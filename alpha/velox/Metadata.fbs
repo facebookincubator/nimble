@@ -1,0 +1,14 @@
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+namespace facebook.alpha.serialization;
+
+table MetadataEntry {
+  key:string;
+  value:string;
+}
+
+table Metadata {
+  entries:[MetadataEntry];
+}
+
+root_type Metadata;

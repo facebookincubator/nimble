@@ -1,0 +1,555 @@
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+#include <algorithm>
+#include <fstream>
+#include <locale>
+#include <numeric>
+#include <ostream>
+#include <tuple>
+#include <utility>
+
+#include "dwio/alpha/common/EncodingPrimitives.h"
+#include "dwio/alpha/common/FixedBitArray.h"
+#include "dwio/alpha/encodings/EncodingFactoryNew.h"
+#include "dwio/alpha/tools/AlphaDumpLib.h"
+#include "dwio/alpha/tools/EncodingUtilities.h"
+#include "dwio/alpha/velox/VeloxReader.h"
+#include "dwio/common/filesystem/FileSystem.h"
+#include "folly/experimental/NestedCommandLineApp.h"
+
+namespace facebook::alpha::tools {
+
+#define RED "\033[31m"
+#define GREEN "\033[32m"
+#define YELLOW "\033[33m"
+#define BLUE "\033[34m"
+#define PURPLE "\033[35m"
+#define CYAN "\033[36m"
+#define RESET_COLOR "\033[0m"
+
+namespace {
+
+constexpr uint32_t kBufferSize = 1000;
+
+struct GroupingKey {
+  EncodingType encodingType;
+  DataType dataType;
+  std::optional<CompressionType> compressinType;
+};
+
+struct GroupingKeyCompare {
+  size_t operator()(const GroupingKey& lhs, const GroupingKey& rhs) const {
+    if (lhs.encodingType != rhs.encodingType) {
+      return lhs.encodingType < rhs.encodingType;
+    } else if (lhs.dataType != rhs.dataType) {
+      return lhs.dataType < rhs.dataType;
+    } else {
+      return lhs.compressinType < rhs.compressinType;
+    }
+  }
+};
+
+class TableFormatter {
+ public:
+  TableFormatter(
+      std::ostream& ostream,
+      std::vector<std::tuple<
+          std::string /* Title */,
+          uint8_t /* Width */
+          >> fields,
+      bool noHeader = false)
+      : ostream_{ostream}, fields_{std::move(fields)} {
+    if (!noHeader) {
+      ostream << YELLOW;
+      for (const auto& field : fields_) {
+        ostream << std::left << std::setw(std::get<1>(field) + 2)
+                << std::get<0>(field);
+      }
+      ostream << RESET_COLOR << std::endl;
+    }
+  }
+
+  void writeRow(const std::vector<std::string>& values) {
+    assert(values.size() == fields_.size());
+    for (auto i = 0; i < values.size(); ++i) {
+      ostream_ << std::left << std::setw(std::get<1>(fields_[i]) + 2)
+               << values[i];
+    }
+    ostream_ << std::endl;
+  }
+
+ private:
+  std::ostream& ostream_;
+  std::vector<std::tuple<
+      std::string /* Title */,
+      uint8_t /* Width */
+      >>
+      fields_;
+};
+
+void traverseTablet(
+    const Tablet& tablet,
+    std::optional<int32_t> stripeIndex,
+    std::function<void(uint32_t /* stripeId */)> stripeVisitor = nullptr,
+    std::function<void(
+        StreamInput& /*stream*/,
+        uint32_t /*stripeId*/,
+        uint32_t /* streamId*/)> streamVisitor = nullptr) {
+  uint32_t startStripe = stripeIndex ? *stripeIndex : 0;
+  uint32_t endStripe = stripeIndex ? *stripeIndex : tablet.stripeCount() - 1;
+  for (uint32_t i = startStripe; i <= endStripe; ++i) {
+    if (stripeVisitor) {
+      stripeVisitor(i);
+    }
+    if (streamVisitor) {
+      std::vector<uint32_t> identifiers(tablet.streamCount(i));
+      std::iota(identifiers.begin(), identifiers.end(), 0);
+      auto streams = tablet.load(i, {identifiers.cbegin(), identifiers.cend()});
+      for (uint32_t j = 0; j < streams.size(); ++j) {
+        auto& stream = streams[j];
+        if (stream) {
+          streamVisitor(*stream, i, j);
+        }
+      }
+    }
+  }
+}
+
+std::string getEncodingTypeLabel(alpha::StreamInput& stream) {
+  std::string label;
+  uint32_t chunkId = 0;
+  while (stream.hasNext()) {
+    label += folly::to<std::string>(chunkId++);
+    auto compression = stream.peekCompressionType();
+    if (compression != CompressionType::Uncompressed) {
+      label += "{" + toString(compression) + "}";
+    }
+    label += ":";
+    uint32_t currentLevel = 0;
+    auto chunk = stream.nextChunk();
+    traverseEncodings(
+        chunk,
+        [&](EncodingType encodingType,
+            DataType dataType,
+            uint32_t level,
+            uint32_t index,
+            std::string nestedEncodingName,
+            std::unordered_map<EncodingPropertyType, EncodingProperty>
+                properties) -> bool {
+          if (level > currentLevel) {
+            label += "[" + nestedEncodingName + ":";
+          } else if (level < currentLevel) {
+            label += "]";
+          }
+
+          if (index > 0) {
+            label += "," + nestedEncodingName + ":";
+          }
+
+          currentLevel = level;
+
+          label += toString(encodingType) + "<" + toString(dataType);
+          const auto& encodedSize =
+              properties.find(EncodingPropertyType::EncodedSize);
+          if (encodedSize != properties.end()) {
+            label += "," + encodedSize->second.value;
+          }
+          label += ">";
+
+          const auto& compressionProperty =
+              properties.find(EncodingPropertyType::Compression);
+          if (compressionProperty != properties.end()
+              // If the "Uncompressed" label clutters the output, uncomment the
+              // next line.
+              // && compressionProperty->second.value !=
+              // toString(CompressionType::Uncompressed)
+          ) {
+            label += "{" + compressionProperty->second.value + "}";
+          }
+
+          return true;
+        });
+    while (currentLevel-- > 0) {
+      label += "]";
+    }
+
+    if (stream.hasNext()) {
+      label += ";";
+    }
+  }
+  return label.substr(0);
+}
+
+template <typename T>
+void printScalarData(
+    std::ostream& ostream,
+    velox::memory::MemoryPool& pool,
+    Encoding& stream,
+    uint32_t rowCount) {
+  alpha::Vector<T> buffer(&pool);
+  alpha::Vector<char> nulls(&pool);
+  buffer.resize(rowCount);
+  nulls.resize((alpha::FixedBitArray::bufferSize(rowCount, 1)));
+  nulls.zero_out();
+  if (stream.isNullable()) {
+    stream.materializeNullable(rowCount, buffer.data(), nulls.data());
+  } else {
+    stream.materialize(rowCount, buffer.data());
+    nulls.fill(0xff);
+  }
+  for (uint32_t i = 0; i < rowCount; ++i) {
+    if (stream.isNullable() && alpha::bits::getBit(i, nulls.data()) == 0) {
+      ostream << "NULL" << std::endl;
+    } else {
+      ostream << folly::to<std::string>(buffer[i])
+              << std::endl; // Have to use folly::to as Int8 was getting
+                            // converted to char.
+    }
+  }
+}
+
+void printScalarType(
+    std::ostream& ostream,
+    velox::memory::MemoryPool& pool,
+    Encoding& stream,
+    uint32_t rowCount) {
+  switch (stream.dataType()) {
+#define CASE(KIND, cppType)                                    \
+  case DataType::KIND: {                                       \
+    printScalarData<cppType>(ostream, pool, stream, rowCount); \
+    break;                                                     \
+  }
+    CASE(Int8, int8_t);
+    CASE(Uint8, uint8_t);
+    CASE(Int16, int16_t);
+    CASE(Uint16, uint16_t);
+    CASE(Int32, int32_t);
+    CASE(Uint32, uint32_t);
+    CASE(Int64, int64_t);
+    CASE(Uint64, uint64_t);
+    CASE(Float, float);
+    CASE(Double, double);
+    CASE(Bool, bool);
+    CASE(String, std::string_view);
+#undef CASE
+    case DataType::Undefined: {
+      ALPHA_UNREACHABLE(
+          fmt::format("Undefined type for stream: {}", stream.dataType()));
+    }
+  }
+}
+
+template <typename T>
+auto commaSeparated(T value) {
+  return fmt::format(std::locale("en_US.UTF-8"), "{:L}", value);
+}
+
+} // namespace
+
+AlphaDumpLib::AlphaDumpLib(std::ostream& ostream, const std::string& file)
+    : pool_{velox::memory::addDefaultLeafMemoryPool()},
+      file_{dwio::file_system::FileSystem::openForRead(
+          file,
+          dwio::common::request::AccessDescriptorBuilder()
+              .withClientId("alpha_dump")
+              .build())},
+      ostream_{ostream} {}
+
+void AlphaDumpLib::emitInfo() {
+  auto tablet = std::make_shared<Tablet>(*pool_, file_.get());
+  ostream_ << CYAN << "Alpha File " << RESET_COLOR << "Version "
+           << tablet->majorVersion() << "." << tablet->minorVersion()
+           << std::endl;
+  ostream_ << "File Size: " << commaSeparated(tablet->fileSize()) << std::endl;
+  ostream_ << "Checksum: " << tablet->checksum() << " ["
+           << alpha::toString(tablet->checksumType()) << "]" << std::endl;
+  ostream_ << "Footer Compression: " << tablet->footerCompressionType()
+           << std::endl;
+  ostream_ << "Footer Size: " << commaSeparated(tablet->footerSize())
+           << std::endl;
+  ostream_ << "Stripe Count: " << commaSeparated(tablet->stripeCount())
+           << std::endl;
+  ostream_ << "Row Count: " << commaSeparated(tablet->tabletRowCount())
+           << std::endl;
+
+  VeloxReader reader{*pool_, tablet};
+  auto& metadata = reader.metadata();
+  if (!metadata.empty()) {
+    ostream_ << "Metadata:";
+    for (const auto& pair : metadata) {
+      ostream_ << std::endl << "  " << pair.first << ": " << pair.second;
+    }
+  }
+  ostream_ << std::endl;
+}
+
+void AlphaDumpLib::emitSchema(bool collapseFlatMap) {
+  auto tablet = std::make_shared<Tablet>(*pool_, file_.get());
+  VeloxReader reader{*pool_, tablet};
+
+  bool skipping = false;
+  SchemaReader::traverseSchema(
+      reader.schema(),
+      [&](uint32_t level,
+          const Type& type,
+          const SchemaReader::NodeInfo& info) {
+        auto parentType = info.parentType;
+        if (parentType != nullptr && parentType->isFlatMap()) {
+          auto childrenCount = parentType->asFlatMap().childrenCount();
+          if (childrenCount > 2 && collapseFlatMap) {
+            // each child of a flatmap consists of a "inmap" node and a
+            // keyName node, so the first inMap's placeInSibling == 0, its
+            // keyName's placeInSibling == 1.
+            if (info.placeInSibling == 2) {
+              ostream_ << std::string(
+                              (std::basic_string<char>::size_type)level * 2,
+                              ' ')
+                       << "..." << std::endl;
+              skipping = true;
+            } else if (info.placeInSibling == childrenCount * 2 - 2) {
+              skipping = false;
+            }
+          }
+        }
+        if (!skipping) {
+          ostream_ << std::string(
+                          (std::basic_string<char>::size_type)level * 2, ' ')
+                   << "[" << type.offset() << "] " << info.name << " : ";
+          if (type.isScalar()) {
+            ostream_ << toString(type.kind()) << "<"
+                     << toString(type.asScalar().scalarKind()) << ">"
+                     << std::endl;
+          } else {
+            ostream_ << toString(type.kind()) << std::endl;
+          }
+        }
+      });
+}
+
+void AlphaDumpLib::emitStripes(bool noHeader) {
+  Tablet tablet{*pool_, file_.get()};
+  TableFormatter formatter(
+      ostream_,
+      {{"Stripe Id", 11},
+       {"Stripe Offset", 15},
+       {"Stripe Size", 15},
+       {"Row Count", 15}},
+      noHeader);
+  traverseTablet(tablet, std::nullopt, [&](uint32_t stripeIndex) {
+    auto sizes = tablet.streamSizes(stripeIndex);
+    auto stripeSize = std::accumulate(sizes.begin(), sizes.end(), 0UL);
+    formatter.writeRow({
+        folly::to<std::string>(stripeIndex),
+        folly::to<std::string>(tablet.stripeOffset(stripeIndex)),
+        folly::to<std::string>(stripeSize),
+        folly::to<std::string>(tablet.stripeRowCount(stripeIndex)),
+    });
+  });
+}
+
+void AlphaDumpLib::emitStreams(
+    bool noHeader,
+    bool flatmapKeys,
+    std::optional<uint32_t> stripeId) {
+  auto tablet = std::make_shared<Tablet>(*pool_, file_.get());
+
+  std::vector<std::tuple<std::string, uint8_t>> fields;
+  fields.push_back({"Stripe Id", 11});
+  fields.push_back({"Stream Id", 11});
+  fields.push_back({"Stream Offset", 13});
+  fields.push_back({"Stream Size", 13});
+  fields.push_back({"Item Count", 13});
+  if (flatmapKeys) {
+    fields.push_back({"Map Stream Id", 13});
+    fields.push_back({"Map Key", 13});
+  }
+  fields.push_back({"Type", 30});
+
+  TableFormatter formatter(ostream_, fields, noHeader);
+
+  VeloxReader reader{*pool_, tablet};
+  std::unordered_map<
+      alpha::offset_size,
+      std::tuple<alpha::offset_size, std::string>>
+      flatmapStreams;
+  if (flatmapKeys) {
+    SchemaReader::traverseSchema(
+        reader.schema(),
+        [&](uint32_t /* level */,
+            const Type& type,
+            const SchemaReader::NodeInfo& info) {
+          if (type.isFlatMap()) {
+            auto map = type.asFlatMap();
+            for (int i = 0; i < map.childrenCount(); ++i) {
+              const auto& inmap = map.inMapAt(i);
+              const auto& value = map.childAt(i);
+              flatmapStreams[inmap->offset()] = {type.offset(), map.nameAt(i)};
+              flatmapStreams[value->offset()] = {type.offset(), map.nameAt(i)};
+            }
+          } else {
+            if (info.parentType != nullptr) {
+              auto it = flatmapStreams.find(info.parentType->offset());
+              if (it != flatmapStreams.end()) {
+                flatmapStreams[type.offset()] = {it->second};
+              }
+            }
+          }
+        });
+  }
+
+  traverseTablet(
+      *tablet,
+      stripeId,
+      nullptr /* stripeVisitor */,
+      [&](StreamInput& stream, uint32_t stripeId, uint32_t streamId) {
+        uint32_t itemCount = 0;
+        while (stream.hasNext()) {
+          auto chunk = stream.nextChunk();
+          itemCount += *reinterpret_cast<const uint32_t*>(chunk.data() + 2);
+        }
+        stream.reset();
+        std::vector<std::string> values;
+        values.push_back(folly::to<std::string>(stripeId));
+        values.push_back(folly::to<std::string>(streamId));
+        values.push_back(
+            folly::to<std::string>(tablet->streamOffsets(stripeId)[streamId]));
+        values.push_back(
+            folly::to<std::string>(tablet->streamSizes(stripeId)[streamId]));
+        values.push_back(folly::to<std::string>(itemCount));
+        if (flatmapKeys) {
+          auto it = flatmapStreams.find(streamId);
+          values.push_back(
+              it != flatmapStreams.end()
+                  ? folly::to<std::string>(std::get<0>(it->second))
+                  : "N/A");
+          values.push_back(
+              it != flatmapStreams.end() ? std::get<1>(it->second) : "N/A");
+        }
+        values.push_back(getStreamInputLabel(stream));
+        formatter.writeRow(values);
+      });
+}
+
+void AlphaDumpLib::emitHistogram(
+    bool topLevel,
+    bool noHeader,
+    std::optional<uint32_t> stripeId) {
+  Tablet tablet{*pool_, file_.get()};
+  std::map<GroupingKey, size_t, GroupingKeyCompare> encodingHistogram;
+  const std::unordered_map<std::string, CompressionType> compressionMap{
+      {toString(CompressionType::Uncompressed), CompressionType::Uncompressed},
+      {toString(CompressionType::Zstd), CompressionType::Zstd},
+      {toString(CompressionType::Zstrong), CompressionType::Zstrong},
+  };
+  traverseTablet(
+      tablet,
+      stripeId,
+      nullptr,
+      [&](StreamInput& stream, auto /*stripeIndex*/, auto /*streamIndex*/) {
+        while (stream.hasNext()) {
+          traverseEncodings(
+              stream.nextChunk(),
+              [&](EncodingType encodingType,
+                  DataType dataType,
+                  uint32_t level,
+                  uint32_t /* index */,
+                  std::string /*nestedEncodingName*/,
+                  std::unordered_map<EncodingPropertyType, EncodingProperty>
+                      properties) {
+                GroupingKey key{
+                    .encodingType = encodingType, .dataType = dataType};
+                const auto& compression =
+                    properties.find(EncodingPropertyType::Compression);
+                if (compression != properties.end()) {
+                  key.compressinType =
+                      compressionMap.at(compression->second.value);
+                }
+                ++encodingHistogram[key];
+                return !(topLevel && level == 1);
+              });
+        }
+      });
+
+  TableFormatter formatter(
+      ostream_,
+      {{"Encoding Type", 17},
+       {"Data Type", 13},
+       {"Compression", 15},
+       {"Count", 15}},
+      noHeader);
+
+  for (auto& [key, value] : encodingHistogram) {
+    formatter.writeRow({
+        toString(key.encodingType),
+        toString(key.dataType),
+        key.compressinType ? toString(*key.compressinType) : "",
+        folly::to<std::string>(value),
+    });
+  }
+}
+
+void AlphaDumpLib::emitContent(
+    uint32_t streamId,
+    std::optional<uint32_t> stripeId) {
+  Tablet tablet{*pool_, file_.get()};
+
+  uint32_t maxStreamCount;
+  bool found = false;
+  traverseTablet(tablet, stripeId, [&](uint32_t stripeId) {
+    maxStreamCount = std::max(maxStreamCount, tablet.streamCount(stripeId));
+    if (streamId >= tablet.streamCount(stripeId)) {
+      return;
+    }
+
+    found = true;
+
+    auto streams = tablet.load(stripeId, std::vector{streamId});
+
+    if (auto& stream = streams[0]) {
+      while (stream->hasNext()) {
+        auto encoding = EncodingFactory::decode(*pool_, stream->nextChunk());
+        uint32_t totalRows = encoding->rowCount();
+        while (totalRows > 0) {
+          auto currentReadSize = std::min(kBufferSize, totalRows);
+          printScalarType(ostream_, *pool_, *encoding, currentReadSize);
+          totalRows -= currentReadSize;
+        }
+      }
+    }
+  });
+
+  if (!found) {
+    throw folly::ProgramExit(
+        -1,
+        fmt::format(
+            "Stream identifier {} is out of bound. Must be between 0 and {}\n",
+            streamId,
+            maxStreamCount));
+  }
+}
+
+void AlphaDumpLib::emitBinary(
+    std::function<std::unique_ptr<std::ostream>()> outputFactory,
+    uint32_t streamId,
+    uint32_t stripeId) {
+  Tablet tablet{*pool_, file_.get()};
+  if (streamId >= tablet.streamCount(stripeId)) {
+    throw folly::ProgramExit(
+        -1,
+        fmt::format(
+            "Stream identifier {} is out of bound. Must be between 0 and {}\n",
+            streamId,
+            tablet.streamCount(stripeId)));
+  }
+
+  auto streams = tablet.load(stripeId, std::vector{streamId});
+
+  if (auto& stream = streams[0]) {
+    auto output = outputFactory();
+    stream->extract([&](auto data) {
+      output->write(data.data(), data.size());
+      output->flush();
+    });
+  }
+}
+
+} // namespace facebook::alpha::tools
