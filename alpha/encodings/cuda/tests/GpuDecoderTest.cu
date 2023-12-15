@@ -17,6 +17,7 @@
 #include <fmt/format.h>
 #include <folly/init/Init.h>
 #include <gflags/gflags.h>
+#include <glog/logging.h>
 #include <gtest/gtest.h>
 #include "dwio/alpha/encodings/cuda/GpuDecoder.cuh"
 #include "velox/experimental/gpu/Common.h"
@@ -564,6 +565,10 @@ TEST_F(GpuDecoderTest, rle) {
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
   folly::init(&argc, &argv);
+  if (int device; cudaGetDevice(&device) != cudaSuccess) {
+    LOG(WARNING) << "No CUDA detected, skipping all tests";
+    return 0;
+  }
   cudaDeviceProp prop;
   CUDA_CHECK_FATAL(cudaGetDeviceProperties(&prop, FLAGS_device_id));
   printf("Running on device: %s\n", prop.name);
