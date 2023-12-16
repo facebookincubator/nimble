@@ -17,7 +17,7 @@ template <typename C>
 class RleEncodingTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    pool_ = facebook::velox::memory::addDefaultLeafMemoryPool();
+    pool_ = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
     buffer_ = std::make_unique<alpha::Buffer>(*pool_);
   }
 

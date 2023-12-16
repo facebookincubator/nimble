@@ -92,7 +92,7 @@ typename alpha::TypeTraits<T>::physicalType asPhysicalType(T value) {
 
 template <typename T>
 void test(std::span<const T> values, std::vector<EncodingDetails> expected) {
-  auto pool = facebook::velox::memory::addDefaultLeafMemoryPool();
+  auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   auto policy = getRootManualSelectionPolicy<T>();
   alpha::Buffer buffer{*pool};
 
@@ -529,7 +529,7 @@ TEST(EncodingSelectionBoolTests, SelectTrivial) {
   policies.push_back(
       std::make_unique<alpha::LearnedEncodingSelectionPolicy<T>>());
 
-  auto pool = facebook::velox::memory::addDefaultLeafMemoryPool();
+  auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   alpha::Buffer buffer{*pool};
 
   for (auto& policy : policies) {
@@ -561,7 +561,7 @@ TEST(EncodingSelectionBoolTests, SelectRunLength) {
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng(seed);
 
-  auto pool = facebook::velox::memory::addDefaultLeafMemoryPool();
+  auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   alpha::Buffer buffer{*pool};
 
   std::vector<uint32_t> runLengths;
@@ -605,7 +605,7 @@ TEST(EncodingSelectionBoolTests, SelectRunLength) {
 TEST(EncodingSelectionStringTests, SelectConst) {
   using T = std::string_view;
 
-  auto pool = facebook::velox::memory::addDefaultLeafMemoryPool();
+  auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   alpha::Buffer buffer{*pool};
 
   for (const T value :
@@ -638,7 +638,7 @@ TEST(EncodingSelectionStringTests, SelectConst) {
 TEST(EncodingSelectionStringTests, SelectMainlyConst) {
   using T = std::string_view;
 
-  auto pool = facebook::velox::memory::addDefaultLeafMemoryPool();
+  auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   alpha::Buffer buffer{*pool};
 
   for (const T value : {
@@ -701,7 +701,7 @@ TEST(EncodingSelectionStringTests, SelectTrivial) {
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng(seed);
 
-  auto pool = facebook::velox::memory::addDefaultLeafMemoryPool();
+  auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   alpha::Buffer buffer{*pool};
 
   auto policy = getRootManualSelectionPolicy<T>();
@@ -750,7 +750,7 @@ TEST(EncodingSelectionStringTests, SelectDictionary) {
 
   std::vector<std::string> uniqueValues{"", "abcdef", std::string(5000, '\0')};
 
-  auto pool = facebook::velox::memory::addDefaultLeafMemoryPool();
+  auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   alpha::Buffer buffer{*pool};
 
   auto policy = getRootManualSelectionPolicy<T>();
@@ -796,7 +796,7 @@ TEST(EncodingSelectionStringTests, SelectRunLength) {
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng(seed);
 
-  auto pool = facebook::velox::memory::addDefaultLeafMemoryPool();
+  auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   alpha::Buffer buffer{*pool};
 
   std::vector<uint32_t> runLengths;
@@ -856,7 +856,7 @@ TEST(EncodingSelectionStringTests, SelectRunLength) {
 
 TEST(EncodingSelectionTests, TestNullable) {
   using T = std::string_view;
-  auto pool = facebook::velox::memory::addDefaultLeafMemoryPool();
+  auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   alpha::Buffer buffer{*pool};
   auto policy = getRootManualSelectionPolicy<T>();
   std::vector<T> data{"abcd", "efg", "hijk", "lmno"};

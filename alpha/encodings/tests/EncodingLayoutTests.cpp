@@ -46,7 +46,7 @@ void testCapture(alpha::EncodingLayout expected, TCollection data) {
     return encodingFactory.createPolicy(dataType);
   };
 
-  auto defaultPool = velox::memory::addDefaultLeafMemoryPool();
+  auto defaultPool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
   alpha::Buffer buffer{*defaultPool};
   auto encoding = alpha::EncodingFactory::encode<T>(
       std::make_unique<alpha::ReplayedEncodingSelectionPolicy<T>>(
@@ -257,7 +257,7 @@ TEST(EncodingLayoutTests, Nullable) {
     return encodingFactory.createPolicy(dataType);
   };
 
-  auto defaultPool = velox::memory::addDefaultLeafMemoryPool();
+  auto defaultPool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
   alpha::Buffer buffer{*defaultPool};
   auto encoding = alpha::EncodingFactory::encodeNullable<uint32_t>(
       std::make_unique<alpha::ReplayedEncodingSelectionPolicy<uint32_t>>(

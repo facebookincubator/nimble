@@ -27,8 +27,8 @@
 using namespace ::facebook;
 
 namespace {
-auto rootPool =
-    velox::memory::defaultMemoryManager().addRootPool("velox_reader_tests");
+auto rootPool = velox::memory::deprecatedDefaultMemoryManager().addRootPool(
+    "velox_reader_tests");
 auto leafPool = rootPool -> addLeafChild("leaf");
 struct VeloxMapGeneratorConfig {
   std::shared_ptr<const velox::RowType> rowType;
@@ -976,7 +976,7 @@ void writeAndVerify(
   auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
   // new pool with to limit already used memory and with tracking enabled
   auto leakDetectPool =
-      facebook::velox::memory::defaultMemoryManager().addRootPool(
+      facebook::velox::memory::deprecatedDefaultMemoryManager().addRootPool(
           "memory_leak_detect");
   auto readerPool = leakDetectPool->addLeafChild("reader_pool");
 

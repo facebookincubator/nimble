@@ -43,7 +43,7 @@ std::string compress(std::string_view data) {
 
 int main(int argc, char* argv[]) {
   auto init = facebook::init::InitFacebookLight{&argc, &argv};
-  auto pool = velox::memory::addDefaultLeafMemoryPool();
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
 
   if (FLAGS_input_files.empty()) {
     LOG(ERROR) << "Missing input files";

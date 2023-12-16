@@ -126,7 +126,7 @@ void writeFile(
 
   LOG(INFO) << "Writing " << identifier;
 
-  auto pool = facebook::velox::memory::addDefaultLeafMemoryPool();
+  auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   alpha::Buffer buffer{*pool};
   auto data = dataGenerator(rng, buffer, rowCount);
 
@@ -340,7 +340,7 @@ int main(int argc, char* argv[]) {
     std::vector<char> buffer(size);
     stream.read(buffer.data(), buffer.size());
 
-    auto pool = facebook::velox::memory::addDefaultLeafMemoryPool();
+    auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
     auto encoding =
         alpha::EncodingFactory::decode(*pool, {buffer.data(), buffer.size()});
     auto rowCount = encoding->rowCount();

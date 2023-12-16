@@ -127,7 +127,7 @@ class EncodingTests : public ::testing::Test {
   using E = typename C::cppDataType;
 
   void SetUp() override {
-    pool_ = facebook::velox::memory::addDefaultLeafMemoryPool();
+    pool_ = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
     buffer_ = std::make_unique<alpha::Buffer>(*this->pool_);
     util_ = std::make_unique<alpha::testing::Util>(*this->pool_);
   }

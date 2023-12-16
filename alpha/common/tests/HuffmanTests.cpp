@@ -8,7 +8,7 @@ using namespace ::facebook;
 class HuffmanTests : public ::testing::Test {
  protected:
   void SetUp() override {
-    pool_ = facebook::velox::memory::addDefaultLeafMemoryPool();
+    pool_ = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   }
 
   std::shared_ptr<facebook::velox::memory::MemoryPool> pool_;

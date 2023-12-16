@@ -16,14 +16,14 @@ using namespace facebook;
 using namespace facebook::alpha;
 
 namespace {
-auto rootPool =
-    velox::memory::defaultMemoryManager().addRootPool("serialization_tests");
+auto rootPool = velox::memory::deprecatedDefaultMemoryManager().addRootPool(
+    "serialization_tests");
 } // namespace
 
 class SerializationTests : public ::testing::Test {
  protected:
   void SetUp() override {
-    pool_ = velox::memory::addDefaultLeafMemoryPool();
+    pool_ = velox::memory::deprecatedAddDefaultLeafMemoryPool();
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;

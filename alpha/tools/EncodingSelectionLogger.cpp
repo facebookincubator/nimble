@@ -27,7 +27,7 @@ using namespace ::facebook;
 
 template <typename T>
 void logEncodingSelection(const std::vector<std::string>& source) {
-  auto pool = facebook::velox::memory::addDefaultLeafMemoryPool();
+  auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   alpha::Vector<T> values{pool.get()};
   values.reserve(source.size());
   for (const auto& value : source) {

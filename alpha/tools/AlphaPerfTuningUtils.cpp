@@ -132,7 +132,7 @@ std::unordered_map<std::string, std::vector<int64_t>> extractFeatureOrdering(
 std::unordered_map<std::string, std::vector<int64_t>> generateFeatureList(
     const std::string& path,
     const dwio::common::request::AccessDescriptor& accessDescriptor) {
-  auto pool = velox::memory::addDefaultLeafMemoryPool();
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
   alpha::VeloxReader reader{
       *pool,
       dwio::file_system::FileSystem::openForRead(path, accessDescriptor),
@@ -181,7 +181,7 @@ std::unordered_map<std::string, std::vector<int64_t>> generateFeatureList(
   // TODO: batch size should actually approximate koski writer or
   // trabant patterns.
   constexpr uint64_t batchSize = 25;
-  auto rootPool = velox::memory::defaultMemoryManager().addRootPool(
+  auto rootPool = velox::memory::deprecatedDefaultMemoryManager().addRootPool(
       "alpha_perf_tuning_rewriteFile");
   auto readerPool = rootPool->addLeafChild("reader");
   auto writerPool = rootPool->addLeafChild("writer");
@@ -265,7 +265,7 @@ std::unordered_map<std::string, std::vector<int64_t>> generateFeatureList(
     const FeatureProjectionConfig& featureProjectionConfig,
     size_t batchSize,
     size_t iters) {
-  auto rootPool = velox::memory::defaultMemoryManager().addRootPool(
+  auto rootPool = velox::memory::deprecatedDefaultMemoryManager().addRootPool(
       "alpha_perf_tuning_readFile");
   auto pool = rootPool->addLeafChild("reader");
   folly::StreamingStats<time_t> cpuStats;

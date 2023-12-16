@@ -249,7 +249,7 @@ void test(
 class TabletTestSuite : public ::testing::Test {
  protected:
   void SetUp() override {
-    pool_ = velox::memory::addDefaultLeafMemoryPool();
+    pool_ = velox::memory::deprecatedAddDefaultLeafMemoryPool();
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
@@ -477,7 +477,7 @@ TEST(TabletTests, OptionalSections) {
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
 
-  auto pool = velox::memory::addDefaultLeafMemoryPool();
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
   alpha::TabletWriter tabletWriter{*pool, &writeFile};
@@ -533,7 +533,7 @@ TEST(TabletTests, OptionalSections) {
 }
 
 TEST(TabletTests, OptionalSectionsEmpty) {
-  auto pool = velox::memory::addDefaultLeafMemoryPool();
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
   alpha::TabletWriter tabletWriter{*pool, &writeFile};
@@ -554,7 +554,7 @@ TEST(TabletTests, OptionalSectionsPreload) {
 
   for (const auto footerCompressionThreshold :
        {0U, std::numeric_limits<uint32_t>::max()}) {
-    auto pool = velox::memory::addDefaultLeafMemoryPool();
+    auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
     std::string file;
     velox::InMemoryWriteFile writeFile(&file);
     alpha::TabletWriter tabletWriter{*pool, &writeFile};
