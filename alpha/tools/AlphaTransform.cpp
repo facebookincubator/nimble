@@ -305,7 +305,7 @@ int main(int argc, char* argv[]) {
             warm_storage::DirectoryOwnershipTokenPair(),
             warm_storage::WSFileSystemMetadataType::ANY,
             warm_storage::RenameOptions{warm_storage::CommonFileAPIOptions{
-                accessDescriptor.state().storageAccessToken}});
+                accessDescriptor.state().storageAccessToken()}});
         std::cout << finalOutputPath;
       }
     } else {
