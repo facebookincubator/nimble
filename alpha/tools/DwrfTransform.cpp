@@ -118,7 +118,8 @@ int main(int argc, char* argv[]) {
   ALPHA_CHECK(
       FLAGS_mode == "transform" || FLAGS_mode == "transform_interactive",
       fmt::format("Unknown run mode: {}", FLAGS_mode));
-  auto pool = facebook::velox::memory::defaultMemoryManager().addRootPool();
+  auto pool =
+      facebook::velox::memory::deprecatedDefaultMemoryManager().addRootPool();
 
   LOG(INFO) << "DWRF Transform - Mode: " << FLAGS_mode;
 

@@ -13,7 +13,8 @@
 using namespace ::facebook;
 
 namespace {
-auto rootPool = velox::memory::defaultMemoryManager().addRootPool("type_tests");
+auto rootPool =
+    velox::memory::deprecatedDefaultMemoryManager().addRootPool("type_tests");
 auto leafPool = rootPool -> addLeafChild("leaf");
 } // namespace
 

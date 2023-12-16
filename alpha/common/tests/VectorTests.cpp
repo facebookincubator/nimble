@@ -15,7 +15,7 @@ class VectorTests : public ::testing::Test {
   }
 
   void SetUp() override {
-    pool_ = facebook::velox::memory::addDefaultLeafMemoryPool();
+    pool_ = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;

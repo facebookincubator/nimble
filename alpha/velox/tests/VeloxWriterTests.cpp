@@ -20,8 +20,8 @@
 using namespace ::facebook;
 
 namespace {
-auto rootPool =
-    velox::memory::defaultMemoryManager().addRootPool("velox_writer_tests");
+auto rootPool = velox::memory::deprecatedDefaultMemoryManager().addRootPool(
+    "velox_writer_tests");
 auto leafPool = rootPool -> addLeafChild("leaf");
 } // namespace
 

@@ -35,7 +35,7 @@ class NullableEncodingTest : public ::testing::Test {
   using E = typename C::cppDataType;
 
   void SetUp() override {
-    pool_ = facebook::velox::memory::addDefaultLeafMemoryPool();
+    pool_ = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
     buffer_ = std::make_unique<alpha::Buffer>(*pool_);
     util_ = std::make_unique<alpha::testing::Util>(*pool_);
   }

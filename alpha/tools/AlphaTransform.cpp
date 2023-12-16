@@ -273,8 +273,9 @@ int main(int argc, char* argv[]) {
       fmt::format("Unknown run mode: {}", FLAGS_mode));
 
   LOG(INFO) << "Alpha Transform - Mode: " << FLAGS_mode;
-  auto pool = facebook::velox::memory::defaultMemoryManager().addRootPool(
-      "alpha_transform");
+  auto pool =
+      facebook::velox::memory::deprecatedDefaultMemoryManager().addRootPool(
+          "alpha_transform");
   try {
     if (FLAGS_mode == "transform_interactive") {
       // Interactive mode - Running in Spark.

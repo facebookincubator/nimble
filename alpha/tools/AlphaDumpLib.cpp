@@ -246,7 +246,7 @@ auto commaSeparated(T value) {
 } // namespace
 
 AlphaDumpLib::AlphaDumpLib(std::ostream& ostream, const std::string& file)
-    : pool_{velox::memory::addDefaultLeafMemoryPool()},
+    : pool_{velox::memory::deprecatedAddDefaultLeafMemoryPool()},
       file_{dwio::file_system::FileSystem::openForRead(
           file,
           dwio::common::request::AccessDescriptorBuilder()
