@@ -7,6 +7,8 @@
 #include "common/strings/Zstd.h"
 #include "dwio/alpha/common/Exceptions.h"
 #include "dwio/alpha/tools/EncodingLayoutTrainer.h"
+#include "folly/executors/CPUThreadPoolExecutor.h"
+#include "folly/experimental/io/FsUtil.h" // @donotremove
 
 using namespace ::facebook;
 
@@ -32,6 +34,11 @@ DEFINE_string(
     "Serialized version of table metadata serde information. "
     "Serialized payload is serialized using Thrift Compact protocol, Zstd compressed and Base64 encoded.");
 
+DEFINE_int32(
+    thread_count,
+    std::max<uint32_t>(std::thread::hardware_concurrency() - 2, 1),
+    "Number of threads to use when training. Default is number of cores on the machine minus 2.");
+
 std::string compress(std::string_view data) {
   if (!FLAGS_compressed) {
     return std::string{data};
@@ -55,13 +62,19 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  if (folly::fs::exists(FLAGS_output_file)) {
+    folly::fs::remove(FLAGS_output_file);
+  }
+
   std::vector<std::string_view> files;
   folly::split(';', FLAGS_input_files, files);
 
   alpha::tools::EncodingLayoutTrainer trainer{
       *pool, files, FLAGS_serialized_serde};
 
-  auto layoutTree = trainer.train();
+  folly::CPUThreadPoolExecutor executor{
+      static_cast<size_t>(FLAGS_thread_count)};
+  auto layoutTree = trainer.train(executor);
   std::string output;
   output.resize(1 * 1024 * 1024);
   auto size = layoutTree.serialize(output);

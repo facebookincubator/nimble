@@ -7,6 +7,7 @@
 #include <vector>
 #include "dwio/alpha/common/Types.h"
 #include "dwio/alpha/velox/VeloxWriterOptions.h"
+#include "folly/Executor.h"
 #include "velox/common/memory/Memory.h"
 
 namespace facebook::alpha::tools {
@@ -18,7 +19,7 @@ class EncodingLayoutTrainer {
       std::vector<std::string_view> files,
       std::string serializedSerde = "");
 
-  EncodingLayoutTree train();
+  EncodingLayoutTree train(folly::Executor& executor);
 
  private:
   velox::memory::MemoryPool& memoryPool_;

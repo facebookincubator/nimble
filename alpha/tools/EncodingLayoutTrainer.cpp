@@ -15,10 +15,41 @@
 #include "fbjava/datainfra-metastore/api/if/gen-cpp2/hive_metastore_types.h"
 #include "thrift/lib/cpp/protocol/TBase64Utils.h"
 #include "thrift/lib/cpp2/protocol/CompactProtocol.h"
+#include "velox/dwio/common/ExecutorBarrier.h"
 
 namespace facebook::alpha::tools {
 
 namespace {
+
+template <typename T>
+class TrainingNode {
+ public:
+  TrainingNode(
+      std::string name,
+      std::unique_ptr<T>&& state,
+      std::vector<std::unique_ptr<TrainingNode<T>>>&& children)
+      : name_{std::move(name)},
+        state_{std::move(state)},
+        children_{std::move(children)} {}
+
+  const std::string& name() const {
+    return name_;
+  }
+
+  T& state() const {
+    return *state_;
+  }
+
+  const std::vector<std::unique_ptr<TrainingNode<T>>>& children() const {
+    return children_;
+  }
+
+ private:
+  std::string name_;
+  std::unique_ptr<T> state_;
+  std::vector<std::unique_ptr<TrainingNode<T>>> children_;
+};
+
 template <typename T>
 T deserialize(const std::string& source) {
   T result;
@@ -32,74 +63,59 @@ T deserialize(const std::string& source) {
   return result;
 }
 
-EncodingLayoutTree traverseSchema(
+template <typename T>
+std::unique_ptr<TrainingNode<T>> createTrainingTree(
     const Type& type,
-    const std::function<std::optional<EncodingLayout>(const Type& type)>&
-        encodingLayoutHandler,
+    const std::function<std::unique_ptr<T>(const Type&)>& createState,
     const std::string& name = "") {
+  auto state = createState(type);
+  std::vector<std::unique_ptr<TrainingNode<T>>> children;
+
   switch (type.kind()) {
     case Kind::Scalar: {
-      return {
-          type.kind(),
-          encodingLayoutHandler(type),
-          name,
-          /* children */ {}};
+      break;
     }
     case Kind::Row: {
       auto& row = type.asRow();
-      std::vector<EncodingLayoutTree> children;
       children.reserve(row.childrenCount());
       for (auto i = 0; i < row.childrenCount(); ++i) {
-        children.push_back(
-            traverseSchema(*row.childAt(i), encodingLayoutHandler));
+        children.emplace_back(createTrainingTree(*row.childAt(i), createState));
       }
-      return {
-          type.kind(), encodingLayoutHandler(type), name, std::move(children)};
+      break;
     }
     case Kind::Array: {
       auto& array = type.asArray();
-      return {
-          type.kind(),
-          encodingLayoutHandler(type),
-          name,
-          {
-              traverseSchema(*array.elements(), encodingLayoutHandler),
-          }};
+      children.reserve(1);
+      children.emplace_back(createTrainingTree(*array.elements(), createState));
+      break;
     }
     case Kind::Map: {
       auto& map = type.asMap();
-      return {
-          type.kind(),
-          encodingLayoutHandler(type),
-          name,
-          {
-              traverseSchema(*map.keys(), encodingLayoutHandler),
-              traverseSchema(*map.values(), encodingLayoutHandler),
-          }};
+      children.reserve(2);
+      children.emplace_back(createTrainingTree(*map.keys(), createState));
+      children.emplace_back(createTrainingTree(*map.values(), createState));
+      break;
     }
     case Kind::ArrayWithOffsets: {
       auto& array = type.asArrayWithOffsets();
-      return {
-          type.kind(),
-          encodingLayoutHandler(type),
-          name,
-          {
-              traverseSchema(*array.elements(), encodingLayoutHandler),
-              traverseSchema(*array.offsets(), encodingLayoutHandler),
-          }};
+      children.reserve(2);
+      children.emplace_back(createTrainingTree(*array.elements(), createState));
+      children.emplace_back(createTrainingTree(*array.offsets(), createState));
+      break;
     }
     case Kind::FlatMap: {
       auto& map = type.asFlatMap();
-      std::vector<EncodingLayoutTree> children;
       children.reserve(map.childrenCount());
       for (auto i = 0; i < map.childrenCount(); ++i) {
-        children.push_back(traverseSchema(
-            *map.childAt(i), encodingLayoutHandler, map.nameAt(i)));
+        children.emplace_back(
+            createTrainingTree(*map.childAt(i), createState, map.nameAt(i)));
       }
-      return {
-          type.kind(), encodingLayoutHandler(type), name, std::move(children)};
+      break;
     }
   }
+
+  return std::make_unique<TrainingNode<T>>(
+      name, std::move(state), std::move(children));
 }
 
 template <typename T>
@@ -144,6 +160,28 @@ EncodingLayout trainEncoding(
   return EncodingLayoutCapture::capture(encoding);
 }
 
+struct State {
+  explicit State(const Type& type) : type{type} {}
+
+  const Type& type;
+  std::optional<alpha::EncodingLayout> encodingLayout;
+};
+
+EncodingLayoutTree toEncodingLayoutTree(const TrainingNode<State>& node) {
+  auto& state = node.state();
+  std::vector<EncodingLayoutTree> children;
+  children.reserve(node.children().size());
+  for (const auto& child : node.children()) {
+    children.push_back(toEncodingLayoutTree(*child));
+  }
+  return {
+      state.type.kind(),
+      state.encodingLayout,
+      node.name(),
+      std::move(children),
+  };
+}
+
 } // namespace
 
 EncodingLayoutTrainer::EncodingLayoutTrainer(
@@ -156,7 +194,7 @@ EncodingLayoutTrainer::EncodingLayoutTrainer(
   ALPHA_CHECK(!files_.empty(), "No files provided to train on");
 }
 
-EncodingLayoutTree EncodingLayoutTrainer::train() {
+EncodingLayoutTree EncodingLayoutTrainer::train(folly::Executor& executor) {
   // Initial "training" implementation is very basic.
   // It loads a single file, and for each schema node (stream), it loads all
   // data from the file and performs encoding selection on it.
@@ -165,7 +203,6 @@ EncodingLayoutTree EncodingLayoutTrainer::train() {
   // * Support multiple files
   // * Verify encoding selection stability across files/stripes.
   // * Perform better encoding selection (brute forcing, etc.)
-  // * Add parallelism
   // * Measure read/write performance
   // * Support different cost functions
 
@@ -208,60 +245,81 @@ EncodingLayoutTree EncodingLayoutTrainer::train() {
             << ", Zstrong.DecompressionLevel = "
             << options.compressionOptions.zstrongDecompressionLevel;
 
+  velox::dwio::common::ExecutorBarrier barrier{executor};
   // Traverse schema. For each node, load all data and capture basic encoding
   // selection on data.
-  return traverseSchema(*reader->schema(), [&](const Type& type) {
-    std::vector<StreamInput*> streams;
-    for (const auto& stripeStream : stripeStreams) {
-      if (stripeStream.size() > type.offset() && stripeStream[type.offset()]) {
-        streams.push_back(stripeStream[type.offset()].get());
-      }
-    }
+  auto taskTree =
+      createTrainingTree<State>(*reader->schema(), [&](const Type& type) {
+        auto state = std::make_unique<State>(type);
+        barrier.add([&, &localState = *state]() {
+          std::vector<StreamInput*> streams;
+          for (const auto& stripeStream : stripeStreams) {
+            if (stripeStream.size() > type.offset() &&
+                stripeStream[type.offset()]) {
+              streams.push_back(stripeStream[type.offset()].get());
+            }
+          }
 
-    switch (type.kind()) {
-      case Kind::Scalar: {
-        auto scalar = type.asScalar();
-#define SCALAR_CASE(kind, dataType) \
-  case ScalarKind::kind:            \
-    return trainEncoding<dataType>(memoryPool_, options, streams);
+          switch (type.kind()) {
+            case Kind::Scalar: {
+              auto scalar = type.asScalar();
 
-        switch (scalar.scalarKind()) {
-          SCALAR_CASE(Int8, int8_t);
-          SCALAR_CASE(UInt8, uint8_t);
-          SCALAR_CASE(Int16, int16_t);
-          SCALAR_CASE(UInt16, uint16_t);
-          SCALAR_CASE(Int32, int32_t);
-          SCALAR_CASE(UInt32, uint32_t);
-          SCALAR_CASE(Int64, int64_t);
-          SCALAR_CASE(UInt64, uint64_t);
-          SCALAR_CASE(Float, float);
-          SCALAR_CASE(Double, double);
-          SCALAR_CASE(Bool, bool);
-          case ScalarKind::String:
-          case ScalarKind::Binary:
-            return trainEncoding<std::string_view>(
-                memoryPool_, options, streams);
-          case ScalarKind::Undefined:
-            ALPHA_UNREACHABLE("Scalar kind cannot be undefined.");
-        }
+#define SCALAR_CASE(kind, dataType)                              \
+  case ScalarKind::kind:                                         \
+    localState.encodingLayout.emplace(                           \
+        trainEncoding<dataType>(memoryPool_, options, streams)); \
+    break;
+
+              switch (scalar.scalarKind()) {
+                SCALAR_CASE(Int8, int8_t);
+                SCALAR_CASE(UInt8, uint8_t);
+                SCALAR_CASE(Int16, int16_t);
+                SCALAR_CASE(UInt16, uint16_t);
+                SCALAR_CASE(Int32, int32_t);
+                SCALAR_CASE(UInt32, uint32_t);
+                SCALAR_CASE(Int64, int64_t);
+                SCALAR_CASE(UInt64, uint64_t);
+                SCALAR_CASE(Float, float);
+                SCALAR_CASE(Double, double);
+                SCALAR_CASE(Bool, bool);
+                case ScalarKind::String:
+                case ScalarKind::Binary:
+                  localState.encodingLayout.emplace(
+                      trainEncoding<std::string_view>(
+                          memoryPool_, options, streams));
+                  break;
+                case ScalarKind::Undefined:
+                  ALPHA_UNREACHABLE("Scalar kind cannot be undefined.");
+              }
+              break;
 
 #undef SCALAR_KIND
-      }
-      case Kind::Row:
-      case Kind::FlatMap: {
-        // Main stream for complex types (row/flatmap) is the "nullable"
-        // stream (boolean stream)
-        return trainEncoding<bool>(memoryPool_, options, streams);
-      }
-      case Kind::Array:
-      case Kind::Map:
-      case Kind::ArrayWithOffsets: {
-        // Main stream for multi-value types (array/map/arrayWithOffsets) is
-        // the "length" stream (int stream)
-        return trainEncoding<int32_t>(memoryPool_, options, streams);
-      }
-    }
-  });
+            }
+            case Kind::Row:
+            case Kind::FlatMap: {
+              // Main stream for complex types (row/flatmap) is the "nullable"
+              // stream (boolean stream)
+              localState.encodingLayout.emplace(
+                  trainEncoding<bool>(memoryPool_, options, streams));
+              break;
+            }
+            case Kind::Array:
+            case Kind::Map:
+            case Kind::ArrayWithOffsets: {
+              // Main stream for multi-value types (array/map/arrayWithOffsets)
+              // is the "length" stream (int stream)
+              localState.encodingLayout.emplace(
+                  trainEncoding<int32_t>(memoryPool_, options, streams));
+              break;
+            }
+          }
+        });
+        return state;
+      });
+
+  barrier.waitAll();
+
+  return toEncodingLayoutTree(*taskTree);
 }
 
 } // namespace facebook::alpha::tools
