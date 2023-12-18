@@ -4,9 +4,11 @@
 #include <glog/logging.h>
 #include <ios>
 #include <unordered_map>
+#include "common/files/FileUtil.h"
 #include "common/init/light.h"
 #include "common/strings/URL.h"
 #include "common/strings/Zstd.h"
+#include "dwio/alpha/velox/EncodingLayoutTree.h"
 #include "dwio/alpha/velox/VeloxWriter.h"
 #include "dwio/api/AlphaWriterOptionBuilder.h"
 #include "dwio/catalog/fbhive/HiveCatalog.h"
@@ -68,6 +70,10 @@ DEFINE_uint64(
     buffered_write_size,
     72 * 1024 * 1024,
     "Buffer size for buffered WS writes");
+DEFINE_string(
+    encoding_layout_file,
+    "",
+    "An optional file with captured encoding layout tree, to be used during write.");
 
 // Initialize dummy Velox stats reporter
 folly::Singleton<velox::BaseStatsReporter> reporter([]() {
@@ -97,6 +103,7 @@ void run(
   LOG(INFO) << "Batch size: " << FLAGS_batch_size << " rows";
   LOG(INFO) << "Using encoding selection: " << std::boolalpha
             << FLAGS_use_encoding_selection;
+  LOG(INFO) << "Encoding Layout File: " << FLAGS_encoding_layout_file;
 
   auto readerPool = memoryPool->addLeafChild("reader");
   velox::dwio::common::ReaderOptions options{readerPool.get()};
@@ -146,6 +153,23 @@ void run(
       folly::split(';', FLAGS_dictionary_array_names, dictionaryArrays);
       optionBuilder.withDictionaryArrayColumns(dictionaryArrays);
     }
+  }
+
+  if (!FLAGS_encoding_layout_file.empty()) {
+    auto encodingFile = dwio::file_system::FileSystem::openForRead(
+        FLAGS_encoding_layout_file, accessDescriptor);
+    std::string buffer;
+    buffer.resize(encodingFile->size());
+    ALPHA_CHECK(
+        encodingFile->pread(0, buffer.size(), buffer.data()).size() ==
+            buffer.size(),
+        "Problem reading encoding layout file. Size mismatch.");
+
+    std::string uncompressed;
+    strings::zstdDecompress(buffer, &uncompressed);
+
+    optionBuilder.withEncodingLayoutTree(
+        alpha::EncodingLayoutTree::create(uncompressed));
   }
 
   if (!FLAGS_serialized_feature_order.empty()) {
@@ -240,6 +264,8 @@ void run(
     }
   }
 
+  std::string schema;
+  std::string encodings;
   auto writerOptions = optionBuilder.build();
   writerOptions.useEncodingSelectionPolicy = FLAGS_use_encoding_selection;
 
