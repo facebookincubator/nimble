@@ -8,7 +8,6 @@
 
 #include "dwio/alpha/common/Bits.h"
 #include "dwio/alpha/common/Varint.h"
-#include "dwio/alpha/encodings/LazyStatistics.h"
 #include "dwio/alpha/encodings/Statistics.h"
 
 using namespace ::facebook;
@@ -21,20 +20,11 @@ using namespace ::facebook;
 #define NUMERIC_TYPES(StatisticType) \
   INTEGRAL_TYPES(StatisticType), StatisticType<float>, StatisticType<double>
 
-using IntegerTypes = ::testing::Types<
-    INTEGRAL_TYPES(alpha::Statistics),
-    INTEGRAL_TYPES(alpha::LazyStatistics)>;
-
-using NumericTypes = ::testing::Types<
-    NUMERIC_TYPES(alpha::Statistics),
-    NUMERIC_TYPES(alpha::LazyStatistics)>;
-
-using BoolTypes =
-    ::testing::Types<alpha::Statistics<bool>, alpha::LazyStatistics<bool>>;
-
-using StringTypes = ::testing::Types<
-    alpha::Statistics<std::string_view>,
-    alpha::LazyStatistics<std::string_view, std::string>>;
+using IntegerTypes = ::testing::Types<INTEGRAL_TYPES(alpha::Statistics)>;
+using NumericTypes = ::testing::Types<NUMERIC_TYPES(alpha::Statistics)>;
+using BoolTypes = ::testing::Types<alpha::Statistics<bool>>;
+using StringTypes =
+    ::testing::Types<alpha::Statistics<std::string_view, std::string>>;
 
 TYPED_TEST_CASE(StatisticsNumericTests, NumericTypes);
 TYPED_TEST_CASE(StatisticsIntegerTests, IntegerTypes);
@@ -248,21 +238,6 @@ void verifyString(
 TYPED_TEST(StatisticsStringTests, Create) {
   using T = TypeParam;
 
-  // Lazy and eager statistics have slightly different create() APIs. LazyStats
-  // uses input type derived from it's second template argument, while eager
-  // requires explicit instantiation. This seems to require this ugliness.
-  auto createStatistic = [](std::vector<std::string>& input) {
-    if constexpr (std::is_same<
-                      T,
-                      alpha::LazyStatistics<std::string_view, std::string>>::
-                      value) {
-      return T::create(input);
-    } else if constexpr (std::is_same<T, alpha::Statistics<std::string_view>>::
-                             value) {
-      return alpha::Statistics<std::string_view>::create<std::string>(input);
-    }
-  };
-
   constexpr auto uniqueStrings = 10;
   constexpr auto maxRepeat = 20;
 
@@ -281,7 +256,7 @@ TYPED_TEST(StatisticsStringTests, Create) {
     --currentRepeat;
   }
 
-  T statistics = createStatistic(data);
+  T statistics = alpha::Statistics<std::string_view, std::string>::create(data);
 
   EXPECT_EQ(uniqueStrings, statistics.uniqueCounts().size());
   EXPECT_EQ(maxRepeat - uniqueStrings + 1, statistics.minRepeat());
@@ -302,7 +277,7 @@ TYPED_TEST(StatisticsStringTests, Create) {
 
   std::random_shuffle(data.begin(), data.end());
 
-  statistics = createStatistic(data);
+  statistics = alpha::Statistics<std::string_view, std::string>::create({data});
 
   EXPECT_EQ(uniqueStrings, statistics.uniqueCounts().size());
   EXPECT_EQ(totalLength, statistics.totalStringsLength());

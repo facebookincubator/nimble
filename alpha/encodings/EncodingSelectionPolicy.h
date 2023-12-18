@@ -175,28 +175,6 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
     EncodingType selectedEncoding = EncodingType::Trivial;
     constexpr size_t maxItems = ALPHA_ENCODING_SELECTION_DEBUG_MAX_ITEMS;
 
-    // Print Alpha Encoding Stripe statistics.
-    ALPHA_SELECTION_LOG(
-        YELLOW << "Consecutive Repeat Count: "
-               << statistics.consecutiveRepeatCount()
-               << " Min Repeat Count: " << statistics.minRepeat()
-               << " Max Repeat Count: " << statistics.maxRepeat()
-               << " Total Strings Length: " << statistics.totalStringsLength()
-               << " Total Strings Repeat Length: "
-               << statistics.totalStringsRepeatLength()
-               << " Min: " << statistics.min() << " Max: " << statistics.max()
-               << " Bucket Counts (Size): " << statistics.bucketCounts().size()
-               << " Bucket Counts (Data Size): "
-               << std::accumulate(
-                      statistics.bucketCounts().cbegin(),
-                      statistics.bucketCounts().cend(),
-                      0,
-                      [](const uint64_t sum, const uint64_t bucketSize) {
-                        return sum + bucketSize;
-                      })
-               << " Unique Counts (Size): "
-               << statistics.uniqueCounts().size());
-
     // Iterate on all candidate encodings, and pick the encoding with the
     // minimal cost.
     for (const auto& pair : readFactors_) {
