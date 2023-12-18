@@ -7,17 +7,20 @@
 #include <tuple>
 #include <utility>
 
+#include "common/strings/Zstd.h"
 #include "dwio/alpha/common/EncodingPrimitives.h"
 #include "dwio/alpha/common/FixedBitArray.h"
+#include "dwio/alpha/common/Types.h"
 #include "dwio/alpha/encodings/EncodingFactoryNew.h"
+#include "dwio/alpha/encodings/EncodingLayout.h"
 #include "dwio/alpha/tools/AlphaDumpLib.h"
 #include "dwio/alpha/tools/EncodingUtilities.h"
+#include "dwio/alpha/velox/EncodingLayoutTree.h"
 #include "dwio/alpha/velox/VeloxReader.h"
 #include "dwio/common/filesystem/FileSystem.h"
 #include "folly/experimental/NestedCommandLineApp.h"
 
 namespace facebook::alpha::tools {
-
 #define RED "\033[31m"
 #define GREEN "\033[32m"
 #define YELLOW "\033[33m"
@@ -158,8 +161,8 @@ std::string getEncodingTypeLabel(alpha::StreamInput& stream) {
           const auto& compressionProperty =
               properties.find(EncodingPropertyType::Compression);
           if (compressionProperty != properties.end()
-              // If the "Uncompressed" label clutters the output, uncomment the
-              // next line.
+              // If the "Uncompressed" label clutters the output, uncomment
+              // the next line.
               // && compressionProperty->second.value !=
               // toString(CompressionType::Uncompressed)
           ) {
@@ -550,6 +553,176 @@ void AlphaDumpLib::emitBinary(
       output->flush();
     });
   }
+}
+
+void traverseEncodingLayout(
+    const std::optional<EncodingLayout>& node,
+    const std::optional<EncodingLayout>& parentNode,
+    uint32_t& nodeId,
+    uint32_t parentId,
+    uint32_t level,
+    uint8_t childIndex,
+    const std::function<void(
+        const std::optional<EncodingLayout>&,
+        const std::optional<EncodingLayout>&,
+        uint32_t,
+        uint32_t,
+        uint32_t,
+        uint8_t)>& visitor) {
+  auto currentNodeId = nodeId;
+  visitor(node, parentNode, currentNodeId, parentId, level, childIndex);
+
+  if (node.has_value()) {
+    for (int i = 0; i < node->childrenCount(); ++i) {
+      traverseEncodingLayout(
+          node->child(i), node, ++nodeId, currentNodeId, level + 1, i, visitor);
+    }
+  }
+}
+
+void traverseEncodingLayoutTree(
+    const EncodingLayoutTree& node,
+    const EncodingLayoutTree& parentNode,
+    uint32_t& nodeId,
+    uint32_t parentId,
+    uint32_t level,
+    uint8_t childIndex,
+    const std::function<void(
+        const EncodingLayoutTree&,
+        const EncodingLayoutTree&,
+        uint32_t,
+        uint32_t,
+        uint32_t,
+        uint8_t)>& visitor) {
+  auto currentNodeId = nodeId;
+  visitor(node, parentNode, currentNodeId, parentId, level, childIndex);
+
+  for (int i = 0; i < node.childrenCount(); ++i) {
+    traverseEncodingLayoutTree(
+        node.child(i), node, ++nodeId, currentNodeId, level + 1, i, visitor);
+  }
+}
+
+std::string getEncodingLayoutLabel(
+    const std::optional<alpha::EncodingLayout>& root) {
+  std::string label;
+  uint32_t currentLevel = 0;
+  std::unordered_map<alpha::EncodingType, std::vector<std::string>>
+      identifierNames{
+          {alpha::EncodingType::Dictionary, {"Alphabet", "Indices"}},
+          {alpha::EncodingType::MainlyConstant, {"IsCommon", "OtherValues"}},
+          {alpha::EncodingType::Nullable, {"Data", "Nulls"}},
+          {alpha::EncodingType::RLE, {"RunLengths", "RunValues"}},
+          {alpha::EncodingType::SparseBool, {"Indices"}},
+          {alpha::EncodingType::Trivial, {"Lengths"}},
+      };
+
+  auto getIdentifierName = [&](alpha::EncodingType encodingType,
+                               uint8_t identifier) {
+    auto it = identifierNames.find(encodingType);
+    LOG(INFO) << (it == identifierNames.end()) << ", "
+              << (it != identifierNames.end()
+                      ? (int)(identifier >= it->second.size())
+                      : -1);
+    return it == identifierNames.end() || identifier >= it->second.size()
+        ? "Unknown"
+        : it->second[identifier];
+  };
+
+  uint32_t id = 0;
+  traverseEncodingLayout(
+      root,
+      root,
+      id,
+      id,
+      0,
+      (uint8_t)0,
+      [&](const std::optional<alpha::EncodingLayout>& node,
+          const std::optional<alpha::EncodingLayout>& parentNode,
+          uint32_t /* nodeId */,
+          uint32_t /* parentId */,
+          uint32_t level,
+          uint8_t identifier) {
+        if (!node.has_value()) {
+          label += "N/A";
+          return true;
+        }
+
+        if (level > currentLevel) {
+          label += "[" +
+              getIdentifierName(parentNode->encodingType(), identifier) + ":";
+
+        } else if (level < currentLevel) {
+          label += "]";
+        }
+
+        if (identifier > 0) {
+          label += "," +
+              getIdentifierName(parentNode->encodingType(), identifier) + ":";
+        }
+
+        currentLevel = level;
+
+        label += toString(node->encodingType()) + "{" +
+            toString(node->compressionType()) + "}";
+
+        return true;
+      });
+
+  while (currentLevel-- > 0) {
+    label += "]";
+  }
+
+  return label;
+}
+
+void AlphaDumpLib::emitLayout(bool noHeader, bool compressed) {
+  auto size = file_->size();
+  std::string buffer;
+  buffer.resize(size);
+  file_->pread(0, size, buffer.data());
+  if (compressed) {
+    std::string uncompressed;
+    strings::zstdDecompress(buffer, &uncompressed);
+    buffer = std::move(uncompressed);
+  }
+
+  auto layout = alpha::EncodingLayoutTree::create(buffer);
+
+  TableFormatter formatter(
+      ostream_,
+      {
+          {"Node Id", 11},
+          {"Parent Id", 11},
+          {"Node Type", 15},
+          {"Node Name", 17},
+          {"Encoding Layout", 20},
+      },
+      noHeader);
+
+  uint32_t id = 0;
+  traverseEncodingLayoutTree(
+      layout,
+      layout,
+      id,
+      id,
+      0,
+      0,
+      [&](const EncodingLayoutTree& node,
+          const EncodingLayoutTree& /* parentNode */,
+          uint32_t nodeId,
+          uint32_t parentId,
+          uint32_t /* level */,
+          uint8_t /* identifier */) {
+        formatter.writeRow(
+            {folly::to<std::string>(nodeId),
+             folly::to<std::string>(parentId),
+             toString(node.schemaKind()),
+             std::string(node.name()),
+             node.encodingLayout().has_value()
+                 ? getEncodingLayoutLabel(node.encodingLayout().value())
+                 : ""});
+      });
 }
 
 } // namespace facebook::alpha::tools

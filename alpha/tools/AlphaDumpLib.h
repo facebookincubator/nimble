@@ -27,6 +27,7 @@ class AlphaDumpLib {
       std::function<std::unique_ptr<std::ostream>()> outputFactory,
       uint32_t streamId,
       uint32_t stripeId);
+  void emitLayout(bool noHeader, bool compressed);
 
  private:
   std::shared_ptr<velox::memory::MemoryPool> pool_;

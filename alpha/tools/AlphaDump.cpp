@@ -257,6 +257,36 @@ int main(int argc, char* argv[]) {
             );
   // clang-format on
 
+  app.addCommand(
+         "layout",
+         "<file>",
+         "Dumps layout file",
+         "Dumps captured layout file content.",
+         [](const po::variables_map& options,
+            const std::vector<std::string>& /*args*/) {
+           alpha::tools::AlphaDumpLib{
+               std::cout, options["file"].as<std::string>()}
+               .emitLayout(options["no_header"].as<bool>(), !options["uncompressed"].as<bool>());
+         },
+         positionalArgs)
+      // clang-format off
+          .add_options()
+              (
+                  "file",
+                  po::value<std::string>()->required(),
+                  "Encoding layout file path."
+              )(
+                "no_header,n",
+                po::bool_switch()->default_value(false),
+                "Don't print column names. Default is to include column names."
+              )(
+                "uncompressed,u",
+                po::bool_switch()->default_value(false),
+                "Is the layout file uncompressed. Default is false, which means "
+                "the layout file is compressed."
+              );
+  // clang-format on
+
   app.addAlias("i", "info");
   app.addAlias("b", "binary");
   app.addAlias("c", "content");
