@@ -5,8 +5,6 @@
 
 #include "dwio/alpha/velox/BufferGrowthPolicy.h"
 
-using namespace ::testing;
-
 namespace facebook::alpha {
 
 struct DefaultInputBufferGrowthPolicyTestCase {

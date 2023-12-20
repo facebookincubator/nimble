@@ -5,7 +5,6 @@
 #include "dwio/alpha/common/Bits.h"
 #include "folly/Random.h"
 
-using namespace ::testing;
 using namespace facebook::alpha::bits;
 
 template <typename T>

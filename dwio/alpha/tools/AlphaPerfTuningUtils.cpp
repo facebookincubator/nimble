@@ -17,8 +17,6 @@
 #include "velox/dwio/common/Options.h"
 #include "velox/dwio/dwrf/reader/DwrfReader.h"
 
-using namespace facebook::velox;
-
 constexpr uint32_t kAlphaWriteBufferSize = 72U * 1024 * 1024;
 
 namespace facebook::alpha::tools {

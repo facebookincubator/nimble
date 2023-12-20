@@ -6,7 +6,6 @@
 #include <memory>
 
 #include "dwio/alpha/common/Exceptions.h"
-#include "dwio/alpha/common/StopWatch.h"
 #include "dwio/alpha/common/Types.h"
 #include "dwio/alpha/encodings/Encoding.h"
 #include "dwio/alpha/encodings/EncodingSelectionPolicy.h"

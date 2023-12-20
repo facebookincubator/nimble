@@ -5,7 +5,6 @@
 #include <ctime>
 
 #include "common/init/light.h"
-#include "common/strings/UUID.h"
 #include "dwio/catalog/Catalog.h"
 #include "dwio/catalog/fbhive/HiveCatalog.h"
 #include "dwio/catalog/impl/DefaultCatalog.h"
