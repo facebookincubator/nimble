@@ -26,7 +26,6 @@
 #include "folly/concurrency/ConcurrentHashMap.h"
 #include "folly/experimental/coro/BlockingWait.h"
 #include "folly/experimental/coro/Collect.h"
-#include "koski/common/SliceUtil.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/type/Type.h"
 
