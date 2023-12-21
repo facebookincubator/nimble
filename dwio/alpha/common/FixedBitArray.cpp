@@ -348,7 +348,6 @@ void bulkSet32Loop(
     uint64_t** nextWord,
     const uint32_t** values,
     uint32_t baseline) {
-  constexpr uint64_t kMask = (1ULL << bitWidth) - 1ULL;
   // Some bits for the next value may need to put be in the current word.
   constexpr int spillover = (loopPosition * bitWidth) % 64 == 0
       ? 0
