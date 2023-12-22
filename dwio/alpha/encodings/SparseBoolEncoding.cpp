@@ -9,7 +9,6 @@
 #include "dwio/alpha/common/Types.h"
 #include "dwio/alpha/encodings/Compression.h"
 #include "dwio/alpha/encodings/EncodingFactoryNew.h"
-#include "dwio/alpha/encodings/SparseBoolEncoding.h"
 
 namespace facebook::alpha {
 

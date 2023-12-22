@@ -105,7 +105,7 @@ class ZstrongLogger : public zstrong::compressors::xldb::XLDBLogger {
     }
   }
 
-  ~ZstrongLogger() override {}
+  ~ZstrongLogger() override = default;
 };
 } // namespace
 

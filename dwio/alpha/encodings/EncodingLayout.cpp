@@ -86,9 +86,9 @@ std::pair<EncodingLayout, uint32_t> EncodingLayout::create(
     if (childExists > 0) {
       auto encodingLayout = EncodingLayout::create(encoding.substr(offset));
       offset += encodingLayout.second;
-      children.push_back(std::move(encodingLayout.first));
+      children.emplace_back(std::move(encodingLayout.first));
     } else {
-      children.push_back(std::nullopt);
+      children.emplace_back(std::nullopt);
     }
   }
 

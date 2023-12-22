@@ -22,11 +22,13 @@ TEST(BitEncoderTests, WriteThenReadDifferentBitLengths) {
 TEST(BitEncoderTests, WriteAndReadIntermixed) {
   constexpr int elementCount = 1000;
   std::vector<int> data;
-  for (int i = 0; i < elementCount; ++i)
+  for (int i = 0; i < elementCount; ++i) {
     data.push_back(2 * i);
+  }
   std::vector<int> bitLengths;
-  for (int i = 0; i < elementCount; ++i)
+  for (int i = 0; i < elementCount; ++i) {
     bitLengths.push_back(11 + (i % 10));
+  }
   std::vector<char> buffer(4 * elementCount);
   alpha::BitEncoder bitEncoder(buffer.data());
   for (int i = 0; i < elementCount; i += 2) {

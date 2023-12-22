@@ -813,7 +813,7 @@ class ManualEncodingSelectionPolicyFactory {
         // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
         if (key == possibleEncodingStrings[i]) {
           found = true;
-          readFactors.push_back({encoding, value.value()});
+          readFactors.emplace_back(encoding, value.value());
           break;
         }
       }

@@ -28,8 +28,9 @@ class BitEncoder {
     if (nextOffset >= 64) {
       ++writeWord_;
       const int spilloverBits = nextOffset - 64;
-      if (numBits == 64 && spilloverBits == 0)
+      if (numBits == 64 && spilloverBits == 0) {
         return;
+      }
       *writeWord_ |= value >> (numBits - spilloverBits);
       writeOffset_ = spilloverBits;
     } else {
@@ -49,8 +50,9 @@ class BitEncoder {
       ++readWord_;
       const int spilloverBits = nextOffset - 64;
       readOffset_ = spilloverBits;
-      if (spilloverBits == 0)
+      if (spilloverBits == 0) {
         return lowBits;
+      }
       return lowBits |
           (*readWord_ & ((1ULL << spilloverBits) - 1ULL))
           << (numBits - spilloverBits);

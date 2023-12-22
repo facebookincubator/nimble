@@ -244,8 +244,9 @@ template <>
 inline Vector<int64_t> Util::sumFriendlyData(const Vector<int64_t>& data) {
   Vector<int64_t> sumData(&memoryPool_);
   // 15 is somewhat arbitrary shift, but this is testing code, so meh.
-  for (int64_t datum : data)
+  for (int64_t datum : data) {
     sumData.push_back(datum >> 15);
+  }
   return sumData;
 }
 
@@ -253,8 +254,9 @@ template <>
 inline Vector<uint64_t> Util::sumFriendlyData(const Vector<uint64_t>& data) {
   Vector<uint64_t> sumData(&memoryPool_);
   // 15 is somewhat arbitrary shift, but this is testing code, so meh.
-  for (uint64_t datum : data)
+  for (uint64_t datum : data) {
     sumData.push_back(datum >> 15);
+  }
   return sumData;
 }
 

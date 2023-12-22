@@ -46,13 +46,14 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
         const uint32_t lengthsBytes = encoding::readUint32(pos);
 
         children.reserve(1);
-        children.push_back(EncodingLayoutCapture::capture({pos, lengthsBytes}));
+        children.emplace_back(
+            EncodingLayoutCapture::capture({pos, lengthsBytes}));
       }
       break;
     }
     case EncodingType::SparseBool: {
       children.reserve(1);
-      children.push_back(EncodingLayoutCapture::capture(
+      children.emplace_back(EncodingLayoutCapture::capture(
           encoding.substr(kEncodingPrefixSize + 1)));
       break;
     }
@@ -62,12 +63,13 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
       const char* pos = encoding.data() + kEncodingPrefixSize;
       const uint32_t isCommonBytes = encoding::readUint32(pos);
 
-      children.push_back(EncodingLayoutCapture::capture({pos, isCommonBytes}));
+      children.emplace_back(
+          EncodingLayoutCapture::capture({pos, isCommonBytes}));
 
       pos += isCommonBytes;
       const uint32_t otherValuesBytes = encoding::readUint32(pos);
 
-      children.push_back(
+      children.emplace_back(
           EncodingLayoutCapture::capture({pos, otherValuesBytes}));
       break;
     }
@@ -76,11 +78,12 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
       const char* pos = encoding.data() + kEncodingPrefixSize;
       const uint32_t alphabetBytes = encoding::readUint32(pos);
 
-      children.push_back(EncodingLayoutCapture::capture({pos, alphabetBytes}));
+      children.emplace_back(
+          EncodingLayoutCapture::capture({pos, alphabetBytes}));
 
       pos += alphabetBytes;
 
-      children.push_back(EncodingLayoutCapture::capture(
+      children.emplace_back(EncodingLayoutCapture::capture(
           {pos, encoding.size() - (pos - encoding.data())}));
       break;
     }
@@ -93,12 +96,13 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
       const char* pos = encoding.data() + kEncodingPrefixSize;
       const uint32_t runLengthBytes = encoding::readUint32(pos);
 
-      children.push_back(EncodingLayoutCapture::capture({pos, runLengthBytes}));
+      children.emplace_back(
+          EncodingLayoutCapture::capture({pos, runLengthBytes}));
 
       if (dataType != DataType::Bool) {
         pos += runLengthBytes;
 
-        children.push_back(EncodingLayoutCapture::capture(
+        children.emplace_back(EncodingLayoutCapture::capture(
             {pos, encoding.size() - (pos - encoding.data())}));
       }
       break;
@@ -110,16 +114,16 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
       const uint32_t deltaBytes = encoding::readUint32(pos);
       const uint32_t restatementBytes = encoding::readUint32(pos);
 
-      children.push_back(EncodingLayoutCapture::capture({pos, deltaBytes}));
+      children.emplace_back(EncodingLayoutCapture::capture({pos, deltaBytes}));
 
       pos += deltaBytes;
 
-      children.push_back(
+      children.emplace_back(
           EncodingLayoutCapture::capture({pos, restatementBytes}));
 
       pos += restatementBytes;
 
-      children.push_back(EncodingLayoutCapture::capture(
+      children.emplace_back(EncodingLayoutCapture::capture(
           {pos, encoding.size() - (pos - encoding.data())}));
       break;
     }

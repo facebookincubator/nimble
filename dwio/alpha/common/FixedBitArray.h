@@ -30,7 +30,7 @@ class FixedBitArray {
   static uint64_t bufferSize(uint64_t elementCount, int bitWidth);
 
   // Not legal to use; included so we can default construct on the stack.
-  FixedBitArray() {}
+  FixedBitArray() = default;
 
   // Creates a fixed bit array stored at buffer whose elements can lie within
   // the range [0, 2^|bitWidth|). The |buffer| must already be preallocated to

@@ -812,7 +812,7 @@ TEST(EncodingSelectionStringTests, SelectRunLength) {
   auto index = 0;
   for (const auto length : runLengths) {
     for (auto i = 0; i < length; ++i) {
-      values.push_back(
+      values.emplace_back(
           index % 2 == 0 ? "abcdefghijklmnopqrstuvwxyz" : "1234567890");
     }
     ++index;
