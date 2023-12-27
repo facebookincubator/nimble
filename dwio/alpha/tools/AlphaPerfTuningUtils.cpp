@@ -3,6 +3,7 @@
 #include "dwio/alpha/tools/AlphaPerfTuningUtils.h"
 
 #include <folly/experimental/FunctionScheduler.h>
+#include <velox/dwio/common/Options.h>
 #include <random>
 
 #include "dwio/alpha/velox/VeloxReader.h"
@@ -10,6 +11,7 @@
 #include "dwio/api/AlphaWriterOptionBuilder.h"
 #include "dwio/common/filesystem/FileSystem.h"
 #include "dwio/utils/BufferedWriteFile.h"
+#include "dwio/utils/FeatureFlatteningUtils.h"
 #include "dwio/utils/FileSink.h"
 #include "dwio/utils/InputStreamFactory.h"
 #include "velox/common/time/CpuWallTimer.h"
@@ -130,41 +132,14 @@ std::unordered_map<std::string, std::vector<int64_t>> extractFeatureOrdering(
 std::unordered_map<std::string, std::vector<int64_t>> generateFeatureList(
     const std::string& path,
     const dwio::common::request::AccessDescriptor& accessDescriptor) {
-  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
-  alpha::VeloxReader reader{
-      *pool,
-      dwio::file_system::FileSystem::openForRead(path, accessDescriptor),
-      /*selector=*/nullptr};
-  auto schema = reader.schema();
-  auto rowType = schema->asRow();
-  std::unordered_map<std::string, std::vector<int64_t>> featuresPerColumn;
-
-  for (size_t i = 0; i < rowType.childrenCount(); ++i) {
-    auto type = rowType.childAt(i);
-    if (type->kind() == alpha::Kind::FlatMap) {
-      auto flatMap = type->asFlatMap();
-      auto childrenCount = flatMap.childrenCount();
-      auto keyScalarKind = flatMap.keyScalarKind();
-      ALPHA_CHECK(
-          keyScalarKind != alpha::ScalarKind::Bool &&
-              keyScalarKind != alpha::ScalarKind::String &&
-              keyScalarKind != alpha::ScalarKind::Binary &&
-              keyScalarKind != alpha::ScalarKind::Float &&
-              keyScalarKind != alpha::ScalarKind::Double &&
-              keyScalarKind != alpha::ScalarKind::Undefined,
-          "Unsupported key types in feature projection");
-      // Skip placeholder elements in empty flatmaps.
-      if (childrenCount == 1 && flatMap.nameAt(0).empty()) {
-        continue;
-      }
-      featuresPerColumn[rowType.nameAt(i)].reserve(childrenCount);
-      for (size_t j = 0; j < childrenCount; ++j) {
-        featuresPerColumn[rowType.nameAt(i)].emplace_back(
-            folly::to<int64_t>(flatMap.nameAt(j)));
-      }
-    }
+  auto featureList = dwio::utils::feature_flattening::extractFeatureNames(
+      velox::dwio::common::FileFormat::ALPHA, path, accessDescriptor);
+  std::unordered_map<std::string, std::vector<int64_t>> features;
+  for (auto& kv : featureList) {
+    features[kv.first] =
+        std::vector<int64_t>{kv.second.begin(), kv.second.end()};
   }
-  return featuresPerColumn;
+  return features;
 }
 } // namespace
 
