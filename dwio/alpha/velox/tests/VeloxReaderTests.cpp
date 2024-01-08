@@ -3,6 +3,7 @@
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <gtest/gtest.h>
 #include <optional>
+#include <stdexcept>
 #include <string_view>
 
 #include "dwio/alpha/common/Buffer.h"
@@ -1059,6 +1060,344 @@ void writeAndVerify(
   if (checkMemoryLeak) {
     EXPECT_LE(numIncrements, expected.size() / 2);
   }
+}
+
+std::unique_ptr<alpha::VeloxReader> getReaderForWrite(
+    velox::memory::MemoryPool& pool,
+    const velox::RowTypePtr& type,
+    std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>
+        generators,
+    size_t batchSize,
+    bool multiSkip = false,
+    bool checkMemoryLeak = false) {
+  alpha::VeloxWriterOptions writerOptions = {};
+  alpha::VeloxReadParams readParams = {};
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  writerOptions.enableChunking = true;
+  writerOptions.flushPolicyFactory = [&]() {
+    return std::make_unique<alpha::LambdaFlushPolicy>(
+        [&](auto&) { return alpha::FlushDecision::None; });
+  };
+  writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
+
+  alpha::VeloxWriter writer(
+      *rootPool, type, std::move(writeFile), std::move(writerOptions));
+
+  for (int i = 0; i < generators.size(); ++i) {
+    auto vectorGenerator = generators.at(i);
+    auto vector = vectorGenerator(type);
+    // In the future, we can take in batchSize as param and try every size
+    writer.write(vector);
+  }
+  writer.close();
+
+  auto readFile = std::make_unique<velox::InMemoryReadFile>(file);
+  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+
+  return std::make_unique<alpha::VeloxReader>(
+      *leafPool, std::move(readFile), std::move(selector), readParams);
+}
+
+void verifyReadersEqual(
+    std::unique_ptr<alpha::VeloxReader> left,
+    std::unique_ptr<alpha::VeloxReader> right,
+    int32_t expectedTotalArrays,
+    int32_t expectedUniqueArrays) {
+  velox::VectorPtr leftResult, rightResult;
+  ASSERT_TRUE(left->next(expectedTotalArrays, leftResult));
+  ASSERT_TRUE(right->next(expectedTotalArrays, rightResult));
+  ASSERT_EQ(
+      leftResult->wrappedVector()
+          ->as<velox::RowVector>()
+          ->childAt(0)
+          ->loadedVector()
+          ->wrappedVector()
+          ->size(),
+      expectedUniqueArrays);
+  ASSERT_EQ(
+      rightResult->wrappedVector()
+          ->as<velox::RowVector>()
+          ->childAt(0)
+          ->loadedVector()
+          ->wrappedVector()
+          ->size(),
+      expectedUniqueArrays);
+
+  for (int i = 0; i < expectedTotalArrays; ++i) {
+    vectorEquals(leftResult, rightResult, i);
+  }
+
+  // Ensure no extra data floating in left/right
+  ASSERT_FALSE(left->next(1, leftResult));
+  ASSERT_FALSE(right->next(1, rightResult));
+}
+
+TEST_F(VeloxReaderTests, ArrayWithOffsetsCaching) {
+  auto type = velox::ROW({
+      {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
+  });
+  auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
+  velox::test::VectorMaker vectorMaker{pool_.get()};
+
+  // Test cache hit on second write
+  auto generator = [&](auto& /*type*/) {
+    return vectorMaker.rowVector(
+        {"dictionaryArray"},
+        {
+            vectorMaker.arrayVector<int32_t>(
+                {{1, 2, 3},
+                 {1, 2, 3},
+                 {1, 2, 3, 4, 5},
+                 {1, 2, 3, 4, 5},
+                 {1, 2, 3, 4, 5},
+                 {1, 2, 3, 4, 5}}),
+        });
+  };
+  auto halfGenerator = [&](auto& /*type*/) {
+    return vectorMaker.rowVector(
+        {"dictionaryArray"},
+        {
+            vectorMaker.arrayVector<int32_t>(
+                {{1, 2, 3}, {1, 2, 3}, {1, 2, 3, 4, 5}}),
+        });
+  };
+  auto otherHalfGenerator = [&](auto& /*type*/) {
+    return vectorMaker.rowVector(
+        {"dictionaryArray"},
+        {
+            vectorMaker.arrayVector<int32_t>(
+                {{1, 2, 3, 4, 5}, {1, 2, 3, 4, 5}, {1, 2, 3, 4, 5}}),
+        });
+  };
+
+  auto leftGenerators =
+      std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>(
+          {generator});
+  auto rightGenerators =
+      std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>(
+          {halfGenerator, otherHalfGenerator});
+  auto expectedTotalArrays = 6;
+  auto expectedUniqueArrays = 2;
+  auto left = getReaderForWrite(*pool_, rowType, leftGenerators, 1);
+  auto right = getReaderForWrite(*pool_, rowType, rightGenerators, 1);
+
+  verifyReadersEqual(
+      std::move(left),
+      std::move(right),
+      expectedTotalArrays,
+      expectedUniqueArrays);
+
+  // Test cache miss on second write
+  // We can re-use the totalGenerator since the total output is unchanged
+  auto halfGeneratorCacheMiss = [&](auto& /*type*/) {
+    return vectorMaker.rowVector(
+        {"dictionaryArray"},
+        {
+            vectorMaker.arrayVector<int32_t>({{1, 2, 3}, {1, 2, 3}}),
+        });
+  };
+  auto otherHalfGeneratorCacheMiss = [&](auto& /*type*/) {
+    return vectorMaker.rowVector(
+        {"dictionaryArray"},
+        {
+            vectorMaker.arrayVector<int32_t>(
+                {{1, 2, 3, 4, 5},
+                 {1, 2, 3, 4, 5},
+                 {1, 2, 3, 4, 5},
+                 {1, 2, 3, 4, 5}}),
+        });
+  };
+
+  rightGenerators =
+      std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>(
+          {halfGeneratorCacheMiss, otherHalfGeneratorCacheMiss});
+  expectedTotalArrays = 6;
+  expectedUniqueArrays = 2;
+  left = getReaderForWrite(*pool_, rowType, leftGenerators, 1);
+  right = getReaderForWrite(*pool_, rowType, rightGenerators, 1);
+
+  verifyReadersEqual(
+      std::move(left),
+      std::move(right),
+      expectedTotalArrays,
+      expectedUniqueArrays);
+
+  // Check cached value against null on next write.
+  auto fullGeneratorWithNull = [&](auto& /*type*/) {
+    return vectorMaker.rowVector(
+        {"dictionaryArray"},
+        {
+            vectorMaker.arrayVectorNullable<int32_t>(
+                {std::vector<std::optional<int32_t>>{1, 2, 3},
+                 std::vector<std::optional<int32_t>>{1, 2, 3},
+                 std::vector<std::optional<int32_t>>{1, 2, 3, 4, 5},
+                 std::nullopt,
+                 std::vector<std::optional<int32_t>>{1, 2, 3, 4, 5},
+                 std::vector<std::optional<int32_t>>{1, 2, 3, 4, 5}}),
+        });
+  };
+  auto halfGeneratorNoNull = [&](auto& /*type*/) {
+    return vectorMaker.rowVector(
+        {"dictionaryArray"},
+        {
+            vectorMaker.arrayVectorNullable<int32_t>(
+                {std::vector<std::optional<int32_t>>{1, 2, 3},
+                 std::vector<std::optional<int32_t>>{1, 2, 3},
+                 std::vector<std::optional<int32_t>>{1, 2, 3, 4, 5}}),
+        });
+  };
+  auto otherHalfGeneratorWithNull = [&](auto& /*type*/) {
+    return vectorMaker.rowVector(
+        {"dictionaryArray"},
+        {
+            vectorMaker.arrayVectorNullable<int32_t>(
+                {std::nullopt,
+                 std::vector<std::optional<int32_t>>{1, 2, 3, 4, 5},
+                 std::vector<std::optional<int32_t>>{1, 2, 3, 4, 5}}),
+        });
+  };
+
+  leftGenerators =
+      std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>(
+          {fullGeneratorWithNull});
+  rightGenerators =
+      std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>(
+          {halfGeneratorNoNull, otherHalfGeneratorWithNull});
+
+  expectedTotalArrays = 6; // null array included in count
+  expectedUniqueArrays = 2; // {{1, 2, 3}, {1, 2, 3, 4, 5}}
+  left = getReaderForWrite(*pool_, rowType, leftGenerators, 1);
+  right = getReaderForWrite(*pool_, rowType, rightGenerators, 1);
+
+  verifyReadersEqual(
+      std::move(left),
+      std::move(right),
+      expectedTotalArrays,
+      expectedUniqueArrays);
+
+  // Check cache stores last valid value, and not null.
+  // Re-use total generator from previous test case
+  auto halfGeneratorWithNull = [&](auto& /*type*/) {
+    return vectorMaker.rowVector(
+        {"dictionaryArray"},
+        {
+            vectorMaker.arrayVectorNullable<int32_t>(
+                {std::vector<std::optional<int32_t>>{1, 2, 3},
+                 std::vector<std::optional<int32_t>>{1, 2, 3},
+                 std::vector<std::optional<int32_t>>{1, 2, 3, 4, 5},
+                 std::nullopt}),
+        });
+  };
+  auto otherHalfGeneratorNoNull = [&](auto& /*type*/) {
+    return vectorMaker.rowVector(
+        {"dictionaryArray"},
+        {
+            vectorMaker.arrayVectorNullable<int32_t>(
+                {std::vector<std::optional<int32_t>>{1, 2, 3, 4, 5},
+                 std::vector<std::optional<int32_t>>{1, 2, 3, 4, 5}}),
+        });
+  };
+  rightGenerators =
+      std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>(
+          {halfGeneratorWithNull, otherHalfGeneratorNoNull});
+
+  expectedTotalArrays = 6; // null array included in count
+  expectedUniqueArrays = 2; // {{1, 2, 3}, {1, 2, 3, 4, 5}}
+  left = getReaderForWrite(*pool_, rowType, leftGenerators, 1);
+  right = getReaderForWrite(*pool_, rowType, rightGenerators, 1);
+
+  verifyReadersEqual(
+      std::move(left),
+      std::move(right),
+      expectedTotalArrays,
+      expectedUniqueArrays);
+
+  // Check cached value against empty vector
+  auto fullGeneratorWithEmpty = [&](auto& /*type*/) {
+    return vectorMaker.rowVector(
+        {"dictionaryArray"},
+        {
+            vectorMaker.arrayVector<int32_t>(
+                {{1, 2, 3},
+                 {1, 2, 3},
+                 {1, 2, 3, 4, 5},
+                 {},
+                 {1, 2, 3, 4, 5},
+                 {1, 2, 3, 4, 5}}),
+        });
+  };
+
+  auto halfGeneratorNoEmpty = [&](auto& /*type*/) {
+    return vectorMaker.rowVector(
+        {"dictionaryArray"},
+        {
+            vectorMaker.arrayVector<int32_t>(
+                {{1, 2, 3}, {1, 2, 3}, {1, 2, 3, 4, 5}}),
+        });
+  };
+  auto otherHalfGeneratorWithEmpty = [&](auto& /*type*/) {
+    return vectorMaker.rowVector(
+        {"dictionaryArray"},
+        {
+            vectorMaker.arrayVector<int32_t>(
+                {{}, {1, 2, 3, 4, 5}, {1, 2, 3, 4, 5}}),
+        });
+  };
+
+  leftGenerators =
+      std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>(
+          {fullGeneratorWithEmpty});
+  rightGenerators =
+      std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>(
+          {halfGeneratorNoEmpty, otherHalfGeneratorWithEmpty});
+  expectedTotalArrays = 6; // empty array included in count
+  expectedUniqueArrays = 4; // {{1, 2, 3}, {1, 2, 3, 4, 5}, {}, {1, 2, 3, 4, 5}}
+  left = getReaderForWrite(*pool_, rowType, leftGenerators, 1);
+  right = getReaderForWrite(*pool_, rowType, rightGenerators, 1);
+
+  verifyReadersEqual(
+      std::move(left),
+      std::move(right),
+      expectedTotalArrays,
+      expectedUniqueArrays);
+
+  // Test empty vector stored in cache from first write
+  // Re-use total generator from last test case
+  auto halfGeneratorWithEmpty = [&](auto& /*type*/) {
+    return vectorMaker.rowVector(
+        {"dictionaryArray"},
+        {
+            vectorMaker.arrayVector<int32_t>(
+                {{1, 2, 3}, {1, 2, 3}, {1, 2, 3, 4, 5}, {}}),
+        });
+  };
+  auto otherHalfGeneratorNoEmpty = [&](auto& /*type*/) {
+    return vectorMaker.rowVector(
+        {"dictionaryArray"},
+        {
+            vectorMaker.arrayVector<int32_t>(
+                {{1, 2, 3, 4, 5}, {1, 2, 3, 4, 5}}),
+        });
+  };
+
+  leftGenerators =
+      std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>(
+          {fullGeneratorWithEmpty});
+  rightGenerators =
+      std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>(
+          {halfGeneratorWithEmpty, otherHalfGeneratorNoEmpty});
+  expectedTotalArrays = 6; // empty array included in count
+  expectedUniqueArrays = 4; // {{1, 2, 3}, {1, 2, 3, 4, 5}, {}, {1, 2, 3, 4, 5}}
+  left = getReaderForWrite(*pool_, rowType, leftGenerators, 1);
+  right = getReaderForWrite(*pool_, rowType, rightGenerators, 1);
+
+  verifyReadersEqual(
+      std::move(left),
+      std::move(right),
+      expectedTotalArrays,
+      expectedUniqueArrays);
 }
 
 TEST_P(VeloxReaderTests, FuzzSimple) {
