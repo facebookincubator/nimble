@@ -1167,10 +1167,11 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
   uint64_t write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
       override {
     uint64_t memoryUsed = 0;
-    OrderedRanges childRanges;
-    auto array = ingestLengthsOffsets(vector, ranges, memoryUsed, childRanges);
-    if (childRanges.size() > 0) {
-      memoryUsed += elements_->write(array->elements(), childRanges);
+    OrderedRanges childFilteredRanges;
+    auto array =
+        ingestLengthsOffsets(vector, ranges, memoryUsed, childFilteredRanges);
+    if (childFilteredRanges.size() > 0) {
+      memoryUsed += elements_->write(array->elements(), childFilteredRanges);
     }
     return memoryUsed + nullBitmapSize(ranges.size());
   }
@@ -1228,8 +1229,8 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       const OrderedRanges& ranges,
       const OrderedRanges& childRanges,
       OrderedRanges& filteredRanges) {
-    const velox::vector_size_t* offsets = array->rawOffsets();
-    const velox::vector_size_t* lengths = array->rawSizes();
+    const velox::vector_size_t* rawOffsets = array->rawOffsets();
+    const velox::vector_size_t* rawLengths = array->rawSizes();
     velox::vector_size_t prevIndex = -1;
     velox::vector_size_t numLengths = 0;
 
@@ -1240,14 +1241,14 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
 
     /** dedup arrays by consecutive elements */
     auto dedupProc = [&](velox::vector_size_t index) {
-      auto const length = lengths[index];
+      auto const length = rawLengths[index];
 
       bool match = false;
       /// Don't compare on the first run
       if (prevIndex >= 0) {
         match =
             (index == prevIndex ||
-             (length == lengths[prevIndex] &&
+             (length == rawLengths[prevIndex] &&
               compareConsecutive(index, prevIndex)));
       } else if (cached_) { // check cache here
         match = (length == cachedSize_ && compareToCache(index));
@@ -1255,7 +1256,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
 
       if (!match) {
         if (length > 0) {
-          filteredRanges.add(offsets[index], length);
+          filteredRanges.add(rawOffsets[index], length);
         }
         lengths_.push_back(length);
         ++numLengths;
@@ -1274,11 +1275,11 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
                                velox::vector_size_t prevIndex) {
         bool match = true;
         velox::CompareFlags flags;
-        for (velox::vector_size_t idx = 0; idx < lengths[index]; ++idx) {
+        for (velox::vector_size_t idx = 0; idx < rawLengths[index]; ++idx) {
           match = flat->compare(
                           flat,
-                          offsets[index] + idx,
-                          offsets[prevIndex] + idx,
+                          rawOffsets[index] + idx,
+                          rawOffsets[prevIndex] + idx,
                           flags)
                       .value_or(-1) == 0;
           if (!match) {
@@ -1302,9 +1303,9 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       compareConsecutive = [&](velox::vector_size_t index,
                                velox::vector_size_t prevIndex) {
         bool match = true;
-        for (velox::vector_size_t idx = 0; idx < lengths[index]; ++idx) {
+        for (velox::vector_size_t idx = 0; idx < rawLengths[index]; ++idx) {
           match = equalDecodedVectorIndices<SourceType>(
-              decoded, offsets[index] + idx, offsets[prevIndex] + idx);
+              decoded, rawOffsets[index] + idx, rawOffsets[prevIndex] + idx);
           if (!match) {
             break;
           }
@@ -1318,9 +1319,9 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       compareToCache = [&](velox::vector_size_t index) {
         bool match = true;
         velox::CompareFlags flags;
-        for (velox::vector_size_t idx = 0; idx < lengths[index]; ++idx) {
+        for (velox::vector_size_t idx = 0; idx < rawLengths[index]; ++idx) {
           match = compareDecodedVectorToCache<SourceType>(
-              decoded, offsets[index] + idx, cachedFlat, idx, flags);
+              decoded, rawOffsets[index] + idx, cachedFlat, idx, flags);
           if (!match) {
             break;
           }
@@ -1337,7 +1338,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       cached_ = true;
       cachedSize_ = lengths_[lengths_.size() - 1];
       ALPHA_ASSERT(
-          lengths_[lengths_.size() - 1] == lengths[prevIndex],
+          lengths_[lengths_.size() - 1] == rawLengths[prevIndex],
           "Unexpected index: Prev index is not the last item in the list.");
       cachedValue_->prepareForReuse();
       velox::BaseVector::CopyRange cacheRange{
@@ -1356,42 +1357,42 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       uint64_t& memoryUsed,
       OrderedRanges& filteredRanges) {
     auto size = ranges.size();
-    const velox::ArrayVector* casted = vector->as<velox::ArrayVector>();
-    const velox::vector_size_t* offsets;
-    const velox::vector_size_t* lengths;
+    const velox::ArrayVector* arrayVector = vector->as<velox::ArrayVector>();
+    const velox::vector_size_t* rawOffsets;
+    const velox::vector_size_t* rawLengths;
     OrderedRanges childRanges;
 
     auto proc = [&](velox::vector_size_t index) {
-      auto length = lengths[index];
+      auto length = rawLengths[index];
       if (length > 0) {
-        childRanges.add(offsets[index], length);
+        childRanges.add(rawOffsets[index], length);
       }
     };
 
-    if (casted) {
-      offsets = casted->rawOffsets();
-      lengths = casted->rawSizes();
+    if (arrayVector) {
+      rawOffsets = arrayVector->rawOffsets();
+      rawLengths = arrayVector->rawSizes();
 
-      ensureCapacity(casted->mayHaveNulls(), size);
-      Flat iterableObj{vector};
-      iterateIndices<true>(ranges, iterableObj, proc);
+      ensureCapacity(arrayVector->mayHaveNulls(), size);
+      Flat iterableVector{vector};
+      iterateIndices<true>(ranges, iterableVector, proc);
       memoryUsed = ingestLengthsOffsetsByElements(
-          casted, iterableObj, ranges, childRanges, filteredRanges);
+          arrayVector, iterableVector, ranges, childRanges, filteredRanges);
     } else {
       auto localDecoded = decode(vector, ranges);
       auto& decoded = localDecoded.get();
-      casted = decoded.base()->template as<velox::ArrayVector>();
-      ALPHA_ASSERT(casted, "Unexpected vector type");
-      offsets = casted->rawOffsets();
-      lengths = casted->rawSizes();
+      arrayVector = decoded.base()->template as<velox::ArrayVector>();
+      ALPHA_ASSERT(arrayVector, "Unexpected vector type");
+      rawOffsets = arrayVector->rawOffsets();
+      rawLengths = arrayVector->rawSizes();
 
       ensureCapacity(decoded.mayHaveNulls(), size);
-      Decoded iterableObj{decoded};
-      iterateIndices<true>(ranges, iterableObj, proc);
+      Decoded iterableVector{decoded};
+      iterateIndices<true>(ranges, iterableVector, proc);
       memoryUsed = ingestLengthsOffsetsByElements(
-          casted, iterableObj, ranges, childRanges, filteredRanges);
+          arrayVector, iterableVector, ranges, childRanges, filteredRanges);
     }
-    return casted;
+    return arrayVector;
   }
 };
 
