@@ -957,7 +957,7 @@ void writeAndVerify(
       decision = alpha::FlushDecision::None;
       auto batchSize = vector->size() - rowIndex;
       // Randomly produce chunks
-      if (!comparator && folly::Random::oneIn(2)) {
+      if (folly::Random::oneIn(2)) {
         batchSize = folly::Random::rand32(0, batchSize, rng) + 1;
         decision = alpha::FlushDecision::Chunk;
       }

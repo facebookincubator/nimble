@@ -2,7 +2,10 @@
 
 #include "dwio/alpha/velox/FieldWriter.h"
 #include <folly/Executor.h>
+#include <velox/vector/ComplexVector.h>
+#include <velox/vector/DecodedVector.h>
 #include <velox/vector/SelectivityVector.h>
+#include <velox/vector/TypeAliases.h>
 #include <memory>
 #include <mutex>
 #include <numeric>
@@ -349,6 +352,27 @@ bool equalDecodedVectorIndices(
   }
 
   return vec.valueAt<T>(index) == vec.valueAt<T>(otherIndex);
+}
+
+template <typename T>
+bool compareDecodedVectorToCache(
+    const velox::DecodedVector& thisVec,
+    velox::vector_size_t index,
+    velox::FlatVector<T>* cachedFlatVec,
+    velox::vector_size_t cacheIndex,
+    velox::CompareFlags flags) {
+  bool thisNull = thisVec.isNullAt(index);
+  bool otherNull = cachedFlatVec->isNullAt(cacheIndex);
+
+  if (thisNull && otherNull) {
+    return true;
+  }
+
+  if (thisNull || otherNull) {
+    return false;
+  }
+
+  return thisVec.valueAt<T>(index) == cachedFlatVec->valueAt(cacheIndex);
 }
 
 template <typename T, typename = std::enable_if_t<std::is_trivial_v<T>>>
@@ -1123,7 +1147,10 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
       : FieldWriter{context, context.schemaBuilder.createBuilderByTypeThreadSafe(Kind::ArrayWithOffsets)},
         lengths_{context.bufferMemoryPool.get()},
-        offsets_{context.bufferMemoryPool.get()} {
+        offsets_{context.bufferMemoryPool.get()},
+        cached_(false),
+        cachedValue_(nullptr),
+        cachedSize_(0) {
     elements_ = FieldWriter::create(context, type->childAt(0));
 
     offsetTypeBuilder_ = std::dynamic_pointer_cast<ScalarTypeBuilder>(
@@ -1132,6 +1159,9 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
 
     dynamic_cast<ArrayWithOffsetsTypeBuilder*>(typeBuilder_.get())
         ->setChildren(offsetTypeBuilder_, elements_->typeBuilder());
+
+    cachedValue_ = velox::ArrayVector::create(
+        type->type(), 1, context.bufferMemoryPool.get());
   }
 
   uint64_t write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
@@ -1156,6 +1186,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
 
       if (reset) {
         FieldWriter::reset();
+        cached_ = false;
         nextOffset_ = 0;
       }
     };
@@ -1186,6 +1217,10 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
   std::shared_ptr<ScalarTypeBuilder> offsetTypeBuilder_;
   OffsetType nextOffset_{0}; /** next available offset for dedup storing */
 
+  bool cached_;
+  velox::VectorPtr cachedValue_;
+  velox::vector_size_t cachedSize_;
+
   template <typename Vector>
   uint64_t ingestLengthsOffsetsByElements(
       const velox::ArrayVector* array,
@@ -1201,6 +1236,8 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
     std::function<bool(velox::vector_size_t, velox::vector_size_t)>
         compareConsecutive;
 
+    std::function<bool(velox::vector_size_t)> compareToCache;
+
     /** dedup arrays by consecutive elements */
     auto dedupProc = [&](velox::vector_size_t index) {
       auto const length = lengths[index];
@@ -1212,6 +1249,8 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
             (index == prevIndex ||
              (length == lengths[prevIndex] &&
               compareConsecutive(index, prevIndex)));
+      } else if (cached_) { // check cache here
+        match = (length == cachedSize_ && compareToCache(index));
       }
 
       if (!match) {
@@ -1249,6 +1288,12 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
         return match;
       };
 
+      compareToCache = [&](velox::vector_size_t index) {
+        velox::CompareFlags flags;
+        return array->compare(cachedValue_.get(), index, 0, flags)
+                   .value_or(-1) == 0;
+      };
+
       numOffsets = iterateIndices<false>(ranges, iterableVector, dedupProc);
     } else {
       auto localDecoded = decode(vectorElements, childRanges);
@@ -1267,9 +1312,40 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
         return match;
       };
 
+      auto cachedElements =
+          (cachedValue_->as<velox::ArrayVector>())->elements();
+      auto cachedFlat = cachedElements->asFlatVector<SourceType>();
+      compareToCache = [&](velox::vector_size_t index) {
+        bool match = true;
+        velox::CompareFlags flags;
+        for (velox::vector_size_t idx = 0; idx < lengths[index]; ++idx) {
+          match = compareDecodedVectorToCache<SourceType>(
+              decoded, offsets[index] + idx, cachedFlat, idx, flags);
+          if (!match) {
+            break;
+          }
+        }
+        return match;
+      };
       numOffsets = iterateIndices<false>(ranges, iterableVector, dedupProc);
     }
 
+    // Copy the last valid element into the cache.
+    // Cache is saved across calls to write(), as long as the same FieldWriter
+    // object is used.
+    if (prevIndex != -1 && lengths_.size() > 0) {
+      cached_ = true;
+      cachedSize_ = lengths_[lengths_.size() - 1];
+      ALPHA_ASSERT(
+          lengths_[lengths_.size() - 1] == lengths[prevIndex],
+          "Unexpected index: Prev index is not the last item in the list.");
+      cachedValue_->prepareForReuse();
+      velox::BaseVector::CopyRange cacheRange{
+          static_cast<velox::vector_size_t>(prevIndex) /* source index*/,
+          0 /* target index*/,
+          1 /* count*/};
+      cachedValue_->copyRanges(array, folly::Range(&cacheRange, 1));
+    }
     return sizeof(velox::vector_size_t) * numLengths +
         sizeof(OffsetType) * numOffsets;
   }
@@ -1315,7 +1391,6 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       memoryUsed = ingestLengthsOffsetsByElements(
           casted, iterableObj, ranges, childRanges, filteredRanges);
     }
-
     return casted;
   }
 };
