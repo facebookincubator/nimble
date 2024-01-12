@@ -1,7 +1,6 @@
 // Copyright 2004-present Facebook. All Rights Reserved.
 
 #include "dwio/alpha/common/Bits.h"
-#include "secure_lib/secure_string.h"
 #include "velox/common/base/BitUtil.h"
 
 namespace facebook::alpha::bits {
@@ -174,9 +173,8 @@ void BitmapBuilder::copy(const Bitmap& other, uint32_t begin, uint32_t end) {
     dest[firstByte] = (dest[firstByte] & mask) | (source[firstByte] & ~mask);
     ++firstByte;
   }
-  checked_memcpy(
+  memcpy(
       dest + firstByte,
-      bits::bytesRequired(size_) - firstByte,
       source + firstByte,
       bits::bytesRequired(end) - firstByte);
 }

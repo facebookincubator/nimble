@@ -1273,9 +1273,8 @@ class RowFieldReader final : public FieldReader {
       if (scatterBitmap) {
         auto requiredBytes = bits::bytesRequired(rowCount);
         auto* nullBuffer = paddedNulls(vector, rowCount);
-        checked_memcpy(
+        memcpy(
             nullBuffer,
-            vector->nulls()->size(),
             static_cast<const char*>(scatterBitmap->bits()),
             requiredBytes);
         vector->setNullCount(rowCount - count);

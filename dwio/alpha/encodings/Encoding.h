@@ -7,7 +7,6 @@
 #include "dwio/alpha/common/Exceptions.h"
 #include "dwio/alpha/common/Types.h"
 #include "dwio/alpha/common/Vector.h"
-#include "secure_lib/secure_string.h"
 #include "velox/common/memory/Memory.h"
 
 #include <type_traits>

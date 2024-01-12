@@ -92,7 +92,7 @@ std::string_view TrivialEncoding<std::string_view>::encode(
       },
       [&](char*& pos) {
         for (auto value : values) {
-          checked_memcpy(pos, uncompressedSize, value.data(), value.size());
+          memcpy(pos, value.data(), value.size());
           pos += value.size();
         }
       }};

@@ -144,7 +144,7 @@ class CompressionEncoder {
       return;
     }
 
-    checked_memcpy(pos, dataSize_, data_->data(), data_->size());
+    memcpy(pos, data_->data(), data_->size());
     pos += data_->size();
   }
 

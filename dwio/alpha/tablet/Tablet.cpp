@@ -8,7 +8,6 @@
 #include "dwio/alpha/tablet/FooterGenerated.h"
 #include "folly/compression/Compression.h"
 #include "folly/io/Cursor.h"
-#include "secure_lib/secure_string.h"
 
 #include <algorithm>
 #include <limits>
@@ -398,7 +397,7 @@ MetadataBuffer::MetadataBuffer(
   switch (type) {
     case CompressionType::Uncompressed: {
       buffer_.resize(ref.size());
-      checked_memcpy(buffer_.data(), buffer_.size(), ref.data(), ref.size());
+      memcpy(buffer_.data(), ref.data(), ref.size());
       break;
     }
     case CompressionType::Zstd: {

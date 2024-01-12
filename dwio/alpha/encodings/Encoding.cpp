@@ -22,7 +22,7 @@ uint32_t Encoding::rowCount() const {
 /* static */ void Encoding::copyIOBuf(char* pos, const folly::IOBuf& buf) {
   size_t length = buf.computeChainDataLength();
   for (auto data : buf) {
-    checked_memcpy(pos, length, data.data(), data.size());
+    memcpy(pos, data.data(), data.size());
     pos += data.size();
     length -= data.size();
   }

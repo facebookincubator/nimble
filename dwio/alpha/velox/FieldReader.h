@@ -6,7 +6,6 @@
 #include <folly/container/F14Map.h>
 #include "dwio/alpha/velox/Decoder.h"
 #include "dwio/alpha/velox/SchemaReader.h"
-#include "secure_lib/secure_string.h"
 #include "velox/common/memory/MemoryPool.h"
 #include "velox/dwio/common/FlatMapHelper.h"
 #include "velox/dwio/common/TypeWithId.h"
