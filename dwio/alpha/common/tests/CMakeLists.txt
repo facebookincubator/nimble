@@ -6,7 +6,6 @@ add_executable(
   FixedBitArrayTests.cpp
   HuffmanTests.cpp
   IndexMapTests.cpp
-  StopWatchTests.cpp
   VarintTests.cpp
   VectorTests.cpp)
 

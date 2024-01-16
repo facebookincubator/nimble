@@ -11,8 +11,18 @@ list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/velox/CMake")
 include(ResolveDependency)
 
 set(VELOX_BUILD_MINIMAL ON CACHE BOOL "Velox minimal build.")
+set(VELOX_DEPENDENCY_SOURCE
+  AUTO
+  CACHE
+  STRING
+  "Default dependency source: AUTO SYSTEM or BUNDLED."
+)
 
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+
+# Ignore known compiler warnings.
+set(KNOWN_WARNINGS "-Wno-stringop-overread")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${KNOWN_WARNINGS}")
 message("FINAL CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}")
 
 include(CTest) # include after project() but before add_subdirectory()
