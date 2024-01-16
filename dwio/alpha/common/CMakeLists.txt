@@ -7,7 +7,6 @@ add_library(
   FixedBitArray.cpp
   Huffman.cpp
   MetricsLogger.cpp
-  StopWatch.cpp
   Types.cpp
   Varint.cpp)
 
