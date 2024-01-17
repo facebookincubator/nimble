@@ -11,11 +11,11 @@
 #include "dwio/alpha/common/Exceptions.h"
 #include "dwio/alpha/common/Types.h"
 #include "dwio/alpha/common/tests/TestUtils.h"
-#include "dwio/alpha/encodings/TrivialEncoding.h"
 #include "dwio/alpha/tablet/Tablet.h"
 #include "folly/FileUtil.h"
 #include "folly/Random.h"
 #include "folly/experimental/coro/Generator.h"
+#include "velox/common/file/File.h"
 #include "velox/common/memory/Memory.h"
 
 using namespace ::facebook;
