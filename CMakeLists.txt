@@ -7,7 +7,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 # Use ThirdPartyToolchain dependencies macros from Velox.
-list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/velox/CMake")
+list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/CMake"
+     "${PROJECT_SOURCE_DIR}/velox/CMake")
 include(ResolveDependency)
 
 set(VELOX_BUILD_MINIMAL ON CACHE BOOL "Velox minimal build.")
@@ -26,6 +27,10 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${KNOWN_WARNINGS}")
 message("FINAL CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}")
 
 include(CTest) # include after project() but before add_subdirectory()
+
+# This doesn't necessarily need to be a dependency (we can check in the
+# generated .cpp/.h files), but adding this for convenience for now.
+find_package(FlatBuffers REQUIRED)
 
 set_source(gtest)
 resolve_dependency(gtest)
@@ -48,3 +53,4 @@ include_directories(SYSTEM ${CMAKE_BINARY_DIR}/_deps/xsimd-src/include/)
 # TODO - compile only Velox submodule and alpha/common
 add_subdirectory(velox)
 add_subdirectory(dwio/alpha/common)
+add_subdirectory(dwio/alpha/tablet)
