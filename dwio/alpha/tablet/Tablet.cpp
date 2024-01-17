@@ -322,7 +322,7 @@ TabletWriter::MetadataSection TabletWriter::createMetadataSection(
   auto compressionType = writeMetadata(metadata);
   auto size = static_cast<uint32_t>(file_->size() - offset);
   return MetadataSection{
-      .offset = offset, .compressionType = compressionType, .size = size};
+      .offset = offset, .size = size, .compressionType = compressionType};
 }
 
 void TabletWriter::writeOptionalSection(
