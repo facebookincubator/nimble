@@ -1,0 +1,438 @@
+---
+title: "Alpha Draft Specification"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+---
+
+This file provides an overview specification for "Alpha", a columnar
+file format for analytical data processing based on lightweight,
+composable data encodings and minimal metadata overhead. Compared with
+older formats like Parquet and ORC, we wish to support wide, sparse
+(mostly null) datasets without having scalability, performance, or
+memory use problems. We designed Alpha for use with modern columnar
+data processing engines having Apache Arrow-like in-memory
+representations, such as DataFusion, DuckDB, or Velox.
+
+We have designed with extensibility in mind that future system
+developers will be able to add new encoding strategies and metadata in
+a forward compatible manner, allowing the format to evolve (we hope!)
+gracefully over a long period of time.
+
+Like predecessor columnar file formats such as Apache Parquet and ORC,
+Alpha organizes data into multiple "stripes" or "row groups", enabling
+data to be encoded in smaller batches or in parallel and then
+assembled into a single file (aka a "tablet"). We similarly support
+nested data (TODO) and schema evolution (TODO).
+
+The metadata strategy has been designed to minimize metadata overhead
+and to provide good performance and scalability for wide and sparse
+(mostly null) datasets, getting around notorious problems present in
+older formats like Parquet. Non-essential metadata (such as schemas
+which may be stored redundantly across many files part of a large
+table, or in a separate metastore like Apache Iceberg) is stored
+out-of-band in the file so that it does not add unnecessary overhead.
+
+# Table (Single File) Layout and Metadata
+
+A single Alpha file is composed of a sequence of **stripes** (also
+known as **row groups** in Parquet) written end-to-end, followed by
+required and optional metadata sections (which includes stripe
+metadata, and may include schemas and logical types, statistics,
+shared dictionaries, and so on, see more on this below).
+
+After the stripes and metadata sections, a minimal **footer** is
+written using Flatbuffers (see Footer.fbs for details) is written that
+contains:
+
+- The total row count
+- The byte offsets and size of the metadata section for each stripe
+- The byte offsets and number of bytes in each optional metadata
+  section. Each optional section has a name allowing for new section
+  types to be added in the future, and for applications to add custom
+  sections (with the serialization details being
+  application-dependent)
+
+The basic layout of the file looks like this:
+
+```
+<STRIPE 1>
+<STRIPE 2>
+...
+<STRIPE N>
+<METADATA SECTIONS>
+<FOOTER>
+<FILE POSTFIX (20 bytes)>
+```
+
+The end of the file has a 20-byte **postfix** that consists of the
+following:
+
+```
+bytes 0 to 3: Footer size (with any compression) as uint32
+byte 4: Footer compression type. See below for compression type codes
+byte 5: File checksum type, including all bytes in the file up to but
+not including this byte. See below for checksum type codes
+bytes 6 to 13: 8 byte checksum
+byte 14 to 15: Major version as uint16
+bytes 16 to 17: Minor version as uint16
+bytes 18 to 19: Magic number 0xA1FA as uint16
+```
+
+TODO: Each component in the above file layout, with the exception of the
+postfix, SHOULD be padded as necessary to finish on an 8-byte boundary, so
+that the next component starts on an 8-byte aligned memory address.
+
+## Data Compression Types
+
+Various components of the file, including the Flatbuffers file footer
+itself, can be compressed with general purpose compression. The
+compression type is indicated by a uint8 byte code chosen from the
+following:
+
+- 0: Uncompressed
+- 1: Zstd
+- 2: Zstrong (as yet unreleased compression from Meta)
+
+Other compression types could be added in the future by appending to
+the list, maintaining forward compatibility.
+
+## Checksum Types
+
+A 64-bit file checksum is stored in the 20-byte postfix of the
+file. The type of checksum is provided by a single uint8 byte code
+chosen from this list:
+
+- 0: XXH3_64 provided by xxhash
+
+Though currently only xxhash is used, other checksums could be
+added in the future as alternatives while maintaining forward
+compatibility
+
+## Stripe, Streams, and their Metadata
+
+A **stripe** for its part is composed of zero or more encoded physical
+column **streams** written end-to-end (empty stripes are
+possible!). To support sparse datasets, a stripe may contain data for
+only a subset of the columns in a stripe. For example, a stripe might
+be written like:
+
+```
+<STREAM offset=0>
+<STREAM offset=2>
+<STREAM offset=3>
+```
+
+Each stream for its turn consists of a 5-byte stream prefix giving the
+size of the encoded data stream and the general compression type
+applied, if any:
+
+```
+uint32: encoded stream size
+uint8: compression type (if any, see codes below)
+uint8*: encoded stream data
+```
+
+As mentioned above, the metadata sections describing the structure of
+each stripe are written out-of-band from the footer. The `Stripes`
+Flatbuffers object provides:
+
+- The row group of each stripe
+- The byte offset and total number of bytes in each stripe
+- For each stripe, `StripeGroup` index that contains the stripe's stream
+  offsets and sizes
+
+A `StripeGroup` is a separate metadata structure that "compacts" the
+stream byte offsets and sizes for multiple stripes, to avoid the
+problem of having many small metadata sections in the file. For
+example, a file containing 20 stripes might have all of its stream
+offsets and sizes in a single StripeGroup. A different file having a
+very large schema might have several stripe groups, each containing
+the stream offsets for multiple stripes. The idea is that when writing
+a file, you estimate the serialized size of a StripeGroup and continue
+to accumulate stream offset metadata until reaching a certain size
+threshold. The `Stripes.group_indices` field indicates which
+`StripeGroup` contains the stream offsets for a particular stripe.
+
+In the `StripeGroup` Flatbuffers struct, the stream offsets and sizes
+are stored in a flattened array of uint32 values. Because each stripe
+may contain a different subset of streams (and possibly none of the
+stripes contains some of the higher-index entries in the table
+schema), these flattened arrays are sized based on the highest
+observed stream index written in the stripe group:
+
+```c++
+table StripeGroup {
+  stripe_count:uint32;
+  stream_offsets:[uint32];
+  stream_sizes:[uint32];
+}
+```
+
+For example, if there are up to 100 streams in a stripe, but within a
+stripe group only up through the 80th stream is observed, then there
+will be `80 * (# of stripes in group)` entries in these
+arrays. Offsets can thus be computed like:
+
+```c++
+const auto& offsets =  group.stream_offsets();
+uint32_t max_stream_index = offsets.Size() / group.stripe_count();
+uint32_t offset_i = offsets[strip_i * max_stream_index + stream_i];
+```
+
+## Schemas and Logical Types
+
+Physical data types are stored in an
+
+- Where is Schema.fbs?
+
+## Statistics
+
+It appears that Alpha has yet to address stripe-level data
+statistics. It would be useful to have these statistics assembled on a
+stream-level basis (to be able to do IO pruning using a predicate or
+better query planning) including:
+
+- Min/max values
+- Null count
+- Serialized HyperLogLog (or other sketch)
+
+## Shared Dictionaries
+
+This is not yet implemented yet, but one proposal would be to use a
+UUID (or other unique string) as an optional metadata section name,
+and then store that UUID as part of the encoding metadata within the
+stream that uses the shared dictionary. The dictionary itself would be
+encoded in the metadata section using the common stream format.
+
+# Data Encodings
+
+::: {.callout-note}
+
+TODO: Where to store pre-allocation hints for variable-size data
+(strings, etc.)
+
+TODO: Exposing partially-decoded data in the API
+
+:::
+
+Alpha is built around the concept of "composable" or "nested"
+encodings. We utilize data encodings that produce new "child" data
+arrays which can be themselves recursively encoded by choosing one of
+the available data encodings for the child arrays. We refer to these
+encodable arrays produced by an encoding pass as **subencodings**. To
+make this more concrete, consider dictionary encoding an array of
+strings:
+
+* A dictionary encoding pass produces an array of integer indices and
+  a (probably smaller) array of unique string values.
+* Now, we have two arrays which can be individually re-encoded (either
+  using the Plain / "Trivial" encoding or another encoding that
+  applies some compression). For example, the dictionary codes might
+  benefit from run-length, delta, or bit-packing encoding.
+
+The sequence of nested encodings chosen produces a tree of encoded
+data, which once decoded from leaves to root produces the original
+input data.
+
+Encodings can either be "nested" (requiring subencodings for its
+constituent child arrays to be chosen) or "terminal" (no further
+subencodings need to be chosen).
+
+Compared with Arrow, rather than introducing nullability into
+Plain-encoded data, we provide nullable encodings (one using a
+bitmask, and the other using sentinel values), allowing the
+non-nullable values to be recursively encoded using one of the other
+encodings.
+
+Each stream of encoded data contains a 6-byte prefix with the
+following:
+
+- byte 0: the encoding type as uint8 (codes below)
+- byte 1: the data type as uint8 (codes below)
+- bytes 2 through 5: number of values encoded as uint32
+
+Alpha's built-in physical data types are the following:
+
+```c++
+enum class DataType : uint8_t {
+  Undefined = 0,
+  Int8 = 1,
+  Uint8 = 2,
+  Int16 = 3,
+  Uint16 = 4,
+  Int32 = 5,
+  Uint32 = 6,
+  Int64 = 7,
+  Uint64 = 8,
+  Float = 9,
+  Double = 10,
+  Bool = 11,
+  String = 12,
+};
+```
+
+The built-in encoding types are:
+
+```c++
+enum class EncodingType {
+  Trivial = 0,
+  RLE = 1,
+  Dictionary = 2,
+  FixedBitWidth = 3,
+  Sentinel = 4,
+  Nullable = 5,
+  SparseBool = 6,
+  Varint = 7,
+  Delta = 8,
+  Constant = 9,
+  MainlyConstant = 10,
+};
+```
+
+## Plain ("Trivial")
+
+This is a terminal encoding for non-nullable value array. After the
+standard encoding prefix, values are encoded as follows
+
+**Numeric (non-boolean) data**: the contiguous values buffer is
+written with optional general compression:
+
+```
+byte 0: compression type (see codes above)
+bytes 1 - N: compressed or uncompressed T*
+```
+
+**String data**: stored somewhat Arrow-like, with the string lengths
+recursively encoded and the blob of concatenated string data
+optionally compressed.
+
+```
+byte 0: compression type for string data
+bytes 1 through 4: size of encoded string lengths
+bytes 5 through N: compressed or uncompresed string data concatenated
+end-to-end
+```
+
+**Boolean data**: stored as optionally-compressed bitmap
+
+```
+byte 0: compression type
+bytes 1 - N: compressed or uncompressed bitmap
+```
+
+## Constant
+
+This encoding uses a single value (encoded in principle with any
+subencoding) for all values in the column.
+
+After the standard prefix, the value is written in the remainder of
+the stream as follows based on the data type:
+
+- **Numbers**: the raw bytes in native-endianness (do we care about BE
+  systems)?
+- **Strings**: a uint32 size prefix followed by the string data bytes
+- **Boolean**: written as a uint8 value of 1
+
+::: {.callout-note}
+
+Need to double-check on the boolean behavior since it may be C++
+implementation dependent.
+
+:::
+
+## Constant with Exceptions ("Mainly Constant")
+
+For data that "mainly" consists of a single value (the "common"
+value), we create a boolean array that says whether the values in the
+array are that frequently-occurring value, then store the exceptions
+(the `false` values in the boolean array) in a subencoded child.
+
+After the standard prefix, this is:
+
+```
+bytes 0 to 3: size of encoded "is common value" boolean subarray
+bytes 4 to K: "is common value" encoded bytes
+bytes K + 1 to K + 4: size of "exceptions" subarray
+bytes K + 5 to M: encoded "exceptions" subarray
+bytes M + 1 to end: the common value encoded as with Constant encoding
+```
+
+## Nullable
+
+This encoding represents nullable data via two subencodings, one for
+the non-null values, and another for a boolean array indicating which
+values in the original decoded array were non-null.
+
+After the standard prefix, this is:
+
+```
+bytes 0 to 3: size of non-null values subencoding
+bytes 4 to K: non-null values subencoding
+bytes K to end: boolean is-valid subencoding
+```
+
+## Sentinel
+
+::: {.callout-note}
+
+It seems like the implementation of this in Alpha is currently
+incomplete / unused.
+
+:::
+
+This encoding uses a special "sentinal" value to denote null values,
+allowing the now "non-null" data to be encoded using a non-nullable
+subencoding. For example, for integers you might use an integer that
+is one larger than the largest element in the array.
+
+After the standard prefix, this is:
+
+```
+bytes 0 to 3: number of null values as uint32
+bytes 4 to 7: size of encoded child array of non-null values with sentinel
+bytes 8 to K: encoded non-null child values
+bytes K to end: the sentinel value written like with Constant encoding
+```
+
+TODO: binary layout / encoding of the sentinal value
+
+## Run-length Encoded ("RLE")
+
+## Varint
+
+## Bit-packed ("FixedBitWidth")
+
+## Dictionary
+
+## Delta
+
+## FSST for Strings
+
+Not Yet implemented
+
+## ALP for Floating Point Data
+
+Not Yet implemented
+
+## PFOR for Integers
+
+Not Yet implemented
+
+# Encoding Selection
+
+# Nested Data Handling
+
+- Scalar
+- Row
+- Array
+- Array with offsets
+- Map
+- Flatmap
+
+# References / Project Comparisons
+
+## BtrBlocks (2023)
+
+## Artus / Procella
