@@ -6,25 +6,25 @@ format:
     toc-depth: 2
 ---
 
-This file provides an overview specification for "Alpha", a columnar
-file format for analytical data processing based on lightweight,
-composable data encodings and minimal metadata overhead. Compared with
-older formats like Parquet and ORC, we wish to support wide, sparse
-(mostly null) datasets without having scalability, performance, or
-memory use problems. We designed Alpha for use with modern columnar
-data processing engines having Apache Arrow-like in-memory
-representations, such as DataFusion, DuckDB, or Velox.
+This file provides an overview specification for "Alpha", an
+extensible binary columnar file format for analytical data processing
+based on lightweight, composable data encodings and minimal metadata
+overhead. Unlike older formats like Parquet and ORC, we want to
+support wide, sparse (mostly null) datasets without having
+scalability, performance, or memory use problems. We designed Alpha
+for use with modern columnar data processing engines having [Apache
+Arrow][1]-like in-memory representations, such as [DataFusion][2],
+[DuckDB][8], or [Velox][9].
 
 We have designed with extensibility in mind that future system
 developers will be able to add new encoding strategies and metadata in
 a forward compatible manner, allowing the format to evolve (we hope!)
-gracefully over a long period of time.
+gracefully over a long period of time. Where possible, we have tried
+to avoid reinventing the wheel and reusing design patterns and even
+auxiliary schema metadata from Apache Arrow (which handles in-memory
+columnar data representation) and related open source projects.
 
-Like predecessor columnar file formats such as Apache Parquet and ORC,
-Alpha organizes data into multiple "stripes" or "row groups", enabling
-data to be encoded in smaller batches or in parallel and then
-assembled into a single file (aka a "tablet"). We similarly support
-nested data (TODO) and schema evolution (TODO).
+We similarly support nested data (TODO) and schema evolution (TODO).
 
 The metadata strategy has been designed to minimize metadata overhead
 and to provide good performance and scalability for wide and sparse
@@ -138,7 +138,7 @@ As mentioned above, the metadata sections describing the structure of
 each stripe are written out-of-band from the footer. The `Stripes`
 Flatbuffers object provides:
 
-- The row group of each stripe
+- The number of logical rows in each stripe
 - The byte offset and total number of bytes in each stripe
 - For each stripe, `StripeGroup` index that contains the stripe's stream
   offsets and sizes
@@ -185,9 +185,22 @@ uint32_t offset_i = offsets[strip_i * max_stream_index + stream_i];
 
 Physical data types are stored in an
 
-- Where is Schema.fbs?
-
 ## Statistics
+
+::: {.callout-caution}
+
+Alpha does not currently have any formal specification for what
+statistics to store or how to store them. A reasonable proposal is for
+us to first decide **what** to store, and then define a schema for the
+statistics, and the statistics can themselves be stored as an Alpha
+tablet within the statistics optional metadata section.
+
+We also need to decide on the name of the optional metadata section
+for the statistics. This name should be versioned somehow to permit
+new statistics sections to be developed and added in the future
+without conflicts or ambiguity.
+
+:::
 
 It appears that Alpha has yet to address stripe-level data
 statistics. It would be useful to have these statistics assembled on a
@@ -196,9 +209,16 @@ better query planning) including:
 
 - Min/max values
 - Null count
+- Size of fully-materialized Arrow data buffers
 - Serialized HyperLogLog (or other sketch)
 
+Including the equivalent fully-decoded Arrow memory buffer sizes in
+the statistics for variable-size data (strings or binary) addresses a
+key deficiency
+
 ## Shared Dictionaries
+
+::: {.callout-caution}
 
 This is not yet implemented yet, but one proposal would be to use a
 UUID (or other unique string) as an optional metadata section name,
@@ -206,16 +226,21 @@ and then store that UUID as part of the encoding metadata within the
 stream that uses the shared dictionary. The dictionary itself would be
 encoded in the metadata section using the common stream format.
 
-# Data Encodings
+:::
 
-::: {.callout-note}
+## Data Samples
 
-TODO: Where to store pre-allocation hints for variable-size data
-(strings, etc.)
+::: {.callout-caution}
 
-TODO: Exposing partially-decoded data in the API
+Not Yet Implemented: It may be beneficial to store data samples from
+stripes in an optional metadata section. The samples themselves can be
+represented in the standard Alpha tablet format.
 
 :::
+
+## File Versioning
+
+# Data Encodings
 
 Alpha is built around the concept of "composable" or "nested"
 encodings. We utilize data encodings that produce new "child" data
@@ -291,7 +316,7 @@ enum class EncodingType {
 };
 ```
 
-## Plain ("Trivial")
+## Encoding: Plain ("Trivial")
 
 This is a terminal encoding for non-nullable value array. After the
 standard encoding prefix, values are encoded as follows
@@ -311,7 +336,7 @@ optionally compressed.
 ```
 byte 0: compression type for string data
 bytes 1 through 4: size of encoded string lengths
-bytes 5 through N: compressed or uncompresed string data concatenated
+bytes 5 through N: compressed or uncompressed string data concatenated
 end-to-end
 ```
 
@@ -322,13 +347,13 @@ byte 0: compression type
 bytes 1 - N: compressed or uncompressed bitmap
 ```
 
-## Constant
+## Encoding: Constant
 
 This encoding uses a single value (encoded in principle with any
 subencoding) for all values in the column.
 
-After the standard prefix, the value is written in the remainder of
-the stream as follows based on the data type:
+After the standard encoding prefix, the value is written in the
+remainder of the stream as follows based on the data type:
 
 - **Numbers**: the raw bytes in native-endianness (do we care about BE
   systems)?
@@ -342,30 +367,30 @@ implementation dependent.
 
 :::
 
-## Constant with Exceptions ("Mainly Constant")
+## Encoding: Constant with Exceptions ("Mainly Constant")
 
 For data that "mainly" consists of a single value (the "common"
 value), we create a boolean array that says whether the values in the
 array are that frequently-occurring value, then store the exceptions
 (the `false` values in the boolean array) in a subencoded child.
 
-After the standard prefix, this is:
+After the standard encoding prefix, the binary layout is:
 
 ```
-bytes 0 to 3: size of encoded "is common value" boolean subarray
+bytes 0 to 3: size of encoded "is common value" boolean subencoding
 bytes 4 to K: "is common value" encoded bytes
-bytes K + 1 to K + 4: size of "exceptions" subarray
-bytes K + 5 to M: encoded "exceptions" subarray
+bytes K + 1 to K + 4: size of "exceptions" subencoding
+bytes K + 5 to M: encoded "exceptions" subencoding
 bytes M + 1 to end: the common value encoded as with Constant encoding
 ```
 
-## Nullable
+## Encoding: Nullable
 
 This encoding represents nullable data via two subencodings, one for
 the non-null values, and another for a boolean array indicating which
 values in the original decoded array were non-null.
 
-After the standard prefix, this is:
+After the standard encoding prefix, the binary layout is:
 
 ```
 bytes 0 to 3: size of non-null values subencoding
@@ -373,7 +398,7 @@ bytes 4 to K: non-null values subencoding
 bytes K to end: boolean is-valid subencoding
 ```
 
-## Sentinel
+## Encoding: Sentinel
 
 ::: {.callout-note}
 
@@ -382,12 +407,12 @@ incomplete / unused.
 
 :::
 
-This encoding uses a special "sentinal" value to denote null values,
+This encoding uses a special "sentinel" value to denote null values,
 allowing the now "non-null" data to be encoded using a non-nullable
 subencoding. For example, for integers you might use an integer that
 is one larger than the largest element in the array.
 
-After the standard prefix, this is:
+After the standard encoding prefix, the binary layout is:
 
 ```
 bytes 0 to 3: number of null values as uint32
@@ -396,43 +421,314 @@ bytes 8 to K: encoded non-null child values
 bytes K to end: the sentinel value written like with Constant encoding
 ```
 
-TODO: binary layout / encoding of the sentinal value
+## Encoding: Run-length Encoded ("RLE")
 
-## Run-length Encoded ("RLE")
+This encoding implements run-length encoding, where the run lengths
+and run values are stored as separate subencodings, which can each
+themselves be encoded using the other available encodings. A typical
+configuration would be to use bit-packing for the run lengths and
+plain encoding for the run values, but in principle any encoding can
+be used.
 
-## Varint
+After the standard encoding prefix, the binary layout is:
 
-## Bit-packed ("FixedBitWidth")
+```
+bytes 0 to 3: size of encoded run lengths as uint32
+bytes 4 to K: encoded run lengths
+bytes K + 1 to end: encoded run values
+```
 
-## Dictionary
+## Encoding: Dictionary
 
-## Delta
+Dictionary encoding extracts an array of unique values and an array of
+indices indicating which unique value corresponds to each slot in the
+encoded array. The dictionary (the unique values) and the indices
+(currently all uint32 values, but in principle can be any integer
+type) are each themselves recursively encoded using the other data
+encodings.
 
-## FSST for Strings
+After the standard encoding prefix, the binary layout is:
 
-Not Yet implemented
+```
+bytes 0 through 3: size of encoded dictionary (unique values) as uint32
+bytes 4 through K: encoded dictionary
+bytes K + 1 through end: encoded integer indices
+```
 
-## ALP for Floating Point Data
+## Encoding: Bit-packed (Integers)
 
-Not Yet implemented
+This bit-packed integer representation encodes deltas from a minimum
+**baseline** value in into a fixed bit width for each delta. The
+encoding pass first finds the minimum and maximum values, using the
+span between min and max to compute the number of bits required to
+bit-pack all of the deltas from the minimum. Finally, the bit-packed
+delta buffer can be optionally compressed with general purpose
+compression.
 
-## PFOR for Integers
+After the standard encoding prefix, the binary layout is:
 
-Not Yet implemented
+```
+byte 0: compression type for bit-packed values
+bytes 1 through sizeof(T): baseline integer value
+bytes sizeof(T) + 1 to sizeof(T) + 2: bit width (as uint8)
+bytes sizeof(T) + 3 to end: bit-packed deltas from baseline
+```
+
+::: {.callout-caution}
+
+Comments in the Alpha code says "For now we only support encoding
+non-negative values, but we may later add an optional zigzag encoding
+that will let us handle negatives". This might be treated as a new
+encoding altogether, but if not then we should try to remedy this ASAP
+to settle/stabilize the varint encoding.
+
+:::
+
+## Encoding: Varint (Integers)
+
+This terminal encoding represents non-negative integers using the same
+varint binary encoding used by Folly and Protocol Buffers. The
+encoding pass finds the minimum value, known as the **baseline**, and
+then varint-encodes each value's non-negative delta from the baseline.
+
+After the standard encoding prefix, the binary layout is:
+
+```
+bytes 0 through sizeof(T) - 1: baseline integer value
+bytes sizeof(T) to end: varint encoded deltas from baseline
+```
+
+::: {.callout-caution}
+
+Comments in the Alpha code says "For now we only support encoding
+non-negative values, but we may later add an optional zigzag encoding
+that will let us handle negatives". This might be treated as a new
+encoding altogether, but if not then we should try to remedy this ASAP
+to settle/stabilize the varint encoding.
+
+:::
+
+## Encoding: Delta (Integers)
+
+::: {.callout-caution}
+
+The implementation of this encoding in Alpha is currently incomplete,
+and so some details may be in flux.
+
+:::
+
+This encoding represents integers as three subencoded arrays that
+provide "restatements" (new frames of reference) and a sequence of
+deltas from previous values. These three arrays are:
+
+- Positive integer deltas from a previous value (which may be a
+  reinstatement). This array of deltas has length equal to the
+  original array of integers minus the length of the reinstatements
+  array
+- Integer array of reinstatement values
+- Boolean array indicating whether each value is a restatement or not
+
+For example, in the data
+
+```
+1 2 4 1 2 3 4 1 2 4 8 8
+```
+
+For the first element, or any decrease in the value, a new restatement
+is recorded. Thus, the deltas, restatements, and is-restatement
+boolean array are:
+
+```
+deltas: 1 2 1 1 1 1 2 4 0
+restatements: 1 1 1
+is-restatement: T F F T F F F T F F F F
+```
+
+When encoded in a stream, the binary layout is:
+
+```
+bytes 0 to 3: uint32 size of delta array subencoding
+bytes 4 through 7: uint32 size of reinstatements array subencoding
+bytes 8 through K: encoded deltas
+bytes K + 1 through M: encoded reinstatements
+bytes M + 1 through end: encoded is-reinstatements
+```
+
+## Encoding: Sparse Boolean
+
+This encoding represents a bitmap where the values are mostly true or
+mostly false. This is done by encoding either the integer indices of
+values that are true or false (which may themselves compress well).
+
+For example, the boolean array
+
+```
+F F F F F T T F F F F F
+```
+
+would encode to
+
+```
+set_or_unset: true
+indices: [5, 6]
+```
+
+After the standard encoding prefix, the binary layout is:
+
+```
+byte 0: uint8 indicating whether the indices are true (1) or false (0)
+bytes 1 to end: encoded sparse indices
+```
+
+## Encoding: FSST (Strings)
+
+::: {.callout-caution}
+
+NOT YET IMPLEMENTED
+
+:::
+
+## Encoding: ALP (Floating Point)
+
+::: {.callout-caution}
+
+NOT YET IMPLEMENTED
+
+:::
+
+## Encoding: PFOR (Integers)
+
+::: {.callout-caution}
+
+NOT YET IMPLEMENTED
+
+:::
 
 # Encoding Selection
 
-# Nested Data Handling
+# Nested Data Support
 
-- Scalar
-- Row
-- Array
-- Array with offsets
-- Map
-- Flatmap
+Similar Apache Arrow, while primitive fields (columns) are stored in a
+single stream, Alpha represents nested data in multiple streams by
+flattening types in pre-order depth first order. This creates a
+sequence of auxiliary structural streams that address nullability and
+repetition of parent schema nodes, while the terminal leaf nodes
+contain the primitive struct, array, or map values.
 
-# References / Project Comparisons
+For example,
+
+In this section we discuss the correspondence between each logical
+nested type and the physical layout of streams that are written, as
+well as any reconstruction logic needed.
+
+## Array, Array With Offsets
+
+## Struct (Flatmap)
+
+## Map
+
+## Row
+
+# Implementation Considerations
+
+::: {.callout-caution}
+
+The assertions in this section are not true yet, but we will want to
+make them true.
+
+:::
+
+We have developed a reference C++ implementation with zero build- or
+link-time library dependencies with the goal to make it easy for
+projects to vendor a compliant Alpha implementation into their
+project.
+
+We consider such tasks as IO scheduling or parallel encoding and
+decoding of streams to be engine specific details, and so we have
+focused on providing a toolkit that exposes all of the features
+necessary to give the developer-integrator full control over these
+details.
+
+We have created reference integrations with Apache Arrow (in C++),
+DuckDB, and Velox that we hope will provide a helpful resource for
+early adopters to get up to speed quickly.
+
+## Access to Partially-Decoded Data
+
+# References and Other Projects
+
+It is tempting to create new file formats for its own sake, but we
+believe that we have developed a practical industrial data format
+informed by the problems that exist with current popular columnar data
+formats like Parquet and ORC. This has been informed by more than a
+decade of production use of existing data formats as well as evidence
+from users from the broader open source and commercial data analytics
+community.
+
+In this section, we hope to provide context to show how Alpha relates
+to other projects that you may be familiar with, in the hopes of
+preemptively answering questions like "why did you create Alpha
+instead of project X?".
+
+## Apache Arrow (2016)
+
+Arrow provides a language-independent in-memory columnar data
+representation that allows for O(1) random access for all data types
+and very nearly zero-copy data deserialization (the only overhead
+being inspecting a small Flatbuffers metadata packets providing
+schemas and memory offsets to Arrow memory buffers).
+
+Alpha is designed to be used effectively in applications that use
+Arrow as a primary in-memory data format.
+
+Some relevant specific aspects of Arrow include:
+
+- The three main ways to represent data in Arrow are plain,
+  dictionary-encoded, and much more recently run-length encoded.
+- Nullable data in Arrow similarly uses a validity bitmap to mark
+  valid (true) and null (false) array slots. Unlike Alpha, Arrow
+  includes unspecified memory for the null slots, allowing for O(1)
+  random access.
+- Like Alpha, Arrow supports using general purpose compression (for
+  example, using ZSTD or LZ4) on plain-encoded data buffers when
+  serializing for transport. This is considered a transport-level
+  detail and not part of the "in-memory" format.
+
+## Lance
+
+## Artus format from Google Procella
 
 ## BtrBlocks (2023)
 
-## Artus / Procella
+The [BtrBlocks][4] paper proposes a similar nested lightweight
+encoding scheme, but it stops short of specifying a self-contained
+tablet format that describes a complete row set for a table. It also
+does not address schemas (aside from the physical data type encoded),
+nested data, or statistics, considering those to be central problem to
+the research topic of the paper which is efficiently encoding and
+decoding primitive columnar array types using a tree of nested
+encodings.
+
+One of BtrBlocks's contributions is its encoding strategy, which is
+based upon a recursive "greedy" selection of encoding algorithms based
+on a 1% sample of 64-value runs from the input data. This sample-based
+approach of contiguous runs was based on an empirical study of the
+[Public BI Datasets][3] balancing accuracy (how often the optimal
+encoding is chosen, when considering all possible permutations) with
+encoding performance. The 1% sample results in reasonably good
+accuracy while adding a small amount (**ADD MORE PRECISE STATISTIC
+HERE**) of overhead to the encoding pass.
+
+BtrBlocks also proposes a novel floating point encoding, but another
+new floating point encoding [ALP][5] has better performance and so we
+have adopted that here.
+
+[1]: Apache Arrow specification online
+[2]: DataFusion
+[3]: Public BI Datasets
+[4]: https://www.cs.cit.tum.de/fileadmin/w00cfj/dis/papers/btrblocks.pdf
+[5]: ALP paper
+[6]: FastLanes paper
+[7]: Procella paper
+[8]: DuckDB
+[9]: Velox
