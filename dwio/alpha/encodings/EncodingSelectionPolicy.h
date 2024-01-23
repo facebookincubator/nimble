@@ -327,8 +327,6 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
         // will most likely be stored as SparseBool. Therefore, for each
         // uncommon value there will be an index. These indices will most likely
         // be stored bit-packed, with bit width of max(rowCount).
-        physicalType min = statistics.min();
-        physicalType max = statistics.max();
 
         // Find most common item count
         const auto maxUniqueCount = std::max_element(
