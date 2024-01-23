@@ -1,0 +1,3 @@
+add_library(alpha_tools_common EncodingUtilities.cpp)
+
+target_link_libraries(alpha_tools_common alpha_common alpha_tablet)

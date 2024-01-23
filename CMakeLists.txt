@@ -22,8 +22,17 @@ set(VELOX_DEPENDENCY_SOURCE
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
 # Ignore known compiler warnings.
-set(KNOWN_WARNINGS "-Wno-stringop-overread")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${KNOWN_WARNINGS}")
+check_cxx_compiler_flag("-Wstringop-overread" COMPILER_HAS_W_STRINGOP_OVERREAD)
+if(COMPILER_HAS_W_STRINGOP_OVERREAD)
+  string(APPEND CMAKE_CXX_FLAGS " -Wno-stringop-overread")
+endif()
+
+check_cxx_compiler_flag("-Wdeprecated-declarations"
+                        COMPILER_HAS_W_DEPRECATED_DECLARATIONS)
+if(COMPILER_HAS_W_DEPRECATED_DECLARATIONS)
+  string(APPEND CMAKE_CXX_FLAGS " -Wno-deprecated-declarations")
+endif()
+
 message("FINAL CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}")
 
 include(CTest) # include after project() but before add_subdirectory()
@@ -54,3 +63,5 @@ include_directories(SYSTEM ${CMAKE_BINARY_DIR}/_deps/xsimd-src/include/)
 add_subdirectory(velox)
 add_subdirectory(dwio/alpha/common)
 add_subdirectory(dwio/alpha/tablet)
+add_subdirectory(dwio/alpha/tools)
+add_subdirectory(dwio/alpha/encodings)
