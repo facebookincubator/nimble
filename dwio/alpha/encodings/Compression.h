@@ -15,11 +15,6 @@ struct CompressionResult {
   std::optional<Vector<char>> buffer;
 };
 
-struct CompressionResultOld {
-  CompressionType compressionType;
-  std::unique_ptr<folly::IOBuf> buffer;
-};
-
 class Compression {
  public:
   static CompressionResult compress(
