@@ -107,7 +107,7 @@ class TestTrivialEncodingSelectionPolicy
   std::unique_ptr<alpha::EncodingSelectionPolicyBase> createImpl(
       alpha::EncodingType /* encodingType */,
       alpha::NestedEncodingIdentifier /* identifier */,
-      alpha::DataType type) {
+      alpha::DataType type) override {
     UNIQUE_PTR_FACTORY(
         type,
         TestTrivialEncodingSelectionPolicy,

@@ -1036,7 +1036,7 @@ class ReplayedEncodingSelectionPolicy
   std::unique_ptr<alpha::EncodingSelectionPolicyBase> createImpl(
       alpha::EncodingType /* encodingType */,
       alpha::NestedEncodingIdentifier identifier,
-      alpha::DataType type) {
+      alpha::DataType type) override {
     ALPHA_ASSERT(
         identifier < encodingLayout_.childrenCount(),
         "Sub-encoding identifier out of range.");
