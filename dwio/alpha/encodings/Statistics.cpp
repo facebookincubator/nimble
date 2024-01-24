@@ -3,6 +3,7 @@
 #include "dwio/alpha/encodings/Statistics.h"
 #include "dwio/alpha/common/Types.h"
 
+#include <algorithm>
 #include <limits>
 #include <memory>
 #include <type_traits>

@@ -4,8 +4,10 @@
 
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <type_traits>
+#include <vector>
 #include "dwio/alpha/common/Types.h"
 
 #include "absl/container/flat_hash_map.h" // @manual=fbsource//third-party/abseil-cpp:container__flat_hash_map
