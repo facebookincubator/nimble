@@ -33,6 +33,13 @@ if(COMPILER_HAS_W_DEPRECATED_DECLARATIONS)
   string(APPEND CMAKE_CXX_FLAGS " -Wno-deprecated-declarations")
 endif()
 
+check_cxx_compiler_flag("-Wmaybe-uninitialized"
+                        COMPILER_HAS_W_MAYBE_UNINITIALIZED)
+if(COMPILER_HAS_W_MAYBE_UNINITIALIZED)
+  string(APPEND CMAKE_CXX_FLAGS " -Wno-maybe-uninitialized")
+endif()
+
+
 message("FINAL CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}")
 
 include(CTest) # include after project() but before add_subdirectory()
@@ -59,7 +66,6 @@ include_directories(SYSTEM velox)
 include_directories(SYSTEM velox/velox/external/xxhash)
 include_directories(SYSTEM ${CMAKE_BINARY_DIR}/_deps/xsimd-src/include/)
 
-# TODO - compile only Velox submodule and alpha/common
 add_subdirectory(velox)
 add_subdirectory(dwio/alpha/common)
 add_subdirectory(dwio/alpha/tablet)
