@@ -58,33 +58,6 @@ std::shared_ptr<const velox::Type> createFlatType(
           selectedFeatures.size(), valueType));
 }
 
-velox::TypePtr inferType(
-    const VeloxReadParams& params,
-    const std::string& name,
-    const velox::TypePtr& type,
-    size_t level) {
-  // Special case for flatmaps. If the flatmap field is missing, still need to
-  // honor the "as struct" intent by returning row instead of map.
-  if (level == 1 && params.readFlatMapFieldAsStruct.count(name) > 0) {
-    ALPHA_CHECK(
-        type->kind() == velox::TypeKind::MAP,
-        "Unexpected type kind of flat maps.");
-    auto it = params.flatMapFeatureSelector.find(name);
-    ALPHA_CHECK(
-        it != params.flatMapFeatureSelector.end() &&
-            !it->second.features.empty(),
-        fmt::format(
-            "Flat map feature selection for map '{}' has empty feature set.",
-            name));
-    ALPHA_CHECK(
-        it->second.mode == SelectionMode::Include,
-        "Flta map exclusion list is not supported when flat map field is missing.");
-
-    return createFlatType(it->second.features, type);
-  }
-  return type;
-}
-
 } // namespace
 
 const std::vector<std::string>& VeloxReader::preloadedOptionalSections() {
