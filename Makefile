@@ -1,4 +1,4 @@
-.PHONY: all cmake build clean debug release unit
+.PHONY: all cmake build clean debug release unit submodules
 
 BUILD_BASE_DIR=_build
 BUILD_DIR=release
@@ -31,7 +31,11 @@ all: release			#: Build the release version
 clean:					#: Delete all build artifacts
 	rm -rf $(BUILD_BASE_DIR)
 
-cmake:					#: Use CMake to create a Makefile build system
+submodules:
+	git submodule sync --recursive
+	git submodule update --init --recursive
+
+cmake: submodules  #: Use CMake to create a Makefile build system
 	mkdir -p $(BUILD_BASE_DIR)/$(BUILD_DIR) && \
 	cmake -B \
 		"$(BUILD_BASE_DIR)/$(BUILD_DIR)" \
