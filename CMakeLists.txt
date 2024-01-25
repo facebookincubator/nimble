@@ -6,6 +6,14 @@ project(Alpha)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+# Sets new behavior for CMP0135, which controls how timestamps are extracted
+# when using ExternalProject_Add():
+# https://cmake.org/cmake/help/latest/policy/CMP0135.html
+if(POLICY CMP0135)
+  cmake_policy(SET CMP0135 NEW)
+  set(CMAKE_POLICY_DEFAULT_CMP0135 NEW)
+endif()
+
 # Use ThirdPartyToolchain dependencies macros from Velox.
 list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/CMake"
      "${PROJECT_SOURCE_DIR}/velox/CMake")
@@ -39,7 +47,6 @@ if(COMPILER_HAS_W_MAYBE_UNINITIALIZED)
   string(APPEND CMAKE_CXX_FLAGS " -Wno-maybe-uninitialized")
 endif()
 
-
 message("FINAL CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}")
 
 include(CTest) # include after project() but before add_subdirectory()
@@ -59,6 +66,9 @@ resolve_dependency(gflags COMPONENTS shared)
 
 set_source(folly)
 resolve_dependency(folly)
+
+set_source(abseil)
+resolve_dependency(abseil)
 
 # Use xxhash and xsimd from Velox for now.
 include_directories(.)
