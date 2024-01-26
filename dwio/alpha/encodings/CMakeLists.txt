@@ -12,4 +12,4 @@ add_library(
   Statistics.cpp
   TrivialEncoding.cpp)
 
-target_link_libraries(alpha_encodings Folly::folly)
+target_link_libraries(alpha_encodings Folly::folly absl::flat_hash_map)
