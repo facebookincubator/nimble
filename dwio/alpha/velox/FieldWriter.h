@@ -7,9 +7,9 @@
 #include "dwio/alpha/common/Buffer.h"
 #include "dwio/alpha/common/Vector.h"
 #include "dwio/alpha/velox/BufferGrowthPolicy.h"
+#include "dwio/alpha/velox/OrderedRanges.h"
 #include "dwio/alpha/velox/SchemaBuilder.h"
 #include "folly/experimental/coro/Task.h"
-#include "koski/common/SliceUtil.h"
 #include "velox/dwio/common/TypeWithId.h"
 #include "velox/vector/DecodedVector.h"
 
@@ -79,7 +79,7 @@ struct FieldWriterContext {
   mutable std::mutex mutex_; // protects access to decodedVectorPool_
 };
 
-using OrderedRanges = koski::range_helper::OrderedRanges<velox::vector_size_t>;
+using OrderedRanges = range_helper::OrderedRanges<velox::vector_size_t>;
 using StreamCollector = std::function<void(
     const TypeBuilder* /* type */,
     std::span<const bool>* /* nonNulls */,
