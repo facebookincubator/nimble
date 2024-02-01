@@ -4,10 +4,12 @@
 #include <glog/logging.h>
 #include <ctime>
 
+#include "common/files/FileUtil.h"
 #include "common/init/light.h"
 #include "dwio/catalog/Catalog.h"
 #include "dwio/catalog/fbhive/HiveCatalog.h"
 #include "dwio/catalog/impl/DefaultCatalog.h"
+#include "folly/portability/Stdlib.h"
 #include "warm_storage/client/File.h"
 
 using namespace ::facebook;
@@ -15,11 +17,12 @@ using namespace ::facebook;
 DEFINE_string(ns, "", "Namespace to read from.");
 DEFINE_string(table, "", "Table to read from.");
 DEFINE_string(partition_filter, "", "partition filter to apply.");
-DEFINE_bool(
-    print_only,
-    false,
-    "Print resolved partitions (no analysis is performed).");
-DEFINE_int32(concurrency, 32, "Number of files to verify in parallel.");
+DEFINE_bool(run, false, "Performs a deep analysis of partitions.");
+DEFINE_int32(concurrency, 4096, "Number of files to verify in parallel.");
+DEFINE_string(
+    status_file,
+    "",
+    "Use status tracking file. Providing the same file across runs will skip successful partitions.");
 DEFINE_uint32(
     time_window_hours,
     4,
@@ -31,7 +34,8 @@ DEFINE_bool(enable_logs, false, "Enable GLOG messages (off by default).");
 
 namespace {
 constexpr uint16_t kAlphaMagicNumber = 0xA1FA;
-}
+constexpr char kPartitionStatusSeparator = '\n';
+} // namespace
 
 #define RED "\033[31m"
 #define GREEN "\033[32m"
@@ -41,24 +45,19 @@ constexpr uint16_t kAlphaMagicNumber = 0xA1FA;
 #define CYAN "\033[36m"
 #define RESET_COLOR "\033[0m"
 
-#define PRINT_ERROR(stream)                                        \
-  std::cout << "--> " << RED << "Error: " << stream << RESET_COLOR \
-            << std::endl;                                          \
-  return 1;
+#define PRINT_ERROR(stream) \
+  std::cerr << "--> " << RED << "Error: " << stream << RESET_COLOR << std::endl;
 
-#define PRINT_SUCCESS(stream)                                          \
-  std::cout << "--> " << GREEN << "Success: " << stream << RESET_COLOR \
-            << std::endl;                                              \
-  return 0;
-
-#define PRINT(stream) std::cout << stream << std::endl;
+#define PRINT(stream) std::cout << stream << RESET_COLOR << std::endl;
 
 int main(int argc, char* argv[]) {
-  auto init = facebook::init::InitFacebookLight{&argc, &argv};
-
   if (!FLAGS_enable_logs) {
-    FLAGS_minloglevel = 5;
+    FLAGS_minloglevel = 6;
+    auto level = folly::to<std::string>(folly::LogLevel::ERR);
+    setenv(folly::kLoggingEnvVarName, level.c_str(), /* overwrite */ 0);
   }
+
+  auto init = facebook::init::InitFacebookLight{&argc, &argv};
 
   if (FLAGS_partition_filter.empty()) {
     time_t now = std::time(nullptr);
@@ -86,15 +85,17 @@ int main(int argc, char* argv[]) {
 
   if (!catalog.existsTable(FLAGS_ns, FLAGS_table)) {
     PRINT_ERROR("Table doesn't exist.");
+    return 1;
   }
 
   auto partitions = catalog.getPartitionsByFilter(
       FLAGS_ns, FLAGS_table, FLAGS_partition_filter, 1024);
   if (partitions.empty()) {
     PRINT_ERROR("Partition filter returned no partitions.");
+    return 1;
   }
 
-  if (FLAGS_print_only) {
+  if (!FLAGS_run) {
     for (const auto& partition : partitions) {
       auto& hivePartition =
           dynamic_cast<const dwio::catalog::fbhive::HivePartitionMetadata&>(
@@ -109,11 +110,56 @@ int main(int argc, char* argv[]) {
           << partition->partitionName());
     }
 
+    PRINT(
+        YELLOW
+        << "********************************************************************************");
+    PRINT(
+        YELLOW
+        << "* This is a PRINT ONLY run. To actually verify the content of partitions, run  *");
+    PRINT(
+        YELLOW
+        << "* again using the --run argument.                                              *");
+    PRINT(
+        YELLOW
+        << "********************************************************************************");
+
     return 0;
+  }
+
+  std::unordered_set<std::string> successfulPartitions;
+  if (!FLAGS_status_file.empty()) {
+    if (files::FileUtil::fileExists(FLAGS_status_file)) {
+      std::string content;
+      files::FileUtil::readFileToString(FLAGS_status_file, &content);
+      std::vector<std::string_view> lines;
+      folly::split(
+          kPartitionStatusSeparator, content, lines, /* ignoreEmpty */ true);
+      for (const auto& line : lines) {
+        successfulPartitions.emplace(line);
+      }
+      PRINT(
+          "Loaded " << successfulPartitions.size()
+                    << " partitions from the status file "
+                    << FLAGS_status_file);
+    } else {
+      if (!files::FileUtil::touch(FLAGS_status_file)) {
+        PRINT_ERROR(
+            "Unable to create status file "
+            << FLAGS_status_file
+            << ". Verify that the directory exists and that the file is not locked by another process.");
+        return 1;
+      }
+    }
   }
 
   bool isError = false;
   for (const auto& partition : partitions) {
+    if (successfulPartitions.contains(partition->partitionName())) {
+      PRINT(
+          PURPLE << "Skipping partition '" << partition->partitionName()
+                 << "' (successfully scanned before)");
+      continue;
+    }
     auto& partitionSd =
         dynamic_cast<const dwio::catalog::fbhive::HivePartitionMetadata&>(
             *partition)
@@ -130,6 +176,7 @@ int main(int argc, char* argv[]) {
         PRINT_ERROR(
             "Invalid partition metadata for Alpha partition: "
             << partition->partitionName());
+        continue;
       }
     } else {
       if (partitionSd.inputFormat_ref().value() !=
@@ -141,6 +188,7 @@ int main(int argc, char* argv[]) {
         PRINT_ERROR(
             "Invalid partition metadata for ORC partition: "
             << partition->partitionName());
+        continue;
       }
     }
 
@@ -156,6 +204,7 @@ int main(int argc, char* argv[]) {
     auto listStatsResult = fs->listStats(partitionSd.location_ref().value());
     if (!listStatsResult.ok()) {
       PRINT_ERROR("Unable to enumerate files in partition.");
+      continue;
     }
 
     auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(
@@ -236,6 +285,7 @@ int main(int argc, char* argv[]) {
           "File count mismatch. Expected {}, actual {}",
           processedFileCount,
           alphaFileCount + otherFileCount));
+      continue;
     }
 
     auto printResult = [](const std::string& partitionName,
@@ -248,12 +298,12 @@ int main(int argc, char* argv[]) {
                 << " is an " << partitionType << " partition but contains "
                 << otherFileCount << " non-" << partitionType
                 << " files out of " << totalFileCount << " files.");
-        return true;
+        return false;
       } else {
         PRINT(
             GREEN << "Success:" << RESET_COLOR << " Partition " << partitionName
                   << " is a valid " << partitionType << " partition.");
-        return false;
+        return true;
       }
     };
 
@@ -262,7 +312,11 @@ int main(int argc, char* argv[]) {
             isAlpha ? "Alpha" : "ORC",
             isAlpha ? otherFileCount : alphaFileCount,
             listStatsResult.value().size())) {
-      return 1;
+      if (!FLAGS_status_file.empty()) {
+        files::appendStringToFileOrDie(
+            partition->partitionName() + kPartitionStatusSeparator,
+            FLAGS_status_file.c_str());
+      }
     }
   }
 }
