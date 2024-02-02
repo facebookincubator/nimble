@@ -1,5 +1,6 @@
 // Copyright 2004-present Facebook. All Rights Reserved.
 
+#include <folly/Random.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <gtest/gtest.h>
 #include <optional>
@@ -15,7 +16,6 @@
 #include "dwio/alpha/velox/VeloxReader.h"
 #include "dwio/alpha/velox/VeloxWriter.h"
 #include "velox/dwio/common/ColumnSelector.h"
-#include "velox/dwio/common/tests/utils/BatchMaker.h"
 #include "velox/type/Type.h"
 #include "velox/vector/BaseVector.h"
 #include "velox/vector/ComplexVector.h"
@@ -285,15 +285,15 @@ void compareFlatMapAsFilteredMap(
 
 std::unique_ptr<alpha::VeloxReader> getReaderForLifeCycleTest(
     const std::shared_ptr<const velox::RowType> schema,
-    int32_t batchSize,
+    size_t batchSize,
     std::mt19937& rng,
     alpha::VeloxWriterOptions writerOptions = {},
     alpha::VeloxReadParams readParams = {}) {
-  std::function<bool(velox::vector_size_t)> isNullAt =
-      [](velox::vector_size_t i) { return i % 2 == 0; };
-
-  auto vector = velox::test::BatchMaker::createBatch(
-      schema, batchSize, *leafPool, rng, isNullAt);
+  velox::VectorFuzzer fuzzer(
+      {.vectorSize = batchSize, .nullRatio = 0.5},
+      leafPool.get(),
+      folly::Random::rand32(rng));
+  auto vector = fuzzer.fuzzInputFlatRow(schema);
   auto file = alpha::test::createAlphaFile(*rootPool, vector, writerOptions);
 
   std::unique_ptr<velox::InMemoryReadFile> readFile =
@@ -392,13 +392,13 @@ TEST_F(VeloxReaderTests, DontReadUnselectedColumnsFromFile) {
       {"map_val", velox::MAP(velox::INTEGER(), velox::BIGINT())},
   });
 
-  int batchSize = 100;
-  auto seed = folly::Random::rand32();
-  LOG(INFO) << "seed: " << seed;
+  size_t batchSize = 100;
   auto selectedColumnNames =
       std::vector<std::string>{"tinyint_val", "double_val"};
-  auto vector = velox::test::BatchMaker::createBatch(
-      type, batchSize, *pool_, nullptr, seed);
+
+  velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, pool_.get());
+  auto vector = fuzzer.fuzzInputFlatRow(type);
+
   auto file = alpha::test::createAlphaFile(*rootPool, vector);
 
   uint32_t readSize = 1;
@@ -583,10 +583,9 @@ TEST_F(VeloxReaderTests, ReadComplexData) {
            }))},
   });
 
-  // Note: Batch size of 5, with current BatchMaker implementation, creates a
-  // non nullable row column. Batch size 1234, creates a nullable row column.
-  for (int batchSize : {5, 1234}) {
-    auto vector = velox::test::BatchMaker::createBatch(type, batchSize, *pool_);
+  for (size_t batchSize : {5, 1234}) {
+    velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, pool_.get());
+    auto vector = fuzzer.fuzzInputFlatRow(type);
     auto file = alpha::test::createAlphaFile(*rootPool, vector);
 
     for (bool upcast : {false, true}) {
@@ -3948,8 +3947,9 @@ TEST_F(VeloxReaderTests, VeloxTypeFromAlphaSchema) {
       {"dictionary_array_val", velox::ARRAY(velox::BIGINT())},
   });
 
-  const auto& vector = std::dynamic_pointer_cast<velox::RowVector>(
-      velox::test::BatchMaker::createBatch(type, 100, *pool_));
+  velox::VectorFuzzer fuzzer({.vectorSize = 100}, pool_.get());
+  auto vector = fuzzer.fuzzInputFlatRow(type);
+
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.flatMapColumns.insert("nested_map_row_val");
   writerOptions.dictionaryArrayColumns.insert("dictionary_array_val");

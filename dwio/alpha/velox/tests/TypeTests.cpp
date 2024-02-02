@@ -5,10 +5,10 @@
 #include "dwio/alpha/common/tests/AlphaFileWriter.h"
 #include "dwio/alpha/velox/VeloxReader.h"
 #include "dwio/alpha/velox/VeloxWriterOptions.h"
-#include "velox/dwio/common/tests/utils/BatchMaker.h"
 #include "velox/type/Type.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/FlatVector.h"
+#include "velox/vector/fuzzer/VectorFuzzer.h"
 
 using namespace ::facebook;
 
@@ -20,6 +20,7 @@ auto leafPool = rootPool -> addLeafChild("leaf");
 
 TEST(TypeTests, MatchingSchema) {
   const uint32_t batchSize = 10;
+
   auto type = velox::ROW({
       {"simple", velox::TINYINT()},
       {"array", velox::ARRAY(velox::BIGINT())},
@@ -40,8 +41,8 @@ TEST(TypeTests, MatchingSchema) {
       {"arraywithoffsets", velox::ARRAY(velox::BIGINT())},
   });
 
-  auto vector =
-      velox::test::BatchMaker::createBatch(type, batchSize, *leafPool);
+  velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, leafPool.get());
+  auto vector = fuzzer.fuzzInputFlatRow(type);
   auto file = alpha::test::createAlphaFile(*rootPool, vector);
 
   velox::InMemoryReadFile readFile(file);
@@ -105,8 +106,8 @@ TEST(TypeTests, ExtraColumnWithRename) {
       {"new", velox::TINYINT()},
   });
 
-  auto vector =
-      velox::test::BatchMaker::createBatch(fileType, batchSize, *leafPool);
+  velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, leafPool.get());
+  auto vector = fuzzer.fuzzInputFlatRow(fileType);
   auto file = alpha::test::createAlphaFile(*rootPool, vector);
 
   velox::InMemoryReadFile readFile(file);
@@ -163,8 +164,8 @@ TEST(TypeTests, SameTypeWithProjection) {
       {"arraywithoffsets", velox::ARRAY(velox::BIGINT())},
   });
 
-  auto vector =
-      velox::test::BatchMaker::createBatch(type, batchSize, *leafPool);
+  velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, leafPool.get());
+  auto vector = fuzzer.fuzzInputFlatRow(type);
   auto file = alpha::test::createAlphaFile(*rootPool, vector);
 
   velox::InMemoryReadFile readFile(file);
@@ -239,8 +240,8 @@ TEST(TypeTests, ProjectingNewColumn) {
       {"new", velox::TINYINT()},
   });
 
-  auto vector =
-      velox::test::BatchMaker::createBatch(fileType, batchSize, *leafPool);
+  velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, leafPool.get());
+  auto vector = fuzzer.fuzzInputFlatRow(fileType);
   auto file = alpha::test::createAlphaFile(*rootPool, vector);
 
   velox::InMemoryReadFile readFile(file);
@@ -290,24 +291,24 @@ TEST(TypeTests, FlatMapFeatureSelection) {
       {"map", velox::MAP(velox::INTEGER(), velox::BIGINT())},
   });
 
-  velox::VectorPtr vector = nullptr;
+  velox::RowVectorPtr vector = nullptr;
   std::unordered_set<int32_t> uniqueKeys;
-  while (uniqueKeys.empty()) {
-    vector = velox::test::BatchMaker::createBatch(type, batchSize, *leafPool);
-    auto keys = vector->as<velox::RowVector>()
-                    ->childAt(0)
-                    ->as<velox::MapVector>()
-                    ->mapKeys()
-                    ->asFlatVector<int32_t>();
-    auto values = vector->as<velox::RowVector>()
-                      ->childAt(0)
-                      ->as<velox::MapVector>()
-                      ->mapValues()
-                      ->asFlatVector<int64_t>();
+  velox::VectorFuzzer fuzzer(
+      {.vectorSize = batchSize, .nullRatio = 0.1, .containerLength = 2},
+      leafPool.get());
 
-    for (auto i = 0; i < keys->size(); ++i) {
-      if (!values->isNullAt(i)) {
-        uniqueKeys.emplace(keys->valueAt(i));
+  while (uniqueKeys.empty()) {
+    vector = fuzzer.fuzzInputFlatRow(type);
+    auto map = vector->childAt(0)->as<velox::MapVector>();
+    auto keys = map->mapKeys()->asFlatVector<int32_t>();
+    auto values = map->mapValues()->asFlatVector<int64_t>();
+
+    for (auto i = 0; i < batchSize; ++i) {
+      for (auto j = 0; j < map->sizeAt(i); ++j) {
+        size_t idx = map->offsetAt(i) + j;
+        if (!values->isNullAt(i)) {
+          uniqueKeys.emplace(keys->valueAt(i));
+        }
       }
     }
   }
@@ -381,10 +382,11 @@ TEST(TypeTests, FlatMapFeatureSelection) {
 
   for (auto i : {1}) {
     ASSERT_EQ(batchSize, resultStruct->size());
-
+    auto featureVector = resultStruct->childAt(i);
     bool foundNotNullValue = false;
+
     for (auto j = 0; j < batchSize; ++j) {
-      if (!resultStruct->childAt(i)->isNullAt(j)) {
+      if (!featureVector->isNullAt(j)) {
         foundNotNullValue = true;
         break;
       }

@@ -13,8 +13,8 @@
 #include "dwio/alpha/velox/VeloxReader.h"
 #include "dwio/alpha/velox/VeloxWriter.h"
 #include "thrift/lib/cpp2/protocol/DebugProtocol.h"
-#include "velox/dwio/common/tests/utils/BatchMaker.h"
 #include "velox/vector/VectorStream.h"
+#include "velox/vector/fuzzer/VectorFuzzer.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
 using namespace ::facebook;
@@ -140,18 +140,18 @@ TEST(VeloxWriterTests, FeatureReorderingNonFlatmapColumn) {
 }
 
 namespace {
-std::vector<velox::VectorPtr> generateBatches(
-    const std::shared_ptr<const velox::Type>& type,
+std::vector<velox::RowVectorPtr> generateBatches(
+    const std::shared_ptr<const velox::RowType>& type,
     size_t batchCount,
     size_t size,
     uint32_t seed,
     velox::memory::MemoryPool& pool) {
-  std::vector<velox::VectorPtr> batches;
-  std::mt19937 gen{};
-  gen.seed(seed);
+  velox::VectorFuzzer fuzzer(
+      {.vectorSize = size, .nullRatio = 0.1}, &pool, seed);
+  std::vector<velox::RowVectorPtr> batches;
+
   for (size_t i = 0; i < batchCount; ++i) {
-    batches.push_back(
-        velox::test::BatchMaker::createBatch(type, size, *leafPool, gen));
+    batches.push_back(fuzzer.fuzzInputFlatRow(type));
   }
   return batches;
 }
