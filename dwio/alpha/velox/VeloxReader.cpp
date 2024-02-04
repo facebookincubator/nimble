@@ -11,7 +11,6 @@
 #include "dwio/alpha/velox/SchemaTypes.h"
 #include "dwio/alpha/velox/SchemaUtils.h"
 #include "dwio/alpha/velox/TabletSections.h"
-#include "velox/common/base/Exceptions.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/type/Type.h"
 
@@ -244,6 +243,9 @@ void VeloxReader::loadStripe() {
     metrics.rowsInStripe = rowsRemainingInStripe_;
     metrics.cpuUsec = timing.cpuNanos / 1000;
     metrics.wallTimeUsec = timing.wallNanos / 1000;
+    if (parameters_.blockedOnIoMsCallback) {
+      parameters_.blockedOnIoMsCallback(timing.wallNanos / 1000000);
+    }
     logger_->logStripeLoad(metrics);
   } catch (const std::exception& e) {
     logger_->logException(MetricsLogger::kStripeLoadOperation, e.what());
@@ -265,10 +267,20 @@ bool VeloxReader::next(uint64_t rowCount, velox::VectorPtr& result) {
     }
   }
   uint64_t rowsToRead = std::min(rowsRemainingInStripe_, rowCount);
+  std::optional<std::chrono::steady_clock::time_point> startTime;
+  if (parameters_.decodingTimeUsCallback) {
+    startTime = std::chrono::steady_clock::now();
+  }
   rootReader_->next(rowsToRead, result, nullptr /*scatterBitmap*/);
   if (barrier_) {
     // Wait for all reader tasks to complete.
     barrier_->waitAll();
+  }
+  if (startTime.has_value()) {
+    parameters_.decodingTimeUsCallback(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - startTime.value())
+            .count());
   }
 
   // Update reader state

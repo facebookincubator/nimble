@@ -40,6 +40,12 @@ struct VeloxReadParams : public FieldReaderParams {
 
   // Report the number of stripes that will be read (consider the given range).
   std::function<void(uint32_t)> stripeCountCallback;
+
+  // Report the Wall time (ms) that we're blocked waiting on IO.
+  std::function<void(uint64_t)> blockedOnIoMsCallback;
+
+  // Report the Wall time (us) that we spend decoding.
+  std::function<void(uint64_t)> decodingTimeUsCallback;
 };
 
 class VeloxReader {
