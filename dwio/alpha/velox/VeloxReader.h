@@ -37,6 +37,9 @@ struct VeloxReadParams : public FieldReaderParams {
 
   // Metric logger with pro-populated access info.
   std::shared_ptr<MetricsLogger> metricsLogger;
+
+  // Report the number of stripes that will be read (consider the given range).
+  std::function<void(uint32_t)> stripeCountCallback;
 };
 
 class VeloxReader {

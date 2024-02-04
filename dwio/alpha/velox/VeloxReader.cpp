@@ -173,6 +173,10 @@ VeloxReader::VeloxReader(
 
   nextStripe_ = firstStripe_;
 
+  if (parameters_.stripeCountCallback) {
+    parameters_.stripeCountCallback(lastStripe_ - firstStripe_);
+  }
+
   VLOG(1) << "Tablet handling stripes: " << firstStripe_ << " -> "
           << lastStripe_ << " (rows " << firstRow_ << " -> " << lastRow_
           << "). Total stripes: " << tablet_->stripeCount()
