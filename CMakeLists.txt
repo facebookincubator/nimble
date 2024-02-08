@@ -20,6 +20,7 @@ list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/CMake"
 include(ResolveDependency)
 
 set(VELOX_BUILD_MINIMAL ON CACHE BOOL "Velox minimal build.")
+set(VELOX_BUILD_DWIO ON CACHE BOOL "Velox dwio build.")
 set(VELOX_DEPENDENCY_SOURCE
   AUTO
   CACHE
@@ -45,6 +46,18 @@ check_cxx_compiler_flag("-Wmaybe-uninitialized"
                         COMPILER_HAS_W_MAYBE_UNINITIALIZED)
 if(COMPILER_HAS_W_MAYBE_UNINITIALIZED)
   string(APPEND CMAKE_CXX_FLAGS " -Wno-maybe-uninitialized")
+endif()
+
+check_cxx_compiler_flag("-Wunknown-warning-option"
+                        COMPILER_HAS_W_UNKNOWN_WARNING_OPTION)
+if(COMPILER_HAS_W_UNKNOWN_WARNING_OPTION)
+  string(APPEND CMAKE_CXX_FLAGS " -Wno-unknown-warning-option")
+endif()
+
+check_cxx_compiler_flag("-Wnullability-completeness"
+                        COMPILER_HAS_W_NULLABILITY_COMPLETENESS)
+if(COMPILER_HAS_W_NULLABILITY_COMPLETENESS)
+  string(APPEND CMAKE_CXX_FLAGS " -Wno-nullability-completeness")
 endif()
 
 message("FINAL CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}")
@@ -81,3 +94,4 @@ add_subdirectory(dwio/alpha/common)
 add_subdirectory(dwio/alpha/tablet)
 add_subdirectory(dwio/alpha/tools)
 add_subdirectory(dwio/alpha/encodings)
+add_subdirectory(dwio/alpha/velox)
