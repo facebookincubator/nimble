@@ -87,6 +87,6 @@ target_link_libraries(
   Folly::folly)
 
 add_library(alpha_velox_writer EncodingLayoutTree.cpp FlushPolicy.cpp
-            VeloxWriter.cpp VeloxWriterOptions.cpp)
+            VeloxWriter.cpp VeloxWriterDefaultMetadataOSS.cpp)
 target_link_libraries(alpha_velox_writer alpha_encodings alpha_common
                       alpha_velox_metadata_fb Folly::folly)
