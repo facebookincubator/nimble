@@ -103,6 +103,20 @@ const T* asFlatBuffersRoot(std::string_view content) {
   return flatbuffers::GetRoot<T>(content.data());
 }
 
+size_t copyTo(const folly::IOBuf& source, void* target, size_t size) {
+  ALPHA_DASSERT(
+      source.computeChainDataLength() <= size, "Target buffer too small.");
+  size_t offset = 0;
+  for (const auto& chunk : source) {
+    // @lint-ignore CLANGSECURITY facebook-security-vulnerable-memcpy
+    std::memcpy(
+        static_cast<char*>(target) + offset, chunk.data(), chunk.size());
+    offset += chunk.size();
+  }
+
+  return offset;
+}
+
 folly::IOBuf
 cloneAndCoalesce(const folly::IOBuf& src, size_t offset, size_t size) {
   folly::io::Cursor cursor(&src);
@@ -258,35 +272,9 @@ void TabletWriter::writeStripe(uint32_t rowCount, std::vector<Stream> streams) {
     // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
     stripeStreamOffsets[index] = file_->size() - stripeOffsets_.back();
 
-    ALPHA_CHECK(
-        stream.compressionParams.type == CompressionType::Uncompressed ||
-            stream.compressionParams.type == CompressionType::Zstd,
-        fmt::format(
-            "Unsupported stream compression type: {}",
-            toString(stream.compressionParams.type)));
-
-    uint32_t totalSize = 0;
     for (auto output : stream.content) {
-      totalSize += output.size();
-      CompressionType compressionType = CompressionType::Uncompressed;
-      std::optional<Vector<char>> compressed;
-      if (stream.compressionParams.type == CompressionType::Zstd) {
-        compressed = ZstdCompression::compress(
-            memoryPool_, output, stream.compressionParams.zstdLevel);
-        if (compressed.has_value()) {
-          compressionType = CompressionType::Zstd;
-          output = {compressed->data(), compressed->size()};
-        }
-      }
-
-      uint32_t size = output.size();
-      writeWithChecksum({reinterpret_cast<const char*>(&size), 4});
-      writeWithChecksum({reinterpret_cast<const char*>(&compressionType), 1});
       writeWithChecksum(output);
     }
-    ALPHA_CHECK(
-        totalSize == stream.size,
-        fmt::format("Invalid stream size {} vs {}", totalSize, stream.size));
 
     // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
     stripeStreamSizes[index] =
@@ -771,6 +759,18 @@ struct LoadTask {
   std::vector<StreamTask> streamTasks;
 };
 
+class PreloadedStreamLoader : public StreamLoader {
+ public:
+  explicit PreloadedStreamLoader(Vector<char>&& stream)
+      : stream_{std::move(stream)} {}
+  const std::string_view getStream() const override {
+    return {stream_.data(), stream_.size()};
+  }
+
+ private:
+  const Vector<char> stream_;
+};
+
 } // namespace
 
 void Tablet::initStripes() {
@@ -834,7 +834,7 @@ uint32_t Tablet::streamCount(uint32_t stripe) const {
   return stripeGroup_.streamCount();
 }
 
-std::vector<std::unique_ptr<StreamInput>> Tablet::load(
+std::vector<std::unique_ptr<StreamLoader>> Tablet::load(
     uint32_t stripe,
     std::span<const uint32_t> streamIdentifiers,
     std::function<std::string_view(uint32_t)> streamLabel) const {
@@ -846,7 +846,7 @@ std::vector<std::unique_ptr<StreamInput>> Tablet::load(
   const auto stripeStreamSizes = stripeGroup_.streamSizes(stripe);
   const uint32_t streamsToLoad = streamIdentifiers.size();
 
-  std::vector<std::unique_ptr<StreamInput>> streams(streamsToLoad);
+  std::vector<std::unique_ptr<StreamLoader>> streams(streamsToLoad);
   std::vector<velox::common::Region> regions;
   std::vector<uint32_t> streamIdx;
   regions.reserve(streamsToLoad);
@@ -874,9 +874,13 @@ std::vector<std::unique_ptr<StreamInput>> Tablet::load(
   if (!regions.empty()) {
     std::vector<folly::IOBuf> iobufs(regions.size());
     file_->preadv(regions, {iobufs.data(), iobufs.size()});
+    ALPHA_DASSERT(iobufs.size() == streamIdx.size(), "Buffer size mismatch.");
     for (uint32_t i = 0; i < streamIdx.size(); ++i) {
-      streams[streamIdx[i]] = std::make_unique<InMemoryStreamInput>(
-          memoryPool_, std::move(iobufs[i]));
+      const auto size = iobufs[i].computeChainDataLength();
+      Vector<char> vector{&memoryPool_, size};
+      copyTo(iobufs[i], vector.data(), vector.size());
+      streams[streamIdx[i]] =
+          std::make_unique<PreloadedStreamLoader>(std::move(vector));
     }
   }
 

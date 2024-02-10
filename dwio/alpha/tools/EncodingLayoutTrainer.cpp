@@ -9,7 +9,7 @@
 #include "dwio/alpha/common/Types.h"
 #include "dwio/alpha/encodings/EncodingFactoryNew.h"
 #include "dwio/alpha/encodings/EncodingLayoutCapture.h"
-#include "dwio/alpha/velox/StreamInputDecoder.h"
+#include "dwio/alpha/velox/ChunkedStream.h"
 #include "dwio/alpha/velox/VeloxReader.h"
 #include "dwio/api/AlphaWriterOptionBuilder.h"
 #include "fbjava/datainfra-metastore/api/if/gen-cpp2/hive_metastore_types.h"
@@ -118,20 +118,33 @@ std::unique_ptr<TrainingNode<T>> createTrainingTree(
       name, std::move(state), std::move(children));
 }
 
+class PreloadedStreamLoader : public StreamLoader {
+ public:
+  explicit PreloadedStreamLoader(std::string_view stream) : stream_{stream} {}
+  const std::string_view getStream() const override {
+    return {stream_.data(), stream_.size()};
+  }
+
+ private:
+  const std::string_view stream_;
+};
+
 template <typename T>
 EncodingLayout trainEncoding(
     velox::memory::MemoryPool& memoryPool,
     const VeloxWriterOptions& options,
-    const std::vector<StreamInput*>& streams) {
+    const std::vector<std::string_view>& streams) {
   // Train on a single schema node. Load all data from all stripes and perform
   // basic encoding selection
 
   std::vector<alpha::Vector<T>> chunks;
   std::vector<std::unique_ptr<Encoding>> encodings;
   uint64_t rowCount = 0;
-  for (const auto stream : streams) {
-    while (stream->hasNext()) {
-      auto chunk = stream->nextChunk();
+  for (const auto& stream : streams) {
+    InMemoryChunkedStream chunkedStream{
+        memoryPool, std::make_unique<PreloadedStreamLoader>(stream)};
+    while (chunkedStream.hasNext()) {
+      auto chunk = chunkedStream.nextChunk();
       auto encoding = alpha::EncodingFactory::decode(memoryPool, chunk);
       Vector<T> data{&memoryPool};
       data.resize(encoding->rowCount());
@@ -220,7 +233,7 @@ EncodingLayoutTree EncodingLayoutTrainer::train(folly::Executor& executor) {
   std::unique_ptr<alpha::VeloxReader> reader =
       std::make_unique<alpha::VeloxReader>(memoryPool_, tablet);
 
-  std::vector<std::vector<std::unique_ptr<StreamInput>>> stripeStreams;
+  std::vector<std::vector<std::unique_ptr<StreamLoader>>> stripeStreams;
   stripeStreams.reserve(tablet->stripeCount());
   for (auto i = 0; i < tablet->stripeCount(); ++i) {
     std::vector<uint32_t> identifiers;
@@ -252,11 +265,11 @@ EncodingLayoutTree EncodingLayoutTrainer::train(folly::Executor& executor) {
       createTrainingTree<State>(*reader->schema(), [&](const Type& type) {
         auto state = std::make_unique<State>(type);
         barrier.add([&, &localState = *state]() {
-          std::vector<StreamInput*> streams;
-          for (const auto& stripeStream : stripeStreams) {
+          std::vector<std::string_view> streams;
+          for (auto& stripeStream : stripeStreams) {
             if (stripeStream.size() > type.offset() &&
                 stripeStream[type.offset()]) {
-              streams.push_back(stripeStream[type.offset()].get());
+              streams.push_back(stripeStream[type.offset()]->getStream());
             }
           }
 

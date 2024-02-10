@@ -63,6 +63,12 @@ class Buffer {
     return memoryPool_;
   }
 
+  std::string_view takeOwnership(velox::BufferPtr&& bufferPtr) {
+    std::string_view chunk{bufferPtr->as<char>(), bufferPtr->size()};
+    chunks_.push_back(std::move(bufferPtr));
+    return chunk;
+  }
+
  private:
   static constexpr uint64_t kMinChunkSize = 1LL << 20;
 

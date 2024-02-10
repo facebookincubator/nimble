@@ -6,7 +6,7 @@
 #include <span>
 #include <vector>
 #include "dwio/alpha/common/Types.h"
-#include "dwio/alpha/velox/VeloxWriterOptions.h"
+#include "dwio/alpha/velox/EncodingLayoutTree.h"
 #include "folly/Executor.h"
 #include "velox/common/memory/Memory.h"
 

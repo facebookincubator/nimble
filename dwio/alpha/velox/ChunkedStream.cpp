@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "dwio/alpha/tablet/StreamInput.h"
+#include "dwio/alpha/velox/ChunkedStream.h"
 #include "dwio/alpha/common/EncodingPrimitives.h"
 #include "dwio/alpha/common/Exceptions.h"
 #include "dwio/alpha/tablet/Compression.h"
@@ -8,19 +8,29 @@
 
 namespace facebook::alpha {
 
-bool InMemoryStreamInput::hasNext() const {
-  return pos_ - data_.data() < data_.size();
+void InMemoryChunkedStream::ensureLoaded() {
+  if (!pos_) {
+    stream_ = streamLoader_->getStream();
+    pos_ = stream_.data();
+  }
 }
 
-std::string_view InMemoryStreamInput::nextChunk() {
+bool InMemoryChunkedStream::hasNext() {
+  ensureLoaded();
+  return pos_ - stream_.data() < stream_.size();
+}
+
+std::string_view InMemoryChunkedStream::nextChunk() {
+  ensureLoaded();
   uncompressed_.clear();
   ALPHA_ASSERT(
-      sizeof(uint32_t) + sizeof(char) <= data_.size() - (pos_ - data_.data()),
+      sizeof(uint32_t) + sizeof(char) <=
+          stream_.size() - (pos_ - stream_.data()),
       "Read beyond end of stream");
   auto length = encoding::readUint32(pos_);
   auto compressionType = static_cast<CompressionType>(encoding::readChar(pos_));
   ALPHA_ASSERT(
-      length <= data_.size() - (pos_ - data_.data()),
+      length <= stream_.size() - (pos_ - stream_.data()),
       "Read beyond end of stream");
   std::string_view chunk;
   switch (compressionType) {
@@ -43,31 +53,19 @@ std::string_view InMemoryStreamInput::nextChunk() {
   return chunk;
 }
 
-CompressionType InMemoryStreamInput::peekCompressionType() const {
+CompressionType InMemoryChunkedStream::peekCompressionType() {
+  ensureLoaded();
   ALPHA_ASSERT(
-      sizeof(uint32_t) + sizeof(char) <= data_.size() - (pos_ - data_.data()),
+      sizeof(uint32_t) + sizeof(char) <=
+          stream_.size() - (pos_ - stream_.data()),
       "Read beyond end of stream");
   auto pos = pos_ + sizeof(uint32_t);
   return static_cast<CompressionType>(encoding::readChar(pos));
 }
 
-void InMemoryStreamInput::reset() {
+void InMemoryChunkedStream::reset() {
   uncompressed_.clear();
-  pos_ = data_.data();
-}
-
-void InMemoryStreamInput::extract(
-    std::function<void(std::string_view)> consumer) const {
-  consumer({data_.data(), data_.size()});
-}
-
-Vector<char> InMemoryStreamInput::toVector(
-    velox::memory::MemoryPool& memoryPool,
-    folly::IOBuf input) {
-  Vector<char> result{&memoryPool, input.computeChainDataLength()};
-  folly::io::Cursor cursor(&input);
-  cursor.pull(result.data(), result.size());
-  return result;
+  pos_ = stream_.data();
 }
 
 } // namespace facebook::alpha

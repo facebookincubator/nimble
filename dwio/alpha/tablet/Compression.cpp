@@ -17,8 +17,12 @@ std::optional<Vector<char>> ZstdCompression::compress(
   Vector<char> buffer{&memoryPool, source.size() + sizeof(uint32_t)};
   auto pos = buffer.data();
   encoding::writeUint32(source.size(), pos);
-  auto ret =
-      ZSTD_compress(pos, source.size(), source.data(), source.size(), level);
+  auto ret = ZSTD_compress(
+      pos,
+      source.size() - sizeof(uint32_t),
+      source.data(),
+      source.size(),
+      level);
   if (ZSTD_isError(ret)) {
     ALPHA_ASSERT(
         ZSTD_getErrorCode(ret) == ZSTD_ErrorCode::ZSTD_error_dstSize_tooSmall,

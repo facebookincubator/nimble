@@ -8,7 +8,7 @@
 #include <vector>
 #include "dwio/alpha/common/EncodingPrimitives.h"
 #include "dwio/alpha/common/Types.h"
-#include "dwio/alpha/tablet/StreamInput.h"
+#include "dwio/alpha/velox/ChunkedStream.h"
 
 namespace facebook::alpha::tools {
 
@@ -36,7 +36,7 @@ void traverseEncodings(
             EncodingPropertyType,
             EncodingProperty> /* properties */)> visitor);
 
-std::string getStreamInputLabel(alpha::StreamInput& stream);
+std::string getStreamInputLabel(alpha::ChunkedStream& stream);
 std::string getEncodingLabel(std::string_view stream);
 
 } // namespace facebook::alpha::tools

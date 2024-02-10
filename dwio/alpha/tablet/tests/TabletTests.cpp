@@ -46,7 +46,6 @@ void printData(std::string prefix, std::string_view data) {
 
 std::vector<StripeData> createStripesData(
     std::mt19937& rng,
-    const alpha::CompressionParams& compressionParams,
     const std::vector<StripeSpecifications>& stripes,
     alpha::Buffer& buffer) {
   std::vector<StripeData> stripesData;
@@ -60,7 +59,7 @@ std::vector<StripeData> createStripesData(
         stripe.streamOffsets.cbegin(),
         stripe.streamOffsets.cend(),
         std::back_inserter(streams),
-        [&rng, &compressionParams, &buffer](auto offset) {
+        [&rng, &buffer](auto offset) {
           const auto size = folly::Random::rand32(32, rng) + 2;
           auto pos = buffer.reserve(size);
           for (auto i = 0; i < size; ++i) {
@@ -68,7 +67,7 @@ std::vector<StripeData> createStripesData(
           }
           printData(folly::to<std::string>("Stream ", offset), {pos, size});
 
-          return alpha::Stream{offset, {pos, size}, compressionParams};
+          return alpha::Stream{.offset = offset, .content = {{pos, size}}};
         });
     stripesData.push_back({
         .rowCount = stripe.rowCount,
@@ -85,7 +84,6 @@ void parameterizedTest(
     velox::memory::MemoryPool& memoryPool,
     uint32_t metadataFlushThreshold,
     uint32_t metadataCompressionThreshold,
-    const alpha::CompressionParams& compressionParams,
     std::vector<StripeSpecifications> stripes,
     const std::optional<std::function<void(const std::exception&)>>&
         errorVerifier = std::nullopt) {
@@ -105,8 +103,7 @@ void parameterizedTest(
     };
 
     alpha::Buffer buffer{memoryPool};
-    auto stripesData =
-        createStripesData(rng, compressionParams, stripes, buffer);
+    auto stripesData = createStripesData(rng, stripes, buffer);
     for (auto& stripe : stripesData) {
       tabletWriter.writeStripe(stripe.rowCount, stripe.streams);
     }
@@ -132,8 +129,7 @@ void parameterizedTest(
         tablet.tabletRowCount());
 
     VLOG(1) << "Output Tablet -> StripeCount: " << tablet.stripeCount()
-            << ", RowCount: " << tablet.tabletRowCount()
-            << ", Compression: " << toString(compressionParams.type);
+            << ", RowCount: " << tablet.tabletRowCount();
 
     // Now, read all stripes and verify results
     size_t extraReads = 0;
@@ -167,11 +163,12 @@ void parameterizedTest(
             printData(
                 folly::to<std::string>("Expected Stream ", stream.offset),
                 stream.content.front());
-            auto actual = serializedStreams[i]->nextChunk();
+            const auto& actual = serializedStreams[i];
+            std::string_view actualData = actual->getStream();
             printData(
                 folly::to<std::string>("Actual Stream ", stream.offset),
-                actual);
-            EXPECT_EQ(stream.content.front(), actual);
+                actualData);
+            EXPECT_EQ(stream.content.front(), actualData);
           }
         }
         if (!found) {
@@ -207,9 +204,6 @@ void test(
     std::vector<StripeSpecifications> stripes,
     std::optional<std::function<void(const std::exception&)>> errorVerifier =
         std::nullopt) {
-  std::vector<alpha::CompressionParams> params{
-      {.type = alpha::CompressionType::Uncompressed},
-      {.type = alpha::CompressionType::Zstd}};
   std::vector<uint64_t> metadataCompressionThresholds{
       // use size 0 here so it will always force a footer compression
       0,
@@ -227,19 +221,15 @@ void test(
 
   for (auto flushThreshold : metadataFlushThresholds) {
     for (auto compressionThreshold : metadataCompressionThresholds) {
-      for (const auto& param : params) {
-        LOG(INFO) << "FlushThreshold: " << flushThreshold
-                  << ", CompressionThreshold: " << compressionThreshold
-                  << ", CompressionType: " << param.type;
-        parameterizedTest(
-            rng,
-            memoryPool,
-            flushThreshold,
-            compressionThreshold,
-            param,
-            stripes,
-            errorVerifier);
-      }
+      LOG(INFO) << "FlushThreshold: " << flushThreshold
+                << ", CompressionThreshold: " << compressionThreshold;
+      parameterizedTest(
+          rng,
+          memoryPool,
+          flushThreshold,
+          compressionThreshold,
+          stripes,
+          errorVerifier);
     }
   }
 }
@@ -298,8 +288,7 @@ void checksumTest(
   };
 
   alpha::Buffer buffer{memoryPool};
-  auto stripesData = createStripesData(
-      rng, {.type = alpha::CompressionType::Zstd}, stripes, buffer);
+  auto stripesData = createStripesData(rng, stripes, buffer);
 
   for (auto& stripe : stripesData) {
     tabletWriter.writeStripe(stripe.rowCount, stripe.streams);

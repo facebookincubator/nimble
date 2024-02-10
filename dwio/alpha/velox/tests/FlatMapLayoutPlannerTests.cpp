@@ -177,9 +177,7 @@ TEST(FlatMapLayoutPlannerTests, ReorderFlatMap) {
   streams.reserve(namedTypes.size());
   for (auto i = 0; i < namedTypes.size(); ++i) {
     streams.push_back(alpha::Stream{
-        std::get<0>(namedTypes[i]),
-        std::get<1>(namedTypes[i]),
-        alpha::CompressionParams()});
+        std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
   }
 
   std::vector<std::string> expected{
@@ -259,9 +257,7 @@ TEST(FlatMapLayoutPlannerTests, ReorderFlatMapDynamicFeatures) {
   streams.reserve(namedTypes.size());
   for (auto i = 0; i < namedTypes.size(); ++i) {
     streams.push_back(alpha::Stream{
-        std::get<0>(namedTypes[i]),
-        std::get<1>(namedTypes[i]),
-        alpha::CompressionParams()});
+        std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
   }
 
   std::vector<std::string> expected{
@@ -296,9 +292,7 @@ TEST(FlatMapLayoutPlannerTests, ReorderFlatMapDynamicFeatures) {
   streams.reserve(namedTypes.size());
   for (auto i = 0; i < namedTypes.size(); ++i) {
     streams.push_back(alpha::Stream{
-        std::get<0>(namedTypes[i]),
-        std::get<1>(namedTypes[i]),
-        alpha::CompressionParams()});
+        std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
   }
 
   expected = {
