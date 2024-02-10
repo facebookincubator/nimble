@@ -133,7 +133,7 @@ std::unordered_map<std::string, std::vector<int64_t>> generateFeatureList(
     const std::string& path,
     const dwio::common::request::AccessDescriptor& accessDescriptor) {
   auto featureList = dwio::utils::feature_flattening::extractFeatureNames(
-      velox::dwio::common::FileFormat::ALPHA, path, accessDescriptor);
+      dwio::file_system::FileSystem::openForRead(path, accessDescriptor));
   std::unordered_map<std::string, std::vector<int64_t>> features;
   for (auto& kv : featureList) {
     features[kv.first] =
