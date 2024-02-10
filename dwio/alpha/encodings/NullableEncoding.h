@@ -45,7 +45,7 @@ class NullableEncoding final
   uint32_t materializeNullable(
       uint32_t rowCount,
       void* buffer,
-      void* nullBitmap,
+      std::function<void*()> nulls,
       const bits::Bitmap* scatterBitmap = nullptr,
       uint32_t offset = 0) final;
 
@@ -154,7 +154,7 @@ template <typename T>
 uint32_t NullableEncoding<T>::materializeNullable(
     uint32_t rowCount,
     void* buffer,
-    void* nullBitmap,
+    std::function<void*()> nulls,
     const bits::Bitmap* scatterBitmap,
     uint32_t offset) {
   boolBuffer_.resize(rowCount);
@@ -169,6 +169,7 @@ uint32_t NullableEncoding<T>::materializeNullable(
 
   auto scatterSize = scatterBitmap ? scatterBitmap->size() - offset : rowCount;
   if (nonNullCount != scatterSize) {
+    void* nullBitmap = nulls();
     bits::BitmapBuilder nullBits{nullBitmap, offset + scatterSize};
     nullBits.clear(offset, offset + scatterSize);
 

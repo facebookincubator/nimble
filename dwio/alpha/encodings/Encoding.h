@@ -96,18 +96,18 @@ class Encoding {
   // in |scatterBitmap|, (note that the value being read may be null). For every
   // positional scatter bit set to 0, it will fill a null in the poisition in
   // the output |buffer|. |rowCount| should match the number of bits set to 1 in
-  // |scatterBitmap|. For scattered reads, |buffer| and |nullBitmap| should
+  // |scatterBitmap|. For scattered reads, |buffer| and |nulls| should
   // have enough space to accommodate |scatterBitmap.size()| items. When
   // |offset| is specified, use the |scatterBitmap| starting from |offset| and
-  // scatter to |buffer| and |nullBitmap| starting from |offset|.
+  // scatter to |buffer| and |nulls| starting from |offset|.
   //
   // Returns number of items that are not null. In the case when all values are
-  // non null, |nullBitmap| will not be filled with all 1s. It's expected that
+  // non null, |nulls| will not be filled with all 1s. It's expected that
   // caller explicitly checks for that condition.
   virtual uint32_t materializeNullable(
       uint32_t rowCount,
       void* buffer,
-      void* nullBitmap,
+      std::function<void*()> nulls,
       const bits::Bitmap* scatterBitmap = nullptr,
       uint32_t offset = 0) = 0;
 
@@ -192,7 +192,7 @@ class TypedEncoding : public Encoding {
   uint32_t materializeNullable(
       uint32_t rowCount,
       void* buffer,
-      void* nullBitmap,
+      std::function<void*()> nulls,
       const bits::Bitmap* scatterBitmap,
       uint32_t offset) override {
     // 1. Read X items from the encoding.
@@ -216,6 +216,8 @@ class TypedEncoding : public Encoding {
     ALPHA_CHECK(
         rowCount < scatterCount,
         fmt::format("Unexpected count {} vs {}", rowCount, scatterCount));
+
+    void* nullBitmap = nulls();
 
     bits::BitmapBuilder nullBits{nullBitmap, offset + scatterCount};
     nullBits.copy(*scatterBitmap, offset, offset + scatterCount);

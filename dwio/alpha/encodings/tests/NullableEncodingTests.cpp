@@ -278,7 +278,11 @@ TYPED_TEST(NullableEncodingTest, ScatteredMaterialize) {
           alpha::bits::Bitmap bitmap{
               scatterBitmap, scatterOffset + scatterCount};
           auto nonNullCount = encoding->materializeNullable(
-              rowCount, buffer, nullsBitmap, &bitmap, scatterOffset);
+              rowCount,
+              buffer,
+              [&]() { return nullsBitmap; },
+              &bitmap,
+              scatterOffset);
           for (int i = 0; i < scatterCount; ++i) {
             auto isSet = false;
             if (scatter[i + scatterOffset]) {
@@ -408,7 +412,7 @@ TYPED_TEST(NullableEncodingTest, MaterializeNullable) {
         alpha::Vector<char> bitmap(this->pool_.get(), rowCount);
 
         auto nonNullCount = encoding->materializeNullable(
-            rowCount, buffer.data(), bitmap.data());
+            rowCount, buffer.data(), [&]() { return bitmap.data(); });
         EXPECT_EQ(
             std::accumulate(nulls.data(), nulls.data() + nulls.size(), 0),
             nonNullCount);
@@ -426,7 +430,7 @@ TYPED_TEST(NullableEncodingTest, MaterializeNullable) {
         encoding->reset();
         const int firstBlock = rowCount / 2;
         nonNullCount = encoding->materializeNullable(
-            firstBlock, buffer.data(), bitmap.data());
+            firstBlock, buffer.data(), [&]() { return bitmap.data(); });
         EXPECT_EQ(
             std::accumulate(nulls.data(), nulls.data() + firstBlock, 0),
             nonNullCount);
@@ -442,7 +446,7 @@ TYPED_TEST(NullableEncodingTest, MaterializeNullable) {
         }
         const int secondBlock = rowCount - firstBlock;
         nonNullCount = encoding->materializeNullable(
-            secondBlock, buffer.data(), bitmap.data());
+            secondBlock, buffer.data(), [&]() { return bitmap.data(); });
         EXPECT_EQ(
             std::accumulate(
                 nulls.data() + firstBlock, nulls.data() + rowCount, 0),
@@ -460,8 +464,8 @@ TYPED_TEST(NullableEncodingTest, MaterializeNullable) {
 
         encoding->reset();
         for (int i = 0; i < rowCount; ++i) {
-          nonNullCount =
-              encoding->materializeNullable(1, buffer.data(), bitmap.data());
+          nonNullCount = encoding->materializeNullable(
+              1, buffer.data(), [&]() { return bitmap.data(); });
           checkOutput(
               0,
               nulls.data() + i,
@@ -480,8 +484,8 @@ TYPED_TEST(NullableEncodingTest, MaterializeNullable) {
           if (start + len > rowCount) {
             break;
           }
-          nonNullCount =
-              encoding->materializeNullable(len, buffer.data(), bitmap.data());
+          nonNullCount = encoding->materializeNullable(
+              len, buffer.data(), [&]() { return bitmap.data(); });
           EXPECT_EQ(
               std::accumulate(
                   nulls.data() + start, nulls.data() + start + len, 0),
@@ -502,8 +506,8 @@ TYPED_TEST(NullableEncodingTest, MaterializeNullable) {
             1 + folly::Random::rand32(rng) % (data.size() - offset);
         encoding->reset();
         encoding->skip(offset);
-        nonNullCount =
-            encoding->materializeNullable(length, buffer.data(), bitmap.data());
+        nonNullCount = encoding->materializeNullable(
+            length, buffer.data(), [&]() { return bitmap.data(); });
         EXPECT_EQ(
             std::accumulate(
                 nulls.data() + offset, nulls.data() + offset + length, 0),

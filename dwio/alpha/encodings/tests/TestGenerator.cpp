@@ -247,7 +247,8 @@ void printScalarData(
   nulls.resize((alpha::FixedBitArray::bufferSize(rowCount, 1)));
   nulls.zero_out();
   if (stream.isNullable()) {
-    stream.materializeNullable(rowCount, buffer.data(), nulls.data());
+    stream.materializeNullable(
+        rowCount, buffer.data(), [&]() { return nulls.data(); });
   } else {
     stream.materialize(rowCount, buffer.data());
     nulls.fill(0xff);

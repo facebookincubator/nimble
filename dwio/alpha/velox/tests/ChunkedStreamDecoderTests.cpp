@@ -221,7 +221,7 @@ void test(
                       << ", outputSize: " << outputSize
                       << ", scatterSize: " << scatterSize
                       << ", nonNullCount: " << nonNullCount;
-            if (nonNullCount != scatterSize) {
+            if (nonNullCount != scatterSize || (outputSize == 0 && scatter)) {
               EXPECT_EQ(1, count);
               EXPECT_EQ(
                   alpha::bits::countSetBits(
@@ -230,9 +230,7 @@ void test(
                       reinterpret_cast<const char*>(outputNulls.data())),
                   nonNullCount);
             } else {
-              // TODO: Remove this when we fix unnecessary allocation of nulls
-              // buffer
-              // EXPECT_EQ(0, count);
+              EXPECT_EQ(0, count);
             }
 
             if (nonNullCount == scatterSize) {
