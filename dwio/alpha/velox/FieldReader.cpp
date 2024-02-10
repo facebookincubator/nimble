@@ -14,100 +14,11 @@ namespace facebook::alpha {
 
 namespace {
 
+constexpr uint32_t kSkipBatchSize = 1024;
+
 uint32_t scatterCount(uint32_t count, const bits::Bitmap* scatterBitmap) {
   return scatterBitmap ? scatterBitmap->size() : count;
 }
-
-class NullColumnReader final : public FieldReader {
- public:
-  NullColumnReader(velox::memory::MemoryPool& pool, velox::TypePtr type)
-      : FieldReader{pool, std::move(type), nullptr} {}
-
-  void next(
-      uint32_t count,
-      velox::VectorPtr& output,
-      const bits::Bitmap* scatterBitmap) final {
-    ensureNullConstant(scatterCount(count, scatterBitmap), output, type_);
-  }
-
-  void skip(uint32_t /* count */) final {}
-};
-
-class NullFieldReaderFactory final : public FieldReaderFactory {
- public:
-  NullFieldReaderFactory(
-      velox::memory::MemoryPool& pool,
-      velox::TypePtr veloxType)
-      : FieldReaderFactory{pool, std::move(veloxType), nullptr} {}
-
-  std::unique_ptr<FieldReader> createReader(
-      const folly::F14FastMap<
-          offset_size,
-          std::unique_ptr<Decoder>>& /* decoders */) final {
-    return createNullColumnReader();
-  }
-};
-
-} // namespace
-
-void FieldReader::ensureNullConstant(
-    uint32_t rowCount,
-    velox::VectorPtr& output,
-    const std::shared_ptr<const velox::Type>& type) const {
-  // If output is already single referenced null constant, resize. Otherwise,
-  // allocate new one.
-  if (output && output.use_count() == 1 &&
-      output->encoding() == velox::VectorEncoding::Simple::CONSTANT &&
-      output->isNullAt(0)) {
-    output->resize(rowCount);
-  } else {
-    output = velox::BaseVector::createNullConstant(type, rowCount, &pool_);
-  }
-}
-
-void FieldReader::reset() {
-  if (decoder_) {
-    decoder_->reset();
-  }
-}
-
-std::unique_ptr<FieldReader> FieldReaderFactory::createNullColumnReader()
-    const {
-  return std::make_unique<NullColumnReader>(pool_, veloxType_);
-}
-
-Decoder* FOLLY_NULLABLE FieldReaderFactory::getDecoder(
-    const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders,
-    const Type* alphaType) const {
-  auto offset = (alphaType ? alphaType : alphaType_)->offset();
-  auto it = decoders.find(offset);
-  if (it == decoders.end()) {
-    // It is possible that for a given offset, we don't have a matching
-    // decoder. Each stripe might see different amount of streams, so for all
-    // the unknown streams, there won't be a matching decoder.
-    return nullptr;
-  }
-
-  return it->second.get();
-}
-
-template <typename T, typename... Args>
-std::unique_ptr<FieldReader> FieldReaderFactory::createReaderImpl(
-    const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders,
-    Args&&... args) const {
-  auto decoder = getDecoder(decoders);
-  if (!decoder) {
-    return createNullColumnReader();
-  }
-
-  return std::make_unique<T>(pool_, veloxType_, decoder, args()...);
-}
-
-namespace {
-
-using namespace velox::dwio::common::flatmap;
-
-constexpr uint32_t kSkipBatchSize = 1024;
 
 // Bytes needed for a packed null bitvector in velox.
 constexpr uint64_t nullBytes(uint32_t rowCount) {
@@ -306,6 +217,36 @@ struct VectorInitializer<velox::RowVector> {
           0 /*nullCount*/);
     }
     return static_cast<velox::RowVector*>(output.get());
+  }
+};
+
+class NullColumnReader final : public FieldReader {
+ public:
+  NullColumnReader(velox::memory::MemoryPool& pool, velox::TypePtr type)
+      : FieldReader{pool, std::move(type), nullptr} {}
+
+  void next(
+      uint32_t count,
+      velox::VectorPtr& output,
+      const bits::Bitmap* scatterBitmap) final {
+    ensureNullConstant(scatterCount(count, scatterBitmap), output, type_);
+  }
+
+  void skip(uint32_t /* count */) final {}
+};
+
+class NullFieldReaderFactory final : public FieldReaderFactory {
+ public:
+  NullFieldReaderFactory(
+      velox::memory::MemoryPool& pool,
+      velox::TypePtr veloxType)
+      : FieldReaderFactory{pool, std::move(veloxType), nullptr} {}
+
+  std::unique_ptr<FieldReader> createReader(
+      const folly::F14FastMap<
+          offset_size,
+          std::unique_ptr<Decoder>>& /* decoders */) final {
+    return createNullColumnReader();
   }
 };
 
@@ -613,7 +554,6 @@ class MultiValueFieldReader : public FieldReader {
         &pool_, output, type_, allocationSize, std::forward<Args>(args)...);
     vector->resize(allocationSize);
 
-    size_t childrenRows = 0;
     velox::vector_size_t* sizes =
         vector->mutableSizes(allocationSize)
             ->template asMutable<velox::vector_size_t>();
@@ -627,6 +567,7 @@ class MultiValueFieldReader : public FieldReader {
         [&]() { return paddedNulls(vector, allocationSize); },
         scatterBitmap);
 
+    size_t childrenRows = 0;
     if (nonNullCount == rowCount) {
       vector->resetNulls();
       for (uint32_t i = 0; i < rowCount; ++i) {
@@ -638,11 +579,10 @@ class MultiValueFieldReader : public FieldReader {
 
       auto notNulls = reinterpret_cast<const char*>(vector->rawNulls());
       for (uint32_t i = 0; i < rowCount; ++i) {
+        offsets[i] = static_cast<velox::vector_size_t>(childrenRows);
         if (bits::getBit(i, notNulls)) {
-          offsets[i] = static_cast<velox::vector_size_t>(childrenRows);
           childrenRows += sizes[i];
         } else {
-          offsets[i] = static_cast<velox::vector_size_t>(childrenRows);
           sizes[i] = 0;
         }
       }
@@ -783,42 +723,67 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
     auto rowCount = scatterCount(count, scatterBitmap);
     // read the offsets/indices which is one value per rowCount
     // and filter out deduped arrays to be read
-    velox::BufferPtr dictIndices, nulls;
     uint32_t nonNullCount;
-    velox::VectorPtr dedupOutput;
 
-    auto dictVector =
+    auto dictionaryVector =
         verifyVectorState<velox::DictionaryVector<velox::ComplexType>>(output);
-    nulls = velox::AlignedBuffer::allocate<bool>((nullBits(rowCount)), &pool_);
-    if (dictVector) {
-      dictVector->resize(rowCount);
-      dictIndices = dictVector->mutableIndices(rowCount);
-      resetIfNotWritable(output, dictIndices);
 
-      dedupOutput = dictVector->valueVector();
+    if (dictionaryVector) {
+      dictionaryVector->resize(rowCount);
+      resetIfNotWritable(output, dictionaryVector->indices());
     } else {
-      dictIndices =
+      velox::VectorPtr child;
+      VectorInitializer<velox::ArrayVector>::initialize(
+          &pool_, child, type_, rowCount);
+      auto indices =
           velox::AlignedBuffer::allocate<OffsetType>(rowCount, &pool_);
+
+      // Note: when creating a dictionary vector, it validates the vector (in
+      // debug builds) for correctness. Therefore, we allocate all the buffers
+      // above with the right size, but we "resize" them to zero, before
+      // creating the dictionary vector, to avoid failing this validation.
+      // We will later resize the vector to the correct size.
+      // These resize operations are "no cost" operations, as shrinking a
+      // vector/buffer doesn't free its memory, and resizing to the orginal size
+      // doesn't allocate, as capacity is guaranteed to be enough.
+      child->resize(0);
+      indices->setSize(0);
+
+      output = velox::BaseVector::wrapInDictionary(
+          /* nulls */ nullptr,
+          /* indices */ std::move(indices),
+          /* size */ 0,
+          /* values */ std::move(child));
+      dictionaryVector =
+          output->as<velox::DictionaryVector<velox::ComplexType>>();
+      dictionaryVector->resize(rowCount);
     }
 
+    void* nullsPtr = nullptr;
     uint32_t dedupCount = getIndicesDeduplicated(
-        dictIndices, nulls, nonNullCount, count, scatterBitmap);
+        dictionaryVector->indices()->asMutable<OffsetType>(),
+        [&]() {
+          nullsPtr = paddedNulls(dictionaryVector, rowCount);
+          return nullsPtr;
+        },
+        nonNullCount,
+        count,
+        scatterBitmap);
+
     bool hasNulls = nonNullCount != rowCount;
+    auto indices = dictionaryVector->indices()->asMutable<OffsetType>();
+    ALPHA_DASSERT(indices, "Indices missing.");
 
-    // adjust indices because indices written by writer are batched
-    velox::vector_size_t* indices =
-        dictIndices->asMutable<velox::vector_size_t>();
+    // Returns the first non-null index or -1 (if all are null).
+    auto baseIndex = findFirstBit(rowCount, hasNulls, nullsPtr, indices);
 
-    // baseIndex is the first non-null index
-    velox::vector_size_t baseIndex =
-        findFirstBit(rowCount, nulls, hasNulls, indices);
+    bool cachedLocally = rowCount > 0 && cached_ && (baseIndex == cachedIndex_);
 
-    bool cachedLocally = cached_ && (baseIndex == cachedIndex_) && rowCount > 0;
-
+    // Initializes sizes and offsets in the vector.
     auto childrenRows = loadOffsets<velox::ArrayVector>(
         dedupCount - cachedLocally,
-        dedupOutput,
-        /*scatterBitmap=*/nullptr,
+        dictionaryVector->valueVector(),
+        /* scatterBitmap */ nullptr,
         dedupCount);
 
     if (cached_ && cachedLazyLoad_) {
@@ -826,7 +791,7 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
         elementsReader_->next(
             cachedLazyChildrenRows_,
             static_cast<velox::ArrayVector&>(*cachedValue_).elements(),
-            /*scatterBitmap=*/nullptr);
+            /* scatterBitmap */ nullptr);
       } else {
         elementsReader_->skip(cachedLazyChildrenRows_);
       }
@@ -835,72 +800,127 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
 
     elementsReader_->next(
         childrenRows,
-        static_cast<velox::ArrayVector&>(*dedupOutput).elements(),
-        /*scatterBitmap=*/nullptr);
+        static_cast<velox::ArrayVector&>(*dictionaryVector->valueVector())
+            .elements(),
+        /* scatterBitmap */ nullptr);
 
-    // load the cached element
     if (cachedLocally) {
-      loadCachedElement(dedupCount, dedupOutput, hasNulls);
+      auto vector = static_cast<velox::ArrayVector*>(
+          dictionaryVector->valueVector().get());
+
+      // Copy elements from cache
+      const auto cacheIdx = static_cast<int64_t>(dedupCount) - 1;
+      velox::BaseVector::CopyRange cacheRange{
+          0, static_cast<velox::vector_size_t>(cacheIdx), 1};
+      vector->copyRanges(cachedValue_.get(), folly::Range(&cacheRange, 1));
+
+      // copyRanges overwrites offsets from the source array and must be reset
+      OffsetType* sizes =
+          vector->mutableSizes(dedupCount)->template asMutable<OffsetType>();
+      OffsetType* offsets =
+          vector->mutableOffsets(dedupCount)->template asMutable<OffsetType>();
+
+      size_t rows = 0;
+      if (cacheIdx > 0) {
+        rows = offsets[cacheIdx - 1] + sizes[cacheIdx - 1];
+      }
+
+      sizes[cacheIdx] = cachedSize_;
+      offsets[cacheIdx] = static_cast<OffsetType>(rows);
+
+      if (hasNulls) {
+        vector->setNull(cacheIdx, false);
+      }
     }
 
-    // cache the last read value and index so that it can be output again
-    cacheElement(
-        rowCount,
-        dedupCount,
-        cachedLocally,
-        nulls,
-        dictIndices,
-        dedupOutput,
-        hasNulls);
+    // Cache last item
+    if (dedupCount > 0) {
+      const auto& values = dictionaryVector->valueVector();
+      auto idxToCache = std::max(
+          0, static_cast<velox::vector_size_t>(dedupCount - 1 - cachedLocally));
+      velox::BaseVector::CopyRange cacheRange{
+          static_cast<velox::vector_size_t>(idxToCache), 0, 1};
+
+      cachedValue_->prepareForReuse();
+      cachedValue_->copyRanges(values.get(), folly::Range(&cacheRange, 1));
+
+      // Get the index for this last element which must be non-null
+      cachedIndex_ = indices[findLastBit(rowCount, hasNulls, nullsPtr)];
+
+      cachedSize_ =
+          static_cast<velox::ArrayVector&>(*values).sizeAt(idxToCache);
+      cached_ = true;
+      cachedLazyLoad_ = false;
+    }
 
     // normalize the indices if not all null
     if (nonNullCount > 0) {
-      for (uint32_t idx = 0; idx < rowCount; idx++) {
-        if (isNullAt(hasNulls, nulls, idx)) {
-          continue;
-        }
+      if (hasNulls) {
+        ALPHA_DASSERT(nullsPtr, "Nulls buffer missing.");
+        for (OffsetType idx = 0; idx < rowCount; idx++) {
+          if (velox::bits::isBitNull(
+                  static_cast<const uint64_t*>(nullsPtr), idx)) {
+            continue;
+          }
 
-        indices[idx] = indices[idx] - baseIndex;
+          indices[idx] = indices[idx] - baseIndex;
+        }
+      } else {
+        for (OffsetType idx = 0; idx < rowCount; idx++) {
+          indices[idx] = indices[idx] - baseIndex;
+        }
       }
     }
 
     // update the indices as per cached and null locations
-    for (uint32_t idx = 0; idx < rowCount; idx++) {
-      if (!isNullAt(hasNulls, nulls, idx)) {
+    if (hasNulls) {
+      dictionaryVector->setNullCount(nonNullCount != rowCount);
+      ALPHA_DASSERT(nullsPtr, "Nulls buffer missing.");
+      for (OffsetType idx = 0; idx < rowCount; idx++) {
+        if (velox::bits::isBitNull(
+                static_cast<const uint64_t*>(nullsPtr), idx)) {
+          indices[idx] = dedupCount - 1;
+        } else {
+          if (indices[idx] == 0 && cachedLocally) { // cached index
+            indices[idx] = dedupCount - 1;
+          } else {
+            indices[idx] -= cachedLocally;
+          }
+        }
+      }
+    } else {
+      dictionaryVector->resetNulls();
+      for (OffsetType idx = 0; idx < rowCount; idx++) {
         if (indices[idx] == 0 && cachedLocally) { // cached index
-          indices[idx] = dedupCount - cachedLocally;
+          indices[idx] = dedupCount - 1;
         } else {
           indices[idx] -= cachedLocally;
         }
-      } else {
-        indices[idx] = dedupCount - 1;
       }
     }
-
-    output = velox::BaseVector::wrapInDictionary(
-        hasNulls ? nulls : nullptr, dictIndices, rowCount, dedupOutput);
   }
 
   void skip(uint32_t count) final {
     // read the offsets/indices which is one value per rowCount
     // and filter out deduped arrays to be read
-    velox::BufferPtr dictIndices =
-        velox::AlignedBuffer::allocate<OffsetType>(kSkipBatchSize, &pool_);
-    velox::BufferPtr nulls = velox::AlignedBuffer::allocate<bool>(
-        (nullBits(kSkipBatchSize)), &pool_, velox::bits::kNotNull);
+    std::array<OffsetType, kSkipBatchSize> indices;
+    std::array<char, nullBytes(kSkipBatchSize)> nulls;
+    void* nullsPtr = nulls.data();
     uint32_t nonNullCount;
-    velox::vector_size_t* indices =
-        dictIndices->asMutable<velox::vector_size_t>();
 
     while (count > 0) {
       auto batchedRowCount = std::min(count, kSkipBatchSize);
       uint32_t dedupCount = getIndicesDeduplicated(
-          dictIndices, nulls, nonNullCount, batchedRowCount);
+          indices.data(),
+          [&]() { return nullsPtr; },
+          nonNullCount,
+          batchedRowCount);
+
       bool hasNulls = nonNullCount != batchedRowCount;
 
       // baseIndex is the first non-null index
-      velox::vector_size_t baseIndex =
-          findFirstBit(batchedRowCount, nulls, hasNulls, indices);
+      auto baseIndex =
+          findFirstBit(batchedRowCount, hasNulls, nullsPtr, indices.data());
 
       bool cachedLocally = cached_ && (baseIndex == cachedIndex_);
       if (cachedLocally) {
@@ -918,11 +938,11 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
 
         /// cache the last child
 
-        // Get the index for this last element which must be non-null
-        cachedIndex_ = indices[findLastBit(batchedRowCount, nulls, hasNulls)];
+        // get the index for this last element which must be non-null
+        cachedIndex_ =
+            indices[findLastBit(batchedRowCount, hasNulls, nullsPtr)];
         cached_ = true;
         cachedLazyLoad_ = true;
-
         cachedLazyChildrenRows_ =
             loadOffsets<velox::ArrayVector>(1, cachedValue_, nullptr);
 
@@ -945,139 +965,97 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
   std::unique_ptr<FieldReader> elementsReader_;
   bool cached_;
   velox::VectorPtr cachedValue_;
-  velox::vector_size_t cachedIndex_;
-  velox::vector_size_t cachedSize_;
+  OffsetType cachedIndex_;
+  uint32_t cachedSize_;
   bool cachedLazyLoad_;
-  velox::vector_size_t cachedLazyChildrenRows_;
+  uint32_t cachedLazyChildrenRows_;
 
-  static inline velox::vector_size_t
-  findLastBit(uint32_t rowCount, const velox::BufferPtr& nulls, bool hasNulls) {
-    velox::vector_size_t idx = rowCount - 1;
-    if (hasNulls) {
-      idx = velox::bits::findLastBit(nulls->asMutable<uint64_t>(), 0, rowCount);
-      idx = idx == -1 ? rowCount - 1 : idx;
-    }
-
-    return idx;
-  }
-
-  static inline velox::vector_size_t findFirstBit(
+  static inline OffsetType findLastBit(
       uint32_t rowCount,
-      const velox::BufferPtr& nulls,
       bool hasNulls,
-      const velox::vector_size_t* indices) {
-    velox::vector_size_t idx = 0;
-    if (hasNulls) {
-      idx =
-          velox::bits::findFirstBit(nulls->asMutable<uint64_t>(), 0, rowCount);
-    }
-
-    return idx == -1 ? idx : indices[idx];
-  }
-
-  static inline bool isNullAt(
-      bool hasNulls,
-      const velox::BufferPtr& nulls,
-      velox::vector_size_t idx) {
+      const void* FOLLY_NULLABLE nulls) {
     if (!hasNulls) {
-      return false;
+      return rowCount - 1;
     }
 
-    VELOX_DCHECK_GE(idx, 0, "Index must not be negative");
-    VELOX_DCHECK_LT(
-        velox::bits::nbytes(idx), nulls->size(), "Index is too large");
-    return velox::bits::isBitNull(nulls->asMutable<const uint64_t>(), idx);
+    ALPHA_DASSERT(nulls, "Nulls buffer missing.");
+    auto index = velox::bits::findLastBit(
+        static_cast<const uint64_t*>(nulls), 0, rowCount);
+    if (index == -1) {
+      return rowCount - 1;
+    }
+
+    return index;
   }
 
-  void loadCachedElement(
+  static inline int32_t findFirstBit(
       uint32_t rowCount,
-      velox::VectorPtr& output,
-      const bool hasNulls = false) {
-    velox::BaseVector::CopyRange cacheRange{
-        0, static_cast<velox::vector_size_t>(rowCount - 1), 1};
-    output->copyRanges(&*cachedValue_, folly::Range(&cacheRange, 1));
-
-    // copyRanges overwrites offsets from the source array and must be reset
-    auto vector = static_cast<velox::ArrayVector*>(output.get());
-
-    velox::vector_size_t* sizes =
-        vector->mutableSizes(rowCount)
-            ->template asMutable<velox::vector_size_t>();
-    velox::vector_size_t* offsets =
-        vector->mutableOffsets(rowCount)
-            ->template asMutable<velox::vector_size_t>();
-
-    auto cacheIdx = rowCount - 1;
-    size_t childrenRows = 0;
-    if (cacheIdx > 0) {
-      childrenRows = offsets[cacheIdx - 1] + sizes[cacheIdx - 1];
+      bool hasNulls,
+      const void* FOLLY_NULLABLE nulls,
+      const OffsetType* indices) {
+    if (!hasNulls) {
+      return indices[0];
     }
 
-    sizes[cacheIdx] = cachedSize_;
-    offsets[cacheIdx] = static_cast<velox::vector_size_t>(childrenRows);
+    ALPHA_DASSERT(nulls, "Nulls buffer missing.");
+    auto index = velox::bits::findFirstBit(
+        static_cast<const uint64_t*>(nulls), 0, rowCount);
 
-    if (hasNulls) {
-      vector->setNull(cacheIdx, false);
-    }
-  }
-
-  void cacheElement(
-      uint32_t rowCount,
-      uint32_t dedupCount,
-      bool cachedLocally,
-      const velox::BufferPtr& nulls,
-      const velox::BufferPtr& indices,
-      const velox::VectorPtr& output,
-      bool hasNulls) {
-    if (dedupCount == 0) {
-      return;
+    if (index == -1) {
+      return -1;
     }
 
-    auto idxToCache = std::max(
-        0, static_cast<velox::vector_size_t>(dedupCount - 1 - cachedLocally));
-    velox::BaseVector::CopyRange cacheRange{
-        static_cast<velox::vector_size_t>(idxToCache), 0, 1};
-
-    cachedValue_->prepareForReuse();
-    cachedValue_->copyRanges(&*output, folly::Range(&cacheRange, 1));
-
-    // Get the index for this last element which must be non-null
-    cachedIndex_ = indices->asMutable<velox::vector_size_t>()[findLastBit(
-        rowCount, nulls, hasNulls)];
-
-    cachedSize_ = static_cast<velox::ArrayVector&>(*output).sizeAt(idxToCache);
-    cached_ = true;
-    cachedLazyLoad_ = false;
+    return indices[index];
   }
 
   uint32_t getIndicesDeduplicated(
-      velox::BufferPtr& dictIndices,
-      velox::BufferPtr& nulls,
+      OffsetType* indices,
+      std::function<void*()> nulls,
       uint32_t& nonNullCount,
       uint32_t count,
       const bits::Bitmap* scatterBitmap = nullptr) {
     auto rowCount = scatterCount(count, scatterBitmap);
+    // OffsetType* indices = dictIndices->asMutable<OffsetType>();
+    void* nullsPtr;
+
     nonNullCount = offsetDecoder_->next(
         count,
-        dictIndices->asMutable<OffsetType>(),
-        [&]() { return nulls->asMutable<char>(); },
+        indices,
+        [&]() {
+          nullsPtr = nulls();
+          return nullsPtr;
+        },
         scatterBitmap);
 
-    OffsetType* indices = dictIndices->asMutable<OffsetType>();
+    // remove duplicated indices and calculate unique count
+    uint32_t uniqueCount = 0;
+    uint32_t prevIdx = 0;
     bool hasNulls = nonNullCount != rowCount;
 
-    // remove duplicated indices and calculate unique count
-    uint32_t uniqueCount = 0, prevIdx = 0;
-    for (uint32_t idx = 0; idx < rowCount; idx++) {
-      if (isNullAt(hasNulls, nulls, idx)) {
-        indices[idx] = 0;
-        continue;
-      }
+    if (hasNulls) {
+      ALPHA_DASSERT(
+          nullsPtr != nullptr,
+          "Data contain nulls but nulls buffer is not initialized.");
 
-      if (uniqueCount == 0 || indices[idx] != indices[prevIdx]) {
-        uniqueCount++;
+      for (uint32_t idx = 0; idx < rowCount; idx++) {
+        if (velox::bits::isBitNull(
+                static_cast<const uint64_t*>(nullsPtr), idx)) {
+          indices[idx] = 0;
+          continue;
+        }
+
+        if (uniqueCount == 0 || indices[idx] != indices[prevIdx]) {
+          uniqueCount++;
+        }
+        prevIdx = idx;
       }
-      prevIdx = idx;
+    } else {
+      for (uint32_t idx = 0; idx < rowCount; idx++) {
+        if (uniqueCount == 0 || indices[idx] != indices[prevIdx]) {
+          uniqueCount++;
+        }
+        prevIdx = idx;
+      }
     }
 
     return uniqueCount;
@@ -1407,7 +1385,7 @@ class FlatMapKeyNode {
       velox::memory::MemoryPool& memoryPool,
       std::unique_ptr<FieldReader> valueReader,
       Decoder* inMapDecoder,
-      const KeyValue<T>& key)
+      const velox::dwio::common::flatmap::KeyValue<T>& key)
       : valueReader_{std::move(valueReader)},
         inMapDecoder_{inMapDecoder},
         inMapData_{&memoryPool},
@@ -1451,7 +1429,7 @@ class FlatMapKeyNode {
     }
   }
 
-  const KeyValue<T>& key() const {
+  const velox::dwio::common::flatmap::KeyValue<T>& key() const {
     return key_;
   }
 
@@ -1505,7 +1483,7 @@ class FlatMapKeyNode {
   std::unique_ptr<FieldReader> valueReader_;
   Decoder* inMapDecoder_;
   Vector<bool> inMapData_;
-  const KeyValue<T>& key_;
+  const velox::dwio::common::flatmap::KeyValue<T>& key_;
   velox::VectorPtr valueVector_;
   // nulls buffer used in parallel read cases.
   Vector<char> mergedNulls_;
@@ -1611,7 +1589,8 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
     auto& flatMap = type->asFlatMap();
     keyValues_.reserve(selectedChildren.size());
     for (auto childIdx : selectedChildren) {
-      keyValues_.push_back(parseKeyValue<T>(flatMap.nameAt(childIdx)));
+      keyValues_.push_back(velox::dwio::common::flatmap::parseKeyValue<T>(
+          flatMap.nameAt(childIdx)));
     }
   }
 
@@ -1670,7 +1649,7 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
  protected:
   std::vector<const ScalarType*> inMapTypes_;
   std::vector<std::unique_ptr<FieldReaderFactory>> valueReaders_;
-  std::vector<KeyValue<T>> keyValues_;
+  std::vector<velox::dwio::common::flatmap::KeyValue<T>> keyValues_;
   Vector<bool> boolBuffer_;
 };
 
@@ -1835,7 +1814,8 @@ class MergedFlatMapFieldReader final
     velox::VectorPtr valuesVector;
     if (totalChildren > 0) {
       keysVector->resize(totalChildren);
-      initializeVector(valuesVector, mapValueType, this->pool_, nodeValues);
+      velox::dwio::common::flatmap::initializeVector(
+          valuesVector, mapValueType, this->pool_, nodeValues);
     }
 
     velox::vector_size_t offset = 0;
@@ -1850,7 +1830,7 @@ class MergedFlatMapFieldReader final
           for (size_t j = 0; j < nodes.size(); ++j) {
             if (nodes[j]->inMap(inMapIndex)) {
               flatKeysVector->set(offset, nodes[j]->key().get());
-              copyOne(
+              velox::dwio::common::flatmap::copyOne(
                   mapValueType,
                   *valuesVector,
                   offset,
@@ -1870,7 +1850,7 @@ class MergedFlatMapFieldReader final
         for (size_t j = 0; j < nodes.size(); ++j) {
           if (nodes[j]->inMap(i)) {
             flatKeysVector->set(offset, nodes[j]->key().get());
-            copyOne(
+            velox::dwio::common::flatmap::copyOne(
                 mapValueType,
                 *valuesVector,
                 offset,
@@ -2372,6 +2352,59 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
 }
 
 } // namespace
+
+void FieldReader::ensureNullConstant(
+    uint32_t rowCount,
+    velox::VectorPtr& output,
+    const std::shared_ptr<const velox::Type>& type) const {
+  // If output is already single referenced null constant, resize. Otherwise,
+  // allocate new one.
+  if (output && output.use_count() == 1 &&
+      output->encoding() == velox::VectorEncoding::Simple::CONSTANT &&
+      output->isNullAt(0)) {
+    output->resize(rowCount);
+  } else {
+    output = velox::BaseVector::createNullConstant(type, rowCount, &pool_);
+  }
+}
+
+void FieldReader::reset() {
+  if (decoder_) {
+    decoder_->reset();
+  }
+}
+
+std::unique_ptr<FieldReader> FieldReaderFactory::createNullColumnReader()
+    const {
+  return std::make_unique<NullColumnReader>(pool_, veloxType_);
+}
+
+Decoder* FOLLY_NULLABLE FieldReaderFactory::getDecoder(
+    const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders,
+    const Type* alphaType) const {
+  auto offset = (alphaType ? alphaType : alphaType_)->offset();
+  auto it = decoders.find(offset);
+  if (it == decoders.end()) {
+    // It is possible that for a given offset, we don't have a matching
+    // decoder. Each stripe might see different amount of streams, so for all
+    // the unknown streams, there won't be a matching decoder.
+    return nullptr;
+  }
+
+  return it->second.get();
+}
+
+template <typename T, typename... Args>
+std::unique_ptr<FieldReader> FieldReaderFactory::createReaderImpl(
+    const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders,
+    Args&&... args) const {
+  auto decoder = getDecoder(decoders);
+  if (!decoder) {
+    return createNullColumnReader();
+  }
+
+  return std::make_unique<T>(pool_, veloxType_, decoder, args()...);
+}
 
 std::unique_ptr<FieldReaderFactory> FieldReaderFactory::create(
     const FieldReaderParams& parameters,

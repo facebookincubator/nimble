@@ -431,7 +431,7 @@ TEST_F(VeloxReaderTests, DontReadUnprojectedFeaturesFromFile) {
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
 
   int batchSize = 500;
-  auto seed = folly::Random::rand32();
+  uint32_t seed = folly::Random::rand32();
 
   VeloxMapGeneratorConfig generatorConfig{
       .rowType = rowType,
@@ -957,7 +957,7 @@ void writeAndVerify(
       decision = alpha::FlushDecision::None;
       auto batchSize = vector->size() - rowIndex;
       // Randomly produce chunks
-      if (folly::Random::oneIn(2)) {
+      if (folly::Random::oneIn(2, rng)) {
         batchSize = folly::Random::rand32(0, batchSize, rng) + 1;
         decision = alpha::FlushDecision::Chunk;
       }
@@ -1415,7 +1415,7 @@ TEST_P(VeloxReaderTests, FuzzSimple) {
       // {"ts_val", velox::TIMESTAMP()},
   });
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
-  auto seed = folly::Random::rand32();
+  uint32_t seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
 
   alpha::VeloxWriterOptions writerOptions;
@@ -1496,7 +1496,7 @@ TEST_P(VeloxReaderTests, FuzzComplex) {
        velox::MAP(velox::INTEGER(), velox::ARRAY(velox::INTEGER()))},
   });
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
-  auto seed = folly::Random::rand32();
+  uint32_t seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
 
   alpha::VeloxWriterOptions writerOptions;
@@ -1569,7 +1569,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsets) {
       {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
   });
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
-  auto seed = folly::Random::rand32();
+  uint32_t seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
 
   alpha::VeloxWriterOptions writerOptions;
@@ -1838,7 +1838,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsetsNullable) {
       {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
   });
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
-  auto seed = folly::Random::rand32();
+  uint32_t seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
 
   alpha::VeloxWriterOptions writerOptions;
@@ -2058,7 +2058,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsetsMultiskips) {
       {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
   });
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
-  auto seed = folly::Random::rand32();
+  uint32_t seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
 
   alpha::VeloxWriterOptions writerOptions;
@@ -2723,7 +2723,7 @@ class TestAlphaReaderFactory {
 std::vector<velox::VectorPtr> createSkipSeekVectors(
     velox::memory::MemoryPool& pool,
     const std::vector<int>& rowsPerStripe) {
-  auto seed = folly::Random::rand32();
+  uint32_t seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
 
@@ -3589,7 +3589,7 @@ TEST_F(VeloxReaderTests, TestScalarFieldLifeCycle) {
         EXPECT_NE(rawValues, child1->values().get());
       };
 
-  auto seed = folly::Random::rand32();
+  uint32_t seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
   std::vector<std::shared_ptr<const velox::RowType>> types = {
@@ -3610,7 +3610,7 @@ TEST_F(VeloxReaderTests, TestScalarFieldLifeCycle) {
 }
 
 TEST_F(VeloxReaderTests, TestArrayFieldLifeCycle) {
-  auto seed = folly::Random::rand32();
+  uint32_t seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
   auto type = velox::ROW({{"arr_val", velox::ARRAY(velox::BIGINT())}});
@@ -3751,7 +3751,7 @@ TEST_F(VeloxReaderTests, TestMapFieldLifeCycle) {
         EXPECT_NE(childPtr, child1.get());
         EXPECT_EQ(rowPtr, result.get());
       };
-  auto seed = folly::Random::rand32();
+  uint32_t seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
   auto type =
@@ -3820,7 +3820,7 @@ TEST_F(VeloxReaderTests, TestFlatMapAsMapFieldLifeCycle) {
         EXPECT_NE(childPtr, child1.get());
         EXPECT_EQ(rowPtr, result.get());
       };
-  auto seed = folly::Random::rand32();
+  uint32_t seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
   auto type =
@@ -3888,7 +3888,7 @@ TEST_F(VeloxReaderTests, TestRowFieldLifeCycle) {
       {{"row_val",
         velox::ROW(
             {{"a", velox::INTEGER()}, {"b", velox::ARRAY(velox::BIGINT())}})}});
-  auto seed = folly::Random::rand32();
+  uint32_t seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
   for (int i = 0; i < 10; ++i) {
