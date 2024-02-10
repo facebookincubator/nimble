@@ -201,7 +201,8 @@ class Encoder {
         std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(
             compressionType)};
 
-    return E::encodeNullable(selection, physicalValues, nulls, buffer);
+    return NullableEncoding<typename E::cppDataType>::encodeNullable(
+        selection, physicalValues, nulls, buffer);
   }
 
   static std::unique_ptr<alpha::Encoding> createEncoding(

@@ -9,7 +9,6 @@
 #include "dwio/alpha/tablet/Tablet.h"
 #include "dwio/alpha/velox/FieldReader.h"
 #include "dwio/alpha/velox/SchemaReader.h"
-#include "dwio/alpha/velox/StreamInputDecoder.h"
 #include "dwio/alpha/velox/StreamLabels.h"
 #include "folly/container/F14Set.h"
 #include "velox/common/file/File.h"

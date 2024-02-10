@@ -1,11 +1,11 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "dwio/alpha/velox/StreamInputDecoder.h"
+#include "dwio/alpha/velox/ChunkedStreamDecoder.h"
 #include "dwio/alpha/encodings/EncodingFactoryNew.h"
 
 namespace facebook::alpha {
 
-uint32_t StreamInputDecoder::next(
+uint32_t ChunkedStreamDecoder::next(
     uint32_t count,
     void* output,
     std::function<void*()> nulls,
@@ -71,7 +71,7 @@ uint32_t StreamInputDecoder::next(
   return nonNullCount;
 }
 
-void StreamInputDecoder::skip(uint32_t count) {
+void ChunkedStreamDecoder::skip(uint32_t count) {
   while (count > 0) {
     ensureLoaded();
     auto toSkip = std::min(count, remaining_);
@@ -81,12 +81,12 @@ void StreamInputDecoder::skip(uint32_t count) {
   }
 }
 
-void StreamInputDecoder::reset() {
+void ChunkedStreamDecoder::reset() {
   stream_->reset();
   remaining_ = 0;
 }
 
-void StreamInputDecoder::ensureLoaded() {
+void ChunkedStreamDecoder::ensureLoaded() {
   if (UNLIKELY(remaining_ == 0)) {
     encoding_ = EncodingFactory::decode(pool_, stream_->nextChunk());
     remaining_ = encoding_->rowCount();
