@@ -33,4 +33,4 @@ Vector<char> uncompressZstrong(
     CompressionType compressionType,
     std::string_view data);
 
-}; // namespace facebook::alpha
+} // namespace facebook::alpha
