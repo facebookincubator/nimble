@@ -21,6 +21,7 @@ include(ResolveDependency)
 
 set(VELOX_BUILD_MINIMAL ON CACHE BOOL "Velox minimal build.")
 set(VELOX_BUILD_DWIO ON CACHE BOOL "Velox dwio build.")
+set(VELOX_BUILD_VECTOR_TEST_UTILS ON CACHE BOOL "Velox vector test utilities (VectorMaker).")
 set(VELOX_DEPENDENCY_SOURCE
   AUTO
   CACHE
@@ -59,6 +60,20 @@ check_cxx_compiler_flag("-Wnullability-completeness"
 if(COMPILER_HAS_W_NULLABILITY_COMPLETENESS)
   string(APPEND CMAKE_CXX_FLAGS " -Wno-nullability-completeness")
 endif()
+
+# Alpha, Velox and folly need to be compiled with the same compiler flags.
+execute_process(
+  COMMAND
+    bash -c
+    "( source ${CMAKE_CURRENT_SOURCE_DIR}/velox/scripts/setup-helper-functions.sh && echo -n $(get_cxx_flags $ENV{CPU_TARGET}))"
+  OUTPUT_VARIABLE SCRIPT_CXX_FLAGS
+  RESULT_VARIABLE COMMAND_STATUS)
+
+if(COMMAND_STATUS EQUAL "1")
+  message(FATAL_ERROR "Unable to determine compiler flags!")
+endif()
+message("Setting CMAKE_CXX_FLAGS=${SCRIPT_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${SCRIPT_CXX_FLAGS}")
 
 message("FINAL CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}")
 
