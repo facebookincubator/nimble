@@ -73,7 +73,7 @@ std::pair<EncodingLayout, uint32_t> EncodingLayout::create(
   const auto encodingType = encoding::read<uint8_t, EncodingType>(pos);
   const auto compressionType = encoding::read<uint8_t, CompressionType>(pos);
   const auto childrenCount = encoding::read<uint8_t>(pos);
-  const auto extraDataSize = encoding::read<uint16_t>(pos);
+  [[maybe_unused]] const auto extraDataSize = encoding::read<uint16_t>(pos);
 
   ALPHA_DASSERT(extraDataSize == 0, "Extra data currently not supported.");
 
