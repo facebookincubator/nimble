@@ -52,4 +52,4 @@ Vector<char> uncompressZstd(
   return buffer;
 }
 
-}; // namespace facebook::alpha
+} // namespace facebook::alpha
