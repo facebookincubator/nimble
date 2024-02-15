@@ -1701,7 +1701,7 @@ class StructFlatMapFieldReader : public FlatMapFieldReaderBase<T, hasNull> {
     ALPHA_ASSERT(scatterBitmap == nullptr, "unexpected scatterBitmap");
     auto vector = VectorInitializer<velox::RowVector>::initialize(
         &this->pool_, output, this->type_, rowCount);
-    vector->resize(rowCount);
+    vector->unsafeResize(rowCount);
     uint32_t nonNullCount = this->loadNulls(rowCount, vector);
 
     if (executor_) {
