@@ -35,7 +35,7 @@ target_link_libraries(
   alpha_encodings
   velox_vector
   velox_vector_fuzzer
-  velox_dwio_common
+  velox_vector_test_lib
   gmock
   gtest
   gtest_main

@@ -1,5 +1,4 @@
-# TODO - fix linkage problems with tests.
-#add_subdirectory(tests)
+add_subdirectory(tests)
 
 add_library(alpha_velox_common SchemaUtils.cpp)
 target_link_libraries(alpha_velox_common alpha_common velox_type)
@@ -23,7 +22,7 @@ target_link_libraries(alpha_velox_config alpha_encodings alpha_common Folly::fol
 
 add_library(alpha_velox_field_reader FieldReader.cpp)
 target_link_libraries(alpha_velox_field_reader alpha_velox_schema_reader
-                      alpha_common Folly::folly)  #velox_dwio_common Folly::folly)
+                      alpha_common Folly::folly)
 
 add_library(alpha_velox_flatmap_layout_planner FlatMapLayoutPlanner.cpp)
 target_link_libraries(alpha_velox_flatmap_layout_planner
@@ -68,8 +67,14 @@ target_link_libraries(
   alpha_velox_schema_fb)
 
 add_library(alpha_velox_deserializer Deserializer.cpp)
-target_link_libraries(alpha_velox_deserializer alpha_common
-                      alpha_velox_field_reader velox_vector velox_memory)
+target_link_libraries(
+  alpha_velox_deserializer
+  alpha_common
+  alpha_velox_common
+  alpha_velox_field_reader
+  velox_vector
+  velox_memory
+  velox_dwio_common)
 
 add_library(alpha_velox_serializer Serializer.cpp)
 target_link_libraries(alpha_velox_serializer alpha_common
