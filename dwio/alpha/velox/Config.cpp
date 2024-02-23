@@ -1,7 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include <folly/dynamic.h>
-#include <folly/json.h>
+#include <folly/json/dynamic.h>
+#include <folly/json/json.h>
 
 #include "dwio/alpha/encodings/EncodingSelectionPolicy.h"
 #include "dwio/alpha/velox/Config.h"

@@ -1,9 +1,9 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include <folly/DynamicConverter.h>
 #include <folly/Singleton.h>
 #include <folly/init/Init.h>
-#include <folly/json.h>
+#include <folly/json/DynamicConverter.h>
+#include <folly/json/json.h>
 #include "dwio/alpha/tools/AlphaPerfTuningUtils.h"
 #include "velox/common/base/StatsReporter.h"
 

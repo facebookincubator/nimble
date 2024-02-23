@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include <folly/dynamic.h>
+#include <folly/json/dynamic.h>
 
 #include "dwio/alpha/velox/VeloxReader.h"
 #include "dwio/alpha/velox/VeloxWriterOptions.h"

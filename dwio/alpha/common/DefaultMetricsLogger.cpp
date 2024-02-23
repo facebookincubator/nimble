@@ -1,7 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "dwio/alpha/common/DefaultMetricsLogger.h"
-#include <folly/json.h>
+#include <folly/json/json.h>
 #include "dwio/alpha/common/Exceptions.h"
 
 namespace facebook::alpha {
