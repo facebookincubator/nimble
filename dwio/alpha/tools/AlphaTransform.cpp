@@ -31,6 +31,8 @@ DEFINE_string(
     mode,
     "transform",
     "Operation mode (transform|transform_interactive)");
+DEFINE_bool(copy_only, false, "Copy only without transformation");
+DEFINE_int32(copy_buffer_mb, 512, "Buffer size (in MB) for copying files");
 DEFINE_string(input_file, "", "Input file path");
 DEFINE_string(output_file, "", "Output file path");
 DEFINE_uint64(batch_size, 512, "Batch row count");
@@ -93,6 +95,16 @@ T deserialize(const std::string& source) {
   return result;
 }
 
+static facebook::warm_storage::FileSystem* getFileSystem() {
+  static std::unique_ptr<facebook::warm_storage::FileSystem> fs =
+      warm_storage::FileSystem::createFileSystem(
+          "dwios.alpha",
+          "dwio.alpha.data_copy",
+          warm_storage::getDefaultFileSystemTimeoutConfig(),
+          warm_storage::FSSessionOptions{.oncall = "dwios"});
+  return fs.get();
+}
+
 void run(
     std::shared_ptr<velox::memory::MemoryPool> memoryPool,
     std::string inputFile,
@@ -107,6 +119,54 @@ void run(
                               .withClientId("alpha_transform")
                               .build();
 
+  // Copy the file without transform. Typically used to create a (sampled)
+  // control set.
+  if (FLAGS_copy_only) {
+    auto fs = getFileSystem();
+    LOG(INFO) << "Copying file from " << inputFile << " to " << outputFile;
+
+    auto openReadResult = fs->open(inputFile, warm_storage::FileOpenMode::READ);
+    if (!openReadResult.ok()) {
+      LOG(FATAL) << "Unable to open source file for read.";
+    }
+
+    warm_storage::FileCreateOptions createOptions{.overwrite = true};
+    auto openWriteResult = fs->create(outputFile, std::move(createOptions));
+    if (!openWriteResult.ok()) {
+      LOG(FATAL) << "Unable to open target file for write.";
+    }
+
+    std::vector<char> buffer(FLAGS_copy_buffer_mb * 1024 * 1024);
+    off_t offset = 0;
+    while (true) {
+      auto readResult =
+          openReadResult.value()->pread(offset, buffer.size(), buffer.data());
+      if (!readResult.ok()) {
+        LOG(FATAL) << "Unable to read from source file.";
+      }
+      auto bytesRead = readResult.value();
+      LOG(INFO) << "Read " << bytesRead << " bytes.";
+      if (bytesRead == 0) {
+        break;
+      }
+
+      auto writeResult =
+          openWriteResult.value()->pwrite(offset, bytesRead, buffer.data());
+      if (!writeResult.ok()) {
+        LOG(FATAL) << "Unable to write to target file.";
+      }
+
+      offset += bytesRead;
+    }
+
+    auto closeResult = openWriteResult.value()->close();
+    if (!closeResult.ok()) {
+      LOG(FATAL) << "Unable to close target file.";
+    }
+    return;
+  }
+
+  // Transform the file with the given serde and other configs.
   std::map<std::string, std::string> serdeParameters;
   std::vector<std::string> flatMaps;
   std::vector<std::string> dictionaryArrays;
@@ -250,6 +310,7 @@ int main(int argc, char* argv[]) {
           dwio::common::request::AccessDescriptorBuilder()
               .withClientId("alpha_transform")
               .build()};
+      // TODO: add consistent sampling.
       while (std::cin >> inputFile >> outputStagingFile) {
         run(pool, inputFile, outputStagingFile);
         auto outputPath =
