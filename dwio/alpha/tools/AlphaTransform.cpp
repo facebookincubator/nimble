@@ -6,13 +6,14 @@
 #include <unordered_map>
 #include "common/files/FileUtil.h"
 #include "common/init/light.h"
-#include "common/strings/URL.h"
 #include "common/strings/Zstd.h"
+#include "dwio/alpha/velox/Config.h"
 #include "dwio/alpha/velox/EncodingLayoutTree.h"
 #include "dwio/alpha/velox/VeloxWriter.h"
 #include "dwio/api/AlphaWriterOptionBuilder.h"
 #include "dwio/catalog/fbhive/HiveCatalog.h"
 #include "dwio/common/filesystem/FileSystem.h"
+#include "dwio/tools/FormatConverter.h"
 #include "dwio/utils/BufferedWriteFile.h"
 #include "dwio/utils/InputStreamFactory.h"
 #include "dwio/utils/warm_storage/WarmStorageRetry.h"
@@ -32,7 +33,7 @@ DEFINE_string(
     "Operation mode (transform|transform_interactive)");
 DEFINE_string(input_file, "", "Input file path");
 DEFINE_string(output_file, "", "Output file path");
-DEFINE_uint32(batch_size, 512, "Batch row count");
+DEFINE_uint64(batch_size, 512, "Batch row count");
 DEFINE_uint64(
     row_count,
     std::numeric_limits<uint64_t>::max(),
@@ -47,7 +48,7 @@ DEFINE_string(
     "",
     "Serialized version of featureOrdering thrift struct. "
     "Serialized payload is serialized using Thrift Compact protocol, Zstd compressed and Base64 encoded.");
-DEFINE_uint32(
+DEFINE_uint64(
     raw_stripe_size,
     384 * 1024 * 1024,
     "Raw stripe size threshold to trigger encoding. Only used if 'serialized_serde' is not provided.");
@@ -65,7 +66,6 @@ DEFINE_string(
     "This spec will be used to retrieve feature reording metadata. "
     "Format: ns:table:partition (where partition is in the format: key1=value1/key2=value2). "
     "Only used if 'serialized_feature_order' is not provided.");
-DEFINE_bool(use_encoding_selection, true, "Enable encoding selection");
 DEFINE_uint64(
     buffered_write_size,
     72 * 1024 * 1024,
@@ -101,152 +101,77 @@ void run(
   LOG(INFO) << "Output: " << outputFile;
   LOG(INFO) << "Buffered write size: " << FLAGS_buffered_write_size << " bytes";
   LOG(INFO) << "Batch size: " << FLAGS_batch_size << " rows";
-  LOG(INFO) << "Using encoding selection: " << std::boolalpha
-            << FLAGS_use_encoding_selection;
   LOG(INFO) << "Encoding Layout File: " << FLAGS_encoding_layout_file;
 
-  auto readerPool = memoryPool->addLeafChild("reader");
-  velox::dwio::common::ReaderOptions options{readerPool.get()};
   auto accessDescriptor = dwio::common::request::AccessDescriptorBuilder{}
                               .withClientId("alpha_transform")
                               .build();
 
-  velox::dwrf::DwrfReader reader(
-      options,
-      std::make_unique<velox::dwio::common::BufferedInput>(
-          dwio::utils::InputStreamFactory::create(inputFile, accessDescriptor),
-          *readerPool));
-
-  velox::dwio::common::RowReaderOptions rowOptions;
-  rowOptions.setReturnFlatVector(true);
-  auto rowReader = reader.createRowReader(rowOptions);
-
-  auto writeFilePool = memoryPool->addLeafChild("write_file");
-  std::string fileBuffer;
-  std::unique_ptr<velox::WriteFile> file =
-      std::make_unique<dwio::api::BufferedWriteFile>(
-          writeFilePool,
-          FLAGS_buffered_write_size,
-          dwio::file_system::FileSystem::openForUnbufferedWrite(
-              outputFile, accessDescriptor));
-
-  dwio::api::AlphaWriterOptionBuilder optionBuilder;
+  std::map<std::string, std::string> serdeParameters;
+  std::vector<std::string> flatMaps;
+  std::vector<std::string> dictionaryArrays;
   if (!FLAGS_serialized_serde.empty()) {
     LOG(INFO) << "Using serde: " << FLAGS_serialized_serde;
-    auto serdeSource =
-        deserialize<Apache::Hadoop::Hive::SerDeInfo>(FLAGS_serialized_serde);
-    optionBuilder.withSerdeParams(
-        reader.rowType(), serdeSource.get_parameters());
+    serdeParameters =
+        deserialize<Apache::Hadoop::Hive::SerDeInfo>(FLAGS_serialized_serde)
+            .get_parameters();
   } else {
     LOG(INFO) << "Raw stripe size: " << FLAGS_raw_stripe_size << " bytes";
     LOG(INFO) << "Flatmap columns: " << FLAGS_flatmap_names;
     LOG(INFO) << "DictionaryArray columns: " << FLAGS_dictionary_array_names;
-    optionBuilder.withDefaultFlushPolicy(FLAGS_raw_stripe_size)
-        .withSerdeParams(reader.rowType(), {});
+    alpha::Config config;
+    config.set(alpha::Config::RAW_STRIPE_SIZE, FLAGS_raw_stripe_size);
+    serdeParameters = config.toSerdeParams();
+
     if (!FLAGS_flatmap_names.empty()) {
-      std::vector<std::string> flatMaps;
       folly::split(';', FLAGS_flatmap_names, flatMaps);
-      optionBuilder.withFlatMapColumns(flatMaps);
     }
+
     if (!FLAGS_dictionary_array_names.empty()) {
-      std::vector<std::string> dictionaryArrays;
       folly::split(';', FLAGS_dictionary_array_names, dictionaryArrays);
-      optionBuilder.withDictionaryArrayColumns(dictionaryArrays);
     }
   }
 
-  if (!FLAGS_encoding_layout_file.empty()) {
-    auto encodingFile = dwio::file_system::FileSystem::openForRead(
-        FLAGS_encoding_layout_file, accessDescriptor);
-    std::string buffer;
-    buffer.resize(encodingFile->size());
-    ALPHA_CHECK(
-        encodingFile->pread(0, buffer.size(), buffer.data()).size() ==
-            buffer.size(),
-        "Problem reading encoding layout file. Size mismatch.");
+  std::string schema;
+  std::string encodings;
 
-    std::string uncompressed;
-    strings::zstdDecompress(buffer, &uncompressed);
+  dwio::api::WriterOptionOverrides writerOptionOverrides{
+      .alphaOverrides = [&](auto& writerOptions) {
+        for (const auto& col : flatMaps) {
+          writerOptions.flatMapColumns.insert(col);
+        }
+        for (const auto& col : dictionaryArrays) {
+          writerOptions.dictionaryArrayColumns.insert(col);
+        }
 
-    optionBuilder.withEncodingLayoutTree(
-        alpha::EncodingLayoutTree::create(uncompressed));
-  }
+        if (!FLAGS_encoding_layout_file.empty()) {
+          auto encodingFile = dwio::file_system::FileSystem::openForRead(
+              FLAGS_encoding_layout_file, accessDescriptor);
+          std::string buffer;
+          buffer.resize(encodingFile->size());
+          ALPHA_CHECK(
+              encodingFile->pread(0, buffer.size(), buffer.data()).size() ==
+                  buffer.size(),
+              "Problem reading encoding layout file. Size mismatch.");
 
-  if (!FLAGS_serialized_feature_order.empty()) {
-    LOG(INFO) << "Using serialized feature reordering";
-    auto featureReorderingSource =
-        deserialize<Apache::Hadoop::Hive::FeatureOrdering>(
-            FLAGS_serialized_feature_order);
-    std::vector<std::tuple<size_t, std::vector<int64_t>>> featureReordering;
-    featureReordering.reserve(
-        featureReorderingSource.featureOrdering_ref()->size());
-    for (const auto& column :
-         featureReorderingSource.featureOrdering_ref().value()) {
-      std::vector<int64_t> features;
-      features.reserve(column.featureOrder_ref()->size());
-      std::copy(
-          column.featureOrder_ref()->cbegin(),
-          column.featureOrder_ref()->cend(),
-          std::back_inserter(features));
-      featureReordering.emplace_back(
-          column.columnId_ref()->columnIdentifier_ref().value(),
-          std::move(features));
-    }
+          std::string uncompressed;
+          strings::zstdDecompress(buffer, &uncompressed);
 
-    optionBuilder.withFeatureReordering(std::move(featureReordering));
-  } else {
-    if (!FLAGS_feature_reordering_spec.empty()) {
-      LOG(INFO) << "Loading feature reordering with spec: "
-                << FLAGS_feature_reordering_spec;
-      std::vector<std::string> parts;
-      parts.reserve(3);
-      folly::split(':', FLAGS_feature_reordering_spec, parts);
+          writerOptions.encodingLayoutTree.emplace(
+              alpha::EncodingLayoutTree::create(uncompressed));
+        }
 
-      ALPHA_CHECK(
-          parts.size() == 3,
-          "Invalid feature reordering spec. Expecting <ns>:<table>:<partition>.");
-
-      std::vector<std::string> segments;
-      folly::split('/', parts[2], segments);
-
-      std::unordered_map<std::string, std::string> partitionPairs(
-          segments.size());
-      for (auto i = 0; i < segments.size(); ++i) {
-        std::vector<std::string> pair;
-        folly::split('=', segments[i], pair);
-        ALPHA_CHECK(
-            pair.size() == 2,
-            "Partition segments must be in the format key=value.");
-        // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
-        partitionPairs.insert({pair[0], strings::URL::urlUnescape(pair[1])});
-      }
-
-      dwio::catalog::fbhive::HiveCatalog catalog{
-          dwio::common::request::AccessDescriptorBuilder{}.build()};
-      auto tableProperties =
-          catalog.getTableStorageProperties(parts[0], parts[1]);
-      std::vector<std::string> partitionValues;
-      partitionValues.reserve(tableProperties->getPartitionKeys().size());
-      for (const auto& key : tableProperties->getPartitionKeys()) {
-        auto it = partitionPairs.find(key);
-        ALPHA_CHECK(
-            it != partitionPairs.end(),
-            fmt::format(
-                "Feature reordering partition spec is missing a required key: {}",
-                key));
-        partitionValues.push_back(std::move(it->second));
-      }
-
-      auto partitionProperties = catalog.getPartitionStorageProperties(
-          parts[0], parts[1], partitionValues);
-
-      if (partitionProperties) {
-        auto source = partitionProperties->getFeatureOrdering();
-        if (!source.featureOrdering_ref()->empty()) {
+        if (!FLAGS_serialized_feature_order.empty()) {
+          LOG(INFO) << "Using serialized feature reordering";
+          auto featureReorderingSource =
+              deserialize<Apache::Hadoop::Hive::FeatureOrdering>(
+                  FLAGS_serialized_feature_order);
           std::vector<std::tuple<size_t, std::vector<int64_t>>>
               featureReordering;
-          featureReordering.reserve(source.featureOrdering_ref()->size());
-          for (const auto& column : source.featureOrdering_ref().value()) {
+          featureReordering.reserve(
+              featureReorderingSource.featureOrdering_ref()->size());
+          for (const auto& column :
+               featureReorderingSource.featureOrdering_ref().value()) {
             std::vector<int64_t> features;
             features.reserve(column.featureOrder_ref()->size());
             std::copy(
@@ -258,38 +183,50 @@ void run(
                 std::move(features));
           }
 
-          optionBuilder.withFeatureReordering(std::move(featureReordering));
+          writerOptions.featureReordering.emplace(std::move(featureReordering));
         }
-      }
-    }
+      }};
+
+  bool fetchFeatureOrder = FLAGS_serialized_feature_order.empty() &&
+      !FLAGS_feature_reordering_spec.empty();
+
+  // Load partition metadata so that format converter can fetch the
+  // feature order correctly.
+  std::shared_ptr<const dwio::catalog::PartitionMetadata> partitionMetadata;
+  if (fetchFeatureOrder) {
+    LOG(INFO) << "Loading feature reordering with spec: "
+              << FLAGS_feature_reordering_spec;
+    std::vector<std::string> parts;
+    parts.reserve(3);
+    folly::split(':', FLAGS_feature_reordering_spec, parts);
+
+    ALPHA_CHECK(
+        parts.size() == 3,
+        "Invalid feature reordering spec. Expecting <ns>:<table>:<partition>.");
+
+    dwio::catalog::fbhive::HiveCatalog catalog{
+        dwio::common::request::AccessDescriptorBuilder{}.build()};
+    partitionMetadata = catalog
+                            .getPartitionsByNames(
+                                /*ns=*/parts[0],
+                                /*tableName=*/parts[1],
+                                /*partitionNames=*/{parts[2]},
+                                /*prunePartitionMetadata=*/false)
+                            .front();
   }
 
-  std::string schema;
-  std::string encodings;
-  auto writerOptions = optionBuilder.build();
-  writerOptions.useEncodingSelectionPolicy = FLAGS_use_encoding_selection;
+  dwio::tools::FormatConverterOptions converterOpts{
+      .inputFormat = velox::dwio::common::FileFormat::DWRF,
+      .outputFormat = velox::dwio::common::FileFormat::ALPHA,
+      .serdeOverride = serdeParameters,
+      .batchSize = FLAGS_batch_size,
+      .rowCount = FLAGS_row_count,
+      .partitionMetadata = std::move(partitionMetadata),
+      .fetchFeatureOrder = fetchFeatureOrder,
+      .writerOptionOverrides = std::move(writerOptionOverrides)};
 
-  alpha::VeloxWriter writer{
-      *memoryPool, reader.rowType(), std::move(file), std::move(writerOptions)};
-
-  auto remainingRows = FLAGS_row_count;
-  uint32_t flushCount = 0;
-  velox::VectorPtr vector;
-  uint64_t batchSize = std::min((uint64_t)FLAGS_batch_size, remainingRows);
-  while (rowReader->next(batchSize, vector)) {
-    if (writer.write(vector)) {
-      ++flushCount;
-    }
-
-    remainingRows -= vector->size();
-    if (remainingRows == 0) {
-      break;
-    }
-
-    batchSize = std::min((uint64_t)FLAGS_batch_size, remainingRows);
-  }
-
-  writer.close();
+  dwio::tools::FormatConverter{std::move(memoryPool), std::move(converterOpts)}
+      .run(inputFile, outputFile);
 }
 
 int main(int argc, char* argv[]) {
