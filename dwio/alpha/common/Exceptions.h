@@ -91,7 +91,7 @@ class AlphaException : public std::exception {
     captureStackTraceFrames();
   }
 
-  const char* what() const throw() {
+  const char* what() const noexcept {
     try {
       folly::call_once(once_, [&] { finalizeMessage(); });
       return finalizedMessage_.c_str();
