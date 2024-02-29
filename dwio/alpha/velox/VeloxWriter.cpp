@@ -236,7 +236,7 @@ std::string_view encodeStream(
               context, buffer, type, nonNulls, cols);
         default:
           ALPHA_UNREACHABLE(
-              fmt::format("Unsupported scalar kind {}", scalarKind));
+              fmt::format("Unsupported scalar kind {}", toString(scalarKind)));
       }
       break;
     }
@@ -248,7 +248,8 @@ std::string_view encodeStream(
     case Kind::Map:
       return encodeStreamTyped<int32_t>(context, buffer, type, nonNulls, cols);
     default:
-      ALPHA_UNREACHABLE(fmt::format("Unsupported type kind {}", type->kind()));
+      ALPHA_UNREACHABLE(
+          fmt::format("Unsupported type kind {}", toString(type->kind())));
   }
 }
 

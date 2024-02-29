@@ -40,8 +40,8 @@ serialization::Kind nodeToSerializationKind(const SchemaNode* node) {
         case ScalarKind::Binary:
           return serialization::Kind_Binary;
         default:
-          ALPHA_UNREACHABLE(
-              fmt::format("Unknown scalar kind {}.", node->scalarKind()));
+          ALPHA_UNREACHABLE(fmt::format(
+              "Unknown scalar kind {}.", toString(node->scalarKind())));
       }
     }
     case Kind::Array:
@@ -81,12 +81,13 @@ serialization::Kind nodeToSerializationKind(const SchemaNode* node) {
         case ScalarKind::Binary:
           return serialization::Kind_FlatMapBinary;
         default:
-          ALPHA_UNREACHABLE(
-              fmt::format("Unknown flat map key kind {}.", node->scalarKind()));
+          ALPHA_UNREACHABLE(fmt::format(
+              "Unknown flat map key kind {}.", toString(node->scalarKind())));
       }
     }
     default:
-      ALPHA_UNREACHABLE(fmt::format("Unknown node kind {}.", node->kind()));
+      ALPHA_UNREACHABLE(
+          fmt::format("Unknown node kind {}.", toString(node->kind())));
   }
 }
 
@@ -154,8 +155,9 @@ std::pair<Kind, ScalarKind> serializationNodeToKind(
     case alpha::serialization::Kind_FlatMapBinary:
       return {Kind::FlatMap, ScalarKind::Binary};
     default:
-      ALPHA_NOT_SUPPORTED(
-          fmt::format("Unknown schema node kind {}.", node->kind()));
+      ALPHA_NOT_SUPPORTED(fmt::format(
+          "Unknown schema node kind {}.",
+          alpha::serialization::EnumNameKind(node->kind())));
   }
 }
 

@@ -68,7 +68,7 @@ class DeserializerImpl : public Decoder {
       // TODO: This is less ideal. Need a way to avoid sending back the values.
       ALPHA_CHECK(
           type_.isRow() || type_.isFlatMap(),
-          fmt::format("missing input data for {}", type_.kind()));
+          fmt::format("missing input data for {}", toString(type_.kind())));
       auto bools = static_cast<bool*>(output);
       std::fill(bools, bools + count, true);
       return count;
@@ -98,7 +98,7 @@ class DeserializerImpl : public Decoder {
         }
         default:
           ALPHA_NOT_SUPPORTED(
-              fmt::format("Unsupported compression {}", compression));
+              fmt::format("Unsupported compression {}", toString(compression)));
       }
       return count;
     }
@@ -109,7 +109,7 @@ class DeserializerImpl : public Decoder {
     auto scalarKind = type_.asScalar().scalarKind();
     ALPHA_CHECK(
         scalarKind == ScalarKind::String || scalarKind == ScalarKind::Binary,
-        fmt::format("Unexpected scalar kind {}", scalarKind));
+        fmt::format("Unexpected scalar kind {}", toString(scalarKind)));
     auto sv = static_cast<std::string_view*>(output);
     auto pos = data_.data();
     for (auto i = 0; i < count; ++i) {

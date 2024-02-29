@@ -36,7 +36,8 @@ std::string toString(EncodingType encodingType) {
     case EncodingType::Sentinel:
       return "Sentinel";
   }
-  return fmt::format("Unknown encoding type: {}", encodingType);
+  return fmt::format(
+      "Unknown encoding type: {}", static_cast<int32_t>(encodingType));
 }
 
 std::ostream& operator<<(std::ostream& out, DataType dataType) {
@@ -70,7 +71,8 @@ std::string toString(DataType dataType) {
     case DataType::String:
       return "String";
     default:
-      return fmt::format("Unknown data type: {}", dataType);
+      return fmt::format(
+          "Unknown data type: {}", static_cast<int32_t>(dataType));
   }
 }
 
@@ -83,7 +85,9 @@ std::string toString(CompressionType compressionType) {
     case CompressionType::Zstrong:
       return "Zstrong";
     default:
-      return fmt::format("Unknown compression type: {}", compressionType);
+      return fmt::format(
+          "Unknown compression type: {}",
+          static_cast<int32_t>(compressionType));
   }
 }
 
@@ -108,7 +112,8 @@ std::string toString(ChecksumType type) {
     case ChecksumType::XXH3_64:
       return "XXH3_64";
     default:
-      return fmt::format("Unknown checksum type: {}", type);
+      return fmt::format(
+          "Unknown checksum type: {}", static_cast<int32_t>(type));
   }
 }
 

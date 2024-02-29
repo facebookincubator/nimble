@@ -366,7 +366,8 @@ void SchemaBuilder::addNode(
     }
 
     default:
-      ALPHA_UNREACHABLE(fmt::format("Unknown type kind: {}.", type.kind()));
+      ALPHA_UNREACHABLE(
+          fmt::format("Unknown type kind: {}.", toString(type.kind())));
   }
 }
 
@@ -391,7 +392,8 @@ std::shared_ptr<TypeBuilder> SchemaBuilder::createBuilderByTypeThreadSafe(
       case Kind::Map:
         return createMapTypeBuilder();
       default:
-        ALPHA_UNREACHABLE(fmt::format("Unsupported type kind {}", kind));
+        ALPHA_UNREACHABLE(
+            fmt::format("Unsupported type kind {}", toString(kind)));
     }
   }
 }
@@ -407,7 +409,8 @@ std::shared_ptr<TypeBuilder> SchemaBuilder::createBuilderByTypeThreadSafe(
       case Kind::Scalar:
         return createScalarTypeBuilder(scalarKind);
       default:
-        ALPHA_UNREACHABLE(fmt::format("Unsupported type kind {}", kind));
+        ALPHA_UNREACHABLE(
+            fmt::format("Unsupported type kind {}", toString(kind)));
     }
   }
 }
@@ -421,7 +424,8 @@ std::shared_ptr<TypeBuilder> SchemaBuilder::createBuilderByTypeThreadSafe(
       case Kind::Row:
         return createRowTypeBuilder(param);
       default:
-        ALPHA_UNREACHABLE(fmt::format("Unsupported type kind {}", kind));
+        ALPHA_UNREACHABLE(
+            fmt::format("Unsupported type kind {}", toString(kind)));
     }
   }
 }

@@ -335,7 +335,7 @@ NamedType getType(
           .name = node->name()};
     }
     default: {
-      ALPHA_UNREACHABLE(fmt::format("Unknown node kind: ", kind));
+      ALPHA_UNREACHABLE(fmt::format("Unknown node kind: ", toString(kind)));
     }
   }
 }

@@ -33,10 +33,11 @@ velox::TypePtr convertToVeloxScalarType(ScalarKind scalarKind) {
     case ScalarKind::UInt32:
     case ScalarKind::UInt64:
     case ScalarKind::Undefined:
-      ALPHA_NOT_SUPPORTED(
-          fmt::format("Scalar kind {} is not supported by Velox.", scalarKind));
+      ALPHA_NOT_SUPPORTED(fmt::format(
+          "Scalar kind {} is not supported by Velox.", toString(scalarKind)));
   }
-  ALPHA_UNREACHABLE(fmt::format("Unknown scalarKind: {}.", scalarKind));
+  ALPHA_UNREACHABLE(
+      fmt::format("Unknown scalarKind: {}.", toString(scalarKind)));
 }
 
 std::shared_ptr<TypeBuilder> convertToAlphaType(
@@ -138,7 +139,8 @@ velox::TypePtr convertToVeloxType(const Type& type) {
           convertToVeloxType(*flatMapType.childAt(0)));
     }
     default:
-      ALPHA_UNREACHABLE(fmt::format("Unknown type kind {}.", type.kind()));
+      ALPHA_UNREACHABLE(
+          fmt::format("Unknown type kind {}.", toString(type.kind())));
   }
 }
 

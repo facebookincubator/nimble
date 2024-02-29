@@ -118,8 +118,8 @@ std::string_view Serializer::serialize(
             break;
           }
           default:
-            ALPHA_NOT_SUPPORTED(
-                fmt::format("Unsupported compression {}", compression));
+            ALPHA_NOT_SUPPORTED(fmt::format(
+                "Unsupported compression {}", toString(compression)));
         }
       }
 

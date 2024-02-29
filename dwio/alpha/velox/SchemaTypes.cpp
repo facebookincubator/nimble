@@ -29,7 +29,7 @@ std::string toString(ScalarKind kind) {
     CASE(Undefined);
 #undef CASE
   }
-  ALPHA_UNREACHABLE(fmt::format("Unknown: {}.", kind));
+  ALPHA_UNREACHABLE(fmt::format("Unknown: {}.", static_cast<int32_t>(kind)));
 }
 
 std::string toString(Kind kind) {
@@ -46,7 +46,7 @@ std::string toString(Kind kind) {
     CASE(FlatMap);
 #undef CASE
   }
-  ALPHA_UNREACHABLE(fmt::format("Unknown: {}.", kind));
+  ALPHA_UNREACHABLE(fmt::format("Unknown: {}.", static_cast<int32_t>(kind)));
 }
 
 } // namespace facebook::alpha
