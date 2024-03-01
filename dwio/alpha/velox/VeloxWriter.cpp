@@ -51,7 +51,7 @@ class WriterContext : public FieldWriterContext {
   std::vector<uint64_t> rowsPerStripe;
 
   WriterContext(MemoryPool& memoryPool, VeloxWriterOptions options_)
-      : FieldWriterContext{memoryPool},
+      : FieldWriterContext{memoryPool, options_.reclaimerFactory()},
         options{std::move(options_)},
         logger{this->options.metricsLogger} {
     flushPolicy = this->options.flushPolicyFactory();
@@ -426,8 +426,12 @@ VeloxWriter::VeloxWriter(
     : schema_{velox::dwio::common::TypeWithId::create(schema)},
       file_{std::move(file)},
       writerMemoryPool_{memoryPool.addAggregateChild(
-          fmt::format("velox_writer_{}", folly::Random::rand64()))},
-      encodingMemoryPool_{writerMemoryPool_->addLeafChild("encoding")},
+          fmt::format("alpha_writer_{}", folly::Random::rand64()),
+          options.reclaimerFactory())},
+      encodingMemoryPool_{writerMemoryPool_->addLeafChild(
+          "encoding",
+          true,
+          options.reclaimerFactory())},
       context_{std::make_unique<detail::WriterContext>(
           *writerMemoryPool_,
           std::move(options))},

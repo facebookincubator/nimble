@@ -2,6 +2,7 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <velox/exec/MemoryReclaimer.h>
 #include <zstd.h>
 
 #include "dwio/alpha/common/EncodingPrimitives.h"
@@ -13,19 +14,31 @@
 #include "dwio/alpha/velox/VeloxReader.h"
 #include "dwio/alpha/velox/VeloxWriter.h"
 #include "thrift/lib/cpp2/protocol/DebugProtocol.h"
+#include "velox/exec/SharedArbitrator.h"
 #include "velox/vector/VectorStream.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
 using namespace ::facebook;
 
-namespace {
-auto rootPool = velox::memory::deprecatedDefaultMemoryManager().addRootPool(
-    "velox_writer_tests");
-auto leafPool = rootPool -> addLeafChild("leaf");
-} // namespace
+class VeloxWriterTests : public testing::Test {
+ protected:
+  static void SetUpTestCase() {
+    velox::exec::SharedArbitrator::registerFactory();
+    velox::memory::MemoryManager::testingSetInstance(
+        {.arbitratorKind = "SHARED"});
+  }
 
-TEST(VeloxWriterTests, EmptyFile) {
+  void SetUp() override {
+    rootPool_ = velox::memory::memoryManager()->addRootPool("default_root");
+    leafPool_ = rootPool_->addLeafChild("default_leaf");
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> rootPool_;
+  std::shared_ptr<velox::memory::MemoryPool> leafPool_;
+};
+
+TEST_F(VeloxWriterTests, EmptyFile) {
   const uint32_t batchSize = 10;
   auto type = velox::ROW({{"simple", velox::INTEGER()}});
   alpha::VeloxWriterOptions writerOptions;
@@ -34,18 +47,18 @@ TEST(VeloxWriterTests, EmptyFile) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   alpha::VeloxWriter writer(
-      *rootPool, type, std::move(writeFile), std::move(writerOptions));
+      *rootPool_, type, std::move(writeFile), std::move(writerOptions));
   writer.close();
 
   velox::InMemoryReadFile readFile(file);
   auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
-  alpha::VeloxReader reader(*leafPool, &readFile, std::move(selector));
+  alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
 
   velox::VectorPtr result;
   ASSERT_FALSE(reader.next(batchSize, result));
 }
 
-TEST(VeloxWriterTests, EmptyFileNoSchema) {
+TEST_F(VeloxWriterTests, EmptyFileNoSchema) {
   const uint32_t batchSize = 10;
   auto type = velox::ROW({{"simple", velox::INTEGER()}});
   alpha::VeloxWriterOptions writerOptions;
@@ -54,19 +67,19 @@ TEST(VeloxWriterTests, EmptyFileNoSchema) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   alpha::VeloxWriter writer(
-      *rootPool, type, std::move(writeFile), std::move(writerOptions));
+      *rootPool_, type, std::move(writeFile), std::move(writerOptions));
   writer.close();
 
   velox::InMemoryReadFile readFile(file);
-  alpha::VeloxReader reader(*leafPool, &readFile);
+  alpha::VeloxReader reader(*leafPool_, &readFile);
 
   velox::VectorPtr result;
   ASSERT_FALSE(reader.next(batchSize, result));
 }
 
-TEST(VeloxWriterTests, RootHasNulls) {
+TEST_F(VeloxWriterTests, RootHasNulls) {
   auto batchSize = 5;
-  velox::test::VectorMaker vectorMaker{leafPool.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(
       {"col0"}, {vectorMaker.flatVector<int32_t>(batchSize, [](auto row) {
         return row;
@@ -80,12 +93,12 @@ TEST(VeloxWriterTests, RootHasNulls) {
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
   alpha::VeloxWriter writer(
-      *rootPool, vector->type(), std::move(writeFile), {});
+      *rootPool_, vector->type(), std::move(writeFile), {});
   writer.write(vector);
   writer.close();
 
   velox::InMemoryReadFile readFile(file);
-  alpha::VeloxReader reader(*leafPool, &readFile);
+  alpha::VeloxReader reader(*leafPool_, &readFile);
 
   velox::VectorPtr result;
   ASSERT_TRUE(reader.next(batchSize, result));
@@ -95,10 +108,10 @@ TEST(VeloxWriterTests, RootHasNulls) {
   }
 }
 
-TEST(VeloxWriterTests, FeatureReorderingNonFlatmapColumn) {
+TEST_F(VeloxWriterTests, FeatureReorderingNonFlatmapColumn) {
   const uint32_t batchSize = 10;
 
-  velox::test::VectorMaker vectorMaker{leafPool.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(
       {"map", "flatmap"},
       {vectorMaker.mapVector<int32_t, int32_t>(
@@ -118,7 +131,7 @@ TEST(VeloxWriterTests, FeatureReorderingNonFlatmapColumn) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   alpha::VeloxWriter writer(
-      *rootPool,
+      *rootPool_,
       vector->type(),
       std::move(writeFile),
       {.flatMapColumns = {"flatmap"},
@@ -164,7 +177,7 @@ struct RawStripeSizeFlushPolicyTestCase {
 };
 
 class RawStripeSizeFlushPolicyTest
-    : public ::testing::Test,
+    : public VeloxWriterTests,
       public ::testing::WithParamInterface<RawStripeSizeFlushPolicyTestCase> {};
 
 TEST_P(RawStripeSizeFlushPolicyTest, RawStripeSizeFlushPolicy) {
@@ -179,9 +192,9 @@ TEST_P(RawStripeSizeFlushPolicyTest, RawStripeSizeFlushPolicy) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   alpha::VeloxWriter writer(
-      *rootPool, type, std::move(writeFile), std::move(writerOptions));
+      *rootPool_, type, std::move(writeFile), std::move(writerOptions));
   auto batches =
-      generateBatches(type, GetParam().batchCount, 4000, 20221110, *leafPool);
+      generateBatches(type, GetParam().batchCount, 4000, 20221110, *leafPool_);
 
   for (const auto& batch : batches) {
     writer.write(batch);
@@ -190,12 +203,60 @@ TEST_P(RawStripeSizeFlushPolicyTest, RawStripeSizeFlushPolicy) {
 
   velox::InMemoryReadFile readFile(file);
   auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
-  alpha::VeloxReader reader(*leafPool, &readFile, std::move(selector));
+  alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
 
   EXPECT_EQ(GetParam().stripeCount, reader.getTabletView().stripeCount());
 }
 
-TEST(VeloxWriterTests, EncodingLayout) {
+namespace {
+class MockReclaimer : public velox::memory::MemoryReclaimer {
+ public:
+  explicit MockReclaimer() {}
+  void setEnterArbitrationFunc(std::function<void()>&& func) {
+    enterArbitrationFunc_ = func;
+  }
+  void enterArbitration() override {
+    if (enterArbitrationFunc_) {
+      enterArbitrationFunc_();
+    }
+  }
+
+ private:
+  std::function<void()> enterArbitrationFunc_;
+};
+} // namespace
+
+TEST_F(VeloxWriterTests, memoryReclaimPath) {
+  auto rootPool = velox::memory::memoryManager()->addRootPool(
+      "root", 4L << 20, velox::exec::MemoryReclaimer::create());
+  auto writerPool = rootPool->addAggregateChild(
+      "writer", velox::exec::MemoryReclaimer::create());
+
+  auto type = velox::ROW(
+      {{"simple_int", velox::INTEGER()}, {"simple_double", velox::DOUBLE()}});
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  std::atomic_bool reclaimEntered = false;
+  alpha::VeloxWriterOptions writerOptions{.reclaimerFactory = [&]() {
+    auto reclaimer = std::make_unique<MockReclaimer>();
+    reclaimer->setEnterArbitrationFunc([&]() { reclaimEntered = true; });
+    return reclaimer;
+  }};
+  alpha::VeloxWriter writer(
+      *writerPool, type, std::move(writeFile), std::move(writerOptions));
+  auto batches = generateBatches(type, 100, 4000, 20221110, *leafPool_);
+
+  EXPECT_THROW(
+      {
+        for (const auto& batch : batches) {
+          writer.write(batch);
+        }
+      },
+      velox::VeloxException);
+  ASSERT_TRUE(reclaimEntered.load());
+}
+
+TEST_F(VeloxWriterTests, EncodingLayout) {
   alpha::EncodingLayoutTree expected{
       alpha::Kind::Row,
       std::nullopt,
@@ -258,7 +319,7 @@ TEST(VeloxWriterTests, EncodingLayout) {
            }},
       }};
 
-  velox::test::VectorMaker vectorMaker{leafPool.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(
       {"map", "flatmap"},
       {vectorMaker.mapVector<int32_t, int32_t>(
@@ -290,7 +351,7 @@ TEST(VeloxWriterTests, EncodingLayout) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   alpha::VeloxWriter writer(
-      *rootPool,
+      *rootPool_,
       vector->type(),
       std::move(writeFile),
       {
@@ -305,7 +366,7 @@ TEST(VeloxWriterTests, EncodingLayout) {
   writer.close();
 
   alpha::testing::InMemoryTrackableReadFile readFile(file);
-  alpha::Tablet tablet{*leafPool, &readFile};
+  alpha::Tablet tablet{*leafPool_, &readFile};
   auto section = tablet.loadOptionalSection(std::string(alpha::kSchemaSection));
   ALPHA_CHECK(section.has_value(), "Schema not found.");
   auto schema =
@@ -401,7 +462,7 @@ TEST(VeloxWriterTests, EncodingLayout) {
   }
 }
 
-TEST(VeloxWriterTests, EncodingLayoutSchemaMismatch) {
+TEST_F(VeloxWriterTests, EncodingLayoutSchemaMismatch) {
   alpha::EncodingLayoutTree expected{
       alpha::Kind::Row,
       std::nullopt,
@@ -422,7 +483,7 @@ TEST(VeloxWriterTests, EncodingLayoutSchemaMismatch) {
           },
       }};
 
-  velox::test::VectorMaker vectorMaker{leafPool.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(
       {"map"},
       {
@@ -440,7 +501,7 @@ TEST(VeloxWriterTests, EncodingLayoutSchemaMismatch) {
 
   try {
     alpha::VeloxWriter writer(
-        *rootPool,
+        *rootPool_,
         vector->type(),
         std::move(writeFile),
         {
@@ -456,7 +517,7 @@ TEST(VeloxWriterTests, EncodingLayoutSchemaMismatch) {
   }
 }
 
-TEST(VeloxWriterTests, EncodingLayoutSchemaEvolutionMapToFlatmap) {
+TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionMapToFlatmap) {
   alpha::EncodingLayoutTree expected{
       alpha::Kind::Row,
       std::nullopt,
@@ -491,7 +552,7 @@ TEST(VeloxWriterTests, EncodingLayoutSchemaEvolutionMapToFlatmap) {
            }},
       }};
 
-  velox::test::VectorMaker vectorMaker{leafPool.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(
       {"map"},
       {
@@ -508,7 +569,7 @@ TEST(VeloxWriterTests, EncodingLayoutSchemaEvolutionMapToFlatmap) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   alpha::VeloxWriter writer(
-      *rootPool,
+      *rootPool_,
       vector->type(),
       std::move(writeFile),
       {
@@ -525,7 +586,7 @@ TEST(VeloxWriterTests, EncodingLayoutSchemaEvolutionMapToFlatmap) {
   // that no captured encoding was used.
 }
 
-TEST(VeloxWriterTests, EncodingLayoutSchemaEvolutionFlamapToMap) {
+TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionFlamapToMap) {
   alpha::EncodingLayoutTree expected{
       alpha::Kind::Row,
       std::nullopt,
@@ -561,7 +622,7 @@ TEST(VeloxWriterTests, EncodingLayoutSchemaEvolutionFlamapToMap) {
            }},
       }};
 
-  velox::test::VectorMaker vectorMaker{leafPool.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(
       {"flatmap"},
       {
@@ -578,7 +639,7 @@ TEST(VeloxWriterTests, EncodingLayoutSchemaEvolutionFlamapToMap) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   alpha::VeloxWriter writer(
-      *rootPool,
+      *rootPool_,
       vector->type(),
       std::move(writeFile),
       {
@@ -594,7 +655,7 @@ TEST(VeloxWriterTests, EncodingLayoutSchemaEvolutionFlamapToMap) {
   // that no captured encoding was used.
 }
 
-TEST(VeloxWriterTests, EncodingLayoutSchemaEvolutionExpandingRow) {
+TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionExpandingRow) {
   alpha::EncodingLayoutTree expected{
       alpha::Kind::Row,
       std::nullopt,
@@ -616,7 +677,7 @@ TEST(VeloxWriterTests, EncodingLayoutSchemaEvolutionExpandingRow) {
            }},
       }};
 
-  velox::test::VectorMaker vectorMaker{leafPool.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   // We are adding new top level column and also nested column
   auto vector = vectorMaker.rowVector(
@@ -636,7 +697,7 @@ TEST(VeloxWriterTests, EncodingLayoutSchemaEvolutionExpandingRow) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   alpha::VeloxWriter writer(
-      *rootPool,
+      *rootPool_,
       vector->type(),
       std::move(writeFile),
       {

@@ -12,13 +12,22 @@
 
 using namespace ::facebook;
 
-namespace {
-auto rootPool =
-    velox::memory::deprecatedDefaultMemoryManager().addRootPool("type_tests");
-auto leafPool = rootPool -> addLeafChild("leaf");
-} // namespace
+class TypeTests : public testing::Test {
+ protected:
+  static void SetUpTestCase() {
+    velox::memory::MemoryManager::testingSetInstance({});
+  }
 
-TEST(TypeTests, MatchingSchema) {
+  void SetUp() override {
+    rootPool_ = velox::memory::memoryManager()->addRootPool("default_root");
+    leafPool_ = rootPool_->addLeafChild("default_leaf");
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> rootPool_;
+  std::shared_ptr<velox::memory::MemoryPool> leafPool_;
+};
+
+TEST_F(TypeTests, MatchingSchema) {
   const uint32_t batchSize = 10;
 
   auto type = velox::ROW({
@@ -41,14 +50,14 @@ TEST(TypeTests, MatchingSchema) {
       {"arraywithoffsets", velox::ARRAY(velox::BIGINT())},
   });
 
-  velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, leafPool.get());
+  velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, leafPool_.get());
   auto vector = fuzzer.fuzzInputFlatRow(type);
-  auto file = alpha::test::createAlphaFile(*rootPool, vector);
+  auto file = alpha::test::createAlphaFile(*rootPool_, vector);
 
   velox::InMemoryReadFile readFile(file);
   auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
       std::dynamic_pointer_cast<const velox::RowType>(vector->type()));
-  alpha::VeloxReader reader(*leafPool, &readFile, std::move(selector));
+  alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
 
   velox::VectorPtr result;
   ASSERT_TRUE(reader.next(batchSize, result));
@@ -63,7 +72,7 @@ TEST(TypeTests, MatchingSchema) {
   }
 }
 
-TEST(TypeTests, ExtraColumnWithRename) {
+TEST_F(TypeTests, ExtraColumnWithRename) {
   const uint32_t batchSize = 10;
   auto fileType = velox::ROW({
       {"simple", velox::TINYINT()},
@@ -106,14 +115,14 @@ TEST(TypeTests, ExtraColumnWithRename) {
       {"new", velox::TINYINT()},
   });
 
-  velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, leafPool.get());
+  velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, leafPool_.get());
   auto vector = fuzzer.fuzzInputFlatRow(fileType);
-  auto file = alpha::test::createAlphaFile(*rootPool, vector);
+  auto file = alpha::test::createAlphaFile(*rootPool_, vector);
 
   velox::InMemoryReadFile readFile(file);
   auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
       std::dynamic_pointer_cast<const velox::RowType>(newType));
-  alpha::VeloxReader reader(*leafPool, &readFile, std::move(selector));
+  alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
 
   velox::VectorPtr result;
   ASSERT_TRUE(reader.next(batchSize, result));
@@ -142,7 +151,7 @@ TEST(TypeTests, ExtraColumnWithRename) {
   }
 }
 
-TEST(TypeTests, SameTypeWithProjection) {
+TEST_F(TypeTests, SameTypeWithProjection) {
   const uint32_t batchSize = 10;
   auto type = velox::ROW({
       {"simple", velox::TINYINT()},
@@ -164,15 +173,15 @@ TEST(TypeTests, SameTypeWithProjection) {
       {"arraywithoffsets", velox::ARRAY(velox::BIGINT())},
   });
 
-  velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, leafPool.get());
+  velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, leafPool_.get());
   auto vector = fuzzer.fuzzInputFlatRow(type);
-  auto file = alpha::test::createAlphaFile(*rootPool, vector);
+  auto file = alpha::test::createAlphaFile(*rootPool_, vector);
 
   velox::InMemoryReadFile readFile(file);
   auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
       std::dynamic_pointer_cast<const velox::RowType>(type),
       std::vector<std::string>{"array", "nested", "arraywithoffsets"});
-  alpha::VeloxReader reader(*leafPool, &readFile, std::move(selector));
+  alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
 
   velox::VectorPtr result;
   ASSERT_TRUE(reader.next(batchSize, result));
@@ -199,7 +208,7 @@ TEST(TypeTests, SameTypeWithProjection) {
   }
 }
 
-TEST(TypeTests, ProjectingNewColumn) {
+TEST_F(TypeTests, ProjectingNewColumn) {
   const uint32_t batchSize = 10;
   auto fileType = velox::ROW({
       {"simple", velox::TINYINT()},
@@ -240,15 +249,15 @@ TEST(TypeTests, ProjectingNewColumn) {
       {"new", velox::TINYINT()},
   });
 
-  velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, leafPool.get());
+  velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, leafPool_.get());
   auto vector = fuzzer.fuzzInputFlatRow(fileType);
-  auto file = alpha::test::createAlphaFile(*rootPool, vector);
+  auto file = alpha::test::createAlphaFile(*rootPool_, vector);
 
   velox::InMemoryReadFile readFile(file);
   auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
       std::dynamic_pointer_cast<const velox::RowType>(newType),
       std::vector<std::string>{"struct_rename", "new"});
-  alpha::VeloxReader reader(*leafPool, &readFile, std::move(selector));
+  alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
 
   velox::VectorPtr result;
   ASSERT_TRUE(reader.next(batchSize, result));
@@ -285,7 +294,7 @@ TEST(TypeTests, ProjectingNewColumn) {
   }
 }
 
-TEST(TypeTests, FlatMapFeatureSelection) {
+TEST_F(TypeTests, FlatMapFeatureSelection) {
   const uint32_t batchSize = 200;
   auto type = velox::ROW({
       {"map", velox::MAP(velox::INTEGER(), velox::BIGINT())},
@@ -295,7 +304,7 @@ TEST(TypeTests, FlatMapFeatureSelection) {
   std::unordered_set<int32_t> uniqueKeys;
   velox::VectorFuzzer fuzzer(
       {.vectorSize = batchSize, .nullRatio = 0.1, .containerLength = 2},
-      leafPool.get());
+      leafPool_.get());
 
   while (uniqueKeys.empty()) {
     vector = fuzzer.fuzzInputFlatRow(type);
@@ -317,7 +326,7 @@ TEST(TypeTests, FlatMapFeatureSelection) {
       .flatMapColumns = {"map"},
   };
   auto file =
-      alpha::test::createAlphaFile(*rootPool, vector, std::move(options));
+      alpha::test::createAlphaFile(*rootPool_, vector, std::move(options));
 
   velox::InMemoryReadFile readFile(file);
   auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
@@ -346,7 +355,7 @@ TEST(TypeTests, FlatMapFeatureSelection) {
          folly::to<std::string>(nonExistingKey2)}}}};
 
   alpha::VeloxReader reader(
-      *leafPool, &readFile, std::move(selector), std::move(params));
+      *leafPool_, &readFile, std::move(selector), std::move(params));
 
   velox::VectorPtr result;
   ASSERT_TRUE(reader.next(batchSize, result));

@@ -96,6 +96,9 @@ struct VeloxWriterOptions {
     return DefaultInputBufferGrowthPolicy::withDefaultRanges();
   };
 
+  std::function<std::unique_ptr<velox::memory::MemoryReclaimer>()>
+      reclaimerFactory = []() { return nullptr; };
+
   bool enableChunking = false;
 };
 

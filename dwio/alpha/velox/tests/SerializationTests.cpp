@@ -15,17 +15,18 @@
 using namespace facebook;
 using namespace facebook::alpha;
 
-namespace {
-auto rootPool = velox::memory::deprecatedDefaultMemoryManager().addRootPool(
-    "serialization_tests");
-} // namespace
-
 class SerializationTests : public ::testing::Test {
  protected:
-  void SetUp() override {
-    pool_ = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  static void SetUpTestCase() {
+    velox::memory::MemoryManager::testingSetInstance({});
   }
 
+  void SetUp() override {
+    rootPool_ = velox::memory::memoryManager()->addRootPool("default_root");
+    pool_ = velox::memory::memoryManager()->addLeafPool("default_leaf");
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> pool_;
 
   static bool vectorEquals(
@@ -34,42 +35,42 @@ class SerializationTests : public ::testing::Test {
       velox::vector_size_t index) {
     return expected->equalValueAt(actual.get(), index, index);
   }
-};
 
-template <typename T = int32_t>
-void writeAndVerify(
-    velox::memory::MemoryPool& pool,
-    const velox::TypePtr& type,
-    std::function<velox::VectorPtr(const velox::TypePtr&)> generator,
-    std::function<bool(
-        const velox::VectorPtr&,
-        const velox::VectorPtr&,
-        velox::vector_size_t)> validator,
-    size_t count) {
-  SerializerOptions options{
-      .compressionType = CompressionType::Zstd,
-      .compressionThreshold = 32,
-      .compressionLevel = 3,
-  };
-  Serializer serializer{options, *rootPool, type};
-  Deserializer deserializer{pool, serializer.alphaSchema()};
+  template <typename T = int32_t>
+  void writeAndVerify(
+      velox::memory::MemoryPool& pool,
+      const velox::TypePtr& type,
+      std::function<velox::VectorPtr(const velox::TypePtr&)> generator,
+      std::function<bool(
+          const velox::VectorPtr&,
+          const velox::VectorPtr&,
+          velox::vector_size_t)> validator,
+      size_t count) {
+    SerializerOptions options{
+        .compressionType = CompressionType::Zstd,
+        .compressionThreshold = 32,
+        .compressionLevel = 3,
+    };
+    Serializer serializer{options, *rootPool_, type};
+    Deserializer deserializer{pool, serializer.alphaSchema()};
 
-  velox::VectorPtr output;
-  for (auto i = 0; i < count; ++i) {
-    auto input = generator(type);
-    auto serialized =
-        serializer.serialize(input, OrderedRanges::of(0, input->size()));
-    deserializer.deserialize(serialized, output);
+    velox::VectorPtr output;
+    for (auto i = 0; i < count; ++i) {
+      auto input = generator(type);
+      auto serialized =
+          serializer.serialize(input, OrderedRanges::of(0, input->size()));
+      deserializer.deserialize(serialized, output);
 
-    ASSERT_EQ(output->size(), input->size());
-    for (auto j = 0; j < input->size(); ++j) {
-      ASSERT_TRUE(validator(output, input, j))
-          << "Content mismatch at index " << j
-          << "\nReference: " << input->toString(j)
-          << "\nResult: " << output->toString(j);
+      ASSERT_EQ(output->size(), input->size());
+      for (auto j = 0; j < input->size(); ++j) {
+        ASSERT_TRUE(validator(output, input, j))
+            << "Content mismatch at index " << j
+            << "\nReference: " << input->toString(j)
+            << "\nResult: " << output->toString(j);
+      }
     }
   }
-}
+};
 
 TEST_F(SerializationTests, FuzzSimple) {
   auto type = velox::ROW({

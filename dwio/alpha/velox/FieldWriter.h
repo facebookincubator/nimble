@@ -45,8 +45,13 @@ struct FieldWriterContext {
   std::function<void(const TypeBuilder&, std::string_view, const TypeBuilder&)>
       flatmapFieldAddedEventHandler;
 
-  explicit FieldWriterContext(velox::memory::MemoryPool& memoryPool)
-      : bufferMemoryPool{memoryPool.addLeafChild("buffer")},
+  explicit FieldWriterContext(
+      velox::memory::MemoryPool& memoryPool,
+      std::unique_ptr<velox::memory::MemoryReclaimer> reclaimer = nullptr)
+      : bufferMemoryPool{memoryPool.addLeafChild(
+            "field_writer_buffer",
+            true,
+            std::move(reclaimer))},
         inputBufferGrowthPolicy{
             DefaultInputBufferGrowthPolicy::withDefaultRanges()} {
     resetStringBuffer();

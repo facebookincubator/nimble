@@ -28,9 +28,6 @@
 using namespace ::facebook;
 
 namespace {
-auto rootPool = velox::memory::deprecatedDefaultMemoryManager().addRootPool(
-    "velox_reader_tests");
-auto leafPool = rootPool -> addLeafChild("leaf");
 struct VeloxMapGeneratorConfig {
   std::shared_ptr<const velox::RowType> rowType;
   velox::TypeKind keyType;
@@ -46,14 +43,14 @@ class VeloxMapGenerator {
   VeloxMapGenerator(
       velox::memory::MemoryPool* pool,
       VeloxMapGeneratorConfig config)
-      : pool_{pool}, config_{config}, rng_(config_.seed), buffer_(*pool) {
+      : leafPool_{pool}, config_{config}, rng_(config_.seed), buffer_(*pool) {
     LOG(INFO) << "seed: " << config_.seed;
   }
 
   velox::VectorPtr generateBatch(velox::vector_size_t batchSize) {
-    auto offsets = velox::allocateOffsets(batchSize, pool_);
+    auto offsets = velox::allocateOffsets(batchSize, leafPool_);
     auto rawOffsets = offsets->template asMutable<velox::vector_size_t>();
-    auto sizes = velox::allocateSizes(batchSize, pool_);
+    auto sizes = velox::allocateSizes(batchSize, leafPool_);
     auto rawSizes = sizes->template asMutable<velox::vector_size_t>();
     velox::vector_size_t childSize = 0;
     for (auto i = 0; i < batchSize; ++i) {
@@ -70,7 +67,7 @@ class VeloxMapGenerator {
     if (folly::Random::oneIn(2, rng_)) {
       offset = 0;
       auto indices = velox::AlignedBuffer::allocate<velox::vector_size_t>(
-          childSize, pool_);
+          childSize, leafPool_);
       auto rawIndices = indices->asMutable<velox::vector_size_t>();
       for (auto i = 0; i < batchSize; ++i) {
         auto mapSize = rawSizes[i];
@@ -93,11 +90,11 @@ class VeloxMapGenerator {
             .containerVariableLength = true,
             .dictionaryHasNulls = config_.hasNulls,
         },
-        pool_,
+        leafPool_,
         config_.seed);
 
     // Generate a random null vector.
-    velox::NullsBuilder builder{batchSize, pool_};
+    velox::NullsBuilder builder{batchSize, leafPool_};
     if (config_.hasNulls) {
       for (auto i = 0; i < batchSize; ++i) {
         if (folly::Random::oneIn(10, rng_)) {
@@ -109,7 +106,7 @@ class VeloxMapGenerator {
     std::vector<velox::VectorPtr> children;
     for (auto& featureColumn : config_.rowType->children()) {
       velox::VectorPtr map = std::make_shared<velox::MapVector>(
-          pool_,
+          leafPool_,
           featureColumn,
           nulls,
           batchSize,
@@ -125,7 +122,7 @@ class VeloxMapGenerator {
     }
 
     return std::make_shared<velox::RowVector>(
-        pool_, config_.rowType, nullptr, batchSize, std::move(children));
+        leafPool_, config_.rowType, nullptr, batchSize, std::move(children));
   }
 
   std::mt19937& rng() {
@@ -138,18 +135,18 @@ class VeloxMapGenerator {
       velox::vector_size_t childSize,
       velox::vector_size_t* rawSizes) {
     switch (config_.keyType) {
-#define SCALAR_CASE(veloxKind, cppType)                                    \
-  case velox::TypeKind::veloxKind: {                                       \
-    auto keys =                                                            \
-        velox::BaseVector::create(velox::veloxKind(), childSize, pool_);   \
-    auto rawKeyValues = keys->asFlatVector<cppType>()->mutableRawValues(); \
-    auto offset = 0;                                                       \
-    for (auto i = 0; i < batchSize; ++i) {                                 \
-      for (auto j = 0; j < rawSizes[i]; ++j) {                             \
-        rawKeyValues[offset++] = folly::to<cppType>(j);                    \
-      }                                                                    \
-    }                                                                      \
-    return keys;                                                           \
+#define SCALAR_CASE(veloxKind, cppType)                                      \
+  case velox::TypeKind::veloxKind: {                                         \
+    auto keys =                                                              \
+        velox::BaseVector::create(velox::veloxKind(), childSize, leafPool_); \
+    auto rawKeyValues = keys->asFlatVector<cppType>()->mutableRawValues();   \
+    auto offset = 0;                                                         \
+    for (auto i = 0; i < batchSize; ++i) {                                   \
+      for (auto j = 0; j < rawSizes[i]; ++j) {                               \
+        rawKeyValues[offset++] = folly::to<cppType>(j);                      \
+      }                                                                      \
+    }                                                                        \
+    return keys;                                                             \
   }
       SCALAR_CASE(TINYINT, int8_t)
       SCALAR_CASE(SMALLINT, int16_t)
@@ -159,7 +156,7 @@ class VeloxMapGenerator {
 #undef SCALAR_CASE
       case velox::TypeKind::VARCHAR: {
         auto keys =
-            velox::BaseVector::create(velox::VARCHAR(), childSize, pool_);
+            velox::BaseVector::create(velox::VARCHAR(), childSize, leafPool_);
         auto flatVector = keys->asFlatVector<velox::StringView>();
         auto offset = 0;
         for (auto i = 0; i < batchSize; ++i) {
@@ -175,7 +172,7 @@ class VeloxMapGenerator {
         ALPHA_NOT_SUPPORTED("Unsupported Key Type");
     }
   }
-  velox::memory::MemoryPool* pool_;
+  velox::memory::MemoryPool* leafPool_;
   VeloxMapGeneratorConfig config_;
   std::mt19937 rng_;
   alpha::Buffer buffer_;
@@ -283,31 +280,6 @@ void compareFlatMapAsFilteredMap(
   }
 }
 
-std::unique_ptr<alpha::VeloxReader> getReaderForLifeCycleTest(
-    const std::shared_ptr<const velox::RowType> schema,
-    size_t batchSize,
-    std::mt19937& rng,
-    alpha::VeloxWriterOptions writerOptions = {},
-    alpha::VeloxReadParams readParams = {}) {
-  velox::VectorFuzzer fuzzer(
-      {.vectorSize = batchSize, .nullRatio = 0.5},
-      leafPool.get(),
-      folly::Random::rand32(rng));
-  auto vector = fuzzer.fuzzInputFlatRow(schema);
-  auto file = alpha::test::createAlphaFile(*rootPool, vector, writerOptions);
-
-  std::unique_ptr<velox::InMemoryReadFile> readFile =
-      std::make_unique<velox::InMemoryReadFile>(file);
-
-  std::shared_ptr<alpha::Tablet> tablet =
-      std::make_shared<alpha::Tablet>(*leafPool, std::move(readFile));
-  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(schema);
-  std::unique_ptr<alpha::VeloxReader> reader =
-      std::make_unique<alpha::VeloxReader>(
-          *leafPool, tablet, std::move(selector), readParams);
-  return reader;
-}
-
 template <typename TData, typename TRequested>
 void verifyUpcastedScalars(
     const velox::VectorPtr& expected,
@@ -372,11 +344,348 @@ size_t streamsReadCount(
 
 class VeloxReaderTests : public ::testing::TestWithParam<bool> {
  protected:
-  void SetUp() override {
-    pool_ = leafPool;
+  static void SetUpTestCase() {
+    velox::memory::MemoryManager::testingSetInstance({});
   }
 
-  std::shared_ptr<velox::memory::MemoryPool> pool_;
+  void SetUp() override {
+    rootPool_ = velox::memory::memoryManager()->addRootPool("default_root");
+    leafPool_ = rootPool_->addLeafChild("default_leaf");
+  }
+
+  static bool vectorEquals(
+      const velox::VectorPtr& expected,
+      const velox::VectorPtr& actual,
+      velox::vector_size_t index) {
+    return expected->equalValueAt(actual.get(), index, index);
+  }
+
+  void verifyReadersEqual(
+      std::unique_ptr<alpha::VeloxReader> lhs,
+      std::unique_ptr<alpha::VeloxReader> rhs,
+      int32_t expectedNumTotalArrays,
+      int32_t expectedNumUniqueArrays) {
+    velox::VectorPtr leftResult;
+    velox::VectorPtr rightResult;
+    ASSERT_TRUE(lhs->next(expectedNumTotalArrays, leftResult));
+    ASSERT_TRUE(rhs->next(expectedNumTotalArrays, rightResult));
+    ASSERT_EQ(
+        leftResult->wrappedVector()
+            ->as<velox::RowVector>()
+            ->childAt(0)
+            ->loadedVector()
+            ->wrappedVector()
+            ->size(),
+        expectedNumUniqueArrays);
+    ASSERT_EQ(
+        rightResult->wrappedVector()
+            ->as<velox::RowVector>()
+            ->childAt(0)
+            ->loadedVector()
+            ->wrappedVector()
+            ->size(),
+        expectedNumUniqueArrays);
+
+    for (int i = 0; i < expectedNumTotalArrays; ++i) {
+      vectorEquals(leftResult, rightResult, i);
+    }
+
+    // Ensure no extra data floating in left/right
+    ASSERT_FALSE(lhs->next(1, leftResult));
+    ASSERT_FALSE(rhs->next(1, rightResult));
+  }
+
+  void testVeloxTypeFromAlphaSchema(
+      velox::memory::MemoryPool& memoryPool,
+      alpha::VeloxWriterOptions writerOptions,
+      const velox::RowVectorPtr& vector) {
+    const auto& veloxRowType =
+        std::dynamic_pointer_cast<const velox::RowType>(vector->type());
+    auto file = alpha::test::createAlphaFile(*rootPool_, vector, writerOptions);
+    auto inMemFile = velox::InMemoryReadFile(file);
+
+    alpha::VeloxReader veloxReader(
+        memoryPool,
+        &inMemFile,
+        std::make_shared<velox::dwio::common::ColumnSelector>(veloxRowType));
+    const auto& veloxTypeResult = convertToVeloxType(*veloxReader.schema());
+
+    EXPECT_EQ(*veloxRowType, *veloxTypeResult)
+        << "Expected: " << veloxRowType->toString()
+        << ", actual: " << veloxTypeResult->toString();
+  }
+
+  template <typename T>
+  void getFieldDefaultValue(alpha::Vector<T>& input, uint32_t index) {
+    static_assert(
+        T() == 0, "Default Constructor value is not zero initialized");
+    input[index] = T();
+  }
+
+  template <>
+  void getFieldDefaultValue(alpha::Vector<std::string>& input, uint32_t index) {
+    input[index] = std::string();
+  }
+
+  template <typename T>
+  void
+  verifyDefaultValue(T valueToBeUpdatedWith, T defaultValue, int32_t size) {
+    alpha::Vector<T> testData(leafPool_.get(), size);
+    for (int i = 0; i < testData.size(); ++i) {
+      getFieldDefaultValue<T>(testData, i);
+      ASSERT_EQ(testData[i], defaultValue);
+      testData[i] = valueToBeUpdatedWith;
+      getFieldDefaultValue<T>(testData, i);
+      ASSERT_EQ(testData[i], defaultValue);
+    }
+  }
+
+  template <typename T>
+  void testFlatMapNullValues() {
+    auto type = velox::ROW(
+        {{"fld", velox::MAP(velox::INTEGER(), velox::CppToType<T>::create())}});
+
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+    facebook::alpha::VeloxWriterOptions writerOptions;
+    writerOptions.flatMapColumns.insert("fld");
+
+    alpha::VeloxWriter writer(
+        *rootPool_, type, std::move(writeFile), std::move(writerOptions));
+
+    facebook::velox::test::VectorMaker vectorMaker(leafPool_.get());
+    auto values = vectorMaker.flatVectorNullable<T>(
+        {std::nullopt, std::nullopt, std::nullopt});
+    auto keys = vectorMaker.flatVector<int32_t>({1, 2, 3});
+    auto vector = vectorMaker.rowVector(
+        {"fld"}, {vectorMaker.mapVector({0, 1, 2}, keys, values)});
+
+    writer.write(vector);
+    writer.close();
+
+    alpha::VeloxReadParams readParams;
+    velox::InMemoryReadFile readFile(file);
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+    alpha::VeloxReader reader(
+        *leafPool_, &readFile, std::move(selector), readParams);
+
+    velox::VectorPtr output;
+    auto size = 3;
+    reader.next(size, output);
+    for (auto i = 0; i < size; ++i) {
+      EXPECT_TRUE(vectorEquals(vector, output, i));
+    }
+  }
+
+  template <typename T = int32_t>
+  void writeAndVerify(
+      std::mt19937& rng,
+      velox::memory::MemoryPool& pool,
+      const velox::RowTypePtr& type,
+      std::function<velox::VectorPtr(const velox::RowTypePtr&)> generator,
+      std::function<bool(
+          const velox::VectorPtr&,
+          const velox::VectorPtr&,
+          velox::vector_size_t)> validator,
+      size_t count,
+      alpha::VeloxWriterOptions writerOptions = {},
+      alpha::VeloxReadParams readParams = {},
+      std::function<bool(std::string&)> isKeyPresent = nullptr,
+      std::function<void(const velox::VectorPtr&)> comparator = nullptr,
+      bool multiSkip = false,
+      bool checkMemoryLeak = false) {
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    alpha::FlushDecision decision;
+    writerOptions.enableChunking = true;
+    writerOptions.flushPolicyFactory = [&]() {
+      return std::make_unique<alpha::LambdaFlushPolicy>(
+          [&](auto&) { return decision; });
+    };
+
+    std::vector<velox::VectorPtr> expected;
+    alpha::VeloxWriter writer(
+        *rootPool_, type, std::move(writeFile), std::move(writerOptions));
+    bool perBatchFlush = folly::Random::oneIn(2, rng);
+    for (auto i = 0; i < count; ++i) {
+      auto vector = generator(type);
+      int32_t rowIndex = 0;
+      while (rowIndex < vector->size()) {
+        decision = alpha::FlushDecision::None;
+        auto batchSize = vector->size() - rowIndex;
+        // Randomly produce chunks
+        if (folly::Random::oneIn(2)) {
+          batchSize = folly::Random::rand32(0, batchSize, rng) + 1;
+          decision = alpha::FlushDecision::Chunk;
+        }
+        if ((perBatchFlush || folly::Random::oneIn(5, rng)) &&
+            (rowIndex + batchSize == vector->size())) {
+          decision = alpha::FlushDecision::Stripe;
+        }
+        writer.write(vector->slice(rowIndex, batchSize));
+        rowIndex += batchSize;
+      }
+      expected.push_back(vector);
+    }
+    writer.close();
+
+    velox::InMemoryReadFile readFile(file);
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+    // new pool with to limit already used memory and with tracking enabled
+    auto leakDetectPool =
+        facebook::velox::memory::deprecatedDefaultMemoryManager().addRootPool(
+            "memory_leak_detect");
+    auto readerPool = leakDetectPool->addLeafChild("reader_pool");
+
+    alpha::VeloxReader reader(
+        *readerPool.get(), &readFile, selector, readParams);
+    if (folly::Random::oneIn(2, rng)) {
+      LOG(INFO) << "using executor";
+      readParams.decodingExecutor =
+          std::make_shared<folly::CPUThreadPoolExecutor>(1);
+    }
+
+    auto rootTypeFromSchema = convertToVeloxType(*reader.schema());
+    EXPECT_EQ(*type, *rootTypeFromSchema)
+        << "Expected: " << type->toString()
+        << ", actual: " << rootTypeFromSchema->toString();
+
+    velox::VectorPtr result;
+    velox::vector_size_t numIncrements = 0, prevMemory = 0;
+    for (auto i = 0; i < expected.size(); ++i) {
+      auto& current = expected.at(i);
+      ASSERT_TRUE(reader.next(current->size(), result));
+      ASSERT_EQ(result->size(), current->size());
+      if (comparator) {
+        comparator(result);
+      }
+      if (isKeyPresent) {
+        compareFlatMapAsFilteredMap<T>(current, result, isKeyPresent);
+      } else {
+        for (auto j = 0; j < result->size(); ++j) {
+          ASSERT_TRUE(validator(current, result, j))
+              << "Content mismatch at index " << j << " at count " << i
+              << "\nReference: " << current->toString(j)
+              << "\nResult: " << result->toString(j);
+        }
+      }
+
+      // validate skip
+      if (i % 2 == 0) {
+        alpha::VeloxReader reader1(pool, &readFile, selector, readParams);
+        alpha::VeloxReader reader2(pool, &readFile, selector, readParams);
+        auto rowCount = expected.at(0)->size();
+        velox::vector_size_t remaining = rowCount;
+        uint32_t skipCount = 0;
+        do {
+          auto toSkip = folly::Random::rand32(1, remaining, rng);
+          velox::VectorPtr result1;
+          velox::VectorPtr result2;
+          reader1.next(toSkip, result1);
+          reader2.skipRows(toSkip);
+          remaining -= toSkip;
+
+          if (remaining > 0) {
+            auto toRead = folly::Random::rand32(1, remaining, rng);
+            reader1.next(toRead, result1);
+            reader2.next(toRead, result2);
+
+            ASSERT_EQ(result1->size(), result2->size());
+
+            for (auto j = 0; j < result1->size(); ++j) {
+              ASSERT_TRUE(vectorEquals(result1, result2, j))
+                  << "Content mismatch at index " << j
+                  << " skipCount  = " << skipCount
+                  << " remaining = " << remaining << " to read = " << toRead
+                  << "\nReference: " << result1->toString(j)
+                  << "\nResult: " << result2->toString(j);
+            }
+
+            remaining -= toRead;
+          }
+          skipCount += 1;
+        } while (multiSkip && remaining > 0);
+      }
+
+      // validate memory usage
+      if (readerPool->currentBytes() > prevMemory) {
+        numIncrements++;
+      }
+      prevMemory = readerPool->currentBytes();
+    }
+    ASSERT_FALSE(reader.next(1, result));
+    if (checkMemoryLeak) {
+      EXPECT_LE(numIncrements, expected.size() / 2);
+    }
+  }
+
+  std::unique_ptr<alpha::VeloxReader> getReaderForLifeCycleTest(
+      const std::shared_ptr<const velox::RowType> schema,
+      size_t batchSize,
+      std::mt19937& rng,
+      alpha::VeloxWriterOptions writerOptions = {},
+      alpha::VeloxReadParams readParams = {}) {
+    velox::VectorFuzzer fuzzer(
+        {.vectorSize = batchSize, .nullRatio = 0.5},
+        leafPool_.get(),
+        folly::Random::rand32(rng));
+    auto vector = fuzzer.fuzzInputFlatRow(schema);
+    auto file = alpha::test::createAlphaFile(*rootPool_, vector, writerOptions);
+
+    std::unique_ptr<velox::InMemoryReadFile> readFile =
+        std::make_unique<velox::InMemoryReadFile>(file);
+
+    std::shared_ptr<alpha::Tablet> tablet =
+        std::make_shared<alpha::Tablet>(*leafPool_, std::move(readFile));
+    auto selector =
+        std::make_shared<velox::dwio::common::ColumnSelector>(schema);
+    std::unique_ptr<alpha::VeloxReader> reader =
+        std::make_unique<alpha::VeloxReader>(
+            *leafPool_, tablet, std::move(selector), readParams);
+    return reader;
+  }
+
+  std::unique_ptr<alpha::VeloxReader> getReaderForWrite(
+      velox::memory::MemoryPool& pool,
+      const velox::RowTypePtr& type,
+      std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>
+          generators,
+      size_t batchSize,
+      bool multiSkip = false,
+      bool checkMemoryLeak = false) {
+    alpha::VeloxWriterOptions writerOptions = {};
+    alpha::VeloxReadParams readParams = {};
+
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    writerOptions.enableChunking = true;
+    writerOptions.flushPolicyFactory = [&]() {
+      return std::make_unique<alpha::LambdaFlushPolicy>(
+          [&](auto&) { return alpha::FlushDecision::None; });
+    };
+    writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
+
+    alpha::VeloxWriter writer(
+        *rootPool_, type, std::move(writeFile), std::move(writerOptions));
+
+    for (int i = 0; i < generators.size(); ++i) {
+      auto vectorGenerator = generators.at(i);
+      auto vector = vectorGenerator(type);
+      // In the future, we can take in batchSize as param and try every size
+      writer.write(vector);
+    }
+    writer.close();
+
+    auto readFile = std::make_unique<velox::InMemoryReadFile>(file);
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+
+    return std::make_unique<alpha::VeloxReader>(
+        *leafPool_, std::move(readFile), std::move(selector), readParams);
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> rootPool_;
+  std::shared_ptr<velox::memory::MemoryPool> leafPool_;
 };
 
 TEST_F(VeloxReaderTests, DontReadUnselectedColumnsFromFile) {
@@ -396,10 +705,10 @@ TEST_F(VeloxReaderTests, DontReadUnselectedColumnsFromFile) {
   auto selectedColumnNames =
       std::vector<std::string>{"tinyint_val", "double_val"};
 
-  velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, pool_.get());
+  velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, leafPool_.get());
   auto vector = fuzzer.fuzzInputFlatRow(type);
 
-  auto file = alpha::test::createAlphaFile(*rootPool, vector);
+  auto file = alpha::test::createAlphaFile(*rootPool_, vector);
 
   uint32_t readSize = 1;
   alpha::testing::InMemoryTrackableReadFile readFile(file);
@@ -409,7 +718,7 @@ TEST_F(VeloxReaderTests, DontReadUnselectedColumnsFromFile) {
   auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
       std::dynamic_pointer_cast<const velox::RowType>(vector->type()),
       selectedColumnNames);
-  alpha::VeloxReader reader(*pool_, &readFile, std::move(selector));
+  alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
 
   velox::VectorPtr result;
   reader.next(readSize, result);
@@ -421,7 +730,8 @@ TEST_F(VeloxReaderTests, DontReadUnselectedColumnsFromFile) {
   }
 
   EXPECT_EQ(
-      streamsReadCount(*pool_, &readFile, chunks), selectedColumnNames.size());
+      streamsReadCount(*leafPool_, &readFile, chunks),
+      selectedColumnNames.size());
 }
 
 TEST_F(VeloxReaderTests, DontReadUnprojectedFeaturesFromFile) {
@@ -441,14 +751,14 @@ TEST_F(VeloxReaderTests, DontReadUnprojectedFeaturesFromFile) {
       .hasNulls = false,
   };
 
-  VeloxMapGenerator generator(pool_.get(), generatorConfig);
+  VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
   auto vector = generator.generateBatch(batchSize);
 
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.flatMapColumns.insert("float_features");
 
-  auto file =
-      alpha::test::createAlphaFile(*rootPool, vector, std::move(writerOptions));
+  auto file = alpha::test::createAlphaFile(
+      *rootPool_, vector, std::move(writerOptions));
 
   facebook::alpha::testing::InMemoryTrackableReadFile readFile(file);
   // We want to check stream by stream if they are being read
@@ -476,7 +786,7 @@ TEST_F(VeloxReaderTests, DontReadUnprojectedFeaturesFromFile) {
   LOG(INFO) << "Selected features (" << selectedFeatures.size()
             << ") :" << folly::join(", ", selectedFeatures);
 
-  alpha::VeloxReader reader(*pool_, &readFile, std::move(selector), params);
+  alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector), params);
 
   uint32_t readSize = 1000;
   velox::VectorPtr result;
@@ -526,7 +836,7 @@ TEST_F(VeloxReaderTests, DontReadUnprojectedFeaturesFromFile) {
   }
 
   EXPECT_EQ(
-      streamsReadCount(*pool_, &readFile, chunks),
+      streamsReadCount(*leafPool_, &readFile, chunks),
       expectedNonEmptyStreamsCount);
 }
 
@@ -584,9 +894,9 @@ TEST_F(VeloxReaderTests, ReadComplexData) {
   });
 
   for (size_t batchSize : {5, 1234}) {
-    velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, pool_.get());
+    velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, leafPool_.get());
     auto vector = fuzzer.fuzzInputFlatRow(type);
-    auto file = alpha::test::createAlphaFile(*rootPool, vector);
+    auto file = alpha::test::createAlphaFile(*rootPool_, vector);
 
     for (bool upcast : {false, true}) {
       for (uint32_t readSize : {1, 2, 5, 7, 20, 100, 555, 2000}) {
@@ -594,7 +904,7 @@ TEST_F(VeloxReaderTests, ReadComplexData) {
         auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
             std::dynamic_pointer_cast<const velox::RowType>(
                 upcast ? typeUpcast : vector->type()));
-        alpha::VeloxReader reader(*pool_, &readFile, std::move(selector));
+        alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
 
         velox::vector_size_t rowIndex = 0;
         std::vector<uint32_t> childRowIndices(
@@ -659,7 +969,7 @@ TEST_F(VeloxReaderTests, Lifetime) {
   std::vector<velox::StringView> strings{s, s, s, s, s};
   std::vector<std::vector<velox::StringView>> stringsOfStrings{
       strings, strings, strings, strings, strings};
-  velox::test::VectorMaker vectorMaker{pool_.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(
       {vectorMaker.flatVector<int32_t>({1, 2, 3, 4, 5}),
        vectorMaker.flatVector(strings),
@@ -678,11 +988,11 @@ TEST_F(VeloxReaderTests, Lifetime) {
 
   velox::VectorPtr result;
   {
-    auto file = alpha::test::createAlphaFile(*rootPool, vector);
+    auto file = alpha::test::createAlphaFile(*rootPool_, vector);
     velox::InMemoryReadFile readFile(file);
     auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
         std::dynamic_pointer_cast<const velox::RowType>(vector->type()));
-    alpha::VeloxReader reader(*pool_, &readFile, std::move(selector));
+    alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
 
     ASSERT_TRUE(reader.next(vector->size(), result));
     ASSERT_FALSE(reader.next(vector->size(), result));
@@ -703,18 +1013,18 @@ TEST_F(VeloxReaderTests, Lifetime) {
 }
 
 TEST_F(VeloxReaderTests, AllValuesNulls) {
-  velox::test::VectorMaker vectorMaker{pool_.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(
       {vectorMaker.flatVectorNullable<int32_t>(
            {std::nullopt, std::nullopt, std::nullopt}),
        vectorMaker.flatVectorNullable<double>(
            {std::nullopt, std::nullopt, std::nullopt}),
        velox::BaseVector::createNullConstant(
-           velox::ROW({{"foo", velox::INTEGER()}}), 3, pool_.get()),
+           velox::ROW({{"foo", velox::INTEGER()}}), 3, leafPool_.get()),
        velox::BaseVector::createNullConstant(
-           velox::MAP(velox::INTEGER(), velox::BIGINT()), 3, pool_.get()),
+           velox::MAP(velox::INTEGER(), velox::BIGINT()), 3, leafPool_.get()),
        velox::BaseVector::createNullConstant(
-           velox::ARRAY(velox::INTEGER()), 3, pool_.get())});
+           velox::ARRAY(velox::INTEGER()), 3, leafPool_.get())});
 
   auto projectedType = velox::ROW({
       {"c0", velox::INTEGER()},
@@ -728,7 +1038,7 @@ TEST_F(VeloxReaderTests, AllValuesNulls) {
     alpha::VeloxWriterOptions options;
     options.flatMapColumns.insert("c3");
     options.dictionaryArrayColumns.insert("c4");
-    auto file = alpha::test::createAlphaFile(*rootPool, vector, options);
+    auto file = alpha::test::createAlphaFile(*rootPool_, vector, options);
     velox::InMemoryReadFile readFile(file);
 
     alpha::VeloxReadParams params;
@@ -736,7 +1046,7 @@ TEST_F(VeloxReaderTests, AllValuesNulls) {
     params.flatMapFeatureSelector.insert({"c3", {{"1"}}});
     auto selector =
         std::make_shared<velox::dwio::common::ColumnSelector>(projectedType);
-    alpha::VeloxReader reader(*pool_, &readFile, selector, params);
+    alpha::VeloxReader reader(*leafPool_, &readFile, selector, params);
 
     ASSERT_TRUE(reader.next(vector->size(), result));
     ASSERT_FALSE(reader.next(vector->size(), result));
@@ -768,15 +1078,15 @@ TEST_F(VeloxReaderTests, StringBuffers) {
   // buffers instead of inlining them.
   std::string s{"012345678901234567890123456789"};
   std::vector<std::string> column{s, s, s, s, s, s, s, s, s, s};
-  velox::test::VectorMaker vectorMaker{pool_.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector({vectorMaker.flatVector(column)});
 
   velox::VectorPtr result;
-  auto file = alpha::test::createAlphaFile(*rootPool, vector);
+  auto file = alpha::test::createAlphaFile(*rootPool_, vector);
   velox::InMemoryReadFile readFile(file);
   auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
       std::dynamic_pointer_cast<const velox::RowType>(vector->type()));
-  alpha::VeloxReader reader(*pool_, &readFile, std::move(selector));
+  alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
 
   ASSERT_TRUE(reader.next(5, result));
 
@@ -826,7 +1136,7 @@ TEST_F(VeloxReaderTests, StringBuffers) {
 }
 
 TEST_F(VeloxReaderTests, NullVectors) {
-  velox::test::VectorMaker vectorMaker{pool_.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   // In the following table, the first 5 rows contain nulls and the last 5
   // rows don't.
@@ -861,12 +1171,12 @@ TEST_F(VeloxReaderTests, NullVectors) {
                 {1.1, 2.2, 3.3, 4.4, 5.5, 6.6, 7.7, 8.8, 9.9, 10.10})})});
   vector->childAt(4)->setNull(2, true); // Set null in row vector
 
-  auto file = alpha::test::createAlphaFile(*rootPool, vector);
+  auto file = alpha::test::createAlphaFile(*rootPool_, vector);
   velox::InMemoryReadFile readFile(file);
   auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
       std::dynamic_pointer_cast<const velox::RowType>(vector->type()));
 
-  alpha::VeloxReader reader(*pool_, &readFile, std::move(selector));
+  alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
 
   velox::VectorPtr result;
 
@@ -913,232 +1223,12 @@ TEST_F(VeloxReaderTests, NullVectors) {
   ASSERT_FALSE(reader.next(1, result));
 }
 
-bool vectorEquals(
-    const velox::VectorPtr& expected,
-    const velox::VectorPtr& actual,
-    velox::vector_size_t index) {
-  return expected->equalValueAt(actual.get(), index, index);
-};
-
-template <typename T = int32_t>
-void writeAndVerify(
-    std::mt19937& rng,
-    velox::memory::MemoryPool& pool,
-    const velox::RowTypePtr& type,
-    std::function<velox::VectorPtr(const velox::RowTypePtr&)> generator,
-    std::function<bool(
-        const velox::VectorPtr&,
-        const velox::VectorPtr&,
-        velox::vector_size_t)> validator,
-    size_t count,
-    alpha::VeloxWriterOptions writerOptions = {},
-    alpha::VeloxReadParams readParams = {},
-    std::function<bool(std::string&)> isKeyPresent = nullptr,
-    std::function<void(const velox::VectorPtr&)> comparator = nullptr,
-    bool multiSkip = false,
-    bool checkMemoryLeak = false) {
-  std::string file;
-  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-  alpha::FlushDecision decision;
-  writerOptions.enableChunking = true;
-  writerOptions.flushPolicyFactory = [&]() {
-    return std::make_unique<alpha::LambdaFlushPolicy>(
-        [&](auto&) { return decision; });
-  };
-
-  std::vector<velox::VectorPtr> expected;
-  alpha::VeloxWriter writer(
-      *rootPool, type, std::move(writeFile), std::move(writerOptions));
-  bool perBatchFlush = folly::Random::oneIn(2, rng);
-  for (auto i = 0; i < count; ++i) {
-    auto vector = generator(type);
-    int32_t rowIndex = 0;
-    while (rowIndex < vector->size()) {
-      decision = alpha::FlushDecision::None;
-      auto batchSize = vector->size() - rowIndex;
-      // Randomly produce chunks
-      if (folly::Random::oneIn(2)) {
-        batchSize = folly::Random::rand32(0, batchSize, rng) + 1;
-        decision = alpha::FlushDecision::Chunk;
-      }
-      if ((perBatchFlush || folly::Random::oneIn(5, rng)) &&
-          (rowIndex + batchSize == vector->size())) {
-        decision = alpha::FlushDecision::Stripe;
-      }
-      writer.write(vector->slice(rowIndex, batchSize));
-      rowIndex += batchSize;
-    }
-    expected.push_back(vector);
-  }
-  writer.close();
-
-  velox::InMemoryReadFile readFile(file);
-  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
-  // new pool with to limit already used memory and with tracking enabled
-  auto leakDetectPool =
-      facebook::velox::memory::deprecatedDefaultMemoryManager().addRootPool(
-          "memory_leak_detect");
-  auto readerPool = leakDetectPool->addLeafChild("reader_pool");
-
-  alpha::VeloxReader reader(*readerPool.get(), &readFile, selector, readParams);
-  if (folly::Random::oneIn(2, rng)) {
-    LOG(INFO) << "using executor";
-    readParams.decodingExecutor =
-        std::make_shared<folly::CPUThreadPoolExecutor>(1);
-  }
-
-  auto rootTypeFromSchema = convertToVeloxType(*reader.schema());
-  EXPECT_EQ(*type, *rootTypeFromSchema)
-      << "Expected: " << type->toString()
-      << ", actual: " << rootTypeFromSchema->toString();
-
-  velox::VectorPtr result;
-  velox::vector_size_t numIncrements = 0, prevMemory = 0;
-  for (auto i = 0; i < expected.size(); ++i) {
-    auto& current = expected.at(i);
-    ASSERT_TRUE(reader.next(current->size(), result));
-    ASSERT_EQ(result->size(), current->size());
-    if (comparator) {
-      comparator(result);
-    }
-    if (isKeyPresent) {
-      compareFlatMapAsFilteredMap<T>(current, result, isKeyPresent);
-    } else {
-      for (auto j = 0; j < result->size(); ++j) {
-        ASSERT_TRUE(validator(current, result, j))
-            << "Content mismatch at index " << j << " at count " << i
-            << "\nReference: " << current->toString(j)
-            << "\nResult: " << result->toString(j);
-      }
-    }
-
-    // validate skip
-    if (i % 2 == 0) {
-      alpha::VeloxReader reader1(pool, &readFile, selector, readParams);
-      alpha::VeloxReader reader2(pool, &readFile, selector, readParams);
-      auto rowCount = expected.at(0)->size();
-      velox::vector_size_t remaining = rowCount;
-      uint32_t skipCount = 0;
-      do {
-        auto toSkip = folly::Random::rand32(1, remaining, rng);
-        velox::VectorPtr result1;
-        velox::VectorPtr result2;
-        reader1.next(toSkip, result1);
-        reader2.skipRows(toSkip);
-        remaining -= toSkip;
-
-        if (remaining > 0) {
-          auto toRead = folly::Random::rand32(1, remaining, rng);
-          reader1.next(toRead, result1);
-          reader2.next(toRead, result2);
-
-          ASSERT_EQ(result1->size(), result2->size());
-
-          for (auto j = 0; j < result1->size(); ++j) {
-            ASSERT_TRUE(vectorEquals(result1, result2, j))
-                << "Content mismatch at index " << j
-                << " skipCount  = " << skipCount << " remaining = " << remaining
-                << " to read = " << toRead
-                << "\nReference: " << result1->toString(j)
-                << "\nResult: " << result2->toString(j);
-          }
-
-          remaining -= toRead;
-        }
-        skipCount += 1;
-      } while (multiSkip && remaining > 0);
-    }
-
-    // validate memory usage
-    if (readerPool->currentBytes() > prevMemory) {
-      numIncrements++;
-    }
-    prevMemory = readerPool->currentBytes();
-  }
-  ASSERT_FALSE(reader.next(1, result));
-  if (checkMemoryLeak) {
-    EXPECT_LE(numIncrements, expected.size() / 2);
-  }
-}
-
-std::unique_ptr<alpha::VeloxReader> getReaderForWrite(
-    velox::memory::MemoryPool& pool,
-    const velox::RowTypePtr& type,
-    std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>
-        generators,
-    size_t batchSize,
-    bool multiSkip = false,
-    bool checkMemoryLeak = false) {
-  alpha::VeloxWriterOptions writerOptions = {};
-  alpha::VeloxReadParams readParams = {};
-
-  std::string file;
-  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-  writerOptions.enableChunking = true;
-  writerOptions.flushPolicyFactory = [&]() {
-    return std::make_unique<alpha::LambdaFlushPolicy>(
-        [&](auto&) { return alpha::FlushDecision::None; });
-  };
-  writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
-
-  alpha::VeloxWriter writer(
-      *rootPool, type, std::move(writeFile), std::move(writerOptions));
-
-  for (int i = 0; i < generators.size(); ++i) {
-    auto vectorGenerator = generators.at(i);
-    auto vector = vectorGenerator(type);
-    // In the future, we can take in batchSize as param and try every size
-    writer.write(vector);
-  }
-  writer.close();
-
-  auto readFile = std::make_unique<velox::InMemoryReadFile>(file);
-  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
-
-  return std::make_unique<alpha::VeloxReader>(
-      *leafPool, std::move(readFile), std::move(selector), readParams);
-}
-
-void verifyReadersEqual(
-    std::unique_ptr<alpha::VeloxReader> left,
-    std::unique_ptr<alpha::VeloxReader> right,
-    int32_t expectedTotalArrays,
-    int32_t expectedUniqueArrays) {
-  velox::VectorPtr leftResult, rightResult;
-  ASSERT_TRUE(left->next(expectedTotalArrays, leftResult));
-  ASSERT_TRUE(right->next(expectedTotalArrays, rightResult));
-  ASSERT_EQ(
-      leftResult->wrappedVector()
-          ->as<velox::RowVector>()
-          ->childAt(0)
-          ->loadedVector()
-          ->wrappedVector()
-          ->size(),
-      expectedUniqueArrays);
-  ASSERT_EQ(
-      rightResult->wrappedVector()
-          ->as<velox::RowVector>()
-          ->childAt(0)
-          ->loadedVector()
-          ->wrappedVector()
-          ->size(),
-      expectedUniqueArrays);
-
-  for (int i = 0; i < expectedTotalArrays; ++i) {
-    vectorEquals(leftResult, rightResult, i);
-  }
-
-  // Ensure no extra data floating in left/right
-  ASSERT_FALSE(left->next(1, leftResult));
-  ASSERT_FALSE(right->next(1, rightResult));
-}
-
 TEST_F(VeloxReaderTests, ArrayWithOffsetsCaching) {
   auto type = velox::ROW({
       {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
   });
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
-  velox::test::VectorMaker vectorMaker{pool_.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   // Test cache hit on second write
   auto generator = [&](auto& /*type*/) {
@@ -1179,8 +1269,8 @@ TEST_F(VeloxReaderTests, ArrayWithOffsetsCaching) {
           {halfGenerator, otherHalfGenerator});
   auto expectedTotalArrays = 6;
   auto expectedUniqueArrays = 2;
-  auto left = getReaderForWrite(*pool_, rowType, leftGenerators, 1);
-  auto right = getReaderForWrite(*pool_, rowType, rightGenerators, 1);
+  auto left = getReaderForWrite(*leafPool_, rowType, leftGenerators, 1);
+  auto right = getReaderForWrite(*leafPool_, rowType, rightGenerators, 1);
 
   verifyReadersEqual(
       std::move(left),
@@ -1214,8 +1304,8 @@ TEST_F(VeloxReaderTests, ArrayWithOffsetsCaching) {
           {halfGeneratorCacheMiss, otherHalfGeneratorCacheMiss});
   expectedTotalArrays = 6;
   expectedUniqueArrays = 2;
-  left = getReaderForWrite(*pool_, rowType, leftGenerators, 1);
-  right = getReaderForWrite(*pool_, rowType, rightGenerators, 1);
+  left = getReaderForWrite(*leafPool_, rowType, leftGenerators, 1);
+  right = getReaderForWrite(*leafPool_, rowType, rightGenerators, 1);
 
   verifyReadersEqual(
       std::move(left),
@@ -1267,8 +1357,8 @@ TEST_F(VeloxReaderTests, ArrayWithOffsetsCaching) {
 
   expectedTotalArrays = 6; // null array included in count
   expectedUniqueArrays = 2; // {{1, 2, 3}, {1, 2, 3, 4, 5}}
-  left = getReaderForWrite(*pool_, rowType, leftGenerators, 1);
-  right = getReaderForWrite(*pool_, rowType, rightGenerators, 1);
+  left = getReaderForWrite(*leafPool_, rowType, leftGenerators, 1);
+  right = getReaderForWrite(*leafPool_, rowType, rightGenerators, 1);
 
   verifyReadersEqual(
       std::move(left),
@@ -1304,8 +1394,8 @@ TEST_F(VeloxReaderTests, ArrayWithOffsetsCaching) {
 
   expectedTotalArrays = 6; // null array included in count
   expectedUniqueArrays = 2; // {{1, 2, 3}, {1, 2, 3, 4, 5}}
-  left = getReaderForWrite(*pool_, rowType, leftGenerators, 1);
-  right = getReaderForWrite(*pool_, rowType, rightGenerators, 1);
+  left = getReaderForWrite(*leafPool_, rowType, leftGenerators, 1);
+  right = getReaderForWrite(*leafPool_, rowType, rightGenerators, 1);
 
   verifyReadersEqual(
       std::move(left),
@@ -1353,8 +1443,8 @@ TEST_F(VeloxReaderTests, ArrayWithOffsetsCaching) {
           {halfGeneratorNoEmpty, otherHalfGeneratorWithEmpty});
   expectedTotalArrays = 6; // empty array included in count
   expectedUniqueArrays = 4; // {{1, 2, 3}, {1, 2, 3, 4, 5}, {}, {1, 2, 3, 4, 5}}
-  left = getReaderForWrite(*pool_, rowType, leftGenerators, 1);
-  right = getReaderForWrite(*pool_, rowType, rightGenerators, 1);
+  left = getReaderForWrite(*leafPool_, rowType, leftGenerators, 1);
+  right = getReaderForWrite(*leafPool_, rowType, rightGenerators, 1);
 
   verifyReadersEqual(
       std::move(left),
@@ -1389,8 +1479,8 @@ TEST_F(VeloxReaderTests, ArrayWithOffsetsCaching) {
           {halfGeneratorWithEmpty, otherHalfGeneratorNoEmpty});
   expectedTotalArrays = 6; // empty array included in count
   expectedUniqueArrays = 4; // {{1, 2, 3}, {1, 2, 3, 4, 5}, {}, {1, 2, 3, 4, 5}}
-  left = getReaderForWrite(*pool_, rowType, leftGenerators, 1);
-  right = getReaderForWrite(*pool_, rowType, rightGenerators, 1);
+  left = getReaderForWrite(*leafPool_, rowType, leftGenerators, 1);
+  right = getReaderForWrite(*leafPool_, rowType, rightGenerators, 1);
 
   verifyReadersEqual(
       std::move(left),
@@ -1437,7 +1527,7 @@ TEST_P(VeloxReaderTests, FuzzSimple) {
           .stringLength = 20,
           .stringVariableLength = true,
       },
-      pool_.get(),
+      leafPool_.get(),
       seed);
 
   velox::VectorFuzzer hasNulls{
@@ -1447,7 +1537,7 @@ TEST_P(VeloxReaderTests, FuzzSimple) {
           .stringLength = 10,
           .stringVariableLength = true,
       },
-      pool_.get(),
+      leafPool_.get(),
       seed};
 
   auto iterations = 20;
@@ -1456,7 +1546,7 @@ TEST_P(VeloxReaderTests, FuzzSimple) {
   for (auto i = 0; i < iterations; ++i) {
     writeAndVerify(
         rng,
-        *pool_,
+        *leafPool_,
         rowType,
         [&](auto& type) { return noNulls.fuzzInputRow(type); },
         vectorEquals,
@@ -1464,7 +1554,7 @@ TEST_P(VeloxReaderTests, FuzzSimple) {
         writerOptions);
     writeAndVerify(
         rng,
-        *pool_,
+        *leafPool_,
         rowType,
         [&](auto& type) { return hasNulls.fuzzInputRow(type); },
         vectorEquals,
@@ -1524,7 +1614,7 @@ TEST_P(VeloxReaderTests, FuzzComplex) {
           .containerLength = 5,
           .containerVariableLength = true,
       },
-      pool_.get(),
+      leafPool_.get(),
       seed);
 
   velox::VectorFuzzer hasNulls{
@@ -1536,7 +1626,7 @@ TEST_P(VeloxReaderTests, FuzzComplex) {
           .containerLength = 5,
           .containerVariableLength = true,
       },
-      pool_.get(),
+      leafPool_.get(),
       seed};
 
   auto iterations = 20;
@@ -1545,7 +1635,7 @@ TEST_P(VeloxReaderTests, FuzzComplex) {
   for (auto i = 0; i < iterations; ++i) {
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& type) { return noNulls.fuzzInputRow(type); },
         vectorEquals,
@@ -1553,7 +1643,7 @@ TEST_P(VeloxReaderTests, FuzzComplex) {
         writerOptions);
     writeAndVerify(
         rng,
-        *pool_,
+        *leafPool_,
         rowType,
         [&](auto& type) { return hasNulls.fuzzInputRow(type); },
         vectorEquals,
@@ -1583,7 +1673,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsets) {
             std::thread::hardware_concurrency());
   }
 
-  velox::test::VectorMaker vectorMaker{pool_.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto iterations = 20;
   auto batches = 20;
@@ -1605,7 +1695,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsets) {
     expectedNumArrays = 1;
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -1624,7 +1714,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsets) {
         checkMemoryLeak);
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -1643,7 +1733,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsets) {
         checkMemoryLeak);
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -1662,7 +1752,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsets) {
         checkMemoryLeak);
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -1683,7 +1773,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsets) {
     expectedNumArrays = 3;
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -1703,7 +1793,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsets) {
         checkMemoryLeak);
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -1723,7 +1813,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsets) {
         checkMemoryLeak);
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -1743,7 +1833,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsets) {
         checkMemoryLeak);
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -1765,7 +1855,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsets) {
     expectedNumArrays = 4;
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -1787,7 +1877,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsets) {
     expectedNumArrays = 5;
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -1809,7 +1899,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsets) {
 
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -1851,7 +1941,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsetsNullable) {
             std::thread::hardware_concurrency(),
             std::thread::hardware_concurrency());
   }
-  velox::test::VectorMaker vectorMaker{pool_.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto iterations = 20;
   auto batches = 20;
@@ -1873,7 +1963,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsetsNullable) {
     expectedNumArrays = 1;
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -1893,7 +1983,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsetsNullable) {
 
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -1914,7 +2004,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsetsNullable) {
     expectedNumArrays = 2;
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -1943,7 +2033,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsetsNullable) {
     expectedNumArrays = 2;
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -1971,7 +2061,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsetsNullable) {
     expectedNumArrays = 1;
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -1998,7 +2088,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsetsNullable) {
     expectedNumArrays = 1;
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -2025,7 +2115,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsetsNullable) {
     expectedNumArrays = 1;
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -2071,7 +2161,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsetsMultiskips) {
             std::thread::hardware_concurrency(),
             std::thread::hardware_concurrency());
   }
-  velox::test::VectorMaker vectorMaker{pool_.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto iterations = 50;
   auto batches = 20;
@@ -2105,7 +2195,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsetsMultiskips) {
     expectedNumArrays = 6;
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -2128,7 +2218,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsetsMultiskips) {
     expectedNumArrays = 3;
     writeAndVerify(
         rng,
-        *pool_.get(),
+        *leafPool_.get(),
         rowType,
         [&](auto& /*type*/) {
           return vectorMaker.rowVector(
@@ -2223,44 +2313,6 @@ bool compareFlatMaps(
   return true;
 }
 
-template <typename T>
-void testFlatMapNullValues() {
-  auto type = velox::ROW(
-      {{"fld", velox::MAP(velox::INTEGER(), velox::CppToType<T>::create())}});
-
-  std::string file;
-  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-
-  facebook::alpha::VeloxWriterOptions writerOptions;
-  writerOptions.flatMapColumns.insert("fld");
-
-  alpha::VeloxWriter writer(
-      *rootPool, type, std::move(writeFile), std::move(writerOptions));
-
-  facebook::velox::test::VectorMaker vectorMaker(leafPool.get());
-  auto values = vectorMaker.flatVectorNullable<T>(
-      {std::nullopt, std::nullopt, std::nullopt});
-  auto keys = vectorMaker.flatVector<int32_t>({1, 2, 3});
-  auto vector = vectorMaker.rowVector(
-      {"fld"}, {vectorMaker.mapVector({0, 1, 2}, keys, values)});
-
-  writer.write(vector);
-  writer.close();
-
-  alpha::VeloxReadParams readParams;
-  velox::InMemoryReadFile readFile(file);
-  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
-  alpha::VeloxReader reader(
-      *leafPool, &readFile, std::move(selector), readParams);
-
-  velox::VectorPtr output;
-  auto size = 3;
-  reader.next(size, output);
-  for (auto i = 0; i < size; ++i) {
-    EXPECT_TRUE(vectorEquals(vector, output, i));
-  }
-}
-
 TEST_F(VeloxReaderTests, FlatMapNullValues) {
   testFlatMapNullValues<int8_t>();
   testFlatMapNullValues<int16_t>();
@@ -2295,7 +2347,7 @@ TEST_P(VeloxReaderTests, FlatMapToStruct) {
       .rowType = rowType,
       .keyType = velox::TypeKind::INTEGER,
       .maxSizeForMap = 10};
-  VeloxMapGenerator generator(pool_.get(), generatorConfig);
+  VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
 
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.flatMapColumns.insert("float_features");
@@ -2332,7 +2384,7 @@ TEST_P(VeloxReaderTests, FlatMapToStruct) {
   for (auto i = 0; i < iterations; ++i) {
     writeAndVerify(
         generator.rng(),
-        *pool_,
+        *leafPool_,
         rowType,
         [&](auto&) { return generator.generateBatch(10); },
         compareFlatMaps<int32_t>,
@@ -2359,7 +2411,7 @@ TEST_P(VeloxReaderTests, FlatMapToStructForComplexType) {
       .rowType = rowType,
       .keyType = velox::TypeKind::INTEGER,
       .maxSizeForMap = 10};
-  VeloxMapGenerator generator(pool_.get(), generatorConfig);
+  VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
 
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.flatMapColumns.insert("row_column");
@@ -2384,7 +2436,7 @@ TEST_P(VeloxReaderTests, FlatMapToStructForComplexType) {
   for (auto i = 0; i < iterations; ++i) {
     writeAndVerify(
         generator.rng(),
-        *pool_,
+        *leafPool_,
         rowType,
         [&](auto&) { return generator.generateBatch(10); },
         compareFlatMaps<int32_t>,
@@ -2420,7 +2472,7 @@ TEST_P(VeloxReaderTests, StringKeyFlatMapAsStruct) {
       .maxSizeForMap = 10,
       .stringKeyPrefix = "testKeyString_",
   };
-  VeloxMapGenerator generator(pool_.get(), generatorConfig);
+  VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
 
   alpha::VeloxReadParams params;
   params.readFlatMapFieldAsStruct.emplace("string_key_feature");
@@ -2434,7 +2486,7 @@ TEST_P(VeloxReaderTests, StringKeyFlatMapAsStruct) {
   for (auto i = 0; i < iterations; ++i) {
     writeAndVerify(
         generator.rng(),
-        *pool_,
+        *leafPool_,
         rowType,
         [&](auto&) { return generator.generateBatch(10); },
         compareFlatMaps<velox::StringView>,
@@ -2448,7 +2500,7 @@ TEST_P(VeloxReaderTests, StringKeyFlatMapAsStruct) {
   for (auto i = 0; i < iterations; ++i) {
     writeAndVerify(
         generator.rng(),
-        *pool_,
+        *leafPool_,
         rowType,
         [&](auto&) { return generator.generateBatch(10); },
         compareFlatMaps<velox::StringView>,
@@ -2476,7 +2528,7 @@ TEST_P(VeloxReaderTests, FlatMapAsMapEncoding) {
       .rowType = rowType,
       .keyType = velox::TypeKind::INTEGER,
   };
-  VeloxMapGenerator generator(pool_.get(), generatorConfig);
+  VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
 
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.flatMapColumns.emplace("float_features");
@@ -2499,7 +2551,7 @@ TEST_P(VeloxReaderTests, FlatMapAsMapEncoding) {
   for (auto i = 0; i < iterations; ++i) {
     writeAndVerify(
         generator.rng(),
-        *pool_,
+        *leafPool_,
         rowType,
         [&](auto&) { return generator.generateBatch(10); },
         vectorEquals,
@@ -2520,7 +2572,7 @@ TEST_P(VeloxReaderTests, FlatMapAsMapEncoding) {
   for (auto i = 0; i < iterations; ++i) {
     writeAndVerify(
         generator.rng(),
-        *pool_,
+        *leafPool_,
         rowType,
         [&](auto&) { return generator.generateBatch(10); },
         vectorEquals,
@@ -2562,7 +2614,7 @@ TEST_P(VeloxReaderTests, FlatMapAsMapEncoding) {
     for (auto i = 0; i < iterations; ++i) {
       writeAndVerify(
           generator.rng(),
-          *pool_,
+          *leafPool_,
           rowType,
           [&](auto&) { return generator.generateBatch(10); },
           vectorEquals,
@@ -2611,7 +2663,7 @@ TEST_P(VeloxReaderTests, FlatMapAsMapEncoding) {
     for (auto i = 0; i < iterations; ++i) {
       writeAndVerify(
           generator.rng(),
-          *pool_,
+          *leafPool_,
           rowType,
           [&](auto&) { return generator.generateBatch(10); },
           vectorEquals,
@@ -2635,7 +2687,7 @@ TEST_F(VeloxReaderTests, StringKeyFlatMapAsMapEncoding) {
       .keyType = velox::TypeKind::VARCHAR,
       .stringKeyPrefix = "testKeyString_",
   };
-  VeloxMapGenerator generator(pool_.get(), generatorConfig);
+  VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
 
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.flatMapColumns.insert("string_key_feature");
@@ -2665,7 +2717,7 @@ TEST_F(VeloxReaderTests, StringKeyFlatMapAsMapEncoding) {
   for (auto i = 0; i < iterations; ++i) {
     writeAndVerify<velox::StringView>(
         generator.rng(),
-        *pool_,
+        *leafPool_,
         rowType,
         [&](auto&) { return generator.generateBatch(10); },
         nullptr, /* for key present use a fix function */
@@ -2680,7 +2732,7 @@ TEST_F(VeloxReaderTests, StringKeyFlatMapAsMapEncoding) {
   for (auto i = 0; i < iterations; ++i) {
     writeAndVerify<velox::StringView>(
         generator.rng(),
-        *pool_,
+        *leafPool_,
         rowType,
         [&](auto&) { return generator.generateBatch(10); },
         nullptr, /* for key present use a fix function */
@@ -2694,12 +2746,13 @@ TEST_F(VeloxReaderTests, StringKeyFlatMapAsMapEncoding) {
 class TestAlphaReaderFactory {
  public:
   TestAlphaReaderFactory(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& leafPool,
+      velox::memory::MemoryPool& rootPool,
       std::vector<velox::VectorPtr> vectors,
       const alpha::VeloxWriterOptions& writerOptions = {})
-      : memoryPool_(memoryPool) {
+      : memoryPool_(leafPool) {
     file_ = std::make_unique<velox::InMemoryReadFile>(
-        alpha::test::createAlphaFile(*rootPool, vectors, writerOptions));
+        alpha::test::createAlphaFile(rootPool, vectors, writerOptions));
     type_ = std::dynamic_pointer_cast<const velox::RowType>(vectors[0]->type());
   }
 
@@ -2795,7 +2848,7 @@ TEST_P(VeloxReaderTests, ReaderSeekTest) {
   bool multithreaded = GetParam();
 
   // Generate an Alpha file with 3 stripes and 10 rows each
-  auto vectors = createSkipSeekVectors(*pool_, {10, 10, 10});
+  auto vectors = createSkipSeekVectors(*leafPool_, {10, 10, 10});
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
   if (multithreaded) {
@@ -2807,7 +2860,8 @@ TEST_P(VeloxReaderTests, ReaderSeekTest) {
             std::thread::hardware_concurrency());
   }
 
-  TestAlphaReaderFactory readerFactory(*pool_, vectors, writerOptions);
+  TestAlphaReaderFactory readerFactory(
+      *leafPool_, *rootPool_, vectors, writerOptions);
   auto reader = readerFactory.createReader();
 
   auto rowResult = reader.skipRows(0);
@@ -2876,7 +2930,7 @@ TEST_P(VeloxReaderTests, ReaderSkipTest) {
   bool multithreaded = GetParam();
 
   // Generate an Alpha file with 3 stripes and 10 rows each
-  auto vectors = createSkipSeekVectors(*pool_, {10, 10, 10});
+  auto vectors = createSkipSeekVectors(*leafPool_, {10, 10, 10});
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
   if (multithreaded) {
@@ -2888,7 +2942,8 @@ TEST_P(VeloxReaderTests, ReaderSkipTest) {
             std::thread::hardware_concurrency());
   }
 
-  TestAlphaReaderFactory readerFactory(*pool_, vectors, writerOptions);
+  TestAlphaReaderFactory readerFactory(
+      *leafPool_, *rootPool_, vectors, writerOptions);
   auto reader = readerFactory.createReader();
 
   // Current position in Comments below represent the position in stripe
@@ -3045,7 +3100,7 @@ TEST_P(VeloxReaderTests, ReaderSkipSingleStripeTest) {
   bool multithreaded = GetParam();
 
   // Generate an Alpha file with 1 stripe and 12 rows
-  auto vectors = createSkipSeekVectors(*pool_, {12});
+  auto vectors = createSkipSeekVectors(*leafPool_, {12});
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
   if (multithreaded) {
@@ -3057,7 +3112,8 @@ TEST_P(VeloxReaderTests, ReaderSkipSingleStripeTest) {
             std::thread::hardware_concurrency());
   }
 
-  TestAlphaReaderFactory readerFactory(*pool_, vectors, writerOptions);
+  TestAlphaReaderFactory readerFactory(
+      *leafPool_, *rootPool_, vectors, writerOptions);
   auto reader = readerFactory.createReader();
 
   // Current position in Comments below represent the position in stripe
@@ -3107,7 +3163,7 @@ TEST_P(VeloxReaderTests, ReaderSeekSingleStripeTest) {
   bool multithreaded = GetParam();
 
   // Generate an Alpha file with 1 stripes and 11 rows
-  auto vectors = createSkipSeekVectors(*pool_, {11});
+  auto vectors = createSkipSeekVectors(*leafPool_, {11});
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
   if (multithreaded) {
@@ -3119,7 +3175,8 @@ TEST_P(VeloxReaderTests, ReaderSeekSingleStripeTest) {
             std::thread::hardware_concurrency());
   }
 
-  TestAlphaReaderFactory readerFactory(*pool_, vectors, writerOptions);
+  TestAlphaReaderFactory readerFactory(
+      *leafPool_, *rootPool_, vectors, writerOptions);
   auto reader = readerFactory.createReader();
 
   // Current position in Comments below represent the position in stripe
@@ -3148,11 +3205,12 @@ TEST_P(VeloxReaderTests, ReaderSeekSingleStripeTest) {
 
 TEST_F(VeloxReaderTests, ReaderSkipUnevenStripesTest) {
   // Generate an Alpha file with 4 stripes
-  auto vectors = createSkipSeekVectors(*pool_, {12, 15, 25, 18});
+  auto vectors = createSkipSeekVectors(*leafPool_, {12, 15, 25, 18});
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
 
-  TestAlphaReaderFactory readerFactory(*pool_, vectors, writerOptions);
+  TestAlphaReaderFactory readerFactory(
+      *leafPool_, *rootPool_, vectors, writerOptions);
   auto reader = readerFactory.createReader();
 
   // Current position in Comments below represent the position in stripe
@@ -3173,29 +3231,6 @@ TEST_F(VeloxReaderTests, ReaderSkipUnevenStripesTest) {
     EXPECT_EQ(rowResult, 23);
     velox::VectorPtr result;
     EXPECT_FALSE(reader.next(1, result));
-  }
-}
-
-template <typename T>
-void getFieldDefaultValue(alpha::Vector<T>& input, uint32_t index) {
-  static_assert(T() == 0, "Default Constructor value is not zero initialized");
-  input[index] = T();
-}
-
-template <>
-void getFieldDefaultValue(alpha::Vector<std::string>& input, uint32_t index) {
-  input[index] = std::string();
-}
-
-template <typename T>
-void verifyDefaultValue(T valueToBeUpdatedWith, T defaultValue, int32_t size) {
-  alpha::Vector<T> testData(leafPool.get(), size);
-  for (int i = 0; i < testData.size(); ++i) {
-    getFieldDefaultValue<T>(testData, i);
-    ASSERT_EQ(testData[i], defaultValue);
-    testData[i] = valueToBeUpdatedWith;
-    getFieldDefaultValue<T>(testData, i);
-    ASSERT_EQ(testData[i], defaultValue);
   }
 }
 
@@ -3238,7 +3273,7 @@ TEST_P(VeloxReaderTests, RangeReads) {
   bool multithreaded = GetParam();
 
   // Generate an Alpha file with 4 stripes
-  auto vectors = createSkipSeekVectors(*pool_, {10, 15, 25, 9});
+  auto vectors = createSkipSeekVectors(*leafPool_, {10, 15, 25, 9});
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
   if (multithreaded) {
@@ -3250,7 +3285,8 @@ TEST_P(VeloxReaderTests, RangeReads) {
             std::thread::hardware_concurrency());
   }
 
-  TestAlphaReaderFactory readerFactory(*pool_, vectors, writerOptions);
+  TestAlphaReaderFactory readerFactory(
+      *leafPool_, *rootPool_, vectors, writerOptions);
 
   auto test = [&readerFactory, &vectors](RangeTestParams params) {
     auto reader = readerFactory.createReader(alpha::VeloxReadParams{
@@ -3548,9 +3584,9 @@ TEST_P(VeloxReaderTests, RangeReads) {
 
 TEST_F(VeloxReaderTests, TestScalarFieldLifeCycle) {
   auto testScalarFieldLifeCycle =
-      [](const std::shared_ptr<const velox::RowType> schema,
-         int32_t batchSize,
-         std::mt19937& rng) {
+      [&](const std::shared_ptr<const velox::RowType> schema,
+          int32_t batchSize,
+          std::mt19937& rng) {
         velox::VectorPtr result;
         auto reader = getReaderForLifeCycleTest(schema, 4 * batchSize, rng);
         EXPECT_TRUE(reader->next(batchSize, result));
@@ -3615,9 +3651,9 @@ TEST_F(VeloxReaderTests, TestArrayFieldLifeCycle) {
   std::mt19937 rng{seed};
   auto type = velox::ROW({{"arr_val", velox::ARRAY(velox::BIGINT())}});
   auto testArrayFieldLifeCycle =
-      [](const std::shared_ptr<const velox::RowType> type,
-         int32_t batchSize,
-         std::mt19937& rng) {
+      [&](const std::shared_ptr<const velox::RowType> type,
+          int32_t batchSize,
+          std::mt19937& rng) {
         velox::VectorPtr result;
         auto reader = getReaderForLifeCycleTest(type, 4 * batchSize, rng);
         EXPECT_TRUE(reader->next(batchSize, result));
@@ -3677,9 +3713,9 @@ TEST_F(VeloxReaderTests, TestArrayFieldLifeCycle) {
 
 TEST_F(VeloxReaderTests, TestMapFieldLifeCycle) {
   auto testMapFieldLifeCycle =
-      [](const std::shared_ptr<const velox::RowType> type,
-         int32_t batchSize,
-         std::mt19937& rng) {
+      [&](const std::shared_ptr<const velox::RowType> type,
+          int32_t batchSize,
+          std::mt19937& rng) {
         velox::VectorPtr result;
         auto reader = getReaderForLifeCycleTest(type, 5 * batchSize, rng);
         EXPECT_TRUE(reader->next(batchSize, result));
@@ -3764,9 +3800,9 @@ TEST_F(VeloxReaderTests, TestMapFieldLifeCycle) {
 
 TEST_F(VeloxReaderTests, TestFlatMapAsMapFieldLifeCycle) {
   auto testFlatMapFieldLifeCycle =
-      [](const std::shared_ptr<const velox::RowType> type,
-         int32_t batchSize,
-         std::mt19937& rng) {
+      [&](const std::shared_ptr<const velox::RowType> type,
+          int32_t batchSize,
+          std::mt19937& rng) {
         velox::VectorPtr result;
         alpha::VeloxWriterOptions writeOptions;
         writeOptions.flatMapColumns.insert("flat_map");
@@ -3833,9 +3869,9 @@ TEST_F(VeloxReaderTests, TestFlatMapAsMapFieldLifeCycle) {
 
 TEST_F(VeloxReaderTests, TestRowFieldLifeCycle) {
   auto testRowFieldLifeCycle =
-      [](const std::shared_ptr<const velox::RowType> type,
-         int32_t batchSize,
-         std::mt19937& rng) {
+      [&](const std::shared_ptr<const velox::RowType> type,
+          int32_t batchSize,
+          std::mt19937& rng) {
         velox::VectorPtr result;
         auto reader = getReaderForLifeCycleTest(type, 5 * batchSize, rng);
         EXPECT_TRUE(reader->next(batchSize, result));
@@ -3897,28 +3933,6 @@ TEST_F(VeloxReaderTests, TestRowFieldLifeCycle) {
   }
 }
 
-namespace {
-void testVeloxTypeFromAlphaSchema(
-    velox::memory::MemoryPool& memoryPool,
-    alpha::VeloxWriterOptions writerOptions,
-    const velox::RowVectorPtr& vector) {
-  const auto& veloxRowType =
-      std::dynamic_pointer_cast<const velox::RowType>(vector->type());
-  auto file = alpha::test::createAlphaFile(*rootPool, vector, writerOptions);
-  auto inMemFile = velox::InMemoryReadFile(file);
-
-  alpha::VeloxReader veloxReader(
-      memoryPool,
-      &inMemFile,
-      std::make_shared<velox::dwio::common::ColumnSelector>(veloxRowType));
-  const auto& veloxTypeResult = convertToVeloxType(*veloxReader.schema());
-
-  EXPECT_EQ(*veloxRowType, *veloxTypeResult)
-      << "Expected: " << veloxRowType->toString()
-      << ", actual: " << veloxTypeResult->toString();
-}
-} // namespace
-
 TEST_F(VeloxReaderTests, VeloxTypeFromAlphaSchema) {
   auto type = velox::ROW({
       {"tinyint_val", velox::TINYINT()},
@@ -3947,17 +3961,17 @@ TEST_F(VeloxReaderTests, VeloxTypeFromAlphaSchema) {
       {"dictionary_array_val", velox::ARRAY(velox::BIGINT())},
   });
 
-  velox::VectorFuzzer fuzzer({.vectorSize = 100}, pool_.get());
+  velox::VectorFuzzer fuzzer({.vectorSize = 100}, leafPool_.get());
   auto vector = fuzzer.fuzzInputFlatRow(type);
 
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.flatMapColumns.insert("nested_map_row_val");
   writerOptions.dictionaryArrayColumns.insert("dictionary_array_val");
-  testVeloxTypeFromAlphaSchema(*pool_, writerOptions, vector);
+  testVeloxTypeFromAlphaSchema(*leafPool_, writerOptions, vector);
 }
 
 TEST_F(VeloxReaderTests, VeloxTypeFromAlphaSchemaEmptyFlatMap) {
-  velox::test::VectorMaker vectorMaker{pool_.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
   uint32_t numRows = 5;
   auto vector = vectorMaker.rowVector(
       {"col_0", "col_1"},
@@ -3981,19 +3995,19 @@ TEST_F(VeloxReaderTests, VeloxTypeFromAlphaSchemaEmptyFlatMap) {
       });
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.flatMapColumns.insert("col_1");
-  testVeloxTypeFromAlphaSchema(*pool_, writerOptions, vector);
+  testVeloxTypeFromAlphaSchema(*leafPool_, writerOptions, vector);
 }
 
 TEST_F(VeloxReaderTests, MissingMetadata) {
-  velox::test::VectorMaker vectorMaker{pool_.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector =
       vectorMaker.rowVector({vectorMaker.flatVector<int32_t>({1, 2, 3})});
 
   alpha::VeloxWriterOptions options;
-  auto file = alpha::test::createAlphaFile(*rootPool, vector, options);
+  auto file = alpha::test::createAlphaFile(*rootPool_, vector, options);
   alpha::testing::InMemoryTrackableReadFile readFile(file);
 
-  alpha::VeloxReader reader(*pool_, &readFile);
+  alpha::VeloxReader reader(*leafPool_, &readFile);
   {
     readFile.resetChunks();
     const auto& metadata = reader.metadata();
@@ -4013,17 +4027,17 @@ TEST_F(VeloxReaderTests, MissingMetadata) {
 }
 
 TEST_F(VeloxReaderTests, WithMetadata) {
-  velox::test::VectorMaker vectorMaker{pool_.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector =
       vectorMaker.rowVector({vectorMaker.flatVector<int32_t>({1, 2, 3})});
 
   alpha::VeloxWriterOptions options{
       .metadata = {{"key 1", "value 1"}, {"key 2", "value 2"}},
   };
-  auto file = alpha::test::createAlphaFile(*rootPool, vector, options);
+  auto file = alpha::test::createAlphaFile(*rootPool_, vector, options);
   alpha::testing::InMemoryTrackableReadFile readFile(file);
 
-  alpha::VeloxReader reader(*pool_, &readFile);
+  alpha::VeloxReader reader(*leafPool_, &readFile);
 
   {
     readFile.resetChunks();
@@ -4061,7 +4075,7 @@ TEST_F(VeloxReaderTests, InaccurateSchemaWithSelection) {
   // doesn't matter. In this case, we expect the compute engine to construct a
   // column selector, with dummy nodes in the schema for the unprojected
   // columns. This test verifies that the reader handles this correctly.
-  velox::test::VectorMaker vectorMaker{pool_.get()};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(
       {"int1", "int2", "string", "double", "row1", "row2", "int3", "int4"},
       {vectorMaker.flatVector<int32_t>({11, 12, 13, 14, 15}),
@@ -4083,7 +4097,7 @@ TEST_F(VeloxReaderTests, InaccurateSchemaWithSelection) {
 
   velox::VectorPtr result;
   {
-    auto file = alpha::test::createAlphaFile(*rootPool, vector);
+    auto file = alpha::test::createAlphaFile(*rootPool_, vector);
     velox::InMemoryReadFile readFile(file);
     auto inaccurateType = velox::ROW({
         {"c1", velox::VARCHAR()},
@@ -4101,7 +4115,7 @@ TEST_F(VeloxReaderTests, InaccurateSchemaWithSelection) {
     auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
         inaccurateType,
         std::vector<uint64_t>{projected.begin(), projected.end()});
-    alpha::VeloxReader reader(*pool_, &readFile, std::move(selector));
+    alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
 
     ASSERT_TRUE(reader.next(vector->size(), result));
     const auto& rowResult = result->as<velox::RowVector>();
