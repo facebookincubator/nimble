@@ -166,6 +166,12 @@ void run(
     return;
   }
 
+  dwio::tools::FormatConverterOptions converterOpts{
+      .inputFormat = velox::dwio::common::FileFormat::DWRF,
+      .outputFormat = velox::dwio::common::FileFormat::ALPHA,
+      .batchSize = FLAGS_batch_size,
+      .rowCount = FLAGS_row_count};
+
   // Transform the file with the given serde and other configs.
   std::map<std::string, std::string> serdeParameters;
   std::vector<std::string> flatMaps;
@@ -191,11 +197,9 @@ void run(
       folly::split(';', FLAGS_dictionary_array_names, dictionaryArrays);
     }
   }
+  converterOpts.serdeOverride = serdeParameters;
 
-  std::string schema;
-  std::string encodings;
-
-  dwio::api::WriterOptionOverrides writerOptionOverrides{
+  converterOpts.writerOptionOverrides = dwio::api::WriterOptionOverrides{
       .alphaOverrides = [&](auto& writerOptions) {
         for (const auto& col : flatMaps) {
           writerOptions.flatMapColumns.insert(col);
@@ -247,13 +251,12 @@ void run(
         }
       }};
 
-  bool fetchFeatureOrder = FLAGS_serialized_feature_order.empty() &&
+  converterOpts.fetchFeatureOrder = FLAGS_serialized_feature_order.empty() &&
       !FLAGS_feature_reordering_spec.empty();
 
   // Load partition metadata so that format converter can fetch the
   // feature order correctly.
-  std::shared_ptr<const dwio::catalog::PartitionMetadata> partitionMetadata;
-  if (fetchFeatureOrder) {
+  if (converterOpts.fetchFeatureOrder) {
     LOG(INFO) << "Loading feature reordering with spec: "
               << FLAGS_feature_reordering_spec;
     std::vector<std::string> parts;
@@ -266,24 +269,14 @@ void run(
 
     dwio::catalog::fbhive::HiveCatalog catalog{
         dwio::common::request::AccessDescriptorBuilder{}.build()};
-    partitionMetadata = catalog
-                            .getPartitionsByNames(
-                                /*ns=*/parts[0],
-                                /*tableName=*/parts[1],
-                                /*partitionNames=*/{parts[2]},
-                                /*prunePartitionMetadata=*/false)
-                            .front();
+    converterOpts.partitionMetadata = catalog
+                                          .getPartitionsByNames(
+                                              /*ns=*/parts[0],
+                                              /*tableName=*/parts[1],
+                                              /*partitionNames=*/{parts[2]},
+                                              /*prunePartitionMetadata=*/false)
+                                          .front();
   }
-
-  dwio::tools::FormatConverterOptions converterOpts{
-      .inputFormat = velox::dwio::common::FileFormat::DWRF,
-      .outputFormat = velox::dwio::common::FileFormat::ALPHA,
-      .serdeOverride = serdeParameters,
-      .batchSize = FLAGS_batch_size,
-      .rowCount = FLAGS_row_count,
-      .partitionMetadata = std::move(partitionMetadata),
-      .fetchFeatureOrder = fetchFeatureOrder,
-      .writerOptionOverrides = std::move(writerOptionOverrides)};
 
   dwio::tools::FormatConverter{std::move(memoryPool), std::move(converterOpts)}
       .run(inputFile, outputFile);
