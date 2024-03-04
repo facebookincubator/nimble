@@ -9,6 +9,7 @@
 #include "dwio/alpha/velox/EncodingLayoutTree.h"
 #include "dwio/alpha/velox/FlushPolicy.h"
 #include "folly/container/F14Set.h"
+#include "velox/common/base/SpillConfig.h"
 #include "velox/type/Type.h"
 
 // Options used by Velox writer that affect the output file format
@@ -98,6 +99,8 @@ struct VeloxWriterOptions {
 
   std::function<std::unique_ptr<velox::memory::MemoryReclaimer>()>
       reclaimerFactory = []() { return nullptr; };
+
+  const velox::common::SpillConfig* spillConfig{nullptr};
 
   bool enableChunking = false;
 };

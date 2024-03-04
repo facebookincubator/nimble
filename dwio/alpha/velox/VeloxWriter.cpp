@@ -443,7 +443,8 @@ VeloxWriter::VeloxWriter(
                      [&sb = context_->schemaBuilder]() { return sb.getRoot(); },
                      context_->options.featureReordering.value())
                : nullptr}},
-      root_{createRootField(*context_, schema_)} {
+      root_{createRootField(*context_, schema_)},
+      spillConfig_{options.spillConfig} {
   ALPHA_CHECK(file_, "File is null");
   VLOG(1) << "Using Encoding Selection: " << std::boolalpha
           << context_->options.useEncodingSelectionPolicy;

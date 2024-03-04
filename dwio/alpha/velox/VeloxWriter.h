@@ -66,6 +66,7 @@ class VeloxWriter {
 
   std::unique_ptr<Buffer> encodingBuffer_;
   std::vector<Stream> streams_;
+  const velox::common::SpillConfig* const spillConfig_;
 
   // Returning 'true' if stripe was written.
   bool tryWriteStripe(bool force = false);
