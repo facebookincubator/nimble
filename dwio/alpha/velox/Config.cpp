@@ -80,7 +80,7 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
 
 /* static */ Config::Entry<uint64_t> Config::RAW_STRIPE_SIZE(
     "alpha.raw.stripe.size",
-    256L * 1024L * 1024L);
+    512L * 1024L * 1024L);
 
 /* static */ Config::Entry<const std::vector<std::pair<EncodingType, float>>>
     Config::MANUAL_ENCODING_SELECTION_READ_FACTORS(
