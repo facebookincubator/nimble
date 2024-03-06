@@ -14,7 +14,7 @@
 #include "dwio/alpha/velox/VeloxReader.h"
 #include "dwio/alpha/velox/VeloxWriter.h"
 #include "thrift/lib/cpp2/protocol/DebugProtocol.h"
-#include "velox/exec/SharedArbitrator.h"
+#include "velox/common/memory/SharedArbitrator.h"
 #include "velox/vector/VectorStream.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
@@ -24,7 +24,7 @@ using namespace ::facebook;
 class VeloxWriterTests : public testing::Test {
  protected:
   static void SetUpTestCase() {
-    velox::exec::SharedArbitrator::registerFactory();
+    velox::memory::SharedArbitrator::registerFactory();
     velox::memory::MemoryManager::testingSetInstance(
         {.arbitratorKind = "SHARED"});
   }
