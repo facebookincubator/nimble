@@ -26,16 +26,16 @@ endif
 NUM_THREADS ?= $(shell getconf _NPROCESSORS_CONF 2>/dev/null || echo 1)
 CPU_TARGET ?= "avx"
 
-all: release			#: Build the release version
+all: release      #: Build the release version
 
-clean:					#: Delete all build artifacts
+clean:            #: Delete all build artifacts
 	rm -rf $(BUILD_BASE_DIR)
 
 submodules:
 	git submodule sync --recursive
 	git submodule update --init --recursive
 
-cmake: submodules  #: Use CMake to create a Makefile build system
+cmake: submodules	#: Use CMake to create a Makefile build system
 	mkdir -p $(BUILD_BASE_DIR)/$(BUILD_DIR) && \
 	cmake -B \
 		"$(BUILD_BASE_DIR)/$(BUILD_DIR)" \
@@ -44,21 +44,34 @@ cmake: submodules  #: Use CMake to create a Makefile build system
 		$(USE_CCACHE) \
 		${EXTRA_CMAKE_FLAGS}
 
-build:					#: Build the software based in BUILD_DIR and BUILD_TYPE variables
+build:            #: Build the software based in BUILD_DIR and BUILD_TYPE variables
 	cmake --build $(BUILD_BASE_DIR)/$(BUILD_DIR) -j $(NUM_THREADS)
 
-debug:					#: Build with debugging symbols
+debug:            #: Build with debugging symbols
 	$(MAKE) cmake BUILD_DIR=debug BUILD_TYPE=Debug
 	$(MAKE) build BUILD_DIR=debug -j ${NUM_THREADS}
 
-release:				#: Build the release version
+release:          #: Build the release version
 	$(MAKE) cmake BUILD_DIR=release BUILD_TYPE=Release && \
 	$(MAKE) build BUILD_DIR=release
 
-unittest: debug			#: Build with debugging and run unit tests
+unittest: debug   #: Build with debugging and run unit tests
 	cd $(BUILD_BASE_DIR)/debug && ctest -j ${NUM_THREADS} -VV --output-on-failure
 
-help:					#: Show the help messages
+format-fix:       #: Fix formatting issues in the main branch
+	scripts/format-check.py format main --fix
+
+format-check:     #: Check for formatting issues on the main branch
+	clang-format --version
+	scripts/format-check.py format main
+
+header-fix:       #: Fix license header issues in the current branch
+	scripts/format-check.py header main --fix
+
+header-check:     #: Check for license header issues on the main branch
+	scripts/format-check.py header main
+
+help:             #: Show the help messages
 	@cat $(firstword $(MAKEFILE_LIST)) | \
 	awk '/^[-a-z]+:/' | \
 	awk -F: '{ printf("%-20s   %s\n", $$1, $$NF) }'

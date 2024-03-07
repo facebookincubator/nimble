@@ -19,8 +19,7 @@ list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/CMake"
      "${PROJECT_SOURCE_DIR}/velox/CMake")
 include(ResolveDependency)
 
-set(VELOX_BUILD_MINIMAL ON CACHE BOOL "Velox minimal build.")
-set(VELOX_BUILD_DWIO ON CACHE BOOL "Velox dwio build.")
+set(VELOX_BUILD_MINIMAL_WITH_DWIO ON CACHE BOOL "Velox minimal build with dwio.")
 set(VELOX_BUILD_VECTOR_TEST_UTILS ON CACHE BOOL "Velox vector test utilities (VectorMaker).")
 set(VELOX_DEPENDENCY_SOURCE
   AUTO
