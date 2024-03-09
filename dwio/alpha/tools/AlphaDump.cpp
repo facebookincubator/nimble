@@ -120,9 +120,9 @@ int main(int argc, char* argv[]) {
            alpha::tools::AlphaDumpLib{
                std::cout, options["file"].as<std::string>()}
                .emitStreams(
-                    options["no_header"].as<bool>(),
-                    options["flatmap_keys"].as<bool>(),
-                    getOptional<uint32_t>(options["stripe"]));
+                   options["no_header"].as<bool>(),
+                   options["flatmap_keys"].as<bool>(),
+                   getOptional<uint32_t>(options["stripe"]));
          },
          positionalArgs)
       // clang-format off
@@ -159,9 +159,9 @@ int main(int argc, char* argv[]) {
            alpha::tools::AlphaDumpLib{
                std::cout, options["file"].as<std::string>()}
                .emitHistogram(
-                    options["root_only"].as<bool>(),
-                    options["no_header"].as<bool>(),
-                    getOptional<uint32_t>(options["stripe"]));
+                   options["root_only"].as<bool>(),
+                   options["no_header"].as<bool>(),
+                   getOptional<uint32_t>(options["stripe"]));
          },
          positionalArgs)
       // clang-format off
@@ -229,9 +229,11 @@ int main(int argc, char* argv[]) {
            alpha::tools::AlphaDumpLib{
                std::cout, options["file"].as<std::string>()}
                .emitBinary(
-                    [path = options["output"].as<std::string>()]() {
-                        return std::make_unique< std::ofstream>(path, std::ios::out | std::ios::binary | std::ios::trunc);
-                    },
+                   [path = options["output"].as<std::string>()]() {
+                     return std::make_unique<std::ofstream>(
+                         path,
+                         std::ios::out | std::ios::binary | std::ios::trunc);
+                   },
                    options["stream"].as<uint32_t>(),
                    options["stripe"].as<uint32_t>());
          },
@@ -266,7 +268,9 @@ int main(int argc, char* argv[]) {
             const std::vector<std::string>& /*args*/) {
            alpha::tools::AlphaDumpLib{
                std::cout, options["file"].as<std::string>()}
-               .emitLayout(options["no_header"].as<bool>(), !options["uncompressed"].as<bool>());
+               .emitLayout(
+                   options["no_header"].as<bool>(),
+                   !options["uncompressed"].as<bool>());
          },
          positionalArgs)
       // clang-format off

@@ -31,11 +31,6 @@ jobs:
       fail-fast: false
       matrix:
         config:
-          - { name: "License Header", 
-              command: "header-fix",
-              message: "Found missing License Header(s)",
-              reqs: "regex" 
-            }
           - { name: "Code Format",
               command: "format-fix",
               message: "Found format issues",

@@ -1,11 +1,7 @@
 add_library(alpha_velox_schema_utils SchemaUtils.cpp)
 target_link_libraries(
-  alpha_velox_schema_utils
-  alpha_velox_schema_fb
-  alpha_velox_schema_builder
-  alpha_velox_schema_reader
-  gtest
-  gtest_main)
+  alpha_velox_schema_utils alpha_velox_schema_fb alpha_velox_schema_builder
+  alpha_velox_schema_reader gtest gtest_main)
 
 add_executable(
   alpha_velox_tests

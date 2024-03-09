@@ -16,10 +16,5 @@ add_executable(
 
 add_test(alpha_common_tests alpha_common_tests)
 
-target_link_libraries(
-  alpha_common_tests
-  alpha_common
-  gtest
-  gtest_main
-  glog::glog
-  Folly::folly)
+target_link_libraries(alpha_common_tests alpha_common gtest gtest_main
+                      glog::glog Folly::folly)
