@@ -144,7 +144,7 @@ TEST(ExceptionTests, Assert) {
 TEST(ExceptionTests, Verify) {
   try {
     ALPHA_VERIFY_EXTERNAL(
-        "a" == "b",
+        1 == 2,
         LocalFileSystem,
         alpha::error_code::NotSupported,
         true,
@@ -156,7 +156,7 @@ TEST(ExceptionTests, Verify) {
         __FILE__,
         "",
         "TestBody",
-        "\"a\" == \"b\"",
+        "1 == 2",
         "error message3",
         "EXTERNAL",
         "NOT_SUPPORTED",
