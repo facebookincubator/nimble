@@ -119,7 +119,7 @@ int main(int argc, char* argv[]) {
       try {
         partitionProperties =
             catalog.getPartitionStorageProperties(ns, table, values);
-      } catch (const velox::VeloxException& e) {
+      } catch (const velox::VeloxException&) {
         LOG(INFO) << "Skipping " << folly::join(",", values) << "...";
       }
 
