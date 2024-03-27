@@ -467,29 +467,36 @@ VeloxWriter::VeloxWriter(
   }
 }
 
-VeloxWriter::~VeloxWriter() {
+VeloxWriter::~VeloxWriter() {}
+
+bool VeloxWriter::write(const velox::VectorPtr& vector) {
+  if (lastException_) {
+    std::rethrow_exception(lastException_);
+  }
+
+  ALPHA_CHECK(file_, "Writer is already closed");
   try {
-    close();
-  } catch (const std::exception& ex) {
-    LOG(WARNING) << "Failed to close velox writer: " << ex.what();
+    auto size = vector->size();
+    context_->memoryUsed += root_->write(vector, OrderedRanges::of(0, size));
+    context_->rowsInFile += size;
+    context_->rowsInStripe += size;
+    return tryWriteStripe();
+  } catch (...) {
+    lastException_ = std::current_exception();
+    throw;
   }
 }
 
-bool VeloxWriter::write(const velox::VectorPtr& vector) {
-  ALPHA_CHECK(file_, "Writer is already closed");
-  auto size = vector->size();
-  context_->memoryUsed += root_->write(vector, OrderedRanges::of(0, size));
-  context_->rowsInFile += size;
-  context_->rowsInStripe += size;
-  return tryWriteStripe();
-}
-
 void VeloxWriter::close() {
+  if (lastException_) {
+    std::rethrow_exception(lastException_);
+  }
+
   if (file_) {
-    auto exitGuard =
-        folly::makeGuard([this]() { context_->flushPolicy->onClose(); });
-    flush();
     try {
+      auto exitGuard =
+          folly::makeGuard([this]() { context_->flushPolicy->onClose(); });
+      flush();
       root_->close();
 
       if (!context_->options.metadata.empty()) {
@@ -536,11 +543,13 @@ void VeloxWriter::close() {
       context_->logger->logFileClose(metrics);
       file_ = nullptr;
     } catch (const std::exception& e) {
+      lastException_ = std::current_exception();
       context_->logger->logException(
           MetricsLogger::kFileCloseOperation, e.what());
       file_ = nullptr;
       throw;
     } catch (...) {
+      lastException_ = std::current_exception();
       context_->logger->logException(
           MetricsLogger::kFileCloseOperation,
           folly::to<std::string>(
@@ -552,7 +561,16 @@ void VeloxWriter::close() {
 }
 
 void VeloxWriter::flush() {
-  tryWriteStripe(true);
+  if (lastException_) {
+    std::rethrow_exception(lastException_);
+  }
+
+  try {
+    tryWriteStripe(true);
+  } catch (...) {
+    lastException_ = std::current_exception();
+    throw;
+  }
 }
 
 void VeloxWriter::writeChunk(bool lastChunk) {

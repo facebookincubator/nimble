@@ -5,6 +5,7 @@
 #include <velox/exec/MemoryReclaimer.h>
 #include <zstd.h>
 
+#include "common/strings/UUID.h"
 #include "dwio/alpha/common/EncodingPrimitives.h"
 #include "dwio/alpha/common/tests/TestUtils.h"
 #include "dwio/alpha/encodings/EncodingLayoutCapture.h"
@@ -39,23 +40,89 @@ class VeloxWriterTests : public testing::Test {
 };
 
 TEST_F(VeloxWriterTests, EmptyFile) {
-  const uint32_t batchSize = 10;
   auto type = velox::ROW({{"simple", velox::INTEGER()}});
-  alpha::VeloxWriterOptions writerOptions;
 
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
-  alpha::VeloxWriter writer(
-      *rootPool_, type, std::move(writeFile), std::move(writerOptions));
+  alpha::VeloxWriter writer(*rootPool_, type, std::move(writeFile), {});
   writer.close();
 
   velox::InMemoryReadFile readFile(file);
-  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
-  alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
+  alpha::VeloxReader reader(*leafPool_, &readFile);
 
   velox::VectorPtr result;
-  ASSERT_FALSE(reader.next(batchSize, result));
+  ASSERT_FALSE(reader.next(1, result));
+}
+
+TEST_F(VeloxWriterTests, ExceptionOnClose) {
+  class ThrowingWriteFile final : public velox::WriteFile {
+   public:
+    void append(std::string_view /* data */) final {
+      throw std::runtime_error("error/" + strings::generateUUID());
+    }
+    void flush() final {
+      throw std::runtime_error("error/" + strings::generateUUID());
+    }
+    void close() final {
+      throw std::runtime_error("error/" + strings::generateUUID());
+    }
+    uint64_t size() const final {
+      throw std::runtime_error("error/" + strings::generateUUID());
+    }
+  };
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto vector = vectorMaker.rowVector(
+      {"col0"}, {vectorMaker.flatVector<int32_t>({1, 2, 3})});
+
+  std::string file;
+  auto writeFile = std::make_unique<ThrowingWriteFile>();
+
+  alpha::VeloxWriter writer(
+      *rootPool_,
+      vector->type(),
+      std::move(writeFile),
+      {.flushPolicyFactory = [&]() {
+        return std::make_unique<alpha::LambdaFlushPolicy>(
+            [&](auto&) { return alpha::FlushDecision::Stripe; });
+      }});
+  std::string error;
+  try {
+    writer.write(vector);
+    FAIL() << "Expecting exception";
+  } catch (const std::runtime_error& e) {
+    EXPECT_TRUE(std::string{e.what()}.starts_with("error/"));
+    error = e.what();
+  }
+
+  try {
+    writer.write(vector);
+    FAIL() << "Expecting exception";
+  } catch (const std::runtime_error& e) {
+    EXPECT_EQ(error, e.what());
+  }
+
+  try {
+    writer.flush();
+    FAIL() << "Expecting exception";
+  } catch (const std::runtime_error& e) {
+    EXPECT_EQ(error, e.what());
+  }
+
+  try {
+    writer.close();
+    FAIL() << "Expecting exception";
+  } catch (const std::runtime_error& e) {
+    EXPECT_EQ(error, e.what());
+  }
+
+  try {
+    writer.close();
+    FAIL() << "Expecting exception";
+  } catch (const std::runtime_error& e) {
+    EXPECT_EQ(error, e.what());
+  }
 }
 
 TEST_F(VeloxWriterTests, EmptyFileNoSchema) {
