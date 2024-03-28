@@ -12,6 +12,7 @@
 #include "dwio/alpha/encodings/SentinelEncoding.h"
 #include "dwio/alpha/tablet/Tablet.h"
 #include "dwio/alpha/velox/BufferGrowthPolicy.h"
+#include "dwio/alpha/velox/ChunkedStreamWriter.h"
 #include "dwio/alpha/velox/EncodingLayoutTree.h"
 #include "dwio/alpha/velox/FieldWriter.h"
 #include "dwio/alpha/velox/FlatMapLayoutPlanner.h"
@@ -591,8 +592,14 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       auto encoded =
           encodeStream(*context_, *encodingBuffer_, type, nonNulls, cols);
       if (!encoded.empty()) {
-        streams_.at(type->offset()).add(encoded);
-        chunkSize += encoded.size();
+        ChunkedStreamWriter chunkWriter{*encodingBuffer_};
+        ALPHA_DASSERT(
+            type->offset() < streams_.size(), "Stream offset out of range.");
+        auto& stream = streams_[type->offset()];
+        for (auto& buffer : chunkWriter.encode(encoded)) {
+          chunkSize += buffer.size();
+          stream.content.push_back(std::move(buffer));
+        }
       }
     };
 
@@ -630,7 +637,7 @@ uint32_t VeloxWriter::writeStripe() {
     size_t nonEmptyCount = 0;
     for (auto i = 0; i < streams_.size(); ++i) {
       auto& source = streams_[i];
-      if (source.size > 0) {
+      if (!source.content.empty()) {
         source.offset = i;
         if (nonEmptyCount != i) {
           streams_[nonEmptyCount] = std::move(source);

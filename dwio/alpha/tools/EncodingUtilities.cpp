@@ -218,7 +218,7 @@ void traverseEncodings(
   traverseEncodings(stream, 0, 0, "", visitor);
 }
 
-std::string getStreamInputLabel(alpha::StreamInput& stream) {
+std::string getStreamInputLabel(alpha::ChunkedStream& stream) {
   std::string label;
   uint32_t chunkId = 0;
   while (stream.hasNext()) {

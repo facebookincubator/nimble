@@ -239,6 +239,19 @@ class Vector {
     }
   }
 
+  velox::BufferPtr releaseOwnership() {
+    velox::BufferPtr tmp = std::move(data_);
+    tmp->setSize(size_);
+    capacity_ = 0;
+    size_ = 0;
+    data_ = nullptr;
+    dataRawPtr_ = nullptr;
+#ifndef NDEBUG
+    dataRawPtr_ = placeholder_.data();
+#endif
+    return tmp;
+  }
+
  private:
   inline void init(size_t size) {
     capacity_ = size;

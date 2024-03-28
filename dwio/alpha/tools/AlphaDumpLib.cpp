@@ -90,11 +90,12 @@ class TableFormatter {
 };
 
 void traverseTablet(
+    velox::memory::MemoryPool& memoryPool,
     const Tablet& tablet,
     std::optional<int32_t> stripeIndex,
     std::function<void(uint32_t /* stripeId */)> stripeVisitor = nullptr,
     std::function<void(
-        StreamInput& /*stream*/,
+        ChunkedStream& /*stream*/,
         uint32_t /*stripeId*/,
         uint32_t /* streamId*/)> streamVisitor = nullptr) {
   uint32_t startStripe = stripeIndex ? *stripeIndex : 0;
@@ -110,76 +111,12 @@ void traverseTablet(
       for (uint32_t j = 0; j < streams.size(); ++j) {
         auto& stream = streams[j];
         if (stream) {
-          streamVisitor(*stream, i, j);
+          InMemoryChunkedStream chunkedStream{memoryPool, std::move(stream)};
+          streamVisitor(chunkedStream, i, j);
         }
       }
     }
   }
-}
-
-std::string getEncodingTypeLabel(alpha::StreamInput& stream) {
-  std::string label;
-  uint32_t chunkId = 0;
-  while (stream.hasNext()) {
-    label += folly::to<std::string>(chunkId++);
-    auto compression = stream.peekCompressionType();
-    if (compression != CompressionType::Uncompressed) {
-      label += "{" + toString(compression) + "}";
-    }
-    label += ":";
-    uint32_t currentLevel = 0;
-    auto chunk = stream.nextChunk();
-    traverseEncodings(
-        chunk,
-        [&](EncodingType encodingType,
-            DataType dataType,
-            uint32_t level,
-            uint32_t index,
-            std::string nestedEncodingName,
-            std::unordered_map<EncodingPropertyType, EncodingProperty>
-                properties) -> bool {
-          if (level > currentLevel) {
-            label += "[" + nestedEncodingName + ":";
-          } else if (level < currentLevel) {
-            label += "]";
-          }
-
-          if (index > 0) {
-            label += "," + nestedEncodingName + ":";
-          }
-
-          currentLevel = level;
-
-          label += toString(encodingType) + "<" + toString(dataType);
-          const auto& encodedSize =
-              properties.find(EncodingPropertyType::EncodedSize);
-          if (encodedSize != properties.end()) {
-            label += "," + encodedSize->second.value;
-          }
-          label += ">";
-
-          const auto& compressionProperty =
-              properties.find(EncodingPropertyType::Compression);
-          if (compressionProperty != properties.end()
-              // If the "Uncompressed" label clutters the output, uncomment
-              // the next line.
-              // && compressionProperty->second.value !=
-              // toString(CompressionType::Uncompressed)
-          ) {
-            label += "{" + compressionProperty->second.value + "}";
-          }
-
-          return true;
-        });
-    while (currentLevel-- > 0) {
-      label += "]";
-    }
-
-    if (stream.hasNext()) {
-      label += ";";
-    }
-  }
-  return label.substr(0);
 }
 
 template <typename T>
@@ -337,7 +274,7 @@ void AlphaDumpLib::emitStripes(bool noHeader) {
        {"Stripe Size", 15},
        {"Row Count", 15}},
       noHeader);
-  traverseTablet(tablet, std::nullopt, [&](uint32_t stripeIndex) {
+  traverseTablet(*pool_, tablet, std::nullopt, [&](uint32_t stripeIndex) {
     auto sizes = tablet.streamSizes(stripeIndex);
     auto stripeSize = std::accumulate(sizes.begin(), sizes.end(), 0UL);
     formatter.writeRow({
@@ -400,10 +337,11 @@ void AlphaDumpLib::emitStreams(
   }
 
   traverseTablet(
+      *pool_,
       *tablet,
       stripeId,
       nullptr /* stripeVisitor */,
-      [&](StreamInput& stream, uint32_t stripeId, uint32_t streamId) {
+      [&](ChunkedStream& stream, uint32_t stripeId, uint32_t streamId) {
         uint32_t itemCount = 0;
         while (stream.hasNext()) {
           auto chunk = stream.nextChunk();
@@ -444,10 +382,11 @@ void AlphaDumpLib::emitHistogram(
       {toString(CompressionType::Zstrong), CompressionType::Zstrong},
   };
   traverseTablet(
+      *pool_,
       tablet,
       stripeId,
       nullptr,
-      [&](StreamInput& stream, auto /*stripeIndex*/, auto /*streamIndex*/) {
+      [&](ChunkedStream& stream, auto /*stripeIndex*/, auto /*streamIndex*/) {
         while (stream.hasNext()) {
           traverseEncodings(
               stream.nextChunk(),
@@ -497,7 +436,7 @@ void AlphaDumpLib::emitContent(
 
   uint32_t maxStreamCount;
   bool found = false;
-  traverseTablet(tablet, stripeId, [&](uint32_t stripeId) {
+  traverseTablet(*pool_, tablet, stripeId, [&](uint32_t stripeId) {
     maxStreamCount = std::max(maxStreamCount, tablet.streamCount(stripeId));
     if (streamId >= tablet.streamCount(stripeId)) {
       return;
@@ -508,8 +447,10 @@ void AlphaDumpLib::emitContent(
     auto streams = tablet.load(stripeId, std::vector{streamId});
 
     if (auto& stream = streams[0]) {
-      while (stream->hasNext()) {
-        auto encoding = EncodingFactory::decode(*pool_, stream->nextChunk());
+      InMemoryChunkedStream chunkedStream{*pool_, std::move(stream)};
+      while (chunkedStream.hasNext()) {
+        auto encoding =
+            EncodingFactory::decode(*pool_, chunkedStream.nextChunk());
         uint32_t totalRows = encoding->rowCount();
         while (totalRows > 0) {
           auto currentReadSize = std::min(kBufferSize, totalRows);
@@ -548,10 +489,8 @@ void AlphaDumpLib::emitBinary(
 
   if (auto& stream = streams[0]) {
     auto output = outputFactory();
-    stream->extract([&](auto data) {
-      output->write(data.data(), data.size());
-      output->flush();
-    });
+    output->write(stream->getStream().data(), stream->getStream().size());
+    output->flush();
   }
 }
 

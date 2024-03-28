@@ -228,9 +228,12 @@ void VeloxReader::loadStripe() {
           // has.
           decoders_[offsets_[i]] = nullptr;
         } else {
-          metrics.totalStreamSize += streams[i]->size();
+          metrics.totalStreamSize += streams[i]->getStream().size();
           decoders_[offsets_[i]] = std::make_unique<StreamInputDecoder>(
-              pool_, std::move(streams[i]), *logger_);
+              pool_,
+              std::make_unique<InMemoryChunkedStream>(
+                  pool_, std::move(streams[i])),
+              *logger_);
           ++metrics.streamCount;
         }
       }

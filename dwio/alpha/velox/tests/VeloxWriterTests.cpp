@@ -464,9 +464,12 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
         flatMapKey2Node.offset()};
     auto streams = tablet.load(i, identifiers);
     {
+      alpha::InMemoryChunkedStream chunkedStream{
+          *leafPool_, std::move(streams[0])};
+      ASSERT_TRUE(chunkedStream.hasNext());
       // Verify Map stream
       auto capture =
-          alpha::EncodingLayoutCapture::capture(streams[0]->nextChunk());
+          alpha::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
       EXPECT_EQ(alpha::EncodingType::Dictionary, capture.encodingType());
       EXPECT_EQ(
           alpha::EncodingType::FixedBitWidth,
@@ -479,9 +482,12 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
     }
 
     {
+      alpha::InMemoryChunkedStream chunkedStream{
+          *leafPool_, std::move(streams[1])};
+      ASSERT_TRUE(chunkedStream.hasNext());
       // Verify Map Values stream
       auto capture =
-          alpha::EncodingLayoutCapture::capture(streams[1]->nextChunk());
+          alpha::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
       EXPECT_EQ(alpha::EncodingType::MainlyConstant, capture.encodingType());
       EXPECT_EQ(
           alpha::EncodingType::Trivial,
@@ -496,9 +502,12 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
     }
 
     {
+      alpha::InMemoryChunkedStream chunkedStream{
+          *leafPool_, std::move(streams[2])};
+      ASSERT_TRUE(chunkedStream.hasNext());
       // Verify FlatMap Kay "1" stream
       auto capture =
-          alpha::EncodingLayoutCapture::capture(streams[2]->nextChunk());
+          alpha::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
       EXPECT_EQ(alpha::EncodingType::MainlyConstant, capture.encodingType());
       EXPECT_EQ(
           alpha::EncodingType::Trivial,
@@ -521,9 +530,12 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
     }
 
     {
+      alpha::InMemoryChunkedStream chunkedStream{
+          *leafPool_, std::move(streams[3])};
+      ASSERT_TRUE(chunkedStream.hasNext());
       // Verify FlatMap Kay "2" stream
       auto capture =
-          alpha::EncodingLayoutCapture::capture(streams[3]->nextChunk());
+          alpha::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
       EXPECT_EQ(alpha::EncodingType::Constant, capture.encodingType());
     }
   }

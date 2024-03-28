@@ -4,7 +4,7 @@
 
 #include "dwio/alpha/common/MetricsLogger.h"
 #include "dwio/alpha/encodings/Encoding.h"
-#include "dwio/alpha/tablet/StreamInput.h"
+#include "dwio/alpha/velox/ChunkedStream.h"
 #include "dwio/alpha/velox/Decoder.h"
 
 namespace facebook::alpha {
@@ -13,7 +13,7 @@ class StreamInputDecoder : public Decoder {
  public:
   StreamInputDecoder(
       velox::memory::MemoryPool& pool,
-      std::unique_ptr<StreamInput> stream,
+      std::unique_ptr<ChunkedStream> stream,
       const MetricsLogger& logger)
       : pool_{pool}, stream_{std::move(stream)}, logger_{logger} {}
 
@@ -31,7 +31,7 @@ class StreamInputDecoder : public Decoder {
   void ensureLoaded();
 
   velox::memory::MemoryPool& pool_;
-  std::unique_ptr<StreamInput> stream_;
+  std::unique_ptr<ChunkedStream> stream_;
   std::unique_ptr<Encoding> encoding_;
   uint32_t remaining_{0};
   const MetricsLogger& logger_;

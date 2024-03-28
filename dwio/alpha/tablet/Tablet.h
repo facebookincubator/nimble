@@ -5,7 +5,6 @@
 
 #include "dwio/alpha/common/Checksum.h"
 #include "dwio/alpha/common/Vector.h"
-#include "dwio/alpha/tablet/StreamInput.h"
 #include "folly/Range.h"
 #include "folly/io/IOBuf.h"
 #include "velox/common/file/File.h"
@@ -109,6 +108,14 @@ class Postscript {
   uint32_t minorVersion_;
 };
 
+// Stream loader abstraction.
+// This is the returned object when loading streams from a tablet.
+class StreamLoader {
+ public:
+  virtual ~StreamLoader() = default;
+  virtual const std::string_view getStream() const = 0;
+};
+
 // Provides read access to a Tablet written by a TabletWriter.
 // Example usage to read all streams from stripe 0 in a file:
 //   auto readFile = std::make_unique<LocalReadFile>("/tmp/myfile");
@@ -135,10 +142,11 @@ class Tablet {
       std::shared_ptr<velox::ReadFile> readFile,
       const std::vector<std::string>& preloadOptionalSections = {});
 
-  // Loads the requested streams from the given stripe. The streams are returned
-  // in the same order as the input stream identifiers vector. If a stream was
-  // not present in the given stripe a null pointer is returned in its slot.
-  std::vector<std::unique_ptr<StreamInput>> load(
+  // Returns a collection of stream loaders for the given stripe. The stream
+  // loaders are returned in the same order as the input stream identifiers
+  // span. If a stream was not present in the given stripe a nullptr is returned
+  // in its slot.
+  std::vector<std::unique_ptr<StreamLoader>> load(
       uint32_t stripe,
       std::span<const uint32_t> streamIdentifiers,
       std::function<std::string_view(uint32_t)> streamLabel = [](uint32_t) {
@@ -276,23 +284,7 @@ class Tablet {
 
 struct Stream {
   uint32_t offset;
-  uint64_t size{0};
   std::vector<std::string_view> content;
-  CompressionParams compressionParams;
-
-  explicit Stream(uint32_t offset = 0)
-      : offset{offset},
-        compressionParams{.type = CompressionType::Uncompressed} {}
-
-  Stream(uint32_t offset, std::string_view data, CompressionParams params)
-      : offset{offset}, compressionParams{std::move(params)} {
-    add(data);
-  }
-
-  void add(std::string_view data) {
-    content.push_back(data);
-    size += data.size();
-  }
 };
 
 class LayoutPlanner {
