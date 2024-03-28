@@ -9,6 +9,7 @@
 #include "dwio/alpha/common/EncodingPrimitives.h"
 #include "dwio/alpha/common/tests/TestUtils.h"
 #include "dwio/alpha/encodings/EncodingLayoutCapture.h"
+#include "dwio/alpha/velox/ChunkedStream.h"
 #include "dwio/alpha/velox/EncodingLayoutTree.h"
 #include "dwio/alpha/velox/SchemaSerialization.h"
 #include "dwio/alpha/velox/TabletSections.h"

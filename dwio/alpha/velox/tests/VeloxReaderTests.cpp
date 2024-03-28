@@ -3787,12 +3787,15 @@ TEST_F(VeloxReaderTests, TestMapFieldLifeCycle) {
         EXPECT_NE(childPtr, child1.get());
         EXPECT_EQ(rowPtr, result.get());
       };
-  auto seed = folly::Random::rand32();
+  uint32_t seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
   auto type =
       velox::ROW({{"map_val", velox::MAP(velox::INTEGER(), velox::REAL())}});
   for (int i = 0; i < 10; ++i) {
+    if (i == 4) {
+      LOG(INFO) << i;
+    }
     testMapFieldLifeCycle(type, 10, rng);
     testMapFieldLifeCycle(type, 10, rng);
   }

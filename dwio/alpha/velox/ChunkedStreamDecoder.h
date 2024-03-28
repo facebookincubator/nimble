@@ -9,9 +9,9 @@
 
 namespace facebook::alpha {
 
-class StreamInputDecoder : public Decoder {
+class ChunkedStreamDecoder : public Decoder {
  public:
-  StreamInputDecoder(
+  ChunkedStreamDecoder(
       velox::memory::MemoryPool& pool,
       std::unique_ptr<ChunkedStream> stream,
       const MetricsLogger& logger)

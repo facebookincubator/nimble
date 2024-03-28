@@ -5,6 +5,7 @@
 #include <optional>
 #include <vector>
 #include "dwio/alpha/common/Exceptions.h"
+#include "dwio/alpha/velox/ChunkedStreamDecoder.h"
 #include "dwio/alpha/velox/MetadataGenerated.h"
 #include "dwio/alpha/velox/SchemaReader.h"
 #include "dwio/alpha/velox/SchemaSerialization.h"
@@ -229,7 +230,7 @@ void VeloxReader::loadStripe() {
           decoders_[offsets_[i]] = nullptr;
         } else {
           metrics.totalStreamSize += streams[i]->getStream().size();
-          decoders_[offsets_[i]] = std::make_unique<StreamInputDecoder>(
+          decoders_[offsets_[i]] = std::make_unique<ChunkedStreamDecoder>(
               pool_,
               std::make_unique<InMemoryChunkedStream>(
                   pool_, std::move(streams[i])),
