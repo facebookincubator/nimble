@@ -48,7 +48,7 @@ class SentinelEncoding final
   uint32_t materializeNullable(
       uint32_t rowCount,
       void* buffer,
-      void* nullBitmap,
+      std::function<void*()> nulls,
       const bits::Bitmap* scatterBitmap = nullptr,
       uint32_t offset = 0) final;
 
@@ -143,7 +143,7 @@ template <typename T>
 uint32_t SentinelEncoding<T>::materializeNullable(
     uint32_t rowCount,
     void* buffer,
-    void* nullBitmap,
+    std::function<void*()> nulls,
     const bits::Bitmap* scatterBitmap,
     uint32_t offset) {
   if (offset > 0) {
@@ -154,6 +154,7 @@ uint32_t SentinelEncoding<T>::materializeNullable(
   // Member variables in tight loops are bad.
   const physicalType localSentinel = sentinelValue_;
   auto scatterCount = scatterBitmap ? scatterBitmap->size() - offset : rowCount;
+  void* nullBitmap = nulls();
   bits::BitmapBuilder nullBits{nullBitmap, offset + scatterCount};
   nullBits.clear(offset, offset + scatterCount);
 

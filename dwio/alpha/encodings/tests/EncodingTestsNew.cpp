@@ -404,7 +404,10 @@ TYPED_TEST(EncodingTests, ScatteredMaterialize) {
           {
             alpha::bits::Bitmap scatterBitmap(scatterPtr, newRowCount);
             actualRows = encoding->materializeNullable(
-                rowCount, buffer.data(), nullsPtr, &scatterBitmap);
+                rowCount,
+                buffer.data(),
+                [&]() { return nullsPtr; },
+                &scatterBitmap);
           }
           ASSERT_EQ(actualRows, rowCount);
           auto hasNulls = actualRows != newRowCount;
@@ -427,7 +430,10 @@ TYPED_TEST(EncodingTests, ScatteredMaterialize) {
           {
             alpha::bits::Bitmap scatterBitmap(scatterPtr, firstScatterSize);
             actualRows = encoding->materializeNullable(
-                firstBlock, buffer.data(), nullsPtr, &scatterBitmap);
+                firstBlock,
+                buffer.data(),
+                [&]() { return nullsPtr; },
+                &scatterBitmap);
           }
           ASSERT_EQ(actualRows, firstBlock);
           hasNulls = actualRows != firstScatterSize;
@@ -451,7 +457,7 @@ TYPED_TEST(EncodingTests, ScatteredMaterialize) {
             actualRows = encoding->materializeNullable(
                 secondBlock,
                 buffer.data(),
-                nullsPtr,
+                [&]() { return nullsPtr; },
                 &scatterBitmap,
                 firstScatterSize);
           }
@@ -484,7 +490,11 @@ TYPED_TEST(EncodingTests, ScatteredMaterialize) {
             {
               alpha::bits::Bitmap scatterBitmap(scatterPtr, scatterEnd);
               actualRows = encoding->materializeNullable(
-                  1, buffer.data(), nullsPtr, &scatterBitmap, scatterStart);
+                  1,
+                  buffer.data(),
+                  [&]() { return nullsPtr; },
+                  &scatterBitmap,
+                  scatterStart);
             }
             ASSERT_EQ(actualRows, 1);
             previousRows = expectedRow;
@@ -517,7 +527,11 @@ TYPED_TEST(EncodingTests, ScatteredMaterialize) {
             {
               alpha::bits::Bitmap scatterBitmap(scatterPtr, scatterEnd);
               actualRows = encoding->materializeNullable(
-                  len, buffer.data(), nullsPtr, &scatterBitmap, scatterStart);
+                  len,
+                  buffer.data(),
+                  [&]() { return nullsPtr; },
+                  &scatterBitmap,
+                  scatterStart);
             }
             ASSERT_EQ(actualRows, len);
             hasNulls = actualRows != scatterEnd - scatterStart;
