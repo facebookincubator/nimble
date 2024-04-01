@@ -1552,21 +1552,32 @@ TEST_F(VeloxReaderTests, FuzzSimple) {
   auto iterations = 20;
   auto batches = 20;
   std::mt19937 rng{seed};
-  for (auto i = 0; i < iterations; ++i) {
-    writeAndVerify(
-        rng,
-        *leafPool_,
-        rowType,
-        [&](auto& type) { return noNulls.fuzzInputRow(type); },
-        vectorEquals,
-        batches);
-    writeAndVerify(
-        rng,
-        *leafPool_,
-        rowType,
-        [&](auto& type) { return hasNulls.fuzzInputRow(type); },
-        vectorEquals,
-        batches);
+  for (auto parallelismFactor : {0U, 1U, std::thread::hardware_concurrency()}) {
+    LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
+    alpha::VeloxWriterOptions writerOptions;
+    if (parallelismFactor > 0) {
+      writerOptions.encodingExecutor =
+          std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
+    }
+
+    for (auto i = 0; i < iterations; ++i) {
+      writeAndVerify(
+          rng,
+          *leafPool_,
+          rowType,
+          [&](auto& type) { return noNulls.fuzzInputRow(type); },
+          vectorEquals,
+          batches,
+          writerOptions);
+      writeAndVerify(
+          rng,
+          *leafPool_,
+          rowType,
+          [&](auto& type) { return hasNulls.fuzzInputRow(type); },
+          vectorEquals,
+          batches,
+          writerOptions);
+    }
   }
 }
 
@@ -1629,23 +1640,31 @@ TEST_F(VeloxReaderTests, FuzzComplex) {
   auto iterations = 20;
   auto batches = 20;
   std::mt19937 rng{seed};
-  for (auto i = 0; i < iterations; ++i) {
-    writeAndVerify(
-        rng,
-        *leafPool_.get(),
-        rowType,
-        [&](auto& type) { return noNulls.fuzzInputRow(type); },
-        vectorEquals,
-        batches,
-        writerOptions);
-    writeAndVerify(
-        rng,
-        *leafPool_,
-        rowType,
-        [&](auto& type) { return hasNulls.fuzzInputRow(type); },
-        vectorEquals,
-        batches,
-        writerOptions);
+
+  for (auto parallelismFactor : {0U, 1U, std::thread::hardware_concurrency()}) {
+    LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
+    writerOptions.encodingExecutor = parallelismFactor > 0
+        ? std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor)
+        : nullptr;
+
+    for (auto i = 0; i < iterations; ++i) {
+      writeAndVerify(
+          rng,
+          *leafPool_.get(),
+          rowType,
+          [&](auto& type) { return noNulls.fuzzInputRow(type); },
+          vectorEquals,
+          batches,
+          writerOptions);
+      writeAndVerify(
+          rng,
+          *leafPool_,
+          rowType,
+          [&](auto& type) { return hasNulls.fuzzInputRow(type); },
+          vectorEquals,
+          batches,
+          writerOptions);
+    }
   }
 }
 

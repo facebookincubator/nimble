@@ -105,6 +105,10 @@ struct VeloxWriterOptions {
 
   const velox::common::SpillConfig* spillConfig{nullptr};
 
+  // If provided, internal encoding operations will happen in parallel using
+  // this executor.
+  std::shared_ptr<folly::Executor> encodingExecutor;
+
   bool enableChunking = false;
 };
 
