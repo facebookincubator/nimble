@@ -73,14 +73,6 @@ struct VeloxWriterOptions {
   bool lowMemoryMode = false;
   bool leafOnlyMode = false;
   bool useEncodingSelectionPolicy = true;
-  bool parallelEncoding = false;
-  bool parallelWriting = false;
-
-  // Optional writer parallel executor. When supplied, encoding/writing will be
-  // parallelized by this executor, if the column type supports parallel
-  // writing/decoding.
-  std::shared_ptr<folly::Executor> parallelExecutor;
-
   // The factory function that produces the root encoding selection policy.
   // Encoding selection policy is the way to balance the tradeoffs of
   // different performance factors (at both read and write times). Heuristics

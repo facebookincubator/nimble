@@ -7,7 +7,6 @@
 
 #include <bits/unique_ptr.h>
 #include <cstring>
-#include <mutex>
 #include <string_view>
 #include <vector>
 
@@ -40,9 +39,6 @@ class Buffer {
   // to, and guarantees for the lifetime of *this that that region will remain
   // valid. Does NOT guarantee that the region is initially 0'd.
   char* reserve(uint64_t bytes) {
-    // Lock to ensure can encode streams in parallel
-    // TODO: update with a better solution as this is critical flush path
-    std::scoped_lock<std::mutex> l(mutex_);
     if (reserveEnd_ + bytes <= chunkEnd_) {
       pos_ = reserveEnd_;
       reserveEnd_ += bytes;
@@ -85,8 +81,6 @@ class Buffer {
   char* chunkEnd_;
   char* pos_;
   char* reserveEnd_;
-  // TODO: T168114889 evaluate if we can remove the mutex from here
-  mutable std::mutex mutex_;
   std::vector<velox::BufferPtr> chunks_;
   MemoryPool& memoryPool_;
 };

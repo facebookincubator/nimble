@@ -342,7 +342,7 @@ size_t streamsReadCount(
 
 } // namespace
 
-class VeloxReaderTests : public ::testing::TestWithParam<bool> {
+class VeloxReaderTests : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
     velox::memory::MemoryManager::testingSetInstance({});
@@ -1489,9 +1489,7 @@ TEST_F(VeloxReaderTests, ArrayWithOffsetsCaching) {
       expectedUniqueArrays);
 }
 
-TEST_P(VeloxReaderTests, FuzzSimple) {
-  bool multithreaded = GetParam();
-
+TEST_F(VeloxReaderTests, FuzzSimple) {
   auto type = velox::ROW({
       {"bool_val", velox::BOOLEAN()},
       {"byte_val", velox::TINYINT()},
@@ -1507,16 +1505,6 @@ TEST_P(VeloxReaderTests, FuzzSimple) {
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
   uint32_t seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
-
-  alpha::VeloxWriterOptions writerOptions;
-  if (multithreaded) {
-    writerOptions.parallelEncoding = true;
-    writerOptions.parallelWriting = true;
-    writerOptions.parallelExecutor =
-        std::make_shared<folly::CPUThreadPoolExecutor>(
-            std::thread::hardware_concurrency(),
-            std::thread::hardware_concurrency());
-  }
 
   // Small batches creates more edge cases.
   size_t batchSize = 10;
@@ -1550,22 +1538,18 @@ TEST_P(VeloxReaderTests, FuzzSimple) {
         rowType,
         [&](auto& type) { return noNulls.fuzzInputRow(type); },
         vectorEquals,
-        batches,
-        writerOptions);
+        batches);
     writeAndVerify(
         rng,
         *leafPool_,
         rowType,
         [&](auto& type) { return hasNulls.fuzzInputRow(type); },
         vectorEquals,
-        batches,
-        writerOptions);
+        batches);
   }
 }
 
-TEST_P(VeloxReaderTests, FuzzComplex) {
-  bool multithreaded = GetParam();
-
+TEST_F(VeloxReaderTests, FuzzComplex) {
   auto type = velox::ROW({
       {"array", velox::ARRAY(velox::REAL())},
       {"dict_array", velox::ARRAY(velox::REAL())},
@@ -1593,15 +1577,6 @@ TEST_P(VeloxReaderTests, FuzzComplex) {
   writerOptions.dictionaryArrayColumns.insert("nested_map_array1");
   writerOptions.dictionaryArrayColumns.insert("nested_map_array2");
   writerOptions.dictionaryArrayColumns.insert("dict_array");
-
-  if (multithreaded) {
-    writerOptions.parallelEncoding = true;
-    writerOptions.parallelWriting = true;
-    writerOptions.parallelExecutor =
-        std::make_shared<folly::CPUThreadPoolExecutor>(
-            std::thread::hardware_concurrency(),
-            std::thread::hardware_concurrency());
-  }
 
   // Small batches creates more edge cases.
   size_t batchSize = 10;
@@ -1652,9 +1627,7 @@ TEST_P(VeloxReaderTests, FuzzComplex) {
   }
 }
 
-TEST_P(VeloxReaderTests, ArrayWithOffsets) {
-  bool multithreaded = GetParam();
-
+TEST_F(VeloxReaderTests, ArrayWithOffsets) {
   auto type = velox::ROW({
       {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
   });
@@ -1664,15 +1637,6 @@ TEST_P(VeloxReaderTests, ArrayWithOffsets) {
 
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
-  if (multithreaded) {
-    writerOptions.parallelEncoding = true;
-    writerOptions.parallelWriting = true;
-    writerOptions.parallelExecutor =
-        std::make_shared<folly::CPUThreadPoolExecutor>(
-            std::thread::hardware_concurrency(),
-            std::thread::hardware_concurrency());
-  }
-
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto iterations = 20;
@@ -1921,9 +1885,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsets) {
   }
 }
 
-TEST_P(VeloxReaderTests, ArrayWithOffsetsNullable) {
-  bool multithreaded = GetParam();
-
+TEST_F(VeloxReaderTests, ArrayWithOffsetsNullable) {
   auto type = velox::ROW({
       {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
   });
@@ -1933,14 +1895,6 @@ TEST_P(VeloxReaderTests, ArrayWithOffsetsNullable) {
 
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
-  if (multithreaded) {
-    writerOptions.parallelEncoding = true;
-    writerOptions.parallelWriting = true;
-    writerOptions.parallelExecutor =
-        std::make_shared<folly::CPUThreadPoolExecutor>(
-            std::thread::hardware_concurrency(),
-            std::thread::hardware_concurrency());
-  }
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto iterations = 20;
@@ -2141,9 +2095,7 @@ TEST_P(VeloxReaderTests, ArrayWithOffsetsNullable) {
   }
 }
 
-TEST_P(VeloxReaderTests, ArrayWithOffsetsMultiskips) {
-  bool multithreaded = GetParam();
-
+TEST_F(VeloxReaderTests, ArrayWithOffsetsMultiskips) {
   auto type = velox::ROW({
       {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
   });
@@ -2153,14 +2105,6 @@ TEST_P(VeloxReaderTests, ArrayWithOffsetsMultiskips) {
 
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
-  if (multithreaded) {
-    writerOptions.parallelEncoding = true;
-    writerOptions.parallelWriting = true;
-    writerOptions.parallelExecutor =
-        std::make_shared<folly::CPUThreadPoolExecutor>(
-            std::thread::hardware_concurrency(),
-            std::thread::hardware_concurrency());
-  }
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto iterations = 50;
@@ -2323,9 +2267,7 @@ TEST_F(VeloxReaderTests, FlatMapNullValues) {
   testFlatMapNullValues<velox::StringView>();
 }
 
-TEST_P(VeloxReaderTests, FlatMapToStruct) {
-  bool multithreaded = GetParam();
-
+TEST_F(VeloxReaderTests, FlatMapToStruct) {
   auto floatFeatures = velox::MAP(velox::INTEGER(), velox::REAL());
   auto idListFeatures =
       velox::MAP(velox::INTEGER(), velox::ARRAY(velox::BIGINT()));
@@ -2354,14 +2296,6 @@ TEST_P(VeloxReaderTests, FlatMapToStruct) {
   writerOptions.flatMapColumns.insert("id_list_features");
   writerOptions.flatMapColumns.insert("id_score_list_features");
   writerOptions.flatMapColumns.insert("row_column");
-  if (multithreaded) {
-    writerOptions.parallelEncoding = true;
-    writerOptions.parallelWriting = true;
-    writerOptions.parallelExecutor =
-        std::make_shared<folly::CPUThreadPoolExecutor>(
-            std::thread::hardware_concurrency(),
-            std::thread::hardware_concurrency());
-  }
 
   alpha::VeloxReadParams params;
   params.readFlatMapFieldAsStruct.insert("float_features");
@@ -2394,8 +2328,7 @@ TEST_P(VeloxReaderTests, FlatMapToStruct) {
   }
 }
 
-TEST_P(VeloxReaderTests, FlatMapToStructForComplexType) {
-  bool multithreaded = GetParam();
+TEST_F(VeloxReaderTests, FlatMapToStructForComplexType) {
   auto rowColumn = velox::MAP(
       velox::INTEGER(),
       velox::ROW(
@@ -2415,14 +2348,6 @@ TEST_P(VeloxReaderTests, FlatMapToStructForComplexType) {
 
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.flatMapColumns.insert("row_column");
-  if (multithreaded) {
-    writerOptions.parallelEncoding = true;
-    writerOptions.parallelWriting = true;
-    writerOptions.parallelExecutor =
-        std::make_shared<folly::CPUThreadPoolExecutor>(
-            std::thread::hardware_concurrency(),
-            std::thread::hardware_concurrency());
-  }
 
   alpha::VeloxReadParams params;
   params.readFlatMapFieldAsStruct.insert("row_column");
@@ -2446,9 +2371,7 @@ TEST_P(VeloxReaderTests, FlatMapToStructForComplexType) {
   }
 }
 
-TEST_P(VeloxReaderTests, StringKeyFlatMapAsStruct) {
-  bool multithreaded = GetParam();
-
+TEST_F(VeloxReaderTests, StringKeyFlatMapAsStruct) {
   auto stringKeyFeatures = velox::MAP(velox::VARCHAR(), velox::REAL());
   auto type = velox::ROW({
       {"string_key_feature", stringKeyFeatures},
@@ -2457,14 +2380,6 @@ TEST_P(VeloxReaderTests, StringKeyFlatMapAsStruct) {
 
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.flatMapColumns.insert("string_key_feature");
-  if (multithreaded) {
-    writerOptions.parallelEncoding = true;
-    writerOptions.parallelWriting = true;
-    writerOptions.parallelExecutor =
-        std::make_shared<folly::CPUThreadPoolExecutor>(
-            std::thread::hardware_concurrency(),
-            std::thread::hardware_concurrency());
-  }
 
   VeloxMapGeneratorConfig generatorConfig{
       .rowType = rowType,
@@ -2510,9 +2425,7 @@ TEST_P(VeloxReaderTests, StringKeyFlatMapAsStruct) {
   }
 }
 
-TEST_P(VeloxReaderTests, FlatMapAsMapEncoding) {
-  bool multithreaded = GetParam();
-
+TEST_F(VeloxReaderTests, FlatMapAsMapEncoding) {
   auto floatFeatures = velox::MAP(velox::INTEGER(), velox::REAL());
   auto idListFeatures =
       velox::MAP(velox::INTEGER(), velox::ARRAY(velox::BIGINT()));
@@ -2534,14 +2447,6 @@ TEST_P(VeloxReaderTests, FlatMapAsMapEncoding) {
   writerOptions.flatMapColumns.emplace("float_features");
   writerOptions.flatMapColumns.emplace("id_list_features");
   writerOptions.flatMapColumns.emplace("id_score_list_features");
-  if (multithreaded) {
-    writerOptions.parallelEncoding = true;
-    writerOptions.parallelWriting = true;
-    writerOptions.parallelExecutor =
-        std::make_shared<folly::CPUThreadPoolExecutor>(
-            std::thread::hardware_concurrency(),
-            std::thread::hardware_concurrency());
-  }
 
   // Verify the flatmap read without feature selection they are read as
   // MapEncoding
@@ -2844,21 +2749,11 @@ void readAndVerifyContent(
   }
 }
 
-TEST_P(VeloxReaderTests, ReaderSeekTest) {
-  bool multithreaded = GetParam();
-
+TEST_F(VeloxReaderTests, ReaderSeekTest) {
   // Generate an Alpha file with 3 stripes and 10 rows each
   auto vectors = createSkipSeekVectors(*leafPool_, {10, 10, 10});
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
-  if (multithreaded) {
-    writerOptions.parallelEncoding = true;
-    writerOptions.parallelWriting = true;
-    writerOptions.parallelExecutor =
-        std::make_shared<folly::CPUThreadPoolExecutor>(
-            std::thread::hardware_concurrency(),
-            std::thread::hardware_concurrency());
-  }
 
   TestAlphaReaderFactory readerFactory(
       *leafPool_, *rootPool_, vectors, writerOptions);
@@ -2926,21 +2821,11 @@ TEST_P(VeloxReaderTests, ReaderSeekTest) {
   }
 }
 
-TEST_P(VeloxReaderTests, ReaderSkipTest) {
-  bool multithreaded = GetParam();
-
+TEST_F(VeloxReaderTests, ReaderSkipTest) {
   // Generate an Alpha file with 3 stripes and 10 rows each
   auto vectors = createSkipSeekVectors(*leafPool_, {10, 10, 10});
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
-  if (multithreaded) {
-    writerOptions.parallelEncoding = true;
-    writerOptions.parallelWriting = true;
-    writerOptions.parallelExecutor =
-        std::make_shared<folly::CPUThreadPoolExecutor>(
-            std::thread::hardware_concurrency(),
-            std::thread::hardware_concurrency());
-  }
 
   TestAlphaReaderFactory readerFactory(
       *leafPool_, *rootPool_, vectors, writerOptions);
@@ -3096,21 +2981,11 @@ TEST_P(VeloxReaderTests, ReaderSkipTest) {
   }
 }
 
-TEST_P(VeloxReaderTests, ReaderSkipSingleStripeTest) {
-  bool multithreaded = GetParam();
-
+TEST_F(VeloxReaderTests, ReaderSkipSingleStripeTest) {
   // Generate an Alpha file with 1 stripe and 12 rows
   auto vectors = createSkipSeekVectors(*leafPool_, {12});
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
-  if (multithreaded) {
-    writerOptions.parallelEncoding = true;
-    writerOptions.parallelWriting = true;
-    writerOptions.parallelExecutor =
-        std::make_shared<folly::CPUThreadPoolExecutor>(
-            std::thread::hardware_concurrency(),
-            std::thread::hardware_concurrency());
-  }
 
   TestAlphaReaderFactory readerFactory(
       *leafPool_, *rootPool_, vectors, writerOptions);
@@ -3159,21 +3034,11 @@ TEST_P(VeloxReaderTests, ReaderSkipSingleStripeTest) {
   }
 }
 
-TEST_P(VeloxReaderTests, ReaderSeekSingleStripeTest) {
-  bool multithreaded = GetParam();
-
+TEST_F(VeloxReaderTests, ReaderSeekSingleStripeTest) {
   // Generate an Alpha file with 1 stripes and 11 rows
   auto vectors = createSkipSeekVectors(*leafPool_, {11});
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
-  if (multithreaded) {
-    writerOptions.parallelEncoding = true;
-    writerOptions.parallelWriting = true;
-    writerOptions.parallelExecutor =
-        std::make_shared<folly::CPUThreadPoolExecutor>(
-            std::thread::hardware_concurrency(),
-            std::thread::hardware_concurrency());
-  }
 
   TestAlphaReaderFactory readerFactory(
       *leafPool_, *rootPool_, vectors, writerOptions);
@@ -3269,21 +3134,11 @@ struct RangeTestParams {
   std::vector<std::tuple<uint32_t, uint32_t>> expectedSkips;
 };
 
-TEST_P(VeloxReaderTests, RangeReads) {
-  bool multithreaded = GetParam();
-
+TEST_F(VeloxReaderTests, RangeReads) {
   // Generate an Alpha file with 4 stripes
   auto vectors = createSkipSeekVectors(*leafPool_, {10, 15, 25, 9});
   alpha::VeloxWriterOptions writerOptions;
   writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
-  if (multithreaded) {
-    writerOptions.parallelEncoding = true;
-    writerOptions.parallelWriting = true;
-    writerOptions.parallelExecutor =
-        std::make_shared<folly::CPUThreadPoolExecutor>(
-            std::thread::hardware_concurrency(),
-            std::thread::hardware_concurrency());
-  }
 
   TestAlphaReaderFactory readerFactory(
       *leafPool_, *rootPool_, vectors, writerOptions);
@@ -4138,8 +3993,3 @@ TEST_F(VeloxReaderTests, InaccurateSchemaWithSelection) {
     ASSERT_FALSE(reader.next(vector->size(), result));
   }
 }
-
-INSTANTIATE_TEST_CASE_P(
-    VeloxReaderTestsMultiThreaded,
-    VeloxReaderTests,
-    ::testing::Values(false, true));

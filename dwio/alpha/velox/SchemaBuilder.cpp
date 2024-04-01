@@ -199,6 +199,7 @@ SchemaBuilder::createArrayWithOffsetsTypeBuilder() {
           ArrayWithOffsetsType{offset, nullptr, nullptr},
           ArrayWithOffsetsTypeBuilder{schemaBuilder, offset} {}
   };
+
   auto type = std::make_shared<MakeSharedEnabler>(*this, currentOffset_++);
   // This new type builder is not attached to a parent, therefore it is a new
   // tree "root" (as of now), so we add it to the roots list.
@@ -268,8 +269,8 @@ offset_size SchemaBuilder::nodeCount() const {
 const std::shared_ptr<const TypeBuilder>& SchemaBuilder::getRoot() const {
   // When retreiving schema nodes, we return a vector ordered based on the
   // schema tree DFS order. To be able to flatten the schema tree to a flat
-  // ordered vector, we need to guarantee that the schema tree has a single
-  // root node, where we start traversing from.
+  // ordered vector, we need to guarantee that the schema tree has a single root
+  // node, where we start traversing from.
   ALPHA_ASSERT(
       roots_.size() == 1,
       fmt::format(
@@ -279,12 +280,11 @@ const std::shared_ptr<const TypeBuilder>& SchemaBuilder::getRoot() const {
 }
 
 void SchemaBuilder::registerChild(const std::shared_ptr<TypeBuilder>& type) {
-  std::scoped_lock<std::mutex> l(mutex_);
-  // If we try to attach a node to a parent, but this node doesn't exist in
-  // the roots list, it means that either this node was already attached to a
-  // parent before (and therefore was removed from the roots list), or the
-  // node was created using a different schema builder instance (and therefore
-  // belongs to a roots list in the other schema builder instance).
+  // If we try to attach a node to a parent, but this node doesn't exist in the
+  // roots list, it means that either this node was already attached to a parent
+  // before (and therefore was removed from the roots list), or the node was
+  // created using a different schema builder instance (and therefore belongs to
+  // a roots list in the other schema builder instance).
   ALPHA_ASSERT(
       roots_.find(type) != roots_.end(),
       "Child type not found. This can happen if child is registered more than once, "
@@ -378,56 +378,6 @@ std::vector<std::unique_ptr<const SchemaNode>> SchemaBuilder::getSchemaNodes()
   nodes.reserve(currentOffset_);
   addNode(nodes, *root);
   return nodes;
-}
-
-std::shared_ptr<TypeBuilder> SchemaBuilder::createBuilderByTypeThreadSafe(
-    Kind kind) {
-  {
-    std::scoped_lock<std::mutex> l(mutex_);
-    switch (kind) {
-      case Kind::Array:
-        return createArrayTypeBuilder();
-      case Kind::ArrayWithOffsets:
-        return createArrayWithOffsetsTypeBuilder();
-      case Kind::Map:
-        return createMapTypeBuilder();
-      default:
-        ALPHA_UNREACHABLE(
-            fmt::format("Unsupported type kind {}", toString(kind)));
-    }
-  }
-}
-
-std::shared_ptr<TypeBuilder> SchemaBuilder::createBuilderByTypeThreadSafe(
-    Kind kind,
-    ScalarKind scalarKind) {
-  {
-    std::scoped_lock<std::mutex> l(mutex_);
-    switch (kind) {
-      case Kind::FlatMap:
-        return createFlatMapTypeBuilder(scalarKind);
-      case Kind::Scalar:
-        return createScalarTypeBuilder(scalarKind);
-      default:
-        ALPHA_UNREACHABLE(
-            fmt::format("Unsupported type kind {}", toString(kind)));
-    }
-  }
-}
-
-std::shared_ptr<TypeBuilder> SchemaBuilder::createBuilderByTypeThreadSafe(
-    Kind kind,
-    size_t param) {
-  {
-    std::scoped_lock<std::mutex> l(mutex_);
-    switch (kind) {
-      case Kind::Row:
-        return createRowTypeBuilder(param);
-      default:
-        ALPHA_UNREACHABLE(
-            fmt::format("Unsupported type kind {}", toString(kind)));
-    }
-  }
 }
 
 void printType(

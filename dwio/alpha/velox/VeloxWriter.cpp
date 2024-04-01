@@ -23,9 +23,6 @@
 #include "dwio/alpha/velox/SchemaTypes.h"
 #include "dwio/alpha/velox/TabletSections.h"
 #include "folly/ScopeGuard.h"
-#include "folly/concurrency/ConcurrentHashMap.h"
-#include "folly/experimental/coro/BlockingWait.h"
-#include "folly/experimental/coro/Collect.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/type/Type.h"
 
@@ -51,26 +48,14 @@ class WriterContext : public FieldWriterContext {
   uint64_t stripeSize{0};
   std::vector<uint64_t> rowsPerStripe;
 
-  WriterContext(MemoryPool& memoryPool, VeloxWriterOptions options_)
-      : FieldWriterContext{memoryPool, options_.reclaimerFactory()},
-        options{std::move(options_)},
+  WriterContext(MemoryPool& memoryPool, VeloxWriterOptions options)
+      : FieldWriterContext{memoryPool, options.reclaimerFactory()},
+        options{std::move(options)},
         logger{this->options.metricsLogger} {
     flushPolicy = this->options.flushPolicyFactory();
     inputBufferGrowthPolicy = this->options.lowMemoryMode
         ? std::make_unique<ExactGrowthPolicy>()
         : this->options.inputGrowthPolicyFactory();
-
-    parallelEncoding = options.parallelEncoding;
-    parallelWriting = options.parallelWriting;
-    parallelExecutor = options.parallelExecutor;
-    if ((parallelEncoding || parallelWriting) && !parallelExecutor) {
-      ALPHA_RAISE_USER_ERROR(
-          "parallelEncoding && parallelWriting && !parallelExecutor",
-          "Parallel writing requires a parallel executor.",
-          ::facebook::alpha::error_code::InvalidArgument,
-          false);
-    }
-
     if (!logger) {
       logger = std::make_shared<MetricsLogger>();
     }
@@ -603,17 +588,7 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       }
     };
 
-    if (context_->options.parallelEncoding) {
-      context_->tasks.clear();
-      context_->tasks.reserve(streams_.size());
-
-      root_->flush(collector, lastChunk);
-      folly::coro::blockingWait(
-          folly::coro::collectAllRange(std::move(context_->tasks)));
-    } else {
-      root_->flush(collector, lastChunk);
-    }
-
+    root_->flush(collector, lastChunk);
     context_->stripeSize += chunkSize;
   }
 

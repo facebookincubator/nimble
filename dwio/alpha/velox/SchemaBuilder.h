@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include <velox/type/Type.h>
 #include "dwio/alpha/common/Exceptions.h"
 #include "dwio/alpha/velox/SchemaReader.h"
 #include "dwio/alpha/velox/SchemaTypes.h"
@@ -189,15 +188,6 @@ class SchemaBuilder {
 
   const std::shared_ptr<const TypeBuilder>& getRoot() const;
 
-  // Create builder for given type with thread safety
-  std::shared_ptr<TypeBuilder> createBuilderByTypeThreadSafe(Kind kind);
-  std::shared_ptr<TypeBuilder> createBuilderByTypeThreadSafe(
-      Kind kind,
-      ScalarKind scalarKind);
-  std::shared_ptr<TypeBuilder> createBuilderByTypeThreadSafe(
-      Kind kind,
-      size_t param);
-
  private:
   void registerChild(const std::shared_ptr<TypeBuilder>& type);
 
@@ -219,7 +209,6 @@ class SchemaBuilder {
   // 2. Attaching a node more than once to a parent.
   folly::F14FastSet<std::shared_ptr<const TypeBuilder>> roots_;
   offset_size currentOffset_ = 0;
-  mutable std::mutex mutex_;
 
   friend class ScalarTypeBuilder;
   friend class ArrayTypeBuilder;

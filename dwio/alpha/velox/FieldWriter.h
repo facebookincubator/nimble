@@ -2,14 +2,12 @@
 
 #pragma once
 
-#include <mutex>
 #include <span>
 #include "dwio/alpha/common/Buffer.h"
 #include "dwio/alpha/common/Vector.h"
 #include "dwio/alpha/velox/BufferGrowthPolicy.h"
 #include "dwio/alpha/velox/OrderedRanges.h"
 #include "dwio/alpha/velox/SchemaBuilder.h"
-#include "folly/experimental/coro/Task.h"
 #include "velox/dwio/common/TypeWithId.h"
 #include "velox/vector/DecodedVector.h"
 
@@ -37,10 +35,6 @@ struct FieldWriterContext {
   // node ids.
   folly::F14FastSet<uint32_t> flatMapNodeIds;
   folly::F14FastSet<uint32_t> dictionaryArrayNodeIds;
-  bool parallelEncoding{false};
-  bool parallelWriting{false};
-  std::shared_ptr<folly::Executor> parallelExecutor;
-  std::vector<folly::coro::TaskWithExecutor<void>> tasks;
 
   std::function<void(const TypeBuilder&, std::string_view, const TypeBuilder&)>
       flatmapFieldAddedEventHandler;
@@ -80,8 +74,6 @@ struct FieldWriterContext {
   std::unique_ptr<Buffer> buffer_;
   std::vector<std::unique_ptr<velox::DecodedVector>> decodedVectorPool_;
   std::unique_ptr<velox::SelectivityVector> selectivity_;
-  // TODO: T168115445 replace with thread local pattern later
-  mutable std::mutex mutex_; // protects access to decodedVectorPool_
 };
 
 using OrderedRanges = range_helper::OrderedRanges<velox::vector_size_t>;

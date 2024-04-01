@@ -1,21 +1,10 @@
 // (c) Facebook, Inc. and its affiliates. Confidential and proprietary.
 
 #include "dwio/alpha/velox/FieldWriter.h"
-#include <folly/Executor.h>
-#include <velox/vector/ComplexVector.h>
-#include <velox/vector/DecodedVector.h>
-#include <velox/vector/SelectivityVector.h>
-#include <velox/vector/TypeAliases.h>
-#include <memory>
-#include <mutex>
-#include <numeric>
 #include "dwio/alpha/common/Exceptions.h"
 #include "dwio/alpha/common/Types.h"
 #include "dwio/alpha/velox/SchemaBuilder.h"
 #include "dwio/alpha/velox/SchemaTypes.h"
-#include "folly/experimental/coro/BlockingWait.h"
-#include "folly/experimental/coro/Collect.h"
-#include "folly/experimental/coro/Invoke.h"
 #include "velox/common/base/CompareFlags.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/FlatVector.h"
@@ -63,7 +52,6 @@ velox::SelectivityVector& FieldWriterContext::getSelectivityVector(
 }
 
 std::unique_ptr<velox::DecodedVector> FieldWriterContext::getDecodedVector() {
-  std::scoped_lock<std::mutex> l(mutex_);
   if (decodedVectorPool_.empty()) {
     return std::make_unique<velox::DecodedVector>();
   }
@@ -74,38 +62,23 @@ std::unique_ptr<velox::DecodedVector> FieldWriterContext::getDecodedVector() {
 
 void FieldWriterContext::releaseDecodedVector(
     std::unique_ptr<velox::DecodedVector>&& vector) {
-  std::scoped_lock<std::mutex> l(mutex_);
   decodedVectorPool_.push_back(std::move(vector));
 }
 
 FieldWriterContext::LocalDecodedVector FieldWriter::decode(
     const velox::VectorPtr& vector,
     const OrderedRanges& ranges) {
-  auto decodeLocal =
-      [this, &vector, &ranges](velox::SelectivityVector& selectivityVector)
-      -> FieldWriterContext::LocalDecodedVector {
-    // initialize selectivity vector
-    selectivityVector.clearAll();
-    ranges.apply([&](auto offset, auto size) {
-      selectivityVector.setValidRange(offset, offset + size, true);
-    });
-    selectivityVector.updateBounds();
+  auto& selectivityVector = context_.getSelectivityVector(vector->size());
+  // initialize selectivity vector
+  selectivityVector.clearAll();
+  ranges.apply([&](auto offset, auto size) {
+    selectivityVector.setValidRange(offset, offset + size, true);
+  });
+  selectivityVector.updateBounds();
 
-    auto localDecoded = context_.getLocalDecodedVector();
-    localDecoded.get().decode(*vector, selectivityVector);
-    return localDecoded;
-  };
-
-  if (!context_.parallelWriting) {
-    auto& selectivityVector = context_.getSelectivityVector(vector->size());
-    return decodeLocal(selectivityVector);
-  } else {
-    // TODO: T168115445 replace with thread local pattern later
-    auto selectivityLocal =
-        std::make_unique<velox::SelectivityVector>(vector->size());
-    auto& selectivityVector = *selectivityLocal;
-    return decodeLocal(selectivityVector);
-  }
+  auto localDecoded = context_.getLocalDecodedVector();
+  localDecoded.get().decode(*vector, selectivityVector);
+  return localDecoded;
 }
 
 void FieldWriter::ensureCapacity(bool mayHaveNulls, velox::vector_size_t size) {
@@ -410,10 +383,8 @@ class SimpleFieldWriter : public FieldWriter {
   explicit SimpleFieldWriter(FieldWriterContext& context)
       : FieldWriter(
             context,
-            std::dynamic_pointer_cast<ScalarTypeBuilder>(
-                context.schemaBuilder.createBuilderByTypeThreadSafe(
-                    Kind::Scalar,
-                    AlphaTypeTraits<K>::scalarKind))),
+            context.schemaBuilder.createScalarTypeBuilder(
+                AlphaTypeTraits<K>::scalarKind)),
         vec_{context.bufferMemoryPool.get()} {}
 
   uint64_t write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
@@ -472,26 +443,11 @@ class SimpleFieldWriter : public FieldWriter {
 
   void flush(const StreamCollector& collector, bool reset) override {
     // Need to solve reader problem before we can enable chunking for strings.
-    auto flushTask = [this, reset, &collector]() {
-      if (!std::is_same_v<C, StringConverter> || reset) {
-        flushStream(collector, hasNulls_, vec_, reset);
-      }
-
-      if (reset) {
-        FieldWriter::reset();
-      }
-    };
-
-    if (context_.parallelEncoding) {
-      context_.tasks.push_back(
-          folly::coro::co_invoke([flushTask]() -> folly::coro::Task<void> {
-            flushTask();
-            co_return;
-          })
-              .scheduleOn(
-                  folly::getKeepAliveToken(context_.parallelExecutor.get())));
-    } else {
-      flushTask();
+    if (!std::is_same_v<C, StringConverter> || reset) {
+      flushStream(collector, hasNulls_, vec_, reset);
+    }
+    if (reset) {
+      FieldWriter::reset();
     }
   }
 
@@ -511,9 +467,7 @@ class RowFieldWriter : public FieldWriter {
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
       : FieldWriter{
             context,
-            context.schemaBuilder.createBuilderByTypeThreadSafe(
-                Kind::Row,
-                type->size())} {
+            context.schemaBuilder.createRowTypeBuilder(type->size())} {
     auto rowType =
         std::dynamic_pointer_cast<const velox::RowType>(type->type());
 
@@ -555,63 +509,21 @@ class RowFieldWriter : public FieldWriter {
         childRanges.add(offset, 1);
       });
     }
-
-    if (context_.parallelWriting) {
-      std::vector<folly::coro::TaskWithExecutor<void>> tasks;
-      std::vector<uint64_t> memoryUsedChildren(fields_.size());
-      ALPHA_ASSERT(
-          memoryUsedChildren.size() == fields_.size(),
-          "MemoryUsedChildren size is smaller than expected");
-      for (auto i = 0; i < fields_.size(); ++i) {
-        tasks.push_back(
-            folly::coro::co_invoke(
-                [&memUsedChild = memoryUsedChildren[i],
-                 &field = fields_[i],
-                 &childRangesPtr,
-                 &child = row->childAt(i)]() -> folly::coro::Task<void> {
-                  co_await folly::coro::co_reschedule_on_current_executor;
-                  memUsedChild = field->write(child, *childRangesPtr);
-                  co_return;
-                })
-                .scheduleOn(
-                    folly::getKeepAliveToken(context_.parallelExecutor.get())));
-      }
-      folly::coro::blockingWait(folly::coro::collectAllRange(std::move(tasks)));
-      memoryUsed = std::accumulate(
-          memoryUsedChildren.begin(), memoryUsedChildren.end(), memoryUsed);
-    } else {
-      for (auto i = 0; i < fields_.size(); ++i) {
-        memoryUsed += fields_[i]->write(row->childAt(i), *childRangesPtr);
-      }
+    for (auto i = 0; i < fields_.size(); ++i) {
+      memoryUsed += fields_[i]->write(row->childAt(i), *childRangesPtr);
     }
     return memoryUsed + nullBitmapSize(size);
   }
 
   void flush(const StreamCollector& collector, bool reset) override {
-    auto flushTask = [this, reset, &collector]() {
-      if (hasNulls_) {
-        flushStream(collector, false, nonNulls_, reset);
-      }
-
-      if (reset) {
-        FieldWriter::reset();
-      }
-    };
-
-    if (context_.parallelEncoding) {
-      context_.tasks.push_back(
-          folly::coro::co_invoke([flushTask]() -> folly::coro::Task<void> {
-            flushTask();
-            co_return;
-          })
-              .scheduleOn(
-                  folly::getKeepAliveToken(context_.parallelExecutor.get())));
-    } else {
-      flushTask();
+    if (hasNulls_) {
+      flushStream(collector, false, nonNulls_, reset);
     }
-
     for (auto& field : fields_) {
       field->flush(collector, reset);
+    }
+    if (reset) {
+      FieldWriter::reset();
     }
   }
 
@@ -675,27 +587,6 @@ class MultiValueFieldWriter : public FieldWriter {
     return casted;
   }
 
-  void flush(const StreamCollector& collector, bool reset) override {
-    auto flushTask = [this, reset, &collector]() {
-      flushStream(collector, hasNulls_, lengths_, reset);
-      if (reset) {
-        FieldWriter::reset();
-      }
-    };
-
-    if (context_.parallelEncoding) {
-      context_.tasks.push_back(
-          folly::coro::co_invoke([flushTask]() -> folly::coro::Task<void> {
-            flushTask();
-            co_return;
-          })
-              .scheduleOn(
-                  folly::getKeepAliveToken(context_.parallelExecutor.get())));
-    } else {
-      flushTask();
-    }
-  }
-
   Vector<velox::vector_size_t> lengths_;
 };
 
@@ -706,7 +597,7 @@ class ArrayFieldWriter : public MultiValueFieldWriter {
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
       : MultiValueFieldWriter{
             context,
-            context.schemaBuilder.createBuilderByTypeThreadSafe(Kind::Array)} {
+            context.schemaBuilder.createArrayTypeBuilder()} {
     auto arrayType =
         std::dynamic_pointer_cast<const velox::ArrayType>(type->type());
 
@@ -730,8 +621,11 @@ class ArrayFieldWriter : public MultiValueFieldWriter {
   }
 
   void flush(const StreamCollector& collector, bool reset) override {
-    MultiValueFieldWriter::flush(collector, reset);
+    flushStream(collector, hasNulls_, lengths_, reset);
     elements_->flush(collector, reset);
+    if (reset) {
+      FieldWriter::reset();
+    }
   }
 
   void close() override {
@@ -749,7 +643,7 @@ class MapFieldWriter : public MultiValueFieldWriter {
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
       : MultiValueFieldWriter{
             context,
-            context.schemaBuilder.createBuilderByTypeThreadSafe(Kind::Map)} {
+            context.schemaBuilder.createMapTypeBuilder()} {
     auto mapType =
         std::dynamic_pointer_cast<const velox::MapType>(type->type());
 
@@ -774,9 +668,12 @@ class MapFieldWriter : public MultiValueFieldWriter {
   }
 
   void flush(const StreamCollector& collector, bool reset) override {
-    MultiValueFieldWriter::flush(collector, reset);
+    flushStream(collector, hasNulls_, lengths_, reset);
     keys_->flush(collector, reset);
     values_->flush(collector, reset);
+    if (reset) {
+      FieldWriter::reset();
+    }
   }
 
   void close() override {
@@ -794,11 +691,8 @@ class FlatMapValueFieldWriter {
   FlatMapValueFieldWriter(
       FieldWriterContext& context,
       std::unique_ptr<FieldWriter> valueField)
-      : context_(context),
-        inMapTypeBuilder_{std::dynamic_pointer_cast<ScalarTypeBuilder>(
-            context.schemaBuilder.createBuilderByTypeThreadSafe(
-                Kind::Scalar,
-                ScalarKind::Bool))},
+      : inMapTypeBuilder_{context.schemaBuilder.createScalarTypeBuilder(
+            ScalarKind::Bool)},
         valueField_{std::move(valueField)},
         inMapBuffer_(context.bufferMemoryPool.get()) {}
 
@@ -827,25 +721,10 @@ class FlatMapValueFieldWriter {
   }
 
   void flush(const StreamCollector& collector, bool reset) {
-    auto flushTask = [this, &collector]() {
-      if (inMapBuffer_.size() > 0) {
-        collector(inMapTypeBuilder_.get(), nullptr, convert(inMapBuffer_));
-        inMapBuffer_.clear();
-      }
-    };
-
-    if (context_.parallelEncoding) {
-      context_.tasks.push_back(
-          folly::coro::co_invoke([flushTask]() -> folly::coro::Task<void> {
-            flushTask();
-            co_return;
-          })
-              .scheduleOn(
-                  folly::getKeepAliveToken(context_.parallelExecutor.get())));
-    } else {
-      flushTask();
+    if (inMapBuffer_.size() > 0) {
+      collector(inMapTypeBuilder_.get(), nullptr, convert(inMapBuffer_));
+      inMapBuffer_.clear();
     }
-
     valueField_->flush(collector, reset);
   }
 
@@ -867,7 +746,6 @@ class FlatMapValueFieldWriter {
   }
 
  private:
-  FieldWriterContext& context_;
   std::shared_ptr<ScalarTypeBuilder> inMapTypeBuilder_;
   std::unique_ptr<FieldWriter> valueField_;
   Vector<bool> inMapBuffer_;
@@ -884,8 +762,7 @@ class FlatMapFieldWriter : public FieldWriter {
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
       : FieldWriter(
             context,
-            context.schemaBuilder.createBuilderByTypeThreadSafe(
-                Kind::FlatMap,
+            context.schemaBuilder.createFlatMapTypeBuilder(
                 AlphaTypeTraits<K>::scalarKind)),
         valueType_{type->childAt(1)} {}
 
@@ -967,38 +844,8 @@ class FlatMapFieldWriter : public FieldWriter {
     // Now actually ingest the map values
     if (nonNullCount > 0) {
       auto& values = map->mapValues();
-
-      if (context_.parallelWriting) {
-        std::vector<folly::coro::TaskWithExecutor<void>> tasks;
-        tasks.reserve(currentValueFields_.size());
-        folly::F14FastMap<KeyType, uint64_t> memoryUsedChildren(
-            currentValueFields_.size());
-        for (auto& pair : currentValueFields_) {
-          memoryUsedChildren[pair.first] = 0;
-          tasks.push_back(
-              folly::coro::co_invoke(
-                  [&pair,
-                   &memUsedChild = memoryUsedChildren[pair.first],
-                   &values = map->mapValues(),
-                   &nonNullCount]() -> folly::coro::Task<void> {
-                    co_await folly::coro::co_reschedule_on_current_executor;
-                    memUsedChild = pair.second->write(values, nonNullCount);
-                    co_return;
-                  })
-                  .scheduleOn(folly::getKeepAliveToken(
-                      context_.parallelExecutor.get())));
-        }
-        folly::coro::blockingWait(
-            folly::coro::collectAllRange(std::move(tasks)));
-        memoryUsed = std::accumulate(
-            memoryUsedChildren.begin(),
-            memoryUsedChildren.end(),
-            memoryUsed,
-            [](const auto& sum, const auto& val) { return sum + val.second; });
-      } else {
-        for (auto& pair : currentValueFields_) {
-          memoryUsed += pair.second->write(values, nonNullCount);
-        }
+      for (auto& pair : currentValueFields_) {
+        memoryUsed += pair.second->write(values, nonNullCount);
       }
     }
     nonNullCount_ += nonNullCount;
@@ -1006,34 +853,15 @@ class FlatMapFieldWriter : public FieldWriter {
   }
 
   void flush(const StreamCollector& collector, bool reset) override {
-    auto flushTask = [this, reset, &collector]() {
-      if (hasNulls_) {
-        flushStream(collector, false, nonNulls_, reset);
-      }
-
-      if (reset) {
-        FieldWriter::reset();
-        nonNullCount_ = 0;
-      }
-    };
-
-    if (context_.parallelEncoding) {
-      context_.tasks.push_back(
-          folly::coro::co_invoke([flushTask]() -> folly::coro::Task<void> {
-            flushTask();
-            co_return;
-          })
-              .scheduleOn(
-                  folly::getKeepAliveToken(context_.parallelExecutor.get())));
-    } else {
-      flushTask();
+    if (hasNulls_) {
+      flushStream(collector, false, nonNulls_, reset);
     }
-
     for (auto& pair : currentValueFields_) {
       pair.second->flush(collector, reset);
     }
-
     if (reset) {
+      FieldWriter::reset();
+      nonNullCount_ = 0;
       currentValueFields_.clear();
     }
   }
@@ -1041,9 +869,8 @@ class FlatMapFieldWriter : public FieldWriter {
   void close() override {
     // Add dummy node so we can preserve schema of an empty flat map.
     if (allValueFields_.empty()) {
-      auto inMap = std::dynamic_pointer_cast<ScalarTypeBuilder>(
-          context_.schemaBuilder.createBuilderByTypeThreadSafe(
-              Kind::Scalar, ScalarKind::Bool));
+      auto inMap =
+          context_.schemaBuilder.createScalarTypeBuilder(ScalarKind::Bool);
       auto valueField = FieldWriter::create(context_, valueType_);
       dynamic_cast<FlatMapTypeBuilder*>(typeBuilder_.get())
           ->addChild("", std::move(inMap), valueField->typeBuilder());
@@ -1145,7 +972,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
   ArrayWithOffsetsFieldWriter(
       FieldWriterContext& context,
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
-      : FieldWriter{context, context.schemaBuilder.createBuilderByTypeThreadSafe(Kind::ArrayWithOffsets)},
+      : FieldWriter{context, context.schemaBuilder.createArrayWithOffsetsTypeBuilder()},
         lengths_{context.bufferMemoryPool.get()},
         offsets_{context.bufferMemoryPool.get()},
         cached_(false),
@@ -1153,9 +980,8 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
         cachedSize_(0) {
     elements_ = FieldWriter::create(context, type->childAt(0));
 
-    offsetTypeBuilder_ = std::dynamic_pointer_cast<ScalarTypeBuilder>(
-        context_.schemaBuilder.createBuilderByTypeThreadSafe(
-            Kind::Scalar, ScalarKind::UInt32));
+    offsetTypeBuilder_ =
+        context_.schemaBuilder.createScalarTypeBuilder(ScalarKind::UInt32);
 
     dynamic_cast<ArrayWithOffsetsTypeBuilder*>(typeBuilder_.get())
         ->setChildren(offsetTypeBuilder_, elements_->typeBuilder());
@@ -1177,34 +1003,18 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
   }
 
   void flush(const StreamCollector& collector, bool reset) override {
-    auto flushTask = [this, reset, &collector]() {
-      flushStream(
-          collector, hasNulls_, offsets_, reset, offsetTypeBuilder_.get());
-      if (lengths_.size() > 0) {
-        collector(typeBuilder_.get(), nullptr, convert(lengths_));
-        lengths_.clear();
-      }
-
-      if (reset) {
-        FieldWriter::reset();
-        cached_ = false;
-        nextOffset_ = 0;
-      }
-    };
-
-    if (context_.parallelEncoding) {
-      context_.tasks.push_back(
-          folly::coro::co_invoke([flushTask]() -> folly::coro::Task<void> {
-            flushTask();
-            co_return;
-          })
-              .scheduleOn(
-                  folly::getKeepAliveToken(context_.parallelExecutor.get())));
-    } else {
-      flushTask();
+    flushStream(
+        collector, hasNulls_, offsets_, reset, offsetTypeBuilder_.get());
+    if (lengths_.size() > 0) {
+      collector(typeBuilder_.get(), nullptr, convert(lengths_));
+      lengths_.clear();
     }
-
     elements_->flush(collector, reset);
+    if (reset) {
+      FieldWriter::reset();
+      cached_ = false;
+      nextOffset_ = 0;
+    }
   }
 
   void close() override {
