@@ -1,7 +1,5 @@
 // Copyright 2004-present Facebook. All Rights Reserved.
 
-#include <folly/Random.h>
-#include <folly/executors/CPUThreadPoolExecutor.h>
 #include <gtest/gtest.h>
 #include <optional>
 #include <stdexcept>
@@ -15,6 +13,9 @@
 #include "dwio/alpha/velox/SchemaUtils.h"
 #include "dwio/alpha/velox/VeloxReader.h"
 #include "dwio/alpha/velox/VeloxWriter.h"
+#include "folly/FileUtil.h"
+#include "folly/Random.h"
+#include "folly/executors/CPUThreadPoolExecutor.h"
 #include "velox/dwio/common/ColumnSelector.h"
 #include "velox/type/Type.h"
 #include "velox/vector/BaseVector.h"
@@ -27,13 +28,26 @@
 
 using namespace ::facebook;
 
+DEFINE_string(
+    output_test_file_path,
+    "",
+    "If provided, files created during tests will be writtern to this path. "
+    "Each test will overwrite the previous file, so this is mainly useful when a single test is executed.");
+
+DEFINE_uint32(
+    reader_tests_seed,
+    0,
+    "If provided, this seed will be used when executing tests. "
+    "Otherwise, a random seed will be used.");
+
 namespace {
 struct VeloxMapGeneratorConfig {
   std::shared_ptr<const velox::RowType> rowType;
   velox::TypeKind keyType;
   std::string stringKeyPrefix = "test_";
   uint32_t maxSizeForMap = 10;
-  unsigned long seed = folly::Random::rand32();
+  unsigned long seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                                   : folly::Random::rand32();
   bool hasNulls = true;
 };
 
@@ -499,6 +513,7 @@ class VeloxReaderTests : public ::testing::Test {
     auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
     alpha::FlushDecision decision;
     writerOptions.enableChunking = true;
+    writerOptions.minStreamChunkRawSize = folly::Random::rand32(30, rng);
     writerOptions.flushPolicyFactory = [&]() {
       return std::make_unique<alpha::LambdaFlushPolicy>(
           [&](auto&) { return decision; });
@@ -515,7 +530,7 @@ class VeloxReaderTests : public ::testing::Test {
         decision = alpha::FlushDecision::None;
         auto batchSize = vector->size() - rowIndex;
         // Randomly produce chunks
-        if (folly::Random::oneIn(2)) {
+        if (folly::Random::oneIn(2, rng)) {
           batchSize = folly::Random::rand32(0, batchSize, rng) + 1;
           decision = alpha::FlushDecision::Chunk;
         }
@@ -529,6 +544,10 @@ class VeloxReaderTests : public ::testing::Test {
       expected.push_back(vector);
     }
     writer.close();
+
+    if (!FLAGS_output_test_file_path.empty()) {
+      folly::writeFile(file, FLAGS_output_test_file_path.c_str());
+    }
 
     velox::InMemoryReadFile readFile(file);
     auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
@@ -565,7 +584,7 @@ class VeloxReaderTests : public ::testing::Test {
       } else {
         for (auto j = 0; j < result->size(); ++j) {
           ASSERT_TRUE(validator(current, result, j))
-              << "Content mismatch at index " << j << " at count " << i
+              << "Content mismatch at batch " << i << " at row " << j
               << "\nReference: " << current->toString(j)
               << "\nResult: " << result->toString(j);
         }
@@ -741,7 +760,8 @@ TEST_F(VeloxReaderTests, DontReadUnprojectedFeaturesFromFile) {
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
 
   int batchSize = 500;
-  uint32_t seed = folly::Random::rand32();
+  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                              : folly::Random::rand32();
 
   VeloxMapGeneratorConfig generatorConfig{
       .rowType = rowType,
@@ -1503,7 +1523,8 @@ TEST_F(VeloxReaderTests, FuzzSimple) {
       // {"ts_val", velox::TIMESTAMP()},
   });
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
-  uint32_t seed = folly::Random::rand32();
+  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                              : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
 
   // Small batches creates more edge cases.
@@ -1570,7 +1591,8 @@ TEST_F(VeloxReaderTests, FuzzComplex) {
        velox::MAP(velox::INTEGER(), velox::ARRAY(velox::INTEGER()))},
   });
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
-  uint32_t seed = folly::Random::rand32();
+  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                              : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
 
   alpha::VeloxWriterOptions writerOptions;
@@ -1632,7 +1654,8 @@ TEST_F(VeloxReaderTests, ArrayWithOffsets) {
       {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
   });
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
-  uint32_t seed = folly::Random::rand32();
+  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                              : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
 
   alpha::VeloxWriterOptions writerOptions;
@@ -1890,7 +1913,8 @@ TEST_F(VeloxReaderTests, ArrayWithOffsetsNullable) {
       {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
   });
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
-  uint32_t seed = folly::Random::rand32();
+  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                              : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
 
   alpha::VeloxWriterOptions writerOptions;
@@ -2100,7 +2124,8 @@ TEST_F(VeloxReaderTests, ArrayWithOffsetsMultiskips) {
       {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
   });
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
-  uint32_t seed = folly::Random::rand32();
+  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                              : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
 
   alpha::VeloxWriterOptions writerOptions;
@@ -2681,7 +2706,8 @@ class TestAlphaReaderFactory {
 std::vector<velox::VectorPtr> createSkipSeekVectors(
     velox::memory::MemoryPool& pool,
     const std::vector<int>& rowsPerStripe) {
-  uint32_t seed = folly::Random::rand32();
+  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                              : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
 
@@ -3480,7 +3506,8 @@ TEST_F(VeloxReaderTests, TestScalarFieldLifeCycle) {
         EXPECT_NE(rawValues, child1->values().get());
       };
 
-  uint32_t seed = folly::Random::rand32();
+  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                              : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
   std::vector<std::shared_ptr<const velox::RowType>> types = {
@@ -3501,7 +3528,8 @@ TEST_F(VeloxReaderTests, TestScalarFieldLifeCycle) {
 }
 
 TEST_F(VeloxReaderTests, TestArrayFieldLifeCycle) {
-  uint32_t seed = folly::Random::rand32();
+  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                              : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
   auto type = velox::ROW({{"arr_val", velox::ARRAY(velox::BIGINT())}});
@@ -3642,7 +3670,8 @@ TEST_F(VeloxReaderTests, TestMapFieldLifeCycle) {
         EXPECT_NE(childPtr, child1.get());
         EXPECT_EQ(rowPtr, result.get());
       };
-  uint32_t seed = folly::Random::rand32();
+  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                              : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
   auto type =
@@ -3714,7 +3743,8 @@ TEST_F(VeloxReaderTests, TestFlatMapAsMapFieldLifeCycle) {
         EXPECT_NE(childPtr, child1.get());
         EXPECT_EQ(rowPtr, result.get());
       };
-  uint32_t seed = folly::Random::rand32();
+  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                              : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
   auto type =
@@ -3782,11 +3812,11 @@ TEST_F(VeloxReaderTests, TestRowFieldLifeCycle) {
       {{"row_val",
         velox::ROW(
             {{"a", velox::INTEGER()}, {"b", velox::ARRAY(velox::BIGINT())}})}});
-  uint32_t seed = folly::Random::rand32();
+  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                              : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
-  for (int i = 0; i < 10; ++i) {
-    testRowFieldLifeCycle(type, 10, rng);
+  for (int i = 0; i < 20; ++i) {
     testRowFieldLifeCycle(type, 10, rng);
   }
 }
@@ -3991,5 +4021,61 @@ TEST_F(VeloxReaderTests, InaccurateSchemaWithSelection) {
       }
     }
     ASSERT_FALSE(reader.next(vector->size(), result));
+  }
+}
+
+TEST_F(VeloxReaderTests, ChunkStreamsWithNulls) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  std::vector<facebook::velox::VectorPtr> vectors{
+      vectorMaker.rowVector({
+          vectorMaker.flatVectorNullable<int32_t>(
+              {std::nullopt, std::nullopt, std::nullopt}),
+          vectorMaker.flatVectorNullable<int32_t>(
+              {2, std::nullopt, std::nullopt}),
+          vectorMaker.flatVectorNullable<int32_t>(
+              {std::nullopt, std::nullopt, std::nullopt}),
+      }),
+      vectorMaker.rowVector({
+          vectorMaker.flatVectorNullable<int32_t>(
+              {std::nullopt, std::nullopt, std::nullopt}),
+          vectorMaker.flatVectorNullable<int32_t>(
+              {std::nullopt, std::nullopt, std::nullopt}),
+          vectorMaker.flatVectorNullable<int32_t>(
+              {std::nullopt, std::nullopt, std::nullopt}),
+      }),
+      vectorMaker.rowVector({
+          vectorMaker.flatVectorNullable<int32_t>(
+              {std::nullopt, std::nullopt, std::nullopt}),
+          vectorMaker.flatVectorNullable<int32_t>(
+              {2, std::nullopt, std::nullopt}),
+          vectorMaker.flatVectorNullable<int32_t>(
+              {std::nullopt, 3, std::nullopt}),
+      })};
+
+  for (auto enableChunking : {false, true}) {
+    alpha::VeloxWriterOptions options{
+        .flushPolicyFactory =
+            [&]() {
+              return std::make_unique<alpha::LambdaFlushPolicy>(
+                  [&](auto&) { return alpha::FlushDecision::Chunk; });
+            },
+        .enableChunking = enableChunking};
+    auto file = alpha::test::createAlphaFile(
+        *rootPool_, vectors, options, /* flushAfterWrite */ false);
+    velox::InMemoryReadFile readFile(file);
+    alpha::VeloxReader reader(*leafPool_, &readFile, /* selector */ nullptr);
+
+    velox::VectorPtr result;
+    for (const auto& expected : vectors) {
+      ASSERT_TRUE(reader.next(expected->size(), result));
+      ASSERT_EQ(expected->size(), result->size());
+      for (auto i = 0; i < expected->size(); ++i) {
+        LOG(INFO) << expected->toString(i);
+        ASSERT_TRUE(expected->equalValueAt(result.get(), i, i))
+            << "Content mismatch at index " << i
+            << "\nReference: " << expected->toString(i)
+            << "\nResult: " << result->toString(i);
+      }
+    }
   }
 }

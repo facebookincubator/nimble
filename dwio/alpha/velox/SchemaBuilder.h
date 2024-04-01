@@ -40,6 +40,11 @@ class ArrayWithOffsetsTypeBuilder;
 
 class StreamContext {
  public:
+  StreamContext() = default;
+  StreamContext(const StreamContext&) = delete;
+  StreamContext(StreamContext&&) = delete;
+  StreamContext& operator=(const StreamContext&) = delete;
+  StreamContext& operator=(StreamContext&&) = delete;
   virtual ~StreamContext() = default;
 };
 
@@ -53,7 +58,7 @@ class StreamDescriptorBuilder : public StreamDescriptor {
   }
 
   template <typename T>
-  const T* context() const {
+  T* context() const {
     return dynamic_cast<T*>(context_.get());
   }
 
@@ -117,24 +122,32 @@ class ScalarTypeBuilder : public TypeBuilder {
   friend class SchemaBuilder;
 };
 
-class ArrayTypeBuilder : public TypeBuilder {
+class LengthsTypeBuilder : public TypeBuilder {
  public:
   const StreamDescriptorBuilder& lengthsDescriptor() const;
+
+ protected:
+  LengthsTypeBuilder(SchemaBuilder& schemaBuilder, Kind kind);
+
+ private:
+  StreamDescriptorBuilder lengthsDescriptor_;
+};
+
+class ArrayTypeBuilder : public LengthsTypeBuilder {
+ public:
   const TypeBuilder& elements() const;
   void setChildren(std::shared_ptr<TypeBuilder> elements);
 
  private:
   explicit ArrayTypeBuilder(SchemaBuilder& schemaBuilder);
 
-  StreamDescriptorBuilder lengthsDescriptor_;
   std::shared_ptr<const TypeBuilder> elements_;
 
   friend class SchemaBuilder;
 };
 
-class MapTypeBuilder : public TypeBuilder {
+class MapTypeBuilder : public LengthsTypeBuilder {
  public:
-  const StreamDescriptorBuilder& lengthsDescriptor() const;
   const TypeBuilder& keys() const;
   const TypeBuilder& values() const;
 
@@ -145,7 +158,6 @@ class MapTypeBuilder : public TypeBuilder {
  private:
   explicit MapTypeBuilder(SchemaBuilder& schemaBuilder);
 
-  StreamDescriptorBuilder lengthsDescriptor_;
   std::shared_ptr<const TypeBuilder> keys_;
   std::shared_ptr<const TypeBuilder> values_;
 
@@ -275,6 +287,7 @@ class SchemaBuilder {
   offset_size currentOffset_ = 0;
 
   friend class ScalarTypeBuilder;
+  friend class LengthsTypeBuilder;
   friend class ArrayTypeBuilder;
   friend class ArrayWithOffsetsTypeBuilder;
   friend class RowTypeBuilder;

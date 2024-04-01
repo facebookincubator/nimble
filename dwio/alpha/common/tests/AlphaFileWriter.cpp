@@ -10,17 +10,20 @@ namespace facebook::alpha::test {
 std::string createAlphaFile(
     velox::memory::MemoryPool& memoryPool,
     const velox::VectorPtr& vector,
-    alpha::VeloxWriterOptions writerOptions) {
+    alpha::VeloxWriterOptions writerOptions,
+    bool flushAfterWrite) {
   return createAlphaFile(
       memoryPool,
       std::vector<facebook::velox::VectorPtr>{vector},
-      std::move(writerOptions));
+      std::move(writerOptions),
+      flushAfterWrite);
 }
 
 std::string createAlphaFile(
     velox::memory::MemoryPool& memoryPool,
     const std::vector<facebook::velox::VectorPtr>& vectors,
-    alpha::VeloxWriterOptions writerOptions) {
+    alpha::VeloxWriterOptions writerOptions,
+    bool flushAfterWrite) {
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
@@ -37,7 +40,9 @@ std::string createAlphaFile(
       memoryPool, type, std::move(writeFile), std::move(writerOptions));
   for (const auto& vector : vectors) {
     writer.write(vector);
-    writer.flush();
+    if (flushAfterWrite) {
+      writer.flush();
+    }
   }
   writer.close();
 

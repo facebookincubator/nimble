@@ -10,11 +10,13 @@ namespace facebook::alpha::test {
 std::string createAlphaFile(
     velox::memory::MemoryPool& memoryPool,
     const std::vector<velox::VectorPtr>& vectors,
-    alpha::VeloxWriterOptions writerOptions = {});
+    alpha::VeloxWriterOptions writerOptions = {},
+    bool flushAfterWrite = true);
 
 std::string createAlphaFile(
     velox::memory::MemoryPool& memoryPool,
     const velox::VectorPtr& vector,
-    alpha::VeloxWriterOptions writerOptions = {});
+    alpha::VeloxWriterOptions writerOptions = {},
+    bool flushAfterWrite = true);
 
 } // namespace facebook::alpha::test

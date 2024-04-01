@@ -71,15 +71,18 @@ const StreamDescriptorBuilder& ScalarTypeBuilder::scalarDescriptor() const {
   return scalarDescriptor_;
 }
 
-ArrayTypeBuilder::ArrayTypeBuilder(SchemaBuilder& schemaBuilder)
-    : TypeBuilder(schemaBuilder, Kind::Array),
+LengthsTypeBuilder::LengthsTypeBuilder(SchemaBuilder& schemaBuilder, Kind kind)
+    : TypeBuilder(schemaBuilder, kind),
       lengthsDescriptor_{
           schemaBuilder_.allocateStreamOffset(),
           ScalarKind::UInt32} {}
 
-const StreamDescriptorBuilder& ArrayTypeBuilder::lengthsDescriptor() const {
+const StreamDescriptorBuilder& LengthsTypeBuilder::lengthsDescriptor() const {
   return lengthsDescriptor_;
 }
+
+ArrayTypeBuilder::ArrayTypeBuilder(SchemaBuilder& schemaBuilder)
+    : LengthsTypeBuilder(schemaBuilder, Kind::Array) {}
 
 const TypeBuilder& ArrayTypeBuilder::elements() const {
   return *elements_;
@@ -89,6 +92,28 @@ void ArrayTypeBuilder::setChildren(std::shared_ptr<TypeBuilder> elements) {
   ALPHA_ASSERT(!elements_, "ArrayTypeBuilder elements already initialized.");
   schemaBuilder_.registerChild(elements);
   elements_ = std::move(elements);
+}
+
+MapTypeBuilder::MapTypeBuilder(SchemaBuilder& schemaBuilder)
+    : LengthsTypeBuilder{schemaBuilder, Kind::Map} {}
+
+const TypeBuilder& MapTypeBuilder::keys() const {
+  return *keys_;
+}
+
+const TypeBuilder& MapTypeBuilder::values() const {
+  return *values_;
+}
+
+void MapTypeBuilder::setChildren(
+    std::shared_ptr<TypeBuilder> keys,
+    std::shared_ptr<TypeBuilder> values) {
+  ALPHA_ASSERT(!keys_, "MapTypeBuilder keys already initialized.");
+  ALPHA_ASSERT(!values_, "MapTypeBuilder values already initialized.");
+  schemaBuilder_.registerChild(keys);
+  schemaBuilder_.registerChild(values);
+  keys_ = std::move(keys);
+  values_ = std::move(values);
 }
 
 ArrayWithOffsetsTypeBuilder::ArrayWithOffsetsTypeBuilder(
@@ -169,35 +194,6 @@ void RowTypeBuilder::addChild(
   schemaBuilder_.registerChild(child);
   names_.push_back(std::move(name));
   children_.push_back(std::move(child));
-}
-
-MapTypeBuilder::MapTypeBuilder(SchemaBuilder& schemaBuilder)
-    : TypeBuilder{schemaBuilder, Kind::Map},
-      lengthsDescriptor_{
-          schemaBuilder_.allocateStreamOffset(),
-          ScalarKind::UInt32} {}
-
-const StreamDescriptorBuilder& MapTypeBuilder::lengthsDescriptor() const {
-  return lengthsDescriptor_;
-}
-
-const TypeBuilder& MapTypeBuilder::keys() const {
-  return *keys_;
-}
-
-const TypeBuilder& MapTypeBuilder::values() const {
-  return *values_;
-}
-
-void MapTypeBuilder::setChildren(
-    std::shared_ptr<TypeBuilder> keys,
-    std::shared_ptr<TypeBuilder> values) {
-  ALPHA_ASSERT(!keys_, "MapTypeBuilder keys already initialized.");
-  ALPHA_ASSERT(!values_, "MapTypeBuilder values already initialized.");
-  schemaBuilder_.registerChild(keys);
-  schemaBuilder_.registerChild(values);
-  keys_ = std::move(keys);
-  values_ = std::move(values);
 }
 
 FlatMapTypeBuilder::FlatMapTypeBuilder(

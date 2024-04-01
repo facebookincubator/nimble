@@ -85,12 +85,10 @@ namespace {
 
 constexpr uint32_t kInitialSchemaSectionSize = 1 << 20; // 1MB
 
-class EncodingLayoutContext : public StreamContext {
+class WriterStreamContext : public StreamContext {
  public:
-  explicit EncodingLayoutContext(const EncodingLayout& encoding)
-      : encoding{encoding} {}
-
-  const EncodingLayout& encoding;
+  bool isNullStream = false;
+  const EncodingLayout* encoding;
 };
 
 class FlatmapEncodingLayoutContext : public TypeBuilderContext {
@@ -109,8 +107,14 @@ std::string_view encode(
     std::optional<EncodingLayout> encodingLayout,
     detail::WriterContext& context,
     Buffer& buffer,
-    std::span<const bool>* nonNulls,
-    std::span<const T> values) {
+    const StreamData& streamData) {
+  ALPHA_DASSERT(
+      streamData.data().size() % sizeof(T) == 0,
+      fmt::format("Unexpected size {}", streamData.data().size()));
+  std::span<const T> data{
+      reinterpret_cast<const T*>(streamData.data().data()),
+      streamData.data().size() / sizeof(T)};
+
   std::unique_ptr<EncodingSelectionPolicy<T>> policy;
   if (encodingLayout.has_value()) {
     policy = std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
@@ -126,11 +130,12 @@ std::string_view encode(
                 .release()));
   }
 
-  if (nonNulls) {
-    return EncodingFactory::encodeNullable<T>(
-        std::move(policy), values, *nonNulls, buffer);
+  if (streamData.hasNulls()) {
+    std::span<const bool> notNulls = streamData.nonNulls();
+    return EncodingFactory::encodeNullable(
+        std::move(policy), data, notNulls, buffer);
   } else {
-    return EncodingFactory::encode<T>(std::move(policy), values, buffer);
+    return EncodingFactory::encode(std::move(policy), data, buffer);
   }
 }
 
@@ -138,22 +143,17 @@ template <typename T>
 std::string_view encodeStreamTyped(
     detail::WriterContext& context,
     Buffer& buffer,
-    const EncodingLayoutContext* encodingLayoutContext,
-    std::span<const bool>* nonNulls,
-    std::string_view data) {
-  ALPHA_ASSERT(
-      data.size() % sizeof(T) == 0,
-      fmt::format("Unexpected size {}", data.size()));
-  std::span<const T> values{
-      reinterpret_cast<const T*>(data.data()), data.size() / sizeof(T)};
+    const StreamData& streamData) {
+  const auto* streamContext =
+      streamData.descriptor().context<WriterStreamContext>();
 
   std::optional<EncodingLayout> encodingLayout;
-  if (encodingLayoutContext) {
-    encodingLayout.emplace(encodingLayoutContext->encoding);
+  if (streamContext && streamContext->encoding) {
+    encodingLayout.emplace(*streamContext->encoding);
   }
 
   try {
-    return encode(encodingLayout, context, buffer, nonNulls, values);
+    return encode<T>(encodingLayout, context, buffer, streamData);
   } catch (const AlphaUserError& e) {
     if (e.errorCode() != error_code::IncompatibleEncoding ||
         !encodingLayout.has_value()) {
@@ -161,47 +161,35 @@ std::string_view encodeStreamTyped(
     }
 
     // Incompatible captured encoding.Try again without a captured encoding.
-    return encode(std::nullopt, context, buffer, nonNulls, values);
+    return encode<T>(std::nullopt, context, buffer, streamData);
   }
 }
 
 std::string_view encodeStream(
     detail::WriterContext& context,
     Buffer& buffer,
-    const StreamDescriptorBuilder& streamDescriptor,
-    std::span<const bool>* nonNulls,
-    std::string_view cols) {
-  auto scalarKind = streamDescriptor.scalarKind();
-  const auto encodingLayout = streamDescriptor.context<EncodingLayoutContext>();
+    const StreamData& streamData) {
+  auto scalarKind = streamData.descriptor().scalarKind();
   switch (scalarKind) {
     case ScalarKind::Bool:
-      return encodeStreamTyped<bool>(
-          context, buffer, encodingLayout, nonNulls, cols);
+      return encodeStreamTyped<bool>(context, buffer, streamData);
     case ScalarKind::Int8:
-      return encodeStreamTyped<int8_t>(
-          context, buffer, encodingLayout, nonNulls, cols);
+      return encodeStreamTyped<int8_t>(context, buffer, streamData);
     case ScalarKind::Int16:
-      return encodeStreamTyped<int16_t>(
-          context, buffer, encodingLayout, nonNulls, cols);
+      return encodeStreamTyped<int16_t>(context, buffer, streamData);
     case ScalarKind::Int32:
-      return encodeStreamTyped<int32_t>(
-          context, buffer, encodingLayout, nonNulls, cols);
+      return encodeStreamTyped<int32_t>(context, buffer, streamData);
     case ScalarKind::UInt32:
-      return encodeStreamTyped<uint32_t>(
-          context, buffer, encodingLayout, nonNulls, cols);
+      return encodeStreamTyped<uint32_t>(context, buffer, streamData);
     case ScalarKind::Int64:
-      return encodeStreamTyped<int64_t>(
-          context, buffer, encodingLayout, nonNulls, cols);
+      return encodeStreamTyped<int64_t>(context, buffer, streamData);
     case ScalarKind::Float:
-      return encodeStreamTyped<float>(
-          context, buffer, encodingLayout, nonNulls, cols);
+      return encodeStreamTyped<float>(context, buffer, streamData);
     case ScalarKind::Double:
-      return encodeStreamTyped<double>(
-          context, buffer, encodingLayout, nonNulls, cols);
+      return encodeStreamTyped<double>(context, buffer, streamData);
     case ScalarKind::String:
     case ScalarKind::Binary:
-      return encodeStreamTyped<std::string_view>(
-          context, buffer, encodingLayout, nonNulls, cols);
+      return encodeStreamTyped<std::string_view>(context, buffer, streamData);
     default:
       ALPHA_UNREACHABLE(fmt::format("Unsupported scalar kind {}", scalarKind));
   }
@@ -219,6 +207,17 @@ void findNodeIds(
   for (const auto& child : typeWithId.getChildren()) {
     findNodeIds(*child, output, predicate);
   }
+}
+
+WriterStreamContext& getStreamContext(
+    const StreamDescriptorBuilder& descriptor) {
+  auto* context = descriptor.context<WriterStreamContext>();
+  if (context) {
+    return *context;
+  }
+
+  descriptor.setContext(std::make_unique<WriterStreamContext>());
+  return *descriptor.context<WriterStreamContext>();
 }
 
 // NOTE: This is a temporary method. We currently use TypeWithId to assing
@@ -254,18 +253,32 @@ std::unique_ptr<FieldWriter> createRootField(
     }
   }
 
-  return FieldWriter::create(context, type);
+  return FieldWriter::create(context, type, [&](const TypeBuilder& type) {
+    switch (type.kind()) {
+      case Kind::Row: {
+        getStreamContext(type.asRow().nullsDescriptor()).isNullStream = true;
+        break;
+      }
+      case Kind::FlatMap: {
+        getStreamContext(type.asFlatMap().nullsDescriptor()).isNullStream =
+            true;
+        break;
+      }
+      default:
+        break;
+    }
+  });
 }
 
 void initializeEncodingLayouts(
     const TypeBuilder& typeBuilder,
     const EncodingLayoutTree& encodingLayoutTree) {
   {
-#define _SET_STREAM_CONTEXT(builder, descriptor, identifier)       \
-  if (auto* encodingLayout = encodingLayoutTree.encodingLayout(    \
-          EncodingLayoutTree::StreamIdentifiers::identifier)) {    \
-    builder.descriptor().setContext(                               \
-        std::make_unique<EncodingLayoutContext>(*encodingLayout)); \
+#define _SET_STREAM_CONTEXT(builder, descriptor, identifier)      \
+  if (auto* encodingLayout = encodingLayoutTree.encodingLayout(   \
+          EncodingLayoutTree::StreamIdentifiers::identifier)) {   \
+    auto& streamContext = getStreamContext(builder.descriptor()); \
+    streamContext.encoding = encodingLayout;                      \
   }
 
     if (typeBuilder.kind() == Kind::FlatMap) {
@@ -339,6 +352,7 @@ void initializeEncodingLayouts(
               encodingLayoutTree.schemaKind() == Kind::Map,
               "Incompatible encoding layout node. Expecting map node.");
           auto& mapBuilder = typeBuilder.asMap();
+
           _SET_STREAM_CONTEXT(
               mapBuilder, lengthsDescriptor, Map::LengthsStream);
           if (encodingLayoutTree.childrenCount() > 0) {
@@ -410,20 +424,19 @@ VeloxWriter::VeloxWriter(
       root_{createRootField(*context_, schema_)},
       spillConfig_{options.spillConfig} {
   ALPHA_CHECK(file_, "File is null");
-  VLOG(1) << "Using Encoding Selection: " << std::boolalpha
-          << context_->options.useEncodingSelectionPolicy;
   if (context_->options.encodingLayoutTree.has_value()) {
-    context_->flatmapFieldAddedEventHandler = [](const TypeBuilder& flatmap,
-                                                 std::string_view fieldKey,
-                                                 const TypeBuilder& fieldType) {
-      auto* context = flatmap.context<FlatmapEncodingLayoutContext>();
-      if (context) {
-        auto it = context->keyEncodings.find(fieldKey);
-        if (it != context->keyEncodings.end()) {
-          initializeEncodingLayouts(fieldType, it->second);
-        }
-      }
-    };
+    context_->flatmapFieldAddedEventHandler =
+        [&](const TypeBuilder& flatmap,
+            std::string_view fieldKey,
+            const TypeBuilder& fieldType) {
+          auto* context = flatmap.context<FlatmapEncodingLayoutContext>();
+          if (context) {
+            auto it = context->keyEncodings.find(fieldKey);
+            if (it != context->keyEncodings.end()) {
+              initializeEncodingLayouts(fieldType, it->second);
+            }
+          }
+        };
     initializeEncodingLayouts(
         *root_->typeBuilder(), context_->options.encodingLayoutTree.value());
   }
@@ -439,9 +452,17 @@ bool VeloxWriter::write(const velox::VectorPtr& vector) {
   ALPHA_CHECK(file_, "Writer is already closed");
   try {
     auto size = vector->size();
-    context_->memoryUsed += root_->write(vector, OrderedRanges::of(0, size));
+    root_->write(vector, OrderedRanges::of(0, size));
+
+    uint64_t memoryUsed = 0;
+    for (const auto& stream : context_->streams()) {
+      memoryUsed += stream->memoryUsed();
+    }
+
+    context_->memoryUsed = memoryUsed;
     context_->rowsInFile += size;
     context_->rowsInStripe += size;
+
     return tryWriteStripe();
   } catch (...) {
     lastException_ = std::current_exception();
@@ -546,27 +567,94 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       encodingBuffer_ = std::make_unique<Buffer>(*encodingMemoryPool_);
     }
     streams_.resize(context_->schemaBuilder.nodeCount());
-    StreamCollector collector =
-        [this, &chunkSize](
-            const StreamDescriptorBuilder& streamDescriptor,
-            std::span<const bool>* nonNulls,
-            std::string_view cols) {
-          auto encoded = encodeStream(
-              *context_, *encodingBuffer_, streamDescriptor, nonNulls, cols);
-          if (!encoded.empty()) {
-            ChunkedStreamWriter chunkWriter{*encodingBuffer_};
-            const auto offset = streamDescriptor.offset();
-            ALPHA_DASSERT(
-                offset < streams_.size(), "Stream offset out of range.");
-            auto& stream = streams_[offset];
-            for (auto& buffer : chunkWriter.encode(encoded)) {
-              chunkSize += buffer.size();
-              stream.content.push_back(std::move(buffer));
-            }
-          }
-        };
 
-    root_->flush(collector, lastChunk);
+    // When writing null streams, we write the nulls as data, and the stream
+    // itself is non-nullable. This adpater class is how we expose the nulls as
+    // values.
+    class NullsAsDataStreamData : public StreamData {
+     public:
+      explicit NullsAsDataStreamData(StreamData& streamData)
+          : StreamData(streamData.descriptor()), streamData_{streamData} {
+        streamData_.materialize();
+      }
+
+      inline virtual std::string_view data() const override {
+        return {
+            reinterpret_cast<const char*>(streamData_.nonNulls().data()),
+            streamData_.nonNulls().size()};
+      }
+
+      inline virtual std::span<const bool> nonNulls() const override {
+        return {};
+      }
+
+      inline virtual bool hasNulls() const override {
+        return false;
+      }
+
+      inline virtual bool empty() const override {
+        return streamData_.empty();
+      }
+      inline virtual uint64_t memoryUsed() const override {
+        return streamData_.memoryUsed();
+      }
+
+      inline virtual void reset() override {
+        streamData_.reset();
+      }
+
+     private:
+      StreamData& streamData_;
+    };
+
+    auto encode = [&](StreamData& streamData) {
+      const auto offset = streamData.descriptor().offset();
+      auto encoded = encodeStream(*context_, *encodingBuffer_, streamData);
+      if (!encoded.empty()) {
+        ChunkedStreamWriter chunkWriter{*encodingBuffer_};
+        ALPHA_DASSERT(offset < streams_.size(), "Stream offset out of range.");
+        auto& stream = streams_[offset];
+        for (auto& buffer : chunkWriter.encode(encoded)) {
+          chunkSize += buffer.size();
+          stream.content.push_back(std::move(buffer));
+        }
+      }
+      streamData.reset();
+    };
+
+    for (auto& streamData : context_->streams()) {
+      const auto offset = streamData->descriptor().offset();
+      const auto* context =
+          streamData->descriptor().context<WriterStreamContext>();
+
+      const auto minStreamSize =
+          lastChunk ? 0 : context_->options.minStreamChunkRawSize;
+
+      if (context && context->isNullStream) {
+        // For null streams we promote the null values to be written as
+        // boolean data.
+        // We still apply the same null logic, where if all values are
+        // non-nulls, we omit the entire stream.
+        if ((streamData->hasNulls() &&
+             streamData->nonNulls().size() > minStreamSize) ||
+            (lastChunk && !streamData->empty() &&
+             !streams_[offset].content.empty())) {
+          NullsAsDataStreamData nullsStreamData{*streamData};
+          encode(nullsStreamData);
+        }
+      } else {
+        if (streamData->data().size() > minStreamSize ||
+            (lastChunk && streamData->nonNulls().size() > 0 &&
+             !streams_[offset].content.empty())) {
+          encode(*streamData);
+        }
+      }
+    }
+
+    if (lastChunk) {
+      root_->reset();
+    }
+
     context_->stripeSize += chunkSize;
   }
 
