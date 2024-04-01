@@ -44,8 +44,8 @@ class SchemaNode {
   SchemaNode(
       Kind kind,
       offset_size offset,
+      ScalarKind scalarKind,
       std::optional<std::string> name = std::nullopt,
-      ScalarKind scalarKind = ScalarKind::Undefined,
       size_t childrenCount = 0)
       : kind_{kind},
         offset_{offset},

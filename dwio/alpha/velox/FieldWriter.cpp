@@ -163,10 +163,7 @@ void FieldWriter::flushStream(
     bool hasNulls,
     Vector<T>& data,
     bool forceFlushingNulls,
-    const TypeBuilder* typeBuilder) {
-  if (!typeBuilder) {
-    typeBuilder = typeBuilder_.get();
-  }
+    const StreamDescriptor& streamDescriptor) {
   // When there is non-null values to be flushed, it always need to flush both
   // data and nulls and then clear the state.
   // When there is no value, there are two cases:
@@ -178,7 +175,7 @@ void FieldWriter::flushStream(
   if (data.size() > 0 ||
       (forceFlushingNulls && nonNulls_.size() > 0 && flushedValueCount_ > 0)) {
     std::span<const bool> nonNulls(nonNulls_);
-    collector(typeBuilder, hasNulls ? &nonNulls : nullptr, convert(data));
+    collector(streamDescriptor, hasNulls ? &nonNulls : nullptr, convert(data));
     flushedValueCount_ += bufferedValueCount_;
     bufferedValueCount_ = 0;
     nonNulls_.clear();
@@ -444,7 +441,12 @@ class SimpleFieldWriter : public FieldWriter {
   void flush(const StreamCollector& collector, bool reset) override {
     // Need to solve reader problem before we can enable chunking for strings.
     if (!std::is_same_v<C, StringConverter> || reset) {
-      flushStream(collector, hasNulls_, vec_, reset);
+      flushStream(
+          collector,
+          hasNulls_,
+          vec_,
+          reset,
+          typeBuilder_->asScalar().scalarDescriptor());
     }
     if (reset) {
       FieldWriter::reset();
@@ -474,8 +476,8 @@ class RowFieldWriter : public FieldWriter {
     fields_.reserve(rowType->size());
     for (auto i = 0; i < rowType->size(); ++i) {
       fields_.push_back(FieldWriter::create(context, type->childAt(i)));
-      dynamic_cast<RowTypeBuilder*>(typeBuilder_.get())
-          ->addChild(rowType->nameOf(i), fields_.back()->typeBuilder());
+      typeBuilder_->asRow().addChild(
+          rowType->nameOf(i), fields_.back()->typeBuilder());
     }
   }
 
@@ -517,7 +519,12 @@ class RowFieldWriter : public FieldWriter {
 
   void flush(const StreamCollector& collector, bool reset) override {
     if (hasNulls_) {
-      flushStream(collector, false, nonNulls_, reset);
+      flushStream(
+          collector,
+          false,
+          nonNulls_,
+          reset,
+          typeBuilder_->asRow().nullsDescriptor());
     }
     for (auto& field : fields_) {
       field->flush(collector, reset);
@@ -604,8 +611,7 @@ class ArrayFieldWriter : public MultiValueFieldWriter {
     ALPHA_DASSERT(type->size() == 1, "Invalid array type.");
     elements_ = FieldWriter::create(context, type->childAt(0));
 
-    dynamic_cast<ArrayTypeBuilder*>(typeBuilder_.get())
-        ->setChildren(elements_->typeBuilder());
+    typeBuilder_->asArray().setChildren(elements_->typeBuilder());
   }
 
   uint64_t write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
@@ -621,7 +627,12 @@ class ArrayFieldWriter : public MultiValueFieldWriter {
   }
 
   void flush(const StreamCollector& collector, bool reset) override {
-    flushStream(collector, hasNulls_, lengths_, reset);
+    flushStream(
+        collector,
+        hasNulls_,
+        lengths_,
+        reset,
+        typeBuilder_->asArray().lengthsDescriptor());
     elements_->flush(collector, reset);
     if (reset) {
       FieldWriter::reset();
@@ -650,8 +661,8 @@ class MapFieldWriter : public MultiValueFieldWriter {
     ALPHA_DASSERT(type->size() == 2, "Invalid map type.");
     keys_ = FieldWriter::create(context, type->childAt(0));
     values_ = FieldWriter::create(context, type->childAt(1));
-    dynamic_cast<MapTypeBuilder*>(typeBuilder_.get())
-        ->setChildren(keys_->typeBuilder(), values_->typeBuilder());
+    typeBuilder_->asMap().setChildren(
+        keys_->typeBuilder(), values_->typeBuilder());
   }
 
   uint64_t write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
@@ -668,7 +679,12 @@ class MapFieldWriter : public MultiValueFieldWriter {
   }
 
   void flush(const StreamCollector& collector, bool reset) override {
-    flushStream(collector, hasNulls_, lengths_, reset);
+    flushStream(
+        collector,
+        hasNulls_,
+        lengths_,
+        reset,
+        typeBuilder_->asMap().lengthsDescriptor());
     keys_->flush(collector, reset);
     values_->flush(collector, reset);
     if (reset) {
@@ -690,9 +706,9 @@ class FlatMapValueFieldWriter {
  public:
   FlatMapValueFieldWriter(
       FieldWriterContext& context,
+      const StreamDescriptor& inMapDescriptor,
       std::unique_ptr<FieldWriter> valueField)
-      : inMapTypeBuilder_{context.schemaBuilder.createScalarTypeBuilder(
-            ScalarKind::Bool)},
+      : inMapDescriptor_{inMapDescriptor},
         valueField_{std::move(valueField)},
         inMapBuffer_(context.bufferMemoryPool.get()) {}
 
@@ -722,18 +738,10 @@ class FlatMapValueFieldWriter {
 
   void flush(const StreamCollector& collector, bool reset) {
     if (inMapBuffer_.size() > 0) {
-      collector(inMapTypeBuilder_.get(), nullptr, convert(inMapBuffer_));
+      collector(inMapDescriptor_, nullptr, convert(inMapBuffer_));
       inMapBuffer_.clear();
     }
     valueField_->flush(collector, reset);
-  }
-
-  std::shared_ptr<ScalarTypeBuilder> inMapTypeBuilder() {
-    return inMapTypeBuilder_;
-  }
-
-  std::shared_ptr<TypeBuilder> valueTypeBuilder() {
-    return valueField_->typeBuilder();
   }
 
   void backfill(uint32_t count, uint32_t reserve) {
@@ -746,7 +754,7 @@ class FlatMapValueFieldWriter {
   }
 
  private:
-  std::shared_ptr<ScalarTypeBuilder> inMapTypeBuilder_;
+  const StreamDescriptor& inMapDescriptor_;
   std::unique_ptr<FieldWriter> valueField_;
   Vector<bool> inMapBuffer_;
   OrderedRanges ranges_;
@@ -854,7 +862,12 @@ class FlatMapFieldWriter : public FieldWriter {
 
   void flush(const StreamCollector& collector, bool reset) override {
     if (hasNulls_) {
-      flushStream(collector, false, nonNulls_, reset);
+      flushStream(
+          collector,
+          false,
+          nonNulls_,
+          reset,
+          typeBuilder_->asFlatMap().nullsDescriptor());
     }
     for (auto& pair : currentValueFields_) {
       pair.second->flush(collector, reset);
@@ -869,11 +882,8 @@ class FlatMapFieldWriter : public FieldWriter {
   void close() override {
     // Add dummy node so we can preserve schema of an empty flat map.
     if (allValueFields_.empty()) {
-      auto inMap =
-          context_.schemaBuilder.createScalarTypeBuilder(ScalarKind::Bool);
       auto valueField = FieldWriter::create(context_, valueType_);
-      dynamic_cast<FlatMapTypeBuilder*>(typeBuilder_.get())
-          ->addChild("", std::move(inMap), valueField->typeBuilder());
+      typeBuilder_->asFlatMap().addChild("", valueField->typeBuilder());
     } else {
       for (auto& pair : allValueFields_) {
         pair.second->close();
@@ -894,19 +904,17 @@ class FlatMapFieldWriter : public FieldWriter {
     // check whether the typebuilder for this key is already present
     auto flatFieldIt = allValueFields_.find(key);
     if (flatFieldIt == allValueFields_.end()) {
-      auto flatMapValueField = std::make_unique<FlatMapValueFieldWriter>(
-          context_, FieldWriter::create(context_, valueType_));
-      flatFieldIt =
-          allValueFields_.emplace(key, std::move(flatMapValueField)).first;
-      dynamic_cast<FlatMapTypeBuilder*>(typeBuilder_.get())
-          ->addChild(
-              stringKey,
-              flatFieldIt->second->inMapTypeBuilder(),
-              flatFieldIt->second->valueTypeBuilder());
+      auto valueFieldWriter = FieldWriter::create(context_, valueType_);
+      const auto& inMapDescriptor = typeBuilder_->asFlatMap().addChild(
+          stringKey, valueFieldWriter->typeBuilder());
       if (context_.flatmapFieldAddedEventHandler) {
         context_.flatmapFieldAddedEventHandler(
-            *typeBuilder_, stringKey, *flatFieldIt->second->valueTypeBuilder());
+            *typeBuilder_, stringKey, *valueFieldWriter->typeBuilder());
       }
+      auto flatMapValueField = std::make_unique<FlatMapValueFieldWriter>(
+          context_, inMapDescriptor, std::move(valueFieldWriter));
+      flatFieldIt =
+          allValueFields_.emplace(key, std::move(flatMapValueField)).first;
     }
     // TODO: assert on not having too many keys?
     it = currentValueFields_.emplace(key, flatFieldIt->second.get()).first;
@@ -980,11 +988,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
         cachedSize_(0) {
     elements_ = FieldWriter::create(context, type->childAt(0));
 
-    offsetTypeBuilder_ =
-        context_.schemaBuilder.createScalarTypeBuilder(ScalarKind::UInt32);
-
-    dynamic_cast<ArrayWithOffsetsTypeBuilder*>(typeBuilder_.get())
-        ->setChildren(offsetTypeBuilder_, elements_->typeBuilder());
+    typeBuilder_->asArrayWithOffsets().setChildren(elements_->typeBuilder());
 
     cachedValue_ = velox::ArrayVector::create(
         type->type(), 1, context.bufferMemoryPool.get());
@@ -1004,9 +1008,16 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
 
   void flush(const StreamCollector& collector, bool reset) override {
     flushStream(
-        collector, hasNulls_, offsets_, reset, offsetTypeBuilder_.get());
+        collector,
+        hasNulls_,
+        offsets_,
+        reset,
+        typeBuilder_->asArrayWithOffsets().offsetsDescriptor());
     if (lengths_.size() > 0) {
-      collector(typeBuilder_.get(), nullptr, convert(lengths_));
+      collector(
+          typeBuilder_->asArrayWithOffsets().lengthsDescriptor(),
+          nullptr,
+          convert(lengths_));
       lengths_.clear();
     }
     elements_->flush(collector, reset);
@@ -1025,7 +1036,6 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
   std::unique_ptr<FieldWriter> elements_;
   Vector<int32_t> lengths_; /** lengths of the each deduped data */
   Vector<OffsetType> offsets_; /** offsets for each data after dedup */
-  std::shared_ptr<ScalarTypeBuilder> offsetTypeBuilder_;
   OffsetType nextOffset_{0}; /** next available offset for dedup storing */
 
   bool cached_;

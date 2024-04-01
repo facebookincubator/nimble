@@ -3,11 +3,10 @@
 #pragma once
 
 #include "dwio/alpha/common/Exceptions.h"
-#include "dwio/alpha/velox/SchemaReader.h"
 #include "dwio/alpha/velox/SchemaTypes.h"
 #include "folly/container/F14Set.h"
 
-// SchemaBuilder is used to construct a tablet schema.
+// SchemaBuilder is used to construct a tablet compatible schema.
 // The table schema translates logical type tree to its underlying Alpha streams
 // stored in the file. Each stream has a unique offset assigned to it, which is
 // later used when storing stream related data in the tablet footer.
@@ -32,90 +31,120 @@
 namespace facebook::alpha {
 
 class SchemaBuilder;
+class ScalarTypeBuilder;
+class ArrayTypeBuilder;
+class MapTypeBuilder;
+class RowTypeBuilder;
+class FlatMapTypeBuilder;
+class ArrayWithOffsetsTypeBuilder;
+
+class StreamContext {
+ public:
+  virtual ~StreamContext() = default;
+};
+
+class StreamDescriptor {
+ public:
+  StreamDescriptor(offset_size offset, ScalarKind scalarKind)
+      : offset_{offset}, scalarKind_{scalarKind} {}
+
+  void setContext(std::unique_ptr<StreamContext>&& context) const {
+    context_ = std::move(context);
+  }
+
+  template <typename T>
+  const T* context() const {
+    return dynamic_cast<T*>(context_.get());
+  }
+
+  offset_size offset() const {
+    return offset_;
+  }
+
+  ScalarKind scalarKind() const {
+    return scalarKind_;
+  }
+
+ private:
+  offset_size offset_;
+  ScalarKind scalarKind_;
+  mutable std::unique_ptr<StreamContext> context_;
+};
 
 class TypeBuilderContext {
  public:
   virtual ~TypeBuilderContext() = default;
 };
 
-class TypeBuilder : public virtual Type {
+class TypeBuilder {
  public:
   void setContext(std::unique_ptr<TypeBuilderContext>&& context) const {
-    _context = std::move(context);
+    context_ = std::move(context);
   }
 
-  const std::unique_ptr<TypeBuilderContext>& context() const {
-    return _context;
+  template <typename T>
+  const T* context() const {
+    return dynamic_cast<T*>(context_.get());
   }
+
+  Kind kind() const;
+
+  ScalarTypeBuilder& asScalar();
+  ArrayTypeBuilder& asArray();
+  MapTypeBuilder& asMap();
+  RowTypeBuilder& asRow();
+  FlatMapTypeBuilder& asFlatMap();
+  ArrayWithOffsetsTypeBuilder& asArrayWithOffsets();
+  const ScalarTypeBuilder& asScalar() const;
+  const ArrayTypeBuilder& asArray() const;
+  const MapTypeBuilder& asMap() const;
+  const RowTypeBuilder& asRow() const;
+  const FlatMapTypeBuilder& asFlatMap() const;
+  const ArrayWithOffsetsTypeBuilder& asArrayWithOffsets() const;
 
  protected:
-  TypeBuilder(SchemaBuilder& schemaBuilder, offset_size offset, Kind kind);
+  TypeBuilder(SchemaBuilder& schemaBuilder, Kind kind);
   virtual ~TypeBuilder() = default;
 
   SchemaBuilder& schemaBuilder_;
 
  private:
-  mutable std::unique_ptr<TypeBuilderContext> _context;
+  Kind kind_;
+  mutable std::unique_ptr<TypeBuilderContext> context_;
 
   friend class SchemaBuilder;
 };
 
-class ScalarTypeBuilder : public virtual TypeBuilder,
-                          public virtual ScalarType {
- private:
-  ScalarTypeBuilder(
-      SchemaBuilder& schemaBuilder,
-      offset_size offset,
-      ScalarKind scalarKind);
-
-  friend class SchemaBuilder;
-};
-
-class ArrayTypeBuilder : public virtual TypeBuilder, public virtual ArrayType {
+class ScalarTypeBuilder : public TypeBuilder {
  public:
-  const TypeBuilder& elements() const;
+  const StreamDescriptor& scalarDescriptor() const;
 
+ private:
+  ScalarTypeBuilder(SchemaBuilder& schemaBuilder, ScalarKind scalarKind);
+
+  StreamDescriptor scalarDescriptor_;
+
+  friend class SchemaBuilder;
+};
+
+class ArrayTypeBuilder : public TypeBuilder {
+ public:
+  const StreamDescriptor& lengthsDescriptor() const;
+  const TypeBuilder& elements() const;
   void setChildren(std::shared_ptr<TypeBuilder> elements);
 
  private:
-  ArrayTypeBuilder(SchemaBuilder& schemaBuilder, offset_size offset);
+  explicit ArrayTypeBuilder(SchemaBuilder& schemaBuilder);
+
+  StreamDescriptor lengthsDescriptor_;
+  std::shared_ptr<const TypeBuilder> elements_;
 
   friend class SchemaBuilder;
 };
 
-class ArrayWithOffsetsTypeBuilder : public virtual TypeBuilder,
-                                    public virtual ArrayWithOffsetsType {
+class MapTypeBuilder : public TypeBuilder {
  public:
-  const ScalarTypeBuilder& offsets() const;
-  const TypeBuilder& elements() const;
-
-  void setChildren(
-      std::shared_ptr<ScalarTypeBuilder> offsets,
-      std::shared_ptr<TypeBuilder> elements);
-
- private:
-  ArrayWithOffsetsTypeBuilder(SchemaBuilder& schemaBuilder, offset_size offset);
-
-  friend class SchemaBuilder;
-};
-
-class RowTypeBuilder : public virtual TypeBuilder, public virtual RowType {
- public:
-  const TypeBuilder& childAt(size_t index) const;
-
-  void addChild(std::string name, std::shared_ptr<TypeBuilder> child);
-
- private:
-  RowTypeBuilder(
-      SchemaBuilder& schemaBuilder,
-      offset_size offset,
-      size_t childrenCount);
-
-  friend class SchemaBuilder;
-};
-
-class MapTypeBuilder : public virtual TypeBuilder, public virtual MapType {
- public:
+  const StreamDescriptor& lengthsDescriptor() const;
   const TypeBuilder& keys() const;
   const TypeBuilder& values() const;
 
@@ -124,27 +153,71 @@ class MapTypeBuilder : public virtual TypeBuilder, public virtual MapType {
       std::shared_ptr<TypeBuilder> values);
 
  private:
-  MapTypeBuilder(SchemaBuilder& schemaBuilder, offset_size offset);
+  explicit MapTypeBuilder(SchemaBuilder& schemaBuilder);
+
+  StreamDescriptor lengthsDescriptor_;
+  std::shared_ptr<const TypeBuilder> keys_;
+  std::shared_ptr<const TypeBuilder> values_;
 
   friend class SchemaBuilder;
 };
 
-class FlatMapTypeBuilder : public virtual TypeBuilder,
-                           public virtual FlatMapType {
+class RowTypeBuilder : public TypeBuilder {
  public:
-  const ScalarTypeBuilder& inMapAt(size_t index) const;
+  const StreamDescriptor& nullsDescriptor() const;
+  size_t childrenCount() const;
   const TypeBuilder& childAt(size_t index) const;
+  const std::string& nameAt(size_t index) const;
+  void addChild(std::string name, std::shared_ptr<TypeBuilder> child);
 
-  void addChild(
+ private:
+  RowTypeBuilder(SchemaBuilder& schemaBuilder, size_t childrenCount);
+
+  StreamDescriptor nullsDescriptor_;
+  std::vector<std::string> names_;
+  std::vector<std::shared_ptr<const TypeBuilder>> children_;
+
+  friend class SchemaBuilder;
+};
+
+class FlatMapTypeBuilder : public TypeBuilder {
+ public:
+  const StreamDescriptor& nullsDescriptor() const;
+  const StreamDescriptor& inMapDescriptorAt(size_t index) const;
+  size_t childrenCount() const;
+  const TypeBuilder& childAt(size_t index) const;
+  const std::string& nameAt(size_t index) const;
+  ScalarKind keyScalarKind() const;
+
+  const StreamDescriptor& addChild(
       std::string name,
-      std::shared_ptr<ScalarTypeBuilder> inMap,
       std::shared_ptr<TypeBuilder> child);
 
  private:
-  FlatMapTypeBuilder(
-      SchemaBuilder& schemaBuilder,
-      offset_size offset,
-      ScalarKind keyScalarKind);
+  FlatMapTypeBuilder(SchemaBuilder& schemaBuilder, ScalarKind keyScalarKind);
+
+  ScalarKind keyScalarKind_;
+  StreamDescriptor nullsDescriptor_;
+  std::vector<std::string> names_;
+  std::vector<std::unique_ptr<StreamDescriptor>> inMapDescriptors_;
+  std::vector<std::shared_ptr<const TypeBuilder>> children_;
+
+  friend class SchemaBuilder;
+};
+
+class ArrayWithOffsetsTypeBuilder : public TypeBuilder {
+ public:
+  const StreamDescriptor& offsetsDescriptor() const;
+  const StreamDescriptor& lengthsDescriptor() const;
+  const TypeBuilder& elements() const;
+  void setChildren(std::shared_ptr<TypeBuilder> elements);
+
+ private:
+  explicit ArrayWithOffsetsTypeBuilder(SchemaBuilder& schemaBuilder);
+
+  StreamDescriptor offsetsDescriptor_;
+  StreamDescriptor lengthsDescriptor_;
+  std::shared_ptr<const TypeBuilder> elements_;
 
   friend class SchemaBuilder;
 };
@@ -190,6 +263,7 @@ class SchemaBuilder {
 
  private:
   void registerChild(const std::shared_ptr<TypeBuilder>& type);
+  offset_size allocateStreamOffset();
 
   void addNode(
       std::vector<std::unique_ptr<const SchemaNode>>& nodes,

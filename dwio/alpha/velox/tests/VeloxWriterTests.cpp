@@ -327,60 +327,80 @@ TEST_F(VeloxWriterTests, memoryReclaimPath) {
 TEST_F(VeloxWriterTests, EncodingLayout) {
   alpha::EncodingLayoutTree expected{
       alpha::Kind::Row,
-      std::nullopt,
+      {},
       "",
       {
           {alpha::Kind::Map,
-           alpha::EncodingLayout{
-               alpha::EncodingType::Dictionary,
-               alpha::CompressionType::Uncompressed,
+           {
                {
+                   0,
                    alpha::EncodingLayout{
-                       alpha::EncodingType::FixedBitWidth,
-                       alpha::CompressionType::Zstrong},
-                   std::nullopt,
-               }},
+                       alpha::EncodingType::Dictionary,
+                       alpha::CompressionType::Uncompressed,
+                       {
+                           alpha::EncodingLayout{
+                               alpha::EncodingType::FixedBitWidth,
+                               alpha::CompressionType::Zstrong},
+                           std::nullopt,
+                       }},
+               },
+           },
            "",
            {
                // Map keys
-               {alpha::Kind::Scalar, std::nullopt, ""},
+               {alpha::Kind::Scalar, {}, ""},
                // Map Values
                {alpha::Kind::Scalar,
-                alpha::EncodingLayout{
-                    alpha::EncodingType::MainlyConstant,
-                    alpha::CompressionType::Uncompressed,
+                {
                     {
-                        std::nullopt,
+                        0,
                         alpha::EncodingLayout{
-                            alpha::EncodingType::Trivial,
-                            alpha::CompressionType::Zstrong},
-                    }},
+                            alpha::EncodingType::MainlyConstant,
+                            alpha::CompressionType::Uncompressed,
+                            {
+                                std::nullopt,
+                                alpha::EncodingLayout{
+                                    alpha::EncodingType::Trivial,
+                                    alpha::CompressionType::Zstrong},
+                            }},
+                    },
+                },
                 ""},
            }},
           {alpha::Kind::FlatMap,
-           std::nullopt,
+           {},
            "",
            {
                {
                    alpha::Kind::Scalar,
-                   alpha::EncodingLayout{
-                       alpha::EncodingType::MainlyConstant,
-                       alpha::CompressionType::Uncompressed,
+                   {
                        {
+                           0,
                            alpha::EncodingLayout{
-                               alpha::EncodingType::Trivial,
-                               alpha::CompressionType::Uncompressed},
-                           alpha::EncodingLayout{
-                               alpha::EncodingType::FixedBitWidth,
-                               alpha::CompressionType::Uncompressed},
-                       }},
+                               alpha::EncodingType::MainlyConstant,
+                               alpha::CompressionType::Uncompressed,
+                               {
+                                   alpha::EncodingLayout{
+                                       alpha::EncodingType::Trivial,
+                                       alpha::CompressionType::Uncompressed},
+                                   alpha::EncodingLayout{
+                                       alpha::EncodingType::FixedBitWidth,
+                                       alpha::CompressionType::Uncompressed},
+                               }},
+                       },
+                   },
                    "1",
                },
                {
                    alpha::Kind::Scalar,
-                   alpha::EncodingLayout{
-                       alpha::EncodingType::Constant,
-                       alpha::CompressionType::Uncompressed,
+                   {
+                       {
+                           0,
+                           alpha::EncodingLayout{
+                               alpha::EncodingType::Constant,
+                               alpha::CompressionType::Uncompressed,
+                           },
+                       },
                    },
                    "2",
                },
@@ -545,20 +565,25 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
 TEST_F(VeloxWriterTests, EncodingLayoutSchemaMismatch) {
   alpha::EncodingLayoutTree expected{
       alpha::Kind::Row,
-      std::nullopt,
+      {},
       "",
       {
           {
               alpha::Kind::Scalar,
-              alpha::EncodingLayout{
-                  alpha::EncodingType::Dictionary,
-                  alpha::CompressionType::Uncompressed,
+              {
                   {
+                      0,
                       alpha::EncodingLayout{
-                          alpha::EncodingType::FixedBitWidth,
-                          alpha::CompressionType::Zstrong},
-                      std::nullopt,
-                  }},
+                          alpha::EncodingType::Dictionary,
+                          alpha::CompressionType::Uncompressed,
+                          {
+                              alpha::EncodingLayout{
+                                  alpha::EncodingType::FixedBitWidth,
+                                  alpha::CompressionType::Zstrong},
+                              std::nullopt,
+                          }},
+                  },
+              },
               "",
           },
       }};
@@ -600,34 +625,44 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaMismatch) {
 TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionMapToFlatmap) {
   alpha::EncodingLayoutTree expected{
       alpha::Kind::Row,
-      std::nullopt,
+      {},
       "",
       {
           {alpha::Kind::Map,
-           alpha::EncodingLayout{
-               alpha::EncodingType::Dictionary,
-               alpha::CompressionType::Uncompressed,
+           {
                {
+                   0,
                    alpha::EncodingLayout{
-                       alpha::EncodingType::FixedBitWidth,
-                       alpha::CompressionType::Zstrong},
-                   std::nullopt,
-               }},
+                       alpha::EncodingType::Dictionary,
+                       alpha::CompressionType::Uncompressed,
+                       {
+                           alpha::EncodingLayout{
+                               alpha::EncodingType::FixedBitWidth,
+                               alpha::CompressionType::Zstrong},
+                           std::nullopt,
+                       }},
+               },
+           },
            "",
            {
                // Map keys
-               {alpha::Kind::Scalar, std::nullopt, ""},
+               {alpha::Kind::Scalar, {}, ""},
                // Map Values
                {alpha::Kind::Scalar,
-                alpha::EncodingLayout{
-                    alpha::EncodingType::MainlyConstant,
-                    alpha::CompressionType::Uncompressed,
+                {
                     {
-                        std::nullopt,
+                        0,
                         alpha::EncodingLayout{
-                            alpha::EncodingType::Trivial,
-                            alpha::CompressionType::Zstrong},
-                    }},
+                            alpha::EncodingType::MainlyConstant,
+                            alpha::CompressionType::Uncompressed,
+                            {
+                                std::nullopt,
+                                alpha::EncodingLayout{
+                                    alpha::EncodingType::Trivial,
+                                    alpha::CompressionType::Zstrong},
+                            }},
+                    },
+                },
                 ""},
            }},
       }};
@@ -669,33 +704,43 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionMapToFlatmap) {
 TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionFlamapToMap) {
   alpha::EncodingLayoutTree expected{
       alpha::Kind::Row,
-      std::nullopt,
+      {},
       "",
       {
           {alpha::Kind::FlatMap,
-           std::nullopt,
+           {},
            "",
            {
                {
                    alpha::Kind::Scalar,
-                   alpha::EncodingLayout{
-                       alpha::EncodingType::MainlyConstant,
-                       alpha::CompressionType::Uncompressed,
+                   {
                        {
+                           0,
                            alpha::EncodingLayout{
-                               alpha::EncodingType::Trivial,
-                               alpha::CompressionType::Uncompressed},
-                           alpha::EncodingLayout{
-                               alpha::EncodingType::FixedBitWidth,
-                               alpha::CompressionType::Uncompressed},
-                       }},
+                               alpha::EncodingType::MainlyConstant,
+                               alpha::CompressionType::Uncompressed,
+                               {
+                                   alpha::EncodingLayout{
+                                       alpha::EncodingType::Trivial,
+                                       alpha::CompressionType::Uncompressed},
+                                   alpha::EncodingLayout{
+                                       alpha::EncodingType::FixedBitWidth,
+                                       alpha::CompressionType::Uncompressed},
+                               }},
+                       },
+                   },
                    "1",
                },
                {
                    alpha::Kind::Scalar,
-                   alpha::EncodingLayout{
-                       alpha::EncodingType::Constant,
-                       alpha::CompressionType::Uncompressed,
+                   {
+                       {
+                           0,
+                           alpha::EncodingLayout{
+                               alpha::EncodingType::Constant,
+                               alpha::CompressionType::Uncompressed,
+                           },
+                       },
                    },
                    "2",
                },
@@ -738,20 +783,30 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionFlamapToMap) {
 TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionExpandingRow) {
   alpha::EncodingLayoutTree expected{
       alpha::Kind::Row,
-      std::nullopt,
+      {},
       "",
       {
           {alpha::Kind::Row,
-           alpha::EncodingLayout{
-               alpha::EncodingType::Trivial,
-               alpha::CompressionType::Uncompressed},
+           {
+               {
+                   0,
+                   alpha::EncodingLayout{
+                       alpha::EncodingType::Trivial,
+                       alpha::CompressionType::Uncompressed},
+               },
+           },
            "",
            {
                {
                    alpha::Kind::Scalar,
-                   alpha::EncodingLayout{
-                       alpha::EncodingType::Trivial,
-                       alpha::CompressionType::Uncompressed},
+                   {
+                       {
+                           0,
+                           alpha::EncodingLayout{
+                               alpha::EncodingType::Trivial,
+                               alpha::CompressionType::Uncompressed},
+                       },
+                   },
                    "",
                },
            }},

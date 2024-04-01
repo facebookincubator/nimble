@@ -6,29 +6,83 @@
 
 namespace facebook::alpha {
 
-TypeBuilder::TypeBuilder(
-    SchemaBuilder& schemaBuilder,
-    offset_size offset,
-    Kind kind)
-    : Type{offset, kind}, schemaBuilder_{schemaBuilder} {}
+TypeBuilder::TypeBuilder(SchemaBuilder& schemaBuilder, Kind kind)
+    : schemaBuilder_{schemaBuilder}, kind_{kind} {}
+
+ScalarTypeBuilder& TypeBuilder::asScalar() {
+  return dynamic_cast<ScalarTypeBuilder&>(*this);
+}
+
+ArrayTypeBuilder& TypeBuilder::asArray() {
+  return dynamic_cast<ArrayTypeBuilder&>(*this);
+}
+
+MapTypeBuilder& TypeBuilder::asMap() {
+  return dynamic_cast<MapTypeBuilder&>(*this);
+}
+
+RowTypeBuilder& TypeBuilder::asRow() {
+  return dynamic_cast<RowTypeBuilder&>(*this);
+}
+
+FlatMapTypeBuilder& TypeBuilder::asFlatMap() {
+  return dynamic_cast<FlatMapTypeBuilder&>(*this);
+}
+
+ArrayWithOffsetsTypeBuilder& TypeBuilder::asArrayWithOffsets() {
+  return dynamic_cast<ArrayWithOffsetsTypeBuilder&>(*this);
+}
+
+const ScalarTypeBuilder& TypeBuilder::asScalar() const {
+  return dynamic_cast<const ScalarTypeBuilder&>(*this);
+}
+
+const ArrayTypeBuilder& TypeBuilder::asArray() const {
+  return dynamic_cast<const ArrayTypeBuilder&>(*this);
+}
+
+const MapTypeBuilder& TypeBuilder::asMap() const {
+  return dynamic_cast<const MapTypeBuilder&>(*this);
+}
+
+const RowTypeBuilder& TypeBuilder::asRow() const {
+  return dynamic_cast<const RowTypeBuilder&>(*this);
+}
+
+const FlatMapTypeBuilder& TypeBuilder::asFlatMap() const {
+  return dynamic_cast<const FlatMapTypeBuilder&>(*this);
+}
+
+const ArrayWithOffsetsTypeBuilder& TypeBuilder::asArrayWithOffsets() const {
+  return dynamic_cast<const ArrayWithOffsetsTypeBuilder&>(*this);
+}
+
+Kind TypeBuilder::kind() const {
+  return kind_;
+}
 
 ScalarTypeBuilder::ScalarTypeBuilder(
     SchemaBuilder& schemaBuilder,
-    offset_size offset,
     ScalarKind scalarKind)
-    : Type{offset, Kind::Scalar},
-      TypeBuilder{schemaBuilder, offset, Kind::Scalar},
-      ScalarType{offset, scalarKind} {}
+    : TypeBuilder{schemaBuilder, Kind::Scalar},
+      scalarDescriptor_{schemaBuilder_.allocateStreamOffset(), scalarKind} {}
 
-ArrayTypeBuilder::ArrayTypeBuilder(
-    SchemaBuilder& schemaBuilder,
-    offset_size offset)
-    : Type{offset, Kind::Array},
-      TypeBuilder(schemaBuilder, offset, Kind::Array),
-      ArrayType{offset, nullptr} {}
+const StreamDescriptor& ScalarTypeBuilder::scalarDescriptor() const {
+  return scalarDescriptor_;
+}
+
+ArrayTypeBuilder::ArrayTypeBuilder(SchemaBuilder& schemaBuilder)
+    : TypeBuilder(schemaBuilder, Kind::Array),
+      lengthsDescriptor_{
+          schemaBuilder_.allocateStreamOffset(),
+          ScalarKind::UInt32} {}
+
+const StreamDescriptor& ArrayTypeBuilder::lengthsDescriptor() const {
+  return lengthsDescriptor_;
+}
 
 const TypeBuilder& ArrayTypeBuilder::elements() const {
-  return dynamic_cast<const TypeBuilder&>(*ArrayType::elements());
+  return *elements_;
 }
 
 void ArrayTypeBuilder::setChildren(std::shared_ptr<TypeBuilder> elements) {
@@ -38,51 +92,68 @@ void ArrayTypeBuilder::setChildren(std::shared_ptr<TypeBuilder> elements) {
 }
 
 ArrayWithOffsetsTypeBuilder::ArrayWithOffsetsTypeBuilder(
-    SchemaBuilder& schemaBuilder,
-    offset_size offset)
-    : Type{offset, Kind::ArrayWithOffsets},
-      TypeBuilder(schemaBuilder, offset, Kind::ArrayWithOffsets),
-      ArrayWithOffsetsType{offset, nullptr, nullptr} {}
+    SchemaBuilder& schemaBuilder)
+    : TypeBuilder(schemaBuilder, Kind::ArrayWithOffsets),
+      offsetsDescriptor_{
+          schemaBuilder_.allocateStreamOffset(),
+          ScalarKind::UInt32},
+      lengthsDescriptor_{
+          schemaBuilder_.allocateStreamOffset(),
+          ScalarKind::UInt32} {}
 
-const ScalarTypeBuilder& ArrayWithOffsetsTypeBuilder::offsets() const {
-  return dynamic_cast<const ScalarTypeBuilder&>(
-      *ArrayWithOffsetsType::offsets());
+const StreamDescriptor& ArrayWithOffsetsTypeBuilder::offsetsDescriptor() const {
+  return offsetsDescriptor_;
+}
+
+const StreamDescriptor& ArrayWithOffsetsTypeBuilder::lengthsDescriptor() const {
+  return lengthsDescriptor_;
 }
 
 const TypeBuilder& ArrayWithOffsetsTypeBuilder::elements() const {
-  return dynamic_cast<const ScalarTypeBuilder&>(
-      *ArrayWithOffsetsType::elements());
+  return *elements_;
 }
 
 void ArrayWithOffsetsTypeBuilder::setChildren(
-    std::shared_ptr<ScalarTypeBuilder> offsets,
     std::shared_ptr<TypeBuilder> elements) {
   ALPHA_ASSERT(
       !elements_, "ArrayWithOffsetsTypeBuilder elements already initialized.");
-  ALPHA_ASSERT(
-      !offsets_, "ArrayWithOffsetsTypeBuilder offsets already initialized.");
-  ALPHA_ASSERT(
-      offsets->scalarKind() == ScalarKind::UInt32,
-      "ArrayWithOffsets offsets should be of type uint32_t")
-  schemaBuilder_.registerChild(offsets);
   schemaBuilder_.registerChild(elements);
-  offsets_ = std::move(offsets);
   elements_ = std::move(elements);
 }
 
 RowTypeBuilder::RowTypeBuilder(
     SchemaBuilder& schemaBuilder,
-    offset_size offset,
     size_t childrenCount)
-    : Type{offset, Kind::Row},
-      TypeBuilder{schemaBuilder, offset, Kind::Row},
-      RowType{offset, {}, {}} {
+    : TypeBuilder{schemaBuilder, Kind::Row},
+      nullsDescriptor_{
+          schemaBuilder_.allocateStreamOffset(),
+          ScalarKind::Bool} {
   names_.reserve(childrenCount);
   children_.reserve(childrenCount);
 }
 
+const StreamDescriptor& RowTypeBuilder::nullsDescriptor() const {
+  return nullsDescriptor_;
+}
+
+size_t RowTypeBuilder::childrenCount() const {
+  return children_.size();
+}
+
 const TypeBuilder& RowTypeBuilder::childAt(size_t index) const {
-  return dynamic_cast<const TypeBuilder&>(*RowType::childAt(index));
+  ALPHA_ASSERT(
+      index < children_.size(),
+      fmt::format(
+          "Index out of range. index: {}, size: {}.", index, children_.size()));
+  return *children_[index];
+}
+
+const std::string& RowTypeBuilder::nameAt(size_t index) const {
+  ALPHA_ASSERT(
+      index < children_.size(),
+      fmt::format(
+          "Index out of range. index: {}, size: {}.", index, children_.size()));
+  return names_[index];
 }
 
 void RowTypeBuilder::addChild(
@@ -98,17 +169,22 @@ void RowTypeBuilder::addChild(
   children_.push_back(std::move(child));
 }
 
-MapTypeBuilder::MapTypeBuilder(SchemaBuilder& schemaBuilder, offset_size offset)
-    : Type{offset, Kind::Map},
-      TypeBuilder{schemaBuilder, offset, Kind::Map},
-      MapType{offset, nullptr, nullptr} {}
+MapTypeBuilder::MapTypeBuilder(SchemaBuilder& schemaBuilder)
+    : TypeBuilder{schemaBuilder, Kind::Map},
+      lengthsDescriptor_{
+          schemaBuilder_.allocateStreamOffset(),
+          ScalarKind::UInt32} {}
+
+const StreamDescriptor& MapTypeBuilder::lengthsDescriptor() const {
+  return lengthsDescriptor_;
+}
 
 const TypeBuilder& MapTypeBuilder::keys() const {
-  return dynamic_cast<const TypeBuilder&>(*MapType::keys());
+  return *keys_;
 }
 
 const TypeBuilder& MapTypeBuilder::values() const {
-  return dynamic_cast<const TypeBuilder&>(*MapType::values());
+  return *values_;
 }
 
 void MapTypeBuilder::setChildren(
@@ -124,51 +200,76 @@ void MapTypeBuilder::setChildren(
 
 FlatMapTypeBuilder::FlatMapTypeBuilder(
     SchemaBuilder& schemaBuilder,
-    offset_size offset,
     ScalarKind keyScalarKind)
-    : Type{offset, Kind::FlatMap},
-      TypeBuilder{schemaBuilder, offset, Kind::FlatMap},
-      FlatMapType{offset, keyScalarKind, {}, {}, {}} {}
+    : TypeBuilder{schemaBuilder, Kind::FlatMap},
+      keyScalarKind_{keyScalarKind},
+      nullsDescriptor_{
+          schemaBuilder_.allocateStreamOffset(),
+          ScalarKind::Bool} {}
 
-const ScalarTypeBuilder& FlatMapTypeBuilder::inMapAt(size_t index) const {
-  return dynamic_cast<const ScalarTypeBuilder&>(*FlatMapType::inMapAt(index));
+const StreamDescriptor& FlatMapTypeBuilder::nullsDescriptor() const {
+  return nullsDescriptor_;
+}
+
+const StreamDescriptor& FlatMapTypeBuilder::inMapDescriptorAt(
+    size_t index) const {
+  ALPHA_ASSERT(
+      index < inMapDescriptors_.size(),
+      fmt::format(
+          "Index out of range. index: {}, size: {}.",
+          index,
+          inMapDescriptors_.size()));
+  return *inMapDescriptors_[index];
 }
 
 const TypeBuilder& FlatMapTypeBuilder::childAt(size_t index) const {
-  return dynamic_cast<const TypeBuilder&>(*FlatMapType::childAt(index));
+  ALPHA_ASSERT(
+      index < children_.size(),
+      fmt::format(
+          "Index out of range. index: {}, size: {}.", index, children_.size()));
+  return *children_[index];
 }
 
-void FlatMapTypeBuilder::addChild(
+ScalarKind FlatMapTypeBuilder::keyScalarKind() const {
+  return keyScalarKind_;
+}
+
+size_t FlatMapTypeBuilder::childrenCount() const {
+  return children_.size();
+}
+
+const std::string& FlatMapTypeBuilder::nameAt(size_t index) const {
+  ALPHA_ASSERT(
+      index < names_.size(),
+      fmt::format(
+          "Index out of range. index: {}, size: {}.", index, names_.size()));
+  return names_[index];
+}
+
+const StreamDescriptor& FlatMapTypeBuilder::addChild(
     std::string name,
-    std::shared_ptr<ScalarTypeBuilder> inMap,
     std::shared_ptr<TypeBuilder> child) {
-  schemaBuilder_.registerChild(inMap);
+  auto& inMapDescriptor =
+      inMapDescriptors_.emplace_back(std::make_unique<StreamDescriptor>(
+          schemaBuilder_.allocateStreamOffset(), ScalarKind::Bool));
+
   schemaBuilder_.registerChild(child);
 
-  ALPHA_ASSERT(
-      inMap->scalarKind() == ScalarKind::Bool,
-      "Flat map in-map field must have a boolean scalar type.");
   names_.push_back(std::move(name));
-  inMaps_.push_back(std::move(inMap));
-  // TODO: ideally, need to check that children are of the same type.
   children_.push_back(std::move(child));
+
+  return *inMapDescriptor;
 }
 
 std::shared_ptr<ScalarTypeBuilder> SchemaBuilder::createScalarTypeBuilder(
     ScalarKind scalarKind) {
   struct MakeSharedEnabler : public ScalarTypeBuilder {
-    MakeSharedEnabler(
-        SchemaBuilder& schemaBuilder,
-        offset_size offset,
-        ScalarKind scalarKind)
-        : Type{offset, Kind::Scalar},
-          TypeBuilder{schemaBuilder, offset, Kind::Scalar},
-          ScalarType{offset, scalarKind},
-          ScalarTypeBuilder{schemaBuilder, offset, scalarKind} {}
+    MakeSharedEnabler(SchemaBuilder& schemaBuilder, ScalarKind scalarKind)
+        : ScalarTypeBuilder{schemaBuilder, scalarKind} {}
   };
 
-  auto type =
-      std::make_shared<MakeSharedEnabler>(*this, currentOffset_++, scalarKind);
+  auto type = std::make_shared<MakeSharedEnabler>(*this, scalarKind);
+
   // This new type builder is not attached to a parent, therefore it is a new
   // tree "root" (as of now), so we add it to the roots list.
   roots_.insert(type);
@@ -177,13 +278,11 @@ std::shared_ptr<ScalarTypeBuilder> SchemaBuilder::createScalarTypeBuilder(
 
 std::shared_ptr<ArrayTypeBuilder> SchemaBuilder::createArrayTypeBuilder() {
   struct MakeSharedEnabler : public ArrayTypeBuilder {
-    MakeSharedEnabler(SchemaBuilder& schemaBuilder, offset_size offset)
-        : Type{offset, Kind::Array},
-          TypeBuilder{schemaBuilder, offset, Kind::Array},
-          ArrayType{offset, nullptr},
-          ArrayTypeBuilder{schemaBuilder, offset} {}
+    explicit MakeSharedEnabler(SchemaBuilder& schemaBuilder)
+        : ArrayTypeBuilder{schemaBuilder} {}
   };
-  auto type = std::make_shared<MakeSharedEnabler>(*this, currentOffset_++);
+  auto type = std::make_shared<MakeSharedEnabler>(*this);
+
   // This new type builder is not attached to a parent, therefore it is a new
   // tree "root" (as of now), so we add it to the roots list.
   roots_.insert(type);
@@ -193,14 +292,12 @@ std::shared_ptr<ArrayTypeBuilder> SchemaBuilder::createArrayTypeBuilder() {
 std::shared_ptr<ArrayWithOffsetsTypeBuilder>
 SchemaBuilder::createArrayWithOffsetsTypeBuilder() {
   struct MakeSharedEnabler : public ArrayWithOffsetsTypeBuilder {
-    MakeSharedEnabler(SchemaBuilder& schemaBuilder, offset_size offset)
-        : Type{offset, Kind::ArrayWithOffsets},
-          TypeBuilder{schemaBuilder, offset, Kind::ArrayWithOffsets},
-          ArrayWithOffsetsType{offset, nullptr, nullptr},
-          ArrayWithOffsetsTypeBuilder{schemaBuilder, offset} {}
+    explicit MakeSharedEnabler(SchemaBuilder& schemaBuilder)
+        : ArrayWithOffsetsTypeBuilder{schemaBuilder} {}
   };
 
-  auto type = std::make_shared<MakeSharedEnabler>(*this, currentOffset_++);
+  auto type = std::make_shared<MakeSharedEnabler>(*this);
+
   // This new type builder is not attached to a parent, therefore it is a new
   // tree "root" (as of now), so we add it to the roots list.
   roots_.insert(type);
@@ -210,17 +307,11 @@ SchemaBuilder::createArrayWithOffsetsTypeBuilder() {
 std::shared_ptr<RowTypeBuilder> SchemaBuilder::createRowTypeBuilder(
     size_t childrenCount) {
   struct MakeSharedEnabler : public RowTypeBuilder {
-    MakeSharedEnabler(
-        SchemaBuilder& schemaBuilder,
-        offset_size offset,
-        size_t childrenCount)
-        : Type{offset, Kind::Row},
-          TypeBuilder{schemaBuilder, offset, Kind::Row},
-          RowType{offset, {}, {}},
-          RowTypeBuilder{schemaBuilder, offset, childrenCount} {}
+    MakeSharedEnabler(SchemaBuilder& schemaBuilder, size_t childrenCount)
+        : RowTypeBuilder{schemaBuilder, childrenCount} {}
   };
-  auto type = std::make_shared<MakeSharedEnabler>(
-      *this, currentOffset_++, childrenCount);
+  auto type = std::make_shared<MakeSharedEnabler>(*this, childrenCount);
+
   // This new type builder is not attached to a parent, therefore it is a new
   // tree "root" (as of now), so we add it to the roots list.
   roots_.insert(type);
@@ -229,13 +320,11 @@ std::shared_ptr<RowTypeBuilder> SchemaBuilder::createRowTypeBuilder(
 
 std::shared_ptr<MapTypeBuilder> SchemaBuilder::createMapTypeBuilder() {
   struct MakeSharedEnabler : public MapTypeBuilder {
-    MakeSharedEnabler(SchemaBuilder& schemaBuilder, offset_size offset)
-        : Type{offset, Kind::Map},
-          TypeBuilder{schemaBuilder, offset, Kind::Map},
-          MapType{offset, nullptr, nullptr},
-          MapTypeBuilder{schemaBuilder, offset} {}
+    explicit MakeSharedEnabler(SchemaBuilder& schemaBuilder)
+        : MapTypeBuilder{schemaBuilder} {}
   };
-  auto type = std::make_shared<MakeSharedEnabler>(*this, currentOffset_++);
+  auto type = std::make_shared<MakeSharedEnabler>(*this);
+
   // This new type builder is not attached to a parent, therefore it is a new
   // tree "root" (as of now), so we add it to the roots list.
   roots_.insert(type);
@@ -245,17 +334,11 @@ std::shared_ptr<MapTypeBuilder> SchemaBuilder::createMapTypeBuilder() {
 std::shared_ptr<FlatMapTypeBuilder> SchemaBuilder::createFlatMapTypeBuilder(
     ScalarKind keyScalarKind) {
   struct MakeSharedEnabler : public FlatMapTypeBuilder {
-    MakeSharedEnabler(
-        SchemaBuilder& schemaBuilder,
-        offset_size offset,
-        ScalarKind keyScalarKind)
-        : Type{offset, Kind::FlatMap},
-          TypeBuilder{schemaBuilder, offset, Kind::FlatMap},
-          FlatMapType{offset, keyScalarKind, {}, {}, {}},
-          FlatMapTypeBuilder(schemaBuilder, offset, keyScalarKind) {}
+    MakeSharedEnabler(SchemaBuilder& schemaBuilder, ScalarKind keyScalarKind)
+        : FlatMapTypeBuilder(schemaBuilder, keyScalarKind) {}
   };
-  auto type = std::make_shared<MakeSharedEnabler>(
-      *this, currentOffset_++, keyScalarKind);
+  auto type = std::make_shared<MakeSharedEnabler>(*this, keyScalarKind);
+
   // This new type builder is not attached to a parent, therefore it is a new
   // tree "root" (as of now), so we add it to the roots list.
   roots_.insert(type);
@@ -295,41 +378,56 @@ void SchemaBuilder::registerChild(const std::shared_ptr<TypeBuilder>& type) {
   roots_.erase(type);
 }
 
+offset_size SchemaBuilder::allocateStreamOffset() {
+  return currentOffset_++;
+}
+
 void SchemaBuilder::addNode(
     std::vector<std::unique_ptr<const SchemaNode>>& nodes,
     const TypeBuilder& type,
     std::optional<std::string> name) const {
   switch (type.kind()) {
     case Kind::Scalar: {
+      const auto& scalar = type.asScalar();
       nodes.push_back(std::make_unique<SchemaNode>(
           type.kind(),
-          type.offset(),
-          std::move(name),
-          dynamic_cast<const ScalarTypeBuilder&>(type).scalarKind()));
+          scalar.scalarDescriptor().offset(),
+          scalar.scalarDescriptor().scalarKind(),
+          std::move(name)));
       break;
     }
     case Kind::Array: {
+      const auto& array = type.asArray();
       nodes.push_back(std::make_unique<SchemaNode>(
-          type.kind(), type.offset(), std::move(name)));
-      addNode(nodes, dynamic_cast<const ArrayTypeBuilder&>(type).elements());
+          type.kind(),
+          array.lengthsDescriptor().offset(),
+          ScalarKind::UInt32,
+          std::move(name)));
+      addNode(nodes, array.elements());
       break;
     }
     case Kind::ArrayWithOffsets: {
+      const auto& array = type.asArrayWithOffsets();
       nodes.push_back(std::make_unique<SchemaNode>(
-          type.kind(), type.offset(), std::move(name)));
-      auto& arrayWithOffsets =
-          dynamic_cast<const ArrayWithOffsetsTypeBuilder&>(type);
-      addNode(nodes, arrayWithOffsets.offsets());
-      addNode(nodes, arrayWithOffsets.elements());
+          type.kind(),
+          array.lengthsDescriptor().offset(),
+          ScalarKind::UInt32,
+          std::move(name)));
+      nodes.push_back(std::make_unique<SchemaNode>(
+          Kind::Scalar,
+          array.offsetsDescriptor().offset(),
+          ScalarKind::UInt32,
+          std::nullopt));
+      addNode(nodes, array.elements());
       break;
     }
     case Kind::Row: {
-      auto& row = dynamic_cast<const RowTypeBuilder&>(type);
+      auto& row = type.asRow();
       nodes.push_back(std::make_unique<SchemaNode>(
           type.kind(),
-          type.offset(),
+          row.nullsDescriptor().offset(),
+          ScalarKind::Bool,
           std::move(name),
-          ScalarKind::Undefined,
           row.childrenCount()));
       for (auto i = 0; i < row.childrenCount(); ++i) {
         addNode(nodes, row.childAt(i), row.nameAt(i));
@@ -337,29 +435,36 @@ void SchemaBuilder::addNode(
       break;
     }
     case Kind::Map: {
+      const auto& map = type.asMap();
       nodes.push_back(std::make_unique<SchemaNode>(
-          type.kind(), type.offset(), std::move(name)));
-      auto& map = dynamic_cast<const MapTypeBuilder&>(type);
+          type.kind(),
+          map.lengthsDescriptor().offset(),
+          ScalarKind::UInt32,
+          std::move(name)));
       addNode(nodes, map.keys());
       addNode(nodes, map.values());
       break;
     }
     case Kind::FlatMap: {
-      auto& flatMap = dynamic_cast<const FlatMapTypeBuilder&>(type);
+      auto& map = type.asFlatMap();
 
-      size_t childrenSize = flatMap.childrenCount();
+      size_t childrenSize = map.childrenCount();
       nodes.push_back(std::make_unique<SchemaNode>(
           type.kind(),
-          type.offset(),
+          map.nullsDescriptor().offset(),
+          map.keyScalarKind(),
           std::move(name),
-          flatMap.keyScalarKind(),
           childrenSize));
       ALPHA_ASSERT(
-          flatMap.inMaps_.size() == childrenSize,
+          map.inMapDescriptors_.size() == childrenSize,
           "Flat map in-maps collection size and children collection size should be the same.");
       for (size_t i = 0; i < childrenSize; ++i) {
-        addNode(nodes, flatMap.inMapAt(i), flatMap.nameAt(i));
-        addNode(nodes, flatMap.childAt(i));
+        nodes.push_back(std::make_unique<SchemaNode>(
+            Kind::Scalar,
+            map.inMapDescriptorAt(i).offset(),
+            ScalarKind::Bool,
+            map.nameAt(i)));
+        addNode(nodes, map.childAt(i));
       }
 
       break;
@@ -385,59 +490,62 @@ void printType(
     const TypeBuilder& builder,
     uint32_t indentation,
     const std::optional<std::string>& name = std::nullopt) {
-  out << std::string(indentation, ' ') << "[" << builder.offset() << "]"
+  out << std::string(indentation, ' ')
       << (name.has_value() ? name.value() + ":" : "");
 
-  if (auto scalar = dynamic_cast<const ScalarTypeBuilder*>(&builder)) {
-    out << toString(scalar->scalarKind()) << "\n";
-    return;
-  }
-
-  if (auto array = dynamic_cast<const ArrayTypeBuilder*>(&builder)) {
-    out << "ARRAY\n";
-    printType(out, array->elements(), indentation + 2, "elements");
-    out << "\n";
-    return;
-  }
-
-  if (auto arrayWithOffsets =
-          dynamic_cast<const ArrayWithOffsetsTypeBuilder*>(&builder)) {
-    out << "OFFSETARRAY\n";
-    printType(out, arrayWithOffsets->offsets(), indentation + 2, "offsets");
-    printType(out, arrayWithOffsets->elements(), indentation + 2, "elements");
-    out << "\n";
-    return;
-  }
-
-  if (auto row = dynamic_cast<const RowTypeBuilder*>(&builder)) {
-    out << "ROW\n";
-    for (auto i = 0; i < row->childrenCount(); ++i) {
-      printType(out, row->childAt(i), indentation + 2, row->nameAt(i));
+  switch (builder.kind()) {
+    case Kind::Scalar: {
+      const auto& scalar = builder.asScalar();
+      out << "[" << scalar.scalarDescriptor().offset() << "]"
+          << toString(scalar.scalarDescriptor().scalarKind()) << "\n";
+      break;
     }
-    out << "\n";
-    return;
-  }
-
-  if (auto map = dynamic_cast<const MapTypeBuilder*>(&builder)) {
-    out << "MAP\n";
-    printType(out, map->keys(), indentation + 2, "keys");
-    printType(out, map->values(), indentation + 2, "values");
-    out << "\n";
-    return;
-  }
-
-  if (auto flatmap = dynamic_cast<const FlatMapTypeBuilder*>(&builder)) {
-    out << "FLATMAP\n";
-    for (auto i = 0; i < flatmap->childrenCount(); ++i) {
-      printType(
-          out,
-          flatmap->childAt(i),
-          indentation + 2,
-          // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
-          flatmap->nameAt(i));
+    case Kind::Array: {
+      const auto& array = builder.asArray();
+      out << "[" << array.lengthsDescriptor().offset() << "]ARRAY\n";
+      printType(out, array.elements(), indentation + 2, "elements");
+      out << "\n";
+      break;
     }
-    out << "\n";
-    return;
+    case Kind::Map: {
+      const auto& map = builder.asMap();
+      out << "[" << map.lengthsDescriptor().offset() << "]MAP\n";
+      printType(out, map.keys(), indentation + 2, "keys");
+      printType(out, map.values(), indentation + 2, "values");
+      out << "\n";
+      break;
+    }
+    case Kind::Row: {
+      const auto& row = builder.asRow();
+      out << "[" << row.nullsDescriptor().offset() << "]ROW\n";
+      for (auto i = 0; i < row.childrenCount(); ++i) {
+        printType(out, row.childAt(i), indentation + 2, row.nameAt(i));
+      }
+      out << "\n";
+      break;
+    }
+    case Kind::FlatMap: {
+      const auto& map = builder.asFlatMap();
+      out << "[" << map.nullsDescriptor().offset() << "]FLATMAP\n";
+      for (auto i = 0; i < map.childrenCount(); ++i) {
+        printType(
+            out,
+            map.childAt(i),
+            indentation + 2,
+            // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
+            map.nameAt(i));
+      }
+      out << "\n";
+      break;
+    }
+    case Kind::ArrayWithOffsets: {
+      const auto& array = builder.asArrayWithOffsets();
+      out << "[" << array.offsetsDescriptor().offset() << ","
+          << array.lengthsDescriptor().offset() << "]OFFSETARRAY\n";
+      printType(out, array.elements(), indentation + 2, "elements");
+      out << "\n";
+      break;
+    }
   }
 }
 

@@ -33,8 +33,8 @@ class Serializer {
       const velox::VectorPtr& vector,
       const OrderedRanges& ranges);
 
-  const std::shared_ptr<const TypeBuilder>& alphaSchema() const {
-    return context_.schemaBuilder.getRoot();
+  const SchemaBuilder& schemaBuilder() const {
+    return context_.schemaBuilder;
   }
 
  private:

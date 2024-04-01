@@ -44,7 +44,7 @@ void compareSchema(
     }
     case alpha::Kind::Row: {
       auto& row = type->asRow();
-      EXPECT_EQ(alpha::ScalarKind::Undefined, node->scalarKind());
+      EXPECT_EQ(alpha::ScalarKind::Bool, node->scalarKind());
       EXPECT_EQ(row.childrenCount(), node->childrenCount());
 
       for (auto i = 0; i < row.childrenCount(); ++i) {
@@ -55,7 +55,7 @@ void compareSchema(
     }
     case alpha::Kind::Array: {
       auto& array = type->asArray();
-      EXPECT_EQ(alpha::ScalarKind::Undefined, node->scalarKind());
+      EXPECT_EQ(alpha::ScalarKind::UInt32, node->scalarKind());
       EXPECT_EQ(0, node->childrenCount());
 
       compareSchema(index, nodes, array.elements());
@@ -64,7 +64,7 @@ void compareSchema(
     }
     case alpha::Kind::ArrayWithOffsets: {
       auto& arrayWithOffsets = type->asArrayWithOffsets();
-      EXPECT_EQ(alpha::ScalarKind::Undefined, node->scalarKind());
+      EXPECT_EQ(alpha::ScalarKind::UInt32, node->scalarKind());
       EXPECT_EQ(0, node->childrenCount());
 
       compareSchema(index, nodes, arrayWithOffsets.offsets());
@@ -74,7 +74,7 @@ void compareSchema(
     }
     case alpha::Kind::Map: {
       auto& map = type->asMap();
-      EXPECT_EQ(alpha::ScalarKind::Undefined, node->scalarKind());
+      EXPECT_EQ(alpha::ScalarKind::UInt32, node->scalarKind());
       EXPECT_EQ(0, node->childrenCount());
 
       compareSchema(index, nodes, map.keys());
@@ -129,10 +129,9 @@ std::shared_ptr<alpha::ArrayTypeBuilder> array(
 
 std::shared_ptr<alpha::ArrayWithOffsetsTypeBuilder> arrayWithOffsets(
     alpha::SchemaBuilder& builder,
-    std::shared_ptr<alpha::ScalarTypeBuilder> offsets,
     std::shared_ptr<alpha::TypeBuilder> elements) {
   auto arrayWithOffsets = builder.createArrayWithOffsetsTypeBuilder();
-  arrayWithOffsets->setChildren(std::move(offsets), std::move(elements));
+  arrayWithOffsets->setChildren(std::move(elements));
 
   return arrayWithOffsets;
 }

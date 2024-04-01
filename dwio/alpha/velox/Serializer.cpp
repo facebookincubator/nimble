@@ -45,10 +45,10 @@ std::string_view Serializer::serialize(
   writer_->write(vector, ranges);
   uint32_t lastStream = 0xffffffff;
   writer_->flush([this, &lastStream](
-                     const TypeBuilder* type,
+                     const StreamDescriptor& streamDescriptor,
                      std::span<const bool>* nonNulls,
                      std::string_view values) {
-    auto stream = type->offset();
+    auto stream = streamDescriptor.offset();
     // Current implementation has strong assumption that schema traversal is
     // pre-order, hence handles types with offsets in increasing order. This
     // assumption may not be true if schema changes based on data shape (ie.
@@ -71,7 +71,7 @@ std::string_view Serializer::serialize(
                 [](bool notNull) { return notNull; }),
         "nulls not supported");
     auto oldSize = buffer_.size();
-    auto scalarKind = getScalarKind(*type);
+    auto scalarKind = streamDescriptor.scalarKind();
     if (scalarKind == ScalarKind::String || scalarKind == ScalarKind::Binary) {
       // TODO: handle string compression
       auto strData = reinterpret_cast<const std::string_view*>(values.data());

@@ -15,12 +15,13 @@ void addNamedTypes(
     std::vector<std::tuple<uint32_t, std::string>>& result) {
   switch (node.kind()) {
     case alpha::Kind::Scalar: {
-      result.emplace_back(node.offset(), prefix + "s");
+      result.emplace_back(
+          node.asScalar().scalarDescriptor().offset(), prefix + "s");
       break;
     }
     case alpha::Kind::Row: {
-      auto& row = dynamic_cast<const alpha::RowTypeBuilder&>(node);
-      result.emplace_back(node.offset(), prefix + "r");
+      auto& row = node.asRow();
+      result.emplace_back(row.nullsDescriptor().offset(), prefix + "r");
       for (auto i = 0; i < row.childrenCount(); ++i) {
         addNamedTypes(
             row.childAt(i),
@@ -30,20 +31,18 @@ void addNamedTypes(
       break;
     }
     case alpha::Kind::Array: {
-      auto& array = dynamic_cast<const alpha::ArrayTypeBuilder&>(node);
-      result.emplace_back(node.offset(), prefix + "a");
+      auto& array = node.asArray();
+      result.emplace_back(array.lengthsDescriptor().offset(), prefix + "a");
       addNamedTypes(
           array.elements(), folly::to<std::string>(prefix, "a."), result);
       break;
     }
     case alpha::Kind::ArrayWithOffsets: {
-      auto& arrayWithOffsets =
-          dynamic_cast<const alpha::ArrayWithOffsetsTypeBuilder&>(node);
-      result.emplace_back(node.offset(), prefix + "da");
-      addNamedTypes(
-          arrayWithOffsets.offsets(),
-          folly::to<std::string>(prefix, "da.o:"),
-          result);
+      auto& arrayWithOffsets = node.asArrayWithOffsets();
+      result.emplace_back(
+          arrayWithOffsets.offsetsDescriptor().offset(), prefix + "da.o");
+      result.emplace_back(
+          arrayWithOffsets.lengthsDescriptor().offset(), prefix + "da.l");
       addNamedTypes(
           arrayWithOffsets.elements(),
           folly::to<std::string>(prefix, "da.e:"),
@@ -52,19 +51,19 @@ void addNamedTypes(
       break;
     }
     case alpha::Kind::Map: {
-      auto& map = dynamic_cast<const alpha::MapTypeBuilder&>(node);
-      result.emplace_back(node.offset(), prefix + "m");
+      auto& map = node.asMap();
+      result.emplace_back(map.lengthsDescriptor().offset(), prefix + "m");
       addNamedTypes(map.keys(), folly::to<std::string>(prefix, "m.k:"), result);
       addNamedTypes(
           map.values(), folly::to<std::string>(prefix, "m.v:"), result);
       break;
     }
     case alpha::Kind::FlatMap: {
-      auto& flatmap = dynamic_cast<const alpha::FlatMapTypeBuilder&>(node);
-      result.emplace_back(node.offset(), prefix + "f");
+      auto& flatmap = node.asFlatMap();
+      result.emplace_back(flatmap.nullsDescriptor().offset(), prefix + "f");
       for (auto i = 0; i < flatmap.childrenCount(); ++i) {
         result.emplace_back(
-            flatmap.inMapAt(i).offset(),
+            flatmap.inMapDescriptorAt(i).offset(),
             fmt::format("{}f.{}({}).im", prefix, flatmap.nameAt(i), i));
         addNamedTypes(
             flatmap.childAt(i),

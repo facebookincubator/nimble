@@ -201,9 +201,9 @@ std::shared_ptr<const Type> SchemaDeserializer::deserialize(
     nodes[i] = std::make_unique<const SchemaNode>(
         kind.first,
         node->offset(),
+        kind.second,
         node->name() ? std::optional<std::string>(node->name()->str())
                      : std::nullopt,
-        kind.second,
         node->children());
   }
 

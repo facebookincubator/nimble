@@ -85,25 +85,21 @@ namespace {
 
 constexpr uint32_t kInitialSchemaSectionSize = 1 << 20; // 1MB
 
-class EncodingLayoutContext : public TypeBuilderContext {
+class EncodingLayoutContext : public StreamContext {
  public:
-  explicit EncodingLayoutContext(EncodingLayout encoding)
-      : TypeBuilderContext(), encoding{std::move(encoding)} {}
+  explicit EncodingLayoutContext(const EncodingLayout& encoding)
+      : encoding{encoding} {}
 
-  EncodingLayout encoding;
+  const EncodingLayout& encoding;
 };
 
 class FlatmapEncodingLayoutContext : public TypeBuilderContext {
  public:
-  FlatmapEncodingLayoutContext(
-      std::optional<EncodingLayout> encoding,
+  explicit FlatmapEncodingLayoutContext(
       folly::F14FastMap<std::string_view, const EncodingLayoutTree&>
           keyEncodings)
-      : TypeBuilderContext(),
-        encoding{std::move(encoding)},
-        keyEncodings{std::move(keyEncodings)} {}
+      : keyEncodings{std::move(keyEncodings)} {}
 
-  const std::optional<EncodingLayout> encoding;
   const folly::F14FastMap<std::string_view, const EncodingLayoutTree&>
       keyEncodings;
 };
@@ -142,7 +138,7 @@ template <typename T>
 std::string_view encodeStreamTyped(
     detail::WriterContext& context,
     Buffer& buffer,
-    const TypeBuilder* type,
+    const EncodingLayoutContext* encodingLayoutContext,
     std::span<const bool>* nonNulls,
     std::string_view data) {
   ALPHA_ASSERT(
@@ -151,23 +147,9 @@ std::string_view encodeStreamTyped(
   std::span<const T> values{
       reinterpret_cast<const T*>(data.data()), data.size() / sizeof(T)};
 
-  const auto& typeContext = type->context();
   std::optional<EncodingLayout> encodingLayout;
-  if (typeContext) {
-    if (type->kind() == Kind::FlatMap) {
-      auto* flatmapTypeContext =
-          dynamic_cast<FlatmapEncodingLayoutContext*>(typeContext.get());
-      ALPHA_DASSERT(
-          flatmapTypeContext, "Expecting flatmap encoding layout context.");
-      if (flatmapTypeContext->encoding.has_value()) {
-        encodingLayout.emplace(flatmapTypeContext->encoding.value());
-      }
-    } else {
-      auto nodeTypeContext =
-          dynamic_cast<EncodingLayoutContext*>(typeContext.get());
-      ALPHA_DASSERT(nodeTypeContext, "Expecting node encoding layout context.");
-      encodingLayout.emplace(nodeTypeContext->encoding);
-    }
+  if (encodingLayoutContext) {
+    encodingLayout.emplace(encodingLayoutContext->encoding);
   }
 
   try {
@@ -186,56 +168,42 @@ std::string_view encodeStreamTyped(
 std::string_view encodeStream(
     detail::WriterContext& context,
     Buffer& buffer,
-    const TypeBuilder* type,
+    const StreamDescriptor& streamDescriptor,
     std::span<const bool>* nonNulls,
     std::string_view cols) {
-  switch (type->kind()) {
-    case Kind::Scalar: {
-      auto scalarKind = type->asScalar().scalarKind();
-      switch (scalarKind) {
-        case ScalarKind::Bool:
-          return encodeStreamTyped<bool>(context, buffer, type, nonNulls, cols);
-        case ScalarKind::Int8:
-          return encodeStreamTyped<int8_t>(
-              context, buffer, type, nonNulls, cols);
-        case ScalarKind::Int16:
-          return encodeStreamTyped<int16_t>(
-              context, buffer, type, nonNulls, cols);
-        case ScalarKind::Int32:
-          return encodeStreamTyped<int32_t>(
-              context, buffer, type, nonNulls, cols);
-        case ScalarKind::UInt32:
-          return encodeStreamTyped<uint32_t>(
-              context, buffer, type, nonNulls, cols);
-        case ScalarKind::Int64:
-          return encodeStreamTyped<int64_t>(
-              context, buffer, type, nonNulls, cols);
-        case ScalarKind::Float:
-          return encodeStreamTyped<float>(
-              context, buffer, type, nonNulls, cols);
-        case ScalarKind::Double:
-          return encodeStreamTyped<double>(
-              context, buffer, type, nonNulls, cols);
-        case ScalarKind::String:
-        case ScalarKind::Binary:
-          return encodeStreamTyped<std::string_view>(
-              context, buffer, type, nonNulls, cols);
-        default:
-          ALPHA_UNREACHABLE(
-              fmt::format("Unsupported scalar kind {}", toString(scalarKind)));
-      }
-      break;
-    }
-    case Kind::Row:
-    case Kind::FlatMap:
-      return encodeStreamTyped<bool>(context, buffer, type, nonNulls, cols);
-    case Kind::Array:
-    case Kind::ArrayWithOffsets:
-    case Kind::Map:
-      return encodeStreamTyped<int32_t>(context, buffer, type, nonNulls, cols);
+  auto scalarKind = streamDescriptor.scalarKind();
+  const auto encodingLayout = streamDescriptor.context<EncodingLayoutContext>();
+  switch (scalarKind) {
+    case ScalarKind::Bool:
+      return encodeStreamTyped<bool>(
+          context, buffer, encodingLayout, nonNulls, cols);
+    case ScalarKind::Int8:
+      return encodeStreamTyped<int8_t>(
+          context, buffer, encodingLayout, nonNulls, cols);
+    case ScalarKind::Int16:
+      return encodeStreamTyped<int16_t>(
+          context, buffer, encodingLayout, nonNulls, cols);
+    case ScalarKind::Int32:
+      return encodeStreamTyped<int32_t>(
+          context, buffer, encodingLayout, nonNulls, cols);
+    case ScalarKind::UInt32:
+      return encodeStreamTyped<uint32_t>(
+          context, buffer, encodingLayout, nonNulls, cols);
+    case ScalarKind::Int64:
+      return encodeStreamTyped<int64_t>(
+          context, buffer, encodingLayout, nonNulls, cols);
+    case ScalarKind::Float:
+      return encodeStreamTyped<float>(
+          context, buffer, encodingLayout, nonNulls, cols);
+    case ScalarKind::Double:
+      return encodeStreamTyped<double>(
+          context, buffer, encodingLayout, nonNulls, cols);
+    case ScalarKind::String:
+    case ScalarKind::Binary:
+      return encodeStreamTyped<std::string_view>(
+          context, buffer, encodingLayout, nonNulls, cols);
     default:
-      ALPHA_UNREACHABLE(
-          fmt::format("Unsupported type kind {}", toString(type->kind())));
+      ALPHA_UNREACHABLE(fmt::format("Unsupported scalar kind {}", scalarKind));
   }
 }
 
@@ -290,10 +258,16 @@ std::unique_ptr<FieldWriter> createRootField(
 }
 
 void initializeEncodingLayouts(
-    const Type& typeBuilder,
+    const TypeBuilder& typeBuilder,
     const EncodingLayoutTree& encodingLayoutTree) {
   {
-    auto& encodingLayout = encodingLayoutTree.encodingLayout();
+#define _SET_STREAM_CONTEXT(builder, descriptor, identifier)       \
+  if (auto* encodingLayout = encodingLayoutTree.encodingLayout(    \
+          EncodingLayoutTree::StreamIdentifiers::identifier)) {    \
+    builder.descriptor().setContext(                               \
+        std::make_unique<EncodingLayoutContext>(*encodingLayout)); \
+  }
+
     if (typeBuilder.kind() == Kind::FlatMap) {
       if (encodingLayoutTree.schemaKind() == Kind::Map) {
         // Schema evolution - If a map is converted to flatmap, we should not
@@ -308,38 +282,34 @@ void initializeEncodingLayouts(
       keyEncodings.reserve(encodingLayoutTree.childrenCount());
       for (auto i = 0; i < encodingLayoutTree.childrenCount(); ++i) {
         auto& child = encodingLayoutTree.child(i);
-        if (child.encodingLayout().has_value()) {
-          keyEncodings.emplace(child.name(), child);
-        }
+        keyEncodings.emplace(child.name(), child);
       }
-      dynamic_cast<const TypeBuilder&>(typeBuilder)
-          .setContext(std::make_unique<FlatmapEncodingLayoutContext>(
-              encodingLayout, std::move(keyEncodings)));
+      const auto& mapBuilder = typeBuilder.asFlatMap();
+      mapBuilder.setContext(std::make_unique<FlatmapEncodingLayoutContext>(
+          std::move(keyEncodings)));
 
+      _SET_STREAM_CONTEXT(mapBuilder, nullsDescriptor, FlatMap::NullsStream);
     } else {
-      if (encodingLayout.has_value()) {
-        dynamic_cast<const TypeBuilder&>(typeBuilder)
-            .setContext(std::make_unique<EncodingLayoutContext>(
-                encodingLayout.value()));
-      }
       switch (typeBuilder.kind()) {
         case Kind::Scalar: {
-          // Do nothing.
           ALPHA_CHECK(
               encodingLayoutTree.schemaKind() == Kind::Scalar,
               "Incompatible encoding layout node. Expecting scalar node.");
+          _SET_STREAM_CONTEXT(
+              typeBuilder.asScalar(), scalarDescriptor, Scalar::ScalarStream);
           break;
         }
         case Kind::Row: {
           ALPHA_CHECK(
               encodingLayoutTree.schemaKind() == Kind::Row,
               "Incompatible encoding layout node. Expecting row node.");
-          auto& row = typeBuilder.asRow();
-          for (auto i = 0; i < row.childrenCount() &&
+          auto& rowBuilder = typeBuilder.asRow();
+          _SET_STREAM_CONTEXT(rowBuilder, nullsDescriptor, Row::NullsStream);
+          for (auto i = 0; i < rowBuilder.childrenCount() &&
                i < encodingLayoutTree.childrenCount();
                ++i) {
             initializeEncodingLayouts(
-                *row.childAt(i), encodingLayoutTree.child(i));
+                rowBuilder.childAt(i), encodingLayoutTree.child(i));
           }
           break;
         }
@@ -347,13 +317,15 @@ void initializeEncodingLayouts(
           ALPHA_CHECK(
               encodingLayoutTree.schemaKind() == Kind::Array,
               "Incompatible encoding layout node. Expecting array node.");
+          auto& arrayBuilder = typeBuilder.asArray();
+          _SET_STREAM_CONTEXT(
+              arrayBuilder, lengthsDescriptor, Array::LengthsStream);
           if (encodingLayoutTree.childrenCount() > 0) {
             ALPHA_CHECK(
                 encodingLayoutTree.childrenCount() == 1,
                 "Invalid encoding layout tree. Array node should have exactly one child.");
-            auto& array = typeBuilder.asArray();
             initializeEncodingLayouts(
-                *array.elements(), encodingLayoutTree.child(0));
+                arrayBuilder.elements(), encodingLayoutTree.child(0));
           }
           break;
         }
@@ -366,14 +338,17 @@ void initializeEncodingLayouts(
           ALPHA_CHECK(
               encodingLayoutTree.schemaKind() == Kind::Map,
               "Incompatible encoding layout node. Expecting map node.");
+          auto& mapBuilder = typeBuilder.asMap();
+          _SET_STREAM_CONTEXT(
+              mapBuilder, lengthsDescriptor, Map::LengthsStream);
           if (encodingLayoutTree.childrenCount() > 0) {
             ALPHA_CHECK(
                 encodingLayoutTree.childrenCount() == 2,
                 "Invalid encoding layout tree. Map node should have exactly two children.");
-            auto& map = typeBuilder.asMap();
-            initializeEncodingLayouts(*map.keys(), encodingLayoutTree.child(0));
             initializeEncodingLayouts(
-                *map.values(), encodingLayoutTree.child(1));
+                mapBuilder.keys(), encodingLayoutTree.child(0));
+            initializeEncodingLayouts(
+                mapBuilder.values(), encodingLayoutTree.child(1));
           }
 
           break;
@@ -382,15 +357,17 @@ void initializeEncodingLayouts(
           ALPHA_CHECK(
               encodingLayoutTree.schemaKind() == Kind::ArrayWithOffsets,
               "Incompatible encoding layout node. Expecting offset array node.");
+          auto& arrayBuilder = typeBuilder.asArrayWithOffsets();
+          _SET_STREAM_CONTEXT(
+              arrayBuilder, offsetsDescriptor, ArrayWithOffsets::OffsetsStream);
+          _SET_STREAM_CONTEXT(
+              arrayBuilder, lengthsDescriptor, ArrayWithOffsets::LengthsStream);
           if (encodingLayoutTree.childrenCount() > 0) {
             ALPHA_CHECK(
                 encodingLayoutTree.childrenCount() == 2,
                 "Invalid encoding layout tree. ArrayWithOffset node should have exactly two children.");
-            auto& array = typeBuilder.asArrayWithOffsets();
             initializeEncodingLayouts(
-                *array.elements(), encodingLayoutTree.child(0));
-            initializeEncodingLayouts(
-                *array.offsets(), encodingLayoutTree.child(1));
+                arrayBuilder.elements(), encodingLayoutTree.child(0));
           }
           break;
         }
@@ -399,6 +376,7 @@ void initializeEncodingLayouts(
         }
       }
     }
+#undef _SET_STREAM_CONTEXT
   }
 }
 
@@ -438,12 +416,10 @@ VeloxWriter::VeloxWriter(
     context_->flatmapFieldAddedEventHandler = [](const TypeBuilder& flatmap,
                                                  std::string_view fieldKey,
                                                  const TypeBuilder& fieldType) {
-      auto& context = flatmap.context();
+      auto* context = flatmap.context<FlatmapEncodingLayoutContext>();
       if (context) {
-        auto& flatmapContext =
-            dynamic_cast<FlatmapEncodingLayoutContext&>(*context);
-        auto it = flatmapContext.keyEncodings.find(fieldKey);
-        if (it != flatmapContext.keyEncodings.end()) {
+        auto it = context->keyEncodings.find(fieldKey);
+        if (it != context->keyEncodings.end()) {
           initializeEncodingLayouts(fieldType, it->second);
         }
       }
@@ -571,16 +547,17 @@ void VeloxWriter::writeChunk(bool lastChunk) {
     }
     streams_.resize(context_->schemaBuilder.nodeCount());
     StreamCollector collector = [this, &chunkSize](
-                                    const TypeBuilder* type,
+                                    const StreamDescriptor& streamDescriptor,
                                     std::span<const bool>* nonNulls,
                                     std::string_view cols) {
-      auto encoded =
-          encodeStream(*context_, *encodingBuffer_, type, nonNulls, cols);
+      auto encoded = encodeStream(
+          *context_, *encodingBuffer_, streamDescriptor, nonNulls, cols);
       if (!encoded.empty()) {
         ChunkedStreamWriter chunkWriter{*encodingBuffer_};
         ALPHA_DASSERT(
-            type->offset() < streams_.size(), "Stream offset out of range.");
-        auto& stream = streams_[type->offset()];
+            streamDescriptor.offset() < streams_.size(),
+            "Stream offset out of range.");
+        auto& stream = streams_[streamDescriptor.offset()];
         for (auto& buffer : chunkWriter.encode(encoded)) {
           chunkSize += buffer.size();
           stream.content.push_back(std::move(buffer));

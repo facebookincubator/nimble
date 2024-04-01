@@ -4,6 +4,7 @@
 
 #include "dwio/alpha/velox/SchemaBuilder.h"
 #include "dwio/alpha/velox/SchemaGenerated.h"
+#include "dwio/alpha/velox/SchemaReader.h"
 
 namespace facebook::alpha {
 

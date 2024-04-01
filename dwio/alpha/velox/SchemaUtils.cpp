@@ -147,7 +147,7 @@ velox::TypePtr convertToVeloxType(const Type& type) {
 std::shared_ptr<const Type> convertToAlphaType(const velox::Type& type) {
   SchemaBuilder builder;
   convertToAlphaType(builder, type);
-  return builder.getRoot();
+  return SchemaReader::getSchema(builder.getSchemaNodes());
 }
 
 } // namespace facebook::alpha

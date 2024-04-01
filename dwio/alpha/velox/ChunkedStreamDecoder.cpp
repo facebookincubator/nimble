@@ -25,7 +25,7 @@ uint32_t ChunkedStreamDecoder::next(
   bool hasNulls = false;
   uint32_t offset = 0;
   void* nullsPtr = nullptr;
-  std::function<void*()> innerNulls = [&]() {
+  std::function<void*()> initNulls = [&]() {
     if (!nullsPtr) {
       nullsPtr = nulls();
     }
@@ -42,7 +42,7 @@ uint32_t ChunkedStreamDecoder::next(
     if (!nulls || !scatterBitmap) {
       ALPHA_CHECK(!scatterBitmap, "unexpected scatter bitmap");
       chunkNonNullCount = encoding_->materializeNullable(
-          rowsToRead, output, innerNulls, nullptr, offset);
+          rowsToRead, output, initNulls, nullptr, offset);
       endOffset = offset + rowsToRead;
     } else {
       endOffset = bits::findSetBit(
@@ -52,7 +52,7 @@ uint32_t ChunkedStreamDecoder::next(
           rowsToRead + 1);
       bits::Bitmap localBitmap{scatterBitmap->bits(), endOffset};
       chunkNonNullCount = encoding_->materializeNullable(
-          rowsToRead, output, innerNulls, &localBitmap, offset);
+          rowsToRead, output, initNulls, &localBitmap, offset);
     }
 
     auto chunkHasNulls = chunkNonNullCount != (endOffset - offset);

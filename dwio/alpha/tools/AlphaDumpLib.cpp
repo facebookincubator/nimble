@@ -654,14 +654,24 @@ void AlphaDumpLib::emitLayout(bool noHeader, bool compressed) {
           uint32_t parentId,
           uint32_t /* level */,
           uint8_t /* identifier */) {
+        auto identifiers = node.encodingLayoutIdentifiers();
+        std::sort(identifiers.begin(), identifiers.end());
+
+        std::string encodingLayout;
+        for (auto identifier : identifiers) {
+          if (!encodingLayout.empty()) {
+            encodingLayout += "|";
+          }
+          encodingLayout += folly::to<std::string>(identifier) + ":" +
+              getEncodingLayoutLabel(*node.encodingLayout(identifier));
+        }
+
         formatter.writeRow(
             {folly::to<std::string>(nodeId),
              folly::to<std::string>(parentId),
              toString(node.schemaKind()),
              std::string(node.name()),
-             node.encodingLayout().has_value()
-                 ? getEncodingLayoutLabel(node.encodingLayout().value())
-                 : ""});
+             encodingLayout});
       });
 }
 

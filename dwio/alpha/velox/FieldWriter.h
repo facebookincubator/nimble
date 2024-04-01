@@ -78,9 +78,9 @@ struct FieldWriterContext {
 
 using OrderedRanges = range_helper::OrderedRanges<velox::vector_size_t>;
 using StreamCollector = std::function<void(
-    const TypeBuilder* /* type */,
+    const StreamDescriptor& /* descriptor */,
     std::span<const bool>* /* nonNulls */,
-    std::string_view /* cols */)>;
+    std::string_view /* data */)>;
 
 class FieldWriter {
  public:
@@ -158,7 +158,7 @@ class FieldWriter {
       bool hasNulls,
       Vector<T>& data,
       bool forceFlushingNulls,
-      const TypeBuilder* typeBuilder = nullptr);
+      const StreamDescriptor& streamDescriptor);
 };
 
 } // namespace facebook::alpha

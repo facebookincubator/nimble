@@ -8,41 +8,47 @@ namespace facebook::alpha {
 namespace {
 
 void appendAllNestedStreams(
-    const Type& type,
+    const TypeBuilder& type,
     std::vector<offset_size>& childrenOffsets) {
-  childrenOffsets.push_back(type.offset());
   switch (type.kind()) {
     case Kind::Scalar: {
+      childrenOffsets.push_back(type.asScalar().scalarDescriptor().offset());
       break;
     }
     case Kind::Row: {
       auto& row = type.asRow();
+      childrenOffsets.push_back(row.nullsDescriptor().offset());
       for (auto i = 0; i < row.childrenCount(); ++i) {
-        appendAllNestedStreams(*row.childAt(i), childrenOffsets);
+        appendAllNestedStreams(row.childAt(i), childrenOffsets);
       }
       break;
     }
     case Kind::Array: {
-      appendAllNestedStreams(*type.asArray().elements(), childrenOffsets);
+      auto& array = type.asArray();
+      childrenOffsets.push_back(array.lengthsDescriptor().offset());
+      appendAllNestedStreams(array.elements(), childrenOffsets);
       break;
     }
     case Kind::ArrayWithOffsets: {
       auto& arrayWithOffsets = type.asArrayWithOffsets();
-      appendAllNestedStreams(*arrayWithOffsets.offsets(), childrenOffsets);
-      appendAllNestedStreams(*arrayWithOffsets.elements(), childrenOffsets);
+      childrenOffsets.push_back(arrayWithOffsets.offsetsDescriptor().offset());
+      childrenOffsets.push_back(arrayWithOffsets.lengthsDescriptor().offset());
+      appendAllNestedStreams(arrayWithOffsets.elements(), childrenOffsets);
       break;
     }
     case Kind::Map: {
       auto& map = type.asMap();
-      appendAllNestedStreams(*map.keys(), childrenOffsets);
-      appendAllNestedStreams(*map.values(), childrenOffsets);
+      childrenOffsets.push_back(map.lengthsDescriptor().offset());
+      appendAllNestedStreams(map.keys(), childrenOffsets);
+      appendAllNestedStreams(map.values(), childrenOffsets);
       break;
     }
     case Kind::FlatMap: {
       auto& flatMap = type.asFlatMap();
+      childrenOffsets.push_back(flatMap.nullsDescriptor().offset());
       for (auto i = 0; i < flatMap.childrenCount(); ++i) {
-        childrenOffsets.push_back(flatMap.inMapAt(i)->offset());
-        appendAllNestedStreams(*flatMap.childAt(i), childrenOffsets);
+        childrenOffsets.push_back(flatMap.inMapDescriptorAt(i).offset());
+        appendAllNestedStreams(flatMap.childAt(i), childrenOffsets);
       }
       break;
     }
@@ -52,7 +58,7 @@ void appendAllNestedStreams(
 } // namespace
 
 FlatMapLayoutPlanner::FlatMapLayoutPlanner(
-    std::function<std::shared_ptr<const Type>()> typeResolver,
+    std::function<std::shared_ptr<const TypeBuilder>()> typeResolver,
     std::vector<std::tuple<size_t, std::vector<int64_t>>> flatMapFeatureOrder)
     : typeResolver_{std::move(typeResolver)},
       flatMapFeatureOrder_{std::move(flatMapFeatureOrder)} {
@@ -95,15 +101,15 @@ std::vector<Stream> FlatMapLayoutPlanner::getLayout(
             root.childrenCount()));
     auto& column = root.childAt(std::get<0>(flatMapFeatures));
     ALPHA_CHECK(
-        column->kind() == Kind::FlatMap,
+        column.kind() == Kind::FlatMap,
         fmt::format(
             "Column '{}' for feature ordering is not a flat map.",
             root.nameAt(std::get<0>(flatMapFeatures))));
 
-    // For each flat map, first we push the flat map (nulls) stream.
-    orderedFlatMapOffsets.push_back(column->offset());
+    auto& flatMap = column.asFlatMap();
 
-    auto& flatMap = column->asFlatMap();
+    // For each flat map, first we push the flat map nulls stream.
+    orderedFlatMapOffsets.push_back(flatMap.nullsDescriptor().offset());
 
     // Build a lookup table from feature name to its schema offset.
     std::unordered_map<std::string, offset_size> flatMapNamedOrdinals;
@@ -121,9 +127,9 @@ std::vector<Stream> FlatMapLayoutPlanner::getLayout(
       }
 
       auto ordinal = it->second;
-      auto& flatMapInMap = flatMap.inMapAt(ordinal);
-      orderedFlatMapOffsets.push_back(flatMapInMap->offset());
-      appendAllNestedStreams(*flatMap.childAt(ordinal), orderedFlatMapOffsets);
+      auto& inMapDescriptor = flatMap.inMapDescriptorAt(ordinal);
+      orderedFlatMapOffsets.push_back(inMapDescriptor.offset());
+      appendAllNestedStreams(flatMap.childAt(ordinal), orderedFlatMapOffsets);
     }
   }
 
@@ -158,8 +164,8 @@ std::vector<Stream> FlatMapLayoutPlanner::getLayout(
   // try and find matching streams for each type builder and append them to the
   // final ordered stream list.
 
-  // First add the root row
-  tryAppendStream(root.offset());
+  // First add the root row's null stream
+  tryAppendStream(root.nullsDescriptor().offset());
 
   // Then, add all ordered flat maps
   for (auto offset : orderedFlatMapOffsets) {

@@ -29,7 +29,6 @@ std::shared_ptr<alpha::ArrayTypeBuilder> array(
 
 std::shared_ptr<alpha::ArrayWithOffsetsTypeBuilder> arrayWithOffsets(
     alpha::SchemaBuilder& builder,
-    std::shared_ptr<alpha::ScalarTypeBuilder> offsets,
     std::shared_ptr<alpha::TypeBuilder> elements);
 
 std::shared_ptr<alpha::MapTypeBuilder> map(
@@ -41,10 +40,7 @@ class FlatMapChildAdder {
  public:
   void addChild(std::string name) {
     ALPHA_CHECK(schemaBuilder_, "Flat map child adder is not intialized.");
-    typeBuilder_->addChild(
-        name,
-        schemaBuilder_->createScalarTypeBuilder(alpha::ScalarKind::Bool),
-        valueFactory_(*schemaBuilder_));
+    typeBuilder_->addChild(name, valueFactory_(*schemaBuilder_));
   }
 
  private:
@@ -90,8 +86,6 @@ void schema(
 #define TINYINT() builder.createScalarTypeBuilder(alpha::ScalarKind::Int8)
 #define SMALLINT() builder.createScalarTypeBuilder(alpha::ScalarKind::Int16)
 #define INTEGER() builder.createScalarTypeBuilder(alpha::ScalarKind::Int32)
-#define UNSIGNEDINTEGER() \
-  builder.createScalarTypeBuilder(alpha::ScalarKind::UInt32)
 #define BIGINT() builder.createScalarTypeBuilder(alpha::ScalarKind::Int64)
 #define REAL() builder.createScalarTypeBuilder(alpha::ScalarKind::Float)
 #define DOUBLE() builder.createScalarTypeBuilder(alpha::ScalarKind::Double)
@@ -99,8 +93,8 @@ void schema(
 #define STRING() builder.createScalarTypeBuilder(alpha::ScalarKind::String)
 #define BINARY() builder.createScalarTypeBuilder(alpha::ScalarKind::Binary)
 #define ARRAY(elements) facebook::alpha::test::array(builder, elements)
-#define OFFSETARRAY(offsets, elements) \
-  facebook::alpha::test::arrayWithOffsets(builder, offsets, elements)
+#define OFFSETARRAY(elements) \
+  facebook::alpha::test::arrayWithOffsets(builder, elements)
 #define MAP(keys, values) facebook::alpha::test::map(builder, keys, values)
 #define FLATMAP(keyKind, values, adder)                      \
   facebook::alpha::test::flatMap(                            \

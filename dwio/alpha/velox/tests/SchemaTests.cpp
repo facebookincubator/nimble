@@ -48,40 +48,33 @@ TEST(SchemaTests, SchemaUtils) {
           {"c11", BOOLEAN()},
           {"c12", STRING()},
           {"c13", BINARY()},
-          {"c14", OFFSETARRAY(UNSIGNEDINTEGER(), INTEGER())},
+          {"c14", OFFSETARRAY(INTEGER())},
       }));
 
   auto nodes = builder.getSchemaNodes();
   alpha::test::verifySchemaNodes(
       nodes,
       {
-          {alpha::Kind::Row,
-           19,
-           std::nullopt,
-           alpha::ScalarKind::Undefined,
-           14},
-          {alpha::Kind::Scalar, 0, "c1", alpha::ScalarKind::Int8},
-          {alpha::Kind::Array, 2, "c2", alpha::ScalarKind::Undefined},
-          {alpha::Kind::Scalar, 1, std::nullopt, alpha::ScalarKind::Int8},
-          {alpha::Kind::FlatMap, 3, "c3", alpha::ScalarKind::Int8, 0},
-          {alpha::Kind::Map, 6, "c4", alpha::ScalarKind::Undefined},
-          {alpha::Kind::Scalar, 4, std::nullopt, alpha::ScalarKind::Int8},
-          {alpha::Kind::Scalar, 5, std::nullopt, alpha::ScalarKind::Int8},
-          {alpha::Kind::FlatMap, 7, "c5", alpha::ScalarKind::Float, 0},
-          {alpha::Kind::Scalar, 8, "c6", alpha::ScalarKind::Int16},
-          {alpha::Kind::Scalar, 9, "c7", alpha::ScalarKind::Int32},
-          {alpha::Kind::Scalar, 10, "c8", alpha::ScalarKind::Int64},
-          {alpha::Kind::Scalar, 11, "c9", alpha::ScalarKind::Float},
-          {alpha::Kind::Scalar, 12, "c10", alpha::ScalarKind::Double},
-          {alpha::Kind::Scalar, 13, "c11", alpha::ScalarKind::Bool},
-          {alpha::Kind::Scalar, 14, "c12", alpha::ScalarKind::String},
-          {alpha::Kind::Scalar, 15, "c13", alpha::ScalarKind::Binary},
-          {alpha::Kind::ArrayWithOffsets,
-           18,
-           "c14",
-           alpha::ScalarKind::Undefined},
-          {alpha::Kind::Scalar, 16, std::nullopt, alpha::ScalarKind::UInt32},
-          {alpha::Kind::Scalar, 17, std::nullopt, alpha::ScalarKind::Int32},
+          {alpha::Kind::Row, 19, alpha::ScalarKind::Bool, std::nullopt, 14},
+          {alpha::Kind::Scalar, 0, alpha::ScalarKind::Int8, "c1"},
+          {alpha::Kind::Array, 2, alpha::ScalarKind::UInt32, "c2"},
+          {alpha::Kind::Scalar, 1, alpha::ScalarKind::Int8},
+          {alpha::Kind::FlatMap, 3, alpha::ScalarKind::Int8, "c3", 0},
+          {alpha::Kind::Map, 6, alpha::ScalarKind::UInt32, "c4"},
+          {alpha::Kind::Scalar, 4, alpha::ScalarKind::Int8},
+          {alpha::Kind::Scalar, 5, alpha::ScalarKind::Int8},
+          {alpha::Kind::FlatMap, 7, alpha::ScalarKind::Float, "c5", 0},
+          {alpha::Kind::Scalar, 8, alpha::ScalarKind::Int16, "c6"},
+          {alpha::Kind::Scalar, 9, alpha::ScalarKind::Int32, "c7"},
+          {alpha::Kind::Scalar, 10, alpha::ScalarKind::Int64, "c8"},
+          {alpha::Kind::Scalar, 11, alpha::ScalarKind::Float, "c9"},
+          {alpha::Kind::Scalar, 12, alpha::ScalarKind::Double, "c10"},
+          {alpha::Kind::Scalar, 13, alpha::ScalarKind::Bool, "c11"},
+          {alpha::Kind::Scalar, 14, alpha::ScalarKind::String, "c12"},
+          {alpha::Kind::Scalar, 15, alpha::ScalarKind::Binary, "c13"},
+          {alpha::Kind::ArrayWithOffsets, 18, alpha::ScalarKind::UInt32, "c14"},
+          {alpha::Kind::Scalar, 17, alpha::ScalarKind::UInt32},
+          {alpha::Kind::Scalar, 16, alpha::ScalarKind::Int32},
       });
 
   verifyLabels(nodes, {"/",   "/0",  "/1",  "/1",  "/2",  "/3", "/3",
@@ -94,36 +87,29 @@ TEST(SchemaTests, SchemaUtils) {
   alpha::test::verifySchemaNodes(
       nodes,
       {
-          {alpha::Kind::Row,
-           19,
-           std::nullopt,
-           alpha::ScalarKind::Undefined,
-           14},
-          {alpha::Kind::Scalar, 0, "c1", alpha::ScalarKind::Int8},
-          {alpha::Kind::Array, 2, "c2", alpha::ScalarKind::Undefined},
-          {alpha::Kind::Scalar, 1, std::nullopt, alpha::ScalarKind::Int8},
-          {alpha::Kind::FlatMap, 3, "c3", alpha::ScalarKind::Int8, 0},
-          {alpha::Kind::Map, 6, "c4", alpha::ScalarKind::Undefined},
-          {alpha::Kind::Scalar, 4, std::nullopt, alpha::ScalarKind::Int8},
-          {alpha::Kind::Scalar, 5, std::nullopt, alpha::ScalarKind::Int8},
-          {alpha::Kind::FlatMap, 7, "c5", alpha::ScalarKind::Float, 1},
-          {alpha::Kind::Scalar, 20, "f1", alpha::ScalarKind::Bool},
-          {alpha::Kind::Array, 22, std::nullopt, alpha::ScalarKind::Undefined},
-          {alpha::Kind::Scalar, 21, std::nullopt, alpha::ScalarKind::Int64},
-          {alpha::Kind::Scalar, 8, "c6", alpha::ScalarKind::Int16},
-          {alpha::Kind::Scalar, 9, "c7", alpha::ScalarKind::Int32},
-          {alpha::Kind::Scalar, 10, "c8", alpha::ScalarKind::Int64},
-          {alpha::Kind::Scalar, 11, "c9", alpha::ScalarKind::Float},
-          {alpha::Kind::Scalar, 12, "c10", alpha::ScalarKind::Double},
-          {alpha::Kind::Scalar, 13, "c11", alpha::ScalarKind::Bool},
-          {alpha::Kind::Scalar, 14, "c12", alpha::ScalarKind::String},
-          {alpha::Kind::Scalar, 15, "c13", alpha::ScalarKind::Binary},
-          {alpha::Kind::ArrayWithOffsets,
-           18,
-           "c14",
-           alpha::ScalarKind::Undefined},
-          {alpha::Kind::Scalar, 16, std::nullopt, alpha::ScalarKind::UInt32},
-          {alpha::Kind::Scalar, 17, std::nullopt, alpha::ScalarKind::Int32},
+          {alpha::Kind::Row, 19, alpha::ScalarKind::Bool, std::nullopt, 14},
+          {alpha::Kind::Scalar, 0, alpha::ScalarKind::Int8, "c1"},
+          {alpha::Kind::Array, 2, alpha::ScalarKind::UInt32, "c2"},
+          {alpha::Kind::Scalar, 1, alpha::ScalarKind::Int8},
+          {alpha::Kind::FlatMap, 3, alpha::ScalarKind::Int8, "c3", 0},
+          {alpha::Kind::Map, 6, alpha::ScalarKind::UInt32, "c4"},
+          {alpha::Kind::Scalar, 4, alpha::ScalarKind::Int8},
+          {alpha::Kind::Scalar, 5, alpha::ScalarKind::Int8},
+          {alpha::Kind::FlatMap, 7, alpha::ScalarKind::Float, "c5", 1},
+          {alpha::Kind::Scalar, 22, alpha::ScalarKind::Bool, "f1"},
+          {alpha::Kind::Array, 21, alpha::ScalarKind::UInt32},
+          {alpha::Kind::Scalar, 20, alpha::ScalarKind::Int64},
+          {alpha::Kind::Scalar, 8, alpha::ScalarKind::Int16, "c6"},
+          {alpha::Kind::Scalar, 9, alpha::ScalarKind::Int32, "c7"},
+          {alpha::Kind::Scalar, 10, alpha::ScalarKind::Int64, "c8"},
+          {alpha::Kind::Scalar, 11, alpha::ScalarKind::Float, "c9"},
+          {alpha::Kind::Scalar, 12, alpha::ScalarKind::Double, "c10"},
+          {alpha::Kind::Scalar, 13, alpha::ScalarKind::Bool, "c11"},
+          {alpha::Kind::Scalar, 14, alpha::ScalarKind::String, "c12"},
+          {alpha::Kind::Scalar, 15, alpha::ScalarKind::Binary, "c13"},
+          {alpha::Kind::ArrayWithOffsets, 18, alpha::ScalarKind::UInt32, "c14"},
+          {alpha::Kind::Scalar, 17, alpha::ScalarKind::UInt32},
+          {alpha::Kind::Scalar, 16, alpha::ScalarKind::Int32},
       });
 
   verifyLabels(
@@ -140,46 +126,39 @@ TEST(SchemaTests, SchemaUtils) {
   alpha::test::verifySchemaNodes(
       nodes,
       {
-          {alpha::Kind::Row,
-           19,
-           std::nullopt,
-           alpha::ScalarKind::Undefined,
-           14},
-          {alpha::Kind::Scalar, 0, "c1", alpha::ScalarKind::Int8},
-          {alpha::Kind::Array, 2, "c2", alpha::ScalarKind::Undefined},
-          {alpha::Kind::Scalar, 1, std::nullopt, alpha::ScalarKind::Int8},
-          {alpha::Kind::FlatMap, 3, "c3", alpha::ScalarKind::Int8, 2},
-          {alpha::Kind::Scalar, 23, "f1", alpha::ScalarKind::Bool},
-          {alpha::Kind::Scalar, 24, std::nullopt, alpha::ScalarKind::Int8},
-          {alpha::Kind::Scalar, 25, "f2", alpha::ScalarKind::Bool},
-          {alpha::Kind::Scalar, 26, std::nullopt, alpha::ScalarKind::Int8},
-          {alpha::Kind::Map, 6, "c4", alpha::ScalarKind::Undefined},
-          {alpha::Kind::Scalar, 4, std::nullopt, alpha::ScalarKind::Int8},
-          {alpha::Kind::Scalar, 5, std::nullopt, alpha::ScalarKind::Int8},
-          {alpha::Kind::FlatMap, 7, "c5", alpha::ScalarKind::Float, 3},
-          {alpha::Kind::Scalar, 20, "f1", alpha::ScalarKind::Bool},
-          {alpha::Kind::Array, 22, std::nullopt, alpha::ScalarKind::Undefined},
-          {alpha::Kind::Scalar, 21, std::nullopt, alpha::ScalarKind::Int64},
-          {alpha::Kind::Scalar, 27, "f2", alpha::ScalarKind::Bool},
-          {alpha::Kind::Array, 29, std::nullopt, alpha::ScalarKind::Undefined},
-          {alpha::Kind::Scalar, 28, std::nullopt, alpha::ScalarKind::Int64},
-          {alpha::Kind::Scalar, 30, "f3", alpha::ScalarKind::Bool},
-          {alpha::Kind::Array, 32, std::nullopt, alpha::ScalarKind::Undefined},
-          {alpha::Kind::Scalar, 31, std::nullopt, alpha::ScalarKind::Int64},
-          {alpha::Kind::Scalar, 8, "c6", alpha::ScalarKind::Int16},
-          {alpha::Kind::Scalar, 9, "c7", alpha::ScalarKind::Int32},
-          {alpha::Kind::Scalar, 10, "c8", alpha::ScalarKind::Int64},
-          {alpha::Kind::Scalar, 11, "c9", alpha::ScalarKind::Float},
-          {alpha::Kind::Scalar, 12, "c10", alpha::ScalarKind::Double},
-          {alpha::Kind::Scalar, 13, "c11", alpha::ScalarKind::Bool},
-          {alpha::Kind::Scalar, 14, "c12", alpha::ScalarKind::String},
-          {alpha::Kind::Scalar, 15, "c13", alpha::ScalarKind::Binary},
-          {alpha::Kind::ArrayWithOffsets,
-           18,
-           "c14",
-           alpha::ScalarKind::Undefined},
-          {alpha::Kind::Scalar, 16, std::nullopt, alpha::ScalarKind::UInt32},
-          {alpha::Kind::Scalar, 17, std::nullopt, alpha::ScalarKind::Int32},
+          {alpha::Kind::Row, 19, alpha::ScalarKind::Bool, std::nullopt, 14},
+          {alpha::Kind::Scalar, 0, alpha::ScalarKind::Int8, "c1"},
+          {alpha::Kind::Array, 2, alpha::ScalarKind::UInt32, "c2"},
+          {alpha::Kind::Scalar, 1, alpha::ScalarKind::Int8},
+          {alpha::Kind::FlatMap, 3, alpha::ScalarKind::Int8, "c3", 2},
+          {alpha::Kind::Scalar, 24, alpha::ScalarKind::Bool, "f1"},
+          {alpha::Kind::Scalar, 23, alpha::ScalarKind::Int8},
+          {alpha::Kind::Scalar, 26, alpha::ScalarKind::Bool, "f2"},
+          {alpha::Kind::Scalar, 25, alpha::ScalarKind::Int8},
+          {alpha::Kind::Map, 6, alpha::ScalarKind::UInt32, "c4"},
+          {alpha::Kind::Scalar, 4, alpha::ScalarKind::Int8},
+          {alpha::Kind::Scalar, 5, alpha::ScalarKind::Int8},
+          {alpha::Kind::FlatMap, 7, alpha::ScalarKind::Float, "c5", 3},
+          {alpha::Kind::Scalar, 22, alpha::ScalarKind::Bool, "f1"},
+          {alpha::Kind::Array, 21, alpha::ScalarKind::UInt32},
+          {alpha::Kind::Scalar, 20, alpha::ScalarKind::Int64},
+          {alpha::Kind::Scalar, 29, alpha::ScalarKind::Bool, "f2"},
+          {alpha::Kind::Array, 28, alpha::ScalarKind::UInt32},
+          {alpha::Kind::Scalar, 27, alpha::ScalarKind::Int64},
+          {alpha::Kind::Scalar, 32, alpha::ScalarKind::Bool, "f3"},
+          {alpha::Kind::Array, 31, alpha::ScalarKind::UInt32},
+          {alpha::Kind::Scalar, 30, alpha::ScalarKind::Int64},
+          {alpha::Kind::Scalar, 8, alpha::ScalarKind::Int16, "c6"},
+          {alpha::Kind::Scalar, 9, alpha::ScalarKind::Int32, "c7"},
+          {alpha::Kind::Scalar, 10, alpha::ScalarKind::Int64, "c8"},
+          {alpha::Kind::Scalar, 11, alpha::ScalarKind::Float, "c9"},
+          {alpha::Kind::Scalar, 12, alpha::ScalarKind::Double, "c10"},
+          {alpha::Kind::Scalar, 13, alpha::ScalarKind::Bool, "c11"},
+          {alpha::Kind::Scalar, 14, alpha::ScalarKind::String, "c12"},
+          {alpha::Kind::Scalar, 15, alpha::ScalarKind::Binary, "c13"},
+          {alpha::Kind::ArrayWithOffsets, 18, alpha::ScalarKind::UInt32, "c14"},
+          {alpha::Kind::Scalar, 17, alpha::ScalarKind::UInt32},
+          {alpha::Kind::Scalar, 16, alpha::ScalarKind::Int32},
       });
 
   verifyLabels(
@@ -192,8 +171,13 @@ TEST(SchemaTests, SchemaUtils) {
 
 TEST(SchemaTests, RoundTrip) {
   alpha::SchemaBuilder builder;
-  // ROW(c1:INT, c2:FLATMAP<TINYINT, ARRAY<DOUBLE>>, c3:MAP<VARCHAR, REAL>,
-  // c4:FLATMAP<BIGINT, INT>, c5:BOOL, c6:OFFSETARRAY<FLOAT>)
+  // ROW(
+  //   c1:INT,
+  //   c2:FLATMAP<TINYINT, ARRAY<DOUBLE>>,
+  //   c3:MAP<VARCHAR, REAL>,
+  //   c4:FLATMAP<BIGINT, INT>,
+  //   c5:BOOL,
+  //   c6:OFFSETARRAY<FLOAT>)
 
   auto row = builder.createRowTypeBuilder(6);
   {
@@ -222,9 +206,8 @@ TEST(SchemaTests, RoundTrip) {
 
   {
     auto arrayWithOffsets = builder.createArrayWithOffsetsTypeBuilder();
-    auto offsets = builder.createScalarTypeBuilder(alpha::ScalarKind::UInt32);
-    auto lengths = builder.createScalarTypeBuilder(alpha::ScalarKind::Int32);
-    arrayWithOffsets->setChildren(std::move(offsets), std::move(lengths));
+    auto elements = builder.createScalarTypeBuilder(alpha::ScalarKind::Float);
+    arrayWithOffsets->setChildren(std::move(elements));
     row->addChild("c6", arrayWithOffsets);
   }
 
@@ -232,17 +215,22 @@ TEST(SchemaTests, RoundTrip) {
   alpha::test::verifySchemaNodes(
       nodes,
       {
-          {alpha::Kind::Row, 0, std::nullopt, alpha::ScalarKind::Undefined, 6},
-          {alpha::Kind::Scalar, 1, "c1", alpha::ScalarKind::Int32, 0},
-          {alpha::Kind::FlatMap, 2, "c2", alpha::ScalarKind::Int8, 0},
-          {alpha::Kind::Map, 3, "c3"},
-          {alpha::Kind::Scalar, 4, std::nullopt, alpha::ScalarKind::String},
-          {alpha::Kind::Scalar, 5, std::nullopt, alpha::ScalarKind::Float},
-          {alpha::Kind::FlatMap, 6, "c4", alpha::ScalarKind::Int64, 0},
-          {alpha::Kind::Scalar, 7, "c5", alpha::ScalarKind::Bool},
-          {alpha::Kind::ArrayWithOffsets, 8, "c6"},
-          {alpha::Kind::Scalar, 9, std::nullopt, alpha::ScalarKind::UInt32},
-          {alpha::Kind::Scalar, 10, std::nullopt, alpha::ScalarKind::Int32},
+          {alpha::Kind::Row, 0, alpha::ScalarKind::Bool, std::nullopt, 6},
+          {alpha::Kind::Scalar, 1, alpha::ScalarKind::Int32, "c1", 0},
+          {alpha::Kind::FlatMap, 2, alpha::ScalarKind::Int8, "c2", 0},
+          {alpha::Kind::Map, 3, alpha::ScalarKind::UInt32, "c3"},
+          {alpha::Kind::Scalar, 4, alpha::ScalarKind::String, std::nullopt},
+          {alpha::Kind::Scalar, 5, alpha::ScalarKind::Float, std::nullopt},
+          {alpha::Kind::FlatMap, 6, alpha::ScalarKind::Int64, "c4", 0},
+          {alpha::Kind::Scalar, 7, alpha::ScalarKind::Bool, "c5"},
+          {alpha::Kind::ArrayWithOffsets, 9, alpha::ScalarKind::UInt32, "c6"},
+          {
+              alpha::Kind::Scalar,
+              8,
+              alpha::ScalarKind::UInt32,
+              std::nullopt,
+          },
+          {alpha::Kind::Scalar, 10, alpha::ScalarKind::Float, std::nullopt},
       });
 
   verifyLabels(
@@ -250,24 +238,21 @@ TEST(SchemaTests, RoundTrip) {
 
   {
     auto array = builder.createArrayTypeBuilder();
-    auto inMap = builder.createScalarTypeBuilder(alpha::ScalarKind::Bool);
     auto elements = builder.createScalarTypeBuilder(alpha::ScalarKind::Double);
     array->setChildren(elements);
-    flatMapCol2->addChild("f1", inMap, array);
+    flatMapCol2->addChild("f1", array);
   }
 
   {
     auto array = builder.createArrayTypeBuilder();
-    auto inMap = builder.createScalarTypeBuilder(alpha::ScalarKind::Bool);
     auto elements = builder.createScalarTypeBuilder(alpha::ScalarKind::Double);
     array->setChildren(elements);
-    flatMapCol2->addChild("f2", inMap, array);
+    flatMapCol2->addChild("f2", array);
   }
 
   {
-    auto inMap = builder.createScalarTypeBuilder(alpha::ScalarKind::Bool);
     auto scalar = builder.createScalarTypeBuilder(alpha::ScalarKind::Int32);
-    flatMapCol4->addChild("f1", inMap, scalar);
+    flatMapCol4->addChild("f1", scalar);
   }
 
   nodes = builder.getSchemaNodes();
@@ -275,25 +260,25 @@ TEST(SchemaTests, RoundTrip) {
   alpha::test::verifySchemaNodes(
       nodes,
       {
-          {alpha::Kind::Row, 0, std::nullopt, alpha::ScalarKind::Undefined, 6},
-          {alpha::Kind::Scalar, 1, "c1", alpha::ScalarKind::Int32, 0},
-          {alpha::Kind::FlatMap, 2, "c2", alpha::ScalarKind::Int8, 2},
-          {alpha::Kind::Scalar, 12, "f1", alpha::ScalarKind::Bool},
-          {alpha::Kind::Array, 11, std::nullopt},
-          {alpha::Kind::Scalar, 13, std::nullopt, alpha::ScalarKind::Double},
-          {alpha::Kind::Scalar, 15, "f2", alpha::ScalarKind::Bool},
-          {alpha::Kind::Array, 14, std::nullopt},
-          {alpha::Kind::Scalar, 16, std::nullopt, alpha::ScalarKind::Double},
-          {alpha::Kind::Map, 3, "c3"},
-          {alpha::Kind::Scalar, 4, std::nullopt, alpha::ScalarKind::String},
-          {alpha::Kind::Scalar, 5, std::nullopt, alpha::ScalarKind::Float},
-          {alpha::Kind::FlatMap, 6, "c4", alpha::ScalarKind::Int64, 1},
-          {alpha::Kind::Scalar, 17, "f1", alpha::ScalarKind::Bool},
-          {alpha::Kind::Scalar, 18, std::nullopt, alpha::ScalarKind::Int32},
-          {alpha::Kind::Scalar, 7, "c5", alpha::ScalarKind::Bool},
-          {alpha::Kind::ArrayWithOffsets, 8, "c6"},
-          {alpha::Kind::Scalar, 9, std::nullopt, alpha::ScalarKind::UInt32},
-          {alpha::Kind::Scalar, 10, std::nullopt, alpha::ScalarKind::Int32},
+          {alpha::Kind::Row, 0, alpha::ScalarKind::Bool, std::nullopt, 6},
+          {alpha::Kind::Scalar, 1, alpha::ScalarKind::Int32, "c1", 0},
+          {alpha::Kind::FlatMap, 2, alpha::ScalarKind::Int8, "c2", 2},
+          {alpha::Kind::Scalar, 13, alpha::ScalarKind::Bool, "f1"},
+          {alpha::Kind::Array, 11, alpha::ScalarKind::UInt32},
+          {alpha::Kind::Scalar, 12, alpha::ScalarKind::Double},
+          {alpha::Kind::Scalar, 16, alpha::ScalarKind::Bool, "f2"},
+          {alpha::Kind::Array, 14, alpha::ScalarKind::UInt32},
+          {alpha::Kind::Scalar, 15, alpha::ScalarKind::Double},
+          {alpha::Kind::Map, 3, alpha::ScalarKind::UInt32, "c3"},
+          {alpha::Kind::Scalar, 4, alpha::ScalarKind::String},
+          {alpha::Kind::Scalar, 5, alpha::ScalarKind::Float},
+          {alpha::Kind::FlatMap, 6, alpha::ScalarKind::Int64, "c4", 1},
+          {alpha::Kind::Scalar, 18, alpha::ScalarKind::Bool, "f1"},
+          {alpha::Kind::Scalar, 17, alpha::ScalarKind::Int32},
+          {alpha::Kind::Scalar, 7, alpha::ScalarKind::Bool, "c5"},
+          {alpha::Kind::ArrayWithOffsets, 9, alpha::ScalarKind::UInt32, "c6"},
+          {alpha::Kind::Scalar, 8, alpha::ScalarKind::UInt32},
+          {alpha::Kind::Scalar, 10, alpha::ScalarKind::Float},
       });
 
   verifyLabels(
@@ -320,16 +305,14 @@ TEST(SchemaTests, RoundTrip) {
 
   {
     auto array = builder.createArrayTypeBuilder();
-    auto inMap = builder.createScalarTypeBuilder(alpha::ScalarKind::Bool);
     auto elements = builder.createScalarTypeBuilder(alpha::ScalarKind::Double);
     array->setChildren(elements);
-    flatMapCol2->addChild("f3", inMap, array);
+    flatMapCol2->addChild("f3", array);
   }
 
   {
-    auto inMap = builder.createScalarTypeBuilder(alpha::ScalarKind::Bool);
     auto scalar = builder.createScalarTypeBuilder(alpha::ScalarKind::Int32);
-    flatMapCol4->addChild("f2", inMap, scalar);
+    flatMapCol4->addChild("f2", scalar);
   }
 
   nodes = builder.getSchemaNodes();
@@ -337,30 +320,30 @@ TEST(SchemaTests, RoundTrip) {
   alpha::test::verifySchemaNodes(
       nodes,
       {
-          {alpha::Kind::Row, 0, std::nullopt, alpha::ScalarKind::Undefined, 6},
-          {alpha::Kind::Scalar, 1, "c1", alpha::ScalarKind::Int32, 0},
-          {alpha::Kind::FlatMap, 2, "c2", alpha::ScalarKind::Int8, 3},
-          {alpha::Kind::Scalar, 12, "f1", alpha::ScalarKind::Bool},
-          {alpha::Kind::Array, 11, std::nullopt},
-          {alpha::Kind::Scalar, 13, std::nullopt, alpha::ScalarKind::Double},
-          {alpha::Kind::Scalar, 15, "f2", alpha::ScalarKind::Bool},
-          {alpha::Kind::Array, 14, std::nullopt},
-          {alpha::Kind::Scalar, 16, std::nullopt, alpha::ScalarKind::Double},
-          {alpha::Kind::Scalar, 20, "f3", alpha::ScalarKind::Bool},
-          {alpha::Kind::Array, 19, std::nullopt},
-          {alpha::Kind::Scalar, 21, std::nullopt, alpha::ScalarKind::Double},
-          {alpha::Kind::Map, 3, "c3"},
-          {alpha::Kind::Scalar, 4, std::nullopt, alpha::ScalarKind::String},
-          {alpha::Kind::Scalar, 5, std::nullopt, alpha::ScalarKind::Float},
-          {alpha::Kind::FlatMap, 6, "c4", alpha::ScalarKind::Int64, 2},
-          {alpha::Kind::Scalar, 17, "f1", alpha::ScalarKind::Bool},
-          {alpha::Kind::Scalar, 18, std::nullopt, alpha::ScalarKind::Int32},
-          {alpha::Kind::Scalar, 22, "f2", alpha::ScalarKind::Bool},
-          {alpha::Kind::Scalar, 23, std::nullopt, alpha::ScalarKind::Int32},
-          {alpha::Kind::Scalar, 7, "c5", alpha::ScalarKind::Bool},
-          {alpha::Kind::ArrayWithOffsets, 8, "c6"},
-          {alpha::Kind::Scalar, 9, std::nullopt, alpha::ScalarKind::UInt32},
-          {alpha::Kind::Scalar, 10, std::nullopt, alpha::ScalarKind::Int32},
+          {alpha::Kind::Row, 0, alpha::ScalarKind::Bool, std::nullopt, 6},
+          {alpha::Kind::Scalar, 1, alpha::ScalarKind::Int32, "c1", 0},
+          {alpha::Kind::FlatMap, 2, alpha::ScalarKind::Int8, "c2", 3},
+          {alpha::Kind::Scalar, 13, alpha::ScalarKind::Bool, "f1"},
+          {alpha::Kind::Array, 11, alpha::ScalarKind::UInt32},
+          {alpha::Kind::Scalar, 12, alpha::ScalarKind::Double},
+          {alpha::Kind::Scalar, 16, alpha::ScalarKind::Bool, "f2"},
+          {alpha::Kind::Array, 14, alpha::ScalarKind::UInt32},
+          {alpha::Kind::Scalar, 15, alpha::ScalarKind::Double},
+          {alpha::Kind::Scalar, 21, alpha::ScalarKind::Bool, "f3"},
+          {alpha::Kind::Array, 19, alpha::ScalarKind::UInt32},
+          {alpha::Kind::Scalar, 20, alpha::ScalarKind::Double},
+          {alpha::Kind::Map, 3, alpha::ScalarKind::UInt32, "c3"},
+          {alpha::Kind::Scalar, 4, alpha::ScalarKind::String},
+          {alpha::Kind::Scalar, 5, alpha::ScalarKind::Float},
+          {alpha::Kind::FlatMap, 6, alpha::ScalarKind::Int64, "c4", 2},
+          {alpha::Kind::Scalar, 18, alpha::ScalarKind::Bool, "f1"},
+          {alpha::Kind::Scalar, 17, alpha::ScalarKind::Int32},
+          {alpha::Kind::Scalar, 23, alpha::ScalarKind::Bool, "f2"},
+          {alpha::Kind::Scalar, 22, alpha::ScalarKind::Int32},
+          {alpha::Kind::Scalar, 7, alpha::ScalarKind::Bool, "c5"},
+          {alpha::Kind::ArrayWithOffsets, 9, alpha::ScalarKind::UInt32, "c6"},
+          {alpha::Kind::Scalar, 8, alpha::ScalarKind::UInt32},
+          {alpha::Kind::Scalar, 10, alpha::ScalarKind::Float},
       });
 
   verifyLabels(nodes, {"/",     "/0",    "/1",    "/1/f1", "/1/f1", "/1/f1",

@@ -52,7 +52,9 @@ class SerializationTests : public ::testing::Test {
         .compressionLevel = 3,
     };
     Serializer serializer{options, *rootPool_, type};
-    Deserializer deserializer{pool, serializer.alphaSchema()};
+    Deserializer deserializer{
+        pool,
+        SchemaReader::getSchema(serializer.schemaBuilder().getSchemaNodes())};
 
     velox::VectorPtr output;
     for (auto i = 0; i < count; ++i) {
