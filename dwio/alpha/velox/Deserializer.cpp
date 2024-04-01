@@ -158,7 +158,7 @@ Deserializer::Deserializer(
     std::shared_ptr<const Type> schema)
     : pool_{pool}, schema_{std::move(schema)} {
   FieldReaderParams params;
-  auto schemaWithId =
+  std::shared_ptr<const velox::dwio::common::TypeWithId> schemaWithId =
       velox::dwio::common::TypeWithId::create(convertToVeloxType(*schema_));
   std::vector<uint32_t> offsets;
   rootFactory_ =
