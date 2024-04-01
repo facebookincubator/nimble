@@ -139,7 +139,7 @@ class CompressionEncoder {
       return;
     }
 
-    memcpy(pos, data_->data(), data_->size());
+    std::copy(data_->begin(), data_->end(), pos);
     pos += data_->size();
   }
 

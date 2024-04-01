@@ -173,7 +173,8 @@ void BitmapBuilder::copy(const Bitmap& other, uint32_t begin, uint32_t end) {
     dest[firstByte] = (dest[firstByte] & mask) | (source[firstByte] & ~mask);
     ++firstByte;
   }
-  memcpy(
+  // @lint-ignore CLANGSECURITY facebook-security-vulnerable-memcpy
+  std::memcpy(
       dest + firstByte,
       source + firstByte,
       bits::bytesRequired(end) - firstByte);
