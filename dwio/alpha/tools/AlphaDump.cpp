@@ -121,7 +121,7 @@ int main(int argc, char* argv[]) {
                std::cout, options["file"].as<std::string>()}
                .emitStreams(
                    options["no_header"].as<bool>(),
-                   options["flatmap_keys"].as<bool>(),
+                   options["labels"].as<bool>(),
                    getOptional<uint32_t>(options["stripe"]));
          },
          positionalArgs)
@@ -141,10 +141,10 @@ int main(int argc, char* argv[]) {
                 po::bool_switch()->default_value(false),
                 "Don't print column names. Default is to include column names."
             )(
-                "flatmap_keys,k",
+                "labels,l",
                 po::bool_switch()->default_value(false),
-                "Include flatmap key information per stream. Information includes "
-                "the parent flatmap stream id and key name."
+                "Include stream labels. Lables provide a readable path from the "
+                "root node to the stream, as they appear in the schema tree."
             );
   // clang-format on
 

@@ -107,11 +107,12 @@ class FieldReaderFactory {
 
   Decoder* FOLLY_NULLABLE getDecoder(
       const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders,
-      const Type* alphaType = nullptr) const;
+      const StreamDescriptor& streamDescriptor) const;
 
   template <typename T, typename... Args>
   std::unique_ptr<FieldReader> createReaderImpl(
       const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders,
+      const StreamDescriptor& nullsDecriptor,
       Args&&... args) const;
 
   velox::memory::MemoryPool& pool_;

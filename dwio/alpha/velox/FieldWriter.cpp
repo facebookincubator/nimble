@@ -163,7 +163,7 @@ void FieldWriter::flushStream(
     bool hasNulls,
     Vector<T>& data,
     bool forceFlushingNulls,
-    const StreamDescriptor& streamDescriptor) {
+    const StreamDescriptorBuilder& streamDescriptor) {
   // When there is non-null values to be flushed, it always need to flush both
   // data and nulls and then clear the state.
   // When there is no value, there are two cases:
@@ -706,7 +706,7 @@ class FlatMapValueFieldWriter {
  public:
   FlatMapValueFieldWriter(
       FieldWriterContext& context,
-      const StreamDescriptor& inMapDescriptor,
+      const StreamDescriptorBuilder& inMapDescriptor,
       std::unique_ptr<FieldWriter> valueField)
       : inMapDescriptor_{inMapDescriptor},
         valueField_{std::move(valueField)},
@@ -754,7 +754,7 @@ class FlatMapValueFieldWriter {
   }
 
  private:
-  const StreamDescriptor& inMapDescriptor_;
+  const StreamDescriptorBuilder& inMapDescriptor_;
   std::unique_ptr<FieldWriter> valueField_;
   Vector<bool> inMapBuffer_;
   OrderedRanges ranges_;

@@ -17,7 +17,7 @@ namespace {
 uint32_t getTypeStorageWidth(const Type& type) {
   switch (type.kind()) {
     case Kind::Scalar: {
-      auto scalarKind = type.asScalar().scalarKind();
+      auto scalarKind = type.asScalar().scalarDescriptor().scalarKind();
       switch (scalarKind) {
         case ScalarKind::Bool:
         case ScalarKind::Int8:
@@ -106,7 +106,7 @@ class DeserializerImpl : public Decoder {
     // TODO: handle string compression. One option is to share implementations
     // with trivial encoding. That way, we also get bit packed booleans for
     // free.
-    auto scalarKind = type_.asScalar().scalarKind();
+    auto scalarKind = type_.asScalar().scalarDescriptor().scalarKind();
     ALPHA_CHECK(
         scalarKind == ScalarKind::String || scalarKind == ScalarKind::Binary,
         fmt::format("Unexpected scalar kind {}", toString(scalarKind)));
@@ -135,6 +135,22 @@ class DeserializerImpl : public Decoder {
   std::string_view data_;
 };
 
+const StreamDescriptor& getMainDescriptor(const Type& type) {
+  switch (type.kind()) {
+    case Kind::Scalar:
+      return type.asScalar().scalarDescriptor();
+    case Kind::Array:
+      return type.asArray().lengthsDescriptor();
+    case Kind::Map:
+      return type.asMap().lengthsDescriptor();
+    case Kind::Row:
+      return type.asRow().nullsDescriptor();
+    default:
+      ALPHA_NOT_SUPPORTED(fmt::format(
+          "Schema type {} is not supported.", toString(type.kind())));
+  }
+}
+
 } // namespace
 
 Deserializer::Deserializer(
@@ -148,7 +164,8 @@ Deserializer::Deserializer(
   rootFactory_ =
       FieldReaderFactory::create(params, pool_, schema_, schemaWithId, offsets);
   SchemaReader::traverseSchema(schema_, [this](auto, auto& type, auto&) {
-    deserializers_[type.offset()] = std::make_unique<DeserializerImpl>(type);
+    deserializers_[getMainDescriptor(type).offset()] =
+        std::make_unique<DeserializerImpl>(type);
   });
   rootReader_ = rootFactory_->createReader(deserializers_);
 }

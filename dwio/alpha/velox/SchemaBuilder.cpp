@@ -67,7 +67,7 @@ ScalarTypeBuilder::ScalarTypeBuilder(
     : TypeBuilder{schemaBuilder, Kind::Scalar},
       scalarDescriptor_{schemaBuilder_.allocateStreamOffset(), scalarKind} {}
 
-const StreamDescriptor& ScalarTypeBuilder::scalarDescriptor() const {
+const StreamDescriptorBuilder& ScalarTypeBuilder::scalarDescriptor() const {
   return scalarDescriptor_;
 }
 
@@ -77,7 +77,7 @@ ArrayTypeBuilder::ArrayTypeBuilder(SchemaBuilder& schemaBuilder)
           schemaBuilder_.allocateStreamOffset(),
           ScalarKind::UInt32} {}
 
-const StreamDescriptor& ArrayTypeBuilder::lengthsDescriptor() const {
+const StreamDescriptorBuilder& ArrayTypeBuilder::lengthsDescriptor() const {
   return lengthsDescriptor_;
 }
 
@@ -101,11 +101,13 @@ ArrayWithOffsetsTypeBuilder::ArrayWithOffsetsTypeBuilder(
           schemaBuilder_.allocateStreamOffset(),
           ScalarKind::UInt32} {}
 
-const StreamDescriptor& ArrayWithOffsetsTypeBuilder::offsetsDescriptor() const {
+const StreamDescriptorBuilder& ArrayWithOffsetsTypeBuilder::offsetsDescriptor()
+    const {
   return offsetsDescriptor_;
 }
 
-const StreamDescriptor& ArrayWithOffsetsTypeBuilder::lengthsDescriptor() const {
+const StreamDescriptorBuilder& ArrayWithOffsetsTypeBuilder::lengthsDescriptor()
+    const {
   return lengthsDescriptor_;
 }
 
@@ -132,7 +134,7 @@ RowTypeBuilder::RowTypeBuilder(
   children_.reserve(childrenCount);
 }
 
-const StreamDescriptor& RowTypeBuilder::nullsDescriptor() const {
+const StreamDescriptorBuilder& RowTypeBuilder::nullsDescriptor() const {
   return nullsDescriptor_;
 }
 
@@ -175,7 +177,7 @@ MapTypeBuilder::MapTypeBuilder(SchemaBuilder& schemaBuilder)
           schemaBuilder_.allocateStreamOffset(),
           ScalarKind::UInt32} {}
 
-const StreamDescriptor& MapTypeBuilder::lengthsDescriptor() const {
+const StreamDescriptorBuilder& MapTypeBuilder::lengthsDescriptor() const {
   return lengthsDescriptor_;
 }
 
@@ -207,11 +209,11 @@ FlatMapTypeBuilder::FlatMapTypeBuilder(
           schemaBuilder_.allocateStreamOffset(),
           ScalarKind::Bool} {}
 
-const StreamDescriptor& FlatMapTypeBuilder::nullsDescriptor() const {
+const StreamDescriptorBuilder& FlatMapTypeBuilder::nullsDescriptor() const {
   return nullsDescriptor_;
 }
 
-const StreamDescriptor& FlatMapTypeBuilder::inMapDescriptorAt(
+const StreamDescriptorBuilder& FlatMapTypeBuilder::inMapDescriptorAt(
     size_t index) const {
   ALPHA_ASSERT(
       index < inMapDescriptors_.size(),
@@ -246,11 +248,11 @@ const std::string& FlatMapTypeBuilder::nameAt(size_t index) const {
   return names_[index];
 }
 
-const StreamDescriptor& FlatMapTypeBuilder::addChild(
+const StreamDescriptorBuilder& FlatMapTypeBuilder::addChild(
     std::string name,
     std::shared_ptr<TypeBuilder> child) {
   auto& inMapDescriptor =
-      inMapDescriptors_.emplace_back(std::make_unique<StreamDescriptor>(
+      inMapDescriptors_.emplace_back(std::make_unique<StreamDescriptorBuilder>(
           schemaBuilder_.allocateStreamOffset(), ScalarKind::Bool));
 
   schemaBuilder_.registerChild(child);

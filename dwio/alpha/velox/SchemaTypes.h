@@ -39,6 +39,24 @@ enum class Kind : uint8_t {
 std::string toString(ScalarKind kind);
 std::string toString(Kind kind);
 
+class StreamDescriptor {
+ public:
+  StreamDescriptor(offset_size offset, ScalarKind scalarKind)
+      : offset_{offset}, scalarKind_{scalarKind} {}
+
+  offset_size offset() const {
+    return offset_;
+  }
+
+  ScalarKind scalarKind() const {
+    return scalarKind_;
+  }
+
+ private:
+  offset_size offset_;
+  ScalarKind scalarKind_;
+};
+
 class SchemaNode {
  public:
   SchemaNode(

@@ -411,32 +411,41 @@ class ScalarFieldReaderFactory final : public FieldReaderFactory {
   std::unique_ptr<FieldReader> createReader(
       const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders)
       final {
-    switch (alphaType_->asScalar().scalarKind()) {
+    const auto& descriptor = alphaType_->asScalar().scalarDescriptor();
+    switch (descriptor.scalarKind()) {
       case ScalarKind::Bool: {
-        return createReaderImpl<ScalarFieldReader<T, bool>>(decoders);
+        return createReaderImpl<ScalarFieldReader<T, bool>>(
+            decoders, descriptor);
       }
       case ScalarKind::Int8: {
-        return createReaderImpl<ScalarFieldReader<T, int8_t>>(decoders);
+        return createReaderImpl<ScalarFieldReader<T, int8_t>>(
+            decoders, descriptor);
       }
       case ScalarKind::Int16: {
-        return createReaderImpl<ScalarFieldReader<T, int16_t>>(decoders);
+        return createReaderImpl<ScalarFieldReader<T, int16_t>>(
+            decoders, descriptor);
       }
       case ScalarKind::Int32: {
-        return createReaderImpl<ScalarFieldReader<T, int32_t>>(decoders);
+        return createReaderImpl<ScalarFieldReader<T, int32_t>>(
+            decoders, descriptor);
       }
       case ScalarKind::Int64: {
-        return createReaderImpl<ScalarFieldReader<T, int64_t>>(decoders);
+        return createReaderImpl<ScalarFieldReader<T, int64_t>>(
+            decoders, descriptor);
       }
       case ScalarKind::Float: {
-        return createReaderImpl<ScalarFieldReader<T, float>>(decoders);
+        return createReaderImpl<ScalarFieldReader<T, float>>(
+            decoders, descriptor);
       }
       case ScalarKind::Double: {
-        return createReaderImpl<ScalarFieldReader<T, double>>(decoders);
+        return createReaderImpl<ScalarFieldReader<T, double>>(
+            decoders, descriptor);
       }
       case ScalarKind::UInt8:
       case ScalarKind::UInt16:
       case ScalarKind::UInt32: {
-        return createReaderImpl<ScalarFieldReader<T, uint32_t>>(decoders);
+        return createReaderImpl<ScalarFieldReader<T, uint32_t>>(
+            decoders, descriptor);
       }
       case ScalarKind::UInt64:
       case ScalarKind::String:
@@ -444,12 +453,12 @@ class ScalarFieldReaderFactory final : public FieldReaderFactory {
       case ScalarKind::Undefined: {
         ALPHA_NOT_SUPPORTED(fmt::format(
             "Unsupported alpha scalar type: {}.",
-            toString(alphaType_->asScalar().scalarKind())))
+            toString(descriptor.scalarKind())))
       }
     }
     ALPHA_UNREACHABLE(fmt::format(
         "Should not have alpha scalar type: {}.",
-        toString(alphaType_->asScalar().scalarKind())))
+        toString(descriptor.scalarKind())))
   }
 };
 
@@ -520,7 +529,8 @@ class StringFieldReaderFactory final : public FieldReaderFactory {
   std::unique_ptr<FieldReader> createReader(
       const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders)
       final {
-    return createReaderImpl<StringFieldReader>(decoders, wrap(buffer_));
+    return createReaderImpl<StringFieldReader>(
+        decoders, alphaType_->asScalar().scalarDescriptor(), wrap(buffer_));
   }
 
  private:
@@ -686,7 +696,9 @@ class ArrayFieldReaderFactory final : public FieldReaderFactory {
       const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders)
       final {
     return createReaderImpl<ArrayFieldReader>(
-        decoders, [&]() { return elements_->createReader(decoders); });
+        decoders, alphaType_->asArray().lengthsDescriptor(), [&]() {
+          return elements_->createReader(decoders);
+        });
   }
 
  private:
@@ -1071,10 +1083,8 @@ class ArrayWithOffsetsFieldReaderFactory final : public FieldReaderFactory {
       velox::memory::MemoryPool& pool,
       velox::TypePtr veloxType,
       const Type* type,
-      const Type* offsetsType,
       std::unique_ptr<FieldReaderFactory> elements)
       : FieldReaderFactory{pool, std::move(veloxType), type},
-        offsetsType_(offsetsType),
         elements_{std::move(elements)} {}
 
   std::unique_ptr<FieldReader> createReader(
@@ -1082,12 +1092,15 @@ class ArrayWithOffsetsFieldReaderFactory final : public FieldReaderFactory {
       final {
     return createReaderImpl<ArrayWithOffsetsFieldReader>(
         decoders,
-        [&]() { return getDecoder(decoders, offsetsType_); },
+        alphaType_->asArrayWithOffsets().lengthsDescriptor(),
+        [&]() {
+          return getDecoder(
+              decoders, alphaType_->asArrayWithOffsets().offsetsDescriptor());
+        },
         [&]() { return elements_->createReader(decoders); });
   }
 
  private:
-  const Type* offsetsType_;
   std::unique_ptr<FieldReaderFactory> elements_;
 };
 
@@ -1156,6 +1169,7 @@ class MapFieldReaderFactory final : public FieldReaderFactory {
       final {
     return createReaderImpl<MapFieldReader>(
         decoders,
+        alphaType_->asMap().lengthsDescriptor(),
         [&]() { return keys_->createReader(decoders); },
         [&]() { return values_->createReader(decoders); });
   }
@@ -1342,7 +1356,7 @@ class RowFieldReaderFactory final : public FieldReaderFactory {
   std::unique_ptr<FieldReader> createReader(
       const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders)
       final {
-    auto nulls = getDecoder(decoders);
+    auto nulls = getDecoder(decoders, alphaType_->asRow().nullsDescriptor());
 
     std::vector<std::unique_ptr<FieldReader>> childrenReaders(children_.size());
     for (uint32_t i = 0; i < children_.size(); ++i) {
@@ -1561,18 +1575,18 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
       velox::memory::MemoryPool& pool,
       velox::TypePtr veloxType,
       const Type* type,
-      std::vector<const ScalarType*> inMapTypes,
+      std::vector<const StreamDescriptor*> inMapDescriptors,
       std::vector<std::unique_ptr<FieldReaderFactory>> valueReaders,
       const std::vector<size_t>& selectedChildren)
       : FieldReaderFactory{pool, std::move(veloxType), type},
-        inMapTypes_{std::move(inMapTypes)},
+        inMapDescriptors_{std::move(inMapDescriptors)},
         valueReaders_{std::move(valueReaders)},
         boolBuffer_{&pool_} {
     // inMapTypes contains all projected children, including those that don't
     // exist in the schema. selectedChildren and valuesReaders only contain
     // those that also exist in the schema.
     ALPHA_ASSERT(
-        inMapTypes_.size() >= valueReaders_.size(),
+        inMapDescriptors_.size() >= valueReaders_.size(),
         "Value and inMaps size mismatch!");
     ALPHA_ASSERT(
         selectedChildren.size() == valueReaders_.size(),
@@ -1594,15 +1608,16 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
   std::unique_ptr<FieldReader> createFlatMapReader(
       const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders,
       Args&&... args) {
-    auto nulls = getDecoder(decoders);
+    auto nulls =
+        getDecoder(decoders, alphaType_->asFlatMap().nullsDescriptor());
 
     std::vector<std::unique_ptr<FlatMapKeyNode<T>>> keyNodes;
     keyNodes.reserve(valueReaders_.size());
     uint32_t childIdx = 0;
-    for (auto inMapType : inMapTypes_) {
-      if (inMapType) {
+    for (auto inMapDescriptor : inMapDescriptors_) {
+      if (inMapDescriptor) {
         auto currentIdx = childIdx++;
-        if (auto decoder = getDecoder(decoders, inMapType)) {
+        if (auto decoder = getDecoder(decoders, *inMapDescriptor)) {
           keyNodes.push_back(std::make_unique<FlatMapKeyNode<T>>(
               pool_,
               // @lint-ignore CLANGTIDY facebook-hte-MemberUncheckedArrayBounds
@@ -1639,7 +1654,7 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
   }
 
  protected:
-  std::vector<const ScalarType*> inMapTypes_;
+  std::vector<const StreamDescriptor*> inMapDescriptors_;
   std::vector<std::unique_ptr<FieldReaderFactory>> valueReaders_;
   std::vector<velox::dwio::common::flatmap::KeyValue<T>> keyValues_;
   Vector<bool> boolBuffer_;
@@ -1723,7 +1738,7 @@ class StructFlatMapFieldReaderFactory final
       velox::memory::MemoryPool& pool,
       velox::TypePtr veloxType,
       const Type* type,
-      std::vector<const ScalarType*> inMapTypes,
+      std::vector<const StreamDescriptor*> inMapDescriptors,
       std::vector<std::unique_ptr<FieldReaderFactory>> valueReaders,
       const std::vector<size_t>& selectedChildren,
       folly::Executor* executor)
@@ -1731,7 +1746,7 @@ class StructFlatMapFieldReaderFactory final
             pool,
             std::move(veloxType),
             type,
-            std::move(inMapTypes),
+            std::move(inMapDescriptors),
             std::move(valueReaders),
             selectedChildren),
         mergedNulls_{&this->pool_},
@@ -1908,7 +1923,7 @@ std::unique_ptr<FieldReaderFactory> createFlatMapReaderFactory(
     velox::TypeKind keyKind,
     velox::TypePtr veloxType,
     const Type* type,
-    std::vector<const ScalarType*> inMapTypes,
+    std::vector<const StreamDescriptor*> inMapDescriptors,
     std::vector<std::unique_ptr<FieldReaderFactory>> valueReaders,
     const std::vector<size_t>& selectedChildren,
     bool flatMapAsStruct,
@@ -1921,7 +1936,7 @@ std::unique_ptr<FieldReaderFactory> createFlatMapReaderFactory(
           pool,                                                            \
           std::move(veloxType),                                            \
           type,                                                            \
-          std::move(inMapTypes),                                           \
+          std::move(inMapDescriptors),                                     \
           std::move(valueReaders),                                         \
           selectedChildren,                                                \
           executor);                                                       \
@@ -1930,7 +1945,7 @@ std::unique_ptr<FieldReaderFactory> createFlatMapReaderFactory(
           pool,                                                            \
           std::move(veloxType),                                            \
           type,                                                            \
-          std::move(inMapTypes),                                           \
+          std::move(inMapDescriptors),                                     \
           std::move(valueReaders),                                         \
           selectedChildren);                                               \
     }                                                                      \
@@ -2001,8 +2016,6 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
     folly::Executor* executor,
     size_t level = 0,
     const std::string* name = nullptr) {
-  offsets.push_back(alphaType->offset());
-
   auto veloxKind = veloxType->type()->kind();
   // compatibleKinds are the types that can be upcasted to alphaType
   auto checkType =
@@ -2011,7 +2024,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
             compatibleKinds.begin(),
             compatibleKinds.end(),
             [&alphaType](ScalarKind k) {
-              return alphaType->asScalar().scalarKind() == k;
+              return alphaType->asScalar().scalarDescriptor().scalarKind() == k;
             });
       };
 
@@ -2036,13 +2049,14 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
   { ScalarKind::Double, ScalarKind::Float }
 
   switch (veloxKind) {
-#define SCALAR_CASE(veloxKind, cppType, compitableKinds)        \
-  case velox::TypeKind::veloxKind: {                            \
-    ALPHA_CHECK(                                                \
-        alphaType->isScalar() && checkType(compitableKinds),    \
-        "Provided schema doesn't match file schema.");          \
-    return std::make_unique<ScalarFieldReaderFactory<cppType>>( \
-        pool, veloxType->type(), alphaType.get());              \
+#define SCALAR_CASE(veloxKind, cppType, compitableKinds)                  \
+  case velox::TypeKind::veloxKind: {                                      \
+    ALPHA_CHECK(                                                          \
+        alphaType->isScalar() && checkType(compitableKinds),              \
+        "Provided schema doesn't match file schema.");                    \
+    offsets.push_back(alphaType->asScalar().scalarDescriptor().offset()); \
+    return std::make_unique<ScalarFieldReaderFactory<cppType>>(           \
+        pool, veloxType->type(), alphaType.get());                        \
   }
 
     SCALAR_CASE(BOOLEAN, bool, BOOLEAN_COMPATIBLE);
@@ -2059,10 +2073,13 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
       ALPHA_CHECK(
           alphaType->isScalar() &&
               (veloxKind == velox::TypeKind::VARCHAR &&
-                   alphaType->asScalar().scalarKind() == ScalarKind::String ||
+                   alphaType->asScalar().scalarDescriptor().scalarKind() ==
+                       ScalarKind::String ||
                veloxKind == velox::TypeKind::VARBINARY &&
-                   alphaType->asScalar().scalarKind() == ScalarKind::Binary),
+                   alphaType->asScalar().scalarDescriptor().scalarKind() ==
+                       ScalarKind::Binary),
           "Provided schema doesn't match file schema.");
+      offsets.push_back(alphaType->asScalar().scalarDescriptor().offset());
       return std::make_unique<StringFieldReaderFactory>(
           pool, veloxType->type(), alphaType.get());
     }
@@ -2076,6 +2093,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
       if (alphaType->isArray()) {
         auto& alphaArray = alphaType->asArray();
         auto& elementType = veloxType->childAt(0);
+        offsets.push_back(alphaArray.lengthsDescriptor().offset());
         auto elements = isSelected(elementType->id())
             ? createFieldReaderFactory(
                   parameters,
@@ -2092,8 +2110,8 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
             pool, veloxType->type(), alphaType.get(), std::move(elements));
       } else {
         auto& alphaArrayWithOffsets = alphaType->asArrayWithOffsets();
-        auto& offsetsType = alphaArrayWithOffsets.offsets();
-        offsets.push_back(offsetsType->offset());
+        offsets.push_back(alphaArrayWithOffsets.lengthsDescriptor().offset());
+        offsets.push_back(alphaArrayWithOffsets.offsetsDescriptor().offset());
 
         auto& elementType = veloxType->childAt(0);
         auto elements = isSelected(elementType->id())
@@ -2109,11 +2127,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
             : std::make_unique<NullFieldReaderFactory>(
                   pool, elementType->type());
         return std::make_unique<ArrayWithOffsetsFieldReaderFactory>(
-            pool,
-            veloxType->type(),
-            alphaType.get(),
-            offsetsType.get(),
-            std::move(elements));
+            pool, veloxType->type(), alphaType.get(), std::move(elements));
       }
     }
     case velox::TypeKind::ROW: {
@@ -2126,6 +2140,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
       std::vector<velox::TypePtr> childTypes;
       children.reserve(veloxType->size());
       childTypes.reserve(veloxType->size());
+      offsets.push_back(alphaRow.nullsDescriptor().offset());
 
       for (auto i = 0; i < veloxType->size(); ++i) {
         auto& child = veloxType->childAt(i);
@@ -2178,8 +2193,9 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
           "Velox map type should have exactly two children.");
 
       if (alphaType->isMap()) {
-        auto alphaMap = alphaType->asMap();
+        const auto& alphaMap = alphaType->asMap();
         auto& keyType = veloxType->childAt(0);
+        offsets.push_back(alphaMap.lengthsDescriptor().offset());
         auto keys = isSelected(keyType->id())
             ? createFieldReaderFactory(
                   parameters,
@@ -2211,7 +2227,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
             std::move(values));
       } else {
         auto& alphaFlatMap = alphaType->asFlatMap();
-
+        offsets.push_back(alphaFlatMap.nullsDescriptor().offset());
         ALPHA_CHECK(
             level == 1 && name != nullptr,
             "Flat map is only supported as top level fields");
@@ -2267,7 +2283,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
         auto actualType = veloxType->type();
         auto& valueType = veloxType->childAt(1);
         std::vector<size_t> selectedChildren;
-        std::vector<const ScalarType*> inMapTypes;
+        std::vector<const StreamDescriptor*> inMapDescriptors;
 
         if (flatMapAsStruct) {
           // When reading as struct, all children appear in the feature
@@ -2275,7 +2291,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
           // the schema.
           auto& features = featuresIt->second.features;
           selectedChildren.reserve(features.size());
-          inMapTypes.reserve(features.size());
+          inMapDescriptors.reserve(features.size());
           actualType = createFlatType(features, veloxType->type());
 
           for (const auto& feature : features) {
@@ -2283,11 +2299,11 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
             if (it != namesToIndices.end()) {
               auto childIdx = it->second;
               selectedChildren.push_back(childIdx);
-              auto inMapType = alphaFlatMap.inMapAt(childIdx).get();
-              inMapTypes.push_back(inMapType);
-              offsets.push_back(inMapType->offset());
+              auto* inMapDescriptor = &alphaFlatMap.inMapDescriptorAt(childIdx);
+              inMapDescriptors.push_back(inMapDescriptor);
+              offsets.push_back(inMapDescriptor->offset());
             } else {
-              inMapTypes.push_back(nullptr);
+              inMapDescriptors.push_back(nullptr);
             }
           }
         } else if (childrenCount > 0) {
@@ -2322,11 +2338,11 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
             }
           }
 
-          inMapTypes.reserve(selectedChildren.size());
+          inMapDescriptors.reserve(selectedChildren.size());
           for (auto childIdx : selectedChildren) {
-            auto inMapType = alphaFlatMap.inMapAt(childIdx).get();
-            inMapTypes.push_back(inMapType);
-            offsets.push_back(inMapType->offset());
+            auto* inMapDescriptor = &alphaFlatMap.inMapDescriptorAt(childIdx);
+            inMapDescriptors.push_back(inMapDescriptor);
+            offsets.push_back(inMapDescriptor->offset());
           }
         }
 
@@ -2356,7 +2372,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
             veloxType->childAt(0)->type()->kind(),
             std::move(actualType),
             alphaType.get(),
-            std::move(inMapTypes),
+            std::move(inMapDescriptors),
             std::move(valueReaders),
             selectedChildren,
             flatMapAsStruct,
@@ -2399,9 +2415,8 @@ std::unique_ptr<FieldReader> FieldReaderFactory::createNullColumnReader()
 
 Decoder* FOLLY_NULLABLE FieldReaderFactory::getDecoder(
     const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders,
-    const Type* alphaType) const {
-  auto offset = (alphaType ? alphaType : alphaType_)->offset();
-  auto it = decoders.find(offset);
+    const StreamDescriptor& streamDescriptor) const {
+  auto it = decoders.find(streamDescriptor.offset());
   if (it == decoders.end()) {
     // It is possible that for a given offset, we don't have a matching
     // decoder. Each stripe might see different amount of streams, so for all
@@ -2415,8 +2430,9 @@ Decoder* FOLLY_NULLABLE FieldReaderFactory::getDecoder(
 template <typename T, typename... Args>
 std::unique_ptr<FieldReader> FieldReaderFactory::createReaderImpl(
     const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders,
+    const StreamDescriptor& nullsDescriptor,
     Args&&... args) const {
-  auto decoder = getDecoder(decoders);
+  auto decoder = getDecoder(decoders, nullsDescriptor);
   if (!decoder) {
     return createNullColumnReader();
   }

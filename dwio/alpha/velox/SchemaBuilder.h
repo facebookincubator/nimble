@@ -43,10 +43,10 @@ class StreamContext {
   virtual ~StreamContext() = default;
 };
 
-class StreamDescriptor {
+class StreamDescriptorBuilder : public StreamDescriptor {
  public:
-  StreamDescriptor(offset_size offset, ScalarKind scalarKind)
-      : offset_{offset}, scalarKind_{scalarKind} {}
+  StreamDescriptorBuilder(offset_size offset, ScalarKind scalarKind)
+      : StreamDescriptor(offset, scalarKind) {}
 
   void setContext(std::unique_ptr<StreamContext>&& context) const {
     context_ = std::move(context);
@@ -57,17 +57,7 @@ class StreamDescriptor {
     return dynamic_cast<T*>(context_.get());
   }
 
-  offset_size offset() const {
-    return offset_;
-  }
-
-  ScalarKind scalarKind() const {
-    return scalarKind_;
-  }
-
  private:
-  offset_size offset_;
-  ScalarKind scalarKind_;
   mutable std::unique_ptr<StreamContext> context_;
 };
 
@@ -117,26 +107,26 @@ class TypeBuilder {
 
 class ScalarTypeBuilder : public TypeBuilder {
  public:
-  const StreamDescriptor& scalarDescriptor() const;
+  const StreamDescriptorBuilder& scalarDescriptor() const;
 
  private:
   ScalarTypeBuilder(SchemaBuilder& schemaBuilder, ScalarKind scalarKind);
 
-  StreamDescriptor scalarDescriptor_;
+  StreamDescriptorBuilder scalarDescriptor_;
 
   friend class SchemaBuilder;
 };
 
 class ArrayTypeBuilder : public TypeBuilder {
  public:
-  const StreamDescriptor& lengthsDescriptor() const;
+  const StreamDescriptorBuilder& lengthsDescriptor() const;
   const TypeBuilder& elements() const;
   void setChildren(std::shared_ptr<TypeBuilder> elements);
 
  private:
   explicit ArrayTypeBuilder(SchemaBuilder& schemaBuilder);
 
-  StreamDescriptor lengthsDescriptor_;
+  StreamDescriptorBuilder lengthsDescriptor_;
   std::shared_ptr<const TypeBuilder> elements_;
 
   friend class SchemaBuilder;
@@ -144,7 +134,7 @@ class ArrayTypeBuilder : public TypeBuilder {
 
 class MapTypeBuilder : public TypeBuilder {
  public:
-  const StreamDescriptor& lengthsDescriptor() const;
+  const StreamDescriptorBuilder& lengthsDescriptor() const;
   const TypeBuilder& keys() const;
   const TypeBuilder& values() const;
 
@@ -155,7 +145,7 @@ class MapTypeBuilder : public TypeBuilder {
  private:
   explicit MapTypeBuilder(SchemaBuilder& schemaBuilder);
 
-  StreamDescriptor lengthsDescriptor_;
+  StreamDescriptorBuilder lengthsDescriptor_;
   std::shared_ptr<const TypeBuilder> keys_;
   std::shared_ptr<const TypeBuilder> values_;
 
@@ -164,7 +154,7 @@ class MapTypeBuilder : public TypeBuilder {
 
 class RowTypeBuilder : public TypeBuilder {
  public:
-  const StreamDescriptor& nullsDescriptor() const;
+  const StreamDescriptorBuilder& nullsDescriptor() const;
   size_t childrenCount() const;
   const TypeBuilder& childAt(size_t index) const;
   const std::string& nameAt(size_t index) const;
@@ -173,7 +163,7 @@ class RowTypeBuilder : public TypeBuilder {
  private:
   RowTypeBuilder(SchemaBuilder& schemaBuilder, size_t childrenCount);
 
-  StreamDescriptor nullsDescriptor_;
+  StreamDescriptorBuilder nullsDescriptor_;
   std::vector<std::string> names_;
   std::vector<std::shared_ptr<const TypeBuilder>> children_;
 
@@ -182,14 +172,14 @@ class RowTypeBuilder : public TypeBuilder {
 
 class FlatMapTypeBuilder : public TypeBuilder {
  public:
-  const StreamDescriptor& nullsDescriptor() const;
-  const StreamDescriptor& inMapDescriptorAt(size_t index) const;
+  const StreamDescriptorBuilder& nullsDescriptor() const;
+  const StreamDescriptorBuilder& inMapDescriptorAt(size_t index) const;
   size_t childrenCount() const;
   const TypeBuilder& childAt(size_t index) const;
   const std::string& nameAt(size_t index) const;
   ScalarKind keyScalarKind() const;
 
-  const StreamDescriptor& addChild(
+  const StreamDescriptorBuilder& addChild(
       std::string name,
       std::shared_ptr<TypeBuilder> child);
 
@@ -197,9 +187,9 @@ class FlatMapTypeBuilder : public TypeBuilder {
   FlatMapTypeBuilder(SchemaBuilder& schemaBuilder, ScalarKind keyScalarKind);
 
   ScalarKind keyScalarKind_;
-  StreamDescriptor nullsDescriptor_;
+  StreamDescriptorBuilder nullsDescriptor_;
   std::vector<std::string> names_;
-  std::vector<std::unique_ptr<StreamDescriptor>> inMapDescriptors_;
+  std::vector<std::unique_ptr<StreamDescriptorBuilder>> inMapDescriptors_;
   std::vector<std::shared_ptr<const TypeBuilder>> children_;
 
   friend class SchemaBuilder;
@@ -207,16 +197,16 @@ class FlatMapTypeBuilder : public TypeBuilder {
 
 class ArrayWithOffsetsTypeBuilder : public TypeBuilder {
  public:
-  const StreamDescriptor& offsetsDescriptor() const;
-  const StreamDescriptor& lengthsDescriptor() const;
+  const StreamDescriptorBuilder& offsetsDescriptor() const;
+  const StreamDescriptorBuilder& lengthsDescriptor() const;
   const TypeBuilder& elements() const;
   void setChildren(std::shared_ptr<TypeBuilder> elements);
 
  private:
   explicit ArrayWithOffsetsTypeBuilder(SchemaBuilder& schemaBuilder);
 
-  StreamDescriptor offsetsDescriptor_;
-  StreamDescriptor lengthsDescriptor_;
+  StreamDescriptorBuilder offsetsDescriptor_;
+  StreamDescriptorBuilder lengthsDescriptor_;
   std::shared_ptr<const TypeBuilder> elements_;
 
   friend class SchemaBuilder;

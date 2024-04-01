@@ -32,18 +32,19 @@ void compareSchema(
     EXPECT_EQ(name.value(), node->name().value());
   }
 
-  EXPECT_EQ(type->offset(), node->offset());
   EXPECT_EQ(type->kind(), node->kind());
 
   switch (type->kind()) {
     case alpha::Kind::Scalar: {
       auto& scalar = type->asScalar();
-      EXPECT_EQ(scalar.scalarKind(), node->scalarKind());
+      EXPECT_EQ(scalar.scalarDescriptor().offset(), node->offset());
+      EXPECT_EQ(scalar.scalarDescriptor().scalarKind(), node->scalarKind());
       EXPECT_EQ(0, node->childrenCount());
       break;
     }
     case alpha::Kind::Row: {
       auto& row = type->asRow();
+      EXPECT_EQ(row.nullsDescriptor().offset(), node->offset());
       EXPECT_EQ(alpha::ScalarKind::Bool, node->scalarKind());
       EXPECT_EQ(row.childrenCount(), node->childrenCount());
 
@@ -55,6 +56,7 @@ void compareSchema(
     }
     case alpha::Kind::Array: {
       auto& array = type->asArray();
+      EXPECT_EQ(array.lengthsDescriptor().offset(), node->offset());
       EXPECT_EQ(alpha::ScalarKind::UInt32, node->scalarKind());
       EXPECT_EQ(0, node->childrenCount());
 
@@ -64,16 +66,24 @@ void compareSchema(
     }
     case alpha::Kind::ArrayWithOffsets: {
       auto& arrayWithOffsets = type->asArrayWithOffsets();
+      EXPECT_EQ(arrayWithOffsets.lengthsDescriptor().offset(), node->offset());
       EXPECT_EQ(alpha::ScalarKind::UInt32, node->scalarKind());
       EXPECT_EQ(0, node->childrenCount());
 
-      compareSchema(index, nodes, arrayWithOffsets.offsets());
+      auto& offsetNode = nodes[index++];
+      EXPECT_FALSE(offsetNode->name().has_value());
+      EXPECT_EQ(Kind::Scalar, offsetNode->kind());
+      EXPECT_EQ(ScalarKind::UInt32, offsetNode->scalarKind());
+      EXPECT_EQ(
+          arrayWithOffsets.offsetsDescriptor().offset(), offsetNode->offset());
+
       compareSchema(index, nodes, arrayWithOffsets.elements());
 
       break;
     }
     case alpha::Kind::Map: {
       auto& map = type->asMap();
+      EXPECT_EQ(map.lengthsDescriptor().offset(), node->offset());
       EXPECT_EQ(alpha::ScalarKind::UInt32, node->scalarKind());
       EXPECT_EQ(0, node->childrenCount());
 
@@ -84,11 +94,17 @@ void compareSchema(
     }
     case alpha::Kind::FlatMap: {
       auto& map = type->asFlatMap();
+      EXPECT_EQ(map.nullsDescriptor().offset(), node->offset());
       EXPECT_EQ(map.keyScalarKind(), node->scalarKind());
       EXPECT_EQ(map.childrenCount(), node->childrenCount());
 
       for (auto i = 0; i < map.childrenCount(); ++i) {
-        compareSchema(index, nodes, map.inMapAt(i), map.nameAt(i));
+        auto& inMapNode = nodes[index++];
+        ASSERT_TRUE(inMapNode->name().has_value());
+        EXPECT_EQ(map.nameAt(i), inMapNode->name().value());
+        EXPECT_EQ(Kind::Scalar, inMapNode->kind());
+        EXPECT_EQ(ScalarKind::Bool, inMapNode->scalarKind());
+        EXPECT_EQ(map.inMapDescriptorAt(i).offset(), inMapNode->offset());
         compareSchema(index, nodes, map.childAt(i));
       }
 

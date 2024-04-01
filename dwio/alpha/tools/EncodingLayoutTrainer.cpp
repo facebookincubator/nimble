@@ -63,58 +63,83 @@ T deserialize(const std::string& source) {
   return result;
 }
 
-template <typename T>
-std::unique_ptr<TrainingNode<T>> createTrainingTree(
+struct State {
+  explicit State(const Type& type) : type{type} {}
+
+  const Type& type;
+  std::unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>
+      encodingLayouts;
+  std::mutex mutex;
+};
+
+std::unique_ptr<TrainingNode<State>> createTrainingTree(
     const Type& type,
-    const std::function<std::unique_ptr<T>(const Type&)>& createState,
+    const std::function<
+        void(const StreamDescriptor&, std::function<void(EncodingLayout&&)>)>&
+        train,
     const std::string& name = "") {
-  auto state = createState(type);
-  std::vector<std::unique_ptr<TrainingNode<T>>> children;
+  auto state = std::make_unique<State>(type);
+  std::vector<std::unique_ptr<TrainingNode<State>>> children;
+
+#define _ASYNC_TRAIN(descriptor, identifier)                         \
+  train(descriptor, [state = state.get()](EncodingLayout&& layout) { \
+    std::lock_guard lock{state->mutex};                              \
+    state->encodingLayouts.insert({                                  \
+        EncodingLayoutTree::StreamIdentifiers::identifier,           \
+        std::move(layout),                                           \
+    });                                                              \
+  });
 
   switch (type.kind()) {
     case Kind::Scalar: {
-      break;
-    }
-    case Kind::Row: {
-      auto& row = type.asRow();
-      children.reserve(row.childrenCount());
-      for (auto i = 0; i < row.childrenCount(); ++i) {
-        children.emplace_back(createTrainingTree(*row.childAt(i), createState));
-      }
+      _ASYNC_TRAIN(type.asScalar().scalarDescriptor(), Scalar::ScalarStream);
       break;
     }
     case Kind::Array: {
       auto& array = type.asArray();
+      _ASYNC_TRAIN(array.lengthsDescriptor(), Array::LengthsStream);
       children.reserve(1);
-      children.emplace_back(createTrainingTree(*array.elements(), createState));
+      children.emplace_back(createTrainingTree(*array.elements(), train));
       break;
     }
     case Kind::Map: {
       auto& map = type.asMap();
+      _ASYNC_TRAIN(map.lengthsDescriptor(), Map::LengthsStream);
       children.reserve(2);
-      children.emplace_back(createTrainingTree(*map.keys(), createState));
-      children.emplace_back(createTrainingTree(*map.values(), createState));
+      children.emplace_back(createTrainingTree(*map.keys(), train));
+      children.emplace_back(createTrainingTree(*map.values(), train));
       break;
     }
-    case Kind::ArrayWithOffsets: {
-      auto& array = type.asArrayWithOffsets();
-      children.reserve(2);
-      children.emplace_back(createTrainingTree(*array.elements(), createState));
-      children.emplace_back(createTrainingTree(*array.offsets(), createState));
+    case Kind::Row: {
+      auto& row = type.asRow();
+      _ASYNC_TRAIN(row.nullsDescriptor(), Row::NullsStream);
+      children.reserve(row.childrenCount());
+      for (auto i = 0; i < row.childrenCount(); ++i) {
+        children.emplace_back(createTrainingTree(*row.childAt(i), train));
+      }
       break;
     }
     case Kind::FlatMap: {
       auto& map = type.asFlatMap();
+      _ASYNC_TRAIN(map.nullsDescriptor(), FlatMap::NullsStream);
       children.reserve(map.childrenCount());
       for (auto i = 0; i < map.childrenCount(); ++i) {
         children.emplace_back(
-            createTrainingTree(*map.childAt(i), createState, map.nameAt(i)));
+            createTrainingTree(*map.childAt(i), train, map.nameAt(i)));
       }
+      break;
+    }
+    case Kind::ArrayWithOffsets: {
+      auto& array = type.asArrayWithOffsets();
+      _ASYNC_TRAIN(array.offsetsDescriptor(), ArrayWithOffsets::OffsetsStream);
+      _ASYNC_TRAIN(array.lengthsDescriptor(), ArrayWithOffsets::LengthsStream);
+      children.reserve(1);
+      children.emplace_back(createTrainingTree(*array.elements(), train));
       break;
     }
   }
 
-  return std::make_unique<TrainingNode<T>>(
+  return std::make_unique<TrainingNode<State>>(
       name, std::move(state), std::move(children));
 }
 
@@ -172,14 +197,6 @@ EncodingLayout trainEncoding(
   encoding = alpha::EncodingFactory::encode<T>(std::move(policy), data, buffer);
   return EncodingLayoutCapture::capture(encoding);
 }
-
-struct State {
-  explicit State(const Type& type) : type{type} {}
-
-  const Type& type;
-  std::unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>
-      encodingLayouts;
-};
 
 EncodingLayoutTree toEncodingLayoutTree(const TrainingNode<State>& node) {
   auto& state = node.state();
@@ -262,93 +279,45 @@ EncodingLayoutTree EncodingLayoutTrainer::train(folly::Executor& executor) {
   velox::dwio::common::ExecutorBarrier barrier{executor};
   // Traverse schema. For each node, load all data and capture basic encoding
   // selection on data.
-  auto taskTree = createTrainingTree<
-      State>(*reader->schema(), [&](const Type& type) {
-    auto state = std::make_unique<State>(type);
-    barrier.add([&, &localState = *state]() {
-      std::vector<std::string_view> streams;
-      for (auto& stripeStream : stripeStreams) {
-        if (stripeStream.size() > type.offset() &&
-            stripeStream[type.offset()]) {
-          streams.push_back(stripeStream[type.offset()]->getStream());
-        }
-      }
+  auto taskTree = createTrainingTree(
+      *reader->schema(),
+      [&](const StreamDescriptor& descriptor,
+          std::function<void(EncodingLayout &&)> setLayout) {
+        barrier.add([&, setLayout = std::move(setLayout)]() {
+          std::vector<std::string_view> streams;
+          for (auto& stripeStream : stripeStreams) {
+            const auto offset = descriptor.offset();
+            if (stripeStream.size() > offset && stripeStream[offset]) {
+              streams.push_back(stripeStream[offset]->getStream());
+            }
+          }
 
-      switch (type.kind()) {
-        case Kind::Scalar: {
-          auto scalar = type.asScalar();
-
-#define SCALAR_CASE(kind, dataType)                                   \
-  case ScalarKind::kind:                                              \
-    localState.encodingLayouts.insert(                                \
-        {EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream, \
-         trainEncoding<dataType>(memoryPool_, options, streams)});    \
+#define _SCALAR_CASE(kind, dataType)                                   \
+  case ScalarKind::kind:                                               \
+    setLayout(trainEncoding<dataType>(memoryPool_, options, streams)); \
     break;
 
-          switch (scalar.scalarKind()) {
-            SCALAR_CASE(Int8, int8_t);
-            SCALAR_CASE(UInt8, uint8_t);
-            SCALAR_CASE(Int16, int16_t);
-            SCALAR_CASE(UInt16, uint16_t);
-            SCALAR_CASE(Int32, int32_t);
-            SCALAR_CASE(UInt32, uint32_t);
-            SCALAR_CASE(Int64, int64_t);
-            SCALAR_CASE(UInt64, uint64_t);
-            SCALAR_CASE(Float, float);
-            SCALAR_CASE(Double, double);
-            SCALAR_CASE(Bool, bool);
-            case ScalarKind::String:
-            case ScalarKind::Binary:
-              localState.encodingLayouts.insert(
-                  {EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
-                   trainEncoding<std::string_view>(
-                       memoryPool_, options, streams)});
-              break;
+          switch (descriptor.scalarKind()) {
+            _SCALAR_CASE(Int8, int8_t);
+            _SCALAR_CASE(UInt8, uint8_t);
+            _SCALAR_CASE(Int16, int16_t);
+            _SCALAR_CASE(UInt16, uint16_t);
+            _SCALAR_CASE(Int32, int32_t);
+            _SCALAR_CASE(UInt32, uint32_t);
+            _SCALAR_CASE(Int64, int64_t);
+            _SCALAR_CASE(UInt64, uint64_t);
+            _SCALAR_CASE(Float, float);
+            _SCALAR_CASE(Double, double);
+            _SCALAR_CASE(Bool, bool);
+            _SCALAR_CASE(String, std::string_view);
+            _SCALAR_CASE(Binary, std::string_view);
             case ScalarKind::Undefined:
               ALPHA_UNREACHABLE("Scalar kind cannot be undefined.");
           }
-          break;
 
-#undef SCALAR_KIND
-        }
-        case Kind::Row:
-        case Kind::FlatMap: {
-          // Main stream for complex types (row/flatmap) is the "nullable"
-          // stream (boolean stream) with identifier 0
-          static_assert(
-              EncodingLayoutTree::StreamIdentifiers::Row::NullsStream == 0);
-          static_assert(
-              EncodingLayoutTree::StreamIdentifiers::FlatMap::NullsStream == 0);
-          localState.encodingLayouts.insert(
-              {0, trainEncoding<bool>(memoryPool_, options, streams)});
-          break;
-        }
-        case Kind::Array:
-        case Kind::Map: {
-          // Main stream for multi-value types (array/map) is the "length"
-          // stream (int stream) with identifier 0
-          static_assert(
-              EncodingLayoutTree::StreamIdentifiers::Array::LengthsStream == 0);
-          static_assert(
-              EncodingLayoutTree::StreamIdentifiers::Map::LengthsStream == 0);
-          localState.encodingLayouts.insert(
-              {0, trainEncoding<uint32_t>(memoryPool_, options, streams)});
-
-          break;
-        }
-        case Kind::ArrayWithOffsets: {
-          // Main stream for array with offsets is the "length" stream (int
-          // stream) with identifier 1
-          localState.encodingLayouts.insert(
-              {EncodingLayoutTree::StreamIdentifiers::ArrayWithOffsets::
-                   LengthsStream,
-               trainEncoding<uint32_t>(memoryPool_, options, streams)});
-          break;
-        }
-      }
-    });
-    return state;
-  });
+#undef _SCALAR_KIND
+        });
+      });
 
   barrier.waitAll();
 

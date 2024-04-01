@@ -98,7 +98,8 @@ std::shared_ptr<TypeBuilder> convertToAlphaType(
 velox::TypePtr convertToVeloxType(const Type& type) {
   switch (type.kind()) {
     case Kind::Scalar: {
-      return convertToVeloxScalarType(type.asScalar().scalarKind());
+      return convertToVeloxScalarType(
+          type.asScalar().scalarDescriptor().scalarKind());
     }
     case Kind::Row: {
       const auto& rowType = type.asRow();

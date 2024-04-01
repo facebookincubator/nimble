@@ -227,6 +227,48 @@ void AlphaDumpLib::emitSchema(bool collapseFlatMap) {
   auto tablet = std::make_shared<Tablet>(*pool_, file_.get());
   VeloxReader reader{*pool_, tablet};
 
+  auto emitOffsets = [](const Type& type) {
+    std::string offsets;
+    switch (type.kind()) {
+      case Kind::Scalar: {
+        offsets =
+            folly::to<std::string>(type.asScalar().scalarDescriptor().offset());
+        break;
+      }
+      case Kind::Array: {
+        offsets =
+            folly::to<std::string>(type.asArray().lengthsDescriptor().offset());
+        break;
+      }
+      case Kind::Map: {
+        offsets =
+            folly::to<std::string>(type.asMap().lengthsDescriptor().offset());
+        break;
+      }
+      case Kind::Row: {
+        offsets =
+            folly::to<std::string>(type.asRow().nullsDescriptor().offset());
+        break;
+      }
+      case Kind::FlatMap: {
+        offsets =
+            folly::to<std::string>(type.asFlatMap().nullsDescriptor().offset());
+        break;
+      }
+      case Kind::ArrayWithOffsets: {
+        offsets = "o:" +
+            folly::to<std::string>(
+                      type.asArrayWithOffsets().offsetsDescriptor().offset()) +
+            ",l:" +
+            folly::to<std::string>(
+                      type.asArrayWithOffsets().lengthsDescriptor().offset());
+        break;
+      }
+    }
+
+    return offsets;
+  };
+
   bool skipping = false;
   SchemaReader::traverseSchema(
       reader.schema(),
@@ -237,16 +279,13 @@ void AlphaDumpLib::emitSchema(bool collapseFlatMap) {
         if (parentType != nullptr && parentType->isFlatMap()) {
           auto childrenCount = parentType->asFlatMap().childrenCount();
           if (childrenCount > 2 && collapseFlatMap) {
-            // each child of a flatmap consists of a "inmap" node and a
-            // keyName node, so the first inMap's placeInSibling == 0, its
-            // keyName's placeInSibling == 1.
-            if (info.placeInSibling == 2) {
+            if (info.placeInSibling == 1) {
               ostream_ << std::string(
                               (std::basic_string<char>::size_type)level * 2,
                               ' ')
                        << "..." << std::endl;
               skipping = true;
-            } else if (info.placeInSibling == childrenCount * 2 - 2) {
+            } else if (info.placeInSibling == childrenCount - 1) {
               skipping = false;
             }
           }
@@ -254,11 +293,12 @@ void AlphaDumpLib::emitSchema(bool collapseFlatMap) {
         if (!skipping) {
           ostream_ << std::string(
                           (std::basic_string<char>::size_type)level * 2, ' ')
-                   << "[" << type.offset() << "] " << info.name << " : ";
+                   << "[" << emitOffsets(type) << "] " << info.name << " : ";
           if (type.isScalar()) {
             ostream_ << toString(type.kind()) << "<"
-                     << toString(type.asScalar().scalarKind()) << ">"
-                     << std::endl;
+                     << toString(
+                            type.asScalar().scalarDescriptor().scalarKind())
+                     << ">" << std::endl;
           } else {
             ostream_ << toString(type.kind()) << std::endl;
           }
@@ -289,7 +329,7 @@ void AlphaDumpLib::emitStripes(bool noHeader) {
 
 void AlphaDumpLib::emitStreams(
     bool noHeader,
-    bool flatmapKeys,
+    bool streamLabels,
     std::optional<uint32_t> stripeId) {
   auto tablet = std::make_shared<Tablet>(*pool_, file_.get());
 
@@ -299,42 +339,17 @@ void AlphaDumpLib::emitStreams(
   fields.push_back({"Stream Offset", 13});
   fields.push_back({"Stream Size", 13});
   fields.push_back({"Item Count", 13});
-  if (flatmapKeys) {
-    fields.push_back({"Map Stream Id", 13});
-    fields.push_back({"Map Key", 13});
+  if (streamLabels) {
+    fields.push_back({"Stream Label", 16});
   }
   fields.push_back({"Type", 30});
 
   TableFormatter formatter(ostream_, fields, noHeader);
 
-  VeloxReader reader{*pool_, tablet};
-  std::unordered_map<
-      alpha::offset_size,
-      std::tuple<alpha::offset_size, std::string>>
-      flatmapStreams;
-  if (flatmapKeys) {
-    SchemaReader::traverseSchema(
-        reader.schema(),
-        [&](uint32_t /* level */,
-            const Type& type,
-            const SchemaReader::NodeInfo& info) {
-          if (type.isFlatMap()) {
-            auto map = type.asFlatMap();
-            for (int i = 0; i < map.childrenCount(); ++i) {
-              const auto& inmap = map.inMapAt(i);
-              const auto& value = map.childAt(i);
-              flatmapStreams[inmap->offset()] = {type.offset(), map.nameAt(i)};
-              flatmapStreams[value->offset()] = {type.offset(), map.nameAt(i)};
-            }
-          } else {
-            if (info.parentType != nullptr) {
-              auto it = flatmapStreams.find(info.parentType->offset());
-              if (it != flatmapStreams.end()) {
-                flatmapStreams[type.offset()] = {it->second};
-              }
-            }
-          }
-        });
+  std::optional<StreamLabels> labels{};
+  if (streamLabels) {
+    VeloxReader reader{*pool_, tablet};
+    labels.emplace(reader.schema());
   }
 
   traverseTablet(
@@ -357,14 +372,8 @@ void AlphaDumpLib::emitStreams(
         values.push_back(
             folly::to<std::string>(tablet->streamSizes(stripeId)[streamId]));
         values.push_back(folly::to<std::string>(itemCount));
-        if (flatmapKeys) {
-          auto it = flatmapStreams.find(streamId);
-          values.push_back(
-              it != flatmapStreams.end()
-                  ? folly::to<std::string>(std::get<0>(it->second))
-                  : "N/A");
-          values.push_back(
-              it != flatmapStreams.end() ? std::get<1>(it->second) : "N/A");
+        if (streamLabels) {
+          auto it = values.emplace_back(labels->streamLabel(streamId));
         }
         values.push_back(getStreamInputLabel(stream));
         formatter.writeRow(values);

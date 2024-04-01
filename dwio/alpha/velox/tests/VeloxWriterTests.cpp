@@ -474,15 +474,15 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
     }
     return nullptr;
   };
-  auto& flatMapKey1Node = findChild(flatMapNode, "1")->asScalar();
-  auto flatMapKey2Node = findChild(flatMapNode, "2")->asScalar();
+  const auto& flatMapKey1Node = findChild(flatMapNode, "1")->asScalar();
+  const auto& flatMapKey2Node = findChild(flatMapNode, "2")->asScalar();
 
   for (auto i = 0; i < tablet.stripeCount(); ++i) {
     std::vector<uint32_t> identifiers{
-        mapNode.offset(),
-        mapValuesNode.offset(),
-        flatMapKey1Node.offset(),
-        flatMapKey2Node.offset()};
+        mapNode.lengthsDescriptor().offset(),
+        mapValuesNode.scalarDescriptor().offset(),
+        flatMapKey1Node.scalarDescriptor().offset(),
+        flatMapKey2Node.scalarDescriptor().offset()};
     auto streams = tablet.load(i, identifiers);
     {
       alpha::InMemoryChunkedStream chunkedStream{

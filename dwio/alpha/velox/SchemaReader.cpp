@@ -33,14 +33,10 @@ struct NamedType {
 
 } // namespace
 
-Type::Type(offset_size offset, Kind kind) : offset_{offset}, kind_{kind} {}
+Type::Type(Kind kind) : kind_{kind} {}
 
 Kind Type::kind() const {
   return kind_;
-}
-
-offset_size Type::offset() const {
-  return offset_;
 }
 
 bool Type::isScalar() const {
@@ -116,40 +112,55 @@ const FlatMapType& Type::asFlatMap() const {
   return dynamic_cast<const FlatMapType&>(*this);
 }
 
-ScalarType::ScalarType(offset_size offset, ScalarKind scalarKind)
-    : Type(offset, Kind::Scalar), scalarKind_{scalarKind} {}
+ScalarType::ScalarType(StreamDescriptor scalarDescriptor)
+    : Type(Kind::Scalar), scalarDescriptor_{std::move(scalarDescriptor)} {}
 
-ScalarKind ScalarType::scalarKind() const {
-  return scalarKind_;
+const StreamDescriptor& ScalarType::scalarDescriptor() const {
+  return scalarDescriptor_;
 }
 
-ArrayType::ArrayType(offset_size offset, std::shared_ptr<const Type> elements)
-    : Type(offset, Kind::Array), elements_{std::move(elements)} {}
+ArrayType::ArrayType(
+    StreamDescriptor lengthsDescriptor,
+    std::shared_ptr<const Type> elements)
+    : Type(Kind::Array),
+      lengthsDescriptor_{std::move(lengthsDescriptor)},
+      elements_{std::move(elements)} {}
+
+const StreamDescriptor& ArrayType::lengthsDescriptor() const {
+  return lengthsDescriptor_;
+}
 
 const std::shared_ptr<const Type>& ArrayType::elements() const {
   return elements_;
 }
 
-ArrayWithOffsetsType::ArrayWithOffsetsType(
-    offset_size offset,
-    std::shared_ptr<const ScalarType> offsets,
-    std::shared_ptr<const Type> elements)
-    : Type(offset, Kind::ArrayWithOffsets),
-      offsets_{std::move(offsets)},
-      elements_{std::move(elements)} {}
+MapType::MapType(
+    StreamDescriptor lengthsDescriptor,
+    std::shared_ptr<const Type> keys,
+    std::shared_ptr<const Type> values)
+    : Type(Kind::Map),
+      lengthsDescriptor_{std::move(lengthsDescriptor)},
+      keys_{std::move(keys)},
+      values_{std::move(values)} {}
 
-const std::shared_ptr<const ScalarType>& ArrayWithOffsetsType::offsets() const {
-  return offsets_;
+const StreamDescriptor& MapType::lengthsDescriptor() const {
+  return lengthsDescriptor_;
 }
-const std::shared_ptr<const Type>& ArrayWithOffsetsType::elements() const {
-  return elements_;
+
+const std::shared_ptr<const Type>& MapType::keys() const {
+  return keys_;
+}
+
+const std::shared_ptr<const Type>& MapType::values() const {
+  return values_;
 }
 
 RowType::RowType(
-    offset_size offset,
+    StreamDescriptor nullsDescriptor,
     std::vector<std::string> names,
     std::vector<std::shared_ptr<const Type>> children)
-    : Type(offset, Kind::Row),
+    : Type(Kind::Row),
+      nullsDescriptor_{std::move(nullsDescriptor)},
       names_{std::move(names)},
       children_{std::move(children)} {
   ALPHA_ASSERT(
@@ -158,6 +169,10 @@ RowType::RowType(
           "Size mismatch. names: {} vs children: {}.",
           names_.size(),
           children_.size()));
+}
+
+const StreamDescriptor& RowType::nullsDescriptor() const {
+  return nullsDescriptor_;
 }
 
 size_t RowType::childrenCount() const {
@@ -180,40 +195,40 @@ const std::string& RowType::nameAt(size_t index) const {
   return names_[index];
 }
 
-MapType::MapType(
-    offset_size offset,
-    std::shared_ptr<const Type> keys,
-    std::shared_ptr<const Type> values)
-    : Type(offset, Kind::Map),
-      keys_{std::move(keys)},
-      values_{std::move(values)} {}
-
-const std::shared_ptr<const Type>& MapType::keys() const {
-  return keys_;
-}
-
-const std::shared_ptr<const Type>& MapType::values() const {
-  return values_;
-}
-
 FlatMapType::FlatMapType(
-    offset_size offset,
+    StreamDescriptor nullsDescriptor,
     ScalarKind keyScalarKind,
     std::vector<std::string> names,
-    std::vector<std::shared_ptr<const ScalarType>> inMaps,
+    std::vector<std::unique_ptr<StreamDescriptor>> inMapDescriptors,
     std::vector<std::shared_ptr<const Type>> children)
-    : Type(offset, Kind::FlatMap),
+    : Type(Kind::FlatMap),
+      nullsDescriptor_{nullsDescriptor},
       keyScalarKind_{keyScalarKind},
       names_{std::move(names)},
-      inMaps_{std::move(inMaps)},
+      inMapDescriptors_{std::move(inMapDescriptors)},
       children_{std::move(children)} {
   ALPHA_ASSERT(
-      names_.size() == children_.size() && inMaps_.size() == children_.size(),
+      names_.size() == children_.size() &&
+          inMapDescriptors_.size() == children_.size(),
       fmt::format(
           "Size mismatch. names: {} vs inMaps: {} vs children: {}.",
           names_.size(),
-          inMaps_.size(),
+          inMapDescriptors_.size(),
           children_.size()));
+}
+
+const StreamDescriptor& FlatMapType::nullsDescriptor() const {
+  return nullsDescriptor_;
+}
+
+const StreamDescriptor& FlatMapType::inMapDescriptorAt(size_t index) const {
+  ALPHA_ASSERT(
+      index < inMapDescriptors_.size(),
+      fmt::format(
+          "Index out of range. index: {}, size: {}.",
+          index,
+          inMapDescriptors_.size()));
+  return *inMapDescriptors_[index];
 }
 
 ScalarKind FlatMapType::keyScalarKind() const {
@@ -222,15 +237,6 @@ ScalarKind FlatMapType::keyScalarKind() const {
 
 size_t FlatMapType::childrenCount() const {
   return children_.size();
-}
-
-const std::shared_ptr<const ScalarType>& FlatMapType::inMapAt(
-    size_t index) const {
-  ALPHA_ASSERT(
-      index < inMaps_.size(),
-      fmt::format(
-          "Index out of range. index: {}, size: {}.", index, inMaps_.size()));
-  return inMaps_[index];
 }
 
 const std::shared_ptr<const Type>& FlatMapType::childAt(size_t index) const {
@@ -249,6 +255,27 @@ const std::string& FlatMapType::nameAt(size_t index) const {
   return names_[index];
 }
 
+ArrayWithOffsetsType::ArrayWithOffsetsType(
+    StreamDescriptor offsetsDescriptor,
+    StreamDescriptor lengthsDescriptor,
+    std::shared_ptr<const Type> elements)
+    : Type(Kind::ArrayWithOffsets),
+      offsetsDescriptor_{std::move(offsetsDescriptor)},
+      lengthsDescriptor_{std::move(lengthsDescriptor)},
+      elements_{std::move(elements)} {}
+
+const StreamDescriptor& ArrayWithOffsetsType::offsetsDescriptor() const {
+  return offsetsDescriptor_;
+}
+
+const StreamDescriptor& ArrayWithOffsetsType::lengthsDescriptor() const {
+  return lengthsDescriptor_;
+}
+
+const std::shared_ptr<const Type>& ArrayWithOffsetsType::elements() const {
+  return elements_;
+}
+
 NamedType getType(
     offset_size& index,
     const std::vector<std::unique_ptr<const SchemaNode>>& nodes) {
@@ -259,27 +286,26 @@ NamedType getType(
   switch (kind) {
     case Kind::Scalar: {
       return {
-          .type = std::make_shared<ScalarType>(offset, node->scalarKind()),
+          .type = std::make_shared<ScalarType>(
+              StreamDescriptor{offset, node->scalarKind()}),
           .name = node->name()};
     }
     case Kind::Array: {
       auto elements = getType(index, nodes).type;
       return {
-          .type = std::make_shared<ArrayType>(offset, std::move(elements)),
+          .type = std::make_shared<ArrayType>(
+              StreamDescriptor{offset, ScalarKind::UInt32},
+              std::move(elements)),
           .name = node->name()};
     }
-    case Kind::ArrayWithOffsets: {
-      auto offsets = getType(index, nodes).type;
-      ALPHA_ASSERT(
-          offsets->kind() == Kind::Scalar &&
-              offsets->asScalar().scalarKind() == ScalarKind::UInt32,
-          "Array with offsets field must have a uint32 scalar type.");
-      auto offsetsScalarType =
-          std::dynamic_pointer_cast<const ScalarType>(offsets);
-      auto elements = getType(index, nodes).type;
+    case Kind::Map: {
+      auto keys = getType(index, nodes).type;
+      auto values = getType(index, nodes).type;
       return {
-          .type = std::make_shared<ArrayWithOffsetsType>(
-              offset, std::move(offsetsScalarType), std::move(elements)),
+          .type = std::make_shared<MapType>(
+              StreamDescriptor{offset, ScalarKind::UInt32},
+              std::move(keys),
+              std::move(values)),
           .name = node->name()};
     }
     case Kind::Row: {
@@ -294,46 +320,59 @@ NamedType getType(
       }
       return {
           .type = std::make_shared<RowType>(
-              offset, std::move(names), std::move(children)),
-          .name = node->name()};
-    }
-    case Kind::Map: {
-      auto keys = getType(index, nodes).type;
-      auto values = getType(index, nodes).type;
-      return {
-          .type = std::make_shared<MapType>(
-              offset, std::move(keys), std::move(values)),
+              StreamDescriptor{offset, ScalarKind::Bool},
+              std::move(names),
+              std::move(children)),
           .name = node->name()};
     }
     case Kind::FlatMap: {
       auto childrenCount = node->childrenCount();
 
       std::vector<std::string> names{childrenCount};
-      std::vector<std::shared_ptr<const ScalarType>> inMaps{childrenCount};
+      std::vector<std::unique_ptr<StreamDescriptor>> inMapDescriptors{
+          childrenCount};
       std::vector<std::shared_ptr<const Type>> children{childrenCount};
 
       for (auto i = 0; i < childrenCount; ++i) {
-        auto inMap = getType(index, nodes);
+        ALPHA_DASSERT(index < nodes.size(), "Unexpected node index.");
+        auto& inMapNode = nodes[index++];
         ALPHA_ASSERT(
-            inMap.type->kind() == Kind::Scalar &&
-                inMap.type->asScalar().scalarKind() == ScalarKind::Bool,
+            inMapNode->kind() == Kind::Scalar &&
+                inMapNode->scalarKind() == ScalarKind::Bool,
             "Flat map in-map field must have a boolean scalar type.");
         ALPHA_ASSERT(
-            inMap.name.has_value(), "Flat map fields must have names.");
+            inMapNode->name().has_value(), "Flat map fields must have names.");
         auto field = getType(index, nodes);
-        names[i] = inMap.name.value();
-        inMaps[i] = std::dynamic_pointer_cast<const ScalarType>(inMap.type);
+        names[i] = inMapNode->name().value();
+        inMapDescriptors[i] = std::make_unique<StreamDescriptor>(
+            inMapNode->offset(), inMapNode->scalarKind());
         children[i] = field.type;
       }
       return {
           .type = std::make_shared<FlatMapType>(
-              offset,
+              StreamDescriptor{offset, ScalarKind::Bool},
               node->scalarKind(),
               std::move(names),
-              std::move(inMaps),
+              std::move(inMapDescriptors),
               std::move(children)),
           .name = node->name()};
     }
+    case Kind::ArrayWithOffsets: {
+      auto& offsetsNode = nodes[index++];
+      ALPHA_ASSERT(
+          offsetsNode->kind() == Kind::Scalar &&
+              offsetsNode->scalarKind() == ScalarKind::UInt32,
+          "Array with offsets field must have a uint32 scalar type.");
+      auto elements = getType(index, nodes).type;
+      return {
+          .type = std::make_shared<ArrayWithOffsetsType>(
+              StreamDescriptor{
+                  offsetsNode->offset(), offsetsNode->scalarKind()},
+              StreamDescriptor{offset, ScalarKind::UInt32},
+              std::move(elements)),
+          .name = node->name()};
+    }
+
     default: {
       ALPHA_UNREACHABLE(fmt::format("Unknown node kind: ", toString(kind)));
     }
@@ -389,12 +428,6 @@ void traverseSchema(
       traverseSchema(
           index,
           level + 1,
-          arrayWithOffsets.offsets(),
-          visitor,
-          {.name = "offsets", .parentType = type.get()});
-      traverseSchema(
-          index,
-          level + 1,
           arrayWithOffsets.elements(),
           visitor,
           {.name = "elements", .parentType = type.get()});
@@ -423,19 +456,11 @@ void traverseSchema(
         traverseSchema(
             index,
             level + 1,
-            map.inMapAt(i),
-            visitor,
-            {.name = "inMap",
-             .parentType = type.get(),
-             .placeInSibling = i * 2});
-        traverseSchema(
-            index,
-            level + 1,
             map.childAt(i),
             visitor,
             {.name = map.nameAt(i),
              .parentType = type.get(),
-             .placeInSibling = i * 2 + 1});
+             .placeInSibling = i});
       }
       break;
     }
@@ -454,33 +479,37 @@ void SchemaReader::traverseSchema(
 std::ostream& operator<<(
     std::ostream& out,
     const std::shared_ptr<const Type>& root) {
-  std::optional<std::string> lastName;
   SchemaReader::traverseSchema(
       root,
-      [&out, &lastName](
-          uint32_t level, const Type& type, const SchemaReader::NodeInfo&) {
-        out << std::string((std::basic_string<char>::size_type)level * 2, ' ')
-            << "[" << type.offset() << "]"
-            << (lastName.has_value() ? lastName.value() + ":" : "");
+      [&out](uint32_t level, const Type& type, const SchemaReader::NodeInfo&) {
+        out << std::string((std::basic_string<char>::size_type)level * 2, ' ');
         if (type.isScalar()) {
           auto& scalar = type.asScalar();
-          out << toString(scalar.scalarKind()) << "\n";
+          out << "[" << scalar.scalarDescriptor().offset() << "]"
+              << toString(scalar.scalarDescriptor().scalarKind()) << "\n";
         } else if (type.isArray()) {
-          out << "ARRAY\n";
+          out << "[" << type.asArray().lengthsDescriptor().offset() << "]"
+              << "ARRAY\n";
         } else if (type.isArrayWithOffsets()) {
-          out << "OFFSETARRAY\n";
+          const auto& array = type.asArrayWithOffsets();
+          out << "[o:" << array.offsetsDescriptor().offset()
+              << ",l:" << array.lengthsDescriptor().offset() << "]"
+              << "OFFSETARRAY\n";
         } else if (type.isRow()) {
           auto& row = type.asRow();
-          out << "ROW[";
+          out << "[" << row.nullsDescriptor().offset() << "]"
+              << "ROW[";
           for (auto i = 0; i < row.childrenCount(); ++i) {
             out << row.nameAt(i) << (i < row.childrenCount() - 1 ? "," : "");
           }
           out << "]\n";
         } else if (type.isMap()) {
-          out << "MAP\n";
+          out << "[" << type.asMap().lengthsDescriptor().offset() << "]"
+              << "MAP\n";
         } else if (type.isFlatMap()) {
           auto& map = type.asFlatMap();
-          out << "FLATMAP[";
+          out << "[" << map.nullsDescriptor().offset() << "]"
+              << "FLATMAP[";
           for (auto i = 0; i < map.childrenCount(); ++i) {
             out << map.nameAt(i) << (i < map.childrenCount() - 1 ? "," : "");
           }

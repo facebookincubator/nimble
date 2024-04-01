@@ -15,7 +15,7 @@ namespace {
 ScalarKind getScalarKind(const Type& type) {
   switch (type.kind()) {
     case Kind::Scalar:
-      return type.asScalar().scalarKind();
+      return type.asScalar().scalarDescriptor().scalarKind();
     case Kind::Row:
     case Kind::Array:
     case Kind::ArrayWithOffsets:

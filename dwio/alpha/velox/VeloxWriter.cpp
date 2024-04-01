@@ -168,7 +168,7 @@ std::string_view encodeStreamTyped(
 std::string_view encodeStream(
     detail::WriterContext& context,
     Buffer& buffer,
-    const StreamDescriptor& streamDescriptor,
+    const StreamDescriptorBuilder& streamDescriptor,
     std::span<const bool>* nonNulls,
     std::string_view cols) {
   auto scalarKind = streamDescriptor.scalarKind();
@@ -546,24 +546,25 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       encodingBuffer_ = std::make_unique<Buffer>(*encodingMemoryPool_);
     }
     streams_.resize(context_->schemaBuilder.nodeCount());
-    StreamCollector collector = [this, &chunkSize](
-                                    const StreamDescriptor& streamDescriptor,
-                                    std::span<const bool>* nonNulls,
-                                    std::string_view cols) {
-      auto encoded = encodeStream(
-          *context_, *encodingBuffer_, streamDescriptor, nonNulls, cols);
-      if (!encoded.empty()) {
-        ChunkedStreamWriter chunkWriter{*encodingBuffer_};
-        ALPHA_DASSERT(
-            streamDescriptor.offset() < streams_.size(),
-            "Stream offset out of range.");
-        auto& stream = streams_[streamDescriptor.offset()];
-        for (auto& buffer : chunkWriter.encode(encoded)) {
-          chunkSize += buffer.size();
-          stream.content.push_back(std::move(buffer));
-        }
-      }
-    };
+    StreamCollector collector =
+        [this, &chunkSize](
+            const StreamDescriptorBuilder& streamDescriptor,
+            std::span<const bool>* nonNulls,
+            std::string_view cols) {
+          auto encoded = encodeStream(
+              *context_, *encodingBuffer_, streamDescriptor, nonNulls, cols);
+          if (!encoded.empty()) {
+            ChunkedStreamWriter chunkWriter{*encodingBuffer_};
+            const auto offset = streamDescriptor.offset();
+            ALPHA_DASSERT(
+                offset < streams_.size(), "Stream offset out of range.");
+            auto& stream = streams_[offset];
+            for (auto& buffer : chunkWriter.encode(encoded)) {
+              chunkSize += buffer.size();
+              stream.content.push_back(std::move(buffer));
+            }
+          }
+        };
 
     root_->flush(collector, lastChunk);
     context_->stripeSize += chunkSize;

@@ -32,7 +32,6 @@ class FlatMapType;
 class Type {
  public:
   Kind kind() const;
-  offset_size offset() const;
 
   bool isScalar() const;
   bool isRow() const;
@@ -49,103 +48,115 @@ class Type {
   const FlatMapType& asFlatMap() const;
 
  protected:
-  Type(offset_size offset, Kind kind);
+  explicit Type(Kind kind);
 
   virtual ~Type() = default;
 
  private:
-  offset_size offset_;
+  Type(const Type&) = delete;
+  Type(Type&&) = delete;
+
   Kind kind_;
 };
 
-class ScalarType : public virtual Type {
+class ScalarType : public Type {
  public:
-  ScalarType(offset_size offset, ScalarKind scalarKind);
+  explicit ScalarType(StreamDescriptor scalarDescriptor);
 
-  ScalarKind scalarKind() const;
+  const StreamDescriptor& scalarDescriptor() const;
 
  private:
-  ScalarKind scalarKind_;
+  StreamDescriptor scalarDescriptor_;
 };
 
-class ArrayType : public virtual Type {
+class ArrayType : public Type {
  public:
-  ArrayType(offset_size offset, std::shared_ptr<const Type> elements);
-
-  const std::shared_ptr<const Type>& elements() const;
-
- protected:
-  std::shared_ptr<const Type> elements_;
-};
-
-class ArrayWithOffsetsType : public virtual Type {
- public:
-  ArrayWithOffsetsType(
-      offset_size offset,
-      std::shared_ptr<const ScalarType> offsets,
+  ArrayType(
+      StreamDescriptor lengthsDescriptor,
       std::shared_ptr<const Type> elements);
 
-  const std::shared_ptr<const ScalarType>& offsets() const;
+  const StreamDescriptor& lengthsDescriptor() const;
   const std::shared_ptr<const Type>& elements() const;
 
  protected:
-  std::shared_ptr<const ScalarType> offsets_;
+  StreamDescriptor lengthsDescriptor_;
   std::shared_ptr<const Type> elements_;
 };
 
-class RowType : public virtual Type {
- public:
-  RowType(
-      offset_size offset,
-      std::vector<std::string> names,
-      std::vector<std::shared_ptr<const Type>> children);
-
-  size_t childrenCount() const;
-  const std::shared_ptr<const Type>& childAt(size_t index) const;
-  const std::string& nameAt(size_t index) const;
-
- protected:
-  std::vector<std::string> names_;
-  std::vector<std::shared_ptr<const Type>> children_;
-};
-
-class MapType : public virtual Type {
+class MapType : public Type {
  public:
   MapType(
-      offset_size offset,
+      StreamDescriptor lengthsDescriptor,
       std::shared_ptr<const Type> keys,
       std::shared_ptr<const Type> values);
 
+  const StreamDescriptor& lengthsDescriptor() const;
   const std::shared_ptr<const Type>& keys() const;
   const std::shared_ptr<const Type>& values() const;
 
  protected:
+  StreamDescriptor lengthsDescriptor_;
   std::shared_ptr<const Type> keys_;
   std::shared_ptr<const Type> values_;
 };
 
-class FlatMapType : public virtual Type {
+class RowType : public Type {
  public:
-  FlatMapType(
-      offset_size offset,
-      ScalarKind keyScalarKind,
+  RowType(
+      StreamDescriptor nullsDescriptor,
       std::vector<std::string> names,
-      std::vector<std::shared_ptr<const ScalarType>> inMaps,
       std::vector<std::shared_ptr<const Type>> children);
 
+  const StreamDescriptor& nullsDescriptor() const;
+  size_t childrenCount() const;
+  const std::shared_ptr<const Type>& childAt(size_t index) const;
+  const std::string& nameAt(size_t index) const;
+
+ protected:
+  StreamDescriptor nullsDescriptor_;
+  std::vector<std::string> names_;
+  std::vector<std::shared_ptr<const Type>> children_;
+};
+
+class FlatMapType : public Type {
+ public:
+  FlatMapType(
+      StreamDescriptor nullsDescriptor,
+      ScalarKind keyScalarKind,
+      std::vector<std::string> names,
+      std::vector<std::unique_ptr<StreamDescriptor>> inMapDescriptors,
+      std::vector<std::shared_ptr<const Type>> children);
+
+  const StreamDescriptor& nullsDescriptor() const;
+  const StreamDescriptor& inMapDescriptorAt(size_t index) const;
   ScalarKind keyScalarKind() const;
   size_t childrenCount() const;
-  const std::shared_ptr<const ScalarType>& inMapAt(size_t index) const;
   const std::shared_ptr<const Type>& childAt(size_t index) const;
   const std::string& nameAt(size_t index) const;
 
  private:
+  StreamDescriptor nullsDescriptor_;
   ScalarKind keyScalarKind_;
+  std::vector<std::string> names_;
+  std::vector<std::unique_ptr<StreamDescriptor>> inMapDescriptors_;
+  std::vector<std::shared_ptr<const Type>> children_;
+};
+
+class ArrayWithOffsetsType : public Type {
+ public:
+  ArrayWithOffsetsType(
+      StreamDescriptor offsetsDescriptor,
+      StreamDescriptor lengthsDescriptor,
+      std::shared_ptr<const Type> elements);
+
+  const StreamDescriptor& offsetsDescriptor() const;
+  const StreamDescriptor& lengthsDescriptor() const;
+  const std::shared_ptr<const Type>& elements() const;
 
  protected:
-  std::vector<std::string> names_;
-  std::vector<std::shared_ptr<const ScalarType>> inMaps_;
-  std::vector<std::shared_ptr<const Type>> children_;
+  StreamDescriptor offsetsDescriptor_;
+  StreamDescriptor lengthsDescriptor_;
+  std::shared_ptr<const Type> elements_;
 };
 
 class SchemaReader {
