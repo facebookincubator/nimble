@@ -24,7 +24,6 @@
 #include "dwio/alpha/velox/TabletSections.h"
 #include "folly/ScopeGuard.h"
 #include "velox/common/time/CpuWallTimer.h"
-#include "velox/dwio/common/ExecutorBarrier.h"
 #include "velox/type/Type.h"
 
 namespace facebook::alpha {
@@ -623,11 +622,10 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       streamData.reset();
     };
 
-    auto processStream = [&](StreamData& streamData,
-                             std::function<void(StreamData&, bool)> encoder) {
-      const auto offset = streamData.descriptor().offset();
+    for (auto& streamData : context_->streams()) {
+      const auto offset = streamData->descriptor().offset();
       const auto* context =
-          streamData.descriptor().context<WriterStreamContext>();
+          streamData->descriptor().context<WriterStreamContext>();
 
       const auto minStreamSize =
           lastChunk ? 0 : context_->options.minStreamChunkRawSize;
@@ -637,50 +635,19 @@ void VeloxWriter::writeChunk(bool lastChunk) {
         // boolean data.
         // We still apply the same null logic, where if all values are
         // non-nulls, we omit the entire stream.
-        if ((streamData.hasNulls() &&
-             streamData.nonNulls().size() > minStreamSize) ||
-            (lastChunk && !streamData.empty() &&
+        if ((streamData->hasNulls() &&
+             streamData->nonNulls().size() > minStreamSize) ||
+            (lastChunk && !streamData->empty() &&
              !streams_[offset].content.empty())) {
-          encoder(streamData, true);
+          NullsAsDataStreamData nullsStreamData{*streamData};
+          encode(nullsStreamData);
         }
       } else {
-        if (streamData.data().size() > minStreamSize ||
-            (lastChunk && streamData.nonNulls().size() > 0 &&
+        if (streamData->data().size() > minStreamSize ||
+            (lastChunk && streamData->nonNulls().size() > 0 &&
              !streams_[offset].content.empty())) {
-          encoder(streamData, false);
+          encode(*streamData);
         }
-      }
-    };
-
-    if (context_->options.encodingExecutor) {
-      velox::dwio::common::ExecutorBarrier barrier{
-          context_->options.encodingExecutor};
-      for (auto& streamData : context_->streams()) {
-        processStream(
-            *streamData, [&](StreamData& innerStreamData, bool isNullStream) {
-              barrier.add([&innerStreamData, isNullStream, &encode]() {
-                if (isNullStream) {
-                  NullsAsDataStreamData nullsStreamData{innerStreamData};
-                  encode(nullsStreamData);
-                } else {
-                  encode(innerStreamData);
-                }
-              });
-            });
-      }
-      barrier.waitAll();
-    } else {
-      for (auto& streamData : context_->streams()) {
-        processStream(
-            *streamData,
-            [&encode](StreamData& innerStreamData, bool isNullStream) {
-              if (isNullStream) {
-                NullsAsDataStreamData nullsStreamData{innerStreamData};
-                encode(nullsStreamData);
-              } else {
-                encode(innerStreamData);
-              }
-            });
       }
     }
 
@@ -725,8 +692,8 @@ uint32_t VeloxWriter::writeStripe() {
     writer_.writeStripe(context_->rowsInStripe, std::move(streams_));
     stripeSize = writer_.size() - startSize;
     encodingBuffer_.reset();
-    // TODO: once chunked string fields are supported, move string buffer
-    // reset to writeChunk()
+    // TODO: once chunked string fields are supported, move string buffer reset
+    // to writeChunk()
     context_->resetStringBuffer();
   }
 
