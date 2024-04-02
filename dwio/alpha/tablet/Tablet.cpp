@@ -108,7 +108,9 @@ size_t copyTo(const folly::IOBuf& source, void* target, size_t size) {
       source.computeChainDataLength() <= size, "Target buffer too small.");
   size_t offset = 0;
   for (const auto& chunk : source) {
-    std::copy(chunk.begin(), chunk.end(), static_cast<char*>(target));
+    // @lint-ignore CLANGSECURITY facebook-security-vulnerable-memcpy
+    std::memcpy(
+        static_cast<char*>(target) + offset, chunk.data(), chunk.size());
     offset += chunk.size();
   }
 
@@ -383,7 +385,7 @@ MetadataBuffer::MetadataBuffer(
   switch (type) {
     case CompressionType::Uncompressed: {
       buffer_.resize(ref.size());
-      std::copy(ref.cbegin(), ref.cend(), buffer_.begin());
+      memcpy(buffer_.data(), ref.data(), ref.size());
       break;
     }
     case CompressionType::Zstd: {

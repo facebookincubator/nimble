@@ -1267,8 +1267,7 @@ class RowFieldReader final : public FieldReader {
       if (scatterBitmap) {
         auto requiredBytes = bits::bytesRequired(rowCount);
         auto* nullBuffer = paddedNulls(vector, rowCount);
-        // @lint-ignore CLANGSECURITY facebook-security-vulnerable-memcpy
-        std::memcpy(
+        memcpy(
             nullBuffer,
             static_cast<const char*>(scatterBitmap->bits()),
             requiredBytes);

@@ -36,14 +36,15 @@ inline void writeUint64(uint64_t value, char*& pos) {
 
 // Just the chars, no leading length.
 inline void writeBytes(std::string_view value, char*& pos) {
-  std::copy(value.cbegin(), value.cend(), pos);
+  memcpy(pos, value.data(), value.size());
   pos += value.size();
 }
 
 // Just the buffers, no leading length.
 inline void writeBuffers(const folly::IOBuf& buffers, char*& pos) {
   for (const auto buffer : buffers) {
-    std::copy(buffer.cbegin(), buffer.cend(), pos);
+    // @lint-ignore CLANGTIDY facebook-security-vulnerable-memcpy
+    memcpy(pos, buffer.data(), buffer.size());
     pos += buffer.size();
   }
 }

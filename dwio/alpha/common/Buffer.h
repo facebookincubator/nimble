@@ -51,8 +51,7 @@ class Buffer {
   // Copies |data| into the chunk, returning a view to the copied data.
   std::string_view writeString(std::string_view data) {
     char* pos = reserve(data.size());
-    // @lint-ignore CLANGSECURITY facebook-security-vulnerable-memcpy
-    std::memcpy(pos, data.data(), data.size());
+    memcpy(pos, data.data(), data.size());
     return {pos, data.size()};
   }
 
