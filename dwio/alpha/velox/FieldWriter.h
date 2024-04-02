@@ -13,194 +13,6 @@
 
 namespace facebook::alpha {
 
-// Stream data is a generic interface representing a stream of data, allowing
-// generic access to the content to be used by writers
-class StreamData {
- public:
-  explicit StreamData(const StreamDescriptorBuilder& descriptor)
-      : descriptor_{descriptor} {}
-
-  StreamData(const StreamData&) = delete;
-  StreamData(StreamData&&) = delete;
-  StreamData& operator=(const StreamData&) = delete;
-  StreamData& operator=(StreamData&&) = delete;
-
-  virtual std::string_view data() const = 0;
-  virtual std::span<const bool> nonNulls() const = 0;
-  virtual bool hasNulls() const = 0;
-  virtual bool empty() const = 0;
-  virtual uint64_t memoryUsed() const = 0;
-
-  virtual void reset() = 0;
-  virtual void materialize() {}
-
-  const StreamDescriptorBuilder& descriptor() const {
-    return descriptor_;
-  }
-
-  virtual ~StreamData() = default;
-
- private:
-  const StreamDescriptorBuilder& descriptor_;
-};
-
-// Content only data stream.
-// Used when a stream doesn't contain nulls.
-template <typename T>
-class ContentStreamData final : public StreamData {
- public:
-  ContentStreamData(
-      velox::memory::MemoryPool& memoryPool,
-      const StreamDescriptorBuilder& descriptor)
-      : StreamData(descriptor), data_{&memoryPool}, extraMemory_{0} {}
-
-  inline virtual std::string_view data() const override {
-    return {
-        reinterpret_cast<const char*>(data_.data()), data_.size() * sizeof(T)};
-  }
-
-  inline virtual std::span<const bool> nonNulls() const override {
-    return {};
-  }
-
-  inline virtual bool hasNulls() const override {
-    return false;
-  }
-
-  inline virtual bool empty() const override {
-    return data_.empty();
-  }
-
-  inline virtual uint64_t memoryUsed() const override {
-    return (data_.size() * sizeof(T)) + extraMemory_;
-  }
-
-  inline Vector<T>& mutableData() {
-    return data_;
-  }
-
-  inline uint64_t& extraMemory() {
-    return extraMemory_;
-  }
-
-  inline virtual void reset() override {
-    data_.clear();
-    extraMemory_ = 0;
-  }
-
- private:
-  Vector<T> data_;
-  uint64_t extraMemory_;
-};
-
-// Nulls only data stream.
-// Used in cases where boolean data (representing nulls) is needed.
-// NOTE: ContentStreamData<bool> can also be used to represent these data
-// streams, however, for these "null streams", we have special optimizations,
-// where if all data is non-null, we omit the stream. This class specialization
-// helps with reusing enabling this optimization.
-class NullsStreamData : public StreamData {
- public:
-  NullsStreamData(
-      velox::memory::MemoryPool& memoryPool,
-      const StreamDescriptorBuilder& descriptor)
-      : StreamData(descriptor),
-        nonNulls_{&memoryPool},
-        hasNulls_{false},
-        bufferedCount_{0} {}
-
-  inline virtual std::string_view data() const override {
-    return {};
-  }
-
-  inline virtual std::span<const bool> nonNulls() const override {
-    return nonNulls_;
-  }
-
-  inline virtual bool hasNulls() const override {
-    return hasNulls_;
-  }
-
-  inline virtual bool empty() const override {
-    return nonNulls_.empty() && bufferedCount_ == 0;
-  }
-
-  inline virtual uint64_t memoryUsed() const override {
-    return nonNulls_.size();
-  }
-
-  inline Vector<bool>& mutableNonNulls() {
-    return nonNulls_;
-  }
-
-  inline virtual void reset() override {
-    nonNulls_.clear();
-    hasNulls_ = false;
-    bufferedCount_ = 0;
-  }
-
-  void materialize() override {
-    if (nonNulls_.size() < bufferedCount_) {
-      const auto offset = nonNulls_.size();
-      nonNulls_.resize(bufferedCount_);
-      std::fill(
-          nonNulls_.data() + offset, nonNulls_.data() + bufferedCount_, true);
-    }
-  }
-
-  void ensureNullsCapacity(bool mayHaveNulls, velox::vector_size_t size);
-
- protected:
-  Vector<bool> nonNulls_;
-  bool hasNulls_;
-  uint32_t bufferedCount_;
-};
-
-// Nullable content data stream.
-// Used in all cases where data may contain nulls.
-template <typename T>
-class NullableContentStreamData final : public NullsStreamData {
- public:
-  NullableContentStreamData(
-      velox::memory::MemoryPool& memoryPool,
-      const StreamDescriptorBuilder& descriptor)
-      : NullsStreamData(memoryPool, descriptor),
-        data_{&memoryPool},
-        extraMemory_{0} {}
-
-  inline virtual std::string_view data() const override {
-    return {
-        reinterpret_cast<const char*>(data_.data()), data_.size() * sizeof(T)};
-  }
-
-  inline virtual bool empty() const override {
-    return NullsStreamData::empty() && data_.empty();
-  }
-
-  inline virtual uint64_t memoryUsed() const override {
-    return (data_.size() * sizeof(T)) + extraMemory_ +
-        NullsStreamData::memoryUsed();
-  }
-
-  inline Vector<T>& mutableData() {
-    return data_;
-  }
-
-  inline uint64_t& extraMemory() {
-    return extraMemory_;
-  }
-
-  inline virtual void reset() override {
-    NullsStreamData::reset();
-    data_.clear();
-    extraMemory_ = 0;
-  }
-
- private:
-  Vector<T> data_;
-  uint64_t extraMemory_;
-};
-
 struct InputBufferGrowthStats {
   std::atomic<uint64_t> count{0};
   // realloc bytes would be interesting, but requires a bit more
@@ -209,7 +21,23 @@ struct InputBufferGrowthStats {
 };
 
 struct FieldWriterContext {
-  class LocalDecodedVector;
+  std::shared_ptr<velox::memory::MemoryPool> bufferMemoryPool;
+  SchemaBuilder schemaBuilder;
+  std::unique_ptr<InputBufferGrowthPolicy> inputBufferGrowthPolicy;
+  InputBufferGrowthStats inputBufferGrowthStats;
+  // TODO: Replace node ids with a new "language" to describe nodes by relative
+  // ordinals. Until we have this language we use node ids. Node ids are not
+  // ideal, because they might change when the schema changes. Therefore, it is
+  // impossible to pass them in, as the caller might use a (future) table schema
+  // which is different than the (older) file schema, producing incorrect node
+  // ids.
+  // In the meantime, we use the file schema to perform config conversions to
+  // node ids.
+  folly::F14FastSet<uint32_t> flatMapNodeIds;
+  folly::F14FastSet<uint32_t> dictionaryArrayNodeIds;
+
+  std::function<void(const TypeBuilder&, std::string_view, const TypeBuilder&)>
+      flatmapFieldAddedEventHandler;
 
   explicit FieldWriterContext(
       velox::memory::MemoryPool& memoryPool,
@@ -223,22 +51,10 @@ struct FieldWriterContext {
     resetStringBuffer();
   }
 
-  std::shared_ptr<velox::memory::MemoryPool> bufferMemoryPool;
-  SchemaBuilder schemaBuilder;
-
-  folly::F14FastSet<uint32_t> flatMapNodeIds;
-  folly::F14FastSet<uint32_t> dictionaryArrayNodeIds;
-
-  std::unique_ptr<InputBufferGrowthPolicy> inputBufferGrowthPolicy;
-  InputBufferGrowthStats inputBufferGrowthStats;
-
-  std::function<void(const TypeBuilder&, std::string_view, const TypeBuilder&)>
-      flatmapFieldAddedEventHandler;
-
-  std::function<void(const TypeBuilder&)> typeAddedHandler =
-      [](const TypeBuilder&) {};
+  class LocalDecodedVector;
 
   LocalDecodedVector getLocalDecodedVector();
+
   velox::SelectivityVector& getSelectivityVector(velox::vector_size_t size);
 
   Buffer& stringBuffer() {
@@ -250,63 +66,44 @@ struct FieldWriterContext {
     buffer_ = std::make_unique<Buffer>(*bufferMemoryPool);
   }
 
-  const std::vector<std::unique_ptr<StreamData>>& streams() {
-    return streams_;
-  }
-
-  template <typename T>
-  NullsStreamData& createNullsStreamData(
-      const StreamDescriptorBuilder& descriptor) {
-    return static_cast<NullsStreamData&>(*streams_.emplace_back(
-        std::make_unique<NullsStreamData>(*bufferMemoryPool, descriptor)));
-  }
-
-  template <typename T>
-  ContentStreamData<T>& createContentStreamData(
-      const StreamDescriptorBuilder& descriptor) {
-    return static_cast<ContentStreamData<T>&>(*streams_.emplace_back(
-        std::make_unique<ContentStreamData<T>>(*bufferMemoryPool, descriptor)));
-  }
-
-  template <typename T>
-  NullableContentStreamData<T>& createNullableContentStreamData(
-      const StreamDescriptorBuilder& descriptor) {
-    return static_cast<NullableContentStreamData<T>&>(
-        *streams_.emplace_back(std::make_unique<NullableContentStreamData<T>>(
-            *bufferMemoryPool, descriptor)));
-  }
-
  private:
   std::unique_ptr<velox::DecodedVector> getDecodedVector();
+
   void releaseDecodedVector(std::unique_ptr<velox::DecodedVector>&& vector);
 
   std::unique_ptr<Buffer> buffer_;
   std::vector<std::unique_ptr<velox::DecodedVector>> decodedVectorPool_;
   std::unique_ptr<velox::SelectivityVector> selectivity_;
-  std::vector<std::unique_ptr<StreamData>> streams_;
 };
 
 using OrderedRanges = range_helper::OrderedRanges<velox::vector_size_t>;
+using StreamCollector = std::function<void(
+    const StreamDescriptorBuilder& /* descriptor */,
+    std::span<const bool>* /* nonNulls */,
+    std::string_view /* data */)>;
 
 class FieldWriter {
  public:
   FieldWriter(
       FieldWriterContext& context,
       std::shared_ptr<TypeBuilder> typeBuilder)
-      : context_{context}, typeBuilder_{std::move(typeBuilder)} {}
+      : context_{context},
+        typeBuilder_{std::move(typeBuilder)},
+        nonNulls_(context.bufferMemoryPool.get()) {}
 
   virtual ~FieldWriter() = default;
 
   // Writes the vector to internal buffers.
-  virtual void write(
+  virtual uint64_t write(
       const velox::VectorPtr& vector,
       const OrderedRanges& ranges) = 0;
 
-  // Clears interanl state and any accumulated data in internal buffers.
-  virtual void reset() = 0;
+  // Flushes any buffered data. `reset` specifies if internal state should be
+  // reset. Writer may be used to flush multiple times, and after each flush, it
+  // may still carry internal state for subsequent write/flush to work. When
+  // `reset` is set to true, internal state will be cleared.
+  virtual void flush(const StreamCollector& collector, bool reset = true) = 0;
 
-  // Called when all writes are done, allowing field writers to finalize
-  // internal state.
   virtual void close() {}
 
   const std::shared_ptr<TypeBuilder>& typeBuilder() {
@@ -317,18 +114,51 @@ class FieldWriter {
       FieldWriterContext& context,
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type);
 
-  static std::unique_ptr<FieldWriter> create(
-      FieldWriterContext& context,
-      const std::shared_ptr<const velox::dwio::common::TypeWithId>& type,
-      std::function<void(const TypeBuilder&)> typeAddedHandler);
-
  protected:
   FieldWriterContext& context_;
   std::shared_ptr<TypeBuilder> typeBuilder_;
 
+  uint64_t bufferedValueCount_{0};
+  uint64_t flushedValueCount_{0};
+  bool hasNulls_{false};
+  Vector<bool> nonNulls_;
+
+  void reset() {
+    bufferedValueCount_ = 0;
+    flushedValueCount_ = 0;
+    hasNulls_ = false;
+    nonNulls_.clear();
+  }
+
+  void ensureCapacity(bool mayHaveNulls, velox::vector_size_t size);
+
+  uint64_t nullBitmapSize(velox::vector_size_t size) const {
+    return hasNulls_ ? size : 0;
+  }
+
   FieldWriterContext::LocalDecodedVector decode(
       const velox::VectorPtr& vector,
       const OrderedRanges& ranges);
+
+  template <bool addNulls, typename Vector, typename Op>
+  uint64_t iterateIndices(
+      const OrderedRanges& ranges,
+      const Vector& vector,
+      const Op& op);
+
+  template <typename Vector, typename Op>
+  uint64_t iterateValues(
+      const OrderedRanges& ranges,
+      const Vector& vector,
+      const Op& op);
+
+  template <typename T>
+  void flushStream(
+      const StreamCollector& collector,
+      bool hasNulls,
+      Vector<T>& data,
+      bool forceFlushingNulls,
+      const StreamDescriptorBuilder& streamDescriptor);
 };
 
 } // namespace facebook::alpha

@@ -35,7 +35,6 @@ class ChunkedStreamDecoder : public Decoder {
   std::unique_ptr<Encoding> encoding_;
   uint32_t remaining_{0};
   const MetricsLogger& logger_;
-  std::vector<Vector<char>> stringBuffers_;
 };
 
 } // namespace facebook::alpha

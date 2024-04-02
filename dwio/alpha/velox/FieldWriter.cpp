@@ -36,6 +36,153 @@ class FieldWriterContext::LocalDecodedVector {
   std::unique_ptr<velox::DecodedVector> vector_;
 };
 
+FieldWriterContext::LocalDecodedVector
+FieldWriterContext::getLocalDecodedVector() {
+  return LocalDecodedVector{*this};
+}
+
+velox::SelectivityVector& FieldWriterContext::getSelectivityVector(
+    velox::vector_size_t size) {
+  if (LIKELY(selectivity_.get() != nullptr)) {
+    selectivity_->resize(size);
+  } else {
+    selectivity_ = std::make_unique<velox::SelectivityVector>(size);
+  }
+  return *selectivity_;
+}
+
+std::unique_ptr<velox::DecodedVector> FieldWriterContext::getDecodedVector() {
+  if (decodedVectorPool_.empty()) {
+    return std::make_unique<velox::DecodedVector>();
+  }
+  auto vector = std::move(decodedVectorPool_.back());
+  decodedVectorPool_.pop_back();
+  return vector;
+}
+
+void FieldWriterContext::releaseDecodedVector(
+    std::unique_ptr<velox::DecodedVector>&& vector) {
+  decodedVectorPool_.push_back(std::move(vector));
+}
+
+FieldWriterContext::LocalDecodedVector FieldWriter::decode(
+    const velox::VectorPtr& vector,
+    const OrderedRanges& ranges) {
+  auto& selectivityVector = context_.getSelectivityVector(vector->size());
+  // initialize selectivity vector
+  selectivityVector.clearAll();
+  ranges.apply([&](auto offset, auto size) {
+    selectivityVector.setValidRange(offset, offset + size, true);
+  });
+  selectivityVector.updateBounds();
+
+  auto localDecoded = context_.getLocalDecodedVector();
+  localDecoded.get().decode(*vector, selectivityVector);
+  return localDecoded;
+}
+
+void FieldWriter::ensureCapacity(bool mayHaveNulls, velox::vector_size_t size) {
+  if (mayHaveNulls || hasNulls_) {
+    auto newSize = bufferedValueCount_ + size;
+    nonNulls_.reserve(newSize);
+    if (!hasNulls_) {
+      hasNulls_ = true;
+      std::fill(nonNulls_.data(), nonNulls_.data() + bufferedValueCount_, true);
+      nonNulls_.update_size(bufferedValueCount_);
+    }
+    if (!mayHaveNulls) {
+      std::fill(
+          nonNulls_.data() + bufferedValueCount_,
+          nonNulls_.data() + newSize,
+          true);
+      nonNulls_.update_size(newSize);
+    }
+  }
+  bufferedValueCount_ += size;
+}
+
+namespace {
+
+template <bool addNulls, typename Vector, typename Consumer, typename IndexOp>
+uint64_t iterate(
+    const OrderedRanges& ranges,
+    alpha::Vector<bool>& nonNulls,
+    const Vector& vector,
+    const Consumer& consumer,
+    const IndexOp& indexOp) {
+  uint64_t nonNullCount = 0;
+  if (vector.hasNulls()) {
+    ranges.applyEach([&](auto offset) {
+      auto notNull = !vector.isNullAt(offset);
+      if constexpr (addNulls) {
+        nonNulls.push_back(notNull);
+      }
+      if (notNull) {
+        ++nonNullCount;
+        consumer(indexOp(offset));
+      }
+    });
+  } else {
+    ranges.applyEach([&](auto offset) { consumer(indexOp(offset)); });
+    nonNullCount = ranges.size();
+  }
+  return nonNullCount;
+}
+
+template <typename T>
+std::string_view convert(const Vector<T>& input) {
+  return {
+      reinterpret_cast<const char*>(input.data()), input.size() * sizeof(T)};
+}
+
+} // namespace
+
+template <bool addNulls, typename Vector, typename Op>
+uint64_t FieldWriter::iterateIndices(
+    const OrderedRanges& ranges,
+    const Vector& vector,
+    const Op& op) {
+  return iterate<addNulls>(ranges, nonNulls_, vector, op, [&](auto offset) {
+    return vector.index(offset);
+  });
+}
+
+template <typename Vector, typename Op>
+uint64_t FieldWriter::iterateValues(
+    const OrderedRanges& ranges,
+    const Vector& vector,
+    const Op& op) {
+  return iterate<true>(ranges, nonNulls_, vector, op, [&](auto offset) {
+    return vector.valueAt(offset);
+  });
+}
+
+template <typename T>
+void FieldWriter::flushStream(
+    const StreamCollector& collector,
+    bool hasNulls,
+    Vector<T>& data,
+    bool forceFlushingNulls,
+    const StreamDescriptorBuilder& streamDescriptor) {
+  // When there is non-null values to be flushed, it always need to flush both
+  // data and nulls and then clear the state.
+  // When there is no value, there are two cases:
+  // 1. All values are null. There is no need to flush nulls if all values
+  // written to this writer is null, which we won't know until it's the last
+  // flush (when `forceFlushingNulls` is set) or if there is already values
+  // flushed previous (indicated by `flushedValueCount_ > 0`).
+  // 2. Array/map has no child. No need to flush.
+  if (data.size() > 0 ||
+      (forceFlushingNulls && nonNulls_.size() > 0 && flushedValueCount_ > 0)) {
+    std::span<const bool> nonNulls(nonNulls_);
+    collector(streamDescriptor, hasNulls ? &nonNulls : nullptr, convert(data));
+    flushedValueCount_ += bufferedValueCount_;
+    bufferedValueCount_ = 0;
+    nonNulls_.clear();
+    data.clear();
+  }
+}
+
 namespace {
 
 template <velox::TypeKind KIND>
@@ -158,55 +305,6 @@ class Decoded {
   const velox::DecodedVector& decoded_;
 };
 
-template <bool addNulls, typename Vector, typename Consumer, typename IndexOp>
-uint64_t iterateNonNulls(
-    const OrderedRanges& ranges,
-    alpha::Vector<bool>& nonNulls,
-    const Vector& vector,
-    const Consumer& consumer,
-    const IndexOp& indexOp) {
-  uint64_t nonNullCount = 0;
-  if (vector.hasNulls()) {
-    ranges.applyEach([&](auto offset) {
-      auto notNull = !vector.isNullAt(offset);
-      if constexpr (addNulls) {
-        nonNulls.push_back(notNull);
-      }
-      if (notNull) {
-        ++nonNullCount;
-        consumer(indexOp(offset));
-      }
-    });
-  } else {
-    ranges.applyEach([&](auto offset) { consumer(indexOp(offset)); });
-    nonNullCount = ranges.size();
-  }
-  return nonNullCount;
-}
-
-template <bool addNulls, typename Vector, typename Op>
-uint64_t iterateNonNullIndices(
-    const OrderedRanges& ranges,
-    alpha::Vector<bool>& nonNulls,
-    const Vector& vector,
-    const Op& op) {
-  return iterateNonNulls<addNulls>(
-      ranges, nonNulls, vector, op, [&](auto offset) {
-        return vector.index(offset);
-      });
-}
-
-template <typename Vector, typename Op>
-uint64_t iterateNonNullValues(
-    const OrderedRanges& ranges,
-    alpha::Vector<bool>& nonNulls,
-    const Vector& vector,
-    const Op& op) {
-  return iterateNonNulls<true>(ranges, nonNulls, vector, op, [&](auto offset) {
-    return vector.valueAt(offset);
-  });
-}
-
 template <typename T>
 bool equalDecodedVectorIndices(
     const velox::DecodedVector& vec,
@@ -247,12 +345,6 @@ bool compareDecodedVectorToCache(
   return thisVec.valueAt<T>(index) == cachedFlatVec->valueAt(cacheIndex);
 }
 
-template <typename T>
-std::string_view convert(const Vector<T>& input) {
-  return {
-      reinterpret_cast<const char*>(input.data()), input.size() * sizeof(T)};
-}
-
 template <typename T, typename = std::enable_if_t<std::is_trivial_v<T>>>
 struct IdentityConverter {
   static T convert(T t, Buffer&, uint64_t&) {
@@ -290,78 +382,84 @@ class SimpleFieldWriter : public FieldWriter {
             context,
             context.schemaBuilder.createScalarTypeBuilder(
                 AlphaTypeTraits<K>::scalarKind)),
-        valuesStream_{context.createNullableContentStreamData<TargetType>(
-            typeBuilder_->asScalar().scalarDescriptor())} {}
+        vec_{context.bufferMemoryPool.get()} {}
 
-  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+  uint64_t write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
       override {
     auto size = ranges.size();
-    uint64_t stringMemoryUsed = 0;
     auto& buffer = context_.stringBuffer();
-    auto& data = valuesStream_.mutableData();
-
+    uint64_t stringMemoryUsed = 0;
+    uint32_t nonNullCount = 0;
     if (auto flat = vector->asFlatVector<SourceType>()) {
-      valuesStream_.ensureNullsCapacity(flat->mayHaveNulls(), size);
+      ensureCapacity(flat->mayHaveNulls(), size);
       bool rangeCopied = false;
       if (!flat->mayHaveNulls()) {
         if constexpr (
             std::is_same_v<C, IdentityConverter<SourceType, void>> &&
             K != velox::TypeKind::BOOLEAN) {
-          // NOTE: this is currently expensive to grow during a long sequence of
-          // ingest
-          // operators. We currently achieve a balance via a buffer growth
-          // policy. Another factor that can help us reduce this cost is to also
-          // consider the stripe progress. However, naive progress based
-          // policies can't be combined with the size based policies, and are
-          // thus currently not included.
-          auto newSize = data.size() + size;
-          if (newSize > data.capacity()) {
+          // In low memory mode we can afford to be exact for raw data
+          // buffering.
+          auto newSize = vec_.size() + size;
+          if (newSize > vec_.capacity()) {
             auto newCapacity =
                 context_.inputBufferGrowthPolicy->getExtendedCapacity(
-                    newSize, data.capacity());
+                    newSize, vec_.capacity());
             ++context_.inputBufferGrowthStats.count;
             context_.inputBufferGrowthStats.itemCount += newCapacity;
-            data.reserve(newCapacity);
+            vec_.reserve(newCapacity);
           }
           ranges.apply([&](auto offset, auto count) {
-            data.insert(
-                data.end(),
+            vec_.insert(
+                vec_.end(),
                 flat->rawValues() + offset,
                 flat->rawValues() + offset + count);
           });
+          nonNullCount = size;
           rangeCopied = true;
         }
       }
 
       if (!rangeCopied) {
-        iterateNonNullValues(
-            ranges,
-            valuesStream_.mutableNonNulls(),
-            Flat<SourceType>{vector},
-            [&](SourceType value) {
-              data.push_back(C::convert(value, buffer, stringMemoryUsed));
+        nonNullCount = iterateValues(
+            ranges, Flat<SourceType>{vector}, [&](SourceType value) {
+              vec_.push_back(C::convert(value, buffer, stringMemoryUsed));
             });
       }
     } else {
       auto localDecoded = decode(vector, ranges);
       auto& decoded = localDecoded.get();
-      valuesStream_.ensureNullsCapacity(decoded.mayHaveNulls(), size);
-      iterateNonNullValues(
-          ranges,
-          valuesStream_.mutableNonNulls(),
-          Decoded<SourceType>{decoded},
-          [&](SourceType value) {
-            data.push_back(C::convert(value, buffer, stringMemoryUsed));
+      ensureCapacity(decoded.mayHaveNulls(), size);
+      nonNullCount = iterateValues(
+          ranges, Decoded<SourceType>{decoded}, [&](SourceType value) {
+            vec_.push_back(C::convert(value, buffer, stringMemoryUsed));
           });
+    }
+    return sizeof(TargetType) * nonNullCount + stringMemoryUsed +
+        nullBitmapSize(size);
+  }
+
+  void flush(const StreamCollector& collector, bool reset) override {
+    // Need to solve reader problem before we can enable chunking for strings.
+    if (!std::is_same_v<C, StringConverter> || reset) {
+      flushStream(
+          collector,
+          hasNulls_,
+          vec_,
+          reset,
+          typeBuilder_->asScalar().scalarDescriptor());
+    }
+    if (reset) {
+      FieldWriter::reset();
     }
   }
 
-  void reset() override {
-    valuesStream_.reset();
-  }
-
  private:
-  NullableContentStreamData<TargetType>& valuesStream_;
+  // NOTE: this is currently expensive to grow during a long sequence of ingest
+  // operators. We currently achieve a balance via a buffer growth policy.
+  // Another factor that can help us reduce this cost is to also consider the
+  // stripe progress. However, naive progress based policies can't be combined
+  // with the size based policies, and are thus currently not included.
+  Vector<TargetType> vec_;
 };
 
 class RowFieldWriter : public FieldWriter {
@@ -369,9 +467,9 @@ class RowFieldWriter : public FieldWriter {
   RowFieldWriter(
       FieldWriterContext& context,
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
-      : FieldWriter{context, context.schemaBuilder.createRowTypeBuilder(type->size())},
-        nullsStream_{context_.createNullsStreamData<bool>(
-            typeBuilder_->asRow().nullsDescriptor())} {
+      : FieldWriter{
+            context,
+            context.schemaBuilder.createRowTypeBuilder(type->size())} {
     auto rowType =
         std::dynamic_pointer_cast<const velox::RowType>(type->type());
 
@@ -383,23 +481,21 @@ class RowFieldWriter : public FieldWriter {
     }
   }
 
-  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+  uint64_t write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
       override {
     auto size = ranges.size();
+    uint64_t memoryUsed = 0;
     OrderedRanges childRanges;
     const OrderedRanges* childRangesPtr;
     const velox::RowVector* row = vector->as<velox::RowVector>();
-
     if (row) {
       ALPHA_CHECK(fields_.size() == row->childrenSize(), "schema mismatch");
-      nullsStream_.ensureNullsCapacity(vector->mayHaveNulls(), size);
+      ensureCapacity(vector->mayHaveNulls(), size);
       if (row->mayHaveNulls()) {
         childRangesPtr = &childRanges;
-        iterateNonNullIndices<true>(
-            ranges,
-            nullsStream_.mutableNonNulls(),
-            Flat{vector},
-            [&](auto offset) { childRanges.add(offset, 1); });
+        iterateIndices<true>(ranges, Flat{vector}, [&](auto offset) {
+          childRanges.add(offset, 1);
+        });
       } else {
         childRangesPtr = &ranges;
       }
@@ -410,23 +506,31 @@ class RowFieldWriter : public FieldWriter {
       ALPHA_ASSERT(row, "Unexpected vector type");
       ALPHA_CHECK(fields_.size() == row->childrenSize(), "schema mismatch");
       childRangesPtr = &childRanges;
-      nullsStream_.ensureNullsCapacity(decoded.mayHaveNulls(), size);
-      iterateNonNullIndices<true>(
-          ranges,
-          nullsStream_.mutableNonNulls(),
-          Decoded{decoded},
-          [&](auto offset) { childRanges.add(offset, 1); });
+      ensureCapacity(decoded.mayHaveNulls(), size);
+      iterateIndices<true>(ranges, Decoded{decoded}, [&](auto offset) {
+        childRanges.add(offset, 1);
+      });
     }
     for (auto i = 0; i < fields_.size(); ++i) {
-      fields_[i]->write(row->childAt(i), *childRangesPtr);
+      memoryUsed += fields_[i]->write(row->childAt(i), *childRangesPtr);
     }
+    return memoryUsed + nullBitmapSize(size);
   }
 
-  void reset() override {
-    nullsStream_.reset();
-
+  void flush(const StreamCollector& collector, bool reset) override {
+    if (hasNulls_) {
+      flushStream(
+          collector,
+          false,
+          nonNulls_,
+          reset,
+          typeBuilder_->asRow().nullsDescriptor());
+    }
     for (auto& field : fields_) {
-      field->reset();
+      field->flush(collector, reset);
+    }
+    if (reset) {
+      FieldWriter::reset();
     }
   }
 
@@ -438,50 +542,42 @@ class RowFieldWriter : public FieldWriter {
 
  private:
   std::vector<std::unique_ptr<FieldWriter>> fields_;
-  NullsStreamData& nullsStream_;
 };
 
 class MultiValueFieldWriter : public FieldWriter {
  public:
   MultiValueFieldWriter(
       FieldWriterContext& context,
-      std::shared_ptr<LengthsTypeBuilder> typeBuilder)
+      std::shared_ptr<TypeBuilder> typeBuilder)
       : FieldWriter{context, std::move(typeBuilder)},
-        lengthsStream_{context.createNullableContentStreamData<uint32_t>(
-            static_cast<LengthsTypeBuilder&>(*typeBuilder_)
-                .lengthsDescriptor())} {}
-
-  void reset() override {
-    lengthsStream_.reset();
-  }
+        lengths_{context.bufferMemoryPool.get()} {}
 
  protected:
   template <typename T>
   const T* ingestLengths(
       const velox::VectorPtr& vector,
       const OrderedRanges& ranges,
+      uint64_t& memoryUsed,
       OrderedRanges& childRanges) {
     auto size = ranges.size();
     const T* casted = vector->as<T>();
     const velox::vector_size_t* offsets;
     const velox::vector_size_t* lengths;
-    auto& data = lengthsStream_.mutableData();
-
     auto proc = [&](velox::vector_size_t index) {
       auto length = lengths[index];
       if (length > 0) {
         childRanges.add(offsets[index], length);
       }
-      data.push_back(length);
+      lengths_.push_back(length);
     };
 
+    uint32_t nonNullCount = 0;
     if (casted) {
       offsets = casted->rawOffsets();
       lengths = casted->rawSizes();
 
-      lengthsStream_.ensureNullsCapacity(casted->mayHaveNulls(), size);
-      iterateNonNullIndices<true>(
-          ranges, lengthsStream_.mutableNonNulls(), Flat{vector}, proc);
+      ensureCapacity(casted->mayHaveNulls(), size);
+      nonNullCount = iterateIndices<true>(ranges, Flat{vector}, proc);
     } else {
       auto localDecoded = decode(vector, ranges);
       auto& decoded = localDecoded.get();
@@ -490,15 +586,15 @@ class MultiValueFieldWriter : public FieldWriter {
       offsets = casted->rawOffsets();
       lengths = casted->rawSizes();
 
-      lengthsStream_.ensureNullsCapacity(decoded.mayHaveNulls(), size);
-      iterateNonNullIndices<true>(
-          ranges, lengthsStream_.mutableNonNulls(), Decoded{decoded}, proc);
+      ensureCapacity(decoded.mayHaveNulls(), size);
+      nonNullCount = iterateIndices<true>(ranges, Decoded{decoded}, proc);
     }
-
+    memoryUsed +=
+        (sizeof(velox::vector_size_t) * nonNullCount + nullBitmapSize(size));
     return casted;
   }
 
-  NullableContentStreamData<uint32_t>& lengthsStream_;
+  Vector<velox::vector_size_t> lengths_;
 };
 
 class ArrayFieldWriter : public MultiValueFieldWriter {
@@ -518,18 +614,29 @@ class ArrayFieldWriter : public MultiValueFieldWriter {
     typeBuilder_->asArray().setChildren(elements_->typeBuilder());
   }
 
-  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+  uint64_t write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
       override {
+    uint64_t memoryUsed = 0;
     OrderedRanges childRanges;
-    auto array = ingestLengths<velox::ArrayVector>(vector, ranges, childRanges);
+    auto array = ingestLengths<velox::ArrayVector>(
+        vector, ranges, memoryUsed, childRanges);
     if (childRanges.size() > 0) {
-      elements_->write(array->elements(), childRanges);
+      memoryUsed += elements_->write(array->elements(), childRanges);
     }
+    return memoryUsed;
   }
 
-  void reset() override {
-    MultiValueFieldWriter::reset();
-    elements_->reset();
+  void flush(const StreamCollector& collector, bool reset) override {
+    flushStream(
+        collector,
+        hasNulls_,
+        lengths_,
+        reset,
+        typeBuilder_->asArray().lengthsDescriptor());
+    elements_->flush(collector, reset);
+    if (reset) {
+      FieldWriter::reset();
+    }
   }
 
   void close() override {
@@ -558,20 +665,31 @@ class MapFieldWriter : public MultiValueFieldWriter {
         keys_->typeBuilder(), values_->typeBuilder());
   }
 
-  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+  uint64_t write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
       override {
+    uint64_t memoryUsed = 0;
     OrderedRanges childRanges;
-    auto map = ingestLengths<velox::MapVector>(vector, ranges, childRanges);
+    auto map = ingestLengths<velox::MapVector>(
+        vector, ranges, memoryUsed, childRanges);
     if (childRanges.size() > 0) {
-      keys_->write(map->mapKeys(), childRanges);
-      values_->write(map->mapValues(), childRanges);
+      memoryUsed += keys_->write(map->mapKeys(), childRanges);
+      memoryUsed += values_->write(map->mapValues(), childRanges);
     }
+    return memoryUsed;
   }
 
-  void reset() override {
-    MultiValueFieldWriter::reset();
-    keys_->reset();
-    values_->reset();
+  void flush(const StreamCollector& collector, bool reset) override {
+    flushStream(
+        collector,
+        hasNulls_,
+        lengths_,
+        reset,
+        typeBuilder_->asMap().lengthsDescriptor());
+    keys_->flush(collector, reset);
+    values_->flush(collector, reset);
+    if (reset) {
+      FieldWriter::reset();
+    }
   }
 
   void close() override {
@@ -592,42 +710,43 @@ class FlatMapValueFieldWriter {
       std::unique_ptr<FieldWriter> valueField)
       : inMapDescriptor_{inMapDescriptor},
         valueField_{std::move(valueField)},
-        inMapStream_{context.createContentStreamData<bool>(inMapDescriptor)} {}
+        inMapBuffer_(context.bufferMemoryPool.get()) {}
 
   // Clear the ranges and extend the inMapBuffer
   void prepare(uint32_t numValues) {
-    auto& data = inMapStream_.mutableData();
-    data.reserve(data.size() + numValues);
-    std::fill(data.end(), data.end() + numValues, false);
+    inMapBuffer_.reserve(inMapBuffer_.size() + numValues);
+    std::fill(inMapBuffer_.end(), inMapBuffer_.end() + numValues, false);
   }
 
   void add(velox::vector_size_t offset, uint32_t mapIndex) {
-    auto& data = inMapStream_.mutableData();
-    auto index = mapIndex + data.size();
-    ALPHA_CHECK(data.empty() || !data[index], "Duplicated key");
+    auto index = mapIndex + inMapBuffer_.size();
+    ALPHA_CHECK(inMapBuffer_.empty() || !inMapBuffer_[index], "Duplicated key");
     ranges_.add(offset, 1);
-    data[index] = true;
+    inMapBuffer_[index] = true;
   }
 
-  void write(const velox::VectorPtr& vector, uint32_t mapCount) {
-    auto& data = inMapStream_.mutableData();
-    data.update_size(data.size() + mapCount);
-
+  uint64_t write(const velox::VectorPtr& vector, uint32_t mapCount) {
+    inMapBuffer_.update_size(inMapBuffer_.size() + mapCount);
+    // TODO: currently bool uses 1 byte memory, update once we move to dense
+    uint64_t memoryUsed = mapCount;
     if (ranges_.size() > 0) {
-      valueField_->write(vector, ranges_);
+      memoryUsed += valueField_->write(vector, ranges_);
     }
-
     ranges_.clear();
+    return memoryUsed;
+  }
+
+  void flush(const StreamCollector& collector, bool reset) {
+    if (inMapBuffer_.size() > 0) {
+      collector(inMapDescriptor_, nullptr, convert(inMapBuffer_));
+      inMapBuffer_.clear();
+    }
+    valueField_->flush(collector, reset);
   }
 
   void backfill(uint32_t count, uint32_t reserve) {
-    inMapStream_.mutableData().resize(count, false);
+    inMapBuffer_.resize(count, false);
     prepare(reserve);
-  }
-
-  void reset() {
-    inMapStream_.reset();
-    valueField_->reset();
   }
 
   void close() {
@@ -637,7 +756,7 @@ class FlatMapValueFieldWriter {
  private:
   const StreamDescriptorBuilder& inMapDescriptor_;
   std::unique_ptr<FieldWriter> valueField_;
-  ContentStreamData<bool>& inMapStream_;
+  Vector<bool> inMapBuffer_;
   OrderedRanges ranges_;
 };
 
@@ -653,13 +772,12 @@ class FlatMapFieldWriter : public FieldWriter {
             context,
             context.schemaBuilder.createFlatMapTypeBuilder(
                 AlphaTypeTraits<K>::scalarKind)),
-        nullsStream_{context_.createNullsStreamData<bool>(
-            typeBuilder_->asFlatMap().nullsDescriptor())},
         valueType_{type->childAt(1)} {}
 
-  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+  uint64_t write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
       override {
     auto size = ranges.size();
+    uint64_t memoryUsed = 0;
     const velox::vector_size_t* offsets;
     const velox::vector_size_t* lengths;
     uint32_t nonNullCount = 0;
@@ -690,21 +808,18 @@ class FlatMapFieldWriter : public FieldWriter {
       if (auto flatKeys = mapKeys->template asFlatVector<KeyType>()) {
         // Keys are flat.
         Flat<KeyType> keysVector{mapKeys};
-        iterateNonNullIndices<true>(
-            ranges, nullsStream_.mutableNonNulls(), vector, [&](auto offset) {
-              processMap(offset, keysVector);
-            });
+        iterateIndices<true>(ranges, vector, [&](auto offset) {
+          processMap(offset, keysVector);
+        });
       } else {
         // Keys are encoded. Decode.
-        iterateNonNullIndices<false>(
-            ranges, nullsStream_.mutableNonNulls(), vector, computeKeyRanges);
+        iterateIndices<false>(ranges, vector, computeKeyRanges);
         auto localDecodedKeys = decode(mapKeys, keyRanges);
         auto& decodedKeys = localDecodedKeys.get();
         Decoded<KeyType> keysVector{decodedKeys};
-        iterateNonNullIndices<true>(
-            ranges, nullsStream_.mutableNonNulls(), vector, [&](auto offset) {
-              processMap(offset, keysVector);
-            });
+        iterateIndices<true>(ranges, vector, [&](auto offset) {
+          processMap(offset, keysVector);
+        });
       }
     };
 
@@ -719,7 +834,7 @@ class FlatMapFieldWriter : public FieldWriter {
       offsets = map->rawOffsets();
       lengths = map->rawSizes();
 
-      nullsStream_.ensureNullsCapacity(map->mayHaveNulls(), size);
+      ensureCapacity(map->mayHaveNulls(), size);
       processVector(map, Flat{vector});
     } else {
       // Map is encoded. Decode.
@@ -730,7 +845,7 @@ class FlatMapFieldWriter : public FieldWriter {
       offsets = map->rawOffsets();
       lengths = map->rawSizes();
 
-      nullsStream_.ensureNullsCapacity(decodedMap.mayHaveNulls(), size);
+      ensureCapacity(decodedMap.mayHaveNulls(), size);
       processVector(map, Decoded{decodedMap});
     }
 
@@ -738,20 +853,30 @@ class FlatMapFieldWriter : public FieldWriter {
     if (nonNullCount > 0) {
       auto& values = map->mapValues();
       for (auto& pair : currentValueFields_) {
-        pair.second->write(values, nonNullCount);
+        memoryUsed += pair.second->write(values, nonNullCount);
       }
     }
     nonNullCount_ += nonNullCount;
+    return memoryUsed + nullBitmapSize(size);
   }
 
-  void reset() override {
-    for (auto& field : currentValueFields_) {
-      field.second->reset();
+  void flush(const StreamCollector& collector, bool reset) override {
+    if (hasNulls_) {
+      flushStream(
+          collector,
+          false,
+          nonNulls_,
+          reset,
+          typeBuilder_->asFlatMap().nullsDescriptor());
     }
-
-    nullsStream_.reset();
-    nonNullCount_ = 0;
-    currentValueFields_.clear();
+    for (auto& pair : currentValueFields_) {
+      pair.second->flush(collector, reset);
+    }
+    if (reset) {
+      FieldWriter::reset();
+      nonNullCount_ = 0;
+      currentValueFields_.clear();
+    }
   }
 
   void close() override {
@@ -802,7 +927,6 @@ class FlatMapFieldWriter : public FieldWriter {
     return it->second;
   }
 
-  NullsStreamData& nullsStream_;
   // This map store the FlatMapValue fields used in current flush unit.
   folly::F14FastMap<KeyType, FlatMapValueFieldWriter*> currentValueFields_;
   const std::shared_ptr<const velox::dwio::common::TypeWithId>& valueType_;
@@ -857,10 +981,8 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       FieldWriterContext& context,
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
       : FieldWriter{context, context.schemaBuilder.createArrayWithOffsetsTypeBuilder()},
-        offsetsStream_{context.createNullableContentStreamData<uint32_t>(
-            typeBuilder_->asArrayWithOffsets().offsetsDescriptor())},
-        lengthsStream_{context.createContentStreamData<uint32_t>(
-            typeBuilder_->asArrayWithOffsets().lengthsDescriptor())},
+        lengths_{context.bufferMemoryPool.get()},
+        offsets_{context.bufferMemoryPool.get()},
         cached_(false),
         cachedValue_(nullptr),
         cachedSize_(0) {
@@ -872,22 +994,38 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
         type->type(), 1, context.bufferMemoryPool.get());
   }
 
-  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+  uint64_t write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
       override {
+    uint64_t memoryUsed = 0;
     OrderedRanges childFilteredRanges;
-    auto array = ingestLengthsOffsets(vector, ranges, childFilteredRanges);
+    auto array =
+        ingestLengthsOffsets(vector, ranges, memoryUsed, childFilteredRanges);
     if (childFilteredRanges.size() > 0) {
-      elements_->write(array->elements(), childFilteredRanges);
+      memoryUsed += elements_->write(array->elements(), childFilteredRanges);
     }
+    return memoryUsed + nullBitmapSize(ranges.size());
   }
 
-  void reset() override {
-    offsetsStream_.reset();
-    lengthsStream_.reset();
-    elements_->reset();
-
-    cached_ = false;
-    nextOffset_ = 0;
+  void flush(const StreamCollector& collector, bool reset) override {
+    flushStream(
+        collector,
+        hasNulls_,
+        offsets_,
+        reset,
+        typeBuilder_->asArrayWithOffsets().offsetsDescriptor());
+    if (lengths_.size() > 0) {
+      collector(
+          typeBuilder_->asArrayWithOffsets().lengthsDescriptor(),
+          nullptr,
+          convert(lengths_));
+      lengths_.clear();
+    }
+    elements_->flush(collector, reset);
+    if (reset) {
+      FieldWriter::reset();
+      cached_ = false;
+      nextOffset_ = 0;
+    }
   }
 
   void close() override {
@@ -896,10 +1034,8 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
 
  private:
   std::unique_ptr<FieldWriter> elements_;
-  NullableContentStreamData<uint32_t>&
-      offsetsStream_; /** offsets for each data after dedup */
-  ContentStreamData<uint32_t>&
-      lengthsStream_; /** lengths of the each deduped data */
+  Vector<int32_t> lengths_; /** lengths of the each deduped data */
+  Vector<OffsetType> offsets_; /** offsets for each data after dedup */
   OffsetType nextOffset_{0}; /** next available offset for dedup storing */
 
   bool cached_;
@@ -907,7 +1043,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
   velox::vector_size_t cachedSize_;
 
   template <typename Vector>
-  void ingestLengthsOffsetsByElements(
+  uint64_t ingestLengthsOffsetsByElements(
       const velox::ArrayVector* array,
       const Vector& iterableVector,
       const OrderedRanges& ranges,
@@ -917,9 +1053,6 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
     const velox::vector_size_t* rawLengths = array->rawSizes();
     velox::vector_size_t prevIndex = -1;
     velox::vector_size_t numLengths = 0;
-    auto& lengthsData = lengthsStream_.mutableData();
-    auto& offsetsData = offsetsStream_.mutableData();
-    auto& nonNulls = offsetsStream_.mutableNonNulls();
 
     std::function<bool(velox::vector_size_t, velox::vector_size_t)>
         compareConsecutive;
@@ -945,15 +1078,16 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
         if (length > 0) {
           filteredRanges.add(rawOffsets[index], length);
         }
-        lengthsData.push_back(length);
+        lengths_.push_back(length);
         ++numLengths;
         ++nextOffset_;
       }
 
       prevIndex = index;
-      offsetsData.push_back(nextOffset_ - 1);
+      offsets_.push_back(nextOffset_ - 1);
     };
 
+    uint32_t numOffsets;
     auto& vectorElements = array->elements();
     if (auto flat = vectorElements->asFlatVector<SourceType>()) {
       /** compare array at index and prevIndex to be equal */
@@ -981,7 +1115,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
                    .value_or(-1) == 0;
       };
 
-      iterateNonNullIndices<false>(ranges, nonNulls, iterableVector, dedupProc);
+      numOffsets = iterateIndices<false>(ranges, iterableVector, dedupProc);
     } else {
       auto localDecoded = decode(vectorElements, childRanges);
       auto& decoded = localDecoded.get();
@@ -1014,17 +1148,17 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
         }
         return match;
       };
-      iterateNonNullIndices<false>(ranges, nonNulls, iterableVector, dedupProc);
+      numOffsets = iterateIndices<false>(ranges, iterableVector, dedupProc);
     }
 
     // Copy the last valid element into the cache.
     // Cache is saved across calls to write(), as long as the same FieldWriter
     // object is used.
-    if (prevIndex != -1 && lengthsData.size() > 0) {
+    if (prevIndex != -1 && lengths_.size() > 0) {
       cached_ = true;
-      cachedSize_ = lengthsData[lengthsData.size() - 1];
+      cachedSize_ = lengths_[lengths_.size() - 1];
       ALPHA_ASSERT(
-          lengthsData[lengthsData.size() - 1] == rawLengths[prevIndex],
+          lengths_[lengths_.size() - 1] == rawLengths[prevIndex],
           "Unexpected index: Prev index is not the last item in the list.");
       cachedValue_->prepareForReuse();
       velox::BaseVector::CopyRange cacheRange{
@@ -1033,11 +1167,14 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
           1 /* count*/};
       cachedValue_->copyRanges(array, folly::Range(&cacheRange, 1));
     }
+    return sizeof(velox::vector_size_t) * numLengths +
+        sizeof(OffsetType) * numOffsets;
   }
 
   const velox::ArrayVector* ingestLengthsOffsets(
       const velox::VectorPtr& vector,
       const OrderedRanges& ranges,
+      uint64_t& memoryUsed,
       OrderedRanges& filteredRanges) {
     auto size = ranges.size();
     const velox::ArrayVector* arrayVector = vector->as<velox::ArrayVector>();
@@ -1056,11 +1193,10 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       rawOffsets = arrayVector->rawOffsets();
       rawLengths = arrayVector->rawSizes();
 
-      offsetsStream_.ensureNullsCapacity(arrayVector->mayHaveNulls(), size);
+      ensureCapacity(arrayVector->mayHaveNulls(), size);
       Flat iterableVector{vector};
-      iterateNonNullIndices<true>(
-          ranges, offsetsStream_.mutableNonNulls(), iterableVector, proc);
-      ingestLengthsOffsetsByElements(
+      iterateIndices<true>(ranges, iterableVector, proc);
+      memoryUsed = ingestLengthsOffsetsByElements(
           arrayVector, iterableVector, ranges, childRanges, filteredRanges);
     } else {
       auto localDecoded = decode(vector, ranges);
@@ -1070,11 +1206,10 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       rawOffsets = arrayVector->rawOffsets();
       rawLengths = arrayVector->rawSizes();
 
-      offsetsStream_.ensureNullsCapacity(decoded.mayHaveNulls(), size);
+      ensureCapacity(decoded.mayHaveNulls(), size);
       Decoded iterableVector{decoded};
-      iterateNonNullIndices<true>(
-          ranges, offsetsStream_.mutableNonNulls(), iterableVector, proc);
-      ingestLengthsOffsetsByElements(
+      iterateIndices<true>(ranges, iterableVector, proc);
+      memoryUsed = ingestLengthsOffsetsByElements(
           arrayVector, iterableVector, ranges, childRanges, filteredRanges);
     }
     return arrayVector;
@@ -1118,161 +1253,58 @@ std::unique_ptr<FieldWriter> createArrayWithOffsetsFieldWriter(
 
 } // namespace
 
-void NullsStreamData::ensureNullsCapacity(
-    bool mayHaveNulls,
-    velox::vector_size_t size) {
-  if (mayHaveNulls || hasNulls_) {
-    auto newSize = bufferedCount_ + size;
-    nonNulls_.reserve(newSize);
-    if (!hasNulls_) {
-      hasNulls_ = true;
-      std::fill(nonNulls_.data(), nonNulls_.data() + bufferedCount_, true);
-      nonNulls_.update_size(bufferedCount_);
-    }
-    if (!mayHaveNulls) {
-      std::fill(
-          nonNulls_.data() + bufferedCount_, nonNulls_.data() + newSize, true);
-      nonNulls_.update_size(newSize);
-    }
-  }
-  bufferedCount_ += size;
-}
-
-FieldWriterContext::LocalDecodedVector
-FieldWriterContext::getLocalDecodedVector() {
-  return LocalDecodedVector{*this};
-}
-
-velox::SelectivityVector& FieldWriterContext::getSelectivityVector(
-    velox::vector_size_t size) {
-  if (LIKELY(selectivity_.get() != nullptr)) {
-    selectivity_->resize(size);
-  } else {
-    selectivity_ = std::make_unique<velox::SelectivityVector>(size);
-  }
-  return *selectivity_;
-}
-
-std::unique_ptr<velox::DecodedVector> FieldWriterContext::getDecodedVector() {
-  if (decodedVectorPool_.empty()) {
-    return std::make_unique<velox::DecodedVector>();
-  }
-  auto vector = std::move(decodedVectorPool_.back());
-  decodedVectorPool_.pop_back();
-  return vector;
-}
-
-void FieldWriterContext::releaseDecodedVector(
-    std::unique_ptr<velox::DecodedVector>&& vector) {
-  decodedVectorPool_.push_back(std::move(vector));
-}
-
-FieldWriterContext::LocalDecodedVector FieldWriter::decode(
-    const velox::VectorPtr& vector,
-    const OrderedRanges& ranges) {
-  auto& selectivityVector = context_.getSelectivityVector(vector->size());
-  // initialize selectivity vector
-  selectivityVector.clearAll();
-  ranges.apply([&](auto offset, auto size) {
-    selectivityVector.setValidRange(offset, offset + size, true);
-  });
-  selectivityVector.updateBounds();
-
-  auto localDecoded = context_.getLocalDecodedVector();
-  localDecoded.get().decode(*vector, selectivityVector);
-  return localDecoded;
-}
-
-std::unique_ptr<FieldWriter> FieldWriter::create(
-    FieldWriterContext& context,
-    const std::shared_ptr<const velox::dwio::common::TypeWithId>& type,
-    std::function<void(const TypeBuilder&)> typeAddedHandler) {
-  context.typeAddedHandler = std::move(typeAddedHandler);
-  return create(context, type);
-}
-
 std::unique_ptr<FieldWriter> FieldWriter::create(
     FieldWriterContext& context,
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& type) {
-  std::unique_ptr<FieldWriter> field;
   switch (type->type()->kind()) {
-    case velox::TypeKind::BOOLEAN: {
-      field = std::make_unique<SimpleFieldWriter<velox::TypeKind::BOOLEAN>>(
+    case velox::TypeKind::BOOLEAN:
+      return std::make_unique<SimpleFieldWriter<velox::TypeKind::BOOLEAN>>(
           context);
-      break;
-    }
-    case velox::TypeKind::TINYINT: {
-      field = std::make_unique<SimpleFieldWriter<velox::TypeKind::TINYINT>>(
+    case velox::TypeKind::TINYINT:
+      return std::make_unique<SimpleFieldWriter<velox::TypeKind::TINYINT>>(
           context);
-      break;
-    }
-    case velox::TypeKind::SMALLINT: {
-      field = std::make_unique<SimpleFieldWriter<velox::TypeKind::SMALLINT>>(
+    case velox::TypeKind::SMALLINT:
+      return std::make_unique<SimpleFieldWriter<velox::TypeKind::SMALLINT>>(
           context);
-      break;
-    }
-    case velox::TypeKind::INTEGER: {
-      field = std::make_unique<SimpleFieldWriter<velox::TypeKind::INTEGER>>(
+    case velox::TypeKind::INTEGER:
+      return std::make_unique<SimpleFieldWriter<velox::TypeKind::INTEGER>>(
           context);
-      break;
-    }
-    case velox::TypeKind::BIGINT: {
-      field =
-          std::make_unique<SimpleFieldWriter<velox::TypeKind::BIGINT>>(context);
-      break;
-    }
-    case velox::TypeKind::REAL: {
-      field =
-          std::make_unique<SimpleFieldWriter<velox::TypeKind::REAL>>(context);
-      break;
-    }
-    case velox::TypeKind::DOUBLE: {
-      field =
-          std::make_unique<SimpleFieldWriter<velox::TypeKind::DOUBLE>>(context);
-      break;
-    }
-    case velox::TypeKind::VARCHAR: {
-      field = std::make_unique<
+    case velox::TypeKind::BIGINT:
+      return std::make_unique<SimpleFieldWriter<velox::TypeKind::BIGINT>>(
+          context);
+    case velox::TypeKind::REAL:
+      return std::make_unique<SimpleFieldWriter<velox::TypeKind::REAL>>(
+          context);
+    case velox::TypeKind::DOUBLE:
+      return std::make_unique<SimpleFieldWriter<velox::TypeKind::DOUBLE>>(
+          context);
+    case velox::TypeKind::VARCHAR:
+      return std::make_unique<
           SimpleFieldWriter<velox::TypeKind::VARCHAR, StringConverter>>(
           context);
-      break;
-    }
-    case velox::TypeKind::VARBINARY: {
-      field = std::make_unique<
+    case velox::TypeKind::VARBINARY:
+      return std::make_unique<
           SimpleFieldWriter<velox::TypeKind::VARBINARY, StringConverter>>(
           context);
-      break;
-    }
-    case velox::TypeKind::TIMESTAMP: {
-      field = std::make_unique<
+    case velox::TypeKind::TIMESTAMP:
+      return std::make_unique<
           SimpleFieldWriter<velox::TypeKind::TIMESTAMP, TimestampConverter>>(
           context);
-      break;
-    }
-    case velox::TypeKind::ROW: {
-      field = std::make_unique<RowFieldWriter>(context, type);
-      break;
-    }
-    case velox::TypeKind::ARRAY: {
-      field = context.dictionaryArrayNodeIds.contains(type->id())
+    case velox::TypeKind::ROW:
+      return std::make_unique<RowFieldWriter>(context, type);
+    case velox::TypeKind::ARRAY:
+      return context.dictionaryArrayNodeIds.contains(type->id())
           ? createArrayWithOffsetsFieldWriter(context, type)
           : std::make_unique<ArrayFieldWriter>(context, type);
-      break;
-    }
     case velox::TypeKind::MAP: {
-      field = context.flatMapNodeIds.contains(type->id())
+      return context.flatMapNodeIds.contains(type->id())
           ? createFlatMapFieldWriter(context, type)
           : std::make_unique<MapFieldWriter>(context, type);
-      break;
     }
     default:
       ALPHA_NOT_SUPPORTED(
           fmt::format("Unsupported kind: {}.", type->type()->kind()));
   }
-
-  context.typeAddedHandler(*field->typeBuilder());
-
-  return field;
 }
 
 } // namespace facebook::alpha
