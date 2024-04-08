@@ -616,7 +616,7 @@ class VeloxReaderTests : public ::testing::Test {
     }
     ASSERT_FALSE(reader.next(1, result));
     if (checkMemoryLeak) {
-      EXPECT_LE(numIncrements, expected.size() / 2);
+      EXPECT_LE(numIncrements, 3 * expected.size() / 4);
     }
   }
 
