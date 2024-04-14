@@ -282,7 +282,7 @@ EncodingLayoutTree EncodingLayoutTrainer::train(folly::Executor& executor) {
   auto taskTree = createTrainingTree(
       *reader->schema(),
       [&](const StreamDescriptor& descriptor,
-          std::function<void(EncodingLayout &&)> setLayout) {
+          std::function<void(EncodingLayout&&)> setLayout) {
         barrier.add([&, setLayout = std::move(setLayout)]() {
           std::vector<std::string_view> streams;
           for (auto& stripeStream : stripeStreams) {

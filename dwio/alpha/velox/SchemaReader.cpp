@@ -497,8 +497,7 @@ std::ostream& operator<<(
               << "OFFSETARRAY\n";
         } else if (type.isRow()) {
           auto& row = type.asRow();
-          out << "[" << row.nullsDescriptor().offset() << "]"
-              << "ROW[";
+          out << "[" << row.nullsDescriptor().offset() << "]" << "ROW[";
           for (auto i = 0; i < row.childrenCount(); ++i) {
             out << row.nameAt(i) << (i < row.childrenCount() - 1 ? "," : "");
           }
@@ -508,8 +507,7 @@ std::ostream& operator<<(
               << "MAP\n";
         } else if (type.isFlatMap()) {
           auto& map = type.asFlatMap();
-          out << "[" << map.nullsDescriptor().offset() << "]"
-              << "FLATMAP[";
+          out << "[" << map.nullsDescriptor().offset() << "]" << "FLATMAP[";
           for (auto i = 0; i < map.childrenCount(); ++i) {
             out << map.nameAt(i) << (i < map.childrenCount() - 1 ? "," : "");
           }
