@@ -325,6 +325,51 @@ TEST_F(VeloxWriterTests, MemoryReclaimPath) {
   ASSERT_TRUE(reclaimEntered.load());
 }
 
+TEST_F(VeloxWriterTests, FlushHugeStrings) {
+  alpha::VeloxWriterOptions writerOptions{.flushPolicyFactory = []() {
+    return std::make_unique<alpha::RawStripeSizeFlushPolicy>(1 * 1024 * 1024);
+  }};
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  // Each vector contains 99 strings with 36 characters each (36*99=3564) + 100
+  // bytes for null vector + 99 string_views (99*16=1584) for a total of 5248
+  // bytes, so writing 200 batches should exceed the flush theshold of 1MB
+  auto vector = vectorMaker.rowVector(
+      {"string"},
+      {
+          vectorMaker.flatVector<std::string>(
+              100,
+              [](auto /* row */) {
+                return std::string("abcdefghijklmnopqrstuvwxyz0123456789");
+              },
+              [](auto row) { return row == 6; }),
+      });
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  alpha::VeloxWriter writer(
+      *rootPool_,
+      vector->type(),
+      std::move(writeFile),
+      std::move(writerOptions));
+
+  // Writing 500 batches should produce 3 stripes, as each 200 vectors will
+  // exceed the flush threshold.
+  for (auto i = 0; i < 500; ++i) {
+    writer.write(vector);
+  }
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
+      std::dynamic_pointer_cast<const velox::RowType>(vector->type()));
+  alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
+
+  EXPECT_EQ(3, reader.getTabletView().stripeCount());
+}
+
 TEST_F(VeloxWriterTests, EncodingLayout) {
   alpha::EncodingLayoutTree expected{
       alpha::Kind::Row,
