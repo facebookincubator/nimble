@@ -109,16 +109,14 @@ class AlphaWriter : public Writer {
     for (const auto& columnName : dictionaryArrays) {
       options.dictionaryArrayColumns.insert(columnName);
     }
-    // if (FLAGS_alpha_parallelize) {
-    //   options.parallelEncoding = true;
-    //   options.parallelWriting = true;
-    //   auto numThreads = std::thread::hardware_concurrency();
-    //   if (FLAGS_threads > 0) {
-    //     numThreads = FLAGS_threads;
-    //   }
-    //   options.parallelExecutor =
-    //       std::make_shared<folly::CPUThreadPoolExecutor>(numThreads);
-    // }
+    if (FLAGS_alpha_parallelize) {
+      auto numThreads = std::thread::hardware_concurrency();
+      if (FLAGS_threads > 0) {
+        numThreads = FLAGS_threads;
+      }
+      options.encodingExecutor =
+          std::make_shared<folly::CPUThreadPoolExecutor>(numThreads);
+    }
     writer_ = std::make_unique<alpha::VeloxWriter>(
         memoryPool, schema, std::move(writeFile), std::move(options));
   }

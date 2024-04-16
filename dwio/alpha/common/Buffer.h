@@ -39,6 +39,7 @@ class Buffer {
   // to, and guarantees for the lifetime of *this that that region will remain
   // valid. Does NOT guarantee that the region is initially 0'd.
   char* reserve(uint64_t bytes) {
+    std::scoped_lock<std::mutex> l(mutex_);
     if (reserveEnd_ + bytes <= chunkEnd_) {
       pos_ = reserveEnd_;
       reserveEnd_ += bytes;
@@ -84,6 +85,11 @@ class Buffer {
   char* reserveEnd_;
   std::vector<velox::BufferPtr> chunks_;
   MemoryPool& memoryPool_;
+  // NOTE: this is temporary fix, to quickly enable parallel access to the
+  // buffer class. In the near future, we are going to templetize this class to
+  // produce a concurrent and a non-concurrent variants, and change the call
+  // sites to use each variant when needed.
+  std::mutex mutex_;
 };
 
 } // namespace facebook::alpha
