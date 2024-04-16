@@ -24,16 +24,9 @@ std::unordered_map<std::string, std::string> defaultMetadata();
 // supplied. It's strongly advised to move instead of copying
 // it.
 struct VeloxWriterOptions {
-  // Provides policy that controls stripe sizes and memory footprint.
-  std::function<std::unique_ptr<FlushPolicy>()> flushPolicyFactory = []() {
-    // Buffering 256MB data before encoding stripes.
-    return std::make_unique<RawStripeSizeFlushPolicy>(256 << 20);
-  };
-
-  // Controls the speed/size tradeoff. Higher numbers choose faster
-  // encodings, lower numbers choose high compression ratios. See FindBest
-  // in the .cpp for more details.
-  int32_t usecFactor = 100;
+  // Property bag for storing user metadata in the file.
+  std::unordered_map<std::string, std::string> metadata =
+      detail::defaultMetadata();
 
   // Columns that should be encoded as flat maps
   folly::F14FastSet<std::string> flatMapColumns;
@@ -43,12 +36,6 @@ struct VeloxWriterOptions {
   // using dictionary arrays. In the future we'll have finer control on
   // individual arrays within a column.
   folly::F14FastSet<std::string> dictionaryArrayColumns;
-
-  // TODO: doesn't belong to writer layer and should be moved to converter
-  // layer instead.
-  // If > 0, conversion will stop converting stripes after at least
-  // rowLimit rows have been processed.
-  uint64_t rowLimit = 0;
 
   // The metric logger would come populated with access descriptor information,
   // application generated query id or specific sampling configs.
@@ -62,17 +49,32 @@ struct VeloxWriterOptions {
   std::optional<std::vector<std::tuple<size_t, std::vector<int64_t>>>>
       featureReordering;
 
-  // Property bag for storing user metadata in the file.
-  std::unordered_map<std::string, std::string> metadata =
-      detail::defaultMetadata();
-
+  // Optional captured encoding layout tree.
+  // Encoding layout tree is overlayed on the writer tree and the captured
+  // encodings are attempted to be used first, before resolving to perform an
+  // encoding selection.
+  // Captured encodings can be used to speed up writes (as no encoding selection
+  // is needed at runtime) and cal also provide better selected encodings, based
+  // on history data.
   std::optional<EncodingLayoutTree> encodingLayoutTree;
 
+  // Compression settings to be used when encoding and compressing data streams
   CompressionOptions compressionOptions;
 
+  // In low-memory mode, the writer is trying to perform smaller (and more
+  // precise) buffer allocations. This means that overall, the writer will
+  // consume less memory, but will come with an additional cost, of more
+  // reallocations and extra data copy.
+  // TODO: This options should be removed and integrated into the
+  // inputGrowthPolicyFactory option (e.g. allow the caller to set an
+  // ExactGrowthPolicy, as defined here: dwio/alpha/velox/BufferGrowthPolicy.h)
   bool lowMemoryMode = false;
-  bool leafOnlyMode = false;
-  bool useEncodingSelectionPolicy = true;
+
+  // When flushing data streams into chunks, streams with raw data size smaller
+  // than this threshold will not be flushed.
+  // Note: this threshold is ignored when it is time to flush a stripe.
+  uint64_t minStreamChunkRawSize = 1024;
+
   // The factory function that produces the root encoding selection policy.
   // Encoding selection policy is the way to balance the tradeoffs of
   // different performance factors (at both read and write times). Heuristics
@@ -83,6 +85,15 @@ struct VeloxWriterOptions {
     return encodingFactory.createPolicy(dataType);
   };
 
+  // Provides policy that controls stripe sizes and memory footprint.
+  std::function<std::unique_ptr<FlushPolicy>()> flushPolicyFactory = []() {
+    // Buffering 256MB data before encoding stripes.
+    return std::make_unique<RawStripeSizeFlushPolicy>(256 << 20);
+  };
+
+  // When the writer needs to buffer data, and internal buffers don't have
+  // enough capacity, the writer is using this policy to claculate the the new
+  // capacity for the vuffers.
   std::function<std::unique_ptr<InputBufferGrowthPolicy>()>
       inputGrowthPolicyFactory =
           []() -> std::unique_ptr<InputBufferGrowthPolicy> {

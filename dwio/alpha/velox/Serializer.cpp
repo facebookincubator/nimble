@@ -40,15 +40,20 @@ std::string_view Serializer::serialize(
     const velox::VectorPtr& vector,
     const OrderedRanges& ranges) {
   buffer_.resize(sizeof(uint32_t));
-  auto data = buffer_.data();
-  encoding::writeUint32(ranges.size(), data);
+  auto pos = buffer_.data();
+  encoding::writeUint32(ranges.size(), pos);
   writer_->write(vector, ranges);
   uint32_t lastStream = 0xffffffff;
-  writer_->flush([this, &lastStream](
-                     const StreamDescriptor& streamDescriptor,
-                     std::span<const bool>* nonNulls,
-                     std::string_view values) {
-    auto stream = streamDescriptor.offset();
+
+  for (auto& streamData : context_.streams()) {
+    auto stream = streamData->descriptor().offset();
+    auto nonNulls = streamData->nonNulls();
+    auto data = streamData->data();
+
+    if (data.empty() && nonNulls.empty()) {
+      continue;
+    }
+
     // Current implementation has strong assumption that schema traversal is
     // pre-order, hence handles types with offsets in increasing order. This
     // assumption may not be true if schema changes based on data shape (ie.
@@ -64,18 +69,20 @@ std::string_view Serializer::serialize(
     lastStream = stream;
 
     ALPHA_CHECK(
-        !nonNulls ||
+        nonNulls.empty() ||
             std::all_of(
-                nonNulls->begin(),
-                nonNulls->end(),
+                nonNulls.begin(),
+                nonNulls.end(),
                 [](bool notNull) { return notNull; }),
         "nulls not supported");
     auto oldSize = buffer_.size();
-    auto scalarKind = streamDescriptor.scalarKind();
+    auto scalarKind = streamData->descriptor().scalarKind();
     if (scalarKind == ScalarKind::String || scalarKind == ScalarKind::Binary) {
       // TODO: handle string compression
-      auto strData = reinterpret_cast<const std::string_view*>(values.data());
-      auto strDataEnd = reinterpret_cast<const std::string_view*>(values.end());
+      const auto strData =
+          reinterpret_cast<const std::string_view*>(data.data());
+      const auto strDataEnd =
+          reinterpret_cast<const std::string_view*>(data.end());
       uint32_t size = 0;
       for (auto sv = strData; sv < strDataEnd; ++sv) {
         size += (sv->size() + sizeof(uint32_t));
@@ -88,7 +95,7 @@ std::string_view Serializer::serialize(
       }
     } else {
       // Size prefix + compression type + actual content
-      auto size = values.size();
+      const auto size = data.size();
       buffer_.resize(oldSize + size + sizeof(uint32_t) + 1);
 
       auto compression = options_.compressionType;
@@ -101,7 +108,7 @@ std::string_view Serializer::serialize(
         switch (compression) {
           case CompressionType::Zstd: {
             auto ret = ZSTD_compress(
-                pos, size, values.data(), size, options_.compressionLevel);
+                pos, size, data.data(), size, options_.compressionLevel);
             if (ZSTD_isError(ret)) {
               ALPHA_ASSERT(
                   ZSTD_getErrorCode(ret) ==
@@ -128,10 +135,12 @@ std::string_view Serializer::serialize(
         encoding::writeUint32(size + 1, pos);
         encoding::writeChar(
             static_cast<int8_t>(CompressionType::Uncompressed), pos);
-        std::copy(values.data(), values.end(), pos);
+        std::copy(data.data(), data.end(), pos);
       }
     }
-  });
+  }
+
+  writer_->reset();
 
   // Write missing streams similar to above
   writeMissingStreams(buffer_, lastStream, context_.schemaBuilder.nodeCount());
