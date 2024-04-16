@@ -711,27 +711,29 @@ TEST_F(VeloxReaderTests, DontReadUnselectedColumnsFromFile) {
   auto file = alpha::test::createAlphaFile(*rootPool_, vector);
 
   uint32_t readSize = 1;
-  alpha::testing::InMemoryTrackableReadFile readFile(file);
-  // We want to check stream by stream if they are being read
-  readFile.setShouldCoalesce(false);
+  for (auto useChaniedBuffers : {false, true}) {
+    alpha::testing::InMemoryTrackableReadFile readFile(file, useChaniedBuffers);
+    // We want to check stream by stream if they are being read
+    readFile.setShouldCoalesce(false);
 
-  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
-      std::dynamic_pointer_cast<const velox::RowType>(vector->type()),
-      selectedColumnNames);
-  alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
+        std::dynamic_pointer_cast<const velox::RowType>(vector->type()),
+        selectedColumnNames);
+    alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
 
-  velox::VectorPtr result;
-  reader.next(readSize, result);
+    velox::VectorPtr result;
+    reader.next(readSize, result);
 
-  auto chunks = readFile.chunks();
+    auto chunks = readFile.chunks();
 
-  for (auto [offset, size] : chunks) {
-    LOG(INFO) << "Stream read: " << offset;
+    for (auto [offset, size] : chunks) {
+      LOG(INFO) << "Stream read: " << offset;
+    }
+
+    EXPECT_EQ(
+        streamsReadCount(*leafPool_, &readFile, chunks),
+        selectedColumnNames.size());
   }
-
-  EXPECT_EQ(
-      streamsReadCount(*leafPool_, &readFile, chunks),
-      selectedColumnNames.size());
 }
 
 TEST_F(VeloxReaderTests, DontReadUnprojectedFeaturesFromFile) {
@@ -760,84 +762,88 @@ TEST_F(VeloxReaderTests, DontReadUnprojectedFeaturesFromFile) {
   auto file = alpha::test::createAlphaFile(
       *rootPool_, vector, std::move(writerOptions));
 
-  facebook::alpha::testing::InMemoryTrackableReadFile readFile(file);
-  // We want to check stream by stream if they are being read
-  readFile.setShouldCoalesce(false);
+  for (auto useChaniedBuffers : {false, true}) {
+    facebook::alpha::testing::InMemoryTrackableReadFile readFile(
+        file, useChaniedBuffers);
+    // We want to check stream by stream if they are being read
+    readFile.setShouldCoalesce(false);
 
-  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
-      std::dynamic_pointer_cast<const velox::RowType>(vector->type()));
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
+        std::dynamic_pointer_cast<const velox::RowType>(vector->type()));
 
-  alpha::VeloxReadParams params;
-  params.readFlatMapFieldAsStruct.insert("float_features");
-  auto& selectedFeatures =
-      params.flatMapFeatureSelector["float_features"].features;
-  std::mt19937 rng(seed);
-  for (int i = 0; i < generatorConfig.maxSizeForMap; ++i) {
-    if (folly::Random::oneIn(2, rng)) {
-      selectedFeatures.push_back(folly::to<std::string>(i));
+    alpha::VeloxReadParams params;
+    params.readFlatMapFieldAsStruct.insert("float_features");
+    auto& selectedFeatures =
+        params.flatMapFeatureSelector["float_features"].features;
+    std::mt19937 rng(seed);
+    for (int i = 0; i < generatorConfig.maxSizeForMap; ++i) {
+      if (folly::Random::oneIn(2, rng)) {
+        selectedFeatures.push_back(folly::to<std::string>(i));
+      }
     }
-  }
-  // Features list can't be empty.
-  if (selectedFeatures.empty()) {
-    selectedFeatures = {folly::to<std::string>(
-        folly::Random::rand32(generatorConfig.maxSizeForMap))};
-  }
+    // Features list can't be empty.
+    if (selectedFeatures.empty()) {
+      selectedFeatures = {folly::to<std::string>(
+          folly::Random::rand32(generatorConfig.maxSizeForMap))};
+    }
 
-  LOG(INFO) << "Selected features (" << selectedFeatures.size()
-            << ") :" << folly::join(", ", selectedFeatures);
+    LOG(INFO) << "Selected features (" << selectedFeatures.size()
+              << ") :" << folly::join(", ", selectedFeatures);
 
-  alpha::VeloxReader reader(*leafPool_, &readFile, std::move(selector), params);
+    alpha::VeloxReader reader(
+        *leafPool_, &readFile, std::move(selector), params);
 
-  uint32_t readSize = 1000;
-  velox::VectorPtr result;
-  reader.next(readSize, result);
+    uint32_t readSize = 1000;
+    velox::VectorPtr result;
+    reader.next(readSize, result);
 
-  auto selectedFeaturesSet = std::unordered_set<std::string>(
-      selectedFeatures.cbegin(), selectedFeatures.cend());
+    auto selectedFeaturesSet = std::unordered_set<std::string>(
+        selectedFeatures.cbegin(), selectedFeatures.cend());
 
-  // We have those streams: Row, FlatMap, N*(Values + inMap)
-  // Row: Empty stream. Not read.
-  // FlatMap: Empty if !hasNulls
-  // N: Number of features
-  // Values: Empty if all rows are null (if inMap all false)
-  // inMap: Non-empty
-  //
-  // Therefore the formula is: 0 + 0 + N*(Values*any(inMap) + inMap)
-  ASSERT_FALSE(generatorConfig.hasNulls);
-  int expectedNonEmptyStreamsCount = 0; // 0 if !hasNulls
-  auto rowResult = result->as<velox::RowVector>();
-  ASSERT_EQ(rowResult->childrenSize(), 1); // FlatMap
-  auto flatMap = rowResult->childAt(0)->as<velox::RowVector>();
+    // We have those streams: Row, FlatMap, N*(Values + inMap)
+    // Row: Empty stream. Not read.
+    // FlatMap: Empty if !hasNulls
+    // N: Number of features
+    // Values: Empty if all rows are null (if inMap all false)
+    // inMap: Non-empty
+    //
+    // Therefore the formula is: 0 + 0 + N*(Values*any(inMap) + inMap)
+    ASSERT_FALSE(generatorConfig.hasNulls);
+    int expectedNonEmptyStreamsCount = 0; // 0 if !hasNulls
+    auto rowResult = result->as<velox::RowVector>();
+    ASSERT_EQ(rowResult->childrenSize(), 1); // FlatMap
+    auto flatMap = rowResult->childAt(0)->as<velox::RowVector>();
 
-  for (int feature = 0; feature < flatMap->childrenSize(); ++feature) {
-    // Each feature will have at least inMap stream
-    ++expectedNonEmptyStreamsCount;
-    if (selectedFeaturesSet.contains(
-            flatMap->type()->asRow().nameOf(feature))) {
-      auto columnResult = flatMap->childAt(feature);
-      for (int row = 0; row < columnResult->size(); ++row) {
-        // Values stream for this column will only exist if there's at least
-        // one element inMap in this column (if not all rows are null at either
-        // row level or element level)
-        if (!flatMap->isNullAt(row) && !columnResult->isNullAt(row)) {
-          ++expectedNonEmptyStreamsCount;
-          // exit row iteration, we know that there's at least one element
-          break;
+    for (int feature = 0; feature < flatMap->childrenSize(); ++feature) {
+      // Each feature will have at least inMap stream
+      ++expectedNonEmptyStreamsCount;
+      if (selectedFeaturesSet.contains(
+              flatMap->type()->asRow().nameOf(feature))) {
+        auto columnResult = flatMap->childAt(feature);
+        for (int row = 0; row < columnResult->size(); ++row) {
+          // Values stream for this column will only exist if there's at least
+          // one element inMap in this column (if not all rows are null at
+          // either row level or element level)
+          if (!flatMap->isNullAt(row) && !columnResult->isNullAt(row)) {
+            ++expectedNonEmptyStreamsCount;
+            // exit row iteration, we know that there's at least one element
+            break;
+          }
         }
       }
     }
+
+    auto chunks = readFile.chunks();
+
+    LOG(INFO) << "Total streams read: " << chunks.size();
+    for (auto [offset, size] : chunks) {
+      LOG(INFO) << "Stream read: " << offset;
+    }
+
+    EXPECT_EQ(
+        streamsReadCount(*leafPool_, &readFile, chunks),
+        expectedNonEmptyStreamsCount);
   }
-
-  auto chunks = readFile.chunks();
-
-  LOG(INFO) << "Total streams read: " << chunks.size();
-  for (auto [offset, size] : chunks) {
-    LOG(INFO) << "Stream read: " << offset;
-  }
-
-  EXPECT_EQ(
-      streamsReadCount(*leafPool_, &readFile, chunks),
-      expectedNonEmptyStreamsCount);
 }
 
 TEST_F(VeloxReaderTests, ReadComplexData) {
@@ -3863,24 +3869,26 @@ TEST_F(VeloxReaderTests, MissingMetadata) {
 
   alpha::VeloxWriterOptions options;
   auto file = alpha::test::createAlphaFile(*rootPool_, vector, options);
-  alpha::testing::InMemoryTrackableReadFile readFile(file);
+  for (auto useChaniedBuffers : {false, true}) {
+    alpha::testing::InMemoryTrackableReadFile readFile(file, useChaniedBuffers);
 
-  alpha::VeloxReader reader(*leafPool_, &readFile);
-  {
-    readFile.resetChunks();
-    const auto& metadata = reader.metadata();
-    // Default metadata injects at least one entry
-    ASSERT_LE(1, metadata.size());
-    EXPECT_EQ(1, readFile.chunks().size());
-  }
+    alpha::VeloxReader reader(*leafPool_, &readFile);
+    {
+      readFile.resetChunks();
+      const auto& metadata = reader.metadata();
+      // Default metadata injects at least one entry
+      ASSERT_LE(1, metadata.size());
+      EXPECT_EQ(1, readFile.chunks().size());
+    }
 
-  {
-    // Metadata is loaded lazily, so reading again just to be sure all is
-    // well.
-    readFile.resetChunks();
-    const auto& metadata = reader.metadata();
-    ASSERT_LE(1, metadata.size());
-    EXPECT_EQ(0, readFile.chunks().size());
+    {
+      // Metadata is loaded lazily, so reading again just to be sure all is
+      // well.
+      readFile.resetChunks();
+      const auto& metadata = reader.metadata();
+      ASSERT_LE(1, metadata.size());
+      EXPECT_EQ(0, readFile.chunks().size());
+    }
   }
 }
 
@@ -3893,34 +3901,36 @@ TEST_F(VeloxReaderTests, WithMetadata) {
       .metadata = {{"key 1", "value 1"}, {"key 2", "value 2"}},
   };
   auto file = alpha::test::createAlphaFile(*rootPool_, vector, options);
-  alpha::testing::InMemoryTrackableReadFile readFile(file);
+  for (auto useChaniedBuffers : {false, true}) {
+    alpha::testing::InMemoryTrackableReadFile readFile(file, useChaniedBuffers);
 
-  alpha::VeloxReader reader(*leafPool_, &readFile);
+    alpha::VeloxReader reader(*leafPool_, &readFile);
 
-  {
-    readFile.resetChunks();
-    auto metadata = reader.metadata();
-    ASSERT_EQ(2, metadata.size());
-    ASSERT_TRUE(metadata.contains("key 1"));
-    ASSERT_TRUE(metadata.contains("key 2"));
-    ASSERT_EQ("value 1", metadata["key 1"]);
-    ASSERT_EQ("value 2", metadata["key 2"]);
+    {
+      readFile.resetChunks();
+      auto metadata = reader.metadata();
+      ASSERT_EQ(2, metadata.size());
+      ASSERT_TRUE(metadata.contains("key 1"));
+      ASSERT_TRUE(metadata.contains("key 2"));
+      ASSERT_EQ("value 1", metadata["key 1"]);
+      ASSERT_EQ("value 2", metadata["key 2"]);
 
-    EXPECT_EQ(1, readFile.chunks().size());
-  }
+      EXPECT_EQ(1, readFile.chunks().size());
+    }
 
-  {
-    // Metadata is loaded lazily, so reading again just to be sure all is
-    // well.
-    readFile.resetChunks();
-    auto metadata = reader.metadata();
-    ASSERT_EQ(2, metadata.size());
-    ASSERT_TRUE(metadata.contains("key 1"));
-    ASSERT_TRUE(metadata.contains("key 2"));
-    ASSERT_EQ("value 1", metadata["key 1"]);
-    ASSERT_EQ("value 2", metadata["key 2"]);
+    {
+      // Metadata is loaded lazily, so reading again just to be sure all is
+      // well.
+      readFile.resetChunks();
+      auto metadata = reader.metadata();
+      ASSERT_EQ(2, metadata.size());
+      ASSERT_TRUE(metadata.contains("key 1"));
+      ASSERT_TRUE(metadata.contains("key 2"));
+      ASSERT_EQ("value 1", metadata["key 1"]);
+      ASSERT_EQ("value 2", metadata["key 2"]);
 
-    EXPECT_EQ(0, readFile.chunks().size());
+      EXPECT_EQ(0, readFile.chunks().size());
+    }
   }
 }
 

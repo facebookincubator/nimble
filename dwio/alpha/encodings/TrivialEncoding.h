@@ -170,7 +170,8 @@ void TrivialEncoding<T>::skip(uint32_t rowCount) {
 
 template <typename T>
 void TrivialEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
-  memcpy(buffer, values_ + row_, sizeof(physicalType) * rowCount);
+  const auto start = values_ + row_;
+  std::copy(start, start + rowCount, static_cast<T*>(buffer));
   row_ += rowCount;
 }
 

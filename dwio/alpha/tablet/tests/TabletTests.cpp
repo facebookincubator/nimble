@@ -117,70 +117,73 @@ void parameterizedTest(
 
     folly::writeFile(file, "/tmp/test.alpha");
 
-    alpha::testing::InMemoryTrackableReadFile readFile(file);
-    alpha::Tablet tablet{memoryPool, &readFile};
-    EXPECT_EQ(stripesData.size(), tablet.stripeCount());
-    EXPECT_EQ(
-        std::accumulate(
-            stripesData.begin(),
-            stripesData.end(),
-            uint64_t{0},
-            [](uint64_t r, const auto& s) { return r + s.rowCount; }),
-        tablet.tabletRowCount());
+    for (auto useChainedBuffers : {false, true}) {
+      alpha::testing::InMemoryTrackableReadFile readFile(
+          file, useChainedBuffers);
+      alpha::Tablet tablet{memoryPool, &readFile};
+      EXPECT_EQ(stripesData.size(), tablet.stripeCount());
+      EXPECT_EQ(
+          std::accumulate(
+              stripesData.begin(),
+              stripesData.end(),
+              uint64_t{0},
+              [](uint64_t r, const auto& s) { return r + s.rowCount; }),
+          tablet.tabletRowCount());
 
-    VLOG(1) << "Output Tablet -> StripeCount: " << tablet.stripeCount()
-            << ", RowCount: " << tablet.tabletRowCount();
+      VLOG(1) << "Output Tablet -> StripeCount: " << tablet.stripeCount()
+              << ", RowCount: " << tablet.tabletRowCount();
 
-    // Now, read all stripes and verify results
-    size_t extraReads = 0;
-    for (auto stripe = 0; stripe < stripesData.size(); ++stripe) {
-      EXPECT_EQ(stripesData[stripe].rowCount, tablet.stripeRowCount(stripe));
+      // Now, read all stripes and verify results
+      size_t extraReads = 0;
+      for (auto stripe = 0; stripe < stripesData.size(); ++stripe) {
+        EXPECT_EQ(stripesData[stripe].rowCount, tablet.stripeRowCount(stripe));
 
-      readFile.resetChunks();
-      std::vector<uint32_t> identifiers(tablet.streamCount(stripe));
-      std::iota(identifiers.begin(), identifiers.end(), 0);
-      auto serializedStreams =
-          tablet.load(stripe, {identifiers.cbegin(), identifiers.cend()});
-      auto chunks = readFile.chunks();
-      auto expectedReads = stripesData[stripe].streams.size();
-      auto diff = chunks.size() - expectedReads;
-      EXPECT_LE(diff, 1);
-      extraReads += diff;
+        readFile.resetChunks();
+        std::vector<uint32_t> identifiers(tablet.streamCount(stripe));
+        std::iota(identifiers.begin(), identifiers.end(), 0);
+        auto serializedStreams =
+            tablet.load(stripe, {identifiers.cbegin(), identifiers.cend()});
+        auto chunks = readFile.chunks();
+        auto expectedReads = stripesData[stripe].streams.size();
+        auto diff = chunks.size() - expectedReads;
+        EXPECT_LE(diff, 1);
+        extraReads += diff;
 
-      for (const auto& chunk : chunks) {
-        VLOG(1) << "Chunk Offset: " << chunk.offset << ", Size: " << chunk.size
-                << ", Stripe: " << stripe;
-      }
+        for (const auto& chunk : chunks) {
+          VLOG(1) << "Chunk Offset: " << chunk.offset
+                  << ", Size: " << chunk.size << ", Stripe: " << stripe;
+        }
 
-      for (auto i = 0; i < serializedStreams.size(); ++i) {
-        // Verify streams content. If stream wasn't written in this stripe, it
-        // should return nullopt optional.
-        auto found = false;
-        for (const auto& stream : stripesData[stripe].streams) {
-          if (stream.offset == i) {
-            found = true;
-            EXPECT_TRUE(serializedStreams[i]);
-            printData(
-                folly::to<std::string>("Expected Stream ", stream.offset),
-                stream.content.front());
-            const auto& actual = serializedStreams[i];
-            std::string_view actualData = actual->getStream();
-            printData(
-                folly::to<std::string>("Actual Stream ", stream.offset),
-                actualData);
-            EXPECT_EQ(stream.content.front(), actualData);
+        for (auto i = 0; i < serializedStreams.size(); ++i) {
+          // Verify streams content. If stream wasn't written in this stripe, it
+          // should return nullopt optional.
+          auto found = false;
+          for (const auto& stream : stripesData[stripe].streams) {
+            if (stream.offset == i) {
+              found = true;
+              EXPECT_TRUE(serializedStreams[i]);
+              printData(
+                  folly::to<std::string>("Expected Stream ", stream.offset),
+                  stream.content.front());
+              const auto& actual = serializedStreams[i];
+              std::string_view actualData = actual->getStream();
+              printData(
+                  folly::to<std::string>("Actual Stream ", stream.offset),
+                  actualData);
+              EXPECT_EQ(stream.content.front(), actualData);
+            }
+          }
+          if (!found) {
+            EXPECT_FALSE(serializedStreams[i]);
           }
         }
-        if (!found) {
-          EXPECT_FALSE(serializedStreams[i]);
-        }
       }
-    }
 
-    EXPECT_EQ(extraReads, (stripeGroupCount == 1 ? 0 : stripeGroupCount));
+      EXPECT_EQ(extraReads, (stripeGroupCount == 1 ? 0 : stripeGroupCount));
 
-    if (errorVerifier.has_value()) {
-      FAIL() << "Error verifier is provided, but no exception was thrown.";
+      if (errorVerifier.has_value()) {
+        FAIL() << "Error verifier is provided, but no exception was thrown.";
+      }
     }
   } catch (const std::exception& e) {
     if (!errorVerifier.has_value()) {
@@ -299,133 +302,143 @@ void checksumTest(
   writeFile.close();
   EXPECT_EQ(writeFile.size(), tabletWriter.size());
 
-  // Velidate checksum on a good file
-  alpha::testing::InMemoryTrackableReadFile readFile(file);
-  alpha::Tablet tablet{memoryPool, &readFile};
-  auto storedChecksum = tablet.checksum();
-  EXPECT_EQ(
-      storedChecksum,
-      alpha::Tablet::calculateChecksum(
-          memoryPool,
-          &readFile,
-          checksumChunked ? writeFile.size() / 3 : writeFile.size()))
-      << "metadataCompressionThreshold: " << metadataCompressionThreshold
-      << ", checksumType: " << alpha::toString(checksumType)
-      << ", checksumChunked: " << checksumChunked;
-
-  // Flip a bit in the stream and verify that checksum can catch the error
-  {
-    // First, make sure we are working on a clean file
-    alpha::testing::InMemoryTrackableReadFile readFileUnchanged(file);
+  for (auto useChaniedBuffers : {false, true}) {
+    // Velidate checksum on a good file
+    alpha::testing::InMemoryTrackableReadFile readFile(file, useChaniedBuffers);
+    alpha::Tablet tablet{memoryPool, &readFile};
+    auto storedChecksum = tablet.checksum();
     EXPECT_EQ(
-        storedChecksum,
-        alpha::Tablet::calculateChecksum(memoryPool, &readFileUnchanged));
-
-    char& c = file[10];
-    c ^= 0x80;
-    alpha::testing::InMemoryTrackableReadFile readFileChanged(file);
-    EXPECT_NE(
         storedChecksum,
         alpha::Tablet::calculateChecksum(
             memoryPool,
-            &readFileChanged,
+            &readFile,
             checksumChunked ? writeFile.size() / 3 : writeFile.size()))
-        << "Checksum didn't find corruption when stream content is changed. "
         << "metadataCompressionThreshold: " << metadataCompressionThreshold
         << ", checksumType: " << alpha::toString(checksumType)
         << ", checksumChunked: " << checksumChunked;
-    // revert the file back.
-    c ^= 0x80;
-  }
 
-  // Flip a bit in the flatbuffer footer and verify that checksum can catch
-  // the error
-  {
-    // First, make sure we are working on a clean file
-    alpha::testing::InMemoryTrackableReadFile readFileUnchanged(file);
-    EXPECT_EQ(
-        storedChecksum,
-        alpha::Tablet::calculateChecksum(memoryPool, &readFileUnchanged));
+    // Flip a bit in the stream and verify that checksum can catch the error
+    {
+      // First, make sure we are working on a clean file
+      alpha::testing::InMemoryTrackableReadFile readFileUnchanged(
+          file, useChaniedBuffers);
+      EXPECT_EQ(
+          storedChecksum,
+          alpha::Tablet::calculateChecksum(memoryPool, &readFileUnchanged));
 
-    auto posInFooter =
-        tablet.fileSize() - kPostscriptSize - tablet.footerSize() / 2;
-    uint8_t& byteInFooter =
-        *reinterpret_cast<uint8_t*>(file.data() + posInFooter);
-    byteInFooter ^= 0x1;
-    alpha::testing::InMemoryTrackableReadFile readFileChanged(file);
-    EXPECT_NE(
-        storedChecksum,
-        alpha::Tablet::calculateChecksum(
-            memoryPool,
-            &readFileChanged,
-            checksumChunked ? writeFile.size() / 3 : writeFile.size()))
-        << "Checksum didn't find corruption when footer content is changed. "
-        << "metadataCompressionThreshold: " << metadataCompressionThreshold
-        << ", checksumType: " << alpha::toString(checksumType)
-        << ", checksumChunked: " << checksumChunked;
-    // revert the file back.
-    byteInFooter ^= 0x1;
-  }
+      char& c = file[10];
+      c ^= 0x80;
+      alpha::testing::InMemoryTrackableReadFile readFileChanged(
+          file, useChaniedBuffers);
+      EXPECT_NE(
+          storedChecksum,
+          alpha::Tablet::calculateChecksum(
+              memoryPool,
+              &readFileChanged,
+              checksumChunked ? writeFile.size() / 3 : writeFile.size()))
+          << "Checksum didn't find corruption when stream content is changed. "
+          << "metadataCompressionThreshold: " << metadataCompressionThreshold
+          << ", checksumType: " << alpha::toString(checksumType)
+          << ", checksumChunked: " << checksumChunked;
+      // revert the file back.
+      c ^= 0x80;
+    }
 
-  // Flip a bit in the footer size field and verify that checksum can catch
-  // the error
-  {
-    // First, make sure we are working on a clean file
-    alpha::testing::InMemoryTrackableReadFile readFileUnchanged(file);
-    EXPECT_EQ(
-        storedChecksum,
-        alpha::Tablet::calculateChecksum(memoryPool, &readFileUnchanged));
+    // Flip a bit in the flatbuffer footer and verify that checksum can catch
+    // the error
+    {
+      // First, make sure we are working on a clean file
+      alpha::testing::InMemoryTrackableReadFile readFileUnchanged(
+          file, useChaniedBuffers);
+      EXPECT_EQ(
+          storedChecksum,
+          alpha::Tablet::calculateChecksum(memoryPool, &readFileUnchanged));
 
-    auto footerSizePos = tablet.fileSize() - kPostscriptSize;
-    uint32_t& footerSize =
-        *reinterpret_cast<uint32_t*>(file.data() + footerSizePos);
-    ASSERT_EQ(footerSize, tablet.footerSize());
-    footerSize ^= 0x1;
-    alpha::testing::InMemoryTrackableReadFile readFileChanged(file);
-    EXPECT_NE(
-        storedChecksum,
-        alpha::Tablet::calculateChecksum(
-            memoryPool,
-            &readFileChanged,
-            checksumChunked ? writeFile.size() / 3 : writeFile.size()))
-        << "Checksum didn't find corruption when footer size field is changed. "
-        << "metadataCompressionThreshold: " << metadataCompressionThreshold
-        << ", checksumType: " << alpha::toString(checksumType)
-        << ", checksumChunked: " << checksumChunked;
-    // revert the file back.
-    footerSize ^= 0x1;
-  }
+      auto posInFooter =
+          tablet.fileSize() - kPostscriptSize - tablet.footerSize() / 2;
+      uint8_t& byteInFooter =
+          *reinterpret_cast<uint8_t*>(file.data() + posInFooter);
+      byteInFooter ^= 0x1;
+      alpha::testing::InMemoryTrackableReadFile readFileChanged(
+          file, useChaniedBuffers);
+      EXPECT_NE(
+          storedChecksum,
+          alpha::Tablet::calculateChecksum(
+              memoryPool,
+              &readFileChanged,
+              checksumChunked ? writeFile.size() / 3 : writeFile.size()))
+          << "Checksum didn't find corruption when footer content is changed. "
+          << "metadataCompressionThreshold: " << metadataCompressionThreshold
+          << ", checksumType: " << alpha::toString(checksumType)
+          << ", checksumChunked: " << checksumChunked;
+      // revert the file back.
+      byteInFooter ^= 0x1;
+    }
 
-  // Flip a bit in the footer compression type field and verify that checksum
-  // can catch the error
-  {
-    // First, make sure we are working on a clean file
-    alpha::testing::InMemoryTrackableReadFile readFileUnchanged(file);
-    EXPECT_EQ(
-        storedChecksum,
-        alpha::Tablet::calculateChecksum(memoryPool, &readFileUnchanged));
+    // Flip a bit in the footer size field and verify that checksum can catch
+    // the error
+    {
+      // First, make sure we are working on a clean file
+      alpha::testing::InMemoryTrackableReadFile readFileUnchanged(
+          file, useChaniedBuffers);
+      EXPECT_EQ(
+          storedChecksum,
+          alpha::Tablet::calculateChecksum(memoryPool, &readFileUnchanged));
 
-    auto footerCompressionTypePos = tablet.fileSize() - kPostscriptSize + 4;
-    alpha::CompressionType& footerCompressionType =
-        *reinterpret_cast<alpha::CompressionType*>(
-            file.data() + footerCompressionTypePos);
-    ASSERT_EQ(footerCompressionType, tablet.footerCompressionType());
-    // Cannot do bit operation on enums, so cast it to integer type.
-    uint8_t& typeAsInt = *reinterpret_cast<uint8_t*>(&footerCompressionType);
-    typeAsInt ^= 0x1;
-    alpha::testing::InMemoryTrackableReadFile readFileChanged(file);
-    EXPECT_NE(
-        storedChecksum,
-        alpha::Tablet::calculateChecksum(
-            memoryPool,
-            &readFileChanged,
-            checksumChunked ? writeFile.size() / 3 : writeFile.size()))
-        << "Checksum didn't find corruption when compression type field is changed. "
-        << "metadataCompressionThreshold: " << metadataCompressionThreshold
-        << ", checksumType: " << alpha::toString(checksumType)
-        << ", checksumChunked: " << checksumChunked;
-    // revert the file back.
-    typeAsInt ^= 0x1;
+      auto footerSizePos = tablet.fileSize() - kPostscriptSize;
+      uint32_t& footerSize =
+          *reinterpret_cast<uint32_t*>(file.data() + footerSizePos);
+      ASSERT_EQ(footerSize, tablet.footerSize());
+      footerSize ^= 0x1;
+      alpha::testing::InMemoryTrackableReadFile readFileChanged(
+          file, useChaniedBuffers);
+      EXPECT_NE(
+          storedChecksum,
+          alpha::Tablet::calculateChecksum(
+              memoryPool,
+              &readFileChanged,
+              checksumChunked ? writeFile.size() / 3 : writeFile.size()))
+          << "Checksum didn't find corruption when footer size field is changed. "
+          << "metadataCompressionThreshold: " << metadataCompressionThreshold
+          << ", checksumType: " << alpha::toString(checksumType)
+          << ", checksumChunked: " << checksumChunked;
+      // revert the file back.
+      footerSize ^= 0x1;
+    }
+
+    // Flip a bit in the footer compression type field and verify that checksum
+    // can catch the error
+    {
+      // First, make sure we are working on a clean file
+      alpha::testing::InMemoryTrackableReadFile readFileUnchanged(
+          file, useChaniedBuffers);
+      EXPECT_EQ(
+          storedChecksum,
+          alpha::Tablet::calculateChecksum(memoryPool, &readFileUnchanged));
+
+      auto footerCompressionTypePos = tablet.fileSize() - kPostscriptSize + 4;
+      alpha::CompressionType& footerCompressionType =
+          *reinterpret_cast<alpha::CompressionType*>(
+              file.data() + footerCompressionTypePos);
+      ASSERT_EQ(footerCompressionType, tablet.footerCompressionType());
+      // Cannot do bit operation on enums, so cast it to integer type.
+      uint8_t& typeAsInt = *reinterpret_cast<uint8_t*>(&footerCompressionType);
+      typeAsInt ^= 0x1;
+      alpha::testing::InMemoryTrackableReadFile readFileChanged(
+          file, useChaniedBuffers);
+      EXPECT_NE(
+          storedChecksum,
+          alpha::Tablet::calculateChecksum(
+              memoryPool,
+              &readFileChanged,
+              checksumChunked ? writeFile.size() / 3 : writeFile.size()))
+          << "Checksum didn't find corruption when compression type field is changed. "
+          << "metadataCompressionThreshold: " << metadataCompressionThreshold
+          << ", checksumType: " << alpha::toString(checksumType)
+          << ", checksumChunked: " << checksumChunked;
+      // revert the file back.
+      typeAsInt ^= 0x1;
+    }
   }
 }
 } // namespace
@@ -497,28 +510,30 @@ TEST(TabletTests, OptionalSections) {
 
   tabletWriter.close();
 
-  alpha::testing::InMemoryTrackableReadFile readFile(file);
-  alpha::Tablet tablet{*pool, &readFile};
+  for (auto useChaniedBuffers : {false, true}) {
+    alpha::testing::InMemoryTrackableReadFile readFile(file, useChaniedBuffers);
+    alpha::Tablet tablet{*pool, &readFile};
 
-  auto section = tablet.loadOptionalSection("section1");
-  ASSERT_TRUE(section.has_value());
-  ASSERT_EQ(random, section->content());
+    auto section = tablet.loadOptionalSection("section1");
+    ASSERT_TRUE(section.has_value());
+    ASSERT_EQ(random, section->content());
 
-  std::string expectedContent;
-  expectedContent.resize(randomSize);
-  for (auto i = 0; i < expectedContent.size(); ++i) {
-    expectedContent[i] = '\0';
+    std::string expectedContent;
+    expectedContent.resize(randomSize);
+    for (auto i = 0; i < expectedContent.size(); ++i) {
+      expectedContent[i] = '\0';
+    }
+    section = tablet.loadOptionalSection("section2");
+    ASSERT_TRUE(section.has_value());
+    ASSERT_EQ(expectedContent, section->content());
+
+    section = tablet.loadOptionalSection("section3");
+    ASSERT_TRUE(section.has_value());
+    ASSERT_EQ(std::string(), section->content());
+
+    section = tablet.loadOptionalSection("section4");
+    ASSERT_FALSE(section.has_value());
   }
-  section = tablet.loadOptionalSection("section2");
-  ASSERT_TRUE(section.has_value());
-  ASSERT_EQ(expectedContent, section->content());
-
-  section = tablet.loadOptionalSection("section3");
-  ASSERT_TRUE(section.has_value());
-  ASSERT_EQ(std::string(), section->content());
-
-  section = tablet.loadOptionalSection("section4");
-  ASSERT_FALSE(section.has_value());
 }
 
 TEST(TabletTests, OptionalSectionsEmpty) {
@@ -529,11 +544,13 @@ TEST(TabletTests, OptionalSectionsEmpty) {
 
   tabletWriter.close();
 
-  alpha::testing::InMemoryTrackableReadFile readFile(file);
-  alpha::Tablet tablet{*pool, &readFile};
+  for (auto useChaniedBuffers : {false, true}) {
+    alpha::testing::InMemoryTrackableReadFile readFile(file, useChaniedBuffers);
+    alpha::Tablet tablet{*pool, &readFile};
 
-  auto section = tablet.loadOptionalSection("section1");
-  ASSERT_FALSE(section.has_value());
+    auto section = tablet.loadOptionalSection("section1");
+    ASSERT_FALSE(section.has_value());
+  }
 }
 
 TEST(TabletTests, OptionalSectionsPreload) {
@@ -566,20 +583,23 @@ TEST(TabletTests, OptionalSectionsPreload) {
                       size_t expectedInitialReads,
                       std::vector<std::tuple<std::string, size_t, std::string>>
                           expected) {
-      alpha::testing::InMemoryTrackableReadFile readFile(file);
-      alpha::Tablet tablet{*pool, &readFile, preload};
+      for (auto useChaniedBuffers : {false, true}) {
+        alpha::testing::InMemoryTrackableReadFile readFile(
+            file, useChaniedBuffers);
+        alpha::Tablet tablet{*pool, &readFile, preload};
 
-      // Expecting only the initial footer read.
-      ASSERT_EQ(expectedInitialReads, readFile.chunks().size());
+        // Expecting only the initial footer read.
+        ASSERT_EQ(expectedInitialReads, readFile.chunks().size());
 
-      for (const auto& e : expected) {
-        auto expectedSection = std::get<0>(e);
-        auto expectedReads = std::get<1>(e);
-        auto expectedContent = std::get<2>(e);
-        auto section = tablet.loadOptionalSection(expectedSection);
-        ASSERT_TRUE(section.has_value());
-        ASSERT_EQ(expectedContent, section->content());
-        ASSERT_EQ(expectedReads, readFile.chunks().size());
+        for (const auto& e : expected) {
+          auto expectedSection = std::get<0>(e);
+          auto expectedReads = std::get<1>(e);
+          auto expectedContent = std::get<2>(e);
+          auto section = tablet.loadOptionalSection(expectedSection);
+          ASSERT_TRUE(section.has_value());
+          ASSERT_EQ(expectedContent, section->content());
+          ASSERT_EQ(expectedReads, readFile.chunks().size());
+        }
       }
     };
 

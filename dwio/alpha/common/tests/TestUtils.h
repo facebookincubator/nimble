@@ -270,7 +270,11 @@ struct Chunk {
 // reader coalese behavior.
 class InMemoryTrackableReadFile final : public velox::ReadFile {
  public:
-  explicit InMemoryTrackableReadFile(std::string_view file) : file_{file} {}
+  explicit InMemoryTrackableReadFile(
+      std::string_view file,
+      bool shouldProduceChainedBuffers)
+      : file_{file},
+        shouldProduceChainedBuffers_{shouldProduceChainedBuffers} {}
 
   std::string_view pread(uint64_t offset, uint64_t length, void* buf)
       const final {
@@ -287,6 +291,33 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
       uint64_t /* offset */,
       const std::vector<folly::Range<char*>>& /* buffers */) const final {
     ALPHA_NOT_SUPPORTED("Not used by Alpha");
+  }
+
+  void preadv(
+      folly::Range<const velox::common::Region*> regions,
+      folly::Range<folly::IOBuf*> iobufs) const override {
+    VELOX_CHECK_EQ(regions.size(), iobufs.size());
+    for (size_t i = 0; i < regions.size(); ++i) {
+      const auto& region = regions[i];
+      auto& output = iobufs[i];
+      if (shouldProduceChainedBuffers_) {
+        chunks_.push_back({region.offset, region.length});
+        uint64_t splitPoint = region.length / 2;
+        output = folly::IOBuf(folly::IOBuf::CREATE, splitPoint);
+        file_.pread(region.offset, splitPoint, output.writableData());
+        output.append(splitPoint);
+        const uint64_t nextLength = region.length - splitPoint;
+        auto next = folly::IOBuf::create(nextLength);
+        file_.pread(
+            region.offset + splitPoint, nextLength, next->writableData());
+        next->append(nextLength);
+        output.appendChain(std::move(next));
+      } else {
+        output = folly::IOBuf(folly::IOBuf::CREATE, region.length);
+        pread(region.offset, region.length, output.writableData());
+        output.append(region.length);
+      }
+    }
   }
 
   uint64_t size() const final {
@@ -324,6 +355,7 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
 
  private:
   velox::InMemoryReadFile file_;
+  bool shouldProduceChainedBuffers_;
   mutable std::vector<Chunk> chunks_;
 };
 

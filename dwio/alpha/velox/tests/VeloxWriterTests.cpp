@@ -453,111 +453,114 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
   writer.write(vector);
   writer.close();
 
-  alpha::testing::InMemoryTrackableReadFile readFile(file);
-  alpha::Tablet tablet{*leafPool_, &readFile};
-  auto section = tablet.loadOptionalSection(std::string(alpha::kSchemaSection));
-  ALPHA_CHECK(section.has_value(), "Schema not found.");
-  auto schema =
-      alpha::SchemaDeserializer::deserialize(section->content().data());
-  auto& mapNode = schema->asRow().childAt(0)->asMap();
-  auto& mapValuesNode = mapNode.values()->asScalar();
-  auto& flatMapNode = schema->asRow().childAt(1)->asFlatMap();
-  ASSERT_EQ(3, flatMapNode.childrenCount());
+  for (auto useChaniedBuffers : {false, true}) {
+    alpha::testing::InMemoryTrackableReadFile readFile(file, useChaniedBuffers);
+    alpha::Tablet tablet{*leafPool_, &readFile};
+    auto section =
+        tablet.loadOptionalSection(std::string(alpha::kSchemaSection));
+    ALPHA_CHECK(section.has_value(), "Schema not found.");
+    auto schema =
+        alpha::SchemaDeserializer::deserialize(section->content().data());
+    auto& mapNode = schema->asRow().childAt(0)->asMap();
+    auto& mapValuesNode = mapNode.values()->asScalar();
+    auto& flatMapNode = schema->asRow().childAt(1)->asFlatMap();
+    ASSERT_EQ(3, flatMapNode.childrenCount());
 
-  auto findChild =
-      [](const facebook::alpha::FlatMapType& map,
-         std::string_view key) -> std::shared_ptr<const alpha::Type> {
-    for (auto i = 0; i < map.childrenCount(); ++i) {
-      if (map.nameAt(i) == key) {
-        return map.childAt(i);
+    auto findChild =
+        [](const facebook::alpha::FlatMapType& map,
+           std::string_view key) -> std::shared_ptr<const alpha::Type> {
+      for (auto i = 0; i < map.childrenCount(); ++i) {
+        if (map.nameAt(i) == key) {
+          return map.childAt(i);
+        }
       }
-    }
-    return nullptr;
-  };
-  const auto& flatMapKey1Node = findChild(flatMapNode, "1")->asScalar();
-  const auto& flatMapKey2Node = findChild(flatMapNode, "2")->asScalar();
+      return nullptr;
+    };
+    const auto& flatMapKey1Node = findChild(flatMapNode, "1")->asScalar();
+    const auto& flatMapKey2Node = findChild(flatMapNode, "2")->asScalar();
 
-  for (auto i = 0; i < tablet.stripeCount(); ++i) {
-    std::vector<uint32_t> identifiers{
-        mapNode.lengthsDescriptor().offset(),
-        mapValuesNode.scalarDescriptor().offset(),
-        flatMapKey1Node.scalarDescriptor().offset(),
-        flatMapKey2Node.scalarDescriptor().offset()};
-    auto streams = tablet.load(i, identifiers);
-    {
-      alpha::InMemoryChunkedStream chunkedStream{
-          *leafPool_, std::move(streams[0])};
-      ASSERT_TRUE(chunkedStream.hasNext());
-      // Verify Map stream
-      auto capture =
-          alpha::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
-      EXPECT_EQ(alpha::EncodingType::Dictionary, capture.encodingType());
-      EXPECT_EQ(
-          alpha::EncodingType::FixedBitWidth,
-          capture.child(alpha::EncodingIdentifiers::Dictionary::Alphabet)
-              ->encodingType());
-      EXPECT_EQ(
-          alpha::CompressionType::Zstrong,
-          capture.child(alpha::EncodingIdentifiers::Dictionary::Alphabet)
-              ->compressionType());
-    }
+    for (auto i = 0; i < tablet.stripeCount(); ++i) {
+      std::vector<uint32_t> identifiers{
+          mapNode.lengthsDescriptor().offset(),
+          mapValuesNode.scalarDescriptor().offset(),
+          flatMapKey1Node.scalarDescriptor().offset(),
+          flatMapKey2Node.scalarDescriptor().offset()};
+      auto streams = tablet.load(i, identifiers);
+      {
+        alpha::InMemoryChunkedStream chunkedStream{
+            *leafPool_, std::move(streams[0])};
+        ASSERT_TRUE(chunkedStream.hasNext());
+        // Verify Map stream
+        auto capture =
+            alpha::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+        EXPECT_EQ(alpha::EncodingType::Dictionary, capture.encodingType());
+        EXPECT_EQ(
+            alpha::EncodingType::FixedBitWidth,
+            capture.child(alpha::EncodingIdentifiers::Dictionary::Alphabet)
+                ->encodingType());
+        EXPECT_EQ(
+            alpha::CompressionType::Zstrong,
+            capture.child(alpha::EncodingIdentifiers::Dictionary::Alphabet)
+                ->compressionType());
+      }
 
-    {
-      alpha::InMemoryChunkedStream chunkedStream{
-          *leafPool_, std::move(streams[1])};
-      ASSERT_TRUE(chunkedStream.hasNext());
-      // Verify Map Values stream
-      auto capture =
-          alpha::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
-      EXPECT_EQ(alpha::EncodingType::MainlyConstant, capture.encodingType());
-      EXPECT_EQ(
-          alpha::EncodingType::Trivial,
-          capture
-              .child(alpha::EncodingIdentifiers::MainlyConstant::OtherValues)
-              ->encodingType());
-      EXPECT_EQ(
-          alpha::CompressionType::Zstrong,
-          capture
-              .child(alpha::EncodingIdentifiers::MainlyConstant::OtherValues)
-              ->compressionType());
-    }
+      {
+        alpha::InMemoryChunkedStream chunkedStream{
+            *leafPool_, std::move(streams[1])};
+        ASSERT_TRUE(chunkedStream.hasNext());
+        // Verify Map Values stream
+        auto capture =
+            alpha::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+        EXPECT_EQ(alpha::EncodingType::MainlyConstant, capture.encodingType());
+        EXPECT_EQ(
+            alpha::EncodingType::Trivial,
+            capture
+                .child(alpha::EncodingIdentifiers::MainlyConstant::OtherValues)
+                ->encodingType());
+        EXPECT_EQ(
+            alpha::CompressionType::Zstrong,
+            capture
+                .child(alpha::EncodingIdentifiers::MainlyConstant::OtherValues)
+                ->compressionType());
+      }
 
-    {
-      alpha::InMemoryChunkedStream chunkedStream{
-          *leafPool_, std::move(streams[2])};
-      ASSERT_TRUE(chunkedStream.hasNext());
-      // Verify FlatMap Kay "1" stream
-      auto capture =
-          alpha::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
-      EXPECT_EQ(alpha::EncodingType::MainlyConstant, capture.encodingType());
-      EXPECT_EQ(
-          alpha::EncodingType::Trivial,
-          capture.child(alpha::EncodingIdentifiers::MainlyConstant::IsCommon)
-              ->encodingType());
-      EXPECT_EQ(
-          alpha::CompressionType::Uncompressed,
-          capture.child(alpha::EncodingIdentifiers::MainlyConstant::IsCommon)
-              ->compressionType());
-      EXPECT_EQ(
-          alpha::EncodingType::FixedBitWidth,
-          capture
-              .child(alpha::EncodingIdentifiers::MainlyConstant::OtherValues)
-              ->encodingType());
-      EXPECT_EQ(
-          alpha::CompressionType::Uncompressed,
-          capture
-              .child(alpha::EncodingIdentifiers::MainlyConstant::OtherValues)
-              ->compressionType());
-    }
+      {
+        alpha::InMemoryChunkedStream chunkedStream{
+            *leafPool_, std::move(streams[2])};
+        ASSERT_TRUE(chunkedStream.hasNext());
+        // Verify FlatMap Kay "1" stream
+        auto capture =
+            alpha::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+        EXPECT_EQ(alpha::EncodingType::MainlyConstant, capture.encodingType());
+        EXPECT_EQ(
+            alpha::EncodingType::Trivial,
+            capture.child(alpha::EncodingIdentifiers::MainlyConstant::IsCommon)
+                ->encodingType());
+        EXPECT_EQ(
+            alpha::CompressionType::Uncompressed,
+            capture.child(alpha::EncodingIdentifiers::MainlyConstant::IsCommon)
+                ->compressionType());
+        EXPECT_EQ(
+            alpha::EncodingType::FixedBitWidth,
+            capture
+                .child(alpha::EncodingIdentifiers::MainlyConstant::OtherValues)
+                ->encodingType());
+        EXPECT_EQ(
+            alpha::CompressionType::Uncompressed,
+            capture
+                .child(alpha::EncodingIdentifiers::MainlyConstant::OtherValues)
+                ->compressionType());
+      }
 
-    {
-      alpha::InMemoryChunkedStream chunkedStream{
-          *leafPool_, std::move(streams[3])};
-      ASSERT_TRUE(chunkedStream.hasNext());
-      // Verify FlatMap Kay "2" stream
-      auto capture =
-          alpha::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
-      EXPECT_EQ(alpha::EncodingType::Constant, capture.encodingType());
+      {
+        alpha::InMemoryChunkedStream chunkedStream{
+            *leafPool_, std::move(streams[3])};
+        ASSERT_TRUE(chunkedStream.hasNext());
+        // Verify FlatMap Kay "2" stream
+        auto capture =
+            alpha::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+        EXPECT_EQ(alpha::EncodingType::Constant, capture.encodingType());
+      }
     }
   }
 }
