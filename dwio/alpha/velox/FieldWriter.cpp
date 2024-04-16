@@ -296,7 +296,6 @@ class SimpleFieldWriter : public FieldWriter {
   void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
       override {
     auto size = ranges.size();
-    uint64_t stringMemoryUsed = 0;
     auto& buffer = context_.stringBuffer();
     auto& data = valuesStream_.mutableData();
 
@@ -339,7 +338,8 @@ class SimpleFieldWriter : public FieldWriter {
             valuesStream_.mutableNonNulls(),
             Flat<SourceType>{vector},
             [&](SourceType value) {
-              data.push_back(C::convert(value, buffer, stringMemoryUsed));
+              data.push_back(
+                  C::convert(value, buffer, valuesStream_.extraMemory()));
             });
       }
     } else {
@@ -351,7 +351,8 @@ class SimpleFieldWriter : public FieldWriter {
           valuesStream_.mutableNonNulls(),
           Decoded<SourceType>{decoded},
           [&](SourceType value) {
-            data.push_back(C::convert(value, buffer, stringMemoryUsed));
+            data.push_back(
+                C::convert(value, buffer, valuesStream_.extraMemory()));
           });
     }
   }
