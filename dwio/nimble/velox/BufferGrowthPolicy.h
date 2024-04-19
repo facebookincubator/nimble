@@ -1,0 +1,60 @@
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+#pragma once
+
+#include <cstdint>
+#include <map>
+
+#include "dwio/nimble/common/Exceptions.h"
+
+namespace facebook::nimble {
+class InputBufferGrowthPolicy {
+ public:
+  virtual ~InputBufferGrowthPolicy() = default;
+
+  virtual uint64_t getExtendedCapacity(uint64_t newSize, uint64_t capacity) = 0;
+};
+
+// Default growth policy for input buffering is a step function across
+// the ranges.
+// The default growth policy is based on item count in the vectors because
+// it tend to be more uniform (tied together by row count) across types.
+// However, bytes based policies are worth evaluation as well.
+class DefaultInputBufferGrowthPolicy : public InputBufferGrowthPolicy {
+ public:
+  explicit DefaultInputBufferGrowthPolicy(
+      std::map<uint64_t, float> rangeConfigs)
+      : rangeConfigs_{std::move(rangeConfigs)} {
+    NIMBLE_CHECK(
+        !rangeConfigs_.empty() && rangeConfigs_.begin()->first > 0,
+        "Invalid range config supplied for default buffer input growth policy.");
+    minCapacity_ = rangeConfigs_.begin()->first;
+  }
+
+  ~DefaultInputBufferGrowthPolicy() override = default;
+
+  uint64_t getExtendedCapacity(uint64_t newSize, uint64_t capacity) override;
+
+  static std::unique_ptr<InputBufferGrowthPolicy> withDefaultRanges() {
+    return std::make_unique<DefaultInputBufferGrowthPolicy>(
+        std::map<uint64_t, float>{
+            {32UL, 4.0}, {512UL, 1.414}, {4096UL, 1.189}});
+  }
+
+ private:
+  // Map of range lowerbounds and the growth factor for the range.
+  // The first lowerbound is the smallest unit of allocation and the last range
+  // extends uint64_t max.
+  std::map<uint64_t, float> rangeConfigs_;
+  uint64_t minCapacity_;
+};
+
+class ExactGrowthPolicy : public InputBufferGrowthPolicy {
+ public:
+  uint64_t getExtendedCapacity(uint64_t newSize, uint64_t /* capacity */)
+      override {
+    return newSize;
+  }
+};
+
+} // namespace facebook::nimble
