@@ -1,0 +1,52 @@
+// (c) Facebook, Inc. and its affiliates. Confidential and proprietary.
+
+#include "dwio/nimble/velox/SchemaTypes.h"
+
+#include "dwio/nimble/common/Exceptions.h"
+
+#include <fmt/format.h>
+
+namespace facebook::nimble {
+std::string toString(ScalarKind kind) {
+  switch (kind) {
+#define CASE(KIND)         \
+  case ScalarKind::KIND: { \
+    return #KIND;          \
+  }
+    CASE(Int8);
+    CASE(UInt8);
+    CASE(Int16);
+    CASE(UInt16);
+    CASE(Int32);
+    CASE(UInt32);
+    CASE(Int64);
+    CASE(UInt64);
+    CASE(Float);
+    CASE(Double);
+    CASE(Bool);
+    CASE(String);
+    CASE(Binary);
+    CASE(Undefined);
+#undef CASE
+  }
+  NIMBLE_UNREACHABLE(fmt::format("Unknown: {}.", static_cast<int32_t>(kind)));
+}
+
+std::string toString(Kind kind) {
+  switch (kind) {
+#define CASE(KIND)   \
+  case Kind::KIND: { \
+    return #KIND;    \
+  }
+    CASE(Scalar);
+    CASE(Row);
+    CASE(Array);
+    CASE(ArrayWithOffsets);
+    CASE(Map);
+    CASE(FlatMap);
+#undef CASE
+  }
+  NIMBLE_UNREACHABLE(fmt::format("Unknown: {}.", static_cast<int32_t>(kind)));
+}
+
+} // namespace facebook::nimble

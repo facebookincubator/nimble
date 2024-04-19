@@ -1,0 +1,3 @@
+add_library(nimble_tools_common EncodingUtilities.cpp)
+
+target_link_libraries(nimble_tools_common nimble_common nimble_tablet)

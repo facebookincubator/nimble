@@ -1,0 +1,44 @@
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+namespace facebook.nimble.serialization;
+
+enum CompressionType:uint8 {
+  Uncompressed = 0,
+  Zstd = 1,
+  Zstrong = 2,
+}
+
+table Stripes {
+  row_counts:[uint32];
+  offsets:[uint64];
+  sizes:[uint32];
+  group_indices:[uint32];
+}
+
+table StripeGroup {
+  stripe_count:uint32;
+  stream_offsets:[uint32];
+  stream_sizes:[uint32];
+}
+
+table MetadataSection {
+  offset:uint64;
+  size:uint32;
+  compression_type:CompressionType;
+}
+
+table OptionalMetadataSections {
+  names:[string];
+  offsets:[uint64];
+  sizes:[uint32];
+  compression_types:[CompressionType];
+}
+
+table Footer {
+  row_count:uint64;
+  stripes:MetadataSection;
+  stripe_groups:[MetadataSection];
+  optional_sections:OptionalMetadataSections;
+}
+
+root_type Footer;
