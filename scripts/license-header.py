@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and its affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -105,6 +105,7 @@ file_types = OrderedDict(
         "*.py": attrdict({"wrapper": wrapper_hash, "hashbang": True}),
         "*.sh": attrdict({"wrapper": wrapper_hash, "hashbang": True}),
         "*.thrift": attrdict({"wrapper": wrapper_chpp, "hashbang": False}),
+        "*.fbs": attrdict({"wrapper": wrapper_chpp, "hashbang": False}),
         "*.txt": attrdict({"wrapper": wrapper_hash, "hashbang": True}),
         "*.yml": attrdict({"wrapper": wrapper_hash, "hashbang": False}),
     }
