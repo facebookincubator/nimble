@@ -1,3 +1,16 @@
+# Copyright (c) Meta Platforms, Inc. and its affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 add_subdirectory(tests)
 
 add_library(nimble_velox_common SchemaUtils.cpp)
@@ -80,7 +93,7 @@ target_link_libraries(nimble_velox_serializer nimble_common
                       nimble_velox_schema_builder velox_vector)
 
 add_library(nimble_velox_reader StreamInputDecoder.cpp StreamLabels.cpp
-                               VeloxReader.cpp)
+                                VeloxReader.cpp)
 target_link_libraries(
   nimble_velox_reader
   nimble_velox_schema
@@ -92,6 +105,6 @@ target_link_libraries(
 
 add_library(
   nimble_velox_writer EncodingLayoutTree.cpp FlushPolicy.cpp VeloxWriter.cpp
-                     VeloxWriterDefaultMetadataOSS.cpp)
+                      VeloxWriterDefaultMetadataOSS.cpp)
 target_link_libraries(nimble_velox_writer nimble_encodings nimble_common
                       nimble_velox_metadata_fb Folly::folly)
