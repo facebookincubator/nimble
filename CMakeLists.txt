@@ -1,3 +1,16 @@
+# Copyright (c) Meta Platforms, Inc. and its affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 cmake_minimum_required(VERSION 3.14)
 
 # Set the project name.
@@ -20,17 +33,14 @@ list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/CMake"
 include(ResolveDependency)
 
 set(VELOX_BUILD_MINIMAL_WITH_DWIO
-  ON CACHE BOOL
-  "Velox minimal build with dwio.")
+    ON
+    CACHE BOOL "Velox minimal build with dwio.")
 set(VELOX_BUILD_VECTOR_TEST_UTILS
-  ON CACHE BOOL
-  "Velox vector test utilities (VectorMaker).")
+    ON
+    CACHE BOOL "Velox vector test utilities (VectorMaker).")
 set(VELOX_DEPENDENCY_SOURCE
-  AUTO
-  CACHE
-  STRING
-  "Default dependency source: AUTO SYSTEM or BUNDLED."
-)
+    AUTO
+    CACHE STRING "Default dependency source: AUTO SYSTEM or BUNDLED.")
 
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
