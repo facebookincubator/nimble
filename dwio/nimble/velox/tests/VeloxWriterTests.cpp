@@ -28,7 +28,6 @@
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "folly/FileUtil.h"
-#include "thrift/lib/cpp2/protocol/DebugProtocol.h"
 #include "velox/common/memory/SharedArbitrator.h"
 #include "velox/exec/MemoryReclaimer.h"
 #include "velox/vector/VectorStream.h"

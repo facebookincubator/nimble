@@ -114,8 +114,8 @@ class VeloxMapGenerator {
             .stringLength = 20,
             .stringVariableLength = true,
             .containerLength = 5,
-            .containerVariableLength = true,
             .dictionaryHasNulls = config_.hasNulls,
+            .containerVariableLength = true,
         },
         leafPool_,
         config_.seed);
@@ -2452,8 +2452,8 @@ TEST_F(VeloxReaderTests, StringKeyFlatMapAsStruct) {
   VeloxMapGeneratorConfig generatorConfig{
       .rowType = rowType,
       .keyType = velox::TypeKind::VARCHAR,
-      .maxSizeForMap = 10,
       .stringKeyPrefix = "testKeyString_",
+      .maxSizeForMap = 10,
   };
   VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
 

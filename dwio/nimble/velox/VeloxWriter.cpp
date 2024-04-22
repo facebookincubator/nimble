@@ -205,7 +205,8 @@ std::string_view encodeStream(
     case ScalarKind::Binary:
       return encodeStreamTyped<std::string_view>(context, buffer, streamData);
     default:
-      NIMBLE_UNREACHABLE(fmt::format("Unsupported scalar kind {}", scalarKind));
+      NIMBLE_UNREACHABLE(
+          fmt::format("Unsupported scalar kind {}", toString(scalarKind)));
   }
 }
 

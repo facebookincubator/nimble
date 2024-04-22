@@ -72,7 +72,8 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
     case DataType::String:                                                   \
       return std::make_unique<Encoding<std::string_view>>(memoryPool, data); \
     default:                                                                 \
-      NIMBLE_UNREACHABLE(fmt::format("Unknown encoding type {}.", dataType)) \
+      NIMBLE_UNREACHABLE(                                                    \
+          fmt::format("Unknown encoding type {}.", toString(dataType)))      \
   }
 
 #define RETURN_ENCODING_BY_INTEGER_TYPE(Encoding, dataType)          \
@@ -97,7 +98,7 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
       NIMBLE_UNREACHABLE(fmt::format(                                \
           "Trying to deserialize an integer-only stream for "        \
           "a nonintegral data type {}.",                             \
-          dataType));                                                \
+          toString(dataType)));                                      \
   }
 
 #define RETURN_ENCODING_BY_VARINT_TYPE(Encoding, dataType)           \
@@ -118,7 +119,7 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
       NIMBLE_UNREACHABLE(fmt::format(                                \
           "Trying to deserialize a varint stream for "               \
           "an incompatible data type {}.",                           \
-          dataType));                                                \
+          toString(dataType)));                                      \
   }
 
 #define RETURN_ENCODING_BY_NON_BOOL_TYPE(Encoding, dataType)                 \
@@ -149,7 +150,7 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
       NIMBLE_UNREACHABLE(fmt::format(                                        \
           "Trying to deserialize a non-bool stream for "                     \
           "the bool data type {}.",                                          \
-          dataType));                                                        \
+          toString(dataType)));                                              \
   }
 
 #define RETURN_ENCODING_BY_NUMERIC_TYPE(Encoding, dataType)          \
@@ -178,7 +179,7 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
       NIMBLE_UNREACHABLE(fmt::format(                                \
           "Trying to deserialize a non-numeric stream for "          \
           "a numeric data type {}.",                                 \
-          dataType));                                                \
+          toString(dataType)));                                      \
   }
 
   switch (encodingType) {
