@@ -111,10 +111,10 @@ class VeloxMapGenerator {
         {
             .vectorSize = static_cast<size_t>(childSize),
             .nullRatio = 0.1,
+            .dictionaryHasNulls = config_.hasNulls,
             .stringLength = 20,
             .stringVariableLength = true,
             .containerLength = 5,
-            .dictionaryHasNulls = config_.hasNulls,
             .containerVariableLength = true,
         },
         leafPool_,
