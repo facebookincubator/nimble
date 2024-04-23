@@ -26,7 +26,9 @@ add_executable(
   SerializationTests.cpp
   TypeTests.cpp
   VeloxReaderTests.cpp
-  VeloxWriterTests.cpp)
+  # TODO: Disabled until MemoryReclaimer is decouple from velox_exec in Velox.
+  # VeloxWriterTests.cpp
+)
 add_test(nimble_velox_tests nimble_velox_tests)
 
 target_link_libraries(
