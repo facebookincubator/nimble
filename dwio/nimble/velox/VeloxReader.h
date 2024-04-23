@@ -54,10 +54,12 @@ struct VeloxReadParams : public FieldReaderParams {
   std::function<void(uint32_t)> stripeCountCallback;
 
   // Report the Wall time (ms) that we're blocked waiting on IO.
-  std::function<void(uint64_t)> blockedOnIoMsCallback;
+  std::function<void(std::chrono::high_resolution_clock::duration)>
+      blockedOnIoCallback;
 
   // Report the Wall time (us) that we spend decoding.
-  std::function<void(uint64_t)> decodingTimeUsCallback;
+  std::function<void(std::chrono::high_resolution_clock::duration)>
+      decodingTimeCallback;
 };
 
 class VeloxReader {
