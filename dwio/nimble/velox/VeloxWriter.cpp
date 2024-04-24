@@ -61,7 +61,9 @@ class WriterContext : public FieldWriterContext {
   uint64_t stripeSize{0};
   std::vector<uint64_t> rowsPerStripe;
 
-  WriterContext(MemoryPool& memoryPool, VeloxWriterOptions options)
+  WriterContext(
+      velox::memory::MemoryPool& memoryPool,
+      VeloxWriterOptions options)
       : FieldWriterContext{memoryPool, options.reclaimerFactory()},
         options{std::move(options)},
         logger{this->options.metricsLogger} {
@@ -411,7 +413,7 @@ void initializeEncodingLayouts(
 } // namespace
 
 VeloxWriter::VeloxWriter(
-    MemoryPool& memoryPool,
+    velox::memory::MemoryPool& memoryPool,
     const velox::TypePtr& schema,
     std::unique_ptr<velox::WriteFile> file,
     VeloxWriterOptions options)
