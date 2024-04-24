@@ -59,7 +59,7 @@ class ReaderFactory {
     NIMBLE_ASSERT(readFile_->size() > 2, "Invalid read file size.");
     uint16_t magicNumber;
     readFile_->pread(readFile_->size() - 2, 2, &magicNumber);
-    format_ = (magicNumber == 0xA1FA) ? velox::dwio::common::FileFormat::ALPHA
+    format_ = (magicNumber == 0xA1FA) ? velox::dwio::common::FileFormat::NIMBLE
                                       : velox::dwio::common::FileFormat::DWRF;
     auto columnFeatures =
         dwio::utils::feature_flattening::extractFeatureNames(readFile_);
@@ -166,7 +166,7 @@ class DwrfReader : public Reader {
 
 std::unique_ptr<Reader> ReaderFactory::create(
     velox::memory::MemoryPool& memoryPool) {
-  if (format_ == velox::dwio::common::FileFormat::ALPHA) {
+  if (format_ == velox::dwio::common::FileFormat::NIMBLE) {
     return std::make_unique<NimbleReader>(memoryPool, readFile_, features_);
   } else {
     return std::make_unique<DwrfReader>(memoryPool, readFile_, features_);
