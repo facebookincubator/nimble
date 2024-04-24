@@ -16,7 +16,7 @@
 #pragma once
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/tablet/Tablet.h"
+#include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/velox/FieldWriter.h"
 #include "dwio/nimble/velox/VeloxWriterOptions.h"
 #include "velox/common/file/File.h"

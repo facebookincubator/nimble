@@ -15,7 +15,7 @@
  */
 #pragma once
 
-#include "dwio/nimble/tablet/Tablet.h"
+#include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 
 namespace facebook::nimble {

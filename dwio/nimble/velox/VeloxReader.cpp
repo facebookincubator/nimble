@@ -19,13 +19,13 @@
 #include <optional>
 #include <vector>
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/velox/ChunkedStreamDecoder.h"
 #include "dwio/nimble/velox/MetadataGenerated.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
-#include "dwio/nimble/velox/TabletSections.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/type/Type.h"
 
@@ -33,15 +33,17 @@ namespace facebook::nimble {
 
 namespace {
 
-std::shared_ptr<const Type> loadSchema(const Tablet& tablet) {
-  auto section = tablet.loadOptionalSection(std::string(kSchemaSection));
+std::shared_ptr<const Type> loadSchema(const TabletReader& tabletReader) {
+  auto section = tabletReader.loadOptionalSection(std::string(kSchemaSection));
   NIMBLE_CHECK(section.has_value(), "Schema not found.");
   return SchemaDeserializer::deserialize(section->content().data());
 }
 
-std::map<std::string, std::string> loadMetadata(const Tablet& tablet) {
+std::map<std::string, std::string> loadMetadata(
+    const TabletReader& tabletReader) {
   std::map<std::string, std::string> result;
-  auto section = tablet.loadOptionalSection(std::string(kMetadataSection));
+  auto section =
+      tabletReader.loadOptionalSection(std::string(kMetadataSection));
 
   if (!section.has_value()) {
     return result;
@@ -86,7 +88,7 @@ VeloxReader::VeloxReader(
     VeloxReadParams params)
     : VeloxReader(
           pool,
-          std::make_shared<const Tablet>(
+          std::make_shared<const TabletReader>(
               pool,
               file, /* preloadOptionalSections */
               preloadedOptionalSections()),
@@ -100,7 +102,7 @@ VeloxReader::VeloxReader(
     VeloxReadParams params)
     : VeloxReader(
           pool,
-          std::make_shared<const Tablet>(
+          std::make_shared<const TabletReader>(
               pool,
               std::move(file), /* preloadOptionalSections */
               preloadedOptionalSections()),
@@ -109,13 +111,13 @@ VeloxReader::VeloxReader(
 
 VeloxReader::VeloxReader(
     velox::memory::MemoryPool& pool,
-    std::shared_ptr<const Tablet> tablet,
+    std::shared_ptr<const TabletReader> tabletReader,
     std::shared_ptr<const velox::dwio::common::ColumnSelector> selector,
     VeloxReadParams params)
     : pool_{pool},
-      tablet_{std::move(tablet)},
+      tabletReader_{std::move(tabletReader)},
       parameters_{std::move(params)},
-      schema_{loadSchema(*tablet_)},
+      schema_{loadSchema(*tabletReader_)},
       streamLabels_{schema_},
       type_{
           selector ? selector->getSchema()
@@ -163,13 +165,13 @@ VeloxReader::VeloxReader(
   // usually the caller will then fetch another file split to process and other
   // file splits will cover the rest of the file.
 
-  firstStripe_ = tablet_->stripeCount();
+  firstStripe_ = tabletReader_->stripeCount();
   lastStripe_ = 0;
   firstRow_ = 0;
   lastRow_ = 0;
   uint64_t rows = 0;
-  for (auto i = 0; i < tablet_->stripeCount(); ++i) {
-    auto stripeOffset = tablet_->stripeOffset(i);
+  for (auto i = 0; i < tabletReader_->stripeCount(); ++i) {
+    auto stripeOffset = tabletReader_->stripeOffset(i);
     if ((stripeOffset >= parameters_.fileRangeStartOffset) &&
         (stripeOffset < parameters_.fileRangeEndOffset)) {
       if (i < firstStripe_) {
@@ -178,11 +180,11 @@ VeloxReader::VeloxReader(
       }
       if (i >= lastStripe_) {
         lastStripe_ = i + 1;
-        lastRow_ = rows + tablet_->stripeRowCount(i);
+        lastRow_ = rows + tabletReader_->stripeRowCount(i);
       }
     }
 
-    rows += tablet_->stripeRowCount(i);
+    rows += tabletReader_->stripeRowCount(i);
   }
 
   nextStripe_ = firstStripe_;
@@ -191,10 +193,10 @@ VeloxReader::VeloxReader(
     parameters_.stripeCountCallback(lastStripe_ - firstStripe_);
   }
 
-  VLOG(1) << "Tablet handling stripes: " << firstStripe_ << " -> "
+  VLOG(1) << "TabletReader handling stripes: " << firstStripe_ << " -> "
           << lastStripe_ << " (rows " << firstRow_ << " -> " << lastRow_
-          << "). Total stripes: " << tablet_->stripeCount()
-          << ". Total rows: " << tablet_->tabletRowCount();
+          << "). Total stripes: " << tabletReader_->stripeCount()
+          << ". Total rows: " << tabletReader_->tabletRowCount();
 
   if (!logger_) {
     logger_ = std::make_shared<MetricsLogger>();
@@ -216,7 +218,7 @@ void VeloxReader::loadStripe() {
       // need to explicitly reset all decoders and readers.
       rootReader_->reset();
 
-      rowsRemainingInStripe_ = tablet_->stripeRowCount(nextStripe_);
+      rowsRemainingInStripe_ = tabletReader_->stripeRowCount(nextStripe_);
       ++nextStripe_;
       return;
     }
@@ -231,8 +233,8 @@ void VeloxReader::loadStripe() {
       // streams than later stripes.
       // In the extreme case, a stripe can return zero streams (for example, if
       // all the streams in that stripe were contained all nulls).
-      auto streams =
-          tablet_->load(nextStripe_, offsets_, [this](offset_size offset) {
+      auto streams = tabletReader_->load(
+          nextStripe_, offsets_, [this](offset_size offset) {
             return streamLabels_.streamLabel(offset);
           });
       for (uint32_t i = 0; i < streams.size(); ++i) {
@@ -252,7 +254,7 @@ void VeloxReader::loadStripe() {
           ++metrics.streamCount;
         }
       }
-      rowsRemainingInStripe_ = tablet_->stripeRowCount(nextStripe_);
+      rowsRemainingInStripe_ = tabletReader_->stripeRowCount(nextStripe_);
       loadedStripe_ = nextStripe_;
       ++nextStripe_;
       rootReader_ = rootFieldReaderFactory_->createReader(decoders_);
@@ -305,11 +307,11 @@ bool VeloxReader::next(uint64_t rowCount, velox::VectorPtr& result) {
   return true;
 }
 
-const Tablet& VeloxReader::getTabletView() const {
-  return *tablet_;
+const TabletReader& VeloxReader::tabletReader() const {
+  return *tabletReader_;
 }
 
-const std::shared_ptr<const velox::RowType>& VeloxReader::getType() const {
+const std::shared_ptr<const velox::RowType>& VeloxReader::type() const {
   return type_;
 }
 
@@ -319,7 +321,7 @@ const std::shared_ptr<const Type>& VeloxReader::schema() const {
 
 const std::map<std::string, std::string>& VeloxReader::metadata() const {
   if (!metadata_.has_value()) {
-    metadata_ = loadMetadata(*tablet_);
+    metadata_ = loadMetadata(*tabletReader_);
   }
 
   return metadata_.value();
@@ -398,14 +400,15 @@ uint64_t VeloxReader::skipStripes(
 
   uint64_t totalRowsToSkip = rowsToSkip;
   while (startStripeIndex < lastStripe_ &&
-         rowsToSkip >= tablet_->stripeRowCount(startStripeIndex)) {
-    rowsToSkip -= tablet_->stripeRowCount(startStripeIndex);
+         rowsToSkip >= tabletReader_->stripeRowCount(startStripeIndex)) {
+    rowsToSkip -= tabletReader_->stripeRowCount(startStripeIndex);
     ++startStripeIndex;
   }
 
   nextStripe_ = startStripeIndex;
-  rowsRemainingInStripe_ =
-      nextStripe_ >= lastStripe_ ? 0 : tablet_->stripeRowCount(nextStripe_);
+  rowsRemainingInStripe_ = nextStripe_ >= lastStripe_
+      ? 0
+      : tabletReader_->stripeRowCount(nextStripe_);
 
   return totalRowsToSkip - rowsToSkip;
 }

@@ -24,7 +24,8 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
-#include "dwio/nimble/tablet/Tablet.h"
+#include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/tablet/TabletWriter.h"
 #include "folly/FileUtil.h"
 #include "folly/Random.h"
 #include "folly/experimental/coro/Generator.h"
@@ -133,7 +134,7 @@ void parameterizedTest(
     for (auto useChainedBuffers : {false, true}) {
       nimble::testing::InMemoryTrackableReadFile readFile(
           file, useChainedBuffers);
-      nimble::Tablet tablet{memoryPool, &readFile};
+      nimble::TabletReader tablet{memoryPool, &readFile};
       EXPECT_EQ(stripesData.size(), tablet.stripeCount());
       EXPECT_EQ(
           std::accumulate(
@@ -319,11 +320,11 @@ void checksumTest(
     // Velidate checksum on a good file
     nimble::testing::InMemoryTrackableReadFile readFile(
         file, useChaniedBuffers);
-    nimble::Tablet tablet{memoryPool, &readFile};
+    nimble::TabletReader tablet{memoryPool, &readFile};
     auto storedChecksum = tablet.checksum();
     EXPECT_EQ(
         storedChecksum,
-        nimble::Tablet::calculateChecksum(
+        nimble::TabletReader::calculateChecksum(
             memoryPool,
             &readFile,
             checksumChunked ? writeFile.size() / 3 : writeFile.size()))
@@ -338,7 +339,8 @@ void checksumTest(
           file, useChaniedBuffers);
       EXPECT_EQ(
           storedChecksum,
-          nimble::Tablet::calculateChecksum(memoryPool, &readFileUnchanged));
+          nimble::TabletReader::calculateChecksum(
+              memoryPool, &readFileUnchanged));
 
       char& c = file[10];
       c ^= 0x80;
@@ -346,7 +348,7 @@ void checksumTest(
           file, useChaniedBuffers);
       EXPECT_NE(
           storedChecksum,
-          nimble::Tablet::calculateChecksum(
+          nimble::TabletReader::calculateChecksum(
               memoryPool,
               &readFileChanged,
               checksumChunked ? writeFile.size() / 3 : writeFile.size()))
@@ -366,7 +368,8 @@ void checksumTest(
           file, useChaniedBuffers);
       EXPECT_EQ(
           storedChecksum,
-          nimble::Tablet::calculateChecksum(memoryPool, &readFileUnchanged));
+          nimble::TabletReader::calculateChecksum(
+              memoryPool, &readFileUnchanged));
 
       auto posInFooter =
           tablet.fileSize() - kPostscriptSize - tablet.footerSize() / 2;
@@ -377,7 +380,7 @@ void checksumTest(
           file, useChaniedBuffers);
       EXPECT_NE(
           storedChecksum,
-          nimble::Tablet::calculateChecksum(
+          nimble::TabletReader::calculateChecksum(
               memoryPool,
               &readFileChanged,
               checksumChunked ? writeFile.size() / 3 : writeFile.size()))
@@ -397,7 +400,8 @@ void checksumTest(
           file, useChaniedBuffers);
       EXPECT_EQ(
           storedChecksum,
-          nimble::Tablet::calculateChecksum(memoryPool, &readFileUnchanged));
+          nimble::TabletReader::calculateChecksum(
+              memoryPool, &readFileUnchanged));
 
       auto footerSizePos = tablet.fileSize() - kPostscriptSize;
       uint32_t& footerSize =
@@ -408,7 +412,7 @@ void checksumTest(
           file, useChaniedBuffers);
       EXPECT_NE(
           storedChecksum,
-          nimble::Tablet::calculateChecksum(
+          nimble::TabletReader::calculateChecksum(
               memoryPool,
               &readFileChanged,
               checksumChunked ? writeFile.size() / 3 : writeFile.size()))
@@ -428,7 +432,8 @@ void checksumTest(
           file, useChaniedBuffers);
       EXPECT_EQ(
           storedChecksum,
-          nimble::Tablet::calculateChecksum(memoryPool, &readFileUnchanged));
+          nimble::TabletReader::calculateChecksum(
+              memoryPool, &readFileUnchanged));
 
       auto footerCompressionTypePos = tablet.fileSize() - kPostscriptSize + 4;
       nimble::CompressionType& footerCompressionType =
@@ -442,7 +447,7 @@ void checksumTest(
           file, useChaniedBuffers);
       EXPECT_NE(
           storedChecksum,
-          nimble::Tablet::calculateChecksum(
+          nimble::TabletReader::calculateChecksum(
               memoryPool,
               &readFileChanged,
               checksumChunked ? writeFile.size() / 3 : writeFile.size()))
@@ -527,7 +532,7 @@ TEST(TabletTests, OptionalSections) {
   for (auto useChaniedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
         file, useChaniedBuffers);
-    nimble::Tablet tablet{*pool, &readFile};
+    nimble::TabletReader tablet{*pool, &readFile};
 
     auto section = tablet.loadOptionalSection("section1");
     ASSERT_TRUE(section.has_value());
@@ -562,7 +567,7 @@ TEST(TabletTests, OptionalSectionsEmpty) {
   for (auto useChaniedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
         file, useChaniedBuffers);
-    nimble::Tablet tablet{*pool, &readFile};
+    nimble::TabletReader tablet{*pool, &readFile};
 
     auto section = tablet.loadOptionalSection("section1");
     ASSERT_FALSE(section.has_value());
@@ -602,7 +607,7 @@ TEST(TabletTests, OptionalSectionsPreload) {
       for (auto useChaniedBuffers : {false, true}) {
         nimble::testing::InMemoryTrackableReadFile readFile(
             file, useChaniedBuffers);
-        nimble::Tablet tablet{*pool, &readFile, preload};
+        nimble::TabletReader tablet{*pool, &readFile, preload};
 
         // Expecting only the initial footer read.
         ASSERT_EQ(expectedInitialReads, readFile.chunks().size());
