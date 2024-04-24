@@ -105,6 +105,11 @@ resolve_dependency(glog)
 set_source(gflags)
 resolve_dependency(gflags COMPONENTS shared)
 
+set(BOOST_INCLUDE_LIBRARIES algorithm context filesystem program_options)
+
+set_source(Boost)
+resolve_dependency(Boost 1.77.0 COMPONENTS ${BOOST_INCLUDE_LIBRARIES})
+
 set_source(folly)
 resolve_dependency(folly)
 
