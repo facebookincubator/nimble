@@ -21,7 +21,7 @@
 
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/tablet/Tablet.h"
+#include "dwio/nimble/tablet/TabletReader.h"
 #include "folly/io/IOBuf.h"
 
 namespace facebook::nimble {

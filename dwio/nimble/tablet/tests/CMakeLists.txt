@@ -11,12 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_executable(nimble_tablet_tests TabletTests.cpp)
+add_executable(nimble_tabletReader_tests TabletTests.cpp)
 
-add_test(nimble_tablet_tests nimble_tablet_tests)
+add_test(nimble_tabletReader_tests nimble_tabletReader_tests)
 
 target_link_libraries(
-  nimble_tablet_tests
+  nimble_tabletReader_tests
   nimble_tablet
   nimble_common
   velox_memory

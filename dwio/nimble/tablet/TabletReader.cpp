@@ -13,11 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/tablet/Tablet.h"
+#include "dwio/nimble/tablet/TabletReader.h"
+
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/tablet/Compression.h"
+#include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
 #include "folly/compression/Compression.h"
 #include "folly/io/Cursor.h"
@@ -57,60 +59,6 @@ DEFINE_uint64(
 // 2 bytes major version + 2 bytes minor version +
 // 4 bytes magic number.
 namespace {
-
-constexpr uint16_t kMagicNumber = 0xA1FA;
-constexpr uint64_t kInitialFooterSize = 8 * 1024 * 1024; // 8Mb
-constexpr uint16_t kVersionMajor = 0;
-constexpr uint16_t kVersionMinor = 1;
-
-// Total size of the fields after the flatbuffer.
-constexpr uint32_t kPostscriptSize = 20;
-
-// The following fields in postscript are included in checksum calculation.
-// 4 bytes footer size + 1 byte compression type
-constexpr uint32_t kPostscriptChecksumedSize = 5;
-
-template <typename Source, typename Target = Source>
-flatbuffers::Offset<flatbuffers::Vector<Target>> createFlattenedVector(
-    flatbuffers::FlatBufferBuilder& builder,
-    size_t streamCount,
-    const std::vector<std::vector<Source>>& source,
-    Target defaultValue) {
-  // This method is performing the following:
-  // 1. Converts the source vector into FlatBuffers representation. The flat
-  // buffer representation is a single dimension array, so this method flattens
-  // the source vectors into this single dimension array.
-  // 2. Source vector contains a child vector per stripe. Each one of those
-  // child vectors might contain different entry count than the final number of
-  // streams in the tablet. This is because each stripe might have
-  // encountered just subset of the streams. Therefore, this method fills up all
-  // missing offsets in the target vector with the provided default value.
-
-  auto stripeCount = source.size();
-  std::vector<Target> target(stripeCount * streamCount);
-  size_t targetIndex = 0;
-
-  for (auto& items : source) {
-    NIMBLE_ASSERT(
-        items.size() <= streamCount,
-        "Corrupted footer. Stream count exceeds expected total number of streams.");
-
-    for (auto i = 0; i < streamCount; ++i) {
-      target[targetIndex++] = i < items.size()
-          ? static_cast<Target>(items[i])
-          : static_cast<Target>(defaultValue);
-    }
-  }
-
-  return builder.CreateVector<Target>(target);
-}
-
-std::string_view asView(const flatbuffers::FlatBufferBuilder& builder) {
-  return {
-      reinterpret_cast<const char*>(builder.GetBufferPointer()),
-      builder.GetSize()};
-}
-
 template <typename T>
 const T* asFlatBuffersRoot(std::string_view content) {
   return flatbuffers::GetRoot<T>(content.data());
@@ -145,248 +93,6 @@ std::string_view toStringView(const folly::IOBuf& buf) {
 }
 
 } // namespace
-
-void TabletWriter::close() {
-  auto stripeCount = stripeOffsets_.size();
-  NIMBLE_ASSERT(
-      stripeCount == stripeSizes_.size() &&
-          stripeCount == stripeGroupIndices_.size() &&
-          stripeCount == rowCounts_.size(),
-      "Stripe count mismatch.");
-
-  const uint64_t totalRows =
-      std::accumulate(rowCounts_.begin(), rowCounts_.end(), uint64_t{0});
-
-  flatbuffers::FlatBufferBuilder builder(kInitialFooterSize);
-
-  // write remaining stripe groups
-  tryWriteStripeGroup(true);
-
-  // write stripes
-  MetadataSection stripes;
-  if (stripeCount > 0) {
-    flatbuffers::FlatBufferBuilder stripesBuilder(kInitialFooterSize);
-    stripesBuilder.Finish(serialization::CreateStripes(
-        stripesBuilder,
-        stripesBuilder.CreateVector(rowCounts_),
-        stripesBuilder.CreateVector(stripeOffsets_),
-        stripesBuilder.CreateVector(stripeSizes_),
-        stripesBuilder.CreateVector(stripeGroupIndices_)));
-    stripes = createMetadataSection(asView(stripesBuilder));
-  }
-
-  auto createOptionalMetadataSection =
-      [](flatbuffers::FlatBufferBuilder& builder,
-         const std::vector<
-             std::pair<std::string, TabletWriter::MetadataSection>>&
-             optionalSections) {
-        return serialization::CreateOptionalMetadataSections(
-            builder,
-            builder.CreateVector<flatbuffers::Offset<flatbuffers::String>>(
-                optionalSections.size(),
-                [&builder, &optionalSections](size_t i) {
-                  return builder.CreateString(optionalSections[i].first);
-                }),
-            builder.CreateVector<uint64_t>(
-                optionalSections.size(),
-                [&optionalSections](size_t i) {
-                  return optionalSections[i].second.offset;
-                }),
-            builder.CreateVector<uint32_t>(
-                optionalSections.size(),
-                [&optionalSections](size_t i) {
-                  return optionalSections[i].second.size;
-                }),
-            builder.CreateVector<uint8_t>(
-                optionalSections.size(), [&optionalSections](size_t i) {
-                  return static_cast<uint8_t>(
-                      optionalSections[i].second.compressionType);
-                }));
-      };
-
-  // write footer
-  builder.Finish(serialization::CreateFooter(
-      builder,
-      totalRows,
-      stripeCount > 0 ? serialization::CreateMetadataSection(
-                            builder,
-                            stripes.offset,
-                            stripes.size,
-                            static_cast<serialization::CompressionType>(
-                                stripes.compressionType))
-                      : 0,
-      !stripeGroups_.empty()
-          ? builder.CreateVector<
-                flatbuffers::Offset<serialization::MetadataSection>>(
-                stripeGroups_.size(),
-                [this, &builder](size_t i) {
-                  return serialization::CreateMetadataSection(
-                      builder,
-                      stripeGroups_[i].offset,
-                      stripeGroups_[i].size,
-                      static_cast<serialization::CompressionType>(
-                          stripeGroups_[i].compressionType));
-                })
-          : 0,
-      !optionalSections_.empty()
-          ? createOptionalMetadataSection(
-                builder, {optionalSections_.begin(), optionalSections_.end()})
-          : 0));
-
-  auto footerStart = file_->size();
-  auto footerCompressionType = writeMetadata(asView(builder));
-
-  // End with the fixed length constants.
-  const uint64_t footerSize64Bit = (file_->size() - footerStart);
-  NIMBLE_ASSERT(
-      footerSize64Bit <= std::numeric_limits<uint32_t>::max(),
-      fmt::format("Footer size too big: {}.", footerSize64Bit));
-  const uint32_t footerSize = footerSize64Bit;
-  writeWithChecksum({reinterpret_cast<const char*>(&footerSize), 4});
-  writeWithChecksum({reinterpret_cast<const char*>(&footerCompressionType), 1});
-  uint64_t checksum = checksum_->getChecksum();
-  file_->append({reinterpret_cast<const char*>(&options_.checksumType), 1});
-  file_->append({reinterpret_cast<const char*>(&checksum), 8});
-  file_->append({reinterpret_cast<const char*>(&kVersionMajor), 2});
-  file_->append({reinterpret_cast<const char*>(&kVersionMinor), 2});
-  file_->append({reinterpret_cast<const char*>(&kMagicNumber), 2});
-}
-
-void TabletWriter::writeStripe(uint32_t rowCount, std::vector<Stream> streams) {
-  if (UNLIKELY(rowCount == 0)) {
-    return;
-  }
-
-  rowCounts_.push_back(rowCount);
-  stripeOffsets_.push_back(file_->size());
-
-  auto streamCount = streams.empty()
-      ? 0
-      : std::max_element(
-            streams.begin(),
-            streams.end(),
-            [](const auto& a, const auto& b) {
-              return a.offset < b.offset;
-            })->offset +
-          1;
-
-  auto& stripeStreamOffsets = streamOffsets_.emplace_back(streamCount, 0);
-  auto& stripeStreamSizes = streamSizes_.emplace_back(streamCount, 0);
-
-  if (options_.layoutPlanner) {
-    streams = options_.layoutPlanner->getLayout(std::move(streams));
-  }
-
-  for (const auto& stream : streams) {
-    const uint32_t index = stream.offset;
-
-    // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
-    stripeStreamOffsets[index] = file_->size() - stripeOffsets_.back();
-
-    for (auto output : stream.content) {
-      writeWithChecksum(output);
-    }
-
-    // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
-    stripeStreamSizes[index] =
-        file_->size() - (stripeStreamOffsets[index] + stripeOffsets_.back());
-  }
-
-  stripeSizes_.push_back(file_->size() - stripeOffsets_.back());
-  stripeGroupIndices_.push_back(stripeGroupIndex_);
-
-  // Write stripe group if size of column offsets/sizes is too large.
-  tryWriteStripeGroup();
-}
-
-CompressionType TabletWriter::writeMetadata(std::string_view metadata) {
-  auto size = metadata.size();
-  bool shouldCompress = size > options_.metadataCompressionThreshold;
-  CompressionType compressionType = CompressionType::Uncompressed;
-  std::optional<Vector<char>> compressed;
-  if (shouldCompress) {
-    compressed = ZstdCompression::compress(memoryPool_, metadata);
-    if (compressed.has_value()) {
-      compressionType = CompressionType::Zstd;
-      metadata = {compressed->data(), compressed->size()};
-    }
-  }
-  writeWithChecksum(metadata);
-  return compressionType;
-}
-
-TabletWriter::MetadataSection TabletWriter::createMetadataSection(
-    std::string_view metadata) {
-  auto offset = file_->size();
-  auto compressionType = writeMetadata(metadata);
-  auto size = static_cast<uint32_t>(file_->size() - offset);
-  return MetadataSection{
-      .offset = offset, .size = size, .compressionType = compressionType};
-}
-
-void TabletWriter::writeOptionalSection(
-    std::string name,
-    std::string_view content) {
-  NIMBLE_CHECK(!name.empty(), "Optional section name cannot be empty.");
-  NIMBLE_CHECK(
-      optionalSections_.find(name) == optionalSections_.end(),
-      fmt::format("Optional section '{}' already exists.", name));
-  optionalSections_.try_emplace(
-      std::move(name), createMetadataSection(content));
-}
-
-void TabletWriter::tryWriteStripeGroup(bool force) {
-  auto stripeCount = streamOffsets_.size();
-  NIMBLE_ASSERT(stripeCount == streamSizes_.size(), "Stripe count mismatch.");
-  if (stripeCount == 0) {
-    return;
-  }
-
-  // Estimate size
-  // 8 bytes for offsets, 4 for size, 1 for compression type, so 13.
-  size_t estimatedSize = 4 + stripeCount * streamOffsets_.back().size() * 13;
-  if (!force && (estimatedSize < options_.metadataFlushThreshold)) {
-    return;
-  }
-
-  auto maxStreamCountIt = std::max_element(
-      streamOffsets_.begin(),
-      streamOffsets_.end(),
-      [](const auto& a, const auto& b) { return a.size() < b.size(); });
-
-  auto streamCount =
-      maxStreamCountIt == streamOffsets_.end() ? 0 : maxStreamCountIt->size();
-
-  // Each stripe may have different stream count recorded.
-  // We need to pad shorter stripes to the full length of stream count. All
-  // these is handled by the |createFlattenedVector| function.
-  flatbuffers::FlatBufferBuilder builder(kInitialFooterSize);
-  auto streamOffsets = createFlattenedVector<uint32_t, uint32_t>(
-      builder, streamCount, streamOffsets_, 0);
-  auto streamSizes = createFlattenedVector<uint32_t, uint32_t>(
-      builder, streamCount, streamSizes_, 0);
-
-  builder.Finish(serialization::CreateStripeGroup(
-      builder, stripeCount, streamOffsets, streamSizes));
-
-  stripeGroups_.push_back(createMetadataSection(asView(builder)));
-  ++stripeGroupIndex_;
-
-  streamOffsets_.clear();
-  streamSizes_.clear();
-}
-
-void TabletWriter::writeWithChecksum(std::string_view data) {
-  file_->append(data);
-  checksum_->update(data);
-}
-
-void TabletWriter::writeWithChecksum(const folly::IOBuf& buf) {
-  for (auto buffer : buf) {
-    writeWithChecksum(
-        {reinterpret_cast<const char*>(buffer.data()), buffer.size()});
-  }
-}
 
 MetadataBuffer::MetadataBuffer(
     velox::memory::MemoryPool& memoryPool,
@@ -447,7 +153,7 @@ MetadataBuffer::MetadataBuffer(
           iobuf.computeChainDataLength(),
           type} {}
 
-void Tablet::StripeGroup::reset(
+void TabletReader::StripeGroup::reset(
     uint32_t stripeGroupIndex,
     const MetadataBuffer& stripes,
     uint32_t stripeIndex,
@@ -482,13 +188,13 @@ void Tablet::StripeGroup::reset(
   firstStripe_ = stripeIndex;
 }
 
-std::span<const uint32_t> Tablet::StripeGroup::streamOffsets(
+std::span<const uint32_t> TabletReader::StripeGroup::streamOffsets(
     uint32_t stripe) const {
   return {
       streamOffsets_ + (stripe - firstStripe_) * streamCount_, streamCount_};
 }
 
-std::span<const uint32_t> Tablet::StripeGroup::streamSizes(
+std::span<const uint32_t> TabletReader::StripeGroup::streamSizes(
     uint32_t stripe) const {
   return {streamSizes_ + (stripe - firstStripe_) * streamCount_, streamCount_};
 }
@@ -535,7 +241,7 @@ Postscript Postscript::parse(std::string_view data) {
   return ps;
 }
 
-Tablet::Tablet(
+TabletReader::TabletReader(
     MemoryPool& memoryPool,
     std::shared_ptr<velox::ReadFile> readFile,
     Postscript postscript,
@@ -562,15 +268,15 @@ Tablet::Tablet(
   }
 }
 
-Tablet::Tablet(
+TabletReader::TabletReader(
     MemoryPool& memoryPool,
     std::shared_ptr<velox::ReadFile> readFile,
     const std::vector<std::string>& preloadOptionalSections)
-    : Tablet{memoryPool, readFile.get(), preloadOptionalSections} {
+    : TabletReader{memoryPool, readFile.get(), preloadOptionalSections} {
   ownedFile_ = std::move(readFile);
 }
 
-Tablet::Tablet(
+TabletReader::TabletReader(
     MemoryPool& memoryPool,
     velox::ReadFile* readFile,
     const std::vector<std::string>& preloadOptionalSections)
@@ -720,7 +426,7 @@ Tablet::Tablet(
   }
 }
 
-uint64_t Tablet::calculateChecksum(
+uint64_t TabletReader::calculateChecksum(
     velox::memory::MemoryPool& memoryPool,
     velox::ReadFile* readFile,
     uint64_t chunkSize) {
@@ -785,7 +491,7 @@ class PreloadedStreamLoader : public StreamLoader {
 
 } // namespace
 
-void Tablet::initStripes() {
+void TabletReader::initStripes() {
   auto footerRoot =
       asFlatBuffersRoot<serialization::Footer>(footer_->content());
   tabletRowCount_ = footerRoot->row_count();
@@ -807,7 +513,7 @@ void Tablet::initStripes() {
   }
 }
 
-void Tablet::ensureStripeGroup(uint32_t stripe) const {
+void TabletReader::ensureStripeGroup(uint32_t stripe) const {
   auto footerRoot =
       asFlatBuffersRoot<serialization::Footer>(footer_->content());
   auto stripesRoot =
@@ -831,22 +537,22 @@ void Tablet::ensureStripeGroup(uint32_t stripe) const {
   }
 }
 
-std::span<const uint32_t> Tablet::streamOffsets(uint32_t stripe) const {
+std::span<const uint32_t> TabletReader::streamOffsets(uint32_t stripe) const {
   ensureStripeGroup(stripe);
   return stripeGroup_.streamOffsets(stripe);
 }
 
-std::span<const uint32_t> Tablet::streamSizes(uint32_t stripe) const {
+std::span<const uint32_t> TabletReader::streamSizes(uint32_t stripe) const {
   ensureStripeGroup(stripe);
   return stripeGroup_.streamSizes(stripe);
 }
 
-uint32_t Tablet::streamCount(uint32_t stripe) const {
+uint32_t TabletReader::streamCount(uint32_t stripe) const {
   ensureStripeGroup(stripe);
   return stripeGroup_.streamCount();
 }
 
-std::vector<std::unique_ptr<StreamLoader>> Tablet::load(
+std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
     uint32_t stripe,
     std::span<const uint32_t> streamIdentifiers,
     std::function<std::string_view(uint32_t)> streamLabel) const {
@@ -899,7 +605,7 @@ std::vector<std::unique_ptr<StreamLoader>> Tablet::load(
   return streams;
 }
 
-std::optional<Section> Tablet::loadOptionalSection(
+std::optional<Section> TabletReader::loadOptionalSection(
     const std::string& name,
     bool keepCache) const {
   NIMBLE_CHECK(!name.empty(), "Optional section name cannot be empty.");

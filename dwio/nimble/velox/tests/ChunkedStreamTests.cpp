@@ -15,7 +15,6 @@
  */
 #include <gtest/gtest.h>
 
-#include "dwio/nimble/tablet/Tablet.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 

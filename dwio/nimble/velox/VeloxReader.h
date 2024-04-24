@@ -19,7 +19,7 @@
 #include "dwio/nimble/common/MetricsLogger.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/tablet/Tablet.h"
+#include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/FieldReader.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/StreamLabels.h"
@@ -80,7 +80,7 @@ class VeloxReader {
 
   VeloxReader(
       velox::memory::MemoryPool& pool,
-      std::shared_ptr<const Tablet> tablet,
+      std::shared_ptr<const TabletReader> tabletReader,
       std::shared_ptr<const velox::dwio::common::ColumnSelector> selector =
           nullptr,
       VeloxReadParams params = {});
@@ -92,15 +92,15 @@ class VeloxReader {
   // pool_. If it is not nullptr its type must match type_.
   bool next(uint64_t rowCount, velox::VectorPtr& result);
 
-  const Tablet& getTabletView() const;
+  const TabletReader& tabletReader() const;
 
-  const std::shared_ptr<const velox::RowType>& getType() const;
+  const std::shared_ptr<const velox::RowType>& type() const;
 
   const std::shared_ptr<const Type>& schema() const;
 
   const std::map<std::string, std::string>& metadata() const;
 
-  velox::memory::MemoryPool& getMemoryPool() const {
+  velox::memory::MemoryPool& memoryPool() const {
     return pool_;
   }
 
@@ -148,7 +148,7 @@ class VeloxReader {
   static const std::vector<std::string>& preloadedOptionalSections();
 
   velox::memory::MemoryPool& pool_;
-  std::shared_ptr<const Tablet> tablet_;
+  std::shared_ptr<const TabletReader> tabletReader_;
   const VeloxReadParams parameters_;
   std::shared_ptr<const Type> schema_;
   StreamLabels streamLabels_;

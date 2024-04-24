@@ -14,13 +14,15 @@
  * limitations under the License.
  */
 #include "dwio/nimble/tools/EncodingLayoutTrainer.h"
-#include <dwio/nimble/common/Vector.h>
+
 #include <optional>
 #include <string_view>
+
 #include "common/strings/Zstd.h"
 #include "dwio/api/NimbleWriterOptionBuilder.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/EncodingFactoryNew.h"
 #include "dwio/nimble/encodings/EncodingLayoutCapture.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
@@ -260,8 +262,8 @@ EncodingLayoutTree EncodingLayoutTrainer::train(folly::Executor& executor) {
   std::unique_ptr<velox::LocalReadFile> readFile =
       std::make_unique<velox::LocalReadFile>(file);
 
-  std::shared_ptr<nimble::Tablet> tablet =
-      std::make_shared<nimble::Tablet>(memoryPool_, std::move(readFile));
+  std::shared_ptr<nimble::TabletReader> tablet =
+      std::make_shared<nimble::TabletReader>(memoryPool_, std::move(readFile));
   std::unique_ptr<nimble::VeloxReader> reader =
       std::make_unique<nimble::VeloxReader>(memoryPool_, tablet);
 
@@ -277,7 +279,7 @@ EncodingLayoutTree EncodingLayoutTrainer::train(folly::Executor& executor) {
   dwio::api::NimbleWriterOptionBuilder optionBuilder;
   if (!serializedSerde_.empty()) {
     optionBuilder.withSerdeParams(
-        reader->getType(),
+        reader->type(),
         deserialize<Apache::Hadoop::Hive::SerDeInfo>(serializedSerde_)
             .get_parameters());
   }

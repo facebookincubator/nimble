@@ -21,10 +21,10 @@
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/encodings/EncodingLayoutCapture.h"
+#include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
-#include "dwio/nimble/velox/TabletSections.h"
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "folly/FileUtil.h"
@@ -286,7 +286,7 @@ TEST_P(RawStripeSizeFlushPolicyTest, RawStripeSizeFlushPolicy) {
   auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
   nimble::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
 
-  EXPECT_EQ(GetParam().stripeCount, reader.getTabletView().stripeCount());
+  EXPECT_EQ(GetParam().stripeCount, reader.tabletReader().stripeCount());
 }
 
 namespace {
@@ -379,7 +379,7 @@ TEST_F(VeloxWriterTests, FlushHugeStrings) {
       std::dynamic_pointer_cast<const velox::RowType>(vector->type()));
   nimble::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
 
-  EXPECT_EQ(3, reader.getTabletView().stripeCount());
+  EXPECT_EQ(3, reader.tabletReader().stripeCount());
 }
 
 TEST_F(VeloxWriterTests, EncodingLayout) {
@@ -514,7 +514,7 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
   for (auto useChaniedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
         file, useChaniedBuffers);
-    nimble::Tablet tablet{*leafPool_, &readFile};
+    nimble::TabletReader tablet{*leafPool_, &readFile};
     auto section =
         tablet.loadOptionalSection(std::string(nimble::kSchemaSection));
     NIMBLE_CHECK(section.has_value(), "Schema not found.");
@@ -924,7 +924,7 @@ void testChunks(
     velox::memory::MemoryPool& rootPool,
     uint32_t minStreamChunkRawSize,
     std::vector<std::tuple<velox::VectorPtr, nimble::FlushDecision>> vectors,
-    std::function<void(const nimble::Tablet&)> verifier,
+    std::function<void(const nimble::TabletReader&)> verifier,
     folly::F14FastSet<std::string> flatMapColumns = {}) {
   ASSERT_LT(0, vectors.size());
   auto& type = std::get<0>(vectors[0])->type();
@@ -961,7 +961,7 @@ void testChunks(
 
   folly::writeFile(file, "/tmp/afile");
 
-  nimble::Tablet tablet{
+  nimble::TabletReader tablet{
       *leafPool, std::make_unique<velox::InMemoryReadFile>(file)};
   verifier(tablet);
 
