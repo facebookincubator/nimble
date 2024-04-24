@@ -16,7 +16,9 @@
 
 #pragma once
 
-#include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/common/Checksum.h"
+#include "velox/common/file/File.h"
+#include "velox/common/memory/Memory.h"
 
 namespace facebook::nimble {
 struct Stream {

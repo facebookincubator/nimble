@@ -20,7 +20,6 @@
 #include "dwio/nimble/tablet/Compression.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
-#include "dwio/nimble/velox/MetadataGenerated.h"
 
 namespace facebook::nimble {
 namespace {
