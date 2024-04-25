@@ -15,7 +15,7 @@
  */
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include <string_view>
-#include "dwio/nimble/encodings/EncodingFactoryNew.h"
+#include "dwio/nimble/encodings/EncodingFactory.h"
 
 namespace facebook::nimble {
 

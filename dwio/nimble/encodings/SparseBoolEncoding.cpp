@@ -21,7 +21,7 @@
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/Compression.h"
-#include "dwio/nimble/encodings/EncodingFactoryNew.h"
+#include "dwio/nimble/encodings/EncodingFactory.h"
 
 namespace facebook::nimble {
 

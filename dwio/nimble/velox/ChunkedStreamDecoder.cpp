@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 #include "dwio/nimble/velox/ChunkedStreamDecoder.h"
-#include "dwio/nimble/encodings/EncodingFactoryNew.h"
+#include "dwio/nimble/encodings/EncodingFactory.h"
 
 namespace facebook::nimble {
 

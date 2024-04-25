@@ -17,7 +17,7 @@ add_library(
   nimble_encodings
   Compression.cpp
   Encoding.cpp
-  EncodingFactoryNew.cpp
+  EncodingFactory.cpp
   EncodingLayout.cpp
   EncodingLayoutCapture.cpp
   RleEncoding.cpp

@@ -21,7 +21,7 @@
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingFactoryNew.h"
+#include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/SentinelEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
