@@ -1,0 +1,79 @@
+# Copyright (c) Meta Platforms, Inc. and its affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Linux Build
+
+on:
+  push:
+    branches:
+      - "main"
+
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.repository }}-${{ github.head_ref || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  ubuntu-debug:
+    runs-on: ubuntu-latest
+    if: ${{ github.repository == 'facebookexternal/nimble' }}
+    name: "Ubuntu Build"
+    env:
+      CCACHE_DIR: "${{ github.workspace }}/.ccache"
+    defaults:
+      run:
+        shell: bash
+        working-directory: nimble
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+        with:
+          path: nimble
+
+      - name: Install Dependencies
+        run: |
+          sudo apt install -y \
+            clang-15 \
+            ccache \
+            flatbuffers-compiler \
+            libflatbuffers-dev \
+            libgflags-dev \
+            libunwind-dev \
+            libgoogle-glog-dev \
+            libdouble-conversion-dev \
+            libevent-dev \
+            liblzo2-dev \
+            libelf-dev \
+            libdwarf-dev \
+            libsnappy-dev \
+            bison \
+            flex \
+            libfl-dev
+
+      - name: "Build"
+        env:
+          CC: "clang-15"
+          CXX: "clang++-15"
+        run: |
+          $CXX --version
+          make
+
+      - name: "Post Build"
+        run: |
+          # Print and zero cache stats.
+          ccache -szv
