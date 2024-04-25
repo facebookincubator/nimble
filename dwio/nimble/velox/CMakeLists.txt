@@ -74,20 +74,6 @@ target_link_libraries(
   nimble_velox_schema_serialization nimble_velox_schema_reader
   nimble_velox_schema_builder nimble_velox_schema_fb)
 
-add_library(nimble_velox_deserializer Deserializer.cpp)
-target_link_libraries(
-  nimble_velox_deserializer
-  nimble_common
-  nimble_velox_common
-  nimble_velox_field_reader
-  velox_vector
-  velox_memory
-  velox_dwio_common)
-
-add_library(nimble_velox_serializer Serializer.cpp)
-target_link_libraries(nimble_velox_serializer nimble_common
-                      nimble_velox_schema_builder velox_vector)
-
 add_library(nimble_velox_reader ChunkedStream.cpp ChunkedStreamDecoder.cpp
                                 StreamLabels.cpp VeloxReader.cpp)
 target_link_libraries(

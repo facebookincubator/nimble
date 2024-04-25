@@ -23,7 +23,6 @@ add_executable(
   FlatMapLayoutPlannerTests.cpp
   OrderedRangesTests.cpp
   SchemaTests.cpp
-  SerializationTests.cpp
   TypeTests.cpp
   VeloxReaderTests.cpp
   # TODO: Disabled until MemoryReclaimer is decouple from velox_exec in Velox.
@@ -37,8 +36,6 @@ target_link_libraries(
   nimble_velox_schema_utils
   nimble_velox_reader
   nimble_velox_writer
-  nimble_velox_serializer
-  nimble_velox_deserializer
   nimble_velox_field_writer
   nimble_velox_flatmap_layout_planner
   nimble_common_file_writer
