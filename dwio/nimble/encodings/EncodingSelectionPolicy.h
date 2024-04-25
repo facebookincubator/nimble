@@ -121,8 +121,8 @@ using EncodingSelectionPolicyFactory =
 struct CompressionOptions {
   float compressionAcceptRatio = 0.98f;
   uint32_t zstdCompressionLevel = 3;
-  uint32_t zstrongCompressionLevel = 4;
-  uint32_t zstrongDecompressionLevel = 2;
+  uint32_t internalCompressionLevel = 4;
+  uint32_t internalDecompressionLevel = 2;
   bool useVariableBitWidthCompressor = false;
 };
 
@@ -209,29 +209,33 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
       }
     }
 
-    // Currently, we always attempt to compress leaf data streams (using
-    // Zstrong). The logic behind this is that encoding selection optimizes the
-    // in-memory layout of data, while compression provides extra saving for
-    // persistent storage (and bandwidth).
-    class AlwaysCompressZstrongPolicy : public CompressionPolicy {
+    // Currently, we always attempt to compress leaf data streams. The logic
+    // behind this is that encoding selection optimizes the in-memory layout of
+    // data, while compression provides extra saving for persistent storage (and
+    // bandwidth).
+    class AlwaysCompressPolicy : public CompressionPolicy {
      public:
-      explicit AlwaysCompressZstrongPolicy(
-          CompressionOptions compressionOptions)
+      explicit AlwaysCompressPolicy(CompressionOptions compressionOptions)
           : compressionOptions_{std::move(compressionOptions)} {}
 
       CompressionInformation compression() const override {
+#ifdef META_INTERNAL_COMPRESSOR
         CompressionInformation information{
-            .compressionType = CompressionType::Zstrong};
-        // See
-        // https://docs.google.com/spreadsheets/d/1tjkVol68s94_Z2R4ROp1kpOkMwlrbHI0Jlg9VpRnk9c/edit?usp=sharing
-        // for summary on why these compression levels are used.
-        information.parameters.zstrong.compressionLevel =
-            compressionOptions_.zstrongCompressionLevel;
-        information.parameters.zstrong.decompressionLevel =
-            compressionOptions_.zstrongDecompressionLevel;
-        information.parameters.zstrong.useVariableBitWidthCompressor =
+            .compressionType = CompressionType::MetaInternal};
+        information.parameters.metaInternal.compressionLevel =
+            compressionOptions_.internalCompressionLevel;
+        information.parameters.metaInternal.decompressionLevel =
+            compressionOptions_.internalDecompressionLevel;
+        information.parameters.metaInternal.useVariableBitWidthCompressor =
             compressionOptions_.useVariableBitWidthCompressor;
         return information;
+#else
+        CompressionInformation information{
+            .compressionType = CompressionType::Zstd};
+        information.parameters.zstd.compressionLevel =
+            compressionOptions_.zstdCompressionLevel;
+        return information;
+#endif
       }
 
       virtual bool shouldAccept(
@@ -276,8 +280,7 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
         .encodingType = selectedEncoding,
         .compressionPolicyFactory = [compressionOptions =
                                          compressionOptions_]() {
-          return std::make_unique<AlwaysCompressZstrongPolicy>(
-              compressionOptions);
+          return std::make_unique<AlwaysCompressPolicy>(compressionOptions);
         }};
   }
 
@@ -961,12 +964,12 @@ class ReplayedCompressionPolicy : public nimble::CompressionPolicy {
     }
 
     nimble::CompressionInformation information{
-        .compressionType = nimble::CompressionType::Zstrong};
-    information.parameters.zstrong.compressionLevel =
-        compressionOptions_.zstrongCompressionLevel;
-    information.parameters.zstrong.decompressionLevel =
-        compressionOptions_.zstrongDecompressionLevel;
-    information.parameters.zstrong.useVariableBitWidthCompressor =
+        .compressionType = nimble::CompressionType::MetaInternal};
+    information.parameters.metaInternal.compressionLevel =
+        compressionOptions_.internalCompressionLevel;
+    information.parameters.metaInternal.decompressionLevel =
+        compressionOptions_.internalDecompressionLevel;
+    information.parameters.metaInternal.useVariableBitWidthCompressor =
         compressionOptions_.useVariableBitWidthCompressor;
     return information;
   }

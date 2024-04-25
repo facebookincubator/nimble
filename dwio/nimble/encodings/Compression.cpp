@@ -16,9 +16,42 @@
 #include "dwio/nimble/encodings/Compression.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/encodings/CompressionInternal.h"
+#include "dwio/nimble/encodings/ZstdCompressor.h"
+
+#ifdef META_INTERNAL_COMPRESSOR
+#include "dwio/nimble/encodings/fb/MetaInternalCompressor.h"
+#endif
 
 namespace facebook::nimble {
+
+namespace {
+
+struct CompressorRegistry {
+  CompressorRegistry() {
+    compressors.reserve(2);
+    compressors.emplace(
+        CompressionType::Zstd, std::make_unique<ZstdCompressor>());
+#ifdef META_INTERNAL_COMPRESSOR
+    compressors.emplace(
+        CompressionType::MetaInternal,
+        std::make_unique<MetaInternalCompressor>());
+#endif
+  }
+
+  std::unordered_map<CompressionType, std::unique_ptr<ICompressor>> compressors;
+};
+
+ICompressor& getCompressor(CompressionType compressionType) {
+  static CompressorRegistry registry;
+  auto it = registry.compressors.find(compressionType);
+  NIMBLE_CHECK(
+      it != registry.compressors.end(),
+      fmt::format(
+          "Compressor for type {} is not registered.",
+          toString(compressionType)));
+  return *it->second;
+}
+} // namespace
 
 /* static */ CompressionResult Compression::compress(
     velox::memory::MemoryPool& memoryPool,
@@ -27,62 +60,17 @@ namespace facebook::nimble {
     int bitWidth,
     const CompressionPolicy& compressionPolicy) {
   auto compression = compressionPolicy.compression();
-  switch (compression.compressionType) {
-#ifdef NIMBLE_HAS_ZSTD
-    case CompressionType::Zstd:
-      return compressZstd(
-          memoryPool,
-          data,
-          dataType,
-          bitWidth,
-          compressionPolicy,
-          compression.parameters.zstd);
-#endif
 
-#ifdef NIMBLE_HAS_ZSTRONG
-    case CompressionType::Zstrong:
-      return compressZstrong(
-          memoryPool,
-          data,
-          dataType,
-          bitWidth,
-          compressionPolicy,
-          compression.parameters.zstrong);
-#endif
-
-    default:
-      break;
-  }
-  NIMBLE_NOT_SUPPORTED(fmt::format(
-      "Unsupported compression type: {}.",
-      toString(compression.compressionType)));
+  return getCompressor(compression.compressionType)
+      .compress(memoryPool, data, dataType, bitWidth, compressionPolicy);
 }
 
 /* static */ Vector<char> Compression::uncompress(
     velox::memory::MemoryPool& memoryPool,
     CompressionType compressionType,
     std::string_view data) {
-  switch (compressionType) {
-    case CompressionType::Uncompressed: {
-      NIMBLE_UNREACHABLE(
-          "uncompress() shouldn't be called on uncompressed buffer.");
-    }
-
-#ifdef NIMBLE_HAS_ZSTD
-    case CompressionType::Zstd:
-      return uncompressZstd(memoryPool, compressionType, data);
-#endif
-
-#ifdef NIMBLE_HAS_ZSTRONG
-    case CompressionType::Zstrong:
-      return uncompressZstrong(memoryPool, compressionType, data);
-#endif
-
-    default:
-      break;
-  }
-  NIMBLE_NOT_SUPPORTED(fmt::format(
-      "Unsupported decompression type: {}.", toString(compressionType)));
+  return getCompressor(compressionType)
+      .uncompress(memoryPool, compressionType, data);
 }
 
 } // namespace facebook::nimble

@@ -54,9 +54,9 @@ class Encoder {
       }
 
       nimble::CompressionInformation information{
-          .compressionType = nimble::CompressionType::Zstrong};
-      information.parameters.zstrong.compressionLevel = 9;
-      information.parameters.zstrong.decompressionLevel = 2;
+          .compressionType = nimble::CompressionType::MetaInternal};
+      information.parameters.metaInternal.compressionLevel = 9;
+      information.parameters.metaInternal.decompressionLevel = 2;
       return information;
     }
 

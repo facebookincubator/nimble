@@ -73,7 +73,7 @@ struct ZstdCompressionParameters {
   int16_t compressionLevel = 3;
 };
 
-struct ZstrongCompressionParameters {
+struct MetaInternalCompressionParameters {
   int16_t compressionLevel = 0;
   int16_t decompressionLevel = 0;
   bool useVariableBitWidthCompressor = true;
@@ -81,7 +81,7 @@ struct ZstrongCompressionParameters {
 
 union CompressionParameters {
   ZstdCompressionParameters zstd;
-  ZstrongCompressionParameters zstrong;
+  MetaInternalCompressionParameters metaInternal;
 };
 
 struct CompressionInformation {

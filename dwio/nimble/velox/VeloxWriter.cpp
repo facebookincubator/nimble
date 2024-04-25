@@ -543,14 +543,13 @@ void VeloxWriter::close() {
       file_ = nullptr;
     } catch (const std::exception& e) {
       lastException_ = std::current_exception();
-      context_->logger->logException(
-          MetricsLogger::kFileCloseOperation, e.what());
+      context_->logger->logException(LogOperation::FileClose, e.what());
       file_ = nullptr;
       throw;
     } catch (...) {
       lastException_ = std::current_exception();
       context_->logger->logException(
-          MetricsLogger::kFileCloseOperation,
+          LogOperation::FileClose,
           folly::to<std::string>(
               folly::exceptionStr(std::current_exception())));
       file_ = nullptr;
@@ -802,12 +801,11 @@ bool VeloxWriter::tryWriteStripe(bool force) {
     context_->nextStripe();
     return true;
   } catch (const std::exception& e) {
-    context_->logger->logException(
-        MetricsLogger::kStripeFlushOperation, e.what());
+    context_->logger->logException(LogOperation::StripeFlush, e.what());
     throw;
   } catch (...) {
     context_->logger->logException(
-        MetricsLogger::kStripeFlushOperation,
+        LogOperation::StripeFlush,
         folly::to<std::string>(folly::exceptionStr(std::current_exception())));
     throw;
   }

@@ -28,6 +28,24 @@ struct CompressionResult {
   std::optional<Vector<char>> buffer;
 };
 
+struct ICompressor {
+  virtual CompressionResult compress(
+      velox::memory::MemoryPool& memoryPool,
+      std::string_view data,
+      DataType dataType,
+      int bitWidth,
+      const CompressionPolicy& compressionPolicy) = 0;
+
+  virtual Vector<char> uncompress(
+      velox::memory::MemoryPool& memoryPool,
+      CompressionType compressionType,
+      std::string_view data) = 0;
+
+  virtual CompressionType compressionType() = 0;
+
+  virtual ~ICompressor() = default;
+};
+
 class Compression {
  public:
   static CompressionResult compress(
@@ -41,6 +59,8 @@ class Compression {
       velox::memory::MemoryPool& memoryPool,
       CompressionType compressionType,
       std::string_view data);
+
+  static void registerCompressor(std::unique_ptr<ICompressor>&& compressor);
 };
 
 // Encodings using compression repeat the same pattern, which involves trying to

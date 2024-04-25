@@ -398,7 +398,7 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
                        {
                            nimble::EncodingLayout{
                                nimble::EncodingType::FixedBitWidth,
-                               nimble::CompressionType::Zstrong},
+                               nimble::CompressionType::MetaInternal},
                            std::nullopt,
                        }},
                },
@@ -419,7 +419,7 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
                                 std::nullopt,
                                 nimble::EncodingLayout{
                                     nimble::EncodingType::Trivial,
-                                    nimble::CompressionType::Zstrong},
+                                    nimble::CompressionType::MetaInternal},
                             }},
                     },
                 },
@@ -558,7 +558,7 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
             capture.child(nimble::EncodingIdentifiers::Dictionary::Alphabet)
                 ->encodingType());
         EXPECT_EQ(
-            nimble::CompressionType::Zstrong,
+            nimble::CompressionType::MetaInternal,
             capture.child(nimble::EncodingIdentifiers::Dictionary::Alphabet)
                 ->compressionType());
       }
@@ -577,7 +577,7 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
                 .child(nimble::EncodingIdentifiers::MainlyConstant::OtherValues)
                 ->encodingType());
         EXPECT_EQ(
-            nimble::CompressionType::Zstrong,
+            nimble::CompressionType::MetaInternal,
             capture
                 .child(nimble::EncodingIdentifiers::MainlyConstant::OtherValues)
                 ->compressionType());
@@ -643,7 +643,7 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaMismatch) {
                           {
                               nimble::EncodingLayout{
                                   nimble::EncodingType::FixedBitWidth,
-                                  nimble::CompressionType::Zstrong},
+                                  nimble::CompressionType::MetaInternal},
                               std::nullopt,
                           }},
                   },
@@ -702,7 +702,7 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionMapToFlatmap) {
                        {
                            nimble::EncodingLayout{
                                nimble::EncodingType::FixedBitWidth,
-                               nimble::CompressionType::Zstrong},
+                               nimble::CompressionType::MetaInternal},
                            std::nullopt,
                        }},
                },
@@ -723,7 +723,7 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionMapToFlatmap) {
                                 std::nullopt,
                                 nimble::EncodingLayout{
                                     nimble::EncodingType::Trivial,
-                                    nimble::CompressionType::Zstrong},
+                                    nimble::CompressionType::MetaInternal},
                             }},
                     },
                 },

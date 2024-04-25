@@ -127,7 +127,7 @@ enum class CompressionType : uint8_t {
   Uncompressed = 0,
   // Zstd doesn't require us to externally store level or any other info.
   Zstd = 1,
-  Zstrong = 2,
+  MetaInternal = 2,
 };
 
 std::string toString(CompressionType compressionType);

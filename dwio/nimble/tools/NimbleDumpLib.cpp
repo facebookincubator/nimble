@@ -405,7 +405,7 @@ void NimbleDumpLib::emitHistogram(
   const std::unordered_map<std::string, CompressionType> compressionMap{
       {toString(CompressionType::Uncompressed), CompressionType::Uncompressed},
       {toString(CompressionType::Zstd), CompressionType::Zstd},
-      {toString(CompressionType::Zstrong), CompressionType::Zstrong},
+      {toString(CompressionType::MetaInternal), CompressionType::MetaInternal},
   };
   traverseTablet(
       *pool_,

@@ -43,8 +43,8 @@ getRootManualSelectionPolicy() {
       },
       nimble::CompressionOptions{
           .compressionAcceptRatio = 0.9,
-          .zstrongCompressionLevel = 9,
-          .zstrongDecompressionLevel = 2,
+          .internalCompressionLevel = 9,
+          .internalDecompressionLevel = 2,
           .useVariableBitWidthCompressor = false,
       },
       std::nullopt);

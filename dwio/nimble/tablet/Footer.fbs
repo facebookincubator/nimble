@@ -18,7 +18,7 @@ namespace facebook.nimble.serialization;
 enum CompressionType:uint8 {
   Uncompressed = 0,
   Zstd = 1,
-  Zstrong = 2,
+  MetaInternal = 2,
 }
 
 table Stripes {

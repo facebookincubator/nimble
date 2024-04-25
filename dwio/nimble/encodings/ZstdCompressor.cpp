@@ -13,25 +13,27 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+#include "dwio/nimble/encodings/ZstdCompressor.h"
+
 #include <zstd.h>
 #include <zstd_errors.h>
 #include <optional>
-#include "dwio/nimble/encodings/CompressionInternal.h"
 
 namespace facebook::nimble {
 
-CompressionResult compressZstd(
+CompressionResult ZstdCompressor::compress(
     velox::memory::MemoryPool& memoryPool,
     std::string_view data,
     DataType dataType,
     int /* bitWidth */,
-    const CompressionPolicy& /* compressionPolicy */,
-    const ZstdCompressionParameters& zstdParams) {
+    const CompressionPolicy& compressionPolicy) {
+  auto parameters = compressionPolicy.compression().parameters.zstd;
   Vector<char> buffer{&memoryPool, data.size() + sizeof(uint32_t)};
   auto pos = buffer.data();
   encoding::writeUint32(data.size(), pos);
   auto ret = ZSTD_compress(
-      pos, data.size(), data.data(), data.size(), zstdParams.compressionLevel);
+      pos, data.size(), data.data(), data.size(), parameters.compressionLevel);
   if (ZSTD_isError(ret)) {
     NIMBLE_ASSERT(
         ZSTD_getErrorCode(ret) == ZSTD_ErrorCode::ZSTD_error_dstSize_tooSmall,
@@ -50,7 +52,7 @@ CompressionResult compressZstd(
   };
 }
 
-Vector<char> uncompressZstd(
+Vector<char> ZstdCompressor::uncompress(
     velox::memory::MemoryPool& memoryPool,
     CompressionType compressionType,
     std::string_view data) {
@@ -63,6 +65,10 @@ Vector<char> uncompressZstd(
       !ZSTD_isError(ret),
       fmt::format("Error uncompressing data: {}", ZSTD_getErrorName(ret)));
   return buffer;
+}
+
+CompressionType ZstdCompressor::compressionType() {
+  return CompressionType::Zstd;
 }
 
 } // namespace facebook::nimble

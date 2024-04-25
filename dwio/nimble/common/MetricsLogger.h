@@ -73,23 +73,25 @@ struct FileCloseMetrics {
   folly::dynamic serialize() const;
 };
 
+enum class LogOperation {
+  StripeLoad,
+  StripeFlush,
+  FileClose,
+  CompressionContext,
+};
+
 class MetricsLogger {
  public:
-  constexpr static std::string_view kStripeLoadOperation{"STRIPE_LOAD"};
-  constexpr static std::string_view kStripeFlushOperation{"STRIPE_FLUSH"};
-  constexpr static std::string_view kFileCloseOperation{"FILE_CLOSE"};
-  constexpr static std::string_view kZstrong{"ZSTRONG"};
-
   virtual ~MetricsLogger() = default;
 
   virtual void logException(
-      std::string_view /* operation */,
+      LogOperation /* operation */,
       const std::string& /* errorMessage */) const {}
 
   virtual void logStripeLoad(const StripeLoadMetrics& /* metrics */) const {}
   virtual void logStripeFlush(const StripeFlushMetrics& /* metrics */) const {}
   virtual void logFileClose(const FileCloseMetrics& /* metrics */) const {}
-  virtual void logZstrongContext(const std::string&) const {}
+  virtual void logCompressionContext(const std::string&) const {}
 };
 
 class LoggingScope {

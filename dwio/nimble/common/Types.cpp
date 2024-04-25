@@ -95,8 +95,8 @@ std::string toString(CompressionType compressionType) {
       return "Uncompressed";
     case CompressionType::Zstd:
       return "Zstd";
-    case CompressionType::Zstrong:
-      return "Zstrong";
+    case CompressionType::MetaInternal:
+      return "MetaInternal";
     default:
       return fmt::format(
           "Unknown compression type: {}",

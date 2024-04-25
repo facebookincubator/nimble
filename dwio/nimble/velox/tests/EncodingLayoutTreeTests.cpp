@@ -89,7 +89,7 @@ TEST(EncodingLayoutTreeTests, SingleNode) {
           nimble::EncodingLayoutTree::StreamIdentifiers::Row::NullsStream,
           nimble::EncodingLayout{
               nimble::EncodingType::SparseBool,
-              nimble::CompressionType::Zstrong,
+              nimble::CompressionType::MetaInternal,
               {
                   nimble::EncodingLayout{
                       nimble::EncodingType::FixedBitWidth,
@@ -110,7 +110,7 @@ TEST(EncodingLayoutTreeTests, SingleNodeMultipleStreams) {
               2,
               nimble::EncodingLayout{
                   nimble::EncodingType::SparseBool,
-                  nimble::CompressionType::Zstrong,
+                  nimble::CompressionType::MetaInternal,
                   {
                       nimble::EncodingLayout{
                           nimble::EncodingType::FixedBitWidth,
@@ -143,7 +143,7 @@ TEST(EncodingLayoutTreeTests, WithChildren) {
               1,
               nimble::EncodingLayout{
                   nimble::EncodingType::SparseBool,
-                  nimble::CompressionType::Zstrong,
+                  nimble::CompressionType::MetaInternal,
                   {
                       nimble::EncodingLayout{
                           nimble::EncodingType::FixedBitWidth,
@@ -199,7 +199,7 @@ TEST(EncodingLayoutTreeTests, SingleNodeEmptyName) {
               9,
               nimble::EncodingLayout{
                   nimble::EncodingType::SparseBool,
-                  nimble::CompressionType::Zstrong,
+                  nimble::CompressionType::MetaInternal,
                   {
                       nimble::EncodingLayout{
                           nimble::EncodingType::FixedBitWidth,

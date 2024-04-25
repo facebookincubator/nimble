@@ -269,11 +269,11 @@ void VeloxReader::loadStripe() {
     }
     logger_->logStripeLoad(metrics);
   } catch (const std::exception& e) {
-    logger_->logException(MetricsLogger::kStripeLoadOperation, e.what());
+    logger_->logException(LogOperation::StripeLoad, e.what());
     throw;
   } catch (...) {
     logger_->logException(
-        MetricsLogger::kStripeLoadOperation,
+        LogOperation::StripeLoad,
         folly::to<std::string>(folly::exceptionStr(std::current_exception())));
     throw;
   }

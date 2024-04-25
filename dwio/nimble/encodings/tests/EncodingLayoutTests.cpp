@@ -86,7 +86,7 @@ TEST(EncodingLayoutTests, Trivial) {
 
   {
     nimble::EncodingLayout expected{
-        nimble::EncodingType::Trivial, nimble::CompressionType::Zstrong};
+        nimble::EncodingType::Trivial, nimble::CompressionType::MetaInternal};
 
     testSerialization(expected);
     testCapture<uint32_t>(expected, {1, 2, 3});
@@ -173,7 +173,8 @@ TEST(EncodingLayoutTests, SparseBool) {
       nimble::CompressionType::Uncompressed,
       {
           nimble::EncodingLayout{
-              nimble::EncodingType::Trivial, nimble::CompressionType::Zstrong},
+              nimble::EncodingType::Trivial,
+              nimble::CompressionType::MetaInternal},
       }};
 
   testSerialization(expected);
@@ -187,7 +188,8 @@ TEST(EncodingLayoutTests, MainlyConst) {
       nimble::CompressionType::Uncompressed,
       {
           nimble::EncodingLayout{
-              nimble::EncodingType::Trivial, nimble::CompressionType::Zstrong},
+              nimble::EncodingType::Trivial,
+              nimble::CompressionType::MetaInternal},
           nimble::EncodingLayout{
               nimble::EncodingType::Trivial,
               nimble::CompressionType::Uncompressed},
@@ -258,7 +260,7 @@ TEST(EncodingLayoutTests, Nullable) {
            {
                nimble::EncodingLayout{
                    nimble::EncodingType::Trivial,
-                   nimble::CompressionType::Zstrong},
+                   nimble::CompressionType::MetaInternal},
            }}}};
 
   testSerialization(expected);
@@ -356,7 +358,7 @@ TEST(EncodingLayoutTests, SizeTooSmall) {
         {
             nimble::EncodingLayout{
                 nimble::EncodingType::Trivial,
-                nimble::CompressionType::Zstrong},
+                nimble::CompressionType::MetaInternal},
             nimble::EncodingLayout{
                 nimble::EncodingType::Trivial,
                 nimble::CompressionType::Uncompressed},
@@ -376,7 +378,7 @@ TEST(EncodingLayoutTests, SizeTooSmall) {
         {
             nimble::EncodingLayout{
                 nimble::EncodingType::Trivial,
-                nimble::CompressionType::Zstrong},
+                nimble::CompressionType::MetaInternal},
             nimble::EncodingLayout{
                 nimble::EncodingType::Trivial,
                 nimble::CompressionType::Uncompressed},
