@@ -23,7 +23,6 @@
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/FixedBitArray.h"
-#include "dwio/nimble/common/NimbleCompare.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/Compression.h"
 #include "dwio/nimble/encodings/Encoding.h"

@@ -18,7 +18,6 @@ add_library(
   Bits.cpp
   Checksum.cpp
   FixedBitArray.cpp
-  Huffman.cpp
   MetricsLogger.cpp
   Types.cpp
   Varint.cpp)

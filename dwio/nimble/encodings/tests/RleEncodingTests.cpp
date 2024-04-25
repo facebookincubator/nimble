@@ -18,6 +18,7 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/common/tests/NimbleCompare.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 

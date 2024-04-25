@@ -22,8 +22,6 @@ add_executable(
   BitsTests.cpp
   ExceptionTests.cpp
   FixedBitArrayTests.cpp
-  HuffmanTests.cpp
-  IndexMapTests.cpp
   VarintTests.cpp
   VectorTests.cpp)
 

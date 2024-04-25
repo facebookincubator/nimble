@@ -16,7 +16,6 @@
 #pragma once
 
 #include <span>
-#include "dwio/nimble/common/NimbleCompare.h"
 #include "dwio/nimble/common/Vector.h"
 
 #include <type_traits>
