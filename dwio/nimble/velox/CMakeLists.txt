@@ -33,7 +33,7 @@ target_link_libraries(nimble_velox_field_reader nimble_velox_schema_reader
 
 add_library(nimble_velox_flatmap_layout_planner FlatMapLayoutPlanner.cpp)
 target_link_libraries(nimble_velox_flatmap_layout_planner
-                      nimble_velox_schema_reader nimble_tablet velox_file)
+                      nimble_velox_schema_reader velox_file)
 
 add_library(nimble_velox_field_writer BufferGrowthPolicy.cpp FieldWriter.cpp)
 target_link_libraries(nimble_velox_field_writer nimble_velox_schema
@@ -82,11 +82,19 @@ target_link_libraries(
   nimble_velox_schema_serialization
   nimble_velox_schema_fb
   nimble_velox_metadata_fb
+  nimble_velox_field_reader
+  nimble_tablet_reader
   nimble_common
   Folly::folly)
 
 add_library(
   nimble_velox_writer EncodingLayoutTree.cpp FlushPolicy.cpp VeloxWriter.cpp
                       ChunkedStreamWriter.cpp VeloxWriterDefaultMetadataOSS.cpp)
-target_link_libraries(nimble_velox_writer nimble_encodings nimble_common
-                      nimble_velox_metadata_fb Folly::folly)
+target_link_libraries(
+  nimble_velox_writer
+  nimble_encodings
+  nimble_common
+  nimble_tablet_writer
+  nimble_velox_metadata_fb
+  velox_dwio_common
+  Folly::folly)

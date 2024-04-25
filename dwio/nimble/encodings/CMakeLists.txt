@@ -23,6 +23,7 @@ add_library(
   RleEncoding.cpp
   SparseBoolEncoding.cpp
   Statistics.cpp
-  TrivialEncoding.cpp)
+  TrivialEncoding.cpp
+  ZstdCompressor.cpp)
 
 target_link_libraries(nimble_encodings Folly::folly absl::flat_hash_map)

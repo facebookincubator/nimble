@@ -17,7 +17,8 @@ add_test(nimble_tabletReader_tests nimble_tabletReader_tests)
 
 target_link_libraries(
   nimble_tabletReader_tests
-  nimble_tablet
+  nimble_tablet_reader
+  nimble_tablet_writer
   nimble_common
   velox_memory
   velox_file

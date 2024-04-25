@@ -30,6 +30,11 @@ target_include_directories(nimble_footer_fb
                            INTERFACE ${FLATBUFFERS_INCLUDE_DIR})
 add_dependencies(nimble_footer_fb nimble_footer_schema_fb)
 
-add_library(nimble_tablet Compression.cpp TabletReader.cpp TabletWriter.cpp)
+add_library(nimble_tablet_common Compression.cpp)
+target_link_libraries(nimble_tablet_common nimble_footer_fb Folly::folly)
 
-target_link_libraries(nimble_tablet nimble_footer_fb Folly::folly)
+add_library(nimble_tablet_reader TabletReader.cpp)
+target_link_libraries(nimble_tablet_reader nimble_tablet_common)
+
+add_library(nimble_tablet_writer TabletWriter.cpp)
+target_link_libraries(nimble_tablet_writer nimble_tablet_common)

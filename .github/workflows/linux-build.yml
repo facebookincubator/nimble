@@ -40,7 +40,8 @@ jobs:
         shell: bash
         working-directory: nimble
     steps:
-      - uses: actions/checkout@v4
+      - name: "Checkout"
+        uses: actions/checkout@v4
         with:
           path: nimble
 
@@ -48,6 +49,7 @@ jobs:
         run: |
           sudo apt install -y \
             clang-15 \
+            ccache \
             flatbuffers-compiler \
             libflatbuffers-dev \
             libgflags-dev \
@@ -63,10 +65,15 @@ jobs:
             flex \
             libfl-dev
 
-      - name: Build
+      - name: "Build"
         env:
           CC: "clang-15"
           CXX: "clang++-15"
         run: |
           $CXX --version
           make
+
+      - name: "Post Build"
+        run: |
+          # Print and zero cache stats.
+          ccache -szv
