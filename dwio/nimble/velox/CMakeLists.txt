@@ -27,10 +27,6 @@ add_library(nimble_velox_schema_builder SchemaBuilder.cpp)
 target_link_libraries(nimble_velox_schema_builder nimble_velox_schema_reader
                       nimble_velox_schema nimble_common Folly::folly)
 
-add_library(nimble_velox_config Config.cpp)
-target_link_libraries(nimble_velox_config nimble_encodings nimble_common
-                      Folly::folly)
-
 add_library(nimble_velox_field_reader FieldReader.cpp)
 target_link_libraries(nimble_velox_field_reader nimble_velox_schema_reader
                       nimble_common Folly::folly)
