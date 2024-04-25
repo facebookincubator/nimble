@@ -17,7 +17,6 @@
 #include <gtest/gtest.h>
 #include <zstd.h>
 
-#include "common/strings/UUID.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/encodings/EncodingLayoutCapture.h"
@@ -28,8 +27,9 @@
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "folly/FileUtil.h"
+#include "folly/Random.h"
+#include "velox/common/memory/MemoryArbitrator.h"
 #include "velox/common/memory/SharedArbitrator.h"
-#include "velox/exec/MemoryReclaimer.h"
 #include "velox/vector/VectorStream.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
@@ -73,16 +73,21 @@ TEST_F(VeloxWriterTests, ExceptionOnClose) {
   class ThrowingWriteFile final : public velox::WriteFile {
    public:
     void append(std::string_view /* data */) final {
-      throw std::runtime_error("error/" + strings::generateUUID());
+      throw std::runtime_error(uniqueErrorMessage());
     }
     void flush() final {
-      throw std::runtime_error("error/" + strings::generateUUID());
+      throw std::runtime_error(uniqueErrorMessage());
     }
     void close() final {
-      throw std::runtime_error("error/" + strings::generateUUID());
+      throw std::runtime_error(uniqueErrorMessage());
     }
     uint64_t size() const final {
-      throw std::runtime_error("error/" + strings::generateUUID());
+      throw std::runtime_error(uniqueErrorMessage());
+    }
+
+   private:
+    std::string uniqueErrorMessage() const {
+      return "error/" + folly::to<std::string>(folly::Random::rand32());
     }
   };
 
@@ -309,9 +314,9 @@ class MockReclaimer : public velox::memory::MemoryReclaimer {
 
 TEST_F(VeloxWriterTests, MemoryReclaimPath) {
   auto rootPool = velox::memory::memoryManager()->addRootPool(
-      "root", 4L << 20, velox::exec::MemoryReclaimer::create());
+      "root", 4L << 20, velox::memory::MemoryReclaimer::create());
   auto writerPool = rootPool->addAggregateChild(
-      "writer", velox::exec::MemoryReclaimer::create());
+      "writer", velox::memory::MemoryReclaimer::create());
 
   auto type = velox::ROW(
       {{"simple_int", velox::INTEGER()}, {"simple_double", velox::DOUBLE()}});
