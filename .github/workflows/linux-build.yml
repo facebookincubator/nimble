@@ -29,7 +29,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ubuntu-debug:
+  ubuntu-release:
     runs-on: ubuntu-latest
     if: ${{ github.repository == 'facebookexternal/nimble' }}
     name: "Ubuntu Build"
@@ -40,6 +40,12 @@ jobs:
         shell: bash
         working-directory: nimble
     steps:
+      - name: "Restore Build Cache"
+        uses: assignUser/stash/restore@v1
+        with:
+          path: '${{ env.CCACHE_DIR }}'
+          key: ccache-ubuntu-release-default
+
       - name: "Checkout"
         uses: actions/checkout@v4
         with:
@@ -73,7 +79,13 @@ jobs:
           $CXX --version
           make
 
-      - name: "Post Build"
+      - name: "Cache Stats"
         run: |
           # Print and zero cache stats.
           ccache -szv
+
+      - name: "Stash Build Cache"
+        uses: assignUser/stash/save@v1
+        with:
+          path: '${{ env.CCACHE_DIR }}'
+          key: ccache-ubuntu-release-default
