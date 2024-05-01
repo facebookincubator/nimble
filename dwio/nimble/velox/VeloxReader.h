@@ -29,6 +29,7 @@
 #include "velox/dwio/common/ColumnSelector.h"
 #include "velox/dwio/common/ExecutorBarrier.h"
 #include "velox/dwio/common/FlatMapHelper.h"
+#include "velox/dwio/common/UnitLoader.h"
 #include "velox/type/Type.h"
 #include "velox/vector/BaseVector.h"
 
@@ -60,6 +61,10 @@ struct VeloxReadParams : public FieldReaderParams {
   // Report the Wall time (us) that we spend decoding.
   std::function<void(std::chrono::high_resolution_clock::duration)>
       decodingTimeCallback;
+
+  // Factory with the algorithm to load stripes (units).
+  // If nullptr we'll use the default one, that doesn't pre-load stripes.
+  std::shared_ptr<velox::dwio::common::UnitLoaderFactory> unitLoaderFactory;
 };
 
 class VeloxReader {
