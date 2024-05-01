@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <folly/executors/CPUThreadPoolExecutor.h>
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <iterator>
@@ -28,9 +27,11 @@
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "folly/FileUtil.h"
 #include "folly/Random.h"
+#include "folly/executors/CPUThreadPoolExecutor.h"
 #include "folly/experimental/coro/Generator.h"
 #include "velox/common/file/File.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/dwio/common/ExecutorBarrier.h"
 
 using namespace ::facebook;
 
@@ -513,14 +514,14 @@ TEST(TabletTests, OptionalSections) {
     const std::string& content = random;
     tabletWriter.writeOptionalSection("section1", content);
   }
+  std::string zeroes;
   {
-    std::string content;
-    content.resize(randomSize);
-    for (auto i = 0; i < content.size(); ++i) {
-      content[i] = '\0';
+    zeroes.resize(randomSize);
+    for (auto i = 0; i < zeroes.size(); ++i) {
+      zeroes[i] = '\0';
     }
 
-    tabletWriter.writeOptionalSection("section2", content);
+    tabletWriter.writeOptionalSection("section2", zeroes);
   }
   {
     std::string content;
@@ -529,30 +530,44 @@ TEST(TabletTests, OptionalSections) {
 
   tabletWriter.close();
 
+  folly::CPUThreadPoolExecutor executor{5};
+  facebook::velox::dwio::common::ExecutorBarrier barrier{executor};
+
   for (auto useChaniedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
         file, useChaniedBuffers);
     nimble::TabletReader tablet{*pool, &readFile};
 
-    auto section = tablet.loadOptionalSection("section1");
-    ASSERT_TRUE(section.has_value());
-    ASSERT_EQ(random, section->content());
+    auto check1 = [&]() {
+      auto section = tablet.loadOptionalSection("section1");
+      ASSERT_TRUE(section.has_value());
+      ASSERT_EQ(random, section->content());
+    };
 
-    std::string expectedContent;
-    expectedContent.resize(randomSize);
-    for (auto i = 0; i < expectedContent.size(); ++i) {
-      expectedContent[i] = '\0';
+    auto check2 = [&]() {
+      auto section = tablet.loadOptionalSection("section2");
+      ASSERT_TRUE(section.has_value());
+      ASSERT_EQ(zeroes, section->content());
+    };
+
+    auto check3 = [&, empty = std::string()]() {
+      auto section = tablet.loadOptionalSection("section3");
+      ASSERT_TRUE(section.has_value());
+      ASSERT_EQ(empty, section->content());
+    };
+
+    auto check4 = [&]() {
+      auto section = tablet.loadOptionalSection("section4");
+      ASSERT_FALSE(section.has_value());
+    };
+
+    for (int i = 0; i < 10; ++i) {
+      barrier.add(check1);
+      barrier.add(check2);
+      barrier.add(check3);
+      barrier.add(check4);
     }
-    section = tablet.loadOptionalSection("section2");
-    ASSERT_TRUE(section.has_value());
-    ASSERT_EQ(expectedContent, section->content());
-
-    section = tablet.loadOptionalSection("section3");
-    ASSERT_TRUE(section.has_value());
-    ASSERT_EQ(std::string(), section->content());
-
-    section = tablet.loadOptionalSection("section4");
-    ASSERT_FALSE(section.has_value());
+    barrier.waitAll();
   }
 }
 

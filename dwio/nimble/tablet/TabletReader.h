@@ -19,6 +19,7 @@
 #include "dwio/nimble/common/Checksum.h"
 #include "dwio/nimble/common/Vector.h"
 #include "folly/Range.h"
+#include "folly/Synchronized.h"
 #include "folly/io/IOBuf.h"
 #include "velox/common/file/File.h"
 #include "velox/common/memory/Memory.h"
@@ -289,7 +290,8 @@ class TabletReader {
       std::string,
       std::tuple<uint64_t, uint32_t, CompressionType>>
       optionalSections_;
-  mutable std::unordered_map<std::string, std::unique_ptr<MetadataBuffer>>
+  mutable folly::Synchronized<
+      std::unordered_map<std::string, std::unique_ptr<MetadataBuffer>>>
       optionalSectionsCache_;
 
   friend class TabletHelper;

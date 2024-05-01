@@ -261,8 +261,9 @@ TabletReader::TabletReader(
       /* stripeIndex */ 0,
       std::make_unique<MetadataBuffer>(memoryPool, stripeGroup));
   initStripes();
+  auto optionalSectionsCacheLock = optionalSectionsCache_.wlock();
   for (auto& pair : optionalSections) {
-    optionalSectionsCache_.insert(
+    optionalSectionsCacheLock->insert(
         {pair.first,
          std::make_unique<MetadataBuffer>(memoryPool, pair.second)});
   }
@@ -407,7 +408,7 @@ TabletReader::TabletReader(
           sectionOffset - offset,
           sectionSize,
           sectionCompressionType);
-      optionalSectionsCache_.insert({preload, std::move(metadata)});
+      optionalSectionsCache_.wlock()->insert({preload, std::move(metadata)});
     }
   }
   if (!mustRead.empty()) {
@@ -421,7 +422,7 @@ TabletReader::TabletReader(
       const std::string preload{mustRead[i].label};
       auto metadata = std::make_unique<MetadataBuffer>(
           memoryPool_, iobuf, std::get<2>(optionalSections_[preload]));
-      optionalSectionsCache_.insert({preload, std::move(metadata)});
+      optionalSectionsCache_.wlock()->insert({preload, std::move(metadata)});
     }
   }
 }
@@ -609,14 +610,17 @@ std::optional<Section> TabletReader::loadOptionalSection(
     const std::string& name,
     bool keepCache) const {
   NIMBLE_CHECK(!name.empty(), "Optional section name cannot be empty.");
-  auto itCache = optionalSectionsCache_.find(name);
-  if (itCache != optionalSectionsCache_.end()) {
-    if (keepCache) {
-      return Section{MetadataBuffer{*itCache->second}};
-    } else {
-      auto metadata = std::move(itCache->second);
-      optionalSectionsCache_.erase(itCache);
-      return Section{std::move(*metadata)};
+  {
+    auto optionalSectionsCache = optionalSectionsCache_.wlock();
+    auto itCache = optionalSectionsCache->find(name);
+    if (itCache != optionalSectionsCache->end()) {
+      if (keepCache) {
+        return Section{MetadataBuffer{*itCache->second}};
+      } else {
+        auto metadata = std::move(itCache->second);
+        optionalSectionsCache->erase(itCache);
+        return Section{std::move(*metadata)};
+      }
     }
   }
 

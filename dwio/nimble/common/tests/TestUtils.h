@@ -23,6 +23,7 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "folly/Random.h"
+#include "folly/Synchronized.h"
 #include "velox/common/file/File.h"
 #include "velox/common/memory/Memory.h"
 
@@ -291,12 +292,12 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
 
   std::string_view pread(uint64_t offset, uint64_t length, void* buf)
       const final {
-    chunks_.push_back({offset, length});
+    chunks_.wlock()->push_back({offset, length});
     return file_.pread(offset, length, buf);
   }
 
   std::string pread(uint64_t offset, uint64_t length) const final {
-    chunks_.push_back({offset, length});
+    chunks_.wlock()->push_back({offset, length});
     return file_.pread(offset, length);
   }
 
@@ -314,7 +315,7 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
       const auto& region = regions[i];
       auto& output = iobufs[i];
       if (shouldProduceChainedBuffers_) {
-        chunks_.push_back({region.offset, region.length});
+        chunks_.wlock()->push_back({region.offset, region.length});
         uint64_t splitPoint = region.length / 2;
         output = folly::IOBuf(folly::IOBuf::CREATE, splitPoint);
         file_.pread(region.offset, splitPoint, output.writableData());
@@ -350,12 +351,12 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
     return file_.shouldCoalesce();
   }
 
-  const std::vector<Chunk>& chunks() {
-    return chunks_;
+  std::vector<Chunk> chunks() {
+    return *chunks_.rlock();
   }
 
   void resetChunks() {
-    chunks_.clear();
+    chunks_.wlock()->clear();
   }
 
   std::string getName() const override {
@@ -369,7 +370,7 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
  private:
   velox::InMemoryReadFile file_;
   bool shouldProduceChainedBuffers_;
-  mutable std::vector<Chunk> chunks_;
+  mutable folly::Synchronized<std::vector<Chunk>> chunks_;
 };
 
 } // namespace facebook::nimble::testing
