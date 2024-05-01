@@ -20,6 +20,7 @@ target_link_libraries(
   nimble_tablet_reader
   nimble_tablet_writer
   nimble_common
+  velox_dwio_common
   velox_memory
   velox_file
   gtest
