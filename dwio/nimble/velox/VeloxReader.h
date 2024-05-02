@@ -154,6 +154,7 @@ class VeloxReader {
 
   velox::memory::MemoryPool& pool_;
   std::shared_ptr<const TabletReader> tabletReader_;
+  std::optional<TabletReader::StripeIdentifier> stripeIdentifier_;
   const VeloxReadParams parameters_;
   std::shared_ptr<const Type> schema_;
   StreamLabels streamLabels_;

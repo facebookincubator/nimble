@@ -154,10 +154,11 @@ void parameterizedTest(
         EXPECT_EQ(stripesData[stripe].rowCount, tablet.stripeRowCount(stripe));
 
         readFile.resetChunks();
-        std::vector<uint32_t> identifiers(tablet.streamCount(stripe));
+        auto stripeIdentifier = tablet.getStripeIdentifier(stripe);
+        std::vector<uint32_t> identifiers(tablet.streamCount(stripeIdentifier));
         std::iota(identifiers.begin(), identifiers.end(), 0);
-        auto serializedStreams =
-            tablet.load(stripe, {identifiers.cbegin(), identifiers.cend()});
+        auto serializedStreams = tablet.load(
+            stripeIdentifier, {identifiers.cbegin(), identifiers.cend()});
         auto chunks = readFile.chunks();
         auto expectedReads = stripesData[stripe].streams.size();
         auto diff = chunks.size() - expectedReads;
@@ -754,4 +755,224 @@ TEST(TabletTests, OptionalSectionsPreload) {
             {"section5", 9, "eeee"},
         });
   }
+}
+
+namespace {
+
+enum class ActionEnum { kCreated, kDestroyed };
+
+using Action = std::pair<ActionEnum, int>;
+using Actions = std::vector<Action>;
+
+class Guard {
+ public:
+  Guard(int id, Actions& actions) : id_{id}, actions_{actions} {
+    actions_.push_back(std::make_pair(ActionEnum::kCreated, id_));
+  }
+
+  ~Guard() {
+    actions_.push_back(std::make_pair(ActionEnum::kDestroyed, id_));
+  }
+
+  Guard(const Guard&) = delete;
+  Guard(Guard&&) = delete;
+  Guard& operator=(const Guard&) = delete;
+  Guard& operator=(Guard&&) = delete;
+
+  int id() const {
+    return id_;
+  }
+
+ private:
+  int id_;
+  Actions& actions_;
+};
+
+} // namespace
+
+TEST(TabletTests, ReferenceCountedCache) {
+  Actions actions;
+  facebook::nimble::ReferenceCountedCache<int, Guard> cache{
+      [&](int id) { return std::make_shared<Guard>(id, actions); }};
+
+  auto e1 = cache.get(0);
+  EXPECT_EQ(e1->id(), 0);
+  EXPECT_EQ(actions, Actions({{ActionEnum::kCreated, 0}}));
+
+  auto e2 = cache.get(0);
+  EXPECT_EQ(e2->id(), 0);
+  EXPECT_EQ(actions, Actions({{ActionEnum::kCreated, 0}}));
+  e2.reset();
+  EXPECT_EQ(actions, Actions({{ActionEnum::kCreated, 0}}));
+
+  auto e3 = cache.get(1);
+  EXPECT_EQ(e3->id(), 1);
+  EXPECT_EQ(
+      actions, Actions({{ActionEnum::kCreated, 0}, {ActionEnum::kCreated, 1}}));
+
+  e1.reset();
+  EXPECT_EQ(
+      actions,
+      Actions(
+          {{ActionEnum::kCreated, 0},
+           {ActionEnum::kCreated, 1},
+           {ActionEnum::kDestroyed, 0}}));
+
+  auto e4 = e3;
+  EXPECT_EQ(e4->id(), 1);
+  e3.reset();
+  EXPECT_EQ(
+      actions,
+      Actions(
+          {{ActionEnum::kCreated, 0},
+           {ActionEnum::kCreated, 1},
+           {ActionEnum::kDestroyed, 0}}));
+
+  e4.reset();
+  EXPECT_EQ(
+      actions,
+      Actions(
+          {{ActionEnum::kCreated, 0},
+           {ActionEnum::kCreated, 1},
+           {ActionEnum::kDestroyed, 0},
+           {ActionEnum::kDestroyed, 1}}));
+
+  auto e5 = cache.get(1);
+  EXPECT_EQ(e5->id(), 1);
+  EXPECT_EQ(
+      actions,
+      Actions(
+          {{ActionEnum::kCreated, 0},
+           {ActionEnum::kCreated, 1},
+           {ActionEnum::kDestroyed, 0},
+           {ActionEnum::kDestroyed, 1},
+           {ActionEnum::kCreated, 1}}));
+
+  auto e6 = cache.get(0);
+  EXPECT_EQ(e6->id(), 0);
+  EXPECT_EQ(
+      actions,
+      Actions(
+          {{ActionEnum::kCreated, 0},
+           {ActionEnum::kCreated, 1},
+           {ActionEnum::kDestroyed, 0},
+           {ActionEnum::kDestroyed, 1},
+           {ActionEnum::kCreated, 1},
+           {ActionEnum::kCreated, 0}}));
+
+  e5.reset();
+  EXPECT_EQ(
+      actions,
+      Actions(
+          {{ActionEnum::kCreated, 0},
+           {ActionEnum::kCreated, 1},
+           {ActionEnum::kDestroyed, 0},
+           {ActionEnum::kDestroyed, 1},
+           {ActionEnum::kCreated, 1},
+           {ActionEnum::kCreated, 0},
+           {ActionEnum::kDestroyed, 1}}));
+
+  e6.reset();
+  EXPECT_EQ(
+      actions,
+      Actions(
+          {{ActionEnum::kCreated, 0},
+           {ActionEnum::kCreated, 1},
+           {ActionEnum::kDestroyed, 0},
+           {ActionEnum::kDestroyed, 1},
+           {ActionEnum::kCreated, 1},
+           {ActionEnum::kCreated, 0},
+           {ActionEnum::kDestroyed, 1},
+           {ActionEnum::kDestroyed, 0}}));
+}
+
+TEST(TabletTests, ReferenceCountedCacheStressParallelDuplicates) {
+  std::atomic_int counter{0};
+  facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
+    ++counter;
+    return std::make_shared<int>(id);
+  }};
+  folly::CPUThreadPoolExecutor executor(10);
+  velox::dwio::common::ExecutorBarrier barrier(executor);
+  constexpr int kEntryIds = 100;
+  constexpr int kEntryDuplicates = 10;
+  for (int i = 0; i < kEntryIds; ++i) {
+    for (int n = 0; n < kEntryDuplicates; ++n) {
+      barrier.add([i, &cache]() {
+        auto e = cache.get(i);
+        EXPECT_EQ(*e, i);
+      });
+    }
+  }
+  barrier.waitAll();
+  EXPECT_GE(counter.load(), kEntryIds);
+}
+
+TEST(TabletTests, ReferenceCountedCacheStressParallelDuplicatesSaveEntries) {
+  std::atomic_int counter{0};
+  facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
+    ++counter;
+    return std::make_shared<int>(id);
+  }};
+  folly::Synchronized<std::vector<std::shared_ptr<int>>> entries;
+  folly::CPUThreadPoolExecutor executor(10);
+  velox::dwio::common::ExecutorBarrier barrier(executor);
+  constexpr int kEntryIds = 100;
+  constexpr int kEntryDuplicates = 10;
+  for (int i = 0; i < kEntryIds; ++i) {
+    for (int n = 0; n < kEntryDuplicates; ++n) {
+      barrier.add([i, &cache, &entries]() {
+        auto e = cache.get(i);
+        EXPECT_EQ(*e, i);
+        entries.wlock()->push_back(e);
+      });
+    }
+  }
+  barrier.waitAll();
+  EXPECT_EQ(counter.load(), kEntryIds);
+}
+
+TEST(TabletTests, ReferenceCountedCacheStress) {
+  std::atomic_int counter{0};
+  facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
+    ++counter;
+    return std::make_shared<int>(id);
+  }};
+  folly::CPUThreadPoolExecutor executor(10);
+  velox::dwio::common::ExecutorBarrier barrier(executor);
+  constexpr int kEntryIds = 100;
+  constexpr int kEntryDuplicates = 10;
+  for (int n = 0; n < kEntryDuplicates; ++n) {
+    for (int i = 0; i < kEntryIds; ++i) {
+      barrier.add([i, &cache]() {
+        auto e = cache.get(i);
+        EXPECT_EQ(*e, i);
+      });
+    }
+  }
+  barrier.waitAll();
+  EXPECT_GE(counter.load(), kEntryIds);
+}
+TEST(TabletTests, ReferenceCountedCacheStressSaveEntries) {
+  std::atomic_int counter{0};
+  facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
+    ++counter;
+    return std::make_shared<int>(id);
+  }};
+  folly::Synchronized<std::vector<std::shared_ptr<int>>> entries;
+  folly::CPUThreadPoolExecutor executor(10);
+  velox::dwio::common::ExecutorBarrier barrier(executor);
+  constexpr int kEntryIds = 100;
+  constexpr int kEntryDuplicates = 10;
+  for (int n = 0; n < kEntryDuplicates; ++n) {
+    for (int i = 0; i < kEntryIds; ++i) {
+      barrier.add([i, &cache, &entries]() {
+        auto e = cache.get(i);
+        EXPECT_EQ(*e, i);
+        entries.wlock()->push_back(e);
+      });
+    }
+  }
+  barrier.waitAll();
+  EXPECT_EQ(counter.load(), kEntryIds);
 }
