@@ -130,6 +130,48 @@ class StreamLoader {
   virtual const std::string_view getStream() const = 0;
 };
 
+template <typename Key, typename Value>
+class ReferenceCountedCache {
+ public:
+  using BuilderCallback = std::function<std::shared_ptr<Value>(Key)>;
+
+  explicit ReferenceCountedCache(BuilderCallback builder)
+      : builder_{std::move(builder)} {}
+
+  std::shared_ptr<Value> get(Key key) {
+    return getPopulatedCacheEntry(key, builder_);
+  }
+
+  std::shared_ptr<Value> get(Key key, const BuilderCallback& builder) {
+    return getPopulatedCacheEntry(key, builder);
+  }
+
+ private:
+  folly::Synchronized<std::weak_ptr<Value>>& getCacheEntry(Key key) {
+    return cache_.wlock()->emplace(key, std::weak_ptr<Value>()).first->second;
+  }
+
+  std::shared_ptr<Value> getPopulatedCacheEntry(
+      Key key,
+      const BuilderCallback& builder) {
+    auto& entry = getCacheEntry(key);
+    auto wlockedEntry = entry.wlock();
+    auto sharedPtr = wlockedEntry->lock();
+    if (sharedPtr) {
+      return sharedPtr;
+    }
+    auto element = builder(key);
+    std::weak_ptr<Value>(element).swap(*wlockedEntry);
+    NIMBLE_DASSERT(!wlockedEntry->expired(), "Shouldn't be expired");
+    return element;
+  }
+
+  BuilderCallback builder_;
+  folly::Synchronized<
+      std::unordered_map<Key, folly::Synchronized<std::weak_ptr<Value>>>>
+      cache_;
+};
+
 // Provides read access to a tablet written by a TabletWriter.
 // Example usage to read all streams from stripe 0 in a file:
 //   auto readFile = std::make_unique<LocalReadFile>("/tmp/myfile");
@@ -138,7 +180,45 @@ class StreamLoader {
 //  |serializedStreams[i]| now contains the stream corresponding to
 //  the stream identifier provided in the input vector.
 class TabletReader {
+  struct StripeGroup {
+    StripeGroup(
+        uint32_t stripeGroupIndex,
+        const MetadataBuffer& stripes,
+        std::unique_ptr<MetadataBuffer> metadata);
+
+    uint32_t index() const {
+      return index_;
+    }
+
+    uint32_t streamCount() const {
+      return streamCount_;
+    }
+
+    std::span<const uint32_t> streamOffsets(uint32_t stripe) const;
+    std::span<const uint32_t> streamSizes(uint32_t stripe) const;
+
+   private:
+    std::unique_ptr<MetadataBuffer> metadata_;
+    uint32_t index_;
+    uint32_t streamCount_;
+    uint32_t firstStripe_;
+    const uint32_t* streamOffsets_;
+    const uint32_t* streamSizes_;
+  };
+
  public:
+  class StripeIdentifier {
+    explicit StripeIdentifier(
+        uint32_t stripeId,
+        std::shared_ptr<StripeGroup> stripeGroup)
+        : stripeId_{stripeId}, stripeGroup_{std::move(stripeGroup)} {}
+
+    uint32_t stripeId_;
+    std::shared_ptr<StripeGroup> stripeGroup_;
+
+    friend class TabletReader;
+  };
+
   // Compute checksum from the beginning of the file all the way to footer
   // size and footer compression type field in postscript.
   // chunkSize means each time reads up to chunkSize, until all data are done.
@@ -161,7 +241,7 @@ class TabletReader {
   // span. If a stream was not present in the given stripe a nullptr is returned
   // in its slot.
   std::vector<std::unique_ptr<StreamLoader>> load(
-      uint32_t stripe,
+      const StripeIdentifier& stripe,
       std::span<const uint32_t> streamIdentifiers,
       std::function<std::string_view(uint32_t)> streamLabel = [](uint32_t) {
         return std::string_view{};
@@ -221,47 +301,27 @@ class TabletReader {
   // Returns stream offsets for the specified stripe. Number of streams is
   // determined by schema node count at the time when stripe is written, so it
   // may have fewer number of items than the final schema node count
-  std::span<const uint32_t> streamOffsets(uint32_t stripe) const;
+  std::span<const uint32_t> streamOffsets(const StripeIdentifier& stripe) const;
 
   // Returns stream sizes for the specified stripe. Has same constraint as
   // `streamOffsets()`.
-  std::span<const uint32_t> streamSizes(uint32_t stripe) const;
+  std::span<const uint32_t> streamSizes(const StripeIdentifier& stripe) const;
 
   // Returns stream count for the specified stripe. Has same constraint as
   // `streamOffsets()`.
-  uint32_t streamCount(uint32_t stripe) const;
+  uint32_t streamCount(const StripeIdentifier& stripe) const;
+
+  StripeIdentifier getStripeIdentifier(uint32_t stripeIndex) const {
+    return StripeIdentifier{
+        stripeIndex, getStripeGroup(getStripeGroupIndex(stripeIndex))};
+  }
 
  private:
-  struct StripeGroup {
-    uint32_t index() const {
-      return index_;
-    }
-
-    uint32_t streamCount() const {
-      return streamCount_;
-    }
-
-    void reset(
-        uint32_t stripeGroupIndex,
-        const MetadataBuffer& stripes,
-        uint32_t stripeIndex,
-        std::unique_ptr<MetadataBuffer> metadata);
-
-    std::span<const uint32_t> streamOffsets(uint32_t stripe) const;
-    std::span<const uint32_t> streamSizes(uint32_t stripe) const;
-
-   private:
-    std::unique_ptr<MetadataBuffer> metadata_;
-    uint32_t index_{std::numeric_limits<uint32_t>::max()};
-    uint32_t streamCount_{0};
-    uint32_t firstStripe_{0};
-    const uint32_t* streamOffsets_{nullptr};
-    const uint32_t* streamSizes_{nullptr};
-  };
+  uint32_t getStripeGroupIndex(uint32_t stripeIndex) const;
+  std::shared_ptr<StripeGroup> loadStripeGroup(uint32_t stripeGroupIndex) const;
+  std::shared_ptr<StripeGroup> getStripeGroup(uint32_t stripeGroupIndex) const;
 
   void initStripes();
-
-  void ensureStripeGroup(uint32_t stripe) const;
 
   // For testing use
   TabletReader(
@@ -280,7 +340,9 @@ class TabletReader {
   Postscript ps_;
   std::unique_ptr<MetadataBuffer> footer_;
   std::unique_ptr<MetadataBuffer> stripes_;
-  mutable StripeGroup stripeGroup_;
+
+  mutable ReferenceCountedCache<uint32_t, StripeGroup> stripeGroupCache_;
+  mutable folly::Synchronized<std::shared_ptr<StripeGroup>> firstStripeGroup_;
 
   uint64_t tabletRowCount_;
   uint32_t stripeCount_{0};

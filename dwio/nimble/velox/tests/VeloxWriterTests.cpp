@@ -544,12 +544,13 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
     const auto& flatMapKey2Node = findChild(flatMapNode, "2")->asScalar();
 
     for (auto i = 0; i < tablet.stripeCount(); ++i) {
+      auto stripeIdentifier = tablet.getStripeIdentifier(i);
       std::vector<uint32_t> identifiers{
           mapNode.lengthsDescriptor().offset(),
           mapValuesNode.scalarDescriptor().offset(),
           flatMapKey1Node.scalarDescriptor().offset(),
           flatMapKey2Node.scalarDescriptor().offset()};
-      auto streams = tablet.load(i, identifiers);
+      auto streams = tablet.load(stripeIdentifier, identifiers);
       {
         nimble::InMemoryChunkedStream chunkedStream{
             *leafPool_, std::move(streams[0])};
@@ -997,15 +998,17 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowAllNullsNoChunks) {
       {{vector, nimble::FlushDecision::None},
        {vector, nimble::FlushDecision::None}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Logically, there should be two streams in the tablet.
         // However, when writing stripes, we do not write empty streams.
         // In this case, the integer column is empty, and therefore, omitted.
-        ASSERT_EQ(1, tablet.streamCount(0));
-        EXPECT_LT(0, tablet.streamSizes(0)[0]);
+        ASSERT_EQ(1, tablet.streamCount(stripeIdentifier));
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[0]);
 
-        auto streamLoaders = tablet.load(0, std::array<uint32_t, 1>{0});
+        auto streamLoaders =
+            tablet.load(stripeIdentifier, std::array<uint32_t, 1>{0});
         ASSERT_EQ(1, streamLoaders.size());
 
         // No chunks used, so expecting single chunk
@@ -1031,15 +1034,17 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowAllNullsWithChunksMinSizeBig) {
       {{vector, nimble::FlushDecision::Chunk},
        {vector, nimble::FlushDecision::Chunk}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Logically, there should be two streams in the tablet.
         // However, when writing stripes, we do not write empty streams.
         // In this case, the integer column is empty, and therefore, omitted.
-        ASSERT_EQ(1, tablet.streamCount(0));
-        EXPECT_LT(0, tablet.streamSizes(0)[0]);
+        ASSERT_EQ(1, tablet.streamCount(stripeIdentifier));
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[0]);
 
-        auto streamLoaders = tablet.load(0, std::array<uint32_t, 1>{0});
+        auto streamLoaders =
+            tablet.load(stripeIdentifier, std::array<uint32_t, 1>{0});
         ASSERT_EQ(1, streamLoaders.size());
 
         // Chunks requested, but min chunk size is too big, so expecting one
@@ -1066,15 +1071,17 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowAllNullsWithChunksMinSizeZero) {
       {{vector, nimble::FlushDecision::Chunk},
        {vector, nimble::FlushDecision::Chunk}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Logically, there should be two streams in the tablet.
         // However, when writing stripes, we do not write empty streams.
         // In this case, the integer column is empty, and therefore, omitted.
-        ASSERT_EQ(1, tablet.streamCount(0));
-        EXPECT_LT(0, tablet.streamSizes(0)[0]);
+        ASSERT_EQ(1, tablet.streamCount(stripeIdentifier));
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[0]);
 
-        auto streamLoaders = tablet.load(0, std::array<uint32_t, 1>{0});
+        auto streamLoaders =
+            tablet.load(stripeIdentifier, std::array<uint32_t, 1>{0});
         ASSERT_EQ(1, streamLoaders.size());
 
         // Chunks requested, and min chunk size is zero, so expecting two
@@ -1108,14 +1115,16 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowSomeNullsNoChunks) {
       {{nullsVector, nimble::FlushDecision::None},
        {nonNullsVector, nimble::FlushDecision::None}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // We have values in stream 2, so it is not optimized away.
-        ASSERT_EQ(2, tablet.streamCount(0));
-        EXPECT_LT(0, tablet.streamSizes(0)[0]);
-        EXPECT_LT(0, tablet.streamSizes(0)[1]);
+        ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[0]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
 
-        auto streamLoaders = tablet.load(0, std::array<uint32_t, 2>{0, 1});
+        auto streamLoaders =
+            tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
         ASSERT_EQ(2, streamLoaders.size());
         {
           // No chunks requested, so expecting single chunk.
@@ -1155,13 +1164,15 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowSomeNullsWithChunksMinSizeBig) {
       {{nullsVector, nimble::FlushDecision::Chunk},
        {nonNullsVector, nimble::FlushDecision::Chunk}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
-        ASSERT_EQ(2, tablet.streamCount(0));
-        EXPECT_LT(0, tablet.streamSizes(0)[0]);
-        EXPECT_LT(0, tablet.streamSizes(0)[1]);
+        ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[0]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
 
-        auto streamLoaders = tablet.load(0, std::array<uint32_t, 2>{0, 1});
+        auto streamLoaders =
+            tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
         ASSERT_EQ(2, streamLoaders.size());
         {
           // Chunks requested, but min chunk size is too big, so expecting one
@@ -1203,13 +1214,15 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowSomeNullsWithChunksMinSizeZero) {
       {{nullsVector, nimble::FlushDecision::Chunk},
        {nonNullsVector, nimble::FlushDecision::Chunk}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
-        ASSERT_EQ(2, tablet.streamCount(0));
-        EXPECT_LT(0, tablet.streamSizes(0)[0]);
-        EXPECT_LT(0, tablet.streamSizes(0)[1]);
+        ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[0]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
 
-        auto streamLoaders = tablet.load(0, std::array<uint32_t, 2>{0, 1});
+        auto streamLoaders =
+            tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
         ASSERT_EQ(2, streamLoaders.size());
         {
           // Chunks requested, and min chunk size is zero, so expecting two
@@ -1243,15 +1256,17 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowNoNullsNoChunks) {
       {{vector, nimble::FlushDecision::None},
        {vector, nimble::FlushDecision::None}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
-        ASSERT_EQ(2, tablet.streamCount(0));
+        ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
 
         // When there are no nulls, the nulls stream is omitted.
-        EXPECT_EQ(0, tablet.streamSizes(0)[0]);
-        EXPECT_LT(0, tablet.streamSizes(0)[1]);
+        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
 
-        auto streamLoaders = tablet.load(0, std::array<uint32_t, 2>{0, 1});
+        auto streamLoaders =
+            tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
         ASSERT_EQ(2, streamLoaders.size());
         {
           // Nulls stream should be missing, as all values are non-null
@@ -1281,15 +1296,17 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowNoNullsWithChunksMinSizeBig) {
       {{vector, nimble::FlushDecision::Chunk},
        {vector, nimble::FlushDecision::Chunk}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
-        ASSERT_EQ(2, tablet.streamCount(0));
+        ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
 
         // When there are no nulls, the nulls stream is omitted.
-        EXPECT_EQ(0, tablet.streamSizes(0)[0]);
-        EXPECT_LT(0, tablet.streamSizes(0)[1]);
+        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
 
-        auto streamLoaders = tablet.load(0, std::array<uint32_t, 2>{0, 1});
+        auto streamLoaders =
+            tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
         ASSERT_EQ(2, streamLoaders.size());
         {
           // Nulls stream should be missing, as all values are non-null
@@ -1320,15 +1337,17 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowNoNullsWithChunksMinSizeZero) {
       {{vector, nimble::FlushDecision::Chunk},
        {vector, nimble::FlushDecision::Chunk}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
-        ASSERT_EQ(2, tablet.streamCount(0));
+        ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
 
         // When there are no nulls, the nulls stream is omitted.
-        EXPECT_EQ(0, tablet.streamSizes(0)[0]);
-        EXPECT_LT(0, tablet.streamSizes(0)[1]);
+        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
 
-        auto streamLoaders = tablet.load(0, std::array<uint32_t, 2>{0, 1});
+        auto streamLoaders =
+            tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
         ASSERT_EQ(2, streamLoaders.size());
         {
           // Nulls stream should be missing, as all values are non-null
@@ -1359,12 +1378,13 @@ TEST_F(VeloxWriterTests, ChunkedStreamsChildAllNullsNoChunks) {
       {{vector, nimble::FlushDecision::None},
        {vector, nimble::FlushDecision::None}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // When all rows are not null, the nulls stream is omitted.
         // When all values are null, the values stream is omitted.
         // Since these are the last two stream, they are optimized away.
-        ASSERT_EQ(0, tablet.streamCount(0));
+        ASSERT_EQ(0, tablet.streamCount(stripeIdentifier));
       });
 }
 
@@ -1384,12 +1404,13 @@ TEST_F(VeloxWriterTests, ChunkedStreamsChildAllNullsWithChunksMinSizeBig) {
       {{vector, nimble::FlushDecision::Chunk},
        {vector, nimble::FlushDecision::Chunk}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // When all rows are not null, the nulls stream is omitted.
         // When all values are null, the values stream is omitted.
         // Since these are the last two stream, they are optimized away.
-        ASSERT_EQ(0, tablet.streamCount(0));
+        ASSERT_EQ(0, tablet.streamCount(stripeIdentifier));
       });
 }
 
@@ -1409,12 +1430,13 @@ TEST_F(VeloxWriterTests, ChunkedStreamsChildAllNullsWithChunksMinSizeZero) {
       {{vector, nimble::FlushDecision::Chunk},
        {vector, nimble::FlushDecision::Chunk}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // When all rows are not null, the nulls stream is omitted.
         // When all values are null, the values stream is omitted.
         // Since these are the last two stream, they are optimized away.
-        ASSERT_EQ(0, tablet.streamCount(0));
+        ASSERT_EQ(0, tablet.streamCount(stripeIdentifier));
       });
 }
 
@@ -1441,16 +1463,18 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapAllNullsNoChunks) {
       {{vector, nimble::FlushDecision::None},
        {vector, nimble::FlushDecision::None}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Expected streams:
         // 0: Row nulls stream (expected empty, as all values are not null)
         // 1: Flatmap nulls stream
-        ASSERT_EQ(2, tablet.streamCount(0));
-        EXPECT_EQ(0, tablet.streamSizes(0)[0]);
-        EXPECT_LT(0, tablet.streamSizes(0)[1]);
+        ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
+        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
 
-        auto streamLoaders = tablet.load(0, std::array<uint32_t, 2>{0, 1});
+        auto streamLoaders =
+            tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
         ASSERT_EQ(2, streamLoaders.size());
 
         // No chunks used, so expecting single chunk
@@ -1482,16 +1506,18 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapAllNullsWithChunksMinSizeBig) {
       {{vector, nimble::FlushDecision::Chunk},
        {vector, nimble::FlushDecision::Chunk}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Expected streams:
         // 0: Row nulls stream (expected empty, as all values are not null)
         // 1: Flatmap nulls stream
-        ASSERT_EQ(2, tablet.streamCount(0));
-        EXPECT_EQ(0, tablet.streamSizes(0)[0]);
-        EXPECT_LT(0, tablet.streamSizes(0)[1]);
+        ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
+        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
 
-        auto streamLoaders = tablet.load(0, std::array<uint32_t, 2>{0, 1});
+        auto streamLoaders =
+            tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
         ASSERT_EQ(2, streamLoaders.size());
 
         // Chunks requested, but min size is too big, so expecting single merged
@@ -1524,16 +1550,18 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapAllNullsWithChunksMinSizeZero) {
       {{vector, nimble::FlushDecision::Chunk},
        {vector, nimble::FlushDecision::Chunk}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Expected streams:
         // 0: Row nulls stream (expected empty, as all values are not null)
         // 1: Flatmap nulls stream
-        ASSERT_EQ(2, tablet.streamCount(0));
-        EXPECT_EQ(0, tablet.streamSizes(0)[0]);
-        EXPECT_LT(0, tablet.streamSizes(0)[1]);
+        ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
+        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
 
-        auto streamLoaders = tablet.load(0, std::array<uint32_t, 2>{0, 1});
+        auto streamLoaders =
+            tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
         ASSERT_EQ(2, streamLoaders.size());
 
         // Chunks requested, with min size zero, so expecting two chunks
@@ -1577,6 +1605,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsNoChunks) {
       {{nullsVector, nimble::FlushDecision::None},
        {nonNullsVector, nimble::FlushDecision::None}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Expected streams:
@@ -1584,14 +1613,14 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsNoChunks) {
         // 1: Flatmap nulls stream
         // 2: Scalar stream (flatmap value for key 5)
         // 3: Scalar stream (flatmap in-map for key 5)
-        ASSERT_EQ(4, tablet.streamCount(0));
-        EXPECT_EQ(0, tablet.streamSizes(0)[0]);
-        EXPECT_LT(0, tablet.streamSizes(0)[1]);
-        EXPECT_LT(0, tablet.streamSizes(0)[2]);
-        EXPECT_LT(0, tablet.streamSizes(0)[3]);
+        ASSERT_EQ(4, tablet.streamCount(stripeIdentifier));
+        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[2]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[3]);
 
         auto streamLoaders =
-            tablet.load(0, std::array<uint32_t, 4>{0, 1, 2, 3});
+            tablet.load(stripeIdentifier, std::array<uint32_t, 4>{0, 1, 2, 3});
         ASSERT_EQ(4, streamLoaders.size());
 
         EXPECT_FALSE(streamLoaders[0]);
@@ -1654,6 +1683,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsWithChunksMinSizeBig) {
       {{nullsVector, nimble::FlushDecision::Chunk},
        {nonNullsVector, nimble::FlushDecision::Chunk}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Expected streams:
@@ -1661,14 +1691,14 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsWithChunksMinSizeBig) {
         // 1: Flatmap nulls stream
         // 2: Scalar stream (flatmap value for key 5)
         // 3: Scalar stream (flatmap in-map for key 5)
-        ASSERT_EQ(4, tablet.streamCount(0));
-        EXPECT_EQ(0, tablet.streamSizes(0)[0]);
-        EXPECT_LT(0, tablet.streamSizes(0)[1]);
-        EXPECT_LT(0, tablet.streamSizes(0)[2]);
-        EXPECT_LT(0, tablet.streamSizes(0)[3]);
+        ASSERT_EQ(4, tablet.streamCount(stripeIdentifier));
+        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[2]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[3]);
 
         auto streamLoaders =
-            tablet.load(0, std::array<uint32_t, 4>{0, 1, 2, 3});
+            tablet.load(stripeIdentifier, std::array<uint32_t, 4>{0, 1, 2, 3});
         ASSERT_EQ(4, streamLoaders.size());
 
         EXPECT_FALSE(streamLoaders[0]);
@@ -1734,6 +1764,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsWithChunksMinSizeZero) {
       {{nullsVector, nimble::FlushDecision::Chunk},
        {nonNullsVector, nimble::FlushDecision::Chunk}},
       [&](const auto& tablet) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Expected streams:
@@ -1741,14 +1772,14 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsWithChunksMinSizeZero) {
         // 1: Flatmap nulls stream
         // 2: Scalar stream (flatmap value for key 5)
         // 3: Scalar stream (flatmap in-map for key 5)
-        ASSERT_EQ(4, tablet.streamCount(0));
-        EXPECT_EQ(0, tablet.streamSizes(0)[0]);
-        EXPECT_LT(0, tablet.streamSizes(0)[1]);
-        EXPECT_LT(0, tablet.streamSizes(0)[2]);
-        EXPECT_LT(0, tablet.streamSizes(0)[3]);
+        ASSERT_EQ(4, tablet.streamCount(stripeIdentifier));
+        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[2]);
+        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[3]);
 
         auto streamLoaders =
-            tablet.load(0, std::array<uint32_t, 4>{0, 1, 2, 3});
+            tablet.load(stripeIdentifier, std::array<uint32_t, 4>{0, 1, 2, 3});
         ASSERT_EQ(4, streamLoaders.size());
 
         EXPECT_FALSE(streamLoaders[0]);

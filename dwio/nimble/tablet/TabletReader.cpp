@@ -153,13 +153,11 @@ MetadataBuffer::MetadataBuffer(
           iobuf.computeChainDataLength(),
           type} {}
 
-void TabletReader::StripeGroup::reset(
+TabletReader::StripeGroup::StripeGroup(
     uint32_t stripeGroupIndex,
     const MetadataBuffer& stripes,
-    uint32_t stripeIndex,
-    std::unique_ptr<MetadataBuffer> stripeGroup) {
-  index_ = stripeGroupIndex;
-  metadata_ = std::move(stripeGroup);
+    std::unique_ptr<MetadataBuffer> stripeGroup)
+    : metadata_{std::move(stripeGroup)}, index_{stripeGroupIndex} {
   auto metadataRoot =
       asFlatBuffersRoot<serialization::StripeGroup>(metadata_->content());
   auto stripesRoot =
@@ -179,13 +177,16 @@ void TabletReader::StripeGroup::reset(
 
   // Find the first stripe that use this stripe group
   auto groupIndices = stripesRoot->group_indices()->data();
-  while (stripeIndex > 0) {
-    if (groupIndices[stripeIndex] != groupIndices[stripeIndex - 1]) {
-      break;
+  for (uint32_t stripeIndex = 0,
+                groupIndicesSize = stripesRoot->group_indices()->size();
+       stripeIndex < groupIndicesSize;
+       ++stripeIndex) {
+    if (groupIndices[stripeIndex] == stripeGroupIndex) {
+      firstStripe_ = stripeIndex;
+      return;
     }
-    --stripeIndex;
   }
-  firstStripe_ = stripeIndex;
+  NIMBLE_UNREACHABLE("No stripe found for stripe group");
 }
 
 std::span<const uint32_t> TabletReader::StripeGroup::streamOffsets(
@@ -254,12 +255,18 @@ TabletReader::TabletReader(
       ownedFile_{std::move(readFile)},
       ps_{std::move(postscript)},
       footer_{std::make_unique<MetadataBuffer>(memoryPool, footer)},
-      stripes_{std::make_unique<MetadataBuffer>(memoryPool, stripes)} {
-  stripeGroup_.reset(
-      /* stripeGroupIndex */ 0,
-      *stripes_,
-      /* stripeIndex */ 0,
-      std::make_unique<MetadataBuffer>(memoryPool, stripeGroup));
+      stripes_{std::make_unique<MetadataBuffer>(memoryPool, stripes)},
+      stripeGroupCache_{[this](uint32_t stripeGroupIndex) {
+        return loadStripeGroup(stripeGroupIndex);
+      }} {
+  auto stripeGroupPtr =
+      stripeGroupCache_.get(0, [this, stripeGroup](uint32_t stripeGroupIndex) {
+        return std::make_shared<StripeGroup>(
+            stripeGroupIndex,
+            *stripes_,
+            std::make_unique<MetadataBuffer>(memoryPool_, stripeGroup));
+      });
+  *firstStripeGroup_.wlock() = std::move(stripeGroupPtr);
   initStripes();
   auto optionalSectionsCacheLock = optionalSectionsCache_.wlock();
   for (auto& pair : optionalSections) {
@@ -281,7 +288,11 @@ TabletReader::TabletReader(
     MemoryPool& memoryPool,
     velox::ReadFile* readFile,
     const std::vector<std::string>& preloadOptionalSections)
-    : memoryPool_{memoryPool}, file_{readFile} {
+    : memoryPool_{memoryPool},
+      file_{readFile},
+      stripeGroupCache_{[this](uint32_t stripeGroupIndex) {
+        return loadStripeGroup(stripeGroupIndex);
+      }} {
   // We make an initial read of the last piece of the file, and then do
   // another read if our first one didn't cover the whole footer. We could
   // make this a parameter to the constructor later.
@@ -343,16 +354,20 @@ TabletReader::TabletReader(
     auto stripeGroup = stripeGroups->Get(0);
     if (stripeGroups->size() == 1 &&
         stripeGroup->offset() + readSize >= fileSize) {
-      stripeGroup_.reset(
-          /* stripeGroupIndex */ 0,
-          *stripes_,
-          /* stripeIndex */ 0,
-          std::make_unique<MetadataBuffer>(
-              memoryPool_,
-              footerIOBuf,
-              stripeGroup->offset() + readSize - fileSize,
-              stripeGroup->size(),
-              static_cast<CompressionType>(stripeGroup->compression_type())));
+      auto stripeGroupPtr =
+          stripeGroupCache_.get(0, [&](uint32_t stripeGroupIndex) {
+            return std::make_shared<StripeGroup>(
+                stripeGroupIndex,
+                *stripes_,
+                std::make_unique<MetadataBuffer>(
+                    memoryPool_,
+                    footerIOBuf,
+                    stripeGroup->offset() + readSize - fileSize,
+                    stripeGroup->size(),
+                    static_cast<CompressionType>(
+                        stripeGroup->compression_type())));
+          });
+      *firstStripeGroup_.wlock() = std::move(stripeGroupPtr);
     }
   }
 
@@ -514,55 +529,63 @@ void TabletReader::initStripes() {
   }
 }
 
-void TabletReader::ensureStripeGroup(uint32_t stripe) const {
+uint32_t TabletReader::getStripeGroupIndex(uint32_t stripeIndex) const {
+  const auto stripesRoot =
+      asFlatBuffersRoot<serialization::Stripes>(stripes_->content());
+  return stripesRoot->group_indices()->Get(stripeIndex);
+}
+
+std::shared_ptr<TabletReader::StripeGroup> TabletReader::loadStripeGroup(
+    uint32_t stripeGroupIndex) const {
   auto footerRoot =
       asFlatBuffersRoot<serialization::Footer>(footer_->content());
-  auto stripesRoot =
-      asFlatBuffersRoot<serialization::Stripes>(stripes_->content());
-  auto targetIndex = stripesRoot->group_indices()->Get(stripe);
-  if (targetIndex != stripeGroup_.index()) {
-    auto stripeGroup = footerRoot->stripe_groups()->Get(targetIndex);
-    velox::common::Region stripeGroupRegion{
-        stripeGroup->offset(), stripeGroup->size(), "StripeGroup"};
-    folly::IOBuf result;
-    file_->preadv({&stripeGroupRegion, 1}, {&result, 1});
+  auto stripeGroupInfo = footerRoot->stripe_groups()->Get(stripeGroupIndex);
+  velox::common::Region stripeGroupRegion{
+      stripeGroupInfo->offset(), stripeGroupInfo->size(), "StripeGroup"};
+  folly::IOBuf buffer;
+  file_->preadv({&stripeGroupRegion, 1}, {&buffer, 1});
 
-    stripeGroup_.reset(
-        targetIndex,
-        *stripes_,
-        stripe,
-        std::make_unique<MetadataBuffer>(
-            memoryPool_,
-            result,
-            static_cast<CompressionType>(stripeGroup->compression_type())));
-  }
+  // Reset the first stripe group that was loaded when we load another one
+  firstStripeGroup_.wlock()->reset();
+
+  return std::make_shared<StripeGroup>(
+      stripeGroupIndex,
+      *stripes_,
+      std::make_unique<MetadataBuffer>(
+          memoryPool_,
+          buffer,
+          static_cast<CompressionType>(stripeGroupInfo->compression_type())));
 }
 
-std::span<const uint32_t> TabletReader::streamOffsets(uint32_t stripe) const {
-  ensureStripeGroup(stripe);
-  return stripeGroup_.streamOffsets(stripe);
+std::shared_ptr<TabletReader::StripeGroup> TabletReader::getStripeGroup(
+    uint32_t stripeGroupIndex) const {
+  return stripeGroupCache_.get(stripeGroupIndex);
 }
 
-std::span<const uint32_t> TabletReader::streamSizes(uint32_t stripe) const {
-  ensureStripeGroup(stripe);
-  return stripeGroup_.streamSizes(stripe);
+std::span<const uint32_t> TabletReader::streamOffsets(
+    const StripeIdentifier& stripe) const {
+  return stripe.stripeGroup_->streamOffsets(stripe.stripeId_);
 }
 
-uint32_t TabletReader::streamCount(uint32_t stripe) const {
-  ensureStripeGroup(stripe);
-  return stripeGroup_.streamCount();
+std::span<const uint32_t> TabletReader::streamSizes(
+    const StripeIdentifier& stripe) const {
+  return stripe.stripeGroup_->streamSizes(stripe.stripeId_);
+}
+
+uint32_t TabletReader::streamCount(const StripeIdentifier& stripe) const {
+  return stripe.stripeGroup_->streamCount();
 }
 
 std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
-    uint32_t stripe,
+    const StripeIdentifier& stripe,
     std::span<const uint32_t> streamIdentifiers,
     std::function<std::string_view(uint32_t)> streamLabel) const {
-  NIMBLE_CHECK(stripe < stripeCount_, "Stripe is out of range.");
+  NIMBLE_CHECK(stripe.stripeId_ < stripeCount_, "Stripe is out of range.");
 
-  const uint64_t stripeOffset = this->stripeOffset(stripe);
-  ensureStripeGroup(stripe);
-  const auto stripeStreamOffsets = stripeGroup_.streamOffsets(stripe);
-  const auto stripeStreamSizes = stripeGroup_.streamSizes(stripe);
+  const uint64_t stripeOffset = this->stripeOffset(stripe.stripeId_);
+  const auto& stripeGroup = stripe.stripeGroup_;
+  const auto stripeStreamOffsets = stripeGroup->streamOffsets(stripe.stripeId_);
+  const auto stripeStreamSizes = stripeGroup->streamSizes(stripe.stripeId_);
   const uint32_t streamsToLoad = streamIdentifiers.size();
 
   std::vector<std::unique_ptr<StreamLoader>> streams(streamsToLoad);
@@ -573,7 +596,7 @@ std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
 
   for (uint32_t i = 0; i < streamsToLoad; ++i) {
     const uint32_t streamIdentifier = streamIdentifiers[i];
-    if (streamIdentifier >= stripeGroup_.streamCount()) {
+    if (streamIdentifier >= stripeGroup->streamCount()) {
       streams[i] = nullptr;
       continue;
     }
