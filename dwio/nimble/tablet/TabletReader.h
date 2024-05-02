@@ -247,6 +247,10 @@ class TabletReader {
         return std::string_view{};
       }) const;
 
+  uint64_t getTotalStreamSize(
+      const StripeIdentifier& stripe,
+      std::span<const uint32_t> streamIdentifiers) const;
+
   std::optional<Section> loadOptionalSection(
       const std::string& name,
       bool keepCache = false) const;
@@ -311,10 +315,7 @@ class TabletReader {
   // `streamOffsets()`.
   uint32_t streamCount(const StripeIdentifier& stripe) const;
 
-  StripeIdentifier getStripeIdentifier(uint32_t stripeIndex) const {
-    return StripeIdentifier{
-        stripeIndex, getStripeGroup(getStripeGroupIndex(stripeIndex))};
-  }
+  StripeIdentifier getStripeIdentifier(uint32_t stripeIndex) const;
 
  private:
   uint32_t getStripeGroupIndex(uint32_t stripeIndex) const;

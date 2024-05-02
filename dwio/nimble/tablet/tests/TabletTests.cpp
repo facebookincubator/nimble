@@ -148,8 +148,24 @@ void parameterizedTest(
       VLOG(1) << "Output Tablet -> StripeCount: " << tablet.stripeCount()
               << ", RowCount: " << tablet.tabletRowCount();
 
-      // Now, read all stripes and verify results
+      uint32_t maxStreamIdentifiers = 0;
+      for (auto stripe = 0; stripe < stripesData.size(); ++stripe) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(stripe);
+        maxStreamIdentifiers = std::max(
+            maxStreamIdentifiers, tablet.streamCount(stripeIdentifier));
+      }
+      std::vector<uint32_t> allStreamIdentifiers(maxStreamIdentifiers);
+      std::iota(allStreamIdentifiers.begin(), allStreamIdentifiers.end(), 0);
+      std::span<const uint32_t> allStreamIdentifiersSpan{
+          allStreamIdentifiers.cbegin(), allStreamIdentifiers.cend()};
       size_t extraReads = 0;
+      std::vector<uint64_t> totalStreamSize;
+      for (auto stripe = 0; stripe < stripesData.size(); ++stripe) {
+        auto stripeIdentifier = tablet.getStripeIdentifier(stripe);
+        totalStreamSize.push_back(tablet.getTotalStreamSize(
+            stripeIdentifier, allStreamIdentifiersSpan));
+      }
+      // Now, read all stripes and verify results
       for (auto stripe = 0; stripe < stripesData.size(); ++stripe) {
         EXPECT_EQ(stripesData[stripe].rowCount, tablet.stripeRowCount(stripe));
 
@@ -159,6 +175,13 @@ void parameterizedTest(
         std::iota(identifiers.begin(), identifiers.end(), 0);
         auto serializedStreams = tablet.load(
             stripeIdentifier, {identifiers.cbegin(), identifiers.cend()});
+        uint64_t totalStreamSizeExpected = 0;
+        for (const auto& stream : serializedStreams) {
+          if (stream) {
+            totalStreamSizeExpected += stream->getStream().size();
+          }
+        }
+        EXPECT_EQ(totalStreamSize[stripe], totalStreamSizeExpected);
         auto chunks = readFile.chunks();
         auto expectedReads = stripesData[stripe].streams.size();
         auto diff = chunks.size() - expectedReads;
