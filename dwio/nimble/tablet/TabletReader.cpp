@@ -564,16 +564,26 @@ std::shared_ptr<TabletReader::StripeGroup> TabletReader::getStripeGroup(
 
 std::span<const uint32_t> TabletReader::streamOffsets(
     const StripeIdentifier& stripe) const {
+  NIMBLE_DASSERT(stripe.stripeId_ < stripeCount_, "Stripe is out of range.");
   return stripe.stripeGroup_->streamOffsets(stripe.stripeId_);
 }
 
 std::span<const uint32_t> TabletReader::streamSizes(
     const StripeIdentifier& stripe) const {
+  NIMBLE_DASSERT(stripe.stripeId_ < stripeCount_, "Stripe is out of range.");
   return stripe.stripeGroup_->streamSizes(stripe.stripeId_);
 }
 
 uint32_t TabletReader::streamCount(const StripeIdentifier& stripe) const {
+  NIMBLE_DASSERT(stripe.stripeId_ < stripeCount_, "Stripe is out of range.");
   return stripe.stripeGroup_->streamCount();
+}
+
+TabletReader::StripeIdentifier TabletReader::getStripeIdentifier(
+    uint32_t stripeIndex) const {
+  NIMBLE_CHECK(stripeIndex < stripeCount_, "Stripe is out of range.");
+  return StripeIdentifier{
+      stripeIndex, getStripeGroup(getStripeGroupIndex(stripeIndex))};
 }
 
 std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
@@ -627,6 +637,23 @@ std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
   }
 
   return streams;
+}
+
+uint64_t TabletReader::getTotalStreamSize(
+    const StripeIdentifier& stripe,
+    std::span<const uint32_t> streamIdentifiers) const {
+  NIMBLE_CHECK(stripe.stripeId_ < stripeCount_, "Stripe is out of range.");
+  const auto& stripeGroup = stripe.stripeGroup_;
+
+  uint64_t streamSizeSum = 0;
+  const auto stripeStreamSizes = stripeGroup->streamSizes(stripe.stripeId_);
+  for (auto streamId : streamIdentifiers) {
+    if (streamId >= stripeGroup->streamCount()) {
+      continue;
+    }
+    streamSizeSum += stripeStreamSizes[streamId];
+  }
+  return streamSizeSum;
 }
 
 std::optional<Section> TabletReader::loadOptionalSection(
