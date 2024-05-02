@@ -132,7 +132,7 @@ class VeloxReader {
 
  private:
   // Loads the next stripe's streams.
-  void loadStripe();
+  void loadNextStripe();
 
   // True if the file contain zero rows.
   bool isEmptyFile() const {
@@ -152,12 +152,17 @@ class VeloxReader {
 
   static const std::vector<std::string>& preloadedOptionalSections();
 
+  std::unique_ptr<velox::dwio::common::UnitLoader> getUnitLoader();
+
+  uint32_t getUnitIndex(uint32_t stripeIndex) const;
+
+  uint32_t getCurrentRowInStripe() const;
+
   velox::memory::MemoryPool& pool_;
   std::shared_ptr<const TabletReader> tabletReader_;
   std::optional<TabletReader::StripeIdentifier> stripeIdentifier_;
   const VeloxReadParams parameters_;
   std::shared_ptr<const Type> schema_;
-  StreamLabels streamLabels_;
   std::shared_ptr<const velox::RowType> type_;
   std::vector<uint32_t> offsets_;
   folly::F14FastMap<offset_size, std::unique_ptr<Decoder>> decoders_;
@@ -173,12 +178,14 @@ class VeloxReader {
   uint32_t nextStripe_ = 0;
   uint64_t rowsRemainingInStripe_ = 0;
   // stripe currently loaded. Initially state is no stripe loaded (INT_MAX)
-  uint32_t loadedStripe_ = std::numeric_limits<uint32_t>::max();
+  std::optional<uint32_t> loadedStripe_;
 
   std::unique_ptr<velox::dwio::common::ExecutorBarrier> barrier_;
   // Right now each reader is considered its own session if not passed from
   // writer option.
   std::shared_ptr<MetricsLogger> logger_;
+
+  std::unique_ptr<velox::dwio::common::UnitLoader> unitLoader_;
 
   friend class VeloxReaderHelper;
 };

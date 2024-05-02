@@ -78,6 +78,7 @@ add_library(nimble_velox_reader ChunkedStream.cpp ChunkedStreamDecoder.cpp
                                 StreamLabels.cpp VeloxReader.cpp)
 target_link_libraries(
   nimble_velox_reader
+  nimble_velox_dwio_common
   nimble_velox_schema
   nimble_velox_schema_serialization
   nimble_velox_schema_fb
