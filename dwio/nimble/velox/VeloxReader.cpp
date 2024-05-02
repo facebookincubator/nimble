@@ -27,6 +27,8 @@
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "velox/common/time/CpuWallTimer.h"
+#include "velox/dwio/common/OnDemandUnitLoader.h"
+#include "velox/dwio/common/UnitLoader.h"
 #include "velox/type/Type.h"
 
 namespace facebook::nimble {
@@ -74,6 +76,92 @@ std::shared_ptr<const velox::Type> createFlatType(
           selectedFeatures.size(), valueType));
 }
 
+class NimbleUnit : public velox::dwio::common::LoadUnit {
+ public:
+  NimbleUnit(
+      uint32_t stripeId,
+      const TabletReader& tabletReader,
+      std::shared_ptr<const Type> schema,
+      const std::vector<uint32_t>& streamIdentifiers)
+      : tabletReader_{tabletReader},
+        schema_{std::move(schema)},
+        streamLabels_{schema_},
+        stripeId_{stripeId},
+        streamIdentifiers_{streamIdentifiers} {}
+
+  // Perform the IO (read)
+  void load() override;
+
+  // Unload the unit to free memory
+  void unload() override;
+
+  // Number of rows in the unit
+  uint64_t getNumRows() override {
+    return tabletReader_.stripeRowCount(stripeId_);
+  }
+
+  // Number of bytes that the IO will read
+  uint64_t getIoSize() override;
+
+  std::vector<std::unique_ptr<StreamLoader>> extractStreamLoaders() {
+    return std::move(streamLoaders_);
+  }
+
+  const StripeLoadMetrics& getMetrics() const {
+    return metrics_;
+  }
+
+ private:
+  const TabletReader& tabletReader_;
+  std::shared_ptr<const Type> schema_;
+  StreamLabels streamLabels_;
+  uint32_t stripeId_;
+  const std::vector<uint32_t>& streamIdentifiers_;
+
+  // Lazy
+  std::optional<uint64_t> ioSize_;
+
+  std::optional<TabletReader::StripeIdentifier> stripeIdentifier_;
+  // Will be loaded on load() and moved away in extractStreamLoaders()
+  std::vector<std::unique_ptr<StreamLoader>> streamLoaders_;
+  StripeLoadMetrics metrics_;
+};
+
+void NimbleUnit::load() {
+  velox::CpuWallTiming timing{};
+  {
+    velox::CpuWallTimer timer{timing};
+    if (!stripeIdentifier_.has_value()) {
+      stripeIdentifier_ = tabletReader_.getStripeIdentifier(stripeId_);
+    }
+    streamLoaders_ = tabletReader_.load(
+        stripeIdentifier_.value(),
+        streamIdentifiers_,
+        [this](offset_size offset) {
+          return streamLabels_.streamLabel(offset);
+        });
+  }
+  metrics_.cpuUsec = timing.cpuNanos / 1000;
+  metrics_.wallTimeUsec = timing.wallNanos / 1000;
+}
+
+void NimbleUnit::unload() {
+  streamLoaders_.clear();
+  stripeIdentifier_.reset();
+}
+
+uint64_t NimbleUnit::getIoSize() {
+  if (ioSize_.has_value()) {
+    return ioSize_.value();
+  }
+  if (!stripeIdentifier_.has_value()) {
+    stripeIdentifier_ = tabletReader_.getStripeIdentifier(stripeId_);
+  }
+  ioSize_ = tabletReader_.getTotalStreamSize(
+      stripeIdentifier_.value(), streamIdentifiers_);
+  return ioSize_.value();
+}
+
 } // namespace
 
 const std::vector<std::string>& VeloxReader::preloadedOptionalSections() {
@@ -118,7 +206,6 @@ VeloxReader::VeloxReader(
       tabletReader_{std::move(tabletReader)},
       parameters_{std::move(params)},
       schema_{loadSchema(*tabletReader_)},
-      streamLabels_{schema_},
       type_{
           selector ? selector->getSchema()
                    : std::dynamic_pointer_cast<const velox::RowType>(
@@ -128,7 +215,9 @@ VeloxReader::VeloxReader(
               ? std::make_unique<velox::dwio::common::ExecutorBarrier>(
                     params.decodingExecutor)
               : nullptr},
-      logger_{parameters_.metricsLogger} {
+      logger_{
+          parameters_.metricsLogger ? parameters_.metricsLogger
+                                    : std::make_shared<MetricsLogger>()} {
   static_assert(std::is_same_v<velox::vector_size_t, int32_t>);
 
   if (!selector) {
@@ -198,47 +287,43 @@ VeloxReader::VeloxReader(
           << "). Total stripes: " << tabletReader_->stripeCount()
           << ". Total rows: " << tabletReader_->tabletRowCount();
 
-  if (!logger_) {
-    logger_ = std::make_shared<MetricsLogger>();
-  }
+  unitLoader_ = getUnitLoader();
 }
 
 void VeloxReader::loadStripeIfAny() {
   if (nextStripe_ < lastStripe_) {
-    loadStripe();
+    loadNextStripe();
   }
 }
 
-void VeloxReader::loadStripe() {
+void VeloxReader::loadNextStripe() {
+  if (loadedStripe_.has_value() && loadedStripe_.value() == nextStripe_) {
+    // We are not reloading the current stripe, but we expect all
+    // decoders/readers to be reset after calling loadNextStripe(), therefore,
+    // we need to explicitly reset all decoders and readers.
+    rootReader_->reset();
+
+    rowsRemainingInStripe_ = tabletReader_->stripeRowCount(nextStripe_);
+    unitLoader_->onSeek(
+        getUnitIndex(loadedStripe_.value()), /* rowInStripe */ 0);
+    ++nextStripe_;
+    return;
+  }
+
   try {
-    if (loadedStripe_ != std::numeric_limits<uint32_t>::max() &&
-        loadedStripe_ == nextStripe_) {
-      // We are not reloading the current stripe, but we expect all
-      // decoders/readers to be reset after calling loadStripe(), therefore, we
-      // need to explicitly reset all decoders and readers.
-      rootReader_->reset();
-
-      rowsRemainingInStripe_ = tabletReader_->stripeRowCount(nextStripe_);
-      ++nextStripe_;
-      return;
-    }
-
-    StripeLoadMetrics metrics{};
+    StripeLoadMetrics metrics;
     velox::CpuWallTiming timing{};
     {
+      auto& unit = unitLoader_->getLoadedUnit(getUnitIndex(nextStripe_));
+
       velox::CpuWallTimer timer{timing};
-      // LoadAll returns all the stream available in a stripe.
-      // The streams returned might be a subset of the total streams available
-      // in the file, as the current stripe might have captured/encountered less
-      // streams than later stripes.
-      // In the extreme case, a stripe can return zero streams (for example, if
-      // all the streams in that stripe were contained all nulls).
-      stripeIdentifier_.emplace(
-          tabletReader_->getStripeIdentifier(nextStripe_));
-      auto streams = tabletReader_->load(
-          stripeIdentifier_.value(), offsets_, [this](offset_size offset) {
-            return streamLabels_.streamLabel(offset);
-          });
+      auto* nimbleUnit = dynamic_cast<NimbleUnit*>(&unit);
+      NIMBLE_ASSERT(nimbleUnit, "Should be a NimbleUnit");
+      rowsRemainingInStripe_ = nimbleUnit->getNumRows();
+      metrics = nimbleUnit->getMetrics();
+      metrics.totalStreamSize = nimbleUnit->getIoSize();
+
+      auto streams = nimbleUnit->extractStreamLoaders();
       for (uint32_t i = 0; i < streams.size(); ++i) {
         if (!streams[i]) {
           // As this stream is not present in current stripe (might be present
@@ -247,28 +332,21 @@ void VeloxReader::loadStripe() {
           // has.
           decoders_[offsets_[i]] = nullptr;
         } else {
-          metrics.totalStreamSize += streams[i]->getStream().size();
+          ++metrics.streamCount;
           decoders_[offsets_[i]] = std::make_unique<ChunkedStreamDecoder>(
               pool_,
               std::make_unique<InMemoryChunkedStream>(
                   pool_, std::move(streams[i])),
               *logger_);
-          ++metrics.streamCount;
         }
       }
-      rowsRemainingInStripe_ = tabletReader_->stripeRowCount(nextStripe_);
-      loadedStripe_ = nextStripe_;
-      ++nextStripe_;
+      loadedStripe_ = nextStripe_++;
       rootReader_ = rootFieldReaderFactory_->createReader(decoders_);
     }
-    metrics.stripeIndex = loadedStripe_;
+    metrics.stripeIndex = loadedStripe_.value();
     metrics.rowsInStripe = rowsRemainingInStripe_;
-    metrics.cpuUsec = timing.cpuNanos / 1000;
-    metrics.wallTimeUsec = timing.wallNanos / 1000;
-    if (parameters_.blockedOnIoCallback) {
-      parameters_.blockedOnIoCallback(
-          std::chrono::nanoseconds{timing.wallNanos});
-    }
+    metrics.cpuUsec += timing.cpuNanos / 1000;
+    metrics.wallTimeUsec += timing.wallNanos / 1000;
     logger_->logStripeLoad(metrics);
   } catch (const std::exception& e) {
     logger_->logException(LogOperation::StripeLoad, e.what());
@@ -284,7 +362,7 @@ void VeloxReader::loadStripe() {
 bool VeloxReader::next(uint64_t rowCount, velox::VectorPtr& result) {
   if (rowsRemainingInStripe_ == 0) {
     if (nextStripe_ < lastStripe_) {
-      loadStripe();
+      loadNextStripe();
     } else {
       return false;
     }
@@ -294,6 +372,8 @@ bool VeloxReader::next(uint64_t rowCount, velox::VectorPtr& result) {
   if (parameters_.decodingTimeCallback) {
     startTime = std::chrono::steady_clock::now();
   }
+  unitLoader_->onRead(
+      getUnitIndex(loadedStripe_.value()), getCurrentRowInStripe(), rowsToRead);
   rootReader_->next(rowsToRead, result, nullptr /*scatterBitmap*/);
   if (barrier_) {
     // Wait for all reader tasks to complete.
@@ -355,7 +435,7 @@ uint64_t VeloxReader::seekToRow(uint64_t rowNumber) {
   }
 
   auto rowsSkipped = skipStripes(0, rowNumber);
-  loadStripe();
+  loadNextStripe();
   skipInCurrentStripe(rowNumber - rowsSkipped);
   return rowNumber;
 }
@@ -388,7 +468,7 @@ uint64_t VeloxReader::skipRows(uint64_t numberOfRowsToSkip) {
     return rowsSkipped;
   }
 
-  loadStripe();
+  loadNextStripe();
   skipInCurrentStripe(numberOfRowsToSkip - rowsSkipped);
   return numberOfRowsToSkip;
 }
@@ -420,9 +500,35 @@ void VeloxReader::skipInCurrentStripe(uint64_t rowsToSkip) {
       rowsToSkip <= rowsRemainingInStripe_,
       "Not Enough rows to skip in stripe!");
   rowsRemainingInStripe_ -= rowsToSkip;
+  unitLoader_->onSeek(
+      getUnitIndex(loadedStripe_.value()), getCurrentRowInStripe());
   rootReader_->skip(rowsToSkip);
 }
 
 VeloxReader::~VeloxReader() = default;
+
+std::unique_ptr<velox::dwio::common::UnitLoader> VeloxReader::getUnitLoader() {
+  std::vector<std::unique_ptr<velox::dwio::common::LoadUnit>> units;
+  units.reserve(lastStripe_ - firstStripe_);
+  for (uint32_t stripe = firstStripe_; stripe < lastStripe_; ++stripe) {
+    units.push_back(std::make_unique<NimbleUnit>(
+        stripe, *tabletReader_, schema_, offsets_));
+  }
+  if (parameters_.unitLoaderFactory) {
+    return parameters_.unitLoaderFactory->create(std::move(units));
+  }
+  velox::dwio::common::OnDemandUnitLoaderFactory factory(
+      parameters_.blockedOnIoCallback);
+  return factory.create(std::move(units));
+}
+
+uint32_t VeloxReader::getUnitIndex(uint32_t stripeIndex) const {
+  return stripeIndex - firstStripe_;
+}
+
+uint32_t VeloxReader::getCurrentRowInStripe() const {
+  return tabletReader_->stripeRowCount(loadedStripe_.value()) -
+      static_cast<uint32_t>(rowsRemainingInStripe_);
+}
 
 } // namespace facebook::nimble
