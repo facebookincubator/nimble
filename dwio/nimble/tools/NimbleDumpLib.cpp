@@ -120,10 +120,13 @@ void traverseTablet(
       stripeVisitor(i);
     }
     if (streamVisitor) {
-      std::vector<uint32_t> identifiers(tabletReader.streamCount(i));
-      std::iota(identifiers.begin(), identifiers.end(), 0);
-      auto streams =
-          tabletReader.load(i, {identifiers.cbegin(), identifiers.cend()});
+      auto stripeIdentifier = tabletReader.getStripeIdentifier(i);
+      std::vector<uint32_t> streamIdentifiers(
+          tabletReader.streamCount(stripeIdentifier));
+      std::iota(streamIdentifiers.begin(), streamIdentifiers.end(), 0);
+      auto streams = tabletReader.load(
+          stripeIdentifier,
+          {streamIdentifiers.cbegin(), streamIdentifiers.cend()});
       for (uint32_t j = 0; j < streams.size(); ++j) {
         auto& stream = streams[j];
         if (stream) {
@@ -332,7 +335,8 @@ void NimbleDumpLib::emitStripes(bool noHeader) {
        {"Row Count", 15}},
       noHeader);
   traverseTablet(*pool_, tabletReader, std::nullopt, [&](uint32_t stripeIndex) {
-    auto sizes = tabletReader.streamSizes(stripeIndex);
+    auto stripeIdentifier = tabletReader.getStripeIdentifier(stripeIndex);
+    auto sizes = tabletReader.streamSizes(stripeIdentifier);
     auto stripeSize = std::accumulate(sizes.begin(), sizes.end(), 0UL);
     formatter.writeRow({
         folly::to<std::string>(stripeIndex),
@@ -374,6 +378,7 @@ void NimbleDumpLib::emitStreams(
       stripeId,
       nullptr /* stripeVisitor */,
       [&](ChunkedStream& stream, uint32_t stripeId, uint32_t streamId) {
+        auto stripeIdentifier = tabletReader->getStripeIdentifier(stripeId);
         uint32_t itemCount = 0;
         while (stream.hasNext()) {
           auto chunk = stream.nextChunk();
@@ -384,9 +389,9 @@ void NimbleDumpLib::emitStreams(
         values.push_back(folly::to<std::string>(stripeId));
         values.push_back(folly::to<std::string>(streamId));
         values.push_back(folly::to<std::string>(
-            tabletReader->streamOffsets(stripeId)[streamId]));
+            tabletReader->streamOffsets(stripeIdentifier)[streamId]));
         values.push_back(folly::to<std::string>(
-            tabletReader->streamSizes(stripeId)[streamId]));
+            tabletReader->streamSizes(stripeIdentifier)[streamId]));
         values.push_back(folly::to<std::string>(itemCount));
         if (streamLabels) {
           auto it = values.emplace_back(labels->streamLabel(streamId));
@@ -463,15 +468,16 @@ void NimbleDumpLib::emitContent(
   uint32_t maxStreamCount;
   bool found = false;
   traverseTablet(*pool_, tabletReader, stripeId, [&](uint32_t stripeId) {
+    auto stripeIdentifier = tabletReader.getStripeIdentifier(stripeId);
     maxStreamCount =
-        std::max(maxStreamCount, tabletReader.streamCount(stripeId));
-    if (streamId >= tabletReader.streamCount(stripeId)) {
+        std::max(maxStreamCount, tabletReader.streamCount(stripeIdentifier));
+    if (streamId >= tabletReader.streamCount(stripeIdentifier)) {
       return;
     }
 
     found = true;
 
-    auto streams = tabletReader.load(stripeId, std::vector{streamId});
+    auto streams = tabletReader.load(stripeIdentifier, std::vector{streamId});
 
     if (auto& stream = streams[0]) {
       InMemoryChunkedStream chunkedStream{*pool_, std::move(stream)};
@@ -503,16 +509,17 @@ void NimbleDumpLib::emitBinary(
     uint32_t streamId,
     uint32_t stripeId) {
   TabletReader tabletReader{*pool_, file_.get()};
-  if (streamId >= tabletReader.streamCount(stripeId)) {
+  auto stripeIdentifier = tabletReader.getStripeIdentifier(stripeId);
+  if (streamId >= tabletReader.streamCount(stripeIdentifier)) {
     throw folly::ProgramExit(
         -1,
         fmt::format(
             "Stream identifier {} is out of bound. Must be between 0 and {}\n",
             streamId,
-            tabletReader.streamCount(stripeId)));
+            tabletReader.streamCount(stripeIdentifier)));
   }
 
-  auto streams = tabletReader.load(stripeId, std::vector{streamId});
+  auto streams = tabletReader.load(stripeIdentifier, std::vector{streamId});
 
   if (auto& stream = streams[0]) {
     auto output = outputFactory();
