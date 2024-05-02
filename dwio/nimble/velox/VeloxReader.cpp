@@ -233,8 +233,10 @@ void VeloxReader::loadStripe() {
       // streams than later stripes.
       // In the extreme case, a stripe can return zero streams (for example, if
       // all the streams in that stripe were contained all nulls).
+      stripeIdentifier_.emplace(
+          tabletReader_->getStripeIdentifier(nextStripe_));
       auto streams = tabletReader_->load(
-          nextStripe_, offsets_, [this](offset_size offset) {
+          stripeIdentifier_.value(), offsets_, [this](offset_size offset) {
             return streamLabels_.streamLabel(offset);
           });
       for (uint32_t i = 0; i < streams.size(); ++i) {

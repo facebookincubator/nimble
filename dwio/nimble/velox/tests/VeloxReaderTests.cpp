@@ -345,7 +345,8 @@ size_t streamsReadCount(
   VELOX_CHECK_EQ(false, readFile->shouldCoalesce());
   nimble::TabletReader tablet(pool, readFile);
   VELOX_CHECK_GE(tablet.stripeCount(), 1);
-  auto offsets = tablet.streamOffsets(0);
+  auto stripeIdentifier = tablet.getStripeIdentifier(0);
+  auto offsets = tablet.streamOffsets(stripeIdentifier);
   std::unordered_set<uint32_t> streamOffsets;
   LOG(INFO) << "Number of streams: " << offsets.size();
   for (auto offset : offsets) {
