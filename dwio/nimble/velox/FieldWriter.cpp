@@ -931,7 +931,6 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
     const velox::vector_size_t* rawOffsets = array->rawOffsets();
     const velox::vector_size_t* rawLengths = array->rawSizes();
     velox::vector_size_t prevIndex = -1;
-    velox::vector_size_t numLengths = 0;
     auto& lengthsData = lengthsStream_.mutableData();
     auto& offsetsData = offsetsStream_.mutableData();
     auto& nonNulls = offsetsStream_.mutableNonNulls();
@@ -961,7 +960,6 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
           filteredRanges.add(rawOffsets[index], length);
         }
         lengthsData.push_back(length);
-        ++numLengths;
         ++nextOffset_;
       }
 
