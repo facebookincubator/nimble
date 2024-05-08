@@ -515,11 +515,11 @@ std::unique_ptr<velox::dwio::common::UnitLoader> VeloxReader::getUnitLoader() {
         stripe, *tabletReader_, schema_, offsets_));
   }
   if (parameters_.unitLoaderFactory) {
-    return parameters_.unitLoaderFactory->create(std::move(units));
+    return parameters_.unitLoaderFactory->create(std::move(units), 0);
   }
   velox::dwio::common::OnDemandUnitLoaderFactory factory(
       parameters_.blockedOnIoCallback);
-  return factory.create(std::move(units));
+  return factory.create(std::move(units), 0);
 }
 
 uint32_t VeloxReader::getUnitIndex(uint32_t stripeIndex) const {
