@@ -279,7 +279,11 @@ VeloxReader::VeloxReader(
   nextStripe_ = firstStripe_;
 
   if (parameters_.stripeCountCallback) {
-    parameters_.stripeCountCallback(lastStripe_ - firstStripe_);
+    if (firstStripe_ <= lastStripe_) {
+      parameters_.stripeCountCallback(lastStripe_ - firstStripe_);
+    } else {
+      parameters_.stripeCountCallback(0);
+    }
   }
 
   VLOG(1) << "TabletReader handling stripes: " << firstStripe_ << " -> "
@@ -508,6 +512,10 @@ void VeloxReader::skipInCurrentStripe(uint64_t rowsToSkip) {
 VeloxReader::~VeloxReader() = default;
 
 std::unique_ptr<velox::dwio::common::UnitLoader> VeloxReader::getUnitLoader() {
+  if (lastStripe_ <= firstStripe_) {
+    return nullptr;
+  }
+
   std::vector<std::unique_ptr<velox::dwio::common::LoadUnit>> units;
   units.reserve(lastStripe_ - firstStripe_);
   for (uint32_t stripe = firstStripe_; stripe < lastStripe_; ++stripe) {
