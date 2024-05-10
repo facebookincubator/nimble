@@ -21,6 +21,7 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/dwio/common/ColumnVisitors.h"
 
 #include <type_traits>
 
@@ -60,6 +61,29 @@
 //     have slightly different semantics than other encodings.
 
 namespace facebook::nimble {
+
+template <typename T, typename Filter, typename ExtractValues, bool kIsDense>
+using DecoderVisitor =
+    velox::dwio::common::ColumnVisitor<T, Filter, ExtractValues, kIsDense>;
+
+// Extra parameters that need to be persisted/used during a single call of
+// readWithVisitor at column reader level, which might span multiple calls of
+// readWithVisitor (one per chunk) in decoders.
+struct ReadWithVisitorParams {
+  // Create the reader nulls buffer if not already exists and return pointer to
+  // the raw buffer.  When it is created, it is created with the full length
+  // across potential mutliple chunks.
+  std::function<uint64_t*()> makeReaderNulls;
+
+  // Create the result nulls if not already exists.  Similar to
+  // `makeReaderNulls', we create one single buffer for all the results nulls
+  // across potential multiple chunks during one read.
+  std::function<void()> prepareResultNulls;
+
+  // Number of rows scanned so far.  Contains rows scanned in previous chunks
+  // during this read call as well.
+  velox::vector_size_t numScanned;
+};
 
 class Encoding {
  public:
@@ -181,6 +205,12 @@ class Encoding {
       uint32_t rowCount,
       char*& pos);
 
+  template <bool kSkip, typename DecoderVisitor, typename F>
+  void readWithVisitorSlow(
+      DecoderVisitor& visitor,
+      const ReadWithVisitorParams& params,
+      F&& decodeOne);
+
   velox::memory::MemoryPool& memoryPool_;
   const std::string_view data_;
 };
@@ -254,7 +284,16 @@ class TypedEncoding : public Encoding {
   }
 };
 
+// Dispatch the visitor and params according to the encoding type and data type.
+// We need to do this to mimic a virtual method call on Encoding with templates.
+template <typename DecoderVisitor>
+void callReadWithVisitor(
+    Encoding& encoding,
+    DecoderVisitor& visitor,
+    ReadWithVisitorParams& params);
+
 namespace detail {
+
 template <typename T, uint16_t BufferSize>
 class BufferedEncoding {
  public:
@@ -295,5 +334,82 @@ class BufferedEncoding {
   std::array<T, BufferSize> buffer_;
 };
 
+template <typename Visitor1, typename Visitor2>
+void checkCurrentRowEqual(const Visitor1& v1, const Visitor2& v2) {
+  if (v1.atEnd()) {
+    NIMBLE_DASSERT(v2.atEnd(), "");
+  } else {
+    NIMBLE_DASSERT(!v2.atEnd(), "");
+    NIMBLE_DASSERT(v1.currentRow() == v2.currentRow(), "");
+  }
+}
+
+template <bool kSkip, typename DecoderVisitor, typename Skip, typename F>
+void readWithVisitorSlow(
+    DecoderVisitor& visitor,
+    const ReadWithVisitorParams& params,
+    Skip skip,
+    F decodeOne) {
+  using T = typename DecoderVisitor::DataType;
+  constexpr bool kExtractToReader = std::is_same_v<
+      typename DecoderVisitor::Extract,
+      velox::dwio::common::ExtractToReader>;
+  const uint64_t* nulls = nullptr;
+  if (auto& nullsBuf = visitor.reader().nullsInReadRange()) {
+    nulls = nullsBuf->template as<uint64_t>();
+  }
+  if constexpr (kExtractToReader) {
+    params.prepareResultNulls();
+  }
+  auto numScanned = params.numScanned;
+  bool atEnd = false;
+  while (!atEnd) {
+    if constexpr (kSkip) {
+      auto numNonNulls = visitor.currentRow() - numScanned;
+      if (nulls) {
+        numNonNulls -=
+            velox::bits::countNulls(nulls, numScanned, visitor.currentRow());
+      }
+      skip(numNonNulls);
+      numScanned = visitor.currentRow() + 1;
+    }
+    if (nulls && velox::bits::isBitNull(nulls, visitor.currentRow())) {
+      if (!visitor.allowNulls()) {
+        visitor.setRowIndex(visitor.rowIndex() + 1);
+        atEnd = visitor.atEnd();
+      } else if (kExtractToReader && visitor.reader().returnReaderNulls()) {
+        visitor.setRowIndex(visitor.rowIndex() + 1);
+        visitor.setNumValues(visitor.reader().numValues() + 1);
+        atEnd = visitor.atEnd();
+      } else {
+        visitor.processNull(atEnd);
+      }
+    } else {
+      auto value = decodeOne();
+      if constexpr (isFloatingPointType<T>()) {
+        if constexpr (sizeof(T) != sizeof(value)) {
+          NIMBLE_UNREACHABLE(typeid(decltype(value)).name());
+        }
+        visitor.process(reinterpret_cast<const T&>(value), atEnd);
+      } else {
+        visitor.process(value, atEnd);
+      }
+    }
+  }
+}
+
 } // namespace detail
+
+template <bool kSkip, typename DecoderVisitor, typename F>
+void Encoding::readWithVisitorSlow(
+    DecoderVisitor& visitor,
+    const ReadWithVisitorParams& params,
+    F&& decodeOne) {
+  detail::readWithVisitorSlow<kSkip>(
+      visitor,
+      params,
+      [&](auto toSkip) { skip(toSkip); },
+      std::forward<F>(decodeOne));
+}
+
 } // namespace facebook::nimble

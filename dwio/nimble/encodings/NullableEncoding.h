@@ -62,6 +62,9 @@ class NullableEncoding final
       const bits::Bitmap* scatterBitmap = nullptr,
       uint32_t offset = 0) final;
 
+  template <typename DecoderVisitor>
+  void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
+
   static std::string_view encodeNullable(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
@@ -226,6 +229,66 @@ uint32_t NullableEncoding<T>::materializeNullable(
 
   row_ += rowCount;
   return nonNullCount;
+}
+
+namespace detail {
+
+class ExtractToNullsBuffer {
+ public:
+  static constexpr bool kSkipNulls = true;
+  using HookType = velox::dwio::common::NoHook;
+
+  explicit ExtractToNullsBuffer(std::function<uint64_t*()>& makeNulls)
+      : makeNulls_(makeNulls) {}
+
+  bool acceptsNulls() const {
+    return false;
+  }
+
+  void addValue(velox::vector_size_t i, bool value) {
+    NIMBLE_DASSERT(!nulls_ || !velox::bits::isBitNull(nulls_, i), "");
+    if (!value) {
+      if (FOLLY_UNLIKELY(!nulls_)) {
+        nulls_ = makeNulls_();
+      }
+      velox::bits::setNull(nulls_, i);
+    }
+  }
+
+  template <typename T>
+  void addNull(velox::vector_size_t /*i*/) {
+    NIMBLE_UNREACHABLE(__PRETTY_FUNCTION__);
+  }
+
+  HookType& hook() {
+    return velox::dwio::common::noHook();
+  }
+
+ private:
+  std::function<uint64_t*()>& makeNulls_;
+  uint64_t* nulls_ = nullptr;
+};
+
+} // namespace detail
+
+template <typename T>
+template <typename V>
+void NullableEncoding<T>::readWithVisitor(
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  auto nullsVisitor = DecoderVisitor<
+      bool,
+      velox::common::AlwaysTrue,
+      detail::ExtractToNullsBuffer,
+      true>(
+      velox::dwio::common::alwaysTrue(),
+      &visitor.reader(),
+      visitor.rowAt(visitor.numRows() - 1) + 1,
+      detail::ExtractToNullsBuffer(params.makeReaderNulls));
+  nullsVisitor.setRowIndex(params.numScanned);
+  callReadWithVisitor(*nulls_, nullsVisitor, params);
+  callReadWithVisitor(*nonNulls_, visitor, params);
+  detail::checkCurrentRowEqual(nullsVisitor, visitor);
 }
 
 template <typename T>

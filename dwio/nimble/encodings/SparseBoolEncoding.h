@@ -59,6 +59,9 @@ class SparseBoolEncoding final : public TypedEncoding<bool, bool> {
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
 
+  template <typename DecoderVisitor>
+  void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
+
   static std::string_view encode(
       EncodingSelection<bool>& selection,
       std::span<const bool> values,
@@ -73,5 +76,21 @@ class SparseBoolEncoding final : public TypedEncoding<bool, bool> {
   uint32_t nextIndex_; // The current index (FBA value).
   uint32_t row_;
 };
+
+template <typename V>
+void SparseBoolEncoding::readWithVisitor(
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  readWithVisitorSlow<true>(visitor, params, [&] {
+    while (nextIndex_ < row_) {
+      nextIndex_ = indices_.nextValue();
+    }
+    if (FOLLY_UNLIKELY(nextIndex_ == row_++)) {
+      nextIndex_ = indices_.nextValue();
+      return sparseValue_;
+    }
+    return !sparseValue_;
+  });
+}
 
 } // namespace facebook::nimble

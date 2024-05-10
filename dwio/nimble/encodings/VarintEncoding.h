@@ -58,6 +58,9 @@ class VarintEncoding final
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
 
+  template <typename DecoderVisitor>
+  void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
+
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
@@ -119,6 +122,23 @@ void VarintEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
     }
   }
   row_ += rowCount;
+}
+
+template <typename T>
+template <typename V>
+void VarintEncoding<T>::readWithVisitor(
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  this->template readWithVisitorSlow<true>(visitor, params, [&] {
+    physicalType value;
+    if constexpr (isFourByteIntegralType<physicalType>()) {
+      value = varint::readVarint32(&pos_);
+    } else {
+      static_assert(sizeof(T) == 8);
+      value = varint::readVarint64(&pos_);
+    }
+    return baseline_ + value;
+  });
 }
 
 template <typename T>

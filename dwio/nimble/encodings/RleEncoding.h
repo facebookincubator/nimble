@@ -103,6 +103,18 @@ class RLEEncodingBase
     }
   }
 
+  template <typename DecoderVisitor>
+  void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params) {
+    this->template readWithVisitorSlow<true>(visitor, params, [&] {
+      if (copiesRemaining_ == 0) {
+        copiesRemaining_ = materializedRunLengths_.nextValue();
+        currentValue_ = nextValue();
+      }
+      --copiesRemaining_;
+      return currentValue_;
+    });
+  }
+
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,

@@ -46,6 +46,9 @@ class ConstantEncoding final
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
 
+  template <typename DecoderVisitor>
+  void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
+
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
@@ -83,6 +86,15 @@ void ConstantEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   for (uint32_t i = 0; i < rowCount; ++i) {
     castBuffer[i] = value_;
   }
+}
+
+template <typename T>
+template <typename V>
+void ConstantEncoding<T>::readWithVisitor(
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  this->template readWithVisitorSlow<false>(
+      visitor, params, [&] { return value_; });
 }
 
 template <typename T>
