@@ -59,6 +59,9 @@ class TrivialEncoding final
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
 
+  template <typename DecoderVisitor>
+  void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
+
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
@@ -94,6 +97,9 @@ class TrivialEncoding<std::string_view> final
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
 
+  template <typename DecoderVisitor>
+  void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
+
   static std::string_view encode(
       EncodingSelection<std::string_view>& selection,
       std::span<const std::string_view> values,
@@ -127,6 +133,9 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
   void reset() final;
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
+
+  template <typename DecoderVisitor>
+  void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
 
   static std::string_view encode(
       EncodingSelection<bool>& selection,
@@ -211,6 +220,53 @@ std::string_view TrivialEncoding<T>::encode(
       static_cast<char>(compressionEncoder.compressionType()), pos);
   compressionEncoder.write(pos);
   return {reserved, encodingSize};
+}
+
+template <typename T>
+template <typename V>
+void TrivialEncoding<T>::readWithVisitor(
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  this->template readWithVisitorSlow<true>(
+      visitor, params, [&] { return values_[row_++]; });
+}
+
+template <typename V>
+void TrivialEncoding<std::string_view>::readWithVisitor(
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  const auto endRow = visitor.rowAt(visitor.numRows() - 1);
+  auto numNonNulls = endRow + 1 - params.numScanned;
+  if (auto& nulls = visitor.reader().nullsInReadRange()) {
+    numNonNulls -= velox::bits::countNulls(
+        nulls->template as<uint64_t>(), params.numScanned, endRow + 1);
+  }
+  buffer_.resize(numNonNulls);
+  lengths_->materialize(numNonNulls, buffer_.data());
+  auto* lengths = buffer_.data();
+  detail::readWithVisitorSlow<true>(
+      visitor,
+      params,
+      [&](auto toSkip) {
+        row_ += toSkip;
+        pos_ += std::accumulate(lengths, lengths + toSkip, 0ull);
+        lengths += toSkip;
+      },
+      [&] {
+        auto len = *lengths++;
+        folly::StringPiece value(pos_, len);
+        ++row_;
+        pos_ += len;
+        return value;
+      });
+}
+
+template <typename V>
+void TrivialEncoding<bool>::readWithVisitor(
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  readWithVisitorSlow<true>(
+      visitor, params, [&] { return bits::getBit(row_++, bitmap_); });
 }
 
 } // namespace facebook::nimble

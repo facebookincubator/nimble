@@ -60,6 +60,9 @@ class FixedBitWidthEncoding final
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
 
+  template <typename DecoderVisitor>
+  void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
+
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
@@ -133,6 +136,15 @@ void FixedBitWidthEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
     }
   }
   row_ += rowCount;
+}
+
+template <typename T>
+template <typename V>
+void FixedBitWidthEncoding<T>::readWithVisitor(
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  this->template readWithVisitorSlow<true>(
+      visitor, params, [&] { return baseline_ + fixedBitArray_.get(row_++); });
 }
 
 template <typename T>

@@ -73,6 +73,9 @@ class MainlyConstantEncoding final
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
 
+  template <typename DecoderVisitor>
+  void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
+
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
@@ -166,6 +169,23 @@ void MainlyConstantEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   NIMBLE_DASSERT(
       nextOtherValue - otherValuesBuffer_.begin() == nonCommonCount,
       "Encoding size mismatch.");
+}
+
+template <typename T>
+template <typename V>
+void MainlyConstantEncoding<T>::readWithVisitor(
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  this->template readWithVisitorSlow<true>(visitor, params, [&] {
+    bool isCommon;
+    isCommon_->materialize(1, &isCommon);
+    if (isCommon) {
+      return commonValue_;
+    }
+    physicalType otherValue;
+    otherValues_->materialize(1, &otherValue);
+    return otherValue;
+  });
 }
 
 namespace internal {} // namespace internal

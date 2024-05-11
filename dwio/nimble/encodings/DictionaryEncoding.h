@@ -57,6 +57,9 @@ class DictionaryEncoding
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
 
+  template <typename DecoderVisitor>
+  void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
+
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
@@ -119,6 +122,65 @@ void DictionaryEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
     *output = alphabet_[index];
     ++output;
   }
+}
+
+namespace detail {
+
+class ExtractDictionaryIndices {
+ public:
+  static constexpr bool kSkipNulls = true;
+  using HookType = velox::dwio::common::NoHook;
+
+  ExtractDictionaryIndices(uint32_t* indices, velox::vector_size_t offset)
+      : indices_(indices), offset_(offset) {}
+
+  bool acceptsNulls() const {
+    return false;
+  }
+
+  void addValue(velox::vector_size_t i, uint32_t value) {
+    indices_[i - offset_] = value;
+  }
+
+  template <typename T>
+  void addNull(velox::vector_size_t /*i*/) {
+    NIMBLE_UNREACHABLE(__PRETTY_FUNCTION__);
+  }
+
+  HookType& hook() {
+    return velox::dwio::common::noHook();
+  }
+
+ private:
+  uint32_t* const indices_;
+  const velox::vector_size_t offset_;
+};
+
+} // namespace detail
+
+template <typename T>
+template <typename V>
+void DictionaryEncoding<T>::readWithVisitor(
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  const auto startRowIndex = visitor.rowIndex();
+  buffer_.resize(visitor.numRows() - startRowIndex);
+  velox::common::AlwaysTrue indicesFilter;
+  auto indicesVisitor = DecoderVisitor<
+      int32_t,
+      velox::common::AlwaysTrue,
+      detail::ExtractDictionaryIndices,
+      V::dense>(
+      indicesFilter,
+      &visitor.reader(),
+      velox::RowSet(visitor.rows(), visitor.numRows()),
+      detail::ExtractDictionaryIndices(buffer_.data(), startRowIndex));
+  indicesVisitor.setRowIndex(startRowIndex);
+  callReadWithVisitor(*indicesEncoding_, indicesVisitor, params);
+  this->template readWithVisitorSlow<false>(visitor, params, [&] {
+    auto index = buffer_[visitor.rowIndex() - startRowIndex];
+    return alphabet_[index];
+  });
 }
 
 template <typename T>
