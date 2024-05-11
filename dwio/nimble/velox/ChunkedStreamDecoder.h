@@ -40,9 +40,13 @@ class ChunkedStreamDecoder : public Decoder {
 
   void reset() override;
 
- private:
   void ensureLoaded();
 
+  const Encoding* encoding() const override {
+    return encoding_.get();
+  }
+
+ private:
   velox::memory::MemoryPool& pool_;
   std::unique_ptr<ChunkedStream> stream_;
   std::unique_ptr<Encoding> encoding_;

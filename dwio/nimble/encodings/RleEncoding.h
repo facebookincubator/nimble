@@ -144,7 +144,7 @@ class RLEEncodingBase
     return {reserved, encodingSize};
   }
 
-  const char* getValuesStart() {
+  const char* getValuesStart() const {
     return this->data_.data() + Encoding::kPrefixSize + 4 +
         *reinterpret_cast<const uint32_t*>(
                this->data_.data() + Encoding::kPrefixSize);

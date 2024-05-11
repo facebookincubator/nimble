@@ -18,6 +18,8 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/NullableEncoding.h"
+#include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "velox/dwio/common/FlatMapHelper.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/DictionaryVector.h"
@@ -238,6 +240,10 @@ class NullColumnReader final : public FieldReader {
   NullColumnReader(velox::memory::MemoryPool& pool, velox::TypePtr type)
       : FieldReader{pool, std::move(type), nullptr} {}
 
+  uint64_t estimatedTotalOutputSize() const final {
+    return 0;
+  }
+
   void next(
       uint32_t count,
       velox::VectorPtr& output,
@@ -329,11 +335,76 @@ class ScalarFieldReader final
 
   using FieldReader::FieldReader;
 
+  uint64_t estimatedTotalOutputSize() const final {
+    uint64_t totalBytes{0};
+    const auto* encoding = decoder_->encoding();
+    NIMBLE_CHECK(
+        encoding != nullptr,
+        "Decoder must be loaded for output size estimation.");
+    const auto rowCount = encoding->rowCount();
+
+    if (encoding->isNullable()) {
+      // Adding memory for BaseVector::nulls_
+      totalBytes += rowCount / 8;
+    }
+
+    NIMBLE_CHECK(
+        type_->isPrimitiveType(),
+        "Velox type must be primitive in ScalarFieldReader");
+    NIMBLE_CHECK(
+        type_->isFixedWidth(),
+        "Velox type must be fixed width in ScalarFieldReader");
+    const auto veloxType = type_->kind();
+
+    switch (veloxType) {
+      case velox::TypeKind::BOOLEAN:
+        // Bit packed representation for bool type
+        totalBytes += rowCount / 8;
+        break;
+      case velox::TypeKind::TINYINT:
+        totalBytes += rowCount *
+            sizeof(velox::TypeTraits<velox::TypeKind::TINYINT>::NativeType);
+        break;
+      case velox::TypeKind::SMALLINT:
+        totalBytes += rowCount *
+            sizeof(velox::TypeTraits<velox::TypeKind::SMALLINT>::NativeType);
+        break;
+      case velox::TypeKind::INTEGER:
+        totalBytes += rowCount *
+            sizeof(velox::TypeTraits<velox::TypeKind::INTEGER>::NativeType);
+        break;
+      case velox::TypeKind::BIGINT:
+        totalBytes += rowCount *
+            sizeof(velox::TypeTraits<velox::TypeKind::BIGINT>::NativeType);
+        break;
+      case velox::TypeKind::REAL:
+        totalBytes += rowCount *
+            sizeof(velox::TypeTraits<velox::TypeKind::REAL>::NativeType);
+        break;
+      case velox::TypeKind::DOUBLE:
+        totalBytes += rowCount *
+            sizeof(velox::TypeTraits<velox::TypeKind::DOUBLE>::NativeType);
+        break;
+      case velox::TypeKind::TIMESTAMP:
+        totalBytes += rowCount *
+            sizeof(velox::TypeTraits<velox::TypeKind::TIMESTAMP>::NativeType);
+        break;
+      case velox::TypeKind::HUGEINT:
+        totalBytes += rowCount *
+            sizeof(velox::TypeTraits<velox::TypeKind::HUGEINT>::NativeType);
+        break;
+      default:
+        NIMBLE_NOT_SUPPORTED(
+            fmt::format("Unsupported Velox type: {}", type_->toString()));
+    }
+    return totalBytes;
+  }
+
   void next(
       uint32_t count,
       velox::VectorPtr& output,
       const bits::Bitmap* scatterBitmap) final {
-    auto rowCount = scatterCount(count, scatterBitmap);
+    const auto rowCount = scatterCount(count, scatterBitmap);
     auto vector = VectorInitializer<velox::FlatVector<TRequested>>::initialize(
         &pool_, output, type_, rowCount);
     vector->resize(rowCount);
@@ -483,6 +554,51 @@ class StringFieldReader final : public FieldReader {
       Decoder* decoder,
       std::vector<std::string_view>& buffer)
       : FieldReader{pool, std::move(type), decoder}, buffer_{buffer} {}
+
+  uint64_t estimatedTotalOutputSize() const final {
+    uint64_t totalBytes{0};
+    const auto* encoding = decoder_->encoding();
+    NIMBLE_CHECK(
+        encoding != nullptr,
+        "Decoder must be loaded for output size estimation.");
+    const auto* innerEncoding = encoding;
+
+    if (encoding->isNullable()) {
+      // Adding memory for BaseVector::nulls_
+      totalBytes += encoding->rowCount() / 8;
+      const auto* nullableEncoding =
+          dynamic_cast<const NullableEncoding<std::string_view>*>(encoding);
+      NIMBLE_CHECK(
+          nullableEncoding != nullptr,
+          "NullableEncoding is not used for nullable string field.");
+      innerEncoding = nullableEncoding->nonNulls();
+    }
+
+    // TODO: support more encodings (or do encoding traversal), DICT, RLE, etc.
+    // We currently only estimate trivial encoded string field.
+    if (const auto* trivialEncoding =
+            dynamic_cast<const TrivialEncoding<std::string_view>*>(
+                innerEncoding)) {
+      // Adding overhead for velox::StringView. 4 bytes for inline, 16 bytes for
+      // non-inline
+      const auto rowCount = trivialEncoding->rowCount();
+      const auto payloadBytes = trivialEncoding->uncompressedDataBytes();
+      totalBytes +=
+          ((payloadBytes / rowCount) > velox::StringView::kInlineSize ? 16
+                                                                      : 4) *
+          rowCount;
+
+      // Adding actual string content payload size
+      totalBytes += payloadBytes;
+    } else {
+      NIMBLE_NOT_SUPPORTED(fmt::format(
+          "String field output size estimation not yet supported for {} "
+          "encoding type",
+          innerEncoding->encodingType()));
+    }
+
+    return totalBytes;
+  }
 
   void next(
       uint32_t count,
@@ -663,6 +779,26 @@ class ArrayFieldReader final : public MultiValueFieldReader {
       : MultiValueFieldReader{pool, std::move(type), decoder},
         elementsReader_{std::move(elementsReader)} {}
 
+  uint64_t estimatedTotalOutputSize() const final {
+    uint64_t totalBytes{0};
+    const auto* encoding = decoder_->encoding();
+    NIMBLE_CHECK(
+        encoding != nullptr,
+        "Decoder must be loaded for output size estimation.");
+    const auto rowCount = encoding->rowCount();
+
+    if (encoding->isNullable()) {
+      // Adding memory for BaseVector::nulls_
+      totalBytes += rowCount / 8;
+    }
+
+    // Adding memory for ArrayVectorBase::sizes_ and ArrayVectorBase::offsets_
+    totalBytes += rowCount * sizeof(int32_t) * 2;
+
+    totalBytes += elementsReader_->estimatedTotalOutputSize();
+    return totalBytes;
+  }
+
   void next(
       uint32_t count,
       velox::VectorPtr& output,
@@ -739,6 +875,12 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
         cachedLazyChildrenRows_{0} {
     VectorInitializer<velox::ArrayVector>::initialize(
         &pool_, cachedValue_, type_, 1);
+  }
+
+  uint64_t estimatedTotalOutputSize() const final {
+    // TODO: Implement estimatedTotalOutputSize for ArrayWithOffsetsFieldReader.
+    NIMBLE_NOT_SUPPORTED(
+        "Array with offsets field output size estimation not yet supported.");
   }
 
   void next(
@@ -1129,6 +1271,28 @@ class MapFieldReader final : public MultiValueFieldReader {
         keysReader_{std::move(keysReader)},
         valuesReader_{std::move(valuesReader)} {}
 
+  uint64_t estimatedTotalOutputSize() const final {
+    uint64_t totalBytes{0};
+    const auto* encoding = decoder_->encoding();
+    NIMBLE_CHECK(
+        encoding != nullptr,
+        "Decoder must be loaded for output size estimation.");
+    const auto rowCount = encoding->rowCount();
+
+    if (encoding->isNullable()) {
+      // Adding memory for BaseVector::nulls_
+      totalBytes += rowCount / 8;
+    }
+
+    // MapVector extends from ArrayVectorBase.
+    // Adding memory for ArrayVectorBase::sizes_ and ArrayVectorBase::offsets_
+    totalBytes += rowCount * sizeof(int32_t) * 2;
+
+    totalBytes += keysReader_->estimatedTotalOutputSize();
+    totalBytes += valuesReader_->estimatedTotalOutputSize();
+    return totalBytes;
+  }
+
   void next(
       uint32_t count,
       velox::VectorPtr& output,
@@ -1230,6 +1394,25 @@ class RowFieldReader final : public FieldReader {
         boolBuffer_{boolBuffer},
         executor_{executor} {}
 
+  uint64_t estimatedTotalOutputSize() const final {
+    uint64_t totalBytes{0};
+
+    if constexpr (hasNull) {
+      // Adding memory for BaseVector::nulls_
+      const auto* encoding = decoder_->encoding();
+      const auto rowCount = encoding->rowCount();
+      totalBytes += rowCount / 8;
+    }
+
+    for (auto& reader : childrenReaders_) {
+      if (reader != nullptr) {
+        // Non selected fields are set to null.
+        totalBytes += reader->estimatedTotalOutputSize();
+      }
+    }
+    return totalBytes;
+  }
+
   void next(
       uint32_t count,
       velox::VectorPtr& output,
@@ -1240,7 +1423,7 @@ class RowFieldReader final : public FieldReader {
     vector->children().resize(childrenReaders_.size());
     vector->unsafeResize(rowCount);
     const void* childrenBits = nullptr;
-    uint32_t childrenCount = 0;
+    uint32_t selectedNonNullCount = 0;
 
     if constexpr (hasNull) {
       zeroNulls(vector, rowCount);
@@ -1258,25 +1441,25 @@ class RowFieldReader final : public FieldReader {
         for (uint32_t i = 0; i < rowCount; ++i) {
           if (scatterBitmap->test(i) && boolBuffer_[boolBufferOffset++]) {
             nullBits.set(i);
-            ++childrenCount;
+            ++selectedNonNullCount;
           }
         }
       } else {
         for (uint32_t i = 0; i < rowCount; ++i) {
           if (boolBuffer_[i]) {
             nullBits.set(i);
-            ++childrenCount;
+            ++selectedNonNullCount;
           }
         }
       }
-      if (UNLIKELY(childrenCount == rowCount)) {
+      if (UNLIKELY(selectedNonNullCount == rowCount)) {
         vector->resetNulls();
       } else {
-        vector->setNullCount(rowCount - childrenCount);
+        vector->setNullCount(rowCount - selectedNonNullCount);
         childrenBits = nullBuffer;
       }
     } else {
-      childrenCount = count;
+      selectedNonNullCount = count;
       if (scatterBitmap) {
         auto requiredBytes = bits::bytesRequired(rowCount);
         auto* nullBuffer = paddedNulls(vector, rowCount);
@@ -1299,11 +1482,11 @@ class RowFieldReader final : public FieldReader {
       for (uint32_t i = 0; i < childrenReaders_.size(); ++i) {
         auto& reader = childrenReaders_[i];
         if (reader) {
-          executor_->add([childrenCount,
+          executor_->add([selectedNonNullCount,
                           bitmapPtr,
                           &reader,
                           &child = vector->childAt(i)]() {
-            reader->next(childrenCount, child, bitmapPtr);
+            reader->next(selectedNonNullCount, child, bitmapPtr);
           });
         }
       }
@@ -1311,7 +1494,7 @@ class RowFieldReader final : public FieldReader {
       for (uint32_t i = 0; i < childrenReaders_.size(); ++i) {
         auto& reader = childrenReaders_[i];
         if (reader) {
-          reader->next(childrenCount, vector->childAt(i), bitmapPtr);
+          reader->next(selectedNonNullCount, vector->childAt(i), bitmapPtr);
         }
       }
     }
@@ -1460,6 +1643,14 @@ class FlatMapKeyNode {
 
   const velox::dwio::common::flatmap::KeyValue<T>& key() const {
     return key_;
+  }
+
+  const FieldReader* valueReader() const {
+    return valueReader_.get();
+  }
+
+  const Decoder* inMapDecoder() const {
+    return inMapDecoder_;
   }
 
   bool inMap(uint32_t index) const {
@@ -1694,6 +1885,28 @@ class StructFlatMapFieldReader : public FlatMapFieldReaderBase<T, hasNull> {
         mergedNulls_{mergedNulls},
         executor_{executor} {}
 
+  uint64_t estimatedTotalOutputSize() const final {
+    uint64_t totalBytes{0};
+    if constexpr (hasNull) {
+      NIMBLE_ASSERT(
+          FieldReader::decoder_ != nullptr,
+          "decoder_ should be set when hasNull is true");
+      const auto* encoding = FieldReader::decoder_->encoding();
+      NIMBLE_CHECK(
+          encoding != nullptr,
+          "Decoder must be loaded for output size estimation.");
+      const auto rowCount = encoding->rowCount();
+
+      // Adding memory for BaseVector::nulls_
+      totalBytes += rowCount / 8;
+    }
+
+    for (const auto& node : this->keyNodes_) {
+      totalBytes += node->valueReader()->estimatedTotalOutputSize();
+    }
+    return totalBytes;
+  }
+
   void next(
       uint32_t rowCount,
       velox::VectorPtr& output,
@@ -1796,6 +2009,58 @@ class MergedFlatMapFieldReader final
             decoder,
             std::move(keyNodes),
             boolBuffer) {}
+
+  uint64_t estimatedTotalOutputSize() const final {
+    uint64_t totalBytes{0};
+
+    uint32_t rowCount{0};
+    if constexpr (hasNull) {
+      NIMBLE_ASSERT(
+          FieldReader::decoder_ != nullptr,
+          "decoder_ should be set when hasNull is true");
+      const auto* encoding = FieldReader::decoder_->encoding();
+      NIMBLE_CHECK(
+          encoding != nullptr,
+          "Decoder must be loaded for output size estimation.");
+      rowCount = encoding->rowCount();
+      // Adding memory for BaseVector::nulls_
+      totalBytes += rowCount / 8;
+    } else {
+      NIMBLE_CHECK(!this->keyNodes_.empty(), "keyNodes_ should not be empty.");
+      rowCount = this->keyNodes_.back()->inMapDecoder()->encoding()->rowCount();
+    }
+
+    // Adding memory for ArrayVectorBase::offsets_ and ArrayVectorBase::sizes_
+    totalBytes += rowCount * sizeof(int32_t) * 2;
+
+    // Estimation of map key vector size in velox::MapVector.
+    // Adding memory for key vector's BaseVector::nulls_
+    totalBytes += rowCount * this->keyNodes_.size() / 8;
+    // MergedFlatMap key field is either velox::StringView or primative type
+    uint64_t totalKeyBytesPerRow{0};
+    if constexpr (std::is_same<T, velox::StringView>::value) {
+      // Adding memory for key vector's FlatVector::stringBuffers_
+      for (const auto& node : this->keyNodes_) {
+        totalKeyBytesPerRow += node->key().get().size();
+      }
+    }
+    // Adding memory for key vector's FlatVector::values_
+    totalKeyBytesPerRow += this->keyNodes_.size() * sizeof(T);
+    totalBytes += totalKeyBytesPerRow * rowCount;
+
+    // Estimation of map value vector size in velox::MapVector. As
+    // MergedFlatMapReader transforms the dimension of the keys and values from
+    // a flat map representation to velox map representation, there is no easy
+    // way of doing a direct estimation of velox values column. So we adopt the
+    // ways from StructFlatMapReader for estimating values size.
+    uint64_t valuesBytes{0};
+    for (const auto& node : this->keyNodes_) {
+      valuesBytes += node->valueReader()->estimatedTotalOutputSize();
+    }
+
+    totalBytes += valuesBytes;
+    return totalBytes;
+  }
 
   void next(
       uint32_t rowCount,

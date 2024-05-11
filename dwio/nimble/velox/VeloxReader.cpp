@@ -254,13 +254,15 @@ VeloxReader::VeloxReader(
   // usually the caller will then fetch another file split to process and other
   // file splits will cover the rest of the file.
 
-  firstStripe_ = tabletReader_->stripeCount();
+  const auto stripeCount = tabletReader_->stripeCount();
+  firstStripe_ = stripeCount;
   lastStripe_ = 0;
   firstRow_ = 0;
   lastRow_ = 0;
   uint64_t rows = 0;
-  for (auto i = 0; i < tabletReader_->stripeCount(); ++i) {
-    auto stripeOffset = tabletReader_->stripeOffset(i);
+  for (auto i = 0; i < stripeCount; ++i) {
+    const auto stripeOffset = tabletReader_->stripeOffset(i);
+    const auto stripeRowCount = tabletReader_->stripeRowCount(i);
     if ((stripeOffset >= parameters_.fileRangeStartOffset) &&
         (stripeOffset < parameters_.fileRangeEndOffset)) {
       if (i < firstStripe_) {
@@ -269,11 +271,10 @@ VeloxReader::VeloxReader(
       }
       if (i >= lastStripe_) {
         lastStripe_ = i + 1;
-        lastRow_ = rows + tabletReader_->stripeRowCount(i);
+        lastRow_ = rows + stripeRowCount;
       }
     }
-
-    rows += tabletReader_->stripeRowCount(i);
+    rows += stripeRowCount;
   }
 
   nextStripe_ = firstStripe_;
@@ -288,7 +289,7 @@ VeloxReader::VeloxReader(
 
   VLOG(1) << "TabletReader handling stripes: " << firstStripe_ << " -> "
           << lastStripe_ << " (rows " << firstRow_ << " -> " << lastRow_
-          << "). Total stripes: " << tabletReader_->stripeCount()
+          << "). Total stripes: " << stripeCount
           << ". Total rows: " << tabletReader_->tabletRowCount();
 
   unitLoader_ = getUnitLoader();
@@ -342,6 +343,8 @@ void VeloxReader::loadNextStripe() {
               std::make_unique<InMemoryChunkedStream>(
                   pool_, std::move(streams[i])),
               *logger_);
+          dynamic_cast<ChunkedStreamDecoder*>(decoders_[offsets_[i]].get())
+              ->ensureLoaded();
         }
       }
       loadedStripe_ = nextStripe_++;
@@ -361,6 +364,30 @@ void VeloxReader::loadNextStripe() {
         folly::to<std::string>(folly::exceptionStr(std::current_exception())));
     throw;
   }
+}
+
+uint64_t VeloxReader::estimatedRowSize() {
+  if (!loadedStripe_.has_value() || rowsRemainingInStripe_ == 0) {
+    // We don't load to do the estimation if there isn't any stripe loaded or we
+    // are currently at stripe boundary. Instead we return a highly conservative
+    // large row size value.
+    return kConservativeEstimatedRowSize;
+  }
+  if (cachedRowSizeEstimationStripeIdx_ != loadedStripe_) {
+    try {
+      cachedRowSizeEstimation_ = rootReader_->estimatedTotalOutputSize() /
+          tabletReader_->stripeRowCount(loadedStripe_.value());
+    } catch (const NimbleUserError& e) {
+      if (e.errorCode() == error_code::NotSupported) {
+        // TODO: Fall back non-supported estimations to conservative row size.
+        cachedRowSizeEstimation_ = kConservativeEstimatedRowSize;
+      } else {
+        throw;
+      }
+    }
+    cachedRowSizeEstimationStripeIdx_ = loadedStripe_;
+  }
+  return cachedRowSizeEstimation_;
 }
 
 bool VeloxReader::next(uint64_t rowCount, velox::VectorPtr& result) {

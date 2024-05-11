@@ -69,6 +69,8 @@ struct VeloxReadParams : public FieldReaderParams {
 
 class VeloxReader {
  public:
+  static constexpr uint64_t kConservativeEstimatedRowSize = 1L << 20; // 1MB
+
   VeloxReader(
       velox::memory::MemoryPool& pool,
       velox::ReadFile* file,
@@ -91,6 +93,9 @@ class VeloxReader {
       VeloxReadParams params = {});
 
   ~VeloxReader();
+
+  // Returns the estimated row size from the current stripe in bytes.
+  uint64_t estimatedRowSize();
 
   // Fills |result| with up to rowCount new rows, returning whether any new rows
   // were read. |result| may be nullptr, in which case it will be allocated via
@@ -175,12 +180,19 @@ class VeloxReader {
   uint64_t lastRow_;
 
   // Reading state for reader
-  uint32_t nextStripe_ = 0;
-  uint64_t rowsRemainingInStripe_ = 0;
-  // stripe currently loaded. Initially state is no stripe loaded (INT_MAX)
+  uint32_t nextStripe_{0};
+  uint64_t rowsRemainingInStripe_{0};
+
+  // stripe currently loaded.
   std::optional<uint32_t> loadedStripe_;
 
+  // Row size estimation cache so that for the same stripe no repeated
+  // estimation is done.
+  uint64_t cachedRowSizeEstimation_{0};
+  std::optional<uint32_t> cachedRowSizeEstimationStripeIdx_;
+
   std::unique_ptr<velox::dwio::common::ExecutorBarrier> barrier_;
+
   // Right now each reader is considered its own session if not passed from
   // writer option.
   std::shared_ptr<MetricsLogger> logger_;

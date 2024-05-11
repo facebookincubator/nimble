@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 #include <gtest/gtest.h>
+#include <velox/vector/ComplexVector.h>
+#include <cmath>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
@@ -55,16 +57,36 @@ DEFINE_uint32(
 
 namespace {
 struct VeloxMapGeneratorConfig {
-  std::shared_ptr<const velox::RowType> rowType;
+  // A RowType containing a group of map feature column types.
+  std::shared_ptr<const velox::RowType> featureTypes;
+
   velox::TypeKind keyType;
+
   std::string stringKeyPrefix = "test_";
-  uint32_t maxSizeForMap = 10;
+
+  // Maximum number of key value pairs per row in a map column.
+  uint32_t maxNumKVPerRow = 10;
+
+  // If true, produces map columns containing different number of key value
+  // pairs in each row. Otherwise, every row will have 'maxNumKVPerRow' key
+  // value pairs.
+  bool variantNumKV = true;
+
   unsigned long seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
                                                    : folly::Random::rand32();
   bool hasNulls = true;
+
+  // TODO: Put VeloxFuzzer::Options directly inside VeloxMapGeneratorConfig.
+  // Length of generated string field.
+  uint32_t stringLength = 20;
+
+  // If true, generated string field will have variable length, maxing at
+  // 'stringLength'.
+  bool stringVariableLength = true;
 };
 
-// Generates a batch of MpaVector Data
+// Generates a RowVector containing a set of feature MapVector with
+// fixed set of keys in each row.
 class VeloxMapGenerator {
  public:
   VeloxMapGenerator(
@@ -74,29 +96,32 @@ class VeloxMapGenerator {
     LOG(INFO) << "seed: " << config_.seed;
   }
 
-  velox::VectorPtr generateBatch(velox::vector_size_t batchSize) {
-    auto offsets = velox::allocateOffsets(batchSize, leafPool_);
+  velox::VectorPtr generateBatch(velox::vector_size_t numRows) {
+    auto offsets = velox::allocateOffsets(numRows, leafPool_);
     auto rawOffsets = offsets->template asMutable<velox::vector_size_t>();
-    auto sizes = velox::allocateSizes(batchSize, leafPool_);
+    auto sizes = velox::allocateSizes(numRows, leafPool_);
     auto rawSizes = sizes->template asMutable<velox::vector_size_t>();
     velox::vector_size_t childSize = 0;
-    for (auto i = 0; i < batchSize; ++i) {
+    for (auto i = 0; i < numRows; ++i) {
       rawOffsets[i] = childSize;
-      auto length = folly::Random::rand32(rng_) % (config_.maxSizeForMap + 1);
-      rawSizes[i] = length;
-      childSize += length;
+      auto numMapKV = config_.variantNumKV
+          ? folly::Random::rand32(rng_) % (config_.maxNumKVPerRow + 1)
+          : config_.maxNumKVPerRow;
+      rawSizes[i] = numMapKV;
+      childSize += numMapKV;
     }
 
     // create keys
-    auto keys = generateKeys(batchSize, childSize, rawSizes);
+    auto keys = generateKeys(numRows, childSize, rawSizes);
     auto offset = 0;
+
     // encode keys
     if (folly::Random::oneIn(2, rng_)) {
       offset = 0;
       auto indices = velox::AlignedBuffer::allocate<velox::vector_size_t>(
           childSize, leafPool_);
       auto rawIndices = indices->asMutable<velox::vector_size_t>();
-      for (auto i = 0; i < batchSize; ++i) {
+      for (auto i = 0; i < numRows; ++i) {
         auto mapSize = rawSizes[i];
         for (auto j = 0; j < mapSize; ++j) {
           rawIndices[offset + j] = offset + mapSize - j - 1;
@@ -110,10 +135,10 @@ class VeloxMapGenerator {
     velox::VectorFuzzer fuzzer(
         {
             .vectorSize = static_cast<size_t>(childSize),
-            .nullRatio = 0.1,
+            .nullRatio = config_.hasNulls ? 0.1 : 0,
             .dictionaryHasNulls = config_.hasNulls,
-            .stringLength = 20,
-            .stringVariableLength = true,
+            .stringLength = config_.stringLength,
+            .stringVariableLength = config_.stringVariableLength,
             .containerLength = 5,
             .containerVariableLength = true,
         },
@@ -121,9 +146,9 @@ class VeloxMapGenerator {
         config_.seed);
 
     // Generate a random null vector.
-    velox::NullsBuilder builder{batchSize, leafPool_};
+    velox::NullsBuilder builder{numRows, leafPool_};
     if (config_.hasNulls) {
-      for (auto i = 0; i < batchSize; ++i) {
+      for (auto i = 0; i < numRows; ++i) {
         if (folly::Random::oneIn(10, rng_)) {
           builder.setNull(i);
         }
@@ -131,12 +156,12 @@ class VeloxMapGenerator {
     }
     auto nulls = builder.build();
     std::vector<velox::VectorPtr> children;
-    for (auto& featureColumn : config_.rowType->children()) {
+    for (auto& featureColumn : config_.featureTypes->children()) {
       velox::VectorPtr map = std::make_shared<velox::MapVector>(
           leafPool_,
           featureColumn,
           nulls,
-          batchSize,
+          numRows,
           offsets,
           sizes,
           keys,
@@ -149,7 +174,7 @@ class VeloxMapGenerator {
     }
 
     return std::make_shared<velox::RowVector>(
-        leafPool_, config_.rowType, nullptr, batchSize, std::move(children));
+        leafPool_, config_.featureTypes, nullptr, numRows, std::move(children));
   }
 
   std::mt19937& rng() {
@@ -158,7 +183,7 @@ class VeloxMapGenerator {
 
  private:
   std::shared_ptr<velox::BaseVector> generateKeys(
-      velox::vector_size_t batchSize,
+      velox::vector_size_t numRows,
       velox::vector_size_t childSize,
       velox::vector_size_t* rawSizes) {
     switch (config_.keyType) {
@@ -168,7 +193,7 @@ class VeloxMapGenerator {
         velox::BaseVector::create(velox::veloxKind(), childSize, leafPool_); \
     auto rawKeyValues = keys->asFlatVector<cppType>()->mutableRawValues();   \
     auto offset = 0;                                                         \
-    for (auto i = 0; i < batchSize; ++i) {                                   \
+    for (auto i = 0; i < numRows; ++i) {                                     \
       for (auto j = 0; j < rawSizes[i]; ++j) {                               \
         rawKeyValues[offset++] = folly::to<cppType>(j);                      \
       }                                                                      \
@@ -186,7 +211,7 @@ class VeloxMapGenerator {
             velox::BaseVector::create(velox::VARCHAR(), childSize, leafPool_);
         auto flatVector = keys->asFlatVector<velox::StringView>();
         auto offset = 0;
-        for (auto i = 0; i < batchSize; ++i) {
+        for (auto i = 0; i < numRows; ++i) {
           for (auto j = 0; j < rawSizes[i]; ++j) {
             auto key = config_.stringKeyPrefix + folly::to<std::string>(j);
             flatVector->set(
@@ -199,6 +224,7 @@ class VeloxMapGenerator {
         NIMBLE_NOT_SUPPORTED("Unsupported Key Type");
     }
   }
+
   velox::memory::MemoryPool* leafPool_;
   VeloxMapGeneratorConfig config_;
   std::mt19937 rng_;
@@ -785,9 +811,9 @@ TEST_F(VeloxReaderTests, DontReadUnprojectedFeaturesFromFile) {
                                               : folly::Random::rand32();
 
   VeloxMapGeneratorConfig generatorConfig{
-      .rowType = rowType,
+      .featureTypes = rowType,
       .keyType = velox::TypeKind::INTEGER,
-      .maxSizeForMap = 10,
+      .maxNumKVPerRow = 10,
       .seed = seed,
       .hasNulls = false,
   };
@@ -815,7 +841,7 @@ TEST_F(VeloxReaderTests, DontReadUnprojectedFeaturesFromFile) {
     auto& selectedFeatures =
         params.flatMapFeatureSelector["float_features"].features;
     std::mt19937 rng(seed);
-    for (int i = 0; i < generatorConfig.maxSizeForMap; ++i) {
+    for (int i = 0; i < generatorConfig.maxNumKVPerRow; ++i) {
       if (folly::Random::oneIn(2, rng)) {
         selectedFeatures.push_back(folly::to<std::string>(i));
       }
@@ -823,7 +849,7 @@ TEST_F(VeloxReaderTests, DontReadUnprojectedFeaturesFromFile) {
     // Features list can't be empty.
     if (selectedFeatures.empty()) {
       selectedFeatures = {folly::to<std::string>(
-          folly::Random::rand32(generatorConfig.maxSizeForMap))};
+          folly::Random::rand32(generatorConfig.maxNumKVPerRow))};
     }
 
     LOG(INFO) << "Selected features (" << selectedFeatures.size()
@@ -2355,9 +2381,9 @@ TEST_F(VeloxReaderTests, FlatMapToStruct) {
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
 
   VeloxMapGeneratorConfig generatorConfig{
-      .rowType = rowType,
+      .featureTypes = rowType,
       .keyType = velox::TypeKind::INTEGER,
-      .maxSizeForMap = 10};
+      .maxNumKVPerRow = 10};
   VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
 
   nimble::VeloxWriterOptions writerOptions;
@@ -2410,9 +2436,9 @@ TEST_F(VeloxReaderTests, FlatMapToStructForComplexType) {
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
 
   VeloxMapGeneratorConfig generatorConfig{
-      .rowType = rowType,
+      .featureTypes = rowType,
       .keyType = velox::TypeKind::INTEGER,
-      .maxSizeForMap = 10};
+      .maxNumKVPerRow = 10};
   VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
 
   nimble::VeloxWriterOptions writerOptions;
@@ -2451,10 +2477,10 @@ TEST_F(VeloxReaderTests, StringKeyFlatMapAsStruct) {
   writerOptions.flatMapColumns.insert("string_key_feature");
 
   VeloxMapGeneratorConfig generatorConfig{
-      .rowType = rowType,
+      .featureTypes = rowType,
       .keyType = velox::TypeKind::VARCHAR,
       .stringKeyPrefix = "testKeyString_",
-      .maxSizeForMap = 10,
+      .maxNumKVPerRow = 10,
   };
   VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
 
@@ -2507,7 +2533,7 @@ TEST_F(VeloxReaderTests, FlatMapAsMapEncoding) {
   });
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
   VeloxMapGeneratorConfig generatorConfig{
-      .rowType = rowType,
+      .featureTypes = rowType,
       .keyType = velox::TypeKind::INTEGER,
   };
   VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
@@ -2657,7 +2683,7 @@ TEST_F(VeloxReaderTests, StringKeyFlatMapAsMapEncoding) {
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
 
   VeloxMapGeneratorConfig generatorConfig{
-      .rowType = rowType,
+      .featureTypes = rowType,
       .keyType = velox::TypeKind::VARCHAR,
       .stringKeyPrefix = "testKeyString_",
   };
@@ -4159,4 +4185,391 @@ TEST_F(VeloxReaderTests, ChunkStreamsWithNulls) {
       }
     }
   }
+}
+
+TEST_F(VeloxReaderTests, EstimatedRowSizeSimple) {
+  const uint32_t rowCount = 100;
+  const double kMaxErrorRate = 0.2;
+  auto testPrimitive = [&, rootPool = rootPool_, leafPool = leafPool_](
+                           velox::TypePtr type, uint64_t typeSize) {
+    for (bool hasNull : {true, false}) {
+      velox::VectorFuzzer::Options fuzzerOpts_;
+      fuzzerOpts_.vectorSize = rowCount;
+      if (hasNull) {
+        fuzzerOpts_.nullRatio = 0.2;
+      }
+      velox::VectorFuzzer fuzzer(fuzzerOpts_, leafPool.get());
+      auto vector = fuzzer.fuzzInputFlatRow(velox::ROW({{"simple_col", type}}));
+      auto file = nimble::test::createNimbleFile(*rootPool, vector);
+      velox::InMemoryReadFile readFile(file);
+      nimble::VeloxReader reader(*leafPool, &readFile, nullptr);
+      velox::VectorPtr result;
+      ASSERT_EQ(
+          nimble::VeloxReader::kConservativeEstimatedRowSize,
+          reader.estimatedRowSize());
+      reader.next(1, result);
+      if (type->isFixedWidth()) {
+        ASSERT_EQ(typeSize, reader.estimatedRowSize());
+      } else {
+        const auto expectedRowSize =
+            (fuzzerOpts_.stringLength + 16) * (1 - fuzzerOpts_.nullRatio);
+        int64_t estimateDifference =
+            reader.estimatedRowSize() - expectedRowSize;
+        ASSERT_LE(
+            std::abs(estimateDifference) * 1.0 / expectedRowSize,
+            kMaxErrorRate);
+      }
+    }
+  };
+
+  testPrimitive(velox::BOOLEAN(), 0);
+  testPrimitive(
+      velox::TINYINT(),
+      sizeof(velox::TypeTraits<velox::TypeKind::TINYINT>::NativeType));
+  testPrimitive(
+      velox::SMALLINT(),
+      sizeof(velox::TypeTraits<velox::TypeKind::SMALLINT>::NativeType));
+  testPrimitive(
+      velox::INTEGER(),
+      sizeof(velox::TypeTraits<velox::TypeKind::INTEGER>::NativeType));
+  testPrimitive(
+      velox::BIGINT(),
+      sizeof(velox::TypeTraits<velox::TypeKind::BIGINT>::NativeType));
+  testPrimitive(
+      velox::REAL(),
+      sizeof(velox::TypeTraits<velox::TypeKind::REAL>::NativeType));
+  testPrimitive(
+      velox::DOUBLE(),
+      sizeof(velox::TypeTraits<velox::TypeKind::DOUBLE>::NativeType));
+  // Nimble writes TIMESTAMP as BIGINT.
+  testPrimitive(
+      velox::TIMESTAMP(),
+      sizeof(velox::TypeTraits<velox::TypeKind::BIGINT>::NativeType));
+  // HUGEINT is currently not supported. Remove the throw test when it is.
+  ASSERT_THROW(
+      testPrimitive(
+          velox::HUGEINT(),
+          sizeof(velox::TypeTraits<velox::TypeKind::HUGEINT>::NativeType)),
+      nimble::NimbleUserError);
+  testPrimitive(velox::VARCHAR(), 0);
+}
+
+TEST_F(VeloxReaderTests, EstimatedRowSizeComplex) {
+  // For string cases and with null cases, it is really hard to get an even
+  // close estimation as velox always over provision memory for vectors. Loose
+  // or very loose error rate is applied to the test verification as there is no
+  // other way of binding the estimate verification with velox implementations.
+  const double kMaxErrorRate = 0.2;
+  const double kMaxErrorRateLoose = 0.4;
+  const double kMaxErrorRateVeryLoose = 0.6;
+
+  auto testMultiValue = [&](uint32_t numRows,
+                            uint32_t numElements,
+                            bool isArray) {
+    velox::VectorFuzzer::Options fuzzerOpts;
+    fuzzerOpts.vectorSize = numRows;
+    fuzzerOpts.containerLength = numElements;
+    fuzzerOpts.complexElementsMaxSize =
+        fuzzerOpts.vectorSize * fuzzerOpts.containerLength;
+    fuzzerOpts.containerHasNulls = false;
+    fuzzerOpts.containerVariableLength = false;
+    fuzzerOpts.stringLength = velox::StringView::kInlineSize;
+    fuzzerOpts.stringVariableLength = false;
+    std::vector<velox::TypePtr> testElementTypes{
+        velox::BIGINT(), velox::VARCHAR()};
+    for (auto type : testElementTypes) {
+      velox::VectorFuzzer fuzzer(fuzzerOpts, leafPool_.get());
+      velox::VectorPtr vector;
+      if (isArray) {
+        vector = fuzzer.fuzzInputFlatRow(
+            velox::ROW({{"flat_array_col", velox::ARRAY(type)}}));
+      } else {
+        vector = fuzzer.fuzzInputFlatRow(
+            velox::ROW({{"flat_map_col", velox::MAP(type, type)}}));
+      }
+
+      auto file = nimble::test::createNimbleFile(*rootPool_, vector);
+
+      velox::InMemoryReadFile readFile(file);
+      nimble::VeloxReader reader(*leafPool_, &readFile, nullptr);
+      velox::VectorPtr result;
+      ASSERT_EQ(
+          nimble::VeloxReader::kConservativeEstimatedRowSize,
+          reader.estimatedRowSize());
+      // Read 1 less row so that it does not reach stripe boundary.
+      reader.next(numRows - 1, result);
+      int64_t estimateBasedOnRetainedSize = result->retainedSize() / numRows;
+      int64_t estimateDifference =
+          reader.estimatedRowSize() - estimateBasedOnRetainedSize;
+      auto maxErrorRate = type->kindEquals(velox::VARCHAR())
+          ? kMaxErrorRateLoose
+          : kMaxErrorRate;
+      ASSERT_LE(
+          std::abs(estimateDifference) * 1.0 / estimateBasedOnRetainedSize,
+          maxErrorRate);
+    }
+  };
+
+  // Test regular map
+  testMultiValue(300, 100, false);
+  // Test regular array
+  testMultiValue(300, 100, true);
+
+  auto testFlatMap = [&](uint32_t rowCount,
+                         uint32_t numFeatures,
+                         bool readFlatMapFieldAsStruct,
+                         bool hasNulls,
+                         double maxErrorRateFixed,
+                         double maxErrorRateString) {
+    std::vector<velox::TypePtr> testElementTypes{
+        velox::BIGINT(), velox::VARCHAR()};
+    for (auto& type : testElementTypes) {
+      VeloxMapGeneratorConfig generatorConfig{
+          .featureTypes =
+              velox::ROW({{"flat_map_col", velox::MAP(type, type)}}),
+          .keyType = type->kind(),
+          .maxNumKVPerRow = numFeatures,
+          .variantNumKV = false,
+          .hasNulls = hasNulls,
+          // Use inline size for better control size estimate by utilizing
+          // BaseVector::retainedSize()
+          .stringLength = velox::StringView::kInlineSize,
+          .stringVariableLength = false,
+          .seed = 1387939242,
+      };
+      VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
+      auto vector = generator.generateBatch(rowCount);
+
+      nimble::VeloxWriterOptions writerOptions;
+      writerOptions.flatMapColumns.insert("flat_map_col");
+
+      // TODO: Remove the customized policy after estimation is supported for
+      // all encoding types.
+      writerOptions.encodingSelectionPolicyFactory =
+          [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{{
+               {nimble::EncodingType::Constant, 1.0},
+               {nimble::EncodingType::Trivial, 0.7},
+               {nimble::EncodingType::FixedBitWidth, 0.9},
+               {nimble::EncodingType::MainlyConstant, 1000.0},
+               {nimble::EncodingType::SparseBool, 1.0},
+               {nimble::EncodingType::Dictionary, 1000.0},
+               {nimble::EncodingType::RLE, 1000.0},
+               {nimble::EncodingType::Varint, 1000.0},
+           }}](nimble::DataType dataType)
+          -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
+        return encodingFactory.createPolicy(dataType);
+      };
+      auto file =
+          nimble::test::createNimbleFile(*rootPool_, vector, writerOptions);
+
+      nimble::VeloxReadParams readParams;
+      if (readFlatMapFieldAsStruct) {
+        readParams.readFlatMapFieldAsStruct.insert("flat_map_col");
+        for (auto i = 0; i < numFeatures; ++i) {
+          if (type->kind() == velox::TypeKind::BIGINT) {
+            readParams.flatMapFeatureSelector["flat_map_col"]
+                .features.push_back(folly::to<std::string>(i));
+          } else {
+            ASSERT_EQ(type->kind(), velox::TypeKind::VARCHAR);
+            readParams.flatMapFeatureSelector["flat_map_col"]
+                .features.push_back(
+                    fmt::format("{}{}", generatorConfig.stringKeyPrefix, i));
+          }
+        }
+      }
+
+      velox::InMemoryReadFile readFile(file);
+      nimble::VeloxReader reader(*leafPool_, &readFile, nullptr, readParams);
+      velox::VectorPtr result;
+      ASSERT_EQ(
+          nimble::VeloxReader::kConservativeEstimatedRowSize,
+          reader.estimatedRowSize());
+      // Read 1 less row so that it does not reach stripe boundary.
+      reader.next(rowCount - 1, result);
+      int64_t estimateBasedOnRetainedSize = result->retainedSize() / rowCount;
+      int64_t estimateDifference =
+          reader.estimatedRowSize() - estimateBasedOnRetainedSize;
+      const auto maxErrorRate = type->kindEquals(velox::VARCHAR())
+          ? maxErrorRateString
+          : maxErrorRateFixed;
+      ASSERT_LE(
+          std::abs(estimateDifference) * 1.0 / estimateBasedOnRetainedSize,
+          maxErrorRate);
+    }
+  };
+
+  // Testing StructFlatMapFieldReader
+  testFlatMap(
+      /* rowCount= */ 1000,
+      /* numFeatures= */ 100,
+      /* readFlatMapFieldAsStruct= */ true,
+      /* hasNulls= */ false,
+      /* maxErrorRateFixed= */ kMaxErrorRate,
+      /* maxErrorRateString= */ kMaxErrorRateLoose);
+  testFlatMap(
+      /* rowCount= */ 1000,
+      /* numFeatures= */ 100,
+      /* readFlatMapFieldAsStruct= */ true,
+      /* hasNulls= */ true,
+      /* maxErrorRateFixed= */ kMaxErrorRate,
+      /* maxErrorRateString= */ kMaxErrorRateVeryLoose);
+  testFlatMap(
+      /* rowCount= */ 50,
+      /* numFeatures= */ 1000,
+      /* readFlatMapFieldAsStruct= */ true,
+      /* hasNulls= */ false,
+      /* maxErrorRateFixed= */ kMaxErrorRate,
+      /* maxErrorRateString= */ kMaxErrorRateLoose);
+  testFlatMap(
+      /* rowCount= */ 50,
+      /* numFeatures= */ 1000,
+      /* readFlatMapFieldAsStruct= */ true,
+      /* hasNulls= */ true,
+      /* maxErrorRateFixed= */ kMaxErrorRateLoose,
+      /* maxErrorRateString= */ kMaxErrorRateVeryLoose);
+
+  // Testing MergedFlatMapFieldReader
+  testFlatMap(
+      /* rowCount= */ 500,
+      /* numFeatures= */ 100,
+      /* readFlatMapFieldAsStruct= */ false,
+      /* hasNulls= */ true,
+      /* maxErrorRateFixed= */ kMaxErrorRate,
+      /* maxErrorRateString= */ kMaxErrorRate);
+  testFlatMap(
+      /* rowCount= */ 500,
+      /* numFeatures= */ 100,
+      /* readFlatMapFieldAsStruct= */ false,
+      /* hasNulls= */ false,
+      /* maxErrorRateFixed= */ kMaxErrorRateLoose,
+      /* maxErrorRateString= */ kMaxErrorRate);
+  testFlatMap(
+      /* rowCount= */ 50,
+      /* numFeatures= */ 1000,
+      /* readFlatMapFieldAsStruct= */ false,
+      /* hasNulls= */ true,
+      /* maxErrorRateFixed= */ kMaxErrorRate,
+      /* maxErrorRateString= */ kMaxErrorRate);
+  testFlatMap(
+      /* rowCount= */ 50,
+      /* numFeatures= */ 1000,
+      /* readFlatMapFieldAsStruct= */ false,
+      /* hasNulls= */ false,
+      /* maxErrorRateFixed= */ kMaxErrorRate,
+      /* maxErrorRateString= */ kMaxErrorRateLoose);
+}
+
+TEST_F(VeloxReaderTests, EstimatedRowSizeMix) {
+  const double kMaxErrorRate = 0.2;
+  const double kMaxErrorRateLoose = 0.4;
+
+  auto testMix = [&](uint32_t numRows,
+                     uint32_t numElements,
+                     std::function<velox::TypePtr(velox::TypePtr)>&& typeFunc,
+                     bool hasNulls,
+                     double maxErrorRateFixed,
+                     double maxErrorRateString) {
+    velox::VectorFuzzer::Options fuzzerOpts;
+    fuzzerOpts.vectorSize = numRows;
+    fuzzerOpts.nullRatio = hasNulls ? 0.1 : 0;
+    fuzzerOpts.containerLength = numElements;
+    fuzzerOpts.containerHasNulls = hasNulls;
+    fuzzerOpts.complexElementsMaxSize = fuzzerOpts.vectorSize *
+        (fuzzerOpts.containerLength * fuzzerOpts.containerLength);
+    fuzzerOpts.containerVariableLength = false;
+
+    std::vector<velox::TypePtr> testElementTypes{
+        /*velox::BIGINT() ,*/ velox::VARCHAR()};
+    for (auto& elementType : testElementTypes) {
+      velox::VectorFuzzer fuzzer(fuzzerOpts, leafPool_.get());
+      velox::VectorPtr vector;
+      vector = fuzzer.fuzzInputFlatRow(
+          velox::ROW({{"flat_mix_col", typeFunc(elementType)}}));
+
+      nimble::VeloxWriterOptions writerOptions;
+      // TODO: Remove the customized policy after estimation is supported
+      // for all encoding types.
+      writerOptions.encodingSelectionPolicyFactory =
+          [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{{
+               {nimble::EncodingType::Constant, 1.0},
+               {nimble::EncodingType::Trivial, 0.7},
+               {nimble::EncodingType::FixedBitWidth, 0.9},
+               {nimble::EncodingType::MainlyConstant, 1000.0},
+               {nimble::EncodingType::SparseBool, 1.0},
+               {nimble::EncodingType::Dictionary, 1000.0},
+               {nimble::EncodingType::RLE, 1000.0},
+               {nimble::EncodingType::Varint, 1000.0},
+           }}](nimble::DataType dataType)
+          -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
+        return encodingFactory.createPolicy(dataType);
+      };
+      auto file =
+          nimble::test::createNimbleFile(*rootPool_, vector, writerOptions);
+
+      velox::InMemoryReadFile readFile(file);
+      nimble::VeloxReader reader(*leafPool_, &readFile, nullptr);
+      velox::VectorPtr result;
+      ASSERT_EQ(
+          nimble::VeloxReader::kConservativeEstimatedRowSize,
+          reader.estimatedRowSize());
+      reader.next(numRows - 1, result);
+      int64_t estimateBasedOnRetainedSize = result->retainedSize() / numRows;
+      int64_t estimateDifference =
+          reader.estimatedRowSize() - estimateBasedOnRetainedSize;
+      const auto maxErrorRate = elementType->kindEquals(velox::VARCHAR())
+          ? maxErrorRateString
+          : maxErrorRateFixed;
+      ASSERT_LE(
+          std::abs(estimateDifference) * 1.0 / estimateBasedOnRetainedSize,
+          maxErrorRate);
+    }
+  };
+
+  // ARRAY(MAP(T, T))
+  testMix(
+      /* numRows= */
+      50,
+      /* numElements= */ 100,
+      /* typeFunc= */
+      [](auto elementType) {
+        return velox::ARRAY(velox::MAP(elementType, elementType));
+      },
+      /* hasNulls */ false,
+      /* maxErrorRateFixed= */ kMaxErrorRate,
+      /* maxErrorRateString= */ kMaxErrorRateLoose);
+  testMix(
+      /* numRows= */
+      50,
+      /* numElements= */ 100,
+      /* typeFunc= */
+      [](auto elementType) {
+        return velox::ARRAY(velox::MAP(elementType, elementType));
+      },
+      /* hasNulls */ true,
+      /* maxErrorRateFixed= */ kMaxErrorRateLoose,
+      /* maxErrorRateString= */ kMaxErrorRateLoose);
+
+  // MAP(ARRAY(T), ARRAY(T))
+  testMix(
+      /* numRows= */
+      50,
+      /* numElements= */ 100,
+      /* typeFunc= */
+      [](auto elementType) {
+        return velox::MAP(velox::ARRAY(elementType), velox::ARRAY(elementType));
+      },
+      /* hasNulls */ false,
+      /* maxErrorRateFixed= */ kMaxErrorRate,
+      /* maxErrorRateString= */ kMaxErrorRateLoose);
+  testMix(
+      /* numRows= */
+      50,
+      /* numElements= */ 100,
+      /* typeFunc= */
+      [](auto elementType) {
+        return velox::MAP(velox::ARRAY(elementType), velox::ARRAY(elementType));
+      },
+      /* hasNulls */ true,
+      /* maxErrorRateFixed= */ kMaxErrorRate,
+      /* maxErrorRateString= */ kMaxErrorRateLoose);
 }

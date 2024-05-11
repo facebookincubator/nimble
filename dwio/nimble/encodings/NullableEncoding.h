@@ -51,6 +51,7 @@ class NullableEncoding final
 
   uint32_t nullCount() const final;
   bool isNullable() const final;
+  const Encoding* nonNulls() const;
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -109,6 +110,11 @@ NullableEncoding<T>::NullableEncoding(
 template <typename T>
 uint32_t NullableEncoding<T>::nullCount() const {
   return nulls_->rowCount() - nonNulls_->rowCount();
+}
+
+template <typename T>
+const Encoding* NullableEncoding<T>::nonNulls() const {
+  return nonNulls_.get();
 }
 
 template <typename T>

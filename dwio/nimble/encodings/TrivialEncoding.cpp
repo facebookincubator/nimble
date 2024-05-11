@@ -39,8 +39,10 @@ TrivialEncoding<std::string_view>::TrivialEncoding(
         dataCompressionType,
         {blob_, static_cast<size_t>(data.end() - blob_)});
     blob_ = reinterpret_cast<const char*>(dataUncompressed_.data());
+    uncompressedDataBytes_ = dataUncompressed_.size();
+  } else {
+    uncompressedDataBytes_ = data.size() - std::distance(blob_, data.data());
   }
-
   pos_ = blob_;
 }
 
@@ -70,6 +72,10 @@ void TrivialEncoding<std::string_view>::materialize(
   }
   pos_ = pos;
   row_ += rowCount;
+}
+
+uint64_t TrivialEncoding<std::string_view>::uncompressedDataBytes() const {
+  return uncompressedDataBytes_;
 }
 
 std::string_view TrivialEncoding<std::string_view>::encode(

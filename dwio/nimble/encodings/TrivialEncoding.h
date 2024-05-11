@@ -100,6 +100,9 @@ class TrivialEncoding<std::string_view> final
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
 
+  // Returns the total size of the characters payload in bytes
+  uint64_t uncompressedDataBytes() const;
+
   static std::string_view encode(
       EncodingSelection<std::string_view>& selection,
       std::span<const std::string_view> values,
@@ -111,6 +114,12 @@ class TrivialEncoding<std::string_view> final
   const char* pos_;
   std::unique_ptr<Encoding> lengths_;
   Vector<uint32_t> buffer_;
+
+  // The size of the uncompressed data in bytes.
+  //
+  // NOTE: This is not necessarily the size of 'dataUncompressed_' because the
+  // data could come as uncompressed.
+  uint64_t uncompressedDataBytes_;
   Vector<char> dataUncompressed_;
 };
 
