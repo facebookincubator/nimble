@@ -63,6 +63,13 @@ class FieldReader {
 
   virtual ~FieldReader() = default;
 
+  // Estimation of the total output size of the current reading stripe in bytes.
+  // This method will throw NotSupported error for not yet supported encoding
+  // estimations.
+  //
+  // NOTE: This is not the estimation on the remaining rows, but the total rows.
+  virtual uint64_t estimatedTotalOutputSize() const = 0;
+
   // Place the next X rows of data into the passed in output vector.
   virtual void next(
       uint32_t count,

@@ -21,6 +21,8 @@
 
 namespace facebook::nimble {
 
+class Encoding;
+
 class Decoder {
  public:
   virtual ~Decoder() = default;
@@ -34,6 +36,8 @@ class Decoder {
   virtual void skip(uint32_t count) = 0;
 
   virtual void reset() = 0;
+
+  virtual const Encoding* encoding() const = 0;
 };
 
 } // namespace facebook::nimble
