@@ -79,6 +79,10 @@ auto encodingTypeDispatchVarint(Encoding& encoding, F f) {
       return f(static_cast<E<int64_t>&>(encoding));
     case DataType::Uint64:
       return f(static_cast<E<uint64_t>&>(encoding));
+    case DataType::Float:
+      return f(static_cast<E<float>&>(encoding));
+    case DataType::Double:
+      return f(static_cast<E<double>&>(encoding));
     default:
       NIMBLE_NOT_SUPPORTED(toString(encoding.dataType()));
   }

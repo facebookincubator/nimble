@@ -46,6 +46,9 @@ class ConstantEncoding final
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
 
+  void materializeBoolsAsBits(uint32_t rowCount, uint64_t* buffer, int begin)
+      final;
+
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
 
@@ -86,6 +89,22 @@ void ConstantEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   for (uint32_t i = 0; i < rowCount; ++i) {
     castBuffer[i] = value_;
   }
+}
+
+template <>
+inline void ConstantEncoding<bool>::materializeBoolsAsBits(
+    uint32_t rowCount,
+    uint64_t* buffer,
+    int begin) {
+  velox::bits::fillBits(buffer, begin, begin + rowCount, value_);
+}
+
+template <typename T>
+void ConstantEncoding<T>::materializeBoolsAsBits(
+    uint32_t /*rowCount*/,
+    uint64_t* /*buffer*/,
+    int /*begin*/) {
+  NIMBLE_UNREACHABLE("");
 }
 
 template <typename T>

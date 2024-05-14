@@ -219,6 +219,9 @@ class RLEEncoding<bool> final
     return {reserved, 1};
   }
 
+  void materializeBoolsAsBits(uint32_t rowCount, uint64_t* buffer, int begin)
+      final;
+
  private:
   bool initialValue_;
   bool value_;

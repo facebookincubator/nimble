@@ -59,6 +59,9 @@ class SparseBoolEncoding final : public TypedEncoding<bool, bool> {
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
 
+  void materializeBoolsAsBits(uint32_t rowCount, uint64_t* buffer, int begin)
+      final;
+
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
 

@@ -148,6 +148,14 @@ class Encoding {
       const bits::Bitmap* scatterBitmap = nullptr,
       uint32_t offset = 0) = 0;
 
+  // Read bool values to output buffer as bits.
+  virtual void materializeBoolsAsBits(
+      uint32_t /*rowCount*/,
+      uint64_t* /*buffer*/,
+      int /*begin*/) {
+    NIMBLE_NOT_IMPLEMENTED(typeid(*this).name());
+  }
+
   // Whether this encoding is nullable, i.e. contains any nulls. This property
   // modifies how engines need to interpret many of the function results, and a
   // number of functions are only callable if isNullable() returns true.

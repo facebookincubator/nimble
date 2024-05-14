@@ -206,6 +206,19 @@ void TrivialEncoding<bool>::materialize(uint32_t rowCount, void* buffer) {
   }
 }
 
+void TrivialEncoding<bool>::materializeBoolsAsBits(
+    uint32_t rowCount,
+    uint64_t* buffer,
+    int begin) {
+  velox::bits::copyBits(
+      reinterpret_cast<const uint64_t*>(bitmap_),
+      row_,
+      buffer,
+      begin,
+      rowCount);
+  row_ += rowCount;
+}
+
 std::string_view TrivialEncoding<bool>::encode(
     EncodingSelection<bool>& selection,
     std::span<const bool> values,
