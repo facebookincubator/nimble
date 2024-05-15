@@ -39,4 +39,25 @@ void RLEEncoding<bool>::resetValues() {
   value_ = initialValue_;
 }
 
+void RLEEncoding<bool>::materializeBoolsAsBits(
+    uint32_t rowCount,
+    uint64_t* buffer,
+    int begin) {
+  auto rowsLeft = rowCount;
+  while (rowsLeft) {
+    if (rowsLeft < copiesRemaining_) {
+      velox::bits::fillBits(buffer, begin, begin + rowsLeft, currentValue_);
+      copiesRemaining_ -= rowsLeft;
+      return;
+    } else {
+      velox::bits::fillBits(
+          buffer, begin, begin + copiesRemaining_, currentValue_);
+      begin += copiesRemaining_;
+      rowsLeft -= copiesRemaining_;
+      copiesRemaining_ = materializedRunLengths_.nextValue();
+      currentValue_ = nextValue();
+    }
+  }
+}
+
 } // namespace facebook::nimble

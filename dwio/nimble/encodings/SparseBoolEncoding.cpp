@@ -69,6 +69,26 @@ void SparseBoolEncoding::materialize(uint32_t rowCount, void* buffer) {
   row_ = end;
 }
 
+void SparseBoolEncoding::materializeBoolsAsBits(
+    uint32_t rowCount,
+    uint64_t* buffer,
+    int begin) {
+  velox::bits::fillBits(buffer, begin, begin + rowCount, !sparseValue_);
+  const auto end = row_ + rowCount;
+  if (sparseValue_) {
+    while (nextIndex_ < end) {
+      velox::bits::setBit(buffer, begin + nextIndex_ - row_);
+      nextIndex_ = indices_.nextValue();
+    }
+  } else {
+    while (nextIndex_ < end) {
+      velox::bits::clearBit(buffer, begin + nextIndex_ - row_);
+      nextIndex_ = indices_.nextValue();
+    }
+  }
+  row_ = end;
+}
+
 std::string_view SparseBoolEncoding::encode(
     EncodingSelection<bool>& selection,
     std::span<const bool> values,

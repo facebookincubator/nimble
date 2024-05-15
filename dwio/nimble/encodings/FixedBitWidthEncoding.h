@@ -143,8 +143,10 @@ template <typename V>
 void FixedBitWidthEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  this->template readWithVisitorSlow<true>(
-      visitor, params, [&] { return baseline_ + fixedBitArray_.get(row_++); });
+  this->template readWithVisitorSlow<true>(visitor, params, [&] {
+    physicalType value = fixedBitArray_.get(row_++) + baseline_;
+    return value;
+  });
 }
 
 template <typename T>
