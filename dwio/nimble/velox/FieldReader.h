@@ -63,23 +63,33 @@ class FieldReader {
 
   virtual ~FieldReader() = default;
 
-  // Estimation of the total output size of the current reading stripe in bytes.
-  // This method will throw NotSupported error for not yet supported encoding
-  // estimations.
+  // Estimation of the per row size of the field on current reading stripe in
+  // bytes. Returns a pair containing the number of rows of the field and
+  // average row size in bytes of the field. This method will return nullopt if
+  // the field or encoding is not supported for estimation.
   //
-  // NOTE: This is not the estimation on the remaining rows, but the total rows.
-  virtual uint64_t estimatedTotalOutputSize() const = 0;
+  // NOTE: This is not the estimation based on the remaining rows, but the
+  // entire stripe's rows.
+  virtual std::optional<std::pair<uint32_t, uint64_t>> estimatedRowSize()
+      const = 0;
 
-  // Place the next X rows of data into the passed in output vector.
+  // Place the next 'count' rows of data into the passed in output vector.
+  //
+  // NOTE: scatterBitmap is not for external selectivity. External callers must
+  // leave scatterBitmap nullptr
   virtual void next(
       uint32_t count,
       velox::VectorPtr& output,
-      const bits::Bitmap* scatterBitmap) = 0;
+      const bits::Bitmap* scatterBitmap = nullptr) = 0;
 
   virtual void skip(uint32_t count) = 0;
 
   // Called at the end of stripe
   virtual void reset();
+
+  const velox::TypePtr& type() const {
+    return type_;
+  }
 
  protected:
   void ensureNullConstant(

@@ -374,16 +374,11 @@ uint64_t VeloxReader::estimatedRowSize() {
     return kConservativeEstimatedRowSize;
   }
   if (cachedRowSizeEstimationStripeIdx_ != loadedStripe_) {
-    try {
-      cachedRowSizeEstimation_ = rootReader_->estimatedTotalOutputSize() /
-          tabletReader_->stripeRowCount(loadedStripe_.value());
-    } catch (const NimbleUserError& e) {
-      if (e.errorCode() == error_code::NotSupported) {
-        // TODO: Fall back non-supported estimations to conservative row size.
-        cachedRowSizeEstimation_ = kConservativeEstimatedRowSize;
-      } else {
-        throw;
-      }
+    auto estimatedRowSize = rootReader_->estimatedRowSize();
+    if (!estimatedRowSize.has_value()) {
+      cachedRowSizeEstimation_ = kConservativeEstimatedRowSize;
+    } else {
+      cachedRowSizeEstimation_ = estimatedRowSize.value().second;
     }
     cachedRowSizeEstimationStripeIdx_ = loadedStripe_;
   }
@@ -405,7 +400,7 @@ bool VeloxReader::next(uint64_t rowCount, velox::VectorPtr& result) {
   }
   unitLoader_->onRead(
       getUnitIndex(loadedStripe_.value()), getCurrentRowInStripe(), rowsToRead);
-  rootReader_->next(rowsToRead, result, nullptr /*scatterBitmap*/);
+  rootReader_->next(rowsToRead, result);
   if (barrier_) {
     // Wait for all reader tasks to complete.
     barrier_->waitAll();

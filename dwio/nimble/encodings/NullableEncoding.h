@@ -77,12 +77,14 @@ class NullableEncoding final
  private:
   // One bit for each row. A true bit represents a row with a non-null value.
   const char* bitmap_;
-  std::unique_ptr<Encoding> nonNulls_;
+  std::unique_ptr<Encoding> nonNullValues_;
   std::unique_ptr<Encoding> nulls_;
   uint32_t row_ = 0;
-  Vector<uint32_t> indicesBuffer_; // Temporary buffer.
-  Vector<char> charBuffer_; // Another temporary buffer.
-  Vector<bool> boolBuffer_; // Yet another temporary buffer.
+
+  // Temporary buffers.
+  Vector<uint32_t> indicesBuffer_;
+  Vector<char> charBuffer_;
+  Vector<bool> boolBuffer_;
 };
 
 //
@@ -99,7 +101,8 @@ NullableEncoding<T>::NullableEncoding(
       boolBuffer_(&memoryPool) {
   const char* pos = data.data() + Encoding::kPrefixSize;
   const uint32_t nonNullsBytes = encoding::readUint32(pos);
-  nonNulls_ = EncodingFactory::decode(this->memoryPool_, {pos, nonNullsBytes});
+  nonNullValues_ =
+      EncodingFactory::decode(this->memoryPool_, {pos, nonNullsBytes});
   pos += nonNullsBytes;
   nulls_ = EncodingFactory::decode(
       this->memoryPool_, {pos, static_cast<size_t>(data.end() - pos)});
@@ -109,12 +112,12 @@ NullableEncoding<T>::NullableEncoding(
 
 template <typename T>
 uint32_t NullableEncoding<T>::nullCount() const {
-  return nulls_->rowCount() - nonNulls_->rowCount();
+  return nulls_->rowCount() - nonNullValues_->rowCount();
 }
 
 template <typename T>
 const Encoding* NullableEncoding<T>::nonNulls() const {
-  return nonNulls_.get();
+  return nonNullValues_.get();
 }
 
 template <typename T>
@@ -125,7 +128,7 @@ bool NullableEncoding<T>::isNullable() const {
 template <typename T>
 void NullableEncoding<T>::reset() {
   row_ = 0;
-  nonNulls_->reset();
+  nonNullValues_->reset();
   nulls_->reset();
 }
 
@@ -137,7 +140,7 @@ void NullableEncoding<T>::skip(uint32_t rowCount) {
   nulls_->materialize(rowCount, boolBuffer_.data());
   const uint32_t nonNullCount =
       std::accumulate(boolBuffer_.begin(), boolBuffer_.end(), 0U);
-  nonNulls_->skip(nonNullCount);
+  nonNullValues_->skip(nonNullCount);
 }
 
 template <typename T>
@@ -149,7 +152,7 @@ void NullableEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   nulls_->materialize(rowCount, boolBuffer_.data());
   const uint32_t nonNullCount =
       std::accumulate(boolBuffer_.begin(), boolBuffer_.end(), 0U);
-  nonNulls_->materialize(nonNullCount, buffer);
+  nonNullValues_->materialize(nonNullCount, buffer);
 
   if (nonNullCount != rowCount) {
     physicalType* output = static_cast<physicalType*>(buffer) + rowCount - 1;
@@ -187,7 +190,7 @@ uint32_t NullableEncoding<T>::materializeNullable(
   if (offset > 0) {
     buffer = static_cast<physicalType*>(buffer) + offset;
   }
-  nonNulls_->materialize(nonNullCount, buffer);
+  nonNullValues_->materialize(nonNullCount, buffer);
 
   auto scatterSize = scatterBitmap ? scatterBitmap->size() - offset : rowCount;
   if (nonNullCount != scatterSize) {
@@ -293,7 +296,7 @@ void NullableEncoding<T>::readWithVisitor(
       detail::ExtractToNullsBuffer(params.makeReaderNulls));
   nullsVisitor.setRowIndex(params.numScanned);
   callReadWithVisitor(*nulls_, nullsVisitor, params);
-  callReadWithVisitor(*nonNulls_, visitor, params);
+  callReadWithVisitor(*nonNullValues_, visitor, params);
   detail::checkCurrentRowEqual(nullsVisitor, visitor);
 }
 
@@ -330,7 +333,7 @@ std::string NullableEncoding<T>::debugString(int offset) const {
   log += fmt::format(
       "\n{}non-null child:\n{}",
       std::string(offset + 2, ' '),
-      nonNulls_->debugString(offset + 4));
+      nonNullValues_->debugString(offset + 4));
   log += fmt::format(
       "\n{}null child:\n{}",
       std::string(offset + 2, ' '),

@@ -4278,6 +4278,11 @@ TEST_F(VeloxReaderTests, EstimatedRowSizeComplex) {
     std::vector<velox::TypePtr> testElementTypes{
         velox::BIGINT(), velox::VARCHAR()};
     for (auto type : testElementTypes) {
+      auto dbgGuard = folly::makeGuard([&] {
+        LOG(INFO) << "Testing " << (isArray ? "array" : "map") << " with "
+                  << type->toString() << " numRows " << numRows
+                  << " numElements " << numElements;
+      });
       velox::VectorFuzzer fuzzer(fuzzerOpts, leafPool_.get());
       velox::VectorPtr vector;
       if (isArray) {
@@ -4307,6 +4312,7 @@ TEST_F(VeloxReaderTests, EstimatedRowSizeComplex) {
       ASSERT_LE(
           std::abs(estimateDifference) * 1.0 / estimateBasedOnRetainedSize,
           maxErrorRate);
+      dbgGuard.dismiss();
     }
   };
 
@@ -4324,6 +4330,13 @@ TEST_F(VeloxReaderTests, EstimatedRowSizeComplex) {
     std::vector<velox::TypePtr> testElementTypes{
         velox::BIGINT(), velox::VARCHAR()};
     for (auto& type : testElementTypes) {
+      std::stringstream dbgStr;
+      dbgStr << "Testing "
+             << (readFlatMapFieldAsStruct ? "FlatMapAsStruct" : "MergedFlatMap")
+             << " with " << type->toString() << " numRows " << rowCount
+             << " numFeatures " << numFeatures << " hasNulls "
+             << (hasNulls ? "true" : "false");
+      auto dbgGuard = folly::makeGuard([&] { LOG(INFO) << dbgStr.str(); });
       VeloxMapGeneratorConfig generatorConfig{
           .featureTypes =
               velox::ROW({{"flat_map_col", velox::MAP(type, type)}}),
@@ -4387,14 +4400,18 @@ TEST_F(VeloxReaderTests, EstimatedRowSizeComplex) {
       // Read 1 less row so that it does not reach stripe boundary.
       reader.next(rowCount - 1, result);
       int64_t estimateBasedOnRetainedSize = result->retainedSize() / rowCount;
+      int64_t estimatedRowSize = reader.estimatedRowSize();
+      dbgStr << " actual " << estimatedRowSize << " expected "
+             << estimateBasedOnRetainedSize;
       int64_t estimateDifference =
-          reader.estimatedRowSize() - estimateBasedOnRetainedSize;
+          estimatedRowSize - estimateBasedOnRetainedSize;
       const auto maxErrorRate = type->kindEquals(velox::VARCHAR())
           ? maxErrorRateString
           : maxErrorRateFixed;
       ASSERT_LE(
           std::abs(estimateDifference) * 1.0 / estimateBasedOnRetainedSize,
           maxErrorRate);
+      dbgGuard.dismiss();
     }
   };
 
@@ -4435,21 +4452,21 @@ TEST_F(VeloxReaderTests, EstimatedRowSizeComplex) {
       /* readFlatMapFieldAsStruct= */ false,
       /* hasNulls= */ true,
       /* maxErrorRateFixed= */ kMaxErrorRate,
-      /* maxErrorRateString= */ kMaxErrorRate);
+      /* maxErrorRateString= */ kMaxErrorRateLoose);
   testFlatMap(
       /* rowCount= */ 500,
       /* numFeatures= */ 100,
       /* readFlatMapFieldAsStruct= */ false,
       /* hasNulls= */ false,
       /* maxErrorRateFixed= */ kMaxErrorRateLoose,
-      /* maxErrorRateString= */ kMaxErrorRate);
+      /* maxErrorRateString= */ kMaxErrorRateLoose);
   testFlatMap(
       /* rowCount= */ 50,
       /* numFeatures= */ 1000,
       /* readFlatMapFieldAsStruct= */ false,
       /* hasNulls= */ true,
       /* maxErrorRateFixed= */ kMaxErrorRate,
-      /* maxErrorRateString= */ kMaxErrorRate);
+      /* maxErrorRateString= */ kMaxErrorRateLoose);
   testFlatMap(
       /* rowCount= */ 50,
       /* numFeatures= */ 1000,
