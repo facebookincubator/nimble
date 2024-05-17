@@ -183,7 +183,9 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
 
     float minCost = std::numeric_limits<float>::max();
     EncodingType selectedEncoding = EncodingType::Trivial;
+#ifndef NDEBUG
     constexpr size_t maxItems = NIMBLE_ENCODING_SELECTION_DEBUG_MAX_ITEMS;
+#endif
 
     // Iterate on all candidate encodings, and pick the encoding with the
     // minimal cost.
