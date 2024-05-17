@@ -32,7 +32,7 @@
 #include "dwio/nimble/tools/NimbleDumpLib.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/VeloxReader.h"
-#include "folly/experimental/NestedCommandLineApp.h"
+#include "folly/cli/NestedCommandLineApp.h"
 
 namespace facebook::nimble::tools {
 #define RED "\033[31m"

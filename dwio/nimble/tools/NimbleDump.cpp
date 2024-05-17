@@ -22,7 +22,7 @@
 #include "common/init/light.h"
 #include "dwio/nimble/tools/NimbleDumpLib.h"
 #include "folly/Singleton.h"
-#include "folly/experimental/NestedCommandLineApp.h"
+#include "folly/cli/NestedCommandLineApp.h"
 #include "velox/common/base/StatsReporter.h"
 
 using namespace ::facebook;
