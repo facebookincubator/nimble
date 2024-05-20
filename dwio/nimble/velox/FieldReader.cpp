@@ -1355,8 +1355,23 @@ class SlidingWindowMapFieldReader final : public FieldReader {
           return nullsPtr;
         },
         scatterBitmap);
+
+    // Return early if everything is null
+    if (nonNullCount == 0) {
+      return;
+    }
+
     bool hasNulls = nonNullCount != rowCount;
-    // Update the indices to be 0-based
+    // Read the lengths
+    uint32_t lengthBuffer[nonNullCount];
+    lengthsDecoder_->next(nonNullCount, lengthBuffer);
+
+    // Convert the offsets and lengths to a list of unique offsets and lengths
+    // and update the indices to be 0-based indices
+    std::vector<uint32_t> deduplicatedOffsets, deduplicatedLengths;
+    deduplicatedOffsets.reserve(nonNullCount);
+    deduplicatedLengths.reserve(nonNullCount);
+    uint32_t uniqueCount = 0, startOffset = 0, endOffset = 0;
     if (hasNulls) {
       NIMBLE_DASSERT(
           nullsPtr != nullptr,
@@ -1366,66 +1381,117 @@ class SlidingWindowMapFieldReader final : public FieldReader {
         if (velox::bits::isBitNull(
                 static_cast<const uint64_t*>(nullsPtr), idx)) {
           indices[idx] = 0;
-          nullCount++;
+          ++nullCount;
           continue;
         }
-        indices[idx] = idx - nullCount;
+        // Firt non-null item
+        if (deduplicatedOffsets.empty()) {
+          deduplicatedOffsets.push_back(indices[idx]);
+          deduplicatedLengths.push_back(lengthBuffer[idx - nullCount]);
+          startOffset = deduplicatedOffsets.back();
+          endOffset = deduplicatedOffsets.back() + deduplicatedLengths.back();
+          uniqueCount = 1;
+        } else if (
+            // Check if the current item is the same as the last one
+            // If not, update deduplicatedOffsets and deduplicatedLengths
+            deduplicatedOffsets.back() != indices[idx] ||
+            deduplicatedLengths.back() != lengthBuffer[idx - nullCount]) {
+          deduplicatedOffsets.push_back(indices[idx]);
+          deduplicatedLengths.push_back(lengthBuffer[idx - nullCount]);
+          endOffset = std::max(
+              deduplicatedOffsets.back() + deduplicatedLengths.back(),
+              endOffset);
+          ++uniqueCount;
+        }
+        indices[idx] = uniqueCount - 1;
       }
-      NIMBLE_DASSERT(
-          nullCount + nonNullCount == rowCount, "Null count is not matching.");
+      NIMBLE_ASSERT(
+          nonNullCount + nullCount == rowCount, "Null Count is not matching");
     } else {
-      std::iota(indices, indices + rowCount, 0);
+      deduplicatedOffsets.push_back(indices[0]);
+      deduplicatedLengths.push_back(lengthBuffer[0]);
+      startOffset = deduplicatedOffsets.back();
+      endOffset = deduplicatedOffsets.back() + deduplicatedLengths.back();
+      indices[0] = 0;
+      ++uniqueCount;
+      // Start from the second item, check if the current item is the same as
+      // the last one If not, update deduplicatedOffsets and deduplicatedLengths
+      for (uint32_t idx = 1; idx < rowCount; ++idx) {
+        if (deduplicatedOffsets.back() != indices[idx] ||
+            deduplicatedLengths.back() != lengthBuffer[idx]) {
+          deduplicatedOffsets.push_back(indices[idx]);
+          deduplicatedLengths.push_back(lengthBuffer[idx]);
+          endOffset = std::max(
+              deduplicatedOffsets.back() + deduplicatedLengths.back(),
+              endOffset);
+          ++uniqueCount;
+        }
+        indices[idx] = uniqueCount - 1;
+      }
     }
 
-    // Create the map vector
+    // Fill the map vector
     auto map =
         static_cast<velox::MapVector*>(dictionaryVector->valueVector().get());
-    map->resize(nonNullCount);
+    map->resize(uniqueCount);
     auto offsets =
-        map->mutableOffsets(nonNullCount)->template asMutable<uint32_t>();
-    auto sizes =
-        map->mutableSizes(nonNullCount)->template asMutable<uint32_t>();
+        map->mutableOffsets(uniqueCount)->template asMutable<uint32_t>();
+    auto sizes = map->mutableSizes(uniqueCount)->template asMutable<uint32_t>();
 
-    // Fill in the map vector
-    lengthsDecoder_->next(nonNullCount, sizes);
-    uint32_t childrenRows = 0;
-    for (uint32_t idx = 0; idx < nonNullCount; ++idx) {
-      offsets[idx] = childrenRows;
-      childrenRows += sizes[idx];
+    uint32_t mapOffset = 0;
+    for (uint32_t i = 0; i < uniqueCount; ++i) {
+      sizes[i] = deduplicatedLengths[i];
+      offsets[i] = mapOffset;
+      mapOffset += deduplicatedLengths[i];
     }
-    // Read the keys and values
-    keysReader_->next(
-        childrenRows,
-        map->mapKeys(),
-        /* scatterBitmap */ nullptr);
-    valuesReader_->next(
-        childrenRows,
-        map->mapValues(),
-        /* scatterBitmap */ nullptr);
+
+    uint32_t childrenRows = endOffset - startOffset;
+    if (childrenRows > 0) {
+      seek(startOffset);
+      // Read the keys and values
+      keysReader_->next(
+          childrenRows,
+          map->mapKeys(),
+          /* scatterBitmap */ nullptr);
+      valuesReader_->next(
+          childrenRows,
+          map->mapValues(),
+          /* scatterBitmap */ nullptr);
+      cursorPos_ = endOffset;
+    }
   }
 
   void skip(uint32_t count) final {
-    uint32_t childrenRows = 0;
     std::array<uint32_t, kSkipBatchSize> offsets;
     std::array<char, nullBytes(kSkipBatchSize)> nulls;
-    std::array<uint32_t, kSkipBatchSize> sizes;
     void* nullsPtr = nulls.data();
 
     while (count > 0) {
-      auto readSize = std::min(count, kSkipBatchSize);
+      auto skipSize = std::min(count, kSkipBatchSize);
       auto nonNullCount = offsetDecoder_->next(
-          readSize,
+          skipSize,
           offsets.data(),
           [&]() { return nullsPtr; },
           /* scatterBitmap */ nullptr);
-      lengthsDecoder_->next(nonNullCount, sizes.data());
-      childrenRows += std::reduce(sizes.data(), sizes.data() + nonNullCount, 0);
-      count -= readSize;
+      lengthsDecoder_->skip(nonNullCount);
+      count -= skipSize;
     }
-    if (childrenRows > 0) {
-      keysReader_->skip(childrenRows);
-      valuesReader_->skip(childrenRows);
+  }
+
+  // Move the cursor of key and value readers to the given offset
+  void seek(uint32_t offset) {
+    if (offset == cursorPos_) {
+      return;
+    } else if (offset < cursorPos_) {
+      keysReader_->reset();
+      valuesReader_->reset();
+      keysReader_->skip(offset);
+      valuesReader_->skip(offset);
+    } else {
+      keysReader_->skip(offset - cursorPos_);
+      valuesReader_->skip(offset - cursorPos_);
     }
+    cursorPos_ = offset;
   }
 
   void reset() final {
@@ -1441,6 +1507,7 @@ class SlidingWindowMapFieldReader final : public FieldReader {
   Decoder* lengthsDecoder_;
   std::unique_ptr<FieldReader> keysReader_;
   std::unique_ptr<FieldReader> valuesReader_;
+  uint32_t cursorPos_{0};
 };
 
 class SlidingWindowMapFieldReaderFactory final : public FieldReaderFactory {

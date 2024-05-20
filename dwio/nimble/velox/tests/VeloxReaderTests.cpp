@@ -1396,14 +1396,14 @@ TEST_F(VeloxReaderTests, SlidingWindowMapEmpty) {
       /* offsets */ {0});
 
   verifySlidingWindowMap(
-      /* expectedNumMaps */ 3,
+      /* expectedNumMaps */ 1,
       /* keys */ {},
       /* values */ {},
       /* offsets */ {0, 0, 0});
 
   // Nullable cases
   verifySlidingWindowMap(
-      /* expectedNumMaps */ 3,
+      /* expectedNumMaps */ 1,
       /* keys */ {},
       /* values */ {},
       /* offsets */ {0, 0, 0, 0},
@@ -1412,7 +1412,7 @@ TEST_F(VeloxReaderTests, SlidingWindowMapEmpty) {
 
 TEST_F(VeloxReaderTests, SlidingWindowMapMixedEmptyLength) {
   verifySlidingWindowMap(
-      /* expectedNumMaps */ 10,
+      /* expectedNumMaps */ 7,
       /* keys */ {1, 2, 2, 1, 1, 2, 4, 4},
       /* values */ {0.1, 0.2, 0.2, 0.1, 0.1, 0.3, 0.4, 0.4},
       /* offsets */ {0, 2, 4, 4, 4, 6, 6, 6, 6, 7});
