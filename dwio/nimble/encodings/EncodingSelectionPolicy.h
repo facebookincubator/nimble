@@ -183,10 +183,6 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
 
     float minCost = std::numeric_limits<float>::max();
     EncodingType selectedEncoding = EncodingType::Trivial;
-#ifndef NDEBUG
-    constexpr size_t maxItems = NIMBLE_ENCODING_SELECTION_DEBUG_MAX_ITEMS;
-#endif
-
     // Iterate on all candidate encodings, and pick the encoding with the
     // minimal cost.
     for (const auto& pair : readFactors_) {
@@ -276,8 +272,13 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
         << folly::join(
                ",",
                std::span<const physicalType>{
-                   values.data(), std::min(maxItems, values.size())})
-        << (values.size() > maxItems ? "..." : ""));
+                   values.data(),
+                   std::min(
+                       size_t(NIMBLE_ENCODING_SELECTION_DEBUG_MAX_ITEMS),
+                       values.size())})
+        << (values.size() > size_t(NIMBLE_ENCODING_SELECTION_DEBUG_MAX_ITEMS)
+                ? "..."
+                : ""));
     return {
         .encodingType = selectedEncoding,
         .compressionPolicyFactory = [compressionOptions =
