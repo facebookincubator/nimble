@@ -16,6 +16,7 @@
 #include "dwio/nimble/velox/FieldWriter.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/velox/DeduplicationUtils.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "velox/common/base/CompareFlags.h"
@@ -608,18 +609,23 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
             typeBuilder_->asSlidingWindowMap().offsetsDescriptor())},
         lengthsStream_{context.createContentStreamData<uint32_t>(
             typeBuilder_->asSlidingWindowMap().lengthsDescriptor())},
-        currentOffset_(0) {
+        currentOffset_(0),
+        cached_{false},
+        cachedLength_{0} {
     NIMBLE_DASSERT(type->size() == 2, "Invalid map type.");
     keys_ = FieldWriter::create(context, type->childAt(0));
     values_ = FieldWriter::create(context, type->childAt(1));
     typeBuilder_->asSlidingWindowMap().setChildren(
         keys_->typeBuilder(), values_->typeBuilder());
+    cachedValue_ = velox::MapVector::create(
+        type->type(), 1, context.bufferMemoryPool.get());
   }
 
   void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
       override {
     OrderedRanges childFilteredRanges;
-    auto map = ingestOffsetsAndLengths(vector, ranges, childFilteredRanges);
+    auto map = ingestOffsetsAndLengthsDeduplicated(
+        vector, ranges, childFilteredRanges);
     if (childFilteredRanges.size() > 0) {
       keys_->write(map->mapKeys(), childFilteredRanges);
       values_->write(map->mapValues(), childFilteredRanges);
@@ -632,6 +638,8 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
     keys_->reset();
     values_->reset();
     currentOffset_ = 0;
+    cached_ = false;
+    cachedLength_ = 0;
   }
 
   void close() override {
@@ -645,8 +653,11 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
   NullableContentStreamData<uint32_t>& offsetsStream_;
   ContentStreamData<uint32_t>& lengthsStream_;
   uint32_t currentOffset_; /* Global Offset for the data */
+  bool cached_;
+  velox::vector_size_t cachedLength_;
+  velox::VectorPtr cachedValue_;
 
-  const velox::MapVector* ingestOffsetsAndLengths(
+  const velox::MapVector* ingestOffsetsAndLengthsDeduplicated(
       const velox::VectorPtr& vector,
       const OrderedRanges& ranges,
       OrderedRanges& filteredRanges) {
@@ -654,18 +665,41 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
     const velox::MapVector* mapVector = vector->as<velox::MapVector>();
     const velox::vector_size_t* rawOffsets;
     const velox::vector_size_t* rawLengths;
+    velox::vector_size_t lastCompareIndex = -1;
     auto& offsetsData = offsetsStream_.mutableData();
     auto& lengthsData = lengthsStream_.mutableData();
 
     auto processMapIndex = [&](velox::vector_size_t index) {
-      auto length = rawLengths[index];
-      currentOffset_ += length;
-      offsetsData.push_back(currentOffset_ - length);
-      lengthsData.push_back(length);
+      auto const length = rawLengths[index];
 
-      if (length > 0) {
-        filteredRanges.add(rawOffsets[index], length);
+      bool match = false;
+      // Compare with the last element if not the first elemment
+      if (lastCompareIndex >= 0) {
+        match = length == rawLengths[lastCompareIndex];
+        if (length > 0) {
+          match = match &&
+              DeduplicationUtils::CompareMapsAtIndex(
+                      *mapVector, index, *mapVector, lastCompareIndex);
+        }
+        // If this is the first element, compare with the cached element from
+        // the last batch
+      } else if (cached_) {
+        match =
+            (length == cachedLength_ &&
+             DeduplicationUtils::CompareMapsAtIndex(
+                 *static_cast<velox::MapVector*>(cachedValue_.get()),
+                 0,
+                 *mapVector,
+                 index));
       }
+
+      if (!match && length > 0) {
+        filteredRanges.add(rawOffsets[index], length);
+        currentOffset_ += length;
+      }
+      lengthsData.push_back(length);
+      offsetsData.push_back(currentOffset_ - length);
+      lastCompareIndex = index;
     };
 
     if (mapVector) {
@@ -693,6 +727,20 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
           iterableVector,
           processMapIndex);
     }
+
+    // Copy the last valid element into the cache.
+    const velox::vector_size_t idxOfLastElement = lastCompareIndex;
+    if (idxOfLastElement != -1) {
+      cached_ = true;
+      cachedLength_ = rawLengths[idxOfLastElement];
+      cachedValue_->prepareForReuse();
+      velox::BaseVector::CopyRange cacheRange{
+          idxOfLastElement /* source index*/,
+          0 /* target index*/,
+          1 /* count*/};
+      cachedValue_->copyRanges(mapVector, folly::Range(&cacheRange, 1));
+    }
+
     return mapVector;
   }
 };

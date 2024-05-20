@@ -748,7 +748,7 @@ class VeloxReaderTests : public ::testing::Test {
   }
 
   void verifySlidingWindowMap(
-      int expectedNumMaps,
+      int deduplicatedMapCount,
       const std::vector<int32_t>& keys,
       const std::vector<float>& values,
       const std::vector<int32_t>& offsets,
@@ -779,7 +779,7 @@ class VeloxReaderTests : public ::testing::Test {
               ->loadedVector()
               ->wrappedVector()
               ->size(),
-          expectedNumMaps);
+          deduplicatedMapCount);
     };
 
     for (auto i = 0; i < iterations; ++i) {
@@ -1358,14 +1358,14 @@ TEST_F(VeloxReaderTests, NullVectors) {
 
 TEST_F(VeloxReaderTests, SlidingWindowMapSizeOne) {
   verifySlidingWindowMap(
-      /* expectedNumMaps */ 1,
+      /* deduplicatedMapCount */ 1,
       /* keys */ {1, 2},
       /* values */ {0.1, 0.2},
       /* offsets */ {0});
 
   // Nullable cases
   verifySlidingWindowMap(
-      /* expectedNumMaps */ 1,
+      /* deduplicatedMapCount */ 1,
       /* keys */ {1, 2},
       /* values */ {0.1, 0.2},
       /* offsets */ {0, 2},
@@ -1374,14 +1374,14 @@ TEST_F(VeloxReaderTests, SlidingWindowMapSizeOne) {
 
 TEST_F(VeloxReaderTests, SlidingWindowMapSizeTwo) {
   verifySlidingWindowMap(
-      /* expectedNumMaps */ 2,
+      /* deduplicatedMapCount */ 1,
       /* keys */ {1, 2, 1, 2},
       /* values */ {0.1, 0.2, 0.1, 0.2},
       /* offsets */ {0, 2});
 
   // Nullable cases
   verifySlidingWindowMap(
-      /* expectedNumMaps */ 2,
+      /* deduplicatedMapCount */ 1,
       /* keys */ {1, 2, 1, 2},
       /* values */ {0.1, 0.2, 0.1, 0.2},
       /* offsets */ {0, 2, 2},
@@ -1390,20 +1390,20 @@ TEST_F(VeloxReaderTests, SlidingWindowMapSizeTwo) {
 
 TEST_F(VeloxReaderTests, SlidingWindowMapEmpty) {
   verifySlidingWindowMap(
-      /* expectedNumMaps */ 1,
+      /* deduplicatedMapCount */ 1,
       /* keys */ {},
       /* values */ {},
       /* offsets */ {0});
 
   verifySlidingWindowMap(
-      /* expectedNumMaps */ 1,
+      /* deduplicatedMapCount */ 1,
       /* keys */ {},
       /* values */ {},
       /* offsets */ {0, 0, 0});
 
   // Nullable cases
   verifySlidingWindowMap(
-      /* expectedNumMaps */ 1,
+      /* deduplicatedMapCount */ 1,
       /* keys */ {},
       /* values */ {},
       /* offsets */ {0, 0, 0, 0},
@@ -1412,10 +1412,18 @@ TEST_F(VeloxReaderTests, SlidingWindowMapEmpty) {
 
 TEST_F(VeloxReaderTests, SlidingWindowMapMixedEmptyLength) {
   verifySlidingWindowMap(
-      /* expectedNumMaps */ 7,
+      /* deduplicatedMapCount */ 5,
       /* keys */ {1, 2, 2, 1, 1, 2, 4, 4},
       /* values */ {0.1, 0.2, 0.2, 0.1, 0.1, 0.3, 0.4, 0.4},
       /* offsets */ {0, 2, 4, 4, 4, 6, 6, 6, 6, 7});
+
+  // Nullable cases
+  verifySlidingWindowMap(
+      /* deduplicatedMapCount */ 5,
+      /* keys */ {1, 2, 2, 1, 1, 2, 4, 4},
+      /* values */ {0.1, 0.2, 0.2, 0.1, 0.1, 0.3, 0.4, 0.4},
+      /* offsets */ {0, 2, 4, 4, 4, 6, 6, 6, 6, 7, 7},
+      /* nulls */ {9});
 }
 
 TEST_F(VeloxReaderTests, ArrayWithOffsetsCaching) {
