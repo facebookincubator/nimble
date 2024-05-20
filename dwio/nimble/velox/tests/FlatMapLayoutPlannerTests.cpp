@@ -71,6 +71,16 @@ void addNamedTypes(
           map.values(), folly::to<std::string>(prefix, "m.v:"), result);
       break;
     }
+    case nimble::Kind::SlidingWindowMap: {
+      auto& map = node.asSlidingWindowMap();
+      result.emplace_back(map.offsetsDescriptor().offset(), prefix + "sm.o");
+      result.emplace_back(map.lengthsDescriptor().offset(), prefix + "sm.l");
+      addNamedTypes(
+          map.keys(), folly::to<std::string>(prefix, "sm.k:"), result);
+      addNamedTypes(
+          map.values(), folly::to<std::string>(prefix, "sm.v:"), result);
+      break;
+    }
     case nimble::Kind::FlatMap: {
       auto& flatmap = node.asFlatMap();
       result.emplace_back(flatmap.nullsDescriptor().offset(), prefix + "f");

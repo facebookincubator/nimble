@@ -46,6 +46,10 @@ class EncodingLayoutTree {
       constexpr static StreamIdentifier OffsetsStream = 0;
       constexpr static StreamIdentifier LengthsStream = 1;
     };
+    struct SlidingWindowMap {
+      constexpr static StreamIdentifier OffsetsStream = 0;
+      constexpr static StreamIdentifier LengthsStream = 1;
+    };
   };
 
   EncodingLayoutTree(

@@ -34,6 +34,10 @@ MapTypeBuilder& TypeBuilder::asMap() {
   return dynamic_cast<MapTypeBuilder&>(*this);
 }
 
+SlidingWindowMapTypeBuilder& TypeBuilder::asSlidingWindowMap() {
+  return dynamic_cast<SlidingWindowMapTypeBuilder&>(*this);
+}
+
 RowTypeBuilder& TypeBuilder::asRow() {
   return dynamic_cast<RowTypeBuilder&>(*this);
 }
@@ -56,6 +60,10 @@ const ArrayTypeBuilder& TypeBuilder::asArray() const {
 
 const MapTypeBuilder& TypeBuilder::asMap() const {
   return dynamic_cast<const MapTypeBuilder&>(*this);
+}
+
+const SlidingWindowMapTypeBuilder& TypeBuilder::asSlidingWindowMap() const {
+  return dynamic_cast<const SlidingWindowMapTypeBuilder&>(*this);
 }
 
 const RowTypeBuilder& TypeBuilder::asRow() const {
@@ -209,6 +217,47 @@ void RowTypeBuilder::addChild(
   children_.push_back(std::move(child));
 }
 
+SlidingWindowMapTypeBuilder::SlidingWindowMapTypeBuilder(
+    SchemaBuilder& schemaBuilder)
+    : TypeBuilder{schemaBuilder, Kind::SlidingWindowMap},
+      offsetsDescriptor_{
+          schemaBuilder_.allocateStreamOffset(),
+          ScalarKind::UInt32},
+      lengthsDescriptor_{
+          schemaBuilder_.allocateStreamOffset(),
+          ScalarKind::UInt32} {}
+
+const StreamDescriptorBuilder& SlidingWindowMapTypeBuilder::offsetsDescriptor()
+    const {
+  return offsetsDescriptor_;
+}
+
+const StreamDescriptorBuilder& SlidingWindowMapTypeBuilder::lengthsDescriptor()
+    const {
+  return lengthsDescriptor_;
+}
+
+const TypeBuilder& SlidingWindowMapTypeBuilder::keys() const {
+  return *keys_;
+}
+
+const TypeBuilder& SlidingWindowMapTypeBuilder::values() const {
+  return *values_;
+}
+
+void SlidingWindowMapTypeBuilder::setChildren(
+    std::shared_ptr<TypeBuilder> keys,
+    std::shared_ptr<TypeBuilder> values) {
+  NIMBLE_ASSERT(
+      !keys_, "SlidingWindowMapTypeBuilder keys already initialized.");
+  NIMBLE_ASSERT(
+      !values_, "SlidingWindowMapTypeBuilder values already initialized.");
+  schemaBuilder_.registerChild(keys);
+  schemaBuilder_.registerChild(values);
+  keys_ = std::move(keys);
+  values_ = std::move(values);
+}
+
 FlatMapTypeBuilder::FlatMapTypeBuilder(
     SchemaBuilder& schemaBuilder,
     ScalarKind keyScalarKind)
@@ -342,6 +391,20 @@ std::shared_ptr<MapTypeBuilder> SchemaBuilder::createMapTypeBuilder() {
   return type;
 }
 
+std::shared_ptr<SlidingWindowMapTypeBuilder>
+SchemaBuilder::createSlidingWindowMapTypeBuilder() {
+  struct MakeSharedEnabler : public SlidingWindowMapTypeBuilder {
+    explicit MakeSharedEnabler(SchemaBuilder& schemaBuilder)
+        : SlidingWindowMapTypeBuilder{schemaBuilder} {}
+  };
+  auto type = std::make_shared<MakeSharedEnabler>(*this);
+
+  // This new type builder is not attached to a parent, therefore it is a new
+  // tree "root" (as of now), so we add it to the roots list.
+  roots_.insert(type);
+  return type;
+}
+
 std::shared_ptr<FlatMapTypeBuilder> SchemaBuilder::createFlatMapTypeBuilder(
     ScalarKind keyScalarKind) {
   struct MakeSharedEnabler : public FlatMapTypeBuilder {
@@ -456,6 +519,22 @@ void SchemaBuilder::addNode(
       addNode(nodes, map.values());
       break;
     }
+    case Kind::SlidingWindowMap: {
+      const auto& map = type.asSlidingWindowMap();
+      nodes.push_back(std::make_unique<SchemaNode>(
+          type.kind(),
+          map.offsetsDescriptor().offset(),
+          ScalarKind::UInt32,
+          std::move(name)));
+      nodes.push_back(std::make_unique<SchemaNode>(
+          Kind::Scalar,
+          map.lengthsDescriptor().offset(),
+          ScalarKind::UInt32,
+          std::nullopt));
+      addNode(nodes, map.keys());
+      addNode(nodes, map.values());
+      break;
+    }
     case Kind::FlatMap: {
       auto& map = type.asFlatMap();
 
@@ -521,6 +600,15 @@ void printType(
     case Kind::Map: {
       const auto& map = builder.asMap();
       out << "[" << map.lengthsDescriptor().offset() << "]MAP\n";
+      printType(out, map.keys(), indentation + 2, "keys");
+      printType(out, map.values(), indentation + 2, "values");
+      out << "\n";
+      break;
+    }
+    case Kind::SlidingWindowMap: {
+      const auto& map = builder.asSlidingWindowMap();
+      out << "[o:" << map.offsetsDescriptor().offset()
+          << ",l:" << map.lengthsDescriptor().offset() << "]SLIDINGWINDOWMAP\n";
       printType(out, map.keys(), indentation + 2, "keys");
       printType(out, map.values(), indentation + 2, "values");
       out << "\n";

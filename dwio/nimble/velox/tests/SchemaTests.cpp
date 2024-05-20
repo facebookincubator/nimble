@@ -65,13 +65,14 @@ TEST(SchemaTests, SchemaUtils) {
           {"c12", STRING()},
           {"c13", BINARY()},
           {"c14", OFFSETARRAY(INTEGER())},
+          {"c15", SLIDINGWINDOWMAP(INTEGER(), INTEGER())},
       }));
 
   auto nodes = builder.getSchemaNodes();
   nimble::test::verifySchemaNodes(
       nodes,
       {
-          {nimble::Kind::Row, 19, nimble::ScalarKind::Bool, std::nullopt, 14},
+          {nimble::Kind::Row, 23, nimble::ScalarKind::Bool, std::nullopt, 15},
           {nimble::Kind::Scalar, 0, nimble::ScalarKind::Int8, "c1"},
           {nimble::Kind::Array, 2, nimble::ScalarKind::UInt32, "c2"},
           {nimble::Kind::Scalar, 1, nimble::ScalarKind::Int8},
@@ -94,11 +95,18 @@ TEST(SchemaTests, SchemaUtils) {
            "c14"},
           {nimble::Kind::Scalar, 17, nimble::ScalarKind::UInt32},
           {nimble::Kind::Scalar, 16, nimble::ScalarKind::Int32},
+          {nimble::Kind::SlidingWindowMap,
+           21,
+           nimble::ScalarKind::UInt32,
+           "c15"},
+          {nimble::Kind::Scalar, 22, nimble::ScalarKind::UInt32},
+          {nimble::Kind::Scalar, 19, nimble::ScalarKind::Int32},
+          {nimble::Kind::Scalar, 20, nimble::ScalarKind::Int32},
       });
 
-  verifyLabels(nodes, {"/",   "/0",  "/1",  "/1",  "/2",  "/3", "/3",
-                       "/3",  "/4",  "/5",  "/6",  "/7",  "/8", "/9",
-                       "/10", "/11", "/12", "/13", "/13", "/13"});
+  verifyLabels(nodes, {"/",   "/0",  "/1",  "/1",  "/2",  "/3",  "/3",  "/3",
+                       "/4",  "/5",  "/6",  "/7",  "/8",  "/9",  "/10", "/11",
+                       "/12", "/13", "/13", "/13", "/14", "/14", "/14", "/14"});
 
   fm2.addChild("f1");
 
@@ -106,7 +114,7 @@ TEST(SchemaTests, SchemaUtils) {
   nimble::test::verifySchemaNodes(
       nodes,
       {
-          {nimble::Kind::Row, 19, nimble::ScalarKind::Bool, std::nullopt, 14},
+          {nimble::Kind::Row, 23, nimble::ScalarKind::Bool, std::nullopt, 15},
           {nimble::Kind::Scalar, 0, nimble::ScalarKind::Int8, "c1"},
           {nimble::Kind::Array, 2, nimble::ScalarKind::UInt32, "c2"},
           {nimble::Kind::Scalar, 1, nimble::ScalarKind::Int8},
@@ -115,9 +123,9 @@ TEST(SchemaTests, SchemaUtils) {
           {nimble::Kind::Scalar, 4, nimble::ScalarKind::Int8},
           {nimble::Kind::Scalar, 5, nimble::ScalarKind::Int8},
           {nimble::Kind::FlatMap, 7, nimble::ScalarKind::Float, "c5", 1},
-          {nimble::Kind::Scalar, 22, nimble::ScalarKind::Bool, "f1"},
-          {nimble::Kind::Array, 21, nimble::ScalarKind::UInt32},
-          {nimble::Kind::Scalar, 20, nimble::ScalarKind::Int64},
+          {nimble::Kind::Scalar, 26, nimble::ScalarKind::Bool, "f1"},
+          {nimble::Kind::Array, 25, nimble::ScalarKind::UInt32},
+          {nimble::Kind::Scalar, 24, nimble::ScalarKind::Int64},
           {nimble::Kind::Scalar, 8, nimble::ScalarKind::Int16, "c6"},
           {nimble::Kind::Scalar, 9, nimble::ScalarKind::Int32, "c7"},
           {nimble::Kind::Scalar, 10, nimble::ScalarKind::Int64, "c8"},
@@ -132,12 +140,19 @@ TEST(SchemaTests, SchemaUtils) {
            "c14"},
           {nimble::Kind::Scalar, 17, nimble::ScalarKind::UInt32},
           {nimble::Kind::Scalar, 16, nimble::ScalarKind::Int32},
+          {nimble::Kind::SlidingWindowMap,
+           21,
+           nimble::ScalarKind::UInt32,
+           "c15"},
+          {nimble::Kind::Scalar, 22, nimble::ScalarKind::UInt32},
+          {nimble::Kind::Scalar, 19, nimble::ScalarKind::Int32},
+          {nimble::Kind::Scalar, 20, nimble::ScalarKind::Int32},
       });
 
-  verifyLabels(
-      nodes, {"/",  "/0",    "/1",    "/1",    "/2",  "/3",  "/3", "/3",
-              "/4", "/4/f1", "/4/f1", "/4/f1", "/5",  "/6",  "/7", "/8",
-              "/9", "/10",   "/11",   "/12",   "/13", "/13", "/13"});
+  verifyLabels(nodes, {"/",   "/0",  "/1",    "/1",    "/2",    "/3",  "/3",
+                       "/3",  "/4",  "/4/f1", "/4/f1", "/4/f1", "/5",  "/6",
+                       "/7",  "/8",  "/9",    "/10",   "/11",   "/12", "/13",
+                       "/13", "/13", "/14",   "/14",   "/14",   "/14"});
 
   fm1.addChild("f1");
   fm1.addChild("f2");
@@ -148,28 +163,28 @@ TEST(SchemaTests, SchemaUtils) {
   nimble::test::verifySchemaNodes(
       nodes,
       {
-          {nimble::Kind::Row, 19, nimble::ScalarKind::Bool, std::nullopt, 14},
+          {nimble::Kind::Row, 23, nimble::ScalarKind::Bool, std::nullopt, 15},
           {nimble::Kind::Scalar, 0, nimble::ScalarKind::Int8, "c1"},
           {nimble::Kind::Array, 2, nimble::ScalarKind::UInt32, "c2"},
           {nimble::Kind::Scalar, 1, nimble::ScalarKind::Int8},
           {nimble::Kind::FlatMap, 3, nimble::ScalarKind::Int8, "c3", 2},
-          {nimble::Kind::Scalar, 24, nimble::ScalarKind::Bool, "f1"},
-          {nimble::Kind::Scalar, 23, nimble::ScalarKind::Int8},
-          {nimble::Kind::Scalar, 26, nimble::ScalarKind::Bool, "f2"},
-          {nimble::Kind::Scalar, 25, nimble::ScalarKind::Int8},
+          {nimble::Kind::Scalar, 28, nimble::ScalarKind::Bool, "f1"},
+          {nimble::Kind::Scalar, 27, nimble::ScalarKind::Int8},
+          {nimble::Kind::Scalar, 30, nimble::ScalarKind::Bool, "f2"},
+          {nimble::Kind::Scalar, 29, nimble::ScalarKind::Int8},
           {nimble::Kind::Map, 6, nimble::ScalarKind::UInt32, "c4"},
           {nimble::Kind::Scalar, 4, nimble::ScalarKind::Int8},
           {nimble::Kind::Scalar, 5, nimble::ScalarKind::Int8},
           {nimble::Kind::FlatMap, 7, nimble::ScalarKind::Float, "c5", 3},
-          {nimble::Kind::Scalar, 22, nimble::ScalarKind::Bool, "f1"},
-          {nimble::Kind::Array, 21, nimble::ScalarKind::UInt32},
-          {nimble::Kind::Scalar, 20, nimble::ScalarKind::Int64},
-          {nimble::Kind::Scalar, 29, nimble::ScalarKind::Bool, "f2"},
-          {nimble::Kind::Array, 28, nimble::ScalarKind::UInt32},
-          {nimble::Kind::Scalar, 27, nimble::ScalarKind::Int64},
-          {nimble::Kind::Scalar, 32, nimble::ScalarKind::Bool, "f3"},
-          {nimble::Kind::Array, 31, nimble::ScalarKind::UInt32},
-          {nimble::Kind::Scalar, 30, nimble::ScalarKind::Int64},
+          {nimble::Kind::Scalar, 26, nimble::ScalarKind::Bool, "f1"},
+          {nimble::Kind::Array, 25, nimble::ScalarKind::UInt32},
+          {nimble::Kind::Scalar, 24, nimble::ScalarKind::Int64},
+          {nimble::Kind::Scalar, 33, nimble::ScalarKind::Bool, "f2"},
+          {nimble::Kind::Array, 32, nimble::ScalarKind::UInt32},
+          {nimble::Kind::Scalar, 31, nimble::ScalarKind::Int64},
+          {nimble::Kind::Scalar, 36, nimble::ScalarKind::Bool, "f3"},
+          {nimble::Kind::Array, 35, nimble::ScalarKind::UInt32},
+          {nimble::Kind::Scalar, 34, nimble::ScalarKind::Int64},
           {nimble::Kind::Scalar, 8, nimble::ScalarKind::Int16, "c6"},
           {nimble::Kind::Scalar, 9, nimble::ScalarKind::Int32, "c7"},
           {nimble::Kind::Scalar, 10, nimble::ScalarKind::Int64, "c8"},
@@ -184,14 +199,22 @@ TEST(SchemaTests, SchemaUtils) {
            "c14"},
           {nimble::Kind::Scalar, 17, nimble::ScalarKind::UInt32},
           {nimble::Kind::Scalar, 16, nimble::ScalarKind::Int32},
+          {nimble::Kind::SlidingWindowMap,
+           21,
+           nimble::ScalarKind::UInt32,
+           "c15"},
+          {nimble::Kind::Scalar, 22, nimble::ScalarKind::UInt32},
+          {nimble::Kind::Scalar, 19, nimble::ScalarKind::Int32},
+          {nimble::Kind::Scalar, 20, nimble::ScalarKind::Int32},
       });
 
   verifyLabels(
-      nodes, {"/",     "/0",    "/1",    "/1",    "/2",    "/2/f1", "/2/f1",
-              "/2/f2", "/2/f2", "/3",    "/3",    "/3",    "/4",    "/4/f1",
-              "/4/f1", "/4/f1", "/4/f2", "/4/f2", "/4/f2", "/4/f3", "/4/f3",
-              "/4/f3", "/5",    "/6",    "/7",    "/8",    "/9",    "/10",
-              "/11",   "/12",   "/13",   "/13",   "/13"});
+      nodes,
+      {"/",     "/0",    "/1",    "/1",    "/2",    "/2/f1", "/2/f1", "/2/f2",
+       "/2/f2", "/3",    "/3",    "/3",    "/4",    "/4/f1", "/4/f1", "/4/f1",
+       "/4/f2", "/4/f2", "/4/f2", "/4/f3", "/4/f3", "/4/f3", "/5",    "/6",
+       "/7",    "/8",    "/9",    "/10",   "/11",   "/12",   "/13",   "/13",
+       "/13",   "/14",   "/14",   "/14",   "/14"});
 }
 
 TEST(SchemaTests, RoundTrip) {
@@ -202,9 +225,10 @@ TEST(SchemaTests, RoundTrip) {
   //   c3:MAP<VARCHAR, REAL>,
   //   c4:FLATMAP<BIGINT, INT>,
   //   c5:BOOL,
-  //   c6:OFFSETARRAY<FLOAT>)
+  //   c6:OFFSETARRAY<FLOAT>,
+  //   c7:SLIDINGWINDOWMAP<INT, INT>)
 
-  auto row = builder.createRowTypeBuilder(6);
+  auto row = builder.createRowTypeBuilder(7);
   {
     auto scalar = builder.createScalarTypeBuilder(nimble::ScalarKind::Int32);
     row->addChild("c1", scalar);
@@ -237,11 +261,19 @@ TEST(SchemaTests, RoundTrip) {
     row->addChild("c6", arrayWithOffsets);
   }
 
+  {
+    auto slidingWindowMap = builder.createSlidingWindowMapTypeBuilder();
+    auto keys = builder.createScalarTypeBuilder(nimble::ScalarKind::Int32);
+    auto values = builder.createScalarTypeBuilder(nimble::ScalarKind::Int32);
+    slidingWindowMap->setChildren(std::move(keys), std::move(values));
+    row->addChild("c7", slidingWindowMap);
+  }
+
   auto nodes = builder.getSchemaNodes();
   nimble::test::verifySchemaNodes(
       nodes,
       {
-          {nimble::Kind::Row, 0, nimble::ScalarKind::Bool, std::nullopt, 6},
+          {nimble::Kind::Row, 0, nimble::ScalarKind::Bool, std::nullopt, 7},
           {nimble::Kind::Scalar, 1, nimble::ScalarKind::Int32, "c1", 0},
           {nimble::Kind::FlatMap, 2, nimble::ScalarKind::Int8, "c2", 0},
           {nimble::Kind::Map, 3, nimble::ScalarKind::UInt32, "c3"},
@@ -257,10 +289,32 @@ TEST(SchemaTests, RoundTrip) {
               std::nullopt,
           },
           {nimble::Kind::Scalar, 10, nimble::ScalarKind::Float, std::nullopt},
+          {nimble::Kind::SlidingWindowMap,
+           11,
+           nimble::ScalarKind::UInt32,
+           "c7"},
+          {nimble::Kind::Scalar, 12, nimble::ScalarKind::UInt32, std::nullopt},
+          {nimble::Kind::Scalar, 13, nimble::ScalarKind::Int32, std::nullopt},
+          {nimble::Kind::Scalar, 14, nimble::ScalarKind::Int32, std::nullopt},
       });
 
   verifyLabels(
-      nodes, {"/", "/0", "/1", "/2", "/2", "/2", "/3", "/4", "/5", "/5", "/5"});
+      nodes,
+      {"/",
+       "/0",
+       "/1",
+       "/2",
+       "/2",
+       "/2",
+       "/3",
+       "/4",
+       "/5",
+       "/5",
+       "/5",
+       "/6",
+       "/6",
+       "/6",
+       "/6"});
 
   {
     auto array = builder.createArrayTypeBuilder();
@@ -286,48 +340,38 @@ TEST(SchemaTests, RoundTrip) {
   nimble::test::verifySchemaNodes(
       nodes,
       {
-          {nimble::Kind::Row, 0, nimble::ScalarKind::Bool, std::nullopt, 6},
+          {nimble::Kind::Row, 0, nimble::ScalarKind::Bool, std::nullopt, 7},
           {nimble::Kind::Scalar, 1, nimble::ScalarKind::Int32, "c1", 0},
           {nimble::Kind::FlatMap, 2, nimble::ScalarKind::Int8, "c2", 2},
-          {nimble::Kind::Scalar, 13, nimble::ScalarKind::Bool, "f1"},
-          {nimble::Kind::Array, 11, nimble::ScalarKind::UInt32},
-          {nimble::Kind::Scalar, 12, nimble::ScalarKind::Double},
-          {nimble::Kind::Scalar, 16, nimble::ScalarKind::Bool, "f2"},
-          {nimble::Kind::Array, 14, nimble::ScalarKind::UInt32},
-          {nimble::Kind::Scalar, 15, nimble::ScalarKind::Double},
+          {nimble::Kind::Scalar, 17, nimble::ScalarKind::Bool, "f1"},
+          {nimble::Kind::Array, 15, nimble::ScalarKind::UInt32},
+          {nimble::Kind::Scalar, 16, nimble::ScalarKind::Double},
+          {nimble::Kind::Scalar, 20, nimble::ScalarKind::Bool, "f2"},
+          {nimble::Kind::Array, 18, nimble::ScalarKind::UInt32},
+          {nimble::Kind::Scalar, 19, nimble::ScalarKind::Double},
           {nimble::Kind::Map, 3, nimble::ScalarKind::UInt32, "c3"},
           {nimble::Kind::Scalar, 4, nimble::ScalarKind::String},
           {nimble::Kind::Scalar, 5, nimble::ScalarKind::Float},
           {nimble::Kind::FlatMap, 6, nimble::ScalarKind::Int64, "c4", 1},
-          {nimble::Kind::Scalar, 18, nimble::ScalarKind::Bool, "f1"},
-          {nimble::Kind::Scalar, 17, nimble::ScalarKind::Int32},
+          {nimble::Kind::Scalar, 22, nimble::ScalarKind::Bool, "f1"},
+          {nimble::Kind::Scalar, 21, nimble::ScalarKind::Int32},
           {nimble::Kind::Scalar, 7, nimble::ScalarKind::Bool, "c5"},
           {nimble::Kind::ArrayWithOffsets, 9, nimble::ScalarKind::UInt32, "c6"},
           {nimble::Kind::Scalar, 8, nimble::ScalarKind::UInt32},
           {nimble::Kind::Scalar, 10, nimble::ScalarKind::Float},
+          {nimble::Kind::SlidingWindowMap,
+           11,
+           nimble::ScalarKind::UInt32,
+           "c7"},
+          {nimble::Kind::Scalar, 12, nimble::ScalarKind::UInt32, std::nullopt},
+          {nimble::Kind::Scalar, 13, nimble::ScalarKind::Int32, std::nullopt},
+          {nimble::Kind::Scalar, 14, nimble::ScalarKind::Int32, std::nullopt},
       });
 
   verifyLabels(
-      nodes,
-      {"/",
-       "/0",
-       "/1",
-       "/1/f1",
-       "/1/f1",
-       "/1/f1",
-       "/1/f2",
-       "/1/f2",
-       "/1/f2",
-       "/2",
-       "/2",
-       "/2",
-       "/3",
-       "/3/f1",
-       "/3/f1",
-       "/4",
-       "/5",
-       "/5",
-       "/5"});
+      nodes, {"/",     "/0", "/1", "/1/f1", "/1/f1", "/1/f1", "/1/f2", "/1/f2",
+              "/1/f2", "/2", "/2", "/2",    "/3",    "/3/f1", "/3/f1", "/4",
+              "/5",    "/5", "/5", "/6",    "/6",    "/6",    "/6"});
 
   {
     auto array = builder.createArrayTypeBuilder();
@@ -346,36 +390,44 @@ TEST(SchemaTests, RoundTrip) {
   nimble::test::verifySchemaNodes(
       nodes,
       {
-          {nimble::Kind::Row, 0, nimble::ScalarKind::Bool, std::nullopt, 6},
+          {nimble::Kind::Row, 0, nimble::ScalarKind::Bool, std::nullopt, 7},
           {nimble::Kind::Scalar, 1, nimble::ScalarKind::Int32, "c1", 0},
           {nimble::Kind::FlatMap, 2, nimble::ScalarKind::Int8, "c2", 3},
-          {nimble::Kind::Scalar, 13, nimble::ScalarKind::Bool, "f1"},
-          {nimble::Kind::Array, 11, nimble::ScalarKind::UInt32},
-          {nimble::Kind::Scalar, 12, nimble::ScalarKind::Double},
-          {nimble::Kind::Scalar, 16, nimble::ScalarKind::Bool, "f2"},
-          {nimble::Kind::Array, 14, nimble::ScalarKind::UInt32},
-          {nimble::Kind::Scalar, 15, nimble::ScalarKind::Double},
-          {nimble::Kind::Scalar, 21, nimble::ScalarKind::Bool, "f3"},
-          {nimble::Kind::Array, 19, nimble::ScalarKind::UInt32},
-          {nimble::Kind::Scalar, 20, nimble::ScalarKind::Double},
+          {nimble::Kind::Scalar, 17, nimble::ScalarKind::Bool, "f1"},
+          {nimble::Kind::Array, 15, nimble::ScalarKind::UInt32},
+          {nimble::Kind::Scalar, 16, nimble::ScalarKind::Double},
+          {nimble::Kind::Scalar, 20, nimble::ScalarKind::Bool, "f2"},
+          {nimble::Kind::Array, 18, nimble::ScalarKind::UInt32},
+          {nimble::Kind::Scalar, 19, nimble::ScalarKind::Double},
+          {nimble::Kind::Scalar, 25, nimble::ScalarKind::Bool, "f3"},
+          {nimble::Kind::Array, 23, nimble::ScalarKind::UInt32},
+          {nimble::Kind::Scalar, 24, nimble::ScalarKind::Double},
           {nimble::Kind::Map, 3, nimble::ScalarKind::UInt32, "c3"},
           {nimble::Kind::Scalar, 4, nimble::ScalarKind::String},
           {nimble::Kind::Scalar, 5, nimble::ScalarKind::Float},
           {nimble::Kind::FlatMap, 6, nimble::ScalarKind::Int64, "c4", 2},
-          {nimble::Kind::Scalar, 18, nimble::ScalarKind::Bool, "f1"},
-          {nimble::Kind::Scalar, 17, nimble::ScalarKind::Int32},
-          {nimble::Kind::Scalar, 23, nimble::ScalarKind::Bool, "f2"},
-          {nimble::Kind::Scalar, 22, nimble::ScalarKind::Int32},
+          {nimble::Kind::Scalar, 22, nimble::ScalarKind::Bool, "f1"},
+          {nimble::Kind::Scalar, 21, nimble::ScalarKind::Int32},
+          {nimble::Kind::Scalar, 27, nimble::ScalarKind::Bool, "f2"},
+          {nimble::Kind::Scalar, 26, nimble::ScalarKind::Int32},
           {nimble::Kind::Scalar, 7, nimble::ScalarKind::Bool, "c5"},
           {nimble::Kind::ArrayWithOffsets, 9, nimble::ScalarKind::UInt32, "c6"},
           {nimble::Kind::Scalar, 8, nimble::ScalarKind::UInt32},
           {nimble::Kind::Scalar, 10, nimble::ScalarKind::Float},
+          {nimble::Kind::SlidingWindowMap,
+           11,
+           nimble::ScalarKind::UInt32,
+           "c7"},
+          {nimble::Kind::Scalar, 12, nimble::ScalarKind::UInt32, std::nullopt},
+          {nimble::Kind::Scalar, 13, nimble::ScalarKind::Int32, std::nullopt},
+          {nimble::Kind::Scalar, 14, nimble::ScalarKind::Int32, std::nullopt},
       });
 
-  verifyLabels(nodes, {"/",     "/0",    "/1",    "/1/f1", "/1/f1", "/1/f1",
-                       "/1/f2", "/1/f2", "/1/f2", "/1/f3", "/1/f3", "/1/f3",
-                       "/2",    "/2",    "/2",    "/3",    "/3/f1", "/3/f1",
-                       "/3/f2", "/3/f2", "/4",    "/5",    "/5",    "/5"});
+  verifyLabels(
+      nodes, {"/",     "/0",    "/1",    "/1/f1", "/1/f1", "/1/f1", "/1/f2",
+              "/1/f2", "/1/f2", "/1/f3", "/1/f3", "/1/f3", "/2",    "/2",
+              "/2",    "/3",    "/3/f1", "/3/f1", "/3/f2", "/3/f2", "/4",
+              "/5",    "/5",    "/5",    "/6",    "/6",    "/6",    "/6"});
 
   auto result = nimble::SchemaReader::getSchema(nodes);
   nimble::test::compareSchema(nodes, result);

@@ -56,6 +56,14 @@ void appendAllNestedStreams(
       appendAllNestedStreams(map.values(), childrenOffsets);
       break;
     }
+    case Kind::SlidingWindowMap: {
+      auto& map = type.asSlidingWindowMap();
+      childrenOffsets.push_back(map.offsetsDescriptor().offset());
+      childrenOffsets.push_back(map.lengthsDescriptor().offset());
+      appendAllNestedStreams(map.keys(), childrenOffsets);
+      appendAllNestedStreams(map.values(), childrenOffsets);
+      break;
+    }
     case Kind::FlatMap: {
       auto& flatMap = type.asFlatMap();
       childrenOffsets.push_back(flatMap.nullsDescriptor().offset());

@@ -383,6 +383,27 @@ void initializeEncodingLayouts(
 
           break;
         }
+        case Kind::SlidingWindowMap: {
+          NIMBLE_CHECK(
+              encodingLayoutTree.schemaKind() == Kind::SlidingWindowMap,
+              "Incompatible encoding layout node. Expecting SlidingWindowMap node.");
+          auto& mapBuilder = typeBuilder.asSlidingWindowMap();
+          _SET_STREAM_CONTEXT(
+              mapBuilder, offsetsDescriptor, SlidingWindowMap::OffsetsStream);
+          _SET_STREAM_CONTEXT(
+              mapBuilder, lengthsDescriptor, SlidingWindowMap::LengthsStream);
+          if (encodingLayoutTree.childrenCount() > 0) {
+            NIMBLE_CHECK(
+                encodingLayoutTree.childrenCount() == 2,
+                "Invalid encoding layout tree. SlidingWindowMap node should have exactly two children.");
+            initializeEncodingLayouts(
+                mapBuilder.keys(), encodingLayoutTree.child(0));
+            initializeEncodingLayouts(
+                mapBuilder.values(), encodingLayoutTree.child(1));
+          }
+
+          break;
+        }
         case Kind::ArrayWithOffsets: {
           NIMBLE_CHECK(
               encodingLayoutTree.schemaKind() == Kind::ArrayWithOffsets,

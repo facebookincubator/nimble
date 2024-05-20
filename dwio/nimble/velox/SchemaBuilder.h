@@ -50,6 +50,7 @@ class MapTypeBuilder;
 class RowTypeBuilder;
 class FlatMapTypeBuilder;
 class ArrayWithOffsetsTypeBuilder;
+class SlidingWindowMapTypeBuilder;
 
 class StreamContext {
  public:
@@ -100,12 +101,14 @@ class TypeBuilder {
   ScalarTypeBuilder& asScalar();
   ArrayTypeBuilder& asArray();
   MapTypeBuilder& asMap();
+  SlidingWindowMapTypeBuilder& asSlidingWindowMap();
   RowTypeBuilder& asRow();
   FlatMapTypeBuilder& asFlatMap();
   ArrayWithOffsetsTypeBuilder& asArrayWithOffsets();
   const ScalarTypeBuilder& asScalar() const;
   const ArrayTypeBuilder& asArray() const;
   const MapTypeBuilder& asMap() const;
+  const SlidingWindowMapTypeBuilder& asSlidingWindowMap() const;
   const RowTypeBuilder& asRow() const;
   const FlatMapTypeBuilder& asFlatMap() const;
   const ArrayWithOffsetsTypeBuilder& asArrayWithOffsets() const;
@@ -171,6 +174,28 @@ class MapTypeBuilder : public LengthsTypeBuilder {
  private:
   explicit MapTypeBuilder(SchemaBuilder& schemaBuilder);
 
+  std::shared_ptr<const TypeBuilder> keys_;
+  std::shared_ptr<const TypeBuilder> values_;
+
+  friend class SchemaBuilder;
+};
+
+class SlidingWindowMapTypeBuilder : public TypeBuilder {
+ public:
+  const StreamDescriptorBuilder& offsetsDescriptor() const;
+  const StreamDescriptorBuilder& lengthsDescriptor() const;
+  const TypeBuilder& keys() const;
+  const TypeBuilder& values() const;
+
+  void setChildren(
+      std::shared_ptr<TypeBuilder> keys,
+      std::shared_ptr<TypeBuilder> values);
+
+ private:
+  explicit SlidingWindowMapTypeBuilder(SchemaBuilder& schemaBuilder);
+
+  StreamDescriptorBuilder offsetsDescriptor_;
+  StreamDescriptorBuilder lengthsDescriptor_;
   std::shared_ptr<const TypeBuilder> keys_;
   std::shared_ptr<const TypeBuilder> values_;
 
@@ -257,6 +282,10 @@ class SchemaBuilder {
   // Create a map builder.
   std::shared_ptr<MapTypeBuilder> createMapTypeBuilder();
 
+  // Create a slidingwindowmap builder.
+  std::shared_ptr<SlidingWindowMapTypeBuilder>
+  createSlidingWindowMapTypeBuilder();
+
   // Create a flat map builder. |keyScalarKind| captures the type of the map
   // key.
   std::shared_ptr<FlatMapTypeBuilder> createFlatMapTypeBuilder(
@@ -306,6 +335,7 @@ class SchemaBuilder {
   friend class RowTypeBuilder;
   friend class MapTypeBuilder;
   friend class FlatMapTypeBuilder;
+  friend class SlidingWindowMapTypeBuilder;
   friend std::ostream& operator<<(
       std::ostream& out,
       const SchemaBuilder& schema);

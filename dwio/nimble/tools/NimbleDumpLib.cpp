@@ -283,6 +283,15 @@ void NimbleDumpLib::emitSchema(bool collapseFlatMap) {
                       type.asArrayWithOffsets().lengthsDescriptor().offset());
         break;
       }
+      case Kind::SlidingWindowMap: {
+        offsets = "o:" +
+            folly::to<std::string>(
+                      type.asSlidingWindowMap().offsetsDescriptor().offset()) +
+            ",l:" +
+            folly::to<std::string>(
+                      type.asSlidingWindowMap().lengthsDescriptor().offset());
+        break;
+      }
     }
 
     return offsets;

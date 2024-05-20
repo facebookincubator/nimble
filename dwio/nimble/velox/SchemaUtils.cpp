@@ -143,6 +143,12 @@ velox::TypePtr convertToVeloxType(const Type& type) {
           convertToVeloxType(*mapType.keys()),
           convertToVeloxType(*mapType.values()));
     }
+    case Kind::SlidingWindowMap: {
+      const auto& mapType = type.asSlidingWindowMap();
+      return std::make_shared<const velox::MapType>(
+          convertToVeloxType(*mapType.keys()),
+          convertToVeloxType(*mapType.values()));
+    }
     case Kind::FlatMap: {
       const auto& flatMapType = type.asFlatMap();
       return std::make_shared<const velox::MapType>(

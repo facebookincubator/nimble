@@ -57,6 +57,7 @@ std::string toString(Kind kind) {
     CASE(ArrayWithOffsets);
     CASE(Map);
     CASE(FlatMap);
+    CASE(SlidingWindowMap);
 #undef CASE
   }
   NIMBLE_UNREACHABLE(fmt::format("Unknown: {}.", static_cast<int32_t>(kind)));

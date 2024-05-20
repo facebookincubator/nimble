@@ -59,6 +59,23 @@ void addLabels(
       addLabels(map.values(), labels, offsetToLabel, labelIndex, "");
       break;
     }
+    case Kind::SlidingWindowMap: {
+      const auto& map = node->asSlidingWindowMap();
+      const auto offsetsOffset = map.offsetsDescriptor().offset();
+      const auto lengthsOffset = map.lengthsDescriptor().offset();
+      NIMBLE_DASSERT(labelIndex < labels.size(), "Unexpected label index.");
+      NIMBLE_DASSERT(
+          offsetToLabel.size() > offsetsOffset, "Unexpected offset.");
+      NIMBLE_DASSERT(
+          offsetToLabel.size() > lengthsOffset, "Unexpected offset.");
+      labels.push_back(labels[labelIndex] + name);
+      labelIndex = labels.size() - 1;
+      offsetToLabel[offsetsOffset] = labelIndex;
+      offsetToLabel[lengthsOffset] = labelIndex;
+      addLabels(map.keys(), labels, offsetToLabel, labelIndex, "");
+      addLabels(map.values(), labels, offsetToLabel, labelIndex, "");
+      break;
+    }
     case Kind::Row: {
       const auto& row = node->asRow();
       const auto offset = row.nullsDescriptor().offset();
@@ -144,6 +161,14 @@ StreamLabels::StreamLabels(const std::shared_ptr<const Type>& root) {
           case Kind::Map: {
             maxOffset = std::max<size_t>(
                 maxOffset, type.asMap().lengthsDescriptor().offset());
+            break;
+          }
+          case Kind::SlidingWindowMap: {
+            const auto& map = type.asSlidingWindowMap();
+            maxOffset =
+                std::max<size_t>(maxOffset, map.offsetsDescriptor().offset());
+            maxOffset =
+                std::max<size_t>(maxOffset, map.lengthsDescriptor().offset());
             break;
           }
           case Kind::Row: {

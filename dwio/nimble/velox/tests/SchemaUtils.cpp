@@ -105,6 +105,23 @@ void compareSchema(
 
       break;
     }
+    case nimble::Kind::SlidingWindowMap: {
+      auto& map = type->asSlidingWindowMap();
+      EXPECT_EQ(map.offsetsDescriptor().offset(), node->offset());
+      EXPECT_EQ(nimble::ScalarKind::UInt32, node->scalarKind());
+      EXPECT_EQ(0, node->childrenCount());
+
+      auto& lengthNode = nodes[index++];
+      EXPECT_FALSE(lengthNode->name().has_value());
+      EXPECT_EQ(Kind::Scalar, lengthNode->kind());
+      EXPECT_EQ(ScalarKind::UInt32, lengthNode->scalarKind());
+      EXPECT_EQ(map.lengthsDescriptor().offset(), lengthNode->offset());
+
+      compareSchema(index, nodes, map.keys());
+      compareSchema(index, nodes, map.values());
+
+      break;
+    }
     case nimble::Kind::FlatMap: {
       auto& map = type->asFlatMap();
       EXPECT_EQ(map.nullsDescriptor().offset(), node->offset());
@@ -172,6 +189,15 @@ std::shared_ptr<nimble::MapTypeBuilder> map(
   auto map = builder.createMapTypeBuilder();
   map->setChildren(std::move(keys), std::move(values));
 
+  return map;
+}
+
+std::shared_ptr<nimble::SlidingWindowMapTypeBuilder> slidingWindowMap(
+    nimble::SchemaBuilder& builder,
+    std::shared_ptr<nimble::TypeBuilder> keys,
+    std::shared_ptr<nimble::TypeBuilder> values) {
+  auto map = builder.createSlidingWindowMapTypeBuilder();
+  map->setChildren(std::move(keys), std::move(values));
   return map;
 }
 

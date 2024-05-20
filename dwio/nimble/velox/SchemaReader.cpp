@@ -76,6 +76,10 @@ bool Type::isFlatMap() const {
   return kind_ == Kind::FlatMap;
 }
 
+bool Type::isSlidingWindowMap() const {
+  return kind_ == Kind::SlidingWindowMap;
+}
+
 const ScalarType& Type::asScalar() const {
   NIMBLE_ASSERT(
       isScalar(),
@@ -125,6 +129,15 @@ const FlatMapType& Type::asFlatMap() const {
   return dynamic_cast<const FlatMapType&>(*this);
 }
 
+const SlidingWindowMapType& Type::asSlidingWindowMap() const {
+  NIMBLE_ASSERT(
+      isSlidingWindowMap(),
+      fmt::format(
+          "Cannot cast to SlidingWindowMap. Current type is {}.",
+          getKindName(kind_)));
+  return dynamic_cast<const SlidingWindowMapType&>(*this);
+}
+
 ScalarType::ScalarType(StreamDescriptor scalarDescriptor)
     : Type(Kind::Scalar), scalarDescriptor_{std::move(scalarDescriptor)} {}
 
@@ -165,6 +178,34 @@ const std::shared_ptr<const Type>& MapType::keys() const {
 }
 
 const std::shared_ptr<const Type>& MapType::values() const {
+  return values_;
+}
+
+SlidingWindowMapType::SlidingWindowMapType(
+    StreamDescriptor offsetsDescriptor,
+    StreamDescriptor lengthsDescriptor,
+    std::shared_ptr<const Type> keys,
+    std::shared_ptr<const Type> values)
+    : Type(Kind::SlidingWindowMap),
+      offsetsDescriptor_{std::move(offsetsDescriptor)},
+      lengthsDescriptor_{std::move(lengthsDescriptor)},
+
+      keys_{std::move(keys)},
+      values_{std::move(values)} {}
+
+const StreamDescriptor& SlidingWindowMapType::offsetsDescriptor() const {
+  return offsetsDescriptor_;
+}
+
+const StreamDescriptor& SlidingWindowMapType::lengthsDescriptor() const {
+  return lengthsDescriptor_;
+}
+
+const std::shared_ptr<const Type>& SlidingWindowMapType::keys() const {
+  return keys_;
+}
+
+const std::shared_ptr<const Type>& SlidingWindowMapType::values() const {
   return values_;
 }
 
@@ -317,6 +358,23 @@ NamedType getType(
       return {
           .type = std::make_shared<MapType>(
               StreamDescriptor{offset, ScalarKind::UInt32},
+              std::move(keys),
+              std::move(values)),
+          .name = node->name()};
+    }
+    case Kind::SlidingWindowMap: {
+      auto& lengthsNode = nodes[index++];
+      NIMBLE_ASSERT(
+          lengthsNode->kind() == Kind::Scalar &&
+              lengthsNode->scalarKind() == ScalarKind::UInt32,
+          "SlidingWindowMap field must have a uint32 scalar type.");
+      auto keys = getType(index, nodes).type;
+      auto values = getType(index, nodes).type;
+      return {
+          .type = std::make_shared<SlidingWindowMapType>(
+              StreamDescriptor{offset, ScalarKind::UInt32},
+              StreamDescriptor{
+                  lengthsNode->offset(), lengthsNode->scalarKind()},
               std::move(keys),
               std::move(values)),
           .name = node->name()};
@@ -478,6 +536,22 @@ void traverseSchema(
       }
       break;
     }
+    case Kind::SlidingWindowMap: {
+      auto& map = type->asSlidingWindowMap();
+      traverseSchema(
+          index,
+          level + 1,
+          map.keys(),
+          visitor,
+          {.name = "keys", .parentType = type.get(), .placeInSibling = 0});
+      traverseSchema(
+          index,
+          level + 1,
+          map.values(),
+          visitor,
+          {.name = "values", .parentType = type.get(), .placeInSibling = 1});
+      break;
+    }
   }
 }
 
@@ -519,6 +593,11 @@ std::ostream& operator<<(
         } else if (type.isMap()) {
           out << "[" << type.asMap().lengthsDescriptor().offset() << "]"
               << "MAP\n";
+        } else if (type.isSlidingWindowMap()) {
+          const auto& map = type.asSlidingWindowMap();
+          out << "[o:" << map.offsetsDescriptor().offset()
+              << ",l:" << map.lengthsDescriptor().offset() << "]"
+              << "SLIDINGWINDOWMAP\n";
         } else if (type.isFlatMap()) {
           auto& map = type.asFlatMap();
           out << "[" << map.nullsDescriptor().offset() << "]" << "FLATMAP[";

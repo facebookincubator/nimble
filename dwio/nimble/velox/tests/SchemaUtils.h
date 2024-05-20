@@ -49,6 +49,11 @@ std::shared_ptr<nimble::MapTypeBuilder> map(
     std::shared_ptr<nimble::TypeBuilder> keys,
     std::shared_ptr<nimble::TypeBuilder> values);
 
+std::shared_ptr<nimble::SlidingWindowMapTypeBuilder> slidingWindowMap(
+    nimble::SchemaBuilder& builder,
+    std::shared_ptr<nimble::TypeBuilder> keys,
+    std::shared_ptr<nimble::TypeBuilder> values);
+
 class FlatMapChildAdder {
  public:
   void addChild(std::string name) {
@@ -109,6 +114,8 @@ void schema(
 #define OFFSETARRAY(elements) \
   facebook::nimble::test::arrayWithOffsets(builder, elements)
 #define MAP(keys, values) facebook::nimble::test::map(builder, keys, values)
+#define SLIDINGWINDOWMAP(keys, values) \
+  facebook::nimble::test::slidingWindowMap(builder, keys, values)
 #define FLATMAP(keyKind, values, adder)                       \
   facebook::nimble::test::flatMap(                            \
       builder,                                                \

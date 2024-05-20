@@ -48,6 +48,7 @@ enum class Kind : uint8_t {
   ArrayWithOffsets,
   Map,
   FlatMap,
+  SlidingWindowMap,
 };
 
 std::string toString(ScalarKind kind);

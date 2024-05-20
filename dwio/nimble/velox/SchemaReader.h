@@ -41,6 +41,7 @@ class ArrayType;
 class ArrayWithOffsetsType;
 class MapType;
 class FlatMapType;
+class SlidingWindowMapType;
 
 class Type {
  public:
@@ -52,6 +53,7 @@ class Type {
   bool isArrayWithOffsets() const;
   bool isMap() const;
   bool isFlatMap() const;
+  bool isSlidingWindowMap() const;
 
   const ScalarType& asScalar() const;
   const RowType& asRow() const;
@@ -59,6 +61,7 @@ class Type {
   const ArrayWithOffsetsType& asArrayWithOffsets() const;
   const MapType& asMap() const;
   const FlatMapType& asFlatMap() const;
+  const SlidingWindowMapType& asSlidingWindowMap() const;
 
  protected:
   explicit Type(Kind kind);
@@ -108,6 +111,26 @@ class MapType : public Type {
   const std::shared_ptr<const Type>& values() const;
 
  protected:
+  StreamDescriptor lengthsDescriptor_;
+  std::shared_ptr<const Type> keys_;
+  std::shared_ptr<const Type> values_;
+};
+
+class SlidingWindowMapType : public virtual Type {
+ public:
+  SlidingWindowMapType(
+      StreamDescriptor offsetsDescriptor,
+      StreamDescriptor lengthsDescriptor,
+      std::shared_ptr<const Type> keys,
+      std::shared_ptr<const Type> values);
+
+  const StreamDescriptor& offsetsDescriptor() const;
+  const StreamDescriptor& lengthsDescriptor() const;
+  const std::shared_ptr<const Type>& keys() const;
+  const std::shared_ptr<const Type>& values() const;
+
+ protected:
+  StreamDescriptor offsetsDescriptor_;
   StreamDescriptor lengthsDescriptor_;
   std::shared_ptr<const Type> keys_;
   std::shared_ptr<const Type> values_;
