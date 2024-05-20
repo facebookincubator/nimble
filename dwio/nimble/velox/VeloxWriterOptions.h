@@ -50,6 +50,11 @@ struct VeloxWriterOptions {
   // individual arrays within a column.
   folly::F14FastSet<std::string> dictionaryArrayColumns;
 
+  // Columns that should be encoded as dictionary map
+  // NOTE: For each column, ALL the maps inside this column will be encoded
+  // using dictionary maps.
+  folly::F14FastSet<std::string> deduplicatedMapColumns;
+
   // The metric logger would come populated with access descriptor information,
   // application generated query id or specific sampling configs.
   std::shared_ptr<MetricsLogger> metricsLogger;

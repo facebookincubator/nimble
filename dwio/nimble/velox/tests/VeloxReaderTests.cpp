@@ -747,6 +747,68 @@ class VeloxReaderTests : public ::testing::Test {
         *leafPool_, std::move(readFile), std::move(selector), readParams);
   }
 
+  void verifySlidingWindowMap(
+      int expectedNumMaps,
+      const std::vector<int32_t>& keys,
+      const std::vector<float>& values,
+      const std::vector<int32_t>& offsets,
+      const std::vector<int32_t>& nulls = {}) {
+    auto type = velox::ROW({
+        {"slidingWindowMap", velox::MAP(velox::INTEGER(), velox::REAL())},
+    });
+
+    auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
+    uint32_t seed = folly::Random::rand32();
+    LOG(INFO) << "seed: " << seed;
+
+    nimble::VeloxWriterOptions writerOptions;
+    writerOptions.deduplicatedMapColumns.insert("slidingWindowMap");
+    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+    auto iterations = 20;
+    auto batches = 20;
+    std::mt19937 rng{seed};
+    bool checkMemoryLeak = true;
+
+    /* Check the inner map */
+    auto compare = [&](const velox::VectorPtr& vector) {
+      ASSERT_EQ(
+          vector->wrappedVector()
+              ->as<velox::RowVector>()
+              ->childAt(0)
+              ->loadedVector()
+              ->wrappedVector()
+              ->size(),
+          expectedNumMaps);
+    };
+
+    for (auto i = 0; i < iterations; ++i) {
+      auto keysVector = vectorMaker.flatVector<int32_t>(keys);
+      auto valuesVector = vectorMaker.flatVector<float>(values);
+
+      writeAndVerify(
+          rng,
+          *leafPool_.get(),
+          rowType,
+          [&](auto& /*type*/) {
+            return vectorMaker.rowVector(
+                {"slidingWindowMap"},
+                {
+                    vectorMaker.mapVector(
+                        offsets, keysVector, valuesVector, nulls),
+                });
+          },
+          vectorEquals,
+          batches,
+          writerOptions,
+          {},
+          nullptr,
+          compare,
+          false,
+          checkMemoryLeak);
+    }
+  }
+
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
 };
@@ -1294,6 +1356,68 @@ TEST_F(VeloxReaderTests, NullVectors) {
   ASSERT_FALSE(reader.next(1, result));
 }
 
+TEST_F(VeloxReaderTests, SlidingWindowMapSizeOne) {
+  verifySlidingWindowMap(
+      /* expectedNumMaps */ 1,
+      /* keys */ {1, 2},
+      /* values */ {0.1, 0.2},
+      /* offsets */ {0});
+
+  // Nullable cases
+  verifySlidingWindowMap(
+      /* expectedNumMaps */ 1,
+      /* keys */ {1, 2},
+      /* values */ {0.1, 0.2},
+      /* offsets */ {0, 2},
+      /* nulls */ {1});
+}
+
+TEST_F(VeloxReaderTests, SlidingWindowMapSizeTwo) {
+  verifySlidingWindowMap(
+      /* expectedNumMaps */ 2,
+      /* keys */ {1, 2, 1, 2},
+      /* values */ {0.1, 0.2, 0.1, 0.2},
+      /* offsets */ {0, 2});
+
+  // Nullable cases
+  verifySlidingWindowMap(
+      /* expectedNumMaps */ 2,
+      /* keys */ {1, 2, 1, 2},
+      /* values */ {0.1, 0.2, 0.1, 0.2},
+      /* offsets */ {0, 2, 2},
+      /* nulls */ {1});
+}
+
+TEST_F(VeloxReaderTests, SlidingWindowMapEmpty) {
+  verifySlidingWindowMap(
+      /* expectedNumMaps */ 1,
+      /* keys */ {},
+      /* values */ {},
+      /* offsets */ {0});
+
+  verifySlidingWindowMap(
+      /* expectedNumMaps */ 3,
+      /* keys */ {},
+      /* values */ {},
+      /* offsets */ {0, 0, 0});
+
+  // Nullable cases
+  verifySlidingWindowMap(
+      /* expectedNumMaps */ 3,
+      /* keys */ {},
+      /* values */ {},
+      /* offsets */ {0, 0, 0, 0},
+      /* nulls */ {1});
+}
+
+TEST_F(VeloxReaderTests, SlidingWindowMapMixedEmptyLength) {
+  verifySlidingWindowMap(
+      /* expectedNumMaps */ 10,
+      /* keys */ {1, 2, 2, 1, 1, 2, 4, 4},
+      /* values */ {0.1, 0.2, 0.2, 0.1, 0.1, 0.3, 0.4, 0.4},
+      /* offsets */ {0, 2, 4, 4, 4, 6, 6, 6, 6, 7});
+}
+
 TEST_F(VeloxReaderTests, ArrayWithOffsetsCaching) {
   auto type = velox::ROW({
       {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
@@ -1633,25 +1757,25 @@ TEST_F(VeloxReaderTests, FuzzSimple) {
 }
 
 TEST_F(VeloxReaderTests, FuzzComplex) {
-  auto type = velox::ROW({
-      {"array", velox::ARRAY(velox::REAL())},
-      {"dict_array", velox::ARRAY(velox::REAL())},
-      {"map", velox::MAP(velox::INTEGER(), velox::DOUBLE())},
-      {"row",
-       velox::ROW({
-           {"a", velox::REAL()},
-           {"b", velox::INTEGER()},
-       })},
-      {"nested",
-       velox::ARRAY(velox::ROW({
-           {"a", velox::INTEGER()},
-           {"b", velox::MAP(velox::REAL(), velox::REAL())},
-       }))},
-      {"nested_map_array1",
-       velox::MAP(velox::INTEGER(), velox::ARRAY(velox::REAL()))},
-      {"nested_map_array2",
-       velox::MAP(velox::INTEGER(), velox::ARRAY(velox::INTEGER()))},
-  });
+  auto type = velox::ROW(
+      {{"array", velox::ARRAY(velox::REAL())},
+       {"dict_array", velox::ARRAY(velox::REAL())},
+       {"map", velox::MAP(velox::INTEGER(), velox::DOUBLE())},
+       {"row",
+        velox::ROW({
+            {"a", velox::REAL()},
+            {"b", velox::INTEGER()},
+        })},
+       {"nested",
+        velox::ARRAY(velox::ROW({
+            {"a", velox::INTEGER()},
+            {"b", velox::MAP(velox::REAL(), velox::REAL())},
+        }))},
+       {"nested_map_array1",
+        velox::MAP(velox::INTEGER(), velox::ARRAY(velox::REAL()))},
+       {"nested_map_array2",
+        velox::MAP(velox::INTEGER(), velox::ARRAY(velox::INTEGER()))},
+       {"dict_map", velox::MAP(velox::INTEGER(), velox::INTEGER())}});
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
   uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
                                               : folly::Random::rand32();
@@ -1661,7 +1785,7 @@ TEST_F(VeloxReaderTests, FuzzComplex) {
   writerOptions.dictionaryArrayColumns.insert("nested_map_array1");
   writerOptions.dictionaryArrayColumns.insert("nested_map_array2");
   writerOptions.dictionaryArrayColumns.insert("dict_array");
-
+  writerOptions.deduplicatedMapColumns.insert("dict_map");
   // Small batches creates more edge cases.
   size_t batchSize = 10;
   velox::VectorFuzzer noNulls(

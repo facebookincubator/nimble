@@ -1275,6 +1275,206 @@ class ArrayWithOffsetsFieldReaderFactory final : public FieldReaderFactory {
   std::unique_ptr<FieldReaderFactory> elements_;
 };
 
+class SlidingWindowMapFieldReader final : public FieldReader {
+ public:
+  SlidingWindowMapFieldReader(
+      velox::memory::MemoryPool& pool,
+      velox::TypePtr type,
+      Decoder* offsetDecoder,
+      Decoder* lengthsDecoder,
+      std::unique_ptr<FieldReader> keysReader,
+      std::unique_ptr<FieldReader> valuesReader)
+      : FieldReader(pool, std::move(type), nullptr),
+        offsetDecoder_{offsetDecoder},
+        lengthsDecoder_{lengthsDecoder},
+        keysReader_{std::move(keysReader)},
+        valuesReader_{std::move(valuesReader)} {}
+
+  std::optional<std::pair<uint32_t, uint64_t>> estimatedRowSize() const final {
+    // TODO: Implement estimatedTotalOutputSize for SlidingWindowMapFieldReader.
+    return std::nullopt;
+  }
+
+  void next(
+      uint32_t count,
+      velox::VectorPtr& output,
+      const bits::Bitmap* scatterBitmap) override {
+    auto rowCount = scatterCount(count, scatterBitmap);
+
+    auto dictionaryVector =
+        verifyVectorState<velox::DictionaryVector<velox::ComplexType>>(output);
+
+    // Initialize the output vector
+    if (dictionaryVector) {
+      dictionaryVector->resize(rowCount);
+      dictionaryVector->resetNulls();
+      resetIfNotWritable(output, dictionaryVector->indices());
+      auto child =
+          verifyVectorState<velox::MapVector>(dictionaryVector->valueVector());
+      if (child) {
+        child->resize(rowCount);
+      } else {
+        VectorInitializer<velox::MapVector>::initialize(
+            &pool_, dictionaryVector->valueVector(), type_, rowCount);
+      }
+    } else {
+      velox::VectorPtr child;
+      VectorInitializer<velox::MapVector>::initialize(
+          &pool_, child, type_, rowCount);
+      auto indices = velox::AlignedBuffer::allocate<uint32_t>(rowCount, &pool_);
+
+      // Note: when creating a dictionary vector, it validates the vector (in
+      // debug builds) for correctness. Therefore, we allocate all the buffers
+      // above with the right size, but we "resize" them to zero, before
+      // creating the dictionary vector, to avoid failing this validation.
+      // We will later resize the vector to the correct size.
+      // These resize operations are "no cost" operations, as shrinking a
+      // vector/buffer doesn't free its memory, and resizing to the orginal size
+      // doesn't allocate, as capacity is guaranteed to be enough.
+      child->resize(0);
+      indices->setSize(0);
+
+      output = velox::BaseVector::wrapInDictionary(
+          /* nulls */ nullptr,
+          /* indices */ std::move(indices),
+          /* size */ 0,
+          /* values */ std::move(child));
+      dictionaryVector =
+          output->as<velox::DictionaryVector<velox::ComplexType>>();
+      dictionaryVector->resize(rowCount);
+    }
+
+    // Read the offsets which can be nullable
+    auto indices = dictionaryVector->indices()->asMutable<uint32_t>();
+    void* nullsPtr = nullptr;
+    uint32_t nonNullCount = offsetDecoder_->next(
+        count,
+        indices,
+        [&]() {
+          nullsPtr = paddedNulls(dictionaryVector, rowCount);
+          return nullsPtr;
+        },
+        scatterBitmap);
+    bool hasNulls = nonNullCount != rowCount;
+    // Update the indices to be 0-based
+    if (hasNulls) {
+      NIMBLE_DASSERT(
+          nullsPtr != nullptr,
+          "Data contain nulls but nulls buffer is not initialized.");
+      uint32_t nullCount = 0;
+      for (uint32_t idx = 0; idx < rowCount; ++idx) {
+        if (velox::bits::isBitNull(
+                static_cast<const uint64_t*>(nullsPtr), idx)) {
+          indices[idx] = 0;
+          nullCount++;
+          continue;
+        }
+        indices[idx] = idx - nullCount;
+      }
+      NIMBLE_DASSERT(
+          nullCount + nonNullCount == rowCount, "Null count is not matching.");
+    } else {
+      std::iota(indices, indices + rowCount, 0);
+    }
+
+    // Create the map vector
+    auto map =
+        static_cast<velox::MapVector*>(dictionaryVector->valueVector().get());
+    map->resize(nonNullCount);
+    auto offsets =
+        map->mutableOffsets(nonNullCount)->template asMutable<uint32_t>();
+    auto sizes =
+        map->mutableSizes(nonNullCount)->template asMutable<uint32_t>();
+
+    // Fill in the map vector
+    lengthsDecoder_->next(nonNullCount, sizes);
+    uint32_t childrenRows = 0;
+    for (uint32_t idx = 0; idx < nonNullCount; ++idx) {
+      offsets[idx] = childrenRows;
+      childrenRows += sizes[idx];
+    }
+    // Read the keys and values
+    keysReader_->next(
+        childrenRows,
+        map->mapKeys(),
+        /* scatterBitmap */ nullptr);
+    valuesReader_->next(
+        childrenRows,
+        map->mapValues(),
+        /* scatterBitmap */ nullptr);
+  }
+
+  void skip(uint32_t count) final {
+    uint32_t childrenRows = 0;
+    std::array<uint32_t, kSkipBatchSize> offsets;
+    std::array<char, nullBytes(kSkipBatchSize)> nulls;
+    std::array<uint32_t, kSkipBatchSize> sizes;
+    void* nullsPtr = nulls.data();
+
+    while (count > 0) {
+      auto readSize = std::min(count, kSkipBatchSize);
+      auto nonNullCount = offsetDecoder_->next(
+          readSize,
+          offsets.data(),
+          [&]() { return nullsPtr; },
+          /* scatterBitmap */ nullptr);
+      lengthsDecoder_->next(nonNullCount, sizes.data());
+      childrenRows += std::reduce(sizes.data(), sizes.data() + nonNullCount, 0);
+      count -= readSize;
+    }
+    if (childrenRows > 0) {
+      keysReader_->skip(childrenRows);
+      valuesReader_->skip(childrenRows);
+    }
+  }
+
+  void reset() final {
+    FieldReader::reset();
+    offsetDecoder_->reset();
+    lengthsDecoder_->reset();
+    keysReader_->reset();
+    valuesReader_->reset();
+  }
+
+ private:
+  Decoder* offsetDecoder_;
+  Decoder* lengthsDecoder_;
+  std::unique_ptr<FieldReader> keysReader_;
+  std::unique_ptr<FieldReader> valuesReader_;
+};
+
+class SlidingWindowMapFieldReaderFactory final : public FieldReaderFactory {
+ public:
+  // Here the index is the index of the array lengths.
+  SlidingWindowMapFieldReaderFactory(
+      velox::memory::MemoryPool& pool,
+      velox::TypePtr veloxType,
+      const Type* type,
+      std::unique_ptr<FieldReaderFactory> keys,
+      std::unique_ptr<FieldReaderFactory> values)
+      : FieldReaderFactory{pool, std::move(veloxType), type},
+        keys_{std::move(keys)},
+        values_{std::move(values)} {}
+
+  std::unique_ptr<FieldReader> createReader(
+      const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders)
+      final {
+    return createReaderImpl<SlidingWindowMapFieldReader>(
+        decoders,
+        nimbleType_->asSlidingWindowMap().offsetsDescriptor(),
+        [&]() {
+          return getDecoder(
+              decoders, nimbleType_->asSlidingWindowMap().lengthsDescriptor());
+        },
+        [&]() { return keys_->createReader(decoders); },
+        [&]() { return values_->createReader(decoders); });
+  }
+
+ private:
+  std::unique_ptr<FieldReaderFactory> keys_;
+  std::unique_ptr<FieldReaderFactory> values_;
+};
+
 class MapFieldReader final : public MultiValueFieldReader {
  public:
   MapFieldReader(
@@ -2621,7 +2821,8 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
     }
     case velox::TypeKind::MAP: {
       NIMBLE_CHECK(
-          nimbleType->isMap() || nimbleType->isFlatMap(),
+          nimbleType->isMap() || nimbleType->isFlatMap() ||
+              nimbleType->isSlidingWindowMap(),
           "Provided schema doesn't match file schema.");
       NIMBLE_ASSERT(
           veloxType->size() == 2,
@@ -2655,6 +2856,40 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
                   level + 1)
             : std::make_unique<NullFieldReaderFactory>(pool, valueType->type());
         return std::make_unique<MapFieldReaderFactory>(
+            pool,
+            veloxType->type(),
+            nimbleType.get(),
+            std::move(keys),
+            std::move(values));
+      } else if (nimbleType->isSlidingWindowMap()) {
+        const auto& nimbleMap = nimbleType->asSlidingWindowMap();
+        offsets.push_back(nimbleMap.offsetsDescriptor().offset());
+        offsets.push_back(nimbleMap.lengthsDescriptor().offset());
+        auto& keyType = veloxType->childAt(0);
+        auto keys = isSelected(keyType->id())
+            ? createFieldReaderFactory(
+                  parameters,
+                  pool,
+                  nimbleMap.keys(),
+                  keyType,
+                  offsets,
+                  isSelected,
+                  executor,
+                  level + 1)
+            : std::make_unique<NullFieldReaderFactory>(pool, keyType->type());
+        auto& valueType = veloxType->childAt(1);
+        auto values = isSelected(valueType->id())
+            ? createFieldReaderFactory(
+                  parameters,
+                  pool,
+                  nimbleMap.values(),
+                  valueType,
+                  offsets,
+                  isSelected,
+                  executor,
+                  level + 1)
+            : std::make_unique<NullFieldReaderFactory>(pool, valueType->type());
+        return std::make_unique<SlidingWindowMapFieldReaderFactory>(
             pool,
             veloxType->type(),
             nimbleType.get(),

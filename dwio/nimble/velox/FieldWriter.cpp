@@ -598,6 +598,105 @@ class MapFieldWriter : public MultiValueFieldWriter {
   std::unique_ptr<FieldWriter> values_;
 };
 
+class SlidingWindowMapFieldWriter : public FieldWriter {
+ public:
+  SlidingWindowMapFieldWriter(
+      FieldWriterContext& context,
+      const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
+      : FieldWriter{context, context.schemaBuilder.createSlidingWindowMapTypeBuilder()},
+        offsetsStream_{context.createNullableContentStreamData<uint32_t>(
+            typeBuilder_->asSlidingWindowMap().offsetsDescriptor())},
+        lengthsStream_{context.createContentStreamData<uint32_t>(
+            typeBuilder_->asSlidingWindowMap().lengthsDescriptor())},
+        currentOffset_(0) {
+    NIMBLE_DASSERT(type->size() == 2, "Invalid map type.");
+    keys_ = FieldWriter::create(context, type->childAt(0));
+    values_ = FieldWriter::create(context, type->childAt(1));
+    typeBuilder_->asSlidingWindowMap().setChildren(
+        keys_->typeBuilder(), values_->typeBuilder());
+  }
+
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
+    OrderedRanges childFilteredRanges;
+    auto map = ingestOffsetsAndLengths(vector, ranges, childFilteredRanges);
+    if (childFilteredRanges.size() > 0) {
+      keys_->write(map->mapKeys(), childFilteredRanges);
+      values_->write(map->mapValues(), childFilteredRanges);
+    }
+  }
+
+  void reset() override {
+    offsetsStream_.reset();
+    lengthsStream_.reset();
+    keys_->reset();
+    values_->reset();
+    currentOffset_ = 0;
+  }
+
+  void close() override {
+    keys_->close();
+    values_->close();
+  }
+
+ private:
+  std::unique_ptr<FieldWriter> keys_;
+  std::unique_ptr<FieldWriter> values_;
+  NullableContentStreamData<uint32_t>& offsetsStream_;
+  ContentStreamData<uint32_t>& lengthsStream_;
+  uint32_t currentOffset_; /* Global Offset for the data */
+
+  const velox::MapVector* ingestOffsetsAndLengths(
+      const velox::VectorPtr& vector,
+      const OrderedRanges& ranges,
+      OrderedRanges& filteredRanges) {
+    const auto size = ranges.size();
+    const velox::MapVector* mapVector = vector->as<velox::MapVector>();
+    const velox::vector_size_t* rawOffsets;
+    const velox::vector_size_t* rawLengths;
+    auto& offsetsData = offsetsStream_.mutableData();
+    auto& lengthsData = lengthsStream_.mutableData();
+
+    auto processMapIndex = [&](velox::vector_size_t index) {
+      auto length = rawLengths[index];
+      currentOffset_ += length;
+      offsetsData.push_back(currentOffset_ - length);
+      lengthsData.push_back(length);
+
+      if (length > 0) {
+        filteredRanges.add(rawOffsets[index], length);
+      }
+    };
+
+    if (mapVector) {
+      rawOffsets = mapVector->rawOffsets();
+      rawLengths = mapVector->rawSizes();
+      offsetsStream_.ensureNullsCapacity(mapVector->mayHaveNulls(), size);
+      Flat iterableVector{vector};
+      iterateNonNullIndices<true>(
+          ranges,
+          offsetsStream_.mutableNonNulls(),
+          iterableVector,
+          processMapIndex);
+    } else {
+      auto localDecoded = decode(vector, ranges);
+      auto& decoded = localDecoded.get();
+      mapVector = decoded.base()->template as<velox::MapVector>();
+      NIMBLE_ASSERT(mapVector, "Unexpected vector type");
+      rawOffsets = mapVector->rawOffsets();
+      rawLengths = mapVector->rawSizes();
+      offsetsStream_.ensureNullsCapacity(decoded.mayHaveNulls(), size);
+      Decoded iterableVector{decoded};
+      iterateNonNullIndices<true>(
+          ranges,
+          offsetsStream_.mutableNonNulls(),
+          iterableVector,
+          processMapIndex);
+    }
+    return mapVector;
+  }
+};
+
 class FlatMapValueFieldWriter {
  public:
   FlatMapValueFieldWriter(
@@ -1273,9 +1372,13 @@ std::unique_ptr<FieldWriter> FieldWriter::create(
       break;
     }
     case velox::TypeKind::MAP: {
-      field = context.flatMapNodeIds.contains(type->id())
-          ? createFlatMapFieldWriter(context, type)
-          : std::make_unique<MapFieldWriter>(context, type);
+      if (context.flatMapNodeIds.contains(type->id())) {
+        field = createFlatMapFieldWriter(context, type);
+      } else if (context.dictionaryMapNodeIds.contains(type->id())) {
+        field = std::make_unique<SlidingWindowMapFieldWriter>(context, type);
+      } else {
+        field = std::make_unique<MapFieldWriter>(context, type);
+      }
       break;
     }
     default:
