@@ -62,20 +62,6 @@ std::map<std::string, std::string> loadMetadata(
   return result;
 }
 
-std::shared_ptr<const velox::Type> createFlatType(
-    const std::vector<std::string>& selectedFeatures,
-    const velox::TypePtr& veloxType) {
-  NIMBLE_ASSERT(
-      !selectedFeatures.empty(),
-      "Empty feature selection not allowed for struct encoding.");
-
-  auto& valueType = veloxType->asMap().valueType();
-  return velox::ROW(
-      std::vector<std::string>(selectedFeatures),
-      std::vector<std::shared_ptr<const velox::Type>>(
-          selectedFeatures.size(), valueType));
-}
-
 class NimbleUnit : public velox::dwio::common::LoadUnit {
  public:
   NimbleUnit(
