@@ -163,6 +163,8 @@ void callReadWithVisitor(
     detail::encodingTypeDispatchString(encoding, [&](auto& typedEncoding) {
       typedEncoding.readWithVisitor(visitor, params);
     });
+  } else if constexpr (std::is_same_v<typename V::DataType, velox::int128_t>) {
+    NIMBLE_NOT_SUPPORTED("Int128 is not supported in Nimble");
   } else {
     detail::encodingTypeDispatchNonString(encoding, [&](auto& typedEncoding) {
       typedEncoding.readWithVisitor(visitor, params);

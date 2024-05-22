@@ -126,34 +126,40 @@ void DictionaryEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
 
 namespace detail {
 
-class ExtractDictionaryIndices {
+class DictionaryIndicesHook : public velox::ValueHook {
  public:
   static constexpr bool kSkipNulls = true;
-  using HookType = velox::dwio::common::NoHook;
 
-  ExtractDictionaryIndices(uint32_t* indices, velox::vector_size_t offset)
+  DictionaryIndicesHook(uint32_t* indices, vector_size_t offset)
       : indices_(indices), offset_(offset) {}
 
-  bool acceptsNulls() const {
+  bool acceptsNulls() const final {
     return false;
   }
 
-  void addValue(velox::vector_size_t i, uint32_t value) {
-    indices_[i - offset_] = value;
+  void addValue(vector_size_t i, const void* value) final {
+    indices_[i - offset_] = *reinterpret_cast<const uint32_t*>(value);
   }
 
-  template <typename T>
-  void addNull(velox::vector_size_t /*i*/) {
+  void addValues(
+      const vector_size_t* rows,
+      const void* values,
+      vector_size_t size,
+      uint8_t valueWidth) final {
+    NIMBLE_DASSERT(valueWidth == sizeof(uint32_t), "");
+    auto* indices = reinterpret_cast<const uint32_t*>(values);
+    for (vector_size_t i = 0; i < size; ++i) {
+      indices_[rows[i] - offset_] = indices[i];
+    }
+  }
+
+  void addNull(vector_size_t /*i*/) final {
     NIMBLE_UNREACHABLE(__PRETTY_FUNCTION__);
-  }
-
-  HookType& hook() {
-    return velox::dwio::common::noHook();
   }
 
  private:
   uint32_t* const indices_;
-  const velox::vector_size_t offset_;
+  const vector_size_t offset_;
 };
 
 } // namespace detail
@@ -166,15 +172,17 @@ void DictionaryEncoding<T>::readWithVisitor(
   const auto startRowIndex = visitor.rowIndex();
   buffer_.resize(visitor.numRows() - startRowIndex);
   velox::common::AlwaysTrue indicesFilter;
+  detail::DictionaryIndicesHook indicesHook(buffer_.data(), startRowIndex);
   auto indicesVisitor = DecoderVisitor<
       int32_t,
       velox::common::AlwaysTrue,
-      detail::ExtractDictionaryIndices,
+      velox::dwio::common::ExtractToHook<detail::DictionaryIndicesHook>,
       V::dense>(
       indicesFilter,
       &visitor.reader(),
       velox::RowSet(visitor.rows(), visitor.numRows()),
-      detail::ExtractDictionaryIndices(buffer_.data(), startRowIndex));
+      velox::dwio::common::ExtractToHook<detail::DictionaryIndicesHook>(
+          &indicesHook));
   indicesVisitor.setRowIndex(startRowIndex);
   callReadWithVisitor(*indicesEncoding_, indicesVisitor, params);
   this->template readWithVisitorSlow<false>(visitor, params, [&] {

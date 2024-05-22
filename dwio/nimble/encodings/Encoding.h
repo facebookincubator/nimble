@@ -66,6 +66,8 @@ template <typename T, typename Filter, typename ExtractValues, bool kIsDense>
 using DecoderVisitor =
     velox::dwio::common::ColumnVisitor<T, Filter, ExtractValues, kIsDense>;
 
+using vector_size_t = velox::vector_size_t;
+
 // Extra parameters that need to be persisted/used during a single call of
 // readWithVisitor at column reader level, which might span multiple calls of
 // readWithVisitor (one per chunk) in decoders.
@@ -75,6 +77,10 @@ struct ReadWithVisitorParams {
   // across potential mutliple chunks.
   std::function<uint64_t*()> makeReaderNulls;
 
+  // Initialize `SelectiveColumnReader::returnReaderNulls_' field.  Need to be
+  // called after decoding nulls in `NullableEncoding'.
+  std::function<void()> initReturnReaderNulls;
+
   // Create the result nulls if not already exists.  Similar to
   // `makeReaderNulls', we create one single buffer for all the results nulls
   // across potential multiple chunks during one read.
@@ -82,7 +88,7 @@ struct ReadWithVisitorParams {
 
   // Number of rows scanned so far.  Contains rows scanned in previous chunks
   // during this read call as well.
-  velox::vector_size_t numScanned;
+  vector_size_t numScanned;
 };
 
 class Encoding {
@@ -342,13 +348,15 @@ class BufferedEncoding {
   std::array<T, BufferSize> buffer_;
 };
 
-template <typename Visitor1, typename Visitor2>
-void checkCurrentRowEqual(const Visitor1& v1, const Visitor2& v2) {
-  if (v1.atEnd()) {
-    NIMBLE_DASSERT(v2.atEnd(), "");
+template <typename T, typename PhysicalType>
+T castFromPhysicalType(const PhysicalType& value) {
+  if constexpr (isFloatingPointType<T>()) {
+    if constexpr (sizeof(T) != sizeof(PhysicalType)) {
+      NIMBLE_UNREACHABLE(typeid(PhysicalType).name());
+    }
+    return reinterpret_cast<const T&>(value);
   } else {
-    NIMBLE_DASSERT(!v2.atEnd(), "");
-    NIMBLE_DASSERT(v1.currentRow() == v2.currentRow(), "");
+    return value;
   }
 }
 
@@ -362,10 +370,7 @@ void readWithVisitorSlow(
   constexpr bool kExtractToReader = std::is_same_v<
       typename DecoderVisitor::Extract,
       velox::dwio::common::ExtractToReader>;
-  const uint64_t* nulls = nullptr;
-  if (auto& nullsBuf = visitor.reader().nullsInReadRange()) {
-    nulls = nullsBuf->template as<uint64_t>();
-  }
+  auto* nulls = visitor.reader().rawNullsInReadRange();
   if constexpr (kExtractToReader) {
     params.prepareResultNulls();
   }
@@ -378,30 +383,24 @@ void readWithVisitorSlow(
         numNonNulls -=
             velox::bits::countNulls(nulls, numScanned, visitor.currentRow());
       }
-      skip(numNonNulls);
+      if (numNonNulls > 0) {
+        skip(numNonNulls);
+      }
       numScanned = visitor.currentRow() + 1;
     }
     if (nulls && velox::bits::isBitNull(nulls, visitor.currentRow())) {
       if (!visitor.allowNulls()) {
-        visitor.setRowIndex(visitor.rowIndex() + 1);
+        visitor.addRowIndex(1);
         atEnd = visitor.atEnd();
       } else if (kExtractToReader && visitor.reader().returnReaderNulls()) {
-        visitor.setRowIndex(visitor.rowIndex() + 1);
-        visitor.setNumValues(visitor.reader().numValues() + 1);
+        visitor.addRowIndex(1);
+        visitor.addNumValues(1);
         atEnd = visitor.atEnd();
       } else {
         visitor.processNull(atEnd);
       }
     } else {
-      auto value = decodeOne();
-      if constexpr (isFloatingPointType<T>()) {
-        if constexpr (sizeof(T) != sizeof(value)) {
-          NIMBLE_UNREACHABLE(typeid(decltype(value)).name());
-        }
-        visitor.process(reinterpret_cast<const T&>(value), atEnd);
-      } else {
-        visitor.process(value, atEnd);
-      }
+      visitor.process(castFromPhysicalType<T>(decodeOne()), atEnd);
     }
   }
 }
