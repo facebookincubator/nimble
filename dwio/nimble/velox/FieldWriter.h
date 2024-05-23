@@ -241,7 +241,7 @@ struct FieldWriterContext {
 
   folly::F14FastSet<uint32_t> flatMapNodeIds;
   folly::F14FastSet<uint32_t> dictionaryArrayNodeIds;
-  folly::F14FastSet<uint32_t> dictionaryMapNodeIds;
+  folly::F14FastSet<uint32_t> deduplicatedMapNodeIds;
 
   std::unique_ptr<InputBufferGrowthPolicy> inputBufferGrowthPolicy;
   InputBufferGrowthStats inputBufferGrowthStats;

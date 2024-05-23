@@ -1420,9 +1420,12 @@ std::unique_ptr<FieldWriter> FieldWriter::create(
       break;
     }
     case velox::TypeKind::MAP: {
+      // A map can both be a flat map and a deduplicated map.
+      // Flat map takes precedence over deduplicated map, i.e. the outer map
+      // will be a flat map whereas the child maps will be deduplicated.
       if (context.flatMapNodeIds.contains(type->id())) {
         field = createFlatMapFieldWriter(context, type);
-      } else if (context.dictionaryMapNodeIds.contains(type->id())) {
+      } else if (context.deduplicatedMapNodeIds.contains(type->id())) {
         field = std::make_unique<SlidingWindowMapFieldWriter>(context, type);
       } else {
         field = std::make_unique<MapFieldWriter>(context, type);

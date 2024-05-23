@@ -2494,6 +2494,71 @@ TEST_F(VeloxReaderTests, FlatMapNullValues) {
   testFlatMapNullValues<velox::StringView>();
 }
 
+TEST_F(VeloxReaderTests, SlidingWindowMapNestedInFlatMap) {
+  auto type = velox::ROW({
+      {"nested_map",
+       velox::MAP(
+           velox::INTEGER(), velox::MAP(velox::INTEGER(), velox::REAL()))},
+  });
+
+  auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
+  uint32_t seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto innerMap = vectorMaker.mapVector(
+
+      /*offsets=*/{0, 2, 4, 6, 7},
+      /*keys=*/vectorMaker.flatVector<int32_t>({1, 2, 2, 1, 1, 2, 4, 4}),
+      /*values=*/
+      vectorMaker.flatVector<float>({0.1, 0.2, 0.2, 0.1, 0.1, 0.3, 0.4, 0.4}),
+      /*nulls=*/{});
+
+  auto outerMap = vectorMaker.mapVector(
+      /*offsets=*/{0, 1, 2, 3, 4},
+      /*keys=*/vectorMaker.flatVector<int32_t>({1, 1, 1, 1, 1}),
+      /*values=*/{innerMap},
+      /*null=s*/ {});
+
+  nimble::VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns.insert("nested_map");
+  nimble::VeloxReadParams params;
+  params.readFlatMapFieldAsStruct.insert("nested_map");
+  params.flatMapFeatureSelector.insert({"nested_map", {{"1"}}});
+  writerOptions.deduplicatedMapColumns.insert("nested_map");
+
+  int deduplicatedMapCount = 3;
+  auto iterations = 10;
+  auto batches = 20;
+  std::mt19937 rng{seed};
+  bool checkMemoryLeak = true;
+  /* Check the inner map is a deduplicated map */
+  auto compare = [&](const velox::VectorPtr& vector) {
+    auto structVector =
+        vector->as<velox::RowVector>()->childAt(0)->as<velox::RowVector>();
+    ASSERT_EQ(
+        structVector->childAt(0)->wrappedVector()->size(),
+        deduplicatedMapCount);
+  };
+  for (auto i = 0; i < iterations; ++i) {
+    writeAndVerify(
+        rng,
+        *leafPool_.get(),
+        rowType,
+        [&](auto& /*type*/) {
+          return vectorMaker.rowVector({"nested_map"}, {outerMap});
+        },
+        compareFlatMaps<int32_t>,
+        batches,
+        writerOptions,
+        params,
+        nullptr,
+        compare,
+        false,
+        checkMemoryLeak);
+  }
+}
+
 TEST_F(VeloxReaderTests, FlatMapToStruct) {
   auto floatFeatures = velox::MAP(velox::INTEGER(), velox::REAL());
   auto idListFeatures =
@@ -2658,10 +2723,16 @@ TEST_F(VeloxReaderTests, FlatMapAsMapEncoding) {
       velox::MAP(velox::INTEGER(), velox::ARRAY(velox::BIGINT()));
   auto idScoreListFeatures =
       velox::MAP(velox::INTEGER(), velox::MAP(velox::BIGINT(), velox::REAL()));
+  auto deduplicatedIdScoreListFeatures =
+      velox::MAP(velox::INTEGER(), velox::MAP(velox::BIGINT(), velox::REAL()));
+  auto deduplicatedIdListFeatures =
+      velox::MAP(velox::INTEGER(), velox::ARRAY(velox::BIGINT()));
   auto type = velox::ROW({
       {"float_features", floatFeatures},
       {"id_list_features", idListFeatures},
       {"id_score_list_features", idScoreListFeatures},
+      {"deduplicated_id_score_list_features", deduplicatedIdScoreListFeatures},
+      {"deduplicated_id_list_features", deduplicatedIdListFeatures},
   });
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
   VeloxMapGeneratorConfig generatorConfig{
@@ -2674,7 +2745,11 @@ TEST_F(VeloxReaderTests, FlatMapAsMapEncoding) {
   writerOptions.flatMapColumns.emplace("float_features");
   writerOptions.flatMapColumns.emplace("id_list_features");
   writerOptions.flatMapColumns.emplace("id_score_list_features");
-
+  writerOptions.flatMapColumns.emplace("deduplicated_id_score_list_features");
+  writerOptions.flatMapColumns.emplace("deduplicated_id_list_features");
+  writerOptions.deduplicatedMapColumns.emplace(
+      "deduplicated_id_score_list_features");
+  writerOptions.dictionaryArrayColumns.emplace("deduplicated_id_list_features");
   // Verify the flatmap read without feature selection they are read as
   // MapEncoding
   nimble::VeloxReadParams params;
@@ -2699,6 +2774,10 @@ TEST_F(VeloxReaderTests, FlatMapAsMapEncoding) {
         folly::to<std::string>(i));
     params.flatMapFeatureSelector["id_score_list_features"].features.push_back(
         folly::to<std::string>(i));
+    params.flatMapFeatureSelector["deduplicated_id_score_list_features"]
+        .features.push_back(folly::to<std::string>(i));
+    params.flatMapFeatureSelector["deduplicated_id_list_features"]
+        .features.push_back(folly::to<std::string>(i));
   }
 
   for (auto i = 0; i < iterations; ++i) {
@@ -2724,6 +2803,10 @@ TEST_F(VeloxReaderTests, FlatMapAsMapEncoding) {
             folly::to<std::string>(i));
         params.flatMapFeatureSelector["id_score_list_features"]
             .features.push_back(folly::to<std::string>(i));
+        params.flatMapFeatureSelector["deduplicated_id_score_list_features"]
+            .features.push_back(folly::to<std::string>(i));
+        params.flatMapFeatureSelector["deduplicated_id_list_features"]
+            .features.push_back(folly::to<std::string>(i));
       }
     }
 
@@ -2737,11 +2820,25 @@ TEST_F(VeloxReaderTests, FlatMapAsMapEncoding) {
         params.flatMapFeatureSelector["id_score_list_features"]
             .features.begin(),
         params.flatMapFeatureSelector["id_score_list_features"].features.end()};
+    std::unordered_set<std::string> deduplicatedIdScoreListFeaturesLookp{
+        params.flatMapFeatureSelector["deduplicated_id_score_list_features"]
+            .features.begin(),
+        params.flatMapFeatureSelector["deduplicated_id_score_list_features"]
+            .features.end()};
+    std::unordered_set<std::string> deduplicatedIdListFeaturesLookp{
+        params.flatMapFeatureSelector["deduplicated_id_list_features"]
+            .features.begin(),
+        params.flatMapFeatureSelector["deduplicated_id_list_features"]
+            .features.end()};
     auto isKeyPresent = [&](std::string& key) {
       return floatFeaturesLookup.find(key) != floatFeaturesLookup.end() ||
           idListFeaturesLookup.find(key) != idListFeaturesLookup.end() ||
           idScoreListFeaturesLookup.find(key) !=
-          idScoreListFeaturesLookup.end();
+          idScoreListFeaturesLookup.end() ||
+          deduplicatedIdScoreListFeaturesLookp.find(key) !=
+          deduplicatedIdScoreListFeaturesLookp.end() ||
+          deduplicatedIdListFeaturesLookp.find(key) !=
+          deduplicatedIdListFeaturesLookp.end();
     };
     for (auto i = 0; i < iterations; ++i) {
       writeAndVerify(
@@ -2763,12 +2860,18 @@ TEST_F(VeloxReaderTests, FlatMapAsMapEncoding) {
     std::unordered_set<std::string> floatFeaturesLookup;
     std::unordered_set<std::string> idListFeaturesLookup;
     std::unordered_set<std::string> idScoreListFeaturesLookup;
+    std::unordered_set<std::string> deduplicatedIdScoreListFeaturesLookp;
+    std::unordered_set<std::string> deduplicatedIdListFeaturesLookp;
 
     params.flatMapFeatureSelector["float_features"].mode =
         nimble::SelectionMode::Exclude;
     params.flatMapFeatureSelector["id_list_features"].mode =
         nimble::SelectionMode::Exclude;
     params.flatMapFeatureSelector["id_score_list_features"].mode =
+        nimble::SelectionMode::Exclude;
+    params.flatMapFeatureSelector["deduplicated_id_score_list_features"].mode =
+        nimble::SelectionMode::Exclude;
+    params.flatMapFeatureSelector["deduplicated_id_list_features"].mode =
         nimble::SelectionMode::Exclude;
     for (auto i = 0; i < 10; ++i) {
       std::string iStr = folly::to<std::string>(i);
@@ -2779,10 +2882,16 @@ TEST_F(VeloxReaderTests, FlatMapAsMapEncoding) {
             iStr);
         params.flatMapFeatureSelector["id_score_list_features"]
             .features.push_back(iStr);
+        params.flatMapFeatureSelector["deduplicated_id_score_list_features"]
+            .features.push_back(iStr);
+        params.flatMapFeatureSelector["deduplicated_id_list_features"]
+            .features.push_back(iStr);
       } else {
         floatFeaturesLookup.insert(iStr);
         idListFeaturesLookup.insert(iStr);
         idScoreListFeaturesLookup.insert(iStr);
+        deduplicatedIdScoreListFeaturesLookp.insert(iStr);
+        deduplicatedIdListFeaturesLookp.insert(iStr);
       }
     }
 
@@ -2790,7 +2899,11 @@ TEST_F(VeloxReaderTests, FlatMapAsMapEncoding) {
       return floatFeaturesLookup.find(key) != floatFeaturesLookup.end() ||
           idListFeaturesLookup.find(key) != idListFeaturesLookup.end() ||
           idScoreListFeaturesLookup.find(key) !=
-          idScoreListFeaturesLookup.end();
+          idScoreListFeaturesLookup.end() ||
+          deduplicatedIdScoreListFeaturesLookp.find(key) !=
+          deduplicatedIdScoreListFeaturesLookp.end() ||
+          deduplicatedIdListFeaturesLookp.find(key) !=
+          deduplicatedIdListFeaturesLookp.end();
     };
     for (auto i = 0; i < iterations; ++i) {
       writeAndVerify(

@@ -270,13 +270,13 @@ std::unique_ptr<FieldWriter> createRootField(
   }
 
   if (!context.options.deduplicatedMapColumns.empty()) {
-    context.dictionaryMapNodeIds.clear();
-    context.dictionaryMapNodeIds.reserve(
+    context.deduplicatedMapNodeIds.clear();
+    context.deduplicatedMapNodeIds.reserve(
         context.options.deduplicatedMapColumns.size());
     for (const auto& column : context.options.deduplicatedMapColumns) {
       findNodeIds(
           *type->childByName(column),
-          context.dictionaryMapNodeIds,
+          context.deduplicatedMapNodeIds,
           [](const velox::dwio::common::TypeWithId& type) {
             return type.type()->kind() == velox::TypeKind::MAP;
           });
