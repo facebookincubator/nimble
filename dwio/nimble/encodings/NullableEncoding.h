@@ -240,64 +240,42 @@ uint32_t NullableEncoding<T>::materializeNullable(
   return nonNullCount;
 }
 
-namespace detail {
-
-class ExtractToNullsBuffer {
- public:
-  static constexpr bool kSkipNulls = true;
-  using HookType = velox::dwio::common::NoHook;
-
-  explicit ExtractToNullsBuffer(std::function<uint64_t*()>& makeNulls)
-      : makeNulls_(makeNulls) {}
-
-  bool acceptsNulls() const {
-    return false;
-  }
-
-  void addValue(velox::vector_size_t i, bool value) {
-    NIMBLE_DASSERT(!nulls_ || !velox::bits::isBitNull(nulls_, i), "");
-    if (!value) {
-      if (FOLLY_UNLIKELY(!nulls_)) {
-        nulls_ = makeNulls_();
-      }
-      velox::bits::setNull(nulls_, i);
-    }
-  }
-
-  template <typename T>
-  void addNull(velox::vector_size_t /*i*/) {
-    NIMBLE_UNREACHABLE(__PRETTY_FUNCTION__);
-  }
-
-  HookType& hook() {
-    return velox::dwio::common::noHook();
-  }
-
- private:
-  std::function<uint64_t*()>& makeNulls_;
-  uint64_t* nulls_ = nullptr;
-};
-
-} // namespace detail
-
 template <typename T>
 template <typename V>
 void NullableEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  auto nullsVisitor = DecoderVisitor<
-      bool,
-      velox::common::AlwaysTrue,
-      detail::ExtractToNullsBuffer,
-      true>(
-      velox::dwio::common::alwaysTrue(),
-      &visitor.reader(),
-      visitor.rowAt(visitor.numRows() - 1) + 1,
-      detail::ExtractToNullsBuffer(params.makeReaderNulls));
-  nullsVisitor.setRowIndex(params.numScanned);
-  callReadWithVisitor(*nulls_, nullsVisitor, params);
+  const auto endRow = visitor.rowAt(visitor.numRows() - 1);
+  const auto rowCount = endRow - params.numScanned + 1;
+  if (const uint64_t* incomingNulls = visitor.reader().rawNullsInReadRange()) {
+    auto nwords = velox::bits::nwords(rowCount);
+    if (params.numScanned % 64 == 0) {
+      boolBuffer_.resize(nwords * sizeof(uint64_t));
+    } else {
+      boolBuffer_.resize(2 * nwords * sizeof(uint64_t));
+    }
+    auto* chunkNulls = reinterpret_cast<uint64_t*>(boolBuffer_.data());
+    auto* chunkNullBytes = reinterpret_cast<char*>(boolBuffer_.data());
+    if (params.numScanned % 64 == 0) {
+      incomingNulls += params.numScanned / 64;
+    } else {
+      auto* incomingNullsCopy = chunkNulls + nwords;
+      velox::bits::copyBits(
+          incomingNulls, params.numScanned, incomingNullsCopy, 0, rowCount);
+      incomingNulls = incomingNullsCopy;
+    }
+    auto numInner = velox::bits::countNonNulls(incomingNulls, 0, rowCount);
+    nulls_->materializeBoolsAsBits(numInner, chunkNulls, 0);
+    velox::bits::scatterBits(
+        numInner, rowCount, chunkNullBytes, incomingNulls, chunkNullBytes);
+    auto* nulls = params.makeReaderNulls();
+    velox::bits::copyBits(chunkNulls, 0, nulls, params.numScanned, rowCount);
+  } else {
+    auto* nulls = params.makeReaderNulls();
+    nulls_->materializeBoolsAsBits(rowCount, nulls, params.numScanned);
+  }
+  params.initReturnReaderNulls();
   callReadWithVisitor(*nonNullValues_, visitor, params);
-  detail::checkCurrentRowEqual(nullsVisitor, visitor);
 }
 
 template <typename T>

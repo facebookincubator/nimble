@@ -27,9 +27,6 @@
 
 namespace facebook::nimble {
 
-template <typename F>
-auto encodingTypeDispatch(Encoding& encoding, F&& f);
-
 template <typename DecoderVisitor>
 void callReadWithVisitor(
     Encoding& encoding,
@@ -38,58 +35,32 @@ void callReadWithVisitor(
 
 namespace detail {
 
-template <template <typename D> typename E, typename F>
-auto encodingTypeDispatchNumeric(Encoding& encoding, F f) {
-  switch (encoding.dataType()) {
+inline int dataTypeSize(DataType type) {
+  switch (type) {
     case DataType::Int8:
-      return f(static_cast<E<int8_t>&>(encoding));
     case DataType::Uint8:
-      return f(static_cast<E<uint8_t>&>(encoding));
-    case DataType::Int16:
-      return f(static_cast<E<int16_t>&>(encoding));
-    case DataType::Uint16:
-      return f(static_cast<E<uint16_t>&>(encoding));
-    case DataType::Int32:
-      return f(static_cast<E<int32_t>&>(encoding));
-    case DataType::Uint32:
-      return f(static_cast<E<uint32_t>&>(encoding));
-    case DataType::Int64:
-      return f(static_cast<E<int64_t>&>(encoding));
-    case DataType::Uint64:
-      return f(static_cast<E<uint64_t>&>(encoding));
-    case DataType::Float:
-      return f(static_cast<E<float>&>(encoding));
-    case DataType::Double:
-      return f(static_cast<E<double>&>(encoding));
     case DataType::Bool:
-      return f(static_cast<E<bool>&>(encoding));
-    default:
-      NIMBLE_NOT_SUPPORTED(toString(encoding.dataType()));
-  }
-}
-
-template <template <typename D> typename E, typename F>
-auto encodingTypeDispatchVarint(Encoding& encoding, F f) {
-  switch (encoding.dataType()) {
+      return 1;
+    case DataType::Int16:
+    case DataType::Uint16:
+      return 2;
     case DataType::Int32:
-      return f(static_cast<E<int32_t>&>(encoding));
     case DataType::Uint32:
-      return f(static_cast<E<uint32_t>&>(encoding));
-    case DataType::Int64:
-      return f(static_cast<E<int64_t>&>(encoding));
-    case DataType::Uint64:
-      return f(static_cast<E<uint64_t>&>(encoding));
     case DataType::Float:
-      return f(static_cast<E<float>&>(encoding));
+      return 4;
+    case DataType::Int64:
+    case DataType::Uint64:
     case DataType::Double:
-      return f(static_cast<E<double>&>(encoding));
+      return 8;
     default:
-      NIMBLE_NOT_SUPPORTED(toString(encoding.dataType()));
+      NIMBLE_NOT_SUPPORTED(toString(type));
   }
 }
 
 template <typename F>
 auto encodingTypeDispatchString(Encoding& encoding, F f) {
+  NIMBLE_ASSERT(
+      encoding.dataType() == DataType::String, toString(encoding.dataType()));
   switch (encoding.encodingType()) {
     case EncodingType::Trivial:
       return f(static_cast<TrivialEncoding<std::string_view>&>(encoding));
@@ -109,35 +80,45 @@ auto encodingTypeDispatchString(Encoding& encoding, F f) {
   }
 }
 
-template <typename F>
+template <typename T, typename F>
 auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
+  NIMBLE_ASSERT(
+      dataTypeSize(encoding.dataType()) == sizeof(T),
+      toString(encoding.dataType()));
   switch (encoding.encodingType()) {
     case EncodingType::Trivial:
-      return detail::encodingTypeDispatchNumeric<TrivialEncoding>(
-          encoding, std::forward<F>(f));
+      return f(static_cast<TrivialEncoding<T>&>(encoding));
     case EncodingType::RLE:
-      return detail::encodingTypeDispatchNumeric<RLEEncoding>(
-          encoding, std::forward<F>(f));
+      return f(static_cast<RLEEncoding<T>&>(encoding));
     case EncodingType::Dictionary:
-      return detail::encodingTypeDispatchNumeric<DictionaryEncoding>(
-          encoding, std::forward<F>(f));
+      return f(static_cast<DictionaryEncoding<T>&>(encoding));
     case EncodingType::FixedBitWidth:
-      return detail::encodingTypeDispatchNumeric<FixedBitWidthEncoding>(
-          encoding, std::forward<F>(f));
+      return f(static_cast<FixedBitWidthEncoding<T>&>(encoding));
     case EncodingType::Nullable:
-      return detail::encodingTypeDispatchNumeric<NullableEncoding>(
-          encoding, std::forward<F>(f));
+      return f(static_cast<NullableEncoding<T>&>(encoding));
     case EncodingType::SparseBool:
-      return f(static_cast<SparseBoolEncoding&>(encoding));
+      if constexpr (std::is_same_v<T, bool>) {
+        return f(static_cast<SparseBoolEncoding&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
     case EncodingType::Varint:
-      return detail::encodingTypeDispatchVarint<VarintEncoding>(
-          encoding, std::forward<F>(f));
+      if constexpr (folly::IsOneOf<
+                        T,
+                        int32_t,
+                        uint32_t,
+                        int64_t,
+                        uint64_t,
+                        float,
+                        double>::value) {
+        return f(static_cast<VarintEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
     case EncodingType::Constant:
-      return detail::encodingTypeDispatchNumeric<ConstantEncoding>(
-          encoding, std::forward<F>(f));
+      return f(static_cast<ConstantEncoding<T>&>(encoding));
     case EncodingType::MainlyConstant:
-      return detail::encodingTypeDispatchNumeric<MainlyConstantEncoding>(
-          encoding, std::forward<F>(f));
+      return f(static_cast<MainlyConstantEncoding<T>&>(encoding));
     default:
       NIMBLE_NOT_SUPPORTED(toString(encoding.encodingType()));
   }
@@ -145,28 +126,35 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
 
 } // namespace detail
 
-template <typename F>
-auto encodingTypeDispatch(Encoding& encoding, F&& f) {
-  if (encoding.dataType() == DataType::String) {
-    return detail::encodingTypeDispatchString(encoding, std::forward<F>(f));
-  } else {
-    return detail::encodingTypeDispatchNonString(encoding, std::forward<F>(f));
-  }
-}
-
 template <typename V>
 void callReadWithVisitor(
     Encoding& encoding,
     V& visitor,
     ReadWithVisitorParams& params) {
-  if constexpr (std::is_same_v<typename V::DataType, folly::StringPiece>) {
+  using T = typename V::DataType;
+  if constexpr (std::is_same_v<T, folly::StringPiece>) {
     detail::encodingTypeDispatchString(encoding, [&](auto& typedEncoding) {
       typedEncoding.readWithVisitor(visitor, params);
     });
+  } else if constexpr (std::is_same_v<T, velox::int128_t>) {
+    NIMBLE_NOT_SUPPORTED("Int128 is not supported in Nimble");
+  } else if constexpr (std::is_same_v<T, int8_t>) {
+    if (encoding.dataType() == DataType::Bool) {
+      detail::encodingTypeDispatchNonString<bool>(
+          encoding, [&](auto& typedEncoding) {
+            typedEncoding.readWithVisitor(visitor, params);
+          });
+    } else {
+      detail::encodingTypeDispatchNonString<int8_t>(
+          encoding, [&](auto& typedEncoding) {
+            typedEncoding.readWithVisitor(visitor, params);
+          });
+    }
   } else {
-    detail::encodingTypeDispatchNonString(encoding, [&](auto& typedEncoding) {
-      typedEncoding.readWithVisitor(visitor, params);
-    });
+    detail::encodingTypeDispatchNonString<T>(
+        encoding, [&](auto& typedEncoding) {
+          typedEncoding.readWithVisitor(visitor, params);
+        });
   }
 }
 

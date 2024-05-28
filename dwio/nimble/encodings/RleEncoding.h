@@ -193,7 +193,25 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
         EncodingIdentifiers::RunLength::RunValues, runValues, buffer);
   }
 
+  template <typename DecoderVisitor>
+  void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
+
+  template <bool kScatter, typename Visitor>
+  void bulkScan(
+      Visitor& visitor,
+      vector_size_t currentRow,
+      const vector_size_t* nonNullRows,
+      vector_size_t numNonNulls,
+      const vector_size_t* scatterRows);
+
  private:
+  template <bool kDense>
+  vector_size_t findNumInRun(
+      const vector_size_t* rows,
+      vector_size_t rowIndex,
+      vector_size_t numRows,
+      vector_size_t currentRow) const;
+
   detail::BufferedEncoding<physicalType, 32> values_;
 };
 
@@ -254,6 +272,141 @@ typename RLEEncoding<T>::physicalType RLEEncoding<T>::nextValue() {
 template <typename T>
 void RLEEncoding<T>::resetValues() {
   values_.reset();
+}
+
+template <typename T>
+template <bool kDense>
+vector_size_t RLEEncoding<T>::findNumInRun(
+    const vector_size_t* rows,
+    vector_size_t rowIndex,
+    vector_size_t numRows,
+    vector_size_t currentRow) const {
+  if constexpr (kDense) {
+    return std::min<vector_size_t>(this->copiesRemaining_, numRows - rowIndex);
+  }
+  if (rows[rowIndex] - currentRow >= this->copiesRemaining_) {
+    // Skip this run.
+    return 0;
+  }
+  if (rows[numRows - 1] - currentRow < this->copiesRemaining_) {
+    return numRows - rowIndex;
+  }
+  auto* begin = rows + rowIndex;
+  auto* end = begin +
+      std::min<vector_size_t>(this->copiesRemaining_, numRows - rowIndex);
+  auto endOfRun = currentRow + this->copiesRemaining_;
+  auto* it = std::lower_bound(begin, end, endOfRun);
+  NIMBLE_DASSERT(it > begin, "");
+  return it - begin;
+}
+
+template <typename T>
+template <bool kScatter, typename V>
+void RLEEncoding<T>::bulkScan(
+    V& visitor,
+    vector_size_t currentRow,
+    const vector_size_t* nonNullRows,
+    vector_size_t numNonNulls,
+    const vector_size_t* scatterRows) {
+  using DataType = typename V::DataType;
+  constexpr bool kIsString = std::is_same_v<DataType, folly::StringPiece>;
+  using ValueType = std::conditional_t<kIsString, velox::StringView, DataType>;
+  auto* values = visitor.reader().template mutableValues<ValueType>(
+      visitor.numRows() - visitor.rowIndex());
+  auto* filterHits = V::kHasFilter ? visitor.outputRows(numNonNulls) : nullptr;
+  vector_size_t numValues = 0;
+  vector_size_t numHits = 0;
+  vector_size_t nonNullRowIndex = 0;
+  for (;;) {
+    if (this->copiesRemaining_ == 0) {
+      this->copiesRemaining_ = this->materializedRunLengths_.nextValue();
+      this->currentValue_ = nextValue();
+    }
+    const auto numInRun = findNumInRun<V::dense>(
+        nonNullRows, nonNullRowIndex, numNonNulls, currentRow);
+    if (numInRun > 0) {
+      auto value = detail::castFromPhysicalType<DataType>(this->currentValue_);
+      bool pass = true;
+      if constexpr (V::kHasFilter) {
+        pass = velox::common::applyFilter(visitor.filter(), value);
+        if (pass) {
+          auto* begin =
+              (kScatter ? scatterRows : nonNullRows) + nonNullRowIndex;
+          std::copy(begin, begin + numInRun, filterHits + numHits);
+          numHits += numInRun;
+        }
+      }
+      if (!V::kFilterOnly && pass) {
+        vector_size_t numRows;
+        if constexpr (kScatter && !V::kHasFilter) {
+          if (FOLLY_UNLIKELY(nonNullRowIndex + numInRun == numNonNulls)) {
+            numRows = visitor.numRows() - visitor.rowIndex();
+          } else {
+            numRows =
+                scatterRows[nonNullRowIndex + numInRun] - visitor.rowIndex();
+          }
+          visitor.addRowIndex(numRows);
+        } else {
+          numRows = numInRun;
+        }
+        ValueType* begin;
+        if constexpr (V::kHasHook) {
+          // Use end of the region to avoid overwrite values in previous chunk
+          // with dictionary indices.
+          begin = values - visitor.reader().numValues() +
+              visitor.reader().valuesCapacity() / sizeof(ValueType) - numRows;
+        } else {
+          begin = values + numValues;
+        }
+        if constexpr (kIsString) {
+          auto sv = visitor.reader().copyStringValueIfNeed(value);
+          std::fill(begin, begin + numRows, sv);
+        } else {
+          std::fill(begin, begin + numRows, value);
+        }
+        if constexpr (V::kHasHook) {
+          visitor.hook().addValues(
+              scatterRows + nonNullRowIndex,
+              begin,
+              numInRun,
+              sizeof(ValueType));
+        } else {
+          numValues += numRows;
+        }
+      }
+      auto endRow = nonNullRows[nonNullRowIndex + numInRun - 1];
+      auto consumed = endRow - currentRow + 1;
+      consumed = std::min<vector_size_t>(consumed, this->copiesRemaining_);
+      this->copiesRemaining_ -= consumed;
+      currentRow += consumed;
+      nonNullRowIndex += numInRun;
+    }
+    if (FOLLY_UNLIKELY(nonNullRowIndex == numNonNulls)) {
+      if constexpr (kScatter && !V::kHasFilter) {
+        NIMBLE_DASSERT(visitor.rowIndex() == visitor.numRows(), "");
+      } else {
+        visitor.setRowIndex(visitor.numRows());
+      }
+      visitor.addNumValues(V::kFilterOnly ? numHits : numValues);
+      return;
+    }
+    currentRow += this->copiesRemaining_;
+    this->copiesRemaining_ = 0;
+  }
+}
+
+template <typename T>
+template <typename V>
+void RLEEncoding<T>::readWithVisitor(
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  auto* nulls = visitor.reader().rawNullsInReadRange();
+  if (velox::dwio::common::useFastPath(visitor, nulls)) {
+    detail::readWithVisitorFast(*this, visitor, params, nulls);
+  } else {
+    internal::RLEEncodingBase<T, RLEEncoding<T>>::readWithVisitor(
+        visitor, params);
+  }
 }
 
 } // namespace facebook::nimble
