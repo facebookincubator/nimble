@@ -51,68 +51,49 @@ using EncodingSelectionPolicyFactory =
 #endif
 
 #define COMMA ,
-#define UNIQUE_PTR_FACTORY_EXTRA(data_type, class, extra_types, ...)           \
-  switch (data_type) {                                                         \
-    case ::facebook::nimble::DataType::Uint8: {                                \
-      return std::make_unique<class<                                           \
-          ::facebook::nimble::TypeTraits<uint8_t>::physicalType extra_types>>( \
-          __VA_ARGS__);                                                        \
-    }                                                                          \
-    case ::facebook::nimble::DataType::Int8: {                                 \
-      return std::make_unique<class<                                           \
-          ::facebook::nimble::TypeTraits<int8_t>::physicalType extra_types>>(  \
-          __VA_ARGS__);                                                        \
-    }                                                                          \
-    case ::facebook::nimble::DataType::Uint16: {                               \
-      return std::make_unique<class<::facebook::nimble::TypeTraits<            \
-          uint16_t>::physicalType extra_types>>(__VA_ARGS__);                  \
-    }                                                                          \
-    case ::facebook::nimble::DataType::Int16: {                                \
-      return std::make_unique<class<                                           \
-          ::facebook::nimble::TypeTraits<int16_t>::physicalType extra_types>>( \
-          __VA_ARGS__);                                                        \
-    }                                                                          \
-    case ::facebook::nimble::DataType::Uint32: {                               \
-      return std::make_unique<class<::facebook::nimble::TypeTraits<            \
-          uint32_t>::physicalType extra_types>>(__VA_ARGS__);                  \
-    }                                                                          \
-    case ::facebook::nimble::DataType::Int32: {                                \
-      return std::make_unique<class<                                           \
-          ::facebook::nimble::TypeTraits<int32_t>::physicalType extra_types>>( \
-          __VA_ARGS__);                                                        \
-    }                                                                          \
-    case ::facebook::nimble::DataType::Uint64: {                               \
-      return std::make_unique<class<::facebook::nimble::TypeTraits<            \
-          uint64_t>::physicalType extra_types>>(__VA_ARGS__);                  \
-    }                                                                          \
-    case ::facebook::nimble::DataType::Int64: {                                \
-      return std::make_unique<class<                                           \
-          ::facebook::nimble::TypeTraits<int64_t>::physicalType extra_types>>( \
-          __VA_ARGS__);                                                        \
-    }                                                                          \
-    case ::facebook::nimble::DataType::Float: {                                \
-      return std::make_unique<class<                                           \
-          ::facebook::nimble::TypeTraits<float>::physicalType extra_types>>(   \
-          __VA_ARGS__);                                                        \
-    }                                                                          \
-    case ::facebook::nimble::DataType::Double: {                               \
-      return std::make_unique<class<                                           \
-          ::facebook::nimble::TypeTraits<double>::physicalType extra_types>>(  \
-          __VA_ARGS__);                                                        \
-    }                                                                          \
-    case ::facebook::nimble::DataType::Bool: {                                 \
-      return std::make_unique<class<                                           \
-          ::facebook::nimble::TypeTraits<bool>::physicalType extra_types>>(    \
-          __VA_ARGS__);                                                        \
-    }                                                                          \
-    case ::facebook::nimble::DataType::String: {                               \
-      return std::make_unique<class<::facebook::nimble::TypeTraits<            \
-          std::string_view>::physicalType extra_types>>(__VA_ARGS__);          \
-    }                                                                          \
-    default: {                                                                 \
-      NIMBLE_UNREACHABLE(                                                      \
-          fmt::format("Unsupported data type {}.", toString(data_type)));      \
-    }                                                                          \
+#define UNIQUE_PTR_FACTORY_EXTRA(data_type, class, extra_types, ...)      \
+  switch (data_type) {                                                    \
+    case ::facebook::nimble::DataType::Uint8: {                           \
+      return std::make_unique<class<uint8_t extra_types>>(__VA_ARGS__);   \
+    }                                                                     \
+    case ::facebook::nimble::DataType::Int8: {                            \
+      return std::make_unique<class<int8_t extra_types>>(__VA_ARGS__);    \
+    }                                                                     \
+    case ::facebook::nimble::DataType::Uint16: {                          \
+      return std::make_unique<class<uint16_t extra_types>>(__VA_ARGS__);  \
+    }                                                                     \
+    case ::facebook::nimble::DataType::Int16: {                           \
+      return std::make_unique<class<int16_t extra_types>>(__VA_ARGS__);   \
+    }                                                                     \
+    case ::facebook::nimble::DataType::Uint32: {                          \
+      return std::make_unique<class<uint32_t extra_types>>(__VA_ARGS__);  \
+    }                                                                     \
+    case ::facebook::nimble::DataType::Int32: {                           \
+      return std::make_unique<class<int32_t extra_types>>(__VA_ARGS__);   \
+    }                                                                     \
+    case ::facebook::nimble::DataType::Uint64: {                          \
+      return std::make_unique<class<uint64_t extra_types>>(__VA_ARGS__);  \
+    }                                                                     \
+    case ::facebook::nimble::DataType::Int64: {                           \
+      return std::make_unique<class<int64_t extra_types>>(__VA_ARGS__);   \
+    }                                                                     \
+    case ::facebook::nimble::DataType::Float: {                           \
+      return std::make_unique<class<float extra_types>>(__VA_ARGS__);     \
+    }                                                                     \
+    case ::facebook::nimble::DataType::Double: {                          \
+      return std::make_unique<class<double extra_types>>(__VA_ARGS__);    \
+    }                                                                     \
+    case ::facebook::nimble::DataType::Bool: {                            \
+      return std::make_unique<class<bool extra_types>>(__VA_ARGS__);      \
+    }                                                                     \
+    case ::facebook::nimble::DataType::String: {                          \
+      return std::make_unique<class<std::string_view extra_types>>(       \
+          __VA_ARGS__);                                                   \
+    }                                                                     \
+    default: {                                                            \
+      NIMBLE_UNREACHABLE(                                                 \
+          fmt::format("Unsupported data type {}.", toString(data_type))); \
+    }                                                                     \
   }
 
 #define UNIQUE_PTR_FACTORY(data_type, class, ...) \
