@@ -19,6 +19,8 @@ project(Nimble)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+add_compile_definitions(DISABLE_META_INTERNAL_COMPRESSOR=1)
+
 # Sets new behavior for CMP0135, which controls how timestamps are extracted
 # when using ExternalProject_Add():
 # https://cmake.org/cmake/help/latest/policy/CMP0135.html

@@ -18,7 +18,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/encodings/ZstdCompressor.h"
 
-#ifdef META_INTERNAL_COMPRESSOR
+#ifndef DISABLE_META_INTERNAL_COMPRESSOR
 #include "dwio/nimble/encodings/fb/MetaInternalCompressor.h"
 #endif
 
@@ -31,7 +31,7 @@ struct CompressorRegistry {
     compressors.reserve(2);
     compressors.emplace(
         CompressionType::Zstd, std::make_unique<ZstdCompressor>());
-#ifdef META_INTERNAL_COMPRESSOR
+#ifndef DISABLE_META_INTERNAL_COMPRESSOR
     compressors.emplace(
         CompressionType::MetaInternal,
         std::make_unique<MetaInternalCompressor>());

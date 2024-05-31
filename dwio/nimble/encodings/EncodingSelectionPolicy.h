@@ -198,7 +198,7 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
           : compressionOptions_{std::move(compressionOptions)} {}
 
       CompressionInformation compression() const override {
-#ifdef META_INTERNAL_COMPRESSOR
+#ifndef DISABLE_META_INTERNAL_COMPRESSOR
         CompressionInformation information{
             .compressionType = CompressionType::MetaInternal};
         information.parameters.metaInternal.compressionLevel =
