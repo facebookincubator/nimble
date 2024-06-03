@@ -31,7 +31,7 @@ concurrency:
 jobs:
   ubuntu-release:
     runs-on: ubuntu-latest
-    if: ${{ github.repository == 'facebookexternal/nimble' }}
+    if: ${{ github.repository == 'facebookincubator/nimble' }}
     name: "Ubuntu Build"
     env:
       CCACHE_DIR: "${{ github.workspace }}/.ccache"
