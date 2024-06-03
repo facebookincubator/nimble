@@ -62,6 +62,14 @@ class TrivialEncoding final
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
 
+  template <bool kScatter, typename Visitor>
+  void bulkScan(
+      Visitor& visitor,
+      vector_size_t currentRow,
+      const vector_size_t* nonNullRows,
+      vector_size_t numNonNulls,
+      const vector_size_t* scatterRows);
+
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
@@ -235,12 +243,70 @@ std::string_view TrivialEncoding<T>::encode(
 }
 
 template <typename T>
+template <bool kScatter, typename V>
+void TrivialEncoding<T>::bulkScan(
+    V& visitor,
+    vector_size_t currentRow,
+    const vector_size_t* nonNullRows,
+    vector_size_t numNonNulls,
+    const vector_size_t* scatterRows) {
+  const auto numRows = visitor.numRows() - visitor.rowIndex();
+  T* values = detail::mutableValues<T>(visitor, numRows);
+  const auto offset = static_cast<vector_size_t>(row_) - currentRow;
+  if constexpr (V::dense) {
+    memcpy(values, values_ + nonNullRows[0] + offset, numNonNulls * sizeof(T));
+  } else {
+    for (vector_size_t i = 0; i < numNonNulls; ++i) {
+      values[i] = values_[nonNullRows[i] + offset];
+    }
+  }
+  if constexpr (!V::kHasHook) {
+    values = reinterpret_cast<T*>(visitor.reader().rawValues());
+  }
+  int32_t numValues = visitor.reader().numValues();
+  int32_t* filterHits;
+  if constexpr (V::kHasFilter) {
+    NIMBLE_DASSERT(visitor.reader().numRows() == numValues, "");
+    filterHits = visitor.outputRows(numNonNulls) - numValues;
+  } else {
+    filterHits = nullptr;
+  }
+  velox::dwio::common::
+      processFixedWidthRun<T, V::kFilterOnly, kScatter, V::dense>(
+          velox::RowSet(nonNullRows, numNonNulls),
+          0,
+          numNonNulls,
+          scatterRows,
+          values,
+          filterHits,
+          numValues,
+          visitor.filter(),
+          visitor.hook());
+  row_ += nonNullRows[numNonNulls - 1] - currentRow + 1;
+  if constexpr (!V::kHasHook) {
+    visitor.addNumValues(
+        V::kHasFilter ? numValues - visitor.reader().numValues() : numRows);
+  }
+  visitor.setRowIndex(visitor.numRows());
+}
+
+template <typename T>
 template <typename V>
 void TrivialEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  this->template readWithVisitorSlow<true>(
-      visitor, params, [&] { return values_[row_++]; });
+  auto* nulls = visitor.reader().rawNullsInReadRange();
+  if constexpr (sizeof(T) >= 2) {
+    if (velox::dwio::common::useFastPath(visitor, nulls)) {
+      detail::readWithVisitorFast(*this, visitor, params, nulls);
+      return;
+    }
+  }
+  detail::readWithVisitorSlow(
+      visitor,
+      params,
+      [&](auto toSkip) { skip(toSkip); },
+      [&] { return values_[row_++]; });
 }
 
 template <typename V>
@@ -256,7 +322,7 @@ void TrivialEncoding<std::string_view>::readWithVisitor(
   buffer_.resize(numNonNulls);
   lengths_->materialize(numNonNulls, buffer_.data());
   auto* lengths = buffer_.data();
-  detail::readWithVisitorSlow<true>(
+  detail::readWithVisitorSlow(
       visitor,
       params,
       [&](auto toSkip) {
@@ -277,8 +343,11 @@ template <typename V>
 void TrivialEncoding<bool>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  readWithVisitorSlow<true>(
-      visitor, params, [&] { return bits::getBit(row_++, bitmap_); });
+  detail::readWithVisitorSlow(
+      visitor,
+      params,
+      [&](auto toSkip) { skip(toSkip); },
+      [&] { return bits::getBit(row_++, bitmap_); });
 }
 
 } // namespace facebook::nimble

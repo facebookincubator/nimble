@@ -190,7 +190,7 @@ void DictionaryEncoding<T>::readWithVisitor(
           &indicesHook));
   indicesVisitor.setRowIndex(startRowIndex);
   callReadWithVisitor(*indicesEncoding_, indicesVisitor, params);
-  this->template readWithVisitorSlow<false>(visitor, params, [&] {
+  detail::readWithVisitorSlow(visitor, params, nullptr, [&] {
     auto index = buffer_[visitor.rowIndex() - startRowIndex];
     return alphabet_[index];
   });

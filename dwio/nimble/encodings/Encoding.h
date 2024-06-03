@@ -93,13 +93,20 @@ struct ReadWithVisitorParams {
 
 class Encoding {
  public:
-  Encoding(velox::memory::MemoryPool& memoryPool, std::string_view data)
-      : memoryPool_{memoryPool}, data_{data} {}
+  Encoding(velox::memory::MemoryPool& memoryPool, std::string_view data);
   virtual ~Encoding() = default;
 
-  EncodingType encodingType() const;
-  DataType dataType() const;
-  uint32_t rowCount() const;
+  EncodingType encodingType() const {
+    return encodingType_;
+  }
+
+  DataType dataType() const {
+    return dataType_;
+  }
+
+  uint32_t rowCount() const {
+    return rowCount_;
+  }
 
   static void copyIOBuf(char* pos, const folly::IOBuf& buf);
 
@@ -219,14 +226,11 @@ class Encoding {
       uint32_t rowCount,
       char*& pos);
 
-  template <bool kSkip, typename DecoderVisitor, typename F>
-  void readWithVisitorSlow(
-      DecoderVisitor& visitor,
-      const ReadWithVisitorParams& params,
-      F&& decodeOne);
-
   velox::memory::MemoryPool& memoryPool_;
   const std::string_view data_;
+  const EncodingType encodingType_;
+  const DataType dataType_;
+  const uint32_t rowCount_;
 };
 
 // The TypedEncoding<physicalType> class exposes the same interface as the base
@@ -358,7 +362,7 @@ T castFromPhysicalType(const PhysicalType& value) {
   }
 }
 
-template <bool kSkip, typename DecoderVisitor, typename Skip, typename F>
+template <typename DecoderVisitor, typename Skip, typename F>
 void readWithVisitorSlow(
     DecoderVisitor& visitor,
     const ReadWithVisitorParams& params,
@@ -375,7 +379,7 @@ void readWithVisitorSlow(
   auto numScanned = params.numScanned;
   bool atEnd = false;
   while (!atEnd) {
-    if constexpr (kSkip) {
+    if constexpr (!std::is_null_pointer_v<Skip>) {
       auto numNonNulls = visitor.currentRow() - numScanned;
       if (nulls) {
         numNonNulls -=
@@ -499,18 +503,35 @@ void readWithVisitorFast(
   }
 }
 
-} // namespace detail
+// DataType is the type of DecoderVisitor::DataType.  The corresponding
+// ValueType is the type we store in values buffer of selective column reader.
+template <typename DataType>
+using ValueType = std::conditional_t<
+    std::is_same_v<DataType, folly::StringPiece>,
+    velox::StringView,
+    DataType>;
 
-template <bool kSkip, typename DecoderVisitor, typename F>
-void Encoding::readWithVisitorSlow(
-    DecoderVisitor& visitor,
-    const ReadWithVisitorParams& params,
-    F&& decodeOne) {
-  detail::readWithVisitorSlow<kSkip>(
-      visitor,
-      params,
-      [&](auto toSkip) { skip(toSkip); },
-      std::forward<F>(decodeOne));
+template <typename V, typename DataType>
+ValueType<DataType> dataToValue(const V& visitor, DataType data) {
+  if constexpr (std::is_same_v<DataType, folly::StringPiece>) {
+    return visitor.reader().copyStringValueIfNeed(data);
+  } else {
+    return data;
+  }
 }
+
+template <typename T, typename V>
+T* mutableValues(const V& visitor, vector_size_t size) {
+  T* values = visitor.reader().template mutableValues<T>(size);
+  if constexpr (V::kHasHook) {
+    // Use end of the region to avoid overwrite values in previous chunk
+    // with dictionary indices.
+    values += visitor.reader().valuesCapacity() / sizeof(T) - size -
+        visitor.reader().numValues();
+  }
+  return values;
+}
+
+} // namespace detail
 
 } // namespace facebook::nimble

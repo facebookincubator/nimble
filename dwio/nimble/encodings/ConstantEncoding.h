@@ -112,8 +112,7 @@ template <typename V>
 void ConstantEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  this->template readWithVisitorSlow<false>(
-      visitor, params, [&] { return value_; });
+  detail::readWithVisitorSlow(visitor, params, nullptr, [&] { return value_; });
 }
 
 template <typename T>

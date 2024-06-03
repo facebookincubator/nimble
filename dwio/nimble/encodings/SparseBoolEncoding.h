@@ -84,16 +84,20 @@ template <typename V>
 void SparseBoolEncoding::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  readWithVisitorSlow<true>(visitor, params, [&] {
-    while (nextIndex_ < row_) {
-      nextIndex_ = indices_.nextValue();
-    }
-    if (FOLLY_UNLIKELY(nextIndex_ == row_++)) {
-      nextIndex_ = indices_.nextValue();
-      return sparseValue_;
-    }
-    return !sparseValue_;
-  });
+  detail::readWithVisitorSlow(
+      visitor,
+      params,
+      [&](auto toSkip) { skip(toSkip); },
+      [&] {
+        while (nextIndex_ < row_) {
+          nextIndex_ = indices_.nextValue();
+        }
+        if (FOLLY_UNLIKELY(nextIndex_ == row_++)) {
+          nextIndex_ = indices_.nextValue();
+          return sparseValue_;
+        }
+        return !sparseValue_;
+      });
 }
 
 } // namespace facebook::nimble
