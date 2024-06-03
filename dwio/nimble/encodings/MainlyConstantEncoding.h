@@ -76,6 +76,14 @@ class MainlyConstantEncoding final
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
 
+  template <bool kScatter, typename Visitor>
+  void bulkScan(
+      Visitor& visitor,
+      vector_size_t currentNonNullRow,
+      const vector_size_t* nonNullRows,
+      vector_size_t numNonNulls,
+      const vector_size_t* scatterRows);
+
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
@@ -172,20 +180,158 @@ void MainlyConstantEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
 }
 
 template <typename T>
+template <bool kScatter, typename V>
+void MainlyConstantEncoding<T>::bulkScan(
+    V& visitor,
+    vector_size_t currentNonNullRow,
+    const vector_size_t* nonNullRows,
+    vector_size_t numNonNulls,
+    const vector_size_t* scatterRows) {
+  using DataType = typename V::DataType;
+  using ValueType = detail::ValueType<DataType>;
+  constexpr bool kScatterValues = kScatter && !V::kHasFilter && !V::kHasHook;
+  ValueType* values;
+  const auto commonData = detail::castFromPhysicalType<DataType>(commonValue_);
+  const bool commonPassed =
+      velox::common::applyFilter(visitor.filter(), commonData);
+  if constexpr (!V::kFilterOnly) {
+    auto numRows = visitor.numRows() - visitor.rowIndex();
+    values = detail::mutableValues<ValueType>(visitor, numRows);
+    if (commonPassed) {
+      auto commonValue = detail::dataToValue(visitor, commonData);
+      std::fill(values, values + numRows, commonValue);
+    }
+  }
+  const auto numIsCommon = nonNullRows[numNonNulls - 1] + 1 - currentNonNullRow;
+  isCommonBuffer_.resize(velox::bits::nwords(numIsCommon) * sizeof(uint64_t));
+  auto* isCommon = reinterpret_cast<uint64_t*>(isCommonBuffer_.data());
+  // TODO: Wrap otherValues_ in BufferedEncoding.  This way when isCommon_ is
+  // SparseBoolEncoding or RLE, we can materialize it on demand and do not need
+  // to allocate memory for the indices.
+  isCommon_->materializeBoolsAsBits(numIsCommon, isCommon, 0);
+  auto numOtherValues =
+      numIsCommon - velox::bits::countBits(isCommon, 0, numIsCommon);
+  otherValuesBuffer_.resize(numOtherValues);
+  otherValues_->materialize(numOtherValues, otherValuesBuffer_.data());
+  numOtherValues = 0;
+  auto* filterHits = V::kHasFilter ? visitor.outputRows(numNonNulls) : nullptr;
+  auto* rows = kScatter ? scatterRows : nonNullRows;
+  vector_size_t numValues = 0;
+  vector_size_t numHits = 0;
+  vector_size_t nonNullRowIndex = 0;
+  velox::bits::forEachUnsetBit(isCommon, 0, numIsCommon, [&](vector_size_t i) {
+    i += currentNonNullRow;
+    auto commonBegin = nonNullRowIndex;
+    if constexpr (V::dense) {
+      nonNullRowIndex += i - nonNullRows[nonNullRowIndex];
+    } else {
+      while (nonNullRows[nonNullRowIndex] < i) {
+        ++nonNullRowIndex;
+      }
+    }
+    const auto numCommon = nonNullRowIndex - commonBegin;
+    if (V::kHasFilter && commonPassed && numCommon > 0) {
+      auto* begin = rows + commonBegin;
+      std::copy(begin, begin + numCommon, filterHits + numHits);
+      numHits += numCommon;
+    }
+    if (nonNullRows[nonNullRowIndex] > i) {
+      if constexpr (!V::kFilterOnly) {
+        vector_size_t numRows;
+        if constexpr (kScatterValues) {
+          numRows = scatterRows[nonNullRowIndex] - visitor.rowIndex();
+          visitor.addRowIndex(numRows);
+        } else {
+          numRows = commonPassed * numCommon;
+        }
+        numValues += numRows;
+      }
+      ++numOtherValues;
+      return;
+    }
+    auto otherData = detail::castFromPhysicalType<DataType>(
+        otherValuesBuffer_[numOtherValues++]);
+    bool otherPassed;
+    if constexpr (V::kHasFilter) {
+      otherPassed = velox::common::applyFilter(visitor.filter(), otherData);
+      if (otherPassed) {
+        filterHits[numHits++] = rows[nonNullRowIndex];
+      }
+    } else {
+      otherPassed = true;
+    }
+    if constexpr (!V::kFilterOnly) {
+      auto* begin = values + numValues;
+      vector_size_t numRows;
+      if constexpr (kScatterValues) {
+        begin[scatterRows[nonNullRowIndex] - visitor.rowIndex()] =
+            detail::dataToValue(visitor, otherData);
+        auto end = nonNullRowIndex + 1;
+        if (FOLLY_UNLIKELY(end == numNonNulls)) {
+          numRows = visitor.numRows() - visitor.rowIndex();
+        } else {
+          numRows = scatterRows[end] - visitor.rowIndex();
+        }
+        visitor.addRowIndex(numRows);
+      } else {
+        numRows = commonPassed * numCommon;
+        if (otherPassed) {
+          begin[numRows++] = detail::dataToValue(visitor, otherData);
+        }
+      }
+      numValues += numRows;
+    }
+    ++nonNullRowIndex;
+  });
+  auto numCommon = numNonNulls - nonNullRowIndex;
+  if (commonPassed && numCommon > 0) {
+    if constexpr (V::kHasFilter) {
+      auto* begin = rows + nonNullRowIndex;
+      std::copy(begin, begin + numCommon, filterHits + numHits);
+      numHits += numCommon;
+    }
+    if constexpr (!V::kFilterOnly) {
+      if constexpr (kScatterValues) {
+        numValues += visitor.numRows() - visitor.rowIndex();
+      } else {
+        numValues += numCommon;
+      }
+    }
+  }
+  visitor.setRowIndex(visitor.numRows());
+  if constexpr (V::kHasHook) {
+    NIMBLE_DASSERT(numValues == numNonNulls, "");
+    visitor.hook().addValues(
+        scatterRows, values, numNonNulls, sizeof(ValueType));
+  } else {
+    visitor.addNumValues(V::kFilterOnly ? numHits : numValues);
+  }
+}
+
+template <typename T>
 template <typename V>
 void MainlyConstantEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  this->template readWithVisitorSlow<true>(visitor, params, [&] {
-    bool isCommon;
-    isCommon_->materialize(1, &isCommon);
-    if (isCommon) {
-      return commonValue_;
-    }
-    physicalType otherValue;
-    otherValues_->materialize(1, &otherValue);
-    return otherValue;
-  });
+  auto* nulls = visitor.reader().rawNullsInReadRange();
+  if (velox::dwio::common::useFastPath(visitor, nulls)) {
+    detail::readWithVisitorFast(*this, visitor, params, nulls);
+    return;
+  }
+  detail::readWithVisitorSlow(
+      visitor,
+      params,
+      [&](auto toSkip) { skip(toSkip); },
+      [&] {
+        bool isCommon;
+        isCommon_->materialize(1, &isCommon);
+        if (isCommon) {
+          return commonValue_;
+        }
+        physicalType otherValue;
+        otherValues_->materialize(1, &otherValue);
+        return otherValue;
+      });
 }
 
 namespace internal {} // namespace internal

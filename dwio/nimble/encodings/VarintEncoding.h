@@ -129,16 +129,20 @@ template <typename V>
 void VarintEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  this->template readWithVisitorSlow<true>(visitor, params, [&] {
-    physicalType value;
-    if constexpr (isFourByteIntegralType<physicalType>()) {
-      value = varint::readVarint32(&pos_);
-    } else {
-      static_assert(sizeof(T) == 8);
-      value = varint::readVarint64(&pos_);
-    }
-    return baseline_ + value;
-  });
+  detail::readWithVisitorSlow(
+      visitor,
+      params,
+      [&](auto toSkip) { skip(toSkip); },
+      [&] {
+        physicalType value;
+        if constexpr (isFourByteIntegralType<physicalType>()) {
+          value = varint::readVarint32(&pos_);
+        } else {
+          static_assert(sizeof(T) == 8);
+          value = varint::readVarint64(&pos_);
+        }
+        return baseline_ + value;
+      });
 }
 
 template <typename T>

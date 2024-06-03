@@ -20,17 +20,13 @@
 
 namespace facebook::nimble {
 
-EncodingType Encoding::encodingType() const {
-  return static_cast<EncodingType>(data_[kEncodingTypeOffset]);
-}
-
-DataType Encoding::dataType() const {
-  return static_cast<DataType>(data_[kDataTypeOffset]);
-}
-
-uint32_t Encoding::rowCount() const {
-  return *reinterpret_cast<const uint32_t*>(data_.data() + kRowCountOffset);
-}
+Encoding::Encoding(velox::memory::MemoryPool& memoryPool, std::string_view data)
+    : memoryPool_{memoryPool},
+      data_{data},
+      encodingType_{data_[kEncodingTypeOffset]},
+      dataType_{static_cast<DataType>(data_[kDataTypeOffset])},
+      rowCount_{
+          *reinterpret_cast<const uint32_t*>(data_.data() + kRowCountOffset)} {}
 
 /* static */ void Encoding::copyIOBuf(char* pos, const folly::IOBuf& buf) {
   [[maybe_unused]] size_t length = buf.computeChainDataLength();
