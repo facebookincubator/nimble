@@ -4588,12 +4588,12 @@ TEST_F(VeloxReaderTests, EstimatedRowSizeComplex) {
           .keyType = type->kind(),
           .maxNumKVPerRow = numFeatures,
           .variantNumKV = false,
+          .seed = 1387939242,
           .hasNulls = hasNulls,
           // Use inline size for better control size estimate by utilizing
           // BaseVector::retainedSize()
           .stringLength = velox::StringView::kInlineSize,
           .stringVariableLength = false,
-          .seed = 1387939242,
       };
       VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
       auto vector = generator.generateBatch(rowCount);

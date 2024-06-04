@@ -67,7 +67,7 @@ main dependencies or compile them locally. In order to compile it, one can
 simply:
 
 ```shell
-$ git clone git@github.com:facebookexternal/nimble.git
+$ git clone git@github.com:facebookincubator/nimble.git
 $ cd nimble
 $ make
 ```
