@@ -214,30 +214,30 @@ TEST_F(VectorTests, BoolCopyCtr) {
 }
 
 TEST_F(VectorTests, MemoryCleanup) {
-  EXPECT_EQ(0, pool_->currentBytes());
+  EXPECT_EQ(0, pool_->usedBytes());
   {
     nimble::Vector<int32_t> v(pool_.get());
-    EXPECT_EQ(0, pool_->currentBytes());
+    EXPECT_EQ(0, pool_->usedBytes());
     v.resize(1000, 10);
-    EXPECT_NE(0, pool_->currentBytes());
+    EXPECT_NE(0, pool_->usedBytes());
   }
-  EXPECT_EQ(0, pool_->currentBytes());
+  EXPECT_EQ(0, pool_->usedBytes());
   {
     nimble::Vector<int32_t> v(pool_.get());
-    EXPECT_EQ(0, pool_->currentBytes());
+    EXPECT_EQ(0, pool_->usedBytes());
     v.resize(1000, 10);
-    EXPECT_NE(0, pool_->currentBytes());
+    EXPECT_NE(0, pool_->usedBytes());
 
     auto vCopy(v);
   }
-  EXPECT_EQ(0, pool_->currentBytes());
+  EXPECT_EQ(0, pool_->usedBytes());
   {
     nimble::Vector<int32_t> v(pool_.get());
-    EXPECT_EQ(0, pool_->currentBytes());
+    EXPECT_EQ(0, pool_->usedBytes());
     v.resize(1000, 10);
-    EXPECT_NE(0, pool_->currentBytes());
+    EXPECT_NE(0, pool_->usedBytes());
 
     auto vCopy(std::move(v));
   }
-  EXPECT_EQ(0, pool_->currentBytes());
+  EXPECT_EQ(0, pool_->usedBytes());
 }

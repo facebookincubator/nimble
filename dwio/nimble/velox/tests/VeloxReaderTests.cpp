@@ -671,10 +671,10 @@ class VeloxReaderTests : public ::testing::Test {
       }
 
       // validate memory usage
-      if (readerPool->currentBytes() > prevMemory) {
+      if (readerPool->usedBytes() > prevMemory) {
         numIncrements++;
       }
-      prevMemory = readerPool->currentBytes();
+      prevMemory = readerPool->usedBytes();
     }
     ASSERT_FALSE(reader.next(1, result));
     if (checkMemoryLeak) {

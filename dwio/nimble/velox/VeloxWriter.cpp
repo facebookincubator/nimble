@@ -804,7 +804,7 @@ bool VeloxWriter::tryWriteStripe(bool force) {
         .rawStripeSize = context_->memoryUsed,
         .stripeSize = context_->stripeSize,
         .bufferSize =
-            static_cast<uint64_t>(context_->bufferMemoryPool->currentBytes()),
+            static_cast<uint64_t>(context_->bufferMemoryPool->usedBytes()),
     });
   };
 
