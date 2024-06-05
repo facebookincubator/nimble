@@ -9,8 +9,6 @@ bool DeduplicationUtils::CompareMapsAtIndex(
     velox::vector_size_t leftIdx,
     const velox::MapVector& rightMap,
     velox::vector_size_t rightIdx) {
-  bool match = true;
-
   // Compare with Null is not defined, return false
   if (leftMap.isNullAt(leftIdx) || rightMap.isNullAt(rightIdx)) {
     return false;
@@ -36,7 +34,7 @@ bool DeduplicationUtils::CompareMapsAtIndex(
       return false;
     }
   }
-  return match;
+  return true;
 }
 
 } // namespace facebook::nimble
