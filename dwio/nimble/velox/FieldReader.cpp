@@ -2273,6 +2273,10 @@ class StructFlatMapFieldReader : public FlatMapFieldReaderBase<T, hasNull> {
     }
 
     for (const auto& node : this->keyNodes_) {
+      if (node == nullptr) {
+        // This could happen when selected feature does not exist.
+        continue;
+      }
       auto keyNodeSize = node->valueReader()->estimatedRowSize();
       if (!keyNodeSize.has_value()) {
         return std::nullopt;
@@ -2425,8 +2429,15 @@ class MergedFlatMapFieldReader final
       // Adding memory for velox::BaseVector::nulls_
       totalBytes += rowCount / 8;
     } else {
-      NIMBLE_CHECK(!this->keyNodes_.empty(), "keyNodes_ should not be empty.");
-      rowCount = this->keyNodes_.back()->inMapDecoder()->encoding()->rowCount();
+      if (this->keyNodes_.empty()) {
+        // This happens when selected feature does not exist in the flatmap. As
+        // we cannot acquire row count in this case, nullopt will be returned to
+        // indicate unsupported.
+        return std::nullopt;
+      }
+      const auto& keyNode = this->keyNodes_.back();
+      VELOX_CHECK_NOT_NULL(keyNode, "keyNode should not be null");
+      rowCount = keyNode->inMapDecoder()->encoding()->rowCount();
     }
 
     // Adding memory for velox::ArrayVectorBase::offsets_ and

@@ -4835,3 +4835,146 @@ TEST_F(VeloxReaderTests, EstimatedRowSizeMix) {
       /* maxErrorRateFixed= */ kMaxErrorRate,
       /* maxErrorRateString= */ kMaxErrorRateLoose);
 }
+
+TEST_F(VeloxReaderTests, ReadNonExistingFlatMapFeature) {
+  auto testFlatMap = [&](uint32_t rowCount,
+                         uint32_t numFeatures,
+                         bool readFlatMapFieldAsStruct,
+                         bool hasNulls) {
+    velox::TypePtr type = velox::BIGINT();
+    std::stringstream dbgStr;
+    dbgStr << "Testing "
+           << (readFlatMapFieldAsStruct ? "FlatMapAsStruct" : "MergedFlatMap")
+           << " with " << type->toString() << " numRows " << rowCount
+           << " numFeatures " << numFeatures << " hasNulls "
+           << (hasNulls ? "true" : "false");
+    auto dbgGuard = folly::makeGuard([&] { LOG(INFO) << dbgStr.str(); });
+    VeloxMapGeneratorConfig generatorConfig{
+        .featureTypes = velox::ROW({{"flat_map_col", velox::MAP(type, type)}}),
+        .keyType = type->kind(),
+        .maxNumKVPerRow = numFeatures,
+        .variantNumKV = false,
+        .seed = 1387939242,
+        .hasNulls = hasNulls,
+        // Use inline size for better control size estimate by utilizing
+        // BaseVector::retainedSize()
+        .stringLength = velox::StringView::kInlineSize,
+        .stringVariableLength = false,
+    };
+    VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
+    auto vector = generator.generateBatch(rowCount);
+
+    nimble::VeloxWriterOptions writerOptions;
+    writerOptions.flatMapColumns.insert("flat_map_col");
+
+    // TODO: Remove the customized policy after estimation is supported for
+    // all encoding types.
+    writerOptions.encodingSelectionPolicyFactory =
+        [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{{
+             {nimble::EncodingType::Constant, 1.0},
+             {nimble::EncodingType::Trivial, 0.7},
+             {nimble::EncodingType::FixedBitWidth, 0.9},
+             {nimble::EncodingType::MainlyConstant, 1000.0},
+             {nimble::EncodingType::SparseBool, 1.0},
+             {nimble::EncodingType::Dictionary, 1000.0},
+             {nimble::EncodingType::RLE, 1000.0},
+             {nimble::EncodingType::Varint, 1000.0},
+         }}](nimble::DataType dataType)
+        -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
+      return encodingFactory.createPolicy(dataType);
+    };
+    auto file =
+        nimble::test::createNimbleFile(*rootPool_, vector, writerOptions);
+
+    nimble::VeloxReadParams readParams;
+    if (readFlatMapFieldAsStruct) {
+      readParams.readFlatMapFieldAsStruct.insert("flat_map_col");
+    }
+    // Insert non-existing feature id.
+    readParams.flatMapFeatureSelector["flat_map_col"].features.push_back(
+        folly::to<std::string>(-1));
+
+    velox::InMemoryReadFile readFile(file);
+    nimble::VeloxReader reader(*leafPool_, &readFile, nullptr, readParams);
+    velox::VectorPtr result;
+    ASSERT_EQ(
+        nimble::VeloxReader::kConservativeEstimatedRowSize,
+        reader.estimatedRowSize());
+    const uint64_t numReadRows = rowCount / 2;
+    reader.next(numReadRows, result);
+    if (readFlatMapFieldAsStruct) {
+      ASSERT_EQ(
+          result->as<velox::RowVector>()
+              ->childAt(0)
+              ->as<velox::RowVector>()
+              ->childAt(0)
+              ->getNullCount()
+              .value(),
+          numReadRows);
+    } else {
+      ASSERT_EQ(
+          result->as<velox::RowVector>()
+              ->childAt(0)
+              ->as<velox::MapVector>()
+              ->mapKeys()
+              ->size(),
+          0);
+      ASSERT_EQ(
+          result->as<velox::RowVector>()
+              ->childAt(0)
+              ->as<velox::MapVector>()
+              ->mapValues()
+              ->size(),
+          0);
+    }
+    reader.estimatedRowSize();
+    reader.next(numReadRows, result);
+    if (readFlatMapFieldAsStruct) {
+      ASSERT_EQ(
+          result->as<velox::RowVector>()
+              ->childAt(0)
+              ->as<velox::RowVector>()
+              ->childAt(0)
+              ->getNullCount()
+              .value(),
+          numReadRows);
+    } else {
+      ASSERT_EQ(
+          result->as<velox::RowVector>()
+              ->childAt(0)
+              ->as<velox::MapVector>()
+              ->mapKeys()
+              ->size(),
+          0);
+      ASSERT_EQ(
+          result->as<velox::RowVector>()
+              ->childAt(0)
+              ->as<velox::MapVector>()
+              ->mapValues()
+              ->size(),
+          0);
+    }
+    dbgGuard.dismiss();
+  };
+
+  testFlatMap(
+      /* rowCount= */ 50,
+      /* numFeatures= */ 10,
+      /* readFlatMapFieldAsStruct= */ false,
+      /* hasNulls= */ false);
+  testFlatMap(
+      /* rowCount= */ 50,
+      /* numFeatures= */ 10,
+      /* readFlatMapFieldAsStruct= */ true,
+      /* hasNulls= */ false);
+  testFlatMap(
+      /* rowCount= */ 50,
+      /* numFeatures= */ 10,
+      /* readFlatMapFieldAsStruct= */ false,
+      /* hasNulls= */ true);
+  testFlatMap(
+      /* rowCount= */ 50,
+      /* numFeatures= */ 10,
+      /* readFlatMapFieldAsStruct= */ true,
+      /* hasNulls= */ true);
+}
