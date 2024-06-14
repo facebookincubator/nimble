@@ -65,6 +65,11 @@ struct GroupingKeyCompare {
   }
 };
 
+struct EncodingHistogramValue {
+  size_t count;
+  size_t bytes;
+};
+
 class TableFormatter {
  public:
   TableFormatter(
@@ -415,7 +420,8 @@ void NimbleDumpLib::emitHistogram(
     bool noHeader,
     std::optional<uint32_t> stripeId) {
   TabletReader tabletReader{*pool_, file_.get()};
-  std::map<GroupingKey, size_t, GroupingKeyCompare> encodingHistogram;
+  std::map<GroupingKey, EncodingHistogramValue, GroupingKeyCompare>
+      encodingHistogram;
   const std::unordered_map<std::string, CompressionType> compressionMap{
       {toString(CompressionType::Uncompressed), CompressionType::Uncompressed},
       {toString(CompressionType::Zstd), CompressionType::Zstd},
@@ -445,7 +451,15 @@ void NimbleDumpLib::emitHistogram(
                   key.compressinType =
                       compressionMap.at(compression->second.value);
                 }
-                ++encodingHistogram[key];
+                auto& value = encodingHistogram[key];
+                ++value.count;
+
+                const auto& encodedSize =
+                    properties.find(EncodingPropertyType::EncodedSize);
+                if (encodedSize != properties.end()) {
+                  value.bytes += folly::to<uint32_t>(encodedSize->second.value);
+                }
+
                 return !(topLevel && level == 1);
               });
         }
@@ -456,7 +470,8 @@ void NimbleDumpLib::emitHistogram(
       {{"Encoding Type", 17},
        {"Data Type", 13},
        {"Compression", 15},
-       {"Count", 15}},
+       {"Instance Count", 15},
+       {"Storage Bytes", 15}},
       noHeader);
 
   for (auto& [key, value] : encodingHistogram) {
@@ -464,7 +479,8 @@ void NimbleDumpLib::emitHistogram(
         toString(key.encodingType),
         toString(key.dataType),
         key.compressinType ? toString(*key.compressinType) : "",
-        folly::to<std::string>(value),
+        folly::to<std::string>(value.count),
+        folly::to<std::string>(value.bytes),
     });
   }
 }
