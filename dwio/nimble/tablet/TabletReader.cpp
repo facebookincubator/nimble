@@ -33,16 +33,6 @@
 
 namespace facebook::nimble {
 
-DEFINE_bool(
-    nimble_disable_coalesce,
-    false,
-    "Disable read coalescing in Nimble reader.");
-
-DEFINE_uint64(
-    nimble_coalesce_max_distance,
-    1024 * 1024 * 1.25,
-    "Maximum read coalescing distance in Nimble reader. And gap smaller than this value will be coalesced.");
-
 // Here's the layout of the tablet:
 //
 // stripe 1 streams
@@ -59,6 +49,7 @@ DEFINE_uint64(
 // 2 bytes major version + 2 bytes minor version +
 // 4 bytes magic number.
 namespace {
+
 template <typename T>
 const T* asFlatBuffersRoot(std::string_view content) {
   return flatbuffers::GetRoot<T>(content.data());
