@@ -307,12 +307,14 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
     NIMBLE_NOT_SUPPORTED("Not used by Nimble");
   }
 
-  void preadv(
+  uint64_t preadv(
       folly::Range<const velox::common::Region*> regions,
       folly::Range<folly::IOBuf*> iobufs) const override {
     VELOX_CHECK_EQ(regions.size(), iobufs.size());
+    uint64_t length = 0;
     for (size_t i = 0; i < regions.size(); ++i) {
       const auto& region = regions[i];
+      length += region.length;
       auto& output = iobufs[i];
       if (shouldProduceChainedBuffers_) {
         chunks_.wlock()->push_back({region.offset, region.length});
@@ -332,6 +334,8 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
         output.append(region.length);
       }
     }
+
+    return length;
   }
 
   uint64_t size() const final {
