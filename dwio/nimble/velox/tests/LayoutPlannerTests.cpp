@@ -16,7 +16,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "dwio/nimble/velox/FlatMapLayoutPlanner.h"
+#include "dwio/nimble/velox/LayoutPlanner.h"
 #include "dwio/nimble/velox/tests/SchemaUtils.h"
 #include "folly/Random.h"
 
@@ -108,8 +108,7 @@ std::vector<std::tuple<uint32_t, std::string>> getNamedTypes(
 
 void testStreamLayout(
     std::mt19937& rng,
-    nimble::FlatMapLayoutPlanner& planner,
-    nimble::SchemaBuilder& builder,
+    nimble::DefaultLayoutPlanner& planner,
     std::vector<nimble::Stream>&& streams,
     std::vector<std::string>&& expected) {
   std::random_shuffle(streams.begin(), streams.end());
@@ -151,7 +150,7 @@ void testStreamLayout(
   }
 }
 
-TEST(FlatMapLayoutPlannerTests, ReorderFlatMap) {
+TEST(DefaultLayoutPlannerTests, ReorderFlatMap) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng(seed);
@@ -188,9 +187,9 @@ TEST(FlatMapLayoutPlannerTests, ReorderFlatMap) {
 
   auto namedTypes = getNamedTypes(*builder.getRoot());
 
-  nimble::FlatMapLayoutPlanner planner{
+  nimble::DefaultLayoutPlanner planner{
       [&]() { return builder.getRoot(); },
-      {{1, {3, 42, 9, 2, 21}}, {5, {3, 2, 42, 21}}}};
+      {{{1, {3, 42, 9, 2, 21}}, {5, {3, 2, 42, 21}}}}};
 
   std::vector<nimble::Stream> streams;
   streams = planner.getLayout(std::move(streams));
@@ -244,11 +243,10 @@ TEST(FlatMapLayoutPlannerTests, ReorderFlatMap) {
       "r.c6(5).f.7(3).a.s",
   };
 
-  testStreamLayout(
-      rng, planner, builder, std::move(streams), std::move(expected));
+  testStreamLayout(rng, planner, std::move(streams), std::move(expected));
 }
 
-TEST(FlatMapLayoutPlannerTests, ReorderFlatMapDynamicFeatures) {
+TEST(DefaultLayoutPlannerTests, ReorderFlatMapDynamicFeatures) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng(seed);
@@ -272,8 +270,8 @@ TEST(FlatMapLayoutPlannerTests, ReorderFlatMapDynamicFeatures) {
 
   auto namedTypes = getNamedTypes(*builder.getRoot());
 
-  nimble::FlatMapLayoutPlanner planner{
-      [&]() { return builder.getRoot(); }, {{1, {3, 42, 9, 2, 21}}}};
+  nimble::DefaultLayoutPlanner planner{
+      [&]() { return builder.getRoot(); }, {{{1, {3, 42, 9, 2, 21}}}}};
 
   std::vector<nimble::Stream> streams;
   streams.reserve(namedTypes.size());
@@ -301,8 +299,7 @@ TEST(FlatMapLayoutPlannerTests, ReorderFlatMapDynamicFeatures) {
       "r.c3(2).a.s",
   };
 
-  testStreamLayout(
-      rng, planner, builder, std::move(streams), std::move(expected));
+  testStreamLayout(rng, planner, std::move(streams), std::move(expected));
 
   fm.addChild("21");
   fm.addChild("3");
@@ -342,11 +339,62 @@ TEST(FlatMapLayoutPlannerTests, ReorderFlatMapDynamicFeatures) {
       "r.c3(2).a.s",
   };
 
-  testStreamLayout(
-      rng, planner, builder, std::move(streams), std::move(expected));
+  testStreamLayout(rng, planner, std::move(streams), std::move(expected));
 }
 
-TEST(FlatMapLayoutPlannerTests, IncompatibleOrdinals) {
+TEST(DefaultLayoutPlannerTests, NoFeatureReordering) {
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+
+  nimble::SchemaBuilder builder;
+
+  nimble::test::FlatMapChildAdder fm;
+
+  SCHEMA(
+      builder,
+      ROW({
+          {"c1", TINYINT()},
+          {"c2", FLATMAP(Int8, TINYINT(), fm)},
+          {"c3", ARRAY(TINYINT())},
+      }));
+
+  fm.addChild("2");
+  fm.addChild("5");
+  fm.addChild("7");
+
+  auto namedTypes = getNamedTypes(*builder.getRoot());
+
+  nimble::DefaultLayoutPlanner planner{
+      [&]() { return builder.getRoot(); }, std::nullopt};
+
+  std::vector<nimble::Stream> streams;
+  streams.reserve(namedTypes.size());
+  for (auto i = 0; i < namedTypes.size(); ++i) {
+    streams.push_back(nimble::Stream{
+        std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
+  }
+
+  std::vector<std::string> expected{
+      // Row should always be first
+      "r",
+      // Streams in the schema order
+      "r.c1(0).s",
+      "r.c2(1).f",
+      "r.c2(1).f.2(0).im",
+      "r.c2(1).f.2(0).s",
+      "r.c2(1).f.5(1).im",
+      "r.c2(1).f.5(1).s",
+      "r.c2(1).f.7(2).im",
+      "r.c2(1).f.7(2).s",
+      "r.c3(2).a",
+      "r.c3(2).a.s",
+  };
+
+  testStreamLayout(rng, planner, std::move(streams), std::move(expected));
+}
+
+TEST(DefaultLayoutPlannerTests, IncompatibleOrdinals) {
   nimble::SchemaBuilder builder;
 
   nimble::test::FlatMapChildAdder fm1;
@@ -371,9 +419,9 @@ TEST(FlatMapLayoutPlannerTests, IncompatibleOrdinals) {
   fm2.addChild("2");
   fm2.addChild("5");
 
-  nimble::FlatMapLayoutPlanner planner{
+  nimble::DefaultLayoutPlanner planner{
       [&]() { return builder.getRoot(); },
-      {{1, {3, 42, 9, 2, 21}}, {2, {3, 2, 42, 21}}}};
+      {{{1, {3, 42, 9, 2, 21}}, {2, {3, 2, 42, 21}}}}};
   try {
     planner.getLayout({});
     FAIL() << "Factory should have failed.";
@@ -383,7 +431,7 @@ TEST(FlatMapLayoutPlannerTests, IncompatibleOrdinals) {
   }
 }
 
-TEST(FlatMapLayoutPlannerTests, OrdinalOutOfRange) {
+TEST(DefaultLayoutPlannerTests, OrdinalOutOfRange) {
   nimble::SchemaBuilder builder;
 
   nimble::test::FlatMapChildAdder fm1;
@@ -408,9 +456,9 @@ TEST(FlatMapLayoutPlannerTests, OrdinalOutOfRange) {
   fm2.addChild("2");
   fm2.addChild("5");
 
-  nimble::FlatMapLayoutPlanner planner{
+  nimble::DefaultLayoutPlanner planner{
       [&]() { return builder.getRoot(); },
-      {{6, {3, 42, 9, 2, 21}}, {3, {3, 2, 42, 21}}}};
+      {{{6, {3, 42, 9, 2, 21}}, {3, {3, 2, 42, 21}}}}};
   try {
     planner.getLayout({});
     FAIL() << "Factory should have failed.";
@@ -420,20 +468,19 @@ TEST(FlatMapLayoutPlannerTests, OrdinalOutOfRange) {
   }
 }
 
-TEST(FlatMapLayoutPlannerTests, IncompatibleSchema) {
+TEST(DefaultLayoutPlannerTests, IncompatibleSchema) {
   nimble::SchemaBuilder builder;
 
   SCHEMA(builder, MAP(TINYINT(), STRING()));
 
-  nimble::FlatMapLayoutPlanner planner{
-      [&]() { return builder.getRoot(); }, {{3, {3, 2, 42, 21}}}};
+  nimble::DefaultLayoutPlanner planner{
+      [&]() { return builder.getRoot(); }, {{{3, {3, 2, 42, 21}}}}};
   try {
     planner.getLayout({});
     FAIL() << "Factory should have failed.";
   } catch (const nimble::NimbleInternalError& e) {
     EXPECT_THAT(
         e.what(),
-        testing::HasSubstr(
-            "Flat map layout planner requires row as the schema root"));
+        testing::HasSubstr("Layout planner requires row as the schema root"));
   }
 }

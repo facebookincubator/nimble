@@ -20,11 +20,12 @@
 
 namespace facebook::nimble {
 
-class FlatMapLayoutPlanner : public LayoutPlanner {
+class DefaultLayoutPlanner : public LayoutPlanner {
  public:
-  FlatMapLayoutPlanner(
+  DefaultLayoutPlanner(
       std::function<std::shared_ptr<const TypeBuilder>()> typeResolver,
-      std::vector<std::tuple<size_t, std::vector<int64_t>>>
+      const std::optional<
+          std::vector<std::tuple<size_t, std::vector<int64_t>>>>&
           flatMapFeatureOrder);
 
   virtual std::vector<Stream> getLayout(std::vector<Stream>&& streams) override;
