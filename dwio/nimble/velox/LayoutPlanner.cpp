@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/velox/FlatMapLayoutPlanner.h"
+#include "dwio/nimble/velox/LayoutPlanner.h"
 #include <cstdint>
 
 namespace facebook::nimble {
@@ -78,20 +78,24 @@ void appendAllNestedStreams(
 
 } // namespace
 
-FlatMapLayoutPlanner::FlatMapLayoutPlanner(
+DefaultLayoutPlanner::DefaultLayoutPlanner(
     std::function<std::shared_ptr<const TypeBuilder>()> typeResolver,
-    std::vector<std::tuple<size_t, std::vector<int64_t>>> flatMapFeatureOrder)
+    const std::optional<std::vector<std::tuple<size_t, std::vector<int64_t>>>>&
+        flatMapFeatureOrder)
     : typeResolver_{std::move(typeResolver)},
-      flatMapFeatureOrder_{std::move(flatMapFeatureOrder)} {
+      flatMapFeatureOrder_{
+          flatMapFeatureOrder.has_value()
+              ? std::move(flatMapFeatureOrder.value())
+              : std::vector<std::tuple<size_t, std::vector<int64_t>>>{}} {
   NIMBLE_ASSERT(typeResolver_ != nullptr, "typeResolver is not supplied");
 }
 
-std::vector<Stream> FlatMapLayoutPlanner::getLayout(
+std::vector<Stream> DefaultLayoutPlanner::getLayout(
     std::vector<Stream>&& streams) {
   auto type = typeResolver_();
   NIMBLE_ASSERT(
       type->kind() == Kind::Row,
-      "Flat map layout planner requires row as the schema root.");
+      "Layout planner requires row as the schema root.");
   auto& root = type->asRow();
 
   // Layout logic:
@@ -99,7 +103,7 @@ std::vector<Stream> FlatMapLayoutPlanner::getLayout(
   // 2. Later, all flat maps included in config are layed out.
   //    For each map, we layout all the features included in the config for
   //    that map, in the order they appeared in the config. For each feature, we
-  //    first add it's in-map stream and then all the value streams for that
+  //    first add its in-map stream and then all the value streams for that
   //    feature (if the value is a complex type, we add all the nested streams
   //    for this complex type together).
   // 3. We then layout all the other "leftover" streams, in "schema order". This
@@ -139,8 +143,8 @@ std::vector<Stream> FlatMapLayoutPlanner::getLayout(
       flatMapNamedOrdinals.insert({flatMap.nameAt(i), i});
     }
 
-    // For every ordered feature, check if we have streams for it and it, along
-    // with all its nested streams to the ordered stream list.
+    // Add feature's inMap stream along with all its nested streams to the
+    // ordered stream list.
     for (const auto& feature : std::get<1>(flatMapFeatures)) {
       auto it = flatMapNamedOrdinals.find(folly::to<std::string>(feature));
       if (it == flatMapNamedOrdinals.end()) {
@@ -155,13 +159,13 @@ std::vector<Stream> FlatMapLayoutPlanner::getLayout(
   }
 
   // This vector is going to hold all the streams, ordered  based on schema
-  // order. This will include streams that already appear in
+  // order. This will include streams that already appear in the
   // 'orderedFlatMapOffsets'. Later, while laying out the final stream oder,
   // we'll de-dup these streams.
   std::vector<offset_size> orderedAllOffsets;
   appendAllNestedStreams(root, orderedAllOffsets);
 
-  // Build a lookup table from type builders to their streams
+  // Build a lookup table from type builders to their streams.
   std::unordered_map<uint32_t, Stream*> offsetsToStreams;
   offsetsToStreams.reserve(streams.size());
   std::transform(
@@ -185,7 +189,7 @@ std::vector<Stream> FlatMapLayoutPlanner::getLayout(
   // try and find matching streams for each type builder and append them to the
   // final ordered stream list.
 
-  // First add the root row's null stream
+  // First add the root's null stream
   tryAppendStream(root.nullsDescriptor().offset());
 
   // Then, add all ordered flat maps
@@ -193,7 +197,7 @@ std::vector<Stream> FlatMapLayoutPlanner::getLayout(
     tryAppendStream(offset);
   }
 
-  // Then add all "leftover" streams, in schema order.
+  // Then add all remaining streams in the schema order.
   // 'tryAppendStream' will de-dup streams that were already added in previous
   // steps.
   for (auto offset : orderedAllOffsets) {

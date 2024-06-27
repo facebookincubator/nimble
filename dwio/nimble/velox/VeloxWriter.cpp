@@ -28,8 +28,8 @@
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/FieldWriter.h"
-#include "dwio/nimble/velox/FlatMapLayoutPlanner.h"
 #include "dwio/nimble/velox/FlushPolicy.h"
+#include "dwio/nimble/velox/LayoutPlanner.h"
 #include "dwio/nimble/velox/MetadataGenerated.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
@@ -467,11 +467,9 @@ VeloxWriter::VeloxWriter(
       writer_{
           *encodingMemoryPool_,
           file_.get(),
-          {.layoutPlanner = context_->options.featureReordering.has_value()
-               ? std::make_unique<FlatMapLayoutPlanner>(
-                     [&sb = context_->schemaBuilder]() { return sb.getRoot(); },
-                     context_->options.featureReordering.value())
-               : nullptr}},
+          {.layoutPlanner = std::make_unique<DefaultLayoutPlanner>(
+               [&sb = context_->schemaBuilder]() { return sb.getRoot(); },
+               context_->options.featureReordering)}},
       root_{createRootField(*context_, schema_)},
       spillConfig_{options.spillConfig} {
   NIMBLE_CHECK(file_, "File is null");

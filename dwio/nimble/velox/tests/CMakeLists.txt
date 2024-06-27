@@ -20,7 +20,7 @@ add_executable(
   nimble_velox_tests
   BufferGrowthPolicyTest.cpp
   EncodingLayoutTreeTests.cpp
-  FlatMapLayoutPlannerTests.cpp
+  LayoutPlannerTests.cpp
   OrderedRangesTests.cpp
   SchemaTests.cpp
   TypeTests.cpp
@@ -35,7 +35,7 @@ target_link_libraries(
   nimble_velox_reader
   nimble_velox_writer
   nimble_velox_field_writer
-  nimble_velox_flatmap_layout_planner
+  nimble_velox_layout_planner
   nimble_common_file_writer
   nimble_common
   nimble_encodings

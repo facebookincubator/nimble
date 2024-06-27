@@ -32,9 +32,9 @@ target_link_libraries(
   nimble_velox_field_reader nimble_velox_schema_reader nimble_common
   Folly::folly absl::flat_hash_map protobuf::libprotobuf)
 
-add_library(nimble_velox_flatmap_layout_planner FlatMapLayoutPlanner.cpp)
-target_link_libraries(nimble_velox_flatmap_layout_planner
-                      nimble_velox_schema_reader velox_file)
+add_library(nimble_velox_layout_planner LayoutPlanner.cpp)
+target_link_libraries(nimble_velox_layout_planner nimble_velox_schema_reader
+                      velox_file)
 
 add_library(nimble_velox_field_writer BufferGrowthPolicy.cpp
                                       DeduplicationUtils.cpp FieldWriter.cpp)
