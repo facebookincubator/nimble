@@ -471,8 +471,9 @@ VeloxWriter::VeloxWriter(
                [&sb = context_->schemaBuilder]() { return sb.getRoot(); },
                context_->options.featureReordering)}},
       root_{createRootField(*context_, schema_)},
-      spillConfig_{options.spillConfig} {
+      spillConfig_{context_->options.spillConfig} {
   NIMBLE_CHECK(file_, "File is null");
+
   if (context_->options.encodingLayoutTree.has_value()) {
     context_->flatmapFieldAddedEventHandler =
         [&](const TypeBuilder& flatmap,
