@@ -128,6 +128,11 @@ struct VeloxWriterOptions {
   std::shared_ptr<folly::Executor> encodingExecutor;
 
   bool enableChunking = false;
+
+  // We may choose to calculate a key order agnostic checksum for certain
+  // column types, like FlatMaps for instance. This indicator tells the writer
+  // when a sorted checksum is expected.
+  bool sortMapKeys = false;
 };
 
 } // namespace facebook::nimble
