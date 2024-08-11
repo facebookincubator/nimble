@@ -20,6 +20,10 @@ class DeduplicationUtilsTests : public testing::Test {
     leafPool_ = rootPool_->addLeafChild("default_leaf");
   }
 
+  void TearDown() override {
+    rootPool_->unregisterArbitration();
+  }
+
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
 };

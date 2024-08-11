@@ -49,6 +49,10 @@ class VeloxWriterTests : public testing::Test {
     leafPool_ = rootPool_->addLeafChild("default_leaf");
   }
 
+  void TearDown() override {
+    rootPool_->unregisterArbitration();
+  }
+
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
 };
@@ -315,6 +319,9 @@ class MockReclaimer : public velox::memory::MemoryReclaimer {
 TEST_F(VeloxWriterTests, MemoryReclaimPath) {
   auto rootPool = velox::memory::memoryManager()->addRootPool(
       "root", 4L << 20, velox::memory::MemoryReclaimer::create());
+  SCOPE_EXIT {
+    rootPool->unregisterArbitration();
+  };
   auto writerPool = rootPool->addAggregateChild(
       "writer", velox::memory::MemoryReclaimer::create());
 
