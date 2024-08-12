@@ -88,6 +88,9 @@ struct VeloxWriterOptions {
   // ExactGrowthPolicy, as defined here: dwio/nimble/velox/BufferGrowthPolicy.h)
   bool lowMemoryMode = false;
 
+  // If present, metadata sections above this threshold size will be compressed.
+  std::optional<uint32_t> metadataCompressionThreshold;
+
   // When flushing data streams into chunks, streams with raw data size smaller
   // than this threshold will not be flushed.
   // Note: this threshold is ignored when it is time to flush a stripe.
