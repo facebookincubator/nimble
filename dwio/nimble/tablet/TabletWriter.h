@@ -33,10 +33,13 @@ class LayoutPlanner {
   virtual ~LayoutPlanner() = default;
 };
 
+constexpr uint32_t kMetadataFlushThreshold = 8 * 1024 * 1024; // 8MB
+constexpr uint32_t kMetadataCompressionThreshold = 4 * 1024 * 1024; // 4MB
+
 struct TabletWriterOptions {
   std::unique_ptr<LayoutPlanner> layoutPlanner{nullptr};
-  uint32_t metadataFlushThreshold{8 * 1024 * 1024}; // 8Mb
-  uint32_t metadataCompressionThreshold{4 * 1024 * 1024}; // 4Mb
+  uint32_t metadataFlushThreshold{kMetadataFlushThreshold};
+  uint32_t metadataCompressionThreshold{kMetadataCompressionThreshold};
   ChecksumType checksumType{ChecksumType::XXH3_64};
 };
 

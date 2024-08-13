@@ -469,7 +469,10 @@ VeloxWriter::VeloxWriter(
           file_.get(),
           {.layoutPlanner = std::make_unique<DefaultLayoutPlanner>(
                [&sb = context_->schemaBuilder]() { return sb.getRoot(); },
-               context_->options.featureReordering)}},
+               context_->options.featureReordering),
+           .metadataCompressionThreshold =
+               context_->options.metadataCompressionThreshold.value_or(
+                   kMetadataCompressionThreshold)}},
       root_{createRootField(*context_, schema_)},
       spillConfig_{context_->options.spillConfig} {
   NIMBLE_CHECK(file_, "File is null");
