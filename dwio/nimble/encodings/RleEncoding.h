@@ -377,8 +377,7 @@ void RLEEncoding<T>::bulkScan(
   }
   if constexpr (V::kHasHook) {
     NIMBLE_DASSERT(numValues == numNonNulls, "");
-    visitor.hook().addValues(
-        scatterRows, values, numNonNulls, sizeof(ValueType));
+    visitor.hook().addValues(scatterRows, values, numNonNulls);
   } else {
     visitor.addNumValues(V::kFilterOnly ? numHits : numValues);
   }

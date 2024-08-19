@@ -137,19 +137,16 @@ class DictionaryIndicesHook : public velox::ValueHook {
     return false;
   }
 
-  void addValue(vector_size_t i, const void* value) final {
-    indices_[i - offset_] = *reinterpret_cast<const uint32_t*>(value);
+  void addValue(vector_size_t i, int64_t value) final {
+    indices_[i - offset_] = value;
   }
 
   void addValues(
       const vector_size_t* rows,
-      const void* values,
-      vector_size_t size,
-      uint8_t valueWidth) final {
-    NIMBLE_DASSERT(valueWidth == sizeof(uint32_t), "");
-    auto* indices = reinterpret_cast<const uint32_t*>(values);
+      const int32_t* values,
+      vector_size_t size) final {
     for (vector_size_t i = 0; i < size; ++i) {
-      indices_[rows[i] - offset_] = indices[i];
+      indices_[rows[i] - offset_] = values[i];
     }
   }
 
