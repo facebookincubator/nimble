@@ -197,9 +197,9 @@ VeloxReader::VeloxReader(
                    : std::dynamic_pointer_cast<const velox::RowType>(
                          convertToVeloxType(*schema_))},
       barrier_{
-          params.decodingExecutor
+          parameters_.decodingExecutor
               ? std::make_unique<velox::dwio::common::ExecutorBarrier>(
-                    params.decodingExecutor)
+                    parameters_.decodingExecutor)
               : nullptr},
       logger_{
           parameters_.metricsLogger ? parameters_.metricsLogger
