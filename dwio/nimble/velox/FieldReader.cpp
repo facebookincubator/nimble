@@ -1846,22 +1846,24 @@ class RowFieldReader final : public FieldReader {
       }
     }
 
-    bits::Bitmap childrenBitmap{childrenBits, rowCount};
-    auto bitmapPtr = childrenBits ? &childrenBitmap : nullptr;
-
     if (executor_) {
       for (uint32_t i = 0; i < childrenReaders_.size(); ++i) {
         auto& reader = childrenReaders_[i];
         if (reader) {
           executor_->add([selectedNonNullCount,
-                          bitmapPtr,
+                          childrenBits,
+                          rowCount,
                           &reader,
                           &child = vector->childAt(i)]() {
+            bits::Bitmap childrenBitmap{childrenBits, rowCount};
+            auto bitmapPtr = childrenBits ? &childrenBitmap : nullptr;
             reader->next(selectedNonNullCount, child, bitmapPtr);
           });
         }
       }
     } else {
+      bits::Bitmap childrenBitmap{childrenBits, rowCount};
+      auto bitmapPtr = childrenBits ? &childrenBitmap : nullptr;
       for (uint32_t i = 0; i < childrenReaders_.size(); ++i) {
         auto& reader = childrenReaders_[i];
         if (reader) {
