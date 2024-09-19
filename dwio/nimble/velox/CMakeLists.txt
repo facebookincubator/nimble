@@ -71,6 +71,19 @@ target_include_directories(nimble_velox_metadata_fb
                            INTERFACE ${FLATBUFFERS_INCLUDE_DIR})
 add_dependencies(nimble_velox_metadata_fb nimble_velox_metadata_schema_fb)
 
+build_flatbuffers(
+  "${CMAKE_CURRENT_SOURCE_DIR}/Stats.fbs"
+  ""
+  nimble_velox_stats_schema_fb
+  ""
+  "${CMAKE_CURRENT_BINARY_DIR}"
+  ""
+  "")
+add_library(nimble_velox_stats_fb INTERFACE)
+target_include_directories(nimble_velox_stats_fb
+                           INTERFACE ${FLATBUFFERS_INCLUDE_DIR})
+add_dependencies(nimble_velox_stats_fb nimble_velox_stats_schema_fb)
+
 add_library(nimble_velox_schema_serialization SchemaSerialization.cpp)
 target_link_libraries(
   nimble_velox_schema_serialization nimble_velox_schema_reader
@@ -98,5 +111,6 @@ target_link_libraries(
   nimble_common
   nimble_tablet_writer
   nimble_velox_metadata_fb
+  nimble_velox_stats_fb
   velox_dwio_common
   Folly::folly)
