@@ -16,7 +16,6 @@
 #pragma once
 
 #include "dwio/nimble/encodings/ConstantEncoding.h"
-#include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
@@ -235,5 +234,12 @@ class Encoder {
         buffer.getMemoryPool(),
         encodeNullable(buffer, values, nulls, compressionType));
   }
+};
+
+class TestUtils {
+ public:
+  static uint64_t getRawDataSize(
+      velox::memory::MemoryPool& memoryPool,
+      std::string_view encodingStr);
 };
 } // namespace facebook::nimble::test

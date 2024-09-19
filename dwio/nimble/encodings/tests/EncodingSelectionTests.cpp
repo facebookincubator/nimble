@@ -21,6 +21,7 @@
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
+#include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/tools/EncodingUtilities.h"
 
 using namespace ::facebook;
@@ -111,6 +112,12 @@ void test(std::span<const T> values, std::vector<EncodingDetails> expected) {
 
   auto serialized =
       nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
+
+  // test getRawDataSize
+  auto size =
+      facebook::nimble::test::TestUtils::getRawDataSize(*pool, serialized);
+  auto expectedSize = values.size_bytes();
+  ASSERT_EQ(size, expectedSize);
 
   LOG(INFO) << "Final size: " << serialized.size();
 
@@ -554,6 +561,12 @@ TEST(EncodingSelectionBoolTests, SelectTrivial) {
     auto serialized =
         nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
 
+    // test getRawDataSize
+    auto size =
+        facebook::nimble::test::TestUtils::getRawDataSize(*pool, serialized);
+    auto expectedSize = values.size() * sizeof(T);
+    ASSERT_EQ(size, expectedSize);
+
     LOG(INFO) << "Final size: " << serialized.size();
 
     verifyEncodingTree(
@@ -599,6 +612,12 @@ TEST(EncodingSelectionBoolTests, SelectRunLength) {
   auto serialized =
       nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
 
+  // test getRawDataSize
+  auto size =
+      facebook::nimble::test::TestUtils::getRawDataSize(*pool, serialized);
+  auto expectedSize = values.size() * sizeof(T);
+  ASSERT_EQ(size, expectedSize);
+
   LOG(INFO) << "Final size: " << serialized.size();
 
   verifyEncodingTree(
@@ -635,6 +654,12 @@ TEST(EncodingSelectionStringTests, SelectConst) {
     auto serialized =
         nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
 
+    // test getRawDataSize
+    auto size =
+        facebook::nimble::test::TestUtils::getRawDataSize(*pool, serialized);
+    auto expectedSize = value.size() * values.size();
+    ASSERT_EQ(size, expectedSize);
+
     LOG(INFO) << "Final size: " << serialized.size();
 
     verifyEncodingTree(
@@ -659,10 +684,14 @@ TEST(EncodingSelectionStringTests, SelectMainlyConst) {
            std::string(5000, '\0'),
        }) {
     std::vector<T> values;
-    values.resize(1000);
+    auto expectedSize = 0;
+
+    auto resize = 1000;
+    values.resize(resize);
     for (auto i = 0; i < values.size(); ++i) {
       values[i] = value;
     }
+    expectedSize += resize * value.size();
 
     std::vector<std::string> uncommonValues;
     for (auto i = 0; i < values.size() / 20; ++i) {
@@ -670,12 +699,19 @@ TEST(EncodingSelectionStringTests, SelectMainlyConst) {
     }
 
     for (auto i = 0; i < uncommonValues.size(); ++i) {
-      values[i * 20] = uncommonValues[i];
+      std::string_view val = uncommonValues[i];
+      values[i * 20] = val;
+      expectedSize += val.size() - value.size();
     }
 
     auto policy = getRootManualSelectionPolicy<T>();
     auto serialized =
         nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
+
+    // test getRawDataSize
+    auto size =
+        facebook::nimble::test::TestUtils::getRawDataSize(*pool, serialized);
+    ASSERT_EQ(size, expectedSize);
 
     LOG(INFO) << "Final size: " << serialized.size();
 
@@ -730,13 +766,20 @@ TEST(EncodingSelectionStringTests, SelectTrivial) {
   }
 
   std::vector<T> values;
+  auto expectedSize = 0;
   values.resize(cache.size());
   for (auto i = 0; i < cache.size(); ++i) {
     values[i] = cache[i];
+    expectedSize += cache[i].size();
   }
 
   auto serialized =
       nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
+
+  // test getRawDataSize
+  auto size =
+      facebook::nimble::test::TestUtils::getRawDataSize(*pool, serialized);
+  ASSERT_EQ(size, expectedSize);
 
   LOG(INFO) << "Final size: " << serialized.size();
 
@@ -769,13 +812,21 @@ TEST(EncodingSelectionStringTests, SelectDictionary) {
   auto policy = getRootManualSelectionPolicy<T>();
 
   std::vector<T> values;
+  auto expectedSize = 0;
   values.resize(10000);
   for (auto i = 0; i < values.size(); ++i) {
-    values[i] = uniqueValues[folly::Random::rand32(rng) % uniqueValues.size()];
+    T val = uniqueValues[folly::Random::rand32(rng) % uniqueValues.size()];
+    values[i] = val;
+    expectedSize += val.size();
   }
 
   auto serialized =
       nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
+
+  // test getRawDataSize
+  auto size =
+      facebook::nimble::test::TestUtils::getRawDataSize(*pool, serialized);
+  ASSERT_EQ(size, expectedSize);
 
   LOG(INFO) << "Final size: " << serialized.size();
 
@@ -821,12 +872,15 @@ TEST(EncodingSelectionStringTests, SelectRunLength) {
   }
 
   std::vector<T> values;
+  auto expectedSize = 0;
   values.reserve(valueCount);
   auto index = 0;
   for (const auto length : runLengths) {
     for (auto i = 0; i < length; ++i) {
-      values.emplace_back(
-          index % 2 == 0 ? "abcdefghijklmnopqrstuvwxyz" : "1234567890");
+      std::string_view val =
+          ((index % 2 == 0) ? "abcdefghijklmnopqrstuvwxyz" : "1234567890");
+      values.emplace_back(val);
+      expectedSize += val.size();
     }
     ++index;
   }
@@ -834,6 +888,11 @@ TEST(EncodingSelectionStringTests, SelectRunLength) {
   auto policy = getRootManualSelectionPolicy<T>();
   auto serialized =
       nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
+
+  // test getRawDataSize
+  auto size =
+      facebook::nimble::test::TestUtils::getRawDataSize(*pool, serialized);
+  ASSERT_EQ(size, expectedSize);
 
   LOG(INFO) << "Final size: " << serialized.size();
 
@@ -878,5 +937,12 @@ TEST(EncodingSelectionTests, TestNullable) {
 
   auto serialized = nimble::EncodingFactory::encodeNullable<T>(
       std::move(policy), data, nulls, buffer);
+
+  // test getRawDataSize
+  auto size =
+      facebook::nimble::test::TestUtils::getRawDataSize(*pool, serialized);
+  auto expectedSize = 15 + 6; // 15 bytes for string data, 6 bytes for nulls
+  ASSERT_EQ(size, expectedSize);
+
   LOG(INFO) << "Final size: " << serialized.size();
 }
