@@ -28,9 +28,11 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingLayout.h"
+#include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tools/EncodingUtilities.h"
 #include "dwio/nimble/tools/NimbleDumpLib.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
+#include "dwio/nimble/velox/StatsGenerated.h"
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "folly/cli/NestedCommandLineApp.h"
 
@@ -220,7 +222,10 @@ NimbleDumpLib::NimbleDumpLib(std::ostream& ostream, const std::string& file)
       ostream_{ostream} {}
 
 void NimbleDumpLib::emitInfo() {
-  auto tablet = std::make_shared<TabletReader>(*pool_, file_.get());
+  std::vector<std::string> preloadedOptionalSections = {
+      std::string(kStatsSection)};
+  auto tablet = std::make_shared<TabletReader>(
+      *pool_, file_.get(), preloadedOptionalSections);
   ostream_ << CYAN << "Nimble File " << RESET_COLOR << "Version "
            << tablet->majorVersion() << "." << tablet->minorVersion()
            << std::endl;
@@ -237,6 +242,19 @@ void NimbleDumpLib::emitInfo() {
            << std::endl;
 
   VeloxReader reader{*pool_, tablet};
+
+  auto statsSection =
+      tablet.get()->loadOptionalSection(preloadedOptionalSections[0]);
+  ostream_ << "Raw Data Size: ";
+  if (statsSection.has_value()) {
+    auto rawSize = flatbuffers::GetRoot<nimble::serialization::Stats>(
+                       statsSection->content().data())
+                       ->raw_size();
+    ostream_ << rawSize << std::endl;
+  } else {
+    ostream_ << "N/A" << std::endl;
+  }
+
   auto& metadata = reader.metadata();
   if (!metadata.empty()) {
     ostream_ << "Metadata:";
