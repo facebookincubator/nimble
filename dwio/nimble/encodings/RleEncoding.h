@@ -174,7 +174,7 @@ class RLEEncodingBase
 
 } // namespace internal
 
-// Handles the numeric cases. Bools and strings are templated below.
+// Handles the numeric and string cases. Bools are templated below.
 // Data layout is:
 // RLEEncodingBase bytes
 // 4 * sizeof(physicalType) bytes: run values
