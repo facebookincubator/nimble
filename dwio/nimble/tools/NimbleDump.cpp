@@ -135,6 +135,7 @@ int main(int argc, char* argv[]) {
                .emitStreams(
                    options["no_header"].as<bool>(),
                    options["labels"].as<bool>(),
+                   options["raw_size"].as<bool>(),
                    getOptional<uint32_t>(options["stripe"]));
          },
          positionalArgs)
@@ -149,6 +150,10 @@ int main(int argc, char* argv[]) {
                 po::value<uint32_t>(),
                 "Limit output to a single stripe with the provided stripe id. "
                 "Default is to print streams for all stripes."
+            )(
+                "raw_size,r",
+                po::bool_switch()->default_value(false),
+                "Print raw stream sizes. Default is to omit raw stream sizes."
             )(
                 "no_header,n",
                 po::bool_switch()->default_value(false),
