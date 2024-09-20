@@ -28,6 +28,7 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingLayout.h"
+#include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tools/EncodingUtilities.h"
 #include "dwio/nimble/tools/NimbleDumpLib.h"
@@ -381,7 +382,8 @@ void NimbleDumpLib::emitStripes(bool noHeader) {
 
 void NimbleDumpLib::emitStreams(
     bool noHeader,
-    bool streamLabels,
+    bool showStreamLabels,
+    bool showStreamRawSize,
     std::optional<uint32_t> stripeId) {
   auto tabletReader = std::make_shared<TabletReader>(*pool_, file_.get());
 
@@ -390,8 +392,11 @@ void NimbleDumpLib::emitStreams(
   fields.push_back({"Stream Id", 11});
   fields.push_back({"Stream Offset", 13});
   fields.push_back({"Stream Size", 13});
+  if (showStreamRawSize) {
+    fields.push_back({"Raw Stream Size", 16});
+  }
   fields.push_back({"Item Count", 13});
-  if (streamLabels) {
+  if (showStreamLabels) {
     fields.push_back({"Stream Label", 16});
   }
   fields.push_back({"Type", 30});
@@ -399,7 +404,7 @@ void NimbleDumpLib::emitStreams(
   TableFormatter formatter(ostream_, fields, noHeader);
 
   std::optional<StreamLabels> labels{};
-  if (streamLabels) {
+  if (showStreamLabels) {
     VeloxReader reader{*pool_, tabletReader};
     labels.emplace(reader.schema());
   }
@@ -412,10 +417,16 @@ void NimbleDumpLib::emitStreams(
       [&](ChunkedStream& stream, uint32_t stripeId, uint32_t streamId) {
         auto stripeIdentifier = tabletReader->getStripeIdentifier(stripeId);
         uint32_t itemCount = 0;
+        uint64_t rawStreamSize = 0;
         while (stream.hasNext()) {
           auto chunk = stream.nextChunk();
           itemCount += *reinterpret_cast<const uint32_t*>(chunk.data() + 2);
+          if (showStreamRawSize) {
+            rawStreamSize +=
+                nimble::test::TestUtils::getRawDataSize(*pool_, chunk);
+          }
         }
+
         stream.reset();
         std::vector<std::string> values;
         values.push_back(folly::to<std::string>(stripeId));
@@ -424,8 +435,11 @@ void NimbleDumpLib::emitStreams(
             tabletReader->streamOffsets(stripeIdentifier)[streamId]));
         values.push_back(folly::to<std::string>(
             tabletReader->streamSizes(stripeIdentifier)[streamId]));
+        if (showStreamRawSize) {
+          values.push_back(folly::to<std::string>(rawStreamSize));
+        }
         values.push_back(folly::to<std::string>(itemCount));
-        if (streamLabels) {
+        if (showStreamLabels) {
           auto it = values.emplace_back(labels->streamLabel(streamId));
         }
         values.push_back(getStreamInputLabel(stream));
