@@ -11,6 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+add_library(nimble_encodings_tests_utils TestUtils.cpp)
+target_link_libraries(nimble_encodings_tests_utils nimble_encodings)
+
 add_executable(
   nimble_encodings_tests
   ConstantEncodingTests.cpp
@@ -27,6 +30,7 @@ add_test(nimble_encodings_tests nimble_encodings_tests)
 
 target_link_libraries(
   nimble_encodings_tests
+  nimble_encodings_tests_utils
   nimble_encodings
   nimble_common
   nimble_tools_common
