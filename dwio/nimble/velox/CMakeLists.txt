@@ -40,11 +40,13 @@ add_library(nimble_velox_layout_planner LayoutPlanner.cpp)
 target_link_libraries(nimble_velox_layout_planner nimble_velox_schema_reader
                       velox_file)
 
-add_library(nimble_velox_field_writer BufferGrowthPolicy.cpp
-                                      DeduplicationUtils.cpp FieldWriter.cpp)
+add_library(nimble_velox_buffer_growth_policy BufferGrowthPolicy.cpp)
+target_link_libraries(nimble_velox_buffer_growth_policy nimble_common)
+
+add_library(nimble_velox_field_writer DeduplicationUtils.cpp FieldWriter.cpp)
 target_link_libraries(
   nimble_velox_field_writer nimble_velox_schema nimble_velox_stream_data
-  nimble_velox_schema_builder Folly::folly)
+  nimble_velox_buffer_growth_policy nimble_velox_schema_builder Folly::folly)
 
 # Nimble code expects an upper case suffix to the generated file.
 list(PREPEND FLATBUFFERS_FLATC_SCHEMA_EXTRA_ARGS "--filename-suffix"
