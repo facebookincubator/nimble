@@ -1278,26 +1278,6 @@ std::unique_ptr<FieldWriter> createArrayWithOffsetsFieldWriter(
 
 } // namespace
 
-void NullsStreamData::ensureNullsCapacity(
-    bool mayHaveNulls,
-    velox::vector_size_t size) {
-  if (mayHaveNulls || hasNulls_) {
-    auto newSize = bufferedCount_ + size;
-    nonNulls_.reserve(newSize);
-    if (!hasNulls_) {
-      hasNulls_ = true;
-      std::fill(nonNulls_.data(), nonNulls_.data() + bufferedCount_, true);
-      nonNulls_.update_size(bufferedCount_);
-    }
-    if (!mayHaveNulls) {
-      std::fill(
-          nonNulls_.data() + bufferedCount_, nonNulls_.data() + newSize, true);
-      nonNulls_.update_size(newSize);
-    }
-  }
-  bufferedCount_ += size;
-}
-
 FieldWriterContext::LocalDecodedVector
 FieldWriterContext::getLocalDecodedVector() {
   return LocalDecodedVector{*this};
