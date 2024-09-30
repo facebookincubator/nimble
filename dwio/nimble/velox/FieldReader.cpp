@@ -927,8 +927,8 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
       // creating the dictionary vector, to avoid failing this validation.
       // We will later resize the vector to the correct size.
       // These resize operations are "no cost" operations, as shrinking a
-      // vector/buffer doesn't free its memory, and resizing to the orginal size
-      // doesn't allocate, as capacity is guaranteed to be enough.
+      // vector/buffer doesn't free its memory, and resizing to the original
+      // size doesn't allocate, as capacity is guaranteed to be enough.
       child->resize(0);
       indices->setSize(0);
 
@@ -1329,8 +1329,8 @@ class SlidingWindowMapFieldReader final : public FieldReader {
       // creating the dictionary vector, to avoid failing this validation.
       // We will later resize the vector to the correct size.
       // These resize operations are "no cost" operations, as shrinking a
-      // vector/buffer doesn't free its memory, and resizing to the orginal size
-      // doesn't allocate, as capacity is guaranteed to be enough.
+      // vector/buffer doesn't free its memory, and resizing to the original
+      // size doesn't allocate, as capacity is guaranteed to be enough.
       child->resize(0);
       indices->setSize(0);
 
@@ -2714,7 +2714,7 @@ velox::TypePtr inferType(
             name));
     NIMBLE_CHECK(
         it->second.mode == SelectionMode::Include,
-        "Flta map exclusion list is not supported when flat map field is missing.");
+        "Flat map exclusion list is not supported when flat map field is missing.");
 
     return createFlatType(it->second.features, type);
   }
@@ -2743,8 +2743,8 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
         });
   };
 
-// Assuming no-upcastingg is the most common case, putting the largest type size
-// at begging so the compatibility check can finish quicker.
+// Assuming no-upcasting is the most common case, putting the largest type size
+// at the beginning so the compatibility check can finish quicker.
 #define BOOLEAN_COMPATIBLE \
   { ScalarKind::Bool }
 #define TINYINT_COMPATIBLE \
@@ -2886,9 +2886,9 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
         children.push_back(std::move(factory));
       }
 
-      // Underlying reader may return a different vector type than what
-      // specified, (eg. flat map read as struct). So create new ROW type based
-      // on children types. Note this special logic is only for Row type based
+      // Underlying reader may return a different vector type than what's
+      // specified (eg. flat map read as struct). So create new ROW type based
+      // on child types. Note this special logic is only for Row type based
       // on the constraint that flatmap can only be top level fields.
       return std::make_unique<RowFieldReaderFactory>(
           pool,
@@ -3170,8 +3170,8 @@ Decoder* FOLLY_NULLABLE FieldReaderFactory::getDecoder(
   auto it = decoders.find(streamDescriptor.offset());
   if (it == decoders.end()) {
     // It is possible that for a given offset, we don't have a matching
-    // decoder. Each stripe might see different amount of streams, so for all
-    // the unknown streams, there won't be a matching decoder.
+    // decoder. Each stripe might see different number of streams, so for all
+    // unknown streams, there won't be a matching decoder.
     return nullptr;
   }
 
