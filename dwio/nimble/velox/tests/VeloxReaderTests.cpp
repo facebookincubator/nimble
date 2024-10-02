@@ -35,9 +35,7 @@
 #include "velox/type/Type.h"
 #include "velox/vector/BaseVector.h"
 #include "velox/vector/ComplexVector.h"
-#include "velox/vector/DecodedVector.h"
 #include "velox/vector/NullsBuilder.h"
-#include "velox/vector/SelectivityVector.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
@@ -3099,15 +3097,23 @@ TEST_F(VeloxReaderTests, ReaderSeekTest) {
   TestNimbleReaderFactory readerFactory(
       *leafPool_, *rootPool_, vectors, writerOptions);
   auto reader = readerFactory.createReader();
+  auto rowNumber = reader.getRowNumber();
+  EXPECT_EQ(0, rowNumber);
 
   auto rowResult = reader.skipRows(0);
   EXPECT_EQ(0, rowResult);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(0, rowNumber);
   rowResult = reader.seekToRow(0);
   EXPECT_EQ(0, rowResult);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(0, rowNumber);
 
   // [Stripe# 0, Current Pos: 0] seek to 1 position
   rowResult = reader.seekToRow(1);
   EXPECT_EQ(rowResult, 1);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 1);
   readAndVerifyContent(
       reader,
       vectors,
@@ -3115,11 +3121,15 @@ TEST_F(VeloxReaderTests, ReaderSeekTest) {
       /* expectedNumberOfRows */ 1,
       /* expectedStripe */ 0,
       /* expectedRowInStripe */ 1);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(2, rowNumber);
 
   // [Stripe# 0, Current Pos: 2] seek to 5 position
   rowResult = reader.seekToRow(5);
+  rowNumber = reader.getRowNumber();
   // [Stripe# 0, Current Pos: 5] seeks start from rowIdx 0
   EXPECT_EQ(rowResult, 5);
+  EXPECT_EQ(rowNumber, 5);
   readAndVerifyContent(
       reader,
       vectors,
@@ -3127,11 +3137,15 @@ TEST_F(VeloxReaderTests, ReaderSeekTest) {
       /* expectedNumberOfRows */ 5,
       /* expectedStripe */ 0,
       /* expectedRowInStripe */ 5);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 10);
 
   // [Stripe# 0, Current Pos: 10] seek to 10 position
   rowResult = reader.seekToRow(10);
+  rowNumber = reader.getRowNumber();
   // [Stripe# 1, Current Pos: 0]
   EXPECT_EQ(rowResult, 10);
+  EXPECT_EQ(rowNumber, 10);
   readAndVerifyContent(
       reader,
       vectors,
@@ -3139,11 +3153,15 @@ TEST_F(VeloxReaderTests, ReaderSeekTest) {
       /* expectedNumberOfRows */ 10,
       /* expectedStripe */ 1,
       /* expectedRowInStripe */ 0);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(20, rowNumber);
 
   // [Stripe# 2, Current Pos: 0]
   rowResult = reader.seekToRow(29);
+  rowNumber = reader.getRowNumber();
   // [Stripe# 2, Current Pos: 9]
   EXPECT_EQ(rowResult, 29);
+  EXPECT_EQ(rowNumber, 29);
   readAndVerifyContent(
       reader,
       vectors,
@@ -3151,14 +3169,21 @@ TEST_F(VeloxReaderTests, ReaderSeekTest) {
       /* expectedNumberOfRows */ 1,
       /* expectedStripe */ 2,
       /* expectedRowInStripe */ 9);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(30, rowNumber);
 
   // seek past
   {
     rowResult = reader.seekToRow(32);
     // Seeks with rows >= totalRows in Nimble file, seeks to lastRow
     EXPECT_EQ(rowResult, 30);
+    rowNumber = reader.getRowNumber();
+    EXPECT_EQ(rowNumber, 30);
+
     velox::VectorPtr result;
     EXPECT_FALSE(reader.next(1, result));
+    rowNumber = reader.getRowNumber();
+    EXPECT_EQ(rowNumber, 30);
   }
 }
 
@@ -3171,11 +3196,15 @@ TEST_F(VeloxReaderTests, ReaderSkipTest) {
   TestNimbleReaderFactory readerFactory(
       *leafPool_, *rootPool_, vectors, writerOptions);
   auto reader = readerFactory.createReader();
+  auto rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 0);
 
   // Current position in Comments below represent the position in stripe
   // [Stripe# 0, Current Pos: 0], After skip [Stripe# 0, Current Pos: 1]
   auto rowResult = reader.skipRows(1);
   EXPECT_EQ(rowResult, 1);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 1);
   // readAndVerifyContent() moves the rowPosition in reader
   readAndVerifyContent(
       reader,
@@ -3184,10 +3213,15 @@ TEST_F(VeloxReaderTests, ReaderSkipTest) {
       /* expectedNumberOfRows */ 1,
       /* expectedStripe */ 0,
       /* expectedRowInStripe */ 1);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 2);
 
   // [Stripe# 0, Current Pos: 2], After skip [Stripe# 0, Current Pos: 7]
   rowResult = reader.skipRows(5);
   EXPECT_EQ(rowResult, 5);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 7);
+
   // reader don't read across stripe so expectedRow is 3
   readAndVerifyContent(
       reader,
@@ -3196,10 +3230,14 @@ TEST_F(VeloxReaderTests, ReaderSkipTest) {
       /* expectedNumberOfRows */ 3,
       /* expectedStripe */ 0,
       /* expectedRowInStripe */ 7);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 10);
 
   // [Stripe# 1, Current Pos: 0], After skip [Stripe# 2, Current Pos: 0]
   rowResult = reader.skipRows(10);
   EXPECT_EQ(rowResult, 10);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 20);
   readAndVerifyContent(
       reader,
       vectors,
@@ -3207,11 +3245,15 @@ TEST_F(VeloxReaderTests, ReaderSkipTest) {
       /* expectedNumberOfRows */ 1,
       /* expectedStripe */ 2,
       /* expectedRowInStripe */ 0);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 21);
 
   // [Stripe# 2, Current Pos: 1], After skip [Stripe# 2, Current Pos: 9]
   rowResult = reader.skipRows(8);
   EXPECT_EQ(rowResult, 8);
-  // reader don't read across stripe so expectedRow is 3
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 29);
+  // reader don't read across stripe so expectedRow is 1
   readAndVerifyContent(
       reader,
       vectors,
@@ -3219,21 +3261,33 @@ TEST_F(VeloxReaderTests, ReaderSkipTest) {
       /* expectedNumberOfRows */ 1,
       /* expectedStripe */ 2,
       /* expectedRowInStripe */ 9);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 30);
 
   {
     // [Stripe# 3, Current Pos: 0], Reached EOF
     rowResult = reader.skipRows(5);
     EXPECT_EQ(rowResult, 0);
+    rowNumber = reader.getRowNumber();
+    EXPECT_EQ(rowNumber, 30);
+
     velox::VectorPtr result;
     EXPECT_FALSE(reader.next(1, result));
+    rowNumber = reader.getRowNumber();
+    EXPECT_EQ(rowNumber, 30);
   }
 
   // Try to seek to start and test skip
   rowResult = reader.seekToRow(0);
   EXPECT_EQ(0, rowResult);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(0, rowNumber);
+
   // [Stripe# 0, Current Pos: 0], After skip [Stripe# 1, Current Pos: 2]
   rowResult = reader.skipRows(12);
   EXPECT_EQ(rowResult, 12);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 12);
   readAndVerifyContent(
       reader,
       vectors,
@@ -3241,14 +3295,21 @@ TEST_F(VeloxReaderTests, ReaderSkipTest) {
       /* expectedNumberOfRows */ 8,
       /* expectedStripe */ 1,
       /* expectedRowInStripe */ 2);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 20);
 
   // Test continuous skip calls and then readandVerify
   reader.seekToRow(0);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 0);
+
   // [Stripe# 0, Current Pos: 0], After skip [Stripe# 1, Current Pos: 0]
   for (int i = 0; i < 10; ++i) {
     rowResult = reader.skipRows(1);
     EXPECT_EQ(rowResult, 1);
+    EXPECT_EQ(reader.getRowNumber(), ++rowNumber);
   }
+
   readAndVerifyContent(
       reader,
       vectors,
@@ -3256,11 +3317,15 @@ TEST_F(VeloxReaderTests, ReaderSkipTest) {
       /* expectedNumberOfRows */ 1,
       /* expectedStripe */ 1,
       /* expectedRowInStripe */ 0);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 11);
 
   // Continuous skip calls across stripe
   // [Stripe# 1, Current Pos: 1], After skip [Stripe# 2, Current Pos: 9]
   for (int i = 0; i < 6; ++i) {
     rowResult = reader.skipRows(3);
+    rowNumber += 3;
+    EXPECT_EQ(reader.getRowNumber(), rowNumber);
   }
   readAndVerifyContent(
       reader,
@@ -3269,15 +3334,20 @@ TEST_F(VeloxReaderTests, ReaderSkipTest) {
       /* expectedNumberOfRows */ 1,
       /* expectedStripe */ 2,
       /* expectedRowInStripe */ 9);
-
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 30);
   {
     // Current position: EOF
     velox::VectorPtr result;
     EXPECT_FALSE(reader.next(1, result));
+    rowNumber = reader.getRowNumber();
+    EXPECT_EQ(rowNumber, 30);
   }
 
   // Read the data(This also move the reader state) follow by skips and verify
   reader.seekToRow(0);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 0);
   for (int i = 0; i < 11; ++i) {
     readAndVerifyContent(
         reader,
@@ -3286,10 +3356,13 @@ TEST_F(VeloxReaderTests, ReaderSkipTest) {
         /* expectedNumberOfRows */ 1,
         /* expectedStripe */ (i / 10),
         /* expectedRowInStripe */ (i % 10));
+    EXPECT_EQ(reader.getRowNumber(), ++rowNumber);
   }
   // [Stripe# 1, Current Pos: 1], After skip [Stripe# 1, Current Pos: 6]
   rowResult = reader.skipRows(5);
   EXPECT_EQ(rowResult, 5);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 16);
   readAndVerifyContent(
       reader,
       vectors,
@@ -3297,20 +3370,30 @@ TEST_F(VeloxReaderTests, ReaderSkipTest) {
       /* expectedNumberOfRows */ 4,
       /* expectedStripe */ 1,
       /* expectedRowInStripe */ 6);
+  rowNumber = reader.getRowNumber();
+  EXPECT_EQ(rowNumber, 20);
 
   {
     // verify the skip to more rows then file have
     reader.seekToRow(0);
+    rowNumber = reader.getRowNumber();
+    EXPECT_EQ(rowNumber, 0);
     // [Stripe# 0, Current Pos: 0], After skip EOF
     rowResult = reader.skipRows(32);
     EXPECT_EQ(30, rowResult);
+    rowNumber = reader.getRowNumber();
+    EXPECT_EQ(rowNumber, 30);
     velox::VectorPtr result;
     EXPECT_FALSE(reader.next(1, result));
 
     reader.seekToRow(0);
+    rowNumber = reader.getRowNumber();
+    EXPECT_EQ(rowNumber, 0);
     // [Stripe# 0, Current Pos: 0], After skip [Stripe# 2, Current Pos: 2]
     rowResult = reader.skipRows(22);
     EXPECT_EQ(22, rowResult);
+    rowNumber = reader.getRowNumber();
+    EXPECT_EQ(rowNumber, 22);
     readAndVerifyContent(
         reader,
         vectors,
@@ -3318,7 +3401,12 @@ TEST_F(VeloxReaderTests, ReaderSkipTest) {
         /* expectedNumberOfRows */ 8,
         /* expectedStripe */ 2,
         /* expectedRowInStripe */ 2);
+    rowNumber = reader.getRowNumber();
+    EXPECT_EQ(rowNumber, 30);
+
     EXPECT_FALSE(reader.next(1, result));
+    rowNumber = reader.getRowNumber();
+    EXPECT_EQ(rowNumber, 30);
   }
 }
 
@@ -3463,16 +3551,18 @@ TEST_F(VeloxReaderTests, TestPrimitiveFieldDefaultValue) {
 struct RangeTestParams {
   uint64_t rangeStart;
   uint64_t rangeEnd;
+  uint32_t firstRow;
 
   // Tuple arguments: rowsToRead, expectedNumberOfRows, expectedStripe,
-  // expectedRowInStripe
-  std::vector<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>> expectedReads;
+  // expectedRowInStripe, expectedRowNumber
+  std::vector<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>>
+      expectedReads;
 
   // Tuple arguments: seekToRow, expectedSeekResult
   std::vector<std::tuple<uint32_t, uint32_t>> expectedSeeks;
 
-  // Tuple arguments: skipRows, expectedSkipResult
-  std::vector<std::tuple<uint32_t, uint32_t>> expectedSkips;
+  // Tuple arguments: skipRows, expectedSkipResult, expectedRowNumber
+  std::vector<std::tuple<uint32_t, uint32_t, uint32_t>> expectedSkips;
 };
 
 TEST_F(VeloxReaderTests, RangeReads) {
@@ -3488,6 +3578,7 @@ TEST_F(VeloxReaderTests, RangeReads) {
     auto reader = readerFactory.createReader(nimble::VeloxReadParams{
         .fileRangeStartOffset = params.rangeStart,
         .fileRangeEndOffset = params.rangeEnd});
+    EXPECT_EQ(reader.getRowNumber(), params.firstRow);
 
     for (const auto& expectedRead : params.expectedReads) {
       readAndVerifyContent(
@@ -3497,6 +3588,7 @@ TEST_F(VeloxReaderTests, RangeReads) {
           /* expectedNumberOfRows */ std::get<1>(expectedRead),
           /* expectedStripe */ std::get<2>(expectedRead),
           /* expectedRowInStripe */ std::get<3>(expectedRead));
+      EXPECT_EQ(reader.getRowNumber(), std::get<4>(expectedRead));
     }
 
     {
@@ -3508,16 +3600,20 @@ TEST_F(VeloxReaderTests, RangeReads) {
       EXPECT_EQ(
           std::get<1>(expectedSeek),
           reader.seekToRow(std::get<0>(expectedSeek)));
+      EXPECT_EQ(reader.getRowNumber(), std::get<1>(expectedSeek));
     }
 
     reader.seekToRow(0);
+    EXPECT_EQ(reader.getRowNumber(), params.firstRow);
     for (const auto& expectedSkip : params.expectedSkips) {
       EXPECT_EQ(
           std::get<1>(expectedSkip),
           reader.skipRows(std::get<0>(expectedSkip)));
+      EXPECT_EQ(reader.getRowNumber(), std::get<2>(expectedSkip));
     }
 
     reader.seekToRow(0);
+    EXPECT_EQ(reader.getRowNumber(), params.firstRow);
     for (const auto& expectedRead : params.expectedReads) {
       readAndVerifyContent(
           reader,
@@ -3526,6 +3622,7 @@ TEST_F(VeloxReaderTests, RangeReads) {
           /* expectedNumberOfRows */ std::get<1>(expectedRead),
           /* expectedStripe */ std::get<2>(expectedRead),
           /* expectedRowInStripe */ std::get<3>(expectedRead));
+      EXPECT_EQ(reader.getRowNumber(), std::get<4>(expectedRead));
     }
 
     {
@@ -3543,11 +3640,15 @@ TEST_F(VeloxReaderTests, RangeReads) {
   test({
       .rangeStart = 0,
       .rangeEnd = 100'000'000,
+      .firstRow = 0,
 
       // Reads stop at stripe boundaries, so we need to invoke several reads
       // to read the entire file.
       .expectedReads =
-          {{30, 10, 0, 0}, {30, 15, 1, 0}, {30, 25, 2, 0}, {30, 9, 3, 0}},
+          {{30, 10, 0, 0, 10},
+           {30, 15, 1, 0, 25},
+           {30, 25, 2, 0, 50},
+           {30, 9, 3, 0, 59}},
 
       // Seeks should be allowed to anywhere in this file (rows 0 to 59)
       .expectedSeeks =
@@ -3564,7 +3665,8 @@ TEST_F(VeloxReaderTests, RangeReads) {
            {60, 59}},
 
       // Skips should cover the entire file (59 rows)
-      .expectedSkips = {{0, 0}, {10, 10}, {20, 20}, {30, 29}, {1, 0}},
+      .expectedSkips =
+          {{0, 0, 0}, {10, 10, 10}, {20, 20, 30}, {30, 29, 59}, {1, 0, 59}},
   });
 
   // Test a range covering only the first stripe.
@@ -3578,9 +3680,10 @@ TEST_F(VeloxReaderTests, RangeReads) {
   test({
       .rangeStart = 0,
       .rangeEnd = 1,
+      .firstRow = 0,
 
       // Reads should only find rows in stripe 0.
-      .expectedReads = {{5, 5, 0, 0}, {10, 5, 0, 5}},
+      .expectedReads = {{5, 5, 0, 0, 5}, {10, 5, 0, 5, 10}},
 
       // Seeks should be allowed to access rows in  first stripe only (rows 0
       // to 10)
@@ -3588,7 +3691,7 @@ TEST_F(VeloxReaderTests, RangeReads) {
           {{0, 0}, {5, 5}, {10, 10}, {15, 10}, {30, 10}, {59, 10}, {60, 10}},
 
       // Skips should cover first stripe only (59 rows)
-      .expectedSkips = {{0, 0}, {5, 5}, {10, 5}, {1, 0}},
+      .expectedSkips = {{0, 0, 0}, {5, 5, 5}, {10, 5, 10}, {1, 0, 10}},
   });
 
   auto tablet = readerFactory.createTablet();
@@ -3603,6 +3706,7 @@ TEST_F(VeloxReaderTests, RangeReads) {
   test({
       .rangeStart = 1,
       .rangeEnd = tablet.stripeOffset(1),
+      .firstRow = 0,
 
       // No read should succeed, as we have zero stripes to read from
       .expectedReads = {},
@@ -3612,7 +3716,7 @@ TEST_F(VeloxReaderTests, RangeReads) {
           {{0, 0}, {5, 0}, {10, 0}, {15, 0}, {30, 0}, {59, 0}, {60, 0}},
 
       // All skips should be ignored
-      .expectedSkips = {{0, 0}, {5, 0}, {59, 0}},
+      .expectedSkips = {{0, 0, 0}, {5, 0, 0}, {59, 0, 0}},
   });
 
   // Test a range starting somewhere in stripe 0 (but not at zero) to somwhere
@@ -3625,9 +3729,10 @@ TEST_F(VeloxReaderTests, RangeReads) {
   test({
       .rangeStart = 1,
       .rangeEnd = tablet.stripeOffset(1) + 1,
+      .firstRow = 10,
 
       // Reads should all resolve to stripe 1
-      .expectedReads = {{5, 5, 1, 0}, {20, 10, 1, 5}},
+      .expectedReads = {{5, 5, 1, 0, 15}, {20, 10, 1, 5, 25}},
 
       // Seeks should succeed if they are in range [10, 25). Otherwise, they
       // should return the edges of stripe 1.
@@ -3642,11 +3747,11 @@ TEST_F(VeloxReaderTests, RangeReads) {
            {60, 25}},
 
       // Skips should allow skipping only 15 rows (number of rows in stripe 1)
-      .expectedSkips = {{0, 0}, {5, 5}, {11, 10}, {1, 0}},
+      .expectedSkips = {{0, 0, 10}, {5, 5, 15}, {11, 10, 25}, {1, 0, 25}},
   });
 
-  // Test a range starting exactly on stripe 2 to somwhere
-  // in stripe 2. This should resolve to only stripe 2.
+  // Test a range starting exactly on stripe 1 to somwhere
+  // in stripe 2. This should resolve to only stripe 1.
   LOG(INFO) << "--> Range starts at beginning of stripe 2";
   LOG(INFO) << "File:     |--s0--|--s1--|--s2--|--s3--|";
   LOG(INFO) << "Range:           |---|";
@@ -3654,9 +3759,10 @@ TEST_F(VeloxReaderTests, RangeReads) {
   test({
       .rangeStart = tablet.stripeOffset(1),
       .rangeEnd = tablet.stripeOffset(1) + 1,
+      .firstRow = 10,
 
       // Reads should all resolve to stripe 1
-      .expectedReads = {{5, 5, 1, 0}, {20, 10, 1, 5}},
+      .expectedReads = {{5, 5, 1, 0, 15}, {20, 10, 1, 5, 25}},
 
       // Seeks should succeed if they are in range [10, 25). Otherwise, they
       // should return the edges of stripe 1.
@@ -3671,7 +3777,7 @@ TEST_F(VeloxReaderTests, RangeReads) {
            {60, 25}},
 
       // Skips should allow skipping only 15 rows (number of rows in stripe 1)
-      .expectedSkips = {{0, 0}, {5, 5}, {11, 10}, {1, 0}},
+      .expectedSkips = {{0, 0, 10}, {5, 5, 15}, {11, 10, 25}, {1, 0, 25}},
   });
 
   // Test a range spanning multiple stripes. We'll start somewhere in stripe 0
@@ -3683,12 +3789,16 @@ TEST_F(VeloxReaderTests, RangeReads) {
   test({
       .rangeStart = tablet.stripeOffset(1) - 1,
       .rangeEnd = tablet.stripeOffset(2) + 1,
+      .firstRow = 10,
 
       // Reads should all resolve to stripes 1 and 2 (rows [15 to 50)).
       // Reads stop at stripe boundaries, so we need to invoke several reads
       // to continue to the next stripe.
       .expectedReads =
-          {{5, 5, 1, 0}, {20, 10, 1, 5}, {20, 20, 2, 0}, {20, 5, 2, 20}},
+          {{5, 5, 1, 0, 15},
+           {20, 10, 1, 5, 25},
+           {20, 20, 2, 0, 45},
+           {20, 5, 2, 20, 50}},
 
       // Seeks should succeed if they are in range [10, 50). Otherwise, they
       // should return the edges of stripe 1 and 2.
@@ -3706,7 +3816,13 @@ TEST_F(VeloxReaderTests, RangeReads) {
 
       // Skips should allow skipping only 40 rows (number of rows in stripes 1
       // and 2)
-      .expectedSkips = {{0, 0}, {5, 5}, {11, 11}, {23, 23}, {2, 1}, {1, 0}},
+      .expectedSkips =
+          {{0, 0, 10},
+           {5, 5, 15},
+           {11, 11, 26},
+           {23, 23, 49},
+           {2, 1, 50},
+           {1, 0, 50}},
   });
 
   // Test a range spanning multiple stripes. We'll start at the beginning of
@@ -3719,16 +3835,17 @@ TEST_F(VeloxReaderTests, RangeReads) {
   test({
       .rangeStart = tablet.stripeOffset(1),
       .rangeEnd = tablet.stripeOffset(3) + 1,
+      .firstRow = 10,
 
       // Reads should all resolve to stripes 1, 2 and 3 (rows [15 to 59)).
       // Reads stop at stripe boundaries, so we need to invoke several reads
       // to continue to the next stripe.
       .expectedReads =
-          {{5, 5, 1, 0},
-           {20, 10, 1, 5},
-           {20, 20, 2, 0},
-           {20, 5, 2, 20},
-           {20, 9, 3, 0}},
+          {{5, 5, 1, 0, 15},
+           {20, 10, 1, 5, 25},
+           {20, 20, 2, 0, 45},
+           {20, 5, 2, 20, 50},
+           {20, 9, 3, 0, 59}},
 
       // Seeks should succeed if they are in range [10, 59). Otherwise, they
       // should return the edges of stripe 1 and 3.
@@ -3746,7 +3863,13 @@ TEST_F(VeloxReaderTests, RangeReads) {
 
       // Skips should allow skipping only 49 rows (number of rows in stripes 1
       // to 3)
-      .expectedSkips = {{0, 0}, {5, 5}, {11, 11}, {32, 32}, {2, 1}, {1, 0}},
+      .expectedSkips =
+          {{0, 0, 10},
+           {5, 5, 15},
+           {11, 11, 26},
+           {32, 32, 58},
+           {2, 1, 59},
+           {1, 0, 59}},
   });
 
   // Test last stripe.
@@ -3757,9 +3880,10 @@ TEST_F(VeloxReaderTests, RangeReads) {
   test({
       .rangeStart = tablet.stripeOffset(3),
       .rangeEnd = 100'000'000,
+      .firstRow = 50,
 
       // Reads should all resolve to stripe 3 (rows 50 to 59).
-      .expectedReads = {{5, 5, 3, 0}, {5, 4, 3, 5}},
+      .expectedReads = {{5, 5, 3, 0, 55}, {5, 4, 3, 5, 59}},
 
       // Seeks should succeed if they are in range [50, 59). Otherwise, they
       // should return the edges of stripe 3.
@@ -3774,7 +3898,7 @@ TEST_F(VeloxReaderTests, RangeReads) {
            {60, 59}},
 
       // Skips should allow skipping only 9 rows (number of rows in stripe 3)
-      .expectedSkips = {{0, 0}, {5, 5}, {5, 4}, {1, 0}},
+      .expectedSkips = {{0, 0, 50}, {5, 5, 55}, {5, 4, 59}, {1, 0, 59}},
   });
 }
 

@@ -114,6 +114,10 @@ class VeloxReader {
     return pool_;
   }
 
+  // Returns the current row number the reader is pointing to. If there are no
+  // more rows to read in the file, this will return the last row number.
+  uint64_t getRowNumber();
+
   // Seeks to |rowNumber| from the beginning of the file (row 0).
   // If |rowNumber| is greater than the number of rows in the file, the
   // seek will stop at the end of file and following reads will return
@@ -170,6 +174,7 @@ class VeloxReader {
   std::shared_ptr<const Type> schema_;
   std::shared_ptr<const velox::RowType> type_;
   std::vector<uint32_t> offsets_;
+  std::vector<uint64_t> cummulativeStripeRowCount_;
   folly::F14FastMap<offset_size, std::unique_ptr<Decoder>> decoders_;
   std::unique_ptr<FieldReaderFactory> rootFieldReaderFactory_;
   std::unique_ptr<FieldReader> rootReader_;
