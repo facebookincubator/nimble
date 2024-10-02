@@ -241,6 +241,7 @@ VeloxReader::VeloxReader(
   // file splits will cover the rest of the file.
 
   const auto stripeCount = tabletReader_->stripeCount();
+  cummulativeStripeRowCount_.reserve(stripeCount);
   firstStripe_ = stripeCount;
   lastStripe_ = 0;
   firstRow_ = 0;
@@ -261,6 +262,7 @@ VeloxReader::VeloxReader(
       }
     }
     rows += stripeRowCount;
+    cummulativeStripeRowCount_.push_back(rows);
   }
 
   nextStripe_ = firstStripe_;
@@ -379,6 +381,7 @@ bool VeloxReader::next(uint64_t rowCount, velox::VectorPtr& result) {
       return false;
     }
   }
+
   uint64_t rowsToRead = std::min(rowsRemainingInStripe_, rowCount);
   std::optional<std::chrono::steady_clock::time_point> startTime;
   if (parameters_.decodingTimeCallback) {
@@ -547,4 +550,30 @@ uint32_t VeloxReader::getCurrentRowInStripe() const {
       static_cast<uint32_t>(rowsRemainingInStripe_);
 }
 
+uint64_t VeloxReader::getRowNumber() {
+  if (!loadedStripe_.has_value()) {
+    return firstRow_;
+  }
+
+  if (rowsRemainingInStripe_ > 0) {
+    return cummulativeStripeRowCount_[loadedStripe_.value()] -
+        rowsRemainingInStripe_;
+  }
+
+  // When rowsRemainingInStripe_ is 0, it either means that we finished reading
+  // a stripe or that we attempted to seek outside of an acceptable row range.
+  // This means we cannot rely on the value of rowsRemainingInStripe_ to be
+  // correct. At this point, we know that nextStripe_ is greater than 0 because:
+  // 1. If we finished reading a stripe, then nextStripe_ is guaranteed to point
+  // to loadedStripe_ + 1.
+  // 2. Seeking to before firstRow_ (this will make rowsRemainingInStripe_ to be
+  // inaccurate) can only happen if firstRow_ is greater than 0 which also means
+  // that nextStripe_ is greater than 0.
+  if (nextStripe_ >= lastStripe_) {
+    return lastRow_;
+  }
+
+  DWIO_ENSURE_GT(nextStripe_, 0);
+  return cummulativeStripeRowCount_[nextStripe_ - 1];
+}
 } // namespace facebook::nimble
