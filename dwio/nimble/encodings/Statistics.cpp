@@ -135,9 +135,9 @@ template <typename T, typename InputType>
 void Statistics<T, InputType>::populateBucketCounts() const {
   using UnsignedT = typename std::make_unsigned<T>::type;
   // Bucket counts are calculated in two phases. In phase one, we iterate on all
-  // entries, and (efficiently) count the occurences based on the MSB (most
+  // entries, and (efficiently) count the occurrences based on the MSB (most
   // significant bit) of the entry. In phase two, we merge the results of phase
-  // one, for each conscutive 7 bits.
+  // one, for each consecutive 7 bits.
   // See benchmarks in
   // dwio/nimble/encodings/tests:bucket_benchmark for why this method is used.
   std::array<uint64_t, std::numeric_limits<UnsignedT>::digits + 1> bitCounts{};
