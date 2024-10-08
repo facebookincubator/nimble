@@ -64,6 +64,13 @@ class Vector {
     std::copy(first, last, dataRawPtr_);
   }
 
+  template <typename It>
+  Vector(velox::memory::MemoryPool* memoryPool, size_t size, It first, It last)
+      : memoryPool_{memoryPool} {
+    init(size);
+    std::copy(first, last, dataRawPtr_);
+  }
+
   Vector(const Vector& other) {
     *this = other;
   }
