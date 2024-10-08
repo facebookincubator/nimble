@@ -27,6 +27,7 @@
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "folly/FileUtil.h"
 #include "folly/Random.h"
+#include "folly/coro/Generator.h"
 #include "folly/executors/CPUThreadPoolExecutor.h"
 #include "velox/common/file/File.h"
 #include "velox/common/memory/Memory.h"
