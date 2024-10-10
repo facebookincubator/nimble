@@ -131,6 +131,11 @@ struct VeloxWriterOptions {
   std::shared_ptr<folly::Executor> encodingExecutor;
 
   bool enableChunking = false;
+
+  // This callback will be visited on access to getDecodedVector in order to
+  // monitor usage of decoded vectors vs. data that is passed-through in the
+  // writer. Default function is no-op since its used for tests only.
+  std::function<void(void)> vectorDecoderVisitor = []() {};
 };
 
 } // namespace facebook::nimble
