@@ -25,7 +25,7 @@
 #include "folly/cli/NestedCommandLineApp.h"
 #include "velox/common/base/StatsReporter.h"
 
-using namespace ::facebook;
+using namespace facebook;
 namespace po = ::boost::program_options;
 
 template <typename T>
