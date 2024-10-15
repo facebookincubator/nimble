@@ -17,7 +17,7 @@
 
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 
-using namespace ::facebook;
+using namespace facebook;
 
 namespace {
 

@@ -17,7 +17,6 @@
 #include <gtest/gtest.h>
 #include <zstd.h>
 
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/encodings/EncodingLayoutCapture.h"
 #include "dwio/nimble/tablet/Constants.h"
@@ -30,13 +29,12 @@
 #include "folly/Random.h"
 #include "velox/common/memory/MemoryArbitrator.h"
 #include "velox/common/memory/SharedArbitrator.h"
-#include "velox/vector/VectorStream.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
-using namespace ::facebook;
+using namespace facebook;
 
-class VeloxWriterTests : public testing::Test {
+class VeloxWriterTests : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
     velox::memory::SharedArbitrator::registerFactory();
@@ -1814,7 +1812,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsWithChunksMinSizeZero) {
 INSTANTIATE_TEST_CASE_P(
     RawStripeSizeFlushPolicyTestSuite,
     RawStripeSizeFlushPolicyTest,
-    testing::Values(
+    ::testing::Values(
         RawStripeSizeFlushPolicyTestCase{
             .batchCount = 50,
             .rawStripeSize = 256 << 10,

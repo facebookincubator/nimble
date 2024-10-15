@@ -20,7 +20,7 @@
 #include "dwio/nimble/velox/tests/SchemaUtils.h"
 #include "folly/Random.h"
 
-using namespace ::facebook;
+using namespace facebook;
 
 void addNamedTypes(
     const nimble::TypeBuilder& node,
@@ -427,7 +427,8 @@ TEST(DefaultLayoutPlannerTests, IncompatibleOrdinals) {
     FAIL() << "Factory should have failed.";
   } catch (const nimble::NimbleUserError& e) {
     EXPECT_THAT(
-        e.what(), testing::HasSubstr("for feature ordering is not a flat map"));
+        e.what(),
+        ::testing::HasSubstr("for feature ordering is not a flat map"));
   }
 }
 
@@ -464,7 +465,7 @@ TEST(DefaultLayoutPlannerTests, OrdinalOutOfRange) {
     FAIL() << "Factory should have failed.";
   } catch (const nimble::NimbleUserError& e) {
     EXPECT_THAT(
-        e.what(), testing::HasSubstr("for feature ordering is out of range"));
+        e.what(), ::testing::HasSubstr("for feature ordering is out of range"));
   }
 }
 
@@ -481,6 +482,6 @@ TEST(DefaultLayoutPlannerTests, IncompatibleSchema) {
   } catch (const nimble::NimbleInternalError& e) {
     EXPECT_THAT(
         e.what(),
-        testing::HasSubstr("Layout planner requires row as the schema root"));
+        ::testing::HasSubstr("Layout planner requires row as the schema root"));
   }
 }

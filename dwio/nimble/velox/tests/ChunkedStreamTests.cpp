@@ -18,7 +18,7 @@
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 
-using namespace ::facebook;
+using namespace facebook;
 
 namespace {
 template <typename RNG>
