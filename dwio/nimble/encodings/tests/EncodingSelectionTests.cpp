@@ -24,7 +24,7 @@
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/tools/EncodingUtilities.h"
 
-using namespace ::facebook;
+using namespace facebook;
 
 namespace {
 template <typename T, bool FixedByteWidth = false>

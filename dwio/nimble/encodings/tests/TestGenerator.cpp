@@ -24,7 +24,7 @@
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "folly/experimental/io/FsUtil.h"
 
-using namespace ::facebook;
+using namespace facebook;
 
 DEFINE_string(output_dir, "", "Output directory to write test artifacts to.");
 DEFINE_string(

@@ -23,7 +23,7 @@
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/Statistics.h"
 
-using namespace ::facebook;
+using namespace facebook;
 
 #define INTEGRAL_TYPES(StatisticType)                                    \
   StatisticType<int8_t>, StatisticType<uint8_t>, StatisticType<int16_t>, \
