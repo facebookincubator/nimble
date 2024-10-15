@@ -39,7 +39,7 @@
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
-using namespace ::facebook;
+using namespace facebook;
 
 DEFINE_string(
     output_test_file_path,

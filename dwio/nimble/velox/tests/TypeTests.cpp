@@ -23,9 +23,9 @@
 #include "velox/vector/FlatVector.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 
-using namespace ::facebook;
+using namespace facebook;
 
-class TypeTests : public testing::Test {
+class TypeTests : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
     velox::memory::MemoryManager::testingSetInstance({});

@@ -5,9 +5,9 @@
 #include "velox/common/memory/SharedArbitrator.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
-using namespace ::facebook;
+using namespace facebook;
 
-class DeduplicationUtilsTests : public testing::Test {
+class DeduplicationUtilsTests : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
     velox::memory::SharedArbitrator::registerFactory();

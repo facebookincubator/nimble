@@ -16,14 +16,13 @@
 #include <gtest/gtest.h>
 #include <optional>
 
-#include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "dwio/nimble/velox/StreamLabels.h"
 #include "dwio/nimble/velox/tests/SchemaUtils.h"
 
-using namespace ::facebook;
+using namespace facebook;
 
 namespace {
 void verifyLabels(

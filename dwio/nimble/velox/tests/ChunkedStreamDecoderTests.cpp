@@ -19,7 +19,7 @@
 #include "dwio/nimble/velox/ChunkedStreamDecoder.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 
-using namespace ::facebook;
+using namespace facebook;
 
 namespace {
 

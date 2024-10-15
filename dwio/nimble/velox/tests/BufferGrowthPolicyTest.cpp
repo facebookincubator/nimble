@@ -44,7 +44,7 @@ TEST_P(DefaultInputBufferGrowthPolicyTest, GetExtendedCapacity) {
 INSTANTIATE_TEST_CASE_P(
     DefaultInputBufferGrowthPolicyMinCapacityTestSuite,
     DefaultInputBufferGrowthPolicyTest,
-    testing::Values(
+    ::testing::Values(
         DefaultInputBufferGrowthPolicyTestCase{
             .rangedConfigs = {{16, 2.0f}},
             .size = 8,
@@ -74,7 +74,7 @@ INSTANTIATE_TEST_CASE_P(
 INSTANTIATE_TEST_CASE_P(
     DefaultInputBufferGrowthPolicyInRangeGrowthTestSuite,
     DefaultInputBufferGrowthPolicyTest,
-    testing::Values(
+    ::testing::Values(
         DefaultInputBufferGrowthPolicyTestCase{
             .rangedConfigs = {{16, 2.0f}},
             .size = 8,
@@ -121,7 +121,7 @@ INSTANTIATE_TEST_CASE_P(
 INSTANTIATE_TEST_CASE_P(
     DefaultInputBufferGrowthPolicyCrossRangeTestSuite,
     DefaultInputBufferGrowthPolicyTest,
-    testing::Values(
+    ::testing::Values(
         DefaultInputBufferGrowthPolicyTestCase{
             .rangedConfigs = {{16, 2.0f}},
             .size = 20,
