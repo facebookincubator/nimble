@@ -39,7 +39,7 @@
 // rather than having to test all the numNullableEncodings X numNormalEncodings
 // combinations.
 
-using namespace ::facebook;
+using namespace facebook;
 
 namespace {
 enum class NullsPattern {

@@ -49,7 +49,7 @@
 // The tests are templated so as to cover all data types and encoding types with
 // a single code path.
 
-using namespace ::facebook;
+using namespace facebook;
 
 namespace {
 

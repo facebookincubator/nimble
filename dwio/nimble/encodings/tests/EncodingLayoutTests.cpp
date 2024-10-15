@@ -19,7 +19,7 @@
 #include "dwio/nimble/encodings/EncodingLayoutCapture.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 
-using namespace ::facebook;
+using namespace facebook;
 
 namespace {
 
