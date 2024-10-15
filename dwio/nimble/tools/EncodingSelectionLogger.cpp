@@ -36,7 +36,7 @@ DEFINE_string(
 DEFINE_string(read_factors, "", "Read factors to use for encoding selection.");
 DEFINE_double(compression_acceptance_ratio, 0.9, "");
 
-using namespace ::facebook;
+using namespace facebook;
 
 template <typename T>
 void logEncodingSelection(const std::vector<std::string>& source) {
