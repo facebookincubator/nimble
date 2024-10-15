@@ -32,7 +32,7 @@
 #include "velox/common/memory/Memory.h"
 #include "velox/dwio/common/ExecutorBarrier.h"
 
-using namespace ::facebook;
+using namespace facebook;
 
 namespace {
 
@@ -231,9 +231,9 @@ void parameterizedTest(
     errorVerifier.value()(e);
 
     // If errorVerifier detected an error, log the exception
-    if (testing::Test::HasFatalFailure()) {
+    if (::testing::Test::HasFatalFailure()) {
       FAIL() << "Failed verifying exception: " << e.what();
-    } else if (testing::Test::HasNonfatalFailure()) {
+    } else if (::testing::Test::HasNonfatalFailure()) {
       LOG(WARNING) << "Failed verifying exception: " << e.what();
     }
   }
