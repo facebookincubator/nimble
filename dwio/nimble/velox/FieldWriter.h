@@ -39,13 +39,15 @@ struct FieldWriterContext {
 
   explicit FieldWriterContext(
       velox::memory::MemoryPool& memoryPool,
-      std::unique_ptr<velox::memory::MemoryReclaimer> reclaimer = nullptr)
+      std::unique_ptr<velox::memory::MemoryReclaimer> reclaimer = nullptr,
+      std::function<void(void)> vectorDecoderVisitor = []() {})
       : bufferMemoryPool{memoryPool.addLeafChild(
             "field_writer_buffer",
             true,
             std::move(reclaimer))},
         inputBufferGrowthPolicy{
-            DefaultInputBufferGrowthPolicy::withDefaultRanges()} {
+            DefaultInputBufferGrowthPolicy::withDefaultRanges()},
+        vectorDecoderVisitor(std::move(vectorDecoderVisitor)) {
     resetStringBuffer();
   }
 
@@ -64,6 +66,8 @@ struct FieldWriterContext {
 
   std::function<void(const TypeBuilder&)> typeAddedHandler =
       [](const TypeBuilder&) {};
+
+  std::function<void(void)> vectorDecoderVisitor;
 
   LocalDecodedVector getLocalDecodedVector();
   velox::SelectivityVector& getSelectivityVector(velox::vector_size_t size);
