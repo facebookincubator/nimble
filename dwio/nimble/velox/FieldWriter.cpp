@@ -1369,6 +1369,8 @@ std::unique_ptr<FieldWriter> createArrayWithOffsetsFieldWriter(
 
 FieldWriterContext::LocalDecodedVector
 FieldWriterContext::getLocalDecodedVector() {
+  NIMBLE_DASSERT(vectorDecoderVisitor, "vectorDecoderVisitor is missing");
+  vectorDecoderVisitor();
   return LocalDecodedVector{*this};
 }
 
