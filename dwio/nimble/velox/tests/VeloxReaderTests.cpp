@@ -1057,6 +1057,83 @@ class VeloxReaderTests : public ::testing::Test {
         expectedUniqueArrays);
   }
 
+  template <typename T>
+  void verifyFlatMapPassthrough(
+      const std::vector<std::string>& features,
+      const std::vector<
+          std::vector<std::optional<std::vector<std::optional<T>>>>>&
+          valueArrays) {
+    auto type = velox::ROW(
+        {{"id_list_features",
+          velox::MAP(velox::INTEGER(), velox::ARRAY(velox::BIGINT()))}});
+    auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
+
+    nimble::VeloxWriterOptions writerOptions;
+    writerOptions.flatMapColumns.insert("id_list_features");
+
+    uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                                : folly::Random::rand32();
+    VeloxMapGeneratorConfig generatorConfig{
+        .seed = seed,
+    };
+    LOG(INFO) << "seed: " << seed;
+    VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
+    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+    nimble::VeloxReadParams params;
+    params.readFlatMapFieldAsStruct.insert("id_list_features");
+    for (int i = 0; i < features.size(); ++i) {
+      params.flatMapFeatureSelector["id_list_features"].features.push_back(
+          features[i]);
+    }
+
+    // Checks that for each flatmap, the child at each key is equal at index
+    auto compareFlatMapToFlatMap = [](const velox::VectorPtr& expected,
+                                      const velox::VectorPtr& actual,
+                                      velox::vector_size_t index) {
+      auto expectedRow = expected->as<velox::RowVector>();
+      auto actualRow = actual->as<velox::RowVector>();
+      EXPECT_EQ(expectedRow->childrenSize(), actualRow->childrenSize());
+      for (auto i = 0; i < expectedRow->childrenSize(); ++i) {
+        auto expectedColumnType = expectedRow->type()->childAt(i);
+        auto actualColumnType = actualRow->type()->childAt(i);
+        EXPECT_EQ(expectedColumnType->kind(), actualColumnType->kind());
+        if (actualColumnType->kind() != velox::TypeKind::ROW) {
+          continue;
+        } else {
+          auto expectedFlatMap = expectedRow->childAt(i);
+          auto actualFlatMap = actualRow->childAt(i);
+          bool match =
+              expectedFlatMap->equalValueAt(actualFlatMap.get(), index, index);
+          if (!match) {
+            return false;
+          }
+        }
+      }
+      return true;
+    };
+
+    auto batches = 20;
+    writeAndVerify(
+        generator.rng(),
+        *leafPool_,
+        rowType,
+        [&](auto&) {
+          std::vector<velox::VectorPtr> children;
+          for (int i = 0; i < valueArrays.size(); ++i) {
+            children.push_back(
+                vectorMaker.arrayVectorNullable<T>(valueArrays[i]));
+          }
+          return vectorMaker.rowVector(
+              {"id_list_features"},
+              {vectorMaker.rowVector(features, children)});
+        },
+        compareFlatMapToFlatMap,
+        batches,
+        writerOptions,
+        params);
+  }
+
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
 };
@@ -3058,7 +3135,7 @@ bool compareFlatMap(
 }
 
 template <typename T = int32_t>
-bool compareFlatMaps(
+bool compareMapToFlatMap(
     const velox::VectorPtr& expected,
     const velox::VectorPtr& actual,
     velox::vector_size_t index) {
@@ -3145,7 +3222,7 @@ TEST_F(VeloxReaderTests, SlidingWindowMapNestedInFlatMap) {
         [&](auto& /*type*/) {
           return vectorMaker.rowVector({"nested_map"}, {outerMap});
         },
-        compareFlatMaps<int32_t>,
+        compareMapToFlatMap<int32_t>,
         batches,
         writerOptions,
         params,
@@ -3153,6 +3230,142 @@ TEST_F(VeloxReaderTests, SlidingWindowMapNestedInFlatMap) {
         compare,
         false,
         checkMemoryLeak);
+  }
+}
+
+TEST_F(VeloxReaderTests, FlatmapPassthroughBasicTest) {
+  // normal flatmap
+  auto features = std::vector<std::string>{"123", "234", "345", "456"};
+  auto valueArrays = std::vector<
+      std::vector<std::optional<std::vector<std::optional<int64_t>>>>>{
+      {std::vector<std::optional<int64_t>>{1, 2},
+       std::vector<std::optional<int64_t>>{1, 2, 3},
+       std::vector<std::optional<int64_t>>{4, 5, 6, 7}},
+      {std::vector<std::optional<int64_t>>{2, 3},
+       std::vector<std::optional<int64_t>>{2, 3, 4},
+       std::vector<std::optional<int64_t>>{6, 9, 12, 15}},
+      {std::vector<std::optional<int64_t>>{9, 10},
+       std::vector<std::optional<int64_t>>{10, 20, 30},
+       std::vector<std::optional<int64_t>>{2, 6, 18, 48}},
+      {std::vector<std::optional<int64_t>>{9},
+       std::vector<std::optional<int64_t>>{10},
+       std::vector<std::optional<int64_t>>{2}}};
+
+  verifyFlatMapPassthrough(features, valueArrays);
+
+  // single column
+  features = std::vector<std::string>{"210"};
+  valueArrays = std::vector<
+      std::vector<std::optional<std::vector<std::optional<int64_t>>>>>{
+      {std::vector<std::optional<int64_t>>{1, 2, 3},
+       std::vector<std::optional<int64_t>>{9, 10, 11},
+       std::vector<std::optional<int64_t>>{20, 30, 40},
+       std::vector<std::optional<int64_t>>{43, 43, 43}}};
+  verifyFlatMapPassthrough(features, valueArrays);
+
+  // single row depth
+  features = std::vector<std::string>{"123", "234", "456"};
+  valueArrays = std::vector<
+      std::vector<std::optional<std::vector<std::optional<int64_t>>>>>{
+      {std::vector<std::optional<int64_t>>{1, 2}},
+      {std::vector<std::optional<int64_t>>{3, 4}},
+      {std::vector<std::optional<int64_t>>{4, 5}}};
+  verifyFlatMapPassthrough(features, valueArrays);
+
+  // empty rows
+  features = std::vector<std::string>{"123", "234", "456"};
+  valueArrays = std::vector<
+      std::vector<std::optional<std::vector<std::optional<int64_t>>>>>{
+      {std::nullopt}, {std::nullopt}, {std::nullopt}};
+  verifyFlatMapPassthrough(features, valueArrays);
+}
+
+TEST_F(VeloxReaderTests, FlatMapPassthroughFuzzer) {
+  auto type = velox::ROW(
+      {{"id_list_features",
+        velox::MAP(velox::INTEGER(), velox::ARRAY(velox::BIGINT()))}});
+  auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
+
+  // Type for fuzzer is a ROW instead of MAP to create a vector of flatmap
+  // while indicating to the writer to expect a MAP type.
+  auto fuzzType = velox::ROW(
+      {{"id_list_features",
+        velox::ROW(
+            {{"0", velox::ARRAY(velox::BIGINT())},
+             {"1", velox::ARRAY(velox::BIGINT())},
+             {"2", velox::ARRAY(velox::BIGINT())},
+             {"3", velox::ARRAY(velox::BIGINT())},
+             {"4", velox::ARRAY(velox::BIGINT())}})}});
+  auto fuzzRow = std::dynamic_pointer_cast<const velox::RowType>(fuzzType);
+
+  nimble::VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns.insert("id_list_features");
+
+  nimble::VeloxReadParams params;
+  params.readFlatMapFieldAsStruct.insert("id_list_features");
+  for (auto i = 0; i < 5; ++i) {
+    params.flatMapFeatureSelector["id_list_features"].features.push_back(
+        folly::to<std::string>(i));
+  }
+  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                              : folly::Random::rand32();
+  VeloxMapGeneratorConfig generatorConfig{
+      .seed = seed,
+  };
+  LOG(INFO) << "seed: " << seed;
+  VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
+
+  auto compareFlatMapToFlatMap = [](const velox::VectorPtr& expected,
+                                    const velox::VectorPtr& actual,
+                                    velox::vector_size_t index) {
+    auto expectedRow = expected->as<velox::RowVector>();
+    auto actualRow = actual->as<velox::RowVector>();
+    EXPECT_EQ(expectedRow->childrenSize(), actualRow->childrenSize());
+    for (auto i = 0; i < expectedRow->childrenSize(); ++i) {
+      auto expectedColumnType = expectedRow->type()->childAt(i);
+      auto actualColumnType = actualRow->type()->childAt(i);
+      EXPECT_EQ(expectedColumnType->kind(), actualColumnType->kind());
+      if (actualColumnType->kind() != velox::TypeKind::ROW) {
+        continue;
+      } else {
+        auto expectedFlatMap = expectedRow->childAt(i);
+        auto actualFlatMap = actualRow->childAt(i);
+        EXPECT_EQ(expectedFlatMap->size(), actualFlatMap->size());
+        bool match =
+            expectedFlatMap->equalValueAt(actualFlatMap.get(), index, index);
+        if (!match) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+
+  size_t batchSize = 5;
+  velox::VectorFuzzer fuzzer(
+      {
+          .vectorSize = batchSize,
+          .nullRatio = 0.2,
+          .stringLength = 20,
+          .stringVariableLength = true,
+          .containerLength = 6,
+          .containerVariableLength = true,
+      },
+      leafPool_.get(),
+      seed);
+
+  auto iterations = 10;
+  auto batches = 10;
+  for (int i = 0; i < iterations; ++i) {
+    writeAndVerify(
+        generator.rng(),
+        *leafPool_,
+        rowType,
+        [&](auto&) { return fuzzer.fuzzInputFlatRow(fuzzRow); },
+        compareFlatMapToFlatMap,
+        batches,
+        writerOptions,
+        params);
   }
 }
 
@@ -3210,7 +3423,7 @@ TEST_F(VeloxReaderTests, FlatMapToStruct) {
         *leafPool_,
         rowType,
         [&](auto&) { return generator.generateBatch(10); },
-        compareFlatMaps<int32_t>,
+        compareMapToFlatMap<int32_t>,
         batches,
         writerOptions,
         params);
@@ -3253,7 +3466,7 @@ TEST_F(VeloxReaderTests, FlatMapToStructForComplexType) {
         *leafPool_,
         rowType,
         [&](auto&) { return generator.generateBatch(10); },
-        compareFlatMaps<int32_t>,
+        compareMapToFlatMap<int32_t>,
         batches,
         writerOptions,
         params);
@@ -3286,14 +3499,14 @@ TEST_F(VeloxReaderTests, StringKeyFlatMapAsStruct) {
   }
 
   auto iterations = 10;
-  auto batches = 1;
+  auto batches = 20;
   for (auto i = 0; i < iterations; ++i) {
     writeAndVerify(
         generator.rng(),
         *leafPool_,
         rowType,
         [&](auto&) { return generator.generateBatch(10); },
-        compareFlatMaps<velox::StringView>,
+        compareMapToFlatMap<velox::StringView>,
         batches,
         writerOptions,
         params);
@@ -3307,7 +3520,7 @@ TEST_F(VeloxReaderTests, StringKeyFlatMapAsStruct) {
         *leafPool_,
         rowType,
         [&](auto&) { return generator.generateBatch(10); },
-        compareFlatMaps<velox::StringView>,
+        compareMapToFlatMap<velox::StringView>,
         batches,
         writerOptions,
         params);
