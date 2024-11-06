@@ -74,7 +74,7 @@ using vector_size_t = velox::vector_size_t;
 struct ReadWithVisitorParams {
   // Create the reader nulls buffer if not already exists and return pointer to
   // the raw buffer.  When it is created, it is created with the full length
-  // across potential mutliple chunks.
+  // across potential multiple chunks.
   std::function<uint64_t*()> makeReaderNulls;
 
   // Initialize `SelectiveColumnReader::returnReaderNulls_' field.  Need to be
