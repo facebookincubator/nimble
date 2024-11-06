@@ -1124,13 +1124,27 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
         dictionaryVector.valueVector()->template as<velox::ArrayVector>();
 
     auto previousOffset = -1;
+    bool newElementIngested = false;
     auto ingestDictionaryIndex = [&](auto index) {
-      // skip writing length if previous offset was the same
-      if (previousOffset < 0 || offsetsData.empty() ||
-          offsets[index] != previousOffset) {
+      bool match = false;
+      // Only write length if first element or if consecutive offset is
+      // different, meaning we have reached a new value element.
+      if (previousOffset >= 0) {
+        match = (offsets[index] == previousOffset);
+      } else if (cached_) {
+        velox::CompareFlags flags;
+        match =
+            (valuesArrayVector->sizeAt(offsets[index]) == cachedSize_ &&
+             valuesArrayVector
+                     ->compare(cachedValue_.get(), offsets[index], 0, flags)
+                     .value_or(-1) == 0);
+      }
+
+      if (!match) {
         auto arrayOffset = valuesArrayVector->offsetAt(offsets[index]);
         auto length = valuesArrayVector->sizeAt(offsets[index]);
         lengthsData.push_back(length);
+        newElementIngested = true;
         if (length > 0) {
           filteredRanges.add(arrayOffset, length);
         }
@@ -1152,8 +1166,19 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
     } else {
       ranges.applyEach([&](auto index) { ingestDictionaryIndex(index); });
     }
-    // ensure that we mark cache as invalidated
-    cached_ = false;
+
+    // insert last element discovered into cache
+    if (newElementIngested) {
+      cached_ = true;
+      cachedSize_ = lengthsData[lengthsData.size() - 1];
+      cachedValue_->prepareForReuse();
+      velox::BaseVector::CopyRange cacheRange{
+          static_cast<velox::vector_size_t>(previousOffset) /* source index*/,
+          0 /* target index*/,
+          1 /* count*/};
+      cachedValue_->copyRanges(valuesArrayVector, folly::Range(&cacheRange, 1));
+    }
+
     return valuesArrayVector;
   }
 

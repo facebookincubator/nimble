@@ -433,6 +433,16 @@ class VeloxReaderTests : public ::testing::Test {
     if (expectedNumTotalArrays == 0) {
       return;
     }
+
+    // Ensure no extra data floating in left/right
+    // Done before reading data to ensure we're comparing full result vectors
+    // Read into new vectors to ensure no accidental rewriting
+    // of leftResult and rightResult
+    velox::VectorPtr leftResultRemainder;
+    velox::VectorPtr rightResultRemainder;
+    ASSERT_FALSE(lhs->next(1, leftResultRemainder));
+    ASSERT_FALSE(rhs->next(1, rightResultRemainder));
+
     ASSERT_EQ(
         leftResult->wrappedVector()
             ->as<velox::RowVector>()
@@ -454,10 +464,6 @@ class VeloxReaderTests : public ::testing::Test {
       ASSERT_TRUE(vectorEquals(leftResult, rightResult, i))
           << "Mismatch at index: " << i;
     }
-
-    // Ensure no extra data floating in left/right
-    ASSERT_FALSE(lhs->next(1, leftResult));
-    ASSERT_FALSE(rhs->next(1, rightResult));
   }
 
   void testVeloxTypeFromNimbleSchema(
@@ -875,7 +881,7 @@ class VeloxReaderTests : public ::testing::Test {
   }
 
   template <typename T>
-  std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>
+  std::function<velox::VectorPtr(const velox::RowTypePtr&)>
   getDictionaryGenerator(
       velox::test::VectorMaker& vectorMaker,
       const std::vector<std::optional<velox::vector_size_t>>& offsets,
@@ -888,14 +894,11 @@ class VeloxReaderTests : public ::testing::Test {
               createEncodedDictionaryVectorNullable(offsets, dictionaryValues),
           });
     };
-    return std::vector<
-        std::function<velox::VectorPtr(const velox::RowTypePtr&)>>(
-        {dictionaryArrayGenerator});
+    return dictionaryArrayGenerator;
   }
 
   template <typename T>
-  std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>
-  getArrayGenerator(
+  std::function<velox::VectorPtr(const velox::RowTypePtr&)> getArrayGenerator(
       velox::test::VectorMaker& vectorMaker,
       const std::vector<std::vector<T>>& arrayValues) {
     auto arrayVectorGenerator = [&, arrayValues](auto& /*type*/) {
@@ -905,13 +908,11 @@ class VeloxReaderTests : public ::testing::Test {
               vectorMaker.arrayVector<T>(arrayValues),
           });
     };
-    return std::vector<
-        std::function<velox::VectorPtr(const velox::RowTypePtr&)>>(
-        {arrayVectorGenerator});
+    return arrayVectorGenerator;
   }
 
   template <typename T>
-  std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>
+  std::function<velox::VectorPtr(const velox::RowTypePtr&)>
   getArrayGeneratorNullable(
       velox::test::VectorMaker& vectorMaker,
       const std::vector<std::optional<std::vector<std::optional<T>>>>&
@@ -923,9 +924,7 @@ class VeloxReaderTests : public ::testing::Test {
               vectorMaker.arrayVectorNullable<T>(arrayValues),
           });
     };
-    return std::vector<
-        std::function<velox::VectorPtr(const velox::RowTypePtr&)>>(
-        {arrayVectorGenerator});
+    return arrayVectorGenerator;
   }
 
   template <typename T>
@@ -940,9 +939,9 @@ class VeloxReaderTests : public ::testing::Test {
 
     velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
-    auto dictionaryGenerators =
-        getDictionaryGenerator(vectorMaker, offsets, dictionaryValues);
-    auto arrayGenerators = getArrayGenerator(vectorMaker, arrayValues);
+    auto dictionaryGenerators = {
+        getDictionaryGenerator(vectorMaker, offsets, dictionaryValues)};
+    auto arrayGenerators = {getArrayGenerator(vectorMaker, arrayValues)};
 
     int decodeDictionaryCount = 0;
     int decodeArrayCount = 0;
@@ -979,9 +978,10 @@ class VeloxReaderTests : public ::testing::Test {
 
     velox::test::VectorMaker vectorMaker{leafPool_.get()};
     // Test duplicate in first index
-    auto dictionaryGenerators =
-        getDictionaryGenerator(vectorMaker, offsets, dictionaryValues);
-    auto arrayGenerators = getArrayGeneratorNullable(vectorMaker, arrayValues);
+    auto dictionaryGenerators = {
+        getDictionaryGenerator(vectorMaker, offsets, dictionaryValues)};
+    auto arrayGenerators = {
+        getArrayGeneratorNullable(vectorMaker, arrayValues)};
 
     int decodeDictionaryCount = 0;
     int decodeArrayCount = 0;
@@ -1003,6 +1003,58 @@ class VeloxReaderTests : public ::testing::Test {
         std::move(arrayReader),
         offsets.size(), /* expectedNumTotalArrays */
         expectedNumUniqueArrays);
+  }
+
+  template <typename T>
+  void verifyDictionaryEncodedPassthroughCached(
+      const std::vector<std::optional<velox::vector_size_t>>& firstWriteOffsets,
+      const std::vector<std::vector<T>>& firstWriteDictValues,
+      const std::vector<std::optional<velox::vector_size_t>>&
+          secondWriteOffsets,
+      const std::vector<std::vector<T>>& secondWriteDictValues,
+      const std::vector<std::optional<std::vector<std::optional<T>>>>&
+          arrayValues,
+      const std::vector<std::optional<velox::vector_size_t>>&
+          expectedCombinedOffsets,
+      const std::vector<std::vector<T>>& expectedCombinedValues,
+      int expectedTotalArrays,
+      int expectedUniqueArrays) {
+    auto type = velox::ROW({
+        {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
+    });
+    auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
+    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+    auto dictionaryGeneratorsDoubleWrite = {
+        getDictionaryGenerator(
+            vectorMaker, firstWriteOffsets, firstWriteDictValues),
+        getDictionaryGenerator(
+            vectorMaker, secondWriteOffsets, secondWriteDictValues)};
+
+    auto arrayGenerators = {
+        getArrayGeneratorNullable(vectorMaker, arrayValues)};
+    auto left =
+        getReaderForWrite(*leafPool_, type, dictionaryGeneratorsDoubleWrite, 1);
+    auto right = getReaderForWrite(*leafPool_, type, arrayGenerators, 1);
+
+    verifyReadersEqual(
+        std::move(left),
+        std::move(right),
+        expectedTotalArrays,
+        expectedUniqueArrays);
+
+    left =
+        getReaderForWrite(*leafPool_, type, dictionaryGeneratorsDoubleWrite, 1);
+
+    auto combinedDictGenerator = {getDictionaryGenerator(
+        vectorMaker, expectedCombinedOffsets, expectedCombinedValues)};
+    right = getReaderForWrite(*leafPool_, type, combinedDictGenerator, 1);
+
+    verifyReadersEqual(
+        std::move(left),
+        std::move(right),
+        expectedTotalArrays,
+        expectedUniqueArrays);
   }
 
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
@@ -2029,6 +2081,212 @@ TEST_F(VeloxReaderTests, DictionaryEncodedPassthroughDecoding) {
       *leafPool_, rowType, dictionaryGenerators, decodeDictionaryCount);
 
   ASSERT_EQ(decodeDictionaryCount, 1);
+}
+
+TEST_F(VeloxReaderTests, DictionaryEncodingPassthroughCaching) {
+  auto firstWriteOffsets =
+      std::vector<std::optional<velox::vector_size_t>>{0, 0, 1, 2};
+  auto firstWriteDictValues =
+      std::vector<std::vector<int32_t>>{{10, 15, 20}, {30, 40, 50}, {3, 4, 5}};
+
+  auto secondWriteOffsets =
+      std::vector<std::optional<velox::vector_size_t>>{0, 0, 1, 2};
+  auto secondWriteDictValues =
+      std::vector<std::vector<int32_t>>{{3, 4, 5}, {9, 9, 9}, {0, 1, 2}};
+
+  auto expectedCombinedOffsets =
+      std::vector<std::optional<velox::vector_size_t>>{0, 0, 1, 2, 2, 2, 3, 4};
+  auto expectedCombinedValues = std::vector<std::vector<int32_t>>{
+      {10, 15, 20}, {30, 40, 50}, {3, 4, 5}, {9, 9, 9}, {0, 1, 2}};
+
+  auto arrayValues =
+      std::vector<std::optional<std::vector<std::optional<int32_t>>>>{
+          std::vector<std::optional<int32_t>>{10, 15, 20},
+          std::vector<std::optional<int32_t>>{10, 15, 20},
+          std::vector<std::optional<int32_t>>{30, 40, 50},
+          std::vector<std::optional<int32_t>>{3, 4, 5},
+          std::vector<std::optional<int32_t>>{3, 4, 5},
+          std::vector<std::optional<int32_t>>{3, 4, 5},
+          std::vector<std::optional<int32_t>>{9, 9, 9},
+          std::vector<std::optional<int32_t>>{0, 1, 2}};
+
+  auto expectedTotalArrays = 8;
+  auto expectedUniqueArrays = 5;
+
+  verifyDictionaryEncodedPassthroughCached(
+      firstWriteOffsets,
+      firstWriteDictValues,
+      secondWriteOffsets,
+      secondWriteDictValues,
+      arrayValues,
+      expectedCombinedOffsets,
+      expectedCombinedValues,
+      expectedTotalArrays,
+      expectedUniqueArrays);
+
+  // cache empty vector
+  firstWriteOffsets =
+      std::vector<std::optional<velox::vector_size_t>>{0, 0, 1, 2};
+  firstWriteDictValues =
+      std::vector<std::vector<int32_t>>{{10, 15}, {30, 40, 50}, {}};
+
+  secondWriteOffsets =
+      std::vector<std::optional<velox::vector_size_t>>{0, 0, 1, 2};
+  secondWriteDictValues =
+      std::vector<std::vector<int32_t>>{{}, {9, 9, 9, 9}, {0, 1, 2}};
+
+  expectedCombinedOffsets =
+      std::vector<std::optional<velox::vector_size_t>>{0, 0, 1, 2, 2, 2, 3, 4};
+  expectedCombinedValues = std::vector<std::vector<int32_t>>{
+      {10, 15}, {30, 40, 50}, {}, {9, 9, 9, 9}, {0, 1, 2}};
+
+  arrayValues = std::vector<std::optional<std::vector<std::optional<int32_t>>>>{
+      std::vector<std::optional<int32_t>>{10, 15},
+      std::vector<std::optional<int32_t>>{10, 15},
+      std::vector<std::optional<int32_t>>{30, 40, 50},
+      std::vector<std::optional<int32_t>>{},
+      std::vector<std::optional<int32_t>>{},
+      std::vector<std::optional<int32_t>>{},
+      std::vector<std::optional<int32_t>>{9, 9, 9, 9},
+      std::vector<std::optional<int32_t>>{0, 1, 2}};
+
+  expectedTotalArrays = 8;
+  expectedUniqueArrays = 5;
+
+  verifyDictionaryEncodedPassthroughCached(
+      firstWriteOffsets,
+      firstWriteDictValues,
+      secondWriteOffsets,
+      secondWriteDictValues,
+      arrayValues,
+      expectedCombinedOffsets,
+      expectedCombinedValues,
+      expectedTotalArrays,
+      expectedUniqueArrays);
+
+  // null does not get cached on first write
+  firstWriteOffsets =
+      std::vector<std::optional<velox::vector_size_t>>{0, 0, 1, std::nullopt};
+  firstWriteDictValues =
+      std::vector<std::vector<int32_t>>{{10, 15}, {30, 40, 50}};
+
+  secondWriteOffsets =
+      std::vector<std::optional<velox::vector_size_t>>{0, 0, 1, 2};
+  secondWriteDictValues =
+      std::vector<std::vector<int32_t>>{{30, 40, 50}, {9, 9, 9, 9}, {0, 1, 2}};
+
+  expectedCombinedOffsets = std::vector<std::optional<velox::vector_size_t>>{
+      0, 0, 1, std::nullopt, 1, 1, 2, 3};
+  expectedCombinedValues = std::vector<std::vector<int32_t>>{
+      {10, 15}, {30, 40, 50}, {9, 9, 9, 9}, {0, 1, 2}};
+
+  arrayValues = std::vector<std::optional<std::vector<std::optional<int32_t>>>>{
+      std::vector<std::optional<int32_t>>{10, 15},
+      std::vector<std::optional<int32_t>>{10, 15},
+      std::vector<std::optional<int32_t>>{30, 40, 50},
+      std::nullopt,
+      std::vector<std::optional<int32_t>>{30, 40, 50},
+      std::vector<std::optional<int32_t>>{30, 40, 50},
+      std::vector<std::optional<int32_t>>{9, 9, 9, 9},
+      std::vector<std::optional<int32_t>>{0, 1, 2}};
+
+  expectedTotalArrays = 8;
+  expectedUniqueArrays = 4;
+
+  verifyDictionaryEncodedPassthroughCached(
+      firstWriteOffsets,
+      firstWriteDictValues,
+      secondWriteOffsets,
+      secondWriteDictValues,
+      arrayValues,
+      expectedCombinedOffsets,
+      expectedCombinedValues,
+      expectedTotalArrays,
+      expectedUniqueArrays);
+
+  // null in first element of second write still allows for cache hit
+  firstWriteOffsets = std::vector<std::optional<velox::vector_size_t>>{0, 0, 1};
+  firstWriteDictValues =
+      std::vector<std::vector<int32_t>>{{10, 15}, {30, 40, 50}};
+
+  secondWriteOffsets = std::vector<std::optional<velox::vector_size_t>>{
+      std::nullopt, 0, 0, 1, 2};
+  secondWriteDictValues =
+      std::vector<std::vector<int32_t>>{{30, 40, 50}, {9, 9, 9, 9}, {0, 1, 2}};
+
+  expectedCombinedOffsets = std::vector<std::optional<velox::vector_size_t>>{
+      0, 0, 1, std::nullopt, 1, 1, 2, 3};
+  expectedCombinedValues = std::vector<std::vector<int32_t>>{
+      {10, 15}, {30, 40, 50}, {9, 9, 9, 9}, {0, 1, 2}};
+
+  arrayValues = std::vector<std::optional<std::vector<std::optional<int32_t>>>>{
+      std::vector<std::optional<int32_t>>{10, 15},
+      std::vector<std::optional<int32_t>>{10, 15},
+      std::vector<std::optional<int32_t>>{30, 40, 50},
+      std::nullopt,
+      std::vector<std::optional<int32_t>>{30, 40, 50},
+      std::vector<std::optional<int32_t>>{30, 40, 50},
+      std::vector<std::optional<int32_t>>{9, 9, 9, 9},
+      std::vector<std::optional<int32_t>>{0, 1, 2}};
+
+  expectedTotalArrays = 8;
+  expectedUniqueArrays = 4;
+
+  verifyDictionaryEncodedPassthroughCached(
+      firstWriteOffsets,
+      firstWriteDictValues,
+      secondWriteOffsets,
+      secondWriteDictValues,
+      arrayValues,
+      expectedCombinedOffsets,
+      expectedCombinedValues,
+      expectedTotalArrays,
+      expectedUniqueArrays);
+
+  // cache miss
+  firstWriteOffsets = std::vector<std::optional<velox::vector_size_t>>{0, 0, 1};
+  firstWriteDictValues =
+      std::vector<std::vector<int32_t>>{{10, 15}, {30, 40, 50}};
+
+  secondWriteOffsets =
+      std::vector<std::optional<velox::vector_size_t>>{0, 0, 1, 2};
+  secondWriteDictValues = std::vector<std::vector<int32_t>>{
+      {30, 40, 50, 60}, {9, 9, 9, 9}, {0, 1, 2}};
+
+  expectedCombinedOffsets =
+      std::vector<std::optional<velox::vector_size_t>>{0, 0, 1, 2, 2, 3, 4};
+  expectedCombinedValues = std::vector<std::vector<int32_t>>{
+      {10, 15}, {30, 40, 50}, {30, 40, 50, 60}, {9, 9, 9, 9}, {0, 1, 2}};
+
+  arrayValues = std::vector<std::optional<std::vector<std::optional<int32_t>>>>{
+      std::vector<std::optional<int32_t>>{10, 15},
+      std::vector<std::optional<int32_t>>{10, 15},
+      std::vector<std::optional<int32_t>>{30, 40, 50},
+      std::vector<std::optional<int32_t>>{30, 40, 50, 60},
+      std::vector<std::optional<int32_t>>{30, 40, 50, 60},
+      std::vector<std::optional<int32_t>>{9, 9, 9, 9},
+      std::vector<std::optional<int32_t>>{0, 1, 2}};
+
+  expectedTotalArrays = 7;
+  expectedUniqueArrays = 5;
+
+  verifyDictionaryEncodedPassthroughCached(
+      firstWriteOffsets,
+      firstWriteDictValues,
+      secondWriteOffsets,
+      secondWriteDictValues,
+      arrayValues,
+      expectedCombinedOffsets,
+      expectedCombinedValues,
+      expectedTotalArrays,
+      expectedUniqueArrays);
+
+  // Null at border (both sides)
+  // Empty vector caching
+  // Cache miss
+  // Differently sized arrays at border
+
+  ASSERT_TRUE(true);
 }
 
 TEST_F(VeloxReaderTests, FuzzSimple) {
