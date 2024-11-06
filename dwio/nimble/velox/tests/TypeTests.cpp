@@ -327,7 +327,6 @@ TEST_F(TypeTests, FlatMapFeatureSelection) {
 
     for (auto i = 0; i < batchSize; ++i) {
       for (auto j = 0; j < map->sizeAt(i); ++j) {
-        size_t idx = map->offsetAt(i) + j;
         if (!values->isNullAt(i)) {
           uniqueKeys.emplace(keys->valueAt(i));
         }

@@ -617,7 +617,7 @@ TEST(TabletTests, OptionalSectionsPreload) {
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
 
-  for (const auto footerCompressionThreshold :
+  for ([[maybe_unused]] const auto footerCompressionThreshold :
        {0U, std::numeric_limits<uint32_t>::max()}) {
     auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
     std::string file;
