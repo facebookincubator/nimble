@@ -728,8 +728,19 @@ class VeloxReaderTests : public ::testing::Test {
       size_t batchSize,
       bool multiSkip = false,
       bool checkMemoryLeak = false) {
-    nimble::VeloxWriterOptions writerOptions = {};
-    nimble::VeloxReadParams readParams = {};
+    int decodeCounterUnused = 0;
+    return getReaderForWriteWithDecodeCounter(
+        pool, type, generators, decodeCounterUnused);
+  }
+
+  std::unique_ptr<nimble::VeloxReader> getReaderForWriteWithDecodeCounter(
+      velox::memory::MemoryPool& pool,
+      const velox::RowTypePtr& type,
+      std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>
+          generators,
+      int& decodeCounter) {
+    nimble::VeloxWriterOptions writerOptions;
+    nimble::VeloxReadParams readParams;
 
     std::string file;
     auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
@@ -739,6 +750,9 @@ class VeloxReaderTests : public ::testing::Test {
           [&](auto&) { return nimble::FlushDecision::None; });
     };
     writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
+    writerOptions.vectorDecoderVisitor = [&decodeCounter]() {
+      ++decodeCounter;
+    };
 
     nimble::VeloxWriter writer(
         *rootPool_, type, std::move(writeFile), std::move(writerOptions));
@@ -755,7 +769,10 @@ class VeloxReaderTests : public ::testing::Test {
     auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
 
     return std::make_unique<nimble::VeloxReader>(
-        *leafPool_, std::move(readFile), std::move(selector), readParams);
+        *leafPool_,
+        std::move(readFile),
+        std::move(selector),
+        std::move(readParams));
   }
 
   void verifySlidingWindowMap(
@@ -818,6 +835,14 @@ class VeloxReaderTests : public ::testing::Test {
           false,
           checkMemoryLeak);
     }
+  }
+
+  velox::VectorPtr wrapInDictionarySingleIndex(
+      velox::VectorPtr vectorToEncode) {
+    auto offsetBuffer = velox::AlignedBuffer::allocate<velox::vector_size_t>(
+        1 /* numValues */, leafPool_.get(), 0 /* initValue */);
+    return velox::BaseVector::wrapInDictionary(
+        nullptr, offsetBuffer, 1, vectorToEncode);
   }
 
   template <typename T>
@@ -919,10 +944,15 @@ class VeloxReaderTests : public ::testing::Test {
         getDictionaryGenerator(vectorMaker, offsets, dictionaryValues);
     auto arrayGenerators = getArrayGenerator(vectorMaker, arrayValues);
 
-    auto dictionaryReader =
-        getReaderForWrite(*leafPool_, rowType, dictionaryGenerators, 1);
-    auto arrayReader =
-        getReaderForWrite(*leafPool_, rowType, arrayGenerators, 1);
+    int decodeDictionaryCount = 0;
+    int decodeArrayCount = 0;
+    auto dictionaryReader = getReaderForWriteWithDecodeCounter(
+        *leafPool_, rowType, dictionaryGenerators, decodeDictionaryCount);
+    auto arrayReader = getReaderForWriteWithDecodeCounter(
+        *leafPool_, rowType, arrayGenerators, decodeArrayCount);
+
+    ASSERT_EQ(decodeDictionaryCount, 0);
+    ASSERT_EQ(decodeArrayCount, 0);
 
     // if dictionaryValues is empty with null offsets,
     // our loaded wrapped vector will contain a single null
@@ -953,10 +983,15 @@ class VeloxReaderTests : public ::testing::Test {
         getDictionaryGenerator(vectorMaker, offsets, dictionaryValues);
     auto arrayGenerators = getArrayGeneratorNullable(vectorMaker, arrayValues);
 
-    auto dictionaryReader =
-        getReaderForWrite(*leafPool_, rowType, dictionaryGenerators, 1);
-    auto arrayReader =
-        getReaderForWrite(*leafPool_, rowType, arrayGenerators, 1);
+    int decodeDictionaryCount = 0;
+    int decodeArrayCount = 0;
+    auto dictionaryReader = getReaderForWriteWithDecodeCounter(
+        *leafPool_, rowType, dictionaryGenerators, decodeDictionaryCount);
+    auto arrayReader = getReaderForWriteWithDecodeCounter(
+        *leafPool_, rowType, arrayGenerators, decodeArrayCount);
+
+    ASSERT_EQ(decodeDictionaryCount, 0);
+    ASSERT_EQ(decodeArrayCount, 0);
 
     // if dictionaryValues is empty with null offsets,
     // our loaded wrapped vector will contain a single null
@@ -1963,6 +1998,37 @@ TEST_F(VeloxReaderTests, DictionaryEncodedPassthrough) {
           std::nullopt, std::nullopt, std::nullopt};
   verifyDictionaryEncodedPassthroughNullable(
       offsets, dictionaryValues, fullArrayVectorNullable);
+}
+
+TEST_F(VeloxReaderTests, DictionaryEncodedPassthroughDecoding) {
+  auto offsets = std::vector<std::optional<velox::vector_size_t>>{0, 0, 1, 2};
+  auto dictionaryValues =
+      std::vector<std::vector<int32_t>>{{10, 15, 20}, {30, 40, 50}, {3, 4, 5}};
+  auto type = velox::ROW({
+      {"dictionaryArray", velox::ARRAY(velox::CppToType<int32_t>::create())},
+  });
+  auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  auto dictionaryGeneratorWrapped = [&](auto& /*type*/) {
+    return vectorMaker.rowVector(
+        {"dictionaryArray"},
+        {
+            wrapInDictionarySingleIndex(createEncodedDictionaryVectorNullable(
+                offsets, dictionaryValues)),
+        });
+  };
+
+  auto dictionaryGenerators =
+      std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>{
+          dictionaryGeneratorWrapped};
+
+  int decodeDictionaryCount = 0;
+  auto dictionaryReader = getReaderForWriteWithDecodeCounter(
+      *leafPool_, rowType, dictionaryGenerators, decodeDictionaryCount);
+
+  ASSERT_EQ(decodeDictionaryCount, 1);
 }
 
 TEST_F(VeloxReaderTests, FuzzSimple) {
