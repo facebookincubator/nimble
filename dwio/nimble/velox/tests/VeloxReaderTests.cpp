@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 #include <gtest/gtest.h>
-#include <velox/vector/ComplexVector.h>
 #include <cmath>
 #include <optional>
 #include <stdexcept>
@@ -31,7 +30,9 @@
 #include "folly/FileUtil.h"
 #include "folly/Random.h"
 #include "folly/executors/CPUThreadPoolExecutor.h"
+#include "velox/common/base/BitUtil.h"
 #include "velox/dwio/common/ColumnSelector.h"
+#include "velox/type/CppToType.h"
 #include "velox/type/Type.h"
 #include "velox/vector/BaseVector.h"
 #include "velox/vector/ComplexVector.h"
@@ -419,8 +420,19 @@ class VeloxReaderTests : public ::testing::Test {
       int32_t expectedNumUniqueArrays) {
     velox::VectorPtr leftResult;
     velox::VectorPtr rightResult;
-    ASSERT_TRUE(lhs->next(expectedNumTotalArrays, leftResult));
-    ASSERT_TRUE(rhs->next(expectedNumTotalArrays, rightResult));
+    // Read all arrays (if there are any)
+    ASSERT_EQ(
+        lhs->next(expectedNumTotalArrays, leftResult),
+        expectedNumTotalArrays > 0);
+    ASSERT_EQ(
+        rhs->next(expectedNumTotalArrays, rightResult),
+        expectedNumTotalArrays > 0);
+
+    // If empty, leftResult & rightResult point to 0 page,
+    // so we terminate early.
+    if (expectedNumTotalArrays == 0) {
+      return;
+    }
     ASSERT_EQ(
         leftResult->wrappedVector()
             ->as<velox::RowVector>()
@@ -439,7 +451,8 @@ class VeloxReaderTests : public ::testing::Test {
         expectedNumUniqueArrays);
 
     for (int i = 0; i < expectedNumTotalArrays; ++i) {
-      vectorEquals(leftResult, rightResult, i);
+      ASSERT_TRUE(vectorEquals(leftResult, rightResult, i))
+          << "Mismatch at index: " << i;
     }
 
     // Ensure no extra data floating in left/right
@@ -805,6 +818,156 @@ class VeloxReaderTests : public ::testing::Test {
           false,
           checkMemoryLeak);
     }
+  }
+
+  template <typename T>
+  velox::VectorPtr createEncodedDictionaryVectorNullable(
+      const std::vector<std::optional<velox::vector_size_t>>& offsets,
+      const std::vector<std::vector<T>>& dictionaryValues) {
+    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+    auto offsetBuffer = velox::AlignedBuffer::allocate<velox::vector_size_t>(
+        offsets.size() /* numValues */, leafPool_.get(), 0 /* initValue */);
+    auto nullBuffer = velox::AlignedBuffer::allocate<uint64_t>(
+        velox::bits::nwords(offsets.size()), leafPool_.get());
+    auto* offsetPtr = offsetBuffer->asMutable<velox::vector_size_t>();
+    auto* nullPtr = nullBuffer->template asMutable<uint64_t>();
+    bool hasNulls = false;
+    for (int i = 0; i < offsets.size(); ++i) {
+      if (offsets[i].has_value()) {
+        velox::bits::setNull(nullPtr, i, false);
+        offsetPtr[i] = offsets[i].value();
+      } else {
+        hasNulls = true;
+        velox::bits::setNull(nullPtr, i, true);
+      }
+    }
+
+    auto array = vectorMaker.arrayVector<T>(dictionaryValues);
+    auto dictionaryArrayEncoded = velox::BaseVector::wrapInDictionary(
+        hasNulls ? nullBuffer : nullptr, offsetBuffer, offsets.size(), array);
+
+    return dictionaryArrayEncoded;
+  }
+
+  template <typename T>
+  std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>
+  getDictionaryGenerator(
+      velox::test::VectorMaker& vectorMaker,
+      const std::vector<std::optional<velox::vector_size_t>>& offsets,
+      const std::vector<std::vector<T>>& dictionaryValues) {
+    auto dictionaryArrayGenerator = [&, offsets, dictionaryValues](
+                                        auto& /*type*/) {
+      return vectorMaker.rowVector(
+          {"dictionaryArray"},
+          {
+              createEncodedDictionaryVectorNullable(offsets, dictionaryValues),
+          });
+    };
+    return std::vector<
+        std::function<velox::VectorPtr(const velox::RowTypePtr&)>>(
+        {dictionaryArrayGenerator});
+  }
+
+  template <typename T>
+  std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>
+  getArrayGenerator(
+      velox::test::VectorMaker& vectorMaker,
+      const std::vector<std::vector<T>>& arrayValues) {
+    auto arrayVectorGenerator = [&, arrayValues](auto& /*type*/) {
+      return vectorMaker.rowVector(
+          {"dictionaryArray"},
+          {
+              vectorMaker.arrayVector<T>(arrayValues),
+          });
+    };
+    return std::vector<
+        std::function<velox::VectorPtr(const velox::RowTypePtr&)>>(
+        {arrayVectorGenerator});
+  }
+
+  template <typename T>
+  std::vector<std::function<velox::VectorPtr(const velox::RowTypePtr&)>>
+  getArrayGeneratorNullable(
+      velox::test::VectorMaker& vectorMaker,
+      const std::vector<std::optional<std::vector<std::optional<T>>>>&
+          arrayValues) {
+    auto arrayVectorGenerator = [&](auto& /*type*/) {
+      return vectorMaker.rowVector(
+          {"dictionaryArray"},
+          {
+              vectorMaker.arrayVectorNullable<T>(arrayValues),
+          });
+    };
+    return std::vector<
+        std::function<velox::VectorPtr(const velox::RowTypePtr&)>>(
+        {arrayVectorGenerator});
+  }
+
+  template <typename T>
+  void verifyDictionaryEncodedPassthrough(
+      const std::vector<std::optional<velox::vector_size_t>>& offsets,
+      const std::vector<std::vector<T>>& dictionaryValues,
+      const std::vector<std::vector<T>>& arrayValues) {
+    auto type = velox::ROW({
+        {"dictionaryArray", velox::ARRAY(velox::CppToType<T>::create())},
+    });
+    auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
+
+    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+    auto dictionaryGenerators =
+        getDictionaryGenerator(vectorMaker, offsets, dictionaryValues);
+    auto arrayGenerators = getArrayGenerator(vectorMaker, arrayValues);
+
+    auto dictionaryReader =
+        getReaderForWrite(*leafPool_, rowType, dictionaryGenerators, 1);
+    auto arrayReader =
+        getReaderForWrite(*leafPool_, rowType, arrayGenerators, 1);
+
+    // if dictionaryValues is empty with null offsets,
+    // our loaded wrapped vector will contain a single null
+    auto expectedNumUniqueArrays =
+        dictionaryValues.size() > 0 ? dictionaryValues.size() : 1;
+
+    verifyReadersEqual(
+        std::move(dictionaryReader),
+        std::move(arrayReader),
+        offsets.size(),
+        expectedNumUniqueArrays);
+  }
+
+  template <typename T>
+  void verifyDictionaryEncodedPassthroughNullable(
+      const std::vector<std::optional<velox::vector_size_t>>& offsets,
+      const std::vector<std::vector<T>>& dictionaryValues,
+      const std::vector<std::optional<std::vector<std::optional<T>>>>&
+          arrayValues) {
+    auto type = velox::ROW({
+        {"dictionaryArray", velox::ARRAY(velox::CppToType<T>::create())},
+    });
+    auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
+
+    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+    // Test duplicate in first index
+    auto dictionaryGenerators =
+        getDictionaryGenerator(vectorMaker, offsets, dictionaryValues);
+    auto arrayGenerators = getArrayGeneratorNullable(vectorMaker, arrayValues);
+
+    auto dictionaryReader =
+        getReaderForWrite(*leafPool_, rowType, dictionaryGenerators, 1);
+    auto arrayReader =
+        getReaderForWrite(*leafPool_, rowType, arrayGenerators, 1);
+
+    // if dictionaryValues is empty with null offsets,
+    // our loaded wrapped vector will contain a single null
+    auto expectedNumUniqueArrays =
+        dictionaryValues.size() > 0 ? dictionaryValues.size() : 1;
+
+    verifyReadersEqual(
+        std::move(dictionaryReader),
+        std::move(arrayReader),
+        offsets.size(), /* expectedNumTotalArrays */
+        expectedNumUniqueArrays);
   }
 
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
@@ -1688,6 +1851,118 @@ TEST_F(VeloxReaderTests, ArrayWithOffsetsCaching) {
       std::move(right),
       expectedTotalArrays,
       expectedUniqueArrays);
+}
+
+TEST_F(VeloxReaderTests, DictionaryEncodedPassthrough) {
+  // test duplicate in first index
+  auto offsets = std::vector<std::optional<velox::vector_size_t>>{0, 0, 1, 2};
+  auto dictionaryValues =
+      std::vector<std::vector<int32_t>>{{10, 15, 20}, {30, 40, 50}, {3, 4, 5}};
+  auto fullArrayVector = std::vector<std::vector<int32_t>>{
+      {10, 15, 20}, {10, 15, 20}, {30, 40, 50}, {3, 4, 5}};
+  verifyDictionaryEncodedPassthrough(
+      offsets, dictionaryValues, fullArrayVector);
+
+  // test duplicate in middle index
+  offsets = std::vector<std::optional<velox::vector_size_t>>{0, 1, 1, 2};
+  dictionaryValues =
+      std::vector<std::vector<int32_t>>{{10, 15}, {30, 40, 50, 60}, {3, 4, 5}};
+  fullArrayVector = std::vector<std::vector<int32_t>>{
+      {10, 15}, {30, 40, 50, 60}, {30, 40, 50, 60}, {3, 4, 5}};
+  verifyDictionaryEncodedPassthrough(
+      offsets, dictionaryValues, fullArrayVector);
+
+  // test duplicate in last index
+  offsets = std::vector<std::optional<velox::vector_size_t>>{0, 1, 2, 2, 2};
+  dictionaryValues = std::vector<std::vector<int32_t>>{
+      {10, 15}, {30, 40, 50, 60}, {3, 4, 5, 6, 7}};
+  fullArrayVector = std::vector<std::vector<int32_t>>{
+      {10, 15},
+      {30, 40, 50, 60},
+      {3, 4, 5, 6, 7},
+      {3, 4, 5, 6, 7},
+      {3, 4, 5, 6, 7}};
+  verifyDictionaryEncodedPassthrough(
+      offsets, dictionaryValues, fullArrayVector);
+
+  // test all duplicated
+  offsets = std::vector<std::optional<velox::vector_size_t>>{0, 0, 0, 0, 0};
+  dictionaryValues = std::vector<std::vector<int32_t>>{{10, 15, 20}};
+  fullArrayVector = std::vector<std::vector<int32_t>>{
+      {10, 15, 20}, {10, 15, 20}, {10, 15, 20}, {10, 15, 20}, {10, 15, 20}};
+  verifyDictionaryEncodedPassthrough(
+      offsets, dictionaryValues, fullArrayVector);
+
+  // test none duplictaed
+  offsets = std::vector<std::optional<velox::vector_size_t>>{0, 1, 2, 3, 4};
+  dictionaryValues = std::vector<std::vector<int32_t>>{
+      {10, 15, 20}, {11, 14, 21}, {12, 13, 22}, {0, 0, 0}, {100, 99, 98}};
+  fullArrayVector = std::vector<std::vector<int32_t>>{
+      {10, 15, 20}, {11, 14, 21}, {12, 13, 22}, {0, 0, 0}, {100, 99, 98}};
+  verifyDictionaryEncodedPassthrough(
+      offsets, dictionaryValues, fullArrayVector);
+
+  // test all empty
+  offsets = std::vector<std::optional<velox::vector_size_t>>{};
+  dictionaryValues = std::vector<std::vector<int32_t>>{};
+  fullArrayVector = std::vector<std::vector<int32_t>>{};
+  verifyDictionaryEncodedPassthrough(
+      offsets, dictionaryValues, fullArrayVector);
+
+  // test null in first index
+  offsets =
+      std::vector<std::optional<velox::vector_size_t>>{std::nullopt, 0, 1, 2};
+  dictionaryValues =
+      std::vector<std::vector<int32_t>>{{10, 15, 20}, {30, 40, 50}, {3, 4, 5}};
+  auto fullArrayVectorNullable =
+      std::vector<std::optional<std::vector<std::optional<int32_t>>>>{
+          std::nullopt,
+          std::vector<std::optional<int32_t>>{10, 15, 20},
+          std::vector<std::optional<int32_t>>{30, 40, 50},
+          std::vector<std::optional<int32_t>>{3, 4, 5}};
+  verifyDictionaryEncodedPassthroughNullable(
+      offsets, dictionaryValues, fullArrayVectorNullable);
+
+  // test duplicates split over null in middle
+  offsets = std::vector<std::optional<velox::vector_size_t>>{
+      std::nullopt, 0, std::nullopt, 0, 1};
+  dictionaryValues =
+      std::vector<std::vector<int32_t>>{{10, 15, 20}, {30, 40, 50, 60}};
+  fullArrayVectorNullable =
+      std::vector<std::optional<std::vector<std::optional<int32_t>>>>{
+          std::nullopt,
+          std::vector<std::optional<int32_t>>{10, 15, 20},
+          std::nullopt,
+          std::vector<std::optional<int32_t>>{10, 15, 20},
+          std::vector<std::optional<int32_t>>{30, 40, 50, 60}};
+  verifyDictionaryEncodedPassthroughNullable(
+      offsets, dictionaryValues, fullArrayVectorNullable);
+
+  // test duplicates split over multiple nulls in middle
+  offsets = std::vector<std::optional<velox::vector_size_t>>{
+      std::nullopt, 0, std::nullopt, std::nullopt, 0, 1};
+  dictionaryValues =
+      std::vector<std::vector<int32_t>>{{10, 15, 20}, {30, 40, 50, 60}};
+  fullArrayVectorNullable =
+      std::vector<std::optional<std::vector<std::optional<int32_t>>>>{
+          std::nullopt,
+          std::vector<std::optional<int32_t>>{10, 15, 20},
+          std::nullopt,
+          std::nullopt,
+          std::vector<std::optional<int32_t>>{10, 15, 20},
+          std::vector<std::optional<int32_t>>{30, 40, 50, 60}};
+  verifyDictionaryEncodedPassthroughNullable(
+      offsets, dictionaryValues, fullArrayVectorNullable);
+
+  // test all null
+  offsets = std::vector<std::optional<velox::vector_size_t>>{
+      std::nullopt, std::nullopt, std::nullopt};
+  dictionaryValues = std::vector<std::vector<int32_t>>{};
+  fullArrayVectorNullable =
+      std::vector<std::optional<std::vector<std::optional<int32_t>>>>{
+          std::nullopt, std::nullopt, std::nullopt};
+  verifyDictionaryEncodedPassthroughNullable(
+      offsets, dictionaryValues, fullArrayVectorNullable);
 }
 
 TEST_F(VeloxReaderTests, FuzzSimple) {
