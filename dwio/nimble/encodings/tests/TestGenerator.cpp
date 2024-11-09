@@ -147,7 +147,6 @@ void writeFile(
     std::ofstream file{
         fmt::format("{}/{}.data", path, identifier),
         std::ios::out | std::ios::binary | std::ios::trunc};
-    auto count = data.size();
     for (const auto& value : data) {
       if constexpr (std::is_same_v<std::string_view, typename E::cppDataType>) {
         auto size = value.size();
