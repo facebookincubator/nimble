@@ -193,8 +193,6 @@ TEST_F(VeloxWriterTests, RootHasNulls) {
 }
 
 TEST_F(VeloxWriterTests, FeatureReorderingNonFlatmapColumn) {
-  const uint32_t batchSize = 10;
-
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(
       {"map", "flatmap"},
