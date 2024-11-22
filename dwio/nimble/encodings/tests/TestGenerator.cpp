@@ -92,8 +92,6 @@ generateFixedBitWidthData(RNG&& rng, nimble::Buffer& buffer, int count) {
   auto bits = 4 * sizeof(T) - 1;
   physicalType mask = (1 << bits) - 1u;
   LOG(INFO) << nimble::bits::printBits(mask);
-  physicalType val =
-      (randomValue<physicalType>(std::forward<RNG>(rng), buffer)) & mask;
   for (int i = 0; i < count; ++i) {
     physicalType value =
         randomValue<physicalType>(std::forward<RNG>(rng), buffer) & mask;
@@ -171,7 +169,6 @@ void writeFile(
     std::ofstream file{
         fmt::format("{}/{}.nulls", path, identifier),
         std::ios::out | std::ios::binary | std::ios::trunc};
-    auto count = data.size();
     for (const auto& value : nulls.value()) {
       file.write(reinterpret_cast<const char*>(&value), sizeof(uint8_t));
     }
