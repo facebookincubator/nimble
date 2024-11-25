@@ -19,6 +19,7 @@
 #include "dwio/nimble/velox/DeduplicationUtils.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
+#include "folly/ScopeGuard.h"
 #include "velox/common/base/CompareFlags.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/DictionaryVector.h"
@@ -26,31 +27,6 @@
 #include "velox/vector/TypeAliases.h"
 
 namespace facebook::nimble {
-
-class FieldWriterContext::LocalDecodedVector {
- public:
-  explicit LocalDecodedVector(FieldWriterContext& context)
-      : context_(context), vector_(context_.getDecodedVector()) {}
-
-  LocalDecodedVector(LocalDecodedVector&& other) noexcept
-      : context_{other.context_}, vector_{std::move(other.vector_)} {}
-
-  LocalDecodedVector& operator=(LocalDecodedVector&& other) = delete;
-
-  ~LocalDecodedVector() {
-    if (vector_) {
-      context_.releaseDecodedVector(std::move(vector_));
-    }
-  }
-
-  velox::DecodedVector& get() {
-    return *vector_;
-  }
-
- private:
-  FieldWriterContext& context_;
-  std::unique_ptr<velox::DecodedVector> vector_;
-};
 
 namespace {
 
@@ -359,8 +335,12 @@ class SimpleFieldWriter : public FieldWriter {
             });
       }
     } else {
-      auto localDecoded = decode(vector, ranges);
-      auto& decoded = localDecoded.get();
+      auto decodingContext = context_.getDecodingContext();
+      auto guard = folly::makeGuard([&]() {
+        context_.returnDecodingContext(std::move(decodingContext));
+      });
+      auto& decoded = decodingContext->decode(vector, ranges);
+
       valuesStream_.ensureNullsCapacity(decoded.mayHaveNulls(), size);
       iterateNonNullValues(
           ranges,
@@ -421,8 +401,11 @@ class RowFieldWriter : public FieldWriter {
         childRangesPtr = &ranges;
       }
     } else {
-      auto localDecoded = decode(vector, ranges);
-      auto& decoded = localDecoded.get();
+      auto decodingContext = context_.getDecodingContext();
+      auto guard = folly::makeGuard([&]() {
+        context_.returnDecodingContext(std::move(decodingContext));
+      });
+      auto& decoded = decodingContext->decode(vector, ranges);
       row = decoded.base()->as<velox::RowVector>();
       NIMBLE_ASSERT(row, "Unexpected vector type");
       NIMBLE_CHECK(fields_.size() == row->childrenSize(), "schema mismatch");
@@ -500,8 +483,11 @@ class MultiValueFieldWriter : public FieldWriter {
       iterateNonNullIndices<true>(
           ranges, lengthsStream_.mutableNonNulls(), Flat{vector}, proc);
     } else {
-      auto localDecoded = decode(vector, ranges);
-      auto& decoded = localDecoded.get();
+      auto decodingContext = context_.getDecodingContext();
+      auto guard = folly::makeGuard([&]() {
+        context_.returnDecodingContext(std::move(decodingContext));
+      });
+      auto& decoded = decodingContext->decode(vector, ranges);
       casted = decoded.base()->as<T>();
       NIMBLE_ASSERT(casted, "Unexpected vector type");
       offsets = casted->rawOffsets();
@@ -715,8 +701,11 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
           iterableVector,
           processMapIndex);
     } else {
-      auto localDecoded = decode(vector, ranges);
-      auto& decoded = localDecoded.get();
+      auto decodingContext = context_.getDecodingContext();
+      auto guard = folly::makeGuard([&]() {
+        context_.returnDecodingContext(std::move(decodingContext));
+      });
+      auto& decoded = decodingContext->decode(vector, ranges);
       mapVector = decoded.base()->template as<velox::MapVector>();
       NIMBLE_ASSERT(mapVector, "Unexpected vector type");
       rawOffsets = mapVector->rawOffsets();
@@ -965,8 +954,11 @@ class FlatMapFieldWriter : public FieldWriter {
         // Keys are encoded. Decode.
         iterateNonNullIndices<false>(
             ranges, nullsStream_.mutableNonNulls(), vector, computeKeyRanges);
-        auto localDecodedKeys = decode(mapKeys, keyRanges);
-        auto& decodedKeys = localDecodedKeys.get();
+        auto decodingContext = context_.getDecodingContext();
+        auto guard = folly::makeGuard([&]() {
+          context_.returnDecodingContext(std::move(decodingContext));
+        });
+        auto& decodedKeys = decodingContext->decode(mapKeys, keyRanges);
         Decoded<KeyType> keysVector{decodedKeys};
         iterateNonNullIndices<true>(
             ranges, nullsStream_.mutableNonNulls(), vector, [&](auto offset) {
@@ -990,8 +982,11 @@ class FlatMapFieldWriter : public FieldWriter {
       processVector(map, Flat{vector});
     } else {
       // Map is encoded. Decode.
-      auto localDecodedMap = decode(vector, ranges);
-      auto& decodedMap = localDecodedMap.get();
+      auto decodingContext = context_.getDecodingContext();
+      auto guard = folly::makeGuard([&]() {
+        context_.returnDecodingContext(std::move(decodingContext));
+      });
+      auto& decodedMap = decodingContext->decode(vector, ranges);
       map = decodedMap.base()->template as<velox::MapVector>();
       NIMBLE_ASSERT(map, "Unexpected vector type");
       offsets = map->rawOffsets();
@@ -1375,8 +1370,11 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
 
       iterateNonNullIndices<false>(ranges, nonNulls, iterableVector, dedupProc);
     } else {
-      auto localDecoded = decode(vectorElements, childRanges);
-      auto& decoded = localDecoded.get();
+      auto decodingContext = context_.getDecodingContext();
+      auto guard = folly::makeGuard([&]() {
+        context_.returnDecodingContext(std::move(decodingContext));
+      });
+      auto& decoded = decodingContext->decode(vectorElements, childRanges);
       /** compare array at index and prevIndex to be equal */
       compareConsecutive = [&](velox::vector_size_t index,
                                velox::vector_size_t prevIndex) {
@@ -1455,8 +1453,11 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       ingestLengthsOffsetsByElements(
           arrayVector, iterableVector, ranges, childRanges, filteredRanges);
     } else {
-      auto localDecoded = decode(vector, ranges);
-      auto& decoded = localDecoded.get();
+      auto decodingContext = context_.getDecodingContext();
+      auto guard = folly::makeGuard([&]() {
+        context_.returnDecodingContext(std::move(decodingContext));
+      });
+      auto& decoded = decodingContext->decode(vector, ranges);
       arrayVector = decoded.base()->template as<velox::ArrayVector>();
       NIMBLE_ASSERT(arrayVector, "Unexpected vector type");
       rawOffsets = arrayVector->rawOffsets();
@@ -1510,51 +1511,18 @@ std::unique_ptr<FieldWriter> createArrayWithOffsetsFieldWriter(
 
 } // namespace
 
-FieldWriterContext::LocalDecodedVector
-FieldWriterContext::getLocalDecodedVector() {
-  NIMBLE_DASSERT(vectorDecoderVisitor, "vectorDecoderVisitor is missing");
-  vectorDecoderVisitor();
-  return LocalDecodedVector{*this};
-}
-
-velox::SelectivityVector& FieldWriterContext::getSelectivityVector(
-    velox::vector_size_t size) {
-  if (LIKELY(selectivity_.get() != nullptr)) {
-    selectivity_->resize(size);
-  } else {
-    selectivity_ = std::make_unique<velox::SelectivityVector>(size);
-  }
-  return *selectivity_;
-}
-
-std::unique_ptr<velox::DecodedVector> FieldWriterContext::getDecodedVector() {
-  if (decodedVectorPool_.empty()) {
-    return std::make_unique<velox::DecodedVector>();
-  }
-  auto vector = std::move(decodedVectorPool_.back());
-  decodedVectorPool_.pop_back();
-  return vector;
-}
-
-void FieldWriterContext::releaseDecodedVector(
-    std::unique_ptr<velox::DecodedVector>&& vector) {
-  decodedVectorPool_.push_back(std::move(vector));
-}
-
-FieldWriterContext::LocalDecodedVector FieldWriter::decode(
+velox::DecodedVector& DecodingContext::decode(
     const velox::VectorPtr& vector,
     const OrderedRanges& ranges) {
-  auto& selectivityVector = context_.getSelectivityVector(vector->size());
-  // initialize selectivity vector
-  selectivityVector.clearAll();
+  selectivityVector_->resize(vector->size());
+  selectivityVector_->clearAll();
   ranges.apply([&](auto offset, auto size) {
-    selectivityVector.setValidRange(offset, offset + size, true);
+    selectivityVector_->setValidRange(offset, offset + size, true);
   });
-  selectivityVector.updateBounds();
+  selectivityVector_->updateBounds();
 
-  auto localDecoded = context_.getLocalDecodedVector();
-  localDecoded.get().decode(*vector, selectivityVector);
-  return localDecoded;
+  decodedVector_->decode(*vector, *selectivityVector_);
+  return *decodedVector_;
 }
 
 std::unique_ptr<FieldWriter> FieldWriter::create(
