@@ -2433,6 +2433,8 @@ TEST_F(VeloxReaderTests, FuzzSimple) {
     if (parallelismFactor > 0) {
       writerOptions.encodingExecutor =
           std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
+      writerOptions.writeExecutor =
+          std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
     }
 
     for (auto i = 0; i < iterations; ++i) {
@@ -2519,9 +2521,12 @@ TEST_F(VeloxReaderTests, FuzzComplex) {
   for (auto parallelismFactor :
        {0U, 1U, 2U, std::thread::hardware_concurrency()}) {
     LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
-    writerOptions.encodingExecutor = parallelismFactor > 0
-        ? std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor)
-        : nullptr;
+    if (parallelismFactor > 0) {
+      writerOptions.encodingExecutor =
+          std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
+      writerOptions.writeExecutor =
+          std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
+    }
 
     for (auto i = 0; i < iterations; ++i) {
       writeAndVerify(

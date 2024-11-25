@@ -64,7 +64,12 @@ class WriterContext : public FieldWriterContext {
   WriterContext(
       velox::memory::MemoryPool& memoryPool,
       VeloxWriterOptions options)
-      : FieldWriterContext{memoryPool, options.reclaimerFactory(), options.vectorDecoderVisitor},
+      : FieldWriterContext{
+        memoryPool,
+        options.writeExecutor,
+        options.reclaimerFactory(),
+        options.vectorDecoderVisitor
+        },
         options{std::move(options)},
         logger{this->options.metricsLogger} {
     flushPolicy = this->options.flushPolicyFactory();

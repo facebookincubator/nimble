@@ -93,12 +93,14 @@ class DecodingContextPool {
 struct FieldWriterContext {
   explicit FieldWriterContext(
       velox::memory::MemoryPool& memoryPool,
+      std::shared_ptr<folly::Executor> writeExecutor = nullptr,
       std::unique_ptr<velox::memory::MemoryReclaimer> reclaimer = nullptr,
       std::function<void(void)> vectorDecoderVisitor = []() {})
       : bufferMemoryPool{memoryPool.addLeafChild(
             "field_writer_buffer",
             true,
             std::move(reclaimer))},
+        writeExecutor{std::move(writeExecutor)},
         inputBufferGrowthPolicy{
             DefaultInputBufferGrowthPolicy::withDefaultRanges()},
         decodingContextPool_{std::make_unique<DecodingContextPool>(
@@ -107,6 +109,7 @@ struct FieldWriterContext {
   }
 
   std::shared_ptr<velox::memory::MemoryPool> bufferMemoryPool;
+  std::shared_ptr<folly::Executor> writeExecutor;
   SchemaBuilder schemaBuilder;
 
   folly::F14FastSet<uint32_t> flatMapNodeIds;

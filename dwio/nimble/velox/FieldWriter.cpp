@@ -20,7 +20,9 @@
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "folly/ScopeGuard.h"
+#include "folly/concurrency/ConcurrentHashMap.h"
 #include "velox/common/base/CompareFlags.h"
+#include "velox/dwio/common/ExecutorBarrier.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/DictionaryVector.h"
 #include "velox/vector/FlatVector.h"
@@ -369,6 +371,11 @@ class RowFieldWriter : public FieldWriter {
       : FieldWriter{context, context.schemaBuilder.createRowTypeBuilder(type->size())},
         nullsStream_{context_.createNullsStreamData<bool>(
             typeBuilder_->asRow().nullsDescriptor())} {
+    if (context.writeExecutor) {
+      barrier_ = std::make_unique<velox::dwio::common::ExecutorBarrier>(
+          std::move(context_.writeExecutor));
+    }
+
     auto rowType =
         std::dynamic_pointer_cast<const velox::RowType>(type->type());
 
@@ -417,8 +424,26 @@ class RowFieldWriter : public FieldWriter {
           Decoded{decoded},
           [&](auto offset) { childRanges.add(offset, 1); });
     }
-    for (auto i = 0; i < fields_.size(); ++i) {
-      fields_[i]->write(row->childAt(i), *childRangesPtr);
+
+    if (barrier_) {
+      for (auto i = 0; i < fields_.size(); ++i) {
+        const auto& kind = fields_[i]->typeBuilder()->kind();
+        if (kind == Kind::FlatMap) {
+          // if flatmap handle within due to fieldvaluewriter creation
+          fields_[i]->write(row->childAt(i), *childRangesPtr);
+        } else {
+          barrier_->add([&field = fields_[i],
+                         &rowItem = row->childAt(i),
+                         &childRanges = *childRangesPtr]() {
+            field->write(rowItem, childRanges);
+          });
+        }
+      }
+      barrier_->waitAll();
+    } else {
+      for (auto i = 0; i < fields_.size(); ++i) {
+        fields_[i]->write(row->childAt(i), *childRangesPtr);
+      }
     }
   }
 
@@ -437,6 +462,7 @@ class RowFieldWriter : public FieldWriter {
   }
 
  private:
+  std::unique_ptr<velox::dwio::common::ExecutorBarrier> barrier_;
   std::vector<std::unique_ptr<FieldWriter>> fields_;
   NullsStreamData& nullsStream_;
 };
@@ -836,7 +862,12 @@ class FlatMapFieldWriter : public FieldWriter {
                 NimbleTypeTraits<K>::scalarKind)),
         nullsStream_{context_.createNullsStreamData<bool>(
             typeBuilder_->asFlatMap().nullsDescriptor())},
-        valueType_{type->childAt(1)} {}
+        valueType_{type->childAt(1)} {
+    if (context.writeExecutor) {
+      barrier_ = std::make_unique<velox::dwio::common::ExecutorBarrier>(
+          std::move(context.writeExecutor));
+    }
+  }
 
   void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
       override {
@@ -999,8 +1030,16 @@ class FlatMapFieldWriter : public FieldWriter {
     // Now actually ingest the map values
     if (nonNullCount > 0) {
       auto& values = map->mapValues();
-      for (auto& pair : currentValueFields_) {
-        pair.second->write(values, nonNullCount);
+
+      if (barrier_) {
+        for (auto& pair : currentValueFields_) {
+          barrier_->add([&]() { pair.second->write(values, nonNullCount); });
+        }
+        barrier_->waitAll();
+      } else {
+        for (auto& pair : currentValueFields_) {
+          pair.second->write(values, nonNullCount);
+        }
       }
     }
     nonNullCount_ += nonNullCount;
@@ -1037,6 +1076,7 @@ class FlatMapFieldWriter : public FieldWriter {
   }
 
  private:
+  std::unique_ptr<velox::dwio::common::ExecutorBarrier> barrier_;
   FlatMapValueFieldWriter* getValueFieldWriter(KeyType key, uint32_t size) {
     auto it = currentValueFields_.find(key);
     if (it != currentValueFields_.end()) {
@@ -1075,7 +1115,8 @@ class FlatMapFieldWriter : public FieldWriter {
 
   NullsStreamData& nullsStream_;
   // This map store the FlatMapValue fields used in current flush unit.
-  folly::F14FastMap<KeyType, FlatMapValueFieldWriter*> currentValueFields_;
+  folly::ConcurrentHashMap<KeyType, FlatMapValueFieldWriter*>
+      currentValueFields_;
 
   // This map stores the FlatMapPassthrough fields.
   folly::F14FastMap<
@@ -1086,7 +1127,7 @@ class FlatMapFieldWriter : public FieldWriter {
   uint64_t nonNullCount_ = 0;
   // This map store all FlatMapValue fields encountered by the VeloxWriter
   // across the whole file.
-  folly::F14FastMap<KeyType, std::unique_ptr<FlatMapValueFieldWriter>>
+  folly::ConcurrentHashMap<KeyType, std::unique_ptr<FlatMapValueFieldWriter>>
       allValueFields_;
 };
 
