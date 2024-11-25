@@ -95,7 +95,8 @@ struct FieldWriterContext {
       velox::memory::MemoryPool& memoryPool,
       std::shared_ptr<folly::Executor> writeExecutor = nullptr,
       std::unique_ptr<velox::memory::MemoryReclaimer> reclaimer = nullptr,
-      std::function<void(void)> vectorDecoderVisitor = []() {})
+      std::function<void(void)> vectorDecoderVisitor = []() {},
+      size_t maxPoolSize = std::thread::hardware_concurrency())
       : bufferMemoryPool{memoryPool.addLeafChild(
             "field_writer_buffer",
             true,
@@ -103,10 +104,10 @@ struct FieldWriterContext {
         writeExecutor{std::move(writeExecutor)},
         inputBufferGrowthPolicy{
             DefaultInputBufferGrowthPolicy::withDefaultRanges()},
+        bufferPool_{
+            std::make_unique<BufferPool>(*bufferMemoryPool, maxPoolSize)},
         decodingContextPool_{std::make_unique<DecodingContextPool>(
-            std::move(vectorDecoderVisitor))} {
-    resetStringBuffer();
-  }
+            std::move(vectorDecoderVisitor))} {}
 
   std::shared_ptr<velox::memory::MemoryPool> bufferMemoryPool;
   std::shared_ptr<folly::Executor> writeExecutor;
@@ -133,13 +134,8 @@ struct FieldWriterContext {
     return decodingContextPool_->addContext(std::move(context));
   }
 
-  Buffer& stringBuffer() {
-    return *buffer_;
-  }
-
-  // Reset writer context for use by next stripe.
-  void resetStringBuffer() {
-    buffer_ = std::make_unique<Buffer>(*bufferMemoryPool);
+  BufferPool& bufferPool() {
+    return *bufferPool_;
   }
 
   const std::vector<std::unique_ptr<StreamData>>& streams() {
@@ -169,7 +165,7 @@ struct FieldWriterContext {
   }
 
  private:
-  std::unique_ptr<Buffer> buffer_;
+  std::unique_ptr<BufferPool> bufferPool_;
   std::unique_ptr<DecodingContextPool> decodingContextPool_;
   std::vector<std::unique_ptr<StreamData>> streams_;
 };

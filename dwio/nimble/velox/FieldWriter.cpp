@@ -290,9 +290,10 @@ class SimpleFieldWriter : public FieldWriter {
   void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
       override {
     auto size = ranges.size();
-    auto& buffer = context_.stringBuffer();
     auto& data = valuesStream_.mutableData();
-
+    auto bufferPtr = context_.bufferPool().reserveBuffer();
+    auto bufferGuard = folly::makeGuard(
+        [&]() { context_.bufferPool().addBuffer(std::move(bufferPtr)); });
     if (auto flat = vector->asFlatVector<SourceType>()) {
       valuesStream_.ensureNullsCapacity(flat->mayHaveNulls(), size);
       bool rangeCopied = false;
@@ -332,6 +333,7 @@ class SimpleFieldWriter : public FieldWriter {
             valuesStream_.mutableNonNulls(),
             Flat<SourceType>{vector},
             [&](SourceType value) {
+              auto& buffer = *bufferPtr;
               data.push_back(
                   C::convert(value, buffer, valuesStream_.extraMemory()));
             });
@@ -349,6 +351,7 @@ class SimpleFieldWriter : public FieldWriter {
           valuesStream_.mutableNonNulls(),
           Decoded<SourceType>{decoded},
           [&](SourceType value) {
+            auto& buffer = *bufferPtr;
             data.push_back(
                 C::convert(value, buffer, valuesStream_.extraMemory()));
           });
