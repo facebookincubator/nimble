@@ -2426,11 +2426,14 @@ TEST_F(VeloxReaderTests, FuzzSimple) {
   auto iterations = 20;
   auto batches = 20;
   std::mt19937 rng{seed};
-  for (auto parallelismFactor : {0U, 1U, std::thread::hardware_concurrency()}) {
+  for (auto parallelismFactor :
+       {0U, 1U, 2U, std::thread::hardware_concurrency()}) {
     LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
     nimble::VeloxWriterOptions writerOptions;
     if (parallelismFactor > 0) {
       writerOptions.encodingExecutor =
+          std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
+      writerOptions.writeExecutor =
           std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
     }
 
@@ -2515,11 +2518,15 @@ TEST_F(VeloxReaderTests, FuzzComplex) {
   auto batches = 20;
   std::mt19937 rng{seed};
 
-  for (auto parallelismFactor : {0U, 1U, std::thread::hardware_concurrency()}) {
+  for (auto parallelismFactor :
+       {0U, 1U, 2U, std::thread::hardware_concurrency()}) {
     LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
-    writerOptions.encodingExecutor = parallelismFactor > 0
-        ? std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor)
-        : nullptr;
+    if (parallelismFactor > 0) {
+      writerOptions.encodingExecutor =
+          std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
+      writerOptions.writeExecutor =
+          std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
+    }
 
     for (auto i = 0; i < iterations; ++i) {
       writeAndVerify(

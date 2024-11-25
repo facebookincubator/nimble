@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "dwio/nimble/common/Exceptions.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/common/memory/Memory.h"
 
@@ -33,12 +34,11 @@
 //   and so on
 
 namespace facebook::nimble {
+using MemoryPool = facebook::velox::memory::MemoryPool;
 
-// Internally manages memory in chunks. Releases memory only upon destruction.
+// Internally manages memory in chunks. releases memory when destroyed
 // Buffer is NOT threadsafe: external locking is required.
 class Buffer {
-  using MemoryPool = facebook::velox::memory::MemoryPool;
-
  public:
   explicit Buffer(
       MemoryPool& memoryPool,
@@ -52,7 +52,6 @@ class Buffer {
   // to, and guarantees for the lifetime of *this that that region will remain
   // valid. Does NOT guarantee that the region is initially 0'd.
   char* reserve(uint64_t bytes) {
-    std::scoped_lock<std::mutex> l(mutex_);
     if (reserveEnd_ + bytes <= chunkEnd_) {
       pos_ = reserveEnd_;
       reserveEnd_ += bytes;
@@ -98,11 +97,68 @@ class Buffer {
   char* reserveEnd_;
   std::vector<velox::BufferPtr> chunks_;
   MemoryPool& memoryPool_;
-  // NOTE: this is temporary fix, to quickly enable parallel access to the
-  // buffer class. In the near future, we are going to templetize this class to
-  // produce a concurrent and a non-concurrent variants, and change the call
-  // sites to use each variant when needed.
+};
+
+// Manages a pool of buffers. Buffers are returned to the pool when released.
+// maxPoolSize should be set to at least 90% of capacity for performance
+class BufferPool {
+ public:
+  explicit BufferPool(
+      MemoryPool& memoryPool,
+      size_t maxPoolSize = std::thread::hardware_concurrency(),
+      uint64_t initialChunkSize = kMinChunkSize)
+      : defaultInitialChunkSize_{initialChunkSize},
+        maxPoolSize(maxPoolSize),
+        semaphore_{0},
+        memoryPool_{memoryPool} {
+    NIMBLE_CHECK(maxPoolSize > 0, "max pool size must be > 0")
+    pool_.reserve(maxPoolSize);
+    for (size_t i = 0; i < maxPoolSize; ++i) {
+      pool_.emplace_back(newBuffer());
+      semaphore_.release();
+    }
+  }
+
+  MemoryPool& getMemoryPool() {
+    return memoryPool_;
+  }
+
+  // buffer back to the pool.
+  void addBuffer(std::unique_ptr<Buffer> buffer) {
+    std::scoped_lock<std::mutex> lock(mutex_);
+    pool_.push_back(std::move(buffer));
+    semaphore_.release();
+  }
+
+  // Reserves a buffer from the pool. Adds a new buffer to the pool
+  // while there are buffers available
+  std::unique_ptr<Buffer> reserveBuffer() {
+    semaphore_.acquire();
+
+    std::scoped_lock<std::mutex> lock(mutex_);
+    auto buffer = std::move(pool_.back());
+    pool_.pop_back();
+    return buffer;
+  }
+
+  // Returns estimated number of buffers in the pool
+  size_t size() {
+    return pool_.size();
+  }
+
+ private:
+  static const uint64_t kMinChunkSize = 1LL << 20;
+  const uint64_t defaultInitialChunkSize_ = kMinChunkSize;
+  const size_t maxPoolSize;
+
   std::mutex mutex_;
+  std::counting_semaphore<> semaphore_;
+  std::vector<std::unique_ptr<Buffer>> pool_;
+  MemoryPool& memoryPool_;
+
+  std::unique_ptr<Buffer> newBuffer() {
+    return std::make_unique<Buffer>(memoryPool_, defaultInitialChunkSize_);
+  }
 };
 
 } // namespace facebook::nimble
