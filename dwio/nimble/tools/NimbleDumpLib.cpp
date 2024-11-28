@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 #include <algorithm>
-#include <fstream>
 #include <locale>
 #include <numeric>
 #include <ostream>
@@ -23,7 +22,6 @@
 
 #include "common/strings/Zstd.h"
 #include "dwio/common/filesystem/FileSystem.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
@@ -73,21 +71,28 @@ struct EncodingHistogramValue {
   size_t bytes;
 };
 
+enum class Alignment {
+  Left,
+  Right,
+};
+
 class TableFormatter {
  public:
   TableFormatter(
       std::ostream& ostream,
       std::vector<std::tuple<
           std::string /* Title */,
-          uint8_t /* Width */
+          uint8_t /* Width */,
+          Alignment /* Horizontal Alignment */
           >> fields,
       bool noHeader = false)
       : ostream_{ostream}, fields_{std::move(fields)} {
     if (!noHeader) {
       ostream << YELLOW;
       for (const auto& field : fields_) {
-        ostream << std::left << std::setw(std::get<1>(field) + 2)
-                << std::get<0>(field);
+        ostream << (std::get<2>(field) == Alignment::Right ? std::right
+                                                           : std::left)
+                << std::setw(std::get<1>(field) + 2) << std::get<0>(field);
       }
       ostream << RESET_COLOR << std::endl;
     }
@@ -96,8 +101,9 @@ class TableFormatter {
   void writeRow(const std::vector<std::string>& values) {
     assert(values.size() == fields_.size());
     for (auto i = 0; i < values.size(); ++i) {
-      ostream_ << std::left << std::setw(std::get<1>(fields_[i]) + 2)
-               << values[i];
+      ostream_ << (std::get<2>(fields_[i]) == Alignment::Right ? std::right
+                                                               : std::left)
+               << std::setw(std::get<1>(fields_[i]) + 2) << values[i];
     }
     ostream_ << std::endl;
   }
@@ -106,7 +112,8 @@ class TableFormatter {
   std::ostream& ostream_;
   std::vector<std::tuple<
       std::string /* Title */,
-      uint8_t /* Width */
+      uint8_t /* Width */,
+      Alignment /* Horizontal Alignment */
       >>
       fields_;
 };
@@ -362,10 +369,10 @@ void NimbleDumpLib::emitStripes(bool noHeader) {
   TabletReader tabletReader{*pool_, file_.get()};
   TableFormatter formatter(
       ostream_,
-      {{"Stripe Id", 11},
-       {"Stripe Offset", 15},
-       {"Stripe Size", 15},
-       {"Row Count", 15}},
+      {{"Stripe Id", 7, Alignment::Left},
+       {"Stripe Offset", 15, Alignment::Right},
+       {"Stripe Size", 15, Alignment::Right},
+       {"Row Count", 10, Alignment::Right}},
       noHeader);
   traverseTablet(*pool_, tabletReader, std::nullopt, [&](uint32_t stripeIndex) {
     auto stripeIdentifier = tabletReader.getStripeIdentifier(stripeIndex);
@@ -373,9 +380,9 @@ void NimbleDumpLib::emitStripes(bool noHeader) {
     auto stripeSize = std::accumulate(sizes.begin(), sizes.end(), 0UL);
     formatter.writeRow({
         folly::to<std::string>(stripeIndex),
-        folly::to<std::string>(tabletReader.stripeOffset(stripeIndex)),
-        folly::to<std::string>(stripeSize),
-        folly::to<std::string>(tabletReader.stripeRowCount(stripeIndex)),
+        commaSeparated(tabletReader.stripeOffset(stripeIndex)),
+        commaSeparated(stripeSize),
+        commaSeparated(tabletReader.stripeRowCount(stripeIndex)),
     });
   });
 }
@@ -387,19 +394,19 @@ void NimbleDumpLib::emitStreams(
     std::optional<uint32_t> stripeId) {
   auto tabletReader = std::make_shared<TabletReader>(*pool_, file_.get());
 
-  std::vector<std::tuple<std::string, uint8_t>> fields;
-  fields.push_back({"Stripe Id", 11});
-  fields.push_back({"Stream Id", 11});
-  fields.push_back({"Stream Offset", 13});
-  fields.push_back({"Stream Size", 13});
+  std::vector<std::tuple<std::string, uint8_t, Alignment>> fields;
+  fields.push_back({"Stripe Id", 11, Alignment::Left});
+  fields.push_back({"Stream Id", 11, Alignment::Left});
+  fields.push_back({"Stream Offset", 13, Alignment::Left});
+  fields.push_back({"Stream Size", 13, Alignment::Left});
   if (showStreamRawSize) {
-    fields.push_back({"Raw Stream Size", 16});
+    fields.push_back({"Raw Stream Size", 16, Alignment::Left});
   }
-  fields.push_back({"Item Count", 13});
+  fields.push_back({"Item Count", 13, Alignment::Left});
   if (showStreamLabels) {
-    fields.push_back({"Stream Label", 16});
+    fields.push_back({"Stream Label", 16, Alignment::Left});
   }
-  fields.push_back({"Type", 30});
+  fields.push_back({"Type", 30, Alignment::Left});
 
   TableFormatter formatter(ostream_, fields, noHeader);
 
@@ -499,11 +506,11 @@ void NimbleDumpLib::emitHistogram(
 
   TableFormatter formatter(
       ostream_,
-      {{"Encoding Type", 17},
-       {"Data Type", 13},
-       {"Compression", 15},
-       {"Instance Count", 15},
-       {"Storage Bytes", 15}},
+      {{"Encoding Type", 17, Alignment::Left},
+       {"Data Type", 13, Alignment::Left},
+       {"Compression", 15, Alignment::Left},
+       {"Instance Count", 15, Alignment::Right},
+       {"Storage Bytes", 15, Alignment::Right}},
       noHeader);
 
   for (auto& [key, value] : encodingHistogram) {
@@ -511,8 +518,8 @@ void NimbleDumpLib::emitHistogram(
         toString(key.encodingType),
         toString(key.dataType),
         key.compressinType ? toString(*key.compressinType) : "",
-        folly::to<std::string>(value.count),
-        folly::to<std::string>(value.bytes),
+        commaSeparated(value.count),
+        commaSeparated(value.bytes),
     });
   }
 }
@@ -722,11 +729,11 @@ void NimbleDumpLib::emitLayout(bool noHeader, bool compressed) {
   TableFormatter formatter(
       ostream_,
       {
-          {"Node Id", 11},
-          {"Parent Id", 11},
-          {"Node Type", 15},
-          {"Node Name", 17},
-          {"Encoding Layout", 20},
+          {"Node Id", 11, Alignment::Left},
+          {"Parent Id", 11, Alignment::Left},
+          {"Node Type", 15, Alignment::Left},
+          {"Node Name", 17, Alignment::Left},
+          {"Encoding Layout", 20, Alignment::Left},
       },
       noHeader);
 
