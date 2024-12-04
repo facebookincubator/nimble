@@ -27,31 +27,6 @@
 
 namespace facebook::nimble {
 
-class FieldWriterContext::LocalDecodedVector {
- public:
-  explicit LocalDecodedVector(FieldWriterContext& context)
-      : context_(context), vector_(context_.getDecodedVector()) {}
-
-  LocalDecodedVector(LocalDecodedVector&& other) noexcept
-      : context_{other.context_}, vector_{std::move(other.vector_)} {}
-
-  LocalDecodedVector& operator=(LocalDecodedVector&& other) = delete;
-
-  ~LocalDecodedVector() {
-    if (vector_) {
-      context_.releaseDecodedVector(std::move(vector_));
-    }
-  }
-
-  velox::DecodedVector& get() {
-    return *vector_;
-  }
-
- private:
-  FieldWriterContext& context_;
-  std::unique_ptr<velox::DecodedVector> vector_;
-};
-
 namespace {
 
 template <velox::TypeKind KIND>
@@ -359,8 +334,8 @@ class SimpleFieldWriter : public FieldWriter {
             });
       }
     } else {
-      auto localDecoded = decode(vector, ranges);
-      auto& decoded = localDecoded.get();
+      auto decodingContext = context_.getDecodingContext();
+      auto& decoded = decodingContext.decode(vector, ranges);
       valuesStream_.ensureNullsCapacity(decoded.mayHaveNulls(), size);
       iterateNonNullValues(
           ranges,
@@ -421,8 +396,8 @@ class RowFieldWriter : public FieldWriter {
         childRangesPtr = &ranges;
       }
     } else {
-      auto localDecoded = decode(vector, ranges);
-      auto& decoded = localDecoded.get();
+      auto decodingContext = context_.getDecodingContext();
+      auto& decoded = decodingContext.decode(vector, ranges);
       row = decoded.base()->as<velox::RowVector>();
       NIMBLE_ASSERT(row, "Unexpected vector type");
       NIMBLE_CHECK(fields_.size() == row->childrenSize(), "schema mismatch");
@@ -500,8 +475,8 @@ class MultiValueFieldWriter : public FieldWriter {
       iterateNonNullIndices<true>(
           ranges, lengthsStream_.mutableNonNulls(), Flat{vector}, proc);
     } else {
-      auto localDecoded = decode(vector, ranges);
-      auto& decoded = localDecoded.get();
+      auto decodingContext = context_.getDecodingContext();
+      auto& decoded = decodingContext.decode(vector, ranges);
       casted = decoded.base()->as<T>();
       NIMBLE_ASSERT(casted, "Unexpected vector type");
       offsets = casted->rawOffsets();
@@ -715,8 +690,8 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
           iterableVector,
           processMapIndex);
     } else {
-      auto localDecoded = decode(vector, ranges);
-      auto& decoded = localDecoded.get();
+      auto decodingContext = context_.getDecodingContext();
+      auto& decoded = decodingContext.decode(vector, ranges);
       mapVector = decoded.base()->template as<velox::MapVector>();
       NIMBLE_ASSERT(mapVector, "Unexpected vector type");
       rawOffsets = mapVector->rawOffsets();
@@ -965,8 +940,8 @@ class FlatMapFieldWriter : public FieldWriter {
         // Keys are encoded. Decode.
         iterateNonNullIndices<false>(
             ranges, nullsStream_.mutableNonNulls(), vector, computeKeyRanges);
-        auto localDecodedKeys = decode(mapKeys, keyRanges);
-        auto& decodedKeys = localDecodedKeys.get();
+        auto decodingContext = context_.getDecodingContext();
+        auto& decodedKeys = decodingContext.decode(mapKeys, keyRanges);
         Decoded<KeyType> keysVector{decodedKeys};
         iterateNonNullIndices<true>(
             ranges, nullsStream_.mutableNonNulls(), vector, [&](auto offset) {
@@ -990,8 +965,8 @@ class FlatMapFieldWriter : public FieldWriter {
       processVector(map, Flat{vector});
     } else {
       // Map is encoded. Decode.
-      auto localDecodedMap = decode(vector, ranges);
-      auto& decodedMap = localDecodedMap.get();
+      auto decodingContext = context_.getDecodingContext();
+      auto& decodedMap = decodingContext.decode(vector, ranges);
       map = decodedMap.base()->template as<velox::MapVector>();
       NIMBLE_ASSERT(map, "Unexpected vector type");
       offsets = map->rawOffsets();
@@ -1375,8 +1350,8 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
 
       iterateNonNullIndices<false>(ranges, nonNulls, iterableVector, dedupProc);
     } else {
-      auto localDecoded = decode(vectorElements, childRanges);
-      auto& decoded = localDecoded.get();
+      auto decodingContext = context_.getDecodingContext();
+      auto& decoded = decodingContext.decode(vectorElements, childRanges);
       /** compare array at index and prevIndex to be equal */
       compareConsecutive = [&](velox::vector_size_t index,
                                velox::vector_size_t prevIndex) {
@@ -1455,8 +1430,8 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       ingestLengthsOffsetsByElements(
           arrayVector, iterableVector, ranges, childRanges, filteredRanges);
     } else {
-      auto localDecoded = decode(vector, ranges);
-      auto& decoded = localDecoded.get();
+      auto decodingContext = context_.getDecodingContext();
+      auto& decoded = decodingContext.decode(vector, ranges);
       arrayVector = decoded.base()->template as<velox::ArrayVector>();
       NIMBLE_ASSERT(arrayVector, "Unexpected vector type");
       rawOffsets = arrayVector->rawOffsets();
@@ -1510,51 +1485,65 @@ std::unique_ptr<FieldWriter> createArrayWithOffsetsFieldWriter(
 
 } // namespace
 
-FieldWriterContext::LocalDecodedVector
-FieldWriterContext::getLocalDecodedVector() {
-  NIMBLE_DASSERT(vectorDecoderVisitor, "vectorDecoderVisitor is missing");
-  vectorDecoderVisitor();
-  return LocalDecodedVector{*this};
+DecodingContextPool::DecodingContext::DecodingContext(
+    DecodingContextPool& pool,
+    std::unique_ptr<velox::DecodedVector> decodedVector,
+    std::unique_ptr<velox::SelectivityVector> selectivityVector)
+    : pool_{pool},
+      decodedVector_{std::move(decodedVector)},
+      selectivityVector_{std::move(selectivityVector)} {}
+
+DecodingContextPool::DecodingContext::~DecodingContext() {
+  pool_.addContext(std::move(decodedVector_), std::move(selectivityVector_));
 }
 
-velox::SelectivityVector& FieldWriterContext::getSelectivityVector(
-    velox::vector_size_t size) {
-  if (LIKELY(selectivity_.get() != nullptr)) {
-    selectivity_->resize(size);
-  } else {
-    selectivity_ = std::make_unique<velox::SelectivityVector>(size);
-  }
-  return *selectivity_;
-}
-
-std::unique_ptr<velox::DecodedVector> FieldWriterContext::getDecodedVector() {
-  if (decodedVectorPool_.empty()) {
-    return std::make_unique<velox::DecodedVector>();
-  }
-  auto vector = std::move(decodedVectorPool_.back());
-  decodedVectorPool_.pop_back();
-  return vector;
-}
-
-void FieldWriterContext::releaseDecodedVector(
-    std::unique_ptr<velox::DecodedVector>&& vector) {
-  decodedVectorPool_.push_back(std::move(vector));
-}
-
-FieldWriterContext::LocalDecodedVector FieldWriter::decode(
+velox::DecodedVector& DecodingContextPool::DecodingContext::decode(
     const velox::VectorPtr& vector,
     const OrderedRanges& ranges) {
-  auto& selectivityVector = context_.getSelectivityVector(vector->size());
-  // initialize selectivity vector
-  selectivityVector.clearAll();
+  selectivityVector_->resize(vector->size());
+  selectivityVector_->clearAll();
   ranges.apply([&](auto offset, auto size) {
-    selectivityVector.setValidRange(offset, offset + size, true);
+    selectivityVector_->setValidRange(offset, offset + size, true);
   });
-  selectivityVector.updateBounds();
+  selectivityVector_->updateBounds();
 
-  auto localDecoded = context_.getLocalDecodedVector();
-  localDecoded.get().decode(*vector, selectivityVector);
-  return localDecoded;
+  decodedVector_->decode(*vector, *selectivityVector_);
+  return *decodedVector_;
+}
+
+DecodingContextPool::DecodingContextPool(
+    std::function<void(void)> vectorDecoderVisitor)
+    : vectorDecoderVisitor_{std::move(vectorDecoderVisitor)} {
+  NIMBLE_CHECK(vectorDecoderVisitor_, "vectorDecoderVisitor must be set");
+  pool_.reserve(std::thread::hardware_concurrency());
+}
+
+void DecodingContextPool::addContext(
+    std::unique_ptr<velox::DecodedVector> decodedVector,
+    std::unique_ptr<velox::SelectivityVector> selectivityVector) {
+  std::scoped_lock<std::mutex> lock{mutex_};
+  pool_.push_back(
+      std::pair(std::move(decodedVector), std::move(selectivityVector)));
+}
+
+DecodingContextPool::DecodingContext DecodingContextPool::reserveContext() {
+  vectorDecoderVisitor_();
+
+  std::scoped_lock<std::mutex> lock{mutex_};
+  if (pool_.empty()) {
+    return DecodingContext{
+        *this,
+        std::make_unique<velox::DecodedVector>(),
+        std::make_unique<velox::SelectivityVector>()};
+  }
+
+  auto pair = std::move(pool_.back());
+  pool_.pop_back();
+  return DecodingContext{*this, std::move(pair.first), std::move(pair.second)};
+}
+
+size_t DecodingContextPool::size() const {
+  return pool_.size();
 }
 
 std::unique_ptr<FieldWriter> FieldWriter::create(
