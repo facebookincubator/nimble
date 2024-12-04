@@ -92,6 +92,7 @@ struct FieldWriterContext {
   }
 
   std::shared_ptr<velox::memory::MemoryPool> bufferMemoryPool;
+  std::mutex flatMapSchemaMutex;
   SchemaBuilder schemaBuilder;
 
   folly::F14FastSet<uint32_t> flatMapNodeIds;
@@ -166,7 +167,8 @@ class FieldWriter {
   // Writes the vector to internal buffers.
   virtual void write(
       const velox::VectorPtr& vector,
-      const OrderedRanges& ranges) = 0;
+      const OrderedRanges& ranges,
+      folly::Executor* executor = nullptr) = 0;
 
   // Clears interanl state and any accumulated data in internal buffers.
   virtual void reset() = 0;
