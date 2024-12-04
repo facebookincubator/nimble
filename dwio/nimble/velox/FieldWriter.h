@@ -34,9 +34,49 @@ struct InputBufferGrowthStats {
   std::atomic<uint64_t> itemCount{0};
 };
 
-struct FieldWriterContext {
-  class LocalDecodedVector;
+// A pool of decoding contexts.  Decoding contexts are used to decode a vector
+// and its associated selectivity vector.  The pool is used to avoid
+// repeated allocations of decoding context.
+class DecodingContextPool {
+ public:
+  class DecodingContext {
+   public:
+    explicit DecodingContext(
+        DecodingContextPool& pool,
+        std::unique_ptr<velox::DecodedVector> decodedVector,
+        std::unique_ptr<velox::SelectivityVector> selectivityVector);
 
+    ~DecodingContext();
+    velox::DecodedVector& decode(
+        const velox::VectorPtr& vector,
+        const range_helper::OrderedRanges<velox::vector_size_t>& ranges);
+
+   private:
+    DecodingContextPool& pool_;
+    std::unique_ptr<velox::DecodedVector> decodedVector_;
+    std::unique_ptr<velox::SelectivityVector> selectivityVector_;
+  };
+
+  explicit DecodingContextPool(
+      std::function<void(void)> vectorDecoderVisitor = []() {});
+
+  DecodingContext reserveContext();
+  size_t size() const;
+
+ private:
+  std::mutex mutex_;
+  std::vector<std::pair<
+      std::unique_ptr<velox::DecodedVector>,
+      std::unique_ptr<velox::SelectivityVector>>>
+      pool_;
+  std::function<void(void)> vectorDecoderVisitor_;
+
+  void addContext(
+      std::unique_ptr<velox::DecodedVector> decodedVector,
+      std::unique_ptr<velox::SelectivityVector> selectivityVector);
+};
+
+struct FieldWriterContext {
   explicit FieldWriterContext(
       velox::memory::MemoryPool& memoryPool,
       std::unique_ptr<velox::memory::MemoryReclaimer> reclaimer = nullptr,
@@ -47,7 +87,7 @@ struct FieldWriterContext {
             std::move(reclaimer))},
         inputBufferGrowthPolicy{
             DefaultInputBufferGrowthPolicy::withDefaultRanges()},
-        vectorDecoderVisitor(std::move(vectorDecoderVisitor)) {
+        decodingContextPool_{std::move(vectorDecoderVisitor)} {
     resetStringBuffer();
   }
 
@@ -67,10 +107,9 @@ struct FieldWriterContext {
   std::function<void(const TypeBuilder&)> typeAddedHandler =
       [](const TypeBuilder&) {};
 
-  std::function<void(void)> vectorDecoderVisitor;
-
-  LocalDecodedVector getLocalDecodedVector();
-  velox::SelectivityVector& getSelectivityVector(velox::vector_size_t size);
+  DecodingContextPool::DecodingContext getDecodingContext() {
+    return decodingContextPool_.reserveContext();
+  }
 
   Buffer& stringBuffer() {
     return *buffer_;
@@ -108,12 +147,8 @@ struct FieldWriterContext {
   }
 
  private:
-  std::unique_ptr<velox::DecodedVector> getDecodedVector();
-  void releaseDecodedVector(std::unique_ptr<velox::DecodedVector>&& vector);
-
   std::unique_ptr<Buffer> buffer_;
-  std::vector<std::unique_ptr<velox::DecodedVector>> decodedVectorPool_;
-  std::unique_ptr<velox::SelectivityVector> selectivity_;
+  DecodingContextPool decodingContextPool_;
   std::vector<std::unique_ptr<StreamData>> streams_;
 };
 
@@ -156,10 +191,6 @@ class FieldWriter {
  protected:
   FieldWriterContext& context_;
   std::shared_ptr<TypeBuilder> typeBuilder_;
-
-  FieldWriterContext::LocalDecodedVector decode(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges);
 };
 
 } // namespace facebook::nimble
