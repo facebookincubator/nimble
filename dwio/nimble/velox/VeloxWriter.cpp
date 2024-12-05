@@ -505,7 +505,14 @@ bool VeloxWriter::write(const velox::VectorPtr& vector) {
   NIMBLE_CHECK(file_, "Writer is already closed");
   try {
     auto size = vector->size();
-    root_->write(vector, OrderedRanges::of(0, size));
+    if (context_->options.writeExecutor) {
+      velox::dwio::common::ExecutorBarrier barrier{
+          context_->options.writeExecutor};
+      root_->write(vector, OrderedRanges::of(0, size), &barrier);
+      barrier.waitAll();
+    } else {
+      root_->write(vector, OrderedRanges::of(0, size));
+    }
 
     uint64_t memoryUsed = 0;
     for (const auto& stream : context_->streams()) {
