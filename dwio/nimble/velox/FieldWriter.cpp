@@ -284,10 +284,8 @@ class SimpleFieldWriter : public FieldWriter {
         valuesStream_{context.createNullableContentStreamData<TargetType>(
             typeBuilder_->asScalar().scalarDescriptor())} {}
 
-  void write(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor*) override {
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
     auto size = ranges.size();
     auto& buffer = context_.stringBuffer();
     auto& data = valuesStream_.mutableData();
@@ -377,10 +375,8 @@ class RowFieldWriter : public FieldWriter {
     }
   }
 
-  void write(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor* executor = nullptr) override {
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
     auto size = ranges.size();
     OrderedRanges childRanges;
     const OrderedRanges* childRangesPtr;
@@ -413,19 +409,8 @@ class RowFieldWriter : public FieldWriter {
           Decoded{decoded},
           [&](auto offset) { childRanges.add(offset, 1); });
     }
-
-    if (executor) {
-      for (auto i = 0; i < fields_.size(); ++i) {
-        executor->add([&field = fields_[i],
-                       &childVector = row->childAt(i),
-                       childRanges = *childRangesPtr]() {
-          field->write(childVector, childRanges);
-        });
-      }
-    } else {
-      for (auto i = 0; i < fields_.size(); ++i) {
-        fields_[i]->write(row->childAt(i), *childRangesPtr);
-      }
+    for (auto i = 0; i < fields_.size(); ++i) {
+      fields_[i]->write(row->childAt(i), *childRangesPtr);
     }
   }
 
@@ -525,10 +510,8 @@ class ArrayFieldWriter : public MultiValueFieldWriter {
     typeBuilder_->asArray().setChildren(elements_->typeBuilder());
   }
 
-  void write(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor*) override {
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
     OrderedRanges childRanges;
     auto array = ingestLengths<velox::ArrayVector>(vector, ranges, childRanges);
     if (childRanges.size() > 0) {
@@ -567,10 +550,8 @@ class MapFieldWriter : public MultiValueFieldWriter {
         keys_->typeBuilder(), values_->typeBuilder());
   }
 
-  void write(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor*) override {
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
     OrderedRanges childRanges;
     auto map = ingestLengths<velox::MapVector>(vector, ranges, childRanges);
     if (childRanges.size() > 0) {
@@ -617,10 +598,8 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
         type->type(), 1, context.bufferMemoryPool.get());
   }
 
-  void write(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor*) override {
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
     OrderedRanges childFilteredRanges;
     auto map = ingestOffsetsAndLengthsDeduplicated(
         vector, ranges, childFilteredRanges);
@@ -845,14 +824,11 @@ class FlatMapFieldWriter : public FieldWriter {
             typeBuilder_->asFlatMap().nullsDescriptor())},
         valueType_{type->childAt(1)} {}
 
-  void write(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor* executor = nullptr) override {
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
     // Check if the vector received is already flattened
     const auto isFlatMap = vector->type()->kind() == velox::TypeKind::ROW;
-    isFlatMap ? ingestFlattenedMap(vector, ranges)
-              : ingestMap(vector, ranges, executor);
+    isFlatMap ? ingestFlattenedMap(vector, ranges) : ingestMap(vector, ranges);
   }
 
   FlatMapPassthroughValueFieldWriter& createPassthroughValueFieldWriter(
@@ -921,10 +897,7 @@ class FlatMapFieldWriter : public FieldWriter {
     }
   }
 
-  void ingestMap(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor* executor = nullptr) {
+  void ingestMap(const velox::VectorPtr& vector, const OrderedRanges& ranges) {
     NIMBLE_ASSERT(
         currentPassthroughFields_.empty(),
         "Mixing map and flatmap vectors in the FlatMapFieldWriter is not supported");
@@ -1006,15 +979,8 @@ class FlatMapFieldWriter : public FieldWriter {
     // Now actually ingest the map values
     if (nonNullCount > 0) {
       auto& values = map->mapValues();
-
-      if (executor) {
-        for (auto& pair : currentValueFields_) {
-          executor->add([&]() { pair.second->write(values, nonNullCount); });
-        }
-      } else {
-        for (auto& pair : currentValueFields_) {
-          pair.second->write(values, nonNullCount);
-        }
+      for (auto& pair : currentValueFields_) {
+        pair.second->write(values, nonNullCount);
       }
     }
     nonNullCount_ += nonNullCount;
@@ -1064,8 +1030,6 @@ class FlatMapFieldWriter : public FieldWriter {
     // check whether the typebuilder for this key is already present
     auto flatFieldIt = allValueFields_.find(key);
     if (flatFieldIt == allValueFields_.end()) {
-      std::scoped_lock<std::mutex> lock{context_.flatMapSchemaMutex};
-
       auto valueFieldWriter = FieldWriter::create(context_, valueType_);
       const auto& inMapDescriptor = typeBuilder_->asFlatMap().addChild(
           stringKey, valueFieldWriter->typeBuilder());
@@ -1165,10 +1129,8 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
         type->type(), 1, context.bufferMemoryPool.get());
   }
 
-  void write(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor*) override {
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
     OrderedRanges childFilteredRanges;
     const velox::ArrayVector* array;
     // To unwrap the dictionaryVector we need to cast into ComplexType before

@@ -129,8 +129,6 @@ struct VeloxWriterOptions {
   // If provided, internal encoding operations will happen in parallel using
   // this executor.
   std::shared_ptr<folly::Executor> encodingExecutor;
-  // If provided, internal ingestion operations will happen in parallel
-  std::shared_ptr<folly::Executor> writeExecutor;
 
   bool enableChunking = false;
 
