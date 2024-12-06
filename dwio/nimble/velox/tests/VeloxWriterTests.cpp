@@ -293,7 +293,7 @@ TEST_P(RawStripeSizeFlushPolicyTest, RawStripeSizeFlushPolicy) {
 namespace {
 class MockReclaimer : public velox::memory::MemoryReclaimer {
  public:
-  explicit MockReclaimer() {}
+  explicit MockReclaimer() : velox::memory::MemoryReclaimer(0) {}
   void setEnterArbitrationFunc(std::function<void()>&& func) {
     enterArbitrationFunc_ = func;
   }
