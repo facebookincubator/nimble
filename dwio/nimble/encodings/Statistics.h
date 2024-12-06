@@ -30,6 +30,12 @@ namespace facebook::nimble {
 template <typename T, typename InputType = T>
 class UniqueValueCounts {
  public:
+  // NOTICE: absl::flat_hash_map has incosistent iteration order
+  // every single time, this might be a problem for some encodings that depend
+  // on the order of the elements, such as dictionary indicies encoded with
+  // VARINT encoding. This also means that the order of the elements in the
+  // dictionary alphabet will be different every time giving incosistent file
+  // sizes.
   using MapType = absl::flat_hash_map<T, uint64_t>;
 
   struct Iterator {

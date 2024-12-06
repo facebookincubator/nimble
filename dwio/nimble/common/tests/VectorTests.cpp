@@ -50,6 +50,16 @@ TEST_F(VectorTests, FromRange) {
   EXPECT_EQ(6, v1[2]);
 }
 
+TEST_F(VectorTests, FromRangeWithSize) {
+  std::vector<int32_t> source{4, 5, 6};
+  nimble::Vector<int32_t> v1(
+      pool_.get(), source.size(), source.begin(), source.end());
+  EXPECT_EQ(3, v1.size());
+  EXPECT_EQ(4, v1[0]);
+  EXPECT_EQ(5, v1[1]);
+  EXPECT_EQ(6, v1[2]);
+}
+
 TEST_F(VectorTests, EqualOp1) {
   nimble::Vector<int32_t> v1(pool_.get());
   v1.push_back(1);
