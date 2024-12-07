@@ -553,7 +553,7 @@ TEST(TabletTests, OptionalSections) {
 
   tabletWriter.close();
 
-  folly::CPUThreadPoolExecutor executor{5};
+  auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(5);
   facebook::velox::dwio::common::ExecutorBarrier barrier{executor};
 
   for (auto useChaniedBuffers : {false, true}) {
@@ -914,7 +914,7 @@ TEST(TabletTests, ReferenceCountedCacheStressParallelDuplicates) {
     ++counter;
     return std::make_shared<int>(id);
   }};
-  folly::CPUThreadPoolExecutor executor(10);
+  auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(10);
   velox::dwio::common::ExecutorBarrier barrier(executor);
   constexpr int kEntryIds = 100;
   constexpr int kEntryDuplicates = 10;
@@ -937,7 +937,7 @@ TEST(TabletTests, ReferenceCountedCacheStressParallelDuplicatesSaveEntries) {
     return std::make_shared<int>(id);
   }};
   folly::Synchronized<std::vector<std::shared_ptr<int>>> entries;
-  folly::CPUThreadPoolExecutor executor(10);
+  auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(10);
   velox::dwio::common::ExecutorBarrier barrier(executor);
   constexpr int kEntryIds = 100;
   constexpr int kEntryDuplicates = 10;
@@ -960,7 +960,7 @@ TEST(TabletTests, ReferenceCountedCacheStress) {
     ++counter;
     return std::make_shared<int>(id);
   }};
-  folly::CPUThreadPoolExecutor executor(10);
+  auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(10);
   velox::dwio::common::ExecutorBarrier barrier(executor);
   constexpr int kEntryIds = 100;
   constexpr int kEntryDuplicates = 10;
@@ -982,7 +982,7 @@ TEST(TabletTests, ReferenceCountedCacheStressSaveEntries) {
     return std::make_shared<int>(id);
   }};
   folly::Synchronized<std::vector<std::shared_ptr<int>>> entries;
-  folly::CPUThreadPoolExecutor executor(10);
+  auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(10);
   velox::dwio::common::ExecutorBarrier barrier(executor);
   constexpr int kEntryIds = 100;
   constexpr int kEntryDuplicates = 10;
