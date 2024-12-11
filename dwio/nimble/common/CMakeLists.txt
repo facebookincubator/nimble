@@ -1,4 +1,4 @@
-# Copyright (c) Meta Platforms, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,13 +13,7 @@
 # limitations under the License.
 add_subdirectory(tests)
 
-add_library(
-  nimble_common
-  Bits.cpp
-  Checksum.cpp
-  FixedBitArray.cpp
-  MetricsLogger.cpp
-  Types.cpp
-  Varint.cpp)
+add_library(nimble_common Bits.cpp Checksum.cpp FixedBitArray.cpp
+                          MetricsLogger.cpp Types.cpp Varint.cpp)
 
 target_link_libraries(nimble_common velox_memory Folly::folly)
