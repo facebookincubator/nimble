@@ -1,4 +1,4 @@
-# Copyright (c) Meta Platforms, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -98,25 +98,25 @@ include(CTest) # include after project() but before add_subdirectory()
 # generated .cpp/.h files), but adding this for convenience for now.
 find_package(FlatBuffers REQUIRED)
 
-set_source(gtest)
-resolve_dependency(gtest)
+velox_set_source(gtest)
+velox_resolve_dependency(gtest)
 
-set_source(glog)
-resolve_dependency(glog)
+velox_set_source(glog)
+velox_resolve_dependency(glog)
 
-set_source(gflags)
-resolve_dependency(gflags COMPONENTS shared)
+velox_set_source(gflags)
+velox_resolve_dependency(gflags COMPONENTS shared)
 
 set(BOOST_INCLUDE_LIBRARIES algorithm context filesystem program_options)
 
-set_source(Boost)
-resolve_dependency(Boost 1.77.0 COMPONENTS ${BOOST_INCLUDE_LIBRARIES})
+velox_set_source(Boost)
+velox_resolve_dependency(Boost 1.77.0 COMPONENTS ${BOOST_INCLUDE_LIBRARIES})
 
-set_source(folly)
-resolve_dependency(folly)
+velox_set_source(folly)
+velox_resolve_dependency(folly)
 
-set_source(abseil)
-resolve_dependency(abseil)
+velox_set_source(abseil)
+velox_resolve_dependency(abseil)
 
 # Use xxhash and xsimd from Velox for now.
 include_directories(.)
