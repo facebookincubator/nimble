@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -912,6 +912,64 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionExpandingRow) {
   // Getting here is good enough for now (as it means we didn't fail on node
   // type mismatch). Once we add metric collection, we can use these to verify
   // that no captured encoding was used.
+}
+
+TEST_F(VeloxWriterTests, CombineMultipleLayersOfDictionaries) {
+  using namespace facebook::velox;
+  test::VectorMaker vectorMaker{leafPool_.get()};
+  auto wrapInDictionary = [&](const std::vector<vector_size_t>& indices,
+                              const VectorPtr& values) {
+    auto buf =
+        AlignedBuffer::allocate<vector_size_t>(indices.size(), leafPool_.get());
+    memcpy(
+        buf->asMutable<vector_size_t>(),
+        indices.data(),
+        sizeof(vector_size_t) * indices.size());
+    return BaseVector::wrapInDictionary(nullptr, buf, indices.size(), values);
+  };
+  auto vector = vectorMaker.rowVector({
+      wrapInDictionary(
+          {0, 0, 1, 1},
+          vectorMaker.rowVector({
+              wrapInDictionary(
+                  {0, 0}, vectorMaker.arrayVector<int64_t>({{1, 2, 3}})),
+          })),
+  });
+  nimble::VeloxWriterOptions options;
+  options.flatMapColumns = {"c0"};
+  options.dictionaryArrayColumns = {"c0"};
+  std::string file;
+  auto writeFile = std::make_unique<InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      *rootPool_,
+      ROW({"c0"}, {MAP(VARCHAR(), ARRAY(BIGINT()))}),
+      std::move(writeFile),
+      std::move(options));
+  writer.write(vector);
+  writer.close();
+  InMemoryReadFile readFile(file);
+  nimble::VeloxReadParams params;
+  params.readFlatMapFieldAsStruct = {"c0"};
+  params.flatMapFeatureSelector["c0"].features = {"c0"};
+  nimble::VeloxReader reader(*leafPool_, &readFile, nullptr, std::move(params));
+  VectorPtr result;
+  ASSERT_TRUE(reader.next(4, result));
+  ASSERT_EQ(result->size(), 4);
+  auto* c0 = result->asChecked<RowVector>()->childAt(0)->asChecked<RowVector>();
+  auto& dict = c0->childAt(0);
+  ASSERT_EQ(dict->encoding(), VectorEncoding::Simple::DICTIONARY);
+  ASSERT_EQ(dict->size(), 4);
+  auto* indices = dict->wrapInfo()->as<vector_size_t>();
+  for (int i = 0; i < 4; ++i) {
+    ASSERT_EQ(indices[i], 0);
+  }
+  auto* values = dict->valueVector()->asChecked<ArrayVector>();
+  ASSERT_EQ(values->size(), 1);
+  auto* elements = values->elements()->asChecked<SimpleVector<int64_t>>();
+  ASSERT_EQ(values->sizeAt(0), 3);
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_EQ(elements->valueAt(i + values->offsetAt(0)), 1 + i);
+  }
 }
 
 #define ASSERT_CHUNK_COUNT(count, chunked) \

@@ -851,8 +851,14 @@ class FlatMapFieldWriter : public FieldWriter {
       folly::Executor* executor = nullptr) override {
     // Check if the vector received is already flattened
     const auto isFlatMap = vector->type()->kind() == velox::TypeKind::ROW;
-    isFlatMap ? ingestFlattenedMap(vector, ranges)
-              : ingestMap(vector, ranges, executor);
+    if (isFlatMap) {
+      ingestFlattenedMap(
+          velox::RowVector::pushDictionaryToRowVectorLeaves(
+              velox::BaseVector::loadedVectorShared(vector)),
+          ranges);
+    } else {
+      ingestMap(vector, ranges, executor);
+    }
   }
 
   FlatMapPassthroughValueFieldWriter& createPassthroughValueFieldWriter(
