@@ -2426,14 +2426,17 @@ TEST_F(VeloxReaderTests, FuzzSimple) {
   auto iterations = 20;
   auto batches = 20;
   std::mt19937 rng{seed};
+
   for (auto parallelismFactor : {0U, 1U, std::thread::hardware_concurrency()}) {
     LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
     nimble::VeloxWriterOptions writerOptions;
+    std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
+
     if (parallelismFactor > 0) {
-      auto executor =
+      executor =
           std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
-      writerOptions.encodingExecutor = executor;
-      writerOptions.writeExecutor = executor;
+      writerOptions.encodingExecutor = folly::getKeepAliveToken(*executor);
+      writerOptions.writeExecutor = folly::getKeepAliveToken(*executor);
     }
 
     for (auto i = 0; i < iterations; ++i) {
@@ -2527,11 +2530,13 @@ TEST_F(VeloxReaderTests, FuzzComplex) {
 
   for (auto parallelismFactor : {0U, 1U, std::thread::hardware_concurrency()}) {
     LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
+    std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
+
     if (parallelismFactor > 0) {
-      auto executor =
+      executor =
           std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
-      writerOptions.encodingExecutor = executor;
-      writerOptions.writeExecutor = executor;
+      writerOptions.encodingExecutor = folly::getKeepAliveToken(*executor);
+      writerOptions.writeExecutor = folly::getKeepAliveToken(*executor);
     }
 
     for (auto i = 0; i < iterations; ++i) {
