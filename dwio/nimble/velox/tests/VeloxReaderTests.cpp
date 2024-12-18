@@ -2429,8 +2429,11 @@ TEST_F(VeloxReaderTests, FuzzSimple) {
 
   for (auto parallelismFactor : {0U, 1U, std::thread::hardware_concurrency()}) {
     LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
-    nimble::VeloxWriterOptions writerOptions;
+
+    // Executor needs to outlive writerOptions since the latter has a keepAlive
+    // on the former.
     std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
+    nimble::VeloxWriterOptions writerOptions;
 
     if (parallelismFactor > 0) {
       executor =
@@ -2493,11 +2496,6 @@ TEST_F(VeloxReaderTests, FuzzComplex) {
                                               : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
 
-  nimble::VeloxWriterOptions writerOptions;
-  writerOptions.dictionaryArrayColumns.insert("nested_map_array1");
-  writerOptions.dictionaryArrayColumns.insert("nested_map_array2");
-  writerOptions.dictionaryArrayColumns.insert("dict_array");
-  writerOptions.deduplicatedMapColumns.insert("dict_map");
   // Small batches creates more edge cases.
   size_t batchSize = 10;
   velox::VectorFuzzer noNulls(
@@ -2528,9 +2526,18 @@ TEST_F(VeloxReaderTests, FuzzComplex) {
   auto batches = 20;
   std::mt19937 rng{seed};
 
+  // Executor needs to outlive writerOptions since the latter has a keepAlive on
+  // the former.
+  std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
+
   for (auto parallelismFactor : {0U, 1U, std::thread::hardware_concurrency()}) {
     LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
-    std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
+
+    nimble::VeloxWriterOptions writerOptions;
+    writerOptions.dictionaryArrayColumns.insert("nested_map_array1");
+    writerOptions.dictionaryArrayColumns.insert("nested_map_array2");
+    writerOptions.dictionaryArrayColumns.insert("dict_array");
+    writerOptions.deduplicatedMapColumns.insert("dict_map");
 
     if (parallelismFactor > 0) {
       executor =
