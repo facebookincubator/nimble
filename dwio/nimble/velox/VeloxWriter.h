@@ -77,7 +77,6 @@ class VeloxWriter {
   TabletWriter writer_;
   std::unique_ptr<FieldWriter> root_;
 
-  std::unique_ptr<Buffer> encodingBuffer_;
   std::vector<Stream> streams_;
   std::exception_ptr lastException_;
   const velox::common::SpillConfig* const spillConfig_;

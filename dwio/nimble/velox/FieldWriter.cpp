@@ -289,9 +289,8 @@ class SimpleFieldWriter : public FieldWriter {
       const OrderedRanges& ranges,
       folly::Executor*) override {
     auto size = ranges.size();
-    auto& buffer = context_.stringBuffer();
     auto& data = valuesStream_.mutableData();
-
+    auto bufferObject = context_.bufferPool().reserveBuffer();
     if (auto flat = vector->asFlatVector<SourceType>()) {
       valuesStream_.ensureNullsCapacity(flat->mayHaveNulls(), size);
       bool rangeCopied = false;
@@ -331,6 +330,7 @@ class SimpleFieldWriter : public FieldWriter {
             valuesStream_.mutableNonNulls(),
             Flat<SourceType>{vector},
             [&](SourceType value) {
+              auto& buffer = bufferObject.get();
               data.push_back(
                   C::convert(value, buffer, valuesStream_.extraMemory()));
             });
@@ -344,6 +344,7 @@ class SimpleFieldWriter : public FieldWriter {
           valuesStream_.mutableNonNulls(),
           Decoded<SourceType>{decoded},
           [&](SourceType value) {
+            auto& buffer = bufferObject.get();
             data.push_back(
                 C::convert(value, buffer, valuesStream_.extraMemory()));
           });
@@ -1588,6 +1589,66 @@ DecodingContextPool::DecodingContext DecodingContextPool::reserveContext() {
 
 size_t DecodingContextPool::size() const {
   return pool_.size();
+}
+
+BufferPool::BufferObject::BufferObject(
+    BufferPool& pool,
+    std::unique_ptr<Buffer> buffer)
+    : pool_{pool}, buffer_{std::move(buffer)} {}
+
+BufferPool::BufferObject::~BufferObject() {
+  pool_.addBuffer(std::move(buffer_));
+}
+
+Buffer& BufferPool::BufferObject::get() {
+  return *buffer_;
+}
+
+BufferPool::BufferPool(
+    facebook::velox::memory::MemoryPool& memoryPool,
+    size_t maxPoolSize,
+    uint64_t initialChunkSize)
+    : defaultInitialChunkSize_{initialChunkSize},
+      semaphore_{0},
+      memoryPool_{memoryPool} {
+  NIMBLE_CHECK(maxPoolSize > 0, "max pool size must be > 0")
+  pool_.reserve(maxPoolSize);
+  for (size_t i = 0; i < maxPoolSize; ++i) {
+    pool_.emplace_back(newBuffer());
+    semaphore_.release();
+  }
+}
+
+facebook::velox::memory::MemoryPool& BufferPool::getMemoryPool() {
+  return memoryPool_;
+}
+
+// buffer back to the pool.
+void BufferPool::addBuffer(std::unique_ptr<Buffer> buffer) {
+  std::scoped_lock<std::mutex> lock(mutex_);
+  pool_.push_back(std::move(buffer));
+  semaphore_.release();
+}
+
+// Reserves a buffer from the pool. Adds a new buffer to the pool
+// while there are buffers available
+BufferPool::BufferObject BufferPool::reserveBuffer() {
+  semaphore_.acquire();
+
+  std::scoped_lock<std::mutex> lock(mutex_);
+  auto buffer = std::move(pool_.back());
+  pool_.pop_back();
+
+  return BufferPool::BufferObject{*this, std::move(buffer)};
+}
+
+// Returns estimated number of buffers in the pool
+size_t BufferPool::size() {
+  return pool_.size();
+}
+
+std::unique_ptr<Buffer> BufferPool::newBuffer() {
+  return std::make_unique<Buffer>(memoryPool_, defaultInitialChunkSize_);
 }
 
 std::unique_ptr<FieldWriter> FieldWriter::create(
