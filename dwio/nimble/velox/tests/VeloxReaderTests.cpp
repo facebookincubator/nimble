@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -82,6 +82,8 @@ struct VeloxMapGeneratorConfig {
   // If true, generated string field will have variable length, maxing at
   // 'stringLength'.
   bool stringVariableLength = true;
+
+  bool allowConstant = true;
 };
 
 // Generates a RowVector containing a set of feature MapVector with
@@ -140,6 +142,7 @@ class VeloxMapGenerator {
             .stringVariableLength = config_.stringVariableLength,
             .containerLength = 5,
             .containerVariableLength = true,
+            .allowConstantVector = config_.allowConstant,
         },
         leafPool_,
         config_.seed);
@@ -3506,7 +3509,7 @@ TEST_F(VeloxReaderTests, MapToFlatMapAndPassthrough) {
       << "Expected: " << type->toString()
       << ", actual: " << flatRootTypeFromSchema->toString();
 
-  // fullReadResult and nextExpected are interchangable at this point
+  // fullReadResult and nextExpected are interchangeable at this point
   for (auto i = 0; i < fullReadResult.size(); ++i) {
     velox::VectorPtr flatResult;
     auto& current = fullReadResult.at(i);
@@ -5681,6 +5684,7 @@ TEST_F(VeloxReaderTests, EstimatedRowSizeComplex) {
           // BaseVector::retainedSize()
           .stringLength = velox::StringView::kInlineSize,
           .stringVariableLength = false,
+          .allowConstant = false,
       };
       VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
       auto vector = generator.generateBatch(rowCount);
