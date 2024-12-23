@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include "velox/common/base/VeloxException.h"
+
 #include <glog/logging.h>
 #include "folly/FixedString.h"
 #include "folly/experimental/symbolizer/Symbolizer.h"
@@ -92,7 +94,8 @@ class NimbleException : public std::exception {
       std::string_view failingExpression,
       std::string_view errorMessage,
       std::string_view errorCode,
-      bool retryable)
+      bool retryable,
+      velox::VeloxException::Type veloxExceptionType)
       : exceptionName_{std::move(exceptionName)},
         fileName_{fileName},
         fileLine_{fileLine},
@@ -100,7 +103,8 @@ class NimbleException : public std::exception {
         failingExpression_{std::move(failingExpression)},
         errorMessage_{std::move(errorMessage)},
         errorCode_{std::move(errorCode)},
-        retryable_{retryable} {
+        retryable_{retryable},
+        context_{captureContextMessage(veloxExceptionType)} {
     captureStackTraceFrames();
   }
 
@@ -147,10 +151,35 @@ class NimbleException : public std::exception {
     return retryable_;
   }
 
+  const std::string& context() const {
+    return context_;
+  }
+
  protected:
   virtual void appendMessage(std::string& /* message */) const {}
 
  private:
+  static std::string captureContextMessage(
+      velox::VeloxException::Type veloxExceptionType) {
+    auto* context = &velox::getExceptionContext();
+    std::string contextMessage = context->message(veloxExceptionType);
+    while (context->parent) {
+      context = context->parent;
+      if (!context->isEssential) {
+        continue;
+      }
+      const auto message = context->message(veloxExceptionType);
+      if (message.empty()) {
+        continue;
+      }
+      if (!contextMessage.empty()) {
+        contextMessage += ' ';
+      }
+      contextMessage += message;
+    }
+    return contextMessage;
+  }
+
   void captureStackTraceFrames() {
     try {
       constexpr size_t skipFrames = 2;
@@ -196,6 +225,11 @@ class NimbleException : public std::exception {
       finalizedMessage_ += failingExpression_;
     }
 
+    if (!context_.empty()) {
+      finalizedMessage_ += "\nContext: ";
+      finalizedMessage_ += context_;
+    }
+
     if (LIKELY(!exceptionFrames_.empty())) {
       std::vector<folly::symbolizer::SymbolizedFrame> symbolizedFrames;
       symbolizedFrames.resize(exceptionFrames_.size());
@@ -226,6 +260,7 @@ class NimbleException : public std::exception {
   const std::string errorMessage_;
   const std::string errorCode_;
   const bool retryable_;
+  const std::string context_;
 
   mutable folly::once_flag once_;
   mutable std::string finalizedMessage_;
@@ -250,7 +285,8 @@ class NimbleUserError : public NimbleException {
             failingExpression,
             errorMessage,
             errorCode,
-            retryable) {}
+            retryable,
+            velox::VeloxException::Type::kUser) {}
 
   const std::string_view errorSource() const override {
     return error_source::User;
@@ -277,7 +313,8 @@ class NimbleInternalError : public NimbleException {
             failingExpression,
             errorMessage,
             errorCode,
-            retryable) {}
+            retryable,
+            velox::VeloxException::Type::kSystem) {}
 
   const std::string_view errorSource() const override {
     return error_source::Internal;
@@ -306,7 +343,8 @@ class NimbleExternalError : public NimbleException {
             failingExpression,
             errorMessage,
             errorCode,
-            retryable),
+            retryable,
+            velox::VeloxException::Type::kSystem),
         externalSource_{externalSource} {}
 
   const std::string_view errorSource() const override {
