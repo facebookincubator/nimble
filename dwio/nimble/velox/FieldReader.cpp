@@ -1768,7 +1768,7 @@ class RowFieldReader final : public FieldReader {
         totalBytes += nullCount * nullOverheadBits(reader->type()) / 8;
       } else if (rowCount == 0) {
         rowCount = childRowCount;
-      } else {
+      } else if (childRowCount != 0) {
         NIMBLE_CHECK(
             rowCount == childRowCount,
             fmt::format(
@@ -2298,7 +2298,7 @@ class StructFlatMapFieldReader : public FlatMapFieldReaderBase<T, hasNull> {
             nullOverheadBits(node->valueReader()->type()) / 8;
       } else if (rowCount == 0) {
         rowCount = nonNullCount;
-      } else {
+      } else if (nonNullCount != 0) {
         NIMBLE_CHECK(
             rowCount == nonNullCount,
             fmt::format(
@@ -2449,7 +2449,7 @@ class MergedFlatMapFieldReader final
     // Estimation of map key vector size in velox::MapVector.
     // Adding memory for key vector's BaseVector::nulls_
     totalBytes += rowCount * this->keyNodes_.size() / 8;
-    // MergedFlatMap key field is either velox::StringView or primative type
+    // MergedFlatMap key field is either velox::StringView or primitive type
     uint64_t totalKeyBytesPerRow{0};
     if constexpr (std::is_same<T, velox::StringView>::value) {
       for (const auto& node : this->keyNodes_) {
