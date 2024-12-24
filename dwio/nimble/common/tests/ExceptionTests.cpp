@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Meta Platforms, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,8 @@
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Exceptions.h"
 
-using namespace ::facebook;
+namespace facebook {
+namespace {
 
 template <typename T>
 void verifyException(
@@ -253,3 +254,46 @@ TEST(ExceptionTests, StackTraceThreads) {
       folly::exceptionStr(e).find(
           "facebook::nimble::NimbleException::NimbleException"));
 }
+
+TEST(ExceptionTests, Context) {
+  auto messageFunc = [](velox::VeloxException::Type exceptionType, void* arg) {
+    auto msg = *static_cast<const std::string*>(arg);
+    switch (exceptionType) {
+      case velox::VeloxException::Type::kUser:
+        return fmt::format("USER {}", msg);
+      case velox::VeloxException::Type::kSystem:
+        return fmt::format("SYSTEM {}", msg);
+    }
+  };
+  std::string context1Message = "1";
+  velox::ExceptionContextSetter context1({messageFunc, &context1Message, true});
+  std::string context2Message = "2";
+  velox::ExceptionContextSetter context2(
+      {messageFunc, &context2Message, false});
+  std::string context3Message = "3";
+  velox::ExceptionContextSetter context3(
+      {messageFunc, &context3Message, false});
+
+  try {
+    NIMBLE_NOT_SUPPORTED("");
+    FAIL();
+  } catch (const nimble::NimbleException& e) {
+    ASSERT_EQ(e.context(), "USER 3 USER 1");
+    ASSERT_NE(
+        std::string(e.what()).find("Context: " + e.context()),
+        std::string::npos);
+  }
+
+  try {
+    NIMBLE_UNKNOWN("");
+    FAIL();
+  } catch (const nimble::NimbleException& e) {
+    ASSERT_EQ(e.context(), "SYSTEM 3 SYSTEM 1");
+    ASSERT_NE(
+        std::string(e.what()).find("Context: " + e.context()),
+        std::string::npos);
+  }
+}
+
+} // namespace
+} // namespace facebook
