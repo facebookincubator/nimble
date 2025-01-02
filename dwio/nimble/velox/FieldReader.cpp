@@ -965,9 +965,11 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
     bool cachedLocally = rowCount > 0 && cached_ && (baseIndex == cachedIndex_);
 
     // Initializes sizes and offsets in the vector.
+    auto& dictionaryValues =
+        const_cast<velox::VectorPtr&>(dictionaryVector->valueVector());
     auto childrenRows = loadOffsets<velox::ArrayVector>(
         dedupCount - cachedLocally,
-        dictionaryVector->valueVector(),
+        dictionaryValues,
         /* scatterBitmap */ nullptr,
         dedupCount);
 
@@ -985,13 +987,11 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
 
     elementsReader_->next(
         childrenRows,
-        static_cast<velox::ArrayVector&>(*dictionaryVector->valueVector())
-            .elements(),
+        static_cast<velox::ArrayVector&>(*dictionaryValues).elements(),
         /* scatterBitmap */ nullptr);
 
     if (cachedLocally) {
-      auto vector = static_cast<velox::ArrayVector*>(
-          dictionaryVector->valueVector().get());
+      auto vector = static_cast<velox::ArrayVector*>(dictionaryValues.get());
 
       // Copy elements from cache
       const auto cacheIdx = static_cast<int64_t>(dedupCount) - 1;
@@ -1309,13 +1309,14 @@ class SlidingWindowMapFieldReader final : public FieldReader {
       dictionaryVector->resize(rowCount);
       dictionaryVector->resetNulls();
       resetIfNotWritable(output, dictionaryVector->indices());
-      auto child =
-          verifyVectorState<velox::MapVector>(dictionaryVector->valueVector());
+      auto& dictionaryValues =
+          const_cast<velox::VectorPtr&>(dictionaryVector->valueVector());
+      auto child = verifyVectorState<velox::MapVector>(dictionaryValues);
       if (child) {
         child->resize(rowCount);
       } else {
         VectorInitializer<velox::MapVector>::initialize(
-            &pool_, dictionaryVector->valueVector(), type_, rowCount);
+            &pool_, dictionaryValues, type_, rowCount);
       }
     } else {
       velox::VectorPtr child;
