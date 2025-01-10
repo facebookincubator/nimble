@@ -18,6 +18,7 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/tablet/Compression.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
@@ -383,11 +384,11 @@ TabletReader::TabletReader(
     for (auto i = 0; i < optionalSections->names()->size(); ++i) {
       optionalSections_.insert(std::make_pair(
           optionalSections->names()->GetAsString(i)->str(),
-          std::make_tuple(
+          MetadataSection{
               optionalSections->offsets()->Get(i),
               optionalSections->sizes()->Get(i),
               static_cast<CompressionType>(
-                  optionalSections->compression_types()->Get(i)))));
+                  optionalSections->compression_types()->Get(i))}));
     }
   }
 
@@ -399,9 +400,9 @@ TabletReader::TabletReader(
       continue;
     }
 
-    const auto sectionOffset = std::get<0>(it->second);
-    const auto sectionSize = std::get<1>(it->second);
-    const auto sectionCompressionType = std::get<2>(it->second);
+    const auto sectionOffset = it->second.offset();
+    const auto sectionSize = it->second.size();
+    const auto sectionCompressionType = it->second.compressionType();
 
     if (sectionOffset < offset) {
       // Section was not read yet. Need to read from file.
@@ -427,7 +428,7 @@ TabletReader::TabletReader(
       auto iobuf = std::move(result[i]);
       const std::string preload{mustRead[i].label};
       auto metadata = std::make_unique<MetadataBuffer>(
-          memoryPool_, iobuf, std::get<2>(optionalSections_[preload]));
+          memoryPool_, iobuf, optionalSections_.at(preload).compressionType());
       optionalSectionsCache_.wlock()->insert({preload, std::move(metadata)});
     }
   }
@@ -670,9 +671,9 @@ std::optional<Section> TabletReader::loadOptionalSection(
     return std::nullopt;
   }
 
-  const auto offset = std::get<0>(it->second);
-  const auto size = std::get<1>(it->second);
-  const auto compressionType = std::get<2>(it->second);
+  const auto offset = it->second.offset();
+  const auto size = it->second.size();
+  const auto compressionType = it->second.compressionType();
 
   velox::common::Region region{offset, size, name};
   folly::IOBuf iobuf;

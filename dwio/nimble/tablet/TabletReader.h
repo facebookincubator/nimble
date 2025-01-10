@@ -17,6 +17,7 @@
 #include <span>
 
 #include "dwio/nimble/common/Checksum.h"
+#include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "folly/Range.h"
 #include "folly/Synchronized.h"
@@ -83,6 +84,32 @@ class Section {
 
  private:
   MetadataBuffer buffer_;
+};
+
+class MetadataSection {
+ public:
+  MetadataSection(
+      uint64_t offset,
+      uint32_t size,
+      CompressionType compressionType)
+      : offset_{offset}, size_{size}, compressionType_{compressionType} {}
+
+  uint64_t offset() const {
+    return offset_;
+  }
+
+  uint32_t size() const {
+    return size_;
+  }
+
+  CompressionType compressionType() const {
+    return compressionType_;
+  }
+
+ private:
+  uint64_t offset_;
+  uint32_t size_;
+  CompressionType compressionType_;
 };
 
 class Postscript {
@@ -251,6 +278,11 @@ class TabletReader {
       const StripeIdentifier& stripe,
       std::span<const uint32_t> streamIdentifiers) const;
 
+  const std::unordered_map<std::string, MetadataSection>& optionalSections()
+      const {
+    return optionalSections_;
+  }
+
   std::optional<Section> loadOptionalSection(
       const std::string& name,
       bool keepCache = false) const;
@@ -349,10 +381,7 @@ class TabletReader {
   uint32_t stripeCount_{0};
   const uint32_t* stripeRowCounts_{nullptr};
   const uint64_t* stripeOffsets_{nullptr};
-  std::unordered_map<
-      std::string,
-      std::tuple<uint64_t, uint32_t, CompressionType>>
-      optionalSections_;
+  std::unordered_map<std::string, MetadataSection> optionalSections_;
   mutable folly::Synchronized<
       std::unordered_map<std::string, std::unique_ptr<MetadataBuffer>>>
       optionalSectionsCache_;
