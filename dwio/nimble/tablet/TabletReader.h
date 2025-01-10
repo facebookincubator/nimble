@@ -14,7 +14,11 @@
  * limitations under the License.
  */
 #pragma once
+
+#include <memory>
+#include <optional>
 #include <span>
+#include <vector>
 
 #include "dwio/nimble/common/Checksum.h"
 #include "dwio/nimble/common/Types.h"
@@ -277,6 +281,10 @@ class TabletReader {
   uint64_t getTotalStreamSize(
       const StripeIdentifier& stripe,
       std::span<const uint32_t> streamIdentifiers) const;
+
+  std::optional<MetadataSection> stripesMetadata() const;
+
+  std::vector<MetadataSection> stripeGroupsMetadata() const;
 
   const std::unordered_map<std::string, MetadataSection>& optionalSections()
       const {

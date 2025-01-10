@@ -26,7 +26,9 @@
 #include "folly/io/Cursor.h"
 
 #include <algorithm>
+#include <iterator>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <tuple>
@@ -48,7 +50,7 @@ namespace facebook::nimble {
 // 4 bytes footer size + 1 byte footer compression type +
 // 1 byte checksum type + 8 bytes checksum +
 // 2 bytes major version + 2 bytes minor version +
-// 4 bytes magic number.
+// 2 bytes magic number.
 namespace {
 
 template <typename T>
@@ -646,6 +648,41 @@ uint64_t TabletReader::getTotalStreamSize(
     streamSizeSum += stripeStreamSizes[streamId];
   }
   return streamSizeSum;
+}
+
+std::optional<MetadataSection> TabletReader::stripesMetadata() const {
+  auto footerRoot =
+      asFlatBuffersRoot<serialization::Footer>(footer_->content());
+  auto stripes = footerRoot->stripes();
+  if (!stripes) {
+    return std::nullopt;
+  }
+  return MetadataSection{
+      stripes->offset(),
+      stripes->size(),
+      static_cast<CompressionType>(stripes->compression_type())};
+}
+
+std::vector<MetadataSection> TabletReader::stripeGroupsMetadata() const {
+  std::vector<MetadataSection> groupsMetadata;
+  auto footerRoot =
+      asFlatBuffersRoot<serialization::Footer>(footer_->content());
+  auto stripeGroups = footerRoot->stripe_groups();
+  if (!stripeGroups) {
+    return groupsMetadata;
+  }
+  groupsMetadata.reserve(stripeGroups->size());
+  std::transform(
+      stripeGroups->cbegin(),
+      stripeGroups->cend(),
+      std::back_inserter(groupsMetadata),
+      [](const auto& stripeGroup) {
+        return MetadataSection{
+            stripeGroup->offset(),
+            stripeGroup->size(),
+            static_cast<CompressionType>(stripeGroup->compression_type())};
+      });
+  return groupsMetadata;
 }
 
 std::optional<Section> TabletReader::loadOptionalSection(
