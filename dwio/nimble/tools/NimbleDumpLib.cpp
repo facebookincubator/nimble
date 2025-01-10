@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include <algorithm>
+#include <functional>
 #include <locale>
 #include <numeric>
 #include <ostream>
@@ -263,9 +264,38 @@ void NimbleDumpLib::emitInfo() {
   ostream_ << "File Size: " << commaSeparated(tablet->fileSize()) << std::endl;
   ostream_ << "Checksum: " << tablet->checksum() << " ["
            << nimble::toString(tablet->checksumType()) << "]" << std::endl;
-  ostream_ << "Footer Compression: " << tablet->footerCompressionType()
+  ostream_ << "Postscript Size: " << commaSeparated(kPostscriptSize)
            << std::endl;
-  ostream_ << "Footer Size: " << commaSeparated(tablet->footerSize())
+  ostream_ << "Footer Size: " << commaSeparated(tablet->footerSize()) << " ("
+           << tablet->footerCompressionType() << ")" << std::endl;
+  ostream_ << "Stripes Metadata Size: ";
+  auto stripesMetadata = tablet->stripesMetadata();
+  if (!stripesMetadata) {
+    ostream_ << "0" << std::endl;
+  } else {
+    ostream_ << commaSeparated(stripesMetadata.value().size()) << " ("
+             << stripesMetadata.value().compressionType() << ")" << std::endl;
+  }
+  auto stripeGroupsMetadata = tablet->stripeGroupsMetadata();
+  ostream_ << "Stripe Groups Metadata Size: "
+           << commaSeparated(std::transform_reduce(
+                  stripeGroupsMetadata.begin(),
+                  stripeGroupsMetadata.end(),
+                  0,
+                  std::plus{},
+                  [](const MetadataSection& metadataSection) {
+                    return metadataSection.size();
+                  }))
+           << std::endl;
+  ostream_ << "Optional Sections Size: "
+           << commaSeparated(std::transform_reduce(
+                  tablet->optionalSections().begin(),
+                  tablet->optionalSections().end(),
+                  0,
+                  std::plus{},
+                  [](const std::pair<std::string, MetadataSection>& entry) {
+                    return entry.second.size();
+                  }))
            << std::endl;
   ostream_ << "Stripe Count: " << commaSeparated(tablet->stripeCount())
            << std::endl;
