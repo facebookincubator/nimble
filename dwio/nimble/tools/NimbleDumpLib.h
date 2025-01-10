@@ -33,6 +33,7 @@ class NimbleDumpLib {
       bool noHeader,
       bool flatmapKeys,
       bool rawSize,
+      bool showInMapStream,
       std::optional<uint32_t> stripeId);
   void
   emitHistogram(bool topLevel, bool noHeader, std::optional<uint32_t> stripeId);

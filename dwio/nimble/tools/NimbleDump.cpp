@@ -136,6 +136,7 @@ int main(int argc, char* argv[]) {
                    options["no_header"].as<bool>(),
                    options["labels"].as<bool>(),
                    options["raw_size"].as<bool>(),
+                   options["inmap_stream"].as<bool>(),
                    getOptional<uint32_t>(options["stripe"]));
          },
          positionalArgs)
@@ -163,6 +164,10 @@ int main(int argc, char* argv[]) {
                 po::bool_switch()->default_value(false),
                 "Include stream labels. Lables provide a readable path from the "
                 "root node to the stream, as they appear in the schema tree."
+            )(
+                "inmap_stream,i",
+                po::bool_switch()->default_value(false),
+                "Include InMap stream indicator."
             );
   // clang-format on
 
