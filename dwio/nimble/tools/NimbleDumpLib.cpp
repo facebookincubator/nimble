@@ -19,6 +19,7 @@
 #include <numeric>
 #include <ostream>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 
 #include "common/strings/Zstd.h"
@@ -444,6 +445,7 @@ void NimbleDumpLib::emitStreams(
     bool noHeader,
     bool showStreamLabels,
     bool showStreamRawSize,
+    bool showInMapStream,
     std::optional<uint32_t> stripeId) {
   auto tabletReader = std::make_shared<TabletReader>(*pool_, file_.get());
 
@@ -459,14 +461,33 @@ void NimbleDumpLib::emitStreams(
   if (showStreamLabels) {
     fields.push_back({"Stream Label", 16, Alignment::Left});
   }
+  if (showInMapStream) {
+    fields.push_back({"InMap Stream", 14, Alignment::Left});
+  }
   fields.push_back({"Type", 30, Alignment::Left});
 
-  TableFormatter formatter(ostream_, fields, noHeader);
+  TableFormatter formatter(ostream_, std::move(fields), noHeader);
 
   std::optional<StreamLabels> labels{};
-  if (showStreamLabels) {
+  std::unordered_set<uint32_t> inMapStreams;
+  if (showStreamLabels || showInMapStream) {
     VeloxReader reader{*pool_, tabletReader};
-    labels.emplace(reader.schema());
+    if (showStreamLabels) {
+      labels.emplace(reader.schema());
+    }
+    if (showInMapStream) {
+      VeloxReader reader{*pool_, tabletReader};
+      SchemaReader::traverseSchema(
+          reader.schema(),
+          [&](auto /*level*/, const Type& type, auto /*info*/) {
+            if (type.kind() == Kind::FlatMap) {
+              auto& map = type.asFlatMap();
+              for (size_t i = 0; i < map.childrenCount(); ++i) {
+                inMapStreams.insert(map.inMapDescriptorAt(i).offset());
+              }
+            }
+          });
+    }
   }
 
   traverseTablet(
@@ -500,7 +521,10 @@ void NimbleDumpLib::emitStreams(
         }
         values.push_back(folly::to<std::string>(itemCount));
         if (showStreamLabels) {
-          auto it = values.emplace_back(labels->streamLabel(streamId));
+          values.emplace_back(labels->streamLabel(streamId));
+        }
+        if (showInMapStream) {
+          values.emplace_back(inMapStreams.contains(streamId) ? "T" : "F");
         }
         values.push_back(getStreamInputLabel(stream));
         formatter.writeRow(values);
