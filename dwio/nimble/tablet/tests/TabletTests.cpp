@@ -561,6 +561,23 @@ TEST(TabletTests, OptionalSections) {
         file, useChaniedBuffers);
     nimble::TabletReader tablet{*pool, &readFile};
 
+    ASSERT_EQ(tablet.optionalSections().size(), 3);
+    ASSERT_TRUE(tablet.optionalSections().contains("section1"));
+    ASSERT_EQ(
+        tablet.optionalSections().at("section1").compressionType(),
+        nimble::CompressionType::Uncompressed);
+    ASSERT_EQ(tablet.optionalSections().at("section1").size(), random.size());
+    ASSERT_TRUE(tablet.optionalSections().contains("section2"));
+    ASSERT_EQ(
+        tablet.optionalSections().at("section2").compressionType(),
+        nimble::CompressionType::Uncompressed);
+    ASSERT_EQ(tablet.optionalSections().at("section2").size(), zeroes.size());
+    ASSERT_TRUE(tablet.optionalSections().contains("section3"));
+    ASSERT_EQ(
+        tablet.optionalSections().at("section3").compressionType(),
+        nimble::CompressionType::Uncompressed);
+    ASSERT_EQ(tablet.optionalSections().at("section3").size(), 0);
+
     auto check1 = [&]() {
       auto section = tablet.loadOptionalSection("section1");
       ASSERT_TRUE(section.has_value());
@@ -606,6 +623,8 @@ TEST(TabletTests, OptionalSectionsEmpty) {
     nimble::testing::InMemoryTrackableReadFile readFile(
         file, useChaniedBuffers);
     nimble::TabletReader tablet{*pool, &readFile};
+
+    ASSERT_TRUE(tablet.optionalSections().empty());
 
     auto section = tablet.loadOptionalSection("section1");
     ASSERT_FALSE(section.has_value());
