@@ -886,4 +886,27 @@ void NimbleDumpLib::emitStripesMetadata(bool noHeader) {
   });
 }
 
+void NimbleDumpLib::emitStripeGroupsMetadata(bool noHeader) {
+  TabletReader tabletReader{*pool_, file_.get()};
+  TableFormatter formatter(
+      ostream_,
+      {
+          {"Group Id", 10, Alignment::Left},
+          {"Offset", 15, Alignment::Left},
+          {"Size", 15, Alignment::Left},
+          {"Compression Type", 18, Alignment::Left},
+      },
+      noHeader);
+  auto stripeGroupsMetadata = tabletReader.stripeGroupsMetadata();
+  for (auto i = 0; i < stripeGroupsMetadata.size(); ++i) {
+    const auto& metadata = stripeGroupsMetadata[i];
+    formatter.writeRow({
+        commaSeparated(i),
+        commaSeparated(metadata.offset()),
+        commaSeparated(metadata.size()),
+        toString(metadata.compressionType()),
+    });
+  }
+}
+
 } // namespace facebook::nimble::tools
