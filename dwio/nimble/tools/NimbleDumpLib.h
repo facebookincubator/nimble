@@ -44,6 +44,7 @@ class NimbleDumpLib {
       uint32_t stripeId);
   void emitLayout(bool noHeader, bool compressed);
   void emitStripesMetadata(bool noHeader);
+  void emitStripeGroupsMetadata(bool noHeader);
 
  private:
   std::shared_ptr<velox::memory::MemoryPool> pool_;
