@@ -117,19 +117,21 @@ std::vector<Stream> DefaultLayoutPlanner::getLayout(
   orderedFlatMapOffsets.reserve(flatMapFeatureOrder_.size() * 3);
 
   for (const auto& flatMapFeatures : flatMapFeatureOrder_) {
-    NIMBLE_CHECK(
-        std::get<0>(flatMapFeatures) < root.childrenCount(),
-        fmt::format(
-            "Column ordinal {} for feature ordering is out of range. "
-            "Top-level row has {} columns.",
-            std::get<0>(flatMapFeatures),
-            root.childrenCount()));
+    if (std::get<0>(flatMapFeatures) >= root.childrenCount()) {
+      LOG(WARNING)
+          << "Column ordinal " << std::get<0>(flatMapFeatures)
+          << " for feature ordering is out of range. Top-level row has "
+          << root.childrenCount() << " columns.";
+      continue;
+    }
+
     auto& column = root.childAt(std::get<0>(flatMapFeatures));
-    NIMBLE_CHECK(
-        column.kind() == Kind::FlatMap,
-        fmt::format(
-            "Column '{}' for feature ordering is not a flat map.",
-            root.nameAt(std::get<0>(flatMapFeatures))));
+
+    if (column.kind() != Kind::FlatMap) {
+      LOG(WARNING) << "Column '" << root.nameAt(std::get<0>(flatMapFeatures))
+                   << "' for feature ordering is not a flat map.";
+      continue;
+    }
 
     auto& flatMap = column.asFlatMap();
 
