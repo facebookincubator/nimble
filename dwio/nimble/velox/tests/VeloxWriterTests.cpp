@@ -192,7 +192,9 @@ TEST_F(VeloxWriterTests, RootHasNulls) {
   }
 }
 
-TEST_F(VeloxWriterTests, FeatureReorderingNonFlatmapColumn) {
+TEST_F(
+    VeloxWriterTests,
+    FeatureReorderingNonFlatmapColumnIgnoresMismatchedConfig) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(
       {"map", "flatmap"},
@@ -220,18 +222,8 @@ TEST_F(VeloxWriterTests, FeatureReorderingNonFlatmapColumn) {
        .featureReordering =
            std::vector<std::tuple<size_t, std::vector<int64_t>>>{
                {0, {1, 2}}, {1, {3, 4}}}});
-
-  try {
-    writer.write(vector);
-    writer.close();
-    FAIL();
-  } catch (const nimble::NimbleUserError& e) {
-    EXPECT_EQ("USER", e.errorSource());
-    EXPECT_EQ("INVALID_ARGUMENT", e.errorCode());
-    EXPECT_EQ(
-        "Column 'map' for feature ordering is not a flat map.",
-        e.errorMessage());
-  }
+  writer.write(vector);
+  writer.close();
 }
 
 namespace {

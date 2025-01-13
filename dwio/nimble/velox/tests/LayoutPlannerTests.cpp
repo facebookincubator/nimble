@@ -394,45 +394,74 @@ TEST(DefaultLayoutPlannerTests, NoFeatureReordering) {
   testStreamLayout(rng, planner, std::move(streams), std::move(expected));
 }
 
-TEST(DefaultLayoutPlannerTests, IncompatibleOrdinals) {
+TEST(DefaultLayoutPlannerTests, NonFlatMapOrdinalsAreIgnored) {
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+
   nimble::SchemaBuilder builder;
 
   nimble::test::FlatMapChildAdder fm1;
   nimble::test::FlatMapChildAdder fm2;
-  nimble::test::FlatMapChildAdder fm3;
 
   SCHEMA(
       builder,
-      ROW({
-          {"c1", TINYINT()},
-          {"c2", FLATMAP(Int8, TINYINT(), fm1)},
-          {"c3", ARRAY(TINYINT())},
-          {"c4", FLATMAP(Int8, TINYINT(), fm2)},
-          {"c5", TINYINT()},
-          {"c6", FLATMAP(Int8, ARRAY(TINYINT()), fm3)},
-      }));
+      ROW(
+          {{"c0", TINYINT()},
+           {"c1", FLATMAP(Int8, TINYINT(), fm1)},
+           {"c2", ARRAY(TINYINT())},
+           {"c3", FLATMAP(Int8, TINYINT(), fm2)}}));
 
   fm1.addChild("2");
   fm1.addChild("5");
-  fm1.addChild("42");
   fm1.addChild("7");
+  fm1.addChild("42");
+
   fm2.addChild("2");
   fm2.addChild("5");
 
   nimble::DefaultLayoutPlanner planner{
-      [&]() { return builder.getRoot(); },
-      {{{1, {3, 42, 9, 2, 21}}, {2, {3, 2, 42, 21}}}}};
-  try {
-    planner.getLayout({});
-    FAIL() << "Factory should have failed.";
-  } catch (const nimble::NimbleUserError& e) {
-    EXPECT_THAT(
-        e.what(),
-        ::testing::HasSubstr("for feature ordering is not a flat map"));
+      [&]() { return builder.getRoot(); }, {{{0, {1, 2, 3}}, {1, {42, 5}}}}};
+
+  auto namedTypes = getNamedTypes(*builder.getRoot());
+  std::vector<nimble::Stream> streams;
+  streams.reserve(namedTypes.size());
+  for (auto i = 0; i < namedTypes.size(); ++i) {
+    streams.push_back(nimble::Stream{
+        std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
   }
+
+  std::vector<std::string> expected{
+      // Start with row
+      "r",
+      // Ordered streams
+      "r.c1(1).f",
+      "r.c1(1).f.42(3).im",
+      "r.c1(1).f.42(3).s",
+      "r.c1(1).f.5(1).im",
+      "r.c1(1).f.5(1).s",
+      // Non-ordered streams following the schema order
+      "r.c0(0).s",
+      "r.c1(1).f.2(0).im",
+      "r.c1(1).f.2(0).s",
+      "r.c1(1).f.7(2).im",
+      "r.c1(1).f.7(2).s",
+      "r.c2(2).a",
+      "r.c2(2).a.s",
+      "r.c3(3).f",
+      "r.c3(3).f.2(0).im",
+      "r.c3(3).f.2(0).s",
+      "r.c3(3).f.5(1).im",
+      "r.c3(3).f.5(1).s"};
+
+  testStreamLayout(rng, planner, std::move(streams), std::move(expected));
 }
 
-TEST(DefaultLayoutPlannerTests, OrdinalOutOfRange) {
+TEST(DefaultLayoutPlannerTests, OrdinalOutOfRangeAreIgnored) {
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+
   nimble::SchemaBuilder builder;
 
   nimble::test::FlatMapChildAdder fm1;
@@ -442,31 +471,60 @@ TEST(DefaultLayoutPlannerTests, OrdinalOutOfRange) {
   SCHEMA(
       builder,
       ROW({
-          {"c1", TINYINT()},
-          {"c2", FLATMAP(Int8, TINYINT(), fm1)},
-          {"c3", ARRAY(TINYINT())},
-          {"c4", FLATMAP(Int8, TINYINT(), fm2)},
-          {"c5", TINYINT()},
-          {"c6", FLATMAP(Int8, ARRAY(TINYINT()), fm3)},
+          {"c0", TINYINT()},
+          {"c1", FLATMAP(Int8, TINYINT(), fm1)},
+          {"c2", ARRAY(TINYINT())},
+          {"c3", FLATMAP(Int8, TINYINT(), fm2)},
+          {"c4", TINYINT()},
+          {"c5", FLATMAP(Int8, ARRAY(TINYINT()), fm3)},
       }));
 
   fm1.addChild("2");
   fm1.addChild("5");
   fm1.addChild("42");
   fm1.addChild("7");
+
   fm2.addChild("2");
   fm2.addChild("5");
 
   nimble::DefaultLayoutPlanner planner{
       [&]() { return builder.getRoot(); },
       {{{6, {3, 42, 9, 2, 21}}, {3, {3, 2, 42, 21}}}}};
-  try {
-    planner.getLayout({});
-    FAIL() << "Factory should have failed.";
-  } catch (const nimble::NimbleUserError& e) {
-    EXPECT_THAT(
-        e.what(), ::testing::HasSubstr("for feature ordering is out of range"));
+
+  auto namedTypes = getNamedTypes(*builder.getRoot());
+  std::vector<nimble::Stream> streams;
+  streams.reserve(namedTypes.size());
+  for (auto i = 0; i < namedTypes.size(); ++i) {
+    streams.push_back(nimble::Stream{
+        std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
   }
+
+  std::vector<std::string> expected{
+      // Start with row
+      "r",
+      // Ordered streams
+      "r.c3(3).f",
+      "r.c3(3).f.2(0).im",
+      "r.c3(3).f.2(0).s",
+      // Non-ordered streams following the schema order
+      "r.c0(0).s",
+      "r.c1(1).f",
+      "r.c1(1).f.2(0).im",
+      "r.c1(1).f.2(0).s",
+      "r.c1(1).f.5(1).im",
+      "r.c1(1).f.5(1).s",
+      "r.c1(1).f.42(2).im",
+      "r.c1(1).f.42(2).s",
+      "r.c1(1).f.7(3).im",
+      "r.c1(1).f.7(3).s",
+      "r.c2(2).a",
+      "r.c2(2).a.s",
+      "r.c3(3).f.5(1).im",
+      "r.c3(3).f.5(1).s",
+      "r.c4(4).s",
+      "r.c5(5).f"};
+
+  testStreamLayout(rng, planner, std::move(streams), std::move(expected));
 }
 
 TEST(DefaultLayoutPlannerTests, IncompatibleSchema) {
