@@ -274,8 +274,8 @@ void NimbleDumpLib::emitInfo() {
   if (!stripesMetadata) {
     ostream_ << "0" << std::endl;
   } else {
-    ostream_ << commaSeparated(stripesMetadata.value().size()) << " ("
-             << stripesMetadata.value().compressionType() << ")" << std::endl;
+    ostream_ << commaSeparated(stripesMetadata->size()) << " ("
+             << stripesMetadata->compressionType() << ")" << std::endl;
   }
   auto stripeGroupsMetadata = tablet->stripeGroupsMetadata();
   ostream_ << "Stripe Groups Metadata Size: "
@@ -863,6 +863,27 @@ void NimbleDumpLib::emitLayout(bool noHeader, bool compressed) {
              std::string(node.name()),
              encodingLayout});
       });
+}
+
+void NimbleDumpLib::emitStripesMetadata(bool noHeader) {
+  TabletReader tabletReader{*pool_, file_.get()};
+  TableFormatter formatter(
+      ostream_,
+      {
+          {"Offset", 15, Alignment::Left},
+          {"Size", 15, Alignment::Left},
+          {"Compression Type", 18, Alignment::Left},
+      },
+      noHeader);
+  auto stripesMetadata = tabletReader.stripesMetadata();
+  if (!stripesMetadata) {
+    return;
+  }
+  formatter.writeRow({
+      commaSeparated(stripesMetadata->offset()),
+      commaSeparated(stripesMetadata->size()),
+      toString(stripesMetadata->compressionType()),
+  });
 }
 
 } // namespace facebook::nimble::tools

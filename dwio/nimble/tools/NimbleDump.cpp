@@ -314,6 +314,31 @@ int main(int argc, char* argv[]) {
               );
   // clang-format on
 
+  app.addCommand(
+         "stripes_metadata",
+         "<file>",
+         "Print stripes metadata information",
+         "Prints stripes metadata information as referenced by the footer.",
+         [](const po::variables_map& options,
+            const std::vector<std::string>& /*args*/) {
+           nimble::tools::NimbleDumpLib{
+               std::cout, options["file"].as<std::string>()}
+               .emitStripesMetadata(options["no_header"].as<bool>());
+         },
+         positionalArgs)
+      // clang-format off
+        .add_options()
+        (
+            "file",
+            po::value<std::string>()->required(),
+            "Nimble file path. Can be a local path or a Warm Storage path."
+        )(
+            "no_header,n",
+            po::bool_switch()->default_value(false),
+            "Don't print column names. Default is to include column names."
+        );
+  // clang-format on
+
   app.addAlias("i", "info");
   app.addAlias("b", "binary");
   app.addAlias("c", "content");
