@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Vector.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/flag_definitions/flags.h"
 
 DECLARE_bool(velox_enable_memory_usage_track_in_default_memory_pool);
 
@@ -25,10 +26,12 @@ class VectorTests : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
     FLAGS_velox_enable_memory_usage_track_in_default_memory_pool = true;
+    facebook::velox::translateFlagsToGlobalConfig();
   }
 
   void SetUp() override {
     pool_ = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
+    facebook::velox::translateFlagsToGlobalConfig();
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
