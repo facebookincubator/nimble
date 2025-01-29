@@ -104,7 +104,10 @@ $ sudo apt install -y \
     libssl-dev \
     bison \
     flex \
-    libfl-dev
+    libfl-dev \
+    pkg-config \
+    clang \
+    clang-format
 ```
 
 Although Nimble’s codebase is today closely coupled with velox, we intend to
