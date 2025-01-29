@@ -16,50 +16,35 @@
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Vector.h"
 #include "velox/common/memory/Memory.h"
-#include "velox/flag_definitions/flags.h"
-
-DECLARE_bool(velox_enable_memory_usage_track_in_default_memory_pool);
 
 using namespace ::facebook;
 
-class VectorTests : public ::testing::Test {
- protected:
-  static void SetUpTestCase() {
-    FLAGS_velox_enable_memory_usage_track_in_default_memory_pool = true;
-    facebook::velox::translateFlagsToGlobalConfig();
-  }
-
-  void SetUp() override {
-    pool_ = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
-    facebook::velox::translateFlagsToGlobalConfig();
-  }
-
-  std::shared_ptr<velox::memory::MemoryPool> pool_;
-};
-
-TEST_F(VectorTests, InitializerList) {
-  nimble::Vector<int32_t> v1(pool_.get(), {3, 4});
+TEST(VectorTests, InitializerList) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Vector<int32_t> v1(pool.get(), {3, 4});
   EXPECT_EQ(2, v1.size());
   EXPECT_EQ(3, v1[0]);
   EXPECT_EQ(4, v1[1]);
 }
 
-TEST_F(VectorTests, FromRange) {
+TEST(VectorTests, FromRange) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
   std::vector<int32_t> source{4, 5, 6};
-  nimble::Vector<int32_t> v1(pool_.get(), source.begin(), source.end());
+  nimble::Vector<int32_t> v1(pool.get(), source.begin(), source.end());
   EXPECT_EQ(3, v1.size());
   EXPECT_EQ(4, v1[0]);
   EXPECT_EQ(5, v1[1]);
   EXPECT_EQ(6, v1[2]);
 }
 
-TEST_F(VectorTests, EqualOp1) {
-  nimble::Vector<int32_t> v1(pool_.get());
+TEST(VectorTests, EqualOp1) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Vector<int32_t> v1(pool.get());
   v1.push_back(1);
   v1.emplace_back(2);
   v1.push_back(3);
 
-  nimble::Vector<int32_t> v2(pool_.get());
+  nimble::Vector<int32_t> v2(pool.get());
   v2.push_back(4);
   v2.emplace_back(5);
 
@@ -80,13 +65,14 @@ TEST_F(VectorTests, EqualOp1) {
   EXPECT_EQ(5, v2[1]);
 }
 
-TEST_F(VectorTests, ExplicitMoveEqualOp) {
-  nimble::Vector<int32_t> v1(pool_.get());
+TEST(VectorTests, ExplicitMoveEqualOp) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Vector<int32_t> v1(pool.get());
   v1.push_back(1);
   v1.emplace_back(2);
   v1.push_back(3);
 
-  nimble::Vector<int32_t> v2(pool_.get());
+  nimble::Vector<int32_t> v2(pool.get());
   v2.push_back(4);
   v2.emplace_back(5);
 
@@ -109,8 +95,9 @@ TEST_F(VectorTests, ExplicitMoveEqualOp) {
   ASSERT_TRUE(v2.empty());
 }
 
-TEST_F(VectorTests, MoveEqualOp1) {
-  nimble::Vector<int32_t> v1(pool_.get());
+TEST(VectorTests, MoveEqualOp1) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Vector<int32_t> v1(pool.get());
   v1.push_back(1);
   v1.emplace_back(2);
   v1.push_back(3);
@@ -118,14 +105,15 @@ TEST_F(VectorTests, MoveEqualOp1) {
   EXPECT_EQ(1, v1[0]);
   EXPECT_EQ(2, v1[1]);
   EXPECT_EQ(3, v1[2]);
-  v1 = nimble::Vector(pool_.get(), {4, 5});
+  v1 = nimble::Vector(pool.get(), {4, 5});
   EXPECT_EQ(2, v1.size());
   EXPECT_EQ(4, v1[0]);
   EXPECT_EQ(5, v1[1]);
 }
 
-TEST_F(VectorTests, CopyCtr) {
-  nimble::Vector<int32_t> v2(pool_.get());
+TEST(VectorTests, CopyCtr) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Vector<int32_t> v2(pool.get());
   v2.push_back(3);
   v2.emplace_back(4);
   EXPECT_EQ(2, v2.size());
@@ -147,16 +135,18 @@ TEST_F(VectorTests, CopyCtr) {
   EXPECT_EQ(4, v2[1]);
 }
 
-TEST_F(VectorTests, BoolInitializerList) {
-  nimble::Vector<bool> v1(pool_.get(), {true, false, true});
+TEST(VectorTests, BoolInitializerList) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Vector<bool> v1(pool.get(), {true, false, true});
   EXPECT_EQ(3, v1.size());
   EXPECT_EQ(true, v1[0]);
   EXPECT_EQ(false, v1[1]);
   EXPECT_EQ(true, v1[2]);
 }
 
-TEST_F(VectorTests, BoolEqualOp1) {
-  nimble::Vector<bool> v1(pool_.get());
+TEST(VectorTests, BoolEqualOp1) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Vector<bool> v1(pool.get());
   v1.push_back(false);
   v1.emplace_back(true);
   v1.push_back(true);
@@ -166,7 +156,7 @@ TEST_F(VectorTests, BoolEqualOp1) {
   EXPECT_EQ(true, v1[1]);
   EXPECT_EQ(true, v1[2]);
 
-  nimble::Vector<bool> v2(pool_.get());
+  nimble::Vector<bool> v2(pool.get());
   v2.push_back(true);
   v2.emplace_back(false);
 
@@ -183,8 +173,9 @@ TEST_F(VectorTests, BoolEqualOp1) {
   EXPECT_EQ(false, v2[1]);
 }
 
-TEST_F(VectorTests, BoolMoveEqualOp1) {
-  nimble::Vector<bool> v1(pool_.get());
+TEST(VectorTests, BoolMoveEqualOp1) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Vector<bool> v1(pool.get());
   v1.push_back(true);
   v1.emplace_back(false);
   v1.push_back(false);
@@ -194,14 +185,15 @@ TEST_F(VectorTests, BoolMoveEqualOp1) {
   EXPECT_EQ(false, v1[1]);
   EXPECT_EQ(false, v1[2]);
 
-  v1 = nimble::Vector(pool_.get(), {false, true});
+  v1 = nimble::Vector(pool.get(), {false, true});
   EXPECT_EQ(2, v1.size());
   EXPECT_EQ(false, v1[0]);
   EXPECT_EQ(true, v1[1]);
 }
 
-TEST_F(VectorTests, BoolCopyCtr) {
-  nimble::Vector<bool> v2(pool_.get());
+TEST(VectorTests, BoolCopyCtr) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Vector<bool> v2(pool.get());
   v2.push_back(true);
   v2.emplace_back(false);
   EXPECT_EQ(2, v2.size());
@@ -216,31 +208,33 @@ TEST_F(VectorTests, BoolCopyCtr) {
   EXPECT_EQ(false, v2[1]);
 }
 
-TEST_F(VectorTests, MemoryCleanup) {
-  EXPECT_EQ(0, pool_->usedBytes());
+TEST(VectorTests, MemoryCleanup) {
+  velox::memory::MemoryManager memoryManager{{.trackDefaultUsage = true}};
+  auto pool = memoryManager.addLeafPool();
+  EXPECT_EQ(0, pool->usedBytes());
   {
-    nimble::Vector<int32_t> v(pool_.get());
-    EXPECT_EQ(0, pool_->usedBytes());
+    nimble::Vector<int32_t> v(pool.get());
+    EXPECT_EQ(0, pool->usedBytes());
     v.resize(1000, 10);
-    EXPECT_NE(0, pool_->usedBytes());
+    EXPECT_NE(0, pool->usedBytes());
   }
-  EXPECT_EQ(0, pool_->usedBytes());
+  EXPECT_EQ(0, pool->usedBytes());
   {
-    nimble::Vector<int32_t> v(pool_.get());
-    EXPECT_EQ(0, pool_->usedBytes());
+    nimble::Vector<int32_t> v(pool.get());
+    EXPECT_EQ(0, pool->usedBytes());
     v.resize(1000, 10);
-    EXPECT_NE(0, pool_->usedBytes());
+    EXPECT_NE(0, pool->usedBytes());
 
     auto vCopy(v);
   }
-  EXPECT_EQ(0, pool_->usedBytes());
+  EXPECT_EQ(0, pool->usedBytes());
   {
-    nimble::Vector<int32_t> v(pool_.get());
-    EXPECT_EQ(0, pool_->usedBytes());
+    nimble::Vector<int32_t> v(pool.get());
+    EXPECT_EQ(0, pool->usedBytes());
     v.resize(1000, 10);
-    EXPECT_NE(0, pool_->usedBytes());
+    EXPECT_NE(0, pool->usedBytes());
 
     auto vCopy(std::move(v));
   }
-  EXPECT_EQ(0, pool_->usedBytes());
+  EXPECT_EQ(0, pool->usedBytes());
 }
