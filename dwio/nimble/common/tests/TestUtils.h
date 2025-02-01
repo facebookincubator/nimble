@@ -290,26 +290,34 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
       : file_{file},
         shouldProduceChainedBuffers_{shouldProduceChainedBuffers} {}
 
-  std::string_view pread(uint64_t offset, uint64_t length, void* buf)
-      const final {
+  std::string_view pread(
+      uint64_t offset,
+      uint64_t length,
+      void* buf,
+      velox::io::IoStatistics* stats = nullptr) const final {
     chunks_.wlock()->push_back({offset, length});
-    return file_.pread(offset, length, buf);
+    return file_.pread(offset, length, buf, stats);
   }
 
-  std::string pread(uint64_t offset, uint64_t length) const final {
+  std::string pread(
+      uint64_t offset,
+      uint64_t length,
+      velox::io::IoStatistics* stats = nullptr) const final {
     chunks_.wlock()->push_back({offset, length});
-    return file_.pread(offset, length);
+    return file_.pread(offset, length, stats);
   }
 
   uint64_t preadv(
       uint64_t /* offset */,
-      const std::vector<folly::Range<char*>>& /* buffers */) const final {
+      const std::vector<folly::Range<char*>>& /* buffers */,
+      velox::io::IoStatistics* stats = nullptr) const final {
     NIMBLE_NOT_SUPPORTED("Not used by Nimble");
   }
 
   uint64_t preadv(
       folly::Range<const velox::common::Region*> regions,
-      folly::Range<folly::IOBuf*> iobufs) const override {
+      folly::Range<folly::IOBuf*> iobufs,
+      velox::io::IoStatistics* stats = nullptr) const override {
     VELOX_CHECK_EQ(regions.size(), iobufs.size());
     uint64_t length = 0;
     for (size_t i = 0; i < regions.size(); ++i) {
@@ -330,7 +338,7 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
         output.appendChain(std::move(next));
       } else {
         output = folly::IOBuf(folly::IOBuf::CREATE, region.length);
-        pread(region.offset, region.length, output.writableData());
+        pread(region.offset, region.length, output.writableData(), stats);
         output.append(region.length);
       }
     }
