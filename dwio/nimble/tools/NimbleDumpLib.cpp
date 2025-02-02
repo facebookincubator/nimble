@@ -189,20 +189,30 @@ void printScalarData(
   buffer.resize(rowCount);
   nulls.resize((nimble::FixedBitArray::bufferSize(rowCount, 1)));
   nulls.zero_out();
+  uint32_t nonNullCount = rowCount;
   if (stream.isNullable()) {
-    stream.materializeNullable(
+    nonNullCount = stream.materializeNullable(
         rowCount, buffer.data(), [&]() { return nulls.data(); });
   } else {
     stream.materialize(rowCount, buffer.data());
-    nulls.fill(0xff);
   }
-  for (uint32_t i = 0; i < rowCount; ++i) {
-    if (stream.isNullable() && nimble::bits::getBit(i, nulls.data()) == 0) {
-      ostream << "NULL" << std::endl;
-    } else {
+
+  if (nonNullCount == rowCount) {
+    for (uint32_t i = 0; i < rowCount; ++i) {
       ostream << folly::to<std::string>(buffer[i])
               << std::endl; // Have to use folly::to as Int8 was getting
                             // converted to char.
+    }
+  } else {
+    for (uint32_t i = 0; i < rowCount; ++i) {
+      assert(stream.isNullable());
+      if (nimble::bits::getBit(i, nulls.data()) == 0) {
+        ostream << "NULL" << std::endl;
+      } else {
+        ostream << folly::to<std::string>(buffer[i])
+                << std::endl; // Have to use folly::to as Int8 was getting
+                              // converted to char.
+      }
     }
   }
 }
