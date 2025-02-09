@@ -76,20 +76,59 @@ class DecodingContextPool {
       std::unique_ptr<velox::SelectivityVector> selectivityVector);
 };
 
+// Manages a pool of buffers. Buffers are returned to the pool when released.
+// maxPoolSize should be set to at least 90% of capacity for performance
+class BufferPool {
+ public:
+  class BufferObject {
+   public:
+    explicit BufferObject(BufferPool& pool, std::unique_ptr<Buffer> buffer);
+
+    ~BufferObject();
+    Buffer& get();
+
+   private:
+    BufferPool& pool_;
+    std::unique_ptr<Buffer> buffer_;
+  };
+
+  explicit BufferPool(
+      facebook::velox::memory::MemoryPool& memoryPool,
+      size_t maxPoolSize = std::thread::hardware_concurrency(),
+      uint64_t initialChunkSize = kMinChunkSize);
+
+  facebook::velox::memory::MemoryPool& getMemoryPool();
+  BufferObject reserveBuffer();
+  size_t size();
+
+ private:
+  static const uint64_t kMinChunkSize = 1LL << 20;
+  const uint64_t defaultInitialChunkSize_;
+
+  std::mutex mutex_;
+  std::counting_semaphore<> semaphore_;
+  std::vector<std::unique_ptr<Buffer>> pool_;
+  facebook::velox::memory::MemoryPool& memoryPool_;
+
+  void addBuffer(std::unique_ptr<Buffer> buffer);
+  std::unique_ptr<Buffer> newBuffer();
+};
+
 struct FieldWriterContext {
   explicit FieldWriterContext(
       velox::memory::MemoryPool& memoryPool,
       std::unique_ptr<velox::memory::MemoryReclaimer> reclaimer = nullptr,
-      std::function<void(void)> vectorDecoderVisitor = []() {})
+      std::function<void(void)> vectorDecoderVisitor = []() {},
+      size_t maxPoolSize = std::thread::hardware_concurrency())
       : bufferMemoryPool{memoryPool.addLeafChild(
             "field_writer_buffer",
             true,
             std::move(reclaimer))},
         inputBufferGrowthPolicy{
             DefaultInputBufferGrowthPolicy::withDefaultRanges()},
-        decodingContextPool_{std::move(vectorDecoderVisitor)} {
-    resetStringBuffer();
-  }
+        bufferPool_{
+            std::make_unique<BufferPool>(*bufferMemoryPool, maxPoolSize)},
+        decodingContextPool_{std::move(vectorDecoderVisitor)} {}
 
   std::shared_ptr<velox::memory::MemoryPool> bufferMemoryPool;
   std::mutex flatMapSchemaMutex;
@@ -112,13 +151,8 @@ struct FieldWriterContext {
     return decodingContextPool_.reserveContext();
   }
 
-  Buffer& stringBuffer() {
-    return *buffer_;
-  }
-
-  // Reset writer context for use by next stripe.
-  void resetStringBuffer() {
-    buffer_ = std::make_unique<Buffer>(*bufferMemoryPool);
+  BufferPool& bufferPool() {
+    return *bufferPool_;
   }
 
   const std::vector<std::unique_ptr<StreamData>>& streams() {
@@ -148,7 +182,7 @@ struct FieldWriterContext {
   }
 
  private:
-  std::unique_ptr<Buffer> buffer_;
+  std::unique_ptr<BufferPool> bufferPool_;
   DecodingContextPool decodingContextPool_;
   std::vector<std::unique_ptr<StreamData>> streams_;
 };
