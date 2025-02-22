@@ -147,7 +147,8 @@ uint32_t ChunkedStreamDecoder::next(
       // string buffers of the Velox Vector. Later diff will change this logic
       // to directly copy the strings into the Velox string buffers directly.
       auto& buffer = stringBuffers_.emplace_back(&pool_);
-      bufferStringContent(buffer, output, nullsPtr, offset, rowsToRead);
+      bufferStringContent(
+          buffer, output, nullsPtr, offset, (endOffset - offset));
     }
 
     offset = endOffset;

@@ -57,6 +57,25 @@ generateData(RNG& rng, velox::memory::MemoryPool& memoryPool, size_t size) {
 }
 
 template <typename RNG>
+nimble::Vector<std::string_view> generateStringData(
+    RNG& rng,
+    velox::memory::MemoryPool& memoryPool,
+    size_t size,
+    nimble::Buffer& buffer) {
+  nimble::Vector<std::string_view> data{&memoryPool, size};
+  for (auto i = 0; i < size; ++i) {
+    uint64_t length = folly::Random::rand32(100, rng);
+    auto content = buffer.reserve(length);
+    for (auto j = 0; j < length; ++j) {
+      content[j] = folly::Random::rand32(std::numeric_limits<char>::max(), rng);
+    }
+    data[i] = std::string_view(content, length);
+    LOG(INFO) << "Data[" << i << "]: " << data[i].length();
+  }
+  return data;
+}
+
+template <typename RNG>
 nimble::Vector<bool>
 generateNullData(RNG& rng, velox::memory::MemoryPool& memoryPool, size_t size) {
   nimble::Vector<bool> data{&memoryPool, size};
@@ -170,11 +189,16 @@ void test(
   std::vector<nimble::Vector<T>> data;
   std::vector<std::optional<nimble::Vector<bool>>> nulls(chunkCount);
 
+  nimble::Buffer buffer{*memoryPool};
   size_t totalSize = 0;
   for (auto i = 0; i < chunkCount; ++i) {
     auto size = folly::Random::rand32(1, FLAGS_max_chunk_size, rng);
     LOG(INFO) << "Chunk: " << i << ", Size: " << size;
-    data.push_back(generateData<T>(rng, *memoryPool, size));
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      data.push_back(generateStringData(rng, *memoryPool, size, buffer));
+    } else {
+      data.push_back(generateData<T>(rng, *memoryPool, size));
+    }
     if (hasNulls && folly::Random::oneIn(2, rng)) {
       nulls[i] = generateNullData(rng, *memoryPool, size);
     }
@@ -337,6 +361,27 @@ TEST(ChunkedStreamDecoderTests, Decode) {
                         << ", Has Nulls: " << hasNulls << ", Skips: " << skip
                         << ", Scatter: " << scatter;
               test<int32_t>(multipleChunks, hasNulls, skip, scatter, compress);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST(ChunkedStreamDecoderTests, DecodeStrings) {
+  for (auto multipleChunks : {false, true}) {
+    for (auto hasNulls : {false, true}) {
+      for (auto skip : {false, true}) {
+        for (auto scatter : {false, true}) {
+          for (auto compress : {false, true}) {
+            for (int i = 0; i < 3; ++i) {
+              LOG(INFO) << "Interation: " << i
+                        << ", Multiple Chunks: " << multipleChunks
+                        << ", Has Nulls: " << hasNulls << ", Skips: " << skip
+                        << ", Scatter: " << scatter;
+              test<std::string_view>(
+                  multipleChunks, hasNulls, skip, scatter, compress);
             }
           }
         }
