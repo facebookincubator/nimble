@@ -25,6 +25,7 @@
 #include "folly/Random.h"
 #include "folly/Synchronized.h"
 #include "velox/common/file/File.h"
+#include "velox/common/file/FileSystems.h"
 #include "velox/common/memory/Memory.h"
 
 // Utilities to support testing in nimble.
@@ -294,7 +295,7 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
       uint64_t offset,
       uint64_t length,
       void* buf,
-      velox::io::IoStatistics* stats = nullptr) const final {
+      velox::filesystems::File::IoStats* stats = nullptr) const final {
     chunks_.wlock()->push_back({offset, length});
     return file_.pread(offset, length, buf, stats);
   }
@@ -302,7 +303,7 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
   std::string pread(
       uint64_t offset,
       uint64_t length,
-      velox::io::IoStatistics* stats = nullptr) const final {
+      velox::filesystems::File::IoStats* stats = nullptr) const final {
     chunks_.wlock()->push_back({offset, length});
     return file_.pread(offset, length, stats);
   }
@@ -310,14 +311,14 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
   uint64_t preadv(
       uint64_t /* offset */,
       const std::vector<folly::Range<char*>>& /* buffers */,
-      velox::io::IoStatistics* stats = nullptr) const final {
+      velox::filesystems::File::IoStats* stats = nullptr) const final {
     NIMBLE_NOT_SUPPORTED("Not used by Nimble");
   }
 
   uint64_t preadv(
       folly::Range<const velox::common::Region*> regions,
       folly::Range<folly::IOBuf*> iobufs,
-      velox::io::IoStatistics* stats = nullptr) const override {
+      velox::filesystems::File::IoStats* stats = nullptr) const override {
     VELOX_CHECK_EQ(regions.size(), iobufs.size());
     uint64_t length = 0;
     for (size_t i = 0; i < regions.size(); ++i) {
