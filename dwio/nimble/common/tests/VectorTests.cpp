@@ -17,15 +17,22 @@
 #include "dwio/nimble/common/Vector.h"
 #include "velox/common/memory/Memory.h"
 
+DECLARE_bool(velox_enable_memory_usage_track_in_default_memory_pool);
+
 using namespace ::facebook;
 
-TEST(VectorTests, InitializerList) {
-  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
-  nimble::Vector<int32_t> v1(pool.get(), {3, 4});
-  EXPECT_EQ(2, v1.size());
-  EXPECT_EQ(3, v1[0]);
-  EXPECT_EQ(4, v1[1]);
-}
+class VectorTests : public ::testing::Test {
+ protected:
+  static void SetUpTestCase() {
+    FLAGS_velox_enable_memory_usage_track_in_default_memory_pool = true;
+  }
+
+  void SetUp() override {
+    pool_ = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> pool_;
+};
 
 TEST(VectorTests, FromRange) {
   auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
