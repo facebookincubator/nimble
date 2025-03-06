@@ -1,4 +1,4 @@
-# Copyright (c) Meta Platforms, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -43,6 +43,18 @@ target_link_libraries(
   velox_vector_fuzzer
   velox_vector_test_lib
   gmock
+  gtest
+  gtest_main
+  Folly::folly)
+
+add_executable(raw_size_tests RawSizeTests.cpp)
+add_test(raw_size_tests raw_size_tests)
+
+target_link_libraries(
+  raw_size_tests
+  raw_size_utils
+  velox_vector
+  velox_vector_test_lib
   gtest
   gtest_main
   Folly::folly)
