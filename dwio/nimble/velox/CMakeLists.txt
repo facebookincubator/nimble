@@ -119,3 +119,6 @@ target_link_libraries(
   nimble_velox_stats_fb
   velox_dwio_common
   Folly::folly)
+
+add_library(raw_size_utils RawSizeUtils.cpp)
+target_link_libraries(raw_size_utils velox_vector)
