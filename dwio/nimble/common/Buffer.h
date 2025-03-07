@@ -18,8 +18,8 @@
 #include "velox/buffer/Buffer.h"
 #include "velox/common/memory/Memory.h"
 
-#include <bits/unique_ptr.h>
 #include <cstring>
+#include <memory>
 #include <string_view>
 #include <vector>
 
