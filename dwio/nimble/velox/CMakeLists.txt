@@ -121,4 +121,4 @@ target_link_libraries(
   Folly::folly)
 
 add_library(raw_size_utils RawSizeUtils.cpp)
-target_link_libraries(raw_size_utils velox_vector)
+target_link_libraries(raw_size_utils velox_vector velox_dwio_common)
