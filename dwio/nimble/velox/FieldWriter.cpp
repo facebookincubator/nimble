@@ -778,8 +778,7 @@ class FlatMapValueFieldWriter {
       FieldWriterContext& context,
       const StreamDescriptorBuilder& inMapDescriptor,
       std::unique_ptr<FieldWriter> valueField)
-      : inMapDescriptor_{inMapDescriptor},
-        valueField_{std::move(valueField)},
+      : valueField_{std::move(valueField)},
         inMapStream_{context.createContentStreamData<bool>(inMapDescriptor)} {}
 
   // Clear the ranges and extend the inMapBuffer
@@ -823,7 +822,6 @@ class FlatMapValueFieldWriter {
   }
 
  private:
-  const StreamDescriptorBuilder& inMapDescriptor_;
   std::unique_ptr<FieldWriter> valueField_;
   ContentStreamData<bool>& inMapStream_;
   OrderedRanges ranges_;
