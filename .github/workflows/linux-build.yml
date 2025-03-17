@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   ubuntu-release:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     if: ${{ github.repository == 'facebookincubator/nimble' }}
     name: "Ubuntu Build"
     env:
@@ -53,6 +53,12 @@ jobs:
 
       - name: Install Dependencies
         run: |
+          # It seems that we can't use GTest 1.13.0 bundled in Velox
+          # with libstdc++ 14. We can remove this after Velox updates
+          # bundled GTest.
+          sudo apt purge -y libgcc-14-dev
+          sudo apt install -y libgcc-13-dev
+
           sudo apt install -y \
             clang-15 \
             ccache \
