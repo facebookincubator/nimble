@@ -13,23 +13,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
-#include "dwio/nimble/velox/RawSizeContext.h"
-#include "velox/dwio/common/Range.h"
-#include "velox/vector/BaseVector.h"
+#include "dwio/nimble/velox/DecodedVectorManager.h"
 
 namespace facebook::nimble {
 
-constexpr uint64_t NULL_SIZE = 1;
+class RawSizeContext {
+ public:
+  RawSizeContext() = default;
 
-uint64_t getRawSizeFromVector(
-    const velox::VectorPtr& vector,
-    const velox::common::Ranges& ranges,
-    RawSizeContext& context);
+  DecodedVectorManager& getDecodedVectorManager() {
+    return decodedVectorManager_;
+  }
 
-uint64_t getRawSizeFromVector(
-    const velox::VectorPtr& vector,
-    const velox::common::Ranges& ranges);
+ private:
+  DecodedVectorManager decodedVectorManager_;
+};
 
 } // namespace facebook::nimble

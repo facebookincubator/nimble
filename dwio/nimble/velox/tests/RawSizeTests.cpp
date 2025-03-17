@@ -28,6 +28,10 @@ std::function<bool(velox::vector_size_t)> randomNulls(int32_t n) {
   };
 }
 
+std::function<bool(velox::vector_size_t)> noNulls() {
+  return [](velox::vector_size_t /*index*/) { return false; };
+}
+
 std::string generateRandomString() {
   auto length = folly::Random::rand32() % VECTOR_SIZE + 1;
   return std::string(length, 'A');
@@ -404,14 +408,14 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
  * raw size returned by the function under test.
  */
 TEST_F(RawSizeTestFixture, Flat) {
-  testFlat<bool>([](velox::vector_size_t) { return false; });
-  testFlat<int8_t>([](velox::vector_size_t) { return false; });
-  testFlat<int16_t>([](velox::vector_size_t) { return false; });
-  testFlat<int32_t>([](velox::vector_size_t) { return false; });
-  testFlat<int64_t>([](velox::vector_size_t) { return false; });
-  testFlat<float>([](velox::vector_size_t) { return false; });
-  testFlat<double>([](velox::vector_size_t) { return false; });
-  testFlat<velox::StringView>([](velox::vector_size_t) { return false; });
+  testFlat<bool>(noNulls());
+  testFlat<int8_t>(noNulls());
+  testFlat<int16_t>(noNulls());
+  testFlat<int32_t>(noNulls());
+  testFlat<int64_t>(noNulls());
+  testFlat<float>(noNulls());
+  testFlat<double>(noNulls());
+  testFlat<velox::StringView>(noNulls());
 }
 TEST_F(RawSizeTestFixture, FlatSomeNull) {
   testFlat<bool>(randomNulls(folly::Random::rand32() % 10 + 1));
@@ -425,14 +429,14 @@ TEST_F(RawSizeTestFixture, FlatSomeNull) {
 }
 
 TEST_F(RawSizeTestFixture, Constant) {
-  testConstant<bool>([](velox::vector_size_t) { return false; });
-  testConstant<int8_t>([](velox::vector_size_t) { return false; });
-  testConstant<int16_t>([](velox::vector_size_t) { return false; });
-  testConstant<int32_t>([](velox::vector_size_t) { return false; });
-  testConstant<int64_t>([](velox::vector_size_t) { return false; });
-  testConstant<float>([](velox::vector_size_t) { return false; });
-  testConstant<double>([](velox::vector_size_t) { return false; });
-  testConstant<velox::StringView>([](velox::vector_size_t) { return false; });
+  testConstant<bool>(noNulls());
+  testConstant<int8_t>(noNulls());
+  testConstant<int16_t>(noNulls());
+  testConstant<int32_t>(noNulls());
+  testConstant<int64_t>(noNulls());
+  testConstant<float>(noNulls());
+  testConstant<double>(noNulls());
+  testConstant<velox::StringView>(noNulls());
 }
 
 TEST_F(RawSizeTestFixture, ConstantSomeNull) {
@@ -448,14 +452,14 @@ TEST_F(RawSizeTestFixture, ConstantSomeNull) {
 }
 
 TEST_F(RawSizeTestFixture, Dictionary) {
-  testDictionary<bool>([](velox::vector_size_t) { return false; });
-  testDictionary<int8_t>([](velox::vector_size_t) { return false; });
-  testDictionary<int16_t>([](velox::vector_size_t) { return false; });
-  testDictionary<int32_t>([](velox::vector_size_t) { return false; });
-  testDictionary<int64_t>([](velox::vector_size_t) { return false; });
-  testDictionary<float>([](velox::vector_size_t) { return false; });
-  testDictionary<double>([](velox::vector_size_t) { return false; });
-  testDictionary<velox::StringView>([](velox::vector_size_t) { return false; });
+  testDictionary<bool>(noNulls());
+  testDictionary<int8_t>(noNulls());
+  testDictionary<int16_t>(noNulls());
+  testDictionary<int32_t>(noNulls());
+  testDictionary<int64_t>(noNulls());
+  testDictionary<float>(noNulls());
+  testDictionary<double>(noNulls());
+  testDictionary<velox::StringView>(noNulls());
 }
 
 TEST_F(RawSizeTestFixture, DictionarySomeNull) {
@@ -471,14 +475,14 @@ TEST_F(RawSizeTestFixture, DictionarySomeNull) {
 }
 
 TEST_F(RawSizeTestFixture, Array) {
-  testArray<bool>([](velox::vector_size_t) { return false; });
-  testArray<int8_t>([](velox::vector_size_t) { return false; });
-  testArray<int16_t>([](velox::vector_size_t) { return false; });
-  testArray<int32_t>([](velox::vector_size_t) { return false; });
-  testArray<int64_t>([](velox::vector_size_t) { return false; });
-  testArray<float>([](velox::vector_size_t) { return false; });
-  testArray<double>([](velox::vector_size_t) { return false; });
-  testArray<velox::StringView>([](velox::vector_size_t) { return false; });
+  testArray<bool>(noNulls());
+  testArray<int8_t>(noNulls());
+  testArray<int16_t>(noNulls());
+  testArray<int32_t>(noNulls());
+  testArray<int64_t>(noNulls());
+  testArray<float>(noNulls());
+  testArray<double>(noNulls());
+  testArray<velox::StringView>(noNulls());
 }
 
 TEST_F(RawSizeTestFixture, ArraySomNull) {
@@ -493,15 +497,14 @@ TEST_F(RawSizeTestFixture, ArraySomNull) {
 }
 
 TEST_F(RawSizeTestFixture, ConstantArray) {
-  testConstantArray<bool>([](velox::vector_size_t) { return false; });
-  testConstantArray<int8_t>([](velox::vector_size_t) { return false; });
-  testConstantArray<int16_t>([](velox::vector_size_t) { return false; });
-  testConstantArray<int32_t>([](velox::vector_size_t) { return false; });
-  testConstantArray<int64_t>([](velox::vector_size_t) { return false; });
-  testConstantArray<float>([](velox::vector_size_t) { return false; });
-  testConstantArray<double>([](velox::vector_size_t) { return false; });
-  testConstantArray<velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testConstantArray<bool>(noNulls());
+  testConstantArray<int8_t>(noNulls());
+  testConstantArray<int16_t>(noNulls());
+  testConstantArray<int32_t>(noNulls());
+  testConstantArray<int64_t>(noNulls());
+  testConstantArray<float>(noNulls());
+  testConstantArray<double>(noNulls());
+  testConstantArray<velox::StringView>(noNulls());
 }
 
 TEST_F(RawSizeTestFixture, ConstantArraySomeNull) {
@@ -517,15 +520,14 @@ TEST_F(RawSizeTestFixture, ConstantArraySomeNull) {
 }
 
 TEST_F(RawSizeTestFixture, DictionaryArray) {
-  testDictionaryArray<bool>([](velox::vector_size_t) { return false; });
-  testDictionaryArray<int8_t>([](velox::vector_size_t) { return false; });
-  testDictionaryArray<int16_t>([](velox::vector_size_t) { return false; });
-  testDictionaryArray<int32_t>([](velox::vector_size_t) { return false; });
-  testDictionaryArray<int64_t>([](velox::vector_size_t) { return false; });
-  testDictionaryArray<float>([](velox::vector_size_t) { return false; });
-  testDictionaryArray<double>([](velox::vector_size_t) { return false; });
-  testDictionaryArray<velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testDictionaryArray<bool>(noNulls());
+  testDictionaryArray<int8_t>(noNulls());
+  testDictionaryArray<int16_t>(noNulls());
+  testDictionaryArray<int32_t>(noNulls());
+  testDictionaryArray<int64_t>(noNulls());
+  testDictionaryArray<float>(noNulls());
+  testDictionaryArray<double>(noNulls());
+  testDictionaryArray<velox::StringView>(noNulls());
 }
 
 TEST_F(RawSizeTestFixture, DictionaryArraySomeNull) {
@@ -541,88 +543,77 @@ TEST_F(RawSizeTestFixture, DictionaryArraySomeNull) {
 }
 
 TEST_F(RawSizeTestFixture, Map) {
-  testMap<bool, bool>([](velox::vector_size_t) { return false; });
-  testMap<bool, int8_t>([](velox::vector_size_t) { return false; });
-  testMap<bool, int16_t>([](velox::vector_size_t) { return false; });
-  testMap<bool, int32_t>([](velox::vector_size_t) { return false; });
-  testMap<bool, int64_t>([](velox::vector_size_t) { return false; });
-  testMap<bool, float>([](velox::vector_size_t) { return false; });
-  testMap<bool, double>([](velox::vector_size_t) { return false; });
-  testMap<bool, velox::StringView>([](velox::vector_size_t) { return false; });
+  testMap<bool, bool>(noNulls());
+  testMap<bool, int8_t>(noNulls());
+  testMap<bool, int16_t>(noNulls());
+  testMap<bool, int32_t>(noNulls());
+  testMap<bool, int64_t>(noNulls());
+  testMap<bool, float>(noNulls());
+  testMap<bool, double>(noNulls());
+  testMap<bool, velox::StringView>(noNulls());
 
-  testMap<int8_t, bool>([](velox::vector_size_t) { return false; });
-  testMap<int8_t, int8_t>([](velox::vector_size_t) { return false; });
-  testMap<int8_t, int16_t>([](velox::vector_size_t) { return false; });
-  testMap<int8_t, int32_t>([](velox::vector_size_t) { return false; });
-  testMap<int8_t, int64_t>([](velox::vector_size_t) { return false; });
-  testMap<int8_t, float>([](velox::vector_size_t) { return false; });
-  testMap<int8_t, double>([](velox::vector_size_t) { return false; });
-  testMap<int8_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testMap<int8_t, bool>(noNulls());
+  testMap<int8_t, int8_t>(noNulls());
+  testMap<int8_t, int16_t>(noNulls());
+  testMap<int8_t, int32_t>(noNulls());
+  testMap<int8_t, int64_t>(noNulls());
+  testMap<int8_t, float>(noNulls());
+  testMap<int8_t, double>(noNulls());
+  testMap<int8_t, velox::StringView>(noNulls());
 
-  testMap<int16_t, bool>([](velox::vector_size_t) { return false; });
-  testMap<int16_t, int8_t>([](velox::vector_size_t) { return false; });
-  testMap<int16_t, int16_t>([](velox::vector_size_t) { return false; });
-  testMap<int16_t, int32_t>([](velox::vector_size_t) { return false; });
-  testMap<int16_t, int64_t>([](velox::vector_size_t) { return false; });
-  testMap<int16_t, float>([](velox::vector_size_t) { return false; });
-  testMap<int16_t, double>([](velox::vector_size_t) { return false; });
-  testMap<int16_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testMap<int16_t, bool>(noNulls());
+  testMap<int16_t, int8_t>(noNulls());
+  testMap<int16_t, int16_t>(noNulls());
+  testMap<int16_t, int32_t>(noNulls());
+  testMap<int16_t, int64_t>(noNulls());
+  testMap<int16_t, float>(noNulls());
+  testMap<int16_t, double>(noNulls());
+  testMap<int16_t, velox::StringView>(noNulls());
 
-  testMap<int32_t, bool>([](velox::vector_size_t) { return false; });
-  testMap<int32_t, int8_t>([](velox::vector_size_t) { return false; });
-  testMap<int32_t, int16_t>([](velox::vector_size_t) { return false; });
-  testMap<int32_t, int32_t>([](velox::vector_size_t) { return false; });
-  testMap<int32_t, int64_t>([](velox::vector_size_t) { return false; });
-  testMap<int32_t, float>([](velox::vector_size_t) { return false; });
-  testMap<int32_t, double>([](velox::vector_size_t) { return false; });
-  testMap<int32_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testMap<int32_t, bool>(noNulls());
+  testMap<int32_t, int8_t>(noNulls());
+  testMap<int32_t, int16_t>(noNulls());
+  testMap<int32_t, int32_t>(noNulls());
+  testMap<int32_t, int64_t>(noNulls());
+  testMap<int32_t, float>(noNulls());
+  testMap<int32_t, double>(noNulls());
+  testMap<int32_t, velox::StringView>(noNulls());
 
-  testMap<int64_t, bool>([](velox::vector_size_t) { return false; });
-  testMap<int64_t, int8_t>([](velox::vector_size_t) { return false; });
-  testMap<int64_t, int16_t>([](velox::vector_size_t) { return false; });
-  testMap<int64_t, int32_t>([](velox::vector_size_t) { return false; });
-  testMap<int64_t, int64_t>([](velox::vector_size_t) { return false; });
-  testMap<int64_t, float>([](velox::vector_size_t) { return false; });
-  testMap<int64_t, double>([](velox::vector_size_t) { return false; });
-  testMap<int64_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testMap<int64_t, bool>(noNulls());
+  testMap<int64_t, int8_t>(noNulls());
+  testMap<int64_t, int16_t>(noNulls());
+  testMap<int64_t, int32_t>(noNulls());
+  testMap<int64_t, int64_t>(noNulls());
+  testMap<int64_t, float>(noNulls());
+  testMap<int64_t, double>(noNulls());
+  testMap<int64_t, velox::StringView>(noNulls());
 
-  testMap<float, bool>([](velox::vector_size_t) { return false; });
-  testMap<float, int8_t>([](velox::vector_size_t) { return false; });
-  testMap<float, int16_t>([](velox::vector_size_t) { return false; });
-  testMap<float, int32_t>([](velox::vector_size_t) { return false; });
-  testMap<float, int64_t>([](velox::vector_size_t) { return false; });
-  testMap<float, float>([](velox::vector_size_t) { return false; });
-  testMap<float, double>([](velox::vector_size_t) { return false; });
-  testMap<float, velox::StringView>([](velox::vector_size_t) { return false; });
+  testMap<float, bool>(noNulls());
+  testMap<float, int8_t>(noNulls());
+  testMap<float, int16_t>(noNulls());
+  testMap<float, int32_t>(noNulls());
+  testMap<float, int64_t>(noNulls());
+  testMap<float, float>(noNulls());
+  testMap<float, double>(noNulls());
+  testMap<float, velox::StringView>(noNulls());
 
-  testMap<double, bool>([](velox::vector_size_t) { return false; });
-  testMap<double, int8_t>([](velox::vector_size_t) { return false; });
-  testMap<double, int16_t>([](velox::vector_size_t) { return false; });
-  testMap<double, int32_t>([](velox::vector_size_t) { return false; });
-  testMap<double, int64_t>([](velox::vector_size_t) { return false; });
-  testMap<double, float>([](velox::vector_size_t) { return false; });
-  testMap<double, double>([](velox::vector_size_t) { return false; });
-  testMap<double, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testMap<double, bool>(noNulls());
+  testMap<double, int8_t>(noNulls());
+  testMap<double, int16_t>(noNulls());
+  testMap<double, int32_t>(noNulls());
+  testMap<double, int64_t>(noNulls());
+  testMap<double, float>(noNulls());
+  testMap<double, double>(noNulls());
+  testMap<double, velox::StringView>(noNulls());
 
-  testMap<velox::StringView, bool>([](velox::vector_size_t) { return false; });
-  testMap<velox::StringView, int8_t>(
-      [](velox::vector_size_t) { return false; });
-  testMap<velox::StringView, int16_t>(
-      [](velox::vector_size_t) { return false; });
-  testMap<velox::StringView, int32_t>(
-      [](velox::vector_size_t) { return false; });
-  testMap<velox::StringView, int64_t>(
-      [](velox::vector_size_t) { return false; });
-  testMap<velox::StringView, float>([](velox::vector_size_t) { return false; });
-  testMap<velox::StringView, double>(
-      [](velox::vector_size_t) { return false; });
-  testMap<velox::StringView, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testMap<velox::StringView, bool>(noNulls());
+  testMap<velox::StringView, int8_t>(noNulls());
+  testMap<velox::StringView, int16_t>(noNulls());
+  testMap<velox::StringView, int32_t>(noNulls());
+  testMap<velox::StringView, int64_t>(noNulls());
+  testMap<velox::StringView, float>(noNulls());
+  testMap<velox::StringView, double>(noNulls());
+  testMap<velox::StringView, velox::StringView>(noNulls());
 }
 
 TEST_F(RawSizeTestFixture, MapSomeNull) {
@@ -715,92 +706,77 @@ TEST_F(RawSizeTestFixture, MapSomeNull) {
 }
 
 TEST_F(RawSizeTestFixture, ConstantMap) {
-  testConstantMap<bool, bool>([](velox::vector_size_t) { return false; });
-  testConstantMap<bool, int8_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<bool, int16_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<bool, int32_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<bool, int64_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<bool, float>([](velox::vector_size_t) { return false; });
-  testConstantMap<bool, double>([](velox::vector_size_t) { return false; });
-  testConstantMap<bool, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testConstantMap<bool, bool>(noNulls());
+  testConstantMap<bool, int8_t>(noNulls());
+  testConstantMap<bool, int16_t>(noNulls());
+  testConstantMap<bool, int32_t>(noNulls());
+  testConstantMap<bool, int64_t>(noNulls());
+  testConstantMap<bool, float>(noNulls());
+  testConstantMap<bool, double>(noNulls());
+  testConstantMap<bool, velox::StringView>(noNulls());
 
-  testConstantMap<int8_t, bool>([](velox::vector_size_t) { return false; });
-  testConstantMap<int8_t, int8_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int8_t, int16_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int8_t, int32_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int8_t, int64_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int8_t, float>([](velox::vector_size_t) { return false; });
-  testConstantMap<int8_t, double>([](velox::vector_size_t) { return false; });
-  testConstantMap<int8_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testConstantMap<int8_t, bool>(noNulls());
+  testConstantMap<int8_t, int8_t>(noNulls());
+  testConstantMap<int8_t, int16_t>(noNulls());
+  testConstantMap<int8_t, int32_t>(noNulls());
+  testConstantMap<int8_t, int64_t>(noNulls());
+  testConstantMap<int8_t, float>(noNulls());
+  testConstantMap<int8_t, double>(noNulls());
+  testConstantMap<int8_t, velox::StringView>(noNulls());
 
-  testConstantMap<int16_t, bool>([](velox::vector_size_t) { return false; });
-  testConstantMap<int16_t, int8_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int16_t, int16_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int16_t, int32_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int16_t, int64_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int16_t, float>([](velox::vector_size_t) { return false; });
-  testConstantMap<int16_t, double>([](velox::vector_size_t) { return false; });
-  testConstantMap<int16_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testConstantMap<int16_t, bool>(noNulls());
+  testConstantMap<int16_t, int8_t>(noNulls());
+  testConstantMap<int16_t, int16_t>(noNulls());
+  testConstantMap<int16_t, int32_t>(noNulls());
+  testConstantMap<int16_t, int64_t>(noNulls());
+  testConstantMap<int16_t, float>(noNulls());
+  testConstantMap<int16_t, double>(noNulls());
+  testConstantMap<int16_t, velox::StringView>(noNulls());
 
-  testConstantMap<int32_t, bool>([](velox::vector_size_t) { return false; });
-  testConstantMap<int32_t, int8_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int32_t, int16_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int32_t, int32_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int32_t, int64_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int32_t, float>([](velox::vector_size_t) { return false; });
-  testConstantMap<int32_t, double>([](velox::vector_size_t) { return false; });
-  testConstantMap<int32_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testConstantMap<int32_t, bool>(noNulls());
+  testConstantMap<int32_t, int8_t>(noNulls());
+  testConstantMap<int32_t, int16_t>(noNulls());
+  testConstantMap<int32_t, int32_t>(noNulls());
+  testConstantMap<int32_t, int64_t>(noNulls());
+  testConstantMap<int32_t, float>(noNulls());
+  testConstantMap<int32_t, double>(noNulls());
+  testConstantMap<int32_t, velox::StringView>(noNulls());
 
-  testConstantMap<int64_t, bool>([](velox::vector_size_t) { return false; });
-  testConstantMap<int64_t, int8_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int64_t, int16_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int64_t, int32_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int64_t, int64_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int64_t, float>([](velox::vector_size_t) { return false; });
-  testConstantMap<int64_t, double>([](velox::vector_size_t) { return false; });
-  testConstantMap<int64_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testConstantMap<int64_t, bool>(noNulls());
+  testConstantMap<int64_t, int8_t>(noNulls());
+  testConstantMap<int64_t, int16_t>(noNulls());
+  testConstantMap<int64_t, int32_t>(noNulls());
+  testConstantMap<int64_t, int64_t>(noNulls());
+  testConstantMap<int64_t, float>(noNulls());
+  testConstantMap<int64_t, double>(noNulls());
+  testConstantMap<int64_t, velox::StringView>(noNulls());
 
-  testConstantMap<float, bool>([](velox::vector_size_t) { return false; });
-  testConstantMap<float, int8_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<float, int16_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<float, int32_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<float, int64_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<float, float>([](velox::vector_size_t) { return false; });
-  testConstantMap<float, double>([](velox::vector_size_t) { return false; });
-  testConstantMap<float, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testConstantMap<float, bool>(noNulls());
+  testConstantMap<float, int8_t>(noNulls());
+  testConstantMap<float, int16_t>(noNulls());
+  testConstantMap<float, int32_t>(noNulls());
+  testConstantMap<float, int64_t>(noNulls());
+  testConstantMap<float, float>(noNulls());
+  testConstantMap<float, double>(noNulls());
+  testConstantMap<float, velox::StringView>(noNulls());
 
-  testConstantMap<double, bool>([](velox::vector_size_t) { return false; });
-  testConstantMap<double, int8_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<double, int16_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<double, int32_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<double, int64_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<double, float>([](velox::vector_size_t) { return false; });
-  testConstantMap<double, double>([](velox::vector_size_t) { return false; });
-  testConstantMap<double, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testConstantMap<double, bool>(noNulls());
+  testConstantMap<double, int8_t>(noNulls());
+  testConstantMap<double, int16_t>(noNulls());
+  testConstantMap<double, int32_t>(noNulls());
+  testConstantMap<double, int64_t>(noNulls());
+  testConstantMap<double, float>(noNulls());
+  testConstantMap<double, double>(noNulls());
+  testConstantMap<double, velox::StringView>(noNulls());
 
-  testConstantMap<velox::StringView, bool>(
-      [](velox::vector_size_t) { return false; });
-  testConstantMap<velox::StringView, int8_t>(
-      [](velox::vector_size_t) { return false; });
-  testConstantMap<velox::StringView, int16_t>(
-      [](velox::vector_size_t) { return false; });
-  testConstantMap<velox::StringView, int32_t>(
-      [](velox::vector_size_t) { return false; });
-  testConstantMap<velox::StringView, int64_t>(
-      [](velox::vector_size_t) { return false; });
-  testConstantMap<velox::StringView, float>(
-      [](velox::vector_size_t) { return false; });
-  testConstantMap<velox::StringView, double>(
-      [](velox::vector_size_t) { return false; });
-  testConstantMap<velox::StringView, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testConstantMap<velox::StringView, bool>(noNulls());
+  testConstantMap<velox::StringView, int8_t>(noNulls());
+  testConstantMap<velox::StringView, int16_t>(noNulls());
+  testConstantMap<velox::StringView, int32_t>(noNulls());
+  testConstantMap<velox::StringView, int64_t>(noNulls());
+  testConstantMap<velox::StringView, float>(noNulls());
+  testConstantMap<velox::StringView, double>(noNulls());
+  testConstantMap<velox::StringView, velox::StringView>(noNulls());
 }
 
 TEST_F(RawSizeTestFixture, ConstantMapSomeNull) {
@@ -924,113 +900,77 @@ TEST_F(RawSizeTestFixture, ConstantMapSomeNull) {
 }
 
 TEST_F(RawSizeTestFixture, DictionaryMap) {
-  testDictionaryMap<bool, bool>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<bool, int8_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<bool, int16_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<bool, int32_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<bool, int64_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<bool, float>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<bool, double>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<bool, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testDictionaryMap<bool, bool>(noNulls());
+  testDictionaryMap<bool, int8_t>(noNulls());
+  testDictionaryMap<bool, int16_t>(noNulls());
+  testDictionaryMap<bool, int32_t>(noNulls());
+  testDictionaryMap<bool, int64_t>(noNulls());
+  testDictionaryMap<bool, float>(noNulls());
+  testDictionaryMap<bool, double>(noNulls());
+  testDictionaryMap<bool, velox::StringView>(noNulls());
 
-  testDictionaryMap<int8_t, bool>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int8_t, int8_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int8_t, int16_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int8_t, int32_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int8_t, int64_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int8_t, float>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int8_t, double>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int8_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testDictionaryMap<int8_t, bool>(noNulls());
+  testDictionaryMap<int8_t, int8_t>(noNulls());
+  testDictionaryMap<int8_t, int16_t>(noNulls());
+  testDictionaryMap<int8_t, int32_t>(noNulls());
+  testDictionaryMap<int8_t, int64_t>(noNulls());
+  testDictionaryMap<int8_t, float>(noNulls());
+  testDictionaryMap<int8_t, double>(noNulls());
+  testDictionaryMap<int8_t, velox::StringView>(noNulls());
 
-  testDictionaryMap<int16_t, bool>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int16_t, int8_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int16_t, int16_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int16_t, int32_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int16_t, int64_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int16_t, float>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int16_t, double>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int16_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testDictionaryMap<int16_t, bool>(noNulls());
+  testDictionaryMap<int16_t, int8_t>(noNulls());
+  testDictionaryMap<int16_t, int16_t>(noNulls());
+  testDictionaryMap<int16_t, int32_t>(noNulls());
+  testDictionaryMap<int16_t, int64_t>(noNulls());
+  testDictionaryMap<int16_t, float>(noNulls());
+  testDictionaryMap<int16_t, double>(noNulls());
+  testDictionaryMap<int16_t, velox::StringView>(noNulls());
 
-  testDictionaryMap<int32_t, bool>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int32_t, int8_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int32_t, int16_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int32_t, int32_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int32_t, int64_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int32_t, float>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int32_t, double>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int32_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testDictionaryMap<int32_t, bool>(noNulls());
+  testDictionaryMap<int32_t, int8_t>(noNulls());
+  testDictionaryMap<int32_t, int16_t>(noNulls());
+  testDictionaryMap<int32_t, int32_t>(noNulls());
+  testDictionaryMap<int32_t, int64_t>(noNulls());
+  testDictionaryMap<int32_t, float>(noNulls());
+  testDictionaryMap<int32_t, double>(noNulls());
+  testDictionaryMap<int32_t, velox::StringView>(noNulls());
 
-  testDictionaryMap<int64_t, bool>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int64_t, int8_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int64_t, int16_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int64_t, int32_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int64_t, int64_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int64_t, float>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int64_t, double>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int64_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testDictionaryMap<int64_t, bool>(noNulls());
+  testDictionaryMap<int64_t, int8_t>(noNulls());
+  testDictionaryMap<int64_t, int16_t>(noNulls());
+  testDictionaryMap<int64_t, int32_t>(noNulls());
+  testDictionaryMap<int64_t, int64_t>(noNulls());
+  testDictionaryMap<int64_t, float>(noNulls());
+  testDictionaryMap<int64_t, double>(noNulls());
+  testDictionaryMap<int64_t, velox::StringView>(noNulls());
 
-  testDictionaryMap<float, bool>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<float, int8_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<float, int16_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<float, int32_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<float, int64_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<float, float>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<float, double>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<float, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testDictionaryMap<float, bool>(noNulls());
+  testDictionaryMap<float, int8_t>(noNulls());
+  testDictionaryMap<float, int16_t>(noNulls());
+  testDictionaryMap<float, int32_t>(noNulls());
+  testDictionaryMap<float, int64_t>(noNulls());
+  testDictionaryMap<float, float>(noNulls());
+  testDictionaryMap<float, double>(noNulls());
+  testDictionaryMap<float, velox::StringView>(noNulls());
 
-  testDictionaryMap<double, bool>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<double, int8_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<double, int16_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<double, int32_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<double, int64_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<double, float>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<double, double>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<double, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testDictionaryMap<double, bool>(noNulls());
+  testDictionaryMap<double, int8_t>(noNulls());
+  testDictionaryMap<double, int16_t>(noNulls());
+  testDictionaryMap<double, int32_t>(noNulls());
+  testDictionaryMap<double, int64_t>(noNulls());
+  testDictionaryMap<double, float>(noNulls());
+  testDictionaryMap<double, double>(noNulls());
+  testDictionaryMap<double, velox::StringView>(noNulls());
 
-  testDictionaryMap<velox::StringView, bool>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<velox::StringView, int8_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<velox::StringView, int16_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<velox::StringView, int32_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<velox::StringView, int64_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<velox::StringView, float>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<velox::StringView, double>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<velox::StringView, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  testDictionaryMap<velox::StringView, bool>(noNulls());
+  testDictionaryMap<velox::StringView, int8_t>(noNulls());
+  testDictionaryMap<velox::StringView, int16_t>(noNulls());
+  testDictionaryMap<velox::StringView, int32_t>(noNulls());
+  testDictionaryMap<velox::StringView, int64_t>(noNulls());
+  testDictionaryMap<velox::StringView, float>(noNulls());
+  testDictionaryMap<velox::StringView, double>(noNulls());
+  testDictionaryMap<velox::StringView, velox::StringView>(noNulls());
 }
 
 TEST_F(RawSizeTestFixture, DictionaryMapSomeNull) {
@@ -1539,4 +1479,21 @@ TEST_F(RawSizeTestFixture, ThrowOnDefaultEncodingVariableWidth) {
   EXPECT_THROW(
       nimble::getRawSizeFromVector(sequenceVector, this->ranges_),
       velox::VeloxRuntimeError);
+}
+
+TEST_F(RawSizeTestFixture, LocalDecodedVectorMoveConstructor) {
+  facebook::nimble::RawSizeContext context;
+
+  auto localDecodedVector1 =
+      facebook::nimble::DecodedVectorManager::LocalDecodedVector(
+          context.getDecodedVectorManager());
+
+  // Constuct LocalDecodedVector by LocalDecodedVector ctr
+  auto localDecodedVector2 = std::move(localDecodedVector1);
+
+  // Access the DecodedVector to ensure it's not null
+  velox::DecodedVector& decodedVector = localDecodedVector2.get();
+  ASSERT_NE(&decodedVector, nullptr);
+
+  // No checks on localDecodedVector1 as it's been moved
 }
