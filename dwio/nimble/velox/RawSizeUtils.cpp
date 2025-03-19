@@ -23,65 +23,41 @@
 
 namespace facebook::nimble {
 
-template <typename T>
+template <velox::TypeKind K>
 uint64_t getRawSizeFromFixedWidthVector(
     const velox::VectorPtr& vector,
     const velox::common::Ranges& ranges) {
   VELOX_CHECK_NOT_NULL(vector);
   VELOX_DCHECK(
-      (std::disjunction_v<
-          std::is_same<bool, T>,
-          std::is_same<int8_t, T>,
-          std::is_same<int16_t, T>,
-          std::is_same<int32_t, T>,
-          std::is_same<int64_t, T>,
-          std::is_same<float, T>,
-          std::is_same<double, T>>),
-      "Wrong vector type. Expected bool | int8_t | int16_t | int32_t | int64_t | float | double.");
+      K == velox::TypeKind::BOOLEAN || K == velox::TypeKind::TINYINT ||
+          K == velox::TypeKind::SMALLINT || K == velox::TypeKind::INTEGER ||
+          K == velox::TypeKind::BIGINT || K == velox::TypeKind::REAL ||
+          K == velox::TypeKind::DOUBLE || K == velox::TypeKind::TIMESTAMP,
+      "Wrong vector type. Expected BOOLEAN | TINYINT | SMALLINT | INTEGER | BIGINT | REAL | DOUBLE | TIMESTAMP.");
 
   const auto& encoding = vector->encoding();
   switch (encoding) {
     case velox::VectorEncoding::Simple::FLAT: {
-      const auto* flatVector = vector->asFlatVector<T>();
-      VELOX_CHECK_NOT_NULL(
-          flatVector,
-          "Encoding mismatch on FlatVector. Encoding: {}. TypeKind: {}.",
-          encoding,
-          vector->typeKind());
-
       uint64_t nullCount = 0;
-      if (flatVector->mayHaveNulls()) {
+      if (vector->mayHaveNulls()) {
         for (const auto& row : ranges) {
-          if (flatVector->isNullAt(row)) {
+          if (vector->isNullAt(row)) {
             ++nullCount;
           }
         }
       }
 
-      return ((ranges.size() - nullCount) * sizeof(T)) +
+      return ((ranges.size() - nullCount) * vector->type()->cppSizeInBytes()) +
           (nullCount * NULL_SIZE);
     }
     case velox::VectorEncoding::Simple::CONSTANT: {
-      const auto* constVector = vector->as<velox::ConstantVector<T>>();
-      VELOX_CHECK_NOT_NULL(
-          constVector,
-          "Encoding mismatch on ConstantVector. Encoding: {}. TypeKind: {}.",
-          encoding,
-          vector->typeKind());
-
-      return constVector->mayHaveNulls() ? ranges.size() * NULL_SIZE
-                                         : ranges.size() * sizeof(T);
+      return vector->mayHaveNulls()
+          ? ranges.size() * NULL_SIZE
+          : ranges.size() * vector->type()->cppSizeInBytes();
     }
     case velox::VectorEncoding::Simple::DICTIONARY: {
-      const auto* dictVector = vector->as<velox::DictionaryVector<T>>();
-      VELOX_CHECK_NOT_NULL(
-          dictVector,
-          "Encoding mismatch on DictionaryVector. Encoding: {}. TypeKind: {}.",
-          encoding,
-          vector->typeKind());
-
       // TODO: Optimize use of DecodedVector.
-      velox::DecodedVector decodedVector(*dictVector);
+      velox::DecodedVector decodedVector(*vector);
 
       uint64_t nullCount = 0;
       if (decodedVector.mayHaveNulls()) {
@@ -92,7 +68,7 @@ uint64_t getRawSizeFromFixedWidthVector(
         }
       }
 
-      return ((ranges.size() - nullCount) * sizeof(T)) +
+      return ((ranges.size() - nullCount) * vector->type()->cppSizeInBytes()) +
           (nullCount * NULL_SIZE);
     }
     default: {
@@ -532,25 +508,36 @@ uint64_t getRawSizeFromVector(
   const auto& typeKind = vector->typeKind();
   switch (typeKind) {
     case velox::TypeKind::BOOLEAN: {
-      return getRawSizeFromFixedWidthVector<bool>(vector, ranges);
+      return getRawSizeFromFixedWidthVector<velox::TypeKind::BOOLEAN>(
+          vector, ranges);
     }
     case velox::TypeKind::TINYINT: {
-      return getRawSizeFromFixedWidthVector<int8_t>(vector, ranges);
+      return getRawSizeFromFixedWidthVector<velox::TypeKind::TINYINT>(
+          vector, ranges);
     }
     case velox::TypeKind::SMALLINT: {
-      return getRawSizeFromFixedWidthVector<int16_t>(vector, ranges);
+      return getRawSizeFromFixedWidthVector<velox::TypeKind::SMALLINT>(
+          vector, ranges);
     }
     case velox::TypeKind::INTEGER: {
-      return getRawSizeFromFixedWidthVector<int32_t>(vector, ranges);
+      return getRawSizeFromFixedWidthVector<velox::TypeKind::INTEGER>(
+          vector, ranges);
     }
     case velox::TypeKind::BIGINT: {
-      return getRawSizeFromFixedWidthVector<int64_t>(vector, ranges);
+      return getRawSizeFromFixedWidthVector<velox::TypeKind::BIGINT>(
+          vector, ranges);
     }
     case velox::TypeKind::REAL: {
-      return getRawSizeFromFixedWidthVector<float>(vector, ranges);
+      return getRawSizeFromFixedWidthVector<velox::TypeKind::REAL>(
+          vector, ranges);
     }
     case velox::TypeKind::DOUBLE: {
-      return getRawSizeFromFixedWidthVector<double>(vector, ranges);
+      return getRawSizeFromFixedWidthVector<velox::TypeKind::DOUBLE>(
+          vector, ranges);
+    }
+    case velox::TypeKind::TIMESTAMP: {
+      return getRawSizeFromFixedWidthVector<velox::TypeKind::TIMESTAMP>(
+          vector, ranges);
     }
     case velox::TypeKind::VARCHAR:
     case velox::TypeKind::VARBINARY: {
