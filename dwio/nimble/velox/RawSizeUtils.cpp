@@ -26,7 +26,8 @@ namespace facebook::nimble {
 template <typename T>
 uint64_t getRawSizeFromFixedWidthVector(
     const velox::VectorPtr& vector,
-    const velox::common::Ranges& ranges) {
+    const velox::common::Ranges& ranges,
+    RawSizeContext& context) {
   VELOX_CHECK_NOT_NULL(vector);
   VELOX_DCHECK(
       (std::disjunction_v<
@@ -80,8 +81,10 @@ uint64_t getRawSizeFromFixedWidthVector(
           encoding,
           vector->typeKind());
 
-      // TODO: Optimize use of DecodedVector.
-      velox::DecodedVector decodedVector(*dictVector);
+      auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
+          context.getDecodedVectorManager());
+      velox::DecodedVector& decodedVector = localDecodedVector.get();
+      decodedVector.decode(*dictVector);
 
       uint64_t nullCount = 0;
       if (decodedVector.mayHaveNulls()) {
@@ -103,7 +106,8 @@ uint64_t getRawSizeFromFixedWidthVector(
 
 uint64_t getRawSizeFromStringVector(
     const velox::VectorPtr& vector,
-    const velox::common::Ranges& ranges) {
+    const velox::common::Ranges& ranges,
+    RawSizeContext& context) {
   VELOX_CHECK_NOT_NULL(vector);
   const auto& encoding = vector->encoding();
   switch (encoding) {
@@ -155,8 +159,10 @@ uint64_t getRawSizeFromStringVector(
           encoding,
           vector->typeKind());
 
-      // TODO: Optimize use of DecodedVector.
-      velox::DecodedVector decodedVector(*dictVector);
+      auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
+          context.getDecodedVectorManager());
+      velox::DecodedVector& decodedVector = localDecodedVector.get();
+      decodedVector.decode(*dictVector);
 
       uint64_t rawSize = 0;
       uint64_t nullCount = 0;
@@ -186,7 +192,8 @@ uint64_t getRawSizeFromStringVector(
 
 uint64_t getRawSizeFromConstantComplexVector(
     const velox::VectorPtr& vector,
-    const velox::common::Ranges& ranges) {
+    const velox::common::Ranges& ranges,
+    RawSizeContext& context) {
   VELOX_CHECK_NOT_NULL(vector);
   VELOX_DCHECK(
       velox::VectorEncoding::Simple::CONSTANT == vector->encoding(),
@@ -205,14 +212,15 @@ uint64_t getRawSizeFromConstantComplexVector(
   velox::common::Ranges childRanges;
   childRanges.add(index, index + 1);
 
-  uint64_t rawSize = getRawSizeFromVector(valueVector, childRanges);
+  uint64_t rawSize = getRawSizeFromVector(valueVector, childRanges, context);
 
   return rawSize * ranges.size();
 }
 
 uint64_t getRawSizeFromArrayVector(
     const velox::VectorPtr& vector,
-    const velox::common::Ranges& ranges) {
+    const velox::common::Ranges& ranges,
+    RawSizeContext& context) {
   VELOX_CHECK_NOT_NULL(vector);
   const auto& encoding = vector->encoding();
   const velox::ArrayVector* arrayVector;
@@ -259,7 +267,7 @@ uint64_t getRawSizeFromArrayVector(
       break;
     }
     case velox::VectorEncoding::Simple::CONSTANT: {
-      return getRawSizeFromConstantComplexVector(vector, ranges);
+      return getRawSizeFromConstantComplexVector(vector, ranges, context);
     }
     case velox::VectorEncoding::Simple::DICTIONARY: {
       const auto* dictionaryArrayVector =
@@ -270,8 +278,10 @@ uint64_t getRawSizeFromArrayVector(
           encoding,
           dictionaryArrayVector->typeKind());
 
-      // TODO: Optimize use of DecodedVector.
-      velox::DecodedVector decodedVector(*dictionaryArrayVector);
+      auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
+          context.getDecodedVectorManager());
+      velox::DecodedVector& decodedVector = localDecodedVector.get();
+      decodedVector.decode(*dictionaryArrayVector);
 
       // Decoded ComplexVectors are stored in baseVector.
       arrayVector = decodedVector.base()->as<velox::ArrayVector>();
@@ -308,7 +318,8 @@ uint64_t getRawSizeFromArrayVector(
   // ARRAY and DICTIONARY encodings should only reach here
   uint64_t rawSize = 0;
   if (childRanges.size()) {
-    rawSize += getRawSizeFromVector(arrayVector->elements(), childRanges);
+    rawSize +=
+        getRawSizeFromVector(arrayVector->elements(), childRanges, context);
   }
 
   if (nullCount) {
@@ -320,7 +331,8 @@ uint64_t getRawSizeFromArrayVector(
 
 uint64_t getRawSizeFromMapVector(
     const velox::VectorPtr& vector,
-    const velox::common::Ranges& ranges) {
+    const velox::common::Ranges& ranges,
+    RawSizeContext& context) {
   VELOX_CHECK_NOT_NULL(vector);
   const auto& encoding = vector->encoding();
   const velox::MapVector* mapVector;
@@ -369,7 +381,7 @@ uint64_t getRawSizeFromMapVector(
       break;
     }
     case velox::VectorEncoding::Simple::CONSTANT: {
-      return getRawSizeFromConstantComplexVector(vector, ranges);
+      return getRawSizeFromConstantComplexVector(vector, ranges, context);
     }
     case velox::VectorEncoding::Simple::DICTIONARY: {
       const auto* dictionaryMapVector =
@@ -380,8 +392,10 @@ uint64_t getRawSizeFromMapVector(
           encoding,
           dictionaryMapVector->typeKind());
 
-      // TODO: Optimize use of DecodedVector.
-      velox::DecodedVector decodedVector(*dictionaryMapVector);
+      auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
+          context.getDecodedVectorManager());
+      velox::DecodedVector& decodedVector = localDecodedVector.get();
+      decodedVector.decode(*dictionaryMapVector);
 
       mapVector = decodedVector.base()->as<velox::MapVector>();
       VELOX_CHECK_NOT_NULL(
@@ -416,8 +430,9 @@ uint64_t getRawSizeFromMapVector(
 
   uint64_t rawSize = 0;
   if (childRanges.size()) {
-    rawSize += getRawSizeFromVector(mapVector->mapKeys(), childRanges);
-    rawSize += getRawSizeFromVector(mapVector->mapValues(), childRanges);
+    rawSize += getRawSizeFromVector(mapVector->mapKeys(), childRanges, context);
+    rawSize +=
+        getRawSizeFromVector(mapVector->mapValues(), childRanges, context);
   }
 
   if (nullCount) {
@@ -429,7 +444,8 @@ uint64_t getRawSizeFromMapVector(
 
 uint64_t getRawSizeFromRowVector(
     const velox::VectorPtr& vector,
-    const velox::common::Ranges& ranges) {
+    const velox::common::Ranges& ranges,
+    RawSizeContext& context) {
   VELOX_CHECK_NOT_NULL(vector);
   const auto& encoding = vector->encoding();
   const velox::RowVector* rowVector;
@@ -464,7 +480,7 @@ uint64_t getRawSizeFromRowVector(
       break;
     }
     case velox::VectorEncoding::Simple::CONSTANT: {
-      return getRawSizeFromConstantComplexVector(vector, ranges);
+      return getRawSizeFromConstantComplexVector(vector, ranges, context);
     }
     case velox::VectorEncoding::Simple::DICTIONARY: {
       const auto* dictionaryRowVector =
@@ -475,8 +491,10 @@ uint64_t getRawSizeFromRowVector(
           encoding,
           dictionaryRowVector->typeKind());
 
-      // TODO: Optimize use of DecodedVector.
-      velox::DecodedVector decodedVector(*dictionaryRowVector);
+      auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
+          context.getDecodedVectorManager());
+      velox::DecodedVector& decodedVector = localDecodedVector.get();
+      decodedVector.decode(*dictionaryRowVector);
 
       rowVector = decodedVector.base()->as<velox::RowVector>();
       VELOX_CHECK_NOT_NULL(
@@ -513,7 +531,8 @@ uint64_t getRawSizeFromRowVector(
   if ((*childRangesPtr).size()) {
     const auto childrenSize = rowVector->childrenSize();
     for (size_t i = 0; i < childrenSize; ++i) {
-      rawSize += getRawSizeFromVector(rowVector->childAt(i), *childRangesPtr);
+      rawSize +=
+          getRawSizeFromVector(rowVector->childAt(i), *childRangesPtr, context);
     }
   }
 
@@ -527,48 +546,56 @@ uint64_t getRawSizeFromRowVector(
 // Returns uint64_t bytes of raw data in the vector.
 uint64_t getRawSizeFromVector(
     const velox::VectorPtr& vector,
-    const velox::common::Ranges& ranges) {
+    const velox::common::Ranges& ranges,
+    RawSizeContext& context) {
   VELOX_CHECK_NOT_NULL(vector);
   const auto& typeKind = vector->typeKind();
   switch (typeKind) {
     case velox::TypeKind::BOOLEAN: {
-      return getRawSizeFromFixedWidthVector<bool>(vector, ranges);
+      return getRawSizeFromFixedWidthVector<bool>(vector, ranges, context);
     }
     case velox::TypeKind::TINYINT: {
-      return getRawSizeFromFixedWidthVector<int8_t>(vector, ranges);
+      return getRawSizeFromFixedWidthVector<int8_t>(vector, ranges, context);
     }
     case velox::TypeKind::SMALLINT: {
-      return getRawSizeFromFixedWidthVector<int16_t>(vector, ranges);
+      return getRawSizeFromFixedWidthVector<int16_t>(vector, ranges, context);
     }
     case velox::TypeKind::INTEGER: {
-      return getRawSizeFromFixedWidthVector<int32_t>(vector, ranges);
+      return getRawSizeFromFixedWidthVector<int32_t>(vector, ranges, context);
     }
     case velox::TypeKind::BIGINT: {
-      return getRawSizeFromFixedWidthVector<int64_t>(vector, ranges);
+      return getRawSizeFromFixedWidthVector<int64_t>(vector, ranges, context);
     }
     case velox::TypeKind::REAL: {
-      return getRawSizeFromFixedWidthVector<float>(vector, ranges);
+      return getRawSizeFromFixedWidthVector<float>(vector, ranges, context);
     }
     case velox::TypeKind::DOUBLE: {
-      return getRawSizeFromFixedWidthVector<double>(vector, ranges);
+      return getRawSizeFromFixedWidthVector<double>(vector, ranges, context);
     }
     case velox::TypeKind::VARCHAR:
     case velox::TypeKind::VARBINARY: {
-      return getRawSizeFromStringVector(vector, ranges);
+      return getRawSizeFromStringVector(vector, ranges, context);
     }
     case velox::TypeKind::ARRAY: {
-      return getRawSizeFromArrayVector(vector, ranges);
+      return getRawSizeFromArrayVector(vector, ranges, context);
     }
     case velox::TypeKind::MAP: {
-      return getRawSizeFromMapVector(vector, ranges);
+      return getRawSizeFromMapVector(vector, ranges, context);
     }
     case velox::TypeKind::ROW: {
-      return getRawSizeFromRowVector(vector, ranges);
+      return getRawSizeFromRowVector(vector, ranges, context);
     }
     default: {
       VELOX_FAIL("Unsupported type: {}.", typeKind);
     }
   }
+}
+
+uint64_t getRawSizeFromVector(
+    const velox::VectorPtr& vector,
+    const velox::common::Ranges& ranges) {
+  RawSizeContext context;
+  return getRawSizeFromVector(vector, ranges, context);
 }
 
 } // namespace facebook::nimble

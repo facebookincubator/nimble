@@ -58,3 +58,8 @@ target_link_libraries(
   gtest
   gtest_main
   Folly::folly)
+
+add_executable(raw_size_benchmark RawSizeBenchmark.cpp)
+
+target_link_libraries(raw_size_benchmark raw_size_utils Folly::folly
+                      Folly::follybenchmark)
