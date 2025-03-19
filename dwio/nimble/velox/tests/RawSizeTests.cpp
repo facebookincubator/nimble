@@ -45,7 +45,6 @@ uint64_t getSize(T /*value*/) {
   return sizeof(T);
 }
 
-// Specialization for StringView type
 template <>
 velox::StringView getValue<velox::StringView>(velox::vector_size_t /*i*/) {
   static std::shared_ptr<std::string> str =
@@ -53,10 +52,22 @@ velox::StringView getValue<velox::StringView>(velox::vector_size_t /*i*/) {
   return velox::StringView(str->data(), str->size());
 }
 
-// Specialization for StringView type
 template <>
 uint64_t getSize<velox::StringView>(velox::StringView value) {
   return value.size();
+}
+
+template <>
+velox::Timestamp getValue<velox::Timestamp>(velox::vector_size_t /*i*/) {
+  int64_t seconds = folly::Random::rand32() % 1'000'000'000;
+  uint64_t nanos = folly::Random::rand32() % 1'000'000'000;
+
+  return velox::Timestamp(seconds, nanos);
+}
+
+template <>
+uint64_t getSize<velox::Timestamp>(velox::Timestamp /*value*/) {
+  return sizeof(int64_t) + sizeof(uint64_t);
 }
 
 class RawSizeBaseTestFixture : public ::testing::Test {
@@ -397,6 +408,88 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
   }
 };
 
+// Macros to loop over each type
+#define FOR_EACH_TYPE(MACRO) \
+  MACRO(bool)                \
+  MACRO(int8_t)              \
+  MACRO(int16_t)             \
+  MACRO(int32_t)             \
+  MACRO(int64_t)             \
+  MACRO(float)               \
+  MACRO(double)              \
+  MACRO(velox::StringView)   \
+  MACRO(velox::Timestamp)
+
+#define TEST_FLAT(TYPE) \
+  testFlat<TYPE>([](velox::vector_size_t) { return false; });
+
+#define TEST_FLAT_SOME_NULL(TYPE) \
+  testFlat<TYPE>(randomNulls(folly::Random::rand32() % 10 + 1));
+
+#define TEST_CONSTANT(TYPE) \
+  testConstant<TYPE>([](velox::vector_size_t) { return false; });
+
+#define TEST_CONSTANT_SOME_NULL(TYPE) \
+  testConstant<TYPE>(randomNulls(folly::Random::rand32() % 10 + 1));
+
+#define TEST_DICTIONARY(TYPE) \
+  testDictionary<TYPE>([](velox::vector_size_t) { return false; });
+
+#define TEST_DICTIONARY_SOME_NULL(TYPE) \
+  testDictionary<TYPE>(randomNulls(folly::Random::rand32() % 10 + 1));
+
+#define TEST_ARRAY(TYPE) \
+  testArray<TYPE>([](velox::vector_size_t) { return false; });
+
+#define TEST_ARRAY_SOME_NULL(TYPE) \
+  testArray<TYPE>(randomNulls(folly::Random::rand32() % 10 + 1));
+
+#define TEST_CONSTANT_ARRAY(TYPE) \
+  testConstantArray<TYPE>([](velox::vector_size_t) { return false; });
+
+#define TEST_CONSTANT_ARRAY_SOME_NULL(TYPE) \
+  testConstantArray<TYPE>(randomNulls(folly::Random::rand32() % 10 + 1));
+
+#define TEST_DICTIONARY_ARRAY(TYPE) \
+  testDictionaryArray<TYPE>([](velox::vector_size_t) { return false; });
+
+#define TEST_DICTIONARY_ARRAY_SOME_NULL(TYPE) \
+  testDictionaryArray<TYPE>(randomNulls(folly::Random::rand32() % 10 + 1));
+
+// Macros to loop over each type for map values against user provided map key
+#define FOR_EACH_VALUE_TYPE(KEY_TYPE, MACRO) \
+  MACRO(KEY_TYPE, bool)                      \
+  MACRO(KEY_TYPE, int8_t)                    \
+  MACRO(KEY_TYPE, int16_t)                   \
+  MACRO(KEY_TYPE, int32_t)                   \
+  MACRO(KEY_TYPE, int64_t)                   \
+  MACRO(KEY_TYPE, float)                     \
+  MACRO(KEY_TYPE, double)                    \
+  MACRO(KEY_TYPE, velox::StringView)         \
+  MACRO(KEY_TYPE, velox::Timestamp)
+
+#define TEST_MAP(KEY_TYPE, VALUE_TYPE) \
+  testMap<KEY_TYPE, VALUE_TYPE>([](velox::vector_size_t) { return false; });
+
+#define TEST_MAP_SOME_NULL(KEY_TYPE, VALUE_TYPE) \
+  testMap<KEY_TYPE, VALUE_TYPE>(randomNulls(folly::Random::rand32() % 10 + 1));
+
+#define TEST_CONSTANT_MAP(KEY_TYPE, VALUE_TYPE) \
+  testConstantMap<KEY_TYPE, VALUE_TYPE>(        \
+      [](velox::vector_size_t) { return false; });
+
+#define TEST_CONSTANT_MAP_SOME_NULL(KEY_TYPE, VALUE_TYPE) \
+  testConstantMap<KEY_TYPE, VALUE_TYPE>(                  \
+      randomNulls(folly::Random::rand32() % 10 + 1));
+
+#define TEST_DICTIONARY_MAP(KEY_TYPE, VALUE_TYPE) \
+  testDictionaryMap<KEY_TYPE, VALUE_TYPE>(        \
+      [](velox::vector_size_t) { return false; });
+
+#define TEST_DICTIONARY_MAP_SOME_NULL(KEY_TYPE, VALUE_TYPE) \
+  testDictionaryMap<KEY_TYPE, VALUE_TYPE>(                  \
+      randomNulls(folly::Random::rand32() % 10 + 1));
+
 /*
  * The following tests are considered Fuzz tests. The data inside the vectors,
  * as well as the null count and positions, are randomized. The expected raw
@@ -404,768 +497,117 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
  * raw size returned by the function under test.
  */
 TEST_F(RawSizeTestFixture, Flat) {
-  testFlat<bool>([](velox::vector_size_t) { return false; });
-  testFlat<int8_t>([](velox::vector_size_t) { return false; });
-  testFlat<int16_t>([](velox::vector_size_t) { return false; });
-  testFlat<int32_t>([](velox::vector_size_t) { return false; });
-  testFlat<int64_t>([](velox::vector_size_t) { return false; });
-  testFlat<float>([](velox::vector_size_t) { return false; });
-  testFlat<double>([](velox::vector_size_t) { return false; });
-  testFlat<velox::StringView>([](velox::vector_size_t) { return false; });
+  FOR_EACH_TYPE(TEST_FLAT);
 }
+
 TEST_F(RawSizeTestFixture, FlatSomeNull) {
-  testFlat<bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testFlat<int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testFlat<int16_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testFlat<int32_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testFlat<int64_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testFlat<float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testFlat<double>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testFlat<velox::StringView>(randomNulls(folly::Random::rand32() % 10 + 1));
+  FOR_EACH_TYPE(TEST_FLAT_SOME_NULL);
 }
 
 TEST_F(RawSizeTestFixture, Constant) {
-  testConstant<bool>([](velox::vector_size_t) { return false; });
-  testConstant<int8_t>([](velox::vector_size_t) { return false; });
-  testConstant<int16_t>([](velox::vector_size_t) { return false; });
-  testConstant<int32_t>([](velox::vector_size_t) { return false; });
-  testConstant<int64_t>([](velox::vector_size_t) { return false; });
-  testConstant<float>([](velox::vector_size_t) { return false; });
-  testConstant<double>([](velox::vector_size_t) { return false; });
-  testConstant<velox::StringView>([](velox::vector_size_t) { return false; });
+  FOR_EACH_TYPE(TEST_CONSTANT);
 }
 
 TEST_F(RawSizeTestFixture, ConstantSomeNull) {
-  testConstant<bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstant<int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstant<int16_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstant<int32_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstant<int64_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstant<float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstant<double>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstant<velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
+  FOR_EACH_TYPE(TEST_CONSTANT_SOME_NULL);
 }
 
 TEST_F(RawSizeTestFixture, Dictionary) {
-  testDictionary<bool>([](velox::vector_size_t) { return false; });
-  testDictionary<int8_t>([](velox::vector_size_t) { return false; });
-  testDictionary<int16_t>([](velox::vector_size_t) { return false; });
-  testDictionary<int32_t>([](velox::vector_size_t) { return false; });
-  testDictionary<int64_t>([](velox::vector_size_t) { return false; });
-  testDictionary<float>([](velox::vector_size_t) { return false; });
-  testDictionary<double>([](velox::vector_size_t) { return false; });
-  testDictionary<velox::StringView>([](velox::vector_size_t) { return false; });
+  FOR_EACH_TYPE(TEST_DICTIONARY);
 }
 
 TEST_F(RawSizeTestFixture, DictionarySomeNull) {
-  testDictionary<bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionary<int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionary<int16_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionary<int32_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionary<int64_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionary<float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionary<double>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionary<velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
+  FOR_EACH_TYPE(TEST_DICTIONARY_SOME_NULL);
 }
 
 TEST_F(RawSizeTestFixture, Array) {
-  testArray<bool>([](velox::vector_size_t) { return false; });
-  testArray<int8_t>([](velox::vector_size_t) { return false; });
-  testArray<int16_t>([](velox::vector_size_t) { return false; });
-  testArray<int32_t>([](velox::vector_size_t) { return false; });
-  testArray<int64_t>([](velox::vector_size_t) { return false; });
-  testArray<float>([](velox::vector_size_t) { return false; });
-  testArray<double>([](velox::vector_size_t) { return false; });
-  testArray<velox::StringView>([](velox::vector_size_t) { return false; });
+  FOR_EACH_TYPE(TEST_ARRAY);
 }
 
-TEST_F(RawSizeTestFixture, ArraySomNull) {
-  testArray<bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testArray<int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testArray<int16_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testArray<int32_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testArray<int64_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testArray<float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testArray<double>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testArray<velox::StringView>(randomNulls(folly::Random::rand32() % 10 + 1));
+TEST_F(RawSizeTestFixture, ArraySomeNull) {
+  FOR_EACH_TYPE(TEST_ARRAY_SOME_NULL);
 }
 
 TEST_F(RawSizeTestFixture, ConstantArray) {
-  testConstantArray<bool>([](velox::vector_size_t) { return false; });
-  testConstantArray<int8_t>([](velox::vector_size_t) { return false; });
-  testConstantArray<int16_t>([](velox::vector_size_t) { return false; });
-  testConstantArray<int32_t>([](velox::vector_size_t) { return false; });
-  testConstantArray<int64_t>([](velox::vector_size_t) { return false; });
-  testConstantArray<float>([](velox::vector_size_t) { return false; });
-  testConstantArray<double>([](velox::vector_size_t) { return false; });
-  testConstantArray<velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  FOR_EACH_TYPE(TEST_CONSTANT_ARRAY);
 }
 
 TEST_F(RawSizeTestFixture, ConstantArraySomeNull) {
-  testConstantArray<bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantArray<int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantArray<int16_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantArray<int32_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantArray<int64_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantArray<float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantArray<double>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantArray<velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
+  FOR_EACH_TYPE(TEST_CONSTANT_ARRAY_SOME_NULL);
 }
 
 TEST_F(RawSizeTestFixture, DictionaryArray) {
-  testDictionaryArray<bool>([](velox::vector_size_t) { return false; });
-  testDictionaryArray<int8_t>([](velox::vector_size_t) { return false; });
-  testDictionaryArray<int16_t>([](velox::vector_size_t) { return false; });
-  testDictionaryArray<int32_t>([](velox::vector_size_t) { return false; });
-  testDictionaryArray<int64_t>([](velox::vector_size_t) { return false; });
-  testDictionaryArray<float>([](velox::vector_size_t) { return false; });
-  testDictionaryArray<double>([](velox::vector_size_t) { return false; });
-  testDictionaryArray<velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  FOR_EACH_TYPE(TEST_DICTIONARY_ARRAY);
 }
 
 TEST_F(RawSizeTestFixture, DictionaryArraySomeNull) {
-  testDictionaryArray<bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryArray<int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryArray<int16_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryArray<int32_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryArray<int64_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryArray<float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryArray<double>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryArray<velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
+  FOR_EACH_TYPE(TEST_DICTIONARY_ARRAY_SOME_NULL);
 }
 
 TEST_F(RawSizeTestFixture, Map) {
-  testMap<bool, bool>([](velox::vector_size_t) { return false; });
-  testMap<bool, int8_t>([](velox::vector_size_t) { return false; });
-  testMap<bool, int16_t>([](velox::vector_size_t) { return false; });
-  testMap<bool, int32_t>([](velox::vector_size_t) { return false; });
-  testMap<bool, int64_t>([](velox::vector_size_t) { return false; });
-  testMap<bool, float>([](velox::vector_size_t) { return false; });
-  testMap<bool, double>([](velox::vector_size_t) { return false; });
-  testMap<bool, velox::StringView>([](velox::vector_size_t) { return false; });
-
-  testMap<int8_t, bool>([](velox::vector_size_t) { return false; });
-  testMap<int8_t, int8_t>([](velox::vector_size_t) { return false; });
-  testMap<int8_t, int16_t>([](velox::vector_size_t) { return false; });
-  testMap<int8_t, int32_t>([](velox::vector_size_t) { return false; });
-  testMap<int8_t, int64_t>([](velox::vector_size_t) { return false; });
-  testMap<int8_t, float>([](velox::vector_size_t) { return false; });
-  testMap<int8_t, double>([](velox::vector_size_t) { return false; });
-  testMap<int8_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testMap<int16_t, bool>([](velox::vector_size_t) { return false; });
-  testMap<int16_t, int8_t>([](velox::vector_size_t) { return false; });
-  testMap<int16_t, int16_t>([](velox::vector_size_t) { return false; });
-  testMap<int16_t, int32_t>([](velox::vector_size_t) { return false; });
-  testMap<int16_t, int64_t>([](velox::vector_size_t) { return false; });
-  testMap<int16_t, float>([](velox::vector_size_t) { return false; });
-  testMap<int16_t, double>([](velox::vector_size_t) { return false; });
-  testMap<int16_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testMap<int32_t, bool>([](velox::vector_size_t) { return false; });
-  testMap<int32_t, int8_t>([](velox::vector_size_t) { return false; });
-  testMap<int32_t, int16_t>([](velox::vector_size_t) { return false; });
-  testMap<int32_t, int32_t>([](velox::vector_size_t) { return false; });
-  testMap<int32_t, int64_t>([](velox::vector_size_t) { return false; });
-  testMap<int32_t, float>([](velox::vector_size_t) { return false; });
-  testMap<int32_t, double>([](velox::vector_size_t) { return false; });
-  testMap<int32_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testMap<int64_t, bool>([](velox::vector_size_t) { return false; });
-  testMap<int64_t, int8_t>([](velox::vector_size_t) { return false; });
-  testMap<int64_t, int16_t>([](velox::vector_size_t) { return false; });
-  testMap<int64_t, int32_t>([](velox::vector_size_t) { return false; });
-  testMap<int64_t, int64_t>([](velox::vector_size_t) { return false; });
-  testMap<int64_t, float>([](velox::vector_size_t) { return false; });
-  testMap<int64_t, double>([](velox::vector_size_t) { return false; });
-  testMap<int64_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testMap<float, bool>([](velox::vector_size_t) { return false; });
-  testMap<float, int8_t>([](velox::vector_size_t) { return false; });
-  testMap<float, int16_t>([](velox::vector_size_t) { return false; });
-  testMap<float, int32_t>([](velox::vector_size_t) { return false; });
-  testMap<float, int64_t>([](velox::vector_size_t) { return false; });
-  testMap<float, float>([](velox::vector_size_t) { return false; });
-  testMap<float, double>([](velox::vector_size_t) { return false; });
-  testMap<float, velox::StringView>([](velox::vector_size_t) { return false; });
-
-  testMap<double, bool>([](velox::vector_size_t) { return false; });
-  testMap<double, int8_t>([](velox::vector_size_t) { return false; });
-  testMap<double, int16_t>([](velox::vector_size_t) { return false; });
-  testMap<double, int32_t>([](velox::vector_size_t) { return false; });
-  testMap<double, int64_t>([](velox::vector_size_t) { return false; });
-  testMap<double, float>([](velox::vector_size_t) { return false; });
-  testMap<double, double>([](velox::vector_size_t) { return false; });
-  testMap<double, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testMap<velox::StringView, bool>([](velox::vector_size_t) { return false; });
-  testMap<velox::StringView, int8_t>(
-      [](velox::vector_size_t) { return false; });
-  testMap<velox::StringView, int16_t>(
-      [](velox::vector_size_t) { return false; });
-  testMap<velox::StringView, int32_t>(
-      [](velox::vector_size_t) { return false; });
-  testMap<velox::StringView, int64_t>(
-      [](velox::vector_size_t) { return false; });
-  testMap<velox::StringView, float>([](velox::vector_size_t) { return false; });
-  testMap<velox::StringView, double>(
-      [](velox::vector_size_t) { return false; });
-  testMap<velox::StringView, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  FOR_EACH_VALUE_TYPE(int8_t, TEST_MAP);
+  FOR_EACH_VALUE_TYPE(int16_t, TEST_MAP);
+  FOR_EACH_VALUE_TYPE(int32_t, TEST_MAP);
+  FOR_EACH_VALUE_TYPE(int64_t, TEST_MAP);
+  FOR_EACH_VALUE_TYPE(float, TEST_MAP);
+  FOR_EACH_VALUE_TYPE(double, TEST_MAP);
+  FOR_EACH_VALUE_TYPE(velox::StringView, TEST_MAP);
+  FOR_EACH_VALUE_TYPE(velox::Timestamp, TEST_MAP);
 }
 
 TEST_F(RawSizeTestFixture, MapSomeNull) {
-  testMap<bool, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<bool, int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<bool, int16_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<bool, int32_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<bool, int64_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<bool, float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<bool, double>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<bool, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testMap<int8_t, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int8_t, int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int8_t, int16_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int8_t, int32_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int8_t, int64_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int8_t, float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int8_t, double>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int8_t, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testMap<int16_t, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int16_t, int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int16_t, int16_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int16_t, int32_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int16_t, int64_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int16_t, float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int16_t, double>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int16_t, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testMap<int32_t, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int32_t, int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int32_t, int16_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int32_t, int32_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int32_t, int64_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int32_t, float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int32_t, double>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int32_t, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testMap<int64_t, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int64_t, int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int64_t, int16_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int64_t, int32_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int64_t, int64_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int64_t, float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int64_t, double>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<int64_t, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testMap<float, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<float, int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<float, int16_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<float, int32_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<float, int64_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<float, float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<float, double>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<float, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testMap<double, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<double, int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<double, int16_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<double, int32_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<double, int64_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<double, float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<double, double>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<double, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testMap<velox::StringView, bool>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<velox::StringView, int8_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<velox::StringView, int16_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<velox::StringView, int32_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<velox::StringView, int64_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<velox::StringView, float>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<velox::StringView, double>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testMap<velox::StringView, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
+  FOR_EACH_VALUE_TYPE(int8_t, TEST_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(int16_t, TEST_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(int32_t, TEST_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(int64_t, TEST_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(float, TEST_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(double, TEST_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(velox::StringView, TEST_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(velox::Timestamp, TEST_MAP_SOME_NULL);
 }
 
 TEST_F(RawSizeTestFixture, ConstantMap) {
-  testConstantMap<bool, bool>([](velox::vector_size_t) { return false; });
-  testConstantMap<bool, int8_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<bool, int16_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<bool, int32_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<bool, int64_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<bool, float>([](velox::vector_size_t) { return false; });
-  testConstantMap<bool, double>([](velox::vector_size_t) { return false; });
-  testConstantMap<bool, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testConstantMap<int8_t, bool>([](velox::vector_size_t) { return false; });
-  testConstantMap<int8_t, int8_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int8_t, int16_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int8_t, int32_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int8_t, int64_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int8_t, float>([](velox::vector_size_t) { return false; });
-  testConstantMap<int8_t, double>([](velox::vector_size_t) { return false; });
-  testConstantMap<int8_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testConstantMap<int16_t, bool>([](velox::vector_size_t) { return false; });
-  testConstantMap<int16_t, int8_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int16_t, int16_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int16_t, int32_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int16_t, int64_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int16_t, float>([](velox::vector_size_t) { return false; });
-  testConstantMap<int16_t, double>([](velox::vector_size_t) { return false; });
-  testConstantMap<int16_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testConstantMap<int32_t, bool>([](velox::vector_size_t) { return false; });
-  testConstantMap<int32_t, int8_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int32_t, int16_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int32_t, int32_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int32_t, int64_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int32_t, float>([](velox::vector_size_t) { return false; });
-  testConstantMap<int32_t, double>([](velox::vector_size_t) { return false; });
-  testConstantMap<int32_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testConstantMap<int64_t, bool>([](velox::vector_size_t) { return false; });
-  testConstantMap<int64_t, int8_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int64_t, int16_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int64_t, int32_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int64_t, int64_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<int64_t, float>([](velox::vector_size_t) { return false; });
-  testConstantMap<int64_t, double>([](velox::vector_size_t) { return false; });
-  testConstantMap<int64_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testConstantMap<float, bool>([](velox::vector_size_t) { return false; });
-  testConstantMap<float, int8_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<float, int16_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<float, int32_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<float, int64_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<float, float>([](velox::vector_size_t) { return false; });
-  testConstantMap<float, double>([](velox::vector_size_t) { return false; });
-  testConstantMap<float, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testConstantMap<double, bool>([](velox::vector_size_t) { return false; });
-  testConstantMap<double, int8_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<double, int16_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<double, int32_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<double, int64_t>([](velox::vector_size_t) { return false; });
-  testConstantMap<double, float>([](velox::vector_size_t) { return false; });
-  testConstantMap<double, double>([](velox::vector_size_t) { return false; });
-  testConstantMap<double, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testConstantMap<velox::StringView, bool>(
-      [](velox::vector_size_t) { return false; });
-  testConstantMap<velox::StringView, int8_t>(
-      [](velox::vector_size_t) { return false; });
-  testConstantMap<velox::StringView, int16_t>(
-      [](velox::vector_size_t) { return false; });
-  testConstantMap<velox::StringView, int32_t>(
-      [](velox::vector_size_t) { return false; });
-  testConstantMap<velox::StringView, int64_t>(
-      [](velox::vector_size_t) { return false; });
-  testConstantMap<velox::StringView, float>(
-      [](velox::vector_size_t) { return false; });
-  testConstantMap<velox::StringView, double>(
-      [](velox::vector_size_t) { return false; });
-  testConstantMap<velox::StringView, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  FOR_EACH_VALUE_TYPE(int8_t, TEST_CONSTANT_MAP);
+  FOR_EACH_VALUE_TYPE(int16_t, TEST_CONSTANT_MAP);
+  FOR_EACH_VALUE_TYPE(int32_t, TEST_CONSTANT_MAP);
+  FOR_EACH_VALUE_TYPE(int64_t, TEST_CONSTANT_MAP);
+  FOR_EACH_VALUE_TYPE(float, TEST_CONSTANT_MAP);
+  FOR_EACH_VALUE_TYPE(double, TEST_CONSTANT_MAP);
+  FOR_EACH_VALUE_TYPE(velox::StringView, TEST_CONSTANT_MAP);
+  FOR_EACH_VALUE_TYPE(velox::Timestamp, TEST_CONSTANT_MAP);
 }
 
 TEST_F(RawSizeTestFixture, ConstantMapSomeNull) {
-  testConstantMap<bool, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<bool, int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<bool, int16_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<bool, int32_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<bool, int64_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<bool, float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<bool, double>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<bool, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testConstantMap<int8_t, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int8_t, int8_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int8_t, int16_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int8_t, int32_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int8_t, int64_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int8_t, float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int8_t, double>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int8_t, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testConstantMap<int16_t, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int16_t, int8_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int16_t, int16_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int16_t, int32_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int16_t, int64_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int16_t, float>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int16_t, double>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int16_t, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testConstantMap<int32_t, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int32_t, int8_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int32_t, int16_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int32_t, int32_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int32_t, int64_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int32_t, float>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int32_t, double>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int32_t, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testConstantMap<int64_t, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int64_t, int8_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int64_t, int16_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int64_t, int32_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int64_t, int64_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int64_t, float>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int64_t, double>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<int64_t, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testConstantMap<float, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<float, int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<float, int16_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<float, int32_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<float, int64_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<float, float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<float, double>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<float, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testConstantMap<double, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<double, int8_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<double, int16_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<double, int32_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<double, int64_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<double, float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<double, double>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<double, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testConstantMap<velox::StringView, bool>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<velox::StringView, int8_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<velox::StringView, int16_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<velox::StringView, int32_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<velox::StringView, int64_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<velox::StringView, float>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<velox::StringView, double>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testConstantMap<velox::StringView, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
+  FOR_EACH_VALUE_TYPE(int8_t, TEST_CONSTANT_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(int16_t, TEST_CONSTANT_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(int32_t, TEST_CONSTANT_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(int64_t, TEST_CONSTANT_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(float, TEST_CONSTANT_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(double, TEST_CONSTANT_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(velox::StringView, TEST_CONSTANT_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(velox::Timestamp, TEST_CONSTANT_MAP_SOME_NULL);
 }
 
 TEST_F(RawSizeTestFixture, DictionaryMap) {
-  testDictionaryMap<bool, bool>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<bool, int8_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<bool, int16_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<bool, int32_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<bool, int64_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<bool, float>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<bool, double>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<bool, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testDictionaryMap<int8_t, bool>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int8_t, int8_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int8_t, int16_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int8_t, int32_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int8_t, int64_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int8_t, float>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int8_t, double>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int8_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testDictionaryMap<int16_t, bool>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int16_t, int8_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int16_t, int16_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int16_t, int32_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int16_t, int64_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int16_t, float>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int16_t, double>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int16_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testDictionaryMap<int32_t, bool>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int32_t, int8_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int32_t, int16_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int32_t, int32_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int32_t, int64_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int32_t, float>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int32_t, double>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int32_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testDictionaryMap<int64_t, bool>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int64_t, int8_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int64_t, int16_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int64_t, int32_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int64_t, int64_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int64_t, float>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<int64_t, double>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<int64_t, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testDictionaryMap<float, bool>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<float, int8_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<float, int16_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<float, int32_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<float, int64_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<float, float>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<float, double>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<float, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testDictionaryMap<double, bool>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<double, int8_t>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<double, int16_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<double, int32_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<double, int64_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<double, float>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<double, double>([](velox::vector_size_t) { return false; });
-  testDictionaryMap<double, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
-
-  testDictionaryMap<velox::StringView, bool>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<velox::StringView, int8_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<velox::StringView, int16_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<velox::StringView, int32_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<velox::StringView, int64_t>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<velox::StringView, float>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<velox::StringView, double>(
-      [](velox::vector_size_t) { return false; });
-  testDictionaryMap<velox::StringView, velox::StringView>(
-      [](velox::vector_size_t) { return false; });
+  FOR_EACH_VALUE_TYPE(int8_t, TEST_DICTIONARY_MAP);
+  FOR_EACH_VALUE_TYPE(int16_t, TEST_DICTIONARY_MAP);
+  FOR_EACH_VALUE_TYPE(int32_t, TEST_DICTIONARY_MAP);
+  FOR_EACH_VALUE_TYPE(int64_t, TEST_DICTIONARY_MAP);
+  FOR_EACH_VALUE_TYPE(float, TEST_DICTIONARY_MAP);
+  FOR_EACH_VALUE_TYPE(double, TEST_DICTIONARY_MAP);
+  FOR_EACH_VALUE_TYPE(velox::StringView, TEST_DICTIONARY_MAP);
+  FOR_EACH_VALUE_TYPE(velox::Timestamp, TEST_DICTIONARY_MAP);
 }
 
 TEST_F(RawSizeTestFixture, DictionaryMapSomeNull) {
-  testDictionaryMap<bool, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<bool, int8_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<bool, int16_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<bool, int32_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<bool, int64_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<bool, float>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<bool, double>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<bool, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testDictionaryMap<int8_t, bool>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int8_t, int8_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int8_t, int16_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int8_t, int32_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int8_t, int64_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int8_t, float>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int8_t, double>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int8_t, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testDictionaryMap<int16_t, bool>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int16_t, int8_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int16_t, int16_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int16_t, int32_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int16_t, int64_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int16_t, float>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int16_t, double>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int16_t, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testDictionaryMap<int32_t, bool>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int32_t, int8_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int32_t, int16_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int32_t, int32_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int32_t, int64_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int32_t, float>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int32_t, double>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int32_t, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testDictionaryMap<int64_t, bool>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int64_t, int8_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int64_t, int16_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int64_t, int32_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int64_t, int64_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int64_t, float>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int64_t, double>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<int64_t, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testDictionaryMap<float, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<float, int8_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<float, int16_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<float, int32_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<float, int64_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<float, float>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<float, double>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<float, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testDictionaryMap<double, bool>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<double, int8_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<double, int16_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<double, int32_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<double, int64_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<double, float>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<double, double>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<double, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-
-  testDictionaryMap<velox::StringView, bool>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<velox::StringView, int8_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<velox::StringView, int16_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<velox::StringView, int32_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<velox::StringView, int64_t>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<velox::StringView, float>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<velox::StringView, double>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
-  testDictionaryMap<velox::StringView, velox::StringView>(
-      randomNulls(folly::Random::rand32() % 10 + 1));
+  FOR_EACH_VALUE_TYPE(int8_t, TEST_DICTIONARY_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(int16_t, TEST_DICTIONARY_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(int32_t, TEST_DICTIONARY_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(int64_t, TEST_DICTIONARY_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(float, TEST_DICTIONARY_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(double, TEST_DICTIONARY_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(velox::StringView, TEST_DICTIONARY_MAP_SOME_NULL);
+  FOR_EACH_VALUE_TYPE(velox::Timestamp, TEST_DICTIONARY_MAP_SOME_NULL);
 }
 
 /*
