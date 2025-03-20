@@ -63,6 +63,19 @@ uint64_t getSize<velox::StringView>(velox::StringView value) {
   return value.size();
 }
 
+template <>
+velox::Timestamp getValue<velox::Timestamp>(velox::vector_size_t /*i*/) {
+  int64_t seconds = folly::Random::rand32() % 1'000'000'000;
+  uint64_t nanos = folly::Random::rand32() % 1'000'000'000;
+
+  return velox::Timestamp(seconds, nanos);
+}
+
+template <>
+uint64_t getSize<velox::Timestamp>(velox::Timestamp /*value*/) {
+  return sizeof(int64_t) + sizeof(uint64_t);
+}
+
 class RawSizeBaseTestFixture : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
@@ -416,7 +429,9 @@ TEST_F(RawSizeTestFixture, Flat) {
   testFlat<float>(noNulls());
   testFlat<double>(noNulls());
   testFlat<velox::StringView>(noNulls());
+  testFlat<velox::Timestamp>(noNulls());
 }
+
 TEST_F(RawSizeTestFixture, FlatSomeNull) {
   testFlat<bool>(randomNulls(folly::Random::rand32() % 10 + 1));
   testFlat<int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
@@ -426,6 +441,7 @@ TEST_F(RawSizeTestFixture, FlatSomeNull) {
   testFlat<float>(randomNulls(folly::Random::rand32() % 10 + 1));
   testFlat<double>(randomNulls(folly::Random::rand32() % 10 + 1));
   testFlat<velox::StringView>(randomNulls(folly::Random::rand32() % 10 + 1));
+  testFlat<velox::Timestamp>(randomNulls(folly::Random::rand32() % 10 + 1));
 }
 
 TEST_F(RawSizeTestFixture, Constant) {
@@ -437,6 +453,7 @@ TEST_F(RawSizeTestFixture, Constant) {
   testConstant<float>(noNulls());
   testConstant<double>(noNulls());
   testConstant<velox::StringView>(noNulls());
+  testConstant<velox::Timestamp>(noNulls());
 }
 
 TEST_F(RawSizeTestFixture, ConstantSomeNull) {
@@ -449,6 +466,7 @@ TEST_F(RawSizeTestFixture, ConstantSomeNull) {
   testConstant<double>(randomNulls(folly::Random::rand32() % 10 + 1));
   testConstant<velox::StringView>(
       randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstant<velox::Timestamp>(randomNulls(folly::Random::rand32() % 10 + 1));
 }
 
 TEST_F(RawSizeTestFixture, Dictionary) {
@@ -460,6 +478,7 @@ TEST_F(RawSizeTestFixture, Dictionary) {
   testDictionary<float>(noNulls());
   testDictionary<double>(noNulls());
   testDictionary<velox::StringView>(noNulls());
+  testDictionary<velox::Timestamp>(noNulls());
 }
 
 TEST_F(RawSizeTestFixture, DictionarySomeNull) {
@@ -472,6 +491,8 @@ TEST_F(RawSizeTestFixture, DictionarySomeNull) {
   testDictionary<double>(randomNulls(folly::Random::rand32() % 10 + 1));
   testDictionary<velox::StringView>(
       randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionary<velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
 }
 
 TEST_F(RawSizeTestFixture, Array) {
@@ -483,6 +504,7 @@ TEST_F(RawSizeTestFixture, Array) {
   testArray<float>(noNulls());
   testArray<double>(noNulls());
   testArray<velox::StringView>(noNulls());
+  testArray<velox::Timestamp>(noNulls());
 }
 
 TEST_F(RawSizeTestFixture, ArraySomNull) {
@@ -494,6 +516,7 @@ TEST_F(RawSizeTestFixture, ArraySomNull) {
   testArray<float>(randomNulls(folly::Random::rand32() % 10 + 1));
   testArray<double>(randomNulls(folly::Random::rand32() % 10 + 1));
   testArray<velox::StringView>(randomNulls(folly::Random::rand32() % 10 + 1));
+  testArray<velox::Timestamp>(randomNulls(folly::Random::rand32() % 10 + 1));
 }
 
 TEST_F(RawSizeTestFixture, ConstantArray) {
@@ -505,6 +528,7 @@ TEST_F(RawSizeTestFixture, ConstantArray) {
   testConstantArray<float>(noNulls());
   testConstantArray<double>(noNulls());
   testConstantArray<velox::StringView>(noNulls());
+  testConstantArray<velox::Timestamp>(noNulls());
 }
 
 TEST_F(RawSizeTestFixture, ConstantArraySomeNull) {
@@ -517,6 +541,8 @@ TEST_F(RawSizeTestFixture, ConstantArraySomeNull) {
   testConstantArray<double>(randomNulls(folly::Random::rand32() % 10 + 1));
   testConstantArray<velox::StringView>(
       randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantArray<velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
 }
 
 TEST_F(RawSizeTestFixture, DictionaryArray) {
@@ -528,6 +554,7 @@ TEST_F(RawSizeTestFixture, DictionaryArray) {
   testDictionaryArray<float>(noNulls());
   testDictionaryArray<double>(noNulls());
   testDictionaryArray<velox::StringView>(noNulls());
+  testDictionaryArray<velox::Timestamp>(noNulls());
 }
 
 TEST_F(RawSizeTestFixture, DictionaryArraySomeNull) {
@@ -540,6 +567,8 @@ TEST_F(RawSizeTestFixture, DictionaryArraySomeNull) {
   testDictionaryArray<double>(randomNulls(folly::Random::rand32() % 10 + 1));
   testDictionaryArray<velox::StringView>(
       randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryArray<velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
 }
 
 TEST_F(RawSizeTestFixture, Map) {
@@ -551,6 +580,7 @@ TEST_F(RawSizeTestFixture, Map) {
   testMap<bool, float>(noNulls());
   testMap<bool, double>(noNulls());
   testMap<bool, velox::StringView>(noNulls());
+  testMap<bool, velox::Timestamp>(noNulls());
 
   testMap<int8_t, bool>(noNulls());
   testMap<int8_t, int8_t>(noNulls());
@@ -560,6 +590,7 @@ TEST_F(RawSizeTestFixture, Map) {
   testMap<int8_t, float>(noNulls());
   testMap<int8_t, double>(noNulls());
   testMap<int8_t, velox::StringView>(noNulls());
+  testMap<int8_t, velox::Timestamp>(noNulls());
 
   testMap<int16_t, bool>(noNulls());
   testMap<int16_t, int8_t>(noNulls());
@@ -569,6 +600,7 @@ TEST_F(RawSizeTestFixture, Map) {
   testMap<int16_t, float>(noNulls());
   testMap<int16_t, double>(noNulls());
   testMap<int16_t, velox::StringView>(noNulls());
+  testMap<int16_t, velox::Timestamp>(noNulls());
 
   testMap<int32_t, bool>(noNulls());
   testMap<int32_t, int8_t>(noNulls());
@@ -578,6 +610,7 @@ TEST_F(RawSizeTestFixture, Map) {
   testMap<int32_t, float>(noNulls());
   testMap<int32_t, double>(noNulls());
   testMap<int32_t, velox::StringView>(noNulls());
+  testMap<int32_t, velox::Timestamp>(noNulls());
 
   testMap<int64_t, bool>(noNulls());
   testMap<int64_t, int8_t>(noNulls());
@@ -587,6 +620,7 @@ TEST_F(RawSizeTestFixture, Map) {
   testMap<int64_t, float>(noNulls());
   testMap<int64_t, double>(noNulls());
   testMap<int64_t, velox::StringView>(noNulls());
+  testMap<int64_t, velox::Timestamp>(noNulls());
 
   testMap<float, bool>(noNulls());
   testMap<float, int8_t>(noNulls());
@@ -596,6 +630,7 @@ TEST_F(RawSizeTestFixture, Map) {
   testMap<float, float>(noNulls());
   testMap<float, double>(noNulls());
   testMap<float, velox::StringView>(noNulls());
+  testMap<float, velox::Timestamp>(noNulls());
 
   testMap<double, bool>(noNulls());
   testMap<double, int8_t>(noNulls());
@@ -605,6 +640,7 @@ TEST_F(RawSizeTestFixture, Map) {
   testMap<double, float>(noNulls());
   testMap<double, double>(noNulls());
   testMap<double, velox::StringView>(noNulls());
+  testMap<double, velox::Timestamp>(noNulls());
 
   testMap<velox::StringView, bool>(noNulls());
   testMap<velox::StringView, int8_t>(noNulls());
@@ -614,6 +650,17 @@ TEST_F(RawSizeTestFixture, Map) {
   testMap<velox::StringView, float>(noNulls());
   testMap<velox::StringView, double>(noNulls());
   testMap<velox::StringView, velox::StringView>(noNulls());
+  testMap<velox::StringView, velox::Timestamp>(noNulls());
+
+  testMap<velox::Timestamp, bool>(noNulls());
+  testMap<velox::Timestamp, int8_t>(noNulls());
+  testMap<velox::Timestamp, int16_t>(noNulls());
+  testMap<velox::Timestamp, int32_t>(noNulls());
+  testMap<velox::Timestamp, int64_t>(noNulls());
+  testMap<velox::Timestamp, float>(noNulls());
+  testMap<velox::Timestamp, double>(noNulls());
+  testMap<velox::Timestamp, velox::StringView>(noNulls());
+  testMap<velox::Timestamp, velox::Timestamp>(noNulls());
 }
 
 TEST_F(RawSizeTestFixture, MapSomeNull) {
@@ -626,6 +673,8 @@ TEST_F(RawSizeTestFixture, MapSomeNull) {
   testMap<bool, double>(randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<bool, velox::StringView>(
       randomNulls(folly::Random::rand32() % 10 + 1));
+  testMap<bool, velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
 
   testMap<int8_t, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<int8_t, int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
@@ -635,6 +684,8 @@ TEST_F(RawSizeTestFixture, MapSomeNull) {
   testMap<int8_t, float>(randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<int8_t, double>(randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<int8_t, velox::StringView>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testMap<int8_t, velox::Timestamp>(
       randomNulls(folly::Random::rand32() % 10 + 1));
 
   testMap<int16_t, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
@@ -646,6 +697,8 @@ TEST_F(RawSizeTestFixture, MapSomeNull) {
   testMap<int16_t, double>(randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<int16_t, velox::StringView>(
       randomNulls(folly::Random::rand32() % 10 + 1));
+  testMap<int16_t, velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
 
   testMap<int32_t, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<int32_t, int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
@@ -655,6 +708,8 @@ TEST_F(RawSizeTestFixture, MapSomeNull) {
   testMap<int32_t, float>(randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<int32_t, double>(randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<int32_t, velox::StringView>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testMap<int32_t, velox::Timestamp>(
       randomNulls(folly::Random::rand32() % 10 + 1));
 
   testMap<int64_t, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
@@ -666,6 +721,8 @@ TEST_F(RawSizeTestFixture, MapSomeNull) {
   testMap<int64_t, double>(randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<int64_t, velox::StringView>(
       randomNulls(folly::Random::rand32() % 10 + 1));
+  testMap<int64_t, velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
 
   testMap<float, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<float, int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
@@ -676,6 +733,8 @@ TEST_F(RawSizeTestFixture, MapSomeNull) {
   testMap<float, double>(randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<float, velox::StringView>(
       randomNulls(folly::Random::rand32() % 10 + 1));
+  testMap<float, velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
 
   testMap<double, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<double, int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
@@ -685,6 +744,8 @@ TEST_F(RawSizeTestFixture, MapSomeNull) {
   testMap<double, float>(randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<double, double>(randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<double, velox::StringView>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testMap<double, velox::Timestamp>(
       randomNulls(folly::Random::rand32() % 10 + 1));
 
   testMap<velox::StringView, bool>(
@@ -703,6 +764,27 @@ TEST_F(RawSizeTestFixture, MapSomeNull) {
       randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<velox::StringView, velox::StringView>(
       randomNulls(folly::Random::rand32() % 10 + 1));
+  testMap<velox::StringView, velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+
+  testMap<velox::Timestamp, bool>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testMap<velox::Timestamp, int8_t>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testMap<velox::Timestamp, int16_t>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testMap<velox::Timestamp, int32_t>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testMap<velox::Timestamp, int64_t>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testMap<velox::Timestamp, float>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testMap<velox::Timestamp, double>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testMap<velox::Timestamp, velox::StringView>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testMap<velox::Timestamp, velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
 }
 
 TEST_F(RawSizeTestFixture, ConstantMap) {
@@ -714,6 +796,7 @@ TEST_F(RawSizeTestFixture, ConstantMap) {
   testConstantMap<bool, float>(noNulls());
   testConstantMap<bool, double>(noNulls());
   testConstantMap<bool, velox::StringView>(noNulls());
+  testConstantMap<bool, velox::Timestamp>(noNulls());
 
   testConstantMap<int8_t, bool>(noNulls());
   testConstantMap<int8_t, int8_t>(noNulls());
@@ -723,6 +806,7 @@ TEST_F(RawSizeTestFixture, ConstantMap) {
   testConstantMap<int8_t, float>(noNulls());
   testConstantMap<int8_t, double>(noNulls());
   testConstantMap<int8_t, velox::StringView>(noNulls());
+  testConstantMap<int8_t, velox::Timestamp>(noNulls());
 
   testConstantMap<int16_t, bool>(noNulls());
   testConstantMap<int16_t, int8_t>(noNulls());
@@ -732,6 +816,7 @@ TEST_F(RawSizeTestFixture, ConstantMap) {
   testConstantMap<int16_t, float>(noNulls());
   testConstantMap<int16_t, double>(noNulls());
   testConstantMap<int16_t, velox::StringView>(noNulls());
+  testConstantMap<int16_t, velox::Timestamp>(noNulls());
 
   testConstantMap<int32_t, bool>(noNulls());
   testConstantMap<int32_t, int8_t>(noNulls());
@@ -741,6 +826,7 @@ TEST_F(RawSizeTestFixture, ConstantMap) {
   testConstantMap<int32_t, float>(noNulls());
   testConstantMap<int32_t, double>(noNulls());
   testConstantMap<int32_t, velox::StringView>(noNulls());
+  testConstantMap<int32_t, velox::Timestamp>(noNulls());
 
   testConstantMap<int64_t, bool>(noNulls());
   testConstantMap<int64_t, int8_t>(noNulls());
@@ -750,6 +836,7 @@ TEST_F(RawSizeTestFixture, ConstantMap) {
   testConstantMap<int64_t, float>(noNulls());
   testConstantMap<int64_t, double>(noNulls());
   testConstantMap<int64_t, velox::StringView>(noNulls());
+  testConstantMap<int64_t, velox::Timestamp>(noNulls());
 
   testConstantMap<float, bool>(noNulls());
   testConstantMap<float, int8_t>(noNulls());
@@ -759,6 +846,7 @@ TEST_F(RawSizeTestFixture, ConstantMap) {
   testConstantMap<float, float>(noNulls());
   testConstantMap<float, double>(noNulls());
   testConstantMap<float, velox::StringView>(noNulls());
+  testConstantMap<float, velox::Timestamp>(noNulls());
 
   testConstantMap<double, bool>(noNulls());
   testConstantMap<double, int8_t>(noNulls());
@@ -768,6 +856,7 @@ TEST_F(RawSizeTestFixture, ConstantMap) {
   testConstantMap<double, float>(noNulls());
   testConstantMap<double, double>(noNulls());
   testConstantMap<double, velox::StringView>(noNulls());
+  testConstantMap<double, velox::Timestamp>(noNulls());
 
   testConstantMap<velox::StringView, bool>(noNulls());
   testConstantMap<velox::StringView, int8_t>(noNulls());
@@ -777,6 +866,17 @@ TEST_F(RawSizeTestFixture, ConstantMap) {
   testConstantMap<velox::StringView, float>(noNulls());
   testConstantMap<velox::StringView, double>(noNulls());
   testConstantMap<velox::StringView, velox::StringView>(noNulls());
+  testConstantMap<velox::StringView, velox::Timestamp>(noNulls());
+
+  testConstantMap<velox::Timestamp, bool>(noNulls());
+  testConstantMap<velox::Timestamp, int8_t>(noNulls());
+  testConstantMap<velox::Timestamp, int16_t>(noNulls());
+  testConstantMap<velox::Timestamp, int32_t>(noNulls());
+  testConstantMap<velox::Timestamp, int64_t>(noNulls());
+  testConstantMap<velox::Timestamp, float>(noNulls());
+  testConstantMap<velox::Timestamp, double>(noNulls());
+  testConstantMap<velox::Timestamp, velox::StringView>(noNulls());
+  testConstantMap<velox::Timestamp, velox::Timestamp>(noNulls());
 }
 
 TEST_F(RawSizeTestFixture, ConstantMapSomeNull) {
@@ -788,6 +888,8 @@ TEST_F(RawSizeTestFixture, ConstantMapSomeNull) {
   testConstantMap<bool, float>(randomNulls(folly::Random::rand32() % 10 + 1));
   testConstantMap<bool, double>(randomNulls(folly::Random::rand32() % 10 + 1));
   testConstantMap<bool, velox::StringView>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantMap<bool, velox::Timestamp>(
       randomNulls(folly::Random::rand32() % 10 + 1));
 
   testConstantMap<int8_t, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
@@ -803,6 +905,8 @@ TEST_F(RawSizeTestFixture, ConstantMapSomeNull) {
   testConstantMap<int8_t, double>(
       randomNulls(folly::Random::rand32() % 10 + 1));
   testConstantMap<int8_t, velox::StringView>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantMap<int8_t, velox::Timestamp>(
       randomNulls(folly::Random::rand32() % 10 + 1));
 
   testConstantMap<int16_t, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
@@ -820,6 +924,8 @@ TEST_F(RawSizeTestFixture, ConstantMapSomeNull) {
       randomNulls(folly::Random::rand32() % 10 + 1));
   testConstantMap<int16_t, velox::StringView>(
       randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantMap<int16_t, velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
 
   testConstantMap<int32_t, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
   testConstantMap<int32_t, int8_t>(
@@ -835,6 +941,8 @@ TEST_F(RawSizeTestFixture, ConstantMapSomeNull) {
   testConstantMap<int32_t, double>(
       randomNulls(folly::Random::rand32() % 10 + 1));
   testConstantMap<int32_t, velox::StringView>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantMap<int32_t, velox::Timestamp>(
       randomNulls(folly::Random::rand32() % 10 + 1));
 
   testConstantMap<int64_t, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
@@ -852,6 +960,8 @@ TEST_F(RawSizeTestFixture, ConstantMapSomeNull) {
       randomNulls(folly::Random::rand32() % 10 + 1));
   testConstantMap<int64_t, velox::StringView>(
       randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantMap<int64_t, velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
 
   testConstantMap<float, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
   testConstantMap<float, int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
@@ -864,6 +974,8 @@ TEST_F(RawSizeTestFixture, ConstantMapSomeNull) {
   testConstantMap<float, float>(randomNulls(folly::Random::rand32() % 10 + 1));
   testConstantMap<float, double>(randomNulls(folly::Random::rand32() % 10 + 1));
   testConstantMap<float, velox::StringView>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantMap<float, velox::Timestamp>(
       randomNulls(folly::Random::rand32() % 10 + 1));
 
   testConstantMap<double, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
@@ -879,6 +991,8 @@ TEST_F(RawSizeTestFixture, ConstantMapSomeNull) {
   testConstantMap<double, double>(
       randomNulls(folly::Random::rand32() % 10 + 1));
   testConstantMap<double, velox::StringView>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantMap<double, velox::Timestamp>(
       randomNulls(folly::Random::rand32() % 10 + 1));
 
   testConstantMap<velox::StringView, bool>(
@@ -897,6 +1011,27 @@ TEST_F(RawSizeTestFixture, ConstantMapSomeNull) {
       randomNulls(folly::Random::rand32() % 10 + 1));
   testConstantMap<velox::StringView, velox::StringView>(
       randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantMap<velox::StringView, velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+
+  testConstantMap<velox::Timestamp, bool>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantMap<velox::Timestamp, int8_t>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantMap<velox::Timestamp, int16_t>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantMap<velox::Timestamp, int32_t>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantMap<velox::Timestamp, int64_t>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantMap<velox::Timestamp, float>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantMap<velox::Timestamp, double>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantMap<velox::Timestamp, velox::StringView>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testConstantMap<velox::Timestamp, velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
 }
 
 TEST_F(RawSizeTestFixture, DictionaryMap) {
@@ -908,6 +1043,7 @@ TEST_F(RawSizeTestFixture, DictionaryMap) {
   testDictionaryMap<bool, float>(noNulls());
   testDictionaryMap<bool, double>(noNulls());
   testDictionaryMap<bool, velox::StringView>(noNulls());
+  testDictionaryMap<bool, velox::Timestamp>(noNulls());
 
   testDictionaryMap<int8_t, bool>(noNulls());
   testDictionaryMap<int8_t, int8_t>(noNulls());
@@ -917,6 +1053,7 @@ TEST_F(RawSizeTestFixture, DictionaryMap) {
   testDictionaryMap<int8_t, float>(noNulls());
   testDictionaryMap<int8_t, double>(noNulls());
   testDictionaryMap<int8_t, velox::StringView>(noNulls());
+  testDictionaryMap<int8_t, velox::Timestamp>(noNulls());
 
   testDictionaryMap<int16_t, bool>(noNulls());
   testDictionaryMap<int16_t, int8_t>(noNulls());
@@ -926,6 +1063,7 @@ TEST_F(RawSizeTestFixture, DictionaryMap) {
   testDictionaryMap<int16_t, float>(noNulls());
   testDictionaryMap<int16_t, double>(noNulls());
   testDictionaryMap<int16_t, velox::StringView>(noNulls());
+  testDictionaryMap<int16_t, velox::Timestamp>(noNulls());
 
   testDictionaryMap<int32_t, bool>(noNulls());
   testDictionaryMap<int32_t, int8_t>(noNulls());
@@ -935,6 +1073,7 @@ TEST_F(RawSizeTestFixture, DictionaryMap) {
   testDictionaryMap<int32_t, float>(noNulls());
   testDictionaryMap<int32_t, double>(noNulls());
   testDictionaryMap<int32_t, velox::StringView>(noNulls());
+  testDictionaryMap<int32_t, velox::Timestamp>(noNulls());
 
   testDictionaryMap<int64_t, bool>(noNulls());
   testDictionaryMap<int64_t, int8_t>(noNulls());
@@ -944,6 +1083,7 @@ TEST_F(RawSizeTestFixture, DictionaryMap) {
   testDictionaryMap<int64_t, float>(noNulls());
   testDictionaryMap<int64_t, double>(noNulls());
   testDictionaryMap<int64_t, velox::StringView>(noNulls());
+  testDictionaryMap<int64_t, velox::Timestamp>(noNulls());
 
   testDictionaryMap<float, bool>(noNulls());
   testDictionaryMap<float, int8_t>(noNulls());
@@ -953,6 +1093,7 @@ TEST_F(RawSizeTestFixture, DictionaryMap) {
   testDictionaryMap<float, float>(noNulls());
   testDictionaryMap<float, double>(noNulls());
   testDictionaryMap<float, velox::StringView>(noNulls());
+  testDictionaryMap<float, velox::Timestamp>(noNulls());
 
   testDictionaryMap<double, bool>(noNulls());
   testDictionaryMap<double, int8_t>(noNulls());
@@ -962,6 +1103,7 @@ TEST_F(RawSizeTestFixture, DictionaryMap) {
   testDictionaryMap<double, float>(noNulls());
   testDictionaryMap<double, double>(noNulls());
   testDictionaryMap<double, velox::StringView>(noNulls());
+  testDictionaryMap<double, velox::Timestamp>(noNulls());
 
   testDictionaryMap<velox::StringView, bool>(noNulls());
   testDictionaryMap<velox::StringView, int8_t>(noNulls());
@@ -971,6 +1113,17 @@ TEST_F(RawSizeTestFixture, DictionaryMap) {
   testDictionaryMap<velox::StringView, float>(noNulls());
   testDictionaryMap<velox::StringView, double>(noNulls());
   testDictionaryMap<velox::StringView, velox::StringView>(noNulls());
+  testDictionaryMap<velox::StringView, velox::Timestamp>(noNulls());
+
+  testDictionaryMap<velox::Timestamp, bool>(noNulls());
+  testDictionaryMap<velox::Timestamp, int8_t>(noNulls());
+  testDictionaryMap<velox::Timestamp, int16_t>(noNulls());
+  testDictionaryMap<velox::Timestamp, int32_t>(noNulls());
+  testDictionaryMap<velox::Timestamp, int64_t>(noNulls());
+  testDictionaryMap<velox::Timestamp, float>(noNulls());
+  testDictionaryMap<velox::Timestamp, double>(noNulls());
+  testDictionaryMap<velox::Timestamp, velox::StringView>(noNulls());
+  testDictionaryMap<velox::Timestamp, velox::Timestamp>(noNulls());
 }
 
 TEST_F(RawSizeTestFixture, DictionaryMapSomeNull) {
@@ -987,6 +1140,8 @@ TEST_F(RawSizeTestFixture, DictionaryMapSomeNull) {
   testDictionaryMap<bool, double>(
       randomNulls(folly::Random::rand32() % 10 + 1));
   testDictionaryMap<bool, velox::StringView>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryMap<bool, velox::Timestamp>(
       randomNulls(folly::Random::rand32() % 10 + 1));
 
   testDictionaryMap<int8_t, bool>(
@@ -1005,6 +1160,8 @@ TEST_F(RawSizeTestFixture, DictionaryMapSomeNull) {
       randomNulls(folly::Random::rand32() % 10 + 1));
   testDictionaryMap<int8_t, velox::StringView>(
       randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryMap<int8_t, velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
 
   testDictionaryMap<int16_t, bool>(
       randomNulls(folly::Random::rand32() % 10 + 1));
@@ -1021,6 +1178,8 @@ TEST_F(RawSizeTestFixture, DictionaryMapSomeNull) {
   testDictionaryMap<int16_t, double>(
       randomNulls(folly::Random::rand32() % 10 + 1));
   testDictionaryMap<int16_t, velox::StringView>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryMap<int16_t, velox::Timestamp>(
       randomNulls(folly::Random::rand32() % 10 + 1));
 
   testDictionaryMap<int32_t, bool>(
@@ -1039,6 +1198,8 @@ TEST_F(RawSizeTestFixture, DictionaryMapSomeNull) {
       randomNulls(folly::Random::rand32() % 10 + 1));
   testDictionaryMap<int32_t, velox::StringView>(
       randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryMap<int32_t, velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
 
   testDictionaryMap<int64_t, bool>(
       randomNulls(folly::Random::rand32() % 10 + 1));
@@ -1056,6 +1217,8 @@ TEST_F(RawSizeTestFixture, DictionaryMapSomeNull) {
       randomNulls(folly::Random::rand32() % 10 + 1));
   testDictionaryMap<int64_t, velox::StringView>(
       randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryMap<int64_t, velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
 
   testDictionaryMap<float, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
   testDictionaryMap<float, int8_t>(
@@ -1071,6 +1234,8 @@ TEST_F(RawSizeTestFixture, DictionaryMapSomeNull) {
   testDictionaryMap<float, double>(
       randomNulls(folly::Random::rand32() % 10 + 1));
   testDictionaryMap<float, velox::StringView>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryMap<float, velox::Timestamp>(
       randomNulls(folly::Random::rand32() % 10 + 1));
 
   testDictionaryMap<double, bool>(
@@ -1089,6 +1254,8 @@ TEST_F(RawSizeTestFixture, DictionaryMapSomeNull) {
       randomNulls(folly::Random::rand32() % 10 + 1));
   testDictionaryMap<double, velox::StringView>(
       randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryMap<double, velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
 
   testDictionaryMap<velox::StringView, bool>(
       randomNulls(folly::Random::rand32() % 10 + 1));
@@ -1105,6 +1272,27 @@ TEST_F(RawSizeTestFixture, DictionaryMapSomeNull) {
   testDictionaryMap<velox::StringView, double>(
       randomNulls(folly::Random::rand32() % 10 + 1));
   testDictionaryMap<velox::StringView, velox::StringView>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryMap<velox::StringView, velox::Timestamp>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+
+  testDictionaryMap<velox::Timestamp, bool>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryMap<velox::Timestamp, int8_t>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryMap<velox::Timestamp, int16_t>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryMap<velox::Timestamp, int32_t>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryMap<velox::Timestamp, int64_t>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryMap<velox::Timestamp, float>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryMap<velox::Timestamp, double>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryMap<velox::StringView, velox::StringView>(
+      randomNulls(folly::Random::rand32() % 10 + 1));
+  testDictionaryMap<velox::Timestamp, velox::Timestamp>(
       randomNulls(folly::Random::rand32() % 10 + 1));
 }
 
