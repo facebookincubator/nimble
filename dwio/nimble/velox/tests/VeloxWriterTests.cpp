@@ -311,11 +311,15 @@ TEST_F(VeloxWriterTests, MemoryReclaimPath) {
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
   std::atomic_bool reclaimEntered = false;
-  nimble::VeloxWriterOptions writerOptions{.reclaimerFactory = [&]() {
-    auto reclaimer = std::make_unique<MockReclaimer>();
-    reclaimer->setEnterArbitrationFunc([&]() { reclaimEntered = true; });
-    return reclaimer;
-  }};
+  nimble::VeloxWriterOptions writerOptions{
+      .reclaimerFactory =
+          [&]() {
+            auto reclaimer = std::make_unique<MockReclaimer>();
+            reclaimer->setEnterArbitrationFunc(
+                [&]() { reclaimEntered = true; });
+            return reclaimer;
+          },
+      .maxPoolSize = 2};
   nimble::VeloxWriter writer(
       *writerPool, type, std::move(writeFile), std::move(writerOptions));
   auto batches = generateBatches(type, 100, 4000, 20221110, *leafPool_);

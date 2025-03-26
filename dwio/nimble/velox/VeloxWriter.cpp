@@ -64,7 +64,12 @@ class WriterContext : public FieldWriterContext {
   WriterContext(
       velox::memory::MemoryPool& memoryPool,
       VeloxWriterOptions options)
-      : FieldWriterContext{memoryPool, options.reclaimerFactory(), options.vectorDecoderVisitor},
+      : FieldWriterContext{
+        memoryPool,
+        options.reclaimerFactory(),
+        options.vectorDecoderVisitor,
+        options.maxPoolSize
+        },
         options{std::move(options)},
         logger{this->options.metricsLogger} {
     flushPolicy = this->options.flushPolicyFactory();
@@ -622,9 +627,6 @@ void VeloxWriter::writeChunk(bool lastChunk) {
     LoggingScope scope{*context_->logger};
     velox::CpuWallTimer veloxTimer{context_->stripeFlushTiming};
 
-    if (!encodingBuffer_) {
-      encodingBuffer_ = std::make_unique<Buffer>(*encodingMemoryPool_);
-    }
     streams_.resize(context_->schemaBuilder.nodeCount());
 
     // When writing null streams, we write the nulls as data, and the stream
@@ -668,9 +670,11 @@ void VeloxWriter::writeChunk(bool lastChunk) {
 
     auto encode = [&](StreamData& streamData) {
       const auto offset = streamData.descriptor().offset();
-      auto encoded = encodeStream(*context_, *encodingBuffer_, streamData);
+      auto bufferObject = context_->bufferPool().reserveBuffer();
+      auto& buffer = bufferObject.get();
+      auto encoded = encodeStream(*context_, buffer, streamData);
       if (!encoded.empty()) {
-        ChunkedStreamWriter chunkWriter{*encodingBuffer_};
+        ChunkedStreamWriter chunkWriter{buffer};
         NIMBLE_DASSERT(offset < streams_.size(), "Stream offset out of range.");
         auto& stream = streams_[offset];
         for (auto& buffer : chunkWriter.encode(encoded)) {
@@ -782,10 +786,6 @@ uint32_t VeloxWriter::writeStripe() {
     uint64_t startSize = writer_.size();
     writer_.writeStripe(context_->rowsInStripe, std::move(streams_));
     stripeSize = writer_.size() - startSize;
-    encodingBuffer_.reset();
-    // TODO: once chunked string fields are supported, move string buffer
-    // reset to writeChunk()
-    context_->resetStringBuffer();
   }
 
   NIMBLE_ASSERT(

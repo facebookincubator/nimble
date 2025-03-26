@@ -126,6 +126,7 @@ struct VeloxWriterOptions {
 
   const velox::common::SpillConfig* spillConfig{nullptr};
 
+  size_t maxPoolSize = std::thread::hardware_concurrency();
   // If provided, internal writing/encoding operations will happen in parallel
   // using the specified executors.
   //
