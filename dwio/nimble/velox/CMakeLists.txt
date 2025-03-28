@@ -107,6 +107,9 @@ target_link_libraries(
   nimble_common
   Folly::folly)
 
+add_library(raw_size_utils RawSizeUtils.cpp DecodedVectorManager.cpp)
+target_link_libraries(raw_size_utils velox_vector velox_dwio_common)
+
 add_library(
   nimble_velox_writer EncodingLayoutTree.cpp FlushPolicy.cpp VeloxWriter.cpp
                       ChunkedStreamWriter.cpp VeloxWriterDefaultMetadataOSS.cpp)
@@ -117,8 +120,6 @@ target_link_libraries(
   nimble_tablet_writer
   nimble_velox_metadata_fb
   nimble_velox_stats_fb
+  raw_size_utils
   velox_dwio_common
   Folly::folly)
-
-add_library(raw_size_utils RawSizeUtils.cpp DecodedVectorManager.cpp)
-target_link_libraries(raw_size_utils velox_vector velox_dwio_common)
