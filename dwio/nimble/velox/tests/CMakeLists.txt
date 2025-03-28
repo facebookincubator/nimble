@@ -36,6 +36,7 @@ target_link_libraries(
   nimble_velox_writer
   nimble_velox_field_writer
   nimble_velox_layout_planner
+  nimble_velox_stats_fb
   nimble_common_file_writer
   nimble_common
   nimble_encodings

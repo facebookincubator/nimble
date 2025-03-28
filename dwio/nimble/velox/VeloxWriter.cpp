@@ -31,9 +31,11 @@
 #include "dwio/nimble/velox/FlushPolicy.h"
 #include "dwio/nimble/velox/LayoutPlanner.h"
 #include "dwio/nimble/velox/MetadataGenerated.h"
+#include "dwio/nimble/velox/RawSizeUtils.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
+#include "dwio/nimble/velox/StatsGenerated.h"
 #include "folly/ScopeGuard.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/dwio/common/ExecutorBarrier.h"
@@ -59,6 +61,7 @@ class WriterContext : public FieldWriterContext {
   uint64_t rowsInFile{0};
   uint64_t rowsInStripe{0};
   uint64_t stripeSize{0};
+  uint64_t rawSize{0};
   std::vector<uint64_t> rowsPerStripe;
 
   WriterContext(
@@ -505,6 +508,13 @@ bool VeloxWriter::write(const velox::VectorPtr& vector) {
   NIMBLE_CHECK(file_, "Writer is already closed");
   try {
     auto size = vector->size();
+
+    // Calculate raw size.
+    auto rawSize = nimble::getRawSizeFromVector(
+        vector, velox::common::Ranges::of(0, size));
+    DWIO_ENSURE_GE(rawSize, 0, "Invalid raw size");
+    context_->rawSize += rawSize;
+
     if (context_->options.writeExecutor) {
       velox::dwio::common::ExecutorBarrier barrier{
           context_->options.writeExecutor};
@@ -560,6 +570,15 @@ void VeloxWriter::close() {
         builder.Finish(serialization::CreateMetadata(builder, entries));
         writer_.writeOptionalSection(
             std::string(kMetadataSection),
+            {reinterpret_cast<const char*>(builder.GetBufferPointer()),
+             builder.GetSize()});
+      }
+
+      {
+        flatbuffers::FlatBufferBuilder builder;
+        builder.Finish(serialization::CreateStats(builder, context_->rawSize));
+        writer_.writeOptionalSection(
+            std::string(kStatsSection),
             {reinterpret_cast<const char*>(builder.GetBufferPointer()),
              builder.GetSize()});
       }

@@ -23,6 +23,7 @@
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
+#include "dwio/nimble/velox/StatsGenerated.h"
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "folly/FileUtil.h"
@@ -877,12 +878,12 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionExpandingRow) {
       {"row1", "row2"},
       {
           vectorMaker.rowVector({
-              vectorMaker.flatVector<uint32_t>({1, 2, 3, 4, 5}),
-              vectorMaker.flatVector<uint32_t>({1, 2, 3, 4, 5}),
+              vectorMaker.flatVector<int32_t>({1, 2, 3, 4, 5}),
+              vectorMaker.flatVector<int32_t>({1, 2, 3, 4, 5}),
           }),
           vectorMaker.rowVector({
-              vectorMaker.flatVector<uint32_t>({1, 2, 3, 4, 5}),
-              vectorMaker.flatVector<uint32_t>({1, 2, 3, 4, 5}),
+              vectorMaker.flatVector<int32_t>({1, 2, 3, 4, 5}),
+              vectorMaker.flatVector<int32_t>({1, 2, 3, 4, 5}),
           }),
       });
 
@@ -1855,6 +1856,47 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsWithChunksMinSizeZero) {
         }
       },
       /* flatmapColumns */ {"c1"});
+}
+
+TEST_F(VeloxWriterTests, RawSizeWritten) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  constexpr uint64_t expectedRawSize = sizeof(int32_t) * 20;
+  auto vector = vectorMaker.rowVector(
+      {"row1", "row2"},
+      {
+          vectorMaker.rowVector({
+              vectorMaker.flatVector<int32_t>({1, 2, 3, 4, 5}),
+              vectorMaker.flatVector<int32_t>({1, 2, 3, 4, 5}),
+          }),
+          vectorMaker.rowVector({
+              vectorMaker.flatVector<int32_t>({1, 2, 3, 4, 5}),
+              vectorMaker.flatVector<int32_t>({1, 2, 3, 4, 5}),
+          }),
+      });
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      *rootPool_, vector->type(), std::move(writeFile), {});
+  writer.write(vector);
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(*leafPool_, &readFile);
+
+  std::vector<std::string> preloadedOptionalSections = {
+      std::string(facebook::nimble::kStatsSection)};
+  auto tablet = std::make_shared<facebook::nimble::TabletReader>(
+      *leafPool_, &readFile, preloadedOptionalSections);
+  auto statsSection =
+      tablet.get()->loadOptionalSection(preloadedOptionalSections[0]);
+  ASSERT_TRUE(statsSection.has_value());
+
+  auto rawSize = flatbuffers::GetRoot<facebook::nimble::serialization::Stats>(
+                     statsSection->content().data())
+                     ->raw_size();
+  ASSERT_EQ(expectedRawSize, rawSize);
 }
 
 INSTANTIATE_TEST_CASE_P(
