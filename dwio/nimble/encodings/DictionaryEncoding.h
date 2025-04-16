@@ -166,11 +166,6 @@ template <typename V>
 void DictionaryEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  if constexpr (sizeof(T) < sizeof(uint32_t)) {
-    // Column reader values buffer is not large enough to hold indices in this
-    // case.
-    NIMBLE_UNREACHABLE(typeid(T).name());
-  }
   const auto startRowIndex = visitor.rowIndex();
   buffer_.resize(visitor.numRows() - startRowIndex);
   velox::common::AlwaysTrue indicesFilter;
