@@ -166,6 +166,13 @@ template <typename V>
 void DictionaryEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
+  if constexpr (sizeof(T) < sizeof(uint32_t)) {
+    // Although we do not use column reader values buffer in this decoder, the
+    // fast path in nested decoders of indices can use it, so need to ensure it
+    // can hold the indices.
+    visitor.reader().template ensureValuesCapacity<uint32_t>(
+        visitor.numRows(), true);
+  }
   const auto startRowIndex = visitor.rowIndex();
   buffer_.resize(visitor.numRows() - startRowIndex);
   velox::common::AlwaysTrue indicesFilter;
