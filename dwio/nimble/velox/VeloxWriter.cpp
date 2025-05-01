@@ -457,13 +457,19 @@ VeloxWriter::VeloxWriter(
     VeloxWriterOptions options)
     : schema_{velox::dwio::common::TypeWithId::create(schema)},
       file_{std::move(file)},
-      writerMemoryPool_{memoryPool.addAggregateChild(
-          fmt::format("nimble_writer_{}", folly::Random::rand64()),
-          options.reclaimerFactory())},
-      encodingMemoryPool_{writerMemoryPool_->addLeafChild(
-          "encoding",
-          true,
-          options.reclaimerFactory())},
+      writerMemoryPool_{MemoryPoolHolder::create(
+          memoryPool,
+          [&](auto& pool) {
+            return pool.addAggregateChild(
+                fmt::format("nimble_writer_{}", folly::Random::rand64()),
+                options.reclaimerFactory());
+          })},
+      encodingMemoryPool_{MemoryPoolHolder::create(
+          *writerMemoryPool_,
+          [&](auto& pool) {
+            return pool.addLeafChild(
+                "encoding", true, options.reclaimerFactory());
+          })},
       context_{std::make_unique<detail::WriterContext>(
           *writerMemoryPool_,
           std::move(options))},

@@ -76,22 +76,59 @@ class DecodingContextPool {
       std::unique_ptr<velox::SelectivityVector> selectivityVector);
 };
 
+class MemoryPoolHolder {
+ public:
+  velox::memory::MemoryPool& operator*() {
+    return *poolPtr_;
+  }
+
+  velox::memory::MemoryPool* get() const {
+    return poolPtr_;
+  }
+
+  velox::memory::MemoryPool* operator->() const {
+    return get();
+  }
+
+  template <typename Creator>
+  static MemoryPoolHolder create(
+      velox::memory::MemoryPool& pool,
+      const Creator& creator) {
+    MemoryPoolHolder holder;
+    if (pool.isLeaf()) {
+      holder.poolPtr_ = &pool;
+    } else {
+      holder.ownedPool_ = creator(pool);
+      holder.poolPtr_ = holder.ownedPool_.get();
+    }
+    return holder;
+  }
+
+ private:
+  MemoryPoolHolder() = default;
+
+  std::shared_ptr<velox::memory::MemoryPool> ownedPool_;
+  velox::memory::MemoryPool* poolPtr_{nullptr};
+};
+
 struct FieldWriterContext {
   explicit FieldWriterContext(
       velox::memory::MemoryPool& memoryPool,
       std::unique_ptr<velox::memory::MemoryReclaimer> reclaimer = nullptr,
       std::function<void(void)> vectorDecoderVisitor = []() {})
-      : bufferMemoryPool{memoryPool.addLeafChild(
-            "field_writer_buffer",
-            true,
-            std::move(reclaimer))},
+      : bufferMemoryPool{MemoryPoolHolder::create(
+            memoryPool,
+            [&](auto& pool) {
+              return pool.addLeafChild(
+                  "field_writer_buffer", true, std::move(reclaimer));
+            })},
         inputBufferGrowthPolicy{
             DefaultInputBufferGrowthPolicy::withDefaultRanges()},
         decodingContextPool_{std::move(vectorDecoderVisitor)} {
     resetStringBuffer();
   }
 
-  std::shared_ptr<velox::memory::MemoryPool> bufferMemoryPool;
+  MemoryPoolHolder bufferMemoryPool;
   std::mutex flatMapSchemaMutex;
   SchemaBuilder schemaBuilder;
 
