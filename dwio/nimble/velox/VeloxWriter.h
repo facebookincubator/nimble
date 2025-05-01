@@ -71,8 +71,8 @@ class VeloxWriter {
  private:
   std::shared_ptr<const velox::dwio::common::TypeWithId> schema_;
   std::unique_ptr<velox::WriteFile> file_;
-  std::shared_ptr<velox::memory::MemoryPool> writerMemoryPool_;
-  std::shared_ptr<velox::memory::MemoryPool> encodingMemoryPool_;
+  MemoryPoolHolder writerMemoryPool_;
+  MemoryPoolHolder encodingMemoryPool_;
   std::unique_ptr<detail::WriterContext> context_;
   TabletWriter writer_;
   std::unique_ptr<FieldWriter> root_;
