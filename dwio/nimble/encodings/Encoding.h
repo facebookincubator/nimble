@@ -470,6 +470,15 @@ void readWithVisitorFast(
           outerRows,
           chunkResultNulls,
           tailSkip);
+  if constexpr (kOutputNulls) {
+    if (auto remainderBitCount = numRows % 8) {
+      // `nonNullRowsFromSparse' resets the bits in last byte after `numRows'.
+      // We need to set them back to ensure rows in next chunk is not
+      // incorrectly nullified.
+      chunkResultNulls[(numRows - 1) / 8] |= static_cast<uint8_t>(-1)
+          << remainderBitCount;
+    }
+  }
   if (anyNulls) {
     visitor.setHasNulls();
   }
