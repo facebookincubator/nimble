@@ -401,7 +401,8 @@ size_t streamsReadCount(
 class VeloxReaderTests : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
-    velox::memory::MemoryManager::testingSetInstance({});
+    velox::memory::MemoryManager::testingSetInstance(
+        velox::memory::MemoryManagerOptions{});
   }
 
   void SetUp() override {

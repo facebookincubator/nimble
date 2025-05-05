@@ -216,7 +216,9 @@ TEST(VectorTests, BoolCopyCtr) {
 }
 
 TEST(VectorTests, MemoryCleanup) {
-  velox::memory::MemoryManager memoryManager{{.trackDefaultUsage = true}};
+  velox::memory::MemoryManagerOptions options;
+  options.trackDefaultUsage = true;
+  velox::memory::MemoryManager memoryManager{options};
   auto pool = memoryManager.addLeafPool();
   EXPECT_EQ(0, pool->usedBytes());
   {
