@@ -25,8 +25,9 @@ class DeduplicationUtilsTests : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
     velox::memory::SharedArbitrator::registerFactory();
-    velox::memory::MemoryManager::testingSetInstance(
-        {.arbitratorKind = "SHARED"});
+    velox::memory::MemoryManagerOptions options;
+    options.arbitratorKind = "SHARED";
+    velox::memory::MemoryManager::testingSetInstance(options);
   }
 
   void SetUp() override {
