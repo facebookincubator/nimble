@@ -325,7 +325,13 @@ void NimbleDumpLib::emitInfo() {
     auto rawSize = flatbuffers::GetRoot<nimble::serialization::Stats>(
                        statsSection->content().data())
                        ->raw_size();
-    ostream_ << rawSize << std::endl;
+    ostream_ << commaSeparated(rawSize) << std::endl;
+    const auto compressionRate = (double)rawSize / tablet->fileSize();
+    ostream_ << fmt::format(
+                    std::locale("en_US.UTF-8"),
+                    "Compression Rate: {:.2Lf}x",
+                    compressionRate)
+             << std::endl;
   } else {
     ostream_ << "N/A" << std::endl;
   }
