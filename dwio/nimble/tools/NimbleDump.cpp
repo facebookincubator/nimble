@@ -368,7 +368,15 @@ int main(int argc, char* argv[]) {
   app.addAlias("b", "binary");
   app.addAlias("c", "content");
 
-  return app.run(argc, argv);
+  try {
+    return app.run(argc, argv);
+  } catch (const facebook::velox::VeloxRuntimeError& e) {
+    if (e.errorCode() == facebook::velox::error_code::kFileNotFound) {
+      std::cerr << "Error: " << e.message() << std::endl;
+      return EXIT_FAILURE;
+    }
+    throw;
+  }
 }
 
 // Initialize dummy Velox stats reporter
