@@ -483,12 +483,21 @@ void readWithVisitorFast(
     visitor.setHasNulls();
   }
   if (kOutputNulls && visitor.rowIndex() % 8 != 0) {
+    auto chunkResultStart = velox::bits::roundUp(visitor.rowIndex(), 8);
     velox::bits::copyBits(
         resultNulls,
-        velox::bits::roundUp(visitor.rowIndex(), 8),
+        chunkResultStart,
         resultNulls,
         visitor.rowIndex(),
         numRows);
+    // Since chunk result is copied over, any trailing nulls in the original
+    // positions need to be set back to non nulls, otherwise we get incorrect
+    // nulls at beginning of next chunk.
+    velox::bits::fillBits(
+        resultNulls,
+        visitor.rowIndex() + numRows,
+        chunkResultStart + numRows,
+        true);
   }
   if (!V::kHasFilter && visitor.rowIndex() > 0) {
     for (auto& row : outerRows) {
