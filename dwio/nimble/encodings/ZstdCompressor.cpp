@@ -67,6 +67,12 @@ Vector<char> ZstdCompressor::uncompress(
   return buffer;
 }
 
+std::optional<size_t> ZstdCompressor::uncompressedSize(
+    std::string_view data) const {
+  auto* pos = data.data();
+  return encoding::readUint32(pos);
+}
+
 CompressionType ZstdCompressor::compressionType() {
   return CompressionType::Zstd;
 }

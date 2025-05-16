@@ -41,6 +41,9 @@ struct ICompressor {
       CompressionType compressionType,
       std::string_view data) = 0;
 
+  virtual std::optional<size_t> uncompressedSize(
+      std::string_view data) const = 0;
+
   virtual CompressionType compressionType() = 0;
 
   virtual ~ICompressor() = default;
@@ -57,6 +60,10 @@ class Compression {
 
   static Vector<char> uncompress(
       velox::memory::MemoryPool& memoryPool,
+      CompressionType compressionType,
+      std::string_view data);
+
+  static std::optional<size_t> uncompressedSize(
       CompressionType compressionType,
       std::string_view data);
 
