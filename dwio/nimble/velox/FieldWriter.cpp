@@ -788,12 +788,20 @@ class FlatMapValueFieldWriter {
     std::fill(data.end(), data.end() + numValues, false);
   }
 
-  void add(velox::vector_size_t offset, uint32_t mapIndex) {
+  // Returns whether the offset is successfully recorded.
+  // NOTE: this method is always called after calling prepare(), so
+  // we can access the raw in map stream data without size checks.
+  bool add(velox::vector_size_t offset, uint32_t mapIndex) {
     auto& data = inMapStream_.mutableData();
     auto index = mapIndex + data.size();
-    NIMBLE_CHECK(data.empty() || !data[index], "Duplicated key");
+    // The index being already populated means we have a key duplication.
+    // In order to avoid another branching here, we perform the rest of the
+    // method regardless, knowning that the whole write will be aborted
+    // upon key duplication, and the rest of the states wouldn't matter.
+    bool keyDuplicated = data[index];
     ranges_.add(offset, 1);
     data[index] = true;
+    return !keyDuplicated;
   }
 
   void write(const velox::VectorPtr& vector, uint32_t mapCount) {
@@ -841,7 +849,8 @@ class FlatMapFieldWriter : public FieldWriter {
                 NimbleTypeTraits<K>::scalarKind)),
         nullsStream_{context_.createNullsStreamData<bool>(
             typeBuilder_->asFlatMap().nullsDescriptor())},
-        valueType_{type->childAt(1)} {}
+        valueType_{type->childAt(1)},
+        nodeId_{type->id()} {}
 
   void write(
       const velox::VectorPtr& vector,
@@ -941,13 +950,19 @@ class FlatMapFieldWriter : public FieldWriter {
     // Lambda that iterates keys of a map and records the offsets to write to
     // particular value node.
     auto processMap = [&](velox::vector_size_t index, auto& keysVector) {
-      for (auto begin = offsets[index], end = begin + lengths[index];
-           begin < end;
-           ++begin) {
-        auto valueField = getValueFieldWriter(keysVector.valueAt(begin), size);
+      for (auto elementIdx = offsets[index], end = elementIdx + lengths[index];
+           elementIdx < end;
+           ++elementIdx) {
+        auto valueField =
+            getValueFieldWriter(keysVector.valueAt(elementIdx), size);
         // Add the value to the buffer by recording its offset in the values
         // vector.
-        valueField->add(begin, nonNullCount);
+        NIMBLE_CHECK(
+            valueField->add(elementIdx, nonNullCount),
+            fmt::format(
+                "Duplicate key: {} at flatmap with node id {}",
+                folly::to<std::string>(keysVector.valueAt(elementIdx)),
+                nodeId_));
       }
       ++nonNullCount;
     };
@@ -1103,6 +1118,7 @@ class FlatMapFieldWriter : public FieldWriter {
       std::unique_ptr<FlatMapPassthroughValueFieldWriter>>
       currentPassthroughFields_;
   const std::shared_ptr<const velox::dwio::common::TypeWithId>& valueType_;
+  const uint32_t nodeId_;
   uint64_t nonNullCount_ = 0;
   // This map store all FlatMapValue fields encountered by the VeloxWriter
   // across the whole file.
