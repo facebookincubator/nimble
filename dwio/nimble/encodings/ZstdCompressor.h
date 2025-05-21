@@ -34,6 +34,8 @@ class ZstdCompressor : public ICompressor {
       CompressionType compressionType,
       std::string_view data) override;
 
+  std::optional<size_t> uncompressedSize(std::string_view data) const override;
+
   CompressionType compressionType() override;
 };
 
