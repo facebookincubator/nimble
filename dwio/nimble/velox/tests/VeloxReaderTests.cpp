@@ -17,7 +17,6 @@
 #include <cmath>
 #include <optional>
 #include <stdexcept>
-#include <string_view>
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Types.h"

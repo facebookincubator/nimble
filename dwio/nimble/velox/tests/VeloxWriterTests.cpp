@@ -15,7 +15,6 @@
  */
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <zstd.h>
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
