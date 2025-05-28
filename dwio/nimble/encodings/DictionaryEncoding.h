@@ -201,35 +201,39 @@ std::string_view DictionaryEncoding<T>::encode(
     std::span<const physicalType> values,
     Buffer& buffer) {
   const uint32_t valueCount = values.size();
-  const uint32_t alphabetCount = selection.statistics().uniqueCounts().size();
-
-  folly::F14FastMap<physicalType, uint32_t> alphabetMapping;
-  alphabetMapping.reserve(alphabetCount);
-  Vector<physicalType> alphabet{&buffer.getMemoryPool()};
-  alphabet.reserve(alphabetCount);
-  uint32_t index = 0;
-  for (const auto& pair : selection.statistics().uniqueCounts()) {
-    alphabet.push_back(pair.first);
-    alphabetMapping.emplace(pair.first, index++);
-  }
-
-  Vector<uint32_t> indices{&buffer.getMemoryPool()};
-  indices.reserve(valueCount);
-  for (const auto& value : values) {
-    auto it = alphabetMapping.find(value);
-    NIMBLE_DASSERT(
-        it != alphabetMapping.end(),
-        "Statistics corruption. Missing alphabet entry.");
-    indices.push_back(it->second);
-  }
-
   Buffer tempBuffer{buffer.getMemoryPool()};
-  std::string_view serializedAlphabet =
-      selection.template encodeNested<physicalType>(
+  std::string_view serializedAlphabet;
+  std::string_view serializedIndices;
+
+  // scope alphabet + indicies population to free up memory faster
+  {
+    const uint32_t alphabetCount = selection.statistics().uniqueCounts().size();
+    folly::F14FastMap<physicalType, uint32_t> alphabetMapping;
+    alphabetMapping.reserve(alphabetCount);
+    {
+      Vector<physicalType> alphabet{&buffer.getMemoryPool()};
+      alphabet.reserve(alphabetCount);
+      uint32_t index = 0;
+      for (const auto& pair : selection.statistics().uniqueCounts()) {
+        alphabet.push_back(pair.first);
+        alphabetMapping.emplace(pair.first, index++);
+      }
+      serializedAlphabet = selection.template encodeNested<physicalType>(
           EncodingIdentifiers::Dictionary::Alphabet, {alphabet}, tempBuffer);
-  std::string_view serializedIndices =
-      selection.template encodeNested<uint32_t>(
-          EncodingIdentifiers::Dictionary::Indices, {indices}, tempBuffer);
+    }
+
+    Vector<uint32_t> indices{&buffer.getMemoryPool()};
+    indices.reserve(valueCount);
+    for (const auto& value : values) {
+      auto it = alphabetMapping.find(value);
+      NIMBLE_DASSERT(
+          it != alphabetMapping.end(),
+          "Statistics corruption. Missing alphabet entry.");
+      indices.push_back(it->second);
+    }
+    serializedIndices = selection.template encodeNested<uint32_t>(
+        EncodingIdentifiers::Dictionary::Indices, {indices}, tempBuffer);
+  }
 
   const uint32_t encodingSize = Encoding::kPrefixSize + 4 +
       serializedAlphabet.size() + serializedIndices.size();
