@@ -93,6 +93,15 @@ struct ReadWithVisitorParams {
 
 class Encoding {
  public:
+  // The binary layout for each Encoding begins with the same prefix:
+  // 1 byte: EncodingType
+  // 1 byte: DataType
+  // 4 bytes: uint32_t num rows
+  static constexpr int kEncodingTypeOffset = 0;
+  static constexpr int kDataTypeOffset = 1;
+  static constexpr int kRowCountOffset = 2;
+  static constexpr int kPrefixSize = 6;
+
   Encoding(velox::memory::MemoryPool& memoryPool, std::string_view data);
   virtual ~Encoding() = default;
 
@@ -211,15 +220,6 @@ class Encoding {
   virtual std::string debugString(int offset = 0) const;
 
  protected:
-  // The binary layout for each Encoding begins with the same prefix:
-  // 1 byte: EncodingType
-  // 1 byte: DataType
-  // 4 bytes: uint32_t num rows
-  static constexpr int kEncodingTypeOffset = 0;
-  static constexpr int kDataTypeOffset = 1;
-  static constexpr int kRowCountOffset = 2;
-  static constexpr int kPrefixSize = 6;
-
   static void serializePrefix(
       EncodingType encodingType,
       DataType dataType,

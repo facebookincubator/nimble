@@ -15,8 +15,8 @@
  */
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <zstd.h>
 
+#include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/encodings/EncodingLayoutCapture.h"
 #include "dwio/nimble/tablet/Constants.h"
@@ -33,7 +33,7 @@
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
-using namespace facebook;
+namespace facebook {
 
 class VeloxWriterTests : public ::testing::Test {
  protected:
@@ -226,6 +226,57 @@ TEST_F(
                {0, {1, 2}}, {1, {3, 4}}}});
   writer.write(vector);
   writer.close();
+}
+
+TEST_F(VeloxWriterTests, DuplicateFlatmapKey) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  // Vector with constant but duplicate key set. Potentially omitting in map
+  // stream in the future.
+  {
+    auto vec = vectorMaker.rowVector(
+        {"flatmap"},
+        {vectorMaker.mapVector<int32_t, int32_t>(
+            10,
+            /* sizeAt */ [](auto row) { return 6; },
+            /* keyAt */
+            [](auto /* row */, auto mapIndex) { return mapIndex / 2; },
+            /* valueAt */ [](auto row, auto /* mapIndex */) { return row; },
+            /* isNullAt */ [](auto /* row */) { return false; })});
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+    nimble::VeloxWriter writer(
+        *rootPool_,
+        vec->type(),
+        std::move(writeFile),
+        {.flatMapColumns = {"flatmap"}});
+    EXPECT_THROW(writer.write(vec), nimble::NimbleUserError);
+    EXPECT_ANY_THROW(writer.close());
+  }
+  // Vector with a rotating duplicate key set. The more typical layout requiring
+  // in map stream to represent.
+  {
+    auto vec = vectorMaker.rowVector(
+        {"flatmap"},
+        {vectorMaker.mapVector<int32_t, int32_t>(
+            10,
+            /* sizeAt */ [](auto row) { return 6; },
+            /* keyAt */
+            [](auto row, auto mapIndex) { return (row + mapIndex / 2) % 6; },
+            /* valueAt */ [](auto row, auto /* mapIndex */) { return row; },
+            /* isNullAt */ [](auto /* row */) { return false; })});
+
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+    nimble::VeloxWriter writer(
+        *rootPool_,
+        vec->type(),
+        std::move(writeFile),
+        {.flatMapColumns = {"flatmap"}});
+    EXPECT_THROW(writer.write(vec), nimble::NimbleUserError);
+    EXPECT_ANY_THROW(writer.close());
+  }
 }
 
 namespace {
@@ -1924,3 +1975,4 @@ INSTANTIATE_TEST_CASE_P(
             .batchCount = 100,
             .rawStripeSize = 256 << 20,
             .stripeCount = 1}));
+} // namespace facebook

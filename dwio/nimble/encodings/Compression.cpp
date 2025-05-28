@@ -73,4 +73,10 @@ ICompressor& getCompressor(CompressionType compressionType) {
       .uncompress(memoryPool, compressionType, data);
 }
 
+/* static */ std::optional<size_t> Compression::uncompressedSize(
+    CompressionType compressionType,
+    std::string_view data) {
+  return getCompressor(compressionType).uncompressedSize(data);
+}
+
 } // namespace facebook::nimble
