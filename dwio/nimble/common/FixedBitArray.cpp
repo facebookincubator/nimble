@@ -21,10 +21,9 @@ namespace facebook::nimble {
 // Warning: do not change this function or lots of horrible data corruption
 // will probably happen.
 uint64_t FixedBitArray::bufferSize(uint64_t elementCount, int bitWidth) {
-  // We may read up to 7 bytes beyond the last theoretically needed byte,
-  // as we access whole machine words.
-  constexpr int kSlopSize = 7;
-  return bits::bytesRequired(elementCount * bitWidth) + kSlopSize;
+  // Pad to a full machine word because we may read up to 7 bytes beyond the
+  // last theoretically needed byte, as we access whole machine words.
+  return bits::bucketsRequired(elementCount * bitWidth, 64) << 3;
 }
 
 FixedBitArray::FixedBitArray(char* buffer, int bitWidth)

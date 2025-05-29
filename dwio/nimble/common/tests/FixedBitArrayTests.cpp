@@ -13,11 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <memory>
 
 #include "dwio/nimble/common/FixedBitArray.h"
-#include "folly/Benchmark.h"
 #include "folly/Random.h"
 
 using namespace ::facebook;
@@ -350,4 +350,37 @@ TEST(FixedBitArrayTests, Equals32Random) {
       }
     }
   }
+}
+
+TEST(FixedBitArrayTests, BufferSizeAlignedToMachineWord) {
+  // Test for bitWidth = 1 byte
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(0, 8), 0);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(1, 8), 8);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(8, 8), 8);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(9, 8), 16);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(16, 8), 16);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(17, 8), 24);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(24, 8), 24);
+
+  // Test for bitWidth = 2 bytes
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(0, 16), 0);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(1, 16), 8);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(4, 16), 8);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(5, 16), 16);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(8, 16), 16);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(9, 16), 24);
+
+  // Test for bitWidth = 4 bytes
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(0, 32), 0);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(1, 32), 8);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(2, 32), 8);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(3, 32), 16);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(4, 32), 16);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(5, 32), 24);
+
+  // Test for bitWidth = 8 bytes
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(0, 64), 0);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(1, 64), 8);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(2, 64), 16);
+  ASSERT_EQ(nimble::FixedBitArray::bufferSize(3, 64), 24);
 }
