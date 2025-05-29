@@ -1181,9 +1181,9 @@ TEST_F(VeloxReaderTests, DontReadUnselectedColumnsFromFile) {
   auto file = nimble::test::createNimbleFile(*rootPool_, vector);
 
   uint32_t readSize = 1;
-  for (auto useChaniedBuffers : {false, true}) {
+  for (auto useChainedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
-        file, useChaniedBuffers);
+        file, useChainedBuffers);
     // We want to check stream by stream if they are being read
     readFile.setShouldCoalesce(false);
 
@@ -1234,9 +1234,9 @@ TEST_F(VeloxReaderTests, DontReadUnprojectedFeaturesFromFile) {
   auto file = nimble::test::createNimbleFile(
       *rootPool_, vector, std::move(writerOptions));
 
-  for (auto useChaniedBuffers : {false, true}) {
+  for (auto useChainedBuffers : {false, true}) {
     facebook::nimble::testing::InMemoryTrackableReadFile readFile(
-        file, useChaniedBuffers);
+        file, useChainedBuffers);
     // We want to check stream by stream if they are being read
     readFile.setShouldCoalesce(false);
 
@@ -5329,9 +5329,9 @@ TEST_F(VeloxReaderTests, MissingMetadata) {
 
   nimble::VeloxWriterOptions options;
   auto file = nimble::test::createNimbleFile(*rootPool_, vector, options);
-  for (auto useChaniedBuffers : {false, true}) {
+  for (auto useChainedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
-        file, useChaniedBuffers);
+        file, useChainedBuffers);
 
     nimble::VeloxReader reader(*leafPool_, &readFile);
     {
@@ -5362,9 +5362,9 @@ TEST_F(VeloxReaderTests, WithMetadata) {
       .metadata = {{"key 1", "value 1"}, {"key 2", "value 2"}},
   };
   auto file = nimble::test::createNimbleFile(*rootPool_, vector, options);
-  for (auto useChaniedBuffers : {false, true}) {
+  for (auto useChainedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
-        file, useChaniedBuffers);
+        file, useChainedBuffers);
 
     nimble::VeloxReader reader(*leafPool_, &readFile);
 

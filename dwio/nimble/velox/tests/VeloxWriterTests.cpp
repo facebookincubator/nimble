@@ -557,9 +557,9 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
   writer.write(vector);
   writer.close();
 
-  for (auto useChaniedBuffers : {false, true}) {
+  for (auto useChainedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
-        file, useChaniedBuffers);
+        file, useChainedBuffers);
     nimble::TabletReader tablet{*leafPool_, &readFile};
     auto section =
         tablet.loadOptionalSection(std::string(nimble::kSchemaSection));
