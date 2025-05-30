@@ -340,10 +340,10 @@ void checksumTest(
   writeFile.close();
   EXPECT_EQ(writeFile.size(), tabletWriter.size());
 
-  for (auto useChaniedBuffers : {false, true}) {
+  for (auto useChainedBuffers : {false, true}) {
     // Velidate checksum on a good file
     nimble::testing::InMemoryTrackableReadFile readFile(
-        file, useChaniedBuffers);
+        file, useChainedBuffers);
     nimble::TabletReader tablet{memoryPool, &readFile};
     auto storedChecksum = tablet.checksum();
     EXPECT_EQ(
@@ -360,7 +360,7 @@ void checksumTest(
     {
       // First, make sure we are working on a clean file
       nimble::testing::InMemoryTrackableReadFile readFileUnchanged(
-          file, useChaniedBuffers);
+          file, useChainedBuffers);
       EXPECT_EQ(
           storedChecksum,
           nimble::TabletReader::calculateChecksum(
@@ -369,7 +369,7 @@ void checksumTest(
       char& c = file[10];
       c ^= 0x80;
       nimble::testing::InMemoryTrackableReadFile readFileChanged(
-          file, useChaniedBuffers);
+          file, useChainedBuffers);
       EXPECT_NE(
           storedChecksum,
           nimble::TabletReader::calculateChecksum(
@@ -389,7 +389,7 @@ void checksumTest(
     {
       // First, make sure we are working on a clean file
       nimble::testing::InMemoryTrackableReadFile readFileUnchanged(
-          file, useChaniedBuffers);
+          file, useChainedBuffers);
       EXPECT_EQ(
           storedChecksum,
           nimble::TabletReader::calculateChecksum(
@@ -401,7 +401,7 @@ void checksumTest(
           *reinterpret_cast<uint8_t*>(file.data() + posInFooter);
       byteInFooter ^= 0x1;
       nimble::testing::InMemoryTrackableReadFile readFileChanged(
-          file, useChaniedBuffers);
+          file, useChainedBuffers);
       EXPECT_NE(
           storedChecksum,
           nimble::TabletReader::calculateChecksum(
@@ -421,7 +421,7 @@ void checksumTest(
     {
       // First, make sure we are working on a clean file
       nimble::testing::InMemoryTrackableReadFile readFileUnchanged(
-          file, useChaniedBuffers);
+          file, useChainedBuffers);
       EXPECT_EQ(
           storedChecksum,
           nimble::TabletReader::calculateChecksum(
@@ -433,7 +433,7 @@ void checksumTest(
       ASSERT_EQ(footerSize, tablet.footerSize());
       footerSize ^= 0x1;
       nimble::testing::InMemoryTrackableReadFile readFileChanged(
-          file, useChaniedBuffers);
+          file, useChainedBuffers);
       EXPECT_NE(
           storedChecksum,
           nimble::TabletReader::calculateChecksum(
@@ -453,7 +453,7 @@ void checksumTest(
     {
       // First, make sure we are working on a clean file
       nimble::testing::InMemoryTrackableReadFile readFileUnchanged(
-          file, useChaniedBuffers);
+          file, useChainedBuffers);
       EXPECT_EQ(
           storedChecksum,
           nimble::TabletReader::calculateChecksum(
@@ -468,7 +468,7 @@ void checksumTest(
       uint8_t& typeAsInt = *reinterpret_cast<uint8_t*>(&footerCompressionType);
       typeAsInt ^= 0x1;
       nimble::testing::InMemoryTrackableReadFile readFileChanged(
-          file, useChaniedBuffers);
+          file, useChainedBuffers);
       EXPECT_NE(
           storedChecksum,
           nimble::TabletReader::calculateChecksum(
@@ -556,9 +556,9 @@ TEST(TabletTests, OptionalSections) {
   auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(5);
   facebook::velox::dwio::common::ExecutorBarrier barrier{executor};
 
-  for (auto useChaniedBuffers : {false, true}) {
+  for (auto useChainedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
-        file, useChaniedBuffers);
+        file, useChainedBuffers);
     nimble::TabletReader tablet{*pool, &readFile};
 
     ASSERT_EQ(tablet.optionalSections().size(), 3);
@@ -619,9 +619,9 @@ TEST(TabletTests, OptionalSectionsEmpty) {
 
   tabletWriter.close();
 
-  for (auto useChaniedBuffers : {false, true}) {
+  for (auto useChainedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
-        file, useChaniedBuffers);
+        file, useChainedBuffers);
     nimble::TabletReader tablet{*pool, &readFile};
 
     ASSERT_TRUE(tablet.optionalSections().empty());
@@ -661,9 +661,9 @@ TEST(TabletTests, OptionalSectionsPreload) {
                       size_t expectedInitialReads,
                       std::vector<std::tuple<std::string, size_t, std::string>>
                           expected) {
-      for (auto useChaniedBuffers : {false, true}) {
+      for (auto useChainedBuffers : {false, true}) {
         nimble::testing::InMemoryTrackableReadFile readFile(
-            file, useChaniedBuffers);
+            file, useChainedBuffers);
         nimble::TabletReader tablet{*pool, &readFile, preload};
 
         // Expecting only the initial footer read.
