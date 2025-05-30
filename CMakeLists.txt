@@ -21,6 +21,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 add_compile_definitions(DISABLE_META_INTERNAL_COMPRESSOR=1)
 
+# The policy allows us to change options without caching.
+cmake_policy(SET CMP0077 NEW)
+set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+
 # Sets new behavior for CMP0135, which controls how timestamps are extracted
 # when using ExternalProject_Add():
 # https://cmake.org/cmake/help/latest/policy/CMP0135.html
