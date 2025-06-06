@@ -312,7 +312,8 @@ class SchemaBuilder {
   void addNode(
       std::vector<std::unique_ptr<const SchemaNode>>& nodes,
       const TypeBuilder& type,
-      std::optional<std::string> name = std::nullopt) const;
+      std::optional<std::string> name = std::nullopt,
+      std::optional<offset_size> column = std::nullopt) const;
 
   // Schema builder is building a tree of types. As a tree, it should have a
   // single root. We use |roots_| to track that the callers don't forget to
