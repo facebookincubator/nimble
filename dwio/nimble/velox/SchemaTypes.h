@@ -79,12 +79,14 @@ class SchemaNode {
       offset_size offset,
       ScalarKind scalarKind,
       std::optional<std::string> name = std::nullopt,
-      size_t childrenCount = 0)
+      size_t childrenCount = 0,
+      std::optional<offset_size> column = std::nullopt)
       : kind_{kind},
         offset_{offset},
         name_{std::move(name)},
         scalarKind_{scalarKind},
-        childrenCount_{childrenCount} {}
+        childrenCount_{childrenCount},
+        column_{column} {}
 
   Kind kind() const {
     return kind_;
@@ -106,12 +108,17 @@ class SchemaNode {
     return scalarKind_;
   }
 
+  std::optional<offset_size> column() const {
+    return column_;
+  }
+
  private:
   Kind kind_;
   offset_size offset_;
   std::optional<std::string> name_;
   ScalarKind scalarKind_;
   size_t childrenCount_;
+  std::optional<offset_size> column_;
 };
 
 } // namespace facebook::nimble
