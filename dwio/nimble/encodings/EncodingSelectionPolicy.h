@@ -325,13 +325,17 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
         // uncommon value there will be an index. These indices will most likely
         // be stored bit-packed, with bit width of max(rowCount).
 
+        // There is no point in applying mainly const if all values are unique
+        if (statistics.uniqueCounts().size() == entryCount) {
+          return std::nullopt;
+        }
         // Find most common item count
-        const auto maxUniqueCount = std::max_element(
+        const auto commonElement = std::max_element(
             statistics.uniqueCounts().cbegin(),
             statistics.uniqueCounts().cend(),
             [](const auto& a, const auto& b) { return a.second < b.second; });
         // Deduce uncommon values count
-        const auto uncommonCount = entryCount - maxUniqueCount->second;
+        const auto uncommonCount = entryCount - commonElement->second;
         // Assuming the uncommon values will be stored bit packed.
         const auto uncommonValueSize =
             bitPackedBytes(statistics.min(), statistics.max(), uncommonCount);
