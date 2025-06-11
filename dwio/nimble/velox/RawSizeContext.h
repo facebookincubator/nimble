@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/velox/DecodedVectorManager.h"
 
 namespace facebook::nimble {
@@ -28,8 +29,65 @@ class RawSizeContext {
     return decodedVectorManager_;
   }
 
+  void appendSize(uint64_t size) {
+    columnSizes_.push_back(size);
+  }
+
+  uint64_t sizeAt(uint64_t columnIndex) const {
+    NIMBLE_ASSERT(
+        columnIndex < columnSizes_.size(),
+        fmt::format(
+            "Column index {} is out of range. Total number of columns is {}",
+            columnIndex,
+            columnSizes_.size()));
+    return columnSizes_.at(columnIndex);
+  }
+
+  void setSizeAt(uint64_t columnIndex, uint64_t size) {
+    NIMBLE_ASSERT(
+        columnIndex < columnSizes_.size(),
+        fmt::format(
+            "Column index {} is out of range. Total number of columns is {}",
+            columnIndex,
+            columnSizes_.size()));
+    columnSizes_[columnIndex] = size;
+  }
+
+  uint64_t columnCount() const {
+    return columnSizes_.size();
+  }
+
+  void appendNullCount(uint64_t nulls) {
+    columnNullCounts_.push_back(nulls);
+  }
+
+  uint64_t nullsAt(uint64_t columnIndex) const {
+    NIMBLE_ASSERT(
+        columnIndex < columnNullCounts_.size(),
+        fmt::format(
+            "Column index {} is out of range. Total number of columns is {}",
+            columnIndex,
+            columnNullCounts_.size()));
+    return columnNullCounts_.at(columnIndex);
+  }
+
+  void setNullsAt(uint64_t columnIndex, uint64_t nulls) {
+    NIMBLE_ASSERT(
+        columnIndex < columnNullCounts_.size(),
+        fmt::format(
+            "Column index {} is out of range. Total number of columns is {}",
+            columnIndex,
+            columnNullCounts_.size()));
+    columnNullCounts_[columnIndex] = nulls;
+  }
+
+  // Number of nulls in last visited node
+  uint64_t nullCount{0};
+
  private:
   DecodedVectorManager decodedVectorManager_;
+  std::vector<uint64_t> columnSizes_;
+  std::vector<uint64_t> columnNullCounts_;
 };
 
 } // namespace facebook::nimble
