@@ -255,6 +255,10 @@ struct StringConverter {
   static std::string_view
   convert(velox::StringView sv, Buffer& buffer, uint64_t& memoryUsed) {
     memoryUsed += sv.size();
+    LOG(INFO) << "StringConverter::convert: " << sv.size() << " bytes";
+    LOG(INFO) << "StringConverter data " << sv.data() << " bytes";
+    LOG(INFO) << "After converting to std string view "
+              << buffer.writeString({sv.data(), sv.size()}).size() << " bytes";
     return buffer.writeString({sv.data(), sv.size()});
   }
 };
@@ -350,6 +354,11 @@ class SimpleFieldWriter : public FieldWriter {
     }
   }
 
+  uint64_t rawSize() override {
+    LOG(INFO) << "SimpleFieldWriter::rawSize: " << valuesStream_.data().size();
+    return valuesStream_.data().size();
+  }
+
   void reset() override {
     valuesStream_.reset();
   }
@@ -443,6 +452,17 @@ class RowFieldWriter : public FieldWriter {
     }
   }
 
+  uint64_t rawSize() override {
+    uint64_t childrenSize = 0;
+    for (auto& field : fields_) {
+      LOG(INFO) << "RowFieldWriter::rawSize: " << field->rawSize() << " type "
+                << toString(field->typeBuilder()->kind());
+      childrenSize += field->rawSize();
+    }
+    // TODO: Handle nulls
+    return childrenSize;
+  }
+
  private:
   std::vector<std::unique_ptr<FieldWriter>> fields_;
   NullsStreamData& nullsStream_;
@@ -457,6 +477,12 @@ class MultiValueFieldWriter : public FieldWriter {
         lengthsStream_{context.createNullableContentStreamData<uint32_t>(
             static_cast<LengthsTypeBuilder&>(*typeBuilder_)
                 .lengthsDescriptor())} {}
+
+  uint64_t rawSize() override {
+    LOG(INFO) << "MultiValueFieldWriter::rawSize: "
+              << lengthsStream_.data().size();
+    return 0;
+  }
 
   void reset() override {
     lengthsStream_.reset();
@@ -536,6 +562,11 @@ class ArrayFieldWriter : public MultiValueFieldWriter {
     }
   }
 
+  uint64_t rawSize() override {
+    LOG(INFO) << "ArrayFieldWriter::rawSize: " << elements_->rawSize();
+    return elements_->rawSize();
+  }
+
   void reset() override {
     MultiValueFieldWriter::reset();
     elements_->reset();
@@ -583,6 +614,12 @@ class MapFieldWriter : public MultiValueFieldWriter {
     MultiValueFieldWriter::reset();
     keys_->reset();
     values_->reset();
+  }
+
+  uint64_t rawSize() override {
+    LOG(INFO) << "MapFieldWriter::rawSize: " << keys_->rawSize() << " + "
+              << values_->rawSize();
+    return keys_->rawSize() + values_->rawSize();
   }
 
   void close() override {
@@ -638,6 +675,12 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
     currentOffset_ = 0;
     cached_ = false;
     cachedLength_ = 0;
+  }
+
+  uint64_t rawSize() override {
+    LOG(INFO) << "SlidingWindowMapFieldWriter::rawSize: " << keys_->rawSize()
+              << " + " << values_->rawSize();
+    return keys_->rawSize() + values_->rawSize();
   }
 
   void close() override {
@@ -763,6 +806,12 @@ class FlatMapPassthroughValueFieldWriter {
     valueField_->reset();
   }
 
+  uint64_t rawSize() {
+    LOG(INFO) << "FlatMapPassthroughValueFieldWriter::rawSize: "
+              << valueField_->rawSize();
+    return valueField_->rawSize();
+  }
+
   void close() {
     valueField_->close();
   }
@@ -823,6 +872,11 @@ class FlatMapValueFieldWriter {
   void reset() {
     inMapStream_.reset();
     valueField_->reset();
+  }
+
+  uint64_t rawSize() {
+    LOG(INFO) << "FlatMapValueFieldWriter::rawSize: " << valueField_->rawSize();
+    return valueField_->rawSize();
   }
 
   void close() {
@@ -1053,6 +1107,20 @@ class FlatMapFieldWriter : public FieldWriter {
     currentValueFields_.clear();
   }
 
+  uint64_t rawSize() override {
+    uint64_t size = 0;
+    for (auto& pair : currentValueFields_) {
+      LOG(INFO) << "FlatMapFieldWriter::rawSize: " << pair.second->rawSize();
+      size += pair.second->rawSize();
+    }
+
+    for (auto& pair : currentPassthroughFields_) {
+      LOG(INFO) << "FlatMapFieldWriter::rawSize: " << pair.second->rawSize();
+      size += pair.second->rawSize();
+    }
+    return size;
+  }
+
   void close() override {
     // Add dummy node so we can preserve schema of an empty flat map
     // when no fields are written
@@ -1215,6 +1283,12 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
 
     cached_ = false;
     nextOffset_ = 0;
+  }
+
+  uint64_t rawSize() override {
+    LOG(INFO) << "ArrayWithOffsetsFieldWriter::rawSize() = "
+              << elements_->rawSize();
+    return elements_->rawSize();
   }
 
   void close() override {

@@ -210,6 +210,10 @@ class FieldWriter {
   // Clears interanl state and any accumulated data in internal buffers.
   virtual void reset() = 0;
 
+  virtual uint64_t rawSize() {
+    return 0;
+  }
+
   // Called when all writes are done, allowing field writers to finalize
   // internal state.
   virtual void close() {}

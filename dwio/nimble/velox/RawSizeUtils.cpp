@@ -126,6 +126,8 @@ uint64_t getRawSizeFromStringVector(
           if (flatVector->isNullAt(row)) {
             ++nullCount;
           } else {
+            LOG(INFO) << "size: " << flatVector->valueAt(row).size();
+            LOG(INFO) << strlen(flatVector->valueAt(row).data());
             rawSize += flatVector->valueAt(row).size();
           }
         }

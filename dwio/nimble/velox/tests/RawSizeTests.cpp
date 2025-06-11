@@ -16,6 +16,9 @@
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/velox/RawSizeUtils.h"
+#include "dwio/nimble/velox/VeloxWriter.h"
+#include "folly/Random.h"
+#include "velox/common/memory/MemoryArbitrator.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
 using namespace facebook;
@@ -1465,6 +1468,8 @@ TEST_F(RawSizeTestFixture, RowNulls) {
       sizeof(int16_t) * 5 + nimble::NULL_SIZE * 1;
   ASSERT_EQ(expectedRawSize, rawSize);
   ASSERT_EQ(3, context_.columnCount());
+  LOG(INFO) << sizeof(int64_t) * 5 << " " << sizeof(bool) * 5 << " "
+            << sizeof(int16_t) * 5;
   ASSERT_EQ(sizeof(int64_t) * 5, context_.sizeAt(0));
   ASSERT_EQ(sizeof(bool) * 5, context_.sizeAt(1));
   ASSERT_EQ(sizeof(int16_t) * 5, context_.sizeAt(2));
@@ -1473,6 +1478,15 @@ TEST_F(RawSizeTestFixture, RowNulls) {
   for (size_t i = 0; i < 3; ++i) {
     ASSERT_EQ(0, context_.nullsAt(i));
   }
+
+  std::shared_ptr<velox::memory::MemoryPool> rootPool_;
+  rootPool_ = velox::memory::memoryManager()->addRootPool("default_root");
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      *rootPool_, rowVector->type(), std::move(writeFile), {});
+  writer.write(rowVector);
+  writer.close();
 }
 
 TEST_F(RawSizeTestFixture, RowAllNulls) {
@@ -1517,6 +1531,9 @@ TEST_F(RawSizeTestFixture, RowNestedNull) {
 
   constexpr auto expectedRawSize = sizeof(int64_t) * 5 + (1 + 2 + 3 + 4 + 5) +
       sizeof(int16_t) * 5 + nimble::NULL_SIZE * 3;
+
+  LOG(INFO) << sizeof(int64_t) * 5 << " " << (1 + 2 + 3 + 4 + 5) << " "
+            << sizeof(int16_t) * 5 << " " << nimble::NULL_SIZE * 3;
   ASSERT_EQ(expectedRawSize, rawSize);
   ASSERT_EQ(3, context_.columnCount());
   ASSERT_EQ(sizeof(int64_t) * 5 + nimble::NULL_SIZE, context_.sizeAt(0));
@@ -1527,6 +1544,15 @@ TEST_F(RawSizeTestFixture, RowNestedNull) {
   for (size_t i = 0; i < 3; ++i) {
     ASSERT_EQ(1, context_.nullsAt(i));
   }
+
+  std::shared_ptr<velox::memory::MemoryPool> rootPool_;
+  rootPool_ = velox::memory::memoryManager()->addRootPool("default_root");
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      *rootPool_, rowVector->type(), std::move(writeFile), {});
+  writer.write(rowVector);
+  writer.close();
 }
 
 TEST_F(RawSizeTestFixture, RowDictionaryChildren) {

@@ -529,6 +529,7 @@ bool VeloxWriter::write(const velox::VectorPtr& vector) {
         vector, velox::common::Ranges::of(0, size), context, /*topLevel=*/true);
     DWIO_ENSURE_GE(rawSize, 0, "Invalid raw size");
     context_->rawSize += rawSize;
+    LOG(INFO) << "Raw size: " << context_->rawSize;
     auto columnCount = context.columnCount();
     if (context_->columnStats.empty()) {
       context_->columnStats =
@@ -623,6 +624,10 @@ void VeloxWriter::close() {
                   column,
                   columnPhysicalSize.size()));
           columnPhysicalSize[column] += streamSize;
+        }
+
+        for (auto& columnSize : columnPhysicalSize) {
+          LOG(INFO) << "Column physical size: " << columnSize;
         }
       }
 
@@ -737,9 +742,14 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       StreamData& streamData_;
     };
 
+    LOG(INFO) << "Size:" << root_->rawSize();
+
     auto encode = [&](StreamData& streamData,
                       std::atomic<uint64_t>& streamSize) {
       const auto offset = streamData.descriptor().offset();
+      LOG(INFO) << "streamData null:" << streamData.hasNulls();
+      LOG(INFO) << "streamData:" << streamData.data().size() << "->"
+                << std::string(streamData.data());
       auto encoded = encodeStream(*context_, *encodingBuffer_, streamData);
       if (!encoded.empty()) {
         ChunkedStreamWriter chunkWriter{*encodingBuffer_};
