@@ -1390,6 +1390,7 @@ TEST_F(RawSizeTestFixture, RowSameTypes) {
   ASSERT_EQ(expectedChildCount, context_.columnCount());
   for (size_t i = 0; i < expectedChildCount; ++i) {
     ASSERT_EQ(sizeof(int64_t) * 6, context_.sizeAt(i));
+    ASSERT_EQ(0, context_.nullsAt(i));
   }
 }
 
@@ -1410,6 +1411,10 @@ TEST_F(RawSizeTestFixture, RowDifferentTypes) {
   ASSERT_EQ(sizeof(int64_t) * 6, context_.sizeAt(0));
   ASSERT_EQ(sizeof(bool) * 6, context_.sizeAt(1));
   ASSERT_EQ(sizeof(int16_t) * 6, context_.sizeAt(2));
+
+  for (size_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(0, context_.nullsAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, RowDifferentTypes2) {
@@ -1430,6 +1435,10 @@ TEST_F(RawSizeTestFixture, RowDifferentTypes2) {
   ASSERT_EQ(sizeof(int64_t) * 6, context_.sizeAt(0));
   ASSERT_EQ(21, context_.sizeAt(1));
   ASSERT_EQ(sizeof(int16_t) * 6, context_.sizeAt(2));
+
+  for (size_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(0, context_.nullsAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, RowNulls) {
@@ -1459,6 +1468,11 @@ TEST_F(RawSizeTestFixture, RowNulls) {
   ASSERT_EQ(sizeof(int64_t) * 5, context_.sizeAt(0));
   ASSERT_EQ(sizeof(bool) * 5, context_.sizeAt(1));
   ASSERT_EQ(sizeof(int16_t) * 5, context_.sizeAt(2));
+
+  ASSERT_EQ(1, context_.nullCount);
+  for (size_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(0, context_.nullsAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, RowAllNulls) {
@@ -1508,6 +1522,11 @@ TEST_F(RawSizeTestFixture, RowNestedNull) {
   ASSERT_EQ(sizeof(int64_t) * 5 + nimble::NULL_SIZE, context_.sizeAt(0));
   ASSERT_EQ(15 + nimble::NULL_SIZE, context_.sizeAt(1));
   ASSERT_EQ(sizeof(int16_t) * 5 + nimble::NULL_SIZE, context_.sizeAt(2));
+
+  ASSERT_EQ(0, context_.nullCount);
+  for (size_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(1, context_.nullsAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, RowDictionaryChildren) {
@@ -1567,6 +1586,11 @@ TEST_F(RawSizeTestFixture, RowDictionaryChildren) {
   ASSERT_EQ(2, context_.columnCount());
   ASSERT_EQ(expectedArrayRawSize, context_.sizeAt(0));
   ASSERT_EQ(expectedMapRawSize, context_.sizeAt(1));
+
+  ASSERT_EQ(0, context_.nullCount);
+  for (size_t i = 0; i < 2; ++i) {
+    ASSERT_EQ(0, context_.nullsAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, ConstRow) {
@@ -1590,6 +1614,11 @@ TEST_F(RawSizeTestFixture, ConstRow) {
   ASSERT_EQ(sizeof(int64_t) * CONST_VECTOR_SIZE, context_.sizeAt(0));
   ASSERT_EQ(6 * CONST_VECTOR_SIZE, context_.sizeAt(1));
   ASSERT_EQ(sizeof(int16_t) * CONST_VECTOR_SIZE, context_.sizeAt(2));
+
+  ASSERT_EQ(0, context_.nullCount);
+  for (size_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(0, context_.nullsAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, ConstRowNestedNull) {
@@ -1615,6 +1644,11 @@ TEST_F(RawSizeTestFixture, ConstRowNestedNull) {
   ASSERT_EQ(sizeof(int64_t) * CONST_VECTOR_SIZE, context_.sizeAt(0));
   ASSERT_EQ(nimble::NULL_SIZE * CONST_VECTOR_SIZE, context_.sizeAt(1));
   ASSERT_EQ(nimble::NULL_SIZE * CONST_VECTOR_SIZE, context_.sizeAt(2));
+
+  ASSERT_EQ(0, context_.nullCount);
+  ASSERT_EQ(0, context_.nullsAt(0));
+  ASSERT_EQ(CONST_VECTOR_SIZE, context_.nullsAt(1));
+  ASSERT_EQ(CONST_VECTOR_SIZE, context_.nullsAt(2));
 }
 
 TEST_F(RawSizeTestFixture, DictRow) {
@@ -1650,6 +1684,11 @@ TEST_F(RawSizeTestFixture, DictRow) {
   ASSERT_EQ(sizeof(int64_t) * VECTOR_TEST_SIZE, context_.sizeAt(0));
   ASSERT_EQ(11, context_.sizeAt(1));
   ASSERT_EQ(sizeof(int16_t) * VECTOR_TEST_SIZE, context_.sizeAt(2));
+
+  ASSERT_EQ(0, context_.nullCount);
+  for (size_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(0, context_.nullsAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, DictRowNull) {
@@ -1686,6 +1725,11 @@ TEST_F(RawSizeTestFixture, DictRowNull) {
   ASSERT_EQ(nimble::NULL_SIZE * 2 + sizeof(int64_t) * 3, context_.sizeAt(0));
   ASSERT_EQ(11, context_.sizeAt(1));
   ASSERT_EQ(sizeof(int16_t) * VECTOR_TEST_SIZE, context_.sizeAt(2));
+
+  ASSERT_EQ(0, context_.nullCount);
+  ASSERT_EQ(2, context_.nullsAt(0));
+  ASSERT_EQ(0, context_.nullsAt(1));
+  ASSERT_EQ(0, context_.nullsAt(2));
 }
 
 TEST_F(RawSizeTestFixture, DictRowNullTopLevel) {
@@ -1725,6 +1769,11 @@ TEST_F(RawSizeTestFixture, DictRowNullTopLevel) {
   ASSERT_EQ(sizeof(int64_t) * (VECTOR_TEST_SIZE - 1), context_.sizeAt(0));
   ASSERT_EQ(9, context_.sizeAt(1));
   ASSERT_EQ(sizeof(int16_t) * (VECTOR_TEST_SIZE - 1), context_.sizeAt(2));
+
+  ASSERT_EQ(1, context_.nullCount);
+  for (size_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(0, context_.nullsAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, ThrowOnDefaultType) {
