@@ -81,7 +81,7 @@ void addLabels(
       const auto offset = row.nullsDescriptor().offset();
       NIMBLE_DASSERT(labelIndex < labels.size(), "Unexpected label index.");
       NIMBLE_DASSERT(offsetToLabel.size() > offset, "Unexpected offset.");
-      labels.push_back(labels[labelIndex] + "/");
+      labels.push_back(labels[labelIndex] + name + "/");
       labelIndex = labels.size() - 1;
       offsetToLabel[offset] = labelIndex;
       for (auto i = 0; i < row.childrenCount(); ++i) {
