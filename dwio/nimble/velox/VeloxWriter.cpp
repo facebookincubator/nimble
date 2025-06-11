@@ -36,6 +36,7 @@
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "dwio/nimble/velox/StatsGenerated.h"
+#include "dwio/nimble/velox/StreamLabels.h"
 #include "folly/ScopeGuard.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/dwio/common/ExecutorBarrier.h"
@@ -47,6 +48,11 @@ namespace detail {
 
 class WriterContext : public FieldWriterContext {
  public:
+  struct ColumnStats {
+    uint64_t logicalSize{0};
+    uint64_t nullCount{0};
+  };
+
   const VeloxWriterOptions options;
   std::unique_ptr<FlushPolicy> flushPolicy;
   velox::CpuWallTiming totalFlushTiming;
@@ -63,6 +69,8 @@ class WriterContext : public FieldWriterContext {
   uint64_t stripeSize{0};
   uint64_t rawSize{0};
   std::vector<uint64_t> rowsPerStripe;
+  std::unordered_map<offset_size, std::atomic<uint64_t>> streamPhysicalSize;
+  std::vector<ColumnStats> columnStats;
 
   WriterContext(
       velox::memory::MemoryPool& memoryPool,
@@ -516,10 +524,21 @@ bool VeloxWriter::write(const velox::VectorPtr& vector) {
     auto size = vector->size();
 
     // Calculate raw size.
-    auto rawSize = nimble::getRawSizeFromVector(
-        vector, velox::common::Ranges::of(0, size));
+    RawSizeContext context;
+    auto rawSize = nimble::getRawSizeFromRowVector(
+        vector, velox::common::Ranges::of(0, size), context, /*topLevel=*/true);
     DWIO_ENSURE_GE(rawSize, 0, "Invalid raw size");
     context_->rawSize += rawSize;
+    LOG(INFO) << "Raw size: " << context_->rawSize;
+    auto columnCount = context.columnCount();
+    if (context_->columnStats.empty()) {
+      context_->columnStats =
+          std::vector<detail::WriterContext::ColumnStats>(columnCount);
+    }
+    for (auto i = 0; i < columnCount; ++i) {
+      context_->columnStats[i].logicalSize += context.sizeAt(i);
+      context_->columnStats[i].nullCount += context.nullsAt(i);
+    }
 
     if (context_->options.writeExecutor) {
       velox::dwio::common::ExecutorBarrier barrier{
@@ -578,6 +597,38 @@ void VeloxWriter::close() {
             std::string(kMetadataSection),
             {reinterpret_cast<const char*>(builder.GetBufferPointer()),
              builder.GetSize()});
+      }
+
+      {
+        // Accumulate column physical size.
+        std::vector<uint64_t> columnPhysicalSize(
+            context_->columnStats.size(), 0);
+        nimble::StreamLabels streamLabels{nimble::SchemaReader::getSchema(
+            context_->schemaBuilder.getSchemaNodes())};
+        for (const auto& [offset, streamSize] : context_->streamPhysicalSize) {
+          if (offset == 0) {
+            continue;
+          }
+          std::vector<std::string> streamLabel;
+          folly::split(
+              '/',
+              streamLabels.streamLabel(offset),
+              streamLabel,
+              /*ignoreEmpty=*/true);
+          NIMBLE_DASSERT(!streamLabel.empty(), "Invalid stream label");
+          auto column = std::stoi(streamLabel[0]);
+          NIMBLE_DASSERT(
+              column < columnPhysicalSize.size(),
+              fmt::format(
+                  "Index {} is out of range for physical size vector of size {}",
+                  column,
+                  columnPhysicalSize.size()));
+          columnPhysicalSize[column] += streamSize;
+        }
+
+        for (auto& columnSize : columnPhysicalSize) {
+          LOG(INFO) << "Column physical size: " << columnSize;
+        }
       }
 
       {
@@ -691,14 +742,21 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       StreamData& streamData_;
     };
 
-    auto encode = [&](StreamData& streamData) {
+    LOG(INFO) << "Size:" << root_->rawSize();
+
+    auto encode = [&](StreamData& streamData,
+                      std::atomic<uint64_t>& streamSize) {
       const auto offset = streamData.descriptor().offset();
+      LOG(INFO) << "streamData null:" << streamData.hasNulls();
+      LOG(INFO) << "streamData:" << streamData.data().size() << "->"
+                << std::string(streamData.data());
       auto encoded = encodeStream(*context_, *encodingBuffer_, streamData);
       if (!encoded.empty()) {
         ChunkedStreamWriter chunkWriter{*encodingBuffer_};
         NIMBLE_DASSERT(offset < streams_.size(), "Stream offset out of range.");
         auto& stream = streams_[offset];
         for (auto& buffer : chunkWriter.encode(encoded)) {
+          streamSize += buffer.size();
           chunkSize += buffer.size();
           stream.content.push_back(std::move(buffer));
         }
@@ -739,29 +797,35 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       velox::dwio::common::ExecutorBarrier barrier{
           context_->options.encodingExecutor};
       for (auto& streamData : context_->streams()) {
+        auto& streamSize =
+            context_->streamPhysicalSize[streamData->descriptor().offset()];
         processStream(
             *streamData, [&](StreamData& innerStreamData, bool isNullStream) {
-              barrier.add([&innerStreamData, isNullStream, &encode]() {
-                if (isNullStream) {
-                  NullsAsDataStreamData nullsStreamData{innerStreamData};
-                  encode(nullsStreamData);
-                } else {
-                  encode(innerStreamData);
-                }
-              });
+              barrier.add(
+                  [&innerStreamData, isNullStream, &encode, &streamSize]() {
+                    if (isNullStream) {
+                      NullsAsDataStreamData nullsStreamData{innerStreamData};
+                      encode(nullsStreamData, streamSize);
+                    } else {
+                      encode(innerStreamData, streamSize);
+                    }
+                  });
             });
       }
       barrier.waitAll();
     } else {
       for (auto& streamData : context_->streams()) {
+        auto& streamSize =
+            context_->streamPhysicalSize[streamData->descriptor().offset()];
         processStream(
             *streamData,
-            [&encode](StreamData& innerStreamData, bool isNullStream) {
+            [&encode, &streamSize](
+                StreamData& innerStreamData, bool isNullStream) {
               if (isNullStream) {
                 NullsAsDataStreamData nullsStreamData{innerStreamData};
-                encode(nullsStreamData);
+                encode(nullsStreamData, streamSize);
               } else {
-                encode(innerStreamData);
+                encode(innerStreamData, streamSize);
               }
             });
       }
