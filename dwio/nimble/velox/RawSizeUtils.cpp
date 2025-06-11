@@ -190,7 +190,8 @@ uint64_t getRawSizeFromStringVector(
 uint64_t getRawSizeFromConstantComplexVector(
     const velox::VectorPtr& vector,
     const velox::common::Ranges& ranges,
-    RawSizeContext& context) {
+    RawSizeContext& context,
+    bool topLevelRow = false) {
   VELOX_CHECK_NOT_NULL(vector);
   VELOX_DCHECK(
       velox::VectorEncoding::Simple::CONSTANT == vector->encoding(),
@@ -199,7 +200,7 @@ uint64_t getRawSizeFromConstantComplexVector(
   const auto* constantVector =
       vector->as<velox::ConstantVector<velox::ComplexType>>();
   VELOX_CHECK_NOT_NULL(
-      vector,
+      constantVector,
       "Encoding mismatch on ConstantVector. Encoding: {}. TypeKind: {}.",
       vector->encoding(),
       vector->typeKind());
@@ -209,7 +210,20 @@ uint64_t getRawSizeFromConstantComplexVector(
   velox::common::Ranges childRanges;
   childRanges.add(index, index + 1);
 
-  uint64_t rawSize = getRawSizeFromVector(valueVector, childRanges, context);
+  uint64_t rawSize = 0;
+  if (topLevelRow) {
+    VELOX_CHECK_EQ(
+        velox::TypeKind::ROW,
+        valueVector->typeKind(),
+        "Value vector should be a RowVector");
+    rawSize = getRawSizeFromRowVector(
+        valueVector, childRanges, context, /*topLevel=*/true);
+    for (int idx = 0; idx < context.columnCount(); ++idx) {
+      context.setSizeAt(idx, context.sizeAt(idx) * ranges.size());
+    }
+  } else {
+    rawSize = getRawSizeFromVector(valueVector, childRanges, context);
+  }
 
   return rawSize * ranges.size();
 }
@@ -442,7 +456,8 @@ uint64_t getRawSizeFromMapVector(
 uint64_t getRawSizeFromRowVector(
     const velox::VectorPtr& vector,
     const velox::common::Ranges& ranges,
-    RawSizeContext& context) {
+    RawSizeContext& context,
+    const bool topLevel) {
   VELOX_CHECK_NOT_NULL(vector);
   const auto& encoding = vector->encoding();
   const velox::RowVector* rowVector;
@@ -477,7 +492,8 @@ uint64_t getRawSizeFromRowVector(
       break;
     }
     case velox::VectorEncoding::Simple::CONSTANT: {
-      return getRawSizeFromConstantComplexVector(vector, ranges, context);
+      return getRawSizeFromConstantComplexVector(
+          vector, ranges, context, topLevel);
     }
     case velox::VectorEncoding::Simple::DICTIONARY: {
       const auto* dictionaryRowVector =
@@ -528,8 +544,16 @@ uint64_t getRawSizeFromRowVector(
   if ((*childRangesPtr).size()) {
     const auto childrenSize = rowVector->childrenSize();
     for (size_t i = 0; i < childrenSize; ++i) {
-      rawSize +=
+      auto childRawSize =
           getRawSizeFromVector(rowVector->childAt(i), *childRangesPtr, context);
+      rawSize += childRawSize;
+      if (topLevel) {
+        context.appendSize(childRawSize);
+      }
+    }
+  } else if (topLevel) {
+    for (size_t i = 0; i < rowVector->childrenSize(); ++i) {
+      context.appendSize(0);
     }
   }
 
