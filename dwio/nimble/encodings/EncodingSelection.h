@@ -77,6 +77,7 @@ struct MetaInternalCompressionParameters {
   int16_t compressionLevel = 0;
   int16_t decompressionLevel = 0;
   bool useVariableBitWidthCompressor = true;
+  bool useManagedCompression = false;
 };
 
 union CompressionParameters {
@@ -85,8 +86,8 @@ union CompressionParameters {
 };
 
 struct CompressionInformation {
-  CompressionType compressionType;
-  CompressionParameters parameters;
+  CompressionType compressionType{};
+  CompressionParameters parameters{};
 };
 
 class CompressionPolicy {
