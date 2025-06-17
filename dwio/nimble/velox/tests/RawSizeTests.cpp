@@ -1375,6 +1375,7 @@ TEST_F(RawSizeTestFixture, ArrayMapNested) {
   ASSERT_EQ(expectedSize, rawSize);
 }
 
+// Start of RowVector tests
 TEST_F(RawSizeTestFixture, RowSameTypes) {
   auto childVector1 = vectorMaker_->flatVector<int64_t>({0, 0, 0, 1, 1, 1});
   auto childVector2 = vectorMaker_->flatVector<int64_t>({0, 1, 0, 1, 0, 1});

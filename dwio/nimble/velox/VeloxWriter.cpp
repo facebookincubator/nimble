@@ -903,4 +903,9 @@ VeloxWriter::RunStats VeloxWriter::getRunStats() const {
       .inputBufferReallocItemCount =
           context_->inputBufferGrowthStats.itemCount};
 }
+
+const std::unordered_map<offset_size, FieldWriterContext::ColumnStats>&
+VeloxWriter::getColumnStats() const {
+  return context_->columnStats;
+}
 } // namespace facebook::nimble
