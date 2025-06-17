@@ -642,4 +642,80 @@ uint64_t getRawSizeFromVector(
   return getRawSizeFromVector(vector, ranges, context);
 }
 
+void traverseSchemaStats(
+    const TypeBuilder& builder,
+    std::unordered_map<offset_size, FieldWriterContext::ColumnStats>&
+        columnStats,
+    std::optional<offset_size> parentOffset) {
+  auto updateStats = [&columnStats](auto sourceOffset, auto targetOffset) {
+    const auto& sourceStats = columnStats.at(sourceOffset);
+    auto& targetStats = columnStats.at(targetOffset);
+    targetStats.logicalSize += sourceStats.logicalSize;
+    targetStats.physicalSize += sourceStats.physicalSize;
+  };
+
+  std::optional<offset_size> offset = std::nullopt;
+  switch (builder.kind()) {
+    case Kind::Row: {
+      const auto& row = builder.asRow();
+      offset = row.nullsDescriptor().offset();
+      for (auto i = 0; i < row.childrenCount(); ++i) {
+        traverseSchemaStats(row.childAt(i), columnStats, offset);
+      }
+      break;
+    }
+    case Kind::Array: {
+      const auto& array = builder.asArray();
+      offset = array.lengthsDescriptor().offset();
+      traverseSchemaStats(array.elements(), columnStats, offset);
+      break;
+    }
+    case Kind::ArrayWithOffsets: {
+      const auto& arrayWithOffsets = builder.asArrayWithOffsets();
+      offset = arrayWithOffsets.lengthsDescriptor().offset();
+      updateStats(
+          arrayWithOffsets.offsetsDescriptor().offset(), offset.value());
+      traverseSchemaStats(arrayWithOffsets.elements(), columnStats, offset);
+      break;
+    }
+    case Kind::Map: {
+      const auto& map = builder.asMap();
+      offset = map.lengthsDescriptor().offset();
+      traverseSchemaStats(map.keys(), columnStats, offset);
+      traverseSchemaStats(map.values(), columnStats, offset);
+      break;
+    }
+    case Kind::FlatMap: {
+      const auto& flatMap = builder.asFlatMap();
+      offset = flatMap.nullsDescriptor().offset();
+      for (auto i = 0; i < flatMap.childrenCount(); ++i) {
+        traverseSchemaStats(flatMap.childAt(i), columnStats, offset);
+      }
+      break;
+    }
+    case Kind::SlidingWindowMap: {
+      const auto& slidingWindowMap = builder.asSlidingWindowMap();
+      offset = slidingWindowMap.lengthsDescriptor().offset();
+      updateStats(
+          slidingWindowMap.offsetsDescriptor().offset(), offset.value());
+      traverseSchemaStats(slidingWindowMap.keys(), columnStats, offset);
+      traverseSchemaStats(slidingWindowMap.values(), columnStats, offset);
+      break;
+    }
+    case Kind::Scalar: {
+      const auto& scalar = builder.asScalar();
+      offset = scalar.scalarDescriptor().offset();
+      break;
+    }
+    default:
+      NIMBLE_NOT_SUPPORTED(
+          fmt::format("Unsupported type: {}.", builder.kind()));
+  }
+
+  NIMBLE_DCHECK(offset.has_value(), "Offset should always be set.");
+  if (parentOffset.has_value()) {
+    updateStats(offset.value(), parentOffset.value());
+  }
+}
+
 } // namespace facebook::nimble

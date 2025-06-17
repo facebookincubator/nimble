@@ -15,7 +15,10 @@
  */
 #pragma once
 
+#include "dwio/nimble/velox/FieldWriter.h"
 #include "dwio/nimble/velox/RawSizeContext.h"
+#include "dwio/nimble/velox/SchemaBuilder.h"
+#include "dwio/nimble/velox/SchemaTypes.h"
 #include "velox/dwio/common/Range.h"
 #include "velox/vector/BaseVector.h"
 
@@ -37,4 +40,10 @@ uint64_t getRawSizeFromRowVector(
     const velox::common::Ranges& ranges,
     RawSizeContext& context,
     const bool topLevel = false);
+
+void traverseSchemaStats(
+    const TypeBuilder& builder,
+    std::unordered_map<offset_size, FieldWriterContext::ColumnStats>&
+        columnStats,
+    std::optional<offset_size> parentOffset = std::nullopt);
 } // namespace facebook::nimble

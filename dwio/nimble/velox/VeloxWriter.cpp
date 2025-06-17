@@ -15,14 +15,11 @@
  */
 #include "dwio/nimble/velox/VeloxWriter.h"
 
-#include <ios>
 #include <memory>
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
-#include "dwio/nimble/encodings/SentinelEncoding.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
@@ -514,13 +511,6 @@ bool VeloxWriter::write(const velox::VectorPtr& vector) {
   NIMBLE_CHECK(file_, "Writer is already closed");
   try {
     auto size = vector->size();
-
-    // Calculate raw size.
-    auto rawSize = nimble::getRawSizeFromVector(
-        vector, velox::common::Ranges::of(0, size));
-    DWIO_ENSURE_GE(rawSize, 0, "Invalid raw size");
-    context_->rawSize += rawSize;
-
     if (context_->options.writeExecutor) {
       velox::dwio::common::ExecutorBarrier barrier{
           context_->options.writeExecutor};
@@ -581,8 +571,18 @@ void VeloxWriter::close() {
       }
 
       {
+        nimble::traverseSchemaStats(
+            *context_->schemaBuilder.getRoot(), context_->columnStats);
+        auto rootStat = context_->columnStats[0];
+        uint64_t rawSize = rootStat.logicalSize;
+        LOG(INFO) << "Raw Size: " << rawSize;
+        // TODO: Take this out eventually.
+        LOG(INFO) << "Logical Size: " << rootStat.logicalSize;
+        LOG(INFO) << "Physical Size: " << rootStat.physicalSize;
+        LOG(INFO) << "Null Count: " << rootStat.nullCount;
+        LOG(INFO) << "Value Count: " << rootStat.valueCount;
         flatbuffers::FlatBufferBuilder builder;
-        builder.Finish(serialization::CreateStats(builder, context_->rawSize));
+        builder.Finish(serialization::CreateStats(builder, rawSize));
         writer_.writeOptionalSection(
             std::string(kStatsSection),
             {reinterpret_cast<const char*>(builder.GetBufferPointer()),
@@ -691,7 +691,7 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       StreamData& streamData_;
     };
 
-    auto encode = [&](StreamData& streamData) {
+    auto encode = [&](StreamData& streamData, uint64_t& streamSize) {
       const auto offset = streamData.descriptor().offset();
       auto encoded = encodeStream(*context_, *encodingBuffer_, streamData);
       if (!encoded.empty()) {
@@ -699,6 +699,7 @@ void VeloxWriter::writeChunk(bool lastChunk) {
         NIMBLE_DASSERT(offset < streams_.size(), "Stream offset out of range.");
         auto& stream = streams_[offset];
         for (auto& buffer : chunkWriter.encode(encoded)) {
+          streamSize += buffer.size();
           chunkSize += buffer.size();
           stream.content.push_back(std::move(buffer));
         }
@@ -739,29 +740,37 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       velox::dwio::common::ExecutorBarrier barrier{
           context_->options.encodingExecutor};
       for (auto& streamData : context_->streams()) {
+        auto& streamSize =
+            context_->columnStats[streamData->descriptor().offset()]
+                .physicalSize;
         processStream(
             *streamData, [&](StreamData& innerStreamData, bool isNullStream) {
-              barrier.add([&innerStreamData, isNullStream, &encode]() {
-                if (isNullStream) {
-                  NullsAsDataStreamData nullsStreamData{innerStreamData};
-                  encode(nullsStreamData);
-                } else {
-                  encode(innerStreamData);
-                }
-              });
+              barrier.add(
+                  [&innerStreamData, isNullStream, &encode, &streamSize]() {
+                    if (isNullStream) {
+                      NullsAsDataStreamData nullsStreamData{innerStreamData};
+                      encode(nullsStreamData, streamSize);
+                    } else {
+                      encode(innerStreamData, streamSize);
+                    }
+                  });
             });
       }
       barrier.waitAll();
     } else {
       for (auto& streamData : context_->streams()) {
+        auto& streamSize =
+            context_->columnStats[streamData->descriptor().offset()]
+                .physicalSize;
         processStream(
             *streamData,
-            [&encode](StreamData& innerStreamData, bool isNullStream) {
+            [&encode, &streamSize](
+                StreamData& innerStreamData, bool isNullStream) {
               if (isNullStream) {
                 NullsAsDataStreamData nullsStreamData{innerStreamData};
-                encode(nullsStreamData);
+                encode(nullsStreamData, streamSize);
               } else {
-                encode(innerStreamData);
+                encode(innerStreamData, streamSize);
               }
             });
       }
@@ -778,8 +787,9 @@ void VeloxWriter::writeChunk(bool lastChunk) {
   auto flushWallTimeMs =
       (context_->stripeFlushTiming.wallNanos - previousFlushWallTime) /
       1'000'000;
-  VLOG(1) << "writeChunk milliseconds: " << flushWallTimeMs
-          << ", chunk bytes: " << chunkSize;
+  // TODO: Remove this log eventually
+  LOG(INFO) << "writeChunk milliseconds: " << flushWallTimeMs
+            << ", chunk bytes: " << chunkSize;
 }
 
 uint32_t VeloxWriter::writeStripe() {
