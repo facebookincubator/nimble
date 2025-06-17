@@ -68,6 +68,9 @@ class VeloxWriter {
 
   RunStats getRunStats() const;
 
+  const std::unordered_map<offset_size, FieldWriterContext::ColumnStats>&
+  getColumnStats() const;
+
  private:
   std::shared_ptr<const velox::dwio::common::TypeWithId> schema_;
   std::unique_ptr<velox::WriteFile> file_;

@@ -282,7 +282,9 @@ class SimpleFieldWriter : public FieldWriter {
             context.schemaBuilder.createScalarTypeBuilder(
                 NimbleTypeTraits<K>::scalarKind)),
         valuesStream_{context.createNullableContentStreamData<TargetType>(
-            typeBuilder_->asScalar().scalarDescriptor())} {}
+            typeBuilder_->asScalar().scalarDescriptor())},
+        columnStats_{context.columnStats[valuesStream_.descriptor().offset()]} {
+  }
 
   void write(
       const velox::VectorPtr& vector,
@@ -291,6 +293,7 @@ class SimpleFieldWriter : public FieldWriter {
     auto size = ranges.size();
     auto& buffer = context_.stringBuffer();
     auto& data = valuesStream_.mutableData();
+    uint64_t nullCount = 0;
 
     if (auto flat = vector->asFlatVector<SourceType>()) {
       valuesStream_.ensureNullsCapacity(flat->mayHaveNulls(), size);
@@ -326,7 +329,7 @@ class SimpleFieldWriter : public FieldWriter {
       }
 
       if (!rangeCopied) {
-        iterateNonNullValues(
+        auto nonNullCount = iterateNonNullValues(
             ranges,
             valuesStream_.mutableNonNulls(),
             Flat<SourceType>{vector},
@@ -334,12 +337,15 @@ class SimpleFieldWriter : public FieldWriter {
               data.push_back(
                   C::convert(value, buffer, valuesStream_.extraMemory()));
             });
+        nullCount = size - nonNullCount;
       }
     } else {
       auto decodingContext = context_.getDecodingContext();
       auto& decoded = decodingContext.decode(vector, ranges);
+      // TODO: Test that null and value count are valid for both wrapped and
+      // unwrapped inputs. Value count shouldn't always be size in that case.
       valuesStream_.ensureNullsCapacity(decoded.mayHaveNulls(), size);
-      iterateNonNullValues(
+      auto nonNullCount = iterateNonNullValues(
           ranges,
           valuesStream_.mutableNonNulls(),
           Decoded<SourceType>{decoded},
@@ -347,7 +353,15 @@ class SimpleFieldWriter : public FieldWriter {
             data.push_back(
                 C::convert(value, buffer, valuesStream_.extraMemory()));
           });
+      nullCount = size - nonNullCount;
     }
+
+    columnStats_.logicalSize +=
+        (K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY)
+        ? valuesStream_.extraMemory()
+        : valuesStream_.data().size();
+    columnStats_.nullCount += nullCount;
+    columnStats_.valueCount += size;
   }
 
   void reset() override {
@@ -356,6 +370,7 @@ class SimpleFieldWriter : public FieldWriter {
 
  private:
   NullableContentStreamData<TargetType>& valuesStream_;
+  FieldWriterContext::ColumnStats& columnStats_;
 };
 
 class RowFieldWriter : public FieldWriter {
@@ -365,7 +380,8 @@ class RowFieldWriter : public FieldWriter {
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
       : FieldWriter{context, context.schemaBuilder.createRowTypeBuilder(type->size())},
         nullsStream_{context_.createNullsStreamData<bool>(
-            typeBuilder_->asRow().nullsDescriptor())} {
+            typeBuilder_->asRow().nullsDescriptor())},
+        columnStats_{context.columnStats[nullsStream_.descriptor().offset()]} {
     auto rowType =
         std::dynamic_pointer_cast<const velox::RowType>(type->type());
 
@@ -385,17 +401,19 @@ class RowFieldWriter : public FieldWriter {
     OrderedRanges childRanges;
     const OrderedRanges* childRangesPtr;
     const velox::RowVector* row = vector->as<velox::RowVector>();
+    uint64_t nullCount = 0;
 
     if (row) {
       NIMBLE_CHECK(fields_.size() == row->childrenSize(), "schema mismatch");
       nullsStream_.ensureNullsCapacity(vector->mayHaveNulls(), size);
       if (row->mayHaveNulls()) {
         childRangesPtr = &childRanges;
-        iterateNonNullIndices<true>(
+        auto nonNullCount = iterateNonNullIndices<true>(
             ranges,
             nullsStream_.mutableNonNulls(),
             Flat{vector},
             [&](auto offset) { childRanges.add(offset, 1); });
+        nullCount = size - nonNullCount;
       } else {
         childRangesPtr = &ranges;
       }
@@ -407,11 +425,12 @@ class RowFieldWriter : public FieldWriter {
       NIMBLE_CHECK(fields_.size() == row->childrenSize(), "schema mismatch");
       childRangesPtr = &childRanges;
       nullsStream_.ensureNullsCapacity(decoded.mayHaveNulls(), size);
-      iterateNonNullIndices<true>(
+      auto nonNullCount = iterateNonNullIndices<true>(
           ranges,
           nullsStream_.mutableNonNulls(),
           Decoded{decoded},
           [&](auto offset) { childRanges.add(offset, 1); });
+      nullCount = size - nonNullCount;
     }
 
     if (executor) {
@@ -427,6 +446,9 @@ class RowFieldWriter : public FieldWriter {
         fields_[i]->write(row->childAt(i), *childRangesPtr);
       }
     }
+
+    columnStats_.nullCount += nullCount;
+    columnStats_.valueCount += size;
   }
 
   void reset() override {
@@ -446,6 +468,7 @@ class RowFieldWriter : public FieldWriter {
  private:
   std::vector<std::unique_ptr<FieldWriter>> fields_;
   NullsStreamData& nullsStream_;
+  FieldWriterContext::ColumnStats& columnStats_;
 };
 
 class MultiValueFieldWriter : public FieldWriter {
@@ -456,7 +479,9 @@ class MultiValueFieldWriter : public FieldWriter {
       : FieldWriter{context, std::move(typeBuilder)},
         lengthsStream_{context.createNullableContentStreamData<uint32_t>(
             static_cast<LengthsTypeBuilder&>(*typeBuilder_)
-                .lengthsDescriptor())} {}
+                .lengthsDescriptor())},
+        columnStats_{
+            context.columnStats[lengthsStream_.descriptor().offset()]} {}
 
   void reset() override {
     lengthsStream_.reset();
@@ -505,7 +530,9 @@ class MultiValueFieldWriter : public FieldWriter {
     return casted;
   }
 
+  // TODO: Track null counts here?
   NullableContentStreamData<uint32_t>& lengthsStream_;
+  FieldWriterContext::ColumnStats& columnStats_;
 };
 
 class ArrayFieldWriter : public MultiValueFieldWriter {
@@ -605,6 +632,7 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
             typeBuilder_->asSlidingWindowMap().offsetsDescriptor())},
         lengthsStream_{context.createContentStreamData<uint32_t>(
             typeBuilder_->asSlidingWindowMap().lengthsDescriptor())},
+        columnStats_{context.columnStats[lengthsStream_.descriptor().offset()]},
         currentOffset_(0),
         cached_{false},
         cachedLength_{0} {
@@ -650,6 +678,7 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
   std::unique_ptr<FieldWriter> values_;
   NullableContentStreamData<uint32_t>& offsetsStream_;
   ContentStreamData<uint32_t>& lengthsStream_;
+  FieldWriterContext::ColumnStats& columnStats_;
   uint32_t currentOffset_; /* Global Offset for the data */
   bool cached_;
   velox::vector_size_t cachedLength_;
@@ -849,6 +878,7 @@ class FlatMapFieldWriter : public FieldWriter {
                 NimbleTypeTraits<K>::scalarKind)),
         nullsStream_{context_.createNullsStreamData<bool>(
             typeBuilder_->asFlatMap().nullsDescriptor())},
+        columnStats_{context_.columnStats[nullsStream_.descriptor().offset()]},
         valueType_{type->childAt(1)},
         nodeId_{type->id()} {}
 
@@ -1109,6 +1139,7 @@ class FlatMapFieldWriter : public FieldWriter {
   }
 
   NullsStreamData& nullsStream_;
+  FieldWriterContext::ColumnStats& columnStats_;
   // This map store the FlatMapValue fields used in current flush unit.
   folly::F14FastMap<KeyType, FlatMapValueFieldWriter*> currentValueFields_;
 
@@ -1174,6 +1205,8 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
             typeBuilder_->asArrayWithOffsets().offsetsDescriptor())},
         lengthsStream_{context.createContentStreamData<uint32_t>(
             typeBuilder_->asArrayWithOffsets().lengthsDescriptor())},
+        columnStats_{
+            context_.columnStats[lengthsStream_.descriptor().offset()]},
         cached_(false),
         cachedValue_(nullptr),
         cachedSize_(0) {
@@ -1227,6 +1260,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       offsetsStream_; /** offsets for each data after dedup */
   ContentStreamData<uint32_t>&
       lengthsStream_; /** lengths of the each deduped data */
+  FieldWriterContext::ColumnStats& columnStats_;
   OffsetType nextOffset_{0}; /** next available offset for dedup storing */
 
   bool cached_;

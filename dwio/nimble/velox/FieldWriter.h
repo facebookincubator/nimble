@@ -112,6 +112,14 @@ class MemoryPoolHolder {
 };
 
 struct FieldWriterContext {
+  struct ColumnStats {
+    uint64_t logicalSize{0};
+    uint64_t physicalSize{0};
+    uint64_t nullCount{0};
+    uint64_t valueCount{0};
+    std::optional<uint64_t> dedupedLogicalSize;
+  };
+
   explicit FieldWriterContext(
       velox::memory::MemoryPool& memoryPool,
       std::unique_ptr<velox::memory::MemoryReclaimer> reclaimer = nullptr,
@@ -138,6 +146,8 @@ struct FieldWriterContext {
 
   std::unique_ptr<InputBufferGrowthPolicy> inputBufferGrowthPolicy;
   InputBufferGrowthStats inputBufferGrowthStats;
+
+  std::unordered_map<offset_size, ColumnStats> columnStats;
 
   std::function<void(const TypeBuilder&, std::string_view, const TypeBuilder&)>
       flatmapFieldAddedEventHandler;

@@ -56,6 +56,7 @@ uint64_t getRawSizeFromFixedWidthVector(
         }
       }
 
+      context.nullCount = nullCount;
       return ((ranges.size() - nullCount) * sizeof(T)) +
           (nullCount * NULL_SIZE);
     }
@@ -67,6 +68,7 @@ uint64_t getRawSizeFromFixedWidthVector(
           encoding,
           vector->typeKind());
 
+      context.nullCount = constVector->mayHaveNulls() ? ranges.size() : 0;
       return constVector->mayHaveNulls() ? ranges.size() * NULL_SIZE
                                          : ranges.size() * sizeof(T);
     }
@@ -92,6 +94,7 @@ uint64_t getRawSizeFromFixedWidthVector(
         }
       }
 
+      context.nullCount = nullCount;
       return ((ranges.size() - nullCount) * sizeof(T)) +
           (nullCount * NULL_SIZE);
     }
@@ -132,6 +135,7 @@ uint64_t getRawSizeFromStringVector(
         }
       }
 
+      context.nullCount = nullCount;
       return rawSize + (nullCount * NULL_SIZE);
     }
     case velox::VectorEncoding::Simple::CONSTANT: {
@@ -143,6 +147,7 @@ uint64_t getRawSizeFromStringVector(
           encoding,
           vector->typeKind());
 
+      context.nullCount = constVector->mayHaveNulls() ? ranges.size() : 0;
       return constVector->mayHaveNulls()
           ? ranges.size() * NULL_SIZE
           : ranges.size() * constVector->value().size();
@@ -179,6 +184,7 @@ uint64_t getRawSizeFromStringVector(
         }
       }
 
+      context.nullCount = nullCount;
       return rawSize + (nullCount * NULL_SIZE);
     }
     default: {
@@ -190,7 +196,8 @@ uint64_t getRawSizeFromStringVector(
 uint64_t getRawSizeFromConstantComplexVector(
     const velox::VectorPtr& vector,
     const velox::common::Ranges& ranges,
-    RawSizeContext& context) {
+    RawSizeContext& context,
+    bool topLevelRow = false) {
   VELOX_CHECK_NOT_NULL(vector);
   VELOX_DCHECK(
       velox::VectorEncoding::Simple::CONSTANT == vector->encoding(),
@@ -199,7 +206,7 @@ uint64_t getRawSizeFromConstantComplexVector(
   const auto* constantVector =
       vector->as<velox::ConstantVector<velox::ComplexType>>();
   VELOX_CHECK_NOT_NULL(
-      vector,
+      constantVector,
       "Encoding mismatch on ConstantVector. Encoding: {}. TypeKind: {}.",
       vector->encoding(),
       vector->typeKind());
@@ -209,8 +216,22 @@ uint64_t getRawSizeFromConstantComplexVector(
   velox::common::Ranges childRanges;
   childRanges.add(index, index + 1);
 
-  uint64_t rawSize = getRawSizeFromVector(valueVector, childRanges, context);
-
+  uint64_t rawSize = 0;
+  if (topLevelRow) {
+    VELOX_CHECK_EQ(
+        velox::TypeKind::ROW,
+        valueVector->typeKind(),
+        "Value vector should be a RowVector");
+    rawSize = getRawSizeFromRowVector(
+        valueVector, childRanges, context, /*topLevel=*/true);
+    for (int idx = 0; idx < context.columnCount(); ++idx) {
+      context.setSizeAt(idx, context.sizeAt(idx) * ranges.size());
+      context.setNullsAt(idx, context.nullsAt(idx) * ranges.size());
+    }
+  } else {
+    rawSize = getRawSizeFromVector(valueVector, childRanges, context);
+  }
+  context.nullCount = constantVector->mayHaveNulls() ? ranges.size() : 0;
   return rawSize * ranges.size();
 }
 
@@ -319,6 +340,7 @@ uint64_t getRawSizeFromArrayVector(
         getRawSizeFromVector(arrayVector->elements(), childRanges, context);
   }
 
+  context.nullCount = nullCount;
   if (nullCount) {
     rawSize += nullCount * NULL_SIZE;
   }
@@ -432,6 +454,7 @@ uint64_t getRawSizeFromMapVector(
         getRawSizeFromVector(mapVector->mapValues(), childRanges, context);
   }
 
+  context.nullCount = nullCount;
   if (nullCount) {
     rawSize += nullCount * NULL_SIZE;
   }
@@ -442,7 +465,8 @@ uint64_t getRawSizeFromMapVector(
 uint64_t getRawSizeFromRowVector(
     const velox::VectorPtr& vector,
     const velox::common::Ranges& ranges,
-    RawSizeContext& context) {
+    RawSizeContext& context,
+    const bool topLevel) {
   VELOX_CHECK_NOT_NULL(vector);
   const auto& encoding = vector->encoding();
   const velox::RowVector* rowVector;
@@ -477,7 +501,8 @@ uint64_t getRawSizeFromRowVector(
       break;
     }
     case velox::VectorEncoding::Simple::CONSTANT: {
-      return getRawSizeFromConstantComplexVector(vector, ranges, context);
+      return getRawSizeFromConstantComplexVector(
+          vector, ranges, context, topLevel);
     }
     case velox::VectorEncoding::Simple::DICTIONARY: {
       const auto* dictionaryRowVector =
@@ -528,11 +553,22 @@ uint64_t getRawSizeFromRowVector(
   if ((*childRangesPtr).size()) {
     const auto childrenSize = rowVector->childrenSize();
     for (size_t i = 0; i < childrenSize; ++i) {
-      rawSize +=
+      auto childRawSize =
           getRawSizeFromVector(rowVector->childAt(i), *childRangesPtr, context);
+      rawSize += childRawSize;
+      if (topLevel) {
+        context.appendSize(childRawSize);
+        context.appendNullCount(context.nullCount);
+      }
+    }
+  } else if (topLevel) {
+    for (size_t i = 0; i < rowVector->childrenSize(); ++i) {
+      context.appendSize(0);
+      context.appendNullCount(0);
     }
   }
 
+  context.nullCount = nullCount;
   if (nullCount) {
     rawSize += nullCount * NULL_SIZE;
   }
@@ -604,6 +640,82 @@ uint64_t getRawSizeFromVector(
     const velox::common::Ranges& ranges) {
   RawSizeContext context;
   return getRawSizeFromVector(vector, ranges, context);
+}
+
+void traverseSchemaStats(
+    const TypeBuilder& builder,
+    std::unordered_map<offset_size, FieldWriterContext::ColumnStats>&
+        columnStats,
+    std::optional<offset_size> parentOffset) {
+  auto updateStats = [&columnStats](auto sourceOffset, auto targetOffset) {
+    const auto& sourceStats = columnStats.at(sourceOffset);
+    auto& targetStats = columnStats.at(targetOffset);
+    targetStats.logicalSize += sourceStats.logicalSize;
+    targetStats.physicalSize += sourceStats.physicalSize;
+  };
+
+  std::optional<offset_size> offset = std::nullopt;
+  switch (builder.kind()) {
+    case Kind::Row: {
+      const auto& row = builder.asRow();
+      offset = row.nullsDescriptor().offset();
+      for (auto i = 0; i < row.childrenCount(); ++i) {
+        traverseSchemaStats(row.childAt(i), columnStats, offset);
+      }
+      break;
+    }
+    case Kind::Array: {
+      const auto& array = builder.asArray();
+      offset = array.lengthsDescriptor().offset();
+      traverseSchemaStats(array.elements(), columnStats, offset);
+      break;
+    }
+    case Kind::ArrayWithOffsets: {
+      const auto& arrayWithOffsets = builder.asArrayWithOffsets();
+      offset = arrayWithOffsets.lengthsDescriptor().offset();
+      updateStats(
+          arrayWithOffsets.offsetsDescriptor().offset(), offset.value());
+      traverseSchemaStats(arrayWithOffsets.elements(), columnStats, offset);
+      break;
+    }
+    case Kind::Map: {
+      const auto& map = builder.asMap();
+      offset = map.lengthsDescriptor().offset();
+      traverseSchemaStats(map.keys(), columnStats, offset);
+      traverseSchemaStats(map.values(), columnStats, offset);
+      break;
+    }
+    case Kind::FlatMap: {
+      const auto& flatMap = builder.asFlatMap();
+      offset = flatMap.nullsDescriptor().offset();
+      for (auto i = 0; i < flatMap.childrenCount(); ++i) {
+        traverseSchemaStats(flatMap.childAt(i), columnStats, offset);
+      }
+      break;
+    }
+    case Kind::SlidingWindowMap: {
+      const auto& slidingWindowMap = builder.asSlidingWindowMap();
+      offset = slidingWindowMap.lengthsDescriptor().offset();
+      updateStats(
+          slidingWindowMap.offsetsDescriptor().offset(), offset.value());
+      traverseSchemaStats(slidingWindowMap.keys(), columnStats, offset);
+      traverseSchemaStats(slidingWindowMap.values(), columnStats, offset);
+      break;
+    }
+    case Kind::Scalar: {
+      const auto& scalar = builder.asScalar();
+      offset = scalar.scalarDescriptor().offset();
+      break;
+    }
+    default:
+      NIMBLE_NOT_SUPPORTED(
+          fmt::format("Unsupported type: {}.", builder.kind()));
+  }
+
+  NIMBLE_DCHECK(offset.has_value(), "Offset should always be set.");
+  if (parentOffset.has_value()) {
+    updateStats(offset.value(), parentOffset.value());
+  }
 }
 
 } // namespace facebook::nimble

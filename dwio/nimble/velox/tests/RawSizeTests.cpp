@@ -92,6 +92,7 @@ class RawSizeBaseTestFixture : public ::testing::Test {
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   velox::common::Ranges ranges_;
+  nimble::RawSizeContext context_;
   std::unique_ptr<velox::test::VectorMaker> vectorMaker_;
 };
 
@@ -1374,6 +1375,7 @@ TEST_F(RawSizeTestFixture, ArrayMapNested) {
   ASSERT_EQ(expectedSize, rawSize);
 }
 
+// Start of RowVector tests
 TEST_F(RawSizeTestFixture, RowSameTypes) {
   auto childVector1 = vectorMaker_->flatVector<int64_t>({0, 0, 0, 1, 1, 1});
   auto childVector2 = vectorMaker_->flatVector<int64_t>({0, 1, 0, 1, 0, 1});
@@ -1381,9 +1383,16 @@ TEST_F(RawSizeTestFixture, RowSameTypes) {
   auto rowVector = vectorMaker_->rowVector(
       {"1", "2", "3"}, {childVector1, childVector2, childVector3});
   this->ranges_.add(0, rowVector->size());
-  auto rawSize = nimble::getRawSizeFromVector(rowVector, this->ranges_);
+  auto rawSize = nimble::getRawSizeFromRowVector(
+      rowVector, this->ranges_, context_, /*topLevel=*/true);
 
   ASSERT_EQ(sizeof(int64_t) * 18, rawSize);
+  size_t expectedChildCount = 3;
+  ASSERT_EQ(expectedChildCount, context_.columnCount());
+  for (size_t i = 0; i < expectedChildCount; ++i) {
+    ASSERT_EQ(sizeof(int64_t) * 6, context_.sizeAt(i));
+    ASSERT_EQ(0, context_.nullsAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, RowDifferentTypes) {
@@ -1393,11 +1402,20 @@ TEST_F(RawSizeTestFixture, RowDifferentTypes) {
   auto rowVector = vectorMaker_->rowVector(
       {"1", "2", "3"}, {childVector1, childVector2, childVector3});
   this->ranges_.add(0, rowVector->size());
-  auto rawSize = nimble::getRawSizeFromVector(rowVector, this->ranges_);
+  auto rawSize = nimble::getRawSizeFromRowVector(
+      rowVector, this->ranges_, context_, /*topLevel=*/true);
+
   constexpr auto expectedRawSize =
       sizeof(int64_t) * 6 + sizeof(bool) * 6 + sizeof(int16_t) * 6;
-
   ASSERT_EQ(expectedRawSize, rawSize);
+  ASSERT_EQ(3, context_.columnCount());
+  ASSERT_EQ(sizeof(int64_t) * 6, context_.sizeAt(0));
+  ASSERT_EQ(sizeof(bool) * 6, context_.sizeAt(1));
+  ASSERT_EQ(sizeof(int16_t) * 6, context_.sizeAt(2));
+
+  for (size_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(0, context_.nullsAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, RowDifferentTypes2) {
@@ -1408,11 +1426,20 @@ TEST_F(RawSizeTestFixture, RowDifferentTypes2) {
   auto rowVector = vectorMaker_->rowVector(
       {"1", "2", "3"}, {childVector1, childVector2, childVector3});
   this->ranges_.add(0, rowVector->size());
-  auto rawSize = nimble::getRawSizeFromVector(rowVector, this->ranges_);
+  auto rawSize = nimble::getRawSizeFromRowVector(
+      rowVector, this->ranges_, context_, /*topLevel=*/true);
+
   constexpr auto expectedRawSize =
       sizeof(int64_t) * 6 + sizeof(int16_t) * 6 + 21;
-
   ASSERT_EQ(expectedRawSize, rawSize);
+  ASSERT_EQ(3, context_.columnCount());
+  ASSERT_EQ(sizeof(int64_t) * 6, context_.sizeAt(0));
+  ASSERT_EQ(21, context_.sizeAt(1));
+  ASSERT_EQ(sizeof(int16_t) * 6, context_.sizeAt(2));
+
+  for (size_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(0, context_.nullsAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, RowNulls) {
@@ -1432,11 +1459,48 @@ TEST_F(RawSizeTestFixture, RowNulls) {
       6,
       children);
   this->ranges_.add(0, rowVector->size());
-  auto rawSize = nimble::getRawSizeFromVector(rowVector, this->ranges_);
+  auto rawSize = nimble::getRawSizeFromRowVector(
+      rowVector, this->ranges_, context_, /*topLevel=*/true);
+
   constexpr auto expectedRawSize = sizeof(int64_t) * 5 + sizeof(bool) * 5 +
       sizeof(int16_t) * 5 + nimble::NULL_SIZE * 1;
-
   ASSERT_EQ(expectedRawSize, rawSize);
+  ASSERT_EQ(3, context_.columnCount());
+  ASSERT_EQ(sizeof(int64_t) * 5, context_.sizeAt(0));
+  ASSERT_EQ(sizeof(bool) * 5, context_.sizeAt(1));
+  ASSERT_EQ(sizeof(int16_t) * 5, context_.sizeAt(2));
+
+  ASSERT_EQ(1, context_.nullCount);
+  for (size_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(0, context_.nullsAt(i));
+  }
+}
+
+TEST_F(RawSizeTestFixture, RowAllNulls) {
+  constexpr velox::vector_size_t VECTOR_TEST_SIZE = 6;
+  auto childVector1 = vectorMaker_->flatVector<int64_t>({0, 0, 0, 1, 1, 1});
+  auto childVector2 = vectorMaker_->flatVector<bool>({0, 1, 0, 1, 0, 1});
+  auto childVector3 = vectorMaker_->flatVector<int16_t>({0, 1, 0, 1, 0, 1});
+  velox::BufferPtr nulls = velox::AlignedBuffer::allocate<bool>(
+      VECTOR_TEST_SIZE, this->pool_.get(), velox::bits::kNull);
+  const std::vector<velox::VectorPtr>& children = {
+      childVector1, childVector2, childVector3};
+  auto rowVector = std::make_shared<velox::RowVector>(
+      pool_.get(),
+      velox::ROW({velox::BIGINT(), velox::BOOLEAN(), velox::SMALLINT()}),
+      nulls,
+      VECTOR_TEST_SIZE,
+      children);
+  this->ranges_.add(0, rowVector->size());
+  auto rawSize = nimble::getRawSizeFromRowVector(
+      rowVector, this->ranges_, context_, /*topLevel=*/true);
+
+  constexpr auto expectedRawSize = nimble::NULL_SIZE * VECTOR_TEST_SIZE;
+  ASSERT_EQ(expectedRawSize, rawSize);
+  ASSERT_EQ(3, context_.columnCount());
+  for (size_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(0, context_.sizeAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, RowNestedNull) {
@@ -1449,11 +1513,21 @@ TEST_F(RawSizeTestFixture, RowNestedNull) {
   auto rowVector = vectorMaker_->rowVector(
       {"1", "2", "3"}, {childVector1, childVector2, childVector3});
   this->ranges_.add(0, rowVector->size());
-  auto rawSize = nimble::getRawSizeFromVector(rowVector, this->ranges_);
+  auto rawSize = nimble::getRawSizeFromRowVector(
+      rowVector, this->ranges_, context_, /*topLevel=*/true);
+
   constexpr auto expectedRawSize = sizeof(int64_t) * 5 + (1 + 2 + 3 + 4 + 5) +
       sizeof(int16_t) * 5 + nimble::NULL_SIZE * 3;
-
   ASSERT_EQ(expectedRawSize, rawSize);
+  ASSERT_EQ(3, context_.columnCount());
+  ASSERT_EQ(sizeof(int64_t) * 5 + nimble::NULL_SIZE, context_.sizeAt(0));
+  ASSERT_EQ(15 + nimble::NULL_SIZE, context_.sizeAt(1));
+  ASSERT_EQ(sizeof(int16_t) * 5 + nimble::NULL_SIZE, context_.sizeAt(2));
+
+  ASSERT_EQ(0, context_.nullCount);
+  for (size_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(1, context_.nullsAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, RowDictionaryChildren) {
@@ -1505,10 +1579,19 @@ TEST_F(RawSizeTestFixture, RowDictionaryChildren) {
       vectorMaker_->rowVector({"1", "2"}, {dictArrayVector, dictMapVector});
 
   this->ranges_.add(0, rowVector->size());
-  auto rawSize = nimble::getRawSizeFromVector(rowVector, this->ranges_);
+  auto rawSize = nimble::getRawSizeFromRowVector(
+      rowVector, this->ranges_, context_, /*topLevel=*/true);
   const uint64_t expectedSize = expectedArrayRawSize + expectedMapRawSize;
 
   ASSERT_EQ(expectedSize, rawSize);
+  ASSERT_EQ(2, context_.columnCount());
+  ASSERT_EQ(expectedArrayRawSize, context_.sizeAt(0));
+  ASSERT_EQ(expectedMapRawSize, context_.sizeAt(1));
+
+  ASSERT_EQ(0, context_.nullCount);
+  for (size_t i = 0; i < 2; ++i) {
+    ASSERT_EQ(0, context_.nullsAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, ConstRow) {
@@ -1518,12 +1601,25 @@ TEST_F(RawSizeTestFixture, ConstRow) {
   auto childVector3 = vectorMaker_->flatVector<int16_t>({0, 1, 0, 1, 0, 1});
   auto rowVector = vectorMaker_->rowVector(
       {"1", "2", "3"}, {childVector1, childVector2, childVector3});
-  auto constVector = velox::BaseVector::wrapInConstant(10, 5, rowVector);
-  this->ranges_.add(0, constVector->size());
-  auto rawSize = nimble::getRawSizeFromVector(constVector, this->ranges_);
-  constexpr auto expectedRawSize = (sizeof(int64_t) + 6 + sizeof(int16_t)) * 10;
+  const velox::vector_size_t CONST_VECTOR_SIZE = 10;
+  auto constVector =
+      velox::BaseVector::wrapInConstant(CONST_VECTOR_SIZE, 5, rowVector);
+  this->ranges_.add(0, CONST_VECTOR_SIZE);
+  auto rawSize = nimble::getRawSizeFromRowVector(
+      constVector, this->ranges_, context_, /*topLevel=*/true);
+  constexpr auto expectedRawSize =
+      (sizeof(int64_t) + 6 + sizeof(int16_t)) * CONST_VECTOR_SIZE;
 
   ASSERT_EQ(expectedRawSize, rawSize);
+  ASSERT_EQ(3, context_.columnCount());
+  ASSERT_EQ(sizeof(int64_t) * CONST_VECTOR_SIZE, context_.sizeAt(0));
+  ASSERT_EQ(6 * CONST_VECTOR_SIZE, context_.sizeAt(1));
+  ASSERT_EQ(sizeof(int16_t) * CONST_VECTOR_SIZE, context_.sizeAt(2));
+
+  ASSERT_EQ(0, context_.nullCount);
+  for (size_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(0, context_.nullsAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, ConstRowNestedNull) {
@@ -1535,13 +1631,25 @@ TEST_F(RawSizeTestFixture, ConstRowNestedNull) {
       vectorMaker_->flatVectorNullable<int16_t>({0, 1, 0, 1, 0, std::nullopt});
   auto rowVector = vectorMaker_->rowVector(
       {"1", "2", "3"}, {childVector1, childVector2, childVector3});
-  auto constVector = velox::BaseVector::wrapInConstant(10, 5, rowVector);
+  const velox::vector_size_t CONST_VECTOR_SIZE = 10;
+  auto constVector =
+      velox::BaseVector::wrapInConstant(CONST_VECTOR_SIZE, 5, rowVector);
   this->ranges_.add(0, constVector->size());
-  auto rawSize = nimble::getRawSizeFromVector(constVector, this->ranges_);
+  auto rawSize = nimble::getRawSizeFromRowVector(
+      constVector, this->ranges_, context_, /*topLevel=*/true);
   constexpr auto expectedRawSize =
-      (sizeof(int64_t) + nimble::NULL_SIZE * 2) * 10;
+      (sizeof(int64_t) + nimble::NULL_SIZE * 2) * CONST_VECTOR_SIZE;
 
   ASSERT_EQ(expectedRawSize, rawSize);
+  ASSERT_EQ(3, context_.columnCount());
+  ASSERT_EQ(sizeof(int64_t) * CONST_VECTOR_SIZE, context_.sizeAt(0));
+  ASSERT_EQ(nimble::NULL_SIZE * CONST_VECTOR_SIZE, context_.sizeAt(1));
+  ASSERT_EQ(nimble::NULL_SIZE * CONST_VECTOR_SIZE, context_.sizeAt(2));
+
+  ASSERT_EQ(0, context_.nullCount);
+  ASSERT_EQ(0, context_.nullsAt(0));
+  ASSERT_EQ(CONST_VECTOR_SIZE, context_.nullsAt(1));
+  ASSERT_EQ(CONST_VECTOR_SIZE, context_.nullsAt(2));
 }
 
 TEST_F(RawSizeTestFixture, DictRow) {
@@ -1567,11 +1675,21 @@ TEST_F(RawSizeTestFixture, DictRow) {
   auto dictVector = velox::BaseVector::wrapInDictionary(
       velox::BufferPtr(nullptr), indices, VECTOR_TEST_SIZE, rowVector);
   this->ranges_.add(0, dictVector->size());
-  auto rawSize = nimble::getRawSizeFromVector(dictVector, this->ranges_);
+  auto rawSize = nimble::getRawSizeFromRowVector(
+      dictVector, this->ranges_, context_, /*topLevel=*/true);
   constexpr auto expectedRawSize =
       sizeof(int64_t) * 5 + sizeof(int16_t) * 5 + 11;
 
   ASSERT_EQ(expectedRawSize, rawSize);
+  ASSERT_EQ(3, context_.columnCount());
+  ASSERT_EQ(sizeof(int64_t) * VECTOR_TEST_SIZE, context_.sizeAt(0));
+  ASSERT_EQ(11, context_.sizeAt(1));
+  ASSERT_EQ(sizeof(int16_t) * VECTOR_TEST_SIZE, context_.sizeAt(2));
+
+  ASSERT_EQ(0, context_.nullCount);
+  for (size_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(0, context_.nullsAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, DictRowNull) {
@@ -1598,11 +1716,21 @@ TEST_F(RawSizeTestFixture, DictRowNull) {
   auto dictVector = velox::BaseVector::wrapInDictionary(
       velox::BufferPtr(nullptr), indices, VECTOR_TEST_SIZE, rowVector);
   this->ranges_.add(0, dictVector->size());
-  auto rawSize = nimble::getRawSizeFromVector(dictVector, this->ranges_);
+  auto rawSize = nimble::getRawSizeFromRowVector(
+      dictVector, this->ranges_, context_, /*topLevel=*/true);
   constexpr auto expectedRawSize =
       sizeof(int64_t) * 3 + sizeof(int16_t) * 5 + 11 + nimble::NULL_SIZE * 2;
 
   ASSERT_EQ(expectedRawSize, rawSize);
+  ASSERT_EQ(3, context_.columnCount());
+  ASSERT_EQ(nimble::NULL_SIZE * 2 + sizeof(int64_t) * 3, context_.sizeAt(0));
+  ASSERT_EQ(11, context_.sizeAt(1));
+  ASSERT_EQ(sizeof(int16_t) * VECTOR_TEST_SIZE, context_.sizeAt(2));
+
+  ASSERT_EQ(0, context_.nullCount);
+  ASSERT_EQ(2, context_.nullsAt(0));
+  ASSERT_EQ(0, context_.nullsAt(1));
+  ASSERT_EQ(0, context_.nullsAt(2));
 }
 
 TEST_F(RawSizeTestFixture, DictRowNullTopLevel) {
@@ -1633,11 +1761,20 @@ TEST_F(RawSizeTestFixture, DictRowNullTopLevel) {
   auto dictVector = velox::BaseVector::wrapInDictionary(
       nulls, indices, VECTOR_TEST_SIZE, rowVector);
   this->ranges_.add(0, dictVector->size());
-  auto rawSize = nimble::getRawSizeFromVector(dictVector, this->ranges_);
+  auto rawSize = nimble::getRawSizeFromRowVector(
+      dictVector, this->ranges_, context_, /*topLevel=*/true);
   constexpr auto expectedRawSize =
       sizeof(int64_t) * 4 + sizeof(int16_t) * 4 + 9 + nimble::NULL_SIZE * 1;
 
   ASSERT_EQ(expectedRawSize, rawSize);
+  ASSERT_EQ(sizeof(int64_t) * (VECTOR_TEST_SIZE - 1), context_.sizeAt(0));
+  ASSERT_EQ(9, context_.sizeAt(1));
+  ASSERT_EQ(sizeof(int16_t) * (VECTOR_TEST_SIZE - 1), context_.sizeAt(2));
+
+  ASSERT_EQ(1, context_.nullCount);
+  for (size_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(0, context_.nullsAt(i));
+  }
 }
 
 TEST_F(RawSizeTestFixture, ThrowOnDefaultType) {
@@ -1671,11 +1808,9 @@ TEST_F(RawSizeTestFixture, ThrowOnDefaultEncodingVariableWidth) {
 }
 
 TEST_F(RawSizeTestFixture, LocalDecodedVectorMoveConstructor) {
-  facebook::nimble::RawSizeContext context;
-
   auto localDecodedVector1 =
       facebook::nimble::DecodedVectorManager::LocalDecodedVector(
-          context.getDecodedVectorManager());
+          context_.getDecodedVectorManager());
 
   // Constuct LocalDecodedVector by LocalDecodedVector ctr
   auto localDecodedVector2 = std::move(localDecodedVector1);

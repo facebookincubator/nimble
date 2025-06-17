@@ -1910,6 +1910,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsWithChunksMinSizeZero) {
       /* flatmapColumns */ {"c1"});
 }
 
+// For initial testing...
 TEST_F(VeloxWriterTests, RawSizeWritten) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
