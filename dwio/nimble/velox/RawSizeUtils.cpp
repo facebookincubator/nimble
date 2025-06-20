@@ -56,6 +56,7 @@ uint64_t getRawSizeFromFixedWidthVector(
         }
       }
 
+      context.nullCount = nullCount;
       return ((ranges.size() - nullCount) * sizeof(T)) +
           (nullCount * NULL_SIZE);
     }
@@ -67,6 +68,7 @@ uint64_t getRawSizeFromFixedWidthVector(
           encoding,
           vector->typeKind());
 
+      context.nullCount = constVector->mayHaveNulls() ? ranges.size() : 0;
       return constVector->mayHaveNulls() ? ranges.size() * NULL_SIZE
                                          : ranges.size() * sizeof(T);
     }
@@ -92,6 +94,7 @@ uint64_t getRawSizeFromFixedWidthVector(
         }
       }
 
+      context.nullCount = nullCount;
       return ((ranges.size() - nullCount) * sizeof(T)) +
           (nullCount * NULL_SIZE);
     }
@@ -132,6 +135,7 @@ uint64_t getRawSizeFromStringVector(
         }
       }
 
+      context.nullCount = nullCount;
       return rawSize + (nullCount * NULL_SIZE);
     }
     case velox::VectorEncoding::Simple::CONSTANT: {
@@ -143,6 +147,7 @@ uint64_t getRawSizeFromStringVector(
           encoding,
           vector->typeKind());
 
+      context.nullCount = constVector->mayHaveNulls() ? ranges.size() : 0;
       return constVector->mayHaveNulls()
           ? ranges.size() * NULL_SIZE
           : ranges.size() * constVector->value().size();
@@ -179,6 +184,7 @@ uint64_t getRawSizeFromStringVector(
         }
       }
 
+      context.nullCount = nullCount;
       return rawSize + (nullCount * NULL_SIZE);
     }
     default: {
@@ -220,11 +226,12 @@ uint64_t getRawSizeFromConstantComplexVector(
         valueVector, childRanges, context, /*topLevel=*/true);
     for (int idx = 0; idx < context.columnCount(); ++idx) {
       context.setSizeAt(idx, context.sizeAt(idx) * ranges.size());
+      context.setNullsAt(idx, context.nullsAt(idx) * ranges.size());
     }
   } else {
     rawSize = getRawSizeFromVector(valueVector, childRanges, context);
   }
-
+  context.nullCount = constantVector->mayHaveNulls() ? ranges.size() : 0;
   return rawSize * ranges.size();
 }
 
@@ -333,6 +340,7 @@ uint64_t getRawSizeFromArrayVector(
         getRawSizeFromVector(arrayVector->elements(), childRanges, context);
   }
 
+  context.nullCount = nullCount;
   if (nullCount) {
     rawSize += nullCount * NULL_SIZE;
   }
@@ -446,6 +454,7 @@ uint64_t getRawSizeFromMapVector(
         getRawSizeFromVector(mapVector->mapValues(), childRanges, context);
   }
 
+  context.nullCount = nullCount;
   if (nullCount) {
     rawSize += nullCount * NULL_SIZE;
   }
@@ -549,14 +558,17 @@ uint64_t getRawSizeFromRowVector(
       rawSize += childRawSize;
       if (topLevel) {
         context.appendSize(childRawSize);
+        context.appendNullCount(context.nullCount);
       }
     }
   } else if (topLevel) {
     for (size_t i = 0; i < rowVector->childrenSize(); ++i) {
       context.appendSize(0);
+      context.appendNullCount(0);
     }
   }
 
+  context.nullCount = nullCount;
   if (nullCount) {
     rawSize += nullCount * NULL_SIZE;
   }
