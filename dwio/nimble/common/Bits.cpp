@@ -167,14 +167,70 @@ void clearBits(uint64_t begin, uint64_t end, char* bitmap) {
 
 uint32_t
 findSetBit(const char* bitmap, uint32_t begin, uint32_t end, uint32_t n) {
-  // TODO: maybe there is something fancy in bmi2
-  while (begin < end) {
-    if (getBit(begin, bitmap) && --n == 0) {
-      break;
-    }
-    ++begin;
+  if (begin >= end || n == 0) {
+    return begin;
   }
-  return begin;
+
+  const uint64_t* wordPtr = reinterpret_cast<const uint64_t*>(bitmap);
+
+  // Handle bits in the first partial word
+  uint32_t wordIdx = begin >> 6;
+  uint32_t bitOffset = begin & 63;
+  uint64_t word = wordPtr[wordIdx];
+
+  // Mask out bits before 'begin'
+  word &= ~((1ULL << bitOffset) - 1);
+
+  while (true) {
+    // Count set bits in current word
+    uint32_t setBitsInWord = __builtin_popcountll(word);
+
+    if (setBitsInWord >= n) {
+      // The n'th set bit is in this word
+      while (n > 0) {
+        uint32_t firstSetBit = __builtin_ffsll(word);
+        if (firstSetBit == 0) {
+          break; // No more set bits
+        }
+
+        // __builtin_ffsll returns the index plus one, so subtract 1
+        --firstSetBit;
+
+        word &= ~(1ULL << firstSetBit);
+        --n;
+
+        if (n == 0) {
+          uint32_t result = (wordIdx << 6) + firstSetBit;
+          return result < end ? result : end;
+        }
+      }
+    }
+
+    // Move to next word
+    n -= setBitsInWord;
+    ++wordIdx;
+    bitOffset = 0;
+
+    // Check if we've reached the end
+    uint32_t nextWordStart = wordIdx << 6;
+    if (nextWordStart >= end) {
+      return end;
+    }
+
+    word = wordPtr[wordIdx];
+
+    // Mask out bits beyond 'end' if this is the last word
+    if (nextWordStart + 64 > end) {
+      word &= (1ULL << (end - nextWordStart)) - 1;
+    }
+
+    // If no bits set in this word, continue to next word
+    if (word == 0) {
+      continue;
+    }
+  }
+
+  return end;
 }
 
 void BitmapBuilder::copy(const Bitmap& other, uint32_t begin, uint32_t end) {
