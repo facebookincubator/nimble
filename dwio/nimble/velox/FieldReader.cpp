@@ -1288,7 +1288,12 @@ class SlidingWindowMapFieldReader final : public FieldReader {
         offsetDecoder_{offsetDecoder},
         lengthsDecoder_{lengthsDecoder},
         keysReader_{std::move(keysReader)},
-        valuesReader_{std::move(valuesReader)} {}
+        valuesReader_{std::move(valuesReader)},
+        currentOffset_{0},
+        cacheOffset_{0} {
+    VectorInitializer<velox::MapVector>::initialize(
+        &pool_, cachedMap_, type_, 0);
+  }
 
   std::optional<std::pair<uint32_t, uint64_t>> estimatedRowSize() const final {
     // TODO: Implement estimatedTotalOutputSize for SlidingWindowMapFieldReader.
@@ -1385,7 +1390,7 @@ class SlidingWindowMapFieldReader final : public FieldReader {
           ++nullCount;
           continue;
         }
-        // Firt non-null item
+        // First non-null item
         if (deduplicatedOffsets.empty()) {
           deduplicatedOffsets.push_back(indices[idx]);
           deduplicatedLengths.push_back(lengthBuffer[idx - nullCount]);
@@ -1431,25 +1436,41 @@ class SlidingWindowMapFieldReader final : public FieldReader {
       }
     }
 
+    NIMBLE_DASSERT(
+        deduplicatedLengths.size() > 0, "Invalid deduplicatedLengths size.");
+    NIMBLE_DASSERT(
+        deduplicatedLengths.size() == uniqueCount,
+        "deduplicatedLengths size mismatch.");
+
     // Fill the map vector
     auto map =
         static_cast<velox::MapVector*>(dictionaryVector->valueVector().get());
     map->resize(uniqueCount);
-    auto offsets =
-        map->mutableOffsets(uniqueCount)->template asMutable<uint32_t>();
-    auto sizes = map->mutableSizes(uniqueCount)->template asMutable<uint32_t>();
+    map->mapKeys()->resize(0);
+    map->mapValues()->resize(0);
 
-    uint32_t mapOffset = 0;
-    for (uint32_t i = 0; i < uniqueCount; ++i) {
-      sizes[i] = deduplicatedLengths[i];
-      offsets[i] = mapOffset;
-      mapOffset += deduplicatedLengths[i];
-    }
-
+    bool useCache = false;
     uint32_t childrenRows = endOffset - startOffset;
     if (childrenRows > 0) {
-      seek(startOffset);
-      // Read the keys and values
+      if (isCached()) {
+        // NOTE: We assume that the cache will either fully match the current
+        // offset, or will fully not match it. There is another "possible" state
+        // (in the future, but not now). When sliding window is actually
+        // supported, it is possible that the cache will cover "part" of the
+        // required map keys and values (but will not be an exact match). When
+        // we add supprot for sliding windows, we need to add correct handling
+        // for the cache, to handle hese partial mismatches.
+        const uint32_t size = cacheSize();
+        if (startOffset == cacheOffset_ && size == deduplicatedLengths[0]) {
+          useCache = true;
+          childrenRows -= size;
+        } else {
+          resetCache();
+        }
+      }
+    }
+
+    if (childrenRows > 0) {
       keysReader_->next(
           childrenRows,
           map->mapKeys(),
@@ -1458,14 +1479,95 @@ class SlidingWindowMapFieldReader final : public FieldReader {
           childrenRows,
           map->mapValues(),
           /* scatterBitmap */ nullptr);
-      cursorPos_ = endOffset;
+    }
+
+    currentOffset_ = endOffset;
+    const uint32_t lastElement =
+        static_cast<uint32_t>(deduplicatedOffsets.size()) - 1;
+
+    auto offsets =
+        map->mutableOffsets(uniqueCount)->template asMutable<uint32_t>();
+    auto sizes = map->mutableSizes(uniqueCount)->template asMutable<uint32_t>();
+
+    if (useCache) {
+      if (!map->mapKeys()->isWritable()) {
+        velox::BaseVector::ensureWritable(
+            velox::SelectivityVector::empty(),
+            map->mapKeys()->type(),
+            &pool_,
+            map->mapKeys());
+      }
+      if (!map->mapValues()->isWritable()) {
+        velox::BaseVector::ensureWritable(
+            velox::SelectivityVector::empty(),
+            map->mapValues()->type(),
+            &pool_,
+            map->mapValues());
+      }
+      velox::BaseVector::CopyRange cacheRange{
+          /* sourceIndex */ 0,
+          /* targetIndex */ 0,
+          /* count */ 1};
+      map->copyRanges(cachedMap_.get(), folly::Range(&cacheRange, 1));
+
+      const uint32_t size = cacheSize();
+      offsets[0] = childrenRows;
+      sizes[0] = deduplicatedLengths[0];
+
+      uint32_t mapOffset = deduplicatedLengths[0];
+      for (uint32_t i = 1; i < uniqueCount; ++i) {
+        sizes[i] = deduplicatedLengths[i];
+        offsets[i] = mapOffset - size;
+
+        mapOffset += deduplicatedLengths[i];
+      }
+    } else {
+      uint32_t mapOffset = 0;
+      for (uint32_t i = 0; i < uniqueCount; ++i) {
+        sizes[i] = deduplicatedLengths[i];
+        offsets[i] = mapOffset;
+        mapOffset += sizes[i];
+      }
+    }
+
+    // Populate cache
+    if (deduplicatedLengths.back() == 0) {
+      resetCache();
+    } else if (
+        !isCached() ||
+        // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
+        deduplicatedOffsets.back() != cacheOffset_) {
+      if (!cachedMap_->isWritable()) {
+        velox::BaseVector::ensureWritable(
+            velox::SelectivityVector::empty(),
+            cachedMap_->type(),
+            &pool_,
+            cachedMap_);
+      }
+      velox::BaseVector::CopyRange cacheRange{
+          static_cast<velox::vector_size_t>(lastElement), 0, 1};
+      cachedMap_->resize(1);
+      cachedMap_->copyRanges(map, folly::Range(&cacheRange, 1));
+      // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
+      cacheOffset_ = deduplicatedOffsets.back();
     }
   }
 
   void skip(uint32_t count) final {
+    if (count == 0) {
+      return;
+    }
+
+    // @lint-ignore CLANGTIDY cppcoreguidelines-pro-type-member-init
     std::array<uint32_t, kSkipBatchSize> offsets;
+    // @lint-ignore CLANGTIDY cppcoreguidelines-pro-type-member-init
+    std::array<uint32_t, kSkipBatchSize> lengths;
     std::array<char, nullBytes(kSkipBatchSize)> nulls;
     void* nullsPtr = nulls.data();
+
+    uint32_t childrenSkip = 0;
+    uint32_t lastOffset = 0;
+    uint32_t lastLength = 0;
 
     while (count > 0) {
       auto skipSize = std::min(count, kSkipBatchSize);
@@ -1474,25 +1576,136 @@ class SlidingWindowMapFieldReader final : public FieldReader {
           offsets.data(),
           [&]() { return nullsPtr; },
           /* scatterBitmap */ nullptr);
-      lengthsDecoder_->skip(nonNullCount);
+      lengthsDecoder_->next(nonNullCount, lengths.data());
+
+      const bool hasNulls = nonNullCount != skipSize;
+
+      uint32_t offsetIndex = 0;
+      uint32_t lengthIndex = 0;
+
+      if (isCached()) {
+        const uint32_t size = cacheSize();
+        if (hasNulls) {
+          for (; offsetIndex < skipSize; ++offsetIndex) {
+            if (!velox::bits::isBitNull(
+                    static_cast<const uint64_t*>(nullsPtr), offsetIndex)) {
+              const uint32_t length = lengths[lengthIndex++];
+              if (offsets[offsetIndex] == cacheOffset_ && length == size) {
+                continue;
+              } else {
+                resetCache();
+                currentOffset_ = offsets[offsetIndex];
+                lastOffset = currentOffset_;
+                lastLength = length;
+                childrenSkip += length;
+                break;
+              }
+            }
+          }
+        } else {
+          for (; offsetIndex < skipSize; ++offsetIndex) {
+            const uint32_t length = lengths[lengthIndex++];
+            if (offsets[offsetIndex] == cacheOffset_ && length == size) {
+              continue;
+            } else {
+              resetCache();
+              currentOffset_ = offsets[offsetIndex];
+              lastOffset = currentOffset_;
+              lastLength = length;
+              childrenSkip += length;
+              break;
+            }
+          }
+        }
+      }
+
+      if (isCached()) {
+        // The entire skip was within the same cached "run"
+        return;
+      }
+
+      // Find how much to skip the children readers. This should not include the
+      // last (non-null) item, as we are going to cache this item.
+      if (hasNulls) {
+        for (; offsetIndex < skipSize; ++offsetIndex) {
+          if (velox::bits::isBitNull(
+                  static_cast<const uint64_t*>(nullsPtr), offsetIndex)) {
+            continue;
+          }
+
+          const uint32_t offset = offsets[offsetIndex];
+          const uint32_t length = lengths[lengthIndex];
+          if (lastOffset != offset || lastLength != length) {
+            childrenSkip += length;
+            currentOffset_ = offset;
+          }
+          lastOffset = offset;
+          lastLength = length;
+          ++lengthIndex;
+        }
+      } else {
+        for (; offsetIndex < skipSize; ++offsetIndex) {
+          const uint32_t offset = offsets[offsetIndex];
+          const uint32_t length = lengths[lengthIndex];
+          if (lastOffset != offset || lastLength != length) {
+            childrenSkip += length;
+            currentOffset_ = offset;
+          }
+          lastOffset = offset;
+          lastLength = length;
+          ++lengthIndex;
+        }
+      }
+
       count -= skipSize;
     }
+
+    if (childrenSkip == 0) {
+      return;
+    }
+
+    childrenSkip -= lastLength;
+
+    if (childrenSkip > 0) {
+      keysReader_->skip(childrenSkip);
+      valuesReader_->skip(childrenSkip);
+    }
+
+    if (lastLength == 0) {
+      return;
+    }
+
+    auto& cachedMap = static_cast<velox::MapVector&>(*cachedMap_);
+    cachedMap_->resize(1);
+    cacheOffset_ = lastOffset;
+    currentOffset_ += lastLength;
+    keysReader_->next(
+        lastLength,
+        cachedMap.mapKeys(),
+        /* scatterBitmap */ nullptr);
+    valuesReader_->next(
+        lastLength,
+        cachedMap.mapValues(),
+        /* scatterBitmap */ nullptr);
+
+    cachedMap.mutableOffsets(1)->template asMutable<uint32_t>()[0] = 0;
+    cachedMap.mutableSizes(1)->template asMutable<uint32_t>()[0] = lastLength;
   }
 
   // Move the cursor of key and value readers to the given offset
   void seek(uint32_t offset) {
-    if (offset == cursorPos_) {
+    if (offset == currentOffset_) {
       return;
-    } else if (offset < cursorPos_) {
+    } else if (offset < currentOffset_) {
       keysReader_->reset();
       valuesReader_->reset();
       keysReader_->skip(offset);
       valuesReader_->skip(offset);
     } else {
-      keysReader_->skip(offset - cursorPos_);
-      valuesReader_->skip(offset - cursorPos_);
+      keysReader_->skip(offset - currentOffset_);
+      valuesReader_->skip(offset - currentOffset_);
     }
-    cursorPos_ = offset;
+    currentOffset_ = offset;
   }
 
   void reset() final {
@@ -1504,11 +1717,30 @@ class SlidingWindowMapFieldReader final : public FieldReader {
   }
 
  private:
+  inline bool isCached() const {
+    return cachedMap_->size() > 0;
+  }
+
+  inline uint32_t cacheSize() {
+    auto& cachedMap = static_cast<velox::MapVector&>(*cachedMap_);
+    NIMBLE_DASSERT(
+        isCached() && cachedMap.sizes()->size() > 0, "Unexpected cache state.");
+    return cachedMap.sizes()->as<int32_t>()[0];
+  }
+
+  inline void resetCache() {
+    cachedMap_->resize(0);
+  }
+
   Decoder* offsetDecoder_;
   Decoder* lengthsDecoder_;
   std::unique_ptr<FieldReader> keysReader_;
   std::unique_ptr<FieldReader> valuesReader_;
-  uint32_t cursorPos_{0};
+  uint32_t currentOffset_;
+
+  // cache
+  velox::VectorPtr cachedMap_;
+  uint32_t cacheOffset_;
 };
 
 class SlidingWindowMapFieldReaderFactory final : public FieldReaderFactory {
@@ -1564,12 +1796,13 @@ class MapFieldReader final : public MultiValueFieldReader {
     const auto rowCount = encoding->rowCount();
 
     // Adding memory for velox::BaseVector::nulls_.
-    // NOTE: We are not traversing encoding to get the number of nulls as it is
-    // expensive for an estimation. We try to be conservative and assume it is
-    // nullable.
+    // NOTE: We are not traversing encoding to get the number of nulls as it
+    // is expensive for an estimation. We try to be conservative and assume it
+    // is nullable.
     totalBytes += rowCount / 8;
 
-    // Adding memory for velox::MapVector::sizes_ and velox::MapVector::offsets_
+    // Adding memory for velox::MapVector::sizes_ and
+    // velox::MapVector::offsets_
     totalBytes += rowCount * sizeof(int32_t) * 2;
 
     auto keySize = keysReader_->estimatedRowSize();
@@ -2433,9 +2666,9 @@ class MergedFlatMapFieldReader final
       totalBytes += rowCount / 8;
     } else {
       if (this->keyNodes_.empty()) {
-        // This happens when selected feature does not exist in the flatmap. As
-        // we cannot acquire row count in this case, nullopt will be returned to
-        // indicate unsupported.
+        // This happens when selected feature does not exist in the flatmap.
+        // As we cannot acquire row count in this case, nullopt will be
+        // returned to indicate unsupported.
         return std::nullopt;
       }
       const auto& keyNode = this->keyNodes_.back();
@@ -2465,15 +2698,15 @@ class MergedFlatMapFieldReader final
       // Adding memory for key vector's velox::FlatVector::values_
       totalKeyBytesPerRow += this->keyNodes_.size() * sizeof(T);
     }
-    // Null row count in this map cannot be easily obtained, we over-estimate by
-    // multiplying total row count.
+    // Null row count in this map cannot be easily obtained, we over-estimate
+    // by multiplying total row count.
     totalBytes += rowCount * totalKeyBytesPerRow;
 
     // Estimation of map value vector size in velox::MapVector. As
-    // MergedFlatMapReader transforms the dimension of the keys and values from
-    // a flat map representation to velox map representation, there is no easy
-    // way of doing a direct estimation of velox values column. So we adopt the
-    // ways from StructFlatMapReader for estimating values size.
+    // MergedFlatMapReader transforms the dimension of the keys and values
+    // from a flat map representation to velox map representation, there is no
+    // easy way of doing a direct estimation of velox values column. So we
+    // adopt the ways from StructFlatMapReader for estimating values size.
     for (const auto& node : this->keyNodes_) {
       auto valueSize = node->valueReader()->estimatedRowSize();
       if (!valueSize.has_value()) {
@@ -3038,8 +3271,8 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
 
         if (flatMapAsStruct) {
           // When reading as struct, all children appear in the feature
-          // selection will need to be in the result even if they don't exist in
-          // the schema.
+          // selection will need to be in the result even if they don't exist
+          // in the schema.
           auto& features = featuresIt->second.features;
           selectedChildren.reserve(features.size());
           inMapDescriptors.reserve(features.size());
@@ -3059,8 +3292,8 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
             }
           }
         } else if (childrenCount > 0) {
-          // When reading as regular map, projection only matters if the map is
-          // not empty.
+          // When reading as regular map, projection only matters if the map
+          // is not empty.
           if (!hasFeatureSelection) {
             selectedChildren.reserve(childrenCount);
             for (auto i = 0; i < childrenCount; ++i) {
