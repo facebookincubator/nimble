@@ -26,14 +26,14 @@ using namespace facebook;
 
 namespace {
 void verifyLabels(
-    const std::vector<std::unique_ptr<const nimble::SchemaNode>>& schemaNodes,
+    const std::vector<nimble::SchemaNode>& schemaNodes,
     std::vector<std::string_view> expected) {
   nimble::StreamLabels streamLabels{
       nimble::SchemaReader::getSchema(schemaNodes)};
   std::vector<std::string_view> actual;
   actual.reserve(schemaNodes.size());
   for (size_t i = 0, end = schemaNodes.size(); i < end; ++i) {
-    actual.push_back(streamLabels.streamLabel(schemaNodes[i]->offset()));
+    actual.push_back(streamLabels.streamLabel(schemaNodes[i].offset()));
   }
 
   EXPECT_EQ(actual, expected);

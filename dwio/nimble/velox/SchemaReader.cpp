@@ -330,19 +330,17 @@ const std::shared_ptr<const Type>& ArrayWithOffsetsType::elements() const {
   return elements_;
 }
 
-NamedType getType(
-    offset_size& index,
-    const std::vector<std::unique_ptr<const SchemaNode>>& nodes) {
+NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
   NIMBLE_DASSERT(index < nodes.size(), "Index out of range.");
-  auto& node = nodes[index++];
-  auto offset = node->offset();
-  auto kind = node->kind();
+  const auto& node = nodes[index++];
+  auto offset = node.offset();
+  auto kind = node.kind();
   switch (kind) {
     case Kind::Scalar: {
       return {
           .type = std::make_shared<ScalarType>(
-              StreamDescriptor{offset, node->scalarKind()}),
-          .name = node->name()};
+              StreamDescriptor{offset, node.scalarKind()}),
+          .name = node.name()};
     }
     case Kind::Array: {
       auto elements = getType(index, nodes).type;
@@ -350,7 +348,7 @@ NamedType getType(
           .type = std::make_shared<ArrayType>(
               StreamDescriptor{offset, ScalarKind::UInt32},
               std::move(elements)),
-          .name = node->name()};
+          .name = node.name()};
     }
     case Kind::Map: {
       auto keys = getType(index, nodes).type;
@@ -360,27 +358,26 @@ NamedType getType(
               StreamDescriptor{offset, ScalarKind::UInt32},
               std::move(keys),
               std::move(values)),
-          .name = node->name()};
+          .name = node.name()};
     }
     case Kind::SlidingWindowMap: {
-      auto& lengthsNode = nodes[index++];
+      const auto& lengthsNode = nodes[index++];
       NIMBLE_ASSERT(
-          lengthsNode->kind() == Kind::Scalar &&
-              lengthsNode->scalarKind() == ScalarKind::UInt32,
+          lengthsNode.kind() == Kind::Scalar &&
+              lengthsNode.scalarKind() == ScalarKind::UInt32,
           "SlidingWindowMap field must have a uint32 scalar type.");
       auto keys = getType(index, nodes).type;
       auto values = getType(index, nodes).type;
       return {
           .type = std::make_shared<SlidingWindowMapType>(
               StreamDescriptor{offset, ScalarKind::UInt32},
-              StreamDescriptor{
-                  lengthsNode->offset(), lengthsNode->scalarKind()},
+              StreamDescriptor{lengthsNode.offset(), lengthsNode.scalarKind()},
               std::move(keys),
               std::move(values)),
-          .name = node->name()};
+          .name = node.name()};
     }
     case Kind::Row: {
-      auto childrenCount = node->childrenCount();
+      auto childrenCount = node.childrenCount();
       std::vector<std::string> names{childrenCount};
       std::vector<std::shared_ptr<const Type>> children{childrenCount};
       for (auto i = 0; i < childrenCount; ++i) {
@@ -395,10 +392,10 @@ NamedType getType(
               StreamDescriptor{offset, ScalarKind::Bool},
               std::move(names),
               std::move(children)),
-          .name = node->name()};
+          .name = node.name()};
     }
     case Kind::FlatMap: {
-      auto childrenCount = node->childrenCount();
+      auto childrenCount = node.childrenCount();
 
       std::vector<std::string> names{childrenCount};
       std::vector<std::unique_ptr<StreamDescriptor>> inMapDescriptors{
@@ -407,42 +404,41 @@ NamedType getType(
 
       for (auto i = 0; i < childrenCount; ++i) {
         NIMBLE_DASSERT(index < nodes.size(), "Unexpected node index.");
-        auto& inMapNode = nodes[index++];
+        const auto& inMapNode = nodes[index++];
         NIMBLE_ASSERT(
-            inMapNode->kind() == Kind::Scalar &&
-                inMapNode->scalarKind() == ScalarKind::Bool,
+            inMapNode.kind() == Kind::Scalar &&
+                inMapNode.scalarKind() == ScalarKind::Bool,
             "Flat map in-map field must have a boolean scalar type.");
         NIMBLE_ASSERT(
-            inMapNode->name().has_value(), "Flat map fields must have names.");
+            inMapNode.name().has_value(), "Flat map fields must have names.");
         auto field = getType(index, nodes);
-        names[i] = inMapNode->name().value();
+        names[i] = inMapNode.name().value();
         inMapDescriptors[i] = std::make_unique<StreamDescriptor>(
-            inMapNode->offset(), inMapNode->scalarKind());
+            inMapNode.offset(), inMapNode.scalarKind());
         children[i] = field.type;
       }
       return {
           .type = std::make_shared<FlatMapType>(
               StreamDescriptor{offset, ScalarKind::Bool},
-              node->scalarKind(),
+              node.scalarKind(),
               std::move(names),
               std::move(inMapDescriptors),
               std::move(children)),
-          .name = node->name()};
+          .name = node.name()};
     }
     case Kind::ArrayWithOffsets: {
-      auto& offsetsNode = nodes[index++];
+      const auto& offsetsNode = nodes[index++];
       NIMBLE_ASSERT(
-          offsetsNode->kind() == Kind::Scalar &&
-              offsetsNode->scalarKind() == ScalarKind::UInt32,
+          offsetsNode.kind() == Kind::Scalar &&
+              offsetsNode.scalarKind() == ScalarKind::UInt32,
           "Array with offsets field must have a uint32 scalar type.");
       auto elements = getType(index, nodes).type;
       return {
           .type = std::make_shared<ArrayWithOffsetsType>(
-              StreamDescriptor{
-                  offsetsNode->offset(), offsetsNode->scalarKind()},
+              StreamDescriptor{offsetsNode.offset(), offsetsNode.scalarKind()},
               StreamDescriptor{offset, ScalarKind::UInt32},
               std::move(elements)),
-          .name = node->name()};
+          .name = node.name()};
     }
 
     default: {
@@ -452,7 +448,7 @@ NamedType getType(
 }
 
 std::shared_ptr<const Type> SchemaReader::getSchema(
-    const std::vector<std::unique_ptr<const SchemaNode>>& nodes) {
+    const std::vector<SchemaNode>& nodes) {
   offset_size index = 0;
   auto namedType = getType(index, nodes);
   return namedType.type;

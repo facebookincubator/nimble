@@ -457,52 +457,52 @@ offset_size SchemaBuilder::allocateStreamOffset() {
 }
 
 void SchemaBuilder::addNode(
-    std::vector<std::unique_ptr<const SchemaNode>>& nodes,
+    std::vector<SchemaNode>& nodes,
     const TypeBuilder& type,
     std::optional<std::string> name) const {
   switch (type.kind()) {
     case Kind::Scalar: {
       const auto& scalar = type.asScalar();
-      nodes.push_back(std::make_unique<SchemaNode>(
+      nodes.emplace_back(
           type.kind(),
           scalar.scalarDescriptor().offset(),
           scalar.scalarDescriptor().scalarKind(),
-          std::move(name)));
+          std::move(name));
       break;
     }
     case Kind::Array: {
       const auto& array = type.asArray();
-      nodes.push_back(std::make_unique<SchemaNode>(
+      nodes.emplace_back(
           type.kind(),
           array.lengthsDescriptor().offset(),
           ScalarKind::UInt32,
-          std::move(name)));
+          std::move(name));
       addNode(nodes, array.elements());
       break;
     }
     case Kind::ArrayWithOffsets: {
       const auto& array = type.asArrayWithOffsets();
-      nodes.push_back(std::make_unique<SchemaNode>(
+      nodes.emplace_back(
           type.kind(),
           array.lengthsDescriptor().offset(),
           ScalarKind::UInt32,
-          std::move(name)));
-      nodes.push_back(std::make_unique<SchemaNode>(
+          std::move(name));
+      nodes.emplace_back(
           Kind::Scalar,
           array.offsetsDescriptor().offset(),
           ScalarKind::UInt32,
-          std::nullopt));
+          std::nullopt);
       addNode(nodes, array.elements());
       break;
     }
     case Kind::Row: {
       auto& row = type.asRow();
-      nodes.push_back(std::make_unique<SchemaNode>(
+      nodes.emplace_back(
           type.kind(),
           row.nullsDescriptor().offset(),
           ScalarKind::Bool,
           std::move(name),
-          row.childrenCount()));
+          row.childrenCount());
       for (auto i = 0; i < row.childrenCount(); ++i) {
         addNode(nodes, row.childAt(i), row.nameAt(i));
       }
@@ -510,27 +510,27 @@ void SchemaBuilder::addNode(
     }
     case Kind::Map: {
       const auto& map = type.asMap();
-      nodes.push_back(std::make_unique<SchemaNode>(
+      nodes.emplace_back(
           type.kind(),
           map.lengthsDescriptor().offset(),
           ScalarKind::UInt32,
-          std::move(name)));
+          std::move(name));
       addNode(nodes, map.keys());
       addNode(nodes, map.values());
       break;
     }
     case Kind::SlidingWindowMap: {
       const auto& map = type.asSlidingWindowMap();
-      nodes.push_back(std::make_unique<SchemaNode>(
+      nodes.emplace_back(
           type.kind(),
           map.offsetsDescriptor().offset(),
           ScalarKind::UInt32,
-          std::move(name)));
-      nodes.push_back(std::make_unique<SchemaNode>(
+          std::move(name));
+      nodes.emplace_back(
           Kind::Scalar,
           map.lengthsDescriptor().offset(),
           ScalarKind::UInt32,
-          std::nullopt));
+          std::nullopt);
       addNode(nodes, map.keys());
       addNode(nodes, map.values());
       break;
@@ -539,21 +539,21 @@ void SchemaBuilder::addNode(
       auto& map = type.asFlatMap();
 
       size_t childrenSize = map.childrenCount();
-      nodes.push_back(std::make_unique<SchemaNode>(
+      nodes.emplace_back(
           type.kind(),
           map.nullsDescriptor().offset(),
           map.keyScalarKind(),
           std::move(name),
-          childrenSize));
+          childrenSize);
       NIMBLE_ASSERT(
           map.inMapDescriptors_.size() == childrenSize,
           "Flat map in-maps collection size and children collection size should be the same.");
       for (size_t i = 0; i < childrenSize; ++i) {
-        nodes.push_back(std::make_unique<SchemaNode>(
+        nodes.emplace_back(
             Kind::Scalar,
             map.inMapDescriptorAt(i).offset(),
             ScalarKind::Bool,
-            map.nameAt(i)));
+            map.nameAt(i));
         addNode(nodes, map.childAt(i));
       }
 
@@ -566,10 +566,9 @@ void SchemaBuilder::addNode(
   }
 }
 
-std::vector<std::unique_ptr<const SchemaNode>> SchemaBuilder::getSchemaNodes()
-    const {
+std::vector<SchemaNode> SchemaBuilder::getSchemaNodes() const {
   auto& root = getRoot();
-  std::vector<std::unique_ptr<const SchemaNode>> nodes;
+  std::vector<SchemaNode> nodes;
   nodes.reserve(currentOffset_);
   addNode(nodes, *root);
   return nodes;

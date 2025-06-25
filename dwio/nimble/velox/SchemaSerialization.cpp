@@ -189,15 +189,15 @@ std::string_view SchemaSerializer::serialize(
   auto schema =
       builder_.CreateVector<flatbuffers::Offset<serialization::SchemaNode>>(
           nodes.size(), [this, &nodes](size_t i) {
-            auto& node = nodes[i];
+            const auto& node = nodes[i];
             return serialization::CreateSchemaNode(
                 builder_,
-                nodeToSerializationKind(node.get()),
-                node->childrenCount(),
-                node->name().has_value()
-                    ? builder_.CreateString(node->name().value())
+                nodeToSerializationKind(&node),
+                node.childrenCount(),
+                node.name().has_value()
+                    ? builder_.CreateString(node.name().value())
                     : 0,
-                node->offset());
+                node.offset());
           });
 
   builder_.Finish(serialization::CreateSchema(builder_, schema));
@@ -210,12 +210,13 @@ std::shared_ptr<const Type> SchemaDeserializer::deserialize(
     std::string_view input) {
   auto schema = flatbuffers::GetRoot<serialization::Schema>(input.data());
   auto nodeCount = schema->nodes()->size();
-  std::vector<std::unique_ptr<const SchemaNode>> nodes(nodeCount);
+  std::vector<SchemaNode> nodes;
+  nodes.reserve(nodeCount);
 
   for (auto i = 0; i < nodeCount; ++i) {
     auto* node = schema->nodes()->Get(i);
     auto kind = serializationNodeToKind(node);
-    nodes[i] = std::make_unique<const SchemaNode>(
+    nodes.emplace_back(
         kind.first,
         node->offset(),
         kind.second,

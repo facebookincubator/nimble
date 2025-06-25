@@ -200,7 +200,7 @@ class SchemaReader {
   // Construct type tree from an ordered list of schema nodes.
   // If the schema nodes are ordered incorrectly the behavior is undefined.
   static std::shared_ptr<const Type> getSchema(
-      const std::vector<std::unique_ptr<const SchemaNode>>& nodes);
+      const std::vector<SchemaNode>& nodes);
 
   struct NodeInfo {
     std::string_view name;

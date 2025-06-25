@@ -20,46 +20,45 @@
 
 namespace facebook::nimble::test {
 void verifySchemaNodes(
-    const std::vector<std::unique_ptr<const nimble::SchemaNode>>& nodes,
+    const std::vector<nimble::SchemaNode>& nodes,
     std::vector<nimble::SchemaNode> expected) {
   ASSERT_EQ(expected.size(), nodes.size());
   for (auto i = 0; i < expected.size(); ++i) {
-    ASSERT_TRUE(nodes[i]) << "i = " << i;
-    EXPECT_EQ(expected[i].kind(), nodes[i]->kind()) << "i = " << i;
-    EXPECT_EQ(expected[i].offset(), nodes[i]->offset()) << "i = " << i;
-    EXPECT_EQ(expected[i].name(), nodes[i]->name()) << "i = " << i;
-    EXPECT_EQ(expected[i].childrenCount(), nodes[i]->childrenCount())
+    EXPECT_EQ(expected[i].kind(), nodes[i].kind()) << "i = " << i;
+    EXPECT_EQ(expected[i].offset(), nodes[i].offset()) << "i = " << i;
+    EXPECT_EQ(expected[i].name(), nodes[i].name()) << "i = " << i;
+    EXPECT_EQ(expected[i].childrenCount(), nodes[i].childrenCount())
         << "i = " << i;
-    EXPECT_EQ(expected[i].scalarKind(), nodes[i]->scalarKind()) << "i = " << i;
+    EXPECT_EQ(expected[i].scalarKind(), nodes[i].scalarKind()) << "i = " << i;
   }
 }
 
 void compareSchema(
     uint32_t& index,
-    const std::vector<std::unique_ptr<const nimble::SchemaNode>>& nodes,
+    const std::vector<nimble::SchemaNode>& nodes,
     const std::shared_ptr<const nimble::Type>& type,
     std::optional<std::string> name = std::nullopt) {
-  auto& node = nodes[index++];
-  EXPECT_EQ(node->name().has_value(), name.has_value());
+  const auto& node = nodes[index++];
+  EXPECT_EQ(node.name().has_value(), name.has_value());
   if (name.has_value()) {
-    EXPECT_EQ(name.value(), node->name().value());
+    EXPECT_EQ(name.value(), node.name().value());
   }
 
-  EXPECT_EQ(type->kind(), node->kind());
+  EXPECT_EQ(type->kind(), node.kind());
 
   switch (type->kind()) {
     case nimble::Kind::Scalar: {
       auto& scalar = type->asScalar();
-      EXPECT_EQ(scalar.scalarDescriptor().offset(), node->offset());
-      EXPECT_EQ(scalar.scalarDescriptor().scalarKind(), node->scalarKind());
-      EXPECT_EQ(0, node->childrenCount());
+      EXPECT_EQ(scalar.scalarDescriptor().offset(), node.offset());
+      EXPECT_EQ(scalar.scalarDescriptor().scalarKind(), node.scalarKind());
+      EXPECT_EQ(0, node.childrenCount());
       break;
     }
     case nimble::Kind::Row: {
       auto& row = type->asRow();
-      EXPECT_EQ(row.nullsDescriptor().offset(), node->offset());
-      EXPECT_EQ(nimble::ScalarKind::Bool, node->scalarKind());
-      EXPECT_EQ(row.childrenCount(), node->childrenCount());
+      EXPECT_EQ(row.nullsDescriptor().offset(), node.offset());
+      EXPECT_EQ(nimble::ScalarKind::Bool, node.scalarKind());
+      EXPECT_EQ(row.childrenCount(), node.childrenCount());
 
       for (auto i = 0; i < row.childrenCount(); ++i) {
         compareSchema(index, nodes, row.childAt(i), row.nameAt(i));
@@ -69,9 +68,9 @@ void compareSchema(
     }
     case nimble::Kind::Array: {
       auto& array = type->asArray();
-      EXPECT_EQ(array.lengthsDescriptor().offset(), node->offset());
-      EXPECT_EQ(nimble::ScalarKind::UInt32, node->scalarKind());
-      EXPECT_EQ(0, node->childrenCount());
+      EXPECT_EQ(array.lengthsDescriptor().offset(), node.offset());
+      EXPECT_EQ(nimble::ScalarKind::UInt32, node.scalarKind());
+      EXPECT_EQ(0, node.childrenCount());
 
       compareSchema(index, nodes, array.elements());
 
@@ -79,16 +78,16 @@ void compareSchema(
     }
     case nimble::Kind::ArrayWithOffsets: {
       auto& arrayWithOffsets = type->asArrayWithOffsets();
-      EXPECT_EQ(arrayWithOffsets.lengthsDescriptor().offset(), node->offset());
-      EXPECT_EQ(nimble::ScalarKind::UInt32, node->scalarKind());
-      EXPECT_EQ(0, node->childrenCount());
+      EXPECT_EQ(arrayWithOffsets.lengthsDescriptor().offset(), node.offset());
+      EXPECT_EQ(nimble::ScalarKind::UInt32, node.scalarKind());
+      EXPECT_EQ(0, node.childrenCount());
 
-      auto& offsetNode = nodes[index++];
-      EXPECT_FALSE(offsetNode->name().has_value());
-      EXPECT_EQ(Kind::Scalar, offsetNode->kind());
-      EXPECT_EQ(ScalarKind::UInt32, offsetNode->scalarKind());
+      const auto& offsetNode = nodes[index++];
+      EXPECT_FALSE(offsetNode.name().has_value());
+      EXPECT_EQ(Kind::Scalar, offsetNode.kind());
+      EXPECT_EQ(ScalarKind::UInt32, offsetNode.scalarKind());
       EXPECT_EQ(
-          arrayWithOffsets.offsetsDescriptor().offset(), offsetNode->offset());
+          arrayWithOffsets.offsetsDescriptor().offset(), offsetNode.offset());
 
       compareSchema(index, nodes, arrayWithOffsets.elements());
 
@@ -96,9 +95,9 @@ void compareSchema(
     }
     case nimble::Kind::Map: {
       auto& map = type->asMap();
-      EXPECT_EQ(map.lengthsDescriptor().offset(), node->offset());
-      EXPECT_EQ(nimble::ScalarKind::UInt32, node->scalarKind());
-      EXPECT_EQ(0, node->childrenCount());
+      EXPECT_EQ(map.lengthsDescriptor().offset(), node.offset());
+      EXPECT_EQ(nimble::ScalarKind::UInt32, node.scalarKind());
+      EXPECT_EQ(0, node.childrenCount());
 
       compareSchema(index, nodes, map.keys());
       compareSchema(index, nodes, map.values());
@@ -107,15 +106,15 @@ void compareSchema(
     }
     case nimble::Kind::SlidingWindowMap: {
       auto& map = type->asSlidingWindowMap();
-      EXPECT_EQ(map.offsetsDescriptor().offset(), node->offset());
-      EXPECT_EQ(nimble::ScalarKind::UInt32, node->scalarKind());
-      EXPECT_EQ(0, node->childrenCount());
+      EXPECT_EQ(map.offsetsDescriptor().offset(), node.offset());
+      EXPECT_EQ(nimble::ScalarKind::UInt32, node.scalarKind());
+      EXPECT_EQ(0, node.childrenCount());
 
-      auto& lengthNode = nodes[index++];
-      EXPECT_FALSE(lengthNode->name().has_value());
-      EXPECT_EQ(Kind::Scalar, lengthNode->kind());
-      EXPECT_EQ(ScalarKind::UInt32, lengthNode->scalarKind());
-      EXPECT_EQ(map.lengthsDescriptor().offset(), lengthNode->offset());
+      const auto& lengthNode = nodes[index++];
+      EXPECT_FALSE(lengthNode.name().has_value());
+      EXPECT_EQ(Kind::Scalar, lengthNode.kind());
+      EXPECT_EQ(ScalarKind::UInt32, lengthNode.scalarKind());
+      EXPECT_EQ(map.lengthsDescriptor().offset(), lengthNode.offset());
 
       compareSchema(index, nodes, map.keys());
       compareSchema(index, nodes, map.values());
@@ -124,17 +123,17 @@ void compareSchema(
     }
     case nimble::Kind::FlatMap: {
       auto& map = type->asFlatMap();
-      EXPECT_EQ(map.nullsDescriptor().offset(), node->offset());
-      EXPECT_EQ(map.keyScalarKind(), node->scalarKind());
-      EXPECT_EQ(map.childrenCount(), node->childrenCount());
+      EXPECT_EQ(map.nullsDescriptor().offset(), node.offset());
+      EXPECT_EQ(map.keyScalarKind(), node.scalarKind());
+      EXPECT_EQ(map.childrenCount(), node.childrenCount());
 
       for (auto i = 0; i < map.childrenCount(); ++i) {
-        auto& inMapNode = nodes[index++];
-        ASSERT_TRUE(inMapNode->name().has_value());
-        EXPECT_EQ(map.nameAt(i), inMapNode->name().value());
-        EXPECT_EQ(Kind::Scalar, inMapNode->kind());
-        EXPECT_EQ(ScalarKind::Bool, inMapNode->scalarKind());
-        EXPECT_EQ(map.inMapDescriptorAt(i).offset(), inMapNode->offset());
+        const auto& inMapNode = nodes[index++];
+        ASSERT_TRUE(inMapNode.name().has_value());
+        EXPECT_EQ(map.nameAt(i), inMapNode.name().value());
+        EXPECT_EQ(Kind::Scalar, inMapNode.kind());
+        EXPECT_EQ(ScalarKind::Bool, inMapNode.scalarKind());
+        EXPECT_EQ(map.inMapDescriptorAt(i).offset(), inMapNode.offset());
         compareSchema(index, nodes, map.childAt(i));
       }
 
@@ -146,7 +145,7 @@ void compareSchema(
 }
 
 void compareSchema(
-    const std::vector<std::unique_ptr<const nimble::SchemaNode>>& nodes,
+    const std::vector<nimble::SchemaNode>& nodes,
     const std::shared_ptr<const nimble::Type>& root) {
   uint32_t index = 0;
   compareSchema(index, nodes, root);

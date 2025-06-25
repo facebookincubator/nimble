@@ -24,11 +24,11 @@
 namespace facebook::nimble::test {
 
 void verifySchemaNodes(
-    const std::vector<std::unique_ptr<const nimble::SchemaNode>>& nodes,
+    const std::vector<SchemaNode>& nodes,
     std::vector<nimble::SchemaNode> expected);
 
 void compareSchema(
-    const std::vector<std::unique_ptr<const nimble::SchemaNode>>& nodes,
+    const std::vector<SchemaNode>& nodes,
     const std::shared_ptr<const nimble::Type>& root);
 
 std::shared_ptr<nimble::RowTypeBuilder> row(
