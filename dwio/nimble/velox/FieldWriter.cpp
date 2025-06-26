@@ -387,7 +387,12 @@ class RowFieldWriter : public FieldWriter {
     const velox::RowVector* row = vector->as<velox::RowVector>();
 
     if (row) {
-      NIMBLE_CHECK(fields_.size() == row->childrenSize(), "schema mismatch");
+      NIMBLE_CHECK(
+          fields_.size() == row->childrenSize(),
+          fmt::format(
+              "Schema mismatch: expected {} fields, but got {} fields",
+              fields_.size(),
+              row->childrenSize()));
       nullsStream_.ensureNullsCapacity(vector->mayHaveNulls(), size);
       if (row->mayHaveNulls()) {
         childRangesPtr = &childRanges;
@@ -404,7 +409,12 @@ class RowFieldWriter : public FieldWriter {
       auto& decoded = decodingContext.decode(vector, ranges);
       row = decoded.base()->as<velox::RowVector>();
       NIMBLE_ASSERT(row, "Unexpected vector type");
-      NIMBLE_CHECK(fields_.size() == row->childrenSize(), "schema mismatch");
+      NIMBLE_CHECK(
+          fields_.size() == row->childrenSize(),
+          fmt::format(
+              "Schema mismatch: expected {} fields, but got {} fields",
+              fields_.size(),
+              row->childrenSize()));
       childRangesPtr = &childRanges;
       nullsStream_.ensureNullsCapacity(decoded.mayHaveNulls(), size);
       iterateNonNullIndices<true>(
