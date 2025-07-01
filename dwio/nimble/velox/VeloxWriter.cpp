@@ -15,14 +15,11 @@
  */
 #include "dwio/nimble/velox/VeloxWriter.h"
 
-#include <ios>
 #include <memory>
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
-#include "dwio/nimble/encodings/SentinelEncoding.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
@@ -581,6 +578,9 @@ void VeloxWriter::close() {
       }
 
       {
+        nimble::aggregateStats(
+            *context_->schemaBuilder.getRoot(), context_->columnStats);
+        // TODO(T228118622): Write column stats to file.
         flatbuffers::FlatBufferBuilder builder;
         builder.Finish(serialization::CreateStats(builder, context_->rawSize));
         writer_.writeOptionalSection(
@@ -691,7 +691,7 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       StreamData& streamData_;
     };
 
-    auto encode = [&](StreamData& streamData) {
+    auto encode = [&](StreamData& streamData, uint64_t& streamSize) {
       const auto offset = streamData.descriptor().offset();
       auto encoded = encodeStream(*context_, *encodingBuffer_, streamData);
       if (!encoded.empty()) {
@@ -699,6 +699,7 @@ void VeloxWriter::writeChunk(bool lastChunk) {
         NIMBLE_DASSERT(offset < streams_.size(), "Stream offset out of range.");
         auto& stream = streams_[offset];
         for (auto& buffer : chunkWriter.encode(encoded)) {
+          streamSize += buffer.size();
           chunkSize += buffer.size();
           stream.content.push_back(std::move(buffer));
         }
@@ -739,29 +740,37 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       velox::dwio::common::ExecutorBarrier barrier{
           context_->options.encodingExecutor};
       for (auto& streamData : context_->streams()) {
+        auto& streamSize =
+            context_->columnStats[streamData->descriptor().offset()]
+                .physicalSize;
         processStream(
             *streamData, [&](StreamData& innerStreamData, bool isNullStream) {
-              barrier.add([&innerStreamData, isNullStream, &encode]() {
-                if (isNullStream) {
-                  NullsAsDataStreamData nullsStreamData{innerStreamData};
-                  encode(nullsStreamData);
-                } else {
-                  encode(innerStreamData);
-                }
-              });
+              barrier.add(
+                  [&innerStreamData, isNullStream, &encode, &streamSize]() {
+                    if (isNullStream) {
+                      NullsAsDataStreamData nullsStreamData{innerStreamData};
+                      encode(nullsStreamData, streamSize);
+                    } else {
+                      encode(innerStreamData, streamSize);
+                    }
+                  });
             });
       }
       barrier.waitAll();
     } else {
       for (auto& streamData : context_->streams()) {
+        auto& streamSize =
+            context_->columnStats[streamData->descriptor().offset()]
+                .physicalSize;
         processStream(
             *streamData,
-            [&encode](StreamData& innerStreamData, bool isNullStream) {
+            [&encode, &streamSize](
+                StreamData& innerStreamData, bool isNullStream) {
               if (isNullStream) {
                 NullsAsDataStreamData nullsStreamData{innerStreamData};
-                encode(nullsStreamData);
+                encode(nullsStreamData, streamSize);
               } else {
-                encode(innerStreamData);
+                encode(innerStreamData, streamSize);
               }
             });
       }
@@ -890,7 +899,8 @@ VeloxWriter::RunStats VeloxWriter::getRunStats() const {
       .encodingSelectionCpuTimeUsec =
           context_->encodingSelectionTiming.cpuNanos / 1000,
       .inputBufferReallocCount = context_->inputBufferGrowthStats.count,
-      .inputBufferReallocItemCount =
-          context_->inputBufferGrowthStats.itemCount};
+      .inputBufferReallocItemCount = context_->inputBufferGrowthStats.itemCount,
+      .columnStats = context_->columnStats,
+  };
 }
 } // namespace facebook::nimble

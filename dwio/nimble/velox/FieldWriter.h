@@ -15,9 +15,8 @@
  */
 #pragma once
 
-#include <span>
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/stats/ColumnStatsUtils.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/OrderedRanges.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
@@ -138,6 +137,9 @@ struct FieldWriterContext {
 
   std::unique_ptr<InputBufferGrowthPolicy> inputBufferGrowthPolicy;
   InputBufferGrowthStats inputBufferGrowthStats;
+
+  // TODO(T226402409): Replace this with stats builder class.
+  std::unordered_map<offset_size, ColumnStats> columnStats;
 
   std::function<void(const TypeBuilder&, std::string_view, const TypeBuilder&)>
       flatmapFieldAddedEventHandler;
