@@ -115,8 +115,8 @@ velox_resolve_dependency(Boost 1.77.0 COMPONENTS ${BOOST_INCLUDE_LIBRARIES})
 velox_set_source(folly)
 velox_resolve_dependency(folly)
 
-velox_set_source(abseil)
-velox_resolve_dependency(abseil)
+velox_set_source(absl)
+velox_resolve_dependency(absl)
 
 # Use xxhash and xsimd from Velox for now.
 include_directories(.)
