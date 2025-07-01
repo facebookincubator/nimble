@@ -37,7 +37,6 @@
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
 #include "folly/Random.h"
-#include "folly/container/F14Set.h"
 #include "velox/common/memory/Memory.h"
 
 // Tests the Encoding API for all basic Encoding implementations and data types.
