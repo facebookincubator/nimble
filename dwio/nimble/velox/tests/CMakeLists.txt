@@ -25,7 +25,8 @@ add_executable(
   SchemaTests.cpp
   TypeTests.cpp
   VeloxReaderTests.cpp
-  VeloxWriterTests.cpp)
+  VeloxWriterTests.cpp
+  FieldWriterStatsTests.cpp)
 add_test(nimble_velox_tests nimble_velox_tests)
 
 target_link_libraries(
@@ -46,7 +47,9 @@ target_link_libraries(
   gmock
   gtest
   gtest_main
-  Folly::folly)
+  Folly::folly
+  raw_size_utils
+  nimble_column_stats_utils)
 
 add_executable(raw_size_tests RawSizeTests.cpp)
 add_test(raw_size_tests raw_size_tests)

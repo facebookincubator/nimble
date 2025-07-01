@@ -49,6 +49,7 @@ class VeloxWriter {
     // coverage in the future.
     uint64_t inputBufferReallocCount;
     uint64_t inputBufferReallocItemCount;
+    std::unordered_map<offset_size, ColumnStats> columnStats;
   };
 
   VeloxWriter(
