@@ -15,7 +15,6 @@
  */
 #include <tsl/robin_map.h>
 #include <bit>
-#include <limits>
 
 #include "common/init/light.h"
 #include "folly/Benchmark.h"
