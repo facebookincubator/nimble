@@ -16,7 +16,6 @@
 #include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/common/Vector.h"
 
 namespace facebook::nimble {
 
