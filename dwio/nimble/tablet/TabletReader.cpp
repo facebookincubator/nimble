@@ -16,7 +16,6 @@
 #include "dwio/nimble/tablet/TabletReader.h"
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/tablet/Compression.h"
@@ -29,7 +28,6 @@
 #include <iterator>
 #include <limits>
 #include <memory>
-#include <numeric>
 #include <optional>
 #include <tuple>
 #include <vector>
