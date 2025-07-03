@@ -106,7 +106,7 @@ struct VectorInitializer<velox::FlatVector<T>> {
     velox::BufferPtr nulls;
     if (vector) {
       nulls = vector->nulls();
-      values = vector->mutableValues(rowCount);
+      values = vector->mutableValues();
       resetIfNotWritable(output, nulls, values);
     }
     if (!values) {
@@ -454,7 +454,7 @@ class ScalarFieldReader final
           [&]() { return paddedNulls(vector, rowCount); },
           scatterBitmap);
 
-      auto target = vector->mutableValues(rowCount)->template asMutable<char>();
+      auto target = vector->mutableValues()->template asMutable<char>();
       std::fill(target, target + bits::bytesRequired(rowCount), 0);
       for (uint32_t i = 0; i < rowCount; ++i) {
         bits::maybeSetBit(i, target, buf[i]);
@@ -462,7 +462,7 @@ class ScalarFieldReader final
     } else {
       nonNullCount = decoder_->next(
           count,
-          vector->mutableValues(rowCount)->template asMutable<TRequested>(),
+          vector->mutableValues()->template asMutable<TRequested>(),
           [&]() { return paddedNulls(vector, rowCount); },
           scatterBitmap);
     }
