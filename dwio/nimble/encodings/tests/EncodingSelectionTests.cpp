@@ -20,13 +20,14 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
-#include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/tools/EncodingUtilities.h"
 
 using namespace facebook;
 
 namespace {
+constexpr uint32_t commonPrefixSize = 6;
+
 template <typename T, bool FixedByteWidth = false>
 std::unique_ptr<nimble::ManualEncodingSelectionPolicy<T, FixedByteWidth>>
 getRootManualSelectionPolicy() {
@@ -102,6 +103,38 @@ template <typename T>
 typename nimble::TypeTraits<T>::physicalType asPhysicalType(T value) {
   return *reinterpret_cast<typename nimble::TypeTraits<T>::physicalType*>(
       &value);
+}
+
+template <typename T, bool FixedByteWidth>
+void verifySizeEstimate(
+    std::span<const T> values,
+    nimble::Buffer& buffer,
+    size_t expectedEstimatedSize,
+    size_t expectedActualSize,
+    nimble::EncodingType encodingTypeForEstimation,
+    const std::vector<std::pair<nimble::EncodingType, float>>& readFactors) {
+  // Create a policy that uses no compression
+  auto policy = std::make_unique<
+      nimble::ManualEncodingSelectionPolicy<T, FixedByteWidth>>(
+      readFactors,
+      nimble::CompressionOptions{
+          .compressionAcceptRatio = 0.0,
+      },
+      std::nullopt);
+
+  // Check the serialized uncompressed size
+  auto serialized =
+      nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
+  auto actualSize = serialized.size();
+  EXPECT_EQ(actualSize, expectedActualSize);
+
+  // Check the estimated size
+  auto estimatedSize =
+      nimble::detail::EncodingSizeEstimation<T, FixedByteWidth>::estimateSize(
+          encodingTypeForEstimation,
+          values.size(),
+          nimble::Statistics<T>::create(values));
+  EXPECT_EQ(estimatedSize, expectedEstimatedSize);
 }
 
 template <typename T>
@@ -545,18 +578,33 @@ TEST(EncodingSelectionBoolTests, SelectTrivial) {
 
   std::vector<std::unique_ptr<nimble::EncodingSelectionPolicy<T>>> policies;
   policies.push_back(getRootManualSelectionPolicy<T>());
-  // use ml policy
   policies.push_back(
       std::make_unique<nimble::LearnedEncodingSelectionPolicy<T>>());
 
   auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   nimble::Buffer buffer{*pool};
 
+  // Size estimate:
+  // 1. Encoding header
+  // 2. 1 byte for the compression flag
+  // 3. Number of bytes to hold one bit per value rounded up to a full byte
+  // 4. 7 extra bytes for the safe vectorized extraction
+  size_t encodingOverhead = commonPrefixSize + 1 + 7;
+
   for (auto& policy : policies) {
-    std::array<T, 10000> values;
+    std::array<T, 10003> values{};
     for (auto i = 0; i < values.size(); ++i) {
       values[i] = folly::Random::oneIn(2, rng);
     }
+
+    const uint32_t expectedEncodedDataSize = std::ceil(values.size() / 8.0);
+    verifySizeEstimate<T, false>(
+        values,
+        buffer,
+        expectedEncodedDataSize + encodingOverhead,
+        expectedEncodedDataSize + encodingOverhead,
+        nimble::EncodingType::Trivial,
+        {{nimble::EncodingType::Trivial, 1.0}});
 
     auto serialized =
         nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
