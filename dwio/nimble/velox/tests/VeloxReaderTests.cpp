@@ -3478,9 +3478,9 @@ TEST_F(VeloxReaderTests, MapToFlatMapAndPassthrough) {
 
     // ensure result is all flatmaps
     auto rowVector = result->as<velox::RowVector>();
-    for (int i = 0; i < rowVector->childrenSize(); ++i) {
+    for (int childIdx = 0; childIdx < rowVector->childrenSize(); ++childIdx) {
       ASSERT_TRUE(
-          result->as<velox::RowVector>()->childAt(i)->type()->kind() ==
+          result->as<velox::RowVector>()->childAt(childIdx)->type()->kind() ==
           velox::TypeKind::ROW);
     }
     fullReadResult.push_back(std::move(result));
