@@ -893,6 +893,7 @@ VeloxWriter::RunStats VeloxWriter::getRunStats() const {
   return RunStats{
       .bytesWritten = context_->bytesWritten,
       .stripeCount = folly::to<uint32_t>(context_->getStripeIndex()),
+      .rawSize = context_->rawSize,
       .rowsPerStripe = context_->rowsPerStripe,
       .flushCpuTimeUsec = context_->totalFlushTiming.cpuNanos / 1000,
       .flushWallTimeUsec = context_->totalFlushTiming.wallNanos / 1000,
