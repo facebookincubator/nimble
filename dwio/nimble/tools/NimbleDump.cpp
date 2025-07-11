@@ -221,7 +221,8 @@ int main(int argc, char* argv[]) {
                std::cout, options["file"].as<std::string>()}
                .emitContent(
                    options["stream"].as<uint32_t>(),
-                   getOptional<uint32_t>(options["stripe"]));
+                   getOptional<uint32_t>(options["stripe"]),
+                   options["separator"].as<std::string>());
          },
          positionalArgs)
       // clang-format off
@@ -239,6 +240,10 @@ int main(int argc, char* argv[]) {
                 po::value<uint32_t>(),
                 "Limit output to a single stripe with the provided stripe id. "
                 "Default is to output stream content across in all stripes."
+            )(
+                "separator",
+                po::value<std::string>()->default_value("\n"),
+                "Record separator. Default is \\n."
             );
   // clang-format on
 
