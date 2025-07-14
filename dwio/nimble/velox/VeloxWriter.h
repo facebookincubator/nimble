@@ -41,6 +41,7 @@ class VeloxWriter {
   struct RunStats {
     uint64_t bytesWritten;
     uint32_t stripeCount;
+    uint64_t rawSize;
     std::vector<uint64_t> rowsPerStripe;
     uint64_t flushCpuTimeUsec;
     uint64_t flushWallTimeUsec;
