@@ -110,14 +110,16 @@ class TableFormatter {
           uint8_t /* Width */,
           Alignment /* Horizontal Alignment */
           >> fields,
-      bool noHeader = false)
-      : ostream_{ostream}, fields_{std::move(fields)} {
+      bool noHeader = false,
+      const std::string& separator = "\t")
+      : ostream_{ostream}, fields_{std::move(fields)}, separator_{separator} {
     if (!noHeader) {
       ostream << YELLOW;
       for (const auto& field : fields_) {
         ostream << (std::get<2>(field) == Alignment::Right ? std::right
                                                            : std::left)
-                << std::setw(std::get<1>(field) + 2) << std::get<0>(field);
+                << std::setw(std::get<1>(field)) << std::get<0>(field)
+                << ((&field != &fields_.back()) ? separator_ : "");
       }
       ostream << RESET_COLOR << std::endl;
     }
@@ -128,7 +130,8 @@ class TableFormatter {
     for (auto i = 0; i < values.size(); ++i) {
       ostream_ << (std::get<2>(fields_[i]) == Alignment::Right ? std::right
                                                                : std::left)
-               << std::setw(std::get<1>(fields_[i]) + 2) << values[i];
+               << std::setw(std::get<1>(fields_[i])) << values[i]
+               << (i != values.size() - 1 ? separator_ : "");
     }
     ostream_ << std::endl;
   }
@@ -141,6 +144,7 @@ class TableFormatter {
       Alignment /* Horizontal Alignment */
       >>
       fields_;
+  const std::string& separator_;
 };
 
 void traverseTablet(
@@ -469,14 +473,14 @@ void NimbleDumpLib::emitStreams(
   auto tabletReader = std::make_shared<TabletReader>(*pool_, file_.get());
 
   std::vector<std::tuple<std::string, uint8_t, Alignment>> fields;
-  fields.push_back({"Stripe Id", 11, Alignment::Left});
-  fields.push_back({"Stream Id", 11, Alignment::Left});
-  fields.push_back({"Stream Offset", 13, Alignment::Left});
-  fields.push_back({"Stream Size", 13, Alignment::Left});
+  fields.push_back({"Stripe Id", 9, Alignment::Left});
+  fields.push_back({"Stream Id", 9, Alignment::Left});
+  fields.push_back({"Stream Offset", 13, Alignment::Right});
+  fields.push_back({"Stream Length", 13, Alignment::Right});
   if (showStreamRawSize) {
-    fields.push_back({"Raw Stream Size", 16, Alignment::Left});
+    fields.push_back({"Raw Stream Size", 16, Alignment::Right});
   }
-  fields.push_back({"Item Count", 13, Alignment::Left});
+  fields.push_back({"Item Count", 13, Alignment::Right});
   if (showStreamLabels) {
     fields.push_back({"Stream Label", 16, Alignment::Left});
   }
