@@ -147,15 +147,12 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
       // For nullable encodings we only capture the data encoding part, so we
       // are "overwriting" the current captured node with the nested data node.
       return EncodingLayoutCapture::capture({pos, dataBytes});
-
-      break;
     }
     case EncodingType::Sentinel: {
       // For sentinel encodings we only capture the data encoding part, so we
       // are "overwriting" the current captured node with the nested data node.
       return EncodingLayoutCapture::capture(
           encoding.substr(kEncodingPrefixSize + 8));
-      break;
     }
   }
 
