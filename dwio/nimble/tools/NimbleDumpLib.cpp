@@ -187,7 +187,8 @@ void printScalarData(
     std::ostream& ostream,
     velox::memory::MemoryPool& pool,
     Encoding& stream,
-    uint32_t rowCount) {
+    uint32_t rowCount,
+    const std::string& separator) {
   nimble::Vector<T> buffer(&pool);
   nimble::Vector<char> nulls(&pool);
   buffer.resize(rowCount);
@@ -206,19 +207,17 @@ void printScalarData(
     // and we should not use it. We should just read all values, ignoring the
     // nulls bitmap.
     for (uint32_t i = 0; i < rowCount; ++i) {
-      ostream << folly::to<std::string>(buffer[i])
-              << std::endl; // Have to use folly::to as Int8 was getting
-                            // converted to char.
+      // Have to use folly::to as Int8 was getting converted to char.
+      ostream << folly::to<std::string>(buffer[i]) << separator;
     }
   } else {
     for (uint32_t i = 0; i < rowCount; ++i) {
       assert(stream.isNullable());
       if (nimble::bits::getBit(i, nulls.data()) == 0) {
-        ostream << "NULL" << std::endl;
+        ostream << "NULL" << separator;
       } else {
-        ostream << folly::to<std::string>(buffer[i])
-                << std::endl; // Have to use folly::to as Int8 was getting
-                              // converted to char.
+        // Have to use folly::to as Int8 was getting converted to char.
+        ostream << folly::to<std::string>(buffer[i]) << separator;
       }
     }
   }
@@ -228,12 +227,13 @@ void printScalarType(
     std::ostream& ostream,
     velox::memory::MemoryPool& pool,
     Encoding& stream,
-    uint32_t rowCount) {
+    uint32_t rowCount,
+    const std::string& separator) {
   switch (stream.dataType()) {
-#define CASE(KIND, cppType)                                    \
-  case DataType::KIND: {                                       \
-    printScalarData<cppType>(ostream, pool, stream, rowCount); \
-    break;                                                     \
+#define CASE(KIND, cppType)                                               \
+  case DataType::KIND: {                                                  \
+    printScalarData<cppType>(ostream, pool, stream, rowCount, separator); \
+    break;                                                                \
   }
     CASE(Int8, int8_t);
     CASE(Uint8, uint8_t);
@@ -642,7 +642,8 @@ void NimbleDumpLib::emitHistogram(
 
 void NimbleDumpLib::emitContent(
     uint32_t streamId,
-    std::optional<uint32_t> stripeId) {
+    std::optional<uint32_t> stripeId,
+    const std::string& separator) {
   TabletReader tabletReader{*pool_, file_.get()};
 
   uint32_t maxStreamCount;
@@ -667,7 +668,8 @@ void NimbleDumpLib::emitContent(
         uint32_t totalRows = encoding->rowCount();
         while (totalRows > 0) {
           auto currentReadSize = std::min(kBufferSize, totalRows);
-          printScalarType(ostream_, *pool_, *encoding, currentReadSize);
+          printScalarType(
+              ostream_, *pool_, *encoding, currentReadSize, separator);
           totalRows -= currentReadSize;
         }
       }
