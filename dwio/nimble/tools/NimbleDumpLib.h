@@ -37,7 +37,10 @@ class NimbleDumpLib {
       std::optional<uint32_t> stripeId);
   void
   emitHistogram(bool topLevel, bool noHeader, std::optional<uint32_t> stripeId);
-  void emitContent(uint32_t streamId, std::optional<uint32_t> stripeId);
+  void emitContent(
+      uint32_t streamId,
+      std::optional<uint32_t> stripeId,
+      const std::string& separator);
   void emitBinary(
       std::function<std::unique_ptr<std::ostream>()> outputFactory,
       uint32_t streamId,
