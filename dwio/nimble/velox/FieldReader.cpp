@@ -2936,7 +2936,7 @@ velox::TypePtr inferType(
     size_t level) {
   // Special case for flatmaps. If the flatmap field is missing, still need to
   // honor the "as struct" intent by returning row instead of map.
-  if (level == 1 && params.readFlatMapFieldAsStruct.count(name) > 0) {
+  if (level == 1 && params.readFlatMapFieldAsStruct.contains(name)) {
     NIMBLE_CHECK(
         type->kind() == velox::TypeKind::MAP,
         "Unexpected type kind of flat maps.");
@@ -3217,7 +3217,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
             level == 1 && name != nullptr,
             "Flat map is only supported as top level fields");
         auto flatMapAsStruct =
-            parameters.readFlatMapFieldAsStruct.count(*name) > 0;
+            parameters.readFlatMapFieldAsStruct.contains(*name);
 
         // Extract features only when flat map is not empty. When flatmap is
         // empty, writer creates dummy child with empty name to carry schema
@@ -3317,7 +3317,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
                   features.begin(), features.end());
               selectedChildren.reserve(childrenCount);
               for (auto i = 0; i < childrenCount; ++i) {
-                if (exclusions.count(nimbleFlatMap.nameAt(i)) == 0) {
+                if (!exclusions.contains(nimbleFlatMap.nameAt(i))) {
                   selectedChildren.push_back(i);
                 }
               }
