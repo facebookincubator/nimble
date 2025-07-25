@@ -3170,7 +3170,7 @@ bool compareFlatMap(
   }
   // missing keys should be null
   for (const auto& columnOffset : columnOffsets) {
-    if (keys.count(folly::to<std::string>(columnOffset.first)) == 0 &&
+    if (!keys.contains(folly::to<std::string>(columnOffset.first)) &&
         !structVector->childAt(columnOffset.second)->isNullAt(index)) {
       return false;
     }
@@ -5452,7 +5452,7 @@ TEST_F(VeloxReaderTests, InaccurateSchemaWithSelection) {
     ASSERT_EQ(inaccurateType->size(), rowResult->childrenSize());
     for (auto i = 0; i < rowResult->childrenSize(); ++i) {
       const auto& child = rowResult->childAt(i);
-      if (projected.count(i) == 0) {
+      if (!projected.contains(i)) {
         ASSERT_EQ(rowResult->childAt(i), nullptr);
       } else {
         ASSERT_EQ(5, child->size());
