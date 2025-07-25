@@ -144,7 +144,7 @@ class TableFormatter {
       Alignment /* Horizontal Alignment */
       >>
       fields_;
-  const std::string& separator_;
+  const std::string separator_;
 };
 
 void traverseTablet(
