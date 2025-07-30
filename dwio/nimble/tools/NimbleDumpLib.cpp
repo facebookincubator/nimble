@@ -838,7 +838,9 @@ void NimbleDumpLib::emitLayout(bool noHeader, bool compressed) {
   file_->pread(0, size, buffer.data());
   if (compressed) {
     std::string uncompressed;
-    strings::zstdDecompress(buffer, &uncompressed);
+    NIMBLE_CHECK(
+        strings::zstdDecompress(buffer, &uncompressed),
+        "Decompress failed during `emitLayout`");
     buffer = std::move(uncompressed);
   }
 
