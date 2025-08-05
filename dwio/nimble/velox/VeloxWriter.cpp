@@ -45,6 +45,8 @@ namespace detail {
 class WriterContext : public FieldWriterContext {
  public:
   const VeloxWriterOptions options;
+  std::unique_ptr<velox::dwio::common::ExecutorBarrier> writeBarrier;
+  std::unique_ptr<velox::dwio::common::ExecutorBarrier> encodeBarrier;
   std::unique_ptr<FlushPolicy> flushPolicy;
   velox::CpuWallTiming totalFlushTiming;
   velox::CpuWallTiming stripeFlushTiming;
@@ -66,6 +68,16 @@ class WriterContext : public FieldWriterContext {
       VeloxWriterOptions options)
       : FieldWriterContext{memoryPool, options.reclaimerFactory(), options.vectorDecoderVisitor},
         options{std::move(options)},
+        writeBarrier{
+            this->options.writeExecutor
+                ? std::make_unique<velox::dwio::common::ExecutorBarrier>(
+                      this->options.writeExecutor)
+                : nullptr},
+        encodeBarrier{
+            this->options.encodingExecutor
+                ? std::make_unique<velox::dwio::common::ExecutorBarrier>(
+                      this->options.encodingExecutor)
+                : nullptr},
         logger{this->options.metricsLogger} {
     flushPolicy = this->options.flushPolicyFactory();
     inputBufferGrowthPolicy = this->options.lowMemoryMode
@@ -518,11 +530,10 @@ bool VeloxWriter::write(const velox::VectorPtr& vector) {
     DWIO_ENSURE_GE(rawSize, 0, "Invalid raw size");
     context_->rawSize += rawSize;
 
-    if (context_->options.writeExecutor) {
-      velox::dwio::common::ExecutorBarrier barrier{
-          context_->options.writeExecutor};
-      root_->write(vector, OrderedRanges::of(0, size), &barrier);
-      barrier.waitAll();
+    if (context_->writeBarrier) {
+      root_->write(
+          vector, OrderedRanges::of(0, size), context_->writeBarrier.get());
+      context_->writeBarrier->waitAll();
     } else {
       root_->write(vector, OrderedRanges::of(0, size));
     }
@@ -736,16 +747,14 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       }
     };
 
-    if (context_->options.encodingExecutor) {
-      velox::dwio::common::ExecutorBarrier barrier{
-          context_->options.encodingExecutor};
+    if (context_->encodeBarrier) {
       for (auto& streamData : context_->streams()) {
         auto& streamSize =
             context_->columnStats[streamData->descriptor().offset()]
                 .physicalSize;
         processStream(
             *streamData, [&](StreamData& innerStreamData, bool isNullStream) {
-              barrier.add(
+              context_->encodeBarrier->add(
                   [&innerStreamData, isNullStream, &encode, &streamSize]() {
                     if (isNullStream) {
                       NullsAsDataStreamData nullsStreamData{innerStreamData};
@@ -756,7 +765,7 @@ void VeloxWriter::writeChunk(bool lastChunk) {
                   });
             });
       }
-      barrier.waitAll();
+      context_->encodeBarrier->waitAll();
     } else {
       for (auto& streamData : context_->streams()) {
         auto& streamSize =
