@@ -88,6 +88,7 @@ union CompressionParameters {
 struct CompressionInformation {
   CompressionType compressionType{};
   CompressionParameters parameters{};
+  uint64_t minCompressionSize = 0;
 };
 
 class CompressionPolicy {
