@@ -535,6 +535,7 @@ bool VeloxWriter::write(const velox::VectorPtr& vector) {
     context_->memoryUsed = memoryUsed;
     context_->rowsInFile += size;
     context_->rowsInStripe += size;
+    context_->bytesWritten = file_->size();
 
     return tryWriteStripe();
   } catch (...) {
