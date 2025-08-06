@@ -46,10 +46,6 @@ target_link_libraries(
   nimble_velox_field_writer nimble_velox_schema nimble_velox_stream_data
   nimble_velox_schema_builder Folly::folly)
 
-# Nimble code expects an upper case suffix to the generated file.
-list(PREPEND FLATBUFFERS_FLATC_SCHEMA_EXTRA_ARGS "--filename-suffix"
-     "Generated")
-
 build_flatbuffers(
   "${CMAKE_CURRENT_SOURCE_DIR}/Schema.fbs"
   ""
