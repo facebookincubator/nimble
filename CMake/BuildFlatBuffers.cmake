@@ -95,10 +95,11 @@ function(build_flatbuffers flatbuffers_schemas
     get_filename_component(filename ${schema} NAME_WE)
     # For each schema, do the things we requested.
     if (NOT ${generated_includes_dir} STREQUAL "")
-      set(generated_include ${generated_includes_dir}/${filename}_generated.h)
+      set(generated_include ${generated_includes_dir}/${filename}Generated.h)
       add_custom_command(
         OUTPUT ${generated_include}
-        COMMAND ${FLATC} ${FLATC_SCHEMA_ARGS}
+        # Nimble code expects an upper case suffix to the generated file.
+        COMMAND ${FLATC} "--filename-suffix" "Generated" ${FLATC_SCHEMA_ARGS}
         -o ${generated_includes_dir}
         ${include_params}
         -c ${schema}
