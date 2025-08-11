@@ -13,10 +13,6 @@
 # limitations under the License.
 add_subdirectory(tests)
 
-# Nimble code expects an upper case suffix to the generated file.
-list(PREPEND FLATBUFFERS_FLATC_SCHEMA_EXTRA_ARGS "--filename-suffix"
-     "Generated")
-
 build_flatbuffers(
   "${CMAKE_CURRENT_SOURCE_DIR}/Footer.fbs"
   ""
