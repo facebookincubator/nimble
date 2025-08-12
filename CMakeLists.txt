@@ -43,6 +43,9 @@ set(VELOX_BUILD_VECTOR_TEST_UTILS
 set(VELOX_DEPENDENCY_SOURCE
     AUTO
     CACHE STRING "Default dependency source: AUTO SYSTEM or BUNDLED.")
+set(VELOX_ENABLE_GEO
+    OFF
+    CACHE BOOL "Disable GEO which is only used in Velox UDFs")
 
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
