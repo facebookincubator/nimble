@@ -263,7 +263,7 @@ uint64_t getRawSizeFromArrayVector(
           arrayVector,
           "Encoding mismatch on ArrayVector. Encoding: {}. TypeKind: {}.",
           encoding,
-          arrayVector->typeKind());
+          vector->typeKind());
       offsets = arrayVector->rawOffsets();
       sizes = arrayVector->rawSizes();
 
@@ -294,7 +294,7 @@ uint64_t getRawSizeFromArrayVector(
           dictionaryArrayVector,
           "Encoding mismatch on DictionaryVector. Encoding: {}. TypeKind: {}.",
           encoding,
-          dictionaryArrayVector->typeKind());
+          vector->typeKind());
 
       auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
           context.getDecodedVectorManager());
@@ -306,8 +306,8 @@ uint64_t getRawSizeFromArrayVector(
       VELOX_CHECK_NOT_NULL(
           arrayVector,
           "Encoding mismatch on ArrayVector. Encoding: {}. TypeKind: {}.",
-          arrayVector->encoding(),
-          arrayVector->typeKind());
+          decodedVector.base()->encoding(),
+          decodedVector.base()->typeKind());
 
       offsets = arrayVector->rawOffsets();
       sizes = arrayVector->rawSizes();
@@ -377,7 +377,7 @@ uint64_t getRawSizeFromMapVector(
           mapVector,
           "Encoding mismatch on MapVector. Encoding: {}. TypeKind: {}.",
           encoding,
-          mapVector->typeKind());
+          vector->typeKind());
 
       offsets = mapVector->rawOffsets();
       sizes = mapVector->rawSizes();
@@ -409,7 +409,7 @@ uint64_t getRawSizeFromMapVector(
           dictionaryMapVector,
           "Encoding mismatch on DictionaryVector. Encoding: {}. TypeKind: {}.",
           encoding,
-          dictionaryMapVector->typeKind());
+          vector->typeKind());
 
       auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
           context.getDecodedVectorManager());
@@ -420,8 +420,8 @@ uint64_t getRawSizeFromMapVector(
       VELOX_CHECK_NOT_NULL(
           mapVector,
           "Encoding mismatch on FlatVector. MapVector: {}. TypeKind: {}.",
-          mapVector->encoding(),
-          mapVector->typeKind());
+          decodedVector.base()->encoding(),
+          decodedVector.base()->typeKind());
 
       offsets = mapVector->rawOffsets();
       sizes = mapVector->rawSizes();
@@ -481,7 +481,7 @@ uint64_t getRawSizeFromRowVector(
           rowVector,
           "Encoding mismatch on RowVector. Encoding: {}. TypeKind: {}.",
           encoding,
-          rowVector->typeKind());
+          vector->typeKind());
 
       childRangesPtr = &childRanges;
       if (rowVector->mayHaveNulls()) {
@@ -511,7 +511,7 @@ uint64_t getRawSizeFromRowVector(
           dictionaryRowVector,
           "Encoding mismatch on DictionaryVector. Encoding: {}. TypeKind: {}.",
           encoding,
-          dictionaryRowVector->typeKind());
+          vector->typeKind());
 
       auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
           context.getDecodedVectorManager());
@@ -522,8 +522,8 @@ uint64_t getRawSizeFromRowVector(
       VELOX_CHECK_NOT_NULL(
           rowVector,
           "Encoding mismatch on RowVector. Encoding: {}. TypeKind: {}.",
-          rowVector->encoding(),
-          rowVector->typeKind());
+          decodedVector.base()->encoding(),
+          decodedVector.base()->typeKind());
 
       childRangesPtr = &childRanges;
       if (decodedVector.mayHaveNulls()) {
