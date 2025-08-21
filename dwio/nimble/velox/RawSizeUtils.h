@@ -37,4 +37,5 @@ uint64_t getRawSizeFromRowVector(
     const velox::common::Ranges& ranges,
     RawSizeContext& context,
     const bool topLevel = false);
+
 } // namespace facebook::nimble
