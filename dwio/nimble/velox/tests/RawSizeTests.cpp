@@ -298,21 +298,31 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
         expectedRawSize += nimble::NULL_SIZE;
       } else {
         std::vector<std::pair<TKey, std::optional<TValue>>> innerVec;
+        std::unordered_set<TKey> keysSeen;
+
         velox::vector_size_t innerSize =
             folly::Random::rand32() % VECTOR_SIZE + 1;
+        innerVec.reserve(innerSize);
+
         for (velox::vector_size_t j = 0; j < innerSize; ++j) {
           TKey key = getValue<TKey>(j);
-          if (isNullAt(j)) {
-            innerVec.emplace_back(key, std::nullopt);
-            expectedRawSize += nimble::NULL_SIZE;
-          } else {
-            auto value = getValue<TValue>(j);
-            expectedRawSize += getSize<TValue>(value);
-            innerVec.emplace_back(key, value);
+
+          // Make sure we don't generate maps with duplicated keys.
+          if (!keysSeen.contains(key)) {
+            keysSeen.insert(key);
+
+            if (isNullAt(j)) {
+              innerVec.emplace_back(key, std::nullopt);
+              expectedRawSize += nimble::NULL_SIZE;
+            } else {
+              auto value = getValue<TValue>(j);
+              expectedRawSize += getSize<TValue>(value);
+              innerVec.emplace_back(key, value);
+            }
+            expectedRawSize += getSize<TKey>(key);
           }
-          expectedRawSize += getSize<TKey>(key);
         }
-        vec.emplace_back(innerVec);
+        vec.emplace_back(std::move(innerVec));
       }
     }
     auto mapVector = vectorMaker_->mapVector<TKey, TValue>(vec);
@@ -330,21 +340,32 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
         vec;
     uint64_t expectedRawSize = 0;
     std::vector<std::pair<TKey, std::optional<TValue>>> innerVec;
+    std::unordered_set<TKey> keysSeen;
+
     velox::vector_size_t innerSize = folly::Random::rand32() % VECTOR_SIZE + 1;
+    innerVec.reserve(innerSize);
+
     for (velox::vector_size_t j = 0; j < innerSize; ++j) {
       TKey key = getValue<TKey>(j);
-      if (isNullAt(j)) {
-        innerVec.emplace_back(key, std::nullopt);
-        expectedRawSize += nimble::NULL_SIZE;
-      } else {
-        auto value = getValue<TValue>(j);
-        expectedRawSize += getSize<TValue>(value);
-        innerVec.emplace_back(key, value);
+
+      // Make sure we don't generate maps with duplicated keys.
+      if (!keysSeen.contains(key)) {
+        keysSeen.insert(key);
+
+        if (isNullAt(j)) {
+          innerVec.emplace_back(key, std::nullopt);
+          expectedRawSize += nimble::NULL_SIZE;
+        } else {
+          auto value = getValue<TValue>(j);
+          expectedRawSize += getSize<TValue>(value);
+          innerVec.emplace_back(key, value);
+        }
+        expectedRawSize += getSize<TKey>(key);
       }
-      expectedRawSize += getSize<TKey>(key);
     }
     expectedRawSize *= VECTOR_SIZE;
-    vec.emplace_back(innerVec);
+    vec.emplace_back(std::move(innerVec));
+
     auto mapVector = vectorMaker_->mapVector<TKey, TValue>(vec);
     auto constVector =
         velox::BaseVector::wrapInConstant(VECTOR_SIZE, 0, mapVector);
@@ -368,28 +389,40 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
         vec.emplace_back(std::nullopt);
       } else {
         std::vector<std::pair<TKey, std::optional<TValue>>> innerVec;
+        std::unordered_set<TKey> keysSeen;
+
         uint64_t size = 0;
         velox::vector_size_t innerSize =
             folly::Random::rand32() % VECTOR_SIZE + 1;
+        innerVec.reserve(innerSize);
+
         for (velox::vector_size_t j = 0; j < innerSize; ++j) {
           TKey key = getValue<TKey>(j);
-          if (isNullAt(j)) {
-            size += nimble::NULL_SIZE;
-            innerVec.emplace_back(key, std::nullopt);
-          } else {
-            auto value = getValue<TValue>(j);
-            size += getSize<TValue>(value);
-            innerVec.emplace_back(key, value);
+
+          // Make sure we don't generate maps with duplicated keys.
+          if (!keysSeen.contains(key)) {
+            keysSeen.insert(key);
+
+            if (isNullAt(j)) {
+              size += nimble::NULL_SIZE;
+              innerVec.emplace_back(key, std::nullopt);
+            } else {
+              auto value = getValue<TValue>(j);
+              size += getSize<TValue>(value);
+              innerVec.emplace_back(key, value);
+            }
+            size += getSize<TKey>(key);
           }
-          size += getSize<TKey>(key);
         }
         indexToSize[i - 1] = size;
-        vec.emplace_back(innerVec);
+        vec.emplace_back(std::move(innerVec));
       }
     }
+
     auto mapVector = vectorMaker_->mapVector<TKey, TValue>(vec);
     auto indices = randomIndices(VECTOR_SIZE);
     const velox::vector_size_t* data = indices->as<velox::vector_size_t>();
+
     for (auto i = 0; i < VECTOR_SIZE; ++i) {
       if (vec[data[i]] == std::nullopt) {
         expectedRawSize += nimble::NULL_SIZE;
