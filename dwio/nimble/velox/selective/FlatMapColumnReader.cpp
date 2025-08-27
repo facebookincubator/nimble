@@ -412,7 +412,8 @@ createFlatMapColumnReader(
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& fileType,
     NimbleParams& params,
     velox::common::ScanSpec& scanSpec) {
-  auto kind = fileType->childAt(0)->type()->kind();
+  VELOX_DCHECK(requestedType->isMap());
+  auto kind = requestedType->childAt(0)->kind();
   switch (kind) {
     case TypeKind::TINYINT:
       return createReader<int8_t>(requestedType, fileType, params, scanSpec);
