@@ -430,14 +430,17 @@ void NimbleDumpLib::emitSchema(bool collapseFlatMap) {
           ostream_ << std::string(
                           (std::basic_string<char>::size_type)level * 2, ' ')
                    << "[" << emitOffsets(type) << "] " << info.name << " : ";
+          ostream_ << toString(type.kind());
           if (type.isScalar()) {
-            ostream_ << toString(type.kind()) << "<"
+            ostream_ << "<"
                      << toString(
                             type.asScalar().scalarDescriptor().scalarKind())
-                     << ">" << std::endl;
-          } else {
-            ostream_ << toString(type.kind()) << std::endl;
+                     << ">";
+          } else if (type.isFlatMap()) {
+            ostream_ << "<" << toString(type.asFlatMap().keyScalarKind())
+                     << ">";
           }
+          ostream_ << std::endl;
         }
       });
 }
