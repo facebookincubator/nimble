@@ -20,6 +20,8 @@
 #include <string_view>
 #include <variant>
 
+#include <fmt/format.h>
+
 // Single file containing all the types and enums in nimble, as well as some
 // templates for mapping between those types and C++ types.
 //
@@ -120,6 +122,7 @@ enum class DataType : uint8_t {
 
 std::string toString(DataType dataType);
 std::ostream& operator<<(std::ostream& out, DataType dataType);
+fmt::underlying_t<DataType> format_as(DataType dataType);
 
 // General string compression. Make sure values here match those in the footer
 // specification
