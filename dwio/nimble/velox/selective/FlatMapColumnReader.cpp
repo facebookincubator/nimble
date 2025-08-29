@@ -21,7 +21,6 @@
 #include "dwio/nimble/velox/selective/StructColumnReader.h"
 #include "velox/dwio/common/FlatMapHelper.h"
 #include "velox/dwio/common/SelectiveFlatMapColumnReader.h"
-#include "velox/vector/FlatMapVector.h"
 
 namespace facebook::nimble {
 
