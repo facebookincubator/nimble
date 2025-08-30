@@ -132,7 +132,8 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
     }
     size_t byteSize, rowCount;
     if (!columnReader_->estimateMaterializedSize(byteSize, rowCount)) {
-      return rowSizeTracker_->getCurrentMaxRowSize();
+      return options_.trackRowSize() ? rowSizeTracker_->getCurrentMaxRowSize()
+                                     : 1UL << 20;
     }
     return rowCount == 0 ? 0 : byteSize / rowCount;
   }
@@ -176,6 +177,7 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
         params,
         *options_.scanSpec(),
         true);
+    rowSizeTracker_->finalizeProjection();
     columnReader_->setIsTopLevel();
     streams_.load();
   }
