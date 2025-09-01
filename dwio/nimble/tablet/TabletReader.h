@@ -20,14 +20,11 @@
 #include <span>
 #include <vector>
 
-#include "dwio/nimble/common/Checksum.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
-#include "folly/Range.h"
 #include "folly/Synchronized.h"
 #include "folly/io/IOBuf.h"
 #include "velox/common/file/File.h"
-#include "velox/common/memory/Memory.h"
 
 // The TabletReader class is the on-disk layout for nimble.
 //
