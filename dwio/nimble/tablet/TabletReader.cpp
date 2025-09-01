@@ -201,8 +201,7 @@ Postscript Postscript::parse(std::string_view data) {
   const uint16_t magicNumber = *reinterpret_cast<const uint16_t*>(pos);
 
   NIMBLE_CHECK(
-      magicNumber == kMagicNumber,
-      "Magic number mismatch. Not an nimble file!");
+      magicNumber == kMagicNumber, "Magic number mismatch. Not a nimble file!");
 
   // Read and validate versions
   pos -= 4;
