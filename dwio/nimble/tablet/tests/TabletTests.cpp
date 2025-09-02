@@ -527,33 +527,41 @@ TEST(TabletTests, OptionalSections) {
   velox::InMemoryWriteFile writeFile(&file);
   nimble::TabletWriter tabletWriter{*pool, &writeFile};
 
-  auto randomSize = folly::Random::rand32(20, 2000000, rng);
-  std::string random;
-  random.resize(folly::Random::rand32(20, 2000000, rng));
-  for (auto i = 0; i < random.size(); ++i) {
-    random[i] = folly::Random::rand32(256);
-  }
-  {
-    const std::string& content = random;
-    tabletWriter.writeOptionalSection("section1", content);
-  }
-  std::string zeroes;
-  {
-    zeroes.resize(randomSize);
-    for (auto i = 0; i < zeroes.size(); ++i) {
-      zeroes[i] = '\0';
-    }
+  // size1 is above the compression threshold and may be compressed
+  // size2 is below the compression threshold and won't be compressed
+  // zeroes is above the compression threshold and is well compressed
+  auto size1 = nimble::kMetadataCompressionThreshold +
+      folly::Random::rand32(20, 2000000, rng);
+  auto size2 =
+      folly::Random::rand32(20, nimble::kMetadataCompressionThreshold, rng);
 
-    tabletWriter.writeOptionalSection("section2", zeroes);
+  std::string random1;
+  std::string random2;
+  std::string zeroes;
+  std::string empty;
+
+  random1.resize(size1);
+  random2.resize(size2);
+  zeroes.resize(size1);
+
+  for (auto i = 0; i < size1; ++i) {
+    random1[i] = folly::Random::rand32(256);
   }
-  {
-    std::string content;
-    tabletWriter.writeOptionalSection("section3", content);
+  for (auto i = 0; i < size2; ++i) {
+    random2[i] = folly::Random::rand32(256);
   }
+  for (auto i = 0; i < size1; ++i) {
+    zeroes[i] = '\0';
+  }
+
+  tabletWriter.writeOptionalSection("section1", random1);
+  tabletWriter.writeOptionalSection("section2", random2);
+  tabletWriter.writeOptionalSection("section3", zeroes);
+  tabletWriter.writeOptionalSection("section4", empty);
 
   tabletWriter.close();
 
-  auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(5);
+  auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(6);
   facebook::velox::dwio::common::ExecutorBarrier barrier{executor};
 
   for (auto useChainedBuffers : {false, true}) {
@@ -561,43 +569,60 @@ TEST(TabletTests, OptionalSections) {
         file, useChainedBuffers);
     nimble::TabletReader tablet{*pool, &readFile};
 
-    ASSERT_EQ(tablet.optionalSections().size(), 3);
+    ASSERT_EQ(tablet.optionalSections().size(), 4);
+
     ASSERT_TRUE(tablet.optionalSections().contains("section1"));
-    ASSERT_EQ(
-        tablet.optionalSections().at("section1").compressionType(),
-        nimble::CompressionType::Uncompressed);
-    ASSERT_EQ(tablet.optionalSections().at("section1").size(), random.size());
+    ASSERT_TRUE(
+        tablet.optionalSections().at("section1").compressionType() ==
+            nimble::CompressionType::Uncompressed ||
+        tablet.optionalSections().at("section1").compressionType() ==
+            nimble::CompressionType::Zstd);
+    ASSERT_LE(tablet.optionalSections().at("section1").size(), size1);
+
     ASSERT_TRUE(tablet.optionalSections().contains("section2"));
     ASSERT_EQ(
         tablet.optionalSections().at("section2").compressionType(),
         nimble::CompressionType::Uncompressed);
-    ASSERT_EQ(tablet.optionalSections().at("section2").size(), zeroes.size());
+    ASSERT_EQ(tablet.optionalSections().at("section2").size(), size2);
+
     ASSERT_TRUE(tablet.optionalSections().contains("section3"));
     ASSERT_EQ(
         tablet.optionalSections().at("section3").compressionType(),
+        nimble::CompressionType::Zstd);
+    ASSERT_LE(tablet.optionalSections().at("section3").size(), zeroes.size());
+
+    ASSERT_TRUE(tablet.optionalSections().contains("section4"));
+    ASSERT_EQ(
+        tablet.optionalSections().at("section4").compressionType(),
         nimble::CompressionType::Uncompressed);
-    ASSERT_EQ(tablet.optionalSections().at("section3").size(), 0);
+    ASSERT_EQ(tablet.optionalSections().at("section4").size(), 0);
 
     auto check1 = [&]() {
       auto section = tablet.loadOptionalSection("section1");
       ASSERT_TRUE(section.has_value());
-      ASSERT_EQ(random, section->content());
+      ASSERT_EQ(random1, section->content());
     };
 
     auto check2 = [&]() {
       auto section = tablet.loadOptionalSection("section2");
       ASSERT_TRUE(section.has_value());
+      ASSERT_EQ(random2, section->content());
+    };
+
+    auto check3 = [&]() {
+      auto section = tablet.loadOptionalSection("section3");
+      ASSERT_TRUE(section.has_value());
       ASSERT_EQ(zeroes, section->content());
     };
 
-    auto check3 = [&, empty = std::string()]() {
-      auto section = tablet.loadOptionalSection("section3");
+    auto check4 = [&, empty = std::string()]() {
+      auto section = tablet.loadOptionalSection("section4");
       ASSERT_TRUE(section.has_value());
       ASSERT_EQ(empty, section->content());
     };
 
-    auto check4 = [&]() {
-      auto section = tablet.loadOptionalSection("section4");
+    auto check5 = [&]() {
+      auto section = tablet.loadOptionalSection("section5");
       ASSERT_FALSE(section.has_value());
     };
 
@@ -606,6 +631,7 @@ TEST(TabletTests, OptionalSections) {
       barrier.add(check2);
       barrier.add(check3);
       barrier.add(check4);
+      barrier.add(check5);
     }
     barrier.waitAll();
   }
