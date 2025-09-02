@@ -916,6 +916,96 @@ void NimbleDumpLib::emitStripesMetadata(bool noHeader) {
   });
 }
 
+void NimbleDumpLib::emitFileLayout(bool noHeader) {
+  struct Entry {
+    std::string name;
+    std::string compression;
+    uint64_t offset;
+    uint64_t size;
+  };
+
+  TabletReader tablet{*pool_, file_.get()};
+  std::vector<Entry> entries;
+
+  auto stripesMetadata = tablet.stripesMetadata();
+  if (stripesMetadata) {
+    entries.push_back({
+        "Stripes Metadata",
+        toString(stripesMetadata->compressionType()),
+        stripesMetadata->offset(),
+        stripesMetadata->size(),
+    });
+  }
+
+  auto stripeGroupsMetadata = tablet.stripeGroupsMetadata();
+  for (auto i = 0; i < stripeGroupsMetadata.size(); ++i) {
+    const auto& metadata = stripeGroupsMetadata[i];
+    entries.push_back({
+        fmt::format("Stripe Group {}", i),
+        toString(metadata.compressionType()),
+        metadata.offset(),
+        metadata.size(),
+    });
+  }
+
+  traverseTablet(*pool_, tablet, std::nullopt, [&](uint32_t stripeIndex) {
+    auto stripeIdentifier = tablet.getStripeIdentifier(stripeIndex);
+    auto sizes = tablet.streamSizes(stripeIdentifier);
+    auto stripeSize = std::accumulate(sizes.begin(), sizes.end(), 0UL);
+    entries.push_back({
+        fmt::format("Stripe {}", stripeIndex),
+        "NA",
+        tablet.stripeOffset(stripeIndex),
+        stripeSize,
+    });
+  });
+
+  for (const auto& [name, metadata] : tablet.optionalSections()) {
+    entries.push_back({
+        fmt::format("Optional Section {}", name),
+        toString(metadata.compressionType()),
+        metadata.offset(),
+        metadata.size(),
+    });
+  }
+
+  entries.push_back(
+      {"File Footer",
+       toString(tablet.footerCompressionType()),
+       tablet.fileSize() - tablet.footerSize() - kPostscriptSize,
+       tablet.footerSize()});
+
+  entries.push_back(
+      {"File Postscript",
+       "NA",
+       tablet.fileSize() - kPostscriptSize,
+       kPostscriptSize});
+
+  std::sort(
+      entries.begin(), entries.end(), [](const Entry& lhs, const Entry& rhs) {
+        return lhs.offset < rhs.offset;
+      });
+
+  TableFormatter formatter(
+      ostream_,
+      {
+          {"Offset", 15, Alignment::Right},
+          {"Size", 15, Alignment::Right},
+          {"Compression", 12, Alignment::Left},
+          {"Object Name", 30, Alignment::Left},
+      },
+      noHeader);
+
+  for (const auto& entry : entries) {
+    formatter.writeRow({
+        commaSeparated(entry.offset),
+        commaSeparated(entry.size),
+        entry.compression,
+        entry.name,
+    });
+  }
+}
+
 void NimbleDumpLib::emitStripeGroupsMetadata(bool noHeader) {
   TabletReader tabletReader{*pool_, file_.get()};
   TableFormatter formatter(

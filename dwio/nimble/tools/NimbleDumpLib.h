@@ -46,6 +46,7 @@ class NimbleDumpLib {
       uint32_t streamId,
       uint32_t stripeId);
   void emitLayout(bool noHeader, bool compressed);
+  void emitFileLayout(bool noHeader);
   void emitStripesMetadata(bool noHeader);
   void emitStripeGroupsMetadata(bool noHeader);
 
