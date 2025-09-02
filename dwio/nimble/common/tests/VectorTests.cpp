@@ -216,7 +216,7 @@ TEST(VectorTests, BoolCopyCtr) {
 }
 
 TEST(VectorTests, MemoryCleanup) {
-  velox::memory::MemoryManagerOptions options;
+  velox::memory::MemoryManager::Options options;
   options.trackDefaultUsage = true;
   velox::memory::MemoryManager memoryManager{options};
   auto pool = memoryManager.addLeafPool();

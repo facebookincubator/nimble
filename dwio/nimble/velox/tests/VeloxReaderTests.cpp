@@ -401,7 +401,7 @@ class VeloxReaderTests : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
     velox::memory::MemoryManager::testingSetInstance(
-        velox::memory::MemoryManagerOptions{});
+        velox::memory::MemoryManager::Options{});
   }
 
   void SetUp() override {

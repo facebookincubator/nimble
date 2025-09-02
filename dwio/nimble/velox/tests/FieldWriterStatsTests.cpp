@@ -27,7 +27,7 @@ class FieldWriterStatsTests : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
     velox::memory::initializeMemoryManager(
-        velox::memory::MemoryManagerOptions{});
+        velox::memory::MemoryManager::Options{});
   }
 
   void SetUp() override {

@@ -80,7 +80,7 @@ class RawSizeBaseTestFixture : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
     velox::memory::MemoryManager::initialize(
-        velox::memory::MemoryManagerOptions{});
+        velox::memory::MemoryManager::Options{});
   }
 
   void SetUp() override {
