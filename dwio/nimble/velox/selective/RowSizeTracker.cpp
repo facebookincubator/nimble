@@ -26,7 +26,6 @@ namespace facebook::nimble {
     : typeWithId_{typeWithId} {
   const auto totalNodes = typeWithId->maxId() + 1;
   variableLengthNodes_.resize(totalNodes);
-  projectedNodes_.resize(totalNodes, false);
   initFromSchema(*typeWithId->type(), 0, false);
   cellSizes_.resize(totalNodes, std::nullopt);
 }
@@ -70,8 +69,6 @@ void RowSizeTracker::update(
     size_t nodeIdx,
     size_t memoryFootprint,
     velox::vector_size_t rowCount) {
-  VELOX_CHECK(
-      projectionFinalized_, "Must finalize projected columns before updates");
   if (rowCount <= 0) {
     return;
   }
@@ -94,25 +91,7 @@ void RowSizeTracker::update(
   }
 }
 
-void RowSizeTracker::applyProjection(size_t nodeIdx, bool projected) {
-  projectedNodes_.setValid(nodeIdx, projected);
-}
-
-void RowSizeTracker::finalizeProjection() {
-  if (UNLIKELY(!projectionFinalized_)) {
-    velox::bits::andBits(
-        const_cast<uint64_t*>(variableLengthNodes_.allBits()),
-        variableLengthNodes_.allBits(),
-        projectedNodes_.allBits(),
-        0,
-        typeWithId_->maxId() + 1);
-    projectionFinalized_ = true;
-  }
-}
-
 size_t RowSizeTracker::getCurrentMaxRowSize() const {
-  VELOX_CHECK(
-      projectionFinalized_, "Must finalize projected columns before access");
   bool allVariableLengthMaterialized = true;
   velox::bits::forEachBit(
       variableLengthNodes_.allBits(),

@@ -34,12 +34,10 @@ class RowSizeTrackerTest : public velox::test::VectorTestBase, public Test {
       velox::RowTypePtr schema,
       std::vector<vector_size_t> variableLengthNodes) {
     // Create the same TypeWithId as reference.
-    std::shared_ptr<const dwio::common::TypeWithId> schemaWithId =
-        dwio::common::TypeWithId::create(schema);
+    auto typeWithId = dwio::common::TypeWithId::create(schema);
+    RowSizeTracker tracker(dwio::common::TypeWithId::create(schema));
 
-    RowSizeTracker tracker(schemaWithId);
-
-    EXPECT_EQ(tracker.cellSizes_.size(), schemaWithId->maxId() + 1);
+    EXPECT_EQ(tracker.cellSizes_.size(), typeWithId->maxId() + 1);
 
     velox::bits::forEachBit(
         tracker.variableLengthNodes_.allBits(),
@@ -76,14 +74,7 @@ TEST_F(RowSizeTrackerTest, initialization) {
 
 TEST_F(RowSizeTrackerTest, basicUpdates) {
   auto schema = ROW({ARRAY(INTEGER()), ROW({VARCHAR(), DOUBLE()})});
-  std::shared_ptr<const dwio::common::TypeWithId> schemaWithId =
-      dwio::common::TypeWithId::create(schema);
-  RowSizeTracker tracker(schemaWithId);
-  for (size_t i = 0; i < 6; ++i) {
-    tracker.applyProjection(i, /*projected=*/true);
-  }
-  tracker.finalizeProjection();
-
+  RowSizeTracker tracker(dwio::common::TypeWithId::create(schema));
   tracker.update(1, 2, 2);
   tracker.update(2, 4, 2);
   tracker.update(3, 8, 2);
@@ -102,17 +93,10 @@ TEST_F(RowSizeTrackerTest, basicUpdates) {
 
 TEST_F(RowSizeTrackerTest, partialMarterialization) {
   auto schema = ROW({ARRAY(INTEGER()), ROW({VARCHAR(), DOUBLE()})});
-  std::shared_ptr<const dwio::common::TypeWithId> schemaWithId =
-      dwio::common::TypeWithId::create(schema);
   constexpr size_t kFallbackValue = 1UL << 20;
   // Updating all variable length columns first
   {
-    RowSizeTracker tracker(schemaWithId);
-    for (size_t i = 0; i < 6; ++i) {
-      tracker.applyProjection(i, /*projected=*/true);
-    }
-    tracker.finalizeProjection();
-
+    RowSizeTracker tracker(dwio::common::TypeWithId::create(schema));
     tracker.update(1, 0, 2);
     EXPECT_EQ(tracker.getCurrentMaxRowSize(), kFallbackValue);
     tracker.update(2, 128, 2);
@@ -126,12 +110,7 @@ TEST_F(RowSizeTrackerTest, partialMarterialization) {
   }
   // Updating all variable length columns last
   {
-    RowSizeTracker tracker(schemaWithId);
-    for (size_t i = 0; i < 6; ++i) {
-      tracker.applyProjection(i, /*projected=*/true);
-    }
-    tracker.finalizeProjection();
-
+    RowSizeTracker tracker(dwio::common::TypeWithId::create(schema));
     tracker.update(5, 32, 2);
     EXPECT_EQ(tracker.getCurrentMaxRowSize(), kFallbackValue);
     tracker.update(3, 8, 2);
@@ -145,12 +124,7 @@ TEST_F(RowSizeTrackerTest, partialMarterialization) {
   }
   // Updating in traversal order
   {
-    RowSizeTracker tracker(schemaWithId);
-    for (size_t i = 0; i < 6; ++i) {
-      tracker.applyProjection(i, /*projected=*/true);
-    }
-    tracker.finalizeProjection();
-
+    RowSizeTracker tracker(dwio::common::TypeWithId::create(schema));
     tracker.update(1, 0, 2);
     EXPECT_EQ(tracker.getCurrentMaxRowSize(), kFallbackValue);
     tracker.update(2, 128, 2);
@@ -166,14 +140,7 @@ TEST_F(RowSizeTrackerTest, partialMarterialization) {
 
 TEST_F(RowSizeTrackerTest, oversizeRow) {
   auto schema = ROW({ARRAY(INTEGER()), ROW({VARCHAR(), DOUBLE()})});
-  std::shared_ptr<const dwio::common::TypeWithId> schemaWithId =
-      dwio::common::TypeWithId::create(schema);
-  RowSizeTracker tracker(schemaWithId);
-  for (size_t i = 0; i < 6; ++i) {
-    tracker.applyProjection(i, /*projected=*/true);
-  }
-  tracker.finalizeProjection();
-
+  RowSizeTracker tracker(dwio::common::TypeWithId::create(schema));
   constexpr size_t kFallbackValue = 1UL << 20;
   EXPECT_EQ(tracker.getCurrentMaxRowSize(), kFallbackValue);
   // One materialized node already surpassed the fallback value 1MB.
