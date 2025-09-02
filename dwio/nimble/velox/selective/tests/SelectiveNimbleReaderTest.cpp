@@ -36,7 +36,7 @@ class SelectiveNimbleReaderTest : public ::testing::Test,
   enum FilterType { kNone, kKeep, kDrop };
 
   static void SetUpTestCase() {
-    memory::initializeMemoryManager(velox::memory::MemoryManagerOptions{});
+    memory::initializeMemoryManager(velox::memory::MemoryManager::Options{});
     registerSelectiveNimbleReaderFactory();
   }
 

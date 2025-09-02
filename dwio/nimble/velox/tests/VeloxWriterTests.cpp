@@ -39,7 +39,7 @@ class VeloxWriterTests : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
     velox::memory::SharedArbitrator::registerFactory();
-    velox::memory::MemoryManagerOptions options;
+    velox::memory::MemoryManager::Options options;
     options.arbitratorKind = "SHARED";
     velox::memory::MemoryManager::testingSetInstance(options);
   }
