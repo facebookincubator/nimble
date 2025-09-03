@@ -34,7 +34,7 @@ class LayoutPlanner {
 };
 
 constexpr uint32_t kMetadataFlushThreshold = 8 * 1024 * 1024; // 8MB
-constexpr uint32_t kMetadataCompressionThreshold = 4 * 1024 * 1024; // 4MB
+constexpr uint32_t kMetadataCompressionThreshold = 64 * 1024; // 64kB
 
 struct TabletWriterOptions {
   std::unique_ptr<LayoutPlanner> layoutPlanner{nullptr};
