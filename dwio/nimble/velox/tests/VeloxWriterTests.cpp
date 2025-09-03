@@ -551,7 +551,8 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
           .encodingLayoutTree = std::move(expected),
           // Boosting acceptance ratio by 100x to make sure it is always
           // accepted (even if compressed size if bigger than uncompressed size)
-          .compressionOptions = {.compressionAcceptRatio = 100},
+          .compressionOptions =
+              {.compressionAcceptRatio = 100, .internalMinCompressionSize = 0},
       });
 
   writer.write(vector);
