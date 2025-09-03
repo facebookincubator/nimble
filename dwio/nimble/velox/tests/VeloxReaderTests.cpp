@@ -4965,9 +4965,13 @@ TEST_F(VeloxReaderTests, TestArrayFieldLifeCycle) {
         child = std::dynamic_pointer_cast<velox::ArrayVector>(
             result->as<velox::RowVector>()->childAt(0));
 
-        if (rawNulls && child->nulls().get()) {
-          EXPECT_EQ(rawNulls, child->nulls().get());
-        }
+        auto checkAndUpdateNulls = [&rawNulls](velox::BaseVector* vector) {
+          if (rawNulls && vector->nulls().get()) {
+            EXPECT_EQ(rawNulls, vector->nulls().get());
+          }
+          rawNulls = vector->nulls().get();
+        };
+        checkAndUpdateNulls(child.get());
         EXPECT_EQ(rawSizes, child->sizes().get());
         EXPECT_NE(offsets, child->offsets());
         EXPECT_EQ(elementsPtr, child->elements().get());
@@ -4982,9 +4986,7 @@ TEST_F(VeloxReaderTests, TestArrayFieldLifeCycle) {
         EXPECT_TRUE(reader->next(batchSize, result));
         child = std::dynamic_pointer_cast<velox::ArrayVector>(
             result->as<velox::RowVector>()->childAt(0));
-        if (rawNulls && child->nulls().get()) {
-          EXPECT_EQ(rawNulls, child->nulls().get());
-        }
+        checkAndUpdateNulls(child.get());
         EXPECT_EQ(rawSizes, child->sizes().get());
         EXPECT_EQ(rawOffsets, child->offsets().get());
         EXPECT_NE(elements, child->elements());
@@ -5034,9 +5036,13 @@ TEST_F(VeloxReaderTests, TestMapFieldLifeCycle) {
         child = std::dynamic_pointer_cast<velox::MapVector>(
             result->as<velox::RowVector>()->childAt(0));
 
-        if (rawNulls && child->nulls().get()) {
-          EXPECT_EQ(rawNulls, child->nulls().get());
-        }
+        auto checkAndUpdateNulls = [&rawNulls](velox::BaseVector* vector) {
+          if (rawNulls && vector->nulls().get()) {
+            EXPECT_EQ(rawNulls, vector->nulls().get());
+          }
+          rawNulls = vector->nulls().get();
+        };
+        checkAndUpdateNulls(child.get());
         EXPECT_NE(sizes, child->sizes());
         EXPECT_EQ(rawOffsets, child->offsets().get());
         EXPECT_EQ(keysPtr, child->mapKeys().get());
@@ -5051,9 +5057,7 @@ TEST_F(VeloxReaderTests, TestMapFieldLifeCycle) {
         EXPECT_TRUE(reader->next(batchSize, result));
         child = std::dynamic_pointer_cast<velox::MapVector>(
             result->as<velox::RowVector>()->childAt(0));
-        if (rawNulls && child->nulls().get()) {
-          EXPECT_EQ(rawNulls, child->nulls().get());
-        }
+        checkAndUpdateNulls(child.get());
         EXPECT_EQ(rawSizes, child->sizes().get());
         EXPECT_EQ(rawOffsets, child->offsets().get());
         EXPECT_NE(mapKeys, child->mapKeys());
@@ -5069,9 +5073,7 @@ TEST_F(VeloxReaderTests, TestMapFieldLifeCycle) {
         EXPECT_TRUE(reader->next(batchSize, result));
         child = std::dynamic_pointer_cast<velox::MapVector>(
             result->as<velox::RowVector>()->childAt(0));
-        if (rawNulls && child->nulls().get()) {
-          EXPECT_EQ(rawNulls, child->nulls().get());
-        }
+        checkAndUpdateNulls(child.get());
         EXPECT_EQ(rawSizes, child->sizes().get());
         EXPECT_EQ(rawOffsets, child->offsets().get());
         EXPECT_EQ(keysPtr, child->mapKeys().get());
@@ -5135,9 +5137,13 @@ TEST_F(VeloxReaderTests, TestFlatMapAsMapFieldLifeCycle) {
         child = std::dynamic_pointer_cast<velox::MapVector>(
             result->as<velox::RowVector>()->childAt(0));
 
-        if (rawNulls && child->nulls().get()) {
-          EXPECT_EQ(rawNulls, child->nulls().get());
-        }
+        auto checkAndUpdateNulls = [&rawNulls](velox::BaseVector* vector) {
+          if (rawNulls && vector->nulls().get()) {
+            EXPECT_EQ(rawNulls, vector->nulls().get());
+          }
+          rawNulls = vector->nulls().get();
+        };
+        checkAndUpdateNulls(child.get());
         EXPECT_NE(sizes, child->sizes());
         EXPECT_EQ(rawOffsets, child->offsets().get());
         EXPECT_EQ(keysPtr, child->mapKeys().get());
@@ -5151,9 +5157,7 @@ TEST_F(VeloxReaderTests, TestFlatMapAsMapFieldLifeCycle) {
         EXPECT_TRUE(reader->next(batchSize, result));
         child = std::dynamic_pointer_cast<velox::MapVector>(
             result->as<velox::RowVector>()->childAt(0));
-        if (rawNulls && child->nulls().get()) {
-          EXPECT_EQ(rawNulls, child->nulls().get());
-        }
+        checkAndUpdateNulls(child.get());
         EXPECT_EQ(rawSizes, child->sizes().get());
         EXPECT_EQ(rawOffsets, child->offsets().get());
         EXPECT_NE(mapKeys, child->mapKeys());
@@ -5225,6 +5229,7 @@ TEST_F(VeloxReaderTests, TestRowFieldLifeCycle) {
         if (rawNulls && child->nulls().get()) {
           EXPECT_EQ(rawNulls, child->nulls().get());
         }
+        rawNulls = child->nulls().get();
         EXPECT_NE(childAtIdx0, child->childAt(0));
         EXPECT_EQ(childPtrAtIdx1, child->childAt(1).get());
         EXPECT_EQ(childPtr, child.get());
