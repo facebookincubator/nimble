@@ -293,8 +293,6 @@ class ChunkedDecoder {
 
   std::unique_ptr<Encoding> encoding_;
   int64_t remainingValues_ = 0;
-  mutable std::optional<size_t> rowCountEstimate_{std::nullopt};
-  mutable std::optional<size_t> stringDataSizeEstimate_{std::nullopt};
 
   friend class ChunkedDecoderTestHelper;
 };

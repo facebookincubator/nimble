@@ -17,7 +17,6 @@
 #pragma once
 
 #include "dwio/nimble/velox/selective/ReaderBase.h"
-#include "dwio/nimble/velox/selective/RowSizeTracker.h"
 #include "velox/dwio/common/FormatData.h"
 
 namespace facebook::nimble {
@@ -109,12 +108,10 @@ class NimbleParams : public velox::dwio::common::FormatParams {
       velox::dwio::common::ColumnReaderStatistics& stats,
       const std::shared_ptr<const Type>& nimbleType,
       StripeStreams& streams,
-      RowSizeTracker* rowSizeTracker,
       bool preserveFlatMapsInMemory = false)
       : FormatParams(pool, stats),
         nimbleType_(nimbleType),
         streams_(streams),
-        rowSizeTracker_(rowSizeTracker),
         preserveFlatMapsInMemory_(preserveFlatMapsInMemory) {}
 
   std::unique_ptr<velox::dwio::common::FormatData> toFormatData(
@@ -123,12 +120,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
 
   NimbleParams makeChildParams(const std::shared_ptr<const Type>& type) {
     return NimbleParams(
-        pool(),
-        runtimeStatistics(),
-        type,
-        streams_,
-        rowSizeTracker_,
-        preserveFlatMapsInMemory_);
+        pool(), runtimeStatistics(), type, streams_, preserveFlatMapsInMemory_);
   }
 
   const std::shared_ptr<const Type>& nimbleType() const {
@@ -147,15 +139,10 @@ class NimbleParams : public velox::dwio::common::FormatParams {
     return preserveFlatMapsInMemory_;
   }
 
-  RowSizeTracker* rowSizeTracker() const {
-    return rowSizeTracker_;
-  }
-
  private:
   const std::shared_ptr<const Type> nimbleType_;
   StripeStreams& streams_;
   ChunkedDecoder* inMapDecoder_ = nullptr;
-  RowSizeTracker* rowSizeTracker_ = nullptr;
   bool preserveFlatMapsInMemory_ = false;
 };
 
