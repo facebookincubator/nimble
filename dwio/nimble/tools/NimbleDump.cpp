@@ -74,6 +74,31 @@ int main(int argc, char* argv[]) {
           "Nimble file path. Can be a local path or a Warm Storage path.");
 
   app.addCommand(
+         "file_layout",
+         "<file>",
+         "Print overall layout of the file",
+         "Print overall layout of the file",
+         [](const po::variables_map& options,
+            const std::vector<std::string>& /*args*/) {
+           nimble::tools::NimbleDumpLib{
+               std::cout, options["file"].as<std::string>()}
+               .emitFileLayout(options["no_header"].as<bool>());
+         },
+         positionalArgs)
+      // clang-format off
+        .add_options()
+        (
+            "file",
+            po::value<std::string>()->required(),
+            "Nimble file path. Can be a local path or a Warm Storage path."
+        )(
+            "no_header,n",
+            po::bool_switch()->default_value(false),
+            "Don't print column names. Default is to include column names."
+        );
+  // clang-format on
+
+  app.addCommand(
          "schema",
          "<file>",
          "Print file schema",
