@@ -340,6 +340,11 @@ class FlatMapAsMapColumnReader : public StructColumnReaderBase {
     flatMap_.getValues(rows, result);
   }
 
+  void setIsTopLevel() override {
+    // Children are not considered top level since this is materialized as MAP.
+    SelectiveColumnReader::setIsTopLevel();
+  }
+
   bool estimateMaterializedSize(size_t& byteSize, size_t& rowCount)
       const final {
     auto* nulls = formatData().template as<NimbleData>().nullsDecoder();
