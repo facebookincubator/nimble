@@ -19,12 +19,66 @@ namespace facebook::nimble {
 
 FlushDecision RawStripeSizeFlushPolicy::shouldFlush(
     const StripeProgress& stripeProgress) {
-  return stripeProgress.rawStripeSize >= rawStripeSize_ ? FlushDecision::Stripe
+  return stripeProgress.stripeRawSize >= rawStripeSize_ ? FlushDecision::Stripe
                                                         : FlushDecision::None;
 }
 
-void RawStripeSizeFlushPolicy::onClose() {
-  // No-op
+FlushDecision ChunkFlushPolicy::shouldFlush(
+    const StripeProgress& stripeProgress) {
+  const auto relieveMemoryPressure = [&]() {
+    const uint64_t inMemoryByteSize =
+        stripeProgress.stripeRawSize + stripeProgress.stripeEncodedSize;
+    // Determine when we need to start relieving memory pressure with chunking
+    if (lastFlushDecision_ == FlushDecision::None &&
+        inMemoryByteSize > config_.writerMaxMemoryBytes) {
+      return FlushDecision::Chunk;
+    }
+
+    // Try chunking when possible to relieve memory pressure
+    else if (
+        lastFlushDecision_ == FlushDecision::Chunk &&
+        stripeProgress.successfullyChunked &&
+        inMemoryByteSize > config_.writerMinMemoryBytes) {
+      return FlushDecision::Chunk;
+    }
+
+    // When chunking is unable to relieve memory pressure, we flush
+    else if (
+        lastFlushDecision_ == FlushDecision::Chunk &&
+        !stripeProgress.successfullyChunked &&
+        inMemoryByteSize > config_.writerMinMemoryBytes) {
+      return FlushDecision::Stripe;
+    }
+
+    return FlushDecision::None;
+  };
+
+  lastFlushDecision_ = relieveMemoryPressure();
+  if (lastFlushDecision_ != FlushDecision::None) {
+    return lastFlushDecision_;
+  }
+
+  // When no writer memory pressure, optimize for storage stripe size
+  const auto optimizeStorageSize = [&]() {
+    double compressionRatio = config_.compressionRatioFactor;
+    // Use historical compression ratio as a heuristic when available.
+    if (stripeProgress.stripeEncodedSize > 0) {
+      compressionRatio *= stripeProgress.stripeEncodedRawSize /
+          stripeProgress.stripeEncodedSize;
+    }
+    double expectedEncodedStripeSize = stripeProgress.stripeEncodedSize +
+        compressionRatio * stripeProgress.stripeRawSize;
+    return expectedEncodedStripeSize >= config_.targetStripeSizeBytes
+        ? FlushDecision::Stripe
+        : FlushDecision::None;
+  };
+  lastFlushDecision_ = optimizeStorageSize();
+
+  return lastFlushDecision_;
+}
+
+void ChunkFlushPolicy::reset() {
+  lastFlushDecision_ = FlushDecision::None;
 }
 
 } // namespace facebook::nimble
