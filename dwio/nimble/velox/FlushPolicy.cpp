@@ -19,12 +19,8 @@ namespace facebook::nimble {
 
 FlushDecision RawStripeSizeFlushPolicy::shouldFlush(
     const StripeProgress& stripeProgress) {
-  return stripeProgress.rawStripeSize >= rawStripeSize_ ? FlushDecision::Stripe
+  return stripeProgress.stripeRawSize >= rawStripeSize_ ? FlushDecision::Stripe
                                                         : FlushDecision::None;
-}
-
-void RawStripeSizeFlushPolicy::onClose() {
-  // No-op
 }
 
 } // namespace facebook::nimble
