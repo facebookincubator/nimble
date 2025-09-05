@@ -22,6 +22,7 @@
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
+#include "dwio/nimble/velox/FlushPolicy.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/StatsGenerated.h"
 #include "dwio/nimble/velox/VeloxReader.h"
@@ -289,7 +290,7 @@ std::vector<velox::RowVectorPtr> generateBatches(
   velox::VectorFuzzer fuzzer(
       {.vectorSize = size, .nullRatio = 0.1}, &pool, seed);
   std::vector<velox::RowVectorPtr> batches;
-
+  batches.reserve(batchCount);
   for (size_t i = 0; i < batchCount; ++i) {
     batches.push_back(fuzzer.fuzzInputFlatRow(type));
   }
@@ -1951,6 +1952,108 @@ TEST_F(VeloxWriterTests, RawSizeWritten) {
   ASSERT_EQ(expectedRawSize, rawSize);
 }
 
+struct ChunkFlushPolicyTestCase {
+  const size_t batchCount{20};
+  const bool enableChunking{true};
+  const uint64_t targetStripeSizeBytes{256 << 10}; // 256KB
+  const uint64_t writerMaxMemoryBytes{80 << 10}; // 80KB
+  const uint64_t writerMinMemoryBytes{75 << 10}; // 75KB
+  const double compressionRatioFactor{1.0};
+  const uint32_t minStreamChunkRawSize{100}; // 100 bytes
+  const uint32_t expectedStripeCount{0};
+  const uint32_t expectedMaxChunkCount{0};
+  const uint32_t expectedMinChunkCount{0};
+};
+
+class ChunkFlushPolicyTest
+    : public VeloxWriterTests,
+      public ::testing::WithParamInterface<ChunkFlushPolicyTestCase> {};
+
+TEST_P(ChunkFlushPolicyTest, ChunkFlushPolicyIntegration) {
+  auto type = velox::ROW(
+      {{"BIGINT", velox::BIGINT()}, {"SMALLINT", velox::SMALLINT()}});
+  nimble::VeloxWriterOptions writerOptions{
+      .minStreamChunkRawSize = GetParam().minStreamChunkRawSize,
+      .flushPolicyFactory = GetParam().enableChunking
+          ? []() -> std::unique_ptr<nimble::FlushPolicy> {
+              return std::make_unique<nimble::ChunkFlushPolicy>(
+                  nimble::ChunkFlushPolicyConfig{
+                      .writerMaxMemoryBytes = GetParam().writerMaxMemoryBytes,
+                      .writerMinMemoryBytes = GetParam().writerMinMemoryBytes,
+                      .targetStripeSizeBytes = GetParam().targetStripeSizeBytes,
+                      .compressionRatioFactor =
+                          GetParam().compressionRatioFactor,
+                  });
+            }
+          : []() -> std::unique_ptr<nimble::FlushPolicy> {
+              return std::make_unique<nimble::RawStripeSizeFlushPolicy>(
+                  GetParam().targetStripeSizeBytes);
+            },
+      .enableChunking = GetParam().enableChunking,
+  };
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  nimble::VeloxWriter writer(
+      *rootPool_, type, std::move(writeFile), std::move(writerOptions));
+  auto batches = generateBatches(
+      type,
+      GetParam().batchCount,
+      /*size=*/4000,
+      /*seed=*/20221110,
+      *leafPool_);
+
+  for (const auto& batch : batches) {
+    writer.write(batch);
+  }
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+  nimble::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
+
+  // Verify stripe count
+  auto expectedStripeCount = GetParam().expectedStripeCount;
+  auto actualStripeCount = reader.tabletReader().stripeCount();
+  EXPECT_EQ(expectedStripeCount, actualStripeCount);
+
+  // Verify chunk count
+  auto chunkCountPair = [&]() {
+    nimble::TabletReader tablet{*leafPool_, &readFile};
+    uint32_t maxChunkCount = 0;
+    uint32_t minChunkCount = std::numeric_limits<uint32_t>::max();
+
+    for (uint32_t index = 0; index < actualStripeCount; ++index) {
+      auto stripeIdentifier = tablet.getStripeIdentifier(index);
+      auto streamCount = tablet.streamCount(stripeIdentifier);
+
+      std::vector<uint32_t> streamIds(streamCount);
+      std::iota(streamIds.begin(), streamIds.end(), 0);
+      auto streamLoaders = tablet.load(stripeIdentifier, streamIds);
+
+      for (auto& streamLoader : streamLoaders) {
+        if (!streamLoader) {
+          continue;
+        }
+        nimble::InMemoryChunkedStream chunked{
+            *leafPool_, std::move(streamLoader)};
+        uint32_t chunkCount = 0;
+        while (chunked.hasNext()) {
+          chunked.nextChunk();
+          chunkCount++;
+        }
+        maxChunkCount = std::max(maxChunkCount, chunkCount);
+        minChunkCount = std::min(minChunkCount, chunkCount);
+      }
+    }
+    return std::make_pair(maxChunkCount, minChunkCount);
+  };
+  auto [maxChunkCount, minChunkCount] = chunkCountPair();
+  EXPECT_EQ(GetParam().expectedMaxChunkCount, maxChunkCount);
+  EXPECT_EQ(GetParam().expectedMinChunkCount, minChunkCount);
+}
+
 INSTANTIATE_TEST_CASE_P(
     RawStripeSizeFlushPolicyTestSuite,
     RawStripeSizeFlushPolicyTest,
@@ -1975,4 +2078,54 @@ INSTANTIATE_TEST_CASE_P(
             .batchCount = 100,
             .rawStripeSize = 256 << 20,
             .stripeCount = 1}));
+
+INSTANTIATE_TEST_CASE_P(
+    ChunkFlushPolicyTestSuite,
+    ChunkFlushPolicyTest,
+    ::testing::Values(
+        // Base Case (no chunking, RawStripeSizeFlushPolicy)
+        ChunkFlushPolicyTestCase{
+            .enableChunking = false,
+            .targetStripeSizeBytes = 250 << 10, // 250KB
+            .expectedStripeCount = 4,
+            .expectedMaxChunkCount = 1,
+            .expectedMinChunkCount = 1,
+        },
+        // Base Case with default settings (has chunking)
+        ChunkFlushPolicyTestCase{
+            .targetStripeSizeBytes = 250 << 10, // 250KB
+            .expectedStripeCount = 7,
+            .expectedMaxChunkCount = 2,
+            .expectedMinChunkCount = 1,
+        },
+        // Increase Max Memory Bytes
+        ChunkFlushPolicyTestCase{
+            .writerMaxMemoryBytes = 160 << 10, // +80KB
+            .expectedStripeCount = 5, // -2 stripes
+            .expectedMaxChunkCount = 1,
+            .expectedMinChunkCount = 1,
+        },
+        // Reduce Min Memory Bytes
+        ChunkFlushPolicyTestCase{
+            .writerMinMemoryBytes = 35 << 10, // -40KB
+            .expectedStripeCount = 10, // +1 stripes
+            .expectedMaxChunkCount = 1,
+            .expectedMinChunkCount = 1,
+        },
+        // Disable Memory Pressure Optimization (Increase Max Memory Bytes)
+        ChunkFlushPolicyTestCase{
+            .targetStripeSizeBytes = 250 << 10, // +250KB
+            .writerMaxMemoryBytes = 160 << 20, // +160MB
+            .expectedStripeCount = 4, // (Identical to RawStripeSizeFlushPolicy)
+            .expectedMaxChunkCount = 1,
+            .expectedMinChunkCount = 1,
+        },
+        // Reduced Target Stripe Size (Disable Memory Pressure Optimization)
+        ChunkFlushPolicyTestCase{
+            .targetStripeSizeBytes = 20 << 10, // -200KB
+            .writerMaxMemoryBytes = 160 << 20, // +160MB
+            .expectedStripeCount = 20, // +13 stripes
+            .expectedMaxChunkCount = 1,
+            .expectedMinChunkCount = 1,
+        }));
 } // namespace facebook
