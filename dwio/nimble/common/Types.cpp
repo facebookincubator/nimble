@@ -15,7 +15,6 @@
  */
 #include "dwio/nimble/common/Types.h"
 
-#include <fmt/core.h>
 #include "dwio/nimble/common/Exceptions.h"
 
 namespace facebook::nimble {
@@ -87,6 +86,10 @@ std::string toString(DataType dataType) {
       return fmt::format(
           "Unknown data type: {}", static_cast<int32_t>(dataType));
   }
+}
+
+fmt::underlying_t<DataType> format_as(DataType dataType) {
+  return fmt::underlying(dataType);
 }
 
 std::string toString(CompressionType compressionType) {

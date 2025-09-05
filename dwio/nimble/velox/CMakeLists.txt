@@ -11,8 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_subdirectory(tests)
-
 add_library(nimble_velox_common SchemaUtils.cpp)
 target_link_libraries(nimble_velox_common nimble_common velox_type)
 
@@ -37,8 +35,7 @@ target_link_libraries(
   Folly::folly absl::flat_hash_map protobuf::libprotobuf)
 
 add_library(nimble_velox_layout_planner LayoutPlanner.cpp)
-target_link_libraries(nimble_velox_layout_planner nimble_velox_schema_reader
-                      velox_file)
+target_link_libraries(nimble_velox_layout_planner nimble_velox_schema_reader)
 
 add_library(nimble_velox_field_writer BufferGrowthPolicy.cpp
                                       DeduplicationUtils.cpp FieldWriter.cpp)
@@ -113,9 +110,15 @@ target_link_libraries(
   nimble_velox_writer
   nimble_encodings
   nimble_common
+  nimble_column_stats_utils
   nimble_tablet_writer
+  nimble_velox_field_writer
+  nimble_velox_layout_planner
   nimble_velox_metadata_fb
   nimble_velox_stats_fb
   raw_size_utils
   velox_dwio_common
   Folly::folly)
+
+add_subdirectory(selective)
+add_subdirectory(tests)
