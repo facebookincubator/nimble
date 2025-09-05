@@ -33,7 +33,6 @@
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "dwio/nimble/velox/StatsGenerated.h"
-#include "folly/ScopeGuard.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/dwio/common/ExecutorBarrier.h"
 #include "velox/type/Type.h"
@@ -58,6 +57,8 @@ class WriterContext : public FieldWriterContext {
   uint64_t rowsInFile{0};
   uint64_t rowsInStripe{0};
   uint64_t stripeSize{0};
+  // Previous raw size of the now encoded stripe data
+  uint64_t stripeEncodedRawSize{0};
   uint64_t rawSize{0};
   std::vector<uint64_t> rowsPerStripe;
 
@@ -83,6 +84,7 @@ class WriterContext : public FieldWriterContext {
     memoryUsed = 0;
     rowsInStripe = 0;
     stripeSize = 0;
+    stripeEncodedRawSize = 0;
     ++stripeIndex_;
   }
 
@@ -551,8 +553,6 @@ void VeloxWriter::close() {
 
   if (file_) {
     try {
-      auto exitGuard =
-          folly::makeGuard([this]() { context_->flushPolicy->onClose(); });
       flush();
       root_->close();
 
@@ -641,9 +641,13 @@ void VeloxWriter::flush() {
   }
 }
 
-void VeloxWriter::writeChunk(bool lastChunk) {
+bool VeloxWriter::writeChunk(
+    bool lastChunk,
+    std::optional<size_t> streamIndex) {
   uint64_t previousFlushWallTime = context_->stripeFlushTiming.wallNanos;
   std::atomic<uint64_t> chunkSize = 0;
+  std::atomic<uint64_t> sizeBeforeEncoding = 0;
+  std::atomic<bool> wroteChunk = false;
   {
     LoggingScope scope{*context_->logger};
     velox::CpuWallTimer veloxTimer{context_->stripeFlushTiming};
@@ -705,6 +709,8 @@ void VeloxWriter::writeChunk(bool lastChunk) {
           stream.content.push_back(std::move(buffer));
         }
       }
+      wroteChunk = true;
+      sizeBeforeEncoding += streamData.memoryUsed();
       streamData.reset();
     };
 
@@ -714,6 +720,7 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       const auto* context =
           streamData.descriptor().context<WriterStreamContext>();
 
+      // TODO: Breakdown large streams above a threshold into smaller chunks.
       const auto minStreamSize =
           lastChunk ? 0 : context_->options.minStreamChunkRawSize;
 
@@ -737,7 +744,17 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       }
     };
 
-    if (context_->options.encodingExecutor) {
+#define ENCODE_STREAM_DATA(innerStreamData, isNullStream, streamSize) \
+  do {                                                                \
+    if (isNullStream) {                                               \
+      NullsAsDataStreamData nullsStreamData{innerStreamData};         \
+      encode(nullsStreamData, streamSize);                            \
+    } else {                                                          \
+      encode(innerStreamData, streamSize);                            \
+    }                                                                 \
+  } while (0)
+
+    if (!streamIndex.has_value() && context_->options.encodingExecutor) {
       velox::dwio::common::ExecutorBarrier barrier{
           context_->options.encodingExecutor};
       for (auto& streamData : context_->streams()) {
@@ -748,16 +765,25 @@ void VeloxWriter::writeChunk(bool lastChunk) {
             *streamData, [&](StreamData& innerStreamData, bool isNullStream) {
               barrier.add(
                   [&innerStreamData, isNullStream, &encode, &streamSize]() {
-                    if (isNullStream) {
-                      NullsAsDataStreamData nullsStreamData{innerStreamData};
-                      encode(nullsStreamData, streamSize);
-                    } else {
-                      encode(innerStreamData, streamSize);
-                    }
+                    ENCODE_STREAM_DATA(
+                        innerStreamData, isNullStream, streamSize);
                   });
             });
       }
       barrier.waitAll();
+    } else if (streamIndex.has_value()) {
+      const auto& streams = context_->streams();
+      NIMBLE_DASSERT(
+          streams.size() >= streamIndex.value(), "Invalid stream index");
+      const auto& streamData = streams[streamIndex.value()];
+      auto& streamSize =
+          context_->columnStats[streamData->descriptor().offset()].physicalSize;
+      processStream(
+          *streamData,
+          [&encode, &streamSize](
+              StreamData& innerStreamData, bool isNullStream) {
+            ENCODE_STREAM_DATA(innerStreamData, isNullStream, streamSize);
+          });
     } else {
       for (auto& streamData : context_->streams()) {
         auto& streamSize =
@@ -767,12 +793,7 @@ void VeloxWriter::writeChunk(bool lastChunk) {
             *streamData,
             [&encode, &streamSize](
                 StreamData& innerStreamData, bool isNullStream) {
-              if (isNullStream) {
-                NullsAsDataStreamData nullsStreamData{innerStreamData};
-                encode(nullsStreamData, streamSize);
-              } else {
-                encode(innerStreamData, streamSize);
-              }
+              ENCODE_STREAM_DATA(innerStreamData, isNullStream, streamSize);
             });
       }
     }
@@ -782,6 +803,12 @@ void VeloxWriter::writeChunk(bool lastChunk) {
     }
 
     context_->stripeSize += chunkSize;
+    context_->stripeEncodedRawSize += sizeBeforeEncoding;
+    uint64_t memoryUsed = 0;
+    for (const auto& stream : context_->streams()) {
+      memoryUsed += stream->memoryUsed();
+    }
+    context_->memoryUsed = memoryUsed;
   }
 
   // Consider getting this from flush timing.
@@ -790,6 +817,9 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       1'000'000;
   VLOG(1) << "writeChunk milliseconds: " << flushWallTimeMs
           << ", chunk bytes: " << chunkSize;
+  return wroteChunk.load();
+
+#undef ENCODE_STREAM_DATA
 }
 
 uint32_t VeloxWriter::writeStripe() {
@@ -843,12 +873,16 @@ bool VeloxWriter::tryWriteStripe(bool force) {
     return false;
   }
 
-  auto shouldFlush = [&]() {
-    return context_->flushPolicy->shouldFlush(StripeProgress{
-        .rawStripeSize = context_->memoryUsed,
-        .stripeSize = context_->stripeSize,
-        .bufferSize =
-            static_cast<uint64_t>(context_->bufferMemoryPool->usedBytes()),
+  const auto& flushPolicy = context_->flushPolicy;
+  NIMBLE_DASSERT(flushPolicy != nullptr, "Flush policy must not be null");
+  flushPolicy->reset();
+
+  auto shouldFlush = [&](bool successfullyChunked = false) {
+    return flushPolicy->shouldFlush(StripeProgress{
+        .stripeRawSize = context_->memoryUsed,
+        .stripeEncodedSize = context_->stripeSize,
+        .stripeEncodedRawSize = context_->stripeEncodedRawSize,
+        .successfullyChunked = successfullyChunked,
     });
   };
 
@@ -860,21 +894,37 @@ bool VeloxWriter::tryWriteStripe(bool force) {
   try {
     // TODO: we can improve merge the last chunk write with stripe
     if (decision == FlushDecision::Chunk && context_->options.enableChunking) {
-      writeChunk(false);
-      decision = shouldFlush();
+      const auto& streams = context_->streams();
+      // Sort streams for chunking based on raw memory usage.
+      std::vector<size_t> streamIndices(streams.size());
+      std::iota(streamIndices.begin(), streamIndices.end(), 0);
+      std::sort(
+          streamIndices.begin(),
+          streamIndices.end(),
+          [&](const size_t& a, const size_t& b) {
+            return streams.at(a)->memoryUsed() > streams.at(b)->memoryUsed();
+          });
+      size_t currentIndex = 0;
+      bool successfullyChunked = true;
+      while (decision == FlushDecision::Chunk && successfullyChunked &&
+             currentIndex < streams.size()) {
+        successfullyChunked = writeChunk(false, streamIndices.at(currentIndex));
+        decision = shouldFlush(successfullyChunked);
+        ++currentIndex;
+      }
     }
 
     if (decision != FlushDecision::Stripe) {
       return false;
     }
 
+    uint32_t stripeSize = writeStripe();
     StripeFlushMetrics metrics{
         .inputSize = context_->stripeSize,
         .rowCount = context_->rowsInStripe,
+        .stripeSize = stripeSize,
         .trackedMemory = context_->memoryUsed,
     };
-
-    metrics.stripeSize = writeStripe();
     context_->logger->logStripeFlush(metrics);
 
     context_->nextStripe();
