@@ -22,11 +22,9 @@ namespace facebook::nimble {
 
 struct StripeProgress {
   // Size of the stripe data when it's fully decompressed and decoded
-  const uint64_t rawStripeSize;
+  const uint64_t stripeRawSize;
   // Size of the stripe after buffered data is encoded and optionally compressed
-  const uint64_t stripeSize;
-  // Size of the allocated buffer in the writer
-  const uint64_t bufferSize;
+  const uint64_t stripeEncodedSize;
 };
 
 enum class FlushDecision : uint8_t {
@@ -39,9 +37,6 @@ class FlushPolicy {
  public:
   virtual ~FlushPolicy() = default;
   virtual FlushDecision shouldFlush(const StripeProgress& stripeProgress) = 0;
-  // Required for memory pressure coordination for now. Will remove in the
-  // future.
-  virtual void onClose() = 0;
 };
 
 class RawStripeSizeFlushPolicy final : public FlushPolicy {
@@ -51,8 +46,6 @@ class RawStripeSizeFlushPolicy final : public FlushPolicy {
 
   FlushDecision shouldFlush(const StripeProgress& stripeProgress) override;
 
-  void onClose() override;
-
  private:
   const uint64_t rawStripeSize_;
 };
@@ -61,14 +54,10 @@ class LambdaFlushPolicy : public FlushPolicy {
  public:
   explicit LambdaFlushPolicy(
       std::function<FlushDecision(const StripeProgress&)> lambda)
-      : lambda_{lambda} {}
+      : lambda_{std::move(lambda)} {}
 
   FlushDecision shouldFlush(const StripeProgress& stripeProgress) override {
     return lambda_(stripeProgress);
-  }
-
-  void onClose() override {
-    // No-op
   }
 
  private:
