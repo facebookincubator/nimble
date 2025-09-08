@@ -39,22 +39,17 @@ uint32_t scatterCount(uint32_t count, const bits::Bitmap* scatterBitmap) {
 
 // Bytes needed for a packed null bitvector in velox.
 constexpr uint64_t nullBytes(uint32_t rowCount) {
-  return velox::bits::nbytes(rowCount) + velox::simd::kPadding;
+  return velox::bits::nbytes(rowCount);
 }
 
-// Bits needed for a packed null bitvector in velox.
-constexpr uint64_t nullBits(uint32_t rowCount) {
-  return rowCount + 8 * velox::simd::kPadding;
+// Ensures nulls can hold |rowCount| values.
+char* ensureNulls(velox::BaseVector* vector, uint32_t rowCount) {
+  return vector->mutableNulls(rowCount)->template asMutable<char>();
 }
 
-// Returns the nulls for a vector properly padded to hold |rowCount|.
-char* paddedNulls(velox::BaseVector* vec, uint32_t rowCount) {
-  return vec->mutableNulls(nullBits(rowCount))->template asMutable<char>();
-}
-
-// Zeroes vec's null vector (aka make it 'all null').
-void zeroNulls(velox::BaseVector* vec, uint32_t rowCount) {
-  memset(paddedNulls(vec, rowCount), 0, nullBytes(rowCount));
+// Zeroes vector's null vector (aka make it 'all null').
+void zeroNulls(velox::BaseVector* vector, uint32_t rowCount) {
+  memset(ensureNulls(vector, rowCount), 0, nullBytes(rowCount));
 }
 
 template <typename T>
@@ -493,19 +488,25 @@ class ScalarFieldReader final
       nonNullCount = decoder_->next(
           count,
           buf,
-          [&]() { return paddedNulls(vector, rowCount); },
+          [&]() { return ensureNulls(vector, rowCount); },
           scatterBitmap);
 
-      auto target = vector->mutableValues(rowCount)->template asMutable<char>();
+      NIMBLE_DASSERT(
+          vector->values()->size() == bits::bytesRequired(rowCount),
+          "Unexpected values buffer size.");
+      auto target = vector->values()->template asMutable<char>();
       std::fill(target, target + bits::bytesRequired(rowCount), 0);
       for (uint32_t i = 0; i < rowCount; ++i) {
         bits::maybeSetBit(i, target, buf[i]);
       }
     } else {
+      NIMBLE_DASSERT(
+          vector->values()->size() == (rowCount * sizeof(TRequested)),
+          "Unexpected values buffer size.");
       nonNullCount = decoder_->next(
           count,
-          vector->mutableValues(rowCount)->template asMutable<TRequested>(),
-          [&]() { return paddedNulls(vector, rowCount); },
+          vector->values()->template asMutable<TRequested>(),
+          [&]() { return ensureNulls(vector, rowCount); },
           scatterBitmap);
     }
 
@@ -662,7 +663,7 @@ class StringFieldReader final : public FieldReader {
     auto nonNullCount = decoder_->next(
         count,
         buffer_.data(),
-        [&]() { return paddedNulls(vector, rowCount); },
+        [&]() { return ensureNulls(vector, rowCount); },
         scatterBitmap);
 
     if (nonNullCount == rowCount) {
@@ -740,17 +741,23 @@ class MultiValueFieldReader : public FieldReader {
         &pool_, output, type_, allocationSize, std::forward<Args>(args)...);
     vector->resize(allocationSize);
 
+    NIMBLE_DASSERT(
+        vector->sizes()->size() ==
+            (allocationSize * sizeof(velox::vector_size_t)),
+        "Unexpected 'sizes' buffer size.");
+    NIMBLE_DASSERT(
+        vector->offsets()->size() ==
+            (allocationSize * sizeof(velox::vector_size_t)),
+        "Unexpected 'offsets' buffer size.");
     velox::vector_size_t* sizes =
-        vector->mutableSizes(allocationSize)
-            ->template asMutable<velox::vector_size_t>();
+        vector->sizes()->template asMutable<velox::vector_size_t>();
     velox::vector_size_t* offsets =
-        vector->mutableOffsets(allocationSize)
-            ->template asMutable<velox::vector_size_t>();
+        vector->offsets()->template asMutable<velox::vector_size_t>();
 
     auto nonNullCount = decoder_->next(
         count,
         sizes,
-        [&]() { return paddedNulls(vector, allocationSize); },
+        [&]() { return ensureNulls(vector, allocationSize); },
         scatterBitmap);
 
     size_t childrenRows = 0;
@@ -990,7 +997,7 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
         [&]() {
           // The pointer will be initialized ONLY if the data is nullable.
           // Otherwise, it will remain nullptr, and this is handled below.
-          nullsPtr = paddedNulls(dictionaryVector, rowCount);
+          nullsPtr = ensureNulls(dictionaryVector, rowCount);
           return nullsPtr;
         },
         nonNullCount,
@@ -1042,10 +1049,14 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
       vector->copyRanges(cachedValue_.get(), folly::Range(&cacheRange, 1));
 
       // copyRanges overwrites offsets from the source array and must be reset
-      OffsetType* sizes =
-          vector->mutableSizes(dedupCount)->template asMutable<OffsetType>();
-      OffsetType* offsets =
-          vector->mutableOffsets(dedupCount)->template asMutable<OffsetType>();
+      NIMBLE_DASSERT(
+          vector->sizes()->size() == (dedupCount * sizeof(OffsetType)),
+          "Unexpected 'sizes' buffer size.");
+      NIMBLE_DASSERT(
+          vector->offsets()->size() == (dedupCount * sizeof(OffsetType)),
+          "Unexpected 'offsets' buffer size.");
+      OffsetType* sizes = vector->sizes()->template asMutable<OffsetType>();
+      OffsetType* offsets = vector->offsets()->template asMutable<OffsetType>();
 
       size_t rows = 0;
       if (cacheIdx > 0) {
@@ -1399,7 +1410,7 @@ class SlidingWindowMapFieldReader final : public FieldReader {
         count,
         indices,
         [&]() {
-          nullsPtr = paddedNulls(dictionaryVector, rowCount);
+          nullsPtr = ensureNulls(dictionaryVector, rowCount);
           return nullsPtr;
         },
         scatterBitmap);
@@ -1527,9 +1538,10 @@ class SlidingWindowMapFieldReader final : public FieldReader {
     const uint32_t lastElement =
         static_cast<uint32_t>(deduplicatedOffsets.size()) - 1;
 
-    auto offsets =
-        map->mutableOffsets(uniqueCount)->template asMutable<uint32_t>();
-    auto sizes = map->mutableSizes(uniqueCount)->template asMutable<uint32_t>();
+    map->sizes()->setSize(uniqueCount * sizeof(uint32_t));
+    map->offsets()->setSize(uniqueCount * sizeof(uint32_t));
+    auto sizes = map->sizes()->template asMutable<uint32_t>();
+    auto offsets = map->offsets()->template asMutable<uint32_t>();
 
     if (useCache) {
       if (!map->mapKeys()->isWritable()) {
@@ -2082,7 +2094,7 @@ class RowFieldReader final : public FieldReader {
       boolBuffer_.resize(count);
       decoder_->next(count, boolBuffer_.data());
 
-      auto* nullBuffer = paddedNulls(vector, rowCount);
+      auto* nullBuffer = ensureNulls(vector, rowCount);
       bits::BitmapBuilder nullBits{nullBuffer, rowCount};
       if (scatterBitmap) {
         uint32_t boolBufferOffset = 0;
@@ -2110,7 +2122,7 @@ class RowFieldReader final : public FieldReader {
       selectedNonNullCount = count;
       if (scatterBitmap) {
         auto requiredBytes = bits::bytesRequired(rowCount);
-        auto* nullBuffer = paddedNulls(vector, rowCount);
+        auto* nullBuffer = ensureNulls(vector, rowCount);
         // @lint-ignore CLANGSECURITY facebook-security-vulnerable-memcpy
         std::memcpy(
             nullBuffer,
@@ -2366,7 +2378,7 @@ class FlatMapFieldReaderBase : public FieldReader {
   uint32_t loadNulls(uint32_t rowCount, velox::BaseVector* vector) {
     if constexpr (hasNull) {
       zeroNulls(vector, rowCount);
-      auto* nullBuffer = paddedNulls(vector, rowCount);
+      auto* nullBuffer = ensureNulls(vector, rowCount);
       bits::BitmapBuilder bitmap{nullBuffer, rowCount};
 
       boolBuffer_.resize(rowCount);
@@ -2791,8 +2803,14 @@ class MergedFlatMapFieldReader final
         std::static_pointer_cast<const velox::MapType>(this->type_)->keyType(),
         rowCount);
 
-    velox::BufferPtr offsets = vector->mutableOffsets(rowCount);
-    velox::BufferPtr lengths = vector->mutableSizes(rowCount);
+    NIMBLE_DASSERT(
+        vector->sizes()->size() == (rowCount * sizeof(velox::vector_size_t)),
+        "Unexpected 'sizes' buffer size.");
+    NIMBLE_DASSERT(
+        vector->offsets()->size() == (rowCount * sizeof(velox::vector_size_t)),
+        "Unexpected 'offsets' buffer size.");
+    const velox::BufferPtr& lengths = vector->sizes();
+    const velox::BufferPtr& offsets = vector->offsets();
     uint32_t nonNullCount = this->loadNulls(rowCount, vector);
 
     nodes_.clear();
