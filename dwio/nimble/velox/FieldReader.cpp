@@ -91,6 +91,42 @@ inline void resetIfNotWritable(velox::VectorPtr& vector, T&... buffer) {
   }
 }
 
+template <typename T, bool ShouldAllocate = true>
+void ensureBuffer(
+    velox::BufferPtr* buffer,
+    size_t elementCount,
+    velox::memory::MemoryPool* pool) {
+  if constexpr (std::is_same_v<T, bool>) {
+    const auto newSize = bits::bytesRequired(elementCount);
+    if (*buffer) {
+      if (newSize <= (*buffer)->capacity()) {
+        (*buffer)->setSize(newSize);
+        return;
+      }
+    }
+
+    if constexpr (ShouldAllocate) {
+      *buffer = velox::AlignedBuffer::allocate<char>(newSize, pool);
+    } else {
+      *buffer = nullptr;
+    }
+  } else {
+    if (*buffer) {
+      const auto newSize = velox::checkedMultiply(elementCount, sizeof(T));
+      if (newSize <= (*buffer)->capacity()) {
+        (*buffer)->setSize(newSize);
+        return;
+      }
+    }
+
+    if constexpr (ShouldAllocate) {
+      *buffer = velox::AlignedBuffer::allocate<T>(elementCount, pool);
+    } else {
+      *buffer = nullptr;
+    }
+  }
+}
+
 template <typename T>
 struct VectorInitializer {};
 
@@ -104,14 +140,16 @@ struct VectorInitializer<velox::FlatVector<T>> {
       velox::BufferPtr values = nullptr) {
     auto vector = verifyVectorState<velox::FlatVector<T>>(output);
     velox::BufferPtr nulls;
+
     if (vector) {
       nulls = vector->nulls();
-      values = vector->mutableValues(rowCount);
+      values = vector->values();
       resetIfNotWritable(output, nulls, values);
     }
-    if (!values) {
-      values = velox::AlignedBuffer::allocate<T>(rowCount, pool);
-    }
+
+    ensureBuffer<bool, /* ShouldAllocate */ false>(&nulls, rowCount, pool);
+    ensureBuffer<T>(&values, rowCount, pool);
+
     if (!output) {
       output = std::make_shared<velox::FlatVector<T>>(
           pool,
@@ -121,6 +159,7 @@ struct VectorInitializer<velox::FlatVector<T>> {
           values,
           std::vector<velox::BufferPtr>());
     }
+
     return static_cast<velox::FlatVector<T>*>(output.get());
   }
 };
@@ -135,21 +174,19 @@ struct VectorInitializer<velox::ArrayVector> {
     auto vector = verifyVectorState<velox::ArrayVector>(output);
     velox::BufferPtr nulls, sizes, offsets;
     velox::VectorPtr elements;
+
     if (vector) {
       nulls = vector->nulls();
-      sizes = vector->mutableSizes(rowCount);
-      offsets = vector->mutableOffsets(rowCount);
+      sizes = vector->sizes();
+      offsets = vector->offsets();
       elements = vector->elements();
       resetIfNotWritable(output, nulls, sizes, offsets);
     }
-    if (!offsets) {
-      offsets =
-          velox::AlignedBuffer::allocate<velox::vector_size_t>(rowCount, pool);
-    }
-    if (!sizes) {
-      sizes =
-          velox::AlignedBuffer::allocate<velox::vector_size_t>(rowCount, pool);
-    }
+
+    ensureBuffer<bool, /* ShouldAllocate */ false>(&nulls, rowCount, pool);
+    ensureBuffer<velox::vector_size_t>(&offsets, rowCount, pool);
+    ensureBuffer<velox::vector_size_t>(&sizes, rowCount, pool);
+
     if (!output) {
       output = std::make_shared<velox::ArrayVector>(
           pool,
@@ -161,6 +198,7 @@ struct VectorInitializer<velox::ArrayVector> {
           /* elements */ elements,
           0 /*nullCount*/);
     }
+
     return static_cast<velox::ArrayVector*>(output.get());
   }
 };
@@ -175,22 +213,20 @@ struct VectorInitializer<velox::MapVector> {
     auto vector = verifyVectorState<velox::MapVector>(output);
     velox::BufferPtr nulls, sizes, offsets;
     velox::VectorPtr mapKeys, mapValues;
+
     if (vector) {
       nulls = vector->nulls();
-      sizes = vector->mutableSizes(rowCount);
-      offsets = vector->mutableOffsets(rowCount);
+      sizes = vector->sizes();
+      offsets = vector->offsets();
       mapKeys = vector->mapKeys();
       mapValues = vector->mapValues();
       resetIfNotWritable(output, nulls, sizes, offsets);
     }
-    if (!offsets) {
-      offsets =
-          velox::AlignedBuffer::allocate<velox::vector_size_t>(rowCount, pool);
-    }
-    if (!sizes) {
-      sizes =
-          velox::AlignedBuffer::allocate<velox::vector_size_t>(rowCount, pool);
-    }
+
+    ensureBuffer<bool, /* ShouldAllocate */ false>(&nulls, rowCount, pool);
+    ensureBuffer<velox::vector_size_t>(&offsets, rowCount, pool);
+    ensureBuffer<velox::vector_size_t>(&sizes, rowCount, pool);
+
     if (!output) {
       output = std::make_shared<velox::MapVector>(
           pool,
@@ -203,6 +239,7 @@ struct VectorInitializer<velox::MapVector> {
           /*values*/ mapValues,
           0 /*nullCount*/);
     }
+
     return static_cast<velox::MapVector*>(output.get());
   }
 };
@@ -217,6 +254,7 @@ struct VectorInitializer<velox::RowVector> {
     auto vector = verifyVectorState<velox::RowVector>(output);
     velox::BufferPtr nulls;
     std::vector<velox::VectorPtr> childrenVectors;
+
     if (vector) {
       nulls = vector->nulls();
       childrenVectors = vector->children();
@@ -224,6 +262,9 @@ struct VectorInitializer<velox::RowVector> {
     } else {
       childrenVectors.resize(veloxType->size());
     }
+
+    ensureBuffer<bool, /* ShouldAllocate */ false>(&nulls, rowCount, pool);
+
     if (!output) {
       output = std::make_shared<velox::RowVector>(
           pool,
@@ -233,6 +274,7 @@ struct VectorInitializer<velox::RowVector> {
           std::move(childrenVectors),
           0 /*nullCount*/);
     }
+
     return static_cast<velox::RowVector*>(output.get());
   }
 };
