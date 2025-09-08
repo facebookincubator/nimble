@@ -6074,3 +6074,205 @@ TEST_F(VeloxReaderTests, ReadNonExistingFlatMapFeature) {
       /* readFlatMapFieldAsStruct= */ true,
       /* hasNulls= */ true);
 }
+
+TEST_F(VeloxReaderTests, VectorVectorResetWithBufferReuse) {
+  {
+    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+    std::vector<facebook::velox::VectorPtr> vectors{
+        vectorMaker.rowVector({
+            vectorMaker.flatVector<long>(
+                1000,
+                [](auto row) { return row; },
+                [](auto row) { return row % 3 == 0; }),
+        }),
+    };
+
+    {
+      auto file = nimble::test::createNimbleFile(*rootPool_, vectors, {});
+      velox::InMemoryReadFile readFile(file);
+      nimble::VeloxReader reader(*leafPool_, &readFile, /* selector */ nullptr);
+
+      velox::VectorPtr result;
+      ASSERT_TRUE(reader.next(10, result));
+
+      // Holding a reference to the nulls will cause both the nulls and the
+      // vector to be reset while reading. The 'values' will be reused.
+      auto v = result->as<velox::RowVector>()->childAt(0)->nulls();
+
+      ASSERT_TRUE(reader.next(990, result));
+    }
+
+    {
+      auto file = nimble::test::createNimbleFile(*rootPool_, vectors, {});
+      velox::InMemoryReadFile readFile(file);
+      nimble::VeloxReader reader(*leafPool_, &readFile, /* selector */ nullptr);
+
+      velox::VectorPtr result;
+      ASSERT_TRUE(reader.next(1, result));
+
+      // Holding a reference to the values will cause both the values and the
+      // vector to be reset while reading. The 'nulls' will be reused.
+      auto v = result->as<velox::RowVector>()->childAt(0)->values();
+
+      ASSERT_TRUE(reader.next(999, result));
+    }
+  }
+
+  {
+    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+    std::vector<facebook::velox::VectorPtr> vectors{
+        vectorMaker.rowVector({
+            vectorMaker.arrayVector<long>(
+                1000,
+                [](auto row) { return row; },
+                [](auto index) { return index; },
+                [](auto row) { return row % 3 == 0; }),
+        }),
+    };
+
+    {
+      auto file = nimble::test::createNimbleFile(*rootPool_, vectors, {});
+      velox::InMemoryReadFile readFile(file);
+      nimble::VeloxReader reader(*leafPool_, &readFile, /* selector */ nullptr);
+
+      velox::VectorPtr result;
+      ASSERT_TRUE(reader.next(10, result));
+
+      // Holding a reference to the 'nulls' will cause both the 'nulls' and the
+      // vector to be reset while reading. Other buffers will be reused.
+      auto v = result->as<velox::RowVector>()->childAt(0)->nulls();
+
+      ASSERT_TRUE(reader.next(990, result));
+    }
+
+    {
+      auto file = nimble::test::createNimbleFile(*rootPool_, vectors, {});
+      velox::InMemoryReadFile readFile(file);
+      nimble::VeloxReader reader(*leafPool_, &readFile, /* selector */ nullptr);
+
+      velox::VectorPtr result;
+      ASSERT_TRUE(reader.next(1, result));
+
+      // Holding a reference to the 'sizes' will cause both the 'sizes' and the
+      // vector to be reset while reading. Other buffers will be reused.
+      auto v = result->as<velox::RowVector>()
+                   ->childAt(0)
+                   ->as<velox::ArrayVector>()
+                   ->sizes();
+
+      ASSERT_TRUE(reader.next(999, result));
+    }
+
+    {
+      auto file = nimble::test::createNimbleFile(*rootPool_, vectors, {});
+      velox::InMemoryReadFile readFile(file);
+      nimble::VeloxReader reader(*leafPool_, &readFile, /* selector */ nullptr);
+
+      velox::VectorPtr result;
+      ASSERT_TRUE(reader.next(1, result));
+
+      // Holding a reference to the 'offsets' will cause both the 'offsets' and
+      // the vector to be reset while reading. Other buffers will be reused.
+      auto v = result->as<velox::RowVector>()
+                   ->childAt(0)
+                   ->as<velox::ArrayVector>()
+                   ->offsets();
+
+      ASSERT_TRUE(reader.next(999, result));
+    }
+  }
+
+  {
+    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+    std::vector<facebook::velox::VectorPtr> vectors{
+        vectorMaker.rowVector({
+            vectorMaker.mapVector<long, long>(
+                1000,
+                [](auto row) { return row; },
+                [](auto index) { return index; },
+                [](auto index) { return index; },
+                [](auto row) { return row % 3 == 0; }),
+        }),
+    };
+
+    {
+      auto file = nimble::test::createNimbleFile(*rootPool_, vectors, {});
+      velox::InMemoryReadFile readFile(file);
+      nimble::VeloxReader reader(*leafPool_, &readFile, /* selector */ nullptr);
+
+      velox::VectorPtr result;
+      ASSERT_TRUE(reader.next(10, result));
+
+      // Holding a reference to the 'nulls' will cause both the 'nulls' and the
+      // vector to be reset while reading. Other buffers will be reused.
+      auto v = result->as<velox::RowVector>()->childAt(0)->nulls();
+
+      ASSERT_TRUE(reader.next(990, result));
+    }
+
+    {
+      auto file = nimble::test::createNimbleFile(*rootPool_, vectors, {});
+      velox::InMemoryReadFile readFile(file);
+      nimble::VeloxReader reader(*leafPool_, &readFile, /* selector */ nullptr);
+
+      velox::VectorPtr result;
+      ASSERT_TRUE(reader.next(1, result));
+
+      // Holding a reference to the 'sizes' will cause both the 'sizes' and the
+      // vector to be reset while reading. Other buffers will be reused.
+      auto v = result->as<velox::RowVector>()
+                   ->childAt(0)
+                   ->as<velox::MapVector>()
+                   ->sizes();
+
+      ASSERT_TRUE(reader.next(999, result));
+    }
+
+    {
+      auto file = nimble::test::createNimbleFile(*rootPool_, vectors, {});
+      velox::InMemoryReadFile readFile(file);
+      nimble::VeloxReader reader(*leafPool_, &readFile, /* selector */ nullptr);
+
+      velox::VectorPtr result;
+      ASSERT_TRUE(reader.next(1, result));
+
+      // Holding a reference to the 'offsets' will cause both the 'offsets' and
+      // the vector to be reset while reading. Other buffers will be reused.
+      auto v = result->as<velox::RowVector>()
+                   ->childAt(0)
+                   ->as<velox::MapVector>()
+                   ->offsets();
+
+      ASSERT_TRUE(reader.next(999, result));
+    }
+  }
+
+  {
+    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+    std::vector<facebook::velox::VectorPtr> vectors{
+        vectorMaker.rowVector({
+            vectorMaker.rowVector({
+                vectorMaker.flatVector<long>(
+                    1000,
+                    [](auto row) { return row; },
+                    [](auto row) { return row % 3 == 0; }),
+            }),
+        }),
+    };
+
+    {
+      auto file = nimble::test::createNimbleFile(*rootPool_, vectors, {});
+      velox::InMemoryReadFile readFile(file);
+      nimble::VeloxReader reader(*leafPool_, &readFile, /* selector */ nullptr);
+
+      velox::VectorPtr result;
+      ASSERT_TRUE(reader.next(10, result));
+
+      // Holding a reference to the 'nulls' will cause both the 'nulls' and the
+      // vector to be reset while reading. There are no other buffers...
+      auto v = result->as<velox::RowVector>()->childAt(0)->nulls();
+
+      ASSERT_TRUE(reader.next(990, result));
+    }
+  }
+}
