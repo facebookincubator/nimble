@@ -1029,4 +1029,40 @@ void NimbleDumpLib::emitStripeGroupsMetadata(bool noHeader) {
   }
 }
 
+void NimbleDumpLib::emitOptionalSectionsMetadata(bool noHeader) {
+  struct NamedMetdataSection {
+    std::string name;
+    nimble::MetadataSection metadata;
+  };
+
+  TabletReader tabletReader{*pool_, file_.get()};
+  std::vector<NamedMetdataSection> sections;
+  sections.reserve(tabletReader.optionalSections().size());
+  for (const auto& [name, metadata] : tabletReader.optionalSections()) {
+    sections.push_back({name, metadata});
+  }
+  std::sort(
+      sections.begin(),
+      sections.end(),
+      [](const NamedMetdataSection& lhs, const NamedMetdataSection& rhs) {
+        return lhs.metadata.offset() < rhs.metadata.offset();
+      });
+
+  TableFormatter formatter(
+      ostream_,
+      {{"Name", 20, Alignment::Left},
+       {"Compression", 12, Alignment::Left},
+       {"Offset", 15, Alignment::Right},
+       {"Size", 15, Alignment::Right}},
+      noHeader);
+  for (const auto& namedSection : sections) {
+    formatter.writeRow({
+        namedSection.name,
+        toString(namedSection.metadata.compressionType()),
+        commaSeparated(namedSection.metadata.offset()),
+        commaSeparated(namedSection.metadata.size()),
+    });
+  }
+}
+
 } // namespace facebook::nimble::tools
