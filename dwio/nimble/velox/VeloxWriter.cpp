@@ -641,7 +641,9 @@ void VeloxWriter::flush() {
   }
 }
 
-bool VeloxWriter::writeChunk(bool lastChunk) {
+bool VeloxWriter::writeChunk(
+    bool lastChunk,
+    std::optional<uint32_t> streamIndex) {
   uint64_t previousFlushWallTime = context_->stripeFlushTiming.wallNanos;
   std::atomic<uint64_t> chunkSize = 0;
   std::atomic<uint64_t> sizeBeforeEncoding = 0;
@@ -742,7 +744,17 @@ bool VeloxWriter::writeChunk(bool lastChunk) {
       }
     };
 
-    if (context_->options.encodingExecutor) {
+#define ENCODE_STREAM_DATA(innerStreamData, isNullStream, streamSize) \
+  do {                                                                \
+    if (isNullStream) {                                               \
+      NullsAsDataStreamData nullsStreamData{innerStreamData};         \
+      encode(nullsStreamData, streamSize);                            \
+    } else {                                                          \
+      encode(innerStreamData, streamSize);                            \
+    }                                                                 \
+  } while (0)
+
+    if (!streamIndex.has_value() && context_->options.encodingExecutor) {
       velox::dwio::common::ExecutorBarrier barrier{
           context_->options.encodingExecutor};
       for (auto& streamData : context_->streams()) {
@@ -753,16 +765,25 @@ bool VeloxWriter::writeChunk(bool lastChunk) {
             *streamData, [&](StreamData& innerStreamData, bool isNullStream) {
               barrier.add(
                   [&innerStreamData, isNullStream, &encode, &streamSize]() {
-                    if (isNullStream) {
-                      NullsAsDataStreamData nullsStreamData{innerStreamData};
-                      encode(nullsStreamData, streamSize);
-                    } else {
-                      encode(innerStreamData, streamSize);
-                    }
+                    ENCODE_STREAM_DATA(
+                        innerStreamData, isNullStream, streamSize);
                   });
             });
       }
       barrier.waitAll();
+    } else if (streamIndex.has_value()) {
+      const auto& streams = context_->streams();
+      NIMBLE_DASSERT(
+          streams.size() >= streamIndex.value(), "Invalid stream index");
+      const auto& streamData = streams[streamIndex.value()];
+      auto& streamSize =
+          context_->columnStats[streamData->descriptor().offset()].physicalSize;
+      processStream(
+          *streamData,
+          [&encode, &streamSize](
+              StreamData& innerStreamData, bool isNullStream) {
+            ENCODE_STREAM_DATA(innerStreamData, isNullStream, streamSize);
+          });
     } else {
       for (auto& streamData : context_->streams()) {
         auto& streamSize =
@@ -772,12 +793,7 @@ bool VeloxWriter::writeChunk(bool lastChunk) {
             *streamData,
             [&encode, &streamSize](
                 StreamData& innerStreamData, bool isNullStream) {
-              if (isNullStream) {
-                NullsAsDataStreamData nullsStreamData{innerStreamData};
-                encode(nullsStreamData, streamSize);
-              } else {
-                encode(innerStreamData, streamSize);
-              }
+              ENCODE_STREAM_DATA(innerStreamData, isNullStream, streamSize);
             });
       }
     }
@@ -802,6 +818,8 @@ bool VeloxWriter::writeChunk(bool lastChunk) {
   VLOG(1) << "writeChunk milliseconds: " << flushWallTimeMs
           << ", chunk bytes: " << chunkSize;
   return wroteChunk.load();
+
+#undef ENCODE_STREAM_DATA
 }
 
 uint32_t VeloxWriter::writeStripe() {
@@ -886,8 +904,22 @@ bool VeloxWriter::tryWriteStripe(bool force) {
   try {
     // TODO: we can improve merge the last chunk write with stripe
     if (decision == FlushDecision::Chunk && context_->options.enableChunking) {
-      while (decision == FlushDecision::Chunk && writeChunk(false)) {
+      const auto& streams = context_->streams();
+      // Sort streams for chunking based on raw memory usage.
+      std::vector<uint32_t> streamIndices(streams.size());
+      std::iota(streamIndices.begin(), streamIndices.end(), 0);
+      std::sort(
+          streamIndices.begin(),
+          streamIndices.end(),
+          [&](const uint32_t& a, const uint32_t& b) {
+            return streams[a]->memoryUsed() > streams[b]->memoryUsed();
+          });
+      uint32_t currentIndex = 0;
+      while (decision == FlushDecision::Chunk &&
+             currentIndex < streams.size() &&
+             writeChunk(false, streamIndices[currentIndex])) {
         decision = shouldChunk();
+        ++currentIndex;
       }
     }
     decision = (decision != FlushDecision::Stripe) ? shouldFlush() : decision;

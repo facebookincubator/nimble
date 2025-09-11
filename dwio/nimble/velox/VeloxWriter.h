@@ -87,7 +87,9 @@ class VeloxWriter {
   // Returning 'true' if stripe was written.
   bool tryWriteStripe(bool force = false);
   // Returns 'true' if chunk was written.
-  bool writeChunk(bool lastChunk = true);
+  bool writeChunk(
+      bool lastChunk = true,
+      std::optional<uint32_t> streamIndex = std::nullopt);
   uint32_t writeStripe();
 };
 
