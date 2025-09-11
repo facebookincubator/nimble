@@ -692,6 +692,11 @@ bool VeloxWriter::writeChunk(
         streamData_.reset();
       }
 
+      inline virtual std::unique_ptr<StreamData> popChunk(
+          uint64_t maxChunkSize) override {
+        return streamData_.popChunk(maxChunkSize);
+      }
+
      private:
       StreamData& streamData_;
     };
