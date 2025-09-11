@@ -22,6 +22,12 @@
 #include <gtest/gtest.h>
 
 namespace facebook::nimble {
+
+enum FilterType { kNone, kKeep, kDrop };
+auto format_as(FilterType filterType) {
+  return fmt::underlying(filterType);
+}
+
 namespace {
 
 using namespace facebook::velox;
@@ -33,8 +39,6 @@ using namespace facebook::velox;
 class SelectiveNimbleReaderTest : public ::testing::Test,
                                   public velox::test::VectorTestBase {
  protected:
-  enum FilterType { kNone, kKeep, kDrop };
-
   static void SetUpTestCase() {
     memory::initializeMemoryManager(velox::memory::MemoryManager::Options{});
     registerSelectiveNimbleReaderFactory();
