@@ -89,6 +89,7 @@ class VeloxWriter {
   // Returns 'true' if chunk was written.
   bool writeChunk(
       bool lastChunk = true,
+      bool ignoreSmallStreams = false,
       std::optional<uint32_t> streamIndex = std::nullopt);
   uint32_t writeStripe();
 };

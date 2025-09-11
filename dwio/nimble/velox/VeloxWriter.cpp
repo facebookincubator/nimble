@@ -643,6 +643,7 @@ void VeloxWriter::flush() {
 
 bool VeloxWriter::writeChunk(
     bool lastChunk,
+    bool ignoreSmallStreams,
     std::optional<uint32_t> streamIndex) {
   uint64_t previousFlushWallTime = context_->stripeFlushTiming.wallNanos;
   std::atomic<uint64_t> chunkSize = 0;
@@ -703,20 +704,44 @@ bool VeloxWriter::writeChunk(
 
     auto encode = [&](StreamData& streamData, uint64_t& streamSize) {
       const auto offset = streamData.descriptor().offset();
-      auto encoded = encodeStream(*context_, *encodingBuffer_, streamData);
-      if (!encoded.empty()) {
-        ChunkedStreamWriter chunkWriter{*encodingBuffer_};
-        NIMBLE_DASSERT(offset < streams_.size(), "Stream offset out of range.");
-        auto& stream = streams_[offset];
-        for (auto& buffer : chunkWriter.encode(encoded)) {
-          streamSize += buffer.size();
-          chunkSize += buffer.size();
-          stream.content.push_back(std::move(buffer));
+      uint64_t streamSizeBeforeEncoding = streamData.memoryUsed();
+
+      auto writeEncoded = [&](std::string_view encoded) {
+        if (!encoded.empty()) {
+          ChunkedStreamWriter chunkWriter{*encodingBuffer_};
+          NIMBLE_DASSERT(
+              offset < streams_.size(), "Stream offset out of range.");
+          auto& stream = streams_[offset];
+          for (auto& buffer : chunkWriter.encode(encoded)) {
+            streamSize += buffer.size();
+            chunkSize += buffer.size();
+            stream.content.push_back(std::move(buffer));
+          }
+        }
+      };
+
+      // Encoded large streams as smaller chunks.
+      if (context_->options.enableChunking) {
+        while (auto chunkedStream = streamData.popChunk(
+                   context_->options.maxStreamChunkRawSize)) {
+          auto encoded =
+              encodeStream(*context_, *encodingBuffer_, *chunkedStream);
+          writeEncoded(encoded);
+          chunkedStream->reset();
         }
       }
+
+      // Encode small streams.
+      uint64_t currentStreamSize = streamData.memoryUsed();
+      if (lastChunk || !context_->options.enableChunking ||
+          (!ignoreSmallStreams && currentStreamSize > 0)) {
+        auto encoded = encodeStream(*context_, *encodingBuffer_, streamData);
+        writeEncoded(encoded);
+        streamData.reset();
+        currentStreamSize = 0;
+      }
+      sizeBeforeEncoding += streamSizeBeforeEncoding - currentStreamSize;
       wroteChunk = true;
-      sizeBeforeEncoding += streamData.memoryUsed();
-      streamData.reset();
     };
 
     auto processStream = [&](StreamData& streamData,
@@ -909,6 +934,25 @@ bool VeloxWriter::tryWriteStripe(bool force) {
   try {
     // TODO: we can improve merge the last chunk write with stripe
     if (decision == FlushDecision::Chunk && context_->options.enableChunking) {
+      // Chunk streams above maxStreamChunkRawSize to relieve memory pressure
+      const auto& streams = context_->streams();
+      uint32_t currentIndex = 0;
+      while (currentIndex < streams.size() &&
+             decision == FlushDecision::Chunk) {
+        if (streams[currentIndex]->memoryUsed() >=
+            context_->options.maxStreamChunkRawSize) {
+          writeChunk(
+              /*lastChunk=*/false,
+              /*ignoreSmallStreams=*/true,
+              /*streamIndex=*/currentIndex);
+          decision = shouldChunk();
+        }
+        ++currentIndex;
+      }
+    }
+
+    if (decision == FlushDecision::Chunk && context_->options.enableChunking) {
+      // Relieve memory pressure by chunking small streams.
       const auto& streams = context_->streams();
       // Sort streams for chunking based on raw memory usage.
       std::vector<uint32_t> streamIndices(streams.size());
@@ -921,8 +965,11 @@ bool VeloxWriter::tryWriteStripe(bool force) {
           });
       uint32_t currentIndex = 0;
       while (decision == FlushDecision::Chunk &&
-             currentIndex < streams.size() &&
-             writeChunk(false, streamIndices[currentIndex])) {
+             currentIndex < streamIndices.size() &&
+             writeChunk(
+                 /*lastChunk=*/false,
+                 /*ignoreSmallStreams=*/false,
+                 /*streamIndex=*/streamIndices[currentIndex])) {
         decision = shouldChunk();
         ++currentIndex;
       }
