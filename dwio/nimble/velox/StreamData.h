@@ -16,12 +16,12 @@
 
 #pragma once
 
+#include <memory>
 #include <span>
 #include <string_view>
 
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
-#include "velox/common/memory/Memory.h"
 
 namespace facebook::nimble {
 
@@ -46,6 +46,9 @@ class StreamData {
   virtual void reset() = 0;
   virtual void materialize() {}
 
+  // Break the stream data into chunks, each respecting the maximum size limit.
+  virtual std::unique_ptr<StreamData> popChunk(uint64_t maxChunkSize) = 0;
+
   const StreamDescriptorBuilder& descriptor() const {
     return descriptor_;
   }
@@ -64,11 +67,33 @@ class ContentStreamData final : public StreamData {
   ContentStreamData(
       velox::memory::MemoryPool& memoryPool,
       const StreamDescriptorBuilder& descriptor)
-      : StreamData(descriptor), data_{&memoryPool}, extraMemory_{0} {}
+      : StreamData(descriptor),
+        data_{&memoryPool},
+        extraMemory_{0},
+        memoryPool_{memoryPool} {}
 
   inline virtual std::string_view data() const override {
     return {
         reinterpret_cast<const char*>(data_.data()), data_.size() * sizeof(T)};
+  }
+
+  inline virtual std::unique_ptr<StreamData> popChunk(
+      uint64_t maxChunkSize) override {
+    size_t chunkSize = maxChunkSize / sizeof(T);
+    if (chunkSize > data_.size()) {
+      return nullptr;
+    }
+
+    Vector<T> dataToBeReturned(
+        &memoryPool_, data_.begin(), data_.begin() + chunkSize);
+    Vector<T> dataToBePreserved(
+        &memoryPool_, data_.begin() + chunkSize, data_.end());
+    auto chunk =
+        std::make_unique<ContentStreamData<T>>(memoryPool_, descriptor());
+    chunk->mutableData() = std::move(dataToBeReturned);
+    chunk->extraMemory_ = extraMemory_;
+    data_ = std::move(dataToBePreserved);
+    return chunk;
   }
 
   inline virtual std::span<const bool> nonNulls() const override {
@@ -103,6 +128,7 @@ class ContentStreamData final : public StreamData {
  private:
   Vector<T> data_;
   uint64_t extraMemory_;
+  velox::memory::MemoryPool& memoryPool_;
 };
 
 // Nulls only data stream.
@@ -119,10 +145,36 @@ class NullsStreamData : public StreamData {
       : StreamData(descriptor),
         nonNulls_{&memoryPool},
         hasNulls_{false},
-        bufferedCount_{0} {}
+        bufferedCount_{0},
+        memoryPool_{memoryPool} {}
 
   inline virtual std::string_view data() const override {
     return {};
+  }
+
+  inline virtual std::unique_ptr<StreamData> popChunk(
+      uint64_t maxChunkSize) override {
+    uint64_t chunkSize = maxChunkSize / sizeof(bool);
+    if (chunkSize > bufferedCount_) {
+      return nullptr;
+    }
+    materialize();
+
+    Vector<bool> nonNullsToBeReturned(
+        &memoryPool_, nonNulls_.begin(), nonNulls_.begin() + chunkSize);
+    Vector<bool> nonNullsToBePreserved(
+        &memoryPool_, nonNulls_.begin() + chunkSize, nonNulls_.end());
+
+    auto chunk = std::make_unique<NullsStreamData>(memoryPool_, descriptor());
+    chunk->mutableNonNulls() = std::move(nonNullsToBeReturned);
+    chunk->bufferedCount_ = static_cast<uint32_t>(chunkSize);
+
+    nonNulls_ = std::move(nonNullsToBePreserved);
+    bufferedCount_ -= chunkSize;
+
+    // Assume hasNulls_ is equal for both chunks to avoid costly iteration.
+    chunk->hasNulls_ = hasNulls_;
+    return chunk;
   }
 
   inline virtual std::span<const bool> nonNulls() const override {
@@ -166,6 +218,7 @@ class NullsStreamData : public StreamData {
   Vector<bool> nonNulls_;
   bool hasNulls_;
   uint32_t bufferedCount_;
+  velox::memory::MemoryPool& memoryPool_;
 };
 
 // Nullable content data stream.
@@ -183,6 +236,47 @@ class NullableContentStreamData final : public NullsStreamData {
   inline virtual std::string_view data() const override {
     return {
         reinterpret_cast<const char*>(data_.data()), data_.size() * sizeof(T)};
+  }
+
+  inline virtual std::unique_ptr<StreamData> popChunk(
+      uint64_t maxChunkSize) override {
+    uint64_t chunkSize = maxChunkSize / (sizeof(T) + sizeof(bool));
+    if (chunkSize > data_.size()) {
+      return nullptr;
+    }
+
+    auto chunk = std::make_unique<NullableContentStreamData<T>>(
+        memoryPool_, descriptor());
+
+    // Chunk Content
+    {
+      Vector<T> dataToBeReturned(
+          &memoryPool_, data_.begin(), data_.begin() + chunkSize);
+      Vector<T> dataToBePreserved(
+          &memoryPool_, data_.begin() + chunkSize, data_.end());
+      chunk->mutableData() = std::move(dataToBeReturned);
+      chunk->extraMemory_ = extraMemory_;
+      data_ = std::move(dataToBePreserved);
+    }
+
+    // Chunk Nulls
+    {
+      NullsStreamData::materialize();
+      Vector<bool> nonNullsToBeReturned(
+          &memoryPool_, nonNulls_.begin(), nonNulls_.begin() + chunkSize);
+      Vector<bool> nonNullsToBePreserved(
+          &memoryPool_, nonNulls_.begin() + chunkSize, nonNulls_.end());
+
+      chunk->mutableNonNulls() = std::move(nonNullsToBeReturned);
+      chunk->bufferedCount_ = static_cast<uint32_t>(chunkSize);
+
+      nonNulls_ = std::move(nonNullsToBePreserved);
+      bufferedCount_ -= chunkSize;
+
+      // Assume hasNulls_ is equal for both chunks to avoid costly iteration.
+      chunk->hasNulls_ = hasNulls_;
+    }
+    return chunk;
   }
 
   inline virtual bool empty() const override {
@@ -212,5 +306,97 @@ class NullableContentStreamData final : public NullsStreamData {
   Vector<T> data_;
   uint64_t extraMemory_;
 };
+
+// Template specialization for std::string_view to handle extra memory properly
+template <>
+inline std::unique_ptr<StreamData>
+ContentStreamData<std::string_view>::popChunk(uint64_t maxChunkSize) {
+  if (memoryUsed() < maxChunkSize) {
+    return nullptr;
+  }
+
+  size_t chunkSize = 0;
+  uint64_t rollingChunkSize = 0;
+  uint64_t rollingExtraMemory = 0;
+  for (size_t i = 0; i < data_.size(); ++i) {
+    const auto& str = data_[i];
+    uint64_t strSize = str.size() + sizeof(std::string_view);
+    if (rollingChunkSize + strSize > maxChunkSize) {
+      break;
+    }
+    rollingExtraMemory += str.size();
+    rollingChunkSize += strSize;
+    chunkSize = i + 1;
+  }
+
+  Vector<std::string_view> dataToBeReturned(
+      &memoryPool_, data_.begin(), data_.begin() + chunkSize);
+  Vector<std::string_view> dataToBePreserved(
+      &memoryPool_, data_.begin() + chunkSize, data_.end());
+  auto chunk = std::make_unique<ContentStreamData<std::string_view>>(
+      memoryPool_, descriptor());
+  chunk->mutableData() = std::move(dataToBeReturned);
+  data_ = std::move(dataToBePreserved);
+
+  chunk->extraMemory_ = rollingExtraMemory;
+  extraMemory_ -= rollingExtraMemory;
+  return chunk;
+}
+
+template <>
+inline std::unique_ptr<StreamData>
+NullableContentStreamData<std::string_view>::popChunk(uint64_t maxChunkSize) {
+  if (memoryUsed() < maxChunkSize) {
+    return nullptr;
+  }
+
+  size_t chunkSize = 0;
+  uint64_t rollingChunkSize = 0;
+  uint64_t rollingExtraMemory = 0;
+  for (size_t i = 0; i < data_.size(); ++i) {
+    const auto& str = data_[i];
+    uint64_t strSize = str.size() + sizeof(std::string_view) + sizeof(bool);
+    if (rollingChunkSize + strSize > maxChunkSize) {
+      break;
+    }
+    rollingExtraMemory += str.size();
+    rollingChunkSize += strSize;
+    chunkSize = i + 1;
+  }
+
+  auto chunk = std::make_unique<NullableContentStreamData<std::string_view>>(
+      memoryPool_, descriptor());
+  // Chunk content
+  {
+    Vector<std::string_view> dataToBeReturned(
+        &memoryPool_, data_.begin(), data_.begin() + chunkSize);
+    Vector<std::string_view> dataToBePreserved(
+        &memoryPool_, data_.begin() + chunkSize, data_.end());
+    chunk->mutableData() = std::move(dataToBeReturned);
+    data_ = std::move(dataToBePreserved);
+
+    chunk->extraMemory_ = rollingExtraMemory;
+    extraMemory_ -= rollingExtraMemory;
+  }
+
+  // Chunk Nulls
+  {
+    NullsStreamData::materialize();
+    Vector<bool> nonNullsToBeReturned(
+        &memoryPool_, nonNulls_.begin(), nonNulls_.begin() + chunkSize);
+    Vector<bool> nonNullsToBePreserved(
+        &memoryPool_, nonNulls_.begin() + chunkSize, nonNulls_.end());
+
+    chunk->mutableNonNulls() = std::move(nonNullsToBeReturned);
+    chunk->bufferedCount_ = static_cast<uint32_t>(chunkSize);
+
+    nonNulls_ = std::move(nonNullsToBePreserved);
+    bufferedCount_ -= chunkSize;
+
+    // Assume hasNulls_ is equal for both chunks to avoid costly iteration.
+    chunk->hasNulls_ = hasNulls_;
+  }
+  return chunk;
+}
 
 } // namespace facebook::nimble
