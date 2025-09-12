@@ -16,6 +16,7 @@
 
 #include "dwio/nimble/velox/selective/ColumnReader.h"
 #include <memory>
+#include "folly/ScopeGuard.h"
 
 #include "dwio/nimble/velox/selective/ByteColumnReader.h"
 #include "dwio/nimble/velox/selective/FlatMapColumnReader.h"
@@ -37,6 +38,13 @@ std::unique_ptr<dwio::common::SelectiveColumnReader> buildColumnReader(
     NimbleParams& params,
     common::ScanSpec& scanSpec,
     bool isRoot) {
+  auto guard = folly::makeGuard([&] {
+    if (params.rowSizeTracker()) {
+      params.rowSizeTracker()->applyProjection(
+          fileType->id(), scanSpec.projectOut());
+    }
+  });
+
   if (isRoot) {
     VELOX_CHECK(fileType->type()->isRow());
   }
