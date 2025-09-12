@@ -846,18 +846,20 @@ bool VeloxWriter::tryWriteStripe(bool force) {
         .stripeEncodedSize = context_->stripeSize});
   };
 
-  auto decision = force ? FlushDecision::Stripe : shouldFlush();
-  if (decision == FlushDecision::None) {
-    return false;
-  }
+  auto shouldChunk = [&]() {
+    return context_->flushPolicy->shouldChunk(StripeProgress{
+        .stripeRawSize = context_->memoryUsed,
+        .stripeEncodedSize = context_->stripeSize});
+  };
 
   try {
     // TODO: we can improve merge the last chunk write with stripe
-    if (decision == FlushDecision::Chunk && context_->options.enableChunking) {
+    if (context_->options.enableChunking &&
+        shouldChunk() == ChunkDecision::Chunk) {
       writeChunk(false);
-      decision = shouldFlush();
     }
 
+    auto decision = force ? FlushDecision::Stripe : shouldFlush();
     if (decision != FlushDecision::Stripe) {
       return false;
     }
