@@ -248,7 +248,9 @@ void ChunkedDecoder::skip(int64_t numValues) {
 }
 
 std::optional<size_t> ChunkedDecoder::estimateRowCount() const {
-  VELOX_CHECK_NULL(encoding_);
+  if (encoding_) {
+    return rowCountEstimate_;
+  }
   constexpr int kChunkCompressionTypeOffset = 4;
   constexpr int kEncodingOffset =
       kChunkCompressionTypeOffset + /*chunkCompressionType*/ 1;
@@ -258,13 +260,18 @@ std::optional<size_t> ChunkedDecoder::estimateRowCount() const {
       kChunkRowCountOffset + sizeof(uint32_t)));
   if (static_cast<CompressionType>(inputData_[kChunkCompressionTypeOffset]) !=
       CompressionType::Uncompressed) {
-    return std::nullopt;
+    rowCountEstimate_ = std::nullopt;
+    return rowCountEstimate_;
   }
-  return folly::loadUnaligned<uint32_t>(inputData_ + kChunkRowCountOffset);
+  rowCountEstimate_ =
+      folly::loadUnaligned<uint32_t>(inputData_ + kChunkRowCountOffset);
+  return rowCountEstimate_;
 }
 
 std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
-  VELOX_CHECK_NULL(encoding_);
+  if (encoding_) {
+    return stringDataSizeEstimate_;
+  }
   constexpr int kChunkCompressionTypeOffset = 4;
   constexpr int kEncodingOffset =
       kChunkCompressionTypeOffset + /*chunkCompressionType*/ 1;
@@ -276,7 +283,8 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
   // We don't want to decompress the chunk just for the estimate. We will fall
   // back on a top level heuristics instead.
   if (compressionType != CompressionType::Uncompressed) {
-    return std::nullopt;
+    stringDataSizeEstimate_ = std::nullopt;
+    return stringDataSizeEstimate_;
   }
   auto encodingStart = kEncodingOffset;
   size_t totalSize = pos + chunkSize - inputData_;
@@ -301,7 +309,8 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
   // column stats implementation. In the vast majority of cases, String types
   // are encoded with TrivialEncoding.
   if (encodingType != EncodingType::Trivial) {
-    return std::nullopt;
+    stringDataSizeEstimate_ = std::nullopt;
+    return stringDataSizeEstimate_;
   }
   VELOX_CHECK(const_cast<ChunkedDecoder*>(this)->ensureInputIncremental_hack(
       encodingStart + Encoding::kPrefixSize +
@@ -314,11 +323,13 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
   VELOX_CHECK(totalSize >= blobOffset);
   size_t blobSize = totalSize - blobOffset;
   if (dataCompressionType == CompressionType::Uncompressed) {
-    return blobSize;
+    stringDataSizeEstimate_ = blobSize;
+    return stringDataSizeEstimate_;
   }
   VELOX_CHECK(const_cast<ChunkedDecoder*>(this)->ensureInput(totalSize));
-  return Compression::uncompressedSize(
+  stringDataSizeEstimate_ = Compression::uncompressedSize(
       dataCompressionType, {inputData_ + blobOffset, blobSize});
+  return stringDataSizeEstimate_;
 }
 
 } // namespace facebook::nimble
