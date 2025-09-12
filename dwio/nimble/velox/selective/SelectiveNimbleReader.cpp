@@ -167,7 +167,7 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
         columnReaderStatistics_,
         readerBase_->nimbleSchema(),
         streams_,
-        rowSizeTracker_.get(),
+        options_.trackRowSize() ? rowSizeTracker_.get() : nullptr,
         options_.preserveFlatMapsInMemory());
     columnReader_ = buildColumnReader(
         options_.requestedType() ? options_.requestedType()
