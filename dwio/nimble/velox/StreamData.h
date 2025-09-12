@@ -20,6 +20,7 @@
 #include <string_view>
 
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "velox/common/memory/Memory.h"
 
@@ -160,7 +161,10 @@ class NullsStreamData : public StreamData {
     }
   }
 
-  void ensureNullsCapacity(bool mayHaveNulls, uint32_t size);
+  void ensureNullsCapacity(
+      bool mayHaveNulls,
+      uint32_t size,
+      InputBufferGrowthPolicy* growthPolicy);
 
  protected:
   Vector<bool> nonNulls_;
