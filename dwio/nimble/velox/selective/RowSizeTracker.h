@@ -22,6 +22,8 @@
 #include "velox/type/Type.h"
 #include "velox/vector/SelectivityVector.h"
 
+#include "velox/dwio/common/ScanSpec.h"
+
 namespace facebook::nimble {
 
 class RowSizeTracker {
@@ -33,6 +35,10 @@ class RowSizeTracker {
 
   void
   update(size_t nodeIdx, size_t memoryFootprint, velox::vector_size_t rowCount);
+
+  void applyProjection(size_t nodeIdx, bool projected);
+
+  void finalizeProjection();
 
   size_t getCurrentMaxRowSize() const;
 
@@ -49,6 +55,8 @@ class RowSizeTracker {
   // Avoid providing aggressive row sizes when we don't have any materialized
   // variable length nodes.
   velox::SelectivityVector variableLengthNodes_;
+  velox::SelectivityVector projectedNodes_;
+  bool projectionFinalized_{false};
   size_t maxRowSize_{0};
 
   friend class RowSizeTrackerTest;
