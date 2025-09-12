@@ -27,7 +27,7 @@ target_link_libraries(nimble_velox_schema_builder nimble_velox_schema_reader
 
 add_library(nimble_velox_stream_data StreamData.cpp)
 target_link_libraries(nimble_velox_stream_data nimble_velox_schema_builder
-                      nimble_common)
+                      nimble_common nimble_velox_buffer_growth_policy)
 
 add_library(nimble_velox_field_reader FieldReader.cpp)
 target_link_libraries(
@@ -37,11 +37,13 @@ target_link_libraries(
 add_library(nimble_velox_layout_planner LayoutPlanner.cpp)
 target_link_libraries(nimble_velox_layout_planner nimble_velox_schema_reader)
 
-add_library(nimble_velox_field_writer BufferGrowthPolicy.cpp
-                                      DeduplicationUtils.cpp FieldWriter.cpp)
+add_library(nimble_velox_buffer_growth_policy BufferGrowthPolicy.cpp)
+target_link_libraries(nimble_velox_buffer_growth_policy nimble_common)
+
+add_library(nimble_velox_field_writer DeduplicationUtils.cpp FieldWriter.cpp)
 target_link_libraries(
   nimble_velox_field_writer nimble_velox_schema nimble_velox_stream_data
-  nimble_velox_schema_builder Folly::folly)
+  nimble_velox_schema_builder nimble_velox_buffer_growth_policy Folly::folly)
 
 build_flatbuffers(
   "${CMAKE_CURRENT_SOURCE_DIR}/Schema.fbs"
@@ -108,6 +110,7 @@ add_library(
                       ChunkedStreamWriter.cpp VeloxWriterDefaultMetadataOSS.cpp)
 target_link_libraries(
   nimble_velox_writer
+  nimble_velox_buffer_growth_policy
   nimble_encodings
   nimble_common
   nimble_column_stats_utils
