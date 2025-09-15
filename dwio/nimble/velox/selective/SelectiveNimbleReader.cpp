@@ -17,6 +17,7 @@
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 #include "dwio/nimble/velox/selective/ColumnReader.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
+#include "dwio/nimble/velox/selective/RowSizeTracker.h"
 
 namespace facebook::nimble {
 namespace detail {
@@ -35,7 +36,11 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
   SelectiveNimbleRowReader(
       const std::shared_ptr<ReaderBase>& readerBase,
       const dwio::common::RowReaderOptions& options)
-      : readerBase_(readerBase), options_(options), streams_(readerBase_) {
+      : readerBase_(readerBase),
+        options_(options),
+        streams_(readerBase_),
+        rowSizeTracker_{
+            std::make_unique<RowSizeTracker>(readerBase->fileSchemaWithId())} {
     initReadRange();
     if (options.eagerFirstStripeLoad()) {
       nextRowNumber();
@@ -127,7 +132,7 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
     }
     size_t byteSize, rowCount;
     if (!columnReader_->estimateMaterializedSize(byteSize, rowCount)) {
-      return 1 << 20;
+      return rowSizeTracker_->getCurrentMaxRowSize();
     }
     return rowCount == 0 ? 0 : byteSize / rowCount;
   }
@@ -162,6 +167,7 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
         columnReaderStatistics_,
         readerBase_->nimbleSchema(),
         streams_,
+        rowSizeTracker_.get(),
         options_.preserveFlatMapsInMemory());
     columnReader_ = buildColumnReader(
         options_.requestedType() ? options_.requestedType()
@@ -185,6 +191,7 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
   int skippedStripes_ = 0;
   std::unique_ptr<dwio::common::SelectiveColumnReader> columnReader_;
   dwio::common::ColumnReaderStatistics columnReaderStatistics_;
+  std::unique_ptr<RowSizeTracker> rowSizeTracker_;
 };
 
 class SelectiveNimbleReader : public dwio::common::Reader {
