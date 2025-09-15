@@ -54,7 +54,8 @@ CompressionResult ZstdCompressor::compress(
 
 Vector<char> ZstdCompressor::uncompress(
     velox::memory::MemoryPool& memoryPool,
-    CompressionType compressionType,
+    const CompressionType compressionType,
+    const DataType /* dataType */,
     std::string_view data) {
   auto pos = data.data();
   const uint32_t uncompressedSize = encoding::readUint32(pos);
