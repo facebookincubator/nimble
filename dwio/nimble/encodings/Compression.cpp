@@ -68,9 +68,10 @@ ICompressor& getCompressor(CompressionType compressionType) {
 /* static */ Vector<char> Compression::uncompress(
     velox::memory::MemoryPool& memoryPool,
     CompressionType compressionType,
+    DataType dataType,
     std::string_view data) {
   return getCompressor(compressionType)
-      .uncompress(memoryPool, compressionType, data);
+      .uncompress(memoryPool, compressionType, dataType, data);
 }
 
 /* static */ std::optional<size_t> Compression::uncompressedSize(
