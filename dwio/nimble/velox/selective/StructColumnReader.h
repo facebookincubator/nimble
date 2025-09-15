@@ -16,7 +16,9 @@
 
 #pragma once
 
+#include "dwio/nimble/velox/selective/ColumnLoader.h"
 #include "dwio/nimble/velox/selective/NimbleData.h"
+#include "dwio/nimble/velox/selective/RowSizeTracker.h"
 #include "velox/dwio/common/SelectiveStructColumnReader.h"
 
 namespace facebook::nimble {
@@ -35,7 +37,8 @@ class StructColumnReaderBase
             fileType,
             params,
             scanSpec,
-            isRoot) {
+            isRoot),
+        rowSizeTracker_{params.rowSizeTracker()} {
     VELOX_CHECK_EQ(fileType_->id(), fileType->id());
   }
 
@@ -50,6 +53,14 @@ class StructColumnReaderBase
     // No-op, there is no index for fast skipping and we need to skip in the
     // decoders.
   }
+
+  virtual std::unique_ptr<velox::dwio::common::ColumnLoader> makeColumnLoader(
+      velox::vector_size_t index) override {
+    return std::make_unique<nimble::TrackedColumnLoader>(
+        this, children_[index], numReads_, rowSizeTracker_);
+  }
+
+  RowSizeTracker* rowSizeTracker_;
 };
 
 class StructColumnReader : public StructColumnReaderBase {
