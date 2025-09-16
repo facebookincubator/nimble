@@ -105,7 +105,8 @@ struct CompressionOptions {
   uint32_t internalCompressionLevel = 4;
   uint32_t internalDecompressionLevel = 2;
   bool useVariableBitWidthCompressor = false;
-  bool metaInternalUseManagedCompressionForCompress = false;
+  int metaInternalUseManagedCompressionForCompress =
+      2; // 0: off, 1: on, 2: unset
 };
 
 // This is the manual encoding selection implementation.
