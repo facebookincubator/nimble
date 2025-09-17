@@ -14,22 +14,18 @@
  * limitations under the License.
  */
 #include "dwio/nimble/tablet/TabletReader.h"
-
-#include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/common/Checksum.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/tablet/Compression.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
-#include "folly/compression/Compression.h"
 #include "folly/io/Cursor.h"
 
 #include <algorithm>
 #include <iterator>
-#include <limits>
 #include <memory>
 #include <optional>
-#include <tuple>
 #include <vector>
 
 namespace facebook::nimble {
