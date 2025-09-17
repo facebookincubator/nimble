@@ -476,21 +476,21 @@ void NimbleDumpLib::emitStreams(
   auto tabletReader = std::make_shared<TabletReader>(*pool_, file_.get());
 
   std::vector<std::tuple<std::string, uint8_t, Alignment>> fields;
-  fields.push_back({"Stripe Id", 9, Alignment::Left});
-  fields.push_back({"Stream Id", 9, Alignment::Left});
-  fields.push_back({"Stream Offset", 13, Alignment::Right});
-  fields.push_back({"Stream Length", 13, Alignment::Right});
+  fields.emplace_back("Stripe Id", 9, Alignment::Left);
+  fields.emplace_back("Stream Id", 9, Alignment::Left);
+  fields.emplace_back("Stream Offset", 13, Alignment::Right);
+  fields.emplace_back("Stream Length", 13, Alignment::Right);
   if (showStreamRawSize) {
-    fields.push_back({"Raw Stream Size", 16, Alignment::Right});
+    fields.emplace_back("Raw Stream Size", 16, Alignment::Right);
   }
-  fields.push_back({"Item Count", 13, Alignment::Right});
+  fields.emplace_back("Item Count", 13, Alignment::Right);
   if (showStreamLabels) {
-    fields.push_back({"Stream Label", 16, Alignment::Left});
+    fields.emplace_back("Stream Label", 16, Alignment::Left);
   }
   if (showInMapStream) {
-    fields.push_back({"InMap Stream", 14, Alignment::Left});
+    fields.emplace_back("InMap Stream", 14, Alignment::Left);
   }
-  fields.push_back({"Type", 30, Alignment::Left});
+  fields.emplace_back("Type", 30, Alignment::Left);
 
   TableFormatter formatter(ostream_, std::move(fields), noHeader);
 
@@ -626,7 +626,7 @@ void NimbleDumpLib::emitHistogram(
       rows;
   for (auto it = encodingHistogram.begin(); it != encodingHistogram.end();
        ++it) {
-    rows.push_back(it);
+    rows.emplace_back(it);
   }
   std::sort(rows.begin(), rows.end(), HistogramRowCompare{});
   const auto fileSize = tabletReader.fileSize();
