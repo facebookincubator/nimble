@@ -19,7 +19,8 @@ add_executable(
   # VELOX_BUILD_MINIMAL_WITH_DWIO=ON.
   #
   # E2EFilterTest.cpp
-  SelectiveNimbleReaderTest.cpp)
+  SelectiveNimbleReaderTest.cpp
+)
 add_test(nimble_velox_selective_tests nimble_velox_selective_tests)
 
 target_link_libraries(
@@ -33,4 +34,5 @@ target_link_libraries(
   gmock
   gtest
   gtest_main
-  Folly::folly)
+  Folly::folly
+)
