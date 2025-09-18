@@ -25,8 +25,13 @@ add_library(
   StringColumnReader.cpp
   StructColumnReader.cpp
   StructColumnReader.cpp
-  VariableLengthColumnReader.cpp)
-target_link_libraries(nimble_velox_selective nimble_velox_reader
-                      nimble_velox_writer nimble_velox_common)
+  VariableLengthColumnReader.cpp
+)
+target_link_libraries(
+  nimble_velox_selective
+  nimble_velox_reader
+  nimble_velox_writer
+  nimble_velox_common
+)
 
 add_subdirectory(tests)
