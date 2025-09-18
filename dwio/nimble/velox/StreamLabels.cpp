@@ -141,12 +141,13 @@ void addLabels(
 
 StreamLabels::StreamLabels(const std::shared_ptr<const Type>& root) {
   size_t maxOffset = 0;
-  size_t uniqueLabels = 1;
+  size_t labelCount = 1;
   SchemaReader::traverseSchema(
       root,
       [&](uint32_t level,
           const Type& type,
           const SchemaReader::NodeInfo& info) {
+        ++labelCount;
         switch (type.kind()) {
           case Kind::Scalar: {
             maxOffset = std::max<size_t>(
@@ -174,7 +175,6 @@ StreamLabels::StreamLabels(const std::shared_ptr<const Type>& root) {
           case Kind::Row: {
             maxOffset = std::max<size_t>(
                 maxOffset, type.asRow().nullsDescriptor().offset());
-            uniqueLabels += type.asRow().childrenCount();
             break;
           }
           case Kind::FlatMap: {
@@ -185,7 +185,7 @@ StreamLabels::StreamLabels(const std::shared_ptr<const Type>& root) {
               maxOffset = std::max<size_t>(
                   maxOffset, map.inMapDescriptorAt(i).offset());
             }
-            uniqueLabels += map.childrenCount();
+            labelCount += map.childrenCount();
             break;
           }
           case Kind::ArrayWithOffsets: {
@@ -200,7 +200,7 @@ StreamLabels::StreamLabels(const std::shared_ptr<const Type>& root) {
       });
 
   // Populate labels
-  labels_.reserve(uniqueLabels + 1);
+  labels_.reserve(labelCount + 1);
   offsetToLabel_.resize(maxOffset + 1);
 
   labels_.push_back("");
