@@ -68,10 +68,11 @@ class NimbleUnit : public velox::dwio::common::LoadUnit {
       uint32_t stripeId,
       const TabletReader& tabletReader,
       std::shared_ptr<const Type> schema,
+      std::shared_ptr<StreamLabels> streamLabels,
       const std::vector<uint32_t>& streamIdentifiers)
       : tabletReader_{tabletReader},
         schema_{std::move(schema)},
-        streamLabels_{schema_},
+        streamLabels_{std::move(streamLabels)},
         stripeId_{stripeId},
         streamIdentifiers_{streamIdentifiers} {}
 
@@ -100,7 +101,7 @@ class NimbleUnit : public velox::dwio::common::LoadUnit {
  private:
   const TabletReader& tabletReader_;
   std::shared_ptr<const Type> schema_;
-  StreamLabels streamLabels_;
+  std::shared_ptr<StreamLabels> streamLabels_;
   uint32_t stripeId_;
   const std::vector<uint32_t>& streamIdentifiers_;
 
@@ -124,7 +125,7 @@ void NimbleUnit::load() {
         stripeIdentifier_.value(),
         streamIdentifiers_,
         [this](offset_size offset) {
-          return streamLabels_.streamLabel(offset);
+          return streamLabels_->streamLabel(offset);
         });
   }
   metrics_.cpuUsec = timing.cpuNanos / 1000;
@@ -529,10 +530,12 @@ std::unique_ptr<velox::dwio::common::UnitLoader> VeloxReader::getUnitLoader() {
 
   std::vector<std::unique_ptr<velox::dwio::common::LoadUnit>> units;
   units.reserve(lastStripe_ - firstStripe_);
+  const auto streamLabels = std::make_shared<StreamLabels>(schema_);
   for (uint32_t stripe = firstStripe_; stripe < lastStripe_; ++stripe) {
     units.push_back(std::make_unique<NimbleUnit>(
-        stripe, *tabletReader_, schema_, offsets_));
+        stripe, *tabletReader_, schema_, streamLabels, offsets_));
   }
+
   if (parameters_.unitLoaderFactory) {
     return parameters_.unitLoaderFactory->create(std::move(units), 0);
   }
