@@ -24,7 +24,7 @@ add_library(
   SparseBoolEncoding.cpp
   Statistics.cpp
   TrivialEncoding.cpp
-  ZstdCompressor.cpp)
+  ZstdCompressor.cpp
+)
 
-target_link_libraries(nimble_encodings Folly::folly absl::flat_hash_map
-                      protobuf::libprotobuf)
+target_link_libraries(nimble_encodings Folly::folly absl::flat_hash_map protobuf::libprotobuf)

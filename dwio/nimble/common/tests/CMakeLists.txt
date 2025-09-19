@@ -1,4 +1,4 @@
-# Copyright (c) Meta Platforms, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,8 +13,7 @@
 # limitations under the License.
 add_library(nimble_common_file_writer NimbleFileWriter.cpp)
 
-target_link_libraries(nimble_common_file_writer nimble_common
-                      nimble_velox_writer velox_vector)
+target_link_libraries(nimble_common_file_writer nimble_common nimble_velox_writer velox_vector)
 
 add_executable(
   nimble_common_tests
@@ -23,9 +22,16 @@ add_executable(
   ExceptionTests.cpp
   FixedBitArrayTests.cpp
   VarintTests.cpp
-  VectorTests.cpp)
+  VectorTests.cpp
+)
 
 add_test(nimble_common_tests nimble_common_tests)
 
-target_link_libraries(nimble_common_tests nimble_common gtest gtest_main
-                      glog::glog Folly::folly)
+target_link_libraries(
+  nimble_common_tests
+  nimble_common
+  gtest
+  gtest_main
+  glog::glog
+  Folly::folly
+)
