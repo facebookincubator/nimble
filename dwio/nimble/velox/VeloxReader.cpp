@@ -308,6 +308,10 @@ void VeloxReader::loadNextStripe() {
     StripeLoadMetrics metrics;
     velox::CpuWallTiming timing{};
     {
+      // Free up any memory used by the previous stripe
+      rootReader_ = nullptr;
+      decoders_.clear();
+
       auto& unit = unitLoader_->getLoadedUnit(getUnitIndex(nextStripe_));
 
       velox::CpuWallTimer timer{timing};
