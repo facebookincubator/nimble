@@ -203,7 +203,7 @@ StreamLabels::StreamLabels(const std::shared_ptr<const Type>& root) {
   labels_.reserve(labelCount + 1);
   offsetToLabel_.resize(maxOffset + 1);
 
-  labels_.push_back("");
+  labels_.emplace_back("");
   addLabels(root, labels_, offsetToLabel_, 0, "");
 }
 

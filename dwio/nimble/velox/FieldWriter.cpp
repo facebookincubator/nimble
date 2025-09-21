@@ -1674,8 +1674,7 @@ void DecodingContextPool::addContext(
     std::unique_ptr<velox::DecodedVector> decodedVector,
     std::unique_ptr<velox::SelectivityVector> selectivityVector) {
   std::scoped_lock<std::mutex> lock{mutex_};
-  pool_.push_back(
-      std::pair(std::move(decodedVector), std::move(selectivityVector)));
+  pool_.emplace_back(std::move(decodedVector), std::move(selectivityVector));
 }
 
 DecodingContextPool::DecodingContext DecodingContextPool::reserveContext() {

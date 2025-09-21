@@ -834,11 +834,11 @@ using Actions = std::vector<Action>;
 class Guard {
  public:
   Guard(int id, Actions& actions) : id_{id}, actions_{actions} {
-    actions_.push_back(std::make_pair(ActionEnum::kCreated, id_));
+    actions_.emplace_back(ActionEnum::kCreated, id_);
   }
 
   ~Guard() {
-    actions_.push_back(std::make_pair(ActionEnum::kDestroyed, id_));
+    actions_.emplace_back(ActionEnum::kDestroyed, id_);
   }
 
   Guard(const Guard&) = delete;
