@@ -295,30 +295,38 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
       uint64_t offset,
       uint64_t length,
       void* buf,
-      velox::filesystems::File::IoStats* stats = nullptr) const final {
+      velox::filesystems::File::IoStats* stats = nullptr,
+      const folly::F14FastMap<std::string, std::string>& fileReadOps = {})
+      const final {
     chunks_.wlock()->push_back({offset, length});
-    return file_.pread(offset, length, buf, stats);
+    return file_.pread(offset, length, buf, stats, fileReadOps);
   }
 
   std::string pread(
       uint64_t offset,
       uint64_t length,
-      velox::filesystems::File::IoStats* stats = nullptr) const final {
+      velox::filesystems::File::IoStats* stats = nullptr,
+      const folly::F14FastMap<std::string, std::string>& fileReadOps = {})
+      const final {
     chunks_.wlock()->push_back({offset, length});
-    return file_.pread(offset, length, stats);
+    return file_.pread(offset, length, stats, fileReadOps);
   }
 
   uint64_t preadv(
       uint64_t /* offset */,
       const std::vector<folly::Range<char*>>& /* buffers */,
-      velox::filesystems::File::IoStats* stats = nullptr) const final {
+      velox::filesystems::File::IoStats* stats = nullptr,
+      const folly::F14FastMap<std::string, std::string>& fileReadOps = {})
+      const final {
     NIMBLE_NOT_SUPPORTED("Not used by Nimble");
   }
 
   uint64_t preadv(
       folly::Range<const velox::common::Region*> regions,
       folly::Range<folly::IOBuf*> iobufs,
-      velox::filesystems::File::IoStats* stats = nullptr) const override {
+      velox::filesystems::File::IoStats* stats = nullptr,
+      const folly::F14FastMap<std::string, std::string>& fileReadOps = {})
+      const override {
     VELOX_CHECK_EQ(regions.size(), iobufs.size());
     uint64_t length = 0;
     for (size_t i = 0; i < regions.size(); ++i) {
