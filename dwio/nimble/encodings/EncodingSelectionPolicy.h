@@ -18,6 +18,8 @@
 #include <glog/logging.h>
 #include <algorithm>
 #include <optional>
+#include <utility>
+#include "dwio/nimble/common/Constants.h"
 #include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/encodings/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/EncodingLayout.h"
@@ -101,7 +103,9 @@ using EncodingSelectionPolicyFactory =
 
 struct CompressionOptions {
   float compressionAcceptRatio = 0.98f;
+  uint64_t zstdMinCompressionSize = kZstdMinCompressionSize;
   uint32_t zstdCompressionLevel = 3;
+  uint64_t internalMinCompressionSize = kMetaInternalMinCompressionSize;
   uint32_t internalCompressionLevel = 4;
   uint32_t internalDecompressionLevel = 2;
   bool useVariableBitWidthCompressor = false;
@@ -204,7 +208,9 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
       CompressionInformation compression() const override {
 #ifndef DISABLE_META_INTERNAL_COMPRESSOR
         CompressionInformation information{
-            .compressionType = CompressionType::MetaInternal};
+            .compressionType = CompressionType::MetaInternal,
+            .minCompressionSize =
+                compressionOptions_.internalMinCompressionSize};
         information.parameters.metaInternal.compressionLevel =
             compressionOptions_.internalCompressionLevel;
         information.parameters.metaInternal.decompressionLevel =
@@ -216,7 +222,8 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
         return information;
 #else
         CompressionInformation information{
-            .compressionType = CompressionType::Zstd};
+            .compressionType = CompressionType::Zstd,
+            .minCompressionSize = compressionOptions_.zstdMinCompressionSize};
         information.parameters.zstd.compressionLevel =
             compressionOptions_.zstdCompressionLevel;
         return information;
@@ -542,14 +549,16 @@ class ReplayedCompressionPolicy : public nimble::CompressionPolicy {
 
     if (compressionType_ == nimble::CompressionType::Zstd) {
       nimble::CompressionInformation information{
-          .compressionType = nimble::CompressionType::Zstd};
+          .compressionType = nimble::CompressionType::Zstd,
+          .minCompressionSize = compressionOptions_.zstdMinCompressionSize};
       information.parameters.zstd.compressionLevel =
           compressionOptions_.zstdCompressionLevel;
       return information;
     }
 
     nimble::CompressionInformation information{
-        .compressionType = nimble::CompressionType::MetaInternal};
+        .compressionType = nimble::CompressionType::MetaInternal,
+        .minCompressionSize = compressionOptions_.internalMinCompressionSize};
     information.parameters.metaInternal.compressionLevel =
         compressionOptions_.internalCompressionLevel;
     information.parameters.metaInternal.decompressionLevel =
