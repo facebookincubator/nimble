@@ -567,7 +567,8 @@ TEST_F(SelectiveNimbleReaderTest, multiChunkNulls) {
   options.minStreamChunkRawSize = 0;
   options.flushPolicyFactory = [] {
     return std::make_unique<LambdaFlushPolicy>(
-        [](const StripeProgress&) { return FlushDecision::Chunk; });
+        [](const StripeProgress&) { return FlushDecision::None; },
+        [](const StripeProgress&) { return ChunkDecision::Chunk; });
   };
   auto file = test::createNimbleFile(
       *rootPool(), {chunk1, chunk2, chunk3}, options, false);
@@ -613,7 +614,8 @@ TEST_F(SelectiveNimbleReaderTest, multiChunkInt16RowSetOverBoundary) {
   options.minStreamChunkRawSize = 0;
   options.flushPolicyFactory = [] {
     return std::make_unique<LambdaFlushPolicy>(
-        [](const StripeProgress&) { return FlushDecision::Chunk; });
+        [](const StripeProgress&) { return FlushDecision::None; },
+        [](const StripeProgress&) { return ChunkDecision::Chunk; });
   };
   auto file =
       test::createNimbleFile(*rootPool(), {chunk1, chunk2}, options, false);
