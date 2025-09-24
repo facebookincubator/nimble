@@ -46,6 +46,7 @@ class TestCompressionPolicy : public nimble::CompressionPolicy {
     compressionInfo_.parameters.zstd.compressionLevel = 3;
     compressionInfo_.parameters.metaInternal.compressionLevel = 4;
     compressionInfo_.parameters.metaInternal.decompressionLevel = 2;
+    compressionInfo_.parameters.metaInternal.useManagedCompression = 1; // On
   }
 
   nimble::CompressionInformation compression() const override {
@@ -80,7 +81,8 @@ void assertMinCompressibleSizeMetaInternal(
     // for compression
     std::vector<char> data(uncompressedSize);
 
-    TestCompressionPolicy compressionPolicy{compressionType, 0};
+    TestCompressionPolicy compressionPolicy{
+        compressionType, expectedMinCompressibleBytes};
     nimble::CompressionEncoder<T> compressionEncoder{
         *pool,
         compressionPolicy,
@@ -123,7 +125,7 @@ TYPED_TEST(CompressionTests, MinCompressibleSizeMetaInternal) {
   using T = TypeParam;
   assertMinCompressibleSizeMetaInternal<T>(
       nimble::CompressionType::MetaInternal,
-      nimble::kMetaInternalMinCompressionSize);
+      nimble::kMetaInternalMinCompressionSize + 20);
 }
 
 TYPED_TEST(CompressionTests, MinCompressibleSizeZstd) {
