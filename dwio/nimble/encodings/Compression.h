@@ -88,7 +88,8 @@ class CompressionEncoder {
       int bitWidth = 0)
       : dataSize_{uncompressedBuffer.size()},
         compressionType_{CompressionType::Uncompressed} {
-    if (uncompressedBuffer.size() == 0 ||
+    if (dataSize_ == 0 ||
+        dataSize_ < compressionPolicy.compression().minCompressionSize ||
         compressionPolicy.compression().compressionType ==
             CompressionType::Uncompressed) {
       // No compression, just use the original buffer.
@@ -129,6 +130,7 @@ class CompressionEncoder {
         compressionType_{CompressionType::Uncompressed},
         encoder_{encoder} {
     if (uncompressedSize == 0 ||
+        uncompressedSize < compressionPolicy.compression().minCompressionSize ||
         compressionPolicy.compression().compressionType ==
             CompressionType::Uncompressed) {
       // No compression. Do not encode the data yet. It will be encoded later

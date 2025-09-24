@@ -64,7 +64,8 @@ void testCapture(nimble::EncodingLayout expected, TCollection data) {
   auto encoding = nimble::EncodingFactory::encode<T>(
       std::make_unique<nimble::ReplayedEncodingSelectionPolicy<T>>(
           expected,
-          nimble::CompressionOptions{.compressionAcceptRatio = 100},
+          nimble::CompressionOptions{
+              .compressionAcceptRatio = 100, .internalMinCompressionSize = 0},
           encodingSelectionPolicyFactory),
       data,
       buffer);
