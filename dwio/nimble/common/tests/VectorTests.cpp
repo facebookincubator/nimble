@@ -247,3 +247,42 @@ TEST(VectorTests, MemoryCleanup) {
   }
   EXPECT_EQ(0, pool->usedBytes());
 }
+
+TEST(VectorTests, ReserveActualSize) {
+  velox::memory::MemoryManager::Options options;
+  options.trackDefaultUsage = true;
+  velox::memory::MemoryManager memoryManager{options};
+  auto pool = memoryManager.addLeafPool();
+  EXPECT_EQ(0, pool->usedBytes());
+
+  // There is no good way to assert the exact expected size because of padding
+  // logic in the AlignedBuffer::allocate.
+  // We know that without the exactSize flag being passed into the
+  // AlignedBuffer, it would allocate 12,582,912 bytes for any requested size in
+  // the range [8,388,609 - 12,582,912]. What we can do is to pick some value
+  // in the middle of this range and assert that it's roughly what we expect it
+  // to be, e.g allocatedSize is in [X, X+1MB].
+  {
+    // 1 byte type
+    nimble::Vector<int8_t> v(pool.get());
+    EXPECT_EQ(0, pool->usedBytes());
+
+    const size_t lowerBound = 9 * 1024 * 1024;
+    const size_t upperBound = lowerBound + 1024 * 1024;
+    v.reserve(lowerBound);
+    EXPECT_GE(pool->usedBytes(), lowerBound);
+    EXPECT_LE(pool->usedBytes(), upperBound);
+  }
+
+  {
+    // 4 byte type
+    nimble::Vector<int32_t> v(pool.get());
+    EXPECT_EQ(0, pool->usedBytes());
+    const size_t lowerBound = 9 * 1024 * 1024;
+    const size_t upperBound = lowerBound + 1024 * 1024;
+    const uint64_t valueCount = lowerBound / sizeof(int32_t);
+    v.reserve(valueCount);
+    EXPECT_GE(pool->usedBytes(), lowerBound);
+    EXPECT_LE(pool->usedBytes(), upperBound);
+  }
+}

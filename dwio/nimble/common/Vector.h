@@ -153,12 +153,12 @@ class Vector {
 
   // Fills all of data_ with T().
   void zero_out() {
-    std::fill(dataRawPtr_, dataRawPtr_ + capacity_, T());
+    std::fill(dataRawPtr_, dataRawPtr_ + size_, T());
   }
 
   // Fills all of data_ with the given value.
   void fill(T value) {
-    std::fill(dataRawPtr_, dataRawPtr_ + capacity_, value);
+    std::fill(dataRawPtr_, dataRawPtr_ + size_, value);
   }
 
   // Resets *this to a newly constructed empty state.
@@ -220,9 +220,13 @@ class Vector {
   // values.
   void reserve(uint64_t size) {
     if (size > capacity_) {
-      capacity_ = size;
       auto newData =
-          velox::AlignedBuffer::allocate<InnerType>(capacity_, memoryPool_);
+          velox::AlignedBuffer::allocateExact<InnerType>(size, memoryPool_);
+      // AlignedBuffer can allocate a bit more than requested for the alignment
+      // purpose, let's leverage that by using its true capacity.
+      capacity_ = newData->capacity() / sizeof(InnerType);
+      NIMBLE_DASSERT(
+          capacity_ >= size, "Allocated capacity is smaller than requested");
       if (data_ != nullptr && size_ > 0) {
         std::move(
             dataRawPtr_,
@@ -282,8 +286,14 @@ class Vector {
   }
 
   inline void allocateBuffer() {
-    data_ = velox::AlignedBuffer::allocate<InnerType>(capacity_, memoryPool_);
+    data_ =
+        velox::AlignedBuffer::allocateExact<InnerType>(capacity_, memoryPool_);
     dataRawPtr_ = reinterpret_cast<T*>(data_->asMutable<InnerType>());
+    uint64_t newCapacity = data_->capacity() / sizeof(InnerType);
+    NIMBLE_DASSERT(
+        newCapacity >= capacity_,
+        "Allocated capacity is smaller than requested");
+    capacity_ = newCapacity;
   }
 
   velox::memory::MemoryPool* memoryPool_;
