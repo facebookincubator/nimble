@@ -1,4 +1,4 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
+# Copyright (c) Meta Platforms, Inc. and its affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,12 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_library(nimble_column_stats_utils ColumnStatsUtils.cpp)
-target_link_libraries(
-  nimble_column_stats_utils
-  nimble_velox_schema
-  nimble_velox_schema_builder
-  raw_size_utils
-  velox_dwio_common
-  velox_vector
-)
+
+line_length: 80
+indent: 2
+definitions:
+  - CMake/BuildFlatBuffers.cmake
