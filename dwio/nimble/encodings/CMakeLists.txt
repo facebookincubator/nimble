@@ -27,4 +27,9 @@ add_library(
   ZstdCompressor.cpp
 )
 
-target_link_libraries(nimble_encodings Folly::folly absl::flat_hash_map protobuf::libprotobuf)
+target_link_libraries(
+  nimble_encodings
+  Folly::folly
+  absl::flat_hash_map
+  protobuf::libprotobuf
+)

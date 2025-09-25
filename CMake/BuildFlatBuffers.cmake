@@ -70,7 +70,11 @@ function(
   endif()
   set(FLATC_SCHEMA_ARGS --gen-mutable)
   if(FLATBUFFERS_FLATC_SCHEMA_EXTRA_ARGS)
-    set(FLATC_SCHEMA_ARGS ${FLATBUFFERS_FLATC_SCHEMA_EXTRA_ARGS} ${FLATC_SCHEMA_ARGS})
+    set(
+      FLATC_SCHEMA_ARGS
+      ${FLATBUFFERS_FLATC_SCHEMA_EXTRA_ARGS}
+      ${FLATC_SCHEMA_ARGS}
+    )
   endif()
 
   set(working_dir "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -99,8 +103,8 @@ function(
         OUTPUT ${generated_include}
         # Nimble code expects an upper case suffix to the generated file.
         COMMAND
-          ${FLATC} "--filename-suffix" "Generated" ${FLATC_SCHEMA_ARGS} -o ${generated_includes_dir}
-          ${include_params} -c ${schema}
+          ${FLATC} "--filename-suffix" "Generated" ${FLATC_SCHEMA_ARGS} -o
+          ${generated_includes_dir} ${include_params} -c ${schema}
         DEPENDS ${FLATC_TARGET} ${schema} ${additional_dependencies}
         WORKING_DIRECTORY "${working_dir}"
       )
@@ -111,7 +115,9 @@ function(
       set(binary_schema ${binary_schemas_dir}/${filename}.bfbs)
       add_custom_command(
         OUTPUT ${binary_schema}
-        COMMAND ${FLATC} -b --schema -o ${binary_schemas_dir} ${include_params} ${schema}
+        COMMAND
+          ${FLATC} -b --schema -o ${binary_schemas_dir} ${include_params}
+          ${schema}
         DEPENDS ${FLATC_TARGET} ${schema} ${additional_dependencies}
         WORKING_DIRECTORY "${working_dir}"
       )
@@ -125,7 +131,10 @@ function(
 
   # Create a custom target that depends on all the generated files. This is the
   # target that you can depend on to trigger all these to be built.
-  add_custom_target(${custom_target_name} DEPENDS ${all_generated_files} ${additional_dependencies})
+  add_custom_target(
+    ${custom_target_name}
+    DEPENDS ${all_generated_files} ${additional_dependencies}
+  )
 
   # Register the include directory we are using.
   if(NOT ${generated_includes_dir} STREQUAL "")
@@ -138,7 +147,10 @@ function(
 
   # Register the binary schemas dir we are using.
   if(NOT ${binary_schemas_dir} STREQUAL "")
-    set_property(TARGET ${custom_target_name} PROPERTY BINARY_SCHEMAS_DIR ${binary_schemas_dir})
+    set_property(
+      TARGET ${custom_target_name}
+      PROPERTY BINARY_SCHEMAS_DIR ${binary_schemas_dir}
+    )
   endif()
 
   # Register the text schema copy dir we are using.
@@ -215,7 +227,10 @@ function(flatbuffers_generate_headers)
   endforeach()
 
   # Create a directory to place the generated code.
-  set(generated_target_dir "${CMAKE_CURRENT_BINARY_DIR}/${FLATBUFFERS_GENERATE_HEADERS_TARGET}")
+  set(
+    generated_target_dir
+    "${CMAKE_CURRENT_BINARY_DIR}/${FLATBUFFERS_GENERATE_HEADERS_TARGET}"
+  )
   set(generated_include_dir "${generated_target_dir}")
   if(NOT ${FLATBUFFERS_GENERATE_HEADERS_INCLUDE_PREFIX} STREQUAL "")
     set(
@@ -243,32 +258,48 @@ function(flatbuffers_generate_headers)
       # Check if schema file contain a rpc_service definition
       file(STRINGS ${schema} has_grpc REGEX "rpc_service")
       if(has_grpc)
-        list(APPEND generated_include "${generated_include_dir}/${filename}.grpc.fb.h")
-        set(generated_source_file "${generated_include_dir}/${filename}.grpc.fb.cc")
+        list(
+          APPEND
+          generated_include
+          "${generated_include_dir}/${filename}.grpc.fb.h"
+        )
+        set(
+          generated_source_file
+          "${generated_include_dir}/${filename}.grpc.fb.cc"
+        )
       endif()
     endif()
 
     add_custom_command(
       OUTPUT ${generated_include} ${generated_source_file}
       COMMAND
-        ${FLATC} ${FLATC_ARGS} -o ${generated_include_dir} ${include_params} -c ${schema}
-        ${FLATBUFFERS_GENERATE_HEADERS_FLAGS}
+        ${FLATC} ${FLATC_ARGS} -o ${generated_include_dir} ${include_params} -c
+        ${schema} ${FLATBUFFERS_GENERATE_HEADERS_FLAGS}
       DEPENDS ${FLATC_TARGET} ${schema}
       WORKING_DIRECTORY "${working_dir}"
       COMMENT "Building ${schema} flatbuffers..."
     )
     list(APPEND all_generated_header_files ${generated_include})
     list(APPEND all_generated_source_files ${generated_source_file})
-    list(APPEND generated_custom_commands "${generated_include}" "${generated_source_file}")
+    list(
+      APPEND
+      generated_custom_commands
+      "${generated_include}"
+      "${generated_source_file}"
+    )
 
     # Geneate the binary flatbuffers schemas if instructed to.
     if(NOT ${FLATBUFFERS_GENERATE_HEADERS_BINARY_SCHEMAS_DIR} STREQUAL "")
-      set(binary_schema "${FLATBUFFERS_GENERATE_HEADERS_BINARY_SCHEMAS_DIR}/${filename}.bfbs")
+      set(
+        binary_schema
+        "${FLATBUFFERS_GENERATE_HEADERS_BINARY_SCHEMAS_DIR}/${filename}.bfbs"
+      )
       add_custom_command(
         OUTPUT ${binary_schema}
         COMMAND
-          ${FLATC} -b --schema -o ${FLATBUFFERS_GENERATE_HEADERS_BINARY_SCHEMAS_DIR}
-          ${include_params} ${schema}
+          ${FLATC} -b --schema -o
+          ${FLATBUFFERS_GENERATE_HEADERS_BINARY_SCHEMAS_DIR} ${include_params}
+          ${schema}
         DEPENDS ${FLATC_TARGET} ${schema}
         WORKING_DIRECTORY "${working_dir}"
       )
@@ -284,7 +315,8 @@ function(flatbuffers_generate_headers)
     ${generate_target}
     ALL
     DEPENDS ${generated_custom_commands}
-    COMMENT "Generating flatbuffer target ${FLATBUFFERS_GENERATE_HEADERS_TARGET}"
+    COMMENT
+      "Generating flatbuffer target ${FLATBUFFERS_GENERATE_HEADERS_TARGET}"
   )
 
   # Set up interface library
@@ -394,12 +426,16 @@ function(flatbuffers_generate_binary_files)
   # Create rules to generate the flatbuffers binary for each json file.
   foreach(json_file ${FLATBUFFERS_GENERATE_BINARY_FILES_JSON_FILES})
     get_filename_component(filename ${json_file} NAME_WE)
-    set(generated_binary_file "${FLATBUFFERS_GENERATE_BINARY_FILES_OUTPUT_DIR}/${filename}.bin")
+    set(
+      generated_binary_file
+      "${FLATBUFFERS_GENERATE_BINARY_FILES_OUTPUT_DIR}/${filename}.bin"
+    )
     add_custom_command(
       OUTPUT ${generated_binary_file}
       COMMAND
-        ${FLATC} ${FLATC_ARGS} -o ${FLATBUFFERS_GENERATE_BINARY_FILES_OUTPUT_DIR} ${include_params}
-        -b ${FLATBUFFERS_GENERATE_BINARY_FILES_SCHEMA} ${json_file}
+        ${FLATC} ${FLATC_ARGS} -o
+        ${FLATBUFFERS_GENERATE_BINARY_FILES_OUTPUT_DIR} ${include_params} -b
+        ${FLATBUFFERS_GENERATE_BINARY_FILES_SCHEMA} ${json_file}
         ${FLATBUFFERS_GENERATE_BINARY_FILES_FLAGS}
       DEPENDS ${FLATC_TARGET} ${json_file}
       WORKING_DIRECTORY "${working_dir}"

@@ -18,7 +18,12 @@ add_library(nimble_velox_schema SchemaTypes.cpp)
 target_link_libraries(nimble_velox_schema nimble_common Folly::folly)
 
 add_library(nimble_velox_schema_reader SchemaReader.cpp)
-target_link_libraries(nimble_velox_schema_reader nimble_velox_schema nimble_common Folly::folly)
+target_link_libraries(
+  nimble_velox_schema_reader
+  nimble_velox_schema
+  nimble_common
+  Folly::folly
+)
 
 add_library(nimble_velox_schema_builder SchemaBuilder.cpp)
 target_link_libraries(
@@ -30,7 +35,11 @@ target_link_libraries(
 )
 
 add_library(nimble_velox_stream_data StreamData.cpp)
-target_link_libraries(nimble_velox_stream_data nimble_velox_schema_builder nimble_common)
+target_link_libraries(
+  nimble_velox_stream_data
+  nimble_velox_schema_builder
+  nimble_common
+)
 
 add_library(nimble_velox_field_reader FieldReader.cpp)
 target_link_libraries(
@@ -45,7 +54,12 @@ target_link_libraries(
 add_library(nimble_velox_layout_planner LayoutPlanner.cpp)
 target_link_libraries(nimble_velox_layout_planner nimble_velox_schema_reader)
 
-add_library(nimble_velox_field_writer BufferGrowthPolicy.cpp DeduplicationUtils.cpp FieldWriter.cpp)
+add_library(
+  nimble_velox_field_writer
+  BufferGrowthPolicy.cpp
+  DeduplicationUtils.cpp
+  FieldWriter.cpp
+)
 target_link_libraries(
   nimble_velox_field_writer
   nimble_velox_schema
@@ -64,7 +78,10 @@ build_flatbuffers(
   ""
 )
 add_library(nimble_velox_schema_fb INTERFACE)
-target_include_directories(nimble_velox_schema_fb INTERFACE ${FLATBUFFERS_INCLUDE_DIR})
+target_include_directories(
+  nimble_velox_schema_fb
+  INTERFACE ${FLATBUFFERS_INCLUDE_DIR}
+)
 add_dependencies(nimble_velox_schema_fb nimble_velox_schema_schema_fb)
 
 build_flatbuffers(
@@ -77,7 +94,10 @@ build_flatbuffers(
   ""
 )
 add_library(nimble_velox_metadata_fb INTERFACE)
-target_include_directories(nimble_velox_metadata_fb INTERFACE ${FLATBUFFERS_INCLUDE_DIR})
+target_include_directories(
+  nimble_velox_metadata_fb
+  INTERFACE ${FLATBUFFERS_INCLUDE_DIR}
+)
 add_dependencies(nimble_velox_metadata_fb nimble_velox_metadata_schema_fb)
 
 build_flatbuffers(
@@ -90,7 +110,10 @@ build_flatbuffers(
   ""
 )
 add_library(nimble_velox_stats_fb INTERFACE)
-target_include_directories(nimble_velox_stats_fb INTERFACE ${FLATBUFFERS_INCLUDE_DIR})
+target_include_directories(
+  nimble_velox_stats_fb
+  INTERFACE ${FLATBUFFERS_INCLUDE_DIR}
+)
 add_dependencies(nimble_velox_stats_fb nimble_velox_stats_schema_fb)
 
 add_library(nimble_velox_schema_serialization SchemaSerialization.cpp)

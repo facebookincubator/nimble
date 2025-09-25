@@ -72,4 +72,9 @@ target_link_libraries(
 
 add_executable(raw_size_benchmark RawSizeBenchmark.cpp)
 
-target_link_libraries(raw_size_benchmark raw_size_utils Folly::folly Folly::follybenchmark)
+target_link_libraries(
+  raw_size_benchmark
+  raw_size_utils
+  Folly::folly
+  Folly::follybenchmark
+)

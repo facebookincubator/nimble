@@ -17,7 +17,11 @@ velox_resolve_dependency_url(ABSL)
 
 message(STATUS "Building Abseil from source")
 
-FetchContent_Declare(absl URL ${VELOX_ABSL_SOURCE_URL} URL_HASH ${VELOX_ABSL_BUILD_SHA256_CHECKSUM})
+FetchContent_Declare(
+  absl
+  URL ${VELOX_ABSL_SOURCE_URL}
+  URL_HASH ${VELOX_ABSL_BUILD_SHA256_CHECKSUM}
+)
 
 set(ABSL_BUILD_TESTING OFF)
 set(ABSL_PROPAGATE_CXX_STD ON)
