@@ -44,6 +44,8 @@ class TestCompressionPolicy : public nimble::CompressionPolicy {
         .minCompressionSize = minCompressionSize};
 
     compressionInfo_.parameters.zstd.compressionLevel = 3;
+    // enum MCTernaryState : long { Unset = 2, Off = 0, On = 1 };
+    compressionInfo_.parameters.metaInternal.useManagedCompression = 0;
     compressionInfo_.parameters.metaInternal.compressionLevel = 4;
     compressionInfo_.parameters.metaInternal.decompressionLevel = 2;
   }
