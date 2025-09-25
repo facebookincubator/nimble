@@ -23,7 +23,10 @@ build_flatbuffers(
   ""
 )
 add_library(nimble_footer_fb INTERFACE)
-target_include_directories(nimble_footer_fb INTERFACE ${FLATBUFFERS_INCLUDE_DIR})
+target_include_directories(
+  nimble_footer_fb
+  INTERFACE ${FLATBUFFERS_INCLUDE_DIR}
+)
 add_dependencies(nimble_footer_fb nimble_footer_schema_fb)
 
 add_library(nimble_tablet_common Compression.cpp)

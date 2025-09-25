@@ -42,7 +42,10 @@ if(FLATBUFFERS_FOUND)
     set(FLATC_OUTPUTS)
     foreach(FILE ${ARGN})
       get_filename_component(FLATC_OUTPUT ${FILE} NAME_WE)
-      set(FLATC_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${FLATC_OUTPUT}_generated.h")
+      set(
+        FLATC_OUTPUT
+        "${CMAKE_CURRENT_BINARY_DIR}/${FLATC_OUTPUT}_generated.h"
+      )
       list(APPEND FLATC_OUTPUTS ${FLATC_OUTPUT})
 
       add_custom_command(

@@ -13,7 +13,12 @@
 # limitations under the License.
 add_library(nimble_common_file_writer NimbleFileWriter.cpp)
 
-target_link_libraries(nimble_common_file_writer nimble_common nimble_velox_writer velox_vector)
+target_link_libraries(
+  nimble_common_file_writer
+  nimble_common
+  nimble_velox_writer
+  velox_vector
+)
 
 add_executable(
   nimble_common_tests
