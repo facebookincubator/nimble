@@ -297,21 +297,21 @@ std::vector<velox::RowVectorPtr> generateBatches(
 }
 } // namespace
 
-struct RawStripeSizeFlushPolicyTestCase {
+struct StripeRawSizeFlushPolicyTestCase {
   const size_t batchCount;
   const uint32_t rawStripeSize;
   const uint32_t stripeCount;
 };
 
-class RawStripeSizeFlushPolicyTest
+class StripeRawSizeFlushPolicyTest
     : public VeloxWriterTests,
-      public ::testing::WithParamInterface<RawStripeSizeFlushPolicyTestCase> {};
+      public ::testing::WithParamInterface<StripeRawSizeFlushPolicyTestCase> {};
 
-TEST_P(RawStripeSizeFlushPolicyTest, RawStripeSizeFlushPolicy) {
+TEST_P(StripeRawSizeFlushPolicyTest, StripeRawSizeFlushPolicy) {
   auto type = velox::ROW({{"simple", velox::INTEGER()}});
   nimble::VeloxWriterOptions writerOptions{.flushPolicyFactory = []() {
     // Buffering 256MB data before encoding stripes.
-    return std::make_unique<nimble::RawStripeSizeFlushPolicy>(
+    return std::make_unique<nimble::StripeRawSizeFlushPolicy>(
         GetParam().rawStripeSize);
   }};
 
@@ -385,7 +385,7 @@ TEST_F(VeloxWriterTests, MemoryReclaimPath) {
 
 TEST_F(VeloxWriterTests, FlushHugeStrings) {
   nimble::VeloxWriterOptions writerOptions{.flushPolicyFactory = []() {
-    return std::make_unique<nimble::RawStripeSizeFlushPolicy>(1 * 1024 * 1024);
+    return std::make_unique<nimble::StripeRawSizeFlushPolicy>(1 * 1024 * 1024);
   }};
 
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
@@ -1953,26 +1953,26 @@ TEST_F(VeloxWriterTests, RawSizeWritten) {
 }
 
 INSTANTIATE_TEST_CASE_P(
-    RawStripeSizeFlushPolicyTestSuite,
-    RawStripeSizeFlushPolicyTest,
+    StripeRawSizeFlushPolicyTestSuite,
+    StripeRawSizeFlushPolicyTest,
     ::testing::Values(
-        RawStripeSizeFlushPolicyTestCase{
+        StripeRawSizeFlushPolicyTestCase{
             .batchCount = 50,
             .rawStripeSize = 256 << 10,
             .stripeCount = 4},
-        RawStripeSizeFlushPolicyTestCase{
+        StripeRawSizeFlushPolicyTestCase{
             .batchCount = 100,
             .rawStripeSize = 256 << 10,
             .stripeCount = 7},
-        RawStripeSizeFlushPolicyTestCase{
+        StripeRawSizeFlushPolicyTestCase{
             .batchCount = 100,
             .rawStripeSize = 256 << 11,
             .stripeCount = 4},
-        RawStripeSizeFlushPolicyTestCase{
+        StripeRawSizeFlushPolicyTestCase{
             .batchCount = 100,
             .rawStripeSize = 256 << 12,
             .stripeCount = 2},
-        RawStripeSizeFlushPolicyTestCase{
+        StripeRawSizeFlushPolicyTestCase{
             .batchCount = 100,
             .rawStripeSize = 256 << 20,
             .stripeCount = 1}));
