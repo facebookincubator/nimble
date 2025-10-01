@@ -13,8 +13,13 @@
 # limitations under the License.
 add_library(nimble_velox_schema_utils SchemaUtils.cpp)
 target_link_libraries(
-  nimble_velox_schema_utils nimble_velox_schema_fb nimble_velox_schema_builder
-  nimble_velox_schema_reader gtest gtest_main)
+  nimble_velox_schema_utils
+  nimble_velox_schema_fb
+  nimble_velox_schema_builder
+  nimble_velox_schema_reader
+  gtest
+  gtest_main
+)
 
 add_executable(
   nimble_velox_tests
@@ -26,7 +31,8 @@ add_executable(
   TypeTests.cpp
   VeloxReaderTests.cpp
   VeloxWriterTests.cpp
-  FieldWriterStatsTests.cpp)
+  FieldWriterStatsTests.cpp
+)
 add_test(nimble_velox_tests nimble_velox_tests)
 
 target_link_libraries(
@@ -48,7 +54,8 @@ target_link_libraries(
   gtest_main
   Folly::folly
   raw_size_utils
-  nimble_column_stats_utils)
+  nimble_column_stats_utils
+)
 
 add_executable(raw_size_tests RawSizeTests.cpp)
 add_test(raw_size_tests raw_size_tests)
@@ -60,9 +67,14 @@ target_link_libraries(
   velox_vector_test_lib
   gtest
   gtest_main
-  Folly::folly)
+  Folly::folly
+)
 
 add_executable(raw_size_benchmark RawSizeBenchmark.cpp)
 
-target_link_libraries(raw_size_benchmark raw_size_utils Folly::folly
-                      Folly::follybenchmark)
+target_link_libraries(
+  raw_size_benchmark
+  raw_size_utils
+  Folly::folly
+  Folly::follybenchmark
+)

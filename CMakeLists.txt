@@ -30,19 +30,32 @@ if(POLICY CMP0135)
 endif()
 
 # Use ThirdPartyToolchain dependencies macros from Velox.
-list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/CMake"
-     "${PROJECT_SOURCE_DIR}/velox/CMake")
+list(
+  PREPEND
+  CMAKE_MODULE_PATH
+  "${PROJECT_SOURCE_DIR}/CMake"
+  "${PROJECT_SOURCE_DIR}/velox/CMake"
+)
 include(ResolveDependency)
 
-set(VELOX_BUILD_MINIMAL_WITH_DWIO
-    ON
-    CACHE BOOL "Velox minimal build with dwio.")
-set(VELOX_BUILD_VECTOR_TEST_UTILS
-    ON
-    CACHE BOOL "Velox vector test utilities (VectorMaker).")
-set(VELOX_DEPENDENCY_SOURCE
-    AUTO
-    CACHE STRING "Default dependency source: AUTO SYSTEM or BUNDLED.")
+set(
+  VELOX_BUILD_MINIMAL_WITH_DWIO
+  ON
+  CACHE BOOL
+  "Velox minimal build with dwio."
+)
+set(
+  VELOX_BUILD_VECTOR_TEST_UTILS
+  ON
+  CACHE BOOL
+  "Velox vector test utilities (VectorMaker)."
+)
+set(
+  VELOX_DEPENDENCY_SOURCE
+  AUTO
+  CACHE STRING
+  "Default dependency source: AUTO SYSTEM or BUNDLED."
+)
 
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
@@ -52,26 +65,34 @@ if(COMPILER_HAS_W_STRINGOP_OVERREAD)
   string(APPEND CMAKE_CXX_FLAGS " -Wno-stringop-overread")
 endif()
 
-check_cxx_compiler_flag("-Wdeprecated-declarations"
-                        COMPILER_HAS_W_DEPRECATED_DECLARATIONS)
+check_cxx_compiler_flag(
+  "-Wdeprecated-declarations"
+  COMPILER_HAS_W_DEPRECATED_DECLARATIONS
+)
 if(COMPILER_HAS_W_DEPRECATED_DECLARATIONS)
   string(APPEND CMAKE_CXX_FLAGS " -Wno-deprecated-declarations")
 endif()
 
-check_cxx_compiler_flag("-Wmaybe-uninitialized"
-                        COMPILER_HAS_W_MAYBE_UNINITIALIZED)
+check_cxx_compiler_flag(
+  "-Wmaybe-uninitialized"
+  COMPILER_HAS_W_MAYBE_UNINITIALIZED
+)
 if(COMPILER_HAS_W_MAYBE_UNINITIALIZED)
   string(APPEND CMAKE_CXX_FLAGS " -Wno-maybe-uninitialized")
 endif()
 
-check_cxx_compiler_flag("-Wunknown-warning-option"
-                        COMPILER_HAS_W_UNKNOWN_WARNING_OPTION)
+check_cxx_compiler_flag(
+  "-Wunknown-warning-option"
+  COMPILER_HAS_W_UNKNOWN_WARNING_OPTION
+)
 if(COMPILER_HAS_W_UNKNOWN_WARNING_OPTION)
   string(APPEND CMAKE_CXX_FLAGS " -Wno-unknown-warning-option")
 endif()
 
-check_cxx_compiler_flag("-Wnullability-completeness"
-                        COMPILER_HAS_W_NULLABILITY_COMPLETENESS)
+check_cxx_compiler_flag(
+  "-Wnullability-completeness"
+  COMPILER_HAS_W_NULLABILITY_COMPLETENESS
+)
 if(COMPILER_HAS_W_NULLABILITY_COMPLETENESS)
   string(APPEND CMAKE_CXX_FLAGS " -Wno-nullability-completeness")
 endif()
@@ -82,7 +103,8 @@ execute_process(
     bash -c
     "( source ${CMAKE_CURRENT_SOURCE_DIR}/velox/scripts/setup-helper-functions.sh && echo -n $(get_cxx_flags $ENV{CPU_TARGET}))"
   OUTPUT_VARIABLE SCRIPT_CXX_FLAGS
-  RESULT_VARIABLE COMMAND_STATUS)
+  RESULT_VARIABLE COMMAND_STATUS
+)
 
 if(COMMAND_STATUS EQUAL "1")
   message(FATAL_ERROR "Unable to determine compiler flags!")

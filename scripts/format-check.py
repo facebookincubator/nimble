@@ -62,18 +62,6 @@ class CppFormatter(str):
             )
 
 
-class CMakeFormatter(str):
-    def diff(self, commit):
-        return get_diff(
-            self, util.run(f"cmake-format --first-comment-is-literal True {self}")[1]
-        )
-
-    def fix(self, commit):
-        return (
-            util.run(f"cmake-format --first-comment-is-literal True -i {self}")[0] == 0
-        )
-
-
 class PythonFormatter(str):
     def diff(self, commit):
         return util.run(f"black -q --diff {self}")
@@ -84,8 +72,6 @@ class PythonFormatter(str):
 
 format_file_types = OrderedDict(
     {
-        "CMakeLists.txt": attrdict({"formatter": CMakeFormatter}),
-        "*.cmake": attrdict({"formatter": CMakeFormatter}),
         "*.cpp": attrdict({"formatter": CppFormatter}),
         "*.h": attrdict({"formatter": CppFormatter}),
         "*.inc": attrdict({"formatter": CppFormatter}),
@@ -200,7 +186,6 @@ def get_files(commit, path):
         and "velox/external/" not in file
         and "build/fbcode_builder" not in file
         and "build/deps" not in file
-        and "cmake-build-debug" not in file
     ]
 
 

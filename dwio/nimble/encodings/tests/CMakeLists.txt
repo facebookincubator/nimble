@@ -1,4 +1,4 @@
-# Copyright (c) Meta Platforms, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,7 +24,8 @@ add_executable(
   NullableEncodingTests.cpp
   RleEncodingTests.cpp
   SentinelEncodingTests.cpp
-  StatisticsTests.cpp)
+  StatisticsTests.cpp
+)
 
 add_test(nimble_encodings_tests nimble_encodings_tests)
 
@@ -36,4 +37,5 @@ target_link_libraries(
   nimble_tools_common
   gtest
   gtest_main
-  Folly::folly)
+  Folly::folly
+)
