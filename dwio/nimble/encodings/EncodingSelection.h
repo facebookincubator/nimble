@@ -80,9 +80,9 @@ struct MetaInternalCompressionParameters {
   int useManagedCompression = 2; // 0: disabled, 1: enabled, 2: unset
 };
 
-union CompressionParameters {
-  ZstdCompressionParameters zstd;
-  MetaInternalCompressionParameters metaInternal;
+struct CompressionParameters {
+  ZstdCompressionParameters zstd{};
+  MetaInternalCompressionParameters metaInternal{};
 };
 
 struct CompressionInformation {
