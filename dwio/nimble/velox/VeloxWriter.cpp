@@ -33,7 +33,6 @@
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "dwio/nimble/velox/StatsGenerated.h"
-#include "folly/ScopeGuard.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/dwio/common/ExecutorBarrier.h"
 #include "velox/type/Type.h"
@@ -551,8 +550,6 @@ void VeloxWriter::close() {
 
   if (file_) {
     try {
-      auto exitGuard =
-          folly::makeGuard([this]() { context_->flushPolicy->onClose(); });
       flush();
       root_->close();
 
@@ -845,25 +842,24 @@ bool VeloxWriter::tryWriteStripe(bool force) {
 
   auto shouldFlush = [&]() {
     return context_->flushPolicy->shouldFlush(StripeProgress{
-        .rawStripeSize = context_->memoryUsed,
-        .stripeSize = context_->stripeSize,
-        .bufferSize =
-            static_cast<uint64_t>(context_->bufferMemoryPool->usedBytes()),
-    });
+        .stripeRawSize = context_->memoryUsed,
+        .stripeEncodedSize = context_->stripeSize});
   };
 
-  auto decision = force ? FlushDecision::Stripe : shouldFlush();
-  if (decision == FlushDecision::None) {
-    return false;
-  }
+  auto shouldChunk = [&]() {
+    return context_->flushPolicy->shouldChunk(StripeProgress{
+        .stripeRawSize = context_->memoryUsed,
+        .stripeEncodedSize = context_->stripeSize});
+  };
 
   try {
     // TODO: we can improve merge the last chunk write with stripe
-    if (decision == FlushDecision::Chunk && context_->options.enableChunking) {
+    if (context_->options.enableChunking &&
+        shouldChunk() == ChunkDecision::Chunk) {
       writeChunk(false);
-      decision = shouldFlush();
     }
 
+    auto decision = force ? FlushDecision::Stripe : shouldFlush();
     if (decision != FlushDecision::Stripe) {
       return false;
     }
