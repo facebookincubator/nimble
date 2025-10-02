@@ -17,14 +17,59 @@
 
 namespace facebook::nimble {
 
-FlushDecision RawStripeSizeFlushPolicy::shouldFlush(
+FlushDecision StripeRawSizeFlushPolicy::shouldFlush(
     const StripeProgress& stripeProgress) {
-  return stripeProgress.rawStripeSize >= rawStripeSize_ ? FlushDecision::Stripe
+  return stripeProgress.stripeRawSize >= stripeRawSize_ ? FlushDecision::Stripe
                                                         : FlushDecision::None;
 }
 
-void RawStripeSizeFlushPolicy::onClose() {
-  // No-op
+// Relieve memory pressure with chunking. Tracks state between calls.
+ChunkDecision ChunkFlushPolicy::shouldChunk(
+    const StripeProgress& stripeProgress) {
+  const auto relieveMemoryPressure = [&]() {
+    uint64_t inMemoryByteSize =
+        stripeProgress.stripeRawSize + stripeProgress.stripeEncodedSize;
+    if (lastChunkDecision_ == ChunkDecision::None) {
+      return inMemoryByteSize > config_->writerMemoryHighThreshold
+          ? ChunkDecision::Chunk
+          : ChunkDecision::None;
+    }
+    chunkingFailed_ = lastStripeRawSize_ <= stripeProgress.stripeRawSize;
+    if (chunkingFailed_ ||
+        inMemoryByteSize < config_->writerMemoryLowThreshold) {
+      return ChunkDecision::None;
+    }
+    return ChunkDecision::Chunk;
+  };
+
+  lastChunkDecision_ = relieveMemoryPressure();
+  lastStripeRawSize_ = stripeProgress.stripeRawSize;
+  return lastChunkDecision_;
+}
+
+// Optimize for expected storage stripe size.
+// Does not track state between calls.
+FlushDecision ChunkFlushPolicy::shouldFlush(
+    const StripeProgress& stripeProgress) {
+  // When chunking is unable to relieve memory pressure, we flush stripe.
+  if (chunkingFailed_) {
+    return FlushDecision::Stripe;
+  }
+
+  // Use historical compression ratio as a heuristic when available.
+  double historicalCompressionRatio = 1.0;
+  if (stripeProgress.stripeEncodedSize > 0) {
+    historicalCompressionRatio =
+        static_cast<double>(stripeProgress.stripeEncodedLogicalSize) /
+        stripeProgress.stripeEncodedSize;
+  }
+  double expectedEncodedStripeSize = stripeProgress.stripeEncodedSize +
+      stripeProgress.stripeRawSize /
+          (historicalCompressionRatio *
+           std::max(config_->compressionRatioFactor, 1.0));
+  return (expectedEncodedStripeSize >= config_->targetStripeSizeBytes)
+      ? FlushDecision::Stripe
+      : FlushDecision::None;
 }
 
 } // namespace facebook::nimble
