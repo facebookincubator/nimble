@@ -16,14 +16,16 @@
 
 #pragma once
 
+#include <memory>
 #include <span>
 #include <string_view>
 
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
-#include "velox/common/memory/Memory.h"
 
 namespace facebook::nimble {
+
+class StreamDataView;
 
 // Stream data is a generic interface representing a stream of data, allowing
 // generic access to the content to be used by writers
@@ -46,6 +48,16 @@ class StreamData {
   virtual void reset() = 0;
   virtual void materialize() {}
 
+  // Materializes and returns the next chunk of stream data up to specified byte
+  // size, or nullptr if unsuccessful. This method enables chunking of large
+  // streams to manage memory usage by processing data in smaller pieces.
+  virtual std::unique_ptr<const StreamDataView> nextChunk(uint64_t) = 0;
+
+  virtual std::unique_ptr<const StreamDataView> lastChunk() {
+    materialize();
+    return nextChunk(memoryUsed());
+  }
+
   const StreamDescriptorBuilder& descriptor() const {
     return descriptor_;
   }
@@ -53,6 +65,56 @@ class StreamData {
   virtual ~StreamData() = default;
 
  private:
+  const StreamDescriptorBuilder& descriptor_;
+};
+
+// Represents a view into a chunk of stream data.
+// Provides a lightweight, non-owning view into a portion of stream data,
+// containing references to the data content and null indicators for efficient
+// processing of large streams without copying data.
+class StreamDataView {
+ public:
+  StreamDataView(
+      const StreamDescriptorBuilder& descriptor,
+      std::string_view data,
+      std::span<const bool> nonNulls,
+      bool hasNulls,
+      uint64_t extraMemory = 0)
+      : data_{data},
+        nonNulls_{nonNulls},
+        hasNulls_{hasNulls},
+        extraMemory_{extraMemory},
+        descriptor_{descriptor} {}
+
+  std::string_view data() const {
+    return data_;
+  }
+
+  std::span<const bool> nonNulls() const {
+    return nonNulls_;
+  }
+
+  bool hasNulls() const {
+    return hasNulls_;
+  }
+
+  uint64_t memoryUsed() const {
+    return data_.size() + nonNulls_.size() * sizeof(bool) + extraMemory_;
+  }
+
+  uint64_t extraMemory() const {
+    return extraMemory_;
+  }
+
+  const StreamDescriptorBuilder& descriptor() const {
+    return descriptor_;
+  }
+
+ private:
+  std::string_view data_;
+  std::span<const bool> nonNulls_;
+  bool hasNulls_;
+  uint64_t extraMemory_;
   const StreamDescriptorBuilder& descriptor_;
 };
 
@@ -64,11 +126,33 @@ class ContentStreamData final : public StreamData {
   ContentStreamData(
       velox::memory::MemoryPool& memoryPool,
       const StreamDescriptorBuilder& descriptor)
-      : StreamData(descriptor), data_{&memoryPool}, extraMemory_{0} {}
+      : StreamData(descriptor),
+        data_{&memoryPool},
+        extraMemory_{0},
+        chunkOffset_{0},
+        memoryPool_{memoryPool} {}
 
   inline virtual std::string_view data() const override {
     return {
-        reinterpret_cast<const char*>(data_.data()), data_.size() * sizeof(T)};
+        reinterpret_cast<const char*>(data_.data() + chunkOffset_),
+        (data_.size() - chunkOffset_) * sizeof(T)};
+  }
+
+  std::unique_ptr<const StreamDataView> nextChunk(
+      uint64_t maxChunkSize) override {
+    size_t nextChunkSize = maxChunkSize / sizeof(T);
+    if (chunkOffset_ + nextChunkSize > data_.size()) {
+      return nullptr;
+    }
+    std::string_view chunkData = {
+        reinterpret_cast<const char*>(data_.data() + chunkOffset_),
+        nextChunkSize * sizeof(T)};
+    chunkOffset_ += nextChunkSize;
+    return std::make_unique<StreamDataView>(
+        descriptor(),
+        chunkData,
+        /*nonNulls=*/std::span<const bool>{},
+        /*hasNulls=*/false);
   }
 
   inline virtual std::span<const bool> nonNulls() const override {
@@ -84,7 +168,7 @@ class ContentStreamData final : public StreamData {
   }
 
   inline virtual uint64_t memoryUsed() const override {
-    return (data_.size() * sizeof(T)) + extraMemory_;
+    return ((data_.size() - chunkOffset_) * sizeof(T)) + extraMemory_;
   }
 
   inline Vector<T>& mutableData() {
@@ -98,11 +182,14 @@ class ContentStreamData final : public StreamData {
   inline virtual void reset() override {
     data_.clear();
     extraMemory_ = 0;
+    chunkOffset_ = 0;
   }
 
  private:
   Vector<T> data_;
   uint64_t extraMemory_;
+  size_t chunkOffset_;
+  velox::memory::MemoryPool& memoryPool_;
 };
 
 // Nulls only data stream.
@@ -119,14 +206,39 @@ class NullsStreamData : public StreamData {
       : StreamData(descriptor),
         nonNulls_{&memoryPool},
         hasNulls_{false},
-        bufferedCount_{0} {}
+        bufferedCount_{0},
+        memoryPool_{memoryPool},
+        chunkNullOffset_{0} {}
 
   inline virtual std::string_view data() const override {
     return {};
   }
 
+  std::unique_ptr<const StreamDataView> nextChunk(
+      uint64_t maxChunkSize) override {
+    materialize();
+    if (memoryUsed() < maxChunkSize) {
+      return nullptr;
+    }
+    size_t nextChunkSize = maxChunkSize / sizeof(bool);
+
+    std::span<const bool> nonNullsChunk(
+        nonNulls_.data() + chunkNullOffset_, nextChunkSize);
+    chunkNullOffset_ += nextChunkSize;
+    return std::make_unique<StreamDataView>(
+        descriptor(),
+        /*data=*/std::string_view{},
+        nonNullsChunk,
+        hasNulls_);
+  }
+
   inline virtual std::span<const bool> nonNulls() const override {
-    return nonNulls_;
+    // non-materialized
+    if (nonNulls_.size() < bufferedCount_) {
+      return nonNulls_;
+    }
+    return {
+        nonNulls_.data() + chunkNullOffset_, bufferedCount_ - chunkNullOffset_};
   }
 
   inline virtual bool hasNulls() const override {
@@ -138,7 +250,7 @@ class NullsStreamData : public StreamData {
   }
 
   inline virtual uint64_t memoryUsed() const override {
-    return nonNulls_.size();
+    return nonNulls_.size() - chunkNullOffset_;
   }
 
   inline Vector<bool>& mutableNonNulls() {
@@ -149,6 +261,7 @@ class NullsStreamData : public StreamData {
     nonNulls_.clear();
     hasNulls_ = false;
     bufferedCount_ = 0;
+    chunkNullOffset_ = 0;
   }
 
   void materialize() override {
@@ -166,6 +279,8 @@ class NullsStreamData : public StreamData {
   Vector<bool> nonNulls_;
   bool hasNulls_;
   uint32_t bufferedCount_;
+  velox::memory::MemoryPool& memoryPool_;
+  size_t chunkNullOffset_;
 };
 
 // Nullable content data stream.
@@ -178,11 +293,62 @@ class NullableContentStreamData final : public NullsStreamData {
       const StreamDescriptorBuilder& descriptor)
       : NullsStreamData(memoryPool, descriptor),
         data_{&memoryPool},
-        extraMemory_{0} {}
+        extraMemory_{0},
+        chunkDataOffset_{0} {}
 
   inline virtual std::string_view data() const override {
     return {
-        reinterpret_cast<const char*>(data_.data()), data_.size() * sizeof(T)};
+        reinterpret_cast<const char*>(data_.data() + chunkDataOffset_),
+        (data_.size() - chunkDataOffset_) * sizeof(T)};
+  }
+
+  std::unique_ptr<const StreamDataView> nextChunk(
+      uint64_t maxChunkSize) override {
+    materialize();
+    if (memoryUsed() < maxChunkSize) {
+      return nullptr;
+    }
+
+    size_t chunkDataSize = 0;
+    size_t chunkNullSize = 0;
+    uint64_t rollingChunkSize = 0;
+
+    // Calculate how many entries we can fit in the chunk
+    for (size_t i = chunkNullOffset_; i < bufferedCount_; ++i) {
+      uint64_t entrySize = sizeof(bool); // Always account for null indicator
+      if (nonNulls_[i]) {
+        entrySize += sizeof(T); // Add data size if non-null
+      }
+
+      if (rollingChunkSize + entrySize > maxChunkSize) {
+        break;
+      }
+
+      if (nonNulls_[i]) {
+        chunkDataSize += 1;
+      }
+      chunkNullSize += 1;
+      rollingChunkSize += entrySize;
+    }
+
+    if (chunkNullSize == 0) {
+      return nullptr;
+    }
+
+    // Chunk nulls
+    std::span<const bool> nonNullsChunk(
+        nonNulls_.data() + chunkNullOffset_, chunkNullSize);
+
+    // Chunk content
+    std::string_view chunkData = {
+        reinterpret_cast<const char*>(data_.data() + chunkDataOffset_),
+        chunkDataSize * sizeof(T)};
+
+    chunkNullOffset_ += chunkNullSize;
+    chunkDataOffset_ += chunkDataSize;
+
+    return std::make_unique<StreamDataView>(
+        descriptor(), chunkData, nonNullsChunk, hasNulls_);
   }
 
   inline virtual bool empty() const override {
@@ -190,7 +356,7 @@ class NullableContentStreamData final : public NullsStreamData {
   }
 
   inline virtual uint64_t memoryUsed() const override {
-    return (data_.size() * sizeof(T)) + extraMemory_ +
+    return ((data_.size() - chunkDataOffset_) * sizeof(T)) + extraMemory_ +
         NullsStreamData::memoryUsed();
   }
 
@@ -206,11 +372,105 @@ class NullableContentStreamData final : public NullsStreamData {
     NullsStreamData::reset();
     data_.clear();
     extraMemory_ = 0;
+    chunkDataOffset_ = 0;
   }
 
  private:
   Vector<T> data_;
   uint64_t extraMemory_;
+  uint64_t chunkDataOffset_;
 };
+
+// Template specialization for std::string_view to handle extra memory properly
+template <>
+inline std::unique_ptr<const StreamDataView>
+ContentStreamData<std::string_view>::nextChunk(uint64_t maxChunkSize) {
+  if (memoryUsed() < maxChunkSize) {
+    return nullptr;
+  }
+
+  // TODO: Expensive operation. We should consider not re-calculating stats.
+  size_t chunkSize = 0;
+  uint64_t rollingChunkSize = 0;
+  uint64_t rollingExtraMemory = 0;
+  for (size_t i = chunkOffset_; i < data_.size(); ++i) {
+    const auto& str = data_[i];
+    uint64_t strSize = str.size() + sizeof(std::string_view);
+    if (rollingChunkSize + strSize > maxChunkSize) {
+      break;
+    }
+    rollingExtraMemory += str.size();
+    rollingChunkSize += strSize;
+    chunkSize += 1;
+  }
+
+  if (chunkOffset_ + chunkSize > data_.size()) {
+    return nullptr;
+  }
+  std::string_view chunkData = {
+      reinterpret_cast<const char*>(data_.data() + chunkOffset_),
+      chunkSize * sizeof(std::string_view)};
+  chunkOffset_ += chunkSize;
+  extraMemory_ -= rollingExtraMemory;
+  return std::make_unique<StreamDataView>(
+      descriptor(),
+      chunkData,
+      /*nonNulls=*/std::span<const bool>{},
+      /*hasNulls=*/false,
+      rollingExtraMemory);
+}
+
+template <>
+inline std::unique_ptr<const StreamDataView>
+NullableContentStreamData<std::string_view>::nextChunk(uint64_t maxChunkSize) {
+  materialize();
+  if (memoryUsed() < maxChunkSize) {
+    return nullptr;
+  }
+
+  // TODO: Expensive operation. We should consider not re-calculating stats.
+  size_t chunkDataSize = 0;
+  size_t chunkNullSize = 0;
+  uint64_t rollingChunkSize = 0;
+  uint64_t rollingExtraMemory = 0;
+  for (size_t i = chunkNullOffset_; i < bufferedCount_; ++i) {
+    uint64_t strSize = 0;
+    if (nonNulls_[i]) {
+      const auto& str = data_[chunkDataOffset_ + chunkDataSize];
+      strSize = str.size() + sizeof(std::string_view);
+    }
+
+    if (rollingChunkSize + sizeof(bool) + strSize > maxChunkSize) {
+      break;
+    }
+
+    rollingChunkSize += sizeof(bool) + strSize;
+    chunkNullSize += 1;
+
+    if (nonNulls_[i]) {
+      rollingExtraMemory += data_[chunkDataOffset_ + chunkDataSize].size();
+      chunkDataSize += 1;
+    }
+  }
+
+  if (chunkNullSize == 0) {
+    return nullptr;
+  }
+
+  // Chunk content
+  std::string_view chunkData = {
+      reinterpret_cast<const char*>(data_.data() + chunkDataOffset_),
+      chunkDataSize * sizeof(std::string_view)};
+
+  // Chunk nulls
+  std::span<const bool> nonNullsChunk(
+      nonNulls_.data() + chunkNullOffset_, chunkNullSize);
+
+  chunkDataOffset_ += chunkDataSize;
+  chunkNullOffset_ += chunkNullSize;
+  extraMemory_ -= rollingExtraMemory;
+  return std::make_unique<StreamDataView>(
+      descriptor(), chunkData, nonNullsChunk, hasNulls_, rollingExtraMemory);
+}
 
 } // namespace facebook::nimble

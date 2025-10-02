@@ -692,6 +692,21 @@ bool VeloxWriter::writeChunk(
         streamData_.reset();
       }
 
+      inline virtual std::unique_ptr<const StreamDataView> nextChunk(
+          uint64_t maxChunkSize) override {
+        if (auto chunk = streamData_.nextChunk(maxChunkSize)) {
+          auto chunkNonNulls = chunk->nonNulls();
+          return std::make_unique<StreamDataView>(
+              streamData_.descriptor(),
+              std::string_view{
+                  reinterpret_cast<const char*>(chunkNonNulls.data()),
+                  chunkNonNulls.size()},
+              /*nonNulls=*/std::span<const bool>{},
+              /*hasNulls=*/false);
+        }
+        return nullptr;
+      }
+
      private:
       StreamData& streamData_;
     };
