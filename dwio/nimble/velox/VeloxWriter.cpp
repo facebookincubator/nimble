@@ -157,6 +157,69 @@ std::string_view encode(
 }
 
 template <typename T>
+std::string_view encode(
+    std::optional<EncodingLayout> encodingLayout,
+    detail::WriterContext& context,
+    Buffer& buffer,
+    const StreamDataView& streamData) {
+  NIMBLE_DASSERT(
+      streamData.data().size() % sizeof(T) == 0,
+      fmt::format("Unexpected size {}", streamData.data().size()));
+  std::span<const T> data{
+      reinterpret_cast<const T*>(streamData.data().data()),
+      streamData.data().size() / sizeof(T)};
+
+  std::unique_ptr<EncodingSelectionPolicy<T>> policy;
+  if (encodingLayout.has_value()) {
+    policy = std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
+        encodingLayout.value(),
+        context.options.compressionOptions,
+        context.options.encodingSelectionPolicyFactory);
+
+  } else {
+    policy = std::unique_ptr<EncodingSelectionPolicy<T>>(
+        static_cast<EncodingSelectionPolicy<T>*>(
+            context.options
+                .encodingSelectionPolicyFactory(TypeTraits<T>::dataType)
+                .release()));
+  }
+
+  if (streamData.hasNulls()) {
+    std::span<const bool> notNulls = streamData.nonNulls();
+    return EncodingFactory::encodeNullable(
+        std::move(policy), data, notNulls, buffer);
+  } else {
+    return EncodingFactory::encode(std::move(policy), data, buffer);
+  }
+}
+
+template <typename T>
+std::string_view encodeStreamTyped(
+    detail::WriterContext& context,
+    Buffer& buffer,
+    const StreamDataView& streamData) {
+  const auto* streamContext =
+      streamData.descriptor().context<WriterStreamContext>();
+
+  std::optional<EncodingLayout> encodingLayout;
+  if (streamContext && streamContext->encoding) {
+    encodingLayout.emplace(*streamContext->encoding);
+  }
+
+  try {
+    return encode<T>(encodingLayout, context, buffer, streamData);
+  } catch (const NimbleUserError& e) {
+    if (e.errorCode() != error_code::IncompatibleEncoding ||
+        !encodingLayout.has_value()) {
+      throw;
+    }
+
+    // Incompatible captured encoding.Try again without a captured encoding.
+    return encode<T>(std::nullopt, context, buffer, streamData);
+  }
+}
+
+template <typename T>
 std::string_view encodeStreamTyped(
     detail::WriterContext& context,
     Buffer& buffer,
@@ -186,6 +249,37 @@ std::string_view encodeStream(
     detail::WriterContext& context,
     Buffer& buffer,
     const StreamData& streamData) {
+  auto scalarKind = streamData.descriptor().scalarKind();
+  switch (scalarKind) {
+    case ScalarKind::Bool:
+      return encodeStreamTyped<bool>(context, buffer, streamData);
+    case ScalarKind::Int8:
+      return encodeStreamTyped<int8_t>(context, buffer, streamData);
+    case ScalarKind::Int16:
+      return encodeStreamTyped<int16_t>(context, buffer, streamData);
+    case ScalarKind::Int32:
+      return encodeStreamTyped<int32_t>(context, buffer, streamData);
+    case ScalarKind::UInt32:
+      return encodeStreamTyped<uint32_t>(context, buffer, streamData);
+    case ScalarKind::Int64:
+      return encodeStreamTyped<int64_t>(context, buffer, streamData);
+    case ScalarKind::Float:
+      return encodeStreamTyped<float>(context, buffer, streamData);
+    case ScalarKind::Double:
+      return encodeStreamTyped<double>(context, buffer, streamData);
+    case ScalarKind::String:
+    case ScalarKind::Binary:
+      return encodeStreamTyped<std::string_view>(context, buffer, streamData);
+    default:
+      NIMBLE_UNREACHABLE(
+          fmt::format("Unsupported scalar kind {}", toString(scalarKind)));
+  }
+}
+
+std::string_view encodeStream(
+    detail::WriterContext& context,
+    Buffer& buffer,
+    const StreamDataView& streamData) {
   auto scalarKind = streamData.descriptor().scalarKind();
   switch (scalarKind) {
     case ScalarKind::Bool:
@@ -643,6 +737,7 @@ void VeloxWriter::flush() {
 
 bool VeloxWriter::writeChunk(
     bool lastChunk,
+    bool encodeBelowMax,
     std::vector<uint32_t> streamIndices) {
   uint64_t previousFlushWallTime = context_->stripeFlushTiming.wallNanos;
   std::atomic<uint64_t> chunkSize = 0;
@@ -713,20 +808,48 @@ bool VeloxWriter::writeChunk(
 
     auto encode = [&](StreamData& streamData, uint64_t& streamSize) {
       const auto offset = streamData.descriptor().offset();
-      auto encoded = encodeStream(*context_, *encodingBuffer_, streamData);
-      if (!encoded.empty()) {
-        ChunkedStreamWriter chunkWriter{*encodingBuffer_};
-        NIMBLE_DASSERT(offset < streams_.size(), "Stream offset out of range.");
-        auto& stream = streams_[offset];
-        for (auto& buffer : chunkWriter.encode(encoded)) {
-          streamSize += buffer.size();
-          chunkSize += buffer.size();
-          stream.content.push_back(std::move(buffer));
+      uint64_t streamSizeBeforeEncoding = streamData.memoryUsed();
+      auto writeEncoded = [&](std::string_view encoded) {
+        if (!encoded.empty()) {
+          ChunkedStreamWriter chunkWriter{*encodingBuffer_};
+          NIMBLE_DASSERT(
+              offset < streams_.size(), "Stream offset out of range.");
+          auto& stream = streams_[offset];
+          for (auto& buffer : chunkWriter.encode(encoded)) {
+            streamSize += buffer.size();
+            chunkSize += buffer.size();
+            stream.content.push_back(std::move(buffer));
+          }
         }
+      };
+
+      // Encoded large streams as smaller chunks.
+      if (context_->options.enableChunking) {
+        while (auto chunkedStream = streamData.nextChunk(
+                   context_->options.maxStreamChunkRawSize)) {
+          auto encoded =
+              encodeStream(*context_, *encodingBuffer_, *chunkedStream);
+          writeEncoded(encoded);
+        }
+
+        // Encode small streams.
+        if ((lastChunk || encodeBelowMax) && streamData.memoryUsed()) {
+          if (auto lastStreamDataChunk = streamData.lastChunk()) {
+            auto encoded =
+                encodeStream(*context_, *encodingBuffer_, *lastStreamDataChunk);
+            writeEncoded(encoded);
+          }
+          streamData.reset();
+        }
+      } else {
+        auto encoded = encodeStream(*context_, *encodingBuffer_, streamData);
+        writeEncoded(encoded);
+        streamData.reset();
       }
+
+      logicalSizeBeforeEncoding +=
+          streamSizeBeforeEncoding - streamData.memoryUsed();
       wroteChunk = true;
-      logicalSizeBeforeEncoding += streamData.memoryUsed();
-      streamData.reset();
     };
 
     auto processStream = [&](StreamData& streamData,
@@ -735,7 +858,6 @@ bool VeloxWriter::writeChunk(
       const auto* context =
           streamData.descriptor().context<WriterStreamContext>();
 
-      // TODO: Breakdown large streams above a threshold into smaller chunks.
       const auto minStreamSize =
           lastChunk ? 0 : context_->options.minStreamChunkRawSize;
 
@@ -896,41 +1018,68 @@ bool VeloxWriter::tryWriteStripe(bool force) {
     // TODO: we can improve merge the last chunk write with stripe
     if (context_->options.enableChunking &&
         shouldChunk() == ChunkDecision::Chunk) {
-      const auto& streams = context_->streams();
-      const uint32_t streamCount = streams.size();
-      // Sort streams for chunking based on raw memory usage.
-      // TODO(T240072104): Improve performance by bucketing the streams by size
-      // (most significant bit) instead of sorting.
-      std::vector<uint32_t> streamIndices(streamCount);
-      std::iota(streamIndices.begin(), streamIndices.end(), 0);
-      std::sort(
-          streamIndices.begin(),
-          streamIndices.end(),
-          [&](const uint32_t& a, const uint32_t& b) {
-            return streams[a]->memoryUsed() > streams[b]->memoryUsed();
-          });
-
-      // Chunk streams in batches.
-      uint32_t currentIndex = 0;
-      ChunkDecision decision = ChunkDecision::Chunk;
-      NIMBLE_DASSERT(
-          context_->options.chunkedStreamBatchSize > 0,
-          "streamEncodingBatchSize must be greater than 0");
-      while (currentIndex < streams.size() &&
-             decision == ChunkDecision::Chunk) {
-        uint32_t endStreamIndex = std::min(
-            streamCount,
-            currentIndex + context_->options.chunkedStreamBatchSize);
-        std::vector<uint32_t> batchIndices(
-            streamIndices.begin() + currentIndex,
-            streamIndices.begin() + endStreamIndex);
-        // Stop attempting chunking once streams are too small to chunk.
-        if (!writeChunk(false, std::move(batchIndices))) {
-          break;
+      bool continueChunking = true;
+      auto batchChunkStreams = [&](const std::vector<uint32_t>& indices,
+                                   bool encodeBelowMax) {
+        uint32_t currentIndex = 0;
+        uint32_t indicesCount = indices.size();
+        NIMBLE_DASSERT(
+            context_->options.chunkedStreamBatchSize > 0,
+            "streamEncodingBatchSize must be greater than 0");
+        while (currentIndex < indicesCount && continueChunking) {
+          size_t endStreamIndex = std::min(
+              indicesCount,
+              currentIndex + context_->options.chunkedStreamBatchSize);
+          std::vector<uint32_t> batchIndices(
+              indices.begin() + currentIndex, indices.begin() + endStreamIndex);
+          // Stop attempting chunking once streams are too small to chunk.
+          if (!writeChunk(
+                  /*lastChunk=*/false,
+                  /*encodeBelowMax=*/encodeBelowMax,
+                  std::move(batchIndices))) {
+            continueChunking = false;
+            break;
+          }
+          currentIndex = endStreamIndex;
+          continueChunking = (shouldChunk() == ChunkDecision::Chunk);
         }
-        currentIndex = endStreamIndex;
-        decision = shouldChunk();
-      }
+      };
+
+      // Chunk streams above maxStreamChunkRawSize to relieve memory pressure
+      const auto& streams = context_->streams();
+      auto chunkStreamsAboveMaxSize = [&]() {
+        std::vector<uint32_t> streamsAboveMaxChunkSize;
+        for (auto streamIndex = 0; streamIndex < streams.size();
+             streamIndex++) {
+          if (streams[streamIndex]->memoryUsed() >=
+              context_->options.maxStreamChunkRawSize) {
+            streamsAboveMaxChunkSize.push_back(streamIndex);
+          }
+        }
+        batchChunkStreams(streamsAboveMaxChunkSize, /*encodeBelowMax=*/false);
+      };
+
+      // Relieve memory pressure by chunking small streams.
+      auto chunkSmallStreams = [&]() {
+        if (!continueChunking) {
+          return;
+        }
+        // Sort streams for chunking based on raw memory usage.
+        // TODO(T240072104): Improve performance by bucketing the streams by
+        // size (by most significant bit) instead of sorting them.
+        std::vector<uint32_t> streamIndices(streams.size());
+        std::iota(streamIndices.begin(), streamIndices.end(), 0);
+        std::sort(
+            streamIndices.begin(),
+            streamIndices.end(),
+            [&](const uint32_t& a, const uint32_t& b) {
+              return streams[a]->memoryUsed() > streams[b]->memoryUsed();
+            });
+        batchChunkStreams(streamIndices, /*encodeBelowMax=*/true);
+      };
+
+      chunkStreamsAboveMaxSize();
+      chunkSmallStreams();
     }
 
     auto decision = force ? FlushDecision::Stripe : shouldFlush();
