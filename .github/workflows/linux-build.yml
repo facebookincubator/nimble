@@ -1,4 +1,4 @@
-# Copyright (c) Meta Platforms, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,9 +16,6 @@ name: Linux Build
 
 on:
   push:
-    branches:
-      - "main"
-
   pull_request:
 
 permissions:
@@ -31,7 +28,6 @@ concurrency:
 jobs:
   ubuntu-release:
     runs-on: ubuntu-22.04
-    if: ${{ github.repository == 'facebookincubator/nimble' }}
     name: "Ubuntu Build"
     env:
       CCACHE_DIR: "${{ github.workspace }}/.ccache"
