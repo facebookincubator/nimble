@@ -96,6 +96,10 @@ struct VeloxWriterOptions {
   // Note: this threshold is ignored when it is time to flush a stripe.
   uint64_t minStreamChunkRawSize = 1024;
 
+  // Number of streams to process in parallel during chunked encoding.
+  // Note: this is ignored when it is time to flush a stripe.
+  uint32_t chunkedStreamBatchSize = 1024;
+
   // The factory function that produces the root encoding selection policy.
   // Encoding selection policy is the way to balance the tradeoffs of
   // different performance factors (at both read and write times). Heuristics

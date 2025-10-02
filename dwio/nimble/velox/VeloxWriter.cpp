@@ -641,7 +641,9 @@ void VeloxWriter::flush() {
   }
 }
 
-bool VeloxWriter::writeChunk(bool lastChunk) {
+bool VeloxWriter::writeChunk(
+    bool lastChunk,
+    std::vector<uint32_t> streamIndices) {
   uint64_t previousFlushWallTime = context_->stripeFlushTiming.wallNanos;
   std::atomic<uint64_t> chunkSize = 0;
   std::atomic<uint64_t> logicalSizeBeforeEncoding = 0;
@@ -742,13 +744,19 @@ bool VeloxWriter::writeChunk(bool lastChunk) {
       }
     };
 
+    const auto& streams = context_->streams();
+    if (streamIndices.empty()) {
+      // Chunk all streams if no stream indices are provided
+      streamIndices.resize(streams.size());
+      std::iota(streamIndices.begin(), streamIndices.end(), 0);
+    }
     if (context_->options.encodingExecutor) {
       velox::dwio::common::ExecutorBarrier barrier{
           context_->options.encodingExecutor};
-      for (auto& streamData : context_->streams()) {
-        auto& streamSize =
-            context_->columnStats[streamData->descriptor().offset()]
-                .physicalSize;
+      for (auto streamIndex : streamIndices) {
+        auto& streamData = streams[streamIndex];
+        auto offset = streamData->descriptor().offset();
+        auto& streamSize = context_->columnStats[offset].physicalSize;
         processStream(
             *streamData, [&](StreamData& innerStreamData, bool isNullStream) {
               barrier.add(
@@ -764,10 +772,10 @@ bool VeloxWriter::writeChunk(bool lastChunk) {
       }
       barrier.waitAll();
     } else {
-      for (auto& streamData : context_->streams()) {
-        auto& streamSize =
-            context_->columnStats[streamData->descriptor().offset()]
-                .physicalSize;
+      for (auto streamIndex : streamIndices) {
+        auto& streamData = streams[streamIndex];
+        auto offset = streamData->descriptor().offset();
+        auto& streamSize = context_->columnStats[offset].physicalSize;
         processStream(
             *streamData,
             [&encode, &streamSize](
@@ -871,8 +879,42 @@ bool VeloxWriter::tryWriteStripe(bool force) {
 
   try {
     // TODO: we can improve merge the last chunk write with stripe
-    if (context_->options.enableChunking) {
-      while (shouldChunk() == ChunkDecision::Chunk && writeChunk(false)) {
+    if (context_->options.enableChunking &&
+        shouldChunk() == ChunkDecision::Chunk) {
+      const auto& streams = context_->streams();
+      const uint32_t streamCount = streams.size();
+      // Sort streams for chunking based on raw memory usage.
+      // TODO(T240072104): Improve performance by bucketing the streams by size
+      // (most significant bit) instead of sorting.
+      std::vector<uint32_t> streamIndices(streamCount);
+      std::iota(streamIndices.begin(), streamIndices.end(), 0);
+      std::sort(
+          streamIndices.begin(),
+          streamIndices.end(),
+          [&](const uint32_t& a, const uint32_t& b) {
+            return streams[a]->memoryUsed() > streams[b]->memoryUsed();
+          });
+
+      // Chunk streams in batches.
+      uint32_t currentIndex = 0;
+      ChunkDecision decision = ChunkDecision::Chunk;
+      NIMBLE_DASSERT(
+          context_->options.chunkedStreamBatchSize > 0,
+          "streamEncodingBatchSize must be greater than 0");
+      while (currentIndex < streams.size() &&
+             decision == ChunkDecision::Chunk) {
+        uint32_t endStreamIndex = std::min(
+            streamCount,
+            currentIndex + context_->options.chunkedStreamBatchSize);
+        std::vector<uint32_t> batchIndices(
+            streamIndices.begin() + currentIndex,
+            streamIndices.begin() + endStreamIndex);
+        // Stop attempting chunking once streams are too small to chunk.
+        if (!writeChunk(false, std::move(batchIndices))) {
+          break;
+        }
+        currentIndex = endStreamIndex;
+        decision = shouldChunk();
       }
     }
 
