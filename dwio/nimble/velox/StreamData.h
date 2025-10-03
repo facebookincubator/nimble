@@ -20,8 +20,8 @@
 #include <string_view>
 
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
-#include "velox/common/memory/Memory.h"
 
 namespace facebook::nimble {
 
@@ -29,13 +29,16 @@ namespace facebook::nimble {
 // generic access to the content to be used by writers
 class StreamData {
  public:
-  explicit StreamData(const StreamDescriptorBuilder& descriptor)
-      : descriptor_{descriptor} {}
+  explicit StreamData(
+      const StreamDescriptorBuilder& descriptor,
+      const InputBufferGrowthPolicy& growthPolicy)
+      : descriptor_{descriptor}, growthPolicy_{growthPolicy} {}
 
   StreamData(const StreamData&) = delete;
   StreamData(StreamData&&) = delete;
   StreamData& operator=(const StreamData&) = delete;
   StreamData& operator=(StreamData&&) = delete;
+  virtual ~StreamData() = default;
 
   virtual std::string_view data() const = 0;
   virtual std::span<const bool> nonNulls() const = 0;
@@ -50,10 +53,24 @@ class StreamData {
     return descriptor_;
   }
 
-  virtual ~StreamData() = default;
+  const InputBufferGrowthPolicy& growthPolicy() const {
+    return growthPolicy_;
+  }
+
+  // Helper method for ensuring data capacity - common pattern used by
+  // subclasses
+  template <typename T>
+  void ensureDataCapacity(Vector<T>& data, uint64_t newSize) {
+    if (newSize > data.capacity()) {
+      const auto newCapacity =
+          growthPolicy_.getExtendedCapacity(newSize, data.capacity());
+      data.reserve(newCapacity);
+    }
+  }
 
  private:
   const StreamDescriptorBuilder& descriptor_;
+  const InputBufferGrowthPolicy& growthPolicy_;
 };
 
 // Content only data stream.
@@ -63,8 +80,11 @@ class ContentStreamData final : public StreamData {
  public:
   ContentStreamData(
       velox::memory::MemoryPool& memoryPool,
-      const StreamDescriptorBuilder& descriptor)
-      : StreamData(descriptor), data_{&memoryPool}, extraMemory_{0} {}
+      const StreamDescriptorBuilder& descriptor,
+      const InputBufferGrowthPolicy& growthPolicy)
+      : StreamData(descriptor, growthPolicy),
+        data_{&memoryPool},
+        extraMemory_{0} {}
 
   inline virtual std::string_view data() const override {
     return {
@@ -91,6 +111,10 @@ class ContentStreamData final : public StreamData {
     return data_;
   }
 
+  void ensureMutableDataCapacity(uint64_t newSize) {
+    this->ensureDataCapacity(data_, newSize);
+  }
+
   inline uint64_t& extraMemory() {
     return extraMemory_;
   }
@@ -115,8 +139,9 @@ class NullsStreamData : public StreamData {
  public:
   NullsStreamData(
       velox::memory::MemoryPool& memoryPool,
-      const StreamDescriptorBuilder& descriptor)
-      : StreamData(descriptor),
+      const StreamDescriptorBuilder& descriptor,
+      const InputBufferGrowthPolicy& growthPolicy)
+      : StreamData(descriptor, growthPolicy),
         nonNulls_{&memoryPool},
         hasNulls_{false},
         bufferedCount_{0} {}
@@ -160,7 +185,7 @@ class NullsStreamData : public StreamData {
     }
   }
 
-  void ensureNullsCapacity(bool mayHaveNulls, uint32_t size);
+  void ensureAdditionalNullsCapacity(bool mayHaveNulls, uint64_t size);
 
  protected:
   Vector<bool> nonNulls_;
@@ -175,8 +200,9 @@ class NullableContentStreamData final : public NullsStreamData {
  public:
   NullableContentStreamData(
       velox::memory::MemoryPool& memoryPool,
-      const StreamDescriptorBuilder& descriptor)
-      : NullsStreamData(memoryPool, descriptor),
+      const StreamDescriptorBuilder& descriptor,
+      const InputBufferGrowthPolicy& growthPolicy)
+      : NullsStreamData(memoryPool, descriptor, growthPolicy),
         data_{&memoryPool},
         extraMemory_{0} {}
 
@@ -196,6 +222,10 @@ class NullableContentStreamData final : public NullsStreamData {
 
   inline Vector<T>& mutableData() {
     return data_;
+  }
+
+  void ensureMutableDataCapacity(uint64_t newSize) {
+    this->ensureDataCapacity(data_, newSize);
   }
 
   inline uint64_t& extraMemory() {
