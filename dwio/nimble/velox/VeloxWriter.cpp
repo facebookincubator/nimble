@@ -659,7 +659,8 @@ void VeloxWriter::writeChunk(bool lastChunk) {
     class NullsAsDataStreamData : public StreamData {
      public:
       explicit NullsAsDataStreamData(StreamData& streamData)
-          : StreamData(streamData.descriptor()), streamData_{streamData} {
+          : StreamData(streamData.descriptor(), streamData.growthPolicy()),
+            streamData_{streamData} {
         streamData_.materialize();
       }
 

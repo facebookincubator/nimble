@@ -296,7 +296,7 @@ class SimpleFieldWriter : public FieldWriter {
     uint64_t nullCount = 0;
 
     if (auto flat = vector->asFlatVector<SourceType>()) {
-      valuesStream_.ensureNullsCapacity(flat->mayHaveNulls(), size);
+      valuesStream_.ensureAdditionalNullsCapacity(flat->mayHaveNulls(), size);
       bool rangeCopied = false;
       if (!flat->mayHaveNulls()) {
         if constexpr (
@@ -309,15 +309,8 @@ class SimpleFieldWriter : public FieldWriter {
           // consider the stripe progress. However, naive progress based
           // policies can't be combined with the size based policies, and are
           // thus currently not included.
-          auto newSize = data.size() + size;
-          if (newSize > data.capacity()) {
-            auto newCapacity =
-                context_.inputBufferGrowthPolicy->getExtendedCapacity(
-                    newSize, data.capacity());
-            ++context_.inputBufferGrowthStats.count;
-            context_.inputBufferGrowthStats.itemCount += newCapacity;
-            data.reserve(newCapacity);
-          }
+          uint64_t newSize = data.size() + size;
+          valuesStream_.ensureMutableDataCapacity(newSize);
           ranges.apply([&](auto offset, auto count) {
             data.insert(
                 data.end(),
@@ -342,7 +335,7 @@ class SimpleFieldWriter : public FieldWriter {
     } else {
       auto decodingContext = context_.getDecodingContext();
       auto& decoded = decodingContext.decode(vector, ranges);
-      valuesStream_.ensureNullsCapacity(decoded.mayHaveNulls(), size);
+      valuesStream_.ensureAdditionalNullsCapacity(decoded.mayHaveNulls(), size);
       auto nonNullCount = iterateNonNullValues(
           ranges,
           valuesStream_.mutableNonNulls(),
@@ -408,7 +401,7 @@ class RowFieldWriter : public FieldWriter {
               "Schema mismatch: expected {} fields, but got {} fields",
               fields_.size(),
               row->childrenSize()));
-      nullsStream_.ensureNullsCapacity(vector->mayHaveNulls(), size);
+      nullsStream_.ensureAdditionalNullsCapacity(vector->mayHaveNulls(), size);
       if (row->mayHaveNulls()) {
         childRangesPtr = &childRanges;
         auto nonNullCount = iterateNonNullIndices<true>(
@@ -432,7 +425,7 @@ class RowFieldWriter : public FieldWriter {
               fields_.size(),
               row->childrenSize()));
       childRangesPtr = &childRanges;
-      nullsStream_.ensureNullsCapacity(decoded.mayHaveNulls(), size);
+      nullsStream_.ensureAdditionalNullsCapacity(decoded.mayHaveNulls(), size);
       auto nonNullCount = iterateNonNullIndices<true>(
           ranges,
           nullsStream_.mutableNonNulls(),
@@ -521,7 +514,8 @@ class MultiValueFieldWriter : public FieldWriter {
       offsets = casted->rawOffsets();
       lengths = casted->rawSizes();
 
-      lengthsStream_.ensureNullsCapacity(casted->mayHaveNulls(), size);
+      lengthsStream_.ensureAdditionalNullsCapacity(
+          casted->mayHaveNulls(), size);
       auto nonNullCount = iterateNonNullIndices<true>(
           ranges, lengthsStream_.mutableNonNulls(), Flat{vector}, proc);
       nullCount = size - nonNullCount;
@@ -533,7 +527,8 @@ class MultiValueFieldWriter : public FieldWriter {
       offsets = casted->rawOffsets();
       lengths = casted->rawSizes();
 
-      lengthsStream_.ensureNullsCapacity(decoded.mayHaveNulls(), size);
+      lengthsStream_.ensureAdditionalNullsCapacity(
+          decoded.mayHaveNulls(), size);
       auto nonNullCount = iterateNonNullIndices<true>(
           ranges, lengthsStream_.mutableNonNulls(), Decoded{decoded}, proc);
       nullCount = size - nonNullCount;
@@ -747,7 +742,8 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
     if (mapVector) {
       rawOffsets = mapVector->rawOffsets();
       rawLengths = mapVector->rawSizes();
-      offsetsStream_.ensureNullsCapacity(mapVector->mayHaveNulls(), size);
+      offsetsStream_.ensureAdditionalNullsCapacity(
+          mapVector->mayHaveNulls(), size);
       Flat iterableVector{vector};
       auto nonNullCount = iterateNonNullIndices<true>(
           ranges,
@@ -762,7 +758,8 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
       NIMBLE_ASSERT(mapVector, "Unexpected vector type");
       rawOffsets = mapVector->rawOffsets();
       rawLengths = mapVector->rawSizes();
-      offsetsStream_.ensureNullsCapacity(decoded.mayHaveNulls(), size);
+      offsetsStream_.ensureAdditionalNullsCapacity(
+          decoded.mayHaveNulls(), size);
       Decoded iterableVector{decoded};
       auto nonNullCount = iterateNonNullIndices<true>(
           ranges,
@@ -849,7 +846,7 @@ class FlatMapValueFieldWriter {
   // Clear the ranges and extend the inMapBuffer
   void prepare(uint32_t numValues) {
     auto& data = inMapStream_.mutableData();
-    data.reserve(data.size() + numValues);
+    inMapStream_.ensureMutableDataCapacity(data.size() + numValues);
     std::fill(data.end(), data.end() + numValues, false);
   }
 
@@ -974,7 +971,7 @@ class FlatMapFieldWriter : public FieldWriter {
         flatMap,
         "Unexpected vector type. Vector must be a decoded ROW vector.");
     const auto size = ranges.size();
-    nullsStream_.ensureNullsCapacity(flatMap->mayHaveNulls(), size);
+    nullsStream_.ensureAdditionalNullsCapacity(flatMap->mayHaveNulls(), size);
     const auto& keys = flatMap->type()->asRow().names();
     const auto& values = flatMap->children();
 
@@ -1080,7 +1077,7 @@ class FlatMapFieldWriter : public FieldWriter {
       offsets = map->rawOffsets();
       lengths = map->rawSizes();
 
-      nullsStream_.ensureNullsCapacity(map->mayHaveNulls(), size);
+      nullsStream_.ensureAdditionalNullsCapacity(map->mayHaveNulls(), size);
       processVector(map, Flat{vector});
     } else {
       // Map is encoded. Decode.
@@ -1091,7 +1088,8 @@ class FlatMapFieldWriter : public FieldWriter {
       offsets = map->rawOffsets();
       lengths = map->rawSizes();
 
-      nullsStream_.ensureNullsCapacity(decodedMap.mayHaveNulls(), size);
+      nullsStream_.ensureAdditionalNullsCapacity(
+          decodedMap.mayHaveNulls(), size);
       processVector(map, Decoded{decodedMap});
     }
 
@@ -1357,7 +1355,8 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       const OrderedRanges& ranges,
       OrderedRanges& filteredRanges) {
     auto size = ranges.size();
-    offsetsStream_.ensureNullsCapacity(dictionaryVector.mayHaveNulls(), size);
+    offsetsStream_.ensureAdditionalNullsCapacity(
+        dictionaryVector.mayHaveNulls(), size);
 
     auto& offsetsData = offsetsStream_.mutableData();
     auto& lengthsData = lengthsStream_.mutableData();
@@ -1575,7 +1574,8 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       rawOffsets = arrayVector->rawOffsets();
       rawLengths = arrayVector->rawSizes();
 
-      offsetsStream_.ensureNullsCapacity(arrayVector->mayHaveNulls(), size);
+      offsetsStream_.ensureAdditionalNullsCapacity(
+          arrayVector->mayHaveNulls(), size);
       Flat iterableVector{vector};
       iterateNonNullIndices<true>(
           ranges, offsetsStream_.mutableNonNulls(), iterableVector, proc);
@@ -1589,7 +1589,8 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       rawOffsets = arrayVector->rawOffsets();
       rawLengths = arrayVector->rawSizes();
 
-      offsetsStream_.ensureNullsCapacity(decoded.mayHaveNulls(), size);
+      offsetsStream_.ensureAdditionalNullsCapacity(
+          decoded.mayHaveNulls(), size);
       Decoded iterableVector{decoded};
       iterateNonNullIndices<true>(
           ranges, offsetsStream_.mutableNonNulls(), iterableVector, proc);
