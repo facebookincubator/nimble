@@ -24,7 +24,6 @@ import util
 
 from util import attrdict
 
-EXTENSIONS = "cpp,h,inc,prolog"
 SCRIPTS = util.script_path()
 
 
@@ -41,27 +40,6 @@ def get_diff(file, formatted):
     return status, stdout, stderr
 
 
-class CppFormatter(str):
-    def diff(self, commit):
-        if commit == "":
-            return get_diff(self, util.run(f"clang-format --style=file {self}")[1])
-        else:
-            return util.run(
-                f"{SCRIPTS}/git-clang-format -q --extensions='{EXTENSIONS}' --diff --style=file {commit} {self}"
-            )
-
-    def fix(self, commit):
-        if commit == "":
-            return util.run(f"clang-format -i --style=file {self}")[0] == 0
-        else:
-            return (
-                util.run(
-                    f"{SCRIPTS}/git-clang-format -q --extensions='{EXTENSIONS}' --style=file {commit} {self}"
-                )[0]
-                == 0
-            )
-
-
 class PythonFormatter(str):
     def diff(self, commit):
         return util.run(f"black -q --diff {self}")
@@ -72,10 +50,6 @@ class PythonFormatter(str):
 
 format_file_types = OrderedDict(
     {
-        "*.cpp": attrdict({"formatter": CppFormatter}),
-        "*.h": attrdict({"formatter": CppFormatter}),
-        "*.inc": attrdict({"formatter": CppFormatter}),
-        "*.prolog": attrdict({"formatter": CppFormatter}),
         "*.py": attrdict({"formatter": PythonFormatter}),
     }
 )
