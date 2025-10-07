@@ -22,15 +22,14 @@
 #include <gtest/gtest.h>
 
 namespace facebook::nimble {
+namespace {
+
+using namespace facebook::velox;
 
 enum FilterType { kNone, kKeep, kDrop };
 auto format_as(FilterType filterType) {
   return fmt::underlying(filterType);
 }
-
-namespace {
-
-using namespace facebook::velox;
 
 // This test suite covers the basic and mostly single batch test cases, as well
 // as some corner cases that are hard to cover in randomized tests.  We rely on
@@ -1004,6 +1003,37 @@ TEST_F(SelectiveNimbleReaderTest, arrayWithOffsetsSubfieldPruning) {
 TEST_F(SelectiveNimbleReaderTest, arrayWithOffsetsLastRunFilteredOutAfterRead) {
   checkArrayWithOffsets(
       {{{1}}, {{1}}}, {false, true}, {1, 1}, std::nullopt, true);
+}
+
+TEST_F(SelectiveNimbleReaderTest, arrayWithOffsetsReuseNullResult) {
+  auto vector = makeRowVector({
+      std::make_shared<MapVector>(
+          pool(),
+          MAP(BIGINT(), ARRAY(BIGINT())),
+          nullptr,
+          4,
+          makeIndices({0, 2, 4, 6}),
+          makeIndices({2, 2, 2, 2}),
+          makeFlatVector<int64_t>({1, 2, 1, 2, 1, 2, 1, 2}),
+          makeNullableArrayVector<int64_t>({
+              {std::nullopt, std::nullopt},
+              {std::optional(3)},
+              {std::nullopt, std::nullopt},
+              {std::optional(3)},
+              {std::nullopt},
+              {std::optional(3)},
+              {std::nullopt},
+              {std::optional(4)},
+          })),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns = {"c0"};
+  writerOptions.dictionaryArrayColumns = {"c0"};
+  auto fileContent = test::createNimbleFile(*rootPool(), vector, writerOptions);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*vector->type());
+  auto readers = makeReaders(vector, fileContent, scanSpec);
+  validate(*vector, *readers.rowReader, 2, [](auto) { return true; });
 }
 
 TEST_F(SelectiveNimbleReaderTest, slidingWindowMapSubfieldPruning) {
