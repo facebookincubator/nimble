@@ -53,6 +53,51 @@ bool estimateMaterializedSizeImpl(
   return true;
 }
 
+void tryReuseArrayVectorBase(
+    velox::ArrayVectorBase& vector,
+    velox::vector_size_t size,
+    velox::BufferPtr& offsets,
+    velox::BufferPtr& sizes) {
+  if (vector.offsets() && vector.offsets()->isMutable()) {
+    offsets = vector.mutableOffsets(size);
+  }
+  if (vector.sizes() && vector.sizes()->isMutable()) {
+    sizes = vector.mutableSizes(size);
+  }
+}
+
+velox::VectorPtr tryReuseWritableVector(const velox::VectorPtr& vector) {
+  if (vector && vector->encoding() != velox::VectorEncoding::Simple::CONSTANT &&
+      vector->encoding() != velox::VectorEncoding::Simple::DICTIONARY &&
+      vector.use_count() == 1) {
+    vector->resize(0);
+    return vector;
+  }
+  return nullptr;
+}
+
+void tryReuseArrayVector(
+    velox::ArrayVector& vector,
+    velox::vector_size_t size,
+    velox::BufferPtr& offsets,
+    velox::BufferPtr& sizes,
+    velox::VectorPtr& elements) {
+  tryReuseArrayVectorBase(vector, size, offsets, sizes);
+  elements = tryReuseWritableVector(vector.elements());
+}
+
+void tryReuseMapVector(
+    velox::MapVector& vector,
+    velox::vector_size_t size,
+    velox::BufferPtr& offsets,
+    velox::BufferPtr& sizes,
+    velox::VectorPtr& keys,
+    velox::VectorPtr& values) {
+  tryReuseArrayVectorBase(vector, size, offsets, sizes);
+  keys = tryReuseWritableVector(vector.mapKeys());
+  values = tryReuseWritableVector(vector.mapValues());
+}
+
 velox::DictionaryVector<velox::ComplexType>* prepareDictionaryArrayResult(
     velox::VectorPtr& result,
     const velox::TypePtr& type,
@@ -78,29 +123,11 @@ velox::DictionaryVector<velox::ComplexType>* prepareDictionaryArrayResult(
         alphabet = dictionaryVector->valueVector();
         auto arrayVector = alphabet->as<velox::ArrayVector>();
         if (arrayVector) {
-          if (arrayVector->sizes() && arrayVector->sizes()->isMutable()) {
-            sizes = arrayVector->mutableSizes(size);
-          }
-          if (arrayVector->offsets() && arrayVector->offsets()->isMutable()) {
-            offsets = arrayVector->mutableOffsets(size);
-          }
-          if (arrayVector->elements() && arrayVector->elements().unique()) {
-            elements = arrayVector->elements();
-            elements->resize(0);
-          }
+          tryReuseArrayVector(*arrayVector, size, offsets, sizes, elements);
         }
       }
     } else if (auto arrayVector = result->as<velox::ArrayVector>()) {
-      if (arrayVector->sizes() && arrayVector->sizes()->isMutable()) {
-        sizes = arrayVector->mutableSizes(size);
-      }
-      if (arrayVector->offsets() && arrayVector->offsets()->isMutable()) {
-        offsets = arrayVector->mutableOffsets(size);
-      }
-      if (arrayVector->elements() && arrayVector->elements().unique()) {
-        elements = arrayVector->elements();
-        elements->resize(0);
-      }
+      tryReuseArrayVector(*arrayVector, size, offsets, sizes, elements);
     }
   }
 
@@ -171,37 +198,11 @@ velox::DictionaryVector<velox::ComplexType>* prepareDictionaryMapResult(
         alphabet = dictionaryVector->valueVector();
         auto mapVector = alphabet->as<velox::MapVector>();
         if (mapVector) {
-          if (mapVector->sizes() && mapVector->sizes()->isMutable()) {
-            sizes = mapVector->mutableSizes(size);
-          }
-          if (mapVector->offsets() && mapVector->offsets()->isMutable()) {
-            offsets = mapVector->mutableOffsets(size);
-          }
-          if (mapVector->mapKeys() && mapVector->mapKeys().unique()) {
-            keys = mapVector->mapKeys();
-            keys->resize(0);
-          }
-          if (mapVector->mapValues() && mapVector->mapValues().unique()) {
-            elements = mapVector->mapValues();
-            elements->resize(0);
-          }
+          tryReuseMapVector(*mapVector, size, offsets, sizes, keys, elements);
         }
       }
     } else if (auto mapVector = result->as<velox::MapVector>()) {
-      if (mapVector->sizes() && mapVector->sizes()->isMutable()) {
-        sizes = mapVector->mutableSizes(size);
-      }
-      if (mapVector->offsets() && mapVector->offsets()->isMutable()) {
-        offsets = mapVector->mutableOffsets(size);
-      }
-      if (mapVector->mapKeys() && mapVector->mapKeys().unique()) {
-        keys = mapVector->mapKeys();
-        keys->resize(0);
-      }
-      if (mapVector->mapValues() && mapVector->mapValues().unique()) {
-        elements = mapVector->mapValues();
-        elements->resize(0);
-      }
+      tryReuseMapVector(*mapVector, size, offsets, sizes, keys, elements);
     }
   }
 
