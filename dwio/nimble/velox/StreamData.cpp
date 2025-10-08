@@ -18,10 +18,12 @@
 
 namespace facebook::nimble {
 
-void NullsStreamData::ensureNullsCapacity(bool mayHaveNulls, uint32_t size) {
+void NullsStreamData::ensureAdditionalNullsCapacity(
+    bool mayHaveNulls,
+    uint64_t additionalSize) {
   if (mayHaveNulls || hasNulls_) {
-    auto newSize = bufferedCount_ + size;
-    nonNulls_.reserve(newSize);
+    const auto newSize = bufferedCount_ + additionalSize;
+    ensureDataCapacity(nonNulls_, newSize);
     if (!hasNulls_) {
       hasNulls_ = true;
       std::fill(nonNulls_.data(), nonNulls_.data() + bufferedCount_, true);
@@ -33,7 +35,7 @@ void NullsStreamData::ensureNullsCapacity(bool mayHaveNulls, uint32_t size) {
       nonNulls_.update_size(newSize);
     }
   }
-  bufferedCount_ += size;
+  bufferedCount_ += additionalSize;
 }
 
 } // namespace facebook::nimble
