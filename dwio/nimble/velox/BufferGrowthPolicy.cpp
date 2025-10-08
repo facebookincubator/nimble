@@ -21,7 +21,7 @@ namespace facebook::nimble {
 
 uint64_t DefaultInputBufferGrowthPolicy::getExtendedCapacity(
     uint64_t newSize,
-    uint64_t capacity) {
+    uint64_t capacity) const {
   // Short circuit when we don't need to grow further.
   if (newSize <= capacity) {
     return capacity;
