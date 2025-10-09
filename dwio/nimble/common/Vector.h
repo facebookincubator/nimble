@@ -182,6 +182,16 @@ class Vector {
     }
   }
 
+  // Removes the first |count| elements from the vector.
+  // Does NOT shrink capacity to fit the new size.
+  void trimLeft(uint64_t count) {
+    NIMBLE_DASSERT(
+        count <= size_, "Cannot trim more elements than exist in vector");
+    const uint64_t remainingSize = size_ - count;
+    std::move(begin() + count, end(), begin());
+    resize(remainingSize);
+  }
+
   // Add |copies| copies of |value| to the end of the vector.
   void extend(uint64_t copies, T value) {
     reserve(size_ + copies);
