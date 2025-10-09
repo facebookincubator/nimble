@@ -1029,7 +1029,7 @@ TEST_F(VeloxWriterTests, CombineMultipleLayersOfDictionaries) {
 void testChunks(
     velox::memory::MemoryPool& rootPool,
     uint32_t minStreamChunkRawSize,
-    std::vector<std::tuple<velox::VectorPtr, nimble::FlushDecision>> vectors,
+    std::vector<std::tuple<velox::VectorPtr, nimble::ChunkDecision>> vectors,
     std::function<void(const nimble::TabletReader&)> verifier,
     folly::F14FastSet<std::string> flatMapColumns = {}) {
   ASSERT_LT(0, vectors.size());
@@ -1041,7 +1041,7 @@ void testChunks(
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
-  auto flushDecision = nimble::FlushDecision::None;
+  auto flushDecision = nimble::ChunkDecision::None;
   nimble::VeloxWriter writer(
       rootPool,
       type,
@@ -1052,6 +1052,7 @@ void testChunks(
           .flushPolicyFactory =
               [&]() {
                 return std::make_unique<nimble::LambdaFlushPolicy>(
+                    [&](auto&) { return nimble::FlushDecision::None; },
                     [&](auto&) { return flushDecision; });
               },
           .enableChunking = true,
@@ -1095,8 +1096,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowAllNullsNoChunks) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
-      {{vector, nimble::FlushDecision::None},
-       {vector, nimble::FlushDecision::None}},
+      {{vector, nimble::ChunkDecision::None},
+       {vector, nimble::ChunkDecision::None}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1131,8 +1132,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowAllNullsWithChunksMinSizeBig) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 1024,
-      {{vector, nimble::FlushDecision::Chunk},
-       {vector, nimble::FlushDecision::Chunk}},
+      {{vector, nimble::ChunkDecision::Chunk},
+       {vector, nimble::ChunkDecision::Chunk}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1168,8 +1169,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowAllNullsWithChunksMinSizeZero) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
-      {{vector, nimble::FlushDecision::Chunk},
-       {vector, nimble::FlushDecision::Chunk}},
+      {{vector, nimble::ChunkDecision::Chunk},
+       {vector, nimble::ChunkDecision::Chunk}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1212,8 +1213,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowSomeNullsNoChunks) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
-      {{nullsVector, nimble::FlushDecision::None},
-       {nonNullsVector, nimble::FlushDecision::None}},
+      {{nullsVector, nimble::ChunkDecision::None},
+       {nonNullsVector, nimble::ChunkDecision::None}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1261,8 +1262,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowSomeNullsWithChunksMinSizeBig) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 1024,
-      {{nullsVector, nimble::FlushDecision::Chunk},
-       {nonNullsVector, nimble::FlushDecision::Chunk}},
+      {{nullsVector, nimble::ChunkDecision::Chunk},
+       {nonNullsVector, nimble::ChunkDecision::Chunk}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1311,8 +1312,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowSomeNullsWithChunksMinSizeZero) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
-      {{nullsVector, nimble::FlushDecision::Chunk},
-       {nonNullsVector, nimble::FlushDecision::Chunk}},
+      {{nullsVector, nimble::ChunkDecision::Chunk},
+       {nonNullsVector, nimble::ChunkDecision::Chunk}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1353,8 +1354,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowNoNullsNoChunks) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
-      {{vector, nimble::FlushDecision::None},
-       {vector, nimble::FlushDecision::None}},
+      {{vector, nimble::ChunkDecision::None},
+       {vector, nimble::ChunkDecision::None}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1393,8 +1394,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowNoNullsWithChunksMinSizeBig) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 1024,
-      {{vector, nimble::FlushDecision::Chunk},
-       {vector, nimble::FlushDecision::Chunk}},
+      {{vector, nimble::ChunkDecision::Chunk},
+       {vector, nimble::ChunkDecision::Chunk}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1434,8 +1435,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowNoNullsWithChunksMinSizeZero) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
-      {{vector, nimble::FlushDecision::Chunk},
-       {vector, nimble::FlushDecision::Chunk}},
+      {{vector, nimble::ChunkDecision::Chunk},
+       {vector, nimble::ChunkDecision::Chunk}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1475,8 +1476,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsChildAllNullsNoChunks) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
-      {{vector, nimble::FlushDecision::None},
-       {vector, nimble::FlushDecision::None}},
+      {{vector, nimble::ChunkDecision::None},
+       {vector, nimble::ChunkDecision::None}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1501,8 +1502,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsChildAllNullsWithChunksMinSizeBig) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 1024,
-      {{vector, nimble::FlushDecision::Chunk},
-       {vector, nimble::FlushDecision::Chunk}},
+      {{vector, nimble::ChunkDecision::Chunk},
+       {vector, nimble::ChunkDecision::Chunk}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1527,8 +1528,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsChildAllNullsWithChunksMinSizeZero) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
-      {{vector, nimble::FlushDecision::Chunk},
-       {vector, nimble::FlushDecision::Chunk}},
+      {{vector, nimble::ChunkDecision::Chunk},
+       {vector, nimble::ChunkDecision::Chunk}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1560,8 +1561,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapAllNullsNoChunks) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
-      {{vector, nimble::FlushDecision::None},
-       {vector, nimble::FlushDecision::None}},
+      {{vector, nimble::ChunkDecision::None},
+       {vector, nimble::ChunkDecision::None}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1603,8 +1604,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapAllNullsWithChunksMinSizeBig) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 1024,
-      {{vector, nimble::FlushDecision::Chunk},
-       {vector, nimble::FlushDecision::Chunk}},
+      {{vector, nimble::ChunkDecision::Chunk},
+       {vector, nimble::ChunkDecision::Chunk}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1647,8 +1648,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapAllNullsWithChunksMinSizeZero) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
-      {{vector, nimble::FlushDecision::Chunk},
-       {vector, nimble::FlushDecision::Chunk}},
+      {{vector, nimble::ChunkDecision::Chunk},
+       {vector, nimble::ChunkDecision::Chunk}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1702,8 +1703,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsNoChunks) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
-      {{nullsVector, nimble::FlushDecision::None},
-       {nonNullsVector, nimble::FlushDecision::None}},
+      {{nullsVector, nimble::ChunkDecision::None},
+       {nonNullsVector, nimble::ChunkDecision::None}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1780,8 +1781,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsWithChunksMinSizeBig) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 1024,
-      {{nullsVector, nimble::FlushDecision::Chunk},
-       {nonNullsVector, nimble::FlushDecision::Chunk}},
+      {{nullsVector, nimble::ChunkDecision::Chunk},
+       {nonNullsVector, nimble::ChunkDecision::Chunk}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
@@ -1861,8 +1862,8 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsWithChunksMinSizeZero) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
-      {{nullsVector, nimble::FlushDecision::Chunk},
-       {nonNullsVector, nimble::FlushDecision::Chunk}},
+      {{nullsVector, nimble::ChunkDecision::Chunk},
+       {nonNullsVector, nimble::ChunkDecision::Chunk}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
