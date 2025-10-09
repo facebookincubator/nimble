@@ -1965,6 +1965,7 @@ struct ChunkFlushPolicyTestCase {
   const uint32_t expectedStripeCount{0};
   const uint32_t expectedMaxChunkCount{0};
   const uint32_t expectedMinChunkCount{0};
+  const uint32_t chunkedStreamBatchSize{2};
 };
 
 class ChunkFlushPolicyTest
@@ -1976,6 +1977,7 @@ TEST_P(ChunkFlushPolicyTest, ChunkFlushPolicyIntegration) {
       {{"BIGINT", velox::BIGINT()}, {"SMALLINT", velox::SMALLINT()}});
   nimble::VeloxWriterOptions writerOptions{
       .minStreamChunkRawSize = GetParam().minStreamChunkRawSize,
+      .chunkedStreamBatchSize = GetParam().chunkedStreamBatchSize,
       .flushPolicyFactory = GetParam().enableChunking
           ? []() -> std::unique_ptr<nimble::FlushPolicy> {
               return std::make_unique<nimble::ChunkFlushPolicy>(
@@ -2097,6 +2099,7 @@ INSTANTIATE_TEST_CASE_P(
             .expectedStripeCount = 4,
             .expectedMaxChunkCount = 1,
             .expectedMinChunkCount = 1,
+            .chunkedStreamBatchSize = 10,
         },
         // Base case with default settings (has chunking)
         ChunkFlushPolicyTestCase{
@@ -2110,6 +2113,7 @@ INSTANTIATE_TEST_CASE_P(
             .expectedStripeCount = 7,
             .expectedMaxChunkCount = 2,
             .expectedMinChunkCount = 1,
+            .chunkedStreamBatchSize = 10,
         },
         // High memory regression threshold
         // Produces file identical to RawStripeSizeFlushPolicy
@@ -2124,6 +2128,7 @@ INSTANTIATE_TEST_CASE_P(
             .expectedStripeCount = 4,
             .expectedMaxChunkCount = 1,
             .expectedMinChunkCount = 1,
+            .chunkedStreamBatchSize = 10,
         },
         // Low memory regression threshold
         // Produces file with more chunks per stripe
@@ -2138,6 +2143,7 @@ INSTANTIATE_TEST_CASE_P(
             .expectedStripeCount = 10,
             .expectedMaxChunkCount = 2,
             .expectedMinChunkCount = 2,
+            .chunkedStreamBatchSize = 10,
         },
         // High target stripe size bytes (with disabled memory pressure
         // optimization) produces fewer stripes. Single chunks.
@@ -2152,6 +2158,8 @@ INSTANTIATE_TEST_CASE_P(
             .expectedStripeCount = 1, // -2 stripes
             .expectedMaxChunkCount = 1,
             .expectedMinChunkCount = 1,
+            .chunkedStreamBatchSize = 10,
+
         },
         // Low target stripe size bytes (with disabled memory pressure
         // optimization) produces more stripes. Single chunks.
@@ -2166,5 +2174,21 @@ INSTANTIATE_TEST_CASE_P(
             .expectedStripeCount = 7, // +6 stripes
             .expectedMaxChunkCount = 1,
             .expectedMinChunkCount = 1,
-        }));
+            .chunkedStreamBatchSize = 10,
+
+        },
+        // Higher chunked stream batch size (no change in policy)
+        ChunkFlushPolicyTestCase{
+            .batchCount = 20,
+            .enableChunking = true,
+            .targetStripeSizeBytes = 250 << 10, // 250KB
+            .writerMemoryHighThresholdBytes = 80 << 10,
+            .writerMemoryLowThresholdBytes = 75 << 10,
+            .estimatedCompressionFactor = 1.0,
+            .minStreamChunkRawSize = 100,
+            .expectedStripeCount = 7,
+            .expectedMaxChunkCount = 2,
+            .expectedMinChunkCount = 1,
+            .chunkedStreamBatchSize = 3} // +1
+        ));
 } // namespace facebook
