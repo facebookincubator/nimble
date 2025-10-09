@@ -88,7 +88,9 @@ class VeloxWriter {
   bool tryWriteStripe(bool force = false);
   void writeChunk(bool lastChunk = true);
   // Returns 'true' if chunks were written.
-  bool writeChunks(bool lastChunk = true);
+  bool writeChunks(
+      bool lastChunk = true,
+      std::span<const uint32_t> streamIndices = {});
   uint32_t writeStripe();
 };
 
