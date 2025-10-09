@@ -865,7 +865,7 @@ void DeduplicatedArrayColumnReader::read(
   if (deduplicatedReadHelper_.loadLastRun_ &&
       !deduplicatedReadHelper_.lastRunLoaded_) {
     velox::VectorPtr result;
-    getValues(outputRows(), &result);
+    getValues({}, &result);
   }
   SelectiveListColumnReader::read(offset, rows, incomingNulls);
 }
@@ -882,7 +882,9 @@ void DeduplicatedArrayColumnReader::getValues(
   // next batch in lazy vector scenario.
   auto dictionaryVector = prepareDictionaryArrayResult(
       *result, requestedType_, rows.size(), memoryPool_);
-  setComplexNulls(rows, *result);
+  if (!rows.empty()) {
+    setComplexNulls(rows, *result);
+  }
   auto indices =
       dictionaryVector->mutableIndices(rows.size())->asMutable<vector_size_t>();
   auto* alphabetArray =
@@ -918,8 +920,11 @@ void DeduplicatedArrayColumnReader::getValues(
     lastRunValue_->resize(0);
   }
 
-  auto* nulls = nullsInReadRange_ ? nullsInReadRange_->as<uint64_t>() : nullptr;
-  deduplicatedReadHelper_.populateSelectedIndices(nulls, rows, indices);
+  if (!rows.empty()) {
+    auto* nulls =
+        nullsInReadRange_ ? nullsInReadRange_->as<uint64_t>() : nullptr;
+    deduplicatedReadHelper_.populateSelectedIndices(nulls, rows, indices);
+  }
 }
 
 DeduplicatedMapColumnReader::DeduplicatedMapColumnReader(
@@ -1010,7 +1015,7 @@ void DeduplicatedMapColumnReader::read(
   if (deduplicatedReadHelper_.loadLastRun_ &&
       !deduplicatedReadHelper_.lastRunLoaded_) {
     velox::VectorPtr result;
-    getValues(outputRows(), &result);
+    getValues({}, &result);
   }
   SelectiveMapColumnReader::read(offset, rows, incomingNulls);
 }
@@ -1027,7 +1032,9 @@ void DeduplicatedMapColumnReader::getValues(
   // next batch in lazy vector scenario.
   auto dictionaryVector = prepareDictionaryMapResult(
       *result, requestedType_, rows.size(), memoryPool_);
-  setComplexNulls(rows, *result);
+  if (!rows.empty()) {
+    setComplexNulls(rows, *result);
+  }
   auto indices =
       dictionaryVector->mutableIndices(rows.size())->asMutable<vector_size_t>();
   auto* alphabetMap =
@@ -1073,7 +1080,10 @@ void DeduplicatedMapColumnReader::getValues(
     lastRunValues_->resize(0);
   }
 
-  auto* nulls = nullsInReadRange_ ? nullsInReadRange_->as<uint64_t>() : nullptr;
-  deduplicatedReadHelper_.populateSelectedIndices(nulls, rows, indices);
+  if (!rows.empty()) {
+    auto* nulls =
+        nullsInReadRange_ ? nullsInReadRange_->as<uint64_t>() : nullptr;
+    deduplicatedReadHelper_.populateSelectedIndices(nulls, rows, indices);
+  }
 }
 } // namespace facebook::nimble
