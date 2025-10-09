@@ -1036,6 +1036,63 @@ TEST_F(SelectiveNimbleReaderTest, arrayWithOffsetsReuseNullResult) {
   validate(*vector, *readers.rowReader, 2, [](auto) { return true; });
 }
 
+TEST_F(SelectiveNimbleReaderTest, arrayWithOffsetsLastRowSetLifeCycle) {
+  std::vector<std::optional<std::vector<std::optional<int64_t>>>> c0, c1, c2;
+  // First batch, one row after filtering, and allocate outputRows_ with a
+  // smaller size.
+  for (int i = 0; i < 16; ++i) {
+    c0.push_back(std::nullopt);
+    c1.push_back({{1}});
+    c2.push_back({{}});
+  }
+  c0.push_back({{}});
+  c1.push_back({{1}});
+  c2.push_back({{}});
+  // Second batch, all filtered out by c2, but c1 reads some value without
+  // calling getValues.
+  c0.push_back(std::nullopt);
+  // Add a null to force setComplexNulls to read last row set before batch 3.
+  c1.push_back(std::nullopt);
+  c2.push_back({{}});
+  for (int i = 0; i < 15; ++i) {
+    c0.push_back(std::nullopt);
+    c1.push_back({{2}});
+    c2.push_back({{}});
+  }
+  c0.push_back({{}});
+  c1.push_back({{2}});
+  c2.push_back(std::nullopt);
+  // Third batch, nothing is filtered out, and force outputRows_ buffer
+  // reallocation.
+  for (int i = 0; i < 17; ++i) {
+    c0.push_back({{}});
+    c1.push_back({{2}});
+    c2.push_back({{}});
+  }
+  auto vector = makeRowVector({
+      makeNullableArrayVector<int64_t>(c0),
+      makeRowVector(
+          {"c1c0"},
+          {makeNullableArrayVector<int64_t>(c1)},
+          // Add some nulls so it is not lazy.
+          [](auto i) { return i == 0; }),
+      makeNullableArrayVector<int64_t>(c2),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.dictionaryArrayColumns = {"c1"};
+  auto fileContent = test::createNimbleFile(*rootPool(), vector, writerOptions);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*vector->type());
+  scanSpec->childByName("c0")->setFilter(std::make_shared<common::IsNotNull>());
+  scanSpec->childByName("c1")->setFilter(std::make_shared<common::IsNotNull>());
+  scanSpec->childByName("c2")->setFilter(std::make_shared<common::IsNotNull>());
+  scanSpec->disableStatsBasedFilterReorder();
+  auto readers = makeReaders(vector, fileContent, scanSpec);
+  validate(*vector, *readers.rowReader, 17, [](auto i) {
+    return i == 16 || i >= 34;
+  });
+}
+
 TEST_F(SelectiveNimbleReaderTest, slidingWindowMapSubfieldPruning) {
   common::BigintRange keyFilter(2, 2, false);
   checkSlidingWindowMap(
