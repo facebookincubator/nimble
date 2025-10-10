@@ -30,14 +30,14 @@ jobs:
     runs-on: ubuntu-22.04
     name: "Ubuntu Build"
     env:
-      CCACHE_DIR: "${{ github.workspace }}/.ccache"
+      CCACHE_DIR: "${{ github.workspace }}/ccache"
     defaults:
       run:
         shell: bash
         working-directory: nimble
     steps:
       - name: "Restore Build Cache"
-        uses: assignUser/stash/restore@v1
+        uses: apache/infrastructure-actions/stash/restore@0731ee889b6301db2001a2a307b4fe4e4f8d3dc8
         with:
           path: '${{ env.CCACHE_DIR }}'
           key: ccache-ubuntu-release-default
@@ -81,7 +81,7 @@ jobs:
           ccache -szv
 
       - name: "Stash Build Cache"
-        uses: assignUser/stash/save@v1
+        uses: apache/infrastructure-actions/stash/save@0731ee889b6301db2001a2a307b4fe4e4f8d3dc8
         with:
           path: '${{ env.CCACHE_DIR }}'
           key: ccache-ubuntu-release-default
