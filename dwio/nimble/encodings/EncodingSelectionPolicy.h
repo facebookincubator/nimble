@@ -186,9 +186,10 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
       // We use read factor weights to raise/lower the favorability of each
       // encoding.
       auto readFactor = pair.second;
-      auto cost = size.value() * readFactor;
+      auto cost = size.value().cost(readFactor);
       NIMBLE_SELECTION_LOG(
-          YELLOW << "Encoding: " << encodingType << ", Size: " << size.value()
+          YELLOW << "Encoding: " << encodingType
+                 << ", Size: " << size.value().size()
                  << ", Factor: " << readFactor << ", Cost: " << cost);
       if (cost < minCost) {
         minCost = cost;
