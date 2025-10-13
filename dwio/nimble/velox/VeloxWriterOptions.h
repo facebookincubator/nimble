@@ -23,7 +23,11 @@
 #include "dwio/nimble/velox/FlushPolicy.h"
 #include "folly/container/F14Set.h"
 #include "velox/common/base/SpillConfig.h"
-#include "velox/type/Type.h"
+
+// Forward declaration to avoid circular dependency
+namespace facebook::nimble {
+class Config;
+}
 
 // Options used by Velox writer that affect the output file format
 
@@ -152,6 +156,11 @@ struct VeloxWriterOptions {
   // monitor usage of decoded vectors vs. data that is passed-through in the
   // writer. Default function is no-op since its used for tests only.
   std::function<void(void)> vectorDecoderVisitor = []() {};
+
+  // Raw nimble configuration object containing all serde parameters.
+  // This provides the nimble writer with access to raw config strings
+  // (like FEATURE_REORDERING) that need to be parsed internally by the writer.
+  std::shared_ptr<nimble::Config> rawConfig;
 };
 
 } // namespace facebook::nimble
