@@ -153,6 +153,7 @@ add_library(
   VeloxWriter.cpp
   ChunkedStreamWriter.cpp
   VeloxWriterDefaultMetadataOSS.cpp
+  StreamChunker.cpp
 )
 target_link_libraries(
   nimble_velox_writer
