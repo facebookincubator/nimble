@@ -74,6 +74,7 @@ struct FileCloseMetrics {
 };
 
 enum class LogOperation {
+  ChunkWrite,
   StripeLoad,
   StripeFlush,
   FileClose,
