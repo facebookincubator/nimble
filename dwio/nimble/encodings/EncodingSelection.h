@@ -23,6 +23,7 @@
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/Statistics.h"
+#include "folly/json.h"
 
 namespace facebook::nimble {
 
@@ -73,11 +74,36 @@ struct ZstdCompressionParameters {
   int16_t compressionLevel = 3;
 };
 
+// An identifier for the meta internal compression policy
+class MetaInternalCompressionKey {
+ public:
+  std::string toString() const {
+    folly::dynamic json = folly::dynamic::object("ns", ns)(
+        "tableName", tableName)("columnName", columnName);
+    return folly::toJson(json);
+  }
+
+  static MetaInternalCompressionKey fromString(const std::string& str) {
+    // will throw upon failure to parse or missing fields
+    auto json = folly::parseJson(str);
+    return {
+        .ns = json["ns"].asString(),
+        .tableName = json["tableName"].asString(),
+        .columnName = json["columnName"].asString(),
+    };
+  }
+
+  std::string ns;
+  std::string tableName;
+  std::string columnName;
+};
+
 struct MetaInternalCompressionParameters {
   int16_t compressionLevel = 0;
   int16_t decompressionLevel = 0;
   bool useVariableBitWidthCompressor = true;
   int useManagedCompression = 2; // 0: disabled, 1: enabled, 2: unset
+  MetaInternalCompressionKey compressionKey;
 };
 
 struct CompressionParameters {

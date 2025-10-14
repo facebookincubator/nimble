@@ -111,6 +111,7 @@ struct CompressionOptions {
   bool useVariableBitWidthCompressor = false;
   int metaInternalUseManagedCompressionForCompress =
       2; // 0: off, 1: on, 2: unset
+  MetaInternalCompressionKey metaInternalCompressionKey;
 };
 
 // This is the manual encoding selection implementation.
@@ -219,6 +220,8 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
             compressionOptions_.useVariableBitWidthCompressor;
         information.parameters.metaInternal.useManagedCompression =
             compressionOptions_.metaInternalUseManagedCompressionForCompress;
+        information.parameters.metaInternal.compressionKey =
+            compressionOptions_.metaInternalCompressionKey;
         return information;
 #else
         CompressionInformation information{
@@ -567,6 +570,8 @@ class ReplayedCompressionPolicy : public nimble::CompressionPolicy {
         compressionOptions_.useVariableBitWidthCompressor;
     information.parameters.metaInternal.useManagedCompression =
         compressionOptions_.metaInternalUseManagedCompressionForCompress;
+    information.parameters.metaInternal.compressionKey =
+        compressionOptions_.metaInternalCompressionKey;
     return information;
   }
 
