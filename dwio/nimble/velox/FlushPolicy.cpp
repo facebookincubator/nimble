@@ -17,14 +17,41 @@
 
 namespace facebook::nimble {
 
-FlushDecision RawStripeSizeFlushPolicy::shouldFlush(
+bool StripeRawSizeFlushPolicy::shouldFlush(
     const StripeProgress& stripeProgress) {
-  return stripeProgress.rawStripeSize >= rawStripeSize_ ? FlushDecision::Stripe
-                                                        : FlushDecision::None;
+  return stripeProgress.stripeRawSize >= stripeRawSize_;
 }
 
-void RawStripeSizeFlushPolicy::onClose() {
-  // No-op
+// Relieve memory pressure with chunking. Tracks state between calls.
+bool ChunkFlushPolicy::shouldChunk(const StripeProgress& stripeProgress) {
+  const uint64_t inMemoryBytes =
+      stripeProgress.stripeRawSize + stripeProgress.stripeEncodedSize;
+  const auto writerMemoryThreshold = (lastChunkDecision_ == false)
+      ? config_.writerMemoryHighThresholdBytes
+      : config_.writerMemoryLowThresholdBytes;
+  lastChunkDecision_ = inMemoryBytes > writerMemoryThreshold;
+  return lastChunkDecision_;
+}
+
+// Optimize for expected storage stripe size.
+// Does not track state between calls.
+bool ChunkFlushPolicy::shouldFlush(const StripeProgress& stripeProgress) {
+  // When chunking is unable to relieve memory pressure, we flush stripe.
+  if (stripeProgress.stripeRawSize + stripeProgress.stripeEncodedSize >
+      config_.writerMemoryHighThresholdBytes) {
+    return true;
+  }
+
+  double compressionFactor = config_.estimatedCompressionFactor;
+  // Use historical compression ratio as a heuristic when available.
+  if (stripeProgress.stripeEncodedSize > 0) {
+    compressionFactor =
+        static_cast<double>(stripeProgress.stripeEncodedLogicalSize) /
+        stripeProgress.stripeEncodedSize;
+  }
+  double expectedEncodedStripeSize = stripeProgress.stripeEncodedSize +
+      stripeProgress.stripeRawSize / std::max(compressionFactor, 1.0);
+  return (expectedEncodedStripeSize >= config_.targetStripeSizeBytes);
 }
 
 } // namespace facebook::nimble
