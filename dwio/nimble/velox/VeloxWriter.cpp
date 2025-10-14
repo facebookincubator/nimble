@@ -654,7 +654,7 @@ void VeloxWriter::writeChunk(bool lastChunk) {
     streams_.resize(context_->schemaBuilder.nodeCount());
 
     // When writing null streams, we write the nulls as data, and the stream
-    // itself is non-nullable. This adpater class is how we expose the nulls as
+    // itself is non-nullable. This adapter class is how we expose the nulls as
     // values.
     class NullsAsDataStreamData : public StreamData {
      public:
