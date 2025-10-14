@@ -105,6 +105,7 @@ constexpr uint32_t kInitialSchemaSectionSize = 1 << 20; // 1MB
 // is non-nullable. This adapter class is how we expose the nulls as values.
 class NullsAsDataStreamData : public StreamData {
  public:
+  static constexpr auto TYPE_NAME = "NULLS_AS_DATA_STREAM_DATA";
   explicit NullsAsDataStreamData(StreamData& streamData)
       : StreamData(streamData.descriptor()), streamData_{streamData} {
     streamData_.materialize();
@@ -126,6 +127,10 @@ class NullsAsDataStreamData : public StreamData {
 
   inline virtual bool empty() const override {
     return streamData_.empty();
+  }
+
+  std::string type() const override {
+    return TYPE_NAME;
   }
 
   inline virtual uint64_t memoryUsed() const override {
