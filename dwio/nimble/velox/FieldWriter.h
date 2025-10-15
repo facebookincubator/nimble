@@ -167,15 +167,17 @@ struct FieldWriterContext {
   template <typename T>
   NullsStreamData& createNullsStreamData(
       const StreamDescriptorBuilder& descriptor) {
-    return static_cast<NullsStreamData&>(*streams_.emplace_back(
-        std::make_unique<NullsStreamData>(*bufferMemoryPool, descriptor)));
+    return static_cast<NullsStreamData&>(
+        *streams_.emplace_back(std::make_unique<NullsStreamData>(
+            *bufferMemoryPool, descriptor, *inputBufferGrowthPolicy)));
   }
 
   template <typename T>
   ContentStreamData<T>& createContentStreamData(
       const StreamDescriptorBuilder& descriptor) {
-    return static_cast<ContentStreamData<T>&>(*streams_.emplace_back(
-        std::make_unique<ContentStreamData<T>>(*bufferMemoryPool, descriptor)));
+    return static_cast<ContentStreamData<T>&>(
+        *streams_.emplace_back(std::make_unique<ContentStreamData<T>>(
+            *bufferMemoryPool, descriptor, *inputBufferGrowthPolicy)));
   }
 
   template <typename T>
@@ -183,7 +185,7 @@ struct FieldWriterContext {
       const StreamDescriptorBuilder& descriptor) {
     return static_cast<NullableContentStreamData<T>&>(
         *streams_.emplace_back(std::make_unique<NullableContentStreamData<T>>(
-            *bufferMemoryPool, descriptor)));
+            *bufferMemoryPool, descriptor, *inputBufferGrowthPolicy)));
   }
 
  private:
