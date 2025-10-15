@@ -109,8 +109,6 @@ struct CompressionOptions {
   uint32_t internalCompressionLevel = 4;
   uint32_t internalDecompressionLevel = 2;
   bool useVariableBitWidthCompressor = false;
-  int metaInternalUseManagedCompressionForCompress =
-      2; // 0: off, 1: on, 2: unset
   MetaInternalCompressionKey metaInternalCompressionKey;
 };
 
@@ -218,8 +216,6 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
             compressionOptions_.internalDecompressionLevel;
         information.parameters.metaInternal.useVariableBitWidthCompressor =
             compressionOptions_.useVariableBitWidthCompressor;
-        information.parameters.metaInternal.useManagedCompression =
-            compressionOptions_.metaInternalUseManagedCompressionForCompress;
         information.parameters.metaInternal.compressionKey =
             compressionOptions_.metaInternalCompressionKey;
         return information;
@@ -568,8 +564,6 @@ class ReplayedCompressionPolicy : public nimble::CompressionPolicy {
         compressionOptions_.internalDecompressionLevel;
     information.parameters.metaInternal.useVariableBitWidthCompressor =
         compressionOptions_.useVariableBitWidthCompressor;
-    information.parameters.metaInternal.useManagedCompression =
-        compressionOptions_.metaInternalUseManagedCompressionForCompress;
     information.parameters.metaInternal.compressionKey =
         compressionOptions_.metaInternalCompressionKey;
     return information;

@@ -44,8 +44,6 @@ class TestCompressionPolicy : public nimble::CompressionPolicy {
         .minCompressionSize = minCompressionSize};
 
     compressionInfo_.parameters.zstd.compressionLevel = 3;
-    // enum MCTernaryState : long { Unset = 2, Off = 0, On = 1 };
-    compressionInfo_.parameters.metaInternal.useManagedCompression = 0;
     compressionInfo_.parameters.metaInternal.compressionLevel = 4;
     compressionInfo_.parameters.metaInternal.decompressionLevel = 2;
   }
@@ -56,9 +54,9 @@ class TestCompressionPolicy : public nimble::CompressionPolicy {
 
   virtual bool shouldAccept(
       nimble::CompressionType /* compressionType */,
-      uint64_t /* uncompressedSize */,
-      uint64_t /* compressedSize */) const override {
-    return true;
+      uint64_t uncompressedSize,
+      uint64_t compressedSize) const override {
+    return compressedSize < uncompressedSize;
   }
 
  private:
