@@ -102,7 +102,6 @@ struct MetaInternalCompressionParameters {
   int16_t compressionLevel = 0;
   int16_t decompressionLevel = 0;
   bool useVariableBitWidthCompressor = true;
-  int useManagedCompression = 2; // 0: disabled, 1: enabled, 2: unset
   MetaInternalCompressionKey compressionKey;
 };
 

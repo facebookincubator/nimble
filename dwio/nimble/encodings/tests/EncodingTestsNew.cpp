@@ -54,13 +54,9 @@ namespace {
 
 class TestCompressPolicy : public nimble::CompressionPolicy {
  public:
-  explicit TestCompressPolicy(
-      bool compress,
-      bool useVariableBitWidthCompressor,
-      bool useManagedCompression)
+  explicit TestCompressPolicy(bool compress, bool useVariableBitWidthCompressor)
       : compress_{compress},
-        useVariableBitWidthCompressor_{useVariableBitWidthCompressor},
-        useManagedCompression_{useManagedCompression} {}
+        useVariableBitWidthCompressor_{useVariableBitWidthCompressor} {}
 
   nimble::CompressionInformation compression() const override {
     if (!compress_) {
@@ -73,8 +69,6 @@ class TestCompressPolicy : public nimble::CompressionPolicy {
     information.parameters.metaInternal.decompressionLevel = 2;
     information.parameters.metaInternal.useVariableBitWidthCompressor =
         useVariableBitWidthCompressor_;
-    information.parameters.metaInternal.useManagedCompression =
-        useManagedCompression_;
     return information;
   }
 
@@ -88,7 +82,6 @@ class TestCompressPolicy : public nimble::CompressionPolicy {
  private:
   bool compress_;
   bool useVariableBitWidthCompressor_;
-  bool useManagedCompression_;
 };
 
 template <typename T>
@@ -99,11 +92,9 @@ class TestTrivialEncodingSelectionPolicy
  public:
   explicit TestTrivialEncodingSelectionPolicy(
       bool shouldCompress,
-      bool useVariableBitWidthCompressor,
-      bool useManagedCompression)
+      bool useVariableBitWidthCompressor)
       : shouldCompress_{shouldCompress},
-        useVariableBitWidthCompressor_{useVariableBitWidthCompressor},
-        useManagedCompression_{useManagedCompression} {}
+        useVariableBitWidthCompressor_{useVariableBitWidthCompressor} {}
 
   nimble::EncodingSelectionResult select(
       std::span<const physicalType> /* values */,
@@ -112,9 +103,7 @@ class TestTrivialEncodingSelectionPolicy
         .encodingType = nimble::EncodingType::Trivial,
         .compressionPolicyFactory = [this]() {
           return std::make_unique<TestCompressPolicy>(
-              shouldCompress_,
-              useVariableBitWidthCompressor_,
-              useManagedCompression_);
+              shouldCompress_, useVariableBitWidthCompressor_);
         }};
   }
 
@@ -135,14 +124,12 @@ class TestTrivialEncodingSelectionPolicy
         type,
         TestTrivialEncodingSelectionPolicy,
         shouldCompress_,
-        useVariableBitWidthCompressor_,
-        useManagedCompression_);
+        useVariableBitWidthCompressor_);
   }
 
  private:
   bool shouldCompress_;
   bool useVariableBitWidthCompressor_;
-  bool useManagedCompression_;
 };
 } // namespace
 // C is the encoding type.
@@ -210,25 +197,20 @@ class EncodingTests : public ::testing::Test {
   std::unique_ptr<nimble::Encoding> createEncoding(
       const nimble::Vector<E>& values,
       bool compress,
-      bool useVariableBitWidthCompressor,
-      bool useManagedCompression) {
+      bool useVariableBitWidthCompressor) {
     using physicalType = typename nimble::TypeTraits<E>::physicalType;
     auto physicalValues = std::span<const physicalType>(
         reinterpret_cast<const physicalType*>(values.data()), values.size());
     nimble::EncodingSelection<physicalType> selection{
         {.encodingType = EncodingTypeTraits<C>::encodingType,
          .compressionPolicyFactory =
-             [compress,
-              useVariableBitWidthCompressor,
-              useManagedCompression]() {
+             [compress, useVariableBitWidthCompressor]() {
                return std::make_unique<TestCompressPolicy>(
-                   compress,
-                   useVariableBitWidthCompressor,
-                   useManagedCompression);
+                   compress, useVariableBitWidthCompressor);
              }},
         nimble::Statistics<physicalType>::create(physicalValues),
         std::make_unique<TestTrivialEncodingSelectionPolicy<E>>(
-            compress, useVariableBitWidthCompressor, useManagedCompression)};
+            compress, useVariableBitWidthCompressor)};
 
     auto encoded = C::encode(selection, physicalValues, *buffer_);
     return std::make_unique<C>(*this->pool_, encoded);
@@ -287,72 +269,67 @@ TYPED_TEST(EncodingTests, Materialize) {
     for (const auto& data : dataPatterns) {
       for (auto compress : {false, true}) {
         for (auto useVariableBitWidthCompressor : {false, true}) {
-          for (auto useManagedCompression : {false, true}) {
-            const int rowCount = data.size();
-            ASSERT_GT(rowCount, 0);
-            std::unique_ptr<nimble::Encoding> encoding;
-            try {
-              encoding = this->createEncoding(
-                  data,
-                  compress,
-                  useVariableBitWidthCompressor,
-                  useManagedCompression);
-            } catch (const nimble::NimbleUserError& e) {
-              if (e.errorCode() == nimble::error_code::IncompatibleEncoding) {
-                continue;
-              }
-              throw;
+          const int rowCount = data.size();
+          ASSERT_GT(rowCount, 0);
+          std::unique_ptr<nimble::Encoding> encoding;
+          try {
+            encoding = this->createEncoding(
+                data, compress, useVariableBitWidthCompressor);
+          } catch (const nimble::NimbleUserError& e) {
+            if (e.errorCode() == nimble::error_code::IncompatibleEncoding) {
+              continue;
             }
-            ASSERT_EQ(encoding->dataType(), nimble::TypeTraits<E>::dataType);
-            nimble::Vector<E> buffer(this->pool_.get(), rowCount);
+            throw;
+          }
+          ASSERT_EQ(encoding->dataType(), nimble::TypeTraits<E>::dataType);
+          nimble::Vector<E> buffer(this->pool_.get(), rowCount);
 
-            encoding->materialize(rowCount, buffer.data());
-            for (int i = 0; i < rowCount; ++i) {
-              ASSERT_EQ(buffer[i], data[i]) << "i: " << i;
-            }
+          encoding->materialize(rowCount, buffer.data());
+          for (int i = 0; i < rowCount; ++i) {
+            ASSERT_EQ(buffer[i], data[i]) << "i: " << i;
+          }
 
-            encoding->reset();
-            const int firstBlock = rowCount / 2;
-            encoding->materialize(firstBlock, buffer.data());
-            for (int i = 0; i < firstBlock; ++i) {
-              ASSERT_EQ(buffer[i], data[i]);
-            }
-            const int secondBlock = rowCount - firstBlock;
-            encoding->materialize(secondBlock, buffer.data());
-            for (int i = 0; i < secondBlock; ++i) {
-              ASSERT_EQ(buffer[i], data[firstBlock + i]);
-            }
+          encoding->reset();
+          const int firstBlock = rowCount / 2;
+          encoding->materialize(firstBlock, buffer.data());
+          for (int i = 0; i < firstBlock; ++i) {
+            ASSERT_EQ(buffer[i], data[i]);
+          }
+          const int secondBlock = rowCount - firstBlock;
+          encoding->materialize(secondBlock, buffer.data());
+          for (int i = 0; i < secondBlock; ++i) {
+            ASSERT_EQ(buffer[i], data[firstBlock + i]);
+          }
 
-            encoding->reset();
-            for (int i = 0; i < rowCount; ++i) {
-              encoding->materialize(1, buffer.data());
-              ASSERT_EQ(buffer[0], data[i]);
-            }
+          encoding->reset();
+          for (int i = 0; i < rowCount; ++i) {
+            encoding->materialize(1, buffer.data());
+            ASSERT_EQ(buffer[0], data[i]);
+          }
 
-            encoding->reset();
-            int start = 0;
-            int len = 0;
-            for (int i = 0; i < rowCount; ++i) {
-              start += len;
-              len += 1;
-              if (start + len > rowCount) {
-                break;
-              }
-              encoding->materialize(len, buffer.data());
-              for (int j = 0; j < len; ++j) {
-                ASSERT_EQ(data[start + j], buffer[j]);
-              }
+          encoding->reset();
+          int start = 0;
+          int len = 0;
+          for (int i = 0; i < rowCount; ++i) {
+            start += len;
+            len += 1;
+            if (start + len > rowCount) {
+              break;
             }
+            encoding->materialize(len, buffer.data());
+            for (int j = 0; j < len; ++j) {
+              ASSERT_EQ(data[start + j], buffer[j]);
+            }
+          }
 
-            const uint32_t offset = folly::Random::rand32(rng) % data.size();
-            const uint32_t length =
-                1 + folly::Random::rand32(rng) % (data.size() - offset);
-            encoding->reset();
-            encoding->skip(offset);
-            encoding->materialize(length, buffer.data());
-            for (uint32_t i = 0; i < length; ++i) {
-              ASSERT_EQ(buffer[i], data[offset + i]);
-            }
+          const uint32_t offset = folly::Random::rand32(rng) % data.size();
+          const uint32_t length =
+              1 + folly::Random::rand32(rng) % (data.size() - offset);
+          encoding->reset();
+          encoding->skip(offset);
+          encoding->materialize(length, buffer.data());
+          for (uint32_t i = 0; i < length; ++i) {
+            ASSERT_EQ(buffer[i], data[offset + i]);
           }
         }
       }
@@ -393,120 +370,150 @@ TYPED_TEST(EncodingTests, ScatteredMaterialize) {
     for (const auto& data : dataPatterns) {
       for (auto compress : {false, true}) {
         for (auto useVariableBitWidthCompressor : {false, true}) {
-          for (auto useManagedCompression : {false, true}) {
-            const int rowCount = data.size();
-            ASSERT_GT(rowCount, 0);
-            std::unique_ptr<nimble::Encoding> encoding;
-            try {
-              encoding = this->createEncoding(
-                  data,
-                  compress,
-                  useVariableBitWidthCompressor,
-                  useManagedCompression);
-            } catch (const nimble::NimbleUserError& e) {
-              if (e.errorCode() == nimble::error_code::IncompatibleEncoding) {
-                continue;
-              }
-              throw;
+          const int rowCount = data.size();
+          ASSERT_GT(rowCount, 0);
+          std::unique_ptr<nimble::Encoding> encoding;
+          try {
+            encoding = this->createEncoding(
+                data, compress, useVariableBitWidthCompressor);
+          } catch (const nimble::NimbleUserError& e) {
+            if (e.errorCode() == nimble::error_code::IncompatibleEncoding) {
+              continue;
             }
-            ASSERT_EQ(encoding->dataType(), nimble::TypeTraits<E>::dataType);
+            throw;
+          }
+          ASSERT_EQ(encoding->dataType(), nimble::TypeTraits<E>::dataType);
 
-            int setBits = 0;
-            std::vector<int32_t> scatterSizes(rowCount + 1);
-            scatterSizes[0] = 0;
-            nimble::Vector<bool> scatter(this->pool_.get());
-            while (setBits < rowCount) {
-              scatter.push_back(folly::Random::oneIn(2, rng));
-              if (scatter.back()) {
-                scatterSizes[++setBits] = scatter.size();
-              }
+          int setBits = 0;
+          std::vector<int32_t> scatterSizes(rowCount + 1);
+          scatterSizes[0] = 0;
+          nimble::Vector<bool> scatter(this->pool_.get());
+          while (setBits < rowCount) {
+            scatter.push_back(folly::Random::oneIn(2, rng));
+            if (scatter.back()) {
+              scatterSizes[++setBits] = scatter.size();
             }
+          }
 
-            auto newRowCount = scatter.size();
-            auto requiredBytes = nimble::bits::bytesRequired(newRowCount);
-            // Note: Internally, some bit implementations use word boundaries to
-            // efficiently iterate on bitmaps. If the buffer doesn't end on a
-            // word boundary, this leads to ASAN buffer overflow (debug builds).
-            // So for now, we are allocating extra 7 bytes to make sure the
-            // buffer ends or exceeds a word boundary.
-            nimble::Buffer scatterBuffer{*this->pool_, requiredBytes + 7};
-            nimble::Buffer nullsBuffer{*this->pool_, requiredBytes + 7};
-            auto scatterPtr = scatterBuffer.reserve(requiredBytes);
-            auto nullsPtr = nullsBuffer.reserve(requiredBytes);
-            memset(scatterPtr, 0, requiredBytes);
-            nimble::bits::packBitmap(scatter, scatterPtr);
+          auto newRowCount = scatter.size();
+          auto requiredBytes = nimble::bits::bytesRequired(newRowCount);
+          // Note: Internally, some bit implementations use word boundaries to
+          // efficiently iterate on bitmaps. If the buffer doesn't end on a
+          // word boundary, this leads to ASAN buffer overflow (debug builds).
+          // So for now, we are allocating extra 7 bytes to make sure the
+          // buffer ends or exceeds a word boundary.
+          nimble::Buffer scatterBuffer{*this->pool_, requiredBytes + 7};
+          nimble::Buffer nullsBuffer{*this->pool_, requiredBytes + 7};
+          auto scatterPtr = scatterBuffer.reserve(requiredBytes);
+          auto nullsPtr = nullsBuffer.reserve(requiredBytes);
+          memset(scatterPtr, 0, requiredBytes);
+          nimble::bits::packBitmap(scatter, scatterPtr);
 
-            nimble::Vector<E> buffer(this->pool_.get(), newRowCount);
+          nimble::Vector<E> buffer(this->pool_.get(), newRowCount);
 
-            uint32_t expectedRow = 0;
-            uint32_t actualRows = 0;
+          uint32_t expectedRow = 0;
+          uint32_t actualRows = 0;
+          {
+            nimble::bits::Bitmap scatterBitmap(scatterPtr, newRowCount);
+            actualRows = encoding->materializeNullable(
+                rowCount,
+                buffer.data(),
+                [&]() { return nullsPtr; },
+                &scatterBitmap);
+          }
+          ASSERT_EQ(actualRows, rowCount);
+          auto hasNulls = actualRows != newRowCount;
+          for (int i = 0; i < newRowCount; ++i) {
+            checkScatteredOutput(
+                hasNulls,
+                i,
+                scatter.data(),
+                buffer.data(),
+                data.data(),
+                nullsPtr,
+                expectedRow);
+          }
+          EXPECT_EQ(rowCount, expectedRow);
+
+          encoding->reset();
+          const int firstBlock = rowCount / 2;
+          const int firstScatterSize = scatterSizes[firstBlock];
+          expectedRow = 0;
+          {
+            nimble::bits::Bitmap scatterBitmap(scatterPtr, firstScatterSize);
+            actualRows = encoding->materializeNullable(
+                firstBlock,
+                buffer.data(),
+                [&]() { return nullsPtr; },
+                &scatterBitmap);
+          }
+          ASSERT_EQ(actualRows, firstBlock);
+          hasNulls = actualRows != firstScatterSize;
+          for (int i = 0; i < firstScatterSize; ++i) {
+            checkScatteredOutput(
+                hasNulls,
+                i,
+                scatter.data(),
+                buffer.data(),
+                data.data(),
+                nullsPtr,
+                expectedRow);
+          }
+          ASSERT_EQ(actualRows, expectedRow);
+
+          const int secondBlock = rowCount - firstBlock;
+          const int secondScatterSize = scatter.size() - firstScatterSize;
+          expectedRow = actualRows;
+          {
+            nimble::bits::Bitmap scatterBitmap(scatterPtr, newRowCount);
+            actualRows = encoding->materializeNullable(
+                secondBlock,
+                buffer.data(),
+                [&]() { return nullsPtr; },
+                &scatterBitmap,
+                firstScatterSize);
+          }
+          ASSERT_EQ(actualRows, secondBlock);
+          hasNulls = actualRows != secondScatterSize;
+          auto previousRows = expectedRow;
+          for (int i = firstScatterSize; i < newRowCount; ++i) {
+            checkScatteredOutput(
+                hasNulls,
+                i,
+                scatter.data(),
+                buffer.data(),
+                data.data(),
+                nullsPtr,
+                expectedRow);
+          }
+          ASSERT_EQ(actualRows, expectedRow - previousRows);
+          ASSERT_EQ(rowCount, expectedRow);
+
+          encoding->reset();
+          expectedRow = 0;
+          for (int i = 0; i < rowCount; ++i) {
+            // Note: Internally, some bit implementations use word boundaries
+            // to efficiently iterate on bitmaps. If the buffer doesn't end on
+            // a word boundary, this leads to ASAN buffer overflow (debug
+            // builds). So for now, we are using uint64_t as the bitmap to
+            // make sure the buffer ends on a word boundary.
+            auto scatterStart = scatterSizes[i];
+            auto scatterEnd = scatterSizes[i + 1];
             {
-              nimble::bits::Bitmap scatterBitmap(scatterPtr, newRowCount);
+              nimble::bits::Bitmap scatterBitmap(scatterPtr, scatterEnd);
               actualRows = encoding->materializeNullable(
-                  rowCount,
-                  buffer.data(),
-                  [&]() { return nullsPtr; },
-                  &scatterBitmap);
-            }
-            ASSERT_EQ(actualRows, rowCount);
-            auto hasNulls = actualRows != newRowCount;
-            for (int i = 0; i < newRowCount; ++i) {
-              checkScatteredOutput(
-                  hasNulls,
-                  i,
-                  scatter.data(),
-                  buffer.data(),
-                  data.data(),
-                  nullsPtr,
-                  expectedRow);
-            }
-            EXPECT_EQ(rowCount, expectedRow);
-
-            encoding->reset();
-            const int firstBlock = rowCount / 2;
-            const int firstScatterSize = scatterSizes[firstBlock];
-            expectedRow = 0;
-            {
-              nimble::bits::Bitmap scatterBitmap(scatterPtr, firstScatterSize);
-              actualRows = encoding->materializeNullable(
-                  firstBlock,
-                  buffer.data(),
-                  [&]() { return nullsPtr; },
-                  &scatterBitmap);
-            }
-            ASSERT_EQ(actualRows, firstBlock);
-            hasNulls = actualRows != firstScatterSize;
-            for (int i = 0; i < firstScatterSize; ++i) {
-              checkScatteredOutput(
-                  hasNulls,
-                  i,
-                  scatter.data(),
-                  buffer.data(),
-                  data.data(),
-                  nullsPtr,
-                  expectedRow);
-            }
-            ASSERT_EQ(actualRows, expectedRow);
-
-            const int secondBlock = rowCount - firstBlock;
-            const int secondScatterSize = scatter.size() - firstScatterSize;
-            expectedRow = actualRows;
-            {
-              nimble::bits::Bitmap scatterBitmap(scatterPtr, newRowCount);
-              actualRows = encoding->materializeNullable(
-                  secondBlock,
+                  1,
                   buffer.data(),
                   [&]() { return nullsPtr; },
                   &scatterBitmap,
-                  firstScatterSize);
+                  scatterStart);
             }
-            ASSERT_EQ(actualRows, secondBlock);
-            hasNulls = actualRows != secondScatterSize;
-            auto previousRows = expectedRow;
-            for (int i = firstScatterSize; i < newRowCount; ++i) {
+            ASSERT_EQ(actualRows, 1);
+            previousRows = expectedRow;
+            for (int j = scatterStart; j < scatterEnd; ++j) {
               checkScatteredOutput(
-                  hasNulls,
-                  i,
+                  scatterEnd - scatterStart > 1,
+                  j,
                   scatter.data(),
                   buffer.data(),
                   data.data(),
@@ -514,79 +521,44 @@ TYPED_TEST(EncodingTests, ScatteredMaterialize) {
                   expectedRow);
             }
             ASSERT_EQ(actualRows, expectedRow - previousRows);
-            ASSERT_EQ(rowCount, expectedRow);
+          }
+          ASSERT_EQ(rowCount, expectedRow);
 
-            encoding->reset();
-            expectedRow = 0;
-            for (int i = 0; i < rowCount; ++i) {
-              // Note: Internally, some bit implementations use word boundaries
-              // to efficiently iterate on bitmaps. If the buffer doesn't end on
-              // a word boundary, this leads to ASAN buffer overflow (debug
-              // builds). So for now, we are using uint64_t as the bitmap to
-              // make sure the buffer ends on a word boundary.
-              auto scatterStart = scatterSizes[i];
-              auto scatterEnd = scatterSizes[i + 1];
-              {
-                nimble::bits::Bitmap scatterBitmap(scatterPtr, scatterEnd);
-                actualRows = encoding->materializeNullable(
-                    1,
-                    buffer.data(),
-                    [&]() { return nullsPtr; },
-                    &scatterBitmap,
-                    scatterStart);
-              }
-              ASSERT_EQ(actualRows, 1);
-              previousRows = expectedRow;
-              for (int j = scatterStart; j < scatterEnd; ++j) {
-                checkScatteredOutput(
-                    scatterEnd - scatterStart > 1,
-                    j,
-                    scatter.data(),
-                    buffer.data(),
-                    data.data(),
-                    nullsPtr,
-                    expectedRow);
-              }
-              ASSERT_EQ(actualRows, expectedRow - previousRows);
+          encoding->reset();
+          expectedRow = 0;
+          int start = 0;
+          int len = 0;
+          for (int i = 0; i < rowCount; ++i) {
+            start += len;
+            len += 1;
+            if (start + len > rowCount) {
+              break;
             }
-            ASSERT_EQ(rowCount, expectedRow);
-
-            encoding->reset();
-            expectedRow = 0;
-            int start = 0;
-            int len = 0;
-            for (int i = 0; i < rowCount; ++i) {
-              start += len;
-              len += 1;
-              if (start + len > rowCount) {
-                break;
-              }
-              auto scatterStart = scatterSizes[start];
-              auto scatterEnd = scatterSizes[start + len];
-              {
-                nimble::bits::Bitmap scatterBitmap(scatterPtr, scatterEnd);
-                actualRows = encoding->materializeNullable(
-                    len,
-                    buffer.data(),
-                    [&]() { return nullsPtr; },
-                    &scatterBitmap,
-                    scatterStart);
-              }
-              ASSERT_EQ(actualRows, len);
-              hasNulls = actualRows != scatterEnd - scatterStart;
-              previousRows = expectedRow;
-              for (int j = scatterStart; j < scatterEnd; ++j) {
-                checkScatteredOutput(
-                    hasNulls,
-                    j,
-                    scatter.data(),
-                    buffer.data(),
-                    data.data(),
-                    nullsPtr,
-                    expectedRow);
-              }
-              ASSERT_EQ(actualRows, expectedRow - previousRows);
+            auto scatterStart = scatterSizes[start];
+            auto scatterEnd = scatterSizes[start + len];
+            {
+              nimble::bits::Bitmap scatterBitmap(scatterPtr, scatterEnd);
+              actualRows = encoding->materializeNullable(
+                  len,
+                  buffer.data(),
+                  [&]() { return nullsPtr; },
+                  &scatterBitmap,
+                  scatterStart);
             }
+            ASSERT_EQ(actualRows, len);
+            hasNulls = actualRows != scatterEnd - scatterStart;
+            previousRows = expectedRow;
+            for (int j = scatterStart; j < scatterEnd; ++j) {
+              checkScatteredOutput(
+                  hasNulls,
+                  j,
+                  scatter.data(),
+                  buffer.data(),
+                  data.data(),
+                  nullsPtr,
+                  expectedRow);
+            }
+            ASSERT_EQ(actualRows, expectedRow - previousRows);
           }
         }
       }
