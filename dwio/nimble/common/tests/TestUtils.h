@@ -295,38 +295,30 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
       uint64_t offset,
       uint64_t length,
       void* buf,
-      velox::filesystems::File::IoStats* stats = nullptr,
-      const folly::F14FastMap<std::string, std::string>& fileReadOps = {})
-      const final {
+      const velox::FileStorageContext& fileStorageContext = {}) const final {
     chunks_.wlock()->push_back({offset, length});
-    return file_.pread(offset, length, buf, stats, fileReadOps);
+    return file_.pread(offset, length, buf, fileStorageContext);
   }
 
   std::string pread(
       uint64_t offset,
       uint64_t length,
-      velox::filesystems::File::IoStats* stats = nullptr,
-      const folly::F14FastMap<std::string, std::string>& fileReadOps = {})
-      const final {
+      const velox::FileStorageContext& fileStorageContext = {}) const final {
     chunks_.wlock()->push_back({offset, length});
-    return file_.pread(offset, length, stats, fileReadOps);
+    return file_.pread(offset, length, fileStorageContext);
   }
 
   uint64_t preadv(
       uint64_t /* offset */,
       const std::vector<folly::Range<char*>>& /* buffers */,
-      velox::filesystems::File::IoStats* stats = nullptr,
-      const folly::F14FastMap<std::string, std::string>& fileReadOps = {})
-      const final {
+      const velox::FileStorageContext& fileStorageContext = {}) const final {
     NIMBLE_NOT_SUPPORTED("Not used by Nimble");
   }
 
   uint64_t preadv(
       folly::Range<const velox::common::Region*> regions,
       folly::Range<folly::IOBuf*> iobufs,
-      velox::filesystems::File::IoStats* stats = nullptr,
-      const folly::F14FastMap<std::string, std::string>& fileReadOps = {})
-      const override {
+      const velox::FileStorageContext& fileStorageContext = {}) const override {
     VELOX_CHECK_EQ(regions.size(), iobufs.size());
     uint64_t length = 0;
     for (size_t i = 0; i < regions.size(); ++i) {
@@ -347,7 +339,11 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
         output.appendChain(std::move(next));
       } else {
         output = folly::IOBuf(folly::IOBuf::CREATE, region.length);
-        pread(region.offset, region.length, output.writableData(), stats);
+        pread(
+            region.offset,
+            region.length,
+            output.writableData(),
+            fileStorageContext);
         output.append(region.length);
       }
     }
