@@ -502,9 +502,9 @@ void NimbleDumpLib::emitStreams(
       labels.emplace(reader.schema());
     }
     if (showInMapStream) {
-      VeloxReader reader{*pool_, tabletReader};
+      VeloxReader inMapReader{*pool_, tabletReader};
       SchemaReader::traverseSchema(
-          reader.schema(),
+          inMapReader.schema(),
           [&](auto /*level*/, const Type& type, auto /*info*/) {
             if (type.kind() == Kind::FlatMap) {
               auto& map = type.asFlatMap();
