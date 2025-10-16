@@ -21,7 +21,6 @@
 
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
-#include "velox/common/memory/Memory.h"
 
 namespace facebook::nimble {
 
@@ -50,10 +49,80 @@ class StreamData {
     return descriptor_;
   }
 
+  // Underlying type of the StreamData.
+  virtual std::string type() const = 0;
+
   virtual ~StreamData() = default;
 
  private:
   const StreamDescriptorBuilder& descriptor_;
+};
+
+// Represents a view into a chunk of stream data.
+// Provides a lightweight, non-owning view into a portion of stream data,
+// containing references to the data content and null indicators for efficient
+// processing of large streams without copying data.
+class StreamDataView final : public StreamData {
+ public:
+  static constexpr auto TYPE_NAME = "STREAM_DATA_VIEW";
+  StreamDataView(
+      const StreamDescriptorBuilder& descriptor,
+      std::string_view data,
+      std::span<const bool> nonNulls,
+      bool hasNulls,
+      uint64_t extraMemory = 0)
+      : StreamData(descriptor),
+        data_{data},
+        nonNulls_{nonNulls},
+        hasNulls_{hasNulls},
+        extraMemory_{extraMemory} {}
+
+  StreamDataView(StreamDataView&& other) noexcept
+      : StreamData(other.descriptor()),
+        data_{other.data_},
+        nonNulls_{other.nonNulls_},
+        hasNulls_{other.hasNulls_},
+        extraMemory_{other.extraMemory_} {}
+
+  StreamDataView& operator=(StreamDataView&& other) noexcept = delete;
+
+  std::string_view data() const override {
+    return data_;
+  }
+
+  std::span<const bool> nonNulls() const override {
+    return nonNulls_;
+  }
+
+  bool hasNulls() const override {
+    return hasNulls_;
+  }
+
+  uint64_t memoryUsed() const override {
+    return data_.size() + nonNulls_.size() * sizeof(bool) + extraMemory_;
+  }
+
+  uint64_t extraMemory() const {
+    return extraMemory_;
+  }
+
+  bool empty() const override {
+    return data_.empty() && nonNulls_.empty();
+  }
+
+  std::string type() const override {
+    return TYPE_NAME;
+  }
+
+  void reset() override {
+    NIMBLE_UNREACHABLE("StreamDataView is non-owning");
+  }
+
+ private:
+  const std::string_view data_;
+  const std::span<const bool> nonNulls_;
+  bool hasNulls_;
+  const uint64_t extraMemory_;
 };
 
 // Content only data stream.
@@ -61,6 +130,7 @@ class StreamData {
 template <typename T>
 class ContentStreamData final : public StreamData {
  public:
+  static constexpr auto TYPE_NAME = "CONTENT_STREAM_DATA";
   ContentStreamData(
       velox::memory::MemoryPool& memoryPool,
       const StreamDescriptorBuilder& descriptor)
@@ -81,6 +151,10 @@ class ContentStreamData final : public StreamData {
 
   inline virtual bool empty() const override {
     return data_.empty();
+  }
+
+  std::string type() const override {
+    return TYPE_NAME;
   }
 
   inline virtual uint64_t memoryUsed() const override {
@@ -113,6 +187,7 @@ class ContentStreamData final : public StreamData {
 // helps with reusing enabling this optimization.
 class NullsStreamData : public StreamData {
  public:
+  static constexpr auto TYPE_NAME = "NULLS_STREAM_DATA";
   NullsStreamData(
       velox::memory::MemoryPool& memoryPool,
       const StreamDescriptorBuilder& descriptor)
@@ -135,6 +210,10 @@ class NullsStreamData : public StreamData {
 
   inline virtual bool empty() const override {
     return nonNulls_.empty() && bufferedCount_ == 0;
+  }
+
+  std::string type() const override {
+    return TYPE_NAME;
   }
 
   inline virtual uint64_t memoryUsed() const override {
@@ -173,6 +252,7 @@ class NullsStreamData : public StreamData {
 template <typename T>
 class NullableContentStreamData final : public NullsStreamData {
  public:
+  static constexpr auto TYPE_NAME = "NULLABLE_CONTENT_STREAM_DATA";
   NullableContentStreamData(
       velox::memory::MemoryPool& memoryPool,
       const StreamDescriptorBuilder& descriptor)
@@ -192,6 +272,10 @@ class NullableContentStreamData final : public NullsStreamData {
   inline virtual uint64_t memoryUsed() const override {
     return (data_.size() * sizeof(T)) + extraMemory_ +
         NullsStreamData::memoryUsed();
+  }
+
+  std::string type() const override {
+    return TYPE_NAME;
   }
 
   inline Vector<T>& mutableData() {
