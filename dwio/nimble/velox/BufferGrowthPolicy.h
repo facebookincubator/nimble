@@ -25,7 +25,8 @@ class InputBufferGrowthPolicy {
  public:
   virtual ~InputBufferGrowthPolicy() = default;
 
-  virtual uint64_t getExtendedCapacity(uint64_t newSize, uint64_t capacity) = 0;
+  virtual uint64_t getExtendedCapacity(uint64_t newSize, uint64_t capacity)
+      const = 0;
 };
 
 // Default growth policy for input buffering is a step function across
@@ -46,7 +47,8 @@ class DefaultInputBufferGrowthPolicy : public InputBufferGrowthPolicy {
 
   ~DefaultInputBufferGrowthPolicy() override = default;
 
-  uint64_t getExtendedCapacity(uint64_t newSize, uint64_t capacity) override;
+  uint64_t getExtendedCapacity(uint64_t newSize, uint64_t capacity)
+      const override;
 
   static std::unique_ptr<InputBufferGrowthPolicy> withDefaultRanges() {
     return std::make_unique<DefaultInputBufferGrowthPolicy>(
@@ -65,7 +67,7 @@ class DefaultInputBufferGrowthPolicy : public InputBufferGrowthPolicy {
 class ExactGrowthPolicy : public InputBufferGrowthPolicy {
  public:
   uint64_t getExtendedCapacity(uint64_t newSize, uint64_t /* capacity */)
-      override {
+      const override {
     return newSize;
   }
 };
