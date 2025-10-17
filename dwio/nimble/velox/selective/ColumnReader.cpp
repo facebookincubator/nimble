@@ -132,8 +132,7 @@ std::unique_ptr<dwio::common::SelectiveColumnReader> buildColumnReader(
             requestedType, fileType, params, scanSpec);
       }
     default:
-      VELOX_UNSUPPORTED(
-          "Unsupported type: {}", mapTypeKindToName(fileType->type()->kind()));
+      VELOX_UNSUPPORTED("Unsupported type: {}", fileType->type()->kind());
   }
 }
 
