@@ -1422,8 +1422,9 @@ class SlidingWindowMapFieldReader final : public FieldReader {
 
     bool hasNulls = nonNullCount != rowCount;
     // Read the lengths
-    uint32_t lengthBuffer[nonNullCount];
-    lengthsDecoder_->next(nonNullCount, lengthBuffer);
+    std::vector<uint32_t> lengthBuffer;
+    lengthBuffer.resize(nonNullCount);
+    lengthsDecoder_->next(nonNullCount, lengthBuffer.data());
 
     // Convert the offsets and lengths to a list of unique offsets and lengths
     // and update the indices to be 0-based indices
