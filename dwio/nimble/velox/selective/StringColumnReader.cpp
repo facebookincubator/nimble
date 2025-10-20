@@ -32,7 +32,7 @@ void StringColumnReader::read(
     int64_t offset,
     const RowSet& rows,
     const uint64_t* incomingNulls) {
-  prepareRead<folly::StringPiece>(offset, rows, incomingNulls);
+  prepareRead<std::string_view>(offset, rows, incomingNulls);
   dwio::common::StringColumnReadWithVisitorHelper<false, false>(
       *this, rows)([&](auto visitor) { decoder_.readWithVisitor(visitor); });
   readOffset_ += rows.back() + 1;
