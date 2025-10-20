@@ -19,10 +19,12 @@
 #include <optional>
 
 #include "common/base/BuildInfo.h"
+#include "common/config/Flags.h"
 #include "common/init/light.h"
 #include "dwio/nimble/tools/NimbleDumpLib.h"
 #include "folly/Singleton.h"
 #include "folly/cli/NestedCommandLineApp.h"
+#include "folly/logging/Init.h"
 #include "velox/common/base/StatsReporter.h"
 
 using namespace facebook;
@@ -33,9 +35,9 @@ std::optional<T> getOptional(const po::variable_value& val) {
   return val.empty() ? std::nullopt : std::optional<T>(val.as<T>());
 }
 
+FOLLY_INIT_LOGGING_CONFIG("CRITICAL");
 int main(int argc, char* argv[]) {
-  // Disable GLOG
-  FLAGS_minloglevel = 5;
+  facebook::config::Flags::overrideDefault("minloglevel", "5");
 
   auto init = init::InitFacebookLight{
       &argc, &argv, folly::InitOptions().useGFlags(false)};
@@ -48,13 +50,16 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  folly::NestedCommandLineApp app{"", version};
+  folly::NestedCommandLineApp app{"", std::move(version)};
   int style = po::command_line_style::default_style;
   style &= ~po::command_line_style::allow_guessing;
   app.setOptionStyle(static_cast<po::command_line_style::style_t>(style));
 
-  po::positional_options_description positionalArgs;
-  positionalArgs.add("file", /*max_count*/ 1);
+  auto makePositionalArgs = []() {
+    po::positional_options_description positionalArgs;
+    positionalArgs.add("file", /*max_count*/ 1);
+    return positionalArgs;
+  };
 
   app.addCommand(
          "info",
@@ -67,7 +72,7 @@ int main(int argc, char* argv[]) {
                std::cout, options["file"].as<std::string>()}
                .emitInfo();
          },
-         positionalArgs)
+         makePositionalArgs())
       .add_options()(
           "file",
           po::value<std::string>()->required(),
@@ -84,7 +89,7 @@ int main(int argc, char* argv[]) {
                std::cout, options["file"].as<std::string>()}
                .emitFileLayout(options["no_header"].as<bool>());
          },
-         positionalArgs)
+         makePositionalArgs())
       // clang-format off
         .add_options()
         (
@@ -109,7 +114,7 @@ int main(int argc, char* argv[]) {
                std::cout, options["file"].as<std::string>()}
                .emitSchema(!options["full"].as<bool>());
          },
-         positionalArgs)
+         makePositionalArgs())
       // clang-format off
         .add_options()
             (
@@ -134,7 +139,7 @@ int main(int argc, char* argv[]) {
                std::cout, options["file"].as<std::string>()}
                .emitStripes(options["no_header"].as<bool>());
          },
-         positionalArgs)
+         makePositionalArgs())
       // clang-format off
         .add_options()
         (
@@ -164,7 +169,7 @@ int main(int argc, char* argv[]) {
                    options["inmap_stream"].as<bool>(),
                    getOptional<uint32_t>(options["stripe"]));
          },
-         positionalArgs)
+         makePositionalArgs())
       // clang-format off
         .add_options()
             (
@@ -211,7 +216,7 @@ int main(int argc, char* argv[]) {
                    options["no_header"].as<bool>(),
                    getOptional<uint32_t>(options["stripe"]));
          },
-         positionalArgs)
+         makePositionalArgs())
       // clang-format off
         .add_options()
             (
@@ -249,7 +254,7 @@ int main(int argc, char* argv[]) {
                    getOptional<uint32_t>(options["stripe"]),
                    options["separator"].as<std::string>());
          },
-         positionalArgs)
+         makePositionalArgs())
       // clang-format off
         .add_options()
             (
@@ -290,7 +295,7 @@ int main(int argc, char* argv[]) {
                    options["stream"].as<uint32_t>(),
                    options["stripe"].as<uint32_t>());
          },
-         positionalArgs)
+         makePositionalArgs())
       // clang-format off
         .add_options()
             (
@@ -325,7 +330,7 @@ int main(int argc, char* argv[]) {
                    options["no_header"].as<bool>(),
                    !options["uncompressed"].as<bool>());
          },
-         positionalArgs)
+         makePositionalArgs())
       // clang-format off
           .add_options()
               (
@@ -355,7 +360,7 @@ int main(int argc, char* argv[]) {
                std::cout, options["file"].as<std::string>()}
                .emitStripesMetadata(options["no_header"].as<bool>());
          },
-         positionalArgs)
+         makePositionalArgs())
       // clang-format off
         .add_options()
         (
@@ -380,7 +385,7 @@ int main(int argc, char* argv[]) {
                std::cout, options["file"].as<std::string>()}
                .emitStripeGroupsMetadata(options["no_header"].as<bool>());
          },
-         positionalArgs)
+         makePositionalArgs())
       // clang-format off
         .add_options()
         (
@@ -404,7 +409,7 @@ int main(int argc, char* argv[]) {
                std::cout, options["file"].as<std::string>()}
                .emitOptionalSectionsMetadata(options["no_header"].as<bool>());
          },
-         positionalArgs)
+         makePositionalArgs())
       // clang-format off
         .add_options()
         (
@@ -424,12 +429,9 @@ int main(int argc, char* argv[]) {
 
   try {
     return app.run(argc, argv);
-  } catch (const facebook::velox::VeloxRuntimeError& e) {
-    if (e.errorCode() == facebook::velox::error_code::kFileNotFound) {
-      std::cerr << "Error: " << e.message() << std::endl;
-      return EXIT_FAILURE;
-    }
-    throw;
+  } catch (const std::exception& e) {
+    std::cerr << "Error: " << e.what() << std::endl;
+    return EXIT_FAILURE;
   }
 }
 
