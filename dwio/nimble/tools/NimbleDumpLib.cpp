@@ -38,13 +38,20 @@
 #include "folly/cli/NestedCommandLineApp.h"
 
 namespace facebook::nimble::tools {
-#define RED "\033[31m"
-#define GREEN "\033[32m"
-#define YELLOW "\033[33m"
-#define BLUE "\033[34m"
-#define PURPLE "\033[35m"
-#define CYAN "\033[36m"
-#define RESET_COLOR "\033[0m"
+#undef RED
+#define RED(enableColor) (enableColor ? "\033[31m" : "")
+#undef GREEN
+#define GREEN(enableColor) (enableColor ? "\033[32m" : "")
+#undef YELLOW
+#define YELLOW(enableColor) (enableColor ? "\033[33m" : "")
+#undef BLUE
+#define BLUE(enableColor) (enableColor ? "\033[34m" : "")
+#undef PURPLE
+#define PURPLE(enableColor) (enableColor ? "\033[35m" : "")
+#undef CYAN
+#define CYAN(enableColor) (enableColor ? "\033[36m" : "")
+#undef RESET_COLOR
+#define RESET_COLOR(enableColor) (enableColor ? "\033[0m" : "")
 
 namespace {
 
@@ -105,6 +112,7 @@ class TableFormatter {
  public:
   TableFormatter(
       std::ostream& ostream,
+      bool enableColor,
       std::vector<std::tuple<
           std::string /* Title */,
           uint8_t /* Width */,
@@ -114,14 +122,14 @@ class TableFormatter {
       const std::string& separator = "\t")
       : ostream_{ostream}, fields_{std::move(fields)}, separator_{separator} {
     if (!noHeader) {
-      ostream << YELLOW;
+      ostream << YELLOW(enableColor);
       for (const auto& field : fields_) {
         ostream << (std::get<2>(field) == Alignment::Right ? std::right
                                                            : std::left)
                 << std::setw(std::get<1>(field)) << std::get<0>(field)
                 << ((&field != &fields_.back()) ? separator_ : "");
       }
-      ostream << RESET_COLOR << std::endl;
+      ostream << RESET_COLOR(enableColor) << std::endl;
     }
   }
 
@@ -151,11 +159,11 @@ void traverseTablet(
     velox::memory::MemoryPool& memoryPool,
     const TabletReader& tabletReader,
     std::optional<int32_t> stripeIndex,
-    std::function<void(uint32_t /* stripeId */)> stripeVisitor = nullptr,
-    std::function<void(
+    const std::function<void(uint32_t /* stripeId */)>& stripeVisitor = nullptr,
+    const std::function<void(
         ChunkedStream& /*stream*/,
         uint32_t /*stripeId*/,
-        uint32_t /* streamId*/)> streamVisitor = nullptr) {
+        uint32_t /* streamId*/)>& streamVisitor = nullptr) {
   uint32_t startStripe = stripeIndex ? *stripeIndex : 0;
   uint32_t endStripe =
       stripeIndex ? *stripeIndex : tabletReader.stripeCount() - 1;
@@ -262,23 +270,27 @@ auto commaSeparated(T value) {
 
 } // namespace
 
-NimbleDumpLib::NimbleDumpLib(std::ostream& ostream, const std::string& file)
+NimbleDumpLib::NimbleDumpLib(
+    std::ostream& ostream,
+    bool enableColors,
+    const std::string& file)
     : pool_{velox::memory::deprecatedAddDefaultLeafMemoryPool()},
       file_{dwio::file_system::FileSystem::openForRead(
           file,
           dwio::common::request::AccessDescriptorBuilder()
               .withClientId("nimble_dump")
               .build())},
-      ostream_{ostream} {}
+      ostream_{ostream},
+      enableColors_{enableColors} {}
 
 void NimbleDumpLib::emitInfo() {
   std::vector<std::string> preloadedOptionalSections = {
       std::string(kStatsSection)};
   auto tablet = std::make_shared<TabletReader>(
       *pool_, file_.get(), preloadedOptionalSections);
-  ostream_ << CYAN << "Nimble File " << RESET_COLOR << "Version "
-           << tablet->majorVersion() << "." << tablet->minorVersion()
-           << std::endl;
+  ostream_ << CYAN(enableColors_) << "Nimble File "
+           << RESET_COLOR(enableColors_) << "Version " << tablet->majorVersion()
+           << "." << tablet->minorVersion() << std::endl;
   ostream_ << "File Size: " << commaSeparated(tablet->fileSize()) << std::endl;
   ostream_ << "Checksum: " << tablet->checksum() << " ["
            << nimble::toString(tablet->checksumType()) << "]" << std::endl;
@@ -449,6 +461,7 @@ void NimbleDumpLib::emitStripes(bool noHeader) {
   TabletReader tabletReader{*pool_, file_.get()};
   TableFormatter formatter(
       ostream_,
+      enableColors_,
       {{"Stripe Id", 7, Alignment::Left},
        {"Stripe Offset", 15, Alignment::Right},
        {"Stripe Size", 15, Alignment::Right},
@@ -492,7 +505,8 @@ void NimbleDumpLib::emitStreams(
   }
   fields.emplace_back("Type", 30, Alignment::Left);
 
-  TableFormatter formatter(ostream_, std::move(fields), noHeader);
+  TableFormatter formatter(
+      ostream_, enableColors_, std::move(fields), noHeader);
 
   std::optional<StreamLabels> labels{};
   std::unordered_set<uint32_t> inMapStreams;
@@ -613,6 +627,7 @@ void NimbleDumpLib::emitHistogram(
 
   TableFormatter formatter(
       ostream_,
+      enableColors_,
       {{"Encoding Type", 17, Alignment::Left},
        {"Data Type", 13, Alignment::Left},
        {"Compression", 15, Alignment::Left},
@@ -851,6 +866,7 @@ void NimbleDumpLib::emitLayout(bool noHeader, bool compressed) {
 
   TableFormatter formatter(
       ostream_,
+      enableColors_,
       {
           {"Node Id", 11, Alignment::Left},
           {"Parent Id", 11, Alignment::Left},
@@ -891,7 +907,7 @@ void NimbleDumpLib::emitLayout(bool noHeader, bool compressed) {
              folly::to<std::string>(parentId),
              toString(node.schemaKind()),
              std::string(node.name()),
-             encodingLayout});
+             std::move(encodingLayout)});
       });
 }
 
@@ -899,6 +915,7 @@ void NimbleDumpLib::emitStripesMetadata(bool noHeader) {
   TabletReader tabletReader{*pool_, file_.get()};
   TableFormatter formatter(
       ostream_,
+      enableColors_,
       {
           {"Offset", 15, Alignment::Left},
           {"Size", 15, Alignment::Left},
@@ -988,6 +1005,7 @@ void NimbleDumpLib::emitFileLayout(bool noHeader) {
 
   TableFormatter formatter(
       ostream_,
+      enableColors_,
       {
           {"Offset", 15, Alignment::Right},
           {"Size", 15, Alignment::Right},
@@ -1010,6 +1028,7 @@ void NimbleDumpLib::emitStripeGroupsMetadata(bool noHeader) {
   TabletReader tabletReader{*pool_, file_.get()};
   TableFormatter formatter(
       ostream_,
+      enableColors_,
       {
           {"Group Id", 10, Alignment::Left},
           {"Offset", 15, Alignment::Left},
@@ -1050,6 +1069,7 @@ void NimbleDumpLib::emitOptionalSectionsMetadata(bool noHeader) {
 
   TableFormatter formatter(
       ostream_,
+      enableColors_,
       {{"Name", 20, Alignment::Left},
        {"Compression", 12, Alignment::Left},
        {"Offset", 15, Alignment::Right},
