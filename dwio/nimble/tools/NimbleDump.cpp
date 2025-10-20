@@ -30,10 +30,23 @@
 using namespace facebook;
 namespace po = ::boost::program_options;
 
+namespace {
 template <typename T>
 std::optional<T> getOptional(const po::variable_value& val) {
   return val.empty() ? std::nullopt : std::optional<T>(val.as<T>());
 }
+
+bool isColorfulTty() {
+  auto isTty = isatty(fileno(stdout));
+  if (!isTty) {
+    return false;
+  }
+
+  auto term = std::getenv("TERM");
+  return !(term == nullptr || term[0] == '\0' || strcmp(term, "dumb") == 0);
+}
+
+} // namespace
 
 FOLLY_INIT_LOGGING_CONFIG("CRITICAL");
 int main(int argc, char* argv[]) {
@@ -41,6 +54,9 @@ int main(int argc, char* argv[]) {
 
   auto init = init::InitFacebookLight{
       &argc, &argv, folly::InitOptions().useGFlags(false)};
+
+  // Enable colored output if we are running in a terminal
+  bool enableColors = isColorfulTty();
 
   std::string version{BuildInfo::getBuildTimeISO8601()};
   if (!version.empty()) {
@@ -66,10 +82,11 @@ int main(int argc, char* argv[]) {
          "<file>",
          "Print file information",
          "Prints file information from the file footer.",
-         [](const po::variables_map& options,
-            const std::vector<std::string>& /*args*/) {
+         [enableColors](
+             const po::variables_map& options,
+             const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, options["file"].as<std::string>()}
+               std::cout, enableColors, options["file"].as<std::string>()}
                .emitInfo();
          },
          makePositionalArgs())
@@ -83,10 +100,11 @@ int main(int argc, char* argv[]) {
          "<file>",
          "Print overall layout of the file",
          "Print overall layout of the file",
-         [](const po::variables_map& options,
-            const std::vector<std::string>& /*args*/) {
+         [enableColors](
+             const po::variables_map& options,
+             const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, options["file"].as<std::string>()}
+               std::cout, enableColors, options["file"].as<std::string>()}
                .emitFileLayout(options["no_header"].as<bool>());
          },
          makePositionalArgs())
@@ -108,10 +126,11 @@ int main(int argc, char* argv[]) {
          "<file>",
          "Print file schema",
          "Prints the file schema tree.",
-         [](const po::variables_map& options,
-            const std::vector<std::string>& /*args*/) {
+         [enableColors](
+             const po::variables_map& options,
+             const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, options["file"].as<std::string>()}
+               std::cout, enableColors, options["file"].as<std::string>()}
                .emitSchema(!options["full"].as<bool>());
          },
          makePositionalArgs())
@@ -133,10 +152,11 @@ int main(int argc, char* argv[]) {
          "<file>",
          "Print stripe information",
          "Prints detailed stripe information.",
-         [](const po::variables_map& options,
-            const std::vector<std::string>& /*args*/) {
+         [enableColors](
+             const po::variables_map& options,
+             const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, options["file"].as<std::string>()}
+               std::cout, enableColors, options["file"].as<std::string>()}
                .emitStripes(options["no_header"].as<bool>());
          },
          makePositionalArgs())
@@ -158,10 +178,11 @@ int main(int argc, char* argv[]) {
          "<file>",
          "Print stream information",
          "Prints detailed stream information.",
-         [](const po::variables_map& options,
-            const std::vector<std::string>& /*args*/) {
+         [enableColors](
+             const po::variables_map& options,
+             const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, options["file"].as<std::string>()}
+               std::cout, enableColors, options["file"].as<std::string>()}
                .emitStreams(
                    options["no_header"].as<bool>(),
                    options["labels"].as<bool>(),
@@ -207,10 +228,11 @@ int main(int argc, char* argv[]) {
          "Print encoding histogram",
          "Prints encoding histogram, counting how many times each encoding "
          "appears in the file.",
-         [](const po::variables_map& options,
-            const std::vector<std::string>& /*args*/) {
+         [enableColors](
+             const po::variables_map& options,
+             const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, options["file"].as<std::string>()}
+               std::cout, enableColors, options["file"].as<std::string>()}
                .emitHistogram(
                    options["root_only"].as<bool>(),
                    options["no_header"].as<bool>(),
@@ -245,10 +267,11 @@ int main(int argc, char* argv[]) {
          "<file>",
          "Print the content of a stream",
          "Prints the materialized content (actual values) of a stream.",
-         [](const po::variables_map& options,
-            const std::vector<std::string>& /*args*/) {
+         [enableColors](
+             const po::variables_map& options,
+             const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, options["file"].as<std::string>()}
+               std::cout, enableColors, options["file"].as<std::string>()}
                .emitContent(
                    options["stream"].as<uint32_t>(),
                    getOptional<uint32_t>(options["stripe"]),
@@ -282,10 +305,11 @@ int main(int argc, char* argv[]) {
          "<file>",
          "Dumps stream binary content",
          "Dumps stream binary content to a file.",
-         [](const po::variables_map& options,
-            const std::vector<std::string>& /*args*/) {
+         [enableColors](
+             const po::variables_map& options,
+             const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, options["file"].as<std::string>()}
+               std::cout, enableColors, options["file"].as<std::string>()}
                .emitBinary(
                    [path = options["output"].as<std::string>()]() {
                      return std::make_unique<std::ofstream>(
@@ -322,10 +346,11 @@ int main(int argc, char* argv[]) {
          "<file>",
          "Dumps layout file",
          "Dumps captured layout file content.",
-         [](const po::variables_map& options,
-            const std::vector<std::string>& /*args*/) {
+         [enableColors](
+             const po::variables_map& options,
+             const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, options["file"].as<std::string>()}
+               std::cout, enableColors, options["file"].as<std::string>()}
                .emitLayout(
                    options["no_header"].as<bool>(),
                    !options["uncompressed"].as<bool>());
@@ -354,10 +379,11 @@ int main(int argc, char* argv[]) {
          "<file>",
          "Print stripes metadata information",
          "Prints stripes metadata information as referenced by the footer.",
-         [](const po::variables_map& options,
-            const std::vector<std::string>& /*args*/) {
+         [enableColors](
+             const po::variables_map& options,
+             const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, options["file"].as<std::string>()}
+               std::cout, enableColors, options["file"].as<std::string>()}
                .emitStripesMetadata(options["no_header"].as<bool>());
          },
          makePositionalArgs())
@@ -379,10 +405,11 @@ int main(int argc, char* argv[]) {
          "<file>",
          "Print stripe groups metadata information",
          "Prints stripe groups information as referenced by the footer.",
-         [](const po::variables_map& options,
-            const std::vector<std::string>& /*args*/) {
+         [enableColors](
+             const po::variables_map& options,
+             const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, options["file"].as<std::string>()}
+               std::cout, enableColors, options["file"].as<std::string>()}
                .emitStripeGroupsMetadata(options["no_header"].as<bool>());
          },
          makePositionalArgs())
@@ -403,10 +430,11 @@ int main(int argc, char* argv[]) {
          "<file>",
          "Print optional sections information",
          "Prints optional sections information as referenced by the footer.",
-         [](const po::variables_map& options,
-            const std::vector<std::string>& /*args*/) {
+         [enableColors](
+             const po::variables_map& options,
+             const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, options["file"].as<std::string>()}
+               std::cout, enableColors, options["file"].as<std::string>()}
                .emitOptionalSectionsMetadata(options["no_header"].as<bool>());
          },
          makePositionalArgs())
