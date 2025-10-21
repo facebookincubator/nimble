@@ -205,6 +205,16 @@ VeloxReader::VeloxReader(
       logger_{
           parameters_.metricsLogger ? parameters_.metricsLogger
                                     : std::make_shared<MetricsLogger>()} {
+  // Attach the path to VeloxException if an exception is thrown in the
+  // constructor.
+  auto exceptionContextMsg =
+      fmt::format("Reader path {}", tabletReader_->fileName());
+  velox::ExceptionContextSetter exceptionContext(
+      {[](velox::VeloxException::Type /*exceptionType*/, auto* debugString) {
+         return *static_cast<std::string*>(debugString);
+       },
+       &exceptionContextMsg});
+
   static_assert(std::is_same_v<velox::vector_size_t, int32_t>);
 
   if (!selector) {

@@ -21,6 +21,7 @@
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
 #include "folly/io/Cursor.h"
+#include "velox/common/base/VeloxException.h"
 
 #include <algorithm>
 #include <iterator>
@@ -280,6 +281,15 @@ TabletReader::TabletReader(
       stripeGroupCache_{[this](uint32_t stripeGroupIndex) {
         return loadStripeGroup(stripeGroupIndex);
       }} {
+  // Attach the path to VeloxException if an exception is thrown while reading
+  // the tablet.
+  auto exceptionContextMsg =
+      fmt::format("TabletReader path {}", file_->getName());
+  velox::ExceptionContextSetter exceptionContext(
+      {[](velox::VeloxException::Type /*exceptionType*/, auto* debugString) {
+         return *static_cast<std::string*>(debugString);
+       },
+       &exceptionContextMsg});
   // We make an initial read of the last piece of the file, and then do
   // another read if our first one didn't cover the whole footer. We could
   // make this a parameter to the constructor later.

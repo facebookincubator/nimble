@@ -296,6 +296,10 @@ class TabletReader {
     return file_->size();
   }
 
+  std::string fileName() const {
+    return file_->getName();
+  }
+
   uint32_t footerSize() const {
     return ps_.footerSize();
   }
