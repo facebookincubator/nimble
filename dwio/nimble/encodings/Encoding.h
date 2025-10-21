@@ -525,13 +525,13 @@ void readWithVisitorFast(
 // ValueType is the type we store in values buffer of selective column reader.
 template <typename DataType>
 using ValueType = std::conditional_t<
-    std::is_same_v<DataType, folly::StringPiece>,
+    std::is_same_v<DataType, std::string_view>,
     velox::StringView,
     DataType>;
 
 template <typename V, typename DataType>
 ValueType<DataType> dataToValue(const V& visitor, DataType data) {
-  if constexpr (std::is_same_v<DataType, folly::StringPiece>) {
+  if constexpr (std::is_same_v<DataType, std::string_view>) {
     return visitor.reader().copyStringValueIfNeed(data);
   } else {
     return data;

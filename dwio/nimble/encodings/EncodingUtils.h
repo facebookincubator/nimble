@@ -132,7 +132,7 @@ void callReadWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
   using T = typename V::DataType;
-  if constexpr (std::is_same_v<T, folly::StringPiece>) {
+  if constexpr (std::is_same_v<T, std::string_view>) {
     detail::encodingTypeDispatchString(encoding, [&](auto& typedEncoding) {
       typedEncoding.readWithVisitor(visitor, params);
     });

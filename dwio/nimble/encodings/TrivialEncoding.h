@@ -332,7 +332,7 @@ void TrivialEncoding<std::string_view>::readWithVisitor(
       },
       [&] {
         auto len = *lengths++;
-        folly::StringPiece value(pos_, len);
+        std::string_view value(pos_, len);
         ++row_;
         pos_ += len;
         return value;
