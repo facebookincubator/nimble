@@ -324,7 +324,7 @@ struct EncodingPredictionModel {
     // TODO: Utilize more features within statistics for prediction.
     auto maxRepeat = statistics.maxRepeat();
     auto minRepeat = statistics.minRepeat();
-    auto unique = statistics.uniqueCounts().size();
+    auto unique = statistics.uniqueCounts().value().size();
     return maxRepeatParam * maxRepeat + minRepeatParam * minRepeat +
         uniqueParam * unique;
   }

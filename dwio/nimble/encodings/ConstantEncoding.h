@@ -124,7 +124,7 @@ std::string_view ConstantEncoding<T>::encode(
     NIMBLE_INCOMPATIBLE_ENCODING("ConstantEncoding cannot be empty.");
   }
 
-  if (selection.statistics().uniqueCounts().size() != 1) {
+  if (selection.statistics().uniqueCounts().value().size() != 1) {
     NIMBLE_INCOMPATIBLE_ENCODING("ConstantEncoding requires constant data.");
   }
 
