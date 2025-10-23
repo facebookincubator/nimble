@@ -279,6 +279,9 @@ class NullsStreamChunker final : public StreamChunker {
 
  private:
   void compact() override {
+    if (omitStream_) {
+      return;
+    }
     auto& nonNulls = streamData_.mutableNonNulls();
     const auto remainingNonNullsCount = nonNulls.size() - nonNullsOffset_;
     const auto newCapacity = detail::getNewBufferCapacity<bool>(
@@ -416,6 +419,9 @@ class NullableContentStreamChunker final : public StreamChunker {
   }
 
   void compact() override {
+    if (omitStream_) {
+      return;
+    }
     auto& currentNonNulls = streamData_.mutableNonNulls();
     auto& currentData = streamData_.mutableData();
     const auto remainingNonNullsCount =

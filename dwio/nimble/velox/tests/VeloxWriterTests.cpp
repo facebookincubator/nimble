@@ -2013,6 +2013,7 @@ struct ChunkFlushPolicyTestCase {
   const uint64_t writerMemoryLowThresholdBytes{75 << 10};
   const double estimatedCompressionFactor{1.3};
   const uint32_t minStreamChunkRawSize{100};
+  const uint32_t maxStreamChunkRawSize{128 << 10};
   const uint32_t expectedStripeCount{0};
   const uint32_t expectedMaxChunkCount{0};
   const uint32_t expectedMinChunkCount{0};
@@ -2028,6 +2029,7 @@ TEST_P(ChunkFlushPolicyTest, ChunkFlushPolicyIntegration) {
       {{"BIGINT", velox::BIGINT()}, {"SMALLINT", velox::SMALLINT()}});
   nimble::VeloxWriterOptions writerOptions{
       .minStreamChunkRawSize = GetParam().minStreamChunkRawSize,
+            .maxStreamChunkRawSize = GetParam().maxStreamChunkRawSize,
       .chunkedStreamBatchSize = GetParam().chunkedStreamBatchSize,
       .flushPolicyFactory = GetParam().enableChunking
           ? []() -> std::unique_ptr<nimble::FlushPolicy> {
@@ -2283,6 +2285,7 @@ INSTANTIATE_TEST_CASE_P(
             .writerMemoryLowThresholdBytes = 75 << 10,
             .estimatedCompressionFactor = 1.3,
             .minStreamChunkRawSize = 100,
+            .maxStreamChunkRawSize = 128 << 10,
             .expectedStripeCount = 4,
             .expectedMaxChunkCount = 1,
             .expectedMinChunkCount = 1,
@@ -2297,13 +2300,29 @@ INSTANTIATE_TEST_CASE_P(
             .writerMemoryLowThresholdBytes = 75 << 10,
             .estimatedCompressionFactor = 1.3,
             .minStreamChunkRawSize = 100,
+            .maxStreamChunkRawSize = 128 << 10,
             .expectedStripeCount = 7,
             .expectedMaxChunkCount = 2,
             .expectedMinChunkCount = 1,
             .chunkedStreamBatchSize = 2,
         },
+        // Reducing maxStreamChunkRawSize produces more chunks
+        ChunkFlushPolicyTestCase{
+            .batchCount = 20,
+            .enableChunking = true,
+            .targetStripeSizeBytes = 250 << 10, // 250KB
+            .writerMemoryHighThresholdBytes = 80 << 10,
+            .writerMemoryLowThresholdBytes = 75 << 10,
+            .estimatedCompressionFactor = 1.0,
+            .minStreamChunkRawSize = 100,
+            .maxStreamChunkRawSize = 12 << 10, // -126KB
+            .expectedStripeCount = 8,
+            .expectedMaxChunkCount = 9, // +7
+            .expectedMinChunkCount = 2, // +1
+            .chunkedStreamBatchSize = 10,
+        },
         // High memory regression threshold and no compression
-        // Produces file identical to RawStripeSizeFlushPolicy
+        // Stripe count identical to RawStripeSizeFlushPolicy
         ChunkFlushPolicyTestCase{
             .batchCount = 20,
             .enableChunking = true,
@@ -2314,8 +2333,9 @@ INSTANTIATE_TEST_CASE_P(
             .estimatedCompressionFactor =
                 1.0, // No compression (as opposed to 1.3 in other cases)
             .minStreamChunkRawSize = 100,
+            .maxStreamChunkRawSize = 128 << 10,
             .expectedStripeCount = 4,
-            .expectedMaxChunkCount = 1,
+            .expectedMaxChunkCount = 2,
             .expectedMinChunkCount = 1,
             .chunkedStreamBatchSize = 2,
         },
@@ -2331,13 +2351,14 @@ INSTANTIATE_TEST_CASE_P(
                 << 10, // 35KB (as opposed to 75KB in other cases)
             .estimatedCompressionFactor = 1.3,
             .minStreamChunkRawSize = 100,
+            .maxStreamChunkRawSize = 128 << 10,
             .expectedStripeCount = 10,
             .expectedMaxChunkCount = 2,
             .expectedMinChunkCount = 2, // +1 chunk
             .chunkedStreamBatchSize = 2,
         },
         // High target stripe size bytes (with disabled memory pressure
-        // optimization) produces fewer stripes. Single chunks.
+        // optimization) produces fewer stripes.
         ChunkFlushPolicyTestCase{
             .batchCount = 20,
             .enableChunking = true,
@@ -2349,9 +2370,10 @@ INSTANTIATE_TEST_CASE_P(
                 << 20, // 1MB (as opposed to 75KB in other cases)
             .estimatedCompressionFactor = 1.3,
             .minStreamChunkRawSize = 100,
+            .maxStreamChunkRawSize = 128 << 10,
             .expectedStripeCount = 1,
-            .expectedMaxChunkCount = 1,
-            .expectedMinChunkCount = 1,
+            .expectedMaxChunkCount = 5,
+            .expectedMinChunkCount = 2,
             .chunkedStreamBatchSize = 2,
 
         },
@@ -2368,6 +2390,7 @@ INSTANTIATE_TEST_CASE_P(
                 << 20, // 1MB (as opposed to 75KB in other cases)
             .estimatedCompressionFactor = 1.3,
             .minStreamChunkRawSize = 100,
+            .maxStreamChunkRawSize = 128 << 10,
             .expectedStripeCount = 7,
             .expectedMaxChunkCount = 1,
             .expectedMinChunkCount = 1,
@@ -2383,6 +2406,7 @@ INSTANTIATE_TEST_CASE_P(
             .writerMemoryLowThresholdBytes = 75 << 10,
             .estimatedCompressionFactor = 1.0,
             .minStreamChunkRawSize = 100,
+            .maxStreamChunkRawSize = 128 << 10,
             .expectedStripeCount = 7,
             .expectedMaxChunkCount = 2,
             .expectedMinChunkCount = 1,

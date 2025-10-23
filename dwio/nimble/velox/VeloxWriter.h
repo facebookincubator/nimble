@@ -92,7 +92,8 @@ class VeloxWriter {
   // Returns 'true' if chunks were written.
   bool writeChunks(
       std::span<const uint32_t> streamIndices,
-      bool lastChunk = true);
+      bool ensureFullChunks = false,
+      bool lastChunk = false);
 };
 
 } // namespace facebook::nimble
