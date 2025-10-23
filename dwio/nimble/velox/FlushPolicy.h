@@ -20,59 +20,89 @@
 
 namespace facebook::nimble {
 
-struct StripeProgress {
-  // Size of the stripe data when it's fully decompressed and decoded
-  const uint64_t rawStripeSize;
-  // Size of the stripe after buffered data is encoded and optionally compressed
-  const uint64_t stripeSize;
-  // Size of the allocated buffer in the writer
-  const uint64_t bufferSize;
+// TODO: Set default values for these parameters based on DISCO experiments.
+// Use abitrary values for now.
+struct ChunkFlushPolicyConfig {
+  // Threshold to trigger chunking to relieve memory pressure
+  const uint64_t writerMemoryHighThresholdBytes{200 * 1024L * 1024L};
+  // Threshold below which chunking stops and stripe size optimization resumes
+  const uint64_t writerMemoryLowThresholdBytes{100 * 1024L * 1024L};
+  // Target size for encoded stripes
+  const uint64_t targetStripeSizeBytes{100 * 1024L * 1024L};
+  // Expected ratio of raw to encoded data
+  const double estimatedCompressionFactor{1.3};
 };
 
-enum class FlushDecision : uint8_t {
-  None = 0,
-  Stripe = 1,
-  Chunk = 2,
+struct StripeProgress {
+  // Size of the stripe data when it's fully decompressed and decoded
+  const uint64_t stripeRawSize;
+  // Size of the stripe after buffered data is encoded and optionally compressed
+  const uint64_t stripeEncodedSize;
+  // Logical size of the now encoded stripe data
+  const uint64_t stripeEncodedLogicalSize;
 };
 
 class FlushPolicy {
  public:
   virtual ~FlushPolicy() = default;
-  virtual FlushDecision shouldFlush(const StripeProgress& stripeProgress) = 0;
-  // Required for memory pressure coordination for now. Will remove in the
-  // future.
-  virtual void onClose() = 0;
+  virtual bool shouldFlush(const StripeProgress& stripeProgress) = 0;
+  virtual bool shouldChunk(const StripeProgress& stripeProgress) = 0;
 };
 
-class RawStripeSizeFlushPolicy final : public FlushPolicy {
+class StripeRawSizeFlushPolicy final : public FlushPolicy {
  public:
-  explicit RawStripeSizeFlushPolicy(uint64_t rawStripeSize)
-      : rawStripeSize_{rawStripeSize} {}
+  explicit StripeRawSizeFlushPolicy(uint64_t stripeRawSize)
+      : stripeRawSize_{stripeRawSize} {}
 
-  FlushDecision shouldFlush(const StripeProgress& stripeProgress) override;
+  bool shouldFlush(const StripeProgress& stripeProgress) override {
+    return stripeProgress.stripeRawSize >= stripeRawSize_;
+  }
 
-  void onClose() override;
+  bool shouldChunk(const StripeProgress&) override {
+    return false;
+  }
 
  private:
-  const uint64_t rawStripeSize_;
+  const uint64_t stripeRawSize_;
 };
 
 class LambdaFlushPolicy : public FlushPolicy {
  public:
   explicit LambdaFlushPolicy(
-      std::function<FlushDecision(const StripeProgress&)> lambda)
-      : lambda_{lambda} {}
+      std::function<bool(const StripeProgress&)> flushLambda =
+          [](const StripeProgress&) { return false; },
+      std::function<bool(const StripeProgress&)> chunkLambda =
+          [](const StripeProgress&) { return false; })
+      : flushLambda_{std::move(flushLambda)},
+        chunkLambda_{std::move(chunkLambda)} {}
 
-  FlushDecision shouldFlush(const StripeProgress& stripeProgress) override {
-    return lambda_(stripeProgress);
+  bool shouldFlush(const StripeProgress& stripeProgress) override {
+    return flushLambda_(stripeProgress);
   }
 
-  void onClose() override {
-    // No-op
+  bool shouldChunk(const StripeProgress& stripeProgress) override {
+    return chunkLambda_(stripeProgress);
   }
 
  private:
-  std::function<FlushDecision(const StripeProgress&)> lambda_;
+  std::function<bool(const StripeProgress&)> flushLambda_;
+  std::function<bool(const StripeProgress&)> chunkLambda_;
+};
+
+class ChunkFlushPolicy : public FlushPolicy {
+ public:
+  explicit ChunkFlushPolicy(ChunkFlushPolicyConfig config)
+      : config_{std::move(config)}, lastChunkDecision_{false} {}
+
+  // Optimize for expected storage stripe size.
+  bool shouldFlush(const StripeProgress& stripeProgress) override;
+
+  // Relieve memory pressure with chunking.
+  bool shouldChunk(const StripeProgress& stripeProgress) override;
+
+ private:
+  const ChunkFlushPolicyConfig config_;
+  bool lastChunkDecision_;
 };
 
 } // namespace facebook::nimble

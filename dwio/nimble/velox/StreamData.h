@@ -77,6 +77,66 @@ class MutableStreamData : public StreamData {
   const InputBufferGrowthPolicy& growthPolicy_;
 };
 
+// Represents a view into a chunk of stream data.
+// Provides a lightweight, non-owning view into a portion of stream data,
+// containing references to the data content and null indicators for efficient
+// processing of large streams without copying data.
+class StreamDataView final : public StreamData {
+ public:
+  StreamDataView(
+      const StreamDescriptorBuilder& descriptor,
+      std::string_view data,
+      std::span<const bool> nonNulls,
+      bool hasNulls)
+      : StreamData(descriptor),
+        data_{data},
+        nonNulls_{nonNulls},
+        hasNulls_{hasNulls} {}
+
+  StreamDataView(StreamDataView&& other) noexcept
+      : StreamData(other.descriptor()),
+        data_{other.data_},
+        nonNulls_{other.nonNulls_},
+        hasNulls_{other.hasNulls_} {}
+
+  StreamDataView(const StreamDataView&) = delete;
+
+  StreamDataView& operator=(const StreamDataView&) = delete;
+
+  StreamDataView& operator=(StreamDataView&& other) noexcept = delete;
+
+  ~StreamDataView() override = default;
+
+  std::string_view data() const override {
+    return data_;
+  }
+
+  std::span<const bool> nonNulls() const override {
+    return nonNulls_;
+  }
+
+  bool hasNulls() const override {
+    return hasNulls_;
+  }
+
+  uint64_t memoryUsed() const override {
+    NIMBLE_UNREACHABLE("StreamDataView is non-owning");
+  }
+
+  bool empty() const override {
+    return data_.empty() && nonNulls_.empty();
+  }
+
+  void reset() override {
+    NIMBLE_UNREACHABLE("StreamDataView is non-owning");
+  }
+
+ private:
+  const std::string_view data_;
+  const std::span<const bool> nonNulls_;
+  bool hasNulls_;
+};
+
 // Content only data stream.
 // Used when a stream doesn't contain nulls.
 template <typename T>
