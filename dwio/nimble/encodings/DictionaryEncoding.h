@@ -206,22 +206,62 @@ std::string_view DictionaryEncoding<T>::encode(
   folly::F14FastMap<physicalType, uint32_t> alphabetMapping;
   alphabetMapping.reserve(alphabetCount);
   Vector<physicalType> alphabet{&buffer.getMemoryPool()};
-  alphabet.reserve(alphabetCount);
-  uint32_t index = 0;
-  for (const auto& pair : selection.statistics().uniqueCounts()) {
-    alphabet.push_back(pair.first);
-    alphabetMapping.emplace(pair.first, index++);
+  alphabet.resize(alphabetCount);
+  Vector<uint32_t> indices{&buffer.getMemoryPool()};
+  indices.resize(valueCount);
+
+  uint32_t alphabetIndex = 0;
+  uint32_t indiciesIndex = 0;
+  auto valuesIt = values.begin();
+
+  // Based on experimentation, there are at least two consistently
+  // "good" ordering approaches that result in consistently smaller storage
+  // footprints:
+  //
+  // 1. Sort alphabet values using natural order. This improves alphabet
+  // compression, but can result in worse indices compression.
+  //
+  // 2. Order the alphabet by the first occurrence of each value in the input.
+  // Storage savings mostly come from indices being much more delta encoding
+  // friendly compared to a random order.
+  //
+  // Other approaches, like sorting alphabet values by frequency, also
+  // occasionally yield more compressible data, but they're not consistent and
+  // can result in storage regression compared to the first two.
+  //
+  // The second approach is used in this implementation because it's essentially
+  // free: we don't need to allocate O(m) memory for a sorting buffer and
+  // then do O(m log m) sorting. However, the first approach has a slightly
+  // better distribution curve for storage savings.
+
+  // Step one: fill alphabet and indices until we get a full alphabet mapping.
+  for (; alphabetIndex < alphabetCount; ++valuesIt, ++indiciesIndex) {
+    NIMBLE_DASSERT(valuesIt != values.end(), "Values iterator out of bounds.");
+    const auto& value = *valuesIt;
+    const auto& it = alphabetMapping.find(value);
+    if (it == alphabetMapping.end()) {
+      alphabetMapping.emplace(value, alphabetIndex);
+      alphabet[alphabetIndex] = value;
+      indices[indiciesIndex] = alphabetIndex;
+      ++alphabetIndex;
+    } else {
+      indices[indiciesIndex] = it->second;
+    }
   }
 
-  Vector<uint32_t> indices{&buffer.getMemoryPool()};
-  indices.reserve(valueCount);
-  for (const auto& value : values) {
-    auto it = alphabetMapping.find(value);
+  // Step two: fill indices for the remaining values using the already fully
+  // populated alphabet mapping. In most cases, depending on the data skew, we
+  // will hit this step relatively early, and it will boost performance by
+  // 20-30%.
+  for (; valuesIt != values.end(); ++valuesIt) {
     NIMBLE_DASSERT(
-        it != alphabetMapping.end(),
-        "Statistics corruption. Missing alphabet entry.");
-    indices.push_back(it->second);
+        alphabetMapping.find(*valuesIt) != alphabetMapping.end(),
+        "Mapping corruption. Missing alphabet entry.");
+    indices[indiciesIndex++] = alphabetMapping.find(*valuesIt)->second;
   }
+
+  NIMBLE_ASSERT(indices.size() == valueCount, "Indices size mismatch.");
+  NIMBLE_ASSERT(alphabet.size() == alphabetCount, "Alphabet size mismatch.");
 
   Buffer tempBuffer{buffer.getMemoryPool()};
   std::string_view serializedAlphabet =
