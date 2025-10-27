@@ -58,8 +58,10 @@ std::string_view InMemoryChunkedStream::nextChunk() {
       break;
     }
     default: {
-      NIMBLE_UNREACHABLE(fmt::format(
-          "Unexpected stream compression type: ", toString(compressionType)));
+      NIMBLE_UNREACHABLE(
+          fmt::format(
+              "Unexpected stream compression type: ",
+              toString(compressionType)));
     }
   }
   pos_ += length;

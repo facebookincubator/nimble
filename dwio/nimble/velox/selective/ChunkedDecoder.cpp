@@ -256,8 +256,9 @@ std::optional<size_t> ChunkedDecoder::estimateRowCount() const {
       kChunkCompressionTypeOffset + /*chunkCompressionType*/ 1;
   constexpr int kChunkRowCountOffset =
       kEncodingOffset + Encoding::kRowCountOffset;
-  VELOX_CHECK(const_cast<ChunkedDecoder*>(this)->ensureInput(
-      kChunkRowCountOffset + sizeof(uint32_t)));
+  VELOX_CHECK(
+      const_cast<ChunkedDecoder*>(this)->ensureInput(
+          kChunkRowCountOffset + sizeof(uint32_t)));
   if (static_cast<CompressionType>(inputData_[kChunkCompressionTypeOffset]) !=
       CompressionType::Uncompressed) {
     rowCountEstimate_ = std::nullopt;
@@ -295,8 +296,9 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
   // Peel off nullable encoding.
   if (encodingType == EncodingType::Nullable) {
     encodingStart += Encoding::kPrefixSize + /* nonNullEncodingSize */ 4;
-    VELOX_CHECK(const_cast<ChunkedDecoder*>(this)->ensureInputIncremental_hack(
-        encodingStart + 6, pos));
+    VELOX_CHECK(
+        const_cast<ChunkedDecoder*>(this)->ensureInputIncremental_hack(
+            encodingStart + 6, pos));
     auto nonNullsBytes = encoding::readUint32(pos);
     // TODO: it might not require an update here.
     totalSize = pos + nonNullsBytes - inputData_;
@@ -312,10 +314,11 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
     stringDataSizeEstimate_ = std::nullopt;
     return stringDataSizeEstimate_;
   }
-  VELOX_CHECK(const_cast<ChunkedDecoder*>(this)->ensureInputIncremental_hack(
-      encodingStart + Encoding::kPrefixSize +
-          TrivialEncoding<std::string_view>::kPrefixSize,
-      pos));
+  VELOX_CHECK(
+      const_cast<ChunkedDecoder*>(this)->ensureInputIncremental_hack(
+          encodingStart + Encoding::kPrefixSize +
+              TrivialEncoding<std::string_view>::kPrefixSize,
+          pos));
   const auto dataCompressionType =
       static_cast<CompressionType>(encoding::readChar(pos));
   const auto lengthBlobSize = encoding::readUint32(pos);

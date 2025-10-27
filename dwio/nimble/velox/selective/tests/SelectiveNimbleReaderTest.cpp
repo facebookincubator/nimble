@@ -880,8 +880,9 @@ TEST_F(SelectiveNimbleReaderTest, mapValueFilter) {
   scanSpec->addAllChildFields(*input->type());
   scanSpec->childByName("c0")
       ->childByName(common::ScanSpec::kMapValuesFieldName)
-      ->setFilter(std::make_unique<common::DoubleRange>(
-          2.0, false, false, 5.0, false, true, false));
+      ->setFilter(
+          std::make_unique<common::DoubleRange>(
+              2.0, false, false, 5.0, false, true, false));
   auto readers = makeReaders(input, scanSpec);
   auto expected = makeRowVector({makeMapVector<int64_t, double>({
       {{4, 2.0}, {5, 2.5}},
@@ -1343,26 +1344,29 @@ TEST_F(SelectiveNimbleReaderTest, nativeFlatMap) {
 
   testRoundtrip(makeFlatMapVector<int32_t, int32_t>({}));
   testRoundtrip(makeFlatMapVector<int32_t, int32_t>({{}}));
-  testRoundtrip(makeFlatMapVector<int16_t, float>({
-      {},
-      {{1, 1.9}, {2, 2.1}, {0, 3.12}},
-      {{127, 0.12}},
-  }));
+  testRoundtrip(
+      makeFlatMapVector<int16_t, float>({
+          {},
+          {{1, 1.9}, {2, 2.1}, {0, 3.12}},
+          {{127, 0.12}},
+      }));
 
-  testRoundtrip(makeFlatMapVector<StringView, StringView>({
-      {{"a", "a1"}},
-      {{"b", "b1"}},
-      {{"c", "c1"}},
-      {{"d", "d1"}},
-  }));
+  testRoundtrip(
+      makeFlatMapVector<StringView, StringView>({
+          {{"a", "a1"}},
+          {{"b", "b1"}},
+          {{"c", "c1"}},
+          {{"d", "d1"}},
+      }));
 
-  testRoundtrip(makeNullableFlatMapVector<int32_t, int32_t>({
-      {{{101, 1}, {102, 2}, {103, 3}}},
-      {{{105, 0}, {106, 0}}},
-      {std::nullopt},
-      {{{101, 11}, {103, 13}, {105, std::nullopt}}},
-      {{{101, 1}, {102, 2}, {103, 3}}},
-  }));
+  testRoundtrip(
+      makeNullableFlatMapVector<int32_t, int32_t>({
+          {{{101, 1}, {102, 2}, {103, 3}}},
+          {{{105, 0}, {106, 0}}},
+          {std::nullopt},
+          {{{101, 11}, {103, 13}, {105, std::nullopt}}},
+          {{{101, 1}, {102, 2}, {103, 3}}},
+      }));
 }
 
 } // namespace

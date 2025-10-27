@@ -144,9 +144,10 @@ void Statistics<T, InputType>::populateBucketCounts() const {
   for (auto i = 0; i < data_.size(); ++i) {
     ++(bitCounts
            [std::numeric_limits<UnsignedT>::digits -
-            std::countl_zero(static_cast<UnsignedT>(
-                static_cast<UnsignedT>(data_[i]) -
-                static_cast<UnsignedT>(min())))]);
+            std::countl_zero(
+                static_cast<UnsignedT>(
+                    static_cast<UnsignedT>(data_[i]) -
+                    static_cast<UnsignedT>(min())))]);
   }
 
   std::vector<uint64_t> bucketCounts(sizeof(T) * 8 / 7 + 1, 0);

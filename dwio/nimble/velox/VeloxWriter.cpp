@@ -328,8 +328,9 @@ void initializeEncodingLayouts(
         keyEncodings.emplace(child.name(), child);
       }
       const auto& mapBuilder = typeBuilder.asFlatMap();
-      mapBuilder.setContext(std::make_unique<FlatmapEncodingLayoutContext>(
-          std::move(keyEncodings)));
+      mapBuilder.setContext(
+          std::make_unique<FlatmapEncodingLayoutContext>(
+              std::move(keyEncodings)));
 
       _SET_STREAM_CONTEXT(mapBuilder, nullsDescriptor, FlatMap::NullsStream);
     } else {
@@ -844,12 +845,13 @@ bool VeloxWriter::tryWriteStripe(bool force) {
   }
 
   auto shouldFlush = [&]() {
-    return context_->flushPolicy->shouldFlush(StripeProgress{
-        .rawStripeSize = context_->memoryUsed,
-        .stripeSize = context_->stripeSize,
-        .bufferSize =
-            static_cast<uint64_t>(context_->bufferMemoryPool->usedBytes()),
-    });
+    return context_->flushPolicy->shouldFlush(
+        StripeProgress{
+            .rawStripeSize = context_->memoryUsed,
+            .stripeSize = context_->stripeSize,
+            .bufferSize =
+                static_cast<uint64_t>(context_->bufferMemoryPool->usedBytes()),
+        });
   };
 
   auto decision = force ? FlushDecision::Stripe : shouldFlush();

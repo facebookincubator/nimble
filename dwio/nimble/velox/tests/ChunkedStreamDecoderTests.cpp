@@ -126,8 +126,9 @@ std::unique_ptr<nimble::StreamLoader> createStream(
           data[offset++] = values[i][j];
         }
       }
-      segments = writer.encode(nimble::test::Encoder<E>::encodeNullable(
-          buffer, data, nulls[i].value()));
+      segments = writer.encode(
+          nimble::test::Encoder<E>::encodeNullable(
+              buffer, data, nulls[i].value()));
     } else {
       segments =
           writer.encode(nimble::test::Encoder<E>::encode(buffer, values[i]));
@@ -296,8 +297,10 @@ void test(
                   if (!nimble::bits::getBit(
                           i,
                           reinterpret_cast<const char*>(scatterMap.data()))) {
-                    EXPECT_FALSE(nimble::bits::getBit(
-                        i, reinterpret_cast<const char*>(outputNulls.data())));
+                    EXPECT_FALSE(
+                        nimble::bits::getBit(
+                            i,
+                            reinterpret_cast<const char*>(outputNulls.data())));
                   } else {
                     const auto isNotNull = nimble::bits::getBit(
                         i, reinterpret_cast<const char*>(outputNulls.data()));

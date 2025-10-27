@@ -157,25 +157,25 @@ void bulkGet32Loop(
 #define BULK_GET32_LOOP_TERMINAL_CASE(bitWidth)      \
   template <>                                        \
   void bulkGet32Loop<uint32_t, bitWidth, 64, false>( \
-      uint64_t & word,                               \
+      uint64_t& word,                                \
       const uint64_t** nextWord,                     \
       uint32_t** values,                             \
       uint32_t baseline) {}                          \
   template <>                                        \
   void bulkGet32Loop<uint64_t, bitWidth, 64, false>( \
-      uint64_t & word,                               \
+      uint64_t& word,                                \
       const uint64_t** nextWord,                     \
       uint64_t** values,                             \
       uint64_t baseline) {}                          \
   template <>                                        \
   void bulkGet32Loop<uint32_t, bitWidth, 64, true>(  \
-      uint64_t & word,                               \
+      uint64_t& word,                                \
       const uint64_t** nextWord,                     \
       uint32_t** values,                             \
       uint32_t baseline) {}                          \
   template <>                                        \
   void bulkGet32Loop<uint64_t, bitWidth, 64, true>(  \
-      uint64_t & word,                               \
+      uint64_t& word,                                \
       const uint64_t** nextWord,                     \
       uint64_t** values,                             \
       uint64_t baseline) {}
@@ -403,13 +403,13 @@ void bulkSet32Loop(
 
 // Unfortunately we cannot partially specialize the template for the
 // terminal case of loopPosition = 64 so we must explicitly specify them.
-#define BULK_SET32_LOOP_TERMINAL_CASE(bitWidth)                            \
-  template <>                                                              \
-  void bulkSet32Loop<bitWidth, 64, false>(                                 \
-      uint64_t * *nextWord, const uint32_t** values, uint32_t baseline) {} \
-  template <>                                                              \
-  void bulkSet32Loop<bitWidth, 64, true>(                                  \
-      uint64_t * *nextWord, const uint32_t** values, uint32_t baseline) {}
+#define BULK_SET32_LOOP_TERMINAL_CASE(bitWidth)                           \
+  template <>                                                             \
+  void bulkSet32Loop<bitWidth, 64, false>(                                \
+      uint64_t** nextWord, const uint32_t** values, uint32_t baseline) {} \
+  template <>                                                             \
+  void bulkSet32Loop<bitWidth, 64, true>(                                 \
+      uint64_t** nextWord, const uint32_t** values, uint32_t baseline) {}
 
 BULK_SET32_LOOP_TERMINAL_CASE(1)
 BULK_SET32_LOOP_TERMINAL_CASE(2)
@@ -598,8 +598,8 @@ void equals32Loop(
       uint32_t value,                    \
       uint64_t equalsMask,               \
       uint64_t word,                     \
-      uint64_t * *nextWord,              \
-      uint64_t * outputWord) {}
+      uint64_t** nextWord,               \
+      uint64_t* outputWord) {}
 
 EQUALS32_TERMINAL_CASE(1)
 EQUALS32_TERMINAL_CASE(2)

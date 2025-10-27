@@ -98,8 +98,9 @@ MetadataBuffer::MetadataBuffer(
       break;
     }
     default:
-      NIMBLE_UNREACHABLE(fmt::format(
-          "Unexpected stream compression type: {}", toString(type)));
+      NIMBLE_UNREACHABLE(
+          fmt::format(
+              "Unexpected stream compression type: {}", toString(type)));
   }
 }
 
@@ -125,8 +126,9 @@ MetadataBuffer::MetadataBuffer(
       break;
     }
     default:
-      NIMBLE_UNREACHABLE(fmt::format(
-          "Unexpected stream compression type: {}", toString(type)));
+      NIMBLE_UNREACHABLE(
+          fmt::format(
+              "Unexpected stream compression type: {}", toString(type)));
   }
 }
 
@@ -377,13 +379,14 @@ TabletReader::TabletReader(
     optionalSections_.reserve(optionalSections->names()->size());
 
     for (auto i = 0; i < optionalSections->names()->size(); ++i) {
-      optionalSections_.insert(std::make_pair(
-          optionalSections->names()->GetAsString(i)->str(),
-          MetadataSection{
-              optionalSections->offsets()->Get(i),
-              optionalSections->sizes()->Get(i),
-              static_cast<CompressionType>(
-                  optionalSections->compression_types()->Get(i))}));
+      optionalSections_.insert(
+          std::make_pair(
+              optionalSections->names()->GetAsString(i)->str(),
+              MetadataSection{
+                  optionalSections->offsets()->Get(i),
+                  optionalSections->sizes()->Get(i),
+                  static_cast<CompressionType>(
+                      optionalSections->compression_types()->Get(i))}));
     }
   }
 

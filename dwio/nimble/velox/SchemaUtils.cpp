@@ -46,8 +46,10 @@ velox::TypePtr convertToVeloxScalarType(ScalarKind scalarKind) {
     case ScalarKind::UInt32:
     case ScalarKind::UInt64:
     case ScalarKind::Undefined:
-      NIMBLE_NOT_SUPPORTED(fmt::format(
-          "Scalar kind {} is not supported by Velox.", toString(scalarKind)));
+      NIMBLE_NOT_SUPPORTED(
+          fmt::format(
+              "Scalar kind {} is not supported by Velox.",
+              toString(scalarKind)));
   }
   NIMBLE_UNREACHABLE(
       fmt::format("Unknown scalarKind: {}.", toString(scalarKind)));

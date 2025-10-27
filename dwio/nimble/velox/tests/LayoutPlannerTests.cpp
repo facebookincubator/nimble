@@ -197,8 +197,9 @@ TEST(DefaultLayoutPlannerTests, ReorderFlatMap) {
 
   streams.reserve(namedTypes.size());
   for (auto i = 0; i < namedTypes.size(); ++i) {
-    streams.push_back(nimble::Stream{
-        std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
+    streams.push_back(
+        nimble::Stream{
+            std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
   }
 
   std::vector<std::string> expected{
@@ -276,8 +277,9 @@ TEST(DefaultLayoutPlannerTests, ReorderFlatMapDynamicFeatures) {
   std::vector<nimble::Stream> streams;
   streams.reserve(namedTypes.size());
   for (auto i = 0; i < namedTypes.size(); ++i) {
-    streams.push_back(nimble::Stream{
-        std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
+    streams.push_back(
+        nimble::Stream{
+            std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
   }
 
   std::vector<std::string> expected{
@@ -310,8 +312,9 @@ TEST(DefaultLayoutPlannerTests, ReorderFlatMapDynamicFeatures) {
   streams.clear();
   streams.reserve(namedTypes.size());
   for (auto i = 0; i < namedTypes.size(); ++i) {
-    streams.push_back(nimble::Stream{
-        std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
+    streams.push_back(
+        nimble::Stream{
+            std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
   }
 
   expected = {
@@ -371,8 +374,9 @@ TEST(DefaultLayoutPlannerTests, NoFeatureReordering) {
   std::vector<nimble::Stream> streams;
   streams.reserve(namedTypes.size());
   for (auto i = 0; i < namedTypes.size(); ++i) {
-    streams.push_back(nimble::Stream{
-        std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
+    streams.push_back(
+        nimble::Stream{
+            std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
   }
 
   std::vector<std::string> expected{
@@ -427,8 +431,9 @@ TEST(DefaultLayoutPlannerTests, NonFlatMapOrdinalsAreIgnored) {
   std::vector<nimble::Stream> streams;
   streams.reserve(namedTypes.size());
   for (auto i = 0; i < namedTypes.size(); ++i) {
-    streams.push_back(nimble::Stream{
-        std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
+    streams.push_back(
+        nimble::Stream{
+            std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
   }
 
   std::vector<std::string> expected{
@@ -495,8 +500,9 @@ TEST(DefaultLayoutPlannerTests, OrdinalOutOfRangeAreIgnored) {
   std::vector<nimble::Stream> streams;
   streams.reserve(namedTypes.size());
   for (auto i = 0; i < namedTypes.size(); ++i) {
-    streams.push_back(nimble::Stream{
-        std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
+    streams.push_back(
+        nimble::Stream{
+            std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
   }
 
   std::vector<std::string> expected{

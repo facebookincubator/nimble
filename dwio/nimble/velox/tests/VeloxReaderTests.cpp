@@ -2485,10 +2485,11 @@ TEST_F(VeloxReaderTests, FuzzComplex) {
        {"map",
         velox::MAP(velox::INTEGER(), velox::ROW({{"a", velox::INTEGER()}}))},
        {"nested",
-        velox::ARRAY(velox::ROW({
-            {"a", velox::INTEGER()},
-            {"b", velox::MAP(velox::REAL(), velox::REAL())},
-        }))},
+        velox::ARRAY(
+            velox::ROW({
+                {"a", velox::INTEGER()},
+                {"b", velox::MAP(velox::REAL(), velox::REAL())},
+            }))},
        {"nested_map_array1",
         velox::MAP(velox::INTEGER(), velox::ARRAY(velox::REAL()))},
        {"nested_map_array2",
@@ -4541,9 +4542,10 @@ TEST_F(VeloxReaderTests, RangeReads) {
       *leafPool_, *rootPool_, vectors, writerOptions);
 
   auto test = [&readerFactory, &vectors](RangeTestParams params) {
-    auto reader = readerFactory.createReader(nimble::VeloxReadParams{
-        .fileRangeStartOffset = params.rangeStart,
-        .fileRangeEndOffset = params.rangeEnd});
+    auto reader = readerFactory.createReader(
+        nimble::VeloxReadParams{
+            .fileRangeStartOffset = params.rangeStart,
+            .fileRangeEndOffset = params.rangeEnd});
     EXPECT_EQ(reader.getRowNumber(), params.firstRow);
 
     for (const auto& expectedRead : params.expectedReads) {

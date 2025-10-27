@@ -308,24 +308,26 @@ void NimbleDumpLib::emitInfo() {
   }
   auto stripeGroupsMetadata = tablet->stripeGroupsMetadata();
   ostream_ << "Stripe Groups Metadata Size: "
-           << commaSeparated(std::transform_reduce(
-                  stripeGroupsMetadata.begin(),
-                  stripeGroupsMetadata.end(),
-                  0,
-                  std::plus{},
-                  [](const MetadataSection& metadataSection) {
-                    return metadataSection.size();
-                  }))
+           << commaSeparated(
+                  std::transform_reduce(
+                      stripeGroupsMetadata.begin(),
+                      stripeGroupsMetadata.end(),
+                      0,
+                      std::plus{},
+                      [](const MetadataSection& metadataSection) {
+                        return metadataSection.size();
+                      }))
            << std::endl;
   ostream_ << "Optional Sections Size: "
-           << commaSeparated(std::transform_reduce(
-                  tablet->optionalSections().begin(),
-                  tablet->optionalSections().end(),
-                  0,
-                  std::plus{},
-                  [](const std::pair<std::string, MetadataSection>& entry) {
-                    return entry.second.size();
-                  }))
+           << commaSeparated(
+                  std::transform_reduce(
+                      tablet->optionalSections().begin(),
+                      tablet->optionalSections().end(),
+                      0,
+                      std::plus{},
+                      [](const std::pair<std::string, MetadataSection>& entry) {
+                        return entry.second.size();
+                      }))
            << std::endl;
   ostream_ << "Stripe Count: " << commaSeparated(tablet->stripeCount())
            << std::endl;
@@ -552,10 +554,12 @@ void NimbleDumpLib::emitStreams(
         std::vector<std::string> values;
         values.push_back(folly::to<std::string>(stripeId));
         values.push_back(folly::to<std::string>(streamId));
-        values.push_back(folly::to<std::string>(
-            tabletReader->streamOffsets(stripeIdentifier)[streamId]));
-        values.push_back(folly::to<std::string>(
-            tabletReader->streamSizes(stripeIdentifier)[streamId]));
+        values.push_back(
+            folly::to<std::string>(
+                tabletReader->streamOffsets(stripeIdentifier)[streamId]));
+        values.push_back(
+            folly::to<std::string>(
+                tabletReader->streamSizes(stripeIdentifier)[streamId]));
         if (showStreamRawSize) {
           values.push_back(folly::to<std::string>(rawStreamSize));
         }

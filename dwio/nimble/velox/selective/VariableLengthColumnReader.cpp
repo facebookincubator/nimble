@@ -299,8 +299,9 @@ ListColumnReader::ListColumnReader(
   auto& childType = requestedType_->childAt(0);
   auto& childFileType = fileType_->childAt(0);
   if (scanSpec_->children().empty()) {
-    scanSpec.getOrCreateChild(velox::common::Subfield(
-        velox::common::ScanSpec::kArrayElementsFieldName));
+    scanSpec.getOrCreateChild(
+        velox::common::Subfield(
+            velox::common::ScanSpec::kArrayElementsFieldName));
   }
   scanSpec_->children()[0]->setProjectOut(true);
   auto childParams =
@@ -805,8 +806,9 @@ DeduplicatedArrayColumnReader::DeduplicatedArrayColumnReader(
   auto& childType = requestedType_->childAt(0);
   auto& childFileType = fileType_->childAt(0);
   if (scanSpec_->children().empty()) {
-    scanSpec.getOrCreateChild(velox::common::Subfield(
-        velox::common::ScanSpec::kArrayElementsFieldName));
+    scanSpec.getOrCreateChild(
+        velox::common::Subfield(
+            velox::common::ScanSpec::kArrayElementsFieldName));
   }
   scanSpec_->children()[0]->setProjectOut(true);
   auto childParams = params.makeChildParams(
@@ -826,10 +828,11 @@ void DeduplicatedArrayColumnReader::readLengths(
     const uint64_t* /* nulls */) {
   // Instead of copying into a buffer, we want to instead reuse the preloaded
   // values buffer for some in place dedupe.
-  VELOX_UNREACHABLE(fmt::format(
-      "node {}, should not call readLengths in class {}",
-      fileType().id(),
-      typeid(*this).name()));
+  VELOX_UNREACHABLE(
+      fmt::format(
+          "node {}, should not call readLengths in class {}",
+          fileType().id(),
+          typeid(*this).name()));
 }
 
 void DeduplicatedArrayColumnReader::makeNestedRowSet(
@@ -971,10 +974,11 @@ void DeduplicatedMapColumnReader::readLengths(
     const uint64_t* /* nulls */) {
   // Instead of copying into a buffer, we want to instead reuse the preloaded
   // values buffer for some in place dedupe.
-  VELOX_UNREACHABLE(fmt::format(
-      "node {}, should not call readLengths in class {}",
-      fileType().id(),
-      typeid(*this).name()));
+  VELOX_UNREACHABLE(
+      fmt::format(
+          "node {}, should not call readLengths in class {}",
+          fileType().id(),
+          typeid(*this).name()));
 }
 
 void DeduplicatedMapColumnReader::makeNestedRowSet(

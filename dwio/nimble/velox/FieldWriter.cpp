@@ -1222,9 +1222,10 @@ std::unique_ptr<FieldWriter> createFlatMapFieldWriter(
       return std::make_unique<FlatMapFieldWriter<velox::TypeKind::VARBINARY>>(
           context, type);
     default:
-      NIMBLE_NOT_SUPPORTED(fmt::format(
-          "Unsupported flat map key type {}.",
-          type->childAt(0)->type()->toString()));
+      NIMBLE_NOT_SUPPORTED(
+          fmt::format(
+              "Unsupported flat map key type {}.",
+              type->childAt(0)->type()->toString()));
   }
 }
 
@@ -1623,9 +1624,10 @@ std::unique_ptr<FieldWriter> createArrayWithOffsetsFieldWriter(
       return std::make_unique<
           ArrayWithOffsetsFieldWriter<velox::TypeKind::DOUBLE>>(context, type);
     default:
-      NIMBLE_NOT_SUPPORTED(fmt::format(
-          "Unsupported dedup array element type {}.",
-          type->childAt(0)->type()->toString()));
+      NIMBLE_NOT_SUPPORTED(
+          fmt::format(
+              "Unsupported dedup array element type {}.",
+              type->childAt(0)->type()->toString()));
   }
 }
 

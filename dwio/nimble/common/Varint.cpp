@@ -67,8 +67,7 @@ uint64_t bulkVarintSize64(std::span<const uint64_t> values) {
 template <typename T>
 __attribute__((__target__("bmi2")))
 // __attribute__ ((optimize("Os")))
-const char*
-bulkVarintDecodeBmi2(uint64_t n, const char* pos, T* output);
+const char* bulkVarintDecodeBmi2(uint64_t n, const char* pos, T* output);
 
 const char* bulkVarintDecode32(uint64_t n, const char* pos, uint32_t* output) {
   static bool hasBmi2 = folly::CpuId().bmi2();

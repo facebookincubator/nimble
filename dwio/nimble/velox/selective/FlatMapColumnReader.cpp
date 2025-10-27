@@ -153,13 +153,14 @@ class FlatMapAsStructColumnReader : public StructColumnReaderBase {
             params,
             scanSpec,
             false),
-        keyNodes_(makeKeyNodes<T>(
-            requestedType,
-            fileType,
-            params,
-            scanSpec,
-            dwio::common::flatmap::FlatMapOutput::kStruct,
-            *memoryPool_)) {
+        keyNodes_(
+            makeKeyNodes<T>(
+                requestedType,
+                fileType,
+                params,
+                scanSpec,
+                dwio::common::flatmap::FlatMapOutput::kStruct,
+                *memoryPool_)) {
     children_.resize(keyNodes_.size());
     for (auto& childSpec : scanSpec.children()) {
       childSpec->setSubscript(kConstantChildSpecSubscript);
@@ -223,13 +224,14 @@ class FlatMapColumnReader
       NimbleParams& params,
       common::ScanSpec& scanSpec)
       : SelectiveFlatMapColumnReader(requestedType, fileType, params, scanSpec),
-        keyNodes_(makeKeyNodes<T>(
-            requestedType,
-            fileType,
-            params,
-            scanSpec,
-            dwio::common::flatmap::FlatMapOutput::kFlatMap,
-            *memoryPool_)) {
+        keyNodes_(
+            makeKeyNodes<T>(
+                requestedType,
+                fileType,
+                params,
+                scanSpec,
+                dwio::common::flatmap::FlatMapOutput::kFlatMap,
+                *memoryPool_)) {
     // Instantiate and populate distinct keys vector.
     keysVector_ = BaseVector::create(
         CppToType<T>::create(),

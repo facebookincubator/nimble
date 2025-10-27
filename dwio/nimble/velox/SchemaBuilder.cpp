@@ -309,8 +309,8 @@ const std::string& FlatMapTypeBuilder::nameAt(size_t index) const {
 const StreamDescriptorBuilder& FlatMapTypeBuilder::addChild(
     std::string name,
     std::shared_ptr<TypeBuilder> child) {
-  auto& inMapDescriptor =
-      inMapDescriptors_.emplace_back(std::make_unique<StreamDescriptorBuilder>(
+  auto& inMapDescriptor = inMapDescriptors_.emplace_back(
+      std::make_unique<StreamDescriptorBuilder>(
           schemaBuilder_.allocateStreamOffset(), ScalarKind::Bool));
 
   schemaBuilder_.registerChild(child);

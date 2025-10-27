@@ -85,12 +85,13 @@ void TabletWriter::close() {
   MetadataSection stripes;
   if (stripeCount > 0) {
     flatbuffers::FlatBufferBuilder stripesBuilder(kInitialFooterSize);
-    stripesBuilder.Finish(serialization::CreateStripes(
-        stripesBuilder,
-        stripesBuilder.CreateVector(rowCounts_),
-        stripesBuilder.CreateVector(stripeOffsets_),
-        stripesBuilder.CreateVector(stripeSizes_),
-        stripesBuilder.CreateVector(stripeGroupIndices_)));
+    stripesBuilder.Finish(
+        serialization::CreateStripes(
+            stripesBuilder,
+            stripesBuilder.CreateVector(rowCounts_),
+            stripesBuilder.CreateVector(stripeOffsets_),
+            stripesBuilder.CreateVector(stripeSizes_),
+            stripesBuilder.CreateVector(stripeGroupIndices_)));
     stripes = createMetadataSection(asView(stripesBuilder));
   }
 
@@ -124,33 +125,35 @@ void TabletWriter::close() {
       };
 
   // write footer
-  builder.Finish(serialization::CreateFooter(
-      builder,
-      totalRows,
-      stripeCount > 0 ? serialization::CreateMetadataSection(
-                            builder,
-                            stripes.offset,
-                            stripes.size,
-                            static_cast<serialization::CompressionType>(
-                                stripes.compressionType))
-                      : 0,
-      !stripeGroups_.empty()
-          ? builder.CreateVector<
-                flatbuffers::Offset<serialization::MetadataSection>>(
-                stripeGroups_.size(),
-                [this, &builder](size_t i) {
-                  return serialization::CreateMetadataSection(
-                      builder,
-                      stripeGroups_[i].offset,
-                      stripeGroups_[i].size,
-                      static_cast<serialization::CompressionType>(
-                          stripeGroups_[i].compressionType));
-                })
-          : 0,
-      !optionalSections_.empty()
-          ? createOptionalMetadataSection(
-                builder, {optionalSections_.begin(), optionalSections_.end()})
-          : 0));
+  builder.Finish(
+      serialization::CreateFooter(
+          builder,
+          totalRows,
+          stripeCount > 0 ? serialization::CreateMetadataSection(
+                                builder,
+                                stripes.offset,
+                                stripes.size,
+                                static_cast<serialization::CompressionType>(
+                                    stripes.compressionType))
+                          : 0,
+          !stripeGroups_.empty()
+              ? builder.CreateVector<
+                    flatbuffers::Offset<serialization::MetadataSection>>(
+                    stripeGroups_.size(),
+                    [this, &builder](size_t i) {
+                      return serialization::CreateMetadataSection(
+                          builder,
+                          stripeGroups_[i].offset,
+                          stripeGroups_[i].size,
+                          static_cast<serialization::CompressionType>(
+                              stripeGroups_[i].compressionType));
+                    })
+              : 0,
+          !optionalSections_.empty()
+              ? createOptionalMetadataSection(
+                    builder,
+                    {optionalSections_.begin(), optionalSections_.end()})
+              : 0));
 
   auto footerStart = file_->size();
   auto footerCompressionType = writeMetadata(asView(builder));
@@ -285,8 +288,9 @@ void TabletWriter::tryWriteStripeGroup(bool force) {
   auto streamSizes = createFlattenedVector<uint32_t, uint32_t>(
       builder, streamCount, streamSizes_, 0);
 
-  builder.Finish(serialization::CreateStripeGroup(
-      builder, stripeCount, streamOffsets, streamSizes));
+  builder.Finish(
+      serialization::CreateStripeGroup(
+          builder, stripeCount, streamOffsets, streamSizes));
 
   stripeGroups_.push_back(createMetadataSection(asView(builder)));
   ++stripeGroupIndex_;

@@ -580,14 +580,16 @@ class ScalarFieldReaderFactory final : public FieldReaderFactory {
       case ScalarKind::String:
       case ScalarKind::Binary:
       case ScalarKind::Undefined: {
-        NIMBLE_NOT_SUPPORTED(fmt::format(
-            "Unsupported nimble scalar type: {}.",
-            toString(descriptor.scalarKind())))
+        NIMBLE_NOT_SUPPORTED(
+            fmt::format(
+                "Unsupported nimble scalar type: {}.",
+                toString(descriptor.scalarKind())))
       }
     }
-    NIMBLE_UNREACHABLE(fmt::format(
-        "Should not have nimble scalar type: {}.",
-        toString(descriptor.scalarKind())))
+    NIMBLE_UNREACHABLE(
+        fmt::format(
+            "Should not have nimble scalar type: {}.",
+            toString(descriptor.scalarKind())))
   }
 };
 
@@ -1558,10 +1560,9 @@ class SlidingWindowMapFieldReader final : public FieldReader {
             &pool_,
             map->mapValues());
       }
-      velox::BaseVector::CopyRange cacheRange{
-          /* sourceIndex */ 0,
-          /* targetIndex */ 0,
-          /* count */ 1};
+      velox::BaseVector::CopyRange cacheRange{/* sourceIndex */ 0,
+                                              /* targetIndex */ 0,
+                                              /* count */ 1};
       map->copyRanges(cachedMap_.get(), folly::Range(&cacheRange, 1));
 
       const uint32_t size = cacheSize();
@@ -2462,14 +2463,14 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
     auto& flatMap = type->asFlatMap();
     keyValues_.reserve(selectedChildren.size());
     for (auto childIdx : selectedChildren) {
-      keyValues_.push_back(velox::dwio::common::flatmap::parseKeyValue<T>(
-          flatMap.nameAt(childIdx)));
+      keyValues_.push_back(
+          velox::dwio::common::flatmap::parseKeyValue<T>(
+              flatMap.nameAt(childIdx)));
     }
   }
 
   template <
-      template <bool>
-      typename ReaderT,
+      template <bool> typename ReaderT,
       bool includeMissing,
       typename... Args>
   std::unique_ptr<FieldReader> createFlatMapReader(
@@ -2485,13 +2486,16 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
       if (inMapDescriptor) {
         auto currentIdx = childIdx++;
         if (auto decoder = getDecoder(decoders, *inMapDescriptor)) {
-          keyNodes.push_back(std::make_unique<FlatMapKeyNode<T>>(
-              pool_,
-              // @lint-ignore CLANGTIDY facebook-hte-MemberUncheckedArrayBounds
-              valueReaders_[currentIdx]->createReader(decoders),
-              decoder,
-              // @lint-ignore CLANGTIDY facebook-hte-MemberUncheckedArrayBounds
-              keyValues_[currentIdx]));
+          keyNodes.push_back(
+              std::make_unique<FlatMapKeyNode<T>>(
+                  pool_,
+                  // @lint-ignore CLANGTIDY
+                  // facebook-hte-MemberUncheckedArrayBounds
+                  valueReaders_[currentIdx]->createReader(decoders),
+                  decoder,
+                  // @lint-ignore CLANGTIDY
+                  // facebook-hte-MemberUncheckedArrayBounds
+                  keyValues_[currentIdx]));
           continue;
         }
       }
@@ -3040,23 +3044,23 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
 
 // Assuming no-upcasting is the most common case, putting the largest type size
 // at the beginning so the compatibility check can finish quicker.
-#define BOOLEAN_COMPATIBLE \
-  { ScalarKind::Bool }
-#define TINYINT_COMPATIBLE \
-  { ScalarKind::Int8, ScalarKind::Bool }
+#define BOOLEAN_COMPATIBLE {ScalarKind::Bool}
+#define TINYINT_COMPATIBLE {ScalarKind::Int8, ScalarKind::Bool}
 #define SMALLINT_COMPATIBLE \
-  { ScalarKind::Int16, ScalarKind::Int8, ScalarKind::Bool }
+  {ScalarKind::Int16, ScalarKind::Int8, ScalarKind::Bool}
 #define INTEGER_COMPATIBLE \
-  { ScalarKind::Int32, ScalarKind::Int16, ScalarKind::Int8, ScalarKind::Bool }
-#define BIGINT_COMPATIBLE                                                      \
-  {                                                                            \
-    ScalarKind::Int64, ScalarKind::Int32, ScalarKind::Int16, ScalarKind::Int8, \
-        ScalarKind::Bool                                                       \
+  {ScalarKind::Int32, ScalarKind::Int16, ScalarKind::Int8, ScalarKind::Bool}
+#define BIGINT_COMPATIBLE \
+  {ScalarKind::Int64,     \
+   ScalarKind::Int32,     \
+   ScalarKind::Int16,     \
+   ScalarKind::Int8,      \
+   ScalarKind::Bool}
+#define FLOAT_COMPATIBLE {ScalarKind::Float}
+#define DOUBLE_COMPATIBLE                 \
+  {                                       \
+    ScalarKind::Double, ScalarKind::Float \
   }
-#define FLOAT_COMPATIBLE \
-  { ScalarKind::Float }
-#define DOUBLE_COMPATIBLE \
-  { ScalarKind::Double, ScalarKind::Float }
 
   switch (veloxKind) {
 #define SCALAR_CASE(veloxKind, cppType, compitableKinds)                   \

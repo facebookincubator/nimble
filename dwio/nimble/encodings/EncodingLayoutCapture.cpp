@@ -66,8 +66,9 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     }
     case EncodingType::SparseBool: {
       children.reserve(1);
-      children.emplace_back(EncodingLayoutCapture::capture(
-          encoding.substr(kEncodingPrefixSize + 1)));
+      children.emplace_back(
+          EncodingLayoutCapture::capture(
+              encoding.substr(kEncodingPrefixSize + 1)));
       break;
     }
     case EncodingType::MainlyConstant: {
@@ -96,8 +97,9 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
 
       pos += alphabetBytes;
 
-      children.emplace_back(EncodingLayoutCapture::capture(
-          {pos, encoding.size() - (pos - encoding.data())}));
+      children.emplace_back(
+          EncodingLayoutCapture::capture(
+              {pos, encoding.size() - (pos - encoding.data())}));
       break;
     }
     case EncodingType::RLE: {
@@ -115,8 +117,9 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
       if (dataType != DataType::Bool) {
         pos += runLengthBytes;
 
-        children.emplace_back(EncodingLayoutCapture::capture(
-            {pos, encoding.size() - (pos - encoding.data())}));
+        children.emplace_back(
+            EncodingLayoutCapture::capture(
+                {pos, encoding.size() - (pos - encoding.data())}));
       }
       break;
     }
@@ -136,8 +139,9 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
 
       pos += restatementBytes;
 
-      children.emplace_back(EncodingLayoutCapture::capture(
-          {pos, encoding.size() - (pos - encoding.data())}));
+      children.emplace_back(
+          EncodingLayoutCapture::capture(
+              {pos, encoding.size() - (pos - encoding.data())}));
       break;
     }
     case EncodingType::Nullable: {

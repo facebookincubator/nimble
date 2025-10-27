@@ -536,8 +536,9 @@ std::unique_ptr<velox::dwio::common::UnitLoader> VeloxReader::getUnitLoader() {
   units.reserve(lastStripe_ - firstStripe_);
   const auto streamLabels = std::make_shared<StreamLabels>(schema_);
   for (uint32_t stripe = firstStripe_; stripe < lastStripe_; ++stripe) {
-    units.push_back(std::make_unique<NimbleUnit>(
-        stripe, *tabletReader_, schema_, streamLabels, offsets_));
+    units.push_back(
+        std::make_unique<NimbleUnit>(
+            stripe, *tabletReader_, schema_, streamLabels, offsets_));
   }
 
   if (parameters_.unitLoaderFactory) {
