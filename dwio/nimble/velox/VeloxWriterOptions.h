@@ -96,6 +96,15 @@ struct VeloxWriterOptions {
   // Note: this threshold is ignored when it is time to flush a stripe.
   uint64_t minStreamChunkRawSize = 1024;
 
+  // When flushing data streams into chunks, streams with raw data size larger
+  // than this threshold will be broken down into multiple smaller chunks. Each
+  // chunk will be at most this size.
+  uint64_t maxStreamChunkRawSize = 4 << 20;
+
+  // Number of streams to try chunking between memory pressure evaluations.
+  // Note: this is ignored when it is time to flush a stripe.
+  size_t chunkedStreamBatchSize = 1024;
+
   // The factory function that produces the root encoding selection policy.
   // Encoding selection policy is the way to balance the tradeoffs of
   // different performance factors (at both read and write times). Heuristics
@@ -109,7 +118,7 @@ struct VeloxWriterOptions {
   // Provides policy that controls stripe sizes and memory footprint.
   std::function<std::unique_ptr<FlushPolicy>()> flushPolicyFactory = []() {
     // Buffering 256MB data before encoding stripes.
-    return std::make_unique<RawStripeSizeFlushPolicy>(256 << 20);
+    return std::make_unique<StripeRawSizeFlushPolicy>(256 << 20);
   };
 
   // When the writer needs to buffer data, and internal buffers don't have

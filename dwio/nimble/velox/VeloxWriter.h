@@ -84,10 +84,16 @@ class VeloxWriter {
   std::exception_ptr lastException_;
   const velox::common::SpillConfig* const spillConfig_;
 
+  // Returning 'true' if stripe was flushed.
+  bool evalauateFlushPolicy();
   // Returning 'true' if stripe was written.
-  bool tryWriteStripe(bool force = false);
+  bool writeStripe();
   void writeChunk(bool lastChunk = true);
-  uint32_t writeStripe();
+  // Returns 'true' if chunks were written.
+  bool writeChunks(
+      std::span<const uint32_t> streamIndices,
+      bool ensureFullChunks = false,
+      bool lastChunk = false);
 };
 
 } // namespace facebook::nimble
