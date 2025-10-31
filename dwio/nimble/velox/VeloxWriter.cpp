@@ -806,7 +806,9 @@ void VeloxWriter::writeChunk(bool lastChunk) {
           << ", chunk bytes: " << chunkSize;
 }
 
-bool VeloxWriter::writeChunks(bool lastChunk) {
+bool VeloxWriter::writeChunks(
+    std::span<const uint32_t> streamIndices,
+    bool lastChunk) {
   uint64_t previousFlushWallTime = context_->stripeFlushTiming.wallNanos;
   std::atomic<uint64_t> chunkSize = 0;
   std::atomic<uint64_t> logicalSizeBeforeEncoding = 0;
@@ -873,15 +875,18 @@ bool VeloxWriter::writeChunks(bool lastChunk) {
       }
     };
 
+    const auto& streams = context_->streams();
     if (context_->options.encodingExecutor) {
       velox::dwio::common::ExecutorBarrier barrier{
           context_->options.encodingExecutor};
-      for (auto& streamData : context_->streams()) {
+      for (auto streamIndex : streamIndices) {
+        auto& streamData = streams[streamIndex];
         barrier.add([&] { processStream(*streamData); });
       }
       barrier.waitAll();
     } else {
-      for (auto& streamData : context_->streams()) {
+      for (auto streamIndex : streamIndices) {
+        auto& streamData = streams[streamIndex];
         processStream(*streamData);
       }
     }
@@ -910,8 +915,10 @@ bool VeloxWriter::writeStripe() {
   }
 
   if (context_->options.enableChunking) {
-    writeChunks(true);
-
+    // Chunk all streams.
+    std::vector<uint32_t> streamIndices(context_->streams().size());
+    std::iota(streamIndices.begin(), streamIndices.end(), 0);
+    writeChunks(streamIndices, true);
   } else {
     writeChunk(true);
   }
@@ -989,8 +996,32 @@ bool VeloxWriter::evalauateFlushPolicy() {
         });
   };
 
-  if (context_->options.enableChunking) {
-    while (shouldChunk() && writeChunks(false)) {
+  if (context_->options.enableChunking && shouldChunk()) {
+    const auto& streams = context_->streams();
+    const size_t streamCount = streams.size();
+    // Sort streams for chunking based on raw memory usage.
+    // TODO(T240072104): Improve performance by bucketing the streams by size
+    // (most significant bit) instead of sorting.
+    std::vector<uint32_t> streamIndices(streamCount);
+    std::iota(streamIndices.begin(), streamIndices.end(), 0);
+    std::sort(
+        streamIndices.begin(),
+        streamIndices.end(),
+        [&](const uint32_t& a, const uint32_t& b) {
+          return streams[a]->memoryUsed() > streams[b]->memoryUsed();
+        });
+
+    // Chunk streams in batches.
+    const auto batchSize = context_->options.chunkedStreamBatchSize;
+    for (size_t index = 0; index < streamCount; index += batchSize) {
+      const size_t currentBatchSize = std::min(batchSize, streamCount - index);
+      std::span<const uint32_t> batchIndices(
+          streamIndices.begin() + index, currentBatchSize);
+      // Stop attempting chunking once streams are too small to chunk or
+      // memory pressure is relieved.
+      if (!(writeChunks(batchIndices, false) && shouldChunk())) {
+        break;
+      }
     }
   }
 

@@ -2020,6 +2020,7 @@ struct ChunkFlushPolicyTestCase {
   const uint32_t expectedStripeCount{0};
   const uint32_t expectedMaxChunkCount{0};
   const uint32_t expectedMinChunkCount{0};
+  const uint32_t chunkedStreamBatchSize{2};
 };
 
 class ChunkFlushPolicyTest
@@ -2031,6 +2032,7 @@ TEST_P(ChunkFlushPolicyTest, ChunkFlushPolicyIntegration) {
       {{"BIGINT", velox::BIGINT()}, {"SMALLINT", velox::SMALLINT()}});
   nimble::VeloxWriterOptions writerOptions{
       .minStreamChunkRawSize = GetParam().minStreamChunkRawSize,
+      .chunkedStreamBatchSize = GetParam().chunkedStreamBatchSize,
       .flushPolicyFactory = GetParam().enableChunking
           ? []() -> std::unique_ptr<nimble::FlushPolicy> {
               return std::make_unique<nimble::ChunkFlushPolicy>(
@@ -2168,6 +2170,87 @@ TEST_F(VeloxWriterTests, FuzzComplex) {
   }
 }
 
+TEST_F(VeloxWriterTests, BatchedChunkingRelievesMemoryPressure) {
+  // Verify we stop chunking early when chunking relieves memory pressure.
+  const uint32_t seed = FLAGS_writer_tests_seed > 0 ? FLAGS_writer_tests_seed
+                                                    : folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng{seed};
+  const uint32_t rowCount =
+      std::uniform_int_distribution<uint32_t>(1, 4096)(rng);
+
+  velox::VectorFuzzer fuzzer({.vectorSize = rowCount}, leafPool_.get(), seed);
+  const auto stringColumn = fuzzer.fuzzFlat(velox::VARCHAR());
+  const auto intColumn = fuzzer.fuzzFlat(velox::INTEGER());
+
+  nimble::RawSizeContext context;
+  nimble::OrderedRanges ranges;
+  ranges.add(0, rowCount);
+  const uint64_t stringColumnRawSize =
+      nimble::getRawSizeFromVector(stringColumn, ranges, context) +
+      sizeof(std::string_view) * rowCount;
+  const uint64_t intColumnRawSize =
+      nimble::getRawSizeFromVector(intColumn, ranges, context);
+
+  constexpr size_t kColumnCount = 20;
+  constexpr size_t kBatchSize = 4;
+  std::vector<velox::VectorPtr> children(kColumnCount);
+  std::vector<std::string> columnNames(kColumnCount);
+  uint64_t totalRawSize = 0;
+  for (size_t i = 0; i < kColumnCount; i += 2) {
+    columnNames[i] = fmt::format("string_column_{}", i);
+    columnNames[i + 1] = fmt::format("int_column_{}", i);
+    children[i] = stringColumn;
+    children[i + 1] = intColumn;
+    totalRawSize += intColumnRawSize + stringColumnRawSize;
+  }
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  const auto rowVector = vectorMaker.rowVector(columnNames, children);
+
+  // We will return true twice and false once
+  const std::vector<bool> expectedChunkingDecisions{true, true, false};
+  std::vector<bool> actualChunkingDecisions;
+
+  // We will be chunking the large streams in the first two batches. 8 string
+  // streams in total. We set the expected rawSize after chunking these two
+  // batches as our memory threshold.
+  const uint64_t memoryPressureThreshold =
+      totalRawSize - (2 * kBatchSize * stringColumnRawSize);
+
+  nimble::VeloxWriterOptions writerOptions;
+  writerOptions.chunkedStreamBatchSize = kBatchSize;
+  writerOptions.enableChunking = true;
+  writerOptions.minStreamChunkRawSize = intColumnRawSize / 2;
+  writerOptions.flushPolicyFactory =
+      [&]() -> std::unique_ptr<nimble::FlushPolicy> {
+    return std::make_unique<nimble::LambdaFlushPolicy>(
+        /* shouldFlush */ [](const auto&) { return true; },
+        /* shouldChunk */
+        [&](const nimble::StripeProgress& stripeProgress) {
+          const bool shouldChunk =
+              stripeProgress.stripeRawSize > memoryPressureThreshold;
+          actualChunkingDecisions.push_back(shouldChunk);
+          return shouldChunk;
+        });
+  };
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      *rootPool_, rowVector->type(), std::move(writeFile), writerOptions);
+  writer.write(rowVector);
+  writer.close();
+
+  EXPECT_THAT(
+      actualChunkingDecisions,
+      ::testing::ElementsAreArray(expectedChunkingDecisions));
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(*leafPool_, &readFile);
+  validateChunkSize(reader, writerOptions.minStreamChunkRawSize);
+}
+
 INSTANTIATE_TEST_CASE_P(
     StripeRawSizeFlushPolicyTestSuite,
     StripeRawSizeFlushPolicyTest,
@@ -2209,6 +2292,7 @@ INSTANTIATE_TEST_CASE_P(
             .expectedStripeCount = 4,
             .expectedMaxChunkCount = 1,
             .expectedMinChunkCount = 1,
+            .chunkedStreamBatchSize = 2,
         },
         // Baseline with default settings (has chunking)
         ChunkFlushPolicyTestCase{
@@ -2222,6 +2306,7 @@ INSTANTIATE_TEST_CASE_P(
             .expectedStripeCount = 7,
             .expectedMaxChunkCount = 2,
             .expectedMinChunkCount = 1,
+            .chunkedStreamBatchSize = 2,
         },
         // High memory regression threshold and no compression
         // Produces file identical to RawStripeSizeFlushPolicy
@@ -2238,6 +2323,7 @@ INSTANTIATE_TEST_CASE_P(
             .expectedStripeCount = 4,
             .expectedMaxChunkCount = 1,
             .expectedMinChunkCount = 1,
+            .chunkedStreamBatchSize = 2,
         },
         // Low memory regression threshold
         // Produces file with more min chunks per stripe
@@ -2253,7 +2339,8 @@ INSTANTIATE_TEST_CASE_P(
             .minStreamChunkRawSize = 100,
             .expectedStripeCount = 10,
             .expectedMaxChunkCount = 2,
-            .expectedMinChunkCount = 2,
+            .expectedMinChunkCount = 2, // +1 chunk
+            .chunkedStreamBatchSize = 2,
         },
         // High target stripe size bytes (with disabled memory pressure
         // optimization) produces fewer stripes. Single chunks.
@@ -2271,6 +2358,8 @@ INSTANTIATE_TEST_CASE_P(
             .expectedStripeCount = 1,
             .expectedMaxChunkCount = 1,
             .expectedMinChunkCount = 1,
+            .chunkedStreamBatchSize = 2,
+
         },
         // Low target stripe size bytes (with disabled memory pressure
         // optimization) produces more stripes. Single chunks.
@@ -2288,5 +2377,20 @@ INSTANTIATE_TEST_CASE_P(
             .expectedStripeCount = 7,
             .expectedMaxChunkCount = 1,
             .expectedMinChunkCount = 1,
-        }));
+            .chunkedStreamBatchSize = 2,
+
+        },
+        // Higher chunked stream batch size (no change in policy)
+        ChunkFlushPolicyTestCase{
+            .batchCount = 20,
+            .enableChunking = true,
+            .targetStripeSizeBytes = 250 << 10, // 250KB
+            .writerMemoryHighThresholdBytes = 80 << 10,
+            .writerMemoryLowThresholdBytes = 75 << 10,
+            .estimatedCompressionFactor = 1.0,
+            .minStreamChunkRawSize = 100,
+            .expectedStripeCount = 7,
+            .expectedMaxChunkCount = 2,
+            .expectedMinChunkCount = 1,
+            .chunkedStreamBatchSize = 10}));
 } // namespace facebook
