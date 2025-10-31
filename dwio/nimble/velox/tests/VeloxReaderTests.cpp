@@ -563,12 +563,14 @@ class VeloxReaderTests : public ::testing::Test {
       std::string& file,
       nimble::VeloxWriterOptions writerOptions) {
     auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-    nimble::FlushDecision decision;
+    bool flushDecision;
+    bool chunkDecision;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = folly::Random::rand32(30, rng);
     writerOptions.flushPolicyFactory = [&]() {
       return std::make_unique<nimble::LambdaFlushPolicy>(
-          [&](auto&) { return decision; });
+          /*flushLambda=*/[&](auto&) { return flushDecision; },
+          /*chunkLambda=*/[&](auto&) { return chunkDecision; });
     };
 
     std::vector<velox::VectorPtr> expected;
@@ -579,16 +581,17 @@ class VeloxReaderTests : public ::testing::Test {
       auto vector = generator(type, i);
       int32_t rowIndex = 0;
       while (rowIndex < vector->size()) {
-        decision = nimble::FlushDecision::None;
+        flushDecision = false;
+        chunkDecision = false;
         auto batchSize = vector->size() - rowIndex;
         // Randomly produce chunks
         if (folly::Random::oneIn(2, rng)) {
           batchSize = folly::Random::rand32(0, batchSize, rng) + 1;
-          decision = nimble::FlushDecision::Chunk;
+          chunkDecision = true;
         }
         if ((perBatchFlush || folly::Random::oneIn(5, rng)) &&
             (rowIndex + batchSize == vector->size())) {
-          decision = nimble::FlushDecision::Stripe;
+          flushDecision = true;
         }
         writer.write(vector->slice(rowIndex, batchSize));
         rowIndex += batchSize;
@@ -773,7 +776,7 @@ class VeloxReaderTests : public ::testing::Test {
     writerOptions.enableChunking = true;
     writerOptions.flushPolicyFactory = [&]() {
       return std::make_unique<nimble::LambdaFlushPolicy>(
-          [&](auto&) { return nimble::FlushDecision::None; });
+          /*flushLambda=*/[&](auto&) { return false; });
     };
     writerOptions.dictionaryArrayColumns.insert("dictionaryArray");
     writerOptions.vectorDecoderVisitor = [&decodeCounter]() {
@@ -5506,7 +5509,8 @@ TEST_F(VeloxReaderTests, ChunkStreamsWithNulls) {
         .flushPolicyFactory =
             [&]() {
               return std::make_unique<nimble::LambdaFlushPolicy>(
-                  [&](auto&) { return nimble::FlushDecision::Chunk; });
+                  /*flushLambda=*/[&](auto&) { return false; },
+                  /*chunkLambda=*/[&](auto&) { return true; });
             },
         .enableChunking = enableChunking};
     auto file = nimble::test::createNimbleFile(
