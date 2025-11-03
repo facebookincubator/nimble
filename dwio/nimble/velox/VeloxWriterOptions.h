@@ -109,7 +109,7 @@ struct VeloxWriterOptions {
   // Provides policy that controls stripe sizes and memory footprint.
   std::function<std::unique_ptr<FlushPolicy>()> flushPolicyFactory = []() {
     // Buffering 256MB data before encoding stripes.
-    return std::make_unique<RawStripeSizeFlushPolicy>(256 << 20);
+    return std::make_unique<StripeRawSizeFlushPolicy>(256 << 20);
   };
 
   // When the writer needs to buffer data, and internal buffers don't have
