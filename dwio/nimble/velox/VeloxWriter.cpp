@@ -822,7 +822,7 @@ bool VeloxWriter::writeChunks(
     }
     streams_.resize(context_->schemaBuilder.nodeCount());
 
-    auto processStream = [&](StreamData& streamData) {
+    auto processStream = [&](StreamData& streamData, uint64_t& streamSize) {
       // TODO: Breakdown large streams above a threshold into smaller chunks.
       const auto minStreamSize =
           lastChunk ? 0 : context_->options.minStreamChunkRawSize;
@@ -861,7 +861,6 @@ bool VeloxWriter::writeChunks(
         }
 
         if (!encoded.empty()) {
-          auto& streamSize = context_->columnStats[offset].physicalSize;
           ChunkedStreamWriter chunkWriter{*encodingBuffer_};
           for (auto& buffer : chunkWriter.encode(encoded)) {
             streamSize += buffer.size();
@@ -881,13 +880,17 @@ bool VeloxWriter::writeChunks(
           context_->options.encodingExecutor};
       for (auto streamIndex : streamIndices) {
         auto& streamData = streams[streamIndex];
-        barrier.add([&] { processStream(*streamData); });
+        const auto offset = streamData->descriptor().offset();
+        auto& streamSize = context_->columnStats[offset].physicalSize;
+        barrier.add([&] { processStream(*streamData, streamSize); });
       }
       barrier.waitAll();
     } else {
       for (auto streamIndex : streamIndices) {
         auto& streamData = streams[streamIndex];
-        processStream(*streamData);
+        const auto offset = streamData->descriptor().offset();
+        auto& streamSize = context_->columnStats[offset].physicalSize;
+        processStream(*streamData, streamSize);
       }
     }
 
