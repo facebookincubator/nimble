@@ -21,6 +21,10 @@ namespace facebook::nimble {
 void NullsStreamData::ensureAdditionalNullsCapacity(
     bool mayHaveNulls,
     uint64_t additionalSize) {
+  if (additionalSize == 0) {
+    return;
+  }
+
   if (mayHaveNulls || hasNulls_) {
     const auto newSize = bufferedCount_ + additionalSize;
     ensureDataCapacity(nonNulls_, newSize);
