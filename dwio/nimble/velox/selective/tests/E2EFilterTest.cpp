@@ -128,14 +128,12 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase {
     writeSchema_ = rowType_;
     VeloxWriterOptions options;
     options.enableChunking = true;
-    options.flushPolicyFactory = [] {
+    auto i = 0;
+    options.flushPolicyFactory = [&] {
       return std::make_unique<LambdaFlushPolicy>(
-          [i = 0](const StripeProgress&) mutable {
-            if (i++ % 3 == 2) {
-              return FlushDecision::Stripe;
-            }
-            return FlushDecision::Chunk;
-          });
+          /*flushLambda=*/[&](const StripeProgress&) { return (i++ % 3 == 2); },
+          /*chunkLambda=*/
+          [&](const StripeProgress&) { return (i++ % 3 == 2); });
     };
     if (!flatMapColumns_.empty()) {
       setUpFlatMapColumns();
