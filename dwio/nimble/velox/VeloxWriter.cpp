@@ -74,6 +74,7 @@ class WriterContext : public FieldWriterContext {
     if (!logger) {
       logger = std::make_shared<MetricsLogger>();
     }
+    ignoreTopLevelNulls = this->options.ignoreTopLevelNulls;
   }
 
   void nextStripe() {
