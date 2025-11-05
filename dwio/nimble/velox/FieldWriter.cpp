@@ -124,17 +124,25 @@ class Flat {
   const T* values_;
 };
 
-template <typename T = int8_t>
+template <typename T = int8_t, bool IgnoreNulls = false>
 class Decoded {
  public:
   explicit Decoded(const velox::DecodedVector& decoded) : decoded_{decoded} {}
 
   bool hasNulls() const {
-    return decoded_.mayHaveNulls();
+    if constexpr (IgnoreNulls) {
+      return false;
+    } else {
+      return decoded_.mayHaveNulls();
+    }
   }
 
   bool isNullAt(velox::vector_size_t index) const {
-    return decoded_.isNullAt(index);
+    if constexpr (IgnoreNulls) {
+      return false;
+    } else {
+      return decoded_.isNullAt(index);
+    }
   }
 
   T valueAt(velox::vector_size_t index) const {
@@ -365,7 +373,8 @@ class RowFieldWriter : public FieldWriter {
       : FieldWriter{context, context.schemaBuilder.createRowTypeBuilder(type->size())},
         nullsStream_{context_.createNullsStreamData<bool>(
             typeBuilder_->asRow().nullsDescriptor())},
-        columnStats_{context.columnStats[nullsStream_.descriptor().offset()]} {
+        columnStats_{context.columnStats[nullsStream_.descriptor().offset()]},
+        ignoreNulls_{type->id() == 0 && context.ignoreTopLevelNulls} {
     auto rowType =
         std::dynamic_pointer_cast<const velox::RowType>(type->type());
 
@@ -395,7 +404,7 @@ class RowFieldWriter : public FieldWriter {
               fields_.size(),
               row->childrenSize()));
       nullsStream_.ensureAdditionalNullsCapacity(vector->mayHaveNulls(), size);
-      if (row->mayHaveNulls()) {
+      if (row->mayHaveNulls() && !ignoreNulls_) {
         childRangesPtr = &childRanges;
         auto nonNullCount = iterateNonNullIndices<true>(
             ranges,
@@ -419,11 +428,17 @@ class RowFieldWriter : public FieldWriter {
               row->childrenSize()));
       childRangesPtr = &childRanges;
       nullsStream_.ensureAdditionalNullsCapacity(decoded.mayHaveNulls(), size);
-      auto nonNullCount = iterateNonNullIndices<true>(
-          ranges,
-          nullsStream_.mutableNonNulls(),
-          Decoded{decoded},
-          [&](auto offset) { childRanges.add(offset, 1); });
+      auto nonNullCount = ignoreNulls_
+          ? iterateNonNullIndices<false>(
+                ranges,
+                nullsStream_.mutableNonNulls(),
+                Decoded<int8_t, true>{decoded},
+                [&](auto offset) { childRanges.add(offset, 1); })
+          : iterateNonNullIndices<true>(
+                ranges,
+                nullsStream_.mutableNonNulls(),
+                Decoded{decoded},
+                [&](auto offset) { childRanges.add(offset, 1); });
       nullCount = size - nonNullCount;
     }
 
@@ -464,6 +479,7 @@ class RowFieldWriter : public FieldWriter {
   std::vector<std::unique_ptr<FieldWriter>> fields_;
   NullsStreamData& nullsStream_;
   ColumnStats& columnStats_;
+  bool ignoreNulls_;
 };
 
 class MultiValueFieldWriter : public FieldWriter {

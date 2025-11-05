@@ -2251,6 +2251,92 @@ TEST_F(VeloxWriterTests, BatchedChunkingRelievesMemoryPressure) {
   validateChunkSize(reader, writerOptions.minStreamChunkRawSize);
 }
 
+TEST_F(VeloxWriterTests, IgnoreTopLevelNulls) {
+  auto seed = folly::randomNumberSeed();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng{seed};
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  constexpr velox::vector_size_t kSize = 10;
+  auto type = velox::ROW({"c1"}, {velox::INTEGER()});
+  auto nulls = velox::AlignedBuffer::allocate<bool>(kSize, leafPool_.get());
+  auto rawNulls = nulls->asMutable<uint64_t>();
+  for (auto i = 0; i < kSize; ++i) {
+    velox::bits::setBit(rawNulls, i, folly::Random::oneIn(2, rng));
+  }
+  auto vector =
+      vectorMaker.flatVector<int32_t>(kSize, [](auto row) { return row; });
+  velox::VectorPtr rowVector = std::make_shared<velox::RowVector>(
+      leafPool_.get(),
+      type,
+      nulls,
+      kSize,
+      std::vector<velox::VectorPtr>{vector});
+
+  auto verify =
+      [](auto& pool, const auto& input, const auto& expected, auto options) {
+        std::string file;
+        auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+        nimble::VeloxWriter writer(
+            pool, input->type(), std::move(writeFile), std::move(options));
+        writer.write(input);
+        writer.close();
+
+        velox::InMemoryReadFile readFile(file);
+        nimble::VeloxReader reader(pool, &readFile);
+        velox::VectorPtr output;
+        reader.next(expected->size(), output);
+        ASSERT_EQ(output->size(), expected->size());
+        for (auto i = 0; i < kSize; ++i) {
+          ASSERT_TRUE(output->equalValueAt(expected.get(), i, i));
+        }
+      };
+
+  // Write with top level nulls
+  verify(*leafPool_, rowVector, rowVector, nimble::VeloxWriterOptions{});
+
+  // Write ignoring top level nulls with flat input
+  {
+    auto expected = std::make_shared<velox::RowVector>(
+        leafPool_.get(),
+        type,
+        nullptr,
+        kSize,
+        std::vector<velox::VectorPtr>{vector});
+    verify(
+        *leafPool_,
+        rowVector,
+        expected,
+        nimble::VeloxWriterOptions{
+            .ignoreTopLevelNulls = true,
+        });
+  }
+
+  // Write ignoring top level nulls with encoded input
+  {
+    auto indices = velox::AlignedBuffer::allocate<velox::vector_size_t>(
+        kSize, leafPool_.get());
+    auto rawIndices = indices->asMutable<velox::vector_size_t>();
+    for (auto i = 0; i < kSize; ++i) {
+      rawIndices[i] = i;
+    }
+    rowVector =
+        velox::BaseVector::wrapInDictionary(nullptr, indices, kSize, rowVector);
+    auto expected = std::make_shared<velox::RowVector>(
+        leafPool_.get(),
+        type,
+        nullptr,
+        kSize,
+        std::vector<velox::VectorPtr>{vector});
+    verify(
+        *leafPool_,
+        rowVector,
+        expected,
+        nimble::VeloxWriterOptions{
+            .ignoreTopLevelNulls = true,
+        });
+  }
+}
+
 INSTANTIATE_TEST_CASE_P(
     StripeRawSizeFlushPolicyTestSuite,
     StripeRawSizeFlushPolicyTest,
