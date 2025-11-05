@@ -116,9 +116,25 @@ message("FINAL CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}")
 
 include(CTest) # include after project() but before add_subdirectory()
 
-# This doesn't necessarily need to be a dependency (we can check in the
-# generated .cpp/.h files), but adding this for convenience for now.
-find_package(FlatBuffers REQUIRED)
+find_package(flatbuffers)
+set(NIMBLE_NEED_BUNDLED_BUILD_FLAT_BUFFERS FLASE)
+if(flatbuffers_FOUND)
+  if(flatbuffers_VERSION VERSION_LESS "22.9.4")
+    set(NIMBLE_NEED_BUNDLED_BUILD_FLAT_BUFFERS TRUE)
+  endif()
+else()
+  # Fallback to old FlatBuffers (< 2.0.0).
+  find_package(Flatbuffers REQUIRED)
+  set(NIMBLE_NEED_BUNDLED_BUILD_FLAT_BUFFERS TRUE)
+endif()
+if(NIMBLE_NEED_BUNDLED_BUILD_FLAT_BUFFERS)
+  # Old FlatBuffers (< 22.9.4) doesn't provide build_flatbuffers(). So
+  # we will use bundled one. We can remove CMake/BuildFlatBuffers once
+  # we drop support for FlatBuffers < 22.9.4.
+  include(BuildFlatBuffers)
+endif()
+# Nimble code expects an upper case suffix to the generated file.
+set(FLATBUFFERS_FLATC_SCHEMA_EXTRA_ARGS "--filename-suffix" "Generated")
 
 velox_set_source(gtest)
 velox_resolve_dependency(gtest)
