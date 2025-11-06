@@ -164,6 +164,10 @@ void traverseTablet(
         ChunkedStream& /*stream*/,
         uint32_t /*stripeId*/,
         uint32_t /* streamId*/)>& streamVisitor = nullptr) {
+  if (tabletReader.stripeCount() == 0) {
+    return;
+  }
+
   uint32_t startStripe = stripeIndex ? *stripeIndex : 0;
   uint32_t endStripe =
       stripeIndex ? *stripeIndex : tabletReader.stripeCount() - 1;
