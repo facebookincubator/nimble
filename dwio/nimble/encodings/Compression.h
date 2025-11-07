@@ -126,9 +126,9 @@ class CompressionEncoder {
       size_t uncompressedSize,
       std::function<std::span<char>()> allocateUncompressedBuffer,
       std::function<void(char*&)> encoder)
-      : dataSize_{uncompressedSize},
-        compressionType_{CompressionType::Uncompressed},
-        encoder_{encoder} {
+      : encoder_{std::move(encoder)},
+        dataSize_{uncompressedSize},
+        compressionType_{CompressionType::Uncompressed} {
     if (uncompressedSize == 0 ||
         uncompressedSize < compressionPolicy.compression().minCompressionSize ||
         compressionPolicy.compression().compressionType ==
@@ -190,11 +190,12 @@ class CompressionEncoder {
   }
 
  private:
+  const std::function<void(char*&)> encoder_;
+
   size_t dataSize_;
   std::optional<std::span<const char>> data_;
   std::optional<Vector<char>> compressed_;
   CompressionType compressionType_;
-  std::function<void(char*&)> encoder_;
 };
 
 } // namespace facebook::nimble

@@ -185,7 +185,7 @@ class ReferenceCountedCache {
     auto& entry = getCacheEntry(key);
     auto wlockedEntry = entry.wlock();
     auto sharedPtr = wlockedEntry->lock();
-    if (sharedPtr) {
+    if (sharedPtr != nullptr) {
       return sharedPtr;
     }
     auto element = builder(key);
@@ -208,7 +208,8 @@ class ReferenceCountedCache {
 //  |serializedStreams[i]| now contains the stream corresponding to
 //  the stream identifier provided in the input vector.
 class TabletReader {
-  struct StripeGroup {
+  class StripeGroup {
+   public:
     StripeGroup(
         uint32_t stripeGroupIndex,
         const MetadataBuffer& stripes,
@@ -226,8 +227,8 @@ class TabletReader {
     std::span<const uint32_t> streamSizes(uint32_t stripe) const;
 
    private:
-    std::unique_ptr<MetadataBuffer> metadata_;
-    uint32_t index_;
+    const std::unique_ptr<MetadataBuffer> metadata_;
+    const uint32_t index_;
     uint32_t streamCount_;
     uint32_t firstStripe_;
     const uint32_t* streamOffsets_;
@@ -236,15 +237,23 @@ class TabletReader {
 
  public:
   class StripeIdentifier {
-    explicit StripeIdentifier(
+   public:
+    StripeIdentifier(
         uint32_t stripeId,
         std::shared_ptr<StripeGroup> stripeGroup)
         : stripeId_{stripeId}, stripeGroup_{std::move(stripeGroup)} {}
 
+    uint32_t stripeId() const {
+      return stripeId_;
+    }
+
+    const std::shared_ptr<StripeGroup>& stripeGroup() const {
+      return stripeGroup_;
+    }
+
+   private:
     uint32_t stripeId_;
     std::shared_ptr<StripeGroup> stripeGroup_;
-
-    friend class TabletReader;
   };
 
   // Compute checksum from the beginning of the file all the way to footer
@@ -259,6 +268,7 @@ class TabletReader {
       MemoryPool& memoryPool,
       velox::ReadFile* readFile,
       const std::vector<std::string>& preloadOptionalSections = {});
+
   TabletReader(
       MemoryPool& memoryPool,
       std::shared_ptr<velox::ReadFile> readFile,
@@ -330,7 +340,7 @@ class TabletReader {
     return stripeRowCounts_[stripe];
   }
 
-  // The number of stripes in the tablet.
+  /// The number of stripes in the tablet.
   uint32_t stripeCount() const {
     return stripeCount_;
   }
@@ -363,7 +373,7 @@ class TabletReader {
 
   // For testing use
   TabletReader(
-      MemoryPool& memoryPool,
+      MemoryPool& pool,
       std::shared_ptr<velox::ReadFile> readFile,
       Postscript postscript,
       std::string_view footer,
@@ -371,10 +381,10 @@ class TabletReader {
       std::string_view stripeGroup,
       std::unordered_map<std::string, std::string_view> optionalSections = {});
 
-  MemoryPool& memoryPool_;
-  velox::ReadFile* file_;
-  std::shared_ptr<velox::ReadFile> ownedFile_;
+  MemoryPool* const pool_;
+  velox::ReadFile* const file_;
 
+  std::shared_ptr<velox::ReadFile> ownedFile_;
   Postscript ps_;
   std::unique_ptr<MetadataBuffer> footer_;
   std::unique_ptr<MetadataBuffer> stripes_;
@@ -382,7 +392,7 @@ class TabletReader {
   mutable ReferenceCountedCache<uint32_t, StripeGroup> stripeGroupCache_;
   mutable folly::Synchronized<std::shared_ptr<StripeGroup>> firstStripeGroup_;
 
-  uint64_t tabletRowCount_;
+  uint64_t tabletRowCount_{0};
   uint32_t stripeCount_{0};
   const uint32_t* stripeRowCounts_{nullptr};
   const uint64_t* stripeOffsets_{nullptr};

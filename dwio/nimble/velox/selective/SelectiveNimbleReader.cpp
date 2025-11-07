@@ -51,7 +51,7 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
     if (nextRowNumber_.has_value()) {
       return *nextRowNumber_;
     }
-    while (currentStripe_ < lastStripe_) {
+    while (currentStripe_ < endStripe_) {
       auto numStripeRows = readerBase_->tablet().stripeRowCount(currentStripe_);
       if (currentRowInStripe_ == 0) {
         if (readerBase_->randomSkip() &&
@@ -80,7 +80,7 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
     if (nextRowNumber() == kAtEnd) {
       return kAtEnd;
     }
-    auto rowsToRead = std::min<int64_t>(
+    const auto rowsToRead = std::min<int64_t>(
         size,
         readerBase_->tablet().stripeRowCount(currentStripe_) -
             currentRowInStripe_);
@@ -144,17 +144,18 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
 
  private:
   void initReadRange() {
-    auto& tablet = readerBase_->tablet();
+    const auto& tablet = readerBase_->tablet();
     currentStripe_ = tablet.stripeCount();
-    lastStripe_ = 0;
+    endStripe_ = 0;
     int64_t numRows = 0;
     firstRowOfStripe_.resize(tablet.stripeCount());
-    const auto low = options_.offset(), high = options_.limit();
+    const auto low = options_.offset();
+    const auto high = options_.limit();
     for (int i = 0; i < tablet.stripeCount(); ++i) {
       firstRowOfStripe_[i] = numRows;
       if (low <= tablet.stripeOffset(i) && tablet.stripeOffset(i) < high) {
         currentStripe_ = std::min(currentStripe_, i);
-        lastStripe_ = std::max(lastStripe_, i + 1);
+        endStripe_ = std::max(endStripe_, i + 1);
       }
       numRows += tablet.stripeRowCount(i);
     }
@@ -182,12 +183,13 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
     streams_.load();
   }
 
-  std::shared_ptr<ReaderBase> const readerBase_;
+  const std::shared_ptr<ReaderBase> readerBase_;
   const dwio::common::RowReaderOptions options_;
   StripeStreams streams_;
   std::vector<int64_t> firstRowOfStripe_;
   int currentStripe_;
-  int lastStripe_;
+  // The exclusive upper bound of the stripe range to read.
+  int endStripe_;
   int64_t currentRowInStripe_;
   std::optional<int64_t> nextRowNumber_;
   int skippedStripes_ = 0;
@@ -230,7 +232,7 @@ class SelectiveNimbleReader : public dwio::common::Reader {
   }
 
  private:
-  std::shared_ptr<ReaderBase> const readerBase_;
+  const std::shared_ptr<ReaderBase> readerBase_;
   const dwio::common::ReaderOptions options_;
 };
 

@@ -99,15 +99,16 @@ void RowSizeTracker::applyProjection(size_t nodeIdx, bool projected) {
 }
 
 void RowSizeTracker::finalizeProjection() {
-  if (UNLIKELY(!projectionFinalized_)) {
-    velox::bits::andBits(
-        const_cast<uint64_t*>(variableLengthNodes_.allBits()),
-        variableLengthNodes_.allBits(),
-        projectedNodes_.allBits(),
-        0,
-        typeWithId_->maxId() + 1);
-    projectionFinalized_ = true;
+  if (projectionFinalized_) {
+    return;
   }
+  velox::bits::andBits(
+      const_cast<uint64_t*>(variableLengthNodes_.allBits()),
+      variableLengthNodes_.allBits(),
+      projectedNodes_.allBits(),
+      0,
+      typeWithId_->maxId() + 1);
+  projectionFinalized_ = true;
 }
 
 size_t RowSizeTracker::getCurrentMaxRowSize() const {

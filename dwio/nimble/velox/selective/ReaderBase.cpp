@@ -68,12 +68,12 @@ ReaderBase::ReaderBase(
 
 std::optional<common::Region> StripeStreams::getStreamRegion(
     int streamId) const {
-  auto& tablet = readerBase_->tablet();
+  const auto& tablet = readerBase_->tablet();
   VELOX_CHECK(stripeIdentifier_.has_value());
   if (streamId >= tablet.streamCount(*stripeIdentifier_)) {
     return std::nullopt;
   }
-  auto size = tablet.streamSizes(*stripeIdentifier_)[streamId];
+  const auto size = tablet.streamSizes(*stripeIdentifier_)[streamId];
   if (size == 0) {
     return std::nullopt;
   }
@@ -86,7 +86,7 @@ std::optional<common::Region> StripeStreams::getStreamRegion(
 
 std::unique_ptr<dwio::common::SeekableInputStream> StripeStreams::enqueue(
     int streamId) {
-  auto region = getStreamRegion(streamId);
+  const auto region = getStreamRegion(streamId);
   if (!region.has_value()) {
     return nullptr;
   }

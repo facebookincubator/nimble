@@ -134,17 +134,16 @@ std::string_view TrivialEncoding<std::string_view>::encode(
 }
 
 TrivialEncoding<bool>::TrivialEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data)
-    : TypedEncoding<bool, bool>{memoryPool, data},
-      row_{0},
+    : TypedEncoding<bool, bool>{pool, data},
       bitmap_{data.data() + kDataOffset},
-      uncompressed_{&memoryPool} {
-  auto compressionType =
+      uncompressed_{&pool} {
+  const auto compressionType =
       static_cast<CompressionType>(data[kCompressionTypeOffset]);
   if (compressionType != CompressionType::Uncompressed) {
     uncompressed_ = Compression::uncompress(
-        memoryPool,
+        pool,
         compressionType,
         {bitmap_, static_cast<size_t>(data.end() - bitmap_)});
     bitmap_ = uncompressed_.data();

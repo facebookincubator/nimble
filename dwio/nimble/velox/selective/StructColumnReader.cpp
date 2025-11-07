@@ -28,16 +28,16 @@ void StructColumnReaderBase::seekTo(int64_t offset, bool /*readsNullsOnly*/) {
     return;
   }
   VELOX_CHECK_LT(readOffset_, offset);
-  if (numParentNulls_) {
+  if (numParentNulls_ > 0) {
     VELOX_CHECK_LE(
         parentNullsRecordedTo_,
         offset,
         "Must not seek to before parentNullsRecordedTo_");
   }
-  auto distance = offset - readOffset_ - numParentNulls_;
-  auto numNonNulls = formatData_->skipNulls(distance);
+  const auto distance = offset - readOffset_ - numParentNulls_;
+  const auto numNonNulls = formatData_->skipNulls(distance);
   for (auto& child : children_) {
-    if (child) {
+    if (child != nullptr) {
       child->addSkippedParentNulls(
           readOffset_, offset, numParentNulls_ + distance - numNonNulls);
     }
@@ -69,11 +69,11 @@ StructColumnReader::StructColumnReader(
     if (!childSpec->readFromFile()) {
       continue;
     }
-    auto i = fileRowType.getChildIdx(childSpec->fieldName());
-    auto& childFileType = fileType_->childAt(i);
-    auto& childRequestedType =
+    const auto childIdx = fileRowType.getChildIdx(childSpec->fieldName());
+    const auto& childFileType = fileType_->childAt(childIdx);
+    const auto& childRequestedType =
         requestedType_->asRow().findChild(childSpec->fieldName());
-    auto childParams = params.makeChildParams(rowType.childAt(i));
+    auto childParams = params.makeChildParams(rowType.childAt(childIdx));
     addChild(buildColumnReader(
         childRequestedType, childFileType, childParams, *childSpec, false));
     childSpec->setSubscript(children_.size() - 1);
@@ -84,8 +84,8 @@ bool StructColumnReader::estimateMaterializedSize(
     size_t& byteSize,
     size_t& rowCount) const {
   auto* nulls = formatData().as<NimbleData>().nullsDecoder();
-  if (nulls) {
-    auto nullsRowCount = nulls->estimateRowCount();
+  if (nulls != nullptr) {
+    const auto nullsRowCount = nulls->estimateRowCount();
     if (!nullsRowCount.has_value()) {
       return false;
     }
@@ -93,13 +93,14 @@ bool StructColumnReader::estimateMaterializedSize(
   } else {
     rowCount = 0;
   }
-  size_t rowSize = 0;
-  for (auto& child : children_) {
-    size_t childByteSize, childRowCount;
+  size_t rowSize{0};
+  for (const auto& child : children_) {
+    size_t childByteSize{0};
+    size_t childRowCount{0};
     if (!child->estimateMaterializedSize(childByteSize, childRowCount)) {
       return false;
     }
-    if (!nulls) {
+    if (nulls == nullptr) {
       rowCount = childRowCount;
     }
     if (childRowCount > 0) {
@@ -107,7 +108,7 @@ bool StructColumnReader::estimateMaterializedSize(
     }
   }
   byteSize = rowSize * rowCount;
-  if (nulls) {
+  if (nulls != nullptr) {
     byteSize += rowCount / 8;
   }
   return true;

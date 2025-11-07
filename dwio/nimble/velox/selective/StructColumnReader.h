@@ -60,7 +60,8 @@ class StructColumnReaderBase
         this, children_[index], numReads_, rowSizeTracker_);
   }
 
-  RowSizeTracker* rowSizeTracker_;
+ protected:
+  RowSizeTracker* const rowSizeTracker_;
 };
 
 class StructColumnReader : public StructColumnReaderBase {

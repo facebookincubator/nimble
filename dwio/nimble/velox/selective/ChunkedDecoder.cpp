@@ -31,7 +31,7 @@ bool ChunkedDecoder::loadNextChunk() {
     return false;
   }
   auto length = encoding::readUint32(inputData_);
-  auto compressionType =
+  const auto compressionType =
       static_cast<CompressionType>(encoding::readChar(inputData_));
   inputSize_ -= 5;
   VELOX_CHECK(ensureInput(length));
@@ -48,8 +48,8 @@ bool ChunkedDecoder::loadNextChunk() {
   }
   inputData_ += length;
   inputSize_ -= length;
-  encoding_ = EncodingFactory::decode(
-      memoryPool_, std::string_view(chunkData, chunkSize));
+  encoding_ =
+      EncodingFactory::decode(*pool_, std::string_view(chunkData, chunkSize));
   remainingValues_ = encoding_->rowCount();
   VELOX_CHECK_GT(remainingValues_, 0);
   VLOG(1) << encoding_->debugString();
@@ -64,7 +64,7 @@ bool ChunkedDecoder::ensureInput(int size) {
       prepareInputBuffer(inputSize_);
     }
     const char* buf;
-    int len;
+    int len{0};
     if (!input_->Next(reinterpret_cast<const void**>(&buf), &len)) {
       VELOX_CHECK_EQ(inputSize_, 0);
       return false;
@@ -83,7 +83,7 @@ bool ChunkedDecoder::ensureInput(int size) {
 
 bool ChunkedDecoder::ensureInputIncremental_hack(int size, const char*& pos) {
   const auto currentOffset = pos - inputData_;
-  bool ensured = ensureInput(size);
+  const bool ensured = ensureInput(size);
   if (LIKELY(ensured)) {
     pos = inputData_ + currentOffset;
   }
@@ -107,7 +107,7 @@ void ChunkedDecoder::prepareInputBuffer(int size) {
     }
     inputData_ = newInputData;
   } else {
-    auto newInputBuffer = AlignedBuffer::allocate<char>(size, &memoryPool_);
+    auto newInputBuffer = AlignedBuffer::allocate<char>(size, pool_);
     char* newInputData = newInputBuffer->asMutable<char>();
     if (inputSize_ > 0) {
       memcpy(newInputData, inputData_, inputSize_);
@@ -122,11 +122,11 @@ void ChunkedDecoder::decodeNullable(
     uint32_t* data,
     int64_t count,
     const uint64_t* incomingNulls) {
-  int64_t totalNumValues = !incomingNulls
+  const int64_t totalNumValues = !incomingNulls
       ? count
       : velox::bits::countNonNulls(incomingNulls, 0, count);
 
-  if (incomingNulls) {
+  if (incomingNulls != nullptr) {
     if (totalNumValues == 0) {
       velox::bits::fillBits(nulls, 0, count, velox::bits::kNull);
       return;
@@ -143,7 +143,7 @@ void ChunkedDecoder::decodeNullable(
         VELOX_CHECK_EQ(encoding_->dataType(), DataType::Uint32);
       }
 
-      auto numValues = std::min(totalNumValues - i, remainingValues_);
+      const auto numValues = std::min(totalNumValues - i, remainingValues_);
       endOffset = bits::findSetBit(
           static_cast<const char*>(scatterBitmap.bits()),
           offset,
@@ -166,8 +166,8 @@ void ChunkedDecoder::decodeNullable(
         VELOX_CHECK_EQ(encoding_->dataType(), DataType::Uint32);
       }
 
-      auto numValues = std::min(totalNumValues - i, remainingValues_);
-      auto nonNullCount = encoding_->materializeNullable(
+      const auto numValues = std::min(totalNumValues - i, remainingValues_);
+      const auto nonNullCount = encoding_->materializeNullable(
           numValues, data, [&]() { return nulls; }, nullptr, i);
       if (nulls && nonNullCount == numValues) {
         velox::bits::fillBits(nulls, i, i + numValues, velox::bits::kNotNull);
@@ -183,7 +183,7 @@ void ChunkedDecoder::nextBools(
     int64_t count,
     const uint64_t* incomingNulls) {
   if (!decodeValuesWithNulls_) {
-    int64_t totalNumValues = !incomingNulls
+    const int64_t totalNumValues = !incomingNulls
         ? count
         : velox::bits::countNonNulls(incomingNulls, 0, count);
     for (int64_t i = 0; i < totalNumValues;) {
@@ -191,12 +191,12 @@ void ChunkedDecoder::nextBools(
         VELOX_CHECK(loadNextChunk());
         VELOX_CHECK_EQ(encoding_->dataType(), DataType::Bool);
       }
-      auto numValues = std::min(totalNumValues - i, remainingValues_);
+      const auto numValues = std::min(totalNumValues - i, remainingValues_);
       encoding_->materializeBoolsAsBits(numValues, data, i);
       remainingValues_ -= numValues;
       i += numValues;
     }
-    if (incomingNulls) {
+    if (incomingNulls != nullptr) {
       velox::bits::scatterBits(
           totalNumValues,
           count,
@@ -209,8 +209,7 @@ void ChunkedDecoder::nextBools(
     // support fully reading uint32_t offsets and sizes.
     if (!nullableValues_ ||
         nullableValues_->capacity() < count * sizeof(uint32_t)) {
-      nullableValues_ =
-          AlignedBuffer::allocate<uint32_t>(count, &memoryPool_, 0);
+      nullableValues_ = AlignedBuffer::allocate<uint32_t>(count, pool_, 0);
     }
     decodeNullable(
         data, nullableValues_->asMutable<uint32_t>(), count, incomingNulls);
@@ -222,8 +221,8 @@ void ChunkedDecoder::nextIndices(
     int64_t count,
     const uint64_t* incomingNulls) {
   velox::BufferPtr nullsBuffer;
-  if (incomingNulls) {
-    nullsBuffer = velox::allocateNulls(count, &memoryPool_, velox::bits::kNull);
+  if (incomingNulls != nullptr) {
+    nullsBuffer = velox::allocateNulls(count, pool_, velox::bits::kNull);
   }
   decodeNullable(
       incomingNulls ? nullsBuffer->asMutable<uint64_t>() : nullptr,
@@ -248,12 +247,12 @@ void ChunkedDecoder::skip(int64_t numValues) {
 }
 
 std::optional<size_t> ChunkedDecoder::estimateRowCount() const {
-  if (encoding_) {
+  if (encoding_ != nullptr) {
     return rowCountEstimate_;
   }
   constexpr int kChunkCompressionTypeOffset = 4;
   constexpr int kEncodingOffset =
-      kChunkCompressionTypeOffset + /*chunkCompressionType*/ 1;
+      kChunkCompressionTypeOffset + /*chunkCompressionType=*/1;
   constexpr int kChunkRowCountOffset =
       kEncodingOffset + Encoding::kRowCountOffset;
   VELOX_CHECK(
@@ -273,14 +272,15 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
   if (encoding_) {
     return stringDataSizeEstimate_;
   }
-  constexpr int kChunkCompressionTypeOffset = 4;
-  constexpr int kEncodingOffset =
-      kChunkCompressionTypeOffset + /*chunkCompressionType*/ 1;
+  constexpr int kChunkCompressionTypeOffset{4};
+  constexpr int kEncodingOffset{
+      kChunkCompressionTypeOffset + /*chunkCompressionType=*/1};
   VELOX_CHECK(
       const_cast<ChunkedDecoder*>(this)->ensureInput(kEncodingOffset + 6));
   auto* pos = inputData_;
-  auto chunkSize = encoding::readUint32(pos);
-  auto compressionType = static_cast<CompressionType>(encoding::readChar(pos));
+  const auto chunkSize = encoding::readUint32(pos);
+  const auto compressionType =
+      static_cast<CompressionType>(encoding::readChar(pos));
   // We don't want to decompress the chunk just for the estimate. We will fall
   // back on a top level heuristics instead.
   if (compressionType != CompressionType::Uncompressed) {
@@ -292,14 +292,14 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
   auto encodingType = static_cast<EncodingType>(encoding::readChar(pos));
   VELOX_CHECK_EQ(
       static_cast<DataType>(encoding::readChar(pos)), DataType::String);
-  auto rowCount = encoding::readUint32(pos);
+  const auto rowCount = encoding::readUint32(pos);
   // Peel off nullable encoding.
   if (encodingType == EncodingType::Nullable) {
-    encodingStart += Encoding::kPrefixSize + /* nonNullEncodingSize */ 4;
+    encodingStart += Encoding::kPrefixSize + /*nonNullEncodingSize=*/4;
     VELOX_CHECK(
         const_cast<ChunkedDecoder*>(this)->ensureInputIncremental_hack(
             encodingStart + 6, pos));
-    auto nonNullsBytes = encoding::readUint32(pos);
+    const auto nonNullsBytes = encoding::readUint32(pos);
     // TODO: it might not require an update here.
     totalSize = pos + nonNullsBytes - inputData_;
     encodingType = static_cast<EncodingType>(encoding::readChar(pos));
@@ -314,22 +314,29 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
     stringDataSizeEstimate_ = std::nullopt;
     return stringDataSizeEstimate_;
   }
-  VELOX_CHECK(
-      const_cast<ChunkedDecoder*>(this)->ensureInputIncremental_hack(
-          encodingStart + Encoding::kPrefixSize +
-              TrivialEncoding<std::string_view>::kPrefixSize,
-          pos));
+  {
+    const auto ensured =
+        const_cast<ChunkedDecoder*>(this)->ensureInputIncremental_hack(
+            encodingStart + Encoding::kPrefixSize +
+                TrivialEncoding<std::string_view>::kPrefixSize,
+            pos);
+    VELOX_CHECK(ensured);
+  }
   const auto dataCompressionType =
       static_cast<CompressionType>(encoding::readChar(pos));
   const auto lengthBlobSize = encoding::readUint32(pos);
   const auto blobOffset = pos + lengthBlobSize - inputData_;
-  VELOX_CHECK(totalSize >= blobOffset);
-  size_t blobSize = totalSize - blobOffset;
+  VELOX_CHECK_GE(totalSize, blobOffset);
+  const size_t blobSize = totalSize - blobOffset;
   if (dataCompressionType == CompressionType::Uncompressed) {
     stringDataSizeEstimate_ = blobSize;
     return stringDataSizeEstimate_;
   }
-  VELOX_CHECK(const_cast<ChunkedDecoder*>(this)->ensureInput(totalSize));
+  {
+    const auto ensured =
+        const_cast<ChunkedDecoder*>(this)->ensureInput(totalSize);
+    VELOX_CHECK(ensured);
+  }
   stringDataSizeEstimate_ = Compression::uncompressedSize(
       dataCompressionType, {inputData_ + blobOffset, blobSize});
   return stringDataSizeEstimate_;

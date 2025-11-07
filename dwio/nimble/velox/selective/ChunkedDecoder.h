@@ -28,10 +28,10 @@ class ChunkedDecoder {
  public:
   ChunkedDecoder(
       std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       bool decodeValuesWithNulls)
       : input_{std::move(input)},
-        memoryPool_{memoryPool},
+        pool_{&pool},
         decodeValuesWithNulls_{decodeValuesWithNulls} {
     VELOX_CHECK_NOT_NULL(input_);
   }
@@ -58,7 +58,7 @@ class ChunkedDecoder {
     VELOX_DCHECK(std::is_sorted(rows.begin(), rows.end()));
     const auto numRows = visitor.numRows();
     ReadWithVisitorParams params{};
-    bool resultNullsPrepared = false;
+    bool resultNullsPrepared{false};
     params.prepareResultNulls = [&] {
       if (FOLLY_UNLIKELY(!resultNullsPrepared)) {
         // Allocate one extra byte for nulls to handle multi-chunk reading,
@@ -77,7 +77,7 @@ class ChunkedDecoder {
         params.makeReaderNulls = [&, copied = false]() mutable {
           if (FOLLY_UNLIKELY(!copied)) {
             // Make a copy to avoid value nulls overwriting in-map buffer.
-            nulls = velox::AlignedBuffer::copy(&memoryPool_, nulls);
+            nulls = velox::AlignedBuffer::copy(pool_, nulls);
             copied = true;
           }
           return nulls->template asMutable<uint64_t>();
@@ -94,9 +94,7 @@ class ChunkedDecoder {
         auto& nulls = visitor.reader().nullsInReadRange();
         if (FOLLY_UNLIKELY(!nulls)) {
           nulls = velox::AlignedBuffer::allocate<bool>(
-              visitor.rowAt(numRows - 1) + 1,
-              &memoryPool_,
-              velox::bits::kNotNull);
+              visitor.rowAt(numRows - 1) + 1, pool_, velox::bits::kNotNull);
         }
         return nulls->template asMutable<uint64_t>();
       };
@@ -164,7 +162,7 @@ class ChunkedDecoder {
       velox::vector_size_t& numNulls,
       velox::vector_size_t& numNonNulls) {
     velox::vector_size_t index;
-    bool allConsumed = velox::bits::testWords(
+    const bool allConsumed = velox::bits::testWords(
         begin,
         end,
         [&](int32_t i, uint64_t mask) {
@@ -184,7 +182,8 @@ class ChunkedDecoder {
       velox::vector_size_t numRows,
       velox::vector_size_t& numNulls,
       velox::vector_size_t& numNonNulls) {
-    numNulls = numNonNulls = 0;
+    numNulls = 0;
+    numNonNulls = 0;
     if constexpr (V::dense) {
       VELOX_DCHECK_EQ(visitor.currentRow(), params.numScanned);
       if constexpr (!kHasNulls) {
@@ -228,8 +227,9 @@ class ChunkedDecoder {
           VELOX_CHECK(loadNextChunk());
         }
       }
-      velox::vector_size_t numNulls, numNonNulls;
-      auto nextRowIndex = computeNextRowIndex<kHasNulls>(
+      velox::vector_size_t numNulls;
+      velox::vector_size_t numNonNulls;
+      const auto nextRowIndex = computeNextRowIndex<kHasNulls>(
           visitor, nulls, params, numRows, numNulls, numNonNulls);
       VLOG(1) << visitor.reader().fileType().fullName() << ":"
               << " rowIndex=" << visitor.rowIndex()
@@ -281,18 +281,18 @@ class ChunkedDecoder {
       int64_t count,
       const uint64_t* incomingNulls);
 
-  std::unique_ptr<velox::dwio::common::SeekableInputStream> const input_;
-  velox::memory::MemoryPool& memoryPool_;
+  const std::unique_ptr<velox::dwio::common::SeekableInputStream> input_;
+  velox::memory::MemoryPool* const pool_;
   const bool decodeValuesWithNulls_;
 
-  const char* inputData_ = nullptr;
-  int64_t inputSize_ = 0;
+  const char* inputData_{nullptr};
+  int64_t inputSize_{0};
   velox::BufferPtr inputBuffer_;
   velox::BufferPtr decompressed_;
   velox::BufferPtr nullableValues_;
 
   std::unique_ptr<Encoding> encoding_;
-  int64_t remainingValues_ = 0;
+  int64_t remainingValues_{0};
   mutable std::optional<size_t> rowCountEstimate_{std::nullopt};
   mutable std::optional<size_t> stringDataSizeEstimate_{std::nullopt};
 

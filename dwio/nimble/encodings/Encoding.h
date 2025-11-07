@@ -68,9 +68,9 @@ using DecoderVisitor =
 
 using vector_size_t = velox::vector_size_t;
 
-// Extra parameters that need to be persisted/used during a single call of
-// readWithVisitor at column reader level, which might span multiple calls of
-// readWithVisitor (one per chunk) in decoders.
+/// Extra parameters that need to be persisted/used during a single call of
+/// readWithVisitor at column reader level, which might span multiple calls of
+/// readWithVisitor (one per chunk) in decoders.
 struct ReadWithVisitorParams {
   // Create the reader nulls buffer if not already exists and return pointer to
   // the raw buffer.  When it is created, it is created with the full length
@@ -102,7 +102,7 @@ class Encoding {
   static constexpr int kRowCountOffset = 2;
   static constexpr int kPrefixSize = 6;
 
-  Encoding(velox::memory::MemoryPool& memoryPool, std::string_view data);
+  Encoding(velox::memory::MemoryPool& pool, std::string_view data);
   virtual ~Encoding() = default;
 
   EncodingType encodingType() const {
@@ -226,7 +226,7 @@ class Encoding {
       uint32_t rowCount,
       char*& pos);
 
-  velox::memory::MemoryPool& memoryPool_;
+  velox::memory::MemoryPool* const pool_;
   const std::string_view data_;
   const EncodingType encodingType_;
   const DataType dataType_;

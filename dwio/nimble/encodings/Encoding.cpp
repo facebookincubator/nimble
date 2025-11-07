@@ -19,8 +19,8 @@
 
 namespace facebook::nimble {
 
-Encoding::Encoding(velox::memory::MemoryPool& memoryPool, std::string_view data)
-    : memoryPool_{memoryPool},
+Encoding::Encoding(velox::memory::MemoryPool& pool, std::string_view data)
+    : pool_{&pool},
       data_{data},
       encodingType_{data_[kEncodingTypeOffset]},
       dataType_{static_cast<DataType>(data_[kDataTypeOffset])},
