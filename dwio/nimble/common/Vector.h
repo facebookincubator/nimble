@@ -225,8 +225,8 @@ class Vector {
       // AlignedBuffer can allocate a bit more than requested for the alignment
       // purpose, let's leverage that by using its true capacity.
       capacity_ = newData->capacity() / sizeof(InnerType);
-      NIMBLE_DASSERT(
-          capacity_ >= size, "Allocated capacity is smaller than requested");
+      NIMBLE_DCHECK_GE(
+          capacity_, size, "Allocated capacity is smaller than requested");
       if (data_ != nullptr && size_ > 0) {
         std::move(
             dataRawPtr_,
@@ -290,9 +290,8 @@ class Vector {
         velox::AlignedBuffer::allocateExact<InnerType>(capacity_, memoryPool_);
     dataRawPtr_ = reinterpret_cast<T*>(data_->asMutable<InnerType>());
     uint64_t newCapacity = data_->capacity() / sizeof(InnerType);
-    NIMBLE_DASSERT(
-        newCapacity >= capacity_,
-        "Allocated capacity is smaller than requested");
+    NIMBLE_DCHECK_GE(
+        newCapacity, capacity_, "Allocated capacity is smaller than requested");
     capacity_ = newCapacity;
   }
 

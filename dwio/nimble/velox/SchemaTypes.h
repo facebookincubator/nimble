@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <fmt/format.h>
 #include <cstdint>
 #include <optional>
 #include <ostream>
@@ -53,6 +54,23 @@ enum class Kind : uint8_t {
 
 std::string toString(ScalarKind kind);
 std::string toString(Kind kind);
+
+inline std::ostream& operator<<(std::ostream& os, Kind kind) {
+  return os << toString(kind);
+}
+
+} // namespace facebook::nimble
+
+// Add fmt::formatter specialization for Kind
+template <>
+struct fmt::formatter<facebook::nimble::Kind> : fmt::formatter<std::string> {
+  auto format(facebook::nimble::Kind kind, format_context& ctx) const {
+    return fmt::formatter<std::string>::format(
+        facebook::nimble::toString(kind), ctx);
+  }
+};
+
+namespace facebook::nimble {
 
 class StreamDescriptor {
  public:

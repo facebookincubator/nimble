@@ -140,7 +140,7 @@ std::string_view ConstantEncoding<T>::encode(
   Encoding::serializePrefix(
       EncodingType::Constant, TypeTraits<T>::dataType, rowCount, pos);
   encoding::write<physicalType>(values[0], pos);
-  NIMBLE_DASSERT(pos - reserved == encodingSize, "Encoding size mismatch.");
+  NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
   return {reserved, encodingSize};
 }
 

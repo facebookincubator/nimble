@@ -144,7 +144,7 @@ class RLEEncodingBase
         EncodingType::RLE, TypeTraits<T>::dataType, valueCount, pos);
     encoding::writeString(serializedRunLengths, pos);
     encoding::writeBytes(serializedRunValues, pos);
-    NIMBLE_DASSERT(pos - reserved == encodingSize, "Encoding size mismatch.");
+    NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
     return {reserved, encodingSize};
   }
 
@@ -300,7 +300,7 @@ vector_size_t RLEEncoding<T>::findNumInRun(
       std::min<vector_size_t>(this->copiesRemaining_, numRows - rowIndex);
   auto endOfRun = currentRow + this->copiesRemaining_;
   auto* it = std::lower_bound(begin, end, endOfRun);
-  NIMBLE_DASSERT(it > begin, "");
+  NIMBLE_DCHECK(it >= begin);
   return it - begin;
 }
 
@@ -371,12 +371,12 @@ void RLEEncoding<T>::bulkScan(
     this->copiesRemaining_ = 0;
   }
   if constexpr (kScatterValues) {
-    NIMBLE_DASSERT(visitor.rowIndex() == visitor.numRows(), "");
+    NIMBLE_DCHECK_EQ(visitor.rowIndex(), visitor.numRows(), "");
   } else {
     visitor.setRowIndex(visitor.numRows());
   }
   if constexpr (V::kHasHook) {
-    NIMBLE_DASSERT(numValues == numNonNulls, "");
+    NIMBLE_DCHECK_EQ(numValues, numNonNulls, "");
     visitor.hook().addValues(scatterRows, values, numNonNulls);
   } else {
     visitor.addNumValues(V::kFilterOnly ? numHits : numValues);

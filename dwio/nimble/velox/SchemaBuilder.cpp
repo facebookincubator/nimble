@@ -110,7 +110,8 @@ const TypeBuilder& ArrayTypeBuilder::elements() const {
 }
 
 void ArrayTypeBuilder::setChildren(std::shared_ptr<TypeBuilder> elements) {
-  NIMBLE_ASSERT(!elements_, "ArrayTypeBuilder elements already initialized.");
+  NIMBLE_CHECK_NULL(
+      elements_, "ArrayTypeBuilder elements already initialized.");
   schemaBuilder_.registerChild(elements);
   elements_ = std::move(elements);
 }
@@ -129,8 +130,8 @@ const TypeBuilder& MapTypeBuilder::values() const {
 void MapTypeBuilder::setChildren(
     std::shared_ptr<TypeBuilder> keys,
     std::shared_ptr<TypeBuilder> values) {
-  NIMBLE_ASSERT(!keys_, "MapTypeBuilder keys already initialized.");
-  NIMBLE_ASSERT(!values_, "MapTypeBuilder values already initialized.");
+  NIMBLE_CHECK_NULL(keys_, "MapTypeBuilder keys already initialized.");
+  NIMBLE_CHECK_NULL(values_, "MapTypeBuilder values already initialized.");
   schemaBuilder_.registerChild(keys);
   schemaBuilder_.registerChild(values);
   keys_ = std::move(keys);
@@ -163,8 +164,8 @@ const TypeBuilder& ArrayWithOffsetsTypeBuilder::elements() const {
 
 void ArrayWithOffsetsTypeBuilder::setChildren(
     std::shared_ptr<TypeBuilder> elements) {
-  NIMBLE_ASSERT(
-      !elements_, "ArrayWithOffsetsTypeBuilder elements already initialized.");
+  NIMBLE_CHECK_NULL(
+      elements_, "ArrayWithOffsetsTypeBuilder elements already initialized.");
   schemaBuilder_.registerChild(elements);
   elements_ = std::move(elements);
 }
@@ -189,29 +190,22 @@ size_t RowTypeBuilder::childrenCount() const {
 }
 
 const TypeBuilder& RowTypeBuilder::childAt(size_t index) const {
-  NIMBLE_ASSERT(
-      index < children_.size(),
-      fmt::format(
-          "Index out of range. index: {}, size: {}.", index, children_.size()));
+  NIMBLE_CHECK_LT(index, children_.size(), "Index out of range.");
   return *children_[index];
 }
 
 const std::string& RowTypeBuilder::nameAt(size_t index) const {
-  NIMBLE_ASSERT(
-      index < children_.size(),
-      fmt::format(
-          "Index out of range. index: {}, size: {}.", index, children_.size()));
+  NIMBLE_CHECK_LT(index, children_.size(), "Index out of range.");
   return names_[index];
 }
 
 void RowTypeBuilder::addChild(
     std::string name,
     std::shared_ptr<TypeBuilder> child) {
-  NIMBLE_DASSERT(
-      children_.size() < children_.capacity(),
-      fmt::format(
-          "Registering more row children than expected. Capacity: {}",
-          children_.capacity()));
+  NIMBLE_DCHECK_LT(
+      children_.size(),
+      children_.capacity(),
+      "Registering more row children than expected.");
   schemaBuilder_.registerChild(child);
   names_.push_back(std::move(name));
   children_.push_back(std::move(child));
@@ -248,10 +242,10 @@ const TypeBuilder& SlidingWindowMapTypeBuilder::values() const {
 void SlidingWindowMapTypeBuilder::setChildren(
     std::shared_ptr<TypeBuilder> keys,
     std::shared_ptr<TypeBuilder> values) {
-  NIMBLE_ASSERT(
-      !keys_, "SlidingWindowMapTypeBuilder keys already initialized.");
-  NIMBLE_ASSERT(
-      !values_, "SlidingWindowMapTypeBuilder values already initialized.");
+  NIMBLE_CHECK_NULL(
+      keys_, "SlidingWindowMapTypeBuilder keys already initialized.");
+  NIMBLE_CHECK_NULL(
+      values_, "SlidingWindowMapTypeBuilder values already initialized.");
   schemaBuilder_.registerChild(keys);
   schemaBuilder_.registerChild(values);
   keys_ = std::move(keys);
@@ -273,20 +267,12 @@ const StreamDescriptorBuilder& FlatMapTypeBuilder::nullsDescriptor() const {
 
 const StreamDescriptorBuilder& FlatMapTypeBuilder::inMapDescriptorAt(
     size_t index) const {
-  NIMBLE_ASSERT(
-      index < inMapDescriptors_.size(),
-      fmt::format(
-          "Index out of range. index: {}, size: {}.",
-          index,
-          inMapDescriptors_.size()));
+  NIMBLE_CHECK_LT(index, inMapDescriptors_.size(), "Index out of range.");
   return *inMapDescriptors_[index];
 }
 
 const TypeBuilder& FlatMapTypeBuilder::childAt(size_t index) const {
-  NIMBLE_ASSERT(
-      index < children_.size(),
-      fmt::format(
-          "Index out of range. index: {}, size: {}.", index, children_.size()));
+  NIMBLE_CHECK_LT(index, children_.size(), "Index out of range.");
   return *children_[index];
 }
 
@@ -299,10 +285,7 @@ size_t FlatMapTypeBuilder::childrenCount() const {
 }
 
 const std::string& FlatMapTypeBuilder::nameAt(size_t index) const {
-  NIMBLE_ASSERT(
-      index < names_.size(),
-      fmt::format(
-          "Index out of range. index: {}, size: {}.", index, names_.size()));
+  NIMBLE_CHECK_LT(index, names_.size(), "Index out of range.");
   return names_[index];
 }
 
@@ -428,11 +411,7 @@ const std::shared_ptr<const TypeBuilder>& SchemaBuilder::getRoot() const {
   // schema tree DFS order. To be able to flatten the schema tree to a flat
   // ordered vector, we need to guarantee that the schema tree has a single root
   // node, where we start traversing from.
-  NIMBLE_ASSERT(
-      roots_.size() == 1,
-      fmt::format(
-          "Unable to determine schema root. List of roots contain {} entries.",
-          roots_.size()));
+  NIMBLE_CHECK_EQ(roots_.size(), 1, "Unable to determine schema root.");
   return *roots_.cbegin();
 }
 
@@ -442,7 +421,7 @@ void SchemaBuilder::registerChild(const std::shared_ptr<TypeBuilder>& type) {
   // before (and therefore was removed from the roots list), or the node was
   // created using a different schema builder instance (and therefore belongs to
   // a roots list in the other schema builder instance).
-  NIMBLE_ASSERT(
+  NIMBLE_CHECK(
       roots_.find(type) != roots_.end(),
       "Child type not found. This can happen if child is registered more than once, "
       "or if a different Schema Builder was used to create the child.");
@@ -545,8 +524,9 @@ void SchemaBuilder::addNode(
           map.keyScalarKind(),
           std::move(name),
           childrenSize);
-      NIMBLE_ASSERT(
-          map.inMapDescriptors_.size() == childrenSize,
+      NIMBLE_CHECK_EQ(
+          map.inMapDescriptors_.size(),
+          childrenSize,
           "Flat map in-maps collection size and children collection size should be the same.");
       for (size_t i = 0; i < childrenSize; ++i) {
         nodes.emplace_back(
@@ -561,8 +541,7 @@ void SchemaBuilder::addNode(
     }
 
     default:
-      NIMBLE_UNREACHABLE(
-          fmt::format("Unknown type kind: {}.", toString(type.kind())));
+      NIMBLE_UNREACHABLE("Unknown type kind: {}.", toString(type.kind()));
   }
 }
 

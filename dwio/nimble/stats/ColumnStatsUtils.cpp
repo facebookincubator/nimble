@@ -108,8 +108,7 @@ void aggregateStats(
       break;
     }
     default:
-      NIMBLE_NOT_SUPPORTED(
-          fmt::format("Unsupported type: {}.", toString(builder.kind())));
+      NIMBLE_UNSUPPORTED("Unsupported type: {}.", toString(builder.kind()));
   }
 
   NIMBLE_DCHECK(offset.has_value(), "Offset should always be set.");

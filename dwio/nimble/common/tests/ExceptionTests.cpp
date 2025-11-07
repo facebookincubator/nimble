@@ -76,7 +76,7 @@ void verifyException(
   }
 }
 
-TEST(ExceptionTests, Format) {
+TEST(ExceptionTests, format) {
   verifyException(
       nimble::NimbleUserError(
           "file1", 23, "func1", "expr1", "err1", "code1", true),
@@ -117,29 +117,10 @@ TEST(ExceptionTests, Format) {
       "True");
 }
 
-TEST(ExceptionTests, Check) {
+TEST(ExceptionTests, check) {
   int a = 5;
   try {
     NIMBLE_CHECK(a < 3, "error message1");
-  } catch (const nimble::NimbleUserError& e) {
-    verifyException(
-        e,
-        "NimbleUserError",
-        __FILE__,
-        "",
-        "TestBody",
-        "a < 3",
-        "error message1",
-        "USER",
-        "INVALID_ARGUMENT",
-        "False");
-  }
-}
-
-TEST(ExceptionTests, Assert) {
-  int a = 5;
-  try {
-    NIMBLE_ASSERT(a > 8, "error message2");
   } catch (const nimble::NimbleInternalError& e) {
     verifyException(
         e,
@@ -147,15 +128,15 @@ TEST(ExceptionTests, Assert) {
         __FILE__,
         "",
         "TestBody",
-        "a > 8",
-        "error message2",
+        "a < 3",
+        "error message1",
         "INTERNAL",
-        "INVALID_STATE",
+        "INVALID_ARGUMENT",
         "False");
   }
 }
 
-TEST(ExceptionTests, Verify) {
+TEST(ExceptionTests, verify) {
   try {
     NIMBLE_VERIFY_EXTERNAL(
         1 == 2,
@@ -179,7 +160,7 @@ TEST(ExceptionTests, Verify) {
   }
 }
 
-TEST(ExceptionTests, Unreachable) {
+TEST(ExceptionTests, unreachable) {
   try {
     NIMBLE_UNREACHABLE("error message");
   } catch (const nimble::NimbleInternalError& e) {
@@ -197,7 +178,7 @@ TEST(ExceptionTests, Unreachable) {
   }
 }
 
-TEST(ExceptionTests, NotImplemented) {
+TEST(ExceptionTests, notImplemented) {
   try {
     NIMBLE_NOT_IMPLEMENTED("error message7");
   } catch (const nimble::NimbleInternalError& e) {
@@ -215,9 +196,9 @@ TEST(ExceptionTests, NotImplemented) {
   }
 }
 
-TEST(ExceptionTests, NotSupported) {
+TEST(ExceptionTests, notSupported) {
   try {
-    NIMBLE_NOT_SUPPORTED("error message6");
+    NIMBLE_UNSUPPORTED("error message6");
   } catch (const nimble::NimbleUserError& e) {
     verifyException(
         e,
@@ -233,7 +214,7 @@ TEST(ExceptionTests, NotSupported) {
   }
 }
 
-TEST(ExceptionTests, StackTraceThreads) {
+TEST(ExceptionTests, stackTraceThreads) {
   // Make sure captured stack trace doesn't need anything from thread local
   // storage
   std::exception_ptr e;
@@ -255,7 +236,7 @@ TEST(ExceptionTests, StackTraceThreads) {
           "facebook::nimble::NimbleException::NimbleException"));
 }
 
-TEST(ExceptionTests, Context) {
+TEST(ExceptionTests, context) {
   auto messageFunc = [](velox::VeloxException::Type exceptionType, void* arg) {
     auto msg = *static_cast<const std::string*>(arg);
     switch (exceptionType) {
@@ -275,7 +256,7 @@ TEST(ExceptionTests, Context) {
       {messageFunc, &context3Message, false});
 
   try {
-    NIMBLE_NOT_SUPPORTED("");
+    NIMBLE_UNSUPPORTED("");
     FAIL();
   } catch (const nimble::NimbleException& e) {
     ASSERT_EQ(e.context(), "USER 3 USER 1");
@@ -292,6 +273,162 @@ TEST(ExceptionTests, Context) {
     ASSERT_NE(
         std::string(e.what()).find("Context: " + e.context()),
         std::string::npos);
+  }
+}
+
+TEST(ExceptionTests, checkComparisons) {
+  // Test NIMBLE_CHECK_GT
+  try {
+    NIMBLE_CHECK_GT(5, 10);
+    FAIL() << "Should have thrown";
+  } catch (const nimble::NimbleInternalError& e) {
+    EXPECT_NE(std::string(e.what()).find("(5 vs. 10)"), std::string::npos);
+    EXPECT_EQ(e.errorCode(), "INVALID_ARGUMENT");
+  }
+
+  // Test NIMBLE_CHECK_GE
+  try {
+    NIMBLE_CHECK_GE(3, 5);
+    FAIL() << "Should have thrown";
+  } catch (const nimble::NimbleInternalError& e) {
+    EXPECT_NE(std::string(e.what()).find("(3 vs. 5)"), std::string::npos);
+  }
+
+  // Test NIMBLE_CHECK_LT
+  try {
+    NIMBLE_CHECK_LT(10, 5);
+    FAIL() << "Should have thrown";
+  } catch (const nimble::NimbleInternalError& e) {
+    EXPECT_NE(std::string(e.what()).find("(10 vs. 5)"), std::string::npos);
+  }
+
+  // Test NIMBLE_CHECK_LE
+  try {
+    NIMBLE_CHECK_LE(8, 3);
+    FAIL() << "Should have thrown";
+  } catch (const nimble::NimbleInternalError& e) {
+    EXPECT_NE(std::string(e.what()).find("(8 vs. 3)"), std::string::npos);
+  }
+
+  // Test NIMBLE_CHECK_EQ
+  try {
+    NIMBLE_CHECK_EQ(5, 10);
+    FAIL() << "Should have thrown";
+  } catch (const nimble::NimbleInternalError& e) {
+    EXPECT_NE(std::string(e.what()).find("(5 vs. 10)"), std::string::npos);
+  }
+
+  // Test NIMBLE_CHECK_NE
+  try {
+    NIMBLE_CHECK_NE(7, 7);
+    FAIL() << "Should have thrown";
+  } catch (const nimble::NimbleInternalError& e) {
+    EXPECT_NE(std::string(e.what()).find("(7 vs. 7)"), std::string::npos);
+  }
+
+  // Test successful comparison (should not throw)
+  NIMBLE_CHECK_GT(10, 5);
+  NIMBLE_CHECK_GE(5, 5);
+  NIMBLE_CHECK_LT(3, 8);
+  NIMBLE_CHECK_LE(4, 4);
+  NIMBLE_CHECK_EQ(7, 7);
+  NIMBLE_CHECK_NE(3, 5);
+}
+
+TEST(ExceptionTests, checkComparisonsWithCustomMessage) {
+  // Test with custom format message
+  try {
+    NIMBLE_CHECK_GT(5, 10, "custom message: {} items", 42);
+    FAIL() << "Should have thrown";
+  } catch (const nimble::NimbleInternalError& e) {
+    std::string what = e.what();
+    EXPECT_NE(what.find("(5 vs. 10)"), std::string::npos);
+    EXPECT_NE(what.find("custom message: 42 items"), std::string::npos);
+  }
+
+  // Test NIMBLE_CHECK_EQ with custom message
+  try {
+    NIMBLE_CHECK_EQ(100, 200, "Size mismatch");
+    FAIL() << "Should have thrown";
+  } catch (const nimble::NimbleInternalError& e) {
+    std::string what = e.what();
+    EXPECT_NE(what.find("(100 vs. 200)"), std::string::npos);
+    EXPECT_NE(what.find("Size mismatch"), std::string::npos);
+  }
+}
+
+TEST(ExceptionTests, checkNull) {
+  int* nullPtr = nullptr;
+  int value = 42;
+  int* validPtr = &value;
+
+  // Test NIMBLE_CHECK_NULL - should throw when pointer is not null
+  try {
+    NIMBLE_CHECK_NULL(validPtr);
+    FAIL() << "Should have thrown";
+  } catch (const nimble::NimbleInternalError& e) {
+    EXPECT_EQ(e.errorCode(), "INVALID_ARGUMENT");
+  }
+
+  // Test NIMBLE_CHECK_NULL - should not throw when pointer is null
+  NIMBLE_CHECK_NULL(nullPtr);
+
+  // Test NIMBLE_CHECK_NOT_NULL - should throw when pointer is null
+  try {
+    NIMBLE_CHECK_NOT_NULL(nullPtr);
+    FAIL() << "Should have thrown";
+  } catch (const nimble::NimbleInternalError& e) {
+    EXPECT_EQ(e.errorCode(), "INVALID_ARGUMENT");
+  }
+
+  // Test NIMBLE_CHECK_NOT_NULL - should not throw when pointer is valid
+  NIMBLE_CHECK_NOT_NULL(validPtr);
+}
+
+TEST(ExceptionTests, checkNullWithMessage) {
+  int* nullPtr = nullptr;
+  int value = 42;
+  int* validPtr = &value;
+
+  // Test with custom message
+  try {
+    NIMBLE_CHECK_NULL(validPtr, "Expected null pointer");
+    FAIL() << "Should have thrown";
+  } catch (const nimble::NimbleInternalError& e) {
+    EXPECT_NE(
+        std::string(e.what()).find("Expected null pointer"), std::string::npos);
+  }
+
+  try {
+    NIMBLE_CHECK_NOT_NULL(nullPtr, "Pointer should not be null");
+    FAIL() << "Should have thrown";
+  } catch (const nimble::NimbleInternalError& e) {
+    EXPECT_NE(
+        std::string(e.what()).find("Pointer should not be null"),
+        std::string::npos);
+  }
+}
+
+TEST(ExceptionTests, failMacros) {
+  // Test NIMBLE_FAIL
+  try {
+    NIMBLE_FAIL("Internal error: {}", 42);
+    FAIL() << "Should have thrown";
+  } catch (const nimble::NimbleInternalError& e) {
+    EXPECT_NE(
+        std::string(e.what()).find("Internal error: 42"), std::string::npos);
+    EXPECT_EQ(e.errorCode(), "INVALID_STATE");
+  }
+
+  // Test NIMBLE_USER_FAIL
+  try {
+    NIMBLE_USER_FAIL("User error: {} is invalid", "input");
+    FAIL() << "Should have thrown";
+  } catch (const nimble::NimbleUserError& e) {
+    EXPECT_NE(
+        std::string(e.what()).find("User error: input is invalid"),
+        std::string::npos);
+    EXPECT_EQ(e.errorCode(), "INVALID_ARGUMENT");
   }
 }
 

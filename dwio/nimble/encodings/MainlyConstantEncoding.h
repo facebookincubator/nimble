@@ -173,8 +173,9 @@ void MainlyConstantEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
       *output++ = *nextOtherValue++;
     }
   }
-  NIMBLE_DASSERT(
-      nextOtherValue - otherValuesBuffer_.begin() == nonCommonCount,
+  NIMBLE_DCHECK_EQ(
+      nextOtherValue - otherValuesBuffer_.begin(),
+      nonCommonCount,
       "Encoding size mismatch.");
 }
 
@@ -299,7 +300,7 @@ void MainlyConstantEncoding<T>::bulkScan(
   }
   visitor.setRowIndex(visitor.numRows());
   if constexpr (V::kHasHook) {
-    NIMBLE_DASSERT(numValues == numNonNulls, "");
+    NIMBLE_DCHECK_EQ(numValues, numNonNulls);
     visitor.hook().addValues(scatterRows, values, numNonNulls);
   } else {
     visitor.addNumValues(V::kFilterOnly ? numHits : numValues);
@@ -388,7 +389,7 @@ std::string_view MainlyConstantEncoding<T>::encode(
   encoding::writeString(serializedIsCommon, pos);
   encoding::writeString(serializedOtherValues, pos);
   encoding::write<physicalType>(commonValue, pos);
-  NIMBLE_DASSERT(pos - reserved == encodingSize, "Encoding size mismatch.");
+  NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
   return {reserved, encodingSize};
 }
 

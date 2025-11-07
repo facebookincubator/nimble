@@ -182,7 +182,7 @@ std::string_view VarintEncoding<T>::encode(
   for (auto value : values) {
     varint::writeVarint(value - selection.statistics().min(), &pos);
   }
-  NIMBLE_DASSERT(pos - reserved == encodingSize, "Encoding size mismatch.");
+  NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
   // Adding 7 bytes, to allow bulk materialization to access the last 64 bit
   // word, even if it is not full.
   return {reserved, encodingSize};

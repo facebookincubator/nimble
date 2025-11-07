@@ -319,7 +319,7 @@ void DeltaEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
 //   encoding::writeBytes(serializedDeltas, pos);
 //   encoding::writeBytes(serializedRestatements, pos);
 //   encoding::writeBytes(serializedIsRestatements, pos);
-//   NIMBLE_DASSERT(pos - reserved == encodingSize, "Encoding size mismatch.");
+//   NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
 //   return {reserved, encodingSize};
 // }
 

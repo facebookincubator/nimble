@@ -42,7 +42,7 @@ std::string toString(ScalarKind kind) {
     CASE(Undefined);
 #undef CASE
   }
-  NIMBLE_UNREACHABLE(fmt::format("Unknown: {}.", static_cast<int32_t>(kind)));
+  NIMBLE_UNREACHABLE("Unknown: {}.", static_cast<int32_t>(kind));
 }
 
 std::string toString(Kind kind) {
@@ -60,7 +60,7 @@ std::string toString(Kind kind) {
     CASE(SlidingWindowMap);
 #undef CASE
   }
-  NIMBLE_UNREACHABLE(fmt::format("Unknown: {}.", static_cast<int32_t>(kind)));
+  NIMBLE_UNREACHABLE("Unknown: {}.", static_cast<int32_t>(kind));
 }
 
 } // namespace facebook::nimble

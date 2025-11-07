@@ -397,12 +397,12 @@ class RowFieldWriter : public FieldWriter {
     uint64_t nullCount = 0;
 
     if (row) {
-      NIMBLE_CHECK(
-          fields_.size() == row->childrenSize(),
-          fmt::format(
-              "Schema mismatch: expected {} fields, but got {} fields",
-              fields_.size(),
-              row->childrenSize()));
+      NIMBLE_CHECK_EQ(
+          fields_.size(),
+          row->childrenSize(),
+          "Schema mismatch: expected {} fields, but got {} fields",
+          fields_.size(),
+          row->childrenSize());
       nullsStream_.ensureAdditionalNullsCapacity(vector->mayHaveNulls(), size);
       if (row->mayHaveNulls() && !ignoreNulls_) {
         childRangesPtr = &childRanges;
@@ -419,13 +419,13 @@ class RowFieldWriter : public FieldWriter {
       auto decodingContext = context_.getDecodingContext();
       auto& decoded = decodingContext.decode(vector, ranges);
       row = decoded.base()->as<velox::RowVector>();
-      NIMBLE_ASSERT(row, "Unexpected vector type");
-      NIMBLE_CHECK(
-          fields_.size() == row->childrenSize(),
-          fmt::format(
-              "Schema mismatch: expected {} fields, but got {} fields",
-              fields_.size(),
-              row->childrenSize()));
+      NIMBLE_CHECK_NOT_NULL(row, "Unexpected vector type");
+      NIMBLE_CHECK_EQ(
+          fields_.size(),
+          row->childrenSize(),
+          "Schema mismatch: expected {} fields, but got {} fields",
+          fields_.size(),
+          row->childrenSize());
       childRangesPtr = &childRanges;
       nullsStream_.ensureAdditionalNullsCapacity(decoded.mayHaveNulls(), size);
       auto nonNullCount = ignoreNulls_
@@ -532,7 +532,7 @@ class MultiValueFieldWriter : public FieldWriter {
       auto decodingContext = context_.getDecodingContext();
       auto& decoded = decodingContext.decode(vector, ranges);
       casted = decoded.base()->as<T>();
-      NIMBLE_ASSERT(casted, "Unexpected vector type");
+      NIMBLE_CHECK_NOT_NULL(casted, "Unexpected vector type");
       offsets = casted->rawOffsets();
       lengths = casted->rawSizes();
 
@@ -564,7 +564,7 @@ class ArrayFieldWriter : public MultiValueFieldWriter {
     auto arrayType =
         std::dynamic_pointer_cast<const velox::ArrayType>(type->type());
 
-    NIMBLE_DASSERT(type->size() == 1, "Invalid array type.");
+    NIMBLE_DCHECK_EQ(type->size(), 1, "Invalid array type.");
     elements_ = FieldWriter::create(context, type->childAt(0));
 
     typeBuilder_->asArray().setChildren(elements_->typeBuilder());
@@ -605,7 +605,7 @@ class MapFieldWriter : public MultiValueFieldWriter {
     auto mapType =
         std::dynamic_pointer_cast<const velox::MapType>(type->type());
 
-    NIMBLE_DASSERT(type->size() == 2, "Invalid map type.");
+    NIMBLE_DCHECK_EQ(type->size(), 2, "Invalid map type.");
     keys_ = FieldWriter::create(context, type->childAt(0));
     values_ = FieldWriter::create(context, type->childAt(1));
     typeBuilder_->asMap().setChildren(
@@ -654,7 +654,7 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
         currentOffset_(0),
         cached_{false},
         cachedLength_{0} {
-    NIMBLE_DASSERT(type->size() == 2, "Invalid map type.");
+    NIMBLE_DCHECK_EQ(type->size(), 2, "Invalid map type.");
     keys_ = FieldWriter::create(context, type->childAt(0));
     values_ = FieldWriter::create(context, type->childAt(1));
     typeBuilder_->asSlidingWindowMap().setChildren(
@@ -764,7 +764,7 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
       auto decodingContext = context_.getDecodingContext();
       auto& decoded = decodingContext.decode(vector, ranges);
       mapVector = decoded.base()->template as<velox::MapVector>();
-      NIMBLE_ASSERT(mapVector, "Unexpected vector type");
+      NIMBLE_CHECK_NOT_NULL(mapVector, "Unexpected vector type");
       rawOffsets = mapVector->rawOffsets();
       rawLengths = mapVector->rawSizes();
       offsetsStream_.ensureAdditionalNullsCapacity(
@@ -963,7 +963,7 @@ class FlatMapFieldWriter : public FieldWriter {
   FlatMapPassthroughValueFieldWriter& findPassthroughValueFieldWriter(
       const std::string& key) {
     auto existingPair = currentPassthroughFields_.find(key);
-    NIMBLE_ASSERT(
+    NIMBLE_CHECK(
         existingPair != currentPassthroughFields_.end(),
         "Field writer must already exist in map");
     return *existingPair->second;
@@ -972,11 +972,11 @@ class FlatMapFieldWriter : public FieldWriter {
   void ingestFlattenedMap(
       const velox::VectorPtr& vector,
       const OrderedRanges& ranges) {
-    NIMBLE_ASSERT(
+    NIMBLE_CHECK(
         currentValueFields_.empty() && allValueFields_.empty(),
         "Mixing map and flatmap vectors in the FlatMapFieldWriter is not supported");
     const auto& flatMap = vector->as<velox::RowVector>();
-    NIMBLE_ASSERT(
+    NIMBLE_CHECK_NOT_NULL(
         flatMap,
         "Unexpected vector type. Vector must be a decoded ROW vector.");
     const auto size = ranges.size();
@@ -1015,7 +1015,7 @@ class FlatMapFieldWriter : public FieldWriter {
       const velox::VectorPtr& vector,
       const OrderedRanges& ranges,
       folly::Executor* executor = nullptr) {
-    NIMBLE_ASSERT(
+    NIMBLE_CHECK(
         currentPassthroughFields_.empty(),
         "Mixing map and flatmap vectors in the FlatMapFieldWriter is not supported");
     auto size = ranges.size();
@@ -1038,10 +1038,9 @@ class FlatMapFieldWriter : public FieldWriter {
         // vector.
         NIMBLE_CHECK(
             valueField->add(elementIdx, nonNullCount),
-            fmt::format(
-                "Duplicate key: {} at flatmap with node id {}",
-                folly::to<std::string>(keyVector),
-                nodeId_));
+            "Duplicate key: {} at flatmap with node id {}",
+            folly::to<std::string>(keyVector),
+            nodeId_);
       }
       ++nonNullCount;
     };
@@ -1093,7 +1092,7 @@ class FlatMapFieldWriter : public FieldWriter {
       auto decodingContext = context_.getDecodingContext();
       auto& decodedMap = decodingContext.decode(vector, ranges);
       map = decodedMap.base()->template as<velox::MapVector>();
-      NIMBLE_ASSERT(map, "Unexpected vector type");
+      NIMBLE_CHECK_NOT_NULL(map, "Unexpected vector type");
       offsets = map->rawOffsets();
       lengths = map->rawSizes();
 
@@ -1160,8 +1159,7 @@ class FlatMapFieldWriter : public FieldWriter {
     }
 
     auto stringKey = folly::to<std::string>(key);
-    NIMBLE_DASSERT(
-        !stringKey.empty(), "String key cannot be empty for flatmap");
+    NIMBLE_DCHECK(!stringKey.empty(), "String key cannot be empty for flatmap");
 
     // check whether the typebuilder for this key is already present
     auto flatFieldIt = allValueFields_.find(key);
@@ -1213,10 +1211,11 @@ class FlatMapFieldWriter : public FieldWriter {
 std::unique_ptr<FieldWriter> createFlatMapFieldWriter(
     FieldWriterContext& context,
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& type) {
-  NIMBLE_DASSERT(
-      type->type()->kind() == velox::TypeKind::MAP,
+  NIMBLE_DCHECK_EQ(
+      type->type()->kind(),
+      velox::TypeKind::MAP,
       "Unexpected flat-map field type.");
-  NIMBLE_DASSERT(type->size() == 2, "Invalid flat-map field type.");
+  NIMBLE_DCHECK_EQ(type->size(), 2, "Invalid flat-map field type.");
   auto kind = type->childAt(0)->type()->kind();
   switch (kind) {
     case velox::TypeKind::TINYINT:
@@ -1238,10 +1237,9 @@ std::unique_ptr<FieldWriter> createFlatMapFieldWriter(
       return std::make_unique<FlatMapFieldWriter<velox::TypeKind::VARBINARY>>(
           context, type);
     default:
-      NIMBLE_NOT_SUPPORTED(
-          fmt::format(
-              "Unsupported flat map key type {}.",
-              type->childAt(0)->type()->toString()));
+      NIMBLE_UNSUPPORTED(
+          "Unsupported flat map key type {}.",
+          type->childAt(0)->type()->toString());
   }
 }
 
@@ -1551,8 +1549,9 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
     if (prevIndex != -1 && lengthsData.size() > 0) {
       cached_ = true;
       cachedSize_ = lengthsData[lengthsData.size() - 1];
-      NIMBLE_ASSERT(
-          lengthsData[lengthsData.size() - 1] == rawLengths[prevIndex],
+      NIMBLE_CHECK_EQ(
+          lengthsData[lengthsData.size() - 1],
+          rawLengths[prevIndex],
           "Unexpected index: Prev index is not the last item in the list.");
       cachedValue_->prepareForReuse();
       velox::BaseVector::CopyRange cacheRange{
@@ -1595,7 +1594,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       auto decodingContext = context_.getDecodingContext();
       auto& decoded = decodingContext.decode(vector, ranges);
       arrayVector = decoded.base()->template as<velox::ArrayVector>();
-      NIMBLE_ASSERT(arrayVector, "Unexpected vector type");
+      NIMBLE_CHECK_NOT_NULL(arrayVector, "Unexpected vector type");
       rawOffsets = arrayVector->rawOffsets();
       rawLengths = arrayVector->rawSizes();
 
@@ -1614,10 +1613,11 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
 std::unique_ptr<FieldWriter> createArrayWithOffsetsFieldWriter(
     FieldWriterContext& context,
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& type) {
-  NIMBLE_DASSERT(
-      type->type()->kind() == velox::TypeKind::ARRAY,
+  NIMBLE_DCHECK_EQ(
+      type->type()->kind(),
+      velox::TypeKind::ARRAY,
       "Unexpected offset-array field type.");
-  NIMBLE_DASSERT(type->size() == 1, "Invalid offset-array field type.");
+  NIMBLE_DCHECK_EQ(type->size(), 1, "Invalid offset-array field type.");
   auto kind = type->childAt(0)->type()->kind();
   switch (kind) {
     case velox::TypeKind::TINYINT:
@@ -1640,10 +1640,9 @@ std::unique_ptr<FieldWriter> createArrayWithOffsetsFieldWriter(
       return std::make_unique<
           ArrayWithOffsetsFieldWriter<velox::TypeKind::DOUBLE>>(context, type);
     default:
-      NIMBLE_NOT_SUPPORTED(
-          fmt::format(
-              "Unsupported dedup array element type {}.",
-              type->childAt(0)->type()->toString()));
+      NIMBLE_UNSUPPORTED(
+          "Unsupported dedup array element type {}.",
+          type->childAt(0)->type()->toString());
   }
 }
 
@@ -1799,8 +1798,7 @@ std::unique_ptr<FieldWriter> FieldWriter::create(
       break;
     }
     default:
-      NIMBLE_NOT_SUPPORTED(
-          fmt::format("Unsupported kind: {}.", type->type()->kind()));
+      NIMBLE_UNSUPPORTED("Unsupported kind: {}.", type->type()->kind());
   }
 
   context.typeAddedHandler(*field->typeBuilder());

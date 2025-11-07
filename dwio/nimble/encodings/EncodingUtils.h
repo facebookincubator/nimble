@@ -53,14 +53,17 @@ inline int dataTypeSize(DataType type) {
     case DataType::Double:
       return 8;
     default:
-      NIMBLE_NOT_SUPPORTED(toString(type));
+      NIMBLE_UNSUPPORTED(toString(type));
   }
 }
 
 template <typename F>
 auto encodingTypeDispatchString(Encoding& encoding, F f) {
-  NIMBLE_ASSERT(
-      encoding.dataType() == DataType::String, toString(encoding.dataType()));
+  NIMBLE_CHECK_EQ(
+      encoding.dataType(),
+      DataType::String,
+      "{}",
+      toString(encoding.dataType()));
   switch (encoding.encodingType()) {
     case EncodingType::Trivial:
       return f(static_cast<TrivialEncoding<std::string_view>&>(encoding));
@@ -76,14 +79,16 @@ auto encodingTypeDispatchString(Encoding& encoding, F f) {
       return f(
           static_cast<MainlyConstantEncoding<std::string_view>&>(encoding));
     default:
-      NIMBLE_NOT_SUPPORTED(toString(encoding.encodingType()));
+      NIMBLE_UNSUPPORTED(toString(encoding.encodingType()));
   }
 }
 
 template <typename T, typename F>
 auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
-  NIMBLE_ASSERT(
-      dataTypeSize(encoding.dataType()) == sizeof(T),
+  NIMBLE_CHECK_EQ(
+      dataTypeSize(encoding.dataType()),
+      sizeof(T),
+      "{}",
       toString(encoding.dataType()));
   switch (encoding.encodingType()) {
     case EncodingType::Trivial:
@@ -120,7 +125,7 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
     case EncodingType::MainlyConstant:
       return f(static_cast<MainlyConstantEncoding<T>&>(encoding));
     default:
-      NIMBLE_NOT_SUPPORTED(toString(encoding.encodingType()));
+      NIMBLE_UNSUPPORTED(toString(encoding.encodingType()));
   }
 }
 
@@ -137,7 +142,7 @@ void callReadWithVisitor(
       typedEncoding.readWithVisitor(visitor, params);
     });
   } else if constexpr (std::is_same_v<T, velox::int128_t>) {
-    NIMBLE_NOT_SUPPORTED("Int128 is not supported in Nimble");
+    NIMBLE_UNSUPPORTED("Int128 is not supported in Nimble");
   } else if constexpr (std::is_same_v<T, int8_t>) {
     if (encoding.dataType() == DataType::Bool) {
       detail::encodingTypeDispatchNonString<bool>(

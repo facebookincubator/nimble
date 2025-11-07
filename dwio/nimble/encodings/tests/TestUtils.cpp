@@ -32,7 +32,7 @@ uint64_t TestUtils::getRawDataSize(
   uint32_t rowCount = encoding->rowCount();
 
   if (encodingType == EncodingType::Sentinel) {
-    NIMBLE_NOT_SUPPORTED("Sentinel encoding is not supported");
+    NIMBLE_UNSUPPORTED("Sentinel encoding is not supported");
   }
 
   if (encodingType == EncodingType::Nullable) {
@@ -127,9 +127,8 @@ uint64_t TestUtils::getRawDataSize(
           }
           break;
         }
-
         default:
-          NIMBLE_NOT_SUPPORTED("Encoding type does not support strings.");
+          NIMBLE_UNSUPPORTED("Encoding type does not support strings.");
       }
       return result;
     }

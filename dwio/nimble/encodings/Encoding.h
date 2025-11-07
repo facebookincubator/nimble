@@ -195,14 +195,14 @@ class Encoding {
   // Dictionary method.
   // The size of the dictionary, which is equal to the number of unique values.
   virtual uint32_t dictionarySize() const {
-    NIMBLE_NOT_SUPPORTED("Data is not dictionary encoded.");
+    NIMBLE_UNSUPPORTED("Data is not dictionary encoded.");
   }
 
   // Dictionary method.
   // Returns the value at the given index, which must be in [0, num_entries).
   // This pointer is only guaranteed valid until the next Entry call.
   virtual const void* dictionaryEntry(uint32_t /* index */) const {
-    NIMBLE_NOT_SUPPORTED("Data is not dictionary encoded.");
+    NIMBLE_UNSUPPORTED("Data is not dictionary encoded.");
   }
 
   // Dictionary method.
@@ -211,7 +211,7 @@ class Encoding {
   virtual void materializeIndices(
       uint32_t /* rowCount */,
       uint32_t* /* buffer */) {
-    NIMBLE_NOT_SUPPORTED("Data is not dictionary encoded.");
+    NIMBLE_UNSUPPORTED("Data is not dictionary encoded.");
   }
 
   // A string for debugging/iteration that gives details about *this.
@@ -274,9 +274,7 @@ class TypedEncoding : public Encoding {
       return rowCount;
     }
 
-    NIMBLE_CHECK(
-        rowCount < scatterCount,
-        fmt::format("Unexpected count {} vs {}", rowCount, scatterCount));
+    NIMBLE_CHECK_LT(rowCount, scatterCount, "Unexpected count");
 
     void* nullBitmap = nulls();
 
@@ -430,9 +428,8 @@ void readWithVisitorFast(
   const auto numNonNullsSoFar =
       velox::bits::countNonNulls(nulls, 0, params.numScanned);
   if constexpr (V::dense) {
-    NIMBLE_DASSERT(
-        !visitor.reader().hasNulls() || visitor.reader().returnReaderNulls(),
-        "");
+    NIMBLE_DCHECK(
+        !visitor.reader().hasNulls() || visitor.reader().returnReaderNulls());
     outerRows.resize(numRows);
     auto numNonNulls = velox::simd::indicesOfSetBits(
         nulls, visitor.rowIndex(), visitor.numRows(), outerRows.data());

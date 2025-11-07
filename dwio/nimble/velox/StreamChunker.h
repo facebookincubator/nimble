@@ -36,8 +36,9 @@ uint64_t getNewBufferCapacity(
   if (currentCapacityCount < maxChunkElementCount) {
     return currentCapacityCount;
   }
-  NIMBLE_DASSERT(
-      requiredCapacityCount <= currentCapacityCount,
+  NIMBLE_DCHECK_LE(
+      requiredCapacityCount,
+      currentCapacityCount,
       "Required capacity should not exceed current capacity");
   return maxChunkElementCount +
       (currentCapacityCount - maxChunkElementCount) * 0.5;
@@ -123,7 +124,7 @@ class ContentStreamChunker final : public StreamChunker {
         std::is_same_v<StreamDataT, ContentStreamData<T>> ||
             std::is_same_v<StreamDataT, NullableContentStreamData<T>>,
         "StreamDataT must be either ContentStreamData<T> or NullableContentStreamData<T>");
-    NIMBLE_DASSERT(
+    NIMBLE_DCHECK(
         !streamData.hasNulls(),
         "Streams with nulls should be handled by NullableContentStreamData");
   }
@@ -205,18 +206,20 @@ class ContentStreamChunker final : public StreamChunker {
     // Move and clear existing buffer
     auto tempData = std::move(currentData);
     streamData_.reset();
-    NIMBLE_DASSERT(
+    NIMBLE_DCHECK(
         streamData_.empty(), "StreamData should be empty after reset");
 
     auto& mutableData = streamData_.mutableData();
     mutableData.reserve(newDataCapacity);
-    NIMBLE_DASSERT(
-        mutableData.capacity() >= newDataCapacity,
+    NIMBLE_DCHECK_GE(
+        mutableData.capacity(),
+        newDataCapacity,
         "Data buffer capacity should be at least new capacity");
 
     mutableData.resize(remainingDataCount);
-    NIMBLE_DASSERT(
-        mutableData.size() == remainingDataCount,
+    NIMBLE_DCHECK_EQ(
+        mutableData.size(),
+        remainingDataCount,
         "Data buffer size should be equal to remaining data count");
 
     std::copy_n(
@@ -307,21 +310,23 @@ class NullsStreamChunker final : public StreamChunker {
     auto tempNonNulls = std::move(nonNulls);
     const bool hasNulls = streamData_.hasNulls();
     streamData_.reset();
-    NIMBLE_DASSERT(
+    NIMBLE_DCHECK(
         streamData_.empty(), "StreamData should be empty after reset");
 
     auto& mutableNonNulls = streamData_.mutableNonNulls();
     mutableNonNulls.reserve(newCapacity);
-    NIMBLE_DASSERT(
-        mutableNonNulls.capacity() >= newCapacity,
+    NIMBLE_DCHECK_GE(
+        mutableNonNulls.capacity(),
+        newCapacity,
         "NonNulls buffer capacity should be at least new capacity");
 
     streamData_.ensureAdditionalNullsCapacity(
         hasNulls, static_cast<uint32_t>(remainingNonNullsCount));
     if (hasNulls) {
       mutableNonNulls.resize(remainingNonNullsCount);
-      NIMBLE_DASSERT(
-          mutableNonNulls.size() == remainingNonNullsCount,
+      NIMBLE_DCHECK_EQ(
+          mutableNonNulls.size(),
+          remainingNonNullsCount,
           "NonNulls buffer size should be equal to remaining non-nulls count");
 
       std::copy_n(
@@ -358,7 +363,7 @@ class NullableContentStreamChunker final : public StreamChunker {
             options.isFirstChunk)},
         ensureFullChunks_{options.ensureFullChunks} {
     static_assert(sizeof(bool) == 1);
-    NIMBLE_DASSERT(
+    NIMBLE_DCHECK(
         streamData.hasNulls(),
         "ContentStreamChunker should be used when no nulls are present in stream.");
     streamData.materialize();
@@ -451,18 +456,20 @@ class NullableContentStreamChunker final : public StreamChunker {
     auto tempData = std::move(currentData);
     const bool hasNulls = streamData_.hasNulls();
     streamData_.reset();
-    NIMBLE_DASSERT(
+    NIMBLE_DCHECK(
         streamData_.empty(), "StreamData should be empty after reset");
 
     auto& mutableData = streamData_.mutableData();
     mutableData.reserve(newDataCapactity);
-    NIMBLE_DASSERT(
-        mutableData.capacity() >= newDataCapactity,
+    NIMBLE_DCHECK_GE(
+        mutableData.capacity(),
+        newDataCapactity,
         "Data buffer capacity should be at least new capacity");
 
     mutableData.resize(remainingDataCount);
-    NIMBLE_DASSERT(
-        mutableData.size() == remainingDataCount,
+    NIMBLE_DCHECK_EQ(
+        mutableData.size(),
+        remainingDataCount,
         "Data buffer size should be equal to remaining data count");
 
     std::copy_n(
@@ -472,16 +479,18 @@ class NullableContentStreamChunker final : public StreamChunker {
 
     auto& mutableNonNulls = streamData_.mutableNonNulls();
     mutableNonNulls.reserve(newNonNullsCapacity);
-    NIMBLE_DASSERT(
-        mutableNonNulls.capacity() >= newNonNullsCapacity,
+    NIMBLE_DCHECK_GE(
+        mutableNonNulls.capacity(),
+        newNonNullsCapacity,
         "NonNulls buffer capacity should be at least new capacity");
 
     streamData_.ensureAdditionalNullsCapacity(
         hasNulls, static_cast<uint32_t>(remainingNonNullsCount));
     if (hasNulls) {
       mutableNonNulls.resize(remainingNonNullsCount);
-      NIMBLE_DASSERT(
-          mutableNonNulls.size() == remainingNonNullsCount,
+      NIMBLE_DCHECK_EQ(
+          mutableNonNulls.size(),
+          remainingNonNullsCount,
           "NonNulls buffer size should be equal to remaining non-nulls count");
 
       std::copy_n(

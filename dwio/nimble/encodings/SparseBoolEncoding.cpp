@@ -140,7 +140,7 @@ std::string_view SparseBoolEncoding::encode(
   encoding::writeChar(sparseValue, pos);
   encoding::writeBytes(serializedIndices, pos);
 
-  NIMBLE_DASSERT(pos - reserved == encodingSize, "Encoding size mismatch.");
+  NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
   return {reserved, encodingSize};
 }
 

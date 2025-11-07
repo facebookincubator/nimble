@@ -41,7 +41,7 @@ std::unique_ptr<StreamChunker> getStreamChunkerTyped(
       auto* nullsStreamData = dynamic_cast<NullsStreamData*>(&streamData)) {
     return std::make_unique<NullsStreamChunker>(*nullsStreamData, options);
   }
-  NIMBLE_UNREACHABLE(fmt::format("Unsupported streamData type"))
+  NIMBLE_UNREACHABLE("Unsupported streamData type")
 }
 
 std::unique_ptr<StreamChunker> getStreamChunker(
@@ -63,8 +63,7 @@ std::unique_ptr<StreamChunker> getStreamChunker(
     HANDLE_SCALAR_KIND(String, std::string_view);
     HANDLE_SCALAR_KIND(Binary, std::string_view);
     default:
-      NIMBLE_UNREACHABLE(
-          fmt::format("Unsupported scalar kind {}", toString(scalarKind)));
+      NIMBLE_UNREACHABLE("Unsupported scalar kind {}", toString(scalarKind));
   }
 }
 } // namespace facebook::nimble

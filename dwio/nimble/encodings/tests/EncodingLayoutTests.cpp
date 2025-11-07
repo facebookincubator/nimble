@@ -309,7 +309,8 @@ TEST(EncodingLayoutTests, SizeTooSmall) {
     std::string output;
     // Encoding needs minimum of 5 bytes. 4 is not enough.
     output.resize(4);
-    EXPECT_THROW(expected.serialize(output), facebook::nimble::NimbleUserError);
+    EXPECT_THROW(
+        expected.serialize(output), facebook::nimble::NimbleInternalError);
   }
   {
     nimble::EncodingLayout expected{
@@ -335,7 +336,8 @@ TEST(EncodingLayoutTests, SizeTooSmall) {
     // 5 bytes for the top level encoding, plus 2 "exists" bytes.
     // Total of 7 bytes. 6 bytes is not enough.
     output.resize(6);
-    EXPECT_THROW(expected.serialize(output), facebook::nimble::NimbleUserError);
+    EXPECT_THROW(
+        expected.serialize(output), facebook::nimble::NimbleInternalError);
   }
   {
     nimble::EncodingLayout expected{
@@ -369,7 +371,8 @@ TEST(EncodingLayoutTests, SizeTooSmall) {
     // Each sub-encoding is 5 bytes (total of 10), plus 5 for the top level one.
     // Plus 2 "exists" bytes. Total of 17 bytes. 16 bytes is not enough.
     output.resize(16);
-    EXPECT_THROW(expected.serialize(output), facebook::nimble::NimbleUserError);
+    EXPECT_THROW(
+        expected.serialize(output), facebook::nimble::NimbleInternalError);
   }
 
   {

@@ -34,7 +34,7 @@ Encoding::Encoding(velox::memory::MemoryPool& pool, std::string_view data)
     pos += data.size();
     length -= data.size();
   }
-  NIMBLE_DASSERT(length == 0, "IOBuf chain length corruption");
+  NIMBLE_DCHECK_EQ(length, 0, "IOBuf chain length corruption");
 }
 
 void Encoding::serializePrefix(

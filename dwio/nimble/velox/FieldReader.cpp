@@ -368,7 +368,7 @@ class ScalarFieldReader final
          !isUnsignedIntegralType<TData>()) ||
         (isFloatingPointType<TRequested>() && !isFloatingPointType<TData>()) ||
         sizeof(TRequested) < sizeof(TData)) {
-      NIMBLE_ASSERT(false, "Incompatabile data type and requested type");
+      NIMBLE_FAIL("Incompatabile data type and requested type");
     }
   }
 
@@ -377,9 +377,8 @@ class ScalarFieldReader final
   std::optional<std::pair<uint32_t, uint64_t>> estimatedRowSize() const final {
     uint64_t totalBytes{0};
     const auto* encoding = decoder_->encoding();
-    NIMBLE_CHECK(
-        encoding != nullptr,
-        "Decoder must be loaded for output size estimation.");
+    NIMBLE_CHECK_NOT_NULL(
+        encoding, "Decoder must be loaded for output size estimation.");
     const auto rowCount = encoding->rowCount();
 
     if (encoding->isNullable()) {
@@ -491,8 +490,9 @@ class ScalarFieldReader final
           [&]() { return ensureNulls(vector, rowCount); },
           scatterBitmap);
 
-      NIMBLE_DASSERT(
-          vector->values()->size() == bits::bytesRequired(rowCount),
+      NIMBLE_DCHECK_EQ(
+          vector->values()->size(),
+          bits::bytesRequired(rowCount),
           "Unexpected values buffer size.");
       auto target = vector->values()->template asMutable<char>();
       std::fill(target, target + bits::bytesRequired(rowCount), 0);
@@ -500,8 +500,9 @@ class ScalarFieldReader final
         bits::maybeSetBit(i, target, buf[i]);
       }
     } else {
-      NIMBLE_DASSERT(
-          vector->values()->size() == (rowCount * sizeof(TRequested)),
+      NIMBLE_DCHECK_EQ(
+          vector->values()->size(),
+          (rowCount * sizeof(TRequested)),
           "Unexpected values buffer size.");
       nonNullCount = decoder_->next(
           count,
@@ -580,16 +581,14 @@ class ScalarFieldReaderFactory final : public FieldReaderFactory {
       case ScalarKind::String:
       case ScalarKind::Binary:
       case ScalarKind::Undefined: {
-        NIMBLE_NOT_SUPPORTED(
-            fmt::format(
-                "Unsupported nimble scalar type: {}.",
-                toString(descriptor.scalarKind())))
+        NIMBLE_UNSUPPORTED(
+            "Unsupported nimble scalar type: {}.",
+            toString(descriptor.scalarKind()));
       }
     }
     NIMBLE_UNREACHABLE(
-        fmt::format(
-            "Should not have nimble scalar type: {}.",
-            toString(descriptor.scalarKind())))
+        "Should not have nimble scalar type: {}.",
+        toString(descriptor.scalarKind()))
   }
 };
 
@@ -605,9 +604,8 @@ class StringFieldReader final : public FieldReader {
   std::optional<std::pair<uint32_t, uint64_t>> estimatedRowSize() const final {
     uint64_t totalBytes{0};
     const auto* encoding = decoder_->encoding();
-    NIMBLE_CHECK(
-        encoding != nullptr,
-        "Decoder must be loaded for output size estimation.");
+    NIMBLE_CHECK_NOT_NULL(
+        encoding, "Decoder must be loaded for output size estimation.");
     const auto* innerEncoding = encoding;
     const auto rowCount = encoding->rowCount();
 
@@ -616,8 +614,8 @@ class StringFieldReader final : public FieldReader {
       totalBytes += rowCount / 8;
       const auto* nullableEncoding =
           dynamic_cast<const NullableEncoding<std::string_view>*>(encoding);
-      NIMBLE_CHECK(
-          nullableEncoding != nullptr,
+      NIMBLE_CHECK_NOT_NULL(
+          nullableEncoding,
           "NullableEncoding is not used for nullable string field.");
       innerEncoding = nullableEncoding->nonNulls();
     }
@@ -732,24 +730,22 @@ class MultiValueFieldReader : public FieldReader {
     if (allocationSize == 0) {
       allocationSize = rowCount;
     }
-    NIMBLE_ASSERT(
-        allocationSize >= rowCount,
-        fmt::format(
-            "readCount should be less than allocationSize. {} vs {}",
-            allocationSize,
-            rowCount));
+    NIMBLE_CHECK_GE(
+        allocationSize,
+        rowCount,
+        "readCount should be less than allocationSize");
 
     auto vector = VectorInitializer<T>::initialize(
         &pool_, output, type_, allocationSize, std::forward<Args>(args)...);
     vector->resize(allocationSize);
 
-    NIMBLE_DASSERT(
-        vector->sizes()->size() ==
-            (allocationSize * sizeof(velox::vector_size_t)),
+    NIMBLE_DCHECK_EQ(
+        vector->sizes()->size(),
+        (allocationSize * sizeof(velox::vector_size_t)),
         "Unexpected 'sizes' buffer size.");
-    NIMBLE_DASSERT(
-        vector->offsets()->size() ==
-            (allocationSize * sizeof(velox::vector_size_t)),
+    NIMBLE_DCHECK_EQ(
+        vector->offsets()->size(),
+        (allocationSize * sizeof(velox::vector_size_t)),
         "Unexpected 'offsets' buffer size.");
     velox::vector_size_t* sizes =
         vector->sizes()->template asMutable<velox::vector_size_t>();
@@ -783,9 +779,10 @@ class MultiValueFieldReader : public FieldReader {
       }
     }
 
-    NIMBLE_CHECK(
-        childrenRows <= std::numeric_limits<velox::vector_size_t>::max(),
-        fmt::format("Unsupported children count: {}", childrenRows));
+    NIMBLE_CHECK_LE(
+        childrenRows,
+        std::numeric_limits<velox::vector_size_t>::max(),
+        "Unsupported children count");
     return static_cast<velox::vector_size_t>(childrenRows);
   }
 
@@ -818,9 +815,10 @@ class MultiValueFieldReader : public FieldReader {
       count -= readSize;
     }
 
-    NIMBLE_CHECK(
-        childrenCount <= std::numeric_limits<uint32_t>::max(),
-        fmt::format("Unsupported children count: {}", childrenCount));
+    NIMBLE_CHECK_LE(
+        childrenCount,
+        std::numeric_limits<uint32_t>::max(),
+        "Unsupported children count");
     return static_cast<uint32_t>(childrenCount);
   }
 };
@@ -838,9 +836,8 @@ class ArrayFieldReader final : public MultiValueFieldReader {
   std::optional<std::pair<uint32_t, uint64_t>> estimatedRowSize() const final {
     uint64_t totalBytes{0};
     const auto* encoding = decoder_->encoding();
-    NIMBLE_CHECK(
-        encoding != nullptr,
-        "Decoder must be loaded for output size estimation.");
+    NIMBLE_CHECK_NOT_NULL(
+        encoding, "Decoder must be loaded for output size estimation.");
     const auto rowCount = encoding->rowCount();
 
     // Adding memory for velox::BaseVector::nulls_.
@@ -1008,7 +1005,7 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
 
     bool hasNulls = nonNullCount != rowCount;
     auto indices = dictionaryVector->indices()->asMutable<OffsetType>();
-    NIMBLE_DASSERT(indices, "Indices missing.");
+    NIMBLE_DCHECK_NOT_NULL(indices, "Indices missing.");
 
     // Returns the first non-null index or -1 (if all are null).
     auto baseIndex = findFirstBit(rowCount, hasNulls, nullsPtr, indices);
@@ -1051,11 +1048,13 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
       vector->copyRanges(cachedValue_.get(), folly::Range(&cacheRange, 1));
 
       // copyRanges overwrites offsets from the source array and must be reset
-      NIMBLE_DASSERT(
-          vector->sizes()->size() == (dedupCount * sizeof(OffsetType)),
+      NIMBLE_DCHECK_EQ(
+          vector->sizes()->size(),
+          (dedupCount * sizeof(OffsetType)),
           "Unexpected 'sizes' buffer size.");
-      NIMBLE_DASSERT(
-          vector->offsets()->size() == (dedupCount * sizeof(OffsetType)),
+      NIMBLE_DCHECK_EQ(
+          vector->offsets()->size(),
+          (dedupCount * sizeof(OffsetType)),
           "Unexpected 'offsets' buffer size.");
       OffsetType* sizes = vector->sizes()->template asMutable<OffsetType>();
       OffsetType* offsets = vector->offsets()->template asMutable<OffsetType>();
@@ -1096,7 +1095,7 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
     // normalize the indices if not all null
     if (nonNullCount > 0) {
       if (hasNulls) {
-        NIMBLE_DASSERT(nullsPtr, "Nulls buffer missing.");
+        NIMBLE_DCHECK_NOT_NULL(nullsPtr, "Nulls buffer missing.");
         for (OffsetType idx = 0; idx < rowCount; idx++) {
           if (velox::bits::isBitNull(
                   static_cast<const uint64_t*>(nullsPtr), idx)) {
@@ -1115,7 +1114,7 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
     // update the indices as per cached and null locations
     if (hasNulls) {
       dictionaryVector->setNullCount(nonNullCount != rowCount);
-      NIMBLE_DASSERT(nullsPtr, "Nulls buffer missing.");
+      NIMBLE_DCHECK_NOT_NULL(nullsPtr, "Nulls buffer missing.");
       for (OffsetType idx = 0; idx < rowCount; idx++) {
         if (velox::bits::isBitNull(
                 static_cast<const uint64_t*>(nullsPtr), idx)) {
@@ -1218,7 +1217,7 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
       return rowCount - 1;
     }
 
-    NIMBLE_DASSERT(nulls, "Nulls buffer missing.");
+    NIMBLE_DCHECK_NOT_NULL(nulls, "Nulls buffer missing.");
     auto index = velox::bits::findLastBit(
         static_cast<const uint64_t*>(nulls), 0, rowCount);
     if (index == -1) {
@@ -1237,7 +1236,7 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
       return indices[0];
     }
 
-    NIMBLE_DASSERT(nulls, "Nulls buffer missing.");
+    NIMBLE_DCHECK_NOT_NULL(nulls, "Nulls buffer missing.");
     auto index = velox::bits::findFirstBit(
         static_cast<const uint64_t*>(nulls), 0, rowCount);
 
@@ -1273,9 +1272,8 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
     bool hasNulls = nonNullCount != rowCount;
 
     if (hasNulls) {
-      NIMBLE_DASSERT(
-          nullsPtr != nullptr,
-          "Data contain nulls but nulls buffer is not initialized.");
+      NIMBLE_DCHECK_NOT_NULL(
+          nullsPtr, "Data contain nulls but nulls buffer is not initialized.");
 
       for (uint32_t idx = 0; idx < rowCount; idx++) {
         if (velox::bits::isBitNull(
@@ -1434,9 +1432,8 @@ class SlidingWindowMapFieldReader final : public FieldReader {
     deduplicatedLengths.reserve(nonNullCount);
     uint32_t uniqueCount = 0, startOffset = 0, endOffset = 0;
     if (hasNulls) {
-      NIMBLE_DASSERT(
-          nullsPtr != nullptr,
-          "Data contain nulls but nulls buffer is not initialized.");
+      NIMBLE_DCHECK_NOT_NULL(
+          nullsPtr, "Data contain nulls but nulls buffer is not initialized.");
       uint32_t nullCount = 0;
       for (uint32_t idx = 0; idx < rowCount; ++idx) {
         if (velox::bits::isBitNull(
@@ -1466,8 +1463,8 @@ class SlidingWindowMapFieldReader final : public FieldReader {
         }
         indices[idx] = uniqueCount - 1;
       }
-      NIMBLE_ASSERT(
-          nonNullCount + nullCount == rowCount, "Null Count is not matching");
+      NIMBLE_CHECK_EQ(
+          nonNullCount + nullCount, rowCount, "Null Count is not matching");
     } else {
       deduplicatedOffsets.push_back(indices[0]);
       deduplicatedLengths.push_back(lengthBuffer[0]);
@@ -1491,10 +1488,11 @@ class SlidingWindowMapFieldReader final : public FieldReader {
       }
     }
 
-    NIMBLE_DASSERT(
-        deduplicatedLengths.size() > 0, "Invalid deduplicatedLengths size.");
-    NIMBLE_DASSERT(
-        deduplicatedLengths.size() == uniqueCount,
+    NIMBLE_DCHECK_GT(
+        deduplicatedLengths.size(), 0, "Invalid deduplicatedLengths size.");
+    NIMBLE_DCHECK_EQ(
+        deduplicatedLengths.size(),
+        uniqueCount,
         "deduplicatedLengths size mismatch.");
 
     // Fill the map vector
@@ -1779,8 +1777,8 @@ class SlidingWindowMapFieldReader final : public FieldReader {
 
   inline uint32_t cacheSize() {
     auto& cachedMap = static_cast<velox::MapVector&>(*cachedMap_);
-    NIMBLE_DASSERT(
-        isCached() && cachedMap.sizes()->size() > 0, "Unexpected cache state.");
+    NIMBLE_DCHECK_GT(
+        isCached() && cachedMap.sizes()->size(), 0, "Unexpected cache state.");
     return cachedMap.sizes()->as<int32_t>()[0];
   }
 
@@ -1846,9 +1844,8 @@ class MapFieldReader final : public MultiValueFieldReader {
   std::optional<std::pair<uint32_t, uint64_t>> estimatedRowSize() const final {
     uint64_t totalBytes{0};
     const auto* encoding = decoder_->encoding();
-    NIMBLE_CHECK(
-        encoding != nullptr,
-        "Decoder must be loaded for output size estimation.");
+    NIMBLE_CHECK_NOT_NULL(
+        encoding, "Decoder must be loaded for output size estimation.");
     const auto rowCount = encoding->rowCount();
 
     // Adding memory for velox::BaseVector::nulls_.
@@ -2030,9 +2027,8 @@ class RowFieldReader final : public FieldReader {
     uint64_t rowCount{0};
     if constexpr (hasNull) {
       const auto* encoding = decoder_->encoding();
-      NIMBLE_CHECK(
-          encoding != nullptr,
-          "Decoder must be loaded for output size estimation.");
+      NIMBLE_CHECK_NOT_NULL(
+          encoding, "Decoder must be loaded for output size estimation.");
       rowCount = encoding->rowCount();
       // Adding memory for velox::BaseVector::nulls_
       totalBytes += rowCount / 8;
@@ -2059,13 +2055,10 @@ class RowFieldReader final : public FieldReader {
       } else if (rowCount == 0) {
         rowCount = childRowCount;
       } else if (childRowCount != 0) {
-        NIMBLE_CHECK(
-            rowCount == childRowCount,
-            fmt::format(
-                "rowCount {} should be equal to childRowCount {} under no null "
-                "condition.",
-                rowCount,
-                childRowCount));
+        NIMBLE_CHECK_EQ(
+            rowCount,
+            childRowCount,
+            "rowCount should be equal to childRowCount under no null condition.");
       }
     }
 
@@ -2453,11 +2446,13 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
     // inMapTypes contains all projected children, including those that don't
     // exist in the schema. selectedChildren and valuesReaders only contain
     // those that also exist in the schema.
-    NIMBLE_ASSERT(
-        inMapDescriptors_.size() >= valueReaders_.size(),
+    NIMBLE_CHECK_GE(
+        inMapDescriptors_.size(),
+        valueReaders_.size(),
         "Value and inMaps size mismatch!");
-    NIMBLE_ASSERT(
-        selectedChildren.size() == valueReaders_.size(),
+    NIMBLE_CHECK_EQ(
+        selectedChildren.size(),
+        valueReaders_.size(),
         "Selected children and value readers size mismatch!");
 
     auto& flatMap = type->asFlatMap();
@@ -2555,13 +2550,11 @@ class StructFlatMapFieldReader : public FlatMapFieldReaderBase<T, hasNull> {
     uint64_t totalBytes{0};
     uint64_t rowCount{0};
     if constexpr (hasNull) {
-      NIMBLE_ASSERT(
-          FieldReader::decoder_ != nullptr,
-          "decoder_ should be set when hasNull is true");
+      NIMBLE_CHECK_NOT_NULL(
+          FieldReader::decoder_, "decoder_ should be set when hasNull is true");
       const auto* encoding = FieldReader::decoder_->encoding();
-      NIMBLE_CHECK(
-          encoding != nullptr,
-          "Decoder must be loaded for output size estimation.");
+      NIMBLE_CHECK_NOT_NULL(
+          encoding, "Decoder must be loaded for output size estimation.");
       rowCount = encoding->rowCount();
       // Adding memory for velox::BaseVector::nulls_
       totalBytes += rowCount / 8;
@@ -2581,24 +2574,17 @@ class StructFlatMapFieldReader : public FlatMapFieldReaderBase<T, hasNull> {
       totalBytes += keyNodeBytesPerRow * nonNullCount;
       // Adding memory for additional null overhead in outer layer
       if constexpr (hasNull) {
-        NIMBLE_ASSERT(
-            rowCount >= nonNullCount,
-            fmt::format(
-                "rowCount {} should be >= nonNullCount {}",
-                rowCount,
-                nonNullCount));
+        NIMBLE_CHECK_GE(
+            rowCount, nonNullCount, "rowCount should be >= nonNullCount");
         totalBytes += (rowCount - nonNullCount) *
             nullOverheadBits(node->valueReader()->type()) / 8;
       } else if (rowCount == 0) {
         rowCount = nonNullCount;
       } else if (nonNullCount != 0) {
-        NIMBLE_CHECK(
-            rowCount == nonNullCount,
-            fmt::format(
-                "rowCount {} should be equal to nonNullCount {} under no null "
-                "condition",
-                rowCount,
-                nonNullCount));
+        NIMBLE_CHECK_EQ(
+            rowCount,
+            nonNullCount,
+            "rowCount should be equal to nonNullCount under no null condition");
       }
     }
     return rowCount == 0 ? std::optional<std::pair<uint32_t, uint64_t>>({0, 0})
@@ -2610,7 +2596,7 @@ class StructFlatMapFieldReader : public FlatMapFieldReaderBase<T, hasNull> {
       uint32_t rowCount,
       velox::VectorPtr& output,
       const bits::Bitmap* scatterBitmap) final {
-    NIMBLE_ASSERT(scatterBitmap == nullptr, "unexpected scatterBitmap");
+    NIMBLE_CHECK_NULL(scatterBitmap, "unexpected scatterBitmap");
     auto vector = VectorInitializer<velox::RowVector>::initialize(
         &this->pool_, output, this->type_, rowCount);
     vector->unsafeResize(rowCount);
@@ -2677,7 +2663,7 @@ class StructFlatMapFieldReaderFactory final
             selectedChildren),
         mergedNulls_{&this->pool_},
         executor_{executor} {
-    NIMBLE_ASSERT(this->nimbleType_->isFlatMap(), "Type should be a flat map.");
+    NIMBLE_CHECK(this->nimbleType_->isFlatMap(), "Type should be a flat map.");
   }
 
   std::unique_ptr<FieldReader> createReader(
@@ -2713,13 +2699,11 @@ class MergedFlatMapFieldReader final
     uint64_t totalBytes{0};
     uint32_t rowCount{0};
     if constexpr (hasNull) {
-      NIMBLE_ASSERT(
-          FieldReader::decoder_ != nullptr,
-          "decoder_ should be set when hasNull is true");
+      NIMBLE_CHECK_NOT_NULL(
+          FieldReader::decoder_, "decoder_ should be set when hasNull is true");
       const auto* encoding = FieldReader::decoder_->encoding();
-      NIMBLE_CHECK(
-          encoding != nullptr,
-          "Decoder must be loaded for output size estimation.");
+      NIMBLE_CHECK_NOT_NULL(
+          encoding, "Decoder must be loaded for output size estimation.");
       rowCount = encoding->rowCount();
       // Adding memory for velox::BaseVector::nulls_
       totalBytes += rowCount / 8;
@@ -2775,12 +2759,8 @@ class MergedFlatMapFieldReader final
       const auto valueBytesPerRow = valueSize.value().second;
       totalBytes += nonNullCount * valueBytesPerRow;
       if constexpr (hasNull) {
-        NIMBLE_ASSERT(
-            rowCount >= nonNullCount,
-            fmt::format(
-                "rowCount {} should be >= nonNullCount {}",
-                rowCount,
-                nonNullCount));
+        NIMBLE_CHECK_GE(
+            rowCount, nonNullCount, "rowCount should be >= than nonNullCount");
         // Adding null overhead on outer layer
         totalBytes += (rowCount - nonNullCount) *
             nullOverheadBits(node->valueReader()->type()) / 8;
@@ -2795,7 +2775,7 @@ class MergedFlatMapFieldReader final
       uint32_t rowCount,
       velox::VectorPtr& output,
       const bits::Bitmap* scatterBitmap) final {
-    NIMBLE_ASSERT(scatterBitmap == nullptr, "unexpected scatterBitmap");
+    NIMBLE_CHECK_NULL(scatterBitmap, "unexpected scatterBitmap");
     auto vector = VectorInitializer<velox::MapVector>::initialize(
         &this->pool_, output, this->type_, rowCount);
     vector->resize(rowCount);
@@ -2807,11 +2787,13 @@ class MergedFlatMapFieldReader final
         std::static_pointer_cast<const velox::MapType>(this->type_)->keyType(),
         rowCount);
 
-    NIMBLE_DASSERT(
-        vector->sizes()->size() == (rowCount * sizeof(velox::vector_size_t)),
+    NIMBLE_DCHECK_EQ(
+        vector->sizes()->size(),
+        (rowCount * sizeof(velox::vector_size_t)),
         "Unexpected 'sizes' buffer size.");
-    NIMBLE_DASSERT(
-        vector->offsets()->size() == (rowCount * sizeof(velox::vector_size_t)),
+    NIMBLE_DCHECK_EQ(
+        vector->offsets()->size(),
+        (rowCount * sizeof(velox::vector_size_t)),
         "Unexpected 'offsets' buffer size.");
     const velox::BufferPtr& lengths = vector->sizes();
     const velox::BufferPtr& offsets = vector->offsets();
@@ -2861,8 +2843,9 @@ class MergedFlatMapFieldReader final
       valuesVector->copyRanges(nodeValues.get(), copyRanges_);
     }
     if (rowCount > 0) {
-      NIMBLE_ASSERT(
-          offsetsPtr[rowCount - 1] == totalChildren,
+      NIMBLE_CHECK_EQ(
+          offsetsPtr[rowCount - 1],
+          totalChildren,
           "Total map entry size mismatch");
       // We updated `offsetsPtr' during the copy process, so that now it was
       // shifted to the left by 1 element (i.e. offsetsPtr[i] is really
@@ -2974,15 +2957,14 @@ std::unique_ptr<FieldReaderFactory> createFlatMapReaderFactory(
 #undef SCALAR_CASE
 
     default:
-      NIMBLE_NOT_SUPPORTED(
-          fmt::format("Not supported flatmap key type: {} ", keyKind));
+      NIMBLE_UNSUPPORTED("Not supported flatmap key type: {} ", keyKind);
   }
 }
 
 std::shared_ptr<const velox::Type> createFlatType(
     const std::vector<std::string>& selectedFeatures,
     const velox::TypePtr& veloxType) {
-  NIMBLE_ASSERT(
+  NIMBLE_CHECK(
       !selectedFeatures.empty(),
       "Empty feature selection not allowed for struct encoding.");
 
@@ -3008,9 +2990,8 @@ velox::TypePtr inferType(
     NIMBLE_CHECK(
         it != params.flatMapFeatureSelector.end() &&
             !it->second.features.empty(),
-        fmt::format(
-            "Flat map feature selection for map '{}' has empty feature set.",
-            name));
+        "Flat map feature selection for map '{}' has empty feature set.",
+        name);
     NIMBLE_CHECK(
         it->second.mode == SelectionMode::Include,
         "Flat map exclusion list is not supported when flat map field is missing.");
@@ -3101,8 +3082,9 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
       NIMBLE_CHECK(
           nimbleType->isArray() || nimbleType->isArrayWithOffsets(),
           "Provided schema doesn't match file schema.");
-      NIMBLE_ASSERT(
-          veloxType->size() == 1,
+      NIMBLE_CHECK_EQ(
+          veloxType->size(),
+          1,
           "Velox array type should have exactly one child.");
       if (nimbleType->isArray()) {
         auto& nimbleArray = nimbleType->asArray();
@@ -3203,8 +3185,9 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
           nimbleType->isMap() || nimbleType->isFlatMap() ||
               nimbleType->isSlidingWindowMap(),
           "Provided schema doesn't match file schema.");
-      NIMBLE_ASSERT(
-          veloxType->size() == 2,
+      NIMBLE_CHECK_EQ(
+          veloxType->size(),
+          2,
           "Velox map type should have exactly two children.");
 
       if (nimbleType->isMap()) {
@@ -3299,9 +3282,8 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
         if (hasFeatureSelection) {
           NIMBLE_CHECK(
               !featuresIt->second.features.empty(),
-              fmt::format(
-                  "Flat map feature selection for map '{}' has empty feature set.",
-                  *name));
+              "Flat map feature selection for map '{}' has empty feature set.",
+              *name);
 
           if (featuresIt->second.mode == SelectionMode::Include) {
             // We have valid feature projection. Build name -> index lookup
@@ -3313,8 +3295,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
           } else {
             NIMBLE_CHECK(
                 !flatMapAsStruct,
-                fmt::format(
-                    "Exclusion can only be applied when flat map is returned as a regular map."));
+                "Exclusion can only be applied when flat map is returned as a regular map.");
           }
         } else {
           // Not specifying features for a flat map is only allowed when
@@ -3323,10 +3304,9 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
           // the returned features.
           NIMBLE_CHECK(
               !flatMapAsStruct,
-              fmt::format(
-                  "Flat map '{}' is configured to be returned as a struct, but feature selection is missing. "
-                  "Feature selection is used to define the order of the features in the returned struct.",
-                  *name));
+              "Flat map '{}' is configured to be returned as a struct, but feature selection is missing. "
+              "Feature selection is used to define the order of the features in the returned struct.",
+              *name);
         }
 
         auto actualType = veloxType->type();
@@ -3430,8 +3410,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
       }
     }
     default:
-      NIMBLE_NOT_SUPPORTED(
-          fmt::format("Unsupported type: {}", veloxType->type()->kindName()));
+      NIMBLE_UNSUPPORTED("Unsupported type: {}", veloxType->type()->kindName());
   }
 }
 

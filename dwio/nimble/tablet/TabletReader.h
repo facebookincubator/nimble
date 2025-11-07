@@ -190,7 +190,7 @@ class ReferenceCountedCache {
     }
     auto element = builder(key);
     std::weak_ptr<Value>(element).swap(*wlockedEntry);
-    NIMBLE_DASSERT(!wlockedEntry->expired(), "Shouldn't be expired");
+    NIMBLE_DCHECK(!wlockedEntry->expired(), "Shouldn't be expired");
     return element;
   }
 

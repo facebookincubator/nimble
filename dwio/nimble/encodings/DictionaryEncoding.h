@@ -236,7 +236,7 @@ std::string_view DictionaryEncoding<T>::encode(
 
   // Step one: fill alphabet and indices until we get a full alphabet mapping.
   for (; alphabetIndex < alphabetCount; ++valuesIt, ++indiciesIndex) {
-    NIMBLE_DASSERT(valuesIt != values.end(), "Values iterator out of bounds.");
+    NIMBLE_DCHECK(valuesIt != values.end(), "Values iterator out of bounds.");
     const auto& value = *valuesIt;
     const auto& it = alphabetMapping.find(value);
     if (it == alphabetMapping.end()) {
@@ -254,14 +254,14 @@ std::string_view DictionaryEncoding<T>::encode(
   // will hit this step relatively early, and it will boost performance by
   // 20-30%.
   for (; valuesIt != values.end(); ++valuesIt) {
-    NIMBLE_DASSERT(
+    NIMBLE_DCHECK(
         alphabetMapping.find(*valuesIt) != alphabetMapping.end(),
         "Mapping corruption. Missing alphabet entry.");
     indices[indiciesIndex++] = alphabetMapping.find(*valuesIt)->second;
   }
 
-  NIMBLE_ASSERT(indices.size() == valueCount, "Indices size mismatch.");
-  NIMBLE_ASSERT(alphabet.size() == alphabetCount, "Alphabet size mismatch.");
+  NIMBLE_CHECK_EQ(indices.size(), valueCount, "Indices size mismatch.");
+  NIMBLE_CHECK_EQ(alphabet.size(), alphabetCount, "Alphabet size mismatch.");
 
   Buffer tempBuffer{buffer.getMemoryPool()};
   std::string_view serializedAlphabet =
@@ -280,7 +280,7 @@ std::string_view DictionaryEncoding<T>::encode(
   encoding::writeUint32(serializedAlphabet.size(), pos);
   encoding::writeBytes(serializedAlphabet, pos);
   encoding::writeBytes(serializedIndices, pos);
-  NIMBLE_DASSERT(pos - reserved == encodingSize, "Encoding size mismatch.");
+  NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
   return {reserved, encodingSize};
 }
 

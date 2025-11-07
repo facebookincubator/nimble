@@ -35,10 +35,10 @@ CompressionResult ZstdCompressor::compress(
   auto ret = ZSTD_compress(
       pos, data.size(), data.data(), data.size(), parameters.compressionLevel);
   if (ZSTD_isError(ret)) {
-    NIMBLE_ASSERT(
+    NIMBLE_CHECK(
         ZSTD_getErrorCode(ret) == ZSTD_ErrorCode::ZSTD_error_dstSize_tooSmall,
-        fmt::format(
-            "Error while compressing data: {}", ZSTD_getErrorName(ret)));
+        "Error while compressing data: {}",
+        ZSTD_getErrorName(ret));
     return {
         .compressionType = CompressionType::Uncompressed,
         .buffer = std::nullopt,
@@ -63,7 +63,8 @@ Vector<char> ZstdCompressor::uncompress(
       buffer.data(), buffer.size(), pos, data.size() - sizeof(uint32_t));
   NIMBLE_CHECK(
       !ZSTD_isError(ret),
-      fmt::format("Error uncompressing data: {}", ZSTD_getErrorName(ret)));
+      "Error uncompressing data: {}",
+      ZSTD_getErrorName(ret));
   return buffer;
 }
 
