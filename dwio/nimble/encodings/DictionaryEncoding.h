@@ -35,11 +35,11 @@
 
 namespace facebook::nimble {
 
-// The layout for a dictionary encoding is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
-// 4 bytes: alphabet size
-// XX bytes: alphabet encoding bytes
-// YY bytes: indices encoding bytes
+/// The layout for a dictionary encoding is:
+/// Encoding::kPrefixSize bytes: standard Encoding prefix
+/// 4 bytes: alphabet size
+/// XX bytes: alphabet encoding bytes
+/// YY bytes: indices encoding bytes
 template <typename T>
 class DictionaryEncoding
     : public TypedEncoding<T, typename TypeTraits<T>::physicalType> {
@@ -49,9 +49,7 @@ class DictionaryEncoding
 
   static const int kAlphabetSizeOffset = Encoding::kPrefixSize;
 
-  DictionaryEncoding(
-      velox::memory::MemoryPool& memoryPool,
-      std::string_view data);
+  DictionaryEncoding(velox::memory::MemoryPool& pool, std::string_view data);
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -74,7 +72,8 @@ class DictionaryEncoding
   // Indices are uint32_t.
   std::unique_ptr<Encoding> indicesEncoding_;
   std::unique_ptr<Encoding> alphabetEncoding_;
-  Vector<uint32_t> buffer_; // Temporary buffer.
+  // Temporary buffer.
+  Vector<uint32_t> indicesBuffer_;
 };
 
 //
@@ -83,14 +82,13 @@ class DictionaryEncoding
 
 template <typename T>
 DictionaryEncoding<T>::DictionaryEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data)
-    : TypedEncoding<T, physicalType>(memoryPool, data),
-      alphabet_{&memoryPool},
-      buffer_(&memoryPool) {
-  auto pos = data.data() + kAlphabetSizeOffset;
+    : TypedEncoding<T, physicalType>{pool, data},
+      alphabet_{this->pool_},
+      indicesBuffer_{this->pool_} {
+  const auto* pos = data.data() + kAlphabetSizeOffset;
   const uint32_t alphabetSize = encoding::readUint32(pos);
-
   alphabetEncoding_ =
       EncodingFactory::decode(*this->pool_, {pos, alphabetSize});
   const uint32_t alphabetCount = alphabetEncoding_->rowCount();
@@ -114,11 +112,11 @@ void DictionaryEncoding<T>::skip(uint32_t rowCount) {
 
 template <typename T>
 void DictionaryEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
-  buffer_.resize(rowCount);
-  indicesEncoding_->materialize(rowCount, buffer_.data());
+  indicesBuffer_.resize(rowCount);
+  indicesEncoding_->materialize(rowCount, indicesBuffer_.data());
 
   T* output = static_cast<T*>(buffer);
-  for (uint32_t index : buffer_) {
+  for (uint32_t index : indicesBuffer_) {
     *output = alphabet_[index];
     ++output;
   }
@@ -174,9 +172,10 @@ void DictionaryEncoding<T>::readWithVisitor(
         visitor.numRows(), true);
   }
   const auto startRowIndex = visitor.rowIndex();
-  buffer_.resize(visitor.numRows() - startRowIndex);
+  indicesBuffer_.resize(visitor.numRows() - startRowIndex);
   velox::common::AlwaysTrue indicesFilter;
-  detail::DictionaryIndicesHook indicesHook(buffer_.data(), startRowIndex);
+  detail::DictionaryIndicesHook indicesHook(
+      indicesBuffer_.data(), startRowIndex);
   auto indicesVisitor = DecoderVisitor<
       int32_t,
       velox::common::AlwaysTrue,
@@ -190,7 +189,7 @@ void DictionaryEncoding<T>::readWithVisitor(
   indicesVisitor.setRowIndex(startRowIndex);
   callReadWithVisitor(*indicesEncoding_, indicesVisitor, params);
   detail::readWithVisitorSlow(visitor, params, nullptr, [&] {
-    auto index = buffer_[visitor.rowIndex() - startRowIndex];
+    const auto index = indicesBuffer_[visitor.rowIndex() - startRowIndex];
     return alphabet_[index];
   });
 }
@@ -210,8 +209,8 @@ std::string_view DictionaryEncoding<T>::encode(
   Vector<uint32_t> indices{&buffer.getMemoryPool()};
   indices.resize(valueCount);
 
-  uint32_t alphabetIndex = 0;
-  uint32_t indiciesIndex = 0;
+  uint32_t alphabetIndex{0};
+  uint32_t indiciesIndex{0};
   auto valuesIt = values.begin();
 
   // Based on experimentation, there are at least two consistently
