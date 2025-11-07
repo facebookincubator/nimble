@@ -92,14 +92,14 @@ DictionaryEncoding<T>::DictionaryEncoding(
   const uint32_t alphabetSize = encoding::readUint32(pos);
 
   alphabetEncoding_ =
-      EncodingFactory::decode(this->memoryPool_, {pos, alphabetSize});
+      EncodingFactory::decode(*this->pool_, {pos, alphabetSize});
   const uint32_t alphabetCount = alphabetEncoding_->rowCount();
   alphabet_.resize(alphabetCount);
   alphabetEncoding_->materialize(alphabetCount, alphabet_.data());
 
   pos += alphabetSize;
   indicesEncoding_ = EncodingFactory::decode(
-      this->memoryPool_, {pos, static_cast<size_t>(data.end() - pos)});
+      *this->pool_, {pos, static_cast<size_t>(data.end() - pos)});
 }
 
 template <typename T>

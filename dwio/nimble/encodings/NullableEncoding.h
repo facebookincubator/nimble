@@ -83,8 +83,7 @@ class NullableEncoding final
 
   // Temporary buffers.
   Vector<uint32_t> indicesBuffer_;
-  Vector<char> charBuffer_;
-  Vector<bool> boolBuffer_;
+  Vector<bool> nullBuffer_;
 };
 
 //
@@ -96,16 +95,14 @@ NullableEncoding<T>::NullableEncoding(
     velox::memory::MemoryPool& memoryPool,
     std::string_view data)
     : TypedEncoding<T, physicalType>(memoryPool, data),
-      indicesBuffer_(&memoryPool),
-      charBuffer_(&memoryPool),
-      boolBuffer_(&memoryPool) {
+      indicesBuffer_(this->pool_),
+      nullBuffer_(this->pool_) {
   const char* pos = data.data() + Encoding::kPrefixSize;
   const uint32_t nonNullsBytes = encoding::readUint32(pos);
-  nonNullValues_ =
-      EncodingFactory::decode(this->memoryPool_, {pos, nonNullsBytes});
+  nonNullValues_ = EncodingFactory::decode(*this->pool_, {pos, nonNullsBytes});
   pos += nonNullsBytes;
   nulls_ = EncodingFactory::decode(
-      this->memoryPool_, {pos, static_cast<size_t>(data.end() - pos)});
+      *this->pool_, {pos, static_cast<size_t>(data.end() - pos)});
   NIMBLE_DASSERT(
       Encoding::rowCount() == nulls_->rowCount(), "Nulls count mismatch.");
 }
@@ -136,10 +133,10 @@ template <typename T>
 void NullableEncoding<T>::skip(uint32_t rowCount) {
   // Hrm this isn't ideal. We should return to this later -- a new
   // encoding func? Encoding::Accumulate to add up next N rows?
-  boolBuffer_.resize(rowCount);
-  nulls_->materialize(rowCount, boolBuffer_.data());
+  nullBuffer_.resize(rowCount);
+  nulls_->materialize(rowCount, nullBuffer_.data());
   const uint32_t nonNullCount =
-      std::accumulate(boolBuffer_.begin(), boolBuffer_.end(), 0U);
+      std::accumulate(nullBuffer_.begin(), nullBuffer_.end(), 0U);
   nonNullValues_->skip(nonNullCount);
 }
 
@@ -148,10 +145,10 @@ void NullableEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   // This too isn't ideal. We will want an Encoding::Indices method or
   // something our SparseBool can use, giving back just the set indices
   // rather than a materialization.
-  boolBuffer_.resize(rowCount);
-  nulls_->materialize(rowCount, boolBuffer_.data());
+  nullBuffer_.resize(rowCount);
+  nulls_->materialize(rowCount, nullBuffer_.data());
   const uint32_t nonNullCount =
-      std::accumulate(boolBuffer_.begin(), boolBuffer_.end(), 0U);
+      std::accumulate(nullBuffer_.begin(), nullBuffer_.end(), 0U);
   nonNullValues_->materialize(nonNullCount, buffer);
 
   if (nonNullCount != rowCount) {
@@ -161,7 +158,7 @@ void NullableEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
     // This is a generic scatter -- should we have a common scatter func?
     uint32_t pos = rowCount - 1;
     while (output != lastNonNull) {
-      if (boolBuffer_[pos]) {
+      if (nullBuffer_[pos]) {
         *output = *lastNonNull;
         --lastNonNull;
       } else {
@@ -182,17 +179,18 @@ uint32_t NullableEncoding<T>::materializeNullable(
     std::function<void*()> nulls,
     const bits::Bitmap* scatterBitmap,
     uint32_t offset) {
-  boolBuffer_.resize(rowCount);
-  nulls_->materialize(rowCount, boolBuffer_.data());
+  nullBuffer_.resize(rowCount);
+  nulls_->materialize(rowCount, nullBuffer_.data());
   const uint32_t nonNullCount =
-      std::accumulate(boolBuffer_.begin(), boolBuffer_.end(), 0U);
+      std::accumulate(nullBuffer_.begin(), nullBuffer_.end(), 0U);
 
   if (offset > 0) {
     buffer = static_cast<physicalType*>(buffer) + offset;
   }
   nonNullValues_->materialize(nonNullCount, buffer);
 
-  auto scatterSize = scatterBitmap ? scatterBitmap->size() - offset : rowCount;
+  const auto scatterSize =
+      scatterBitmap ? scatterBitmap->size() - offset : rowCount;
   if (nonNullCount != scatterSize) {
     void* nullBitmap = nulls();
     bits::BitmapBuilder nullBits{nullBitmap, offset + scatterSize};
@@ -202,8 +200,8 @@ uint32_t NullableEncoding<T>::materializeNullable(
     physicalType* output = static_cast<physicalType*>(buffer) + scatterSize - 1;
     const physicalType* lastNonNull =
         static_cast<physicalType*>(buffer) + nonNullCount - 1;
-    auto nonNullIt = boolBuffer_.begin() + rowCount - 1;
 
+    auto nonNullIt = nullBuffer_.begin() + rowCount - 1;
     if (scatterSize != rowCount) {
       // In scattered reads, spread the items into the right positions in
       // |buffer| and |nullBitmap| based on the bits set to 1 in
@@ -250,12 +248,12 @@ void NullableEncoding<T>::readWithVisitor(
   if (const uint64_t* incomingNulls = visitor.reader().rawNullsInReadRange()) {
     auto nwords = velox::bits::nwords(rowCount);
     if (params.numScanned % 64 == 0) {
-      boolBuffer_.resize(nwords * sizeof(uint64_t));
+      nullBuffer_.resize(nwords * sizeof(uint64_t));
     } else {
-      boolBuffer_.resize(2 * nwords * sizeof(uint64_t));
+      nullBuffer_.resize(2 * nwords * sizeof(uint64_t));
     }
-    auto* chunkNulls = reinterpret_cast<uint64_t*>(boolBuffer_.data());
-    auto* chunkNullBytes = reinterpret_cast<char*>(boolBuffer_.data());
+    auto* chunkNulls = reinterpret_cast<uint64_t*>(nullBuffer_.data());
+    auto* chunkNullBytes = reinterpret_cast<char*>(nullBuffer_.data());
     if (params.numScanned % 64 == 0) {
       incomingNulls += params.numScanned / 64;
     } else {
@@ -264,7 +262,8 @@ void NullableEncoding<T>::readWithVisitor(
           incomingNulls, params.numScanned, incomingNullsCopy, 0, rowCount);
       incomingNulls = incomingNullsCopy;
     }
-    auto numInner = velox::bits::countNonNulls(incomingNulls, 0, rowCount);
+    const auto numInner =
+        velox::bits::countNonNulls(incomingNulls, 0, rowCount);
     nulls_->materializeBoolsAsBits(numInner, chunkNulls, 0);
     velox::bits::scatterBits(
         numInner, rowCount, chunkNullBytes, incomingNulls, chunkNullBytes);

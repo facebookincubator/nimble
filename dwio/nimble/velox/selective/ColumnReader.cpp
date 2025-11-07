@@ -38,12 +38,12 @@ std::unique_ptr<dwio::common::SelectiveColumnReader> buildColumnReader(
     NimbleParams& params,
     common::ScanSpec& scanSpec,
     bool isRoot) {
-  auto guard = folly::makeGuard([&] {
+  SCOPE_EXIT {
     if (params.rowSizeTracker()) {
       params.rowSizeTracker()->applyProjection(
           fileType->id(), scanSpec.projectOut());
     }
-  });
+  };
 
   if (isRoot) {
     VELOX_CHECK(fileType->type()->isRow());

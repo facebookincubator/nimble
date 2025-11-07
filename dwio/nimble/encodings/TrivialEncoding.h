@@ -145,7 +145,7 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
   static constexpr int kDataOffset =
       Encoding::kPrefixSize + TrivialEncoding<bool>::kPrefixSize;
 
-  TrivialEncoding(velox::memory::MemoryPool& memoryPool, std::string_view data);
+  TrivialEncoding(velox::memory::MemoryPool& pool, std::string_view data);
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -163,7 +163,7 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
       Buffer& buffer);
 
  private:
-  uint32_t row_;
+  uint32_t row_{0};
   const char* bitmap_;
   Vector<char> uncompressed_;
 };

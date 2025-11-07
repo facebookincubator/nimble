@@ -64,10 +64,10 @@ class ReaderBase {
   }
 
  private:
-  std::unique_ptr<velox::dwio::common::BufferedInput> const input_;
+  const std::unique_ptr<velox::dwio::common::BufferedInput> input_;
   const TabletReader tablet_;
   velox::memory::MemoryPool* const memoryPool_;
-  std::shared_ptr<velox::random::RandomSkipTracker> const randomSkip_;
+  const std::shared_ptr<velox::random::RandomSkipTracker> randomSkip_;
   const std::shared_ptr<velox::common::ScanSpec> scanSpec_;
   const std::shared_ptr<const Type> nimbleSchema_;
   const velox::RowTypePtr fileSchema_;
@@ -99,7 +99,7 @@ class StripeStreams {
  private:
   std::optional<velox::common::Region> getStreamRegion(int streamId) const;
 
-  std::shared_ptr<ReaderBase> const readerBase_;
+  const std::shared_ptr<ReaderBase> readerBase_;
   int stripe_;
   std::optional<TabletReader::StripeIdentifier> stripeIdentifier_;
 };

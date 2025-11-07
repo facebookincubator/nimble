@@ -76,32 +76,6 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
           fmt::format("Unknown encoding type {}.", toString(dataType)))      \
   }
 
-#define RETURN_ENCODING_BY_INTEGER_TYPE(Encoding, dataType)          \
-  switch (dataType) {                                                \
-    case DataType::Int8:                                             \
-      return std::make_unique<Encoding<int8_t>>(memoryPool, data);   \
-    case DataType::Uint8:                                            \
-      return std::make_unique<Encoding<uint8_t>>(memoryPool, data);  \
-    case DataType::Int16:                                            \
-      return std::make_unique<Encoding<int16_t>>(memoryPool, data);  \
-    case DataType::Uint16:                                           \
-      return std::make_unique<Encoding<uint16_t>>(memoryPool, data); \
-    case DataType::Int32:                                            \
-      return std::make_unique<Encoding<int32_t>>(memoryPool, data);  \
-    case DataType::Uint32:                                           \
-      return std::make_unique<Encoding<uint32_t>>(memoryPool, data); \
-    case DataType::Int64:                                            \
-      return std::make_unique<Encoding<int64_t>>(memoryPool, data);  \
-    case DataType::Uint64:                                           \
-      return std::make_unique<Encoding<uint64_t>>(memoryPool, data); \
-    default:                                                         \
-      NIMBLE_UNREACHABLE(                                            \
-          fmt::format(                                               \
-              "Trying to deserialize an integer-only stream for "    \
-              "a nonintegral data type {}.",                         \
-              toString(dataType)));                                  \
-  }
-
 #define RETURN_ENCODING_BY_VARINT_TYPE(Encoding, dataType)           \
   switch (dataType) {                                                \
     case DataType::Int32:                                            \

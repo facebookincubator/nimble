@@ -122,15 +122,15 @@ uint64_t NimbleData::skipNulls(uint64_t numValues, bool /*nullsOnly*/) {
   }
   constexpr uint64_t kBufferWords = 256;
   constexpr auto kBitCount = 64 * kBufferWords;
-  auto countNulls = [](ChunkedDecoder& decoder, size_t size) {
+  const auto countNulls = [](ChunkedDecoder& decoder, size_t size) {
     uint64_t buffer[kBufferWords];
     decoder.nextBools(buffer, size, nullptr);
     return velox::bits::countNulls(buffer, 0, size);
   };
   auto remaining = numValues;
   while (remaining > 0) {
-    auto chunkSize = std::min(remaining, kBitCount);
-    uint64_t nullCount;
+    const auto chunkSize = std::min(remaining, kBitCount);
+    uint64_t nullCount{0};
     if (inMapDecoder_) {
       nullCount = countNulls(*inMapDecoder_, chunkSize);
       if (nullsDecoder_) {
@@ -183,7 +183,7 @@ std::unique_ptr<velox::dwio::common::FormatData> NimbleParams::toFormatData(
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& /*type*/,
     const velox::common::ScanSpec& /*scanSpec*/) {
   return std::make_unique<NimbleData>(
-      nimbleType_, streams_, pool(), inMapDecoder_);
+      nimbleType_, *streams_, pool(), inMapDecoder_);
 }
 
 } // namespace facebook::nimble

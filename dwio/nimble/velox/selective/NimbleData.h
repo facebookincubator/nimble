@@ -32,7 +32,7 @@ class NimbleData : public velox::dwio::common::FormatData {
       velox::memory::MemoryPool& memoryPool,
       ChunkedDecoder* inMapDecoder);
 
-  /// Read internal node nulls.  For leaf nodes, we only copy `incomingNulls' if
+  /// Read internal node nulls. For leaf nodes, we only copy `incomingNulls' if
   /// it exists.
   void readNulls(
       velox::vector_size_t numValues,
@@ -113,7 +113,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
       bool preserveFlatMapsInMemory = false)
       : FormatParams(pool, stats),
         nimbleType_(nimbleType),
-        streams_(streams),
+        streams_(&streams),
         rowSizeTracker_(rowSizeTracker),
         preserveFlatMapsInMemory_(preserveFlatMapsInMemory) {}
 
@@ -126,7 +126,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
         pool(),
         runtimeStatistics(),
         type,
-        streams_,
+        *streams_,
         rowSizeTracker_,
         preserveFlatMapsInMemory_);
   }
@@ -136,7 +136,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
   }
 
   StripeStreams& streams() {
-    return streams_;
+    return *streams_;
   }
 
   void setInMapDecoder(ChunkedDecoder* decoder) {
@@ -153,10 +153,10 @@ class NimbleParams : public velox::dwio::common::FormatParams {
 
  private:
   const std::shared_ptr<const Type> nimbleType_;
-  StripeStreams& streams_;
-  ChunkedDecoder* inMapDecoder_ = nullptr;
-  RowSizeTracker* rowSizeTracker_ = nullptr;
-  bool preserveFlatMapsInMemory_ = false;
+  StripeStreams* const streams_;
+  RowSizeTracker* const rowSizeTracker_{nullptr};
+  const bool preserveFlatMapsInMemory_{false};
+  ChunkedDecoder* inMapDecoder_{nullptr};
 };
 
 } // namespace facebook::nimble
