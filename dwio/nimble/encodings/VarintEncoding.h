@@ -35,10 +35,10 @@
 
 namespace facebook::nimble {
 
-// Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
-// sizeof(T) bytes: baseline value
-// X bytes: the varint encoded bytes
+/// Data layout is:
+/// Encoding::kPrefixSize bytes: standard Encoding prefix
+/// sizeof(T) bytes: baseline value
+/// X bytes: the varint encoded bytes
 template <typename T>
 class VarintEncoding final
     : public TypedEncoding<T, typename TypeTraits<T>::physicalType> {
@@ -50,9 +50,7 @@ class VarintEncoding final
   static const int kDataOffset = kBaselineOffset + sizeof(T);
   static const int kPrefixSize = kDataOffset - kBaselineOffset;
 
-  explicit VarintEncoding(
-      velox::memory::MemoryPool& memoryPool,
-      std::string_view data);
+  VarintEncoding(velox::memory::MemoryPool& pool, std::string_view data);
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -67,8 +65,8 @@ class VarintEncoding final
       Buffer& buffer);
 
  private:
-  const physicalType baseline_;
-  uint32_t row_ = 0;
+  const physicalType baseValue_;
+  uint32_t row_{0};
   const char* pos_;
   Vector<physicalType> buf_;
 };
@@ -79,12 +77,12 @@ class VarintEncoding final
 
 template <typename T>
 VarintEncoding<T>::VarintEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data)
-    : TypedEncoding<T, physicalType>(memoryPool, data),
-      baseline_{*reinterpret_cast<const physicalType*>(
+    : TypedEncoding<T, physicalType>(pool, data),
+      baseValue_{*reinterpret_cast<const physicalType*>(
           data.data() + kBaselineOffset)},
-      buf_{&memoryPool} {
+      buf_{this->pool_} {
   reset();
 }
 
@@ -114,11 +112,11 @@ void VarintEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
         rowCount, pos_, static_cast<uint64_t*>(buffer));
   }
 
-  if (baseline_ != 0) {
+  if (baseValue_ != 0) {
     // Add baseline to values
-    auto output = reinterpret_cast<physicalType*>(buffer);
+    auto* output = reinterpret_cast<physicalType*>(buffer);
     for (auto i = 0; i < rowCount; ++i) {
-      output[i] += baseline_;
+      output[i] += baseValue_;
     }
   }
   row_ += rowCount;
@@ -141,7 +139,7 @@ void VarintEncoding<T>::readWithVisitor(
           static_assert(sizeof(T) == 8);
           value = varint::readVarint64(&pos_);
         }
-        return baseline_ + value;
+        return baseValue_ + value;
       });
 }
 
@@ -159,17 +157,17 @@ std::string_view VarintEncoding<T>::encode(
       sizeof(T) == 4 || sizeof(T) == 8,
       "Varint encoding require 4 or 8 bytes data types.");
   const uint32_t valueCount = values.size();
-  uint8_t index = 0;
-  uint32_t dataSize = std::accumulate(
+  uint8_t index{0};
+  const uint32_t dataSize = std::accumulate(
       selection.statistics().bucketCounts().cbegin(),
       selection.statistics().bucketCounts().cend(),
       0,
-      [&index](uint32_t sum, const uint64_t bucketSize) {
+      [&index](uint32_t sum, uint64_t bucketSize) {
         // First (7 bit) bucket is going to consume 1 byte, 2nd bucket is going
         // to consume 2 bytes, etc.
         return sum + (bucketSize * (++index));
       });
-  uint32_t encodingSize =
+  const uint32_t encodingSize =
       dataSize + Encoding::kPrefixSize + VarintEncoding<T>::kPrefixSize;
 
   // Adding 7 bytes, to allow bulk materialization to access the last 64 bit

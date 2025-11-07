@@ -260,17 +260,17 @@ class TabletReader {
   // size and footer compression type field in postscript.
   // chunkSize means each time reads up to chunkSize, until all data are done.
   static uint64_t calculateChecksum(
-      MemoryPool& memoryPool,
+      MemoryPool& pool,
       velox::ReadFile* readFile,
       uint64_t chunkSize = 256 * 1024 * 1024);
 
   TabletReader(
-      MemoryPool& memoryPool,
+      MemoryPool& pool,
       velox::ReadFile* readFile,
       const std::vector<std::string>& preloadOptionalSections = {});
 
   TabletReader(
-      MemoryPool& memoryPool,
+      MemoryPool& pool,
       std::shared_ptr<velox::ReadFile> readFile,
       const std::vector<std::string>& preloadOptionalSections = {});
 
