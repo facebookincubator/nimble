@@ -229,7 +229,7 @@ std::string_view FixedBitWidthEncoding<T>::encode(
   encoding::writeChar(bitsRequired, pos);
   compressionEncoder.write(pos);
 
-  NIMBLE_DASSERT(encodingSize == pos - reserved, "Encoding size mismatch.");
+  NIMBLE_DCHECK_EQ(encodingSize, pos - reserved, "Encoding size mismatch.");
   return {reserved, encodingSize};
 }
 

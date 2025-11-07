@@ -44,8 +44,9 @@ flatbuffers::Offset<flatbuffers::Vector<Target>> createFlattenedVector(
   size_t targetIndex = 0;
 
   for (auto& items : source) {
-    NIMBLE_ASSERT(
-        items.size() <= streamCount,
+    NIMBLE_CHECK_LE(
+        items.size(),
+        streamCount,
         "Corrupted footer. Stream count exceeds expected total number of streams.");
 
     for (auto i = 0; i < streamCount; ++i) {
@@ -67,7 +68,7 @@ std::string_view asView(const flatbuffers::FlatBufferBuilder& builder) {
 
 void TabletWriter::close() {
   auto stripeCount = stripeOffsets_.size();
-  NIMBLE_ASSERT(
+  NIMBLE_CHECK(
       stripeCount == stripeSizes_.size() &&
           stripeCount == stripeGroupIndices_.size() &&
           stripeCount == rowCounts_.size(),
@@ -160,9 +161,10 @@ void TabletWriter::close() {
 
   // End with the fixed length constants.
   const uint64_t footerSize64Bit = (file_->size() - footerStart);
-  NIMBLE_ASSERT(
-      footerSize64Bit <= std::numeric_limits<uint32_t>::max(),
-      fmt::format("Footer size too big: {}.", footerSize64Bit));
+  NIMBLE_CHECK_LE(
+      footerSize64Bit,
+      std::numeric_limits<uint32_t>::max(),
+      "Footer size too big.");
   const uint32_t footerSize = footerSize64Bit;
   writeWithChecksum({reinterpret_cast<const char*>(&footerSize), 4});
   writeWithChecksum({reinterpret_cast<const char*>(&footerCompressionType), 1});
@@ -252,31 +254,33 @@ void TabletWriter::writeOptionalSection(
   NIMBLE_CHECK(!name.empty(), "Optional section name cannot be empty.");
   NIMBLE_CHECK(
       optionalSections_.find(name) == optionalSections_.end(),
-      fmt::format("Optional section '{}' already exists.", name));
+      "Optional section '{}' already exists.",
+      name);
   optionalSections_.try_emplace(
       std::move(name), createMetadataSection(content));
 }
 
 void TabletWriter::tryWriteStripeGroup(bool force) {
-  auto stripeCount = streamOffsets_.size();
-  NIMBLE_ASSERT(stripeCount == streamSizes_.size(), "Stripe count mismatch.");
+  const auto stripeCount = streamOffsets_.size();
+  NIMBLE_CHECK_EQ(stripeCount, streamSizes_.size(), "Stripe count mismatch.");
   if (stripeCount == 0) {
     return;
   }
 
   // Estimate size
   // 8 bytes for offsets, 4 for size, 1 for compression type, so 13.
-  size_t estimatedSize = 4 + stripeCount * streamOffsets_.back().size() * 13;
+  const size_t estimatedSize =
+      4 + stripeCount * streamOffsets_.back().size() * 13;
   if (!force && (estimatedSize < options_.metadataFlushThreshold)) {
     return;
   }
 
-  auto maxStreamCountIt = std::max_element(
+  const auto maxStreamCountIt = std::max_element(
       streamOffsets_.begin(),
       streamOffsets_.end(),
       [](const auto& a, const auto& b) { return a.size() < b.size(); });
 
-  auto streamCount =
+  const auto streamCount =
       maxStreamCountIt == streamOffsets_.end() ? 0 : maxStreamCountIt->size();
 
   // Each stripe may have different stream count recorded.

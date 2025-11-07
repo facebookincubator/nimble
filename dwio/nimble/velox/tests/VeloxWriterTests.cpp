@@ -259,7 +259,7 @@ TEST_F(VeloxWriterTests, DuplicateFlatmapKey) {
         vec->type(),
         std::move(writeFile),
         {.flatMapColumns = {"flatmap"}});
-    EXPECT_THROW(writer.write(vec), nimble::NimbleUserError);
+    EXPECT_THROW(writer.write(vec), nimble::NimbleInternalError);
     EXPECT_ANY_THROW(writer.close());
   }
   // Vector with a rotating duplicate key set. The more typical layout requiring
@@ -283,7 +283,7 @@ TEST_F(VeloxWriterTests, DuplicateFlatmapKey) {
         vec->type(),
         std::move(writeFile),
         {.flatMapColumns = {"flatmap"}});
-    EXPECT_THROW(writer.write(vec), nimble::NimbleUserError);
+    EXPECT_THROW(writer.write(vec), nimble::NimbleInternalError);
     EXPECT_ANY_THROW(writer.close());
   }
 }
@@ -798,7 +798,7 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaMismatch) {
             .compressionOptions = {.compressionAcceptRatio = 100},
         });
     FAIL() << "Writer should fail on incompatible encoding layout node";
-  } catch (const nimble::NimbleUserError& e) {
+  } catch (const nimble::NimbleInternalError& e) {
     EXPECT_NE(
         std::string(e.what()).find(
             "Incompatible encoding layout node. Expecting map node"),

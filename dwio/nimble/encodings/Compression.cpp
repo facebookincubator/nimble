@@ -46,9 +46,8 @@ ICompressor& getCompressor(CompressionType compressionType) {
   auto it = registry.compressors.find(compressionType);
   NIMBLE_CHECK(
       it != registry.compressors.end(),
-      fmt::format(
-          "Compressor for type {} is not registered.",
-          toString(compressionType)));
+      "Compressor for type {} is not registered.",
+      toString(compressionType));
   return *it->second;
 }
 } // namespace

@@ -53,8 +53,8 @@ const T* asFlatBuffersRoot(std::string_view content) {
 }
 
 size_t copyTo(const folly::IOBuf& source, void* target, size_t size) {
-  NIMBLE_DASSERT(
-      source.computeChainDataLength() <= size, "Target buffer too small.");
+  NIMBLE_DCHECK_LE(
+      source.computeChainDataLength(), size, "Target buffer too small.");
   size_t offset = 0;
   for (const auto& chunk : source) {
     std::copy(chunk.begin(), chunk.end(), static_cast<char*>(target) + offset);
@@ -67,9 +67,9 @@ size_t copyTo(const folly::IOBuf& source, void* target, size_t size) {
 folly::IOBuf
 cloneAndCoalesce(const folly::IOBuf& src, size_t offset, size_t size) {
   folly::io::Cursor cursor(&src);
-  NIMBLE_ASSERT(cursor.totalLength() >= offset, "Offset out of range");
+  NIMBLE_CHECK_GE(cursor.totalLength(), offset, "Offset out of range");
   cursor.skip(offset);
-  NIMBLE_ASSERT(cursor.totalLength() >= size, "Size out of range");
+  NIMBLE_CHECK_GE(cursor.totalLength(), size, "Size out of range");
   folly::IOBuf result;
   cursor.clone(result, size);
   result.coalesceWithHeadroomTailroom(0, 0);
@@ -99,8 +99,7 @@ MetadataBuffer::MetadataBuffer(
     }
     default:
       NIMBLE_UNREACHABLE(
-          fmt::format(
-              "Unexpected stream compression type: {}", toString(type)));
+          "Unexpected stream compression type: {}", toString(type));
   }
 }
 
@@ -127,8 +126,7 @@ MetadataBuffer::MetadataBuffer(
     }
     default:
       NIMBLE_UNREACHABLE(
-          fmt::format(
-              "Unexpected stream compression type: {}", toString(type)));
+          "Unexpected stream compression type: {}", toString(type));
   }
 }
 
@@ -154,12 +152,13 @@ TabletReader::StripeGroup::StripeGroup(
       asFlatBuffersRoot<serialization::Stripes>(stripes.content());
 
   const auto streamCount = metadataRoot->stream_offsets()->size();
-  NIMBLE_ASSERT(
-      streamCount == metadataRoot->stream_sizes()->size(),
+  NIMBLE_CHECK_EQ(
+      streamCount,
+      metadataRoot->stream_sizes()->size(),
       "Unexpected stream metadata");
 
   const auto stripeCount = metadataRoot->stripe_count();
-  NIMBLE_ASSERT(stripeCount > 0, "Unexpected stripe count");
+  NIMBLE_CHECK_GT(stripeCount, 0, "Unexpected stripe count");
   streamCount_ = streamCount / stripeCount;
 
   streamOffsets_ = metadataRoot->stream_offsets()->data();
@@ -191,27 +190,22 @@ std::span<const uint32_t> TabletReader::StripeGroup::streamSizes(
 }
 
 Postscript Postscript::parse(std::string_view data) {
-  NIMBLE_CHECK(data.size() >= kPostscriptSize, "Invalid postscript length");
+  NIMBLE_CHECK_GE(data.size(), kPostscriptSize, "Invalid postscript length");
 
   Postscript ps;
   // Read and validate magic
   auto pos = data.data() + data.size() - 2;
   const uint16_t magicNumber = *reinterpret_cast<const uint16_t*>(pos);
 
-  NIMBLE_CHECK(
-      magicNumber == kMagicNumber, "Magic number mismatch. Not a nimble file!");
+  NIMBLE_CHECK_EQ(
+      magicNumber, kMagicNumber, "Magic number mismatch. Not a nimble file!");
 
   // Read and validate versions
   pos -= 4;
   ps.majorVersion_ = *reinterpret_cast<const uint16_t*>(pos);
   ps.minorVersion_ = *reinterpret_cast<const uint16_t*>(pos + 2);
 
-  NIMBLE_CHECK(
-      ps.majorVersion_ <= kVersionMajor,
-      fmt::format(
-          "Unsupported file version. Reader version: {}, file version: {}",
-          kVersionMajor,
-          ps.majorVersion_));
+  NIMBLE_CHECK_LE(ps.majorVersion_, kVersionMajor, "Unsupported file version");
 
   pos -= 14;
   ps.footerSize_ = *reinterpret_cast<const uint32_t*>(pos);
@@ -303,8 +297,8 @@ TabletReader::TabletReader(
     ps_ = Postscript::parse(toStringView(psIOBuf));
   }
 
-  NIMBLE_CHECK(
-      ps_.footerSize() + kPostscriptSize <= readSize, "Unexpected footer size");
+  NIMBLE_CHECK_LE(
+      ps_.footerSize() + kPostscriptSize, readSize, "Unexpected footer size");
   footer_ = std::make_unique<MetadataBuffer>(
       *pool_,
       footerIOBuf,
@@ -318,9 +312,8 @@ TabletReader::TabletReader(
   auto* stripes = footerRoot->stripes();
   if (stripes != nullptr) {
     // For now, assume stripes section will always be within the initial fetch
-    NIMBLE_CHECK(
-        stripes->offset() + readSize >= fileSize,
-        "Incomplete stripes metadata.");
+    NIMBLE_CHECK_GE(
+        stripes->offset() + readSize, fileSize, "Incomplete stripes metadata.");
     stripes_ = std::make_unique<MetadataBuffer>(
         *pool_,
         footerIOBuf,
@@ -417,8 +410,9 @@ TabletReader::TabletReader(
   if (!mustRead.empty()) {
     std::vector<folly::IOBuf> result(mustRead.size());
     file_->preadv(mustRead, {result.data(), result.size()});
-    NIMBLE_ASSERT(
-        result.size() == mustRead.size(),
+    NIMBLE_CHECK_EQ(
+        result.size(),
+        mustRead.size(),
         "Region and IOBuf vector sizes don't match");
     for (size_t i = 0; i < result.size(); ++i) {
       auto iobuf = std::move(result[i]);
@@ -505,7 +499,7 @@ void TabletReader::initStripes() {
         asFlatBuffersRoot<serialization::Stripes>(stripes_->content());
 
     stripeCount_ = stripesRoot->row_counts()->size();
-    NIMBLE_CHECK(stripeCount_ > 0, "Unexpected stripe count");
+    NIMBLE_CHECK_GT(stripeCount_, 0, "Unexpected stripe count");
     NIMBLE_CHECK(
         stripeCount_ == stripesRoot->offsets()->size() &&
             stripeCount_ == stripesRoot->sizes()->size() &&
@@ -552,24 +546,24 @@ std::shared_ptr<TabletReader::StripeGroup> TabletReader::getStripeGroup(
 
 std::span<const uint32_t> TabletReader::streamOffsets(
     const StripeIdentifier& stripe) const {
-  NIMBLE_DASSERT(stripe.stripeId() < stripeCount_, "Stripe is out of range.");
+  NIMBLE_CHECK_LT(stripe.stripeId(), stripeCount_, "Stripe is out of range.");
   return stripe.stripeGroup()->streamOffsets(stripe.stripeId());
 }
 
 std::span<const uint32_t> TabletReader::streamSizes(
     const StripeIdentifier& stripe) const {
-  NIMBLE_DASSERT(stripe.stripeId() < stripeCount_, "Stripe is out of range.");
+  NIMBLE_DCHECK_LT(stripe.stripeId(), stripeCount_, "Stripe is out of range.");
   return stripe.stripeGroup()->streamSizes(stripe.stripeId());
 }
 
 uint32_t TabletReader::streamCount(const StripeIdentifier& stripe) const {
-  NIMBLE_DASSERT(stripe.stripeId() < stripeCount_, "Stripe is out of range.");
+  NIMBLE_DCHECK_LT(stripe.stripeId(), stripeCount_, "Stripe is out of range.");
   return stripe.stripeGroup()->streamCount();
 }
 
 TabletReader::StripeIdentifier TabletReader::getStripeIdentifier(
     uint32_t stripeIndex) const {
-  NIMBLE_CHECK(stripeIndex < stripeCount_, "Stripe is out of range.");
+  NIMBLE_CHECK_LT(stripeIndex, stripeCount_, "Stripe is out of range.");
   return StripeIdentifier{
       stripeIndex, getStripeGroup(getStripeGroupIndex(stripeIndex))};
 }
@@ -578,7 +572,7 @@ std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
     const StripeIdentifier& stripe,
     std::span<const uint32_t> streamIdentifiers,
     std::function<std::string_view(uint32_t)> streamLabel) const {
-  NIMBLE_CHECK(stripe.stripeId() < stripeCount_, "Stripe is out of range.");
+  NIMBLE_CHECK_LT(stripe.stripeId(), stripeCount_, "Stripe is out of range.");
 
   const uint64_t stripeOffset = this->stripeOffset(stripe.stripeId());
   const auto& stripeGroup = stripe.stripeGroup();
@@ -615,7 +609,7 @@ std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
   if (!regions.empty()) {
     std::vector<folly::IOBuf> iobufs(regions.size());
     file_->preadv(regions, {iobufs.data(), iobufs.size()});
-    NIMBLE_DASSERT(iobufs.size() == streamIdx.size(), "Buffer size mismatch.");
+    NIMBLE_DCHECK_EQ(iobufs.size(), streamIdx.size(), "Buffer size mismatch.");
     for (uint32_t i = 0; i < streamIdx.size(); ++i) {
       const auto size = iobufs[i].computeChainDataLength();
       Vector<char> vector{pool_, size};
@@ -631,7 +625,7 @@ std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
 uint64_t TabletReader::getTotalStreamSize(
     const StripeIdentifier& stripe,
     std::span<const uint32_t> streamIdentifiers) const {
-  NIMBLE_CHECK(stripe.stripeId() < stripeCount_, "Stripe is out of range.");
+  NIMBLE_CHECK_LT(stripe.stripeId(), stripeCount_, "Stripe is out of range.");
   const auto& stripeGroup = stripe.stripeGroup();
 
   uint64_t streamSizeSum = 0;

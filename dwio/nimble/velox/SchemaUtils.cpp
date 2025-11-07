@@ -46,13 +46,10 @@ velox::TypePtr convertToVeloxScalarType(ScalarKind scalarKind) {
     case ScalarKind::UInt32:
     case ScalarKind::UInt64:
     case ScalarKind::Undefined:
-      NIMBLE_NOT_SUPPORTED(
-          fmt::format(
-              "Scalar kind {} is not supported by Velox.",
-              toString(scalarKind)));
+      NIMBLE_UNSUPPORTED(
+          "Scalar kind {} is not supported by Velox.", toString(scalarKind));
   }
-  NIMBLE_UNREACHABLE(
-      fmt::format("Unknown scalarKind: {}.", toString(scalarKind)));
+  NIMBLE_UNREACHABLE("Unknown scalarKind: {}.", toString(scalarKind));
 }
 
 std::shared_ptr<TypeBuilder> convertToNimbleType(
@@ -103,8 +100,7 @@ std::shared_ptr<TypeBuilder> convertToNimbleType(
       return nimbleType;
     }
     default:
-      NIMBLE_NOT_SUPPORTED(
-          fmt::format("Unsupported type kind {}.", type.kind()));
+      NIMBLE_UNSUPPORTED("Unsupported type kind {}.", type.kind());
   }
 }
 
@@ -161,8 +157,7 @@ velox::TypePtr convertToVeloxType(const Type& type) {
           convertToVeloxType(*flatMapType.childAt(0)));
     }
     default:
-      NIMBLE_UNREACHABLE(
-          fmt::format("Unknown type kind {}.", toString(type.kind())));
+      NIMBLE_UNREACHABLE("Unknown type kind {}.", toString(type.kind()));
   }
 }
 

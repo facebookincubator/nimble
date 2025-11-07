@@ -105,7 +105,7 @@ std::unique_ptr<nimble::StreamLoader> createStream(
     const std::vector<std::optional<nimble::Vector<bool>>>& nulls,
     nimble::CompressionParams compressionParams = {
         .type = nimble::CompressionType::Uncompressed}) {
-  NIMBLE_ASSERT(values.size() == nulls.size(), "Data and nulls size mismatch.");
+  NIMBLE_CHECK_EQ(values.size(), nulls.size(), "Data and nulls size mismatch.");
 
   std::string stream;
 

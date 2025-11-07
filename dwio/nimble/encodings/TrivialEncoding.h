@@ -266,7 +266,7 @@ void TrivialEncoding<T>::bulkScan(
   int32_t numValues = visitor.reader().numValues();
   int32_t* filterHits;
   if constexpr (V::kHasFilter) {
-    NIMBLE_DASSERT(visitor.reader().numRows() == numValues, "");
+    NIMBLE_DCHECK_EQ(visitor.reader().numRows(), numValues, "");
     filterHits = visitor.outputRows(numNonNulls) - numValues;
   } else {
     filterHits = nullptr;

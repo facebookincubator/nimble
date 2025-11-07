@@ -129,7 +129,7 @@ std::string_view TrivialEncoding<std::string_view>::encode(
   encoding::writeBytes(serializedLengths, pos);
   compressionEncoder.write(pos);
 
-  NIMBLE_ASSERT(pos - reserved == encodingSize, "Encoding size mismatch.");
+  NIMBLE_CHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
   return {reserved, encodingSize};
 }
 
@@ -254,7 +254,7 @@ std::string_view TrivialEncoding<bool>::encode(
       static_cast<char>(compressionEncoder.compressionType()), pos);
   compressionEncoder.write(pos);
 
-  NIMBLE_ASSERT(pos - reserved == encodingSize, "Encoding size mismatch.");
+  NIMBLE_CHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
   return {reserved, encodingSize};
 }
 

@@ -40,11 +40,11 @@ std::string createNimbleFile(
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
-  NIMBLE_ASSERT(vectors.size() > 0, "Expecting at least one input vector.");
+  NIMBLE_CHECK_GT(vectors.size(), 0, "Expecting at least one input vector.");
   auto& type = vectors[0]->type();
 
   for (int i = 1; i < vectors.size(); ++i) {
-    NIMBLE_ASSERT(
+    NIMBLE_CHECK(
         vectors[i]->type()->kindEquals(type),
         "All vectors should have the same schema.");
   }

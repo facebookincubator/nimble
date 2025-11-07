@@ -17,8 +17,10 @@
 
 #include "velox/common/base/VeloxException.h"
 
+#include <fmt/ostream.h>
 #include <glog/logging.h>
 #include "folly/FixedString.h"
+#include "folly/Preprocessor.h"
 #include "folly/experimental/symbolizer/Symbolizer.h"
 #include "folly/synchronization/CallOnce.h"
 
@@ -81,6 +83,29 @@ inline constexpr auto WarmStorage = "WARM_STORAGE"_fs;
 inline constexpr auto LocalFileSystem = "FILE_SYSTEM"_fs;
 
 } // namespace external_source
+
+namespace detail {
+// Helper function to format messages with optional arguments
+inline std::string formatOrEmpty() {
+  return "";
+}
+
+// Overload for plain string literals or when no formatting is needed
+inline std::string formatOrEmpty(const char* msg) {
+  return std::string(msg);
+}
+
+inline std::string formatOrEmpty(const std::string& msg) {
+  return msg;
+}
+
+template <typename... Args>
+inline std::string formatOrEmpty(
+    fmt::format_string<Args...> fmt,
+    Args&&... args) {
+  return fmt::format(fmt, std::forward<Args>(args)...);
+}
+} // namespace detail
 
 // Based exception, used by all other Nimble exceptions. Provides common
 // functionality for all other exception types.
@@ -378,126 +403,118 @@ class NimbleExternalError : public NimbleException {
       retryable,                                          \
       __VA_ARGS__)
 
-#define NIMBLE_RAISE_USER_ERROR(expression, message, code, retryable) \
+#define NIMBLE_RAISE_USER_ERROR(expression, code, retryable, ...) \
+  _NIMBLE_RAISE_EXCEPTION(                                        \
+      ::facebook::nimble::NimbleUserError,                        \
+      expression,                                                 \
+      ::facebook::nimble::detail::formatOrEmpty(__VA_ARGS__),     \
+      code,                                                       \
+      retryable)
+
+#define NIMBLE_RAISE_INTERNAL_ERROR(expression, code, retryable, ...) \
   _NIMBLE_RAISE_EXCEPTION(                                            \
-      ::facebook::nimble::NimbleUserError,                            \
+      ::facebook::nimble::NimbleInternalError,                        \
       expression,                                                     \
-      message,                                                        \
+      ::facebook::nimble::detail::formatOrEmpty(__VA_ARGS__),         \
       code,                                                           \
       retryable)
 
-#define NIMBLE_RAISE_INTERNAL_ERROR(expression, message, code, retryable) \
-  _NIMBLE_RAISE_EXCEPTION(                                                \
-      ::facebook::nimble::NimbleInternalError,                            \
-      expression,                                                         \
-      message,                                                            \
-      code,                                                               \
-      retryable)
-
-#define NIMBLE_RAISE_EXTERNAL_ERROR(              \
-    expression, source, message, code, retryable) \
-  _NIMBLE_RAISE_EXCEPTION_EXTENDED(               \
-      ::facebook::nimble::NimbleExternalError,    \
-      expression,                                 \
-      message,                                    \
-      code,                                       \
-      retryable,                                  \
+#define NIMBLE_RAISE_EXTERNAL_ERROR(expression, source, code, retryable, ...) \
+  _NIMBLE_RAISE_EXCEPTION_EXTENDED(                                           \
+      ::facebook::nimble::NimbleExternalError,                                \
+      expression,                                                             \
+      ::facebook::nimble::detail::formatOrEmpty(__VA_ARGS__),                 \
+      code,                                                                   \
+      retryable,                                                              \
       source)
 
-// Check user related conditions. Failure of this condition means the user
-// misused Nimble and will trigger a user error.
-#define NIMBLE_CHECK(condition, message)                 \
-  if (UNLIKELY(!(condition))) {                          \
-    NIMBLE_RAISE_USER_ERROR(                             \
-        #condition,                                      \
-        message,                                         \
-        ::facebook::nimble::error_code::InvalidArgument, \
-        /* retryable */ false);                          \
-  }
+// Helper macro to handle optional message formatting
+#define _NIMBLE_FORMAT_OR_EMPTY(...) \
+  ::facebook::nimble::detail::formatOrEmpty(__VA_ARGS__)
 
-// Assert an internal Nimble expected behavior. Failure of this condition means
-// Nimble encountered an unexpected behavior and will trigger an internal error.
-#define NIMBLE_ASSERT(condition, message)             \
-  if (UNLIKELY(!(condition))) {                       \
-    NIMBLE_RAISE_INTERNAL_ERROR(                      \
-        #condition,                                   \
-        message,                                      \
-        ::facebook::nimble::error_code::InvalidState, \
-        /* retryable */ false);                       \
+// Check internal preconditions and invariants. Failure of this condition
+// indicates a bug in Nimble and will trigger an internal error.
+#define NIMBLE_CHECK(condition, ...)                     \
+  if (UNLIKELY(!(condition))) {                          \
+    NIMBLE_RAISE_INTERNAL_ERROR(                         \
+        #condition,                                      \
+        ::facebook::nimble::error_code::InvalidArgument, \
+        /* retryable */ false,                           \
+        __VA_ARGS__);                                    \
   }
 
 // Verify a result from an external Nimble dependency. Failure of this condition
 // means an external dependency returned an error and all retries (if
 // applicable) were exhausted. This will trigger an external error.
-#define NIMBLE_VERIFY_EXTERNAL(condition, source, code, retryable, message) \
-  if (UNLIKELY(!(condition))) {                                             \
-    NIMBLE_RAISE_EXTERNAL_ERROR(                                            \
-        #condition,                                                         \
-        ::facebook::nimble::external_source::source,                        \
-        message,                                                            \
-        code,                                                               \
-        retryable);                                                         \
+#define NIMBLE_VERIFY_EXTERNAL(condition, source, code, retryable, ...) \
+  if (UNLIKELY(!(condition))) {                                         \
+    NIMBLE_RAISE_EXTERNAL_ERROR(                                        \
+        #condition,                                                     \
+        ::facebook::nimble::external_source::source,                    \
+        code,                                                           \
+        retryable,                                                      \
+        __VA_ARGS__);                                                   \
   }
 
 // Verify an expected file format conditions. Failure of this condition means
 // the file is corrupted (e.g. passed magic number and version verification, but
 // got unexpected format). This will trigger a user error.
-#define NIMBLE_CHECK_FILE(condition, message)          \
+#define NIMBLE_CHECK_FILE(condition, ...)              \
   if (UNLIKELY(!(condition))) {                        \
     NIMBLE_RAISE_USER_ERROR(                           \
         #condition,                                    \
-        message,                                       \
         ::facebook::nimble::error_code::CorruptedFile, \
-        /* retryable */ false);                        \
+        /* retryable */ false,                         \
+        __VA_ARGS__);                                  \
   }
 
 // Should be raised when we don't expect to hit a code path, but we did. This
 // means a bug in Nimble.
-#define NIMBLE_UNREACHABLE(message)                    \
+#define NIMBLE_UNREACHABLE(...)                        \
   NIMBLE_RAISE_INTERNAL_ERROR(                         \
       "",                                              \
-      message,                                         \
       ::facebook::nimble::error_code::UnreachableCode, \
-      /* retryable */ false);
+      /* retryable */ false,                           \
+      __VA_ARGS__);
 
 // Should be raised in places where we still didn't implement the required
 // functionality, but intend to do so in the future. This raises an internal
 // error to indicate users needs this functionality, but we don't provide it.
-#define NIMBLE_NOT_IMPLEMENTED(message)               \
+#define NIMBLE_NOT_IMPLEMENTED(...)                   \
   NIMBLE_RAISE_INTERNAL_ERROR(                        \
       "",                                             \
-      message,                                        \
       ::facebook::nimble::error_code::NotImplemented, \
-      /* retryable */ false);
+      /* retryable */ false,                          \
+      __VA_ARGS__);
 
 // Should be raised in places where we don't support a functionality, and have
 // no intention to support it in the future. This raises a user error, as the
 // user should not expect this functionality to exist in the first place.
-#define NIMBLE_NOT_SUPPORTED(message)               \
+#define NIMBLE_UNSUPPORTED(...)                     \
   NIMBLE_RAISE_USER_ERROR(                          \
       "",                                           \
-      message,                                      \
       ::facebook::nimble::error_code::NotSupported, \
-      /* retryable */ false);
+      /* retryable */ false,                        \
+      __VA_ARGS__);
 
 // Incompatible Encoding errors are used in Nimble's encoding optimization, to
 // indicate that an attempted encoding is incompatible with the data and should
 // be avoided.
-#define NIMBLE_INCOMPATIBLE_ENCODING(message)               \
+#define NIMBLE_INCOMPATIBLE_ENCODING(...)                   \
   NIMBLE_RAISE_USER_ERROR(                                  \
       "",                                                   \
-      message,                                              \
       ::facebook::nimble::error_code::IncompatibleEncoding, \
-      /* retryable */ false);
+      /* retryable */ false,                                \
+      __VA_ARGS__);
 
 // Should be used in "catch all" exception handlers, where we can't classify the
 // error correctly. These errors mean that we are missing error classification.
-#define NIMBLE_UNKNOWN(message)                \
+#define NIMBLE_UNKNOWN(...)                    \
   NIMBLE_RAISE_INTERNAL_ERROR(                 \
       "",                                      \
-      message,                                 \
       ::facebook::nimble::error_code::Unknown, \
-      /* retryable */ true);
+      /* retryable */ true,                    \
+      __VA_ARGS__);
 
 // Should be used in "catch all" exception handlers wrapping external Nimble
 // dependencies, where we can't classify the error correctly. These errors mean
@@ -510,12 +527,82 @@ class NimbleExternalError : public NimbleException {
       ::facebook::nimble::error_code::Unknown,     \
       /* retryable */ true);
 
+// Comparison macros for user checks with automatic value formatting
+#define _NIMBLE_CHECK_OP_WITH_USER_FMT_HELPER(  \
+    implmacro, expr1, expr2, op, user_fmt, ...) \
+  implmacro(                                    \
+      (expr1)op(expr2),                         \
+      fmt::runtime("({} vs. {}) " user_fmt),    \
+      expr1,                                    \
+      expr2,                                    \
+      ##__VA_ARGS__)
+
+#define _NIMBLE_CHECK_OP_HELPER(implmacro, expr1, expr2, op, ...)             \
+  do {                                                                        \
+    if constexpr (FOLLY_PP_DETAIL_NARGS(__VA_ARGS__) > 0) {                   \
+      _NIMBLE_CHECK_OP_WITH_USER_FMT_HELPER(                                  \
+          implmacro, expr1, expr2, op, __VA_ARGS__);                          \
+    } else {                                                                  \
+      implmacro((expr1)op(expr2), fmt::runtime("({} vs. {})"), expr1, expr2); \
+    }                                                                         \
+  } while (0)
+
+#define _NIMBLE_CHECK_OP(expr1, expr2, op, ...) \
+  _NIMBLE_CHECK_OP_HELPER(NIMBLE_CHECK, expr1, expr2, op, ##__VA_ARGS__)
+
+// Comparison check macros
+#define NIMBLE_CHECK_GT(e1, e2, ...) _NIMBLE_CHECK_OP(e1, e2, >, ##__VA_ARGS__)
+#define NIMBLE_CHECK_GE(e1, e2, ...) _NIMBLE_CHECK_OP(e1, e2, >=, ##__VA_ARGS__)
+#define NIMBLE_CHECK_LT(e1, e2, ...) _NIMBLE_CHECK_OP(e1, e2, <, ##__VA_ARGS__)
+#define NIMBLE_CHECK_LE(e1, e2, ...) _NIMBLE_CHECK_OP(e1, e2, <=, ##__VA_ARGS__)
+#define NIMBLE_CHECK_EQ(e1, e2, ...) _NIMBLE_CHECK_OP(e1, e2, ==, ##__VA_ARGS__)
+#define NIMBLE_CHECK_NE(e1, e2, ...) _NIMBLE_CHECK_OP(e1, e2, !=, ##__VA_ARGS__)
+
+// Null pointer checks
+#define NIMBLE_CHECK_NULL(e, ...) NIMBLE_CHECK((e) == nullptr, ##__VA_ARGS__)
+#define NIMBLE_CHECK_NOT_NULL(e, ...) \
+  NIMBLE_CHECK((e) != nullptr, ##__VA_ARGS__)
+
+// Failure macros without conditions
+#define NIMBLE_FAIL(...)                            \
+  NIMBLE_RAISE_INTERNAL_ERROR(                      \
+      "",                                           \
+      ::facebook::nimble::error_code::InvalidState, \
+      /* retryable */ false,                        \
+      __VA_ARGS__)
+
+#define NIMBLE_USER_FAIL(...)                          \
+  NIMBLE_RAISE_USER_ERROR(                             \
+      "",                                              \
+      ::facebook::nimble::error_code::InvalidArgument, \
+      /* retryable */ false,                           \
+      __VA_ARGS__)
+
+// Debug variants
 #ifndef NDEBUG
-#define NIMBLE_DCHECK(condition, message) NIMBLE_CHECK(condition, message)
-#define NIMBLE_DASSERT(condition, message) NIMBLE_ASSERT(condition, message)
+#define NIMBLE_DCHECK(condition, ...) NIMBLE_CHECK(condition, ##__VA_ARGS__)
+#define NIMBLE_DCHECK_GT(e1, e2, ...) NIMBLE_CHECK_GT(e1, e2, ##__VA_ARGS__)
+#define NIMBLE_DCHECK_GE(e1, e2, ...) NIMBLE_CHECK_GE(e1, e2, ##__VA_ARGS__)
+#define NIMBLE_DCHECK_LT(e1, e2, ...) NIMBLE_CHECK_LT(e1, e2, ##__VA_ARGS__)
+#define NIMBLE_DCHECK_LE(e1, e2, ...) NIMBLE_CHECK_LE(e1, e2, ##__VA_ARGS__)
+#define NIMBLE_DCHECK_EQ(e1, e2, ...) NIMBLE_CHECK_EQ(e1, e2, ##__VA_ARGS__)
+#define NIMBLE_DCHECK_NE(e1, e2, ...) NIMBLE_CHECK_NE(e1, e2, ##__VA_ARGS__)
+#define NIMBLE_DCHECK_NULL(e, ...) NIMBLE_CHECK_NULL(e, ##__VA_ARGS__)
+#define NIMBLE_DCHECK_NOT_NULL(e, ...) NIMBLE_CHECK_NOT_NULL(e, ##__VA_ARGS__)
+
+#define NIMBLE_DEBUG_ONLY
 #else
-#define NIMBLE_DCHECK(condition, message) NIMBLE_CHECK(true, message)
-#define NIMBLE_DASSERT(condition, message) NIMBLE_ASSERT(true, message)
+#define NIMBLE_DCHECK(condition, ...) NIMBLE_CHECK(true, "")
+#define NIMBLE_DCHECK_GT(e1, e2, ...) NIMBLE_CHECK(true, "")
+#define NIMBLE_DCHECK_GE(e1, e2, ...) NIMBLE_CHECK(true, "")
+#define NIMBLE_DCHECK_LT(e1, e2, ...) NIMBLE_CHECK(true, "")
+#define NIMBLE_DCHECK_LE(e1, e2, ...) NIMBLE_CHECK(true, "")
+#define NIMBLE_DCHECK_EQ(e1, e2, ...) NIMBLE_CHECK(true, "")
+#define NIMBLE_DCHECK_NE(e1, e2, ...) NIMBLE_CHECK(true, "")
+#define NIMBLE_DCHECK_NULL(e, ...) NIMBLE_CHECK(true, "")
+#define NIMBLE_DCHECK_NOT_NULL(e, ...) NIMBLE_CHECK(true, "")
+
+#define NIMBLE_DEBUG_ONLY [[maybe_unused]]
 #endif
 
 } // namespace facebook::nimble

@@ -179,7 +179,7 @@ void ChunkedStreamDecoder::ensureLoaded() {
   if (UNLIKELY(remaining_ == 0)) {
     encoding_ = EncodingFactory::decode(pool_, stream_->nextChunk());
     remaining_ = encoding_->rowCount();
-    NIMBLE_ASSERT(remaining_ > 0, "Empty chunk");
+    NIMBLE_CHECK_GT(remaining_, 0, "Empty chunk");
   }
 }
 

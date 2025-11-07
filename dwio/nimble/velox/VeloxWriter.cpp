@@ -164,9 +164,11 @@ std::string_view encode(
     detail::WriterContext& context,
     Buffer& buffer,
     const StreamData& streamData) {
-  NIMBLE_DASSERT(
-      streamData.data().size() % sizeof(T) == 0,
-      fmt::format("Unexpected size {}", streamData.data().size()));
+  NIMBLE_DCHECK_EQ(
+      streamData.data().size() % sizeof(T),
+      0,
+      "Unexpected size {}",
+      streamData.data().size());
   std::span<const T> data{
       reinterpret_cast<const T*>(streamData.data().data()),
       streamData.data().size() / sizeof(T)};
@@ -247,8 +249,7 @@ std::string_view encodeStream(
     case ScalarKind::Binary:
       return encodeStreamTyped<std::string_view>(context, buffer, streamData);
     default:
-      NIMBLE_UNREACHABLE(
-          fmt::format("Unsupported scalar kind {}", toString(scalarKind)));
+      NIMBLE_UNREACHABLE("Unsupported scalar kind {}", toString(scalarKind));
   }
 }
 
@@ -714,7 +715,8 @@ void VeloxWriter::writeChunk(bool lastChunk) {
       auto encoded = encodeStream(*context_, *encodingBuffer_, streamData);
       if (!encoded.empty()) {
         ChunkedStreamWriter chunkWriter{*encodingBuffer_};
-        NIMBLE_DASSERT(offset < streams_.size(), "Stream offset out of range.");
+        NIMBLE_DCHECK_LT(
+            offset, streams_.size(), "Stream offset out of range.");
         auto& stream = streams_[offset];
         for (auto& buffer : chunkWriter.encode(encoded)) {
           streamSize += buffer.size();
@@ -843,7 +845,7 @@ bool VeloxWriter::writeChunks(
       // If we have previous written chunks for this stream, during final
       // chunk, always write any remaining data.
       const auto offset = streamData.descriptor().offset();
-      NIMBLE_DASSERT(offset < streams_.size(), "Stream offset out of range.");
+      NIMBLE_DCHECK_LT(offset, streams_.size(), "Stream offset out of range.");
       auto& stream = streams_[offset];
       if (lastChunk && !shouldChunkStream && !stream.content.empty()) {
         shouldChunkStream =
@@ -955,9 +957,11 @@ bool VeloxWriter::writeStripe() {
     context_->resetStringBuffer();
   }
 
-  NIMBLE_ASSERT(
-      stripeSize < std::numeric_limits<uint32_t>::max(),
-      fmt::format("unexpected stripe size {}", stripeSize));
+  NIMBLE_CHECK_LT(
+      stripeSize,
+      std::numeric_limits<uint32_t>::max(),
+      "unexpected stripe size {}",
+      stripeSize);
 
   // Consider getting this from flush timing.
   auto flushWallTimeMs =
@@ -981,7 +985,7 @@ bool VeloxWriter::writeStripe() {
 
 bool VeloxWriter::evalauateFlushPolicy() {
   auto flushPolicy = context_->options.flushPolicyFactory();
-  NIMBLE_DASSERT(flushPolicy != nullptr, "Flush policy must not be null");
+  NIMBLE_DCHECK_NOT_NULL(flushPolicy, "Flush policy must not be null");
 
   auto shouldFlush = [&]() {
     return flushPolicy->shouldFlush(

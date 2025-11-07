@@ -316,7 +316,7 @@ void VeloxReader::loadNextStripe() {
 
       velox::CpuWallTimer timer{timing};
       auto* nimbleUnit = dynamic_cast<NimbleUnit*>(&unit);
-      NIMBLE_ASSERT(nimbleUnit, "Should be a NimbleUnit");
+      NIMBLE_CHECK_NOT_NULL(nimbleUnit, "Should be a NimbleUnit");
       rowsRemainingInStripe_ = nimbleUnit->getNumRows();
       metrics = nimbleUnit->getMetrics();
       metrics.totalStreamSize = nimbleUnit->getIoSize();

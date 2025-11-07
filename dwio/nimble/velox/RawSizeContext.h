@@ -34,22 +34,14 @@ class RawSizeContext {
   }
 
   uint64_t sizeAt(uint64_t columnIndex) const {
-    NIMBLE_ASSERT(
-        columnIndex < columnSizes_.size(),
-        fmt::format(
-            "Column index {} is out of range. Total number of columns is {}",
-            columnIndex,
-            columnSizes_.size()));
+    NIMBLE_CHECK_LT(
+        columnIndex, columnSizes_.size(), "Column index is out of range.");
     return columnSizes_.at(columnIndex);
   }
 
   void setSizeAt(uint64_t columnIndex, uint64_t size) {
-    NIMBLE_ASSERT(
-        columnIndex < columnSizes_.size(),
-        fmt::format(
-            "Column index {} is out of range. Total number of columns is {}",
-            columnIndex,
-            columnSizes_.size()));
+    NIMBLE_CHECK_LT(
+        columnIndex, columnSizes_.size(), "Column index is out of range.");
     columnSizes_[columnIndex] = size;
   }
 
@@ -62,22 +54,14 @@ class RawSizeContext {
   }
 
   uint64_t nullsAt(uint64_t columnIndex) const {
-    NIMBLE_ASSERT(
-        columnIndex < columnNullCounts_.size(),
-        fmt::format(
-            "Column index {} is out of range. Total number of columns is {}",
-            columnIndex,
-            columnNullCounts_.size()));
+    NIMBLE_CHECK_LT(
+        columnIndex, columnNullCounts_.size(), "Column index is out of range.");
     return columnNullCounts_.at(columnIndex);
   }
 
   void setNullsAt(uint64_t columnIndex, uint64_t nulls) {
-    NIMBLE_ASSERT(
-        columnIndex < columnNullCounts_.size(),
-        fmt::format(
-            "Column index {} is out of range. Total number of columns is {}",
-            columnIndex,
-            columnNullCounts_.size()));
+    NIMBLE_CHECK_LT(
+        columnIndex, columnNullCounts_.size(), "Column index is out of range.");
     columnNullCounts_[columnIndex] = nulls;
   }
 

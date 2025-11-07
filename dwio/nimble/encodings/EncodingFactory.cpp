@@ -72,8 +72,7 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
     case DataType::String:                                                   \
       return std::make_unique<Encoding<std::string_view>>(memoryPool, data); \
     default:                                                                 \
-      NIMBLE_UNREACHABLE(                                                    \
-          fmt::format("Unknown encoding type {}.", toString(dataType)))      \
+      NIMBLE_UNREACHABLE("Unknown encoding type {}.", toString(dataType))    \
   }
 
 #define RETURN_ENCODING_BY_VARINT_TYPE(Encoding, dataType)           \
@@ -92,10 +91,9 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
       return std::make_unique<Encoding<double>>(memoryPool, data);   \
     default:                                                         \
       NIMBLE_UNREACHABLE(                                            \
-          fmt::format(                                               \
-              "Trying to deserialize a varint stream for "           \
-              "an incompatible data type {}.",                       \
-              toString(dataType)));                                  \
+          "Trying to deserialize a varint stream for "               \
+          "an incompatible data type {}.",                           \
+          toString(dataType));                                       \
   }
 
 #define RETURN_ENCODING_BY_NON_BOOL_TYPE(Encoding, dataType)                 \
@@ -124,10 +122,9 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
       return std::make_unique<Encoding<std::string_view>>(memoryPool, data); \
     default:                                                                 \
       NIMBLE_UNREACHABLE(                                                    \
-          fmt::format(                                                       \
-              "Trying to deserialize a non-bool stream for "                 \
-              "the bool data type {}.",                                      \
-              toString(dataType)));                                          \
+          "Trying to deserialize a non-bool stream for "                     \
+          "the bool data type {}.",                                          \
+          toString(dataType));                                               \
   }
 
 #define RETURN_ENCODING_BY_NUMERIC_TYPE(Encoding, dataType)          \
@@ -154,10 +151,9 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
       return std::make_unique<Encoding<double>>(memoryPool, data);   \
     default:                                                         \
       NIMBLE_UNREACHABLE(                                            \
-          fmt::format(                                               \
-              "Trying to deserialize a non-numeric stream for "      \
-              "a numeric data type {}.",                             \
-              toString(dataType)));                                  \
+          "Trying to deserialize a non-numeric stream for "          \
+          "a numeric data type {}.",                                 \
+          toString(dataType));                                       \
   }
 
   switch (encodingType) {
@@ -177,8 +173,9 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
       RETURN_ENCODING_BY_LEAF_TYPE(NullableEncoding, dataType);
     }
     case EncodingType::SparseBool: {
-      NIMBLE_ASSERT(
-          dataType == DataType::Bool,
+      NIMBLE_CHECK_EQ(
+          dataType,
+          DataType::Bool,
           "Trying to deserialize a SparseBoolEncoding with a non-bool data type.");
       return std::make_unique<SparseBoolEncoding>(memoryPool, data);
     }
@@ -252,7 +249,7 @@ std::string_view EncodingFactory::encode(
       return RLEEncoding<T>::encode(selection, castedValues, buffer);
     }
     case EncodingType::Dictionary: {
-      NIMBLE_DASSERT(
+      NIMBLE_DCHECK(
           (!std::is_same<T, bool>::value && !castedValues.empty()),
           "Invalid DictionaryEncoding selection.");
       return DictionaryEncoding<T>::encode(selection, castedValues, buffer);
@@ -298,10 +295,8 @@ std::string_view EncodingFactory::encode(
       }
     }
     default: {
-      NIMBLE_NOT_SUPPORTED(
-          fmt::format(
-              "Encoding {} is not supported.",
-              toString(selection.encodingType())));
+      NIMBLE_UNSUPPORTED(
+          "Encoding {} is not supported.", toString(selection.encodingType()));
     }
   }
 }
@@ -319,10 +314,9 @@ std::string_view EncodingFactory::encodeNullable(
           selection, physicalValues, nulls, buffer);
     }
     default: {
-      NIMBLE_NOT_SUPPORTED(
-          fmt::format(
-              "Encoding {} is not supported for nullable data.",
-              toString(selection.encodingType())));
+      NIMBLE_UNSUPPORTED(
+          "Encoding {} is not supported for nullable data.",
+          toString(selection.encodingType()));
     }
   }
 }

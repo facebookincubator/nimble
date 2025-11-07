@@ -30,8 +30,8 @@ void addLabels(
     case Kind::Scalar: {
       const auto& scalar = node->asScalar();
       const auto offset = scalar.scalarDescriptor().offset();
-      NIMBLE_DASSERT(labelIndex < labels.size(), "Unexpected label index.");
-      NIMBLE_DASSERT(offsetToLabel.size() > offset, "Unexpected offset.");
+      NIMBLE_DCHECK_LT(labelIndex, labels.size(), "Unexpected label index.");
+      NIMBLE_DCHECK_GT(offsetToLabel.size(), offset, "Unexpected offset.");
       labels.push_back(labels[labelIndex] + name);
       offsetToLabel[offset] = labels.size() - 1;
       break;
@@ -39,8 +39,8 @@ void addLabels(
     case Kind::Array: {
       const auto& array = node->asArray();
       const auto offset = array.lengthsDescriptor().offset();
-      NIMBLE_DASSERT(labelIndex < labels.size(), "Unexpected label index.");
-      NIMBLE_DASSERT(offsetToLabel.size() > offset, "Unexpected offset.");
+      NIMBLE_DCHECK_LT(labelIndex, labels.size(), "Unexpected label index.");
+      NIMBLE_DCHECK_GT(offsetToLabel.size(), offset, "Unexpected offset.");
       labels.push_back(labels[labelIndex] + name);
       labelIndex = labels.size() - 1;
       offsetToLabel[offset] = labelIndex;
@@ -50,8 +50,8 @@ void addLabels(
     case Kind::Map: {
       const auto& map = node->asMap();
       const auto offset = map.lengthsDescriptor().offset();
-      NIMBLE_DASSERT(labelIndex < labels.size(), "Unexpected label index.");
-      NIMBLE_DASSERT(offsetToLabel.size() > offset, "Unexpected offset.");
+      NIMBLE_DCHECK_LT(labelIndex, labels.size(), "Unexpected label index.");
+      NIMBLE_DCHECK_GT(offsetToLabel.size(), offset, "Unexpected offset.");
       labels.push_back(labels[labelIndex] + name);
       labelIndex = labels.size() - 1;
       offsetToLabel[offset] = labelIndex;
@@ -63,11 +63,11 @@ void addLabels(
       const auto& map = node->asSlidingWindowMap();
       const auto offsetsOffset = map.offsetsDescriptor().offset();
       const auto lengthsOffset = map.lengthsDescriptor().offset();
-      NIMBLE_DASSERT(labelIndex < labels.size(), "Unexpected label index.");
-      NIMBLE_DASSERT(
-          offsetToLabel.size() > offsetsOffset, "Unexpected offset.");
-      NIMBLE_DASSERT(
-          offsetToLabel.size() > lengthsOffset, "Unexpected offset.");
+      NIMBLE_DCHECK_LT(labelIndex, labels.size(), "Unexpected label index.");
+      NIMBLE_DCHECK_GT(
+          offsetToLabel.size(), offsetsOffset, "Unexpected offset.");
+      NIMBLE_DCHECK_GT(
+          offsetToLabel.size(), lengthsOffset, "Unexpected offset.");
       labels.push_back(labels[labelIndex] + name);
       labelIndex = labels.size() - 1;
       offsetToLabel[offsetsOffset] = labelIndex;
@@ -79,8 +79,8 @@ void addLabels(
     case Kind::Row: {
       const auto& row = node->asRow();
       const auto offset = row.nullsDescriptor().offset();
-      NIMBLE_DASSERT(labelIndex < labels.size(), "Unexpected label index.");
-      NIMBLE_DASSERT(offsetToLabel.size() > offset, "Unexpected offset.");
+      NIMBLE_DCHECK_LT(labelIndex, labels.size(), "Unexpected label index.");
+      NIMBLE_DCHECK_GT(offsetToLabel.size(), offset, "Unexpected offset.");
       labels.push_back(labels[labelIndex] + name + "/");
       labelIndex = labels.size() - 1;
       offsetToLabel[offset] = labelIndex;
@@ -97,15 +97,15 @@ void addLabels(
     case Kind::FlatMap: {
       const auto& map = node->asFlatMap();
       const auto offset = map.nullsDescriptor().offset();
-      NIMBLE_DASSERT(labelIndex < labels.size(), "Unexpected label index.");
-      NIMBLE_DASSERT(offsetToLabel.size() > offset, "Unexpected offset.");
+      NIMBLE_DCHECK_LT(labelIndex, labels.size(), "Unexpected label index.");
+      NIMBLE_DCHECK_GT(offsetToLabel.size(), offset, "Unexpected offset.");
       labels.push_back(labels[labelIndex] + name);
       labelIndex = labels.size() - 1;
       offsetToLabel[offset] = labelIndex;
       for (auto i = 0; i < map.childrenCount(); ++i) {
         const auto inMapOffset = map.inMapDescriptorAt(i).offset();
-        NIMBLE_DASSERT(
-            offsetToLabel.size() > inMapOffset, "Unexpected offset.");
+        NIMBLE_DCHECK_GT(
+            offsetToLabel.size(), inMapOffset, "Unexpected offset.");
         labels.push_back(labels[labelIndex] + "/" + map.nameAt(i));
         offsetToLabel[inMapOffset] = labels.size() - 1;
       }
@@ -123,11 +123,11 @@ void addLabels(
       const auto& array = node->asArrayWithOffsets();
       const auto offsetsOffset = array.offsetsDescriptor().offset();
       const auto lengthsOffset = array.lengthsDescriptor().offset();
-      NIMBLE_DASSERT(labelIndex < labels.size(), "Unexpected label index.");
-      NIMBLE_DASSERT(
-          offsetToLabel.size() > offsetsOffset, "Unexpected offset.");
-      NIMBLE_DASSERT(
-          offsetToLabel.size() > lengthsOffset, "Unexpected offset.");
+      NIMBLE_DCHECK_LT(labelIndex, labels.size(), "Unexpected label index.");
+      NIMBLE_DCHECK_GT(
+          offsetToLabel.size(), offsetsOffset, "Unexpected offset.");
+      NIMBLE_DCHECK_GT(
+          offsetToLabel.size(), lengthsOffset, "Unexpected offset.");
       labels.push_back(labels[labelIndex] + name);
       labelIndex = labels.size() - 1;
       offsetToLabel[offsetsOffset] = labelIndex;
@@ -208,7 +208,7 @@ StreamLabels::StreamLabels(const std::shared_ptr<const Type>& root) {
 }
 
 std::string_view StreamLabels::streamLabel(offset_size offset) const {
-  NIMBLE_ASSERT(offset < offsetToLabel_.size(), "Stream offset out of range");
+  NIMBLE_CHECK_LT(offset, offsetToLabel_.size(), "Stream offset out of range");
   return labels_[offsetToLabel_[offset]];
 }
 

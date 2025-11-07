@@ -25,7 +25,7 @@ namespace {
 class Xxh3_64Checksum : public Checksum {
  public:
   Xxh3_64Checksum() : state_{XXH3_createState()} {
-    NIMBLE_DASSERT(state_ != nullptr, "Failed to initialize Xxh3_64Checksum.");
+    NIMBLE_DCHECK_NOT_NULL(state_, "Failed to initialize Xxh3_64Checksum.");
     reset();
   }
 
@@ -34,8 +34,8 @@ class Xxh3_64Checksum : public Checksum {
   }
 
   void update(std::string_view data) override {
-    auto result = XXH3_64bits_update(state_, data.data(), data.size());
-    NIMBLE_ASSERT(result != XXH_ERROR, "XXH3_64bits_update error.");
+    const auto result = XXH3_64bits_update(state_, data.data(), data.size());
+    NIMBLE_CHECK(result != XXH_ERROR, "XXH3_64bits_update error.");
   }
 
   uint64_t getChecksum(bool reset) override {
@@ -54,8 +54,8 @@ class Xxh3_64Checksum : public Checksum {
   XXH3_state_t* state_;
 
   void reset() {
-    auto result = XXH3_64bits_reset(state_);
-    NIMBLE_ASSERT(result != XXH_ERROR, "XXH3_64bits_reset error.");
+    const auto result = XXH3_64bits_reset(state_);
+    NIMBLE_CHECK(result != XXH_ERROR, "XXH3_64bits_reset error.");
   }
 };
 } // namespace
@@ -65,8 +65,7 @@ std::unique_ptr<Checksum> ChecksumFactory::create(ChecksumType type) {
     case ChecksumType::XXH3_64:
       return std::make_unique<Xxh3_64Checksum>();
     default:
-      NIMBLE_NOT_SUPPORTED(
-          fmt::format("Unsupported checksum type: {}", toString(type)));
+      NIMBLE_UNSUPPORTED("Unsupported checksum type: {}", toString(type));
   }
 }
 

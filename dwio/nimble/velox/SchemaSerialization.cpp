@@ -54,8 +54,7 @@ serialization::Kind nodeToSerializationKind(const SchemaNode* node) {
           return serialization::Kind_Binary;
         default:
           NIMBLE_UNREACHABLE(
-              fmt::format(
-                  "Unknown scalar kind {}.", toString(node->scalarKind())));
+              "Unknown scalar kind {}.", toString(node->scalarKind()));
       }
     }
     case Kind::Array:
@@ -98,14 +97,12 @@ serialization::Kind nodeToSerializationKind(const SchemaNode* node) {
           return serialization::Kind_FlatMapBinary;
         default:
           NIMBLE_UNREACHABLE(
-              fmt::format(
-                  "Unknown flat map key kind {}.",
-                  toString(node->scalarKind())));
+              "Unknown flat map key kind {}.", toString(node->scalarKind()));
       }
     }
     default:
-      NIMBLE_UNREACHABLE(
-          fmt::format("Unknown node kind {}.", toString(node->kind())));
+
+      NIMBLE_UNREACHABLE("Unknown node kind {}.", toString(node->kind()));
   }
 }
 
@@ -175,10 +172,9 @@ std::pair<Kind, ScalarKind> serializationNodeToKind(
     case nimble::serialization::Kind_FlatMapBinary:
       return {Kind::FlatMap, ScalarKind::Binary};
     default:
-      NIMBLE_NOT_SUPPORTED(
-          fmt::format(
-              "Unknown schema node kind {}.",
-              nimble::serialization::EnumNameKind(node->kind())));
+      NIMBLE_UNSUPPORTED(
+          "Unknown schema node kind {}.",
+          nimble::serialization::EnumNameKind(node->kind()));
   }
 }
 

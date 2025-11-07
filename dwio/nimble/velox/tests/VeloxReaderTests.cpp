@@ -222,7 +222,7 @@ class VeloxMapGenerator {
         return keys;
       }
       default:
-        NIMBLE_NOT_SUPPORTED("Unsupported Key Type");
+        NIMBLE_UNSUPPORTED("Unsupported Key Type");
     }
   }
 

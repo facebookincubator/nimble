@@ -36,14 +36,15 @@ bool InMemoryChunkedStream::hasNext() {
 std::string_view InMemoryChunkedStream::nextChunk() {
   ensureLoaded();
   uncompressed_.clear();
-  NIMBLE_ASSERT(
-      sizeof(uint32_t) + sizeof(char) <=
-          stream_.size() - (pos_ - stream_.data()),
+  NIMBLE_CHECK_LE(
+      sizeof(uint32_t) + sizeof(char),
+      stream_.size() - (pos_ - stream_.data()),
       "Read beyond end of stream");
   auto length = encoding::readUint32(pos_);
   auto compressionType = static_cast<CompressionType>(encoding::readChar(pos_));
-  NIMBLE_ASSERT(
-      length <= stream_.size() - (pos_ - stream_.data()),
+  NIMBLE_CHECK_LE(
+      length,
+      stream_.size() - (pos_ - stream_.data()),
       "Read beyond end of stream");
   std::string_view chunk;
   switch (compressionType) {
@@ -59,9 +60,7 @@ std::string_view InMemoryChunkedStream::nextChunk() {
     }
     default: {
       NIMBLE_UNREACHABLE(
-          fmt::format(
-              "Unexpected stream compression type: ",
-              toString(compressionType)));
+          "Unexpected stream compression type: ", toString(compressionType));
     }
   }
   pos_ += length;
@@ -70,9 +69,9 @@ std::string_view InMemoryChunkedStream::nextChunk() {
 
 CompressionType InMemoryChunkedStream::peekCompressionType() {
   ensureLoaded();
-  NIMBLE_ASSERT(
-      sizeof(uint32_t) + sizeof(char) <=
-          stream_.size() - (pos_ - stream_.data()),
+  NIMBLE_CHECK_LE(
+      sizeof(uint32_t) + sizeof(char),
+      stream_.size() - (pos_ - stream_.data()),
       "Read beyond end of stream");
   auto pos = pos_ + sizeof(uint32_t);
   return static_cast<CompressionType>(encoding::readChar(pos));

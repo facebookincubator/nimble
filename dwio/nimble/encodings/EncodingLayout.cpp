@@ -88,7 +88,7 @@ std::pair<EncodingLayout, uint32_t> EncodingLayout::create(
   const auto childrenCount = encoding::read<uint8_t>(pos);
   [[maybe_unused]] const auto extraDataSize = encoding::read<uint16_t>(pos);
 
-  NIMBLE_DASSERT(extraDataSize == 0, "Extra data currently not supported.");
+  NIMBLE_DCHECK_EQ(extraDataSize, 0, "Extra data currently not supported.");
 
   uint32_t offset = kMinEncodingLayoutBufferSize;
   std::vector<std::optional<const EncodingLayout>> children;

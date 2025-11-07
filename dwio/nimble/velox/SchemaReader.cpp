@@ -81,60 +81,54 @@ bool Type::isSlidingWindowMap() const {
 }
 
 const ScalarType& Type::asScalar() const {
-  NIMBLE_ASSERT(
+  NIMBLE_CHECK(
       isScalar(),
-      fmt::format(
-          "Cannot cast to Scalar. Current type is {}.", getKindName(kind_)));
+      "Cannot cast to Scalar. Current type is {}.",
+      getKindName(kind_));
   return dynamic_cast<const ScalarType&>(*this);
 }
 
 const RowType& Type::asRow() const {
-  NIMBLE_ASSERT(
-      isRow(),
-      fmt::format(
-          "Cannot cast to Row. Current type is {}.", getKindName(kind_)));
+  NIMBLE_CHECK(
+      isRow(), "Cannot cast to Row. Current type is {}.", getKindName(kind_));
   return dynamic_cast<const RowType&>(*this);
 }
 
 const ArrayType& Type::asArray() const {
-  NIMBLE_ASSERT(
+  NIMBLE_CHECK(
       isArray(),
-      fmt::format(
-          "Cannot cast to Array. Current type is {}.", getKindName(kind_)));
+      "Cannot cast to Array. Current type is {}.",
+      getKindName(kind_));
   return dynamic_cast<const ArrayType&>(*this);
 }
 
 const ArrayWithOffsetsType& Type::asArrayWithOffsets() const {
-  NIMBLE_ASSERT(
+  NIMBLE_CHECK(
       isArrayWithOffsets(),
-      fmt::format(
-          "Cannot cast to ArrayWithOffsets. Current type is {}.",
-          getKindName(kind_)));
+      "Cannot cast to ArrayWithOffsets. Current type is {}.",
+      getKindName(kind_));
   return dynamic_cast<const ArrayWithOffsetsType&>(*this);
 }
 
 const MapType& Type::asMap() const {
-  NIMBLE_ASSERT(
-      isMap(),
-      fmt::format(
-          "Cannot cast to Map. Current type is {}.", getKindName(kind_)));
+  NIMBLE_CHECK(
+      isMap(), "Cannot cast to Map. Current type is {}.", getKindName(kind_));
   return dynamic_cast<const MapType&>(*this);
 }
 
 const FlatMapType& Type::asFlatMap() const {
-  NIMBLE_ASSERT(
+  NIMBLE_CHECK(
       isFlatMap(),
-      fmt::format(
-          "Cannot cast to FlatMap. Current type is {}.", getKindName(kind_)));
+      "Cannot cast to FlatMap. Current type is {}.",
+      getKindName(kind_));
   return dynamic_cast<const FlatMapType&>(*this);
 }
 
 const SlidingWindowMapType& Type::asSlidingWindowMap() const {
-  NIMBLE_ASSERT(
+  NIMBLE_CHECK(
       isSlidingWindowMap(),
-      fmt::format(
-          "Cannot cast to SlidingWindowMap. Current type is {}.",
-          getKindName(kind_)));
+      "Cannot cast to SlidingWindowMap. Current type is {}.",
+      getKindName(kind_));
   return dynamic_cast<const SlidingWindowMapType&>(*this);
 }
 
@@ -217,12 +211,12 @@ RowType::RowType(
       nullsDescriptor_{std::move(nullsDescriptor)},
       names_{std::move(names)},
       children_{std::move(children)} {
-  NIMBLE_ASSERT(
-      names_.size() == children_.size(),
-      fmt::format(
-          "Size mismatch. names: {} vs children: {}.",
-          names_.size(),
-          children_.size()));
+  NIMBLE_CHECK_EQ(
+      names_.size(),
+      children_.size(),
+      "Size mismatch. names: {} vs children: {}.",
+      names_.size(),
+      children_.size());
 }
 
 const StreamDescriptor& RowType::nullsDescriptor() const {
@@ -234,18 +228,12 @@ size_t RowType::childrenCount() const {
 }
 
 const std::shared_ptr<const Type>& RowType::childAt(size_t index) const {
-  NIMBLE_ASSERT(
-      index < children_.size(),
-      fmt::format(
-          "Index out of range. index: {}, size: {}.", index, children_.size()));
+  NIMBLE_CHECK_LT(index, children_.size(), "Index out of range.");
   return children_[index];
 }
 
 const std::string& RowType::nameAt(size_t index) const {
-  NIMBLE_ASSERT(
-      index < children_.size(),
-      fmt::format(
-          "Index out of range. index: {}, size: {}.", index, children_.size()));
+  NIMBLE_CHECK_LT(index, children_.size(), "Index out of range.");
   return names_[index];
 }
 
@@ -261,14 +249,13 @@ FlatMapType::FlatMapType(
       names_{std::move(names)},
       inMapDescriptors_{std::move(inMapDescriptors)},
       children_{std::move(children)} {
-  NIMBLE_ASSERT(
+  NIMBLE_CHECK(
       names_.size() == children_.size() &&
           inMapDescriptors_.size() == children_.size(),
-      fmt::format(
-          "Size mismatch. names: {} vs inMaps: {} vs children: {}.",
-          names_.size(),
-          inMapDescriptors_.size(),
-          children_.size()));
+      "Size mismatch. names: {} vs inMaps: {} vs children: {}.",
+      names_.size(),
+      inMapDescriptors_.size(),
+      children_.size());
 }
 
 const StreamDescriptor& FlatMapType::nullsDescriptor() const {
@@ -276,12 +263,7 @@ const StreamDescriptor& FlatMapType::nullsDescriptor() const {
 }
 
 const StreamDescriptor& FlatMapType::inMapDescriptorAt(size_t index) const {
-  NIMBLE_ASSERT(
-      index < inMapDescriptors_.size(),
-      fmt::format(
-          "Index out of range. index: {}, size: {}.",
-          index,
-          inMapDescriptors_.size()));
+  NIMBLE_CHECK_LT(index, inMapDescriptors_.size(), "Index out of range.");
   return *inMapDescriptors_[index];
 }
 
@@ -294,18 +276,12 @@ size_t FlatMapType::childrenCount() const {
 }
 
 const std::shared_ptr<const Type>& FlatMapType::childAt(size_t index) const {
-  NIMBLE_ASSERT(
-      index < children_.size(),
-      fmt::format(
-          "Index out of range. index: {}, size: {}.", index, children_.size()));
+  NIMBLE_CHECK_LT(index, children_.size(), "Index out of range.");
   return children_[index];
 }
 
 const std::string& FlatMapType::nameAt(size_t index) const {
-  NIMBLE_ASSERT(
-      index < names_.size(),
-      fmt::format(
-          "Index out of range. index: {}, size: {}.", index, names_.size()));
+  NIMBLE_CHECK_LT(index, names_.size(), "Index out of range.");
   return names_[index];
 }
 
@@ -331,7 +307,7 @@ const std::shared_ptr<const Type>& ArrayWithOffsetsType::elements() const {
 }
 
 NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
-  NIMBLE_DASSERT(index < nodes.size(), "Index out of range.");
+  NIMBLE_DCHECK_LT(index, nodes.size(), "Index out of range.");
   const auto& node = nodes[index++];
   auto offset = node.offset();
   auto kind = node.kind();
@@ -362,7 +338,7 @@ NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
     }
     case Kind::SlidingWindowMap: {
       const auto& lengthsNode = nodes[index++];
-      NIMBLE_ASSERT(
+      NIMBLE_CHECK(
           lengthsNode.kind() == Kind::Scalar &&
               lengthsNode.scalarKind() == ScalarKind::UInt32,
           "SlidingWindowMap field must have a uint32 scalar type.");
@@ -382,8 +358,7 @@ NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
       std::vector<std::shared_ptr<const Type>> children{childrenCount};
       for (auto i = 0; i < childrenCount; ++i) {
         auto namedType = getType(index, nodes);
-        NIMBLE_ASSERT(
-            namedType.name.has_value(), "Row fields must have names.");
+        NIMBLE_CHECK(namedType.name.has_value(), "Row fields must have names.");
         children[i] = namedType.type;
         names[i] = namedType.name.value();
       }
@@ -403,13 +378,13 @@ NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
       std::vector<std::shared_ptr<const Type>> children{childrenCount};
 
       for (auto i = 0; i < childrenCount; ++i) {
-        NIMBLE_DASSERT(index < nodes.size(), "Unexpected node index.");
+        NIMBLE_DCHECK_LT(index, nodes.size(), "Unexpected node index.");
         const auto& inMapNode = nodes[index++];
-        NIMBLE_ASSERT(
+        NIMBLE_CHECK(
             inMapNode.kind() == Kind::Scalar &&
                 inMapNode.scalarKind() == ScalarKind::Bool,
             "Flat map in-map field must have a boolean scalar type.");
-        NIMBLE_ASSERT(
+        NIMBLE_CHECK(
             inMapNode.name().has_value(), "Flat map fields must have names.");
         auto field = getType(index, nodes);
         names[i] = inMapNode.name().value();
@@ -428,7 +403,7 @@ NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
     }
     case Kind::ArrayWithOffsets: {
       const auto& offsetsNode = nodes[index++];
-      NIMBLE_ASSERT(
+      NIMBLE_CHECK(
           offsetsNode.kind() == Kind::Scalar &&
               offsetsNode.scalarKind() == ScalarKind::UInt32,
           "Array with offsets field must have a uint32 scalar type.");
@@ -442,7 +417,7 @@ NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
     }
 
     default: {
-      NIMBLE_UNREACHABLE(fmt::format("Unknown node kind: ", toString(kind)));
+      NIMBLE_UNREACHABLE("Unknown node kind: ", toString(kind));
     }
   }
 }

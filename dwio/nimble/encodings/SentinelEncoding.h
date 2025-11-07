@@ -345,7 +345,7 @@ Vector<physicalType> createSentineledData(
 //   encoding::writeUint32(nullCount, pos);
 //   encoding::writeString(sentineledEncoding, pos);
 //   encoding::write<physicalType>(sentinelValue, pos);
-//   NIMBLE_DASSERT(pos - reserved == encodingSize, "Encoding size mismatch.");
+//   NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
 //   return {reserved, encodingSize};
 // }
 

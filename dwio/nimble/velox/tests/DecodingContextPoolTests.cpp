@@ -27,7 +27,7 @@ TEST(DeocodingContextPoolTest, VectorDecoderVisitorMissingThrows) {
   try {
     auto pool = DecodingContextPool{/* vectorDecoderVisitor*/ nullptr};
     FAIL();
-  } catch (facebook::nimble::NimbleUserError& e) {
+  } catch (facebook::nimble::NimbleInternalError& e) {
     ASSERT_EQ(e.errorMessage(), "vectorDecoderVisitor must be set");
   }
 }

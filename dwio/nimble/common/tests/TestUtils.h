@@ -312,7 +312,7 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
       uint64_t /* offset */,
       const std::vector<folly::Range<char*>>& /* buffers */,
       const velox::FileStorageContext& fileStorageContext = {}) const final {
-    NIMBLE_NOT_SUPPORTED("Not used by Nimble");
+    NIMBLE_UNSUPPORTED("Not used by Nimble");
   }
 
   uint64_t preadv(

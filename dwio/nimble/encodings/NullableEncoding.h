@@ -103,8 +103,8 @@ NullableEncoding<T>::NullableEncoding(
   pos += nonNullsBytes;
   nulls_ = EncodingFactory::decode(
       *this->pool_, {pos, static_cast<size_t>(data.end() - pos)});
-  NIMBLE_DASSERT(
-      Encoding::rowCount() == nulls_->rowCount(), "Nulls count mismatch.");
+  NIMBLE_DCHECK_EQ(
+      Encoding::rowCount(), nulls_->rowCount(), "Nulls count mismatch.");
 }
 
 template <typename T>
@@ -300,7 +300,7 @@ std::string_view NullableEncoding<T>::encodeNullable(
       EncodingType::Nullable, TypeTraits<T>::dataType, rowCount, pos);
   encoding::writeString(serializedValues, pos);
   encoding::writeBytes(serializedNulls, pos);
-  NIMBLE_DASSERT(pos - reserved == encodingSize, "Encoding size mismatch.");
+  NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
   return {reserved, encodingSize};
 }
 

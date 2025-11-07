@@ -87,14 +87,15 @@ DefaultLayoutPlanner::DefaultLayoutPlanner(
           flatMapFeatureOrder.has_value()
               ? std::move(flatMapFeatureOrder.value())
               : std::vector<std::tuple<size_t, std::vector<int64_t>>>{}} {
-  NIMBLE_ASSERT(typeResolver_ != nullptr, "typeResolver is not supplied");
+  NIMBLE_CHECK_NOT_NULL(typeResolver_, "typeResolver is not supplied");
 }
 
 std::vector<Stream> DefaultLayoutPlanner::getLayout(
     std::vector<Stream>&& streams) {
   auto type = typeResolver_();
-  NIMBLE_ASSERT(
-      type->kind() == Kind::Row,
+  NIMBLE_CHECK_EQ(
+      type->kind(),
+      Kind::Row,
       "Layout planner requires row as the schema root.");
   auto& root = type->asRow();
 
@@ -206,12 +207,7 @@ std::vector<Stream> DefaultLayoutPlanner::getLayout(
     tryAppendStream(offset);
   }
 
-  NIMBLE_ASSERT(
-      streams.size() == layout.size(),
-      fmt::format(
-          "Stream count mismatch. Input size: {}, output size: {}.",
-          streams.size(),
-          layout.size()));
+  NIMBLE_CHECK_EQ(streams.size(), layout.size(), "Stream count mismatch.");
 
   return layout;
 }
