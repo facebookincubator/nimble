@@ -15,6 +15,7 @@
  */
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Exceptions.h"
+#include "velox/common/base/VeloxException.h"
 
 namespace facebook {
 namespace {
@@ -102,19 +103,6 @@ TEST(ExceptionTests, format) {
       "INTERNAL",
       "code2",
       "False");
-
-  verifyException(
-      nimble::NimbleExternalError(
-          "file3", 25, "func3", "expr3", "err3", "code3", true, "source"),
-      "NimbleExternalError",
-      "file3",
-      "25",
-      "func3",
-      "expr3",
-      "err3",
-      "EXTERNAL",
-      "code3",
-      "True");
 }
 
 TEST(ExceptionTests, check) {
@@ -133,30 +121,6 @@ TEST(ExceptionTests, check) {
         "INTERNAL",
         "INVALID_ARGUMENT",
         "False");
-  }
-}
-
-TEST(ExceptionTests, verify) {
-  try {
-    NIMBLE_VERIFY_EXTERNAL(
-        1 == 2,
-        LocalFileSystem,
-        nimble::error_code::NotSupported,
-        true,
-        "error message3");
-  } catch (const nimble::NimbleExternalError& e) {
-    verifyException(
-        e,
-        "NimbleExternalError",
-        __FILE__,
-        "",
-        "TestBody",
-        "1 == 2",
-        "error message3",
-        "EXTERNAL",
-        "NOT_SUPPORTED",
-        "True",
-        "External Source: FILE_SYSTEM");
   }
 }
 
