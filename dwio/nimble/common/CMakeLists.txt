@@ -17,8 +17,10 @@ add_library(
   nimble_common
   Bits.cpp
   Checksum.cpp
+  Exceptions.cpp
   FixedBitArray.cpp
   MetricsLogger.cpp
+  NimbleException.cpp
   Types.cpp
   Varint.cpp
 )

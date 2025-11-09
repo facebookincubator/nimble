@@ -144,7 +144,7 @@ target_link_libraries(
 )
 
 add_library(raw_size_utils RawSizeUtils.cpp DecodedVectorManager.cpp)
-target_link_libraries(raw_size_utils velox_vector velox_dwio_common)
+target_link_libraries(raw_size_utils nimble_common velox_vector velox_dwio_common)
 
 add_library(
   nimble_velox_writer

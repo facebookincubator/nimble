@@ -15,446 +15,147 @@
  */
 #pragma once
 
-#include "velox/common/base/VeloxException.h"
-
 #include <fmt/ostream.h>
 #include <glog/logging.h>
+
+#include "dwio/nimble/common/ExceptionHelper.h"
+#include "dwio/nimble/common/NimbleException.h"
 #include "folly/FixedString.h"
 #include "folly/Preprocessor.h"
 #include "folly/experimental/symbolizer/Symbolizer.h"
-#include "folly/synchronization/CallOnce.h"
 
 // Standard errors used throughout the codebase.
 
 namespace facebook::nimble {
 
-namespace error_source {
-using namespace folly::string_literals;
-
-// Errors where the root cause of the problem is either because of bad input
-// or an unsupported pattern of use are classified with source USER.
-inline constexpr auto User = "USER"_fs;
-
-// Errors where the root cause of the problem is an unexpected internal state in
-// the system.
-inline constexpr auto Internal = "INTERNAL"_fs;
-
-// Errors where the root cause of the problem is the result of a dependency or
-// an environment failures.
-inline constexpr auto External = "EXTERNAL"_fs;
-} // namespace error_source
-
-namespace error_code {
-using namespace folly::string_literals;
-
-// An error raised when an argument verification fails
-inline constexpr auto InvalidArgument = "INVALID_ARGUMENT"_fs;
-
-// An error raised when the current state of a component is invalid.
-inline constexpr auto InvalidState = "INVALID_STATE"_fs;
-
-// An error raised when unreachable code point was executed.
-inline constexpr auto UnreachableCode = "UNREACHABLE_CODE"_fs;
-
-// An error raised when a requested operation is not yet implemented.
-inline constexpr auto NotImplemented = "NOT_IMPLEMENTED"_fs;
-
-// An error raised when a requested operation is not supported.
-inline constexpr auto NotSupported = "NOT_SUPPORTED"_fs;
-
-// As error raised during encoding optimization, when incompatible encoding is
-// attempted.
-inline constexpr auto IncompatibleEncoding = "INCOMPATIBLE_ENCODING"_fs;
-
-// Am error raised if a corrupted file is detected
-inline constexpr auto CorruptedFile = "CORRUPTED_FILE"_fs;
-
-// We do not know how to classify it yet.
-inline constexpr auto Unknown = "UNKNOWN"_fs;
-} // namespace error_code
-
-namespace external_source {
-using namespace folly::string_literals;
-
-// Warm Storage
-inline constexpr auto WarmStorage = "WARM_STORAGE"_fs;
-
-// Local File System
-inline constexpr auto LocalFileSystem = "FILE_SYSTEM"_fs;
-
-} // namespace external_source
-
 namespace detail {
-// Helper function to format messages with optional arguments
-inline std::string formatOrEmpty() {
-  return "";
+
+// Struct containing the arguments needed to throw a Nimble exception
+struct NimbleCheckFailArgs {
+  const char* file;
+  size_t line;
+  const char* function;
+  const char* expression;
+  std::string_view errorCode;
+  bool isRetryable;
+};
+
+// Out-of-line nimbleCheckFail implementations to reduce binary bloat
+template <typename Exception, typename Msg>
+[[noreturn]] void nimbleCheckFail(const NimbleCheckFailArgs& args, Msg msg) {
+  throw Exception(
+      args.file,
+      args.line,
+      args.function,
+      args.expression,
+      msg,
+      args.errorCode,
+      args.isRetryable);
 }
 
-// Overload for plain string literals or when no formatting is needed
-inline std::string formatOrEmpty(const char* msg) {
-  return std::string(msg);
-}
+// NimbleCheckFailStringType helps us pass by reference to
+// NimbleCheckFail exactly when the string type is std::string.
+template <typename T>
+struct NimbleCheckFailStringType;
 
-inline std::string formatOrEmpty(const std::string& msg) {
-  return msg;
-}
+template <>
+struct NimbleCheckFailStringType<CompileTimeEmptyString> {
+  using type = CompileTimeEmptyString;
+};
 
-template <typename... Args>
-inline std::string formatOrEmpty(
-    fmt::format_string<Args...> fmt,
-    Args&&... args) {
-  return fmt::format(fmt, std::forward<Args>(args)...);
-}
+template <>
+struct NimbleCheckFailStringType<const char*> {
+  using type = const char*;
+};
+
+template <>
+struct NimbleCheckFailStringType<std::string> {
+  using type = const std::string&;
+};
+
+// Declare explicit instantiations of nimbleCheckFail for the given
+// exceptionType. Just the signatures go in this macro, not the definitions.
+#define NIMBLE_DECLARE_CHECK_FAIL_TEMPLATES(exceptionType)                     \
+  namespace detail {                                                           \
+  extern template void nimbleCheckFail<exceptionType, const char*>(            \
+      const NimbleCheckFailArgs&,                                              \
+      const char*);                                                            \
+  extern template void nimbleCheckFail<exceptionType, const std::string&>(     \
+      const NimbleCheckFailArgs&,                                              \
+      const std::string&);                                                     \
+  extern template void nimbleCheckFail<exceptionType, CompileTimeEmptyString>( \
+      const NimbleCheckFailArgs&,                                              \
+      CompileTimeEmptyString);                                                 \
+  }
+
+// Define explicit instantiations of nimbleCheckFail for the given
+// exceptionType. The actual template instantiations go in this macro.
+#define NIMBLE_DEFINE_CHECK_FAIL_TEMPLATES(exceptionType)               \
+  namespace detail {                                                    \
+  template void nimbleCheckFail<exceptionType, const char*>(            \
+      const NimbleCheckFailArgs&,                                       \
+      const char*);                                                     \
+  template void nimbleCheckFail<exceptionType, const std::string&>(     \
+      const NimbleCheckFailArgs&,                                       \
+      const std::string&);                                              \
+  template void nimbleCheckFail<exceptionType, CompileTimeEmptyString>( \
+      const NimbleCheckFailArgs&,                                       \
+      CompileTimeEmptyString);                                          \
+  }
 } // namespace detail
 
-// Based exception, used by all other Nimble exceptions. Provides common
-// functionality for all other exception types.
-class NimbleException : public std::exception {
- public:
-  explicit NimbleException(
-      std::string_view exceptionName,
-      const char* fileName,
-      size_t fileLine,
-      const char* functionName,
-      std::string_view failingExpression,
-      std::string_view errorMessage,
-      std::string_view errorCode,
-      bool retryable,
-      velox::VeloxException::Type veloxExceptionType)
-      : exceptionName_{std::move(exceptionName)},
-        fileName_{fileName},
-        fileLine_{fileLine},
-        functionName_{functionName},
-        failingExpression_{std::move(failingExpression)},
-        errorMessage_{std::move(errorMessage)},
-        errorCode_{std::move(errorCode)},
-        retryable_{retryable},
-        context_{captureContextMessage(veloxExceptionType)} {
-    captureStackTraceFrames();
-  }
+// Declare template instantiations for common exception types
+NIMBLE_DECLARE_CHECK_FAIL_TEMPLATES(::facebook::nimble::NimbleUserError);
+NIMBLE_DECLARE_CHECK_FAIL_TEMPLATES(::facebook::nimble::NimbleInternalError);
 
-  const char* what() const noexcept {
-    try {
-      folly::call_once(once_, [&] { finalizeMessage(); });
-      return finalizedMessage_.c_str();
-    } catch (...) {
-      return "<unknown failure in NimbleException::what>";
-    }
-  }
-
-  const std::string& exceptionName() const {
-    return exceptionName_;
-  }
-
-  const char* fileName() const {
-    return fileName_;
-  }
-
-  size_t fileLine() const {
-    return fileLine_;
-  }
-
-  const char* functionName() const {
-    return functionName_;
-  }
-
-  const std::string& failingExpression() const {
-    return failingExpression_;
-  }
-
-  const std::string& errorMessage() const {
-    return errorMessage_;
-  }
-
-  virtual const std::string_view errorSource() const = 0;
-
-  const std::string& errorCode() const {
-    return errorCode_;
-  }
-
-  bool retryable() const {
-    return retryable_;
-  }
-
-  const std::string& context() const {
-    return context_;
-  }
-
- protected:
-  virtual void appendMessage(std::string& /* message */) const {}
-
- private:
-  static std::string captureContextMessage(
-      velox::VeloxException::Type veloxExceptionType) {
-    auto* context = &velox::getExceptionContext();
-    std::string contextMessage = context->message(veloxExceptionType);
-    while (context->parent) {
-      context = context->parent;
-      if (!context->isEssential) {
-        continue;
-      }
-      const auto message = context->message(veloxExceptionType);
-      if (message.empty()) {
-        continue;
-      }
-      if (!contextMessage.empty()) {
-        contextMessage += ' ';
-      }
-      contextMessage += message;
-    }
-    return contextMessage;
-  }
-
-  void captureStackTraceFrames() {
-    try {
-      constexpr size_t skipFrames = 2;
-      constexpr size_t maxFrames = 200;
-      uintptr_t addresses[maxFrames];
-      ssize_t n = folly::symbolizer::getStackTrace(addresses, maxFrames);
-
-      if (n < skipFrames) {
-        return;
-      }
-
-      exceptionFrames_.assign(addresses + skipFrames, addresses + n);
-    } catch (const std::exception& ex) {
-      LOG(WARNING) << "Unable to capture stack trace: " << ex.what();
-    } catch (...) { // Should never happen, catchall
-      LOG(WARNING) << "Unable to capture stack trace.";
-    }
-  }
-
-  void finalizeMessage() const {
-    finalizedMessage_ += exceptionName_;
-    finalizedMessage_ += "\nError Source: ";
-    finalizedMessage_ += errorSource();
-    finalizedMessage_ += "\nError Code: ";
-    finalizedMessage_ += errorCode_;
-    if (!errorMessage_.empty()) {
-      finalizedMessage_ += "\nError Message: ";
-      finalizedMessage_ += errorMessage_;
-    }
-    finalizedMessage_ += "\n";
-    appendMessage(finalizedMessage_);
-    finalizedMessage_ += "Retryable: ";
-    finalizedMessage_ += retryable_ ? "True" : "False";
-    finalizedMessage_ += "\nLocation: ";
-    finalizedMessage_ += functionName_;
-    finalizedMessage_ += "@";
-    finalizedMessage_ += fileName_;
-    finalizedMessage_ += ":";
-    finalizedMessage_ += folly::to<std::string>(fileLine_);
-
-    if (!failingExpression_.empty()) {
-      finalizedMessage_ += "\nExpression: ";
-      finalizedMessage_ += failingExpression_;
-    }
-
-    if (!context_.empty()) {
-      finalizedMessage_ += "\nContext: ";
-      finalizedMessage_ += context_;
-    }
-
-    if (LIKELY(!exceptionFrames_.empty())) {
-      std::vector<folly::symbolizer::SymbolizedFrame> symbolizedFrames;
-      symbolizedFrames.resize(exceptionFrames_.size());
-
-      folly::symbolizer::Symbolizer symbolizer{
-          folly::symbolizer::LocationInfoMode::FULL};
-      symbolizer.symbolize(
-          exceptionFrames_.data(),
-          symbolizedFrames.data(),
-          symbolizedFrames.size());
-
-      folly::symbolizer::StringSymbolizePrinter printer{
-          folly::symbolizer::StringSymbolizePrinter::COLOR};
-      printer.println(symbolizedFrames.data(), symbolizedFrames.size());
-
-      finalizedMessage_ += "\nStack Trace:\n";
-      finalizedMessage_ += printer.str();
-    }
-  }
-
-  std::vector<uintptr_t> exceptionFrames_;
-  const std::string stackTrace_;
-  const std::string exceptionName_;
-  const char* fileName_;
-  const size_t fileLine_;
-  const char* functionName_;
-  const std::string failingExpression_;
-  const std::string errorMessage_;
-  const std::string errorCode_;
-  const bool retryable_;
-  const std::string context_;
-
-  mutable folly::once_flag once_;
-  mutable std::string finalizedMessage_;
-};
-
-// Exception representing an error originating by a user misusing Nimble.
-class NimbleUserError : public NimbleException {
- public:
-  NimbleUserError(
-      const char* fileName,
-      size_t fileLine,
-      const char* functionName,
-      std::string_view failingExpression,
-      std::string_view errorMessage,
-      std::string_view errorCode,
-      bool retryable)
-      : NimbleException(
-            "NimbleUserError",
-            fileName,
-            fileLine,
-            functionName,
-            failingExpression,
-            errorMessage,
-            errorCode,
-            retryable,
-            velox::VeloxException::Type::kUser) {}
-
-  const std::string_view errorSource() const override {
-    return error_source::User;
-  }
-};
-
-// Excpetion representing unexpected behavior in Nimble. This usually means a
-// bug in Nimble.
-class NimbleInternalError : public NimbleException {
- public:
-  NimbleInternalError(
-      const char* fileName,
-      size_t fileLine,
-      const char* functionName,
-      std::string_view failingExpression,
-      std::string_view errorMessage,
-      std::string_view errorCode,
-      bool retryable)
-      : NimbleException(
-            "NimbleInternalError",
-            fileName,
-            fileLine,
-            functionName,
-            failingExpression,
-            errorMessage,
-            errorCode,
-            retryable,
-            velox::VeloxException::Type::kSystem) {}
-
-  const std::string_view errorSource() const override {
-    return error_source::Internal;
-  }
-};
-
-// Exception representing an issue originating from an Nimble external
-// dependency (for example, Warm Storage or file system). These exceptions
-// should not affect Nimble's SLA.
-class NimbleExternalError : public NimbleException {
- public:
-  NimbleExternalError(
-      const char* fileName,
-      const size_t fileLine,
-      const char* functionName,
-      std::string_view failingExpression,
-      std::string_view errorMessage,
-      std::string_view errorCode,
-      bool retryable,
-      std::string_view externalSource)
-      : NimbleException(
-            "NimbleExternalError",
-            fileName,
-            fileLine,
-            functionName,
-            failingExpression,
-            errorMessage,
-            errorCode,
-            retryable,
-            velox::VeloxException::Type::kSystem),
-        externalSource_{externalSource} {}
-
-  const std::string_view errorSource() const override {
-    return error_source::External;
-  }
-
-  void appendMessage(std::string& message) const override {
-    message += "External Source: ";
-    message += externalSource_;
-    message += "\n";
-  }
-
- private:
-  const std::string externalSource_;
-};
-
-#define _NIMBLE_RAISE_EXCEPTION(                     \
-    exception, expression, message, code, retryable) \
-  throw exception(                                   \
-      __FILE__, __LINE__, __FUNCTION__, expression, message, code, retryable)
-
-#define _NIMBLE_RAISE_EXCEPTION_EXTENDED(                 \
-    exception, expression, message, code, retryable, ...) \
-  throw exception(                                        \
-      __FILE__,                                           \
-      __LINE__,                                           \
-      __FUNCTION__,                                       \
-      expression,                                         \
-      message,                                            \
-      code,                                               \
-      retryable,                                          \
-      __VA_ARGS__)
+// Base throw implementation - Velox-style with NimbleCheckFailArgs
+#define _NIMBLE_THROW_IMPL(exception, exprStr, errorCode, retryable, ...)     \
+  do {                                                                        \
+    /* GCC 9.2.1 doesn't accept this code with constexpr. */                  \
+    static const ::facebook::nimble::detail::NimbleCheckFailArgs              \
+        nimbleCheckFailArgs = {                                               \
+            __FILE__, __LINE__, __FUNCTION__, exprStr, errorCode, retryable}; \
+    auto message = ::facebook::nimble::errorMessage(__VA_ARGS__);             \
+    ::facebook::nimble::detail::nimbleCheckFail<                              \
+        exception,                                                            \
+        typename ::facebook::nimble::detail::NimbleCheckFailStringType<       \
+            decltype(message)>::type>(nimbleCheckFailArgs, message);          \
+  } while (0)
 
 #define NIMBLE_RAISE_USER_ERROR(expression, code, retryable, ...) \
-  _NIMBLE_RAISE_EXCEPTION(                                        \
+  _NIMBLE_THROW_IMPL(                                             \
       ::facebook::nimble::NimbleUserError,                        \
       expression,                                                 \
-      ::facebook::nimble::detail::formatOrEmpty(__VA_ARGS__),     \
       code,                                                       \
-      retryable)
+      retryable,                                                  \
+      ##__VA_ARGS__)
 
 #define NIMBLE_RAISE_INTERNAL_ERROR(expression, code, retryable, ...) \
-  _NIMBLE_RAISE_EXCEPTION(                                            \
+  _NIMBLE_THROW_IMPL(                                                 \
       ::facebook::nimble::NimbleInternalError,                        \
       expression,                                                     \
-      ::facebook::nimble::detail::formatOrEmpty(__VA_ARGS__),         \
       code,                                                           \
-      retryable)
+      retryable,                                                      \
+      ##__VA_ARGS__)
 
-#define NIMBLE_RAISE_EXTERNAL_ERROR(expression, source, code, retryable, ...) \
-  _NIMBLE_RAISE_EXCEPTION_EXTENDED(                                           \
-      ::facebook::nimble::NimbleExternalError,                                \
-      expression,                                                             \
-      ::facebook::nimble::detail::formatOrEmpty(__VA_ARGS__),                 \
-      code,                                                                   \
-      retryable,                                                              \
-      source)
-
-// Helper macro to handle optional message formatting
-#define _NIMBLE_FORMAT_OR_EMPTY(...) \
-  ::facebook::nimble::detail::formatOrEmpty(__VA_ARGS__)
-
-// Check internal preconditions and invariants. Failure of this condition
-// indicates a bug in Nimble and will trigger an internal error.
-#define NIMBLE_CHECK(condition, ...)                     \
-  if (UNLIKELY(!(condition))) {                          \
-    NIMBLE_RAISE_INTERNAL_ERROR(                         \
-        #condition,                                      \
-        ::facebook::nimble::error_code::InvalidArgument, \
-        /* retryable */ false,                           \
-        __VA_ARGS__);                                    \
+// Check internal preconditions and invariants - Velox-style implementation
+#define _NIMBLE_CHECK_AND_THROW_IMPL(                             \
+    exprStr, expr, exception, errorCode, retryable, ...)          \
+  if (UNLIKELY(!(expr))) {                                        \
+    _NIMBLE_THROW_IMPL(                                           \
+        exception, exprStr, errorCode, retryable, ##__VA_ARGS__); \
   }
 
-// Verify a result from an external Nimble dependency. Failure of this condition
-// means an external dependency returned an error and all retries (if
-// applicable) were exhausted. This will trigger an external error.
-#define NIMBLE_VERIFY_EXTERNAL(condition, source, code, retryable, ...) \
-  if (UNLIKELY(!(condition))) {                                         \
-    NIMBLE_RAISE_EXTERNAL_ERROR(                                        \
-        #condition,                                                     \
-        ::facebook::nimble::external_source::source,                    \
-        code,                                                           \
-        retryable,                                                      \
-        __VA_ARGS__);                                                   \
-  }
+#define _NIMBLE_CHECK_IMPL(expr, exprStr, ...)         \
+  _NIMBLE_CHECK_AND_THROW_IMPL(                        \
+      exprStr,                                         \
+      expr,                                            \
+      ::facebook::nimble::NimbleInternalError,         \
+      ::facebook::nimble::error_code::InvalidArgument, \
+      false,                                           \
+      ##__VA_ARGS__)
+
+#define NIMBLE_CHECK(expr, ...) _NIMBLE_CHECK_IMPL(expr, #expr, ##__VA_ARGS__)
 
 // Verify an expected file format conditions. Failure of this condition means
 // the file is corrupted (e.g. passed magic number and version verification, but
@@ -516,39 +217,47 @@ class NimbleExternalError : public NimbleException {
       /* retryable */ true,                    \
       __VA_ARGS__);
 
-// Should be used in "catch all" exception handlers wrapping external Nimble
-// dependencies, where we can't classify the error correctly. These errors mean
-// that we are missing error classification.
-#define NIMBLE_UNKNOWN_EXTERNAL(source, message)   \
-  NIMBLE_RAISE_EXTERNAL_ERROR(                     \
-      "",                                          \
-      ::facebook::nimble::external_source::source, \
-      message,                                     \
-      ::facebook::nimble::error_code::Unknown,     \
-      /* retryable */ true);
-
-// Comparison macros for user checks with automatic value formatting
+// Comparison macros - Velox-style
 #define _NIMBLE_CHECK_OP_WITH_USER_FMT_HELPER(  \
     implmacro, expr1, expr2, op, user_fmt, ...) \
   implmacro(                                    \
       (expr1)op(expr2),                         \
-      fmt::runtime("({} vs. {}) " user_fmt),    \
+      #expr1 " " #op " " #expr2,                \
+      "({} vs. {}) " user_fmt,                  \
       expr1,                                    \
       expr2,                                    \
       ##__VA_ARGS__)
 
-#define _NIMBLE_CHECK_OP_HELPER(implmacro, expr1, expr2, op, ...)             \
-  do {                                                                        \
-    if constexpr (FOLLY_PP_DETAIL_NARGS(__VA_ARGS__) > 0) {                   \
-      _NIMBLE_CHECK_OP_WITH_USER_FMT_HELPER(                                  \
-          implmacro, expr1, expr2, op, __VA_ARGS__);                          \
-    } else {                                                                  \
-      implmacro((expr1)op(expr2), fmt::runtime("({} vs. {})"), expr1, expr2); \
-    }                                                                         \
+#define _NIMBLE_CHECK_OP_HELPER(implmacro, expr1, expr2, op, ...) \
+  do {                                                            \
+    if constexpr (FOLLY_PP_DETAIL_NARGS(__VA_ARGS__) > 0) {       \
+      _NIMBLE_CHECK_OP_WITH_USER_FMT_HELPER(                      \
+          implmacro, expr1, expr2, op, __VA_ARGS__);              \
+    } else {                                                      \
+      implmacro(                                                  \
+          (expr1)op(expr2),                                       \
+          #expr1 " " #op " " #expr2,                              \
+          "({} vs. {})",                                          \
+          expr1,                                                  \
+          expr2);                                                 \
+    }                                                             \
   } while (0)
 
 #define _NIMBLE_CHECK_OP(expr1, expr2, op, ...) \
-  _NIMBLE_CHECK_OP_HELPER(NIMBLE_CHECK, expr1, expr2, op, ##__VA_ARGS__)
+  _NIMBLE_CHECK_OP_HELPER(_NIMBLE_CHECK_IMPL, expr1, expr2, op, ##__VA_ARGS__)
+
+#define _NIMBLE_USER_CHECK_IMPL(expr, exprStr, ...)    \
+  _NIMBLE_CHECK_AND_THROW_IMPL(                        \
+      exprStr,                                         \
+      expr,                                            \
+      ::facebook::nimble::NimbleUserError,             \
+      ::facebook::nimble::error_code::InvalidArgument, \
+      /* retryable */ false,                           \
+      ##__VA_ARGS__)
+
+#define _NIMBLE_USER_CHECK_OP(expr1, expr2, op, ...) \
+  _NIMBLE_CHECK_OP_HELPER(                           \
+      _NIMBLE_USER_CHECK_IMPL, expr1, expr2, op, ##__VA_ARGS__)
 
 // Comparison check macros
 #define NIMBLE_CHECK_GT(e1, e2, ...) _NIMBLE_CHECK_OP(e1, e2, >, ##__VA_ARGS__)
