@@ -57,7 +57,7 @@ class FieldWriterStatsTests : public ::testing::Test {
   void verifyReturnedColumnStats(
       const velox::VectorPtr& input,
       const std::vector<ColumnStats>& expectedStats,
-      const nimble::VeloxWriterOptions& options = {},
+      nimble::VeloxWriterOptions options = {},
       std::shared_ptr<const velox::Type> rowType = nullptr) {
     // Write Nimble file.
     std::string file;
@@ -65,6 +65,7 @@ class FieldWriterStatsTests : public ::testing::Test {
     if (!rowType) {
       rowType = input->type();
     }
+    options.enableChunking = true;
     nimble::VeloxWriter writer(
         *rootPool_, rowType, std::move(writeFile), options);
     writer.write(input);
@@ -742,7 +743,7 @@ TEST_F(FieldWriterStatsTests, RowFieldWriterStats) {
   auto c3 = velox::BaseVector::wrapInDictionary(nulls, indices, columnSize, c1);
   auto c3SubFieldStat1 = ColumnStats{
       .logicalSize = sizeof(int8_t) * 4,
-      .physicalSize = 33,
+      .physicalSize = 16,
       .valueCount = columnSize - 2};
   auto c3SubFieldStat2 = ColumnStats{
       .logicalSize = 13, .physicalSize = 43, .valueCount = columnSize - 2};
