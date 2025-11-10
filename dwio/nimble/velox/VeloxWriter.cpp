@@ -825,8 +825,13 @@ bool VeloxWriter::writeChunks(
     if (!encodingBuffer_) {
       encodingBuffer_ = std::make_unique<Buffer>(*encodingMemoryPool_);
     }
-    streams_.resize(context_->schemaBuilder.nodeCount());
-
+    const auto& options = context_->options;
+    const auto minChunkSize = lastChunk ? 0 : options.minStreamChunkRawSize;
+    const auto schemaNodeCount = context_->schemaBuilder.nodeCount();
+    const auto maxChunkSize = schemaNodeCount > options.largeSchemaThreshold
+        ? options.wideSchemaMaxStreamChunkRawSize
+        : options.maxStreamChunkRawSize;
+    streams_.resize(schemaNodeCount);
     auto processStream = [&](StreamData& streamData, uint64_t& streamSize) {
       logicalSizeBeforeEncoding += streamData.memoryUsed();
       const auto& offset = streamData.descriptor().offset();
@@ -834,9 +839,8 @@ bool VeloxWriter::writeChunks(
       auto chunker = getStreamChunker(
           streamData,
           StreamChunkerOptions{
-              .minChunkSize =
-                  lastChunk ? 0 : context_->options.minStreamChunkRawSize,
-              .maxChunkSize = context_->options.maxStreamChunkRawSize,
+              .minChunkSize = minChunkSize,
+              .maxChunkSize = maxChunkSize,
               .ensureFullChunks = ensureFullChunks,
               .isFirstChunk = streamContent.empty()});
       while (auto streamDataView = chunker->next()) {

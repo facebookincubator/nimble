@@ -127,6 +127,10 @@ class ContentStreamChunker final : public StreamChunker {
     NIMBLE_DCHECK(
         !streamData.hasNulls(),
         "Streams with nulls should be handled by NullableContentStreamData");
+    NIMBLE_DCHECK_GE(
+        maxChunkSize_,
+        sizeof(T),
+        "MaxChunkSize must be at least the size of a single data element.");
   }
 
   std::optional<StreamDataView> next() override {
@@ -170,6 +174,16 @@ class ContentStreamChunker final : public StreamChunker {
     for (size_t i = dataElementOffset_; i < data.size(); ++i) {
       const auto& str = data[i];
       const uint64_t strSize = str.size() + sizeof(std::string_view);
+
+      if (rollingChunkSize == 0 && strSize > maxChunkSize_) {
+        // Allow a single oversized string as its own chunk.
+        fullChunk = true;
+        rollingExtraMemory += str.size();
+        rollingChunkSize += strSize;
+        ++stringCount;
+        break;
+      }
+
       if (rollingChunkSize + strSize > maxChunkSize_) {
         fullChunk = true;
         break;
@@ -267,6 +281,11 @@ class NullsStreamChunker final : public StreamChunker {
             options.isFirstChunk)},
         ensureFullChunks_{options.ensureFullChunks} {
     static_assert(sizeof(bool) == 1);
+    NIMBLE_DCHECK_GE(
+        maxChunkSize_,
+        1,
+        "MaxChunkSize must be at least the size of a single element.");
+
     // No need to materialize nulls stream if it's omitted.
     if (!omitStream_) {
       streamData.materialize();
@@ -366,6 +385,11 @@ class NullableContentStreamChunker final : public StreamChunker {
     NIMBLE_DCHECK(
         streamData.hasNulls(),
         "ContentStreamChunker should be used when no nulls are present in stream.");
+    NIMBLE_DCHECK_GE(
+        maxChunkSize_,
+        sizeof(T) + 1,
+        "MaxChunkSize must be at least the size of a single element.");
+
     streamData.materialize();
   }
 
@@ -534,6 +558,17 @@ NullableContentStreamChunker<std::string_view>::nextChunkSize() {
           currentString.size() + sizeof(std::string_view);
       currentElementExtraMemory = currentString.size();
       ++currentElementDataCount;
+    }
+
+    if (chunkSize.rollingChunkSize == 0 &&
+        currentElementTotalSize > maxChunkSize_) {
+      // Allow a single oversized string as its own chunk.
+      fullChunk = true;
+      chunkSize.dataElementCount += currentElementDataCount;
+      ++chunkSize.nullElementCount;
+      chunkSize.rollingChunkSize += currentElementTotalSize;
+      chunkSize.extraMemory += currentElementExtraMemory;
+      break;
     }
 
     if (chunkSize.rollingChunkSize + currentElementTotalSize > maxChunkSize_) {

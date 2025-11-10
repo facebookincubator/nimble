@@ -144,14 +144,14 @@ TEST_F(StreamChunkerTestsBase, getNewBufferCapacityTest) {
 
 TEST_F(StreamChunkerTestsBase, getStreamChunkerTest) {
   // Ensure a chunker can be created for all types.
-#define TEST_STREAM_CHUNKER_FOR_TYPE(scalarKind, T)           \
-  {                                                           \
-    const auto scalarTypeBuilder =                            \
-        schemaBuilder_->createScalarTypeBuilder(scalarKind);  \
-    auto descriptor = &scalarTypeBuilder->scalarDescriptor(); \
-    ContentStreamData<T> stream(                              \
-        *leafPool_, *descriptor, *inputBufferGrowthPolicy_);  \
-    getStreamChunker(stream, {});                             \
+#define TEST_STREAM_CHUNKER_FOR_TYPE(scalarKind, T)                    \
+  {                                                                    \
+    const auto scalarTypeBuilder =                                     \
+        schemaBuilder_->createScalarTypeBuilder(scalarKind);           \
+    auto descriptor = &scalarTypeBuilder->scalarDescriptor();          \
+    ContentStreamData<T> stream(                                       \
+        *leafPool_, *descriptor, *inputBufferGrowthPolicy_);           \
+    getStreamChunker(stream, {.minChunkSize = 4, .maxChunkSize = 30}); \
   }
 
   EXPECT_NO_THROW(
@@ -405,7 +405,7 @@ TEST_F(StreamChunkerTestsBase, ContentStreamChunkerTest) {
   auto scalarTypeBuilder =
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
-  StreamChunkerOptions options{};
+  StreamChunkerOptions options{.minChunkSize = 4, .maxChunkSize = 30};
 
   // ContentStreamData can be used to create a ContentStreamChunker.
   ContentStreamData<int32_t> stream(
@@ -635,6 +635,39 @@ TEST_F(StreamChunkerTestsBase, ContentStreamStringChunking) {
     };
     validateChunk<std::string_view>(
         stream, std::move(chunker), expectedChunks, {});
+  }
+
+  // Test 5: Single string exceeds maxChunkSize.
+  {
+    std::vector<std::string_view> testData = {
+        "a", "short", "really really large string", "small"};
+    auto& data = stream.mutableData();
+    populateData(data, testData);
+
+    // Size of "really really large string" and string view minus 1.
+    maxChunkSize = 24 + sizeof(std::string_view);
+
+    // Calculate extra memory for string content.
+    for (const auto& str : testData) {
+      stream.extraMemory() += str.size();
+    }
+
+    // "a"(1), "short"(5), "really really large string"(25), "small"(5) = 37
+    // bytes of extra memory.
+    ASSERT_EQ(stream.extraMemory(), 37);
+    auto chunker = getStreamChunker(
+        stream,
+        {
+            .minChunkSize = minChunkSize,
+            .maxChunkSize = maxChunkSize,
+            .ensureFullChunks = true,
+        });
+    validateChunk<std::string_view>(
+        stream,
+        std::move(chunker),
+        {{.chunkData = {"a", "short"}, .extraMemory = 6},
+         {.chunkData = {"really really large string"}, .extraMemory = 25}},
+        {.chunkData = {"small"}, .extraMemory = 5});
   }
 }
 
@@ -989,6 +1022,49 @@ TEST_F(StreamChunkerTestsBase, NullableContentStreamStringChunking) {
     ASSERT_NE(contentStreamChunker, nullptr);
     validateChunk<std::string_view>(
         stream, std::move(chunker), {{.chunkData = {"test", "data"}}}, {});
+  }
+
+  // Test 5: Single string exceeds maxChunkSize.
+  {
+    testData = {"a", "short", "really really large string", "small"};
+    populateData(data, testData);
+
+    nonNullsData = {true, false, true, true, false, true, false};
+    stream.ensureAdditionalNullsCapacity(
+        /*mayHaveNulls=*/true, static_cast<uint32_t>(nonNullsData.size()));
+    populateData(nonNulls, nonNullsData);
+
+    const uint64_t minChunkSize = 1;
+    // Size of "really really large string", string view, and null minus 1.
+    const uint64_t maxChunkSize = 24 + sizeof(std::string_view) + sizeof(bool);
+
+    // Calculate extra memory for string content.
+    for (const auto& str : testData) {
+      stream.extraMemory() += str.size();
+    }
+
+    // "a"(1), "short"(5), "really really large string"(25), "small"(5) =
+    // 37 bytes of extra memory.
+    ASSERT_EQ(stream.extraMemory(), 37);
+    auto chunker = getStreamChunker(
+        stream,
+        {
+            .minChunkSize = minChunkSize,
+            .maxChunkSize = maxChunkSize,
+            .ensureFullChunks = true,
+        });
+    validateChunk<std::string_view>(
+        stream,
+        std::move(chunker),
+        {{.chunkData = {"a", "short"},
+          .chunkNonNulls = {true, false, true},
+          .hasNulls = true,
+          .extraMemory = 6},
+         {.chunkData = {"really really large string"}, .extraMemory = 25}},
+        {.chunkData = {"small"},
+         .chunkNonNulls = {false, true, false},
+         .hasNulls = true,
+         .extraMemory = 5});
   }
 }
 } // namespace facebook::nimble
