@@ -30,7 +30,7 @@ struct ChunkFlushPolicyConfig {
   // Target size for encoded stripes
   const uint64_t targetStripeSizeBytes{100 * 1024L * 1024L};
   // Expected ratio of raw to encoded data
-  const double estimatedCompressionFactor{1.3};
+  const double estimatedCompressionFactor{3.7};
 };
 
 struct StripeProgress {

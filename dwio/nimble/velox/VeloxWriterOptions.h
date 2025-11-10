@@ -99,7 +99,14 @@ struct VeloxWriterOptions {
   // When flushing data streams into chunks, streams with raw data size larger
   // than this threshold will be broken down into multiple smaller chunks. Each
   // chunk will be at most this size.
-  uint64_t maxStreamChunkRawSize = 4 << 20;
+  uint64_t maxStreamChunkRawSize = 20 << 20;
+
+  // Used in place of maxStreamChunkRawSize for tables with large schemas.
+  uint32_t wideSchemaMaxStreamChunkRawSize = 4 << 20;
+
+  // When the number of schema nodes exceeds this threshold we use
+  // wideSchemaMaxStreamChunkRawSize in place of maxStreamChunkRawSize.
+  size_t largeSchemaThreshold = 5000;
 
   // Number of streams to try chunking between memory pressure evaluations.
   // Note: this is ignored when it is time to flush a stripe.
