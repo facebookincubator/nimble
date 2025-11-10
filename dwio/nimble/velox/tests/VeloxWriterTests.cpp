@@ -21,6 +21,7 @@
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingLayoutCapture.h"
 #include "dwio/nimble/encodings/EncodingUtils.h"
+#include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
@@ -313,7 +314,9 @@ struct ChunkSizeResults {
 
 ChunkSizeResults validateChunkSize(
     nimble::VeloxReader& reader,
-    const uint64_t minStreamChunkRawSize) {
+    const uint64_t minStreamChunkRawSize,
+    const uint64_t maxStreamChunkRawSize) {
+  const double kMaxErrorRate = 0.2;
   const auto& tablet = reader.tabletReader();
   auto& pool = reader.memoryPool();
 
@@ -339,14 +342,18 @@ ChunkSizeResults validateChunkSize(
       while (chunkedStream.hasNext()) {
         ++currentStreamChunkCount;
         const auto chunk = chunkedStream.nextChunk();
+        const uint64_t chunkRawDataSize =
+            nimble::test::TestUtils::getRawDataSize(pool, chunk);
+        EXPECT_LE(chunkRawDataSize, maxStreamChunkRawSize)
+            << "Stream " << streamId << " has a chunk with size "
+            << chunkRawDataSize << " which is above max chunk size of "
+            << maxStreamChunkRawSize;
+
         // Validate min chunk size when not last chunk
-        if (chunkedStream.hasNext()) {
-          const auto encoding = nimble::EncodingFactory::decode(pool, chunk);
-          const auto rowCount = encoding->rowCount();
-          const auto dataType = encoding->dataType();
-          const uint64_t chunkRawDataSize =
-              facebook::nimble::detail::dataTypeSize(dataType) * rowCount;
-          EXPECT_GE(chunkRawDataSize, minStreamChunkRawSize)
+        if (chunkedStream.hasNext() &&
+            chunkRawDataSize < minStreamChunkRawSize) {
+          uint64_t difference = minStreamChunkRawSize - chunkRawDataSize;
+          EXPECT_LE(difference * 1.0 / minStreamChunkRawSize, kMaxErrorRate)
               << "Stream " << streamId << " has a non-last chunk with size "
               << chunkRawDataSize << " which is below min chunk size of "
               << minStreamChunkRawSize;
@@ -1101,6 +1108,7 @@ TEST_F(VeloxWriterTests, CombineMultipleLayersOfDictionaries) {
 void testChunks(
     velox::memory::MemoryPool& rootPool,
     uint32_t minStreamChunkRawSize,
+    uint32_t maxStreamChunkRawSize,
     std::vector<std::tuple<velox::VectorPtr, bool>> vectors,
     std::function<void(const nimble::TabletReader&)> verifier,
     folly::F14FastSet<std::string> flatMapColumns = {}) {
@@ -1154,7 +1162,7 @@ void testChunks(
   }
   ASSERT_FALSE(reader.next(1, result));
 
-  validateChunkSize(reader, minStreamChunkRawSize);
+  validateChunkSize(reader, minStreamChunkRawSize, maxStreamChunkRawSize);
 }
 
 TEST_F(VeloxWriterTests, ChunkedStreamsRowAllNullsNoChunks) {
@@ -1170,6 +1178,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowAllNullsNoChunks) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
+      /* maxStreamChunkRawSize */ 1024,
       {{vector, false}, {vector, false}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1205,6 +1214,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowAllNullsWithChunksMinSizeBig) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 1024,
+      /* maxStreamChunkRawSize */ 1024,
       {{vector, true}, {vector, true}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1241,6 +1251,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowAllNullsWithChunksMinSizeZero) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
+      /* maxStreamChunkRawSize */ 1024,
       {{vector, true}, {vector, true}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1284,6 +1295,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowSomeNullsNoChunks) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
+      /* maxStreamChunkRawSize */ 1024,
       {{nullsVector, false}, {nonNullsVector, false}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1332,6 +1344,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowSomeNullsWithChunksMinSizeBig) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 1024,
+      /* maxStreamChunkRawSize */ 1024,
       {{nullsVector, true}, {nonNullsVector, true}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1381,6 +1394,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowSomeNullsWithChunksMinSizeZero) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
+      /* maxStreamChunkRawSize */ 1024,
       {{nullsVector, true}, {nonNullsVector, true}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1422,6 +1436,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowNoNullsNoChunks) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
+      /* maxStreamChunkRawSize */ 1024,
       {{vector, false}, {vector, false}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1461,6 +1476,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowNoNullsWithChunksMinSizeBig) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 1024,
+      /* maxStreamChunkRawSize */ 2048,
       {{vector, true}, {vector, true}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1501,6 +1517,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowNoNullsWithChunksMinSizeZero) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
+      /* maxStreamChunkRawSize */ 1024,
       {{vector, true}, {vector, true}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1541,6 +1558,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsChildAllNullsNoChunks) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
+      /* maxStreamChunkRawSize */ 1024,
       {{vector, false}, {vector, false}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1566,6 +1584,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsChildAllNullsWithChunksMinSizeBig) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 1024,
+      /* maxStreamChunkRawSize */ 2048,
       {{vector, true}, {vector, true}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1591,6 +1610,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsChildAllNullsWithChunksMinSizeZero) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
+      /* maxStreamChunkRawSize */ 1024,
       {{vector, true}, {vector, true}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1623,6 +1643,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapAllNullsNoChunks) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
+      /* maxStreamChunkRawSize */ 1024,
       {{vector, false}, {vector, false}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1665,6 +1686,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapAllNullsWithChunksMinSizeBig) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 1024,
+      /* maxStreamChunkRawSize */ 2048,
       {{vector, true}, {vector, true}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1708,6 +1730,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapAllNullsWithChunksMinSizeZero) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
+      /* maxStreamChunkRawSize */ 1024,
       {{vector, true}, {vector, true}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1762,6 +1785,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsNoChunks) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
+      /* maxStreamChunkRawSize */ 1024,
       {{nullsVector, false}, {nonNullsVector, false}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1839,6 +1863,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsWithChunksMinSizeBig) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 1024,
+      /* maxStreamChunkRawSize */ 2048,
       {{nullsVector, true}, {nonNullsVector, true}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -1919,6 +1944,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsWithChunksMinSizeZero) {
   testChunks(
       *rootPool_,
       /* minStreamChunkRawSize */ 0,
+      /* maxStreamChunkRawSize */ 1024,
       {{nullsVector, true}, {nonNullsVector, true}},
       [&](const auto& tablet) {
         auto stripeIdentifier = tablet.getStripeIdentifier(0);
@@ -2017,6 +2043,7 @@ struct ChunkFlushPolicyTestCase {
   const uint64_t writerMemoryLowThresholdBytes{75 << 10};
   const double estimatedCompressionFactor{1.3};
   const uint32_t minStreamChunkRawSize{100};
+  const uint32_t maxStreamChunkRawSize{128 << 10};
   const uint32_t expectedStripeCount{0};
   const uint32_t expectedMaxChunkCount{0};
   const uint32_t expectedMinChunkCount{0};
@@ -2032,6 +2059,7 @@ TEST_P(ChunkFlushPolicyTest, ChunkFlushPolicyIntegration) {
       {{"BIGINT", velox::BIGINT()}, {"SMALLINT", velox::SMALLINT()}});
   nimble::VeloxWriterOptions writerOptions{
       .minStreamChunkRawSize = GetParam().minStreamChunkRawSize,
+      .maxStreamChunkRawSize = GetParam().maxStreamChunkRawSize,
       .chunkedStreamBatchSize = GetParam().chunkedStreamBatchSize,
       .flushPolicyFactory = GetParam().enableChunking
           ? []() -> std::unique_ptr<nimble::FlushPolicy> {
@@ -2069,8 +2097,10 @@ TEST_P(ChunkFlushPolicyTest, ChunkFlushPolicyIntegration) {
   writer.close();
   velox::InMemoryReadFile readFile(file);
   nimble::VeloxReader reader(*leafPool_, &readFile);
-  ChunkSizeResults result =
-      validateChunkSize(reader, GetParam().minStreamChunkRawSize);
+  ChunkSizeResults result = validateChunkSize(
+      reader,
+      GetParam().minStreamChunkRawSize,
+      GetParam().maxStreamChunkRawSize);
 
   EXPECT_EQ(GetParam().expectedStripeCount, result.stripeCount);
   EXPECT_EQ(GetParam().expectedMaxChunkCount, result.maxChunkCount);
@@ -2107,8 +2137,8 @@ TEST_F(VeloxWriterTests, FuzzComplex) {
         velox::MAP(velox::INTEGER(), velox::ARRAY(velox::INTEGER()))},
        {"dict_map", velox::MAP(velox::INTEGER(), velox::INTEGER())}});
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
-  uint32_t seed = FLAGS_writer_tests_seed > 0 ? FLAGS_writer_tests_seed
-                                              : folly::Random::rand32();
+  const uint32_t seed = FLAGS_writer_tests_seed > 0 ? FLAGS_writer_tests_seed
+                                                    : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
   for (auto parallelismFactor : {0U, 1U, std::thread::hardware_concurrency()}) {
@@ -2142,7 +2172,10 @@ TEST_F(VeloxWriterTests, FuzzComplex) {
     const auto iterations = 20;
     for (auto i = 0; i < iterations; ++i) {
       writerOptions.minStreamChunkRawSize =
-          std::uniform_int_distribution<uint32_t>(10, 4096)(rng);
+          std::uniform_int_distribution<uint64_t>(10, 4096)(rng);
+      writerOptions.maxStreamChunkRawSize =
+          std::uniform_int_distribution<uint64_t>(
+              writerOptions.minStreamChunkRawSize, 8192)(rng);
       const auto batchSize =
           std::uniform_int_distribution<uint32_t>(10, 400)(rng);
       const auto batchCount = 5;
@@ -2165,7 +2198,10 @@ TEST_F(VeloxWriterTests, FuzzComplex) {
 
       velox::InMemoryReadFile readFile(file);
       nimble::VeloxReader reader(*leafPool_, &readFile);
-      validateChunkSize(reader, writerOptions.minStreamChunkRawSize);
+      validateChunkSize(
+          reader,
+          writerOptions.minStreamChunkRawSize,
+          writerOptions.maxStreamChunkRawSize);
     }
   }
 }
@@ -2208,29 +2244,35 @@ TEST_F(VeloxWriterTests, BatchedChunkingRelievesMemoryPressure) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   const auto rowVector = vectorMaker.rowVector(columnNames, children);
 
-  // We will return true twice and false once
-  const std::vector<bool> expectedChunkingDecisions{true, true, false};
+  // Ensure we can chunk the integer streams into multiple chunks
+  const uint64_t minChunkSize = intColumnRawSize / 2;
+  // In the aggresive stage, we chunk large streams in the first batch. We set
+  // the memoryPressureThreshold with the assumption of at least once max chunk
+  // being produced for each stream in that batch.
+  const uint64_t maxChunkSize = stringColumnRawSize / 2;
+  uint64_t memoryPressureThreshold = totalRawSize - (kBatchSize * maxChunkSize);
+
   std::vector<bool> actualChunkingDecisions;
-
-  // We will be chunking the large streams in the first two batches. 8 string
-  // streams in total. We set the expected rawSize after chunking these two
-  // batches as our memory threshold.
-  const uint64_t memoryPressureThreshold =
-      totalRawSize - (2 * kBatchSize * stringColumnRawSize);
-
   nimble::VeloxWriterOptions writerOptions;
   writerOptions.chunkedStreamBatchSize = kBatchSize;
   writerOptions.enableChunking = true;
-  writerOptions.minStreamChunkRawSize = intColumnRawSize / 2;
+  writerOptions.minStreamChunkRawSize = minChunkSize;
+  writerOptions.maxStreamChunkRawSize = maxChunkSize;
   writerOptions.flushPolicyFactory =
       [&]() -> std::unique_ptr<nimble::FlushPolicy> {
     return std::make_unique<nimble::LambdaFlushPolicy>(
         /* shouldFlush */ [](const auto&) { return true; },
         /* shouldChunk */
         [&](const nimble::StripeProgress& stripeProgress) {
-          const bool shouldChunk =
+          bool shouldChunk =
               stripeProgress.stripeRawSize > memoryPressureThreshold;
           actualChunkingDecisions.push_back(shouldChunk);
+          if (!shouldChunk) {
+            // Force memory pressure after the initial aggressive stage.
+            memoryPressureThreshold = 0;
+            // Force beginning of the non-aggressive chunking stage.
+            shouldChunk = true;
+          }
           return shouldChunk;
         });
   };
@@ -2242,13 +2284,17 @@ TEST_F(VeloxWriterTests, BatchedChunkingRelievesMemoryPressure) {
   writer.write(rowVector);
   writer.close();
 
-  EXPECT_THAT(
-      actualChunkingDecisions,
-      ::testing::ElementsAreArray(expectedChunkingDecisions));
+  // We expect true and then false for the aggressive stage.
+  EXPECT_GE(actualChunkingDecisions.size(), 2);
+  EXPECT_TRUE(actualChunkingDecisions[0]);
+  EXPECT_FALSE(actualChunkingDecisions[1]);
 
   velox::InMemoryReadFile readFile(file);
   nimble::VeloxReader reader(*leafPool_, &readFile);
-  validateChunkSize(reader, writerOptions.minStreamChunkRawSize);
+  validateChunkSize(
+      reader,
+      writerOptions.minStreamChunkRawSize,
+      writerOptions.maxStreamChunkRawSize);
 }
 
 TEST_F(VeloxWriterTests, IgnoreTopLevelNulls) {
@@ -2375,6 +2421,8 @@ INSTANTIATE_TEST_CASE_P(
             .writerMemoryLowThresholdBytes = 75 << 10,
             .estimatedCompressionFactor = 1.3,
             .minStreamChunkRawSize = 100,
+            .maxStreamChunkRawSize =
+                std::numeric_limits<uint32_t>::max(), // no limit
             .expectedStripeCount = 4,
             .expectedMaxChunkCount = 1,
             .expectedMinChunkCount = 1,
@@ -2389,13 +2437,30 @@ INSTANTIATE_TEST_CASE_P(
             .writerMemoryLowThresholdBytes = 75 << 10,
             .estimatedCompressionFactor = 1.3,
             .minStreamChunkRawSize = 100,
+            .maxStreamChunkRawSize = 128 << 10,
             .expectedStripeCount = 7,
             .expectedMaxChunkCount = 2,
             .expectedMinChunkCount = 1,
             .chunkedStreamBatchSize = 2,
         },
+        // Reducing maxStreamChunkRawSize produces more chunks
+        ChunkFlushPolicyTestCase{
+            .batchCount = 20,
+            .enableChunking = true,
+            .targetStripeSizeBytes = 250 << 10, // 250KB
+            .writerMemoryHighThresholdBytes = 80 << 10,
+            .writerMemoryLowThresholdBytes = 75 << 10,
+            .estimatedCompressionFactor = 1.0,
+            .minStreamChunkRawSize = 100,
+            .maxStreamChunkRawSize = 12
+                << 10, // -126KB (as opposed to 128KB in other cases)
+            .expectedStripeCount = 7,
+            .expectedMaxChunkCount = 9, // +7 chunks
+            .expectedMinChunkCount = 2, // +1 chunk
+            .chunkedStreamBatchSize = 10,
+        },
         // High memory regression threshold and no compression
-        // Produces file identical to RawStripeSizeFlushPolicy
+        // Stripe count identical to RawStripeSizeFlushPolicy
         ChunkFlushPolicyTestCase{
             .batchCount = 20,
             .enableChunking = true,
@@ -2406,8 +2471,9 @@ INSTANTIATE_TEST_CASE_P(
             .estimatedCompressionFactor =
                 1.0, // No compression (as opposed to 1.3 in other cases)
             .minStreamChunkRawSize = 100,
+            .maxStreamChunkRawSize = 128 << 10,
             .expectedStripeCount = 4,
-            .expectedMaxChunkCount = 1,
+            .expectedMaxChunkCount = 2,
             .expectedMinChunkCount = 1,
             .chunkedStreamBatchSize = 2,
         },
@@ -2423,13 +2489,14 @@ INSTANTIATE_TEST_CASE_P(
                 << 10, // 35KB (as opposed to 75KB in other cases)
             .estimatedCompressionFactor = 1.3,
             .minStreamChunkRawSize = 100,
+            .maxStreamChunkRawSize = 128 << 10,
             .expectedStripeCount = 10,
             .expectedMaxChunkCount = 2,
             .expectedMinChunkCount = 2, // +1 chunk
             .chunkedStreamBatchSize = 2,
         },
         // High target stripe size bytes (with disabled memory pressure
-        // optimization) produces fewer stripes. Single chunks.
+        // optimization) produces fewer stripes.
         ChunkFlushPolicyTestCase{
             .batchCount = 20,
             .enableChunking = true,
@@ -2441,9 +2508,10 @@ INSTANTIATE_TEST_CASE_P(
                 << 20, // 1MB (as opposed to 75KB in other cases)
             .estimatedCompressionFactor = 1.3,
             .minStreamChunkRawSize = 100,
+            .maxStreamChunkRawSize = 128 << 10,
             .expectedStripeCount = 1,
-            .expectedMaxChunkCount = 1,
-            .expectedMinChunkCount = 1,
+            .expectedMaxChunkCount = 5,
+            .expectedMinChunkCount = 2,
             .chunkedStreamBatchSize = 2,
 
         },
@@ -2460,6 +2528,7 @@ INSTANTIATE_TEST_CASE_P(
                 << 20, // 1MB (as opposed to 75KB in other cases)
             .estimatedCompressionFactor = 1.3,
             .minStreamChunkRawSize = 100,
+            .maxStreamChunkRawSize = 128 << 10,
             .expectedStripeCount = 7,
             .expectedMaxChunkCount = 1,
             .expectedMinChunkCount = 1,
@@ -2475,6 +2544,7 @@ INSTANTIATE_TEST_CASE_P(
             .writerMemoryLowThresholdBytes = 75 << 10,
             .estimatedCompressionFactor = 1.0,
             .minStreamChunkRawSize = 100,
+            .maxStreamChunkRawSize = 128 << 10,
             .expectedStripeCount = 7,
             .expectedMaxChunkCount = 2,
             .expectedMinChunkCount = 1,

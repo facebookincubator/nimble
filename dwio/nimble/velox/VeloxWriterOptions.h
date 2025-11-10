@@ -96,6 +96,11 @@ struct VeloxWriterOptions {
   // Note: this threshold is ignored when it is time to flush a stripe.
   uint64_t minStreamChunkRawSize = 1024;
 
+  // When flushing data streams into chunks, streams with raw data size larger
+  // than this threshold will be broken down into multiple smaller chunks. Each
+  // chunk will be at most this size.
+  uint64_t maxStreamChunkRawSize = 4 << 20;
+
   // Number of streams to try chunking between memory pressure evaluations.
   // Note: this is ignored when it is time to flush a stripe.
   size_t chunkedStreamBatchSize = 1024;

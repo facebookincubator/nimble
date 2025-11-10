@@ -33,6 +33,7 @@
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "dwio/nimble/velox/StatsGenerated.h"
+#include "dwio/nimble/velox/StreamChunker.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/dwio/common/ExecutorBarrier.h"
 #include "velox/type/Type.h"
@@ -811,6 +812,7 @@ void VeloxWriter::writeChunk(bool lastChunk) {
 
 bool VeloxWriter::writeChunks(
     std::span<const uint32_t> streamIndices,
+    bool ensureFullChunks,
     bool lastChunk) {
   uint64_t previousFlushWallTime = context_->stripeFlushTiming.wallNanos;
   std::atomic<uint64_t> chunkSize = 0;
@@ -826,55 +828,33 @@ bool VeloxWriter::writeChunks(
     streams_.resize(context_->schemaBuilder.nodeCount());
 
     auto processStream = [&](StreamData& streamData, uint64_t& streamSize) {
-      // TODO: Breakdown large streams above a threshold into smaller chunks.
-      const auto minStreamSize =
-          lastChunk ? 0 : context_->options.minStreamChunkRawSize;
-      const auto* context =
-          streamData.descriptor().context<WriterStreamContext>();
-      bool isNullStream = context && context->isNullStream;
-      bool shouldChunkStream = false;
-      if (isNullStream) {
-        // We apply the same null logic, where if all values
-        // are non-nulls, we omit the entire stream.
-        shouldChunkStream = streamData.hasNulls() &&
-            streamData.nonNulls().size() > minStreamSize;
-      } else {
-        shouldChunkStream = streamData.data().size() > minStreamSize;
-      }
-
-      // If we have previous written chunks for this stream, during final
-      // chunk, always write any remaining data.
-      const auto offset = streamData.descriptor().offset();
-      NIMBLE_DCHECK_LT(offset, streams_.size(), "Stream offset out of range.");
-      auto& stream = streams_[offset];
-      if (lastChunk && !shouldChunkStream && !stream.content.empty()) {
-        shouldChunkStream =
-            !streamData.empty() || !streamData.nonNulls().empty();
-      }
-
-      if (shouldChunkStream) {
-        std::string_view encoded;
-        if (isNullStream) {
-          // For null streams we promote the null values to be written as
-          // boolean data.
-          encoded = encodeStream(
-              *context_, *encodingBuffer_, NullsAsDataStreamData(streamData));
-        } else {
-          encoded = encodeStream(*context_, *encodingBuffer_, streamData);
-        }
-
+      logicalSizeBeforeEncoding += streamData.memoryUsed();
+      const auto& offset = streamData.descriptor().offset();
+      auto& streamContent = streams_[offset].content;
+      auto chunker = getStreamChunker(
+          streamData,
+          StreamChunkerOptions{
+              .minChunkSize =
+                  lastChunk ? 0 : context_->options.minStreamChunkRawSize,
+              .maxChunkSize = context_->options.maxStreamChunkRawSize,
+              .ensureFullChunks = ensureFullChunks,
+              .isFirstChunk = streamContent.empty()});
+      while (auto streamDataView = chunker->next()) {
+        std::string_view encoded =
+            encodeStream(*context_, *encodingBuffer_, *streamDataView);
         if (!encoded.empty()) {
           ChunkedStreamWriter chunkWriter{*encodingBuffer_};
           for (auto& buffer : chunkWriter.encode(encoded)) {
             streamSize += buffer.size();
             chunkSize += buffer.size();
-            stream.content.push_back(std::move(buffer));
+            streamContent.push_back(std::move(buffer));
           }
         }
         wroteChunk = true;
-        logicalSizeBeforeEncoding += streamData.memoryUsed();
-        streamData.reset();
       }
+      // Compact erases processed stream data to reclaim memory.
+      chunker->compact();
+      logicalSizeBeforeEncoding -= streamData.memoryUsed();
     };
 
     const auto& streams = context_->streams();
@@ -924,7 +904,7 @@ bool VeloxWriter::writeStripe() {
     // Chunk all streams.
     std::vector<uint32_t> streamIndices(context_->streams().size());
     std::iota(streamIndices.begin(), streamIndices.end(), 0);
-    writeChunks(streamIndices, true);
+    writeChunks(streamIndices, /*ensureFullChunks=*/false, /*lastChunk=*/true);
   } else {
     writeChunk(true);
   }
@@ -1005,31 +985,49 @@ bool VeloxWriter::evalauateFlushPolicy() {
   };
 
   if (context_->options.enableChunking && shouldChunk()) {
-    const auto& streams = context_->streams();
-    const size_t streamCount = streams.size();
-    // Sort streams for chunking based on raw memory usage.
-    // TODO(T240072104): Improve performance by bucketing the streams by size
-    // (most significant bit) instead of sorting.
-    std::vector<uint32_t> streamIndices(streamCount);
-    std::iota(streamIndices.begin(), streamIndices.end(), 0);
-    std::sort(
-        streamIndices.begin(),
-        streamIndices.end(),
-        [&](const uint32_t& a, const uint32_t& b) {
-          return streams[a]->memoryUsed() > streams[b]->memoryUsed();
-        });
-
-    // Chunk streams in batches.
-    const auto batchSize = context_->options.chunkedStreamBatchSize;
-    for (size_t index = 0; index < streamCount; index += batchSize) {
-      const size_t currentBatchSize = std::min(batchSize, streamCount - index);
-      std::span<const uint32_t> batchIndices(
-          streamIndices.begin() + index, currentBatchSize);
-      // Stop attempting chunking once streams are too small to chunk or
-      // memory pressure is relieved.
-      if (!(writeChunks(batchIndices, false) && shouldChunk())) {
-        break;
+    auto batchChunkStreams = [&](const std::vector<uint32_t>& indices,
+                                 bool ensureFullChunks) {
+      const size_t indicesCount = indices.size();
+      const auto batchSize = context_->options.chunkedStreamBatchSize;
+      for (size_t index = 0; index < indicesCount; index += batchSize) {
+        size_t currentBatchSize = std::min(batchSize, indicesCount - index);
+        std::span<const uint32_t> batchIndices(
+            indices.begin() + index, currentBatchSize);
+        // Stop attempting chunking once streams are too small to chunk or
+        // memory pressure is relieved.
+        if (!writeChunks(batchIndices, ensureFullChunks) || !shouldChunk()) {
+          return false;
+        }
       }
+      return true;
+    };
+
+    // Relieve memory pressure by chunking streams above max size.
+    const auto& streams = context_->streams();
+    std::vector<uint32_t> streamIndices;
+    streamIndices.reserve(streams.size());
+    for (auto streamIndex = 0; streamIndex < streams.size(); ++streamIndex) {
+      if (streams[streamIndex]->memoryUsed() >=
+          context_->options.maxStreamChunkRawSize) {
+        streamIndices.push_back(streamIndex);
+      }
+    }
+    const bool continueChunking =
+        batchChunkStreams(streamIndices, /*ensureFullChunks=*/true);
+    if (continueChunking) {
+      // Relieve memory pressure by chunking small streams.
+      // Sort streams for chunking based on raw memory usage.
+      // TODO(T240072104): Improve performance by bucketing the streams
+      // by size (by most significant bit) instead of sorting them.
+      streamIndices.resize(streams.size());
+      std::iota(streamIndices.begin(), streamIndices.end(), 0);
+      std::sort(
+          streamIndices.begin(),
+          streamIndices.end(),
+          [&](const uint32_t& a, const uint32_t& b) {
+            return streams[a]->memoryUsed() > streams[b]->memoryUsed();
+          });
+      batchChunkStreams(streamIndices, /*ensureFullChunks=*/false);
     }
   }
 

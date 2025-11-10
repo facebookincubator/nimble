@@ -46,6 +46,7 @@ target_link_libraries(
   nimble_common_file_writer
   nimble_common
   nimble_encodings
+  nimble_encodings_tests_utils
   velox_vector
   velox_vector_fuzzer
   velox_vector_test_lib
