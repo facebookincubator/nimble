@@ -86,10 +86,10 @@ class StreamChunker {
  public:
   StreamChunker() = default;
 
-  // Returns the next chunk of stream data.
+  /// Returns the next chunk of stream data.
   virtual std::optional<StreamDataView> next() = 0;
 
-  // Erases processed data to reclaim memory.
+  /// Erases processed data to reclaim memory.
   virtual void compact() = 0;
 
   virtual ~StreamChunker() = default;
@@ -97,10 +97,10 @@ class StreamChunker {
  protected:
   // Helper struct to hold result of nextChunkSize helper methods.
   struct ChunkSize {
-    size_t dataElementCount = 0;
-    size_t nullElementCount = 0;
-    uint64_t rollingChunkSize = 0;
-    uint64_t extraMemory = 0;
+    size_t dataElementCount{0};
+    size_t nullElementCount{0};
+    uint64_t rollingChunkSize{0};
+    uint64_t extraMemory{0};
   };
 };
 
@@ -114,18 +114,17 @@ class ContentStreamChunker final : public StreamChunker {
   explicit ContentStreamChunker(
       StreamDataT& streamData,
       const StreamChunkerOptions& options)
-      : streamData_{streamData},
+      : streamData_{&streamData},
         minChunkSize_{options.minChunkSize},
         maxChunkSize_{options.maxChunkSize},
-        dataElementOffset_{0},
-        extraMemory_{streamData_.extraMemory()},
-        ensureFullChunks_{options.ensureFullChunks} {
+        ensureFullChunks_{options.ensureFullChunks},
+        extraMemory_{streamData_->extraMemory()} {
     static_assert(
         std::is_same_v<StreamDataT, ContentStreamData<T>> ||
             std::is_same_v<StreamDataT, NullableContentStreamData<T>>,
         "StreamDataT must be either ContentStreamData<T> or NullableContentStreamData<T>");
     NIMBLE_DCHECK(
-        !streamData.hasNulls(),
+        !streamData_->hasNulls(),
         "Streams with nulls should be handled by NullableContentStreamData");
     NIMBLE_DCHECK_GE(
         maxChunkSize_,
@@ -139,21 +138,20 @@ class ContentStreamChunker final : public StreamChunker {
       return std::nullopt;
     }
 
-    std::string_view dataChunk = {
+    const std::string_view dataChunk = {
         reinterpret_cast<const char*>(
-            streamData_.mutableData().data() + dataElementOffset_),
+            streamData_->mutableData().data() + dataElementOffset_),
         chunkSize.dataElementCount * sizeof(T)};
     dataElementOffset_ += chunkSize.dataElementCount;
     extraMemory_ -= chunkSize.extraMemory;
-
-    return StreamDataView{streamData_.descriptor(), dataChunk};
+    return StreamDataView{streamData_->descriptor(), dataChunk};
   }
 
  private:
   ChunkSize nextChunkSize() {
     const size_t maxChunkValuesCount = maxChunkSize_ / sizeof(T);
     const size_t remainingValuesCount =
-        streamData_.mutableData().size() - dataElementOffset_;
+        streamData_->mutableData().size() - dataElementOffset_;
     if ((ensureFullChunks_ && remainingValuesCount < maxChunkValuesCount) ||
         (remainingValuesCount < minChunkSize_ / sizeof(T))) {
       return ChunkSize{};
@@ -166,11 +164,11 @@ class ContentStreamChunker final : public StreamChunker {
   }
 
   ChunkSize nextStringChunkSize() {
-    const auto& data = streamData_.mutableData();
-    size_t stringCount = 0;
-    uint64_t rollingChunkSize = 0;
-    uint64_t rollingExtraMemory = 0;
-    bool fullChunk = false;
+    const auto& data = streamData_->mutableData();
+    size_t stringCount{0};
+    uint64_t rollingChunkSize{0};
+    uint64_t rollingExtraMemory{0};
+    bool fullChunk{false};
     for (size_t i = dataElementOffset_; i < data.size(); ++i) {
       const auto& str = data[i];
       const uint64_t strSize = str.size() + sizeof(std::string_view);
@@ -212,18 +210,18 @@ class ContentStreamChunker final : public StreamChunker {
       return;
     }
 
-    auto& currentData = streamData_.mutableData();
+    auto& currentData = streamData_->mutableData();
     const uint64_t remainingDataCount = currentData.size() - dataElementOffset_;
     const auto newDataCapacity = detail::getNewBufferCapacity<T>(
         maxChunkSize_, currentData.capacity(), remainingDataCount);
 
     // Move and clear existing buffer
     auto tempData = std::move(currentData);
-    streamData_.reset();
-    NIMBLE_DCHECK(
-        streamData_.empty(), "StreamData should be empty after reset");
+    streamData_->reset();
+    NIMBLE_CHECK(
+        streamData_->empty(), "StreamData should be empty after reset");
 
-    auto& mutableData = streamData_.mutableData();
+    auto& mutableData = streamData_->mutableData();
     mutableData.reserve(newDataCapacity);
     NIMBLE_DCHECK_GE(
         mutableData.capacity(),
@@ -241,15 +239,16 @@ class ContentStreamChunker final : public StreamChunker {
         remainingDataCount,
         mutableData.begin());
     dataElementOffset_ = 0;
-    streamData_.extraMemory() = extraMemory_;
+    streamData_->extraMemory() = extraMemory_;
   }
 
-  StreamDataT& streamData_;
-  uint64_t minChunkSize_;
-  uint64_t maxChunkSize_;
-  size_t dataElementOffset_;
-  size_t extraMemory_;
-  bool ensureFullChunks_;
+  StreamDataT* const streamData_;
+  const uint64_t minChunkSize_;
+  const uint64_t maxChunkSize_;
+  const bool ensureFullChunks_;
+
+  size_t dataElementOffset_{0};
+  size_t extraMemory_{0};
 };
 
 template <>
@@ -268,13 +267,12 @@ inline StreamChunker::ChunkSize ContentStreamChunker<
 
 class NullsStreamChunker final : public StreamChunker {
  public:
-  explicit NullsStreamChunker(
+  NullsStreamChunker(
       NullsStreamData& streamData,
       const StreamChunkerOptions& options)
-      : streamData_{streamData},
+      : streamData_{&streamData},
         minChunkSize_{options.minChunkSize},
         maxChunkSize_{options.maxChunkSize},
-        nonNullsOffset_{0},
         omitStream_{detail::shouldOmitNullStream(
             streamData,
             options.minChunkSize,
@@ -297,8 +295,8 @@ class NullsStreamChunker final : public StreamChunker {
       return std::nullopt;
     }
 
-    auto& nonNulls = streamData_.mutableNonNulls();
-    size_t remainingNonNulls = nonNulls.size() - nonNullsOffset_;
+    auto& nonNulls = streamData_->mutableNonNulls();
+    const size_t remainingNonNulls = nonNulls.size() - nonNullsOffset_;
     size_t nonNullsInChunk = std::min(maxChunkSize_, remainingNonNulls);
     if (nonNullsInChunk == 0 || nonNullsInChunk < minChunkSize_ ||
         (ensureFullChunks_ && nonNullsInChunk < maxChunkSize_)) {
@@ -310,8 +308,7 @@ class NullsStreamChunker final : public StreamChunker {
         reinterpret_cast<const char*>(nonNulls.data() + nonNullsOffset_),
         nonNullsInChunk};
     nonNullsOffset_ += nonNullsInChunk;
-
-    return StreamDataView{streamData_.descriptor(), dataChunk};
+    return StreamDataView{streamData_->descriptor(), dataChunk};
   }
 
  private:
@@ -320,30 +317,30 @@ class NullsStreamChunker final : public StreamChunker {
     if (nonNullsOffset_ == 0) {
       return;
     }
-    auto& nonNulls = streamData_.mutableNonNulls();
+    auto& nonNulls = streamData_->mutableNonNulls();
     const auto remainingNonNullsCount = nonNulls.size() - nonNullsOffset_;
     const auto newCapacity = detail::getNewBufferCapacity<bool>(
         maxChunkSize_, nonNulls.capacity(), remainingNonNullsCount);
 
     // Move and clear existing buffer
     auto tempNonNulls = std::move(nonNulls);
-    const bool hasNulls = streamData_.hasNulls();
-    streamData_.reset();
-    NIMBLE_DCHECK(
-        streamData_.empty(), "StreamData should be empty after reset");
+    const bool hasNulls = streamData_->hasNulls();
+    streamData_->reset();
+    NIMBLE_CHECK(
+        streamData_->empty(), "StreamData should be empty after reset");
 
-    auto& mutableNonNulls = streamData_.mutableNonNulls();
+    auto& mutableNonNulls = streamData_->mutableNonNulls();
     mutableNonNulls.reserve(newCapacity);
     NIMBLE_DCHECK_GE(
         mutableNonNulls.capacity(),
         newCapacity,
         "NonNulls buffer capacity should be at least new capacity");
 
-    streamData_.ensureAdditionalNullsCapacity(
+    streamData_->ensureAdditionalNullsCapacity(
         hasNulls, static_cast<uint32_t>(remainingNonNullsCount));
     if (hasNulls) {
       mutableNonNulls.resize(remainingNonNullsCount);
-      NIMBLE_DCHECK_EQ(
+      NIMBLE_CHECK_EQ(
           mutableNonNulls.size(),
           remainingNonNullsCount,
           "NonNulls buffer size should be equal to remaining non-nulls count");
@@ -356,12 +353,13 @@ class NullsStreamChunker final : public StreamChunker {
     nonNullsOffset_ = 0;
   }
 
-  NullsStreamData& streamData_;
-  uint64_t minChunkSize_;
-  uint64_t maxChunkSize_;
-  size_t nonNullsOffset_;
-  bool omitStream_;
-  bool ensureFullChunks_;
+  NullsStreamData* const streamData_;
+  const uint64_t minChunkSize_;
+  const uint64_t maxChunkSize_;
+  const bool omitStream_;
+  const bool ensureFullChunks_;
+
+  size_t nonNullsOffset_{0};
 };
 
 template <typename T>
@@ -370,22 +368,20 @@ class NullableContentStreamChunker final : public StreamChunker {
   explicit NullableContentStreamChunker(
       NullableContentStreamData<T>& streamData,
       const StreamChunkerOptions& options)
-      : streamData_{streamData},
+      : streamData_{&streamData},
         minChunkSize_{options.minChunkSize},
         maxChunkSize_{options.maxChunkSize},
-        dataElementOffset_{0},
-        nonNullsOffset_{0},
-        extraMemory_{streamData_.extraMemory()},
         omitStream_{detail::shouldOmitDataStream(
             streamData,
             options.minChunkSize,
             options.isFirstChunk)},
-        ensureFullChunks_{options.ensureFullChunks} {
+        ensureFullChunks_{options.ensureFullChunks},
+        extraMemory_{streamData_->extraMemory()} {
     static_assert(sizeof(bool) == 1);
-    NIMBLE_DCHECK(
+    NIMBLE_CHECK(
         streamData.hasNulls(),
         "ContentStreamChunker should be used when no nulls are present in stream.");
-    NIMBLE_DCHECK_GE(
+    NIMBLE_CHECK_GE(
         maxChunkSize_,
         sizeof(T) + 1,
         "MaxChunkSize must be at least the size of a single element.");
@@ -405,12 +401,12 @@ class NullableContentStreamChunker final : public StreamChunker {
     // Chunk content
     std::string_view dataChunk = {
         reinterpret_cast<const char*>(
-            streamData_.mutableData().data() + dataElementOffset_),
+            streamData_->mutableData().data() + dataElementOffset_),
         chunkSize.dataElementCount * sizeof(T)};
 
     // Chunk nulls
     std::span<const bool> nonNullsChunk(
-        streamData_.mutableNonNulls().data() + nonNullsOffset_,
+        streamData_->mutableNonNulls().data() + nonNullsOffset_,
         chunkSize.nullElementCount);
 
     dataElementOffset_ += chunkSize.dataElementCount;
@@ -418,23 +414,24 @@ class NullableContentStreamChunker final : public StreamChunker {
     extraMemory_ -= chunkSize.extraMemory;
 
     if (chunkSize.nullElementCount > chunkSize.dataElementCount) {
-      return StreamDataView{streamData_.descriptor(), dataChunk, nonNullsChunk};
+      return StreamDataView{
+          streamData_->descriptor(), dataChunk, nonNullsChunk};
     }
-    return StreamDataView{streamData_.descriptor(), dataChunk};
+    return StreamDataView{streamData_->descriptor(), dataChunk};
   }
 
  private:
   ChunkSize nextChunkSize() {
-    const auto& nonNulls = streamData_.mutableNonNulls();
+    const auto& nonNulls = streamData_->mutableNonNulls();
     const auto bufferedCount = nonNulls.size();
 
     ChunkSize chunkSize;
-    bool fullChunk = false;
+    bool fullChunk{false};
     // Calculate how many entries we can fit in the chunk
     for (size_t nonNullIdx = nonNullsOffset_; nonNullIdx < bufferedCount;
          ++nonNullIdx) {
       uint32_t elementSize = sizeof(bool); // Always account for null indicator
-      uint32_t numDataElements = 0;
+      uint32_t numDataElements{0};
       if (nonNulls[nonNullIdx]) {
         elementSize += sizeof(T); // Add data size if non-null
         ++numDataElements;
@@ -455,7 +452,6 @@ class NullableContentStreamChunker final : public StreamChunker {
         (chunkSize.rollingChunkSize < minChunkSize_)) {
       return ChunkSize{};
     }
-
     return chunkSize;
   }
 
@@ -464,12 +460,11 @@ class NullableContentStreamChunker final : public StreamChunker {
     if (nonNullsOffset_ == 0) {
       return;
     }
-    auto& currentNonNulls = streamData_.mutableNonNulls();
-    auto& currentData = streamData_.mutableData();
+    auto& currentNonNulls = streamData_->mutableNonNulls();
+    auto& currentData = streamData_->mutableData();
     const auto remainingNonNullsCount =
         currentNonNulls.size() - nonNullsOffset_;
     const auto remainingDataCount = currentData.size() - dataElementOffset_;
-
     const auto newNonNullsCapacity = detail::getNewBufferCapacity<bool>(
         maxChunkSize_, currentNonNulls.capacity(), remainingNonNullsCount);
     const auto newDataCapactity = detail::getNewBufferCapacity<T>(
@@ -478,12 +473,12 @@ class NullableContentStreamChunker final : public StreamChunker {
     // Move and clear existing buffers
     auto tempNonNulls = std::move(currentNonNulls);
     auto tempData = std::move(currentData);
-    const bool hasNulls = streamData_.hasNulls();
-    streamData_.reset();
-    NIMBLE_DCHECK(
-        streamData_.empty(), "StreamData should be empty after reset");
+    const bool hasNulls = streamData_->hasNulls();
+    streamData_->reset();
+    NIMBLE_CHECK(
+        streamData_->empty(), "StreamData should be empty after reset");
 
-    auto& mutableData = streamData_.mutableData();
+    auto& mutableData = streamData_->mutableData();
     mutableData.reserve(newDataCapactity);
     NIMBLE_DCHECK_GE(
         mutableData.capacity(),
@@ -491,7 +486,7 @@ class NullableContentStreamChunker final : public StreamChunker {
         "Data buffer capacity should be at least new capacity");
 
     mutableData.resize(remainingDataCount);
-    NIMBLE_DCHECK_EQ(
+    NIMBLE_CHECK_EQ(
         mutableData.size(),
         remainingDataCount,
         "Data buffer size should be equal to remaining data count");
@@ -501,18 +496,18 @@ class NullableContentStreamChunker final : public StreamChunker {
         remainingDataCount,
         mutableData.begin());
 
-    auto& mutableNonNulls = streamData_.mutableNonNulls();
+    auto& mutableNonNulls = streamData_->mutableNonNulls();
     mutableNonNulls.reserve(newNonNullsCapacity);
     NIMBLE_DCHECK_GE(
         mutableNonNulls.capacity(),
         newNonNullsCapacity,
         "NonNulls buffer capacity should be at least new capacity");
 
-    streamData_.ensureAdditionalNullsCapacity(
+    streamData_->ensureAdditionalNullsCapacity(
         hasNulls, static_cast<uint32_t>(remainingNonNullsCount));
     if (hasNulls) {
       mutableNonNulls.resize(remainingNonNullsCount);
-      NIMBLE_DCHECK_EQ(
+      NIMBLE_CHECK_EQ(
           mutableNonNulls.size(),
           remainingNonNullsCount,
           "NonNulls buffer size should be equal to remaining non-nulls count");
@@ -522,35 +517,36 @@ class NullableContentStreamChunker final : public StreamChunker {
           remainingNonNullsCount,
           mutableNonNulls.begin());
     }
-    streamData_.extraMemory() = extraMemory_;
+    streamData_->extraMemory() = extraMemory_;
     dataElementOffset_ = 0;
     nonNullsOffset_ = 0;
   }
 
-  NullableContentStreamData<T>& streamData_;
-  uint64_t minChunkSize_;
-  uint64_t maxChunkSize_;
-  size_t dataElementOffset_;
-  size_t nonNullsOffset_;
-  size_t extraMemory_;
-  bool omitStream_;
-  bool ensureFullChunks_;
+  NullableContentStreamData<T>* const streamData_;
+  const uint64_t minChunkSize_;
+  const uint64_t maxChunkSize_;
+  const bool omitStream_;
+  const bool ensureFullChunks_;
+
+  size_t dataElementOffset_{0};
+  size_t nonNullsOffset_{0};
+  size_t extraMemory_{0};
 };
 
 template <>
 inline StreamChunker::ChunkSize
 NullableContentStreamChunker<std::string_view>::nextChunkSize() {
-  const auto& data = streamData_.mutableData();
-  const auto& nonNulls = streamData_.mutableNonNulls();
+  const auto& data = streamData_->mutableData();
+  const auto& nonNulls = streamData_->mutableNonNulls();
   const auto bufferedCount = nonNulls.size();
   ChunkSize chunkSize;
-  bool fullChunk = false;
+  bool fullChunk{false};
   // Calculate how many entries we can fit in the chunk
   for (size_t nonNullsIndex = nonNullsOffset_; nonNullsIndex < bufferedCount;
        ++nonNullsIndex) {
-    uint64_t currentElementTotalSize = sizeof(bool);
-    size_t currentElementExtraMemory = 0;
-    uint32_t currentElementDataCount = 0;
+    uint64_t currentElementTotalSize{sizeof(bool)};
+    size_t currentElementExtraMemory{0};
+    uint32_t currentElementDataCount{0};
     if (nonNulls[nonNullsIndex]) {
       const auto& currentString =
           data[dataElementOffset_ + chunkSize.dataElementCount];
@@ -587,7 +583,6 @@ NullableContentStreamChunker<std::string_view>::nextChunkSize() {
       (chunkSize.rollingChunkSize < minChunkSize_)) {
     chunkSize = ChunkSize{};
   }
-
   return chunkSize;
 }
 } // namespace facebook::nimble
