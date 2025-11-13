@@ -1009,15 +1009,26 @@ bool VeloxWriter::evalauateFlushPolicy() {
     // Relieve memory pressure by chunking streams above max size.
     const auto& streams = context_->streams();
     std::vector<uint32_t> streamIndices;
-    streamIndices.reserve(streams.size());
+    const auto streamCount = streams.size();
+    streamIndices.reserve(streamCount);
+
+    // Determine size threshold for soft chunking based on schema width.
+    const auto& options = context_->options;
+    const auto maxChunkSize = streamCount > options.largeSchemaThreshold
+        ? options.wideSchemaMaxStreamChunkRawSize
+        : options.maxStreamChunkRawSize;
     for (auto streamIndex = 0; streamIndex < streams.size(); ++streamIndex) {
-      if (streams[streamIndex]->memoryUsed() >=
-          context_->options.maxStreamChunkRawSize) {
+      if (streams[streamIndex]->memoryUsed() >= maxChunkSize) {
         streamIndices.push_back(streamIndex);
       }
     }
+
+    // Soft chunking.
     const bool continueChunking =
         batchChunkStreams(streamIndices, /*ensureFullChunks=*/true);
+
+    // Hard chunking when chunking streams above maxChunkSize fails to
+    // relieve memory pressure.
     if (continueChunking) {
       // Relieve memory pressure by chunking small streams.
       // Sort streams for chunking based on raw memory usage.
