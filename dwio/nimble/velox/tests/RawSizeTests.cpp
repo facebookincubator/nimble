@@ -90,6 +90,20 @@ class RawSizeBaseTestFixture : public ::testing::Test {
     ranges_.clear();
   }
 
+  void reset() {
+    ranges_.clear();
+  }
+
+  velox::BufferPtr randomIndices(velox::vector_size_t size) {
+    velox::BufferPtr indices =
+        velox::AlignedBuffer::allocate<velox::vector_size_t>(size, pool_.get());
+    auto rawIndices = indices->asMutable<velox::vector_size_t>();
+    for (int32_t i = 0; i < size; i++) {
+      rawIndices[i] = folly::Random::rand32(size);
+    }
+    return indices;
+  }
+
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   velox::common::Ranges ranges_;
   nimble::RawSizeContext context_;
@@ -98,10 +112,6 @@ class RawSizeBaseTestFixture : public ::testing::Test {
 
 class RawSizeTestFixture : public RawSizeBaseTestFixture {
  protected:
-  void reset() {
-    ranges_.clear();
-  }
-
   template <typename T>
   void testFlat(const std::function<bool(velox::vector_size_t)>& isNullAt) {
     reset();
@@ -283,7 +293,24 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
     auto rawSize = nimble::getRawSizeFromVector(wrappedVector, ranges_);
     ASSERT_EQ(expectedRawSize, rawSize);
   }
+};
 
+class RawSizeMapTestFixture
+    : public RawSizeBaseTestFixture,
+      public testing::WithParamInterface<velox::VectorEncoding::Simple> {
+ public:
+  RawSizeMapTestFixture() : mapEncoding_(GetParam()) {}
+
+  // Instantiate test for both maps and flat maps.
+  static std::vector<velox::VectorEncoding::Simple> getTestParams() {
+    static std::vector<velox::VectorEncoding::Simple> mapEncodings = {
+        velox::VectorEncoding::Simple::MAP,
+        velox::VectorEncoding::Simple::FLAT_MAP,
+    };
+    return mapEncodings;
+  }
+
+ protected:
   template <typename TKey, typename TValue>
   void testMap(const std::function<bool(velox::vector_size_t)>& isNullAt) {
     reset();
@@ -325,9 +352,9 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
         vec.emplace_back(std::move(innerVec));
       }
     }
-    auto mapVector = vectorMaker_->mapVector<TKey, TValue>(vec);
-    ranges_.add(0, mapVector->size());
-    auto rawSize = nimble::getRawSizeFromVector(mapVector, ranges_);
+    auto vector = makeVector<TKey, TValue>(vec);
+    ranges_.add(0, vector->size());
+    auto rawSize = nimble::getRawSizeFromVector(vector, ranges_);
     ASSERT_EQ(expectedRawSize, rawSize);
   }
 
@@ -366,9 +393,9 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
     expectedRawSize *= VECTOR_SIZE;
     vec.emplace_back(std::move(innerVec));
 
-    auto mapVector = vectorMaker_->mapVector<TKey, TValue>(vec);
+    auto vector = makeVector<TKey, TValue>(vec);
     auto constVector =
-        velox::BaseVector::wrapInConstant(VECTOR_SIZE, 0, mapVector);
+        velox::BaseVector::wrapInConstant(VECTOR_SIZE, 0, vector);
     ranges_.add(0, constVector->size());
     auto rawSize = nimble::getRawSizeFromVector(constVector, ranges_);
     ASSERT_EQ(expectedRawSize, rawSize);
@@ -384,6 +411,7 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
     vec.reserve(VECTOR_SIZE);
     uint64_t expectedRawSize = 0;
     std::unordered_map<velox::vector_size_t, uint64_t> indexToSize;
+
     for (velox::vector_size_t i = 1; i <= VECTOR_SIZE; ++i) {
       if (isNullAt(i)) {
         vec.emplace_back(std::nullopt);
@@ -419,7 +447,7 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
       }
     }
 
-    auto mapVector = vectorMaker_->mapVector<TKey, TValue>(vec);
+    auto vector = makeVector<TKey, TValue>(vec);
     auto indices = randomIndices(VECTOR_SIZE);
     const velox::vector_size_t* data = indices->as<velox::vector_size_t>();
 
@@ -431,22 +459,30 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
       }
     }
     auto wrappedVector = velox::BaseVector::wrapInDictionary(
-        velox::BufferPtr(nullptr), indices, VECTOR_SIZE, mapVector);
+        velox::BufferPtr{}, indices, VECTOR_SIZE, vector);
     ranges_.add(0, wrappedVector->size());
     auto rawSize = nimble::getRawSizeFromVector(wrappedVector, ranges_);
     ASSERT_EQ(expectedRawSize, rawSize);
   }
 
- private:
-  velox::BufferPtr randomIndices(velox::vector_size_t size) {
-    velox::BufferPtr indices =
-        velox::AlignedBuffer::allocate<velox::vector_size_t>(size, pool_.get());
-    auto rawIndices = indices->asMutable<velox::vector_size_t>();
-    for (int32_t i = 0; i < size; i++) {
-      rawIndices[i] = folly::Random::rand32(size);
+  template <typename TKey, typename TValue, typename TInput>
+  velox::VectorPtr makeVector(const TInput& data) const {
+    switch (mapEncoding_) {
+      case velox::VectorEncoding::Simple::FLAT_MAP:
+        return vectorMaker_->flatMapVectorNullable<TKey, TValue>(data);
+
+      case velox::VectorEncoding::Simple::MAP:
+        return vectorMaker_->mapVector<TKey, TValue>(data);
+
+      default:
+        // We don't instantiate the test using any other encodings.
+        throw std::runtime_error(
+            fmt::format("Only map encodings expected, got {}", mapEncoding_));
     }
-    return indices;
   }
+
+ private:
+  velox::VectorEncoding::Simple mapEncoding_;
 };
 
 /*
@@ -606,7 +642,7 @@ TEST_F(RawSizeTestFixture, DictionaryArraySomeNull) {
       randomNulls(folly::Random::rand32() % 10 + 1));
 }
 
-TEST_F(RawSizeTestFixture, Map) {
+TEST_P(RawSizeMapTestFixture, Map) {
   testMap<bool, bool>(noNulls());
   testMap<bool, int8_t>(noNulls());
   testMap<bool, int16_t>(noNulls());
@@ -698,7 +734,7 @@ TEST_F(RawSizeTestFixture, Map) {
   testMap<velox::Timestamp, velox::Timestamp>(noNulls());
 }
 
-TEST_F(RawSizeTestFixture, MapSomeNull) {
+TEST_P(RawSizeMapTestFixture, MapSomeNull) {
   testMap<bool, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<bool, int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
   testMap<bool, int16_t>(randomNulls(folly::Random::rand32() % 10 + 1));
@@ -822,7 +858,7 @@ TEST_F(RawSizeTestFixture, MapSomeNull) {
       randomNulls(folly::Random::rand32() % 10 + 1));
 }
 
-TEST_F(RawSizeTestFixture, ConstantMap) {
+TEST_P(RawSizeMapTestFixture, ConstantMap) {
   testConstantMap<bool, bool>(noNulls());
   testConstantMap<bool, int8_t>(noNulls());
   testConstantMap<bool, int16_t>(noNulls());
@@ -914,7 +950,7 @@ TEST_F(RawSizeTestFixture, ConstantMap) {
   testConstantMap<velox::Timestamp, velox::Timestamp>(noNulls());
 }
 
-TEST_F(RawSizeTestFixture, ConstantMapSomeNull) {
+TEST_P(RawSizeMapTestFixture, ConstantMapSomeNull) {
   testConstantMap<bool, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
   testConstantMap<bool, int8_t>(randomNulls(folly::Random::rand32() % 10 + 1));
   testConstantMap<bool, int16_t>(randomNulls(folly::Random::rand32() % 10 + 1));
@@ -1069,7 +1105,7 @@ TEST_F(RawSizeTestFixture, ConstantMapSomeNull) {
       randomNulls(folly::Random::rand32() % 10 + 1));
 }
 
-TEST_F(RawSizeTestFixture, DictionaryMap) {
+TEST_P(RawSizeMapTestFixture, DictionaryMap) {
   testDictionaryMap<bool, bool>(noNulls());
   testDictionaryMap<bool, int8_t>(noNulls());
   testDictionaryMap<bool, int16_t>(noNulls());
@@ -1161,7 +1197,7 @@ TEST_F(RawSizeTestFixture, DictionaryMap) {
   testDictionaryMap<velox::Timestamp, velox::Timestamp>(noNulls());
 }
 
-TEST_F(RawSizeTestFixture, DictionaryMapSomeNull) {
+TEST_P(RawSizeMapTestFixture, DictionaryMapSomeNull) {
   testDictionaryMap<bool, bool>(randomNulls(folly::Random::rand32() % 10 + 1));
   testDictionaryMap<bool, int8_t>(
       randomNulls(folly::Random::rand32() % 10 + 1));
@@ -1330,6 +1366,11 @@ TEST_F(RawSizeTestFixture, DictionaryMapSomeNull) {
   testDictionaryMap<velox::Timestamp, velox::Timestamp>(
       randomNulls(folly::Random::rand32() % 10 + 1));
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    RawSizeMapTest,
+    RawSizeMapTestFixture,
+    testing::ValuesIn(RawSizeMapTestFixture::getTestParams()));
 
 /*
  * The following tests are considered handcrafted tests for different nested
