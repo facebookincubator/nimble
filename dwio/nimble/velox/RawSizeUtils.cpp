@@ -19,6 +19,7 @@
 #include "velox/vector/ConstantVector.h"
 #include "velox/vector/DecodedVector.h"
 #include "velox/vector/DictionaryVector.h"
+#include "velox/vector/FlatMapVector.h"
 #include "velox/vector/FlatVector.h"
 
 namespace facebook::nimble {
@@ -348,18 +349,80 @@ uint64_t getRawSizeFromArrayVector(
   return rawSize;
 }
 
+namespace {
+
 uint64_t getRawSizeFromMapVector(
+    const velox::MapVector& mapVector,
+    const velox::common::Ranges& childRanges,
+    RawSizeContext& context) {
+  uint64_t rawSize = 0;
+  rawSize += getRawSizeFromVector(mapVector.mapKeys(), childRanges, context);
+  rawSize += getRawSizeFromVector(mapVector.mapValues(), childRanges, context);
+  return rawSize;
+}
+
+// For flat map vectors, we need to merge the base ranges with the "valid"
+// ranges for each key. Valid ranges for a key are controled by `inMap` buffers,
+// which dictate in which rows a particular key is present/active.
+uint64_t getRawSizeFromFlatMapVector(
+    const velox::FlatMapVector& flatMapVector,
+    const velox::common::Ranges& baseRanges,
+    RawSizeContext& context) {
+  uint64_t rawSize = 0;
+
+  if (baseRanges.size()) {
+    velox::common::Ranges keyRanges;
+
+    for (size_t i = 0; i < flatMapVector.numDistinctKeys(); ++i) {
+      keyRanges.clear();
+
+      const uint32_t keySize = getRawSizeFromVector(
+          flatMapVector.distinctKeys(),
+          velox::common::Ranges::of(i, i + 1),
+          context);
+
+      // Process the keys and values for the rows where the key is present.
+      if (auto& inMaps = flatMapVector.inMapsAt(i)) {
+        const auto* rawInMaps = inMaps->as<uint64_t>();
+        for (const auto& row : baseRanges) {
+          if (velox::bits::isBitSet(rawInMaps, row)) {
+            keyRanges.add(row, row + 1);
+          }
+        }
+
+        rawSize += getRawSizeFromVector(
+            flatMapVector.mapValuesAt(i), keyRanges, context);
+        rawSize += keySize * keyRanges.size();
+      }
+      // If there is no inMap buffer, process all rows.
+      else {
+        rawSize += getRawSizeFromVector(
+            flatMapVector.mapValuesAt(i), baseRanges, context);
+        rawSize += keySize * baseRanges.size();
+      }
+    }
+  }
+  return rawSize;
+}
+
+} // namespace
+
+uint64_t getRawSizeFromMap(
     const velox::VectorPtr& vector,
     const velox::common::Ranges& ranges,
     RawSizeContext& context) {
   VELOX_CHECK_NOT_NULL(vector);
   const auto& encoding = vector->encoding();
   const velox::MapVector* mapVector;
+
   const velox::vector_size_t* offsets;
   const velox::vector_size_t* sizes;
   velox::common::Ranges childRanges;
+
+  uint64_t rawSize = 0;
   uint64_t nullCount = 0;
-  auto processRow = [&](size_t row) {
+
+  auto processMapRow = [&](size_t row) {
     auto begin = offsets[row];
     auto end = begin + sizes[row];
     // Ensure valid size
@@ -371,6 +434,7 @@ uint64_t getRawSizeFromMapVector(
   };
 
   switch (encoding) {
+    // Handle top-level (regular) Map vectors.
     case velox::VectorEncoding::Simple::MAP: {
       mapVector = vector->as<velox::MapVector>();
       VELOX_CHECK_NOT_NULL(
@@ -388,20 +452,50 @@ uint64_t getRawSizeFromMapVector(
           if (velox::bits::isBitNull(nulls, row)) {
             ++nullCount;
           } else {
-            processRow(row);
+            processMapRow(row);
           }
         }
       } else {
         for (const auto& row : ranges) {
-          processRow(row);
+          processMapRow(row);
         }
       }
-
+      rawSize += getRawSizeFromMapVector(*mapVector, childRanges, context);
       break;
     }
+
+    // Handle top-level Flat Map vectors.
+    case velox::VectorEncoding::Simple::FLAT_MAP: {
+      auto flatMapVector = vector->as<velox::FlatMapVector>();
+      VELOX_CHECK_NOT_NULL(
+          flatMapVector,
+          "Encoding mismatch on FlatMapVector. Encoding: {}. TypeKind: {}.",
+          encoding,
+          vector->typeKind());
+
+      if (flatMapVector->mayHaveNulls()) {
+        const uint64_t* nulls = flatMapVector->rawNulls();
+        for (const auto& row : ranges) {
+          if (velox::bits::isBitNull(nulls, row)) {
+            ++nullCount;
+          } else {
+            childRanges.add(row, row + 1);
+          }
+        }
+        rawSize +=
+            getRawSizeFromFlatMapVector(*flatMapVector, childRanges, context);
+      } else {
+        rawSize += getRawSizeFromFlatMapVector(*flatMapVector, ranges, context);
+      }
+      break;
+    }
+
+    // Cases when maps or flat maps are wrapped by a constant.
     case velox::VectorEncoding::Simple::CONSTANT: {
       return getRawSizeFromConstantComplexVector(vector, ranges, context);
     }
+
+    // Cases when maps or flat maps are wrapped by a dictionary.
     case velox::VectorEncoding::Simple::DICTIONARY: {
       const auto* dictionaryMapVector =
           vector->as<velox::DictionaryVector<velox::ComplexType>>();
@@ -416,49 +510,79 @@ uint64_t getRawSizeFromMapVector(
       velox::DecodedVector& decodedVector = localDecodedVector.get();
       decodedVector.decode(*dictionaryMapVector);
 
-      mapVector = decodedVector.base()->as<velox::MapVector>();
-      VELOX_CHECK_NOT_NULL(
-          mapVector,
-          "Encoding mismatch on FlatVector. MapVector: {}. TypeKind: {}.",
-          decodedVector.base()->encoding(),
-          decodedVector.base()->typeKind());
+      // Now switch on the inner type of the dictionary; must be either a map
+      // or a flat map.
+      switch (decodedVector.base()->encoding()) {
+        // Dictionary wrapped around a map:
+        case velox::VectorEncoding::Simple::MAP: {
+          mapVector = decodedVector.base()->as<velox::MapVector>();
+          VELOX_CHECK_NOT_NULL(
+              mapVector,
+              "Encoding mismatch on FlatVector. MapVector: {}. TypeKind: {}.",
+              decodedVector.base()->encoding(),
+              decodedVector.base()->typeKind());
 
-      offsets = mapVector->rawOffsets();
-      sizes = mapVector->rawSizes();
+          offsets = mapVector->rawOffsets();
+          sizes = mapVector->rawSizes();
 
-      if (decodedVector.mayHaveNulls()) {
-        for (const auto& row : ranges) {
-          if (decodedVector.isNullAt(row)) {
-            ++nullCount;
+          if (decodedVector.mayHaveNulls()) {
+            for (const auto& row : ranges) {
+              if (decodedVector.isNullAt(row)) {
+                ++nullCount;
+              } else {
+                processMapRow(decodedVector.index(row));
+              }
+            }
           } else {
-            processRow(decodedVector.index(row));
+            for (const auto& row : ranges) {
+              processMapRow(decodedVector.index(row));
+            }
           }
+          rawSize += getRawSizeFromMapVector(*mapVector, childRanges, context);
+          break;
         }
-      } else {
-        for (const auto& row : ranges) {
-          processRow(decodedVector.index(row));
-        }
-      }
+        // Dictionary wrapped around a flat map:
+        case velox::VectorEncoding::Simple::FLAT_MAP: {
+          auto flatMapVector = decodedVector.base()->as<velox::FlatMapVector>();
+          VELOX_CHECK_NOT_NULL(
+              flatMapVector,
+              "Encoding mismatch on FlatMapVector. Encoding: {}. TypeKind: {}.",
+              decodedVector.base()->encoding(),
+              decodedVector.base()->typeKind());
 
+          if (decodedVector.mayHaveNulls()) {
+            for (const auto& row : ranges) {
+              if (decodedVector.isNullAt(row)) {
+                ++nullCount;
+              } else {
+                auto idx = decodedVector.index(row);
+                childRanges.add(idx, idx + 1);
+              }
+            }
+          } else {
+            for (const auto& row : ranges) {
+              auto idx = decodedVector.index(row);
+              childRanges.add(idx, idx + 1);
+            }
+          }
+          rawSize +=
+              getRawSizeFromFlatMapVector(*flatMapVector, childRanges, context);
+          break;
+        }
+        default:
+          VELOX_FAIL(
+              "Unsupported map encoding wrapped by DICTIONARY: {}.", encoding);
+      }
       break;
     }
-    default: {
-      VELOX_FAIL("Unsupported encoding: {}.", encoding);
-    }
-  }
-
-  uint64_t rawSize = 0;
-  if (childRanges.size()) {
-    rawSize += getRawSizeFromVector(mapVector->mapKeys(), childRanges, context);
-    rawSize +=
-        getRawSizeFromVector(mapVector->mapValues(), childRanges, context);
+    default:
+      VELOX_FAIL("Unsupported map encoding: {}.", encoding);
   }
 
   context.nullCount = nullCount;
   if (nullCount) {
     rawSize += nullCount * NULL_SIZE;
   }
-
   return rawSize;
 }
 
@@ -494,10 +618,8 @@ uint64_t getRawSizeFromRowVector(
           }
         }
       } else {
-        // Potentially expensive?
         childRangesPtr = &ranges;
       }
-
       break;
     }
     case velox::VectorEncoding::Simple::CONSTANT: {
@@ -624,7 +746,7 @@ uint64_t getRawSizeFromVector(
       return getRawSizeFromArrayVector(vector, ranges, context);
     }
     case velox::TypeKind::MAP: {
-      return getRawSizeFromMapVector(vector, ranges, context);
+      return getRawSizeFromMap(vector, ranges, context);
     }
     case velox::TypeKind::ROW: {
       return getRawSizeFromRowVector(vector, ranges, context);
