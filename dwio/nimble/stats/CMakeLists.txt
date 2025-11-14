@@ -11,12 +11,5 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_library(nimble_column_stats_utils ColumnStatsUtils.cpp)
-target_link_libraries(
-  nimble_column_stats_utils
-  nimble_velox_schema
-  nimble_velox_schema_builder
-  raw_size_utils
-  velox_dwio_common
-  velox_vector
-)
+target_sources(nimble PRIVATE ColumnStatsUtils.cpp)
+target_link_libraries(nimble PRIVATE velox_dwio_common velox_vector)

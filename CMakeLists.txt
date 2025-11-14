@@ -147,6 +147,16 @@ include_directories(SYSTEM velox/velox/external/xxhash)
 include_directories(SYSTEM ${CMAKE_BINARY_DIR}/_deps/xsimd-src/include/)
 
 add_subdirectory(velox)
+
+add_library(nimble)
+set_target_properties(nimble PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(nimble_test)
+target_link_libraries(
+  nimble_test
+  PUBLIC nimble gmock gtest
+  INTERFACE gtest_main Folly::folly
+)
+
 add_subdirectory(dwio/nimble/common)
 add_subdirectory(dwio/nimble/tablet)
 add_subdirectory(dwio/nimble/tools)

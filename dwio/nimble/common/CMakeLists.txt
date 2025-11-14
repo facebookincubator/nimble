@@ -13,16 +13,17 @@
 # limitations under the License.
 add_subdirectory(tests)
 
-add_library(
-  nimble_common
-  Bits.cpp
-  Checksum.cpp
-  Exceptions.cpp
-  FixedBitArray.cpp
-  MetricsLogger.cpp
-  NimbleException.cpp
-  Types.cpp
-  Varint.cpp
+target_sources(
+  nimble
+  PRIVATE
+    Bits.cpp
+    Checksum.cpp
+    Exceptions.cpp
+    FixedBitArray.cpp
+    MetricsLogger.cpp
+    NimbleException.cpp
+    Types.cpp
+    Varint.cpp
 )
 
-target_link_libraries(nimble_common velox_memory velox_exception Folly::folly)
+target_link_libraries(nimble PRIVATE velox_memory velox_exception Folly::folly)

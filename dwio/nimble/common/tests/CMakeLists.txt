@@ -11,14 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_library(nimble_common_file_writer NimbleFileWriter.cpp)
+target_sources(nimble_test PRIVATE NimbleFileWriter.cpp)
 
-target_link_libraries(
-  nimble_common_file_writer
-  nimble_common
-  nimble_velox_writer
-  velox_vector
-)
+target_link_libraries(nimble_test PUBLIC velox_vector)
 
 add_executable(
   nimble_common_tests
@@ -32,11 +27,4 @@ add_executable(
 
 add_test(nimble_common_tests nimble_common_tests)
 
-target_link_libraries(
-  nimble_common_tests
-  nimble_common
-  gtest
-  gtest_main
-  glog::glog
-  Folly::folly
-)
+target_link_libraries(nimble_common_tests PRIVATE nimble_test glog::glog)

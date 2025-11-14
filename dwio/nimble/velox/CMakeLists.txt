@@ -11,61 +11,25 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_library(nimble_velox_common SchemaUtils.cpp)
-target_link_libraries(nimble_velox_common nimble_common velox_type)
 
-add_library(nimble_velox_schema SchemaTypes.cpp)
-target_link_libraries(nimble_velox_schema nimble_common Folly::folly)
-
-add_library(nimble_velox_schema_reader SchemaReader.cpp)
-target_link_libraries(
-  nimble_velox_schema_reader
-  nimble_velox_schema
-  nimble_common
-  Folly::folly
+target_sources(
+  nimble
+  PRIVATE
+    SchemaUtils.cpp
+    SchemaTypes.cpp
+    SchemaReader.cpp
+    SchemaBuilder.cpp
+    StreamData.cpp
+    FieldReader.cpp
+    LayoutPlanner.cpp
+    BufferGrowthPolicy.cpp
+    DeduplicationUtils.cpp
+    FieldWriter.cpp
 )
 
-add_library(nimble_velox_schema_builder SchemaBuilder.cpp)
 target_link_libraries(
-  nimble_velox_schema_builder
-  nimble_velox_schema_reader
-  nimble_velox_schema
-  nimble_common
-  Folly::folly
-)
-
-add_library(nimble_velox_stream_data StreamData.cpp)
-target_link_libraries(
-  nimble_velox_stream_data
-  nimble_velox_schema_builder
-  nimble_common
-)
-
-add_library(nimble_velox_field_reader FieldReader.cpp)
-target_link_libraries(
-  nimble_velox_field_reader
-  nimble_velox_schema_reader
-  nimble_common
-  Folly::folly
-  absl::flat_hash_map
-  protobuf::libprotobuf
-)
-
-add_library(nimble_velox_layout_planner LayoutPlanner.cpp)
-target_link_libraries(nimble_velox_layout_planner nimble_velox_schema_reader)
-
-add_library(
-  nimble_velox_field_writer
-  BufferGrowthPolicy.cpp
-  DeduplicationUtils.cpp
-  FieldWriter.cpp
-)
-target_link_libraries(
-  nimble_velox_field_writer
-  nimble_velox_schema
-  nimble_velox_stream_data
-  nimble_velox_schema_builder
-  Folly::folly
+  nimble
+  PRIVATE velox_type Folly::folly absl::flat_hash_map protobuf::libprotobuf
 )
 
 build_flatbuffers(
@@ -116,63 +80,27 @@ target_include_directories(
 )
 add_dependencies(nimble_velox_stats_fb nimble_velox_stats_schema_fb)
 
-add_library(nimble_velox_schema_serialization SchemaSerialization.cpp)
 target_link_libraries(
-  nimble_velox_schema_serialization
-  nimble_velox_schema_reader
-  nimble_velox_schema_builder
-  nimble_velox_schema_fb
+  nimble
+  PRIVATE nimble_velox_schema_fb nimble_velox_metadata_fb nimble_velox_stats_fb
 )
 
-add_library(
-  nimble_velox_reader
-  ChunkedStream.cpp
-  ChunkedStreamDecoder.cpp
-  StreamLabels.cpp
-  VeloxReader.cpp
-)
-target_link_libraries(
-  nimble_velox_reader
-  nimble_velox_schema
-  nimble_velox_schema_serialization
-  nimble_velox_schema_fb
-  nimble_velox_metadata_fb
-  nimble_velox_field_reader
-  nimble_tablet_reader
-  nimble_common
-  Folly::folly
-)
-
-add_library(raw_size_utils RawSizeUtils.cpp DecodedVectorManager.cpp)
-target_link_libraries(
-  raw_size_utils
-  nimble_common
-  velox_vector
-  velox_dwio_common
-)
-
-add_library(
-  nimble_velox_writer
-  EncodingLayoutTree.cpp
-  FlushPolicy.cpp
-  VeloxWriter.cpp
-  ChunkedStreamWriter.cpp
-  VeloxWriterDefaultMetadataOSS.cpp
-  StreamChunker.cpp
-)
-target_link_libraries(
-  nimble_velox_writer
-  nimble_encodings
-  nimble_common
-  nimble_column_stats_utils
-  nimble_tablet_writer
-  nimble_velox_field_writer
-  nimble_velox_layout_planner
-  nimble_velox_metadata_fb
-  nimble_velox_stats_fb
-  raw_size_utils
-  velox_dwio_common
-  Folly::folly
+target_sources(
+  nimble
+  PRIVATE
+    ChunkedStream.cpp
+    ChunkedStreamDecoder.cpp
+    SchemaSerialization.cpp
+    StreamLabels.cpp
+    VeloxReader.cpp
+    RawSizeUtils.cpp
+    DecodedVectorManager.cpp
+    EncodingLayoutTree.cpp
+    FlushPolicy.cpp
+    VeloxWriter.cpp
+    ChunkedStreamWriter.cpp
+    VeloxWriterDefaultMetadataOSS.cpp
+    StreamChunker.cpp
 )
 
 add_subdirectory(selective)
