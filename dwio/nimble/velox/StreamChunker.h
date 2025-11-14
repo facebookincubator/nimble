@@ -34,7 +34,8 @@ uint64_t getNewBufferCapacity(
     uint64_t requiredCapacityCount) {
   const auto maxChunkElementCount = maxChunkSize / sizeof(T);
   if (currentCapacityCount < maxChunkElementCount) {
-    return currentCapacityCount;
+    return std::max<uint64_t>(
+        currentCapacityCount * 0.5, requiredCapacityCount);
   }
   NIMBLE_DCHECK_LE(
       requiredCapacityCount,
