@@ -100,6 +100,10 @@ class ChunkFlushPolicy : public FlushPolicy {
   // Relieve memory pressure with chunking.
   bool shouldChunk(const StripeProgress& stripeProgress) override;
 
+  const ChunkFlushPolicyConfig& getConfig() const {
+    return config_;
+  }
+
  private:
   const ChunkFlushPolicyConfig config_;
   bool lastChunkDecision_;

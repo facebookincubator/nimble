@@ -122,15 +122,26 @@ class StreamChunkerTestsBase : public ::testing::Test {
 
 TEST_F(StreamChunkerTestsBase, getNewBufferCapacityTest) {
   // currentCapacityCount  < maxChunkElementCount
+  // currentCapacityCount * 0.5 < requiredCapacityCount
   uint64_t maxChunkElementCount = 8;
   uint64_t currentCapacityCount = 4;
-  const uint64_t requiredCapacityCount = 2;
+  uint64_t requiredCapacityCount = 3;
   EXPECT_EQ(
       detail::getNewBufferCapacity<int32_t>(
           /*maxChunkSize=*/maxChunkElementCount * sizeof(int32_t),
           /*currentCapacityCount=*/currentCapacityCount,
           /*requiredCapacityCount=*/requiredCapacityCount),
-      currentCapacityCount);
+      requiredCapacityCount);
+
+  // currentCapacityCount  < maxChunkElementCount
+  // currentCapacityCount * 0.5 > requiredCapacityCount
+  requiredCapacityCount = 1;
+  EXPECT_EQ(
+      detail::getNewBufferCapacity<int32_t>(
+          /*maxChunkSize=*/maxChunkElementCount * sizeof(int32_t),
+          /*currentCapacityCount=*/currentCapacityCount,
+          /*requiredCapacityCount=*/requiredCapacityCount),
+      currentCapacityCount * 0.5);
 
   currentCapacityCount = 40;
   // currentCapacityCount  > maxChunkElementCount = 8 + (40 - 8) * 0.5 = 24
