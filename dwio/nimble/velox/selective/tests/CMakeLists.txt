@@ -25,14 +25,12 @@ add_test(nimble_velox_selective_tests nimble_velox_selective_tests)
 
 target_link_libraries(
   nimble_velox_selective_tests
-  nimble_velox_selective
-  nimble_common_file_writer
-  velox_vector_test_lib
-  # See also the above VELOX_BUILD_TEST_UTILS=ON comment.
-  #
-  # velox_dwio_common_test_utils
-  gmock
-  gtest
-  gtest_main
-  Folly::folly
+  PRIVATE
+    nimble_test
+    velox_vector_test_lib
+    # See also the above VELOX_BUILD_TEST_UTILS=ON comment.
+    #
+    # velox_dwio_common_test_utils
+    gmock
+    gtest_main
 )

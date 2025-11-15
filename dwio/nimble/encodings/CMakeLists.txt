@@ -13,23 +13,22 @@
 # limitations under the License.
 add_subdirectory(tests)
 
-add_library(
-  nimble_encodings
-  Compression.cpp
-  Encoding.cpp
-  EncodingFactory.cpp
-  EncodingLayout.cpp
-  EncodingLayoutCapture.cpp
-  RleEncoding.cpp
-  SparseBoolEncoding.cpp
-  Statistics.cpp
-  TrivialEncoding.cpp
-  ZstdCompressor.cpp
+target_sources(
+  nimble
+  PRIVATE
+    Compression.cpp
+    Encoding.cpp
+    EncodingFactory.cpp
+    EncodingLayout.cpp
+    EncodingLayoutCapture.cpp
+    RleEncoding.cpp
+    SparseBoolEncoding.cpp
+    Statistics.cpp
+    TrivialEncoding.cpp
+    ZstdCompressor.cpp
 )
 
 target_link_libraries(
-  nimble_encodings
-  Folly::folly
-  absl::flat_hash_map
-  protobuf::libprotobuf
+  nimble
+  PRIVATE Folly::folly absl::flat_hash_map protobuf::libprotobuf
 )

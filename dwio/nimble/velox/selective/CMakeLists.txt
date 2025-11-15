@@ -11,27 +11,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_library(
-  nimble_velox_selective
-  ChunkedDecoder.cpp
-  ColumnReader.cpp
-  FlatMapColumnReader.cpp
-  IntegerColumnReader.cpp
-  NimbleData.cpp
-  ReaderBase.cpp
-  RowSizeTracker.cpp
-  SelectiveNimbleReader.cpp
-  SelectiveNimbleReaderInitHookOSS.cpp
-  StringColumnReader.cpp
-  StructColumnReader.cpp
-  StructColumnReader.cpp
-  VariableLengthColumnReader.cpp
-)
-target_link_libraries(
-  nimble_velox_selective
-  nimble_velox_reader
-  nimble_velox_writer
-  nimble_velox_common
+target_sources(
+  nimble
+  PRIVATE
+    ChunkedDecoder.cpp
+    ColumnReader.cpp
+    FlatMapColumnReader.cpp
+    IntegerColumnReader.cpp
+    NimbleData.cpp
+    ReaderBase.cpp
+    RowSizeTracker.cpp
+    SelectiveNimbleReader.cpp
+    SelectiveNimbleReaderInitHookOSS.cpp
+    StringColumnReader.cpp
+    StructColumnReader.cpp
+    StructColumnReader.cpp
+    VariableLengthColumnReader.cpp
 )
 
 add_subdirectory(tests)

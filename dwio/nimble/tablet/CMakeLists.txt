@@ -29,11 +29,5 @@ target_include_directories(
 )
 add_dependencies(nimble_footer_fb nimble_footer_schema_fb)
 
-add_library(nimble_tablet_common Compression.cpp)
-target_link_libraries(nimble_tablet_common nimble_footer_fb Folly::folly)
-
-add_library(nimble_tablet_reader TabletReader.cpp)
-target_link_libraries(nimble_tablet_reader nimble_tablet_common)
-
-add_library(nimble_tablet_writer TabletWriter.cpp)
-target_link_libraries(nimble_tablet_writer nimble_tablet_common)
+target_sources(nimble PRIVATE Compression.cpp TabletReader.cpp TabletWriter.cpp)
+target_link_libraries(nimble PRIVATE nimble_footer_fb Folly::folly)
