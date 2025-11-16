@@ -59,7 +59,7 @@ class EncodingLayoutTree {
       std::vector<EncodingLayoutTree> children = {});
 
   Kind schemaKind() const;
-  const EncodingLayout* FOLLY_NULLABLE encodingLayout(StreamIdentifier) const;
+  const EncodingLayout* encodingLayout(StreamIdentifier) const;
   const std::string& name() const;
   uint32_t childrenCount() const;
   const EncodingLayoutTree& child(uint32_t index) const;

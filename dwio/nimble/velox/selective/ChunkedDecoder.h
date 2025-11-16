@@ -33,7 +33,7 @@ class ChunkedDecoder {
       : input_{std::move(input)},
         pool_{&pool},
         decodeValuesWithNulls_{decodeValuesWithNulls} {
-    VELOX_CHECK_NOT_NULL(input_);
+    NIMBLE_CHECK_NOT_NULL(input_);
   }
 
   /// Skip non null values.

@@ -40,52 +40,140 @@
 
 namespace facebook::nimble {
 
+using velox::dwio::common::TypeWithId;
+
 namespace detail {
 
 class WriterContext : public FieldWriterContext {
  public:
-  const VeloxWriterOptions options;
-  velox::CpuWallTiming totalFlushTiming;
-  velox::CpuWallTiming stripeFlushTiming;
-  velox::CpuWallTiming encodingSelectionTiming;
-  // Right now each writer is considered its own session if not passed from
-  // writer option.
-  std::shared_ptr<MetricsLogger> logger;
-
-  uint64_t memoryUsed{0};
-  uint64_t bytesWritten{0};
-  uint64_t rowsInFile{0};
-  uint32_t rowsInStripe{0};
-  // Physical size of the encoded stripe data.
-  uint64_t stripeEncodedPhysicalSize{0};
-  // Logical size of the encoded stripe data.
-  uint64_t stripeEncodedLogicalSize{0};
-  uint64_t fileRawSize{0};
-  std::vector<uint64_t> rowsPerStripe;
-
   WriterContext(
       velox::memory::MemoryPool& memoryPool,
       VeloxWriterOptions options)
       : FieldWriterContext{memoryPool, options.reclaimerFactory(), options.vectorDecoderVisitor},
-        options{std::move(options)},
-        logger{this->options.metricsLogger} {
-    inputBufferGrowthPolicy = this->options.lowMemoryMode
+        options_{std::move(options)},
+        logger_{
+            this->options_.metricsLogger == nullptr
+                ? std::make_shared<MetricsLogger>()
+                : this->options_.metricsLogger} {
+    inputBufferGrowthPolicy_ = this->options_.lowMemoryMode
         ? std::make_unique<ExactGrowthPolicy>()
-        : this->options.inputGrowthPolicyFactory();
-    if (!logger) {
-      logger = std::make_shared<MetricsLogger>();
-    }
-    ignoreTopLevelNulls = this->options.ignoreTopLevelNulls;
+        : this->options_.inputGrowthPolicyFactory();
+    ignoreTopLevelNulls_ = options_.ignoreTopLevelNulls;
+  }
+
+  const VeloxWriterOptions& options() const {
+    return options_;
+  }
+
+  velox::CpuWallTiming& totalFlushTiming() {
+    return totalFlushTiming_;
+  }
+
+  const velox::CpuWallTiming& totalFlushTiming() const {
+    return totalFlushTiming_;
+  }
+
+  velox::CpuWallTiming& stripeFlushTiming() {
+    return stripeFlushTiming_;
+  }
+
+  const velox::CpuWallTiming& stripeFlushTiming() const {
+    return stripeFlushTiming_;
+  }
+
+  velox::CpuWallTiming& encodingSelectionTiming() {
+    return encodingSelectionTiming_;
+  }
+
+  const velox::CpuWallTiming& encodingSelectionTiming() const {
+    return encodingSelectionTiming_;
+  }
+
+  std::shared_ptr<MetricsLogger>& logger() {
+    return logger_;
+  }
+
+  const std::shared_ptr<MetricsLogger>& logger() const {
+    return logger_;
+  }
+
+  uint64_t memoryUsed() const {
+    return memoryUsed_;
+  }
+
+  void setMemoryUsed(uint64_t value) {
+    memoryUsed_ = value;
+  }
+
+  void updateMemoryUsed(uint64_t value) {
+    memoryUsed_ += value;
+    NIMBLE_CHECK_GE(memoryUsed_, 0);
+  }
+
+  uint64_t bytesWritten() const {
+    return bytesWritten_;
+  }
+
+  void setBytesWritten(uint64_t writtenBytes) {
+    bytesWritten_ = writtenBytes;
+  }
+
+  uint64_t rowsInFile() const {
+    return rowsInFile_;
+  }
+
+  void updateRowsInFile(uint64_t numRows) {
+    rowsInFile_ += numRows;
+  }
+
+  uint32_t rowsInStripe() const {
+    return rowsInStripe_;
+  }
+
+  void updateRowsInStripe(uint32_t numRows) {
+    rowsInStripe_ += numRows;
+  }
+
+  uint64_t stripeEncodedPhysicalSize() const {
+    return stripeEncodedPhysicalSize_;
+  }
+
+  void updateStripeEncodedPhysicalSize(uint64_t updateBytes) {
+    stripeEncodedPhysicalSize_ += updateBytes;
+  }
+
+  uint64_t stripeEncodedLogicalSize() const {
+    return stripeEncodedLogicalSize_;
+  }
+
+  void updateStripeEncodedLogicalSize(uint64_t bytes) {
+    stripeEncodedLogicalSize_ += bytes;
+  }
+
+  uint64_t fileRawSize() const {
+    return fileRawBytes_;
+  }
+
+  void updateFileRawSize(uint64_t bytes) {
+    fileRawBytes_ += bytes;
+  }
+
+  std::vector<uint64_t>& rowsPerStripe() {
+    return rowsPerStripe_;
+  }
+
+  const std::vector<uint64_t>& rowsPerStripe() const {
+    return rowsPerStripe_;
   }
 
   void nextStripe() {
-    totalFlushTiming.add(stripeFlushTiming);
-    stripeFlushTiming.clear();
-    rowsPerStripe.push_back(rowsInStripe);
-    memoryUsed = 0;
-    rowsInStripe = 0;
-    stripeEncodedPhysicalSize = 0;
-    stripeEncodedLogicalSize = 0;
+    totalFlushTiming_.add(stripeFlushTiming_);
+    stripeFlushTiming_.clear();
+    rowsPerStripe_.push_back(rowsInStripe_);
+    memoryUsed_ = 0;
+    rowsInStripe_ = 0;
+    stripeEncodedPhysicalSize_ = 0;
+    stripeEncodedLogicalSize_ = 0;
     ++stripeIndex_;
   }
 
@@ -94,6 +182,19 @@ class WriterContext : public FieldWriterContext {
   }
 
  private:
+  const VeloxWriterOptions options_;
+  velox::CpuWallTiming totalFlushTiming_;
+  velox::CpuWallTiming stripeFlushTiming_;
+  velox::CpuWallTiming encodingSelectionTiming_;
+  std::shared_ptr<MetricsLogger> logger_;
+  uint64_t memoryUsed_{0};
+  uint64_t bytesWritten_{0};
+  uint64_t rowsInFile_{0};
+  uint32_t rowsInStripe_{0};
+  uint64_t stripeEncodedPhysicalSize_{0};
+  uint64_t stripeEncodedLogicalSize_{0};
+  uint64_t fileRawBytes_{0};
+  std::vector<uint64_t> rowsPerStripe_;
   size_t stripeIndex_{0};
 };
 
@@ -108,38 +209,38 @@ constexpr uint32_t kInitialSchemaSectionSize = 1 << 20; // 1MB
 class NullsAsDataStreamData : public StreamData {
  public:
   explicit NullsAsDataStreamData(StreamData& streamData)
-      : StreamData(streamData.descriptor()), streamData_{streamData} {
-    streamData_.materialize();
+      : StreamData(streamData.descriptor()), streamData_{&streamData} {
+    streamData_->materialize();
   }
 
-  inline virtual std::string_view data() const override {
+  inline std::string_view data() const override {
     return {
-        reinterpret_cast<const char*>(streamData_.nonNulls().data()),
-        streamData_.nonNulls().size()};
+        reinterpret_cast<const char*>(streamData_->nonNulls().data()),
+        streamData_->nonNulls().size()};
   }
 
-  inline virtual std::span<const bool> nonNulls() const override {
+  inline std::span<const bool> nonNulls() const override {
     return {};
   }
 
-  inline virtual bool hasNulls() const override {
+  inline bool hasNulls() const override {
     return false;
   }
 
-  inline virtual bool empty() const override {
-    return streamData_.empty();
+  inline bool empty() const override {
+    return streamData_->empty();
   }
 
-  inline virtual uint64_t memoryUsed() const override {
-    return streamData_.memoryUsed();
+  inline uint64_t memoryUsed() const override {
+    return streamData_->memoryUsed();
   }
 
-  inline virtual void reset() override {
-    streamData_.reset();
+  inline void reset() override {
+    streamData_->reset();
   }
 
  private:
-  StreamData& streamData_;
+  StreamData* const streamData_;
 };
 
 class WriterStreamContext : public StreamContext {
@@ -178,13 +279,13 @@ std::string_view encode(
   if (encodingLayout.has_value()) {
     policy = std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
         std::move(encodingLayout.value()),
-        context.options.compressionOptions,
-        context.options.encodingSelectionPolicyFactory);
+        context.options().compressionOptions,
+        context.options().encodingSelectionPolicyFactory);
 
   } else {
     policy = std::unique_ptr<EncodingSelectionPolicy<T>>(
         static_cast<EncodingSelectionPolicy<T>*>(
-            context.options
+            context.options()
                 .encodingSelectionPolicyFactory(TypeTraits<T>::dataType)
                 .release()));
   }
@@ -288,40 +389,38 @@ WriterStreamContext& getStreamContext(
 // restrictive) external configuration and perform internal conversion to node
 // ids. Once the new language is ready, we'll switch to using it instead and
 // this translation logic will be removed.
-std::unique_ptr<FieldWriter> createRootField(
-    detail::WriterContext& context,
-    const std::shared_ptr<const velox::dwio::common::TypeWithId>& type) {
-  if (!context.options.flatMapColumns.empty()) {
-    context.flatMapNodeIds.clear();
-    context.flatMapNodeIds.reserve(context.options.flatMapColumns.size());
-    for (const auto& column : context.options.flatMapColumns) {
-      context.flatMapNodeIds.insert(type->childByName(column)->id());
+std::unique_ptr<FieldWriter> createRootFieldWriter(
+    const std::shared_ptr<const velox::dwio::common::TypeWithId>& type,
+    detail::WriterContext& context) {
+  if (!context.options().flatMapColumns.empty()) {
+    context.clearAndReserveFlatMapNodeIds(
+        context.options().flatMapColumns.size());
+    for (const auto& column : context.options().flatMapColumns) {
+      context.addFlatMapNodeId(type->childByName(column)->id());
     }
   }
 
-  if (!context.options.dictionaryArrayColumns.empty()) {
-    context.dictionaryArrayNodeIds.clear();
-    context.dictionaryArrayNodeIds.reserve(
-        context.options.dictionaryArrayColumns.size());
-    for (const auto& column : context.options.dictionaryArrayColumns) {
+  if (!context.options().dictionaryArrayColumns.empty()) {
+    context.clearAndReserveDictionaryArrayNodeIds(
+        context.options().dictionaryArrayColumns.size());
+    for (const auto& column : context.options().dictionaryArrayColumns) {
       findNodeIds(
           *type->childByName(column),
-          context.dictionaryArrayNodeIds,
+          context.dictionaryArrayNodeIds(),
           [](const velox::dwio::common::TypeWithId& type) {
             return type.type()->kind() == velox::TypeKind::ARRAY;
           });
     }
   }
 
-  if (!context.options.deduplicatedMapColumns.empty()) {
-    context.deduplicatedMapNodeIds.clear();
-    context.deduplicatedMapNodeIds.reserve(
-        context.options.deduplicatedMapColumns.size());
-    for (const auto& column : context.options.deduplicatedMapColumns) {
+  if (!context.options().deduplicatedMapColumns.empty()) {
+    context.clearAndReserveDeduplicatedMapNodeIds(
+        context.options().deduplicatedMapColumns.size());
+    for (const auto& column : context.options().deduplicatedMapColumns) {
       findNodeIds(
           *type->childByName(column),
-          context.deduplicatedMapNodeIds,
-          [](const velox::dwio::common::TypeWithId& type) {
+          context.deduplicatedMapNodeIds(),
+          [](const TypeWithId& type) {
             return type.type()->kind() == velox::TypeKind::MAP;
           });
     }
@@ -361,8 +460,9 @@ void initializeEncodingLayouts(
         // fail, but also not try to replay captured encodings.
         return;
       }
-      NIMBLE_CHECK(
-          encodingLayoutTree.schemaKind() == Kind::FlatMap,
+      NIMBLE_CHECK_EQ(
+          encodingLayoutTree.schemaKind(),
+          Kind::FlatMap,
           "Incompatible encoding layout node. Expecting flatmap node.");
       folly::F14FastMap<std::string_view, const EncodingLayoutTree&>
           keyEncodings;
@@ -380,16 +480,18 @@ void initializeEncodingLayouts(
     } else {
       switch (typeBuilder.kind()) {
         case Kind::Scalar: {
-          NIMBLE_CHECK(
-              encodingLayoutTree.schemaKind() == Kind::Scalar,
+          NIMBLE_CHECK_EQ(
+              encodingLayoutTree.schemaKind(),
+              Kind::Scalar,
               "Incompatible encoding layout node. Expecting scalar node.");
           _SET_STREAM_CONTEXT(
               typeBuilder.asScalar(), scalarDescriptor, Scalar::ScalarStream);
           break;
         }
         case Kind::Row: {
-          NIMBLE_CHECK(
-              encodingLayoutTree.schemaKind() == Kind::Row,
+          NIMBLE_CHECK_EQ(
+              encodingLayoutTree.schemaKind(),
+              Kind::Row,
               "Incompatible encoding layout node. Expecting row node.");
           auto& rowBuilder = typeBuilder.asRow();
           _SET_STREAM_CONTEXT(rowBuilder, nullsDescriptor, Row::NullsStream);
@@ -402,8 +504,9 @@ void initializeEncodingLayouts(
           break;
         }
         case Kind::Array: {
-          NIMBLE_CHECK(
-              encodingLayoutTree.schemaKind() == Kind::Array,
+          NIMBLE_CHECK_EQ(
+              encodingLayoutTree.schemaKind(),
+              Kind::Array,
               "Incompatible encoding layout node. Expecting array node.");
           auto& arrayBuilder = typeBuilder.asArray();
           _SET_STREAM_CONTEXT(
@@ -423,8 +526,9 @@ void initializeEncodingLayouts(
             // not fail, but also not try to replay captured encodings.
             return;
           }
-          NIMBLE_CHECK(
-              encodingLayoutTree.schemaKind() == Kind::Map,
+          NIMBLE_CHECK_EQ(
+              encodingLayoutTree.schemaKind(),
+              Kind::Map,
               "Incompatible encoding layout node. Expecting map node.");
           auto& mapBuilder = typeBuilder.asMap();
 
@@ -443,8 +547,9 @@ void initializeEncodingLayouts(
           break;
         }
         case Kind::SlidingWindowMap: {
-          NIMBLE_CHECK(
-              encodingLayoutTree.schemaKind() == Kind::SlidingWindowMap,
+          NIMBLE_CHECK_EQ(
+              encodingLayoutTree.schemaKind(),
+              Kind::SlidingWindowMap,
               "Incompatible encoding layout node. Expecting SlidingWindowMap node.");
           auto& mapBuilder = typeBuilder.asSlidingWindowMap();
           _SET_STREAM_CONTEXT(
@@ -464,8 +569,9 @@ void initializeEncodingLayouts(
           break;
         }
         case Kind::ArrayWithOffsets: {
-          NIMBLE_CHECK(
-              encodingLayoutTree.schemaKind() == Kind::ArrayWithOffsets,
+          NIMBLE_CHECK_EQ(
+              encodingLayoutTree.schemaKind(),
+              Kind::ArrayWithOffsets,
               "Incompatible encoding layout node. Expecting offset array node.");
           auto& arrayBuilder = typeBuilder.asArrayWithOffsets();
           _SET_STREAM_CONTEXT(
@@ -489,18 +595,16 @@ void initializeEncodingLayouts(
 #undef _SET_STREAM_CONTEXT
   }
 }
-
 } // namespace
 
 VeloxWriter::VeloxWriter(
-    velox::memory::MemoryPool& memoryPool,
-    const velox::TypePtr& schema,
+    const velox::TypePtr& type,
     std::unique_ptr<velox::WriteFile> file,
+    velox::memory::MemoryPool& pool,
     VeloxWriterOptions options)
-    : schema_{velox::dwio::common::TypeWithId::create(schema)},
-      file_{std::move(file)},
+    : schema_{velox::dwio::common::TypeWithId::create(type)},
       writerMemoryPool_{MemoryPoolHolder::create(
-          memoryPool,
+          pool,
           [&](auto& pool) {
             return pool.addAggregateChild(
                 fmt::format("nimble_writer_{}", folly::Random::rand64()),
@@ -515,21 +619,23 @@ VeloxWriter::VeloxWriter(
       context_{std::make_unique<detail::WriterContext>(
           *writerMemoryPool_,
           std::move(options))},
-      writer_{
-          *encodingMemoryPool_,
+      file_{std::move(file)},
+      tabletWriter_{TabletWriter::create(
           file_.get(),
+          *encodingMemoryPool_,
           {.layoutPlanner = std::make_unique<DefaultLayoutPlanner>(
-               [&sb = context_->schemaBuilder]() { return sb.getRoot(); },
-               context_->options.featureReordering),
+               [&schemaBuilder = context_->schemaBuilder()]() {
+                 return schemaBuilder.getRoot();
+               },
+               context_->options().featureReordering),
            .metadataCompressionThreshold =
-               context_->options.metadataCompressionThreshold.value_or(
-                   kMetadataCompressionThreshold)}},
-      root_{createRootField(*context_, schema_)},
-      spillConfig_{context_->options.spillConfig} {
-  NIMBLE_CHECK(file_, "File is null");
+               context_->options().metadataCompressionThreshold.value_or(
+                   kMetadataCompressionThreshold)})},
+      rootWriter_{createRootFieldWriter(schema_, *context_)} {
+  NIMBLE_CHECK_NOT_NULL(file_, "File is null");
 
-  if (context_->options.encodingLayoutTree.has_value()) {
-    context_->flatmapFieldAddedEventHandler =
+  if (context_->options().encodingLayoutTree.has_value()) {
+    context_->setFlatmapFieldAddedEventHandler(
         [&](const TypeBuilder& flatmap,
             std::string_view fieldKey,
             const TypeBuilder& fieldType) {
@@ -540,60 +646,103 @@ VeloxWriter::VeloxWriter(
               initializeEncodingLayouts(fieldType, it->second);
             }
           }
-        };
+        });
     initializeEncodingLayouts(
-        *root_->typeBuilder(), context_->options.encodingLayoutTree.value());
+        *rootWriter_->typeBuilder(),
+        context_->options().encodingLayoutTree.value());
   }
 }
 
 VeloxWriter::~VeloxWriter() {}
 
-bool VeloxWriter::write(const velox::VectorPtr& vector) {
+bool VeloxWriter::write(const velox::VectorPtr& input) {
   if (lastException_) {
     std::rethrow_exception(lastException_);
   }
 
-  NIMBLE_CHECK(file_, "Writer is already closed");
+  NIMBLE_CHECK_NOT_NULL(file_, "Writer is already closed");
   try {
-    auto size = vector->size();
-
+    const auto numRows = input->size();
     // Calculate raw size.
-    auto rawSize = nimble::getRawSizeFromVector(
-        vector, velox::common::Ranges::of(0, size));
-    DWIO_ENSURE_GE(rawSize, 0, "Invalid raw size");
-    context_->fileRawSize += rawSize;
+    const auto rawSize = nimble::getRawSizeFromVector(
+        input, velox::common::Ranges::of(0, numRows));
+    NIMBLE_CHECK_GE(rawSize, 0, "Invalid raw size");
+    context_->updateFileRawSize(rawSize);
 
-    if (context_->options.writeExecutor) {
+    if (context_->options().writeExecutor) {
       velox::dwio::common::ExecutorBarrier barrier{
-          context_->options.writeExecutor};
-      root_->write(vector, OrderedRanges::of(0, size), &barrier);
+          context_->options().writeExecutor};
+      rootWriter_->write(input, OrderedRanges::of(0, numRows), &barrier);
       barrier.waitAll();
     } else {
-      root_->write(vector, OrderedRanges::of(0, size));
+      rootWriter_->write(input, OrderedRanges::of(0, numRows));
     }
 
-    uint64_t memoryUsed = 0;
+    uint64_t memoryUsed{0};
     for (const auto& stream : context_->streams()) {
       memoryUsed += stream->memoryUsed();
     }
 
-    context_->memoryUsed = memoryUsed;
-    context_->rowsInFile += size;
-    context_->rowsInStripe += size;
-    context_->bytesWritten = file_->size();
+    context_->setMemoryUsed(memoryUsed);
+    context_->updateRowsInFile(numRows);
+    context_->updateRowsInStripe(numRows);
+    context_->setBytesWritten(file_->size());
 
     return evalauateFlushPolicy();
   } catch (const std::exception& e) {
     lastException_ = std::current_exception();
-    context_->logger->logException(LogOperation::Write, e.what());
+    context_->logger()->logException(LogOperation::Write, e.what());
     throw;
   } catch (...) {
     lastException_ = std::current_exception();
-    context_->logger->logException(
+    context_->logger()->logException(
         LogOperation::Write,
         folly::to<std::string>(folly::exceptionStr(std::current_exception())));
     throw;
   }
+}
+
+void VeloxWriter::writeMetadata() {
+  if (context_->options().metadata.empty()) {
+    return;
+  }
+  auto& metadata = context_->options().metadata;
+  auto it = metadata.cbegin();
+  flatbuffers::FlatBufferBuilder builder(kInitialSchemaSectionSize);
+  auto entries =
+      builder.CreateVector<flatbuffers::Offset<serialization::MetadataEntry>>(
+          metadata.size(), [&builder, &it](size_t /* i */) {
+            auto entry = serialization::CreateMetadataEntry(
+                builder,
+                builder.CreateString(it->first),
+                builder.CreateString(it->second));
+            ++it;
+            return entry;
+          });
+
+  builder.Finish(serialization::CreateMetadata(builder, entries));
+  tabletWriter_->writeOptionalSection(
+      std::string(kMetadataSection),
+      {reinterpret_cast<const char*>(builder.GetBufferPointer()),
+       builder.GetSize()});
+}
+
+void VeloxWriter::writeColumnStats() {
+  nimble::aggregateStats(
+      *context_->schemaBuilder().getRoot(), context_->columnStats());
+  flatbuffers::FlatBufferBuilder builder;
+  builder.Finish(serialization::CreateStats(builder, context_->fileRawSize()));
+  tabletWriter_->writeOptionalSection(
+      std::string(kStatsSection),
+      {reinterpret_cast<const char*>(builder.GetBufferPointer()),
+       builder.GetSize()});
+}
+
+void VeloxWriter::writeSchema() {
+  SchemaSerializer serializer;
+  tabletWriter_->writeOptionalSection(
+      std::string(kSchemaSection),
+      serializer.serialize(context_->schemaBuilder()));
 }
 
 void VeloxWriter::close() {
@@ -601,75 +750,37 @@ void VeloxWriter::close() {
     std::rethrow_exception(lastException_);
   }
 
-  if (file_) {
+  if (file_ != nullptr) {
     try {
       writeStripe();
-      root_->close();
+      rootWriter_->close();
 
-      if (!context_->options.metadata.empty()) {
-        auto& metadata = context_->options.metadata;
-        auto it = metadata.cbegin();
-        flatbuffers::FlatBufferBuilder builder(kInitialSchemaSectionSize);
-        auto entries = builder.CreateVector<
-            flatbuffers::Offset<serialization::MetadataEntry>>(
-            metadata.size(), [&builder, &it](size_t /* i */) {
-              auto entry = serialization::CreateMetadataEntry(
-                  builder,
-                  builder.CreateString(it->first),
-                  builder.CreateString(it->second));
-              ++it;
-              return entry;
-            });
+      writeMetadata();
+      writeColumnStats();
+      writeSchema();
 
-        builder.Finish(serialization::CreateMetadata(builder, entries));
-        writer_.writeOptionalSection(
-            std::string(kMetadataSection),
-            {reinterpret_cast<const char*>(builder.GetBufferPointer()),
-             builder.GetSize()});
-      }
-
-      {
-        nimble::aggregateStats(
-            *context_->schemaBuilder.getRoot(), context_->columnStats);
-        // TODO(T228118622): Write column stats to file.
-        flatbuffers::FlatBufferBuilder builder;
-        builder.Finish(
-            serialization::CreateStats(builder, context_->fileRawSize));
-        writer_.writeOptionalSection(
-            std::string(kStatsSection),
-            {reinterpret_cast<const char*>(builder.GetBufferPointer()),
-             builder.GetSize()});
-      }
-
-      {
-        SchemaSerializer serializer;
-        writer_.writeOptionalSection(
-            std::string(kSchemaSection),
-            serializer.serialize(context_->schemaBuilder));
-      }
-
-      writer_.close();
+      tabletWriter_->close();
       file_->close();
-      context_->bytesWritten = file_->size();
+      context_->setBytesWritten(file_->size());
 
       auto runStats = getRunStats();
       // TODO: compute and populate input size.
       FileCloseMetrics metrics{
-          .rowCount = context_->rowsInFile,
+          .rowCount = context_->rowsInFile(),
           .stripeCount = context_->getStripeIndex(),
-          .fileSize = context_->bytesWritten,
+          .fileSize = context_->bytesWritten(),
           .totalFlushCpuUsec = runStats.flushCpuTimeUsec,
           .totalFlushWallTimeUsec = runStats.flushWallTimeUsec};
-      context_->logger->logFileClose(metrics);
+      context_->logger()->logFileClose(metrics);
       file_ = nullptr;
     } catch (const std::exception& e) {
       lastException_ = std::current_exception();
-      context_->logger->logException(LogOperation::Close, e.what());
+      context_->logger()->logException(LogOperation::Close, e.what());
       file_ = nullptr;
       throw;
     } catch (...) {
       lastException_ = std::current_exception();
-      context_->logger->logException(
+      context_->logger()->logException(
           LogOperation::Close,
           folly::to<std::string>(
               folly::exceptionStr(std::current_exception())));
@@ -688,92 +799,103 @@ void VeloxWriter::flush() {
     writeStripe();
   } catch (const std::exception& e) {
     lastException_ = std::current_exception();
-    context_->logger->logException(LogOperation::Flush, e.what());
+    context_->logger()->logException(LogOperation::Flush, e.what());
     throw;
   } catch (...) {
     lastException_ = std::current_exception();
-    context_->logger->logException(
+    context_->logger()->logException(
         LogOperation::Flush,
         folly::to<std::string>(folly::exceptionStr(std::current_exception())));
     throw;
   }
 }
 
-void VeloxWriter::writeChunk(bool lastChunk) {
-  uint64_t previousFlushWallTime = context_->stripeFlushTiming.wallNanos;
-  std::atomic<uint64_t> chunkSize = 0;
-  {
-    LoggingScope scope{*context_->logger};
-    velox::CpuWallTimer veloxTimer{context_->stripeFlushTiming};
+void VeloxWriter::ensureEncodingBuffer() {
+  if (encodingBuffer_ == nullptr) {
+    encodingBuffer_ = std::make_unique<Buffer>(*encodingMemoryPool_);
+  }
+}
 
-    if (!encodingBuffer_) {
-      encodingBuffer_ = std::make_unique<Buffer>(*encodingMemoryPool_);
-    }
-    streams_.resize(context_->schemaBuilder.nodeCount());
+void VeloxWriter::clearEncodingBuffer() {
+  encodingBuffer_.reset();
+}
+
+void VeloxWriter::writeWithoutChunk() {
+  const uint64_t previousFlushWallTime =
+      context_->stripeFlushTiming().wallNanos;
+  std::atomic_uint64_t chunkSize{0};
+  {
+    LoggingScope scope{*context_->logger()};
+    velox::CpuWallTimer veloxTimer{context_->stripeFlushTiming()};
+
+    ensureEncodingBuffer();
+    streams_.resize(context_->schemaBuilder().nodeCount());
 
     auto encode = [&](StreamData& streamData, uint64_t& streamSize) {
       const auto offset = streamData.descriptor().offset();
-      auto encoded = encodeStream(*context_, *encodingBuffer_, streamData);
+      const auto encoded =
+          encodeStream(*context_, *encodingBuffer_, streamData);
       if (!encoded.empty()) {
         ChunkedStreamWriter chunkWriter{*encodingBuffer_};
         NIMBLE_DCHECK_LT(
             offset, streams_.size(), "Stream offset out of range.");
         auto& stream = streams_[offset];
+        auto& chunk = stream.chunks.emplace_back();
         for (auto& buffer : chunkWriter.encode(encoded)) {
           streamSize += buffer.size();
           chunkSize += buffer.size();
-          stream.content.push_back(std::move(buffer));
+          chunk.content.push_back(std::move(buffer));
         }
       }
       streamData.reset();
     };
 
     auto processStream = [&](StreamData& streamData,
-                             std::function<void(StreamData&, bool)> encoder) {
+                             std::function<void(StreamData&, bool)> encodeFn) {
       const auto offset = streamData.descriptor().offset();
       const auto* context =
           streamData.descriptor().context<WriterStreamContext>();
 
-      const auto minStreamSize =
-          lastChunk ? 0 : context_->options.minStreamChunkRawSize;
-
-      if (context && context->isNullStream) {
+      NIMBLE_CHECK(streams_[offset].chunks.empty());
+      if ((context != nullptr) && context->isNullStream) {
         // For null streams we promote the null values to be written as
         // boolean data.
         // We still apply the same null logic, where if all values are
         // non-nulls, we omit the entire stream.
-        if ((streamData.hasNulls() &&
-             streamData.nonNulls().size() > minStreamSize) ||
-            (lastChunk && !streamData.empty() &&
-             !streams_[offset].content.empty())) {
-          encoder(streamData, true);
+        if (streamData.hasNulls()) {
+          encodeFn(streamData, /*isNullStream=*/true);
         }
       } else {
-        if (streamData.data().size() > minStreamSize ||
-            (lastChunk && streamData.nonNulls().size() > 0 &&
-             !streams_[offset].content.empty())) {
-          encoder(streamData, false);
+        if (!streamData.data().empty()) {
+          encodeFn(streamData, /*isNullStream=*/false);
         }
       }
     };
 
-    if (context_->options.encodingExecutor) {
+    auto encoder = [&encode](
+                       StreamData& innerStreamData,
+                       bool isNullStream,
+                       uint64_t& streamSize) {
+      if (isNullStream) {
+        NullsAsDataStreamData nullsStreamData{innerStreamData};
+        encode(nullsStreamData, streamSize);
+      } else {
+        encode(innerStreamData, streamSize);
+      }
+    };
+
+    if (context_->options().encodingExecutor) {
       velox::dwio::common::ExecutorBarrier barrier{
-          context_->options.encodingExecutor};
+          context_->options().encodingExecutor};
       for (auto& streamData : context_->streams()) {
         auto& streamSize =
-            context_->columnStats[streamData->descriptor().offset()]
+            context_->columnStats(streamData->descriptor().offset())
                 .physicalSize;
         processStream(
-            *streamData, [&](StreamData& innerStreamData, bool isNullStream) {
+            *streamData, [&](StreamData& _streamData, bool isNullStream) {
               barrier.add(
-                  [&innerStreamData, isNullStream, &encode, &streamSize]() {
-                    if (isNullStream) {
-                      NullsAsDataStreamData nullsStreamData{innerStreamData};
-                      encode(nullsStreamData, streamSize);
-                    } else {
-                      encode(innerStreamData, streamSize);
-                    }
+                  [&_streamData, isNullStream, &encoder, &streamSize]() {
+                    encoder(_streamData, isNullStream, streamSize);
                   });
             });
       }
@@ -781,94 +903,85 @@ void VeloxWriter::writeChunk(bool lastChunk) {
     } else {
       for (auto& streamData : context_->streams()) {
         auto& streamSize =
-            context_->columnStats[streamData->descriptor().offset()]
+            context_->columnStats(streamData->descriptor().offset())
                 .physicalSize;
         processStream(
             *streamData,
-            [&encode, &streamSize](
-                StreamData& innerStreamData, bool isNullStream) {
-              if (isNullStream) {
-                NullsAsDataStreamData nullsStreamData{innerStreamData};
-                encode(nullsStreamData, streamSize);
-              } else {
-                encode(innerStreamData, streamSize);
-              }
+            [&encoder, &streamSize](
+                StreamData& _streamData, bool isNullStream) {
+              encoder(_streamData, isNullStream, streamSize);
             });
       }
     }
 
-    if (lastChunk) {
-      root_->reset();
-    }
+    rootWriter_->reset();
   }
 
   // Consider getting this from flush timing.
-  auto flushWallTimeMs =
-      (context_->stripeFlushTiming.wallNanos - previousFlushWallTime) /
+  const auto flushWallTimeMs =
+      (context_->stripeFlushTiming().wallNanos - previousFlushWallTime) /
       1'000'000;
-  VLOG(1) << "writeChunk milliseconds: " << flushWallTimeMs
-          << ", chunk bytes: " << chunkSize;
+  VLOG(1) << "writeChunk time: " << velox::succinctMillis(flushWallTimeMs)
+          << ", chunk size: " << velox::succinctBytes(chunkSize);
 }
 
 bool VeloxWriter::writeChunks(
     std::span<const uint32_t> streamIndices,
     bool ensureFullChunks,
     bool lastChunk) {
-  uint64_t previousFlushWallTime = context_->stripeFlushTiming.wallNanos;
-  std::atomic<uint64_t> chunkSize = 0;
-  std::atomic<uint64_t> logicalSizeBeforeEncoding = 0;
-  std::atomic<bool> wroteChunk = false;
+  const uint64_t previousFlushWallTime{context_->stripeFlushTiming().wallNanos};
+  std::atomic_uint64_t chunkSize{0};
+  std::atomic_uint64_t logicalSize{0};
+  std::atomic_bool writtenChunk{false};
   {
-    LoggingScope scope{*context_->logger};
-    velox::CpuWallTimer veloxTimer{context_->stripeFlushTiming};
-
-    if (!encodingBuffer_) {
-      encodingBuffer_ = std::make_unique<Buffer>(*encodingMemoryPool_);
-    }
-    const auto& options = context_->options;
+    LoggingScope scope{*context_->logger()};
+    velox::CpuWallTimer veloxTimer{context_->stripeFlushTiming()};
+    ensureEncodingBuffer();
+    const auto& options = context_->options();
     const auto minChunkSize = lastChunk ? 0 : options.minStreamChunkRawSize;
-    const auto schemaNodeCount = context_->schemaBuilder.nodeCount();
+    const auto schemaNodeCount = context_->schemaBuilder().nodeCount();
     const auto maxChunkSize = schemaNodeCount > options.largeSchemaThreshold
         ? options.wideSchemaMaxStreamChunkRawSize
         : options.maxStreamChunkRawSize;
     streams_.resize(schemaNodeCount);
     auto processStream = [&](StreamData& streamData, uint64_t& streamSize) {
-      logicalSizeBeforeEncoding += streamData.memoryUsed();
+      logicalSize += streamData.memoryUsed();
       const auto& offset = streamData.descriptor().offset();
-      auto& streamContent = streams_[offset].content;
+      auto& streamChunks = streams_[offset].chunks;
       auto chunker = getStreamChunker(
           streamData,
           StreamChunkerOptions{
               .minChunkSize = minChunkSize,
               .maxChunkSize = maxChunkSize,
               .ensureFullChunks = ensureFullChunks,
-              .isFirstChunk = streamContent.empty()});
-      while (auto streamDataView = chunker->next()) {
+              .isFirstChunk = streamChunks.empty()});
+      while (auto chunkView = chunker->next()) {
+        auto& streamChunk = streamChunks.emplace_back();
         std::string_view encoded =
-            encodeStream(*context_, *encodingBuffer_, *streamDataView);
+            encodeStream(*context_, *encodingBuffer_, *chunkView);
         if (!encoded.empty()) {
           ChunkedStreamWriter chunkWriter{*encodingBuffer_};
           for (auto& buffer : chunkWriter.encode(encoded)) {
             streamSize += buffer.size();
             chunkSize += buffer.size();
-            streamContent.push_back(std::move(buffer));
+            streamChunk.content.push_back(std::move(buffer));
           }
         }
-        wroteChunk = true;
+        writtenChunk = true;
       }
       // Compact erases processed stream data to reclaim memory.
       chunker->compact();
-      logicalSizeBeforeEncoding -= streamData.memoryUsed();
+      logicalSize -= streamData.memoryUsed();
     };
 
     const auto& streams = context_->streams();
-    if (context_->options.encodingExecutor) {
+    if (context_->options().encodingExecutor) {
       velox::dwio::common::ExecutorBarrier barrier{
-          context_->options.encodingExecutor};
+          context_->options().encodingExecutor};
       for (auto streamIndex : streamIndices) {
         auto& streamData = streams[streamIndex];
         const auto offset = streamData->descriptor().offset();
-        auto& streamSize = context_->columnStats[offset].physicalSize;
+        auto& streamSize = context_->columnStats()[offset].physicalSize;
         barrier.add([&] { processStream(*streamData, streamSize); });
       }
       barrier.waitAll();
@@ -876,53 +989,54 @@ bool VeloxWriter::writeChunks(
       for (auto streamIndex : streamIndices) {
         auto& streamData = streams[streamIndex];
         const auto offset = streamData->descriptor().offset();
-        auto& streamSize = context_->columnStats[offset].physicalSize;
+        auto& streamSize = context_->columnStats()[offset].physicalSize;
         processStream(*streamData, streamSize);
       }
     }
 
     if (lastChunk) {
-      root_->reset();
+      rootWriter_->reset();
     }
 
-    context_->stripeEncodedPhysicalSize += chunkSize;
-    context_->stripeEncodedLogicalSize += logicalSizeBeforeEncoding;
-    context_->memoryUsed -= logicalSizeBeforeEncoding;
+    context_->updateStripeEncodedPhysicalSize(chunkSize);
+    context_->updateStripeEncodedLogicalSize(logicalSize);
+    context_->updateMemoryUsed(-logicalSize);
   }
 
   // Consider getting this from flush timing.
-  auto flushWallTimeMs =
-      (context_->stripeFlushTiming.wallNanos - previousFlushWallTime) /
+  const auto flushWallTimeMs =
+      (context_->stripeFlushTiming().wallNanos - previousFlushWallTime) /
       1'000'000;
-  VLOG(1) << "writeChunk milliseconds: " << flushWallTimeMs
-          << ", chunk bytes: " << chunkSize;
-  return wroteChunk;
+  VLOG(1) << "writeChunk time: " << velox::succinctMillis(flushWallTimeMs)
+          << ", chunk size: " << velox::succinctBytes(chunkSize);
+  return writtenChunk;
 }
 
 bool VeloxWriter::writeStripe() {
-  if (context_->rowsInStripe == 0) {
+  if (context_->rowsInStripe() == 0) {
     return false;
   }
 
-  if (context_->options.enableChunking) {
+  if (context_->options().enableChunking) {
     // Chunk all streams.
     std::vector<uint32_t> streamIndices(context_->streams().size());
     std::iota(streamIndices.begin(), streamIndices.end(), 0);
     writeChunks(streamIndices, /*ensureFullChunks=*/false, /*lastChunk=*/true);
   } else {
-    writeChunk(true);
+    writeWithoutChunk();
   }
 
-  uint64_t previousFlushWallTime = context_->stripeFlushTiming.wallNanos;
-  uint64_t stripeSize = 0;
+  const uint64_t previousFlushWallTime =
+      context_->stripeFlushTiming().wallNanos;
+  uint64_t stripeSize{0};
   {
-    LoggingScope scope{*context_->logger};
-    velox::CpuWallTimer veloxTimer{context_->stripeFlushTiming};
+    LoggingScope scope{*context_->logger()};
+    velox::CpuWallTimer veloxTimer{context_->stripeFlushTiming()};
 
-    size_t nonEmptyCount = 0;
+    size_t nonEmptyCount{0};
     for (auto i = 0; i < streams_.size(); ++i) {
       auto& source = streams_[i];
-      if (!source.content.empty()) {
+      if (!source.chunks.empty()) {
         source.offset = i;
         if (nonEmptyCount != i) {
           streams_[nonEmptyCount] = std::move(source);
@@ -932,67 +1046,65 @@ bool VeloxWriter::writeStripe() {
     }
     streams_.resize(nonEmptyCount);
 
-    uint64_t startSize = writer_.size();
-    writer_.writeStripe(context_->rowsInStripe, std::move(streams_));
-    stripeSize = writer_.size() - startSize;
-    encodingBuffer_.reset();
+    const uint64_t startSize = tabletWriter_->size();
+    tabletWriter_->writeStripe(context_->rowsInStripe(), std::move(streams_));
+    stripeSize = tabletWriter_->size() - startSize;
+    clearEncodingBuffer();
     // TODO: once chunked string fields are supported, move string buffer
-    // reset to writeChunk()
+    // reset to writeWithoutChunk()
     context_->resetStringBuffer();
   }
 
   NIMBLE_CHECK_LT(
       stripeSize,
       std::numeric_limits<uint32_t>::max(),
-      "unexpected stripe size {}",
-      stripeSize);
+      "unexpected stripe size");
 
   // Consider getting this from flush timing.
-  auto flushWallTimeMs =
-      (context_->stripeFlushTiming.wallNanos - previousFlushWallTime) /
+  const auto flushWallTimeMs =
+      (context_->stripeFlushTiming().wallNanos - previousFlushWallTime) /
       1'000'000;
 
-  VLOG(1) << "writeStripe milliseconds: " << flushWallTimeMs
-          << ", on disk stripe bytes: " << stripeSize;
+  VLOG(1) << "writeStripe time: " << velox::succinctMillis(flushWallTimeMs)
+          << ", on disk stripe size: " << velox::succinctBytes(stripeSize);
 
   StripeFlushMetrics metrics{
-      .inputSize = context_->stripeEncodedPhysicalSize,
-      .rowCount = context_->rowsInStripe,
+      .inputSize = context_->stripeEncodedPhysicalSize(),
+      .rowCount = context_->rowsInStripe(),
       .stripeSize = stripeSize,
-      .trackedMemory = context_->memoryUsed,
+      .trackedMemory = context_->memoryUsed(),
   };
-  context_->logger->logStripeFlush(metrics);
-
+  context_->logger()->logStripeFlush(metrics);
   context_->nextStripe();
   return true;
 }
 
 bool VeloxWriter::evalauateFlushPolicy() {
-  auto flushPolicy = context_->options.flushPolicyFactory();
+  auto flushPolicy = context_->options().flushPolicyFactory();
   NIMBLE_DCHECK_NOT_NULL(flushPolicy, "Flush policy must not be null");
 
   auto shouldFlush = [&]() {
     return flushPolicy->shouldFlush(
         StripeProgress{
-            .stripeRawSize = context_->memoryUsed,
-            .stripeEncodedSize = context_->stripeEncodedPhysicalSize,
-            .stripeEncodedLogicalSize = context_->stripeEncodedLogicalSize});
+            .stripeRawSize = context_->memoryUsed(),
+            .stripeEncodedSize = context_->stripeEncodedPhysicalSize(),
+            .stripeEncodedLogicalSize = context_->stripeEncodedLogicalSize()});
   };
 
   auto shouldChunk = [&]() {
     return flushPolicy->shouldChunk(
         StripeProgress{
-            .stripeRawSize = context_->memoryUsed,
-            .stripeEncodedSize = context_->stripeEncodedPhysicalSize,
-            .stripeEncodedLogicalSize = context_->stripeEncodedLogicalSize,
+            .stripeRawSize = context_->memoryUsed(),
+            .stripeEncodedSize = context_->stripeEncodedPhysicalSize(),
+            .stripeEncodedLogicalSize = context_->stripeEncodedLogicalSize(),
         });
   };
 
-  if (context_->options.enableChunking && shouldChunk()) {
+  if (context_->options().enableChunking && shouldChunk()) {
     auto batchChunkStreams = [&](const std::vector<uint32_t>& indices,
                                  bool ensureFullChunks) {
       const size_t indicesCount = indices.size();
-      const auto batchSize = context_->options.chunkedStreamBatchSize;
+      const auto batchSize = context_->options().chunkedStreamBatchSize;
       for (size_t index = 0; index < indicesCount; index += batchSize) {
         size_t currentBatchSize = std::min(batchSize, indicesCount - index);
         std::span<const uint32_t> batchIndices(
@@ -1013,7 +1125,7 @@ bool VeloxWriter::evalauateFlushPolicy() {
     streamIndices.reserve(streamCount);
 
     // Determine size threshold for soft chunking based on schema width.
-    const auto& options = context_->options;
+    const auto& options = context_->options();
     const auto maxChunkSize = streamCount > options.largeSchemaThreshold
         ? options.wideSchemaMaxStreamChunkRawSize
         : options.maxStreamChunkRawSize;
@@ -1054,17 +1166,18 @@ bool VeloxWriter::evalauateFlushPolicy() {
 
 VeloxWriter::RunStats VeloxWriter::getRunStats() const {
   return RunStats{
-      .bytesWritten = context_->bytesWritten,
+      .bytesWritten = context_->bytesWritten(),
       .stripeCount = folly::to<uint32_t>(context_->getStripeIndex()),
-      .rawSize = context_->fileRawSize,
-      .rowsPerStripe = context_->rowsPerStripe,
-      .flushCpuTimeUsec = context_->totalFlushTiming.cpuNanos / 1000,
-      .flushWallTimeUsec = context_->totalFlushTiming.wallNanos / 1000,
+      .rawSize = context_->fileRawSize(),
+      .rowsPerStripe = context_->rowsPerStripe(),
+      .flushCpuTimeUsec = context_->totalFlushTiming().cpuNanos / 1'000,
+      .flushWallTimeUsec = context_->totalFlushTiming().wallNanos / 1'000,
       .encodingSelectionCpuTimeUsec =
-          context_->encodingSelectionTiming.cpuNanos / 1000,
-      .inputBufferReallocCount = context_->inputBufferGrowthStats.count,
-      .inputBufferReallocItemCount = context_->inputBufferGrowthStats.itemCount,
-      .columnStats = context_->columnStats,
+          context_->encodingSelectionTiming().cpuNanos / 1'000,
+      .inputBufferReallocCount = context_->inputBufferGrowthStats().count,
+      .inputBufferReallocItemCount =
+          context_->inputBufferGrowthStats().itemCount,
+      .columnStats = context_->columnStats(),
   };
 }
 } // namespace facebook::nimble

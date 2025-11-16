@@ -287,11 +287,11 @@ class SimpleFieldWriter : public FieldWriter {
   explicit SimpleFieldWriter(FieldWriterContext& context)
       : FieldWriter(
             context,
-            context.schemaBuilder.createScalarTypeBuilder(
+            context.schemaBuilder().createScalarTypeBuilder(
                 NimbleTypeTraits<K>::scalarKind)),
         valuesStream_{context.createNullableContentStreamData<TargetType>(
             typeBuilder_->asScalar().scalarDescriptor())},
-        columnStats_{context.columnStats[valuesStream_.descriptor().offset()]} {
+        columnStats_{context.columnStats(valuesStream_.descriptor().offset())} {
   }
 
   void write(
@@ -334,7 +334,7 @@ class SimpleFieldWriter : public FieldWriter {
         nullCount = size - nonNullCount;
       }
     } else {
-      auto decodingContext = context_.getDecodingContext();
+      auto decodingContext = context_.decodingContext();
       auto& decoded = decodingContext.decode(vector, ranges);
       valuesStream_.ensureAdditionalNullsCapacity(decoded.mayHaveNulls(), size);
       auto nonNullCount = iterateNonNullValues(
@@ -370,11 +370,11 @@ class RowFieldWriter : public FieldWriter {
   RowFieldWriter(
       FieldWriterContext& context,
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
-      : FieldWriter{context, context.schemaBuilder.createRowTypeBuilder(type->size())},
-        nullsStream_{context_.createNullsStreamData<bool>(
+      : FieldWriter{context, context.schemaBuilder().createRowTypeBuilder(type->size())},
+        nullsStream_{context_.createNullsStreamData(
             typeBuilder_->asRow().nullsDescriptor())},
-        columnStats_{context.columnStats[nullsStream_.descriptor().offset()]},
-        ignoreNulls_{type->id() == 0 && context.ignoreTopLevelNulls} {
+        columnStats_{context.columnStats(nullsStream_.descriptor().offset())},
+        ignoreNulls_{type->id() == 0 && context.ignoreTopLevelNulls()} {
     auto rowType =
         std::dynamic_pointer_cast<const velox::RowType>(type->type());
 
@@ -416,7 +416,7 @@ class RowFieldWriter : public FieldWriter {
         childRangesPtr = &ranges;
       }
     } else {
-      auto decodingContext = context_.getDecodingContext();
+      auto decodingContext = context_.decodingContext();
       auto& decoded = decodingContext.decode(vector, ranges);
       row = decoded.base()->as<velox::RowVector>();
       NIMBLE_CHECK_NOT_NULL(row, "Unexpected vector type");
@@ -492,7 +492,7 @@ class MultiValueFieldWriter : public FieldWriter {
             static_cast<LengthsTypeBuilder&>(*typeBuilder_)
                 .lengthsDescriptor())},
         columnStats_{
-            context.columnStats[lengthsStream_.descriptor().offset()]} {}
+            context.columnStats(lengthsStream_.descriptor().offset())} {}
 
   void reset() override {
     lengthsStream_.reset();
@@ -529,7 +529,7 @@ class MultiValueFieldWriter : public FieldWriter {
           ranges, lengthsStream_.mutableNonNulls(), Flat{vector}, proc);
       nullCount = size - nonNullCount;
     } else {
-      auto decodingContext = context_.getDecodingContext();
+      auto decodingContext = context_.decodingContext();
       auto& decoded = decodingContext.decode(vector, ranges);
       casted = decoded.base()->as<T>();
       NIMBLE_CHECK_NOT_NULL(casted, "Unexpected vector type");
@@ -560,7 +560,7 @@ class ArrayFieldWriter : public MultiValueFieldWriter {
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
       : MultiValueFieldWriter{
             context,
-            context.schemaBuilder.createArrayTypeBuilder()} {
+            context.schemaBuilder().createArrayTypeBuilder()} {
     auto arrayType =
         std::dynamic_pointer_cast<const velox::ArrayType>(type->type());
 
@@ -601,7 +601,7 @@ class MapFieldWriter : public MultiValueFieldWriter {
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
       : MultiValueFieldWriter{
             context,
-            context.schemaBuilder.createMapTypeBuilder()} {
+            context.schemaBuilder().createMapTypeBuilder()} {
     auto mapType =
         std::dynamic_pointer_cast<const velox::MapType>(type->type());
 
@@ -645,12 +645,12 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
   SlidingWindowMapFieldWriter(
       FieldWriterContext& context,
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
-      : FieldWriter{context, context.schemaBuilder.createSlidingWindowMapTypeBuilder()},
+      : FieldWriter{context, context.schemaBuilder().createSlidingWindowMapTypeBuilder()},
         offsetsStream_{context.createNullableContentStreamData<uint32_t>(
             typeBuilder_->asSlidingWindowMap().offsetsDescriptor())},
         lengthsStream_{context.createContentStreamData<uint32_t>(
             typeBuilder_->asSlidingWindowMap().lengthsDescriptor())},
-        columnStats_{context.columnStats[lengthsStream_.descriptor().offset()]},
+        columnStats_{context.columnStats(lengthsStream_.descriptor().offset())},
         currentOffset_(0),
         cached_{false},
         cachedLength_{0} {
@@ -660,7 +660,7 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
     typeBuilder_->asSlidingWindowMap().setChildren(
         keys_->typeBuilder(), values_->typeBuilder());
     cachedValue_ = velox::MapVector::create(
-        type->type(), 1, context.bufferMemoryPool.get());
+        type->type(), 1, context.bufferMemoryPool().get());
   }
 
   void write(
@@ -761,7 +761,7 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
           processMapIndex);
       nullCount = size - nonNullCount;
     } else {
-      auto decodingContext = context_.getDecodingContext();
+      auto decodingContext = context_.decodingContext();
       auto& decoded = decodingContext.decode(vector, ranges);
       mapVector = decoded.base()->template as<velox::MapVector>();
       NIMBLE_CHECK_NOT_NULL(mapVector, "Unexpected vector type");
@@ -817,7 +817,7 @@ class FlatMapPassthroughValueFieldWriter {
       : valueField_{std::move(valueField)},
         inMapStream_{context.createContentStreamData<bool>(inMapDescriptor)},
         // TODO(T226402409): Reuse same stats object for all flatmap fields.
-        columnStats_{context.columnStats[inMapStream_.descriptor().offset()]} {}
+        columnStats_{context.columnStats(inMapStream_.descriptor().offset())} {}
 
   void write(const velox::VectorPtr& vector, const OrderedRanges& ranges) {
     auto& data = inMapStream_.mutableData();
@@ -850,7 +850,7 @@ class FlatMapValueFieldWriter {
       : valueField_{std::move(valueField)},
         inMapStream_{context.createContentStreamData<bool>(inMapDescriptor)},
         // TODO(T226402409): Reuse same stats object for all flatmap fields.
-        columnStats_{context.columnStats[inMapStream_.descriptor().offset()]} {}
+        columnStats_{context.columnStats(inMapStream_.descriptor().offset())} {}
 
   // Clear the ranges and extend the inMapBuffer
   void prepare(uint32_t numValues) {
@@ -918,13 +918,14 @@ class FlatMapFieldWriter : public FieldWriter {
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
       : FieldWriter(
             context,
-            context.schemaBuilder.createFlatMapTypeBuilder(
+            context.schemaBuilder().createFlatMapTypeBuilder(
                 NimbleTypeTraits<K>::scalarKind)),
-        nullsStream_{context_.createNullsStreamData<bool>(
-            typeBuilder_->asFlatMap().nullsDescriptor())},
-        columnStats_{context_.columnStats[nullsStream_.descriptor().offset()]},
         valueType_{type->childAt(1)},
-        nodeId_{type->id()} {}
+        nodeId_{type->id()},
+        nullsStream_{context_.createNullsStreamData(
+            typeBuilder_->asFlatMap().nullsDescriptor())},
+        columnStats_{context_.columnStats(nullsStream_.descriptor().offset())} {
+  }
 
   void write(
       const velox::VectorPtr& vector,
@@ -947,10 +948,8 @@ class FlatMapFieldWriter : public FieldWriter {
     auto fieldWriter = FieldWriter::create(context_, valueType_);
     auto& inMapDescriptor =
         typeBuilder_->asFlatMap().addChild(key, fieldWriter->typeBuilder());
-    if (context_.flatmapFieldAddedEventHandler) {
-      context_.flatmapFieldAddedEventHandler(
-          *typeBuilder_, key, *fieldWriter->typeBuilder());
-    }
+    context_.handleFlatmapFieldAddEvent(
+        *typeBuilder_, key, *fieldWriter->typeBuilder());
     auto it = currentPassthroughFields_
                   .insert(
                       {key,
@@ -1064,7 +1063,7 @@ class FlatMapFieldWriter : public FieldWriter {
         // Keys are encoded. Decode.
         iterateNonNullIndices<false>(
             ranges, nullsStream_.mutableNonNulls(), vector, computeKeyRanges);
-        auto decodingContext = context_.getDecodingContext();
+        auto decodingContext = context_.decodingContext();
         auto& decodedKeys = decodingContext.decode(mapKeys, keyRanges);
         Decoded<KeyType> keysVector{decodedKeys};
         iterateNonNullIndices<true>(
@@ -1089,7 +1088,7 @@ class FlatMapFieldWriter : public FieldWriter {
       processVector(map, Flat{vector});
     } else {
       // Map is encoded. Decode.
-      auto decodingContext = context_.getDecodingContext();
+      auto decodingContext = context_.decodingContext();
       auto& decodedMap = decodingContext.decode(vector, ranges);
       map = decodedMap.base()->template as<velox::MapVector>();
       NIMBLE_CHECK_NOT_NULL(map, "Unexpected vector type");
@@ -1164,15 +1163,13 @@ class FlatMapFieldWriter : public FieldWriter {
     // check whether the typebuilder for this key is already present
     auto flatFieldIt = allValueFields_.find(key);
     if (flatFieldIt == allValueFields_.end()) {
-      std::scoped_lock<std::mutex> lock{context_.flatMapSchemaMutex};
+      std::scoped_lock<std::mutex> lock{context_.flatMapSchemaMutex()};
 
       auto valueFieldWriter = FieldWriter::create(context_, valueType_);
       const auto& inMapDescriptor = typeBuilder_->asFlatMap().addChild(
           stringKey, valueFieldWriter->typeBuilder());
-      if (context_.flatmapFieldAddedEventHandler) {
-        context_.flatmapFieldAddedEventHandler(
-            *typeBuilder_, stringKey, *valueFieldWriter->typeBuilder());
-      }
+      context_.handleFlatmapFieldAddEvent(
+          *typeBuilder_, stringKey, *valueFieldWriter->typeBuilder());
       auto flatMapValueField = std::make_unique<FlatMapValueFieldWriter>(
           context_, inMapDescriptor, std::move(valueFieldWriter));
       flatFieldIt =
@@ -1189,19 +1186,19 @@ class FlatMapFieldWriter : public FieldWriter {
     return it->second;
   }
 
+  const std::shared_ptr<const velox::dwio::common::TypeWithId>& valueType_;
+  const uint32_t nodeId_;
+
   NullsStreamData& nullsStream_;
   ColumnStats& columnStats_;
   // This map store the FlatMapValue fields used in current flush unit.
   folly::F14FastMap<KeyType, FlatMapValueFieldWriter*> currentValueFields_;
-
   // This map stores the FlatMapPassthrough fields.
   folly::F14FastMap<
       std::string,
       std::unique_ptr<FlatMapPassthroughValueFieldWriter>>
       currentPassthroughFields_;
-  const std::shared_ptr<const velox::dwio::common::TypeWithId>& valueType_;
-  const uint32_t nodeId_;
-  uint64_t nonNullCount_ = 0;
+  uint64_t nonNullCount_{0};
   // This map store all FlatMapValue fields encountered by the VeloxWriter
   // across the whole file.
   folly::F14FastMap<KeyType, std::unique_ptr<FlatMapValueFieldWriter>>
@@ -1252,22 +1249,19 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
   ArrayWithOffsetsFieldWriter(
       FieldWriterContext& context,
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
-      : FieldWriter{context, context.schemaBuilder.createArrayWithOffsetsTypeBuilder()},
+      : FieldWriter{context, context.schemaBuilder().createArrayWithOffsetsTypeBuilder()},
         offsetsStream_{context.createNullableContentStreamData<uint32_t>(
             typeBuilder_->asArrayWithOffsets().offsetsDescriptor())},
         lengthsStream_{context.createContentStreamData<uint32_t>(
             typeBuilder_->asArrayWithOffsets().lengthsDescriptor())},
         columnStats_{
-            context_.columnStats[lengthsStream_.descriptor().offset()]},
-        cached_(false),
-        cachedValue_(nullptr),
-        cachedSize_(0) {
+            context_.columnStats(lengthsStream_.descriptor().offset())} {
     elements_ = FieldWriter::create(context, type->childAt(0));
 
     typeBuilder_->asArrayWithOffsets().setChildren(elements_->typeBuilder());
 
     cachedValue_ = velox::ArrayVector::create(
-        type->type(), 1, context.bufferMemoryPool.get());
+        type->type(), 1, context.bufferMemoryPool().get());
   }
 
   void write(
@@ -1329,9 +1323,9 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
   ColumnStats& columnStats_;
   OffsetType nextOffset_{0}; /** next available offset for dedup storing */
 
-  bool cached_;
-  velox::VectorPtr cachedValue_;
-  velox::vector_size_t cachedSize_;
+  bool cached_{false};
+  velox::VectorPtr cachedValue_{nullptr};
+  velox::vector_size_t cachedSize_{0};
 
   /*
    * Check if the dictionary is valid run length encoded.
@@ -1509,7 +1503,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
 
       iterateNonNullIndices<false>(ranges, nonNulls, iterableVector, dedupProc);
     } else {
-      auto decodingContext = context_.getDecodingContext();
+      auto decodingContext = context_.decodingContext();
       auto& decoded = decodingContext.decode(vectorElements, childRanges);
       /** compare array at index and prevIndex to be equal */
       compareConsecutive = [&](velox::vector_size_t index,
@@ -1591,7 +1585,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       ingestLengthsOffsetsByElements(
           arrayVector, iterableVector, ranges, childRanges, filteredRanges);
     } else {
-      auto decodingContext = context_.getDecodingContext();
+      auto decodingContext = context_.decodingContext();
       auto& decoded = decodingContext.decode(vector, ranges);
       arrayVector = decoded.base()->template as<velox::ArrayVector>();
       NIMBLE_CHECK_NOT_NULL(arrayVector, "Unexpected vector type");
@@ -1712,7 +1706,7 @@ std::unique_ptr<FieldWriter> FieldWriter::create(
     FieldWriterContext& context,
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& type,
     std::function<void(const TypeBuilder&)> typeAddedHandler) {
-  context.typeAddedHandler = std::move(typeAddedHandler);
+  context.setTypeAddedHandler(std::move(typeAddedHandler));
   return create(context, type);
 }
 
@@ -1779,7 +1773,7 @@ std::unique_ptr<FieldWriter> FieldWriter::create(
       break;
     }
     case velox::TypeKind::ARRAY: {
-      field = context.dictionaryArrayNodeIds.contains(type->id())
+      field = context.hasDictionaryArrayNodeId(type->id())
           ? createArrayWithOffsetsFieldWriter(context, type)
           : std::make_unique<ArrayFieldWriter>(context, type);
       break;
@@ -1788,9 +1782,9 @@ std::unique_ptr<FieldWriter> FieldWriter::create(
       // A map can both be a flat map and a deduplicated map.
       // Flat map takes precedence over deduplicated map, i.e. the outer map
       // will be a flat map whereas the child maps will be deduplicated.
-      if (context.flatMapNodeIds.contains(type->id())) {
+      if (context.hasFlatMapNodeId(type->id())) {
         field = createFlatMapFieldWriter(context, type);
-      } else if (context.deduplicatedMapNodeIds.contains(type->id())) {
+      } else if (context.hasDeduplicatedMapNodeId(type->id())) {
         field = std::make_unique<SlidingWindowMapFieldWriter>(context, type);
       } else {
         field = std::make_unique<MapFieldWriter>(context, type);
@@ -1800,9 +1794,7 @@ std::unique_ptr<FieldWriter> FieldWriter::create(
     default:
       NIMBLE_UNSUPPORTED("Unsupported kind: {}.", type->type()->kind());
   }
-
-  context.typeAddedHandler(*field->typeBuilder());
-
+  context.handleAddedType(*field->typeBuilder());
   return field;
 }
 

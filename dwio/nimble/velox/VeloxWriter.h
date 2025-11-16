@@ -38,6 +38,21 @@ class WriterContext;
 // Writer that takes velox vector as input and produces nimble file.
 class VeloxWriter {
  public:
+  VeloxWriter(
+      const velox::TypePtr& type,
+      std::unique_ptr<velox::WriteFile> file,
+      velox::memory::MemoryPool& pool,
+      VeloxWriterOptions options);
+
+  ~VeloxWriter();
+
+  // Return value of 'true' means this write ended with a flush.
+  bool write(const velox::VectorPtr& input);
+
+  void close();
+
+  void flush();
+
   struct RunStats {
     uint64_t bytesWritten;
     uint32_t stripeCount;
@@ -52,48 +67,40 @@ class VeloxWriter {
     uint64_t inputBufferReallocItemCount;
     std::unordered_map<offset_size, ColumnStats> columnStats;
   };
-
-  VeloxWriter(
-      velox::memory::MemoryPool& memoryPool,
-      const velox::TypePtr& schema,
-      std::unique_ptr<velox::WriteFile> file,
-      VeloxWriterOptions options);
-
-  ~VeloxWriter();
-
-  // Return value of 'true' means this write ended with a flush.
-  bool write(const velox::VectorPtr& vector);
-
-  void close();
-
-  void flush();
-
   RunStats getRunStats() const;
 
  private:
-  std::shared_ptr<const velox::dwio::common::TypeWithId> schema_;
-  std::unique_ptr<velox::WriteFile> file_;
-  MemoryPoolHolder writerMemoryPool_;
-  MemoryPoolHolder encodingMemoryPool_;
-  std::unique_ptr<detail::WriterContext> context_;
-  TabletWriter writer_;
-  std::unique_ptr<FieldWriter> root_;
-
-  std::unique_ptr<Buffer> encodingBuffer_;
-  std::vector<Stream> streams_;
-  std::exception_ptr lastException_;
-  const velox::common::SpillConfig* const spillConfig_;
-
   // Returning 'true' if stripe was flushed.
   bool evalauateFlushPolicy();
+
   // Returning 'true' if stripe was written.
   bool writeStripe();
-  void writeChunk(bool lastChunk = true);
+
+  void writeWithoutChunk();
   // Returns 'true' if chunks were written.
   bool writeChunks(
       std::span<const uint32_t> streamIndices,
       bool ensureFullChunks = false,
       bool lastChunk = false);
+
+  void writeMetadata();
+  void writeColumnStats();
+  void writeSchema();
+
+  void ensureEncodingBuffer();
+  void clearEncodingBuffer();
+
+  const std::shared_ptr<const velox::dwio::common::TypeWithId> schema_;
+  MemoryPoolHolder writerMemoryPool_;
+  MemoryPoolHolder encodingMemoryPool_;
+  const std::unique_ptr<detail::WriterContext> context_;
+  std::unique_ptr<velox::WriteFile> file_;
+  const std::unique_ptr<TabletWriter> tabletWriter_;
+  const std::unique_ptr<FieldWriter> rootWriter_;
+
+  std::unique_ptr<Buffer> encodingBuffer_;
+  std::vector<Stream> streams_;
+  std::exception_ptr lastException_;
 };
 
 } // namespace facebook::nimble

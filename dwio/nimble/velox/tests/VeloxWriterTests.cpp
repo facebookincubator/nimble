@@ -63,13 +63,13 @@ class VeloxWriterTests : public ::testing::Test {
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
 };
 
-TEST_F(VeloxWriterTests, EmptyFile) {
+TEST_F(VeloxWriterTests, emptyFile) {
   auto type = velox::ROW({{"simple", velox::INTEGER()}});
 
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
-  nimble::VeloxWriter writer(*rootPool_, type, std::move(writeFile), {});
+  nimble::VeloxWriter writer(type, std::move(writeFile), *rootPool_, {});
   writer.close();
 
   velox::InMemoryReadFile readFile(file);
@@ -79,7 +79,7 @@ TEST_F(VeloxWriterTests, EmptyFile) {
   ASSERT_FALSE(reader.next(1, result));
 }
 
-TEST_F(VeloxWriterTests, ExceptionOnClose) {
+TEST_F(VeloxWriterTests, exceptionOnClose) {
   class ThrowingWriteFile final : public velox::WriteFile {
    public:
     void append(std::string_view /* data */) final {
@@ -109,9 +109,9 @@ TEST_F(VeloxWriterTests, ExceptionOnClose) {
   auto writeFile = std::make_unique<ThrowingWriteFile>();
 
   nimble::VeloxWriter writer(
-      *rootPool_,
       vector->type(),
       std::move(writeFile),
+      *rootPool_,
       {.flushPolicyFactory = [&]() {
         return std::make_unique<nimble::LambdaFlushPolicy>(
             /*flushLambda=*/[&](auto&) { return true; });
@@ -154,7 +154,7 @@ TEST_F(VeloxWriterTests, ExceptionOnClose) {
   }
 }
 
-TEST_F(VeloxWriterTests, EmptyFileNoSchema) {
+TEST_F(VeloxWriterTests, emptyFileNoSchema) {
   const uint32_t batchSize = 10;
   auto type = velox::ROW({{"simple", velox::INTEGER()}});
   nimble::VeloxWriterOptions writerOptions;
@@ -163,7 +163,7 @@ TEST_F(VeloxWriterTests, EmptyFileNoSchema) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   nimble::VeloxWriter writer(
-      *rootPool_, type, std::move(writeFile), std::move(writerOptions));
+      type, std::move(writeFile), *rootPool_, std::move(writerOptions));
   writer.close();
 
   velox::InMemoryReadFile readFile(file);
@@ -173,7 +173,7 @@ TEST_F(VeloxWriterTests, EmptyFileNoSchema) {
   ASSERT_FALSE(reader.next(batchSize, result));
 }
 
-TEST_F(VeloxWriterTests, RootHasNulls) {
+TEST_F(VeloxWriterTests, rootHasNulls) {
   auto batchSize = 5;
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(
@@ -189,7 +189,7 @@ TEST_F(VeloxWriterTests, RootHasNulls) {
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
   nimble::VeloxWriter writer(
-      *rootPool_, vector->type(), std::move(writeFile), {});
+      vector->type(), std::move(writeFile), *rootPool_, {});
   writer.write(vector);
   writer.close();
 
@@ -227,9 +227,9 @@ TEST_F(
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   nimble::VeloxWriter writer(
-      *rootPool_,
       vector->type(),
       std::move(writeFile),
+      *rootPool_,
       {.flatMapColumns = {"flatmap"},
        .featureReordering =
            std::vector<std::tuple<size_t, std::vector<int64_t>>>{
@@ -238,7 +238,7 @@ TEST_F(
   writer.close();
 }
 
-TEST_F(VeloxWriterTests, DuplicateFlatmapKey) {
+TEST_F(VeloxWriterTests, duplicateFlatmapKey) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   // Vector with constant but duplicate key set. Potentially omitting in map
   // stream in the future.
@@ -256,9 +256,9 @@ TEST_F(VeloxWriterTests, DuplicateFlatmapKey) {
     auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
     nimble::VeloxWriter writer(
-        *rootPool_,
         vec->type(),
         std::move(writeFile),
+        *rootPool_,
         {.flatMapColumns = {"flatmap"}});
     EXPECT_THROW(writer.write(vec), nimble::NimbleInternalError);
     EXPECT_ANY_THROW(writer.close());
@@ -280,9 +280,9 @@ TEST_F(VeloxWriterTests, DuplicateFlatmapKey) {
     auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
     nimble::VeloxWriter writer(
-        *rootPool_,
         vec->type(),
         std::move(writeFile),
+        *rootPool_,
         {.flatMapColumns = {"flatmap"}});
     EXPECT_THROW(writer.write(vec), nimble::NimbleInternalError);
     EXPECT_ANY_THROW(writer.close());
@@ -398,7 +398,7 @@ TEST_P(StripeRawSizeFlushPolicyTest, StripeRawSizeFlushPolicy) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   nimble::VeloxWriter writer(
-      *rootPool_, type, std::move(writeFile), std::move(writerOptions));
+      type, std::move(writeFile), *rootPool_, std::move(writerOptions));
   auto batches =
       generateBatches(type, GetParam().batchCount, 4000, 20221110, *leafPool_);
 
@@ -432,7 +432,7 @@ class MockReclaimer : public velox::memory::MemoryReclaimer {
 };
 } // namespace
 
-TEST_F(VeloxWriterTests, MemoryReclaimPath) {
+TEST_F(VeloxWriterTests, memoryReclaimPath) {
   auto rootPool = velox::memory::memoryManager()->addRootPool(
       "root", 4L << 20, velox::memory::MemoryReclaimer::create());
   auto writerPool = rootPool->addAggregateChild(
@@ -449,7 +449,7 @@ TEST_F(VeloxWriterTests, MemoryReclaimPath) {
     return reclaimer;
   }};
   nimble::VeloxWriter writer(
-      *writerPool, type, std::move(writeFile), std::move(writerOptions));
+      type, std::move(writeFile), *writerPool, std::move(writerOptions));
   auto batches = generateBatches(type, 100, 4000, 20221110, *leafPool_);
 
   EXPECT_THROW(
@@ -462,7 +462,7 @@ TEST_F(VeloxWriterTests, MemoryReclaimPath) {
   ASSERT_TRUE(reclaimEntered.load());
 }
 
-TEST_F(VeloxWriterTests, FlushHugeStrings) {
+TEST_F(VeloxWriterTests, flushHugeStrings) {
   nimble::VeloxWriterOptions writerOptions{.flushPolicyFactory = []() {
     return std::make_unique<nimble::StripeRawSizeFlushPolicy>(1 * 1024 * 1024);
   }};
@@ -487,9 +487,9 @@ TEST_F(VeloxWriterTests, FlushHugeStrings) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   nimble::VeloxWriter writer(
-      *rootPool_,
       vector->type(),
       std::move(writeFile),
+      *rootPool_,
       std::move(writerOptions));
 
   // Writing 500 batches should produce 3 stripes, as each 200 vectors will
@@ -507,7 +507,7 @@ TEST_F(VeloxWriterTests, FlushHugeStrings) {
   EXPECT_EQ(3, reader.tabletReader().stripeCount());
 }
 
-TEST_F(VeloxWriterTests, EncodingLayout) {
+TEST_F(VeloxWriterTests, encodingLayout) {
   nimble::EncodingLayoutTree expected{
       nimble::Kind::Row,
       {},
@@ -622,9 +622,9 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   nimble::VeloxWriter writer(
-      *rootPool_,
       vector->type(),
       std::move(writeFile),
+      *rootPool_,
       {
           .flatMapColumns = {"flatmap"},
           .encodingLayoutTree = std::move(expected),
@@ -753,7 +753,7 @@ TEST_F(VeloxWriterTests, EncodingLayout) {
   }
 }
 
-TEST_F(VeloxWriterTests, EncodingLayoutSchemaMismatch) {
+TEST_F(VeloxWriterTests, encodingLayoutSchemaMismatch) {
   nimble::EncodingLayoutTree expected{
       nimble::Kind::Row,
       {},
@@ -797,9 +797,9 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaMismatch) {
 
   try {
     nimble::VeloxWriter writer(
-        *rootPool_,
         vector->type(),
         std::move(writeFile),
+        *rootPool_,
         {
             .encodingLayoutTree = std::move(expected),
             .compressionOptions = {.compressionAcceptRatio = 100},
@@ -813,7 +813,7 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaMismatch) {
   }
 }
 
-TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionMapToFlatmap) {
+TEST_F(VeloxWriterTests, encodingLayoutSchemaEvolutionMapToFlatmap) {
   nimble::EncodingLayoutTree expected{
       nimble::Kind::Row,
       {},
@@ -875,9 +875,9 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionMapToFlatmap) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   nimble::VeloxWriter writer(
-      *rootPool_,
       vector->type(),
       std::move(writeFile),
+      *rootPool_,
       {
           .flatMapColumns = {"map"},
           .encodingLayoutTree = std::move(expected),
@@ -892,7 +892,7 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionMapToFlatmap) {
   // that no captured encoding was used.
 }
 
-TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionFlamapToMap) {
+TEST_F(VeloxWriterTests, encodingLayoutSchemaEvolutionFlamapToMap) {
   nimble::EncodingLayoutTree expected{
       nimble::Kind::Row,
       {},
@@ -955,9 +955,9 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionFlamapToMap) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   nimble::VeloxWriter writer(
-      *rootPool_,
       vector->type(),
       std::move(writeFile),
+      *rootPool_,
       {
           .encodingLayoutTree = std::move(expected),
           .compressionOptions = {.compressionAcceptRatio = 100},
@@ -971,7 +971,7 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionFlamapToMap) {
   // that no captured encoding was used.
 }
 
-TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionExpandingRow) {
+TEST_F(VeloxWriterTests, encodingLayoutSchemaEvolutionExpandingRow) {
   nimble::EncodingLayoutTree expected{
       nimble::Kind::Row,
       {},
@@ -1023,9 +1023,9 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionExpandingRow) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   nimble::VeloxWriter writer(
-      *rootPool_,
       vector->type(),
       std::move(writeFile),
+      *rootPool_,
       {
           .encodingLayoutTree = std::move(expected),
           .compressionOptions = {.compressionAcceptRatio = 100},
@@ -1039,7 +1039,7 @@ TEST_F(VeloxWriterTests, EncodingLayoutSchemaEvolutionExpandingRow) {
   // that no captured encoding was used.
 }
 
-TEST_F(VeloxWriterTests, CombineMultipleLayersOfDictionaries) {
+TEST_F(VeloxWriterTests, combineMultipleLayersOfDictionaries) {
   using namespace facebook::velox;
   test::VectorMaker vectorMaker{leafPool_.get()};
   auto wrapInDictionary = [&](const std::vector<vector_size_t>& indices,
@@ -1066,9 +1066,9 @@ TEST_F(VeloxWriterTests, CombineMultipleLayersOfDictionaries) {
   std::string file;
   auto writeFile = std::make_unique<InMemoryWriteFile>(&file);
   nimble::VeloxWriter writer(
-      *rootPool_,
       ROW({"c0"}, {MAP(VARCHAR(), ARRAY(BIGINT()))}),
       std::move(writeFile),
+      *rootPool_,
       std::move(options));
   writer.write(vector);
   writer.close();
@@ -1123,9 +1123,9 @@ void testChunks(
 
   auto flushDecision = false;
   nimble::VeloxWriter writer(
-      rootPool,
       type,
       std::move(writeFile),
+      rootPool,
       {
           .flatMapColumns = std::move(flatMapColumns),
           .minStreamChunkRawSize = minStreamChunkRawSize,
@@ -1165,7 +1165,7 @@ void testChunks(
   validateChunkSize(reader, minStreamChunkRawSize, maxStreamChunkRawSize);
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsRowAllNullsNoChunks) {
+TEST_F(VeloxWriterTests, chunkedStreamsRowAllNullsNoChunks) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1201,7 +1201,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowAllNullsNoChunks) {
       });
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsRowAllNullsWithChunksMinSizeBig) {
+TEST_F(VeloxWriterTests, chunkedStreamsRowAllNullsWithChunksMinSizeBig) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1238,7 +1238,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowAllNullsWithChunksMinSizeBig) {
       });
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsRowAllNullsWithChunksMinSizeZero) {
+TEST_F(VeloxWriterTests, chunkedStreamsRowAllNullsWithChunksMinSizeZero) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1275,7 +1275,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowAllNullsWithChunksMinSizeZero) {
       });
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsRowSomeNullsNoChunks) {
+TEST_F(VeloxWriterTests, chunkedStreamsRowSomeNullsNoChunks) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto nullsVector = vectorMaker.rowVector(
@@ -1324,7 +1324,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowSomeNullsNoChunks) {
       });
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsRowSomeNullsWithChunksMinSizeBig) {
+TEST_F(VeloxWriterTests, chunkedStreamsRowSomeNullsWithChunksMinSizeBig) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto nullsVector = vectorMaker.rowVector(
@@ -1374,7 +1374,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowSomeNullsWithChunksMinSizeBig) {
       });
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsRowSomeNullsWithChunksMinSizeZero) {
+TEST_F(VeloxWriterTests, chunkedStreamsRowSomeNullsWithChunksMinSizeZero) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto nullsVector = vectorMaker.rowVector(
@@ -1424,7 +1424,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowSomeNullsWithChunksMinSizeZero) {
       });
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsRowNoNullsNoChunks) {
+TEST_F(VeloxWriterTests, chunkedStreamsRowNoNullsNoChunks) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1464,7 +1464,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowNoNullsNoChunks) {
       });
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsRowNoNullsWithChunksMinSizeBig) {
+TEST_F(VeloxWriterTests, chunkedStreamsRowNoNullsWithChunksMinSizeBig) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1505,7 +1505,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowNoNullsWithChunksMinSizeBig) {
       });
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsRowNoNullsWithChunksMinSizeZero) {
+TEST_F(VeloxWriterTests, chunkedStreamsRowNoNullsWithChunksMinSizeZero) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1545,7 +1545,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsRowNoNullsWithChunksMinSizeZero) {
       });
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsChildAllNullsNoChunks) {
+TEST_F(VeloxWriterTests, chunkedStreamsChildAllNullsNoChunks) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1571,7 +1571,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsChildAllNullsNoChunks) {
       });
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsChildAllNullsWithChunksMinSizeBig) {
+TEST_F(VeloxWriterTests, chunkedStreamsChildAllNullsWithChunksMinSizeBig) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1597,7 +1597,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsChildAllNullsWithChunksMinSizeBig) {
       });
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsChildAllNullsWithChunksMinSizeZero) {
+TEST_F(VeloxWriterTests, chunkedStreamsChildAllNullsWithChunksMinSizeZero) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1623,7 +1623,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsChildAllNullsWithChunksMinSizeZero) {
       });
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapAllNullsNoChunks) {
+TEST_F(VeloxWriterTests, chunkedStreamsFlatmapAllNullsNoChunks) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1668,7 +1668,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapAllNullsNoChunks) {
       /* flatmapColumns */ {"c1"});
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapAllNullsWithChunksMinSizeBig) {
+TEST_F(VeloxWriterTests, chunkedStreamsFlatmapAllNullsWithChunksMinSizeBig) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1712,7 +1712,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapAllNullsWithChunksMinSizeBig) {
       /* flatmapColumns */ {"c1"});
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapAllNullsWithChunksMinSizeZero) {
+TEST_F(VeloxWriterTests, chunkedStreamsFlatmapAllNullsWithChunksMinSizeZero) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1755,7 +1755,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapAllNullsWithChunksMinSizeZero) {
       /* flatmapColumns */ {"c1"});
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsNoChunks) {
+TEST_F(VeloxWriterTests, chunkedStreamsFlatmapSomeNullsNoChunks) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto nullsVector = vectorMaker.rowVector(
@@ -1833,7 +1833,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsNoChunks) {
       /* flatmapColumns */ {"c1"});
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsWithChunksMinSizeBig) {
+TEST_F(VeloxWriterTests, chunkedStreamsFlatmapSomeNullsWithChunksMinSizeBig) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto nullsVector = vectorMaker.rowVector(
@@ -1914,7 +1914,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsWithChunksMinSizeBig) {
       /* flatmapColumns */ {"c1"});
 }
 
-TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsWithChunksMinSizeZero) {
+TEST_F(VeloxWriterTests, chunkedStreamsFlatmapSomeNullsWithChunksMinSizeZero) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto nullsVector = vectorMaker.rowVector(
@@ -1994,7 +1994,7 @@ TEST_F(VeloxWriterTests, ChunkedStreamsFlatmapSomeNullsWithChunksMinSizeZero) {
       /* flatmapColumns */ {"c1"});
 }
 
-TEST_F(VeloxWriterTests, RawSizeWritten) {
+TEST_F(VeloxWriterTests, rawSizeWritten) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   constexpr uint64_t expectedRawSize = sizeof(int32_t) * 20;
@@ -2014,7 +2014,7 @@ TEST_F(VeloxWriterTests, RawSizeWritten) {
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
   nimble::VeloxWriter writer(
-      *rootPool_, vector->type(), std::move(writeFile), {});
+      vector->type(), std::move(writeFile), *rootPool_, {});
   writer.write(vector);
   writer.close();
 
@@ -2083,7 +2083,7 @@ TEST_P(ChunkFlushPolicyTest, ChunkFlushPolicyIntegration) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
   nimble::VeloxWriter writer(
-      *rootPool_, type, std::move(writeFile), std::move(writerOptions));
+      type, std::move(writeFile), *rootPool_, std::move(writerOptions));
   const auto batches = generateBatches(
       type,
       GetParam().batchCount,
@@ -2107,7 +2107,7 @@ TEST_P(ChunkFlushPolicyTest, ChunkFlushPolicyIntegration) {
   EXPECT_EQ(GetParam().expectedMinChunkCount, result.minChunkCount);
 }
 
-TEST_F(VeloxWriterTests, FuzzComplex) {
+TEST_F(VeloxWriterTests, fuzzComplex) {
   auto type = velox::ROW(
       {{"array", velox::ARRAY(velox::REAL())},
        {"dict_array", velox::ARRAY(velox::REAL())},
@@ -2183,7 +2183,7 @@ TEST_F(VeloxWriterTests, FuzzComplex) {
       std::string file;
       auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
       nimble::VeloxWriter writer(
-          *leafPool_.get(), type, std::move(writeFile), writerOptions);
+          type, std::move(writeFile), *leafPool_.get(), writerOptions);
       const auto batches = generateBatches(
           type,
           /*batchCount=*/batchCount,
@@ -2206,7 +2206,7 @@ TEST_F(VeloxWriterTests, FuzzComplex) {
   }
 }
 
-TEST_F(VeloxWriterTests, BatchedChunkingRelievesMemoryPressure) {
+TEST_F(VeloxWriterTests, batchedChunkingRelievesMemoryPressure) {
   // Verify we stop chunking early when chunking relieves memory pressure.
   const uint32_t seed = FLAGS_writer_tests_seed > 0 ? FLAGS_writer_tests_seed
                                                     : folly::Random::rand32();
@@ -2280,7 +2280,7 @@ TEST_F(VeloxWriterTests, BatchedChunkingRelievesMemoryPressure) {
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
   nimble::VeloxWriter writer(
-      *rootPool_, rowVector->type(), std::move(writeFile), writerOptions);
+      rowVector->type(), std::move(writeFile), *rootPool_, writerOptions);
   writer.write(rowVector);
   writer.close();
 
@@ -2297,7 +2297,7 @@ TEST_F(VeloxWriterTests, BatchedChunkingRelievesMemoryPressure) {
       writerOptions.maxStreamChunkRawSize);
 }
 
-TEST_F(VeloxWriterTests, IgnoreTopLevelNulls) {
+TEST_F(VeloxWriterTests, ignoreTopLevelNulls) {
   auto seed = folly::randomNumberSeed();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
@@ -2323,7 +2323,7 @@ TEST_F(VeloxWriterTests, IgnoreTopLevelNulls) {
         std::string file;
         auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
         nimble::VeloxWriter writer(
-            pool, input->type(), std::move(writeFile), std::move(options));
+            input->type(), std::move(writeFile), pool, std::move(options));
         writer.write(input);
         writer.close();
 

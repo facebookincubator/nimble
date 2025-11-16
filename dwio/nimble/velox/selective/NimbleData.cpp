@@ -75,7 +75,7 @@ NimbleData::NimbleData(
       break;
     }
     default:
-      VELOX_UNSUPPORTED("{}", toString(nimbleType->kind()));
+      NIMBLE_UNSUPPORTED("{}", toString(nimbleType->kind()));
   }
 }
 
@@ -112,7 +112,7 @@ void NimbleData::readNulls(
 }
 
 const velox::BufferPtr& NimbleData::getPreloadedValues() {
-  VELOX_CHECK(nullsDecoder_, "A valid nullable decoder is required");
+  NIMBLE_CHECK_NOT_NULL(nullsDecoder_, "A valid nullable decoder is required");
   return nullsDecoder_->getPreloadedValues();
 }
 

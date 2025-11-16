@@ -50,7 +50,7 @@ std::string createNimbleFile(
   }
 
   nimble::VeloxWriter writer(
-      memoryPool, type, std::move(writeFile), std::move(writerOptions));
+      type, std::move(writeFile), memoryPool, std::move(writerOptions));
   for (const auto& vector : vectors) {
     writer.write(vector);
     if (flushAfterWrite) {
