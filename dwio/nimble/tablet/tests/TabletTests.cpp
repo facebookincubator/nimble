@@ -81,7 +81,9 @@ std::vector<StripeData> createStripesData(
           }
           printData(folly::to<std::string>("Stream ", offset), {pos, size});
 
-          return nimble::Stream{.offset = offset, .content = {{pos, size}}};
+          return nimble::Stream{
+              .offset = offset,
+              .chunks = {{.content = {std::string_view(pos, size)}}}};
         });
     stripesData.push_back({
         .rowCount = stripe.rowCount,
@@ -104,12 +106,12 @@ void parameterizedTest(
   try {
     std::string file;
     velox::InMemoryWriteFile writeFile(&file);
-    nimble::TabletWriter tabletWriter{
-        memoryPool,
+    auto tabletWriter = nimble::TabletWriter::create(
         &writeFile,
-        {nullptr, metadataFlushThreshold, metadataCompressionThreshold}};
+        memoryPool,
+        {nullptr, metadataFlushThreshold, metadataCompressionThreshold});
 
-    EXPECT_EQ(0, tabletWriter.size());
+    EXPECT_EQ(0, tabletWriter->size());
 
     struct StripeData {
       uint32_t rowCount;
@@ -119,15 +121,15 @@ void parameterizedTest(
     nimble::Buffer buffer{memoryPool};
     auto stripesData = createStripesData(rng, stripes, buffer);
     for (auto& stripe : stripesData) {
-      tabletWriter.writeStripe(stripe.rowCount, stripe.streams);
+      tabletWriter->writeStripe(stripe.rowCount, stripe.streams);
     }
 
-    tabletWriter.close();
-    EXPECT_LT(0, tabletWriter.size());
+    tabletWriter->close();
+    EXPECT_LT(0, tabletWriter->size());
     writeFile.close();
-    EXPECT_EQ(writeFile.size(), tabletWriter.size());
+    EXPECT_EQ(writeFile.size(), tabletWriter->size());
 
-    auto stripeGroupCount = tabletWriter.stripeGroupCount();
+    auto stripeGroupCount = tabletWriter->testingStripeGroupCount();
 
     folly::writeFile(file, "/tmp/test.nimble");
 
@@ -193,8 +195,8 @@ void parameterizedTest(
         }
 
         for (auto i = 0; i < serializedStreams.size(); ++i) {
-          // Verify streams content. If stream wasn't written in this stripe, it
-          // should return nullopt optional.
+          // Verify streams content. If stream wasn't written in this stripe,
+          // it should return nullopt optional.
           auto found = false;
           for (const auto& stream : stripesData[stripe].streams) {
             if (stream.offset == i) {
@@ -202,13 +204,13 @@ void parameterizedTest(
               EXPECT_TRUE(serializedStreams[i]);
               printData(
                   folly::to<std::string>("Expected Stream ", stream.offset),
-                  stream.content.front());
+                  stream.chunks[0].content[0]);
               const auto& actual = serializedStreams[i];
               std::string_view actualData = actual->getStream();
               printData(
                   folly::to<std::string>("Actual Stream ", stream.offset),
                   actualData);
-              EXPECT_EQ(stream.content.front(), actualData);
+              EXPECT_EQ(stream.chunks[0].content[0], actualData);
             }
           }
           if (!found) {
@@ -286,14 +288,14 @@ class TabletTestSuite : public ::testing::Test {
   std::shared_ptr<velox::memory::MemoryPool> pool_;
 };
 
-TEST_F(TabletTestSuite, EmptyWrite) {
+TEST_F(TabletTestSuite, emptyWrite) {
   // Creating an Nimble file without writing any stripes
   test(
       *this->pool_,
       /* stripes */ {});
 }
 
-TEST_F(TabletTestSuite, WriteDifferentStreamsPerStripe) {
+TEST_F(TabletTestSuite, writeDifferentStreamsPerStripe) {
   // Write different subset of streams in each stripe
   test(
       *this->pool_,
@@ -315,13 +317,13 @@ void checksumTest(
     std::vector<StripeSpecifications> stripes) {
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
-  nimble::TabletWriter tabletWriter{
-      memoryPool,
+  auto tabletWriter = nimble::TabletWriter::create(
       &writeFile,
+      memoryPool,
       {.layoutPlanner = nullptr,
        .metadataCompressionThreshold = metadataCompressionThreshold,
-       .checksumType = checksumType}};
-  EXPECT_EQ(0, tabletWriter.size());
+       .checksumType = checksumType});
+  EXPECT_EQ(0, tabletWriter->size());
 
   struct StripeData {
     uint32_t rowCount;
@@ -332,13 +334,13 @@ void checksumTest(
   auto stripesData = createStripesData(rng, stripes, buffer);
 
   for (auto& stripe : stripesData) {
-    tabletWriter.writeStripe(stripe.rowCount, stripe.streams);
+    tabletWriter->writeStripe(stripe.rowCount, stripe.streams);
   }
 
-  tabletWriter.close();
-  EXPECT_LT(0, tabletWriter.size());
+  tabletWriter->close();
+  EXPECT_LT(0, tabletWriter->size());
   writeFile.close();
-  EXPECT_EQ(writeFile.size(), tabletWriter.size());
+  EXPECT_EQ(writeFile.size(), tabletWriter->size());
 
   for (auto useChainedBuffers : {false, true}) {
     // Velidate checksum on a good file
@@ -486,7 +488,7 @@ void checksumTest(
 }
 } // namespace
 
-TEST_F(TabletTestSuite, ChecksumValidation) {
+TEST_F(TabletTestSuite, checksumValidation) {
   std::vector<uint64_t> metadataCompressionThresholds{
       // use size 0 here so it will always force a footer compression
       0,
@@ -517,7 +519,7 @@ TEST_F(TabletTestSuite, ChecksumValidation) {
   }
 }
 
-TEST(TabletTests, OptionalSections) {
+TEST(TabletTests, optionalSections) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
@@ -525,7 +527,7 @@ TEST(TabletTests, OptionalSections) {
   auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
-  nimble::TabletWriter tabletWriter{*pool, &writeFile};
+  auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool, {});
 
   // size1 is above the compression threshold and may be compressed
   // size2 is below the compression threshold and won't be compressed
@@ -554,12 +556,12 @@ TEST(TabletTests, OptionalSections) {
     zeroes[i] = '\0';
   }
 
-  tabletWriter.writeOptionalSection("section1", random1);
-  tabletWriter.writeOptionalSection("section2", random2);
-  tabletWriter.writeOptionalSection("section3", zeroes);
-  tabletWriter.writeOptionalSection("section4", empty);
+  tabletWriter->writeOptionalSection("section1", random1);
+  tabletWriter->writeOptionalSection("section2", random2);
+  tabletWriter->writeOptionalSection("section3", zeroes);
+  tabletWriter->writeOptionalSection("section4", empty);
 
-  tabletWriter.close();
+  tabletWriter->close();
 
   auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(6);
   facebook::velox::dwio::common::ExecutorBarrier barrier{executor};
@@ -637,13 +639,13 @@ TEST(TabletTests, OptionalSections) {
   }
 }
 
-TEST(TabletTests, OptionalSectionsEmpty) {
+TEST(TabletTests, optionalSectionsEmpty) {
   auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
-  nimble::TabletWriter tabletWriter{*pool, &writeFile};
+  auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool, {});
 
-  tabletWriter.close();
+  tabletWriter->close();
 
   for (auto useChainedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
@@ -657,7 +659,7 @@ TEST(TabletTests, OptionalSectionsEmpty) {
   }
 }
 
-TEST(TabletTests, OptionalSectionsPreload) {
+TEST(TabletTests, optionalSectionsPreload) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
@@ -667,7 +669,7 @@ TEST(TabletTests, OptionalSectionsPreload) {
     auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
     std::string file;
     velox::InMemoryWriteFile writeFile(&file);
-    nimble::TabletWriter tabletWriter{*pool, &writeFile};
+    auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool, {});
 
     // Using random string to make sure compression can't compress it well
     std::string random;
@@ -676,12 +678,12 @@ TEST(TabletTests, OptionalSectionsPreload) {
       random[i] = folly::Random::rand32(256);
     }
 
-    tabletWriter.writeOptionalSection("section1", "aaaa");
-    tabletWriter.writeOptionalSection("section2", "bbbb");
-    tabletWriter.writeOptionalSection("section3", random);
-    tabletWriter.writeOptionalSection("section4", "dddd");
-    tabletWriter.writeOptionalSection("section5", "eeee");
-    tabletWriter.close();
+    tabletWriter->writeOptionalSection("section1", "aaaa");
+    tabletWriter->writeOptionalSection("section2", "bbbb");
+    tabletWriter->writeOptionalSection("section3", random);
+    tabletWriter->writeOptionalSection("section4", "dddd");
+    tabletWriter->writeOptionalSection("section5", "eeee");
+    tabletWriter->close();
 
     auto verify = [&](std::vector<std::string> preload,
                       size_t expectedInitialReads,
@@ -857,7 +859,7 @@ class Guard {
 
 } // namespace
 
-TEST(TabletTests, ReferenceCountedCache) {
+TEST(TabletTests, referenceCountedCache) {
   Actions actions;
   facebook::nimble::ReferenceCountedCache<int, Guard> cache{
       [&](int id) { return std::make_shared<Guard>(id, actions); }};
@@ -953,7 +955,7 @@ TEST(TabletTests, ReferenceCountedCache) {
            {ActionEnum::kDestroyed, 0}}));
 }
 
-TEST(TabletTests, ReferenceCountedCacheStressParallelDuplicates) {
+TEST(TabletTests, referenceCountedCacheStressParallelDuplicates) {
   std::atomic_int counter{0};
   facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
     ++counter;
@@ -975,7 +977,7 @@ TEST(TabletTests, ReferenceCountedCacheStressParallelDuplicates) {
   EXPECT_GE(counter.load(), kEntryIds);
 }
 
-TEST(TabletTests, ReferenceCountedCacheStressParallelDuplicatesSaveEntries) {
+TEST(TabletTests, referenceCountedCacheStressParallelDuplicatesSaveEntries) {
   std::atomic_int counter{0};
   facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
     ++counter;
@@ -999,7 +1001,7 @@ TEST(TabletTests, ReferenceCountedCacheStressParallelDuplicatesSaveEntries) {
   EXPECT_EQ(counter.load(), kEntryIds);
 }
 
-TEST(TabletTests, ReferenceCountedCacheStress) {
+TEST(TabletTests, referenceCountedCacheStress) {
   std::atomic_int counter{0};
   facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
     ++counter;
@@ -1020,7 +1022,7 @@ TEST(TabletTests, ReferenceCountedCacheStress) {
   barrier.waitAll();
   EXPECT_GE(counter.load(), kEntryIds);
 }
-TEST(TabletTests, ReferenceCountedCacheStressSaveEntries) {
+TEST(TabletTests, referenceCountedCacheStressSaveEntries) {
   std::atomic_int counter{0};
   facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
     ++counter;

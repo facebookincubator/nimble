@@ -149,7 +149,7 @@ Kind EncodingLayoutTree::schemaKind() const {
   return schemaKind_;
 }
 
-const EncodingLayout* FOLLY_NULLABLE EncodingLayoutTree::encodingLayout(
+const EncodingLayout* EncodingLayoutTree::encodingLayout(
     EncodingLayoutTree::StreamIdentifier identifier) const {
   auto it = encodingLayouts_.find(identifier);
   if (it == encodingLayouts_.end()) {

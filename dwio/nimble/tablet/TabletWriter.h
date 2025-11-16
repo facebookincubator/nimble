@@ -16,14 +16,22 @@
 
 #pragma once
 
+#include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Checksum.h"
+#include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/tablet/FooterGenerated.h"
 #include "velox/common/file/File.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/vector/TypeAliases.h"
 
 namespace facebook::nimble {
+struct Chunk {
+  std::vector<std::string_view> content;
+};
+
 struct Stream {
   uint32_t offset;
-  std::vector<std::string_view> content;
+  std::vector<Chunk> chunks;
 };
 
 class LayoutPlanner {
@@ -36,24 +44,20 @@ class LayoutPlanner {
 constexpr uint32_t kMetadataFlushThreshold = 8 * 1024 * 1024; // 8MB
 constexpr uint32_t kMetadataCompressionThreshold = 64 * 1024; // 64kB
 
-struct TabletWriterOptions {
-  std::unique_ptr<LayoutPlanner> layoutPlanner{nullptr};
-  uint32_t metadataFlushThreshold{kMetadataFlushThreshold};
-  uint32_t metadataCompressionThreshold{kMetadataCompressionThreshold};
-  ChecksumType checksumType{ChecksumType::XXH3_64};
-};
-
-// Writes a new nimble file.
+/// Writes a new nimble file.
 class TabletWriter {
  public:
-  TabletWriter(
-      velox::memory::MemoryPool& memoryPool,
-      velox::WriteFile* writeFile,
-      TabletWriterOptions options = {})
-      : file_{writeFile},
-        memoryPool_(memoryPool),
-        options_(std::move(options)),
-        checksum_{ChecksumFactory::create(options_.checksumType)} {}
+  struct Options {
+    std::unique_ptr<LayoutPlanner> layoutPlanner{nullptr};
+    uint32_t metadataFlushThreshold{kMetadataFlushThreshold};
+    uint32_t metadataCompressionThreshold{kMetadataCompressionThreshold};
+    ChecksumType checksumType{ChecksumType::XXH3_64};
+  };
+
+  static std::unique_ptr<TabletWriter> create(
+      velox::WriteFile* file,
+      velox::memory::MemoryPool& pool,
+      TabletWriter::Options options);
 
   // Writes out the footer. Remember that the underlying file is not readable
   // until the write file itself is closed.
@@ -80,40 +84,60 @@ class TabletWriter {
     return file_->size();
   }
 
-  // For testing purpose
-  uint32_t stripeGroupCount() const {
+  uint32_t testingStripeGroupCount() const {
     return stripeGroups_.size();
   }
 
  private:
+  TabletWriter(
+      velox::WriteFile* file,
+      velox::memory::MemoryPool& pool,
+      Options options);
+
   struct MetadataSection {
-    uint64_t offset;
-    uint32_t size;
-    CompressionType compressionType;
+    uint64_t offset{0};
+    uint32_t size{0};
+    CompressionType compressionType{CompressionType::Uncompressed};
   };
 
   // Write metadata entry to file
   CompressionType writeMetadata(std::string_view metadata);
+
   // Write stripe group metadata entry and also add that to footer sections if
   // exceeds metadata flush size.
   void tryWriteStripeGroup(bool force = false);
+  bool shouldWriteStripeGroup(bool force) const;
+  void writeStripeGroup(size_t streamCount, size_t stripeCount);
+  void finishStripeGroup();
+
+  // Write stripes metadata section
+  MetadataSection writeStripes(size_t stripeCount);
+
   // Create metadata section in the file
   MetadataSection createMetadataSection(std::string_view metadata);
 
+  static flatbuffers::Offset<serialization::OptionalMetadataSections>
+  createOptionalMetadataSection(
+      flatbuffers::FlatBufferBuilder& builder,
+      const std::vector<std::pair<std::string, MetadataSection>>&
+          optionalSections);
+
   void writeWithChecksum(std::string_view data);
   void writeWithChecksum(const folly::IOBuf& buf);
+  void writeChunkWithChecksum(const Chunk& chunk);
 
-  velox::WriteFile* file_;
-  velox::memory::MemoryPool& memoryPool_;
-  TabletWriterOptions options_;
-  std::unique_ptr<Checksum> checksum_;
+  velox::WriteFile* const file_;
+  velox::memory::MemoryPool* const pool_;
+  const Options options_;
+  const std::unique_ptr<Checksum> checksum_;
 
   // Number of rows in each stripe.
-  std::vector<uint32_t> rowCounts_;
+  std::vector<uint32_t> stripeRowCounts_;
   // Offsets from start of file to first byte in each stripe.
   std::vector<uint64_t> stripeOffsets_;
   // Sizes of the stripes
   std::vector<uint32_t> stripeSizes_;
+
   // Stripe group indices
   std::vector<uint32_t> stripeGroupIndices_;
   // Accumulated offsets within each stripe relative to start of the stripe,
@@ -122,6 +146,7 @@ class TabletWriter {
   // Accumulated stream sizes within each stripe. Same behavior as
   // streamOffsets_.
   std::vector<std::vector<uint32_t>> streamSizes_;
+
   // Current stripe group index
   uint32_t stripeGroupIndex_{0};
   // Stripe groups

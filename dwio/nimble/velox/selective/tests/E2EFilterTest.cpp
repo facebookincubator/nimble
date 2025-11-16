@@ -147,7 +147,7 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase {
     }
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
     VeloxWriter writer(
-        *rootPool_, writeSchema_, std::move(writeFile), std::move(options));
+        writeSchema_, std::move(writeFile), *rootPool_, std::move(options));
     for (auto& batch : batches) {
       writer.write(batch);
     }

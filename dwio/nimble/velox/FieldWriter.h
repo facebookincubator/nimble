@@ -46,6 +46,7 @@ class DecodingContextPool {
         std::unique_ptr<velox::SelectivityVector> selectivityVector);
 
     ~DecodingContext();
+
     velox::DecodedVector& decode(
         const velox::VectorPtr& vector,
         const range_helper::OrderedRanges<velox::vector_size_t>& ranges);
@@ -110,67 +111,172 @@ class MemoryPoolHolder {
   velox::memory::MemoryPool* poolPtr_{nullptr};
 };
 
-struct FieldWriterContext {
+/// NOTE: this class is not thread-safe.
+class FieldWriterContext {
+ public:
   explicit FieldWriterContext(
       velox::memory::MemoryPool& memoryPool,
       std::unique_ptr<velox::memory::MemoryReclaimer> reclaimer = nullptr,
       std::function<void(void)> vectorDecoderVisitor = []() {})
-      : bufferMemoryPool{MemoryPoolHolder::create(
+      : bufferMemoryPool_{MemoryPoolHolder::create(
             memoryPool,
             [&](auto& pool) {
               return pool.addLeafChild(
                   "field_writer_buffer", true, std::move(reclaimer));
             })},
-        inputBufferGrowthPolicy{
+        inputBufferGrowthPolicy_{
             DefaultInputBufferGrowthPolicy::withDefaultRanges()},
         decodingContextPool_{std::move(vectorDecoderVisitor)} {
     resetStringBuffer();
   }
 
-  MemoryPoolHolder bufferMemoryPool;
-  std::mutex flatMapSchemaMutex;
-  SchemaBuilder schemaBuilder;
+  inline MemoryPoolHolder& bufferMemoryPool() {
+    return bufferMemoryPool_;
+  }
 
-  folly::F14FastSet<uint32_t> flatMapNodeIds;
-  folly::F14FastSet<uint32_t> dictionaryArrayNodeIds;
-  folly::F14FastSet<uint32_t> deduplicatedMapNodeIds;
-  bool ignoreTopLevelNulls{false};
+  inline const MemoryPoolHolder& bufferMemoryPool() const {
+    return bufferMemoryPool_;
+  }
 
-  std::unique_ptr<InputBufferGrowthPolicy> inputBufferGrowthPolicy;
-  InputBufferGrowthStats inputBufferGrowthStats;
+  inline std::mutex& flatMapSchemaMutex() {
+    return flatMapSchemaMutex_;
+  }
 
-  // TODO(T226402409): Replace this with stats builder class.
-  std::unordered_map<offset_size, ColumnStats> columnStats;
+  inline SchemaBuilder& schemaBuilder() {
+    return schemaBuilder_;
+  }
 
-  std::function<void(const TypeBuilder&, std::string_view, const TypeBuilder&)>
-      flatmapFieldAddedEventHandler;
+  inline const SchemaBuilder& schemaBuilder() const {
+    return schemaBuilder_;
+  }
 
-  std::function<void(const TypeBuilder&)> typeAddedHandler =
-      [](const TypeBuilder&) {};
+  inline bool hasFlatMapNodeId(uint32_t nodeId) const {
+    return flatMapNodeIds_.contains(nodeId);
+  }
 
-  DecodingContextPool::DecodingContext getDecodingContext() {
+  inline void clearAndReserveFlatMapNodeIds(size_t size) {
+    flatMapNodeIds_.clear();
+    flatMapNodeIds_.reserve(size);
+  }
+
+  inline void addFlatMapNodeId(uint32_t nodeId) {
+    flatMapNodeIds_.insert(nodeId);
+  }
+
+  inline folly::F14FastSet<uint32_t>& dictionaryArrayNodeIds() {
+    return dictionaryArrayNodeIds_;
+  }
+
+  inline const folly::F14FastSet<uint32_t>& dictionaryArrayNodeIds() const {
+    return dictionaryArrayNodeIds_;
+  }
+
+  inline void clearAndReserveDictionaryArrayNodeIds(size_t size) {
+    dictionaryArrayNodeIds_.clear();
+    dictionaryArrayNodeIds_.reserve(size);
+  }
+
+  inline bool hasDictionaryArrayNodeId(uint32_t nodeId) const {
+    return dictionaryArrayNodeIds_.contains(nodeId);
+  }
+
+  inline folly::F14FastSet<uint32_t>& deduplicatedMapNodeIds() {
+    return deduplicatedMapNodeIds_;
+  }
+
+  inline bool hasDeduplicatedMapNodeId(uint32_t nodeId) const {
+    return deduplicatedMapNodeIds_.contains(nodeId);
+  }
+
+  inline const folly::F14FastSet<uint32_t>& deduplicatedMapNodeIds() const {
+    return deduplicatedMapNodeIds_;
+  }
+
+  inline void clearAndReserveDeduplicatedMapNodeIds(size_t size) {
+    deduplicatedMapNodeIds_.clear();
+    deduplicatedMapNodeIds_.reserve(size);
+  }
+
+  inline bool ignoreTopLevelNulls() const {
+    return ignoreTopLevelNulls_;
+  }
+
+  inline void setIgnoreTopLevelNulls(bool value) {
+    ignoreTopLevelNulls_ = value;
+  }
+
+  inline std::unique_ptr<InputBufferGrowthPolicy>& inputBufferGrowthPolicy() {
+    return inputBufferGrowthPolicy_;
+  }
+
+  inline const std::unique_ptr<InputBufferGrowthPolicy>&
+  inputBufferGrowthPolicy() const {
+    return inputBufferGrowthPolicy_;
+  }
+
+  inline InputBufferGrowthStats& inputBufferGrowthStats() {
+    return inputBufferGrowthStats_;
+  }
+
+  inline const InputBufferGrowthStats& inputBufferGrowthStats() const {
+    return inputBufferGrowthStats_;
+  }
+
+  inline ColumnStats& columnStats(offset_size offset) {
+    return columnStats_[offset];
+  }
+
+  inline std::unordered_map<offset_size, ColumnStats>& columnStats() {
+    return columnStats_;
+  }
+
+  void handleFlatmapFieldAddEvent(
+      const TypeBuilder& typeBuilder,
+      std::string_view flatmapKey,
+      const TypeBuilder& flatmapTypeBuilder) {
+    if (flatmapFieldAddedEventHandler_) {
+      flatmapFieldAddedEventHandler_(
+          typeBuilder, flatmapKey, flatmapTypeBuilder);
+    }
+  }
+
+  inline void setFlatmapFieldAddedEventHandler(
+      std::function<
+          void(const TypeBuilder&, std::string_view, const TypeBuilder&)>
+          handler) {
+    flatmapFieldAddedEventHandler_ = std::move(handler);
+  }
+
+  inline void handleAddedType(const TypeBuilder& typeBuilder) const {
+    typeAddedHandler_(typeBuilder);
+  }
+
+  inline void setTypeAddedHandler(
+      std::function<void(const TypeBuilder&)>&& handler) {
+    typeAddedHandler_ = std::move(handler);
+  }
+
+  inline DecodingContextPool::DecodingContext decodingContext() {
     return decodingContextPool_.reserveContext();
   }
 
-  Buffer& stringBuffer() {
+  inline Buffer& stringBuffer() {
     return *buffer_;
   }
 
-  // Reset writer context for use by next stripe.
-  void resetStringBuffer() {
-    buffer_ = std::make_unique<Buffer>(*bufferMemoryPool);
+  inline void resetStringBuffer() {
+    buffer_ = std::make_unique<Buffer>(*bufferMemoryPool_);
   }
 
-  const std::vector<std::unique_ptr<StreamData>>& streams() {
+  inline const std::vector<std::unique_ptr<StreamData>>& streams() {
     return streams_;
   }
 
-  template <typename T>
-  NullsStreamData& createNullsStreamData(
+  inline NullsStreamData& createNullsStreamData(
       const StreamDescriptorBuilder& descriptor) {
     return static_cast<NullsStreamData&>(*streams_.emplace_back(
         std::make_unique<NullsStreamData>(
-            *bufferMemoryPool, descriptor, *inputBufferGrowthPolicy)));
+            *bufferMemoryPool_, descriptor, *inputBufferGrowthPolicy_)));
   }
 
   template <typename T>
@@ -178,7 +284,7 @@ struct FieldWriterContext {
       const StreamDescriptorBuilder& descriptor) {
     return static_cast<ContentStreamData<T>&>(*streams_.emplace_back(
         std::make_unique<ContentStreamData<T>>(
-            *bufferMemoryPool, descriptor, *inputBufferGrowthPolicy)));
+            *bufferMemoryPool_, descriptor, *inputBufferGrowthPolicy_)));
   }
 
   template <typename T>
@@ -186,8 +292,29 @@ struct FieldWriterContext {
       const StreamDescriptorBuilder& descriptor) {
     return static_cast<NullableContentStreamData<T>&>(*streams_.emplace_back(
         std::make_unique<NullableContentStreamData<T>>(
-            *bufferMemoryPool, descriptor, *inputBufferGrowthPolicy)));
+            *bufferMemoryPool_, descriptor, *inputBufferGrowthPolicy_)));
   }
+
+ protected:
+  MemoryPoolHolder bufferMemoryPool_;
+  std::mutex flatMapSchemaMutex_;
+  SchemaBuilder schemaBuilder_;
+
+  folly::F14FastSet<uint32_t> flatMapNodeIds_;
+  folly::F14FastSet<uint32_t> dictionaryArrayNodeIds_;
+  folly::F14FastSet<uint32_t> deduplicatedMapNodeIds_;
+  bool ignoreTopLevelNulls_{false};
+
+  std::unique_ptr<InputBufferGrowthPolicy> inputBufferGrowthPolicy_;
+  InputBufferGrowthStats inputBufferGrowthStats_;
+
+  std::unordered_map<offset_size, ColumnStats> columnStats_;
+
+  std::function<void(const TypeBuilder&, std::string_view, const TypeBuilder&)>
+      flatmapFieldAddedEventHandler_;
+
+  std::function<void(const TypeBuilder&)> typeAddedHandler_{
+      [](const TypeBuilder&) {}};
 
  private:
   std::unique_ptr<Buffer> buffer_;

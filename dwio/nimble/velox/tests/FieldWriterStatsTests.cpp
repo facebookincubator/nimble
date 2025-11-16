@@ -67,7 +67,7 @@ class FieldWriterStatsTests : public ::testing::Test {
     }
     options.enableChunking = true;
     nimble::VeloxWriter writer(
-        *rootPool_, rowType, std::move(writeFile), options);
+        rowType, std::move(writeFile), *rootPool_, options);
     writer.write(input);
     writer.close();
 
@@ -115,7 +115,7 @@ class FieldWriterStatsTests : public ::testing::Test {
   std::unique_ptr<velox::test::VectorMaker> vectorMaker_;
 };
 
-TEST_F(FieldWriterStatsTests, SimpleFieldWriterStats) {
+TEST_F(FieldWriterStatsTests, simpleFieldWriterStats) {
   {
     // String and int flat columns with nulls.
     auto c1 = vectorMaker_->flatVector<int32_t>({1, 2, 3});
@@ -237,7 +237,7 @@ TEST_F(FieldWriterStatsTests, SimpleFieldWriterStats) {
   }
 }
 
-TEST_F(FieldWriterStatsTests, ArrayFieldWriterStats) {
+TEST_F(FieldWriterStatsTests, arrayFieldWriterStats) {
   auto simpleArrayVector =
       vectorMaker_->arrayVector<int8_t>({{0, 1, 2}, {0, 1, 2}, {0, 1, 2}});
   simpleArrayVector->setNull(1, true);
@@ -321,7 +321,7 @@ TEST_F(FieldWriterStatsTests, ArrayFieldWriterStats) {
        elementsStat4});
 }
 
-TEST_F(FieldWriterStatsTests, ArrayWithOffsetFieldWriterStats) {
+TEST_F(FieldWriterStatsTests, arrayWithOffsetFieldWriterStats) {
   auto simpleArrayVector =
       vectorMaker_->arrayVector<int8_t>({{0, 1, 2}, {0, 1, 2}, {0, 1, 2}});
   auto elementsStat1 = ColumnStats{
@@ -426,7 +426,7 @@ TEST_F(FieldWriterStatsTests, ArrayWithOffsetFieldWriterStats) {
       });
 }
 
-TEST_F(FieldWriterStatsTests, MapFieldWriterStats) {
+TEST_F(FieldWriterStatsTests, mapFieldWriterStats) {
   auto mapVector = vectorMaker_->mapVector<int8_t, int32_t>(
       {{{0, 1}, {2, 3}},
        {{0, 1}, {2, 3}},
@@ -466,7 +466,7 @@ TEST_F(FieldWriterStatsTests, MapFieldWriterStats) {
   }
 }
 
-TEST_F(FieldWriterStatsTests, FlatMapFieldWriterStats) {
+TEST_F(FieldWriterStatsTests, flatMapFieldWriterStats) {
   auto mapVector = vectorMaker_->mapVector<int8_t, int32_t>(
       {{{0, 1}, {2, 3}},
        {{0, 1}},
@@ -548,7 +548,7 @@ TEST_F(FieldWriterStatsTests, FlatMapFieldWriterStats) {
       {.flatMapColumns = {"c0"}});
 }
 
-TEST_F(FieldWriterStatsTests, FlatMapPassThroughValueFieldWriterStats) {
+TEST_F(FieldWriterStatsTests, flatMapPassThroughValueFieldWriterStats) {
   auto feature0 = vectorMaker_->flatVectorNullable<int32_t>(
       {{1}, {1}, std::nullopt, {1}, {1}, std::nullopt});
   auto feature2 = vectorMaker_->flatVectorNullable<int32_t>(
@@ -644,7 +644,7 @@ TEST_F(FieldWriterStatsTests, FlatMapPassThroughValueFieldWriterStats) {
       velox::ROW({{"c0", velox::MAP(velox::TINYINT(), velox::INTEGER())}}));
 }
 
-TEST_F(FieldWriterStatsTests, SlidingWindowMapFieldWriterStats) {
+TEST_F(FieldWriterStatsTests, slidingWindowMapFieldWriterStats) {
   auto mapVector = vectorMaker_->mapVector<int8_t, int32_t>(
       {{{0, 1}, {2, 3}},
        {{0, 1}, {2, 3}},
@@ -696,7 +696,7 @@ TEST_F(FieldWriterStatsTests, SlidingWindowMapFieldWriterStats) {
       });
 }
 
-TEST_F(FieldWriterStatsTests, RowFieldWriterStats) {
+TEST_F(FieldWriterStatsTests, rowFieldWriterStats) {
   auto c1 = vectorMaker_->rowVector({
       vectorMaker_->flatVectorNullable<int8_t>({0, 0, 0, 1, 1, std::nullopt}),
       vectorMaker_->flatVector<velox::StringView>(

@@ -118,7 +118,7 @@ void testStreamLayout(
   ASSERT_EQ(expected.size(), streams.size());
 
   for (auto i = 0; i < expected.size(); ++i) {
-    EXPECT_EQ(expected[i], streams[i].content.front()) << "i = " << i;
+    EXPECT_EQ(expected[i], streams[i].chunks[0].content[0]) << "i = " << i;
   }
 
   // Now we test that planner can handle the case where less streams are
@@ -131,7 +131,7 @@ void testStreamLayout(
     if (folly::Random::oneIn(2, rng)) {
       streamSubset.push_back(streams[i]);
       for (const auto& e : expected) {
-        if (streamSubset.back().content.front() == e) {
+        if (streamSubset.back().chunks[0].content[0] == e) {
           expectedSubset.push_back(e);
           break;
         }
@@ -146,11 +146,11 @@ void testStreamLayout(
   ASSERT_EQ(expectedSubset.size(), streamSubset.size());
 
   for (auto i = 0; i < expectedSubset.size(); ++i) {
-    EXPECT_EQ(expectedSubset[i], streamSubset[i].content.front());
+    EXPECT_EQ(expectedSubset[i], streamSubset[i].chunks[0].content[0]);
   }
 }
 
-TEST(DefaultLayoutPlannerTests, ReorderFlatMap) {
+TEST(DefaultLayoutPlannerTests, reorderFlatMap) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng(seed);
@@ -199,7 +199,8 @@ TEST(DefaultLayoutPlannerTests, ReorderFlatMap) {
   for (auto i = 0; i < namedTypes.size(); ++i) {
     streams.push_back(
         nimble::Stream{
-            std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
+            std::get<0>(namedTypes[i]),
+            {{.content = {std::get<1>(namedTypes[i])}}}});
   }
 
   std::vector<std::string> expected{
@@ -247,7 +248,7 @@ TEST(DefaultLayoutPlannerTests, ReorderFlatMap) {
   testStreamLayout(rng, planner, std::move(streams), std::move(expected));
 }
 
-TEST(DefaultLayoutPlannerTests, ReorderFlatMapDynamicFeatures) {
+TEST(DefaultLayoutPlannerTests, reorderFlatMapDynamicFeatures) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng(seed);
@@ -279,7 +280,8 @@ TEST(DefaultLayoutPlannerTests, ReorderFlatMapDynamicFeatures) {
   for (auto i = 0; i < namedTypes.size(); ++i) {
     streams.push_back(
         nimble::Stream{
-            std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
+            std::get<0>(namedTypes[i]),
+            {{.content = {std::get<1>(namedTypes[i])}}}});
   }
 
   std::vector<std::string> expected{
@@ -314,7 +316,8 @@ TEST(DefaultLayoutPlannerTests, ReorderFlatMapDynamicFeatures) {
   for (auto i = 0; i < namedTypes.size(); ++i) {
     streams.push_back(
         nimble::Stream{
-            std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
+            std::get<0>(namedTypes[i]),
+            {{.content = {std::get<1>(namedTypes[i])}}}});
   }
 
   expected = {
@@ -345,7 +348,7 @@ TEST(DefaultLayoutPlannerTests, ReorderFlatMapDynamicFeatures) {
   testStreamLayout(rng, planner, std::move(streams), std::move(expected));
 }
 
-TEST(DefaultLayoutPlannerTests, NoFeatureReordering) {
+TEST(DefaultLayoutPlannerTests, noFeatureReordering) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng(seed);
@@ -376,7 +379,8 @@ TEST(DefaultLayoutPlannerTests, NoFeatureReordering) {
   for (auto i = 0; i < namedTypes.size(); ++i) {
     streams.push_back(
         nimble::Stream{
-            std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
+            std::get<0>(namedTypes[i]),
+            {{.content = {std::get<1>(namedTypes[i])}}}});
   }
 
   std::vector<std::string> expected{
@@ -398,7 +402,7 @@ TEST(DefaultLayoutPlannerTests, NoFeatureReordering) {
   testStreamLayout(rng, planner, std::move(streams), std::move(expected));
 }
 
-TEST(DefaultLayoutPlannerTests, NonFlatMapOrdinalsAreIgnored) {
+TEST(DefaultLayoutPlannerTests, nonFlatMapOrdinalsAreIgnored) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng(seed);
@@ -433,7 +437,8 @@ TEST(DefaultLayoutPlannerTests, NonFlatMapOrdinalsAreIgnored) {
   for (auto i = 0; i < namedTypes.size(); ++i) {
     streams.push_back(
         nimble::Stream{
-            std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
+            std::get<0>(namedTypes[i]),
+            {{.content = {std::get<1>(namedTypes[i])}}}});
   }
 
   std::vector<std::string> expected{
@@ -462,7 +467,7 @@ TEST(DefaultLayoutPlannerTests, NonFlatMapOrdinalsAreIgnored) {
   testStreamLayout(rng, planner, std::move(streams), std::move(expected));
 }
 
-TEST(DefaultLayoutPlannerTests, OrdinalOutOfRangeAreIgnored) {
+TEST(DefaultLayoutPlannerTests, ordinalOutOfRangeAreIgnored) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng(seed);
@@ -502,7 +507,8 @@ TEST(DefaultLayoutPlannerTests, OrdinalOutOfRangeAreIgnored) {
   for (auto i = 0; i < namedTypes.size(); ++i) {
     streams.push_back(
         nimble::Stream{
-            std::get<0>(namedTypes[i]), {std::get<1>(namedTypes[i])}});
+            std::get<0>(namedTypes[i]),
+            {{.content = {std::get<1>(namedTypes[i])}}}});
   }
 
   std::vector<std::string> expected{
@@ -533,7 +539,7 @@ TEST(DefaultLayoutPlannerTests, OrdinalOutOfRangeAreIgnored) {
   testStreamLayout(rng, planner, std::move(streams), std::move(expected));
 }
 
-TEST(DefaultLayoutPlannerTests, IncompatibleSchema) {
+TEST(DefaultLayoutPlannerTests, incompatibleSchema) {
   nimble::SchemaBuilder builder;
 
   SCHEMA(builder, MAP(TINYINT(), STRING()));
