@@ -34,7 +34,7 @@ const std::vector<std::string> kPreloadOptionalSections = {
 std::shared_ptr<const facebook::nimble::Type> loadSchema(
     const TabletReader& tablet) {
   auto section = tablet.loadOptionalSection(kSchemaSectionString);
-  VELOX_CHECK(section.has_value());
+  NIMBLE_CHECK(section.has_value());
   return SchemaDeserializer::deserialize(section->content().data());
 }
 
@@ -55,21 +55,21 @@ ReaderBase::ReaderBase(
     const dwio::common::ReaderOptions& options)
     : input_(std::move(input)),
       tablet_(
-          options.memoryPool(),
-          // TODO: Make TabletReader taking BufferedInput.
-          input_->getReadFile().get(),
-          kPreloadOptionalSections),
+          TabletReader::create(
+              // TODO: Make TabletReader taking BufferedInput.
+              input_->getReadFile().get(),
+              options.memoryPool(),
+              kPreloadOptionalSections)),
       memoryPool_(&options.memoryPool()),
       randomSkip_(options.randomSkip()),
       scanSpec_(options.scanSpec()),
-      nimbleSchema_(loadSchema(tablet_)),
+      nimbleSchema_(loadSchema(*tablet_)),
       fileSchema_(asRowType(
           getFileSchema(options, convertToVeloxType(*nimbleSchema_)))) {}
 
-std::optional<common::Region> StripeStreams::getStreamRegion(
-    int streamId) const {
+std::optional<common::Region> StripeStreams::streamRegion(int streamId) const {
+  NIMBLE_CHECK(stripeIdentifier_.has_value());
   const auto& tablet = readerBase_->tablet();
-  VELOX_CHECK(stripeIdentifier_.has_value());
   if (streamId >= tablet.streamCount(*stripeIdentifier_)) {
     return std::nullopt;
   }
@@ -86,7 +86,7 @@ std::optional<common::Region> StripeStreams::getStreamRegion(
 
 std::unique_ptr<dwio::common::SeekableInputStream> StripeStreams::enqueue(
     int streamId) {
-  const auto region = getStreamRegion(streamId);
+  const auto region = streamRegion(streamId);
   if (!region.has_value()) {
     return nullptr;
   }

@@ -27,7 +27,7 @@ inline std::uint64_t getRawStreamSize(
   // Calculate expected size by summing stream sizes.
   uint64_t expected = 0;
   for (auto i = 0; i < tablet.stripeCount(); ++i) {
-    auto stripeIdentifier = tablet.getStripeIdentifier(i);
+    auto stripeIdentifier = tablet.stripeIdentifier(i);
 
     auto numStreams = tablet.streamCount(stripeIdentifier);
     std::vector<uint32_t> identifiers(numStreams);

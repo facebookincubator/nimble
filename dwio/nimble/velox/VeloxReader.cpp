@@ -108,7 +108,7 @@ class NimbleUnit : public velox::dwio::common::LoadUnit {
   // Lazy
   std::optional<uint64_t> ioSize_;
 
-  std::optional<TabletReader::StripeIdentifier> stripeIdentifier_;
+  std::optional<StripeIdentifier> stripeIdentifier_;
   // Will be loaded on load() and moved away in extractStreamLoaders()
   std::vector<std::unique_ptr<StreamLoader>> streamLoaders_;
   StripeLoadMetrics metrics_;
@@ -119,7 +119,7 @@ void NimbleUnit::load() {
   {
     velox::CpuWallTimer timer{timing};
     if (!stripeIdentifier_.has_value()) {
-      stripeIdentifier_ = tabletReader_.getStripeIdentifier(stripeId_);
+      stripeIdentifier_ = tabletReader_.stripeIdentifier(stripeId_);
     }
     streamLoaders_ = tabletReader_.load(
         stripeIdentifier_.value(),
@@ -142,9 +142,9 @@ uint64_t NimbleUnit::getIoSize() {
     return ioSize_.value();
   }
   if (!stripeIdentifier_.has_value()) {
-    stripeIdentifier_ = tabletReader_.getStripeIdentifier(stripeId_);
+    stripeIdentifier_ = tabletReader_.stripeIdentifier(stripeId_);
   }
-  ioSize_ = tabletReader_.getTotalStreamSize(
+  ioSize_ = tabletReader_.totalStreamSize(
       stripeIdentifier_.value(), streamIdentifiers_);
   return ioSize_.value();
 }
@@ -157,36 +157,37 @@ const std::vector<std::string>& VeloxReader::preloadedOptionalSections() {
 }
 
 VeloxReader::VeloxReader(
-    velox::memory::MemoryPool& pool,
     velox::ReadFile* file,
+    velox::memory::MemoryPool& pool,
     std::shared_ptr<const velox::dwio::common::ColumnSelector> selector,
     VeloxReadParams params)
     : VeloxReader(
-          pool,
-          std::make_shared<const TabletReader>(
+          TabletReader::create(
+              file,
               pool,
-              file, /* preloadOptionalSections */
+              /* preloadOptionalSections */
               preloadedOptionalSections()),
+          pool,
           std::move(selector),
           std::move(params)) {}
 
 VeloxReader::VeloxReader(
-    velox::memory::MemoryPool& pool,
     std::shared_ptr<velox::ReadFile> file,
+    velox::memory::MemoryPool& pool,
     std::shared_ptr<const velox::dwio::common::ColumnSelector> selector,
     VeloxReadParams params)
     : VeloxReader(
-          pool,
-          std::make_shared<const TabletReader>(
-              pool,
-              std::move(file), /* preloadOptionalSections */
+          TabletReader::create(
+              std::move(file),
+              pool, /* preloadOptionalSections */
               preloadedOptionalSections()),
+          pool,
           std::move(selector),
           std::move(params)) {}
 
 VeloxReader::VeloxReader(
-    velox::memory::MemoryPool& pool,
     std::shared_ptr<const TabletReader> tabletReader,
+    velox::memory::MemoryPool& pool,
     std::shared_ptr<const velox::dwio::common::ColumnSelector> selector,
     VeloxReadParams params)
     : pool_{pool},

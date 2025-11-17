@@ -64,7 +64,7 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
       }
       if (currentRowInStripe_ < numStripeRows) {
         nextRowNumber_ =
-            firstRowOfStripe_[currentStripe_] + currentRowInStripe_;
+            stripeRowOffsets_[currentStripe_] + currentRowInStripe_;
         return *nextRowNumber_;
       }
     advanceToNextStripe:
@@ -148,11 +148,11 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
     currentStripe_ = tablet.stripeCount();
     endStripe_ = 0;
     int64_t numRows = 0;
-    firstRowOfStripe_.resize(tablet.stripeCount());
+    stripeRowOffsets_.resize(tablet.stripeCount());
     const auto low = options_.offset();
     const auto high = options_.limit();
     for (int i = 0; i < tablet.stripeCount(); ++i) {
-      firstRowOfStripe_[i] = numRows;
+      stripeRowOffsets_[i] = numRows;
       if (low <= tablet.stripeOffset(i) && tablet.stripeOffset(i) < high) {
         currentStripe_ = std::min(currentStripe_, i);
         endStripe_ = std::max(endStripe_, i + 1);
@@ -186,7 +186,7 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
   const std::shared_ptr<ReaderBase> readerBase_;
   const dwio::common::RowReaderOptions options_;
   StripeStreams streams_;
-  std::vector<int64_t> firstRowOfStripe_;
+  std::vector<int64_t> stripeRowOffsets_;
   int currentStripe_;
   // The exclusive upper bound of the stripe range to read.
   int endStripe_;
