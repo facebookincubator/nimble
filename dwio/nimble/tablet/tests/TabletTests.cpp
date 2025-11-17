@@ -136,24 +136,24 @@ void parameterizedTest(
     for (auto useChainedBuffers : {false, true}) {
       nimble::testing::InMemoryTrackableReadFile readFile(
           file, useChainedBuffers);
-      nimble::TabletReader tablet{memoryPool, &readFile};
-      EXPECT_EQ(stripesData.size(), tablet.stripeCount());
+      auto tablet = nimble::TabletReader::create(&readFile, memoryPool);
+      EXPECT_EQ(stripesData.size(), tablet->stripeCount());
       EXPECT_EQ(
           std::accumulate(
               stripesData.begin(),
               stripesData.end(),
               uint64_t{0},
               [](uint64_t r, const auto& s) { return r + s.rowCount; }),
-          tablet.tabletRowCount());
+          tablet->tabletRowCount());
 
-      VLOG(1) << "Output Tablet -> StripeCount: " << tablet.stripeCount()
-              << ", RowCount: " << tablet.tabletRowCount();
+      VLOG(1) << "Output Tablet -> StripeCount: " << tablet->stripeCount()
+              << ", RowCount: " << tablet->tabletRowCount();
 
       uint32_t maxStreamIdentifiers = 0;
       for (auto stripe = 0; stripe < stripesData.size(); ++stripe) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(stripe);
+        auto stripeIdentifier = tablet->stripeIdentifier(stripe);
         maxStreamIdentifiers = std::max(
-            maxStreamIdentifiers, tablet.streamCount(stripeIdentifier));
+            maxStreamIdentifiers, tablet->streamCount(stripeIdentifier));
       }
       std::vector<uint32_t> allStreamIdentifiers(maxStreamIdentifiers);
       std::iota(allStreamIdentifiers.begin(), allStreamIdentifiers.end(), 0);
@@ -162,19 +162,20 @@ void parameterizedTest(
       size_t extraReads = 0;
       std::vector<uint64_t> totalStreamSize;
       for (auto stripe = 0; stripe < stripesData.size(); ++stripe) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(stripe);
-        totalStreamSize.push_back(tablet.getTotalStreamSize(
+        auto stripeIdentifier = tablet->stripeIdentifier(stripe);
+        totalStreamSize.push_back(tablet->totalStreamSize(
             stripeIdentifier, allStreamIdentifiersSpan));
       }
       // Now, read all stripes and verify results
       for (auto stripe = 0; stripe < stripesData.size(); ++stripe) {
-        EXPECT_EQ(stripesData[stripe].rowCount, tablet.stripeRowCount(stripe));
+        EXPECT_EQ(stripesData[stripe].rowCount, tablet->stripeRowCount(stripe));
 
         readFile.resetChunks();
-        auto stripeIdentifier = tablet.getStripeIdentifier(stripe);
-        std::vector<uint32_t> identifiers(tablet.streamCount(stripeIdentifier));
+        auto stripeIdentifier = tablet->stripeIdentifier(stripe);
+        std::vector<uint32_t> identifiers(
+            tablet->streamCount(stripeIdentifier));
         std::iota(identifiers.begin(), identifiers.end(), 0);
-        auto serializedStreams = tablet.load(
+        auto serializedStreams = tablet->load(
             stripeIdentifier, {identifiers.cbegin(), identifiers.cend()});
         uint64_t totalStreamSizeExpected = 0;
         for (const auto& stream : serializedStreams) {
@@ -346,8 +347,8 @@ void checksumTest(
     // Velidate checksum on a good file
     nimble::testing::InMemoryTrackableReadFile readFile(
         file, useChainedBuffers);
-    nimble::TabletReader tablet{memoryPool, &readFile};
-    auto storedChecksum = tablet.checksum();
+    auto tablet = nimble::TabletReader::create(&readFile, memoryPool);
+    auto storedChecksum = tablet->checksum();
     EXPECT_EQ(
         storedChecksum,
         nimble::TabletReader::calculateChecksum(
@@ -398,7 +399,7 @@ void checksumTest(
               memoryPool, &readFileUnchanged));
 
       auto posInFooter =
-          tablet.fileSize() - kPostscriptSize - tablet.footerSize() / 2;
+          tablet->fileSize() - kPostscriptSize - tablet->footerSize() / 2;
       uint8_t& byteInFooter =
           *reinterpret_cast<uint8_t*>(file.data() + posInFooter);
       byteInFooter ^= 0x1;
@@ -429,10 +430,10 @@ void checksumTest(
           nimble::TabletReader::calculateChecksum(
               memoryPool, &readFileUnchanged));
 
-      auto footerSizePos = tablet.fileSize() - kPostscriptSize;
+      auto footerSizePos = tablet->fileSize() - kPostscriptSize;
       uint32_t& footerSize =
           *reinterpret_cast<uint32_t*>(file.data() + footerSizePos);
-      ASSERT_EQ(footerSize, tablet.footerSize());
+      ASSERT_EQ(footerSize, tablet->footerSize());
       footerSize ^= 0x1;
       nimble::testing::InMemoryTrackableReadFile readFileChanged(
           file, useChainedBuffers);
@@ -461,11 +462,11 @@ void checksumTest(
           nimble::TabletReader::calculateChecksum(
               memoryPool, &readFileUnchanged));
 
-      auto footerCompressionTypePos = tablet.fileSize() - kPostscriptSize + 4;
+      auto footerCompressionTypePos = tablet->fileSize() - kPostscriptSize + 4;
       nimble::CompressionType& footerCompressionType =
           *reinterpret_cast<nimble::CompressionType*>(
               file.data() + footerCompressionTypePos);
-      ASSERT_EQ(footerCompressionType, tablet.footerCompressionType());
+      ASSERT_EQ(footerCompressionType, tablet->footerCompressionType());
       // Cannot do bit operation on enums, so cast it to integer type.
       uint8_t& typeAsInt = *reinterpret_cast<uint8_t*>(&footerCompressionType);
       typeAsInt ^= 0x1;
@@ -569,62 +570,62 @@ TEST(TabletTests, optionalSections) {
   for (auto useChainedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
         file, useChainedBuffers);
-    nimble::TabletReader tablet{*pool, &readFile};
+    auto tablet = nimble::TabletReader::create(&readFile, *pool);
 
-    ASSERT_EQ(tablet.optionalSections().size(), 4);
+    ASSERT_EQ(tablet->optionalSections().size(), 4);
 
-    ASSERT_TRUE(tablet.optionalSections().contains("section1"));
+    ASSERT_TRUE(tablet->optionalSections().contains("section1"));
     ASSERT_TRUE(
-        tablet.optionalSections().at("section1").compressionType() ==
+        tablet->optionalSections().at("section1").compressionType() ==
             nimble::CompressionType::Uncompressed ||
-        tablet.optionalSections().at("section1").compressionType() ==
+        tablet->optionalSections().at("section1").compressionType() ==
             nimble::CompressionType::Zstd);
-    ASSERT_LE(tablet.optionalSections().at("section1").size(), size1);
+    ASSERT_LE(tablet->optionalSections().at("section1").size(), size1);
 
-    ASSERT_TRUE(tablet.optionalSections().contains("section2"));
+    ASSERT_TRUE(tablet->optionalSections().contains("section2"));
     ASSERT_EQ(
-        tablet.optionalSections().at("section2").compressionType(),
+        tablet->optionalSections().at("section2").compressionType(),
         nimble::CompressionType::Uncompressed);
-    ASSERT_EQ(tablet.optionalSections().at("section2").size(), size2);
+    ASSERT_EQ(tablet->optionalSections().at("section2").size(), size2);
 
-    ASSERT_TRUE(tablet.optionalSections().contains("section3"));
+    ASSERT_TRUE(tablet->optionalSections().contains("section3"));
     ASSERT_EQ(
-        tablet.optionalSections().at("section3").compressionType(),
+        tablet->optionalSections().at("section3").compressionType(),
         nimble::CompressionType::Zstd);
-    ASSERT_LE(tablet.optionalSections().at("section3").size(), zeroes.size());
+    ASSERT_LE(tablet->optionalSections().at("section3").size(), zeroes.size());
 
-    ASSERT_TRUE(tablet.optionalSections().contains("section4"));
+    ASSERT_TRUE(tablet->optionalSections().contains("section4"));
     ASSERT_EQ(
-        tablet.optionalSections().at("section4").compressionType(),
+        tablet->optionalSections().at("section4").compressionType(),
         nimble::CompressionType::Uncompressed);
-    ASSERT_EQ(tablet.optionalSections().at("section4").size(), 0);
+    ASSERT_EQ(tablet->optionalSections().at("section4").size(), 0);
 
     auto check1 = [&]() {
-      auto section = tablet.loadOptionalSection("section1");
+      auto section = tablet->loadOptionalSection("section1");
       ASSERT_TRUE(section.has_value());
       ASSERT_EQ(random1, section->content());
     };
 
     auto check2 = [&]() {
-      auto section = tablet.loadOptionalSection("section2");
+      auto section = tablet->loadOptionalSection("section2");
       ASSERT_TRUE(section.has_value());
       ASSERT_EQ(random2, section->content());
     };
 
     auto check3 = [&]() {
-      auto section = tablet.loadOptionalSection("section3");
+      auto section = tablet->loadOptionalSection("section3");
       ASSERT_TRUE(section.has_value());
       ASSERT_EQ(zeroes, section->content());
     };
 
     auto check4 = [&, empty = std::string()]() {
-      auto section = tablet.loadOptionalSection("section4");
+      auto section = tablet->loadOptionalSection("section4");
       ASSERT_TRUE(section.has_value());
       ASSERT_EQ(empty, section->content());
     };
 
     auto check5 = [&]() {
-      auto section = tablet.loadOptionalSection("section5");
+      auto section = tablet->loadOptionalSection("section5");
       ASSERT_FALSE(section.has_value());
     };
 
@@ -650,11 +651,11 @@ TEST(TabletTests, optionalSectionsEmpty) {
   for (auto useChainedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
         file, useChainedBuffers);
-    nimble::TabletReader tablet{*pool, &readFile};
+    auto tablet = nimble::TabletReader::create(&readFile, *pool);
 
-    ASSERT_TRUE(tablet.optionalSections().empty());
+    ASSERT_TRUE(tablet->optionalSections().empty());
 
-    auto section = tablet.loadOptionalSection("section1");
+    auto section = tablet->loadOptionalSection("section1");
     ASSERT_FALSE(section.has_value());
   }
 }
@@ -692,7 +693,7 @@ TEST(TabletTests, optionalSectionsPreload) {
       for (auto useChainedBuffers : {false, true}) {
         nimble::testing::InMemoryTrackableReadFile readFile(
             file, useChainedBuffers);
-        nimble::TabletReader tablet{*pool, &readFile, preload};
+        auto tablet = nimble::TabletReader::create(&readFile, *pool, preload);
 
         // Expecting only the initial footer read.
         ASSERT_EQ(expectedInitialReads, readFile.chunks().size());
@@ -701,7 +702,7 @@ TEST(TabletTests, optionalSectionsPreload) {
           auto expectedSection = std::get<0>(e);
           auto expectedReads = std::get<1>(e);
           auto expectedContent = std::get<2>(e);
-          auto section = tablet.loadOptionalSection(expectedSection);
+          auto section = tablet->loadOptionalSection(expectedSection);
           ASSERT_TRUE(section.has_value());
           ASSERT_EQ(expectedContent, section->content());
           ASSERT_EQ(expectedReads, readFile.chunks().size());

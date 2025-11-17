@@ -72,22 +72,22 @@ class VeloxReader {
   static constexpr uint64_t kConservativeEstimatedRowSize = 1L << 20; // 1MB
 
   VeloxReader(
-      velox::memory::MemoryPool& pool,
       velox::ReadFile* file,
+      velox::memory::MemoryPool& pool,
       std::shared_ptr<const velox::dwio::common::ColumnSelector> selector =
           nullptr,
       VeloxReadParams params = {});
 
   VeloxReader(
-      velox::memory::MemoryPool& pool,
       std::shared_ptr<velox::ReadFile> file,
+      velox::memory::MemoryPool& pool,
       std::shared_ptr<const velox::dwio::common::ColumnSelector> selector =
           nullptr,
       VeloxReadParams params = {});
 
   VeloxReader(
-      velox::memory::MemoryPool& pool,
       std::shared_ptr<const TabletReader> tabletReader,
+      velox::memory::MemoryPool& pool,
       std::shared_ptr<const velox::dwio::common::ColumnSelector> selector =
           nullptr,
       VeloxReadParams params = {});
@@ -169,7 +169,7 @@ class VeloxReader {
 
   velox::memory::MemoryPool& pool_;
   std::shared_ptr<const TabletReader> tabletReader_;
-  std::optional<TabletReader::StripeIdentifier> stripeIdentifier_;
+  std::optional<StripeIdentifier> stripeIdentifier_;
   const VeloxReadParams parameters_;
   std::shared_ptr<const Type> schema_;
   std::shared_ptr<const velox::RowType> type_;

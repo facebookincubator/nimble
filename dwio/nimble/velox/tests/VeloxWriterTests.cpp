@@ -73,7 +73,7 @@ TEST_F(VeloxWriterTests, emptyFile) {
   writer.close();
 
   velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(*leafPool_, &readFile);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
 
   velox::VectorPtr result;
   ASSERT_FALSE(reader.next(1, result));
@@ -167,7 +167,7 @@ TEST_F(VeloxWriterTests, emptyFileNoSchema) {
   writer.close();
 
   velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(*leafPool_, &readFile);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
 
   velox::VectorPtr result;
   ASSERT_FALSE(reader.next(batchSize, result));
@@ -194,7 +194,7 @@ TEST_F(VeloxWriterTests, rootHasNulls) {
   writer.close();
 
   velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(*leafPool_, &readFile);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
 
   velox::VectorPtr result;
   ASSERT_TRUE(reader.next(batchSize, result));
@@ -325,7 +325,7 @@ ChunkSizeResults validateChunkSize(
   uint32_t minChunkCount = std::numeric_limits<uint32_t>::max();
 
   for (uint32_t stripeIndex = 0; stripeIndex < stripeCount; ++stripeIndex) {
-    const auto stripeIdentifier = tablet.getStripeIdentifier(stripeIndex);
+    const auto stripeIdentifier = tablet.stripeIdentifier(stripeIndex);
     const auto streamCount = tablet.streamCount(stripeIdentifier);
 
     std::vector<uint32_t> streamIds(streamCount);
@@ -409,7 +409,7 @@ TEST_P(StripeRawSizeFlushPolicyTest, StripeRawSizeFlushPolicy) {
 
   velox::InMemoryReadFile readFile(file);
   auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
-  nimble::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
+  nimble::VeloxReader reader(&readFile, *leafPool_, std::move(selector));
 
   EXPECT_EQ(GetParam().stripeCount, reader.tabletReader().stripeCount());
 }
@@ -502,7 +502,7 @@ TEST_F(VeloxWriterTests, flushHugeStrings) {
   velox::InMemoryReadFile readFile(file);
   auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
       std::dynamic_pointer_cast<const velox::RowType>(vector->type()));
-  nimble::VeloxReader reader(*leafPool_, &readFile, std::move(selector));
+  nimble::VeloxReader reader(&readFile, *leafPool_, std::move(selector));
 
   EXPECT_EQ(3, reader.tabletReader().stripeCount());
 }
@@ -640,9 +640,9 @@ TEST_F(VeloxWriterTests, encodingLayout) {
   for (auto useChainedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
         file, useChainedBuffers);
-    nimble::TabletReader tablet{*leafPool_, &readFile};
+    auto tablet = nimble::TabletReader::create(&readFile, *leafPool_);
     auto section =
-        tablet.loadOptionalSection(std::string(nimble::kSchemaSection));
+        tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
     NIMBLE_CHECK(section.has_value(), "Schema not found.");
     auto schema =
         nimble::SchemaDeserializer::deserialize(section->content().data());
@@ -664,14 +664,14 @@ TEST_F(VeloxWriterTests, encodingLayout) {
     const auto& flatMapKey1Node = findChild(flatMapNode, "1")->asScalar();
     const auto& flatMapKey2Node = findChild(flatMapNode, "2")->asScalar();
 
-    for (auto i = 0; i < tablet.stripeCount(); ++i) {
-      auto stripeIdentifier = tablet.getStripeIdentifier(i);
+    for (auto i = 0; i < tablet->stripeCount(); ++i) {
+      auto stripeIdentifier = tablet->stripeIdentifier(i);
       std::vector<uint32_t> identifiers{
           mapNode.lengthsDescriptor().offset(),
           mapValuesNode.scalarDescriptor().offset(),
           flatMapKey1Node.scalarDescriptor().offset(),
           flatMapKey2Node.scalarDescriptor().offset()};
-      auto streams = tablet.load(stripeIdentifier, identifiers);
+      auto streams = tablet->load(stripeIdentifier, identifiers);
       {
         nimble::InMemoryChunkedStream chunkedStream{
             *leafPool_, std::move(streams[0])};
@@ -1076,7 +1076,7 @@ TEST_F(VeloxWriterTests, combineMultipleLayersOfDictionaries) {
   nimble::VeloxReadParams params;
   params.readFlatMapFieldAsStruct = {"c0"};
   params.flatMapFeatureSelector["c0"].features = {"c0"};
-  nimble::VeloxReader reader(*leafPool_, &readFile, nullptr, std::move(params));
+  nimble::VeloxReader reader(&readFile, *leafPool_, nullptr, std::move(params));
   VectorPtr result;
   ASSERT_TRUE(reader.next(4, result));
   ASSERT_EQ(result->size(), 4);
@@ -1148,12 +1148,12 @@ void testChunks(
 
   folly::writeFile(file, "/tmp/afile");
 
-  nimble::TabletReader tablet{
-      *leafPool, std::make_unique<velox::InMemoryReadFile>(file)};
-  verifier(tablet);
+  auto tablet = nimble::TabletReader::create(
+      std::make_shared<velox::InMemoryReadFile>(file), *leafPool);
+  verifier(*tablet);
 
   nimble::VeloxReader reader(
-      *leafPool, std::make_shared<velox::InMemoryReadFile>(file));
+      std::make_shared<velox::InMemoryReadFile>(file), *leafPool);
   velox::VectorPtr result;
   ASSERT_TRUE(reader.next(expected->size(), result));
   ASSERT_EQ(expected->size(), result->size());
@@ -1181,7 +1181,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowAllNullsNoChunks) {
       /* maxStreamChunkRawSize */ 1024,
       {{vector, false}, {vector, false}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Logically, there should be two streams in the tablet.
@@ -1217,7 +1217,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowAllNullsWithChunksMinSizeBig) {
       /* maxStreamChunkRawSize */ 1024,
       {{vector, true}, {vector, true}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Logically, there should be two streams in the tablet.
@@ -1254,7 +1254,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowAllNullsWithChunksMinSizeZero) {
       /* maxStreamChunkRawSize */ 1024,
       {{vector, true}, {vector, true}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Logically, there should be two streams in the tablet.
@@ -1298,7 +1298,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowSomeNullsNoChunks) {
       /* maxStreamChunkRawSize */ 1024,
       {{nullsVector, false}, {nonNullsVector, false}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // We have values in stream 2, so it is not optimized away.
@@ -1347,7 +1347,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowSomeNullsWithChunksMinSizeBig) {
       /* maxStreamChunkRawSize */ 1024,
       {{nullsVector, true}, {nonNullsVector, true}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
@@ -1397,7 +1397,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowSomeNullsWithChunksMinSizeZero) {
       /* maxStreamChunkRawSize */ 1024,
       {{nullsVector, true}, {nonNullsVector, true}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
@@ -1439,7 +1439,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowNoNullsNoChunks) {
       /* maxStreamChunkRawSize */ 1024,
       {{vector, false}, {vector, false}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
@@ -1479,7 +1479,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowNoNullsWithChunksMinSizeBig) {
       /* maxStreamChunkRawSize */ 2048,
       {{vector, true}, {vector, true}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
@@ -1520,7 +1520,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowNoNullsWithChunksMinSizeZero) {
       /* maxStreamChunkRawSize */ 1024,
       {{vector, true}, {vector, true}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
@@ -1561,7 +1561,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsChildAllNullsNoChunks) {
       /* maxStreamChunkRawSize */ 1024,
       {{vector, false}, {vector, false}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // When all rows are not null, the nulls stream is omitted.
@@ -1587,7 +1587,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsChildAllNullsWithChunksMinSizeBig) {
       /* maxStreamChunkRawSize */ 2048,
       {{vector, true}, {vector, true}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // When all rows are not null, the nulls stream is omitted.
@@ -1613,7 +1613,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsChildAllNullsWithChunksMinSizeZero) {
       /* maxStreamChunkRawSize */ 1024,
       {{vector, true}, {vector, true}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // When all rows are not null, the nulls stream is omitted.
@@ -1646,7 +1646,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsFlatmapAllNullsNoChunks) {
       /* maxStreamChunkRawSize */ 1024,
       {{vector, false}, {vector, false}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Expected streams:
@@ -1689,7 +1689,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsFlatmapAllNullsWithChunksMinSizeBig) {
       /* maxStreamChunkRawSize */ 2048,
       {{vector, true}, {vector, true}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Expected streams:
@@ -1733,7 +1733,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsFlatmapAllNullsWithChunksMinSizeZero) {
       /* maxStreamChunkRawSize */ 1024,
       {{vector, true}, {vector, true}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Expected streams:
@@ -1788,7 +1788,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsFlatmapSomeNullsNoChunks) {
       /* maxStreamChunkRawSize */ 1024,
       {{nullsVector, false}, {nonNullsVector, false}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Expected streams:
@@ -1866,7 +1866,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsFlatmapSomeNullsWithChunksMinSizeBig) {
       /* maxStreamChunkRawSize */ 2048,
       {{nullsVector, true}, {nonNullsVector, true}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Expected streams:
@@ -1947,7 +1947,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsFlatmapSomeNullsWithChunksMinSizeZero) {
       /* maxStreamChunkRawSize */ 1024,
       {{nullsVector, true}, {nonNullsVector, true}},
       [&](const auto& tablet) {
-        auto stripeIdentifier = tablet.getStripeIdentifier(0);
+        auto stripeIdentifier = tablet.stripeIdentifier(0);
         ASSERT_EQ(1, tablet.stripeCount());
 
         // Expected streams:
@@ -2018,15 +2018,14 @@ TEST_F(VeloxWriterTests, rawSizeWritten) {
   writer.write(vector);
   writer.close();
 
-  velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(*leafPool_, &readFile);
+  auto readFilePtr = std::make_shared<velox::InMemoryReadFile>(file);
+  nimble::VeloxReader reader(readFilePtr.get(), *leafPool_);
 
   std::vector<std::string> preloadedOptionalSections = {
       std::string(facebook::nimble::kStatsSection)};
-  auto tablet = std::make_shared<facebook::nimble::TabletReader>(
-      *leafPool_, &readFile, preloadedOptionalSections);
-  auto statsSection =
-      tablet.get()->loadOptionalSection(preloadedOptionalSections[0]);
+  auto tablet = facebook::nimble::TabletReader::create(
+      readFilePtr, *leafPool_, preloadedOptionalSections);
+  auto statsSection = tablet->loadOptionalSection(preloadedOptionalSections[0]);
   ASSERT_TRUE(statsSection.has_value());
 
   auto rawSize = flatbuffers::GetRoot<facebook::nimble::serialization::Stats>(
@@ -2096,7 +2095,7 @@ TEST_P(ChunkFlushPolicyTest, ChunkFlushPolicyIntegration) {
   }
   writer.close();
   velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(*leafPool_, &readFile);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
   ChunkSizeResults result = validateChunkSize(
       reader,
       GetParam().minStreamChunkRawSize,
@@ -2197,7 +2196,7 @@ TEST_F(VeloxWriterTests, fuzzComplex) {
       writer.close();
 
       velox::InMemoryReadFile readFile(file);
-      nimble::VeloxReader reader(*leafPool_, &readFile);
+      nimble::VeloxReader reader(&readFile, *leafPool_);
       validateChunkSize(
           reader,
           writerOptions.minStreamChunkRawSize,
@@ -2290,7 +2289,7 @@ TEST_F(VeloxWriterTests, batchedChunkingRelievesMemoryPressure) {
   EXPECT_FALSE(actualChunkingDecisions[1]);
 
   velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(*leafPool_, &readFile);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
   validateChunkSize(
       reader,
       writerOptions.minStreamChunkRawSize,
@@ -2328,7 +2327,7 @@ TEST_F(VeloxWriterTests, ignoreTopLevelNulls) {
         writer.close();
 
         velox::InMemoryReadFile readFile(file);
-        nimble::VeloxReader reader(pool, &readFile);
+        nimble::VeloxReader reader(&readFile, pool);
         velox::VectorPtr output;
         reader.next(expected->size(), output);
         ASSERT_EQ(output->size(), expected->size());

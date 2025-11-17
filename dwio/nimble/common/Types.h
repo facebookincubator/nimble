@@ -312,3 +312,11 @@ constexpr bool isBoolType() {
 }
 
 } // namespace facebook::nimble
+
+template <>
+struct fmt::formatter<facebook::nimble::CompressionType>
+    : formatter<std::string> {
+  auto format(facebook::nimble::CompressionType s, format_context& ctx) const {
+    return formatter<std::string>::format(facebook::nimble::toString(s), ctx);
+  }
+};
