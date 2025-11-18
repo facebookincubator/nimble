@@ -204,6 +204,76 @@ TEST_F(VeloxWriterTests, rootHasNulls) {
   }
 }
 
+TEST_F(VeloxWriterTests, schemaGrowthExtraColumn) {
+  // File type has a single column
+  const auto type = velox::ROW({"c0"}, {velox::BIGINT()});
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  // Expect the written values to match the file type
+  velox::RowVectorPtr expectedVector = vectorMaker.rowVector(
+      {"c0"}, {vectorMaker.flatVector<int64_t>({1, 2, 3})});
+
+  // Add extra column into the written vector
+  velox::RowVectorPtr vector = vectorMaker.rowVector(
+      {"c0", "c1"},
+      {vectorMaker.flatVector<int64_t>({1, 2, 3}),
+       vectorMaker.flatVector<int64_t>({10, 20, 30})});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(type, std::move(writeFile), *rootPool_, {});
+  writer.write(vector);
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(3, result));
+  ASSERT_EQ(result->size(), 3);
+  ASSERT_EQ(*result->type(), *type);
+  for (auto i = 0; i < 3; ++i) {
+    ASSERT_TRUE(result->equalValueAt(expectedVector.get(), i, i));
+  }
+}
+
+TEST_F(VeloxWriterTests, schemaGrowthExtraSubField) {
+  // File type has a single column of type struct<f1>
+  const auto type = velox::ROW({"c0"}, {velox::ROW({"f1"}, {velox::BIGINT()})});
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  // Expect the written values to match the file type
+  velox::RowVectorPtr expectedVector = vectorMaker.rowVector(
+      {"c0"},
+      {vectorMaker.rowVector(
+          {"f1"}, {vectorMaker.flatVector<int64_t>({1, 2, 3})})});
+
+  // Add extra sub-field into the column: struct<f1> -> struct<f1, f2>
+  velox::RowVectorPtr vector = vectorMaker.rowVector(
+      {"c0"},
+      {vectorMaker.rowVector(
+          {"f1", "f2"},
+          {vectorMaker.flatVector<int64_t>({1, 2, 3}),
+           vectorMaker.flatVector<int64_t>({10, 20, 30})})});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(type, std::move(writeFile), *rootPool_, {});
+  writer.write(vector);
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(3, result));
+  ASSERT_EQ(result->size(), 3);
+  ASSERT_EQ(*result->type(), *type);
+  for (auto i = 0; i < 3; ++i) {
+    ASSERT_TRUE(result->equalValueAt(expectedVector.get(), i, i));
+  }
+}
+
 TEST_F(
     VeloxWriterTests,
     FeatureReorderingNonFlatmapColumnIgnoresMismatchedConfig) {

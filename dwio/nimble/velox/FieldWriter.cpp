@@ -397,7 +397,7 @@ class RowFieldWriter : public FieldWriter {
     uint64_t nullCount = 0;
 
     if (row) {
-      NIMBLE_CHECK_EQ(
+      NIMBLE_CHECK_LE(
           fields_.size(),
           row->childrenSize(),
           "Schema mismatch: expected {} fields, but got {} fields",
@@ -420,7 +420,7 @@ class RowFieldWriter : public FieldWriter {
       auto& decoded = decodingContext.decode(vector, ranges);
       row = decoded.base()->as<velox::RowVector>();
       NIMBLE_CHECK_NOT_NULL(row, "Unexpected vector type");
-      NIMBLE_CHECK_EQ(
+      NIMBLE_CHECK_LE(
           fields_.size(),
           row->childrenSize(),
           "Schema mismatch: expected {} fields, but got {} fields",
