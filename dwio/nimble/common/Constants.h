@@ -15,12 +15,23 @@
  */
 #pragma once
 
-namespace facebook::nimble {
+#include <cstdint>
 
-// Attempt to compress a data stream only if the data size is equal or greater
-// than this threshold.
-// WARNING: These values have been derived experimentally.
+namespace facebook::nimble {
+/// WARNING: These values have been derived experimentally.
+
+/// Attempt to compress a data stream only if the data size is equal or greater
+/// than this threshold.
 constexpr uint32_t kMetaInternalMinCompressionSize = 40;
 constexpr uint32_t kZstdMinCompressionSize = 25;
 
+/// Default options for the ChunkFlushPolicy.
+/// Threshold to trigger chunking to relieve memory pressure
+constexpr uint64_t kChunkingWriterMemoryHighThreshold = 400 << 20; // 400MB
+/// Threshold below which chunking stops.
+constexpr uint64_t kChunkingWriterMemoryLowThreshold = 300 << 20; // 300MB
+/// Target size for encoded stripes.
+constexpr uint64_t kChunkingWriterTargetStripeStorageSize = 100 << 20; // 100MB
+/// Expected ratio of raw to encoded data.
+constexpr double kChunkingWriterEstimatedCompressionFactor = 3.7;
 } // namespace facebook::nimble
