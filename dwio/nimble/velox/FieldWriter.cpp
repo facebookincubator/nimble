@@ -22,11 +22,11 @@
 #include "velox/common/base/CompareFlags.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/DictionaryVector.h"
+#include "velox/vector/FlatMapVector.h"
 #include "velox/vector/FlatVector.h"
 #include "velox/vector/TypeAliases.h"
 
 namespace facebook::nimble {
-
 namespace {
 
 template <velox::TypeKind KIND>
@@ -819,11 +819,32 @@ class FlatMapPassthroughValueFieldWriter {
         // TODO(T226402409): Reuse same stats object for all flatmap fields.
         columnStats_{context.columnStats(inMapStream_.descriptor().offset())} {}
 
+  // Write without an explicit inMaps buffer; assume all inMap bits are set.
   void write(const velox::VectorPtr& vector, const OrderedRanges& ranges) {
     auto& data = inMapStream_.mutableData();
     data.resize(data.size() + ranges.size(), true);
-    valueField_->write(vector, ranges);
-    columnStats_.valueCount += ranges.size();
+    writeImpl(vector, ranges);
+  }
+
+  // Write values based on an inMaps buffer. The range needs to be shrunk
+  // according to the inMaps bits first.
+  void write(
+      const velox::VectorPtr& vector,
+      const velox::BufferPtr& inMaps,
+      const OrderedRanges& ranges) {
+    const auto* rawInMaps = inMaps->as<uint64_t>();
+    auto& data = inMapStream_.mutableData();
+    childRanges_.clear();
+
+    ranges.applyEach([&](auto offset) {
+      if (velox::bits::isBitSet(rawInMaps, offset)) {
+        data.push_back(true);
+        childRanges_.add(offset, 1);
+      } else {
+        data.push_back(false);
+      }
+    });
+    writeImpl(vector, childRanges_);
   }
 
   void reset() {
@@ -836,9 +857,18 @@ class FlatMapPassthroughValueFieldWriter {
   }
 
  private:
+  void writeImpl(const velox::VectorPtr& vector, const OrderedRanges& ranges) {
+    valueField_->write(vector, ranges);
+    columnStats_.valueCount += ranges.size();
+  }
+
   std::unique_ptr<FieldWriter> valueField_;
   ContentStreamData<bool>& inMapStream_;
   ColumnStats& columnStats_;
+
+  // Range to reuse when writing valueFields based on input inMap buffers, so we
+  // don't reallocated on each write() call.
+  OrderedRanges childRanges_;
 };
 
 class FlatMapValueFieldWriter {
@@ -908,6 +938,16 @@ class FlatMapValueFieldWriter {
   OrderedRanges ranges_;
 };
 
+template <typename T>
+std::string flatMapKeyToString(T val) {
+  return std::to_string(val);
+}
+
+template <>
+std::string flatMapKeyToString(velox::StringView val) {
+  return val.getString();
+}
+
 template <velox::TypeKind K>
 class FlatMapFieldWriter : public FieldWriter {
   using KeyType = typename velox::TypeTraits<K>::NativeType;
@@ -931,16 +971,35 @@ class FlatMapFieldWriter : public FieldWriter {
       const velox::VectorPtr& vector,
       const OrderedRanges& ranges,
       folly::Executor* executor = nullptr) override {
-    // Check if the vector received is already flattened
-    const auto isFlatMap = vector->type()->kind() == velox::TypeKind::ROW;
-    if (isFlatMap) {
-      ingestFlattenedMap(
-          velox::RowVector::pushDictionaryToRowVectorLeaves(
-              velox::BaseVector::loadedVectorShared(vector)),
-          ranges);
-    } else {
-      ingestMap(vector, ranges, executor);
+    // Check the type of the received vector. Accepted types are ROW or MAP
+    // (the latter either MapVector or FlatMapVector encodings).
+    switch (vector->type()->kind()) {
+      case velox::TypeKind::ROW:
+        ingestRow(
+            velox::RowVector::pushDictionaryToRowVectorLeaves(
+                velox::BaseVector::loadedVectorShared(vector)),
+            ranges);
+        return;
+
+      case velox::TypeKind::MAP: {
+        switch (vector->encoding()) {
+          case velox::VectorEncoding::Simple::FLAT_MAP:
+            ingestFlatMap(vector, ranges);
+            return;
+
+          default:
+            ingestMap(vector, ranges, executor);
+            return;
+        }
+        break;
+      }
+
+      default:
+        break;
     }
+
+    NIMBLE_UNSUPPORTED(
+        "Unsupported vector type for flat map writer.", vector->toString());
   }
 
   FlatMapPassthroughValueFieldWriter& createPassthroughValueFieldWriter(
@@ -968,20 +1027,81 @@ class FlatMapFieldWriter : public FieldWriter {
     return *existingPair->second;
   }
 
-  void ingestFlattenedMap(
+  void ingestFlatMap(
       const velox::VectorPtr& vector,
       const OrderedRanges& ranges) {
     NIMBLE_CHECK(
         currentValueFields_.empty() && allValueFields_.empty(),
         "Mixing map and flatmap vectors in the FlatMapFieldWriter is not supported");
-    const auto& flatMap = vector->as<velox::RowVector>();
+    const auto& flatMapVector = vector->as<velox::FlatMapVector>();
+    NIMBLE_CHECK(
+        flatMapVector,
+        fmt::format(
+            "Unexpected vector type. Expected decoded FLAT_MAP but got '{}'",
+            vector->toString()));
+
+    const auto size = ranges.size();
+    nullsStream_.ensureAdditionalNullsCapacity(
+        flatMapVector->mayHaveNulls(), size);
+
+    // First write top-level nulls, collecting the non-nulls ranges to write.
+    OrderedRanges childRanges;
+    uint64_t nonNullCount = iterateNonNullIndices<true>(
+        ranges, nullsStream_.mutableNonNulls(), Flat{vector}, [&](auto offset) {
+          childRanges.add(offset, 1);
+        });
+
+    columnStats_.nullCount += size - nonNullCount;
+    columnStats_.logicalSize += columnStats_.nullCount;
+    columnStats_.valueCount += size;
+
+    // Early bail out if no ranges at the top level row vector.
+    if (childRanges.size() == 0) {
+      return;
+    }
+
+    // Only create keys on first call to write (with valid ranges). Subsequent
+    // calls must have the same set of keys, otherwise writer will throw.
+    bool populateMap = currentPassthroughFields_.empty();
+
+    const auto& values = flatMapVector->mapValues();
+    const auto& inMaps = flatMapVector->inMaps();
+    const auto* flatKeys =
+        flatMapVector->distinctKeys()->as<const velox::FlatVector<KeyType>>();
+
+    NIMBLE_CHECK(
+        flatKeys,
+        fmt::format(
+            "Unexpected distinct keys vector within FlatMapVector: '{}'",
+            flatMapVector->distinctKeys()->toString()));
+
+    for (velox::vector_size_t i = 0; i < flatKeys->size(); ++i) {
+      // Ideally we wouldn't need to convert the key to a string, but this is
+      // done for backward compatibility with ingestRow().
+      const auto& key = flatMapKeyToString(flatKeys->valueAt(i));
+      auto& writer = populateMap ? createPassthroughValueFieldWriter(key)
+                                 : findPassthroughValueFieldWriter(key);
+
+      if (inMaps[i]) {
+        writer.write(values[i], inMaps[i], childRanges);
+      } else {
+        writer.write(values[i], childRanges);
+      }
+    }
+  }
+
+  void ingestRow(const velox::VectorPtr& vector, const OrderedRanges& ranges) {
+    NIMBLE_CHECK(
+        currentValueFields_.empty() && allValueFields_.empty(),
+        "Mixing map and flatmap vectors in the FlatMapFieldWriter is not supported");
+    const auto& rowVector = vector->as<velox::RowVector>();
     NIMBLE_CHECK_NOT_NULL(
-        flatMap,
+        rowVector,
         "Unexpected vector type. Vector must be a decoded ROW vector.");
     const auto size = ranges.size();
-    nullsStream_.ensureAdditionalNullsCapacity(flatMap->mayHaveNulls(), size);
-    const auto& keys = flatMap->type()->asRow().names();
-    const auto& values = flatMap->children();
+    nullsStream_.ensureAdditionalNullsCapacity(rowVector->mayHaveNulls(), size);
+    const auto& keys = rowVector->type()->asRow().names();
+    const auto& values = rowVector->children();
 
     OrderedRanges childRanges;
     uint64_t nonNullCount = iterateNonNullIndices<true>(
@@ -992,17 +1112,17 @@ class FlatMapFieldWriter : public FieldWriter {
     columnStats_.nullCount += size - nonNullCount;
     columnStats_.logicalSize += columnStats_.nullCount;
     columnStats_.valueCount += size;
-    // early bail out if no ranges at the top level row vector
+
+    // Early bail out if no ranges at the top level row vector.
     if (childRanges.size() == 0) {
       return;
     }
 
-    // Only create keys on first call to write (with valid ranges).
-    // Subsequent calls must have the same set of keys,
-    // otherwise writer will throw.
+    // Only create keys on first call to write (with valid ranges). Subsequent
+    // calls must have the same set of keys, otherwise writer will throw.
     bool populateMap = currentPassthroughFields_.empty();
 
-    for (int i = 0; i < keys.size(); ++i) {
+    for (velox::vector_size_t i = 0; i < keys.size(); ++i) {
       const auto& key = keys[i];
       auto& writer = populateMap ? createPassthroughValueFieldWriter(key)
                                  : findPassthroughValueFieldWriter(key);
@@ -1024,7 +1144,7 @@ class FlatMapFieldWriter : public FieldWriter {
     OrderedRanges keyRanges;
 
     // Lambda that iterates keys of a map and records the offsets to write to
-    // particular value node.
+    // a particular value node.
     auto processMap = [&](velox::vector_size_t index, auto& keysVector) {
       for (auto elementIdx = offsets[index], end = elementIdx + lengths[index];
            elementIdx < end;
@@ -1191,6 +1311,7 @@ class FlatMapFieldWriter : public FieldWriter {
 
   NullsStreamData& nullsStream_;
   ColumnStats& columnStats_;
+
   // This map store the FlatMapValue fields used in current flush unit.
   folly::F14FastMap<KeyType, FlatMapValueFieldWriter*> currentValueFields_;
   // This map stores the FlatMapPassthrough fields.
@@ -1199,6 +1320,7 @@ class FlatMapFieldWriter : public FieldWriter {
       std::unique_ptr<FlatMapPassthroughValueFieldWriter>>
       currentPassthroughFields_;
   uint64_t nonNullCount_{0};
+
   // This map store all FlatMapValue fields encountered by the VeloxWriter
   // across the whole file.
   folly::F14FastMap<KeyType, std::unique_ptr<FlatMapValueFieldWriter>>
