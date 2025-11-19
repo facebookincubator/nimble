@@ -1324,11 +1324,11 @@ TEST_F(SelectiveNimbleReaderTest, schemaEvolutionFilterOnMissingSubfield) {
 }
 
 TEST_F(SelectiveNimbleReaderTest, nativeFlatMap) {
-  // Roundtrip test that takes a flat map vector, converts to a map vector, then
-  // writes it to a file as a storage flat map. Then reads the storage flat map
-  // as a flat map vector, and compares with the initial input.
+  // Roundtrip test that takes a flat map vector and writes it to a file as a
+  // storage flat map. Then reads the storage flat map as a flat map vector, and
+  // compares with the initial input.
   auto testRoundtrip = [&](const FlatMapVectorPtr& inputFlatMap) {
-    auto input = makeRowVector({inputFlatMap->toMapVector()});
+    auto input = makeRowVector({inputFlatMap, inputFlatMap->toMapVector()});
 
     VeloxWriterOptions writerOptions;
     writerOptions.flatMapColumns = {"c0"};
@@ -1338,7 +1338,9 @@ TEST_F(SelectiveNimbleReaderTest, nativeFlatMap) {
     scanSpec->addAllChildFields(*input->type());
     auto readers = makeReaders(input, fileContent, scanSpec, true);
 
-    auto expected = makeRowVector({inputFlatMap});
+    // We invert the order on purpose to cross-compare MapVector with
+    // FlatMapVectors; logically they are the same.
+    auto expected = makeRowVector({inputFlatMap->toMapVector(), inputFlatMap});
     validate(*expected, *readers.rowReader, inputFlatMap->size(), [](auto) {
       return true;
     });
@@ -1346,6 +1348,23 @@ TEST_F(SelectiveNimbleReaderTest, nativeFlatMap) {
 
   testRoundtrip(makeFlatMapVector<int32_t, int32_t>({}));
   testRoundtrip(makeFlatMapVector<int32_t, int32_t>({{}}));
+  testRoundtrip(
+      makeFlatMapVector<int16_t, float>({
+          {{1, 300}},
+          {{1, 400}},
+          {{2, 20}},
+          {{2, 30}},
+          {{2, 40}},
+          {{2, 50}},
+          {{2, 60}},
+      }));
+  testRoundtrip(
+      makeFlatMapVector<int16_t, float>({
+          {},
+          {{1, 1.9}, {2, 2.1}, {0, 3.12}},
+          {{127, 0.12}},
+      }));
+
   testRoundtrip(
       makeFlatMapVector<int16_t, float>({
           {},
