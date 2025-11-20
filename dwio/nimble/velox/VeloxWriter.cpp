@@ -34,6 +34,7 @@
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "dwio/nimble/velox/StatsGenerated.h"
 #include "dwio/nimble/velox/StreamChunker.h"
+#include "dwio/nimble/velox/VeloxWriterUtils.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/dwio/common/ExecutorBarrier.h"
 #include "velox/type/Type.h"
@@ -1144,16 +1145,7 @@ bool VeloxWriter::evalauateFlushPolicy() {
     if (continueChunking) {
       // Relieve memory pressure by chunking small streams.
       // Sort streams for chunking based on raw memory usage.
-      // TODO(T240072104): Improve performance by bucketing the streams
-      // by size (by most significant bit) instead of sorting them.
-      streamIndices.resize(streams.size());
-      std::iota(streamIndices.begin(), streamIndices.end(), 0);
-      std::sort(
-          streamIndices.begin(),
-          streamIndices.end(),
-          [&](const uint32_t& a, const uint32_t& b) {
-            return streams[a]->memoryUsed() > streams[b]->memoryUsed();
-          });
+      streamIndices = getStreamIndicesByMemoryUsage(streams);
       batchChunkStreams(streamIndices, /*ensureFullChunks=*/false);
     }
   }
