@@ -39,7 +39,7 @@ struct EncodingSizeEstimation {
       const Statistics<physicalType>& statistics) {
     switch (encodingType) {
       case EncodingType::Constant: {
-        return statistics.uniqueCounts().size() == 1
+        return statistics.uniqueCounts().value().size() == 1
             ? std::optional<uint64_t>{getEncodingOverhead<
                   EncodingType::Constant,
                   physicalType>()}
@@ -59,8 +59,8 @@ struct EncodingSizeEstimation {
 
         // Find most common item count
         const auto maxUniqueCount = std::max_element(
-            statistics.uniqueCounts().cbegin(),
-            statistics.uniqueCounts().cend(),
+            statistics.uniqueCounts().value().cbegin(),
+            statistics.uniqueCounts().value().cend(),
             [](const auto& a, const auto& b) { return a.second < b.second; });
         // Deduce uncommon values count
         const auto uncommonCount = entryCount - maxUniqueCount->second;
@@ -96,10 +96,10 @@ struct EncodingSizeEstimation {
         // Alphabet stored trivially.
         // Indices are stored bit-packed, with bit width needed to store max
         // dictionary size (which is the unique value count).
-        const uint64_t indicesSize =
-            bitPackedBytes(0, statistics.uniqueCounts().size(), entryCount);
+        const uint64_t indicesSize = bitPackedBytes(
+            0, statistics.uniqueCounts().value().size(), entryCount);
         const uint64_t alphabetSize =
-            statistics.uniqueCounts().size() * sizeof(physicalType);
+            statistics.uniqueCounts().value().size() * sizeof(physicalType);
         uint32_t overhead =
             getEncodingOverhead<EncodingType::Dictionary, physicalType>() +
             // Alphabet overhead
@@ -163,7 +163,7 @@ struct EncodingSizeEstimation {
       const Statistics<physicalType>& statistics) {
     switch (encodingType) {
       case EncodingType::Constant: {
-        return statistics.uniqueCounts().size() == 1
+        return statistics.uniqueCounts().value().size() == 1
             ? std::optional<uint64_t>{getEncodingOverhead<
                   EncodingType::Constant,
                   physicalType>()}
@@ -175,8 +175,8 @@ struct EncodingSizeEstimation {
         // representing max entry count).
 
         const auto exceptionCount = std::min(
-            statistics.uniqueCounts().at(true),
-            statistics.uniqueCounts().at(false));
+            statistics.uniqueCounts().value().at(true),
+            statistics.uniqueCounts().value().at(false));
         uint32_t overhead =
             getEncodingOverhead<EncodingType::SparseBool, physicalType>() +
             // Overhead for storing exception indices
@@ -216,7 +216,7 @@ struct EncodingSizeEstimation {
     const uint32_t maxStringSize = statistics.max().size();
     switch (encodingType) {
       case EncodingType::Constant: {
-        return statistics.uniqueCounts().size() == 1
+        return statistics.uniqueCounts().value().size() == 1
             ? std::optional<uint64_t>{getEncodingOverhead<
                   EncodingType::Constant,
                   physicalType>(maxStringSize)}
@@ -238,13 +238,13 @@ struct EncodingSizeEstimation {
 
         // Find the most common item count
         const auto maxUniqueCount = std::max_element(
-            statistics.uniqueCounts().cbegin(),
-            statistics.uniqueCounts().cend(),
+            statistics.uniqueCounts().value().cbegin(),
+            statistics.uniqueCounts().value().cend(),
             [](const auto& a, const auto& b) { return a.second < b.second; });
         // Get the total blob size for all (unique) strings
         const uint64_t alphabetByteSize = std::accumulate(
-            statistics.uniqueCounts().cbegin(),
-            statistics.uniqueCounts().cend(),
+            statistics.uniqueCounts().value().cbegin(),
+            statistics.uniqueCounts().value().cend(),
             0,
             [](const uint32_t sum, const auto& unique) {
               return sum + unique.first.size();
@@ -259,7 +259,7 @@ struct EncodingSizeEstimation {
             maxUniqueCount->first.size() +
             bitPackedBytes(statistics.min().size(),
                            statistics.max().size(),
-                           statistics.uniqueCounts().size());
+                           statistics.uniqueCounts().value().size());
         // Uncommon values (sparse bool) bitmap will have index per value,
         // stored bit packed.
         const auto uncommonIndicesSize =
@@ -290,12 +290,12 @@ struct EncodingSizeEstimation {
         // Alphabet stored trivially.
         // Indices are stored bit-packed, with bit width needed to store max
         // dictionary size (which is the unique value count).
-        const uint64_t indicesSize =
-            bitPackedBytes(0, statistics.uniqueCounts().size(), entryCount);
+        const uint64_t indicesSize = bitPackedBytes(
+            0, statistics.uniqueCounts().value().size(), entryCount);
         // Get the total blob size for all (unique) strings
         const uint64_t alphabetByteSize = std::accumulate(
-            statistics.uniqueCounts().cbegin(),
-            statistics.uniqueCounts().cend(),
+            statistics.uniqueCounts().value().cbegin(),
+            statistics.uniqueCounts().value().cend(),
             0,
             [](const uint32_t sum, const auto& unique) {
               return sum + unique.first.size();
@@ -304,7 +304,7 @@ struct EncodingSizeEstimation {
         const uint64_t alphabetSize = alphabetByteSize +
             bitPackedBytes(statistics.min().size(),
                            statistics.max().size(),
-                           statistics.uniqueCounts().size());
+                           statistics.uniqueCounts().value().size());
         uint32_t overhead =
             getEncodingOverhead<EncodingType::Dictionary, physicalType>(
                 maxStringSize) +
@@ -324,8 +324,8 @@ struct EncodingSizeEstimation {
         uint64_t runValuesSize =
             // (unique) strings blob size
             std::accumulate(
-                statistics.uniqueCounts().cbegin(),
-                statistics.uniqueCounts().cend(),
+                statistics.uniqueCounts().value().cbegin(),
+                statistics.uniqueCounts().value().cend(),
                 0,
                 [](const uint32_t sum, const auto& unique) {
                   return sum + unique.first.size();
@@ -338,7 +338,7 @@ struct EncodingSizeEstimation {
             // dictionary indices
             bitPackedBytes(
                 0,
-                statistics.uniqueCounts().size(),
+                statistics.uniqueCounts().value().size(),
                 statistics.consecutiveRepeatCount());
         const auto runLengthsSize = bitPackedBytes(
             statistics.minRepeat(),

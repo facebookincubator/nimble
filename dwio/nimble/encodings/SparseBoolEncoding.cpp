@@ -94,10 +94,11 @@ std::string_view SparseBoolEncoding::encode(
     std::span<const bool> values,
     Buffer& buffer) {
   // Decide the polarity of the encoding.
-  const uint32_t valueCount = values.size();
-  const uint32_t setCount = selection.statistics().uniqueCounts().at(true);
+  const uint64_t valueCount = values.size();
+  const uint64_t setCount =
+      selection.statistics().uniqueCounts().value().at(true);
   bool sparseValue;
-  uint32_t indexCount;
+  uint64_t indexCount;
   if (setCount > (valueCount >> 1)) {
     sparseValue = false;
     indexCount = valueCount - setCount;

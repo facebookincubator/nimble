@@ -345,8 +345,8 @@ std::string_view MainlyConstantEncoding<T>::encode(
   }
 
   const auto commonElement = std::max_element(
-      selection.statistics().uniqueCounts().cbegin(),
-      selection.statistics().uniqueCounts().cend(),
+      selection.statistics().uniqueCounts().value().cbegin(),
+      selection.statistics().uniqueCounts().value().cend(),
       [](const auto& a, const auto& b) { return a.second < b.second; });
 
   const uint32_t entryCount = values.size();
