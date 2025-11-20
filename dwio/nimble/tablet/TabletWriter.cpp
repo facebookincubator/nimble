@@ -16,7 +16,6 @@
 
 #include "dwio/nimble/tablet/TabletWriter.h"
 
-#include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/tablet/Compression.h"
 #include "dwio/nimble/tablet/Constants.h"
 
