@@ -200,7 +200,8 @@ std::string_view DictionaryEncoding<T>::encode(
     std::span<const physicalType> values,
     Buffer& buffer) {
   const uint32_t valueCount = values.size();
-  const uint32_t alphabetCount = selection.statistics().uniqueCounts().size();
+  const uint32_t alphabetCount =
+      selection.statistics().uniqueCounts().value().size();
 
   folly::F14FastMap<physicalType, uint32_t> alphabetMapping;
   alphabetMapping.reserve(alphabetCount);

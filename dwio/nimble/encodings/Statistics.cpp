@@ -18,7 +18,6 @@
 
 #include <algorithm>
 #include <limits>
-#include <memory>
 #include <type_traits>
 
 namespace facebook::nimble {
@@ -128,7 +127,7 @@ void Statistics<T, InputType>::populateUniques() const {
       ++uniqueCounts[data_[i]];
     }
   }
-  uniqueCounts_.emplace(std::move(uniqueCounts));
+  uniqueCounts_.emplace(std::make_optional(std::move(uniqueCounts)));
 }
 
 template <typename T, typename InputType>
@@ -192,7 +191,8 @@ Statistics<T, InputType> Statistics<T, InputType>::create(
     statistics.max_ = T();
 
     statistics.bucketCounts_ = {};
-    statistics.uniqueCounts_ = {};
+    statistics.uniqueCounts_ = std::make_optional(
+        std::make_optional(UniqueValueCounts<T, InputType>()));
     return statistics;
   }
 

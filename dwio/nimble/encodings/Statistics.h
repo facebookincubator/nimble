@@ -16,7 +16,6 @@
 #pragma once
 
 #include <limits>
-#include <memory>
 #include <optional>
 #include <span>
 #include <type_traits>
@@ -179,7 +178,8 @@ class Statistics {
     return bucketCounts_.value();
   }
 
-  const UniqueValueCounts<T, InputType>& uniqueCounts() const noexcept {
+  const std::optional<UniqueValueCounts<T, InputType>>& uniqueCounts()
+      const noexcept {
     if (!uniqueCounts_.has_value()) {
       populateUniques();
     }
@@ -204,7 +204,8 @@ class Statistics {
   mutable std::optional<T> min_;
   mutable std::optional<T> max_;
   mutable std::optional<std::vector<uint64_t>> bucketCounts_;
-  mutable std::optional<UniqueValueCounts<T, InputType>> uniqueCounts_;
+  mutable std::optional<std::optional<UniqueValueCounts<T, InputType>>>
+      uniqueCounts_;
 };
 
 } // namespace facebook::nimble

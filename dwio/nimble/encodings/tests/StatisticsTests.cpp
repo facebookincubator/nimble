@@ -77,28 +77,28 @@ TYPED_TEST(StatisticsNumericTests, Create) {
   }
 
   auto statistics = T::create({data});
-  EXPECT_EQ(repeatSize, statistics.uniqueCounts().size());
+  EXPECT_EQ(repeatSize, statistics.uniqueCounts().value().size());
   EXPECT_EQ(minValue, statistics.min());
   EXPECT_EQ(minValue + repeatSize - 1, statistics.max());
   EXPECT_EQ(1, statistics.minRepeat());
   EXPECT_EQ(1, statistics.maxRepeat());
   EXPECT_EQ(dataSize, statistics.consecutiveRepeatCount());
 
-  for (const auto& pair : statistics.uniqueCounts()) {
+  for (const auto& pair : statistics.uniqueCounts().value()) {
     EXPECT_EQ(dataSize / repeatSize, pair.second);
   }
 
   // Repeating data (consecutive)
   std::sort(data.begin(), data.end());
   statistics = T::create({data});
-  EXPECT_EQ(repeatSize, statistics.uniqueCounts().size());
+  EXPECT_EQ(repeatSize, statistics.uniqueCounts().value().size());
   EXPECT_EQ(minValue, statistics.min());
   EXPECT_EQ(minValue + repeatSize - 1, statistics.max());
   EXPECT_EQ(dataSize / repeatSize, statistics.minRepeat());
   EXPECT_EQ(dataSize / repeatSize, statistics.maxRepeat());
   EXPECT_EQ(repeatSize, statistics.consecutiveRepeatCount());
 
-  for (const auto& pair : statistics.uniqueCounts()) {
+  for (const auto& pair : statistics.uniqueCounts().value()) {
     EXPECT_EQ(dataSize / repeatSize, pair.second);
   }
 
@@ -108,14 +108,14 @@ TYPED_TEST(StatisticsNumericTests, Create) {
   }
 
   statistics = T::create({data});
-  EXPECT_EQ(dataSize, statistics.uniqueCounts().size());
+  EXPECT_EQ(dataSize, statistics.uniqueCounts().value().size());
   EXPECT_EQ(minValue, statistics.min());
   EXPECT_EQ(minValue + dataSize - 1, statistics.max());
   EXPECT_EQ(1, statistics.minRepeat());
   EXPECT_EQ(1, statistics.maxRepeat());
   EXPECT_EQ(dataSize, statistics.consecutiveRepeatCount());
 
-  for (const auto& pair : statistics.uniqueCounts()) {
+  for (const auto& pair : statistics.uniqueCounts().value()) {
     EXPECT_EQ(1, pair.second);
   }
 
@@ -127,14 +127,14 @@ TYPED_TEST(StatisticsNumericTests, Create) {
         std::numeric_limits<ValueType>::lowest(),
         std::numeric_limits<ValueType>::max()};
     statistics = T::create({data});
-    EXPECT_EQ(4, statistics.uniqueCounts().size());
+    EXPECT_EQ(4, statistics.uniqueCounts().value().size());
     EXPECT_EQ(std::numeric_limits<ValueType>::lowest(), statistics.min());
     EXPECT_EQ(std::numeric_limits<ValueType>::max(), statistics.max());
     EXPECT_EQ(1, statistics.minRepeat());
     EXPECT_EQ(1, statistics.maxRepeat());
     EXPECT_EQ(4, statistics.consecutiveRepeatCount());
 
-    for (const auto& pair : statistics.uniqueCounts()) {
+    for (const auto& pair : statistics.uniqueCounts().value()) {
       EXPECT_EQ(1, pair.second);
     }
   } else {
@@ -143,14 +143,14 @@ TYPED_TEST(StatisticsNumericTests, Create) {
         1,
         std::numeric_limits<ValueType>::max()};
     statistics = T::create({data});
-    EXPECT_EQ(3, statistics.uniqueCounts().size());
+    EXPECT_EQ(3, statistics.uniqueCounts().value().size());
     EXPECT_EQ(std::numeric_limits<ValueType>::min(), statistics.min());
     EXPECT_EQ(std::numeric_limits<ValueType>::max(), statistics.max());
     EXPECT_EQ(1, statistics.minRepeat());
     EXPECT_EQ(1, statistics.maxRepeat());
     EXPECT_EQ(3, statistics.consecutiveRepeatCount());
 
-    for (const auto& pair : statistics.uniqueCounts()) {
+    for (const auto& pair : statistics.uniqueCounts().value()) {
       EXPECT_EQ(1, pair.second);
     }
   }
@@ -174,9 +174,10 @@ TYPED_TEST(StatisticsBoolTests, Create) {
   uint64_t expectedDistinctValuesCount = 0;
   expectedDistinctValuesCount += trueCount > 0 ? 1 : 0;
   expectedDistinctValuesCount += falseCount > 0 ? 1 : 0;
-  EXPECT_EQ(expectedDistinctValuesCount, statistics.uniqueCounts().size());
-  EXPECT_EQ(trueCount, statistics.uniqueCounts().at(true));
-  EXPECT_EQ(falseCount, statistics.uniqueCounts().at(false));
+  EXPECT_EQ(
+      expectedDistinctValuesCount, statistics.uniqueCounts().value().size());
+  EXPECT_EQ(trueCount, statistics.uniqueCounts().value().at(true));
+  EXPECT_EQ(falseCount, statistics.uniqueCounts().value().at(false));
   EXPECT_EQ(std::min(trueCount, falseCount), statistics.minRepeat());
   EXPECT_EQ(std::max(trueCount, falseCount), statistics.maxRepeat());
   EXPECT_EQ(2, statistics.consecutiveRepeatCount());
@@ -185,9 +186,10 @@ TYPED_TEST(StatisticsBoolTests, Create) {
 
   statistics =
       T::create(std::span<const bool>(data.get(), trueCount + falseCount));
-  EXPECT_EQ(expectedDistinctValuesCount, statistics.uniqueCounts().size());
-  EXPECT_EQ(trueCount, statistics.uniqueCounts().at(true));
-  EXPECT_EQ(falseCount, statistics.uniqueCounts().at(false));
+  EXPECT_EQ(
+      expectedDistinctValuesCount, statistics.uniqueCounts().value().size());
+  EXPECT_EQ(trueCount, statistics.uniqueCounts().value().at(true));
+  EXPECT_EQ(falseCount, statistics.uniqueCounts().value().at(false));
 }
 
 template <typename T>
@@ -213,7 +215,7 @@ void verifyString(
 
   T statistics = genStatisticsType(data);
 
-  EXPECT_EQ(uniqueStrings, statistics.uniqueCounts().size());
+  EXPECT_EQ(uniqueStrings, statistics.uniqueCounts().value().size());
   EXPECT_EQ(maxRepeat - uniqueStrings + 1, statistics.minRepeat());
   EXPECT_EQ(maxRepeat, statistics.maxRepeat());
   EXPECT_EQ(uniqueStrings, statistics.consecutiveRepeatCount());
@@ -224,9 +226,9 @@ void verifyString(
   EXPECT_EQ(std::string(1, 'a'), statistics.min());
 
   currentRepeat = maxRepeat;
-  for (auto i = 0; i < statistics.uniqueCounts().size(); ++i) {
+  for (auto i = 0; i < statistics.uniqueCounts().value().size(); ++i) {
     EXPECT_EQ(
-        statistics.uniqueCounts().at(std::string(i + 1, 'a' + i)),
+        statistics.uniqueCounts().value().at(std::string(i + 1, 'a' + i)),
         currentRepeat--);
   }
 
@@ -234,16 +236,16 @@ void verifyString(
 
   statistics = genStatisticsType(data);
 
-  EXPECT_EQ(uniqueStrings, statistics.uniqueCounts().size());
+  EXPECT_EQ(uniqueStrings, statistics.uniqueCounts().value().size());
   EXPECT_EQ(totalLength, statistics.totalStringsLength());
   EXPECT_EQ(
       std::string(uniqueStrings, 'a' + uniqueStrings - 1), statistics.max());
   EXPECT_EQ(std::string(1, 'a'), statistics.min());
 
-  currentRepeat = maxRepeat;
-  for (auto i = 0; i < statistics.uniqueCounts().size(); ++i) {
+  const auto uniqueCounts7 = statistics.uniqueCounts().value();
+  for (auto i = 0; i < statistics.uniqueCounts().value().size(); ++i) {
     EXPECT_EQ(
-        statistics.uniqueCounts().at(std::string(i + 1, 'a' + i)),
+        statistics.uniqueCounts().value().at(std::string(i + 1, 'a' + i)),
         currentRepeat--);
   }
 }
@@ -272,7 +274,7 @@ TYPED_TEST(StatisticsStringTests, Create) {
   T statistics =
       nimble::Statistics<std::string_view, std::string>::create(data);
 
-  EXPECT_EQ(uniqueStrings, statistics.uniqueCounts().size());
+  EXPECT_EQ(uniqueStrings, statistics.uniqueCounts().value().size());
   EXPECT_EQ(maxRepeat - uniqueStrings + 1, statistics.minRepeat());
   EXPECT_EQ(maxRepeat, statistics.maxRepeat());
   EXPECT_EQ(uniqueStrings, statistics.consecutiveRepeatCount());
@@ -283,9 +285,9 @@ TYPED_TEST(StatisticsStringTests, Create) {
   EXPECT_EQ(std::string(1, 'a'), statistics.min());
 
   currentRepeat = maxRepeat;
-  for (auto i = 0; i < statistics.uniqueCounts().size(); ++i) {
+  for (auto i = 0; i < statistics.uniqueCounts().value().size(); ++i) {
     EXPECT_EQ(
-        statistics.uniqueCounts().at(std::string(i + 1, 'a' + i)),
+        statistics.uniqueCounts().value().at(std::string(i + 1, 'a' + i)),
         currentRepeat--);
   }
 
@@ -294,16 +296,16 @@ TYPED_TEST(StatisticsStringTests, Create) {
   statistics =
       nimble::Statistics<std::string_view, std::string>::create({data});
 
-  EXPECT_EQ(uniqueStrings, statistics.uniqueCounts().size());
+  EXPECT_EQ(uniqueStrings, statistics.uniqueCounts().value().size());
   EXPECT_EQ(totalLength, statistics.totalStringsLength());
   EXPECT_EQ(
       std::string(uniqueStrings, 'a' + uniqueStrings - 1), statistics.max());
   EXPECT_EQ(std::string(1, 'a'), statistics.min());
 
   currentRepeat = maxRepeat;
-  for (auto i = 0; i < statistics.uniqueCounts().size(); ++i) {
+  for (auto i = 0; i < statistics.uniqueCounts().value().size(); ++i) {
     EXPECT_EQ(
-        statistics.uniqueCounts().at(std::string(i + 1, 'a' + i)),
+        statistics.uniqueCounts().value().at(std::string(i + 1, 'a' + i)),
         currentRepeat--);
   }
 }
