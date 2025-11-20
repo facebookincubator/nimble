@@ -300,7 +300,7 @@ vector_size_t RLEEncoding<T>::findNumInRun(
       std::min<vector_size_t>(this->copiesRemaining_, numRows - rowIndex);
   auto endOfRun = currentRow + this->copiesRemaining_;
   auto* it = std::lower_bound(begin, end, endOfRun);
-  NIMBLE_DCHECK(it >= begin);
+  NIMBLE_DCHECK(it > begin);
   return it - begin;
 }
 
