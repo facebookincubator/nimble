@@ -22,9 +22,28 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/encodings/Statistics.h"
 
 namespace facebook::nimble {
 namespace detail {
+
+struct SizeEstimation {
+ public:
+  SizeEstimation(uint64_t headerSize, uint64_t dataSize)
+      : headerSize_{headerSize}, dataSize_{dataSize} {}
+
+  uint64_t cost(double readFactor) const {
+    return headerSize_ + (dataSize_ * readFactor);
+  }
+
+  uint64_t size() const {
+    return headerSize_ + dataSize_;
+  }
+
+ private:
+  const uint64_t headerSize_;
+  const uint64_t dataSize_;
+};
 
 // This class is meant to quickly estimate the size of encoded data using a
 // given encoding type. It does a lot of assumptions, and it is not meant to be
@@ -33,16 +52,16 @@ template <typename T, bool FixedByteWidth>
 struct EncodingSizeEstimation {
   using physicalType = typename TypeTraits<T>::physicalType;
 
-  static std::optional<uint64_t> estimateNumericSize(
+  static std::optional<SizeEstimation> estimateNumericSize(
       const EncodingType encodingType,
       const uint64_t entryCount,
       const Statistics<physicalType>& statistics) {
     switch (encodingType) {
       case EncodingType::Constant: {
         return statistics.uniqueCounts().value().size() == 1
-            ? std::optional<uint64_t>{getEncodingOverhead<
-                  EncodingType::Constant,
-                  physicalType>()}
+            ? std::optional<SizeEstimation>{SizeEstimation{
+                  getEncodingOverhead<EncodingType::Constant, physicalType>(),
+                  0}}
             : std::nullopt;
       }
       case EncodingType::MainlyConstant: {
@@ -71,25 +90,26 @@ struct EncodingSizeEstimation {
         // stored bit packed.
         const auto uncommonIndicesSize =
             bitPackedBytes(0, entryCount, uncommonCount);
-        uint32_t overhead =
+        const uint32_t overhead =
             getEncodingOverhead<EncodingType::MainlyConstant, physicalType>() +
             // Overhead for storing uncommon values
             getEncodingOverhead<EncodingType::FixedBitWidth, physicalType>() +
             // Overhead for storing uncommon bitmap
             getEncodingOverhead<EncodingType::SparseBool, bool>() +
             getEncodingOverhead<EncodingType::FixedBitWidth, uint32_t>();
-        return overhead + sizeof(physicalType) + uncommonValueSize +
-            uncommonIndicesSize;
+        return SizeEstimation{
+            overhead + sizeof(physicalType),
+            uncommonValueSize + uncommonIndicesSize};
       }
       case EncodingType::Trivial: {
-        return getEncodingOverhead<EncodingType::Trivial, physicalType>() +
-            (entryCount * sizeof(physicalType));
+        return SizeEstimation{
+            getEncodingOverhead<EncodingType::Trivial, physicalType>(),
+            entryCount * sizeof(physicalType)};
       }
       case EncodingType::FixedBitWidth: {
-        return getEncodingOverhead<
-                   EncodingType::FixedBitWidth,
-                   physicalType>() +
-            bitPackedBytes(statistics.min(), statistics.max(), entryCount);
+        return SizeEstimation{
+            getEncodingOverhead<EncodingType::FixedBitWidth, physicalType>(),
+            bitPackedBytes(statistics.min(), statistics.max(), entryCount)};
       }
       case EncodingType::Dictionary: {
         // Assumptions:
@@ -100,13 +120,13 @@ struct EncodingSizeEstimation {
             0, statistics.uniqueCounts().value().size(), entryCount);
         const uint64_t alphabetSize =
             statistics.uniqueCounts().value().size() * sizeof(physicalType);
-        uint32_t overhead =
+        const uint32_t overhead =
             getEncodingOverhead<EncodingType::Dictionary, physicalType>() +
             // Alphabet overhead
             getEncodingOverhead<EncodingType::Trivial, physicalType>() +
             // Indices overhead
             getEncodingOverhead<EncodingType::FixedBitWidth, uint32_t>();
-        return overhead + alphabetSize + indicesSize;
+        return SizeEstimation{overhead, alphabetSize + indicesSize};
       }
       case EncodingType::RLE: {
         // Assumptions:
@@ -122,13 +142,13 @@ struct EncodingSizeEstimation {
             statistics.minRepeat(),
             statistics.maxRepeat(),
             statistics.consecutiveRepeatCount());
-        uint32_t overhead =
+        const uint32_t overhead =
             getEncodingOverhead<EncodingType::RLE, physicalType>() +
             // Overhead of run values
             getEncodingOverhead<EncodingType::FixedBitWidth, physicalType>() +
             // Overhead of run lengths
             getEncodingOverhead<EncodingType::FixedBitWidth, uint32_t>();
-        return overhead + runValuesSize + runLengthsSize;
+        return SizeEstimation{overhead, runValuesSize + runLengthsSize};
       }
       case EncodingType::Varint: {
         // Note: the condition below actually support floating point numbers as
@@ -145,8 +165,9 @@ struct EncodingSizeEstimation {
               [&i](const uint64_t sum, const uint64_t bucketSize) {
                 return sum + (bucketSize * (++i));
               });
-          return getEncodingOverhead<EncodingType::Varint, physicalType>() +
-              dataSize;
+          return SizeEstimation{
+              getEncodingOverhead<EncodingType::Varint, physicalType>(),
+              dataSize};
         } else {
           return std::nullopt;
         }
@@ -157,16 +178,16 @@ struct EncodingSizeEstimation {
     }
   }
 
-  static std::optional<uint64_t> estimateBoolSize(
+  static std::optional<SizeEstimation> estimateBoolSize(
       const EncodingType encodingType,
       const size_t entryCount,
       const Statistics<physicalType>& statistics) {
     switch (encodingType) {
       case EncodingType::Constant: {
         return statistics.uniqueCounts().value().size() == 1
-            ? std::optional<uint64_t>{getEncodingOverhead<
-                  EncodingType::Constant,
-                  physicalType>()}
+            ? std::optional<SizeEstimation>{SizeEstimation{
+                  getEncodingOverhead<EncodingType::Constant, physicalType>(),
+                  0}}
             : std::nullopt;
       }
       case EncodingType::SparseBool: {
@@ -177,16 +198,18 @@ struct EncodingSizeEstimation {
         const auto exceptionCount = std::min(
             statistics.uniqueCounts().value().at(true),
             statistics.uniqueCounts().value().at(false));
-        uint32_t overhead =
+        const uint32_t overhead =
             getEncodingOverhead<EncodingType::SparseBool, physicalType>() +
             // Overhead for storing exception indices
             getEncodingOverhead<EncodingType::FixedBitWidth, uint32_t>();
-        return overhead + sizeof(bool) +
-            bitPackedBytes(0, entryCount, exceptionCount);
+        return SizeEstimation{
+            overhead + sizeof(bool),
+            bitPackedBytes(0, entryCount, exceptionCount)};
       }
       case EncodingType::Trivial: {
-        return getEncodingOverhead<EncodingType::Trivial, physicalType>() +
-            FixedBitArray::bufferSize(entryCount, 1);
+        return SizeEstimation{
+            getEncodingOverhead<EncodingType::Trivial, physicalType>(),
+            FixedBitArray::bufferSize(entryCount, 1)};
       }
       case EncodingType::RLE: {
         // Assumptions:
@@ -197,11 +220,11 @@ struct EncodingSizeEstimation {
             statistics.minRepeat(),
             statistics.maxRepeat(),
             statistics.consecutiveRepeatCount());
-        uint32_t overhead =
+        const uint32_t overhead =
             getEncodingOverhead<EncodingType::RLE, physicalType>() +
             // Overhead of run lengths
             getEncodingOverhead<EncodingType::FixedBitWidth, uint32_t>();
-        return overhead + sizeof(bool) + runLengthsSize;
+        return SizeEstimation{overhead + sizeof(bool), runLengthsSize};
       }
       default: {
         return std::nullopt;
@@ -209,7 +232,7 @@ struct EncodingSizeEstimation {
     }
   }
 
-  static std::optional<uint64_t> estimateStringSize(
+  static std::optional<SizeEstimation> estimateStringSize(
       const EncodingType encodingType,
       const size_t entryCount,
       const Statistics<std::string_view>& statistics) {
@@ -217,9 +240,10 @@ struct EncodingSizeEstimation {
     switch (encodingType) {
       case EncodingType::Constant: {
         return statistics.uniqueCounts().value().size() == 1
-            ? std::optional<uint64_t>{getEncodingOverhead<
-                  EncodingType::Constant,
-                  physicalType>(maxStringSize)}
+            ? std::optional<SizeEstimation>{SizeEstimation{
+                  getEncodingOverhead<EncodingType::Constant, physicalType>(
+                      maxStringSize),
+                  0}}
             : std::nullopt;
       }
       case EncodingType::MainlyConstant: {
@@ -264,7 +288,7 @@ struct EncodingSizeEstimation {
         // stored bit packed.
         const auto uncommonIndicesSize =
             bitPackedBytes(0, entryCount, uncommonCount);
-        uint32_t overhead =
+        const uint32_t overhead =
             getEncodingOverhead<EncodingType::MainlyConstant, physicalType>(
                 maxUniqueCount->first.size()) +
             // Overhead for storing uncommon values
@@ -273,17 +297,18 @@ struct EncodingSizeEstimation {
             // Overhead for storing uncommon bitmap
             getEncodingOverhead<EncodingType::SparseBool, bool>();
 
-        return overhead + alphabetSize + uncommonIndicesSize;
+        return SizeEstimation{overhead, alphabetSize + uncommonIndicesSize};
       }
       case EncodingType::Trivial: {
         // We assume string lengths will be stored bit packed.
-        return getEncodingOverhead<EncodingType::Trivial, physicalType>(
-                   maxStringSize) +
+        return SizeEstimation{
+            getEncodingOverhead<EncodingType::Trivial, physicalType>(
+                maxStringSize),
             statistics.totalStringsLength() +
-            bitPackedBytes(
-                   statistics.min().size(),
-                   statistics.max().size(),
-                   entryCount);
+                bitPackedBytes(
+                    statistics.min().size(),
+                    statistics.max().size(),
+                    entryCount)};
       }
       case EncodingType::Dictionary: {
         // Assumptions:
@@ -305,7 +330,7 @@ struct EncodingSizeEstimation {
             bitPackedBytes(statistics.min().size(),
                            statistics.max().size(),
                            statistics.uniqueCounts().value().size());
-        uint32_t overhead =
+        const uint32_t overhead =
             getEncodingOverhead<EncodingType::Dictionary, physicalType>(
                 maxStringSize) +
             // Alphabet overhead
@@ -313,7 +338,7 @@ struct EncodingSizeEstimation {
                 maxStringSize) +
             // Indices overhead
             getEncodingOverhead<EncodingType::FixedBitWidth, uint32_t>();
-        return overhead + alphabetSize + indicesSize;
+        return SizeEstimation{overhead, alphabetSize + indicesSize};
       }
       case EncodingType::RLE: {
         // Assumptions:
@@ -321,7 +346,7 @@ struct EncodingSizeEstimation {
         // bit-packing). Run lengths are stored using bit-packing (with bit
         // width needed to store max repetition count).
 
-        uint64_t runValuesSize =
+        const uint64_t runValuesSize =
             // (unique) strings blob size
             std::accumulate(
                 statistics.uniqueCounts().value().cbegin(),
@@ -344,7 +369,7 @@ struct EncodingSizeEstimation {
             statistics.minRepeat(),
             statistics.maxRepeat(),
             statistics.consecutiveRepeatCount());
-        uint32_t overhead =
+        const uint32_t overhead =
             getEncodingOverhead<EncodingType::RLE, physicalType>() +
             // Overhead of run values
             getEncodingOverhead<EncodingType::Dictionary, physicalType>() +
@@ -352,7 +377,7 @@ struct EncodingSizeEstimation {
             getEncodingOverhead<EncodingType::FixedBitWidth, uint32_t>() +
             // Overhead of run lengths
             getEncodingOverhead<EncodingType::FixedBitWidth, uint32_t>();
-        return overhead + runValuesSize + runLengthsSize;
+        return SizeEstimation{overhead, runValuesSize + runLengthsSize};
       }
       default: {
         return std::nullopt;
@@ -360,7 +385,7 @@ struct EncodingSizeEstimation {
     }
   }
 
-  static std::optional<uint64_t> estimateSize(
+  static std::optional<SizeEstimation> estimateSize(
       const EncodingType encodingType,
       const size_t entryCount,
       const Statistics<physicalType>& statistics) {
