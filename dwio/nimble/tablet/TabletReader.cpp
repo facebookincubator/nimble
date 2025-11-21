@@ -648,7 +648,7 @@ std::shared_ptr<StripeGroup> TabletReader::stripeGroup(
 
 std::span<const uint32_t> TabletReader::streamOffsets(
     const StripeIdentifier& stripe) const {
-  NIMBLE_CHECK_LT(stripe.stripeId(), stripeCount_, "Stripe is out of range.");
+  NIMBLE_DCHECK_LT(stripe.stripeId(), stripeCount_, "Stripe is out of range.");
   return stripe.stripeGroup()->streamOffsets(stripe.stripeId());
 }
 
