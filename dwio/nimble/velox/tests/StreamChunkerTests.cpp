@@ -868,10 +868,11 @@ TEST_F(StreamChunkerTestsBase, NullableContentStreamIntChunking) {
         {});
   }
 
-  // Test 4: We can reuse a stream post compaction
+  // Test 4: We can reuse a stream post compaction, while properly handling
+  // retained memory.
   {
-    std::vector<int32_t> newTestData = {10, 11};
-    std::vector<bool> test3NonNullsData = {true, true};
+    std::vector<int32_t> newTestData = {10, 11, 12, 13, 14};
+    std::vector<bool> test3NonNullsData = {true, true, true};
     stream.ensureAdditionalNullsCapacity(
         /*mayHaveNulls=*/false,
         static_cast<uint32_t>(test3NonNullsData.size()));
@@ -880,17 +881,26 @@ TEST_F(StreamChunkerTestsBase, NullableContentStreamIntChunking) {
     populateData(data, newTestData);
     populateData(nonNulls, test3NonNullsData);
 
+    minChunkSize = sizeof(int32_t) * 3;
     auto chunker = getStreamChunker(
         stream,
-        {.maxChunkSize = stream.memoryUsed(), .ensureFullChunks = true});
+        {.minChunkSize = minChunkSize,
+         .maxChunkSize = minChunkSize,
+         .ensureFullChunks = true});
     // NullableContentStreamData as ContentStreamData when mayHaveNulls=false
     auto contentStreamChunker = dynamic_cast<
         ContentStreamChunker<int32_t, NullableContentStreamData<int32_t>>*>(
         chunker.get());
     ASSERT_NE(contentStreamChunker, nullptr);
     std::vector<ExpectedChunk<int32_t>> expectedChunks = {
-        {.chunkData = newTestData}};
-    validateChunk<int32_t>(stream, std::move(chunker), expectedChunks, {});
+        {.chunkData = {10, 11, 12}}};
+    ExpectedChunk<int32_t> retainedData = {.chunkData = {13, 14}};
+    validateChunk<int32_t>(
+        stream, std::move(chunker), expectedChunks, retainedData);
+    ASSERT_EQ(stream.mutableNonNulls().size(), 0);
+    // After materialization, mutable non-nulls should reflect leftover data
+    stream.materialize();
+    ASSERT_EQ(stream.mutableNonNulls().size(), 2);
   }
 }
 
@@ -997,9 +1007,10 @@ TEST_F(StreamChunkerTestsBase, NullableContentStreamStringChunking) {
         stream, std::move(chunker2), {lastChunk}, {});
   }
 
-  // Test 4: We can reuse a stream post compaction
+  // Test 4: We can reuse a stream post compaction, while properly handling
+  // retained memory.
   {
-    std::vector<std::string_view> smallTestData = {"test", "data"};
+    std::vector<std::string_view> smallTestData = {"extra_data", "test"};
     std::vector<bool> smallNonNullsData = {true, true};
     stream.ensureAdditionalNullsCapacity(
         /*mayHaveNulls=*/false,
@@ -1016,14 +1027,15 @@ TEST_F(StreamChunkerTestsBase, NullableContentStreamStringChunking) {
     }
 
     const uint64_t minChunkSize =
-        stream.extraMemory() + 2 * sizeof(std::string_view);
-    const uint64_t maxChunkSize = minChunkSize + 1; // Larger than data size
+        smallTestData.at(0).size() + sizeof(std::string_view);
+    const uint64_t maxChunkSize =
+        minChunkSize; // Exactly what is needed to fit just the first entry
     auto chunker = getStreamChunker(
         stream,
         {
             .minChunkSize = minChunkSize,
             .maxChunkSize = maxChunkSize,
-            .ensureFullChunks = false,
+            .ensureFullChunks = true,
         });
 
     // NullableContentStreamData as ContentStreamData when mayHaveNulls=false
@@ -1032,7 +1044,15 @@ TEST_F(StreamChunkerTestsBase, NullableContentStreamStringChunking) {
         NullableContentStreamData<std::string_view>>*>(chunker.get());
     ASSERT_NE(contentStreamChunker, nullptr);
     validateChunk<std::string_view>(
-        stream, std::move(chunker), {{.chunkData = {"test", "data"}}}, {});
+        stream,
+        std::move(chunker),
+        {{.chunkData = {"extra_data"}}},
+        {.chunkData = {"test"}, .extraMemory = 4});
+    ASSERT_EQ(stream.mutableNonNulls().size(), 0);
+    // After materialization, mutable non-nulls should reflect leftover data
+    stream.materialize();
+    ASSERT_EQ(stream.mutableNonNulls().size(), 1);
+    stream.reset();
   }
 
   // Test 5: Single string exceeds maxChunkSize.
