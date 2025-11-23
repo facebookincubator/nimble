@@ -219,7 +219,7 @@ class ContentStreamChunker final : public StreamChunker {
     // Move and clear existing buffer
     auto tempData = std::move(currentData);
     streamData_->reset();
-    NIMBLE_CHECK(
+    NIMBLE_DCHECK(
         streamData_->empty(), "StreamData should be empty after reset");
 
     auto& mutableData = streamData_->mutableData();
@@ -241,6 +241,13 @@ class ContentStreamChunker final : public StreamChunker {
         mutableData.begin());
     dataElementOffset_ = 0;
     streamData_->extraMemory() = extraMemory_;
+
+    // Ensure nulls capacity for nullable content streams without nulls.
+    if (auto* nullableContentStreamData =
+            dynamic_cast<NullableContentStreamData<T>*>(streamData_)) {
+      nullableContentStreamData->ensureAdditionalNullsCapacity(
+          /*mayHaveNulls=*/false, static_cast<uint32_t>(remainingDataCount));
+    }
   }
 
   StreamDataT* const streamData_;
