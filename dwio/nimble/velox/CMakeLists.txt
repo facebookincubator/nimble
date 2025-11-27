@@ -78,9 +78,13 @@ build_flatbuffers(
   ""
 )
 add_library(nimble_velox_schema_fb INTERFACE)
+# build_flatbuffers() assumes that we include generated .h files by
+# #include "SchemaGenerated.h" but we want to use #include
+# "dwio/nimble/velox/SchemaGenerated.h". So we need
+# ${PROJECT_BINARY_DIR} here.
 target_include_directories(
   nimble_velox_schema_fb
-  INTERFACE ${FLATBUFFERS_INCLUDE_DIR}
+  INTERFACE ${PROJECT_BINARY_DIR} ${FLATBUFFERS_INCLUDE_DIR}
 )
 add_dependencies(nimble_velox_schema_fb nimble_velox_schema_schema_fb)
 
