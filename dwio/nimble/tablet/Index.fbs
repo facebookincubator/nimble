@@ -1,0 +1,48 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+include "Footer.fbs";
+
+namespace facebook.nimble.serialization;
+
+table StripeValueIndex {
+  key_stream_offsets:[uint32];
+  key_stream_sizes:[uint32];
+  key_stream_chunk_counts:[uint32];
+  key_stream_chunk_rows:[uint32];
+  key_stream_chunk_keys:[string];
+}
+
+table StripePositionIndex {
+  stream_chunks:[uint32];
+  stream_chunk_rows:[uint32];
+  stream_chunk_offsets:[uint32];
+}
+
+table StripeIndexGroup {
+  stripe_count:uint32;
+  value_index:StripeValueIndex;
+  position_index:StripePositionIndex;
+}
+
+table Index {
+  stripe_keys:[string];
+  stripe_row_counts:[uint32];
+  stripe_group_indices:[uint32];
+  stripe_index_groups:[MetadataSection];
+}
+
+root_type Index;
