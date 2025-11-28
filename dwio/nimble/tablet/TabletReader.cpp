@@ -82,57 +82,6 @@ std::string_view toStringView(const folly::IOBuf& buf) {
 
 } // namespace
 
-MetadataBuffer::MetadataBuffer(
-    velox::memory::MemoryPool& pool,
-    std::string_view ref,
-    CompressionType type)
-    : buffer_{&pool} {
-  switch (type) {
-    case CompressionType::Uncompressed: {
-      buffer_.resize(ref.size());
-      std::copy(ref.cbegin(), ref.cend(), buffer_.begin());
-      break;
-    }
-    case CompressionType::Zstd: {
-      buffer_ = ZstdCompression::uncompress(pool, ref);
-      break;
-    }
-    default:
-      NIMBLE_UNREACHABLE("Unexpected stream compression type: {}", type);
-  }
-}
-
-MetadataBuffer::MetadataBuffer(
-    velox::memory::MemoryPool& pool,
-    const folly::IOBuf& iobuf,
-    size_t offset,
-    size_t length,
-    CompressionType type)
-    : buffer_{&pool} {
-  switch (type) {
-    case CompressionType::Uncompressed: {
-      buffer_.resize(length);
-      folly::io::Cursor cursor(&iobuf);
-      cursor.skip(offset);
-      cursor.pull(buffer_.data(), length);
-      break;
-    }
-    case CompressionType::Zstd: {
-      auto compressed = cloneAndCoalesce(iobuf, offset, length);
-      buffer_ = ZstdCompression::uncompress(pool, toStringView(compressed));
-      break;
-    }
-    default:
-      NIMBLE_UNREACHABLE("Unexpected stream compression type: {}", type);
-  }
-}
-
-MetadataBuffer::MetadataBuffer(
-    velox::memory::MemoryPool& pool,
-    const folly::IOBuf& iobuf,
-    CompressionType type)
-    : MetadataBuffer{pool, iobuf, 0, iobuf.computeChainDataLength(), type} {}
-
 StripeGroup::StripeGroup(
     uint32_t stripeGroupIndex,
     const MetadataBuffer& stripes,
@@ -775,6 +724,11 @@ std::vector<MetadataSection> TabletReader::stripeGroupsMetadata() const {
             static_cast<CompressionType>(stripeGroup->compression_type())};
       });
   return groupsMetadata;
+}
+
+bool TabletReader::hasOptionalSection(const std::string& name) const {
+  const auto it = optionalSections_.find(name);
+  return it != optionalSections_.end();
 }
 
 std::optional<Section> TabletReader::loadOptionalSection(

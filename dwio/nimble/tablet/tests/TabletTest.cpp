@@ -94,23 +94,206 @@ std::vector<StripeData> createStripesData(
   return stripesData;
 }
 
-// Runs a single write/read test using input parameters
-void parameterizedTest(
-    std::mt19937& rng,
-    velox::memory::MemoryPool& memoryPool,
-    uint32_t metadataFlushThreshold,
-    uint32_t metadataCompressionThreshold,
-    std::vector<StripeSpecifications> stripes,
-    const std::optional<std::function<void(const std::exception&)>>&
-        errorVerifier = std::nullopt) {
-  try {
+class TabletTest : public ::testing::Test {
+ protected:
+  static void SetUpTestCase() {
+    velox::memory::MemoryManager::initialize({});
+  }
+
+  void SetUp() override {}
+
+  // Runs a single write/read test using input parameters
+  void parameterizedTest(
+      std::mt19937& rng,
+      uint32_t metadataFlushThreshold,
+      uint32_t metadataCompressionThreshold,
+      std::vector<StripeSpecifications> stripes,
+      const std::optional<std::function<void(const std::exception&)>>&
+          errorVerifier = std::nullopt) {
+    try {
+      std::string file;
+      velox::InMemoryWriteFile writeFile(&file);
+      auto tabletWriter = nimble::TabletWriter::create(
+          &writeFile,
+          *pool_,
+          {nullptr, metadataFlushThreshold, metadataCompressionThreshold});
+
+      EXPECT_EQ(0, tabletWriter->size());
+
+      struct StripeData {
+        uint32_t rowCount;
+        std::vector<nimble::Stream> streams;
+      };
+
+      nimble::Buffer buffer{*pool_};
+      auto stripesData = createStripesData(rng, stripes, buffer);
+      for (auto& stripe : stripesData) {
+        tabletWriter->writeStripe(stripe.rowCount, stripe.streams);
+      }
+
+      tabletWriter->close();
+      EXPECT_LT(0, tabletWriter->size());
+      writeFile.close();
+      EXPECT_EQ(writeFile.size(), tabletWriter->size());
+
+      auto stripeGroupCount = tabletWriter->testingStripeGroupCount();
+
+      folly::writeFile(file, "/tmp/test.nimble");
+
+      for (auto useChainedBuffers : {false, true}) {
+        nimble::testing::InMemoryTrackableReadFile readFile(
+            file, useChainedBuffers);
+        auto tablet = nimble::TabletReader::create(&readFile, *pool_);
+        EXPECT_EQ(stripesData.size(), tablet->stripeCount());
+        EXPECT_EQ(
+            std::accumulate(
+                stripesData.begin(),
+                stripesData.end(),
+                uint64_t{0},
+                [](uint64_t r, const auto& s) { return r + s.rowCount; }),
+            tablet->tabletRowCount());
+
+        VLOG(1) << "Output Tablet -> StripeCount: " << tablet->stripeCount()
+                << ", RowCount: " << tablet->tabletRowCount();
+
+        uint32_t maxStreamIdentifiers = 0;
+        for (auto stripe = 0; stripe < stripesData.size(); ++stripe) {
+          auto stripeIdentifier = tablet->stripeIdentifier(stripe);
+          maxStreamIdentifiers = std::max(
+              maxStreamIdentifiers, tablet->streamCount(stripeIdentifier));
+        }
+        std::vector<uint32_t> allStreamIdentifiers(maxStreamIdentifiers);
+        std::iota(allStreamIdentifiers.begin(), allStreamIdentifiers.end(), 0);
+        std::span<const uint32_t> allStreamIdentifiersSpan{
+            allStreamIdentifiers.cbegin(), allStreamIdentifiers.cend()};
+        size_t extraReads = 0;
+        std::vector<uint64_t> totalStreamSize;
+        for (auto stripe = 0; stripe < stripesData.size(); ++stripe) {
+          auto stripeIdentifier = tablet->stripeIdentifier(stripe);
+          totalStreamSize.push_back(tablet->totalStreamSize(
+              stripeIdentifier, allStreamIdentifiersSpan));
+        }
+        // Now, read all stripes and verify results
+        for (auto stripe = 0; stripe < stripesData.size(); ++stripe) {
+          EXPECT_EQ(
+              stripesData[stripe].rowCount, tablet->stripeRowCount(stripe));
+
+          readFile.resetChunks();
+          auto stripeIdentifier = tablet->stripeIdentifier(stripe);
+          std::vector<uint32_t> identifiers(
+              tablet->streamCount(stripeIdentifier));
+          std::iota(identifiers.begin(), identifiers.end(), 0);
+          auto serializedStreams = tablet->load(
+              stripeIdentifier, {identifiers.cbegin(), identifiers.cend()});
+          uint64_t totalStreamSizeExpected = 0;
+          for (const auto& stream : serializedStreams) {
+            if (stream) {
+              totalStreamSizeExpected += stream->getStream().size();
+            }
+          }
+          EXPECT_EQ(totalStreamSize[stripe], totalStreamSizeExpected);
+          auto chunks = readFile.chunks();
+          auto expectedReads = stripesData[stripe].streams.size();
+          auto diff = chunks.size() - expectedReads;
+          EXPECT_LE(diff, 1);
+          extraReads += diff;
+
+          for (const auto& chunk : chunks) {
+            VLOG(1) << "Chunk Offset: " << chunk.offset
+                    << ", Size: " << chunk.size << ", Stripe: " << stripe;
+          }
+
+          for (auto i = 0; i < serializedStreams.size(); ++i) {
+            // Verify streams content. If stream wasn't written in this stripe,
+            // it should return nullopt optional.
+            auto found = false;
+            for (const auto& stream : stripesData[stripe].streams) {
+              if (stream.offset == i) {
+                found = true;
+                EXPECT_TRUE(serializedStreams[i]);
+                printData(
+                    folly::to<std::string>("Expected Stream ", stream.offset),
+                    stream.chunks[0].content[0]);
+                const auto& actual = serializedStreams[i];
+                std::string_view actualData = actual->getStream();
+                printData(
+                    folly::to<std::string>("Actual Stream ", stream.offset),
+                    actualData);
+                EXPECT_EQ(stream.chunks[0].content[0], actualData);
+              }
+            }
+            if (!found) {
+              EXPECT_FALSE(serializedStreams[i]);
+            }
+          }
+        }
+
+        EXPECT_EQ(extraReads, (stripeGroupCount == 1 ? 0 : stripeGroupCount));
+
+        if (errorVerifier.has_value()) {
+          FAIL() << "Error verifier is provided, but no exception was thrown.";
+        }
+      }
+    } catch (const std::exception& e) {
+      if (!errorVerifier.has_value()) {
+        FAIL() << "Unexpected exception: " << e.what();
+      }
+
+      errorVerifier.value()(e);
+
+      // If errorVerifier detected an error, log the exception
+      if (::testing::Test::HasFatalFailure()) {
+        FAIL() << "Failed verifying exception: " << e.what();
+      } else if (::testing::Test::HasNonfatalFailure()) {
+        LOG(WARNING) << "Failed verifying exception: " << e.what();
+      }
+    }
+  }
+
+  // Run all permutations of a test using all test parameters
+  void test(
+      std::vector<StripeSpecifications> stripes,
+      std::optional<std::function<void(const std::exception&)>> errorVerifier =
+          std::nullopt) {
+    std::vector<uint64_t> metadataCompressionThresholds{
+        // use size 0 here so it will always force a footer compression
+        0,
+        // use a large number here so it will not do a footer compression
+        1024 * 1024 * 1024};
+    std::vector<uint32_t> metadataFlushThresholds{
+        0, // force flush
+        100, // flush a few
+        1024 * 1024 * 1024, // never flush
+    };
+
+    auto seed = folly::Random::rand32();
+    LOG(INFO) << "seed: " << seed;
+    std::mt19937 rng(seed);
+
+    for (auto flushThreshold : metadataFlushThresholds) {
+      for (auto compressionThreshold : metadataCompressionThresholds) {
+        LOG(INFO) << "FlushThreshold: " << flushThreshold
+                  << ", CompressionThreshold: " << compressionThreshold;
+        parameterizedTest(
+            rng, flushThreshold, compressionThreshold, stripes, errorVerifier);
+      }
+    }
+  }
+
+  void checksumTest(
+      std::mt19937& rng,
+      uint32_t metadataCompressionThreshold,
+      nimble::ChecksumType checksumType,
+      bool checksumChunked,
+      std::vector<StripeSpecifications> stripes) {
     std::string file;
     velox::InMemoryWriteFile writeFile(&file);
     auto tabletWriter = nimble::TabletWriter::create(
         &writeFile,
-        memoryPool,
-        {nullptr, metadataFlushThreshold, metadataCompressionThreshold});
-
+        *pool_,
+        {.layoutPlanner = nullptr,
+         .metadataCompressionThreshold = metadataCompressionThreshold,
+         .checksumType = checksumType});
     EXPECT_EQ(0, tabletWriter->size());
 
     struct StripeData {
@@ -118,8 +301,9 @@ void parameterizedTest(
       std::vector<nimble::Stream> streams;
     };
 
-    nimble::Buffer buffer{memoryPool};
+    nimble::Buffer buffer{*pool_};
     auto stripesData = createStripesData(rng, stripes, buffer);
+
     for (auto& stripe : stripesData) {
       tabletWriter->writeStripe(stripe.rowCount, stripe.streams);
     }
@@ -129,177 +313,168 @@ void parameterizedTest(
     writeFile.close();
     EXPECT_EQ(writeFile.size(), tabletWriter->size());
 
-    auto stripeGroupCount = tabletWriter->testingStripeGroupCount();
-
-    folly::writeFile(file, "/tmp/test.nimble");
-
     for (auto useChainedBuffers : {false, true}) {
+      // Velidate checksum on a good file
       nimble::testing::InMemoryTrackableReadFile readFile(
           file, useChainedBuffers);
-      auto tablet = nimble::TabletReader::create(&readFile, memoryPool);
-      EXPECT_EQ(stripesData.size(), tablet->stripeCount());
+      auto tablet = nimble::TabletReader::create(&readFile, *this->pool_);
+      auto storedChecksum = tablet->checksum();
       EXPECT_EQ(
-          std::accumulate(
-              stripesData.begin(),
-              stripesData.end(),
-              uint64_t{0},
-              [](uint64_t r, const auto& s) { return r + s.rowCount; }),
-          tablet->tabletRowCount());
+          storedChecksum,
+          nimble::TabletReader::calculateChecksum(
+              *pool_,
+              &readFile,
+              checksumChunked ? writeFile.size() / 3 : writeFile.size()))
+          << "metadataCompressionThreshold: " << metadataCompressionThreshold
+          << ", checksumType: " << nimble::toString(checksumType)
+          << ", checksumChunked: " << checksumChunked;
 
-      VLOG(1) << "Output Tablet -> StripeCount: " << tablet->stripeCount()
-              << ", RowCount: " << tablet->tabletRowCount();
+      // Flip a bit in the stream and verify that checksum can catch the error
+      {
+        // First, make sure we are working on a clean file
+        nimble::testing::InMemoryTrackableReadFile readFileUnchanged(
+            file, useChainedBuffers);
+        EXPECT_EQ(
+            storedChecksum,
+            nimble::TabletReader::calculateChecksum(
+                *pool_, &readFileUnchanged));
 
-      uint32_t maxStreamIdentifiers = 0;
-      for (auto stripe = 0; stripe < stripesData.size(); ++stripe) {
-        auto stripeIdentifier = tablet->stripeIdentifier(stripe);
-        maxStreamIdentifiers = std::max(
-            maxStreamIdentifiers, tablet->streamCount(stripeIdentifier));
-      }
-      std::vector<uint32_t> allStreamIdentifiers(maxStreamIdentifiers);
-      std::iota(allStreamIdentifiers.begin(), allStreamIdentifiers.end(), 0);
-      std::span<const uint32_t> allStreamIdentifiersSpan{
-          allStreamIdentifiers.cbegin(), allStreamIdentifiers.cend()};
-      size_t extraReads = 0;
-      std::vector<uint64_t> totalStreamSize;
-      for (auto stripe = 0; stripe < stripesData.size(); ++stripe) {
-        auto stripeIdentifier = tablet->stripeIdentifier(stripe);
-        totalStreamSize.push_back(tablet->totalStreamSize(
-            stripeIdentifier, allStreamIdentifiersSpan));
-      }
-      // Now, read all stripes and verify results
-      for (auto stripe = 0; stripe < stripesData.size(); ++stripe) {
-        EXPECT_EQ(stripesData[stripe].rowCount, tablet->stripeRowCount(stripe));
-
-        readFile.resetChunks();
-        auto stripeIdentifier = tablet->stripeIdentifier(stripe);
-        std::vector<uint32_t> identifiers(
-            tablet->streamCount(stripeIdentifier));
-        std::iota(identifiers.begin(), identifiers.end(), 0);
-        auto serializedStreams = tablet->load(
-            stripeIdentifier, {identifiers.cbegin(), identifiers.cend()});
-        uint64_t totalStreamSizeExpected = 0;
-        for (const auto& stream : serializedStreams) {
-          if (stream) {
-            totalStreamSizeExpected += stream->getStream().size();
-          }
-        }
-        EXPECT_EQ(totalStreamSize[stripe], totalStreamSizeExpected);
-        auto chunks = readFile.chunks();
-        auto expectedReads = stripesData[stripe].streams.size();
-        auto diff = chunks.size() - expectedReads;
-        EXPECT_LE(diff, 1);
-        extraReads += diff;
-
-        for (const auto& chunk : chunks) {
-          VLOG(1) << "Chunk Offset: " << chunk.offset
-                  << ", Size: " << chunk.size << ", Stripe: " << stripe;
-        }
-
-        for (auto i = 0; i < serializedStreams.size(); ++i) {
-          // Verify streams content. If stream wasn't written in this stripe,
-          // it should return nullopt optional.
-          auto found = false;
-          for (const auto& stream : stripesData[stripe].streams) {
-            if (stream.offset == i) {
-              found = true;
-              EXPECT_TRUE(serializedStreams[i]);
-              printData(
-                  folly::to<std::string>("Expected Stream ", stream.offset),
-                  stream.chunks[0].content[0]);
-              const auto& actual = serializedStreams[i];
-              std::string_view actualData = actual->getStream();
-              printData(
-                  folly::to<std::string>("Actual Stream ", stream.offset),
-                  actualData);
-              EXPECT_EQ(stream.chunks[0].content[0], actualData);
-            }
-          }
-          if (!found) {
-            EXPECT_FALSE(serializedStreams[i]);
-          }
-        }
+        char& c = file[10];
+        c ^= 0x80;
+        nimble::testing::InMemoryTrackableReadFile readFileChanged(
+            file, useChainedBuffers);
+        EXPECT_NE(
+            storedChecksum,
+            nimble::TabletReader::calculateChecksum(
+                *pool_,
+                &readFileChanged,
+                checksumChunked ? writeFile.size() / 3 : writeFile.size()))
+            << "Checksum didn't find corruption when stream content is changed. "
+            << "metadataCompressionThreshold: " << metadataCompressionThreshold
+            << ", checksumType: " << nimble::toString(checksumType)
+            << ", checksumChunked: " << checksumChunked;
+        // revert the file back.
+        c ^= 0x80;
       }
 
-      EXPECT_EQ(extraReads, (stripeGroupCount == 1 ? 0 : stripeGroupCount));
+      // Flip a bit in the flatbuffer footer and verify that checksum can catch
+      // the error
+      {
+        // First, make sure we are working on a clean file
+        nimble::testing::InMemoryTrackableReadFile readFileUnchanged(
+            file, useChainedBuffers);
+        EXPECT_EQ(
+            storedChecksum,
+            nimble::TabletReader::calculateChecksum(
+                *pool_, &readFileUnchanged));
 
-      if (errorVerifier.has_value()) {
-        FAIL() << "Error verifier is provided, but no exception was thrown.";
+        auto posInFooter =
+            tablet->fileSize() - kPostscriptSize - tablet->footerSize() / 2;
+        uint8_t& byteInFooter =
+            *reinterpret_cast<uint8_t*>(file.data() + posInFooter);
+        byteInFooter ^= 0x1;
+        nimble::testing::InMemoryTrackableReadFile readFileChanged(
+            file, useChainedBuffers);
+        EXPECT_NE(
+            storedChecksum,
+            nimble::TabletReader::calculateChecksum(
+                *pool_,
+                &readFileChanged,
+                checksumChunked ? writeFile.size() / 3 : writeFile.size()))
+            << "Checksum didn't find corruption when footer content is changed. "
+            << "metadataCompressionThreshold: " << metadataCompressionThreshold
+            << ", checksumType: " << nimble::toString(checksumType)
+            << ", checksumChunked: " << checksumChunked;
+        // revert the file back.
+        byteInFooter ^= 0x1;
       }
-    }
-  } catch (const std::exception& e) {
-    if (!errorVerifier.has_value()) {
-      FAIL() << "Unexpected exception: " << e.what();
-    }
 
-    errorVerifier.value()(e);
+      // Flip a bit in the footer size field and verify that checksum can catch
+      // the error
+      {
+        // First, make sure we are working on a clean file
+        nimble::testing::InMemoryTrackableReadFile readFileUnchanged(
+            file, useChainedBuffers);
+        EXPECT_EQ(
+            storedChecksum,
+            nimble::TabletReader::calculateChecksum(
+                *pool_, &readFileUnchanged));
 
-    // If errorVerifier detected an error, log the exception
-    if (::testing::Test::HasFatalFailure()) {
-      FAIL() << "Failed verifying exception: " << e.what();
-    } else if (::testing::Test::HasNonfatalFailure()) {
-      LOG(WARNING) << "Failed verifying exception: " << e.what();
+        auto footerSizePos = tablet->fileSize() - kPostscriptSize;
+        uint32_t& footerSize =
+            *reinterpret_cast<uint32_t*>(file.data() + footerSizePos);
+        ASSERT_EQ(footerSize, tablet->footerSize());
+        footerSize ^= 0x1;
+
+        nimble::testing::InMemoryTrackableReadFile readFileChanged(
+            file, useChainedBuffers);
+        EXPECT_NE(
+            storedChecksum,
+            nimble::TabletReader::calculateChecksum(
+                *pool_,
+                &readFileChanged,
+                checksumChunked ? writeFile.size() / 3 : writeFile.size()))
+            << "Checksum didn't find corruption when footer size field is changed. "
+            << "metadataCompressionThreshold: " << metadataCompressionThreshold
+            << ", checksumType: " << nimble::toString(checksumType)
+            << ", checksumChunked: " << checksumChunked;
+        // revert the file back.
+        footerSize ^= 0x1;
+      }
+
+      // Flip a bit in the footer compression type field and verify that
+      // checksum can catch the error
+      {
+        // First, make sure we are working on a clean file
+        nimble::testing::InMemoryTrackableReadFile readFileUnchanged(
+            file, useChainedBuffers);
+        EXPECT_EQ(
+            storedChecksum,
+            nimble::TabletReader::calculateChecksum(
+                *pool_, &readFileUnchanged));
+
+        auto footerCompressionTypePos =
+            tablet->fileSize() - kPostscriptSize + 4;
+        nimble::CompressionType& footerCompressionType =
+            *reinterpret_cast<nimble::CompressionType*>(
+                file.data() + footerCompressionTypePos);
+        ASSERT_EQ(footerCompressionType, tablet->footerCompressionType());
+        // Cannot do bit operation on enums, so cast it to integer type.
+        uint8_t& typeAsInt =
+            *reinterpret_cast<uint8_t*>(&footerCompressionType);
+        typeAsInt ^= 0x1;
+        nimble::testing::InMemoryTrackableReadFile readFileChanged(
+            file, useChainedBuffers);
+        EXPECT_NE(
+            storedChecksum,
+            nimble::TabletReader::calculateChecksum(
+                *pool_,
+                &readFileChanged,
+                checksumChunked ? writeFile.size() / 3 : writeFile.size()))
+            << "Checksum didn't find corruption when compression type field is changed. "
+            << "metadataCompressionThreshold: " << metadataCompressionThreshold
+            << ", checksumType: " << nimble::toString(checksumType)
+            << ", checksumChunked: " << checksumChunked;
+        // revert the file back.
+        typeAsInt ^= 0x1;
+      }
     }
   }
-}
 
-// Run all permutations of a test using all test parameters
-void test(
-    velox::memory::MemoryPool& memoryPool,
-    std::vector<StripeSpecifications> stripes,
-    std::optional<std::function<void(const std::exception&)>> errorVerifier =
-        std::nullopt) {
-  std::vector<uint64_t> metadataCompressionThresholds{
-      // use size 0 here so it will always force a footer compression
-      0,
-      // use a large number here so it will not do a footer compression
-      1024 * 1024 * 1024};
-  std::vector<uint32_t> metadataFlushThresholds{
-      0, // force flush
-      100, // flush a few
-      1024 * 1024 * 1024, // never flush
-  };
-
-  auto seed = folly::Random::rand32();
-  LOG(INFO) << "seed: " << seed;
-  std::mt19937 rng(seed);
-
-  for (auto flushThreshold : metadataFlushThresholds) {
-    for (auto compressionThreshold : metadataCompressionThresholds) {
-      LOG(INFO) << "FlushThreshold: " << flushThreshold
-                << ", CompressionThreshold: " << compressionThreshold;
-      parameterizedTest(
-          rng,
-          memoryPool,
-          flushThreshold,
-          compressionThreshold,
-          stripes,
-          errorVerifier);
-    }
-  }
-}
-
-} // namespace
-
-class TabletTestSuite : public ::testing::Test {
- protected:
-  void SetUp() override {
-    pool_ = velox::memory::deprecatedAddDefaultLeafMemoryPool();
-  }
-
-  std::shared_ptr<velox::memory::MemoryPool> pool_;
+  std::shared_ptr<velox::memory::MemoryPool> rootPool_{
+      velox::memory::memoryManager()->addRootPool("TabletTest")};
+  std::shared_ptr<velox::memory::MemoryPool> pool_{
+      rootPool_->addLeafChild("TabletTest")};
 };
 
-TEST_F(TabletTestSuite, emptyWrite) {
+TEST_F(TabletTest, emptyWrite) {
   // Creating an Nimble file without writing any stripes
-  test(
-      *this->pool_,
-      /* stripes */ {});
+  test(/* stripes */ {});
 }
 
-TEST_F(TabletTestSuite, writeDifferentStreamsPerStripe) {
+TEST_F(TabletTest, writeDifferentStreamsPerStripe) {
   // Write different subset of streams in each stripe
   test(
-      *this->pool_,
       /* stripes */
       {
           {.rowCount = 20, .streamOffsets = {3, 1}},
@@ -308,188 +483,7 @@ TEST_F(TabletTestSuite, writeDifferentStreamsPerStripe) {
       });
 }
 
-namespace {
-void checksumTest(
-    std::mt19937& rng,
-    velox::memory::MemoryPool& memoryPool,
-    uint32_t metadataCompressionThreshold,
-    nimble::ChecksumType checksumType,
-    bool checksumChunked,
-    std::vector<StripeSpecifications> stripes) {
-  std::string file;
-  velox::InMemoryWriteFile writeFile(&file);
-  auto tabletWriter = nimble::TabletWriter::create(
-      &writeFile,
-      memoryPool,
-      {.layoutPlanner = nullptr,
-       .metadataCompressionThreshold = metadataCompressionThreshold,
-       .checksumType = checksumType});
-  EXPECT_EQ(0, tabletWriter->size());
-
-  struct StripeData {
-    uint32_t rowCount;
-    std::vector<nimble::Stream> streams;
-  };
-
-  nimble::Buffer buffer{memoryPool};
-  auto stripesData = createStripesData(rng, stripes, buffer);
-
-  for (auto& stripe : stripesData) {
-    tabletWriter->writeStripe(stripe.rowCount, stripe.streams);
-  }
-
-  tabletWriter->close();
-  EXPECT_LT(0, tabletWriter->size());
-  writeFile.close();
-  EXPECT_EQ(writeFile.size(), tabletWriter->size());
-
-  for (auto useChainedBuffers : {false, true}) {
-    // Velidate checksum on a good file
-    nimble::testing::InMemoryTrackableReadFile readFile(
-        file, useChainedBuffers);
-    auto tablet = nimble::TabletReader::create(&readFile, memoryPool);
-    auto storedChecksum = tablet->checksum();
-    EXPECT_EQ(
-        storedChecksum,
-        nimble::TabletReader::calculateChecksum(
-            memoryPool,
-            &readFile,
-            checksumChunked ? writeFile.size() / 3 : writeFile.size()))
-        << "metadataCompressionThreshold: " << metadataCompressionThreshold
-        << ", checksumType: " << nimble::toString(checksumType)
-        << ", checksumChunked: " << checksumChunked;
-
-    // Flip a bit in the stream and verify that checksum can catch the error
-    {
-      // First, make sure we are working on a clean file
-      nimble::testing::InMemoryTrackableReadFile readFileUnchanged(
-          file, useChainedBuffers);
-      EXPECT_EQ(
-          storedChecksum,
-          nimble::TabletReader::calculateChecksum(
-              memoryPool, &readFileUnchanged));
-
-      char& c = file[10];
-      c ^= 0x80;
-      nimble::testing::InMemoryTrackableReadFile readFileChanged(
-          file, useChainedBuffers);
-      EXPECT_NE(
-          storedChecksum,
-          nimble::TabletReader::calculateChecksum(
-              memoryPool,
-              &readFileChanged,
-              checksumChunked ? writeFile.size() / 3 : writeFile.size()))
-          << "Checksum didn't find corruption when stream content is changed. "
-          << "metadataCompressionThreshold: " << metadataCompressionThreshold
-          << ", checksumType: " << nimble::toString(checksumType)
-          << ", checksumChunked: " << checksumChunked;
-      // revert the file back.
-      c ^= 0x80;
-    }
-
-    // Flip a bit in the flatbuffer footer and verify that checksum can catch
-    // the error
-    {
-      // First, make sure we are working on a clean file
-      nimble::testing::InMemoryTrackableReadFile readFileUnchanged(
-          file, useChainedBuffers);
-      EXPECT_EQ(
-          storedChecksum,
-          nimble::TabletReader::calculateChecksum(
-              memoryPool, &readFileUnchanged));
-
-      auto posInFooter =
-          tablet->fileSize() - kPostscriptSize - tablet->footerSize() / 2;
-      uint8_t& byteInFooter =
-          *reinterpret_cast<uint8_t*>(file.data() + posInFooter);
-      byteInFooter ^= 0x1;
-      nimble::testing::InMemoryTrackableReadFile readFileChanged(
-          file, useChainedBuffers);
-      EXPECT_NE(
-          storedChecksum,
-          nimble::TabletReader::calculateChecksum(
-              memoryPool,
-              &readFileChanged,
-              checksumChunked ? writeFile.size() / 3 : writeFile.size()))
-          << "Checksum didn't find corruption when footer content is changed. "
-          << "metadataCompressionThreshold: " << metadataCompressionThreshold
-          << ", checksumType: " << nimble::toString(checksumType)
-          << ", checksumChunked: " << checksumChunked;
-      // revert the file back.
-      byteInFooter ^= 0x1;
-    }
-
-    // Flip a bit in the footer size field and verify that checksum can catch
-    // the error
-    {
-      // First, make sure we are working on a clean file
-      nimble::testing::InMemoryTrackableReadFile readFileUnchanged(
-          file, useChainedBuffers);
-      EXPECT_EQ(
-          storedChecksum,
-          nimble::TabletReader::calculateChecksum(
-              memoryPool, &readFileUnchanged));
-
-      auto footerSizePos = tablet->fileSize() - kPostscriptSize;
-      uint32_t& footerSize =
-          *reinterpret_cast<uint32_t*>(file.data() + footerSizePos);
-      ASSERT_EQ(footerSize, tablet->footerSize());
-      footerSize ^= 0x1;
-      nimble::testing::InMemoryTrackableReadFile readFileChanged(
-          file, useChainedBuffers);
-      EXPECT_NE(
-          storedChecksum,
-          nimble::TabletReader::calculateChecksum(
-              memoryPool,
-              &readFileChanged,
-              checksumChunked ? writeFile.size() / 3 : writeFile.size()))
-          << "Checksum didn't find corruption when footer size field is changed. "
-          << "metadataCompressionThreshold: " << metadataCompressionThreshold
-          << ", checksumType: " << nimble::toString(checksumType)
-          << ", checksumChunked: " << checksumChunked;
-      // revert the file back.
-      footerSize ^= 0x1;
-    }
-
-    // Flip a bit in the footer compression type field and verify that checksum
-    // can catch the error
-    {
-      // First, make sure we are working on a clean file
-      nimble::testing::InMemoryTrackableReadFile readFileUnchanged(
-          file, useChainedBuffers);
-      EXPECT_EQ(
-          storedChecksum,
-          nimble::TabletReader::calculateChecksum(
-              memoryPool, &readFileUnchanged));
-
-      auto footerCompressionTypePos = tablet->fileSize() - kPostscriptSize + 4;
-      nimble::CompressionType& footerCompressionType =
-          *reinterpret_cast<nimble::CompressionType*>(
-              file.data() + footerCompressionTypePos);
-      ASSERT_EQ(footerCompressionType, tablet->footerCompressionType());
-      // Cannot do bit operation on enums, so cast it to integer type.
-      uint8_t& typeAsInt = *reinterpret_cast<uint8_t*>(&footerCompressionType);
-      typeAsInt ^= 0x1;
-      nimble::testing::InMemoryTrackableReadFile readFileChanged(
-          file, useChainedBuffers);
-      EXPECT_NE(
-          storedChecksum,
-          nimble::TabletReader::calculateChecksum(
-              memoryPool,
-              &readFileChanged,
-              checksumChunked ? writeFile.size() / 3 : writeFile.size()))
-          << "Checksum didn't find corruption when compression type field is changed. "
-          << "metadataCompressionThreshold: " << metadataCompressionThreshold
-          << ", checksumType: " << nimble::toString(checksumType)
-          << ", checksumChunked: " << checksumChunked;
-      // revert the file back.
-      typeAsInt ^= 0x1;
-    }
-  }
-}
-} // namespace
-
-TEST_F(TabletTestSuite, checksumValidation) {
+TEST_F(TabletTest, checksumValidation) {
   std::vector<uint64_t> metadataCompressionThresholds{
       // use size 0 here so it will always force a footer compression
       0,
@@ -505,7 +499,6 @@ TEST_F(TabletTestSuite, checksumValidation) {
       for (auto checksumChunked : {true, false}) {
         checksumTest(
             rng,
-            *this->pool_,
             metadataCompressionThreshold,
             algorithm,
             checksumChunked,
@@ -520,15 +513,14 @@ TEST_F(TabletTestSuite, checksumValidation) {
   }
 }
 
-TEST(TabletTests, optionalSections) {
+TEST_F(TabletTest, optionalSections) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
 
-  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
-  auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool, {});
+  auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
 
   // size1 is above the compression threshold and may be compressed
   // size2 is below the compression threshold and won't be compressed
@@ -570,7 +562,7 @@ TEST(TabletTests, optionalSections) {
   for (auto useChainedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
         file, useChainedBuffers);
-    auto tablet = nimble::TabletReader::create(&readFile, *pool);
+    auto tablet = nimble::TabletReader::create(&readFile, *pool_);
 
     ASSERT_EQ(tablet->optionalSections().size(), 4);
 
@@ -640,18 +632,17 @@ TEST(TabletTests, optionalSections) {
   }
 }
 
-TEST(TabletTests, optionalSectionsEmpty) {
-  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+TEST_F(TabletTest, optionalSectionsEmpty) {
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
-  auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool, {});
+  auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
 
   tabletWriter->close();
 
   for (auto useChainedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
         file, useChainedBuffers);
-    auto tablet = nimble::TabletReader::create(&readFile, *pool);
+    auto tablet = nimble::TabletReader::create(&readFile, *pool_);
 
     ASSERT_TRUE(tablet->optionalSections().empty());
 
@@ -660,17 +651,58 @@ TEST(TabletTests, optionalSectionsEmpty) {
   }
 }
 
-TEST(TabletTests, optionalSectionsPreload) {
+TEST_F(TabletTest, hasOptionalSection) {
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
+
+  // Write some optional sections
+  tabletWriter->writeOptionalSection("section1", "data1");
+  tabletWriter->writeOptionalSection("section2", "data2");
+  tabletWriter->writeOptionalSection("section3", "data3");
+
+  tabletWriter->close();
+
+  nimble::testing::InMemoryTrackableReadFile readFile(file, true);
+  auto tablet = nimble::TabletReader::create(&readFile, *pool_);
+
+  // Test that hasOptionalSection returns true for existing sections
+  EXPECT_TRUE(tablet->hasOptionalSection("section1"));
+  EXPECT_TRUE(tablet->hasOptionalSection("section2"));
+  EXPECT_TRUE(tablet->hasOptionalSection("section3"));
+
+  // Test that hasOptionalSection returns false for non-existing sections
+  EXPECT_FALSE(tablet->hasOptionalSection("section4"));
+  EXPECT_FALSE(tablet->hasOptionalSection("nonexistent"));
+  EXPECT_FALSE(tablet->hasOptionalSection(""));
+}
+
+TEST_F(TabletTest, hasOptionalSectionEmpty) {
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
+
+  tabletWriter->close();
+
+  nimble::testing::InMemoryTrackableReadFile readFile(file, true);
+  auto tablet = nimble::TabletReader::create(&readFile, *pool_);
+
+  // Test that hasOptionalSection returns false when there are no sections
+  EXPECT_FALSE(tablet->hasOptionalSection("section1"));
+  EXPECT_FALSE(tablet->hasOptionalSection(""));
+  EXPECT_FALSE(tablet->hasOptionalSection("any_name"));
+}
+
+TEST_F(TabletTest, optionalSectionsPreload) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
 
   for ([[maybe_unused]] const auto footerCompressionThreshold :
        {0U, std::numeric_limits<uint32_t>::max()}) {
-    auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
     std::string file;
     velox::InMemoryWriteFile writeFile(&file);
-    auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool, {});
+    auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
 
     // Using random string to make sure compression can't compress it well
     std::string random;
@@ -693,7 +725,7 @@ TEST(TabletTests, optionalSectionsPreload) {
       for (auto useChainedBuffers : {false, true}) {
         nimble::testing::InMemoryTrackableReadFile readFile(
             file, useChainedBuffers);
-        auto tablet = nimble::TabletReader::create(&readFile, *pool, preload);
+        auto tablet = nimble::TabletReader::create(&readFile, *pool_, preload);
 
         // Expecting only the initial footer read.
         ASSERT_EQ(expectedInitialReads, readFile.chunks().size());
@@ -827,8 +859,6 @@ TEST(TabletTests, optionalSectionsPreload) {
   }
 }
 
-namespace {
-
 enum class ActionEnum { kCreated, kDestroyed };
 
 using Action = std::pair<ActionEnum, int>;
@@ -858,9 +888,7 @@ class Guard {
   Actions& actions_;
 };
 
-} // namespace
-
-TEST(TabletTests, referenceCountedCache) {
+TEST_F(TabletTest, referenceCountedCache) {
   Actions actions;
   facebook::nimble::ReferenceCountedCache<int, Guard> cache{
       [&](int id) { return std::make_shared<Guard>(id, actions); }};
@@ -956,7 +984,7 @@ TEST(TabletTests, referenceCountedCache) {
            {ActionEnum::kDestroyed, 0}}));
 }
 
-TEST(TabletTests, referenceCountedCacheStressParallelDuplicates) {
+TEST_F(TabletTest, referenceCountedCacheStressParallelDuplicates) {
   std::atomic_int counter{0};
   facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
     ++counter;
@@ -978,7 +1006,7 @@ TEST(TabletTests, referenceCountedCacheStressParallelDuplicates) {
   EXPECT_GE(counter.load(), kEntryIds);
 }
 
-TEST(TabletTests, referenceCountedCacheStressParallelDuplicatesSaveEntries) {
+TEST_F(TabletTest, referenceCountedCacheStressParallelDuplicatesSaveEntries) {
   std::atomic_int counter{0};
   facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
     ++counter;
@@ -1002,7 +1030,7 @@ TEST(TabletTests, referenceCountedCacheStressParallelDuplicatesSaveEntries) {
   EXPECT_EQ(counter.load(), kEntryIds);
 }
 
-TEST(TabletTests, referenceCountedCacheStress) {
+TEST_F(TabletTest, referenceCountedCacheStress) {
   std::atomic_int counter{0};
   facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
     ++counter;
@@ -1023,7 +1051,7 @@ TEST(TabletTests, referenceCountedCacheStress) {
   barrier.waitAll();
   EXPECT_GE(counter.load(), kEntryIds);
 }
-TEST(TabletTests, referenceCountedCacheStressSaveEntries) {
+TEST_F(TabletTest, referenceCountedCacheStressSaveEntries) {
   std::atomic_int counter{0};
   facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
     ++counter;
@@ -1046,3 +1074,5 @@ TEST(TabletTests, referenceCountedCacheStressSaveEntries) {
   barrier.waitAll();
   EXPECT_EQ(counter.load(), kEntryIds);
 }
+
+} // namespace
