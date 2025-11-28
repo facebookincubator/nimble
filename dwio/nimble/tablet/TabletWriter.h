@@ -20,6 +20,7 @@
 #include "dwio/nimble/common/Checksum.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
+#include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "velox/common/file/File.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/vector/TypeAliases.h"
@@ -93,12 +94,6 @@ class TabletWriter {
       velox::WriteFile* file,
       velox::memory::MemoryPool& pool,
       Options options);
-
-  struct MetadataSection {
-    uint64_t offset{0};
-    uint32_t size{0};
-    CompressionType compressionType{CompressionType::Uncompressed};
-  };
 
   // Write metadata entry to file
   CompressionType writeMetadata(std::string_view metadata);

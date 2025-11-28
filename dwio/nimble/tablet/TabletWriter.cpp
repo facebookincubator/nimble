@@ -107,10 +107,10 @@ void TabletWriter::close() {
           totalRows,
           stripeCount > 0 ? serialization::CreateMetadataSection(
                                 builder,
-                                stripes.offset,
-                                stripes.size,
+                                stripes.offset(),
+                                stripes.size(),
                                 static_cast<serialization::CompressionType>(
-                                    stripes.compressionType))
+                                    stripes.compressionType()))
                           : 0,
           !stripeGroups_.empty()
               ? builder.CreateVector<
@@ -119,10 +119,10 @@ void TabletWriter::close() {
                     [this, &builder](size_t i) {
                       return serialization::CreateMetadataSection(
                           builder,
-                          stripeGroups_[i].offset,
-                          stripeGroups_[i].size,
+                          stripeGroups_[i].offset(),
+                          stripeGroups_[i].size(),
                           static_cast<serialization::CompressionType>(
-                              stripeGroups_[i].compressionType));
+                              stripeGroups_[i].compressionType()));
                     })
               : 0,
           !optionalSections_.empty()
@@ -212,13 +212,11 @@ CompressionType TabletWriter::writeMetadata(std::string_view metadata) {
   return compressionType;
 }
 
-TabletWriter::MetadataSection TabletWriter::createMetadataSection(
-    std::string_view metadata) {
+MetadataSection TabletWriter::createMetadataSection(std::string_view metadata) {
   auto offset = file_->size();
   auto compressionType = writeMetadata(metadata);
   auto size = static_cast<uint32_t>(file_->size() - offset);
-  return MetadataSection{
-      .offset = offset, .size = size, .compressionType = compressionType};
+  return MetadataSection{offset, size, compressionType};
 }
 
 void TabletWriter::writeOptionalSection(
@@ -262,7 +260,7 @@ void TabletWriter::writeStripeGroup(size_t streamCount, size_t stripeCount) {
   stripeGroups_.emplace_back(createMetadataSection(asView(builder)));
 }
 
-TabletWriter::MetadataSection TabletWriter::writeStripes(size_t stripeCount) {
+MetadataSection TabletWriter::writeStripes(size_t stripeCount) {
   if (stripeCount == 0) {
     return {};
   }
@@ -292,17 +290,17 @@ TabletWriter::createOptionalMetadataSection(
       builder.CreateVector<uint64_t>(
           optionalSections.size(),
           [&optionalSections](size_t i) {
-            return optionalSections[i].second.offset;
+            return optionalSections[i].second.offset();
           }),
       builder.CreateVector<uint32_t>(
           optionalSections.size(),
           [&optionalSections](size_t i) {
-            return optionalSections[i].second.size;
+            return optionalSections[i].second.size();
           }),
       builder.CreateVector<uint8_t>(
           optionalSections.size(), [&optionalSections](size_t i) {
             return static_cast<uint8_t>(
-                optionalSections[i].second.compressionType);
+                optionalSections[i].second.compressionType());
           }));
 }
 
