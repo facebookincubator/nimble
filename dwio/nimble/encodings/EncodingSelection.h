@@ -141,6 +141,11 @@ class NoCompressionPolicy : public CompressionPolicy {
       uint64_t /* compressedSize */) const override {
     return false;
   }
+
+  static const NoCompressionPolicy& instance() {
+    static const NoCompressionPolicy instance{};
+    return instance;
+  }
 };
 
 // Type representing a selected encoding.
