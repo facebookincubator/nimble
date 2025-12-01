@@ -17,6 +17,9 @@
 #pragma once
 
 #include "dwio/nimble/velox/StreamData.h"
+#ifndef DISABLE_META_INTERNAL_MEMORY_REALLOCATION_OPTIMIZATION
+#include "justknobs/JustKnobProxy.h"
+#endif
 
 namespace facebook::nimble {
 namespace detail {
@@ -32,6 +35,14 @@ uint64_t getNewBufferCapacity(
     uint64_t maxChunkSize,
     uint64_t currentCapacityCount,
     uint64_t requiredCapacityCount) {
+#ifndef DISABLE_META_INTERNAL_MEMORY_REALLOCATION_OPTIMIZATION
+  static facebook::jk::BooleanKnob disableMemoryReallocationOptimization(
+      "dwio/nimble_chunking:disable_memory_reallocation_optimization");
+  if (disableMemoryReallocationOptimization()) {
+    return requiredCapacityCount;
+  }
+#endif
+
   const auto maxChunkElementCount = maxChunkSize / sizeof(T);
   if (currentCapacityCount < maxChunkElementCount) {
     return std::max<uint64_t>(
