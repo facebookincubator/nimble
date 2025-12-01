@@ -22,6 +22,7 @@
 
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "folly/Synchronized.h"
 #include "folly/io/IOBuf.h"
 #include "velox/common/file/File.h"
@@ -44,74 +45,6 @@
 namespace facebook::nimble {
 
 using MemoryPool = facebook::velox::memory::MemoryPool;
-
-class MetadataBuffer {
- public:
-  MetadataBuffer(
-      velox::memory::MemoryPool& pool,
-      std::string_view ref,
-      CompressionType type = CompressionType::Uncompressed);
-
-  MetadataBuffer(
-      velox::memory::MemoryPool& pool,
-      const folly::IOBuf& iobuf,
-      size_t offset,
-      size_t length,
-      CompressionType type = CompressionType::Uncompressed);
-
-  MetadataBuffer(
-      velox::memory::MemoryPool& pool,
-      const folly::IOBuf& iobuf,
-      CompressionType type = CompressionType::Uncompressed);
-
-  std::string_view content() const {
-    return {buffer_.data(), buffer_.size()};
-  }
-
- private:
-  Vector<char> buffer_;
-};
-
-class Section {
- public:
-  explicit Section(MetadataBuffer&& buffer) : buffer_{std::move(buffer)} {}
-
-  std::string_view content() const {
-    return buffer_.content();
-  }
-  explicit operator std::string_view() const {
-    return content();
-  }
-
- private:
-  MetadataBuffer buffer_;
-};
-
-class MetadataSection {
- public:
-  MetadataSection(
-      uint64_t offset,
-      uint32_t size,
-      CompressionType compressionType)
-      : offset_{offset}, size_{size}, compressionType_{compressionType} {}
-
-  uint64_t offset() const {
-    return offset_;
-  }
-
-  uint32_t size() const {
-    return size_;
-  }
-
-  CompressionType compressionType() const {
-    return compressionType_;
-  }
-
- private:
-  uint64_t offset_;
-  uint32_t size_;
-  CompressionType compressionType_;
-};
 
 class Postscript {
  public:
@@ -256,7 +189,8 @@ class TabletReader {
  public:
   /// Compute checksum from the beginning of the file all the way to footer
   /// size and footer compression type field in postscript.
-  /// chunkSize means each time reads up to chunkSize, until all data are done.
+  /// chunkSize means each time reads up to chunkSize, until all data are
+  /// done.
   static uint64_t calculateChecksum(
       MemoryPool& pool,
       velox::ReadFile* readFile,
@@ -305,6 +239,8 @@ class TabletReader {
       const {
     return optionalSections_;
   }
+
+  bool hasOptionalSection(const std::string& name) const;
 
   std::optional<Section> loadOptionalSection(
       const std::string& name,
@@ -358,8 +294,8 @@ class TabletReader {
   }
 
   /// Returns stream offsets for the specified stripe. Number of streams is
-  /// determined by schema node count at the time when stripe is written, so it
-  /// may have fewer number of items than the final schema node count
+  /// determined by schema node count at the time when stripe is written, so
+  /// it may have fewer number of items than the final schema node count
   std::span<const uint32_t> streamOffsets(const StripeIdentifier& stripe) const;
 
   /// Returns stream sizes for the specified stripe. Has same constraint as
@@ -396,7 +332,9 @@ class TabletReader {
   void initFooter(const folly::IOBuf& footerIoBuf, uint64_t footerIoSize);
 
   uint32_t stripeGroupIndex(uint32_t stripeIndex) const;
+
   std::shared_ptr<StripeGroup> loadStripeGroup(uint32_t stripeGroupIndex) const;
+
   std::shared_ptr<StripeGroup> stripeGroup(uint32_t stripeGroupIndex) const;
 
   void initStripes(
@@ -416,8 +354,8 @@ class TabletReader {
   // Non-owning pointer to the file for reading. Always valid during the
   // lifetime of TabletReader.
   velox::ReadFile* const file_;
-  // Optional owned file pointer. When provided, ensures the file remains valid
-  // throughout TabletReader's lifetime.
+  // Optional owned file pointer. When provided, ensures the file remains
+  // valid throughout TabletReader's lifetime.
   const std::shared_ptr<velox::ReadFile> ownedFile_;
 
   Postscript ps_;
@@ -431,6 +369,7 @@ class TabletReader {
   uint32_t stripeCount_{0};
   const uint32_t* stripeRowCounts_{nullptr};
   const uint64_t* stripeOffsets_{nullptr};
+
   std::unordered_map<std::string, MetadataSection> optionalSections_;
   mutable folly::Synchronized<
       std::unordered_map<std::string, std::unique_ptr<MetadataBuffer>>>
