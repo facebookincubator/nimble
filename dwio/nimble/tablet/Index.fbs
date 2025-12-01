@@ -27,7 +27,8 @@ table StripeValueIndex {
 }
 
 table StripePositionIndex {
-  stream_chunks:[uint32];
+  stream_chunk_counts:[uint32];
+  stream_start_chunk_offsets:[uint32];
   stream_chunk_rows:[uint32];
   stream_chunk_offsets:[uint32];
 }
@@ -40,7 +41,7 @@ table StripeIndexGroup {
 
 table Index {
   stripe_keys:[string];
-  stripe_row_counts:[uint32];
+  index_columns:[string];
   stripe_group_indices:[uint32];
   stripe_index_groups:[MetadataSection];
 }
