@@ -171,17 +171,21 @@ void traverseTablet(
   uint32_t startStripe = stripeIndex ? *stripeIndex : 0;
   uint32_t endStripe =
       stripeIndex ? *stripeIndex : tabletReader.stripeCount() - 1;
+  // Stripe identifier internally is holding on to a reference counted cache of
+  // stripe groups. We must hold on to it across loop iterations in order to
+  // maintain the items in the cache.
+  std::optional<StripeIdentifier> stripeIdentifier;
   for (uint32_t i = startStripe; i <= endStripe; ++i) {
     if (stripeVisitor) {
       stripeVisitor(i);
     }
     if (streamVisitor) {
-      const auto stripeIdentifier = tabletReader.stripeIdentifier(i);
+      stripeIdentifier = tabletReader.stripeIdentifier(i);
       std::vector<uint32_t> streamIdentifiers(
-          tabletReader.streamCount(stripeIdentifier));
+          tabletReader.streamCount(stripeIdentifier.value()));
       std::iota(streamIdentifiers.begin(), streamIdentifiers.end(), 0);
       auto streams = tabletReader.load(
-          stripeIdentifier,
+          stripeIdentifier.value(),
           {streamIdentifiers.cbegin(), streamIdentifiers.cend()});
       for (uint32_t j = 0; j < streams.size(); ++j) {
         auto& stream = streams[j];
@@ -472,9 +476,13 @@ void NimbleDumpLib::emitStripes(bool noHeader) {
        {"Stripe Size", 15, Alignment::Right},
        {"Row Count", 10, Alignment::Right}},
       noHeader);
+  // Stripe identifier internally is holding on to a reference counted cache of
+  // stripe groups. We must hold on to it across loop iterations in order to
+  // maintain the items in the cache.
+  std::optional<StripeIdentifier> stripeIdentifier;
   for (auto i = 0; i < tabletReader->stripeCount(); ++i) {
-    auto stripeIdentifier = tabletReader->stripeIdentifier(i);
-    auto sizes = tabletReader->streamSizes(stripeIdentifier);
+    stripeIdentifier = tabletReader->stripeIdentifier(i);
+    auto sizes = tabletReader->streamSizes(stripeIdentifier.value());
     auto stripeSize = std::accumulate(sizes.begin(), sizes.end(), 0UL);
     formatter.writeRow({
         folly::to<std::string>(i),
