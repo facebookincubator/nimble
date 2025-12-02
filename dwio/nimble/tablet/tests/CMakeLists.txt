@@ -11,8 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_executable(
-  nimble_tabletReader_tests TabletTest.cpp MetadataBufferTest.cpp)
+add_executable(nimble_tabletReader_tests TabletTest.cpp MetadataBufferTest.cpp)
 
 add_test(nimble_tabletReader_tests nimble_tabletReader_tests)
 
