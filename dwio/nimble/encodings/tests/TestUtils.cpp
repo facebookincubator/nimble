@@ -38,11 +38,8 @@ uint64_t TestUtils::getRawDataSize(
   if (encodingType == EncodingType::Nullable) {
     auto pos = encodingStr.data() + kPrefixSize;
     auto nonNullsSize = encoding::readUint32(pos);
-    auto nonNullsCount = encoding::peek<uint32_t>(pos + kRowCountOffset);
-    // We do not count the bits indicating non-null, therefore we only
-    // include the size of the null bits and the non-null values.
-    return getRawDataSize(memoryPool, {pos, nonNullsSize}) +
-        (rowCount - nonNullsCount);
+    // Sum of the  nulls count and size of the non-null child encoding.
+    return getRawDataSize(memoryPool, {pos, nonNullsSize}) + rowCount;
   } else {
     if (dataType != DataType::String) {
       auto typeSize = nimble::detail::dataTypeSize(dataType);

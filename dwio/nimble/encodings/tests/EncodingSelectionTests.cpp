@@ -989,7 +989,7 @@ TEST(EncodingSelectionTests, TestNullable) {
   // test getRawDataSize
   auto size =
       facebook::nimble::test::TestUtils::getRawDataSize(*pool, serialized);
-  auto expectedSize = 15 + 6; // 15 bytes for string data, 6 bytes for nulls
+  auto expectedSize = 15 + 10; // 15 bytes for string data, 10 bytes for nulls
   ASSERT_EQ(size, expectedSize);
 
   LOG(INFO) << "Final size: " << serialized.size();
