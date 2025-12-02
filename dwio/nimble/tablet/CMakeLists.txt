@@ -29,7 +29,7 @@ target_include_directories(
 )
 add_dependencies(nimble_footer_fb nimble_footer_schema_fb)
 
-add_library(nimble_tablet_common Compression.cpp, MetadataBuffer.cpp)
+add_library(nimble_tablet_common Compression.cpp MetadataBuffer.cpp)
 target_link_libraries(nimble_tablet_common nimble_footer_fb Folly::folly)
 
 add_library(nimble_tablet_reader TabletReader.cpp)
