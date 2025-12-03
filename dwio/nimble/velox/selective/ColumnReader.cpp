@@ -128,6 +128,10 @@ std::unique_ptr<dwio::common::SelectiveColumnReader> buildColumnReader(
           return std::make_unique<NullColumnReader>(
               requestedType, fileType, params, scanSpec);
         }
+        if (scanSpec.isFlatMapAsStruct()) {
+          return std::make_unique<MapAsStructColumnReader>(
+              requestedType, fileType, params, scanSpec);
+        }
         return std::make_unique<MapColumnReader>(
             requestedType, fileType, params, scanSpec);
       }

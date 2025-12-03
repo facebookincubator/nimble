@@ -69,6 +69,25 @@ class MapColumnReader : public velox::dwio::common::SelectiveMapColumnReader {
       const override;
 };
 
+class MapAsStructColumnReader
+    : public velox::dwio::common::SelectiveMapAsStructColumnReader {
+ public:
+  MapAsStructColumnReader(
+      const velox::TypePtr& requestedType,
+      const std::shared_ptr<const velox::dwio::common::TypeWithId>& fileType,
+      NimbleParams& params,
+      velox::common::ScanSpec& scanSpec);
+
+  void readLengths(int32_t* lengths, int32_t numLengths, const uint64_t* nulls)
+      override;
+
+  uint64_t skip(uint64_t numValues) override;
+
+  void seekToRowGroup(int64_t /*index*/) override {
+    NIMBLE_UNREACHABLE();
+  }
+};
+
 class DeduplicatedArrayColumnReader;
 class DeduplicatedMapColumnReader;
 
