@@ -359,40 +359,84 @@ bool ListColumnReader::estimateMaterializedSize(
       formatData(), children(), byteSize, rowCount);
 }
 
+namespace {
+
+void makeMapChildrenReaders(
+    const velox::dwio::common::TypeWithId& fileType,
+    const velox::Type& requestedType,
+    NimbleParams& params,
+    const velox::common::ScanSpec& scanSpec,
+    std::unique_ptr<velox::dwio::common::SelectiveColumnReader>& keyReader,
+    std::unique_ptr<velox::dwio::common::SelectiveColumnReader>&
+        elementReader) {
+  auto& keyType = requestedType.childAt(0);
+  auto& valueType = requestedType.childAt(1);
+  auto& fileKeyType = fileType.childAt(0);
+  auto& fileValueType = fileType.childAt(1);
+  auto& mapSchemaType = params.nimbleType()->asMap();
+  auto keyParams = params.makeChildParams(mapSchemaType.keys());
+  keyReader = buildColumnReader(
+      keyType,
+      fileKeyType,
+      keyParams,
+      *scanSpec.children()[0],
+      /*isRoot=*/false);
+  auto valueParams = params.makeChildParams(mapSchemaType.values());
+  elementReader = buildColumnReader(
+      valueType,
+      fileValueType,
+      valueParams,
+      *scanSpec.children()[1],
+      /*isRoot=*/false);
+}
+
+template <typename ReadLengths>
+uint64_t skipMapChildren(
+    uint64_t numValues,
+    velox::memory::MemoryPool* memoryPool,
+    velox::dwio::common::FormatData& formatData,
+    velox::dwio::common::SelectiveColumnReader* keyReader,
+    velox::dwio::common::SelectiveColumnReader* elementReader,
+    int64_t& childTargetReadOffset,
+    ReadLengths&& readLengths) {
+  auto nullsBuffer = velox::AlignedBuffer::allocate<uint64_t>(
+      velox::bits::nwords(numValues), memoryPool);
+  auto nulls = nullsBuffer->as<uint64_t>();
+  formatData.readNulls(numValues, nullptr, nullsBuffer);
+  NIMBLE_CHECK(keyReader || elementReader);
+  nimble::Vector<int32_t> buffer{memoryPool, numValues};
+  uint64_t childElements = 0;
+  readLengths(buffer.data(), numValues, nullptr);
+  for (size_t i = 0; i < numValues; ++i) {
+    if (!velox::bits::isBitNull(nulls, i)) {
+      childElements += buffer[i];
+    }
+  }
+  if (keyReader) {
+    keyReader->seekTo(keyReader->readOffset() + childElements, false);
+  }
+  if (elementReader) {
+    elementReader->seekTo(elementReader->readOffset() + childElements, false);
+  }
+  childTargetReadOffset += childElements;
+  return velox::bits::countNonNulls(nulls, 0, numValues);
+}
+
+} // namespace
+
 MapColumnReader::MapColumnReader(
     const velox::TypePtr& requestedType,
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& fileType,
     NimbleParams& params,
     velox::common::ScanSpec& scanSpec)
     : SelectiveMapColumnReader{requestedType, fileType, params, scanSpec} {
-  auto& keyType = requestedType_->childAt(0);
-  auto& valueType = requestedType_->childAt(1);
-  auto& fileKeyType = fileType_->childAt(0);
-  auto& fileValueType = fileType_->childAt(1);
-  if (scanSpec_->children().empty()) {
-    scanSpec.getOrCreateChild(
-        velox::common::Subfield(velox::common::ScanSpec::kMapKeysFieldName));
-    scanSpec.getOrCreateChild(
-        velox::common::Subfield(velox::common::ScanSpec::kMapValuesFieldName));
-  }
-  scanSpec_->children()[0]->setProjectOut(true);
-  scanSpec_->children()[1]->setProjectOut(true);
-
-  auto& mapSchemaType = params.nimbleType()->asMap();
-  auto keyParams = params.makeChildParams(mapSchemaType.keys());
-  keyReader_ = buildColumnReader(
-      keyType,
-      fileKeyType,
-      keyParams,
-      *scanSpec_->children()[0],
-      /*isRoot=*/false);
-  auto valueParams = params.makeChildParams(mapSchemaType.values());
-  elementReader_ = buildColumnReader(
-      valueType,
-      fileValueType,
-      valueParams,
-      *scanSpec_->children()[1],
-      /*isRoot=*/false);
+  makeMapChildrenReaders(
+      *fileType_,
+      *requestedType_,
+      params,
+      *scanSpec_,
+      keyReader_,
+      elementReader_);
   children_ = {keyReader_.get(), elementReader_.get()};
 }
 
@@ -412,32 +456,16 @@ void MapColumnReader::readLengths(
 }
 
 uint64_t MapColumnReader::skip(uint64_t numValues) {
-  auto nullsBuffer = velox::AlignedBuffer::allocate<uint64_t>(
-      velox::bits::nwords(numValues), memoryPool_);
-  auto nulls = nullsBuffer->as<uint64_t>();
-  formatData_->readNulls(numValues, nullptr, nullsBuffer);
-  if (keyReader_ || elementReader_) {
-    nimble::Vector<int32_t> buffer{memoryPool_, numValues};
-    uint64_t childElements = 0;
-    readLengths(buffer.data(), numValues, nullptr);
-    for (size_t i = 0; i < numValues; ++i) {
-      if (velox::bits::isBitSet(nulls, i)) {
-        childElements += buffer[i];
-      }
-    }
-    if (keyReader_) {
-      keyReader_->seekTo(keyReader_->readOffset() + childElements, false);
-    }
-    if (elementReader_) {
-      elementReader_->seekTo(
-          elementReader_->readOffset() + childElements, false);
-    }
-    childTargetReadOffset_ += childElements;
-
-  } else {
-    VELOX_FAIL("Variable length type reader with no children");
-  }
-  return velox::bits::countNonNulls(nulls, 0, numValues);
+  return skipMapChildren(
+      numValues,
+      memoryPool_,
+      *formatData_,
+      keyReader_.get(),
+      elementReader_.get(),
+      childTargetReadOffset_,
+      [this](int32_t* lengths, int32_t numLengths, const uint64_t* nulls) {
+        readLengths(lengths, numLengths, nulls);
+      });
 }
 
 bool MapColumnReader::estimateMaterializedSize(
@@ -445,6 +473,54 @@ bool MapColumnReader::estimateMaterializedSize(
     size_t& rowCount) const {
   return estimateMaterializedSizeImpl(
       formatData(), children(), byteSize, rowCount);
+}
+
+MapAsStructColumnReader::MapAsStructColumnReader(
+    const velox::TypePtr& requestedType,
+    const std::shared_ptr<const velox::dwio::common::TypeWithId>& fileType,
+    NimbleParams& params,
+    velox::common::ScanSpec& scanSpec)
+    : SelectiveMapAsStructColumnReader{
+          requestedType,
+          fileType,
+          params,
+          scanSpec} {
+  makeMapChildrenReaders(
+      *fileType_,
+      *requestedType_,
+      params,
+      mapScanSpec_,
+      keyReader_,
+      elementReader_);
+  children_ = {keyReader_.get(), elementReader_.get()};
+}
+
+void MapAsStructColumnReader::readLengths(
+    int32_t* lengths,
+    int32_t numLengths,
+    const uint64_t* nulls) {
+  // Relies on the strong assumption about readNulls are called with exactly the
+  // same row count.
+  NIMBLE_CHECK_LE(
+      numLengths * sizeof(int32_t),
+      formatData().as<NimbleData>().getPreloadedValues()->capacity());
+  std::memcpy(
+      lengths,
+      formatData().as<NimbleData>().getPreloadedValues()->as<int32_t>(),
+      numLengths * sizeof(int32_t));
+}
+
+uint64_t MapAsStructColumnReader::skip(uint64_t numValues) {
+  return skipMapChildren(
+      numValues,
+      memoryPool_,
+      *formatData_,
+      keyReader_.get(),
+      elementReader_.get(),
+      childTargetReadOffset_,
+      [this](int32_t* lengths, int32_t numLengths, const uint64_t* nulls) {
+        readLengths(lengths, numLengths, nulls);
+      });
 }
 
 DeduplicatedReadHelper::DeduplicatedReadHelper(
@@ -941,14 +1017,6 @@ DeduplicatedMapColumnReader::DeduplicatedMapColumnReader(
   auto& valueType = requestedType_->childAt(1);
   auto& fileKeyType = fileType_->childAt(0);
   auto& fileValueType = fileType_->childAt(1);
-  if (scanSpec_->children().empty()) {
-    scanSpec.getOrCreateChild(
-        velox::common::Subfield(velox::common::ScanSpec::kMapKeysFieldName));
-    scanSpec.getOrCreateChild(
-        velox::common::Subfield(velox::common::ScanSpec::kMapValuesFieldName));
-  }
-  scanSpec_->children()[0]->setProjectOut(true);
-  scanSpec_->children()[1]->setProjectOut(true);
 
   auto& mapSchemaType = params.nimbleType()->asSlidingWindowMap();
   auto keyParams = params.makeChildParams(mapSchemaType.keys());

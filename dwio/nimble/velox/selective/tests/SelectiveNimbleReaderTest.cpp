@@ -1390,5 +1390,87 @@ TEST_F(SelectiveNimbleReaderTest, nativeFlatMap) {
       }));
 }
 
+TEST_F(SelectiveNimbleReaderTest, mapAsStruct) {
+  auto input = makeRowVector({
+      makeMapVector<int32_t, int64_t>({{{1, 4}, {2, 5}}, {{1, 6}, {3, 7}}}),
+  });
+  auto outType = ROW({"c0"}, {ROW({"3", "1"}, BIGINT())});
+  auto spec = std::make_shared<common::ScanSpec>("<root>");
+  spec->addAllChildFields(*outType);
+  spec->childByName("c0")->setFlatMapAsStruct(true);
+  auto readers = makeReaders(input, spec);
+  VectorPtr batch = BaseVector::create(outType, 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, batch), 2);
+  auto expected = makeRowVector({
+      makeRowVector(
+          {"3", "1"},
+          {
+              makeNullableFlatVector<int64_t>({std::nullopt, 7}),
+              makeFlatVector<int64_t>({4, 6}),
+          }),
+  });
+  velox::test::assertEqualVectors(expected, batch);
+}
+
+TEST_F(SelectiveNimbleReaderTest, mapAsStructFilterAfterRead) {
+  auto input = makeRowVector({
+      makeMapVector<int32_t, int64_t>({{{1, 4}, {2, 5}}, {}, {{1, 6}, {3, 7}}}),
+      makeRowVector(
+          {makeConstant<int64_t>(0, 3)}, [](auto i) { return i == 0; }),
+  });
+  auto outType =
+      ROW({"c0", "c1"}, {ROW({"3", "1"}, BIGINT()), ROW({"c0"}, BIGINT())});
+  auto spec = std::make_shared<common::ScanSpec>("<root>");
+  spec->addAllChildFields(*outType);
+  auto* c0Spec = spec->childByName("c0");
+  c0Spec->setFlatMapAsStruct(true);
+  c0Spec->setFilter(std::make_shared<common::IsNotNull>());
+  spec->childByName("c1")->setFilter(std::make_shared<common::IsNotNull>());
+  auto readers = makeReaders(input, spec);
+  VectorPtr batch = BaseVector::create(outType, 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, batch), 3);
+  auto expected = makeRowVector({
+      makeRowVector(
+          {"3", "1"},
+          {
+              makeNullableFlatVector<int64_t>({std::nullopt, 7}),
+              makeNullableFlatVector<int64_t>({std::nullopt, 6}),
+          }),
+      makeRowVector({makeConstant<int64_t>(0, 2)}),
+  });
+  velox::test::assertEqualVectors(expected, batch);
+}
+
+TEST_F(SelectiveNimbleReaderTest, mapAsStructAllEmpty) {
+  auto input = makeRowVector({makeMapVector<int32_t, int64_t>({{}, {}})});
+  auto outType = ROW({"c0"}, {ROW({"1"}, BIGINT())});
+  auto spec = std::make_shared<common::ScanSpec>("<root>");
+  spec->addAllChildFields(*outType);
+  spec->childByName("c0")->setFlatMapAsStruct(true);
+  auto readers = makeReaders(input, spec);
+  VectorPtr batch = BaseVector::create(outType, 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, batch), 2);
+  auto expected = makeRowVector({
+      makeRowVector({"1"}, {makeNullConstant(TypeKind::BIGINT, 2)}),
+  });
+  velox::test::assertEqualVectors(expected, batch);
+}
+
+TEST_F(SelectiveNimbleReaderTest, mapAsStructAllNulls) {
+  auto input = makeRowVector(
+      {makeNullableMapVector<int32_t, int64_t>({std::nullopt, std::nullopt})});
+  auto outType = ROW({"c0"}, {ROW({"1"}, BIGINT())});
+  auto spec = std::make_shared<common::ScanSpec>("<root>");
+  spec->addAllChildFields(*outType);
+  spec->childByName("c0")->setFlatMapAsStruct(true);
+  auto readers = makeReaders(input, spec);
+  VectorPtr batch = BaseVector::create(outType, 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, batch), 2);
+  auto expected = makeRowVector({
+      BaseVector::createNullConstant(ROW({"1"}, BIGINT()), 2, pool()),
+  });
+  velox::test::assertEqualVectors(expected, batch);
+}
+
 } // namespace
 } // namespace facebook::nimble

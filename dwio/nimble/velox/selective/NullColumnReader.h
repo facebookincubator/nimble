@@ -48,8 +48,14 @@ class NullColumnReader : public velox::dwio::common::SelectiveColumnReader {
   }
 
   void getValues(const velox::RowSet& rows, velox::VectorPtr* result) final {
-    *result = velox::BaseVector::createNullConstant(
-        requestedType_, rows.size(), memoryPool_);
+    if (scanSpec_->isFlatMapAsStruct()) {
+      NIMBLE_CHECK(result->get() && result->get()->type()->isRow());
+      *result = velox::BaseVector::createNullConstant(
+          result->get()->type(), rows.size(), memoryPool_);
+    } else {
+      *result = velox::BaseVector::createNullConstant(
+          requestedType_, rows.size(), memoryPool_);
+    }
   }
 
   bool estimateMaterializedSize(size_t& byteSize, size_t& rowCount)
