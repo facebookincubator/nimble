@@ -560,6 +560,21 @@ class PreloadedStreamLoader : public StreamLoader {
   const Vector<char> stream_;
 };
 
+struct RegionHash {
+  size_t operator()(const velox::common::Region& region) const {
+    return folly::hash::hash_combine(
+        std::hash<size_t>{}(region.offset), std::hash<size_t>{}(region.length));
+  }
+};
+
+struct RegionEqual {
+  bool operator()(
+      const velox::common::Region& lhs,
+      const velox::common::Region& rhs) const {
+    return lhs.offset == rhs.offset && lhs.length == rhs.length;
+  }
+};
+
 } // namespace
 
 uint32_t TabletReader::stripeGroupIndex(uint32_t stripeIndex) const {
@@ -632,10 +647,15 @@ std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
   const uint32_t streamsToLoad = streamIdentifiers.size();
 
   std::vector<std::unique_ptr<StreamLoader>> streams(streamsToLoad);
-  std::vector<velox::common::Region> regions;
-  std::vector<uint32_t> streamIdices;
-  regions.reserve(streamsToLoad);
-  streamIdices.reserve(streamsToLoad);
+  folly::F14FastMap<
+      velox::common::Region,
+      std::vector<uint32_t>,
+      RegionHash,
+      RegionEqual>
+      regionToStreamIndices;
+  std::vector<velox::common::Region> uniqueRegions;
+  regionToStreamIndices.reserve(streamsToLoad);
+  uniqueRegions.reserve(streamsToLoad);
 
   for (uint32_t i = 0; i < streamsToLoad; ++i) {
     const uint32_t streamIdentifier = streamIdentifiers[i];
@@ -652,25 +672,34 @@ std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
 
     const auto streamStart =
         stripeOffset + stripeStreamOffsets[streamIdentifier];
-    regions.emplace_back(
-        streamStart, streamSize, streamLabel(streamIdentifier));
-    streamIdices.push_back(i);
+
+    auto it = regionToStreamIndices.emplace(
+        velox::common::Region{streamStart, streamSize},
+        std::vector<uint32_t>{});
+    if (it.second) {
+      uniqueRegions.emplace_back(
+          streamStart, streamSize, streamLabel(streamIdentifier));
+    }
+    it.first->second.push_back(i);
+  }
+  if (!uniqueRegions.empty()) {
+    std::vector<folly::IOBuf> iobufs(uniqueRegions.size());
+    file_->preadv(uniqueRegions, {iobufs.data(), iobufs.size()});
+    NIMBLE_DCHECK_EQ(
+        iobufs.size(), uniqueRegions.size(), "Buffer size mismatch.");
+    for (uint32_t i = 0; i < uniqueRegions.size(); ++i) {
+      // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
+      const auto size = iobufs[i].computeChainDataLength();
+      const auto& streamIndices = regionToStreamIndices[uniqueRegions[i]];
+      for (uint32_t streamIndex : streamIndices) {
+        Vector<char> vector{pool_, size};
+        copyTo(iobufs[i], vector.data(), vector.size());
+        streams[streamIndex] =
+            std::make_unique<PreloadedStreamLoader>(std::move(vector));
+      }
+    }
   }
 
-  if (regions.empty()) {
-    return streams;
-  }
-
-  std::vector<folly::IOBuf> iobufs(regions.size());
-  file_->preadv(regions, {iobufs.data(), iobufs.size()});
-  NIMBLE_CHECK_EQ(iobufs.size(), streamIdices.size(), "Buffer size mismatch.");
-  for (uint32_t i = 0; i < streamIdices.size(); ++i) {
-    const auto size = iobufs[i].computeChainDataLength();
-    Vector<char> vector{pool_, size};
-    copyTo(iobufs[i], vector.data(), vector.size());
-    streams[streamIdices[i]] =
-        std::make_unique<PreloadedStreamLoader>(std::move(vector));
-  }
   return streams;
 }
 

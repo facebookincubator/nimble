@@ -80,6 +80,95 @@ std::string_view asView(const flatbuffers::FlatBufferBuilder& builder) {
       reinterpret_cast<const char*>(builder.GetBufferPointer()),
       builder.GetSize()};
 }
+
+struct StreamHash {
+  size_t operator()(const Stream* stream) const {
+    folly::hash::SpookyHashV2 hash{};
+    hash.Init(0, 0);
+    for (const auto& chunk : stream->chunks) {
+      for (const auto content : chunk.content) {
+        hash.Update(content.data(), content.size());
+      }
+    }
+
+    uint64_t hash1;
+    uint64_t hash2;
+    hash.Final(&hash1, &hash2);
+    return static_cast<std::size_t>(hash1);
+  }
+};
+
+struct StreamEqual {
+  bool operator()(const Stream* lhs, const Stream* rhs) const {
+    // Calculate total sizes for early exit
+    size_t lhsSize{0};
+    for (const auto& chunk : lhs->chunks) {
+      for (const auto content : chunk.content) {
+        lhsSize += content.size();
+      }
+    }
+    size_t rhsSize{0};
+    for (const auto& chunk : rhs->chunks) {
+      for (const auto content : chunk.content) {
+        rhsSize += content.size();
+      }
+    }
+
+    if (lhsSize != rhsSize) {
+      return false;
+    }
+
+    size_t lhsChunkIndex{0}, rhsChunkIndex{0};
+    size_t lhsContentIndex{0}, rhsContentIndex{0};
+    size_t lhsPosition{0}, rhsPosition{0};
+
+    while (lhsChunkIndex < lhs->chunks.size() &&
+           rhsChunkIndex < rhs->chunks.size()) {
+      if (lhsContentIndex >= lhs->chunks[lhsChunkIndex].content.size()) {
+        ++lhsChunkIndex;
+        lhsContentIndex = 0;
+        if (lhsChunkIndex >= lhs->chunks.size()) {
+          break;
+        }
+      }
+      if (rhsContentIndex >= rhs->chunks[rhsChunkIndex].content.size()) {
+        ++rhsChunkIndex;
+        rhsContentIndex = 0;
+        if (rhsChunkIndex >= rhs->chunks.size()) {
+          break;
+        }
+      }
+
+      const auto& lhsView = lhs->chunks[lhsChunkIndex].content[lhsContentIndex];
+      const auto& rhsView = rhs->chunks[rhsChunkIndex].content[rhsContentIndex];
+
+      size_t compareSize =
+          std::min(lhsView.size() - lhsPosition, rhsView.size() - rhsPosition);
+
+      if (std::memcmp(
+              lhsView.data() + lhsPosition,
+              rhsView.data() + rhsPosition,
+              compareSize) != 0) {
+        return false;
+      }
+
+      lhsPosition += compareSize;
+      rhsPosition += compareSize;
+
+      if (lhsPosition == lhsView.size()) {
+        ++lhsContentIndex;
+        lhsPosition = 0;
+      }
+      if (rhsPosition == rhsView.size()) {
+        ++rhsContentIndex;
+        rhsPosition = 0;
+      }
+    }
+
+    return true;
+  }
+};
+
 } // namespace
 
 void TabletWriter::close() {
@@ -176,18 +265,91 @@ void TabletWriter::writeStripe(uint32_t rowCount, std::vector<Stream> streams) {
     streams = options_.layoutPlanner->getLayout(std::move(streams));
   }
 
-  const auto fileOffset = file_->size();
-  NIMBLE_CHECK_EQ(fileOffset, stripeOffsets_.back());
-  for (const auto& stream : streams) {
-    const uint32_t streamIndex = stream.offset;
-    // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
-    stripeStreamOffsets[streamIndex] = file_->size() - stripeOffsets_.back();
-    for (const auto& chunk : stream.chunks) {
-      writeChunkWithChecksum(chunk);
+  if (options_.streamDeduplicationEnabled) {
+    folly::F14FastMap<
+        const Stream*,
+        std::pair<uint32_t, uint32_t>,
+        StreamHash,
+        StreamEqual>
+        uniqueStreams;
+
+    for (const auto& stream : streams) {
+      const uint32_t index = stream.offset;
+      auto it = uniqueStreams.emplace(
+          &stream, std::make_pair<uint32_t, uint32_t>(0, 0));
+
+      NIMBLE_DCHECK_GT(
+          stripeStreamOffsets.size(),
+          index,
+          "Invalid stripe stream offsets capacity.");
+      NIMBLE_DCHECK_GT(
+          stripeStreamSizes.size(),
+          index,
+          "Invalid stripe stream sizes capacity.");
+
+      if (it.second) {
+        // If we are here, this is a new stream, and needs to be added to the
+        // file.
+        NIMBLE_CHECK_LT(
+            file_->size() - stripeOffsets_.back(),
+            std::numeric_limits<uint32_t>::max(),
+            "Unexpected stream offset");
+        stripeStreamOffsets[index] =
+            static_cast<uint32_t>(file_->size() - stripeOffsets_.back());
+
+        writeStreamWithChecksum(stream);
+
+        NIMBLE_DCHECK_LT(
+            file_->size() -
+                (stripeStreamOffsets[index] + stripeOffsets_.back()),
+            std::numeric_limits<uint32_t>::max(),
+            "Unexpected stream size");
+        stripeStreamSizes[index] = static_cast<uint32_t>(
+            file_->size() -
+            (stripeStreamOffsets[index] + stripeOffsets_.back()));
+
+        it.first->second.first = stripeStreamOffsets[index];
+        it.first->second.second = stripeStreamSizes[index];
+      } else {
+        // If we are here, this is a duplicate stream, so we need to reference
+        // the original stream instead of this one.
+
+        // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
+        stripeStreamOffsets[index] = it.first->second.first;
+        // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
+        stripeStreamSizes[index] = it.first->second.second;
+      }
     }
-    // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
-    stripeStreamSizes[streamIndex] = file_->size() -
-        (stripeStreamOffsets[streamIndex] + stripeOffsets_.back());
+  } else {
+    for (const auto& stream : streams) {
+      const uint32_t index = stream.offset;
+
+      NIMBLE_DCHECK_GT(
+          stripeStreamOffsets.size(),
+          index,
+          "Invalid stripe stream offsets capacity.");
+      NIMBLE_DCHECK_GT(
+          stripeStreamSizes.size(),
+          index,
+          "Invalid stripe stream sizes capacity.");
+
+      NIMBLE_DCHECK_LT(
+          file_->size() - stripeOffsets_.back(),
+          std::numeric_limits<uint32_t>::max(),
+          "Unexpected stream offset");
+      stripeStreamOffsets[index] =
+          static_cast<uint32_t>(file_->size() - stripeOffsets_.back());
+
+      writeStreamWithChecksum(stream);
+
+      NIMBLE_DCHECK_LT(
+          file_->size() - (stripeStreamOffsets[index] + stripeOffsets_.back()),
+          std::numeric_limits<uint32_t>::max(),
+          "Unexpected stream size");
+      // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
+      stripeStreamSizes[index] = static_cast<uint32_t>(
+          file_->size() - (stripeStreamOffsets[index] + stripeOffsets_.back()));
+    }
   }
 
   stripeSizes_.push_back(file_->size() - stripeOffsets_.back());
@@ -346,10 +508,12 @@ void TabletWriter::writeWithChecksum(const folly::IOBuf& buf) {
   }
 }
 
-void TabletWriter::writeChunkWithChecksum(const Chunk& chunk) {
-  NIMBLE_CHECK(!chunk.content.empty());
-  for (const auto& content : chunk.content) {
-    writeWithChecksum(content);
+void TabletWriter::writeStreamWithChecksum(const Stream& stream) {
+  for (const auto& chunk : stream.chunks) {
+    for (const auto& content : chunk.content) {
+      writeWithChecksum(content);
+    }
   }
 }
+
 } // namespace facebook::nimble

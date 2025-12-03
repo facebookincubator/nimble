@@ -53,6 +53,7 @@ class TabletWriter {
     uint32_t metadataFlushThreshold{kMetadataFlushThreshold};
     uint32_t metadataCompressionThreshold{kMetadataCompressionThreshold};
     ChecksumType checksumType{ChecksumType::XXH3_64};
+    bool streamDeduplicationEnabled{true};
   };
 
   static std::unique_ptr<TabletWriter> create(
@@ -119,7 +120,7 @@ class TabletWriter {
 
   void writeWithChecksum(std::string_view data);
   void writeWithChecksum(const folly::IOBuf& buf);
-  void writeChunkWithChecksum(const Chunk& chunk);
+  void writeStreamWithChecksum(const Stream& stream);
 
   velox::WriteFile* const file_;
   velox::memory::MemoryPool* const pool_;
