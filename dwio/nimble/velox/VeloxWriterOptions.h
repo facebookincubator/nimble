@@ -86,7 +86,7 @@ struct VeloxWriterOptions {
   // TODO: This options should be removed and integrated into the
   // inputGrowthPolicyFactory option (e.g. allow the caller to set an
   // ExactGrowthPolicy, as defined here: dwio/nimble/velox/BufferGrowthPolicy.h)
-  bool lowMemoryMode = false;
+  bool lowMemoryMode{false};
 
   // If present, metadata sections above this threshold size will be compressed.
   std::optional<uint32_t> metadataCompressionThreshold;
@@ -94,23 +94,23 @@ struct VeloxWriterOptions {
   // When flushing data streams into chunks, streams with raw data size smaller
   // than this threshold will not be flushed.
   // Note: this threshold is ignored when it is time to flush a stripe.
-  uint64_t minStreamChunkRawSize = 1024;
+  uint64_t minStreamChunkRawSize{1024};
 
   // When flushing data streams into chunks, streams with raw data size larger
   // than this threshold will be broken down into multiple smaller chunks. Each
   // chunk will be at most this size.
-  uint64_t maxStreamChunkRawSize = 20 << 20;
+  uint64_t maxStreamChunkRawSize{20 << 20};
 
   // Used in place of maxStreamChunkRawSize for tables with large schemas.
-  uint32_t wideSchemaMaxStreamChunkRawSize = 4 << 20;
+  uint32_t wideSchemaMaxStreamChunkRawSize{4 << 20};
 
   // When the number of schema nodes exceeds this threshold we use
   // wideSchemaMaxStreamChunkRawSize in place of maxStreamChunkRawSize.
-  size_t largeSchemaThreshold = 5000;
+  size_t largeSchemaThreshold{5000};
 
   // Number of streams to try chunking between memory pressure evaluations.
   // Note: this is ignored when it is time to flush a stripe.
-  size_t chunkedStreamBatchSize = 1024;
+  size_t chunkedStreamBatchSize{1024};
 
   // The factory function that produces the root encoding selection policy.
   // Encoding selection policy is the way to balance the tradeoffs of
@@ -162,15 +162,17 @@ struct VeloxWriterOptions {
   folly::Executor::KeepAlive<> encodingExecutor;
   folly::Executor::KeepAlive<> writeExecutor;
 
-  bool enableChunking = false;
+  bool enableChunking{false};
 
   // This callback will be visited on access to getDecodedVector in order to
   // monitor usage of decoded vectors vs. data that is passed-through in the
   // writer. Default function is no-op since its used for tests only.
-  std::function<void(void)> vectorDecoderVisitor = []() {};
+  std::function<void(void)> vectorDecoderVisitor{[]() {}};
 
   // Whether writer should ignore the top level nulls in the input.
   bool ignoreTopLevelNulls{false};
+
+  bool enableStreamDeduplication{true};
 };
 
 } // namespace facebook::nimble

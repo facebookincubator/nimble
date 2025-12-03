@@ -626,7 +626,9 @@ VeloxWriter::VeloxWriter(
                context_->options().featureReordering),
            .metadataCompressionThreshold =
                context_->options().metadataCompressionThreshold.value_or(
-                   kMetadataCompressionThreshold)})},
+                   kMetadataCompressionThreshold),
+           .streamDeduplicationEnabled =
+               context_->options().enableStreamDeduplication})},
       rootWriter_{createRootFieldWriter(schema_, *context_)} {
   NIMBLE_CHECK_NOT_NULL(file_);
 
