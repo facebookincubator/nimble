@@ -28,7 +28,7 @@
 
 // Stores integer data in a delta encoding. We use three child encodings:
 // one for whether each row is a delta from the last or a restatement,
-// one for the deltas, and one one for the restatements. For now we
+// one for the deltas, and one for the restatements. For now we
 // only support positive deltas.
 //
 // As an example, consider the data

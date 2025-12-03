@@ -65,7 +65,7 @@ inline constexpr auto NotSupported = "NOT_SUPPORTED"_fs;
 // attempted.
 inline constexpr auto IncompatibleEncoding = "INCOMPATIBLE_ENCODING"_fs;
 
-// Am error raised if a corrupted file is detected
+// An error raised if a corrupted file is detected
 inline constexpr auto CorruptedFile = "CORRUPTED_FILE"_fs;
 
 // We do not know how to classify it yet.

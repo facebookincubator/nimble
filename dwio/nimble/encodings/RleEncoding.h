@@ -219,7 +219,7 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
   detail::BufferedEncoding<physicalType, 32> values_;
 };
 
-// For the bool case we know the values will alternative between true
+// For the bool case we know the values will alternate between true
 // and false, so in addition to the run lengths we need only store
 // whether the first value is true or false.
 // RLEEncodingBase bytes

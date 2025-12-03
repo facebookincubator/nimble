@@ -99,7 +99,7 @@ class Buffer {
   std::vector<velox::BufferPtr> chunks_;
   MemoryPool& memoryPool_;
   // NOTE: this is temporary fix, to quickly enable parallel access to the
-  // buffer class. In the near future, we are going to templetize this class to
+  // buffer class. In the near future, we are going to templatize this class to
   // produce a concurrent and a non-concurrent variants, and change the call
   // sites to use each variant when needed.
   std::mutex mutex_;

@@ -22,7 +22,7 @@
 
 // Common functions related to bits/bit-packing.
 //
-// The inlined methods are too simple to test or dont need tests
+// The inlined methods are too simple to test or don't need tests
 // as they are for debugging. The non-inlined methods are tested
 // indirectly through the nullableColumnTests.cpp.
 
@@ -91,7 +91,7 @@ void clearBits(uint64_t begin, uint64_t end, char* bitmap);
 void packBitmap(std::span<const bool> bools, char* bitmap);
 
 // Returns how many of the bits in the |bitmap| starting at index |row| and
-// going |rowCount| forward  are are non-null.
+// going |rowCount| forward are non-null.
 uint32_t countSetBits(uint32_t row, uint32_t rowCount, const char* bitmap);
 
 // Finds the indices (relative to the row) of the non-null indices (i.e. set

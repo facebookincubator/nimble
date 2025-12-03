@@ -134,7 +134,7 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
     // In each sub-level of the encoding selection, we exclude the encodings
     // selected in parent levels. Although this is not required (as hopefully,
     // the model will not pick a nested encoding of the same type as the
-    // parent), it provides an additional safty net, making sure the encoding
+    // parent), it provides an additional safety net, making sure the encoding
     // selection will eventually converge, and also slightly speeds up nested
     // encoding selection.
     // TODO: validate the assumptions here compared to brute forcing, to see if
@@ -490,7 +490,7 @@ class LearnedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
     // In each sub-level of the encoding selection, we exclude the encodings
     // selected in parent levels. Although this is not required (as hopefully,
     // the model will not pick a nested encoding of the same type as the
-    // parent), it provides an additional safty net, making sure the encoding
+    // parent), it provides an additional safety net, making sure the encoding
     // selection will eventually converge, and also slightly speeds up nested
     // encoding selection.
     // TODO: validate the assumptions here compared to brute forcing, to see if

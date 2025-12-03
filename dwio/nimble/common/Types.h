@@ -140,7 +140,7 @@ enum class ChecksumType : uint8_t { XXH3_64 = 0 };
 
 std::string toString(ChecksumType type);
 
-// A CompresionType and any type-specific configuration params.
+// A CompressionType and any type-specific configuration params.
 struct CompressionParams {
   CompressionType type;
 
