@@ -19,8 +19,6 @@
 #include "dwio/nimble/common/Bits.h"
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
-#include "dwio/nimble/common/EncodingType.h"
-#include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/Encoding.h"
@@ -37,7 +35,7 @@ namespace facebook::nimble {
 // Encoding::kPrefixSize bytes: standard Encoding prefix
 // 4 bytes: non-null child encoding size (X)
 // X bytes: non-null child encoding bytes
-// Y byes: null child encoding bytes
+// Y bytes: null child encoding bytes
 template <typename T>
 class NullableEncoding final
     : public TypedEncoding<T, typename TypeTraits<T>::physicalType> {
