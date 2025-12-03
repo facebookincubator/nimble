@@ -73,16 +73,12 @@ class WriterContext : public FieldWriterContext {
     return totalFlushTiming_;
   }
 
-  velox::CpuWallTiming& stripeFlushTiming() {
-    return stripeFlushTiming_;
-  }
-
   const velox::CpuWallTiming& stripeFlushTiming() const {
     return stripeFlushTiming_;
   }
 
-  velox::CpuWallTiming& encodingSelectionTiming() {
-    return encodingSelectionTiming_;
+  void addStripeFlushTiming(const velox::CpuWallTiming& timing) {
+    stripeFlushTiming_.add(timing);
   }
 
   const velox::CpuWallTiming& encodingSelectionTiming() const {
@@ -325,7 +321,7 @@ std::string_view encodeStreamTyped(
   }
 }
 
-std::string_view encodeStream(
+std::string_view encodeStreamData(
     detail::WriterContext& context,
     Buffer& buffer,
     const StreamData& streamData) {
@@ -632,7 +628,7 @@ VeloxWriter::VeloxWriter(
                context_->options().metadataCompressionThreshold.value_or(
                    kMetadataCompressionThreshold)})},
       rootWriter_{createRootFieldWriter(schema_, *context_)} {
-  NIMBLE_CHECK_NOT_NULL(file_, "File is null");
+  NIMBLE_CHECK_NOT_NULL(file_);
 
   if (context_->options().encodingLayoutTree.has_value()) {
     context_->setFlatmapFieldAddedEventHandler(
@@ -745,6 +741,22 @@ void VeloxWriter::writeSchema() {
       serializer.serialize(context_->schemaBuilder()));
 }
 
+bool VeloxWriter::shouldFlush(FlushPolicy* policy) const {
+  return policy->shouldFlush(
+      StripeProgress{
+          .stripeRawSize = context_->memoryUsed(),
+          .stripeEncodedSize = context_->stripeEncodedPhysicalSize(),
+          .stripeEncodedLogicalSize = context_->stripeEncodedLogicalSize()});
+}
+
+bool VeloxWriter::shouldChunk(FlushPolicy* policy) const {
+  return policy->shouldChunk(
+      StripeProgress{
+          .stripeRawSize = context_->memoryUsed(),
+          .stripeEncodedSize = context_->stripeEncodedPhysicalSize(),
+          .stripeEncodedLogicalSize = context_->stripeEncodedLogicalSize()});
+}
+
 void VeloxWriter::close() {
   if (lastException_) {
     std::rethrow_exception(lastException_);
@@ -820,69 +832,24 @@ void VeloxWriter::clearEncodingBuffer() {
   encodingBuffer_.reset();
 }
 
-void VeloxWriter::writeWithoutChunk() {
-  const uint64_t previousFlushWallTime =
-      context_->stripeFlushTiming().wallNanos;
+void VeloxWriter::ensureWriteStreams() {
+  ensureEncodingBuffer();
+  const auto schemaNodeCount = context_->schemaBuilder().nodeCount();
+  encodedStreams_.resize(schemaNodeCount);
+}
+
+void VeloxWriter::resetFieldWriters() {
+  rootWriter_->reset();
+}
+
+void VeloxWriter::writeStreams() {
   std::atomic_uint64_t chunkSize{0};
+  velox::CpuWallTiming flushTiming;
   {
     LoggingScope scope{*context_->logger()};
-    velox::CpuWallTimer veloxTimer{context_->stripeFlushTiming()};
+    velox::CpuWallTimer veloxTimer{flushTiming};
 
-    ensureEncodingBuffer();
-    streams_.resize(context_->schemaBuilder().nodeCount());
-
-    auto encode = [&](StreamData& streamData, uint64_t& streamSize) {
-      const auto offset = streamData.descriptor().offset();
-      const auto encoded =
-          encodeStream(*context_, *encodingBuffer_, streamData);
-      if (!encoded.empty()) {
-        ChunkedStreamWriter chunkWriter{*encodingBuffer_};
-        NIMBLE_DCHECK_LT(
-            offset, streams_.size(), "Stream offset out of range.");
-        auto& stream = streams_[offset];
-        auto& chunk = stream.chunks.emplace_back();
-        for (auto& buffer : chunkWriter.encode(encoded)) {
-          streamSize += buffer.size();
-          chunkSize += buffer.size();
-          chunk.content.push_back(std::move(buffer));
-        }
-      }
-      streamData.reset();
-    };
-
-    auto processStream = [&](StreamData& streamData,
-                             std::function<void(StreamData&, bool)> encodeFn) {
-      const auto offset = streamData.descriptor().offset();
-      const auto* context =
-          streamData.descriptor().context<WriterStreamContext>();
-
-      NIMBLE_CHECK(streams_[offset].chunks.empty());
-      if ((context != nullptr) && context->isNullStream) {
-        // For null streams we promote the null values to be written as
-        // boolean data.
-        // We still apply the same null logic, where if all values are
-        // non-nulls, we omit the entire stream.
-        if (streamData.hasNulls()) {
-          encodeFn(streamData, /*isNullStream=*/true);
-        }
-      } else {
-        if (!streamData.data().empty()) {
-          encodeFn(streamData, /*isNullStream=*/false);
-        }
-      }
-    };
-
-    auto encoder = [&encode](
-                       StreamData& innerStreamData,
-                       bool isNullStream,
-                       uint64_t& streamSize) {
-      if (isNullStream) {
-        NullsAsDataStreamData nullsStreamData{innerStreamData};
-        encode(nullsStreamData, streamSize);
-      } else {
-        encode(innerStreamData, streamSize);
-      }
-    };
+    ensureWriteStreams();
 
     if (context_->options().encodingExecutor) {
       velox::dwio::common::ExecutorBarrier barrier{
@@ -891,125 +858,208 @@ void VeloxWriter::writeWithoutChunk() {
         auto& streamSize =
             context_->columnStats(streamData->descriptor().offset())
                 .physicalSize;
-        processStream(
-            *streamData, [&](StreamData& _streamData, bool isNullStream) {
-              barrier.add(
-                  [&_streamData, isNullStream, &encoder, &streamSize]() {
-                    encoder(_streamData, isNullStream, streamSize);
-                  });
-            });
+        barrier.add([&, _streamData = streamData.get()]() {
+          processStream(*(_streamData), streamSize, chunkSize);
+        });
       }
       barrier.waitAll();
     } else {
-      for (auto& streamData : context_->streams()) {
+      const auto& streams = context_->streams();
+      for (auto& streamData : streams) {
         auto& streamSize =
             context_->columnStats(streamData->descriptor().offset())
                 .physicalSize;
-        processStream(
-            *streamData,
-            [&encoder, &streamSize](
-                StreamData& _streamData, bool isNullStream) {
-              encoder(_streamData, isNullStream, streamSize);
-            });
+        processStream(*streamData, streamSize, chunkSize);
       }
     }
 
-    rootWriter_->reset();
+    resetFieldWriters();
   }
 
-  // Consider getting this from flush timing.
-  const auto flushWallTimeMs =
-      (context_->stripeFlushTiming().wallNanos - previousFlushWallTime) /
-      1'000'000;
-  VLOG(1) << "writeChunk time: " << velox::succinctMillis(flushWallTimeMs)
+  context_->addStripeFlushTiming(flushTiming);
+  VLOG(1) << "writeChunk time: " << velox::succinctNanos(flushTiming.wallNanos)
           << ", chunk size: " << velox::succinctBytes(chunkSize);
+}
+
+void VeloxWriter::encodeStream(
+    StreamData& streamData,
+    uint64_t& streamSize,
+    std::atomic_uint64_t& chunkSize) {
+  const auto offset = streamData.descriptor().offset();
+  NIMBLE_DCHECK_LT(
+      offset, encodedStreams_.size(), "Stream offset out of range.");
+  auto& encodedStream = encodedStreams_[offset];
+  // NOTE: we always expect the stream to be empty as encodeStream is only
+  // used in non-chunked mode.
+  NIMBLE_CHECK(encodedStream.chunks.empty());
+  auto& chunk = encodedStream.chunks.emplace_back();
+  encodeChunk(streamData, chunk, streamSize, chunkSize);
+  streamData.reset();
+}
+
+void VeloxWriter::processStream(
+    StreamData& streamData,
+    uint64_t& streamSize,
+    std::atomic_uint64_t& chunkSize) {
+  const auto offset = streamData.descriptor().offset();
+  const auto* context = streamData.descriptor().context<WriterStreamContext>();
+  NIMBLE_CHECK(encodedStreams_[offset].chunks.empty());
+
+  if ((context != nullptr) && context->isNullStream) {
+    // For null streams we promote the null values to be written as
+    // boolean data.
+    // We still apply the same null logic, where if all values are
+    // non-nulls, we omit the entire stream.
+    if (streamData.hasNulls()) {
+      NullsAsDataStreamData nullsStreamData{streamData};
+      encodeStream(nullsStreamData, streamSize, chunkSize);
+    }
+  } else {
+    if (!streamData.data().empty()) {
+      encodeStream(streamData, streamSize, chunkSize);
+    }
+  }
+}
+
+bool VeloxWriter::encodeStreamChunk(
+    StreamData& streamData,
+    uint64_t minChunkSize,
+    uint64_t maxChunkSize,
+    bool ensureFullChunks,
+    Stream& encodedStream,
+    uint64_t& streamBytes,
+    std::atomic_uint64_t& chunkBytes,
+    std::atomic_uint64_t& logicalBytes) {
+  bool writtenChunk{false};
+  logicalBytes += streamData.memoryUsed();
+  auto& streamChunks = encodedStream.chunks;
+  auto chunker = getStreamChunker(
+      streamData,
+      StreamChunkerOptions{
+          .minChunkSize = minChunkSize,
+          .maxChunkSize = maxChunkSize,
+          .ensureFullChunks = ensureFullChunks,
+          .isFirstChunk = streamChunks.empty()});
+  while (auto chunkView = chunker->next()) {
+    auto& streamChunk = streamChunks.emplace_back();
+    encodeChunk(*chunkView, streamChunk, streamBytes, chunkBytes);
+    writtenChunk = true;
+  }
+  // Compact erases processed stream data to reclaim memory.
+  chunker->compact();
+  logicalBytes -= streamData.memoryUsed();
+  return writtenChunk;
+}
+
+void VeloxWriter::encodeChunk(
+    const StreamData& chunkView,
+    Chunk& streamChunk,
+    uint64_t& streamBytes,
+    std::atomic_uint64_t& chunkBytes) {
+  std::string_view encoded =
+      encodeStreamData(*context_, *encodingBuffer_, chunkView);
+  NIMBLE_DCHECK(!encoded.empty());
+  if (!encoded.empty()) {
+    ChunkedStreamWriter chunkWriter{*encodingBuffer_};
+    for (auto& buffer : chunkWriter.encode(encoded)) {
+      streamBytes += buffer.size();
+      chunkBytes += buffer.size();
+      streamChunk.content.push_back(std::move(buffer));
+    }
+  }
 }
 
 bool VeloxWriter::writeChunks(
     std::span<const uint32_t> streamIndices,
     bool ensureFullChunks,
     bool lastChunk) {
-  const uint64_t previousFlushWallTime{context_->stripeFlushTiming().wallNanos};
-  std::atomic_uint64_t chunkSize{0};
-  std::atomic_uint64_t logicalSize{0};
+  std::atomic_uint64_t chunkBytes{0};
+  std::atomic_uint64_t logicalBytes{0};
   std::atomic_bool writtenChunk{false};
+  velox::CpuWallTiming flushTiming;
   {
     LoggingScope scope{*context_->logger()};
-    velox::CpuWallTimer veloxTimer{context_->stripeFlushTiming()};
-    ensureEncodingBuffer();
+    velox::CpuWallTimer veloxTimer{flushTiming};
     const auto& options = context_->options();
     const auto minChunkSize = lastChunk ? 0 : options.minStreamChunkRawSize;
     const auto schemaNodeCount = context_->schemaBuilder().nodeCount();
     const auto maxChunkSize = schemaNodeCount > options.largeSchemaThreshold
         ? options.wideSchemaMaxStreamChunkRawSize
         : options.maxStreamChunkRawSize;
-    streams_.resize(schemaNodeCount);
-    auto processStream = [&](StreamData& streamData, uint64_t& streamSize) {
-      logicalSize += streamData.memoryUsed();
-      const auto& offset = streamData.descriptor().offset();
-      auto& streamChunks = streams_[offset].chunks;
-      auto chunker = getStreamChunker(
-          streamData,
-          StreamChunkerOptions{
-              .minChunkSize = minChunkSize,
-              .maxChunkSize = maxChunkSize,
-              .ensureFullChunks = ensureFullChunks,
-              .isFirstChunk = streamChunks.empty()});
-      while (auto chunkView = chunker->next()) {
-        auto& streamChunk = streamChunks.emplace_back();
-        std::string_view encoded =
-            encodeStream(*context_, *encodingBuffer_, *chunkView);
-        if (!encoded.empty()) {
-          ChunkedStreamWriter chunkWriter{*encodingBuffer_};
-          for (auto& buffer : chunkWriter.encode(encoded)) {
-            streamSize += buffer.size();
-            chunkSize += buffer.size();
-            streamChunk.content.push_back(std::move(buffer));
-          }
-        }
-        writtenChunk = true;
-      }
-      // Compact erases processed stream data to reclaim memory.
-      chunker->compact();
-      logicalSize -= streamData.memoryUsed();
-    };
+    ensureWriteStreams();
 
     const auto& streams = context_->streams();
     if (context_->options().encodingExecutor) {
       velox::dwio::common::ExecutorBarrier barrier{
           context_->options().encodingExecutor};
       for (auto streamIndex : streamIndices) {
-        auto& streamData = streams[streamIndex];
-        const auto offset = streamData->descriptor().offset();
-        auto& streamSize = context_->columnStats()[offset].physicalSize;
-        barrier.add([&] { processStream(*streamData, streamSize); });
+        barrier.add([&, streamData = streams[streamIndex].get()] {
+          const auto offset = streamData->descriptor().offset();
+          if (encodeStreamChunk(
+                  *streamData,
+                  minChunkSize,
+                  maxChunkSize,
+                  ensureFullChunks,
+                  encodedStreams_[offset],
+                  context_->columnStats()[offset].physicalSize,
+                  chunkBytes,
+                  logicalBytes)) {
+            writtenChunk = true;
+          }
+        });
       }
       barrier.waitAll();
     } else {
       for (auto streamIndex : streamIndices) {
-        auto& streamData = streams[streamIndex];
+        auto* streamData = streams[streamIndex].get();
         const auto offset = streamData->descriptor().offset();
-        auto& streamSize = context_->columnStats()[offset].physicalSize;
-        processStream(*streamData, streamSize);
+        if (encodeStreamChunk(
+                *streamData,
+                minChunkSize,
+                maxChunkSize,
+                ensureFullChunks,
+                encodedStreams_[offset],
+                context_->columnStats()[offset].physicalSize,
+                chunkBytes,
+                logicalBytes)) {
+          writtenChunk = true;
+        }
       }
     }
 
     if (lastChunk) {
-      rootWriter_->reset();
+      resetFieldWriters();
     }
 
-    context_->updateStripeEncodedPhysicalSize(chunkSize);
-    context_->updateStripeEncodedLogicalSize(logicalSize);
-    context_->updateMemoryUsed(-logicalSize);
+    context_->updateStripeEncodedPhysicalSize(chunkBytes);
+    context_->updateStripeEncodedLogicalSize(logicalBytes);
+    context_->updateMemoryUsed(-logicalBytes);
   }
 
-  // Consider getting this from flush timing.
-  const auto flushWallTimeMs =
-      (context_->stripeFlushTiming().wallNanos - previousFlushWallTime) /
-      1'000'000;
-  VLOG(1) << "writeChunk time: " << velox::succinctMillis(flushWallTimeMs)
-          << ", chunk size: " << velox::succinctBytes(chunkSize);
+  context_->addStripeFlushTiming(flushTiming);
+  VLOG(1) << "writeChunk time: " << velox::succinctNanos(flushTiming.wallNanos)
+          << ", chunk size: " << velox::succinctBytes(chunkBytes);
   return writtenChunk;
+}
+
+bool VeloxWriter::flushChunks(
+    const std::vector<uint32_t>& indices,
+    bool ensureFullChunks,
+    FlushPolicy* flushPolicy) {
+  const size_t indicesCount = indices.size();
+  const auto batchSize = context_->options().chunkedStreamBatchSize;
+  for (size_t index = 0; index < indicesCount; index += batchSize) {
+    const size_t currentBatchSize = std::min(batchSize, indicesCount - index);
+    std::span<const uint32_t> batchIndices(
+        indices.begin() + index, currentBatchSize);
+    // Stop attempting chunking once streams are too small to chunk or
+    // memory pressure is relieved.
+    if (!writeChunks(batchIndices, ensureFullChunks) ||
+        !shouldChunk(flushPolicy)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool VeloxWriter::writeStripe() {
@@ -1023,35 +1073,35 @@ bool VeloxWriter::writeStripe() {
     std::iota(streamIndices.begin(), streamIndices.end(), 0);
     writeChunks(streamIndices, /*ensureFullChunks=*/false, /*lastChunk=*/true);
   } else {
-    writeWithoutChunk();
+    writeStreams();
   }
 
-  const uint64_t previousFlushWallTime =
-      context_->stripeFlushTiming().wallNanos;
   uint64_t stripeSize{0};
+  velox::CpuWallTiming flushTiming;
   {
     LoggingScope scope{*context_->logger()};
-    velox::CpuWallTimer veloxTimer{context_->stripeFlushTiming()};
+    velox::CpuWallTimer veloxTimer{flushTiming};
 
     size_t nonEmptyCount{0};
-    for (auto i = 0; i < streams_.size(); ++i) {
-      auto& source = streams_[i];
+    for (auto i = 0; i < encodedStreams_.size(); ++i) {
+      auto& source = encodedStreams_[i];
       if (!source.chunks.empty()) {
         source.offset = i;
         if (nonEmptyCount != i) {
-          streams_[nonEmptyCount] = std::move(source);
+          encodedStreams_[nonEmptyCount] = std::move(source);
         }
         ++nonEmptyCount;
       }
     }
-    streams_.resize(nonEmptyCount);
+    encodedStreams_.resize(nonEmptyCount);
 
     const uint64_t startSize = tabletWriter_->size();
-    tabletWriter_->writeStripe(context_->rowsInStripe(), std::move(streams_));
+    tabletWriter_->writeStripe(
+        context_->rowsInStripe(), std::move(encodedStreams_));
     stripeSize = tabletWriter_->size() - startSize;
     clearEncodingBuffer();
     // TODO: once chunked string fields are supported, move string buffer
-    // reset to writeWithoutChunk()
+    // reset to writeStreams()
     context_->resetStringBuffer();
   }
 
@@ -1061,11 +1111,8 @@ bool VeloxWriter::writeStripe() {
       "unexpected stripe size");
 
   // Consider getting this from flush timing.
-  const auto flushWallTimeMs =
-      (context_->stripeFlushTiming().wallNanos - previousFlushWallTime) /
-      1'000'000;
-
-  VLOG(1) << "writeStripe time: " << velox::succinctMillis(flushWallTimeMs)
+  context_->addStripeFlushTiming(flushTiming);
+  VLOG(1) << "writeStripe time: " << velox::succinctNanos(flushTiming.wallNanos)
           << ", on disk stripe size: " << velox::succinctBytes(stripeSize);
 
   StripeFlushMetrics metrics{
@@ -1080,44 +1127,10 @@ bool VeloxWriter::writeStripe() {
 }
 
 bool VeloxWriter::evalauateFlushPolicy() {
+  // NOTE that flush policy factory is stateful, so we need to get a new policy
+  // every time we check.
   auto flushPolicy = context_->options().flushPolicyFactory();
-  NIMBLE_DCHECK_NOT_NULL(flushPolicy, "Flush policy must not be null");
-
-  auto shouldFlush = [&]() {
-    return flushPolicy->shouldFlush(
-        StripeProgress{
-            .stripeRawSize = context_->memoryUsed(),
-            .stripeEncodedSize = context_->stripeEncodedPhysicalSize(),
-            .stripeEncodedLogicalSize = context_->stripeEncodedLogicalSize()});
-  };
-
-  auto shouldChunk = [&]() {
-    return flushPolicy->shouldChunk(
-        StripeProgress{
-            .stripeRawSize = context_->memoryUsed(),
-            .stripeEncodedSize = context_->stripeEncodedPhysicalSize(),
-            .stripeEncodedLogicalSize = context_->stripeEncodedLogicalSize(),
-        });
-  };
-
-  if (context_->options().enableChunking && shouldChunk()) {
-    auto batchChunkStreams = [&](const std::vector<uint32_t>& indices,
-                                 bool ensureFullChunks) {
-      const size_t indicesCount = indices.size();
-      const auto batchSize = context_->options().chunkedStreamBatchSize;
-      for (size_t index = 0; index < indicesCount; index += batchSize) {
-        size_t currentBatchSize = std::min(batchSize, indicesCount - index);
-        std::span<const uint32_t> batchIndices(
-            indices.begin() + index, currentBatchSize);
-        // Stop attempting chunking once streams are too small to chunk or
-        // memory pressure is relieved.
-        if (!writeChunks(batchIndices, ensureFullChunks) || !shouldChunk()) {
-          return false;
-        }
-      }
-      return true;
-    };
-
+  if (context_->options().enableChunking && shouldChunk(flushPolicy.get())) {
     // Relieve memory pressure by chunking streams above max size.
     const auto& streams = context_->streams();
     std::vector<uint32_t> streamIndices;
@@ -1136,9 +1149,8 @@ bool VeloxWriter::evalauateFlushPolicy() {
     }
 
     // Soft chunking.
-    const bool continueChunking =
-        batchChunkStreams(streamIndices, /*ensureFullChunks=*/true);
-
+    const bool continueChunking = flushChunks(
+        streamIndices, /*ensureFullChunks=*/true, flushPolicy.get());
     // Hard chunking when chunking streams above maxChunkSize fails to
     // relieve memory pressure.
     if (continueChunking) {
@@ -1154,11 +1166,11 @@ bool VeloxWriter::evalauateFlushPolicy() {
           [&](const uint32_t& a, const uint32_t& b) {
             return streams[a]->memoryUsed() > streams[b]->memoryUsed();
           });
-      batchChunkStreams(streamIndices, /*ensureFullChunks=*/false);
+      flushChunks(streamIndices, /*ensureFullChunks=*/false, flushPolicy.get());
     }
   }
 
-  if (shouldFlush()) {
+  if (shouldFlush(flushPolicy.get())) {
     return writeStripe();
   }
   return false;

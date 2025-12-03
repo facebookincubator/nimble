@@ -70,14 +70,60 @@ class VeloxWriter {
   RunStats getRunStats() const;
 
  private:
+  bool shouldFlush(FlushPolicy* policy) const;
+
+  bool shouldChunk(FlushPolicy* policy) const;
+
+  bool flushChunks(
+      const std::vector<uint32_t>& indices,
+      bool ensureFullChunks,
+      FlushPolicy* policy);
+
+  bool encodeStreamChunk(
+      StreamData& streamData,
+      uint64_t minChunkSize,
+      uint64_t maxChunkSize,
+      bool ensureFullChunks,
+      Stream& encodedStream,
+      uint64_t& streamBytes,
+      std::atomic_uint64_t& chunkBytes,
+      std::atomic_uint64_t& logicalBytes);
+
+  // Encodes a single chunk view and writes it to the stream chunk.
+  void encodeChunk(
+      const StreamData& chunkView,
+      Chunk& streamChunk,
+      uint64_t& streamBytes,
+      std::atomic_uint64_t& chunkBytes);
+
+  void encodeStream(
+      StreamData& streamData,
+      uint64_t& streamSize,
+      std::atomic_uint64_t& chunkSize);
+
+  void processStream(
+      StreamData& streamData,
+      uint64_t& streamSize,
+      std::atomic_uint64_t& chunkSize);
+
   // Returning 'true' if stripe was flushed.
   bool evalauateFlushPolicy();
 
   // Returning 'true' if stripe was written.
   bool writeStripe();
 
-  void writeWithoutChunk();
+  // Encodes and writes all streams to the tablet writer. This method iterates
+  // through all field writers to encode their stream data and append them to
+  // the tablet. Note: This method does not perform chunking.
+  void writeStreams();
+
+  // Writes stream chunks for the specified stream indices. This method performs
+  // chunking of encoded stream data and writes them to the tablet writer.
   // Returns 'true' if chunks were written.
+  // Parameters:
+  //   streamIndices: Indices of streams to write chunks for
+  //   ensureFullChunks: If true, ensures chunks meet minimum size requirements
+  //   lastChunk: If true, indicates this is the final chunk for the streams
   bool writeChunks(
       std::span<const uint32_t> streamIndices,
       bool ensureFullChunks = false,
@@ -90,6 +136,9 @@ class VeloxWriter {
   void ensureEncodingBuffer();
   void clearEncodingBuffer();
 
+  void ensureWriteStreams();
+  void resetFieldWriters();
+
   const std::shared_ptr<const velox::dwio::common::TypeWithId> schema_;
   MemoryPoolHolder writerMemoryPool_;
   MemoryPoolHolder encodingMemoryPool_;
@@ -99,7 +148,7 @@ class VeloxWriter {
   const std::unique_ptr<FieldWriter> rootWriter_;
 
   std::unique_ptr<Buffer> encodingBuffer_;
-  std::vector<Stream> streams_;
+  std::vector<Stream> encodedStreams_;
   std::exception_ptr lastException_;
 };
 
