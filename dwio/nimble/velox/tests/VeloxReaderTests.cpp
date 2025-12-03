@@ -3963,7 +3963,7 @@ class TestNimbleReaderFactory {
       const nimble::VeloxWriterOptions& writerOptions = {})
       : file_{std::make_unique<velox::InMemoryReadFile>(
             nimble::test::createNimbleFile(rootPool, vectors, writerOptions))},
-        type_{velox::checked_pointer_cast<const velox::RowType>(
+        type_{velox::checkedPointerCast<const velox::RowType>(
             vectors[0]->type())},
         pool_{&leafPool} {}
 
