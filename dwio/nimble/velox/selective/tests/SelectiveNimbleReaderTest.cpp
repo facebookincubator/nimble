@@ -1044,7 +1044,7 @@ TEST_F(SelectiveNimbleReaderTest, arrayWithOffsetsLastRowSetLifeCycle) {
   // First batch, one row after filtering, and allocate outputRows_ with a
   // smaller size.
   for (int i = 0; i < 16; ++i) {
-    c0.push_back(std::nullopt);
+    c0.emplace_back(std::nullopt);
     c1.push_back({{1}});
     c2.push_back({{}});
   }
@@ -1053,18 +1053,18 @@ TEST_F(SelectiveNimbleReaderTest, arrayWithOffsetsLastRowSetLifeCycle) {
   c2.push_back({{}});
   // Second batch, all filtered out by c2, but c1 reads some value without
   // calling getValues.
-  c0.push_back(std::nullopt);
+  c0.emplace_back(std::nullopt);
   // Add a null to force setComplexNulls to read last row set before batch 3.
-  c1.push_back(std::nullopt);
+  c1.emplace_back(std::nullopt);
   c2.push_back({{}});
   for (int i = 0; i < 15; ++i) {
-    c0.push_back(std::nullopt);
+    c0.emplace_back(std::nullopt);
     c1.push_back({{2}});
     c2.push_back({{}});
   }
   c0.push_back({{}});
   c1.push_back({{2}});
-  c2.push_back(std::nullopt);
+  c2.emplace_back(std::nullopt);
   // Third batch, nothing is filtered out, and force outputRows_ buffer
   // reallocation.
   for (int i = 0; i < 17; ++i) {
