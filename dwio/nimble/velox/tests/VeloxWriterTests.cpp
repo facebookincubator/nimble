@@ -2239,12 +2239,15 @@ TEST_F(VeloxWriterTests, fuzzComplex) {
     }
 
     const auto iterations = 20;
+    // provide sufficient buffer between min and max chunk size thresholds
+    constexpr uint64_t chunkThresholdBuffer = sizeof(int64_t) + sizeof(bool);
     for (auto i = 0; i < iterations; ++i) {
       writerOptions.minStreamChunkRawSize =
           std::uniform_int_distribution<uint64_t>(10, 4096)(rng);
       writerOptions.maxStreamChunkRawSize =
           std::uniform_int_distribution<uint64_t>(
-              writerOptions.minStreamChunkRawSize, 8192)(rng);
+              writerOptions.minStreamChunkRawSize + chunkThresholdBuffer,
+              8192)(rng);
       const auto batchSize =
           std::uniform_int_distribution<uint32_t>(10, 400)(rng);
       const auto batchCount = 5;
