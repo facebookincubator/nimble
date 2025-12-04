@@ -239,7 +239,7 @@ void bulkGet32Internal(
         // TODO: An alternative would be to have a separate (constexpr) loop
         // adding baselines at the end and hopefully the compiler will vectorize
         // it (with -mavx2?). But it might be slower due to the extra loop
-        // condition cvhecks. Needto benchmark it.
+        // condition checks. Need to benchmark it.
         *values = fixedBitArray.get32(i) + baseline;
       } else {
         *values = fixedBitArray.get32(i);

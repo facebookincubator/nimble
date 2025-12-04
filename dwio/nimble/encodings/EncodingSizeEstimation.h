@@ -432,7 +432,7 @@ struct EncodingSizeEstimation {
     if constexpr (FixedByteWidth) {
       // NOTE: We round up the bits required to the next byte boundary.
       // This is to match a (temporary) hack we added to FixedBitWidthEncoding,
-      // to mitigare compression issue on non-rounded bit widths. See
+      // to mitigate compression issue on non-rounded bit widths. See
       // dwio/nimble/encodings/FixedBitWidthEncoding.h for full details.
       return bits::bytesRequired(
           ((bits::bitsRequired(maxValue - minValue) + 7) & ~7) * count);

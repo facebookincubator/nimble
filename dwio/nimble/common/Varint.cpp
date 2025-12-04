@@ -171,7 +171,7 @@ const char* bulkVarintDecodeBmi2(uint64_t n, const char* pos, T* output) {
   int carryoverBits = 0;
   pos -= maskLength;
   // Also note that a handful of these cases are impossible for 32-bit varints.
-  // We coould save a tiny bit of program size by pruning them out.
+  // We could save a tiny bit of program size by pruning them out.
   while (n >= 8) {
     pos += maskLength;
     uint64_t word = *reinterpret_cast<const uint64_t*>(pos);
