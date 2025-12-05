@@ -17,6 +17,7 @@
 #pragma once
 
 #include "dwio/nimble/encodings/EncodingUtils.h"
+#include "dwio/nimble/index/StripeGroupIndex.h"
 #include "dwio/nimble/velox/selective/NimbleData.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 
@@ -28,16 +29,24 @@ class ChunkedDecoder {
  public:
   ChunkedDecoder(
       std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
-      velox::memory::MemoryPool& pool,
-      bool decodeValuesWithNulls)
+      bool decodeValuesWithNulls,
+      std::shared_ptr<StreamIndex> streamIndex,
+      velox::memory::MemoryPool* pool)
       : input_{std::move(input)},
-        pool_{&pool},
-        decodeValuesWithNulls_{decodeValuesWithNulls} {
+        pool_{pool},
+        decodeValuesWithNulls_{decodeValuesWithNulls},
+        streamIndex_{std::move(streamIndex)} {
     NIMBLE_CHECK_NOT_NULL(input_);
   }
 
   /// Skip non null values.
   void skip(int64_t numValues);
+
+  /// Skip non null values using index-based acceleration.
+  void skipWithIndex(int64_t numValues);
+
+  /// Skip non null values using sequential skipping.
+  void skipWithoutIndex(int64_t numValues);
 
   /// Decode nulls or in-map buffer values.
   void nextBools(uint64_t* data, int64_t count, const uint64_t* incomingNulls);
@@ -46,7 +55,7 @@ class ChunkedDecoder {
   void nextIndices(int32_t* data, int64_t count, const uint64_t* incomingNulls);
 
   const velox::BufferPtr& getPreloadedValues() {
-    VELOX_CHECK(
+    NIMBLE_CHECK(
         decodeValuesWithNulls_,
         "Only Array and Map types preload offset values with nulls");
     return nullableValues_;
@@ -55,7 +64,7 @@ class ChunkedDecoder {
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor) {
     const velox::RowSet rows(visitor.rows(), visitor.numRows());
-    VELOX_DCHECK(std::is_sorted(rows.begin(), rows.end()));
+    NIMBLE_DCHECK(std::is_sorted(rows.begin(), rows.end()));
     const auto numRows = visitor.numRows();
     ReadWithVisitorParams params{};
     bool resultNullsPrepared{false};
@@ -130,7 +139,7 @@ class ChunkedDecoder {
     }
     auto c = __builtin_popcountll(word);
     if (FOLLY_UNLIKELY(c > 0 && remainingValues_ == 0)) {
-      VELOX_CHECK(loadNextChunk());
+      loadNextChunk();
     }
     if (c == 0 || numNonNulls + c < remainingValues_) {
       numNulls += (kHasMask ? __builtin_popcountll(mask) : 64) - c;
@@ -152,7 +161,7 @@ class ChunkedDecoder {
         ++numNulls;
       }
     }
-    VELOX_UNREACHABLE();
+    NIMBLE_UNREACHABLE();
   }
 
   velox::vector_size_t lastNonNullIndex(
@@ -185,7 +194,7 @@ class ChunkedDecoder {
     numNulls = 0;
     numNonNulls = 0;
     if constexpr (V::dense) {
-      VELOX_DCHECK_EQ(visitor.currentRow(), params.numScanned);
+      NIMBLE_DCHECK_EQ(visitor.currentRow(), params.numScanned);
       if constexpr (!kHasNulls) {
         numNonNulls =
             std::min<int64_t>(numRows - visitor.rowIndex(), remainingValues_);
@@ -224,7 +233,7 @@ class ChunkedDecoder {
     while (visitor.rowIndex() < numRows) {
       if constexpr (!kHasNulls) {
         if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
-          VELOX_CHECK(loadNextChunk());
+          loadNextChunk();
         }
       }
       velox::vector_size_t numNulls;
@@ -258,21 +267,33 @@ class ChunkedDecoder {
           }
         }
       updateRemainingValues:
-        VELOX_DCHECK_EQ(visitor.rowIndex(), nextRowIndex);
+        NIMBLE_DCHECK_EQ(visitor.rowIndex(), nextRowIndex);
       }
       remainingValues_ -= numNonNulls;
       params.numScanned += numNulls + numNonNulls;
     }
   }
 
+  // Ensures that the input buffer has at least 'size' bytes available for
+  // reading. If the current buffer doesn't have enough data, this method will
+  // read more data from the underlying input stream until the requirement is
+  // met or the stream is exhausted.
+  // Returns true if the input buffer has at least 'size' bytes available,
+  // false if the end of stream is reached before meeting the requirement.
   bool ensureInput(int size);
 
   // TODO: remove with row size estimate hacks.
   bool ensureInputIncremental_hack(int size, const char*& pos);
 
-  bool loadNextChunk();
+  void loadNextChunk();
 
-  void prepareInputBuffer(int size);
+  void prepareInputBuffer(int32_t size);
+
+  // Seek to a specific chunk by offset and row position.
+  // Positions the decoder at the beginning of the chunk at the given offset.
+  // @param offset The byte offset of the chunk in the stream
+  // @param rowPosition The row position at the start of the chunk
+  void seekToChunk(uint32_t offset, uint32_t rowPosition);
 
   // Used only for full scanning length data streams.
   void decodeNullable(
@@ -283,7 +304,12 @@ class ChunkedDecoder {
 
   const std::unique_ptr<velox::dwio::common::SeekableInputStream> input_;
   velox::memory::MemoryPool* const pool_;
+  // When true, decode nullable values (for array/map length streams that
+  // encode nulls alongside values). When false, decode values without nulls
+  // (standard case for scalar types).
   const bool decodeValuesWithNulls_;
+  // Optional stream index for accelerating skip operations
+  const std::shared_ptr<StreamIndex> streamIndex_;
 
   const char* inputData_{nullptr};
   int64_t inputSize_{0};
@@ -295,6 +321,9 @@ class ChunkedDecoder {
   int64_t remainingValues_{0};
   mutable std::optional<size_t> rowCountEstimate_{std::nullopt};
   mutable std::optional<size_t> stringDataSizeEstimate_{std::nullopt};
+
+  // Tracks the absolute row position in the stream
+  uint32_t currentRow_{0};
 
   friend class ChunkedDecoderTestHelper;
 };

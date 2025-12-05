@@ -52,7 +52,7 @@ class NimbleData : public velox::dwio::common::FormatData {
 
   velox::dwio::common::PositionProvider seekToRowGroup(
       int64_t /*index*/) final {
-    VELOX_UNREACHABLE();
+    NIMBLE_UNSUPPORTED();
   }
 
   void filterRowGroups(
@@ -60,7 +60,7 @@ class NimbleData : public velox::dwio::common::FormatData {
       uint64_t /*rowsPerRowGroup*/,
       const velox::dwio::common::StatsContext& /*writerContext*/,
       FilterRowGroupsResult& /*result*/) final {
-    VELOX_UNREACHABLE();
+    NIMBLE_UNSUPPORTED();
   }
 
   const Type& nimbleType() const {
@@ -95,8 +95,8 @@ class NimbleData : public velox::dwio::common::FormatData {
       bool decodeValuesWithNulls);
 
   const std::shared_ptr<const Type> nimbleType_;
-  StripeStreams& streams_;
-  velox::memory::MemoryPool& memoryPool_;
+  StripeStreams* const streams_;
+  velox::memory::MemoryPool* const pool_;
   ChunkedDecoder* const inMapDecoder_;
   std::unique_ptr<ChunkedDecoder> nullsDecoder_;
   velox::BufferPtr inMap_;
@@ -153,7 +153,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
 
  private:
   const std::shared_ptr<const Type> nimbleType_;
-  StripeStreams* const streams_;
+  StripeStreams* const streams_{nullptr};
   RowSizeTracker* const rowSizeTracker_{nullptr};
   const bool preserveFlatMapsInMemory_{false};
   ChunkedDecoder* inMapDecoder_{nullptr};

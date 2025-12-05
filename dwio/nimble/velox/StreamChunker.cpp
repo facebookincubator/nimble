@@ -40,6 +40,11 @@ std::unique_ptr<StreamChunker> getStreamChunkerTyped(
   } else if (
       auto* nullsStreamData = dynamic_cast<NullsStreamData*>(&streamData)) {
     return std::make_unique<NullsStreamChunker>(*nullsStreamData, options);
+  } else if (auto* keyStreamData = dynamic_cast<KeyStreamData*>(&streamData)) {
+    NIMBLE_CHECK(
+        (std::is_same_v<T, std::string_view>),
+        "KeyStreamChunker only supports std::string_view type");
+    return std::make_unique<KeyStreamChunker>(*keyStreamData, options);
   }
   NIMBLE_UNREACHABLE("Unsupported streamData type")
 }

@@ -18,6 +18,7 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/velox/FieldWriter.h"
+#include "dwio/nimble/velox/IndexWriter.h"
 #include "dwio/nimble/velox/VeloxWriterOptions.h"
 #include "velox/common/file/File.h"
 #include "velox/dwio/common/TypeWithId.h"
@@ -70,17 +71,27 @@ class VeloxWriter {
   RunStats getRunStats() const;
 
  private:
-  bool shouldFlush(FlushPolicy* policy) const;
+  bool hasIndex() const {
+    return indexWriter_ != nullptr;
+  }
 
-  bool shouldChunk(FlushPolicy* policy) const;
+  void addIndexKey(
+      const velox::VectorPtr& input,
+      folly::Executor* executor = nullptr);
 
-  bool flushChunks(
+  bool shouldFlush() const;
+
+  bool shouldChunk() const;
+
+  bool writeStreamChunkBatch(
       const std::vector<uint32_t>& indices,
-      bool ensureFullChunks,
-      FlushPolicy* policy);
+      bool ensureFullChunks);
 
-  bool encodeStreamChunk(
+  bool writeKeyStreamChunk(bool lastChunk, bool ensureFullChunks);
+
+  bool writeStreamChunk(
       StreamData& streamData,
+      bool isKeyStream,
       uint64_t minChunkSize,
       uint64_t maxChunkSize,
       bool ensureFullChunks,
@@ -89,29 +100,22 @@ class VeloxWriter {
       std::atomic_uint64_t& chunkBytes,
       std::atomic_uint64_t& logicalBytes);
 
-  // Encodes a single chunk view and writes it to the stream chunk.
-  void encodeChunk(
-      const StreamData& chunkView,
-      Chunk& streamChunk,
-      uint64_t& streamBytes,
-      std::atomic_uint64_t& chunkBytes);
-
-  void encodeStream(
+  void writeStreamWithoutChunk(
       StreamData& streamData,
+      bool isKeyStream,
       uint64_t& streamSize,
       std::atomic_uint64_t& chunkSize);
 
-  void processStream(
+  void processStreamWithoutChunk(
       StreamData& streamData,
+      bool isKeyStream,
       uint64_t& streamSize,
       std::atomic_uint64_t& chunkSize);
 
   // Returning 'true' if stripe was flushed.
   bool evalauateFlushPolicy();
-
   // Returning 'true' if stripe was written.
   bool writeStripe();
-
   // Encodes and writes all streams to the tablet writer. This method iterates
   // through all field writers to encode their stream data and append them to
   // the tablet. Note: This method does not perform chunking.
@@ -143,12 +147,15 @@ class VeloxWriter {
   MemoryPoolHolder writerMemoryPool_;
   MemoryPoolHolder encodingMemoryPool_;
   const std::unique_ptr<detail::WriterContext> context_;
+  const std::unique_ptr<FlushPolicy> flushPolicy_;
   std::unique_ptr<velox::WriteFile> file_;
   const std::unique_ptr<TabletWriter> tabletWriter_;
   const std::unique_ptr<FieldWriter> rootWriter_;
+  const std::unique_ptr<IndexWriter> indexWriter_;
 
   std::unique_ptr<Buffer> encodingBuffer_;
   std::vector<Stream> encodedStreams_;
+  std::optional<Stream> keyStream_;
   std::exception_ptr lastException_;
 };
 

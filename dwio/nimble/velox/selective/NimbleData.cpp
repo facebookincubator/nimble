@@ -29,8 +29,8 @@ NimbleData::NimbleData(
     memory::MemoryPool& memoryPool,
     ChunkedDecoder* inMapDecoder)
     : nimbleType_(nimbleType),
-      streams_(streams),
-      memoryPool_(memoryPool),
+      streams_(&streams),
+      pool_(&memoryPool),
       inMapDecoder_(inMapDecoder) {
   switch (nimbleType->kind()) {
     case Kind::Scalar:
@@ -90,13 +90,13 @@ void NimbleData::readNulls(
   }
   auto numBytes = velox::bits::nbytes(numValues);
   if (!nulls || nulls->capacity() < numBytes) {
-    nulls = AlignedBuffer::allocate<char>(numBytes, &memoryPool_);
+    nulls = AlignedBuffer::allocate<char>(numBytes, pool_);
   }
   nulls->setSize(numBytes);
   auto* nullsPtr = nulls->asMutable<uint64_t>();
   if (inMapDecoder_) {
     if (nullsDecoder_) {
-      dwio::common::ensureCapacity<char>(inMap_, numBytes, &memoryPool_);
+      dwio::common::ensureCapacity<char>(inMap_, numBytes, pool_);
       inMapDecoder_->nextBools(
           inMap_->asMutable<uint64_t>(), numValues, incomingNulls);
       nullsDecoder_->nextBools(nullsPtr, numValues, inMap_->as<uint64_t>());
@@ -148,10 +148,12 @@ uint64_t NimbleData::skipNulls(uint64_t numValues, bool /*nullsOnly*/) {
 }
 
 ChunkedDecoder NimbleData::makeScalarDecoder() {
+  const auto streamId = nimbleType_->asScalar().scalarDescriptor().offset();
   return ChunkedDecoder(
-      streams_.enqueue(nimbleType_->asScalar().scalarDescriptor().offset()),
-      memoryPool_,
-      /*decodeValuesWithNulls=*/false);
+      streams_->enqueue(streamId),
+      /*decodeValuesWithNulls=*/false,
+      streams_->streamIndex(streamId),
+      *pool_, );
 }
 
 std::unique_ptr<ChunkedDecoder> NimbleData::makeLengthDecoder() {
@@ -171,12 +173,12 @@ std::unique_ptr<ChunkedDecoder> NimbleData::makeLengthDecoder() {
 std::unique_ptr<ChunkedDecoder> NimbleData::makeDecoder(
     const StreamDescriptor& descriptor,
     bool decodeValuesWithNulls) {
-  auto input = streams_.enqueue(descriptor.offset());
+  auto input = streams_->enqueue(descriptor.offset());
   if (!input) {
     return nullptr;
   }
   return std::make_unique<ChunkedDecoder>(
-      std::move(input), memoryPool_, decodeValuesWithNulls);
+      std::move(input), *pool_, decodeValuesWithNulls);
 }
 
 std::unique_ptr<velox::dwio::common::FormatData> NimbleParams::toFormatData(

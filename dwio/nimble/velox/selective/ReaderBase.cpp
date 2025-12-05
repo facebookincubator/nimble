@@ -26,15 +26,13 @@ namespace facebook::nimble {
 using namespace facebook::velox;
 
 namespace {
-
 const std::string kSchemaSectionString(kSchemaSection);
 const std::vector<std::string> kPreloadOptionalSections = {
     kSchemaSectionString};
 
-std::shared_ptr<const facebook::nimble::Type> loadSchema(
-    const TabletReader& tablet) {
+std::shared_ptr<const Type> loadSchema(const TabletReader& tablet) {
   auto section = tablet.loadOptionalSection(kSchemaSectionString);
-  NIMBLE_CHECK(section.has_value());
+  NIMBLE_CHECK_NOT_NULL(section);
   return SchemaDeserializer::deserialize(section->content().data());
 }
 
@@ -47,25 +45,50 @@ TypePtr getFileSchema(
   return dwio::common::Reader::updateColumnNames(
       fileSchema, options.fileSchema());
 }
-
 } // namespace
 
+std::shared_ptr<ReaderBase> ReaderBase::create(
+    std::unique_ptr<velox::dwio::common::BufferedInput> input,
+    const velox::dwio::common::ReaderOptions& options) {
+  // Initialize all members
+  auto tablet = TabletReader::create(
+      // TODO: Make TabletReader taking BufferedInput.
+      input->getReadFile().get(),
+      options.memoryPool(),
+      kPreloadOptionalSections);
+
+  auto* pool = &options.memoryPool();
+  const auto& randomSkip = options.randomSkip();
+  const auto& scanSpec = options.scanSpec();
+  const auto nimbleSchema = loadSchema(*tablet);
+  auto fileSchema =
+      asRowType(getFileSchema(options, convertToVeloxType(*nimbleSchema)));
+
+  return std::shared_ptr<ReaderBase>(new ReaderBase(
+      std::move(input),
+      std::move(tablet),
+      pool,
+      randomSkip,
+      scanSpec,
+      std::move(nimbleSchema),
+      std::move(fileSchema)));
+}
+
 ReaderBase::ReaderBase(
-    std::unique_ptr<dwio::common::BufferedInput> input,
-    const dwio::common::ReaderOptions& options)
-    : input_(std::move(input)),
-      tablet_(
-          TabletReader::create(
-              // TODO: Make TabletReader taking BufferedInput.
-              input_->getReadFile().get(),
-              options.memoryPool(),
-              kPreloadOptionalSections)),
-      memoryPool_(&options.memoryPool()),
-      randomSkip_(options.randomSkip()),
-      scanSpec_(options.scanSpec()),
-      nimbleSchema_(loadSchema(*tablet_)),
-      fileSchema_(asRowType(
-          getFileSchema(options, convertToVeloxType(*nimbleSchema_)))) {}
+    std::unique_ptr<velox::dwio::common::BufferedInput> input,
+    std::shared_ptr<TabletReader> tablet,
+    velox::memory::MemoryPool* pool,
+    const std::shared_ptr<velox::random::RandomSkipTracker>& randomSkip,
+    const std::shared_ptr<velox::common::ScanSpec>& scanSpec,
+    std::shared_ptr<const Type> nimbleSchema,
+    velox::RowTypePtr fileSchema)
+    : input_{std::move(input)},
+      tablet_{std::move(tablet)},
+      pool_{pool},
+      randomSkip_{std::move(randomSkip)},
+      scanSpec_{std::move(scanSpec)},
+      nimbleSchema_{std::move(nimbleSchema)},
+      fileSchema_{std::move(fileSchema)} {}
 
 std::optional<common::Region> StripeStreams::streamRegion(int streamId) const {
   NIMBLE_CHECK(stripeIdentifier_.has_value());
@@ -92,6 +115,20 @@ std::unique_ptr<dwio::common::SeekableInputStream> StripeStreams::enqueue(
   }
   dwio::common::StreamIdentifier sid(streamId);
   return readerBase_->input().enqueue(*region, &sid);
+}
+
+std::shared_ptr<StreamIndex> StripeStreams::streamIndex(int streamId) const {
+  if (!stripeIdentifier_.has_value()) {
+    return nullptr;
+  }
+
+  const auto& stripeGroupIndex = stripeIdentifier_->stripeGroupIndex();
+  if (!stripeGroupIndex) {
+    return nullptr;
+  }
+
+  return StreamIndex::create(
+      stripeGroupIndex.get(), stripeIdentifier_->stripeId(), streamId);
 }
 
 } // namespace facebook::nimble

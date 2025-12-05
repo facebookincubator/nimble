@@ -16,8 +16,10 @@
 
 #include "dwio/nimble/tablet/TabletWriter.h"
 
+#include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/tablet/Compression.h"
 #include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/tablet/IndexGenerated.h"
 
 namespace facebook::nimble {
 
@@ -82,6 +84,53 @@ std::string_view asView(const flatbuffers::FlatBufferBuilder& builder) {
 }
 } // namespace
 
+void TabletWriter::writeIndex() {
+  if (!hasIndex() || index_.stripeGroupIndexes.empty()) {
+    return;
+  }
+
+  flatbuffers::FlatBufferBuilder builder(kInitialFooterSize);
+
+  // Create stripe keys vector
+  auto stripeKeysVector =
+      builder.CreateVector<flatbuffers::Offset<flatbuffers::String>>(
+          index_.stripeKeys.size(), [&builder, this](size_t i) {
+            return builder.CreateString(
+                index_.stripeKeys[i].data(), index_.stripeKeys[i].size());
+          });
+
+  // Create index columns vector from index config
+  auto indexColumnsVector =
+      builder.CreateVector<flatbuffers::Offset<flatbuffers::String>>(
+          options_.indexConfig->columns.size(), [&builder, this](size_t i) {
+            return builder.CreateString(options_.indexConfig->columns[i]);
+          });
+
+  // Create stripe group indices vector
+  auto stripeGroupIndicesVector = builder.CreateVector(stripeGroupIndices_);
+
+  // Create stripe index groups metadata sections
+  auto stripeIndexGroupsVector =
+      builder.CreateVector<flatbuffers::Offset<serialization::MetadataSection>>(
+          index_.stripeGroupIndexes.size(), [&builder, this](size_t i) {
+            return serialization::CreateMetadataSection(
+                builder,
+                index_.stripeGroupIndexes[i].offset(),
+                index_.stripeGroupIndexes[i].size(),
+                static_cast<serialization::CompressionType>(
+                    index_.stripeGroupIndexes[i].compressionType()));
+          });
+
+  builder.Finish(
+      serialization::CreateIndex(
+          builder,
+          stripeKeysVector,
+          indexColumnsVector,
+          stripeGroupIndicesVector,
+          stripeIndexGroupsVector));
+  writeOptionalSection(std::string(kIndexSection), asView(builder));
+}
+
 void TabletWriter::close() {
   const auto stripeCount = stripeOffsets_.size();
   NIMBLE_CHECK(
@@ -92,6 +141,9 @@ void TabletWriter::close() {
 
   // write remaining stripe groups
   tryWriteStripeGroup(true);
+
+  // write key index
+  writeIndex();
 
   // write stripes
   MetadataSection stripes = writeStripes(stripeCount);
@@ -149,9 +201,13 @@ void TabletWriter::close() {
   file_->append({reinterpret_cast<const char*>(&kVersionMajor), 2});
   file_->append({reinterpret_cast<const char*>(&kVersionMinor), 2});
   file_->append({reinterpret_cast<const char*>(&kMagicNumber), 2});
+  indexEncodingBuffer_.reset();
 }
 
-void TabletWriter::writeStripe(uint32_t rowCount, std::vector<Stream> streams) {
+void TabletWriter::writeStripe(
+    uint32_t rowCount,
+    std::vector<Stream> streams,
+    std::optional<Stream> keyStream) {
   if (UNLIKELY(rowCount == 0)) {
     return;
   }
@@ -172,6 +228,10 @@ void TabletWriter::writeStripe(uint32_t rowCount, std::vector<Stream> streams) {
   auto& stripeStreamOffsets = streamOffsets_.emplace_back(streamCount, 0);
   auto& stripeStreamSizes = streamSizes_.emplace_back(streamCount, 0);
 
+  ensureIndexWrite(streamCount);
+
+  addStripeIndexKey(keyStream);
+
   if (options_.layoutPlanner != nullptr) {
     streams = options_.layoutPlanner->getLayout(std::move(streams));
   }
@@ -183,14 +243,18 @@ void TabletWriter::writeStripe(uint32_t rowCount, std::vector<Stream> streams) {
     // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
     stripeStreamOffsets[streamIndex] = file_->size() - stripeOffsets_.back();
     for (const auto& chunk : stream.chunks) {
+      const auto chunkOffset = file_->size() - stripeOffsets_.back();
       writeChunkWithChecksum(chunk);
+      addStreamChunkIndex(streamIndex, chunk, chunkOffset);
     }
     // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
     stripeStreamSizes[streamIndex] = file_->size() -
         (stripeStreamOffsets[streamIndex] + stripeOffsets_.back());
   }
-
   stripeSizes_.push_back(file_->size() - stripeOffsets_.back());
+
+  writeKeyStream(keyStream);
+
   stripeGroupIndices_.push_back(stripeGroupIndex_);
   // Write stripe group if size of column offsets/sizes is too large.
   tryWriteStripeGroup();
@@ -217,6 +281,78 @@ MetadataSection TabletWriter::createMetadataSection(std::string_view metadata) {
   auto compressionType = writeMetadata(metadata);
   auto size = static_cast<uint32_t>(file_->size() - offset);
   return MetadataSection{offset, size, compressionType};
+}
+
+void TabletWriter::ensureIndexWrite(size_t streamCount) {
+  if (!hasIndex()) {
+    return;
+  }
+  if (indexEncodingBuffer_ == nullptr) {
+    indexEncodingBuffer_ = std::make_unique<Buffer>(*pool_);
+  }
+  if (streamIndexEncodingBuffer_ == nullptr) {
+    streamIndexEncodingBuffer_ = std::make_unique<Buffer>(*pool_);
+  }
+  // Initialize vectors for current stripe if this is the first stripe or a new
+  // stripe group
+  if (streamIndex_ == nullptr) {
+    streamIndex_ = std::make_unique<StreamChunkIndex>();
+    streamIndex_->streamChunkRows.resize(streamCount);
+    streamIndex_->streamChunkOffsets.resize(streamCount);
+  }
+  streamIndex_->streamChunkCounts.emplace_back(streamCount, 0);
+  streamIndex_->keyStreamChunkCounts.emplace_back(0);
+}
+
+void TabletWriter::addStripeIndexKey(const std::optional<Stream>& keyStream) {
+  NIMBLE_CHECK_EQ(hasIndex(), keyStream.has_value());
+  if (!hasIndex()) {
+    return;
+  }
+  NIMBLE_CHECK(!keyStream->chunks.empty());
+  if (index_.stripeKeys.empty()) {
+    index_.stripeKeys.push_back(indexEncodingBuffer_->writeString(
+        keyStream->chunks[0].firstKey.value()));
+  }
+  index_.stripeKeys.push_back(indexEncodingBuffer_->writeString(
+      keyStream->chunks.back().lastKey.value()));
+}
+
+void TabletWriter::writeKeyStream(const std::optional<Stream>& keyStream) {
+  NIMBLE_CHECK_EQ(hasIndex(), keyStream.has_value());
+  if (!hasIndex()) {
+    return;
+  }
+
+  const auto keyStreamOffset = file_->size();
+  for (const auto& chunk : keyStream->chunks) {
+    const auto chunkOffset = file_->size();
+    writeChunkWithChecksum(chunk);
+
+    // Track key stream chunk index
+    streamIndex_->keyStreamChunkRows.emplace_back(chunk.numRows);
+    streamIndex_->keyStreamChunkOffsets.emplace_back(chunkOffset);
+    NIMBLE_CHECK(chunk.firstKey.has_value());
+    streamIndex_->keyStreamChunkKeys.emplace_back(
+        streamIndexEncodingBuffer_->writeString(chunk.lastKey.value()));
+    ++streamIndex_->keyStreamChunkCounts.back();
+  }
+
+  const auto keyStreamSize = file_->size() - keyStreamOffset;
+  streamIndex_->keyStreamOffsets.emplace_back(keyStreamOffset);
+  streamIndex_->keyStreamSizes.emplace_back(keyStreamSize);
+}
+
+void TabletWriter::addStreamChunkIndex(
+    uint32_t streamIndex,
+    const Chunk& chunk,
+    uint32_t chunkOffset) {
+  if (!hasIndex()) {
+    return;
+  }
+  streamIndex_->streamChunkRows[streamIndex].emplace_back(chunk.numRows);
+  streamIndex_->streamChunkOffsets[streamIndex].emplace_back(chunkOffset);
+  ++streamIndex_->streamChunkCounts.back()[streamIndex];
 }
 
 void TabletWriter::writeOptionalSection(
@@ -258,6 +394,71 @@ void TabletWriter::writeStripeGroup(size_t streamCount, size_t stripeCount) {
       serialization::CreateStripeGroup(
           builder, stripeCount, streamOffsets, streamSizes));
   stripeGroups_.emplace_back(createMetadataSection(asView(builder)));
+}
+
+void TabletWriter::writeStripeGroupIndex(size_t streamCount) {
+  if (!hasIndex()) {
+    return;
+  }
+  NIMBLE_CHECK_NOT_NULL(streamIndex_);
+
+  const size_t stripeCount = streamSizes_.size();
+
+  flatbuffers::FlatBufferBuilder indexBuilder(kInitialIndexSize);
+
+  // Create StripeValueIndex with key stream data
+  auto valueIndex = serialization::CreateStripeValueIndex(
+      indexBuilder,
+      indexBuilder.CreateVector(streamIndex_->keyStreamOffsets),
+      indexBuilder.CreateVector(streamIndex_->keyStreamSizes),
+      indexBuilder.CreateVector(streamIndex_->keyStreamChunkCounts),
+      indexBuilder.CreateVector(streamIndex_->keyStreamChunkRows),
+      indexBuilder.CreateVector<flatbuffers::Offset<flatbuffers::String>>(
+          streamIndex_->keyStreamChunkKeys.size(),
+          [&indexBuilder, this](size_t i) {
+            return indexBuilder.CreateString(
+                streamIndex_->keyStreamChunkKeys[i].data(),
+                streamIndex_->keyStreamChunkKeys[i].size());
+          }));
+
+  // Create StripePositionIndex with flattened stream chunk data
+  // Flatten stream_chunks: for each stripe, list chunk counts for all streams
+  std::vector<uint32_t> flattenedStreamChunks;
+  for (const auto& chunkCounts : streamIndex_->streamChunkCounts) {
+    for (size_t streamId = 0; streamId < streamCount; ++streamId) {
+      flattenedStreamChunks.push_back(
+          streamId < chunkCounts.size() ? chunkCounts[streamId] : 0);
+    }
+  }
+
+  // Flatten stream_chunk_rows: concatenate all chunk rows from all streams
+  std::vector<uint32_t> flattenedChunkRows;
+  for (const auto& rows : streamIndex_->streamChunkRows) {
+    flattenedChunkRows.insert(
+        flattenedChunkRows.end(), rows.begin(), rows.end());
+  }
+
+  // Flatten stream_chunk_offsets: concatenate all chunk offsets from all
+  // streams
+  std::vector<uint32_t> flattenedChunkOffsets;
+  for (const auto& offsets : streamIndex_->streamChunkOffsets) {
+    flattenedChunkOffsets.insert(
+        flattenedChunkOffsets.end(), offsets.begin(), offsets.end());
+  }
+
+  auto positionIndex = serialization::CreateStripePositionIndex(
+      indexBuilder,
+      indexBuilder.CreateVector(flattenedStreamChunks),
+      indexBuilder.CreateVector(flattenedChunkRows),
+      indexBuilder.CreateVector(flattenedChunkOffsets));
+
+  // Create StripeIndexGroup with both value and position indexes
+  indexBuilder.Finish(
+      serialization::CreateStripeIndexGroup(
+          indexBuilder, stripeCount, valueIndex, positionIndex));
+
+  index_.stripeGroupIndexes.push_back(
+      createMetadataSection(asView(indexBuilder)));
 }
 
 MetadataSection TabletWriter::writeStripes(size_t stripeCount) {
@@ -325,12 +526,17 @@ void TabletWriter::tryWriteStripeGroup(bool force) {
   // these is handled by the |createFlattenedVector| function.
   writeStripeGroup(streamCount, stripeCount);
 
+  writeStripeGroupIndex(streamCount);
+
   finishStripeGroup();
 }
 
 void TabletWriter::finishStripeGroup() {
   streamOffsets_.clear();
   streamSizes_.clear();
+  // Reset stream chunk index data for the stripe group
+  streamIndex_.reset();
+  streamIndexEncodingBuffer_.reset();
   ++stripeGroupIndex_;
 }
 

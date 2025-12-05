@@ -18,6 +18,7 @@
 #include "dwio/nimble/common/MetricsLogger.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/FlushPolicy.h"
@@ -40,6 +41,8 @@ struct VeloxWriterOptions {
   // Property bag for storing user metadata in the file.
   std::unordered_map<std::string, std::string> metadata =
       detail::defaultMetadata();
+
+  std::optional<IndexConfig> indexConfig;
 
   // Columns that should be encoded as flat maps
   folly::F14FastSet<std::string> flatMapColumns;
@@ -95,6 +98,11 @@ struct VeloxWriterOptions {
   // than this threshold will not be flushed.
   // Note: this threshold is ignored when it is time to flush a stripe.
   uint64_t minStreamChunkRawSize{512 << 10};
+
+  // When flushing data streams into chunks, streams with raw data size larger
+  // than this threshold will be broken down into multiple smaller chunks. Each
+  // chunk will be at most this size.
+  uint64_t maxKeyStreamChunkRawSize = 20 << 20;
 
   // When flushing data streams into chunks, streams with raw data size larger
   // than this threshold will be broken down into multiple smaller chunks. Each

@@ -59,6 +59,13 @@ class TrivialEncoding final
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
 
+  std::optional<uint32_t> seekAtOrAfter(const void* /*value*/, bool& exactMatch)
+      final {
+    NIMBLE_UNSUPPORTED(
+        "seekAtOrAfter is not supported for TrivialEncoding of type {}",
+        TypeTraits<T>::dataType);
+  }
+
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
 
@@ -111,6 +118,9 @@ class TrivialEncoding<std::string_view> final
   // Returns the total size of the characters payload in bytes
   uint64_t uncompressedDataBytes() const;
 
+  std::optional<uint32_t> seekAtOrAfter(const void* value, bool& exactMatch)
+      final;
+
   static std::string_view encode(
       EncodingSelection<std::string_view>& selection,
       std::span<const std::string_view> values,
@@ -161,6 +171,12 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
       EncodingSelection<bool>& selection,
       std::span<const bool> values,
       Buffer& buffer);
+
+  std::optional<uint32_t> seekAtOrAfter(const void* /*value*/, bool& exactMatch)
+      final {
+    NIMBLE_UNSUPPORTED(
+        "seekAtOrAfter is not supported for TrivialEncoding of bool");
+  }
 
  private:
   uint32_t row_{0};

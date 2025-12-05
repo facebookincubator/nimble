@@ -133,6 +133,12 @@ class ScalarTypeBuilder : public TypeBuilder {
  private:
   ScalarTypeBuilder(SchemaBuilder& schemaBuilder, ScalarKind scalarKind);
 
+  // Special constructor for key type builder with explicit offset
+  ScalarTypeBuilder(
+      SchemaBuilder& schemaBuilder,
+      ScalarKind scalarKind,
+      offset_size streamOffset);
+
   StreamDescriptorBuilder scalarDescriptor_;
 
   friend class SchemaBuilder;
@@ -152,6 +158,7 @@ class LengthsTypeBuilder : public TypeBuilder {
 class ArrayTypeBuilder : public LengthsTypeBuilder {
  public:
   const TypeBuilder& elements() const;
+
   void setChildren(std::shared_ptr<TypeBuilder> elements);
 
  private:
@@ -291,6 +298,11 @@ class SchemaBuilder {
   std::shared_ptr<FlatMapTypeBuilder> createFlatMapTypeBuilder(
       ScalarKind keyScalarKind);
 
+  // Creates a key type builder with max stream offset.
+  // This is used for index keys which don't need real stream offsets.
+  // Returns a static singleton to ensure only one key node is created.
+  std::shared_ptr<ScalarTypeBuilder> createKeyTypeBuilder();
+
   // Retrieves all the nodes CURRENTLY known to the schema builder.
   // If more nodes are added to the schema builder later on, following calls to
   // this method will return existing and new nodes. It is guaranteed that the
@@ -299,15 +311,24 @@ class SchemaBuilder {
   // state means that the schema is a valid tree, with a single root node. This
   // means that all created builders were attached to their parents by calling
   // addChild/setChildren.
-  std::vector<SchemaNode> getSchemaNodes() const;
+  std::vector<SchemaNode> schemaNodes() const;
 
   offset_size nodeCount() const;
 
-  const std::shared_ptr<const TypeBuilder>& getRoot() const;
+  const std::shared_ptr<const TypeBuilder>& root() const;
+
+  const std::shared_ptr<const ScalarTypeBuilder>& key() const;
 
  private:
   void registerChild(const std::shared_ptr<TypeBuilder>& type);
+
   offset_size allocateStreamOffset();
+
+  // Returns the reserved offset for the key stream to ensure it doesn't
+  // collide with regular stream node offsets
+  static offset_size keyStreamOffset() {
+    return std::numeric_limits<offset_size>::max();
+  }
 
   void addNode(
       std::vector<SchemaNode>& nodes,
@@ -326,7 +347,9 @@ class SchemaBuilder {
   // was attached to a parent of a different schema builder.
   // 2. Attaching a node more than once to a parent.
   folly::F14FastSet<std::shared_ptr<const TypeBuilder>> roots_;
-  offset_size currentOffset_ = 0;
+  offset_size nodeOffset_{0};
+
+  std::shared_ptr<ScalarTypeBuilder> key_;
 
   friend class ScalarTypeBuilder;
   friend class LengthsTypeBuilder;

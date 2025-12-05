@@ -88,6 +88,13 @@ ScalarTypeBuilder::ScalarTypeBuilder(
     : TypeBuilder{schemaBuilder, Kind::Scalar},
       scalarDescriptor_{schemaBuilder_.allocateStreamOffset(), scalarKind} {}
 
+ScalarTypeBuilder::ScalarTypeBuilder(
+    SchemaBuilder& schemaBuilder,
+    ScalarKind scalarKind,
+    offset_size streamOffset)
+    : TypeBuilder{schemaBuilder, Kind::Scalar},
+      scalarDescriptor_{streamOffset, scalarKind} {}
+
 const StreamDescriptorBuilder& ScalarTypeBuilder::scalarDescriptor() const {
   return scalarDescriptor_;
 }
@@ -319,6 +326,34 @@ std::shared_ptr<ScalarTypeBuilder> SchemaBuilder::createScalarTypeBuilder(
   return type;
 }
 
+std::shared_ptr<ScalarTypeBuilder> SchemaBuilder::createKeyTypeBuilder() {
+  // Ensure only one key node can be created per SchemaBuilder instance
+  NIMBLE_CHECK_NULL(key_, "Key node already initialized.");
+
+  // Create a static singleton key type builder with max stream offset
+  // This ensures only one key node is ever created globally and it uses max
+  // offset
+  static auto keyNode = []() {
+    // Create a temporary schema builder just for constructing the key node
+    static SchemaBuilder tempBuilder;
+    struct MakeSharedEnabler : public ScalarTypeBuilder {
+      MakeSharedEnabler(SchemaBuilder& schemaBuilder)
+          : ScalarTypeBuilder{
+                schemaBuilder,
+                ScalarKind::Binary,
+                SchemaBuilder::keyStreamOffset()} {}
+    };
+    return std::make_shared<MakeSharedEnabler>(tempBuilder);
+  }();
+
+  // Store the key node in this SchemaBuilder instance
+  key_ = std::move(keyNode);
+  NIMBLE_CHECK_EQ(
+      key_->asScalar().scalarDescriptor().offset(),
+      SchemaBuilder::keyStreamOffset());
+  return key_;
+}
+
 std::shared_ptr<ArrayTypeBuilder> SchemaBuilder::createArrayTypeBuilder() {
   struct MakeSharedEnabler : public ArrayTypeBuilder {
     explicit MakeSharedEnabler(SchemaBuilder& schemaBuilder)
@@ -403,16 +438,20 @@ std::shared_ptr<FlatMapTypeBuilder> SchemaBuilder::createFlatMapTypeBuilder(
 }
 
 offset_size SchemaBuilder::nodeCount() const {
-  return currentOffset_;
+  return nodeOffset_;
 }
 
-const std::shared_ptr<const TypeBuilder>& SchemaBuilder::getRoot() const {
+const std::shared_ptr<const TypeBuilder>& SchemaBuilder::root() const {
   // When retreiving schema nodes, we return a vector ordered based on the
   // schema tree DFS order. To be able to flatten the schema tree to a flat
   // ordered vector, we need to guarantee that the schema tree has a single root
   // node, where we start traversing from.
   NIMBLE_CHECK_EQ(roots_.size(), 1, "Unable to determine schema root.");
   return *roots_.cbegin();
+}
+
+const std::shared_ptr<const ScalarTypeBuilder>& SchemaBuilder::key() const {
+  return key_;
 }
 
 void SchemaBuilder::registerChild(const std::shared_ptr<TypeBuilder>& type) {
@@ -432,7 +471,11 @@ void SchemaBuilder::registerChild(const std::shared_ptr<TypeBuilder>& type) {
 }
 
 offset_size SchemaBuilder::allocateStreamOffset() {
-  return currentOffset_++;
+  NIMBLE_CHECK_LT(
+      nodeOffset_,
+      keyStreamOffset(),
+      "Stream offset would collide with key stream offset");
+  return nodeOffset_++;
 }
 
 void SchemaBuilder::addNode(
@@ -536,7 +579,6 @@ void SchemaBuilder::addNode(
             map.nameAt(i));
         addNode(nodes, map.childAt(i));
       }
-
       break;
     }
 
@@ -545,10 +587,10 @@ void SchemaBuilder::addNode(
   }
 }
 
-std::vector<SchemaNode> SchemaBuilder::getSchemaNodes() const {
-  auto& root = getRoot();
+std::vector<SchemaNode> SchemaBuilder::schemaNodes() const {
+  auto& root = this->root();
   std::vector<SchemaNode> nodes;
-  nodes.reserve(currentOffset_);
+  nodes.reserve(nodeOffset_);
   addNode(nodes, *root);
   return nodes;
 }

@@ -21,68 +21,6 @@
 
 namespace facebook::nimble {
 
-bool IndexBounds::validate() const {
-  if (!lowerBound.has_value() && !upperBound.has_value()) {
-    return false;
-  }
-
-  const auto validateBound = [this](const velox::RowVectorPtr& bound) {
-    if (bound->size() != 1) {
-      return false;
-    }
-
-    const auto& rowType = asRowType(bound->type());
-    if (rowType->size() != indexColumns.size()) {
-      return false;
-    }
-    for (const auto& columnName : indexColumns) {
-      if (!rowType->containsChild(columnName)) {
-        return false;
-      }
-    }
-    return true;
-  };
-
-  if (lowerBound.has_value() && !validateBound(lowerBound->bound)) {
-    return false;
-  }
-
-  if (upperBound.has_value() && !validateBound(upperBound->bound)) {
-    return false;
-  }
-
-  return true;
-}
-
-std::string IndexBounds::toString() const {
-  std::stringstream ss;
-  ss << "IndexBounds{indexColumns=[";
-  for (size_t i = 0; i < indexColumns.size(); ++i) {
-    if (i > 0) {
-      ss << ", ";
-    }
-    ss << indexColumns[i];
-  }
-  ss << "]";
-
-  if (lowerBound.has_value()) {
-    ss << ", lowerBound=" << (lowerBound->inclusive ? "[" : "(");
-    // Note: Would need to format the bound values here
-    ss << "...";
-    ss << (lowerBound->inclusive ? "]" : ")");
-  }
-
-  if (upperBound.has_value()) {
-    ss << ", upperBound=" << (upperBound->inclusive ? "[" : "(");
-    // Note: Would need to format the bound values here
-    ss << "...";
-    ss << (upperBound->inclusive ? "]" : ")");
-  }
-
-  ss << "}";
-  return ss.str();
-}
-
 namespace {
 
 static constexpr int64_t DOUBLE_EXP_BIT_MASK = 0x7FF0000000000000L;
@@ -909,7 +847,7 @@ KeyEncoder::KeyEncoder(
   NIMBLE_CHECK_EQ(keyChannels_.size(), sortOrders_.size());
 }
 
-velox::RowVectorPtr KeyEncoder::createIncrementedBound(
+std::optional<velox::RowVectorPtr> KeyEncoder::createIncrementedBound(
     const velox::RowVectorPtr& bound) const {
   const auto& children = bound->children();
   NIMBLE_CHECK_EQ(bound->size(), 1);
@@ -940,7 +878,7 @@ velox::RowVectorPtr KeyEncoder::createIncrementedBound(
   }
 
   // All key columns overflowed - cannot increment
-  NIMBLE_FAIL("Cannot increment key: all key columns are at maximum value");
+  return std::nullopt;
 }
 
 void KeyEncoder::encode(
@@ -1055,7 +993,12 @@ EncodedKeyBounds KeyEncoder::encodeIndexBounds(const IndexBounds& indexBounds) {
     velox::RowVectorPtr lowerBoundToEncode = lowerBound.bound;
     // For exclusive lower bound, increment the row before encoding
     if (!lowerBound.inclusive) {
-      lowerBoundToEncode = createIncrementedBound(lowerBoundToEncode);
+      const auto incrementedBoundOpt =
+          createIncrementedBound(lowerBoundToEncode);
+      if (!incrementedBoundOpt.has_value()) {
+        NIMBLE_FAIL("Cannot increment lower bound");
+      }
+      lowerBoundToEncode = incrementedBoundOpt.value();
     }
     auto encodedKeys = encode(lowerBoundToEncode);
     NIMBLE_CHECK_EQ(encodedKeys.size(), 1);
@@ -1069,10 +1012,20 @@ EncodedKeyBounds KeyEncoder::encodeIndexBounds(const IndexBounds& indexBounds) {
 
     // For inclusive upper bound, increment the row before encoding
     if (upperBound.inclusive) {
-      upperBoundToEncode = createIncrementedBound(upperBound.bound);
+      const auto incrementedBoundOpt = createIncrementedBound(upperBound.bound);
+      // If increment fails (bound is at maximum value), treat as unbounded by
+      // setting to nullptr. This prevents setting an upper bound when the
+      // inclusive upper bound is already at the maximum possible value.
+      if (!incrementedBoundOpt.has_value()) {
+        upperBoundToEncode = nullptr;
+      } else {
+        upperBoundToEncode = incrementedBoundOpt.value();
+      }
     }
-    auto encodedKeys = encode(upperBoundToEncode);
-    result.upperKey = std::move(encodedKeys[0]);
+    if (upperBoundToEncode != nullptr) {
+      auto encodedKeys = encode(upperBoundToEncode);
+      result.upperKey = std::move(encodedKeys[0]);
+    }
   }
 
   return result;

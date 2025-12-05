@@ -13,21 +13,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 #pragma once
 
-#include "dwio/nimble/velox/selective/NimbleData.h"
-#include "velox/dwio/common/SelectiveColumnReader.h"
+#include <string>
+#include <vector>
 
 namespace facebook::nimble {
 
-std::unique_ptr<velox::dwio::common::SelectiveColumnReader> buildColumnReader(
-    const velox::TypePtr& requestedType,
-    const std::shared_ptr<const velox::dwio::common::TypeWithId>& fileType,
-    NimbleParams& params,
-    velox::common::ScanSpec& scanSpec,
-    bool isRoot);
-
-}
+/// Configuration for index generation.
+/// The index allows efficient filtering and pruning of data based on
+/// the specified index columns.
+struct IndexConfig {
+  /// Columns to be indexed for data pruning.
+  /// These columns will be encoded using KeyWriter to generate index keys
+  /// that enable efficient data skipping during reads.
+  std::vector<std::string> columns;
+};
 
 } // namespace facebook::nimble

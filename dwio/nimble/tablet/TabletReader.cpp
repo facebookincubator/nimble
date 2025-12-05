@@ -20,6 +20,7 @@
 #include "dwio/nimble/tablet/Compression.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
+#include "dwio/nimble/tablet/IndexGenerated.h"
 #include "folly/io/Cursor.h"
 
 #include <algorithm>
@@ -179,6 +180,9 @@ TabletReader::TabletReader(
       stripes_{std::make_unique<MetadataBuffer>(pool, stripes)},
       stripeGroupCache_{[this](uint32_t stripeGroupIndex) {
         return loadStripeGroup(stripeGroupIndex);
+      }},
+      stripeIndexGroupCache_{[this](uint32_t stripeGroupIndex) {
+        return loadStripeIndexGroup(stripeGroupIndex);
       }} {
   auto stripeGroupPtr =
       stripeGroupCache_.get(0, [this, stripeGroup](uint32_t stripeGroupIndex) {
@@ -206,6 +210,9 @@ TabletReader::TabletReader(
       ownedFile_{std::move(ownedReadFile)},
       stripeGroupCache_{[this](uint32_t stripeGroupIndex) {
         return loadStripeGroup(stripeGroupIndex);
+      }},
+      stripeIndexGroupCache_{[this](uint32_t stripeGroupIndex) {
+        return loadStripeIndexGroup(stripeGroupIndex);
       }} {
   init(preloadOptionalSections);
 }
@@ -239,6 +246,8 @@ void TabletReader::init(
   initStripes(footerIoBuf, footerIoSize, fileSize);
 
   initOptionalSections(footerIoBuf, footerIoOffset, preloadOptionalSections);
+
+  initIndex(footerIoBuf, footerIoOffset, fileSize);
 }
 
 void TabletReader::initPostScript(
@@ -595,6 +604,28 @@ std::shared_ptr<StripeGroup> TabletReader::stripeGroup(
   return stripeGroupCache_.get(stripeGroupIndex);
 }
 
+std::shared_ptr<StripeIndexGroup> TabletReader::stripeIndexGroup(
+    uint32_t stripeGroupIndex) const {
+  return stripeIndexGroupCache_.get(stripeGroupIndex);
+}
+
+std::shared_ptr<StripeIndexGroup> TabletReader::loadStripeIndexGroup(
+    uint32_t stripeGroupIndex) const {
+  NIMBLE_CHECK_NOT_NULL(tabletIndex_, "Index not initialized.");
+  const auto* section =
+      tabletIndex_->stripeIndexGroupMetadata(stripeGroupIndex);
+  velox::common::Region stripeIndexGroupRegion{
+      section->offset(), section->size(), "StripeIndexGroup"};
+  folly::IOBuf buffer;
+  file_->preadv({&stripeIndexGroupRegion, 1}, {&buffer, 1});
+  return StripeIndexGroup::create(
+      stripeGroupIndex,
+      std::make_unique<MetadataBuffer>(
+          *pool_,
+          buffer,
+          static_cast<CompressionType>(section->compressionType())));
+}
+
 std::span<const uint32_t> TabletReader::streamOffsets(
     const StripeIdentifier& stripe) const {
   NIMBLE_DCHECK_LT(stripe.stripeId(), stripeCount_, "Stripe is out of range.");
@@ -614,8 +645,11 @@ uint32_t TabletReader::streamCount(const StripeIdentifier& stripe) const {
 
 StripeIdentifier TabletReader::stripeIdentifier(uint32_t stripeIndex) const {
   NIMBLE_CHECK_LT(stripeIndex, stripeCount_, "Stripe is out of range.");
+  const auto stripeGroupIndex = this->stripeGroupIndex(stripeIndex);
   return StripeIdentifier{
-      stripeIndex, stripeGroup(stripeGroupIndex(stripeIndex))};
+      stripeIndex,
+      stripeGroup(stripeGroupIndex),
+      stripeIndexGroup(stripeGroupIndex)};
 }
 
 std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
@@ -727,11 +761,11 @@ std::vector<MetadataSection> TabletReader::stripeGroupsMetadata() const {
 }
 
 bool TabletReader::hasOptionalSection(const std::string& name) const {
-  const auto it = optionalSections_.find(name);
+  auto it = optionalSections_.find(name);
   return it != optionalSections_.end();
 }
 
-std::optional<Section> TabletReader::loadOptionalSection(
+std::unique_ptr<Section> TabletReader::loadOptionalSection(
     const std::string& name,
     bool keepCache) const {
   NIMBLE_CHECK(!name.empty(), "Optional section name cannot be empty.");
@@ -740,18 +774,18 @@ std::optional<Section> TabletReader::loadOptionalSection(
     auto itCache = optionalSectionsCache->find(name);
     if (itCache != optionalSectionsCache->end()) {
       if (keepCache) {
-        return Section{MetadataBuffer{*itCache->second}};
+        return std::make_unique<Section>(MetadataBuffer{*itCache->second});
       } else {
         auto metadata = std::move(itCache->second);
         optionalSectionsCache->erase(itCache);
-        return Section{std::move(*metadata)};
+        return std::make_unique<Section>(std::move(*metadata));
       }
     }
   }
 
   auto it = optionalSections_.find(name);
   if (it == optionalSections_.end()) {
-    return std::nullopt;
+    return nullptr;
   }
 
   const auto offset = it->second.offset();
@@ -761,6 +795,50 @@ std::optional<Section> TabletReader::loadOptionalSection(
   velox::common::Region region{offset, size, name};
   folly::IOBuf iobuf;
   file_->preadv({&region, 1}, {&iobuf, 1});
-  return Section{MetadataBuffer{*pool_, iobuf, compressionType}};
+  return std::make_unique<Section>(
+      MetadataBuffer{*pool_, iobuf, compressionType});
 }
+
+bool TabletReader::hasIndex() const {
+  return hasOptionalSection(std::string{kIndexSection});
+}
+
+void TabletReader::initIndex(
+    const folly::IOBuf& footerIoBuf,
+    uint64_t footerIoOffset,
+    uint64_t fileSize) {
+  NIMBLE_CHECK_NULL(tabletIndex_, "Index already initialized.");
+
+  if (!hasIndex()) {
+    return;
+  }
+
+  auto indexSection =
+      loadOptionalSection(std::string{kIndexSection}, /*keepCache=*/false);
+  NIMBLE_CHECK_NOT_NULL(indexSection, "Failed to load index section.");
+
+  tabletIndex_ = TabletIndex::create(std::move(indexSection));
+
+  // Preload the first stripe index group if it's already in the footer buffer
+  const auto* firstIndexGroupMetadata =
+      tabletIndex_->stripeIndexGroupMetadata(0);
+  if (firstIndexGroupMetadata &&
+      firstIndexGroupMetadata->offset() +
+              footerIoBuf.computeChainDataLength() >=
+          fileSize) {
+    stripeIndexGroupCache_.get(0, [&](uint32_t stripeIndexGroupIndex) {
+      return StripeIndexGroup::create(
+          stripeIndexGroupIndex,
+          std::make_unique<MetadataBuffer>(
+              *pool_,
+              footerIoBuf,
+              firstIndexGroupMetadata->offset() +
+                  footerIoBuf.computeChainDataLength() - fileSize,
+              firstIndexGroupMetadata->size(),
+              static_cast<CompressionType>(
+                  firstIndexGroupMetadata->compressionType())));
+    });
+  }
+}
+
 } // namespace facebook::nimble

@@ -20,8 +20,11 @@
 #include <span>
 #include <vector>
 
+#include "dwio/nimble/common/MetadataBuffer.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/index/StripeIndexGroup.h"
+#include "dwio/nimble/index/TabletIndex.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "folly/Synchronized.h"
 #include "folly/io/IOBuf.h"
@@ -162,8 +165,13 @@ class StripeGroup {
 
 class StripeIdentifier {
  public:
-  StripeIdentifier(uint32_t stripeId, std::shared_ptr<StripeGroup> stripeGroup)
-      : stripeId_{stripeId}, stripeGroup_{std::move(stripeGroup)} {}
+  StripeIdentifier(
+      uint32_t stripeId,
+      std::shared_ptr<StripeGroup> stripeGroup,
+      std::shared_ptr<StripeIndexGroup> stripeIndexGroup)
+      : stripeId_{stripeId},
+        stripeGroup_{std::move(stripeGroup)},
+        stripeIndexGroup_{std::move(stripeIndexGroup)} {}
 
   uint32_t stripeId() const {
     return stripeId_;
@@ -173,9 +181,14 @@ class StripeIdentifier {
     return stripeGroup_;
   }
 
+  const std::shared_ptr<StripeIndexGroup>& stripeIndexGroup() const {
+    return stripeIndexGroup_;
+  }
+
  private:
   uint32_t stripeId_;
   std::shared_ptr<StripeGroup> stripeGroup_;
+  std::shared_ptr<StripeIndexGroup> stripeIndexGroup_;
 };
 
 /// Provides read access to a tablet written by a TabletWriter.
@@ -242,9 +255,17 @@ class TabletReader {
 
   bool hasOptionalSection(const std::string& name) const;
 
-  std::optional<Section> loadOptionalSection(
+  std::unique_ptr<Section> loadOptionalSection(
       const std::string& name,
       bool keepCache = false) const;
+
+  // Returns true if the file contains index data.
+  bool hasIndex() const;
+
+  // Returns the tablet index if available, nullptr otherwise.
+  TabletIndex* index() const {
+    return tabletIndex_.get();
+  }
 
   uint64_t fileSize() const {
     return file_->size();
@@ -331,11 +352,17 @@ class TabletReader {
 
   void initFooter(const folly::IOBuf& footerIoBuf, uint64_t footerIoSize);
 
-  uint32_t stripeGroupIndex(uint32_t stripeIndex) const;
+  uint32_t stripeGroupIndex(uint32_t stripeId) const;
+
+  std::shared_ptr<StripeGroup> stripeGroup(uint32_t stripeGroupIndex) const;
 
   std::shared_ptr<StripeGroup> loadStripeGroup(uint32_t stripeGroupIndex) const;
 
-  std::shared_ptr<StripeGroup> stripeGroup(uint32_t stripeGroupIndex) const;
+  std::shared_ptr<StripeIndexGroup> stripeIndexGroup(
+      uint32_t stripeGroupIndex) const;
+
+  std::shared_ptr<StripeIndexGroup> loadStripeIndexGroup(
+      uint32_t stripeGroupIndex) const;
 
   void initStripes(
       const folly::IOBuf& footerIoBuf,
@@ -349,6 +376,11 @@ class TabletReader {
       const folly::IOBuf& footerIoBuf,
       uint64_t footerIoOffset,
       const std::vector<std::string>& preloadOptionalSections);
+
+  void initIndex(
+      const folly::IOBuf& footerIoBuf,
+      uint64_t footerIoOffset,
+      uint64_t fileSize);
 
   MemoryPool* const pool_;
   // Non-owning pointer to the file for reading. Always valid during the
@@ -364,11 +396,16 @@ class TabletReader {
 
   mutable ReferenceCountedCache<uint32_t, StripeGroup> stripeGroupCache_;
   mutable folly::Synchronized<std::shared_ptr<StripeGroup>> firstStripeGroup_;
+  mutable ReferenceCountedCache<uint32_t, StripeIndexGroup>
+      stripeIndexGroupCache_;
 
-  uint64_t tabletRowCount_{0};
+  uint32_t tabletRowCount_{0};
   uint32_t stripeCount_{0};
   const uint32_t* stripeRowCounts_{nullptr};
   const uint64_t* stripeOffsets_{nullptr};
+
+  // Index related fields.
+  mutable std::unique_ptr<TabletIndex> tabletIndex_;
 
   std::unordered_map<std::string, MetadataSection> optionalSections_;
   mutable folly::Synchronized<

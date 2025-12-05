@@ -120,7 +120,11 @@ class ContentStreamChunker final : public StreamChunker {
         chunkSize.dataElementCount * sizeof(T)};
     dataElementOffset_ += chunkSize.dataElementCount;
     extraMemory_ -= chunkSize.extraMemory;
-    return StreamDataView{streamData_->descriptor(), dataChunk};
+    return StreamDataView{
+        streamData_->descriptor(),
+        dataChunk,
+        static_cast<uint32_t>(chunkSize.dataElementCount),
+        std::nullopt};
   }
 
  private:
@@ -246,6 +250,132 @@ inline StreamChunker::ChunkSize ContentStreamChunker<
   return nextStringChunkSize();
 }
 
+class KeyStreamChunker final : public StreamChunker {
+ public:
+  KeyStreamChunker(
+      KeyStreamData& streamData,
+      const StreamChunkerOptions& options)
+      : streamData_{&streamData},
+        minChunkSize_{options.minChunkSize},
+        maxChunkSize_{options.maxChunkSize},
+        ensureFullChunks_{options.ensureFullChunks},
+        extraMemory_{streamData_->extraMemory()} {
+    NIMBLE_DCHECK_GE(
+        maxChunkSize_,
+        sizeof(std::string_view),
+        "MaxChunkSize must be at least the size of a single key element.");
+  }
+
+  std::optional<StreamDataView> next() override {
+    const auto& chunkSize = nextChunkSize();
+    if (chunkSize.rollingChunkSize == 0) {
+      return std::nullopt;
+    }
+
+    const std::string_view dataChunk = {
+        reinterpret_cast<const char*>(
+            streamData_->keys().data() + keyElementOffset_),
+        chunkSize.dataElementCount * sizeof(std::string_view)};
+    keyElementOffset_ += chunkSize.dataElementCount;
+    extraMemory_ -= chunkSize.extraMemory;
+    const auto firstKeyOffset = keyElementOffset_ - chunkSize.dataElementCount;
+    return StreamDataView{
+        streamData_->descriptor(),
+        dataChunk,
+        static_cast<uint32_t>(chunkSize.dataElementCount),
+        streamData_->keys()[firstKeyOffset],
+        streamData_->keys()[keyElementOffset_ - 1]};
+  }
+
+ private:
+  ChunkSize nextChunkSize() {
+    const auto& keys = streamData_->keys();
+    size_t keyCount{0};
+    uint64_t rollingChunkSize{0};
+    uint64_t rollingExtraMemory{0};
+    bool fullChunk{false};
+    for (size_t i = keyElementOffset_; i < keys.size(); ++i) {
+      const auto& key = keys[i];
+      const uint64_t keySize = key.size() + sizeof(std::string_view);
+
+      if (rollingChunkSize == 0 && keySize > maxChunkSize_) {
+        // Allow a single oversized key as its own chunk.
+        fullChunk = true;
+        rollingExtraMemory += key.size();
+        rollingChunkSize += keySize;
+        ++keyCount;
+        break;
+      }
+
+      if (rollingChunkSize + keySize > maxChunkSize_) {
+        fullChunk = true;
+        break;
+      }
+
+      rollingExtraMemory += key.size();
+      rollingChunkSize += keySize;
+      ++keyCount;
+    }
+
+    fullChunk = fullChunk || (rollingChunkSize == maxChunkSize_);
+    if ((ensureFullChunks_ && !fullChunk) ||
+        (rollingChunkSize < minChunkSize_)) {
+      return ChunkSize{};
+    }
+
+    return ChunkSize{
+        .dataElementCount = keyCount,
+        .rollingChunkSize = rollingChunkSize,
+        .extraMemory = rollingExtraMemory};
+  }
+
+  void compact() override {
+    // No changes made to stream data, nothing to compact.
+    if (keyElementOffset_ == 0) {
+      return;
+    }
+
+    auto& currentKeys = streamData_->mutableKeys();
+    const uint64_t remainingKeyCount = currentKeys.size() - keyElementOffset_;
+    const auto newKeyCapacity = detail::getNewBufferCapacity<std::string_view>(
+        maxChunkSize_, currentKeys.capacity(), remainingKeyCount);
+
+    // Move and clear existing buffer
+    auto tempKeys = std::move(currentKeys);
+    streamData_->reset();
+    NIMBLE_CHECK(
+        streamData_->empty(), "StreamData should be empty after reset");
+
+    auto& mutableKeys = streamData_->mutableKeys();
+    mutableKeys.reserve(newKeyCapacity);
+    NIMBLE_DCHECK_GE(
+        mutableKeys.capacity(),
+        newKeyCapacity,
+        "Keys buffer capacity should be at least new capacity");
+
+    mutableKeys.resize(remainingKeyCount);
+    NIMBLE_DCHECK_EQ(
+        mutableKeys.size(),
+        remainingKeyCount,
+        "Keys buffer size should be equal to remaining key count");
+
+    std::copy_n(
+        tempKeys.begin() + keyElementOffset_,
+        remainingKeyCount,
+        mutableKeys.begin());
+    keyElementOffset_ = 0;
+    streamData_->extraMemory() = extraMemory_;
+  }
+
+  KeyStreamData* const streamData_;
+  const uint64_t minChunkSize_;
+  const uint64_t maxChunkSize_;
+  const bool ensureFullChunks_;
+
+  size_t keyElementOffset_{0};
+  size_t extraMemory_{0};
+};
+
 class NullsStreamChunker final : public StreamChunker {
  public:
   NullsStreamChunker(
@@ -278,7 +408,7 @@ class NullsStreamChunker final : public StreamChunker {
 
     auto& nonNulls = streamData_->mutableNonNulls();
     const size_t remainingNonNulls = nonNulls.size() - nonNullsOffset_;
-    size_t nonNullsInChunk = std::min(maxChunkSize_, remainingNonNulls);
+    const size_t nonNullsInChunk = std::min(maxChunkSize_, remainingNonNulls);
     if (nonNullsInChunk == 0 || nonNullsInChunk < minChunkSize_ ||
         (ensureFullChunks_ && nonNullsInChunk < maxChunkSize_)) {
       return std::nullopt;
@@ -289,7 +419,11 @@ class NullsStreamChunker final : public StreamChunker {
         reinterpret_cast<const char*>(nonNulls.data() + nonNullsOffset_),
         nonNullsInChunk};
     nonNullsOffset_ += nonNullsInChunk;
-    return StreamDataView{streamData_->descriptor(), dataChunk};
+    return StreamDataView{
+        streamData_->descriptor(),
+        dataChunk,
+        static_cast<uint32_t>(nonNullsInChunk),
+        std::nullopt};
   }
 
  private:
@@ -394,9 +528,17 @@ class NullableContentStreamChunker final : public StreamChunker {
 
     if (chunkSize.nullElementCount > chunkSize.dataElementCount) {
       return StreamDataView{
-          streamData_->descriptor(), dataChunk, nonNullsChunk};
+          streamData_->descriptor(),
+          dataChunk,
+          static_cast<uint32_t>(chunkSize.nullElementCount),
+          nonNullsChunk};
     }
-    return StreamDataView{streamData_->descriptor(), dataChunk};
+    NIMBLE_CHECK_EQ(chunkSize.dataElementCount, chunkSize.nullElementCount);
+    return StreamDataView{
+        streamData_->descriptor(),
+        dataChunk,
+        static_cast<uint32_t>(chunkSize.dataElementCount),
+        std::nullopt};
   }
 
  private:

@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "dwio/nimble/index/StripeGroupIndex.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "velox/dwio/common/BufferedInput.h"
@@ -25,7 +26,7 @@ namespace facebook::nimble {
 
 class ReaderBase {
  public:
-  ReaderBase(
+  static std::shared_ptr<ReaderBase> create(
       std::unique_ptr<velox::dwio::common::BufferedInput> input,
       const velox::dwio::common::ReaderOptions& options);
 
@@ -37,8 +38,8 @@ class ReaderBase {
     return *tablet_;
   }
 
-  velox::memory::MemoryPool* memoryPool() const {
-    return memoryPool_;
+  velox::memory::MemoryPool* pool() const {
+    return pool_;
   }
 
   const std::shared_ptr<velox::random::RandomSkipTracker>& randomSkip() const {
@@ -64,9 +65,18 @@ class ReaderBase {
   }
 
  private:
+  ReaderBase(
+      std::unique_ptr<velox::dwio::common::BufferedInput> input,
+      std::shared_ptr<TabletReader> tablet,
+      velox::memory::MemoryPool* pool,
+      const std::shared_ptr<velox::random::RandomSkipTracker>& randomSkip,
+      const std::shared_ptr<velox::common::ScanSpec>& scanSpec,
+      std::shared_ptr<const Type> nimbleSchema,
+      velox::RowTypePtr fileSchema);
+
   const std::unique_ptr<velox::dwio::common::BufferedInput> input_;
   const std::shared_ptr<TabletReader> tablet_;
-  velox::memory::MemoryPool* const memoryPool_;
+  velox::memory::MemoryPool* const pool_;
   const std::shared_ptr<velox::random::RandomSkipTracker> randomSkip_;
   const std::shared_ptr<velox::common::ScanSpec> scanSpec_;
   const std::shared_ptr<const Type> nimbleSchema_;
@@ -95,6 +105,12 @@ class StripeStreams {
   void load() {
     readerBase_->input().load(velox::dwio::common::LogType::STREAM_BUNDLE);
   }
+
+  int32_t stripeIndex() const {
+    return stripe_;
+  }
+
+  std::shared_ptr<StreamIndex> streamIndex(int streamId) const;
 
  private:
   std::optional<velox::common::Region> streamRegion(int streamId) const;

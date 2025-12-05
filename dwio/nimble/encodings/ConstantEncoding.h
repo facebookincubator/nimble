@@ -57,6 +57,13 @@ class ConstantEncoding final
       std::span<const physicalType> values,
       Buffer& buffer);
 
+  std::optional<uint32_t> seekAtOrAfter(const void* /*value*/, bool& exactMatch)
+      override final {
+    NIMBLE_UNSUPPORTED(
+        "seekAtOrAfter is not supported for ConstantEncoding of type {}",
+        TypeTraits<T>::dataType);
+  }
+
   std::string debugString(int offset) const final;
 
  private:

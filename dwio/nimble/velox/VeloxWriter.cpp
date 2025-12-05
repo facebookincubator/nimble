@@ -209,6 +209,10 @@ class NullsAsDataStreamData : public StreamData {
     streamData_->materialize();
   }
 
+  inline uint32_t numRows() const override {
+    return streamData_->numRows();
+  }
+
   inline std::string_view data() const override {
     return {
         reinterpret_cast<const char*>(streamData_->nonNulls().data()),
@@ -615,20 +619,24 @@ VeloxWriter::VeloxWriter(
       context_{std::make_unique<detail::WriterContext>(
           *writerMemoryPool_,
           std::move(options))},
+      flushPolicy_{context_->options().flushPolicyFactory()},
       file_{std::move(file)},
       tabletWriter_{TabletWriter::create(
           file_.get(),
           *encodingMemoryPool_,
           {.layoutPlanner = std::make_unique<DefaultLayoutPlanner>(
                [&schemaBuilder = context_->schemaBuilder()]() {
-                 return schemaBuilder.getRoot();
+                 return schemaBuilder.root();
                },
                context_->options().featureReordering),
            .metadataCompressionThreshold =
                context_->options().metadataCompressionThreshold.value_or(
-                   kMetadataCompressionThreshold)})},
-      rootWriter_{createRootFieldWriter(schema_, *context_)} {
+                   kMetadataCompressionThreshold),
+           .indexConfig = context_->options().indexConfig})},
+      rootWriter_{createRootFieldWriter(schema_, *context_)},
+      indexWriter_{IndexWriter::create(options.indexConfig, type, *context_)} {
   NIMBLE_CHECK_NOT_NULL(file_);
+  NIMBLE_CHECK_NOT_NULL(flushPolicy_);
 
   if (context_->options().encodingLayoutTree.has_value()) {
     context_->setFlatmapFieldAddedEventHandler(
@@ -669,9 +677,11 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
       velox::dwio::common::ExecutorBarrier barrier{
           context_->options().writeExecutor};
       rootWriter_->write(input, OrderedRanges::of(0, numRows), &barrier);
+      addIndexKey(input, &barrier);
       barrier.waitAll();
     } else {
       rootWriter_->write(input, OrderedRanges::of(0, numRows));
+      addIndexKey(input);
     }
 
     uint64_t memoryUsed{0};
@@ -725,7 +735,7 @@ void VeloxWriter::writeMetadata() {
 
 void VeloxWriter::writeColumnStats() {
   nimble::aggregateStats(
-      *context_->schemaBuilder().getRoot(), context_->columnStats());
+      *context_->schemaBuilder().root(), context_->columnStats());
   flatbuffers::FlatBufferBuilder builder;
   builder.Finish(serialization::CreateStats(builder, context_->fileRawSize()));
   tabletWriter_->writeOptionalSection(
@@ -741,20 +751,51 @@ void VeloxWriter::writeSchema() {
       serializer.serialize(context_->schemaBuilder()));
 }
 
-bool VeloxWriter::shouldFlush(FlushPolicy* policy) const {
-  return policy->shouldFlush(
+void VeloxWriter::addIndexKey(
+    const velox::VectorPtr& input,
+    folly::Executor* executor) {
+  if (indexWriter_ == nullptr) {
+    return;
+  }
+  if (executor != nullptr) {
+    executor->add([&]() { indexWriter_->write(input); });
+  } else {
+    indexWriter_->write(input);
+  }
+}
+
+bool VeloxWriter::shouldFlush() const {
+  return flushPolicy_->shouldFlush(
       StripeProgress{
           .stripeRawSize = context_->memoryUsed(),
           .stripeEncodedSize = context_->stripeEncodedPhysicalSize(),
           .stripeEncodedLogicalSize = context_->stripeEncodedLogicalSize()});
 }
 
-bool VeloxWriter::shouldChunk(FlushPolicy* policy) const {
-  return policy->shouldChunk(
+bool VeloxWriter::shouldChunk() const {
+  return flushPolicy_->shouldChunk(
       StripeProgress{
           .stripeRawSize = context_->memoryUsed(),
           .stripeEncodedSize = context_->stripeEncodedPhysicalSize(),
           .stripeEncodedLogicalSize = context_->stripeEncodedLogicalSize()});
+}
+
+bool VeloxWriter::writeStreamChunkBatch(
+    const std::vector<uint32_t>& indices,
+    bool ensureFullChunks) {
+  const size_t indicesCount = indices.size();
+  const auto batchSize = context_->options().chunkedStreamBatchSize;
+  for (size_t index = 0; index < indicesCount; index += batchSize) {
+    size_t currentBatchSize = std::min(batchSize, indicesCount - index);
+    std::span<const uint32_t> batchIndices(
+        indices.begin() + index, currentBatchSize);
+    // Stop attempting chunking once streams are too small to chunk or
+    // memory pressure is relieved.
+    if (!writeChunks(batchIndices, ensureFullChunks) || !shouldChunk()) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void VeloxWriter::close() {
@@ -832,6 +873,21 @@ void VeloxWriter::clearEncodingBuffer() {
   encodingBuffer_.reset();
 }
 
+void VeloxWriter::ensureStreams() {
+  const auto schemaNodeCount = context_->schemaBuilder().nodeCount();
+  streams_.resize(schemaNodeCount);
+  if (hasIndex() && !keyStream_.has_value()) {
+    keyStream_.emplace();
+  }
+}
+
+void VeloxWriter::resetWriter() {
+  rootWriter_->reset();
+  if (hasIndex()) {
+    indexWriter_->reset();
+  }
+}
+
 void VeloxWriter::ensureWriteStreams() {
   ensureEncodingBuffer();
   const auto schemaNodeCount = context_->schemaBuilder().nodeCount();
@@ -847,9 +903,10 @@ void VeloxWriter::writeStreams() {
   velox::CpuWallTiming flushTiming;
   {
     LoggingScope scope{*context_->logger()};
-    velox::CpuWallTimer veloxTimer{flushTiming};
+    velox::CpuWallTimer veloxTimer{context_->stripeFlushTiming()};
 
-    ensureWriteStreams();
+    ensureEncodingBuffer();
+    ensureStreams();
 
     if (context_->options().encodingExecutor) {
       velox::dwio::common::ExecutorBarrier barrier{
@@ -859,9 +916,22 @@ void VeloxWriter::writeStreams() {
             context_->columnStats(streamData->descriptor().offset())
                 .physicalSize;
         barrier.add([&, _streamData = streamData.get()]() {
-          processStream(*(_streamData), streamSize, chunkSize);
+          processStreamWithoutChunk(
+              *_streamData, /*isKeyStream=*/false, streamSize, chunkSize);
         });
       }
+
+      // Handle keyStream if index is enabled
+      if (hasIndex()) {
+        barrier.add([&]() {
+          auto* keyStreamData = indexWriter_->keyStreamData();
+          NIMBLE_CHECK(!keyStreamData->empty());
+          uint64_t dummyStreamSize = 0;
+          processStreamWithoutChunk(
+              *keyStreamData, /*isKeyStream=*/true, dummyStreamSize, chunkSize);
+        });
+      }
+
       barrier.waitAll();
     } else {
       const auto& streams = context_->streams();
@@ -869,7 +939,17 @@ void VeloxWriter::writeStreams() {
         auto& streamSize =
             context_->columnStats(streamData->descriptor().offset())
                 .physicalSize;
-        processStream(*streamData, streamSize, chunkSize);
+        processStreamWithoutChunk(
+            *streamData, /*isKeyStream=*/false, streamSize, chunkSize);
+      }
+
+      // Handle keyStream if index is enabled
+      if (hasIndex()) {
+        auto* keyStreamData = indexWriter_->keyStreamData();
+        NIMBLE_CHECK(!keyStreamData->empty());
+        uint64_t dummyStreamSize = 0;
+        processStreamWithoutChunk(
+            *keyStreamData, /*isKeyStream=*/true, dummyStreamSize, chunkSize);
       }
     }
 
@@ -879,6 +959,158 @@ void VeloxWriter::writeStreams() {
   context_->addStripeFlushTiming(flushTiming);
   VLOG(1) << "writeChunk time: " << velox::succinctNanos(flushTiming.wallNanos)
           << ", chunk size: " << velox::succinctBytes(chunkSize);
+  return true;
+}
+
+void VeloxWriter::writeStreamWithoutChunk(
+    StreamData& streamData,
+    bool isKeyStream,
+    uint64_t& streamSize,
+    std::atomic_uint64_t& chunkSize) {
+  const auto encoded = encodeStream(*context_, *encodingBuffer_, streamData);
+  if (!encoded.empty()) {
+    ChunkedStreamWriter chunkWriter{*encodingBuffer_};
+    if (isKeyStream) {
+      NIMBLE_CHECK(keyStream_.has_value(), "keyStream must be initialized");
+      NIMBLE_CHECK(keyStream_->chunks.empty());
+      auto& chunk = keyStream_->chunks.emplace_back();
+      chunk.numRows = streamData.numRows();
+      for (auto& buffer : chunkWriter.encode(encoded)) {
+        streamSize += buffer.size();
+        chunkSize += buffer.size();
+        chunk.content.push_back(std::move(buffer));
+      }
+      chunk.firstKey = encodingBuffer_->writeString(streamData.firstKey());
+      chunk.lastKey = encodingBuffer_->writeString(streamData.lastKey());
+    } else {
+      const auto offset = streamData.descriptor().offset();
+      NIMBLE_DCHECK_LT(offset, streams_.size(), "Stream offset out of range.");
+      auto& stream = streams_[offset];
+      NIMBLE_CHECK(stream.chunks.empty());
+      auto& chunk = stream.chunks.emplace_back();
+      chunk.numRows = streamData.numRows();
+      for (auto& buffer : chunkWriter.encode(encoded)) {
+        streamSize += buffer.size();
+        chunkSize += buffer.size();
+        chunk.content.push_back(std::move(buffer));
+      }
+    }
+  }
+  streamData.reset();
+}
+
+void VeloxWriter::processStreamWithoutChunk(
+    StreamData& streamData,
+    bool isKeyStream,
+    uint64_t& streamSize,
+    std::atomic_uint64_t& chunkSize) {
+  if (isKeyStream) {
+    writeStreamWithoutChunk(
+        streamData, /*isKeyStream=*/true, streamSize, chunkSize);
+  } else {
+    const auto offset = streamData.descriptor().offset();
+    const auto* context =
+        streamData.descriptor().context<WriterStreamContext>();
+    NIMBLE_CHECK(streams_[offset].chunks.empty());
+
+    if ((context != nullptr) && context->isNullStream) {
+      // For null streams we promote the null values to be written as
+      // boolean data.
+      // We still apply the same null logic, where if all values are
+      // non-nulls, we omit the entire stream.
+      if (streamData.hasNulls()) {
+        NullsAsDataStreamData nullsStreamData{streamData};
+        writeStreamWithoutChunk(
+            nullsStreamData, /*isKeyStream=*/false, streamSize, chunkSize);
+      }
+    } else {
+      if (!streamData.data().empty()) {
+        writeStreamWithoutChunk(
+            streamData, /*isKeyStream=*/false, streamSize, chunkSize);
+      }
+    }
+  }
+}
+
+bool VeloxWriter::writeKeyStreamChunk(bool lastChunk, bool ensureFullChunks) {
+  NIMBLE_CHECK(hasIndex());
+  auto* keyStreamData = indexWriter_->keyStreamData();
+  NIMBLE_CHECK_NOT_NULL(keyStreamData);
+
+  if (keyStreamData->empty()) {
+    return false;
+  }
+
+  const auto& options = context_->options();
+  const auto minChunkSize = lastChunk ? 0 : options.minStreamChunkRawSize;
+  const auto maxChunkSize = options.maxKeyStreamChunkRawSize;
+
+  // Use dummy variables for counters that don't need to be tracked
+  uint64_t dummyKeyStreamBytes = 0;
+  std::atomic_uint64_t dummyChunkBytes{0};
+  std::atomic_uint64_t dummyLogicalBytes{0};
+
+  NIMBLE_CHECK(keyStream_.has_value(), "keyStream must be initialized");
+  return writeStreamChunk(
+      *keyStreamData,
+      /*isKeyStream=*/true,
+      minChunkSize,
+      maxChunkSize,
+      ensureFullChunks,
+      keyStream_.value(),
+      dummyKeyStreamBytes,
+      dummyChunkBytes,
+      dummyLogicalBytes);
+}
+
+bool VeloxWriter::writeStreamChunk(
+    StreamData& streamData,
+    bool isKeyStream,
+    uint64_t minChunkSize,
+    uint64_t maxChunkSize,
+    bool ensureFullChunks,
+    Stream& encodedStream,
+    uint64_t& streamBytes,
+    std::atomic_uint64_t& chunkBytes,
+    std::atomic_uint64_t& logicalBytes) {
+  bool writtenChunk{false};
+  logicalBytes += streamData.memoryUsed();
+  auto& streamChunks = encodedStream.chunks;
+  auto chunker = getStreamChunker(
+      streamData,
+      StreamChunkerOptions{
+          .minChunkSize = minChunkSize,
+          .maxChunkSize = maxChunkSize,
+          .ensureFullChunks = ensureFullChunks,
+          .isFirstChunk = streamChunks.empty()});
+  while (auto chunkView = chunker->next()) {
+    auto& streamChunk = streamChunks.emplace_back();
+    std::string_view encoded =
+        encodeStream(*context_, *encodingBuffer_, *chunkView);
+    if (!encoded.empty()) {
+      ChunkedStreamWriter chunkWriter{*encodingBuffer_};
+      for (auto& buffer : chunkWriter.encode(encoded)) {
+        streamBytes += buffer.size();
+        chunkBytes += buffer.size();
+        streamChunk.content.push_back(std::move(buffer));
+      }
+    }
+    streamChunk.numRows = chunkView->numRows();
+    if (isKeyStream) {
+      NIMBLE_CHECK(hasIndex());
+      // Set firstKey for the first chunk
+      if (streamChunks.size() == 1) {
+        streamChunk.firstKey =
+            encodingBuffer_->writeString(chunkView->firstKey());
+      }
+      streamChunk.lastKey = encodingBuffer_->writeString(chunkView->lastKey());
+    }
+    writtenChunk = true;
+  }
+  // Compact erases processed stream data to reclaim memory.
+  chunker->compact();
+  logicalBytes -= streamData.memoryUsed();
+  return writtenChunk;
 }
 
 void VeloxWriter::encodeStream(
@@ -1008,6 +1240,17 @@ bool VeloxWriter::writeChunks(
           }
         });
       }
+
+      // Handle keyStream if index is enabled
+      if (hasIndex()) {
+        barrier.add([&] {
+          const bool written = writeKeyStreamChunk(lastChunk, ensureFullChunks);
+          if (written) {
+            writtenChunk = true;
+          }
+        });
+      }
+
       barrier.waitAll();
     } else {
       for (auto streamIndex : streamIndices) {
@@ -1096,8 +1339,11 @@ bool VeloxWriter::writeStripe() {
     encodedStreams_.resize(nonEmptyCount);
 
     const uint64_t startSize = tabletWriter_->size();
+    NIMBLE_CHECK_EQ(hasIndex(), keyStream_.has_value());
     tabletWriter_->writeStripe(
-        context_->rowsInStripe(), std::move(encodedStreams_));
+        context_->rowsInStripe(),
+        std::move(encodedStreams_),
+        std::move(keyStream_));
     stripeSize = tabletWriter_->size() - startSize;
     clearEncodingBuffer();
     // TODO: once chunked string fields are supported, move string buffer
@@ -1122,6 +1368,7 @@ bool VeloxWriter::writeStripe() {
       .trackedMemory = context_->memoryUsed(),
   };
   context_->logger()->logStripeFlush(metrics);
+  resetWriter();
   context_->nextStripe();
   return true;
 }

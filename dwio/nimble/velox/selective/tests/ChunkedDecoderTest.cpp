@@ -27,24 +27,26 @@ using namespace facebook::velox;
 
 class ChunkedDecoderTestHelper {
  public:
-  explicit ChunkedDecoderTestHelper(ChunkedDecoder& decoder)
-      : decoder_(decoder) {}
+  explicit ChunkedDecoderTestHelper(ChunkedDecoder* decoder)
+      : decoder_(decoder) {
+    NIMBLE_CHECK_NOT_NULL(decoder_);
+  }
 
   bool ensureInput(int size) {
-    return decoder_.ensureInput(size);
+    return decoder_->ensureInput(size);
   }
 
   std::string_view inputData() const {
-    return std::string_view(decoder_.inputData_, decoder_.inputSize_);
+    return std::string_view(decoder_->inputData_, decoder_->inputSize_);
   }
 
   void advanceInputData(int size) {
-    decoder_.inputData_ += size;
-    decoder_.inputSize_ -= size;
+    decoder_->inputData_ += size;
+    decoder_->inputSize_ -= size;
   }
 
  private:
-  ChunkedDecoder& decoder_;
+  ChunkedDecoder* const decoder_;
 };
 
 namespace {
@@ -59,7 +61,7 @@ class TestingSeekableInputStream : public dwio::common::SeekableInputStream {
       std::fill(data_[index_ - 1].begin(), data_[index_ - 1].end(), 0xFF);
     }
     if (index_ >= data_.size()) {
-      VELOX_CHECK_EQ(index_, data_.size());
+      NIMBLE_CHECK_EQ(index_, data_.size());
       return false;
     }
     *data = data_[index_].data();
@@ -69,19 +71,19 @@ class TestingSeekableInputStream : public dwio::common::SeekableInputStream {
   }
 
   void BackUp(int32_t /*count*/) override {
-    VELOX_UNREACHABLE();
+    NIMBLE_UNREACHABLE();
   }
 
   bool SkipInt64(int64_t /*count*/) override {
-    VELOX_UNREACHABLE();
+    NIMBLE_UNREACHABLE();
   }
 
   google::protobuf::int64 ByteCount() const override {
-    VELOX_UNREACHABLE();
+    NIMBLE_UNREACHABLE();
   }
 
   void seekToPosition(dwio::common::PositionProvider& /*position*/) override {
-    VELOX_UNREACHABLE();
+    NIMBLE_UNREACHABLE();
   }
 
   std::string getName() const override {
@@ -89,7 +91,7 @@ class TestingSeekableInputStream : public dwio::common::SeekableInputStream {
   }
 
   size_t positionSize() const override {
-    VELOX_UNREACHABLE();
+    NIMBLE_UNREACHABLE();
   }
 
  private:
@@ -148,9 +150,9 @@ TEST_F(ChunkedDecoderTest, bufferedInput) {
 
   auto chunkedDecoder = std::make_unique<nimble::ChunkedDecoder>(
       input->read(0, kFileSize, velox::dwio::common::LogType::TEST),
-      pool(),
-      false);
-  ChunkedDecoderTestHelper helper(*chunkedDecoder);
+      false,
+      pool());
+  ChunkedDecoderTestHelper helper(chunkedDecoder.get());
   helper.ensureInput(kFileSize);
   ASSERT_EQ(helper.inputData(), fileContent);
 }
@@ -159,9 +161,9 @@ TEST_F(ChunkedDecoderTest, ensureInput) {
   std::vector<std::string> data = {"a", "b", "c", "d", "e", "fg", "h"};
   ChunkedDecoder decoder(
       std::make_unique<TestingSeekableInputStream>(std::move(data)),
-      pool(),
-      false);
-  ChunkedDecoderTestHelper helper(decoder);
+      false,
+      pool());
+  ChunkedDecoderTestHelper helper(&decoder);
   auto checkNext = [&](const std::string& expected) {
     helper.ensureInput(expected.size());
     ASSERT_GE(helper.inputData().size(), expected.size());

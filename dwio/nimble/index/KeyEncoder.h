@@ -19,43 +19,16 @@
 #include "dwio/nimble/common/Vector.h"
 #include "velox/common/memory/Scratch.h"
 #include "velox/core/PlanNode.h"
+#include "velox/dwio/common/ScanSpec.h"
 #include "velox/type/Type.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/DecodedVector.h"
 
 namespace facebook::nimble {
 
-/// A single index bound (lower or upper) with a single row and inclusive flag.
-/// Used to represent either a lower or upper bound for index filtering.
-struct IndexBound {
-  /// Single row containing the bound values. Must have exactly 1 row.
-  velox::RowVectorPtr bound;
-  /// Whether this bound is inclusive. If true, the bound value is included
-  /// in the range; if false, it's excluded.
-  bool inclusive{true};
-};
-
-/// Represents bounds for index-based filtering with optional lower and upper
-/// bounds. Used to define a range of values for index columns that can be
-/// encoded into byte-comparable keys for efficient filtering.
-struct IndexBounds {
-  /// The top-level column names that form the index. These columns must exist
-  /// in the input data and define the order of columns in the encoded key.
-  std::vector<std::string> indexColumns;
-  /// Optional lower bound for the index range.
-  std::optional<IndexBound> lowerBound;
-  /// Optional upper bound for the index range.
-  std::optional<IndexBound> upperBound;
-
-  /// Validates that the bounds are well-formed:
-  /// - At least one bound (lower or upper) must be present
-  /// - Each bound must have exactly 1 row
-  /// Returns true if valid, false otherwise.
-  bool validate() const;
-
-  /// Returns a human-readable string representation of the bounds.
-  std::string toString() const;
-};
+// Use IndexBound and IndexBounds from ScanSpec
+using IndexBound = velox::common::ScanSpec::IndexBound;
+using IndexBounds = velox::common::ScanSpec::IndexBounds;
 
 /// Encoded representation of index bounds as byte-comparable strings.
 /// These keys can be compared lexicographically to perform range filtering.
@@ -153,9 +126,9 @@ class KeyEncoder {
 
   // Creates a new row vector with the key columns incremented by 1.
   // Similar to Apache Kudu's IncrementKey, this increments from the
-  // rightmost (least significant) column. Returns nullptr if all columns
+  // rightmost (least significant) column. Returns std::nullopt if all columns
   // overflow (key is at maximum value).
-  velox::RowVectorPtr createIncrementedBound(
+  std::optional<velox::RowVectorPtr> createIncrementedBound(
       const velox::RowVectorPtr& bound) const;
 
   const velox::RowTypePtr inputType_;
