@@ -610,10 +610,10 @@ TEST_F(TabletTest, optionalSections) {
       ASSERT_EQ(zeroes, section->content());
     };
 
-    auto check4 = [&, empty = std::string()]() {
+    auto check4 = [&, emptyStr = std::string()]() {
       auto section = tablet->loadOptionalSection("section4");
       ASSERT_TRUE(section.has_value());
-      ASSERT_EQ(empty, section->content());
+      ASSERT_EQ(emptyStr, section->content());
     };
 
     auto check5 = [&]() {
