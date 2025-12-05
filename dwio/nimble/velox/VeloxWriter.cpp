@@ -1158,6 +1158,7 @@ bool VeloxWriter::evalauateFlushPolicy() {
       // Sort streams for chunking based on raw memory usage.
       // TODO(T240072104): Improve performance by bucketing the streams
       // by size (by most significant bit) instead of sorting them.
+      // Only sort streams above minChunkSize.
       streamIndices.resize(streams.size());
       std::iota(streamIndices.begin(), streamIndices.end(), 0);
       std::sort(
