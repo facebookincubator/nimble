@@ -148,85 +148,27 @@ FOLLY_ALWAYS_INLINE void encodeByte(int8_t value, bool descending, char*& out) {
   ++out;
 }
 
-FOLLY_ALWAYS_INLINE void
-encodeLong(int64_t value, bool descending, char*& out) {
-  // Flip sign bit for lexicographic ordering
-  value ^= (1LL << 63);
+// Template for encoding integers (signed and unsigned).
+// For signed types: flips the sign bit for lexicographic ordering.
+// Converts to big-endian and applies descending transformation if needed.
+template <typename T>
+FOLLY_ALWAYS_INLINE void encodeInt(T value, bool descending, char*& out) {
+  using UnsignedT = std::make_unsigned_t<T>;
+
+  // Flip sign bit for signed types for lexicographic ordering
+  if constexpr (std::is_signed_v<T>) {
+    constexpr int kSignBitShift = sizeof(T) * 8 - 1;
+    value ^= 1ULL << kSignBitShift;
+  }
 
   // Convert to big-endian
   value = folly::Endian::big(value);
 
   // Apply descending transformation if needed (branchless)
-  // If descending is true, XOR with all 1s (0xff...ff)
-  // If descending is false, XOR with 0
-  const uint64_t mask = -static_cast<uint64_t>(descending);
+  // If descending is true, XOR with all 1s; if false, XOR with 0
+  const UnsignedT mask = -static_cast<UnsignedT>(descending);
   value ^= mask;
 
-  // Write all 8 bytes at once
-  std::memcpy(out, &value, sizeof(value));
-  out += sizeof(value);
-}
-
-FOLLY_ALWAYS_INLINE void
-encodeUnsignedLong(uint64_t value, bool descending, char*& out) {
-  // Convert to big-endian
-  value = folly::Endian::big(value);
-
-  // Apply descending transformation if needed (branchless)
-  const uint64_t mask = -static_cast<uint64_t>(descending);
-  value ^= mask;
-
-  // Write all 8 bytes at once
-  std::memcpy(out, &value, sizeof(value));
-  out += sizeof(value);
-}
-
-FOLLY_ALWAYS_INLINE void
-encodeShort(int16_t value, bool descending, char*& out) {
-  // Flip sign bit for lexicographic ordering
-  value ^= (1 << 15);
-
-  // Convert to big-endian
-  value = folly::Endian::big(value);
-
-  // Apply descending transformation if needed (branchless)
-  const uint16_t mask = -static_cast<uint16_t>(descending);
-  value ^= mask;
-
-  // Write all 2 bytes at once
-  std::memcpy(out, &value, sizeof(value));
-  out += sizeof(value);
-}
-
-FOLLY_ALWAYS_INLINE void
-encodeInteger(int32_t value, bool descending, char*& out) {
-  // Flip sign bit for lexicographic ordering
-  value ^= (1 << 31);
-
-  // Convert to big-endian
-  value = folly::Endian::big(value);
-
-  // Apply descending transformation if needed (branchless)
-  // If descending is true, XOR with all 1s (0xffffffff)
-  // If descending is false, XOR with 0
-  const uint32_t mask = -static_cast<uint32_t>(descending);
-  value ^= mask;
-
-  // Write all 4 bytes at once
-  std::memcpy(out, &value, sizeof(value));
-  out += sizeof(value);
-}
-
-FOLLY_ALWAYS_INLINE void
-encodeUnsignedInteger(uint32_t value, bool descending, char*& out) {
-  // Convert to big-endian
-  value = folly::Endian::big(value);
-
-  // Apply descending transformation if needed (branchless)
-  const uint32_t mask = -static_cast<uint32_t>(descending);
-  value ^= mask;
-
-  // Write all 4 bytes at once
   std::memcpy(out, &value, sizeof(value));
   out += sizeof(value);
 }
@@ -450,6 +392,32 @@ std::vector<velox::vector_size_t> getKeyChannels(
     keyChannels.emplace_back(inputType->getChildIdx(keyColumn));
   }
   return keyChannels;
+}
+
+// Wrapper functions for backward compatibility and readability
+FOLLY_ALWAYS_INLINE void
+encodeLong(int64_t value, bool descending, char*& out) {
+  encodeInt(value, descending, out);
+}
+
+FOLLY_ALWAYS_INLINE void
+encodeUnsignedLong(uint64_t value, bool descending, char*& out) {
+  encodeInt(value, descending, out);
+}
+
+FOLLY_ALWAYS_INLINE void
+encodeShort(int16_t value, bool descending, char*& out) {
+  encodeInt(value, descending, out);
+}
+
+FOLLY_ALWAYS_INLINE void
+encodeInteger(int32_t value, bool descending, char*& out) {
+  encodeInt(value, descending, out);
+}
+
+FOLLY_ALWAYS_INLINE void
+encodeUnsignedInteger(uint32_t value, bool descending, char*& out) {
+  encodeInt(value, descending, out);
 }
 
 void encodeBigInt(
