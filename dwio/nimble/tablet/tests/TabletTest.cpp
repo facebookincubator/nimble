@@ -36,6 +36,15 @@ using namespace facebook;
 
 namespace {
 
+DEFINE_uint32(
+    tablet_tests_seed,
+    0,
+    "If provided, this seed will be used when executing tests. "
+    "Otherwise, a random seed will be used.");
+
+#define GREEN "\033[32m"
+#define RESET_COLOR "\033[0m"
+
 // Total size of the fields after the flatbuffer.
 constexpr uint32_t kPostscriptSize = 20;
 
@@ -104,19 +113,26 @@ class TabletTest : public ::testing::Test {
 
   // Runs a single write/read test using input parameters
   void parameterizedTest(
-      std::mt19937& rng,
       uint32_t metadataFlushThreshold,
       uint32_t metadataCompressionThreshold,
-      std::vector<StripeSpecifications> stripes,
+      const std::vector<StripeData>& stripesData,
       const std::optional<std::function<void(const std::exception&)>>&
-          errorVerifier = std::nullopt) {
+          errorVerifier = std::nullopt,
+      const std::optional<std::function<uint32_t(uint32_t)>>&
+          expectedReadsPerStripe = std::nullopt,
+      bool enableStreamDedplication = false) {
     try {
       std::string file;
       velox::InMemoryWriteFile writeFile(&file);
       auto tabletWriter = nimble::TabletWriter::create(
           &writeFile,
           *pool_,
-          {nullptr, metadataFlushThreshold, metadataCompressionThreshold});
+          {
+              .layoutPlanner = nullptr,
+              .metadataFlushThreshold = metadataFlushThreshold,
+              .metadataCompressionThreshold = metadataCompressionThreshold,
+              .streamDeduplicationEnabled = enableStreamDedplication,
+          });
 
       EXPECT_EQ(0, tabletWriter->size());
 
@@ -125,8 +141,6 @@ class TabletTest : public ::testing::Test {
         std::vector<nimble::Stream> streams;
       };
 
-      nimble::Buffer buffer{*pool_};
-      auto stripesData = createStripesData(rng, stripes, buffer);
       for (auto& stripe : stripesData) {
         tabletWriter->writeStripe(stripe.rowCount, stripe.streams);
       }
@@ -194,6 +208,9 @@ class TabletTest : public ::testing::Test {
           EXPECT_EQ(totalStreamSize[stripe], totalStreamSizeExpected);
           auto chunks = readFile.chunks();
           auto expectedReads = stripesData[stripe].streams.size();
+          if (expectedReadsPerStripe.has_value()) {
+            expectedReads = expectedReadsPerStripe.value()(stripe);
+          }
           auto diff = chunks.size() - expectedReads;
           EXPECT_LE(diff, 1);
           extraReads += diff;
@@ -211,15 +228,22 @@ class TabletTest : public ::testing::Test {
               if (stream.offset == i) {
                 found = true;
                 EXPECT_TRUE(serializedStreams[i]);
+                std::vector<std::string_view> allContent;
+                for (const auto& chunk : stream.chunks) {
+                  for (const auto& content : chunk.content) {
+                    allContent.push_back(content);
+                  }
+                }
+                auto expectedData = folly::join("", allContent);
                 printData(
                     folly::to<std::string>("Expected Stream ", stream.offset),
-                    stream.chunks[0].content[0]);
+                    expectedData);
                 const auto& actual = serializedStreams[i];
                 std::string_view actualData = actual->getStream();
                 printData(
                     folly::to<std::string>("Actual Stream ", stream.offset),
                     actualData);
-                EXPECT_EQ(stream.chunks[0].content[0], actualData);
+                EXPECT_EQ(expectedData, actualData);
               }
             }
             if (!found) {
@@ -255,7 +279,7 @@ class TabletTest : public ::testing::Test {
       std::vector<StripeSpecifications> stripes,
       std::optional<std::function<void(const std::exception&)>> errorVerifier =
           std::nullopt) {
-    std::vector<uint64_t> metadataCompressionThresholds{
+    std::vector<uint32_t> metadataCompressionThresholds{
         // use size 0 here so it will always force a footer compression
         0,
         // use a large number here so it will not do a footer compression
@@ -270,12 +294,15 @@ class TabletTest : public ::testing::Test {
     LOG(INFO) << "seed: " << seed;
     std::mt19937 rng(seed);
 
+    nimble::Buffer buffer{*pool_};
+    auto stripesData = createStripesData(rng, stripes, buffer);
+
     for (auto flushThreshold : metadataFlushThresholds) {
       for (auto compressionThreshold : metadataCompressionThresholds) {
         LOG(INFO) << "FlushThreshold: " << flushThreshold
                   << ", CompressionThreshold: " << compressionThreshold;
         parameterizedTest(
-            rng, flushThreshold, compressionThreshold, stripes, errorVerifier);
+            flushThreshold, compressionThreshold, stripesData, errorVerifier);
       }
     }
   }
@@ -461,6 +488,135 @@ class TabletTest : public ::testing::Test {
     }
   }
 
+  void testStreamDeduplication(
+      std::mt19937& rng,
+      bool noDuplicates,
+      uint32_t chunkCount,
+      bool evenChunks) {
+    const uint32_t maxStripes = 10;
+    const uint32_t maxStreams = 100;
+    const uint32_t maxDataSize = 32;
+
+    nimble::Buffer buffer{*pool_};
+
+    LOG(INFO) << GREEN
+              << "Stream Deduplication Test. No duplicates: " << noDuplicates
+              << ", Chunk Count: " << chunkCount
+              << ", Even Chunks: " << evenChunks << RESET_COLOR;
+
+    const auto stripesCount = folly::Random::rand32(maxStripes, rng) + 1;
+    std::vector<StripeData> stripesData;
+    std::vector<uint32_t> uniqueStreamsPerStripe;
+    stripesData.reserve(stripesCount);
+    uniqueStreamsPerStripe.reserve(stripesCount);
+    for (auto stripe = 0; stripe < stripesCount; ++stripe) {
+      // For each stripe:
+      // * Generate offsets (with gaps)
+      // * Pick how many duplicate groups to have
+      // * Assign offsets to duplicate groups
+      // * Generate unique strings, one for each duplicate group
+      // * For each offset, assign string (based on group), and split it to
+      //   chunks
+      const auto streamCount = folly::Random::rand32(maxStreams, rng) + 1;
+      std::unordered_set<uint32_t> offsets;
+      offsets.reserve(streamCount);
+      while (offsets.size() < streamCount) {
+        offsets.insert(folly::Random::rand32(streamCount * 2, rng));
+      }
+
+      const auto duplicateCount = noDuplicates
+          ? streamCount
+          : folly::Random::rand32(streamCount, rng) + 1;
+      uniqueStreamsPerStripe.push_back(duplicateCount);
+
+      std::vector<std::vector<uint32_t>> duplicateGroups{duplicateCount};
+      uint32_t index = 0;
+      while (!offsets.empty()) {
+        auto offset = offsets.extract(offsets.begin());
+        duplicateGroups[index++ % duplicateGroups.size()].push_back(
+            offset.value());
+      }
+
+      std::unordered_set<std::string_view> uniqueStreamData;
+      uniqueStreamData.reserve(duplicateCount);
+      while (uniqueStreamData.size() < duplicateCount) {
+        const auto dataSize = folly::Random::rand32(maxDataSize, rng) + 2;
+        auto pos = buffer.reserve(dataSize);
+        folly::Random::secureRandom(pos, dataSize);
+        uniqueStreamData.emplace(pos, dataSize);
+      }
+
+      StripeData stripeData{.rowCount = folly::Random::rand32(10, rng) + 1};
+      stripeData.streams.reserve(streamCount);
+      for (const auto& duplicateGroup : duplicateGroups) {
+        auto data = uniqueStreamData.extract(uniqueStreamData.begin());
+        for (auto offset : duplicateGroup) {
+          auto getChunkEnds = [](std::mt19937& rng,
+                                 uint32_t chunkCount,
+                                 bool evenChunks,
+                                 std::string_view source) {
+            std::vector<size_t> chunkEnds;
+            chunkEnds.reserve(chunkCount);
+
+            size_t splitPoint = 0;
+            for (auto i = 0; i < chunkCount - 1; ++i) {
+              if (source.size() - splitPoint < 3) {
+                break;
+              }
+
+              splitPoint += evenChunks
+                  ? static_cast<uint32_t>(source.size()) / chunkCount
+                  : folly::Random::rand32(
+                        static_cast<uint32_t>(source.size() - splitPoint) - 2,
+                        rng) +
+                      1;
+              chunkEnds.push_back(splitPoint);
+            }
+            chunkEnds.push_back(source.size());
+
+            return chunkEnds;
+          };
+
+          nimble::Stream stream{.offset = offset};
+          auto chunkEnds =
+              getChunkEnds(rng, chunkCount, evenChunks, data.value());
+
+          nimble::Chunk chunk;
+          chunk.content.reserve(chunkEnds.size());
+          size_t start = 0;
+          for (size_t chunkEnd : chunkEnds) {
+            chunk.content.push_back(
+                data.value().substr(start, chunkEnd - start));
+            start = chunkEnd;
+          }
+          stream.chunks.push_back(std::move(chunk));
+
+          for (auto i = 0; i < stream.chunks[0].content.size(); ++i) {
+            printData(
+                fmt::format(
+                    "Stripe: {}, Stream {}, Chunk {}", stripe, offset, i),
+                stream.chunks[0].content[i]);
+          }
+
+          stripeData.streams.push_back(std::move(stream));
+        }
+      }
+      stripesData.push_back(std::move(stripeData));
+    }
+
+    parameterizedTest(
+        /* metadataFlushThreshold */
+        1024 * 1024 * 1024, // No need to flush stripe groups
+        /* metadataCompressionThreshold */ 0,
+        stripesData,
+        /* errorVerifier */ std::nullopt,
+        /* expectedReadsPerStripe */
+        [&uniqueStreamsPerStripe](uint32_t stripe) {
+          return uniqueStreamsPerStripe[stripe];
+        },
+        /* enableStreamDedplication */ true);
+  }
+
   std::shared_ptr<velox::memory::MemoryPool> rootPool_{
       velox::memory::memoryManager()->addRootPool("TabletTest")};
   std::shared_ptr<velox::memory::MemoryPool> pool_{
@@ -484,7 +640,7 @@ TEST_F(TabletTest, writeDifferentStreamsPerStripe) {
 }
 
 TEST_F(TabletTest, checksumValidation) {
-  std::vector<uint64_t> metadataCompressionThresholds{
+  std::vector<uint32_t> metadataCompressionThresholds{
       // use size 0 here so it will always force a footer compression
       0,
       // use a large number here so it will not do a footer compression
@@ -1075,4 +1231,18 @@ TEST_F(TabletTest, referenceCountedCacheStressSaveEntries) {
   EXPECT_EQ(counter.load(), kEntryIds);
 }
 
+TEST_F(TabletTest, deduplicateStreams) {
+  auto seed = FLAGS_tablet_tests_seed > 0 ? FLAGS_tablet_tests_seed
+                                          : folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+
+  for (auto noDuplicates : {true, false}) {
+    for (auto chunkCount : {1U, 2U, folly::Random::rand32(10, rng) + 1}) {
+      for (auto evenChunks : {true, false}) {
+        testStreamDeduplication(rng, noDuplicates, chunkCount, evenChunks);
+      }
+    }
+  }
+}
 } // namespace
