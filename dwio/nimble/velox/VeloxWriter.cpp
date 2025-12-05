@@ -993,15 +993,18 @@ bool VeloxWriter::writeChunks(
       velox::dwio::common::ExecutorBarrier barrier{
           context_->options().encodingExecutor};
       for (auto streamIndex : streamIndices) {
-        barrier.add([&, streamData = streams[streamIndex].get()] {
-          const auto offset = streamData->descriptor().offset();
+        auto& streamData = streams[streamIndex];
+        const auto offset = streamData->descriptor().offset();
+        auto& streamSize = context_->columnStats(offset).physicalSize;
+        auto& encodeStream = encodedStreams_[offset];
+        barrier.add([&] {
           if (encodeStreamChunk(
                   *streamData,
                   minChunkSize,
                   maxChunkSize,
                   ensureFullChunks,
-                  encodedStreams_[offset],
-                  context_->columnStats()[offset].physicalSize,
+                  encodeStream,
+                  streamSize,
                   chunkBytes,
                   logicalBytes)) {
             writtenChunk = true;
