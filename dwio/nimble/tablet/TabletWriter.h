@@ -53,7 +53,7 @@ class TabletWriter {
     uint32_t metadataFlushThreshold{kMetadataFlushThreshold};
     uint32_t metadataCompressionThreshold{kMetadataCompressionThreshold};
     ChecksumType checksumType{ChecksumType::XXH3_64};
-    bool streamDeduplicationEnabled{false};
+    bool streamDeduplicationEnabled{true};
   };
 
   static std::unique_ptr<TabletWriter> create(
