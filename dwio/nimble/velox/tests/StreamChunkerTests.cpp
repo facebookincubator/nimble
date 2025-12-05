@@ -120,39 +120,6 @@ class StreamChunkerTestsBase : public ::testing::Test {
   std::unique_ptr<InputBufferGrowthPolicy> inputBufferGrowthPolicy_;
 };
 
-TEST_F(StreamChunkerTestsBase, getNewBufferCapacityTest) {
-  // currentCapacityCount  < maxChunkElementCount
-  // currentCapacityCount * 0.5 < requiredCapacityCount
-  uint64_t maxChunkElementCount = 8;
-  uint64_t currentCapacityCount = 4;
-  uint64_t requiredCapacityCount = 3;
-  EXPECT_EQ(
-      detail::getNewBufferCapacity<int32_t>(
-          /*maxChunkSize=*/maxChunkElementCount * sizeof(int32_t),
-          /*currentCapacityCount=*/currentCapacityCount,
-          /*requiredCapacityCount=*/requiredCapacityCount),
-      requiredCapacityCount);
-
-  // currentCapacityCount  < maxChunkElementCount
-  // currentCapacityCount * 0.5 > requiredCapacityCount
-  requiredCapacityCount = 1;
-  EXPECT_EQ(
-      detail::getNewBufferCapacity<int32_t>(
-          /*maxChunkSize=*/maxChunkElementCount * sizeof(int32_t),
-          /*currentCapacityCount=*/currentCapacityCount,
-          /*requiredCapacityCount=*/requiredCapacityCount),
-      currentCapacityCount * 0.5);
-
-  currentCapacityCount = 40;
-  // currentCapacityCount  > maxChunkElementCount = 8 + (40 - 8) * 0.5 = 24
-  EXPECT_EQ(
-      detail::getNewBufferCapacity<int32_t>(
-          /*maxChunkSize=*/maxChunkElementCount * sizeof(int32_t),
-          /*currentCapacityCount=*/currentCapacityCount,
-          /*requiredCapacityCount=*/requiredCapacityCount),
-      24);
-}
-
 TEST_F(StreamChunkerTestsBase, getStreamChunkerTest) {
   // Ensure a chunker can be created for all types.
 #define TEST_STREAM_CHUNKER_FOR_TYPE(scalarKind, T)                    \

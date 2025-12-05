@@ -20,31 +20,6 @@
 
 namespace facebook::nimble {
 namespace detail {
-// When we create new buffers, it's likely that these buffers will end up
-// growing to the size that previously triggered chunking. As a trafeoff between
-// minimizing reallocations (for performance) and actually releasing memory (to
-// relieve memory pressure), we heuristically set the new buffer size to be
-// maxChunkSize_ plus 50% of the difference between the current buffer capacity
-// and maxChunkSize_. This ensures the buffer is not too small (causing frequent
-// reallocations) nor too large (wasting memory).
-template <typename T>
-uint64_t getNewBufferCapacity(
-    uint64_t maxChunkSize,
-    uint64_t currentCapacityCount,
-    uint64_t requiredCapacityCount) {
-  const auto maxChunkElementCount = maxChunkSize / sizeof(T);
-  if (currentCapacityCount < maxChunkElementCount) {
-    return std::max<uint64_t>(
-        currentCapacityCount * 0.5, requiredCapacityCount);
-  }
-  NIMBLE_DCHECK_LE(
-      requiredCapacityCount,
-      currentCapacityCount,
-      "Required capacity should not exceed current capacity");
-  return maxChunkElementCount +
-      (currentCapacityCount - maxChunkElementCount) * 0.5;
-}
-
 inline bool shouldOmitDataStream(
     const StreamData& streamData,
     uint64_t minChunkSize,
@@ -213,8 +188,6 @@ class ContentStreamChunker final : public StreamChunker {
 
     auto& currentData = streamData_->mutableData();
     const uint64_t remainingDataCount = currentData.size() - dataElementOffset_;
-    const auto newDataCapacity = detail::getNewBufferCapacity<T>(
-        maxChunkSize_, currentData.capacity(), remainingDataCount);
 
     // Move and clear existing buffer
     auto tempData = std::move(currentData);
@@ -223,10 +196,10 @@ class ContentStreamChunker final : public StreamChunker {
         streamData_->empty(), "StreamData should be empty after reset");
 
     auto& mutableData = streamData_->mutableData();
-    mutableData.reserve(newDataCapacity);
+    mutableData.reserve(remainingDataCount);
     NIMBLE_DCHECK_GE(
         mutableData.capacity(),
-        newDataCapacity,
+        remainingDataCount,
         "Data buffer capacity should be at least new capacity");
 
     mutableData.resize(remainingDataCount);
@@ -327,8 +300,6 @@ class NullsStreamChunker final : public StreamChunker {
     }
     auto& nonNulls = streamData_->mutableNonNulls();
     const auto remainingNonNullsCount = nonNulls.size() - nonNullsOffset_;
-    const auto newCapacity = detail::getNewBufferCapacity<bool>(
-        maxChunkSize_, nonNulls.capacity(), remainingNonNullsCount);
 
     // Move and clear existing buffer
     auto tempNonNulls = std::move(nonNulls);
@@ -338,10 +309,10 @@ class NullsStreamChunker final : public StreamChunker {
         streamData_->empty(), "StreamData should be empty after reset");
 
     auto& mutableNonNulls = streamData_->mutableNonNulls();
-    mutableNonNulls.reserve(newCapacity);
+    mutableNonNulls.reserve(remainingNonNullsCount);
     NIMBLE_DCHECK_GE(
         mutableNonNulls.capacity(),
-        newCapacity,
+        remainingNonNullsCount,
         "NonNulls buffer capacity should be at least new capacity");
 
     streamData_->ensureAdditionalNullsCapacity(
@@ -473,10 +444,6 @@ class NullableContentStreamChunker final : public StreamChunker {
     const auto remainingNonNullsCount =
         currentNonNulls.size() - nonNullsOffset_;
     const auto remainingDataCount = currentData.size() - dataElementOffset_;
-    const auto newNonNullsCapacity = detail::getNewBufferCapacity<bool>(
-        maxChunkSize_, currentNonNulls.capacity(), remainingNonNullsCount);
-    const auto newDataCapactity = detail::getNewBufferCapacity<T>(
-        maxChunkSize_, currentData.capacity(), remainingDataCount);
 
     // Move and clear existing buffers
     auto tempNonNulls = std::move(currentNonNulls);
@@ -487,10 +454,10 @@ class NullableContentStreamChunker final : public StreamChunker {
         streamData_->empty(), "StreamData should be empty after reset");
 
     auto& mutableData = streamData_->mutableData();
-    mutableData.reserve(newDataCapactity);
+    mutableData.reserve(remainingDataCount);
     NIMBLE_DCHECK_GE(
         mutableData.capacity(),
-        newDataCapactity,
+        remainingDataCount,
         "Data buffer capacity should be at least new capacity");
 
     mutableData.resize(remainingDataCount);
@@ -505,10 +472,10 @@ class NullableContentStreamChunker final : public StreamChunker {
         mutableData.begin());
 
     auto& mutableNonNulls = streamData_->mutableNonNulls();
-    mutableNonNulls.reserve(newNonNullsCapacity);
+    mutableNonNulls.reserve(remainingNonNullsCount);
     NIMBLE_DCHECK_GE(
         mutableNonNulls.capacity(),
-        newNonNullsCapacity,
+        remainingNonNullsCount,
         "NonNulls buffer capacity should be at least new capacity");
 
     streamData_->ensureAdditionalNullsCapacity(
