@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 #include "dwio/nimble/index/KeyEncoder.h"
-
 #include "dwio/nimble/common/Exceptions.h"
 #include "velox/common/base/SimdUtil.h"
+#include "velox/type/Timestamp.h"
 #include "velox/vector/FlatVector.h"
 
 namespace facebook::nimble {
@@ -51,18 +51,7 @@ bool IndexBounds::validate() const {
     return false;
   }
 
-  if (lowerBound.has_value() && upperBound.has_value() &&
-      !lowerBound->bound->type()->equivalent(*upperBound->bound->type())) {
-    return false;
-  }
-
   return true;
-}
-
-velox::TypePtr IndexBounds::type() const {
-  const velox::RowVectorPtr& boundVector =
-      lowerBound.has_value() ? lowerBound->bound : upperBound->bound;
-  return boundVector->type();
 }
 
 std::string IndexBounds::toString() const {
@@ -76,18 +65,18 @@ std::string IndexBounds::toString() const {
   }
   ss << "]";
 
-  const auto formatBound = [&ss](const char* name, const IndexBound& bound) {
-    ss << ", " << name << "=" << (bound.inclusive ? "[" : "(");
-    ss << bound.bound->toString(0, bound.bound->size());
-    ss << (bound.inclusive ? "]" : ")");
-  };
-
   if (lowerBound.has_value()) {
-    formatBound("lowerBound", lowerBound.value());
+    ss << ", lowerBound=" << (lowerBound->inclusive ? "[" : "(");
+    // Note: Would need to format the bound values here
+    ss << "...";
+    ss << (lowerBound->inclusive ? "]" : ")");
   }
 
   if (upperBound.has_value()) {
-    formatBound("upperBound", upperBound.value());
+    ss << ", upperBound=" << (upperBound->inclusive ? "[" : "(");
+    // Note: Would need to format the bound values here
+    ss << "...";
+    ss << (upperBound->inclusive ? "]" : ")");
   }
 
   ss << "}";
@@ -95,27 +84,15 @@ std::string IndexBounds::toString() const {
 }
 
 namespace {
-// Validates if a type is a valid index column type.
-// Only primitive scalar types are supported except UNKNOWN, TIMESTAMP and
-// HUGEINT.
-bool isValidIndexColumnType(const velox::TypePtr& type) {
-  return type->isPrimitiveType() && type->kind() != velox::TypeKind::UNKNOWN &&
-      type->kind() != velox::TypeKind::TIMESTAMP &&
-      type->kind() != velox::TypeKind::HUGEINT;
-}
 
 static constexpr int64_t DOUBLE_EXP_BIT_MASK = 0x7FF0000000000000L;
 static constexpr int64_t DOUBLE_SIGNIF_BIT_MASK = 0x000FFFFFFFFFFFFFL;
 
-static constexpr int32_t FLOAT_EXP_BIT_MASK = 0x7F800000;
-static constexpr int32_t FLOAT_SIGNIF_BIT_MASK = 0x007FFFFF;
+static constexpr int64_t FLOAT_EXP_BIT_MASK = 0x7F800000;
+static constexpr int64_t FLOAT_SIGNIF_BIT_MASK = 0x007FFFFF;
 
 static constexpr size_t kNullByteSize = 1;
 
-// Converts a double to its int64_t bit representation, normalizing all NaN
-// values to a canonical quiet NaN (0x7ff8000000000000L). This ensures
-// consistent key encoding since different NaN bit patterns should compare
-// equal.
 FOLLY_ALWAYS_INLINE int64_t doubleToLong(double value) {
   const int64_t* result = reinterpret_cast<const int64_t*>(&value);
 
@@ -126,9 +103,6 @@ FOLLY_ALWAYS_INLINE int64_t doubleToLong(double value) {
   return *result;
 }
 
-// Converts a float to its int32_t bit representation, normalizing all NaN
-// values to a canonical quiet NaN (0x7fc00000). This ensures consistent key
-// encoding since different NaN bit patterns should compare equal.
 FOLLY_ALWAYS_INLINE int32_t floatToInt(float value) {
   const int32_t* result = reinterpret_cast<const int32_t*>(&value);
 
@@ -148,27 +122,57 @@ FOLLY_ALWAYS_INLINE void encodeByte(int8_t value, bool descending, char*& out) {
   ++out;
 }
 
-// Template for encoding integers (signed and unsigned).
-// For signed types: flips the sign bit for lexicographic ordering.
-// Converts to big-endian and applies descending transformation if needed.
-template <typename T>
-FOLLY_ALWAYS_INLINE void encodeInt(T value, bool descending, char*& out) {
-  using UnsignedT = std::make_unsigned_t<T>;
-
-  // Flip sign bit for signed types for lexicographic ordering
-  if constexpr (std::is_signed_v<T>) {
-    constexpr int kSignBitShift = sizeof(T) * 8 - 1;
-    value ^= 1ULL << kSignBitShift;
-  }
+FOLLY_ALWAYS_INLINE void
+encodeLong(int64_t value, bool descending, char*& out) {
+  // Flip sign bit for lexicographic ordering
+  value ^= (1LL << 63);
 
   // Convert to big-endian
   value = folly::Endian::big(value);
 
   // Apply descending transformation if needed (branchless)
-  // If descending is true, XOR with all 1s; if false, XOR with 0
-  const UnsignedT mask = -static_cast<UnsignedT>(descending);
+  // If descending is true, XOR with all 1s (0xff...ff)
+  // If descending is false, XOR with 0
+  const uint64_t mask = -static_cast<uint64_t>(descending);
   value ^= mask;
 
+  // Write all 8 bytes at once
+  std::memcpy(out, &value, sizeof(value));
+  out += sizeof(value);
+}
+
+FOLLY_ALWAYS_INLINE void
+encodeShort(int16_t value, bool descending, char*& out) {
+  // Flip sign bit for lexicographic ordering
+  value ^= (1 << 15);
+
+  // Convert to big-endian
+  value = folly::Endian::big(value);
+
+  // Apply descending transformation if needed (branchless)
+  const uint16_t mask = -static_cast<uint16_t>(descending);
+  value ^= mask;
+
+  // Write all 2 bytes at once
+  std::memcpy(out, &value, sizeof(value));
+  out += sizeof(value);
+}
+
+FOLLY_ALWAYS_INLINE void
+encodeInteger(int32_t value, bool descending, char*& out) {
+  // Flip sign bit for lexicographic ordering
+  value ^= (1 << 31);
+
+  // Convert to big-endian
+  value = folly::Endian::big(value);
+
+  // Apply descending transformation if needed (branchless)
+  // If descending is true, XOR with all 1s (0xffffffff)
+  // If descending is false, XOR with 0
+  const uint32_t mask = -static_cast<uint32_t>(descending);
+  value ^= mask;
+
+  // Write all 4 bytes at once
   std::memcpy(out, &value, sizeof(value));
   out += sizeof(value);
 }
@@ -374,6 +378,11 @@ void addColumnEncodedSizeTyped(
       *nonNullSizePtrs[i] +=
           kNullByteSize + stringEncodedSize(view.data(), view.size());
     }
+  } else if constexpr (KIND == velox::TypeKind::TIMESTAMP) {
+    // Timestamp uses int64_t for serialization
+    for (auto i = 0; i < nonNullRows.size(); ++i) {
+      *nonNullSizePtrs[i] += (kNullByteSize + sizeof(int64_t));
+    }
   } else {
     // Fixed-width scalar types
     const auto elementSize = decodedSource.base()->type()->cppSizeInBytes();
@@ -394,55 +403,21 @@ std::vector<velox::vector_size_t> getKeyChannels(
   return keyChannels;
 }
 
-// Wrapper functions for backward compatibility and readability
-FOLLY_ALWAYS_INLINE void
-encodeLong(int64_t value, bool descending, char*& out) {
-  encodeInt(value, descending, out);
-}
-
-FOLLY_ALWAYS_INLINE void
-encodeUnsignedLong(uint64_t value, bool descending, char*& out) {
-  encodeInt(value, descending, out);
-}
-
-FOLLY_ALWAYS_INLINE void
-encodeShort(int16_t value, bool descending, char*& out) {
-  encodeInt(value, descending, out);
-}
-
-FOLLY_ALWAYS_INLINE void
-encodeInteger(int32_t value, bool descending, char*& out) {
-  encodeInt(value, descending, out);
-}
-
-FOLLY_ALWAYS_INLINE void
-encodeUnsignedInteger(uint32_t value, bool descending, char*& out) {
-  encodeInt(value, descending, out);
-}
-
 void encodeBigInt(
     const velox::DecodedVector& decodedVector,
     velox::vector_size_t numRows,
     bool descending,
-    bool nullLast,
     std::vector<char*>& rowOffsets) {
   const bool mayHaveNulls = decodedVector.mayHaveNulls();
   if (mayHaveNulls) {
     for (auto row = 0; row < numRows; ++row) {
-      if (decodedVector.isNullAt(row)) {
-        // Encode null indicator only
-        encodeBool(nullLast, rowOffsets[row]);
-      } else {
-        // Encode non-null indicator followed by data
-        encodeBool(!nullLast, rowOffsets[row]);
+      if (!decodedVector.isNullAt(row)) {
         const auto value = decodedVector.valueAt<int64_t>(row);
         encodeLong(value, descending, rowOffsets[row]);
       }
     }
   } else {
     for (auto row = 0; row < numRows; ++row) {
-      // Encode non-null indicator followed by data
-      encodeBool(!nullLast, rowOffsets[row]);
       const auto value = decodedVector.valueAt<int64_t>(row);
       encodeLong(value, descending, rowOffsets[row]);
     }
@@ -453,17 +428,11 @@ void encodeBoolean(
     const velox::DecodedVector& decodedVector,
     velox::vector_size_t numRows,
     bool descending,
-    bool nullLast,
     std::vector<char*>& rowOffsets) {
   const bool mayHaveNulls = decodedVector.mayHaveNulls();
   if (mayHaveNulls) {
     for (auto row = 0; row < numRows; ++row) {
-      if (decodedVector.isNullAt(row)) {
-        // Encode null indicator only
-        encodeBool(nullLast, rowOffsets[row]);
-      } else {
-        // Encode non-null indicator followed by data
-        encodeBool(!nullLast, rowOffsets[row]);
+      if (!decodedVector.isNullAt(row)) {
         const auto value = decodedVector.valueAt<bool>(row);
         encodeByte(
             static_cast<int8_t>(value ? 2 : 1), descending, rowOffsets[row]);
@@ -471,8 +440,6 @@ void encodeBoolean(
     }
   } else {
     for (auto row = 0; row < numRows; ++row) {
-      // Encode non-null indicator followed by data
-      encodeBool(!nullLast, rowOffsets[row]);
       const auto value = decodedVector.valueAt<bool>(row);
       encodeByte(
           static_cast<int8_t>(value ? 2 : 1), descending, rowOffsets[row]);
@@ -484,47 +451,31 @@ void encodeDouble(
     const velox::DecodedVector& decodedVector,
     velox::vector_size_t numRows,
     bool descending,
-    bool nullLast,
     std::vector<char*>& rowOffsets) {
   const bool mayHaveNulls = decodedVector.mayHaveNulls();
   if (mayHaveNulls) {
     for (auto row = 0; row < numRows; ++row) {
-      if (decodedVector.isNullAt(row)) {
-        // Encode null indicator only
-        encodeBool(nullLast, rowOffsets[row]);
-      } else {
-        // Encode non-null indicator followed by data
-        encodeBool(!nullLast, rowOffsets[row]);
+      if (!decodedVector.isNullAt(row)) {
         const auto value = decodedVector.valueAt<double>(row);
         int64_t longValue = doubleToLong(value);
-        // Normalize -0.0 to +0.0 by clearing sign bit when value is zero
-        if ((longValue & ~(1L << 63)) == 0) {
-          longValue = 0;
-        }
         if ((longValue & (1L << 63)) != 0) {
           longValue = ~longValue;
         } else {
           longValue = longValue ^ (1L << 63);
         }
-        encodeUnsignedLong(longValue, descending, rowOffsets[row]);
+        encodeLong(longValue, descending, rowOffsets[row]);
       }
     }
   } else {
     for (auto row = 0; row < numRows; ++row) {
-      // Encode non-null indicator followed by data
-      encodeBool(!nullLast, rowOffsets[row]);
       const auto value = decodedVector.valueAt<double>(row);
       int64_t longValue = doubleToLong(value);
-      // Normalize -0.0 to +0.0 by clearing sign bit when value is zero
-      if ((longValue & ~(1L << 63)) == 0) {
-        longValue = 0;
-      }
       if ((longValue & (1L << 63)) != 0) {
         longValue = ~longValue;
       } else {
         longValue = longValue ^ (1L << 63);
       }
-      encodeUnsignedLong(longValue, descending, rowOffsets[row]);
+      encodeLong(longValue, descending, rowOffsets[row]);
     }
   }
 }
@@ -533,47 +484,31 @@ void encodeReal(
     const velox::DecodedVector& decodedVector,
     velox::vector_size_t numRows,
     bool descending,
-    bool nullLast,
     std::vector<char*>& rowOffsets) {
   const bool mayHaveNulls = decodedVector.mayHaveNulls();
   if (mayHaveNulls) {
     for (auto row = 0; row < numRows; ++row) {
-      if (decodedVector.isNullAt(row)) {
-        // Encode null indicator only
-        encodeBool(nullLast, rowOffsets[row]);
-      } else {
-        // Encode non-null indicator followed by data
-        encodeBool(!nullLast, rowOffsets[row]);
+      if (!decodedVector.isNullAt(row)) {
         const auto value = decodedVector.valueAt<float>(row);
         int32_t intValue = floatToInt(value);
-        // Normalize -0.0 to +0.0 by clearing sign bit when value is zero
-        if ((intValue & ~(1 << 31)) == 0) {
-          intValue = 0;
-        }
         if ((intValue & (1L << 31)) != 0) {
           intValue = ~intValue;
         } else {
           intValue = intValue ^ (1L << 31);
         }
-        encodeUnsignedInteger(intValue, descending, rowOffsets[row]);
+        encodeInteger(intValue, descending, rowOffsets[row]);
       }
     }
   } else {
     for (auto row = 0; row < numRows; ++row) {
-      // Encode non-null indicator followed by data
-      encodeBool(!nullLast, rowOffsets[row]);
       const auto value = decodedVector.valueAt<float>(row);
       int32_t intValue = floatToInt(value);
-      // Normalize -0.0 to +0.0 by clearing sign bit when value is zero
-      if ((intValue & ~(1 << 31)) == 0) {
-        intValue = 0;
-      }
       if ((intValue & (1L << 31)) != 0) {
         intValue = ~intValue;
       } else {
         intValue = intValue ^ (1L << 31);
       }
-      encodeUnsignedInteger(intValue, descending, rowOffsets[row]);
+      encodeInteger(intValue, descending, rowOffsets[row]);
     }
   }
 }
@@ -582,17 +517,11 @@ void encodeTinyInt(
     const velox::DecodedVector& decodedVector,
     velox::vector_size_t numRows,
     bool descending,
-    bool nullLast,
     std::vector<char*>& rowOffsets) {
   const bool mayHaveNulls = decodedVector.mayHaveNulls();
   if (mayHaveNulls) {
     for (auto row = 0; row < numRows; ++row) {
-      if (decodedVector.isNullAt(row)) {
-        // Encode null indicator only
-        encodeBool(nullLast, rowOffsets[row]);
-      } else {
-        // Encode non-null indicator followed by data
-        encodeBool(!nullLast, rowOffsets[row]);
+      if (!decodedVector.isNullAt(row)) {
         const auto value = decodedVector.valueAt<int8_t>(row);
         encodeByte(
             static_cast<int8_t>(value ^ 0x80), descending, rowOffsets[row]);
@@ -600,8 +529,6 @@ void encodeTinyInt(
     }
   } else {
     for (auto row = 0; row < numRows; ++row) {
-      // Encode non-null indicator followed by data
-      encodeBool(!nullLast, rowOffsets[row]);
       const auto value = decodedVector.valueAt<int8_t>(row);
       encodeByte(
           static_cast<int8_t>(value ^ 0x80), descending, rowOffsets[row]);
@@ -613,25 +540,17 @@ void encodeSmallInt(
     const velox::DecodedVector& decodedVector,
     velox::vector_size_t numRows,
     bool descending,
-    bool nullLast,
     std::vector<char*>& rowOffsets) {
   const bool mayHaveNulls = decodedVector.mayHaveNulls();
   if (mayHaveNulls) {
     for (auto row = 0; row < numRows; ++row) {
-      if (decodedVector.isNullAt(row)) {
-        // Encode null indicator only
-        encodeBool(nullLast, rowOffsets[row]);
-      } else {
-        // Encode non-null indicator followed by data
-        encodeBool(!nullLast, rowOffsets[row]);
+      if (!decodedVector.isNullAt(row)) {
         const auto value = decodedVector.valueAt<int16_t>(row);
         encodeShort(value, descending, rowOffsets[row]);
       }
     }
   } else {
     for (auto row = 0; row < numRows; ++row) {
-      // Encode non-null indicator followed by data
-      encodeBool(!nullLast, rowOffsets[row]);
       const auto value = decodedVector.valueAt<int16_t>(row);
       encodeShort(value, descending, rowOffsets[row]);
     }
@@ -642,25 +561,17 @@ void encodeIntegerType(
     const velox::DecodedVector& decodedVector,
     velox::vector_size_t numRows,
     bool descending,
-    bool nullLast,
     std::vector<char*>& rowOffsets) {
   const bool mayHaveNulls = decodedVector.mayHaveNulls();
   if (mayHaveNulls) {
     for (auto row = 0; row < numRows; ++row) {
-      if (decodedVector.isNullAt(row)) {
-        // Encode null indicator only
-        encodeBool(nullLast, rowOffsets[row]);
-      } else {
-        // Encode non-null indicator followed by data
-        encodeBool(!nullLast, rowOffsets[row]);
+      if (!decodedVector.isNullAt(row)) {
         const auto value = decodedVector.valueAt<int32_t>(row);
         encodeInteger(value, descending, rowOffsets[row]);
       }
     }
   } else {
     for (auto row = 0; row < numRows; ++row) {
-      // Encode non-null indicator followed by data
-      encodeBool(!nullLast, rowOffsets[row]);
       const auto value = decodedVector.valueAt<int32_t>(row);
       encodeInteger(value, descending, rowOffsets[row]);
     }
@@ -671,27 +582,40 @@ void encodeStringType(
     const velox::DecodedVector& decodedVector,
     velox::vector_size_t numRows,
     bool descending,
-    bool nullLast,
     std::vector<char*>& rowOffsets) {
   const bool mayHaveNulls = decodedVector.mayHaveNulls();
   if (mayHaveNulls) {
     for (auto row = 0; row < numRows; ++row) {
-      if (decodedVector.isNullAt(row)) {
-        // Encode null indicator only
-        encodeBool(nullLast, rowOffsets[row]);
-      } else {
-        // Encode non-null indicator followed by data
-        encodeBool(!nullLast, rowOffsets[row]);
+      if (!decodedVector.isNullAt(row)) {
         const auto value = decodedVector.valueAt<velox::StringView>(row);
         encodeString(value.data(), value.size(), descending, rowOffsets[row]);
       }
     }
   } else {
     for (auto row = 0; row < numRows; ++row) {
-      // Encode non-null indicator followed by data
-      encodeBool(!nullLast, rowOffsets[row]);
       const auto value = decodedVector.valueAt<velox::StringView>(row);
       encodeString(value.data(), value.size(), descending, rowOffsets[row]);
+    }
+  }
+}
+
+void encodeTimestamp(
+    const velox::DecodedVector& decodedVector,
+    velox::vector_size_t numRows,
+    bool descending,
+    std::vector<char*>& rowOffsets) {
+  const bool mayHaveNulls = decodedVector.mayHaveNulls();
+  if (mayHaveNulls) {
+    for (auto row = 0; row < numRows; ++row) {
+      if (!decodedVector.isNullAt(row)) {
+        const auto value = decodedVector.valueAt<velox::Timestamp>(row);
+        encodeLong(value.toNanos(), descending, rowOffsets[row]);
+      }
+    }
+  } else {
+    for (auto row = 0; row < numRows; ++row) {
+      const auto value = decodedVector.valueAt<velox::Timestamp>(row);
+      encodeLong(value.toNanos(), descending, rowOffsets[row]);
     }
   }
 }
@@ -701,25 +625,17 @@ void encodeDate(
     const velox::DecodedVector& decodedVector,
     velox::vector_size_t numRows,
     bool descending,
-    bool nullLast,
     std::vector<char*>& rowOffsets) {
   const bool mayHaveNulls = decodedVector.mayHaveNulls();
   if (mayHaveNulls) {
     for (auto row = 0; row < numRows; ++row) {
-      if (decodedVector.isNullAt(row)) {
-        // Encode null indicator only
-        encodeBool(nullLast, rowOffsets[row]);
-      } else {
-        // Encode non-null indicator followed by data
-        encodeBool(!nullLast, rowOffsets[row]);
+      if (!decodedVector.isNullAt(row)) {
         const auto value = decodedVector.valueAt<int32_t>(row);
         encodeInteger(value, descending, rowOffsets[row]);
       }
     }
   } else {
     for (auto row = 0; row < numRows; ++row) {
-      // Encode non-null indicator followed by data
-      encodeBool(!nullLast, rowOffsets[row]);
       const auto value = decodedVector.valueAt<int32_t>(row);
       encodeInteger(value, descending, rowOffsets[row]);
     }
@@ -732,25 +648,26 @@ void encodeColumnTyped(
     const velox::DecodedVector& decodedVector,
     velox::vector_size_t numRows,
     bool descending,
-    bool nullLast,
     std::vector<char*>& rowOffsets) {
   if constexpr (Kind == velox::TypeKind::BIGINT) {
-    encodeBigInt(decodedVector, numRows, descending, nullLast, rowOffsets);
+    encodeBigInt(decodedVector, numRows, descending, rowOffsets);
   } else if constexpr (Kind == velox::TypeKind::BOOLEAN) {
-    encodeBoolean(decodedVector, numRows, descending, nullLast, rowOffsets);
+    encodeBoolean(decodedVector, numRows, descending, rowOffsets);
   } else if constexpr (Kind == velox::TypeKind::DOUBLE) {
-    encodeDouble(decodedVector, numRows, descending, nullLast, rowOffsets);
+    encodeDouble(decodedVector, numRows, descending, rowOffsets);
   } else if constexpr (Kind == velox::TypeKind::REAL) {
-    encodeReal(decodedVector, numRows, descending, nullLast, rowOffsets);
+    encodeReal(decodedVector, numRows, descending, rowOffsets);
   } else if constexpr (Kind == velox::TypeKind::TINYINT) {
-    encodeTinyInt(decodedVector, numRows, descending, nullLast, rowOffsets);
+    encodeTinyInt(decodedVector, numRows, descending, rowOffsets);
   } else if constexpr (Kind == velox::TypeKind::SMALLINT) {
-    encodeSmallInt(decodedVector, numRows, descending, nullLast, rowOffsets);
+    encodeSmallInt(decodedVector, numRows, descending, rowOffsets);
   } else if constexpr (Kind == velox::TypeKind::INTEGER) {
-    encodeIntegerType(decodedVector, numRows, descending, nullLast, rowOffsets);
+    encodeIntegerType(decodedVector, numRows, descending, rowOffsets);
   } else if constexpr (
       Kind == velox::TypeKind::VARCHAR || Kind == velox::TypeKind::VARBINARY) {
-    encodeStringType(decodedVector, numRows, descending, nullLast, rowOffsets);
+    encodeStringType(decodedVector, numRows, descending, rowOffsets);
+  } else if constexpr (Kind == velox::TypeKind::TIMESTAMP) {
+    encodeTimestamp(decodedVector, numRows, descending, rowOffsets);
   } else {
     NIMBLE_UNSUPPORTED("Unsupported type: {}", Kind);
   }
@@ -800,24 +717,11 @@ template <velox::TypeKind KIND>
 bool setMinValueTyped(velox::VectorPtr& result, velox::vector_size_t row) {
   using T = typename velox::TypeTraits<KIND>::NativeType;
 
-  if constexpr (KIND == velox::TypeKind::BOOLEAN) {
-    auto* flatVector = result->asChecked<velox::FlatVector<bool>>();
-    flatVector->set(row, false);
-    return true;
-  }
-
   if constexpr (
       KIND == velox::TypeKind::TINYINT || KIND == velox::TypeKind::SMALLINT ||
       KIND == velox::TypeKind::INTEGER || KIND == velox::TypeKind::BIGINT) {
     auto* flatVector = result->asChecked<velox::FlatVector<T>>();
     flatVector->set(row, std::numeric_limits<T>::min());
-    return true;
-  }
-
-  if constexpr (
-      KIND == velox::TypeKind::REAL || KIND == velox::TypeKind::DOUBLE) {
-    auto* flatVector = result->asChecked<velox::FlatVector<T>>();
-    flatVector->set(row, -std::numeric_limits<T>::infinity());
     return true;
   }
 
@@ -829,18 +733,19 @@ bool setMinValueTyped(velox::VectorPtr& result, velox::vector_size_t row) {
     return true;
   }
 
+  if constexpr (KIND == velox::TypeKind::TIMESTAMP) {
+    auto* flatVector = result->asChecked<velox::FlatVector<velox::Timestamp>>();
+    flatVector->set(
+        row, velox::Timestamp::fromNanos(std::numeric_limits<int64_t>::min()));
+    return true;
+  }
+
   NIMBLE_UNSUPPORTED("Cannot set min value for column type: {}", KIND);
 }
 
 template <velox::TypeKind KIND>
 bool setMaxValueTyped(velox::VectorPtr& result, velox::vector_size_t row) {
   using T = typename velox::TypeTraits<KIND>::NativeType;
-
-  if constexpr (KIND == velox::TypeKind::BOOLEAN) {
-    auto* flatVector = result->asChecked<velox::FlatVector<bool>>();
-    flatVector->set(row, true);
-    return true;
-  }
 
   if constexpr (
       KIND == velox::TypeKind::TINYINT || KIND == velox::TypeKind::SMALLINT ||
@@ -851,17 +756,17 @@ bool setMaxValueTyped(velox::VectorPtr& result, velox::vector_size_t row) {
   }
 
   if constexpr (
-      KIND == velox::TypeKind::REAL || KIND == velox::TypeKind::DOUBLE) {
-    auto* flatVector = result->asChecked<velox::FlatVector<T>>();
-    flatVector->set(row, std::numeric_limits<T>::infinity());
-    return true;
-  }
-
-  if constexpr (
       KIND == velox::TypeKind::VARCHAR || KIND == velox::TypeKind::VARBINARY) {
     // For max string value, we can't represent it directly, but we can use
     // a very large string. However, this is problematic. For now, return false.
     return false;
+  }
+
+  if constexpr (KIND == velox::TypeKind::TIMESTAMP) {
+    auto* flatVector = result->asChecked<velox::FlatVector<velox::Timestamp>>();
+    flatVector->set(
+        row, velox::Timestamp::fromNanos(std::numeric_limits<int64_t>::max()));
+    return true;
   }
 
   NIMBLE_UNSUPPORTED("Cannot set max value for column type: {}", KIND);
@@ -875,67 +780,23 @@ bool incrementColumnValueTyped(
     bool descending) {
   using T = typename velox::TypeTraits<KIND>::NativeType;
 
-  if constexpr (KIND == velox::TypeKind::BOOLEAN) {
-    auto* inputVector = column->asChecked<velox::FlatVector<bool>>();
-    auto* resultVector = result->asChecked<velox::FlatVector<bool>>();
-    const auto value = inputVector->valueAt(row);
-    if (!descending) {
-      // Ascending: false -> true, true cannot increment
-      if (value) {
-        return false;
-      }
-      resultVector->set(row, true);
-    } else {
-      // Descending: true -> false, false cannot decrement
-      if (!value) {
-        return false;
-      }
-      resultVector->set(row, false);
-    }
-    return true;
-  }
-
   if constexpr (
       KIND == velox::TypeKind::TINYINT || KIND == velox::TypeKind::SMALLINT ||
       KIND == velox::TypeKind::INTEGER || KIND == velox::TypeKind::BIGINT) {
-    auto* inputVector = column->asChecked<velox::FlatVector<T>>();
-    auto* resultVector = result->asChecked<velox::FlatVector<T>>();
-    const auto value = inputVector->valueAt(row);
+    auto* flatVector = column->as<velox::FlatVector<T>>();
+    const auto value = flatVector->valueAt(row);
     if (!descending) {
       // Ascending: increment
       if (value == std::numeric_limits<T>::max()) {
         return false;
       }
-      resultVector->set(row, value + 1);
+      flatVector->set(row, value + 1);
     } else {
       // Descending: decrement
       if (value == std::numeric_limits<T>::min()) {
         return false;
       }
-      resultVector->set(row, value - 1);
-    }
-    return true;
-  }
-
-  if constexpr (
-      KIND == velox::TypeKind::REAL || KIND == velox::TypeKind::DOUBLE) {
-    auto* inputVector = column->asChecked<velox::FlatVector<T>>();
-    auto* resultVector = result->asChecked<velox::FlatVector<T>>();
-    const auto value = inputVector->valueAt(row);
-    if (!descending) {
-      // Ascending: increment to next representable value
-      if (std::isinf(value) && value > 0) {
-        return false;
-      }
-      resultVector->set(
-          row, std::nextafter(value, std::numeric_limits<T>::infinity()));
-    } else {
-      // Descending: decrement to previous representable value
-      if (std::isinf(value) && value < 0) {
-        return false;
-      }
-      resultVector->set(
-          row, std::nextafter(value, -std::numeric_limits<T>::infinity()));
+      flatVector->set(row, value - 1);
     }
     return true;
   }
@@ -943,16 +804,33 @@ bool incrementColumnValueTyped(
   if constexpr (
       KIND == velox::TypeKind::VARCHAR || KIND == velox::TypeKind::VARBINARY) {
     // For strings, increment/decrement the string representation.
-    auto* inputVector =
-        column->asChecked<velox::FlatVector<velox::StringView>>();
-    auto* resultVector =
-        result->asChecked<velox::FlatVector<velox::StringView>>();
-    const auto value = inputVector->valueAt(row);
-    std::string incrementedStr(value.data(), value.size());
-    if (!incrementStringValue(&incrementedStr, descending)) {
+    auto* flatVector = column->as<velox::FlatVector<velox::StringView>>();
+    const auto value = flatVector->valueAt(row);
+    std::string str(value.data(), value.size());
+    if (!incrementStringValue(&str, descending)) {
       return false;
     }
-    resultVector->set(row, velox::StringView(incrementedStr));
+    flatVector->set(row, velox::StringView(str));
+    return true;
+  }
+
+  if constexpr (KIND == velox::TypeKind::TIMESTAMP) {
+    auto* flatVector = column->as<velox::FlatVector<velox::Timestamp>>();
+    const auto value = flatVector->valueAt(row);
+    const int64_t nanos = value.toNanos();
+    if (!descending) {
+      // Ascending: increment
+      if (nanos == std::numeric_limits<int64_t>::max()) {
+        return false;
+      }
+      flatVector->set(row, velox::Timestamp::fromNanos(nanos + 1));
+    } else {
+      // Descending: decrement
+      if (nanos == std::numeric_limits<int64_t>::min()) {
+        return false;
+      }
+      flatVector->set(row, velox::Timestamp::fromNanos(nanos - 1));
+    }
     return true;
   }
 
@@ -968,23 +846,16 @@ bool incrementNullColumnValue(
     bool nullLast,
     velox::VectorPtr& result) {
   if (!nullLast) {
+    // Nulls first: null is at the beginning
+    result->setNull(row, false);
     if (descending) {
-      // Nulls first: null is at the beginning
-      result->setNull(row, false);
-      const auto ret = VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(
+      // Descending with nulls first: next value is maximum
+      return VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(
           setMaxValueTyped, column->typeKind(), result, row);
-      if (!ret) {
-        result->setNull(row, true);
-      }
-      return ret;
     } else {
-      result->setNull(row, false);
-      const auto ret = VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(
+      // Ascending with nulls first: next value is minimum
+      return VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(
           setMinValueTyped, column->typeKind(), result, row);
-      if (!ret) {
-        result->setNull(row, true);
-      }
-      return ret;
     }
   } else {
     // Nulls last: null is at the end, can't increment
@@ -1017,42 +888,28 @@ bool incrementColumnValue(
 
 // static.
 std::unique_ptr<KeyEncoder> KeyEncoder::create(
-    std::vector<std::string> keyColumns,
-    velox::RowTypePtr inputType,
-    std::vector<velox::core::SortOrder> sortOrders,
+    const std::vector<std::string>& keyColumns,
+    const velox::RowTypePtr& inputType,
+    const std::vector<velox::core::SortOrder>& sortOrders,
     velox::memory::MemoryPool* pool) {
   return std::unique_ptr<KeyEncoder>(
       new KeyEncoder(keyColumns, inputType, sortOrders, pool));
 }
 
 KeyEncoder::KeyEncoder(
-    std::vector<std::string> keyColumns,
-    velox::RowTypePtr inputType,
-    std::vector<velox::core::SortOrder> sortOrders,
+    const std::vector<std::string>& keyColumns,
+    const velox::RowTypePtr& inputType,
+    const std::vector<velox::core::SortOrder>& sortOrders,
     velox::memory::MemoryPool* pool)
-    : inputType_{std::move(inputType)},
-      sortOrders_{std::move(sortOrders)},
+    : inputType_{inputType},
+      sortOrders_{sortOrders},
       keyChannels_{getKeyChannels(inputType_, keyColumns)},
       pool_{pool},
       childDecodedVectors_{keyColumns.size()} {
-  NIMBLE_CHECK(!childDecodedVectors_.empty());
-  NIMBLE_CHECK_EQ(
-      keyChannels_.size(),
-      sortOrders_.size(),
-      "Size mismatch between key columns and sort orders");
-
-  // Validate that all index columns are valid types
-  for (size_t i = 0; i < keyChannels_.size(); ++i) {
-    const auto& columnType = inputType_->childAt(keyChannels_[i]);
-    NIMBLE_CHECK(
-        isValidIndexColumnType(columnType),
-        "Unsupported type for index column '{}': {}",
-        keyColumns[i],
-        columnType->toString());
-  }
+  NIMBLE_CHECK_EQ(keyChannels_.size(), sortOrders_.size());
 }
 
-std::optional<velox::RowVectorPtr> KeyEncoder::createIncrementedBound(
+velox::RowVectorPtr KeyEncoder::createIncrementedBound(
     const velox::RowVectorPtr& bound) const {
   const auto& children = bound->children();
   NIMBLE_CHECK_EQ(bound->size(), 1);
@@ -1083,7 +940,7 @@ std::optional<velox::RowVectorPtr> KeyEncoder::createIncrementedBound(
   }
 
   // All key columns overflowed - cannot increment
-  return std::nullopt;
+  NIMBLE_FAIL("Cannot increment key: all key columns are at maximum value");
 }
 
 void KeyEncoder::encode(
@@ -1101,7 +958,7 @@ void KeyEncoder::encode(
     childDecodedVectors_[i].decode(*children[keyChannels_[i]]);
   }
   const auto totalBytes = estimateEncodedSize();
-  auto* const reserved = buffer.reserve(totalBytes);
+  auto* reserved = buffer.reserve(totalBytes);
 
   const auto numRows = input->size();
   const auto numKeys = keyChannels_.size();
@@ -1114,16 +971,20 @@ void KeyEncoder::encode(
   }
 
   // Encode column-by-column for better cache locality
-  for (auto i = 0; i < numKeys; ++i) {
-    const bool nullLast = !sortOrders_[i].isNullsFirst();
-    const bool descending = !sortOrders_[i].isAscending();
-    const auto& decodedVector = childDecodedVectors_[i];
+  for (auto keyIdx = 0; keyIdx < numKeys; ++keyIdx) {
+    const bool nullLast = !sortOrders_[keyIdx].isNullsFirst();
+    const bool descending = !sortOrders_[keyIdx].isAscending();
+    const auto& decodedVector = childDecodedVectors_[keyIdx];
 
-    // Encode column data for all rows (null indicator is encoded within each
-    // type's encoding function)
+    // Encode null indicator for all rows
+    for (auto row = 0; row < numRows; ++row) {
+      encodeBool(!nullLast, rowOffsets[row]);
+    }
+
+    // Encode column data for all rows
     const auto typeKind = decodedVector.base()->typeKind();
     if (decodedVector.base()->type()->isDate()) {
-      encodeDate(decodedVector, numRows, descending, nullLast, rowOffsets);
+      encodeDate(decodedVector, numRows, descending, rowOffsets);
     } else {
       VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(
           encodeColumnTyped,
@@ -1131,27 +992,28 @@ void KeyEncoder::encode(
           decodedVector,
           numRows,
           descending,
-          nullLast,
           rowOffsets);
     }
   }
 
   // Build encoded keys string views
   encodedKeys.reserve(encodedKeys.size() + numRows);
-  size_t offset{0};
   for (auto row = 0; row < numRows; ++row) {
-    encodedKeys.emplace_back(reserved + offset, encodedSizes_[row]);
-    offset += encodedSizes_[row];
-    NIMBLE_CHECK_EQ(rowOffsets[row], reserved + offset);
+    encodedKeys.emplace_back(
+        reserved + (row > 0 ? encodedSizes_[row - 1] : 0), encodedSizes_[row]);
   }
 }
 
 uint64_t KeyEncoder::estimateEncodedSize() {
   const auto numRows = decodedVector_.size();
   encodedSizes_.resize(numRows, 0);
+  // Initialize base sizes with one byte per key channel.
+  for (auto i = 0; i < numRows; ++i) {
+    encodedSizes_[i] += keyChannels_.size();
+  }
 
   // Process each key channel in columnar order.
-  for (auto i = 0; i < keyChannels_.size(); ++i) {
+  for (const auto keyChannel : keyChannels_) {
     velox::ScratchPtr<velox::vector_size_t, 128> decodedRowsHolder(scratch_);
     auto* decodedRows = decodedRowsHolder.get(numRows);
     for (auto row = 0; row < numRows; ++row) {
@@ -1159,7 +1021,7 @@ uint64_t KeyEncoder::estimateEncodedSize() {
     }
 
     estimateEncodedColumnSize(
-        childDecodedVectors_[i],
+        childDecodedVectors_[keyChannel],
         folly::Range<const velox::vector_size_t*>(decodedRows, numRows),
         encodedSizes_,
         scratch_);
@@ -1182,8 +1044,7 @@ std::vector<std::string> KeyEncoder::encode(const velox::RowVectorPtr& input) {
   return result;
 }
 
-std::optional<EncodedKeyBounds> KeyEncoder::encodeIndexBounds(
-    const IndexBounds& indexBounds) {
+EncodedKeyBounds KeyEncoder::encodeIndexBounds(const IndexBounds& indexBounds) {
   NIMBLE_CHECK(indexBounds.validate());
 
   EncodedKeyBounds result;
@@ -1194,12 +1055,7 @@ std::optional<EncodedKeyBounds> KeyEncoder::encodeIndexBounds(
     velox::RowVectorPtr lowerBoundToEncode = lowerBound.bound;
     // For exclusive lower bound, increment the row before encoding
     if (!lowerBound.inclusive) {
-      const auto incrementedBoundOpt =
-          createIncrementedBound(lowerBoundToEncode);
-      if (!incrementedBoundOpt.has_value()) {
-        return std::nullopt;
-      }
-      lowerBoundToEncode = incrementedBoundOpt.value();
+      lowerBoundToEncode = createIncrementedBound(lowerBoundToEncode);
     }
     auto encodedKeys = encode(lowerBoundToEncode);
     NIMBLE_CHECK_EQ(encodedKeys.size(), 1);
@@ -1213,20 +1069,10 @@ std::optional<EncodedKeyBounds> KeyEncoder::encodeIndexBounds(
 
     // For inclusive upper bound, increment the row before encoding
     if (upperBound.inclusive) {
-      const auto incrementedBoundOpt = createIncrementedBound(upperBound.bound);
-      // If increment fails (bound is at maximum value), treat as unbounded by
-      // setting to nullptr. This prevents setting an upper bound when the
-      // inclusive upper bound is already at the maximum possible value.
-      if (!incrementedBoundOpt.has_value()) {
-        upperBoundToEncode = nullptr;
-      } else {
-        upperBoundToEncode = incrementedBoundOpt.value();
-      }
+      upperBoundToEncode = createIncrementedBound(upperBound.bound);
     }
-    if (upperBoundToEncode != nullptr) {
-      auto encodedKeys = encode(upperBoundToEncode);
-      result.upperKey = std::move(encodedKeys[0]);
-    }
+    auto encodedKeys = encode(upperBoundToEncode);
+    result.upperKey = std::move(encodedKeys[0]);
   }
 
   return result;

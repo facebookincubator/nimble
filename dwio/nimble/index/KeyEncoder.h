@@ -53,11 +53,6 @@ struct IndexBounds {
   /// Returns true if valid, false otherwise.
   bool validate() const;
 
-  /// Returns the type from the bound vectors.
-  /// Extracts the type from lowerBound if available, otherwise from upperBound.
-  /// At least one bound must be present.
-  velox::TypePtr type() const;
-
   /// Returns a human-readable string representation of the bounds.
   std::string toString() const;
 };
@@ -85,7 +80,8 @@ struct EncodedKeyBounds {
 ///   first/last)
 /// - Ascending/descending sort orders are respected
 /// - Only scalar types are supported (e.g., integers, floats, strings,
-///   booleans, dates). Complex types (arrays, maps, rows) are not supported.
+///   timestamps, booleans). Complex types (arrays, maps, rows) are not
+///   supported.
 ///
 /// Example usage:
 ///   auto keyEncoder = KeyEncoder::create(
@@ -104,9 +100,9 @@ class KeyEncoder {
   /// @param pool Memory pool for allocations
   /// @return Unique pointer to a new KeyEncoder instance
   static std::unique_ptr<KeyEncoder> create(
-      std::vector<std::string> keyColumns,
-      velox::RowTypePtr inputType,
-      std::vector<velox::core::SortOrder> sortOrders,
+      const std::vector<std::string>& keyColumns,
+      const velox::RowTypePtr& inputType,
+      const std::vector<velox::core::SortOrder>& sortOrders,
       velox::memory::MemoryPool* pool);
 
   /// Encodes the key columns from the input vector into byte-comparable keys.
@@ -126,36 +122,19 @@ class KeyEncoder {
 
   /// Encodes index bounds into byte-comparable boundary keys.
   ///
-  /// The implementation normalizes all bounds to half-open interval format
-  /// [lower_bound, upper_bound) to ease range scan processing:
-  /// - Lower bounds: Always converted to inclusive
-  ///   - Exclusive lower bound (x > 5) → incremented to inclusive (x >= 6)
-  ///   - Inclusive lower bound (x >= 5) → stays as is
-  /// - Upper bounds: Always converted to exclusive
-  ///   - Inclusive upper bound (x <= 10) → incremented to exclusive (x < 11)
-  ///   - Exclusive upper bound (x < 10) → stays as is
-  ///
-  /// Increment failure handling (asymmetric behavior):
-  /// - Lower bound increment fails → returns std::nullopt (cannot establish
-  ///   valid range start)
-  /// - Upper bound increment fails → upperKey set to std::nullopt (treated as
-  ///   unbounded upper range)
-  ///
-  /// Increment fails when values are at their maximum (e.g., INT_MAX, strings
-  /// with all \xFF characters, or nulls in NULLS_LAST ordering).
+  /// For non-inclusive bounds, the key is adjusted (incremented for lower
+  /// bound, decremented for upper bound) to convert to an inclusive range.
   ///
   /// @param indexBounds Index bounds containing lower/upper bounds with
   ///                    inclusive flags
-  /// @return std::nullopt if lower bound increment fails; otherwise
-  ///         EncodedKeyBounds with encoded keys in [lower, upper) format
-  std::optional<EncodedKeyBounds> encodeIndexBounds(
-      const IndexBounds& indexBounds);
+  /// @return EncodedKeyBounds with encoded lower and/or upper keys
+  EncodedKeyBounds encodeIndexBounds(const IndexBounds& indexBounds);
 
  private:
   KeyEncoder(
-      std::vector<std::string> keyColumns,
-      velox::RowTypePtr inputType,
-      std::vector<velox::core::SortOrder> sortOrders,
+      const std::vector<std::string>& keyColumns,
+      const velox::RowTypePtr& inputType,
+      const std::vector<velox::core::SortOrder>& sortOrders,
       velox::memory::MemoryPool* pool);
 
   uint64_t estimateEncodedSize();
@@ -174,9 +153,9 @@ class KeyEncoder {
 
   // Creates a new row vector with the key columns incremented by 1.
   // Similar to Apache Kudu's IncrementKey, this increments from the
-  // rightmost (least significant) column. Returns std::nullopt if all columns
+  // rightmost (least significant) column. Returns nullptr if all columns
   // overflow (key is at maximum value).
-  std::optional<velox::RowVectorPtr> createIncrementedBound(
+  velox::RowVectorPtr createIncrementedBound(
       const velox::RowVectorPtr& bound) const;
 
   const velox::RowTypePtr inputType_;
