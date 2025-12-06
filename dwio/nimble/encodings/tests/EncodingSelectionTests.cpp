@@ -134,7 +134,7 @@ void verifySizeEstimate(
           encodingTypeForEstimation,
           values.size(),
           nimble::Statistics<T>::create(values));
-  EXPECT_EQ(estimatedSize, expectedEstimatedSize);
+  EXPECT_EQ(estimatedSize.value().size(), expectedEstimatedSize);
 }
 
 template <typename T>
@@ -180,7 +180,7 @@ void test(std::span<const T> values, std::vector<EncodingDetails> expected) {
     LOG(INFO) << "Expected: " << expected[i].encodingType << "<"
               << expected[i].dataType << ">[" << expected[i].nestedEncodingName
               << ":" << expected[i].level << "]";
-    LOG(INFO) << "Actual: " << actual[i].encodingType << "<"
+    LOG(INFO) << "Actual:   " << actual[i].encodingType << "<"
               << actual[i].dataType << ">[" << actual[i].nestedEncodingName
               << ":" << actual[i].level << "]";
     EXPECT_EQ(expected[i].encodingType, actual[i].encodingType);
@@ -435,7 +435,7 @@ TYPED_TEST(EncodingSelectionNumericTests, SelectRunLength) {
 
   if constexpr (
       nimble::isFloatingPointType<T>() || std::is_same_v<int32_t, T> ||
-      sizeof(T) > 4) {
+      sizeof(T) >= 4) {
     // Floating point types and big types prefer storing the run values as
     // dictionary
     test<T>(
@@ -993,4 +993,17 @@ TEST(EncodingSelectionTests, TestNullable) {
   ASSERT_EQ(size, expectedSize);
 
   LOG(INFO) << "Final size: " << serialized.size();
+}
+
+TEST(EncodingSelectionTests, TestSizeEstimateCost) {
+  std::vector<uint8_t> values{1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+  auto estimatedSize =
+      nimble::detail::EncodingSizeEstimation<uint8_t, false>::estimateSize(
+          nimble::EncodingType::Trivial,
+          values.size(),
+          nimble::Statistics<uint8_t>::create(values))
+          .value();
+  EXPECT_EQ(estimatedSize.size(), 17);
+  EXPECT_EQ(estimatedSize.cost(10), 107);
+  EXPECT_EQ(estimatedSize.cost(0), 7);
 }
