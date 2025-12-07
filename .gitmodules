@@ -1,3 +1,6 @@
 [submodule "velox"]
 	path = velox
 	url = https://github.com/facebookincubator/velox.git
+[submodule "openzl"]
+	path = openzl
+	url = https://github.com/facebook/openzl.git
