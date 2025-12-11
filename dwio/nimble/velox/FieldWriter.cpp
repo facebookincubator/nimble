@@ -1066,27 +1066,42 @@ class FlatMapFieldWriter : public FieldWriter {
 
     const auto& values = flatMapVector->mapValues();
     const auto& inMaps = flatMapVector->inMaps();
-    const auto* flatKeys =
-        flatMapVector->distinctKeys()->as<const velox::FlatVector<KeyType>>();
 
-    NIMBLE_CHECK(
-        flatKeys,
-        fmt::format(
-            "Unexpected distinct keys vector within FlatMapVector: '{}'",
-            flatMapVector->distinctKeys()->toString()));
+    // Confirm that the keys are distinct. Otherwise writing the same key
+    // multiple times leads to out of bounds scan spec channels.
+    std::unordered_set<std::string> distinctKeySet;
 
-    for (velox::vector_size_t i = 0; i < flatKeys->size(); ++i) {
-      // Ideally we wouldn't need to convert the key to a string, but this is
-      // done for backward compatibility with ingestRow().
-      const auto& key = flatMapKeyToString(flatKeys->valueAt(i));
-      auto& writer = populateMap ? createPassthroughValueFieldWriter(key)
-                                 : findPassthroughValueFieldWriter(key);
+    auto processKeys = [&](const auto& keysVector) {
+      for (velox::vector_size_t i = 0; i < flatMapVector->numDistinctKeys();
+           ++i) {
+        // Ideally we wouldn't need to convert the key to a string, but this is
+        // done for backward compatibility with ingestRow().
+        const auto& key = flatMapKeyToString(keysVector.valueAt(i));
+        VELOX_CHECK(
+            distinctKeySet.find(key) == distinctKeySet.end(),
+            "FlatMapVector keys are not distinct.");
+        distinctKeySet.insert(key);
 
-      if (inMaps[i]) {
-        writer.write(values[i], inMaps[i], childRanges);
-      } else {
-        writer.write(values[i], childRanges);
+        auto& writer = populateMap ? createPassthroughValueFieldWriter(key)
+                                   : findPassthroughValueFieldWriter(key);
+
+        if (inMaps[i]) {
+          writer.write(values[i], inMaps[i], childRanges);
+        } else {
+          writer.write(values[i], childRanges);
+        }
       }
+    };
+
+    if (flatMapVector->distinctKeys()->isFlatEncoding()) {
+      processKeys(Flat<KeyType>{flatMapVector->distinctKeys()});
+    } else {
+      auto decodingContext = context_.decodingContext();
+      OrderedRanges keyRanges;
+      keyRanges.add(0, flatMapVector->distinctKeys()->size());
+      auto& decodedKeys =
+          decodingContext.decode(flatMapVector->distinctKeys(), keyRanges);
+      processKeys(Decoded<KeyType>{decodedKeys});
     }
   }
 

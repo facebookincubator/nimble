@@ -16,6 +16,7 @@
 
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
+#include "velox/common/base/tests/GTestUtils.h"
 #include "velox/dwio/common/TypeUtils.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
@@ -1388,6 +1389,64 @@ TEST_F(SelectiveNimbleReaderTest, nativeFlatMap) {
           {{{101, 11}, {103, 13}, {105, std::nullopt}}},
           {{{101, 1}, {102, 2}, {103, 3}}},
       }));
+
+  auto constructFlatMap = [&](VectorPtr keys) {
+    return std::make_shared<FlatMapVector>(
+        pool(),
+        MAP(INTEGER(), INTEGER()),
+        nullptr,
+        3,
+        keys,
+        std::vector<VectorPtr>{
+            makeFlatVector<int32_t>({1, 2, 3}),
+            makeFlatVector<int32_t>({4, 5, 6}),
+            makeFlatVector<int32_t>({7, 8, 9})},
+        std::vector<BufferPtr>{nullptr, nullptr, nullptr});
+  };
+
+  // Dictionary wrapped keys
+  {
+    LOG(INFO) << "Dictionary wrapped keys";
+    testRoundtrip(constructFlatMap(
+        BaseVector::wrapInDictionary(
+            nullptr,
+            makeIndices({0, 1, 2}),
+            3,
+            makeFlatVector<int32_t>({4, 5, 6}))));
+
+    testRoundtrip(constructFlatMap(
+        BaseVector::wrapInDictionary(
+            nullptr,
+            makeIndices({2, 0, 1}),
+            3,
+            makeFlatVector<int32_t>({4, 5, 6}))));
+
+    // Difference in cardinality
+    testRoundtrip(constructFlatMap(
+        BaseVector::wrapInDictionary(
+            nullptr,
+            makeIndices({1, 3, 5}),
+            3,
+            makeFlatVector<int32_t>({4, 5, 6, 7, 8, 9}))));
+
+    VELOX_ASSERT_THROW(
+        testRoundtrip(constructFlatMap(
+            BaseVector::wrapInDictionary(
+                nullptr,
+                makeIndices({2, 1, 1}),
+                3,
+                makeFlatVector<int32_t>({4, 5, 6})))),
+        "FlatMapVector keys are not distinct.");
+  }
+
+  // Constant wrapped keys
+  {
+    VELOX_ASSERT_THROW(
+        testRoundtrip(constructFlatMap(
+            BaseVector::wrapInConstant(
+                3, 0, makeFlatVector<int32_t>({1, 2, 3})))),
+        "FlatMapVector keys are not distinct.");
+  }
 }
 
 TEST_F(SelectiveNimbleReaderTest, mapAsStruct) {
