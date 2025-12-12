@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 #include "dwio/nimble/velox/ChunkedStreamDecoder.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
 
 namespace facebook::nimble {
 
@@ -177,7 +176,7 @@ void ChunkedStreamDecoder::reset() {
 
 void ChunkedStreamDecoder::ensureLoaded() {
   if (UNLIKELY(remaining_ == 0)) {
-    encoding_ = EncodingFactory::decode(pool_, stream_->nextChunk());
+    encoding_ = encodingFactory_(pool_, stream_->nextChunk());
     remaining_ = encoding_->rowCount();
     NIMBLE_CHECK_GT(remaining_, 0, "Empty chunk");
   }

@@ -132,6 +132,7 @@ class TestTrivialEncodingSelectionPolicy
   bool useVariableBitWidthCompressor_;
 };
 } // namespace
+
 // C is the encoding type.
 template <typename C>
 class EncodingTests : public ::testing::Test {
