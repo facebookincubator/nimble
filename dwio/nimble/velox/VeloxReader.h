@@ -19,6 +19,7 @@
 #include "dwio/nimble/common/MetricsLogger.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/FieldReader.h"
 #include "dwio/nimble/velox/SchemaReader.h"
@@ -65,6 +66,16 @@ struct VeloxReadParams : public FieldReaderParams {
   // Factory with the algorithm to load stripes (units).
   // If nullptr we'll use the default one, that doesn't pre-load stripes.
   std::shared_ptr<velox::dwio::common::UnitLoaderFactory> unitLoaderFactory;
+
+  // Used strictly for backward compatible migrations where the Encoding
+  // implementations might have different read implementations, but
+  // identical/backward compatible write behavior.
+  std::function<
+      std::unique_ptr<Encoding>(velox::memory::MemoryPool&, std::string_view)>
+      encodingFactory = [](velox::memory::MemoryPool& pool,
+                           std::string_view data) -> std::unique_ptr<Encoding> {
+    return EncodingFactory::decode(pool, data);
+  };
 };
 
 class VeloxReader {

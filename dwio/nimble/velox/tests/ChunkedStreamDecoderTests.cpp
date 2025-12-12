@@ -15,6 +15,7 @@
  */
 #include <gtest/gtest.h>
 
+#include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/velox/ChunkedStreamDecoder.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
@@ -177,7 +178,8 @@ void test(
     bool hasNulls,
     bool skips,
     bool scatter,
-    bool compress) {
+    bool compress,
+    bool useLegacyEncoding) {
   uint32_t seed = FLAGS_seed == 0 ? folly::Random::rand32() : FLAGS_seed;
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
@@ -219,6 +221,13 @@ void test(
       *memoryPool,
       std::make_unique<nimble::InMemoryChunkedStream>(
           *memoryPool, std::move(streamLoader)),
+      useLegacyEncoding ? [](velox::memory::MemoryPool& pool,
+         std::string_view data) -> std::unique_ptr<nimble::Encoding> {
+        return nimble::legacy::EncodingFactory::decode(pool, data);
+      } : [](velox::memory::MemoryPool& pool,
+         std::string_view data) -> std::unique_ptr<nimble::Encoding> {
+        return nimble::EncodingFactory::decode(pool, data);
+      },
       /* metricLogger */ {}};
 
   for (auto batchSize = 1; batchSize <= totalSize; ++batchSize) {
@@ -349,46 +358,48 @@ void test(
     }
   }
 }
-
 } // namespace
 
-TEST(ChunkedStreamDecoderTests, Decode) {
-  for (auto multipleChunks : {false, true}) {
-    for (auto hasNulls : {false, true}) {
-      for (auto skip : {false, true}) {
-        for (auto scatter : {false, true}) {
-          for (auto compress : {false, true}) {
-            for (int i = 0; i < 3; ++i) {
-              LOG(INFO) << "Interation: " << i
-                        << ", Multiple Chunks: " << multipleChunks
-                        << ", Has Nulls: " << hasNulls << ", Skips: " << skip
-                        << ", Scatter: " << scatter;
-              test<int32_t>(multipleChunks, hasNulls, skip, scatter, compress);
-            }
-          }
-        }
-      }
-    }
+class ChunkedStreamDecoderTests
+    : public ::testing::Test,
+      public ::testing::WithParamInterface<
+          std::tuple<bool, bool, bool, bool, bool, bool>> {};
+
+TEST_P(ChunkedStreamDecoderTests, Decode) {
+  const auto
+      [multipleChunks, hasNulls, skip, scatter, compress, useLegacyEncoding] =
+          GetParam();
+  for (int i = 0; i < 3; ++i) {
+    LOG(INFO) << "Interation: " << i << ", Multiple Chunks: " << multipleChunks
+              << ", Has Nulls: " << hasNulls << ", Skips: " << skip
+              << ", Scatter: " << scatter
+              << ", Use Legacy Encoding: " << useLegacyEncoding;
+    test<int32_t>(
+        multipleChunks, hasNulls, skip, scatter, compress, useLegacyEncoding);
   }
 }
 
-TEST(ChunkedStreamDecoderTests, DecodeStrings) {
-  for (auto multipleChunks : {false, true}) {
-    for (auto hasNulls : {false, true}) {
-      for (auto skip : {false, true}) {
-        for (auto scatter : {false, true}) {
-          for (auto compress : {false, true}) {
-            for (int i = 0; i < 3; ++i) {
-              LOG(INFO) << "Interation: " << i
-                        << ", Multiple Chunks: " << multipleChunks
-                        << ", Has Nulls: " << hasNulls << ", Skips: " << skip
-                        << ", Scatter: " << scatter;
-              test<std::string_view>(
-                  multipleChunks, hasNulls, skip, scatter, compress);
-            }
-          }
-        }
-      }
-    }
+TEST_P(ChunkedStreamDecoderTests, DecodeStrings) {
+  const auto
+      [multipleChunks, hasNulls, skip, scatter, compress, useLegacyEncoding] =
+          GetParam();
+  for (int i = 0; i < 3; ++i) {
+    LOG(INFO) << "Interation: " << i << ", Multiple Chunks: " << multipleChunks
+              << ", Has Nulls: " << hasNulls << ", Skips: " << skip
+              << ", Scatter: " << scatter
+              << ", Use Legacy Encoding: " << useLegacyEncoding;
+    test<std::string_view>(
+        multipleChunks, hasNulls, skip, scatter, compress, useLegacyEncoding);
   }
 }
+
+INSTANTIATE_TEST_CASE_P(
+    ChunkedStreamDecoderTestSuite,
+    ChunkedStreamDecoderTests,
+    testing::Combine(
+        testing::Values(false, true),
+        testing::Values(false, true),
+        testing::Values(false, true),
+        testing::Values(false, true),
+        testing::Values(false, true),
+        testing::Values(false, true)));

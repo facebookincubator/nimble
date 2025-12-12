@@ -27,8 +27,14 @@ class ChunkedStreamDecoder : public Decoder {
   ChunkedStreamDecoder(
       velox::memory::MemoryPool& pool,
       std::unique_ptr<ChunkedStream> stream,
+      std::function<std::unique_ptr<Encoding>(
+          velox::memory::MemoryPool&,
+          std::string_view)> encodingFactory,
       const MetricsLogger& logger)
-      : pool_{pool}, stream_{std::move(stream)}, logger_{logger} {}
+      : pool_{pool},
+        stream_{std::move(stream)},
+        encodingFactory_{std::move(encodingFactory)},
+        logger_{logger} {}
 
   uint32_t next(
       uint32_t count,
@@ -51,6 +57,9 @@ class ChunkedStreamDecoder : public Decoder {
   std::unique_ptr<ChunkedStream> stream_;
   std::unique_ptr<Encoding> encoding_;
   uint32_t remaining_{0};
+  std::function<
+      std::unique_ptr<Encoding>(velox::memory::MemoryPool&, std::string_view)>
+      encodingFactory_;
   const MetricsLogger& logger_;
   std::vector<Vector<char>> stringBuffers_;
 };
