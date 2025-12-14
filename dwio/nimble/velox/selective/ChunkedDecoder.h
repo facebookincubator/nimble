@@ -29,10 +29,18 @@ class ChunkedDecoder {
   ChunkedDecoder(
       std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
       velox::memory::MemoryPool& pool,
-      bool decodeValuesWithNulls)
+      bool decodeValuesWithNulls,
+      std::function<std::unique_ptr<Encoding>(
+          velox::memory::MemoryPool&,
+          std::string_view)> encodingFactory =
+          [](velox::memory::MemoryPool& pool,
+             std::string_view data) -> std::unique_ptr<Encoding> {
+        return EncodingFactory::decode(pool, data);
+      })
       : input_{std::move(input)},
         pool_{&pool},
-        decodeValuesWithNulls_{decodeValuesWithNulls} {
+        decodeValuesWithNulls_{decodeValuesWithNulls},
+        encodingFactory_{encodingFactory} {
     NIMBLE_CHECK_NOT_NULL(input_);
   }
 
@@ -284,6 +292,9 @@ class ChunkedDecoder {
   const std::unique_ptr<velox::dwio::common::SeekableInputStream> input_;
   velox::memory::MemoryPool* const pool_;
   const bool decodeValuesWithNulls_;
+  std::function<
+      std::unique_ptr<Encoding>(velox::memory::MemoryPool&, std::string_view)>
+      encodingFactory_;
 
   const char* inputData_{nullptr};
   int64_t inputSize_{0};
