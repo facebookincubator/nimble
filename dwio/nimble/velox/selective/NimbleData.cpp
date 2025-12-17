@@ -27,11 +27,15 @@ NimbleData::NimbleData(
     const std::shared_ptr<const Type>& nimbleType,
     StripeStreams& streams,
     memory::MemoryPool& memoryPool,
-    ChunkedDecoder* inMapDecoder)
+    ChunkedDecoder* inMapDecoder,
+    std::function<
+        std::unique_ptr<Encoding>(velox::memory::MemoryPool&, std::string_view)>
+        encodingFactory)
     : nimbleType_(nimbleType),
       streams_(streams),
       memoryPool_(memoryPool),
-      inMapDecoder_(inMapDecoder) {
+      inMapDecoder_(inMapDecoder),
+      encodingFactory_{encodingFactory} {
   switch (nimbleType->kind()) {
     case Kind::Scalar:
       // Nulls in scalar types will be decoded along with values.
@@ -176,14 +180,14 @@ std::unique_ptr<ChunkedDecoder> NimbleData::makeDecoder(
     return nullptr;
   }
   return std::make_unique<ChunkedDecoder>(
-      std::move(input), memoryPool_, decodeValuesWithNulls);
+      std::move(input), memoryPool_, decodeValuesWithNulls, encodingFactory_);
 }
 
 std::unique_ptr<velox::dwio::common::FormatData> NimbleParams::toFormatData(
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& /*type*/,
     const velox::common::ScanSpec& /*scanSpec*/) {
   return std::make_unique<NimbleData>(
-      nimbleType_, *streams_, pool(), inMapDecoder_);
+      nimbleType_, *streams_, pool(), inMapDecoder_, encodingFactory_);
 }
 
 } // namespace facebook::nimble

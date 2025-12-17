@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
 #include "velox/dwio/common/FormatData.h"
@@ -30,7 +31,10 @@ class NimbleData : public velox::dwio::common::FormatData {
       const std::shared_ptr<const Type>& nimbleType,
       StripeStreams& streams,
       velox::memory::MemoryPool& memoryPool,
-      ChunkedDecoder* inMapDecoder);
+      ChunkedDecoder* inMapDecoder,
+      std::function<std::unique_ptr<Encoding>(
+          velox::memory::MemoryPool&,
+          std::string_view)> encodingFactory);
 
   /// Read internal node nulls. For leaf nodes, we only copy `incomingNulls' if
   /// it exists.
@@ -100,6 +104,9 @@ class NimbleData : public velox::dwio::common::FormatData {
   ChunkedDecoder* const inMapDecoder_;
   std::unique_ptr<ChunkedDecoder> nullsDecoder_;
   velox::BufferPtr inMap_;
+  std::function<
+      std::unique_ptr<Encoding>(velox::memory::MemoryPool&, std::string_view)>
+      encodingFactory_;
 };
 
 class NimbleParams : public velox::dwio::common::FormatParams {
@@ -110,12 +117,16 @@ class NimbleParams : public velox::dwio::common::FormatParams {
       const std::shared_ptr<const Type>& nimbleType,
       StripeStreams& streams,
       RowSizeTracker* rowSizeTracker,
+      std::function<std::unique_ptr<Encoding>(
+          velox::memory::MemoryPool&,
+          std::string_view)> encodingFactory,
       bool preserveFlatMapsInMemory = false)
       : FormatParams(pool, stats),
         nimbleType_(nimbleType),
         streams_(&streams),
         rowSizeTracker_(rowSizeTracker),
-        preserveFlatMapsInMemory_(preserveFlatMapsInMemory) {}
+        preserveFlatMapsInMemory_(preserveFlatMapsInMemory),
+        encodingFactory_(encodingFactory) {}
 
   std::unique_ptr<velox::dwio::common::FormatData> toFormatData(
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& /*type*/,
@@ -128,6 +139,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
         type,
         *streams_,
         rowSizeTracker_,
+        encodingFactory_,
         preserveFlatMapsInMemory_);
   }
 
@@ -157,6 +169,9 @@ class NimbleParams : public velox::dwio::common::FormatParams {
   RowSizeTracker* const rowSizeTracker_{nullptr};
   const bool preserveFlatMapsInMemory_{false};
   ChunkedDecoder* inMapDecoder_{nullptr};
+  std::function<
+      std::unique_ptr<Encoding>(velox::memory::MemoryPool&, std::string_view)>
+      encodingFactory_;
 };
 
 } // namespace facebook::nimble
