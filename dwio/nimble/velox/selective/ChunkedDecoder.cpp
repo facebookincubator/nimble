@@ -48,8 +48,7 @@ bool ChunkedDecoder::loadNextChunk() {
   }
   inputData_ += length;
   inputSize_ -= length;
-  encoding_ =
-      EncodingFactory::decode(*pool_, std::string_view(chunkData, chunkSize));
+  encoding_ = encodingFactory_(*pool_, std::string_view(chunkData, chunkSize));
   remainingValues_ = encoding_->rowCount();
   VELOX_CHECK_GT(remainingValues_, 0);
   VLOG(1) << encoding_->debugString();

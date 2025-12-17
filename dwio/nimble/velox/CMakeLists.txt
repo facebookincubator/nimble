@@ -140,6 +140,7 @@ target_link_libraries(
   nimble_velox_field_reader
   nimble_tablet_reader
   nimble_common
+  nimble_encodings_legacy
   Folly::folly
 )
 

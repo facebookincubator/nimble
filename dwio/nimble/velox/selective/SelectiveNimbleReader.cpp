@@ -15,6 +15,8 @@
  */
 
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
+#include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/velox/selective/ColumnReader.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
@@ -170,6 +172,14 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
         readerBase_->nimbleSchema(),
         streams_,
         options_.trackRowSize() ? rowSizeTracker_.get() : nullptr,
+        options_.passStringBuffersFromDecoder()
+        ? [](velox::memory::MemoryPool& pool, std::string_view data)
+              -> std::unique_ptr<
+                  Encoding> { return EncodingFactory::decode(pool, data); }
+        : [](velox::memory::MemoryPool& pool,
+             std::string_view data) -> std::unique_ptr<Encoding> {
+            return legacy::EncodingFactory::decode(pool, data);
+          },
         options_.preserveFlatMapsInMemory());
     columnReader_ = buildColumnReader(
         options_.requestedType() ? options_.requestedType()
