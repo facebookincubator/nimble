@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "dwio/nimble/velox/FieldWriter.h"
+#include <folly/system/HardwareConcurrency.h>
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/velox/DeduplicationUtils.h"
@@ -1809,7 +1810,7 @@ DecodingContextPool::DecodingContextPool(
     std::function<void(void)> vectorDecoderVisitor)
     : vectorDecoderVisitor_{std::move(vectorDecoderVisitor)} {
   NIMBLE_CHECK(vectorDecoderVisitor_, "vectorDecoderVisitor must be set");
-  pool_.reserve(std::thread::hardware_concurrency());
+  pool_.reserve(folly::hardware_concurrency());
 }
 
 void DecodingContextPool::addContext(

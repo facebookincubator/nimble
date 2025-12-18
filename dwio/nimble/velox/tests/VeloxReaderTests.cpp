@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <folly/system/HardwareConcurrency.h>
 #include <gtest/gtest.h>
 #include <cmath>
 #include <optional>
@@ -2431,7 +2432,7 @@ TEST_F(VeloxReaderTests, fuzzSimple) {
   auto batches = 20;
   std::mt19937 rng{seed};
 
-  for (auto parallelismFactor : {0U, 1U, std::thread::hardware_concurrency()}) {
+  for (auto parallelismFactor : {0U, 1U, folly::hardware_concurrency()}) {
     LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
 
     // Executor needs to outlive writerOptions since the latter has a keepAlive
@@ -2535,7 +2536,7 @@ TEST_F(VeloxReaderTests, fuzzComplex) {
   // the former.
   std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
 
-  for (auto parallelismFactor : {0U, 1U, std::thread::hardware_concurrency()}) {
+  for (auto parallelismFactor : {0U, 1U, folly::hardware_concurrency()}) {
     LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
 
     nimble::VeloxWriterOptions writerOptions;

@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <folly/system/HardwareConcurrency.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -2210,7 +2211,7 @@ TEST_F(VeloxWriterTests, fuzzComplex) {
                                                     : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
-  for (auto parallelismFactor : {0U, 1U, std::thread::hardware_concurrency()}) {
+  for (auto parallelismFactor : {0U, 1U, folly::hardware_concurrency()}) {
     std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
     nimble::VeloxWriterOptions writerOptions;
     writerOptions.enableChunking = true;
