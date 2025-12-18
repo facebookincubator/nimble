@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <folly/system/HardwareConcurrency.h>
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/velox/FieldWriter.h"
@@ -60,7 +61,7 @@ TEST(DecodingContextPoolTest, FillPool) {
 }
 
 TEST(DecodingContextPoolTest, ParallelFillPool) {
-  auto parallelismFactor = std::thread::hardware_concurrency();
+  auto parallelismFactor = folly::hardware_concurrency();
   auto executor = folly::CPUThreadPoolExecutor{parallelismFactor};
 
   DecodingContextPool pool;
