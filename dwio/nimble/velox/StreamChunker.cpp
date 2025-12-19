@@ -55,6 +55,7 @@ std::unique_ptr<StreamChunker> getStreamChunker(
     HANDLE_SCALAR_KIND(Bool, bool);
     HANDLE_SCALAR_KIND(Int8, int8_t);
     HANDLE_SCALAR_KIND(Int16, int16_t);
+    HANDLE_SCALAR_KIND(UInt16, uint16_t);
     HANDLE_SCALAR_KIND(Int32, int32_t);
     HANDLE_SCALAR_KIND(UInt32, uint32_t);
     HANDLE_SCALAR_KIND(Int64, int64_t);

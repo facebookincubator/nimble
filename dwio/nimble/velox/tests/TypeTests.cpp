@@ -62,6 +62,7 @@ TEST_F(TypeTests, MatchingSchema) {
                 velox::ARRAY(velox::MAP(velox::INTEGER(), velox::BIGINT()))},
            }))},
       {"arraywithoffsets", velox::ARRAY(velox::BIGINT())},
+      {"timestamp", velox::TIMESTAMP()},
   });
 
   velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, leafPool_.get());
