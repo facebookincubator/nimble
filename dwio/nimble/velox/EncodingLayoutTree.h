@@ -30,6 +30,10 @@ class EncodingLayoutTree {
     struct Scalar {
       constexpr static StreamIdentifier ScalarStream = 0;
     };
+    struct TimestampMicroNano {
+      constexpr static StreamIdentifier MicrosStream = 0;
+      constexpr static StreamIdentifier NanosStream = 1;
+    };
     struct Array {
       constexpr static StreamIdentifier LengthsStream = 0;
     };

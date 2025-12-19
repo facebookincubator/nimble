@@ -25,6 +25,7 @@ namespace {
 inline std::string getKindName(Kind kind) {
   static folly::F14FastMap<Kind, std::string> names{
       {Kind::Scalar, "Scalar"},
+      {Kind::TimestampMicroNano, "TimestampMicroNano"},
       {Kind::Row, "Row"},
       {Kind::Array, "Array"},
       {Kind::Map, "Map"},
@@ -54,6 +55,10 @@ Kind Type::kind() const {
 
 bool Type::isScalar() const {
   return kind_ == Kind::Scalar;
+}
+
+bool Type::isTimestampMicroNano() const {
+  return kind_ == Kind::TimestampMicroNano;
 }
 
 bool Type::isRow() const {
@@ -86,6 +91,14 @@ const ScalarType& Type::asScalar() const {
       "Cannot cast to Scalar. Current type is {}.",
       getKindName(kind_));
   return dynamic_cast<const ScalarType&>(*this);
+}
+
+const TimestampMicroNanoType& Type::asTimestampMicroNano() const {
+  NIMBLE_CHECK(
+      isTimestampMicroNano(),
+      "Cannot cast to TimestampMicroNano. Current type is {}.",
+      getKindName(kind_));
+  return dynamic_cast<const TimestampMicroNanoType&>(*this);
 }
 
 const RowType& Type::asRow() const {
@@ -137,6 +150,21 @@ ScalarType::ScalarType(StreamDescriptor scalarDescriptor)
 
 const StreamDescriptor& ScalarType::scalarDescriptor() const {
   return scalarDescriptor_;
+}
+
+TimestampMicroNanoType::TimestampMicroNanoType(
+    StreamDescriptor microsDescriptor,
+    StreamDescriptor nanosDescriptor)
+    : Type(Kind::TimestampMicroNano),
+      microsDescriptor_{std::move(microsDescriptor)},
+      nanosDescriptor_{std::move(nanosDescriptor)} {}
+
+const StreamDescriptor& TimestampMicroNanoType::microsDescriptor() const {
+  return microsDescriptor_;
+}
+
+const StreamDescriptor& TimestampMicroNanoType::nanosDescriptor() const {
+  return nanosDescriptor_;
 }
 
 ArrayType::ArrayType(
@@ -318,6 +346,18 @@ NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
               StreamDescriptor{offset, node.scalarKind()}),
           .name = node.name()};
     }
+    case Kind::TimestampMicroNano: {
+      const auto& nanosNode = nodes[index++];
+      NIMBLE_CHECK(
+          nanosNode.kind() == Kind::Scalar &&
+              nanosNode.scalarKind() == ScalarKind::UInt16,
+          "TimestampMicroNano nanos field must have a uint16 scalar type.");
+      return {
+          .type = std::make_shared<TimestampMicroNanoType>(
+              StreamDescriptor{offset, ScalarKind::Int64},
+              StreamDescriptor{nanosNode.offset(), nanosNode.scalarKind()}),
+          .name = node.name()};
+    }
     case Kind::Array: {
       auto elements = getType(index, nodes).type;
       return {
@@ -441,6 +481,10 @@ void traverseSchema(
   switch (type->kind()) {
     case Kind::Scalar:
       break;
+    case Kind::TimestampMicroNano: {
+      ++index;
+      break;
+    }
     case Kind::Row: {
       auto& row = type->asRow();
       auto childrenCount = row.childrenCount();
@@ -546,6 +590,11 @@ std::ostream& operator<<(
           auto& scalar = type.asScalar();
           out << "[" << scalar.scalarDescriptor().offset() << "]"
               << toString(scalar.scalarDescriptor().scalarKind()) << "\n";
+        } else if (type.isTimestampMicroNano()) {
+          auto& timestamp = type.asTimestampMicroNano();
+          out << "[micros:" << timestamp.microsDescriptor().offset()
+              << ",nanos:" << timestamp.nanosDescriptor().offset()
+              << "]TIMESTAMP_MICRONANO\n";
         } else if (type.isArray()) {
           out << "[" << type.asArray().lengthsDescriptor().offset() << "]"
               << "ARRAY\n";

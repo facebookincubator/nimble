@@ -28,6 +28,12 @@ void appendAllNestedStreams(
       childrenOffsets.push_back(type.asScalar().scalarDescriptor().offset());
       break;
     }
+    case Kind::TimestampMicroNano: {
+      auto& timestamp = type.asTimestampMicroNano();
+      childrenOffsets.push_back(timestamp.microsDescriptor().offset());
+      childrenOffsets.push_back(timestamp.nanosDescriptor().offset());
+      break;
+    }
     case Kind::Row: {
       auto& row = type.asRow();
       childrenOffsets.push_back(row.nullsDescriptor().offset());

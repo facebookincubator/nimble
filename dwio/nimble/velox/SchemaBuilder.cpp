@@ -26,6 +26,10 @@ ScalarTypeBuilder& TypeBuilder::asScalar() {
   return dynamic_cast<ScalarTypeBuilder&>(*this);
 }
 
+TimestampMicroNanoTypeBuilder& TypeBuilder::asTimestampMicroNano() {
+  return dynamic_cast<TimestampMicroNanoTypeBuilder&>(*this);
+}
+
 ArrayTypeBuilder& TypeBuilder::asArray() {
   return dynamic_cast<ArrayTypeBuilder&>(*this);
 }
@@ -52,6 +56,10 @@ ArrayWithOffsetsTypeBuilder& TypeBuilder::asArrayWithOffsets() {
 
 const ScalarTypeBuilder& TypeBuilder::asScalar() const {
   return dynamic_cast<const ScalarTypeBuilder&>(*this);
+}
+
+const TimestampMicroNanoTypeBuilder& TypeBuilder::asTimestampMicroNano() const {
+  return dynamic_cast<const TimestampMicroNanoTypeBuilder&>(*this);
 }
 
 const ArrayTypeBuilder& TypeBuilder::asArray() const {
@@ -90,6 +98,26 @@ ScalarTypeBuilder::ScalarTypeBuilder(
 
 const StreamDescriptorBuilder& ScalarTypeBuilder::scalarDescriptor() const {
   return scalarDescriptor_;
+}
+
+TimestampMicroNanoTypeBuilder::TimestampMicroNanoTypeBuilder(
+    SchemaBuilder& schemaBuilder)
+    : TypeBuilder{schemaBuilder, Kind::TimestampMicroNano},
+      microsDescriptor_{
+          schemaBuilder_.allocateStreamOffset(),
+          ScalarKind::Int64},
+      nanosDescriptor_{
+          schemaBuilder_.allocateStreamOffset(),
+          ScalarKind::UInt16} {}
+
+const StreamDescriptorBuilder& TimestampMicroNanoTypeBuilder::microsDescriptor()
+    const {
+  return microsDescriptor_;
+}
+
+const StreamDescriptorBuilder& TimestampMicroNanoTypeBuilder::nanosDescriptor()
+    const {
+  return nanosDescriptor_;
 }
 
 LengthsTypeBuilder::LengthsTypeBuilder(SchemaBuilder& schemaBuilder, Kind kind)
@@ -319,6 +347,21 @@ std::shared_ptr<ScalarTypeBuilder> SchemaBuilder::createScalarTypeBuilder(
   return type;
 }
 
+std::shared_ptr<TimestampMicroNanoTypeBuilder>
+SchemaBuilder::createTimestampMicroNanoTypeBuilder() {
+  struct MakeSharedEnabler : public TimestampMicroNanoTypeBuilder {
+    explicit MakeSharedEnabler(SchemaBuilder& schemaBuilder)
+        : TimestampMicroNanoTypeBuilder{schemaBuilder} {}
+  };
+
+  auto type = std::make_shared<MakeSharedEnabler>(*this);
+
+  // This new type builder is not attached to a parent, therefore it is a new
+  // tree "root" (as of now), so we add it to the roots list.
+  roots_.insert(type);
+  return type;
+}
+
 std::shared_ptr<ArrayTypeBuilder> SchemaBuilder::createArrayTypeBuilder() {
   struct MakeSharedEnabler : public ArrayTypeBuilder {
     explicit MakeSharedEnabler(SchemaBuilder& schemaBuilder)
@@ -449,6 +492,21 @@ void SchemaBuilder::addNode(
           std::move(name));
       break;
     }
+
+    case Kind::TimestampMicroNano: {
+      const auto& timestampMicroNano = type.asTimestampMicroNano();
+      nodes.emplace_back(
+          type.kind(),
+          timestampMicroNano.microsDescriptor().offset(),
+          ScalarKind::Int64,
+          std::move(name));
+      nodes.emplace_back(
+          Kind::Scalar,
+          timestampMicroNano.nanosDescriptor().offset(),
+          ScalarKind::UInt16,
+          std::nullopt);
+      break;
+    }
     case Kind::Array: {
       const auto& array = type.asArray();
       nodes.emplace_back(
@@ -566,6 +624,13 @@ void printType(
       const auto& scalar = builder.asScalar();
       out << "[" << scalar.scalarDescriptor().offset() << "]"
           << toString(scalar.scalarDescriptor().scalarKind()) << "\n";
+      break;
+    }
+    case Kind::TimestampMicroNano: {
+      const auto& timestamp = builder.asTimestampMicroNano();
+      out << "[micros:" << timestamp.microsDescriptor().offset()
+          << ",nanos:" << timestamp.nanosDescriptor().offset()
+          << "]TIMESTAMP_MICRONANO\n";
       break;
     }
     case Kind::Array: {
