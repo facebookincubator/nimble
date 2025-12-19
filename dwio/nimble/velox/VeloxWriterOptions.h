@@ -102,7 +102,7 @@ struct VeloxWriterOptions {
   uint64_t maxStreamChunkRawSize{20 << 20};
 
   // Used in place of maxStreamChunkRawSize for tables with large schemas.
-  uint32_t wideSchemaMaxStreamChunkRawSize{2 << 20};
+  uint64_t wideSchemaMaxStreamChunkRawSize{2 << 20};
 
   // When the number of schema nodes exceeds this threshold we use
   // wideSchemaMaxStreamChunkRawSize in place of maxStreamChunkRawSize.
