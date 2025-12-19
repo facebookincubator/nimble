@@ -116,67 +116,6 @@ void ChunkedDecoder::prepareInputBuffer(int size) {
   }
 }
 
-void ChunkedDecoder::decodeNullable(
-    uint64_t* nulls,
-    uint32_t* data,
-    int64_t count,
-    const uint64_t* incomingNulls) {
-  const int64_t totalNumValues = !incomingNulls
-      ? count
-      : velox::bits::countNonNulls(incomingNulls, 0, count);
-
-  if (incomingNulls != nullptr) {
-    if (totalNumValues == 0) {
-      velox::bits::fillBits(nulls, 0, count, velox::bits::kNull);
-      return;
-    }
-
-    bits::Bitmap scatterBitmap{incomingNulls, static_cast<uint32_t>(count)};
-    // These are subranges in the scatter bit map for each materialize
-    // call.
-    uint32_t offset{0};
-    uint32_t endOffset{0};
-    for (int64_t i = 0; i < totalNumValues;) {
-      if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
-        VELOX_CHECK(loadNextChunk());
-        VELOX_CHECK_EQ(encoding_->dataType(), DataType::Uint32);
-      }
-
-      const auto numValues = std::min(totalNumValues - i, remainingValues_);
-      endOffset = bits::findSetBit(
-          static_cast<const char*>(scatterBitmap.bits()),
-          offset,
-          scatterBitmap.size(),
-          numValues + 1);
-      bits::Bitmap localBitmap{scatterBitmap.bits(), endOffset};
-      auto nonNullCount = encoding_->materializeNullable(
-          numValues, data, [&]() { return nulls; }, &localBitmap, offset);
-      if (nulls && nonNullCount == endOffset - offset) {
-        velox::bits::fillBits(nulls, offset, endOffset, velox::bits::kNotNull);
-      }
-      remainingValues_ -= numValues;
-      i += numValues;
-      offset = endOffset;
-    }
-  } else {
-    for (int64_t i = 0; i < totalNumValues;) {
-      if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
-        VELOX_CHECK(loadNextChunk());
-        VELOX_CHECK_EQ(encoding_->dataType(), DataType::Uint32);
-      }
-
-      const auto numValues = std::min(totalNumValues - i, remainingValues_);
-      const auto nonNullCount = encoding_->materializeNullable(
-          numValues, data, [&]() { return nulls; }, nullptr, i);
-      if (nulls && nonNullCount == numValues) {
-        velox::bits::fillBits(nulls, i, i + numValues, velox::bits::kNotNull);
-      }
-      remainingValues_ -= numValues;
-      i += numValues;
-    }
-  }
-}
-
 void ChunkedDecoder::nextBools(
     uint64_t* data,
     int64_t count,

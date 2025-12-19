@@ -25,6 +25,7 @@
 #include "dwio/nimble/velox/selective/NullColumnReader.h"
 #include "dwio/nimble/velox/selective/StringColumnReader.h"
 #include "dwio/nimble/velox/selective/StructColumnReader.h"
+#include "dwio/nimble/velox/selective/TimestampColumnReader.h"
 #include "dwio/nimble/velox/selective/VariableLengthColumnReader.h"
 #include "velox/dwio/common/TypeUtils.h"
 
@@ -83,6 +84,15 @@ std::unique_ptr<dwio::common::SelectiveColumnReader> buildColumnReader(
     case TypeKind::VARBINARY:
     case TypeKind::VARCHAR:
       return std::make_unique<StringColumnReader>(
+          requestedType, fileType, params, scanSpec);
+    case TypeKind::TIMESTAMP:
+      VELOX_CHECK(nimbleType->isTimestampMicroNano());
+      if (!params.streams().hasStream(
+              nimbleType->asTimestampMicroNano().microsDescriptor().offset())) {
+        return std::make_unique<NullColumnReader>(
+            requestedType, fileType, params, scanSpec);
+      }
+      return std::make_unique<TimestampColumnReader>(
           requestedType, fileType, params, scanSpec);
     case TypeKind::ROW:
       return std::make_unique<StructColumnReader>(
