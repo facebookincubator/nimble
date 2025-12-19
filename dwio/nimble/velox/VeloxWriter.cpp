@@ -333,6 +333,8 @@ std::string_view encodeStreamData(
       return encodeStreamTyped<int8_t>(context, buffer, streamData);
     case ScalarKind::Int16:
       return encodeStreamTyped<int16_t>(context, buffer, streamData);
+    case ScalarKind::UInt16:
+      return encodeStreamTyped<uint16_t>(context, buffer, streamData);
     case ScalarKind::Int32:
       return encodeStreamTyped<int32_t>(context, buffer, streamData);
     case ScalarKind::UInt32:

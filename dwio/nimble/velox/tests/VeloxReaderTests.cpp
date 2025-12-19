@@ -2399,7 +2399,10 @@ TEST_F(VeloxReaderTests, fuzzSimple) {
       {"double_val", velox::DOUBLE()},
       {"string_val", velox::VARCHAR()},
       {"binary_val", velox::VARBINARY()},
-      // {"ts_val", velox::TIMESTAMP()},
+      // VectorFuzzer generates timestamps within a constrained range
+      // (approx +/- 68 years from epoch), which fits within Nimble's
+      // int64 microseconds storage, so no overflow occurs.
+      {"ts_val", velox::TIMESTAMP()},
   });
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
   uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
@@ -2496,7 +2499,25 @@ TEST_F(VeloxReaderTests, fuzzComplex) {
         velox::MAP(velox::INTEGER(), velox::ARRAY(velox::REAL()))},
        {"nested_map_array2",
         velox::MAP(velox::INTEGER(), velox::ARRAY(velox::INTEGER()))},
-       {"dict_map", velox::MAP(velox::INTEGER(), velox::INTEGER())}});
+       {"dict_map", velox::MAP(velox::INTEGER(), velox::INTEGER())},
+       {"timestamp", velox::TIMESTAMP()},
+       {"timestamp_array", velox::ARRAY(velox::TIMESTAMP())},
+       {"timestamp_map", velox::MAP(velox::INTEGER(), velox::TIMESTAMP())},
+       {"row_with_timestamp",
+        velox::ROW({
+            {"timestamp", velox::TIMESTAMP()},
+        })},
+       {"timestamp_array_nested",
+        velox::ARRAY(velox::ARRAY(velox::TIMESTAMP()))},
+       {"timestamp_nested_map_array",
+        velox::MAP(velox::TIMESTAMP(), velox::ARRAY(velox::TIMESTAMP()))},
+       {"row_with_timestamp_nested",
+        velox::ROW({
+            {"nested",
+             velox::ROW({
+                 {"timestamp", velox::TIMESTAMP()},
+             })},
+        })}});
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
   uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
                                               : folly::Random::rand32();
@@ -5586,10 +5607,9 @@ TEST_F(VeloxReaderTests, estimatedRowSizeSimple) {
   testPrimitive(
       velox::DOUBLE(),
       sizeof(velox::TypeTraits<velox::TypeKind::DOUBLE>::NativeType));
-  // Nimble writes TIMESTAMP as BIGINT.
   testPrimitive(
       velox::TIMESTAMP(),
-      sizeof(velox::TypeTraits<velox::TypeKind::BIGINT>::NativeType));
+      sizeof(velox::TypeTraits<velox::TypeKind::TIMESTAMP>::NativeType));
   // HUGEINT is currently not supported. Remove the throw test when it is.
   ASSERT_THROW(
       testPrimitive(
@@ -6280,4 +6300,63 @@ TEST_F(VeloxReaderTests, vectorVectorResetWithBufferReuse) {
       ASSERT_TRUE(reader.next(990, result));
     }
   }
+}
+
+// Timestamp tests that might not be covered by fuzzer
+TEST_F(VeloxReaderTests, timestampAllNulls) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  auto vector = vectorMaker.rowVector(
+      {"timestamp"},
+      {vectorMaker.flatVector<velox::Timestamp>(
+          1000,
+          [](auto) { return velox::Timestamp(0, 0); },
+          [](auto) { return true; })}); // all nulls
+
+  auto file = nimble::test::createNimbleFile(*rootPool_, vector, {});
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(1000, result));
+
+  auto child = result->as<velox::RowVector>()->childAt(0);
+  for (auto i = 0; i < 1000; ++i) {
+    ASSERT_TRUE(child->isNullAt(i));
+  }
+}
+
+TEST_F(VeloxReaderTests, timestampLargeRowCount) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  const velox::vector_size_t rowCount = 10'000'000;
+  auto vector = vectorMaker.rowVector(
+      {"timestamp"},
+      {vectorMaker.flatVector<velox::Timestamp>(
+          rowCount,
+          [](auto i) { return velox::Timestamp(i, i % rowCount); },
+          [](auto i) { return i % 11 == 0; })});
+
+  auto file = nimble::test::createNimbleFile(*rootPool_, vector, {});
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+
+  velox::VectorPtr result;
+  velox::vector_size_t totalReads = 0;
+  while (reader.next(1'000, result)) {
+    auto child = result->as<velox::RowVector>()->childAt(0);
+    auto* timestamps = child->asFlatVector<velox::Timestamp>();
+    for (auto j = 0; j < result->size(); ++j) {
+      const auto i = totalReads + j;
+      if (i % 11 == 0) {
+        ASSERT_TRUE(child->isNullAt(j));
+      } else {
+        ASSERT_FALSE(child->isNullAt(j));
+        const auto expected = velox::Timestamp(i, i % rowCount);
+        ASSERT_EQ(timestamps->valueAt(j), expected);
+      }
+    }
+    totalReads += result->size();
+  }
+  ASSERT_EQ(totalReads, rowCount);
 }
