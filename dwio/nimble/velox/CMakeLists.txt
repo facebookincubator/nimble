@@ -52,7 +52,11 @@ target_link_libraries(
 )
 
 add_library(nimble_velox_layout_planner LayoutPlanner.cpp)
-target_link_libraries(nimble_velox_layout_planner nimble_velox_schema_reader)
+target_link_libraries(
+  nimble_velox_layout_planner
+  nimble_velox_schema_reader
+  nimble_tablet_writer
+)
 
 add_library(
   nimble_velox_field_writer
