@@ -110,6 +110,7 @@ void schema(
 #define BOOLEAN() builder.createScalarTypeBuilder(nimble::ScalarKind::Bool)
 #define STRING() builder.createScalarTypeBuilder(nimble::ScalarKind::String)
 #define BINARY() builder.createScalarTypeBuilder(nimble::ScalarKind::Binary)
+#define TIMESTAMPMICRONANO() builder.createTimestampMicroNanoTypeBuilder()
 #define ARRAY(elements) facebook::nimble::test::array(builder, elements)
 #define OFFSETARRAY(elements) \
   facebook::nimble::test::arrayWithOffsets(builder, elements)

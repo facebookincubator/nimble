@@ -36,6 +36,7 @@
 namespace facebook::nimble {
 
 class ScalarType;
+class TimestampMicroNanoType;
 class RowType;
 class ArrayType;
 class ArrayWithOffsetsType;
@@ -48,6 +49,7 @@ class Type {
   Kind kind() const;
 
   bool isScalar() const;
+  bool isTimestampMicroNano() const;
   bool isRow() const;
   bool isArray() const;
   bool isArrayWithOffsets() const;
@@ -56,6 +58,7 @@ class Type {
   bool isSlidingWindowMap() const;
 
   const ScalarType& asScalar() const;
+  const TimestampMicroNanoType& asTimestampMicroNano() const;
   const RowType& asRow() const;
   const ArrayType& asArray() const;
   const ArrayWithOffsetsType& asArrayWithOffsets() const;
@@ -83,6 +86,20 @@ class ScalarType : public Type {
 
  private:
   StreamDescriptor scalarDescriptor_;
+};
+
+class TimestampMicroNanoType : public Type {
+ public:
+  explicit TimestampMicroNanoType(
+      StreamDescriptor microsDescriptor,
+      StreamDescriptor nanosDescriptor);
+
+  const StreamDescriptor& microsDescriptor() const;
+  const StreamDescriptor& nanosDescriptor() const;
+
+ private:
+  StreamDescriptor microsDescriptor_;
+  StreamDescriptor nanosDescriptor_;
 };
 
 class ArrayType : public Type {

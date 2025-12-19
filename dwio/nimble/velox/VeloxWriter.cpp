@@ -484,6 +484,23 @@ void initializeEncodingLayouts(
               typeBuilder.asScalar(), scalarDescriptor, Scalar::ScalarStream);
           break;
         }
+        case Kind::TimestampMicroNano: {
+          NIMBLE_CHECK_EQ(
+              encodingLayoutTree.schemaKind(),
+              Kind::TimestampMicroNano,
+              "Incompatible encoding layout node. Expecting TimestampMicroNano node but got {}.",
+              toString(encodingLayoutTree.schemaKind()));
+          auto& timestampMicroNanoBuilder = typeBuilder.asTimestampMicroNano();
+          _SET_STREAM_CONTEXT(
+              timestampMicroNanoBuilder,
+              microsDescriptor,
+              TimestampMicroNano::MicrosStream);
+          _SET_STREAM_CONTEXT(
+              timestampMicroNanoBuilder,
+              nanosDescriptor,
+              TimestampMicroNano::NanosStream);
+          break;
+        }
         case Kind::Row: {
           NIMBLE_CHECK_EQ(
               encodingLayoutTree.schemaKind(),

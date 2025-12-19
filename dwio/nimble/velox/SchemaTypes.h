@@ -44,6 +44,7 @@ enum class ScalarKind : uint8_t {
 
 enum class Kind : uint8_t {
   Scalar,
+  TimestampMicroNano,
   Row,
   Array,
   ArrayWithOffsets,

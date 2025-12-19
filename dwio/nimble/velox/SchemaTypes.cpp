@@ -52,6 +52,7 @@ std::string toString(Kind kind) {
     return #KIND;    \
   }
     CASE(Scalar);
+    CASE(TimestampMicroNano);
     CASE(Row);
     CASE(Array);
     CASE(ArrayWithOffsets);
