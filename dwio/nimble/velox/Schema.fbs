@@ -29,6 +29,7 @@ enum Kind:uint8 {
   Bool,
   String,
   Binary,
+  TimestampMicroNano,
   Row = 50,
   Array,
   Map,

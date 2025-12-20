@@ -54,6 +54,19 @@ void compareSchema(
       EXPECT_EQ(0, node.childrenCount());
       break;
     }
+    case nimble::Kind::TimestampMicroNano: {
+      auto& timestamp = type->asTimestampMicroNano();
+      EXPECT_EQ(timestamp.microsDescriptor().offset(), node.offset());
+      EXPECT_EQ(nimble::ScalarKind::Int64, node.scalarKind());
+      EXPECT_EQ(0, node.childrenCount());
+
+      const auto& nanosNode = nodes[index++];
+      EXPECT_FALSE(nanosNode.name().has_value());
+      EXPECT_EQ(Kind::Scalar, nanosNode.kind());
+      EXPECT_EQ(ScalarKind::UInt16, nanosNode.scalarKind());
+      EXPECT_EQ(timestamp.nanosDescriptor().offset(), nanosNode.offset());
+      break;
+    }
     case nimble::Kind::Row: {
       auto& row = type->asRow();
       EXPECT_EQ(row.nullsDescriptor().offset(), node.offset());

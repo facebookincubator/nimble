@@ -383,6 +383,14 @@ void NimbleDumpLib::emitSchema(bool collapseFlatMap) {
             folly::to<std::string>(type.asScalar().scalarDescriptor().offset());
         break;
       }
+      case Kind::TimestampMicroNano: {
+        auto& timestamp = type.asTimestampMicroNano();
+        offsets = "m:" +
+            folly::to<std::string>(timestamp.microsDescriptor().offset()) +
+            ",n:" +
+            folly::to<std::string>(timestamp.nanosDescriptor().offset());
+        break;
+      }
       case Kind::Array: {
         offsets =
             folly::to<std::string>(type.asArray().lengthsDescriptor().offset());

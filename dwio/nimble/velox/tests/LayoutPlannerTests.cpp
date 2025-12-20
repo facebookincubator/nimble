@@ -32,6 +32,13 @@ void addNamedTypes(
           node.asScalar().scalarDescriptor().offset(), prefix + "s");
       break;
     }
+    case nimble::Kind::TimestampMicroNano: {
+      auto& timestamp = node.asTimestampMicroNano();
+      result.emplace_back(
+          timestamp.microsDescriptor().offset(), prefix + "t.m");
+      result.emplace_back(timestamp.nanosDescriptor().offset(), prefix + "t.n");
+      break;
+    }
     case nimble::Kind::Row: {
       auto& row = node.asRow();
       result.emplace_back(row.nullsDescriptor().offset(), prefix + "r");
@@ -554,4 +561,57 @@ TEST(DefaultLayoutPlannerTests, incompatibleSchema) {
         e.what(),
         ::testing::HasSubstr("Layout planner requires row as the schema root"));
   }
+}
+
+TEST(DefaultLayoutPlannerTests, timestampMicros) {
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+
+  nimble::SchemaBuilder builder;
+
+  SCHEMA(
+      builder,
+      ROW(
+          {{"c1", TINYINT()},
+           {"c2", TIMESTAMPMICRONANO()},
+           {"c3", ARRAY(TIMESTAMPMICRONANO())},
+           {"c4", MAP(TIMESTAMPMICRONANO(), TIMESTAMPMICRONANO())},
+           {"c5", ROW({{"c5a", TIMESTAMPMICRONANO()}})}}));
+
+  auto namedTypes = getNamedTypes(*builder.getRoot());
+
+  nimble::DefaultLayoutPlanner planner{
+      [&]() { return builder.getRoot(); }, std::nullopt};
+
+  std::vector<nimble::Stream> streams;
+  streams.reserve(namedTypes.size());
+  for (auto i = 0; i < namedTypes.size(); ++i) {
+    streams.push_back(
+        nimble::Stream{
+            std::get<0>(namedTypes[i]),
+            {{.content = {std::get<1>(namedTypes[i])}}}});
+  }
+
+  std::vector<std::string> expected{
+      // Row should always be first
+      "r",
+      // Streams in schema order
+      "r.c1(0).s",
+      "r.c2(1).t.m",
+      "r.c2(1).t.n",
+      "r.c3(2).a",
+      "r.c3(2).a.t.m",
+      "r.c3(2).a.t.n",
+      "r.c4(3).m",
+      "r.c4(3).m.k:t.m",
+      "r.c4(3).m.k:t.n",
+      "r.c4(3).m.v:t.m",
+      "r.c4(3).m.v:t.n",
+      "r.c5(4).r",
+      "r.c5(4).r.c5a(0).t.m",
+      "r.c5(4).r.c5a(0).t.n",
+  };
+
+  testStreamLayout(rng, planner, std::move(streams), std::move(expected));
 }

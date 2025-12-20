@@ -45,6 +45,7 @@ namespace facebook::nimble {
 
 class SchemaBuilder;
 class ScalarTypeBuilder;
+class TimestampMicroNanoTypeBuilder;
 class ArrayTypeBuilder;
 class MapTypeBuilder;
 class RowTypeBuilder;
@@ -99,6 +100,7 @@ class TypeBuilder {
   Kind kind() const;
 
   ScalarTypeBuilder& asScalar();
+  TimestampMicroNanoTypeBuilder& asTimestampMicroNano();
   ArrayTypeBuilder& asArray();
   MapTypeBuilder& asMap();
   SlidingWindowMapTypeBuilder& asSlidingWindowMap();
@@ -106,6 +108,7 @@ class TypeBuilder {
   FlatMapTypeBuilder& asFlatMap();
   ArrayWithOffsetsTypeBuilder& asArrayWithOffsets();
   const ScalarTypeBuilder& asScalar() const;
+  const TimestampMicroNanoTypeBuilder& asTimestampMicroNano() const;
   const ArrayTypeBuilder& asArray() const;
   const MapTypeBuilder& asMap() const;
   const SlidingWindowMapTypeBuilder& asSlidingWindowMap() const;
@@ -134,6 +137,20 @@ class ScalarTypeBuilder : public TypeBuilder {
   ScalarTypeBuilder(SchemaBuilder& schemaBuilder, ScalarKind scalarKind);
 
   StreamDescriptorBuilder scalarDescriptor_;
+
+  friend class SchemaBuilder;
+};
+
+class TimestampMicroNanoTypeBuilder : public TypeBuilder {
+ public:
+  const StreamDescriptorBuilder& microsDescriptor() const;
+  const StreamDescriptorBuilder& nanosDescriptor() const;
+
+ private:
+  explicit TimestampMicroNanoTypeBuilder(SchemaBuilder& schemaBuilder);
+
+  StreamDescriptorBuilder microsDescriptor_;
+  StreamDescriptorBuilder nanosDescriptor_;
 
   friend class SchemaBuilder;
 };
@@ -268,6 +285,11 @@ class SchemaBuilder {
   std::shared_ptr<ScalarTypeBuilder> createScalarTypeBuilder(
       ScalarKind scalarKind);
 
+  // Create a builder representing a timestamp with microsecond precision and
+  // optional nanosecond precision.
+  std::shared_ptr<TimestampMicroNanoTypeBuilder>
+  createTimestampMicroNanoTypeBuilder();
+
   // Create an array builder
   std::shared_ptr<ArrayTypeBuilder> createArrayTypeBuilder();
 
@@ -329,6 +351,7 @@ class SchemaBuilder {
   offset_size currentOffset_ = 0;
 
   friend class ScalarTypeBuilder;
+  friend class TimestampMicroNanoTypeBuilder;
   friend class LengthsTypeBuilder;
   friend class ArrayTypeBuilder;
   friend class ArrayWithOffsetsTypeBuilder;

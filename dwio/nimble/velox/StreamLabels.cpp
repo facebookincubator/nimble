@@ -36,6 +36,23 @@ void addLabels(
       offsetToLabel[offset] = labels.size() - 1;
       break;
     }
+    case Kind::TimestampMicroNano: {
+      const auto& timestamp = node->asTimestampMicroNano();
+      const auto microsOffset = timestamp.microsDescriptor().offset();
+      const auto nanosOffset = timestamp.nanosDescriptor().offset();
+      NIMBLE_DCHECK_LT(labelIndex, labels.size(), "Unexpected label index.");
+      NIMBLE_DCHECK_GT(
+          offsetToLabel.size(), microsOffset, "Unexpected micros offset.");
+      NIMBLE_DCHECK_GT(
+          offsetToLabel.size(), nanosOffset, "Unexpected nanos offset.");
+      // linter does not recognize NIMBLE_DCHECK_LT as sufficient checks
+      // @lint-ignore CLANGTIDY facebook-hte-ParameterUncheckedArrayBounds
+      labels.push_back(labels[labelIndex] + name);
+      labelIndex = labels.size() - 1;
+      offsetToLabel[microsOffset] = labelIndex;
+      offsetToLabel[nanosOffset] = labelIndex;
+      break;
+    }
     case Kind::Array: {
       const auto& array = node->asArray();
       const auto offset = array.lengthsDescriptor().offset();
@@ -152,6 +169,15 @@ StreamLabels::StreamLabels(const std::shared_ptr<const Type>& root) {
           case Kind::Scalar: {
             maxOffset = std::max<size_t>(
                 maxOffset, type.asScalar().scalarDescriptor().offset());
+            break;
+          }
+          case Kind::TimestampMicroNano: {
+            maxOffset = std::max<size_t>(
+                maxOffset,
+                type.asTimestampMicroNano().microsDescriptor().offset());
+            maxOffset = std::max<size_t>(
+                maxOffset,
+                type.asTimestampMicroNano().nanosDescriptor().offset());
             break;
           }
           case Kind::Array: {
