@@ -25,6 +25,7 @@ add_library(
   StringColumnReader.cpp
   StructColumnReader.cpp
   StructColumnReader.cpp
+  TimestampColumnReader.cpp
   VariableLengthColumnReader.cpp
 )
 target_link_libraries(

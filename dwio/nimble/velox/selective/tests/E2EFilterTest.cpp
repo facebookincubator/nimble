@@ -905,5 +905,149 @@ TEST_F(E2EFilterTest, mutationCornerCases) {
   testMutationCornerCases();
 }
 
+TEST_F(E2EFilterTest, timestamp) {
+  testWithTypes(
+      "timestamp_val:timestamp,"
+      "long_val:bigint,"
+      "timestamp_null:timestamp",
+      [&]() { makeAllNulls("timestamp_null"); },
+      true,
+      {"timestamp_val", "long_val"},
+      20);
+}
+
+TEST_F(E2EFilterTest, timestampNullFilter) {
+  testWithTypes(
+      "timestamp_val:timestamp,"
+      "long_val:bigint,"
+      "timestamp_null:timestamp",
+      [&]() { makeAllNulls("timestamp_null"); },
+      true,
+      {"timestamp_null"},
+      20);
+}
+
+TEST_F(E2EFilterTest, timestampNoNulls) {
+  testWithTypes(
+      "timestamp_val:timestamp,"
+      "long_val:bigint",
+      [&]() { makeNotNull(); },
+      true,
+      {"long_val", "timestamp_val"},
+      20,
+      /*withRecursiveNulls=*/false);
+}
+
+TEST_F(E2EFilterTest, timestampMultiple) {
+  testWithTypes(
+      "ts1:timestamp,"
+      "ts2:timestamp,"
+      "ts3:timestamp",
+      [&]() { makeAllNulls("ts3"); },
+      true,
+      {"ts1", "ts2"},
+      20);
+}
+
+TEST_F(E2EFilterTest, timestampArray) {
+  testWithTypes(
+      "long_val:bigint,"
+      "timestamp_array:array<timestamp>",
+      [&]() {},
+      true,
+      {"long_val", "timestamp_array"},
+      20);
+}
+
+TEST_F(E2EFilterTest, timestampMap) {
+  testWithTypes(
+      "long_val:bigint,"
+      "timestamp_map:map<int, timestamp>",
+      [&]() {},
+      true,
+      {"long_val", "timestamp_map"},
+      20);
+}
+
+TEST_F(E2EFilterTest, timestampInStruct) {
+  testWithTypes(
+      "long_val:bigint,"
+      "struct_with_ts:struct<ts:timestamp, val:bigint>",
+      [&]() {},
+      true,
+      {"long_val", "struct_with_ts"},
+      20);
+}
+
+TEST_F(E2EFilterTest, timestampNestedArray) {
+  testWithTypes(
+      "long_val:bigint,"
+      "nested_ts_array:array<array<timestamp>>",
+      [&]() {},
+      true,
+      {"long_val"},
+      20);
+}
+
+TEST_F(E2EFilterTest, timestampNestedStruct) {
+  testWithTypes(
+      "long_val:bigint,"
+      "outer:struct<inner:struct<ts:timestamp>>",
+      [&]() {},
+      true,
+      {"long_val", "outer"},
+      20);
+}
+
+TEST_F(E2EFilterTest, timestampNestedMap) {
+  testWithTypes(
+      "long_val:bigint,"
+      "nested_ts_map:map<int, map<int, timestamp>>",
+      [&]() {},
+      true,
+      {"long_val"},
+      20);
+}
+
+TEST_F(E2EFilterTest, timestampArrayInMap) {
+  testWithTypes(
+      "long_val:bigint,"
+      "map_of_ts_array:map<int, array<timestamp>>",
+      [&]() {},
+      true,
+      {"long_val"},
+      20);
+}
+
+TEST_F(E2EFilterTest, timestampMapInArray) {
+  testWithTypes(
+      "long_val:bigint,"
+      "array_of_ts_map:array<map<int, timestamp>>",
+      [&]() {},
+      true,
+      {"long_val"},
+      20);
+}
+
+TEST_F(E2EFilterTest, timestampStructInArray) {
+  testWithTypes(
+      "long_val:bigint,"
+      "array_of_ts_struct:array<struct<ts:timestamp, val:bigint>>",
+      [&]() {},
+      true,
+      {"long_val"},
+      20);
+}
+
+TEST_F(E2EFilterTest, timestampArrayInStruct) {
+  testWithTypes(
+      "long_val:bigint,"
+      "struct_with_ts_array:struct<ts_array:array<timestamp>, val:bigint>",
+      [&]() {},
+      true,
+      {"long_val"},
+      20);
+}
+
 } // namespace
 } // namespace facebook::nimble

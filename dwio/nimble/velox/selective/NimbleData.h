@@ -73,6 +73,10 @@ class NimbleData : public velox::dwio::common::FormatData {
 
   ChunkedDecoder makeScalarDecoder();
 
+  // Decoders for Timestamps
+  ChunkedDecoder makeMicrosDecoder();
+  ChunkedDecoder makeNanosDecoder();
+
   const velox::BufferPtr& getPreloadedValues();
 
   const uint64_t* inMap() const {

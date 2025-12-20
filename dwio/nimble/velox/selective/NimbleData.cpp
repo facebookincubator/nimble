@@ -40,6 +40,9 @@ NimbleData::NimbleData(
     case Kind::Scalar:
       // Nulls in scalar types will be decoded along with values.
       break;
+    case Kind::TimestampMicroNano:
+      // Nulls are decoded along with micros values (nullable stream).
+      break;
     case Kind::Row: {
       auto& rowType = nimbleType->asRow();
       nullsDecoder_ = makeDecoder(
@@ -154,6 +157,24 @@ uint64_t NimbleData::skipNulls(uint64_t numValues, bool /*nullsOnly*/) {
 ChunkedDecoder NimbleData::makeScalarDecoder() {
   return ChunkedDecoder(
       streams_.enqueue(nimbleType_->asScalar().scalarDescriptor().offset()),
+      memoryPool_,
+      /*decodeValuesWithNulls=*/false);
+}
+
+ChunkedDecoder NimbleData::makeMicrosDecoder() {
+  VELOX_CHECK(nimbleType_->isTimestampMicroNano());
+  return ChunkedDecoder(
+      streams_.enqueue(
+          nimbleType_->asTimestampMicroNano().microsDescriptor().offset()),
+      memoryPool_,
+      /*decodeValuesWithNulls=*/false);
+}
+
+ChunkedDecoder NimbleData::makeNanosDecoder() {
+  VELOX_CHECK(nimbleType_->isTimestampMicroNano());
+  return ChunkedDecoder(
+      streams_.enqueue(
+          nimbleType_->asTimestampMicroNano().nanosDescriptor().offset()),
       memoryPool_,
       /*decodeValuesWithNulls=*/false);
 }
