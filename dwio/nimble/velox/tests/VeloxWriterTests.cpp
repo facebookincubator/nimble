@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingLayoutCapture.h"
@@ -2455,6 +2456,110 @@ TEST_F(VeloxWriterTests, ignoreTopLevelNulls) {
         });
   }
 }
+
+struct TimestampTestCase {
+  std::string name;
+  velox::Timestamp timestamp;
+};
+
+class TimestampEdgeCaseTest
+    : public VeloxWriterTests,
+      public ::testing::WithParamInterface<TimestampTestCase> {};
+
+// We rely on fuzz tests in VeloxReaderTests for more complex data shapes.
+TEST_P(TimestampEdgeCaseTest, RoundTrip) {
+  auto testCase = GetParam();
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  auto vector = vectorMaker.rowVector(
+      {"timestamp"},
+      {vectorMaker.flatVector<velox::Timestamp>(
+          std::vector<velox::Timestamp>{testCase.timestamp})});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      vector->type(), std::move(writeFile), *rootPool_, {});
+  writer.write(vector);
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(1, result));
+
+  auto actual = result->as<velox::RowVector>()
+                    ->childAt(0)
+                    ->asFlatVector<velox::Timestamp>()
+                    ->valueAt(0);
+
+  EXPECT_EQ(testCase.timestamp.getSeconds(), actual.getSeconds());
+  EXPECT_EQ(testCase.timestamp.getNanos(), actual.getNanos());
+}
+
+// Test that timestamps exceeding Nimble's microsecond range cause overflow.
+// Nimble stores timestamps as int64 microseconds, so seconds values beyond
+// INT64_MAX/1'000'000 or INT64_MIN/1'000'000 will overflow during conversion.
+TEST_F(VeloxWriterTests, TimestampOverflowMax) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  auto overflowVector = vectorMaker.rowVector(
+      {"timestamp"},
+      {vectorMaker.flatVector<velox::Timestamp>(std::vector<velox::Timestamp>{
+          velox::Timestamp(INT64_MAX / 1'000'000 + 1, 0)})});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      overflowVector->type(), std::move(writeFile), *rootPool_, {});
+  EXPECT_THROW(writer.write(overflowVector), nimble::NimbleUserError);
+}
+
+TEST_F(VeloxWriterTests, TimestampOverflowMin) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  auto overflowVector = vectorMaker.rowVector(
+      {"timestamp"},
+      {vectorMaker.flatVector<velox::Timestamp>(std::vector<velox::Timestamp>{
+          velox::Timestamp(INT64_MIN / 1'000'000 - 1, 0)})});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      overflowVector->type(), std::move(writeFile), *rootPool_, {});
+  EXPECT_THROW(writer.write(overflowVector), nimble::NimbleUserError);
+}
+
+INSTANTIATE_TEST_CASE_P(
+    TimestampEdgeCaseTestSuite,
+    TimestampEdgeCaseTest,
+    ::testing::Values(
+        TimestampTestCase{"Epoch", velox::Timestamp(0, 0)},
+        TimestampTestCase{"EpochPlus1Nano", velox::Timestamp::fromNanos(1)},
+        TimestampTestCase{"EpochMinus1Nano", velox::Timestamp::fromNanos(-1)},
+
+        TimestampTestCase{"ExactMicrosecond", velox::Timestamp(0, 1'000)},
+        TimestampTestCase{"ExactMillisecond", velox::Timestamp(0, 1'000'000)},
+
+        TimestampTestCase{"Negative1ms", velox::Timestamp::fromMillis(-1)},
+        TimestampTestCase{"Negative999ms", velox::Timestamp::fromMillis(-999)},
+        TimestampTestCase{
+            "Negative1000ms",
+            velox::Timestamp::fromMillis(-1000)},
+        TimestampTestCase{
+            "Negative1500ms",
+            velox::Timestamp::fromMillis(-1500)},
+
+        TimestampTestCase{
+            "SubMicroPrecisionConversion",
+            velox::Timestamp(100, 999'999'999)},
+
+        TimestampTestCase{
+            "MaxMicros",
+            velox::Timestamp(INT64_MAX / 1'000'000, 999)},
+        TimestampTestCase{
+            "MinMicros",
+            velox::Timestamp(INT64_MIN / 1'000'000, 0)}));
 
 INSTANTIATE_TEST_CASE_P(
     StripeRawSizeFlushPolicyTestSuite,

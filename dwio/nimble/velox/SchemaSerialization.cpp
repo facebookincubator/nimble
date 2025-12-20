@@ -57,6 +57,8 @@ serialization::Kind nodeToSerializationKind(const SchemaNode* node) {
               "Unknown scalar kind {}.", toString(node->scalarKind()));
       }
     }
+    case Kind::TimestampMicroNano:
+      return serialization::Kind_TimestampMicroNano;
     case Kind::Array:
       return serialization::Kind_Array;
     case Kind::ArrayWithOffsets:
@@ -135,6 +137,8 @@ std::pair<Kind, ScalarKind> serializationNodeToKind(
       return {Kind::Scalar, ScalarKind::String};
     case nimble::serialization::Kind_Binary:
       return {Kind::Scalar, ScalarKind::Binary};
+    case nimble::serialization::Kind_TimestampMicroNano:
+      return {Kind::TimestampMicroNano, ScalarKind::Undefined};
     case nimble::serialization::Kind_Row:
       return {Kind::Row, ScalarKind::Undefined};
     case nimble::serialization::Kind_Array:

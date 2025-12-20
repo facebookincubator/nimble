@@ -74,6 +74,8 @@ std::shared_ptr<TypeBuilder> convertToNimbleType(
       return builder.createScalarTypeBuilder(ScalarKind::String);
     case velox::TypeKind::VARBINARY:
       return builder.createScalarTypeBuilder(ScalarKind::Binary);
+    case velox::TypeKind::TIMESTAMP:
+      return builder.createTimestampMicroNanoTypeBuilder();
     case velox::TypeKind::ARRAY: {
       auto& arrayType = type.asArray();
       auto nimbleType = builder.createArrayTypeBuilder();
@@ -111,6 +113,9 @@ velox::TypePtr convertToVeloxType(const Type& type) {
     case Kind::Scalar: {
       return convertToVeloxScalarType(
           type.asScalar().scalarDescriptor().scalarKind());
+    }
+    case Kind::TimestampMicroNano: {
+      return velox::ScalarType<velox::TypeKind::TIMESTAMP>::create();
     }
     case Kind::Row: {
       const auto& rowType = type.asRow();

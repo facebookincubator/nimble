@@ -714,6 +714,166 @@ class StringFieldReaderFactory final : public FieldReaderFactory {
   std::vector<std::string_view> buffer_;
 };
 
+class TimestampMicroNanoFieldReader final : public FieldReader {
+ public:
+  TimestampMicroNanoFieldReader(
+      velox::memory::MemoryPool& pool,
+      velox::TypePtr type,
+      Decoder* microsDecoder,
+      Decoder* nanosDecoder)
+      : FieldReader{pool, std::move(type), microsDecoder},
+        nanosDecoder_{nanosDecoder},
+        microsBuffer_{&pool},
+        nanosBuffer_{&pool} {
+    NIMBLE_DCHECK_NOT_NULL(
+        nanosDecoder,
+        "Nanoseconds decoder must exist when microseconds decoder exists");
+  }
+
+  std::optional<std::pair<uint32_t, uint64_t>> estimatedRowSize() const final {
+    const auto* encoding = decoder_->encoding();
+    NIMBLE_CHECK_NOT_NULL(
+        encoding, "Decoder must be loaded for output size estimation.");
+
+    const auto rowCount = encoding->rowCount();
+
+    if (rowCount == 0) {
+      return std::optional<std::pair<uint32_t, uint64_t>>({0, 0});
+    }
+
+    uint64_t totalBytes = rowCount *
+        sizeof(velox::TypeTraits<velox::TypeKind::TIMESTAMP>::NativeType);
+
+    if (encoding->isNullable()) {
+      totalBytes += rowCount / 8;
+    }
+
+    return std::optional<std::pair<uint32_t, uint64_t>>(
+        {rowCount, totalBytes / rowCount});
+  }
+
+  void next(
+      uint32_t count,
+      velox::VectorPtr& output,
+      const bits::Bitmap* scatterBitmap) final {
+    const auto rowCount = scatterCount(count, scatterBitmap);
+    auto vector =
+        VectorInitializer<velox::FlatVector<velox::Timestamp>>::initialize(
+            &pool_, output, type_, rowCount);
+    vector->resize(rowCount);
+    microsBuffer_.resize(rowCount);
+
+    auto nonNullCount = decoder_->next(
+        count,
+        microsBuffer_.data(),
+        [&]() { return ensureNulls(vector, rowCount); },
+        scatterBitmap);
+
+    nanosBuffer_.resize(nonNullCount);
+    nanosDecoder_->next(
+        nonNullCount, nanosBuffer_.data(), []() { return nullptr; }, nullptr);
+
+    auto* rawValues = vector->mutableRawValues();
+
+    if (nonNullCount == rowCount) {
+      vector->resetNulls();
+      for (velox::vector_size_t i = 0; i < rowCount; ++i) {
+        rawValues[i] =
+            convertToVeloxTimestamp(microsBuffer_[i], nanosBuffer_[i]);
+      }
+    } else {
+      vector->setNullCount(rowCount - nonNullCount);
+      velox::vector_size_t nanosIndex = 0;
+      for (velox::vector_size_t i = 0; i < rowCount; ++i) {
+        if (!vector->isNullAt(i)) {
+          rawValues[i] = convertToVeloxTimestamp(
+              microsBuffer_[i], nanosBuffer_[nanosIndex++]);
+        }
+      }
+    }
+  }
+
+  void skip(uint32_t count) final {
+    std::array<int64_t, kSkipBatchSize> microsBuffer{};
+    std::array<char, nullBytes(kSkipBatchSize)> nulls{};
+    uint32_t nonNullCount = 0;
+
+    while (count > 0) {
+      auto readSize = std::min(count, kSkipBatchSize);
+      nonNullCount += decoder_->next(
+          readSize,
+          microsBuffer.data(),
+          [&]() { return nulls.data(); },
+          /* scatterBitmap */ nullptr);
+      count -= readSize;
+    }
+
+    if (nonNullCount > 0) {
+      nanosDecoder_->skip(nonNullCount);
+    }
+  }
+
+  void reset() final {
+    FieldReader::reset();
+    nanosDecoder_->reset();
+  }
+
+ private:
+  // - Nimble stores time as:
+  //     micros         -> whole microseconds since epoch
+  //     subMicrosNanos -> extra nanoseconds inside the microsecond [0, 999]
+  // - Velox stores time as:
+  //     seconds + nanos (0 <= nanos < 1_000_000_000)
+  //
+  // The math below splits 'micros' into whole seconds and the remainder, then
+  // converts the remainder to nanoseconds and adds the sub-microsecond nanos.
+  // For negative remainders, we use a branchless correction to ensure nanos
+  // is always positive.
+  static velox::Timestamp convertToVeloxTimestamp(
+      int64_t micros,
+      uint16_t subMicrosNanos) {
+    int64_t seconds = micros / 1000000;
+    int64_t remainder = micros % 1000000;
+    // Branchless Sign Correction
+    // If micros was negative (e.g., -100us), remainder will be -100.
+    // We need to borrow 1 second to make the remainder positive.
+    // mask will be -1 (0xFF...FF) if remainder < 0, else 0.
+    int64_t mask = remainder >> 63;
+    // If negative: seconds -= 1; remainder += 1000000;
+    seconds += mask;
+    remainder += (1000000 & mask);
+    // remainder is now guaranteed [0, 999999].
+    // Convert remainder micros to nanos (* 1000) and add the fractional nanos.
+    uint64_t nanos = static_cast<uint64_t>(remainder) * 1000 + subMicrosNanos;
+    return velox::Timestamp(seconds, nanos);
+  }
+
+  Decoder* nanosDecoder_;
+  Vector<int64_t> microsBuffer_;
+  Vector<uint16_t> nanosBuffer_;
+};
+
+class TimestampMicroNanoFieldReaderFactory final : public FieldReaderFactory {
+ public:
+  TimestampMicroNanoFieldReaderFactory(
+      velox::memory::MemoryPool& pool,
+      velox::TypePtr veloxType,
+      const Type* type)
+      : FieldReaderFactory{pool, std::move(veloxType), type} {}
+
+  std::unique_ptr<FieldReader> createReader(
+      const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders)
+      final {
+    return createReaderImpl<TimestampMicroNanoFieldReader>(
+        decoders,
+        nimbleType_->asTimestampMicroNano().microsDescriptor(),
+        [&]() {
+          return getDecoder(
+              decoders, nimbleType_->asTimestampMicroNano().nanosDescriptor());
+        });
+  }
+};
+
 class MultiValueFieldReader : public FieldReader {
  public:
   using FieldReader::FieldReader;
@@ -3076,6 +3236,17 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
           "Provided schema doesn't match file schema.");
       offsets.push_back(nimbleType->asScalar().scalarDescriptor().offset());
       return std::make_unique<StringFieldReaderFactory>(
+          pool, veloxType->type(), nimbleType.get());
+    }
+    case velox::TypeKind::TIMESTAMP: {
+      NIMBLE_CHECK(
+          nimbleType->isTimestampMicroNano(),
+          "Provided schema doesn't match file schema.");
+      offsets.push_back(
+          nimbleType->asTimestampMicroNano().microsDescriptor().offset());
+      offsets.push_back(
+          nimbleType->asTimestampMicroNano().nanosDescriptor().offset());
+      return std::make_unique<TimestampMicroNanoFieldReaderFactory>(
           pool, veloxType->type(), nimbleType.get());
     }
     case velox::TypeKind::ARRAY: {

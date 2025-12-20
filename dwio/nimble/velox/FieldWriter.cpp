@@ -78,11 +78,6 @@ struct NimbleTypeTraits<velox::TypeKind::VARBINARY> {
   static constexpr ScalarKind scalarKind = ScalarKind::Binary;
 };
 
-template <>
-struct NimbleTypeTraits<velox::TypeKind::TIMESTAMP> {
-  static constexpr ScalarKind scalarKind = ScalarKind::Int64;
-};
-
 // Adapters to handle flat or decoded vector using same interfaces.
 template <typename T = int8_t>
 class Flat {
@@ -268,12 +263,6 @@ struct StringConverter {
   }
 };
 
-struct TimestampConverter {
-  static int64_t convert(velox::Timestamp ts, Buffer&, uint64_t&) {
-    return ts.toMillis();
-  }
-};
-
 template <
     velox::TypeKind K,
     typename C = IdentityConverter<typename velox::TypeTraits<K>::NativeType>>
@@ -363,6 +352,92 @@ class SimpleFieldWriter : public FieldWriter {
 
  private:
   NullableContentStreamData<TargetType>& valuesStream_;
+  ColumnStats& columnStats_;
+};
+
+class TimestampFieldWriter : public FieldWriter {
+ public:
+  explicit TimestampFieldWriter(FieldWriterContext& context)
+      : FieldWriter{context, context.schemaBuilder().createTimestampMicroNanoTypeBuilder()},
+        microsStream_{context.createNullableContentStreamData<int64_t>(
+            typeBuilder_->asTimestampMicroNano().microsDescriptor())},
+        nanosStream_{context.createContentStreamData<uint16_t>(
+            typeBuilder_->asTimestampMicroNano().nanosDescriptor())},
+        columnStats_{context.columnStats(microsStream_.descriptor().offset())} {
+  }
+
+  void write(
+      const velox::VectorPtr& vector,
+      const OrderedRanges& ranges,
+      folly::Executor*) override {
+    auto size = ranges.size();
+    Vector<int64_t>& microsData = microsStream_.mutableData();
+    Vector<uint16_t>& nanosData = nanosStream_.mutableData();
+    microsData.reserve(microsData.size() + size);
+    nanosData.reserve(nanosData.size() + size);
+
+    // - Velox stores time as:
+    //     seconds + nanos (0 <= nanos < 1_000_000_000)
+    // - Nimble stores time as:
+    //     micros         -> whole microseconds since epoch
+    //     subMicrosNanos -> extra nanoseconds inside the microsecond [0, 999]
+    //
+    // The conversion below uses __int128_t to avoid overflow during
+    // intermediate computation, then checks if the result fits in int64_t.
+    auto processTimestamp = [&](velox::Timestamp ts) {
+      const auto seconds = ts.getSeconds();
+      const auto nanos = ts.getNanos();
+      __int128_t result = static_cast<__int128_t>(seconds) * 1'000'000 +
+          static_cast<int64_t>(nanos / 1'000);
+      if (result < std::numeric_limits<int64_t>::min() ||
+          result > std::numeric_limits<int64_t>::max()) {
+        NIMBLE_USER_FAIL(
+            "Could not convert Timestamp({}, {}) to microseconds",
+            seconds,
+            nanos);
+      }
+      int64_t micros = static_cast<int64_t>(result);
+      uint16_t subMicrosNanos = static_cast<uint16_t>(nanos % 1'000);
+      microsData.push_back(micros);
+      nanosData.push_back(subMicrosNanos);
+    };
+
+    uint64_t nonNullCount;
+    if (auto flat = vector->asFlatVector<velox::Timestamp>()) {
+      microsStream_.ensureAdditionalNullsCapacity(flat->mayHaveNulls(), size);
+      nonNullCount = iterateNonNullValues(
+          ranges,
+          microsStream_.mutableNonNulls(),
+          Flat<velox::Timestamp>{vector},
+          processTimestamp);
+    } else {
+      auto decodingContext = context_.decodingContext();
+      auto& decoded = decodingContext.decode(vector, ranges);
+      microsStream_.ensureAdditionalNullsCapacity(decoded.mayHaveNulls(), size);
+      nonNullCount = iterateNonNullValues(
+          ranges,
+          microsStream_.mutableNonNulls(),
+          Decoded<velox::Timestamp>{decoded},
+          processTimestamp);
+    }
+
+    const uint64_t nullCount = size - nonNullCount;
+
+    constexpr uint64_t kTimestampLogicalSize = 12;
+    columnStats_.logicalSize +=
+        nonNullCount * kTimestampLogicalSize + nullCount;
+    columnStats_.nullCount += nullCount;
+    columnStats_.valueCount += size;
+  }
+
+  void reset() override {
+    microsStream_.reset();
+    nanosStream_.reset();
+  }
+
+ private:
+  NullableContentStreamData<int64_t>& microsStream_;
+  ContentStreamData<uint16_t>& nanosStream_;
   ColumnStats& columnStats_;
 };
 
@@ -1901,9 +1976,7 @@ std::unique_ptr<FieldWriter> FieldWriter::create(
       break;
     }
     case velox::TypeKind::TIMESTAMP: {
-      field = std::make_unique<
-          SimpleFieldWriter<velox::TypeKind::TIMESTAMP, TimestampConverter>>(
-          context);
+      field = std::make_unique<TimestampFieldWriter>(context);
       break;
     }
     case velox::TypeKind::ROW: {

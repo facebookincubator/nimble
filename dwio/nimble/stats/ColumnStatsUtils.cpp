@@ -107,6 +107,12 @@ void aggregateStats(
       offset = scalar.scalarDescriptor().offset();
       break;
     }
+    case Kind::TimestampMicroNano: {
+      const auto& timestamp = builder.asTimestampMicroNano();
+      offset = timestamp.microsDescriptor().offset();
+      updateStats(timestamp.nanosDescriptor().offset(), offset.value());
+      break;
+    }
     default:
       NIMBLE_UNSUPPORTED("Unsupported type: {}.", toString(builder.kind()));
   }
