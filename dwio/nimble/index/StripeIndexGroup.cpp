@@ -1,0 +1,255 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "dwio/nimble/index/StripeIndexGroup.h"
+
+#include "dwio/nimble/tablet/IndexGenerated.h"
+#include "dwio/nimble/tablet/MetadataBuffer.h"
+#include "dwio/nimble/tablet/TabletReader.h"
+
+#include <algorithm>
+
+namespace facebook::nimble {
+
+namespace {
+template <typename T>
+const T* asFlatBuffersRoot(std::string_view content) {
+  return flatbuffers::GetRoot<T>(content.data());
+}
+
+uint32_t getStripeCount(const MetadataBuffer* metadata) {
+  const auto* root =
+      asFlatBuffersRoot<serialization::StripeIndexGroup>(metadata->content());
+  return root->stripe_count();
+}
+
+uint32_t getStreamCount(const MetadataBuffer* metadata) {
+  const auto* root =
+      asFlatBuffersRoot<serialization::StripeIndexGroup>(metadata->content());
+  const uint32_t stripeCount = root->stripe_count();
+  NIMBLE_CHECK_GT(stripeCount, 0);
+  const auto* positionIndex = root->position_index();
+  NIMBLE_CHECK_NOT_NULL(positionIndex);
+  const auto* streamChunkCounts = positionIndex->stream_chunk_counts();
+  NIMBLE_CHECK_NOT_NULL(streamChunkCounts);
+  NIMBLE_CHECK_GE(streamChunkCounts->size(), stripeCount);
+  NIMBLE_CHECK_EQ(
+      streamChunkCounts->size() % stripeCount,
+      0,
+      "stream_chunk_counts size must be divisible by stripe_count");
+  return streamChunkCounts->size() / stripeCount;
+}
+} // namespace
+
+std::shared_ptr<StripeIndexGroup> StripeIndexGroup::create(
+    uint32_t stripeGroupIndex,
+    const MetadataBuffer& rootIndex,
+    std::unique_ptr<MetadataBuffer> groupIndex) {
+  // Find the first stripe that uses this stripe index group
+  const auto* indexRoot =
+      asFlatBuffersRoot<serialization::Index>(rootIndex.content());
+  auto* groupIndices = indexRoot->stripe_group_indices()->data();
+  const auto groupIndicesSize = indexRoot->stripe_group_indices()->size();
+  uint32_t firstStripe = groupIndicesSize;
+  for (uint32_t stripeIndex = 0; stripeIndex < groupIndicesSize;
+       ++stripeIndex) {
+    if (groupIndices[stripeIndex] == stripeGroupIndex) {
+      firstStripe = stripeIndex;
+      break;
+    }
+  }
+  NIMBLE_CHECK_LT(
+      firstStripe,
+      indexRoot->stripe_group_indices()->size(),
+      "No stripe found for stripe index group");
+
+  return std::shared_ptr<StripeIndexGroup>(new StripeIndexGroup(
+      stripeGroupIndex, firstStripe, std::move(groupIndex)));
+}
+
+StripeIndexGroup::StripeIndexGroup(
+    uint32_t groupIndex,
+    uint32_t firstStripe,
+    std::unique_ptr<MetadataBuffer> metadata)
+    : metadata_{std::move(metadata)},
+      groupIndex_{groupIndex},
+      firstStripe_{firstStripe},
+      stripeCount_{getStripeCount(metadata_.get())},
+      streamCount_{getStreamCount(metadata_.get())} {}
+
+std::optional<ChunkLocation> StripeIndexGroup::lookupChunk(
+    uint32_t stripe,
+    std::string_view encodedKey) const {
+  const uint32_t stripeOffset = this->stripeOffset(stripe);
+  const auto* root =
+      asFlatBuffersRoot<serialization::StripeIndexGroup>(metadata_->content());
+
+  // Get value index (single object for the entire group)
+  const auto* valueIndex = root->value_index();
+  NIMBLE_CHECK_NOT_NULL(valueIndex);
+
+  // Get chunk counts to determine the search range for this stripe
+  const auto* chunkCounts = valueIndex->key_stream_chunk_counts();
+  NIMBLE_CHECK_NOT_NULL(chunkCounts);
+  NIMBLE_CHECK_EQ(stripeCount_, chunkCounts->size());
+
+  // Determine the chunk range for this stripe
+  // chunkCounts contains accumulated counts, so:
+  // - Start index: chunkCounts[stripeOffset - 1] (or 0 for first stripe)
+  // - End index: chunkCounts[stripeOffset]
+  const uint32_t startChunkIndex =
+      stripeOffset == 0 ? 0 : chunkCounts->Get(stripeOffset - 1);
+  const uint32_t endChunkIndex = chunkCounts->Get(stripeOffset);
+
+  const auto* chunkKeys = valueIndex->key_stream_chunk_keys();
+  NIMBLE_CHECK_NOT_NULL(chunkKeys);
+  NIMBLE_CHECK_LE(endChunkIndex, chunkKeys->size());
+
+  // Binary search for the chunk key within this stripe's range
+  auto it = std::lower_bound(
+      chunkKeys->begin() + startChunkIndex,
+      chunkKeys->begin() + endChunkIndex,
+      encodedKey,
+      [](const flatbuffers::String* a, std::string_view b) {
+        return a->string_view() < b;
+      });
+  if (it == chunkKeys->begin() + endChunkIndex) {
+    return std::nullopt;
+  }
+
+  const uint32_t chunkIndex = it - chunkKeys->begin();
+
+  const auto* chunkRows = valueIndex->key_stream_chunk_rows();
+  NIMBLE_CHECK_NOT_NULL(chunkRows);
+  NIMBLE_CHECK_EQ(chunkRows->size(), chunkKeys->size());
+
+  const auto* chunkOffsets = valueIndex->key_stream_chunk_offsets();
+  NIMBLE_CHECK_NOT_NULL(chunkOffsets);
+  NIMBLE_CHECK_EQ(chunkOffsets->size(), chunkKeys->size());
+
+  // Return the found chunk location.
+  return ChunkLocation{
+      chunkOffsets->Get(chunkIndex),
+      chunkIndex == startChunkIndex ? 0 : chunkRows->Get(chunkIndex - 1)};
+}
+
+std::optional<ChunkLocation> StripeIndexGroup::lookupChunk(
+    uint32_t stripe,
+    uint32_t streamId,
+    uint32_t rowId) const {
+  NIMBLE_CHECK_LT(streamId, streamCount_, "streamId out of range");
+
+  const uint32_t stripeOffset = this->stripeOffset(stripe);
+  const auto* root =
+      asFlatBuffersRoot<serialization::StripeIndexGroup>(metadata_->content());
+
+  // Get position index (single object for the entire group)
+  const auto* positionIndex = root->position_index();
+  NIMBLE_CHECK_NOT_NULL(positionIndex);
+
+  // Use stream_chunk_counts and stream_chunk_indexes to find the range
+  // for this specific stream in this stripe
+  const auto* streamChunkCounts = positionIndex->stream_chunk_counts();
+  NIMBLE_CHECK_NOT_NULL(streamChunkCounts);
+  const auto* streamChunkIndexes = positionIndex->stream_chunk_indexes();
+  NIMBLE_CHECK_NOT_NULL(streamChunkIndexes);
+  NIMBLE_CHECK_EQ(streamChunkCounts->size(), streamChunkIndexes->size());
+
+  // Calculate the index in the flattened stream_chunk_counts array
+  const uint32_t streamChunkCountIndex = stripeOffset * streamCount_ + streamId;
+  NIMBLE_CHECK_LT(streamChunkCountIndex, streamChunkCounts->size());
+
+  const uint32_t chunkCount = streamChunkCounts->Get(streamChunkCountIndex);
+  const uint32_t startChunkIndex =
+      streamChunkIndexes->Get(streamChunkCountIndex);
+  const uint32_t endChunkIndex = startChunkIndex + chunkCount;
+
+  const auto* chunkRows = positionIndex->stream_chunk_rows();
+  NIMBLE_CHECK_NOT_NULL(chunkRows);
+  NIMBLE_CHECK_LE(endChunkIndex, chunkRows->size());
+
+  LOG(ERROR) << "startChunkIndex " << startChunkIndex << " end "
+             << endChunkIndex;
+  // Binary search within the specific stream's chunk range
+  const auto beginIt = chunkRows->begin() + startChunkIndex;
+  const auto endIt = chunkRows->begin() + endChunkIndex;
+  const auto it = std::lower_bound(beginIt, endIt, rowId + 1);
+  if (it == endIt) {
+    return std::nullopt;
+  }
+
+  const uint32_t chunkIndex = it - chunkRows->begin();
+  LOG(ERROR) << "chunk index " << chunkIndex;
+  const auto* chunkOffsets = positionIndex->stream_chunk_offsets();
+  NIMBLE_CHECK_NOT_NULL(chunkOffsets);
+  return ChunkLocation{
+      chunkOffsets->Get(chunkIndex),
+      chunkIndex == startChunkIndex ? 0 : chunkRows->Get(chunkIndex - 1)};
+}
+
+std::unique_ptr<StreamIndex> StripeIndexGroup::createStreamIndex(
+    uint32_t stripe,
+    uint32_t streamId) const {
+  return StreamIndex::create(this, stripe, streamId);
+}
+
+std::optional<velox::common::Region> StripeIndexGroup::keyStreamRegion(
+    uint32_t stripeIndex) const {
+  const uint32_t stripeOffset = this->stripeOffset(stripeIndex);
+  const auto* root =
+      asFlatBuffersRoot<serialization::StripeIndexGroup>(metadata_->content());
+
+  const auto* valueIndex = root->value_index();
+  NIMBLE_CHECK_NOT_NULL(valueIndex);
+
+  const auto* offsets = valueIndex->key_stream_offsets();
+  NIMBLE_CHECK_NOT_NULL(offsets);
+  const auto* sizes = valueIndex->key_stream_sizes();
+  NIMBLE_CHECK_NOT_NULL(sizes);
+  NIMBLE_CHECK_EQ(
+      offsets->size(),
+      sizes->size(),
+      "key_stream_offsets and key_stream_sizes must have the same size");
+  NIMBLE_CHECK_LT(stripeOffset, offsets->size());
+
+  const uint32_t keyStreamOffset = offsets->Get(stripeOffset);
+  const uint32_t keyStreamSize = sizes->Get(stripeOffset);
+  NIMBLE_CHECK_GT(keyStreamSize, 0);
+  return velox::common::Region{keyStreamOffset, keyStreamSize};
+}
+
+std::unique_ptr<StreamIndex> StreamIndex::create(
+    const StripeIndexGroup* stripeIndexGroup,
+    uint32_t stripe,
+    uint32_t streamId) {
+  return std::unique_ptr<StreamIndex>(
+      new StreamIndex(stripeIndexGroup, stripe, streamId));
+}
+
+StreamIndex::StreamIndex(
+    const StripeIndexGroup* stripeIndexGroup,
+    uint32_t stripe,
+    uint32_t streamId)
+    : stripeIndexGroup_(stripeIndexGroup),
+      stripe_(stripe),
+      streamId_(streamId) {
+  NIMBLE_CHECK_NOT_NULL(stripeIndexGroup_);
+}
+
+std::optional<ChunkLocation> StreamIndex::lookupChunk(uint32_t rowId) const {
+  return stripeIndexGroup_->lookupChunk(stripe_, streamId_, rowId);
+}
+
+} // namespace facebook::nimble

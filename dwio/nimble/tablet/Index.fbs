@@ -24,11 +24,12 @@ table StripeValueIndex {
   key_stream_chunk_counts:[uint32];
   key_stream_chunk_rows:[uint32];
   key_stream_chunk_keys:[string];
+  key_stream_chunk_offsets:[uint32];
 }
 
 table StripePositionIndex {
   stream_chunk_counts:[uint32];
-  stream_start_chunk_offsets:[uint32];
+  stream_chunk_indexes:[uint32];
   stream_chunk_rows:[uint32];
   stream_chunk_offsets:[uint32];
 }

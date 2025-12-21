@@ -13,11 +13,12 @@
 # limitations under the License.
 add_subdirectory(tests)
 
-add_library(nimble_index KeyEncoder.cpp)
+add_library(nimble_index KeyEncoder.cpp StripeIndexGroup.cpp)
 target_link_libraries(
   nimble_index
   nimble_common
   nimble_encodings
+  nimble_tablet_common
   velox_core
   velox_type
   velox_vector
