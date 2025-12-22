@@ -208,6 +208,11 @@ class KeyEncoderTest : public velox::exec::test::OperatorTestBase {
                 vec->as<velox::FlatVector<velox::StringView>>();
             return flatVec->valueAt(0).str();
           }
+          case velox::TypeKind::TIMESTAMP: {
+            const auto* flatVec =
+                vec->as<velox::FlatVector<velox::Timestamp>>();
+            return flatVec->valueAt(0).toString();
+          }
           default:
             return fmt::format(
                 "<unknown type: {}>", static_cast<int>(typeKind));
@@ -304,8 +309,7 @@ class KeyEncoderTest : public velox::exec::test::OperatorTestBase {
     if (testCase.expectedFailure) {
       // For lower bound bump failures, expect std::nullopt to be returned
       EXPECT_FALSE(encodedBounds.has_value())
-          << "Expected encodeIndexBounds to return std::nullopt for lower "
-             "bound bump failure";
+          << "Expected encodeIndexBounds to return std::nullopt for bound bump failure";
       return;
     }
 
@@ -2829,6 +2833,405 @@ TEST_F(KeyEncoderTest, stringTypeWithNulls) {
   }
 }
 
+TEST_F(KeyEncoderTest, timestampTypeWithoutNulls) {
+  struct {
+    std::vector<std::vector<velox::Timestamp>> columnValues;
+
+    std::string debugString() const {
+      const size_t numRows = columnValues[0].size();
+      std::vector<std::string> rows;
+      rows.reserve(numRows);
+
+      for (size_t row = 0; row < numRows; ++row) {
+        std::vector<std::string> rowValues;
+        rowValues.reserve(columnValues.size());
+        for (const auto& column : columnValues) {
+          rowValues.push_back(column[row].toString());
+        }
+        rows.push_back(fmt::format("{{{}}}", fmt::join(rowValues, ", ")));
+      }
+
+      return fmt::format("[{}]", fmt::join(rows, ", "));
+    }
+  } testCases[] = {
+      // Single row
+      {{{velox::Timestamp(1, 0)},
+        {velox::Timestamp(2, 0)},
+        {velox::Timestamp(3, 0)}}},
+      // All same values
+      {{{velox::Timestamp(5, 100), velox::Timestamp(5, 100)},
+        {velox::Timestamp(10, 200), velox::Timestamp(10, 200)},
+        {velox::Timestamp(15, 300), velox::Timestamp(15, 300)}}},
+      // Ascending order in first column (by seconds)
+      {{{velox::Timestamp(1, 0),
+         velox::Timestamp(2, 0),
+         velox::Timestamp(3, 0)},
+        {velox::Timestamp(100, 0),
+         velox::Timestamp(100, 0),
+         velox::Timestamp(100, 0)},
+        {velox::Timestamp(50, 0),
+         velox::Timestamp(50, 0),
+         velox::Timestamp(50, 0)}}},
+      // Descending order in first column (by seconds)
+      {{{velox::Timestamp(10, 0),
+         velox::Timestamp(9, 0),
+         velox::Timestamp(8, 0)},
+        {velox::Timestamp(0, 0),
+         velox::Timestamp(0, 0),
+         velox::Timestamp(0, 0)},
+        {velox::Timestamp(5, 0),
+         velox::Timestamp(5, 0),
+         velox::Timestamp(5, 0)}}},
+      // Mixed positive and negative seconds
+      {{{velox::Timestamp(-5, 0),
+         velox::Timestamp(0, 0),
+         velox::Timestamp(5, 0)},
+        {velox::Timestamp(-10, 0),
+         velox::Timestamp(-5, 0),
+         velox::Timestamp(0, 0)},
+        {velox::Timestamp(10, 0),
+         velox::Timestamp(5, 0),
+         velox::Timestamp(0, 0)}}},
+      // Same seconds, different nanos
+      {{{velox::Timestamp(100, 1),
+         velox::Timestamp(100, 2),
+         velox::Timestamp(100, 3)},
+        {velox::Timestamp(200, 100),
+         velox::Timestamp(200, 200),
+         velox::Timestamp(200, 300)},
+        {velox::Timestamp(300, 999),
+         velox::Timestamp(300, 998),
+         velox::Timestamp(300, 997)}}},
+      // Edge values: valid min and max seconds for Timestamp
+      // kMinSeconds = INT64_MIN / 1000 - 1, kMaxSeconds = INT64_MAX / 1000
+      {{{velox::Timestamp::min(),
+         velox::Timestamp::max(),
+         velox::Timestamp(0, 0)},
+        {velox::Timestamp(-1, 0),
+         velox::Timestamp(0, 0),
+         velox::Timestamp(1, 0)},
+        {velox::Timestamp(100, 0),
+         velox::Timestamp(200, 0),
+         velox::Timestamp(300, 0)}}},
+      // All zeros
+      {{{velox::Timestamp(0, 0),
+         velox::Timestamp(0, 0),
+         velox::Timestamp(0, 0)},
+        {velox::Timestamp(0, 0),
+         velox::Timestamp(0, 0),
+         velox::Timestamp(0, 0)},
+        {velox::Timestamp(0, 0),
+         velox::Timestamp(0, 0),
+         velox::Timestamp(0, 0)}}},
+      // Duplicate values across rows
+      {{{velox::Timestamp(1, 100),
+         velox::Timestamp(2, 200),
+         velox::Timestamp(1, 100),
+         velox::Timestamp(2, 200)},
+        {velox::Timestamp(3, 300),
+         velox::Timestamp(3, 300),
+         velox::Timestamp(4, 400),
+         velox::Timestamp(4, 400)},
+        {velox::Timestamp(5, 500),
+         velox::Timestamp(5, 500),
+         velox::Timestamp(5, 500),
+         velox::Timestamp(5, 500)}}},
+      // Large spread of values
+      {{{velox::Timestamp(-1000000, 0),
+         velox::Timestamp(-1, 0),
+         velox::Timestamp(0, 0),
+         velox::Timestamp(1, 0),
+         velox::Timestamp(1000000, 0)},
+        {velox::Timestamp(999999, 0),
+         velox::Timestamp(500000, 0),
+         velox::Timestamp(0, 0),
+         velox::Timestamp(-500000, 0),
+         velox::Timestamp(-999999, 0)},
+        {velox::Timestamp(42, 0),
+         velox::Timestamp(42, 0),
+         velox::Timestamp(42, 0),
+         velox::Timestamp(42, 0),
+         velox::Timestamp(42, 0)}}},
+      // Values that differ only in last column
+      {{{velox::Timestamp(1, 0),
+         velox::Timestamp(1, 0),
+         velox::Timestamp(1, 0)},
+        {velox::Timestamp(2, 0),
+         velox::Timestamp(2, 0),
+         velox::Timestamp(2, 0)},
+        {velox::Timestamp(3, 0),
+         velox::Timestamp(4, 0),
+         velox::Timestamp(5, 0)}}},
+      // Values that differ only in first column
+      {{{velox::Timestamp(1, 0),
+         velox::Timestamp(2, 0),
+         velox::Timestamp(3, 0)},
+        {velox::Timestamp(100, 0),
+         velox::Timestamp(100, 0),
+         velox::Timestamp(100, 0)},
+        {velox::Timestamp(200, 0),
+         velox::Timestamp(200, 0),
+         velox::Timestamp(200, 0)}}},
+      // Nanos ordering within same second
+      {{{velox::Timestamp(1, 0),
+         velox::Timestamp(1, 500000000),
+         velox::Timestamp(1, 999999999)},
+        {velox::Timestamp(2, 999999999),
+         velox::Timestamp(2, 500000000),
+         velox::Timestamp(2, 0)},
+        {velox::Timestamp(3, 123456789),
+         velox::Timestamp(3, 123456789),
+         velox::Timestamp(3, 123456789)}}},
+      // All min values
+      {{{velox::Timestamp::min(),
+         velox::Timestamp::min(),
+         velox::Timestamp::min()},
+        {velox::Timestamp::min(),
+         velox::Timestamp::min(),
+         velox::Timestamp::min()},
+        {velox::Timestamp::min(),
+         velox::Timestamp::min(),
+         velox::Timestamp::min()}}},
+      // All max values
+      {{{velox::Timestamp::max(),
+         velox::Timestamp::max(),
+         velox::Timestamp::max()},
+        {velox::Timestamp::max(),
+         velox::Timestamp::max(),
+         velox::Timestamp::max()},
+        {velox::Timestamp::max(),
+         velox::Timestamp::max(),
+         velox::Timestamp::max()}}},
+      // Min to max range in single column
+      {{{velox::Timestamp::min(),
+         velox::Timestamp(0, 0),
+         velox::Timestamp::max()},
+        {velox::Timestamp::min(),
+         velox::Timestamp(0, 0),
+         velox::Timestamp::max()},
+        {velox::Timestamp::min(),
+         velox::Timestamp(0, 0),
+         velox::Timestamp::max()}}},
+      // Min and max with max nanos
+      {{{velox::Timestamp(velox::Timestamp::min().getSeconds(), 999999999),
+         velox::Timestamp(velox::Timestamp::max().getSeconds(), 999999999)},
+        {velox::Timestamp(velox::Timestamp::min().getSeconds(), 0),
+         velox::Timestamp(velox::Timestamp::max().getSeconds(), 0)},
+        {velox::Timestamp(0, 999999999), velox::Timestamp(0, 0)}}},
+      // Alternating min and max
+      {{{velox::Timestamp::min(),
+         velox::Timestamp::max(),
+         velox::Timestamp::min(),
+         velox::Timestamp::max()},
+        {velox::Timestamp::max(),
+         velox::Timestamp::min(),
+         velox::Timestamp::max(),
+         velox::Timestamp::min()},
+        {velox::Timestamp::min(),
+         velox::Timestamp::min(),
+         velox::Timestamp::max(),
+         velox::Timestamp::max()}}}};
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
+    ASSERT_EQ(testCase.columnValues.size(), 3);
+    const auto input = makeRowVector(
+        {makeFlatVector<velox::Timestamp>(testCase.columnValues[0]),
+         makeFlatVector<velox::Timestamp>(testCase.columnValues[1]),
+         makeFlatVector<velox::Timestamp>(testCase.columnValues[2])});
+    const std::vector<std::string> keyColumns = {"c0", "c1", "c2"};
+
+    // Test all four sort orders
+    encodeTest({input}, keyColumns);
+  }
+}
+
+TEST_F(KeyEncoderTest, timestampTypeWithNulls) {
+  struct {
+    std::vector<std::vector<std::optional<velox::Timestamp>>> columnValues;
+
+    std::string debugString() const {
+      const size_t numRows = columnValues[0].size();
+      std::vector<std::string> rows;
+      rows.reserve(numRows);
+
+      for (size_t row = 0; row < numRows; ++row) {
+        std::vector<std::string> rowValues;
+        rowValues.reserve(columnValues.size());
+        for (const auto& column : columnValues) {
+          if (column[row].has_value()) {
+            rowValues.push_back(column[row].value().toString());
+          } else {
+            rowValues.push_back("null");
+          }
+        }
+        rows.push_back(fmt::format("{{{}}}", fmt::join(rowValues, ", ")));
+      }
+
+      return fmt::format("[{}]", fmt::join(rows, ", "));
+    }
+  } testCases[] = {
+      // Single row with null
+      {{{std::nullopt}, {velox::Timestamp(1, 0)}, {velox::Timestamp(2, 0)}}},
+      // Single row without null (nullable type)
+      {{{velox::Timestamp(1, 0)},
+        {velox::Timestamp(2, 0)},
+        {velox::Timestamp(3, 0)}}},
+      // All nulls
+      {{{std::nullopt, std::nullopt, std::nullopt},
+        {std::nullopt, std::nullopt, std::nullopt},
+        {std::nullopt, std::nullopt, std::nullopt}}},
+      // Null at beginning of first column
+      {{{std::nullopt, velox::Timestamp(1, 0), velox::Timestamp(2, 0)},
+        {velox::Timestamp(10, 0),
+         velox::Timestamp(20, 0),
+         velox::Timestamp(30, 0)},
+        {velox::Timestamp(100, 0),
+         velox::Timestamp(200, 0),
+         velox::Timestamp(300, 0)}}},
+      // Null at end of first column
+      {{{velox::Timestamp(1, 0), velox::Timestamp(2, 0), std::nullopt},
+        {velox::Timestamp(10, 0),
+         velox::Timestamp(20, 0),
+         velox::Timestamp(30, 0)},
+        {velox::Timestamp(100, 0),
+         velox::Timestamp(200, 0),
+         velox::Timestamp(300, 0)}}},
+      // Null in middle of first column
+      {{{velox::Timestamp(1, 0), std::nullopt, velox::Timestamp(2, 0)},
+        {velox::Timestamp(10, 0),
+         velox::Timestamp(20, 0),
+         velox::Timestamp(30, 0)},
+        {velox::Timestamp(100, 0),
+         velox::Timestamp(200, 0),
+         velox::Timestamp(300, 0)}}},
+      // Nulls in all positions across different columns
+      {{{std::nullopt,
+         velox::Timestamp(1, 0),
+         velox::Timestamp(2, 0),
+         velox::Timestamp(3, 0)},
+        {velox::Timestamp(1, 0),
+         std::nullopt,
+         velox::Timestamp(2, 0),
+         velox::Timestamp(3, 0)},
+        {velox::Timestamp(1, 0),
+         velox::Timestamp(2, 0),
+         std::nullopt,
+         velox::Timestamp(3, 0)}}},
+      // Multiple nulls in same row
+      {{{std::nullopt, velox::Timestamp(1, 0), velox::Timestamp(2, 0)},
+        {std::nullopt, velox::Timestamp(10, 0), velox::Timestamp(20, 0)},
+        {std::nullopt, velox::Timestamp(100, 0), velox::Timestamp(200, 0)}}},
+      // Alternating nulls and values
+      {{{std::nullopt,
+         velox::Timestamp(1, 0),
+         std::nullopt,
+         velox::Timestamp(2, 0)},
+        {velox::Timestamp(10, 0),
+         std::nullopt,
+         velox::Timestamp(20, 0),
+         std::nullopt},
+        {std::nullopt,
+         velox::Timestamp(100, 0),
+         std::nullopt,
+         velox::Timestamp(200, 0)}}},
+      // Nulls with valid edge values for Timestamp
+      // kMinSeconds = INT64_MIN / 1000 - 1, kMaxSeconds = INT64_MAX / 1000
+      {{{std::nullopt, velox::Timestamp::min(), velox::Timestamp::max()},
+        {velox::Timestamp(0, 0), std::nullopt, velox::Timestamp(1, 0)},
+        {velox::Timestamp(-1, 0), velox::Timestamp(0, 0), std::nullopt}}},
+      // Null with varying nanos
+      {{{std::nullopt,
+         velox::Timestamp(1, 100),
+         velox::Timestamp(1, 200),
+         velox::Timestamp(1, 300)},
+        {velox::Timestamp(2, 100),
+         std::nullopt,
+         velox::Timestamp(2, 200),
+         velox::Timestamp(2, 300)},
+        {velox::Timestamp(3, 100),
+         velox::Timestamp(3, 200),
+         std::nullopt,
+         velox::Timestamp(3, 300)}}},
+      // Dense nulls at boundaries
+      {{{std::nullopt,
+         std::nullopt,
+         velox::Timestamp(1, 0),
+         velox::Timestamp(2, 0),
+         std::nullopt,
+         std::nullopt},
+        {velox::Timestamp(10, 0),
+         velox::Timestamp(20, 0),
+         std::nullopt,
+         std::nullopt,
+         velox::Timestamp(30, 0),
+         velox::Timestamp(40, 0)},
+        {std::nullopt,
+         velox::Timestamp(100, 0),
+         std::nullopt,
+         velox::Timestamp(200, 0),
+         std::nullopt,
+         velox::Timestamp(300, 0)}}},
+      // All min values with some nulls
+      {{{velox::Timestamp::min(), std::nullopt, velox::Timestamp::min()},
+        {std::nullopt, velox::Timestamp::min(), velox::Timestamp::min()},
+        {velox::Timestamp::min(), velox::Timestamp::min(), std::nullopt}}},
+      // All max values with some nulls
+      {{{velox::Timestamp::max(), std::nullopt, velox::Timestamp::max()},
+        {std::nullopt, velox::Timestamp::max(), velox::Timestamp::max()},
+        {velox::Timestamp::max(), velox::Timestamp::max(), std::nullopt}}},
+      // Min to max range with nulls
+      {{{std::nullopt,
+         velox::Timestamp::min(),
+         velox::Timestamp(0, 0),
+         velox::Timestamp::max()},
+        {velox::Timestamp::min(),
+         std::nullopt,
+         velox::Timestamp(0, 0),
+         velox::Timestamp::max()},
+        {velox::Timestamp::min(),
+         velox::Timestamp(0, 0),
+         std::nullopt,
+         velox::Timestamp::max()}}},
+      // Min and max with max nanos and nulls
+      {{{std::nullopt,
+         velox::Timestamp(velox::Timestamp::min().getSeconds(), 999999999),
+         velox::Timestamp(velox::Timestamp::max().getSeconds(), 999999999)},
+        {velox::Timestamp(velox::Timestamp::min().getSeconds(), 0),
+         std::nullopt,
+         velox::Timestamp(velox::Timestamp::max().getSeconds(), 0)},
+        {velox::Timestamp(0, 999999999),
+         velox::Timestamp(0, 0),
+         std::nullopt}}},
+      // Alternating min, max and nulls
+      {{{velox::Timestamp::min(),
+         std::nullopt,
+         velox::Timestamp::max(),
+         std::nullopt},
+        {std::nullopt,
+         velox::Timestamp::max(),
+         std::nullopt,
+         velox::Timestamp::min()},
+        {velox::Timestamp::max(),
+         velox::Timestamp::min(),
+         std::nullopt,
+         std::nullopt}}},
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
+    ASSERT_EQ(testCase.columnValues.size(), 3);
+    const auto input = makeRowVector(
+        {makeNullableFlatVector<velox::Timestamp>(testCase.columnValues[0]),
+         makeNullableFlatVector<velox::Timestamp>(testCase.columnValues[1]),
+         makeNullableFlatVector<velox::Timestamp>(testCase.columnValues[2])});
+    const std::vector<std::string> keyColumns = {"c0", "c1", "c2"};
+
+    // Test all four sort orders (ASC/DESC x NULLS FIRST/NULLS LAST)
+    encodeTest({input}, keyColumns);
+  }
+}
+
 TEST_F(KeyEncoderTest, keyColumnsOutOfOrder) {
   // Create a dataset with multiple columns of different types
   // Columns: BIGINT, VARCHAR, DOUBLE, BOOLEAN, INTEGER, SMALLINT
@@ -3014,23 +3417,6 @@ TEST_F(KeyEncoderTest, unsupportedIndexColumnType) {
         "Unsupported type for index column 'c0': OPAQUE");
   }
 
-  // Test TIMESTAMP type
-  {
-    auto input = makeRowVector({
-        makeFlatVector<velox::Timestamp>(
-            {velox::Timestamp(0, 0), velox::Timestamp(1, 0)}),
-    });
-
-    const std::vector<std::string> keyColumns = {"c0"};
-    const std::vector<velox::core::SortOrder> sortOrders = {
-        velox::core::kAscNullsFirst};
-
-    NIMBLE_ASSERT_THROW(
-        KeyEncoder::create(
-            keyColumns, asRowType(input->type()), sortOrders, pool_.get()),
-        "Unsupported type for index column 'c0': TIMESTAMP");
-  }
-
   // Test HUGEINT type
   {
     using HugeintType = velox::TypeTraits<velox::TypeKind::HUGEINT>::NativeType;
@@ -3065,7 +3451,7 @@ TEST_F(KeyEncoderTest, encodeFuzz) {
       velox::BOOLEAN(),
       velox::VARCHAR(),
       velox::DATE(),
-  };
+      velox::TIMESTAMP()};
 
   // VectorFuzzer options
   velox::VectorFuzzer::Options options;
@@ -8386,6 +8772,316 @@ TEST_F(KeyEncoderTest, encodeIndexBoundsWithDoubleType) {
         .bound = makeRowVector(
             {makeNullableFlatVector<double>({std::nullopt}),
              makeNullableFlatVector<double>({std::nullopt})}),
+        .inclusive = false};
+    testCase.upperBound = std::nullopt;
+    testCase.sortOrder = velox::core::kAscNullsLast;
+    testCase.expectedFailure = true;
+    SCOPED_TRACE(testCase.debugString());
+    testIndexBounds(testCase);
+  }
+}
+
+TEST_F(KeyEncoderTest, encodeIndexBoundsWithTimestampType) {
+  // Test Case 1: Both bounds inclusive
+  {
+    auto testCases = createIndexBoundEncodeTestCases(
+        {"c0"},
+        IndexBound{
+            .bound = makeRowVector({makeFlatVector<velox::Timestamp>(
+                {velox::Timestamp(10, 100)})}),
+            .inclusive = true},
+        IndexBound{
+            .bound = makeRowVector({makeFlatVector<velox::Timestamp>(
+                {velox::Timestamp(100, 200)})}),
+            .inclusive = true},
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(10, 100)})}), // ASC_NULLS_FIRST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 201)})}), // ASC_NULLS_FIRST upper
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(10, 100)})}), // ASC_NULLS_LAST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 201)})}), // ASC_NULLS_LAST upper
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(10, 100)})}), // DESC_NULLS_FIRST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 199)})}), // DESC_NULLS_FIRST upper
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(10, 100)})}), // DESC_NULLS_LAST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 199)})})); // DESC_NULLS_LAST upper
+    for (const auto& testCase : testCases) {
+      SCOPED_TRACE(testCase.debugString());
+      testIndexBounds(testCase);
+    }
+  }
+
+  // Test Case 2: Both bounds exclusive
+  {
+    auto testCases = createIndexBoundEncodeTestCases(
+        {"c0"},
+        IndexBound{
+            .bound = makeRowVector({makeFlatVector<velox::Timestamp>(
+                {velox::Timestamp(10, 100)})}),
+            .inclusive = false},
+        IndexBound{
+            .bound = makeRowVector({makeFlatVector<velox::Timestamp>(
+                {velox::Timestamp(100, 200)})}),
+            .inclusive = false},
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(10, 101)})}), // ASC_NULLS_FIRST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 200)})}), // ASC_NULLS_FIRST upper
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(10, 101)})}), // ASC_NULLS_LAST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 200)})}), // ASC_NULLS_LAST upper
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(10, 99)})}), // DESC_NULLS_FIRST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 200)})}), // DESC_NULLS_FIRST upper
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(10, 99)})}), // DESC_NULLS_LAST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 200)})})); // DESC_NULLS_LAST upper
+    for (const auto& testCase : testCases) {
+      SCOPED_TRACE(testCase.debugString());
+      testIndexBounds(testCase);
+    }
+  }
+
+  // Test Case 3: Lower inclusive, upper exclusive
+  {
+    auto testCases = createIndexBoundEncodeTestCases(
+        {"c0"},
+        IndexBound{
+            .bound = makeRowVector({makeFlatVector<velox::Timestamp>(
+                {velox::Timestamp(10, 100)})}),
+            .inclusive = true},
+        IndexBound{
+            .bound = makeRowVector({makeFlatVector<velox::Timestamp>(
+                {velox::Timestamp(100, 200)})}),
+            .inclusive = false},
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(10, 100)})}), // ASC_NULLS_FIRST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 200)})}), // ASC_NULLS_FIRST upper
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(10, 100)})}), // ASC_NULLS_LAST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 200)})}), // ASC_NULLS_LAST upper
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(10, 100)})}), // DESC_NULLS_FIRST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 200)})}), // DESC_NULLS_FIRST upper
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(10, 100)})}), // DESC_NULLS_LAST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 200)})})); // DESC_NULLS_LAST upper
+    for (const auto& testCase : testCases) {
+      SCOPED_TRACE(testCase.debugString());
+      testIndexBounds(testCase);
+    }
+  }
+
+  // Test Case 4: Only lower bound
+  {
+    auto testCases = createIndexBoundEncodeTestCases(
+        {"c0"},
+        IndexBound{
+            .bound = makeRowVector({makeFlatVector<velox::Timestamp>(
+                {velox::Timestamp(10, 100)})}),
+            .inclusive = true},
+        std::nullopt,
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(10, 100)})}), // ASC_NULLS_FIRST lower
+        std::nullopt, // ASC_NULLS_FIRST upper
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(10, 100)})}), // ASC_NULLS_LAST lower
+        std::nullopt, // ASC_NULLS_LAST upper
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(10, 100)})}), // DESC_NULLS_FIRST lower
+        std::nullopt, // DESC_NULLS_FIRST upper
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(10, 100)})}), // DESC_NULLS_LAST lower
+        std::nullopt); // DESC_NULLS_LAST upper
+    for (const auto& testCase : testCases) {
+      SCOPED_TRACE(testCase.debugString());
+      testIndexBounds(testCase);
+    }
+  }
+
+  // Test Case 5: Only upper bound
+  {
+    auto testCases = createIndexBoundEncodeTestCases(
+        {"c0"},
+        std::nullopt,
+        IndexBound{
+            .bound = makeRowVector({makeFlatVector<velox::Timestamp>(
+                {velox::Timestamp(100, 200)})}),
+            .inclusive = true},
+        std::nullopt, // ASC_NULLS_FIRST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 201)})}), // ASC_NULLS_FIRST upper
+        std::nullopt, // ASC_NULLS_LAST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 201)})}), // ASC_NULLS_LAST upper
+        std::nullopt, // DESC_NULLS_FIRST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 199)})}), // DESC_NULLS_FIRST upper
+        std::nullopt, // DESC_NULLS_LAST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 199)})})); // DESC_NULLS_LAST upper
+    for (const auto& testCase : testCases) {
+      SCOPED_TRACE(testCase.debugString());
+      testIndexBounds(testCase);
+    }
+  }
+
+  // Test Case 6: Single column with null in lower bound
+  {
+    auto testCases = createIndexBoundEncodeTestCases(
+        {"c0"},
+        IndexBound{
+            .bound = makeRowVector(
+                {makeNullableFlatVector<velox::Timestamp>({std::nullopt})}),
+            .inclusive = true},
+        IndexBound{
+            .bound = makeRowVector({makeFlatVector<velox::Timestamp>(
+                {velox::Timestamp(100, 200)})}),
+            .inclusive = true},
+        makeRowVector({makeNullableFlatVector<velox::Timestamp>(
+            {std::nullopt})}), // ASC_NULLS_FIRST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 201)})}), // ASC_NULLS_FIRST upper
+        makeRowVector({makeNullableFlatVector<velox::Timestamp>(
+            {std::nullopt})}), // ASC_NULLS_LAST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 201)})}), // ASC_NULLS_LAST upper
+        makeRowVector({makeNullableFlatVector<velox::Timestamp>(
+            {std::nullopt})}), // DESC_NULLS_FIRST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 199)})}), // DESC_NULLS_FIRST upper
+        makeRowVector({makeNullableFlatVector<velox::Timestamp>(
+            {std::nullopt})}), // DESC_NULLS_LAST lower
+        makeRowVector({makeFlatVector<velox::Timestamp>(
+            {velox::Timestamp(100, 199)})})); // DESC_NULLS_LAST upper
+    for (const auto& testCase : testCases) {
+      SCOPED_TRACE(testCase.debugString());
+      testIndexBounds(testCase);
+    }
+  }
+
+  // Test Case 7: Multi-column, both inclusive
+  {
+    auto testCases = createIndexBoundEncodeTestCases(
+        {"c0", "c1"},
+        IndexBound{
+            .bound = makeRowVector(
+                {makeFlatVector<velox::Timestamp>({velox::Timestamp(10, 100)}),
+                 makeFlatVector<velox::Timestamp>(
+                     {velox::Timestamp(20, 200)})}),
+            .inclusive = true},
+        IndexBound{
+            .bound = makeRowVector(
+                {makeFlatVector<velox::Timestamp>({velox::Timestamp(100, 300)}),
+                 makeFlatVector<velox::Timestamp>(
+                     {velox::Timestamp(200, 400)})}),
+            .inclusive = true},
+        makeRowVector(
+            {makeFlatVector<velox::Timestamp>({velox::Timestamp(10, 100)}),
+             makeFlatVector<velox::Timestamp>(
+                 {velox::Timestamp(20, 200)})}), // ASC_NULLS_FIRST lower
+        makeRowVector(
+            {makeFlatVector<velox::Timestamp>({velox::Timestamp(100, 300)}),
+             makeFlatVector<velox::Timestamp>(
+                 {velox::Timestamp(200, 401)})}), // ASC_NULLS_FIRST upper
+        makeRowVector(
+            {makeFlatVector<velox::Timestamp>({velox::Timestamp(10, 100)}),
+             makeFlatVector<velox::Timestamp>(
+                 {velox::Timestamp(20, 200)})}), // ASC_NULLS_LAST lower
+        makeRowVector(
+            {makeFlatVector<velox::Timestamp>({velox::Timestamp(100, 300)}),
+             makeFlatVector<velox::Timestamp>(
+                 {velox::Timestamp(200, 401)})}), // ASC_NULLS_LAST upper
+        makeRowVector(
+            {makeFlatVector<velox::Timestamp>({velox::Timestamp(10, 100)}),
+             makeFlatVector<velox::Timestamp>(
+                 {velox::Timestamp(20, 200)})}), // DESC_NULLS_FIRST lower
+        makeRowVector(
+            {makeFlatVector<velox::Timestamp>({velox::Timestamp(100, 300)}),
+             makeFlatVector<velox::Timestamp>(
+                 {velox::Timestamp(200, 399)})}), // DESC_NULLS_FIRST upper
+        makeRowVector(
+            {makeFlatVector<velox::Timestamp>({velox::Timestamp(10, 100)}),
+             makeFlatVector<velox::Timestamp>(
+                 {velox::Timestamp(20, 200)})}), // DESC_NULLS_LAST lower
+        makeRowVector(
+            {makeFlatVector<velox::Timestamp>({velox::Timestamp(100, 300)}),
+             makeFlatVector<velox::Timestamp>(
+                 {velox::Timestamp(200, 399)})})); // DESC_NULLS_LAST upper
+    for (const auto& testCase : testCases) {
+      SCOPED_TRACE(testCase.debugString());
+      testIndexBounds(testCase);
+    }
+  }
+
+  // Test Case 8: Lower bound bump failure - exclusive bound at max value
+  {
+    EncodeIndexBoundsTestCase testCase;
+    testCase.indexColumns = {"c0"};
+    testCase.lowerBound = IndexBound{
+        .bound = makeRowVector(
+            {makeFlatVector<velox::Timestamp>({velox::Timestamp::max()})}),
+        .inclusive = false};
+    testCase.upperBound = std::nullopt;
+    testCase.sortOrder = velox::core::kAscNullsFirst;
+    testCase.expectedFailure = true;
+    SCOPED_TRACE(testCase.debugString());
+    testIndexBounds(testCase);
+  }
+
+  // Test Case 9: Lower bound bump failure - exclusive bound with null at end
+  {
+    EncodeIndexBoundsTestCase testCase;
+    testCase.indexColumns = {"c0"};
+    testCase.lowerBound = IndexBound{
+        .bound = makeRowVector(
+            {makeNullableFlatVector<velox::Timestamp>({std::nullopt})}),
+        .inclusive = false};
+    testCase.upperBound = std::nullopt;
+    testCase.sortOrder = velox::core::kAscNullsLast;
+    testCase.expectedFailure = true;
+    SCOPED_TRACE(testCase.debugString());
+    testIndexBounds(testCase);
+  }
+
+  // Test Case 10: Multi-column lower bound bump failure - all columns at max
+  // value
+  {
+    EncodeIndexBoundsTestCase testCase;
+    testCase.indexColumns = {"c0", "c1"};
+    testCase.lowerBound = IndexBound{
+        .bound = makeRowVector(
+            {makeFlatVector<velox::Timestamp>({velox::Timestamp::max()}),
+             makeFlatVector<velox::Timestamp>({velox::Timestamp::max()})}),
+        .inclusive = false};
+    testCase.upperBound = std::nullopt;
+    testCase.sortOrder = velox::core::kAscNullsLast;
+    testCase.expectedFailure = true;
+    SCOPED_TRACE(testCase.debugString());
+    testIndexBounds(testCase);
+  }
+
+  // Test Case 11: Multi-column lower bound bump failure - all columns at max
+  // value with null
+  {
+    EncodeIndexBoundsTestCase testCase;
+    testCase.indexColumns = {"c0", "c1"};
+    testCase.lowerBound = IndexBound{
+        .bound = makeRowVector(
+            {makeNullableFlatVector<velox::Timestamp>({std::nullopt}),
+             makeNullableFlatVector<velox::Timestamp>({std::nullopt})}),
         .inclusive = false};
     testCase.upperBound = std::nullopt;
     testCase.sortOrder = velox::core::kAscNullsLast;

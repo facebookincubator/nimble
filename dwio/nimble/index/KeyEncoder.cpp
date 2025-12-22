@@ -17,6 +17,7 @@
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "velox/common/base/SimdUtil.h"
+#include "velox/type/Timestamp.h"
 #include "velox/vector/FlatVector.h"
 
 namespace facebook::nimble {
@@ -96,11 +97,9 @@ std::string IndexBounds::toString() const {
 
 namespace {
 // Validates if a type is a valid index column type.
-// Only primitive scalar types are supported except UNKNOWN, TIMESTAMP and
-// HUGEINT.
+// Only primitive scalar types are supported except UNKNOWN and HUGEINT.
 bool isValidIndexColumnType(const velox::TypePtr& type) {
   return type->isPrimitiveType() && type->kind() != velox::TypeKind::UNKNOWN &&
-      type->kind() != velox::TypeKind::TIMESTAMP &&
       type->kind() != velox::TypeKind::HUGEINT;
 }
 
@@ -341,7 +340,9 @@ void estimateEncodedColumnSize(
 
   // Process data for non-null rows only (or all rows if no nulls)
   if (decodedSource.base()->type()->isDate()) {
-    addDateEncodedSize(nonNullRows, nonNullSizePtrs);
+    for (auto i = 0; i < nonNullRows.size(); ++i) {
+      *nonNullSizePtrs[i] += (kNullByteSize + sizeof(int32_t));
+    }
   } else {
     VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(
         addColumnEncodedSizeTyped,
@@ -349,14 +350,6 @@ void estimateEncodedColumnSize(
         decodedSource,
         nonNullRows,
         nonNullSizePtrs);
-  }
-}
-
-void addDateEncodedSize(
-    const folly::Range<const velox::vector_size_t*>& nonNullRows,
-    velox::vector_size_t** nonNullSizePtrs) {
-  for (auto i = 0; i < nonNullRows.size(); ++i) {
-    *nonNullSizePtrs[i] += (kNullByteSize + sizeof(int32_t));
   }
 }
 
@@ -696,6 +689,43 @@ void encodeStringType(
   }
 }
 
+// Encodes Timestamp type column for all rows in columnar fashion.
+// When comparing Timestamp, first compare seconds and then compare nanos, so
+// when encoding, just encode seconds and nanos in sequence (similar to
+// PrefixSortEncoder).
+void encodeTimestamp(
+    const velox::DecodedVector& decodedVector,
+    velox::vector_size_t numRows,
+    bool descending,
+    bool nullLast,
+    std::vector<char*>& rowOffsets) {
+  const bool mayHaveNulls = decodedVector.mayHaveNulls();
+  if (mayHaveNulls) {
+    for (auto row = 0; row < numRows; ++row) {
+      if (decodedVector.isNullAt(row)) {
+        // Encode null indicator only
+        encodeBool(nullLast, rowOffsets[row]);
+      } else {
+        // Encode non-null indicator followed by data
+        encodeBool(!nullLast, rowOffsets[row]);
+        const auto value = decodedVector.valueAt<velox::Timestamp>(row);
+        // Encode seconds (int64_t) followed by nanos (uint64_t)
+        encodeLong(value.getSeconds(), descending, rowOffsets[row]);
+        encodeUnsignedLong(value.getNanos(), descending, rowOffsets[row]);
+      }
+    }
+  } else {
+    for (auto row = 0; row < numRows; ++row) {
+      // Encode non-null indicator followed by data
+      encodeBool(!nullLast, rowOffsets[row]);
+      const auto value = decodedVector.valueAt<velox::Timestamp>(row);
+      // Encode seconds (int64_t) followed by nanos (uint64_t)
+      encodeLong(value.getSeconds(), descending, rowOffsets[row]);
+      encodeUnsignedLong(value.getNanos(), descending, rowOffsets[row]);
+    }
+  }
+}
+
 // Encodes Date type column for all rows in columnar fashion.
 void encodeDate(
     const velox::DecodedVector& decodedVector,
@@ -748,6 +778,8 @@ void encodeColumnTyped(
     encodeSmallInt(decodedVector, numRows, descending, nullLast, rowOffsets);
   } else if constexpr (Kind == velox::TypeKind::INTEGER) {
     encodeIntegerType(decodedVector, numRows, descending, nullLast, rowOffsets);
+  } else if constexpr (Kind == velox::TypeKind::TIMESTAMP) {
+    encodeTimestamp(decodedVector, numRows, descending, nullLast, rowOffsets);
   } else if constexpr (
       Kind == velox::TypeKind::VARCHAR || Kind == velox::TypeKind::VARBINARY) {
     encodeStringType(decodedVector, numRows, descending, nullLast, rowOffsets);
@@ -829,6 +861,12 @@ bool setMinValueTyped(velox::VectorPtr& result, velox::vector_size_t row) {
     return true;
   }
 
+  if constexpr (KIND == velox::TypeKind::TIMESTAMP) {
+    auto* flatVector = result->asChecked<velox::FlatVector<velox::Timestamp>>();
+    flatVector->set(row, std::numeric_limits<velox::Timestamp>::min());
+    return true;
+  }
+
   NIMBLE_UNSUPPORTED("Cannot set min value for column type: {}", KIND);
 }
 
@@ -857,6 +895,12 @@ bool setMaxValueTyped(velox::VectorPtr& result, velox::vector_size_t row) {
     return true;
   }
 
+  if constexpr (KIND == velox::TypeKind::TIMESTAMP) {
+    auto* flatVector = result->asChecked<velox::FlatVector<velox::Timestamp>>();
+    flatVector->set(row, std::numeric_limits<velox::Timestamp>::max());
+    return true;
+  }
+
   if constexpr (
       KIND == velox::TypeKind::VARCHAR || KIND == velox::TypeKind::VARBINARY) {
     // For max string value, we can't represent it directly, but we can use
@@ -876,7 +920,7 @@ bool incrementColumnValueTyped(
   using T = typename velox::TypeTraits<KIND>::NativeType;
 
   if constexpr (KIND == velox::TypeKind::BOOLEAN) {
-    auto* inputVector = column->asChecked<velox::FlatVector<bool>>();
+    const auto* inputVector = column->asChecked<velox::FlatVector<bool>>();
     auto* resultVector = result->asChecked<velox::FlatVector<bool>>();
     const auto value = inputVector->valueAt(row);
     if (!descending) {
@@ -898,7 +942,7 @@ bool incrementColumnValueTyped(
   if constexpr (
       KIND == velox::TypeKind::TINYINT || KIND == velox::TypeKind::SMALLINT ||
       KIND == velox::TypeKind::INTEGER || KIND == velox::TypeKind::BIGINT) {
-    auto* inputVector = column->asChecked<velox::FlatVector<T>>();
+    const auto* inputVector = column->asChecked<velox::FlatVector<T>>();
     auto* resultVector = result->asChecked<velox::FlatVector<T>>();
     const auto value = inputVector->valueAt(row);
     if (!descending) {
@@ -919,7 +963,7 @@ bool incrementColumnValueTyped(
 
   if constexpr (
       KIND == velox::TypeKind::REAL || KIND == velox::TypeKind::DOUBLE) {
-    auto* inputVector = column->asChecked<velox::FlatVector<T>>();
+    const auto* inputVector = column->asChecked<velox::FlatVector<T>>();
     auto* resultVector = result->asChecked<velox::FlatVector<T>>();
     const auto value = inputVector->valueAt(row);
     if (!descending) {
@@ -943,7 +987,7 @@ bool incrementColumnValueTyped(
   if constexpr (
       KIND == velox::TypeKind::VARCHAR || KIND == velox::TypeKind::VARBINARY) {
     // For strings, increment/decrement the string representation.
-    auto* inputVector =
+    const auto* inputVector =
         column->asChecked<velox::FlatVector<velox::StringView>>();
     auto* resultVector =
         result->asChecked<velox::FlatVector<velox::StringView>>();
@@ -953,6 +997,41 @@ bool incrementColumnValueTyped(
       return false;
     }
     resultVector->set(row, velox::StringView(incrementedStr));
+    return true;
+  }
+
+  if constexpr (KIND == velox::TypeKind::TIMESTAMP) {
+    const auto* inputVector =
+        column->asChecked<velox::FlatVector<velox::Timestamp>>();
+    auto* resultVector =
+        result->asChecked<velox::FlatVector<velox::Timestamp>>();
+    const auto value = inputVector->valueAt(row);
+    if (!descending) {
+      // Ascending: increment nanos first, then seconds if nanos overflow
+      const auto nanos = value.getNanos();
+      NIMBLE_DCHECK_LE(nanos, velox::Timestamp::kMaxNanos);
+      const auto seconds = value.getSeconds();
+      NIMBLE_DCHECK_LE(seconds, velox::Timestamp::kMaxSeconds);
+      if (nanos < velox::Timestamp::kMaxNanos) {
+        resultVector->set(row, velox::Timestamp(seconds, nanos + 1));
+      } else if (seconds < velox::Timestamp::kMaxSeconds) {
+        resultVector->set(row, velox::Timestamp(seconds + 1, 0));
+      } else {
+        return false;
+      }
+    } else {
+      // Descending: decrement nanos first, then seconds if nanos underflow
+      const auto nanos = value.getNanos();
+      const auto seconds = value.getSeconds();
+      if (nanos > 0) {
+        resultVector->set(row, velox::Timestamp(seconds, nanos - 1));
+      } else if (seconds > velox::Timestamp::kMinSeconds) {
+        resultVector->set(
+            row, velox::Timestamp(seconds - 1, velox::Timestamp::kMaxNanos));
+      } else {
+        return false;
+      }
+    }
     return true;
   }
 
