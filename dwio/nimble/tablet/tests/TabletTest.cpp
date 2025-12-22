@@ -106,7 +106,7 @@ std::vector<StripeData> createStripesData(
 class TabletTest : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
-    velox::memory::MemoryManager::initialize({});
+    velox::memory::MemoryManager::testingSetInstance({});
   }
 
   void SetUp() override {}

@@ -27,7 +27,7 @@ namespace {
 class MetadataBufferTest : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
-    velox::memory::MemoryManager::initialize({});
+    velox::memory::MemoryManager::testingSetInstance({});
   }
 
   void SetUp() override {}
