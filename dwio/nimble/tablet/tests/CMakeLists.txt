@@ -11,12 +11,30 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_executable(nimble_tabletReader_tests TabletTest.cpp MetadataBufferTest.cpp)
+add_executable(nimble_tabletReader_metadata_buffer_tests MetadataBufferTest.cpp)
 
-add_test(nimble_tabletReader_tests nimble_tabletReader_tests)
+add_test(nimble_tabletReader_metadata_buffer_tests nimble_tabletReader_metadata_buffer_tests)
 
 target_link_libraries(
-  nimble_tabletReader_tests
+  nimble_tabletReader_metadata_buffer_tests
+  nimble_tablet_reader
+  nimble_tablet_writer
+  nimble_common
+  velox_dwio_common
+  velox_memory
+  velox_file
+  gtest
+  gtest_main
+  glog::glog
+  Folly::folly
+)
+
+add_executable(nimble_tabletReader_tablet_tests TabletTest.cpp)
+
+add_test(nimble_tabletReader_tablet_tests nimble_tabletReader_tablet_tests)
+
+target_link_libraries(
+  nimble_tabletReader_tablet_tests
   nimble_tablet_reader
   nimble_tablet_writer
   nimble_common

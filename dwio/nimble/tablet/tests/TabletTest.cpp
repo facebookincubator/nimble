@@ -64,7 +64,7 @@ void printData(std::string prefix, std::string_view data) {
     output += folly::to<std::string>((uint8_t)data[i]) + " ";
   }
 
-  LOG(INFO) << prefix << " (" << (void*)data.data() << "): " << output;
+  VLOG(1) << prefix << " (" << (void*)data.data() << "): " << output;
 }
 
 std::vector<StripeData> createStripesData(
@@ -291,7 +291,7 @@ class TabletTest : public ::testing::Test {
     };
 
     auto seed = folly::Random::rand32();
-    LOG(INFO) << "seed: " << seed;
+    VLOG(1) << "seed: " << seed;
     std::mt19937 rng(seed);
 
     nimble::Buffer buffer{*pool_};
@@ -299,7 +299,7 @@ class TabletTest : public ::testing::Test {
 
     for (auto flushThreshold : metadataFlushThresholds) {
       for (auto compressionThreshold : metadataCompressionThresholds) {
-        LOG(INFO) << "FlushThreshold: " << flushThreshold
+        VLOG(1) << "FlushThreshold: " << flushThreshold
                   << ", CompressionThreshold: " << compressionThreshold;
         parameterizedTest(
             flushThreshold, compressionThreshold, stripesData, errorVerifier);
@@ -499,7 +499,7 @@ class TabletTest : public ::testing::Test {
 
     nimble::Buffer buffer{*pool_};
 
-    LOG(INFO) << GREEN
+    VLOG(1) << GREEN
               << "Stream Deduplication Test. No duplicates: " << noDuplicates
               << ", Chunk Count: " << chunkCount
               << ", Even Chunks: " << evenChunks << RESET_COLOR;
@@ -647,7 +647,7 @@ TEST_F(TabletTest, checksumValidation) {
       1024 * 1024 * 1024};
 
   auto seed = folly::Random::rand32();
-  LOG(INFO) << "seed: " << seed;
+  VLOG(1) << "seed: " << seed;
   std::mt19937 rng(seed);
 
   for (auto metadataCompressionThreshold : metadataCompressionThresholds) {
@@ -671,7 +671,7 @@ TEST_F(TabletTest, checksumValidation) {
 
 TEST_F(TabletTest, optionalSections) {
   auto seed = folly::Random::rand32();
-  LOG(INFO) << "seed: " << seed;
+  VLOG(1) << "seed: " << seed;
   std::mt19937 rng{seed};
 
   std::string file;
@@ -851,7 +851,7 @@ TEST_F(TabletTest, hasOptionalSectionEmpty) {
 
 TEST_F(TabletTest, optionalSectionsPreload) {
   auto seed = folly::Random::rand32();
-  LOG(INFO) << "seed: " << seed;
+  VLOG(1) << "seed: " << seed;
   std::mt19937 rng{seed};
 
   for ([[maybe_unused]] const auto footerCompressionThreshold :
@@ -1234,7 +1234,7 @@ TEST_F(TabletTest, referenceCountedCacheStressSaveEntries) {
 TEST_F(TabletTest, deduplicateStreams) {
   auto seed = FLAGS_tablet_tests_seed > 0 ? FLAGS_tablet_tests_seed
                                           : folly::Random::rand32();
-  LOG(INFO) << "seed: " << seed;
+  VLOG(1) << "seed: " << seed;
   std::mt19937 rng(seed);
 
   for (auto noDuplicates : {true, false}) {
