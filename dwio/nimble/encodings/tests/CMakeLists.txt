@@ -26,6 +26,7 @@ add_executable(
   RleEncodingTests.cpp
   SentinelEncodingTests.cpp
   StatisticsTests.cpp
+  EncodingSeekTest.cpp
 )
 
 add_test(nimble_encodings_tests nimble_encodings_tests)

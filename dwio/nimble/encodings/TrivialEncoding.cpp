@@ -26,9 +26,9 @@ TrivialEncoding<std::string_view>::TrivialEncoding(
       buffer_{&memoryPool},
       dataUncompressed_{&memoryPool} {
   auto pos = data.data() + kDataCompressionOffset;
-  auto dataCompressionType =
+  const auto dataCompressionType =
       static_cast<CompressionType>(encoding::readChar(pos));
-  auto lengthsSize = encoding::readUint32(pos);
+  const auto lengthsSize = encoding::readUint32(pos);
   lengths_ = EncodingFactory::decode(memoryPool, {pos, lengthsSize});
   blob_ = pos + lengthsSize;
 
@@ -75,6 +75,42 @@ void TrivialEncoding<std::string_view>::materialize(
 
 uint64_t TrivialEncoding<std::string_view>::uncompressedDataBytes() const {
   return uncompressedDataBytes_;
+}
+
+std::optional<uint32_t> TrivialEncoding<std::string_view>::seekAtOrAfter(
+    const void* value) {
+  const auto* seekValue = static_cast<const std::string_view*>(value);
+  NIMBLE_CHECK_NOT_NULL(seekValue);
+
+  reset();
+  const uint32_t totalRows = rowCount();
+
+  if (totalRows == 0) {
+    return std::nullopt;
+  }
+
+  buffer_.resize(totalRows);
+  lengths_->materialize(totalRows, buffer_.data());
+
+  std::vector<std::string_view> values;
+  values.reserve(totalRows);
+  const char* pos = pos_;
+  for (uint32_t i = 0; i < totalRows; ++i) {
+    values.emplace_back(pos, buffer_[i]);
+    pos += buffer_[i];
+  }
+
+  auto it = std::lower_bound(
+      values.begin(),
+      values.end(),
+      *seekValue,
+      [](std::string_view a, std::string_view b) { return a < b; });
+
+  if (it == values.end()) {
+    return std::nullopt;
+  }
+
+  return std::distance(values.begin(), it);
 }
 
 std::string_view TrivialEncoding<std::string_view>::encode(
