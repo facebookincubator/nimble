@@ -64,7 +64,7 @@ void printData(std::string prefix, std::string_view data) {
     output += folly::to<std::string>((uint8_t)data[i]) + " ";
   }
 
-  LOG(INFO) << prefix << " (" << (void*)data.data() << "): " << output;
+  VLOG(1) << prefix << " (" << (void*)data.data() << "): " << output;
 }
 
 std::vector<StripeData> createStripesData(
@@ -106,7 +106,7 @@ std::vector<StripeData> createStripesData(
 class TabletTest : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
-    velox::memory::MemoryManager::initialize({});
+    velox::memory::MemoryManager::testingSetInstance({});
   }
 
   void SetUp() override {}
@@ -299,8 +299,8 @@ class TabletTest : public ::testing::Test {
 
     for (auto flushThreshold : metadataFlushThresholds) {
       for (auto compressionThreshold : metadataCompressionThresholds) {
-        LOG(INFO) << "FlushThreshold: " << flushThreshold
-                  << ", CompressionThreshold: " << compressionThreshold;
+        VLOG(1) << "FlushThreshold: " << flushThreshold
+                << ", CompressionThreshold: " << compressionThreshold;
         parameterizedTest(
             flushThreshold, compressionThreshold, stripesData, errorVerifier);
       }
