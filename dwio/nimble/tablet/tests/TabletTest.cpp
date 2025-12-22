@@ -291,7 +291,7 @@ class TabletTest : public ::testing::Test {
     };
 
     auto seed = folly::Random::rand32();
-    VLOG(1) << "seed: " << seed;
+    LOG(INFO) << "seed: " << seed;
     std::mt19937 rng(seed);
 
     nimble::Buffer buffer{*pool_};
@@ -647,7 +647,7 @@ TEST_F(TabletTest, checksumValidation) {
       1024 * 1024 * 1024};
 
   auto seed = folly::Random::rand32();
-  VLOG(1) << "seed: " << seed;
+  LOG(INFO) << "seed: " << seed;
   std::mt19937 rng(seed);
 
   for (auto metadataCompressionThreshold : metadataCompressionThresholds) {
@@ -671,7 +671,7 @@ TEST_F(TabletTest, checksumValidation) {
 
 TEST_F(TabletTest, optionalSections) {
   auto seed = folly::Random::rand32();
-  VLOG(1) << "seed: " << seed;
+  LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
 
   std::string file;
@@ -851,7 +851,7 @@ TEST_F(TabletTest, hasOptionalSectionEmpty) {
 
 TEST_F(TabletTest, optionalSectionsPreload) {
   auto seed = folly::Random::rand32();
-  VLOG(1) << "seed: " << seed;
+  LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
 
   for ([[maybe_unused]] const auto footerCompressionThreshold :
@@ -1234,7 +1234,7 @@ TEST_F(TabletTest, referenceCountedCacheStressSaveEntries) {
 TEST_F(TabletTest, deduplicateStreams) {
   auto seed = FLAGS_tablet_tests_seed > 0 ? FLAGS_tablet_tests_seed
                                           : folly::Random::rand32();
-  VLOG(1) << "seed: " << seed;
+  LOG(INFO) << "seed: " << seed;
   std::mt19937 rng(seed);
 
   for (auto noDuplicates : {true, false}) {
