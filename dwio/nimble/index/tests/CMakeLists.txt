@@ -11,7 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_executable(nimble_index_tests KeyEncoderTest.cpp)
+add_executable(
+  nimble_index_tests
+  KeyEncoderTest.cpp
+  StripeIndexGroupTest.cpp
+  TabletIndexTest.cpp
+  TabletIndexTestBase.cpp
+)
 
 add_test(nimble_index_tests nimble_index_tests)
 
