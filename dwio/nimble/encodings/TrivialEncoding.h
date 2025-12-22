@@ -111,6 +111,8 @@ class TrivialEncoding<std::string_view> final
   // Returns the total size of the characters payload in bytes
   uint64_t uncompressedDataBytes() const;
 
+  std::optional<uint32_t> seekAtOrAfter(const void* value) final;
+
   static std::string_view encode(
       EncodingSelection<std::string_view>& selection,
       std::span<const std::string_view> values,

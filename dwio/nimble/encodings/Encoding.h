@@ -130,6 +130,10 @@ class Encoding {
   // iterator; if you need to move your row pointer back, reset() and skip().
   virtual void skip(uint32_t rowCount) = 0;
 
+  virtual std::optional<uint32_t> seekAtOrAfter(const void* value) {
+    NIMBLE_UNSUPPORTED("seekAtOrAfter is not supported.");
+  }
+
   // Materializes the next |rowCount| rows into buffer. Advances
   // the row pointer |rowCount|.
   //
