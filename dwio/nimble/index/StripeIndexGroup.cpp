@@ -180,8 +180,6 @@ std::optional<ChunkLocation> StripeIndexGroup::lookupChunk(
   NIMBLE_CHECK_NOT_NULL(chunkRows);
   NIMBLE_CHECK_LE(endChunkIndex, chunkRows->size());
 
-  LOG(ERROR) << "startChunkIndex " << startChunkIndex << " end "
-             << endChunkIndex;
   // Binary search within the specific stream's chunk range
   const auto beginIt = chunkRows->begin() + startChunkIndex;
   const auto endIt = chunkRows->begin() + endChunkIndex;
@@ -191,7 +189,6 @@ std::optional<ChunkLocation> StripeIndexGroup::lookupChunk(
   }
 
   const uint32_t chunkIndex = it - chunkRows->begin();
-  LOG(ERROR) << "chunk index " << chunkIndex;
   const auto* chunkOffsets = positionIndex->stream_chunk_offsets();
   NIMBLE_CHECK_NOT_NULL(chunkOffsets);
   return ChunkLocation{
