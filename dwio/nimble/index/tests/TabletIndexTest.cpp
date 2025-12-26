@@ -88,17 +88,17 @@ TEST_F(TabletIndexTest, basic) {
   EXPECT_EQ(cols[1], "col2");
   EXPECT_EQ(cols[2], "col3");
 
-  auto metadata0 = tabletIndex->indexGroupMetadata(0);
+  auto metadata0 = tabletIndex->groupIndexMetadata(0);
   EXPECT_EQ(metadata0.offset(), 0);
   EXPECT_GT(metadata0.size(), 0);
   EXPECT_EQ(metadata0.compressionType(), CompressionType::Uncompressed);
 
-  auto metadata1 = tabletIndex->indexGroupMetadata(1);
+  auto metadata1 = tabletIndex->groupIndexMetadata(1);
   EXPECT_EQ(metadata1.offset(), metadata0.size());
   EXPECT_GT(metadata1.size(), 0);
   EXPECT_EQ(metadata1.compressionType(), CompressionType::Uncompressed);
 
-  auto metadata2 = tabletIndex->indexGroupMetadata(2);
+  auto metadata2 = tabletIndex->groupIndexMetadata(2);
   EXPECT_EQ(metadata2.offset(), metadata0.size() + metadata1.size());
   EXPECT_GT(metadata2.size(), 0);
   EXPECT_EQ(metadata2.compressionType(), CompressionType::Uncompressed);

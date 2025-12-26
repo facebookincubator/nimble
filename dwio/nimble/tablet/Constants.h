@@ -18,7 +18,7 @@
 namespace facebook::nimble {
 
 constexpr uint16_t kMagicNumber = 0xA1FA;
-constexpr uint64_t kInitialFooterSize = 8 * 1024 * 1024; // 8Mb
+constexpr uint64_t kInitialFooterSize = 8 * 1024 * 1024; // 8MB
 constexpr uint16_t kVersionMajor = 0;
 constexpr uint16_t kVersionMinor = 1;
 
@@ -32,5 +32,6 @@ constexpr uint32_t kPostscriptChecksumedSize = 5;
 constexpr std::string_view kSchemaSection = "columnar.schema";
 constexpr std::string_view kMetadataSection = "columnar.metadata";
 constexpr std::string_view kStatsSection = "columnar.stats";
+constexpr std::string_view kIndexSection = "columnar.index";
 
 } // namespace facebook::nimble

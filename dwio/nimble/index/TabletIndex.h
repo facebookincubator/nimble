@@ -19,6 +19,7 @@
 #include <optional>
 #include <string_view>
 #include <vector>
+
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 
 namespace facebook::nimble {
@@ -53,7 +54,7 @@ struct StripeLocation {
 ///   if (location) {
 ///     auto stripeGroupIndex =
 ///     tabletReader.stripeGroupIndex(location->stripeIndex); auto metadata =
-///     index->indexGroupMetadata(stripeGroupIndex);
+///     index->groupIndexMetadata(stripeGroupIndex);
 ///   }
 ///   ... read stripe data ...
 ///
@@ -61,11 +62,10 @@ class TabletIndex {
  public:
   /// Creates a TabletIndex for efficient key-based stripe lookups.
   ///
-  /// @param indexSection The index section buffer containing the serialized
+  /// @param indexSection The index section containing the serialized
   ///        index data
   /// @return A unique pointer to a newly created TabletIndex
-  static std::unique_ptr<TabletIndex> create(
-      std::unique_ptr<MetadataBuffer> indexSection);
+  static std::unique_ptr<TabletIndex> create(Section indexSection);
 
   /// Looks up the stripe location containing the specified encoded key using
   /// binary search.
@@ -120,12 +120,16 @@ class TabletIndex {
   /// @param groupIndex The zero-based stripe group index.
   /// @return Metadata section containing offset, size, and
   ///         compression info for the stripe index group
-  MetadataSection indexGroupMetadata(uint32_t groupIndex) const;
+  MetadataSection groupIndexMetadata(uint32_t groupIndex) const;
+
+  /// Returns a reference to the root index metadata buffer.
+  /// This is needed by StripeIndexGroup to read stripe group information.
+  const MetadataBuffer& rootIndex() const;
 
  private:
-  explicit TabletIndex(std::unique_ptr<MetadataBuffer> indexSection);
+  explicit TabletIndex(Section indexSection);
 
-  const std::unique_ptr<MetadataBuffer> indexSection_;
+  const Section indexSection_;
   const uint32_t numStripes_;
   const std::vector<std::string_view> stripeKeys_;
   const std::vector<std::string> indexColumns_;

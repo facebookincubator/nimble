@@ -17,7 +17,6 @@
 
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
-#include "dwio/nimble/tablet/TabletReader.h"
 
 #include <algorithm>
 
@@ -29,16 +28,34 @@ const T* asFlatBuffersRoot(std::string_view content) {
   return flatbuffers::GetRoot<T>(content.data());
 }
 
-uint32_t getStripeCount(const MetadataBuffer* metadata) {
-  const auto* root =
-      asFlatBuffersRoot<serialization::StripeIndexGroup>(metadata->content());
-  return root->stripe_count();
+uint32_t getStripeCount(
+    const MetadataBuffer& rootIndex,
+    uint32_t stripeGroupIndex) {
+  const auto* indexRoot =
+      asFlatBuffersRoot<serialization::Index>(rootIndex.content());
+  auto* stripeCounts = indexRoot->stripe_counts();
+  NIMBLE_CHECK_NOT_NULL(stripeCounts);
+  NIMBLE_CHECK_LT(stripeGroupIndex, stripeCounts->size());
+  const uint32_t endStripe = stripeCounts->Get(stripeGroupIndex);
+  const uint32_t startStripe =
+      stripeGroupIndex == 0 ? 0 : stripeCounts->Get(stripeGroupIndex - 1);
+  return endStripe - startStripe;
 }
 
-uint32_t getStreamCount(const MetadataBuffer* metadata) {
+uint32_t getFirstStripe(
+    const MetadataBuffer& rootIndex,
+    uint32_t stripeGroupIndex) {
+  const auto* indexRoot =
+      asFlatBuffersRoot<serialization::Index>(rootIndex.content());
+  auto* stripeCounts = indexRoot->stripe_counts();
+  NIMBLE_CHECK_NOT_NULL(stripeCounts);
+  NIMBLE_CHECK_LT(stripeGroupIndex, stripeCounts->size());
+  return stripeGroupIndex == 0 ? 0 : stripeCounts->Get(stripeGroupIndex - 1);
+}
+
+uint32_t getStreamCount(const MetadataBuffer* metadata, uint32_t stripeCount) {
   const auto* root =
       asFlatBuffersRoot<serialization::StripeIndexGroup>(metadata->content());
-  const uint32_t stripeCount = root->stripe_count();
   NIMBLE_CHECK_GT(stripeCount, 0);
   const auto* positionIndex = root->position_index();
   NIMBLE_CHECK_NOT_NULL(positionIndex);
@@ -57,37 +74,23 @@ std::shared_ptr<StripeIndexGroup> StripeIndexGroup::create(
     uint32_t stripeGroupIndex,
     const MetadataBuffer& rootIndex,
     std::unique_ptr<MetadataBuffer> groupIndex) {
-  // Find the first stripe that uses this stripe index group
-  const auto* indexRoot =
-      asFlatBuffersRoot<serialization::Index>(rootIndex.content());
-  auto* groupIndices = indexRoot->stripe_group_indices()->data();
-  const auto groupIndicesSize = indexRoot->stripe_group_indices()->size();
-  uint32_t firstStripe = groupIndicesSize;
-  for (uint32_t stripeIndex = 0; stripeIndex < groupIndicesSize;
-       ++stripeIndex) {
-    if (groupIndices[stripeIndex] == stripeGroupIndex) {
-      firstStripe = stripeIndex;
-      break;
-    }
-  }
-  NIMBLE_CHECK_LT(
-      firstStripe,
-      indexRoot->stripe_group_indices()->size(),
-      "No stripe found for stripe index group");
+  const uint32_t firstStripe = getFirstStripe(rootIndex, stripeGroupIndex);
+  const uint32_t stripeCount = getStripeCount(rootIndex, stripeGroupIndex);
 
   return std::shared_ptr<StripeIndexGroup>(new StripeIndexGroup(
-      stripeGroupIndex, firstStripe, std::move(groupIndex)));
+      stripeGroupIndex, firstStripe, stripeCount, std::move(groupIndex)));
 }
 
 StripeIndexGroup::StripeIndexGroup(
     uint32_t groupIndex,
     uint32_t firstStripe,
+    uint32_t stripeCount,
     std::unique_ptr<MetadataBuffer> metadata)
     : metadata_{std::move(metadata)},
       groupIndex_{groupIndex},
       firstStripe_{firstStripe},
-      stripeCount_{getStripeCount(metadata_.get())},
-      streamCount_{getStreamCount(metadata_.get())} {}
+      stripeCount_{stripeCount},
+      streamCount_{getStreamCount(metadata_.get(), stripeCount)} {}
 
 std::optional<ChunkLocation> StripeIndexGroup::lookupChunk(
     uint32_t stripe,

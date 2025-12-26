@@ -18,32 +18,61 @@ include "Footer.fbs";
 
 namespace facebook.nimble.serialization;
 
+/// Value index for key stream data within a stripe group.
+/// Contains stream-level and chunk-level metadata for key-based lookups.
 table StripeValueIndex {
+  /// Byte offset of key stream for each stripe (relative to file start).
   key_stream_offsets:[uint32];
+  /// Byte size of key stream for each stripe.
   key_stream_sizes:[uint32];
+  /// Accumulated chunk counts per stripe.
+  /// For stripe i: chunk count = key_stream_chunk_counts[i] - (i > 0 ? key_stream_chunk_counts[i-1] : 0)
   key_stream_chunk_counts:[uint32];
+  /// Accumulated row counts per chunk (prefix sum of row counts).
+  /// For chunk j: start row = (j > 0 ? key_stream_chunk_rows[j-1] : 0)
   key_stream_chunk_rows:[uint32];
-  key_stream_chunk_keys:[string];
+  /// Byte offset of each chunk within its key stream.
   key_stream_chunk_offsets:[uint32];
+  /// Last key value for each chunk, used for binary search during lookups.
+  key_stream_chunk_keys:[string];
 }
 
+/// Position index for stream data within a stripe group.
+/// Enables chunk-level seeking within streams based on row IDs.
 table StripePositionIndex {
+  /// Chunk count per (stripe, stream) pair, flattened in row-major order.
   stream_chunk_counts:[uint32];
+  /// Start index in the chunk arrays for each (stripe, stream) pair.
   stream_chunk_indexes:[uint32];
+  /// Accumulated row counts per chunk (prefix sum of row counts).
+  /// For chunk j: start row = (j > 0 ? stream_chunk_rows[j-1] : 0)
   stream_chunk_rows:[uint32];
+  /// Byte offset of each chunk within its stream.
   stream_chunk_offsets:[uint32];
 }
 
+/// Index data for a group of stripes.
+/// Contains both value index (for key-based lookups) and position index (for row-based seeking).
 table StripeIndexGroup {
-  stripe_count:uint32;
   value_index:StripeValueIndex;
   position_index:StripePositionIndex;
 }
 
+/// Root index table for the entire file.
+/// Stored in the optional sections of the footer.
 table Index {
+  /// Key boundaries for each stripe.
+  /// First element is the min key of the first stripe.
+  /// Subsequent elements are the max key of each stripe.
+  /// Size = stripe_count + 1
   stripe_keys:[string];
+  /// Names of columns used for indexing.
   index_columns:[string];
-  stripe_group_indices:[uint32];
+  /// Accumulated stripe counts per group (prefix sum).
+  /// For group i: stripe count = stripe_counts[i] - (i > 0 ? stripe_counts[i-1] : 0)
+  /// For group i: first stripe = (i > 0 ? stripe_counts[i-1] : 0)
+  stripe_counts:[uint32];
+  /// Metadata sections for each stripe index group.
   stripe_index_groups:[MetadataSection];
 }
 

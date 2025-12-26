@@ -60,6 +60,11 @@ class Section {
     return content();
   }
 
+  /// Returns a reference to the underlying MetadataBuffer.
+  const MetadataBuffer& buffer() const {
+    return buffer_;
+  }
+
  private:
   MetadataBuffer buffer_;
 };
