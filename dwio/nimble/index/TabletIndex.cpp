@@ -19,26 +19,26 @@
 #include <algorithm>
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
+#include "dwio/nimble/tablet/MetadataBuffer.h"
 
 namespace facebook::nimble {
 
 namespace {
-const serialization::Index* getIndexRoot(const MetadataBuffer& indexSection) {
+const serialization::Index* getIndexRoot(const Section& indexSection) {
   const auto* indexRoot =
       flatbuffers::GetRoot<serialization::Index>(indexSection.content().data());
   NIMBLE_CHECK_NOT_NULL(indexRoot);
   return indexRoot;
 }
 
-uint32_t getStripeCount(const MetadataBuffer& indexSection) {
+uint32_t getStripeCount(const Section& indexSection) {
   const auto* indexRoot = getIndexRoot(indexSection);
   const auto* stripeKeys = indexRoot->stripe_keys();
   NIMBLE_CHECK_NOT_NULL(stripeKeys);
   return stripeKeys->size() - 1;
 }
 
-std::vector<std::string_view> getStripeKeys(
-    const MetadataBuffer& indexSection) {
+std::vector<std::string_view> getStripeKeys(const Section& indexSection) {
   const auto* indexRoot = getIndexRoot(indexSection);
   const auto* stripeKeys = indexRoot->stripe_keys();
   NIMBLE_CHECK_NOT_NULL(stripeKeys);
@@ -50,7 +50,7 @@ std::vector<std::string_view> getStripeKeys(
   return result;
 }
 
-std::vector<std::string> getIndexColumns(const MetadataBuffer& indexSection) {
+std::vector<std::string> getIndexColumns(const Section& indexSection) {
   const auto* indexRoot = getIndexRoot(indexSection);
   const auto* indexColumns = indexRoot->index_columns();
   NIMBLE_CHECK_NOT_NULL(indexColumns);
@@ -64,21 +64,20 @@ std::vector<std::string> getIndexColumns(const MetadataBuffer& indexSection) {
 
 } // namespace
 
-std::unique_ptr<TabletIndex> TabletIndex::create(
-    std::unique_ptr<MetadataBuffer> indexSection) {
+std::unique_ptr<TabletIndex> TabletIndex::create(Section indexSection) {
   return std::unique_ptr<TabletIndex>(new TabletIndex(std::move(indexSection)));
 }
 
-TabletIndex::TabletIndex(std::unique_ptr<MetadataBuffer> indexSection)
+TabletIndex::TabletIndex(Section indexSection)
     : indexSection_{std::move(indexSection)},
-      numStripes_{getStripeCount(*indexSection_)},
-      stripeKeys_{getStripeKeys(*indexSection_)},
-      indexColumns_{getIndexColumns(*indexSection_)} {
+      numStripes_{getStripeCount(indexSection_)},
+      stripeKeys_{getStripeKeys(indexSection_)},
+      indexColumns_{getIndexColumns(indexSection_)} {
   NIMBLE_CHECK(!indexColumns_.empty());
   NIMBLE_CHECK_EQ(numStripes_ + 1, stripeKeys_.size());
 
   // Validate consistency between stripe group indices and stripe index groups
-  const auto* indexRoot = getIndexRoot(*indexSection_);
+  const auto* indexRoot = getIndexRoot(indexSection_);
   const auto* stripeIndexGroups = indexRoot->stripe_index_groups();
   NIMBLE_CHECK_NOT_NULL(stripeIndexGroups);
   NIMBLE_CHECK_GE(
@@ -113,8 +112,8 @@ std::optional<StripeLocation> TabletIndex::lookup(
   return StripeLocation{targetStripe};
 }
 
-MetadataSection TabletIndex::indexGroupMetadata(uint32_t groupIndex) const {
-  const auto* indexRoot = getIndexRoot(*indexSection_);
+MetadataSection TabletIndex::groupIndexMetadata(uint32_t groupIndex) const {
+  const auto* indexRoot = getIndexRoot(indexSection_);
   const auto* indexGroupSections = indexRoot->stripe_index_groups();
   NIMBLE_CHECK_NOT_NULL(indexGroupSections);
   NIMBLE_CHECK_LT(groupIndex, indexGroupSections->size());
@@ -123,5 +122,9 @@ MetadataSection TabletIndex::indexGroupMetadata(uint32_t groupIndex) const {
       metadata->offset(),
       metadata->size(),
       static_cast<CompressionType>(metadata->compression_type())};
+}
+
+const MetadataBuffer& TabletIndex::rootIndex() const {
+  return indexSection_.buffer();
 }
 } // namespace facebook::nimble

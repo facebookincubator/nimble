@@ -179,6 +179,17 @@ TEST_F(MetadataBufferTest, sectionStringViewConversion) {
   EXPECT_EQ(content, kTestData);
 }
 
+TEST_F(MetadataBufferTest, sectionBuffer) {
+  nimble::MetadataBuffer buffer(
+      *pool_, kTestData, nimble::CompressionType::Uncompressed);
+
+  nimble::Section section{std::move(buffer)};
+
+  const nimble::MetadataBuffer& bufferRef = section.buffer();
+  EXPECT_EQ(bufferRef.content(), kTestData);
+  EXPECT_EQ(bufferRef.content(), section.content());
+}
+
 TEST_F(MetadataBufferTest, metadataSectionConstructor) {
   uint64_t offset = 100;
   uint32_t size = 200;

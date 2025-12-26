@@ -28,19 +28,17 @@ TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
     const std::string& minKey,
     const std::vector<Stripe>& stripes,
     const std::vector<int>& stripeGroups) {
-  IndexBuffers result;
+  // Build stripe_counts - accumulated number of stripes up to each group.
+  std::vector<uint32_t> stripeCounts;
+  stripeCounts.reserve(stripeGroups.size());
+  uint32_t accumulatedStripes = 0;
+  for (uint32_t groupIdx = 0; groupIdx < stripeGroups.size(); ++groupIdx) {
+    accumulatedStripes += stripeGroups[groupIdx];
+    stripeCounts.push_back(accumulatedStripes);
+  }
 
   flatbuffers::FlatBufferBuilder builder;
-
-  // Build stripe_group_indices - for each stripe, which group it belongs to.
-  // Size equals number of stripes.
-  std::vector<uint32_t> stripeGroupIndices;
-  stripeGroupIndices.reserve(stripes.size());
-  for (uint32_t groupIdx = 0; groupIdx < stripeGroups.size(); ++groupIdx) {
-    for (int i = 0; i < stripeGroups[groupIdx]; ++i) {
-      stripeGroupIndices.push_back(groupIdx);
-    }
-  }
+  IndexBuffers result;
 
   // Build StripeIndexGroup for each group and serialize to buffer
   std::vector<flatbuffers::Offset<serialization::MetadataSection>>
@@ -123,8 +121,8 @@ TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
         groupBuilder.CreateVector(keyStreamSizes),
         groupBuilder.CreateVector(keyStreamChunkCounts),
         groupBuilder.CreateVector(keyStreamChunkRows),
-        groupBuilder.CreateVector(keyStreamChunkKeys),
-        groupBuilder.CreateVector(keyStreamChunkOffsets));
+        groupBuilder.CreateVector(keyStreamChunkOffsets),
+        groupBuilder.CreateVector(keyStreamChunkKeys));
 
     // Build StripePositionIndex for this group
     auto positionIndex = serialization::CreateStripePositionIndex(
@@ -136,7 +134,7 @@ TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
 
     // Build StripeIndexGroup combining all stripes in this group
     auto stripeIndexGroup = serialization::CreateStripeIndexGroup(
-        groupBuilder, groupStripeCount, valueIndex, positionIndex);
+        groupBuilder, valueIndex, positionIndex);
     groupBuilder.Finish(stripeIndexGroup);
 
     // Record offset before appending
@@ -174,7 +172,7 @@ TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
   // Create all vectors right before CreateIndex to avoid offset invalidation
   auto stripeKeysVector = builder.CreateVector(stripeKeyOffsets);
   auto indexColumnsVector = builder.CreateVector(indexColumnOffsets);
-  auto stripeGroupIndicesVector = builder.CreateVector(stripeGroupIndices);
+  auto stripeCountsVector = builder.CreateVector(stripeCounts);
   auto stripeIndexGroupsVector =
       builder.CreateVector(stripeIndexGroupMetadataOffsets);
 
@@ -183,7 +181,7 @@ TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
       builder,
       stripeKeysVector,
       indexColumnsVector,
-      stripeGroupIndicesVector,
+      stripeCountsVector,
       stripeIndexGroupsVector);
 
   builder.Finish(index);
@@ -197,8 +195,8 @@ TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
 
 std::unique_ptr<TabletIndex> TabletIndexTestBase::createTabletIndex(
     const IndexBuffers& indexBuffers) {
-  auto indexSection = std::make_unique<MetadataBuffer>(
-      *pool_, indexBuffers.rootIndex, CompressionType::Uncompressed);
+  Section indexSection{MetadataBuffer(
+      *pool_, indexBuffers.rootIndex, CompressionType::Uncompressed)};
   return TabletIndex::create(std::move(indexSection));
 }
 
@@ -211,7 +209,7 @@ std::shared_ptr<StripeIndexGroup> TabletIndexTestBase::createStripeIndexGroup(
 
   // Get the metadata for the specified stripe group from the root index
   auto tabletIndex = createTabletIndex(indexBuffers);
-  auto metadata = tabletIndex->indexGroupMetadata(stripeGroupIndex);
+  auto metadata = tabletIndex->groupIndexMetadata(stripeGroupIndex);
 
   // Create the group index MetadataBuffer from the indexGroups buffer
   // using the offset and size from the metadata

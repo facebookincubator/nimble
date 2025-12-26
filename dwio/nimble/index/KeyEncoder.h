@@ -160,14 +160,6 @@ class KeyEncoder {
 
   uint64_t estimateEncodedSize();
 
-  // Encodes a single column for all rows in columnar fashion.
-  void encodeColumn(
-      const velox::DecodedVector& decodedVector,
-      velox::vector_size_t numRows,
-      bool nullLast,
-      bool descending,
-      std::vector<char*>& rowOffsets) const;
-
   // Encodes a RowVector and returns encoded keys as strings.
   // Each row in the input vector produces one encoded key string.
   std::vector<std::string> encode(const velox::RowVectorPtr& input);

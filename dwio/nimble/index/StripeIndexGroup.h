@@ -77,6 +77,7 @@ class StripeIndexGroup {
   StripeIndexGroup(
       uint32_t groupIndex,
       uint32_t firstStripe,
+      uint32_t stripeCount,
       std::unique_ptr<MetadataBuffer> metadata);
 
   inline uint32_t stripeOffset(uint32_t stripe) const {
