@@ -15,7 +15,6 @@
  */
 #include "dwio/nimble/index/KeyEncoder.h"
 
-#include "dwio/nimble/common/Exceptions.h"
 #include "velox/common/base/SimdUtil.h"
 #include "velox/type/Timestamp.h"
 #include "velox/vector/FlatVector.h"
@@ -1131,6 +1130,27 @@ KeyEncoder::KeyEncoder(
   }
 }
 
+void KeyEncoder::encodeColumn(
+    const velox::DecodedVector& decodedVector,
+    velox::vector_size_t numRows,
+    bool descending,
+    bool nullLast,
+    std::vector<char*>& rowOffsets) {
+  const auto typeKind = decodedVector.base()->typeKind();
+  if (decodedVector.base()->type()->isDate()) {
+    encodeDate(decodedVector, numRows, descending, nullLast, rowOffsets);
+  } else {
+    VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(
+        encodeColumnTyped,
+        typeKind,
+        decodedVector,
+        numRows,
+        descending,
+        nullLast,
+        rowOffsets);
+  }
+}
+
 std::optional<velox::RowVectorPtr> KeyEncoder::createIncrementedBound(
     const velox::RowVectorPtr& bound) const {
   const auto& children = bound->children();
@@ -1165,66 +1185,6 @@ std::optional<velox::RowVectorPtr> KeyEncoder::createIncrementedBound(
   return std::nullopt;
 }
 
-void KeyEncoder::encode(
-    const velox::VectorPtr& input,
-    Vector<std::string_view>& encodedKeys,
-    Buffer& buffer) {
-  NIMBLE_CHECK_GT(input->size(), 0);
-  SCOPE_EXIT {
-    encodedSizes_.clear();
-  };
-  decodedVector_.decode(*input, /*loadLazy=*/true);
-  const auto* rowBase = decodedVector_.base()->asChecked<velox::RowVector>();
-  const auto& children = rowBase->children();
-  for (auto i = 0; i < keyChannels_.size(); ++i) {
-    childDecodedVectors_[i].decode(*children[keyChannels_[i]]);
-  }
-  const auto totalBytes = estimateEncodedSize();
-  auto* const reserved = buffer.reserve(totalBytes);
-
-  const auto numRows = input->size();
-  const auto numKeys = keyChannels_.size();
-
-  // Compute buffer start offsets for each row
-  std::vector<char*> rowOffsets(numRows);
-  rowOffsets[0] = reserved;
-  for (auto row = 1; row < numRows; ++row) {
-    rowOffsets[row] = rowOffsets[row - 1] + encodedSizes_[row - 1];
-  }
-
-  // Encode column-by-column for better cache locality
-  for (auto i = 0; i < numKeys; ++i) {
-    const bool nullLast = !sortOrders_[i].isNullsFirst();
-    const bool descending = !sortOrders_[i].isAscending();
-    const auto& decodedVector = childDecodedVectors_[i];
-
-    // Encode column data for all rows (null indicator is encoded within each
-    // type's encoding function)
-    const auto typeKind = decodedVector.base()->typeKind();
-    if (decodedVector.base()->type()->isDate()) {
-      encodeDate(decodedVector, numRows, descending, nullLast, rowOffsets);
-    } else {
-      VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(
-          encodeColumnTyped,
-          typeKind,
-          decodedVector,
-          numRows,
-          descending,
-          nullLast,
-          rowOffsets);
-    }
-  }
-
-  // Build encoded keys string views
-  encodedKeys.reserve(encodedKeys.size() + numRows);
-  size_t offset{0};
-  for (auto row = 0; row < numRows; ++row) {
-    encodedKeys.emplace_back(reserved + offset, encodedSizes_[row]);
-    offset += encodedSizes_[row];
-    NIMBLE_CHECK_EQ(rowOffsets[row], reserved + offset);
-  }
-}
-
 uint64_t KeyEncoder::estimateEncodedSize() {
   const auto numRows = decodedVector_.size();
   encodedSizes_.resize(numRows, 0);
@@ -1248,9 +1208,11 @@ uint64_t KeyEncoder::estimateEncodedSize() {
 
 std::vector<std::string> KeyEncoder::encode(const velox::RowVectorPtr& input) {
   Buffer buffer{*pool_};
-  Vector<std::string_view> encodedKeys{pool_};
-  // Call the public encode method
-  encode(input, encodedKeys, buffer);
+  std::vector<std::string_view> encodedKeys;
+  // Call the templated encode method with a buffer allocator lambda
+  encode(input, encodedKeys, [&buffer](size_t size) -> void* {
+    return buffer.reserve(size);
+  });
 
   // Copy encoded keys to result.
   std::vector<std::string> result;
