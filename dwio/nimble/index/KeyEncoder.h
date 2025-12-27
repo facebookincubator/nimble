@@ -15,8 +15,10 @@
  */
 #pragma once
 
+#include <functional>
+
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/common/Exceptions.h"
 #include "velox/common/memory/Scratch.h"
 #include "velox/core/PlanNode.h"
 #include "velox/type/Type.h"
@@ -109,20 +111,29 @@ class KeyEncoder {
       std::vector<velox::core::SortOrder> sortOrders,
       velox::memory::MemoryPool* pool);
 
+  /// Type alias for buffer allocator function.
+  /// Takes estimated size in bytes and returns a pointer to the allocated
+  /// buffer.
+  using BufferAllocator = std::function<void*(size_t)>;
+
   /// Encodes the key columns from the input vector into byte-comparable keys.
   ///
   /// Each row in the input produces one encoded key string. The keys can be
   /// compared lexicographically, and the comparison result will match the
   /// logical comparison based on the specified sort orders.
   ///
+  /// @tparam Container A container type for std::string_view that supports
+  ///                   reserve(), size(), and emplace_back() operations.
   /// @param input Input vector containing rows to encode
-  /// @param encodedKeys Output vector to store the encoded key strings (views
-  ///                    into buffer)
-  /// @param buffer Buffer to hold the actual encoded key data
+  /// @param encodedKeys Output container to store the encoded key strings
+  ///                    (views into allocated buffer)
+  /// @param bufferAllocator Allocator function that takes estimated size and
+  ///                        returns pointer to allocated buffer
+  template <typename Container>
   void encode(
       const velox::VectorPtr& input,
-      Vector<std::string_view>& encodedKeys,
-      Buffer& buffer);
+      Container& encodedKeys,
+      const BufferAllocator& bufferAllocator);
 
   /// Encodes index bounds into byte-comparable boundary keys.
   ///
@@ -171,6 +182,14 @@ class KeyEncoder {
   std::optional<velox::RowVectorPtr> createIncrementedBound(
       const velox::RowVectorPtr& bound) const;
 
+  // Encodes a single column for all rows.
+  void encodeColumn(
+      const velox::DecodedVector& decodedVector,
+      velox::vector_size_t numRows,
+      bool descending,
+      bool nullLast,
+      std::vector<char*>& rowOffsets);
+
   const velox::RowTypePtr inputType_;
   const std::vector<velox::core::SortOrder> sortOrders_;
   const std::vector<velox::vector_size_t> keyChannels_;
@@ -183,4 +202,55 @@ class KeyEncoder {
   std::vector<velox::vector_size_t> encodedSizes_;
   velox::Scratch scratch_;
 };
+
+// Template implementation
+template <typename Container>
+void KeyEncoder::encode(
+    const velox::VectorPtr& input,
+    Container& encodedKeys,
+    const BufferAllocator& bufferAllocator) {
+  NIMBLE_CHECK_GT(input->size(), 0);
+  SCOPE_EXIT {
+    encodedSizes_.clear();
+  };
+  decodedVector_.decode(*input, /*loadLazy=*/true);
+  const auto* rowBase = decodedVector_.base()->asChecked<velox::RowVector>();
+  const auto& children = rowBase->children();
+  for (auto i = 0; i < keyChannels_.size(); ++i) {
+    childDecodedVectors_[i].decode(*children[keyChannels_[i]]);
+  }
+  const auto totalBytes = estimateEncodedSize();
+  auto* const allocated = static_cast<char*>(bufferAllocator(totalBytes));
+
+  const auto numRows = input->size();
+  const auto numKeys = keyChannels_.size();
+
+  // Compute buffer start offsets for each row
+  std::vector<char*> rowOffsets(numRows);
+  rowOffsets[0] = allocated;
+  for (auto row = 1; row < numRows; ++row) {
+    rowOffsets[row] = rowOffsets[row - 1] + encodedSizes_[row - 1];
+  }
+
+  // Encode column-by-column for better cache locality
+  for (auto i = 0; i < numKeys; ++i) {
+    const bool nullLast = !sortOrders_[i].isNullsFirst();
+    const bool descending = !sortOrders_[i].isAscending();
+    const auto& decodedVector = childDecodedVectors_[i];
+
+    // Encode column data for all rows (null indicator is encoded within each
+    // type's encoding function)
+    encodeColumn(decodedVector, numRows, descending, nullLast, rowOffsets);
+  }
+
+  // Build encoded keys string views
+  encodedKeys.reserve(encodedKeys.size() + numRows);
+  size_t offset{0};
+  for (auto row = 0; row < numRows; ++row) {
+    encodedKeys.emplace_back(allocated + offset, encodedSizes_[row]);
+    offset += encodedSizes_[row];
+    NIMBLE_CHECK_EQ(rowOffsets[row], allocated + offset);
+  }
+}
+
 } // namespace facebook::nimble
