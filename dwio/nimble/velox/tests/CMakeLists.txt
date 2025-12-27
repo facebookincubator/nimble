@@ -71,6 +71,54 @@ target_link_libraries(
   Folly::folly
 )
 
+add_executable(nimble_index_writer_test IndexWriterTest.cpp)
+add_test(nimble_index_writer_test nimble_index_writer_test)
+
+target_link_libraries(
+  nimble_index_writer_test
+  nimble_velox_index_writer
+  nimble_common
+  nimble_common_tests_utils
+  nimble_index
+  velox_vector
+  velox_vector_fuzzer
+  velox_vector_test_lib
+  gmock
+  gtest
+  gtest_main
+  Folly::folly
+)
+
+add_executable(nimble_stream_data_tests StreamDataTest.cpp)
+add_test(nimble_stream_data_tests nimble_stream_data_tests)
+
+target_link_libraries(
+  nimble_stream_data_tests
+  nimble_velox_stream_data
+  nimble_velox_schema_builder
+  nimble_common
+  velox_memory
+  gmock
+  gtest
+  gtest_main
+)
+
+add_executable(nimble_stream_chunker_tests StreamChunkerTests.cpp)
+add_test(nimble_stream_chunker_tests nimble_stream_chunker_tests)
+
+target_link_libraries(
+  nimble_stream_chunker_tests
+  nimble_velox_stream_chunker
+  nimble_velox_stream_data
+  nimble_velox_schema_builder
+  nimble_velox_chunked_stream_writer
+  nimble_common
+  velox_memory
+  gmock
+  gtest
+  gtest_main
+)
+
 add_executable(raw_size_benchmark RawSizeBenchmark.cpp)
 
 target_link_libraries(

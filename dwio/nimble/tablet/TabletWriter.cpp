@@ -21,6 +21,14 @@
 
 namespace facebook::nimble {
 
+uint32_t Chunk::contentSize() const {
+  uint32_t size = 0;
+  for (const auto& c : content) {
+    size += c.size();
+  }
+  return size;
+}
+
 std::unique_ptr<TabletWriter> TabletWriter::create(
     velox::WriteFile* file,
     velox::memory::MemoryPool& pool,

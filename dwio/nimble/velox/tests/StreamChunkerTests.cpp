@@ -120,7 +120,7 @@ class StreamChunkerTestsBase : public ::testing::Test {
   std::unique_ptr<InputBufferGrowthPolicy> inputBufferGrowthPolicy_;
 };
 
-TEST_F(StreamChunkerTestsBase, getStreamChunkerTest) {
+TEST_F(StreamChunkerTestsBase, getStreamChunker) {
   // Ensure a chunker can be created for all types.
 #define TEST_STREAM_CHUNKER_FOR_TYPE(scalarKind, T)                    \
   {                                                                    \
@@ -159,7 +159,7 @@ TEST_F(StreamChunkerTestsBase, getStreamChunkerTest) {
 #undef TEST_STREAM_CHUNKER_FOR_TYPE
 }
 
-TEST_F(StreamChunkerTestsBase, shouldOmitNullStreamTest) {
+TEST_F(StreamChunkerTestsBase, shouldOmitNullStream) {
   const auto scalarTypeBuilder =
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Bool);
   const auto descriptor = &scalarTypeBuilder->scalarDescriptor();
@@ -231,7 +231,7 @@ TEST_F(StreamChunkerTestsBase, shouldOmitNullStreamTest) {
   }
 }
 
-TEST_F(StreamChunkerTestsBase, shouldOmitDataStreamTest) {
+TEST_F(StreamChunkerTestsBase, shouldOmitDataStream) {
   auto scalarTypeBuilder =
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Bool);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
@@ -284,7 +284,7 @@ TEST_F(StreamChunkerTestsBase, shouldOmitDataStreamTest) {
   }
 }
 
-TEST_F(StreamChunkerTestsBase, ensureShouldOmitStreamIsRespectedTest) {
+TEST_F(StreamChunkerTestsBase, ensureShouldOmitStreamIsRespected) {
   auto scalarTypeBuilder =
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Bool);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
@@ -379,7 +379,7 @@ TEST_F(StreamChunkerTestsBase, ensureShouldOmitStreamIsRespectedTest) {
   }
 }
 
-TEST_F(StreamChunkerTestsBase, ContentStreamChunkerTest) {
+TEST_F(StreamChunkerTestsBase, contentStreamChunker) {
   auto scalarTypeBuilder =
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
@@ -403,7 +403,7 @@ TEST_F(StreamChunkerTestsBase, ContentStreamChunkerTest) {
   ASSERT_NE(contentStreamChunker, nullptr);
 }
 
-TEST_F(StreamChunkerTestsBase, ContentStreamIntChunking) {
+TEST_F(StreamChunkerTestsBase, contentStreamIntChunking) {
   auto scalarTypeBuilder =
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
@@ -496,7 +496,7 @@ TEST_F(StreamChunkerTestsBase, ContentStreamIntChunking) {
   }
 }
 
-TEST_F(StreamChunkerTestsBase, ContentStreamStringChunking) {
+TEST_F(StreamChunkerTestsBase, contentStreamStringChunking) {
   auto scalarTypeBuilder =
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
@@ -649,7 +649,7 @@ TEST_F(StreamChunkerTestsBase, ContentStreamStringChunking) {
   }
 }
 
-TEST_F(StreamChunkerTestsBase, NullsStreamChunking) {
+TEST_F(StreamChunkerTestsBase, nullsStreamChunking) {
   auto scalarTypeBuilder =
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Bool);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
@@ -751,7 +751,7 @@ TEST_F(StreamChunkerTestsBase, NullsStreamChunking) {
   }
 }
 
-TEST_F(StreamChunkerTestsBase, NullableContentStreamIntChunking) {
+TEST_F(StreamChunkerTestsBase, nullableContentStreamIntChunking) {
   auto scalarTypeBuilder =
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
@@ -871,7 +871,7 @@ TEST_F(StreamChunkerTestsBase, NullableContentStreamIntChunking) {
   }
 }
 
-TEST_F(StreamChunkerTestsBase, NullableContentStreamStringChunking) {
+TEST_F(StreamChunkerTestsBase, nullableContentStreamStringChunking) {
   auto scalarTypeBuilder =
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
@@ -1065,4 +1065,256 @@ TEST_F(StreamChunkerTestsBase, NullableContentStreamStringChunking) {
          .extraMemory = 5});
   }
 }
+
+// Tests to verify rowCount is set properly for chunked StreamDataViews.
+TEST_F(StreamChunkerTestsBase, contentStreamChunkerRowCount) {
+  auto scalarTypeBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
+  auto descriptor = &scalarTypeBuilder->scalarDescriptor();
+  ContentStreamData<int32_t> stream(
+      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+
+  // Add 10 elements.
+  std::vector<int32_t> testData = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+  auto& data = stream.mutableData();
+  populateData(data, testData);
+
+  // Max chunk size = 16 bytes = 4 int32_t elements.
+  auto chunker = getStreamChunker(
+      stream,
+      {
+          .minChunkSize = 1,
+          .maxChunkSize = 16,
+          .ensureFullChunks = false,
+      });
+
+  // Verify rowCount for each chunk.
+  std::vector<uint32_t> expectedRowCounts = {4, 4, 2};
+  size_t chunkIndex = 0;
+  while (const auto chunkView = chunker->next()) {
+    ASSERT_LT(chunkIndex, expectedRowCounts.size());
+    EXPECT_EQ(chunkView->rowCount(), expectedRowCounts[chunkIndex])
+        << "Chunk " << chunkIndex << " has incorrect rowCount";
+    // Verify data size matches rowCount * sizeof(T).
+    EXPECT_EQ(
+        chunkView->data().size(), chunkView->rowCount() * sizeof(int32_t));
+    ++chunkIndex;
+  }
+  EXPECT_EQ(chunkIndex, expectedRowCounts.size());
+}
+
+TEST_F(StreamChunkerTestsBase, contentStreamStringChunkerRowCount) {
+  auto scalarTypeBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
+  auto descriptor = &scalarTypeBuilder->scalarDescriptor();
+  ContentStreamData<std::string_view> stream(
+      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+
+  // Add strings with varying sizes.
+  std::vector<std::string_view> testData = {
+      "a", "bb", "ccc", "dddd", "eeeee", "ffffff"};
+  auto& data = stream.mutableData();
+  populateData(data, testData);
+  for (const auto& str : testData) {
+    stream.extraMemory() += str.size();
+  }
+
+  // Max chunk size that fits ~2-3 strings per chunk.
+  auto chunker = getStreamChunker(
+      stream,
+      {
+          .minChunkSize = 1,
+          .maxChunkSize = 40,
+          .ensureFullChunks = false,
+      });
+
+  // Verify rowCount matches the number of string_views in each chunk.
+  uint32_t totalRowCount = 0;
+  while (const auto chunkView = chunker->next()) {
+    EXPECT_GT(chunkView->rowCount(), 0);
+    // For strings, data size = rowCount * sizeof(string_view).
+    EXPECT_EQ(
+        chunkView->data().size(),
+        chunkView->rowCount() * sizeof(std::string_view));
+    totalRowCount += chunkView->rowCount();
+  }
+  EXPECT_EQ(totalRowCount, testData.size());
+}
+
+TEST_F(StreamChunkerTestsBase, nullsStreamChunkerRowCount) {
+  auto scalarTypeBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Bool);
+  auto descriptor = &scalarTypeBuilder->scalarDescriptor();
+  NullsStreamData stream(*leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+
+  // Add 10 null indicators.
+  std::vector<bool> testData = {
+      true, false, true, true, false, true, false, true, false, false};
+  stream.ensureAdditionalNullsCapacity(
+      /*mayHaveNulls=*/true, static_cast<uint32_t>(testData.size()));
+  auto& nonNulls = stream.mutableNonNulls();
+  populateData(nonNulls, testData);
+
+  // Max chunk size = 4 bytes = 4 bool elements.
+  auto chunker = getStreamChunker(
+      stream,
+      {
+          .minChunkSize = 1,
+          .maxChunkSize = 4,
+          .ensureFullChunks = false,
+      });
+
+  // Verify rowCount for each chunk.
+  std::vector<uint32_t> expectedRowCounts = {4, 4, 2};
+  size_t chunkIndex = 0;
+  while (const auto chunkView = chunker->next()) {
+    ASSERT_LT(chunkIndex, expectedRowCounts.size());
+    EXPECT_EQ(chunkView->rowCount(), expectedRowCounts[chunkIndex])
+        << "Chunk " << chunkIndex << " has incorrect rowCount";
+    // For nulls stream, data size = rowCount (1 byte per bool).
+    EXPECT_EQ(chunkView->data().size(), chunkView->rowCount());
+    ++chunkIndex;
+  }
+  EXPECT_EQ(chunkIndex, expectedRowCounts.size());
+}
+
+TEST_F(StreamChunkerTestsBase, nullableContentStreamChunkerRowCount) {
+  auto scalarTypeBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
+  auto descriptor = &scalarTypeBuilder->scalarDescriptor();
+  NullableContentStreamData<int32_t> stream(
+      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+
+  // Add data with nulls: 10 rows, 7 non-null values.
+  std::vector<int32_t> testData = {1, 2, 3, 4, 5, 6, 7};
+  std::vector<bool> nonNullsData = {
+      true, false, true, true, false, true, false, true, true, true};
+  stream.ensureAdditionalNullsCapacity(
+      /*mayHaveNulls=*/true, static_cast<uint32_t>(nonNullsData.size()));
+  populateData(stream.mutableData(), testData);
+  populateData(stream.mutableNonNulls(), nonNullsData);
+
+  // Max chunk size = 17 bytes (fits ~4 rows with mixed nulls).
+  auto chunker = getStreamChunker(
+      stream,
+      {
+          .minChunkSize = 1,
+          .maxChunkSize = 17,
+          .ensureFullChunks = false,
+      });
+
+  // Verify rowCount includes both null and non-null rows.
+  uint32_t totalRowCount = 0;
+  while (const auto chunkView = chunker->next()) {
+    EXPECT_GT(chunkView->rowCount(), 0);
+    // rowCount should match nonNulls size when nulls are present.
+    if (chunkView->hasNulls()) {
+      EXPECT_EQ(chunkView->rowCount(), chunkView->nonNulls().size());
+    }
+    totalRowCount += chunkView->rowCount();
+  }
+  EXPECT_EQ(totalRowCount, nonNullsData.size());
+}
+
+TEST_F(StreamChunkerTestsBase, nullableContentStreamStringChunkerRowCount) {
+  auto scalarTypeBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
+  auto descriptor = &scalarTypeBuilder->scalarDescriptor();
+  NullableContentStreamData<std::string_view> stream(
+      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+
+  // Add data with nulls.
+  std::vector<std::string_view> testData = {"hello", "world", "test", "data"};
+  std::vector<bool> nonNullsData = {true, false, true, true, false, true};
+  stream.ensureAdditionalNullsCapacity(
+      /*mayHaveNulls=*/true, static_cast<uint32_t>(nonNullsData.size()));
+  auto& data = stream.mutableData();
+  auto& nonNulls = stream.mutableNonNulls();
+  populateData(data, testData);
+  populateData(nonNulls, nonNullsData);
+  for (const auto& str : testData) {
+    stream.extraMemory() += str.size();
+  }
+
+  auto chunker = getStreamChunker(
+      stream,
+      {
+          .minChunkSize = 1,
+          .maxChunkSize = 50,
+          .ensureFullChunks = false,
+      });
+
+  // Verify rowCount for nullable string stream.
+  uint32_t totalRowCount = 0;
+  while (const auto chunkView = chunker->next()) {
+    EXPECT_GT(chunkView->rowCount(), 0);
+    if (chunkView->hasNulls()) {
+      EXPECT_EQ(chunkView->rowCount(), chunkView->nonNulls().size());
+    }
+    totalRowCount += chunkView->rowCount();
+  }
+  EXPECT_EQ(totalRowCount, nonNullsData.size());
+}
+
+TEST_F(StreamChunkerTestsBase, singleElementChunkRowCount) {
+  auto scalarTypeBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int64);
+  auto descriptor = &scalarTypeBuilder->scalarDescriptor();
+  ContentStreamData<int64_t> stream(
+      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+
+  // Add single element.
+  stream.mutableData().push_back(42);
+
+  auto chunker = getStreamChunker(
+      stream,
+      {
+          .minChunkSize = 1,
+          .maxChunkSize = 100,
+          .ensureFullChunks = false,
+      });
+
+  auto chunkView = chunker->next();
+  ASSERT_TRUE(chunkView.has_value());
+  EXPECT_EQ(chunkView->rowCount(), 1);
+  EXPECT_EQ(chunkView->data().size(), sizeof(int64_t));
+
+  // No more chunks.
+  EXPECT_FALSE(chunker->next().has_value());
+}
+
+TEST_F(StreamChunkerTestsBase, rowCountAcrossChunks) {
+  auto scalarTypeBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
+  auto descriptor = &scalarTypeBuilder->scalarDescriptor();
+  ContentStreamData<int32_t> stream(
+      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+
+  // Add 100 elements.
+  for (int32_t i = 0; i < 100; ++i) {
+    stream.mutableData().push_back(i);
+  }
+
+  // Small chunk size to create many chunks.
+  auto chunker = getStreamChunker(
+      stream,
+      {
+          .minChunkSize = 1,
+          .maxChunkSize = 20, // 5 int32_t per chunk
+          .ensureFullChunks = false,
+      });
+
+  // Verify total rowCount across all chunks equals original data size.
+  uint32_t totalRowCount = 0;
+  uint32_t chunkCount = 0;
+  while (const auto chunkView = chunker->next()) {
+    EXPECT_GT(chunkView->rowCount(), 0);
+    EXPECT_LE(chunkView->rowCount(), 5); // Max 5 per chunk.
+    totalRowCount += chunkView->rowCount();
+    ++chunkCount;
+  }
+  EXPECT_EQ(totalRowCount, 100);
+  EXPECT_EQ(chunkCount, 20); // 100 / 5 = 20 chunks.
+}
+
 } // namespace facebook::nimble

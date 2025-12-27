@@ -41,7 +41,7 @@ void verifyLabels(
 
 } // namespace
 
-TEST(SchemaTests, SchemaUtils) {
+TEST(SchemaTests, schemaUtils) {
   nimble::SchemaBuilder builder;
 
   nimble::test::FlatMapChildAdder fm1;
@@ -69,7 +69,7 @@ TEST(SchemaTests, SchemaUtils) {
           {"c17", TIMESTAMPMICRONANO()},
       }));
 
-  auto nodes = builder.getSchemaNodes();
+  auto nodes = builder.schemaNodes();
   nimble::test::verifySchemaNodes(
       nodes,
       {
@@ -122,7 +122,7 @@ TEST(SchemaTests, SchemaUtils) {
 
   fm2.addChild("f1");
 
-  nodes = builder.getSchemaNodes();
+  nodes = builder.schemaNodes();
   nimble::test::verifySchemaNodes(
       nodes,
       {
@@ -182,7 +182,7 @@ TEST(SchemaTests, SchemaUtils) {
   fm2.addChild("f2");
   fm2.addChild("f3");
 
-  nodes = builder.getSchemaNodes();
+  nodes = builder.schemaNodes();
   nimble::test::verifySchemaNodes(
       nodes,
       {
@@ -250,7 +250,7 @@ TEST(SchemaTests, SchemaUtils) {
        "/15/1", "/16",   "/16"});
 }
 
-TEST(SchemaTests, RoundTrip) {
+TEST(SchemaTests, roundTrip) {
   nimble::SchemaBuilder builder;
   // ROW(
   //   c1:INT,
@@ -325,7 +325,7 @@ TEST(SchemaTests, RoundTrip) {
     row->addChild("c9", timestampMicroNano);
   }
 
-  auto nodes = builder.getSchemaNodes();
+  auto nodes = builder.schemaNodes();
   nimble::test::verifySchemaNodes(
       nodes,
       {
@@ -386,7 +386,7 @@ TEST(SchemaTests, RoundTrip) {
     flatMapCol4->addChild("f1", scalar);
   }
 
-  nodes = builder.getSchemaNodes();
+  nodes = builder.schemaNodes();
 
   nimble::test::verifySchemaNodes(
       nodes,
@@ -446,7 +446,7 @@ TEST(SchemaTests, RoundTrip) {
     flatMapCol4->addChild("f2", scalar);
   }
 
-  nodes = builder.getSchemaNodes();
+  nodes = builder.schemaNodes();
 
   nimble::test::verifySchemaNodes(
       nodes,

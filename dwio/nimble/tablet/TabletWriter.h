@@ -26,12 +26,35 @@
 #include "velox/vector/TypeAliases.h"
 
 namespace facebook::nimble {
+/// Represents a single chunk of encoded data within a stream.
+/// A stream may be divided into multiple chunks to control memory usage during
+/// writing. Each chunk contains the encoded data, row count, and optional key
+/// information for indexing.
 struct Chunk {
+  /// Number of rows contained in this chunk.
+  uint32_t rowCount{0};
+
+  /// The encoded and compressed data content of this chunk, stored as a vector
+  /// of string views. Each string_view points to a buffer containing a portion
+  /// of the chunk's data. Multiple buffers may be used for large chunks.
   std::vector<std::string_view> content;
+
+  /// Optional first key value in this chunk (for indexed streams only).
+  /// Used by the cluster index to enable efficient range lookups. Only
+  /// populated for the first chunk in a stream.
+  std::optional<std::string_view> firstKey;
+
+  /// Optional last key value in this chunk (for indexed streams only).
+  /// Used by the cluster index to enable efficient range lookups. Populated
+  /// for all chunks in indexed streams.
+  std::optional<std::string_view> lastKey;
+
+  /// Returns the total byte size of all content in this chunk.
+  uint32_t contentSize() const;
 };
 
 struct Stream {
-  uint32_t offset;
+  uint32_t offset{0};
   std::vector<Chunk> chunks;
 };
 

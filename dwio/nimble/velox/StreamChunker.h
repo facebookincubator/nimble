@@ -120,7 +120,10 @@ class ContentStreamChunker final : public StreamChunker {
         chunkSize.dataElementCount * sizeof(T)};
     dataElementOffset_ += chunkSize.dataElementCount;
     extraMemory_ -= chunkSize.extraMemory;
-    return StreamDataView{streamData_->descriptor(), dataChunk};
+    return StreamDataView{
+        streamData_->descriptor(),
+        dataChunk,
+        static_cast<uint32_t>(chunkSize.dataElementCount)};
   }
 
  private:
@@ -278,7 +281,7 @@ class NullsStreamChunker final : public StreamChunker {
 
     auto& nonNulls = streamData_->mutableNonNulls();
     const size_t remainingNonNulls = nonNulls.size() - nonNullsOffset_;
-    size_t nonNullsInChunk = std::min(maxChunkSize_, remainingNonNulls);
+    const size_t nonNullsInChunk = std::min(maxChunkSize_, remainingNonNulls);
     if (nonNullsInChunk == 0 || nonNullsInChunk < minChunkSize_ ||
         (ensureFullChunks_ && nonNullsInChunk < maxChunkSize_)) {
       return std::nullopt;
@@ -289,7 +292,10 @@ class NullsStreamChunker final : public StreamChunker {
         reinterpret_cast<const char*>(nonNulls.data() + nonNullsOffset_),
         nonNullsInChunk};
     nonNullsOffset_ += nonNullsInChunk;
-    return StreamDataView{streamData_->descriptor(), dataChunk};
+    return StreamDataView{
+        streamData_->descriptor(),
+        dataChunk,
+        static_cast<uint32_t>(nonNullsInChunk)};
   }
 
  private:
@@ -394,9 +400,16 @@ class NullableContentStreamChunker final : public StreamChunker {
 
     if (chunkSize.nullElementCount > chunkSize.dataElementCount) {
       return StreamDataView{
-          streamData_->descriptor(), dataChunk, nonNullsChunk};
+          streamData_->descriptor(),
+          dataChunk,
+          static_cast<uint32_t>(chunkSize.nullElementCount),
+          nonNullsChunk};
     }
-    return StreamDataView{streamData_->descriptor(), dataChunk};
+    NIMBLE_CHECK_EQ(chunkSize.dataElementCount, chunkSize.nullElementCount);
+    return StreamDataView{
+        streamData_->descriptor(),
+        dataChunk,
+        static_cast<uint32_t>(chunkSize.dataElementCount)};
   }
 
  private:

@@ -1245,4 +1245,18 @@ TEST_F(TabletTest, deduplicateStreams) {
     }
   }
 }
+
+TEST_F(TabletTest, chunkContentSize) {
+  nimble::Chunk chunk;
+  EXPECT_EQ(chunk.contentSize(), 0);
+
+  chunk.content = {"hello"};
+  EXPECT_EQ(chunk.contentSize(), 5);
+
+  chunk.content = {"hello", "world"};
+  EXPECT_EQ(chunk.contentSize(), 10);
+
+  chunk.content = {"", "abc", ""};
+  EXPECT_EQ(chunk.contentSize(), 3);
+}
 } // namespace

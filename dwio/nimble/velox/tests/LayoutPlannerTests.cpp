@@ -192,10 +192,10 @@ TEST(DefaultLayoutPlannerTests, reorderFlatMap) {
   fm3.addChild("42");
   fm3.addChild("7");
 
-  auto namedTypes = getNamedTypes(*builder.getRoot());
+  auto namedTypes = getNamedTypes(*builder.root());
 
   nimble::DefaultLayoutPlanner planner{
-      [&]() { return builder.getRoot(); },
+      [&]() { return builder.root(); },
       {{{1, {3, 42, 9, 2, 21}}, {5, {3, 2, 42, 21}}}}};
 
   std::vector<nimble::Stream> streams;
@@ -277,10 +277,10 @@ TEST(DefaultLayoutPlannerTests, reorderFlatMapDynamicFeatures) {
   fm.addChild("42");
   fm.addChild("7");
 
-  auto namedTypes = getNamedTypes(*builder.getRoot());
+  auto namedTypes = getNamedTypes(*builder.root());
 
   nimble::DefaultLayoutPlanner planner{
-      [&]() { return builder.getRoot(); }, {{{1, {3, 42, 9, 2, 21}}}}};
+      [&]() { return builder.root(); }, {{{1, {3, 42, 9, 2, 21}}}}};
 
   std::vector<nimble::Stream> streams;
   streams.reserve(namedTypes.size());
@@ -316,7 +316,7 @@ TEST(DefaultLayoutPlannerTests, reorderFlatMapDynamicFeatures) {
   fm.addChild("3");
   fm.addChild("57");
 
-  namedTypes = getNamedTypes(*builder.getRoot());
+  namedTypes = getNamedTypes(*builder.root());
 
   streams.clear();
   streams.reserve(namedTypes.size());
@@ -376,10 +376,10 @@ TEST(DefaultLayoutPlannerTests, noFeatureReordering) {
   fm.addChild("5");
   fm.addChild("7");
 
-  auto namedTypes = getNamedTypes(*builder.getRoot());
+  auto namedTypes = getNamedTypes(*builder.root());
 
   nimble::DefaultLayoutPlanner planner{
-      [&]() { return builder.getRoot(); }, std::nullopt};
+      [&]() { return builder.root(); }, std::nullopt};
 
   std::vector<nimble::Stream> streams;
   streams.reserve(namedTypes.size());
@@ -436,9 +436,9 @@ TEST(DefaultLayoutPlannerTests, nonFlatMapOrdinalsAreIgnored) {
   fm2.addChild("5");
 
   nimble::DefaultLayoutPlanner planner{
-      [&]() { return builder.getRoot(); }, {{{0, {1, 2, 3}}, {1, {42, 5}}}}};
+      [&]() { return builder.root(); }, {{{0, {1, 2, 3}}, {1, {42, 5}}}}};
 
-  auto namedTypes = getNamedTypes(*builder.getRoot());
+  auto namedTypes = getNamedTypes(*builder.root());
   std::vector<nimble::Stream> streams;
   streams.reserve(namedTypes.size());
   for (auto i = 0; i < namedTypes.size(); ++i) {
@@ -505,10 +505,10 @@ TEST(DefaultLayoutPlannerTests, ordinalOutOfRangeAreIgnored) {
   fm2.addChild("5");
 
   nimble::DefaultLayoutPlanner planner{
-      [&]() { return builder.getRoot(); },
+      [&]() { return builder.root(); },
       {{{6, {3, 42, 9, 2, 21}}, {3, {3, 2, 42, 21}}}}};
 
-  auto namedTypes = getNamedTypes(*builder.getRoot());
+  auto namedTypes = getNamedTypes(*builder.root());
   std::vector<nimble::Stream> streams;
   streams.reserve(namedTypes.size());
   for (auto i = 0; i < namedTypes.size(); ++i) {
@@ -552,7 +552,7 @@ TEST(DefaultLayoutPlannerTests, incompatibleSchema) {
   SCHEMA(builder, MAP(TINYINT(), STRING()));
 
   nimble::DefaultLayoutPlanner planner{
-      [&]() { return builder.getRoot(); }, {{{3, {3, 2, 42, 21}}}}};
+      [&]() { return builder.root(); }, {{{3, {3, 2, 42, 21}}}}};
   try {
     planner.getLayout({});
     FAIL() << "Factory should have failed.";
@@ -579,10 +579,10 @@ TEST(DefaultLayoutPlannerTests, timestampMicros) {
            {"c4", MAP(TIMESTAMPMICRONANO(), TIMESTAMPMICRONANO())},
            {"c5", ROW({{"c5a", TIMESTAMPMICRONANO()}})}}));
 
-  auto namedTypes = getNamedTypes(*builder.getRoot());
+  auto namedTypes = getNamedTypes(*builder.root());
 
   nimble::DefaultLayoutPlanner planner{
-      [&]() { return builder.getRoot(); }, std::nullopt};
+      [&]() { return builder.root(); }, std::nullopt};
 
   std::vector<nimble::Stream> streams;
   streams.reserve(namedTypes.size());
