@@ -122,8 +122,9 @@ uint8_t EncodingLayout::childrenCount() const {
 
 const std::optional<const EncodingLayout>& EncodingLayout::child(
     NestedEncodingIdentifier identifier) const {
-  NIMBLE_DCHECK(
-      identifier < children_.size(),
+  NIMBLE_DCHECK_LT(
+      identifier,
+      children_.size(),
       "Encoding layout identifier is out of range.");
 
   return children_[identifier];

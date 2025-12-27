@@ -231,6 +231,10 @@ class NullsAsDataStreamData : public StreamData {
     return streamData_->memoryUsed();
   }
 
+  inline uint32_t rowCount() const override {
+    return streamData_->rowCount();
+  }
+
   inline void reset() override {
     streamData_->reset();
   }
@@ -640,7 +644,7 @@ VeloxWriter::VeloxWriter(
           *encodingMemoryPool_,
           {.layoutPlanner = std::make_unique<DefaultLayoutPlanner>(
                [&schemaBuilder = context_->schemaBuilder()]() {
-                 return schemaBuilder.getRoot();
+                 return schemaBuilder.root();
                },
                context_->options().featureReordering),
            .metadataCompressionThreshold =
@@ -746,7 +750,7 @@ void VeloxWriter::writeMetadata() {
 
 void VeloxWriter::writeColumnStats() {
   nimble::aggregateStats(
-      *context_->schemaBuilder().getRoot(), context_->columnStats());
+      *context_->schemaBuilder().root(), context_->columnStats());
   flatbuffers::FlatBufferBuilder builder;
   builder.Finish(serialization::CreateStats(builder, context_->fileRawSize()));
   tabletWriter_->writeOptionalSection(

@@ -16,6 +16,7 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <vector>
 
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
@@ -47,12 +48,12 @@ uint64_t getAlignedBufferCapacity(
 }
 
 template <typename T>
-class NullStreamDataTest : public ::testing::Test {};
+class nullStreamDataTest : public ::testing::Test {};
 using NullTestTypes =
     ::testing::Types<NullsStreamData, NullableContentStreamData<int32_t>>;
-TYPED_TEST_SUITE(NullStreamDataTest, NullTestTypes);
+TYPED_TEST_SUITE(nullStreamDataTest, NullTestTypes);
 
-TYPED_TEST(NullStreamDataTest, EnsureAdditionalNullsCapacity) {
+TYPED_TEST(nullStreamDataTest, ensureAdditionalNullsCapacity) {
   using T = TypeParam;
   velox::memory::MemoryManager::testingSetInstance(
       velox::memory::MemoryManager::Options{});
@@ -138,13 +139,13 @@ TYPED_TEST(NullStreamDataTest, EnsureAdditionalNullsCapacity) {
 }
 
 template <typename T>
-class ContentStreamDataTest : public ::testing::Test {};
+class contentStreamDataTest : public ::testing::Test {};
 
 using ContentTestTypes = ::testing::
     Types<ContentStreamData<int32_t>, NullableContentStreamData<int32_t>>;
-TYPED_TEST_SUITE(ContentStreamDataTest, ContentTestTypes);
+TYPED_TEST_SUITE(contentStreamDataTest, ContentTestTypes);
 
-TYPED_TEST(ContentStreamDataTest, EnsureMutableDataCapacity) {
+TYPED_TEST(contentStreamDataTest, ensureMutableDataCapacity) {
   using T = TypeParam;
   velox::memory::MemoryManager::testingSetInstance(
       velox::memory::MemoryManager::Options{});
@@ -219,5 +220,273 @@ TYPED_TEST(ContentStreamDataTest, EnsureMutableDataCapacity) {
     EXPECT_EQ(data[i], i) << "Value at index " << i << " was corrupted";
   }
   EXPECT_EQ(memoryPool->stats().numAllocs, 2);
+}
+
+class rowCountTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    velox::memory::MemoryManager::testingSetInstance(
+        velox::memory::MemoryManager::Options{});
+    memoryPool_ = velox::memory::memoryManager()->addLeafPool("test");
+    schemaBuilder_ = std::make_unique<SchemaBuilder>();
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> memoryPool_;
+  std::unique_ptr<SchemaBuilder> schemaBuilder_;
+};
+
+TEST_F(rowCountTest, contentStreamDataRowCount) {
+  ExactGrowthPolicy growthPolicy;
+  const auto scalarBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
+  const auto& descriptor = scalarBuilder->scalarDescriptor();
+  ContentStreamData<int32_t> streamData(*memoryPool_, descriptor, growthPolicy);
+
+  // Initially empty.
+  EXPECT_EQ(streamData.rowCount(), 0);
+  EXPECT_TRUE(streamData.empty());
+
+  // Add some data.
+  auto& data = streamData.mutableData();
+  data.push_back(1);
+  data.push_back(2);
+  data.push_back(3);
+
+  // rowCount() should match data size.
+  EXPECT_EQ(streamData.rowCount(), 3);
+  EXPECT_FALSE(streamData.empty());
+
+  // Add more data.
+  data.push_back(4);
+  data.push_back(5);
+  EXPECT_EQ(streamData.rowCount(), 5);
+
+  // Reset clears row count.
+  streamData.reset();
+  EXPECT_EQ(streamData.rowCount(), 0);
+  EXPECT_TRUE(streamData.empty());
+}
+
+TEST_F(rowCountTest, contentStreamDataStringRowCount) {
+  ExactGrowthPolicy growthPolicy;
+  const auto scalarBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
+  const auto& descriptor = scalarBuilder->scalarDescriptor();
+  ContentStreamData<std::string_view> streamData(
+      *memoryPool_, descriptor, growthPolicy);
+
+  EXPECT_EQ(streamData.rowCount(), 0);
+
+  auto& data = streamData.mutableData();
+  data.push_back("hello");
+  data.push_back("world");
+  EXPECT_EQ(streamData.rowCount(), 2);
+
+  data.push_back("test");
+  EXPECT_EQ(streamData.rowCount(), 3);
+
+  streamData.reset();
+  EXPECT_EQ(streamData.rowCount(), 0);
+}
+
+TEST_F(rowCountTest, nullsStreamDataRowCount) {
+  ExactGrowthPolicy growthPolicy;
+  const auto scalarBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Bool);
+  const auto& descriptor = scalarBuilder->scalarDescriptor();
+  NullsStreamData streamData(*memoryPool_, descriptor, growthPolicy);
+
+  // Initially empty.
+  EXPECT_EQ(streamData.rowCount(), 0);
+  EXPECT_TRUE(streamData.empty());
+
+  // Add data without nulls (bufferedCount_ is set via
+  // ensureAdditionalNullsCapacity).
+  streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/false, 5);
+  EXPECT_EQ(streamData.rowCount(), 5);
+  EXPECT_FALSE(streamData.empty());
+
+  // Add more data.
+  streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/false, 3);
+  EXPECT_EQ(streamData.rowCount(), 8);
+
+  // Reset clears row count.
+  streamData.reset();
+  EXPECT_EQ(streamData.rowCount(), 0);
+  EXPECT_TRUE(streamData.empty());
+}
+
+TEST_F(rowCountTest, nullsStreamDataRowCountWithNulls) {
+  ExactGrowthPolicy growthPolicy;
+  const auto scalarBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Bool);
+  const auto& descriptor = scalarBuilder->scalarDescriptor();
+  NullsStreamData streamData(*memoryPool_, descriptor, growthPolicy);
+
+  // Add data with nulls.
+  streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/true, 4);
+  auto& nonNulls = streamData.mutableNonNulls();
+  nonNulls.push_back(true);
+  nonNulls.push_back(false);
+  nonNulls.push_back(true);
+  nonNulls.push_back(false);
+
+  EXPECT_EQ(streamData.rowCount(), 4);
+  EXPECT_TRUE(streamData.hasNulls());
+
+  // Increase capacity and add more data.
+  streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/true, 3);
+  nonNulls.push_back(true);
+  nonNulls.push_back(false);
+  nonNulls.push_back(true);
+
+  EXPECT_EQ(streamData.rowCount(), 7);
+  EXPECT_TRUE(streamData.hasNulls());
+
+  streamData.reset();
+  EXPECT_EQ(streamData.rowCount(), 0);
+  EXPECT_FALSE(streamData.hasNulls());
+}
+
+TEST_F(rowCountTest, nullableContentStreamDataRowCount) {
+  ExactGrowthPolicy growthPolicy;
+  const auto scalarBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
+  const auto& descriptor = scalarBuilder->scalarDescriptor();
+  NullableContentStreamData<int32_t> streamData(
+      *memoryPool_, descriptor, growthPolicy);
+
+  // Initially empty.
+  EXPECT_EQ(streamData.rowCount(), 0);
+  EXPECT_TRUE(streamData.empty());
+
+  // Add data with nulls (rowCount is tracked by bufferedCount_ from
+  // NullsStreamData).
+  streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/true, 5);
+  auto& nonNulls = streamData.mutableNonNulls();
+  auto& data = streamData.mutableData();
+  // 5 rows: 3 non-null values, 2 nulls.
+  nonNulls.push_back(true);
+  data.push_back(1);
+  nonNulls.push_back(false); // null
+  nonNulls.push_back(true);
+  data.push_back(2);
+  nonNulls.push_back(false); // null
+  nonNulls.push_back(true);
+  data.push_back(3);
+
+  // rowCount is based on bufferedCount_, not data size.
+  EXPECT_EQ(streamData.rowCount(), 5);
+  EXPECT_EQ(data.size(), 3); // Only non-null values stored.
+  EXPECT_FALSE(streamData.empty());
+
+  // Reset clears row count.
+  streamData.reset();
+  EXPECT_EQ(streamData.rowCount(), 0);
+  EXPECT_TRUE(streamData.empty());
+}
+
+TEST_F(rowCountTest, nullableContentStreamDataRowCountWithoutNulls) {
+  ExactGrowthPolicy growthPolicy;
+  const auto scalarBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
+  const auto& descriptor = scalarBuilder->scalarDescriptor();
+  NullableContentStreamData<int32_t> streamData(
+      *memoryPool_, descriptor, growthPolicy);
+
+  // Add data without nulls.
+  streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/false, 3);
+  auto& data = streamData.mutableData();
+  data.push_back(10);
+  data.push_back(20);
+  data.push_back(30);
+
+  EXPECT_EQ(streamData.rowCount(), 3);
+  EXPECT_FALSE(streamData.hasNulls());
+
+  streamData.reset();
+  EXPECT_EQ(streamData.rowCount(), 0);
+}
+
+TEST_F(rowCountTest, nullableContentStreamDataRowCountWithAllNulls) {
+  ExactGrowthPolicy growthPolicy;
+  const auto scalarBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
+  const auto& descriptor = scalarBuilder->scalarDescriptor();
+  NullableContentStreamData<int32_t> streamData(
+      *memoryPool_, descriptor, growthPolicy);
+
+  // Add data with all nulls.
+  streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/true, 5);
+  auto& nonNulls = streamData.mutableNonNulls();
+  // All 5 rows are nulls.
+  nonNulls.push_back(false);
+  nonNulls.push_back(false);
+  nonNulls.push_back(false);
+  nonNulls.push_back(false);
+  nonNulls.push_back(false);
+
+  // rowCount should be 5 even though no actual data values are stored.
+  EXPECT_EQ(streamData.rowCount(), 5);
+  EXPECT_TRUE(streamData.hasNulls());
+  EXPECT_EQ(streamData.mutableData().size(), 0); // No non-null values stored.
+
+  // Increase capacity and add more null rows.
+  streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/true, 3);
+  nonNulls.push_back(false);
+  nonNulls.push_back(false);
+  nonNulls.push_back(false);
+
+  EXPECT_EQ(streamData.rowCount(), 8);
+  EXPECT_TRUE(streamData.hasNulls());
+  EXPECT_EQ(streamData.mutableData().size(), 0);
+
+  streamData.reset();
+  EXPECT_EQ(streamData.rowCount(), 0);
+  EXPECT_FALSE(streamData.hasNulls());
+}
+
+TEST_F(rowCountTest, streamDataViewRowCount) {
+  const auto scalarBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
+  const auto& descriptor = scalarBuilder->scalarDescriptor();
+
+  // Create StreamDataView with explicit row count.
+  std::vector<int32_t> testData = {1, 2, 3, 4, 5};
+  std::string_view dataView(
+      reinterpret_cast<const char*>(testData.data()),
+      testData.size() * sizeof(int32_t));
+
+  StreamDataView view(descriptor, dataView, /*rowCount=*/5);
+  EXPECT_EQ(view.rowCount(), 5);
+  EXPECT_EQ(view.data().size(), 5 * sizeof(int32_t));
+  EXPECT_FALSE(view.hasNulls());
+
+  StreamDataView zeroView(descriptor, std::string_view{}, /*rowCount=*/0);
+  EXPECT_EQ(zeroView.rowCount(), 0);
+  EXPECT_TRUE(zeroView.data().empty());
+  EXPECT_FALSE(zeroView.hasNulls());
+}
+
+TEST_F(rowCountTest, streamDataViewRowCountWithNulls) {
+  const auto scalarBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
+  const auto& descriptor = scalarBuilder->scalarDescriptor();
+
+  // Create StreamDataView with nulls.
+  std::vector<int32_t> testData = {1, 2, 3};
+  std::string_view dataView(
+      reinterpret_cast<const char*>(testData.data()),
+      testData.size() * sizeof(int32_t));
+  // Use std::array instead of std::vector<bool> because std::vector<bool> is
+  // bit-packed and doesn't provide contiguous storage required by std::span.
+  std::array<bool, 5> nonNulls = {true, false, true, false, true};
+
+  // rowCount can differ from data element count when nulls are present.
+  StreamDataView view(descriptor, dataView, /*rowCount=*/5, nonNulls);
+  EXPECT_EQ(view.rowCount(), 5);
+  EXPECT_EQ(view.data().size(), 3 * sizeof(int32_t)); // Only non-null data.
+  EXPECT_TRUE(view.hasNulls());
+  EXPECT_EQ(view.nonNulls().size(), 5);
 }
 } // namespace facebook::nimble

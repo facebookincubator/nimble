@@ -160,17 +160,45 @@ target_link_libraries(
   velox_dwio_common
 )
 
+add_library(nimble_velox_chunked_stream_writer ChunkedStreamWriter.cpp)
+target_link_libraries(
+  nimble_velox_chunked_stream_writer
+  nimble_common
+  nimble_encodings
+  nimble_tablet_common
+)
+
+add_library(nimble_velox_stream_chunker StreamChunker.cpp)
+target_link_libraries(
+  nimble_velox_stream_chunker
+  nimble_velox_stream_data
+)
+
+add_library(nimble_velox_index_writer IndexWriter.cpp)
+target_link_libraries(
+  nimble_velox_index_writer
+  nimble_velox_chunked_stream_writer
+  nimble_velox_stream_chunker
+  nimble_velox_stream_data
+  nimble_velox_field_writer
+  nimble_common
+  nimble_encodings
+  nimble_index
+  nimble_tablet_writer
+  velox_dwio_common
+)
+
 add_library(
   nimble_velox_writer
   EncodingLayoutTree.cpp
   FlushPolicy.cpp
   VeloxWriter.cpp
-  ChunkedStreamWriter.cpp
   VeloxWriterDefaultMetadataOSS.cpp
-  StreamChunker.cpp
 )
 target_link_libraries(
   nimble_velox_writer
+  nimble_velox_chunked_stream_writer
+  nimble_velox_stream_chunker
   nimble_encodings
   nimble_common
   nimble_column_stats_utils

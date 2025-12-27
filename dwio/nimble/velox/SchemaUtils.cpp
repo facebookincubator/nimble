@@ -169,7 +169,7 @@ velox::TypePtr convertToVeloxType(const Type& type) {
 std::shared_ptr<const Type> convertToNimbleType(const velox::Type& type) {
   SchemaBuilder builder;
   convertToNimbleType(builder, type);
-  return SchemaReader::getSchema(builder.getSchemaNodes());
+  return SchemaReader::getSchema(builder.schemaNodes());
 }
 
 } // namespace facebook::nimble
