@@ -320,3 +320,10 @@ struct fmt::formatter<facebook::nimble::CompressionType>
     return formatter<std::string>::format(facebook::nimble::toString(s), ctx);
   }
 };
+
+template <>
+struct fmt::formatter<facebook::nimble::EncodingType> : formatter<std::string> {
+  auto format(facebook::nimble::EncodingType s, format_context& ctx) const {
+    return formatter<std::string>::format(facebook::nimble::toString(s), ctx);
+  }
+};

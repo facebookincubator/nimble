@@ -231,6 +231,10 @@ class NullsAsDataStreamData : public StreamData {
     return streamData_->memoryUsed();
   }
 
+  inline uint32_t rowCount() const override {
+    return streamData_->rowCount();
+  }
+
   inline void reset() override {
     streamData_->reset();
   }

@@ -164,6 +164,7 @@ add_library(
   nimble_velox_writer
   EncodingLayoutTree.cpp
   FlushPolicy.cpp
+  IndexWriter.cpp
   VeloxWriter.cpp
   ChunkedStreamWriter.cpp
   VeloxWriterDefaultMetadataOSS.cpp
@@ -171,9 +172,10 @@ add_library(
 )
 target_link_libraries(
   nimble_velox_writer
-  nimble_encodings
   nimble_common
   nimble_column_stats_utils
+  nimble_encodings
+  nimble_index
   nimble_tablet_writer
   nimble_velox_field_writer
   nimble_velox_layout_planner
