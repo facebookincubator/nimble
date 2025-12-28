@@ -11,14 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_subdirectory(tests)
-
-add_library(nimble_index KeyEncoder.cpp StripeIndexGroup.cpp)
+add_library(nimble_index KeyEncoder.cpp StripeIndexGroup.cpp TabletIndex.cpp)
 target_link_libraries(
   nimble_index
   nimble_common
   nimble_encodings
   nimble_tablet_common
+  nimble_index_fb
   velox_core
   velox_type
   velox_vector
@@ -26,3 +25,5 @@ target_link_libraries(
   velox_memory
   Folly::folly
 )
+
+add_subdirectory(tests)

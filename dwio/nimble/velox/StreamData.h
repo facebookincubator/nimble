@@ -25,8 +25,8 @@
 
 namespace facebook::nimble {
 
-// Stream data is a generic interface representing a stream of data, allowing
-// generic access to the content to be used by writers
+/// Stream data is a generic interface representing a stream of data, allowing
+/// generic access to the content to be used by writers
 class StreamData {
  public:
   explicit StreamData(const StreamDescriptorBuilder& descriptor)
@@ -39,12 +39,19 @@ class StreamData {
   virtual ~StreamData() = default;
 
   virtual std::string_view data() const = 0;
+
   virtual std::span<const bool> nonNulls() const = 0;
   virtual bool hasNulls() const = 0;
+
   virtual bool empty() const = 0;
+
   virtual uint64_t memoryUsed() const = 0;
 
+  /// Returns the number of rows in the stream.
+  virtual uint32_t rowCount() const = 0;
+
   virtual void reset() = 0;
+
   virtual void materialize() {}
 
   const StreamDescriptorBuilder& descriptor() const {
@@ -77,20 +84,25 @@ class MutableStreamData : public StreamData {
   const InputBufferGrowthPolicy& growthPolicy_;
 };
 
-// Provides a lightweight, non-owning view into a portion of stream data,
-// containing references to the data content and null indicators for efficient
-// processing of large streams without copying data.
+/// Provides a lightweight, non-owning view into a portion of stream data,
+/// containing references to the data content and null indicators for efficient
+/// processing of large streams without copying data.
 class StreamDataView final : public StreamData {
  public:
   StreamDataView(
       const StreamDescriptorBuilder& descriptor,
       std::string_view data,
+      uint32_t rowCount,
       std::optional<std::span<const bool>> nonNulls = std::nullopt)
-      : StreamData(descriptor), data_{data}, nonNulls_{nonNulls} {}
+      : StreamData(descriptor),
+        data_{data},
+        rowCount_{rowCount},
+        nonNulls_{nonNulls} {}
 
   StreamDataView(StreamDataView&& other) noexcept
       : StreamData(other.descriptor()),
         data_{other.data_},
+        rowCount_{other.rowCount_},
         nonNulls_{other.nonNulls_} {}
 
   StreamDataView(const StreamDataView&) = delete;
@@ -100,6 +112,10 @@ class StreamDataView final : public StreamData {
   StreamDataView& operator=(StreamDataView&& other) noexcept = delete;
 
   ~StreamDataView() override = default;
+
+  uint32_t rowCount() const override {
+    return rowCount_;
+  }
 
   std::string_view data() const override {
     return data_;
@@ -127,40 +143,43 @@ class StreamDataView final : public StreamData {
 
  private:
   const std::string_view data_;
+  const uint32_t rowCount_;
   const std::optional<std::span<const bool>> nonNulls_;
 };
 
-// Content only data stream.
-// Used when a stream doesn't contain nulls.
+/// Content only data stream.
+/// Used when a stream doesn't contain nulls.
 template <typename T>
 class ContentStreamData final : public MutableStreamData {
  public:
   ContentStreamData(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       const StreamDescriptorBuilder& descriptor,
       const InputBufferGrowthPolicy& growthPolicy)
-      : MutableStreamData(descriptor, growthPolicy),
-        data_{&memoryPool},
-        extraMemory_{0} {}
+      : MutableStreamData(descriptor, growthPolicy), data_{&pool} {}
 
-  inline virtual std::string_view data() const override {
+  inline uint32_t rowCount() const override {
+    return data_.size();
+  }
+
+  inline std::string_view data() const override {
     return {
         reinterpret_cast<const char*>(data_.data()), data_.size() * sizeof(T)};
   }
 
-  inline virtual std::span<const bool> nonNulls() const override {
+  inline std::span<const bool> nonNulls() const override {
     return {};
   }
 
-  inline virtual bool hasNulls() const override {
+  inline bool hasNulls() const override {
     return false;
   }
 
-  inline virtual bool empty() const override {
+  inline bool empty() const override {
     return data_.empty();
   }
 
-  inline virtual uint64_t memoryUsed() const override {
+  inline uint64_t memoryUsed() const override {
     return (data_.size() * sizeof(T)) + extraMemory_;
   }
 
@@ -183,43 +202,45 @@ class ContentStreamData final : public MutableStreamData {
 
  private:
   Vector<T> data_;
-  uint64_t extraMemory_;
+  uint64_t extraMemory_{0};
 };
 
-// Nulls only data stream.
-// Used in cases where boolean data (representing nulls) is needed.
-// NOTE: ContentStreamData<bool> can also be used to represent these data
-// streams, however, for these "null streams", we have special optimizations,
-// where if all data is non-null, we omit the stream. This class specialization
-// helps with reusing enabling this optimization.
+/// Nulls only data stream.
+/// Used in cases where boolean data (representing nulls) is needed.
+///
+/// NOTE: ContentStreamData<bool> can also be used to represent these data
+/// streams, however, for these "null streams", we have special optimizations,
+/// where if all data is non-null, we omit the stream. This class
+/// specialization helps with reusing enabling this optimization.
 class NullsStreamData : public MutableStreamData {
  public:
   NullsStreamData(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       const StreamDescriptorBuilder& descriptor,
       const InputBufferGrowthPolicy& growthPolicy)
-      : MutableStreamData(descriptor, growthPolicy),
-        nonNulls_{&memoryPool},
-        hasNulls_{false},
-        bufferedCount_{0} {}
+      : MutableStreamData(descriptor, growthPolicy), nonNulls_{&pool} {}
 
-  inline virtual std::string_view data() const override {
+  inline uint32_t rowCount() const override {
+    return bufferedCount_;
+  }
+
+  inline std::string_view data() const override {
     return {};
   }
 
-  inline virtual std::span<const bool> nonNulls() const override {
+  inline std::span<const bool> nonNulls() const override {
     return nonNulls_;
   }
 
-  inline virtual bool hasNulls() const override {
+  inline bool hasNulls() const override {
     return hasNulls_;
   }
 
-  inline virtual bool empty() const override {
+  inline bool empty() const override {
     return nonNulls_.empty() && bufferedCount_ == 0;
   }
 
-  inline virtual uint64_t memoryUsed() const override {
+  inline uint64_t memoryUsed() const override {
     return nonNulls_.size();
   }
 
@@ -227,19 +248,21 @@ class NullsStreamData : public MutableStreamData {
     return nonNulls_;
   }
 
-  inline virtual void reset() override {
+  inline void reset() override {
     nonNulls_.clear();
     hasNulls_ = false;
     bufferedCount_ = 0;
   }
 
   void materialize() override {
-    if (nonNulls_.size() < bufferedCount_) {
-      const auto offset = nonNulls_.size();
-      nonNulls_.resize(bufferedCount_);
-      std::fill(
-          nonNulls_.data() + offset, nonNulls_.data() + bufferedCount_, true);
+    const auto offset = nonNulls_.size();
+    NIMBLE_CHECK_LE(offset, bufferedCount_);
+    if (offset >= bufferedCount_) {
+      return;
     }
+    nonNulls_.resize(bufferedCount_);
+    std::fill(
+        nonNulls_.data() + offset, nonNulls_.data() + bufferedCount_, true);
   }
 
   void ensureAdditionalNullsCapacity(
@@ -248,12 +271,12 @@ class NullsStreamData : public MutableStreamData {
 
  protected:
   Vector<bool> nonNulls_;
-  bool hasNulls_;
-  uint32_t bufferedCount_;
+  bool hasNulls_{false};
+  uint32_t bufferedCount_{0};
 };
 
-// Nullable content data stream.
-// Used in all cases where data may contain nulls.
+/// Nullable content data stream.
+/// Used in all cases where data may contain nulls.
 template <typename T>
 class NullableContentStreamData final : public NullsStreamData {
  public:
@@ -265,16 +288,16 @@ class NullableContentStreamData final : public NullsStreamData {
         data_{&memoryPool},
         extraMemory_{0} {}
 
-  inline virtual std::string_view data() const override {
+  inline std::string_view data() const override {
     return {
         reinterpret_cast<const char*>(data_.data()), data_.size() * sizeof(T)};
   }
 
-  inline virtual bool empty() const override {
+  inline bool empty() const override {
     return NullsStreamData::empty() && data_.empty();
   }
 
-  inline virtual uint64_t memoryUsed() const override {
+  inline uint64_t memoryUsed() const override {
     return (data_.size() * sizeof(T)) + extraMemory_ +
         NullsStreamData::memoryUsed();
   }
@@ -291,7 +314,7 @@ class NullableContentStreamData final : public NullsStreamData {
     return extraMemory_;
   }
 
-  inline virtual void reset() override {
+  inline void reset() override {
     NullsStreamData::reset();
     data_.clear();
     extraMemory_ = 0;

@@ -25,9 +25,12 @@ add_executable(
   nimble_velox_tests
   BufferGrowthPolicyTest.cpp
   EncodingLayoutTreeTests.cpp
+  IndexWriterTest.cpp
   LayoutPlannerTests.cpp
   OrderedRangesTests.cpp
   SchemaTests.cpp
+  StreamChunkerTests.cpp
+  StreamDataTest.cpp
   TypeTests.cpp
   VeloxReaderTests.cpp
   VeloxWriterTests.cpp
