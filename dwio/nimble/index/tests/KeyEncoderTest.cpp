@@ -91,8 +91,10 @@ class KeyEncoderTest : public velox::exec::test::OperatorTestBase {
     for (const auto& input : inputs) {
       // Encode the keys
       Buffer buffer(*pool_);
-      Vector<std::string_view> encodedKeys(pool_.get());
-      keyEncoder->encode(input, encodedKeys, buffer);
+      std::vector<std::string_view> encodedKeys;
+      keyEncoder->encode(input, encodedKeys, [&buffer](size_t size) -> void* {
+        return buffer.reserve(size);
+      });
 
       // Sort indices based on encoded keys (lexicographic comparison)
       std::vector<velox::vector_size_t> encodedIndices(input->size());
@@ -328,9 +330,13 @@ class KeyEncoderTest : public velox::exec::test::OperatorTestBase {
     if (testCase.expectedLowerBound.has_value()) {
       ASSERT_TRUE(encodedBounds->lowerKey.has_value());
       Buffer expectedBuffer(*pool_);
-      Vector<std::string_view> expectedKeys(pool_.get());
+      std::vector<std::string_view> expectedKeys;
       keyEncoder->encode(
-          testCase.expectedLowerBound.value(), expectedKeys, expectedBuffer);
+          testCase.expectedLowerBound.value(),
+          expectedKeys,
+          [&expectedBuffer](size_t size) -> void* {
+            return expectedBuffer.reserve(size);
+          });
       EXPECT_EQ(expectedKeys.size(), 1);
       EXPECT_EQ(encodedBounds->lowerKey.value(), std::string(expectedKeys[0]));
     }
@@ -338,9 +344,13 @@ class KeyEncoderTest : public velox::exec::test::OperatorTestBase {
     if (testCase.expectedUpperBound.has_value()) {
       ASSERT_TRUE(encodedBounds->upperKey.has_value());
       Buffer expectedBuffer(*pool_);
-      Vector<std::string_view> expectedKeys(pool_.get());
+      std::vector<std::string_view> expectedKeys;
       keyEncoder->encode(
-          testCase.expectedUpperBound.value(), expectedKeys, expectedBuffer);
+          testCase.expectedUpperBound.value(),
+          expectedKeys,
+          [&expectedBuffer](size_t size) -> void* {
+            return expectedBuffer.reserve(size);
+          });
       EXPECT_EQ(expectedKeys.size(), 1);
       EXPECT_EQ(encodedBounds->upperKey.value(), std::string(expectedKeys[0]));
     }
@@ -9565,9 +9575,11 @@ TEST_F(KeyEncoderTest, columnSeparatorTest) {
           pool_.get());
 
       // Use the public encode() method
-      Vector<std::string_view> encodedKeys(pool_.get());
-      Buffer buffer(*pool_.get());
-      encoder->encode(input, encodedKeys, buffer);
+      Buffer buffer(*pool_);
+      std::vector<std::string_view> encodedKeys;
+      encoder->encode(input, encodedKeys, [&buffer](size_t size) -> void* {
+        return buffer.reserve(size);
+      });
 
       // Verify we got 2 distinct keys
       EXPECT_EQ(encodedKeys.size(), 2);
