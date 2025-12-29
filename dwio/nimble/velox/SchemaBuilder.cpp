@@ -449,7 +449,7 @@ offset_size SchemaBuilder::nodeCount() const {
   return currentOffset_;
 }
 
-const std::shared_ptr<const TypeBuilder>& SchemaBuilder::getRoot() const {
+const std::shared_ptr<const TypeBuilder>& SchemaBuilder::root() const {
   // When retreiving schema nodes, we return a vector ordered based on the
   // schema tree DFS order. To be able to flatten the schema tree to a flat
   // ordered vector, we need to guarantee that the schema tree has a single root
@@ -603,8 +603,8 @@ void SchemaBuilder::addNode(
   }
 }
 
-std::vector<SchemaNode> SchemaBuilder::getSchemaNodes() const {
-  auto& root = getRoot();
+std::vector<SchemaNode> SchemaBuilder::schemaNodes() const {
+  auto& root = this->root();
   std::vector<SchemaNode> nodes;
   nodes.reserve(currentOffset_);
   addNode(nodes, *root);
