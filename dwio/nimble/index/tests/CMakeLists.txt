@@ -13,9 +13,6 @@
 # limitations under the License.
 add_executable(
   nimble_index_tests
-  # This requires DuckDB which is not available in the nimble OSS build.
-  #
-  # KeyEncoderTest.cpp
   StripeIndexGroupTest.cpp
   TabletIndexTest.cpp
   TabletIndexTestBase.cpp

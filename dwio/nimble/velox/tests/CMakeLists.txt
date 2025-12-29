@@ -28,6 +28,7 @@ add_executable(
   IndexWriterTest.cpp
   LayoutPlannerTests.cpp
   OrderedRangesTests.cpp
+  RawSizeTests.cpp
   SchemaTests.cpp
   StreamChunkerTests.cpp
   StreamDataTest.cpp
@@ -50,6 +51,7 @@ target_link_libraries(
   nimble_common
   nimble_encodings
   nimble_encodings_tests_utils
+  velox_key_encoder
   velox_vector
   velox_vector_fuzzer
   velox_vector_test_lib
@@ -59,19 +61,6 @@ target_link_libraries(
   Folly::folly
   raw_size_utils
   nimble_column_stats_utils
-)
-
-add_executable(raw_size_tests RawSizeTests.cpp)
-add_test(raw_size_tests raw_size_tests)
-
-target_link_libraries(
-  raw_size_tests
-  raw_size_utils
-  velox_vector
-  velox_vector_test_lib
-  gtest
-  gtest_main
-  Folly::folly
 )
 
 add_executable(raw_size_benchmark RawSizeBenchmark.cpp)
