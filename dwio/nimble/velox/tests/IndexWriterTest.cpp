@@ -20,10 +20,10 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/index/IndexConfig.h"
-#include "dwio/nimble/index/KeyEncoder.h"
 #include "dwio/nimble/velox/IndexWriter.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/serializers/KeyEncoder.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
@@ -68,9 +68,9 @@ class IndexWriterTest : public testing::Test,
             }}};
   }
 
-  std::unique_ptr<KeyEncoder> createKeyEncoder() const {
+  std::unique_ptr<velox::serializer::KeyEncoder> createKeyEncoder() const {
     const auto keyType = velox::ROW({{std::string(kCol1), velox::INTEGER()}});
-    return KeyEncoder::create(
+    return velox::serializer::KeyEncoder::create(
         {std::string(kCol1)},
         keyType,
         {velox::core::SortOrder{true, true}},

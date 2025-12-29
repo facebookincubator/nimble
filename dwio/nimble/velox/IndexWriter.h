@@ -21,10 +21,10 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 #include "dwio/nimble/index/IndexConfig.h"
-#include "dwio/nimble/index/KeyEncoder.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/velox/StreamData.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/serializers/KeyEncoder.h"
 
 namespace facebook::nimble {
 
@@ -147,7 +147,7 @@ class IndexWriter {
   createEncodingPolicy() const;
 
   velox::memory::MemoryPool* const pool_;
-  const std::unique_ptr<KeyEncoder> keyEncoder_;
+  const std::unique_ptr<velox::serializer::KeyEncoder> keyEncoder_;
   const std::unique_ptr<ContentStreamData<std::string_view>> keyStream_;
   const EncodingLayout encodingLayout_;
   const bool enforceKeyOrder_;

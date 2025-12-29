@@ -63,7 +63,7 @@ IndexWriter::IndexWriter(
     const velox::RowTypePtr& inputType,
     velox::memory::MemoryPool* pool)
     : pool_{pool},
-      keyEncoder_{KeyEncoder::create(
+      keyEncoder_{velox::serializer::KeyEncoder::create(
           config.columns,
           inputType,
           std::vector<velox::core::SortOrder>{
