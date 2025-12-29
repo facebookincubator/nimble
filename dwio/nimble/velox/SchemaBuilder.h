@@ -321,11 +321,11 @@ class SchemaBuilder {
   // state means that the schema is a valid tree, with a single root node. This
   // means that all created builders were attached to their parents by calling
   // addChild/setChildren.
-  std::vector<SchemaNode> getSchemaNodes() const;
+  std::vector<SchemaNode> schemaNodes() const;
 
   offset_size nodeCount() const;
 
-  const std::shared_ptr<const TypeBuilder>& getRoot() const;
+  const std::shared_ptr<const TypeBuilder>& root() const;
 
  private:
   void registerChild(const std::shared_ptr<TypeBuilder>& type);

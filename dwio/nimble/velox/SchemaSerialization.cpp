@@ -188,7 +188,7 @@ SchemaSerializer::SchemaSerializer() : builder_{kInitialSchemaSectionSize} {}
 
 std::string_view SchemaSerializer::serialize(
     const SchemaBuilder& schemaBuilder) {
-  auto nodes = schemaBuilder.getSchemaNodes();
+  auto nodes = schemaBuilder.schemaNodes();
   builder_.Clear();
   auto schema =
       builder_.CreateVector<flatbuffers::Offset<serialization::SchemaNode>>(
