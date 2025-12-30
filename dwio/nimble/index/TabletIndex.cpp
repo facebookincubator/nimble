@@ -21,7 +21,7 @@
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 
-namespace facebook::nimble {
+namespace facebook::nimble::index {
 
 namespace {
 const serialization::Index* getIndexRoot(const Section& indexSection) {
@@ -36,6 +36,13 @@ uint32_t getStripeCount(const Section& indexSection) {
   const auto* stripeKeys = indexRoot->stripe_keys();
   NIMBLE_CHECK_NOT_NULL(stripeKeys);
   return stripeKeys->size() - 1;
+}
+
+uint32_t getIndexGroupCount(const Section& indexSection) {
+  const auto* indexRoot = getIndexRoot(indexSection);
+  const auto* stripeIndexGroups = indexRoot->stripe_index_groups();
+  NIMBLE_CHECK_NOT_NULL(stripeIndexGroups);
+  return stripeIndexGroups->size();
 }
 
 std::vector<std::string_view> getStripeKeys(const Section& indexSection) {
@@ -71,18 +78,16 @@ std::unique_ptr<TabletIndex> TabletIndex::create(Section indexSection) {
 TabletIndex::TabletIndex(Section indexSection)
     : indexSection_{std::move(indexSection)},
       numStripes_{getStripeCount(indexSection_)},
+      numIndexGroups_{getIndexGroupCount(indexSection_)},
       stripeKeys_{getStripeKeys(indexSection_)},
       indexColumns_{getIndexColumns(indexSection_)} {
   NIMBLE_CHECK(!indexColumns_.empty());
   NIMBLE_CHECK_EQ(numStripes_ + 1, stripeKeys_.size());
 
   // Validate consistency between stripe group indices and stripe index groups
-  const auto* indexRoot = getIndexRoot(indexSection_);
-  const auto* stripeIndexGroups = indexRoot->stripe_index_groups();
-  NIMBLE_CHECK_NOT_NULL(stripeIndexGroups);
   NIMBLE_CHECK_GE(
       numStripes_,
-      stripeIndexGroups->size(),
+      numIndexGroups_,
       "Number of stripe index groups cannot exceed number of stripes");
 }
 
@@ -113,10 +118,10 @@ std::optional<StripeLocation> TabletIndex::lookup(
 }
 
 MetadataSection TabletIndex::groupIndexMetadata(uint32_t groupIndex) const {
+  NIMBLE_CHECK_LT(groupIndex, numIndexGroups_);
   const auto* indexRoot = getIndexRoot(indexSection_);
   const auto* indexGroupSections = indexRoot->stripe_index_groups();
   NIMBLE_CHECK_NOT_NULL(indexGroupSections);
-  NIMBLE_CHECK_LT(groupIndex, indexGroupSections->size());
   const auto* metadata = indexGroupSections->Get(groupIndex);
   return MetadataSection{
       metadata->offset(),
@@ -127,4 +132,4 @@ MetadataSection TabletIndex::groupIndexMetadata(uint32_t groupIndex) const {
 const MetadataBuffer& TabletIndex::rootIndex() const {
   return indexSection_.buffer();
 }
-} // namespace facebook::nimble
+} // namespace facebook::nimble::index

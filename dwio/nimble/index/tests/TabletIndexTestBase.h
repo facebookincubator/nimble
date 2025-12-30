@@ -25,7 +25,7 @@
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "velox/common/memory/Memory.h"
 
-namespace facebook::nimble::test {
+namespace facebook::nimble::index::test {
 
 /// Base test class providing common test utilities for tablet index tests.
 class TabletIndexTestBase : public ::testing::Test {
@@ -94,4 +94,4 @@ class TabletIndexTestBase : public ::testing::Test {
       rootPool_->addLeafChild("TabletIndexTestBase")};
 };
 
-} // namespace facebook::nimble::test
+} // namespace facebook::nimble::index::test

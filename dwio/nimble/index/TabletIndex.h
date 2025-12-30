@@ -22,7 +22,7 @@
 
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 
-namespace facebook::nimble {
+namespace facebook::nimble::index {
 
 /// Represents the global stripe index within a tablet.
 struct StripeLocation {
@@ -126,13 +126,19 @@ class TabletIndex {
   /// This is needed by StripeIndexGroup to read stripe group information.
   const MetadataBuffer& rootIndex() const;
 
+  /// Returns the number of index groups for testing purposes.
+  size_t numIndexGroups() const {
+    return numIndexGroups_;
+  }
+
  private:
   explicit TabletIndex(Section indexSection);
 
   const Section indexSection_;
   const uint32_t numStripes_;
+  const uint32_t numIndexGroups_;
   const std::vector<std::string_view> stripeKeys_;
   const std::vector<std::string> indexColumns_;
 };
 
-} // namespace facebook::nimble
+} // namespace facebook::nimble::index

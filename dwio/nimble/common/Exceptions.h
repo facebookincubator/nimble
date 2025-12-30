@@ -157,7 +157,10 @@ NIMBLE_DECLARE_CHECK_FAIL_TEMPLATES(::facebook::nimble::NimbleInternalError);
 
 #define NIMBLE_CHECK(expr, ...) _NIMBLE_CHECK_IMPL(expr, #expr, ##__VA_ARGS__)
 
-// Verify an expected file format conditions. Failure of this condition means
+#define NIMBLE_USER_CHECK(expr, ...) \
+  _NIMBLE_USER_CHECK_IMPL(expr, #expr, ##__VA_ARGS__)
+
+// Verify an expected file format conditions.
 // the file is corrupted (e.g. passed magic number and version verification, but
 // got unexpected format). This will trigger a user error.
 #define NIMBLE_CHECK_FILE(condition, ...)              \

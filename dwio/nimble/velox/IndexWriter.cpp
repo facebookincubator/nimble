@@ -21,7 +21,7 @@
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 #include "dwio/nimble/velox/StreamChunker.h"
 
-namespace facebook::nimble {
+namespace facebook::nimble::index {
 
 namespace {
 // The key stream uses a placeholder offset value (max offset_size) that does
@@ -110,7 +110,7 @@ void IndexWriter::write(const velox::VectorPtr& input, Buffer& buffer) {
     const auto& keys = keyStream_->mutableData();
     const auto startIdx = prevSize > 0 ? prevSize - 1 : 0;
     for (auto i = startIdx + 1; i < newSize; ++i) {
-      NIMBLE_CHECK(
+      NIMBLE_USER_CHECK(
           keys[i] >= keys[i - 1],
           "Encoded keys must be in non-descending order");
     }
@@ -124,14 +124,12 @@ void IndexWriter::encodeStream(Buffer& buffer) {
   }
 
   auto& chunk = encodedKeyStream_.chunks.emplace_back();
-  auto& chunkKey = encodedKeyStream_.chunkKeys.emplace_back();
   encodeChunkData(
       std::span<const std::string_view>(keys.data(), keys.size()),
       keys[0],
       keys[keys.size() - 1],
       buffer,
-      chunk,
-      chunkKey);
+      chunk);
   keyStream_->reset();
 }
 
@@ -163,14 +161,12 @@ bool IndexWriter::encodeChunk(
   const auto keyCount = chunkView->rowCount();
 
   auto& chunk = encodedKeyStream_.chunks.emplace_back();
-  auto& chunkKey = encodedKeyStream_.chunkKeys.emplace_back();
   encodeChunkData(
       std::span<const std::string_view>(keys.data(), keyCount),
       keys[0],
       keys[keyCount - 1],
       buffer,
-      chunk,
-      chunkKey);
+      chunk);
 
   chunker->compact();
   return true;
@@ -178,10 +174,14 @@ bool IndexWriter::encodeChunk(
 
 std::optional<KeyStream> IndexWriter::finishStripe(Buffer& buffer) {
   NIMBLE_CHECK(keyStream_->empty(), "Key stream must be empty at stripe end");
+  SCOPE_EXIT {
+    reset();
+  };
   if (encodedKeyStream_.chunks.empty()) {
     return std::nullopt;
   }
-  return std::move(encodedKeyStream_);
+  auto result = std::move(encodedKeyStream_);
+  return result;
 }
 
 uint32_t IndexWriter::encodeChunkData(
@@ -189,8 +189,7 @@ uint32_t IndexWriter::encodeChunkData(
     std::string_view firstKey,
     std::string_view lastKey,
     Buffer& buffer,
-    Chunk& chunk,
-    ChunkKey& chunkKey) {
+    KeyChunk& chunk) {
   const auto encoded = EncodingFactory::encode<std::string_view>(
       createEncodingPolicy(), data, buffer);
   NIMBLE_CHECK(!encoded.empty());
@@ -201,9 +200,8 @@ uint32_t IndexWriter::encodeChunkData(
   auto* keyData = buffer.reserve(totalKeySize);
   std::memcpy(keyData, firstKey.data(), firstKey.size());
   std::memcpy(keyData + firstKey.size(), lastKey.data(), lastKey.size());
-  chunkKey.firstKey = std::string_view{keyData, firstKey.size()};
-  chunkKey.lastKey =
-      std::string_view{keyData + firstKey.size(), lastKey.size()};
+  chunk.firstKey = std::string_view{keyData, firstKey.size()};
+  chunk.lastKey = std::string_view{keyData + firstKey.size(), lastKey.size()};
 
   uint32_t chunkBytes{0};
   ChunkedStreamWriter chunkWriter{buffer};
@@ -226,4 +224,4 @@ void IndexWriter::reset() {
 void IndexWriter::close() {
   reset();
 }
-} // namespace facebook::nimble
+} // namespace facebook::nimble::index

@@ -190,7 +190,8 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
     }
     default: {
       NIMBLE_UNREACHABLE(
-          "Trying to deserialize invalid EncodingType -- garbage input?");
+          "Trying to deserialize invalid EncodingType:{} -- garbage input?",
+          static_cast<int>(encodingType));
     }
   }
 }

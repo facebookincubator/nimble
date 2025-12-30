@@ -24,9 +24,14 @@
 #include "velox/common/file/Region.h"
 
 namespace facebook::nimble {
-
 class MetadataBuffer;
-class StripeGroup;
+} // namespace facebook::nimble
+
+namespace facebook::nimble::index {
+
+namespace test {
+class StripeIndexGroupTestHelper;
+} // namespace test
 
 /// Represents the location of a chunk within a stream.
 /// Both offsets are relative:
@@ -96,6 +101,8 @@ class StripeIndexGroup {
   const uint32_t firstStripe_;
   const uint32_t stripeCount_;
   const uint32_t streamCount_;
+
+  friend class test::StripeIndexGroupTestHelper;
 };
 
 /// StreamIndex is a convenience wrapper around StripeIndexGroup for rowId-based
@@ -122,4 +129,4 @@ class StreamIndex {
   const uint32_t streamId_;
 };
 
-} // namespace facebook::nimble
+} // namespace facebook::nimble::index

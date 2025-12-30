@@ -47,22 +47,20 @@ struct Stream {
   std::vector<Chunk> chunks;
 };
 
-/// Represents the key boundaries for a single chunk in an indexed stream.
+/// Represents a chunk in a key stream with key boundaries.
 /// Used to enable efficient range-based lookups during reads.
-struct ChunkKey {
+struct KeyChunk : public Chunk {
   /// First key value in this chunk.
   std::string_view firstKey;
   /// Last key value in this chunk.
   std::string_view lastKey;
 };
 
-/// KeyStream extends Stream with per-chunk key boundary information
-/// for efficient range lookups in indexed data. The chunkKeys vector
-/// should have the same size as chunks when fully populated.
-struct KeyStream : public Stream {
-  /// Key boundaries for each chunk. The vector size should match
-  /// chunks.size() when fully populated.
-  std::vector<ChunkKey> chunkKeys;
+/// KeyStream holds key chunks for efficient range lookups in indexed data.
+/// Unlike Stream, KeyStream is a standalone struct since it uses KeyChunk
+/// instead of Chunk and doesn't need offset tracking.
+struct KeyStream {
+  std::vector<KeyChunk> chunks;
 };
 
 class LayoutPlanner {

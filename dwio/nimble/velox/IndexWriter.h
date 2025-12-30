@@ -26,7 +26,7 @@
 #include "velox/common/memory/Memory.h"
 #include "velox/serializers/KeyEncoder.h"
 
-namespace facebook::nimble {
+namespace facebook::nimble::index {
 
 /// IndexWriter encodes index keys
 /// produces encoded chunks ready for tablet writing.
@@ -113,10 +113,6 @@ class IndexWriter {
   /// Returns true if there are accumulated keys to encode.
   bool hasKeys() const;
 
-  /// Resets the key stream, clearing all encoded keys.
-  /// Called between stripes to start fresh for each stripe.
-  void reset();
-
   /// Closes the writer and releases resources.
   void close();
 
@@ -126,25 +122,20 @@ class IndexWriter {
       const velox::RowTypePtr& inputType,
       velox::memory::MemoryPool* pool);
 
-  /// Encodes a single chunk and populates the Chunk struct and ChunkKey.
-  /// @param data Span of keys to encode.
-  /// @param firstKey First key in the chunk.
-  /// @param lastKey Last key in the chunk.
-  /// @param buffer Encoding buffer.
-  /// @param chunk Output chunk to populate.
-  /// @param chunkKey Output chunk key to populate with firstKey/lastKey.
-  /// @return Number of bytes written.
+  // Encodes a single chunk and populates the Chunk struct and ChunkKey.
   uint32_t encodeChunkData(
       std::span<const std::string_view> data,
       std::string_view firstKey,
       std::string_view lastKey,
       Buffer& buffer,
-      Chunk& chunk,
-      ChunkKey& chunkKey);
+      KeyChunk& chunk);
 
-  /// Creates a new encoding policy instance for key encoding.
+  // Creates a new encoding policy instance for key encoding.
   std::unique_ptr<EncodingSelectionPolicy<std::string_view>>
   createEncodingPolicy() const;
+
+  // Resets the internal state and releases resources.
+  void reset();
 
   velox::memory::MemoryPool* const pool_;
   const std::unique_ptr<velox::serializer::KeyEncoder> keyEncoder_;
@@ -158,4 +149,4 @@ class IndexWriter {
   KeyStream encodedKeyStream_;
 };
 
-} // namespace facebook::nimble
+} // namespace facebook::nimble::index

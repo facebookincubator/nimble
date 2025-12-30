@@ -27,7 +27,7 @@
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
-namespace facebook::nimble {
+namespace facebook::nimble::index::test {
 namespace {
 
 class IndexWriterTest : public testing::Test,
@@ -153,7 +153,7 @@ TEST_F(IndexWriterTest, enforceKeyOrderInvalidWithinBatch) {
          makeFlatVector<velox::StringView>({"f", "g", "h", "i", "j"})});
 
     if (enforceKeyOrder) {
-      NIMBLE_ASSERT_THROW(
+      NIMBLE_ASSERT_USER_THROW(
           writer->write(batch, *buffer_),
           "Encoded keys must be in non-descending order");
     } else {
@@ -163,7 +163,6 @@ TEST_F(IndexWriterTest, enforceKeyOrderInvalidWithinBatch) {
       ASSERT_TRUE(stream.has_value());
       ASSERT_EQ(stream->chunks.size(), 1);
       EXPECT_EQ(stream->chunks[0].rowCount, 5);
-      ASSERT_EQ(stream->chunkKeys.size(), 1);
     }
   }
 }
@@ -189,7 +188,7 @@ TEST_F(IndexWriterTest, enforceKeyOrderInvalidAcrossBatches) {
 
     writer->write(batch1, *buffer_);
     if (enforceKeyOrder) {
-      NIMBLE_ASSERT_THROW(
+      NIMBLE_ASSERT_USER_THROW(
           writer->write(batch2, *buffer_),
           "Encoded keys must be in non-descending order");
     } else {
@@ -302,7 +301,6 @@ TEST_P(IndexWriterDataTest, writeAndFinishStripeNonChunked) {
     ASSERT_TRUE(stream.has_value());
     ASSERT_EQ(stream->chunks.size(), 1);
     EXPECT_EQ(stream->chunks[0].rowCount, testCase.totalRows());
-    ASSERT_EQ(stream->chunkKeys.size(), 1);
 
     Vector<std::string_view> encodedKeys(pool_.get());
     Buffer keyBuffer(*pool_);
@@ -311,7 +309,7 @@ TEST_P(IndexWriterDataTest, writeAndFinishStripeNonChunked) {
         makeKeyInput(testCase.batches.front().front()),
         encodedKeys,
         [&keyBuffer](size_t size) { return keyBuffer.reserve(size); });
-    EXPECT_EQ(stream->chunkKeys[0].firstKey, encodedKeys[0]);
+    EXPECT_EQ(stream->chunks[0].firstKey, encodedKeys[0]);
 
     // Verify lastKey matches the last value of the last batch.
     encodedKeys.clear();
@@ -319,7 +317,7 @@ TEST_P(IndexWriterDataTest, writeAndFinishStripeNonChunked) {
         makeKeyInput(testCase.batches.back().back()),
         encodedKeys,
         [&keyBuffer](size_t size) { return keyBuffer.reserve(size); });
-    EXPECT_EQ(stream->chunkKeys[0].lastKey, encodedKeys[0]);
+    EXPECT_EQ(stream->chunks[0].lastKey, encodedKeys[0]);
   }
 }
 
@@ -390,21 +388,17 @@ TEST_P(IndexWriterDataTest, writeAndFinishStripeChunked) {
         [&keyBuffer](size_t size) { return keyBuffer.reserve(size); });
 
     // Verify chunk keys based on row offsets.
-    ASSERT_EQ(stream->chunkKeys.size(), stream->chunks.size());
     uint64_t rowOffset = 0;
     for (size_t i = 0; i < stream->chunks.size(); ++i) {
       SCOPED_TRACE(fmt::format("chunk {}", i));
       const auto& chunk = stream->chunks[i];
-      const auto& chunkKey = stream->chunkKeys[i];
 
       // Verify firstKey matches the value at chunk start offset.
-      EXPECT_EQ(chunkKey.firstKey, allEncodedKeys[rowOffset]);
+      EXPECT_EQ(chunk.firstKey, allEncodedKeys[rowOffset]);
 
       // Verify lastKey matches the value at chunk end offset.
-      EXPECT_EQ(
-          chunkKey.lastKey, allEncodedKeys[rowOffset + chunk.rowCount - 1]);
-
       rowOffset += chunk.rowCount;
+      ASSERT_EQ(chunk.lastKey, allEncodedKeys[rowOffset - 1]);
     }
     // Verify all rows are accounted for.
     EXPECT_EQ(rowOffset, allValues.size());
@@ -772,20 +766,17 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
         [&keyBuffer](size_t size) { return keyBuffer.reserve(size); });
 
     // Verify chunk keys based on row offsets.
-    ASSERT_EQ(stream->chunkKeys.size(), stream->chunks.size());
     uint64_t rowOffset = 0;
     for (size_t i = 0; i < stream->chunks.size(); ++i) {
       SCOPED_TRACE(fmt::format("chunk {}", i));
       const auto& chunk = stream->chunks[i];
-      const auto& chunkKey = stream->chunkKeys[i];
       ASSERT_FALSE(chunk.content.empty());
 
       // Verify firstKey matches the value at chunk start offset.
-      ASSERT_EQ(chunkKey.firstKey, allEncodedKeys[rowOffset]);
+      ASSERT_EQ(chunk.firstKey, allEncodedKeys[rowOffset]);
 
       // Verify lastKey matches the value at chunk end offset.
-      ASSERT_EQ(
-          chunkKey.lastKey, allEncodedKeys[rowOffset + chunk.rowCount - 1]);
+      ASSERT_EQ(chunk.lastKey, allEncodedKeys[rowOffset + chunk.rowCount - 1]);
 
       rowOffset += chunk.rowCount;
     }
@@ -825,20 +816,6 @@ TEST_P(IndexWriterDataTest, multiColumnIndex) {
   EXPECT_EQ(stream->chunks[0].rowCount, 3);
 }
 
-TEST_P(IndexWriterDataTest, reset) {
-  auto config = indexConfig(compressionType());
-  auto writer = IndexWriter::create(config, type_, pool_.get());
-  ASSERT_NE(writer, nullptr);
-
-  writer->write(makeInput({1, 2, 3}), *buffer_);
-  EXPECT_TRUE(writer->hasKeys());
-
-  writer->reset();
-  EXPECT_FALSE(writer->hasKeys());
-  auto stream = writer->finishStripe(*buffer_);
-  EXPECT_FALSE(stream.has_value());
-}
-
 TEST_P(IndexWriterDataTest, close) {
   auto config = indexConfig(compressionType());
   auto writer = IndexWriter::create(config, type_, pool_.get());
@@ -860,4 +837,4 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 } // namespace
-} // namespace facebook::nimble
+} // namespace facebook::nimble::index::test

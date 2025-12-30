@@ -183,6 +183,7 @@ target_link_libraries(
   nimble_velox_stats_fb
   raw_size_utils
   velox_dwio_common
+  velox_key_encoder
   Folly::folly
 )
 

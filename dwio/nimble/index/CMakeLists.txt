@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_library(nimble_index StripeIndexGroup.cpp TabletIndex.cpp)
+add_library(nimble_index IndexConfig.cpp StripeIndexGroup.cpp TabletIndex.cpp)
 target_link_libraries(
   nimble_index
   nimble_common

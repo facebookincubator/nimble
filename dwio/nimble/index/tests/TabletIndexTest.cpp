@@ -21,7 +21,8 @@
 #include "dwio/nimble/index/tests/TabletIndexTestBase.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 
-namespace facebook::nimble::test {
+namespace facebook::nimble::index::test {
+namespace {
 
 class TabletIndexTest : public TabletIndexTestBase {};
 
@@ -225,5 +226,5 @@ TEST_F(TabletIndexTest, lookupWithSameKeys) {
     }
   }
 }
-
-} // namespace facebook::nimble::test
+} // namespace
+} // namespace facebook::nimble::index::test
