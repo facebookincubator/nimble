@@ -173,6 +173,10 @@ struct VeloxWriterOptions {
   bool ignoreTopLevelNulls{false};
 
   bool enableStreamDeduplication{true};
+
+  // When true, string fields use per-field buffers instead of a shared buffer.
+  // This enables incremental memory reclamation during chunking.
+  bool disableSharedStringBuffers{false};
 };
 
 } // namespace facebook::nimble

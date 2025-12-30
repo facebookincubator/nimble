@@ -194,6 +194,7 @@ class ContentStreamChunker final : public StreamChunker {
 
     // Move and clear existing buffer
     auto tempData = std::move(currentData);
+    auto tempBuffer = streamData_->takeStringBuffer();
     streamData_->reset();
     NIMBLE_DCHECK(
         streamData_->empty(), "StreamData should be empty after reset");
@@ -215,6 +216,11 @@ class ContentStreamChunker final : public StreamChunker {
         tempData.begin() + dataElementOffset_,
         remainingDataCount,
         mutableData.begin());
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      if (tempBuffer) {
+        streamData_->compactStringBuffer(mutableData);
+      }
+    }
     dataElementOffset_ = 0;
     streamData_->extraMemory() = extraMemory_;
 
@@ -461,6 +467,7 @@ class NullableContentStreamChunker final : public StreamChunker {
     // Move and clear existing buffers
     auto tempNonNulls = std::move(currentNonNulls);
     auto tempData = std::move(currentData);
+    auto tempBuffer = streamData_->takeStringBuffer();
     const bool hasNulls = streamData_->hasNulls();
     streamData_->reset();
     NIMBLE_CHECK(
@@ -504,6 +511,11 @@ class NullableContentStreamChunker final : public StreamChunker {
           tempNonNulls.begin() + nonNullsOffset_,
           remainingNonNullsCount,
           mutableNonNulls.begin());
+    }
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      if (tempBuffer) {
+        streamData_->compactStringBuffer(mutableData);
+      }
     }
     streamData_->extraMemory() = extraMemory_;
     dataElementOffset_ = 0;

@@ -19,6 +19,7 @@
 #include <span>
 #include <string_view>
 
+#include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
@@ -65,9 +66,12 @@ class StreamData {
 class MutableStreamData : public StreamData {
  protected:
   MutableStreamData(
+      velox::memory::MemoryPool& memoryPool,
       const StreamDescriptorBuilder& descriptor,
       const InputBufferGrowthPolicy& growthPolicy)
-      : StreamData(descriptor), growthPolicy_{growthPolicy} {}
+      : StreamData(descriptor),
+        growthPolicy_{growthPolicy},
+        memoryPool_{memoryPool} {}
 
   virtual ~MutableStreamData() = default;
 
@@ -80,8 +84,44 @@ class MutableStreamData : public StreamData {
     }
   }
 
+  void resetStringBuffer() {
+    if (stringBuffer_) {
+      stringBuffer_.reset();
+    }
+  }
+
+ public:
+  /// Returns a reference to the internal string buffer.
+  /// Creates the string buffer lazily if it doesn't exist.
+  Buffer& stringBuffer() {
+    if (!stringBuffer_) {
+      stringBuffer_ = std::make_unique<Buffer>(memoryPool_);
+    }
+    return *stringBuffer_;
+  }
+
+  /// Takes ownership of the buffer from this stream.
+  std::unique_ptr<Buffer> takeStringBuffer() {
+    return std::move(stringBuffer_);
+  }
+
+  /// Compacts the string buffer by copying remaining strings to a new buffer
+  /// and updating the string_views in data.
+  void compactStringBuffer(Vector<std::string_view>& data) {
+    if (data.empty()) {
+      return;
+    }
+    auto newStringBuffer = std::make_unique<Buffer>(memoryPool_);
+    for (size_t i = 0; i < data.size(); ++i) {
+      data[i] = newStringBuffer->writeString(data[i]);
+    }
+    stringBuffer_ = std::move(newStringBuffer);
+  }
+
  private:
   const InputBufferGrowthPolicy& growthPolicy_;
+  velox::memory::MemoryPool& memoryPool_;
+  std::unique_ptr<Buffer> stringBuffer_;
 };
 
 /// Provides a lightweight, non-owning view into a portion of stream data,
@@ -156,7 +196,7 @@ class ContentStreamData final : public MutableStreamData {
       velox::memory::MemoryPool& pool,
       const StreamDescriptorBuilder& descriptor,
       const InputBufferGrowthPolicy& growthPolicy)
-      : MutableStreamData(descriptor, growthPolicy), data_{&pool} {}
+      : MutableStreamData(pool, descriptor, growthPolicy), data_{&pool} {}
 
   inline uint32_t rowCount() const override {
     return data_.size();
@@ -198,6 +238,7 @@ class ContentStreamData final : public MutableStreamData {
   inline virtual void reset() override {
     data_.clear();
     extraMemory_ = 0;
+    resetStringBuffer();
   }
 
  private:
@@ -218,7 +259,7 @@ class NullsStreamData : public MutableStreamData {
       velox::memory::MemoryPool& pool,
       const StreamDescriptorBuilder& descriptor,
       const InputBufferGrowthPolicy& growthPolicy)
-      : MutableStreamData(descriptor, growthPolicy), nonNulls_{&pool} {}
+      : MutableStreamData(pool, descriptor, growthPolicy), nonNulls_{&pool} {}
 
   inline uint32_t rowCount() const override {
     return bufferedCount_;
@@ -252,6 +293,7 @@ class NullsStreamData : public MutableStreamData {
     nonNulls_.clear();
     hasNulls_ = false;
     bufferedCount_ = 0;
+    resetStringBuffer();
   }
 
   void materialize() override {

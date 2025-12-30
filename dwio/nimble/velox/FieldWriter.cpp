@@ -289,7 +289,7 @@ class SimpleFieldWriter : public FieldWriter {
       const OrderedRanges& ranges,
       folly::Executor*) override {
     auto size = ranges.size();
-    auto& buffer = context_.stringBuffer();
+    auto& buffer = getBuffer();
     auto& data = valuesStream_.mutableData();
     uint64_t nullCount = 0;
 
@@ -351,6 +351,16 @@ class SimpleFieldWriter : public FieldWriter {
   }
 
  private:
+  Buffer& getBuffer() {
+    if constexpr (
+        K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY) {
+      if (context_.disableSharedStringBuffers()) {
+        return valuesStream_.stringBuffer();
+      }
+    }
+    return context_.stringBuffer();
+  }
+
   NullableContentStreamData<TargetType>& valuesStream_;
   ColumnStats& columnStats_;
 };
