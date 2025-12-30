@@ -28,4 +28,4 @@ std::unique_ptr<velox::dwio::common::SelectiveColumnReader> buildColumnReader(
     velox::common::ScanSpec& scanSpec,
     bool isRoot);
 
-}
+} // namespace facebook::nimble

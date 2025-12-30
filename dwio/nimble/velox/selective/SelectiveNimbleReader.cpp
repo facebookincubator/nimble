@@ -49,149 +49,28 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
     }
   }
 
-  int64_t nextRowNumber() override {
-    if (nextRowNumber_.has_value()) {
-      return *nextRowNumber_;
-    }
-    while (currentStripe_ < endStripe_) {
-      auto numStripeRows = readerBase_->tablet().stripeRowCount(currentStripe_);
-      if (currentRowInStripe_ == 0) {
-        if (readerBase_->randomSkip() &&
-            readerBase_->randomSkip()->nextSkip() >= numStripeRows) {
-          readerBase_->randomSkip()->consume(numStripeRows);
-          ++skippedStripes_;
-          goto advanceToNextStripe;
-        }
-        loadCurrentStripe();
-      }
-      if (currentRowInStripe_ < numStripeRows) {
-        nextRowNumber_ =
-            stripeRowOffsets_[currentStripe_] + currentRowInStripe_;
-        return *nextRowNumber_;
-      }
-    advanceToNextStripe:
-      ++currentStripe_;
-      currentRowInStripe_ = 0;
-    }
-    nextRowNumber_ = kAtEnd;
-    return kAtEnd;
-  }
+  int64_t nextRowNumber() override;
 
-  int64_t nextReadSize(uint64_t size) override {
-    VELOX_DCHECK_GT(size, 0);
-    if (nextRowNumber() == kAtEnd) {
-      return kAtEnd;
-    }
-    const auto rowsToRead = std::min<int64_t>(
-        size,
-        readerBase_->tablet().stripeRowCount(currentStripe_) -
-            currentRowInStripe_);
-    VELOX_DCHECK_GT(rowsToRead, 0);
-    return rowsToRead;
-  }
+  int64_t nextReadSize(uint64_t size) override;
 
   uint64_t next(
       uint64_t size,
       VectorPtr& result,
-      const dwio::common::Mutation* mutation) override {
-    const auto rowsToRead = nextReadSize(size);
-    if (rowsToRead == kAtEnd) {
-      return 0;
-    }
-    columnReader_->setCurrentRowNumber(nextRowNumber());
-    if (options_.rowNumberColumnInfo().has_value()) {
-      readWithRowNumber(
-          columnReader_,
-          options_,
-          nextRowNumber(),
-          rowsToRead,
-          mutation,
-          result);
-    } else {
-      columnReader_->next(rowsToRead, result, mutation);
-    }
-    nextRowNumber_.reset();
-    currentRowInStripe_ += rowsToRead;
-    return rowsToRead;
-  }
+      const dwio::common::Mutation* mutation) override;
 
   void updateRuntimeStats(
-      dwio::common::RuntimeStatistics& stats) const override {
-    stats.skippedStrides += skippedStripes_;
-  }
+      dwio::common::RuntimeStatistics& stats) const override;
 
-  void resetFilterCaches() override {
-    if (columnReader_) {
-      columnReader_->resetFilterCaches();
-    }
-  }
+  void resetFilterCaches() override;
 
-  std::optional<size_t> estimatedRowSize() const override {
-    // TODO: Use column statistics once ready.
-    if (const_cast<SelectiveNimbleRowReader*>(this)->nextRowNumber() ==
-        kAtEnd) {
-      return std::nullopt;
-    }
-    size_t byteSize, rowCount;
-    if (!columnReader_->estimateMaterializedSize(byteSize, rowCount)) {
-      return options_.trackRowSize() ? rowSizeTracker_->getCurrentMaxRowSize()
-                                     : 1UL << 20;
-    }
-    return rowCount == 0 ? 0 : byteSize / rowCount;
-  }
+  std::optional<size_t> estimatedRowSize() const override;
 
-  bool allPrefetchIssued() const final {
-    return true;
-  }
+  bool allPrefetchIssued() const final;
 
  private:
-  void initReadRange() {
-    const auto& tablet = readerBase_->tablet();
-    currentStripe_ = tablet.stripeCount();
-    endStripe_ = 0;
-    int64_t numRows = 0;
-    stripeRowOffsets_.resize(tablet.stripeCount());
-    const auto low = options_.offset();
-    const auto high = options_.limit();
-    for (int i = 0; i < tablet.stripeCount(); ++i) {
-      stripeRowOffsets_[i] = numRows;
-      if (low <= tablet.stripeOffset(i) && tablet.stripeOffset(i) < high) {
-        currentStripe_ = std::min(currentStripe_, i);
-        endStripe_ = std::max(endStripe_, i + 1);
-      }
-      numRows += tablet.stripeRowCount(i);
-    }
-    currentRowInStripe_ = 0;
-  }
+  void initReadRange();
 
-  void loadCurrentStripe() {
-    streams_.setStripe(currentStripe_);
-    NimbleParams params(
-        *readerBase_->memoryPool(),
-        columnReaderStatistics_,
-        readerBase_->nimbleSchema(),
-        streams_,
-        options_.trackRowSize() ? rowSizeTracker_.get() : nullptr,
-        options_.passStringBuffersFromDecoder()
-        ? [](velox::memory::MemoryPool& pool, std::string_view data)
-              -> std::unique_ptr<
-                  Encoding> { return EncodingFactory::decode(pool, data); }
-        : [](velox::memory::MemoryPool& pool,
-             std::string_view data) -> std::unique_ptr<Encoding> {
-            return legacy::EncodingFactory::decode(pool, data);
-          },
-        options_.preserveFlatMapsInMemory());
-    columnReader_ = buildColumnReader(
-        options_.requestedType() ? options_.requestedType()
-                                 : readerBase_->fileSchema(),
-        readerBase_->fileSchemaWithId(),
-        params,
-        *options_.scanSpec(),
-        true);
-    rowSizeTracker_->finalizeProjection();
-    columnReader_->setIsTopLevel();
-    streams_.load();
-  }
+  void loadCurrentStripe();
 
   const std::shared_ptr<ReaderBase> readerBase_;
   const dwio::common::RowReaderOptions options_;
@@ -208,6 +87,141 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
   std::unique_ptr<RowSizeTracker> rowSizeTracker_;
 };
 
+int64_t SelectiveNimbleRowReader::nextRowNumber() {
+  if (nextRowNumber_.has_value()) {
+    return *nextRowNumber_;
+  }
+  while (currentStripe_ < endStripe_) {
+    auto numStripeRows = readerBase_->tablet().stripeRowCount(currentStripe_);
+    if (currentRowInStripe_ == 0) {
+      if (readerBase_->randomSkip() &&
+          readerBase_->randomSkip()->nextSkip() >= numStripeRows) {
+        readerBase_->randomSkip()->consume(numStripeRows);
+        ++skippedStripes_;
+        goto advanceToNextStripe;
+      }
+      loadCurrentStripe();
+    }
+    if (currentRowInStripe_ < numStripeRows) {
+      nextRowNumber_ = stripeRowOffsets_[currentStripe_] + currentRowInStripe_;
+      return *nextRowNumber_;
+    }
+  advanceToNextStripe:
+    ++currentStripe_;
+    currentRowInStripe_ = 0;
+  }
+  nextRowNumber_ = kAtEnd;
+  return kAtEnd;
+}
+
+int64_t SelectiveNimbleRowReader::nextReadSize(uint64_t size) {
+  NIMBLE_DCHECK_GT(size, 0);
+  if (nextRowNumber() == kAtEnd) {
+    return kAtEnd;
+  }
+  const auto rowsToRead = std::min<int64_t>(
+      size,
+      readerBase_->tablet().stripeRowCount(currentStripe_) -
+          currentRowInStripe_);
+  NIMBLE_DCHECK_GT(rowsToRead, 0);
+  return rowsToRead;
+}
+
+uint64_t SelectiveNimbleRowReader::next(
+    uint64_t size,
+    VectorPtr& result,
+    const dwio::common::Mutation* mutation) {
+  const auto rowsToRead = nextReadSize(size);
+  if (rowsToRead == kAtEnd) {
+    return 0;
+  }
+  columnReader_->setCurrentRowNumber(nextRowNumber());
+  if (options_.rowNumberColumnInfo().has_value()) {
+    readWithRowNumber(
+        columnReader_, options_, nextRowNumber(), rowsToRead, mutation, result);
+  } else {
+    columnReader_->next(rowsToRead, result, mutation);
+  }
+  nextRowNumber_.reset();
+  currentRowInStripe_ += rowsToRead;
+  return rowsToRead;
+}
+
+void SelectiveNimbleRowReader::updateRuntimeStats(
+    dwio::common::RuntimeStatistics& stats) const {
+  stats.skippedStrides += skippedStripes_;
+}
+
+void SelectiveNimbleRowReader::resetFilterCaches() {
+  if (columnReader_) {
+    columnReader_->resetFilterCaches();
+  }
+}
+
+std::optional<size_t> SelectiveNimbleRowReader::estimatedRowSize() const {
+  // TODO: Use column statistics once ready.
+  if (const_cast<SelectiveNimbleRowReader*>(this)->nextRowNumber() == kAtEnd) {
+    return std::nullopt;
+  }
+  size_t byteSize, rowCount;
+  if (!columnReader_->estimateMaterializedSize(byteSize, rowCount)) {
+    return options_.trackRowSize() ? rowSizeTracker_->getCurrentMaxRowSize()
+                                   : 1UL << 20;
+  }
+  return rowCount == 0 ? 0 : byteSize / rowCount;
+}
+
+bool SelectiveNimbleRowReader::allPrefetchIssued() const {
+  return true;
+}
+
+void SelectiveNimbleRowReader::initReadRange() {
+  const auto& tablet = readerBase_->tablet();
+  currentStripe_ = tablet.stripeCount();
+  endStripe_ = 0;
+  int64_t numRows = 0;
+  stripeRowOffsets_.resize(tablet.stripeCount());
+  const auto low = options_.offset();
+  const auto high = options_.limit();
+  for (int i = 0; i < tablet.stripeCount(); ++i) {
+    stripeRowOffsets_[i] = numRows;
+    if (low <= tablet.stripeOffset(i) && tablet.stripeOffset(i) < high) {
+      currentStripe_ = std::min(currentStripe_, i);
+      endStripe_ = std::max(endStripe_, i + 1);
+    }
+    numRows += tablet.stripeRowCount(i);
+  }
+  currentRowInStripe_ = 0;
+}
+
+void SelectiveNimbleRowReader::loadCurrentStripe() {
+  streams_.setStripe(currentStripe_);
+  NimbleParams params(
+      *readerBase_->memoryPool(),
+      columnReaderStatistics_,
+      readerBase_->nimbleSchema(),
+      streams_,
+      options_.trackRowSize() ? rowSizeTracker_.get() : nullptr,
+      options_.passStringBuffersFromDecoder()
+      ? [](velox::memory::MemoryPool& pool, std::string_view data)
+            -> std::unique_ptr<
+                Encoding> { return EncodingFactory::decode(pool, data); }
+      : [](velox::memory::MemoryPool& pool, std::string_view data)
+            -> std::unique_ptr<
+                Encoding> { return legacy::EncodingFactory::decode(pool, data); },
+      options_.preserveFlatMapsInMemory());
+  columnReader_ = buildColumnReader(
+      options_.requestedType() ? options_.requestedType()
+                               : readerBase_->fileSchema(),
+      readerBase_->fileSchemaWithId(),
+      params,
+      *options_.scanSpec(),
+      true);
+  rowSizeTracker_->finalizeProjection();
+  columnReader_->setIsTopLevel();
+  streams_.load();
+}
+
 class SelectiveNimbleReader : public dwio::common::Reader {
  public:
   SelectiveNimbleReader(
@@ -218,33 +232,46 @@ class SelectiveNimbleReader : public dwio::common::Reader {
     detail::initHook();
   }
 
-  std::optional<uint64_t> numberOfRows() const override {
-    return readerBase_->tablet().tabletRowCount();
-  }
+  std::optional<uint64_t> numberOfRows() const override;
 
   std::unique_ptr<dwio::common::ColumnStatistics> columnStatistics(
-      uint32_t /*index*/) const override {
-    return nullptr;
-  }
+      uint32_t index) const override;
 
-  const RowTypePtr& rowType() const override {
-    return readerBase_->fileSchema();
-  }
+  const RowTypePtr& rowType() const override;
 
   const std::shared_ptr<const dwio::common::TypeWithId>& typeWithId()
-      const override {
-    return readerBase_->fileSchemaWithId();
-  }
+      const override;
 
   std::unique_ptr<dwio::common::RowReader> createRowReader(
-      const dwio::common::RowReaderOptions& options) const override {
-    return std::make_unique<SelectiveNimbleRowReader>(readerBase_, options);
-  }
+      const dwio::common::RowReaderOptions& options) const override;
 
  private:
   const std::shared_ptr<ReaderBase> readerBase_;
   const dwio::common::ReaderOptions options_;
 };
+
+std::optional<uint64_t> SelectiveNimbleReader::numberOfRows() const {
+  return readerBase_->tablet().tabletRowCount();
+}
+
+std::unique_ptr<dwio::common::ColumnStatistics>
+SelectiveNimbleReader::columnStatistics(uint32_t /*index*/) const {
+  return nullptr;
+}
+
+const RowTypePtr& SelectiveNimbleReader::rowType() const {
+  return readerBase_->fileSchema();
+}
+
+const std::shared_ptr<const dwio::common::TypeWithId>&
+SelectiveNimbleReader::typeWithId() const {
+  return readerBase_->fileSchemaWithId();
+}
+
+std::unique_ptr<dwio::common::RowReader> SelectiveNimbleReader::createRowReader(
+    const dwio::common::RowReaderOptions& options) const {
+  return std::make_unique<SelectiveNimbleRowReader>(readerBase_, options);
+}
 
 } // namespace
 
