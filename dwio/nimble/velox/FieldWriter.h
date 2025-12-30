@@ -296,6 +296,10 @@ class FieldWriterContext {
             *bufferMemoryPool_, descriptor, *inputBufferGrowthPolicy_)));
   }
 
+  inline bool disableSharedStringBuffers() const {
+    return disableSharedStringBuffers_;
+  }
+
  protected:
   MemoryPoolHolder bufferMemoryPool_;
   std::mutex flatMapSchemaMutex_;
@@ -305,6 +309,7 @@ class FieldWriterContext {
   folly::F14FastSet<uint32_t> dictionaryArrayNodeIds_;
   folly::F14FastSet<uint32_t> deduplicatedMapNodeIds_;
   bool ignoreTopLevelNulls_{false};
+  bool disableSharedStringBuffers_{false};
 
   std::unique_ptr<InputBufferGrowthPolicy> inputBufferGrowthPolicy_;
   InputBufferGrowthStats inputBufferGrowthStats_;

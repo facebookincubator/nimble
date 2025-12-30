@@ -59,6 +59,7 @@ class WriterContext : public FieldWriterContext {
         ? std::make_unique<ExactGrowthPolicy>()
         : this->options_.inputGrowthPolicyFactory();
     ignoreTopLevelNulls_ = options_.ignoreTopLevelNulls;
+    disableSharedStringBuffers_ = options_.disableSharedStringBuffers;
   }
 
   const VeloxWriterOptions& options() const {
