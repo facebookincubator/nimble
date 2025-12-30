@@ -1,0 +1,136 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "dwio/nimble/index/tests/TabletIndexTestUtils.h"
+
+#include "dwio/nimble/tablet/IndexGenerated.h"
+#include "dwio/nimble/tablet/MetadataBuffer.h"
+
+namespace facebook::nimble::index::test {
+
+KeyStreamStats StripeIndexGroupTestHelper::keyStreamStats() const {
+  KeyStreamStats stats;
+
+  const auto* root = flatbuffers::GetRoot<serialization::StripeIndexGroup>(
+      indexGroup_->metadata_->content().data());
+
+  const auto* valueIndex = root->value_index();
+  if (valueIndex == nullptr) {
+    return stats;
+  }
+
+  // Copy key stream offsets per stripe.
+  if (const auto* offsets = valueIndex->key_stream_offsets()) {
+    stats.offsets.reserve(offsets->size());
+    for (const auto offset : *offsets) {
+      stats.offsets.push_back(offset);
+    }
+  }
+
+  // Copy key stream sizes per stripe.
+  if (const auto* sizes = valueIndex->key_stream_sizes()) {
+    stats.sizes.reserve(sizes->size());
+    for (const auto size : *sizes) {
+      stats.sizes.push_back(size);
+    }
+  }
+
+  // Copy accumulated chunk counts per stripe.
+  if (const auto* chunkCounts = valueIndex->key_stream_chunk_counts()) {
+    stats.chunkCounts.reserve(chunkCounts->size());
+    for (const auto count : *chunkCounts) {
+      stats.chunkCounts.push_back(count);
+    }
+  }
+
+  // Copy accumulated row counts per chunk.
+  if (const auto* chunkRows = valueIndex->key_stream_chunk_rows()) {
+    stats.chunkRows.reserve(chunkRows->size());
+    for (const auto row : *chunkRows) {
+      stats.chunkRows.push_back(row);
+    }
+  }
+
+  // Copy chunk offsets.
+  if (const auto* chunkOffsets = valueIndex->key_stream_chunk_offsets()) {
+    stats.chunkOffsets.reserve(chunkOffsets->size());
+    for (const auto offset : *chunkOffsets) {
+      stats.chunkOffsets.push_back(offset);
+    }
+  }
+
+  // Copy chunk keys.
+  if (const auto* keys = valueIndex->key_stream_chunk_keys()) {
+    stats.chunkKeys.reserve(keys->size());
+    for (const auto* key : *keys) {
+      stats.chunkKeys.push_back(key->str());
+    }
+  }
+
+  return stats;
+}
+
+StreamStats StripeIndexGroupTestHelper::streamStats(uint32_t streamId) const {
+  StreamStats stats;
+
+  const auto* root = flatbuffers::GetRoot<serialization::StripeIndexGroup>(
+      indexGroup_->metadata_->content().data());
+
+  const auto* positionIndex = root->position_index();
+  if (positionIndex == nullptr) {
+    return stats;
+  }
+
+  const auto* streamChunkCounts = positionIndex->stream_chunk_counts();
+  NIMBLE_CHECK_NOT_NULL(streamChunkCounts);
+  const auto* chunkRows = positionIndex->stream_chunk_rows();
+  NIMBLE_CHECK_NOT_NULL(chunkRows);
+  const auto* chunkOffsets = positionIndex->stream_chunk_offsets();
+  NIMBLE_CHECK_NOT_NULL(chunkOffsets);
+
+  const uint32_t stripeCount = indexGroup_->stripeCount_;
+  const uint32_t streamCount = indexGroup_->streamCount_;
+
+  // Extract chunk data for this stream across all stripes.
+  // streamChunkCounts is stored in (stripe, stream) order as prefix sums.
+  // We need to:
+  // 1. Calculate accumulated chunk count for this stream only
+  // 2. Extract chunk rows and offsets for this stream's chunks
+  uint32_t accumulatedChunkCountForStream = 0;
+  for (uint32_t stripeOffset = 0; stripeOffset < stripeCount; ++stripeOffset) {
+    const uint32_t idx = stripeOffset * streamCount + streamId;
+    const uint32_t globalAccumulatedCount = streamChunkCounts->Get(idx);
+    const uint32_t prevGlobalAccumulatedCount =
+        idx == 0 ? 0 : streamChunkCounts->Get(idx - 1);
+    const uint32_t chunksInThisStripe =
+        globalAccumulatedCount - prevGlobalAccumulatedCount;
+    // Accumulate chunk count for this stream
+    accumulatedChunkCountForStream += chunksInThisStripe;
+    stats.chunkCounts.push_back(accumulatedChunkCountForStream);
+
+    // Extract chunk rows and offsets for this stripe's chunks
+    const uint32_t startChunkIndex = prevGlobalAccumulatedCount;
+    for (uint32_t i = 0; i < chunksInThisStripe; ++i) {
+      const uint32_t chunkIdx = startChunkIndex + i;
+      stats.chunkRows.push_back(chunkRows->Get(chunkIdx));
+      stats.chunkOffsets.push_back(chunkOffsets->Get(chunkIdx));
+    }
+  }
+
+  return stats;
+}
+
+} // namespace facebook::nimble::index::test

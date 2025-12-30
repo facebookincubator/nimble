@@ -20,7 +20,7 @@
 
 #include <algorithm>
 
-namespace facebook::nimble {
+namespace facebook::nimble::index {
 
 namespace {
 template <typename T>
@@ -162,22 +162,23 @@ std::optional<ChunkLocation> StripeIndexGroup::lookupChunk(
   const auto* positionIndex = root->position_index();
   NIMBLE_CHECK_NOT_NULL(positionIndex);
 
-  // Use stream_chunk_counts and stream_chunk_indexes to find the range
+  // Use accumulated stream_chunk_counts to find the range
   // for this specific stream in this stripe
   const auto* streamChunkCounts = positionIndex->stream_chunk_counts();
   NIMBLE_CHECK_NOT_NULL(streamChunkCounts);
-  const auto* streamChunkIndexes = positionIndex->stream_chunk_indexes();
-  NIMBLE_CHECK_NOT_NULL(streamChunkIndexes);
-  NIMBLE_CHECK_EQ(streamChunkCounts->size(), streamChunkIndexes->size());
 
   // Calculate the index in the flattened stream_chunk_counts array
   const uint32_t streamChunkCountIndex = stripeOffset * streamCount_ + streamId;
   NIMBLE_CHECK_LT(streamChunkCountIndex, streamChunkCounts->size());
 
-  const uint32_t chunkCount = streamChunkCounts->Get(streamChunkCountIndex);
-  const uint32_t startChunkIndex =
-      streamChunkIndexes->Get(streamChunkCountIndex);
-  const uint32_t endChunkIndex = startChunkIndex + chunkCount;
+  // stream_chunk_counts is accumulated, so:
+  // - Start index: streamChunkCounts[streamChunkCountIndex - 1] (or 0 for
+  // first)
+  // - End index: streamChunkCounts[streamChunkCountIndex]
+  const uint32_t endChunkIndex = streamChunkCounts->Get(streamChunkCountIndex);
+  const uint32_t startChunkIndex = streamChunkCountIndex == 0
+      ? 0
+      : streamChunkCounts->Get(streamChunkCountIndex - 1);
 
   const auto* chunkRows = positionIndex->stream_chunk_rows();
   NIMBLE_CHECK_NOT_NULL(chunkRows);
@@ -252,4 +253,4 @@ std::optional<ChunkLocation> StreamIndex::lookupChunk(uint32_t rowId) const {
   return stripeIndexGroup_->lookupChunk(stripe_, streamId_, rowId);
 }
 
-} // namespace facebook::nimble
+} // namespace facebook::nimble::index

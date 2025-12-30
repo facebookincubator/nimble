@@ -40,10 +40,10 @@ table StripeValueIndex {
 /// Position index for stream data within a stripe group.
 /// Enables chunk-level seeking within streams based on row IDs.
 table StripePositionIndex {
-  /// Chunk count per (stripe, stream) pair, flattened in row-major order.
+  /// Accumulated chunk counts per (stripe, stream) pair, flattened in row-major order.
+  /// For (stripe, stream) pair at index i: chunk count = stream_chunk_counts[i] - (i > 0 ? stream_chunk_counts[i-1] : 0)
+  /// Start chunk index = (i > 0 ? stream_chunk_counts[i-1] : 0)
   stream_chunk_counts:[uint32];
-  /// Start index in the chunk arrays for each (stripe, stream) pair.
-  stream_chunk_indexes:[uint32];
   /// Accumulated row counts per chunk (prefix sum of row counts).
   /// For chunk j: start row = (j > 0 ? stream_chunk_rows[j-1] : 0)
   stream_chunk_rows:[uint32];

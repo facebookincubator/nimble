@@ -17,7 +17,7 @@
 
 #include "dwio/nimble/tablet/IndexGenerated.h"
 
-namespace facebook::nimble::test {
+namespace facebook::nimble::index::test {
 
 void TabletIndexTestBase::SetUpTestCase() {
   velox::memory::MemoryManager::initialize({});
@@ -59,13 +59,13 @@ TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
     std::vector<uint32_t> keyStreamChunkOffsets;
 
     std::vector<uint32_t> streamChunkCounts;
-    std::vector<uint32_t> streamChunkIndexes;
     std::vector<uint32_t> streamChunkRows;
     std::vector<uint32_t> streamChunkOffsets;
 
-    uint32_t currentChunkIndex = 0;
     // chunkCounts are accumulated values for key stream only
     uint32_t accumulatedKeyStreamChunkCount = 0;
+    // streamChunkCounts are accumulated globally in (stripe, stream) order
+    uint32_t accumulatedStreamChunkCount = 0;
     for (int i = 0; i < groupStripeCount; ++i, ++stripeIdx) {
       NIMBLE_CHECK_LT(stripeIdx, stripes.size());
       const auto& stripe = stripes[stripeIdx];
@@ -96,9 +96,10 @@ TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
       }
 
       // Add position index data for each stream in this stripe
+      // streamChunkCounts are accumulated globally in (stripe, stream) order
       for (const auto& stream : stripe.streams) {
-        streamChunkCounts.push_back(stream.numChunks);
-        streamChunkIndexes.push_back(currentChunkIndex);
+        accumulatedStreamChunkCount += stream.numChunks;
+        streamChunkCounts.push_back(accumulatedStreamChunkCount);
         NIMBLE_CHECK_EQ(stream.numChunks, stream.chunkRows.size());
         // chunkRows are accumulated values (cumulative row counts)
         uint32_t accumulatedRows = 0;
@@ -110,7 +111,6 @@ TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
         for (const auto& offset : stream.chunkOffsets) {
           streamChunkOffsets.push_back(offset);
         }
-        currentChunkIndex += stream.numChunks;
       }
     }
 
@@ -128,7 +128,6 @@ TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
     auto positionIndex = serialization::CreateStripePositionIndex(
         groupBuilder,
         groupBuilder.CreateVector(streamChunkCounts),
-        groupBuilder.CreateVector(streamChunkIndexes),
         groupBuilder.CreateVector(streamChunkRows),
         groupBuilder.CreateVector(streamChunkOffsets));
 
@@ -152,7 +151,7 @@ TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
   }
   // Build stripe_keys vector
   // First element is the min key, rest are max keys of each stripe
-  // Max key of each stripe is the last key in keyStream.chunkKeys
+  // Max key of each stripe is the last key in keyStream.keys
   std::vector<flatbuffers::Offset<flatbuffers::String>> stripeKeyOffsets;
   stripeKeyOffsets.reserve(stripes.size() + 1);
   stripeKeyOffsets.push_back(builder.CreateString(minKey));
@@ -223,4 +222,4 @@ std::shared_ptr<StripeIndexGroup> TabletIndexTestBase::createStripeIndexGroup(
       stripeGroupIndex, rootIndexBuffer, std::move(groupIndexBuffer));
 }
 
-} // namespace facebook::nimble::test
+} // namespace facebook::nimble::index::test

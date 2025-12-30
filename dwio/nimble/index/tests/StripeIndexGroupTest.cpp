@@ -22,7 +22,7 @@
 #include "dwio/nimble/index/tests/TabletIndexTestBase.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 
-namespace facebook::nimble::test {
+namespace facebook::nimble::index::test {
 
 class StripeIndexGroupTest : public TabletIndexTestBase {};
 
@@ -664,4 +664,4 @@ TEST_F(StripeIndexGroupTest, stripeIndexAndStreamIdOutOfBound) {
   NIMBLE_ASSERT_THROW(
       stripeIndexGroup1->lookupChunk(3, 5, 0), "streamId out of range");
 }
-} // namespace facebook::nimble::test
+} // namespace facebook::nimble::index::test

@@ -50,12 +50,7 @@ struct IndexConfig {
   /// TrivialEncoding for string_view needs a nested encoding for string
   /// lengths.
   static EncodingLayout defaultEncodingLayout(
-      CompressionType compressionType = CompressionType::Zstd) {
-    return EncodingLayout{
-        EncodingType::Trivial,
-        compressionType,
-        {EncodingLayout{EncodingType::Trivial, CompressionType::Uncompressed}}};
-  }
+      CompressionType compressionType = CompressionType::Zstd);
 };
 
 } // namespace facebook::nimble
