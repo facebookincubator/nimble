@@ -46,3 +46,23 @@ target_link_libraries(
   glog::glog
   Folly::folly
 )
+
+add_executable(nimble_tablet_index_writer_tests TabletIndexWriterTest.cpp)
+
+add_test(nimble_tablet_index_writer_tests nimble_tablet_index_writer_tests)
+
+target_link_libraries(
+  nimble_tablet_index_writer_tests
+  nimble_tablet_reader
+  nimble_tablet_writer
+  nimble_index
+  nimble_index_test_utils
+  nimble_common
+  velox_dwio_common
+  velox_memory
+  velox_file
+  gtest
+  gtest_main
+  glog::glog
+  Folly::folly
+)

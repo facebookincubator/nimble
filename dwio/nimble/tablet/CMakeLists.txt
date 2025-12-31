@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_subdirectory(tests)
 
 build_flatbuffers(
   "${CMAKE_CURRENT_SOURCE_DIR}/Footer.fbs"
@@ -60,5 +59,7 @@ target_link_libraries(
 add_library(nimble_tablet_reader TabletReader.cpp)
 target_link_libraries(nimble_tablet_reader nimble_tablet_common)
 
-add_library(nimble_tablet_writer TabletWriter.cpp)
-target_link_libraries(nimble_tablet_writer nimble_tablet_common)
+add_library(nimble_tablet_writer TabletIndexWriter.cpp TabletWriter.cpp)
+target_link_libraries(nimble_tablet_writer nimble_tablet_common nimble_index_fb)
+
+add_subdirectory(tests)

@@ -122,7 +122,7 @@ class IndexWriter {
       const velox::RowTypePtr& inputType,
       velox::memory::MemoryPool* pool);
 
-  // Encodes a single chunk and populates the Chunk struct and ChunkKey.
+  // Encodes a single chunk and populates the KeyChunk struct.
   uint32_t encodeChunkData(
       std::span<const std::string_view> data,
       std::string_view firstKey,
