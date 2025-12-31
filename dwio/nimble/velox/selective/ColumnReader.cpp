@@ -47,7 +47,7 @@ std::unique_ptr<dwio::common::SelectiveColumnReader> buildColumnReader(
   };
 
   if (isRoot) {
-    VELOX_CHECK(fileType->type()->isRow());
+    NIMBLE_CHECK(fileType->type()->isRow());
   }
   dwio::common::typeutils::checkTypeCompatibility(
       *fileType->type(), *requestedType);
@@ -66,7 +66,7 @@ std::unique_ptr<dwio::common::SelectiveColumnReader> buildColumnReader(
     case TypeKind::SMALLINT:
     case TypeKind::INTEGER:
     case TypeKind::BIGINT:
-      VELOX_CHECK(!fileType->type()->isDecimal());
+      NIMBLE_CHECK(!fileType->type()->isDecimal());
       return std::make_unique<IntegerColumnReader>(
           requestedType, fileType, params, scanSpec);
     case TypeKind::REAL:
@@ -74,7 +74,7 @@ std::unique_ptr<dwio::common::SelectiveColumnReader> buildColumnReader(
         return std::make_unique<FloatingPointColumnReader<float, float>>(
             requestedType, fileType, params, scanSpec);
       } else {
-        VELOX_CHECK_EQ(requestedType->kind(), TypeKind::DOUBLE);
+        NIMBLE_CHECK_EQ(requestedType->kind(), TypeKind::DOUBLE);
         return std::make_unique<FloatingPointColumnReader<float, double>>(
             requestedType, fileType, params, scanSpec);
       }
@@ -108,7 +108,7 @@ std::unique_ptr<dwio::common::SelectiveColumnReader> buildColumnReader(
         return std::make_unique<DeduplicatedArrayColumnReader>(
             requestedType, fileType, params, scanSpec);
       } else {
-        VELOX_CHECK(nimbleType->isArray());
+        NIMBLE_CHECK(nimbleType->isArray());
         if (!params.streams().hasStream(
                 nimbleType->asArray().lengthsDescriptor().offset())) {
           return std::make_unique<NullColumnReader>(
@@ -132,7 +132,7 @@ std::unique_ptr<dwio::common::SelectiveColumnReader> buildColumnReader(
         return std::make_unique<DeduplicatedMapColumnReader>(
             requestedType, fileType, params, scanSpec);
       } else {
-        VELOX_CHECK(nimbleType->isMap());
+        NIMBLE_CHECK(nimbleType->isMap());
         if (!params.streams().hasStream(
                 nimbleType->asMap().lengthsDescriptor().offset())) {
           return std::make_unique<NullColumnReader>(
@@ -146,7 +146,7 @@ std::unique_ptr<dwio::common::SelectiveColumnReader> buildColumnReader(
             requestedType, fileType, params, scanSpec);
       }
     default:
-      VELOX_UNSUPPORTED("Unsupported type: {}", fileType->type()->kind());
+      NIMBLE_UNSUPPORTED("Unsupported type: {}", fileType->type()->kind());
   }
 }
 
