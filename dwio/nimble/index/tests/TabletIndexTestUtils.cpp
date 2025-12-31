@@ -175,4 +175,47 @@ StreamStats StripeIndexGroupTestHelper::streamStats(uint32_t streamId) const {
   return stats;
 }
 
+uint32_t StripeIndexGroupTestHelper::keyChunkLength(
+    uint32_t stripeIndex,
+    uint32_t chunkStreamOffset,
+    uint32_t keyStreamLength) const {
+  const auto* root = flatbuffers::GetRoot<serialization::StripeIndexGroup>(
+      indexGroup_->metadata_->content().data());
+
+  const auto* valueIndex = root->value_index();
+  NIMBLE_CHECK_NOT_NULL(valueIndex);
+
+  const auto* chunkCounts = valueIndex->key_stream_chunk_counts();
+  NIMBLE_CHECK_NOT_NULL(chunkCounts);
+  const auto* chunkOffsets = valueIndex->key_stream_chunk_offsets();
+  NIMBLE_CHECK_NOT_NULL(chunkOffsets);
+
+  const uint32_t stripeOffset = indexGroup_->stripeOffset(stripeIndex);
+
+  // Determine the chunk range for this stripe
+  const uint32_t startChunkIndex =
+      stripeOffset == 0 ? 0 : chunkCounts->Get(stripeOffset - 1);
+  const uint32_t endChunkIndex = chunkCounts->Get(stripeOffset);
+
+  // Find the chunk with the matching offset
+  for (uint32_t i = startChunkIndex; i < endChunkIndex; ++i) {
+    if (chunkOffsets->Get(i) == chunkStreamOffset) {
+      // Found the chunk, calculate its length
+      if (i + 1 < endChunkIndex) {
+        // Use next chunk's offset
+        return chunkOffsets->Get(i + 1) - chunkStreamOffset;
+      } else {
+        // Last chunk in stripe, use stream length
+        return keyStreamLength - chunkStreamOffset;
+      }
+    }
+  }
+
+  NIMBLE_UNREACHABLE(
+      fmt::format(
+          "Chunk with offset {} not found in stripe {}",
+          chunkStreamOffset,
+          stripeIndex));
+}
+
 } // namespace facebook::nimble::index::test

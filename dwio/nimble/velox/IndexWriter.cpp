@@ -152,24 +152,23 @@ bool IndexWriter::encodeChunk(
           .ensureFullChunks = ensureFullChunks,
           .isFirstChunk = encodedKeyStream_.chunks.empty()});
 
-  auto chunkView = chunker->next();
-  if (!chunkView.has_value()) {
-    return false;
+  bool writtenChunk{false};
+  while (auto chunkView = chunker->next()) {
+    const auto& keys = keyStream_->mutableData();
+    const auto keyCount = chunkView->rowCount();
+
+    auto& chunk = encodedKeyStream_.chunks.emplace_back();
+    encodeChunkData(
+        std::span<const std::string_view>(keys.data(), keyCount),
+        keys[0],
+        keys[keyCount - 1],
+        buffer,
+        chunk);
+
+    chunker->compact();
+    writtenChunk = true;
   }
-
-  const auto& keys = keyStream_->mutableData();
-  const auto keyCount = chunkView->rowCount();
-
-  auto& chunk = encodedKeyStream_.chunks.emplace_back();
-  encodeChunkData(
-      std::span<const std::string_view>(keys.data(), keyCount),
-      keys[0],
-      keys[keyCount - 1],
-      buffer,
-      chunk);
-
-  chunker->compact();
-  return true;
+  return writtenChunk;
 }
 
 std::optional<KeyStream> IndexWriter::finishStripe(Buffer& buffer) {
