@@ -21,6 +21,48 @@
 
 namespace facebook::nimble::index::test {
 
+KeyStream createKeyStream(
+    Buffer& buffer,
+    const std::vector<KeyChunkSpec>& chunkSpecs) {
+  KeyStream keyStream;
+
+  for (const auto& spec : chunkSpecs) {
+    auto contentSize = spec.firstKey.size() + spec.lastKey.size();
+    auto pos = buffer.reserve(contentSize);
+    std::memcpy(pos, spec.firstKey.data(), spec.firstKey.size());
+    std::memcpy(
+        pos + spec.firstKey.size(), spec.lastKey.data(), spec.lastKey.size());
+
+    KeyChunk chunk;
+    chunk.rowCount = spec.rowCount;
+    chunk.content = {std::string_view(pos, contentSize)};
+
+    auto firstKeyPos = buffer.reserve(spec.firstKey.size());
+    std::memcpy(firstKeyPos, spec.firstKey.data(), spec.firstKey.size());
+    auto lastKeyPos = buffer.reserve(spec.lastKey.size());
+    std::memcpy(lastKeyPos, spec.lastKey.data(), spec.lastKey.size());
+
+    chunk.firstKey = std::string_view(firstKeyPos, spec.firstKey.size());
+    chunk.lastKey = std::string_view(lastKeyPos, spec.lastKey.size());
+    keyStream.chunks.push_back(std::move(chunk));
+  }
+
+  return keyStream;
+}
+
+std::vector<Chunk> createChunks(
+    Buffer& buffer,
+    const std::vector<ChunkSpec>& chunkSpecs) {
+  std::vector<Chunk> chunks;
+  for (const auto& spec : chunkSpecs) {
+    auto pos = buffer.reserve(spec.size);
+    std::memset(pos, 'X', spec.size);
+    chunks.push_back(
+        {.rowCount = spec.rowCount, .content = {{pos, spec.size}}});
+  }
+  return chunks;
+}
+
 KeyStreamStats StripeIndexGroupTestHelper::keyStreamStats() const {
   KeyStreamStats stats;
 

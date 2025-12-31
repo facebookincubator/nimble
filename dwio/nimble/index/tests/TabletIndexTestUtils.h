@@ -16,161 +16,142 @@
 
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/index/StripeIndexGroup.h"
-#include "dwio/nimble/tablet/Compression.h"
+#include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/tablet/TabletWriter.h"
+#include "dwio/nimble/velox/ChunkedStream.h"
 
 namespace facebook::nimble::index::test {
 
-/// Test utility class to decode chunks from raw chunk data.
-/// Follows the same pattern as InMemoryChunkedStream::nextChunk().
-/// Chunk format: uint32_t length + char compressionType + data.
-class TestChunkDecoder {
+// Simple StreamLoader implementation for testing that holds data in memory.
+class TestStreamLoader : public StreamLoader {
  public:
-  explicit TestChunkDecoder(
-      velox::memory::MemoryPool& pool,
-      std::string_view data)
-      : pool_(pool), data_(data), pos_(data_.data()) {}
+  explicit TestStreamLoader(std::string_view data) : data_(data) {}
 
-  /// Returns true if there is more data to decode.
-  bool hasNext() const {
-    return pos_ - data_.data() < data_.size();
-  }
-
-  /// Decodes and returns the next chunk.
-  /// The returned string_view is valid until the next call to nextChunk().
-  std::string_view nextChunk() {
-    uncompressed_.clear();
-    NIMBLE_CHECK_LE(
-        sizeof(uint32_t) + sizeof(char),
-        data_.size() - (pos_ - data_.data()),
-        "Read beyond end of data");
-    auto length = encoding::readUint32(pos_);
-    auto compressionType =
-        static_cast<CompressionType>(encoding::readChar(pos_));
-    NIMBLE_CHECK_LE(
-        length,
-        data_.size() - (pos_ - data_.data()),
-        "Read beyond end of data");
-    std::string_view chunk;
-    switch (compressionType) {
-      case CompressionType::Uncompressed: {
-        chunk = {pos_, length};
-        break;
-      }
-      case CompressionType::Zstd: {
-        uncompressed_ = ZstdCompression::uncompress(pool_, {pos_, length});
-        chunk = {uncompressed_.data(), uncompressed_.size()};
-        break;
-      }
-      default: {
-        NIMBLE_UNREACHABLE(
-            "Unexpected stream compression type: ", toString(compressionType));
-      }
-    }
-    pos_ += length;
-    return chunk;
-  }
-
-  /// Resets the decoder to the beginning of the data.
-  void reset() {
-    uncompressed_.clear();
-    pos_ = data_.data();
+  const std::string_view getStream() const override {
+    return data_;
   }
 
  private:
-  velox::memory::MemoryPool& pool_;
   std::string_view data_;
-  const char* pos_;
-  Vector<char> uncompressed_{&pool_};
 };
 
-/// Wrapper around TestChunkDecoder that ensures exactly one chunk is decoded.
-/// Use this when the data is expected to contain exactly one chunk.
+// Wrapper around InMemoryChunkedStream that ensures exactly one chunk is
+// decoded. Use this when the data is expected to contain exactly one chunk.
 class SingleChunkDecoder {
  public:
   explicit SingleChunkDecoder(
       velox::memory::MemoryPool& pool,
       std::string_view data)
-      : decoder_(pool, data) {}
+      : stream_(pool, std::make_unique<TestStreamLoader>(data)) {}
 
-  /// Decodes and returns the single chunk.
-  /// Asserts that exactly one chunk exists in the data.
+  // Decodes and returns the single chunk.
+  // Asserts that exactly one chunk exists in the data.
   std::string_view decode() {
-    NIMBLE_CHECK(decoder_.hasNext(), "Expected at least one chunk");
-    auto chunk = decoder_.nextChunk();
-    NIMBLE_CHECK(!decoder_.hasNext(), "Expected exactly one chunk");
+    NIMBLE_CHECK(stream_.hasNext(), "Expected at least one chunk");
+    auto chunk = stream_.nextChunk();
+    NIMBLE_CHECK(!stream_.hasNext(), "Expected exactly one chunk");
     return chunk;
   }
 
  private:
-  TestChunkDecoder decoder_;
+  InMemoryChunkedStream stream_;
 };
 
-/// Holds key stream statistics extracted from a StripeIndexGroup for testing.
+// Holds key stream statistics extracted from a StripeIndexGroup for testing.
 struct KeyStreamStats {
-  /// Byte offset of key stream for each stripe.
+  // Byte offset of key stream for each stripe.
   std::vector<uint32_t> offsets;
-  /// Byte size of key stream for each stripe.
+  // Byte size of key stream for each stripe.
   std::vector<uint32_t> sizes;
-  /// Accumulated chunk counts per stripe.
+  // Accumulated chunk counts per stripe.
   std::vector<uint32_t> chunkCounts;
-  /// Accumulated row counts per chunk.
+  // Accumulated row counts per chunk.
   std::vector<uint32_t> chunkRows;
-  /// Byte offset of each chunk within its key stream.
+  // Byte offset of each chunk within its key stream.
   std::vector<uint32_t> chunkOffsets;
-  /// Last key value for each chunk.
+  // Last key value for each chunk.
   std::vector<std::string> chunkKeys;
 };
 
-/// Holds stream position index statistics for a specific stream.
+// Holds stream position index statistics for a specific stream.
 struct StreamStats {
-  /// Accumulated chunk count for each stripe for this stream.
+  // Accumulated chunk count for each stripe for this stream.
   std::vector<uint32_t> chunkCounts;
-  /// Accumulated row counts per chunk for this stream.
+  // Accumulated row counts per chunk for this stream.
   std::vector<uint32_t> chunkRows;
-  /// Byte offset of each chunk within its stream.
+  // Byte offset of each chunk within its stream.
   std::vector<uint32_t> chunkOffsets;
 };
 
-/// Test helper class for StripeIndexGroup that provides convenient access
-/// to private members for testing purposes. This is a friend class of
-/// StripeIndexGroup.
+// Specification for a single chunk in a stream (for test data creation).
+struct ChunkSpec {
+  uint32_t rowCount;
+  uint32_t size;
+};
+
+// Specification for a single stream (for test data creation).
+struct StreamSpec {
+  uint32_t offset;
+  std::vector<ChunkSpec> chunks;
+};
+
+// Specification for a key chunk (for test data creation).
+struct KeyChunkSpec {
+  uint32_t rowCount;
+  std::string firstKey;
+  std::string lastKey;
+};
+
+// Creates a KeyStream with test data from the given chunk specifications.
+// The buffer is used to store the chunk content and key data.
+KeyStream createKeyStream(
+    Buffer& buffer,
+    const std::vector<KeyChunkSpec>& chunkSpecs);
+
+// Creates chunks for a stream from the given chunk specifications.
+// The buffer is used to store the chunk content.
+std::vector<Chunk> createChunks(
+    Buffer& buffer,
+    const std::vector<ChunkSpec>& chunkSpecs);
+
+// Test helper class for StripeIndexGroup
+// to private members for testing purposes. This is a friend class of
+// StripeIndexGroup.
 class StripeIndexGroupTestHelper {
  public:
   explicit StripeIndexGroupTestHelper(const StripeIndexGroup* indexGroup)
       : indexGroup_(indexGroup) {}
 
-  /// Returns the group index.
+  // Returns the group index.
   uint32_t groupIndex() const {
     return indexGroup_->groupIndex_;
   }
 
-  /// Returns the first stripe index in this group.
+  // Returns the first stripe index in this group.
   uint32_t firstStripe() const {
     return indexGroup_->firstStripe_;
   }
 
-  /// Returns the number of stripes in this group.
+  // Returns the number of stripes in this group.
   uint32_t stripeCount() const {
     return indexGroup_->stripeCount_;
   }
 
-  /// Returns the number of streams per stripe.
+  // Returns the number of streams per stripe.
   uint32_t streamCount() const {
     return indexGroup_->streamCount_;
   }
 
-  /// Returns the key stream statistics for testing verification.
+  // Returns the key stream statistics for testing verification.
   KeyStreamStats keyStreamStats() const;
 
-  /// Returns the stream position index statistics for the specified stream.
+  // Returns the stream position index statistics for the specified stream.
   StreamStats streamStats(uint32_t streamId) const;
 
  private:
