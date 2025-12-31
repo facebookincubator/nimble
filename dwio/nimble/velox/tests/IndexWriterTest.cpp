@@ -413,8 +413,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
     uint64_t maxChunkRawSize;
     // Whether to use ensureFullChunks in encodeChunk calls.
     bool ensureFullChunks;
-    // Expected number of chunks before last chunk call.
-    size_t expectedChunksBeforeLast;
     // Expected total chunk count after all encoding.
     size_t expectedChunks;
 
@@ -434,7 +432,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 1 << 20,
           .maxChunkRawSize = 10 << 20,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 0,
           .expectedChunks = 1,
       },
       // Small input with large thresholds - single chunk.
@@ -443,7 +440,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 1 << 20,
           .maxChunkRawSize = 10 << 20,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 0,
           .expectedChunks = 1,
       },
       // Medium input with large thresholds - single chunk.
@@ -452,7 +448,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 1 << 20,
           .maxChunkRawSize = 10 << 20,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 0,
           .expectedChunks = 1,
       },
       // Large input with very large thresholds - single chunk.
@@ -461,7 +456,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 1 << 20,
           .maxChunkRawSize = 10 << 20,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 0,
           .expectedChunks = 1,
       },
       // Large input with ensureFullChunks=true and large thresholds.
@@ -470,7 +464,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 1 << 20,
           .maxChunkRawSize = 10 << 20,
           .ensureFullChunks = true,
-          .expectedChunksBeforeLast = 0,
           .expectedChunks = 1,
       },
       // Single row with minimum possible min threshold.
@@ -479,7 +472,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 1,
           .maxChunkRawSize = 1 << 20,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 1,
           .expectedChunks = 1,
       },
       // ensureFullChunks with single row.
@@ -488,7 +480,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 1 << 20,
           .maxChunkRawSize = 10 << 20,
           .ensureFullChunks = true,
-          .expectedChunksBeforeLast = 0,
           .expectedChunks = 1,
       },
       // Medium input with ensureFullChunks - single chunk.
@@ -497,7 +488,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 1 << 20,
           .maxChunkRawSize = 10 << 20,
           .ensureFullChunks = true,
-          .expectedChunksBeforeLast = 0,
           .expectedChunks = 1,
       },
       // ===== Input larger than max threshold - forces multiple chunks =====
@@ -508,7 +498,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 1,
           .maxChunkRawSize = 100,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 250,
           .expectedChunks = 250,
       },
       // Large input with tiny thresholds and ensureFullChunks.
@@ -517,7 +506,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 1,
           .maxChunkRawSize = 100,
           .ensureFullChunks = true,
-          .expectedChunksBeforeLast = 249,
           .expectedChunks = 250,
       },
       // Large input with small max threshold.
@@ -526,7 +514,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 1,
           .maxChunkRawSize = 20,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 1'000,
           .expectedChunks = 1'000,
       },
       // Large input with small max threshold and ensureFullChunks.
@@ -535,7 +522,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 1,
           .maxChunkRawSize = 20,
           .ensureFullChunks = true,
-          .expectedChunksBeforeLast = 1'000,
           .expectedChunks = 1'000,
       },
       // Large input with medium thresholds.
@@ -544,7 +530,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 100,
           .maxChunkRawSize = 500,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 44,
           .expectedChunks = 44,
       },
       // Large input with medium thresholds and ensureFullChunks.
@@ -553,7 +538,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 100,
           .maxChunkRawSize = 500,
           .ensureFullChunks = true,
-          .expectedChunksBeforeLast = 43,
           .expectedChunks = 44,
       },
       // Very large input with small thresholds.
@@ -562,7 +546,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 50,
           .maxChunkRawSize = 200,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 1'111,
           .expectedChunks = 1'112,
       },
       // Very large input with small thresholds and ensureFullChunks.
@@ -571,7 +554,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 50,
           .maxChunkRawSize = 200,
           .ensureFullChunks = true,
-          .expectedChunksBeforeLast = 1'111,
           .expectedChunks = 1'112,
       },
 
@@ -583,7 +565,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 50,
           .maxChunkRawSize = 10'000,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 1,
           .expectedChunks = 1,
       },
       // Input between min and max with ensureFullChunks.
@@ -592,7 +573,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 50,
           .maxChunkRawSize = 10'000,
           .ensureFullChunks = true,
-          .expectedChunksBeforeLast = 0,
           .expectedChunks = 1,
       },
       // Medium input with tight min/max range.
@@ -601,7 +581,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 100,
           .maxChunkRawSize = 200,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 56,
           .expectedChunks = 56,
       },
       // Medium input with tight min/max range and ensureFullChunks.
@@ -610,7 +589,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 100,
           .maxChunkRawSize = 200,
           .ensureFullChunks = true,
-          .expectedChunksBeforeLast = 55,
           .expectedChunks = 56,
       },
       // ===== Edge cases with equal min and max =====
@@ -621,7 +599,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 100,
           .maxChunkRawSize = 100,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 0,
           .expectedChunks = 250,
       },
       // Min equals max with ensureFullChunks.
@@ -630,7 +607,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 100,
           .maxChunkRawSize = 100,
           .ensureFullChunks = true,
-          .expectedChunksBeforeLast = 0,
           .expectedChunks = 250,
       },
       // Tiny equal thresholds.
@@ -639,7 +615,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 1,
           .maxChunkRawSize = 20,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 100,
           .expectedChunks = 100,
       },
 
@@ -651,7 +626,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 100,
           .maxChunkRawSize = 1'000,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 1,
           .expectedChunks = 2,
       },
       {
@@ -659,7 +633,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 100,
           .maxChunkRawSize = 1'000,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 5,
           .expectedChunks = 5,
       },
       {
@@ -667,7 +640,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 100,
           .maxChunkRawSize = 1'000,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 11,
           .expectedChunks = 11,
       },
       {
@@ -675,7 +647,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 100,
           .maxChunkRawSize = 1'000,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 43,
           .expectedChunks = 43,
       },
       {
@@ -683,7 +654,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 100,
           .maxChunkRawSize = 1'000,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 107,
           .expectedChunks = 107,
       },
 
@@ -695,7 +665,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 0,
           .maxChunkRawSize = 100,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 250,
           .expectedChunks = 250,
       },
       // Zero min with small max and ensureFullChunks.
@@ -704,7 +673,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 0,
           .maxChunkRawSize = 100,
           .ensureFullChunks = true,
-          .expectedChunksBeforeLast = 249,
           .expectedChunks = 250,
       },
       // Zero min with large max.
@@ -713,7 +681,6 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
           .minChunkRawSize = 0,
           .maxChunkRawSize = 10 << 20,
           .ensureFullChunks = false,
-          .expectedChunksBeforeLast = 1,
           .expectedChunks = 1,
       },
   };
@@ -739,19 +706,13 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
     writer->write(makeInput(input), *buffer_);
     ASSERT_TRUE(writer->hasKeys());
 
-    // Encode chunks with ensureFullChunks setting (not last chunk).
-    size_t chunksBeforeLast = 0;
-    while (writer->encodeChunk(
-        testCase.ensureFullChunks, /*lastChunk=*/false, *buffer_)) {
-      ++chunksBeforeLast;
-    }
+    // First encode with lastChunk=false to use minChunkSize constraint.
+    writer->encodeChunk(
+        testCase.ensureFullChunks, /*lastChunk=*/false, *buffer_);
 
-    ASSERT_EQ(chunksBeforeLast, testCase.expectedChunksBeforeLast);
-
-    // Encode remaining chunks with lastChunk=true.
-    while (writer->encodeChunk(
-        /*ensureFullChunks=*/false, /*lastChunk=*/true, *buffer_)) {
-    }
+    // Then flush remaining with lastChunk=true.
+    writer->encodeChunk(
+        /*ensureFullChunks=*/false, /*lastChunk=*/true, *buffer_);
 
     auto stream = writer->finishStripe(*buffer_);
     ASSERT_TRUE(stream.has_value());
@@ -826,6 +787,115 @@ TEST_P(IndexWriterDataTest, close) {
 
   writer->close();
   EXPECT_FALSE(writer->hasKeys());
+}
+
+// Dedicated test to verify encodeChunk loop processing:
+// - The while loop correctly iterates through all chunks from StreamChunker
+// - Each chunk has correct firstKey/lastKey boundaries
+// - chunker->compact() properly advances the stream (no data loss/duplication)
+// - The method returns true when chunks are written, false when empty
+//
+// We set very small min/max chunk sizes so that all keys are encoded in a
+// single encodeChunk call (with lastChunk=true), which exercises the internal
+// while loop multiple times within that one call.
+TEST_P(IndexWriterDataTest, encodeChunkLoopProcessing) {
+  auto keyEncoder = createKeyEncoder();
+
+  struct TestCase {
+    std::vector<int32_t> input;
+    // Expected minimum number of chunks (depends on encoding overhead).
+    size_t expectedMinChunks;
+
+    std::string debugString() const {
+      return fmt::format(
+          "input size: {}, expectedMinChunks: {}",
+          input.size(),
+          expectedMinChunks);
+    }
+  } testCases[] = {
+      // Single row - single chunk.
+      {.input = {1}, .expectedMinChunks = 1},
+      // Small input - multiple chunks due to tiny max size.
+      // Each key is ~9 bytes encoded, max 20 bytes = ~2 keys per chunk.
+      {.input = {1, 2, 3, 4, 5}, .expectedMinChunks = 3},
+      // Larger input - forces many loop iterations.
+      {.input = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, .expectedMinChunks = 5},
+      // Even larger input.
+      {.input = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+       .expectedMinChunks = 8},
+      // 30 keys - many loop iterations.
+      {.input = {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15,
+                 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30},
+       .expectedMinChunks = 15},
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
+
+    auto config = indexConfig(compressionType());
+    // Use tiny chunk sizes to force multiple chunks per encodeChunk call.
+    // This exercises the internal while loop multiple times.
+    config.minChunkRawSize = 1;
+    config.maxChunkRawSize = 20;
+
+    auto writer = IndexWriter::create(config, type_, pool_.get());
+    writer->write(makeInput(testCase.input), *buffer_);
+
+    // Single encodeChunk call with lastChunk=true should process all keys
+    // through the internal while loop. No need for additional calls.
+    EXPECT_TRUE(writer->encodeChunk(false, true, *buffer_));
+
+    // Subsequent call should return false since all keys are encoded.
+    EXPECT_FALSE(writer->encodeChunk(false, true, *buffer_));
+
+    auto stream = writer->finishStripe(*buffer_);
+    ASSERT_TRUE(stream.has_value());
+
+    // Verify we got at least the minimum expected chunks.
+    ASSERT_GE(stream->chunks.size(), testCase.expectedMinChunks);
+
+    // Encode all expected keys for verification.
+    Vector<std::string_view> allEncodedKeys(pool_.get());
+    Buffer keyBuffer(*pool_);
+    keyEncoder->encode(
+        makeRowVector(
+            {std::string(kCol1)}, {makeFlatVector<int32_t>(testCase.input)}),
+        allEncodedKeys,
+        [&keyBuffer](size_t size) { return keyBuffer.reserve(size); });
+
+    // Verify each chunk has correct firstKey/lastKey from loop processing.
+    // This validates that compact() properly advances the stream.
+    uint64_t rowOffset = 0;
+    for (size_t i = 0; i < stream->chunks.size(); ++i) {
+      SCOPED_TRACE(fmt::format("chunk {}", i));
+      const auto& chunk = stream->chunks[i];
+
+      // Verify firstKey matches key at chunk start.
+      EXPECT_EQ(chunk.firstKey, allEncodedKeys[rowOffset]);
+      // Verify lastKey matches key at chunk end.
+      EXPECT_EQ(chunk.lastKey, allEncodedKeys[rowOffset + chunk.rowCount - 1]);
+
+      rowOffset += chunk.rowCount;
+    }
+
+    // Verify no data lost or duplicated - all rows accounted for.
+    EXPECT_EQ(rowOffset, testCase.input.size());
+  }
+}
+
+// Test that encodeChunk returns false when there are no keys to encode.
+TEST_P(IndexWriterDataTest, encodeChunkEmptyStream) {
+  auto config = indexConfig(compressionType());
+  auto writer = IndexWriter::create(config, type_, pool_.get());
+
+  // encodeChunk on empty stream should return false.
+  EXPECT_FALSE(writer->encodeChunk(false, false, *buffer_));
+  EXPECT_FALSE(writer->encodeChunk(false, true, *buffer_));
+  EXPECT_FALSE(writer->encodeChunk(true, false, *buffer_));
+  EXPECT_FALSE(writer->encodeChunk(true, true, *buffer_));
+
+  auto stream = writer->finishStripe(*buffer_);
+  EXPECT_FALSE(stream.has_value());
 }
 
 INSTANTIATE_TEST_SUITE_P(
