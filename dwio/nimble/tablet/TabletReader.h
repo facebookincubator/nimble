@@ -22,6 +22,8 @@
 
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/index/StripeIndexGroup.h"
+#include "dwio/nimble/index/TabletIndex.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "folly/Synchronized.h"
 #include "folly/io/IOBuf.h"
@@ -43,6 +45,10 @@
 /// will be the same size as the raw data.
 
 namespace facebook::nimble {
+
+namespace test {
+class TabletReaderTestHelper;
+} // namespace test
 
 using MemoryPool = facebook::velox::memory::MemoryPool;
 
@@ -107,6 +113,28 @@ class ReferenceCountedCache {
     return getPopulatedCacheEntry(key, builder);
   }
 
+  /// Returns the number of non-expired cached entries for testing purposes.
+  size_t testingCachedCount() const {
+    size_t count = 0;
+    auto rlockedCache = cache_.rlock();
+    for (const auto& [key, entry] : *rlockedCache) {
+      if (!entry.rlock()->expired()) {
+        ++count;
+      }
+    }
+    return count;
+  }
+
+  /// Returns whether the given key has a non-expired cached entry for testing.
+  bool testingHasCachedEntry(Key key) const {
+    auto rlockedCache = cache_.rlock();
+    auto it = rlockedCache->find(key);
+    if (it == rlockedCache->end()) {
+      return false;
+    }
+    return !it->second.rlock()->expired();
+  }
+
  private:
   folly::Synchronized<std::weak_ptr<Value>>& getCacheEntry(Key key) {
     return cache_.wlock()->emplace(key, std::weak_ptr<Value>()).first->second;
@@ -160,10 +188,17 @@ class StripeGroup {
   const uint32_t* streamSizes_;
 };
 
+using index::StripeIndexGroup;
+
 class StripeIdentifier {
  public:
-  StripeIdentifier(uint32_t stripeId, std::shared_ptr<StripeGroup> stripeGroup)
-      : stripeId_{stripeId}, stripeGroup_{std::move(stripeGroup)} {}
+  StripeIdentifier(
+      uint32_t stripeId,
+      std::shared_ptr<StripeGroup> stripeGroup,
+      std::shared_ptr<StripeIndexGroup> indexGroup)
+      : stripeId_{stripeId},
+        stripeGroup_{std::move(stripeGroup)},
+        indexGroup_{std::move(indexGroup)} {}
 
   uint32_t stripeId() const {
     return stripeId_;
@@ -173,10 +208,17 @@ class StripeIdentifier {
     return stripeGroup_;
   }
 
+  const std::shared_ptr<StripeIndexGroup>& indexGroup() const {
+    return indexGroup_;
+  }
+
  private:
   uint32_t stripeId_;
   std::shared_ptr<StripeGroup> stripeGroup_;
+  std::shared_ptr<StripeIndexGroup> indexGroup_;
 };
+
+using index::TabletIndex;
 
 /// Provides read access to a tablet written by a TabletWriter.
 /// Example usage to read all streams from stripe 0 in a file:
@@ -246,6 +288,14 @@ class TabletReader {
       const std::string& name,
       bool keepCache = false) const;
 
+  // Returns true if the file contains index data.
+  bool hasIndex() const;
+
+  // Returns the tablet index if available, nullptr otherwise.
+  const TabletIndex* index() const {
+    return tabletIndex_.get();
+  }
+
   uint64_t fileSize() const {
     return file_->size();
   }
@@ -306,7 +356,9 @@ class TabletReader {
   /// `streamOffsets()`.
   uint32_t streamCount(const StripeIdentifier& stripe) const;
 
-  StripeIdentifier stripeIdentifier(uint32_t stripeIndex) const;
+  StripeIdentifier stripeIdentifier(
+      uint32_t stripeIndex,
+      bool loadIndex = false) const;
 
  private:
   TabletReader(
@@ -337,6 +389,16 @@ class TabletReader {
 
   std::shared_ptr<StripeGroup> stripeGroup(uint32_t stripeGroupIndex) const;
 
+  // Returns the cached StripeIndexGroup for the given stripe group index.
+  // The StripeIndexGroup contains index metadata for efficient data filtering
+  // and skipping during reads.
+  std::shared_ptr<StripeIndexGroup> indexGroup(uint32_t stripeGroupIndex) const;
+
+  // Loads the StripeIndexGroup for the given stripe group index from file.
+  // This is called by the cache when the index group is not already cached.
+  std::shared_ptr<StripeIndexGroup> loadIndexGroup(
+      uint32_t stripeGroupIndex) const;
+
   void initStripes(
       const folly::IOBuf& footerIoBuf,
       uint64_t footerIoSize,
@@ -349,6 +411,11 @@ class TabletReader {
       const folly::IOBuf& footerIoBuf,
       uint64_t footerIoOffset,
       const std::vector<std::string>& preloadOptionalSections);
+
+  void initIndex(
+      const folly::IOBuf& footerIoBuf,
+      uint64_t footerIoOffset,
+      uint64_t fileSize);
 
   MemoryPool* const pool_;
   // Non-owning pointer to the file for reading. Always valid during the
@@ -363,6 +430,10 @@ class TabletReader {
   std::unique_ptr<MetadataBuffer> stripes_;
 
   mutable ReferenceCountedCache<uint32_t, StripeGroup> stripeGroupCache_;
+  // Holds a strong reference to the first stripe group when preloaded from the
+  // footer IO. This prevents the first stripe group from being garbage
+  // collected when it's the only stripe group (common case). Reset when loading
+  // a different stripe group.
   mutable folly::Synchronized<std::shared_ptr<StripeGroup>> firstStripeGroup_;
 
   uint64_t tabletRowCount_{0};
@@ -370,11 +441,22 @@ class TabletReader {
   const uint32_t* stripeRowCounts_{nullptr};
   const uint64_t* stripeOffsets_{nullptr};
 
+  // Index related fields.
+  std::unique_ptr<TabletIndex> tabletIndex_;
+  mutable ReferenceCountedCache<uint32_t, StripeIndexGroup> indexGroupCache_;
+  // Holds a strong reference to the first index group when preloaded from the
+  // footer IO. This prevents the first index group from being garbage collected
+  // when it's the only index group (common case). Reset when loading a
+  // different index group.
+  mutable folly::Synchronized<std::shared_ptr<StripeIndexGroup>>
+      firstIndexGroup_;
+
   std::unordered_map<std::string, MetadataSection> optionalSections_;
   mutable folly::Synchronized<
       std::unordered_map<std::string, std::unique_ptr<MetadataBuffer>>>
       optionalSectionsCache_;
 
   friend class TabletHelper;
+  friend class test::TabletReaderTestHelper;
 };
 } // namespace facebook::nimble

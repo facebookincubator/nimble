@@ -19,6 +19,7 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
+
 #include "folly/io/Cursor.h"
 
 #include <algorithm>
@@ -178,6 +179,9 @@ TabletReader::TabletReader(
       stripes_{std::make_unique<MetadataBuffer>(pool, stripes)},
       stripeGroupCache_{[this](uint32_t stripeGroupIndex) {
         return loadStripeGroup(stripeGroupIndex);
+      }},
+      indexGroupCache_{[this](uint32_t stripeGroupIndex) {
+        return loadIndexGroup(stripeGroupIndex);
       }} {
   auto stripeGroupPtr =
       stripeGroupCache_.get(0, [this, stripeGroup](uint32_t stripeGroupIndex) {
@@ -205,6 +209,9 @@ TabletReader::TabletReader(
       ownedFile_{std::move(ownedReadFile)},
       stripeGroupCache_{[this](uint32_t stripeGroupIndex) {
         return loadStripeGroup(stripeGroupIndex);
+      }},
+      indexGroupCache_{[this](uint32_t stripeGroupIndex) {
+        return loadIndexGroup(stripeGroupIndex);
       }} {
   init(preloadOptionalSections);
 }
@@ -238,6 +245,8 @@ void TabletReader::init(
   initStripes(footerIoBuf, footerIoSize, fileSize);
 
   initOptionalSections(footerIoBuf, footerIoOffset, preloadOptionalSections);
+
+  initIndex(footerIoBuf, footerIoOffset, fileSize);
 }
 
 void TabletReader::initPostScript(
@@ -609,6 +618,33 @@ std::shared_ptr<StripeGroup> TabletReader::stripeGroup(
   return stripeGroupCache_.get(stripeGroupIndex);
 }
 
+std::shared_ptr<StripeIndexGroup> TabletReader::indexGroup(
+    uint32_t stripeGroupIndex) const {
+  return indexGroupCache_.get(stripeGroupIndex);
+}
+
+std::shared_ptr<StripeIndexGroup> TabletReader::loadIndexGroup(
+    uint32_t stripeGroupIndex) const {
+  NIMBLE_CHECK_NOT_NULL(tabletIndex_, "Index not initialized.");
+  firstIndexGroup_.wlock()->reset();
+
+  const auto section = tabletIndex_->groupIndexMetadata(stripeGroupIndex);
+  velox::common::Region indexGroupRegion{
+      section.offset(), section.size(), "StripeIndexGroup"};
+  folly::IOBuf buffer;
+  file_->preadv({&indexGroupRegion, 1}, {&buffer, 1});
+
+  // Reset the first index group that was loaded when we load another one
+
+  return StripeIndexGroup::create(
+      stripeGroupIndex,
+      tabletIndex_->rootIndex(),
+      std::make_unique<MetadataBuffer>(
+          *pool_,
+          buffer,
+          static_cast<CompressionType>(section.compressionType())));
+}
+
 std::span<const uint32_t> TabletReader::streamOffsets(
     const StripeIdentifier& stripe) const {
   NIMBLE_DCHECK_LT(stripe.stripeId(), stripeCount_, "Stripe is out of range.");
@@ -626,10 +662,15 @@ uint32_t TabletReader::streamCount(const StripeIdentifier& stripe) const {
   return stripe.stripeGroup()->streamCount();
 }
 
-StripeIdentifier TabletReader::stripeIdentifier(uint32_t stripeIndex) const {
+StripeIdentifier TabletReader::stripeIdentifier(
+    uint32_t stripeIndex,
+    bool loadIndex) const {
   NIMBLE_CHECK_LT(stripeIndex, stripeCount_, "Stripe is out of range.");
+  const auto stripeGroupIndex = this->stripeGroupIndex(stripeIndex);
   return StripeIdentifier{
-      stripeIndex, stripeGroup(stripeGroupIndex(stripeIndex))};
+      stripeIndex,
+      stripeGroup(stripeGroupIndex),
+      loadIndex ? indexGroup(stripeGroupIndex) : nullptr};
 }
 
 std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
@@ -791,4 +832,47 @@ std::optional<Section> TabletReader::loadOptionalSection(
   file_->preadv({&region, 1}, {&iobuf, 1});
   return Section{MetadataBuffer{*pool_, iobuf, compressionType}};
 }
+
+bool TabletReader::hasIndex() const {
+  return hasOptionalSection(std::string{kIndexSection});
+}
+
+void TabletReader::initIndex(
+    const folly::IOBuf& footerIoBuf,
+    uint64_t footerIoOffset,
+    uint64_t fileSize) {
+  NIMBLE_CHECK_NULL(tabletIndex_, "Index already initialized.");
+
+  if (!hasIndex()) {
+    return;
+  }
+
+  auto indexSection =
+      loadOptionalSection(std::string{kIndexSection}, /*keepCache=*/false);
+  NIMBLE_CHECK(indexSection.has_value(), "Failed to load index section.");
+
+  tabletIndex_ = TabletIndex::create(std::move(indexSection.value()));
+
+  // Preload the first stripe index group if it's already in the footer buffer
+  const auto firstIndexGroupMetadata = tabletIndex_->groupIndexMetadata(0);
+  if (tabletIndex_->numIndexGroups() == 1 &&
+      firstIndexGroupMetadata.offset() + footerIoBuf.computeChainDataLength() >=
+          fileSize) {
+    auto indexGroupPtr = indexGroupCache_.get(0, [&](uint32_t indexGroupIndex) {
+      return StripeIndexGroup::create(
+          indexGroupIndex,
+          tabletIndex_->rootIndex(),
+          std::make_unique<MetadataBuffer>(
+              *pool_,
+              footerIoBuf,
+              firstIndexGroupMetadata.offset() +
+                  footerIoBuf.computeChainDataLength() - fileSize,
+              firstIndexGroupMetadata.size(),
+              static_cast<CompressionType>(
+                  firstIndexGroupMetadata.compressionType())));
+    });
+    *firstIndexGroup_.wlock() = std::move(indexGroupPtr);
+  }
+}
+
 } // namespace facebook::nimble

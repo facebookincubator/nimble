@@ -411,7 +411,8 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
     size_t numInputRows;
     uint64_t minChunkRawSize;
     uint64_t maxChunkRawSize;
-    // Whether to use ensureFullChunks in encodeChunk calls.
+    // Whether to use ensureFullChunks in encodeChunk
+    // calls.dwio/nimble/tools/fb/feature_reaper/NimbleRewrite.cpp
     bool ensureFullChunks;
     // Expected total chunk count after all encoding.
     size_t expectedChunks;
