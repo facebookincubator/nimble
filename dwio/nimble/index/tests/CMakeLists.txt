@@ -11,6 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+add_library(nimble_index_test_utils TabletIndexTestUtils.cpp)
+target_link_libraries(
+  nimble_index_test_utils
+  nimble_index
+  nimble_common
+  velox_memory
+  Folly::folly
+)
+
 add_executable(
   nimble_index_tests
   StripeIndexGroupTest.cpp

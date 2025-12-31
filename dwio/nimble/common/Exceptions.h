@@ -262,7 +262,7 @@ NIMBLE_DECLARE_CHECK_FAIL_TEMPLATES(::facebook::nimble::NimbleInternalError);
   _NIMBLE_CHECK_OP_HELPER(                           \
       _NIMBLE_USER_CHECK_IMPL, expr1, expr2, op, ##__VA_ARGS__)
 
-// Comparison check macros
+// Comparison check macros - internal errors
 #define NIMBLE_CHECK_GT(e1, e2, ...) _NIMBLE_CHECK_OP(e1, e2, >, ##__VA_ARGS__)
 #define NIMBLE_CHECK_GE(e1, e2, ...) _NIMBLE_CHECK_OP(e1, e2, >=, ##__VA_ARGS__)
 #define NIMBLE_CHECK_LT(e1, e2, ...) _NIMBLE_CHECK_OP(e1, e2, <, ##__VA_ARGS__)
@@ -270,10 +270,28 @@ NIMBLE_DECLARE_CHECK_FAIL_TEMPLATES(::facebook::nimble::NimbleInternalError);
 #define NIMBLE_CHECK_EQ(e1, e2, ...) _NIMBLE_CHECK_OP(e1, e2, ==, ##__VA_ARGS__)
 #define NIMBLE_CHECK_NE(e1, e2, ...) _NIMBLE_CHECK_OP(e1, e2, !=, ##__VA_ARGS__)
 
+// Comparison check macros - user errors
+#define NIMBLE_USER_CHECK_GT(e1, e2, ...) \
+  _NIMBLE_USER_CHECK_OP(e1, e2, >, ##__VA_ARGS__)
+#define NIMBLE_USER_CHECK_GE(e1, e2, ...) \
+  _NIMBLE_USER_CHECK_OP(e1, e2, >=, ##__VA_ARGS__)
+#define NIMBLE_USER_CHECK_LT(e1, e2, ...) \
+  _NIMBLE_USER_CHECK_OP(e1, e2, <, ##__VA_ARGS__)
+#define NIMBLE_USER_CHECK_LE(e1, e2, ...) \
+  _NIMBLE_USER_CHECK_OP(e1, e2, <=, ##__VA_ARGS__)
+#define NIMBLE_USER_CHECK_EQ(e1, e2, ...) \
+  _NIMBLE_USER_CHECK_OP(e1, e2, ==, ##__VA_ARGS__)
+#define NIMBLE_USER_CHECK_NE(e1, e2, ...) \
+  _NIMBLE_USER_CHECK_OP(e1, e2, !=, ##__VA_ARGS__)
+
 // Null pointer checks
 #define NIMBLE_CHECK_NULL(e, ...) NIMBLE_CHECK((e) == nullptr, ##__VA_ARGS__)
 #define NIMBLE_CHECK_NOT_NULL(e, ...) \
   NIMBLE_CHECK((e) != nullptr, ##__VA_ARGS__)
+#define NIMBLE_USER_CHECK_NULL(e, ...) \
+  NIMBLE_USER_CHECK((e) == nullptr, ##__VA_ARGS__)
+#define NIMBLE_USER_CHECK_NOT_NULL(e, ...) \
+  NIMBLE_USER_CHECK((e) != nullptr, ##__VA_ARGS__)
 
 // Failure macros without conditions
 #define NIMBLE_FAIL(...)                            \
