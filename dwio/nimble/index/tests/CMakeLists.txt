@@ -22,7 +22,7 @@ target_link_libraries(
 
 add_executable(
   nimble_index_tests
-  IndexKeyReaderTest.cpp
+  IndexReaderTest.cpp
   StripeIndexGroupTest.cpp
   TabletIndexTest.cpp
   TabletIndexTestBase.cpp

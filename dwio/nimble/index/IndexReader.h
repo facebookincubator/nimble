@@ -27,20 +27,20 @@ namespace facebook::nimble::index {
 
 /// Reader for cluster index keys within a stripe.
 ///
-/// The IndexKeyReader provides access to sorted keys stored in a special key
+/// The IndexReader provides access to sorted keys stored in a special key
 /// stream at kKeyStreamId. It works in conjunction with StripeIndexGroup to
 /// locate and decode key data for efficient row filtering based on cluster
 /// index lookups.
 ///
 /// The key stream contains keys organized in chunks, where each chunk is
-/// independently decodable. The IndexKeyReader performs binary search within
+/// independently decodable. The IndexReader performs binary search within
 /// chunks to find keys efficiently.
 ///
 /// TODO: Integrate with velox data cache for improved read performance.
-class IndexKeyReader {
+class IndexReader {
  public:
-  /// Static factory method to create a IndexKeyReader instance
-  static std::unique_ptr<IndexKeyReader> create(
+  /// Static factory method to create a IndexReader instance
+  static std::unique_ptr<IndexReader> create(
       std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
       uint32_t stripeIndex,
       std::shared_ptr<StripeIndexGroup> indexGroup,
@@ -52,7 +52,7 @@ class IndexKeyReader {
   std::optional<uint32_t> seekAtOrAfter(std::string_view encodedKey);
 
  private:
-  IndexKeyReader(
+  IndexReader(
       std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
       uint32_t stripeIndex,
       std::shared_ptr<StripeIndexGroup> indexGroup,

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "dwio/nimble/index/IndexKeyReader.h"
+#include "dwio/nimble/index/IndexReader.h"
 
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
@@ -31,7 +31,7 @@ using namespace facebook::velox;
     return std::nullopt;       \
   }
 
-IndexKeyReader::IndexKeyReader(
+IndexReader::IndexReader(
     std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
     uint32_t stripeIndex,
     std::shared_ptr<StripeIndexGroup> indexGroup,
@@ -44,16 +44,16 @@ IndexKeyReader::IndexKeyReader(
   NIMBLE_CHECK_NOT_NULL(pool_);
 }
 
-std::unique_ptr<IndexKeyReader> IndexKeyReader::create(
+std::unique_ptr<IndexReader> IndexReader::create(
     std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
     uint32_t stripeIndex,
     std::shared_ptr<StripeIndexGroup> indexGroup,
     velox::memory::MemoryPool* pool) {
-  return std::unique_ptr<IndexKeyReader>(new IndexKeyReader(
+  return std::unique_ptr<IndexReader>(new IndexReader(
       std::move(input), stripeIndex, std::move(indexGroup), pool));
 }
 
-std::optional<uint32_t> IndexKeyReader::seekAtOrAfter(
+std::optional<uint32_t> IndexReader::seekAtOrAfter(
     std::string_view encodedKey) {
   const auto chunkLocation = indexGroup_->lookupChunk(stripeIndex_, encodedKey);
   RETURN_IF_NULLOPT(chunkLocation);
@@ -64,7 +64,7 @@ std::optional<uint32_t> IndexKeyReader::seekAtOrAfter(
   return chunkLocation->rowOffset + rowOffset.value();
 }
 
-std::optional<uint32_t> IndexKeyReader::seekAtOrAfterInChunk(
+std::optional<uint32_t> IndexReader::seekAtOrAfterInChunk(
     uint32_t chunkOffset,
     std::string_view encodedKey) {
   seekToChunk(chunkOffset);
@@ -72,7 +72,7 @@ std::optional<uint32_t> IndexKeyReader::seekAtOrAfterInChunk(
   return encoding_->seekAtOrAfter(&encodedKey);
 }
 
-bool IndexKeyReader::ensureInput(int size) {
+bool IndexReader::ensureInput(int size) {
   while (inputSize_ < size) {
     if (inputSize_ > 0) {
       prepareInputBuffer(inputSize_);
@@ -87,14 +87,14 @@ bool IndexKeyReader::ensureInput(int size) {
       inputData_ = buf;
     } else {
       prepareInputBuffer(inputSize_ + len);
-      ::memcpy(inputBuffer_->asMutable<char>() + inputSize_, buf, len);
+      std::memcpy(inputBuffer_->asMutable<char>() + inputSize_, buf, len);
     }
     inputSize_ += len;
   }
   return true;
 }
 
-void IndexKeyReader::seekToChunk(uint32_t chunkOffset) {
+void IndexReader::seekToChunk(uint32_t chunkOffset) {
   if ((chunkOffset_ == chunkOffset) && (encoding_ != nullptr)) {
     return;
   }
@@ -109,7 +109,7 @@ void IndexKeyReader::seekToChunk(uint32_t chunkOffset) {
   loadChunk();
 }
 
-void IndexKeyReader::loadChunk() {
+void IndexReader::loadChunk() {
   auto ret = ensureInput(5);
   NIMBLE_CHECK(ret);
   const auto length = encoding::readUint32(inputData_);
@@ -137,7 +137,7 @@ void IndexKeyReader::loadChunk() {
   NIMBLE_CHECK_EQ(encoding_->encodingType(), EncodingType::Trivial);
 }
 
-void IndexKeyReader::prepareInputBuffer(int32_t size) {
+void IndexReader::prepareInputBuffer(int32_t size) {
   NIMBLE_DCHECK_LE(inputSize_, size);
   if (inputBuffer_ && size <= inputBuffer_->capacity()) {
     if (inputData_ == inputBuffer_->as<char>()) {
@@ -152,7 +152,7 @@ void IndexKeyReader::prepareInputBuffer(int32_t size) {
     auto newInputBuffer = AlignedBuffer::allocate<char>(size, pool_);
     char* newInputData = newInputBuffer->asMutable<char>();
     if (inputSize_ > 0) {
-      memcpy(newInputData, inputData_, inputSize_);
+      std::memcpy(newInputData, inputData_, inputSize_);
     }
     inputBuffer_ = std::move(newInputBuffer);
     inputData_ = newInputData;

@@ -18,10 +18,10 @@
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/common/tests/GTestUtils.h"
+
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
-#include "dwio/nimble/index/IndexKeyReader.h"
+#include "dwio/nimble/index/IndexReader.h"
 #include "dwio/nimble/index/tests/TabletIndexTestBase.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 #include "velox/dwio/common/SeekableInputStream.h"
@@ -31,7 +31,7 @@ namespace facebook::nimble::index::test {
 using namespace facebook::velox;
 using namespace facebook::velox::dwio::common;
 
-class IndexKeyReaderTest : public TabletIndexTestBase {
+class IndexReaderTest : public TabletIndexTestBase {
  protected:
   // Encodes a vector of string keys into a chunked stream format.
   // Returns the encoded stream data and the chunk offsets for each key group.
@@ -97,7 +97,7 @@ class IndexKeyReaderTest : public TabletIndexTestBase {
   }
 };
 
-TEST_F(IndexKeyReaderTest, singleChunkSingleKey) {
+TEST_F(IndexReaderTest, singleChunkSingleKey) {
   // Create a single chunk with one key
   auto encodedStream = encodeKeyStream({{"key_a"}});
 
@@ -115,7 +115,7 @@ TEST_F(IndexKeyReaderTest, singleChunkSingleKey) {
   auto stripeIndexGroup =
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexKeyReader::create(
+  auto reader = IndexReader::create(
       createInputStream(encodedStream.data),
       /*stripeIndex=*/0,
       stripeIndexGroup,
@@ -136,7 +136,7 @@ TEST_F(IndexKeyReaderTest, singleChunkSingleKey) {
   ASSERT_FALSE(result.has_value());
 }
 
-TEST_F(IndexKeyReaderTest, singleChunkMultipleKeys) {
+TEST_F(IndexReaderTest, singleChunkMultipleKeys) {
   // Create a single chunk with multiple sorted keys
   std::vector<std::string> keys = {
       "key_aaa", "key_bbb", "key_ccc", "key_ddd", "key_eee"};
@@ -156,7 +156,7 @@ TEST_F(IndexKeyReaderTest, singleChunkMultipleKeys) {
   auto stripeIndexGroup =
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexKeyReader::create(
+  auto reader = IndexReader::create(
       createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
 
   // Test exact matches, keys between existing keys, and keys after last key.
@@ -186,7 +186,7 @@ TEST_F(IndexKeyReaderTest, singleChunkMultipleKeys) {
   }
 }
 
-TEST_F(IndexKeyReaderTest, multipleChunks) {
+TEST_F(IndexReaderTest, multipleChunks) {
   // Create multiple chunks with different keys
   std::vector<std::vector<std::string>> keyChunks = {
       {"key_a", "key_b", "key_c"}, // Chunk 0: 3 keys
@@ -212,7 +212,7 @@ TEST_F(IndexKeyReaderTest, multipleChunks) {
   auto stripeIndexGroup =
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexKeyReader::create(
+  auto reader = IndexReader::create(
       createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
 
   // Test keys across all chunks with mixed found/not-found cases.
@@ -247,7 +247,7 @@ TEST_F(IndexKeyReaderTest, multipleChunks) {
   }
 }
 
-TEST_F(IndexKeyReaderTest, seekBetweenChunks) {
+TEST_F(IndexReaderTest, seekBetweenChunks) {
   // Create multiple chunks and test seeking keys that fall between chunks
   std::vector<std::vector<std::string>> keyChunks = {
       {"key_aaa", "key_bbb", "key_ccc"}, // Chunk 0
@@ -272,7 +272,7 @@ TEST_F(IndexKeyReaderTest, seekBetweenChunks) {
   auto stripeIndexGroup =
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexKeyReader::create(
+  auto reader = IndexReader::create(
       createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
 
   // Key falls between chunk 0's max (ccc) and chunk 1's content (ddd)
@@ -310,7 +310,7 @@ TEST_F(IndexKeyReaderTest, seekBetweenChunks) {
   EXPECT_EQ(result.value(), 4);
 }
 
-TEST_F(IndexKeyReaderTest, multipleStripes) {
+TEST_F(IndexReaderTest, multipleStripes) {
   // Create key streams for two stripes
   std::vector<std::vector<std::string>> stripe0Keys = {
       {"key_a", "key_b", "key_c"}};
@@ -344,7 +344,7 @@ TEST_F(IndexKeyReaderTest, multipleStripes) {
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   // Test reader for stripe 0
-  auto reader0 = IndexKeyReader::create(
+  auto reader0 = IndexReader::create(
       createInputStream(encodedStream0.data), 0, stripeIndexGroup, pool_.get());
 
   auto result = reader0->seekAtOrAfter("key_a");
@@ -356,7 +356,7 @@ TEST_F(IndexKeyReaderTest, multipleStripes) {
   EXPECT_EQ(result.value(), 1);
 
   // Test reader for stripe 1
-  auto reader1 = IndexKeyReader::create(
+  auto reader1 = IndexReader::create(
       createInputStream(encodedStream1.data), 1, stripeIndexGroup, pool_.get());
 
   result = reader1->seekAtOrAfter("key_d");
@@ -368,13 +368,13 @@ TEST_F(IndexKeyReaderTest, multipleStripes) {
   EXPECT_EQ(result.value(), 1);
 }
 
-TEST_F(IndexKeyReaderTest, emptyStringKey) {
+TEST_F(IndexReaderTest, emptyStringKey) {
   // Test with empty string as a key
   std::vector<std::string> keys = {"", "a", "b"};
   auto encodedStream = encodeKeyStream({keys});
 
   std::vector<std::string> indexColumns = {"col1"};
-  std::string minKey = "";
+  std::string minKey;
   std::vector<Stripe> stripes = {createStripe(
       {.streamOffset = 0,
        .streamSize = static_cast<uint32_t>(encodedStream.data.size()),
@@ -387,7 +387,7 @@ TEST_F(IndexKeyReaderTest, emptyStringKey) {
   auto stripeIndexGroup =
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexKeyReader::create(
+  auto reader = IndexReader::create(
       createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
 
   // Test empty string key
@@ -403,7 +403,7 @@ TEST_F(IndexKeyReaderTest, emptyStringKey) {
   ASSERT_FALSE(result.has_value());
 }
 
-TEST_F(IndexKeyReaderTest, largeNumberOfKeys) {
+TEST_F(IndexReaderTest, largeNumberOfKeys) {
   // Test with a large number of keys in a single chunk
   std::vector<std::string> keys;
   constexpr int numKeys = 1000;
@@ -427,7 +427,7 @@ TEST_F(IndexKeyReaderTest, largeNumberOfKeys) {
   auto stripeIndexGroup =
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexKeyReader::create(
+  auto reader = IndexReader::create(
       createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
 
   // Test some specific keys
@@ -450,7 +450,7 @@ TEST_F(IndexKeyReaderTest, largeNumberOfKeys) {
   EXPECT_EQ(result.value(), 501);
 }
 
-TEST_F(IndexKeyReaderTest, repeatedSeeksToSameChunk) {
+TEST_F(IndexReaderTest, repeatedSeeksToSameChunk) {
   // Test that repeated seeks to the same chunk work correctly
   // (tests chunk caching behavior)
   std::vector<std::vector<std::string>> keyChunks = {
@@ -483,7 +483,7 @@ TEST_F(IndexKeyReaderTest, repeatedSeeksToSameChunk) {
   auto stripeIndexGroup =
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexKeyReader::create(
+  auto reader = IndexReader::create(
       createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
 
   // Test repeated seeks within each chunk and across chunks.
@@ -507,7 +507,7 @@ TEST_F(IndexKeyReaderTest, repeatedSeeksToSameChunk) {
   }
 }
 
-TEST_F(IndexKeyReaderTest, unevenChunkSizes) {
+TEST_F(IndexReaderTest, unevenChunkSizes) {
   // Test with chunks of varying sizes
   std::vector<std::vector<std::string>> keyChunks = {
       {"key_a"}, // Small chunk: 1 key
@@ -533,7 +533,7 @@ TEST_F(IndexKeyReaderTest, unevenChunkSizes) {
   auto stripeIndexGroup =
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexKeyReader::create(
+  auto reader = IndexReader::create(
       createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
 
   // Chunk 0: row offset 0, 1 key
@@ -564,7 +564,7 @@ TEST_F(IndexKeyReaderTest, unevenChunkSizes) {
   }
 }
 
-TEST_F(IndexKeyReaderTest, binaryKeys) {
+TEST_F(IndexReaderTest, binaryKeys) {
   // Test with binary keys (keys containing null bytes and non-printable chars)
   std::vector<std::string> keys = {
       std::string("\x00\x01\x02", 3),
@@ -589,7 +589,7 @@ TEST_F(IndexKeyReaderTest, binaryKeys) {
   auto stripeIndexGroup =
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexKeyReader::create(
+  auto reader = IndexReader::create(
       createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
 
   // Test exact matches and not-found cases for binary keys.
