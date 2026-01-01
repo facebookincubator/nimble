@@ -63,6 +63,11 @@ std::vector<Chunk> createChunks(
   return chunks;
 }
 
+Stream createStream(Buffer& buffer, const StreamSpec& spec) {
+  return Stream{
+      .offset = spec.offset, .chunks = createChunks(buffer, spec.chunks)};
+}
+
 KeyStreamStats StripeIndexGroupTestHelper::keyStreamStats() const {
   KeyStreamStats stats;
 

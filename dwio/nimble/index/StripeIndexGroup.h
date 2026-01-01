@@ -118,6 +118,11 @@ class StreamIndex {
   /// Returns chunk offset and size, or std::nullopt if not found
   std::optional<ChunkLocation> lookupChunk(uint32_t rowId) const;
 
+  /// Returns the stream ID this index is for
+  uint32_t streamId() const {
+    return streamId_;
+  }
+
  private:
   StreamIndex(
       const StripeIndexGroup* stripeIndexGroup,

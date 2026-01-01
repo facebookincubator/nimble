@@ -34,7 +34,7 @@ add_executable(
   StreamDataTest.cpp
   TypeTests.cpp
   VeloxReaderTests.cpp
-  VeloxWriterTests.cpp
+  VeloxWriterTest.cpp
   FieldWriterStatsTests.cpp
 )
 add_test(nimble_velox_tests nimble_velox_tests)
