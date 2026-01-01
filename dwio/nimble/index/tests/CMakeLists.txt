@@ -22,6 +22,7 @@ target_link_libraries(
 
 add_executable(
   nimble_index_tests
+  IndexKeyReaderTest.cpp
   StripeIndexGroupTest.cpp
   TabletIndexTest.cpp
   TabletIndexTestBase.cpp
@@ -32,10 +33,12 @@ add_test(nimble_index_tests nimble_index_tests)
 target_link_libraries(
   nimble_index_tests
   nimble_index
+  nimble_velox_writer
   velox_core
   velox_vector
   velox_vector_test_lib
   velox_memory
+  velox_dwio_common
   gmock
   gtest
   gtest_main
