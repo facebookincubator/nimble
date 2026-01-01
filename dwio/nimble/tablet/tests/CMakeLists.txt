@@ -37,6 +37,8 @@ target_link_libraries(
   nimble_tablet_tests
   nimble_tablet_reader
   nimble_tablet_writer
+  nimble_index
+  nimble_index_test_utils
   nimble_common
   velox_dwio_common
   velox_memory

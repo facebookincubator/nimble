@@ -18,12 +18,14 @@
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingLayoutCapture.h"
 #include "dwio/nimble/encodings/EncodingUtils.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
+#include "dwio/nimble/index/tests/TabletIndexTestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
@@ -34,8 +36,10 @@
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "folly/FileUtil.h"
 #include "folly/Random.h"
+#include "velox/common/memory/HashStringAllocator.h"
 #include "velox/common/memory/MemoryArbitrator.h"
 #include "velox/common/memory/SharedArbitrator.h"
+#include "velox/serializers/KeyEncoder.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
@@ -47,7 +51,7 @@ DEFINE_uint32(
     "If provided, this seed will be used when executing tests. "
     "Otherwise, a random seed will be used.");
 
-class VeloxWriterTests : public ::testing::Test {
+class VeloxWriterTest : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
     velox::memory::SharedArbitrator::registerFactory();
@@ -61,11 +65,332 @@ class VeloxWriterTests : public ::testing::Test {
     leafPool_ = rootPool_->addLeafChild("default_leaf");
   }
 
+  // Verifies that file data matches the expected batches row-by-row.
+  void verifyFileData(
+      const std::string& file,
+      const velox::TypePtr& type,
+      const std::vector<velox::RowVectorPtr>& expectedBatches,
+      uint32_t readBatchSize = 100) {
+    velox::InMemoryReadFile readFile(file);
+    nimble::VeloxReader reader(&readFile, *leafPool_);
+
+    auto expected = velox::BaseVector::create(type, 0, leafPool_.get());
+    for (const auto& batch : expectedBatches) {
+      expected->append(batch.get());
+    }
+
+    velox::VectorPtr result;
+    uint64_t rowOffset = 0;
+    while (reader.next(readBatchSize, result)) {
+      for (velox::vector_size_t i = 0; i < result->size(); ++i) {
+        ASSERT_TRUE(result->equalValueAt(expected.get(), i, rowOffset + i))
+            << "Mismatch at row " << (rowOffset + i);
+      }
+      rowOffset += result->size();
+    }
+    EXPECT_EQ(rowOffset, expected->size()) << "All rows should be verified";
+  }
+
+  // Verifies that the position index correctly stores chunk row counts.
+  // For each stripe and stream:
+  // 1. Gets the expected chunk row counts from the position index
+  // 2. Verifies using two methods:
+  //    a. Sequential iteration using InMemoryChunkedStream
+  //    b. Direct chunk access using offset/size from index with
+  //    SingleChunkDecoder
+  void verifyPositionIndex(const nimble::TabletReader& tablet) {
+    for (uint32_t stripeIdx = 0; stripeIdx < tablet.stripeCount();
+         ++stripeIdx) {
+      const auto stripeId =
+          tablet.stripeIdentifier(stripeIdx, /*loadIndex=*/true);
+      ASSERT_NE(stripeId.indexGroup(), nullptr)
+          << "Index group should be available for stripe " << stripeIdx;
+
+      nimble::index::test::StripeIndexGroupTestHelper helper(
+          stripeId.indexGroup().get());
+
+      const uint32_t stripeOffsetInGroup = stripeIdx - helper.firstStripe();
+
+      // Load all streams for this stripe
+      const uint32_t streamCount = tablet.streamCount(stripeId);
+      std::vector<uint32_t> streamIds(streamCount);
+      std::iota(streamIds.begin(), streamIds.end(), 0);
+      auto streamLoaders = tablet.load(stripeId, streamIds);
+
+      for (uint32_t streamId = 0; streamId < streamLoaders.size(); ++streamId) {
+        if (!streamLoaders[streamId]) {
+          continue;
+        }
+
+        auto streamStats = helper.streamStats(streamId);
+
+        // Get chunk count for this stripe from accumulated values
+        const uint32_t prevChunkCount = (stripeOffsetInGroup == 0)
+            ? 0
+            : streamStats.chunkCounts[stripeOffsetInGroup - 1];
+        const uint32_t currChunkCount =
+            streamStats.chunkCounts[stripeOffsetInGroup];
+        const uint32_t numChunksInStripe = currChunkCount - prevChunkCount;
+
+        // Extract per-chunk row counts from accumulated row counts
+        std::vector<uint32_t> expectedChunkRowCounts;
+        expectedChunkRowCounts.reserve(numChunksInStripe);
+        uint32_t prevRowCount = 0;
+        for (uint32_t i = 0; i < numChunksInStripe; ++i) {
+          const uint32_t accumulatedRows =
+              streamStats.chunkRows[prevChunkCount + i];
+          expectedChunkRowCounts.push_back(accumulatedRows - prevRowCount);
+          prevRowCount = accumulatedRows;
+        }
+
+        // Get the raw stream data
+        const std::string_view rawStreamData =
+            streamLoaders[streamId]->getStream();
+
+        // Method 1: Verify using sequential InMemoryChunkedStream iteration
+        {
+          nimble::InMemoryChunkedStream chunkedStream{
+              *leafPool_,
+              std::make_unique<nimble::index::test::TestStreamLoader>(
+                  rawStreamData)};
+          uint32_t chunkIndex = 0;
+          while (chunkedStream.hasNext()) {
+            const auto chunkData = chunkedStream.nextChunk();
+            auto encoding =
+                nimble::EncodingFactory::decode(*leafPool_, chunkData);
+            EXPECT_EQ(encoding->rowCount(), expectedChunkRowCounts[chunkIndex])
+                << "Stripe " << stripeIdx << " stream " << streamId << " chunk "
+                << chunkIndex << " row count mismatch (sequential)";
+            ++chunkIndex;
+          }
+
+          EXPECT_EQ(chunkIndex, numChunksInStripe)
+              << "Stripe " << stripeIdx << " stream " << streamId
+              << " chunk count mismatch";
+        }
+
+        // Method 2: Verify using chunk offset/size from index with
+        // SingleChunkDecoder
+        for (uint32_t i = 0; i < numChunksInStripe; ++i) {
+          const uint32_t chunkOffset =
+              streamStats.chunkOffsets[prevChunkCount + i];
+
+          // Calculate chunk size from consecutive offsets or to end of stream
+          uint32_t chunkSize;
+          if (i + 1 < numChunksInStripe) {
+            chunkSize =
+                streamStats.chunkOffsets[prevChunkCount + i + 1] - chunkOffset;
+          } else {
+            chunkSize = rawStreamData.size() - chunkOffset;
+          }
+
+          // Extract chunk data using offset and size from index
+          std::string_view chunkStreamData(
+              rawStreamData.data() + chunkOffset, chunkSize);
+
+          // Decode using SingleChunkDecoder (same pattern as verifyValueIndex)
+          nimble::index::test::SingleChunkDecoder chunkDecoder(
+              *leafPool_, chunkStreamData);
+          auto encodingData = chunkDecoder.decode();
+          auto encoding =
+              nimble::EncodingFactory::decode(*leafPool_, encodingData);
+
+          EXPECT_EQ(encoding->rowCount(), expectedChunkRowCounts[i])
+              << "Stripe " << stripeIdx << " stream " << streamId << " chunk "
+              << i << " row count mismatch (using chunk offset from index)";
+        }
+      }
+    }
+  }
+
+  // Verifies that the value index correctly maps each key to its row position.
+  // For each row in the input batches:
+  // 1. Encodes the key using KeyEncoder
+  // 2. Looks up the stripe via TabletIndex
+  // 3. Gets chunk location within stripe via StripeIndexGroup::lookupChunk
+  // 4. Loads the key stream chunk and decodes it
+  // 5. Uses seekAtOrAfter to find the exact row within the chunk
+  // 6. For duplicate keys, verifies the found row id matches the earliest row
+  //    with the same key value
+  void verifyValueIndex(
+      const nimble::TabletReader& tablet,
+      velox::ReadFile* file,
+      const velox::RowTypePtr& type,
+      const std::vector<velox::RowVectorPtr>& batches,
+      const std::vector<std::string>& indexColumns) {
+    const auto* index = tablet.index();
+    ASSERT_NE(index, nullptr) << "Index must exist";
+
+    // Pre-compute stripe start row offsets
+    std::vector<uint64_t> stripeStartRows;
+    stripeStartRows.reserve(tablet.stripeCount());
+    uint64_t startRow = 0;
+    for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
+      stripeStartRows.push_back(startRow);
+      startRow += tablet.stripeRowCount(i);
+    }
+
+    // Create sort orders for KeyEncoder (all ascending, nulls first)
+    std::vector<velox::core::SortOrder> sortOrders(
+        indexColumns.size(),
+        velox::core::SortOrder(true, true)); // ascending, nulls first
+
+    // Create KeyEncoder for encoding row keys
+    auto keyEncoder = velox::serializer::KeyEncoder::create(
+        indexColumns, type, sortOrders, leafPool_.get());
+
+    // Pre-encode all keys and build a map from encoded key to earliest row id.
+    // This handles duplicate keys where seekAtOrAfter returns the first
+    // occurrence.
+    std::map<std::string, uint64_t> keyToEarliestRowId;
+    std::vector<std::string> allEncodedKeys;
+    {
+      uint64_t rowId = 0;
+      for (const auto& batch : batches) {
+        velox::HashStringAllocator allocator(leafPool_.get());
+        std::vector<std::string_view> encodedKeys;
+        keyEncoder->encode(batch, encodedKeys, [&allocator](size_t size) {
+          return allocator.allocate(size)->begin();
+        });
+
+        for (velox::vector_size_t i = 0; i < batch->size(); ++i) {
+          std::string keyStr(encodedKeys[i]);
+          allEncodedKeys.push_back(keyStr);
+          // Only store the first occurrence (earliest row id) for each key
+          if (keyToEarliestRowId.find(keyStr) == keyToEarliestRowId.end()) {
+            keyToEarliestRowId[keyStr] = rowId;
+          }
+          ++rowId;
+        }
+      }
+    }
+
+    // Cache for loaded and decoded key stream chunks
+    // Key: chunk file offset (unique across all stripes), Value: decoded
+    // encoding
+    std::unordered_map<uint64_t, std::unique_ptr<nimble::Encoding>>
+        keyStreamCache;
+    // Buffer for loaded key stream data (must outlive the encoding)
+    std::unordered_map<uint64_t, std::string> keyStreamBufferCache;
+
+    // Verify each row's index lookup
+    uint64_t currentRowId = 0;
+    for (const auto& batch : batches) {
+      // Verify each row
+      for (velox::vector_size_t i = 0; i < batch->size(); ++i) {
+        const std::string& encodedKey = allEncodedKeys[currentRowId];
+        std::string_view encodedKeyView(encodedKey);
+
+        // Look up the stripe for this key
+        auto stripeLocation = index->lookup(encodedKeyView);
+        ASSERT_TRUE(stripeLocation.has_value())
+            << "Key at row " << currentRowId << " should be found in index";
+
+        uint32_t stripeIndex = stripeLocation->stripeIndex;
+        ASSERT_LT(stripeIndex, tablet.stripeCount())
+            << "Stripe index out of range";
+
+        // Get stripe identifier with index group loaded
+        const auto stripeId =
+            tablet.stripeIdentifier(stripeIndex, /*loadIndex=*/true);
+        ASSERT_NE(stripeId.indexGroup(), nullptr)
+            << "Index group should be available for stripe " << stripeIndex;
+
+        // Look up chunk by encoded key to get chunk location within stripe
+        const auto chunkLocation =
+            stripeId.indexGroup()->lookupChunk(stripeIndex, encodedKeyView);
+        ASSERT_TRUE(chunkLocation.has_value())
+            << "Key at row " << currentRowId << " should be found in stripe "
+            << stripeIndex;
+
+        // Get key stream region for this stripe
+        auto keyStreamRegion =
+            stripeId.indexGroup()->keyStreamRegion(stripeIndex);
+        ASSERT_TRUE(keyStreamRegion.has_value())
+            << "Key stream region should exist for stripe " << stripeIndex;
+
+        // Cache key: chunk file offset (unique across all stripes)
+        const uint64_t chunkFileOffset =
+            keyStreamRegion->offset + chunkLocation->streamOffset;
+
+        // Load and decode key chunk if not cached
+        if (keyStreamCache.find(chunkFileOffset) == keyStreamCache.end()) {
+          // Get chunk length from the index. The index stores chunk offsets
+          // in key_stream_chunk_offsets, so we can compute the length by
+          // looking at the next chunk offset (or stream end for the last
+          // chunk). Use helper to get chunk length from StripeIndexGroup
+          // internals.
+          nimble::index::test::StripeIndexGroupTestHelper helper(
+              stripeId.indexGroup().get());
+          const uint32_t chunkLength = helper.keyChunkLength(
+              stripeIndex,
+              chunkLocation->streamOffset,
+              keyStreamRegion->length);
+
+          // Load the key chunk data from file
+          velox::common::Region region{
+              chunkFileOffset, chunkLength, "keyChunk"};
+          folly::IOBuf iobuf;
+          file->preadv({&region, 1}, {&iobuf, 1});
+
+          // Copy data to a persistent buffer
+          std::string& buffer = keyStreamBufferCache[chunkFileOffset];
+          buffer.resize(iobuf.computeChainDataLength());
+          size_t offset = 0;
+          for (auto range : iobuf) {
+            std::memcpy(buffer.data() + offset, range.data(), range.size());
+            offset += range.size();
+          }
+
+          // Decode the single chunk to get the raw encoding data
+          nimble::index::test::SingleChunkDecoder chunkDecoder(
+              *leafPool_, buffer);
+          auto encodingData = chunkDecoder.decode();
+
+          // Decode the key encoding from the chunk data
+          keyStreamCache[chunkFileOffset] =
+              nimble::EncodingFactory::decode(*leafPool_, encodingData);
+        }
+
+        auto* keyEncoding = keyStreamCache[chunkFileOffset].get();
+        ASSERT_NE(keyEncoding, nullptr);
+
+        // Reset encoding and seek to find the row within the chunk
+        keyEncoding->reset();
+
+        // Use seekAtOrAfter to find the exact row position within the remaining
+        // rows
+        auto seekResult = keyEncoding->seekAtOrAfter(&encodedKeyView);
+        ASSERT_TRUE(seekResult.has_value())
+            << "seekAtOrAfter should find key at row " << currentRowId;
+
+        // Calculate the actual file row id
+        // seekAtOrAfter returns the offset from current position where the key
+        // was found
+        uint64_t fileRowId = stripeStartRows[stripeIndex] +
+            chunkLocation->rowOffset + seekResult.value();
+
+        // For duplicate keys, seekAtOrAfter returns the first occurrence.
+        // Verify that the found row id matches the earliest row with the same
+        // key.
+        uint64_t expectedFileRowId = keyToEarliestRowId.at(encodedKey);
+        EXPECT_EQ(fileRowId, expectedFileRowId)
+            << "Row " << currentRowId << " key lookup mismatch: "
+            << "expected earliest row " << expectedFileRowId << ", got "
+            << fileRowId << " (stripe " << stripeIndex << ", chunk row offset "
+            << chunkLocation->rowOffset << ", seek offset "
+            << seekResult.value() << ")";
+
+        ++currentRowId;
+      }
+    }
+  }
+
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
 };
 
-TEST_F(VeloxWriterTests, emptyFile) {
+TEST_F(VeloxWriterTest, emptyFile) {
   auto type = velox::ROW({{"simple", velox::INTEGER()}});
 
   std::string file;
@@ -81,7 +406,7 @@ TEST_F(VeloxWriterTests, emptyFile) {
   ASSERT_FALSE(reader.next(1, result));
 }
 
-TEST_F(VeloxWriterTests, exceptionOnClose) {
+TEST_F(VeloxWriterTest, exceptionOnClose) {
   class ThrowingWriteFile final : public velox::WriteFile {
    public:
     void append(std::string_view /* data */) final {
@@ -156,7 +481,7 @@ TEST_F(VeloxWriterTests, exceptionOnClose) {
   }
 }
 
-TEST_F(VeloxWriterTests, emptyFileNoSchema) {
+TEST_F(VeloxWriterTest, emptyFileNoSchema) {
   const uint32_t batchSize = 10;
   auto type = velox::ROW({{"simple", velox::INTEGER()}});
   nimble::VeloxWriterOptions writerOptions;
@@ -175,7 +500,7 @@ TEST_F(VeloxWriterTests, emptyFileNoSchema) {
   ASSERT_FALSE(reader.next(batchSize, result));
 }
 
-TEST_F(VeloxWriterTests, rootHasNulls) {
+TEST_F(VeloxWriterTest, rootHasNulls) {
   auto batchSize = 5;
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(
@@ -206,7 +531,7 @@ TEST_F(VeloxWriterTests, rootHasNulls) {
   }
 }
 
-TEST_F(VeloxWriterTests, schemaGrowthExtraColumn) {
+TEST_F(VeloxWriterTest, schemaGrowthExtraColumn) {
   // File type has a single column
   const auto type = velox::ROW({"c0"}, {velox::BIGINT()});
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
@@ -239,7 +564,7 @@ TEST_F(VeloxWriterTests, schemaGrowthExtraColumn) {
   }
 }
 
-TEST_F(VeloxWriterTests, schemaGrowthExtraSubField) {
+TEST_F(VeloxWriterTest, schemaGrowthExtraSubField) {
   // File type has a single column of type struct<f1>
   const auto type = velox::ROW({"c0"}, {velox::ROW({"f1"}, {velox::BIGINT()})});
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
@@ -277,7 +602,7 @@ TEST_F(VeloxWriterTests, schemaGrowthExtraSubField) {
 }
 
 TEST_F(
-    VeloxWriterTests,
+    VeloxWriterTest,
     FeatureReorderingNonFlatmapColumnIgnoresMismatchedConfig) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(
@@ -310,7 +635,7 @@ TEST_F(
   writer.close();
 }
 
-TEST_F(VeloxWriterTests, duplicateFlatmapKey) {
+TEST_F(VeloxWriterTest, duplicateFlatmapKey) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   // Vector with constant but duplicate key set. Potentially omitting in map
   // stream in the future.
@@ -455,7 +780,7 @@ struct StripeRawSizeFlushPolicyTestCase {
 };
 
 class StripeRawSizeFlushPolicyTest
-    : public VeloxWriterTests,
+    : public VeloxWriterTest,
       public ::testing::WithParamInterface<StripeRawSizeFlushPolicyTestCase> {};
 
 TEST_P(StripeRawSizeFlushPolicyTest, StripeRawSizeFlushPolicy) {
@@ -504,7 +829,7 @@ class MockReclaimer : public velox::memory::MemoryReclaimer {
 };
 } // namespace
 
-TEST_F(VeloxWriterTests, memoryReclaimPath) {
+TEST_F(VeloxWriterTest, memoryReclaimPath) {
   auto rootPool = velox::memory::memoryManager()->addRootPool(
       "root", 4L << 20, velox::memory::MemoryReclaimer::create());
   auto writerPool = rootPool->addAggregateChild(
@@ -534,7 +859,7 @@ TEST_F(VeloxWriterTests, memoryReclaimPath) {
   ASSERT_TRUE(reclaimEntered.load());
 }
 
-TEST_F(VeloxWriterTests, flushHugeStrings) {
+TEST_F(VeloxWriterTest, flushHugeStrings) {
   nimble::VeloxWriterOptions writerOptions{.flushPolicyFactory = []() {
     return std::make_unique<nimble::StripeRawSizeFlushPolicy>(1 * 1024 * 1024);
   }};
@@ -579,7 +904,7 @@ TEST_F(VeloxWriterTests, flushHugeStrings) {
   EXPECT_EQ(3, reader.tabletReader().stripeCount());
 }
 
-TEST_F(VeloxWriterTests, encodingLayout) {
+TEST_F(VeloxWriterTest, encodingLayout) {
   nimble::EncodingLayoutTree expected{
       nimble::Kind::Row,
       {},
@@ -825,7 +1150,7 @@ TEST_F(VeloxWriterTests, encodingLayout) {
   }
 }
 
-TEST_F(VeloxWriterTests, encodingLayoutSchemaMismatch) {
+TEST_F(VeloxWriterTest, encodingLayoutSchemaMismatch) {
   nimble::EncodingLayoutTree expected{
       nimble::Kind::Row,
       {},
@@ -885,7 +1210,7 @@ TEST_F(VeloxWriterTests, encodingLayoutSchemaMismatch) {
   }
 }
 
-TEST_F(VeloxWriterTests, encodingLayoutSchemaEvolutionMapToFlatmap) {
+TEST_F(VeloxWriterTest, encodingLayoutSchemaEvolutionMapToFlatmap) {
   nimble::EncodingLayoutTree expected{
       nimble::Kind::Row,
       {},
@@ -964,7 +1289,7 @@ TEST_F(VeloxWriterTests, encodingLayoutSchemaEvolutionMapToFlatmap) {
   // that no captured encoding was used.
 }
 
-TEST_F(VeloxWriterTests, encodingLayoutSchemaEvolutionFlamapToMap) {
+TEST_F(VeloxWriterTest, encodingLayoutSchemaEvolutionFlamapToMap) {
   nimble::EncodingLayoutTree expected{
       nimble::Kind::Row,
       {},
@@ -1043,7 +1368,7 @@ TEST_F(VeloxWriterTests, encodingLayoutSchemaEvolutionFlamapToMap) {
   // that no captured encoding was used.
 }
 
-TEST_F(VeloxWriterTests, encodingLayoutSchemaEvolutionExpandingRow) {
+TEST_F(VeloxWriterTest, encodingLayoutSchemaEvolutionExpandingRow) {
   nimble::EncodingLayoutTree expected{
       nimble::Kind::Row,
       {},
@@ -1111,7 +1436,7 @@ TEST_F(VeloxWriterTests, encodingLayoutSchemaEvolutionExpandingRow) {
   // that no captured encoding was used.
 }
 
-TEST_F(VeloxWriterTests, combineMultipleLayersOfDictionaries) {
+TEST_F(VeloxWriterTest, combineMultipleLayersOfDictionaries) {
   using namespace facebook::velox;
   test::VectorMaker vectorMaker{leafPool_.get()};
   auto wrapInDictionary = [&](const std::vector<vector_size_t>& indices,
@@ -1237,7 +1562,7 @@ void testChunks(
   validateChunkSize(reader, minStreamChunkRawSize, maxStreamChunkRawSize);
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsRowAllNullsNoChunks) {
+TEST_F(VeloxWriterTest, chunkedStreamsRowAllNullsNoChunks) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1273,7 +1598,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowAllNullsNoChunks) {
       });
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsRowAllNullsWithChunksMinSizeBig) {
+TEST_F(VeloxWriterTest, chunkedStreamsRowAllNullsWithChunksMinSizeBig) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1310,7 +1635,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowAllNullsWithChunksMinSizeBig) {
       });
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsRowAllNullsWithChunksMinSizeZero) {
+TEST_F(VeloxWriterTest, chunkedStreamsRowAllNullsWithChunksMinSizeZero) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1347,7 +1672,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowAllNullsWithChunksMinSizeZero) {
       });
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsRowSomeNullsNoChunks) {
+TEST_F(VeloxWriterTest, chunkedStreamsRowSomeNullsNoChunks) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto nullsVector = vectorMaker.rowVector(
@@ -1396,7 +1721,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowSomeNullsNoChunks) {
       });
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsRowSomeNullsWithChunksMinSizeBig) {
+TEST_F(VeloxWriterTest, chunkedStreamsRowSomeNullsWithChunksMinSizeBig) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto nullsVector = vectorMaker.rowVector(
@@ -1446,7 +1771,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowSomeNullsWithChunksMinSizeBig) {
       });
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsRowSomeNullsWithChunksMinSizeZero) {
+TEST_F(VeloxWriterTest, chunkedStreamsRowSomeNullsWithChunksMinSizeZero) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto nullsVector = vectorMaker.rowVector(
@@ -1496,7 +1821,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowSomeNullsWithChunksMinSizeZero) {
       });
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsRowNoNullsNoChunks) {
+TEST_F(VeloxWriterTest, chunkedStreamsRowNoNullsNoChunks) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1536,7 +1861,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowNoNullsNoChunks) {
       });
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsRowNoNullsWithChunksMinSizeBig) {
+TEST_F(VeloxWriterTest, chunkedStreamsRowNoNullsWithChunksMinSizeBig) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1577,7 +1902,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowNoNullsWithChunksMinSizeBig) {
       });
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsRowNoNullsWithChunksMinSizeZero) {
+TEST_F(VeloxWriterTest, chunkedStreamsRowNoNullsWithChunksMinSizeZero) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1617,7 +1942,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsRowNoNullsWithChunksMinSizeZero) {
       });
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsChildAllNullsNoChunks) {
+TEST_F(VeloxWriterTest, chunkedStreamsChildAllNullsNoChunks) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1643,7 +1968,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsChildAllNullsNoChunks) {
       });
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsChildAllNullsWithChunksMinSizeBig) {
+TEST_F(VeloxWriterTest, chunkedStreamsChildAllNullsWithChunksMinSizeBig) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1669,7 +1994,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsChildAllNullsWithChunksMinSizeBig) {
       });
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsChildAllNullsWithChunksMinSizeZero) {
+TEST_F(VeloxWriterTest, chunkedStreamsChildAllNullsWithChunksMinSizeZero) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1695,7 +2020,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsChildAllNullsWithChunksMinSizeZero) {
       });
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsFlatmapAllNullsNoChunks) {
+TEST_F(VeloxWriterTest, chunkedStreamsFlatmapAllNullsNoChunks) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1740,7 +2065,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsFlatmapAllNullsNoChunks) {
       /* flatmapColumns */ {"c1"});
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsFlatmapAllNullsWithChunksMinSizeBig) {
+TEST_F(VeloxWriterTest, chunkedStreamsFlatmapAllNullsWithChunksMinSizeBig) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1784,7 +2109,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsFlatmapAllNullsWithChunksMinSizeBig) {
       /* flatmapColumns */ {"c1"});
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsFlatmapAllNullsWithChunksMinSizeZero) {
+TEST_F(VeloxWriterTest, chunkedStreamsFlatmapAllNullsWithChunksMinSizeZero) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -1827,7 +2152,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsFlatmapAllNullsWithChunksMinSizeZero) {
       /* flatmapColumns */ {"c1"});
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsFlatmapSomeNullsNoChunks) {
+TEST_F(VeloxWriterTest, chunkedStreamsFlatmapSomeNullsNoChunks) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto nullsVector = vectorMaker.rowVector(
@@ -1905,7 +2230,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsFlatmapSomeNullsNoChunks) {
       /* flatmapColumns */ {"c1"});
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsFlatmapSomeNullsWithChunksMinSizeBig) {
+TEST_F(VeloxWriterTest, chunkedStreamsFlatmapSomeNullsWithChunksMinSizeBig) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto nullsVector = vectorMaker.rowVector(
@@ -1986,7 +2311,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsFlatmapSomeNullsWithChunksMinSizeBig) {
       /* flatmapColumns */ {"c1"});
 }
 
-TEST_F(VeloxWriterTests, chunkedStreamsFlatmapSomeNullsWithChunksMinSizeZero) {
+TEST_F(VeloxWriterTest, chunkedStreamsFlatmapSomeNullsWithChunksMinSizeZero) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto nullsVector = vectorMaker.rowVector(
@@ -2066,7 +2391,7 @@ TEST_F(VeloxWriterTests, chunkedStreamsFlatmapSomeNullsWithChunksMinSizeZero) {
       /* flatmapColumns */ {"c1"});
 }
 
-TEST_F(VeloxWriterTests, rawSizeWritten) {
+TEST_F(VeloxWriterTest, rawSizeWritten) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   constexpr uint64_t expectedRawSize = sizeof(int32_t) * 20;
@@ -2122,7 +2447,7 @@ struct ChunkFlushPolicyTestCase {
 };
 
 class ChunkFlushPolicyTest
-    : public VeloxWriterTests,
+    : public VeloxWriterTest,
       public ::testing::WithParamInterface<ChunkFlushPolicyTestCase> {};
 
 TEST_P(ChunkFlushPolicyTest, ChunkFlushPolicyIntegration) {
@@ -2178,7 +2503,7 @@ TEST_P(ChunkFlushPolicyTest, ChunkFlushPolicyIntegration) {
   EXPECT_EQ(GetParam().expectedMinChunkCount, result.minChunkCount);
 }
 
-TEST_F(VeloxWriterTests, fuzzComplex) {
+TEST_F(VeloxWriterTest, fuzzComplex) {
   auto type = velox::ROW(
       {{"array", velox::ARRAY(velox::REAL())},
        {"dict_array", velox::ARRAY(velox::REAL())},
@@ -2280,7 +2605,7 @@ TEST_F(VeloxWriterTests, fuzzComplex) {
   }
 }
 
-TEST_F(VeloxWriterTests, batchedChunkingRelievesMemoryPressure) {
+TEST_F(VeloxWriterTest, batchedChunkingRelievesMemoryPressure) {
   // Verify we stop chunking early when chunking relieves memory pressure.
   const uint32_t seed = FLAGS_writer_tests_seed > 0 ? FLAGS_writer_tests_seed
                                                     : folly::Random::rand32();
@@ -2371,7 +2696,7 @@ TEST_F(VeloxWriterTests, batchedChunkingRelievesMemoryPressure) {
       writerOptions.maxStreamChunkRawSize);
 }
 
-TEST_F(VeloxWriterTests, ignoreTopLevelNulls) {
+TEST_F(VeloxWriterTest, ignoreTopLevelNulls) {
   auto seed = folly::randomNumberSeed();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
@@ -2463,7 +2788,7 @@ struct TimestampTestCase {
 };
 
 class TimestampEdgeCaseTest
-    : public VeloxWriterTests,
+    : public VeloxWriterTest,
       public ::testing::WithParamInterface<TimestampTestCase> {};
 
 // We rely on fuzz tests in VeloxReaderTests for more complex data shapes.
@@ -2500,7 +2825,7 @@ TEST_P(TimestampEdgeCaseTest, RoundTrip) {
 // Test that timestamps exceeding Nimble's microsecond range cause overflow.
 // Nimble stores timestamps as int64 microseconds, so seconds values beyond
 // INT64_MAX/1'000'000 or INT64_MIN/1'000'000 will overflow during conversion.
-TEST_F(VeloxWriterTests, TimestampOverflowMax) {
+TEST_F(VeloxWriterTest, TimestampOverflowMax) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto overflowVector = vectorMaker.rowVector(
@@ -2515,7 +2840,7 @@ TEST_F(VeloxWriterTests, TimestampOverflowMax) {
   EXPECT_THROW(writer.write(overflowVector), nimble::NimbleUserError);
 }
 
-TEST_F(VeloxWriterTests, TimestampOverflowMin) {
+TEST_F(VeloxWriterTest, TimestampOverflowMin) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto overflowVector = vectorMaker.rowVector(
@@ -2727,4 +3052,780 @@ INSTANTIATE_TEST_CASE_P(
             .expectedMaxChunkCount = 2,
             .expectedMinChunkCount = 1,
             .chunkedStreamBatchSize = 10}));
+
+// Parameterized test fixture for index tests.
+// When enableChunking is false, sets very high minChunkRawSize and
+// maxChunkRawSize to prevent chunking (one chunk per stream).
+// When enableChunking is true, sets very low values to force aggressive
+// chunking.
+class VeloxWriterIndexTest : public VeloxWriterTest,
+                             public ::testing::WithParamInterface<bool> {
+ protected:
+  bool enableChunking() const {
+    return GetParam();
+  }
+
+  // Default type with integer key column and multiple scalar/complex non-key
+  // columns for comprehensive index testing.
+  static velox::RowTypePtr defaultType() {
+    return velox::ROW({
+        {"key_col", velox::BIGINT()}, // Integer key column for indexing
+        // Scalar types
+        {"int_col", velox::INTEGER()},
+        {"double_col", velox::DOUBLE()},
+        {"string_col1", velox::VARCHAR()},
+        {"string_col2", velox::VARCHAR()},
+        {"bool_col", velox::BOOLEAN()},
+        // Complex types
+        {"array_col", velox::ARRAY(velox::INTEGER())},
+        {"map_col", velox::MAP(velox::VARCHAR(), velox::BIGINT())},
+        {"row_col",
+         velox::ROW(
+             {{"nested_int", velox::INTEGER()},
+              {"nested_string", velox::VARCHAR()}})},
+    });
+  }
+
+  // Generate pre-sorted batches with sorted key column and fuzzed non-key
+  // columns. Uses VectorFuzzer to generate non-key columns with various
+  // encodings (flat, constant, dictionary) but not lazy vectors.
+  std::vector<velox::RowVectorPtr> generateFuzzedSortedBatches(
+      const velox::RowTypePtr& type,
+      size_t batchCount,
+      size_t batchSize,
+      uint32_t seed = 12345) {
+    folly::Random::DefaultGenerator rng(seed);
+    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+    // Configure fuzzer to generate various encodings but not lazy vectors
+    velox::VectorFuzzer::Options fuzzerOpts;
+    fuzzerOpts.vectorSize = batchSize;
+    fuzzerOpts.nullRatio = 0.1;
+    fuzzerOpts.containerLength = 5;
+    fuzzerOpts.stringLength = 20;
+    fuzzerOpts.containerVariableLength = true;
+    // Note: VectorFuzzer generates flat, constant, and dictionary encodings
+    // by default. Lazy vectors are not generated unless explicitly requested.
+    velox::VectorFuzzer fuzzer(fuzzerOpts, leafPool_.get(), seed);
+
+    std::vector<velox::RowVectorPtr> batches;
+    batches.reserve(batchCount);
+
+    int64_t currentKey = 0;
+    for (size_t i = 0; i < batchCount; ++i) {
+      // Generate sorted key column
+      std::vector<int64_t> keys(batchSize);
+      for (size_t j = 0; j < batchSize; ++j) {
+        currentKey += folly::Random::rand32(1, 10, rng);
+        keys[j] = currentKey;
+      }
+      auto keyVector = vectorMaker.flatVector<int64_t>(keys);
+
+      // Generate fuzzed non-key columns
+      std::vector<velox::VectorPtr> children;
+      children.push_back(keyVector);
+
+      for (size_t colIdx = 1; colIdx < type->size(); ++colIdx) {
+        auto childType = type->childAt(colIdx);
+        children.push_back(fuzzer.fuzz(childType));
+      }
+
+      batches.push_back(
+          std::make_shared<velox::RowVector>(
+              leafPool_.get(),
+              type,
+              nullptr, // no nulls at top level
+              batchSize,
+              std::move(children)));
+    }
+
+    return batches;
+  }
+
+  nimble::IndexConfig createIndexConfig(
+      const std::vector<std::string>& columns,
+      bool enforceKeyOrder = true) {
+    if (enableChunking()) {
+      return nimble::IndexConfig{
+          .columns = columns,
+          .enforceKeyOrder = enforceKeyOrder,
+          .minChunkRawSize = 32, // 32B - small to force chunking
+          .maxChunkRawSize = 1 << 10, // 1KB - small to force chunking
+      };
+    } else {
+      return nimble::IndexConfig{
+          .columns = columns,
+          .enforceKeyOrder = enforceKeyOrder,
+          .minChunkRawSize = 1ULL << 30, // 1GB - large to prevent chunking
+          .maxChunkRawSize = 1ULL << 30, // 1GB - large to prevent chunking
+      };
+    }
+  }
+
+  nimble::VeloxWriterOptions createWriterOptions(
+      const nimble::IndexConfig& indexConfig,
+      const std::function<std::unique_ptr<nimble::FlushPolicy>()>&
+          flushPolicyFactory = nullptr) {
+    nimble::VeloxWriterOptions options{
+        .indexConfig = std::move(indexConfig),
+    };
+    if (enableChunking()) {
+      options.minStreamChunkRawSize = 1 << 10; // 1KB
+      options.maxStreamChunkRawSize = 4 << 10; // 4KB
+      options.enableChunking = true;
+    }
+    if (flushPolicyFactory) {
+      options.flushPolicyFactory = std::move(flushPolicyFactory);
+    }
+    options.enableStreamDeduplication = true;
+    return options;
+  }
+};
+
+TEST_P(VeloxWriterIndexTest, singleGroup) {
+  // Test writing a file with index using real pre-sorted data with complex
+  // types. Uses a large flush threshold to ensure all stripes stay in one
+  // group.
+  auto type = defaultType();
+
+  nimble::IndexConfig indexConfig = createIndexConfig({"key_col"});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  constexpr int kNumBatches = 5;
+  constexpr int kBatchSize = 100;
+  nimble::VeloxWriter writer(
+      type,
+      std::move(writeFile),
+      *rootPool_,
+      createWriterOptions(indexConfig, []() {
+        // Flush after every batch to create one stripe per batch
+        return std::make_unique<nimble::LambdaFlushPolicy>(
+            [](auto) { return true; }, [](auto) { return false; });
+      }));
+
+  // Generate pre-sorted batches with fuzzed non-key columns
+  auto batches = generateFuzzedSortedBatches(type, kNumBatches, kBatchSize);
+
+  for (const auto& batch : batches) {
+    writer.write(batch);
+  }
+  writer.close();
+
+  // Read and verify
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+
+  const auto& tablet = reader.tabletReader();
+
+  // Verify each batch triggered exactly one stripe
+  EXPECT_EQ(tablet.stripeCount(), kNumBatches)
+      << "Each batch should trigger exactly one stripe";
+
+  // Verify all stripes are in the same stripe group (index 0)
+  // Default metadataFlushThreshold is large, so all stripes stay in one group
+  for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
+    auto stripeId = tablet.stripeIdentifier(i);
+    EXPECT_EQ(stripeId.stripeGroup()->index(), 0)
+        << "Stripe " << i << " should be in stripe group 0";
+  }
+
+  // Verify index section exists
+  EXPECT_TRUE(tablet.hasOptionalSection(std::string(nimble::kIndexSection)));
+
+  // Verify index is available
+  const auto* index = tablet.index();
+  ASSERT_NE(index, nullptr);
+
+  // Verify index columns
+  EXPECT_EQ(index->indexColumns().size(), 1);
+  EXPECT_EQ(index->indexColumns()[0], "key_col");
+
+  // Verify stripe keys are monotonically increasing
+  for (uint32_t i = 1; i < index->numStripes(); ++i) {
+    EXPECT_LE(index->stripeKey(i - 1), index->stripeKey(i))
+        << "Stripe keys should be in non-descending order";
+  }
+
+  // Verify lookups work correctly
+  // Keys should be found in the correct stripes
+  EXPECT_TRUE(index->lookup(index->minKey()).has_value());
+  EXPECT_TRUE(index->lookup(index->maxKey()).has_value());
+
+  // Keys outside range should not be found
+  EXPECT_FALSE(index->lookup("").has_value());
+
+  // Read back all data and verify row-by-row match with written batches
+  verifyFileData(file, type, batches, kBatchSize);
+
+  // Verify position index chunk row counts
+  verifyPositionIndex(tablet);
+
+  // Verify value index maps each key to correct row position
+  verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
+}
+
+TEST_P(VeloxWriterIndexTest, multipleGroups) {
+  // Test writing a file with index and multiple stripe groups.
+  // Uses small batches with flush-per-batch policy to create multiple stripes.
+  auto type = defaultType();
+
+  nimble::IndexConfig indexConfig = createIndexConfig({"key_col"});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  constexpr int kNumBatches = 5;
+  constexpr int kBatchSize = 100;
+  nimble::VeloxWriter writer(
+      type,
+      std::move(writeFile),
+      *rootPool_,
+      createWriterOptions(indexConfig, []() {
+        // Flush stripe after each batch
+        return std::make_unique<nimble::LambdaFlushPolicy>(
+            [](auto) { return true; }, [](auto) { return false; });
+      }));
+
+  // Generate pre-sorted batches with fuzzed non-key columns
+  auto batches = generateFuzzedSortedBatches(type, kNumBatches, kBatchSize);
+
+  for (const auto& batch : batches) {
+    writer.write(batch);
+  }
+  writer.close();
+
+  // Read and verify
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+
+  const auto& tablet = reader.tabletReader();
+
+  // Verify each batch triggered exactly one stripe
+  EXPECT_EQ(tablet.stripeCount(), kNumBatches)
+      << "Each batch should trigger exactly one stripe";
+
+  // Note: Without controlling metadataFlushThreshold from VeloxWriterOptions,
+  // all stripes end up in the same group (default threshold is 8MB).
+  // This test verifies the default behavior where all stripes share group 0.
+  for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
+    auto stripeId = tablet.stripeIdentifier(i);
+    EXPECT_EQ(stripeId.stripeGroup()->index(), 0)
+        << "Stripe " << i << " should be in stripe group 0";
+  }
+
+  // Verify index section exists
+  EXPECT_TRUE(tablet.hasOptionalSection(std::string(nimble::kIndexSection)));
+
+  // Verify index is available
+  const auto* index = tablet.index();
+  ASSERT_NE(index, nullptr);
+
+  // Verify index columns
+  EXPECT_EQ(index->indexColumns().size(), 1);
+  EXPECT_EQ(index->indexColumns()[0], "key_col");
+
+  // Verify stripe keys are monotonically increasing
+  for (uint32_t i = 1; i < index->numStripes(); ++i) {
+    EXPECT_LE(index->stripeKey(i - 1), index->stripeKey(i))
+        << "Stripe keys should be in non-descending order";
+  }
+
+  // Verify we can look up stripes by key
+  // Get the first stripe's key and verify it maps to stripe 0
+  auto firstLocation = index->lookup(index->minKey());
+  ASSERT_TRUE(firstLocation.has_value());
+  EXPECT_EQ(firstLocation->stripeIndex, 0);
+
+  // Get the last stripe's key and verify it maps to the last stripe
+  auto lastLocation = index->lookup(index->maxKey());
+  ASSERT_TRUE(lastLocation.has_value());
+  EXPECT_EQ(lastLocation->stripeIndex, index->numStripes() - 1);
+
+  // Verify stripeIdentifier with loadIndex returns index group
+  for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
+    auto stripeId = tablet.stripeIdentifier(i, /*loadIndex=*/true);
+    EXPECT_NE(stripeId.stripeGroup(), nullptr);
+    EXPECT_NE(stripeId.indexGroup(), nullptr)
+        << "Index group should be available for stripe " << i;
+  }
+
+  // Verify stripeIdentifier without loadIndex does not return index group
+  {
+    auto stripeId = tablet.stripeIdentifier(0, /*loadIndex=*/false);
+    EXPECT_NE(stripeId.stripeGroup(), nullptr);
+    EXPECT_EQ(stripeId.indexGroup(), nullptr);
+  }
+
+  // Read back all data and verify row-by-row match with written batches
+  verifyFileData(file, type, batches);
+
+  // Verify position index chunk row counts
+  verifyPositionIndex(tablet);
+
+  // Verify value index maps each key to correct row position
+  verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
+}
+
+TEST_P(VeloxWriterIndexTest, multipleIndexColumns) {
+  // Test index with multiple index columns (composite key).
+  auto type = velox::ROW({
+      {"key1", velox::BIGINT()},
+      {"key2", velox::INTEGER()},
+      {"data_col", velox::VARCHAR()},
+  });
+
+  nimble::IndexConfig indexConfig = createIndexConfig({"key1", "key2"});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, createWriterOptions(indexConfig));
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  // Create pre-sorted data with composite key (key1, key2)
+  // key1 increases slowly, key2 varies within same key1 value
+  int64_t key1Val = 0;
+  int32_t key2Val = 0;
+  for (int batch = 0; batch < 10; ++batch) {
+    std::vector<int64_t> key1Values;
+    std::vector<int32_t> key2Values;
+    std::vector<std::string> dataValues;
+
+    for (int i = 0; i < 100; ++i) {
+      key1Values.push_back(key1Val);
+      key2Values.push_back(key2Val);
+      dataValues.push_back(
+          "data_" + std::to_string(key1Val) + "_" + std::to_string(key2Val));
+
+      // Increment keys in sorted order
+      ++key2Val;
+      if (key2Val >= 5) {
+        key2Val = 0;
+        ++key1Val;
+      }
+    }
+
+    auto vector = vectorMaker.rowVector(
+        {"key1", "key2", "data_col"},
+        {
+            vectorMaker.flatVector<int64_t>(key1Values),
+            vectorMaker.flatVector<int32_t>(key2Values),
+            vectorMaker.flatVector<std::string>(dataValues),
+        });
+    writer.write(vector);
+  }
+  writer.close();
+
+  // Read and verify
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+
+  const auto& tablet = reader.tabletReader();
+  const auto* index = tablet.index();
+  ASSERT_NE(index, nullptr);
+
+  // Verify both columns are indexed
+  EXPECT_EQ(index->indexColumns().size(), 2);
+  EXPECT_EQ(index->indexColumns()[0], "key1");
+  EXPECT_EQ(index->indexColumns()[1], "key2");
+
+  // Verify stripe keys exist
+  EXPECT_FALSE(index->minKey().empty());
+  EXPECT_FALSE(index->maxKey().empty());
+
+  // Verify value index maps each key to correct row position
+  // Need to collect batches to verify
+  velox::test::VectorMaker vectorMaker2{leafPool_.get()};
+  std::vector<velox::RowVectorPtr> batches;
+  key1Val = 0;
+  key2Val = 0;
+  for (int batch = 0; batch < 10; ++batch) {
+    std::vector<int64_t> key1Values;
+    std::vector<int32_t> key2Values;
+    std::vector<std::string> dataValues;
+
+    for (int i = 0; i < 100; ++i) {
+      key1Values.push_back(key1Val);
+      key2Values.push_back(key2Val);
+      dataValues.push_back(
+          "data_" + std::to_string(key1Val) + "_" + std::to_string(key2Val));
+
+      ++key2Val;
+      if (key2Val >= 5) {
+        key2Val = 0;
+        ++key1Val;
+      }
+    }
+
+    batches.push_back(vectorMaker2.rowVector(
+        {"key1", "key2", "data_col"},
+        {
+            vectorMaker2.flatVector<int64_t>(key1Values),
+            vectorMaker2.flatVector<int32_t>(key2Values),
+            vectorMaker2.flatVector<std::string>(dataValues),
+        }));
+  }
+  // Verify position index chunk row counts
+  verifyPositionIndex(tablet);
+
+  verifyValueIndex(tablet, &readFile, type, batches, {"key1", "key2"});
+}
+
+TEST_F(VeloxWriterTest, indexEnforceKeyOrder) {
+  // Test both enforceKeyOrder=true (detects out-of-order keys) and
+  // enforceKeyOrder=false (allows out-of-order keys)
+  auto type = velox::ROW(
+      {{"key_col", velox::BIGINT()}, {"data_col", velox::INTEGER()}});
+
+  for (bool enforceKeyOrder : {true, false}) {
+    SCOPED_TRACE(fmt::format("enforceKeyOrder={}", enforceKeyOrder));
+
+    nimble::IndexConfig indexConfig{
+        .columns = {"key_col"},
+        .enforceKeyOrder = enforceKeyOrder,
+    };
+
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, {.indexConfig = indexConfig});
+
+    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+    // Write first batch with ascending keys
+    auto batch1 = vectorMaker.rowVector(
+        {"key_col", "data_col"},
+        {
+            vectorMaker.flatVector<int64_t>({100, 200, 300}),
+            vectorMaker.flatVector<int32_t>({1, 2, 3}),
+        });
+    writer.write(batch1);
+
+    // Write second batch with keys LESS than previous batch
+    auto batch2 = vectorMaker.rowVector(
+        {"key_col", "data_col"},
+        {
+            vectorMaker.flatVector<int64_t>({50, 60, 70}),
+            vectorMaker.flatVector<int32_t>({4, 5, 6}),
+        });
+
+    if (enforceKeyOrder) {
+      // Should fail when enforceKeyOrder is true
+      NIMBLE_ASSERT_USER_THROW(
+          writer.write(batch2), "Encoded keys must be in non-descending order");
+    } else {
+      // Should succeed when enforceKeyOrder is false
+      EXPECT_NO_THROW(writer.write(batch2));
+      writer.close();
+
+      // Verify file was written successfully
+      velox::InMemoryReadFile readFile(file);
+      nimble::VeloxReader reader(&readFile, *leafPool_);
+      EXPECT_TRUE(reader.tabletReader().hasOptionalSection(
+          std::string(nimble::kIndexSection)));
+    }
+  }
+}
+
+TEST_P(VeloxWriterIndexTest, withDuplicateKeys) {
+  // Test index with duplicate key values (non-unique keys).
+  // This is a valid scenario where multiple rows have the same key value.
+  auto type = defaultType();
+
+  nimble::IndexConfig indexConfig = createIndexConfig({"key_col"});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  constexpr int kNumBatches = 10;
+  constexpr int kBatchSize = 100;
+  constexpr uint32_t kSeed = 12345;
+  // Use flush-per-batch to create multiple stripes
+  nimble::VeloxWriter writer(
+      type,
+      std::move(writeFile),
+      *rootPool_,
+      createWriterOptions(indexConfig, []() {
+        return std::make_unique<nimble::LambdaFlushPolicy>(
+            [](auto) { return true; }, [](auto) { return false; });
+      }));
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  // Configure fuzzer to generate various encodings for non-key columns
+  velox::VectorFuzzer::Options fuzzerOpts;
+  fuzzerOpts.vectorSize = kBatchSize;
+  fuzzerOpts.nullRatio = 0.1;
+  fuzzerOpts.containerLength = 5;
+  fuzzerOpts.stringLength = 20;
+  fuzzerOpts.containerVariableLength = true;
+  velox::VectorFuzzer fuzzer(fuzzerOpts, leafPool_.get(), kSeed);
+
+  // Generate pre-sorted batches with duplicate keys.
+  // Each key value repeats 5 times before incrementing.
+  std::vector<velox::RowVectorPtr> batches;
+  int64_t keyVal = 0;
+  for (int batch = 0; batch < kNumBatches; ++batch) {
+    std::vector<int64_t> keyValues;
+
+    for (int i = 0; i < kBatchSize; ++i) {
+      keyValues.push_back(keyVal);
+      // Increment key every 5 rows to create duplicates
+      if (((batch * kBatchSize + i + 1) % 5) == 0) {
+        ++keyVal;
+      }
+    }
+
+    // Build children: key column + fuzzed non-key columns
+    std::vector<velox::VectorPtr> children;
+    children.push_back(vectorMaker.flatVector<int64_t>(keyValues));
+    for (size_t colIdx = 1; colIdx < type->size(); ++colIdx) {
+      children.push_back(fuzzer.fuzz(type->childAt(colIdx)));
+    }
+
+    auto batchVec = std::make_shared<velox::RowVector>(
+        leafPool_.get(),
+        type,
+        nullptr, // no nulls at top level
+        kBatchSize,
+        std::move(children));
+    batches.push_back(batchVec);
+    writer.write(batchVec);
+  }
+  writer.close();
+
+  // Read and verify
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+
+  const auto& tablet = reader.tabletReader();
+
+  // Verify index exists
+  const auto* index = tablet.index();
+  ASSERT_NE(index, nullptr);
+  EXPECT_EQ(index->indexColumns().size(), 1);
+  EXPECT_EQ(index->indexColumns()[0], "key_col");
+
+  // Verify stripe keys are monotonically increasing (even with duplicates)
+  for (uint32_t i = 1; i < index->numStripes(); ++i) {
+    EXPECT_LE(index->stripeKey(i - 1), index->stripeKey(i))
+        << "Stripe keys should be in non-descending order";
+  }
+
+  // Verify we can look up stripes by key
+  auto firstLocation = index->lookup(index->minKey());
+  ASSERT_TRUE(firstLocation.has_value());
+  EXPECT_EQ(firstLocation->stripeIndex, 0);
+
+  auto lastLocation = index->lookup(index->maxKey());
+  ASSERT_TRUE(lastLocation.has_value());
+  EXPECT_EQ(lastLocation->stripeIndex, index->numStripes() - 1);
+
+  // Read back all data and verify row-by-row match with written batches
+  verifyFileData(file, type, batches);
+
+  // Verify position index chunk row counts
+  verifyPositionIndex(tablet);
+
+  // Verify value index maps each key to correct row position
+  // With duplicate keys, lookup should find the first occurrence
+  verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
+}
+
+TEST_P(VeloxWriterIndexTest, withChunking) {
+  // Test index with chunking enabled
+  auto type = defaultType();
+
+  nimble::IndexConfig indexConfig = createIndexConfig({"key_col"});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  constexpr int kNumBatches = 50;
+  constexpr int kBatchSize = 500;
+  auto options = createWriterOptions(indexConfig, []() {
+    return std::make_unique<nimble::StripeRawSizeFlushPolicy>(128 << 10);
+  });
+  // Always enable chunking for this test
+  options.minStreamChunkRawSize = 1 << 10;
+  options.maxStreamChunkRawSize = 4 << 10;
+  options.enableChunking = true;
+
+  nimble::VeloxWriter writer(type, std::move(writeFile), *rootPool_, options);
+
+  // Generate pre-sorted batches with fuzzed non-key columns
+  auto batches = generateFuzzedSortedBatches(type, kNumBatches, kBatchSize);
+
+  for (const auto& batch : batches) {
+    writer.write(batch);
+  }
+  writer.close();
+
+  // Read and verify
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+
+  const auto& tablet = reader.tabletReader();
+
+  // Verify index exists and works
+  const auto* index = tablet.index();
+  ASSERT_NE(index, nullptr);
+  EXPECT_EQ(index->indexColumns().size(), 1);
+  EXPECT_EQ(index->indexColumns()[0], "key_col");
+
+  // Verify stripe keys are in order
+  for (uint32_t i = 1; i < index->numStripes(); ++i) {
+    EXPECT_LE(index->stripeKey(i - 1), index->stripeKey(i));
+  }
+
+  // Verify index group can be loaded for each stripe
+  for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
+    auto stripeId = tablet.stripeIdentifier(i, /*loadIndex=*/true);
+    ASSERT_NE(stripeId.indexGroup(), nullptr);
+  }
+
+  // Read back all data and verify row-by-row match with written batches
+  verifyFileData(file, type, batches);
+
+  // Verify position index chunk row counts
+  verifyPositionIndex(tablet);
+
+  // Verify value index maps each key to correct row position
+  verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
+}
+
+TEST_P(VeloxWriterIndexTest, withStreamDeduplication) {
+  // Test that streams with identical content are deduplicated by the tablet
+  // writer. We create batches where string_col1 and string_col2 reference the
+  // same underlying vector, which should result in identical stream content
+  // that gets deduplicated.
+  auto type = defaultType();
+
+  nimble::IndexConfig indexConfig = createIndexConfig({"key_col"});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  constexpr int kNumBatches = 5;
+  constexpr int kBatchSize = 100;
+  constexpr uint32_t kSeed = 42;
+
+  nimble::VeloxWriter writer(
+      type,
+      std::move(writeFile),
+      *rootPool_,
+      createWriterOptions(indexConfig, []() {
+        // Flush after every batch to create multiple stripes
+        return std::make_unique<nimble::LambdaFlushPolicy>(
+            [](auto) { return true; }, [](auto) { return false; });
+      }));
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  // Configure fuzzer for generating non-string columns
+  velox::VectorFuzzer::Options fuzzerOpts;
+  fuzzerOpts.vectorSize = kBatchSize;
+  fuzzerOpts.nullRatio = 0.1;
+  fuzzerOpts.containerLength = 5;
+  fuzzerOpts.stringLength = 20;
+  fuzzerOpts.containerVariableLength = true;
+  velox::VectorFuzzer fuzzer(fuzzerOpts, leafPool_.get(), kSeed);
+
+  // Generate pre-sorted batches where string_col1 and string_col2 share the
+  // same underlying vector (to trigger stream deduplication)
+  std::vector<velox::RowVectorPtr> batches;
+  int64_t keyVal = 0;
+  for (int batch = 0; batch < kNumBatches; ++batch) {
+    std::vector<int64_t> keyValues;
+    keyValues.reserve(kBatchSize);
+    for (int i = 0; i < kBatchSize; ++i) {
+      keyValues.push_back(keyVal++);
+    }
+
+    // Create the shared string vector that will be used for both string columns
+    auto sharedStringVector = fuzzer.fuzz(velox::VARCHAR());
+
+    // Build children: key column, fuzzed scalar columns, shared string columns,
+    // then fuzzed complex columns
+    std::vector<velox::VectorPtr> children;
+    // Column 0: key_col
+    children.push_back(vectorMaker.flatVector<int64_t>(keyValues));
+    // Column 1: int_col
+    children.push_back(fuzzer.fuzz(type->childAt(1)));
+    // Column 2: double_col
+    children.push_back(fuzzer.fuzz(type->childAt(2)));
+    // Column 3: string_col1 - use the shared string vector
+    children.push_back(sharedStringVector);
+    // Column 4: string_col2 - use the SAME shared string vector
+    children.push_back(sharedStringVector);
+    // Column 5: bool_col
+    children.push_back(fuzzer.fuzz(type->childAt(5)));
+    // Columns 6-8: complex types
+    for (size_t colIdx = 6; colIdx < type->size(); ++colIdx) {
+      children.push_back(fuzzer.fuzz(type->childAt(colIdx)));
+    }
+
+    auto batchVec = std::make_shared<velox::RowVector>(
+        leafPool_.get(),
+        type,
+        nullptr, // no nulls at top level
+        kBatchSize,
+        std::move(children));
+    batches.push_back(batchVec);
+    writer.write(batchVec);
+  }
+  writer.close();
+
+  // Read and verify
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+
+  const auto& tablet = reader.tabletReader();
+
+  // Verify index exists
+  const auto* index = tablet.index();
+  ASSERT_NE(index, nullptr);
+  EXPECT_EQ(index->indexColumns().size(), 1);
+  EXPECT_EQ(index->indexColumns()[0], "key_col");
+
+  // Verify stripe keys are monotonically increasing
+  for (uint32_t i = 1; i < index->numStripes(); ++i) {
+    EXPECT_LE(index->stripeKey(i - 1), index->stripeKey(i))
+        << "Stripe keys should be in non-descending order";
+  }
+
+  // Verify we can look up stripes by key
+  auto firstLocation = index->lookup(index->minKey());
+  ASSERT_TRUE(firstLocation.has_value());
+  EXPECT_EQ(firstLocation->stripeIndex, 0);
+
+  auto lastLocation = index->lookup(index->maxKey());
+  ASSERT_TRUE(lastLocation.has_value());
+  EXPECT_EQ(lastLocation->stripeIndex, index->numStripes() - 1);
+
+  // Read back all data and verify row-by-row match with written batches
+  // Note: When reading back, string_col1 and string_col2 will have identical
+  // content since they were written from the same source vector
+  verifyFileData(file, type, batches);
+
+  // Verify position index chunk row counts
+  verifyPositionIndex(tablet);
+
+  // Verify value index maps each key to correct row position
+  verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    VeloxWriterIndexTestSuite,
+    VeloxWriterIndexTest,
+    ::testing::Values(false, true),
+    [](const ::testing::TestParamInfo<bool>& info) {
+      return info.param ? "WithKeyChunking" : "NoKeyChunking";
+    });
+
 } // namespace facebook

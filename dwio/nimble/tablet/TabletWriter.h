@@ -21,8 +21,8 @@
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
+#include "dwio/nimble/tablet/TabletIndexWriter.h"
 #include "velox/common/file/File.h"
-#include "velox/common/memory/Memory.h"
 #include "velox/vector/TypeAliases.h"
 
 namespace facebook::nimble {
@@ -63,6 +63,8 @@ struct KeyStream {
   std::vector<KeyChunk> chunks;
 };
 
+struct TabletIndexConfig;
+
 class LayoutPlanner {
  public:
   virtual std::vector<Stream> getLayout(std::vector<Stream>&& streams) = 0;
@@ -82,6 +84,8 @@ class TabletWriter {
     uint32_t metadataCompressionThreshold{kMetadataCompressionThreshold};
     ChecksumType checksumType{ChecksumType::XXH3_64};
     bool streamDeduplicationEnabled{true};
+    /// Configuration for cluster index.
+    std::optional<TabletIndexConfig> indexConfig;
   };
 
   static std::unique_ptr<TabletWriter> create(
@@ -105,7 +109,10 @@ class TabletWriter {
   // level or other params.
   //
   // A stream's type must be the same across all stripes.
-  void writeStripe(uint32_t rowCount, std::vector<Stream> streams);
+  void writeStripe(
+      uint32_t rowCount,
+      std::vector<Stream> streams,
+      std::optional<KeyStream>&& keyStream = std::nullopt);
 
   void writeOptionalSection(std::string name, std::string_view content);
 
@@ -114,15 +121,15 @@ class TabletWriter {
     return file_->size();
   }
 
-  uint32_t testingStripeGroupCount() const {
-    return stripeGroups_.size();
-  }
-
  private:
   TabletWriter(
       velox::WriteFile* file,
       velox::memory::MemoryPool& pool,
       Options options);
+
+  inline bool hasIndex() const {
+    return indexWriter_ != nullptr;
+  }
 
   // Write metadata entry to file
   CompressionType writeMetadata(std::string_view metadata);
@@ -148,12 +155,34 @@ class TabletWriter {
 
   void writeWithChecksum(std::string_view data);
   void writeWithChecksum(const folly::IOBuf& buf);
-  void writeStreamWithChecksum(const Stream& stream);
+
+  template <typename T>
+  void writeStreamWithChecksum(const T& stream);
+
+  // Indexing related methods
+  // Starts index writing for a new stripe.
+  void startStripeIndexWrite(
+      size_t streamCount,
+      const std::optional<KeyStream>& keyStream);
+
+  // Writes key stream to file via index writer if indexing is enabled.
+  void writeKeyStream(const std::optional<KeyStream>& keyStream);
+
+  // Adds chunk-level index data for a stream.
+  void addStreamIndex(uint32_t streamIndex, const std::vector<Chunk>& chunks);
+
+  // Writes the index group for a completed stripe group.
+  void writeIndexGroup(size_t streamCount, size_t stripeCount);
+
+  // Writes the root index. This is the last call to indexWriter_.
+  void writeRootIndex();
 
   velox::WriteFile* const file_;
   velox::memory::MemoryPool* const pool_;
   const Options options_;
   const std::unique_ptr<Checksum> checksum_;
+  // Index writer for managing cluster index (nullable if indexing disabled).
+  const std::unique_ptr<TabletIndexWriter> indexWriter_;
 
   // Number of rows in each stripe.
   std::vector<uint32_t> stripeRowCounts_;
@@ -162,7 +191,7 @@ class TabletWriter {
   // Sizes of the stripes
   std::vector<uint32_t> stripeSizes_;
 
-  // Stripe group indices
+  // For each stripe, which stripe group it belongs to.
   std::vector<uint32_t> stripeGroupIndices_;
   // Accumulated offsets within each stripe relative to start of the stripe,
   // with one value for each seen stream in the current OR PREVIOUS stripes.
@@ -171,7 +200,7 @@ class TabletWriter {
   // streamOffsets_.
   std::vector<std::vector<uint32_t>> streamSizes_;
 
-  // Current stripe group index
+  // Current stripe group index.
   uint32_t stripeGroupIndex_{0};
   // Stripe groups
   std::vector<MetadataSection> stripeGroups_;

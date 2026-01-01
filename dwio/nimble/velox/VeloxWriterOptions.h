@@ -18,6 +18,7 @@
 #include "dwio/nimble/common/MetricsLogger.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/FlushPolicy.h"
@@ -40,6 +41,10 @@ struct VeloxWriterOptions {
   // Property bag for storing user metadata in the file.
   std::unordered_map<std::string, std::string> metadata =
       detail::defaultMetadata();
+
+  /// If set, the cluster index on the specified columns will be built during
+  /// writing. The index stores the per-chunk min and max key for each stripe.
+  std::optional<IndexConfig> indexConfig;
 
   // Columns that should be encoded as flat maps
   folly::F14FastSet<std::string> flatMapColumns;
