@@ -15,8 +15,7 @@
  */
 #include "dwio/nimble/velox/IndexWriter.h"
 
-#include <limits>
-
+#include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 #include "dwio/nimble/velox/StreamChunker.h"
@@ -24,7 +23,7 @@
 namespace facebook::nimble::index {
 
 namespace {
-// The key stream uses a placeholder offset value (max offset_size) that does
+// The key stream uses a placeholder offset value (kKeyStreamId) that does
 // not correspond to any actual stream position. This offset is not used for
 // data retrieval but is required to conform to Nimble's stream typing
 // framework, which expects all streams to have an associated offset.
@@ -32,7 +31,7 @@ namespace {
 // ContentStreamData which stores a reference to the descriptor.
 const StreamDescriptorBuilder& keyStreamDescriptor() {
   static const StreamDescriptorBuilder descriptor{
-      std::numeric_limits<offset_size>::max(), ScalarKind::Binary};
+      kKeyStreamId, ScalarKind::Binary};
   return descriptor;
 }
 

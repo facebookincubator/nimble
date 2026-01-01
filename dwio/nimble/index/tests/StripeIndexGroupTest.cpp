@@ -389,6 +389,60 @@ TEST_F(StripeIndexGroupTest, createStreamIndex) {
   ASSERT_NE(streamIndex, nullptr);
 }
 
+TEST_F(StripeIndexGroupTest, streamIndexStreamId) {
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "aaa";
+  std::vector<Stripe> stripes = {
+      {.streams =
+           {{.numChunks = 1, .chunkRows = {100}, .chunkOffsets = {0}},
+            {.numChunks = 1, .chunkRows = {150}, .chunkOffsets = {0}},
+            {.numChunks = 1, .chunkRows = {200}, .chunkOffsets = {0}}},
+       .keyStream =
+           {.streamOffset = 0,
+            .streamSize = 100,
+            .stream = {.numChunks = 1, .chunkRows = {200}, .chunkOffsets = {0}},
+            .chunkKeys = {"bbb"}}},
+      {.streams =
+           {{.numChunks = 1, .chunkRows = {120}, .chunkOffsets = {0}},
+            {.numChunks = 1, .chunkRows = {180}, .chunkOffsets = {0}},
+            {.numChunks = 1, .chunkRows = {240}, .chunkOffsets = {0}}},
+       .keyStream = {
+           .streamOffset = 100,
+           .streamSize = 100,
+           .stream = {.numChunks = 1, .chunkRows = {240}, .chunkOffsets = {0}},
+           .chunkKeys = {"ccc"}}}};
+  std::vector<int> stripeGroups = {2};
+
+  auto indexBuffers =
+      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto stripeIndexGroup = createStripeIndexGroup(indexBuffers, 0);
+  ASSERT_NE(stripeIndexGroup, nullptr);
+
+  struct {
+    uint32_t stripeIndex;
+    uint32_t streamId;
+  } testCases[] = {
+      {0, 0},
+      {0, 1},
+      {0, 2},
+      {1, 0},
+      {1, 1},
+      {1, 2},
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(
+        fmt::format(
+            "stripeIndex {} streamId {}",
+            testCase.stripeIndex,
+            testCase.streamId));
+    auto streamIndex = stripeIndexGroup->createStreamIndex(
+        testCase.stripeIndex, testCase.streamId);
+    ASSERT_NE(streamIndex, nullptr);
+    EXPECT_EQ(streamIndex->streamId(), testCase.streamId);
+  }
+}
+
 TEST_F(StripeIndexGroupTest, streamIndexLookupChunk) {
   std::vector<std::string> indexColumns = {"col1"};
   std::string minKey = "aaa";

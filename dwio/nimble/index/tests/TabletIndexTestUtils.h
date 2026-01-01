@@ -120,6 +120,10 @@ std::vector<Chunk> createChunks(
     Buffer& buffer,
     const std::vector<ChunkSpec>& chunkSpecs);
 
+/// Creates a Stream with the specified test parameters.
+/// The buffer is used to store the chunk content.
+Stream createStream(Buffer& buffer, const StreamSpec& spec);
+
 /// Test helper class for StripeIndexGroup
 /// to private members for testing purposes. This is a friend class of
 /// StripeIndexGroup.

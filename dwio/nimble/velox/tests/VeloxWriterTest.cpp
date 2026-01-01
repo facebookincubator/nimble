@@ -65,327 +65,6 @@ class VeloxWriterTest : public ::testing::Test {
     leafPool_ = rootPool_->addLeafChild("default_leaf");
   }
 
-  // Verifies that file data matches the expected batches row-by-row.
-  void verifyFileData(
-      const std::string& file,
-      const velox::TypePtr& type,
-      const std::vector<velox::RowVectorPtr>& expectedBatches,
-      uint32_t readBatchSize = 100) {
-    velox::InMemoryReadFile readFile(file);
-    nimble::VeloxReader reader(&readFile, *leafPool_);
-
-    auto expected = velox::BaseVector::create(type, 0, leafPool_.get());
-    for (const auto& batch : expectedBatches) {
-      expected->append(batch.get());
-    }
-
-    velox::VectorPtr result;
-    uint64_t rowOffset = 0;
-    while (reader.next(readBatchSize, result)) {
-      for (velox::vector_size_t i = 0; i < result->size(); ++i) {
-        ASSERT_TRUE(result->equalValueAt(expected.get(), i, rowOffset + i))
-            << "Mismatch at row " << (rowOffset + i);
-      }
-      rowOffset += result->size();
-    }
-    EXPECT_EQ(rowOffset, expected->size()) << "All rows should be verified";
-  }
-
-  // Verifies that the position index correctly stores chunk row counts.
-  // For each stripe and stream:
-  // 1. Gets the expected chunk row counts from the position index
-  // 2. Verifies using two methods:
-  //    a. Sequential iteration using InMemoryChunkedStream
-  //    b. Direct chunk access using offset/size from index with
-  //    SingleChunkDecoder
-  void verifyPositionIndex(const nimble::TabletReader& tablet) {
-    for (uint32_t stripeIdx = 0; stripeIdx < tablet.stripeCount();
-         ++stripeIdx) {
-      const auto stripeId =
-          tablet.stripeIdentifier(stripeIdx, /*loadIndex=*/true);
-      ASSERT_NE(stripeId.indexGroup(), nullptr)
-          << "Index group should be available for stripe " << stripeIdx;
-
-      nimble::index::test::StripeIndexGroupTestHelper helper(
-          stripeId.indexGroup().get());
-
-      const uint32_t stripeOffsetInGroup = stripeIdx - helper.firstStripe();
-
-      // Load all streams for this stripe
-      const uint32_t streamCount = tablet.streamCount(stripeId);
-      std::vector<uint32_t> streamIds(streamCount);
-      std::iota(streamIds.begin(), streamIds.end(), 0);
-      auto streamLoaders = tablet.load(stripeId, streamIds);
-
-      for (uint32_t streamId = 0; streamId < streamLoaders.size(); ++streamId) {
-        if (!streamLoaders[streamId]) {
-          continue;
-        }
-
-        auto streamStats = helper.streamStats(streamId);
-
-        // Get chunk count for this stripe from accumulated values
-        const uint32_t prevChunkCount = (stripeOffsetInGroup == 0)
-            ? 0
-            : streamStats.chunkCounts[stripeOffsetInGroup - 1];
-        const uint32_t currChunkCount =
-            streamStats.chunkCounts[stripeOffsetInGroup];
-        const uint32_t numChunksInStripe = currChunkCount - prevChunkCount;
-
-        // Extract per-chunk row counts from accumulated row counts
-        std::vector<uint32_t> expectedChunkRowCounts;
-        expectedChunkRowCounts.reserve(numChunksInStripe);
-        uint32_t prevRowCount = 0;
-        for (uint32_t i = 0; i < numChunksInStripe; ++i) {
-          const uint32_t accumulatedRows =
-              streamStats.chunkRows[prevChunkCount + i];
-          expectedChunkRowCounts.push_back(accumulatedRows - prevRowCount);
-          prevRowCount = accumulatedRows;
-        }
-
-        // Get the raw stream data
-        const std::string_view rawStreamData =
-            streamLoaders[streamId]->getStream();
-
-        // Method 1: Verify using sequential InMemoryChunkedStream iteration
-        {
-          nimble::InMemoryChunkedStream chunkedStream{
-              *leafPool_,
-              std::make_unique<nimble::index::test::TestStreamLoader>(
-                  rawStreamData)};
-          uint32_t chunkIndex = 0;
-          while (chunkedStream.hasNext()) {
-            const auto chunkData = chunkedStream.nextChunk();
-            auto encoding =
-                nimble::EncodingFactory::decode(*leafPool_, chunkData);
-            EXPECT_EQ(encoding->rowCount(), expectedChunkRowCounts[chunkIndex])
-                << "Stripe " << stripeIdx << " stream " << streamId << " chunk "
-                << chunkIndex << " row count mismatch (sequential)";
-            ++chunkIndex;
-          }
-
-          EXPECT_EQ(chunkIndex, numChunksInStripe)
-              << "Stripe " << stripeIdx << " stream " << streamId
-              << " chunk count mismatch";
-        }
-
-        // Method 2: Verify using chunk offset/size from index with
-        // SingleChunkDecoder
-        for (uint32_t i = 0; i < numChunksInStripe; ++i) {
-          const uint32_t chunkOffset =
-              streamStats.chunkOffsets[prevChunkCount + i];
-
-          // Calculate chunk size from consecutive offsets or to end of stream
-          uint32_t chunkSize;
-          if (i + 1 < numChunksInStripe) {
-            chunkSize =
-                streamStats.chunkOffsets[prevChunkCount + i + 1] - chunkOffset;
-          } else {
-            chunkSize = rawStreamData.size() - chunkOffset;
-          }
-
-          // Extract chunk data using offset and size from index
-          std::string_view chunkStreamData(
-              rawStreamData.data() + chunkOffset, chunkSize);
-
-          // Decode using SingleChunkDecoder (same pattern as verifyValueIndex)
-          nimble::index::test::SingleChunkDecoder chunkDecoder(
-              *leafPool_, chunkStreamData);
-          auto encodingData = chunkDecoder.decode();
-          auto encoding =
-              nimble::EncodingFactory::decode(*leafPool_, encodingData);
-
-          EXPECT_EQ(encoding->rowCount(), expectedChunkRowCounts[i])
-              << "Stripe " << stripeIdx << " stream " << streamId << " chunk "
-              << i << " row count mismatch (using chunk offset from index)";
-        }
-      }
-    }
-  }
-
-  // Verifies that the value index correctly maps each key to its row position.
-  // For each row in the input batches:
-  // 1. Encodes the key using KeyEncoder
-  // 2. Looks up the stripe via TabletIndex
-  // 3. Gets chunk location within stripe via StripeIndexGroup::lookupChunk
-  // 4. Loads the key stream chunk and decodes it
-  // 5. Uses seekAtOrAfter to find the exact row within the chunk
-  // 6. For duplicate keys, verifies the found row id matches the earliest row
-  //    with the same key value
-  void verifyValueIndex(
-      const nimble::TabletReader& tablet,
-      velox::ReadFile* file,
-      const velox::RowTypePtr& type,
-      const std::vector<velox::RowVectorPtr>& batches,
-      const std::vector<std::string>& indexColumns) {
-    const auto* index = tablet.index();
-    ASSERT_NE(index, nullptr) << "Index must exist";
-
-    // Pre-compute stripe start row offsets
-    std::vector<uint64_t> stripeStartRows;
-    stripeStartRows.reserve(tablet.stripeCount());
-    uint64_t startRow = 0;
-    for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
-      stripeStartRows.push_back(startRow);
-      startRow += tablet.stripeRowCount(i);
-    }
-
-    // Create sort orders for KeyEncoder (all ascending, nulls first)
-    std::vector<velox::core::SortOrder> sortOrders(
-        indexColumns.size(),
-        velox::core::SortOrder(true, true)); // ascending, nulls first
-
-    // Create KeyEncoder for encoding row keys
-    auto keyEncoder = velox::serializer::KeyEncoder::create(
-        indexColumns, type, sortOrders, leafPool_.get());
-
-    // Pre-encode all keys and build a map from encoded key to earliest row id.
-    // This handles duplicate keys where seekAtOrAfter returns the first
-    // occurrence.
-    std::map<std::string, uint64_t> keyToEarliestRowId;
-    std::vector<std::string> allEncodedKeys;
-    {
-      uint64_t rowId = 0;
-      for (const auto& batch : batches) {
-        velox::HashStringAllocator allocator(leafPool_.get());
-        std::vector<std::string_view> encodedKeys;
-        keyEncoder->encode(batch, encodedKeys, [&allocator](size_t size) {
-          return allocator.allocate(size)->begin();
-        });
-
-        for (velox::vector_size_t i = 0; i < batch->size(); ++i) {
-          std::string keyStr(encodedKeys[i]);
-          allEncodedKeys.push_back(keyStr);
-          // Only store the first occurrence (earliest row id) for each key
-          if (keyToEarliestRowId.find(keyStr) == keyToEarliestRowId.end()) {
-            keyToEarliestRowId[keyStr] = rowId;
-          }
-          ++rowId;
-        }
-      }
-    }
-
-    // Cache for loaded and decoded key stream chunks
-    // Key: chunk file offset (unique across all stripes), Value: decoded
-    // encoding
-    std::unordered_map<uint64_t, std::unique_ptr<nimble::Encoding>>
-        keyStreamCache;
-    // Buffer for loaded key stream data (must outlive the encoding)
-    std::unordered_map<uint64_t, std::string> keyStreamBufferCache;
-
-    // Verify each row's index lookup
-    uint64_t currentRowId = 0;
-    for (const auto& batch : batches) {
-      // Verify each row
-      for (velox::vector_size_t i = 0; i < batch->size(); ++i) {
-        const std::string& encodedKey = allEncodedKeys[currentRowId];
-        std::string_view encodedKeyView(encodedKey);
-
-        // Look up the stripe for this key
-        auto stripeLocation = index->lookup(encodedKeyView);
-        ASSERT_TRUE(stripeLocation.has_value())
-            << "Key at row " << currentRowId << " should be found in index";
-
-        uint32_t stripeIndex = stripeLocation->stripeIndex;
-        ASSERT_LT(stripeIndex, tablet.stripeCount())
-            << "Stripe index out of range";
-
-        // Get stripe identifier with index group loaded
-        const auto stripeId =
-            tablet.stripeIdentifier(stripeIndex, /*loadIndex=*/true);
-        ASSERT_NE(stripeId.indexGroup(), nullptr)
-            << "Index group should be available for stripe " << stripeIndex;
-
-        // Look up chunk by encoded key to get chunk location within stripe
-        const auto chunkLocation =
-            stripeId.indexGroup()->lookupChunk(stripeIndex, encodedKeyView);
-        ASSERT_TRUE(chunkLocation.has_value())
-            << "Key at row " << currentRowId << " should be found in stripe "
-            << stripeIndex;
-
-        // Get key stream region for this stripe
-        auto keyStreamRegion =
-            stripeId.indexGroup()->keyStreamRegion(stripeIndex);
-        ASSERT_TRUE(keyStreamRegion.has_value())
-            << "Key stream region should exist for stripe " << stripeIndex;
-
-        // Cache key: chunk file offset (unique across all stripes)
-        const uint64_t chunkFileOffset =
-            keyStreamRegion->offset + chunkLocation->streamOffset;
-
-        // Load and decode key chunk if not cached
-        if (keyStreamCache.find(chunkFileOffset) == keyStreamCache.end()) {
-          // Get chunk length from the index. The index stores chunk offsets
-          // in key_stream_chunk_offsets, so we can compute the length by
-          // looking at the next chunk offset (or stream end for the last
-          // chunk). Use helper to get chunk length from StripeIndexGroup
-          // internals.
-          nimble::index::test::StripeIndexGroupTestHelper helper(
-              stripeId.indexGroup().get());
-          const uint32_t chunkLength = helper.keyChunkLength(
-              stripeIndex,
-              chunkLocation->streamOffset,
-              keyStreamRegion->length);
-
-          // Load the key chunk data from file
-          velox::common::Region region{
-              chunkFileOffset, chunkLength, "keyChunk"};
-          folly::IOBuf iobuf;
-          file->preadv({&region, 1}, {&iobuf, 1});
-
-          // Copy data to a persistent buffer
-          std::string& buffer = keyStreamBufferCache[chunkFileOffset];
-          buffer.resize(iobuf.computeChainDataLength());
-          size_t offset = 0;
-          for (auto range : iobuf) {
-            std::memcpy(buffer.data() + offset, range.data(), range.size());
-            offset += range.size();
-          }
-
-          // Decode the single chunk to get the raw encoding data
-          nimble::index::test::SingleChunkDecoder chunkDecoder(
-              *leafPool_, buffer);
-          auto encodingData = chunkDecoder.decode();
-
-          // Decode the key encoding from the chunk data
-          keyStreamCache[chunkFileOffset] =
-              nimble::EncodingFactory::decode(*leafPool_, encodingData);
-        }
-
-        auto* keyEncoding = keyStreamCache[chunkFileOffset].get();
-        ASSERT_NE(keyEncoding, nullptr);
-
-        // Reset encoding and seek to find the row within the chunk
-        keyEncoding->reset();
-
-        // Use seekAtOrAfter to find the exact row position within the remaining
-        // rows
-        auto seekResult = keyEncoding->seekAtOrAfter(&encodedKeyView);
-        ASSERT_TRUE(seekResult.has_value())
-            << "seekAtOrAfter should find key at row " << currentRowId;
-
-        // Calculate the actual file row id
-        // seekAtOrAfter returns the offset from current position where the key
-        // was found
-        uint64_t fileRowId = stripeStartRows[stripeIndex] +
-            chunkLocation->rowOffset + seekResult.value();
-
-        // For duplicate keys, seekAtOrAfter returns the first occurrence.
-        // Verify that the found row id matches the earliest row with the same
-        // key.
-        uint64_t expectedFileRowId = keyToEarliestRowId.at(encodedKey);
-        EXPECT_EQ(fileRowId, expectedFileRowId)
-            << "Row " << currentRowId << " key lookup mismatch: "
-            << "expected earliest row " << expectedFileRowId << ", got "
-            << fileRowId << " (stripe " << stripeIndex << ", chunk row offset "
-            << chunkLocation->rowOffset << ", seek offset "
-            << seekResult.value() << ")";
-
-        ++currentRowId;
-      }
-    }
-  }
-
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
 };
@@ -3180,6 +2859,327 @@ class VeloxWriterIndexTest : public VeloxWriterTest,
     options.enableStreamDeduplication = true;
     return options;
   }
+
+  // Verifies that file data matches the expected batches row-by-row.
+  void verifyFileData(
+      const std::string& file,
+      const velox::TypePtr& type,
+      const std::vector<velox::RowVectorPtr>& expectedBatches,
+      uint32_t readBatchSize = 100) {
+    velox::InMemoryReadFile readFile(file);
+    nimble::VeloxReader reader(&readFile, *leafPool_);
+
+    auto expected = velox::BaseVector::create(type, 0, leafPool_.get());
+    for (const auto& batch : expectedBatches) {
+      expected->append(batch.get());
+    }
+
+    velox::VectorPtr result;
+    uint64_t rowOffset = 0;
+    while (reader.next(readBatchSize, result)) {
+      for (velox::vector_size_t i = 0; i < result->size(); ++i) {
+        ASSERT_TRUE(result->equalValueAt(expected.get(), i, rowOffset + i))
+            << "Mismatch at row " << (rowOffset + i);
+      }
+      rowOffset += result->size();
+    }
+    EXPECT_EQ(rowOffset, expected->size()) << "All rows should be verified";
+  }
+
+  // Verifies that the position index correctly stores chunk row counts.
+  // For each stripe and stream:
+  // 1. Gets the expected chunk row counts from the position index
+  // 2. Verifies using two methods:
+  //    a. Sequential iteration using InMemoryChunkedStream
+  //    b. Direct chunk access using offset/size from index with
+  //    SingleChunkDecoder
+  void verifyPositionIndex(const nimble::TabletReader& tablet) {
+    for (uint32_t stripeIdx = 0; stripeIdx < tablet.stripeCount();
+         ++stripeIdx) {
+      const auto stripeId =
+          tablet.stripeIdentifier(stripeIdx, /*loadIndex=*/true);
+      ASSERT_NE(stripeId.indexGroup(), nullptr)
+          << "Index group should be available for stripe " << stripeIdx;
+
+      nimble::index::test::StripeIndexGroupTestHelper helper(
+          stripeId.indexGroup().get());
+
+      const uint32_t stripeOffsetInGroup = stripeIdx - helper.firstStripe();
+
+      // Load all streams for this stripe
+      const uint32_t streamCount = tablet.streamCount(stripeId);
+      std::vector<uint32_t> streamIds(streamCount);
+      std::iota(streamIds.begin(), streamIds.end(), 0);
+      auto streamLoaders = tablet.load(stripeId, streamIds);
+
+      for (uint32_t streamId = 0; streamId < streamLoaders.size(); ++streamId) {
+        if (!streamLoaders[streamId]) {
+          continue;
+        }
+
+        auto streamStats = helper.streamStats(streamId);
+
+        // Get chunk count for this stripe from accumulated values
+        const uint32_t prevChunkCount = (stripeOffsetInGroup == 0)
+            ? 0
+            : streamStats.chunkCounts[stripeOffsetInGroup - 1];
+        const uint32_t currChunkCount =
+            streamStats.chunkCounts[stripeOffsetInGroup];
+        const uint32_t numChunksInStripe = currChunkCount - prevChunkCount;
+
+        // Extract per-chunk row counts from accumulated row counts
+        std::vector<uint32_t> expectedChunkRowCounts;
+        expectedChunkRowCounts.reserve(numChunksInStripe);
+        uint32_t prevRowCount = 0;
+        for (uint32_t i = 0; i < numChunksInStripe; ++i) {
+          const uint32_t accumulatedRows =
+              streamStats.chunkRows[prevChunkCount + i];
+          expectedChunkRowCounts.push_back(accumulatedRows - prevRowCount);
+          prevRowCount = accumulatedRows;
+        }
+
+        // Get the raw stream data
+        const std::string_view rawStreamData =
+            streamLoaders[streamId]->getStream();
+
+        // Method 1: Verify using sequential InMemoryChunkedStream iteration
+        {
+          nimble::InMemoryChunkedStream chunkedStream{
+              *leafPool_,
+              std::make_unique<nimble::index::test::TestStreamLoader>(
+                  rawStreamData)};
+          uint32_t chunkIndex = 0;
+          while (chunkedStream.hasNext()) {
+            const auto chunkData = chunkedStream.nextChunk();
+            auto encoding =
+                nimble::EncodingFactory::decode(*leafPool_, chunkData);
+            EXPECT_EQ(encoding->rowCount(), expectedChunkRowCounts[chunkIndex])
+                << "Stripe " << stripeIdx << " stream " << streamId << " chunk "
+                << chunkIndex << " row count mismatch (sequential)";
+            ++chunkIndex;
+          }
+
+          EXPECT_EQ(chunkIndex, numChunksInStripe)
+              << "Stripe " << stripeIdx << " stream " << streamId
+              << " chunk count mismatch";
+        }
+
+        // Method 2: Verify using chunk offset/size from index with
+        // SingleChunkDecoder
+        for (uint32_t i = 0; i < numChunksInStripe; ++i) {
+          const uint32_t chunkOffset =
+              streamStats.chunkOffsets[prevChunkCount + i];
+
+          // Calculate chunk size from consecutive offsets or to end of stream
+          uint32_t chunkSize;
+          if (i + 1 < numChunksInStripe) {
+            chunkSize =
+                streamStats.chunkOffsets[prevChunkCount + i + 1] - chunkOffset;
+          } else {
+            chunkSize = rawStreamData.size() - chunkOffset;
+          }
+
+          // Extract chunk data using offset and size from index
+          std::string_view chunkStreamData(
+              rawStreamData.data() + chunkOffset, chunkSize);
+
+          // Decode using SingleChunkDecoder (same pattern as verifyValueIndex)
+          nimble::index::test::SingleChunkDecoder chunkDecoder(
+              *leafPool_, chunkStreamData);
+          auto encodingData = chunkDecoder.decode();
+          auto encoding =
+              nimble::EncodingFactory::decode(*leafPool_, encodingData);
+
+          EXPECT_EQ(encoding->rowCount(), expectedChunkRowCounts[i])
+              << "Stripe " << stripeIdx << " stream " << streamId << " chunk "
+              << i << " row count mismatch (using chunk offset from index)";
+        }
+      }
+    }
+  }
+
+  // Verifies that the value index correctly maps each key to its row position.
+  // For each row in the input batches:
+  // 1. Encodes the key using KeyEncoder
+  // 2. Looks up the stripe via TabletIndex
+  // 3. Gets chunk location within stripe via StripeIndexGroup::lookupChunk
+  // 4. Loads the key stream chunk and decodes it
+  // 5. Uses seekAtOrAfter to find the exact row within the chunk
+  // 6. For duplicate keys, verifies the found row id matches the earliest row
+  //    with the same key value
+  void verifyValueIndex(
+      const nimble::TabletReader& tablet,
+      velox::ReadFile* file,
+      const velox::RowTypePtr& type,
+      const std::vector<velox::RowVectorPtr>& batches,
+      const std::vector<std::string>& indexColumns) {
+    const auto* index = tablet.index();
+    ASSERT_NE(index, nullptr) << "Index must exist";
+
+    // Pre-compute stripe start row offsets
+    std::vector<uint64_t> stripeStartRows;
+    stripeStartRows.reserve(tablet.stripeCount());
+    uint64_t startRow = 0;
+    for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
+      stripeStartRows.push_back(startRow);
+      startRow += tablet.stripeRowCount(i);
+    }
+
+    // Create sort orders for KeyEncoder (all ascending, nulls first)
+    std::vector<velox::core::SortOrder> sortOrders(
+        indexColumns.size(),
+        velox::core::SortOrder(true, true)); // ascending, nulls first
+
+    // Create KeyEncoder for encoding row keys
+    auto keyEncoder = velox::serializer::KeyEncoder::create(
+        indexColumns, type, sortOrders, leafPool_.get());
+
+    // Pre-encode all keys and build a map from encoded key to earliest row id.
+    // This handles duplicate keys where seekAtOrAfter returns the first
+    // occurrence.
+    std::map<std::string, uint64_t> keyToEarliestRowId;
+    std::vector<std::string> allEncodedKeys;
+    {
+      uint64_t rowId = 0;
+      for (const auto& batch : batches) {
+        velox::HashStringAllocator allocator(leafPool_.get());
+        std::vector<std::string_view> encodedKeys;
+        keyEncoder->encode(batch, encodedKeys, [&allocator](size_t size) {
+          return allocator.allocate(size)->begin();
+        });
+
+        for (velox::vector_size_t i = 0; i < batch->size(); ++i) {
+          std::string keyStr(encodedKeys[i]);
+          allEncodedKeys.push_back(keyStr);
+          // Only store the first occurrence (earliest row id) for each key
+          if (keyToEarliestRowId.find(keyStr) == keyToEarliestRowId.end()) {
+            keyToEarliestRowId[keyStr] = rowId;
+          }
+          ++rowId;
+        }
+      }
+    }
+
+    // Cache for loaded and decoded key stream chunks
+    // Key: chunk file offset (unique across all stripes), Value: decoded
+    // encoding
+    std::unordered_map<uint64_t, std::unique_ptr<nimble::Encoding>>
+        keyStreamCache;
+    // Buffer for loaded key stream data (must outlive the encoding)
+    std::unordered_map<uint64_t, std::string> keyStreamBufferCache;
+
+    // Verify each row's index lookup
+    uint64_t currentRowId = 0;
+    for (const auto& batch : batches) {
+      // Verify each row
+      for (velox::vector_size_t i = 0; i < batch->size(); ++i) {
+        const std::string& encodedKey = allEncodedKeys[currentRowId];
+        std::string_view encodedKeyView(encodedKey);
+
+        // Look up the stripe for this key
+        auto stripeLocation = index->lookup(encodedKeyView);
+        ASSERT_TRUE(stripeLocation.has_value())
+            << "Key at row " << currentRowId << " should be found in index";
+
+        uint32_t stripeIndex = stripeLocation->stripeIndex;
+        ASSERT_LT(stripeIndex, tablet.stripeCount())
+            << "Stripe index out of range";
+
+        // Get stripe identifier with index group loaded
+        const auto stripeId =
+            tablet.stripeIdentifier(stripeIndex, /*loadIndex=*/true);
+        ASSERT_NE(stripeId.indexGroup(), nullptr)
+            << "Index group should be available for stripe " << stripeIndex;
+
+        // Look up chunk by encoded key to get chunk location within stripe
+        const auto chunkLocation =
+            stripeId.indexGroup()->lookupChunk(stripeIndex, encodedKeyView);
+        ASSERT_TRUE(chunkLocation.has_value())
+            << "Key at row " << currentRowId << " should be found in stripe "
+            << stripeIndex;
+
+        // Get key stream region for this stripe
+        auto keyStreamRegion =
+            stripeId.indexGroup()->keyStreamRegion(stripeIndex);
+        ASSERT_TRUE(keyStreamRegion.has_value())
+            << "Key stream region should exist for stripe " << stripeIndex;
+
+        // Cache key: chunk file offset (unique across all stripes)
+        const uint64_t chunkFileOffset =
+            keyStreamRegion->offset + chunkLocation->streamOffset;
+
+        // Load and decode key chunk if not cached
+        if (keyStreamCache.find(chunkFileOffset) == keyStreamCache.end()) {
+          // Get chunk length from the index. The index stores chunk offsets
+          // in key_stream_chunk_offsets, so we can compute the length by
+          // looking at the next chunk offset (or stream end for the last
+          // chunk). Use helper to get chunk length from StripeIndexGroup
+          // internals.
+          nimble::index::test::StripeIndexGroupTestHelper helper(
+              stripeId.indexGroup().get());
+          const uint32_t chunkLength = helper.keyChunkLength(
+              stripeIndex,
+              chunkLocation->streamOffset,
+              keyStreamRegion->length);
+
+          // Load the key chunk data from file
+          velox::common::Region region{
+              chunkFileOffset, chunkLength, "keyChunk"};
+          folly::IOBuf iobuf;
+          file->preadv({&region, 1}, {&iobuf, 1});
+
+          // Copy data to a persistent buffer
+          std::string& buffer = keyStreamBufferCache[chunkFileOffset];
+          buffer.resize(iobuf.computeChainDataLength());
+          size_t offset = 0;
+          for (auto range : iobuf) {
+            std::memcpy(buffer.data() + offset, range.data(), range.size());
+            offset += range.size();
+          }
+
+          // Decode the single chunk to get the raw encoding data
+          nimble::index::test::SingleChunkDecoder chunkDecoder(
+              *leafPool_, buffer);
+          auto encodingData = chunkDecoder.decode();
+
+          // Decode the key encoding from the chunk data
+          keyStreamCache[chunkFileOffset] =
+              nimble::EncodingFactory::decode(*leafPool_, encodingData);
+        }
+
+        auto* keyEncoding = keyStreamCache[chunkFileOffset].get();
+        ASSERT_NE(keyEncoding, nullptr);
+
+        // Reset encoding and seek to find the row within the chunk
+        keyEncoding->reset();
+
+        // Use seekAtOrAfter to find the exact row position within the remaining
+        // rows
+        auto seekResult = keyEncoding->seekAtOrAfter(&encodedKeyView);
+        ASSERT_TRUE(seekResult.has_value())
+            << "seekAtOrAfter should find key at row " << currentRowId;
+
+        // Calculate the actual file row id
+        // seekAtOrAfter returns the offset from current position where the key
+        // was found
+        uint64_t fileRowId = stripeStartRows[stripeIndex] +
+            chunkLocation->rowOffset + seekResult.value();
+
+        // For duplicate keys, seekAtOrAfter returns the first occurrence.
+        // Verify that the found row id matches the earliest row with the same
+        // key.
+        uint64_t expectedFileRowId = keyToEarliestRowId.at(encodedKey);
+        EXPECT_EQ(fileRowId, expectedFileRowId)
+            << "Row " << currentRowId << " key lookup mismatch: "
+            << "expected earliest row " << expectedFileRowId << ", got "
+            << fileRowId << " (stripe " << stripeIndex << ", chunk row offset "
+            << chunkLocation->rowOffset << ", seek offset "
+            << seekResult.value() << ")";
+
+        ++currentRowId;
+      }
+    }
+  }
 };
 
 TEST_P(VeloxWriterIndexTest, singleGroup) {
@@ -3532,7 +3532,7 @@ TEST_F(VeloxWriterTest, indexEnforceKeyOrder) {
   }
 }
 
-TEST_P(VeloxWriterIndexTest, withDuplicateKeys) {
+TEST_P(VeloxWriterIndexTest, duplicateKeys) {
   // Test index with duplicate key values (non-unique keys).
   // This is a valid scenario where multiple rows have the same key value.
   auto type = defaultType();
@@ -3637,7 +3637,7 @@ TEST_P(VeloxWriterIndexTest, withDuplicateKeys) {
   verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
 }
 
-TEST_P(VeloxWriterIndexTest, withChunking) {
+TEST_P(VeloxWriterIndexTest, chunking) {
   // Test index with chunking enabled
   auto type = defaultType();
 
@@ -3699,7 +3699,7 @@ TEST_P(VeloxWriterIndexTest, withChunking) {
   verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
 }
 
-TEST_P(VeloxWriterIndexTest, withStreamDeduplication) {
+TEST_P(VeloxWriterIndexTest, streamDeduplication) {
   // Test that streams with identical content are deduplicated by the tablet
   // writer. We create batches where string_col1 and string_col2 reference the
   // same underlying vector, which should result in identical stream content
