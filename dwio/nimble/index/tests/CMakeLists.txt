@@ -20,6 +20,19 @@ target_link_libraries(
   Folly::folly
 )
 
+add_library(nimble_index_test_base TabletIndexTestBase.cpp)
+target_link_libraries(
+  nimble_index_test_base
+  nimble_index
+  nimble_velox_writer
+  velox_core
+  velox_vector
+  velox_memory
+  velox_dwio_common
+  gtest
+  Folly::folly
+)
+
 add_executable(
   nimble_index_tests
   IndexReaderTest.cpp

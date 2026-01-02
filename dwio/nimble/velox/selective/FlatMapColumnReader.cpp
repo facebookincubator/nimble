@@ -129,7 +129,10 @@ std::vector<KeyNode<T>> makeKeyNodes(
       continue;
     }
     node.inMap = std::make_unique<ChunkedDecoder>(
-        std::move(inMapInput), memoryPool, /*decodeValuesWithNulls=*/false);
+        std::move(inMapInput),
+        /*decodeValuesWithNulls=*/false,
+        /*streamIndex=*/nullptr,
+        &memoryPool);
     auto childParams = params.makeChildParams(nimbleType.childAt(i));
     childParams.setInMapDecoder(node.inMap.get());
     node.reader = buildColumnReader(
