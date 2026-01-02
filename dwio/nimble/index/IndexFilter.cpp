@@ -1,0 +1,450 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "dwio/nimble/index/IndexFilter.h"
+
+#include "dwio/nimble/common/Exceptions.h"
+#include "velox/vector/FlatVector.h"
+
+namespace facebook::nimble {
+
+using namespace velox;
+using namespace velox::common;
+
+namespace {
+
+// Information extracted from a filter for building index bounds.
+struct FilterBoundInfo {
+  // Whether the filter is convertible to index bounds.
+  bool convertible{false};
+
+  // Whether this is a point lookup (lower == upper, both inclusive).
+  // Point lookups allow continuing to the next index column.
+  // Range scans must be the terminal column.
+  bool pointLookup{false};
+
+  // Whether the filter can be removed after applying index filtering.
+  bool canRemoveFilter{false};
+};
+
+// Check if a filter is convertible and whether it's a point lookup.
+FilterBoundInfo getFilterBoundInfo(const Filter& filter) {
+  FilterBoundInfo info;
+
+  switch (filter.kind()) {
+    case FilterKind::kBigintRange: {
+      if (filter.nullAllowed()) {
+        return info;
+      }
+      const auto& range = *filter.as<BigintRange>();
+      info.convertible = true;
+      info.pointLookup = range.isSingleValue();
+      info.canRemoveFilter = true;
+      break;
+    }
+
+    case FilterKind::kDoubleRange: {
+      if (filter.nullAllowed()) {
+        return info;
+      }
+      const auto& range = *filter.as<DoubleRange>();
+      if (range.lowerUnbounded() && range.upperUnbounded()) {
+        return info; // Not convertible
+      }
+      info.convertible = true;
+      // Point lookup: both bounds exist, equal, and both inclusive.
+      info.pointLookup = !range.lowerUnbounded() && !range.upperUnbounded() &&
+          range.lower() == range.upper() && !range.lowerExclusive() &&
+          !range.upperExclusive();
+      info.canRemoveFilter = true;
+      break;
+    }
+
+    case FilterKind::kFloatRange: {
+      if (filter.nullAllowed()) {
+        return info;
+      }
+      const auto& range = *filter.as<FloatRange>();
+      if (range.lowerUnbounded() && range.upperUnbounded()) {
+        return info; // Not convertible
+      }
+      info.convertible = true;
+      info.pointLookup = !range.lowerUnbounded() && !range.upperUnbounded() &&
+          range.lower() == range.upper() && !range.lowerExclusive() &&
+          !range.upperExclusive();
+      info.canRemoveFilter = true;
+      break;
+    }
+
+    case FilterKind::kBytesRange: {
+      if (filter.nullAllowed()) {
+        return info;
+      }
+      const auto& range = *filter.as<BytesRange>();
+      if (range.isLowerUnbounded() && range.isUpperUnbounded()) {
+        return info; // Not convertible
+      }
+      info.convertible = true;
+      info.pointLookup = range.isSingleValue();
+      info.canRemoveFilter = true;
+      break;
+    }
+
+    case FilterKind::kBytesValues: {
+      if (filter.nullAllowed()) {
+        return info;
+      }
+      const auto& values = filter.as<BytesValues>()->values();
+      // Only support single value for point lookup.
+      if (values.size() != 1) {
+        return info; // Not convertible
+      }
+      info.convertible = true;
+      info.pointLookup = true;
+      info.canRemoveFilter = true;
+      break;
+    }
+
+    case FilterKind::kBoolValue: {
+      if (filter.nullAllowed()) {
+        return info;
+      }
+      info.convertible = true;
+      info.pointLookup = true;
+      info.canRemoveFilter = true;
+      break;
+    }
+
+    case FilterKind::kTimestampRange: {
+      if (filter.nullAllowed()) {
+        return info;
+      }
+      const auto& range = *filter.as<TimestampRange>();
+      info.convertible = true;
+      info.pointLookup = range.isSingleValue();
+      info.canRemoveFilter = true;
+      break;
+    }
+
+    default:
+      // Unsupported filter type.
+      break;
+  }
+
+  return info;
+}
+
+// Set a value in a FlatVector at index 0.
+template <typename T>
+void setValue(FlatVector<T>* vector, T value) {
+  vector->set(0, value);
+}
+
+// Create bound vectors for a single column based on filter type.
+// Returns pair of (lowerVector, upperVector) and (lowerInclusive,
+// upperInclusive).
+// For DESC columns, lower and upper bounds are swapped to maintain correct
+// range semantics in a descending index.
+void addColumnBound(
+    const Filter& filter,
+    const std::string& columnName,
+    const TypePtr& columnType,
+    const core::SortOrder& sortOrder,
+    memory::MemoryPool* pool,
+    std::vector<std::string>& columnNames,
+    std::vector<TypePtr>& columnTypes,
+    std::vector<VectorPtr>& lowerVectors,
+    std::vector<VectorPtr>& upperVectors,
+    bool& lowerInclusive,
+    bool& upperInclusive) {
+  columnNames.push_back(columnName);
+  columnTypes.push_back(columnType);
+
+  const bool isDesc = !sortOrder.isAscending();
+
+  // Helper to add vectors considering sort order.
+  // For DESC columns, we swap lower and upper bounds.
+  const auto addVectors = [&](VectorPtr lower, VectorPtr upper) {
+    if (isDesc) {
+      lowerVectors.push_back(std::move(upper));
+      upperVectors.push_back(std::move(lower));
+    } else {
+      lowerVectors.push_back(std::move(lower));
+      upperVectors.push_back(std::move(upper));
+    }
+  };
+
+  switch (filter.kind()) {
+    case FilterKind::kBigintRange: {
+      const auto& range = *filter.as<BigintRange>();
+      auto lowerVector =
+          BaseVector::create<FlatVector<int64_t>>(columnType, 1, pool);
+      auto upperVector =
+          BaseVector::create<FlatVector<int64_t>>(columnType, 1, pool);
+      lowerVector->set(0, range.lower());
+      upperVector->set(0, range.upper());
+      addVectors(std::move(lowerVector), std::move(upperVector));
+      break;
+    }
+
+    case FilterKind::kDoubleRange: {
+      const auto& range = *filter.as<DoubleRange>();
+      auto lowerVector =
+          BaseVector::create<FlatVector<double>>(columnType, 1, pool);
+      auto upperVector =
+          BaseVector::create<FlatVector<double>>(columnType, 1, pool);
+      bool localLowerInclusive = true;
+      bool localUpperInclusive = true;
+      if (!range.lowerUnbounded()) {
+        lowerVector->set(0, range.lower());
+        localLowerInclusive = !range.lowerExclusive();
+      } else {
+        lowerVector->setNull(0, true);
+      }
+      if (!range.upperUnbounded()) {
+        upperVector->set(0, range.upper());
+        localUpperInclusive = !range.upperExclusive();
+      } else {
+        upperVector->setNull(0, true);
+      }
+      // For DESC, swap the inclusivity as well.
+      if (isDesc) {
+        lowerInclusive = lowerInclusive && localUpperInclusive;
+        upperInclusive = upperInclusive && localLowerInclusive;
+      } else {
+        lowerInclusive = lowerInclusive && localLowerInclusive;
+        upperInclusive = upperInclusive && localUpperInclusive;
+      }
+      addVectors(std::move(lowerVector), std::move(upperVector));
+      break;
+    }
+
+    case FilterKind::kFloatRange: {
+      const auto& range = *filter.as<FloatRange>();
+      auto lowerVector =
+          BaseVector::create<FlatVector<float>>(columnType, 1, pool);
+      auto upperVector =
+          BaseVector::create<FlatVector<float>>(columnType, 1, pool);
+      bool localLowerInclusive = true;
+      bool localUpperInclusive = true;
+      if (!range.lowerUnbounded()) {
+        lowerVector->set(0, static_cast<float>(range.lower()));
+        localLowerInclusive = !range.lowerExclusive();
+      } else {
+        lowerVector->setNull(0, true);
+      }
+      if (!range.upperUnbounded()) {
+        upperVector->set(0, static_cast<float>(range.upper()));
+        localUpperInclusive = !range.upperExclusive();
+      } else {
+        upperVector->setNull(0, true);
+      }
+      if (isDesc) {
+        lowerInclusive = lowerInclusive && localUpperInclusive;
+        upperInclusive = upperInclusive && localLowerInclusive;
+      } else {
+        lowerInclusive = lowerInclusive && localLowerInclusive;
+        upperInclusive = upperInclusive && localUpperInclusive;
+      }
+      addVectors(std::move(lowerVector), std::move(upperVector));
+      break;
+    }
+
+    case FilterKind::kBytesRange: {
+      const auto& range = *filter.as<BytesRange>();
+      auto lowerVector =
+          BaseVector::create<FlatVector<StringView>>(columnType, 1, pool);
+      auto upperVector =
+          BaseVector::create<FlatVector<StringView>>(columnType, 1, pool);
+      bool localLowerInclusive = true;
+      bool localUpperInclusive = true;
+      if (!range.isLowerUnbounded()) {
+        lowerVector->set(0, StringView(range.lower()));
+        localLowerInclusive = !range.isLowerExclusive();
+      } else {
+        lowerVector->setNull(0, true);
+      }
+      if (!range.isUpperUnbounded()) {
+        upperVector->set(0, StringView(range.upper()));
+        localUpperInclusive = !range.isUpperExclusive();
+      } else {
+        upperVector->setNull(0, true);
+      }
+      if (isDesc) {
+        lowerInclusive = lowerInclusive && localUpperInclusive;
+        upperInclusive = upperInclusive && localLowerInclusive;
+      } else {
+        lowerInclusive = lowerInclusive && localLowerInclusive;
+        upperInclusive = upperInclusive && localUpperInclusive;
+      }
+      addVectors(std::move(lowerVector), std::move(upperVector));
+      break;
+    }
+
+    case FilterKind::kBytesValues: {
+      const auto& values = filter.as<BytesValues>()->values();
+      const auto& value = *values.begin();
+      auto lowerVector =
+          BaseVector::create<FlatVector<StringView>>(columnType, 1, pool);
+      auto upperVector =
+          BaseVector::create<FlatVector<StringView>>(columnType, 1, pool);
+      lowerVector->set(0, StringView(value));
+      upperVector->set(0, StringView(value));
+      // Point lookup - no need to swap for DESC.
+      addVectors(std::move(lowerVector), std::move(upperVector));
+      break;
+    }
+
+    case FilterKind::kBoolValue: {
+      const auto& boolFilter = *filter.as<BoolValue>();
+      const bool value = boolFilter.testBool(true);
+      auto lowerVector =
+          BaseVector::create<FlatVector<bool>>(columnType, 1, pool);
+      auto upperVector =
+          BaseVector::create<FlatVector<bool>>(columnType, 1, pool);
+      lowerVector->set(0, value);
+      upperVector->set(0, value);
+      // Point lookup - no need to swap for DESC.
+      addVectors(std::move(lowerVector), std::move(upperVector));
+      break;
+    }
+
+    case FilterKind::kTimestampRange: {
+      const auto& range = *filter.as<TimestampRange>();
+      auto lowerVector =
+          BaseVector::create<FlatVector<Timestamp>>(columnType, 1, pool);
+      auto upperVector =
+          BaseVector::create<FlatVector<Timestamp>>(columnType, 1, pool);
+      lowerVector->set(0, range.lower());
+      upperVector->set(0, range.upper());
+      addVectors(std::move(lowerVector), std::move(upperVector));
+      break;
+    }
+
+    default:
+      NIMBLE_UNREACHABLE(
+          "Unsupported filter kind: {}", static_cast<int>(filter.kind()));
+  }
+}
+
+} // namespace
+
+std::optional<serializer::IndexBounds> convertFilterToIndexBounds(
+    const std::vector<std::string>& indexColumns,
+    const std::vector<core::SortOrder>& sortOrders,
+    const RowTypePtr& rowType,
+    ScanSpec& scanSpec,
+    memory::MemoryPool* pool) {
+  NIMBLE_CHECK(!indexColumns.empty(), "Index columns cannot be empty");
+  NIMBLE_CHECK_EQ(
+      indexColumns.size(),
+      sortOrders.size(),
+      "Index columns size must match sort orders size");
+
+  std::vector<std::string> boundColumnNames;
+  std::vector<TypePtr> boundColumnTypes;
+  std::vector<VectorPtr> lowerVectors;
+  std::vector<VectorPtr> upperVectors;
+  bool lowerInclusive{true};
+  bool upperInclusive{true};
+
+  for (size_t i = 0; i < indexColumns.size(); ++i) {
+    const auto& columnName = indexColumns[i];
+    const auto& sortOrder = sortOrders[i];
+
+    // Find the ScanSpec child for this column.
+    auto* childSpec = scanSpec.childByName(columnName);
+    if (childSpec == nullptr) {
+      break;
+    }
+
+    const auto* filter = childSpec->filter();
+    if (filter == nullptr) {
+      break;
+    }
+
+    // Check if the filter is convertible.
+    const auto boundInfo = getFilterBoundInfo(*filter);
+    if (!boundInfo.convertible) {
+      break;
+    }
+
+    // Get column type.
+    const auto columnIdx = rowType->getChildIdxIfExists(columnName);
+    NIMBLE_CHECK(
+        columnIdx.has_value(),
+        "Index column '{}' not found in row type",
+        columnName);
+    const auto& columnType = rowType->childAt(columnIdx.value());
+
+    // Add bounds for this column.
+    addColumnBound(
+        *filter,
+        columnName,
+        columnType,
+        sortOrder,
+        pool,
+        boundColumnNames,
+        boundColumnTypes,
+        lowerVectors,
+        upperVectors,
+        lowerInclusive,
+        upperInclusive);
+
+    // If this is a range scan (not point lookup), we must stop here.
+    // Cannot add more columns after a range scan.
+    if (!boundInfo.pointLookup) {
+      break;
+    }
+  }
+
+  // If no columns were added, return empty result.
+  if (boundColumnNames.empty()) {
+    return std::nullopt;
+  }
+
+  // Remove filters from scanSpec for columns that are covered by index bounds.
+  for (const auto& columnName : boundColumnNames) {
+    auto* childSpec = scanSpec.childByName(columnName);
+    if (childSpec != nullptr) {
+      childSpec->setFilter(nullptr);
+    }
+  }
+
+  // Build the IndexBounds.
+  serializer::IndexBounds bounds;
+  bounds.indexColumns = std::move(boundColumnNames);
+
+  // Create RowVectors for lower and upper bounds.
+  auto boundRowType =
+      ROW(std::vector<std::string>(bounds.indexColumns),
+          std::move(boundColumnTypes));
+
+  auto lowerRowVector = std::make_shared<RowVector>(
+      pool, boundRowType, nullptr, 1, std::move(lowerVectors));
+
+  auto upperRowVector = std::make_shared<RowVector>(
+      pool, boundRowType, nullptr, 1, std::move(upperVectors));
+
+  bounds.lowerBound =
+      serializer::IndexBound{std::move(lowerRowVector), lowerInclusive};
+  bounds.upperBound =
+      serializer::IndexBound{std::move(upperRowVector), upperInclusive};
+
+  return bounds;
+}
+
+} // namespace facebook::nimble
