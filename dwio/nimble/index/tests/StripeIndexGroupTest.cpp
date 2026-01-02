@@ -141,6 +141,7 @@ TEST_F(StripeIndexGroupTest, lookupChunkWithEncodedKey) {
     std::optional<uint32_t> expectedRowOffset;
   } testCases[] = {
       // Stripe 0: chunks with keys "ccc", "fff", "iii"
+      // chunkRows = {100, 200, 300}
       // Key before first chunk locate at the first chunk as we
       // expect the caller will locate the right stripe with tablet index.
       {0, "aa", 0, 0},
@@ -163,6 +164,7 @@ TEST_F(StripeIndexGroupTest, lookupChunkWithEncodedKey) {
       {0, "zzz", std::nullopt, std::nullopt},
 
       // Stripe 1: chunks with keys "mmm", "ppp"
+      // chunkRows = {150, 300}
       // Key before first chunk locate at the first chunk as we
       // expect the caller will locate the right stripe with tablet index.
       {1, "aaa", 0, 0},
@@ -248,6 +250,7 @@ TEST_F(StripeIndexGroupTest, lookupChunkWithRowId) {
   } testCases[] = {
       // Stripe 0, Stream 0: chunks at rows {100, 250, 400}, offsets {0, 50,
       // 120}
+      // Accumulated rows: {100, 350, 750}
       // Row 0 - first row of first chunk
       {0, 0, 0, 0, 0},
       // Row in first chunk [0, 100)
@@ -718,4 +721,122 @@ TEST_F(StripeIndexGroupTest, stripeIndexAndStreamIdOutOfBound) {
   NIMBLE_ASSERT_THROW(
       stripeIndexGroup1->lookupChunk(3, 5, 0), "streamId out of range");
 }
+
+TEST_F(StripeIndexGroupTest, streamIndexRowCount) {
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "aaa";
+  // Setup: 4 stripes across 2 groups, each stripe with 2 streams
+  std::vector<Stripe> stripes = {
+      // Stripe 0 (Group 0)
+      {.streams =
+           {// Stream 0: 3 chunks at rows {100, 250, 400}, offsets {0, 50, 120}
+            // Accumulated rows: 100, 350, 750 -> total rows = 750
+            {.numChunks = 3,
+             .chunkRows = {100, 250, 400},
+             .chunkOffsets = {0, 50, 120}},
+            // Stream 1: 2 chunks at rows {150, 300}, offsets {0, 80}
+            // Accumulated rows: 150, 450 -> total rows = 450
+            {.numChunks = 2, .chunkRows = {150, 300}, .chunkOffsets = {0, 80}}},
+       .keyStream =
+           {.streamOffset = 0,
+            .streamSize = 100,
+            .stream = {.numChunks = 1, .chunkRows = {750}, .chunkOffsets = {0}},
+            .chunkKeys = {"bbb"}}},
+      // Stripe 1 (Group 0)
+      {.streams =
+           {// Stream 0: 2 chunks at rows {200, 350}, offsets {0, 60}
+            // Accumulated rows: 200, 550 -> total rows = 550
+            {.numChunks = 2, .chunkRows = {200, 350}, .chunkOffsets = {0, 60}},
+            // Stream 1: 3 chunks at rows {100, 200, 350}, offsets {0, 40, 90}
+            // Accumulated rows: 100, 300, 650 -> total rows = 650
+            {.numChunks = 3,
+             .chunkRows = {100, 200, 350},
+             .chunkOffsets = {0, 40, 90}}},
+       .keyStream =
+           {.streamOffset = 100,
+            .streamSize = 100,
+            .stream = {.numChunks = 1, .chunkRows = {550}, .chunkOffsets = {0}},
+            .chunkKeys = {"ccc"}}},
+      // Stripe 2 (Group 1)
+      {.streams =
+           {// Stream 0: 2 chunks at rows {150, 300}, offsets {0, 70}
+            // Accumulated rows: 150, 450 -> total rows = 450
+            {.numChunks = 2, .chunkRows = {150, 300}, .chunkOffsets = {0, 70}},
+            // Stream 1: 2 chunks at rows {180, 360}, offsets {0, 55}
+            // Accumulated rows: 180, 540 -> total rows = 540
+            {.numChunks = 2, .chunkRows = {180, 360}, .chunkOffsets = {0, 55}}},
+       .keyStream =
+           {.streamOffset = 200,
+            .streamSize = 100,
+            .stream = {.numChunks = 1, .chunkRows = {450}, .chunkOffsets = {0}},
+            .chunkKeys = {"ddd"}}},
+      // Stripe 3 (Group 1)
+      {.streams =
+           {// Stream 0: 3 chunks at rows {80, 160, 240}, offsets {0, 30, 65}
+            // Accumulated rows: 80, 240, 480 -> total rows = 480
+            {.numChunks = 3,
+             .chunkRows = {80, 160, 240},
+             .chunkOffsets = {0, 30, 65}},
+            // Stream 1: 2 chunks at rows {120, 240}, offsets {0, 45}
+            // Accumulated rows: 120, 360 -> total rows = 360
+            {.numChunks = 2, .chunkRows = {120, 240}, .chunkOffsets = {0, 45}}},
+       .keyStream = {
+           .streamOffset = 300,
+           .streamSize = 100,
+           .stream = {.numChunks = 1, .chunkRows = {480}, .chunkOffsets = {0}},
+           .chunkKeys = {"eee"}}}};
+  std::vector<int> stripeGroups = {2, 2};
+
+  auto indexBuffers =
+      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
+
+  struct {
+    uint32_t groupIndex;
+    uint32_t stripeIndex;
+    uint32_t streamId;
+    uint32_t expectedRowCount;
+  } testCases[] = {
+      // Group 0, Stripe 0
+      {0, 0, 0, 750}, // Stream 0: accumulated rows = 100 + 250 + 400 = 750
+      {0, 0, 1, 450}, // Stream 1: accumulated rows = 150 + 300 = 450
+
+      // Group 0, Stripe 1
+      {0, 1, 0, 550}, // Stream 0: accumulated rows = 200 + 350 = 550
+      {0, 1, 1, 650}, // Stream 1: accumulated rows = 100 + 200 + 350 = 650
+
+      // Group 1, Stripe 2
+      {1, 2, 0, 450}, // Stream 0: accumulated rows = 150 + 300 = 450
+      {1, 2, 1, 540}, // Stream 1: accumulated rows = 180 + 360 = 540
+
+      // Group 1, Stripe 3
+      {1, 3, 0, 480}, // Stream 0: accumulated rows = 80 + 160 + 240 = 480
+      {1, 3, 1, 360}, // Stream 1: accumulated rows = 120 + 240 = 360
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(
+        fmt::format(
+            "groupIndex {} stripeIndex {} streamId {}",
+            testCase.groupIndex,
+            testCase.stripeIndex,
+            testCase.streamId));
+
+    // Create StripeIndexGroup based on groupIndex parameter
+    auto stripeIndexGroup =
+        createStripeIndexGroup(indexBuffers, testCase.groupIndex);
+    ASSERT_NE(stripeIndexGroup, nullptr);
+
+    // Test rowCount through StripeIndexGroup
+    EXPECT_EQ(
+        stripeIndexGroup->rowCount(testCase.stripeIndex, testCase.streamId),
+        testCase.expectedRowCount);
+
+    // Test rowCount through StreamIndex
+    auto streamIndex = stripeIndexGroup->createStreamIndex(
+        testCase.stripeIndex, testCase.streamId);
+    ASSERT_NE(streamIndex, nullptr);
+    EXPECT_EQ(streamIndex->rowCount(), testCase.expectedRowCount);
+  }
+}
+
 } // namespace facebook::nimble::index::test
