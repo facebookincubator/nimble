@@ -72,6 +72,9 @@ class StripeIndexGroup {
       uint32_t stripe,
       uint32_t streamId) const;
 
+  /// Returns the total number of rows for the specified stripe and stream.
+  uint32_t rowCount(uint32_t stripe, uint32_t streamId) const;
+
   /// Returns the region for the key stream of the specified stripe.
   /// The key stream is stored in the StripeIndexGroup metadata.
   /// Returns std::nullopt if the stripe has no key stream.
@@ -117,6 +120,9 @@ class StreamIndex {
   /// Lookup chunk by row ID
   /// Returns chunk offset and size, or std::nullopt if not found
   std::optional<ChunkLocation> lookupChunk(uint32_t rowId) const;
+
+  /// Returns the total number of rows in this stream
+  uint32_t rowCount() const;
 
   /// Returns the stream ID this index is for
   uint32_t streamId() const {
