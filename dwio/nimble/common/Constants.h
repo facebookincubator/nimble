@@ -44,4 +44,7 @@ constexpr uint64_t kChunkingWriterMinChunkSize{512 << 10}; // 512KB
 constexpr uint64_t kChunkingWriterMaxChunkSize{20 << 20}; // 20MB
 /// Used in place of kChunkingWriterMaxChunkSize for tables with large schemas.
 constexpr uint64_t kChunkingWriterWideSchemaMaxChunkSize{2 << 20}; // 2MB
+
+// Chunk header size: 4 bytes for length + 1 byte for compression type.
+constexpr int kChunkHeaderSize = 5;
 } // namespace facebook::nimble

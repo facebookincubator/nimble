@@ -16,25 +16,29 @@
 
 #include "dwio/nimble/velox/selective/ChunkedDecoder.h"
 
+#include "dwio/nimble/common/Constants.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
+#include "velox/common/testutil/TestValue.h"
 
 #include <cstddef>
+
+using facebook::velox::common::testutil::TestValue;
 
 namespace facebook::nimble {
 
 using namespace facebook::velox;
 
-bool ChunkedDecoder::loadNextChunk() {
-  if (!ensureInput(5)) {
-    return false;
-  }
+void ChunkedDecoder::loadNextChunk() {
+  auto ret = ensureInput(kChunkHeaderSize);
+  NIMBLE_CHECK(ret, "Failed to read chunk header");
   auto length = encoding::readUint32(inputData_);
   const auto compressionType =
       static_cast<CompressionType>(encoding::readChar(inputData_));
-  inputSize_ -= 5;
-  VELOX_CHECK(ensureInput(length));
+  inputSize_ -= kChunkHeaderSize;
+  ret = ensureInput(length);
+  NIMBLE_CHECK(ret);
   const char* chunkData;
   int64_t chunkSize;
   switch (compressionType) {
@@ -43,16 +47,14 @@ bool ChunkedDecoder::loadNextChunk() {
       chunkSize = length;
       break;
     default:
-      VELOX_UNSUPPORTED(
-          "Unsupported compression type: {}", toString(compressionType));
+      NIMBLE_UNSUPPORTED("Unsupported compression type: {}", compressionType);
   }
   inputData_ += length;
   inputSize_ -= length;
   encoding_ = encodingFactory_(*pool_, std::string_view(chunkData, chunkSize));
   remainingValues_ = encoding_->rowCount();
-  VELOX_CHECK_GT(remainingValues_, 0);
+  NIMBLE_CHECK_GT(remainingValues_, 0);
   VLOG(1) << encoding_->debugString();
-  return true;
 }
 
 bool ChunkedDecoder::ensureInput(int size) {
@@ -65,7 +67,7 @@ bool ChunkedDecoder::ensureInput(int size) {
     const char* buf;
     int len{0};
     if (!input_->Next(reinterpret_cast<const void**>(&buf), &len)) {
-      VELOX_CHECK_EQ(inputSize_, 0);
+      NIMBLE_CHECK_EQ(inputSize_, 0);
       return false;
     }
     if (inputSize_ == 0) {
@@ -94,8 +96,8 @@ bool ChunkedDecoder::ensureInputIncremental_hack(int size, const char*& pos) {
 // 2. The first `inputSize_' bytes in `inputData_' before the call are copied to
 //    the beginning of `inputBuffer_'.
 // 3. `inputData_' is pointing to `inputBuffer_'.
-void ChunkedDecoder::prepareInputBuffer(int size) {
-  VELOX_DCHECK_LE(inputSize_, size);
+void ChunkedDecoder::prepareInputBuffer(int32_t size) {
+  NIMBLE_DCHECK_LE(inputSize_, size);
   if (inputBuffer_ && size <= inputBuffer_->capacity()) {
     if (inputData_ == inputBuffer_->as<char>()) {
       return;
@@ -126,12 +128,12 @@ void ChunkedDecoder::nextBools(
         : velox::bits::countNonNulls(incomingNulls, 0, count);
     for (int64_t i = 0; i < totalNumValues;) {
       if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
-        VELOX_CHECK(loadNextChunk());
-        VELOX_CHECK_EQ(encoding_->dataType(), DataType::Bool);
+        loadNextChunk();
+        NIMBLE_CHECK_EQ(encoding_->dataType(), DataType::Bool);
       }
       const auto numValues = std::min(totalNumValues - i, remainingValues_);
       encoding_->materializeBoolsAsBits(numValues, data, i);
-      remainingValues_ -= numValues;
+      advancePosition(numValues);
       i += numValues;
     }
     if (incomingNulls != nullptr) {
@@ -170,18 +172,94 @@ void ChunkedDecoder::nextIndices(
 }
 
 void ChunkedDecoder::skip(int64_t numValues) {
+  NIMBLE_DCHECK_GE(numValues, 0);
+  if (numValues == 0) {
+    return;
+  }
+
+  if (streamIndex_ != nullptr) {
+    skipWithIndex(numValues);
+  } else {
+    skipWithoutIndex(numValues);
+  }
+}
+
+void ChunkedDecoder::skipWithIndex(int64_t numValues) {
+  TestValue::adjust("facebook::nimble::ChunkedDecoder::skipWithIndex", this);
+  NIMBLE_CHECK_GT(numValues, 0);
+  // If we can skip within the current chunk, do so without seeking.
+  if (numValues <= remainingValues_) {
+    encoding_->skip(numValues);
+    advancePosition(numValues);
+    return;
+  }
+
+  const uint32_t targetRow = rowPosition_ + numValues;
+
+  // Use streamRowCount_ to validate we're not skipping beyond the stream.
+  NIMBLE_DCHECK(streamRowCount_.has_value());
+  NIMBLE_CHECK_LE(
+      targetRow,
+      streamRowCount_.value(),
+      "Cannot skip beyond end of stream in stream {}",
+      streamIndex_->streamId());
+
+  // If targetRow is exactly at the end, just reset state.
+  if (targetRow == streamRowCount_.value()) {
+    encoding_ = nullptr;
+    remainingValues_ = 0;
+    rowPosition_ = targetRow;
+    // Advance input buffer to the end.
+    inputData_ += inputSize_;
+    inputSize_ = 0;
+    // Exhaust the underlying input stream.
+    input_->SkipInt64(std::numeric_limits<int64_t>::max());
+    return;
+  }
+
+  // Lookup the chunk containing targetRow.
+  const auto location = streamIndex_->lookupChunk(targetRow);
+  NIMBLE_DCHECK(location.has_value());
+
+  // Seek to the chunk and skip within it.
+  seekToChunk(location->streamOffset);
+  rowPosition_ = location->rowOffset;
+
+  const uint32_t rowsToSkipInChunk = targetRow - rowPosition_;
+  NIMBLE_DCHECK_LT(rowsToSkipInChunk, remainingValues_);
+  encoding_->skip(rowsToSkipInChunk);
+  advancePosition(rowsToSkipInChunk);
+}
+
+void ChunkedDecoder::skipWithoutIndex(int64_t numValues) {
   while (numValues > 0) {
     if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
-      VELOX_CHECK(loadNextChunk());
+      loadNextChunk();
     }
     if (numValues < remainingValues_) {
       encoding_->skip(numValues);
-      remainingValues_ -= numValues;
+      advancePosition(numValues);
       break;
     }
     numValues -= remainingValues_;
+    rowPosition_ += remainingValues_;
     remainingValues_ = 0;
   }
+}
+
+void ChunkedDecoder::seekToChunk(uint32_t offset) {
+  // Use position provider to seek to the chunk offset
+  const std::vector<uint64_t> offsets{offset};
+  velox::dwio::common::PositionProvider positionProvider(offsets);
+  input_->seekToPosition(positionProvider);
+
+  // Reset buffer state after seeking
+  inputData_ = nullptr;
+  inputSize_ = 0;
+  remainingValues_ = 0;
+
+  // Load the chunk at this position
+  loadNextChunk();
 }
 
 std::optional<size_t> ChunkedDecoder::estimateRowCount() const {
@@ -193,7 +271,7 @@ std::optional<size_t> ChunkedDecoder::estimateRowCount() const {
       kChunkCompressionTypeOffset + /*chunkCompressionType=*/1;
   constexpr int kChunkRowCountOffset =
       kEncodingOffset + Encoding::kRowCountOffset;
-  VELOX_CHECK(
+  NIMBLE_CHECK(
       const_cast<ChunkedDecoder*>(this)->ensureInput(
           kChunkRowCountOffset + sizeof(uint32_t)));
   if (static_cast<CompressionType>(inputData_[kChunkCompressionTypeOffset]) !=
@@ -213,7 +291,7 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
   constexpr int kChunkCompressionTypeOffset{4};
   constexpr int kEncodingOffset{
       kChunkCompressionTypeOffset + /*chunkCompressionType=*/1};
-  VELOX_CHECK(
+  NIMBLE_CHECK(
       const_cast<ChunkedDecoder*>(this)->ensureInput(kEncodingOffset + 6));
   auto* pos = inputData_;
   const auto chunkSize = encoding::readUint32(pos);
@@ -228,22 +306,22 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
   auto encodingStart = kEncodingOffset;
   size_t totalSize = pos + chunkSize - inputData_;
   auto encodingType = static_cast<EncodingType>(encoding::readChar(pos));
-  VELOX_CHECK_EQ(
+  NIMBLE_CHECK_EQ(
       static_cast<DataType>(encoding::readChar(pos)), DataType::String);
   const auto rowCount = encoding::readUint32(pos);
   // Peel off nullable encoding.
   if (encodingType == EncodingType::Nullable) {
     encodingStart += Encoding::kPrefixSize + /*nonNullEncodingSize=*/4;
-    VELOX_CHECK(
+    NIMBLE_CHECK(
         const_cast<ChunkedDecoder*>(this)->ensureInputIncremental_hack(
             encodingStart + 6, pos));
     const auto nonNullsBytes = encoding::readUint32(pos);
     // TODO: it might not require an update here.
     totalSize = pos + nonNullsBytes - inputData_;
     encodingType = static_cast<EncodingType>(encoding::readChar(pos));
-    VELOX_CHECK_EQ(
+    NIMBLE_CHECK_EQ(
         static_cast<DataType>(encoding::readChar(pos)), DataType::String);
-    VELOX_CHECK_LE(encoding::readUint32(pos), rowCount);
+    NIMBLE_CHECK_LE(encoding::readUint32(pos), rowCount);
   }
   // TODO: we will soon add simple support for other encodings before we have
   // column stats implementation. In the vast majority of cases, String types
@@ -258,13 +336,13 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
             encodingStart + Encoding::kPrefixSize +
                 TrivialEncoding<std::string_view>::kPrefixSize,
             pos);
-    VELOX_CHECK(ensured);
+    NIMBLE_CHECK(ensured);
   }
   const auto dataCompressionType =
       static_cast<CompressionType>(encoding::readChar(pos));
   const auto lengthBlobSize = encoding::readUint32(pos);
   const auto blobOffset = pos + lengthBlobSize - inputData_;
-  VELOX_CHECK_GE(totalSize, blobOffset);
+  NIMBLE_CHECK_GE(totalSize, blobOffset);
   const size_t blobSize = totalSize - blobOffset;
   if (dataCompressionType == CompressionType::Uncompressed) {
     stringDataSizeEstimate_ = blobSize;
@@ -273,7 +351,7 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
   {
     const auto ensured =
         const_cast<ChunkedDecoder*>(this)->ensureInput(totalSize);
-    VELOX_CHECK(ensured);
+    NIMBLE_CHECK(ensured);
   }
   stringDataSizeEstimate_ = Compression::uncompressedSize(
       dataCompressionType, {inputData_ + blobOffset, blobSize});

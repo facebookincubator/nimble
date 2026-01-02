@@ -157,8 +157,9 @@ uint64_t NimbleData::skipNulls(uint64_t numValues, bool /*nullsOnly*/) {
 ChunkedDecoder NimbleData::makeScalarDecoder() {
   return ChunkedDecoder(
       streams_.enqueue(nimbleType_->asScalar().scalarDescriptor().offset()),
-      memoryPool_,
-      /*decodeValuesWithNulls=*/false);
+      /*decodeValuesWithNulls=*/false,
+      /*streamIndex=*/nullptr,
+      &memoryPool_);
 }
 
 ChunkedDecoder NimbleData::makeMicrosDecoder() {
@@ -166,8 +167,9 @@ ChunkedDecoder NimbleData::makeMicrosDecoder() {
   return ChunkedDecoder(
       streams_.enqueue(
           nimbleType_->asTimestampMicroNano().microsDescriptor().offset()),
-      memoryPool_,
-      /*decodeValuesWithNulls=*/false);
+      /*decodeValuesWithNulls=*/false,
+      /*streamIndex=*/nullptr,
+      &memoryPool_);
 }
 
 ChunkedDecoder NimbleData::makeNanosDecoder() {
@@ -175,8 +177,9 @@ ChunkedDecoder NimbleData::makeNanosDecoder() {
   return ChunkedDecoder(
       streams_.enqueue(
           nimbleType_->asTimestampMicroNano().nanosDescriptor().offset()),
-      memoryPool_,
-      /*decodeValuesWithNulls=*/false);
+      /*decodeValuesWithNulls=*/false,
+      /*streamIndex=*/nullptr,
+      &memoryPool_);
 }
 
 std::unique_ptr<ChunkedDecoder> NimbleData::makeLengthDecoder() {
@@ -201,7 +204,11 @@ std::unique_ptr<ChunkedDecoder> NimbleData::makeDecoder(
     return nullptr;
   }
   return std::make_unique<ChunkedDecoder>(
-      std::move(input), memoryPool_, decodeValuesWithNulls, encodingFactory_);
+      std::move(input),
+      decodeValuesWithNulls,
+      /*streamIndex=*/nullptr,
+      &memoryPool_,
+      encodingFactory_);
 }
 
 std::unique_ptr<velox::dwio::common::FormatData> NimbleParams::toFormatData(

@@ -16,11 +16,13 @@
 #include "dwio/nimble/index/tests/TabletIndexTestBase.h"
 
 #include "dwio/nimble/tablet/IndexGenerated.h"
+#include "velox/common/testutil/TestValue.h"
 
 namespace facebook::nimble::index::test {
 
 void TabletIndexTestBase::SetUpTestCase() {
   velox::memory::MemoryManager::initialize({});
+  velox::common::testutil::TestValue::enable();
 }
 
 TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
