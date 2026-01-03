@@ -77,9 +77,7 @@ class StripeIndexGroup {
 
   /// Returns the region for the key stream of the specified stripe.
   /// The key stream is stored in the StripeIndexGroup metadata.
-  /// Returns std::nullopt if the stripe has no key stream.
-  std::optional<velox::common::Region> keyStreamRegion(
-      uint32_t stripeIndex) const;
+  velox::common::Region keyStreamRegion(uint32_t stripeIndex) const;
 
  private:
   StripeIndexGroup(
