@@ -99,9 +99,8 @@ TEST_F(StripeIndexGroupTest, keyStreamRegion) {
     ASSERT_NE(stripeIndexGroup, nullptr);
 
     auto region = stripeIndexGroup->keyStreamRegion(testCase.stripeIndex);
-    ASSERT_TRUE(region.has_value());
-    EXPECT_EQ(region->offset, testCase.expectedOffset);
-    EXPECT_EQ(region->length, testCase.expectedLength);
+    EXPECT_EQ(region.offset, testCase.expectedOffset);
+    EXPECT_EQ(region.length, testCase.expectedLength);
   }
 }
 

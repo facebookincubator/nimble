@@ -3099,14 +3099,12 @@ class VeloxWriterIndexTest : public VeloxWriterTest,
             << stripeIndex;
 
         // Get key stream region for this stripe
-        auto keyStreamRegion =
+        const auto keyStreamRegion =
             stripeId.indexGroup()->keyStreamRegion(stripeIndex);
-        ASSERT_TRUE(keyStreamRegion.has_value())
-            << "Key stream region should exist for stripe " << stripeIndex;
 
         // Cache key: chunk file offset (unique across all stripes)
         const uint64_t chunkFileOffset =
-            keyStreamRegion->offset + chunkLocation->streamOffset;
+            keyStreamRegion.offset + chunkLocation->streamOffset;
 
         // Load and decode key chunk if not cached
         if (keyStreamCache.find(chunkFileOffset) == keyStreamCache.end()) {
@@ -3118,9 +3116,7 @@ class VeloxWriterIndexTest : public VeloxWriterTest,
           nimble::index::test::StripeIndexGroupTestHelper helper(
               stripeId.indexGroup().get());
           const uint32_t chunkLength = helper.keyChunkLength(
-              stripeIndex,
-              chunkLocation->streamOffset,
-              keyStreamRegion->length);
+              stripeIndex, chunkLocation->streamOffset, keyStreamRegion.length);
 
           // Load the key chunk data from file
           velox::common::Region region{

@@ -240,7 +240,7 @@ uint32_t StripeIndexGroup::rowCount(uint32_t stripe, uint32_t streamId) const {
   return chunkRows->Get(endChunkIndex - 1);
 }
 
-std::optional<velox::common::Region> StripeIndexGroup::keyStreamRegion(
+velox::common::Region StripeIndexGroup::keyStreamRegion(
     uint32_t stripeIndex) const {
   const uint32_t stripeOffset = this->stripeOffset(stripeIndex);
   const auto* root =
