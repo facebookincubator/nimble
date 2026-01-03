@@ -35,9 +35,6 @@ struct FilterBoundInfo {
   // Point lookups allow continuing to the next index column.
   // Range scans must be the terminal column.
   bool pointLookup{false};
-
-  // Whether the filter can be removed after applying index filtering.
-  bool canRemoveFilter{false};
 };
 
 // Check if a filter is convertible and whether it's a point lookup.
@@ -52,7 +49,6 @@ FilterBoundInfo getFilterBoundInfo(const Filter& filter) {
       const auto& range = *filter.as<BigintRange>();
       info.convertible = true;
       info.pointLookup = range.isSingleValue();
-      info.canRemoveFilter = true;
       break;
     }
 
@@ -69,7 +65,6 @@ FilterBoundInfo getFilterBoundInfo(const Filter& filter) {
       info.pointLookup = !range.lowerUnbounded() && !range.upperUnbounded() &&
           range.lower() == range.upper() && !range.lowerExclusive() &&
           !range.upperExclusive();
-      info.canRemoveFilter = true;
       break;
     }
 
@@ -85,7 +80,6 @@ FilterBoundInfo getFilterBoundInfo(const Filter& filter) {
       info.pointLookup = !range.lowerUnbounded() && !range.upperUnbounded() &&
           range.lower() == range.upper() && !range.lowerExclusive() &&
           !range.upperExclusive();
-      info.canRemoveFilter = true;
       break;
     }
 
@@ -99,7 +93,6 @@ FilterBoundInfo getFilterBoundInfo(const Filter& filter) {
       }
       info.convertible = true;
       info.pointLookup = range.isSingleValue();
-      info.canRemoveFilter = true;
       break;
     }
 
@@ -114,7 +107,6 @@ FilterBoundInfo getFilterBoundInfo(const Filter& filter) {
       }
       info.convertible = true;
       info.pointLookup = true;
-      info.canRemoveFilter = true;
       break;
     }
 
@@ -124,7 +116,6 @@ FilterBoundInfo getFilterBoundInfo(const Filter& filter) {
       }
       info.convertible = true;
       info.pointLookup = true;
-      info.canRemoveFilter = true;
       break;
     }
 
@@ -135,7 +126,6 @@ FilterBoundInfo getFilterBoundInfo(const Filter& filter) {
       const auto& range = *filter.as<TimestampRange>();
       info.convertible = true;
       info.pointLookup = range.isSingleValue();
-      info.canRemoveFilter = true;
       break;
     }
 
@@ -222,11 +212,11 @@ void addColumnBound(
       }
       // For DESC, swap the inclusivity as well.
       if (isDesc) {
-        lowerInclusive = lowerInclusive && localUpperInclusive;
-        upperInclusive = upperInclusive && localLowerInclusive;
+        lowerInclusive &= localUpperInclusive;
+        upperInclusive &= localLowerInclusive;
       } else {
-        lowerInclusive = lowerInclusive && localLowerInclusive;
-        upperInclusive = upperInclusive && localUpperInclusive;
+        lowerInclusive &= localLowerInclusive;
+        upperInclusive &= localUpperInclusive;
       }
       addVectors(std::move(lowerVector), std::move(upperVector));
       break;
@@ -253,11 +243,11 @@ void addColumnBound(
         upperVector->setNull(0, true);
       }
       if (isDesc) {
-        lowerInclusive = lowerInclusive && localUpperInclusive;
-        upperInclusive = upperInclusive && localLowerInclusive;
+        lowerInclusive &= localUpperInclusive;
+        upperInclusive &= localLowerInclusive;
       } else {
-        lowerInclusive = lowerInclusive && localLowerInclusive;
-        upperInclusive = upperInclusive && localUpperInclusive;
+        lowerInclusive &= localLowerInclusive;
+        upperInclusive &= localUpperInclusive;
       }
       addVectors(std::move(lowerVector), std::move(upperVector));
       break;
@@ -284,11 +274,11 @@ void addColumnBound(
         upperVector->setNull(0, true);
       }
       if (isDesc) {
-        lowerInclusive = lowerInclusive && localUpperInclusive;
-        upperInclusive = upperInclusive && localLowerInclusive;
+        lowerInclusive &= localUpperInclusive;
+        upperInclusive &= localLowerInclusive;
       } else {
-        lowerInclusive = lowerInclusive && localLowerInclusive;
-        upperInclusive = upperInclusive && localUpperInclusive;
+        lowerInclusive &= localLowerInclusive;
+        upperInclusive &= localUpperInclusive;
       }
       addVectors(std::move(lowerVector), std::move(upperVector));
       break;
