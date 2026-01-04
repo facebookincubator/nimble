@@ -26,6 +26,38 @@ using namespace velox::common;
 
 namespace {
 
+// Dispatch macro for integer types (TINYINT, SMALLINT, INTEGER, BIGINT).
+#define INTEGER_TYPE_DISPATCH(FUNC, typeKind, ...)                       \
+  [&]() {                                                                \
+    switch (typeKind) {                                                  \
+      case TypeKind::TINYINT:                                            \
+        return FUNC<TypeKind::TINYINT>(__VA_ARGS__);                     \
+      case TypeKind::SMALLINT:                                           \
+        return FUNC<TypeKind::SMALLINT>(__VA_ARGS__);                    \
+      case TypeKind::INTEGER:                                            \
+        return FUNC<TypeKind::INTEGER>(__VA_ARGS__);                     \
+      case TypeKind::BIGINT:                                             \
+        return FUNC<TypeKind::BIGINT>(__VA_ARGS__);                      \
+      default:                                                           \
+        NIMBLE_UNREACHABLE(                                              \
+            "Unsupported integer type: {}", static_cast<int>(typeKind)); \
+    }                                                                    \
+  }()
+
+template <TypeKind Kind>
+std::pair<VectorPtr, VectorPtr> createIntegerBoundVectors(
+    const TypePtr& columnType,
+    int64_t lower,
+    int64_t upper,
+    memory::MemoryPool* pool) {
+  using T = typename TypeTraits<Kind>::NativeType;
+  auto lowerVector = BaseVector::create<FlatVector<T>>(columnType, 1, pool);
+  auto upperVector = BaseVector::create<FlatVector<T>>(columnType, 1, pool);
+  lowerVector->set(0, static_cast<T>(lower));
+  upperVector->set(0, static_cast<T>(upper));
+  return {std::move(lowerVector), std::move(upperVector)};
+}
+
 // Information extracted from a filter for building index bounds.
 struct FilterBoundInfo {
   // Whether the filter is convertible to index bounds.
@@ -153,13 +185,13 @@ void addColumnBound(
     const std::string& columnName,
     const TypePtr& columnType,
     const core::SortOrder& sortOrder,
-    memory::MemoryPool* pool,
     std::vector<std::string>& columnNames,
     std::vector<TypePtr>& columnTypes,
     std::vector<VectorPtr>& lowerVectors,
     std::vector<VectorPtr>& upperVectors,
     bool& lowerInclusive,
-    bool& upperInclusive) {
+    bool& upperInclusive,
+    memory::MemoryPool* pool) {
   columnNames.push_back(columnName);
   columnTypes.push_back(columnType);
 
@@ -180,12 +212,13 @@ void addColumnBound(
   switch (filter.kind()) {
     case FilterKind::kBigintRange: {
       const auto& range = *filter.as<BigintRange>();
-      auto lowerVector =
-          BaseVector::create<FlatVector<int64_t>>(columnType, 1, pool);
-      auto upperVector =
-          BaseVector::create<FlatVector<int64_t>>(columnType, 1, pool);
-      lowerVector->set(0, range.lower());
-      upperVector->set(0, range.upper());
+      auto [lowerVector, upperVector] = INTEGER_TYPE_DISPATCH(
+          createIntegerBoundVectors,
+          columnType->kind(),
+          columnType,
+          range.lower(),
+          range.upper(),
+          pool);
       addVectors(std::move(lowerVector), std::move(upperVector));
       break;
     }
@@ -325,8 +358,7 @@ void addColumnBound(
     }
 
     default:
-      NIMBLE_UNREACHABLE(
-          "Unsupported filter kind: {}", static_cast<int>(filter.kind()));
+      NIMBLE_UNREACHABLE("Unsupported filter kind: {}", filter.kind());
   }
 }
 
@@ -386,13 +418,13 @@ std::optional<serializer::IndexBounds> convertFilterToIndexBounds(
         columnName,
         columnType,
         sortOrder,
-        pool,
         boundColumnNames,
         boundColumnTypes,
         lowerVectors,
         upperVectors,
         lowerInclusive,
-        upperInclusive);
+        upperInclusive,
+        pool);
 
     // If this is a range scan (not point lookup), we must stop here.
     // Cannot add more columns after a range scan.
