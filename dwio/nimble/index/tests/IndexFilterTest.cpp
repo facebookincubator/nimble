@@ -463,6 +463,74 @@ TEST_P(IndexFilterTestWithSortOrder, bigintFilter) {
   }
 }
 
+// Tests for different integer types (TINYINT, SMALLINT, INTEGER) to verify
+// the INTEGER_TYPE_DISPATCH macro works correctly with all integer types.
+TEST_P(IndexFilterTestWithSortOrder, integerTypesFilter) {
+  // Local template function to test a single integer type with range filter.
+  auto testIntegerType =
+      [this]<typename T>(const TypePtr& type, int64_t lower, int64_t upper) {
+        const auto rowType = ROW({"a"}, {type});
+        std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
+        filters["a"] = std::make_unique<BigintRange>(lower, upper, false);
+        auto scanSpec = createScanSpec(rowType, filters);
+
+        auto result = convertFilterToIndexBounds(
+            {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
+        ASSERT_TRUE(result.has_value());
+
+        const auto& bounds = result.value();
+        EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
+        verifyRangeBounds<T>(bounds, "a", lower, upper);
+        EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
+      };
+
+  // Test all integer types.
+  testIntegerType.template operator()<int8_t>(TINYINT(), 10, 20);
+  testIntegerType.template operator()<int16_t>(SMALLINT(), 1000, 2000);
+  testIntegerType.template operator()<int32_t>(INTEGER(), 100000, 200000);
+  testIntegerType.template operator()<int64_t>(BIGINT(), 1000000, 2000000);
+
+  // Local template function to test mixed integer types: point lookup on first
+  // column + range on second column.
+  auto testMixedIntegerTypes = [this]<typename T1, typename T2>(
+                                   const TypePtr& type1,
+                                   int64_t pointValue,
+                                   const TypePtr& type2,
+                                   int64_t lower,
+                                   int64_t upper) {
+    const auto rowType = ROW({"a", "b"}, {type1, type2});
+    std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
+    filters["a"] = std::make_unique<BigintRange>(pointValue, pointValue, false);
+    filters["b"] = std::make_unique<BigintRange>(lower, upper, false);
+    auto scanSpec = createScanSpec(rowType, filters);
+
+    auto result = convertFilterToIndexBounds(
+        {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
+    ASSERT_TRUE(result.has_value());
+
+    const auto& bounds = result.value();
+    EXPECT_EQ(bounds.indexColumns.size(), 2);
+    EXPECT_EQ(bounds.indexColumns[0], "a");
+    EXPECT_EQ(bounds.indexColumns[1], "b");
+
+    // Point lookup on "a".
+    verifyBound<T1>(bounds.lowerBound->bound, "a", pointValue);
+    verifyBound<T1>(bounds.upperBound->bound, "a", pointValue);
+    // Range on "b".
+    verifyRangeBounds<T2>(bounds, "b", lower, upper);
+
+    EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
+    EXPECT_EQ(scanSpec->childByName("b")->filter(), nullptr);
+  };
+
+  // Test mixed integer types: TINYINT point lookup + INTEGER range.
+  testMixedIntegerTypes.template operator()<int8_t, int32_t>(
+      TINYINT(), 42, INTEGER(), 10000, 20000);
+  // Test SMALLINT + BIGINT combination.
+  testMixedIntegerTypes.template operator()<int16_t, int64_t>(
+      SMALLINT(), 100, BIGINT(), 1000000000, 2000000000);
+}
+
 TEST_P(IndexFilterTestWithSortOrder, doubleFilter) {
   const auto rowType = ROW({"a", "b"}, {DOUBLE(), DOUBLE()});
 
