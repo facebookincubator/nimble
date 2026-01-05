@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "dwio/nimble/index/StripeIndexGroup.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "velox/dwio/common/BufferedInput.h"
@@ -25,7 +26,7 @@ namespace facebook::nimble {
 
 class ReaderBase {
  public:
-  ReaderBase(
+  static std::shared_ptr<ReaderBase> create(
       std::unique_ptr<velox::dwio::common::BufferedInput> input,
       const velox::dwio::common::ReaderOptions& options);
 
@@ -37,8 +38,8 @@ class ReaderBase {
     return *tablet_;
   }
 
-  velox::memory::MemoryPool* memoryPool() const {
-    return memoryPool_;
+  velox::memory::MemoryPool* pool() const {
+    return pool_;
   }
 
   const std::shared_ptr<velox::random::RandomSkipTracker>& randomSkip() const {
@@ -64,9 +65,18 @@ class ReaderBase {
   }
 
  private:
+  ReaderBase(
+      std::unique_ptr<velox::dwio::common::BufferedInput> input,
+      std::shared_ptr<TabletReader> tablet,
+      velox::memory::MemoryPool* pool,
+      const std::shared_ptr<velox::random::RandomSkipTracker>& randomSkip,
+      const std::shared_ptr<velox::common::ScanSpec>& scanSpec,
+      std::shared_ptr<const Type> nimbleSchema,
+      velox::RowTypePtr fileSchema);
+
   const std::unique_ptr<velox::dwio::common::BufferedInput> input_;
   const std::shared_ptr<TabletReader> tablet_;
-  velox::memory::MemoryPool* const memoryPool_;
+  velox::memory::MemoryPool* const pool_;
   const std::shared_ptr<velox::random::RandomSkipTracker> randomSkip_;
   const std::shared_ptr<velox::common::ScanSpec> scanSpec_;
   const std::shared_ptr<const Type> nimbleSchema_;
@@ -80,9 +90,15 @@ class StripeStreams {
   explicit StripeStreams(const std::shared_ptr<ReaderBase>& readerBase)
       : readerBase_(readerBase) {}
 
-  void setStripe(int stripe) {
+  void setStripe(int stripe, bool loadIndex = false) {
     stripe_ = stripe;
-    stripeIdentifier_ = readerBase_->tablet().stripeIdentifier(stripe_);
+    stripeIdentifier_ =
+        readerBase_->tablet().stripeIdentifier(stripe_, loadIndex);
+    if (loadIndex) {
+      NIMBLE_CHECK_NOT_NULL(
+          stripeIdentifier_->indexGroup(),
+          "Index group should be set when loadIndex is true");
+    }
   }
 
   bool hasStream(int streamId) const {
@@ -92,9 +108,21 @@ class StripeStreams {
   std::unique_ptr<velox::dwio::common::SeekableInputStream> enqueue(
       int streamId);
 
+  std::unique_ptr<velox::dwio::common::SeekableInputStream> enqueueKeyStream();
+
   void load() {
     readerBase_->input().load(velox::dwio::common::LogType::STREAM_BUNDLE);
   }
+
+  int32_t stripeIndex() const {
+    return stripe_;
+  }
+
+  const std::shared_ptr<StripeIndexGroup>& indexGroup() const {
+    return stripeIdentifier_->indexGroup();
+  }
+
+  std::shared_ptr<index::StreamIndex> streamIndex(int streamId) const;
 
  private:
   std::optional<velox::common::Region> streamRegion(int streamId) const;
