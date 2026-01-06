@@ -142,6 +142,14 @@ struct VeloxWriterOptions {
     return DefaultInputBufferGrowthPolicy::withDefaultRanges();
   };
 
+  // When per-stream string buffers are enabled (disableSharedStringBuffers),
+  // this policy controls how the string buffer vectors grow.
+  std::function<std::unique_ptr<InputBufferGrowthPolicy>()>
+      stringBufferGrowthPolicyFactory =
+          []() -> std::unique_ptr<InputBufferGrowthPolicy> {
+    return DefaultInputBufferGrowthPolicy::withStringBufferRanges();
+  };
+
   std::function<std::unique_ptr<velox::memory::MemoryReclaimer>()>
       reclaimerFactory = []() { return nullptr; };
 
@@ -178,6 +186,10 @@ struct VeloxWriterOptions {
   bool ignoreTopLevelNulls{false};
 
   bool enableStreamDeduplication{true};
+
+  // When true, string fields use per-field buffers instead of a shared buffer.
+  // This enables incremental memory reclamation during chunking.
+  bool disableSharedStringBuffers{false};
 };
 
 } // namespace facebook::nimble

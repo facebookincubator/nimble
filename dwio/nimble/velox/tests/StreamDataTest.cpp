@@ -76,7 +76,18 @@ TYPED_TEST(nullStreamDataTest, ensureAdditionalNullsCapacity) {
             1030, getAlignedBufferCapacity<bool>(20, helperPool)))
         .WillOnce(Return(1030));
   }
-  T streamData(*memoryPool, descriptor, growthPolicy);
+  // NullsStreamData takes 3 params, NullableContentStreamData takes 4.
+  std::unique_ptr<T> streamDataPtr;
+  if constexpr (std::is_same_v<T, NullsStreamData>) {
+    streamDataPtr = std::make_unique<T>(*memoryPool, descriptor, growthPolicy);
+  } else {
+    streamDataPtr = std::make_unique<T>(
+        *memoryPool,
+        descriptor,
+        growthPolicy,
+        std::make_shared<ExactGrowthPolicy>());
+  }
+  T& streamData = *streamDataPtr;
 
   // First ensure some capacity with nulls
   streamData.ensureAdditionalNullsCapacity(true, 20);
@@ -167,7 +178,12 @@ TYPED_TEST(contentStreamDataTest, ensureMutableDataCapacity) {
             1000, getAlignedBufferCapacity<int32_t>(20, helperPool)))
         .WillOnce(Return(1000));
   }
-  T streamData(*memoryPool, descriptor, growthPolicy);
+  // ContentStreamData and NullableContentStreamData both take 4 params.
+  T streamData(
+      *memoryPool,
+      descriptor,
+      growthPolicy,
+      std::make_shared<ExactGrowthPolicy>());
   EXPECT_EQ(memoryPool->stats().numAllocs, 0);
 
   // Ensure the size of 20, make sure capacity has changed
@@ -240,7 +256,11 @@ TEST_F(rowCountTest, contentStreamDataRowCount) {
   const auto scalarBuilder =
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   const auto& descriptor = scalarBuilder->scalarDescriptor();
-  ContentStreamData<int32_t> streamData(*memoryPool_, descriptor, growthPolicy);
+  ContentStreamData<int32_t> streamData(
+      *memoryPool_,
+      descriptor,
+      growthPolicy,
+      std::make_shared<ExactGrowthPolicy>());
 
   // Initially empty.
   EXPECT_EQ(streamData.rowCount(), 0);
@@ -273,7 +293,10 @@ TEST_F(rowCountTest, contentStreamDataStringRowCount) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
   const auto& descriptor = scalarBuilder->scalarDescriptor();
   ContentStreamData<std::string_view> streamData(
-      *memoryPool_, descriptor, growthPolicy);
+      *memoryPool_,
+      descriptor,
+      growthPolicy,
+      std::make_shared<ExactGrowthPolicy>());
 
   EXPECT_EQ(streamData.rowCount(), 0);
 
@@ -354,7 +377,10 @@ TEST_F(rowCountTest, nullableContentStreamDataRowCount) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   const auto& descriptor = scalarBuilder->scalarDescriptor();
   NullableContentStreamData<int32_t> streamData(
-      *memoryPool_, descriptor, growthPolicy);
+      *memoryPool_,
+      descriptor,
+      growthPolicy,
+      std::make_shared<ExactGrowthPolicy>());
 
   // Initially empty.
   EXPECT_EQ(streamData.rowCount(), 0);
@@ -392,7 +418,10 @@ TEST_F(rowCountTest, nullableContentStreamDataRowCountWithoutNulls) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   const auto& descriptor = scalarBuilder->scalarDescriptor();
   NullableContentStreamData<int32_t> streamData(
-      *memoryPool_, descriptor, growthPolicy);
+      *memoryPool_,
+      descriptor,
+      growthPolicy,
+      std::make_shared<ExactGrowthPolicy>());
 
   // Add data without nulls.
   streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/false, 3);
@@ -414,7 +443,10 @@ TEST_F(rowCountTest, nullableContentStreamDataRowCountWithAllNulls) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   const auto& descriptor = scalarBuilder->scalarDescriptor();
   NullableContentStreamData<int32_t> streamData(
-      *memoryPool_, descriptor, growthPolicy);
+      *memoryPool_,
+      descriptor,
+      growthPolicy,
+      std::make_shared<ExactGrowthPolicy>());
 
   // Add data with all nulls.
   streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/true, 5);
