@@ -35,6 +35,24 @@ void populateData(Vector<T>& vec, const std::vector<T>& data) {
   }
 }
 
+uint64_t populateStringData(
+    StringBuffer& stringBuffer,
+    const std::vector<std::string_view>& testData) {
+  uint64_t extraMemory = 0;
+  for (const auto& str : testData) {
+    extraMemory += str.size();
+  }
+  auto& buffer = stringBuffer.mutableBuffer();
+  auto& mutableLengths = stringBuffer.mutableLengths();
+  buffer.reserve(buffer.size() + extraMemory);
+  mutableLengths.reserve(mutableLengths.size() + testData.size());
+  for (const auto& str : testData) {
+    buffer.insert(buffer.end(), str.begin(), str.end());
+    mutableLengths.push_back(str.size());
+  }
+  return extraMemory;
+}
+
 template <typename T>
 std::vector<T> toVector(std::string_view data) {
   const T* chunkData = reinterpret_cast<const T*>(data.data());
@@ -55,7 +73,7 @@ class StreamChunkerTestsBase : public ::testing::Test {
   // Helper method to validate chunk results against expected data
   template <typename T>
   void validateChunk(
-      const StreamData& stream,
+      StreamData& stream,
       std::unique_ptr<StreamChunker> chunker,
       const std::vector<ExpectedChunk<T>>& expectedChunks,
       const ExpectedChunk<T>& expectedRetainedData) {
@@ -85,8 +103,14 @@ class StreamChunkerTestsBase : public ::testing::Test {
     chunker->compact();
 
     // Validate buffer is properly compacted to only retain expected data
+    stream.materializeStrings();
+    const auto streamDataVector = toVector<T>(stream.data());
+    size_t stringBufferLength = 0;
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      stringBufferLength = streamDataVector.size();
+    }
     EXPECT_THAT(
-        toVector<T>(stream.data()),
+        streamDataVector,
         ::testing::ElementsAreArray(expectedRetainedData.chunkData));
     EXPECT_THAT(
         stream.nonNulls(),
@@ -94,6 +118,7 @@ class StreamChunkerTestsBase : public ::testing::Test {
     EXPECT_EQ(stream.hasNulls(), expectedRetainedData.hasNulls);
     const uint64_t expectedRetainedMemoryUsed =
         (sizeof(T) * expectedRetainedData.chunkData.size()) +
+        (sizeof(size_t) * stringBufferLength) +
         expectedRetainedData.chunkNonNulls.size() +
         expectedRetainedData.extraMemory;
     EXPECT_EQ(stream.memoryUsed(), expectedRetainedMemoryUsed);
@@ -508,13 +533,8 @@ TEST_F(StreamChunkerTestsBase, contentStreamStringChunking) {
   {
     std::vector<std::string_view> testData = {
         "short", "a_longer_string", "x", "medium_size", "tiny"};
-    auto& data = stream.mutableData();
-    populateData(data, testData);
-
-    // Calculate extra memory for string content
-    for (const auto& str : testData) {
-      stream.extraMemory() += str.size();
-    }
+    stream.extraMemory() +=
+        populateStringData(stream.mutableStringBuffer(), testData);
 
     // Total string content sizes:
     // "short"(5) + "a_longer_string"(15) + "x"(1) + "medium_size"(11) +
@@ -582,17 +602,10 @@ TEST_F(StreamChunkerTestsBase, contentStreamStringChunking) {
 
   // Test 4: We can reuse a stream post compaction.
   {
-    auto& data = stream.mutableData();
-    stream.extraMemory() = 0; // Reset extra memory
     std::vector<std::string_view> testData = {
         "hello", "world", "hello", "world"};
-    populateData(data, testData);
-
-    // Calculate extra memory for string content
-    for (const auto& str : testData) {
-      stream.extraMemory() += str.size();
-    }
-
+    stream.extraMemory() =
+        populateStringData(stream.mutableStringBuffer(), testData);
     auto chunker = getStreamChunker(
         stream,
         {
@@ -619,16 +632,10 @@ TEST_F(StreamChunkerTestsBase, contentStreamStringChunking) {
   {
     std::vector<std::string_view> testData = {
         "a", "short", "really really large string", "small"};
-    auto& data = stream.mutableData();
-    populateData(data, testData);
-
     // Size of "really really large string" and string view minus 1.
     maxChunkSize = 24 + sizeof(std::string_view);
-
-    // Calculate extra memory for string content.
-    for (const auto& str : testData) {
-      stream.extraMemory() += str.size();
-    }
+    stream.extraMemory() =
+        populateStringData(stream.mutableStringBuffer(), testData);
 
     // "a"(1), "short"(5), "really really large string"(25), "small"(5) = 37
     // bytes of extra memory.
@@ -888,23 +895,18 @@ TEST_F(StreamChunkerTestsBase, nullableContentStreamStringChunking) {
   // insertion
   stream.ensureAdditionalNullsCapacity(
       /*mayHaveNulls=*/true, static_cast<uint32_t>(nonNullsData.size()));
-  auto& data = stream.mutableData();
   auto& nonNulls = stream.mutableNonNulls();
-  populateData(data, testData);
   populateData(nonNulls, nonNullsData);
 
   // Set extra memory for string overhead
   // number of strings: 7
-  // size of string view data pointers = 7 * 8 = 56 bytes
-  // size of string view data size = 7 * 8 = 56 bytes
+  // size of string buffer length vector = 8 * 7 = 56 bytes
   // size of nulls = 11 * 1 = 11 bytes
   // total size of stored string data = 36 bytes
-  // total size of stream data = 56 + 56 + 11 + 36 = 159 bytes
-  for (const auto& entry : testData) {
-    stream.extraMemory() += entry.size();
-  }
-  ASSERT_EQ(stream.memoryUsed(), 159);
-
+  // total size of stream data = 56 + 11 + 36 = 103 bytes
+  stream.extraMemory() +=
+      populateStringData(stream.mutableStringBuffer(), testData);
+  ASSERT_EQ(stream.memoryUsed(), 103);
   // Test 1: Not last chunk
   {
     const uint64_t maxChunkSize = 72;
@@ -966,7 +968,7 @@ TEST_F(StreamChunkerTestsBase, nullableContentStreamStringChunking) {
     auto chunker2 = getStreamChunker(
         stream,
         {
-            .minChunkSize = stream.memoryUsed(),
+            .minChunkSize = 0,
             .maxChunkSize = maxChunkSize,
             .ensureFullChunks = false,
         });
@@ -982,16 +984,13 @@ TEST_F(StreamChunkerTestsBase, nullableContentStreamStringChunking) {
     stream.ensureAdditionalNullsCapacity(
         /*mayHaveNulls=*/false,
         static_cast<uint32_t>(smallNonNullsData.size()));
-    auto& smallData = stream.mutableData();
     auto& smallNonNulls = stream.mutableNonNulls();
-    populateData(smallData, smallTestData);
     populateData(smallNonNulls, smallNonNullsData);
 
     // Reset extra memory for new test data
     stream.extraMemory() = 0;
-    for (const auto& entry : smallTestData) {
-      stream.extraMemory() += entry.size();
-    }
+    stream.extraMemory() +=
+        populateStringData(stream.mutableStringBuffer(), smallTestData);
 
     const uint64_t minChunkSize =
         smallTestData.at(0).size() + sizeof(std::string_view);
@@ -1025,7 +1024,6 @@ TEST_F(StreamChunkerTestsBase, nullableContentStreamStringChunking) {
   // Test 5: Single string exceeds maxChunkSize.
   {
     testData = {"a", "short", "really really large string", "small"};
-    populateData(data, testData);
 
     nonNullsData = {true, false, true, true, false, true, false};
     stream.ensureAdditionalNullsCapacity(
@@ -1037,9 +1035,8 @@ TEST_F(StreamChunkerTestsBase, nullableContentStreamStringChunking) {
     const uint64_t maxChunkSize = 24 + sizeof(std::string_view) + sizeof(bool);
 
     // Calculate extra memory for string content.
-    for (const auto& str : testData) {
-      stream.extraMemory() += str.size();
-    }
+    stream.extraMemory() +=
+        populateStringData(stream.mutableStringBuffer(), testData);
 
     // "a"(1), "short"(5), "really really large string"(25), "small"(5) =
     // 37 bytes of extra memory.
@@ -1113,11 +1110,8 @@ TEST_F(StreamChunkerTestsBase, contentStreamStringChunkerRowCount) {
   // Add strings with varying sizes.
   std::vector<std::string_view> testData = {
       "a", "bb", "ccc", "dddd", "eeeee", "ffffff"};
-  auto& data = stream.mutableData();
-  populateData(data, testData);
-  for (const auto& str : testData) {
-    stream.extraMemory() += str.size();
-  }
+  stream.extraMemory() +=
+      populateStringData(stream.mutableStringBuffer(), testData);
 
   // Max chunk size that fits ~2-3 strings per chunk.
   auto chunker = getStreamChunker(
@@ -1228,13 +1222,10 @@ TEST_F(StreamChunkerTestsBase, nullableContentStreamStringChunkerRowCount) {
   std::vector<bool> nonNullsData = {true, false, true, true, false, true};
   stream.ensureAdditionalNullsCapacity(
       /*mayHaveNulls=*/true, static_cast<uint32_t>(nonNullsData.size()));
-  auto& data = stream.mutableData();
   auto& nonNulls = stream.mutableNonNulls();
-  populateData(data, testData);
   populateData(nonNulls, nonNullsData);
-  for (const auto& str : testData) {
-    stream.extraMemory() += str.size();
-  }
+  stream.extraMemory() +=
+      populateStringData(stream.mutableStringBuffer(), testData);
 
   auto chunker = getStreamChunker(
       stream,
