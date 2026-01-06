@@ -57,7 +57,11 @@ class WriterContext : public FieldWriterContext {
     inputBufferGrowthPolicy_ = this->options_.lowMemoryMode
         ? std::make_unique<ExactGrowthPolicy>()
         : this->options_.inputGrowthPolicyFactory();
+    stringBufferGrowthPolicy_ = this->options_.lowMemoryMode
+        ? std::make_unique<ExactGrowthPolicy>()
+        : this->options_.stringBufferGrowthPolicyFactory();
     ignoreTopLevelNulls_ = options_.ignoreTopLevelNulls;
+    disableSharedStringBuffers_ = options_.disableSharedStringBuffers;
   }
 
   const VeloxWriterOptions& options() const {
@@ -980,6 +984,7 @@ void VeloxWriter::processStream(
     std::atomic_uint64_t& chunkSize) {
   const auto offset = streamData.descriptor().offset();
   const auto* context = streamData.descriptor().context<WriterStreamContext>();
+  streamData.materializeStrings();
   NIMBLE_CHECK(encodedStreams_[offset].chunks.empty());
   if ((context != nullptr) && context->isNullStream) {
     // For null streams we promote the null values to be written as

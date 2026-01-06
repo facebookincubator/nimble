@@ -88,8 +88,12 @@ class MutableStreamData : public StreamData {
 
 class StringBuffer {
  public:
-  explicit StringBuffer(velox::memory::MemoryPool& pool)
-      : buffer_{&pool}, lengths_{&pool} {}
+  StringBuffer(
+      velox::memory::MemoryPool& pool,
+      std::shared_ptr<const InputBufferGrowthPolicy> growthPolicy)
+      : buffer_{&pool},
+        lengths_{&pool},
+        growthPolicy_{std::move(growthPolicy)} {}
 
   Vector<char>& mutableBuffer() {
     return buffer_;
@@ -116,6 +120,31 @@ class StringBuffer {
     lengths_.clear();
   }
 
+  void ensureAdditionalCapacity(
+      uint64_t additionalStrings,
+      uint64_t additionalBytes) {
+    if (additionalStrings > 0) {
+      const auto newLengthsSize = lengths_.size() + additionalStrings;
+      if (newLengthsSize > lengths_.capacity()) {
+        const auto newCapacity = growthPolicy_->getExtendedCapacity(
+            newLengthsSize, lengths_.capacity());
+        lengths_.reserve(newCapacity);
+      }
+    }
+    if (additionalBytes > 0) {
+      const auto newBufferSize = buffer_.size() + additionalBytes;
+      if (newBufferSize > buffer_.capacity()) {
+        const auto newCapacity = growthPolicy_->getExtendedCapacity(
+            newBufferSize, buffer_.capacity());
+        buffer_.reserve(newCapacity);
+      }
+    }
+  }
+
+  const std::shared_ptr<const InputBufferGrowthPolicy>& growthPolicy() const {
+    return growthPolicy_;
+  }
+
   void materialize(Vector<std::string_view>& data) {
     if (empty()) {
       return;
@@ -131,6 +160,7 @@ class StringBuffer {
  private:
   Vector<char> buffer_;
   Vector<size_t> lengths_;
+  std::shared_ptr<const InputBufferGrowthPolicy> growthPolicy_;
 };
 
 /// Provides a lightweight, non-owning view into a portion of stream data,
@@ -204,10 +234,11 @@ class ContentStreamData final : public MutableStreamData {
   ContentStreamData(
       velox::memory::MemoryPool& pool,
       const StreamDescriptorBuilder& descriptor,
-      const InputBufferGrowthPolicy& growthPolicy)
+      const InputBufferGrowthPolicy& growthPolicy,
+      std::shared_ptr<const InputBufferGrowthPolicy> stringBufferGrowthPolicy)
       : MutableStreamData(descriptor, growthPolicy),
         data_{&pool},
-        stringBuffer_{pool} {}
+        stringBuffer_{pool, std::move(stringBufferGrowthPolicy)} {}
 
   inline uint32_t rowCount() const override {
     return data_.size();
@@ -245,6 +276,12 @@ class ContentStreamData final : public MutableStreamData {
 
   void ensureMutableDataCapacity(uint64_t newSize) {
     this->ensureDataCapacity(data_, newSize);
+  }
+
+  void ensureStringBufferCapacity(
+      uint64_t additionalStrings,
+      uint64_t additionalBytes) {
+    stringBuffer_.ensureAdditionalCapacity(additionalStrings, additionalBytes);
   }
 
   inline uint64_t& extraMemory() {
@@ -347,10 +384,11 @@ class NullableContentStreamData final : public NullsStreamData {
   NullableContentStreamData(
       velox::memory::MemoryPool& memoryPool,
       const StreamDescriptorBuilder& descriptor,
-      const InputBufferGrowthPolicy& growthPolicy)
+      const InputBufferGrowthPolicy& growthPolicy,
+      std::shared_ptr<const InputBufferGrowthPolicy> stringBufferGrowthPolicy)
       : NullsStreamData(memoryPool, descriptor, growthPolicy),
         data_{&memoryPool},
-        stringBuffer_{memoryPool},
+        stringBuffer_{memoryPool, std::move(stringBufferGrowthPolicy)},
         extraMemory_{0} {}
 
   inline std::string_view data() const override {
@@ -377,6 +415,12 @@ class NullableContentStreamData final : public NullsStreamData {
 
   void ensureMutableDataCapacity(uint64_t newSize) {
     this->ensureDataCapacity(data_, newSize);
+  }
+
+  void ensureStringBufferCapacity(
+      uint64_t additionalStrings,
+      uint64_t additionalBytes) {
+    stringBuffer_.ensureAdditionalCapacity(additionalStrings, additionalBytes);
   }
 
   inline uint64_t& extraMemory() {

@@ -2220,6 +2220,7 @@ TEST_F(VeloxWriterTest, fuzzComplex) {
     std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
     nimble::VeloxWriterOptions writerOptions;
     writerOptions.enableChunking = true;
+    writerOptions.disableSharedStringBuffers = true;
     writerOptions.flushPolicyFactory =
         []() -> std::unique_ptr<nimble::FlushPolicy> {
       return std::make_unique<nimble::ChunkFlushPolicy>(
@@ -2334,6 +2335,7 @@ TEST_F(VeloxWriterTest, batchedChunkingRelievesMemoryPressure) {
   nimble::VeloxWriterOptions writerOptions;
   writerOptions.chunkedStreamBatchSize = kBatchSize;
   writerOptions.enableChunking = true;
+  writerOptions.disableSharedStringBuffers = true;
   writerOptions.minStreamChunkRawSize = minChunkSize;
   writerOptions.maxStreamChunkRawSize = maxChunkSize;
   writerOptions.flushPolicyFactory =

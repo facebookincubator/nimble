@@ -49,7 +49,7 @@ inline void compactStringBuffer(
     Vector<T>& mutableData,
     size_t dataElementOffset,
     uint64_t extraMemory) {
-  StringBuffer newStringBuffer(*pool);
+  StringBuffer newStringBuffer(*pool, stringBuffer.growthPolicy());
   auto& newBuffer = newStringBuffer.mutableBuffer();
   newBuffer.reserve(extraMemory);
 

@@ -127,6 +127,8 @@ class FieldWriterContext {
             })},
         inputBufferGrowthPolicy_{
             DefaultInputBufferGrowthPolicy::withDefaultRanges()},
+        stringBufferGrowthPolicy_{
+            DefaultInputBufferGrowthPolicy::withStringBufferRanges()},
         decodingContextPool_{std::move(vectorDecoderVisitor)} {
     resetStringBuffer();
   }
@@ -285,7 +287,10 @@ class FieldWriterContext {
       const StreamDescriptorBuilder& descriptor) {
     return static_cast<ContentStreamData<T>&>(*streams_.emplace_back(
         std::make_unique<ContentStreamData<T>>(
-            *bufferMemoryPool_, descriptor, *inputBufferGrowthPolicy_)));
+            *bufferMemoryPool_,
+            descriptor,
+            *inputBufferGrowthPolicy_,
+            stringBufferGrowthPolicy_)));
   }
 
   template <typename T>
@@ -293,7 +298,14 @@ class FieldWriterContext {
       const StreamDescriptorBuilder& descriptor) {
     return static_cast<NullableContentStreamData<T>&>(*streams_.emplace_back(
         std::make_unique<NullableContentStreamData<T>>(
-            *bufferMemoryPool_, descriptor, *inputBufferGrowthPolicy_)));
+            *bufferMemoryPool_,
+            descriptor,
+            *inputBufferGrowthPolicy_,
+            stringBufferGrowthPolicy_)));
+  }
+
+  inline bool disableSharedStringBuffers() const {
+    return disableSharedStringBuffers_;
   }
 
  protected:
@@ -305,8 +317,10 @@ class FieldWriterContext {
   folly::F14FastSet<uint32_t> dictionaryArrayNodeIds_;
   folly::F14FastSet<uint32_t> deduplicatedMapNodeIds_;
   bool ignoreTopLevelNulls_{false};
+  bool disableSharedStringBuffers_{false};
 
   std::unique_ptr<InputBufferGrowthPolicy> inputBufferGrowthPolicy_;
+  std::shared_ptr<const InputBufferGrowthPolicy> stringBufferGrowthPolicy_;
   InputBufferGrowthStats inputBufferGrowthStats_;
 
   std::unordered_map<offset_size, ColumnStats> columnStats_;

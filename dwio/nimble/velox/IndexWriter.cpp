@@ -35,12 +35,12 @@ const StreamDescriptorBuilder& keyStreamDescriptor() {
   return descriptor;
 }
 
-// Returns a reference to a static growth policy to ensure lifetime validity for
-// ContentStreamData which stores a reference to the policy.
-const InputBufferGrowthPolicy& keyStreamGrowthPolicy() {
-  static const auto policy =
-      DefaultInputBufferGrowthPolicy::withDefaultRanges();
-  return *policy;
+// Returns a shared pointer to a static growth policy for string buffers in
+// the key stream.
+std::shared_ptr<const InputBufferGrowthPolicy> keyStreamStringGrowthPolicy() {
+  static const auto policy = std::shared_ptr<const InputBufferGrowthPolicy>(
+      DefaultInputBufferGrowthPolicy::withDefaultRanges());
+  return policy;
 }
 
 } // namespace
@@ -72,7 +72,8 @@ IndexWriter::IndexWriter(
       keyStream_{std::make_unique<ContentStreamData<std::string_view>>(
           *pool_,
           keyStreamDescriptor(),
-          keyStreamGrowthPolicy())},
+          *keyStreamStringGrowthPolicy(),
+          keyStreamStringGrowthPolicy())},
       encodingLayout_{config.encodingLayout},
       enforceKeyOrder_{config.enforceKeyOrder},
       minChunkSize_{config.minChunkRawSize},

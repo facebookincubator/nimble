@@ -261,6 +261,17 @@ struct StringConverter {
     memoryUsed += sv.size();
     return buffer.writeString({sv.data(), sv.size()});
   }
+
+  static void convert(
+      velox::StringView sv,
+      StringBuffer& stringBuffer,
+      uint64_t& memoryUsed) {
+    memoryUsed += sv.size();
+    auto& buffer = stringBuffer.mutableBuffer();
+    buffer.insert(buffer.end(), sv.begin(), sv.end());
+    auto& mutableLengths = stringBuffer.mutableLengths();
+    mutableLengths.push_back(sv.size());
+  }
 };
 
 template <
@@ -289,9 +300,36 @@ class SimpleFieldWriter : public FieldWriter {
       const OrderedRanges& ranges,
       folly::Executor*) override {
     auto size = ranges.size();
-    auto& buffer = context_.stringBuffer();
+    auto& sharedStringBuffer = context_.stringBuffer();
     auto& data = valuesStream_.mutableData();
     uint64_t nullCount = 0;
+
+    auto ensureStringBufferCapacity = [&]() {
+      if constexpr (
+          K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY) {
+        if (context_.disableSharedStringBuffers()) {
+          RawSizeContext rawSizeContext;
+          uint64_t totalBytes =
+              getRawSizeFromVector(vector, ranges, rawSizeContext);
+          valuesStream_.ensureStringBufferCapacity(size, totalBytes);
+        }
+      }
+    };
+
+    auto convertAndAppend = [&](SourceType value) {
+      if constexpr (
+          K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY) {
+        if (context_.disableSharedStringBuffers()) {
+          C::convert(
+              value,
+              valuesStream_.mutableStringBuffer(),
+              valuesStream_.extraMemory());
+          return;
+        }
+      }
+      data.push_back(
+          C::convert(value, sharedStringBuffer, valuesStream_.extraMemory()));
+    };
 
     if (auto flat = vector->asFlatVector<SourceType>()) {
       valuesStream_.ensureAdditionalNullsCapacity(flat->mayHaveNulls(), size);
@@ -313,28 +351,24 @@ class SimpleFieldWriter : public FieldWriter {
       }
 
       if (!rangeCopied) {
+        ensureStringBufferCapacity();
         auto nonNullCount = iterateNonNullValues(
             ranges,
             valuesStream_.mutableNonNulls(),
             Flat<SourceType>{vector},
-            [&](SourceType value) {
-              data.push_back(
-                  C::convert(value, buffer, valuesStream_.extraMemory()));
-            });
+            convertAndAppend);
         nullCount = size - nonNullCount;
       }
     } else {
       auto decodingContext = context_.decodingContext();
       auto& decoded = decodingContext.decode(vector, ranges);
       valuesStream_.ensureAdditionalNullsCapacity(decoded.mayHaveNulls(), size);
+      ensureStringBufferCapacity();
       auto nonNullCount = iterateNonNullValues(
           ranges,
           valuesStream_.mutableNonNulls(),
           Decoded<SourceType>{decoded},
-          [&](SourceType value) {
-            data.push_back(
-                C::convert(value, buffer, valuesStream_.extraMemory()));
-          });
+          convertAndAppend);
       nullCount = size - nonNullCount;
     }
 

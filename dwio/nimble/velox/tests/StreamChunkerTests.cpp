@@ -137,12 +137,15 @@ class StreamChunkerTestsBase : public ::testing::Test {
     schemaBuilder_ = std::make_unique<SchemaBuilder>();
     inputBufferGrowthPolicy_ =
         DefaultInputBufferGrowthPolicy::withDefaultRanges();
+    stringBufferGrowthPolicy_ =
+        DefaultInputBufferGrowthPolicy::withStringBufferRanges();
   }
 
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
   std::unique_ptr<SchemaBuilder> schemaBuilder_;
   std::unique_ptr<InputBufferGrowthPolicy> inputBufferGrowthPolicy_;
+  std::shared_ptr<const InputBufferGrowthPolicy> stringBufferGrowthPolicy_;
 };
 
 TEST_F(StreamChunkerTestsBase, getStreamChunker) {
@@ -153,7 +156,10 @@ TEST_F(StreamChunkerTestsBase, getStreamChunker) {
         schemaBuilder_->createScalarTypeBuilder(scalarKind);           \
     auto descriptor = &scalarTypeBuilder->scalarDescriptor();          \
     ContentStreamData<T> stream(                                       \
-        *leafPool_, *descriptor, *inputBufferGrowthPolicy_);           \
+        *leafPool_,                                                    \
+        *descriptor,                                                   \
+        *inputBufferGrowthPolicy_,                                     \
+        stringBufferGrowthPolicy_);                                    \
     getStreamChunker(stream, {.minChunkSize = 4, .maxChunkSize = 30}); \
   }
 
@@ -275,7 +281,10 @@ TEST_F(StreamChunkerTestsBase, shouldOmitDataStream) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   descriptor = &scalarTypeBuilder->scalarDescriptor();
   NullableContentStreamData<int32_t> nullableContentStream(
-      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+      *leafPool_,
+      *descriptor,
+      *inputBufferGrowthPolicy_,
+      stringBufferGrowthPolicy_);
   std::vector<int32_t> testData = {1, 2, 3, 4, 5};
   // Populate data using ensureAdditionalNullsCapacity and manual data insertion
   nullableContentStream.ensureAdditionalNullsCapacity(
@@ -360,7 +369,10 @@ TEST_F(StreamChunkerTestsBase, ensureShouldOmitStreamIsRespected) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   descriptor = &scalarTypeBuilder->scalarDescriptor();
   NullableContentStreamData<int32_t> nullableContentStream(
-      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+      *leafPool_,
+      *descriptor,
+      *inputBufferGrowthPolicy_,
+      stringBufferGrowthPolicy_);
   std::vector<int32_t> testData = {1, 2, 3, 4, 5};
   // Populate data using ensureAdditionalNullsCapacity and manual data
   // insertion
@@ -412,7 +424,10 @@ TEST_F(StreamChunkerTestsBase, contentStreamChunker) {
 
   // ContentStreamData can be used to create a ContentStreamChunker.
   ContentStreamData<int32_t> stream(
-      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+      *leafPool_,
+      *descriptor,
+      *inputBufferGrowthPolicy_,
+      stringBufferGrowthPolicy_);
   ASSERT_NE(
       dynamic_cast<ContentStreamChunker<int32_t>*>(
           getStreamChunker(stream, options).get()),
@@ -420,7 +435,10 @@ TEST_F(StreamChunkerTestsBase, contentStreamChunker) {
 
   // NullableContentStreamData can be used to create a ContentStreamChunker.
   NullableContentStreamData<int32_t> nullableStream(
-      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+      *leafPool_,
+      *descriptor,
+      *inputBufferGrowthPolicy_,
+      stringBufferGrowthPolicy_);
   auto streamChunker = getStreamChunker(nullableStream, options);
   auto contentStreamChunker = dynamic_cast<
       ContentStreamChunker<int32_t, NullableContentStreamData<int32_t>>*>(
@@ -433,7 +451,10 @@ TEST_F(StreamChunkerTestsBase, contentStreamIntChunking) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
   ContentStreamData<int32_t> stream(
-      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+      *leafPool_,
+      *descriptor,
+      *inputBufferGrowthPolicy_,
+      stringBufferGrowthPolicy_);
 
   uint64_t maxChunkSize = 18; // 4.5 elements
   uint64_t minChunkSize = 2; // 0 elements
@@ -526,7 +547,10 @@ TEST_F(StreamChunkerTestsBase, contentStreamStringChunking) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
   ContentStreamData<std::string_view> stream(
-      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+      *leafPool_,
+      *descriptor,
+      *inputBufferGrowthPolicy_,
+      stringBufferGrowthPolicy_);
   uint64_t maxChunkSize = 55;
   uint64_t minChunkSize = 1;
   // Test 1: Ensure Full Chunks. Min Size is Ignored.
@@ -763,7 +787,10 @@ TEST_F(StreamChunkerTestsBase, nullableContentStreamIntChunking) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
   NullableContentStreamData<int32_t> stream(
-      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+      *leafPool_,
+      *descriptor,
+      *inputBufferGrowthPolicy_,
+      stringBufferGrowthPolicy_);
 
   // Setup test data with some nulls
   std::vector<int32_t> testData = {1, 2, 3, 4, 5, 6, 7};
@@ -883,7 +910,10 @@ TEST_F(StreamChunkerTestsBase, nullableContentStreamStringChunking) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
   NullableContentStreamData<std::string_view> stream(
-      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+      *leafPool_,
+      *descriptor,
+      *inputBufferGrowthPolicy_,
+      stringBufferGrowthPolicy_);
 
   // Setup test data with some nulls
   std::vector<std::string_view> testData = {
@@ -1069,7 +1099,10 @@ TEST_F(StreamChunkerTestsBase, contentStreamChunkerRowCount) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
   ContentStreamData<int32_t> stream(
-      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+      *leafPool_,
+      *descriptor,
+      *inputBufferGrowthPolicy_,
+      stringBufferGrowthPolicy_);
 
   // Add 10 elements.
   std::vector<int32_t> testData = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
@@ -1105,7 +1138,10 @@ TEST_F(StreamChunkerTestsBase, contentStreamStringChunkerRowCount) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
   ContentStreamData<std::string_view> stream(
-      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+      *leafPool_,
+      *descriptor,
+      *inputBufferGrowthPolicy_,
+      stringBufferGrowthPolicy_);
 
   // Add strings with varying sizes.
   std::vector<std::string_view> testData = {
@@ -1177,7 +1213,10 @@ TEST_F(StreamChunkerTestsBase, nullableContentStreamChunkerRowCount) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
   NullableContentStreamData<int32_t> stream(
-      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+      *leafPool_,
+      *descriptor,
+      *inputBufferGrowthPolicy_,
+      stringBufferGrowthPolicy_);
 
   // Add data with nulls: 10 rows, 7 non-null values.
   std::vector<int32_t> testData = {1, 2, 3, 4, 5, 6, 7};
@@ -1215,7 +1254,10 @@ TEST_F(StreamChunkerTestsBase, nullableContentStreamStringChunkerRowCount) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
   NullableContentStreamData<std::string_view> stream(
-      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+      *leafPool_,
+      *descriptor,
+      *inputBufferGrowthPolicy_,
+      stringBufferGrowthPolicy_);
 
   // Add data with nulls.
   std::vector<std::string_view> testData = {"hello", "world", "test", "data"};
@@ -1252,7 +1294,10 @@ TEST_F(StreamChunkerTestsBase, singleElementChunkRowCount) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int64);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
   ContentStreamData<int64_t> stream(
-      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+      *leafPool_,
+      *descriptor,
+      *inputBufferGrowthPolicy_,
+      stringBufferGrowthPolicy_);
 
   // Add single element.
   stream.mutableData().push_back(42);
@@ -1279,7 +1324,10 @@ TEST_F(StreamChunkerTestsBase, rowCountAcrossChunks) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   auto descriptor = &scalarTypeBuilder->scalarDescriptor();
   ContentStreamData<int32_t> stream(
-      *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+      *leafPool_,
+      *descriptor,
+      *inputBufferGrowthPolicy_,
+      stringBufferGrowthPolicy_);
 
   // Add 100 elements.
   for (int32_t i = 0; i < 100; ++i) {
