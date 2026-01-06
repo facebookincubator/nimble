@@ -19,6 +19,7 @@ add_executable(
   # VELOX_BUILD_MINIMAL_WITH_DWIO=ON.
   #
   # E2EFilterTest.cpp
+  # E2EIndexTest.cpp
   SelectiveNimbleReaderTest.cpp
 )
 add_test(nimble_velox_selective_tests nimble_velox_selective_tests)
@@ -29,6 +30,7 @@ target_link_libraries(
   nimble_common_file_writer
   nimble_index_test_base
   velox_vector_test_lib
+  velox_vector_fuzzer
   # See also the above VELOX_BUILD_TEST_UTILS=ON comment.
   #
   # velox_dwio_common_test_utils

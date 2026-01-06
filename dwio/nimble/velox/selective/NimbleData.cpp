@@ -32,8 +32,8 @@ NimbleData::NimbleData(
         std::unique_ptr<Encoding>(velox::memory::MemoryPool&, std::string_view)>
         encodingFactory)
     : nimbleType_(nimbleType),
-      streams_(streams),
-      memoryPool_(memoryPool),
+      streams_(&streams),
+      pool_(&memoryPool),
       inMapDecoder_(inMapDecoder),
       encodingFactory_{encodingFactory} {
   switch (nimbleType->kind()) {
@@ -97,13 +97,13 @@ void NimbleData::readNulls(
   }
   auto numBytes = velox::bits::nbytes(numValues);
   if (!nulls || nulls->capacity() < numBytes) {
-    nulls = AlignedBuffer::allocate<char>(numBytes, &memoryPool_);
+    nulls = AlignedBuffer::allocate<char>(numBytes, pool_);
   }
   nulls->setSize(numBytes);
   auto* nullsPtr = nulls->asMutable<uint64_t>();
   if (inMapDecoder_) {
     if (nullsDecoder_) {
-      dwio::common::ensureCapacity<char>(inMap_, numBytes, &memoryPool_);
+      dwio::common::ensureCapacity<char>(inMap_, numBytes, pool_);
       inMapDecoder_->nextBools(
           inMap_->asMutable<uint64_t>(), numValues, incomingNulls);
       nullsDecoder_->nextBools(nullsPtr, numValues, inMap_->as<uint64_t>());
@@ -155,31 +155,34 @@ uint64_t NimbleData::skipNulls(uint64_t numValues, bool /*nullsOnly*/) {
 }
 
 ChunkedDecoder NimbleData::makeScalarDecoder() {
+  const auto streamId = nimbleType_->asScalar().scalarDescriptor().offset();
   return ChunkedDecoder(
-      streams_.enqueue(nimbleType_->asScalar().scalarDescriptor().offset()),
+      streams_->enqueue(streamId),
       /*decodeValuesWithNulls=*/false,
-      /*streamIndex=*/nullptr,
-      &memoryPool_);
+      streams_->streamIndex(streamId),
+      pool_);
 }
 
 ChunkedDecoder NimbleData::makeMicrosDecoder() {
   VELOX_CHECK(nimbleType_->isTimestampMicroNano());
+  const auto streamId =
+      nimbleType_->asTimestampMicroNano().microsDescriptor().offset();
   return ChunkedDecoder(
-      streams_.enqueue(
-          nimbleType_->asTimestampMicroNano().microsDescriptor().offset()),
+      streams_->enqueue(streamId),
       /*decodeValuesWithNulls=*/false,
-      /*streamIndex=*/nullptr,
-      &memoryPool_);
+      streams_->streamIndex(streamId),
+      pool_);
 }
 
 ChunkedDecoder NimbleData::makeNanosDecoder() {
   VELOX_CHECK(nimbleType_->isTimestampMicroNano());
+  const auto streamId =
+      nimbleType_->asTimestampMicroNano().nanosDescriptor().offset();
   return ChunkedDecoder(
-      streams_.enqueue(
-          nimbleType_->asTimestampMicroNano().nanosDescriptor().offset()),
+      streams_->enqueue(streamId),
       /*decodeValuesWithNulls=*/false,
-      /*streamIndex=*/nullptr,
-      &memoryPool_);
+      streams_->streamIndex(streamId),
+      pool_);
 }
 
 std::unique_ptr<ChunkedDecoder> NimbleData::makeLengthDecoder() {
@@ -199,16 +202,15 @@ std::unique_ptr<ChunkedDecoder> NimbleData::makeLengthDecoder() {
 std::unique_ptr<ChunkedDecoder> NimbleData::makeDecoder(
     const StreamDescriptor& descriptor,
     bool decodeValuesWithNulls) {
-  auto input = streams_.enqueue(descriptor.offset());
+  auto input = streams_->enqueue(descriptor.offset());
   if (!input) {
     return nullptr;
   }
   return std::make_unique<ChunkedDecoder>(
       std::move(input),
       decodeValuesWithNulls,
-      /*streamIndex=*/nullptr,
-      &memoryPool_,
-      encodingFactory_);
+      streams_->streamIndex(descriptor.offset()),
+      pool_);
 }
 
 std::unique_ptr<velox::dwio::common::FormatData> NimbleParams::toFormatData(
