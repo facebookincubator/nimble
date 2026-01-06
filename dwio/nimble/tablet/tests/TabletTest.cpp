@@ -1480,9 +1480,9 @@ TEST_F(TabletWithIndexTest, stripeIdentifier) {
       &writeFile,
       *pool_,
       {
-          .indexConfig = indexConfig,
           .metadataFlushThreshold = 1024 * 1024 * 1024,
           .streamDeduplicationEnabled = false,
+          .indexConfig = indexConfig,
       });
 
   nimble::Buffer buffer{*pool_};
@@ -1535,10 +1535,10 @@ TEST_F(TabletWithIndexTest, singleGroup) {
       &writeFile,
       *pool_,
       {
-          .indexConfig = indexConfig,
           // Set a large threshold to ensure all stripes stay in one group
           .metadataFlushThreshold = 1024 * 1024 * 1024,
           .streamDeduplicationEnabled = false,
+          .indexConfig = indexConfig,
       });
 
   nimble::Buffer buffer{*pool_};
@@ -1956,10 +1956,10 @@ TEST_F(TabletWithIndexTest, multipleGroups) {
       &writeFile,
       *pool_,
       {
-          .indexConfig = indexConfig,
           // Set threshold to 0 to force flush after every stripe
           .metadataFlushThreshold = 0,
           .streamDeduplicationEnabled = false,
+          .indexConfig = indexConfig,
       });
 
   nimble::Buffer buffer{*pool_};
@@ -2331,10 +2331,10 @@ TEST_F(TabletWithIndexTest, singleGroupWithEmptyStream) {
       &writeFile,
       *pool_,
       {
-          .indexConfig = indexConfig,
           // Set a large threshold to ensure all stripes stay in one group
           .metadataFlushThreshold = 1024 * 1024 * 1024,
           .streamDeduplicationEnabled = false,
+          .indexConfig = indexConfig,
       });
 
   nimble::Buffer buffer{*pool_};
@@ -2745,10 +2745,10 @@ TEST_F(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
       &writeFile,
       *pool_,
       {
-          .indexConfig = indexConfig,
           // Set threshold to 0 to force flush after every stripe
           .metadataFlushThreshold = 0,
           .streamDeduplicationEnabled = false,
+          .indexConfig = indexConfig,
       });
 
   nimble::Buffer buffer{*pool_};
@@ -3217,9 +3217,9 @@ TEST_F(TabletWithIndexTest, streamDeduplication) {
       &writeFile,
       *pool_,
       {
-          .indexConfig = indexConfig,
           .metadataFlushThreshold = 1024 * 1024 * 1024,
           .streamDeduplicationEnabled = true,
+          .indexConfig = indexConfig,
       });
 
   nimble::Buffer buffer{*pool_};
