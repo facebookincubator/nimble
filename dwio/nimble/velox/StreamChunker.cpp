@@ -21,6 +21,7 @@ template <typename T>
 std::unique_ptr<StreamChunker> getStreamChunkerTyped(
     StreamData& streamData,
     const StreamChunkerOptions& options) {
+  streamData.materializeStrings();
   if (auto* contentStreamChunker =
           dynamic_cast<ContentStreamData<T>*>(&streamData)) {
     return std::make_unique<ContentStreamChunker<T>>(

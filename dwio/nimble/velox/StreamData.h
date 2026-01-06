@@ -54,6 +54,8 @@ class StreamData {
 
   virtual void materialize() {}
 
+  virtual void materializeStrings() {}
+
   const StreamDescriptorBuilder& descriptor() const {
     return descriptor_;
   }
@@ -82,6 +84,53 @@ class MutableStreamData : public StreamData {
 
  private:
   const InputBufferGrowthPolicy& growthPolicy_;
+};
+
+class StringBuffer {
+ public:
+  explicit StringBuffer(velox::memory::MemoryPool& pool)
+      : buffer_{&pool}, lengths_{&pool} {}
+
+  Vector<char>& mutableBuffer() {
+    return buffer_;
+  }
+
+  Vector<size_t>& mutableLengths() {
+    return lengths_;
+  }
+
+  bool empty() const {
+    return lengths_.empty();
+  }
+
+  uint64_t size() const {
+    return lengths_.size();
+  }
+
+  uint64_t memoryUsed() const {
+    return buffer_.size() + lengths_.size() * sizeof(size_t);
+  }
+
+  void clear() {
+    buffer_.clear();
+    lengths_.clear();
+  }
+
+  void materialize(Vector<std::string_view>& data) {
+    if (empty()) {
+      return;
+    }
+    data.resize(lengths_.size());
+    size_t runningOffset = 0;
+    for (size_t i = 0; i < lengths_.size(); ++i) {
+      data[i] = std::string_view(buffer_.data() + runningOffset, lengths_[i]);
+      runningOffset += lengths_[i];
+    }
+  }
+
+ private:
+  Vector<char> buffer_;
+  Vector<size_t> lengths_;
 };
 
 /// Provides a lightweight, non-owning view into a portion of stream data,
@@ -156,7 +205,9 @@ class ContentStreamData final : public MutableStreamData {
       velox::memory::MemoryPool& pool,
       const StreamDescriptorBuilder& descriptor,
       const InputBufferGrowthPolicy& growthPolicy)
-      : MutableStreamData(descriptor, growthPolicy), data_{&pool} {}
+      : MutableStreamData(descriptor, growthPolicy),
+        data_{&pool},
+        stringBuffer_{pool} {}
 
   inline uint32_t rowCount() const override {
     return data_.size();
@@ -180,11 +231,16 @@ class ContentStreamData final : public MutableStreamData {
   }
 
   inline uint64_t memoryUsed() const override {
-    return (data_.size() * sizeof(T)) + extraMemory_;
+    return (data_.size() * sizeof(T)) +
+        (stringBuffer_.empty() ? extraMemory_ : stringBuffer_.memoryUsed());
   }
 
   inline Vector<T>& mutableData() {
     return data_;
+  }
+
+  inline StringBuffer& mutableStringBuffer() {
+    return stringBuffer_;
   }
 
   void ensureMutableDataCapacity(uint64_t newSize) {
@@ -197,11 +253,19 @@ class ContentStreamData final : public MutableStreamData {
 
   inline virtual void reset() override {
     data_.clear();
+    stringBuffer_.clear();
     extraMemory_ = 0;
+  }
+
+  void materializeStrings() override {
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      stringBuffer_.materialize(data_);
+    }
   }
 
  private:
   Vector<T> data_;
+  StringBuffer stringBuffer_;
   uint64_t extraMemory_{0};
 };
 
@@ -286,6 +350,7 @@ class NullableContentStreamData final : public NullsStreamData {
       const InputBufferGrowthPolicy& growthPolicy)
       : NullsStreamData(memoryPool, descriptor, growthPolicy),
         data_{&memoryPool},
+        stringBuffer_{memoryPool},
         extraMemory_{0} {}
 
   inline std::string_view data() const override {
@@ -298,12 +363,16 @@ class NullableContentStreamData final : public NullsStreamData {
   }
 
   inline uint64_t memoryUsed() const override {
-    return (data_.size() * sizeof(T)) + extraMemory_ +
-        NullsStreamData::memoryUsed();
+    return (data_.size() * sizeof(T)) + NullsStreamData::memoryUsed() +
+        (stringBuffer_.empty() ? extraMemory_ : stringBuffer_.memoryUsed());
   }
 
   inline Vector<T>& mutableData() {
     return data_;
+  }
+
+  inline StringBuffer& mutableStringBuffer() {
+    return stringBuffer_;
   }
 
   void ensureMutableDataCapacity(uint64_t newSize) {
@@ -317,11 +386,19 @@ class NullableContentStreamData final : public NullsStreamData {
   inline void reset() override {
     NullsStreamData::reset();
     data_.clear();
+    stringBuffer_.clear();
     extraMemory_ = 0;
+  }
+
+  void materializeStrings() override {
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      stringBuffer_.materialize(data_);
+    }
   }
 
  private:
   Vector<T> data_;
+  StringBuffer stringBuffer_;
   uint64_t extraMemory_;
 };
 
