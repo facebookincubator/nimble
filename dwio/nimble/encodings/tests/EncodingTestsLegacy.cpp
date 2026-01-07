@@ -43,7 +43,7 @@
 //
 // Nullable data will be tested via a separate file, as will structured data,
 // and any data-type-specific functions (e.g. for there are some Encoding calls
-// only valid for bools, and those are testing in BoolEncodingTestsNew.cpp).
+// only valid for bools, and those are testing in BoolEncodingTestsLegacy.cpp).
 //
 // The tests are templated so as to cover all data types and encoding types with
 // a single code path.
@@ -136,7 +136,7 @@ class TestTrivialEncodingSelectionPolicy
 } // namespace
 // C is the encoding type.
 template <typename C>
-class EncodingTestsNew : public ::testing::Test {
+class EncodingTestsLegacy : public ::testing::Test {
  protected:
   using E = typename C::cppDataType;
 
@@ -199,7 +199,8 @@ class EncodingTestsNew : public ::testing::Test {
   std::unique_ptr<nimble::Encoding> createEncoding(
       const nimble::Vector<E>& values,
       bool compress,
-      bool useVariableBitWidthCompressor) {
+      bool useVariableBitWidthCompressor,
+      std::function<void*(uint32_t)> stringBufferFactory) {
     using physicalType = typename nimble::TypeTraits<E>::physicalType;
     auto physicalValues = std::span<const physicalType>(
         reinterpret_cast<const physicalType*>(values.data()), values.size());
@@ -215,7 +216,7 @@ class EncodingTestsNew : public ::testing::Test {
             compress, useVariableBitWidthCompressor)};
 
     auto encoded = C::encode(selection, physicalValues, *buffer_);
-    return std::make_unique<C>(*this->pool_, encoded);
+    return std::make_unique<C>(*this->pool_, encoded, stringBufferFactory);
   }
 
   // Each unit test runs on randomized data this many times before
@@ -255,9 +256,9 @@ using TestTypes = ::testing::Types<
     ALL_TYPES(nimble::legacy::RLEEncoding),
     ALL_TYPES(nimble::legacy::ConstantEncoding)>;
 
-TYPED_TEST_CASE(EncodingTestsNew, TestTypes);
+TYPED_TEST_CASE(EncodingTestsLegacy, TestTypes);
 
-TYPED_TEST(EncodingTestsNew, Materialize) {
+TYPED_TEST(EncodingTestsLegacy, Materialize) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng(seed);
@@ -274,9 +275,19 @@ TYPED_TEST(EncodingTestsNew, Materialize) {
           const int rowCount = data.size();
           ASSERT_GT(rowCount, 0);
           std::unique_ptr<nimble::Encoding> encoding;
+          std::vector<velox::BufferPtr> newStringBuffers;
+          const auto stringBufferFactory = [&](uint32_t totalLength) {
+            auto& buffer = newStringBuffers.emplace_back(
+                velox::AlignedBuffer::allocate<char>(
+                    totalLength, this->pool_.get()));
+            return buffer->template asMutable<void>();
+          };
           try {
             encoding = this->createEncoding(
-                data, compress, useVariableBitWidthCompressor);
+                data,
+                compress,
+                useVariableBitWidthCompressor,
+                stringBufferFactory);
           } catch (const nimble::NimbleUserError& e) {
             if (e.errorCode() == nimble::error_code::IncompatibleEncoding) {
               continue;
@@ -358,7 +369,7 @@ void checkScatteredOutput(
   }
 }
 
-TYPED_TEST(EncodingTestsNew, ScatteredMaterialize) {
+TYPED_TEST(EncodingTestsLegacy, ScatteredMaterialize) {
   using E = typename TypeParam::cppDataType;
 
   auto seed = folly::Random::rand32();
@@ -375,9 +386,19 @@ TYPED_TEST(EncodingTestsNew, ScatteredMaterialize) {
           const int rowCount = data.size();
           ASSERT_GT(rowCount, 0);
           std::unique_ptr<nimble::Encoding> encoding;
+          std::vector<velox::BufferPtr> newStringBuffers;
+          const auto stringBufferFactory = [&](uint32_t totalLength) {
+            auto& buffer = newStringBuffers.emplace_back(
+                velox::AlignedBuffer::allocate<char>(
+                    totalLength, this->pool_.get()));
+            return buffer->template asMutable<void>();
+          };
           try {
             encoding = this->createEncoding(
-                data, compress, useVariableBitWidthCompressor);
+                data,
+                compress,
+                useVariableBitWidthCompressor,
+                stringBufferFactory);
           } catch (const nimble::NimbleUserError& e) {
             if (e.errorCode() == nimble::error_code::IncompatibleEncoding) {
               continue;

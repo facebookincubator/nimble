@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <functional>
 #include "dwio/nimble/common/Bits.h"
+#include "velox/buffer/Buffer.h"
 
 namespace facebook::nimble {
 
@@ -27,9 +28,13 @@ class Decoder {
  public:
   virtual ~Decoder() = default;
 
+  // Decode next 'count' values into 'output'.
+  // For string types, stringBuffers will be populated with buffers holding
+  // the string data. For non-string types, stringBuffers will remain empty.
   virtual uint32_t next(
       uint32_t count,
       void* output,
+      std::vector<velox::BufferPtr>& stringBuffers,
       std::function<void*()> nulls = nullptr,
       const bits::Bitmap* scatterBitmap = nullptr) = 0;
 

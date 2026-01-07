@@ -61,7 +61,10 @@ class DeltaEncoding final
   using cppDataType = T;
   using physicalType = typename TypeTraits<T>::physicalType;
 
-  DeltaEncoding(velox::memory::MemoryPool& memoryPool, std::string_view data);
+  DeltaEncoding(
+      velox::memory::MemoryPool& memoryPool,
+      std::string_view data,
+      std::function<void*(uint32_t)> stringBufferFactory);
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -87,7 +90,8 @@ class DeltaEncoding final
 template <typename T>
 DeltaEncoding<T>::DeltaEncoding(
     velox::memory::MemoryPool& memoryPool,
-    std::string_view data)
+    std::string_view data,
+    std::function<void*(uint32_t)> stringBufferFactory)
     : TypedEncoding<T, physicalType>(memoryPool, data),
       deltasBuffer_(&memoryPool),
       restatementsBuffer_(&memoryPool),
@@ -95,13 +99,16 @@ DeltaEncoding<T>::DeltaEncoding(
   auto pos = data.data() + Encoding::kPrefixSize;
   const uint32_t restatementsOffset = encoding::readUint32(pos);
   const uint32_t isRestatementsOffset = encoding::readUint32(pos);
-  deltas_ = EncodingFactory::decode(memoryPool, {pos, restatementsOffset});
+  deltas_ = EncodingFactory::decode(
+      memoryPool, {pos, restatementsOffset}, stringBufferFactory);
   pos += restatementsOffset;
-  restatements_ =
-      EncodingFactory::decode(memoryPool, {pos, isRestatementsOffset});
+  restatements_ = EncodingFactory::decode(
+      memoryPool, {pos, isRestatementsOffset}, stringBufferFactory);
   pos += isRestatementsOffset;
   isRestatements_ = EncodingFactory::decode(
-      memoryPool, {pos, static_cast<size_t>(data.end() - pos)});
+      memoryPool,
+      {pos, static_cast<size_t>(data.end() - pos)},
+      stringBufferFactory);
 }
 
 template <typename T>
