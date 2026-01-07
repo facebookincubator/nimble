@@ -28,9 +28,10 @@ NimbleData::NimbleData(
     StripeStreams& streams,
     memory::MemoryPool& memoryPool,
     ChunkedDecoder* inMapDecoder,
-    std::function<
-        std::unique_ptr<Encoding>(velox::memory::MemoryPool&, std::string_view)>
-        encodingFactory)
+    std::function<std::unique_ptr<Encoding>(
+        velox::memory::MemoryPool&,
+        std::string_view,
+        std::function<void*(uint32_t)>)> encodingFactory)
     : nimbleType_(nimbleType),
       streams_(&streams),
       pool_(&memoryPool),

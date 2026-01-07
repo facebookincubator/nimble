@@ -190,7 +190,14 @@ void test(std::span<const T> values, std::vector<EncodingDetails> expected) {
   }
 
   nimble::Vector<T> materialized{pool.get()};
-  auto encoding = nimble::EncodingFactory::decode(*pool, serialized);
+  std::vector<velox::BufferPtr> newStringBuffers;
+  const auto stringBufferFactory = [&](uint32_t totalLength) {
+    auto& buffer = newStringBuffers.emplace_back(
+        velox::AlignedBuffer::allocate<char>(totalLength, pool.get()));
+    return buffer->asMutable<void>();
+  };
+  auto encoding =
+      nimble::EncodingFactory::decode(*pool, serialized, stringBufferFactory);
   nimble::Vector<T> result{pool.get()};
   result.resize(values.size());
   encoding->materialize(values.size(), result.data());

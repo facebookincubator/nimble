@@ -55,13 +55,17 @@ class RLEEncodingBase
   using cppDataType = T;
   using physicalType = typename TypeTraits<T>::physicalType;
 
-  RLEEncodingBase(velox::memory::MemoryPool& memoryPool, std::string_view data)
+  RLEEncodingBase(
+      velox::memory::MemoryPool& memoryPool,
+      std::string_view data,
+      std::function<void*(uint32_t)> stringBufferFactory)
       : TypedEncoding<T, physicalType>(memoryPool, data),
         materializedRunLengths_{EncodingFactory::decode(
             memoryPool,
             {data.data() + Encoding::kPrefixSize + 4,
              *reinterpret_cast<const uint32_t*>(
-                 data.data() + Encoding::kPrefixSize)})} {}
+                 data.data() + Encoding::kPrefixSize)},
+            stringBufferFactory)} {}
 
   void reset() {
     materializedRunLengths_.reset();
@@ -185,7 +189,8 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
  public:
   explicit RLEEncoding(
       velox::memory::MemoryPool& memoryPool,
-      std::string_view data);
+      std::string_view data,
+      std::function<void*(uint32_t)> stringBufferFactory);
 
   physicalType nextValue();
   void resetValues();
@@ -228,7 +233,10 @@ template <>
 class RLEEncoding<bool> final
     : public internal::RLEEncodingBase<bool, RLEEncoding<bool>> {
  public:
-  RLEEncoding(velox::memory::MemoryPool& memoryPool, std::string_view data);
+  RLEEncoding(
+      velox::memory::MemoryPool& memoryPool,
+      std::string_view data,
+      std::function<void*(uint32_t)> stringBufferFactory);
 
   bool nextValue();
   void resetValues();
@@ -256,15 +264,19 @@ class RLEEncoding<bool> final
 template <typename T>
 RLEEncoding<T>::RLEEncoding(
     velox::memory::MemoryPool& memoryPool,
-    std::string_view data)
-    : internal::RLEEncodingBase<T, RLEEncoding<T>>(memoryPool, data),
+    std::string_view data,
+    std::function<void*(uint32_t)> stringBufferFactory)
+    : internal::RLEEncodingBase<T, RLEEncoding<T>>(
+          memoryPool,
+          data,
+          stringBufferFactory),
       values_{EncodingFactory::decode(
           memoryPool,
           {internal::RLEEncodingBase<T, RLEEncoding<T>>::getValuesStart(),
            static_cast<size_t>(
                data.end() -
-               internal::RLEEncodingBase<T, RLEEncoding<T>>::
-                   getValuesStart())})} {
+               internal::RLEEncodingBase<T, RLEEncoding<T>>::getValuesStart())},
+          stringBufferFactory)} {
   internal::RLEEncodingBase<T, RLEEncoding<T>>::reset();
 }
 
