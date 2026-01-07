@@ -701,11 +701,17 @@ void NimbleDumpLib::emitContent(
 
     auto streams = tabletReader->load(stripeIdentifier, std::vector{streamId});
 
+    std::vector<velox::BufferPtr> newStringBuffers;
+    const auto stringBufferFactory = [&](uint32_t totalLength) {
+      auto& buffer = newStringBuffers.emplace_back(
+          velox::AlignedBuffer::allocate<char>(totalLength, pool_.get()));
+      return buffer->asMutable<void>();
+    };
     if (auto& stream = streams[0]) {
       InMemoryChunkedStream chunkedStream{*pool_, std::move(stream)};
       while (chunkedStream.hasNext()) {
-        auto encoding =
-            EncodingFactory::decode(*pool_, chunkedStream.nextChunk());
+        auto encoding = EncodingFactory::decode(
+            *pool_, chunkedStream.nextChunk(), stringBufferFactory);
         uint32_t totalRows = encoding->rowCount();
         while (totalRows > 0) {
           auto currentReadSize = std::min(kBufferSize, totalRows);

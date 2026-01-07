@@ -54,7 +54,8 @@ class SparseBoolEncoding final : public TypedEncoding<bool, bool> {
 
   SparseBoolEncoding(
       velox::memory::MemoryPool& memoryPool,
-      std::string_view data);
+      std::string_view data,
+      std::function<void*(uint32_t)> stringBufferFactory);
 
   void reset() final;
   void skip(uint32_t rowCount) final;

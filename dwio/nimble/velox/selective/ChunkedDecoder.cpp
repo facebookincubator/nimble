@@ -51,7 +51,15 @@ void ChunkedDecoder::loadNextChunk() {
   }
   inputData_ += length;
   inputSize_ -= length;
-  encoding_ = encodingFactory_(*pool_, std::string_view(chunkData, chunkSize));
+  currentStringBuffers_.clear();
+  encoding_ = encodingFactory_(
+      *pool_,
+      std::string_view(chunkData, chunkSize),
+      [&](uint32_t totalLength) {
+        auto& buffer = currentStringBuffers_.emplace_back(
+            velox::AlignedBuffer::allocate<char>(totalLength, pool_));
+        return buffer->asMutable<void>();
+      });
   remainingValues_ = encoding_->rowCount();
   NIMBLE_CHECK_GT(remainingValues_, 0);
   VLOG(1) << encoding_->debugString();
