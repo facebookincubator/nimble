@@ -337,6 +337,7 @@ void VeloxReader::loadNextStripe() {
               std::make_unique<InMemoryChunkedStream>(
                   pool_, std::move(streams[i])),
               parameters_.encodingFactory,
+              parameters_.optimizeStringBufferHandling,
               *logger_);
           dynamic_cast<ChunkedStreamDecoder*>(decoders_[offsets_[i]].get())
               ->ensureLoaded();

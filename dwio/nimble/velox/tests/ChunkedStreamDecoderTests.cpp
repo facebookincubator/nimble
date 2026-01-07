@@ -179,7 +179,7 @@ void test(
     bool skips,
     bool scatter,
     bool compress,
-    bool useLegacyEncoding) {
+    bool optimizeStringBufferHandling) {
   uint32_t seed = FLAGS_seed == 0 ? folly::Random::rand32() : FLAGS_seed;
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
@@ -221,13 +221,14 @@ void test(
       *memoryPool,
       std::make_unique<nimble::InMemoryChunkedStream>(
           *memoryPool, std::move(streamLoader)),
-      useLegacyEncoding ? [](velox::memory::MemoryPool& pool,
-         std::string_view data, std::function<void*(uint32_t)> stringBufferFactory) -> std::unique_ptr<nimble::Encoding> {
-        return nimble::legacy::EncodingFactory::decode(pool, data, stringBufferFactory);
-      } : [](velox::memory::MemoryPool& pool,
+      optimizeStringBufferHandling ? [](velox::memory::MemoryPool& pool,
          std::string_view data, std::function<void*(uint32_t)> stringBufferFactory) -> std::unique_ptr<nimble::Encoding> {
         return nimble::EncodingFactory::decode(pool, data, stringBufferFactory);
+      } : [](velox::memory::MemoryPool& pool,
+         std::string_view data, std::function<void*(uint32_t)> stringBufferFactory) -> std::unique_ptr<nimble::Encoding> {
+        return nimble::legacy::EncodingFactory::decode(pool, data, stringBufferFactory);
       },
+      optimizeStringBufferHandling,
       /* metricLogger */ {}};
 
   for (auto batchSize = 1; batchSize <= totalSize; ++batchSize) {
@@ -372,29 +373,49 @@ class ChunkedStreamDecoderTests
 
 TEST_P(ChunkedStreamDecoderTests, Decode) {
   const auto
-      [multipleChunks, hasNulls, skip, scatter, compress, useLegacyEncoding] =
-          GetParam();
+      [multipleChunks,
+       hasNulls,
+       skip,
+       scatter,
+       compress,
+       optimizeStringBufferHandling] = GetParam();
   for (int i = 0; i < 3; ++i) {
     LOG(INFO) << "Interation: " << i << ", Multiple Chunks: " << multipleChunks
               << ", Has Nulls: " << hasNulls << ", Skips: " << skip
               << ", Scatter: " << scatter
-              << ", Use Legacy Encoding: " << useLegacyEncoding;
+              << ", Optimize String Buffer Handling: "
+              << optimizeStringBufferHandling;
     test<int32_t>(
-        multipleChunks, hasNulls, skip, scatter, compress, useLegacyEncoding);
+        multipleChunks,
+        hasNulls,
+        skip,
+        scatter,
+        compress,
+        optimizeStringBufferHandling);
   }
 }
 
 TEST_P(ChunkedStreamDecoderTests, DecodeStrings) {
   const auto
-      [multipleChunks, hasNulls, skip, scatter, compress, useLegacyEncoding] =
-          GetParam();
+      [multipleChunks,
+       hasNulls,
+       skip,
+       scatter,
+       compress,
+       optimizeStringBufferHandling] = GetParam();
   for (int i = 0; i < 3; ++i) {
     LOG(INFO) << "Interation: " << i << ", Multiple Chunks: " << multipleChunks
               << ", Has Nulls: " << hasNulls << ", Skips: " << skip
               << ", Scatter: " << scatter << ", Compress: " << compress
-              << ", Use Legacy Encoding: " << useLegacyEncoding;
+              << ", Optimize String Buffer Handling: "
+              << optimizeStringBufferHandling;
     test<std::string_view>(
-        multipleChunks, hasNulls, skip, scatter, compress, useLegacyEncoding);
+        multipleChunks,
+        hasNulls,
+        skip,
+        scatter,
+        compress,
+        optimizeStringBufferHandling);
   }
 }
 
@@ -407,4 +428,4 @@ INSTANTIATE_TEST_CASE_P(
         testing::Values(false, true),
         testing::Values(false, true),
         testing::Values(false, true),
-        testing::Values(false)));
+        testing::Values(false, true)));
