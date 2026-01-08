@@ -31,7 +31,8 @@ NimbleData::NimbleData(
     std::function<std::unique_ptr<Encoding>(
         velox::memory::MemoryPool&,
         std::string_view,
-        std::function<void*(uint32_t)>)> encodingFactory)
+        std::function<void*(uint32_t)>)> encodingFactory,
+    bool getStringBuffersFromDecoder)
     : nimbleType_(nimbleType),
       streams_(&streams),
       pool_(&memoryPool),
@@ -85,6 +86,7 @@ NimbleData::NimbleData(
     default:
       NIMBLE_UNSUPPORTED("{}", toString(nimbleType->kind()));
   }
+  getStringBuffersFromDecoder_ = getStringBuffersFromDecoder;
 }
 
 void NimbleData::readNulls(
@@ -218,7 +220,12 @@ std::unique_ptr<velox::dwio::common::FormatData> NimbleParams::toFormatData(
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& /*type*/,
     const velox::common::ScanSpec& /*scanSpec*/) {
   return std::make_unique<NimbleData>(
-      nimbleType_, *streams_, pool(), inMapDecoder_, encodingFactory_);
+      nimbleType_,
+      *streams_,
+      pool(),
+      inMapDecoder_,
+      encodingFactory_,
+      getStringBuffersFromDecoder_);
 }
 
 } // namespace facebook::nimble
