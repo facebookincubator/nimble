@@ -310,8 +310,6 @@ class ChunkedDecoder {
     constexpr bool kExtractToReader = std::
         is_same_v<typename V::Extract, velox::dwio::common::ExtractToReader>;
     const auto numRows = visitor.numRows();
-
-    std::vector<velox::BufferPtr> stringBuffers;
     while (visitor.rowIndex() < numRows) {
       if constexpr (!kHasNulls) {
         if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
@@ -353,18 +351,6 @@ class ChunkedDecoder {
       }
       advancePosition(numNonNulls);
       params.numScanned += numNulls + numNonNulls;
-
-      // Note: we can over queue the current string buffers by exactly
-      // once, but that doesn't change the life cycle of the buffers for now.
-      // Keeping this pattern for simplicity.
-      // For non-string types, currentStringBuffers_ will be empty
-      for (const auto& buf : currentStringBuffers_) {
-        stringBuffers.push_back(buf);
-      }
-    }
-
-    if (visitor.reader().formatData().getStringBuffersFromDecoder()) {
-      visitor.reader().setStringBuffers(std::move(stringBuffers));
     }
   }
 
