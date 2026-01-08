@@ -2951,14 +2951,8 @@ class VeloxWriterIndexTest : public VeloxWriterTest,
           uint32_t chunkIndex = 0;
           while (chunkedStream.hasNext()) {
             const auto chunkData = chunkedStream.nextChunk();
-            std::vector<velox::BufferPtr> stringBuffers;
-            auto encoding = nimble::EncodingFactory::decode(
-                *leafPool_, chunkData, [&](uint32_t totalLength) {
-                  auto& buffer = stringBuffers.emplace_back(
-                      velox::AlignedBuffer::allocate<char>(
-                          totalLength, leafPool_.get()));
-                  return buffer->asMutable<void>();
-                });
+            auto encoding =
+                nimble::EncodingFactory::decode(*leafPool_, chunkData);
             EXPECT_EQ(encoding->rowCount(), expectedChunkRowCounts[chunkIndex])
                 << "Stripe " << stripeIdx << " stream " << streamId << " chunk "
                 << chunkIndex << " row count mismatch (sequential)";
@@ -2993,14 +2987,8 @@ class VeloxWriterIndexTest : public VeloxWriterTest,
           nimble::index::test::SingleChunkDecoder chunkDecoder(
               *leafPool_, chunkStreamData);
           auto encodingData = chunkDecoder.decode();
-          std::vector<velox::BufferPtr> stringBuffers;
-          auto encoding = nimble::EncodingFactory::decode(
-              *leafPool_, encodingData, [&](uint32_t totalLength) {
-                auto& buffer = stringBuffers.emplace_back(
-                    velox::AlignedBuffer::allocate<char>(
-                        totalLength, leafPool_.get()));
-                return buffer->asMutable<void>();
-              });
+          auto encoding =
+              nimble::EncodingFactory::decode(*leafPool_, encodingData);
 
           EXPECT_EQ(encoding->rowCount(), expectedChunkRowCounts[i])
               << "Stripe " << stripeIdx << " stream " << streamId << " chunk "
@@ -3079,7 +3067,6 @@ class VeloxWriterIndexTest : public VeloxWriterTest,
         keyStreamCache;
     // Buffer for loaded key stream data (must outlive the encoding)
     std::unordered_map<uint64_t, std::string> keyStreamBufferCache;
-    std::vector<velox::BufferPtr> stringBuffers;
 
     // Verify each row's index lookup
     uint64_t currentRowId = 0;
@@ -3152,14 +3139,8 @@ class VeloxWriterIndexTest : public VeloxWriterTest,
           auto encodingData = chunkDecoder.decode();
 
           // Decode the key encoding from the chunk data
-
-          keyStreamCache[chunkFileOffset] = nimble::EncodingFactory::decode(
-              *leafPool_, encodingData, [&](uint32_t totalLength) {
-                auto& buf = stringBuffers.emplace_back(
-                    velox::AlignedBuffer::allocate<char>(
-                        totalLength, leafPool_.get()));
-                return buf->asMutable<void>();
-              });
+          keyStreamCache[chunkFileOffset] =
+              nimble::EncodingFactory::decode(*leafPool_, encodingData);
         }
 
         auto* keyEncoding = keyStreamCache[chunkFileOffset].get();

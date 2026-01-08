@@ -26,14 +26,7 @@ static constexpr int kCompressionTypeSize = 1;
 uint64_t TestUtils::getRawDataSize(
     velox::memory::MemoryPool& memoryPool,
     std::string_view encodingStr) {
-  std::vector<velox::BufferPtr> newStringBuffers;
-  const auto stringBufferFactory = [&](uint32_t totalLength) {
-    auto& buffer = newStringBuffers.emplace_back(
-        velox::AlignedBuffer::allocate<char>(totalLength, &memoryPool));
-    return buffer->asMutable<void>();
-  };
-  auto encoding =
-      EncodingFactory::decode(memoryPool, encodingStr, stringBufferFactory);
+  auto encoding = EncodingFactory::decode(memoryPool, encodingStr);
   EncodingType encodingType = encoding->encodingType();
   DataType dataType = encoding->dataType();
   uint32_t rowCount = encoding->rowCount();
@@ -60,8 +53,8 @@ uint64_t TestUtils::getRawDataSize(
         case EncodingType::Trivial: {
           pos += kCompressionTypeSize;
           auto lengthsSize = encoding::readUint32(pos);
-          auto lengths = EncodingFactory::decode(
-              memoryPool, {pos, lengthsSize}, stringBufferFactory);
+          auto lengths =
+              EncodingFactory::decode(memoryPool, {pos, lengthsSize});
           std::vector<uint32_t> buffer(rowCount);
           lengths->materialize(rowCount, buffer.data());
           result += std::accumulate(buffer.begin(), buffer.end(), 0u);
@@ -92,15 +85,15 @@ uint64_t TestUtils::getRawDataSize(
         case EncodingType::Dictionary: {
           auto alphabetSize = encoding::readUint32(pos);
           auto alphabetCount = encoding::peek<uint32_t>(pos + kRowCountOffset);
-          auto alphabet = EncodingFactory::decode(
-              memoryPool, {pos, alphabetSize}, stringBufferFactory);
+          auto alphabet =
+              EncodingFactory::decode(memoryPool, {pos, alphabetSize});
           std::vector<std::string_view> alphabetBuffer(alphabetCount);
           alphabet->materialize(alphabetCount, alphabetBuffer.data());
 
           pos += alphabetSize;
           auto indicesSize = encodingStr.length() - (pos - encodingStr.data());
-          auto indices = EncodingFactory::decode(
-              memoryPool, {pos, indicesSize}, stringBufferFactory);
+          auto indices =
+              EncodingFactory::decode(memoryPool, {pos, indicesSize});
           std::vector<uint32_t> indicesBuffer(rowCount);
           indices->materialize(rowCount, indicesBuffer.data());
           for (int i = 0; i < rowCount; ++i) {
@@ -113,16 +106,16 @@ uint64_t TestUtils::getRawDataSize(
           auto runLengthsSize = encoding::readUint32(pos);
           auto runLengthsCount =
               encoding::peek<uint32_t>(pos + kRowCountOffset);
-          auto runLengths = EncodingFactory::decode(
-              memoryPool, {pos, runLengthsSize}, stringBufferFactory);
+          auto runLengths =
+              EncodingFactory::decode(memoryPool, {pos, runLengthsSize});
           std::vector<uint32_t> runLengthsBuffer(runLengthsCount);
           runLengths->materialize(runLengthsCount, runLengthsBuffer.data());
 
           pos += runLengthsSize;
           auto runValuesSize =
               encodingStr.length() - (pos - encodingStr.data());
-          auto runValues = EncodingFactory::decode(
-              memoryPool, {pos, runValuesSize}, stringBufferFactory);
+          auto runValues =
+              EncodingFactory::decode(memoryPool, {pos, runValuesSize});
           std::vector<std::string_view> runValuesBuffer(runLengthsCount);
           runValues->materialize(runLengthsCount, runValuesBuffer.data());
 

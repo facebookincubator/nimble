@@ -150,16 +150,8 @@ TYPED_TEST(NullableEncodingTest, Materialize) {
         const nimble::Vector<E> spreadData =
             spreadNullsIntoData<E>(*this->pool_, data, nulls);
 
-        std::vector<velox::BufferPtr> newStringBuffers;
-        const auto stringBufferFactory = [&](uint32_t totalLength) {
-          auto& buffer = newStringBuffers.emplace_back(
-              velox::AlignedBuffer::allocate<char>(
-                  totalLength, this->pool_.get()));
-          return buffer->template asMutable<void>();
-        };
         auto encoding = nimble::test::Encoder<nimble::NullableEncoding<E>>::
-            createNullableEncoding(
-                *this->buffer_, data, nulls, stringBufferFactory);
+            createNullableEncoding(*this->buffer_, data, nulls);
         ASSERT_EQ(encoding->dataType(), nimble::TypeTraits<E>::dataType);
         ASSERT_TRUE(encoding->isNullable());
         const uint32_t rowCount = encoding->rowCount();
@@ -254,16 +246,8 @@ TYPED_TEST(NullableEncodingTest, ScatteredMaterialize) {
         const nimble::Vector<E> spreadData =
             spreadNullsIntoData<E>(*this->pool_, data, nulls);
 
-        std::vector<velox::BufferPtr> newStringBuffers;
-        const auto stringBufferFactory = [&](uint32_t totalLength) {
-          auto& buffer = newStringBuffers.emplace_back(
-              velox::AlignedBuffer::allocate<char>(
-                  totalLength, this->pool_.get()));
-          return buffer->template asMutable<void>();
-        };
         auto encoding = nimble::test::Encoder<nimble::NullableEncoding<E>>::
-            createNullableEncoding(
-                *this->buffer_, data, nulls, stringBufferFactory);
+            createNullableEncoding(*this->buffer_, data, nulls);
         ASSERT_EQ(encoding->dataType(), nimble::TypeTraits<E>::dataType);
         ASSERT_TRUE(encoding->isNullable());
         const uint32_t rowCount = encoding->rowCount();
@@ -434,16 +418,8 @@ TYPED_TEST(NullableEncodingTest, MaterializeNullable) {
         const nimble::Vector<E> spreadData =
             spreadNullsIntoData<E>(*this->pool_, data, nulls);
 
-        std::vector<velox::BufferPtr> newStringBuffers;
-        const auto stringBufferFactory = [&](uint32_t totalLength) {
-          auto& buffer = newStringBuffers.emplace_back(
-              velox::AlignedBuffer::allocate<char>(
-                  totalLength, this->pool_.get()));
-          return buffer->template asMutable<void>();
-        };
         auto encoding = nimble::test::Encoder<nimble::NullableEncoding<E>>::
-            createNullableEncoding(
-                *this->buffer_, data, nulls, stringBufferFactory);
+            createNullableEncoding(*this->buffer_, data, nulls);
         ASSERT_TRUE(encoding->isNullable());
         const uint32_t rowCount = encoding->rowCount();
         nimble::Vector<E> buffer(this->pool_.get(), rowCount);

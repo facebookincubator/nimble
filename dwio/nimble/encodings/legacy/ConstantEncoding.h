@@ -41,8 +41,7 @@ class ConstantEncoding final
 
   ConstantEncoding(
       velox::memory::MemoryPool& memoryPool,
-      std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::string_view data);
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -72,8 +71,7 @@ class ConstantEncoding final
 template <typename T>
 ConstantEncoding<T>::ConstantEncoding(
     velox::memory::MemoryPool& memoryPool,
-    std::string_view data,
-    std::function<void*(uint32_t)> /* stringBufferFactory */)
+    std::string_view data)
     : TypedEncoding<T, physicalType>(memoryPool, data) {
   const char* pos = data.data() + Encoding::kPrefixSize;
   value_ = encoding::read<physicalType>(pos);

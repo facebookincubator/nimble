@@ -222,11 +222,11 @@ void test(
       std::make_unique<nimble::InMemoryChunkedStream>(
           *memoryPool, std::move(streamLoader)),
       useLegacyEncoding ? [](velox::memory::MemoryPool& pool,
-         std::string_view data, std::function<void*(uint32_t)> stringBufferFactory) -> std::unique_ptr<nimble::Encoding> {
-        return nimble::legacy::EncodingFactory::decode(pool, data, stringBufferFactory);
+         std::string_view data) -> std::unique_ptr<nimble::Encoding> {
+        return nimble::legacy::EncodingFactory::decode(pool, data);
       } : [](velox::memory::MemoryPool& pool,
-         std::string_view data, std::function<void*(uint32_t)> stringBufferFactory) -> std::unique_ptr<nimble::Encoding> {
-        return nimble::EncodingFactory::decode(pool, data, stringBufferFactory);
+         std::string_view data) -> std::unique_ptr<nimble::Encoding> {
+        return nimble::EncodingFactory::decode(pool, data);
       },
       /* metricLogger */ {}};
 
@@ -264,8 +264,6 @@ void test(
             scatterBitmap.emplace(scatterMap.data(), scatterSize);
           }
 
-          std::vector<velox::BufferPtr> stringBuffers;
-
           if (hasNulls || scatter) {
             std::vector<T> output(scatterSize);
             std::vector<uint8_t> outputNulls(
@@ -274,7 +272,6 @@ void test(
             const auto nonNullCount = decoder.next(
                 outputSize,
                 output.data(),
-                stringBuffers,
                 [&]() {
                   ++count;
                   return outputNulls.data();
@@ -345,9 +342,7 @@ void test(
             }
           } else {
             std::vector<T> output(outputSize);
-            const auto actualOutputSize =
-                decoder.next(outputSize, output.data(), stringBuffers);
-            EXPECT_EQ(outputSize, actualOutputSize);
+            EXPECT_EQ(outputSize, decoder.next(outputSize, output.data()));
 
             for (auto i = 0; i < outputSize; ++i) {
               EXPECT_EQ(getValue(data, offset + i), output[i])
@@ -391,7 +386,7 @@ TEST_P(ChunkedStreamDecoderTests, DecodeStrings) {
   for (int i = 0; i < 3; ++i) {
     LOG(INFO) << "Interation: " << i << ", Multiple Chunks: " << multipleChunks
               << ", Has Nulls: " << hasNulls << ", Skips: " << skip
-              << ", Scatter: " << scatter << ", Compress: " << compress
+              << ", Scatter: " << scatter
               << ", Use Legacy Encoding: " << useLegacyEncoding;
     test<std::string_view>(
         multipleChunks, hasNulls, skip, scatter, compress, useLegacyEncoding);
@@ -407,4 +402,4 @@ INSTANTIATE_TEST_CASE_P(
         testing::Values(false, true),
         testing::Values(false, true),
         testing::Values(false, true),
-        testing::Values(false)));
+        testing::Values(false, true)));

@@ -49,10 +49,7 @@ class DictionaryEncoding
 
   static const int kAlphabetSizeOffset = Encoding::kPrefixSize;
 
-  DictionaryEncoding(
-      velox::memory::MemoryPool& pool,
-      std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+  DictionaryEncoding(velox::memory::MemoryPool& pool, std::string_view data);
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -86,24 +83,21 @@ class DictionaryEncoding
 template <typename T>
 DictionaryEncoding<T>::DictionaryEncoding(
     velox::memory::MemoryPool& pool,
-    std::string_view data,
-    std::function<void*(uint32_t)> stringBufferFactory)
+    std::string_view data)
     : TypedEncoding<T, physicalType>{pool, data},
       alphabet_{this->pool_},
       indicesBuffer_{this->pool_} {
   const auto* pos = data.data() + kAlphabetSizeOffset;
   const uint32_t alphabetSize = encoding::readUint32(pos);
-  alphabetEncoding_ = EncodingFactory::decode(
-      *this->pool_, {pos, alphabetSize}, stringBufferFactory);
+  alphabetEncoding_ =
+      EncodingFactory::decode(*this->pool_, {pos, alphabetSize});
   const uint32_t alphabetCount = alphabetEncoding_->rowCount();
   alphabet_.resize(alphabetCount);
   alphabetEncoding_->materialize(alphabetCount, alphabet_.data());
 
   pos += alphabetSize;
   indicesEncoding_ = EncodingFactory::decode(
-      *this->pool_,
-      {pos, static_cast<size_t>(data.end() - pos)},
-      stringBufferFactory);
+      *this->pool_, {pos, static_cast<size_t>(data.end() - pos)});
 }
 
 template <typename T>

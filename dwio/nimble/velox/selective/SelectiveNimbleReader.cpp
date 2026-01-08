@@ -324,18 +324,12 @@ void SelectiveNimbleRowReader::loadCurrentStripe() {
       streams_,
       options_.trackRowSize() ? rowSizeTracker_.get() : nullptr,
       options_.passStringBuffersFromDecoder()
-          ? [](velox::memory::MemoryPool& pool,
-               std::string_view data,
-               std::function<void*(uint32_t)> stringBufferFactory)
-                -> std::unique_ptr<Encoding> {
-        return EncodingFactory::decode(pool, data, stringBufferFactory);
-      }
-          : [](velox::memory::MemoryPool& pool,
-               std::string_view data,
-               std::function<void*(uint32_t)> stringBufferFactory)
-                -> std::unique_ptr<Encoding> {
-        return legacy::EncodingFactory::decode(pool, data, stringBufferFactory);
-      },
+      ? [](velox::memory::MemoryPool& pool, std::string_view data)
+            -> std::unique_ptr<
+                Encoding> { return EncodingFactory::decode(pool, data); }
+      : [](velox::memory::MemoryPool& pool, std::string_view data)
+            -> std::unique_ptr<
+                Encoding> { return legacy::EncodingFactory::decode(pool, data); },
       options_.preserveFlatMapsInMemory());
   columnReader_ = buildColumnReader(
       options_.requestedType() ? options_.requestedType()

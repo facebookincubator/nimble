@@ -91,8 +91,6 @@ class IndexReader {
   uint32_t chunkOffset_{0};
   // The encoding for the current chunk. Reset when seeking to a new chunk.
   std::unique_ptr<nimble::Encoding> encoding_;
-  // Buffers holding string data for the current encoding
-  std::vector<velox::BufferPtr> stringBuffers_;
 };
 
 } // namespace facebook::nimble::index

@@ -20,8 +20,7 @@ namespace facebook::nimble::legacy {
 
 TrivialEncoding<std::string_view>::TrivialEncoding(
     velox::memory::MemoryPool& memoryPool,
-    std::string_view data,
-    std::function<void*(uint32_t)> stringBufferFactory)
+    std::string_view data)
     : TypedEncoding<std::string_view, std::string_view>{memoryPool, data},
       row_{0},
       buffer_{&memoryPool},
@@ -30,8 +29,7 @@ TrivialEncoding<std::string_view>::TrivialEncoding(
   auto dataCompressionType =
       static_cast<CompressionType>(encoding::readChar(pos));
   auto lengthsSize = encoding::readUint32(pos);
-  lengths_ = EncodingFactory::decode(
-      memoryPool, {pos, lengthsSize}, stringBufferFactory);
+  lengths_ = EncodingFactory::decode(memoryPool, {pos, lengthsSize});
   blob_ = pos + lengthsSize;
 
   if (dataCompressionType != CompressionType::Uncompressed) {
@@ -137,8 +135,7 @@ std::string_view TrivialEncoding<std::string_view>::encode(
 
 TrivialEncoding<bool>::TrivialEncoding(
     velox::memory::MemoryPool& pool,
-    std::string_view data,
-    std::function<void*(uint32_t)> /* stringBufferFactory */)
+    std::string_view data)
     : TypedEncoding<bool, bool>{pool, data},
       bitmap_{data.data() + kDataOffset},
       uncompressed_{&pool} {

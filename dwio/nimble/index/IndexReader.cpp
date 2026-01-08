@@ -130,15 +130,8 @@ void IndexReader::loadChunk() {
   }
   inputData_ += length;
   inputSize_ -= length;
-  stringBuffers_.clear();
   encoding_ = nimble::EncodingFactory::decode(
-      *pool_,
-      std::string_view(chunkData, chunkSize),
-      [&](uint32_t totalLength) {
-        auto& buffer = stringBuffers_.emplace_back(
-            velox::AlignedBuffer::allocate<char>(totalLength, pool_));
-        return buffer->asMutable<void>();
-      });
+      *pool_, std::string_view(chunkData, chunkSize));
   NIMBLE_CHECK_EQ(encoding_->dataType(), DataType::String);
   // TODO: support prefix encoding for encoded keys.
   NIMBLE_CHECK_EQ(encoding_->encodingType(), EncodingType::Trivial);

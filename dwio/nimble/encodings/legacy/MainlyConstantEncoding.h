@@ -68,8 +68,7 @@ class MainlyConstantEncoding final
 
   MainlyConstantEncoding(
       velox::memory::MemoryPool& memoryPool,
-      std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::string_view data);
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -109,19 +108,16 @@ class MainlyConstantEncoding final
 template <typename T>
 MainlyConstantEncoding<T>::MainlyConstantEncoding(
     velox::memory::MemoryPool& memoryPool,
-    std::string_view data,
-    std::function<void*(uint32_t)> stringBufferFactory)
+    std::string_view data)
     : TypedEncoding<T, physicalType>(memoryPool, data),
       isCommonBuffer_(&memoryPool),
       otherValuesBuffer_(&memoryPool) {
   const char* pos = data.data() + Encoding::kPrefixSize;
   const uint32_t isCommonBytes = encoding::readUint32(pos);
-  isCommon_ = EncodingFactory::decode(
-      *this->pool_, {pos, isCommonBytes}, stringBufferFactory);
+  isCommon_ = EncodingFactory::decode(*this->pool_, {pos, isCommonBytes});
   pos += isCommonBytes;
   const uint32_t otherValuesBytes = encoding::readUint32(pos);
-  otherValues_ = EncodingFactory::decode(
-      *this->pool_, {pos, otherValuesBytes}, stringBufferFactory);
+  otherValues_ = EncodingFactory::decode(*this->pool_, {pos, otherValuesBytes});
   pos += otherValuesBytes;
   commonValue_ = encoding::read<physicalType>(pos);
   NIMBLE_CHECK(pos == data.end(), "Unexpected mainly constant encoding end");

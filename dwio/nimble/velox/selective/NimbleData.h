@@ -34,8 +34,7 @@ class NimbleData : public velox::dwio::common::FormatData {
       ChunkedDecoder* inMapDecoder,
       std::function<std::unique_ptr<Encoding>(
           velox::memory::MemoryPool&,
-          std::string_view,
-          std::function<void*(uint32_t)>)> encodingFactory);
+          std::string_view)> encodingFactory);
 
   /// Read internal node nulls. For leaf nodes, we only copy `incomingNulls' if
   /// it exists.
@@ -109,10 +108,8 @@ class NimbleData : public velox::dwio::common::FormatData {
   ChunkedDecoder* const inMapDecoder_;
   std::unique_ptr<ChunkedDecoder> nullsDecoder_;
   velox::BufferPtr inMap_;
-  std::function<std::unique_ptr<Encoding>(
-      velox::memory::MemoryPool&,
-      std::string_view,
-      std::function<void*(uint32_t)>)>
+  std::function<
+      std::unique_ptr<Encoding>(velox::memory::MemoryPool&, std::string_view)>
       encodingFactory_;
 };
 
@@ -126,8 +123,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
       RowSizeTracker* rowSizeTracker,
       std::function<std::unique_ptr<Encoding>(
           velox::memory::MemoryPool&,
-          std::string_view,
-          std::function<void*(uint32_t)>)> encodingFactory,
+          std::string_view)> encodingFactory,
       bool preserveFlatMapsInMemory = false)
       : FormatParams(pool, stats),
         nimbleType_(nimbleType),
@@ -177,10 +173,8 @@ class NimbleParams : public velox::dwio::common::FormatParams {
   RowSizeTracker* const rowSizeTracker_{nullptr};
   const bool preserveFlatMapsInMemory_{false};
   ChunkedDecoder* inMapDecoder_{nullptr};
-  std::function<std::unique_ptr<Encoding>(
-      velox::memory::MemoryPool&,
-      std::string_view,
-      std::function<void*(uint32_t)> stringBufferFactory)>
+  std::function<
+      std::unique_ptr<Encoding>(velox::memory::MemoryPool&, std::string_view)>
       encodingFactory_;
 };
 
