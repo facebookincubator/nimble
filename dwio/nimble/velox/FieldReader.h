@@ -51,8 +51,6 @@ struct FieldReaderParams {
   // Callback to populate feature projection stats when needed
   std::function<void(velox::dwio::common::flatmap::FlatMapKeySelectionStats)>
       keySelectionCallback{nullptr};
-
-  bool optimizeStringBufferHandling{true};
 };
 
 class FieldReader {

@@ -17,6 +17,36 @@
 
 namespace facebook::nimble {
 
+RLEEncoding<std::string_view>::RLEEncoding(
+    velox::memory::MemoryPool& memoryPool,
+    std::string_view data,
+    std::function<void*(uint32_t)> stringBufferFactory)
+    : internal::RLEEncodingBase<
+          std::string_view,
+          RLEEncoding<std::string_view>>(memoryPool, data, stringBufferFactory),
+      values_{EncodingFactory::decode(
+          memoryPool,
+          {internal::RLEEncodingBase<
+               std::string_view,
+               RLEEncoding<std::string_view>>::getValuesStart(),
+           static_cast<size_t>(
+               data.end() -
+               internal::RLEEncodingBase<
+                   std::string_view,
+                   RLEEncoding<std::string_view>>::getValuesStart())},
+          stringBufferFactory)} {
+  internal::RLEEncodingBase<std::string_view, RLEEncoding<std::string_view>>::
+      reset();
+}
+
+std::string_view RLEEncoding<std::string_view>::nextValue() {
+  return values_.nextValue();
+}
+
+void RLEEncoding<std::string_view>::resetValues() {
+  values_.reset();
+}
+
 RLEEncoding<bool>::RLEEncoding(
     velox::memory::MemoryPool& memoryPool,
     std::string_view data,
