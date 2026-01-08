@@ -52,6 +52,11 @@ class FixedBitWidthEncoding final
   static const int kCompressionOffset = Encoding::kPrefixSize;
   static const int kPrefixSize = 2 + sizeof(T);
 
+  // Fallback to uncompressed bit packed encoding if byte-aligned
+  // encoding does not offer size improvement by at least this much.
+  // TODO: Make this constant configurable
+  constexpr static const double kFallbackToBitPackingThresholdRatio = 0.99;
+
   FixedBitWidthEncoding(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
@@ -177,31 +182,29 @@ std::string_view FixedBitWidthEncoding<T>::encode(
   // 2. Apply compression only if bit width is a multiple of 8
   // 3. Try both bit width and byte width and pick one.
   // 4. etc...
-  const int bitsRequired =
+  const int byteAlignedBitWidth =
       (bits::bitsRequired(
            selection.statistics().max() - selection.statistics().min()) +
        7) &
       ~7;
 
-  const uint32_t fixedBitArraySize =
-      FixedBitArray::bufferSize(values.size(), bitsRequired);
+  const uint32_t byteAlignedBufferSize =
+      FixedBitArray::bufferSize(values.size(), byteAlignedBitWidth);
 
-  Vector<char> vector{&buffer.getMemoryPool()};
+  int bitWidth = byteAlignedBitWidth;
 
+  Vector<char> vector{&buffer.getMemoryPool(), byteAlignedBufferSize};
   auto dataCompressionPolicy = selection.compressionPolicy();
   CompressionEncoder<T> compressionEncoder{
       buffer.getMemoryPool(),
       *dataCompressionPolicy,
       DataType::Undefined,
-      bitsRequired,
-      fixedBitArraySize,
-      [&]() {
-        vector.resize(fixedBitArraySize);
-        return std::span<char>{vector};
-      },
+      byteAlignedBitWidth,
+      byteAlignedBufferSize,
+      [&]() { return std::span<char>{vector}; },
       [&, baseline = selection.statistics().min()](char*& pos) {
-        memset(pos, 0, fixedBitArraySize);
-        FixedBitArray fba(pos, bitsRequired);
+        memset(pos, 0, byteAlignedBufferSize);
+        FixedBitArray fba(pos, byteAlignedBitWidth);
         if constexpr (sizeof(physicalType) == 4) {
           fba.bulkSet32WithBaseline(
               0,
@@ -215,9 +218,46 @@ std::string_view FixedBitWidthEncoding<T>::encode(
             fba.set(i, values[i] - baseline);
           }
         }
-        pos += fixedBitArraySize;
+        pos += byteAlignedBufferSize;
         return pos;
       }};
+
+  const int bitAlignedBitWidth = bits::bitsRequired(
+      selection.statistics().max() - selection.statistics().min());
+  const uint32_t bitAlignedBufferSize =
+      FixedBitArray::bufferSize(values.size(), bitAlignedBitWidth);
+  const double byteToBitEncodedRatio =
+      (double)compressionEncoder.getSize() / bitAlignedBufferSize;
+
+  // Fallback to uncompressed bit packed encoding if byte encoding does not
+  // offer size improvement. Do fallback only if output sizes are different to
+  // avoid repacking data with no positive impact.
+  if (byteToBitEncodedRatio > kFallbackToBitPackingThresholdRatio &&
+      byteAlignedBufferSize != bitAlignedBufferSize) {
+    const auto baseline = selection.statistics().min();
+    vector.resize(bitAlignedBufferSize);
+    char* pos = vector.data();
+    memset(pos, 0, bitAlignedBufferSize);
+    FixedBitArray fba(pos, bitAlignedBitWidth);
+    if constexpr (sizeof(physicalType) == 4) {
+      fba.bulkSet32WithBaseline(
+          0,
+          rowCount,
+          reinterpret_cast<const uint32_t*>(values.data()),
+          baseline);
+    } else {
+      for (uint32_t i = 0; i < values.size(); ++i) {
+        fba.set(i, values[i] - baseline);
+      }
+    }
+
+    compressionEncoder = {
+        buffer.getMemoryPool(),
+        NoCompressionPolicy::instance(),
+        DataType::Undefined,
+        {reinterpret_cast<const char*>(vector.data()), bitAlignedBufferSize}};
+    bitWidth = bitAlignedBitWidth;
+  }
 
   const uint32_t encodingSize = Encoding::kPrefixSize +
       FixedBitWidthEncoding<T>::kPrefixSize + compressionEncoder.getSize();
@@ -228,7 +268,7 @@ std::string_view FixedBitWidthEncoding<T>::encode(
   encoding::writeChar(
       static_cast<char>(compressionEncoder.compressionType()), pos);
   encoding::write(selection.statistics().min(), pos);
-  encoding::writeChar(bitsRequired, pos);
+  encoding::writeChar(bitWidth, pos);
   compressionEncoder.write(pos);
 
   NIMBLE_DCHECK_EQ(encodingSize, pos - reserved, "Encoding size mismatch.");
