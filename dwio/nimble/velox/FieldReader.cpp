@@ -913,6 +913,7 @@ class TimestampMicroNanoFieldReader final : public FieldReader {
         [&]() { return ensureNulls(vector, rowCount); },
         scatterBitmap);
 
+    stringBuffers.clear();
     nanosBuffer_.resize(nonNullCount);
     nanosDecoder_->next(
         nonNullCount,
