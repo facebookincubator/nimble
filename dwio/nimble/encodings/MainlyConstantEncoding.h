@@ -58,263 +58,46 @@ namespace facebook::nimble {
 // 4 bytes: num otherValues encoding bytes (Y)
 // Y bytes: otherValues encoding bytes
 // Z bytes: the constant value via encoding primitive.
-
 template <typename T>
-class MainlyConstantEncodingBase
+class MainlyConstantEncoding final
     : public TypedEncoding<T, typename TypeTraits<T>::physicalType> {
- public:
-  using cppDataType = T;
-  using physicalType = typename TypeTraits<T>::physicalType;
-
-  MainlyConstantEncodingBase(
-      velox::memory::MemoryPool& memoryPool,
-      std::string_view data)
-      : TypedEncoding<T, physicalType>(memoryPool, data),
-        isCommonBuffer_(&memoryPool),
-        otherValuesBuffer_(&memoryPool) {}
-
-  void reset() final {
-    isCommon_->reset();
-    otherValues_->reset();
-  }
-
-  void skip(uint32_t rowCount) final {
-    isCommonBuffer_.resize(rowCount);
-    isCommon_->materialize(rowCount, isCommonBuffer_.data());
-    const uint32_t commonCount =
-        std::accumulate(isCommonBuffer_.begin(), isCommonBuffer_.end(), 0U);
-    const uint32_t nonCommonCount = rowCount - commonCount;
-    if (nonCommonCount == 0) {
-      return;
-    }
-
-    otherValues_->skip(nonCommonCount);
-  }
-
-  void materialize(uint32_t rowCount, void* buffer) final {
-    isCommonBuffer_.resize(rowCount);
-    isCommon_->materialize(rowCount, isCommonBuffer_.data());
-    const uint32_t commonCount =
-        std::accumulate(isCommonBuffer_.begin(), isCommonBuffer_.end(), 0U);
-    const uint32_t nonCommonCount = rowCount - commonCount;
-
-    if (nonCommonCount == 0) {
-      physicalType* output = static_cast<physicalType*>(buffer);
-      std::fill(output, output + rowCount, commonValue_);
-      return;
-    }
-
-    otherValuesBuffer_.reserve(nonCommonCount);
-    otherValues_->materialize(nonCommonCount, otherValuesBuffer_.data());
-    physicalType* output = static_cast<physicalType*>(buffer);
-    const physicalType* nextOtherValue = otherValuesBuffer_.begin();
-    for (uint32_t i = 0; i < rowCount; ++i) {
-      if (isCommonBuffer_[i]) {
-        *output++ = commonValue_;
-      } else {
-        *output++ = *nextOtherValue++;
-      }
-    }
-    NIMBLE_DCHECK_EQ(
-        nextOtherValue - otherValuesBuffer_.begin(),
-        nonCommonCount,
-        "Encoding size mismatch.");
-  }
-
-  template <typename DecoderVisitor>
-  void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params) {
-    auto* nulls = visitor.reader().rawNullsInReadRange();
-    if (velox::dwio::common::useFastPath(visitor, nulls)) {
-      detail::readWithVisitorFast(*this, visitor, params, nulls);
-      return;
-    }
-    detail::readWithVisitorSlow(
-        visitor,
-        params,
-        [&](auto toSkip) { skip(toSkip); },
-        [&] {
-          bool isCommon;
-          isCommon_->materialize(1, &isCommon);
-          if (isCommon) {
-            return commonValue_;
-          }
-          physicalType otherValue;
-          otherValues_->materialize(1, &otherValue);
-          return otherValue;
-        });
-  }
-
-  template <bool kScatter, typename V>
-  void bulkScan(
-      V& visitor,
-      vector_size_t currentNonNullRow,
-      const vector_size_t* nonNullRows,
-      vector_size_t numNonNulls,
-      const vector_size_t* scatterRows) {
-    using DataType = typename V::DataType;
-    using ValueType = detail::ValueType<DataType>;
-    constexpr bool kScatterValues = kScatter && !V::kHasFilter && !V::kHasHook;
-    ValueType* values;
-    const auto commonData =
-        detail::castFromPhysicalType<DataType>(commonValue_);
-    const bool commonPassed =
-        velox::common::applyFilter(visitor.filter(), commonData);
-    if constexpr (!V::kFilterOnly) {
-      auto numRows = visitor.numRows() - visitor.rowIndex();
-      values = detail::mutableValues<ValueType>(visitor, numRows);
-      if (commonPassed) {
-        auto commonValue = detail::dataToValue(visitor, commonData);
-        std::fill(values, values + numRows, commonValue);
-      }
-    }
-    const auto numIsCommon =
-        nonNullRows[numNonNulls - 1] + 1 - currentNonNullRow;
-    isCommonBuffer_.resize(velox::bits::nwords(numIsCommon) * sizeof(uint64_t));
-    auto* isCommon = reinterpret_cast<uint64_t*>(isCommonBuffer_.data());
-    isCommon_->materializeBoolsAsBits(numIsCommon, isCommon, 0);
-    auto numOtherValues =
-        numIsCommon - velox::bits::countBits(isCommon, 0, numIsCommon);
-    otherValuesBuffer_.resize(numOtherValues);
-    otherValues_->materialize(numOtherValues, otherValuesBuffer_.data());
-    numOtherValues = 0;
-    auto* filterHits =
-        V::kHasFilter ? visitor.outputRows(numNonNulls) : nullptr;
-    auto* rows = kScatter ? scatterRows : nonNullRows;
-    vector_size_t numValues = 0;
-    vector_size_t numHits = 0;
-    vector_size_t nonNullRowIndex = 0;
-    velox::bits::forEachUnsetBit(
-        isCommon, 0, numIsCommon, [&](vector_size_t i) {
-          i += currentNonNullRow;
-          auto commonBegin = nonNullRowIndex;
-          if constexpr (V::dense) {
-            nonNullRowIndex += i - nonNullRows[nonNullRowIndex];
-          } else {
-            while (nonNullRows[nonNullRowIndex] < i) {
-              ++nonNullRowIndex;
-            }
-          }
-          const auto numCommon = nonNullRowIndex - commonBegin;
-          if (V::kHasFilter && commonPassed && numCommon > 0) {
-            auto* begin = rows + commonBegin;
-            std::copy(begin, begin + numCommon, filterHits + numHits);
-            numHits += numCommon;
-          }
-          if (nonNullRows[nonNullRowIndex] > i) {
-            if constexpr (!V::kFilterOnly) {
-              vector_size_t numRows;
-              if constexpr (kScatterValues) {
-                numRows = scatterRows[nonNullRowIndex] - visitor.rowIndex();
-                visitor.addRowIndex(numRows);
-              } else {
-                numRows = commonPassed * numCommon;
-              }
-              numValues += numRows;
-            }
-            ++numOtherValues;
-            return;
-          }
-          auto otherData = detail::castFromPhysicalType<DataType>(
-              otherValuesBuffer_[numOtherValues++]);
-          bool otherPassed;
-          if constexpr (V::kHasFilter) {
-            otherPassed =
-                velox::common::applyFilter(visitor.filter(), otherData);
-            if (otherPassed) {
-              filterHits[numHits++] = rows[nonNullRowIndex];
-            }
-          } else {
-            otherPassed = true;
-          }
-          if constexpr (!V::kFilterOnly) {
-            auto* begin = values + numValues;
-            vector_size_t numRows;
-            if constexpr (kScatterValues) {
-              begin[scatterRows[nonNullRowIndex] - visitor.rowIndex()] =
-                  detail::dataToValue(visitor, otherData);
-              auto end = nonNullRowIndex + 1;
-              if (FOLLY_UNLIKELY(end == numNonNulls)) {
-                numRows = visitor.numRows() - visitor.rowIndex();
-              } else {
-                numRows = scatterRows[end] - visitor.rowIndex();
-              }
-              visitor.addRowIndex(numRows);
-            } else {
-              numRows = commonPassed * numCommon;
-              if (otherPassed) {
-                begin[numRows++] = detail::dataToValue(visitor, otherData);
-              }
-            }
-            numValues += numRows;
-          }
-          ++nonNullRowIndex;
-        });
-    auto numCommon = numNonNulls - nonNullRowIndex;
-    if (commonPassed && numCommon > 0) {
-      if constexpr (V::kHasFilter) {
-        auto* begin = rows + nonNullRowIndex;
-        std::copy(begin, begin + numCommon, filterHits + numHits);
-        numHits += numCommon;
-      }
-      if constexpr (!V::kFilterOnly) {
-        if constexpr (kScatterValues) {
-          numValues += visitor.numRows() - visitor.rowIndex();
-        } else {
-          numValues += numCommon;
-        }
-      }
-    }
-    visitor.setRowIndex(visitor.numRows());
-    if constexpr (V::kHasHook) {
-      NIMBLE_DCHECK_EQ(numValues, numNonNulls);
-      visitor.hook().addValues(scatterRows, values, numNonNulls);
-    } else {
-      visitor.addNumValues(V::kFilterOnly ? numHits : numValues);
-    }
-  }
-
-  std::string debugString(int offset) const final {
-    std::string log = fmt::format(
-        "{}{}<{}> rowCount={} commonValue={}",
-        std::string(offset, ' '),
-        toString(this->encodingType()),
-        toString(this->dataType()),
-        this->rowCount(),
-        commonValue_);
-    log += fmt::format(
-        "\n{}isCommon child:\n{}",
-        std::string(offset + 2, ' '),
-        isCommon_->debugString(offset + 4));
-    log += fmt::format(
-        "\n{}otherValues child:\n{}",
-        std::string(offset + 2, ' '),
-        otherValues_->debugString(offset + 4));
-    return log;
-  }
-
- protected:
-  std::unique_ptr<Encoding> isCommon_;
-  std::unique_ptr<Encoding> otherValues_;
-  physicalType commonValue_;
-  Vector<bool> isCommonBuffer_;
-  Vector<physicalType> otherValuesBuffer_;
-};
-
-template <typename T>
-class MainlyConstantEncoding final : public MainlyConstantEncodingBase<T> {
  public:
   using cppDataType = T;
   using physicalType = typename TypeTraits<T>::physicalType;
 
   MainlyConstantEncoding(
       velox::memory::MemoryPool& memoryPool,
-      std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::string_view data);
+
+  void reset() final;
+  void skip(uint32_t rowCount) final;
+  void materialize(uint32_t rowCount, void* buffer) final;
+
+  template <typename DecoderVisitor>
+  void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
+
+  template <bool kScatter, typename Visitor>
+  void bulkScan(
+      Visitor& visitor,
+      vector_size_t currentNonNullRow,
+      const vector_size_t* nonNullRows,
+      vector_size_t numNonNulls,
+      const vector_size_t* scatterRows);
 
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
       Buffer& buffer);
+
+  std::string debugString(int offset) const final;
+
+ private:
+  std::unique_ptr<Encoding> isCommon_;
+  std::unique_ptr<Encoding> otherValues_;
+  physicalType commonValue_;
+  // Temporary bufs.
+  Vector<bool> isCommonBuffer_;
+  Vector<physicalType> otherValuesBuffer_;
 };
 
 //
@@ -324,20 +107,230 @@ class MainlyConstantEncoding final : public MainlyConstantEncodingBase<T> {
 template <typename T>
 MainlyConstantEncoding<T>::MainlyConstantEncoding(
     velox::memory::MemoryPool& memoryPool,
-    std::string_view data,
-    std::function<void*(uint32_t)> stringBufferFactory)
-    : MainlyConstantEncodingBase<T>(memoryPool, data) {
+    std::string_view data)
+    : TypedEncoding<T, physicalType>(memoryPool, data),
+      isCommonBuffer_(&memoryPool),
+      otherValuesBuffer_(&memoryPool) {
   const char* pos = data.data() + Encoding::kPrefixSize;
   const uint32_t isCommonBytes = encoding::readUint32(pos);
-  this->isCommon_ = EncodingFactory::decode(
-      *this->pool_, {pos, isCommonBytes}, stringBufferFactory);
+  isCommon_ = EncodingFactory::decode(*this->pool_, {pos, isCommonBytes});
   pos += isCommonBytes;
   const uint32_t otherValuesBytes = encoding::readUint32(pos);
-  this->otherValues_ = EncodingFactory::decode(
-      *this->pool_, {pos, otherValuesBytes}, stringBufferFactory);
+  otherValues_ = EncodingFactory::decode(*this->pool_, {pos, otherValuesBytes});
   pos += otherValuesBytes;
-  this->commonValue_ = encoding::read<physicalType>(pos);
+  commonValue_ = encoding::read<physicalType>(pos);
   NIMBLE_CHECK(pos == data.end(), "Unexpected mainly constant encoding end");
+}
+
+template <typename T>
+void MainlyConstantEncoding<T>::reset() {
+  isCommon_->reset();
+  otherValues_->reset();
+}
+
+template <typename T>
+void MainlyConstantEncoding<T>::skip(uint32_t rowCount) {
+  // Hrm this isn't ideal. We should return to this later -- a new
+  // encoding func? Encoding::Accumulate to add up next N rows?
+  isCommonBuffer_.resize(rowCount);
+  isCommon_->materialize(rowCount, isCommonBuffer_.data());
+  const uint32_t commonCount =
+      std::accumulate(isCommonBuffer_.begin(), isCommonBuffer_.end(), 0U);
+  const uint32_t nonCommonCount = rowCount - commonCount;
+  if (nonCommonCount == 0) {
+    return;
+  }
+
+  otherValues_->skip(nonCommonCount);
+}
+
+template <typename T>
+void MainlyConstantEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
+  // This too isn't ideal. We will want an Encoding::Indices method or
+  // something our SparseBool can use, giving back just the set indices
+  // rather than a materialization.
+  isCommonBuffer_.resize(rowCount);
+  isCommon_->materialize(rowCount, isCommonBuffer_.data());
+  const uint32_t commonCount =
+      std::accumulate(isCommonBuffer_.begin(), isCommonBuffer_.end(), 0U);
+  const uint32_t nonCommonCount = rowCount - commonCount;
+
+  if (nonCommonCount == 0) {
+    physicalType* output = static_cast<physicalType*>(buffer);
+    std::fill(output, output + rowCount, commonValue_);
+    return;
+  }
+
+  otherValuesBuffer_.reserve(nonCommonCount);
+  otherValues_->materialize(nonCommonCount, otherValuesBuffer_.data());
+  physicalType* output = static_cast<physicalType*>(buffer);
+  const physicalType* nextOtherValue = otherValuesBuffer_.begin();
+  // This is a generic scatter -- should we have a common scatter func?
+  for (uint32_t i = 0; i < rowCount; ++i) {
+    if (isCommonBuffer_[i]) {
+      *output++ = commonValue_;
+    } else {
+      *output++ = *nextOtherValue++;
+    }
+  }
+  NIMBLE_DCHECK_EQ(
+      nextOtherValue - otherValuesBuffer_.begin(),
+      nonCommonCount,
+      "Encoding size mismatch.");
+}
+
+template <typename T>
+template <bool kScatter, typename V>
+void MainlyConstantEncoding<T>::bulkScan(
+    V& visitor,
+    vector_size_t currentNonNullRow,
+    const vector_size_t* nonNullRows,
+    vector_size_t numNonNulls,
+    const vector_size_t* scatterRows) {
+  using DataType = typename V::DataType;
+  using ValueType = detail::ValueType<DataType>;
+  constexpr bool kScatterValues = kScatter && !V::kHasFilter && !V::kHasHook;
+  ValueType* values;
+  const auto commonData = detail::castFromPhysicalType<DataType>(commonValue_);
+  const bool commonPassed =
+      velox::common::applyFilter(visitor.filter(), commonData);
+  if constexpr (!V::kFilterOnly) {
+    auto numRows = visitor.numRows() - visitor.rowIndex();
+    values = detail::mutableValues<ValueType>(visitor, numRows);
+    if (commonPassed) {
+      auto commonValue = detail::dataToValue(visitor, commonData);
+      std::fill(values, values + numRows, commonValue);
+    }
+  }
+  const auto numIsCommon = nonNullRows[numNonNulls - 1] + 1 - currentNonNullRow;
+  isCommonBuffer_.resize(velox::bits::nwords(numIsCommon) * sizeof(uint64_t));
+  auto* isCommon = reinterpret_cast<uint64_t*>(isCommonBuffer_.data());
+  // TODO: Wrap otherValues_ in BufferedEncoding.  This way when isCommon_ is
+  // SparseBoolEncoding or RLE, we can materialize it on demand and do not need
+  // to allocate memory for the indices.
+  isCommon_->materializeBoolsAsBits(numIsCommon, isCommon, 0);
+  auto numOtherValues =
+      numIsCommon - velox::bits::countBits(isCommon, 0, numIsCommon);
+  otherValuesBuffer_.resize(numOtherValues);
+  otherValues_->materialize(numOtherValues, otherValuesBuffer_.data());
+  numOtherValues = 0;
+  auto* filterHits = V::kHasFilter ? visitor.outputRows(numNonNulls) : nullptr;
+  auto* rows = kScatter ? scatterRows : nonNullRows;
+  vector_size_t numValues = 0;
+  vector_size_t numHits = 0;
+  vector_size_t nonNullRowIndex = 0;
+  velox::bits::forEachUnsetBit(isCommon, 0, numIsCommon, [&](vector_size_t i) {
+    i += currentNonNullRow;
+    auto commonBegin = nonNullRowIndex;
+    if constexpr (V::dense) {
+      nonNullRowIndex += i - nonNullRows[nonNullRowIndex];
+    } else {
+      while (nonNullRows[nonNullRowIndex] < i) {
+        ++nonNullRowIndex;
+      }
+    }
+    const auto numCommon = nonNullRowIndex - commonBegin;
+    if (V::kHasFilter && commonPassed && numCommon > 0) {
+      auto* begin = rows + commonBegin;
+      std::copy(begin, begin + numCommon, filterHits + numHits);
+      numHits += numCommon;
+    }
+    if (nonNullRows[nonNullRowIndex] > i) {
+      if constexpr (!V::kFilterOnly) {
+        vector_size_t numRows;
+        if constexpr (kScatterValues) {
+          numRows = scatterRows[nonNullRowIndex] - visitor.rowIndex();
+          visitor.addRowIndex(numRows);
+        } else {
+          numRows = commonPassed * numCommon;
+        }
+        numValues += numRows;
+      }
+      ++numOtherValues;
+      return;
+    }
+    auto otherData = detail::castFromPhysicalType<DataType>(
+        otherValuesBuffer_[numOtherValues++]);
+    bool otherPassed;
+    if constexpr (V::kHasFilter) {
+      otherPassed = velox::common::applyFilter(visitor.filter(), otherData);
+      if (otherPassed) {
+        filterHits[numHits++] = rows[nonNullRowIndex];
+      }
+    } else {
+      otherPassed = true;
+    }
+    if constexpr (!V::kFilterOnly) {
+      auto* begin = values + numValues;
+      vector_size_t numRows;
+      if constexpr (kScatterValues) {
+        begin[scatterRows[nonNullRowIndex] - visitor.rowIndex()] =
+            detail::dataToValue(visitor, otherData);
+        auto end = nonNullRowIndex + 1;
+        if (FOLLY_UNLIKELY(end == numNonNulls)) {
+          numRows = visitor.numRows() - visitor.rowIndex();
+        } else {
+          numRows = scatterRows[end] - visitor.rowIndex();
+        }
+        visitor.addRowIndex(numRows);
+      } else {
+        numRows = commonPassed * numCommon;
+        if (otherPassed) {
+          begin[numRows++] = detail::dataToValue(visitor, otherData);
+        }
+      }
+      numValues += numRows;
+    }
+    ++nonNullRowIndex;
+  });
+  auto numCommon = numNonNulls - nonNullRowIndex;
+  if (commonPassed && numCommon > 0) {
+    if constexpr (V::kHasFilter) {
+      auto* begin = rows + nonNullRowIndex;
+      std::copy(begin, begin + numCommon, filterHits + numHits);
+      numHits += numCommon;
+    }
+    if constexpr (!V::kFilterOnly) {
+      if constexpr (kScatterValues) {
+        numValues += visitor.numRows() - visitor.rowIndex();
+      } else {
+        numValues += numCommon;
+      }
+    }
+  }
+  visitor.setRowIndex(visitor.numRows());
+  if constexpr (V::kHasHook) {
+    NIMBLE_DCHECK_EQ(numValues, numNonNulls);
+    visitor.hook().addValues(scatterRows, values, numNonNulls);
+  } else {
+    visitor.addNumValues(V::kFilterOnly ? numHits : numValues);
+  }
+}
+
+template <typename T>
+template <typename V>
+void MainlyConstantEncoding<T>::readWithVisitor(
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  auto* nulls = visitor.reader().rawNullsInReadRange();
+  if (velox::dwio::common::useFastPath(visitor, nulls)) {
+    detail::readWithVisitorFast(*this, visitor, params, nulls);
+    return;
+  }
+  detail::readWithVisitorSlow(
+      visitor,
+      params,
+      [&](auto toSkip) { skip(toSkip); },
+      [&] {
+        bool isCommon;
+        isCommon_->materialize(1, &isCommon);
+        if (isCommon) {
+          return commonValue_;
+        }
+        physicalType otherValue;
+        otherValues_->materialize(1, &otherValue);
+        return otherValue;
+      });
 }
 
 namespace internal {} // namespace internal
@@ -400,21 +393,24 @@ std::string_view MainlyConstantEncoding<T>::encode(
   return {reserved, encodingSize};
 }
 
-template <>
-class MainlyConstantEncoding<std::string_view> final
-    : public MainlyConstantEncodingBase<std::string_view> {
- public:
-  using cppDataType = std::string_view;
-  using physicalType = std::string_view;
+template <typename T>
+std::string MainlyConstantEncoding<T>::debugString(int offset) const {
+  std::string log = fmt::format(
+      "{}{}<{}> rowCount={} commonValue={}",
+      std::string(offset, ' '),
+      toString(Encoding::encodingType()),
+      toString(Encoding::dataType()),
+      Encoding::rowCount(),
+      commonValue_);
+  log += fmt::format(
+      "\n{}isCommon child:\n{}",
+      std::string(offset + 2, ' '),
+      isCommon_->debugString(offset + 4));
+  log += fmt::format(
+      "\n{}otherValues child:\n{}",
+      std::string(offset + 2, ' '),
+      otherValues_->debugString(offset + 4));
+  return log;
+}
 
-  MainlyConstantEncoding(
-      velox::memory::MemoryPool& memoryPool,
-      std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
-
-  static std::string_view encode(
-      EncodingSelection<physicalType>& selection,
-      std::span<const physicalType> values,
-      Buffer& buffer);
-};
 } // namespace facebook::nimble

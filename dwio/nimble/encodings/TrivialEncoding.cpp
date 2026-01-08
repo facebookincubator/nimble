@@ -20,8 +20,7 @@ namespace facebook::nimble {
 
 TrivialEncoding<std::string_view>::TrivialEncoding(
     velox::memory::MemoryPool& memoryPool,
-    std::string_view data,
-    std::function<void*(uint32_t)> stringBufferFactory)
+    std::string_view data)
     : TypedEncoding<std::string_view, std::string_view>{memoryPool, data},
       row_{0},
       buffer_{&memoryPool},
@@ -30,8 +29,7 @@ TrivialEncoding<std::string_view>::TrivialEncoding(
   const auto dataCompressionType =
       static_cast<CompressionType>(encoding::readChar(pos));
   const auto lengthsSize = encoding::readUint32(pos);
-  lengths_ = EncodingFactory::decode(
-      memoryPool, {pos, lengthsSize}, stringBufferFactory);
+  lengths_ = EncodingFactory::decode(memoryPool, {pos, lengthsSize});
   blob_ = pos + lengthsSize;
 
   if (dataCompressionType != CompressionType::Uncompressed) {
@@ -42,16 +40,8 @@ TrivialEncoding<std::string_view>::TrivialEncoding(
     blob_ = reinterpret_cast<const char*>(dataUncompressed_.data());
     uncompressedDataBytes_ = dataUncompressed_.size();
   } else {
-    uncompressedDataBytes_ = data.size() - std::distance(data.data(), blob_);
+    uncompressedDataBytes_ = data.size() - std::distance(blob_, data.data());
   }
-  // TODO(huamengjiang): if we want to reduce the temporary memory peak, we can
-  // pass the string buffer factory into the compression api.
-  auto stringBuffer = stringBufferFactory(uncompressedDataBytes_);
-  // TODO(huamengjiang): in a follow up, we will let the factory return a smart
-  // pointer that can also be held by the encoding.
-  std::memcpy(stringBuffer, blob_, uncompressedDataBytes_);
-  dataUncompressed_.clear();
-  blob_ = static_cast<char*>(stringBuffer);
   pos_ = blob_;
 }
 
@@ -181,8 +171,7 @@ std::string_view TrivialEncoding<std::string_view>::encode(
 
 TrivialEncoding<bool>::TrivialEncoding(
     velox::memory::MemoryPool& pool,
-    std::string_view data,
-    std::function<void*(uint32_t)> /* stringBufferFactory */)
+    std::string_view data)
     : TypedEncoding<bool, bool>{pool, data},
       bitmap_{data.data() + kDataOffset},
       uncompressed_{&pool} {

@@ -49,10 +49,7 @@ class VarintEncoding final
   static const int kDataOffset = kBaselineOffset + sizeof(T);
   static const int kPrefixSize = kDataOffset - kBaselineOffset;
 
-  VarintEncoding(
-      velox::memory::MemoryPool& pool,
-      std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+  VarintEncoding(velox::memory::MemoryPool& pool, std::string_view data);
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -80,8 +77,7 @@ class VarintEncoding final
 template <typename T>
 VarintEncoding<T>::VarintEncoding(
     velox::memory::MemoryPool& pool,
-    std::string_view data,
-    std::function<void*(uint32_t)> /* stringBufferFactory */)
+    std::string_view data)
     : TypedEncoding<T, physicalType>(pool, data),
       baseValue_{*reinterpret_cast<const physicalType*>(
           data.data() + kBaselineOffset)},

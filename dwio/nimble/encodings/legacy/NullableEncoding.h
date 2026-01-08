@@ -48,8 +48,7 @@ class NullableEncoding final
 
   NullableEncoding(
       velox::memory::MemoryPool& memoryPool,
-      std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::string_view data);
 
   uint32_t nullCount() const final;
   bool isNullable() const final;
@@ -95,20 +94,16 @@ class NullableEncoding final
 template <typename T>
 NullableEncoding<T>::NullableEncoding(
     velox::memory::MemoryPool& memoryPool,
-    std::string_view data,
-    std::function<void*(uint32_t)> stringBufferFactory)
+    std::string_view data)
     : TypedEncoding<T, physicalType>(memoryPool, data),
       indicesBuffer_(this->pool_),
       nullBuffer_(this->pool_) {
   const char* pos = data.data() + Encoding::kPrefixSize;
   const uint32_t nonNullsBytes = encoding::readUint32(pos);
-  nonNullValues_ = EncodingFactory::decode(
-      *this->pool_, {pos, nonNullsBytes}, stringBufferFactory);
+  nonNullValues_ = EncodingFactory::decode(*this->pool_, {pos, nonNullsBytes});
   pos += nonNullsBytes;
   nulls_ = EncodingFactory::decode(
-      *this->pool_,
-      {pos, static_cast<size_t>(data.end() - pos)},
-      stringBufferFactory);
+      *this->pool_, {pos, static_cast<size_t>(data.end() - pos)});
   NIMBLE_DCHECK_EQ(
       Encoding::rowCount(), nulls_->rowCount(), "Nulls count mismatch.");
 }

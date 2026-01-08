@@ -220,24 +220,19 @@ class Encoder {
   static std::unique_ptr<nimble::Encoding> createEncoding(
       nimble::Buffer& buffer,
       const nimble::Vector<T>& values,
-      std::function<void*(uint32_t)> stringBufferFactory,
       CompressionType compressionType = CompressionType::Uncompressed) {
     return std::make_unique<E>(
-        buffer.getMemoryPool(),
-        encode(buffer, values, compressionType),
-        stringBufferFactory);
+        buffer.getMemoryPool(), encode(buffer, values, compressionType));
   }
 
   static std::unique_ptr<nimble::Encoding> createNullableEncoding(
       nimble::Buffer& buffer,
       const nimble::Vector<T>& values,
       const nimble::Vector<bool>& nulls,
-      std::function<void*(uint32_t)> stringBufferFactory,
       CompressionType compressionType = CompressionType::Uncompressed) {
     return std::make_unique<E>(
         buffer.getMemoryPool(),
-        encodeNullable(buffer, values, nulls, compressionType),
-        stringBufferFactory);
+        encodeNullable(buffer, values, nulls, compressionType));
   }
 };
 

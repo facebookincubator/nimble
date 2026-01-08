@@ -54,10 +54,7 @@ class TrivialEncoding final
   static constexpr int kDataOffset =
       Encoding::kPrefixSize + TrivialEncoding<T>::kPrefixSize;
 
-  TrivialEncoding(
-      velox::memory::MemoryPool& memoryPool,
-      std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+  TrivialEncoding(velox::memory::MemoryPool& memoryPool, std::string_view data);
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -103,10 +100,7 @@ class TrivialEncoding<std::string_view> final
   static constexpr int kLengthOffset =
       Encoding::kPrefixSize + TrivialEncoding<std::string_view>::kPrefixSize;
 
-  TrivialEncoding(
-      velox::memory::MemoryPool& memoryPool,
-      std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+  TrivialEncoding(velox::memory::MemoryPool& memoryPool, std::string_view data);
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -152,10 +146,7 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
   static constexpr int kDataOffset =
       Encoding::kPrefixSize + TrivialEncoding<bool>::kPrefixSize;
 
-  TrivialEncoding(
-      velox::memory::MemoryPool& pool,
-      std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+  TrivialEncoding(velox::memory::MemoryPool& pool, std::string_view data);
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -185,8 +176,7 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
 template <typename T>
 TrivialEncoding<T>::TrivialEncoding(
     velox::memory::MemoryPool& memoryPool,
-    std::string_view data,
-    std::function<void*(uint32_t)> /* stringBufferFactory */)
+    std::string_view data)
     : TypedEncoding<T, physicalType>{memoryPool, data},
       row_{0},
       values_{reinterpret_cast<const T*>(data.data() + kDataOffset)},

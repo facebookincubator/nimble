@@ -50,8 +50,7 @@ class SentinelEncoding final
 
   SentinelEncoding(
       velox::memory::MemoryPool& memoryPool,
-      std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::string_view data);
 
   uint32_t nullCount() const final;
   bool isNullable() const final;
@@ -107,8 +106,7 @@ class SentinelEncoding final
 template <typename T>
 SentinelEncoding<T>::SentinelEncoding(
     velox::memory::MemoryPool& memoryPool,
-    std::string_view data,
-    std::function<void*(uint32_t)> /* stringBufferFactory */)
+    std::string_view data)
     : TypedEncoding<T, physicalType>(memoryPool, data), buffer_(&memoryPool) {
   const char* pos = data.data() + Encoding::kPrefixSize;
   nullCount_ = encoding::readUint32(pos);

@@ -70,15 +70,11 @@ struct VeloxReadParams : public FieldReaderParams {
   // Used strictly for backward compatible migrations where the Encoding
   // implementations might have different read implementations, but
   // identical/backward compatible write behavior.
-  std::function<std::unique_ptr<Encoding>(
-      velox::memory::MemoryPool&,
-      std::string_view,
-      std::function<void*(uint32_t)>)>
+  std::function<
+      std::unique_ptr<Encoding>(velox::memory::MemoryPool&, std::string_view)>
       encodingFactory = [](velox::memory::MemoryPool& pool,
-                           std::string_view data,
-                           std::function<void*(uint32_t)> stringBufferFactory)
-      -> std::unique_ptr<Encoding> {
-    return EncodingFactory::decode(pool, data, stringBufferFactory);
+                           std::string_view data) -> std::unique_ptr<Encoding> {
+    return EncodingFactory::decode(pool, data);
   };
 };
 

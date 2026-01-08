@@ -148,16 +148,10 @@ TYPED_TEST(RleEncodingTest, SerializeThenDeserialize) {
   using D = TypeParam;
 
   auto valueGroups = this->template prepareValues<D>();
-  std::vector<velox::BufferPtr> newStringBuffers;
-  const auto stringBufferFactory = [&](uint32_t totalLength) {
-    auto& buffer = newStringBuffers.emplace_back(
-        velox::AlignedBuffer::allocate<char>(totalLength, this->pool_.get()));
-    return buffer->template asMutable<void>();
-  };
   for (const auto& values : valueGroups) {
     auto encoding =
         nimble::test::Encoder<nimble::RLEEncoding<D>>::createEncoding(
-            *this->buffer_, values, stringBufferFactory);
+            *this->buffer_, values);
     uint32_t rowCount = values.size();
     nimble::Vector<D> result(this->pool_.get(), rowCount);
     encoding->materialize(rowCount, result.data());

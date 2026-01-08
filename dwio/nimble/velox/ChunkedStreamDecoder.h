@@ -29,8 +29,7 @@ class ChunkedStreamDecoder : public Decoder {
       std::unique_ptr<ChunkedStream> stream,
       std::function<std::unique_ptr<Encoding>(
           velox::memory::MemoryPool&,
-          std::string_view,
-          std::function<void*(uint32_t)>)> encodingFactory,
+          std::string_view)> encodingFactory,
       const MetricsLogger& logger)
       : pool_{pool},
         stream_{std::move(stream)},
@@ -40,7 +39,6 @@ class ChunkedStreamDecoder : public Decoder {
   uint32_t next(
       uint32_t count,
       void* output,
-      std::vector<velox::BufferPtr>& stringBuffers,
       std::function<void*()> nulls = nullptr,
       const bits::Bitmap* scatterBitmap = nullptr) override;
 
@@ -59,13 +57,11 @@ class ChunkedStreamDecoder : public Decoder {
   std::unique_ptr<ChunkedStream> stream_;
   std::unique_ptr<Encoding> encoding_;
   uint32_t remaining_{0};
-  std::function<std::unique_ptr<Encoding>(
-      velox::memory::MemoryPool&,
-      std::string_view,
-      std::function<void*(uint32_t)>)>
+  std::function<
+      std::unique_ptr<Encoding>(velox::memory::MemoryPool&, std::string_view)>
       encodingFactory_;
   const MetricsLogger& logger_;
-  std::vector<velox::BufferPtr> currentStringBuffers_;
+  std::vector<Vector<char>> stringBuffers_;
 };
 
 } // namespace facebook::nimble
