@@ -86,10 +86,6 @@ struct ReadWithVisitorParams {
   // across potential multiple chunks during one read.
   std::function<void()> prepareResultNulls;
 
-  // TODO: hmmmm, do we still need this? We will need to pass this into the
-  // encodingFactory. Then the decoder needs to setStringVectors on the reader.
-  std::function<void*(uint32_t)> stringBufferFactory;
-
   // Number of rows scanned so far.  Contains rows scanned in previous chunks
   // during this read call as well.
   vector_size_t numScanned;
