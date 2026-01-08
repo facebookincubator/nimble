@@ -336,7 +336,6 @@ void SelectiveNimbleRowReader::loadCurrentStripe() {
                 -> std::unique_ptr<Encoding> {
         return legacy::EncodingFactory::decode(pool, data, stringBufferFactory);
       },
-      options_.passStringBuffersFromDecoder(),
       options_.preserveFlatMapsInMemory());
   columnReader_ = buildColumnReader(
       options_.requestedType() ? options_.requestedType()
