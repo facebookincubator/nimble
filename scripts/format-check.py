@@ -21,7 +21,6 @@ from collections import OrderedDict
 
 import regex
 import util
-
 from util import attrdict
 
 SCRIPTS = util.script_path()
