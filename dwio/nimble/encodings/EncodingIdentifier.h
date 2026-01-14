@@ -51,6 +51,28 @@ struct EncodingIdentifiers {
   struct Trivial {
     static constexpr NestedEncodingIdentifier Lengths = 0;
   };
+
+  struct FrequencyPartition {
+    // Partition metadata
+    static constexpr NestedEncodingIdentifier PartitionOffsets = 0;
+    static constexpr NestedEncodingIdentifier PartitionSizes = 1;
+    // Per-tier dictionaries (1-bit, 2-bit, 4-bit, 8-bit, etc.)
+    static constexpr NestedEncodingIdentifier Dict1Bit = 2;
+    static constexpr NestedEncodingIdentifier Dict2Bit = 3;
+    static constexpr NestedEncodingIdentifier Dict4Bit = 4;
+    static constexpr NestedEncodingIdentifier Dict8Bit = 5;
+    static constexpr NestedEncodingIdentifier Dict16Bit = 6;
+    static constexpr NestedEncodingIdentifier Dict32Bit = 7;
+    // Per-tier encoded keys
+    static constexpr NestedEncodingIdentifier Keys1Bit = 8;
+    static constexpr NestedEncodingIdentifier Keys2Bit = 9;
+    static constexpr NestedEncodingIdentifier Keys4Bit = 10;
+    static constexpr NestedEncodingIdentifier Keys8Bit = 11;
+    static constexpr NestedEncodingIdentifier Keys16Bit = 12;
+    static constexpr NestedEncodingIdentifier Keys32Bit = 13;
+    // Unencoded partition (raw values that don't fit in any tier)
+    static constexpr NestedEncodingIdentifier UnencodedValues = 14;
+  };
 };
 
 } // namespace facebook::nimble
