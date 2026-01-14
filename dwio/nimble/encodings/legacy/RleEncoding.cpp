@@ -19,8 +19,12 @@ namespace facebook::nimble::legacy {
 
 RLEEncoding<bool>::RLEEncoding(
     velox::memory::MemoryPool& memoryPool,
-    std::string_view data)
-    : internal::RLEEncodingBase<bool, RLEEncoding<bool>>(memoryPool, data) {
+    std::string_view data,
+    std::function<void*(uint32_t)> stringBufferFactory)
+    : internal::RLEEncodingBase<bool, RLEEncoding<bool>>(
+          memoryPool,
+          data,
+          stringBufferFactory) {
   initialValue_ = *reinterpret_cast<const bool*>(
       internal::RLEEncodingBase<bool, RLEEncoding<bool>>::getValuesStart());
   NIMBLE_CHECK(

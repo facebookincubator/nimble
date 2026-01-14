@@ -54,7 +54,8 @@ class FixedBitWidthEncoding final
 
   FixedBitWidthEncoding(
       velox::memory::MemoryPool& memoryPool,
-      std::string_view data);
+      std::string_view data,
+      std::function<void*(uint32_t)> stringBufferFactory);
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -86,7 +87,8 @@ class FixedBitWidthEncoding final
 template <typename T>
 FixedBitWidthEncoding<T>::FixedBitWidthEncoding(
     velox::memory::MemoryPool& memoryPool,
-    std::string_view data)
+    std::string_view data,
+    std::function<void*(uint32_t)> /* stringBufferFactory */)
     : TypedEncoding<T, physicalType>{memoryPool, data},
       uncompressedData_{&memoryPool},
       buffer_{&memoryPool} {

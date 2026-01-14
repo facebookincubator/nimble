@@ -198,7 +198,8 @@ class EncodingTests : public ::testing::Test {
   std::unique_ptr<nimble::Encoding> createEncoding(
       const nimble::Vector<E>& values,
       bool compress,
-      bool useVariableBitWidthCompressor) {
+      bool useVariableBitWidthCompressor,
+      std::function<void*(uint32_t)> stringBufferFactory) {
     using physicalType = typename nimble::TypeTraits<E>::physicalType;
     auto physicalValues = std::span<const physicalType>(
         reinterpret_cast<const physicalType*>(values.data()), values.size());
@@ -214,7 +215,7 @@ class EncodingTests : public ::testing::Test {
             compress, useVariableBitWidthCompressor)};
 
     auto encoded = C::encode(selection, physicalValues, *buffer_);
-    return std::make_unique<C>(*this->pool_, encoded);
+    return std::make_unique<C>(*this->pool_, encoded, stringBufferFactory);
   }
 
   // Each unit test runs on randomized data this many times before
@@ -273,9 +274,19 @@ TYPED_TEST(EncodingTests, Materialize) {
           const int rowCount = data.size();
           ASSERT_GT(rowCount, 0);
           std::unique_ptr<nimble::Encoding> encoding;
+          std::vector<velox::BufferPtr> newStringBuffers;
+          const auto stringBufferFactory = [&](uint32_t totalLength) {
+            auto& buffer = newStringBuffers.emplace_back(
+                velox::AlignedBuffer::allocate<char>(
+                    totalLength, this->pool_.get()));
+            return buffer->template asMutable<void>();
+          };
           try {
             encoding = this->createEncoding(
-                data, compress, useVariableBitWidthCompressor);
+                data,
+                compress,
+                useVariableBitWidthCompressor,
+                stringBufferFactory);
           } catch (const nimble::NimbleUserError& e) {
             if (e.errorCode() == nimble::error_code::IncompatibleEncoding) {
               continue;
@@ -374,9 +385,19 @@ TYPED_TEST(EncodingTests, ScatteredMaterialize) {
           const int rowCount = data.size();
           ASSERT_GT(rowCount, 0);
           std::unique_ptr<nimble::Encoding> encoding;
+          std::vector<velox::BufferPtr> newStringBuffers;
+          const auto stringBufferFactory = [&](uint32_t totalLength) {
+            auto& buffer = newStringBuffers.emplace_back(
+                velox::AlignedBuffer::allocate<char>(
+                    totalLength, this->pool_.get()));
+            return buffer->template asMutable<void>();
+          };
           try {
             encoding = this->createEncoding(
-                data, compress, useVariableBitWidthCompressor);
+                data,
+                compress,
+                useVariableBitWidthCompressor,
+                stringBufferFactory);
           } catch (const nimble::NimbleUserError& e) {
             if (e.errorCode() == nimble::error_code::IncompatibleEncoding) {
               continue;
