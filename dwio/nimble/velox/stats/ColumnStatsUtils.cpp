@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/stats/ColumnStatsUtils.h"
+#include "dwio/nimble/velox/stats/ColumnStatsUtils.h"
 #include "dwio/nimble/velox/RawSizeUtils.h"
 #include "velox/dwio/common/Range.h"
 

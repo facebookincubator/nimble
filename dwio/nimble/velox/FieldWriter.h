@@ -17,11 +17,11 @@
 #pragma once
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/stats/ColumnStatsUtils.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/OrderedRanges.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/StreamData.h"
+#include "dwio/nimble/velox/stats/ColumnStatsUtils.h"
 #include "velox/dwio/common/TypeWithId.h"
 #include "velox/vector/DecodedVector.h"
 
