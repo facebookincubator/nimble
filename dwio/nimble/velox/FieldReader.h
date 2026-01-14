@@ -52,7 +52,7 @@ struct FieldReaderParams {
   std::function<void(velox::dwio::common::flatmap::FlatMapKeySelectionStats)>
       keySelectionCallback{nullptr};
 
-  bool optimizeStringBufferHandling{true};
+  bool optimizeStringBufferHandling{false};
 };
 
 class FieldReader {

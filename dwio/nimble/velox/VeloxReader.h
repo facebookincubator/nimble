@@ -20,6 +20,7 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/FieldReader.h"
 #include "dwio/nimble/velox/SchemaReader.h"
@@ -78,7 +79,7 @@ struct VeloxReadParams : public FieldReaderParams {
                            std::string_view data,
                            std::function<void*(uint32_t)> stringBufferFactory)
       -> std::unique_ptr<Encoding> {
-    return EncodingFactory::decode(pool, data, stringBufferFactory);
+    return legacy::EncodingFactory::decode(pool, data, stringBufferFactory);
   };
 };
 
