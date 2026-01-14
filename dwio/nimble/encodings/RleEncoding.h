@@ -224,49 +224,6 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
   detail::BufferedEncoding<physicalType, 32> values_;
 };
 
-template <>
-class RLEEncoding<std::string_view> final
-    : public internal::
-          RLEEncodingBase<std::string_view, RLEEncoding<std::string_view>> {
- public:
-  RLEEncoding(
-      velox::memory::MemoryPool& memoryPool,
-      std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
-
-  std::string_view nextValue();
-  void resetValues();
-  static std::string_view getSerializedRunValues(
-      EncodingSelection<std::string_view>& selection,
-      const Vector<std::string_view>& runValues,
-      Buffer& buffer) {
-    return selection.template encodeNested<std::string_view>(
-        EncodingIdentifiers::RunLength::RunValues, runValues, buffer);
-  }
-
-  // template <typename DecoderVisitor>
-  // void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams&
-  // params);
-
-  // template <bool kScatter, typename Visitor>
-  // void bulkScan(
-  //     Visitor& visitor,
-  //     vector_size_t currentRow,
-  //     const vector_size_t* nonNullRows,
-  //     vector_size_t numNonNulls,
-  //     const vector_size_t* scatterRows);
-
- private:
-  // template <bool kDense>
-  // vector_size_t findNumInRun(
-  //     const vector_size_t* rows,
-  //     vector_size_t rowIndex,
-  //     vector_size_t numRows,
-  //     vector_size_t currentRow) const;
-
-  detail::BufferedEncoding<std::string_view, 32> values_;
-};
-
 // For the bool case we know the values will alternate between true
 // and false, so in addition to the run lengths we need only store
 // whether the first value is true or false.
