@@ -188,4 +188,5 @@ target_link_libraries(
 )
 
 add_subdirectory(selective)
+add_subdirectory(stats)
 add_subdirectory(tests)
