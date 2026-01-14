@@ -5619,14 +5619,19 @@ TEST_F(VeloxReaderTests, estimatedRowSizeSimple) {
   testPrimitive(velox::VARCHAR(), 0);
 }
 
+// TODO: soon we should get rid of row estimates entirely, so we are just tuning
+// the current heuristics. The Encodings with the newer memory handling would
+// boost the reported retained size (without actually allocating more memory).
+// This is ok for velox compute engines because they don't use the c++ Nimble
+// batch readers.
 TEST_F(VeloxReaderTests, estimatedRowSizeComplex) {
   // For string cases and with null cases, it is really hard to get an even
   // close estimation as velox always over provision memory for vectors. Loose
   // or very loose error rate is applied to the test verification as there is no
   // other way of binding the estimate verification with velox implementations.
   const double kMaxErrorRate = 0.2;
-  const double kMaxErrorRateLoose = 0.4;
-  const double kMaxErrorRateVeryLoose = 0.6;
+  const double kMaxErrorRateLoose = 0.5;
+  const double kMaxErrorRateVeryLoose = 0.7;
 
   auto testMultiValue = [&](uint32_t numRows,
                             uint32_t numElements,

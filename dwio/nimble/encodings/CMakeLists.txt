@@ -17,10 +17,12 @@ add_subdirectory(legacy)
 add_library(
   nimble_encodings
   Compression.cpp
+  ConstantEncoding.cpp
   Encoding.cpp
   EncodingFactory.cpp
   EncodingLayout.cpp
   EncodingLayoutCapture.cpp
+  MainlyConstantEncoding.cpp
   RleEncoding.cpp
   SparseBoolEncoding.cpp
   Statistics.cpp
