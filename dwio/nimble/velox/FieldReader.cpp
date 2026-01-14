@@ -481,12 +481,16 @@ class ScalarFieldReader final
     };
 
     uint32_t nonNullCount = 0;
+
+    // Unused string buffer container for api
+    std::vector<velox::BufferPtr> stringBuffers;
     if constexpr (IsBool<TRequested, TData>::value) {
       // TODO: implement method for bitpacked bool
       auto buf = this->ensureBuffer(rowCount);
       nonNullCount = decoder_->next(
           count,
           buf,
+          stringBuffers,
           [&]() { return ensureNulls(vector, rowCount); },
           scatterBitmap);
 
@@ -507,6 +511,7 @@ class ScalarFieldReader final
       nonNullCount = decoder_->next(
           count,
           vector->values()->template asMutable<TRequested>(),
+          stringBuffers,
           [&]() { return ensureNulls(vector, rowCount); },
           scatterBitmap);
     }
@@ -656,35 +661,36 @@ class StringFieldReader final : public FieldReader {
     auto vector =
         VectorInitializer<velox::FlatVector<velox::StringView>>::initialize(
             &pool_, output, type_, rowCount);
-    vector->clearStringBuffers();
     vector->resize(rowCount);
     buffer_.resize(rowCount);
 
+    std::vector<velox::BufferPtr> stringBuffers;
+    // NOTE: the next diff will branch and use an earlier version
+    // of copying string values or simple setter in flat vector.
     auto nonNullCount = decoder_->next(
         count,
         buffer_.data(),
+        stringBuffers,
         [&]() { return ensureNulls(vector, rowCount); },
         scatterBitmap);
-
+    auto* valuesPtr = vector->mutableValues()->asMutable<velox::StringView>();
     if (nonNullCount == rowCount) {
       vector->resetNulls();
       for (uint32_t i = 0; i < rowCount; ++i) {
-        vector->set(
-            i,
-            // @lint-ignore CLANGTIDY facebook-hte-MemberUncheckedArrayBounds
-            {buffer_[i].data(), static_cast<int32_t>(buffer_[i].length())});
+        valuesPtr[i] =
+            velox::StringView(buffer_[i].data(), buffer_[i].length());
       }
     } else {
       vector->setNullCount(rowCount - nonNullCount);
       for (uint32_t i = 0; i < rowCount; ++i) {
         if (!vector->isNullAt(i)) {
-          vector->set(
-              i,
-              // @lint-ignore CLANGTIDY facebook-hte-MemberUncheckedArrayBounds
-              {buffer_[i].data(), static_cast<int32_t>(buffer_[i].length())});
+          valuesPtr[i] =
+              velox::StringView(buffer_[i].data(), buffer_[i].length());
         }
       }
     }
+    // Use shared ownership of the buffers
+    vector->setStringBuffers(std::move(stringBuffers));
   }
 
   void skip(uint32_t count) final {
@@ -763,15 +769,21 @@ class TimestampMicroNanoFieldReader final : public FieldReader {
     vector->resize(rowCount);
     microsBuffer_.resize(rowCount);
 
+    std::vector<velox::BufferPtr> stringBuffers;
     auto nonNullCount = decoder_->next(
         count,
         microsBuffer_.data(),
+        stringBuffers,
         [&]() { return ensureNulls(vector, rowCount); },
         scatterBitmap);
 
     nanosBuffer_.resize(nonNullCount);
     nanosDecoder_->next(
-        nonNullCount, nanosBuffer_.data(), []() { return nullptr; }, nullptr);
+        nonNullCount,
+        nanosBuffer_.data(),
+        stringBuffers,
+        []() { return nullptr; },
+        nullptr);
 
     auto* rawValues = vector->mutableRawValues();
 
@@ -798,11 +810,13 @@ class TimestampMicroNanoFieldReader final : public FieldReader {
     std::array<char, nullBytes(kSkipBatchSize)> nulls{};
     uint32_t nonNullCount = 0;
 
+    std::vector<velox::BufferPtr> stringBuffers;
     while (count > 0) {
       auto readSize = std::min(count, kSkipBatchSize);
       nonNullCount += decoder_->next(
           readSize,
           microsBuffer.data(),
+          stringBuffers,
           [&]() { return nulls.data(); },
           /* scatterBitmap */ nullptr);
       count -= readSize;
@@ -912,9 +926,11 @@ class MultiValueFieldReader : public FieldReader {
     velox::vector_size_t* offsets =
         vector->offsets()->template asMutable<velox::vector_size_t>();
 
+    std::vector<velox::BufferPtr> stringBuffers;
     auto nonNullCount = decoder_->next(
         count,
         sizes,
+        stringBuffers,
         [&]() { return ensureNulls(vector, allocationSize); },
         scatterBitmap);
 
@@ -953,11 +969,14 @@ class MultiValueFieldReader : public FieldReader {
     constexpr auto byteSize = nullBytes(kSkipBatchSize);
     std::array<char, byteSize> nulls;
 
+    // Unused place holder for api.
+    std::vector<velox::BufferPtr> stringBuffers;
     while (count > 0) {
       auto readSize = std::min(count, kSkipBatchSize);
       auto nonNullCount = decoder_->next(
           readSize,
           sizes.data(),
+          stringBuffers,
           [&]() { return nulls.data(); },
           /* scatterBitmap */ nullptr);
 
@@ -1417,9 +1436,11 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
     // OffsetType* indices = dictIndices->asMutable<OffsetType>();
     void* nullsPtr;
 
+    std::vector<velox::BufferPtr> stringBuffers;
     nonNullCount = offsetDecoder_->next(
         count,
         indices,
+        stringBuffers,
         [&]() {
           nullsPtr = nulls();
           return nullsPtr;
@@ -1566,9 +1587,11 @@ class SlidingWindowMapFieldReader final : public FieldReader {
     // Read the offsets which can be nullable
     auto indices = dictionaryVector->indices()->asMutable<uint32_t>();
     void* nullsPtr = nullptr;
+    std::vector<velox::BufferPtr> stringBuffers;
     uint32_t nonNullCount = offsetDecoder_->next(
         count,
         indices,
+        stringBuffers,
         [&]() {
           nullsPtr = ensureNulls(dictionaryVector, rowCount);
           return nullsPtr;
@@ -1583,7 +1606,8 @@ class SlidingWindowMapFieldReader final : public FieldReader {
     bool hasNulls = nonNullCount != rowCount;
     // Read the lengths
     uint32_t lengthBuffer[nonNullCount];
-    lengthsDecoder_->next(nonNullCount, lengthBuffer);
+    std::vector<velox::BufferPtr> lengthStringBuffers;
+    lengthsDecoder_->next(nonNullCount, lengthBuffer, lengthStringBuffers);
 
     // Convert the offsets and lengths to a list of unique offsets and lengths
     // and update the indices to be 0-based indices
@@ -1782,14 +1806,18 @@ class SlidingWindowMapFieldReader final : public FieldReader {
     uint32_t lastOffset = 0;
     uint32_t lastLength = 0;
 
+    // Unused string buffer container for api
+    std::vector<velox::BufferPtr> stringBuffers;
     while (count > 0) {
       auto skipSize = std::min(count, kSkipBatchSize);
       auto nonNullCount = offsetDecoder_->next(
           skipSize,
           offsets.data(),
+          stringBuffers,
           [&]() { return nullsPtr; },
           /* scatterBitmap */ nullptr);
-      lengthsDecoder_->next(nonNullCount, lengths.data());
+      std::vector<velox::BufferPtr> lengthStringBuffers;
+      lengthsDecoder_->next(nonNullCount, lengths.data(), lengthStringBuffers);
 
       const bool hasNulls = nonNullCount != skipSize;
 
@@ -2103,7 +2131,8 @@ uint32_t readBooleanValues(
     bool* buffer,
     uint32_t count,
     TrueHandler handler) {
-  decoder->next(count, buffer);
+  std::vector<velox::BufferPtr> stringBuffers;
+  decoder->next(count, buffer, stringBuffers);
 
   uint32_t trueCount = 0;
   for (uint32_t i = 0; i < count; ++i) {
@@ -2246,7 +2275,8 @@ class RowFieldReader final : public FieldReader {
       // read only those values, if there is no scatter then we can read
       // rowCount values
       boolBuffer_.resize(count);
-      decoder_->next(count, boolBuffer_.data());
+      std::vector<velox::BufferPtr> stringBuffers;
+      decoder_->next(count, boolBuffer_.data(), stringBuffers);
 
       auto* nullBuffer = ensureNulls(vector, rowCount);
       bits::BitmapBuilder nullBits{nullBuffer, rowCount};
@@ -3161,6 +3191,8 @@ velox::TypePtr inferType(
   return type;
 }
 
+// TODO: use field reader params or another flag to control creating legacy
+// string field reader.
 std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
     const FieldReaderParams& parameters,
     velox::memory::MemoryPool& pool,

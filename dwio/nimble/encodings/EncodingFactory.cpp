@@ -41,119 +41,159 @@ static std::span<const typename TypeTraits<T>::physicalType> toPhysicalSpan(
 
 std::unique_ptr<Encoding> EncodingFactory::decode(
     velox::memory::MemoryPool& memoryPool,
-    std::string_view data) {
+    std::string_view data,
+    std::function<void*(uint32_t)> stringBufferFactory) {
   // Maybe we should have a magic number of encodings too? Hrm.
   const EncodingType encodingType = static_cast<EncodingType>(data[0]);
   const DataType dataType = static_cast<DataType>(data[1]);
-#define RETURN_ENCODING_BY_LEAF_TYPE(Encoding, dataType)                     \
-  switch (dataType) {                                                        \
-    case DataType::Int8:                                                     \
-      return std::make_unique<Encoding<int8_t>>(memoryPool, data);           \
-    case DataType::Uint8:                                                    \
-      return std::make_unique<Encoding<uint8_t>>(memoryPool, data);          \
-    case DataType::Int16:                                                    \
-      return std::make_unique<Encoding<int16_t>>(memoryPool, data);          \
-    case DataType::Uint16:                                                   \
-      return std::make_unique<Encoding<uint16_t>>(memoryPool, data);         \
-    case DataType::Int32:                                                    \
-      return std::make_unique<Encoding<int32_t>>(memoryPool, data);          \
-    case DataType::Uint32:                                                   \
-      return std::make_unique<Encoding<uint32_t>>(memoryPool, data);         \
-    case DataType::Int64:                                                    \
-      return std::make_unique<Encoding<int64_t>>(memoryPool, data);          \
-    case DataType::Uint64:                                                   \
-      return std::make_unique<Encoding<uint64_t>>(memoryPool, data);         \
-    case DataType::Float:                                                    \
-      return std::make_unique<Encoding<float>>(memoryPool, data);            \
-    case DataType::Double:                                                   \
-      return std::make_unique<Encoding<double>>(memoryPool, data);           \
-    case DataType::Bool:                                                     \
-      return std::make_unique<Encoding<bool>>(memoryPool, data);             \
-    case DataType::String:                                                   \
-      return std::make_unique<Encoding<std::string_view>>(memoryPool, data); \
-    default:                                                                 \
-      NIMBLE_UNREACHABLE("Unknown encoding type {}.", toString(dataType))    \
+#define RETURN_ENCODING_BY_LEAF_TYPE(Encoding, dataType)                  \
+  switch (dataType) {                                                     \
+    case DataType::Int8:                                                  \
+      return std::make_unique<Encoding<int8_t>>(                          \
+          memoryPool, data, stringBufferFactory);                         \
+    case DataType::Uint8:                                                 \
+      return std::make_unique<Encoding<uint8_t>>(                         \
+          memoryPool, data, stringBufferFactory);                         \
+    case DataType::Int16:                                                 \
+      return std::make_unique<Encoding<int16_t>>(                         \
+          memoryPool, data, stringBufferFactory);                         \
+    case DataType::Uint16:                                                \
+      return std::make_unique<Encoding<uint16_t>>(                        \
+          memoryPool, data, stringBufferFactory);                         \
+    case DataType::Int32:                                                 \
+      return std::make_unique<Encoding<int32_t>>(                         \
+          memoryPool, data, stringBufferFactory);                         \
+    case DataType::Uint32:                                                \
+      return std::make_unique<Encoding<uint32_t>>(                        \
+          memoryPool, data, stringBufferFactory);                         \
+    case DataType::Int64:                                                 \
+      return std::make_unique<Encoding<int64_t>>(                         \
+          memoryPool, data, stringBufferFactory);                         \
+    case DataType::Uint64:                                                \
+      return std::make_unique<Encoding<uint64_t>>(                        \
+          memoryPool, data, stringBufferFactory);                         \
+    case DataType::Float:                                                 \
+      return std::make_unique<Encoding<float>>(                           \
+          memoryPool, data, stringBufferFactory);                         \
+    case DataType::Double:                                                \
+      return std::make_unique<Encoding<double>>(                          \
+          memoryPool, data, stringBufferFactory);                         \
+    case DataType::Bool:                                                  \
+      return std::make_unique<Encoding<bool>>(                            \
+          memoryPool, data, stringBufferFactory);                         \
+    case DataType::String:                                                \
+      return std::make_unique<Encoding<std::string_view>>(                \
+          memoryPool, data, stringBufferFactory);                         \
+    default:                                                              \
+      NIMBLE_UNREACHABLE("Unknown encoding type {}.", toString(dataType)) \
   }
 
-#define RETURN_ENCODING_BY_VARINT_TYPE(Encoding, dataType)           \
-  switch (dataType) {                                                \
-    case DataType::Int32:                                            \
-      return std::make_unique<Encoding<int32_t>>(memoryPool, data);  \
-    case DataType::Uint32:                                           \
-      return std::make_unique<Encoding<uint32_t>>(memoryPool, data); \
-    case DataType::Int64:                                            \
-      return std::make_unique<Encoding<int64_t>>(memoryPool, data);  \
-    case DataType::Uint64:                                           \
-      return std::make_unique<Encoding<uint64_t>>(memoryPool, data); \
-    case DataType::Float:                                            \
-      return std::make_unique<Encoding<float>>(memoryPool, data);    \
-    case DataType::Double:                                           \
-      return std::make_unique<Encoding<double>>(memoryPool, data);   \
-    default:                                                         \
-      NIMBLE_UNREACHABLE(                                            \
-          "Trying to deserialize a varint stream for "               \
-          "an incompatible data type {}.",                           \
-          toString(dataType));                                       \
+#define RETURN_ENCODING_BY_VARINT_TYPE(Encoding, dataType) \
+  switch (dataType) {                                      \
+    case DataType::Int32:                                  \
+      return std::make_unique<Encoding<int32_t>>(          \
+          memoryPool, data, stringBufferFactory);          \
+    case DataType::Uint32:                                 \
+      return std::make_unique<Encoding<uint32_t>>(         \
+          memoryPool, data, stringBufferFactory);          \
+    case DataType::Int64:                                  \
+      return std::make_unique<Encoding<int64_t>>(          \
+          memoryPool, data, stringBufferFactory);          \
+    case DataType::Uint64:                                 \
+      return std::make_unique<Encoding<uint64_t>>(         \
+          memoryPool, data, stringBufferFactory);          \
+    case DataType::Float:                                  \
+      return std::make_unique<Encoding<float>>(            \
+          memoryPool, data, stringBufferFactory);          \
+    case DataType::Double:                                 \
+      return std::make_unique<Encoding<double>>(           \
+          memoryPool, data, stringBufferFactory);          \
+    default:                                               \
+      NIMBLE_UNREACHABLE(                                  \
+          "Trying to deserialize a varint stream for "     \
+          "an incompatible data type {}.",                 \
+          toString(dataType));                             \
   }
 
-#define RETURN_ENCODING_BY_NON_BOOL_TYPE(Encoding, dataType)                 \
-  switch (dataType) {                                                        \
-    case DataType::Int8:                                                     \
-      return std::make_unique<Encoding<int8_t>>(memoryPool, data);           \
-    case DataType::Uint8:                                                    \
-      return std::make_unique<Encoding<uint8_t>>(memoryPool, data);          \
-    case DataType::Int16:                                                    \
-      return std::make_unique<Encoding<int16_t>>(memoryPool, data);          \
-    case DataType::Uint16:                                                   \
-      return std::make_unique<Encoding<uint16_t>>(memoryPool, data);         \
-    case DataType::Int32:                                                    \
-      return std::make_unique<Encoding<int32_t>>(memoryPool, data);          \
-    case DataType::Uint32:                                                   \
-      return std::make_unique<Encoding<uint32_t>>(memoryPool, data);         \
-    case DataType::Int64:                                                    \
-      return std::make_unique<Encoding<int64_t>>(memoryPool, data);          \
-    case DataType::Uint64:                                                   \
-      return std::make_unique<Encoding<uint64_t>>(memoryPool, data);         \
-    case DataType::Float:                                                    \
-      return std::make_unique<Encoding<float>>(memoryPool, data);            \
-    case DataType::Double:                                                   \
-      return std::make_unique<Encoding<double>>(memoryPool, data);           \
-    case DataType::String:                                                   \
-      return std::make_unique<Encoding<std::string_view>>(memoryPool, data); \
-    default:                                                                 \
-      NIMBLE_UNREACHABLE(                                                    \
-          "Trying to deserialize a non-bool stream for "                     \
-          "the bool data type {}.",                                          \
-          toString(dataType));                                               \
+#define RETURN_ENCODING_BY_NON_BOOL_TYPE(Encoding, dataType) \
+  switch (dataType) {                                        \
+    case DataType::Int8:                                     \
+      return std::make_unique<Encoding<int8_t>>(             \
+          memoryPool, data, stringBufferFactory);            \
+    case DataType::Uint8:                                    \
+      return std::make_unique<Encoding<uint8_t>>(            \
+          memoryPool, data, stringBufferFactory);            \
+    case DataType::Int16:                                    \
+      return std::make_unique<Encoding<int16_t>>(            \
+          memoryPool, data, stringBufferFactory);            \
+    case DataType::Uint16:                                   \
+      return std::make_unique<Encoding<uint16_t>>(           \
+          memoryPool, data, stringBufferFactory);            \
+    case DataType::Int32:                                    \
+      return std::make_unique<Encoding<int32_t>>(            \
+          memoryPool, data, stringBufferFactory);            \
+    case DataType::Uint32:                                   \
+      return std::make_unique<Encoding<uint32_t>>(           \
+          memoryPool, data, stringBufferFactory);            \
+    case DataType::Int64:                                    \
+      return std::make_unique<Encoding<int64_t>>(            \
+          memoryPool, data, stringBufferFactory);            \
+    case DataType::Uint64:                                   \
+      return std::make_unique<Encoding<uint64_t>>(           \
+          memoryPool, data, stringBufferFactory);            \
+    case DataType::Float:                                    \
+      return std::make_unique<Encoding<float>>(              \
+          memoryPool, data, stringBufferFactory);            \
+    case DataType::Double:                                   \
+      return std::make_unique<Encoding<double>>(             \
+          memoryPool, data, stringBufferFactory);            \
+    case DataType::String:                                   \
+      return std::make_unique<Encoding<std::string_view>>(   \
+          memoryPool, data, stringBufferFactory);            \
+    default:                                                 \
+      NIMBLE_UNREACHABLE(                                    \
+          "Trying to deserialize a non-bool stream for "     \
+          "the bool data type {}.",                          \
+          toString(dataType));                               \
   }
 
-#define RETURN_ENCODING_BY_NUMERIC_TYPE(Encoding, dataType)          \
-  switch (dataType) {                                                \
-    case DataType::Int8:                                             \
-      return std::make_unique<Encoding<int8_t>>(memoryPool, data);   \
-    case DataType::Uint8:                                            \
-      return std::make_unique<Encoding<uint8_t>>(memoryPool, data);  \
-    case DataType::Int16:                                            \
-      return std::make_unique<Encoding<int16_t>>(memoryPool, data);  \
-    case DataType::Uint16:                                           \
-      return std::make_unique<Encoding<uint16_t>>(memoryPool, data); \
-    case DataType::Int32:                                            \
-      return std::make_unique<Encoding<int32_t>>(memoryPool, data);  \
-    case DataType::Uint32:                                           \
-      return std::make_unique<Encoding<uint32_t>>(memoryPool, data); \
-    case DataType::Int64:                                            \
-      return std::make_unique<Encoding<int64_t>>(memoryPool, data);  \
-    case DataType::Uint64:                                           \
-      return std::make_unique<Encoding<uint64_t>>(memoryPool, data); \
-    case DataType::Float:                                            \
-      return std::make_unique<Encoding<float>>(memoryPool, data);    \
-    case DataType::Double:                                           \
-      return std::make_unique<Encoding<double>>(memoryPool, data);   \
-    default:                                                         \
-      NIMBLE_UNREACHABLE(                                            \
-          "Trying to deserialize a non-numeric stream for "          \
-          "a numeric data type {}.",                                 \
-          toString(dataType));                                       \
+#define RETURN_ENCODING_BY_NUMERIC_TYPE(Encoding, dataType) \
+  switch (dataType) {                                       \
+    case DataType::Int8:                                    \
+      return std::make_unique<Encoding<int8_t>>(            \
+          memoryPool, data, stringBufferFactory);           \
+    case DataType::Uint8:                                   \
+      return std::make_unique<Encoding<uint8_t>>(           \
+          memoryPool, data, stringBufferFactory);           \
+    case DataType::Int16:                                   \
+      return std::make_unique<Encoding<int16_t>>(           \
+          memoryPool, data, stringBufferFactory);           \
+    case DataType::Uint16:                                  \
+      return std::make_unique<Encoding<uint16_t>>(          \
+          memoryPool, data, stringBufferFactory);           \
+    case DataType::Int32:                                   \
+      return std::make_unique<Encoding<int32_t>>(           \
+          memoryPool, data, stringBufferFactory);           \
+    case DataType::Uint32:                                  \
+      return std::make_unique<Encoding<uint32_t>>(          \
+          memoryPool, data, stringBufferFactory);           \
+    case DataType::Int64:                                   \
+      return std::make_unique<Encoding<int64_t>>(           \
+          memoryPool, data, stringBufferFactory);           \
+    case DataType::Uint64:                                  \
+      return std::make_unique<Encoding<uint64_t>>(          \
+          memoryPool, data, stringBufferFactory);           \
+    case DataType::Float:                                   \
+      return std::make_unique<Encoding<float>>(             \
+          memoryPool, data, stringBufferFactory);           \
+    case DataType::Double:                                  \
+      return std::make_unique<Encoding<double>>(            \
+          memoryPool, data, stringBufferFactory);           \
+    default:                                                \
+      NIMBLE_UNREACHABLE(                                   \
+          "Trying to deserialize a non-numeric stream for " \
+          "a numeric data type {}.",                        \
+          toString(dataType));                              \
   }
 
   switch (encodingType) {
@@ -177,7 +217,8 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
           dataType,
           DataType::Bool,
           "Trying to deserialize a SparseBoolEncoding with a non-bool data type.");
-      return std::make_unique<SparseBoolEncoding>(memoryPool, data);
+      return std::make_unique<SparseBoolEncoding>(
+          memoryPool, data, stringBufferFactory);
     }
     case EncodingType::Varint: {
       RETURN_ENCODING_BY_VARINT_TYPE(VarintEncoding, dataType);
