@@ -295,30 +295,30 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
       uint64_t offset,
       uint64_t length,
       void* buf,
-      const velox::FileStorageContext& fileStorageContext = {}) const final {
+      const velox::FileIoContext& context = {}) const final {
     chunks_.wlock()->push_back({offset, length});
-    return file_.pread(offset, length, buf, fileStorageContext);
+    return file_.pread(offset, length, buf, context);
   }
 
   std::string pread(
       uint64_t offset,
       uint64_t length,
-      const velox::FileStorageContext& fileStorageContext = {}) const final {
+      const velox::FileIoContext& context = {}) const final {
     chunks_.wlock()->push_back({offset, length});
-    return file_.pread(offset, length, fileStorageContext);
+    return file_.pread(offset, length, context);
   }
 
   uint64_t preadv(
       uint64_t /* offset */,
       const std::vector<folly::Range<char*>>& /* buffers */,
-      const velox::FileStorageContext& fileStorageContext = {}) const final {
+      const velox::FileIoContext& context = {}) const final {
     NIMBLE_UNSUPPORTED("Not used by Nimble");
   }
 
   uint64_t preadv(
       folly::Range<const velox::common::Region*> regions,
       folly::Range<folly::IOBuf*> iobufs,
-      const velox::FileStorageContext& fileStorageContext = {}) const override {
+      const velox::FileIoContext& context = {}) const override {
     VELOX_CHECK_EQ(regions.size(), iobufs.size());
     uint64_t length = 0;
     for (size_t i = 0; i < regions.size(); ++i) {
@@ -339,11 +339,7 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
         output.appendChain(std::move(next));
       } else {
         output = folly::IOBuf(folly::IOBuf::CREATE, region.length);
-        pread(
-            region.offset,
-            region.length,
-            output.writableData(),
-            fileStorageContext);
+        pread(region.offset, region.length, output.writableData(), context);
         output.append(region.length);
       }
     }
