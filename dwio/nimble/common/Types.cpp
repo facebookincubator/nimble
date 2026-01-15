@@ -47,6 +47,8 @@ std::string toString(EncodingType encodingType) {
       return "MainlyConstant";
     case EncodingType::Sentinel:
       return "Sentinel";
+    case EncodingType::Prefix:
+      return "Prefix";
   }
   return fmt::format(
       "Unknown encoding type: {}", static_cast<int32_t>(encodingType));

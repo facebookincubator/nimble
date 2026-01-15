@@ -22,31 +22,30 @@
 #include <array>
 #include <memory>
 
-// Basically equivalent to std::vector, but without the edge case for booleans,
-// i.e. data() returns T* for all T. This allows for implicit conversion to
-// std::span for all T.
-
 namespace facebook::nimble {
 
+/// A vector-like container similar to std::vector, but without the edge case
+/// for booleans. Unlike std::vector<bool>, data() returns T* for all T,
+/// allowing implicit conversion to std::span for all T.
 template <typename T>
 class Vector {
   using InnerType =
       typename std::conditional<std::is_same_v<T, bool>, uint8_t, T>::type;
 
  public:
-  Vector(velox::memory::MemoryPool* memoryPool, size_t size, T value)
-      : memoryPool_{memoryPool} {
+  /// Constructs a vector with the given size, filled with the specified value.
+  Vector(velox::memory::MemoryPool* pool, size_t size, T value) : pool_{pool} {
     init(size);
     std::fill(dataRawPtr_, dataRawPtr_ + size_, value);
   }
 
-  Vector(velox::memory::MemoryPool* memoryPool, size_t size)
-      : memoryPool_{memoryPool} {
+  /// Constructs a vector with the given size, with uninitialized elements.
+  Vector(velox::memory::MemoryPool* pool, size_t size) : pool_{pool} {
     init(size);
   }
 
-  explicit Vector(velox::memory::MemoryPool* memoryPool)
-      : memoryPool_{memoryPool} {
+  /// Constructs an empty vector.
+  explicit Vector(velox::memory::MemoryPool* pool) : pool_{pool} {
     capacity_ = 0;
     size_ = 0;
     data_ = nullptr;
@@ -56,33 +55,37 @@ class Vector {
 #endif
   }
 
+  /// Constructs a vector from an iterator range.
   template <typename It>
-  Vector(velox::memory::MemoryPool* memoryPool, It first, It last)
-      : memoryPool_{memoryPool} {
+  Vector(velox::memory::MemoryPool* pool, It first, It last) : pool_{pool} {
     auto size = last - first;
     init(size);
     std::copy(first, last, dataRawPtr_);
   }
 
+  /// Copy constructor.
   Vector(const Vector& other) {
     *this = other;
   }
 
+  /// Copy assignment operator.
   Vector& operator=(const Vector& other) {
     if (this != &other) {
       size_ = other.size();
       capacity_ = other.capacity_;
-      memoryPool_ = other.memoryPool_;
+      pool_ = other.pool_;
       allocateBuffer();
       std::copy(other.dataRawPtr_, other.dataRawPtr_ + size_, dataRawPtr_);
     }
     return *this;
   }
 
+  /// Move constructor.
   Vector(Vector&& other) noexcept {
     *this = std::move(other);
   }
 
+  /// Move assignment operator.
   Vector& operator=(Vector&& other) noexcept {
     if (this != &other) {
       size_ = other.size();
@@ -94,74 +97,97 @@ class Vector {
       if (data_ != nullptr) {
         dataRawPtr_ = reinterpret_cast<T*>(data_->asMutable<InnerType>());
       }
-      memoryPool_ = other.memoryPool_;
+      pool_ = other.pool_;
       other.size_ = 0;
       other.capacity_ = 0;
     }
     return *this;
   }
 
-  Vector(velox::memory::MemoryPool* memoryPool, std::initializer_list<T> l)
-      : memoryPool_{memoryPool} {
+  /// Constructs a vector from an initializer list.
+  Vector(velox::memory::MemoryPool* pool, std::initializer_list<T> l)
+      : pool_{pool} {
     init(l.size());
     std::copy(l.begin(), l.end(), dataRawPtr_);
   }
 
-  inline velox::memory::MemoryPool* memoryPool() {
-    return memoryPool_;
+  /// Returns the memory pool used by this vector.
+  inline velox::memory::MemoryPool* pool() {
+    return pool_;
   }
 
+  /// Returns the number of elements in the vector.
   uint64_t size() const {
     return size_;
   }
+
+  /// Returns true if the vector is empty.
   bool empty() const {
     return size_ == 0;
   }
+
+  /// Returns the current capacity of the vector.
   uint64_t capacity() const {
     return capacity_;
   }
+  /// Returns a reference to the element at the given index.
   T& operator[](uint64_t i) {
     return dataRawPtr_[i];
   }
+
+  /// Returns a const reference to the element at the given index.
   const T& operator[](uint64_t i) const {
     return dataRawPtr_[i];
   }
+
+  /// Returns a pointer to the first element.
   T* begin() {
     return dataRawPtr_;
   }
+
+  /// Returns a pointer past the last element.
   T* end() {
     return dataRawPtr_ + size_;
   }
+
+  /// Returns a const pointer to the first element.
   const T* begin() const {
     return dataRawPtr_;
   }
+
+  /// Returns a const pointer past the last element.
   const T* end() const {
     return dataRawPtr_ + size_;
   }
+
+  /// Returns a reference to the last element.
   T& back() {
     return dataRawPtr_[size_ - 1];
   }
+
+  /// Returns a const reference to the last element.
   const T& back() const {
     return dataRawPtr_[size_ - 1];
   }
 
-  // Directly updates the size_ to |size|. Useful if you've filled in some data
-  // directly using the underlying raw pointers.
+  /// Directly updates the size to the given value.
+  /// Useful if you've filled in data directly using the underlying raw
+  /// pointers.
   void update_size(uint64_t size) {
     size_ = size;
   }
 
-  // Fills all of data_ with T().
+  /// Fills all elements with the default value T().
   void zero_out() {
     std::fill(dataRawPtr_, dataRawPtr_ + size_, T());
   }
 
-  // Fills all of data_ with the given value.
+  /// Fills all elements with the given value.
   void fill(T value) {
     std::fill(dataRawPtr_, dataRawPtr_ + size_, value);
   }
 
-  // Resets *this to a newly constructed empty state.
+  /// Resets the vector to an empty state, releasing allocated memory.
   void clear() {
     capacity_ = 0;
     size_ = 0;
@@ -169,6 +195,8 @@ class Vector {
     dataRawPtr_ = nullptr;
   }
 
+  /// Inserts elements from [inputStart, inputEnd) at the given output
+  /// position.
   void insert(T* output, const T* inputStart, const T* inputEnd) {
     const uint64_t inputSize = inputEnd - inputStart;
     const uint64_t distanceToEnd = end() - output;
@@ -182,21 +210,24 @@ class Vector {
     }
   }
 
-  // Add |copies| copies of |value| to the end of the vector.
+  /// Appends the given number of copies of value to the end of the vector.
   void extend(uint64_t copies, T value) {
     reserve(size_ + copies);
     std::fill(end(), end() + copies, value);
     size_ += copies;
   }
 
+  /// Returns a pointer to the underlying data.
   T* data() noexcept {
     return dataRawPtr_;
   }
 
+  /// Returns a const pointer to the underlying data.
   const T* data() const noexcept {
     return dataRawPtr_;
   }
 
+  /// Appends the given value to the end of the vector.
   void push_back(T value) {
     if (size_ == capacity_) {
       reserve(calculateNewSize(capacity_));
@@ -205,6 +236,7 @@ class Vector {
     ++size_;
   }
 
+  /// Constructs an element in-place at the end of the vector.
   template <typename... Args>
   void emplace_back(Args&&... args) {
     if (size_ == capacity_) {
@@ -215,13 +247,13 @@ class Vector {
     ++size_;
   }
 
-  // Ensures that *this can hold |size| elements. Does NOT shrink to
-  // fit if |size| is less than size(), and does NOT initialize any new
-  // values.
+  /// Ensures the vector can hold at least the given number of elements.
+  /// Does NOT shrink if size is less than current size, and does NOT
+  /// initialize any new elements.
   void reserve(uint64_t size) {
     if (size > capacity_) {
       auto newData =
-          velox::AlignedBuffer::allocateExact<InnerType>(size, memoryPool_);
+          velox::AlignedBuffer::allocateExact<InnerType>(size, pool_);
       // AlignedBuffer can allocate a bit more than requested for the alignment
       // purpose, let's leverage that by using its true capacity.
       capacity_ = newData->capacity() / sizeof(InnerType);
@@ -238,15 +270,15 @@ class Vector {
     }
   }
 
-  // Changes size_ to |size|. Does NOT shrink to fit the new size, and
-  // does NOT initialize any new elements if |size| is greater than size_.
+  /// Changes the size of the vector.
+  /// Does NOT shrink capacity, and does NOT initialize new elements.
   void resize(uint64_t size) {
     reserve(size);
     size_ = size;
   }
 
-  // Changes size_ to |newSize|. Does NOT shrink to fit the new size. Initialize
-  // any new elements to |value| if |newSize| is greater than size_.
+  /// Changes the size of the vector, initializing new elements to value.
+  /// Does NOT shrink capacity.
   void resize(uint64_t newSize, const T& value) {
     auto initialSize = size_;
     resize(newSize);
@@ -256,6 +288,8 @@ class Vector {
     }
   }
 
+  /// Releases ownership of the underlying buffer and returns it.
+  /// The vector is left in an empty state after this call.
   velox::BufferPtr releaseOwnership() {
     velox::BufferPtr tmp = std::move(data_);
     tmp->setSize(size_);
@@ -286,8 +320,7 @@ class Vector {
   }
 
   inline void allocateBuffer() {
-    data_ =
-        velox::AlignedBuffer::allocateExact<InnerType>(capacity_, memoryPool_);
+    data_ = velox::AlignedBuffer::allocateExact<InnerType>(capacity_, pool_);
     dataRawPtr_ = reinterpret_cast<T*>(data_->asMutable<InnerType>());
     uint64_t newCapacity = data_->capacity() / sizeof(InnerType);
     NIMBLE_DCHECK_GE(
@@ -295,7 +328,7 @@ class Vector {
     capacity_ = newCapacity;
   }
 
-  velox::memory::MemoryPool* memoryPool_;
+  velox::memory::MemoryPool* pool_;
   velox::BufferPtr data_;
   uint64_t capacity_;
   uint64_t size_;

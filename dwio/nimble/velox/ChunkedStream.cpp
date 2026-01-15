@@ -53,8 +53,8 @@ std::string_view InMemoryChunkedStream::nextChunk() {
       break;
     }
     case CompressionType::Zstd: {
-      uncompressed_ = ZstdCompression::uncompress(
-          *uncompressed_.memoryPool(), {pos_, length});
+      uncompressed_ =
+          ZstdCompression::uncompress(*uncompressed_.pool(), {pos_, length});
       chunk = {uncompressed_.data(), uncompressed_.size()};
       break;
     }

@@ -30,8 +30,8 @@ constexpr uint32_t kEncodingPrefixSize = 6;
 } // namespace
 
 EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
-  NIMBLE_CHECK(
-      encoding.size() >= kEncodingPrefixSize, "Encoding size too small.");
+  NIMBLE_CHECK_GE(
+      encoding.size(), kEncodingPrefixSize, "Encoding size too small.");
 
   const auto encodingType =
       encoding::peek<uint8_t, EncodingType>(encoding.data());
@@ -47,7 +47,8 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
   switch (encodingType) {
     case EncodingType::FixedBitWidth:
     case EncodingType::Varint:
-    case EncodingType::Constant: {
+    case EncodingType::Constant:
+    case EncodingType::Prefix: {
       // Non nested encodings have zero children
       break;
     }

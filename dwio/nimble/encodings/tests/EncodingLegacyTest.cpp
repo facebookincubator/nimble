@@ -24,18 +24,18 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
-#include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
-#include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
-#include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
-#include "dwio/nimble/encodings/MainlyConstantEncoding.h"
-#include "dwio/nimble/encodings/RleEncoding.h"
-#include "dwio/nimble/encodings/SparseBoolEncoding.h"
-#include "dwio/nimble/encodings/TrivialEncoding.h"
-#include "dwio/nimble/encodings/VarintEncoding.h"
+#include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
+#include "dwio/nimble/encodings/legacy/DictionaryEncoding.h"
+#include "dwio/nimble/encodings/legacy/EncodingFactory.h"
+#include "dwio/nimble/encodings/legacy/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/legacy/MainlyConstantEncoding.h"
+#include "dwio/nimble/encodings/legacy/RleEncoding.h"
+#include "dwio/nimble/encodings/legacy/SparseBoolEncoding.h"
+#include "dwio/nimble/encodings/legacy/TrivialEncoding.h"
+#include "dwio/nimble/encodings/legacy/VarintEncoding.h"
 #include "folly/Random.h"
 #include "velox/common/memory/Memory.h"
 
@@ -43,7 +43,7 @@
 //
 // Nullable data will be tested via a separate file, as will structured data,
 // and any data-type-specific functions (e.g. for there are some Encoding calls
-// only valid for bools, and those are testing in BoolEncodingTests.cpp).
+// only valid for bools, and those are testing in BoolEncodingLegacyTest.cpp).
 //
 // The tests are templated so as to cover all data types and encoding types with
 // a single code path.
@@ -72,12 +72,14 @@ class TestCompressPolicy : public nimble::CompressionPolicy {
     return information;
   }
 
-  virtual bool shouldAccept(
+  bool shouldAccept(
       nimble::CompressionType /* compressionType */,
       uint64_t /* uncompressedSize */,
       uint64_t /* compressedSize */) const override {
     return true;
   }
+
+  ~TestCompressPolicy() override = default;
 
  private:
   bool compress_;
@@ -132,10 +134,9 @@ class TestTrivialEncodingSelectionPolicy
   bool useVariableBitWidthCompressor_;
 };
 } // namespace
-
 // C is the encoding type.
 template <typename C>
-class EncodingTests : public ::testing::Test {
+class EncodingLegacyTest : public ::testing::Test {
  protected:
   using E = typename C::cppDataType;
 
@@ -149,48 +150,48 @@ class EncodingTests : public ::testing::Test {
   struct EncodingTypeTraits {};
 
   template <>
-  struct EncodingTypeTraits<nimble::ConstantEncoding<E>> {
+  struct EncodingTypeTraits<nimble::legacy::ConstantEncoding<E>> {
     static inline nimble::EncodingType encodingType =
         nimble::EncodingType::Constant;
   };
 
   template <>
-  struct EncodingTypeTraits<nimble::DictionaryEncoding<E>> {
+  struct EncodingTypeTraits<nimble::legacy::DictionaryEncoding<E>> {
     static inline nimble::EncodingType encodingType =
         nimble::EncodingType::Dictionary;
   };
 
   template <>
-  struct EncodingTypeTraits<nimble::FixedBitWidthEncoding<E>> {
+  struct EncodingTypeTraits<nimble::legacy::FixedBitWidthEncoding<E>> {
     static inline nimble::EncodingType encodingType =
         nimble::EncodingType::FixedBitWidth;
   };
 
   template <>
-  struct EncodingTypeTraits<nimble::MainlyConstantEncoding<E>> {
+  struct EncodingTypeTraits<nimble::legacy::MainlyConstantEncoding<E>> {
     static inline nimble::EncodingType encodingType =
         nimble::EncodingType::MainlyConstant;
   };
 
   template <>
-  struct EncodingTypeTraits<nimble::RLEEncoding<E>> {
+  struct EncodingTypeTraits<nimble::legacy::RLEEncoding<E>> {
     static inline nimble::EncodingType encodingType = nimble::EncodingType::RLE;
   };
 
   template <>
-  struct EncodingTypeTraits<nimble::SparseBoolEncoding> {
+  struct EncodingTypeTraits<nimble::legacy::SparseBoolEncoding> {
     static inline nimble::EncodingType encodingType =
         nimble::EncodingType::SparseBool;
   };
 
   template <>
-  struct EncodingTypeTraits<nimble::TrivialEncoding<E>> {
+  struct EncodingTypeTraits<nimble::legacy::TrivialEncoding<E>> {
     static inline nimble::EncodingType encodingType =
         nimble::EncodingType::Trivial;
   };
 
   template <>
-  struct EncodingTypeTraits<nimble::VarintEncoding<E>> {
+  struct EncodingTypeTraits<nimble::legacy::VarintEncoding<E>> {
     static inline nimble::EncodingType encodingType =
         nimble::EncodingType::Varint;
   };
@@ -246,18 +247,18 @@ class EncodingTests : public ::testing::Test {
 #define ALL_TYPES(EncodingName) NON_BOOL_TYPES(EncodingName), EncodingName<bool>
 
 using TestTypes = ::testing::Types<
-    nimble::SparseBoolEncoding,
-    VARINT_TYPES(nimble::VarintEncoding),
-    NUMERIC_TYPES(nimble::FixedBitWidthEncoding),
-    NON_BOOL_TYPES(nimble::DictionaryEncoding),
-    NON_BOOL_TYPES(nimble::MainlyConstantEncoding),
-    ALL_TYPES(nimble::TrivialEncoding),
-    ALL_TYPES(nimble::RLEEncoding),
-    ALL_TYPES(nimble::ConstantEncoding)>;
+    nimble::legacy::SparseBoolEncoding,
+    VARINT_TYPES(nimble::legacy::VarintEncoding),
+    NUMERIC_TYPES(nimble::legacy::FixedBitWidthEncoding),
+    NON_BOOL_TYPES(nimble::legacy::DictionaryEncoding),
+    NON_BOOL_TYPES(nimble::legacy::MainlyConstantEncoding),
+    ALL_TYPES(nimble::legacy::TrivialEncoding),
+    ALL_TYPES(nimble::legacy::RLEEncoding),
+    ALL_TYPES(nimble::legacy::ConstantEncoding)>;
 
-TYPED_TEST_CASE(EncodingTests, TestTypes);
+TYPED_TEST_CASE(EncodingLegacyTest, TestTypes);
 
-TYPED_TEST(EncodingTests, Materialize) {
+TYPED_TEST(EncodingLegacyTest, materialize) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng(seed);
@@ -368,7 +369,7 @@ void checkScatteredOutput(
   }
 }
 
-TYPED_TEST(EncodingTests, ScatteredMaterialize) {
+TYPED_TEST(EncodingLegacyTest, scatteredMaterialize) {
   using E = typename TypeParam::cppDataType;
 
   auto seed = folly::Random::rand32();

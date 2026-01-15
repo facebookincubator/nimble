@@ -20,6 +20,7 @@
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
+#include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
@@ -78,6 +79,8 @@ auto encodingTypeDispatchString(Encoding& encoding, F f) {
     case EncodingType::MainlyConstant:
       return f(
           static_cast<MainlyConstantEncoding<std::string_view>&>(encoding));
+    case EncodingType::Prefix:
+      return f(static_cast<PrefixEncoding&>(encoding));
     default:
       NIMBLE_UNSUPPORTED(toString(encoding.encodingType()));
   }

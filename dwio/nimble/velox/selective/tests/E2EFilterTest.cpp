@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 #include "velox/dwio/common/tests/utils/E2EFilterTestBase.h"
@@ -44,26 +45,7 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase {
       const std::vector<std::string>& filterable,
       int32_t numCombinations,
       bool withRecursiveNulls = true) {
-    if (withRecursiveNulls) {
-      testScenario(
-          columns,
-          customize,
-          wrapInStruct,
-          filterable,
-          numCombinations,
-          /*withRecursiveNulls=*/true);
-      auto noNullCustomize = [&] {
-        customize();
-        makeNotNull();
-      };
-      testScenario(
-          columns,
-          noNullCustomize,
-          wrapInStruct,
-          filterable,
-          numCombinations,
-          /*withRecursiveNulls=*/true);
-    } else {
+    if (!withRecursiveNulls) {
       testScenario(
           columns,
           customize,
@@ -71,7 +53,27 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase {
           filterable,
           numCombinations,
           /*withRecursiveNulls=*/false);
+      return;
     }
+
+    testScenario(
+        columns,
+        customize,
+        wrapInStruct,
+        filterable,
+        numCombinations,
+        /*withRecursiveNulls=*/true);
+    auto noNullCustomize = [&] {
+      customize();
+      makeNotNull();
+    };
+    testScenario(
+        columns,
+        noNullCustomize,
+        wrapInStruct,
+        filterable,
+        numCombinations,
+        /*withRecursiveNulls=*/true);
   }
 
   void testRunLengthDictionaryWithTypes(
@@ -122,7 +124,7 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase {
   void writeToMemory(
       const TypePtr& type,
       const std::vector<RowVectorPtr>& batches,
-      bool forRowGroupSkip) final {
+      bool forRowGroupSkip) override {
     VELOX_CHECK(!forRowGroupSkip);
     rowType_ = asRowType(type);
     writeSchema_ = rowType_;
@@ -1050,4 +1052,94 @@ TEST_F(E2EFilterTest, timestampArrayInStruct) {
 }
 
 } // namespace
+
+// Test that PrefixEncoding's readWithVisitor works correctly when reading
+// sorted string data through the selective reader. This test derives from
+// E2EFilterTest and overrides writeToMemory to explicitly specify
+// PrefixEncoding for the string column.
+class PrefixEncodingE2ETest : public E2EFilterTest {
+ protected:
+  void writeToMemory(
+      const TypePtr& type,
+      const std::vector<RowVectorPtr>& batches,
+      bool forRowGroupSkip) final {
+    VELOX_CHECK(!forRowGroupSkip);
+    rowType_ = asRowType(type);
+
+    // Create encoding layout tree with prefix encoding for string columns
+    std::vector<EncodingLayoutTree> children;
+    for (size_t i = 0; i < rowType_->size(); ++i) {
+      const auto& childType = rowType_->childAt(i);
+      const auto& childName = rowType_->nameOf(i);
+
+      if (childType->isVarchar() || childType->isVarbinary()) {
+        // Use prefix encoding for string columns
+        children.push_back(
+            EncodingLayoutTree{
+                Kind::Scalar,
+                {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
+                  EncodingLayout{
+                      EncodingType::Prefix, CompressionType::Uncompressed}}},
+                std::string(childName)});
+      } else {
+        // For all other types, let the writer decide
+        children.push_back(
+            EncodingLayoutTree{Kind::Scalar, {}, std::string(childName)});
+      }
+    }
+
+    EncodingLayoutTree encodingLayoutTree{
+        Kind::Row, {}, "", std::move(children)};
+
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriter writer(
+        rowType_,
+        std::move(writeFile),
+        *rootPool_,
+        {.encodingLayoutTree = std::move(encodingLayoutTree)});
+    for (auto& batch : batches) {
+      writer.write(batch);
+    }
+    writer.close();
+  }
+};
+
+TEST_F(PrefixEncodingE2ETest, withoutFilterOnString) {
+  for (bool withRecursiveNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("withRecursiveNulls={}", withRecursiveNulls));
+    testWithTypes(
+        "string_val:string,"
+        "long_val:bigint",
+        [&]() {
+          // Make string values unique and sorted to benefit from prefix
+          // encoding
+          makeStringUnique("string_val");
+        },
+        /*wrapInStruct=*/false,
+        /*filterable=*/{"long_val"},
+        /*numCombinations=*/5,
+        withRecursiveNulls);
+  }
+}
+
+TEST_F(PrefixEncodingE2ETest, filterOnString) {
+  // Test with filter on both string and integer columns.
+  // This tests the skip functionality in readWithVisitor.
+  for (bool withRecursiveNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("withRecursiveNulls={}", withRecursiveNulls));
+    testWithTypes(
+        "string_val:string,"
+        "string_val_2:string,"
+        "long_val:bigint",
+        [&]() {
+          makeStringUnique("string_val");
+          makeStringUnique("string_val_2");
+        },
+        /*wrapInStruct=*/false,
+        {"string_val", "long_val"},
+        /*numCombinations=*/5,
+        withRecursiveNulls);
+  }
+}
+
 } // namespace facebook::nimble

@@ -373,9 +373,7 @@ struct EncodingSizeEstimation {
     }
 
     NIMBLE_UNREACHABLE(
-        fmt::format(
-            "Unable to estimate size for type {}.",
-            folly::demangle(typeid(T))));
+        "Unable to estimate size for type {}.", folly::demangle(typeid(T)));
   }
 
   template <EncodingType encodingType, typename dataType>
