@@ -48,6 +48,7 @@ void extractCompressionType(
     case EncodingType::Delta:
     case EncodingType::Constant:
     case EncodingType::MainlyConstant:
+    case EncodingType::Prefix:
       break;
   }
 }
@@ -99,7 +100,8 @@ void traverseEncodings(
   switch (encodingType) {
     case EncodingType::FixedBitWidth:
     case EncodingType::Varint:
-    case EncodingType::Constant: {
+    case EncodingType::Constant:
+    case EncodingType::Prefix: {
       // don't have any nested encoding
       break;
     }

@@ -171,11 +171,11 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
     // Iterate on all candidate encodings, and pick the encoding with the
     // minimal cost.
     for (const auto& pair : readFactors_) {
-      auto encodingType = pair.first;
-      auto size =
+      const auto encodingType = pair.first;
+      const auto estimatedSize =
           detail::EncodingSizeEstimation<T, FixedByteWidth>::estimateSize(
               encodingType, values.size(), statistics);
-      if (!size.has_value()) {
+      if (!estimatedSize.has_value()) {
         NIMBLE_SELECTION_LOG(
             PURPLE << encodingType << " encoding is incompatible.");
         continue;
@@ -184,9 +184,10 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
       // We use read factor weights to raise/lower the favorability of each
       // encoding.
       auto readFactor = pair.second;
-      auto cost = size.value() * readFactor;
+      auto cost = estimatedSize.value() * readFactor;
       NIMBLE_SELECTION_LOG(
-          YELLOW << "Encoding: " << encodingType << ", Size: " << size.value()
+          YELLOW << "Encoding: " << encodingType
+                 << ", Size: " << estimatedSize.value()
                  << ", Factor: " << readFactor << ", Cost: " << cost);
       if (cost < minCost) {
         minCost = cost;

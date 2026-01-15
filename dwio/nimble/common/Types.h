@@ -100,6 +100,10 @@ enum class EncodingType {
   // using a bool child vector to store whether each row is that special value,
   // and stores the non-special values as a separate encoding.
   MainlyConstant = 10,
+  // Stores sorted string data with prefix compression. Common prefixes are
+  // shared across consecutive entries to reduce storage. Supports seek
+  // operations for efficient random access.
+  Prefix = 11,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);

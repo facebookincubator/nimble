@@ -23,6 +23,7 @@ add_library(
   EncodingLayout.cpp
   EncodingLayoutCapture.cpp
   MainlyConstantEncoding.cpp
+  PrefixEncoding.cpp
   RleEncoding.cpp
   SparseBoolEncoding.cpp
   Statistics.cpp

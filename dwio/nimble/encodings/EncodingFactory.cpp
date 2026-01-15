@@ -20,6 +20,7 @@
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
+#include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
@@ -229,6 +230,13 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
     case EncodingType::MainlyConstant: {
       RETURN_ENCODING_BY_NON_BOOL_TYPE(MainlyConstantEncoding, dataType);
     }
+    case EncodingType::Prefix: {
+      NIMBLE_CHECK_EQ(
+          dataType,
+          DataType::String,
+          "Trying to deserialize a PrefixEncoding with a non-string data type.");
+      return std::make_unique<PrefixEncoding>(memoryPool, data);
+    }
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
@@ -334,6 +342,14 @@ std::string_view EncodingFactory::encode(
             "SparseBool encoding should not be selected for non-bool data types.");
       } else {
         return SparseBoolEncoding::encode(selection, castedValues, buffer);
+      }
+    }
+    case EncodingType::Prefix: {
+      if constexpr (!std::is_same<T, std::string_view>::value) {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "Prefix encoding should only be selected for string_view data types.");
+      } else {
+        return PrefixEncoding::encode(selection, castedValues, buffer);
       }
     }
     default: {

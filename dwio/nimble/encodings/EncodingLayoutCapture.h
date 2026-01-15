@@ -22,10 +22,10 @@ namespace facebook::nimble {
 
 class EncodingLayoutCapture {
  public:
-  // Captures an encoding tree from an encoded stream.
-  // It traverses the encoding headers in the stream and produces a serialized
-  // encoding tree layout.
-  // |encoding| - The serialized encoding
+  /// Captures an encoding tree from an encoded stream.
+  /// It traverses the encoding headers in the stream and produces a serialized
+  /// encoding tree layout.
+  /// |encoding| - The serialized encoding
   static EncodingLayout capture(std::string_view encoding);
 };
 
