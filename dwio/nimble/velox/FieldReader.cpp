@@ -22,6 +22,8 @@
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
+#include "dwio/nimble/encodings/legacy/NullableEncoding.h"
+#include "dwio/nimble/encodings/legacy/TrivialEncoding.h"
 #include "velox/dwio/common/FlatMapHelper.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/DictionaryVector.h"
@@ -723,7 +725,8 @@ class LegacyStringFieldReader final : public FieldReader {
       // Adding memory for velox::BaseVector::nulls_
       totalBytes += rowCount / 8;
       const auto* nullableEncoding =
-          dynamic_cast<const NullableEncoding<std::string_view>*>(encoding);
+          dynamic_cast<const legacy::NullableEncoding<std::string_view>*>(
+              encoding);
       NIMBLE_CHECK_NOT_NULL(
           nullableEncoding,
           "NullableEncoding is not used for nullable string field.");
@@ -733,7 +736,7 @@ class LegacyStringFieldReader final : public FieldReader {
     // TODO: support more encodings (or do encoding traversal), DICT, RLE, etc.
     // We currently only estimate trivial encoded string field.
     if (const auto* trivialEncoding =
-            dynamic_cast<const TrivialEncoding<std::string_view>*>(
+            dynamic_cast<const legacy::TrivialEncoding<std::string_view>*>(
                 innerEncoding)) {
       // Adding overhead for velox::StringView. 4 bytes for inline, 16 bytes for
       // non-inline
