@@ -33,7 +33,8 @@ class EncodingFactory {
  public:
   static std::unique_ptr<Encoding> decode(
       velox::memory::MemoryPool& memoryPool,
-      std::string_view data);
+      std::string_view data,
+      std::function<void*(uint32_t)> stringBufferFactory);
 
   template <typename T>
   static std::string_view encode(

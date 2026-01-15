@@ -131,10 +131,16 @@ TYPED_TEST(ConstantEncodingTest, SerializeThenDeserialize) {
   using D = TypeParam;
 
   auto valueGroups = this->template prepareValues<D>();
+  std::vector<velox::BufferPtr> newStringBuffers;
+  const auto stringBufferFactory = [&](uint32_t totalLength) {
+    auto& buffer = newStringBuffers.emplace_back(
+        velox::AlignedBuffer::allocate<char>(totalLength, this->pool_.get()));
+    return buffer->template asMutable<void>();
+  };
   for (const auto& values : valueGroups) {
     auto encoding =
         nimble::test::Encoder<nimble::ConstantEncoding<D>>::createEncoding(
-            *this->buffer_, values);
+            *this->buffer_, values, stringBufferFactory);
 
     uint32_t rowCount = values.size();
     nimble::Vector<D> result(this->pool_.get(), rowCount);
@@ -153,10 +159,16 @@ TYPED_TEST(ConstantEncodingTest, NonConstantFailure) {
   using D = TypeParam;
 
   auto valueGroups = this->template prepareFailureValues<D>();
+  std::vector<velox::BufferPtr> newStringBuffers;
+  const auto stringBufferFactory = [&](uint32_t totalLength) {
+    auto& buffer = newStringBuffers.emplace_back(
+        velox::AlignedBuffer::allocate<char>(totalLength, this->pool_.get()));
+    return buffer->template asMutable<void>();
+  };
   for (const auto& values : valueGroups) {
     try {
       nimble::test::Encoder<nimble::ConstantEncoding<D>>::createEncoding(
-          *this->buffer_, values);
+          *this->buffer_, values, stringBufferFactory);
       FAIL() << "ConstantEncodingTest should fail due to non constant data";
     } catch (const nimble::NimbleUserError& e) {
       EXPECT_EQ(nimble::error_code::IncompatibleEncoding, e.errorCode());

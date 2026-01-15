@@ -49,12 +49,18 @@ class EncodingSeekTest : public ::testing::Test {
 
   std::unique_ptr<nimble::Encoding> createEncoding(
       const nimble::Vector<std::string_view>& values) {
+    stringBuffers_.clear();
     return nimble::test::Encoder<nimble::TrivialEncoding<std::string_view>>::
-        createEncoding(*buffer_, values);
+        createEncoding(*buffer_, values, [&](uint32_t totalLength) {
+          auto& buffer = stringBuffers_.emplace_back(
+              velox::AlignedBuffer::allocate<char>(totalLength, pool_.get()));
+          return buffer->asMutable<void>();
+        });
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::unique_ptr<nimble::Buffer> buffer_;
+  std::vector<velox::BufferPtr> stringBuffers_;
 };
 
 class EncodingSeekTestWithCompression
@@ -75,12 +81,23 @@ class EncodingSeekTestWithCompression
   std::unique_ptr<nimble::Encoding> createEncoding(
       const nimble::Vector<std::string_view>& values,
       nimble::CompressionType compressionType) {
+    stringBuffers_.clear();
     return nimble::test::Encoder<nimble::TrivialEncoding<std::string_view>>::
-        createEncoding(*buffer_, values, compressionType);
+        createEncoding(
+            *buffer_,
+            values,
+            [&](uint32_t totalLength) {
+              auto& buffer = stringBuffers_.emplace_back(
+                  velox::AlignedBuffer::allocate<char>(
+                      totalLength, pool_.get()));
+              return buffer->asMutable<void>();
+            },
+            compressionType);
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::unique_ptr<nimble::Buffer> buffer_;
+  std::vector<velox::BufferPtr> stringBuffers_;
 };
 
 TEST_P(EncodingSeekTestWithCompression, seekExactMatch) {
@@ -300,57 +317,72 @@ NIMBLE_INSTANTIATE_TEST_SUITE_P(
 
 TEST_F(EncodingSeekTest, seekUnsupportedEncodings) {
   std::string_view seekValue = "test";
+  std::vector<velox::BufferPtr> stringBuffers;
+
+  auto makeStringBufferFactory = [&]() {
+    return [&](uint32_t totalLength) {
+      auto& buffer = stringBuffers.emplace_back(
+          velox::AlignedBuffer::allocate<char>(totalLength, pool_.get()));
+      return buffer->asMutable<void>();
+    };
+  };
 
   // RLE encoding
   {
+    stringBuffers.clear();
     nimble::Vector<std::string_view> values{pool_.get()};
     values.push_back("apple");
     values.push_back("apple");
     values.push_back("banana");
     auto encoding =
         nimble::test::Encoder<nimble::RLEEncoding<std::string_view>>::
-            createEncoding(*buffer_, values);
+            createEncoding(*buffer_, values, makeStringBufferFactory());
     NIMBLE_ASSERT_THROW(
         encoding->seekAtOrAfter(&seekValue), "seekAtOrAfter is not supported");
   }
 
   // Dictionary encoding
   {
+    stringBuffers.clear();
     nimble::Vector<std::string_view> values{pool_.get()};
     values.push_back("apple");
     values.push_back("banana");
     auto encoding =
         nimble::test::Encoder<nimble::DictionaryEncoding<std::string_view>>::
-            createEncoding(*buffer_, values);
+            createEncoding(*buffer_, values, makeStringBufferFactory());
     NIMBLE_ASSERT_THROW(
         encoding->seekAtOrAfter(&seekValue), "seekAtOrAfter is not supported");
   }
 
   // Constant encoding
   {
+    stringBuffers.clear();
     nimble::Vector<std::string_view> values{pool_.get()};
     values.push_back("apple");
     auto encoding =
         nimble::test::Encoder<nimble::ConstantEncoding<std::string_view>>::
-            createEncoding(*buffer_, values);
+            createEncoding(*buffer_, values, makeStringBufferFactory());
     NIMBLE_ASSERT_THROW(
         encoding->seekAtOrAfter(&seekValue), "seekAtOrAfter is not supported");
   }
 
   // MainlyConstant encoding
   {
+    stringBuffers.clear();
     nimble::Vector<std::string_view> values{pool_.get()};
     values.push_back("apple");
     values.push_back("apple");
     values.push_back("banana");
-    auto encoding = nimble::test::Encoder<nimble::MainlyConstantEncoding<
-        std::string_view>>::createEncoding(*buffer_, values);
+    auto encoding = nimble::test::Encoder<
+        nimble::MainlyConstantEncoding<std::string_view>>::
+        createEncoding(*buffer_, values, makeStringBufferFactory());
     NIMBLE_ASSERT_THROW(
         encoding->seekAtOrAfter(&seekValue), "seekAtOrAfter is not supported");
   }
 
   // Nullable encoding
   {
+    stringBuffers.clear();
     nimble::Vector<std::string_view> values{pool_.get()};
     values.push_back("apple");
     values.push_back("banana");
@@ -359,7 +391,8 @@ TEST_F(EncodingSeekTest, seekUnsupportedEncodings) {
     nulls.push_back(false);
     auto encoding =
         nimble::test::Encoder<nimble::NullableEncoding<std::string_view>>::
-            createNullableEncoding(*buffer_, values, nulls);
+            createNullableEncoding(
+                *buffer_, values, nulls, makeStringBufferFactory());
     NIMBLE_ASSERT_THROW(
         encoding->seekAtOrAfter(&seekValue), "seekAtOrAfter is not supported");
   }
@@ -371,7 +404,7 @@ TEST_F(EncodingSeekTest, seekUnsupportedEncodings) {
     intValues.push_back(2);
     auto encoding =
         nimble::test::Encoder<nimble::TrivialEncoding<int32_t>>::createEncoding(
-            *buffer_, intValues);
+            *buffer_, intValues, makeStringBufferFactory());
     int32_t intSeekValue = 1;
     NIMBLE_ASSERT_THROW(
         encoding->seekAtOrAfter(&intSeekValue),
@@ -385,7 +418,7 @@ TEST_F(EncodingSeekTest, seekUnsupportedEncodings) {
     intValues.push_back(2);
     auto encoding =
         nimble::test::Encoder<nimble::FixedBitWidthEncoding<uint32_t>>::
-            createEncoding(*buffer_, intValues);
+            createEncoding(*buffer_, intValues, makeStringBufferFactory());
     uint32_t intSeekValue = 1;
     NIMBLE_ASSERT_THROW(
         encoding->seekAtOrAfter(&intSeekValue),
@@ -399,7 +432,7 @@ TEST_F(EncodingSeekTest, seekUnsupportedEncodings) {
     intValues.push_back(2);
     auto encoding =
         nimble::test::Encoder<nimble::VarintEncoding<uint32_t>>::createEncoding(
-            *buffer_, intValues);
+            *buffer_, intValues, makeStringBufferFactory());
     uint32_t intSeekValue = 1;
     NIMBLE_ASSERT_THROW(
         encoding->seekAtOrAfter(&intSeekValue),
@@ -414,7 +447,7 @@ TEST_F(EncodingSeekTest, seekUnsupportedEncodings) {
     intValues.push_back(2);
     auto encoding =
         nimble::test::Encoder<nimble::RLEEncoding<int32_t>>::createEncoding(
-            *buffer_, intValues);
+            *buffer_, intValues, makeStringBufferFactory());
     int32_t intSeekValue = 1;
     NIMBLE_ASSERT_THROW(
         encoding->seekAtOrAfter(&intSeekValue),
@@ -429,7 +462,7 @@ TEST_F(EncodingSeekTest, seekUnsupportedEncodings) {
     boolValues.push_back(true);
     auto encoding =
         nimble::test::Encoder<nimble::SparseBoolEncoding>::createEncoding(
-            *buffer_, boolValues);
+            *buffer_, boolValues, makeStringBufferFactory());
     bool boolSeekValue = true;
     NIMBLE_ASSERT_THROW(
         encoding->seekAtOrAfter(&boolSeekValue),
