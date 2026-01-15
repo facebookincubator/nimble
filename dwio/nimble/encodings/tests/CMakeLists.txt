@@ -20,9 +20,10 @@ add_executable(
   EncodingLayoutTests.cpp
   EncodingSelectionTests.cpp
   EncodingTests.cpp
-  EncodingTestsLegacy.cpp
+  EncodingLegacyTest.cpp
   MainlyConstantEncodingTests.cpp
   NullableEncodingTests.cpp
+  PrefixEncodingTest.cpp
   RleEncodingTests.cpp
   SentinelEncodingTests.cpp
   StatisticsTests.cpp
