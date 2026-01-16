@@ -21,14 +21,15 @@
 namespace facebook::nimble {
 namespace detail {
 inline bool shouldOmitDataStream(
-    const StreamData& streamData,
+    uint64_t dataVectorSize,
     uint64_t minChunkSize,
+    bool allNulls,
     bool isFirstChunk) {
-  if (streamData.data().size() > minChunkSize) {
+  if (dataVectorSize > minChunkSize) {
     return false;
   }
   // When all values are null, the values stream is omitted.
-  return isFirstChunk || streamData.nonNulls().empty();
+  return isFirstChunk || allNulls;
 }
 
 inline bool shouldOmitNullStream(
@@ -184,7 +185,7 @@ class ContentStreamChunker final : public StreamChunker {
   }
 
   void compact() override {
-    // No changes made to stream data, nothing to compact.
+    // No chunks consumed from stream data, we should not compact.
     if (dataElementOffset_ == 0) {
       return;
     }
@@ -300,7 +301,7 @@ class NullsStreamChunker final : public StreamChunker {
 
  private:
   void compact() override {
-    // No changes made to stream data, nothing to compact.
+    // No chunks consumed from stream data, we should not compact.
     if (nonNullsOffset_ == 0) {
       return;
     }
@@ -357,8 +358,9 @@ class NullableContentStreamChunker final : public StreamChunker {
         minChunkSize_{options.minChunkSize},
         maxChunkSize_{options.maxChunkSize},
         omitStream_{detail::shouldOmitDataStream(
-            streamData,
+            streamData.data().size(),
             options.minChunkSize,
+            streamData.nonNulls().empty(),
             options.isFirstChunk)},
         ensureFullChunks_{options.ensureFullChunks},
         extraMemory_{streamData_->extraMemory()} {
@@ -448,7 +450,7 @@ class NullableContentStreamChunker final : public StreamChunker {
   }
 
   void compact() override {
-    // No changes made to stream data, nothing to compact.
+    // No chunks consumed from stream data, we should not compact.
     if (nonNullsOffset_ == 0) {
       return;
     }
@@ -573,4 +575,201 @@ NullableContentStreamChunker<std::string_view>::nextChunkSize() {
   }
   return chunkSize;
 }
+
+class NullableContentStringStreamChunker final : public StreamChunker {
+ public:
+  explicit NullableContentStringStreamChunker(
+      NullableContentStringStreamData& streamData,
+      const StreamChunkerOptions& options)
+      : streamData_{&streamData},
+        minChunkSize_{options.minChunkSize},
+        maxChunkSize_{options.maxChunkSize},
+        omitStream_{detail::shouldOmitDataStream(
+            streamData.bufferSize(),
+            options.minChunkSize,
+            streamData.nonNulls().empty(),
+            options.isFirstChunk)},
+        ensureFullChunks_{options.ensureFullChunks} {
+    static_assert(sizeof(bool) == 1);
+  }
+
+  std::optional<StreamDataView> next() override {
+    if (omitStream_) {
+      return std::nullopt;
+    }
+    const auto& chunkSize = nextChunkSize();
+    if (chunkSize.rollingChunkSize == 0) {
+      return std::nullopt;
+    }
+
+    // Content
+    auto& output = streamData_->mutableStringViews();
+    output.resize(0);
+    output.reserve(chunkSize.dataElementCount);
+    auto mutableData = streamData_->mutableData();
+    auto& mutableLengths = mutableData.lengths;
+    auto& mutableBuffer = mutableData.buffer;
+    auto currentBufferOffset = bufferOffset_;
+    for (size_t i = 0; i < chunkSize.dataElementCount; ++i) {
+      const auto currentLength = mutableLengths[lengthsOffset_ + i];
+      output.emplace_back(
+          std::string_view{
+              mutableBuffer.data() + currentBufferOffset, currentLength});
+      currentBufferOffset += currentLength;
+    }
+    std::string_view dataChunk = {
+        reinterpret_cast<const char*>(output.data()),
+        chunkSize.dataElementCount * sizeof(std::string_view)};
+
+    // Nulls
+    std::span<const bool> nonNullsChunk(
+        streamData_->mutableNonNulls().data() + nonNullsOffset_,
+        chunkSize.nullElementCount);
+
+    lengthsOffset_ += chunkSize.dataElementCount;
+    nonNullsOffset_ += chunkSize.nullElementCount;
+    bufferOffset_ += chunkSize.extraMemory;
+
+    if (chunkSize.nullElementCount > chunkSize.dataElementCount) {
+      return StreamDataView{
+          streamData_->descriptor(),
+          dataChunk,
+          static_cast<uint32_t>(chunkSize.nullElementCount),
+          nonNullsChunk};
+    }
+    NIMBLE_DCHECK_EQ(chunkSize.dataElementCount, chunkSize.nullElementCount);
+    return StreamDataView{
+        streamData_->descriptor(),
+        dataChunk,
+        static_cast<uint32_t>(chunkSize.dataElementCount)};
+  }
+
+ private:
+  ChunkSize nextChunkSize() {
+    const auto& stringLengths = streamData_->mutableData().lengths;
+    const auto& nonNulls = streamData_->mutableNonNulls();
+    ChunkSize chunkSize;
+    bool fullChunk{false};
+    // Calculate how many entries we can fit in the chunk
+    for (size_t idx = nonNullsOffset_; idx < nonNulls.size(); ++idx) {
+      uint64_t currentTotalSize{sizeof(bool)};
+      uint32_t currentDataCount{0};
+      size_t currentExtraMemory{0};
+      if (nonNulls[idx]) {
+        currentExtraMemory =
+            stringLengths[lengthsOffset_ + chunkSize.dataElementCount];
+        currentTotalSize += currentExtraMemory + sizeof(uint64_t);
+        ++currentDataCount;
+      }
+
+      if (chunkSize.rollingChunkSize == 0 && currentTotalSize > maxChunkSize_) {
+        // Allow a single oversized string as its own chunk.
+        fullChunk = true;
+        chunkSize.extraMemory += currentExtraMemory;
+        chunkSize.dataElementCount += currentDataCount;
+        chunkSize.rollingChunkSize += currentTotalSize;
+        ++chunkSize.nullElementCount;
+        break;
+      }
+
+      if (chunkSize.rollingChunkSize + currentTotalSize > maxChunkSize_) {
+        fullChunk = true;
+        break;
+      }
+
+      chunkSize.extraMemory += currentExtraMemory;
+      chunkSize.dataElementCount += currentDataCount;
+      chunkSize.rollingChunkSize += currentTotalSize;
+      ++chunkSize.nullElementCount;
+    }
+
+    fullChunk = fullChunk || (chunkSize.rollingChunkSize == maxChunkSize_);
+    if ((ensureFullChunks_ && !fullChunk) ||
+        (chunkSize.rollingChunkSize < minChunkSize_)) {
+      chunkSize = ChunkSize{};
+    }
+    return chunkSize;
+  }
+
+  void compact() override {
+    // Clear existing outputvector before beginning compaction.
+    streamData_->mutableStringViews().clear();
+
+    // No chunks consumed from stream data, we should not compact.
+    if (nonNullsOffset_ == 0) {
+      return;
+    }
+
+    const bool hasNulls = streamData_->hasNulls();
+    // Move and clear existing buffers
+    auto tempBuffer = std::move(streamData_->mutableData().buffer);
+    auto tempLengths = std::move(streamData_->mutableData().lengths);
+    auto tempNonNulls = std::move(streamData_->mutableNonNulls());
+    streamData_->reset();
+    NIMBLE_DCHECK(
+        streamData_->empty(), "StreamData should be empty after reset");
+
+    {
+      const auto remainingDataCount = tempLengths.size() - lengthsOffset_;
+      auto& mutableDataLength = streamData_->mutableData().lengths;
+      mutableDataLength.resize(remainingDataCount);
+      NIMBLE_DCHECK_EQ(
+          mutableDataLength.size(),
+          remainingDataCount,
+          "Data length size should be equal to remaining data count");
+
+      std::copy_n(
+          tempLengths.begin() + lengthsOffset_,
+          remainingDataCount,
+          mutableDataLength.begin());
+    }
+
+    {
+      const auto remainingDataBytes = tempBuffer.size() - bufferOffset_;
+      auto& mutableDataBuffer = streamData_->mutableData().buffer;
+      mutableDataBuffer.resize(remainingDataBytes);
+      NIMBLE_DCHECK_EQ(
+          mutableDataBuffer.size(),
+          remainingDataBytes,
+          "Data buffer size should be equal to remaining data bytes");
+
+      std::copy_n(
+          tempBuffer.begin() + bufferOffset_,
+          remainingDataBytes,
+          mutableDataBuffer.begin());
+    }
+
+    {
+      auto& mutableNonNulls = streamData_->mutableNonNulls();
+      const auto remainingNonNullsCount = tempNonNulls.size() - nonNullsOffset_;
+      streamData_->ensureAdditionalNullsCapacity(
+          hasNulls, static_cast<uint32_t>(remainingNonNullsCount));
+      if (hasNulls) {
+        mutableNonNulls.resize(remainingNonNullsCount);
+        NIMBLE_DCHECK_EQ(
+            mutableNonNulls.size(),
+            remainingNonNullsCount,
+            "NonNulls buffer size should be equal to remaining non-nulls count");
+
+        std::copy_n(
+            tempNonNulls.begin() + nonNullsOffset_,
+            remainingNonNullsCount,
+            mutableNonNulls.begin());
+      }
+    }
+    lengthsOffset_ = 0;
+    nonNullsOffset_ = 0;
+    bufferOffset_ = 0;
+  }
+
+  NullableContentStringStreamData* const streamData_;
+  const uint64_t minChunkSize_;
+  const uint64_t maxChunkSize_;
+  const bool omitStream_;
+  const bool ensureFullChunks_;
+
+  size_t lengthsOffset_{0};
+  size_t nonNullsOffset_{0};
+  uint64_t bufferOffset_{0};
+};
 } // namespace facebook::nimble

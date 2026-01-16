@@ -35,6 +35,23 @@ void populateData(Vector<T>& vec, const std::vector<T>& data) {
   }
 }
 
+void populateStringData(
+    StringBuffer& stringBuffer,
+    const std::vector<std::string_view>& testData) {
+  uint64_t extraMemory = 0;
+  for (const auto& str : testData) {
+    extraMemory += str.size();
+  }
+  auto& buffer = stringBuffer.buffer;
+  auto& mutableLengths = stringBuffer.lengths;
+  buffer.reserve(buffer.size() + extraMemory);
+  mutableLengths.reserve(mutableLengths.size() + testData.size());
+  for (const auto& str : testData) {
+    buffer.insert(buffer.end(), str.begin(), str.end());
+    mutableLengths.push_back(str.size());
+  }
+}
+
 template <typename T>
 std::vector<T> toVector(std::string_view data) {
   const T* chunkData = reinterpret_cast<const T*>(data.data());
@@ -55,7 +72,7 @@ class StreamChunkerTestsBase : public ::testing::Test {
   // Helper method to validate chunk results against expected data
   template <typename T>
   void validateChunk(
-      const StreamData& stream,
+      StreamData& stream,
       std::unique_ptr<StreamChunker> chunker,
       const std::vector<ExpectedChunk<T>>& expectedChunks,
       const ExpectedChunk<T>& expectedRetainedData) {
@@ -85,15 +102,42 @@ class StreamChunkerTestsBase : public ::testing::Test {
     chunker->compact();
 
     // Validate buffer is properly compacted to only retain expected data
-    EXPECT_THAT(
-        toVector<T>(stream.data()),
-        ::testing::ElementsAreArray(expectedRetainedData.chunkData));
+    size_t expectedStreamDataSize = 0;
+    if (auto* nullableContentStringStreamData =
+            dynamic_cast<NullableContentStringStreamData*>(&stream)) {
+      if constexpr (std::is_same_v<T, std::string_view>) {
+        const auto [buffer, lengths] =
+            nullableContentStringStreamData->mutableData();
+
+        std::string expectedBufferContent;
+        std::vector<uint64_t> expectedLength;
+        for (const auto str : expectedRetainedData.chunkData) {
+          expectedBufferContent += str;
+          expectedLength.push_back(str.size());
+        }
+        EXPECT_EQ(
+            std::string(buffer.begin(), buffer.end()), expectedBufferContent);
+        EXPECT_THAT(
+            std::vector<uint64_t>(lengths.begin(), lengths.end()),
+            ::testing::ElementsAreArray(expectedLength));
+        expectedStreamDataSize = expectedBufferContent.size() +
+            expectedLength.size() * sizeof(uint64_t);
+      } else {
+        NIMBLE_UNREACHABLE(
+            "NullableContentStringStreamData can only be called on string data");
+      }
+    } else {
+      EXPECT_THAT(
+          toVector<T>(stream.data()),
+          ::testing::ElementsAreArray(expectedRetainedData.chunkData));
+      expectedStreamDataSize =
+          sizeof(T) * expectedRetainedData.chunkData.size();
+    }
     EXPECT_THAT(
         stream.nonNulls(),
         ::testing::ElementsAreArray(expectedRetainedData.chunkNonNulls));
     EXPECT_EQ(stream.hasNulls(), expectedRetainedData.hasNulls);
-    const uint64_t expectedRetainedMemoryUsed =
-        (sizeof(T) * expectedRetainedData.chunkData.size()) +
+    const uint64_t expectedRetainedMemoryUsed = expectedStreamDataSize +
         expectedRetainedData.chunkNonNulls.size() +
         expectedRetainedData.extraMemory;
     EXPECT_EQ(stream.memoryUsed(), expectedRetainedMemoryUsed);
@@ -263,23 +307,27 @@ TEST_F(StreamChunkerTestsBase, shouldOmitDataStream) {
     // Non-empty stream with size above minChunkSize
     EXPECT_FALSE(
         detail::shouldOmitDataStream(
-            nullableContentStream,
+            nullableContentStream.data().size(),
             /*minChunkSize=*/4,
+            nullableContentStream.nonNulls().empty(),
             /*isFirstChunk=*/false));
 
     // Non-empty stream with size below minChunkSize
     EXPECT_TRUE(
         detail::shouldOmitDataStream(
-            nullableContentStream,
+            nullableContentStream.data().size(),
             /*minChunkSize=*/100,
+            nullableContentStream.nonNulls().empty(),
+
             /*isFirstChunk=*/true));
 
     // Non-empty stream with size below minChunkSize
     // and non-empty written stream content
     EXPECT_FALSE(
         detail::shouldOmitDataStream(
-            nullableContentStream,
+            nullableContentStream.data().size(),
             /*minChunkSize=*/100,
+            nullableContentStream.nonNulls().empty(),
             /*isFirstChunk=*/false));
   }
 }
@@ -1066,6 +1114,167 @@ TEST_F(StreamChunkerTestsBase, nullableContentStreamStringChunking) {
   }
 }
 
+TEST_F(StreamChunkerTestsBase, nullableContentStringStreamChunking) {
+  auto scalarTypeBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
+  auto descriptor = &scalarTypeBuilder->scalarDescriptor();
+  NullableContentStringStreamData stream(
+      *leafPool_,
+      *descriptor,
+      *inputBufferGrowthPolicy_, /* lengthsGrowthPolicy */
+      *inputBufferGrowthPolicy_ /* bufferGrowthPolicy */);
+
+  // Setup test data with some nulls
+  std::vector<std::string_view> testData = {
+      "hello", "world", "test", "string", "chunk", "data", "example"};
+  std::vector<bool> nonNullsData = {
+      true, false, true, true, false, true, false, true, true, true, false};
+
+  stream.ensureAdditionalNullsCapacity(
+      /*mayHaveNulls=*/true, static_cast<uint32_t>(nonNullsData.size()));
+  auto& nonNulls = stream.mutableNonNulls();
+  populateData(nonNulls, nonNullsData);
+
+  auto data = stream.mutableData();
+  populateStringData(data, testData);
+
+  // number of strings: 7
+  // size of string buffer length = 7 * 8 = 56 bytes
+  // size of nulls = 11 * 1 = 11 bytes
+  // total number of characters = 36 bytes
+  // total size of stream data = 56 + 11 + 36 = 103 bytes
+  ASSERT_EQ(stream.memoryUsed(), 103);
+
+  // Test 1: Not last chunk
+  {
+    const uint64_t maxChunkSize = 45;
+    const uint64_t minChunkSize = 40;
+    auto chunker = getStreamChunker(
+        stream,
+        {
+            .minChunkSize = minChunkSize,
+            .maxChunkSize = maxChunkSize,
+            .ensureFullChunks = true,
+        });
+
+    std::vector<ExpectedChunk<std::string_view>> expectedChunks = {
+        {.chunkData = {"hello", "world", "test"},
+         .chunkNonNulls = {true, false, true, true, false},
+         .hasNulls = true},
+        {.chunkData = {"string", "chunk", "data"},
+         .chunkNonNulls = {true, false, true, true},
+         .hasNulls = true}};
+    // Expected retained data after compaction
+    ExpectedChunk<std::string_view> expectedRetainedData{
+        .chunkData = {"example"},
+        .chunkNonNulls = {true, false},
+        .hasNulls = true};
+    validateChunk<std::string_view>(
+        stream, std::move(chunker), expectedChunks, expectedRetainedData);
+  }
+
+  // When ensureFullChunks = false
+  {
+    // Test 2: Nothing is returned when chunk is below minChunkSize
+    const uint64_t maxChunkSize = 35;
+    auto chunker = getStreamChunker(
+        stream,
+        {
+            .minChunkSize = stream.memoryUsed() + 1,
+            .maxChunkSize = maxChunkSize,
+            .ensureFullChunks = false,
+        });
+
+    ExpectedChunk<std::string_view> lastChunk{
+        .chunkData = {"example"},
+        .chunkNonNulls = {true, false},
+        .hasNulls = true};
+
+    // Nothing is returned
+    validateChunk<std::string_view>(
+        stream, std::move(chunker), {}, {lastChunk});
+
+    // Test 3: Everything is returned when chunk is above minChunkSize
+    auto chunker2 = getStreamChunker(
+        stream,
+        {
+            .minChunkSize = stream.memoryUsed(),
+            .maxChunkSize = maxChunkSize,
+            .ensureFullChunks = false,
+        });
+    validateChunk<std::string_view>(
+        stream, std::move(chunker2), {lastChunk}, {});
+  }
+
+  // Test 4: We can reuse a stream post compaction.
+  {
+    std::vector<std::string_view> smallTestData = {"extra_data", "test"};
+    std::vector<bool> smallNonNullsData = {true, true};
+    stream.ensureAdditionalNullsCapacity(
+        /*mayHaveNulls=*/false,
+        static_cast<uint32_t>(smallNonNullsData.size()));
+    auto smallData = stream.mutableData();
+    populateStringData(smallData, smallTestData);
+
+    auto& smallNonNulls = stream.mutableNonNulls();
+    populateData(smallNonNulls, smallNonNullsData);
+
+    // Exactly what is needed to fit just the first entry
+    const uint64_t minChunkSize = smallTestData.at(0).size() + sizeof(uint64_t);
+    const uint64_t maxChunkSize = minChunkSize;
+    auto chunker = getStreamChunker(
+        stream,
+        {
+            .minChunkSize = minChunkSize,
+            .maxChunkSize = maxChunkSize,
+            .ensureFullChunks = true,
+        });
+
+    validateChunk<std::string_view>(
+        stream,
+        std::move(chunker),
+        {{.chunkData = {"extra_data"}}},
+        {.chunkData = {"test"}});
+    ASSERT_EQ(stream.mutableNonNulls().size(), 0);
+    // After materialization, mutable non-nulls should reflect leftover data
+    stream.materialize();
+    ASSERT_EQ(stream.mutableNonNulls().size(), 1);
+    stream.reset();
+  }
+
+  // Test 5: Single string exceeds maxChunkSize.
+  {
+    testData = {"a", "short", "really really large string", "small"};
+    populateStringData(data, testData);
+
+    nonNullsData = {true, false, true, true, false, true, false};
+    stream.ensureAdditionalNullsCapacity(
+        /*mayHaveNulls=*/true, static_cast<uint32_t>(nonNullsData.size()));
+    populateData(nonNulls, nonNullsData);
+
+    const uint64_t minChunkSize = 1;
+    // Size of "really really large string", string view, and null minus 1.
+    const uint64_t maxChunkSize = 24 + sizeof(uint64_t) + sizeof(bool);
+    auto chunker = getStreamChunker(
+        stream,
+        {
+            .minChunkSize = minChunkSize,
+            .maxChunkSize = maxChunkSize,
+            .ensureFullChunks = true,
+        });
+    validateChunk<std::string_view>(
+        stream,
+        std::move(chunker),
+        {{.chunkData = {"a", "short"},
+          .chunkNonNulls = {true, false, true},
+          .hasNulls = true},
+         {.chunkData = {"really really large string"}, .extraMemory = 25}},
+        {.chunkData = {"small"},
+         .chunkNonNulls = {false, true, false},
+         .hasNulls = true});
+  }
+}
+
 // Tests to verify rowCount is set properly for chunked StreamDataViews.
 TEST_F(StreamChunkerTestsBase, contentStreamChunkerRowCount) {
   auto scalarTypeBuilder =
@@ -1235,6 +1444,47 @@ TEST_F(StreamChunkerTestsBase, nullableContentStreamStringChunkerRowCount) {
   for (const auto& str : testData) {
     stream.extraMemory() += str.size();
   }
+
+  auto chunker = getStreamChunker(
+      stream,
+      {
+          .minChunkSize = 1,
+          .maxChunkSize = 50,
+          .ensureFullChunks = false,
+      });
+
+  // Verify rowCount for nullable string stream.
+  uint32_t totalRowCount = 0;
+  while (const auto chunkView = chunker->next()) {
+    EXPECT_GT(chunkView->rowCount(), 0);
+    if (chunkView->hasNulls()) {
+      EXPECT_EQ(chunkView->rowCount(), chunkView->nonNulls().size());
+    }
+    totalRowCount += chunkView->rowCount();
+  }
+  EXPECT_EQ(totalRowCount, nonNullsData.size());
+}
+
+TEST_F(StreamChunkerTestsBase, nullableContentStringStreamChunkerRowCount) {
+  auto scalarTypeBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
+  auto descriptor = &scalarTypeBuilder->scalarDescriptor();
+  NullableContentStringStreamData stream(
+      *leafPool_,
+      *descriptor,
+      *inputBufferGrowthPolicy_, /* lengthsGrowthPolicy */
+      *inputBufferGrowthPolicy_ /* bufferGrowthPolicy */);
+
+  // Add data with nulls.
+  std::vector<std::string_view> testData = {"hello", "world", "test", "data"};
+  std::vector<bool> nonNullsData = {true, false, true, true, false, true};
+  stream.ensureAdditionalNullsCapacity(
+      /*mayHaveNulls=*/true, static_cast<uint32_t>(nonNullsData.size()));
+  auto data = stream.mutableData();
+  populateStringData(data, testData);
+
+  auto& nonNulls = stream.mutableNonNulls();
+  populateData(nonNulls, nonNullsData);
 
   auto chunker = getStreamChunker(
       stream,
