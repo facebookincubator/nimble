@@ -489,4 +489,95 @@ TEST_F(rowCountTest, streamDataViewRowCountWithNulls) {
   EXPECT_TRUE(view.hasNulls());
   EXPECT_EQ(view.nonNulls().size(), 5);
 }
+
+class NullableContentStringStreamDataTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    velox::memory::MemoryManager::testingSetInstance(
+        velox::memory::MemoryManager::Options{});
+    memoryPool_ = velox::memory::memoryManager()->addLeafPool("test");
+    helperPool_ = velox::memory::memoryManager()->addLeafPool("helper");
+    schemaBuilder_ = std::make_unique<SchemaBuilder>();
+    scalarBuilder_ =
+        schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
+  }
+
+  NullableContentStringStreamData createStreamData(
+      const InputBufferGrowthPolicy& dataPolicy,
+      const InputBufferGrowthPolicy& bufferPolicy) {
+    return NullableContentStringStreamData(
+        *memoryPool_,
+        scalarBuilder_->scalarDescriptor(),
+        dataPolicy,
+        bufferPolicy);
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> memoryPool_;
+  std::shared_ptr<velox::memory::MemoryPool> helperPool_;
+  std::unique_ptr<SchemaBuilder> schemaBuilder_;
+  std::shared_ptr<ScalarTypeBuilder> scalarBuilder_;
+};
+
+TEST_F(NullableContentStringStreamDataTest, basicOperations) {
+  ExactGrowthPolicy policy;
+  auto streamData = createStreamData(policy, policy);
+
+  EXPECT_EQ(streamData.rowCount(), 0);
+  EXPECT_TRUE(streamData.empty());
+
+  // Add 4 rows: "hello", null, "world", null.
+  const std::vector<bool> nonNullsData = {true, false, true, false};
+  streamData.ensureAdditionalNullsCapacity(true, nonNullsData.size());
+  for (const auto& nonNull : nonNullsData) {
+    streamData.mutableNonNulls().push_back(nonNull);
+  }
+
+  const std::vector<std::string_view> testData = {"hello", "world"};
+  const auto bufferSize = testData[0].size() + testData[1].size();
+  streamData.ensureStringBufferCapacity(testData.size(), bufferSize);
+  auto& nonNulls = streamData.mutableNonNulls();
+  auto [buffer, lengths] = streamData.mutableData();
+  for (const auto& str : testData) {
+    buffer.insert(buffer.end(), str.begin(), str.end());
+    lengths.push_back(str.size());
+  }
+
+  EXPECT_EQ(streamData.rowCount(), 4);
+  EXPECT_TRUE(streamData.hasNulls());
+  EXPECT_EQ(lengths.size(), 2);
+  EXPECT_EQ(buffer.size(), 10);
+  EXPECT_EQ(
+      streamData.memoryUsed(),
+      nonNulls.size() + buffer.size() + lengths.size() * sizeof(uint64_t));
+
+  streamData.materialize();
+  const auto* views =
+      reinterpret_cast<const std::string_view*>(streamData.data().data());
+  EXPECT_EQ(views[0], "hello");
+  EXPECT_EQ(views[1], "world");
+
+  streamData.reset();
+  EXPECT_EQ(streamData.rowCount(), 0);
+  EXPECT_TRUE(streamData.empty());
+}
+
+TEST_F(NullableContentStringStreamDataTest, ensureStringBufferCapacity) {
+  MockGrowthPolicy dataPolicy;
+  MockGrowthPolicy bufferPolicy;
+
+  EXPECT_CALL(dataPolicy, getExtendedCapacity(10, 0)).WillOnce(Return(10));
+  EXPECT_CALL(bufferPolicy, getExtendedCapacity(100, 0)).WillOnce(Return(100));
+
+  auto streamData = createStreamData(dataPolicy, bufferPolicy);
+  streamData.ensureStringBufferCapacity(10, 100);
+  EXPECT_EQ(memoryPool_->stats().numAllocs, 2);
+
+  auto [buffer, lengths] = streamData.mutableData();
+  EXPECT_GE(lengths.capacity(), 10);
+  EXPECT_GE(buffer.capacity(), 100);
+
+  // Zero strings is a no-op.
+  streamData.ensureStringBufferCapacity(0, 100);
+  EXPECT_EQ(memoryPool_->stats().numAllocs, 2);
+}
 } // namespace facebook::nimble

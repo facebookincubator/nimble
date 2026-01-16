@@ -325,4 +325,113 @@ class NullableContentStreamData final : public NullsStreamData {
   uint64_t extraMemory_;
 };
 
+struct StringBuffer {
+  Vector<char>& buffer;
+  Vector<size_t>& lengths;
+};
+
+class NullableContentStringStreamData final : public NullsStreamData {
+ public:
+  NullableContentStringStreamData(
+      velox::memory::MemoryPool& memoryPool,
+      const StreamDescriptorBuilder& descriptor,
+      const InputBufferGrowthPolicy& lengthsGrowthPolicy,
+      const InputBufferGrowthPolicy& bufferGrowthPolicy)
+      : NullsStreamData(memoryPool, descriptor, lengthsGrowthPolicy),
+        buffer_{&memoryPool},
+        lengths_{&memoryPool},
+        stringViews_{&memoryPool},
+        bufferGrowthPolicy_{bufferGrowthPolicy},
+        lengthGrowthPolicy_{lengthsGrowthPolicy} {}
+
+  inline std::string_view data() const override {
+    NIMBLE_DCHECK(materialized_, "Data must be materialized before access");
+    return std::string_view{
+        reinterpret_cast<const char*>(stringViews_.data()),
+        stringViews_.size() * sizeof(std::string_view)};
+  }
+
+  inline bool empty() const override {
+    return NullsStreamData::empty() && lengths_.empty();
+  }
+
+  inline uint64_t memoryUsed() const override {
+    return NullsStreamData::memoryUsed() + buffer_.size() +
+        lengths_.size() * sizeof(uint64_t) +
+        stringViews_.size() * sizeof(std::string_view);
+  }
+
+  inline uint64_t bufferSize() const {
+    return lengths_.size() * sizeof(uint64_t) + buffer_.size();
+  }
+
+  inline StringBuffer mutableData() {
+    // When mutableData() is called, it returns direct references to buffer_ and
+    // lengths_, allowing external code to modify them. Since dataChunkVector_
+    // contains string_view objects pointing into buffer_, any buffer
+    // modifications invalidate these views. Therefore, materialize() must be
+    // called before the next access to rebuild dataChunkVector_ with valid
+    // string_view references to the updated buffer content.
+    materialized_ = false;
+    return {buffer_, lengths_};
+  }
+
+  inline Vector<std::string_view>& mutableStringViews() {
+    materialized_ = false;
+    return stringViews_;
+  }
+
+  void materialize() override {
+    stringViews_.resize(lengths_.size());
+    auto runningOffset = 0;
+    for (auto i = 0; i < lengths_.size(); ++i) {
+      stringViews_[i] =
+          std::string_view(buffer_.data() + runningOffset, lengths_[i]);
+      runningOffset += lengths_[i];
+    }
+    NullsStreamData::materialize();
+    materialized_ = true;
+  }
+
+  void ensureStringBufferCapacity(
+      uint64_t additionalStrings,
+      uint64_t additionalBytes) {
+    if (additionalStrings == 0) {
+      return;
+    }
+
+    const auto newLengthsSize = lengths_.size() + additionalStrings;
+    if (newLengthsSize > lengths_.capacity()) {
+      const auto newCapacity = lengthGrowthPolicy_.getExtendedCapacity(
+          newLengthsSize, lengths_.capacity());
+      lengths_.reserve(newCapacity);
+    }
+
+    if (additionalBytes > 0) {
+      const auto newBufferSize = buffer_.size() + additionalBytes;
+      if (newBufferSize > buffer_.capacity()) {
+        const auto newCapacity = bufferGrowthPolicy_.getExtendedCapacity(
+            newBufferSize, buffer_.capacity());
+        buffer_.reserve(newCapacity);
+      }
+    }
+  }
+
+  inline void reset() override {
+    NullsStreamData::reset();
+    buffer_.clear();
+    lengths_.clear();
+    stringViews_.clear();
+  }
+
+ private:
+  Vector<char> buffer_;
+  Vector<uint64_t> lengths_;
+  Vector<std::string_view> stringViews_;
+  const InputBufferGrowthPolicy& bufferGrowthPolicy_;
+  const InputBufferGrowthPolicy& lengthGrowthPolicy_;
+
+  bool materialized_{false};
+};
+
 } // namespace facebook::nimble
