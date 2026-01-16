@@ -338,6 +338,7 @@ class SimpleFieldWriter : public FieldWriter {
       nullCount = size - nonNullCount;
     }
 
+    // NOTE: This logic is wrong. Will be removed with new stats changes.
     columnStats_.logicalSize += nullCount +
         ((K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY)
              ? valuesStream_.extraMemory()
@@ -352,6 +353,75 @@ class SimpleFieldWriter : public FieldWriter {
 
  private:
   NullableContentStreamData<TargetType>& valuesStream_;
+  ColumnStats& columnStats_;
+};
+
+template <velox::TypeKind K>
+class StringFieldWriter : public FieldWriter {
+ public:
+  explicit StringFieldWriter(FieldWriterContext& context)
+      : FieldWriter(
+            context,
+            context.schemaBuilder().createScalarTypeBuilder(
+                NimbleTypeTraits<K>::scalarKind)),
+        valuesStream_{context.createNullableContentStringStreamData(
+            typeBuilder_->asScalar().scalarDescriptor())},
+        columnStats_{context.columnStats(valuesStream_.descriptor().offset())} {
+    static_assert(
+        K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY,
+        "StringFieldWriter only supports VARCHAR and VARBINARY types");
+  }
+
+  void write(
+      const velox::VectorPtr& vector,
+      const OrderedRanges& ranges,
+      folly::Executor*) override {
+    // Ensure string buffer capacity.
+    auto size = ranges.size();
+    const uint64_t totalBytes = getRawSizeFromVector(vector, ranges);
+    valuesStream_.ensureStringBufferCapacity(size, totalBytes);
+
+    // Append to string buffer.
+    uint64_t memoryUsed = 0;
+    auto stringBuffer = valuesStream_.mutableData();
+    auto appendToStringBuffer = [&](velox::StringView sv) {
+      memoryUsed += sv.size();
+      auto& buffer = stringBuffer.buffer;
+      buffer.insert(buffer.end(), sv.begin(), sv.end());
+      auto& mutableLengths = stringBuffer.lengths;
+      mutableLengths.push_back(sv.size());
+    };
+
+    uint64_t nonNullCount = 0;
+    if (auto flat = vector->asFlatVector<velox::StringView>()) {
+      valuesStream_.ensureAdditionalNullsCapacity(flat->mayHaveNulls(), size);
+      nonNullCount = iterateNonNullValues(
+          ranges,
+          valuesStream_.mutableNonNulls(),
+          Flat<velox::StringView>{vector},
+          appendToStringBuffer);
+    } else {
+      auto decodingContext = context_.decodingContext();
+      auto& decoded = decodingContext.decode(vector, ranges);
+      valuesStream_.ensureAdditionalNullsCapacity(decoded.mayHaveNulls(), size);
+      nonNullCount = iterateNonNullValues(
+          ranges,
+          valuesStream_.mutableNonNulls(),
+          Decoded<velox::StringView>{decoded},
+          appendToStringBuffer);
+    }
+    uint64_t nullCount = size - nonNullCount;
+    columnStats_.logicalSize += nullCount + memoryUsed;
+    columnStats_.nullCount += nullCount;
+    columnStats_.valueCount += size;
+  }
+
+  void reset() override {
+    valuesStream_.reset();
+  }
+
+ private:
+  NullableContentStringStreamData& valuesStream_;
   ColumnStats& columnStats_;
 };
 
@@ -1964,15 +2034,25 @@ std::unique_ptr<FieldWriter> FieldWriter::create(
       break;
     }
     case velox::TypeKind::VARCHAR: {
-      field = std::make_unique<
-          SimpleFieldWriter<velox::TypeKind::VARCHAR, StringConverter>>(
-          context);
+      if (context.disableSharedStringBuffers()) {
+        field = std::make_unique<StringFieldWriter<velox::TypeKind::VARCHAR>>(
+            context);
+      } else {
+        field = std::make_unique<
+            SimpleFieldWriter<velox::TypeKind::VARCHAR, StringConverter>>(
+            context);
+      }
       break;
     }
     case velox::TypeKind::VARBINARY: {
-      field = std::make_unique<
-          SimpleFieldWriter<velox::TypeKind::VARBINARY, StringConverter>>(
-          context);
+      if (context.disableSharedStringBuffers()) {
+        field = std::make_unique<StringFieldWriter<velox::TypeKind::VARBINARY>>(
+            context);
+      } else {
+        field = std::make_unique<
+            SimpleFieldWriter<velox::TypeKind::VARBINARY, StringConverter>>(
+            context);
+      }
       break;
     }
     case velox::TypeKind::TIMESTAMP: {

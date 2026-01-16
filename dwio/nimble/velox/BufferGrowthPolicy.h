@@ -56,6 +56,15 @@ class DefaultInputBufferGrowthPolicy : public InputBufferGrowthPolicy {
             {32UL, 4.0}, {512UL, 1.414}, {4096UL, 1.189}});
   }
 
+  // Growth policy for per-stream string buffers when disableSharedStringBuffers
+  // is enabled. Uses byte-based thresholds since string data is stored as raw
+  // bytes.
+  static std::unique_ptr<InputBufferGrowthPolicy> withStringBufferRanges() {
+    return std::make_unique<DefaultInputBufferGrowthPolicy>(
+        std::map<uint64_t, float>{
+            {4096UL, 2.0}, {4194304UL, 1.414}, {12582912UL, 1.189}});
+  }
+
  private:
   // Map of range lowerbounds and the growth factor for the range.
   // The first lowerbound is the smallest unit of allocation and the last range

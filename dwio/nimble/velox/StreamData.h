@@ -381,6 +381,10 @@ class NullableContentStringStreamData final : public NullsStreamData {
     return stringViews_;
   }
 
+  void materializeNulls() {
+    NullsStreamData::materialize();
+  }
+
   void materialize() override {
     stringViews_.resize(lengths_.size());
     auto runningOffset = 0;
@@ -389,7 +393,7 @@ class NullableContentStringStreamData final : public NullsStreamData {
           std::string_view(buffer_.data() + runningOffset, lengths_[i]);
       runningOffset += lengths_[i];
     }
-    NullsStreamData::materialize();
+    materializeNulls();
     materialized_ = true;
   }
 

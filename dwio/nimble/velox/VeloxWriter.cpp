@@ -57,7 +57,11 @@ class WriterContext : public FieldWriterContext {
     inputBufferGrowthPolicy_ = this->options_.lowMemoryMode
         ? std::make_unique<ExactGrowthPolicy>()
         : this->options_.inputGrowthPolicyFactory();
+    stringBufferGrowthPolicy_ = this->options_.lowMemoryMode
+        ? std::make_unique<ExactGrowthPolicy>()
+        : this->options_.stringBufferGrowthPolicyFactory();
     ignoreTopLevelNulls_ = options_.ignoreTopLevelNulls;
+    disableSharedStringBuffers_ = options_.disableSharedStringBuffers;
   }
 
   const VeloxWriterOptions& options() const {
@@ -991,6 +995,7 @@ void VeloxWriter::processStream(
       encodeStream(nullsStreamData, streamSize, chunkSize);
     }
   } else {
+    streamData.materialize();
     if (!streamData.data().empty()) {
       encodeStream(streamData, streamSize, chunkSize);
     }
