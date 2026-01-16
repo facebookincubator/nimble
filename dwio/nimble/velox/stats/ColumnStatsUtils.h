@@ -39,6 +39,10 @@ uint64_t getRawSizeFromVector(
     const OrderedRanges& ranges,
     RawSizeContext& context);
 
+uint64_t getRawSizeFromVector(
+    const velox::VectorPtr& vector,
+    const OrderedRanges& ranges);
+
 void aggregateStats(
     const TypeBuilder& builder,
     std::unordered_map<offset_size, ColumnStats>& columnStats,

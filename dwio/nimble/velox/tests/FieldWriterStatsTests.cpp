@@ -66,6 +66,7 @@ class FieldWriterStatsTests : public ::testing::Test {
       rowType = input->type();
     }
     options.enableChunking = true;
+    options.disableSharedStringBuffers = true;
     nimble::VeloxWriter writer(
         rowType, std::move(writeFile), *rootPool_, options);
     writer.write(input);

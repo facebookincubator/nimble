@@ -18,17 +18,30 @@
 #include "velox/dwio/common/Range.h"
 
 namespace facebook::nimble {
-uint64_t getRawSizeFromVector(
-    const velox::VectorPtr& vector,
-    const OrderedRanges& ranges,
-    RawSizeContext& context) {
+
+namespace {
+velox::common::Ranges toVeloxRanges(const OrderedRanges& ranges) {
   velox::common::Ranges veloxRanges;
   for (auto& range : ranges.ranges()) {
     veloxRanges.add(
         std::get<0>(range), std::get<0>(range) + std::get<1>(range));
   }
-  return getRawSizeFromVector(vector, veloxRanges, context);
-};
+  return veloxRanges;
+}
+} // namespace
+
+uint64_t getRawSizeFromVector(
+    const velox::VectorPtr& vector,
+    const OrderedRanges& ranges,
+    RawSizeContext& context) {
+  return getRawSizeFromVector(vector, toVeloxRanges(ranges), context);
+}
+
+uint64_t getRawSizeFromVector(
+    const velox::VectorPtr& vector,
+    const OrderedRanges& ranges) {
+  return getRawSizeFromVector(vector, toVeloxRanges(ranges));
+}
 
 void aggregateStats(
     const TypeBuilder& builder,

@@ -591,6 +591,7 @@ class NullableContentStringStreamChunker final : public StreamChunker {
             options.isFirstChunk)},
         ensureFullChunks_{options.ensureFullChunks} {
     static_assert(sizeof(bool) == 1);
+    streamData_->materializeNulls();
   }
 
   std::optional<StreamDataView> next() override {

@@ -296,6 +296,22 @@ class FieldWriterContext {
             *bufferMemoryPool_, descriptor, *inputBufferGrowthPolicy_)));
   }
 
+  nimble::NullableContentStringStreamData&
+  createNullableContentStringStreamData(
+      const nimble::StreamDescriptorBuilder& descriptor) {
+    return static_cast<nimble::NullableContentStringStreamData&>(
+        *streams_.emplace_back(
+            std::make_unique<nimble::NullableContentStringStreamData>(
+                *bufferMemoryPool_,
+                descriptor,
+                *inputBufferGrowthPolicy_,
+                *stringBufferGrowthPolicy_)));
+  }
+
+  inline bool disableSharedStringBuffers() const {
+    return disableSharedStringBuffers_;
+  }
+
  protected:
   MemoryPoolHolder bufferMemoryPool_;
   std::mutex flatMapSchemaMutex_;
@@ -305,8 +321,10 @@ class FieldWriterContext {
   folly::F14FastSet<uint32_t> dictionaryArrayNodeIds_;
   folly::F14FastSet<uint32_t> deduplicatedMapNodeIds_;
   bool ignoreTopLevelNulls_{false};
+  bool disableSharedStringBuffers_{false};
 
   std::unique_ptr<InputBufferGrowthPolicy> inputBufferGrowthPolicy_;
+  std::unique_ptr<InputBufferGrowthPolicy> stringBufferGrowthPolicy_;
   InputBufferGrowthStats inputBufferGrowthStats_;
 
   std::unordered_map<offset_size, ColumnStats> columnStats_;

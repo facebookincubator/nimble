@@ -2184,7 +2184,7 @@ TEST_P(ChunkFlushPolicyTest, ChunkFlushPolicyIntegration) {
 
 TEST_F(VeloxWriterTest, fuzzComplex) {
   auto type = velox::ROW(
-      {{"array", velox::ARRAY(velox::REAL())},
+      {{"array", velox::ARRAY(velox::VARCHAR())},
        {"dict_array", velox::ARRAY(velox::REAL())},
        {"map", velox::MAP(velox::INTEGER(), velox::DOUBLE())},
        {"row",
@@ -2204,13 +2204,14 @@ TEST_F(VeloxWriterTest, fuzzComplex) {
         velox::ARRAY(
             velox::ROW({
                 {"a", velox::INTEGER()},
-                {"b", velox::MAP(velox::REAL(), velox::REAL())},
+                {"b", velox::MAP(velox::REAL(), velox::VARBINARY())},
             }))},
        {"nested_map_array1",
         velox::MAP(velox::INTEGER(), velox::ARRAY(velox::REAL()))},
        {"nested_map_array2",
         velox::MAP(velox::INTEGER(), velox::ARRAY(velox::INTEGER()))},
        {"dict_map", velox::MAP(velox::INTEGER(), velox::INTEGER())}});
+
   auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
   const uint32_t seed = FLAGS_writer_tests_seed > 0 ? FLAGS_writer_tests_seed
                                                     : folly::Random::rand32();
@@ -2220,6 +2221,7 @@ TEST_F(VeloxWriterTest, fuzzComplex) {
     std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
     nimble::VeloxWriterOptions writerOptions;
     writerOptions.enableChunking = true;
+    writerOptions.disableSharedStringBuffers = true;
     writerOptions.flushPolicyFactory =
         []() -> std::unique_ptr<nimble::FlushPolicy> {
       return std::make_unique<nimble::ChunkFlushPolicy>(
@@ -2302,7 +2304,7 @@ TEST_F(VeloxWriterTest, batchedChunkingRelievesMemoryPressure) {
   ranges.add(0, rowCount);
   const uint64_t stringColumnRawSize =
       nimble::getRawSizeFromVector(stringColumn, ranges, context) +
-      sizeof(std::string_view) * rowCount;
+      sizeof(uint64_t) * rowCount;
   const uint64_t intColumnRawSize =
       nimble::getRawSizeFromVector(intColumn, ranges, context);
 
@@ -2334,6 +2336,7 @@ TEST_F(VeloxWriterTest, batchedChunkingRelievesMemoryPressure) {
   nimble::VeloxWriterOptions writerOptions;
   writerOptions.chunkedStreamBatchSize = kBatchSize;
   writerOptions.enableChunking = true;
+  writerOptions.disableSharedStringBuffers = true;
   writerOptions.minStreamChunkRawSize = minChunkSize;
   writerOptions.maxStreamChunkRawSize = maxChunkSize;
   writerOptions.flushPolicyFactory =
