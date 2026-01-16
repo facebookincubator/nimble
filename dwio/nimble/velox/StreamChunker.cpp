@@ -38,6 +38,11 @@ std::unique_ptr<StreamChunker> getStreamChunkerTyped(
     return std::make_unique<NullableContentStreamChunker<T>>(
         *nullableContentStreamData, options);
   } else if (
+      auto* nullableContentStringStreamData =
+          dynamic_cast<NullableContentStringStreamData*>(&streamData)) {
+    return std::make_unique<NullableContentStringStreamChunker>(
+        *nullableContentStringStreamData, options);
+  } else if (
       auto* nullsStreamData = dynamic_cast<NullsStreamData*>(&streamData)) {
     return std::make_unique<NullsStreamChunker>(*nullsStreamData, options);
   }
