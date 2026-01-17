@@ -140,8 +140,11 @@ void IndexReader::loadChunk() {
         return buffer->asMutable<void>();
       });
   NIMBLE_CHECK_EQ(encoding_->dataType(), DataType::String);
-  // TODO: support prefix encoding for encoded keys.
-  NIMBLE_CHECK_EQ(encoding_->encodingType(), EncodingType::Trivial);
+  NIMBLE_CHECK(
+      encoding_->encodingType() == EncodingType::Trivial ||
+          encoding_->encodingType() == EncodingType::Prefix,
+      "Unsupported encoding type: {}",
+      encoding_->encodingType());
 }
 
 void IndexReader::prepareInputBuffer(int32_t size) {

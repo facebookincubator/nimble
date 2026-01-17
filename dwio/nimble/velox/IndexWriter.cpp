@@ -77,11 +77,12 @@ IndexWriter::IndexWriter(
       enforceKeyOrder_{config.enforceKeyOrder},
       minChunkSize_{config.minChunkRawSize},
       maxChunkSize_{config.maxChunkRawSize} {
-  // Key stream encoding only supports trivial encoding without nested children.
-  NIMBLE_CHECK_EQ(
-      encodingLayout_.encodingType(),
-      EncodingType::Trivial,
-      "Key stream encoding only supports Trivial encoding");
+  // Key stream encoding only supports Prefix or Trivial encoding.
+  NIMBLE_CHECK(
+      encodingLayout_.encodingType() == EncodingType::Prefix ||
+          encodingLayout_.encodingType() == EncodingType::Trivial,
+      "Key stream encoding only supports Prefix or Trivial encoding, but got: {}",
+      encodingLayout_.encodingType());
 }
 
 std::unique_ptr<EncodingSelectionPolicy<std::string_view>>

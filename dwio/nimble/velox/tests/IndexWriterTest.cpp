@@ -54,20 +54,6 @@ class IndexWriterTest : public testing::Test,
     buffer_ = nullptr;
   }
 
-  IndexConfig indexConfig(
-      CompressionType compressionType = CompressionType::Uncompressed) const {
-    return IndexConfig{
-        .columns = {std::string(kCol1)},
-        .encodingLayout = EncodingLayout{
-            EncodingType::Trivial,
-            compressionType,
-            {
-                nimble::EncodingLayout{
-                    nimble::EncodingType::Trivial,
-                    nimble::CompressionType::Uncompressed},
-            }}};
-  }
-
   std::unique_ptr<velox::serializer::KeyEncoder> createKeyEncoder() const {
     const auto keyType = velox::ROW({{std::string(kCol1), velox::INTEGER()}});
     return velox::serializer::KeyEncoder::create(
@@ -75,6 +61,19 @@ class IndexWriterTest : public testing::Test,
         keyType,
         {velox::core::SortOrder{true, true}},
         pool_.get());
+  }
+
+  static IndexConfig indexConfig(
+      EncodingType encodingType = EncodingType::Prefix) {
+    EncodingLayout layout = encodingType == EncodingType::Prefix
+        ? EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}
+        : EncodingLayout{
+              EncodingType::Trivial,
+              CompressionType::Zstd,
+              {EncodingLayout{
+                  EncodingType::Trivial, CompressionType::Uncompressed}}};
+    return IndexConfig{
+        .columns = {std::string(kCol1)}, .encodingLayout = layout};
   }
 
   std::unique_ptr<Buffer> buffer_;
@@ -93,13 +92,23 @@ TEST_F(IndexWriterTest, createWithValidConfig) {
        {CompressionType::Uncompressed,
         CompressionType::Zstd,
         CompressionType::MetaInternal}) {
-    SCOPED_TRACE(fmt::format("compressionType: {}", compressionType));
-    IndexConfig config{
-        .columns = {"col0"},
-        .encodingLayout =
-            EncodingLayout{EncodingType::Trivial, compressionType}};
-    auto writer = IndexWriter::create(config, type_, pool_.get());
-    EXPECT_NE(writer, nullptr);
+    for (auto encodingType : {EncodingType::Prefix, EncodingType::Trivial}) {
+      SCOPED_TRACE(
+          fmt::format(
+              "compressionType: {}, encodingType: {}",
+              compressionType,
+              toString(encodingType)));
+      EncodingLayout layout = encodingType == EncodingType::Prefix
+          ? EncodingLayout{EncodingType::Prefix, compressionType}
+          : EncodingLayout{
+                EncodingType::Trivial,
+                compressionType,
+                {EncodingLayout{
+                    EncodingType::Trivial, CompressionType::Uncompressed}}};
+      IndexConfig config{.columns = {"col0"}, .encodingLayout = layout};
+      auto writer = IndexWriter::create(config, type_, pool_.get());
+      EXPECT_NE(writer, nullptr);
+    }
   }
 }
 
@@ -117,19 +126,25 @@ TEST_F(IndexWriterTest, createWithInvalidConfig) {
   }
 
   {
-    SCOPED_TRACE("non-trivial encoding");
+    SCOPED_TRACE("non-supported encoding");
     IndexConfig config{
         .columns = {"col0"},
         .encodingLayout = EncodingLayout{
             EncodingType::FixedBitWidth, CompressionType::Uncompressed}};
     NIMBLE_ASSERT_THROW(
         IndexWriter::create(config, type, pool_.get()),
-        "Key stream encoding only supports Trivial encoding");
+        "Key stream encoding only supports Prefix or Trivial encoding");
   }
 }
 
 TEST_F(IndexWriterTest, emptyWriteFinishStripe) {
-  auto config = indexConfig();
+  IndexConfig config{
+      .columns = {std::string(kCol1)},
+      .encodingLayout = EncodingLayout{
+          EncodingType::Trivial,
+          CompressionType::Uncompressed,
+          {EncodingLayout{
+              EncodingType::Trivial, CompressionType::Uncompressed}}}};
   auto writer = IndexWriter::create(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
@@ -141,8 +156,15 @@ TEST_F(IndexWriterTest, emptyWriteFinishStripe) {
 TEST_F(IndexWriterTest, enforceKeyOrderInvalidWithinBatch) {
   for (bool enforceKeyOrder : {true, false}) {
     SCOPED_TRACE(fmt::format("enforceKeyOrder: {}", enforceKeyOrder));
-    auto config = indexConfig();
-    config.enforceKeyOrder = enforceKeyOrder;
+    IndexConfig config{
+        .columns = {std::string(kCol1)},
+        .encodingLayout =
+            EncodingLayout{
+                EncodingType::Trivial,
+                CompressionType::Uncompressed,
+                {EncodingLayout{
+                    EncodingType::Trivial, CompressionType::Uncompressed}}},
+        .enforceKeyOrder = enforceKeyOrder};
     auto writer = IndexWriter::create(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
 
@@ -170,8 +192,15 @@ TEST_F(IndexWriterTest, enforceKeyOrderInvalidWithinBatch) {
 TEST_F(IndexWriterTest, enforceKeyOrderInvalidAcrossBatches) {
   for (bool enforceKeyOrder : {true, false}) {
     SCOPED_TRACE(fmt::format("enforceKeyOrder: {}", enforceKeyOrder));
-    auto config = indexConfig();
-    config.enforceKeyOrder = enforceKeyOrder;
+    IndexConfig config{
+        .columns = {std::string(kCol1)},
+        .encodingLayout =
+            EncodingLayout{
+                EncodingType::Trivial,
+                CompressionType::Uncompressed,
+                {EncodingLayout{
+                    EncodingType::Trivial, CompressionType::Uncompressed}}},
+        .enforceKeyOrder = enforceKeyOrder};
     auto writer = IndexWriter::create(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
 
@@ -202,9 +231,8 @@ TEST_F(IndexWriterTest, enforceKeyOrderInvalidAcrossBatches) {
   }
 }
 
-class IndexWriterDataTest
-    : public IndexWriterTest,
-      public ::testing::WithParamInterface<CompressionType> {
+class IndexWriterDataTest : public IndexWriterTest,
+                            public ::testing::WithParamInterface<EncodingType> {
  protected:
   void SetUp() override {
     IndexWriterTest::SetUp();
@@ -218,7 +246,7 @@ class IndexWriterDataTest
     IndexWriterTest::TearDown();
   }
 
-  CompressionType compressionType() const {
+  EncodingType encodingType() const {
     return GetParam();
   }
 
@@ -246,7 +274,7 @@ class IndexWriterDataTest
 };
 
 TEST_P(IndexWriterDataTest, writeAndFinishStripeNonChunked) {
-  auto config = indexConfig(compressionType());
+  auto config = indexConfig(encodingType());
   auto keyEncoder = createKeyEncoder();
 
   struct {
@@ -322,7 +350,7 @@ TEST_P(IndexWriterDataTest, writeAndFinishStripeNonChunked) {
 }
 
 TEST_P(IndexWriterDataTest, writeAndFinishStripeChunked) {
-  auto config = indexConfig(compressionType());
+  auto config = indexConfig(encodingType());
   // Use small chunk sizes to force multiple chunks.
   config.minChunkRawSize = 1;
   config.maxChunkRawSize = 50;
@@ -698,7 +726,7 @@ TEST_P(IndexWriterDataTest, indexChunkSizeControl) {
       input.push_back(static_cast<int32_t>(i));
     }
 
-    auto config = indexConfig(compressionType());
+    auto config = indexConfig(encodingType());
     config.minChunkRawSize = testCase.minChunkRawSize;
     config.maxChunkRawSize = testCase.maxChunkRawSize;
 
@@ -752,16 +780,14 @@ TEST_P(IndexWriterDataTest, multiColumnIndex) {
       {"col0", velox::INTEGER()},
       {"col1", velox::VARCHAR()},
   });
-  IndexConfig config{
-      .columns = {"col0", "col1"},
-      .encodingLayout = EncodingLayout{
-          EncodingType::Trivial,
-          compressionType(),
-          {
-              nimble::EncodingLayout{
-                  nimble::EncodingType::Trivial,
-                  nimble::CompressionType::Uncompressed},
-          }}};
+  EncodingLayout layout = encodingType() == EncodingType::Prefix
+      ? EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}
+      : EncodingLayout{
+            EncodingType::Trivial,
+            CompressionType::Zstd,
+            {EncodingLayout{
+                EncodingType::Trivial, CompressionType::Uncompressed}}};
+  IndexConfig config{.columns = {"col0", "col1"}, .encodingLayout = layout};
   auto writer = IndexWriter::create(config, type, pool_.get());
 
   auto batch = makeRowVector(
@@ -779,7 +805,7 @@ TEST_P(IndexWriterDataTest, multiColumnIndex) {
 }
 
 TEST_P(IndexWriterDataTest, close) {
-  auto config = indexConfig(compressionType());
+  auto config = indexConfig(encodingType());
   auto writer = IndexWriter::create(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
@@ -833,7 +859,7 @@ TEST_P(IndexWriterDataTest, encodeChunkLoopProcessing) {
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(testCase.debugString());
 
-    auto config = indexConfig(compressionType());
+    auto config = indexConfig(encodingType());
     // Use tiny chunk sizes to force multiple chunks per encodeChunk call.
     // This exercises the internal while loop multiple times.
     config.minChunkRawSize = 1;
@@ -886,7 +912,7 @@ TEST_P(IndexWriterDataTest, encodeChunkLoopProcessing) {
 
 // Test that encodeChunk returns false when there are no keys to encode.
 TEST_P(IndexWriterDataTest, encodeChunkEmptyStream) {
-  auto config = indexConfig(compressionType());
+  auto config = indexConfig(encodingType());
   auto writer = IndexWriter::create(config, type_, pool_.get());
 
   // encodeChunk on empty stream should return false.
@@ -902,9 +928,9 @@ TEST_P(IndexWriterDataTest, encodeChunkEmptyStream) {
 INSTANTIATE_TEST_SUITE_P(
     IndexWriterDataTestSuite,
     IndexWriterDataTest,
-    ::testing::Values(CompressionType::Uncompressed, CompressionType::Zstd),
-    [](const ::testing::TestParamInfo<CompressionType>& info) {
-      return toString(info.param);
+    ::testing::Values(EncodingType::Prefix, EncodingType::Trivial),
+    [](const ::testing::TestParamInfo<EncodingType>& info) {
+      return info.param == EncodingType::Prefix ? "Prefix" : "Trivial";
     });
 
 } // namespace
