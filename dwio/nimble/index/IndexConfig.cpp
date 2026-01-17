@@ -18,12 +18,8 @@
 
 namespace facebook::nimble {
 
-EncodingLayout IndexConfig::defaultEncodingLayout(
-    CompressionType compressionType) {
-  return EncodingLayout{
-      EncodingType::Trivial,
-      compressionType,
-      {EncodingLayout{EncodingType::Trivial, CompressionType::Uncompressed}}};
+EncodingLayout IndexConfig::defaultEncodingLayout() {
+  return EncodingLayout{EncodingType::Prefix, CompressionType::Uncompressed};
 }
 
 } // namespace facebook::nimble

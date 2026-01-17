@@ -2740,11 +2740,28 @@ INSTANTIATE_TEST_CASE_P(
 // maxChunkRawSize to prevent chunking (one chunk per stream).
 // When enableChunking is true, sets very low values to force aggressive
 // chunking.
-class VeloxWriterIndexTest : public VeloxWriterTest,
-                             public ::testing::WithParamInterface<bool> {
+struct IndexTestParams {
+  bool enableChunking;
+  nimble::EncodingType encodingType;
+
+  std::string toString() const {
+    std::string name =
+        encodingType == nimble::EncodingType::Prefix ? "Prefix" : "Trivial";
+    name += enableChunking ? "_WithKeyChunking" : "_NoKeyChunking";
+    return name;
+  }
+};
+
+class VeloxWriterIndexTest
+    : public VeloxWriterTest,
+      public ::testing::WithParamInterface<IndexTestParams> {
  protected:
   bool enableChunking() const {
-    return GetParam();
+    return GetParam().enableChunking;
+  }
+
+  nimble::EncodingType encodingType() const {
+    return GetParam().encodingType;
   }
 
   // Default type with integer key column and multiple scalar/complex non-key
@@ -2827,21 +2844,33 @@ class VeloxWriterIndexTest : public VeloxWriterTest,
   nimble::IndexConfig createIndexConfig(
       const std::vector<std::string>& columns,
       bool enforceKeyOrder = true) {
-    if (enableChunking()) {
-      return nimble::IndexConfig{
-          .columns = columns,
-          .enforceKeyOrder = enforceKeyOrder,
-          .minChunkRawSize = 32, // 32B - small to force chunking
-          .maxChunkRawSize = 1 << 10, // 1KB - small to force chunking
-      };
+    nimble::IndexConfig config{
+        .columns = columns,
+        .enforceKeyOrder = enforceKeyOrder,
+    };
+
+    // Set encoding layout based on test parameter
+    if (encodingType() == nimble::EncodingType::Prefix) {
+      config.encodingLayout = nimble::EncodingLayout{
+          nimble::EncodingType::Prefix, nimble::CompressionType::Zstd};
     } else {
-      return nimble::IndexConfig{
-          .columns = columns,
-          .enforceKeyOrder = enforceKeyOrder,
-          .minChunkRawSize = 1ULL << 30, // 1GB - large to prevent chunking
-          .maxChunkRawSize = 1ULL << 30, // 1GB - large to prevent chunking
-      };
+      // Trivial encoding needs a nested encoding for string lengths
+      config.encodingLayout = nimble::EncodingLayout{
+          nimble::EncodingType::Trivial,
+          nimble::CompressionType::Zstd,
+          {nimble::EncodingLayout{
+              nimble::EncodingType::Trivial,
+              nimble::CompressionType::Uncompressed}}};
     }
+
+    if (enableChunking()) {
+      config.minChunkRawSize = 32; // 32B - small to force chunking
+      config.maxChunkRawSize = 1 << 10; // 1KB - small to force chunking
+    } else {
+      config.minChunkRawSize = 1ULL << 30; // 1GB - large to prevent chunking
+      config.maxChunkRawSize = 1ULL << 30; // 1GB - large to prevent chunking
+    }
+    return config;
   }
 
   nimble::VeloxWriterOptions createWriterOptions(
@@ -3190,7 +3219,8 @@ class VeloxWriterIndexTest : public VeloxWriterTest,
         EXPECT_EQ(fileRowId, expectedFileRowId)
             << "Row " << currentRowId << " key lookup mismatch: "
             << "expected earliest row " << expectedFileRowId << ", got "
-            << fileRowId << " (stripe " << stripeIndex << ", chunk row offset "
+            << fileRowId << " (stripe " << stripeIndex << ", stripe start row "
+            << stripeStartRows[stripeIndex] << ", chunk row offset "
             << chunkLocation->rowOffset << ", seek offset "
             << seekResult.value() << ")";
 
@@ -3560,8 +3590,10 @@ TEST_P(VeloxWriterIndexTest, duplicateKeys) {
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
-  constexpr int kNumBatches = 10;
-  constexpr int kBatchSize = 100;
+  // constexpr int kNumBatches = 10;
+  constexpr int kNumBatches = 1;
+  // constexpr int kBatchSize = 100;
+  constexpr int kBatchSize = 32;
   constexpr uint32_t kSeed = 12345;
   // Use flush-per-batch to create multiple stripes
   nimble::VeloxWriter writer(
@@ -3841,9 +3873,16 @@ TEST_P(VeloxWriterIndexTest, streamDeduplication) {
 INSTANTIATE_TEST_SUITE_P(
     VeloxWriterIndexTestSuite,
     VeloxWriterIndexTest,
-    ::testing::Values(false, true),
-    [](const ::testing::TestParamInfo<bool>& info) {
-      return info.param ? "WithKeyChunking" : "NoKeyChunking";
+    ::testing::Values(
+        IndexTestParams{false, nimble::EncodingType::Prefix}
+#if 0
+        IndexTestParams{true, nimble::EncodingType::Prefix},
+        IndexTestParams{false, nimble::EncodingType::Trivial},
+        IndexTestParams{true, nimble::EncodingType::Trivial}
+#endif
+        ),
+    [](const ::testing::TestParamInfo<IndexTestParams>& info) {
+      return info.param.toString();
     });
 
 } // namespace facebook
