@@ -166,16 +166,20 @@ std::optional<uint32_t> PrefixEncoding::seekAtOrAfter(const void* value) {
   uint32_t left = 0;
   uint32_t right = numRestarts_;
 
+  std::string_view restartValue;
   while (left < right) {
     const uint32_t mid = left + (right - left) / 2;
 
     seekToRestartPoint(mid);
     NIMBLE_CHECK_EQ(currentRow_, mid * restartInterval_);
-    std::string_view restartValue = decodeEntry();
+    restartValue = decodeEntry();
     if (restartValue == targetValue) {
-      // decodeEntry() increments currentRow_ after decoding, so return the
-      // row index before the increment
-      return currentRow_ - 1;
+      // Found a match at restart point, but there might be duplicate keys
+      // in the previous restart interval. We need to check from the previous
+      // interval to find the earliest occurrence. Set left = mid here and let
+      // the decrement after the loop handle going back.
+      left = mid;
+      break;
     }
 
     if (restartValue < targetValue) {
@@ -185,9 +189,16 @@ std::optional<uint32_t> PrefixEncoding::seekAtOrAfter(const void* value) {
     }
   }
 
-  // If left > 0, check the previous block
-  if (left > 0) {
+  // If left > 0, check the previous block (there might be duplicate keys
+  // spanning multiple restart intervals). We need to check if the previous
+  // restart point's value could still match the target.
+  while (left > 0) {
     --left;
+    seekToRestartPoint(left);
+    restartValue = decodeEntry();
+    if (restartValue < targetValue) {
+      break;
+    }
   }
 
   // Seek to the identified restart point
