@@ -35,6 +35,33 @@ using namespace velox;
 using namespace velox::common;
 using namespace velox::dwio::common;
 
+// Defines the encoding layout configuration for index tests.
+struct IndexEncodingParam {
+  std::string name;
+  EncodingType encodingType;
+  CompressionType compressionType;
+
+  static IndexEncodingParam prefix() {
+    return IndexEncodingParam{
+        "Prefix", EncodingType::Prefix, CompressionType::Uncompressed};
+  }
+
+  static IndexEncodingParam trivialZstd() {
+    return IndexEncodingParam{
+        "TrivialZstd", EncodingType::Trivial, CompressionType::Zstd};
+  }
+
+  EncodingLayout makeEncodingLayout() const {
+    std::vector<std::optional<const EncodingLayout>> children;
+    if (encodingType == EncodingType::Trivial) {
+      // Trivial encoding for string data needs a child encoding for lengths.
+      children.push_back(
+          EncodingLayout{EncodingType::Trivial, CompressionType::Uncompressed});
+    }
+    return EncodingLayout{encodingType, compressionType, std::move(children)};
+  }
+};
+
 // Test helper to capture runtime stats.
 class TestRuntimeStatWriter : public BaseRuntimeStatWriter {
  public:
@@ -124,7 +151,8 @@ class E2EIndexTestBase : public ::testing::Test {
   // multiple stripes and write groups for better test coverage.
   void writeData(
       const std::vector<RowVectorPtr>& batches,
-      const std::vector<std::string>& indexColumns) {
+      const std::vector<std::string>& indexColumns,
+      std::optional<EncodingLayout> encodingLayout = std::nullopt) {
     ASSERT_FALSE(indexColumns.empty()) << "indexColumns must not be empty";
 
     sinkData_.clear();
@@ -135,6 +163,9 @@ class E2EIndexTestBase : public ::testing::Test {
     IndexConfig indexConfig;
     indexConfig.columns = indexColumns;
     indexConfig.enforceKeyOrder = true;
+    if (encodingLayout.has_value()) {
+      indexConfig.encodingLayout = std::move(encodingLayout).value();
+    }
     options.indexConfig = std::move(indexConfig);
 
     // Use small stripe and chunk sizes to generate multiple stripes and write
@@ -377,10 +408,24 @@ class E2EIndexTestBase : public ::testing::Test {
   std::string sinkData_;
 };
 
-class E2EIndexTest : public E2EIndexTestBase {};
+class E2EIndexTest : public E2EIndexTestBase,
+                     public ::testing::WithParamInterface<IndexEncodingParam> {
+ protected:
+  // Returns the encoding layout from the test parameter.
+  EncodingLayout getEncodingLayout() const {
+    return GetParam().makeEncodingLayout();
+  }
+
+  // Writes data using the test parameter's encoding layout.
+  void writeDataWithParam(
+      const std::vector<RowVectorPtr>& batches,
+      const std::vector<std::string>& indexColumns) {
+    writeData(batches, indexColumns, getEncodingLayout());
+  }
+};
 
 // Test with single bigint key column covering various boundary conditions.
-TEST_F(E2EIndexTest, singleBigintKey) {
+TEST_P(E2EIndexTest, singleBigintKey) {
   // Key values range from kMinKey to kMinKey + kNumRows - 1 (for unique keys).
   // With duplicates, there are fewer unique keys but the same total row count.
   constexpr int64_t kMinKey = 1'000;
@@ -457,7 +502,7 @@ TEST_F(E2EIndexTest, singleBigintKey) {
         currentWithDuplicates.value() != testCase.withDuplicates) {
       auto batches = generateNumericKeyData<int64_t>(
           kNumRows, kRowsPerBatch, testCase.withDuplicates, keyGenerator);
-      writeData(batches, {"key"});
+      writeDataWithParam(batches, {"key"});
       currentWithDuplicates = testCase.withDuplicates;
     }
 
@@ -491,7 +536,7 @@ TEST_F(E2EIndexTest, singleBigintKey) {
 }
 
 // Test with single double key column covering various boundary conditions.
-TEST_F(E2EIndexTest, singleDoubleKey) {
+TEST_P(E2EIndexTest, singleDoubleKey) {
   // Key values range from kMinKey to kMinKey + kNumRows - 1 (for unique keys).
   // With duplicates, there are fewer unique keys but the same total row count.
   constexpr double kMinKey = 1'000.0;
@@ -574,7 +619,7 @@ TEST_F(E2EIndexTest, singleDoubleKey) {
         currentWithDuplicates.value() != testCase.withDuplicates) {
       auto batches = generateNumericKeyData<double>(
           kNumRows, kRowsPerBatch, testCase.withDuplicates, keyGenerator);
-      writeData(batches, {"key"});
+      writeDataWithParam(batches, {"key"});
       currentWithDuplicates = testCase.withDuplicates;
     }
 
@@ -614,7 +659,7 @@ TEST_F(E2EIndexTest, singleDoubleKey) {
 }
 
 // Test with single float key column covering various boundary conditions.
-TEST_F(E2EIndexTest, singleFloatKey) {
+TEST_P(E2EIndexTest, singleFloatKey) {
   // Key values range from kMinKey to kMinKey + kNumRows - 1 (for unique keys).
   // With duplicates, there are fewer unique keys but the same total row count.
   constexpr float kMinKey = 1'000.0f;
@@ -695,7 +740,7 @@ TEST_F(E2EIndexTest, singleFloatKey) {
         currentWithDuplicates.value() != testCase.withDuplicates) {
       auto batches = generateNumericKeyData<float>(
           kNumRows, kRowsPerBatch, testCase.withDuplicates, keyGenerator);
-      writeData(batches, {"key"});
+      writeDataWithParam(batches, {"key"});
       currentWithDuplicates = testCase.withDuplicates;
     }
 
@@ -735,7 +780,7 @@ TEST_F(E2EIndexTest, singleFloatKey) {
 }
 
 // Test with single timestamp key column covering various boundary conditions.
-TEST_F(E2EIndexTest, singleTimestampKey) {
+TEST_P(E2EIndexTest, singleTimestampKey) {
   // Key values range from kMinKey to kMinKey + kNumRows - 1 seconds (for unique
   // keys). With duplicates, there are fewer unique keys but the same total row
   // count.
@@ -825,7 +870,7 @@ TEST_F(E2EIndexTest, singleTimestampKey) {
         currentWithDuplicates.value() != testCase.withDuplicates) {
       auto batches = generateNumericKeyData<Timestamp>(
           kNumRows, kRowsPerBatch, testCase.withDuplicates, keyGenerator);
-      writeData(batches, {"key"});
+      writeDataWithParam(batches, {"key"});
       currentWithDuplicates = testCase.withDuplicates;
     }
 
@@ -861,7 +906,7 @@ TEST_F(E2EIndexTest, singleTimestampKey) {
 // Test with single boolean key column.
 // Boolean keys naturally have duplicates since there are only two possible
 // values (true/false).
-TEST_F(E2EIndexTest, singleBoolKey) {
+TEST_P(E2EIndexTest, singleBoolKey) {
   constexpr size_t kNumRows = 2'000;
   constexpr size_t kRowsPerBatch = 200;
 
@@ -897,7 +942,7 @@ TEST_F(E2EIndexTest, singleBoolKey) {
         vectorMaker_->rowVector({"key", "data"}, {keyVector, dataVector}));
   }
 
-  writeData(batches, {"key"});
+  writeDataWithParam(batches, {"key"});
 
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(testCase.debugString());
@@ -931,7 +976,7 @@ TEST_F(E2EIndexTest, singleBoolKey) {
 }
 
 // Test with single varchar key column covering various boundary conditions.
-TEST_F(E2EIndexTest, singleVarcharKey) {
+TEST_P(E2EIndexTest, singleVarcharKey) {
   // Key values are formatted strings "key_00001000" to "key_00010999" (for
   // unique keys). With duplicates, there are fewer unique keys but the same
   // total row count.
@@ -1031,7 +1076,7 @@ TEST_F(E2EIndexTest, singleVarcharKey) {
         currentWithDuplicates.value() != testCase.withDuplicates) {
       auto batches = generateNumericKeyData<std::string>(
           kNumRows, kRowsPerBatch, testCase.withDuplicates, keyGenerator);
-      writeData(batches, {"key"});
+      writeDataWithParam(batches, {"key"});
       currentWithDuplicates = testCase.withDuplicates;
     }
 
@@ -1078,7 +1123,7 @@ TEST_F(E2EIndexTest, singleVarcharKey) {
 }
 
 // Test with two key columns (bigint, varchar) and point + range filters.
-TEST_F(E2EIndexTest, twoKeyColumnsPointAndRange) {
+TEST_P(E2EIndexTest, twoKeyColumnsPointAndRange) {
   constexpr size_t kNumRows = 5'000;
   constexpr size_t kRowsPerBatch = 500;
 
@@ -1112,7 +1157,7 @@ TEST_F(E2EIndexTest, twoKeyColumnsPointAndRange) {
         {"key1", "key2", "data"}, {key1VectorReal, key2Vector, dataVector}));
   }
 
-  writeData(batches, {"key1", "key2"});
+  writeDataWithParam(batches, {"key1", "key2"});
 
   // Point lookup on key1 (= 100), range on key2.
   std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
@@ -1154,7 +1199,7 @@ TEST_F(E2EIndexTest, twoKeyColumnsPointAndRange) {
 // - No filter on key1 + filter on key2: no conversion (0 conversions)
 // - Filter gap (key1 and key3 but not key2): only key1 converted (1 conversion)
 // Includes nested complex types in the data column.
-TEST_F(E2EIndexTest, twoBigintKeysFilterCombinations) {
+TEST_P(E2EIndexTest, twoBigintKeysFilterCombinations) {
   constexpr size_t kNumRows = 5'000;
   constexpr size_t kRowsPerBatch = 500;
 
@@ -1191,7 +1236,7 @@ TEST_F(E2EIndexTest, twoBigintKeysFilterCombinations) {
         {key1Vector, key2Vector, dataVector, nestedVector}));
   }
 
-  writeData(batches, {"key1", "key2"});
+  writeDataWithParam(batches, {"key1", "key2"});
 
   struct TestCase {
     std::string name;
@@ -1300,7 +1345,7 @@ TEST_F(E2EIndexTest, twoBigintKeysFilterCombinations) {
 // When there's a gap in the filter chain (filter on key1 and key3, but not
 // key2), extraction stops at the missing filter on key2.
 // Includes nested complex types in the data column.
-TEST_F(E2EIndexTest, threeBigintKeysFilterGap) {
+TEST_P(E2EIndexTest, threeBigintKeysFilterGap) {
   constexpr size_t kNumRows = 3'000;
   constexpr size_t kRowsPerBatch = 300;
 
@@ -1340,7 +1385,7 @@ TEST_F(E2EIndexTest, threeBigintKeysFilterGap) {
         {key1Vector, key2Vector, key3Vector, dataVector, nestedVector}));
   }
 
-  writeData(batches, {"key1", "key2", "key3"});
+  writeDataWithParam(batches, {"key1", "key2", "key3"});
 
   struct TestCase {
     std::string name;
@@ -1452,7 +1497,7 @@ TEST_F(E2EIndexTest, threeBigintKeysFilterGap) {
 
 // Test with two double key columns covering all filter-to-index conversion
 // combinations. Includes nested complex types in the data column.
-TEST_F(E2EIndexTest, twoDoubleKeysFilterCombinations) {
+TEST_P(E2EIndexTest, twoDoubleKeysFilterCombinations) {
   constexpr size_t kNumRows = 5'000;
   constexpr size_t kRowsPerBatch = 500;
 
@@ -1486,7 +1531,7 @@ TEST_F(E2EIndexTest, twoDoubleKeysFilterCombinations) {
         {key1Vector, key2Vector, dataVector, nestedVector}));
   }
 
-  writeData(batches, {"key1", "key2"});
+  writeDataWithParam(batches, {"key1", "key2"});
 
   struct TestCase {
     std::string name;
@@ -1604,7 +1649,7 @@ TEST_F(E2EIndexTest, twoDoubleKeysFilterCombinations) {
 
 // Test with two float key columns covering all filter-to-index conversion
 // combinations. Includes nested complex types in the data column.
-TEST_F(E2EIndexTest, twoFloatKeysFilterCombinations) {
+TEST_P(E2EIndexTest, twoFloatKeysFilterCombinations) {
   constexpr size_t kNumRows = 5'000;
   constexpr size_t kRowsPerBatch = 500;
 
@@ -1638,7 +1683,7 @@ TEST_F(E2EIndexTest, twoFloatKeysFilterCombinations) {
         {key1Vector, key2Vector, dataVector, nestedVector}));
   }
 
-  writeData(batches, {"key1", "key2"});
+  writeDataWithParam(batches, {"key1", "key2"});
 
   struct TestCase {
     std::string name;
@@ -1757,7 +1802,7 @@ TEST_F(E2EIndexTest, twoFloatKeysFilterCombinations) {
 // Test with two boolean key columns covering filter-to-index conversion
 // combinations. Note: Boolean only supports point lookups (BoolValue filter),
 // not range filters. Includes nested complex types in the data column.
-TEST_F(E2EIndexTest, twoBoolKeysFilterCombinations) {
+TEST_P(E2EIndexTest, twoBoolKeysFilterCombinations) {
   constexpr size_t kNumRows = 4'000;
   constexpr size_t kRowsPerBatch = 400;
 
@@ -1801,7 +1846,7 @@ TEST_F(E2EIndexTest, twoBoolKeysFilterCombinations) {
         {key1Vector, key2Vector, dataVector, nestedVector}));
   }
 
-  writeData(batches, {"key1", "key2"});
+  writeDataWithParam(batches, {"key1", "key2"});
 
   struct TestCase {
     std::string name;
@@ -1892,7 +1937,7 @@ TEST_F(E2EIndexTest, twoBoolKeysFilterCombinations) {
 
 // Test with two varchar key columns covering all filter-to-index conversion
 // combinations. Includes nested complex types in the data column.
-TEST_F(E2EIndexTest, twoVarcharKeysFilterCombinations) {
+TEST_P(E2EIndexTest, twoVarcharKeysFilterCombinations) {
   constexpr size_t kNumRows = 5'000;
   constexpr size_t kRowsPerBatch = 500;
 
@@ -1929,7 +1974,7 @@ TEST_F(E2EIndexTest, twoVarcharKeysFilterCombinations) {
         {key1Vector, key2Vector, dataVector, nestedVector}));
   }
 
-  writeData(batches, {"key1", "key2"});
+  writeDataWithParam(batches, {"key1", "key2"});
 
   struct TestCase {
     std::string name;
@@ -2048,7 +2093,7 @@ TEST_F(E2EIndexTest, twoVarcharKeysFilterCombinations) {
 // Test with two timestamp key columns covering all filter-to-index conversion
 // combinations. Includes nested complex types in the data column to ensure
 // index filtering works correctly with complex nested data.
-TEST_F(E2EIndexTest, twoTimestampKeysFilterCombinations) {
+TEST_P(E2EIndexTest, twoTimestampKeysFilterCombinations) {
   constexpr size_t kNumRows = 5'000;
   constexpr size_t kRowsPerBatch = 500;
   constexpr int64_t kBaseSeconds = 1'000'000;
@@ -2085,7 +2130,7 @@ TEST_F(E2EIndexTest, twoTimestampKeysFilterCombinations) {
         {key1Vector, key2Vector, dataVector, nestedVector}));
   }
 
-  writeData(batches, {"key1", "key2"});
+  writeDataWithParam(batches, {"key1", "key2"});
 
   struct TestCase {
     std::string name;
@@ -2196,6 +2241,16 @@ TEST_F(E2EIndexTest, twoTimestampKeysFilterCombinations) {
     EXPECT_EQ(numConversionsWithoutIndex, 0);
   }
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    E2EIndexTestSuite,
+    E2EIndexTest,
+    ::testing::Values(
+        IndexEncodingParam::prefix(),
+        IndexEncodingParam::trivialZstd()),
+    [](const ::testing::TestParamInfo<IndexEncodingParam>& info) {
+      return info.param.name;
+    });
 
 // Fuzzer test that generates random wide and nested types with index columns
 // at various positions. Tests different filter combinations including point
@@ -2785,7 +2840,7 @@ INSTANTIATE_TEST_SUITE_P(
 // Test with filters that are not eligible for index conversion.
 // These include unsupported filter types, filters that allow nulls, and
 // filters on non-index columns.
-TEST_F(E2EIndexTest, filtersNotEligibleForIndexConversion) {
+TEST_P(E2EIndexTest, filtersNotEligibleForIndexConversion) {
   constexpr size_t kNumRows = 2'000;
   constexpr size_t kRowsPerBatch = 200;
 
@@ -2812,7 +2867,7 @@ TEST_F(E2EIndexTest, filtersNotEligibleForIndexConversion) {
           vectorMaker_->rowVector({"key", "data"}, {keyVector, dataVector}));
     }
 
-    writeData(batches, {"key"});
+    writeDataWithParam(batches, {"key"});
 
     std::vector<TestCase> testCases;
     // IsNotNull filter is NOT supported for index conversion.
@@ -2875,7 +2930,7 @@ TEST_F(E2EIndexTest, filtersNotEligibleForIndexConversion) {
           {"key", "value", "data"}, {keyVector, valueVector, dataVector}));
     }
 
-    writeData(batches, {"key"});
+    writeDataWithParam(batches, {"key"});
 
     // Filter on "value" which is NOT an index column.
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
@@ -2909,7 +2964,7 @@ TEST_F(E2EIndexTest, filtersNotEligibleForIndexConversion) {
 // Test that random skip (random sampling) produces the same results with and
 // without cluster index enabled. This verifies that the random skip tracker
 // is properly updated when rows are skipped due to index bounds.
-TEST_F(E2EIndexTest, randomSkipWithIndex) {
+TEST_P(E2EIndexTest, randomSkipWithIndex) {
   constexpr int64_t kMinKey = 1'000;
   constexpr size_t kNumRows = 10'000;
   constexpr size_t kRowsPerBatch = 1'000;
@@ -2924,7 +2979,7 @@ TEST_F(E2EIndexTest, randomSkipWithIndex) {
   auto keyGenerator = [](size_t idx) -> int64_t { return kMinKey + idx; };
   auto batches = generateNumericKeyData<int64_t>(
       kNumRows, kRowsPerBatch, /*withDuplicates=*/false, keyGenerator);
-  writeData(batches, {"key"});
+  writeDataWithParam(batches, {"key"});
 
   struct TestCase {
     std::string name;

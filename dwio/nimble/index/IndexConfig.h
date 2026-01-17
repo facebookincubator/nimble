@@ -37,6 +37,7 @@ struct IndexConfig {
   /// efficient range-based filtering. An exception is thrown if keys are found
   /// to be out of order.
   bool enforceKeyOrder{false};
+  uint32_t prefixRestartInterval{16};
   /// When flushing key stream into chunks, key stream with raw data size
   /// smaller than this threshold will not be flushed.
   /// Note: this threshold is ignored when it is time to flush a stripe.
@@ -47,10 +48,7 @@ struct IndexConfig {
   uint64_t maxChunkRawSize{20 << 20};
 
   /// Returns the default encoding layout for index key stream.
-  /// TrivialEncoding for string_view needs a nested encoding for string
-  /// lengths.
-  static EncodingLayout defaultEncodingLayout(
-      CompressionType compressionType = CompressionType::Zstd);
+  static EncodingLayout defaultEncodingLayout();
 };
 
 } // namespace facebook::nimble
