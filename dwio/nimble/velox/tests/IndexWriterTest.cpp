@@ -177,7 +177,7 @@ TEST_F(IndexWriterTest, enforceKeyOrderInvalidWithinBatch) {
     if (enforceKeyOrder) {
       NIMBLE_ASSERT_USER_THROW(
           writer->write(batch, *buffer_),
-          "Encoded keys must be in non-descending order");
+          "Encoded keys must be in strictly ascending order (duplicates are not allowed)");
     } else {
       EXPECT_NO_THROW(writer->write(batch, *buffer_));
       writer->encodeStream(*buffer_);
@@ -219,7 +219,7 @@ TEST_F(IndexWriterTest, enforceKeyOrderInvalidAcrossBatches) {
     if (enforceKeyOrder) {
       NIMBLE_ASSERT_USER_THROW(
           writer->write(batch2, *buffer_),
-          "Encoded keys must be in non-descending order");
+          "Encoded keys must be in strictly ascending order (duplicates are not allowed)");
     } else {
       EXPECT_NO_THROW(writer->write(batch2, *buffer_));
       writer->encodeStream(*buffer_);
@@ -229,6 +229,31 @@ TEST_F(IndexWriterTest, enforceKeyOrderInvalidAcrossBatches) {
       EXPECT_EQ(stream->chunks[0].rowCount, 6);
     }
   }
+}
+
+TEST_F(IndexWriterTest, enforceKeyOrderDuplicateKeys) {
+  IndexConfig config{
+      .columns = {std::string(kCol1)},
+      .encodingLayout =
+          EncodingLayout{
+              EncodingType::Trivial,
+              CompressionType::Uncompressed,
+              {EncodingLayout{
+                  EncodingType::Trivial, CompressionType::Uncompressed}}},
+      .enforceKeyOrder = true};
+  auto writer = IndexWriter::create(config, type_, pool_.get());
+  ASSERT_NE(writer, nullptr);
+
+  // Batch with duplicate keys (1, 1, 2, 3, 3)
+  auto batch = makeRowVector(
+      {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+      {makeFlatVector<velox::StringView>({"a", "b", "c", "d", "e"}),
+       makeFlatVector<int32_t>({1, 1, 2, 3, 3}),
+       makeFlatVector<velox::StringView>({"f", "g", "h", "i", "j"})});
+
+  NIMBLE_ASSERT_USER_THROW(
+      writer->write(batch, *buffer_),
+      "Encoded keys must be in strictly ascending order (duplicates are not allowed)");
 }
 
 class IndexWriterDataTest : public IndexWriterTest,
