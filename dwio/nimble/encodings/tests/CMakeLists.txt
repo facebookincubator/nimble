@@ -16,17 +16,17 @@ target_link_libraries(nimble_encodings_tests_utils nimble_encodings)
 
 add_executable(
   nimble_encodings_tests
-  ConstantEncodingTests.cpp
-  EncodingLayoutTests.cpp
-  EncodingSelectionTests.cpp
+  ConstantEncodingTest.cpp
+  EncodingLayoutTest.cpp
+  EncodingSelectionTest.cpp
   EncodingTest.cpp
   EncodingLegacyTest.cpp
-  MainlyConstantEncodingTests.cpp
-  NullableEncodingTests.cpp
-  RleEncodingTests.cpp
-  SentinelEncodingTests.cpp
-  StatisticsTests.cpp
-  EncodingSeekTest.cpp
+  MainlyConstantEncodingTest.cpp
+  NullableEncodingTest.cpp
+  RleEncodingTest.cpp
+  SentinelEncodingTest.cpp
+  StatisticsTest.cpp
+  TrivialEncodingTest.cpp
 )
 
 add_test(nimble_encodings_tests nimble_encodings_tests)

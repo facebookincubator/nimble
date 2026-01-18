@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "dwio/nimble/encodings/NullableEncoding.h"
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <span>
@@ -22,7 +23,6 @@
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/SentinelEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"

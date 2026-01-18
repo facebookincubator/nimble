@@ -3524,167 +3524,80 @@ TEST_P(VeloxWriterIndexTest, multipleIndexColumns) {
 }
 
 TEST_F(VeloxWriterTest, indexEnforceKeyOrder) {
-  // Test both enforceKeyOrder=true (detects out-of-order keys) and
-  // enforceKeyOrder=false (allows out-of-order keys)
+  // Test both enforceKeyOrder=true (detects out-of-order and duplicate keys)
+  // and enforceKeyOrder=false (allows out-of-order and duplicate keys)
   auto type = velox::ROW(
       {{"key_col", velox::BIGINT()}, {"data_col", velox::INTEGER()}});
 
+  enum class TestCase { kOutOfOrder, kDuplicateKeys };
+
   for (bool enforceKeyOrder : {true, false}) {
-    SCOPED_TRACE(fmt::format("enforceKeyOrder={}", enforceKeyOrder));
+    for (auto testCase : {TestCase::kOutOfOrder, TestCase::kDuplicateKeys}) {
+      SCOPED_TRACE(
+          fmt::format(
+              "enforceKeyOrder={}, testCase={}",
+              enforceKeyOrder,
+              testCase == TestCase::kOutOfOrder ? "OutOfOrder"
+                                                : "DuplicateKeys"));
 
-    nimble::IndexConfig indexConfig{
-        .columns = {"key_col"},
-        .enforceKeyOrder = enforceKeyOrder,
-    };
+      nimble::IndexConfig indexConfig{
+          .columns = {"key_col"},
+          .enforceKeyOrder = enforceKeyOrder,
+      };
 
-    std::string file;
-    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+      std::string file;
+      auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
 
-    nimble::VeloxWriter writer(
-        type, std::move(writeFile), *rootPool_, {.indexConfig = indexConfig});
+      nimble::VeloxWriter writer(
+          type, std::move(writeFile), *rootPool_, {.indexConfig = indexConfig});
 
-    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+      velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
-    // Write first batch with ascending keys
-    auto batch1 = vectorMaker.rowVector(
-        {"key_col", "data_col"},
-        {
-            vectorMaker.flatVector<int64_t>({100, 200, 300}),
-            vectorMaker.flatVector<int32_t>({1, 2, 3}),
-        });
-    writer.write(batch1);
+      // Write first batch with ascending keys
+      auto batch1 = vectorMaker.rowVector(
+          {"key_col", "data_col"},
+          {
+              vectorMaker.flatVector<int64_t>({100, 200, 300}),
+              vectorMaker.flatVector<int32_t>({1, 2, 3}),
+          });
+      writer.write(batch1);
 
-    // Write second batch with keys LESS than previous batch
-    auto batch2 = vectorMaker.rowVector(
-        {"key_col", "data_col"},
-        {
-            vectorMaker.flatVector<int64_t>({50, 60, 70}),
-            vectorMaker.flatVector<int32_t>({4, 5, 6}),
-        });
+      // Write second batch with invalid key ordering based on test case:
+      // - OutOfOrder: keys LESS than previous batch
+      // - DuplicateKeys: keys starting with same value as previous batch's last
+      // key
+      auto batch2 = testCase == TestCase::kOutOfOrder
+          ? vectorMaker.rowVector(
+                {"key_col", "data_col"},
+                {
+                    vectorMaker.flatVector<int64_t>({50, 60, 70}),
+                    vectorMaker.flatVector<int32_t>({4, 5, 6}),
+                })
+          : vectorMaker.rowVector(
+                {"key_col", "data_col"},
+                {
+                    vectorMaker.flatVector<int64_t>({300, 400, 500}),
+                    vectorMaker.flatVector<int32_t>({4, 5, 6}),
+                });
 
-    if (enforceKeyOrder) {
-      // Should fail when enforceKeyOrder is true
-      NIMBLE_ASSERT_USER_THROW(
-          writer.write(batch2), "Encoded keys must be in non-descending order");
-    } else {
-      // Should succeed when enforceKeyOrder is false
-      EXPECT_NO_THROW(writer.write(batch2));
-      writer.close();
+      if (enforceKeyOrder) {
+        // Should fail when enforceKeyOrder is true
+        NIMBLE_ASSERT_USER_THROW(
+            writer.write(batch2),
+            "Encoded keys must be in strictly ascending order (duplicates are not allowed)");
+      } else {
+        // Should succeed when enforceKeyOrder is false
+        EXPECT_NO_THROW(writer.write(batch2));
+        writer.close();
 
-      // Verify file was written successfully
-      velox::InMemoryReadFile readFile(file);
-      nimble::VeloxReader reader(&readFile, *leafPool_);
-      EXPECT_TRUE(reader.tabletReader().hasOptionalSection(
-          std::string(nimble::kIndexSection)));
-    }
-  }
-}
-
-TEST_P(VeloxWriterIndexTest, duplicateKeys) {
-  // Test index with duplicate key values (non-unique keys).
-  // This is a valid scenario where multiple rows have the same key value.
-  auto type = defaultType();
-
-  nimble::IndexConfig indexConfig = createIndexConfig({"key_col"});
-
-  std::string file;
-  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-
-  // constexpr int kNumBatches = 10;
-  constexpr int kNumBatches = 1;
-  // constexpr int kBatchSize = 100;
-  constexpr int kBatchSize = 32;
-  constexpr uint32_t kSeed = 12345;
-  // Use flush-per-batch to create multiple stripes
-  nimble::VeloxWriter writer(
-      type,
-      std::move(writeFile),
-      *rootPool_,
-      createWriterOptions(indexConfig, []() {
-        return std::make_unique<nimble::LambdaFlushPolicy>(
-            [](auto) { return true; }, [](auto) { return false; });
-      }));
-
-  velox::test::VectorMaker vectorMaker{leafPool_.get()};
-
-  // Configure fuzzer to generate various encodings for non-key columns
-  velox::VectorFuzzer::Options fuzzerOpts;
-  fuzzerOpts.vectorSize = kBatchSize;
-  fuzzerOpts.nullRatio = 0.1;
-  fuzzerOpts.containerLength = 5;
-  fuzzerOpts.stringLength = 20;
-  fuzzerOpts.containerVariableLength = true;
-  velox::VectorFuzzer fuzzer(fuzzerOpts, leafPool_.get(), kSeed);
-
-  // Generate pre-sorted batches with duplicate keys.
-  // Each key value repeats 5 times before incrementing.
-  std::vector<velox::RowVectorPtr> batches;
-  int64_t keyVal = 0;
-  for (int batch = 0; batch < kNumBatches; ++batch) {
-    std::vector<int64_t> keyValues;
-
-    for (int i = 0; i < kBatchSize; ++i) {
-      keyValues.push_back(keyVal);
-      // Increment key every 5 rows to create duplicates
-      if (((batch * kBatchSize + i + 1) % 5) == 0) {
-        ++keyVal;
+        // Verify file was written successfully
+        velox::InMemoryReadFile readFile(file);
+        nimble::VeloxReader reader(&readFile, *leafPool_);
+        EXPECT_TRUE(reader.tabletReader().hasOptionalSection(
+            std::string(nimble::kIndexSection)));
       }
     }
-
-    // Build children: key column + fuzzed non-key columns
-    std::vector<velox::VectorPtr> children;
-    children.push_back(vectorMaker.flatVector<int64_t>(keyValues));
-    for (size_t colIdx = 1; colIdx < type->size(); ++colIdx) {
-      children.push_back(fuzzer.fuzz(type->childAt(colIdx)));
-    }
-
-    auto batchVec = std::make_shared<velox::RowVector>(
-        leafPool_.get(),
-        type,
-        nullptr, // no nulls at top level
-        kBatchSize,
-        std::move(children));
-    batches.push_back(batchVec);
-    writer.write(batchVec);
   }
-  writer.close();
-
-  // Read and verify
-  velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(&readFile, *leafPool_);
-
-  const auto& tablet = reader.tabletReader();
-
-  // Verify index exists
-  const auto* index = tablet.index();
-  ASSERT_NE(index, nullptr);
-  EXPECT_EQ(index->indexColumns().size(), 1);
-  EXPECT_EQ(index->indexColumns()[0], "key_col");
-
-  // Verify stripe keys are monotonically increasing (even with duplicates)
-  for (uint32_t i = 1; i < index->numStripes(); ++i) {
-    EXPECT_LE(index->stripeKey(i - 1), index->stripeKey(i))
-        << "Stripe keys should be in non-descending order";
-  }
-
-  // Verify we can look up stripes by key
-  auto firstLocation = index->lookup(index->minKey());
-  ASSERT_TRUE(firstLocation.has_value());
-  EXPECT_EQ(firstLocation->stripeIndex, 0);
-
-  auto lastLocation = index->lookup(index->maxKey());
-  ASSERT_TRUE(lastLocation.has_value());
-  EXPECT_EQ(lastLocation->stripeIndex, index->numStripes() - 1);
-
-  // Read back all data and verify row-by-row match with written batches
-  verifyFileData(file, type, batches);
-
-  // Verify position index chunk row counts
-  verifyPositionIndex(tablet);
-
-  // Verify value index maps each key to correct row position
-  // With duplicate keys, lookup should find the first occurrence
-  verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
 }
 
 TEST_P(VeloxWriterIndexTest, chunking) {

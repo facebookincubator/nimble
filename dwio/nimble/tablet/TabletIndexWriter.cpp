@@ -77,13 +77,14 @@ void TabletIndexWriter::addStripeKey(const KeyStream& keyStream) {
         rootIndex_->encodingBuffer->writeString(chunks.front().firstKey));
   }
   const auto& newKey = chunks.back().lastKey;
-  // Verify that the new stripe key is no less than the previous stripe key.
+  // Verify that the new stripe key is strictly greater than the previous stripe
+  // key.
   if (config_.enforceKeyOrder) {
     NIMBLE_CHECK(!rootIndex_->stripeKeys.empty());
-    NIMBLE_USER_CHECK_GE(
+    NIMBLE_USER_CHECK_GT(
         newKey,
         rootIndex_->stripeKeys.back(),
-        "Stripe keys must be in non-descending order");
+        "Stripe keys must be in strictly ascending order (duplicates are not allowed)");
   }
   rootIndex_->stripeKeys.emplace_back(
       rootIndex_->encodingBuffer->writeString(newKey));

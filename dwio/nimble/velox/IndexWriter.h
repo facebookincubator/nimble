@@ -81,8 +81,9 @@ class IndexWriter {
   /// key stream.
   ///
   /// If enforceKeyOrder is enabled, verifies that all encoded keys (including
-  /// the boundary with previously encoded keys) are in non-descending order.
-  /// Throws an exception if keys are found to be out of order.
+  /// the boundary with previously encoded keys) are in strictly ascending
+  /// order. Throws an exception if keys are found to be out of order or if
+  /// duplicate keys are detected.
   ///
   /// @param input Input vector containing rows to encode.
   /// @param buffer Buffer for string allocations during key encoding.
