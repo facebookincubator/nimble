@@ -642,6 +642,11 @@ VeloxWriter::VeloxWriter(
           *writerMemoryPool_,
           std::move(options))},
       file_{std::move(file)},
+      rootWriter_{createRootFieldWriter(schema_, *context_)},
+      indexWriter_{IndexWriter::create(
+          context_->options().indexConfig,
+          type,
+          &(*context_->bufferMemoryPool()))},
       tabletWriter_{TabletWriter::create(
           file_.get(),
           *encodingMemoryPool_,
@@ -664,12 +669,7 @@ VeloxWriter::VeloxWriter(
                  .columns = config->columns,
                  .enforceKeyOrder = config->enforceKeyOrder,
              };
-           }(context_->options().indexConfig)})},
-      rootWriter_{createRootFieldWriter(schema_, *context_)},
-      indexWriter_{IndexWriter::create(
-          context_->options().indexConfig,
-          type,
-          &(*context_->bufferMemoryPool()))} {
+           }(context_->options().indexConfig)})} {
   NIMBLE_CHECK_NOT_NULL(file_);
 
   if (context_->options().encodingLayoutTree.has_value()) {
