@@ -105,14 +105,15 @@ void IndexWriter::write(const velox::VectorPtr& input, Buffer& buffer) {
   });
 
   // Verify that all new encoded keys (plus last previous key if exists) are in
-  // non-descending order.
+  // strictly ascending order (no duplicates allowed).
   if (enforceKeyOrder_) {
     const auto& keys = keyStream_->mutableData();
     const auto startIdx = prevSize > 0 ? prevSize - 1 : 0;
     for (auto i = startIdx + 1; i < newSize; ++i) {
-      NIMBLE_USER_CHECK(
-          keys[i] >= keys[i - 1],
-          "Encoded keys must be in non-descending order");
+      NIMBLE_USER_CHECK_GT(
+          keys[i],
+          keys[i - 1],
+          "Encoded keys must be in strictly ascending order (duplicates are not allowed)");
     }
   }
 }

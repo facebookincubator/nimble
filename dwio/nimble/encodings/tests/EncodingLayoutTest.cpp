@@ -13,9 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "dwio/nimble/encodings/EncodingLayout.h"
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/encodings/EncodingLayout.h"
 #include "dwio/nimble/encodings/EncodingLayoutCapture.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 
