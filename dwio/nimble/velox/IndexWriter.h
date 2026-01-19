@@ -114,6 +114,12 @@ class IndexWriter {
   /// Returns true if there are accumulated keys to encode.
   bool hasKeys() const;
 
+  /// Returns the sort orders for each index column.
+  /// The returned vector will have the same size as the index columns.
+  const std::vector<velox::core::SortOrder>& sortOrders() const {
+    return keyEncoder_->sortOrders();
+  }
+
   /// Closes the writer and releases resources.
   void close();
 

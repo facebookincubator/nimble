@@ -20,6 +20,7 @@
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
+#include "folly/json.h"
 
 namespace facebook::nimble {
 
@@ -42,6 +43,10 @@ std::unique_ptr<TabletIndexWriter> TabletIndexWriter::create(
   NIMBLE_USER_CHECK(
       !config->columns.empty(),
       "Index columns must not be empty in TabletIndexConfig");
+  NIMBLE_USER_CHECK_EQ(
+      config->columns.size(),
+      config->sortOrders.size(),
+      "Index columns and sort orders must have the same size in TabletIndexConfig");
   return std::unique_ptr<TabletIndexWriter>(
       new TabletIndexWriter(config.value(), pool));
 }
@@ -316,6 +321,14 @@ void TabletIndexWriter::writeRootIndex(
             return builder.CreateString(config_.columns[i]);
           });
 
+  // Create sort orders vector from index config
+  auto sortOrdersVector =
+      builder.CreateVector<flatbuffers::Offset<flatbuffers::String>>(
+          config_.sortOrders.size(), [&builder, this](size_t i) {
+            return builder.CreateString(
+                folly::toJson(config_.sortOrders[i].serialize()));
+          });
+
   // Compute accumulated stripe counts per group from stripeGroupIndices.
   std::vector<uint32_t> stripeCounts;
   if (!stripeGroupIndices.empty()) {
@@ -348,6 +361,7 @@ void TabletIndexWriter::writeRootIndex(
           builder,
           stripeKeysVector,
           indexColumnsVector,
+          sortOrdersVector,
           stripeCountsVector,
           stripeIndexGroupsVector));
   writeOptionalSection(std::string(kIndexSection), asView(builder));

@@ -137,6 +137,162 @@ TEST_F(IndexWriterTest, createWithInvalidConfig) {
   }
 }
 
+TEST_F(IndexWriterTest, multiColumnWithDifferentSortOrders) {
+  const auto type = velox::ROW({
+      {"col0", velox::INTEGER()},
+      {"col1", velox::VARCHAR()},
+      {"col2", velox::BIGINT()},
+  });
+
+  {
+    SCOPED_TRACE("valid: empty sort orders uses default");
+    IndexConfig config{
+        .columns = {"col0", "col1"},
+        .sortOrders = {},
+        .encodingLayout =
+            EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}};
+    auto writer = IndexWriter::create(config, type, pool_.get());
+    EXPECT_NE(writer, nullptr);
+  }
+
+  {
+    SCOPED_TRACE("invalid: sort orders size mismatch (fewer)");
+    IndexConfig config{
+        .columns = {"col0", "col1", "col2"},
+        .sortOrders =
+            {velox::core::kAscNullsFirst, velox::core::kDescNullsLast},
+        .encodingLayout =
+            EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}};
+    NIMBLE_ASSERT_THROW(
+        IndexWriter::create(config, type, pool_.get()),
+        "sortOrders size (2) must be empty or match columns size (3)");
+  }
+
+  {
+    SCOPED_TRACE("invalid: sort orders size mismatch (more)");
+    IndexConfig config{
+        .columns = {"col0", "col1"},
+        .sortOrders =
+            {velox::core::kAscNullsFirst,
+             velox::core::kDescNullsLast,
+             velox::core::kAscNullsLast},
+        .encodingLayout =
+            EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}};
+    NIMBLE_ASSERT_THROW(
+        IndexWriter::create(config, type, pool_.get()),
+        "sortOrders size (3) must be empty or match columns size (2)");
+  }
+
+  // Data test: write data with multiple columns and different sort orders,
+  // then verify the encoded keys match what KeyEncoder produces.
+  {
+    SCOPED_TRACE("data test: write and verify encoded keys");
+    const std::vector<velox::core::SortOrder> sortOrders = {
+        velox::core::kAscNullsFirst,
+        velox::core::kDescNullsLast,
+        velox::core::kAscNullsLast};
+
+    IndexConfig config{
+        .columns = {"col0", "col1", "col2"},
+        .sortOrders = sortOrders,
+        .encodingLayout =
+            EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}};
+
+    auto writer = IndexWriter::create(config, type, pool_.get());
+    ASSERT_NE(writer, nullptr);
+
+    // Create input data with 3 rows.
+    auto batch = makeRowVector(
+        {"col0", "col1", "col2"},
+        {makeFlatVector<int32_t>({1, 2, 3}),
+         makeFlatVector<velox::StringView>({"a", "b", "c"}),
+         makeFlatVector<int64_t>({100, 200, 300})});
+
+    Buffer buffer(*pool_);
+    writer->write(batch, buffer);
+    EXPECT_TRUE(writer->hasKeys());
+
+    writer->encodeStream(buffer);
+    auto stream = writer->finishStripe(buffer);
+
+    ASSERT_TRUE(stream.has_value());
+    ASSERT_EQ(stream->chunks.size(), 1);
+    EXPECT_EQ(stream->chunks[0].rowCount, 3);
+
+    // Create a KeyEncoder with the same configuration to verify keys.
+    auto keyEncoder = velox::serializer::KeyEncoder::create(
+        {"col0", "col1", "col2"}, type, sortOrders, pool_.get());
+
+    // Encode first row to get firstKey.
+    auto firstRow = makeRowVector(
+        {"col0", "col1", "col2"},
+        {makeFlatVector<int32_t>({1}),
+         makeFlatVector<velox::StringView>({"a"}),
+         makeFlatVector<int64_t>({100})});
+    Vector<std::string_view> firstEncodedKey(pool_.get());
+    Buffer keyBuffer(*pool_);
+    keyEncoder->encode(firstRow, firstEncodedKey, [&keyBuffer](size_t size) {
+      return keyBuffer.reserve(size);
+    });
+    EXPECT_EQ(stream->chunks[0].firstKey, firstEncodedKey[0]);
+
+    // Encode last row to get lastKey.
+    auto lastRow = makeRowVector(
+        {"col0", "col1", "col2"},
+        {makeFlatVector<int32_t>({3}),
+         makeFlatVector<velox::StringView>({"c"}),
+         makeFlatVector<int64_t>({300})});
+    Vector<std::string_view> lastEncodedKey(pool_.get());
+    keyEncoder->encode(lastRow, lastEncodedKey, [&keyBuffer](size_t size) {
+      return keyBuffer.reserve(size);
+    });
+    EXPECT_EQ(stream->chunks[0].lastKey, lastEncodedKey[0]);
+  }
+
+  // Data test: verify that different sort orders produce different encoded
+  // keys for the same input data.
+  {
+    SCOPED_TRACE("data test: different sort orders produce different keys");
+    const auto singleColType = velox::ROW({{"col0", velox::INTEGER()}});
+
+    // Create input data.
+    auto batch = makeRowVector({"col0"}, {makeFlatVector<int32_t>({1, 2, 3})});
+
+    Buffer buffer1(*pool_);
+    Buffer buffer2(*pool_);
+
+    // Write with ascending order.
+    IndexConfig configAsc{
+        .columns = {"col0"},
+        .sortOrders = {velox::core::kAscNullsFirst},
+        .encodingLayout =
+            EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}};
+    auto writerAsc = IndexWriter::create(configAsc, singleColType, pool_.get());
+    writerAsc->write(batch, buffer1);
+    writerAsc->encodeStream(buffer1);
+    auto streamAsc = writerAsc->finishStripe(buffer1);
+
+    // Write with descending order.
+    IndexConfig configDesc{
+        .columns = {"col0"},
+        .sortOrders = {velox::core::kDescNullsLast},
+        .encodingLayout =
+            EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}};
+    auto writerDesc =
+        IndexWriter::create(configDesc, singleColType, pool_.get());
+    writerDesc->write(batch, buffer2);
+    writerDesc->encodeStream(buffer2);
+    auto streamDesc = writerDesc->finishStripe(buffer2);
+
+    ASSERT_TRUE(streamAsc.has_value());
+    ASSERT_TRUE(streamDesc.has_value());
+
+    // The encoded keys should be different because of different sort orders.
+    EXPECT_NE(streamAsc->chunks[0].firstKey, streamDesc->chunks[0].firstKey);
+    EXPECT_NE(streamAsc->chunks[0].lastKey, streamDesc->chunks[0].lastKey);
+  }
+}
+
 TEST_F(IndexWriterTest, emptyWriteFinishStripe) {
   IndexConfig config{
       .columns = {std::string(kCol1)},
@@ -256,8 +412,22 @@ TEST_F(IndexWriterTest, enforceKeyOrderDuplicateKeys) {
       "Encoded keys must be in strictly ascending order (duplicates are not allowed)");
 }
 
-class IndexWriterDataTest : public IndexWriterTest,
-                            public ::testing::WithParamInterface<EncodingType> {
+struct IndexWriterTestParam {
+  EncodingType encodingType;
+  velox::core::SortOrder sortOrder;
+
+  std::string toString() const {
+    const std::string encodingName =
+        encodingType == EncodingType::Prefix ? "Prefix" : "Trivial";
+    std::string sortName = sortOrder.isAscending() ? "Asc" : "Desc";
+    sortName += sortOrder.isNullsFirst() ? "NullsFirst" : "NullsLast";
+    return encodingName + "_" + sortName;
+  }
+};
+
+class IndexWriterDataTest
+    : public IndexWriterTest,
+      public ::testing::WithParamInterface<IndexWriterTestParam> {
  protected:
   void SetUp() override {
     IndexWriterTest::SetUp();
@@ -272,7 +442,33 @@ class IndexWriterDataTest : public IndexWriterTest,
   }
 
   EncodingType encodingType() const {
-    return GetParam();
+    return GetParam().encodingType;
+  }
+
+  velox::core::SortOrder sortOrder() const {
+    return GetParam().sortOrder;
+  }
+
+  std::unique_ptr<velox::serializer::KeyEncoder> createKeyEncoderWithSortOrder()
+      const {
+    const auto keyType = velox::ROW({{std::string(kCol1), velox::INTEGER()}});
+    return velox::serializer::KeyEncoder::create(
+        {std::string(kCol1)}, keyType, {sortOrder()}, pool_.get());
+  }
+
+  IndexConfig indexConfigWithSortOrder(
+      EncodingType encodingType = EncodingType::Prefix) const {
+    EncodingLayout layout = encodingType == EncodingType::Prefix
+        ? EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}
+        : EncodingLayout{
+              EncodingType::Trivial,
+              CompressionType::Zstd,
+              {EncodingLayout{
+                  EncodingType::Trivial, CompressionType::Uncompressed}}};
+    return IndexConfig{
+        .columns = {std::string(kCol1)},
+        .sortOrders = {sortOrder()},
+        .encodingLayout = layout};
   }
 
   // Creates a row vector with the given index column values and
@@ -299,8 +495,8 @@ class IndexWriterDataTest : public IndexWriterTest,
 };
 
 TEST_P(IndexWriterDataTest, writeAndFinishStripeNonChunked) {
-  auto config = indexConfig(encodingType());
-  auto keyEncoder = createKeyEncoder();
+  auto config = indexConfigWithSortOrder(encodingType());
+  auto keyEncoder = createKeyEncoderWithSortOrder();
 
   struct {
     std::vector<std::vector<int32_t>> batches;
@@ -953,9 +1149,25 @@ TEST_P(IndexWriterDataTest, encodeChunkEmptyStream) {
 INSTANTIATE_TEST_SUITE_P(
     IndexWriterDataTestSuite,
     IndexWriterDataTest,
-    ::testing::Values(EncodingType::Prefix, EncodingType::Trivial),
-    [](const ::testing::TestParamInfo<EncodingType>& info) {
-      return info.param == EncodingType::Prefix ? "Prefix" : "Trivial";
+    ::testing::Values(
+        IndexWriterTestParam{EncodingType::Prefix, velox::core::kAscNullsFirst},
+        IndexWriterTestParam{EncodingType::Prefix, velox::core::kAscNullsLast},
+        IndexWriterTestParam{
+            EncodingType::Prefix,
+            velox::core::kDescNullsFirst},
+        IndexWriterTestParam{EncodingType::Prefix, velox::core::kDescNullsLast},
+        IndexWriterTestParam{
+            EncodingType::Trivial,
+            velox::core::kAscNullsFirst},
+        IndexWriterTestParam{EncodingType::Trivial, velox::core::kAscNullsLast},
+        IndexWriterTestParam{
+            EncodingType::Trivial,
+            velox::core::kDescNullsFirst},
+        IndexWriterTestParam{
+            EncodingType::Trivial,
+            velox::core::kDescNullsLast}),
+    [](const ::testing::TestParamInfo<IndexWriterTestParam>& info) {
+      return info.param.toString();
     });
 
 } // namespace

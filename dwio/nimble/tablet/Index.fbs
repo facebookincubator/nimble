@@ -68,6 +68,11 @@ table Index {
   stripe_keys:[string];
   /// Names of columns used for indexing.
   index_columns:[string];
+  /// Sort orders for each index column.
+  /// Each string is serialized from velox::core::SortOrder
+  /// (e.g., "ASC NULLS FIRST", "DESC NULLS LAST").
+  /// Size must equal index_columns size.
+  sort_orders:[string];
   /// Accumulated stripe counts per group (prefix sum).
   /// For group i: stripe count = stripe_counts[i] - (i > 0 ? stripe_counts[i-1] : 0)
   /// For group i: first stripe = (i > 0 ? stripe_counts[i-1] : 0)

@@ -43,6 +43,27 @@ const InputBufferGrowthPolicy& keyStreamGrowthPolicy() {
   return *policy;
 }
 
+std::unique_ptr<velox::serializer::KeyEncoder> createKeyEncoder(
+    const IndexConfig& config,
+    const velox::RowTypePtr& inputType,
+    velox::memory::MemoryPool* pool) {
+  NIMBLE_CHECK(
+      config.sortOrders.empty() ||
+          config.sortOrders.size() == config.columns.size(),
+      "sortOrders size ({}) must be empty or match columns size ({})",
+      config.sortOrders.size(),
+      config.columns.size());
+  return velox::serializer::KeyEncoder::create(
+      config.columns,
+      inputType,
+      config.sortOrders.empty()
+          ? std::vector<
+                velox::core::
+                    SortOrder>{config.columns.size(), velox::core::kAscNullsFirst}
+          : config.sortOrders,
+      pool);
+}
+
 } // namespace
 
 std::unique_ptr<IndexWriter> IndexWriter::create(
@@ -62,13 +83,7 @@ IndexWriter::IndexWriter(
     const velox::RowTypePtr& inputType,
     velox::memory::MemoryPool* pool)
     : pool_{pool},
-      keyEncoder_{velox::serializer::KeyEncoder::create(
-          config.columns,
-          inputType,
-          std::vector<velox::core::SortOrder>{
-              config.columns.size(),
-              velox::core::SortOrder{true, true}},
-          pool_)},
+      keyEncoder_{createKeyEncoder(config, inputType, pool)},
       keyStream_{std::make_unique<ContentStreamData<std::string_view>>(
           *pool_,
           keyStreamDescriptor(),

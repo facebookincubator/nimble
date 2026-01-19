@@ -391,13 +391,10 @@ void SelectiveNimbleRowReader::initIndexBounds() {
 
   // Convert filters from scanSpec to index bounds.
   //
-  // TODO: Get sort orders from index metadata. Assuming ASC for now.
-  //
   // TODO: Add to restore the removed filters after this row reader finish
   // processing as we might be used in multiple split execution modes and the
   // scan spec is shared across split readers.
-  const std::vector<velox::core::SortOrder> sortOrders(
-      indexColumns.size(), velox::core::kAscNullsFirst);
+  const auto& sortOrders = tabletIndex->sortOrders();
   auto indexBounds = convertFilterToIndexBounds(
       indexColumns,
       sortOrders,

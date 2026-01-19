@@ -70,8 +70,13 @@ struct FilterBoundInfo {
 };
 
 // Check if a filter is convertible and whether it's a point lookup.
-FilterBoundInfo getFilterBoundInfo(const Filter& filter) {
+// For VARCHAR types (kBytesRange, kBytesValues), descending order is not
+// supported yet.
+FilterBoundInfo getFilterBoundInfo(
+    const Filter& filter,
+    const core::SortOrder& sortOrder) {
   FilterBoundInfo info;
+  const bool isDesc = !sortOrder.isAscending();
 
   switch (filter.kind()) {
     case FilterKind::kBigintRange: {
@@ -119,6 +124,10 @@ FilterBoundInfo getFilterBoundInfo(const Filter& filter) {
       if (filter.nullAllowed()) {
         return info;
       }
+      // Descending order not supported for VARCHAR yet.
+      if (isDesc) {
+        return info;
+      }
       const auto& range = *filter.as<BytesRange>();
       if (range.isLowerUnbounded() && range.isUpperUnbounded()) {
         return info; // Not convertible
@@ -130,6 +139,10 @@ FilterBoundInfo getFilterBoundInfo(const Filter& filter) {
 
     case FilterKind::kBytesValues: {
       if (filter.nullAllowed()) {
+        return info;
+      }
+      // Descending order not supported for VARCHAR yet.
+      if (isDesc) {
         return info;
       }
       const auto& values = filter.as<BytesValues>()->values();
@@ -399,7 +412,7 @@ std::optional<serializer::IndexBounds> convertFilterToIndexBounds(
     }
 
     // Check if the filter is convertible.
-    const auto boundInfo = getFilterBoundInfo(*filter);
+    const auto boundInfo = getFilterBoundInfo(*filter, sortOrder);
     if (!boundInfo.convertible) {
       break;
     }
