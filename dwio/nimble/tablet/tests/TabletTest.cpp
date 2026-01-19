@@ -3457,71 +3457,91 @@ TEST_F(TabletWithIndexTest, streamDeduplication) {
 
 TEST_F(TabletWithIndexTest, keyOrderEnforcement) {
   // Test key order enforcement behavior with enforceKeyOrder = true/false
+  // Test both out-of-order keys and duplicate keys scenarios
+  enum class TestCase { kOutOfOrder, kDuplicateKeys };
+
   for (bool enforceKeyOrder : {true, false}) {
-    SCOPED_TRACE(fmt::format("enforceKeyOrder={}", enforceKeyOrder));
+    for (auto testCase : {TestCase::kOutOfOrder, TestCase::kDuplicateKeys}) {
+      SCOPED_TRACE(
+          fmt::format(
+              "enforceKeyOrder={}, testCase={}",
+              enforceKeyOrder,
+              testCase == TestCase::kOutOfOrder ? "OutOfOrder"
+                                                : "DuplicateKeys"));
 
-    std::string file;
-    velox::InMemoryWriteFile writeFile(&file);
+      std::string file;
+      velox::InMemoryWriteFile writeFile(&file);
 
-    nimble::TabletIndexConfig indexConfig{
-        .columns = {"col1"},
-        .enforceKeyOrder = enforceKeyOrder,
-    };
+      nimble::TabletIndexConfig indexConfig{
+          .columns = {"col1"},
+          .enforceKeyOrder = enforceKeyOrder,
+      };
 
-    auto tabletWriter = nimble::TabletWriter::create(
-        &writeFile,
-        *pool_,
-        {
-            .indexConfig = indexConfig,
-        });
+      auto tabletWriter = nimble::TabletWriter::create(
+          &writeFile,
+          *pool_,
+          {
+              .indexConfig = indexConfig,
+          });
 
-    nimble::Buffer buffer{*pool_};
+      nimble::Buffer buffer{*pool_};
 
-    // Write first stripe with key ending at "ddd"
-    {
-      std::vector<nimble::Stream> streams;
-      auto pos = buffer.reserve(10);
-      std::memset(pos, 'A', 10);
-      streams.push_back(
-          {.offset = 0, .chunks = {{.rowCount = 100, .content = {{pos, 10}}}}});
+      // Write first stripe with key ending at "ddd"
+      {
+        std::vector<nimble::Stream> streams;
+        auto pos = buffer.reserve(10);
+        std::memset(pos, 'A', 10);
+        streams.push_back(
+            {.offset = 0,
+             .chunks = {{.rowCount = 100, .content = {{pos, 10}}}}});
 
-      auto keyStream = createKeyStream(
-          buffer, {{.rowCount = 100, .firstKey = "ccc", .lastKey = "ddd"}});
-      tabletWriter->writeStripe(100, std::move(streams), std::move(keyStream));
-    }
+        auto keyStream = createKeyStream(
+            buffer, {{.rowCount = 100, .firstKey = "ccc", .lastKey = "ddd"}});
+        tabletWriter->writeStripe(
+            100, std::move(streams), std::move(keyStream));
+      }
 
-    // Write second stripe with key ending before "ddd" (out of order)
-    {
-      std::vector<nimble::Stream> streams;
-      auto pos = buffer.reserve(10);
-      std::memset(pos, 'B', 10);
-      streams.push_back(
-          {.offset = 0, .chunks = {{.rowCount = 100, .content = {{pos, 10}}}}});
+      // Write second stripe with invalid key ordering
+      {
+        std::vector<nimble::Stream> streams;
+        auto pos = buffer.reserve(10);
+        std::memset(pos, 'B', 10);
+        streams.push_back(
+            {.offset = 0,
+             .chunks = {{.rowCount = 100, .content = {{pos, 10}}}}});
 
-      // Key "bbb" < "ddd", out of order
-      auto keyStream = createKeyStream(
-          buffer, {{.rowCount = 100, .firstKey = "aaa", .lastKey = "bbb"}});
+        // Create key stream based on test case:
+        // - OutOfOrder: Key "bbb" < previous "ddd"
+        // - DuplicateKeys: Key "ddd" == previous "ddd"
+        auto keyStream = testCase == TestCase::kOutOfOrder
+            ? createKeyStream(
+                  buffer,
+                  {{.rowCount = 100, .firstKey = "aaa", .lastKey = "bbb"}})
+            : createKeyStream(
+                  buffer,
+                  {{.rowCount = 100, .firstKey = "ddd", .lastKey = "ddd"}});
 
-      if (enforceKeyOrder) {
-        // Should throw when enforceKeyOrder is true
-        NIMBLE_ASSERT_USER_THROW(
-            tabletWriter->writeStripe(
-                100, std::move(streams), std::move(keyStream)),
-            "Stripe keys must be in non-descending order");
-      } else {
-        // Should NOT throw when enforceKeyOrder is false
-        EXPECT_NO_THROW(tabletWriter->writeStripe(
-            100, std::move(streams), std::move(keyStream)));
+        if (enforceKeyOrder) {
+          // Should throw when enforceKeyOrder is true
+          NIMBLE_ASSERT_USER_THROW(
+              tabletWriter->writeStripe(
+                  100, std::move(streams), std::move(keyStream)),
+              "Stripe keys must be in strictly ascending order (duplicates are not allowed)");
+        } else {
+          // Should NOT throw when enforceKeyOrder is false
+          EXPECT_NO_THROW(tabletWriter->writeStripe(
+              100, std::move(streams), std::move(keyStream)));
 
-        tabletWriter->close();
-        writeFile.close();
+          tabletWriter->close();
+          writeFile.close();
 
-        // Verify file is readable
-        nimble::testing::InMemoryTrackableReadFile readFile(file, false);
-        auto tablet = nimble::TabletReader::create(&readFile, *pool_);
-        EXPECT_EQ(tablet->stripeCount(), 2);
-        EXPECT_TRUE(
-            tablet->hasOptionalSection(std::string(nimble::kIndexSection)));
+          // Verify file is readable
+          nimble::testing::InMemoryTrackableReadFile readFile(file, false);
+          auto tablet = nimble::TabletReader::create(&readFile, *pool_);
+          EXPECT_EQ(tablet->stripeCount(), 2);
+          EXPECT_TRUE(
+              tablet->hasOptionalSection(std::string(nimble::kIndexSection)));
+        }
       }
     }
   }

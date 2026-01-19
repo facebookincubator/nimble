@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "dwio/nimble/encodings/TrivialEncoding.h"
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Buffer.h"
@@ -26,17 +27,22 @@
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
-#include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "velox/common/memory/Memory.h"
 
 using namespace facebook;
 
-class EncodingSeekTest : public ::testing::Test {
+class TrivialEncodingTest : public ::testing::Test {
  protected:
+  static void SetUpTestCase() {
+    velox::memory::MemoryManager::testingSetInstance({});
+  }
+
   void SetUp() override {
-    pool_ = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+    rootPool_ =
+        velox::memory::memoryManager()->addRootPool("TrivialEncodingTest");
+    pool_ = rootPool_->addLeafChild("TrivialEncodingTestLeaf");
     buffer_ = std::make_unique<nimble::Buffer>(*pool_);
   }
 
@@ -58,16 +64,23 @@ class EncodingSeekTest : public ::testing::Test {
         });
   }
 
+  std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::unique_ptr<nimble::Buffer> buffer_;
   std::vector<velox::BufferPtr> stringBuffers_;
 };
 
-class EncodingSeekTestWithCompression
+class TrivialEncodingTestWithCompression
     : public ::testing::TestWithParam<nimble::CompressionType> {
  protected:
+  static void SetUpTestCase() {
+    velox::memory::MemoryManager::testingSetInstance({});
+  }
+
   void SetUp() override {
-    pool_ = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+    rootPool_ = velox::memory::memoryManager()->addRootPool(
+        "TrivialEncodingTestWithCompression");
+    pool_ = rootPool_->addLeafChild("TrivialEncodingTestWithCompressionLeaf");
     buffer_ = std::make_unique<nimble::Buffer>(*pool_);
   }
 
@@ -95,12 +108,13 @@ class EncodingSeekTestWithCompression
             compressionType);
   }
 
+  std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::unique_ptr<nimble::Buffer> buffer_;
   std::vector<velox::BufferPtr> stringBuffers_;
 };
 
-TEST_P(EncodingSeekTestWithCompression, seekExactMatch) {
+TEST_P(TrivialEncodingTestWithCompression, seekExactMatch) {
   const auto values =
       toVector({"", "apple", "banana", "cherry", "date", "elderberry"});
   const auto encoding = createEncoding(values, GetParam());
@@ -142,47 +156,7 @@ TEST_P(EncodingSeekTestWithCompression, seekExactMatch) {
   }
 }
 
-TEST_P(EncodingSeekTestWithCompression, seekExactMatchWithDuplicateValues) {
-  const auto values = toVector(
-      {"apple", "apple", "banana", "banana", "banana", "cherry", "cherry"});
-  const auto encoding = createEncoding(values, GetParam());
-
-  struct {
-    std::string_view seekValue;
-    std::optional<uint32_t> expected;
-
-    std::string debugString() const {
-      if (expected.has_value()) {
-        return fmt::format("seek '{}' -> row {}", seekValue, expected.value());
-      }
-      return fmt::format("seek '{}' -> not found", seekValue);
-    }
-  } testCases[] = {
-      // Should return first occurrence of duplicate values
-      {"apple", 0},
-      {"banana", 2},
-      {"cherry", 5},
-      // Between values (should return first of next value)
-      {"aaa", 0},
-      {"app", 0},
-      {"az", 2},
-      {"car", 5},
-      // After all values (not found)
-      {"date", std::nullopt},
-      {"zebra", std::nullopt}};
-
-  for (const auto& testCase : testCases) {
-    SCOPED_TRACE(testCase.debugString());
-    encoding->reset();
-    auto result = encoding->seekAtOrAfter(&testCase.seekValue);
-    ASSERT_EQ(result.has_value(), testCase.expected.has_value());
-    if (testCase.expected.has_value()) {
-      EXPECT_EQ(result.value(), testCase.expected.value());
-    }
-  }
-}
-
-TEST_P(EncodingSeekTestWithCompression, seekExactMatchWithEmptyEncoding) {
+TEST_P(TrivialEncodingTestWithCompression, seekExactMatchWithEmptyEncoding) {
   const auto values = toVector({});
   const auto encoding = createEncoding(values, GetParam());
 
@@ -214,7 +188,7 @@ TEST_P(EncodingSeekTestWithCompression, seekExactMatchWithEmptyEncoding) {
   }
 }
 
-TEST_P(EncodingSeekTestWithCompression, seekAfterValue) {
+TEST_P(TrivialEncodingTestWithCompression, seekAfterValue) {
   auto compressionType = GetParam();
   auto values = toVector({"apple", "cherry", "elderberry", "grape", "kiwi"});
   auto encoding = createEncoding(values, compressionType);
@@ -259,54 +233,9 @@ TEST_P(EncodingSeekTestWithCompression, seekAfterValue) {
   }
 }
 
-TEST_P(EncodingSeekTestWithCompression, seekAfterValueWithDuplicateValues) {
-  auto compressionType = GetParam();
-  // Duplicates at beginning (apple), middle (cherry), and end (kiwi)
-  auto values = toVector(
-      {"apple", "apple", "apple", "cherry", "cherry", "grape", "kiwi", "kiwi"});
-  auto encoding = createEncoding(values, compressionType);
-
-  struct {
-    std::string_view seekValue;
-    std::optional<uint32_t> expected;
-
-    std::string debugString() const {
-      if (expected.has_value()) {
-        return fmt::format("seek '{}' -> row {}", seekValue, expected.value());
-      }
-      return fmt::format("seek '{}' -> not found", seekValue);
-    }
-  } testCases[] = {
-      // Before first duplicate group
-      {"", 0},
-      {"aaa", 0},
-      // Between apple (end) and cherry (start)
-      {"banana", 3},
-      {"car", 3},
-      // Between cherry (end) and grape
-      {"date", 5},
-      {"fig", 5},
-      // Between grape and kiwi (start of end duplicates)
-      {"honey", 6},
-      // After last duplicate group (not found)
-      {"lemon", std::nullopt},
-      {"zebra", std::nullopt},
-  };
-
-  for (const auto& testCase : testCases) {
-    SCOPED_TRACE(testCase.debugString());
-    encoding->reset();
-    auto result = encoding->seekAtOrAfter(&testCase.seekValue);
-    ASSERT_EQ(result.has_value(), testCase.expected.has_value());
-    if (testCase.expected.has_value()) {
-      EXPECT_EQ(result.value(), testCase.expected.value());
-    }
-  }
-}
-
 NIMBLE_INSTANTIATE_TEST_SUITE_P(
-    EncodingSeekTestWithCompressionSuite,
-    EncodingSeekTestWithCompression,
+    TrivialEncodingTestWithCompressionSuite,
+    TrivialEncodingTestWithCompression,
     ::testing::Values(
         nimble::CompressionType::Uncompressed,
         nimble::CompressionType::Zstd,
@@ -315,7 +244,7 @@ NIMBLE_INSTANTIATE_TEST_SUITE_P(
       return nimble::toString(info.param);
     });
 
-TEST_F(EncodingSeekTest, seekUnsupportedEncodings) {
+TEST_F(TrivialEncodingTest, seekUnsupportedEncodings) {
   std::string_view seekValue = "test";
   std::vector<velox::BufferPtr> stringBuffers;
 

@@ -32,11 +32,21 @@ struct IndexConfig {
   std::vector<std::string> columns;
   /// Specifies the key encoding layout.
   EncodingLayout encodingLayout = defaultEncodingLayout();
-  /// If true, enforces that encoded keys must be in non-descending order across
-  /// stripes. This ensures that stripe boundaries maintain sorted order for
-  /// efficient range-based filtering. An exception is thrown if keys are found
-  /// to be out of order.
+  /// If true, enforces that encoded keys must be in strictly ascending order
+  /// (each key must be greater than the previous). This ensures that stripe
+  /// boundaries maintain sorted order for efficient range-based filtering.
+  /// An exception is thrown if keys are found to be out of order or if
+  /// duplicate keys are detected.
   bool enforceKeyOrder{false};
+  /// Controls the restart interval for prefix encoding of index keys. Prefix
+  /// encoding stores each key as a shared prefix length plus a unique suffix,
+  /// which is space-efficient for sorted keys. However, to decode any key, all
+  /// previous keys must be decoded sequentially. Restart points are positions
+  /// where the full key is stored, allowing direct seeking without decoding
+  /// from the beginning. A smaller interval improves seek performance but
+  /// increases storage overhead. A larger interval saves space but slows down
+  /// random access. Default value of 16 means every 16th key is a restart
+  /// point.
   uint32_t prefixRestartInterval{16};
   /// When flushing key stream into chunks, key stream with raw data size
   /// smaller than this threshold will not be flushed.

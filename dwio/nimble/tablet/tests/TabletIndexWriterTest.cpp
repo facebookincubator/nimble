@@ -136,7 +136,7 @@ TEST_F(TabletIndexWriterTest, stripeKeyOutOfOrderCheck) {
     if (enforceKeyOrder) {
       NIMBLE_ASSERT_USER_THROW(
           writer->addStripeKey(keyStream2),
-          "(aab vs. ccc) Stripe keys must be in non-descending order");
+          "(aab vs. ccc) Stripe keys must be in strictly ascending order (duplicates are not allowed)");
     } else {
       EXPECT_NO_THROW(writer->addStripeKey(keyStream2));
     }

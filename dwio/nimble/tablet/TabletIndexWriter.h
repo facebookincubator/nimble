@@ -34,8 +34,8 @@ struct KeyStream;
 struct TabletIndexConfig {
   /// Columns to be indexed for data pruning.
   std::vector<std::string> columns;
-  /// If true, enforces that encoded keys must be in non-descending order across
-  /// stripes.
+  /// If true, enforces that encoded keys must be in strictly ascending order
+  /// across stripes.
   bool enforceKeyOrder{false};
 };
 
