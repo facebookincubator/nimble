@@ -20,6 +20,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
+#include "folly/json.h"
 
 namespace facebook::nimble::index {
 
@@ -69,6 +70,20 @@ std::vector<std::string> getIndexColumns(const Section& indexSection) {
   return result;
 }
 
+std::vector<velox::core::SortOrder> getSortOrders(const Section& indexSection) {
+  const auto* indexRoot = getIndexRoot(indexSection);
+  const auto* sortOrders = indexRoot->sort_orders();
+  NIMBLE_CHECK_NOT_NULL(sortOrders);
+  std::vector<velox::core::SortOrder> result;
+  result.reserve(sortOrders->size());
+  for (const auto* sortOrder : *sortOrders) {
+    result.emplace_back(
+        velox::core::SortOrder::deserialize(
+            folly::parseJson(sortOrder->string_view())));
+  }
+  return result;
+}
+
 } // namespace
 
 std::unique_ptr<TabletIndex> TabletIndex::create(Section indexSection) {
@@ -80,9 +95,11 @@ TabletIndex::TabletIndex(Section indexSection)
       numStripes_{getStripeCount(indexSection_)},
       numIndexGroups_{getIndexGroupCount(indexSection_)},
       stripeKeys_{getStripeKeys(indexSection_)},
-      indexColumns_{getIndexColumns(indexSection_)} {
+      indexColumns_{getIndexColumns(indexSection_)},
+      sortOrders_{getSortOrders(indexSection_)} {
   NIMBLE_CHECK(!indexColumns_.empty());
   NIMBLE_CHECK_EQ(numStripes_ + 1, stripeKeys_.size());
+  NIMBLE_CHECK_EQ(indexColumns_.size(), sortOrders_.size());
 
   // Validate consistency between stripe group indices and stripe index groups
   NIMBLE_CHECK_GE(

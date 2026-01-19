@@ -1473,6 +1473,7 @@ TEST_F(TabletWithIndexTest, stripeIdentifier) {
 
   nimble::TabletIndexConfig indexConfig{
       .columns = {"col1"},
+      .sortOrders = {velox::core::kAscNullsFirst},
       .enforceKeyOrder = true,
   };
 
@@ -1528,6 +1529,7 @@ TEST_F(TabletWithIndexTest, singleGroup) {
 
   nimble::TabletIndexConfig indexConfig{
       .columns = {"col1", "col2"},
+      .sortOrders = {velox::core::kAscNullsFirst, velox::core::kAscNullsFirst},
       .enforceKeyOrder = true,
   };
 
@@ -1949,6 +1951,7 @@ TEST_F(TabletWithIndexTest, multipleGroups) {
 
   nimble::TabletIndexConfig indexConfig{
       .columns = {"col1", "col2"},
+      .sortOrders = {velox::core::kAscNullsFirst, velox::core::kAscNullsFirst},
       .enforceKeyOrder = true,
   };
 
@@ -2324,6 +2327,7 @@ TEST_F(TabletWithIndexTest, singleGroupWithEmptyStream) {
 
   nimble::TabletIndexConfig indexConfig{
       .columns = {"col1"},
+      .sortOrders = {velox::core::kAscNullsFirst},
       .enforceKeyOrder = true,
   };
 
@@ -2738,6 +2742,7 @@ TEST_F(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
 
   nimble::TabletIndexConfig indexConfig{
       .columns = {"col1"},
+      .sortOrders = {velox::core::kAscNullsFirst},
       .enforceKeyOrder = true,
   };
 
@@ -3210,6 +3215,7 @@ TEST_F(TabletWithIndexTest, streamDeduplication) {
 
   nimble::TabletIndexConfig indexConfig{
       .columns = {"col1"},
+      .sortOrders = {velox::core::kAscNullsFirst},
       .enforceKeyOrder = true,
   };
 
@@ -3474,6 +3480,7 @@ TEST_F(TabletWithIndexTest, keyOrderEnforcement) {
 
       nimble::TabletIndexConfig indexConfig{
           .columns = {"col1"},
+          .sortOrders = {velox::core::kAscNullsFirst},
           .enforceKeyOrder = enforceKeyOrder,
       };
 

@@ -448,6 +448,19 @@ std::unique_ptr<FieldWriter> createRootFieldWriter(
   });
 }
 
+std::optional<TabletIndexConfig> createTabletIndexConfig(
+    const std::optional<IndexConfig>& config,
+    index::IndexWriter* indexWriter) {
+  if (!config.has_value() || indexWriter == nullptr) {
+    return std::nullopt;
+  }
+  return TabletIndexConfig{
+      .columns = config->columns,
+      .sortOrders = indexWriter->sortOrders(),
+      .enforceKeyOrder = config->enforceKeyOrder,
+  };
+}
+
 void initializeEncodingLayouts(
     const TypeBuilder& typeBuilder,
     const EncodingLayoutTree& encodingLayoutTree) {
@@ -660,16 +673,9 @@ VeloxWriter::VeloxWriter(
                    kMetadataCompressionThreshold),
            .streamDeduplicationEnabled =
                context_->options().enableStreamDeduplication,
-           .indexConfig = [](const std::optional<IndexConfig>& config)
-               -> std::optional<TabletIndexConfig> {
-             if (!config.has_value()) {
-               return std::nullopt;
-             }
-             return TabletIndexConfig{
-                 .columns = config->columns,
-                 .enforceKeyOrder = config->enforceKeyOrder,
-             };
-           }(context_->options().indexConfig)})} {
+           .indexConfig = createTabletIndexConfig(
+               context_->options().indexConfig,
+               indexWriter_.get())})} {
   NIMBLE_CHECK_NOT_NULL(file_);
 
   if (context_->options().encodingLayoutTree.has_value()) {

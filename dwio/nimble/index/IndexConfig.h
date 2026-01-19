@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "dwio/nimble/encodings/EncodingLayout.h"
+#include "velox/core/PlanNode.h"
 
 namespace facebook::nimble {
 
@@ -30,6 +31,10 @@ struct IndexConfig {
   /// These columns will be encoded using KeyWriter to generate index keys
   /// that enable efficient data skipping during reads.
   std::vector<std::string> columns;
+  /// Specifies the sort order for each index column.
+  /// If empty, defaults to ascending order with nulls first for all columns.
+  /// If not empty, must have the same size as 'columns'.
+  std::vector<velox::core::SortOrder> sortOrders;
   /// Specifies the key encoding layout.
   EncodingLayout encodingLayout = defaultEncodingLayout();
   /// If true, enforces that encoded keys must be in strictly ascending order

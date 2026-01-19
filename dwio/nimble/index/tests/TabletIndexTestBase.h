@@ -62,10 +62,21 @@ class TabletIndexTestBase : public ::testing::Test {
 
   /// Helper function to create a serialized Index flatbuffer for testing.
   /// @param indexColumns Vector of index column names
+  /// @param sortOrders Vector of sort order strings (e.g., "ASC NULLS FIRST")
+  /// @param minKey Minimum key for the first stripe
   /// @param stripes Vector of stripe data
   /// @param stripeGroups Vector indicating how many stripes are in each group
   /// @return IndexBuffers containing serialized StripeIndexGroups and root
   /// Index
+  IndexBuffers createTestTabletIndex(
+      const std::vector<std::string>& indexColumns,
+      const std::vector<std::string>& sortOrders,
+      const std::string& minKey,
+      const std::vector<Stripe>& stripes,
+      const std::vector<int>& stripeGroups);
+
+  /// Convenience wrapper that uses default ascending sort orders for all
+  /// columns.
   IndexBuffers createTestTabletIndex(
       const std::vector<std::string>& indexColumns,
       const std::string& minKey,
