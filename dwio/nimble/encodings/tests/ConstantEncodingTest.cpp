@@ -13,13 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "dwio/nimble/encodings/ConstantEncoding.h"
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/tests/NimbleCompare.h"
-#include "dwio/nimble/encodings/RleEncoding.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 
 #include <limits>
@@ -28,7 +28,7 @@
 using namespace facebook;
 
 template <typename C>
-class RleEncodingTest : public ::testing::Test {
+class ConstantEncodingTest : public ::testing::Test {
  protected:
   void SetUp() override {
     pool_ = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
@@ -42,10 +42,9 @@ class RleEncodingTest : public ::testing::Test {
   }
 
   template <typename T>
-  nimble::Vector<T> toVector(std::initializer_list<T> l) {
-    nimble::Vector<T> v{pool_.get()};
-    v.insert(v.end(), l.begin(), l.end());
-    return v;
+  std::vector<nimble::Vector<T>> prepareFailureValues() {
+    FAIL() << "unspecialized prepapreValues() should not be called";
+    return {};
   }
 
   template <typename T>
@@ -55,83 +54,67 @@ class RleEncodingTest : public ::testing::Test {
   double dNaN1 = std::numeric_limits<double>::signaling_NaN();
   double dNaN2 = ET<double>::asEncodingLogicalType(
       (ET<double>::asEncodingPhysicalType(dNaN0) | 0x3));
-  double dNaN3 = ET<double>::asEncodingLogicalType(
-      (ET<double>::asEncodingPhysicalType(dNaN0) | 0x5));
-
-  template <>
-  std::vector<nimble::Vector<double>> prepareValues() {
-    return {
-        toVector({0.0, -0.0}),
-        toVector({-0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0}),
-        toVector({-0.0, -0.0, -0.0, +0.0, -0.0, +0.0, -0.0, -0.0, -0.0, -0.0}),
-        toVector({-2.1, -0.0, -0.0, 3.54, 9.87, -0.0, -0.0, -0.0, -0.0, 10.6}),
-        toVector({0.00, 1.11, 2.22, 3.33, 4.44, 5.55, 6.66, 7.77, 8.88, 9.99}),
-        toVector(
-            {dNaN0, dNaN0, dNaN0, dNaN1, dNaN1, dNaN2, dNaN3, dNaN3, dNaN0})};
-  }
 
   float fNaN0 = std::numeric_limits<float>::quiet_NaN();
   float fNaN1 = std::numeric_limits<float>::signaling_NaN();
   float fNaN2 = ET<float>::asEncodingLogicalType(
       (ET<float>::asEncodingPhysicalType(fNaN0) | 0x3));
-  float fNaN3 = ET<float>::asEncodingLogicalType(
-      (ET<float>::asEncodingPhysicalType(fNaN0) | 0x5));
+
+  template <typename T>
+  nimble::Vector<T> toVector(std::initializer_list<T> l) {
+    nimble::Vector<T> v{pool_.get()};
+    v.insert(v.end(), l.begin(), l.end());
+    return v;
+  }
+
+  template <>
+  std::vector<nimble::Vector<double>> prepareValues() {
+    return {
+        toVector({0.0}),
+        toVector({0.0, 0.00}),
+        toVector({-0.0, -0.00}),
+        toVector({-2.1, -2.1, -2.1, -2.1, -2.1}),
+        toVector({dNaN0, dNaN0, dNaN0}),
+        toVector({dNaN1, dNaN1, dNaN1}),
+        toVector({dNaN2, dNaN2, dNaN2})};
+  }
 
   template <>
   std::vector<nimble::Vector<float>> prepareValues() {
     return {
-        toVector({0.0f, -0.0f}),
-        toVector(
-            {-0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f}),
-        toVector(
-            {-0.0f,
-             -0.0f,
-             -0.0f,
-             +0.0f,
-             -0.0f,
-             +0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f}),
-        toVector(
-            {-2.1f,
-             -0.0f,
-             -0.0f,
-             3.54f,
-             9.87f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             10.6f}),
-        toVector(
-            {0.00f,
-             1.11f,
-             2.22f,
-             3.33f,
-             4.44f,
-             5.55f,
-             6.66f,
-             7.77f,
-             8.88f,
-             9.99f}),
-        toVector(
-            {fNaN0, fNaN0, fNaN0, fNaN1, fNaN1, fNaN2, fNaN3, fNaN3, fNaN0})};
+        toVector({0.0f}),
+        toVector({0.0f, 0.00f}),
+        toVector({-0.0f, -0.00f}),
+        toVector({-2.1f, -2.1f, -2.1f, -2.1f, -2.1f}),
+        toVector({fNaN0, fNaN0, fNaN0}),
+        toVector({fNaN1, fNaN1, fNaN1}),
+        toVector({fNaN2, fNaN2, fNaN2})};
   }
 
   template <>
   std::vector<nimble::Vector<int32_t>> prepareValues() {
-    return {toVector({2, 3, 3}), toVector({1, 2, 2, 3, 3, 3, 4, 4, 4, 4})};
+    return {toVector({1}), toVector({3, 3, 3})};
+  }
+
+  template <>
+  std::vector<nimble::Vector<double>> prepareFailureValues() {
+    return {
+        toVector({-0.0, -0.00, -0.0000001}),
+        toVector({-2.1, -2.1, -2.1, -2.1, -2.2}),
+        toVector({dNaN0, dNaN0, dNaN1})};
+  }
+
+  template <>
+  std::vector<nimble::Vector<float>> prepareFailureValues() {
+    return {
+        toVector({-0.0f, -0.00f, -0.0000001f}),
+        toVector({-2.1f, -2.1f, -2.1f, -2.1f, -2.2f}),
+        toVector({fNaN0, fNaN0, fNaN2})};
+  }
+
+  template <>
+  std::vector<nimble::Vector<int32_t>> prepareFailureValues() {
+    return {toVector({3, 2, 3})};
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
@@ -142,9 +125,9 @@ class RleEncodingTest : public ::testing::Test {
 
 using TestTypes = ::testing::Types<NUM_TYPES>;
 
-TYPED_TEST_CASE(RleEncodingTest, TestTypes);
+TYPED_TEST_CASE(ConstantEncodingTest, TestTypes);
 
-TYPED_TEST(RleEncodingTest, SerializeThenDeserialize) {
+TYPED_TEST(ConstantEncodingTest, SerializeThenDeserialize) {
   using D = TypeParam;
 
   auto valueGroups = this->template prepareValues<D>();
@@ -156,17 +139,40 @@ TYPED_TEST(RleEncodingTest, SerializeThenDeserialize) {
   };
   for (const auto& values : valueGroups) {
     auto encoding =
-        nimble::test::Encoder<nimble::RLEEncoding<D>>::createEncoding(
+        nimble::test::Encoder<nimble::ConstantEncoding<D>>::createEncoding(
             *this->buffer_, values, stringBufferFactory);
+
     uint32_t rowCount = values.size();
     nimble::Vector<D> result(this->pool_.get(), rowCount);
     encoding->materialize(rowCount, result.data());
 
-    EXPECT_EQ(encoding->encodingType(), nimble::EncodingType::RLE);
+    EXPECT_EQ(encoding->encodingType(), nimble::EncodingType::Constant);
     EXPECT_EQ(encoding->dataType(), nimble::TypeTraits<D>::dataType);
     EXPECT_EQ(encoding->rowCount(), rowCount);
     for (uint32_t i = 0; i < rowCount; ++i) {
       EXPECT_TRUE(nimble::NimbleCompare<D>::equals(result[i], values[i]));
+    }
+  }
+}
+
+TYPED_TEST(ConstantEncodingTest, NonConstantFailure) {
+  using D = TypeParam;
+
+  auto valueGroups = this->template prepareFailureValues<D>();
+  std::vector<velox::BufferPtr> newStringBuffers;
+  const auto stringBufferFactory = [&](uint32_t totalLength) {
+    auto& buffer = newStringBuffers.emplace_back(
+        velox::AlignedBuffer::allocate<char>(totalLength, this->pool_.get()));
+    return buffer->template asMutable<void>();
+  };
+  for (const auto& values : valueGroups) {
+    try {
+      nimble::test::Encoder<nimble::ConstantEncoding<D>>::createEncoding(
+          *this->buffer_, values, stringBufferFactory);
+      FAIL() << "ConstantEncodingTest should fail due to non constant data";
+    } catch (const nimble::NimbleUserError& e) {
+      EXPECT_EQ(nimble::error_code::IncompatibleEncoding, e.errorCode());
+      EXPECT_EQ("ConstantEncoding requires constant data.", e.errorMessage());
     }
   }
 }

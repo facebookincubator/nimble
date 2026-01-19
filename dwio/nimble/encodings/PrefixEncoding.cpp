@@ -162,26 +162,22 @@ void PrefixEncoding::seekToRestartPoint(uint32_t restartIndex) {
 std::optional<uint32_t> PrefixEncoding::seekAtOrAfter(const void* value) {
   const auto& targetValue = *static_cast<const std::string_view*>(value);
 
-  // Binary search among restart points to find the block
+  // Binary search among restart points to find the block containing the target.
+  // Since keys are unique and sorted, we find the last restart point whose
+  // value is <= targetValue.
   uint32_t left = 0;
   uint32_t right = numRestarts_;
 
-  std::string_view restartValue;
   while (left < right) {
     const uint32_t mid = left + (right - left) / 2;
 
     seekToRestartPoint(mid);
-    NIMBLE_CHECK_EQ(currentRow_, mid * restartInterval_);
-    restartValue = decodeEntry();
+    const std::string_view restartValue = decodeEntry();
     if (restartValue == targetValue) {
-      // Found a match at restart point, but there might be duplicate keys
-      // in the previous restart interval. We need to check from the previous
-      // interval to find the earliest occurrence. Set left = mid here and let
-      // the decrement after the loop handle going back.
-      left = mid;
-      break;
+      // Exact match found at restart point. Since keys are unique (no
+      // duplicates), we can return immediately.
+      return currentRow_ - 1;
     }
-
     if (restartValue < targetValue) {
       left = mid + 1;
     } else {
@@ -189,34 +185,29 @@ std::optional<uint32_t> PrefixEncoding::seekAtOrAfter(const void* value) {
     }
   }
 
-  // If left > 0, check the previous block (there might be duplicate keys
-  // spanning multiple restart intervals). We need to check if the previous
-  // restart point's value could still match the target.
-  while (left > 0) {
+  // 'left' is now the first restart point whose value >= targetValue,
+  // or numRestarts_ if all restart values < targetValue.
+  // We need to search from the previous restart point (if exists) because
+  // the target might be within that block but after its restart value.
+  if (left > 0) {
     --left;
-    seekToRestartPoint(left);
-    restartValue = decodeEntry();
-    if (restartValue < targetValue) {
-      break;
-    }
   }
 
   // Seek to the identified restart point
   seekToRestartPoint(left);
-  NIMBLE_CHECK_EQ(currentRow_, left * restartInterval_);
 
   // Linear scan within the block
   while (currentRow_ < rowCount_) {
     std::string_view currentValue = decodeEntry();
-
+    // Return when we find either:
+    // 1. Exact match (since keys are unique, no need to scan further), or
+    // 2. First value greater than target.
     if (currentValue >= targetValue) {
-      // decodeEntry() increments currentRow_ after decoding, so return the
-      // row index before the increment
       return currentRow_ - 1;
     }
   }
 
-  // Target is greater than all entries
+  // Target is greater than all entries.
   return std::nullopt;
 }
 
