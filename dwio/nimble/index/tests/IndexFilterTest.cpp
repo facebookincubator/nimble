@@ -965,11 +965,16 @@ TEST_P(IndexFilterTestWithSortOrder, floatFilter) {
   }
 }
 
+// Test VARCHAR (bytes) filters. For ascending order, BytesValues (single value)
+// and BytesRange filters are convertible. For descending order, VARCHAR filters
+// are NOT convertible.
 TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
   const auto rowType = ROW({"a", "b"}, {VARCHAR(), VARCHAR()});
+  const bool ascending = isAscending();
 
   {
     // Prefix point lookup using BytesValues with single value.
+    // Ascending: convertible. Descending: not convertible.
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
     filters["a"] =
         std::make_unique<BytesValues>(std::vector<std::string>{"hello"}, false);
@@ -977,25 +982,23 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
 
     auto result = convertFilterToIndexBounds(
         {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
-    ASSERT_TRUE(result.has_value());
-
-    const auto& bounds = result.value();
-    EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
-    ASSERT_TRUE(bounds.lowerBound.has_value());
-    ASSERT_TRUE(bounds.upperBound.has_value());
-    EXPECT_TRUE(bounds.lowerBound->inclusive);
-    EXPECT_TRUE(bounds.upperBound->inclusive);
-
-    // Point lookup: both bounds have same value regardless of sort order.
-    verifyBound<StringView>(bounds.lowerBound->bound, "a", StringView("hello"));
-    verifyBound<StringView>(bounds.upperBound->bound, "a", StringView("hello"));
-
-    // Filter should be removed from scanSpec.
-    EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
+    EXPECT_EQ(result.has_value(), ascending);
+    if (ascending) {
+      const auto& bounds = result.value();
+      EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
+      verifyBound<StringView>(
+          bounds.lowerBound->bound, "a", StringView("hello"));
+      verifyBound<StringView>(
+          bounds.upperBound->bound, "a", StringView("hello"));
+      EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
+    } else {
+      EXPECT_NE(scanSpec->childByName("a")->filter(), nullptr);
+    }
   }
 
   {
     // Prefix point lookup using BytesRange with same lower and upper.
+    // Ascending: convertible. Descending: not convertible.
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
     filters["a"] = std::make_unique<BytesRange>(
         "hello", false, false, "hello", false, false, false);
@@ -1003,21 +1006,23 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
 
     auto result = convertFilterToIndexBounds(
         {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
-    ASSERT_TRUE(result.has_value());
-
-    const auto& bounds = result.value();
-    EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
-
-    // Point lookup: both bounds have same value regardless of sort order.
-    verifyBound<StringView>(bounds.lowerBound->bound, "a", StringView("hello"));
-    verifyBound<StringView>(bounds.upperBound->bound, "a", StringView("hello"));
-
-    // Filter should be removed from scanSpec.
-    EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
+    EXPECT_EQ(result.has_value(), ascending);
+    if (ascending) {
+      const auto& bounds = result.value();
+      EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
+      verifyBound<StringView>(
+          bounds.lowerBound->bound, "a", StringView("hello"));
+      verifyBound<StringView>(
+          bounds.upperBound->bound, "a", StringView("hello"));
+      EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
+    } else {
+      EXPECT_NE(scanSpec->childByName("a")->filter(), nullptr);
+    }
   }
 
   {
     // Prefix range: range filter on the first index column only.
+    // Ascending: convertible. Descending: not convertible.
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
     filters["a"] = std::make_unique<BytesRange>(
         "abc", false, false, "xyz", false, false, false);
@@ -1025,25 +1030,22 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
 
     auto result = convertFilterToIndexBounds(
         {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
-    ASSERT_TRUE(result.has_value());
-
-    const auto& bounds = result.value();
-    EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
-    ASSERT_TRUE(bounds.lowerBound.has_value());
-    ASSERT_TRUE(bounds.upperBound.has_value());
-    EXPECT_TRUE(bounds.lowerBound->inclusive);
-    EXPECT_TRUE(bounds.upperBound->inclusive);
-
-    verifyRangeBounds<StringView>(
-        bounds, "a", StringView("abc"), StringView("xyz"));
-
-    // Filter should be removed from scanSpec.
-    EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
+    EXPECT_EQ(result.has_value(), ascending);
+    if (ascending) {
+      const auto& bounds = result.value();
+      EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
+      verifyBound<StringView>(bounds.lowerBound->bound, "a", StringView("abc"));
+      verifyBound<StringView>(bounds.upperBound->bound, "a", StringView("xyz"));
+      EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
+    } else {
+      EXPECT_NE(scanSpec->childByName("a")->filter(), nullptr);
+    }
   }
 
   {
     // Point lookup + range: point lookup on first column (BytesValues),
     // range on second (BytesRange), spanning two index columns.
+    // Ascending: both convertible. Descending: not convertible.
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
     filters["a"] =
         std::make_unique<BytesValues>(std::vector<std::string>{"hello"}, false);
@@ -1053,28 +1055,27 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
 
     auto result = convertFilterToIndexBounds(
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
-    ASSERT_TRUE(result.has_value());
-
-    const auto& bounds = result.value();
-    EXPECT_EQ(bounds.indexColumns.size(), 2);
-    EXPECT_EQ(bounds.indexColumns[0], "a");
-    EXPECT_EQ(bounds.indexColumns[1], "b");
-
-    // Point lookup on "a": same value regardless of sort order.
-    verifyBound<StringView>(bounds.lowerBound->bound, "a", StringView("hello"));
-    verifyBound<StringView>(bounds.upperBound->bound, "a", StringView("hello"));
-    // Range on "b": bounds swapped for descending sort.
-    verifyRangeBounds<StringView>(
-        bounds, "b", StringView("abc"), StringView("xyz"));
-
-    // Both filters should be removed from scanSpec.
-    EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
-    EXPECT_EQ(scanSpec->childByName("b")->filter(), nullptr);
+    EXPECT_EQ(result.has_value(), ascending);
+    if (ascending) {
+      const auto& bounds = result.value();
+      EXPECT_EQ(bounds.indexColumns.size(), 2);
+      verifyBound<StringView>(
+          bounds.lowerBound->bound, "a", StringView("hello"));
+      verifyBound<StringView>(
+          bounds.upperBound->bound, "a", StringView("hello"));
+      verifyBound<StringView>(bounds.lowerBound->bound, "b", StringView("abc"));
+      verifyBound<StringView>(bounds.upperBound->bound, "b", StringView("xyz"));
+      EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
+      EXPECT_EQ(scanSpec->childByName("b")->filter(), nullptr);
+    } else {
+      EXPECT_NE(scanSpec->childByName("a")->filter(), nullptr);
+      EXPECT_NE(scanSpec->childByName("b")->filter(), nullptr);
+    }
   }
 
   {
-    // Range + range: range filter on the first column stops extraction,
-    // so only the first column is converted, not the second.
+    // Range + range: range filter on the first column stops extraction.
+    // Ascending: only first column convertible. Descending: not convertible.
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
     filters["a"] = std::make_unique<BytesRange>(
         "aaa", false, false, "bbb", false, false, false);
@@ -1084,27 +1085,23 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
 
     auto result = convertFilterToIndexBounds(
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
-    ASSERT_TRUE(result.has_value());
-
-    const auto& bounds = result.value();
-    // Only column "a" should be included because it's a range scan.
-    // The range filter stops extraction from including subsequent columns.
-    EXPECT_EQ(bounds.indexColumns.size(), 1);
-    EXPECT_EQ(bounds.indexColumns[0], "a");
-
-    verifyRangeBounds<StringView>(
-        bounds, "a", StringView("aaa"), StringView("bbb"));
-
-    // Filter on "a" removed, but "b" should still have filter since it wasn't
-    // converted.
-    EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
-    EXPECT_NE(scanSpec->childByName("b")->filter(), nullptr);
+    EXPECT_EQ(result.has_value(), ascending);
+    if (ascending) {
+      const auto& bounds = result.value();
+      EXPECT_EQ(bounds.indexColumns.size(), 1);
+      verifyBound<StringView>(bounds.lowerBound->bound, "a", StringView("aaa"));
+      verifyBound<StringView>(bounds.upperBound->bound, "a", StringView("bbb"));
+      EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
+      EXPECT_NE(scanSpec->childByName("b")->filter(), nullptr);
+    } else {
+      EXPECT_NE(scanSpec->childByName("a")->filter(), nullptr);
+      EXPECT_NE(scanSpec->childByName("b")->filter(), nullptr);
+    }
   }
 
   {
     // Point lookup + point lookup: point lookups on both index columns.
-    // Both columns should be included since point lookups allow extraction to
-    // continue.
+    // Ascending: both convertible. Descending: not convertible.
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
     filters["a"] =
         std::make_unique<BytesValues>(std::vector<std::string>{"hello"}, false);
@@ -1114,26 +1111,29 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
 
     auto result = convertFilterToIndexBounds(
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
-    ASSERT_TRUE(result.has_value());
-
-    const auto& bounds = result.value();
-    EXPECT_EQ(bounds.indexColumns.size(), 2);
-    EXPECT_EQ(bounds.indexColumns[0], "a");
-    EXPECT_EQ(bounds.indexColumns[1], "b");
-
-    // Point lookups: same value for both bounds regardless of sort order.
-    verifyBound<StringView>(bounds.lowerBound->bound, "a", StringView("hello"));
-    verifyBound<StringView>(bounds.upperBound->bound, "a", StringView("hello"));
-    verifyBound<StringView>(bounds.lowerBound->bound, "b", StringView("world"));
-    verifyBound<StringView>(bounds.upperBound->bound, "b", StringView("world"));
-
-    // Both filters should be removed from scanSpec.
-    EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
-    EXPECT_EQ(scanSpec->childByName("b")->filter(), nullptr);
+    EXPECT_EQ(result.has_value(), ascending);
+    if (ascending) {
+      const auto& bounds = result.value();
+      EXPECT_EQ(bounds.indexColumns.size(), 2);
+      verifyBound<StringView>(
+          bounds.lowerBound->bound, "a", StringView("hello"));
+      verifyBound<StringView>(
+          bounds.upperBound->bound, "a", StringView("hello"));
+      verifyBound<StringView>(
+          bounds.lowerBound->bound, "b", StringView("world"));
+      verifyBound<StringView>(
+          bounds.upperBound->bound, "b", StringView("world"));
+      EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
+      EXPECT_EQ(scanSpec->childByName("b")->filter(), nullptr);
+    } else {
+      EXPECT_NE(scanSpec->childByName("a")->filter(), nullptr);
+      EXPECT_NE(scanSpec->childByName("b")->filter(), nullptr);
+    }
   }
 
   {
     // Exclusive bounds.
+    // Ascending: convertible. Descending: not convertible.
     auto singleColRowType = ROW({"a"}, {VARCHAR()});
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
     filters["a"] = std::make_unique<BytesRange>(
@@ -1142,17 +1142,19 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
 
     auto result = convertFilterToIndexBounds(
         {"a"}, sortOrders(1), singleColRowType, *scanSpec, pool_.get());
-    ASSERT_TRUE(result.has_value());
-
-    const auto& bounds = result.value();
-    EXPECT_FALSE(bounds.lowerBound->inclusive);
-    EXPECT_FALSE(bounds.upperBound->inclusive);
-    verifyRangeBounds<StringView>(
-        bounds, "a", StringView("abc"), StringView("xyz"));
+    EXPECT_EQ(result.has_value(), ascending);
+    if (ascending) {
+      const auto& bounds = result.value();
+      EXPECT_FALSE(bounds.lowerBound->inclusive);
+      EXPECT_FALSE(bounds.upperBound->inclusive);
+      verifyBound<StringView>(bounds.lowerBound->bound, "a", StringView("abc"));
+      verifyBound<StringView>(bounds.upperBound->bound, "a", StringView("xyz"));
+    }
   }
 
   {
     // Lower unbounded: empty string to "xyz" (inclusive).
+    // Ascending: convertible. Descending: not convertible.
     auto singleColRowType = ROW({"a"}, {VARCHAR()});
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
     filters["a"] = std::make_unique<BytesRange>(
@@ -1161,20 +1163,17 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
 
     auto result = convertFilterToIndexBounds(
         {"a"}, sortOrders(1), singleColRowType, *scanSpec, pool_.get());
-    ASSERT_TRUE(result.has_value());
-
-    const auto& bounds = result.value();
-    if (isAscending()) {
+    EXPECT_EQ(result.has_value(), ascending);
+    if (ascending) {
+      const auto& bounds = result.value();
       verifyNullBound(bounds.lowerBound->bound, "a");
       verifyBound<StringView>(bounds.upperBound->bound, "a", StringView("xyz"));
-    } else {
-      verifyBound<StringView>(bounds.lowerBound->bound, "a", StringView("xyz"));
-      verifyNullBound(bounds.upperBound->bound, "a");
     }
   }
 
   {
     // Upper unbounded: "abc" (inclusive) to unbounded.
+    // Ascending: convertible. Descending: not convertible.
     auto singleColRowType = ROW({"a"}, {VARCHAR()});
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
     filters["a"] = std::make_unique<BytesRange>(
@@ -1183,20 +1182,17 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
 
     auto result = convertFilterToIndexBounds(
         {"a"}, sortOrders(1), singleColRowType, *scanSpec, pool_.get());
-    ASSERT_TRUE(result.has_value());
-
-    const auto& bounds = result.value();
-    if (isAscending()) {
+    EXPECT_EQ(result.has_value(), ascending);
+    if (ascending) {
+      const auto& bounds = result.value();
       verifyBound<StringView>(bounds.lowerBound->bound, "a", StringView("abc"));
       verifyNullBound(bounds.upperBound->bound, "a");
-    } else {
-      verifyNullBound(bounds.lowerBound->bound, "a");
-      verifyBound<StringView>(bounds.upperBound->bound, "a", StringView("abc"));
     }
   }
 
   {
-    // BytesValues with multiple values - should not be convertible.
+    // BytesValues with multiple values - should not be convertible for any
+    // sort order.
     auto singleColRowType = ROW({"a"}, {VARCHAR()});
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
     filters["a"] = std::make_unique<BytesValues>(
@@ -1465,9 +1461,14 @@ TEST_P(IndexFilterTestWithSortOrder, timestampFilter) {
   }
 }
 
+// Test mixed filter data types. For ascending order, all types are convertible.
+// For descending order, VARCHAR filters are NOT convertible.
 TEST_P(IndexFilterTestWithSortOrder, mixedFilterDataTypes) {
+  const bool ascending = isAscending();
+
   {
     // Bigint point lookup + varchar point lookup.
+    // Ascending: both convertible. Descending: only bigint convertible.
     auto rowType = ROW({"a", "b"}, {BIGINT(), VARCHAR()});
 
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
@@ -1481,21 +1482,28 @@ TEST_P(IndexFilterTestWithSortOrder, mixedFilterDataTypes) {
     ASSERT_TRUE(result.has_value());
 
     const auto& bounds = result.value();
-    EXPECT_EQ(bounds.indexColumns.size(), 2);
+    const size_t expectedColumns = ascending ? 2 : 1;
+    EXPECT_EQ(bounds.indexColumns.size(), expectedColumns);
     EXPECT_EQ(bounds.indexColumns[0], "a");
-    EXPECT_EQ(bounds.indexColumns[1], "b");
 
     verifyBound<int64_t>(bounds.lowerBound->bound, "a", 42);
     verifyBound<int64_t>(bounds.upperBound->bound, "a", 42);
-    verifyBound<StringView>(bounds.lowerBound->bound, "b", StringView("hello"));
-    verifyBound<StringView>(bounds.upperBound->bound, "b", StringView("hello"));
 
     EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
-    EXPECT_EQ(scanSpec->childByName("b")->filter(), nullptr);
+    if (ascending) {
+      EXPECT_EQ(bounds.indexColumns[1], "b");
+      verifyBound<StringView>(
+          bounds.lowerBound->bound, "b", StringView("hello"));
+      verifyBound<StringView>(
+          bounds.upperBound->bound, "b", StringView("hello"));
+      EXPECT_EQ(scanSpec->childByName("b")->filter(), nullptr);
+    } else {
+      EXPECT_NE(scanSpec->childByName("b")->filter(), nullptr);
+    }
   }
 
   {
-    // Double point lookup + bool point lookup.
+    // Double point lookup + bool point lookup - works for both sort orders.
     auto rowType = ROW({"a", "b"}, {DOUBLE(), BOOLEAN()});
 
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
@@ -1524,6 +1532,7 @@ TEST_P(IndexFilterTestWithSortOrder, mixedFilterDataTypes) {
 
   {
     // Varchar point lookup + timestamp range.
+    // Ascending: both convertible. Descending: not convertible (VARCHAR first).
     auto rowType = ROW({"a", "b"}, {VARCHAR(), TIMESTAMP()});
     Timestamp lower(100, 0);
     Timestamp upper(200, 0);
@@ -1536,24 +1545,26 @@ TEST_P(IndexFilterTestWithSortOrder, mixedFilterDataTypes) {
 
     auto result = convertFilterToIndexBounds(
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
-    ASSERT_TRUE(result.has_value());
-
-    const auto& bounds = result.value();
-    EXPECT_EQ(bounds.indexColumns.size(), 2);
-    EXPECT_EQ(bounds.indexColumns[0], "a");
-    EXPECT_EQ(bounds.indexColumns[1], "b");
-
-    verifyBound<StringView>(bounds.lowerBound->bound, "a", StringView("hello"));
-    verifyBound<StringView>(bounds.upperBound->bound, "a", StringView("hello"));
-    verifyRangeBounds<Timestamp>(bounds, "b", lower, upper);
-
-    EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
-    EXPECT_EQ(scanSpec->childByName("b")->filter(), nullptr);
+    EXPECT_EQ(result.has_value(), ascending);
+    if (ascending) {
+      const auto& bounds = result.value();
+      EXPECT_EQ(bounds.indexColumns.size(), 2);
+      verifyBound<StringView>(
+          bounds.lowerBound->bound, "a", StringView("hello"));
+      verifyBound<StringView>(
+          bounds.upperBound->bound, "a", StringView("hello"));
+      verifyRangeBounds<Timestamp>(bounds, "b", lower, upper);
+      EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
+      EXPECT_EQ(scanSpec->childByName("b")->filter(), nullptr);
+    } else {
+      EXPECT_NE(scanSpec->childByName("a")->filter(), nullptr);
+      EXPECT_NE(scanSpec->childByName("b")->filter(), nullptr);
+    }
   }
 
   {
     // Float range + bigint point lookup: range on first column stops
-    // extraction.
+    // extraction - works for both sort orders.
     auto rowType = ROW({"a", "b"}, {REAL(), BIGINT()});
 
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
@@ -1579,7 +1590,7 @@ TEST_P(IndexFilterTestWithSortOrder, mixedFilterDataTypes) {
 
   {
     // Timestamp point lookup + double point lookup + bool point lookup:
-    // three different types, all point lookups.
+    // three different types, all point lookups - works for both sort orders.
     auto rowType = ROW({"a", "b", "c"}, {TIMESTAMP(), DOUBLE(), BOOLEAN()});
     Timestamp ts(100, 0);
 
@@ -1613,8 +1624,9 @@ TEST_P(IndexFilterTestWithSortOrder, mixedFilterDataTypes) {
   }
 
   {
-    // Bigint point lookup + varchar range + float point lookup:
-    // range in middle stops extraction.
+    // Bigint point lookup + varchar range + float point lookup.
+    // Ascending: bigint + varchar convertible (range stops extraction).
+    // Descending: only bigint convertible (VARCHAR not supported).
     auto rowType = ROW({"a", "b", "c"}, {BIGINT(), VARCHAR(), REAL()});
 
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
@@ -1630,18 +1642,24 @@ TEST_P(IndexFilterTestWithSortOrder, mixedFilterDataTypes) {
     ASSERT_TRUE(result.has_value());
 
     const auto& bounds = result.value();
-    // "a" and "b" included, but "c" is not because "b" is a range.
-    EXPECT_EQ(bounds.indexColumns.size(), 2);
+    const size_t expectedColumns = ascending ? 2 : 1;
+    EXPECT_EQ(bounds.indexColumns.size(), expectedColumns);
     EXPECT_EQ(bounds.indexColumns[0], "a");
-    EXPECT_EQ(bounds.indexColumns[1], "b");
 
     verifyBound<int64_t>(bounds.lowerBound->bound, "a", 42);
     verifyBound<int64_t>(bounds.upperBound->bound, "a", 42);
-    verifyRangeBounds<StringView>(
-        bounds, "b", StringView("abc"), StringView("xyz"));
-
     EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
-    EXPECT_EQ(scanSpec->childByName("b")->filter(), nullptr);
+
+    if (ascending) {
+      EXPECT_EQ(bounds.indexColumns[1], "b");
+      verifyRangeBounds<StringView>(
+          bounds, "b", StringView("abc"), StringView("xyz"));
+      EXPECT_EQ(scanSpec->childByName("b")->filter(), nullptr);
+    } else {
+      EXPECT_NE(scanSpec->childByName("b")->filter(), nullptr);
+    }
+    // "c" is never converted (range on "b" stops extraction for ascending,
+    // VARCHAR not supported stops for descending).
     EXPECT_NE(scanSpec->childByName("c")->filter(), nullptr);
   }
 }

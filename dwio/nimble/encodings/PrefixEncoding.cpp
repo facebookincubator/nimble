@@ -198,7 +198,7 @@ std::optional<uint32_t> PrefixEncoding::seekAtOrAfter(const void* value) {
 
   // Linear scan within the block
   while (currentRow_ < rowCount_) {
-    std::string_view currentValue = decodeEntry();
+    const std::string_view currentValue = decodeEntry();
     // Return when we find either:
     // 1. Exact match (since keys are unique, no need to scan further), or
     // 2. First value greater than target.

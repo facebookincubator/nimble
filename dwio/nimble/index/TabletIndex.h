@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "dwio/nimble/tablet/MetadataBuffer.h"
+#include "velox/core/PlanNode.h"
 
 namespace facebook::nimble::index {
 
@@ -115,6 +116,13 @@ class TabletIndex {
     return indexColumns_;
   }
 
+  /// Returns the sort orders for each index column.
+  ///
+  /// @return Vector of sort orders, one per index column
+  const std::vector<velox::core::SortOrder>& sortOrders() const {
+    return sortOrders_;
+  }
+
   /// Returns metadata for a specific index group.
   ///
   /// @param groupIndex The zero-based stripe group index.
@@ -139,6 +147,7 @@ class TabletIndex {
   const uint32_t numIndexGroups_;
   const std::vector<std::string_view> stripeKeys_;
   const std::vector<std::string> indexColumns_;
+  const std::vector<velox::core::SortOrder> sortOrders_;
 };
 
 } // namespace facebook::nimble::index

@@ -16,6 +16,7 @@
 #include "dwio/nimble/index/tests/TabletIndexTestBase.h"
 
 #include "dwio/nimble/tablet/IndexGenerated.h"
+#include "folly/json.h"
 #include "velox/common/testutil/TestValue.h"
 
 namespace facebook::nimble::index::test {
@@ -27,9 +28,11 @@ void TabletIndexTestBase::SetUpTestCase() {
 
 TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
     const std::vector<std::string>& indexColumns,
+    const std::vector<std::string>& sortOrders,
     const std::string& minKey,
     const std::vector<Stripe>& stripes,
     const std::vector<int>& stripeGroups) {
+  NIMBLE_CHECK_EQ(indexColumns.size(), sortOrders.size());
   // Build stripe_counts - accumulated number of stripes up to each group.
   std::vector<uint32_t> stripeCounts;
   stripeCounts.reserve(stripeGroups.size());
@@ -170,9 +173,17 @@ TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
     indexColumnOffsets.push_back(builder.CreateString(column));
   }
 
+  // Build sort_orders vector
+  std::vector<flatbuffers::Offset<flatbuffers::String>> sortOrderOffsets;
+  sortOrderOffsets.reserve(sortOrders.size());
+  for (const auto& sortOrder : sortOrders) {
+    sortOrderOffsets.push_back(builder.CreateString(sortOrder));
+  }
+
   // Create all vectors right before CreateIndex to avoid offset invalidation
   auto stripeKeysVector = builder.CreateVector(stripeKeyOffsets);
   auto indexColumnsVector = builder.CreateVector(indexColumnOffsets);
+  auto sortOrdersVector = builder.CreateVector(sortOrderOffsets);
   auto stripeCountsVector = builder.CreateVector(stripeCounts);
   auto stripeIndexGroupsVector =
       builder.CreateVector(stripeIndexGroupMetadataOffsets);
@@ -182,6 +193,7 @@ TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
       builder,
       stripeKeysVector,
       indexColumnsVector,
+      sortOrdersVector,
       stripeCountsVector,
       stripeIndexGroupsVector);
 
@@ -192,6 +204,22 @@ TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
       builder.GetSize());
 
   return result;
+}
+
+TabletIndexTestBase::IndexBuffers TabletIndexTestBase::createTestTabletIndex(
+    const std::vector<std::string>& indexColumns,
+    const std::string& minKey,
+    const std::vector<Stripe>& stripes,
+    const std::vector<int>& stripeGroups) {
+  // Default to serialized "ASC NULLS FIRST" sort orders for all columns
+  std::vector<std::string> defaultSortOrders;
+  defaultSortOrders.reserve(indexColumns.size());
+  for (size_t i = 0; i < indexColumns.size(); ++i) {
+    defaultSortOrders.push_back(
+        folly::toJson(velox::core::kAscNullsFirst.serialize()));
+  }
+  return createTestTabletIndex(
+      indexColumns, defaultSortOrders, minKey, stripes, stripeGroups);
 }
 
 std::unique_ptr<TabletIndex> TabletIndexTestBase::createTabletIndex(

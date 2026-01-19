@@ -22,6 +22,7 @@
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
+#include "velox/core/PlanNode.h"
 
 namespace facebook::nimble {
 
@@ -34,6 +35,9 @@ struct KeyStream;
 struct TabletIndexConfig {
   /// Columns to be indexed for data pruning.
   std::vector<std::string> columns;
+  /// Specifies the sort order for each index column.
+  /// Must not be empty and must have the same size as 'columns'.
+  std::vector<velox::core::SortOrder> sortOrders;
   /// If true, enforces that encoded keys must be in strictly ascending order
   /// across stripes.
   bool enforceKeyOrder{false};

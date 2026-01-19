@@ -28,6 +28,7 @@
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/core/PlanNode.h"
 
 namespace facebook::nimble::test {
 
@@ -90,6 +91,8 @@ TEST_F(TabletIndexWriterTest, basic) {
   {
     TabletIndexConfig config{
         .columns = {"col1", "col2"},
+        .sortOrders =
+            {velox::core::kAscNullsFirst, velox::core::kDescNullsLast},
         .enforceKeyOrder = true,
     };
     auto writer = TabletIndexWriter::create(config, *pool_);
@@ -106,11 +109,36 @@ TEST_F(TabletIndexWriterTest, basic) {
   {
     TabletIndexConfig config{
         .columns = {},
+        .sortOrders = {},
         .enforceKeyOrder = false,
     };
     NIMBLE_ASSERT_USER_THROW(
         TabletIndexWriter::create(config, *pool_),
         "Index columns must not be empty in TabletIndexConfig");
+  }
+
+  // Test create with empty sortOrders throws
+  {
+    TabletIndexConfig config{
+        .columns = {"col1"},
+        .sortOrders = {},
+        .enforceKeyOrder = false,
+    };
+    NIMBLE_ASSERT_USER_THROW(
+        TabletIndexWriter::create(config, *pool_),
+        "(1 vs. 0) Index columns and sort orders must have the same size in TabletIndexConfig");
+  }
+
+  // Test create with mismatched columns and sortOrders size throws
+  {
+    TabletIndexConfig config{
+        .columns = {"col1", "col2"},
+        .sortOrders = {velox::core::kAscNullsFirst},
+        .enforceKeyOrder = false,
+    };
+    NIMBLE_ASSERT_USER_THROW(
+        TabletIndexWriter::create(config, *pool_),
+        "Index columns and sort orders must have the same size in TabletIndexConfig");
   }
 }
 
@@ -119,7 +147,9 @@ TEST_F(TabletIndexWriterTest, stripeKeyOutOfOrderCheck) {
     SCOPED_TRACE(fmt::format("enforceKeyOrder={}", enforceKeyOrder));
 
     TabletIndexConfig config{
-        .columns = {"col1"}, .enforceKeyOrder = enforceKeyOrder};
+        .columns = {"col1"},
+        .sortOrders = {velox::core::kAscNullsFirst},
+        .enforceKeyOrder = enforceKeyOrder};
     auto writer = TabletIndexWriter::create(config, *pool_);
 
     Buffer buffer{*pool_};
@@ -144,7 +174,10 @@ TEST_F(TabletIndexWriterTest, stripeKeyOutOfOrderCheck) {
 }
 
 TEST_F(TabletIndexWriterTest, checkNotFinalizedAfterWriteRootIndex) {
-  TabletIndexConfig config{.columns = {"col1"}, .enforceKeyOrder = false};
+  TabletIndexConfig config{
+      .columns = {"col1"},
+      .sortOrders = {velox::core::kAscNullsFirst},
+      .enforceKeyOrder = false};
   auto writer = TabletIndexWriter::create(config, *pool_);
 
   Buffer buffer{*pool_};
@@ -180,7 +213,10 @@ TEST_F(TabletIndexWriterTest, checkNotFinalizedAfterWriteRootIndex) {
 }
 
 TEST_F(TabletIndexWriterTest, writeRootIndexWithEmptyStripeKeys) {
-  TabletIndexConfig config{.columns = {"col1"}, .enforceKeyOrder = false};
+  TabletIndexConfig config{
+      .columns = {"col1"},
+      .sortOrders = {velox::core::kAscNullsFirst},
+      .enforceKeyOrder = false};
   auto writer = TabletIndexWriter::create(config, *pool_);
 
   // Initialize but don't add any stripe keys
@@ -197,7 +233,10 @@ TEST_F(TabletIndexWriterTest, writeRootIndexWithEmptyStripeKeys) {
 }
 
 TEST_F(TabletIndexWriterTest, emptyStreamInStripe) {
-  TabletIndexConfig config{.columns = {"col1"}, .enforceKeyOrder = false};
+  TabletIndexConfig config{
+      .columns = {"col1"},
+      .sortOrders = {velox::core::kAscNullsFirst},
+      .enforceKeyOrder = false};
   auto writer = TabletIndexWriter::create(config, *pool_);
 
   Buffer buffer{*pool_};
@@ -234,6 +273,7 @@ TEST_F(TabletIndexWriterTest, emptyStreamInStripe) {
 TEST_F(TabletIndexWriterTest, writeAndReadWithSingleGroup) {
   TabletIndexConfig config{
       .columns = {"col1", "col2"},
+      .sortOrders = {velox::core::kAscNullsFirst, velox::core::kDescNullsLast},
       .enforceKeyOrder = true,
   };
   auto writer = TabletIndexWriter::create(config, *pool_);
@@ -340,6 +380,11 @@ TEST_F(TabletIndexWriterTest, writeAndReadWithSingleGroup) {
   EXPECT_EQ(tabletIndex->indexColumns().size(), 2);
   EXPECT_EQ(tabletIndex->indexColumns()[0], "col1");
   EXPECT_EQ(tabletIndex->indexColumns()[1], "col2");
+
+  // Verify sort orders
+  ASSERT_EQ(tabletIndex->sortOrders().size(), 2);
+  EXPECT_EQ(tabletIndex->sortOrders()[0], velox::core::kAscNullsFirst);
+  EXPECT_EQ(tabletIndex->sortOrders()[1], velox::core::kDescNullsLast);
 
   // Verify stripe keys
   EXPECT_EQ(tabletIndex->minKey(), "aaa");
@@ -465,6 +510,7 @@ TEST_F(TabletIndexWriterTest, writeAndReadWithSingleGroup) {
 TEST_F(TabletIndexWriterTest, writeAndReadWithMultipleGroups) {
   TabletIndexConfig config{
       .columns = {"col1", "col2"},
+      .sortOrders = {velox::core::kAscNullsFirst, velox::core::kDescNullsLast},
       .enforceKeyOrder = true,
   };
   auto writer = TabletIndexWriter::create(config, *pool_);
@@ -714,6 +760,7 @@ TEST_F(TabletIndexWriterTest, writeAndReadWithMultipleGroups) {
 TEST_F(TabletIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
   TabletIndexConfig config{
       .columns = {"col1"},
+      .sortOrders = {velox::core::kAscNullsFirst},
       .enforceKeyOrder = true,
   };
   auto writer = TabletIndexWriter::create(config, *pool_);

@@ -22,7 +22,6 @@
 #include "velox/common/base/RandomUtil.h"
 #include "velox/common/base/RuntimeMetrics.h"
 #include "velox/common/memory/Memory.h"
-#include "velox/dwio/common/Reader.h"
 #include "velox/dwio/common/ScanSpec.h"
 #include "velox/type/Filter.h"
 #include "velox/vector/FlatVector.h"
@@ -40,15 +39,38 @@ struct IndexEncodingParam {
   std::string name;
   EncodingType encodingType;
   CompressionType compressionType;
+  velox::core::SortOrder sortOrder;
 
   static IndexEncodingParam prefix() {
     return IndexEncodingParam{
-        "Prefix", EncodingType::Prefix, CompressionType::Uncompressed};
+        "Prefix",
+        EncodingType::Prefix,
+        CompressionType::Uncompressed,
+        velox::core::kAscNullsFirst};
   }
 
   static IndexEncodingParam trivialZstd() {
     return IndexEncodingParam{
-        "TrivialZstd", EncodingType::Trivial, CompressionType::Zstd};
+        "TrivialZstd",
+        EncodingType::Trivial,
+        CompressionType::Zstd,
+        velox::core::kAscNullsFirst};
+  }
+
+  static IndexEncodingParam prefixDesc() {
+    return IndexEncodingParam{
+        "PrefixDesc",
+        EncodingType::Prefix,
+        CompressionType::Uncompressed,
+        velox::core::kDescNullsLast};
+  }
+
+  static IndexEncodingParam trivialZstdDesc() {
+    return IndexEncodingParam{
+        "TrivialZstdDesc",
+        EncodingType::Trivial,
+        CompressionType::Zstd,
+        velox::core::kDescNullsLast};
   }
 
   EncodingLayout makeEncodingLayout() const {
@@ -152,7 +174,8 @@ class E2EIndexTestBase : public ::testing::Test {
   void writeData(
       const std::vector<RowVectorPtr>& batches,
       const std::vector<std::string>& indexColumns,
-      std::optional<EncodingLayout> encodingLayout = std::nullopt) {
+      std::optional<EncodingLayout> encodingLayout = std::nullopt,
+      velox::core::SortOrder sortOrder = velox::core::kAscNullsFirst) {
     ASSERT_FALSE(indexColumns.empty()) << "indexColumns must not be empty";
 
     sinkData_.clear();
@@ -162,6 +185,8 @@ class E2EIndexTestBase : public ::testing::Test {
     options.enableChunking = true;
     IndexConfig indexConfig;
     indexConfig.columns = indexColumns;
+    indexConfig.sortOrders =
+        std::vector<velox::core::SortOrder>(indexColumns.size(), sortOrder);
     indexConfig.enforceKeyOrder = true;
     if (encodingLayout.has_value()) {
       indexConfig.encodingLayout = std::move(encodingLayout).value();
@@ -337,33 +362,6 @@ class E2EIndexTestBase : public ::testing::Test {
     return fuzzer.fuzz(type);
   }
 
-  // Generates unique sorted key data.
-  // KeyT: The numeric key type (int64_t, double, float).
-  // KeyGeneratorT: A callable that takes an index and returns a key value.
-  template <typename KeyT, typename KeyGeneratorT>
-  std::vector<RowVectorPtr> generateNumericKeyData(
-      size_t numRows,
-      size_t rowsPerBatch,
-      KeyGeneratorT keyGenerator) {
-    std::vector<RowVectorPtr> batches;
-    for (size_t batchIdx = 0; batchIdx < numRows / rowsPerBatch; ++batchIdx) {
-      std::vector<KeyT> keyValues(rowsPerBatch);
-      for (size_t i = 0; i < rowsPerBatch; ++i) {
-        keyValues[i] = keyGenerator(batchIdx * rowsPerBatch + i);
-      }
-      auto keyVector = vectorMaker_->flatVector(keyValues);
-      auto dataVector = makeFuzzedComplexVector(
-          ARRAY(INTEGER()), rowsPerBatch, batchIdx * 12345);
-      auto nestedVector = makeFuzzedComplexVector(
-          ROW({{"nested", MAP(INTEGER(), VARCHAR())}}),
-          rowsPerBatch,
-          batchIdx * 54321);
-      batches.push_back(vectorMaker_->rowVector(
-          {"key", "data", "nested"}, {keyVector, dataVector, nestedVector}));
-    }
-    return batches;
-  }
-
   std::shared_ptr<memory::MemoryPool> rootPool_;
   std::shared_ptr<memory::MemoryPool> leafPool_;
   std::unique_ptr<velox::test::VectorMaker> vectorMaker_;
@@ -378,11 +376,64 @@ class E2EIndexTest : public E2EIndexTestBase,
     return GetParam().makeEncodingLayout();
   }
 
-  // Writes data using the test parameter's encoding layout.
+  // Returns true if the sort order is ascending.
+  bool isAscending() const {
+    return GetParam().sortOrder.isAscending();
+  }
+
+  // Generates sorted key column data based on the test parameter's sort order.
+  template <typename T>
+  VectorPtr makeSortedFlatVector(size_t size, T startValue, T step) {
+    std::vector<T> values(size);
+    if (isAscending()) {
+      for (size_t i = 0; i < size; ++i) {
+        values[i] = startValue + static_cast<T>(i) * step;
+      }
+    } else {
+      // For descending order, generate values in reverse.
+      for (size_t i = 0; i < size; ++i) {
+        values[i] = startValue + static_cast<T>(size - 1 - i) * step;
+      }
+    }
+    return vectorMaker_->flatVector(values);
+  }
+
+  // Generates unique sorted key data using the test parameter's sort order.
+  // KeyT: The numeric key type (int64_t, double, float).
+  // KeyGeneratorT: A callable that takes (globalIdx, numRows, ascending) and
+  // returns a key value. The keyGenerator is responsible for computing the
+  // effective index based on the sort order.
+  template <typename KeyT, typename KeyGeneratorT>
+  std::vector<RowVectorPtr> generateNumericKeyData(
+      size_t numRows,
+      size_t rowsPerBatch,
+      KeyGeneratorT keyGenerator) {
+    const bool ascending = isAscending();
+    std::vector<RowVectorPtr> batches;
+    for (size_t batchIdx = 0; batchIdx < numRows / rowsPerBatch; ++batchIdx) {
+      std::vector<KeyT> keyValues(rowsPerBatch);
+      for (size_t i = 0; i < rowsPerBatch; ++i) {
+        const size_t globalIdx = batchIdx * rowsPerBatch + i;
+        keyValues[i] = keyGenerator(globalIdx, numRows, ascending);
+      }
+      auto keyVector = vectorMaker_->flatVector(keyValues);
+      auto dataVector = makeFuzzedComplexVector(
+          ARRAY(INTEGER()), rowsPerBatch, batchIdx * 12345);
+      auto nestedVector = makeFuzzedComplexVector(
+          ROW({{"nested", MAP(INTEGER(), VARCHAR())}}),
+          rowsPerBatch,
+          batchIdx * 54321);
+      batches.push_back(vectorMaker_->rowVector(
+          {"key", "data", "nested"}, {keyVector, dataVector, nestedVector}));
+    }
+    return batches;
+  }
+
+  // Writes data using the test parameter's encoding layout and sort order.
   void writeDataWithParam(
       const std::vector<RowVectorPtr>& batches,
       const std::vector<std::string>& indexColumns) {
-    writeData(batches, indexColumns, getEncodingLayout());
+    writeData(batches, indexColumns, getEncodingLayout(), GetParam().sortOrder);
   }
 };
 
@@ -438,7 +489,11 @@ TEST_P(E2EIndexTest, singleBigintKey) {
            ARRAY(INTEGER()),
            ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  auto keyGenerator = [](size_t idx) -> int64_t { return kMinKey + idx; };
+  auto keyGenerator =
+      [](size_t idx, size_t numRows, bool ascending) -> int64_t {
+    const size_t effectiveIdx = ascending ? idx : (numRows - 1 - idx);
+    return kMinKey + effectiveIdx;
+  };
   auto batches =
       generateNumericKeyData<int64_t>(kNumRows, kRowsPerBatch, keyGenerator);
   writeDataWithParam(batches, {"key"});
@@ -533,7 +588,10 @@ TEST_P(E2EIndexTest, singleDoubleKey) {
            ARRAY(INTEGER()),
            ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  auto keyGenerator = [](size_t idx) -> double { return kMinKey + idx; };
+  auto keyGenerator = [](size_t idx, size_t numRows, bool ascending) -> double {
+    const size_t effectiveIdx = ascending ? idx : (numRows - 1 - idx);
+    return kMinKey + effectiveIdx;
+  };
   auto batches =
       generateNumericKeyData<double>(kNumRows, kRowsPerBatch, keyGenerator);
   writeDataWithParam(batches, {"key"});
@@ -632,7 +690,10 @@ TEST_P(E2EIndexTest, singleFloatKey) {
       {"key", "data", "nested"},
       {REAL(), ARRAY(INTEGER()), ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  auto keyGenerator = [](size_t idx) -> float { return kMinKey + idx; };
+  auto keyGenerator = [](size_t idx, size_t numRows, bool ascending) -> float {
+    const size_t effectiveIdx = ascending ? idx : (numRows - 1 - idx);
+    return kMinKey + effectiveIdx;
+  };
   auto batches =
       generateNumericKeyData<float>(kNumRows, kRowsPerBatch, keyGenerator);
   writeDataWithParam(batches, {"key"});
@@ -738,8 +799,10 @@ TEST_P(E2EIndexTest, singleTimestampKey) {
            ARRAY(INTEGER()),
            ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  auto keyGenerator = [](size_t idx) -> Timestamp {
-    return Timestamp(kMinKeySeconds + idx, 0);
+  auto keyGenerator =
+      [](size_t idx, size_t numRows, bool ascending) -> Timestamp {
+    const size_t effectiveIdx = ascending ? idx : (numRows - 1 - idx);
+    return Timestamp(kMinKeySeconds + effectiveIdx, 0);
   };
   auto batches =
       generateNumericKeyData<Timestamp>(kNumRows, kRowsPerBatch, keyGenerator);
@@ -798,9 +861,12 @@ TEST_P(E2EIndexTest, singleBoolKey) {
 
   auto rowType = ROW({"key", "data"}, {BOOLEAN(), ARRAY(INTEGER())});
 
-  // Generate strictly ordered boolean keys: [false, true].
+  // Generate strictly ordered boolean keys based on sort order.
+  // Ascending: [false, true], Descending: [true, false]
+  const bool ascending = GetParam().sortOrder.isAscending();
   std::vector<RowVectorPtr> batches;
-  auto keyVector = vectorMaker_->flatVector<bool>({false, true});
+  auto keyVector = ascending ? vectorMaker_->flatVector<bool>({false, true})
+                             : vectorMaker_->flatVector<bool>({true, false});
   auto dataVector = makeFuzzedComplexVector(ARRAY(INTEGER()), 2, 12345);
   batches.push_back(
       vectorMaker_->rowVector({"key", "data"}, {keyVector, dataVector}));
@@ -906,8 +972,10 @@ TEST_P(E2EIndexTest, singleVarcharKey) {
            ARRAY(INTEGER()),
            ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  auto keyGenerator = [&](size_t idx) -> std::string {
-    return formatKey(kMinKeyNum + idx);
+  auto keyGenerator =
+      [&](size_t idx, size_t numRows, bool ascending) -> std::string {
+    const size_t effectiveIdx = ascending ? idx : (numRows - 1 - idx);
+    return formatKey(kMinKeyNum + effectiveIdx);
   };
   auto batches = generateNumericKeyData<std::string>(
       kNumRows, kRowsPerBatch, keyGenerator);
@@ -953,12 +1021,13 @@ TEST_P(E2EIndexTest, singleVarcharKey) {
 
     verifyResultsEqual(resultsWithIndex, resultsWithoutIndex);
 
-    EXPECT_EQ(numConversionsWithIndex, 1);
+    // For descending order, VARCHAR index filter conversion is not supported.
+    const int64_t expectedConversions = isAscending() ? 1 : 0;
+    EXPECT_EQ(numConversionsWithIndex, expectedConversions);
     EXPECT_EQ(numConversionsWithoutIndex, 0);
   }
 }
 
-// Test with two key columns (bigint, varchar) and point + range filters.
 TEST_P(E2EIndexTest, twoKeyColumnsPointAndRange) {
   constexpr size_t kNumRows = 5'000;
   constexpr size_t kRowsPerBatch = 500;
@@ -967,30 +1036,27 @@ TEST_P(E2EIndexTest, twoKeyColumnsPointAndRange) {
       ROW({"key1", "key2", "data"},
           {BIGINT(), VARCHAR(), ROW({{"nested", ARRAY(INTEGER())}})});
 
+  const bool ascending = isAscending();
   std::vector<RowVectorPtr> batches;
   for (size_t batchIdx = 0; batchIdx < kNumRows / kRowsPerBatch; ++batchIdx) {
-    // key1 is sorted in increments of 10, allowing duplicates for key2.
-    auto key1Vector = makeSortedFlatVector<int64_t>(
-        kRowsPerBatch, batchIdx * kRowsPerBatch / 10 * 10, 0);
-
-    // Actually make key1 sorted with some duplicates.
     std::vector<int64_t> key1Values(kRowsPerBatch);
-    for (size_t i = 0; i < kRowsPerBatch; ++i) {
-      key1Values[i] = (batchIdx * kRowsPerBatch + i) / 10;
-    }
-    auto key1VectorReal = vectorMaker_->flatVector(key1Values);
-
-    // key2 is also sorted within each key1 group.
     std::vector<std::string> key2Values(kRowsPerBatch);
     for (size_t i = 0; i < kRowsPerBatch; ++i) {
-      key2Values[i] = fmt::format("val_{:05d}", i % 10);
+      const size_t globalIdx = batchIdx * kRowsPerBatch + i;
+      const size_t effectiveIdx =
+          ascending ? globalIdx : (kNumRows - 1 - globalIdx);
+      // key1: each value repeated 10 times.
+      key1Values[i] = effectiveIdx / 10;
+      // key2: sorted within each key1 group.
+      key2Values[i] = fmt::format("val_{:05d}", effectiveIdx % 10);
     }
+    auto key1Vector = vectorMaker_->flatVector(key1Values);
     auto key2Vector = vectorMaker_->flatVector(key2Values);
 
     auto dataVector = makeFuzzedComplexVector(
         ROW({{"nested", ARRAY(INTEGER())}}), kRowsPerBatch, batchIdx * 11111);
     batches.push_back(vectorMaker_->rowVector(
-        {"key1", "key2", "data"}, {key1VectorReal, key2Vector, dataVector}));
+        {"key1", "key2", "data"}, {key1Vector, key2Vector, dataVector}));
   }
 
   writeDataWithParam(batches, {"key1", "key2"});
@@ -1021,8 +1087,11 @@ TEST_P(E2EIndexTest, twoKeyColumnsPointAndRange) {
 
   verifyResultsEqual(resultsWithIndex, resultsWithoutIndex);
 
-  // Both key columns should be converted.
-  EXPECT_EQ(numConversionsWithIndex, 2);
+  // For ascending order, both key columns should be converted (2 conversions).
+  // For descending order, VARCHAR index filter conversion is not supported,
+  // so only key1 (BIGINT) is converted (1 conversion).
+  const int64_t expectedConversions = ascending ? 2 : 1;
+  EXPECT_EQ(numConversionsWithIndex, expectedConversions);
   EXPECT_EQ(numConversionsWithoutIndex, 0);
 }
 
@@ -1049,15 +1118,19 @@ TEST_P(E2EIndexTest, twoBigintKeysFilterCombinations) {
            ARRAY(MAP(INTEGER(), VARCHAR())),
            ROW({{"inner", MAP(VARCHAR(), ARRAY(BIGINT()))}})});
 
+  const bool ascending = isAscending();
   std::vector<RowVectorPtr> batches;
   for (size_t batchIdx = 0; batchIdx < kNumRows / kRowsPerBatch; ++batchIdx) {
     std::vector<int64_t> key1Values(kRowsPerBatch);
     std::vector<int64_t> key2Values(kRowsPerBatch);
     for (size_t i = 0; i < kRowsPerBatch; ++i) {
+      const size_t globalIdx = batchIdx * kRowsPerBatch + i;
+      const size_t effectiveIdx =
+          ascending ? globalIdx : (kNumRows - 1 - globalIdx);
       // key1: 0, 0, ..., 0 (10x), 1, 1, ..., 1 (10x), etc.
-      key1Values[i] = (batchIdx * kRowsPerBatch + i) / 10;
+      key1Values[i] = effectiveIdx / 10;
       // key2: 0, 1, 2, ..., 9, 0, 1, 2, ..., 9, etc. (sorted within key1 group)
-      key2Values[i] = (batchIdx * kRowsPerBatch + i) % 10;
+      key2Values[i] = effectiveIdx % 10;
     }
     auto key1Vector = vectorMaker_->flatVector(key1Values);
     auto key2Vector = vectorMaker_->flatVector(key2Values);
@@ -1085,8 +1158,8 @@ TEST_P(E2EIndexTest, twoBigintKeysFilterCombinations) {
           "name={}, expectedConversions={}, key1Filter={}, key2Filter={}",
           name,
           expectedConversions,
-          key1Filter ? key1Filter->toString() : "null",
-          key2Filter ? key2Filter->toString() : "null");
+          key1Filter ? key1Filter->serialize() : "null",
+          key2Filter ? key2Filter->serialize() : "null");
     }
   };
 
@@ -1193,19 +1266,22 @@ TEST_P(E2EIndexTest, threeBigintKeysFilterGap) {
            ARRAY(MAP(INTEGER(), VARCHAR())),
            ROW({{"inner", MAP(VARCHAR(), ARRAY(BIGINT()))}})});
 
+  const bool ascending = isAscending();
   std::vector<RowVectorPtr> batches;
   for (size_t batchIdx = 0; batchIdx < kNumRows / kRowsPerBatch; ++batchIdx) {
     std::vector<int64_t> key1Values(kRowsPerBatch);
     std::vector<int64_t> key2Values(kRowsPerBatch);
     std::vector<int64_t> key3Values(kRowsPerBatch);
     for (size_t i = 0; i < kRowsPerBatch; ++i) {
-      size_t globalIdx = batchIdx * kRowsPerBatch + i;
+      const size_t globalIdx = batchIdx * kRowsPerBatch + i;
+      const size_t effectiveIdx =
+          ascending ? globalIdx : (kNumRows - 1 - globalIdx);
       // key1: each value repeated 100 times.
-      key1Values[i] = globalIdx / 100;
+      key1Values[i] = effectiveIdx / 100;
       // key2: each value repeated 10 times within key1 group.
-      key2Values[i] = (globalIdx / 10) % 10;
+      key2Values[i] = (effectiveIdx / 10) % 10;
       // key3: unique within key1+key2 group.
-      key3Values[i] = globalIdx % 10;
+      key3Values[i] = effectiveIdx % 10;
     }
     auto key1Vector = vectorMaker_->flatVector(key1Values);
     auto key2Vector = vectorMaker_->flatVector(key2Values);
@@ -1344,15 +1420,19 @@ TEST_P(E2EIndexTest, twoDoubleKeysFilterCombinations) {
            ARRAY(MAP(INTEGER(), VARCHAR())),
            ROW({{"inner", MAP(VARCHAR(), ARRAY(BIGINT()))}})});
 
+  const bool ascending = isAscending();
   std::vector<RowVectorPtr> batches;
   for (size_t batchIdx = 0; batchIdx < kNumRows / kRowsPerBatch; ++batchIdx) {
     std::vector<double> key1Values(kRowsPerBatch);
     std::vector<double> key2Values(kRowsPerBatch);
     for (size_t i = 0; i < kRowsPerBatch; ++i) {
+      const size_t globalIdx = batchIdx * kRowsPerBatch + i;
+      const size_t effectiveIdx =
+          ascending ? globalIdx : (kNumRows - 1 - globalIdx);
       // key1: 0.0, 0.0, ..., 0.0 (10x), 1.0, 1.0, ..., 1.0 (10x), etc.
-      key1Values[i] = static_cast<double>((batchIdx * kRowsPerBatch + i) / 10);
+      key1Values[i] = static_cast<double>(effectiveIdx / 10);
       // key2: 0.0, 1.0, 2.0, ..., 9.0 (sorted within key1 group)
-      key2Values[i] = static_cast<double>((batchIdx * kRowsPerBatch + i) % 10);
+      key2Values[i] = static_cast<double>(effectiveIdx % 10);
     }
     auto key1Vector = vectorMaker_->flatVector(key1Values);
     auto key2Vector = vectorMaker_->flatVector(key2Values);
@@ -1496,15 +1576,19 @@ TEST_P(E2EIndexTest, twoFloatKeysFilterCombinations) {
            ARRAY(MAP(INTEGER(), VARCHAR())),
            ROW({{"inner", MAP(VARCHAR(), ARRAY(BIGINT()))}})});
 
+  const bool ascending = isAscending();
   std::vector<RowVectorPtr> batches;
   for (size_t batchIdx = 0; batchIdx < kNumRows / kRowsPerBatch; ++batchIdx) {
     std::vector<float> key1Values(kRowsPerBatch);
     std::vector<float> key2Values(kRowsPerBatch);
     for (size_t i = 0; i < kRowsPerBatch; ++i) {
+      const size_t globalIdx = batchIdx * kRowsPerBatch + i;
+      const size_t effectiveIdx =
+          ascending ? globalIdx : (kNumRows - 1 - globalIdx);
       // key1: 0.0f, 0.0f, ..., 0.0f (10x), 1.0f, 1.0f, ..., 1.0f (10x), etc.
-      key1Values[i] = static_cast<float>((batchIdx * kRowsPerBatch + i) / 10);
+      key1Values[i] = static_cast<float>(effectiveIdx / 10);
       // key2: 0.0f, 1.0f, 2.0f, ..., 9.0f (sorted within key1 group)
-      key2Values[i] = static_cast<float>((batchIdx * kRowsPerBatch + i) % 10);
+      key2Values[i] = static_cast<float>(effectiveIdx % 10);
     }
     auto key1Vector = vectorMaker_->flatVector(key1Values);
     auto key2Vector = vectorMaker_->flatVector(key2Values);
@@ -1649,10 +1733,19 @@ TEST_P(E2EIndexTest, twoBoolKeysFilterCombinations) {
            ROW({{"inner", MAP(VARCHAR(), ARRAY(BIGINT()))}})});
 
   // Generate strictly ordered boolean keys with exactly 4 rows:
-  // (false, false), (false, true), (true, false), (true, true).
+  // Ascending: (false, false), (false, true), (true, false), (true, true).
+  // Descending: (true, true), (true, false), (false, true), (false, false).
   std::vector<RowVectorPtr> batches;
-  auto key1Vector = vectorMaker_->flatVector<bool>({false, false, true, true});
-  auto key2Vector = vectorMaker_->flatVector<bool>({false, true, false, true});
+  VectorPtr key1Vector;
+  VectorPtr key2Vector;
+  if (isAscending()) {
+    key1Vector = vectorMaker_->flatVector<bool>({false, false, true, true});
+    key2Vector = vectorMaker_->flatVector<bool>({false, true, false, true});
+  } else {
+    key1Vector = vectorMaker_->flatVector<bool>({true, true, false, false});
+    key2Vector = vectorMaker_->flatVector<bool>({true, false, true, false});
+  }
+
   auto dataVector =
       makeFuzzedComplexVector(ARRAY(MAP(INTEGER(), VARCHAR())), 4, 555);
   auto nestedVector = makeFuzzedComplexVector(
@@ -1756,7 +1849,7 @@ TEST_P(E2EIndexTest, twoVarcharKeysFilterCombinations) {
   constexpr size_t kNumRows = 5'000;
   constexpr size_t kRowsPerBatch = 500;
 
-  auto rowType =
+  const auto rowType =
       ROW({"key1", "key2", "data", "nested"},
           {VARCHAR(),
            VARCHAR(),
@@ -1766,16 +1859,22 @@ TEST_P(E2EIndexTest, twoVarcharKeysFilterCombinations) {
   auto formatKey1 = [](size_t idx) { return fmt::format("k1_{:05d}", idx); };
   auto formatKey2 = [](size_t idx) { return fmt::format("k2_{:05d}", idx); };
 
+  const bool ascending = isAscending();
+
   std::vector<RowVectorPtr> batches;
   for (size_t batchIdx = 0; batchIdx < kNumRows / kRowsPerBatch; ++batchIdx) {
     std::vector<std::string> key1Values(kRowsPerBatch);
     std::vector<std::string> key2Values(kRowsPerBatch);
     for (size_t i = 0; i < kRowsPerBatch; ++i) {
+      const size_t globalIdx = batchIdx * kRowsPerBatch + i;
+      const size_t effectiveIdx =
+          ascending ? globalIdx : (kNumRows - 1 - globalIdx);
       // key1: k1_00000 (10x), k1_00001 (10x), etc.
-      key1Values[i] = formatKey1((batchIdx * kRowsPerBatch + i) / 10);
+      key1Values[i] = formatKey1(effectiveIdx / 10);
       // key2: k2_00000, k2_00001, ..., k2_00009 (sorted within key1 group)
-      key2Values[i] = formatKey2((batchIdx * kRowsPerBatch + i) % 10);
+      key2Values[i] = formatKey2(effectiveIdx % 10);
     }
+
     auto key1Vector = vectorMaker_->flatVector(key1Values);
     auto key2Vector = vectorMaker_->flatVector(key2Values);
     auto dataVector = makeFuzzedComplexVector(
@@ -1795,6 +1894,9 @@ TEST_P(E2EIndexTest, twoVarcharKeysFilterCombinations) {
     std::string name;
     std::unique_ptr<Filter> key1Filter;
     std::unique_ptr<Filter> key2Filter;
+    // Expected conversions for ascending order.
+    // For descending order, VARCHAR index filter conversion is not supported,
+    // so expectedConversions is always 0.
     int64_t expectedConversions;
 
     std::string debugString() const {
@@ -1802,8 +1904,8 @@ TEST_P(E2EIndexTest, twoVarcharKeysFilterCombinations) {
           "name={}, expectedConversions={}, key1Filter={}, key2Filter={}",
           name,
           expectedConversions,
-          key1Filter ? key1Filter->toString() : "null",
-          key2Filter ? key2Filter->toString() : "null");
+          key1Filter ? key1Filter->serialize() : "null",
+          key2Filter ? key2Filter->serialize() : "null");
     }
   };
 
@@ -1900,7 +2002,10 @@ TEST_P(E2EIndexTest, twoVarcharKeysFilterCombinations) {
 
     verifyResultsEqual(resultsWithIndex, resultsWithoutIndex);
 
-    EXPECT_EQ(numConversionsWithIndex, testCase.expectedConversions);
+    // For descending order, VARCHAR index filter conversion is not supported.
+    const int64_t expectedConversions =
+        ascending ? testCase.expectedConversions : 0;
+    EXPECT_EQ(numConversionsWithIndex, expectedConversions);
     EXPECT_EQ(numConversionsWithoutIndex, 0);
   }
 }
@@ -1921,16 +2026,19 @@ TEST_P(E2EIndexTest, twoTimestampKeysFilterCombinations) {
            ARRAY(MAP(INTEGER(), VARCHAR())),
            ROW({{"inner", MAP(VARCHAR(), ARRAY(BIGINT()))}})});
 
+  const bool ascending = isAscending();
   std::vector<RowVectorPtr> batches;
   for (size_t batchIdx = 0; batchIdx < kNumRows / kRowsPerBatch; ++batchIdx) {
     std::vector<Timestamp> key1Values(kRowsPerBatch);
     std::vector<Timestamp> key2Values(kRowsPerBatch);
     for (size_t i = 0; i < kRowsPerBatch; ++i) {
+      const size_t globalIdx = batchIdx * kRowsPerBatch + i;
+      const size_t effectiveIdx =
+          ascending ? globalIdx : (kNumRows - 1 - globalIdx);
       // key1: base, base, ..., base (10x), base+1, base+1, ..., base+1 (10x)
-      key1Values[i] =
-          Timestamp(kBaseSeconds + (batchIdx * kRowsPerBatch + i) / 10, 0);
+      key1Values[i] = Timestamp(kBaseSeconds + effectiveIdx / 10, 0);
       // key2: 0, 1, 2, ..., 9 seconds (sorted within key1 group)
-      key2Values[i] = Timestamp((batchIdx * kRowsPerBatch + i) % 10, 0);
+      key2Values[i] = Timestamp(effectiveIdx % 10, 0);
     }
     auto key1Vector = vectorMaker_->flatVector(key1Values);
     auto key2Vector = vectorMaker_->flatVector(key2Values);
@@ -2062,7 +2170,9 @@ INSTANTIATE_TEST_SUITE_P(
     E2EIndexTest,
     ::testing::Values(
         IndexEncodingParam::prefix(),
-        IndexEncodingParam::trivialZstd()),
+        IndexEncodingParam::trivialZstd(),
+        IndexEncodingParam::prefixDesc(),
+        IndexEncodingParam::trivialZstdDesc()),
     [](const ::testing::TestParamInfo<IndexEncodingParam>& info) {
       return info.param.name;
     });
@@ -2070,8 +2180,50 @@ INSTANTIATE_TEST_SUITE_P(
 // Fuzzer test that generates random wide and nested types with index columns
 // at various positions. Tests different filter combinations including point
 // lookups, ranges, and filters on non-index columns.
-class E2EIndexFuzzerTest : public E2EIndexTestBase,
-                           public ::testing::WithParamInterface<uint32_t> {
+
+// Parameter struct for fuzzer tests including seed and sort order.
+struct FuzzerTestParam {
+  uint32_t seed;
+  velox::core::SortOrder sortOrder;
+  EncodingType encodingType;
+  CompressionType compressionType;
+
+  static FuzzerTestParam make(
+      uint32_t seed,
+      velox::core::SortOrder sortOrder,
+      EncodingType encodingType,
+      CompressionType compressionType) {
+    return FuzzerTestParam{seed, sortOrder, encodingType, compressionType};
+  }
+
+  bool isAscending() const {
+    return sortOrder.isAscending();
+  }
+
+  EncodingLayout makeEncodingLayout() const {
+    std::vector<std::optional<const EncodingLayout>> children;
+    if (encodingType == EncodingType::Trivial) {
+      // Trivial encoding for string data needs a child encoding for lengths.
+      children.push_back(
+          EncodingLayout{EncodingType::Trivial, CompressionType::Uncompressed});
+    }
+    return EncodingLayout{encodingType, compressionType, std::move(children)};
+  }
+
+  std::string name() const {
+    std::string result = fmt::format("seed_{}", seed);
+    result += isAscending() ? "_asc" : "_desc";
+    result += encodingType == EncodingType::Prefix ? "_prefix" : "_trivial";
+    if (compressionType == CompressionType::Zstd) {
+      result += "_zstd";
+    }
+    return result;
+  }
+};
+
+class E2EIndexFuzzerTest
+    : public E2EIndexTestBase,
+      public ::testing::WithParamInterface<FuzzerTestParam> {
  protected:
   // Supported index column types for the fuzzer.
   // Note: BOOLEAN, TINYINT, and SMALLINT are excluded because they have
@@ -2115,43 +2267,52 @@ class E2EIndexFuzzerTest : public E2EIndexTestBase,
   }
 
   // Generates strictly ordered unique key column data.
+  // For ascending order: values increase (0, 1, 2, ...)
+  // For descending order: values decrease (numRows-1, numRows-2, ...)
   VectorPtr generateSortedKeyColumn(
       const TypePtr& type,
       size_t numRows,
-      size_t batchOffset) {
+      size_t batchOffset,
+      size_t totalRows,
+      bool ascending) {
+    const auto effectiveOffset = [&](size_t i) -> size_t {
+      const size_t globalIdx = batchOffset + i;
+      return ascending ? globalIdx : (totalRows - 1 - globalIdx);
+    };
+
     switch (type->kind()) {
       case TypeKind::INTEGER: {
         std::vector<int32_t> values(numRows);
         for (size_t i = 0; i < numRows; ++i) {
-          values[i] = static_cast<int32_t>(batchOffset + i);
+          values[i] = static_cast<int32_t>(effectiveOffset(i));
         }
         return vectorMaker_->flatVector(values);
       }
       case TypeKind::BIGINT: {
         std::vector<int64_t> values(numRows);
         for (size_t i = 0; i < numRows; ++i) {
-          values[i] = static_cast<int64_t>(batchOffset + i);
+          values[i] = static_cast<int64_t>(effectiveOffset(i));
         }
         return vectorMaker_->flatVector(values);
       }
       case TypeKind::REAL: {
         std::vector<float> values(numRows);
         for (size_t i = 0; i < numRows; ++i) {
-          values[i] = static_cast<float>(batchOffset + i);
+          values[i] = static_cast<float>(effectiveOffset(i));
         }
         return vectorMaker_->flatVector(values);
       }
       case TypeKind::DOUBLE: {
         std::vector<double> values(numRows);
         for (size_t i = 0; i < numRows; ++i) {
-          values[i] = static_cast<double>(batchOffset + i);
+          values[i] = static_cast<double>(effectiveOffset(i));
         }
         return vectorMaker_->flatVector(values);
       }
       case TypeKind::VARCHAR: {
         std::vector<std::string> values(numRows);
         for (size_t i = 0; i < numRows; ++i) {
-          values[i] = fmt::format("key_{:08d}", batchOffset + i);
+          values[i] = fmt::format("key_{:08d}", effectiveOffset(i));
         }
         return vectorMaker_->flatVector(values);
       }
@@ -2364,7 +2525,9 @@ class E2EIndexFuzzerTest : public E2EIndexTestBase,
 };
 
 TEST_P(E2EIndexFuzzerTest, randomSchemaAndFilters) {
-  const uint32_t seed = GetParam();
+  const auto& param = GetParam();
+  const uint32_t seed = param.seed;
+  const bool ascending = param.isAscending();
   std::mt19937 rng(seed);
 
   // Configuration.
@@ -2441,7 +2604,11 @@ TEST_P(E2EIndexFuzzerTest, randomSchemaAndFilters) {
       if (indexPositionSet.count(colIdx) > 0) {
         // Generate sorted key column with strictly ordered unique values.
         columns.push_back(generateSortedKeyColumn(
-            colType, kRowsPerBatch, batchIdx * kRowsPerBatch));
+            colType,
+            kRowsPerBatch,
+            batchIdx * kRowsPerBatch,
+            kNumRows,
+            ascending));
       } else {
         // Generate fuzzed non-index column.
         columns.push_back(makeFuzzedComplexVector(
@@ -2452,7 +2619,8 @@ TEST_P(E2EIndexFuzzerTest, randomSchemaAndFilters) {
     batches.push_back(vectorMaker_->rowVector(rowType->names(), columns));
   }
 
-  writeData(batches, indexColumnNames);
+  writeData(
+      batches, indexColumnNames, param.makeEncodingLayout(), param.sortOrder);
   // Generate multiple filter combinations.
   constexpr int kNumFilterIterations = 10;
 
@@ -2487,7 +2655,15 @@ TEST_P(E2EIndexFuzzerTest, randomSchemaAndFilters) {
       auto filter = generateFilter(colType, kind, kNumRows, rng);
       if (filter) {
         // Count expected conversions.
+        // Note: For descending order, VARCHAR filter conversion is not
+        // supported.
         if (!rangeEncountered) {
+          const auto& colType = rowType->findChild(colName);
+          const bool isVarchar = colType->kind() == TypeKind::VARCHAR;
+          if (isVarchar && !ascending) {
+            // VARCHAR with descending order stops the conversion chain.
+            break;
+          }
           ++expectedConversions;
           if (isRangeFilter(filter.get())) {
             rangeEncountered = true;
@@ -2604,9 +2780,55 @@ TEST_P(E2EIndexFuzzerTest, randomSchemaAndFilters) {
 INSTANTIATE_TEST_SUITE_P(
     E2EIndexFuzzerTestSuite,
     E2EIndexFuzzerTest,
-    ::testing::Values(42, 123, 456, 789, 1000, 2024, 3141, 5926, 8675, 9999),
-    [](const ::testing::TestParamInfo<uint32_t>& info) {
-      return fmt::format("seed_{}", info.param);
+    ::testing::Values(
+        // Ascending order with Prefix encoding.
+        FuzzerTestParam::make(
+            42,
+            velox::core::kAscNullsFirst,
+            EncodingType::Prefix,
+            CompressionType::Uncompressed),
+        FuzzerTestParam::make(
+            123,
+            velox::core::kAscNullsFirst,
+            EncodingType::Prefix,
+            CompressionType::Uncompressed),
+        FuzzerTestParam::make(
+            456,
+            velox::core::kAscNullsFirst,
+            EncodingType::Prefix,
+            CompressionType::Uncompressed),
+        // Ascending order with Trivial encoding and Zstd compression.
+        FuzzerTestParam::make(
+            42,
+            velox::core::kAscNullsFirst,
+            EncodingType::Trivial,
+            CompressionType::Zstd),
+        FuzzerTestParam::make(
+            123,
+            velox::core::kAscNullsFirst,
+            EncodingType::Trivial,
+            CompressionType::Zstd),
+        // Descending order with Prefix encoding.
+        // Note: VARCHAR filter conversion is not supported for descending
+        // order.
+        FuzzerTestParam::make(
+            42,
+            velox::core::kDescNullsLast,
+            EncodingType::Prefix,
+            CompressionType::Uncompressed),
+        FuzzerTestParam::make(
+            123,
+            velox::core::kDescNullsLast,
+            EncodingType::Prefix,
+            CompressionType::Uncompressed),
+        // Descending order with Trivial encoding and Zstd compression.
+        FuzzerTestParam::make(
+            42,
+            velox::core::kDescNullsLast,
+            EncodingType::Trivial,
+            CompressionType::Zstd)),
+    [](const ::testing::TestParamInfo<FuzzerTestParam>& info) {
+      return info.param.name();
     });
 
 // Test with filters that are not eligible for index conversion.
@@ -2615,6 +2837,8 @@ INSTANTIATE_TEST_SUITE_P(
 TEST_P(E2EIndexTest, filtersNotEligibleForIndexConversion) {
   constexpr size_t kNumRows = 2'000;
   constexpr size_t kRowsPerBatch = 200;
+
+  const bool ascending = isAscending();
 
   // Test unsupported filter types and filters allowing nulls.
   {
@@ -2631,8 +2855,14 @@ TEST_P(E2EIndexTest, filtersNotEligibleForIndexConversion) {
 
     std::vector<RowVectorPtr> batches;
     for (size_t batchIdx = 0; batchIdx < kNumRows / kRowsPerBatch; ++batchIdx) {
-      auto keyVector = makeSortedFlatVector<int64_t>(
-          kRowsPerBatch, batchIdx * kRowsPerBatch, 1);
+      std::vector<int64_t> keyValues(kRowsPerBatch);
+      for (size_t i = 0; i < kRowsPerBatch; ++i) {
+        const size_t globalIdx = batchIdx * kRowsPerBatch + i;
+        const size_t effectiveIdx =
+            ascending ? globalIdx : (kNumRows - 1 - globalIdx);
+        keyValues[i] = static_cast<int64_t>(effectiveIdx);
+      }
+      auto keyVector = vectorMaker_->flatVector(keyValues);
       auto dataVector = makeFuzzedComplexVector(
           ARRAY(INTEGER()), kRowsPerBatch, batchIdx * 99999);
       batches.push_back(
@@ -2689,8 +2919,14 @@ TEST_P(E2EIndexTest, filtersNotEligibleForIndexConversion) {
 
     std::vector<RowVectorPtr> batches;
     for (size_t batchIdx = 0; batchIdx < kNumRows / kRowsPerBatch; ++batchIdx) {
-      auto keyVector = makeSortedFlatVector<int64_t>(
-          kRowsPerBatch, batchIdx * kRowsPerBatch, 1);
+      std::vector<int64_t> keyValues(kRowsPerBatch);
+      for (size_t i = 0; i < kRowsPerBatch; ++i) {
+        const size_t globalIdx = batchIdx * kRowsPerBatch + i;
+        const size_t effectiveIdx =
+            ascending ? globalIdx : (kNumRows - 1 - globalIdx);
+        keyValues[i] = static_cast<int64_t>(effectiveIdx);
+      }
+      auto keyVector = vectorMaker_->flatVector(keyValues);
       std::vector<int64_t> valueValues(kRowsPerBatch);
       for (size_t i = 0; i < kRowsPerBatch; ++i) {
         valueValues[i] = i % 100;
@@ -2731,9 +2967,92 @@ TEST_P(E2EIndexTest, filtersNotEligibleForIndexConversion) {
     EXPECT_EQ(numConversionsWithIndex, 0);
     EXPECT_EQ(numConversionsWithoutIndex, 0);
   }
+
+  // Test VARCHAR with descending order - not convertible for both point lookup
+  // and range scan.
+  if (!ascending) {
+    SCOPED_TRACE("varcharDescendingNotConvertible");
+
+    auto rowType = ROW({"key", "data"}, {VARCHAR(), ARRAY(INTEGER())});
+
+    std::vector<RowVectorPtr> batches;
+    for (size_t batchIdx = 0; batchIdx < kNumRows / kRowsPerBatch; ++batchIdx) {
+      std::vector<std::string> keyValues(kRowsPerBatch);
+      for (size_t i = 0; i < kRowsPerBatch; ++i) {
+        const size_t globalIdx = batchIdx * kRowsPerBatch + i;
+        const size_t effectiveIdx = kNumRows - 1 - globalIdx;
+        keyValues[i] = fmt::format("key_{:08d}", effectiveIdx);
+      }
+      auto keyVector = vectorMaker_->flatVector(keyValues);
+      auto dataVector = makeFuzzedComplexVector(
+          ARRAY(INTEGER()), kRowsPerBatch, batchIdx * 77777);
+      batches.push_back(
+          vectorMaker_->rowVector({"key", "data"}, {keyVector, dataVector}));
+    }
+
+    writeDataWithParam(batches, {"key"});
+
+    struct TestCase {
+      std::string name;
+      std::unique_ptr<Filter> filter;
+
+      std::string debugString() const {
+        return fmt::format("name={}", name);
+      }
+    };
+
+    std::vector<TestCase> testCases;
+    // Point lookup (BytesValues) with descending order is NOT supported.
+    testCases.push_back(
+        {"pointLookupDescending",
+         std::make_unique<BytesValues>(
+             std::vector<std::string>{"key_00000100", "key_00000200"}, false)});
+    // Range scan (BytesRange) with descending order is NOT supported.
+    testCases.push_back(
+        {"rangeScanDescending",
+         std::make_unique<BytesRange>(
+             "key_00000100",
+             false,
+             false,
+             "key_00000500",
+             false,
+             false,
+             false)});
+
+    for (auto& testCase : testCases) {
+      SCOPED_TRACE(testCase.debugString());
+
+      std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
+      filters["key"] = testCase.filter->clone();
+
+      auto reader = createReader();
+
+      int64_t numConversionsWithIndex = 0;
+      auto resultsWithIndex = readWithFilters(
+          *reader,
+          rowType,
+          filters,
+          /*indexEnabled=*/true,
+          numConversionsWithIndex);
+
+      int64_t numConversionsWithoutIndex = 0;
+      auto resultsWithoutIndex = readWithFilters(
+          *reader,
+          rowType,
+          filters,
+          /*indexEnabled=*/false,
+          numConversionsWithoutIndex);
+
+      verifyResultsEqual(resultsWithIndex, resultsWithoutIndex);
+
+      EXPECT_EQ(numConversionsWithIndex, 0);
+      EXPECT_EQ(numConversionsWithoutIndex, 0);
+    }
+  }
 }
 
 // Test that random skip (random sampling) produces the same results with and
+// without cluster index enabled.
 // without cluster index enabled. This verifies that the random skip tracker
 // is properly updated when rows are skipped due to index bounds.
 TEST_P(E2EIndexTest, randomSkipWithIndex) {
@@ -2747,7 +3066,11 @@ TEST_P(E2EIndexTest, randomSkipWithIndex) {
            ARRAY(INTEGER()),
            ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  auto keyGenerator = [](size_t idx) -> int64_t { return kMinKey + idx; };
+  auto keyGenerator =
+      [](size_t idx, size_t numRows, bool ascending) -> int64_t {
+    const size_t effectiveIdx = ascending ? idx : (numRows - 1 - idx);
+    return kMinKey + effectiveIdx;
+  };
   auto batches =
       generateNumericKeyData<int64_t>(kNumRows, kRowsPerBatch, keyGenerator);
   writeDataWithParam(batches, {"key"});
