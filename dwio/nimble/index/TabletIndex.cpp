@@ -32,22 +32,20 @@ const serialization::Index* getIndexRoot(const Section& indexSection) {
   return indexRoot;
 }
 
-uint32_t getStripeCount(const Section& indexSection) {
-  const auto* indexRoot = getIndexRoot(indexSection);
+uint32_t getStripeCount(const serialization::Index* indexRoot) {
   const auto* stripeKeys = indexRoot->stripe_keys();
   NIMBLE_CHECK_NOT_NULL(stripeKeys);
   return stripeKeys->size() - 1;
 }
 
-uint32_t getIndexGroupCount(const Section& indexSection) {
-  const auto* indexRoot = getIndexRoot(indexSection);
+uint32_t getIndexGroupCount(const serialization::Index* indexRoot) {
   const auto* stripeIndexGroups = indexRoot->stripe_index_groups();
   NIMBLE_CHECK_NOT_NULL(stripeIndexGroups);
   return stripeIndexGroups->size();
 }
 
-std::vector<std::string_view> getStripeKeys(const Section& indexSection) {
-  const auto* indexRoot = getIndexRoot(indexSection);
+std::vector<std::string_view> getStripeKeys(
+    const serialization::Index* indexRoot) {
   const auto* stripeKeys = indexRoot->stripe_keys();
   NIMBLE_CHECK_NOT_NULL(stripeKeys);
   std::vector<std::string_view> result;
@@ -58,8 +56,8 @@ std::vector<std::string_view> getStripeKeys(const Section& indexSection) {
   return result;
 }
 
-std::vector<std::string> getIndexColumns(const Section& indexSection) {
-  const auto* indexRoot = getIndexRoot(indexSection);
+std::vector<std::string> getIndexColumns(
+    const serialization::Index* indexRoot) {
   const auto* indexColumns = indexRoot->index_columns();
   NIMBLE_CHECK_NOT_NULL(indexColumns);
   std::vector<std::string> result;
@@ -70,8 +68,8 @@ std::vector<std::string> getIndexColumns(const Section& indexSection) {
   return result;
 }
 
-std::vector<velox::core::SortOrder> getSortOrders(const Section& indexSection) {
-  const auto* indexRoot = getIndexRoot(indexSection);
+std::vector<velox::core::SortOrder> getSortOrders(
+    const serialization::Index* indexRoot) {
   const auto* sortOrders = indexRoot->sort_orders();
   NIMBLE_CHECK_NOT_NULL(sortOrders);
   std::vector<velox::core::SortOrder> result;
@@ -92,11 +90,12 @@ std::unique_ptr<TabletIndex> TabletIndex::create(Section indexSection) {
 
 TabletIndex::TabletIndex(Section indexSection)
     : indexSection_{std::move(indexSection)},
-      numStripes_{getStripeCount(indexSection_)},
-      numIndexGroups_{getIndexGroupCount(indexSection_)},
-      stripeKeys_{getStripeKeys(indexSection_)},
-      indexColumns_{getIndexColumns(indexSection_)},
-      sortOrders_{getSortOrders(indexSection_)} {
+      indexRoot_{getIndexRoot(indexSection_)},
+      numStripes_{getStripeCount(indexRoot_)},
+      numIndexGroups_{getIndexGroupCount(indexRoot_)},
+      stripeKeys_{getStripeKeys(indexRoot_)},
+      indexColumns_{getIndexColumns(indexRoot_)},
+      sortOrders_{getSortOrders(indexRoot_)} {
   NIMBLE_CHECK(!indexColumns_.empty());
   NIMBLE_CHECK_EQ(numStripes_ + 1, stripeKeys_.size());
   NIMBLE_CHECK_EQ(indexColumns_.size(), sortOrders_.size());
@@ -136,8 +135,7 @@ std::optional<StripeLocation> TabletIndex::lookup(
 
 MetadataSection TabletIndex::groupIndexMetadata(uint32_t groupIndex) const {
   NIMBLE_CHECK_LT(groupIndex, numIndexGroups_);
-  const auto* indexRoot = getIndexRoot(indexSection_);
-  const auto* indexGroupSections = indexRoot->stripe_index_groups();
+  const auto* indexGroupSections = indexRoot_->stripe_index_groups();
   NIMBLE_CHECK_NOT_NULL(indexGroupSections);
   const auto* metadata = indexGroupSections->Get(groupIndex);
   return MetadataSection{

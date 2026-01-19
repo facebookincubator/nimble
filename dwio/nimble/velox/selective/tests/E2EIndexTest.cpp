@@ -3164,6 +3164,65 @@ TEST_P(E2EIndexTest, randomSkipWithIndex) {
   }
 }
 
+// Test that filters converted to index bounds are properly restored after each
+// row reader completes. This is important for multiple split execution modes
+// where the scan spec is shared across split readers.
+TEST_P(E2EIndexTest, filterRestorationAcrossMultipleSplits) {
+  constexpr int64_t kMinKey = 1'000;
+  constexpr size_t kNumRows = 10'000;
+  constexpr size_t kRowsPerBatch = 1'000;
+
+  auto rowType =
+      ROW({"key", "data", "nested"},
+          {BIGINT(),
+           ARRAY(INTEGER()),
+           ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
+
+  auto keyGenerator =
+      [](size_t idx, size_t numRows, bool ascending) -> int64_t {
+    const size_t effectiveIdx = ascending ? idx : (numRows - 1 - idx);
+    return kMinKey + effectiveIdx;
+  };
+  auto batches =
+      generateNumericKeyData<int64_t>(kNumRows, kRowsPerBatch, keyGenerator);
+  writeDataWithParam(batches, {"key"});
+
+  // Create a shared scan spec with a filter that will be converted to index
+  // bounds.
+  auto scanSpec = std::make_shared<ScanSpec>("root");
+  for (size_t i = 0; i < rowType->size(); ++i) {
+    auto* childSpec =
+        scanSpec->addField(rowType->nameOf(i), static_cast<column_index_t>(i));
+    addChildSpecs(childSpec, rowType->childAt(i));
+  }
+  scanSpec->childByName("key")->setFilter(
+      std::make_unique<BigintRange>(3'000, 7'000, false));
+
+  auto* keySpec = scanSpec->childByName("key");
+  auto reader = createReader();
+
+  RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setRequestedType(rowType);
+  rowReaderOptions.setScanSpec(scanSpec);
+  auto nimbleOptions = std::make_shared<NimbleRowReaderOptions>();
+  nimbleOptions->setIndexEnabled(true);
+  rowReaderOptions.setFormatSpecificOptions(std::move(nimbleOptions));
+
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  // Verify filter is removed after row reader init.
+  EXPECT_EQ(keySpec->filter(), nullptr);
+
+  // Read all data to completion.
+  VectorPtr result = BaseVector::create(rowType, 1, leafPool_.get());
+  while (rowReader->next(1'000, result) > 0) {
+  }
+
+  // Verify filter is restored after row reader completes.
+  ASSERT_NE(keySpec->filter(), nullptr);
+  EXPECT_EQ(keySpec->filter()->kind(), FilterKind::kBigintRange);
+}
+
 // TODO: add schema revolution tests like column renaming to make sure selective
 // reader can handle properly for the index columns.
 } // namespace facebook::nimble::test

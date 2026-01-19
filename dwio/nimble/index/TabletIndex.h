@@ -23,6 +23,10 @@
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "velox/core/PlanNode.h"
 
+namespace facebook::nimble::serialization {
+struct Index;
+} // namespace facebook::nimble::serialization
+
 namespace facebook::nimble::index {
 
 /// Represents the global stripe index within a tablet.
@@ -143,6 +147,7 @@ class TabletIndex {
   explicit TabletIndex(Section indexSection);
 
   const Section indexSection_;
+  const serialization::Index* const indexRoot_;
   const uint32_t numStripes_;
   const uint32_t numIndexGroups_;
   const std::vector<std::string_view> stripeKeys_;
