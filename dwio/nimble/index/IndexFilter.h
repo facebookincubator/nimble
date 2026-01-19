@@ -27,6 +27,18 @@
 
 namespace facebook::nimble {
 
+/// Result of converting filters to index bounds.
+struct FilterToIndexBoundsResult {
+  /// The converted index bounds.
+  velox::serializer::IndexBounds indexBounds;
+
+  /// Filters that were removed from the ScanSpec during conversion.
+  /// These can be used to restore the filters when the row reader completes,
+  /// which is needed when the ScanSpec is shared across multiple split readers.
+  std::vector<std::pair<std::string, std::shared_ptr<velox::common::Filter>>>
+      removedFilters;
+};
+
 /// Converts filters from ScanSpec to IndexBounds for index-based filtering.
 ///
 /// This utility examines the ScanSpec and index column names to extract filters
@@ -70,9 +82,9 @@ namespace facebook::nimble {
 ///        fully captured by the index bounds will be removed from this
 ///        ScanSpec.
 /// @param pool Memory pool for allocations.
-/// @return The converted IndexBounds if filters can be converted, std::nullopt
-///         otherwise.
-std::optional<velox::serializer::IndexBounds> convertFilterToIndexBounds(
+/// @return The result containing the converted IndexBounds and the removed
+///         filters if filters can be converted, std::nullopt otherwise.
+std::optional<FilterToIndexBoundsResult> convertFilterToIndexBounds(
     const std::vector<std::string>& indexColumns,
     const std::vector<velox::core::SortOrder>& sortOrders,
     const velox::RowTypePtr& rowType,

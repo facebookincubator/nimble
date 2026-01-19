@@ -90,6 +90,10 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
     }
   }
 
+  ~SelectiveNimbleRowReader() override {
+    restoreFilters();
+  }
+
   int64_t nextRowNumber() override;
 
   int64_t nextReadSize(uint64_t size) override;
@@ -155,6 +159,14 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
   // Updates the random skip tracker when rows are skipped due to index bounds.
   void maybeUpdateRandomSkip(int64_t rowsSkipped);
 
+  // Sets nextRowNumber_ to kAtEnd and restores any filters that were removed
+  // during index bound conversion.
+  void setAtEnd();
+
+  // Restores filters that were removed during index bound conversion.
+  // Called from both setAtEnd() and the destructor.
+  void restoreFilters();
+
   const std::shared_ptr<ReaderBase> readerBase_;
   const dwio::common::RowReaderOptions options_;
   StripeStreams streams_;
@@ -189,6 +201,12 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
   std::unique_ptr<dwio::common::SelectiveColumnReader> columnReader_;
   dwio::common::ColumnReaderStatistics columnReaderStatistics_;
   std::unique_ptr<RowSizeTracker> rowSizeTracker_;
+
+  // Filters that were removed from the scan spec during index bound conversion.
+  // These need to be restored when the row reader is destroyed, as the scan
+  // spec may be shared across multiple split readers.
+  std::vector<std::pair<std::string, std::shared_ptr<common::Filter>>>
+      filtersToRestore_;
 };
 
 int64_t SelectiveNimbleRowReader::nextRowNumber() {
@@ -222,7 +240,8 @@ int64_t SelectiveNimbleRowReader::nextRowNumber() {
   // index bound filtering (includes both entire trailing stripes and rows at
   // the end of the last stripe).
   maybeUpdateRandomSkip(trailingSkippedRows_);
-  nextRowNumber_ = kAtEnd;
+
+  setAtEnd();
   return kAtEnd;
 }
 
@@ -390,36 +409,34 @@ void SelectiveNimbleRowReader::initIndexBounds() {
       readerBase_->fileSchema());
 
   // Convert filters from scanSpec to index bounds.
-  //
-  // TODO: Add to restore the removed filters after this row reader finish
-  // processing as we might be used in multiple split execution modes and the
-  // scan spec is shared across split readers.
   const auto& sortOrders = tabletIndex->sortOrders();
-  auto indexBounds = convertFilterToIndexBounds(
+  auto result = convertFilterToIndexBounds(
       indexColumns,
       sortOrders,
       readerBase_->fileSchema(),
       *options_.scanSpec(),
       readerBase_->pool());
 
-  if (!indexBounds.has_value()) {
+  if (!result.has_value()) {
     return;
   }
+
+  filtersToRestore_ = std::move(result->removedFilters);
 
   tabletIndex_ = tabletIndex;
 
   addThreadLocalRuntimeStat(
       kNumIndexFilterConversions,
-      velox::RuntimeCounter(indexBounds->indexColumns.size()));
+      velox::RuntimeCounter(result->indexBounds.indexColumns.size()));
 
   auto keyEncoder = velox::serializer::KeyEncoder::create(
-      indexBounds->indexColumns,
-      asRowType(indexBounds->type()),
+      result->indexBounds.indexColumns,
+      asRowType(result->indexBounds.type()),
       std::vector<velox::core::SortOrder>{
           sortOrders.begin(),
-          sortOrders.begin() + indexBounds->indexColumns.size()},
+          sortOrders.begin() + result->indexBounds.indexColumns.size()},
       readerBase_->pool());
-  encodedKeyBounds_ = keyEncoder->encodeIndexBounds(indexBounds.value());
+  encodedKeyBounds_ = keyEncoder->encodeIndexBounds(result->indexBounds);
 
   updateStartStripeFromLowerIndexBound();
   updateEndStripeFromUpperIndexBound();
@@ -516,6 +533,27 @@ void SelectiveNimbleRowReader::maybeUpdateRandomSkip(int64_t rowsSkipped) {
     readerBase_->randomSkip()->consume(
         std::min(static_cast<int64_t>(skip), rowsSkipped));
   }
+}
+
+void SelectiveNimbleRowReader::restoreFilters() {
+  // Restore filters that were removed during index bound conversion.
+  // This is needed because the scan spec may be shared across multiple
+  // split readers in multiple split execution modes.
+  NIMBLE_DCHECK(
+      filtersToRestore_.empty() || tabletIndex_ != nullptr,
+      "filtersToRestore_ should only be set when index bounds are used");
+  for (auto& [columnName, filter] : filtersToRestore_) {
+    auto* childSpec = options_.scanSpec()->childByName(columnName);
+    if (childSpec != nullptr) {
+      childSpec->setFilter(std::move(filter));
+    }
+  }
+  filtersToRestore_.clear();
+}
+
+void SelectiveNimbleRowReader::setAtEnd() {
+  restoreFilters();
+  nextRowNumber_ = kAtEnd;
 }
 
 void SelectiveNimbleRowReader::setStripeRowRange() {

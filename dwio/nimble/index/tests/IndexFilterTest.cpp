@@ -220,7 +220,7 @@ TEST_F(IndexFilterTest, noMatchingFilter) {
         pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     // Only "a" should be included - stops at missing filter on "b".
     EXPECT_EQ(bounds.indexColumns.size(), 1);
     EXPECT_EQ(bounds.indexColumns[0], "a");
@@ -232,6 +232,124 @@ TEST_F(IndexFilterTest, noMatchingFilter) {
     // converted (due to gap at "b").
     EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
     EXPECT_NE(scanSpec->childByName("c")->filter(), nullptr);
+  }
+}
+
+TEST_F(IndexFilterTest, removedFilters) {
+  // Test that removed filters are returned correctly.
+  const auto rowType = ROW({"a", "b", "c"}, {BIGINT(), BIGINT(), BIGINT()});
+
+  {
+    // Single column filter - one filter removed.
+    std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
+    filters["a"] = std::make_unique<BigintRange>(10, 20, false);
+    auto scanSpec = createScanSpec(rowType, filters);
+
+    auto result = convertFilterToIndexBounds(
+        {"a", "b", "c"},
+        {core::kAscNullsFirst, core::kAscNullsFirst, core::kAscNullsFirst},
+        rowType,
+        *scanSpec,
+        pool_.get());
+    ASSERT_TRUE(result.has_value());
+
+    // Verify removed filters.
+    ASSERT_EQ(result->removedFilters.size(), 1);
+    EXPECT_EQ(result->removedFilters[0].first, "a");
+    ASSERT_NE(result->removedFilters[0].second, nullptr);
+    EXPECT_EQ(
+        result->removedFilters[0].second->kind(), FilterKind::kBigintRange);
+  }
+
+  {
+    // Two column filters - two filters removed.
+    std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
+    filters["a"] = std::make_unique<BigintRange>(42, 42, false);
+    filters["b"] = std::make_unique<BigintRange>(100, 100, false);
+    auto scanSpec = createScanSpec(rowType, filters);
+
+    auto result = convertFilterToIndexBounds(
+        {"a", "b", "c"},
+        {core::kAscNullsFirst, core::kAscNullsFirst, core::kAscNullsFirst},
+        rowType,
+        *scanSpec,
+        pool_.get());
+    ASSERT_TRUE(result.has_value());
+
+    // Verify removed filters.
+    ASSERT_EQ(result->removedFilters.size(), 2);
+    EXPECT_EQ(result->removedFilters[0].first, "a");
+    EXPECT_EQ(
+        result->removedFilters[0].second->kind(), FilterKind::kBigintRange);
+    EXPECT_EQ(result->removedFilters[1].first, "b");
+    EXPECT_EQ(
+        result->removedFilters[1].second->kind(), FilterKind::kBigintRange);
+  }
+
+  {
+    // Gap in filter chain - only first filter removed.
+    std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
+    filters["a"] = std::make_unique<BigintRange>(42, 42, false);
+    filters["c"] = std::make_unique<BigintRange>(100, 100, false);
+    auto scanSpec = createScanSpec(rowType, filters);
+
+    auto result = convertFilterToIndexBounds(
+        {"a", "b", "c"},
+        {core::kAscNullsFirst, core::kAscNullsFirst, core::kAscNullsFirst},
+        rowType,
+        *scanSpec,
+        pool_.get());
+    ASSERT_TRUE(result.has_value());
+
+    // Only "a" should be removed due to gap at "b".
+    ASSERT_EQ(result->removedFilters.size(), 1);
+    EXPECT_EQ(result->removedFilters[0].first, "a");
+    EXPECT_EQ(
+        result->removedFilters[0].second->kind(), FilterKind::kBigintRange);
+  }
+
+  {
+    // Range + range - only first filter removed (range stops extraction).
+    std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
+    filters["a"] = std::make_unique<BigintRange>(10, 100, false);
+    filters["b"] = std::make_unique<BigintRange>(200, 300, false);
+    auto scanSpec = createScanSpec(rowType, filters);
+
+    auto result = convertFilterToIndexBounds(
+        {"a", "b"},
+        {core::kAscNullsFirst, core::kAscNullsFirst},
+        rowType,
+        *scanSpec,
+        pool_.get());
+    ASSERT_TRUE(result.has_value());
+
+    // Only "a" should be removed because it's a range scan.
+    ASSERT_EQ(result->removedFilters.size(), 1);
+    EXPECT_EQ(result->removedFilters[0].first, "a");
+    EXPECT_EQ(
+        result->removedFilters[0].second->kind(), FilterKind::kBigintRange);
+  }
+
+  {
+    // No matching filter - no result, no removed filters.
+    std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
+    filters["b"] = std::make_unique<BigintRange>(10, 20, false);
+    auto scanSpec = createScanSpec(rowType, filters);
+
+    auto result = convertFilterToIndexBounds(
+        {"a"}, {core::kAscNullsFirst}, rowType, *scanSpec, pool_.get());
+    EXPECT_FALSE(result.has_value());
+  }
+
+  {
+    // Unsupported filter - no result, no removed filters.
+    std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
+    filters["a"] = std::make_unique<IsNull>();
+    auto scanSpec = createScanSpec(rowType, filters);
+
+    auto result = convertFilterToIndexBounds(
+        {"a"}, {core::kAscNullsFirst}, rowType, *scanSpec, pool_.get());
+    EXPECT_FALSE(result.has_value());
   }
 }
 
@@ -265,7 +383,7 @@ TEST_F(IndexFilterTest, sortOrder) {
         pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     // All three columns should be included: point lookup on "a" and "b",
     // range on "c".
     EXPECT_EQ(bounds.indexColumns.size(), 3);
@@ -341,7 +459,7 @@ TEST_P(IndexFilterTestWithSortOrder, bigintFilter) {
         {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
     ASSERT_TRUE(bounds.lowerBound.has_value());
     ASSERT_TRUE(bounds.upperBound.has_value());
@@ -366,7 +484,7 @@ TEST_P(IndexFilterTestWithSortOrder, bigintFilter) {
         {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
     ASSERT_TRUE(bounds.lowerBound.has_value());
     ASSERT_TRUE(bounds.upperBound.has_value());
@@ -391,7 +509,7 @@ TEST_P(IndexFilterTestWithSortOrder, bigintFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns.size(), 2);
     EXPECT_EQ(bounds.indexColumns[0], "a");
     EXPECT_EQ(bounds.indexColumns[1], "b");
@@ -419,7 +537,7 @@ TEST_P(IndexFilterTestWithSortOrder, bigintFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     // Only column "a" should be included because it's a range scan.
     // The range filter stops extraction from including subsequent columns.
     EXPECT_EQ(bounds.indexColumns.size(), 1);
@@ -446,7 +564,7 @@ TEST_P(IndexFilterTestWithSortOrder, bigintFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns.size(), 2);
     EXPECT_EQ(bounds.indexColumns[0], "a");
     EXPECT_EQ(bounds.indexColumns[1], "b");
@@ -478,7 +596,7 @@ TEST_P(IndexFilterTestWithSortOrder, integerTypesFilter) {
             {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
         ASSERT_TRUE(result.has_value());
 
-        const auto& bounds = result.value();
+        const auto& bounds = result->indexBounds;
         EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
         verifyRangeBounds<T>(bounds, "a", lower, upper);
         EXPECT_EQ(scanSpec->childByName("a")->filter(), nullptr);
@@ -508,7 +626,7 @@ TEST_P(IndexFilterTestWithSortOrder, integerTypesFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns.size(), 2);
     EXPECT_EQ(bounds.indexColumns[0], "a");
     EXPECT_EQ(bounds.indexColumns[1], "b");
@@ -545,7 +663,7 @@ TEST_P(IndexFilterTestWithSortOrder, doubleFilter) {
         {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
     ASSERT_TRUE(bounds.lowerBound.has_value());
     ASSERT_TRUE(bounds.upperBound.has_value());
@@ -571,7 +689,7 @@ TEST_P(IndexFilterTestWithSortOrder, doubleFilter) {
         {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
     ASSERT_TRUE(bounds.lowerBound.has_value());
     ASSERT_TRUE(bounds.upperBound.has_value());
@@ -598,7 +716,7 @@ TEST_P(IndexFilterTestWithSortOrder, doubleFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns.size(), 2);
     EXPECT_EQ(bounds.indexColumns[0], "a");
     EXPECT_EQ(bounds.indexColumns[1], "b");
@@ -628,7 +746,7 @@ TEST_P(IndexFilterTestWithSortOrder, doubleFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     // Only column "a" should be included because it's a range scan.
     // The range filter stops extraction from including subsequent columns.
     EXPECT_EQ(bounds.indexColumns.size(), 1);
@@ -657,7 +775,7 @@ TEST_P(IndexFilterTestWithSortOrder, doubleFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns.size(), 2);
     EXPECT_EQ(bounds.indexColumns[0], "a");
     EXPECT_EQ(bounds.indexColumns[1], "b");
@@ -685,7 +803,7 @@ TEST_P(IndexFilterTestWithSortOrder, doubleFilter) {
         {"a"}, sortOrders(1), singleColRowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_FALSE(bounds.lowerBound->inclusive);
     EXPECT_FALSE(bounds.upperBound->inclusive);
     verifyRangeBounds<double>(bounds, "a", 1.5, 10.5);
@@ -709,7 +827,7 @@ TEST_P(IndexFilterTestWithSortOrder, doubleFilter) {
         {"a"}, sortOrders(1), singleColRowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     if (isAscending()) {
       verifyNullBound(bounds.lowerBound->bound, "a");
       verifyBound<double>(bounds.upperBound->bound, "a", 10.5);
@@ -737,7 +855,7 @@ TEST_P(IndexFilterTestWithSortOrder, doubleFilter) {
         {"a"}, sortOrders(1), singleColRowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     if (isAscending()) {
       verifyBound<double>(bounds.lowerBound->bound, "a", 1.5);
       verifyNullBound(bounds.upperBound->bound, "a");
@@ -762,7 +880,7 @@ TEST_P(IndexFilterTestWithSortOrder, floatFilter) {
         {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
     ASSERT_TRUE(bounds.lowerBound.has_value());
     ASSERT_TRUE(bounds.upperBound.has_value());
@@ -788,7 +906,7 @@ TEST_P(IndexFilterTestWithSortOrder, floatFilter) {
         {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
     ASSERT_TRUE(bounds.lowerBound.has_value());
     ASSERT_TRUE(bounds.upperBound.has_value());
@@ -815,7 +933,7 @@ TEST_P(IndexFilterTestWithSortOrder, floatFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns.size(), 2);
     EXPECT_EQ(bounds.indexColumns[0], "a");
     EXPECT_EQ(bounds.indexColumns[1], "b");
@@ -845,7 +963,7 @@ TEST_P(IndexFilterTestWithSortOrder, floatFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     // Only column "a" should be included because it's a range scan.
     // The range filter stops extraction from including subsequent columns.
     EXPECT_EQ(bounds.indexColumns.size(), 1);
@@ -874,7 +992,7 @@ TEST_P(IndexFilterTestWithSortOrder, floatFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns.size(), 2);
     EXPECT_EQ(bounds.indexColumns[0], "a");
     EXPECT_EQ(bounds.indexColumns[1], "b");
@@ -902,7 +1020,7 @@ TEST_P(IndexFilterTestWithSortOrder, floatFilter) {
         {"a"}, sortOrders(1), singleColRowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_FALSE(bounds.lowerBound->inclusive);
     EXPECT_FALSE(bounds.upperBound->inclusive);
     verifyRangeBounds<float>(bounds, "a", 1.5f, 10.5f);
@@ -926,7 +1044,7 @@ TEST_P(IndexFilterTestWithSortOrder, floatFilter) {
         {"a"}, sortOrders(1), singleColRowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     if (isAscending()) {
       verifyNullBound(bounds.lowerBound->bound, "a");
       verifyBound<float>(bounds.upperBound->bound, "a", 10.5f);
@@ -954,7 +1072,7 @@ TEST_P(IndexFilterTestWithSortOrder, floatFilter) {
         {"a"}, sortOrders(1), singleColRowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     if (isAscending()) {
       verifyBound<float>(bounds.lowerBound->bound, "a", 1.5f);
       verifyNullBound(bounds.upperBound->bound, "a");
@@ -984,7 +1102,7 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
         {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
     EXPECT_EQ(result.has_value(), ascending);
     if (ascending) {
-      const auto& bounds = result.value();
+      const auto& bounds = result->indexBounds;
       EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
       verifyBound<StringView>(
           bounds.lowerBound->bound, "a", StringView("hello"));
@@ -1008,7 +1126,7 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
         {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
     EXPECT_EQ(result.has_value(), ascending);
     if (ascending) {
-      const auto& bounds = result.value();
+      const auto& bounds = result->indexBounds;
       EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
       verifyBound<StringView>(
           bounds.lowerBound->bound, "a", StringView("hello"));
@@ -1032,7 +1150,7 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
         {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
     EXPECT_EQ(result.has_value(), ascending);
     if (ascending) {
-      const auto& bounds = result.value();
+      const auto& bounds = result->indexBounds;
       EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
       verifyBound<StringView>(bounds.lowerBound->bound, "a", StringView("abc"));
       verifyBound<StringView>(bounds.upperBound->bound, "a", StringView("xyz"));
@@ -1057,7 +1175,7 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     EXPECT_EQ(result.has_value(), ascending);
     if (ascending) {
-      const auto& bounds = result.value();
+      const auto& bounds = result->indexBounds;
       EXPECT_EQ(bounds.indexColumns.size(), 2);
       verifyBound<StringView>(
           bounds.lowerBound->bound, "a", StringView("hello"));
@@ -1087,7 +1205,7 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     EXPECT_EQ(result.has_value(), ascending);
     if (ascending) {
-      const auto& bounds = result.value();
+      const auto& bounds = result->indexBounds;
       EXPECT_EQ(bounds.indexColumns.size(), 1);
       verifyBound<StringView>(bounds.lowerBound->bound, "a", StringView("aaa"));
       verifyBound<StringView>(bounds.upperBound->bound, "a", StringView("bbb"));
@@ -1113,7 +1231,7 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     EXPECT_EQ(result.has_value(), ascending);
     if (ascending) {
-      const auto& bounds = result.value();
+      const auto& bounds = result->indexBounds;
       EXPECT_EQ(bounds.indexColumns.size(), 2);
       verifyBound<StringView>(
           bounds.lowerBound->bound, "a", StringView("hello"));
@@ -1144,7 +1262,7 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
         {"a"}, sortOrders(1), singleColRowType, *scanSpec, pool_.get());
     EXPECT_EQ(result.has_value(), ascending);
     if (ascending) {
-      const auto& bounds = result.value();
+      const auto& bounds = result->indexBounds;
       EXPECT_FALSE(bounds.lowerBound->inclusive);
       EXPECT_FALSE(bounds.upperBound->inclusive);
       verifyBound<StringView>(bounds.lowerBound->bound, "a", StringView("abc"));
@@ -1165,7 +1283,7 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
         {"a"}, sortOrders(1), singleColRowType, *scanSpec, pool_.get());
     EXPECT_EQ(result.has_value(), ascending);
     if (ascending) {
-      const auto& bounds = result.value();
+      const auto& bounds = result->indexBounds;
       verifyNullBound(bounds.lowerBound->bound, "a");
       verifyBound<StringView>(bounds.upperBound->bound, "a", StringView("xyz"));
     }
@@ -1184,7 +1302,7 @@ TEST_P(IndexFilterTestWithSortOrder, bytesFilter) {
         {"a"}, sortOrders(1), singleColRowType, *scanSpec, pool_.get());
     EXPECT_EQ(result.has_value(), ascending);
     if (ascending) {
-      const auto& bounds = result.value();
+      const auto& bounds = result->indexBounds;
       verifyBound<StringView>(bounds.lowerBound->bound, "a", StringView("abc"));
       verifyNullBound(bounds.upperBound->bound, "a");
     }
@@ -1221,7 +1339,7 @@ TEST_P(IndexFilterTestWithSortOrder, boolValueFilter) {
           {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
       ASSERT_TRUE(result.has_value());
 
-      const auto& bounds = result.value();
+      const auto& bounds = result->indexBounds;
       verifyBound<bool>(bounds.lowerBound->bound, "a", value);
       verifyBound<bool>(bounds.upperBound->bound, "a", value);
     }
@@ -1242,7 +1360,7 @@ TEST_P(IndexFilterTestWithSortOrder, boolValueFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns.size(), 2);
     EXPECT_EQ(bounds.indexColumns[0], "a");
     EXPECT_EQ(bounds.indexColumns[1], "b");
@@ -1272,7 +1390,7 @@ TEST_P(IndexFilterTestWithSortOrder, boolValueFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns.size(), 2);
     EXPECT_EQ(bounds.indexColumns[0], "a");
     EXPECT_EQ(bounds.indexColumns[1], "b");
@@ -1302,7 +1420,7 @@ TEST_P(IndexFilterTestWithSortOrder, boolValueFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     // Only column "a" should be included because it's a range scan.
     EXPECT_EQ(bounds.indexColumns.size(), 1);
     EXPECT_EQ(bounds.indexColumns[0], "a");
@@ -1331,7 +1449,7 @@ TEST_P(IndexFilterTestWithSortOrder, timestampFilter) {
         {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
     ASSERT_TRUE(bounds.lowerBound.has_value());
     ASSERT_TRUE(bounds.upperBound.has_value());
@@ -1356,7 +1474,7 @@ TEST_P(IndexFilterTestWithSortOrder, timestampFilter) {
         {"a"}, sortOrders(1), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns, std::vector<std::string>{"a"});
     ASSERT_TRUE(bounds.lowerBound.has_value());
     ASSERT_TRUE(bounds.upperBound.has_value());
@@ -1384,7 +1502,7 @@ TEST_P(IndexFilterTestWithSortOrder, timestampFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns.size(), 2);
     EXPECT_EQ(bounds.indexColumns[0], "a");
     EXPECT_EQ(bounds.indexColumns[1], "b");
@@ -1415,7 +1533,7 @@ TEST_P(IndexFilterTestWithSortOrder, timestampFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     // Only column "a" should be included because it's a range scan.
     // The range filter stops extraction from including subsequent columns.
     EXPECT_EQ(bounds.indexColumns.size(), 1);
@@ -1444,7 +1562,7 @@ TEST_P(IndexFilterTestWithSortOrder, timestampFilter) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns.size(), 2);
     EXPECT_EQ(bounds.indexColumns[0], "a");
     EXPECT_EQ(bounds.indexColumns[1], "b");
@@ -1481,7 +1599,7 @@ TEST_P(IndexFilterTestWithSortOrder, mixedFilterDataTypes) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     const size_t expectedColumns = ascending ? 2 : 1;
     EXPECT_EQ(bounds.indexColumns.size(), expectedColumns);
     EXPECT_EQ(bounds.indexColumns[0], "a");
@@ -1516,7 +1634,7 @@ TEST_P(IndexFilterTestWithSortOrder, mixedFilterDataTypes) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns.size(), 2);
     EXPECT_EQ(bounds.indexColumns[0], "a");
     EXPECT_EQ(bounds.indexColumns[1], "b");
@@ -1547,7 +1665,7 @@ TEST_P(IndexFilterTestWithSortOrder, mixedFilterDataTypes) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     EXPECT_EQ(result.has_value(), ascending);
     if (ascending) {
-      const auto& bounds = result.value();
+      const auto& bounds = result->indexBounds;
       EXPECT_EQ(bounds.indexColumns.size(), 2);
       verifyBound<StringView>(
           bounds.lowerBound->bound, "a", StringView("hello"));
@@ -1577,7 +1695,7 @@ TEST_P(IndexFilterTestWithSortOrder, mixedFilterDataTypes) {
         {"a", "b"}, sortOrders(2), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     // Only "a" because it's a range filter.
     EXPECT_EQ(bounds.indexColumns.size(), 1);
     EXPECT_EQ(bounds.indexColumns[0], "a");
@@ -1605,7 +1723,7 @@ TEST_P(IndexFilterTestWithSortOrder, mixedFilterDataTypes) {
         {"a", "b", "c"}, sortOrders(3), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     EXPECT_EQ(bounds.indexColumns.size(), 3);
     EXPECT_EQ(bounds.indexColumns[0], "a");
     EXPECT_EQ(bounds.indexColumns[1], "b");
@@ -1641,7 +1759,7 @@ TEST_P(IndexFilterTestWithSortOrder, mixedFilterDataTypes) {
         {"a", "b", "c"}, sortOrders(3), rowType, *scanSpec, pool_.get());
     ASSERT_TRUE(result.has_value());
 
-    const auto& bounds = result.value();
+    const auto& bounds = result->indexBounds;
     const size_t expectedColumns = ascending ? 2 : 1;
     EXPECT_EQ(bounds.indexColumns.size(), expectedColumns);
     EXPECT_EQ(bounds.indexColumns[0], "a");

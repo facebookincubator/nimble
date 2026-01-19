@@ -377,7 +377,7 @@ void addColumnBound(
 
 } // namespace
 
-std::optional<serializer::IndexBounds> convertFilterToIndexBounds(
+std::optional<FilterToIndexBoundsResult> convertFilterToIndexBounds(
     const std::vector<std::string>& indexColumns,
     const std::vector<core::SortOrder>& sortOrders,
     const RowTypePtr& rowType,
@@ -451,10 +451,15 @@ std::optional<serializer::IndexBounds> convertFilterToIndexBounds(
     return std::nullopt;
   }
 
-  // Remove filters from scanSpec for columns that are covered by index bounds.
+  // Save filters before removing them from scanSpec. This allows callers to
+  // restore the filters when needed (e.g., when the ScanSpec is shared across
+  // multiple split readers).
+  std::vector<std::pair<std::string, std::shared_ptr<common::Filter>>>
+      removedFilters;
   for (const auto& columnName : boundColumnNames) {
     auto* childSpec = scanSpec.childByName(columnName);
-    if (childSpec != nullptr) {
+    if (childSpec != nullptr && childSpec->filter() != nullptr) {
+      removedFilters.emplace_back(columnName, childSpec->filter()->clone());
       childSpec->setFilter(nullptr);
     }
   }
@@ -479,7 +484,8 @@ std::optional<serializer::IndexBounds> convertFilterToIndexBounds(
   bounds.upperBound =
       serializer::IndexBound{std::move(upperRowVector), upperInclusive};
 
-  return bounds;
+  return FilterToIndexBoundsResult{
+      std::move(bounds), std::move(removedFilters)};
 }
 
 } // namespace facebook::nimble
