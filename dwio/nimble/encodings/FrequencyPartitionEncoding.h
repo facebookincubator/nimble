@@ -190,9 +190,12 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
   constexpr uint32_t keyBitOptions[] = {1, 2, 4, 8, 16, 32};
   constexpr uint32_t maxKeyBits = getMaxKeyBits();
 
+  // All partitions except the last one are coded tiers
+  // The last partition is the unencoded partition (if it exists)
+  const uint32_t numCodedTiers = (numPartitions > 0) ? numPartitions - 1 : 0;
+
   for (uint32_t i = 0; i < numPartitions; ++i) {
-    if (i < sizeof(keyBitOptions) / sizeof(keyBitOptions[0]) &&
-        keyBitOptions[i] <= maxKeyBits) {
+    if (i < numCodedTiers) {
       // This is a coded tier
       TierInfo tier(this->pool_);
       tier.keyBits = keyBitOptions[i];
@@ -291,7 +294,7 @@ void FrequencyPartitionEncoding<T>::materialize(
   uint32_t remaining = rowCount;
   uint32_t outputIdx = 0;
 
-  while (remaining > 0 && currentTier_ <= tiers_.size()) {
+  while (remaining > 0) {
     if (currentTier_ < tiers_.size()) {
       const auto& tier = tiers_[currentTier_];
       const uint32_t availableInTier = tier.size - currentTierOffset_;
@@ -310,14 +313,25 @@ void FrequencyPartitionEncoding<T>::materialize(
         ++currentTier_;
         currentTierOffset_ = 0;
       }
-    } else {
+    } else if (currentTier_ == tiers_.size()) {
       // Read from unencoded partition
-      const uint32_t toRead =
-          std::min(remaining, static_cast<uint32_t>(unencodedValues_.size()));
+      const uint32_t availableUnencoded = 
+          static_cast<uint32_t>(unencodedValues_.size()) - currentTierOffset_;
+      const uint32_t toRead = std::min(remaining, availableUnencoded);
+      
       for (uint32_t i = 0; i < toRead; ++i) {
         output[outputIdx++] = unencodedValues_[currentTierOffset_ + i];
       }
+      
+      currentTierOffset_ += toRead;
       remaining -= toRead;
+      
+      if (currentTierOffset_ >= unencodedValues_.size()) {
+        ++currentTier_; // Move past unencoded partition
+        currentTierOffset_ = 0;
+      }
+    } else {
+      // No more data to read
       break;
     }
   }
@@ -353,12 +367,6 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
     std::span<const physicalType> values,
     Buffer& buffer) {
   const uint32_t valueCount = values.size();
-
-  // Early exit for small datasets
-  if (valueCount < 3) {
-    // Fall back to trivial encoding for very small datasets
-    return {};
-  }
 
   // Build frequency map
   folly::F14FastMap<physicalType, uint32_t> frequencyMap;
@@ -565,16 +573,13 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
   encoding::writeUint32(serializedSizes.size(), pos);
   encoding::writeBytes(serializedSizes, pos);
 
-  for (const auto& dict : serializedDicts) {
-    if (!dict.empty()) {
-      encoding::writeUint32(dict.size(), pos);
-      encoding::writeBytes(dict, pos);
-    }
-  }
-  for (const auto& keys : serializedKeys) {
-    if (!keys.empty()) {
-      encoding::writeUint32(keys.size(), pos);
-      encoding::writeBytes(keys, pos);
+  // Write dictionary and keys for each tier together
+  for (size_t i = 0; i < serializedDicts.size(); ++i) {
+    if (!serializedDicts[i].empty()) {
+      encoding::writeUint32(serializedDicts[i].size(), pos);
+      encoding::writeBytes(serializedDicts[i], pos);
+      encoding::writeUint32(serializedKeys[i].size(), pos);
+      encoding::writeBytes(serializedKeys[i], pos);
     }
   }
   if (!serializedUnencoded.empty()) {
