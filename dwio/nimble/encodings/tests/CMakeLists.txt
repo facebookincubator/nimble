@@ -21,6 +21,7 @@ add_executable(
   EncodingSelectionTest.cpp
   EncodingTest.cpp
   EncodingLegacyTest.cpp
+  FrequencyPartitionEncodingTest.cpp
   MainlyConstantEncodingTest.cpp
   NullableEncodingTest.cpp
   RleEncodingTest.cpp

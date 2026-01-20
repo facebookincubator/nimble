@@ -31,6 +31,7 @@
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
@@ -147,6 +148,11 @@ struct EncodingTypeGetter<nimble::DictionaryEncoding<T>> {
 template <typename T>
 struct EncodingTypeGetter<nimble::FixedBitWidthEncoding<T>> {
   static constexpr nimble::EncodingType value = nimble::EncodingType::FixedBitWidth;
+};
+
+template <typename T>
+struct EncodingTypeGetter<nimble::FrequencyPartitionEncoding<T>> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::FrequencyPartition;
 };
 
 template <typename T>
