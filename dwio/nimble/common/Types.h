@@ -104,15 +104,11 @@ enum class EncodingType {
   // shared across consecutive entries to reduce storage. Supports seek
   // operations for efficient random access.
   Prefix = 11,
-  // Stores data using frequency-based partitioning with variable-bit codes.
-  // Most frequent values get shorter codes (1-bit, 2-bit, etc.) similar to
-  // Huffman encoding while maintaining random access. Rows are reordered to
-  // group same-length codes together into partitions.
+  // Partitions data by value frequency. Frequent values get shorter bit-width
+  // codes. Rows are reordered to group values with same code length.
   FrequencyPartition = 12,
-  // Frame of Reference encoding: divides data into fixed-size frames and
-  // stores each value as an offset from the frame's minimum value (reference).
-  // Offsets are bit-packed for compression. Supports true O(1) random access
-  // without delta dependencies. Order is preserved.
+  // Frame of Reference: stores offsets from per-frame minimum values.
+  // Supports O(1) random access. Preserves row order.
   FOR = 13,
 };
 std::string toString(EncodingType encodingType);
