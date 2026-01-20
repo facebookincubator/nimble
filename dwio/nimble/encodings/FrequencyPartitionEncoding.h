@@ -33,33 +33,24 @@
 #include "folly/container/F14Map.h"
 #include "velox/common/memory/Memory.h"
 
-// Frequency partition encoding emulates Huffman encoding while maintaining
-// random access by:
-// 1. Analyzing value frequency distribution
-// 2. Assigning shorter bit-width codes to more frequent values
-//    (1-bit for top 2 values, 2-bit for next 4, 4-bit for next 16, etc.)
-// 3. Reordering rows to group same-length codes into contiguous partitions
-// 4. Encoding each partition with appropriate bit-width
+// Frequency partition encoding assigns shorter bit widths to more frequent
+// values, similar to Huffman coding but with random access support. Values
+// are partitioned by frequency into tiers (1-bit, 2-bit, 4-bit, etc.) and
+// rows are reordered to group same-tier values together.
 //
-// NOTE: This encoding REORDERS ROWS. The reordering must be applied at the
-// table level before queries. Random access indices used in queries must
-// account for this reordering.
+// Note: This encoding reorders rows. Original row order is not preserved.
 //
-// TODO: Implement table-level row reordering coordination
-// TODO: Store reordering permutation metadata for reconstructing original order
-// TODO: Consider integration with Nimble's automatic encoding selection
+// Data layout is:
+// Encoding::kPrefixSize bytes: standard Encoding prefix
+// 4 bytes: number of partitions
+// XX bytes: partition offsets encoding (nested)
+// YY bytes: partition sizes encoding (nested)
+// For each tier (1-bit, 2-bit, 4-bit, 8-bit, 16-bit, 32-bit):
+//   ZZ bytes: dictionary encoding (nested, if tier non-empty)
+//   WW bytes: keys encoding (nested, if tier non-empty)
+// VV bytes: unencoded values (nested, if any)
 
 namespace facebook::nimble {
-
-/// The layout for a frequency partition encoding is:
-/// Encoding::kPrefixSize bytes: standard Encoding prefix
-/// 4 bytes: number of partitions
-/// XX bytes: partition offsets encoding (cumulative sum of partition sizes)
-/// YY bytes: partition sizes encoding
-/// For each tier (1-bit, 2-bit, 4-bit, 8-bit, 16-bit, 32-bit):
-///   ZZ bytes: dictionary encoding (if tier is non-empty)
-///   WW bytes: keys encoding (if tier is non-empty)
-/// VV bytes: unencoded values encoding (if any values don't fit in tiers)
 
 template <typename T>
 class FrequencyPartitionEncoding
@@ -89,14 +80,13 @@ class FrequencyPartitionEncoding
   std::string debugString(int offset) const final;
 
  private:
-  // Helper structures for encoding
   struct TierInfo {
-    uint32_t keyBits;        // Number of bits per key (1, 2, 4, 8, 16, 32)
-    uint32_t capacity;       // Max number of unique values in this tier
-    Vector<T> dictionary;    // Unique values in this tier
-    Vector<uint32_t> indices; // Indices into dictionary (decoded from keys)
-    uint32_t startRow;       // Starting row index in the reordered data
-    uint32_t size;           // Number of rows in this partition
+    uint32_t keyBits;
+    uint32_t capacity;
+    Vector<T> dictionary;
+    Vector<uint32_t> indices;
+    uint32_t startRow;
+    uint32_t size;
 
     TierInfo(velox::memory::MemoryPool* pool)
         : keyBits(0),
@@ -118,13 +108,11 @@ class FrequencyPartitionEncoding
                            : 0;
   }
 
-  // Determine max key bits based on value size
   static constexpr uint32_t getMaxKeyBits() {
     constexpr size_t valueSize =
         std::is_same_v<T, std::string_view> ? sizeof(int64_t) : sizeof(T);
     constexpr size_t valueBits = valueSize * 8;
 
-    // Can use keys smaller than the value size for compression
     if constexpr (valueBits <= 8) {
       return 4; // For 1-byte values, can use up to 4-bit keys
     } else if constexpr (valueBits <= 16) {
@@ -136,18 +124,14 @@ class FrequencyPartitionEncoding
     }
   }
 
-  // Tier information for each partition
   std::vector<TierInfo> tiers_;
 
-  // Unencoded values (fallback for values that don't fit in any tier)
   Vector<T> unencodedValues_;
   uint32_t unencodedStartRow_;
 
-  // Current decoding state
   uint32_t currentTier_;
   uint32_t currentTierOffset_;
 
-  // Helper to determine which tier a row belongs to
   uint32_t getTierForRow(uint32_t rowIndex) const;
 };
 
@@ -167,7 +151,6 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
   const auto* pos = data.data() + kNumPartitionsOffset;
   const uint32_t numPartitions = encoding::readUint32(pos);
 
-  // Read partition metadata
   const uint32_t partitionOffsetsSize = encoding::readUint32(pos);
   auto partitionOffsetsEncoding =
       EncodingFactory::decode(*this->pool_, {pos, partitionOffsetsSize});
@@ -178,7 +161,6 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
       EncodingFactory::decode(*this->pool_, {pos, partitionSizesSize});
   pos += partitionSizesSize;
 
-  // Decode partition info
   Vector<uint32_t> partitionOffsets{this->pool_};
   Vector<uint32_t> partitionSizes{this->pool_};
   partitionOffsets.resize(numPartitions);
@@ -186,17 +168,13 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
   partitionOffsetsEncoding->materialize(numPartitions, partitionOffsets.data());
   partitionSizesEncoding->materialize(numPartitions, partitionSizes.data());
 
-  // Read tier data
   constexpr uint32_t keyBitOptions[] = {1, 2, 4, 8, 16, 32};
   constexpr uint32_t maxKeyBits = getMaxKeyBits();
 
-  // All partitions except the last one are coded tiers
-  // The last partition is the unencoded partition (if it exists)
   const uint32_t numCodedTiers = (numPartitions > 0) ? numPartitions - 1 : 0;
 
   for (uint32_t i = 0; i < numPartitions; ++i) {
     if (i < numCodedTiers) {
-      // This is a coded tier
       TierInfo tier(this->pool_);
       tier.keyBits = keyBitOptions[i];
       tier.capacity = getCapacity(tier.keyBits);
@@ -204,7 +182,6 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
       tier.size = partitionSizes[i];
 
       if (tier.size > 0) {
-        // Read dictionary
         const uint32_t dictSize = encoding::readUint32(pos);
         auto dictEncoding =
             EncodingFactory::decode(*this->pool_, {pos, dictSize});
@@ -214,20 +191,17 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
         tier.dictionary.resize(dictCount);
         dictEncoding->materialize(dictCount, tier.dictionary.data());
 
-        // Read keys
         const uint32_t keysSize = encoding::readUint32(pos);
         auto keysEncoding =
             EncodingFactory::decode(*this->pool_, {pos, keysSize});
         pos += keysSize;
 
-        // Decode keys to indices
         tier.indices.resize(tier.size);
         keysEncoding->materialize(tier.size, tier.indices.data());
       }
 
       tiers_.push_back(std::move(tier));
     } else {
-      // This is the unencoded partition
       unencodedStartRow_ = partitionOffsets[i];
       const uint32_t unencodedSize = partitionSizes[i];
 
@@ -252,20 +226,17 @@ void FrequencyPartitionEncoding<T>::reset() {
 
 template <typename T>
 uint32_t FrequencyPartitionEncoding<T>::getTierForRow(uint32_t rowIndex) const {
-  // Check coded tiers
   for (uint32_t i = 0; i < tiers_.size(); ++i) {
     if (rowIndex >= tiers_[i].startRow &&
         rowIndex < tiers_[i].startRow + tiers_[i].size) {
       return i;
     }
   }
-  // Must be in unencoded partition
   return tiers_.size();
 }
 
 template <typename T>
 void FrequencyPartitionEncoding<T>::skip(uint32_t rowCount) {
-  // Update position based on partitions
   uint32_t remaining = rowCount;
   while (remaining > 0 && currentTier_ <= tiers_.size()) {
     if (currentTier_ < tiers_.size()) {
@@ -280,7 +251,6 @@ void FrequencyPartitionEncoding<T>::skip(uint32_t rowCount) {
         currentTierOffset_ = 0;
       }
     } else {
-      // In unencoded partition
       break;
     }
   }
@@ -300,7 +270,6 @@ void FrequencyPartitionEncoding<T>::materialize(
       const uint32_t availableInTier = tier.size - currentTierOffset_;
       const uint32_t toRead = std::min(remaining, availableInTier);
 
-      // Decode from dictionary using indices
       for (uint32_t i = 0; i < toRead; ++i) {
         const uint32_t index = tier.indices[currentTierOffset_ + i];
         output[outputIdx++] = tier.dictionary[index];
@@ -314,7 +283,6 @@ void FrequencyPartitionEncoding<T>::materialize(
         currentTierOffset_ = 0;
       }
     } else if (currentTier_ == tiers_.size()) {
-      // Read from unencoded partition
       const uint32_t availableUnencoded = 
           static_cast<uint32_t>(unencodedValues_.size()) - currentTierOffset_;
       const uint32_t toRead = std::min(remaining, availableUnencoded);
@@ -331,7 +299,6 @@ void FrequencyPartitionEncoding<T>::materialize(
         currentTierOffset_ = 0;
       }
     } else {
-      // No more data to read
       break;
     }
   }
@@ -342,8 +309,6 @@ template <typename V>
 void FrequencyPartitionEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  // Similar to DictionaryEncoding but accounting for multiple partitions
-  // For now, use the slower path that materializes values
   detail::readWithVisitorSlow(visitor, params, nullptr, [&] {
     uint32_t absoluteRow = visitor.rowIndex();
     uint32_t tier = getTierForRow(absoluteRow);
