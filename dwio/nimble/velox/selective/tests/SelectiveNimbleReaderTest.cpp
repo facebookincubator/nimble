@@ -1032,7 +1032,7 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeNullableString) {
 TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsLastRunFilteredOut) {
   const bool passStringBuffersFromDecoder = GetParam();
   checkArrayWithOffsets(
-      {{{1}}, {{}}, {{}}},
+      {{{1}}, std::vector<std::optional<int64_t>>{}, std::vector<std::optional<int64_t>>{}},
       {false, true, true},
       {1, 1, 1},
       passStringBuffersFromDecoder);
@@ -1059,7 +1059,7 @@ TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsNoSeekBackward) {
 TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsLastRunResize) {
   const bool passStringBuffersFromDecoder = GetParam();
   checkArrayWithOffsets(
-      {{{1}}, {{1}}, {{}}, {{}}}, {}, {1, 2, 1}, passStringBuffersFromDecoder);
+      {{{1}}, {{1}}, std::vector<std::optional<int64_t>>{}, std::vector<std::optional<int64_t>>{}}, {}, {1, 2, 1}, passStringBuffersFromDecoder);
 }
 
 TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsCopyLastRunAfterSkip) {
@@ -1133,31 +1133,31 @@ TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsLastRowSetLifeCycle) {
   for (int i = 0; i < 16; ++i) {
     c0.emplace_back(std::nullopt);
     c1.push_back({{1}});
-    c2.push_back({{}});
+    c2.push_back(std::vector<std::optional<int64_t>>{});
   }
-  c0.push_back({{}});
+  c0.push_back(std::vector<std::optional<int64_t>>{});
   c1.push_back({{1}});
-  c2.push_back({{}});
+  c2.push_back(std::vector<std::optional<int64_t>>{});
   // Second batch, all filtered out by c2, but c1 reads some value without
   // calling getValues.
   c0.emplace_back(std::nullopt);
   // Add a null to force setComplexNulls to read last row set before batch 3.
   c1.emplace_back(std::nullopt);
-  c2.push_back({{}});
+  c2.push_back(std::vector<std::optional<int64_t>>{});
   for (int i = 0; i < 15; ++i) {
     c0.emplace_back(std::nullopt);
     c1.push_back({{2}});
-    c2.push_back({{}});
+    c2.push_back(std::vector<std::optional<int64_t>>{});
   }
-  c0.push_back({{}});
+  c0.push_back(std::vector<std::optional<int64_t>>{});
   c1.push_back({{2}});
   c2.emplace_back(std::nullopt);
   // Third batch, nothing is filtered out, and force outputRows_ buffer
   // reallocation.
   for (int i = 0; i < 17; ++i) {
-    c0.push_back({{}});
+    c0.push_back(std::vector<std::optional<int64_t>>{});
     c1.push_back({{2}});
-    c2.push_back({{}});
+    c2.push_back(std::vector<std::optional<int64_t>>{});
   }
   auto vector = makeRowVector({
       makeNullableArrayVector<int64_t>(c0),
@@ -1207,9 +1207,9 @@ TEST_P(SelectiveNimbleReaderTest, slidingWindowMapLengthDedup) {
   checkSlidingWindowMap(
       {
           {{{1, {2}}}},
-          {{}},
+          std::vector<std::pair<int64_t, std::optional<int64_t>>>{},
           {{{3, {4}}}},
-          {{}},
+          std::vector<std::pair<int64_t, std::optional<int64_t>>>{},
           {{{5, {6}}}},
       },
       {},

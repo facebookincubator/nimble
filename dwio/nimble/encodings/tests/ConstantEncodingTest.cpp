@@ -27,9 +27,80 @@
 
 using namespace facebook;
 
+// Forward declaration
+template <typename C>
+class ConstantEncodingTest;
+
+// Helper to prepare values - must be at namespace scope
+template <typename T, typename TestClass>
+struct ValuesPreparer {
+  static std::vector<nimble::Vector<T>> prepareValues(TestClass* test) {
+    FAIL() << "unspecialized prepareValues() should not be called";
+    return {};
+  }
+  static std::vector<nimble::Vector<T>> prepareFailureValues(TestClass* test) {
+    FAIL() << "unspecialized prepareFailureValues() should not be called";
+    return {};
+  }
+};
+
+template <typename TestClass>
+struct ValuesPreparer<double, TestClass> {
+  static std::vector<nimble::Vector<double>> prepareValues(TestClass* test) {
+    return {
+        test->toVector({0.0}),
+        test->toVector({0.0, 0.00}),
+        test->toVector({-0.0, -0.00}),
+        test->toVector({-2.1, -2.1, -2.1, -2.1, -2.1}),
+        test->toVector({test->dNaN0, test->dNaN0, test->dNaN0}),
+        test->toVector({test->dNaN1, test->dNaN1, test->dNaN1}),
+        test->toVector({test->dNaN2, test->dNaN2, test->dNaN2})};
+  }
+  static std::vector<nimble::Vector<double>> prepareFailureValues(TestClass* test) {
+    return {
+        test->toVector({-0.0, -0.00, -0.0000001}),
+        test->toVector({-2.1, -2.1, -2.1, -2.1, -2.2}),
+        test->toVector({test->dNaN0, test->dNaN0, test->dNaN1})};
+  }
+};
+
+template <typename TestClass>
+struct ValuesPreparer<float, TestClass> {
+  static std::vector<nimble::Vector<float>> prepareValues(TestClass* test) {
+    return {
+        test->toVector({0.0f}),
+        test->toVector({0.0f, 0.00f}),
+        test->toVector({-0.0f, -0.00f}),
+        test->toVector({-2.1f, -2.1f, -2.1f, -2.1f, -2.1f}),
+        test->toVector({test->fNaN0, test->fNaN0, test->fNaN0}),
+        test->toVector({test->fNaN1, test->fNaN1, test->fNaN1}),
+        test->toVector({test->fNaN2, test->fNaN2, test->fNaN2})};
+  }
+  static std::vector<nimble::Vector<float>> prepareFailureValues(TestClass* test) {
+    return {
+        test->toVector({-0.0f, -0.00f, -0.0000001f}),
+        test->toVector({-2.1f, -2.1f, -2.1f, -2.1f, -2.2f}),
+        test->toVector({test->fNaN0, test->fNaN0, test->fNaN2})};
+  }
+};
+
+template <typename TestClass>
+struct ValuesPreparer<int32_t, TestClass> {
+  static std::vector<nimble::Vector<int32_t>> prepareValues(TestClass* test) {
+    return {test->toVector({1}), test->toVector({3, 3, 3})};
+  }
+  static std::vector<nimble::Vector<int32_t>> prepareFailureValues(TestClass* test) {
+    return {test->toVector({3, 2, 3})};
+  }
+};
+
 template <typename C>
 class ConstantEncodingTest : public ::testing::Test {
  protected:
+  // Make helper templates friends so they can access protected members
+  template <typename T, typename TestClass>
+  friend struct ValuesPreparer;
+
   void SetUp() override {
     pool_ = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
     buffer_ = std::make_unique<nimble::Buffer>(*pool_);
@@ -37,14 +108,12 @@ class ConstantEncodingTest : public ::testing::Test {
 
   template <typename T>
   std::vector<nimble::Vector<T>> prepareValues() {
-    FAIL() << "unspecialized prepapreValues() should not be called";
-    return {};
+    return ValuesPreparer<T, ConstantEncodingTest<C>>::prepareValues(this);
   }
 
   template <typename T>
   std::vector<nimble::Vector<T>> prepareFailureValues() {
-    FAIL() << "unspecialized prepapreValues() should not be called";
-    return {};
+    return ValuesPreparer<T, ConstantEncodingTest<C>>::prepareFailureValues(this);
   }
 
   template <typename T>
@@ -65,56 +134,6 @@ class ConstantEncodingTest : public ::testing::Test {
     nimble::Vector<T> v{pool_.get()};
     v.insert(v.end(), l.begin(), l.end());
     return v;
-  }
-
-  template <>
-  std::vector<nimble::Vector<double>> prepareValues() {
-    return {
-        toVector({0.0}),
-        toVector({0.0, 0.00}),
-        toVector({-0.0, -0.00}),
-        toVector({-2.1, -2.1, -2.1, -2.1, -2.1}),
-        toVector({dNaN0, dNaN0, dNaN0}),
-        toVector({dNaN1, dNaN1, dNaN1}),
-        toVector({dNaN2, dNaN2, dNaN2})};
-  }
-
-  template <>
-  std::vector<nimble::Vector<float>> prepareValues() {
-    return {
-        toVector({0.0f}),
-        toVector({0.0f, 0.00f}),
-        toVector({-0.0f, -0.00f}),
-        toVector({-2.1f, -2.1f, -2.1f, -2.1f, -2.1f}),
-        toVector({fNaN0, fNaN0, fNaN0}),
-        toVector({fNaN1, fNaN1, fNaN1}),
-        toVector({fNaN2, fNaN2, fNaN2})};
-  }
-
-  template <>
-  std::vector<nimble::Vector<int32_t>> prepareValues() {
-    return {toVector({1}), toVector({3, 3, 3})};
-  }
-
-  template <>
-  std::vector<nimble::Vector<double>> prepareFailureValues() {
-    return {
-        toVector({-0.0, -0.00, -0.0000001}),
-        toVector({-2.1, -2.1, -2.1, -2.1, -2.2}),
-        toVector({dNaN0, dNaN0, dNaN1})};
-  }
-
-  template <>
-  std::vector<nimble::Vector<float>> prepareFailureValues() {
-    return {
-        toVector({-0.0f, -0.00f, -0.0000001f}),
-        toVector({-2.1f, -2.1f, -2.1f, -2.1f, -2.2f}),
-        toVector({fNaN0, fNaN0, fNaN2})};
-  }
-
-  template <>
-  std::vector<nimble::Vector<int32_t>> prepareFailureValues() {
-    return {toVector({3, 2, 3})};
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;

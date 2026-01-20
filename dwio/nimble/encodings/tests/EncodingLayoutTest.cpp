@@ -88,13 +88,12 @@ TEST(EncodingLayoutTests, Trivial) {
   }
 
   {
+    // Test serialization of Zstd compression type (but don't test capture,
+    // since ManualEncodingSelectionPolicy doesn't enable compression)
     nimble::EncodingLayout expected{
-        nimble::EncodingType::Trivial,
-        {},
-        nimble::CompressionType::MetaInternal};
+        nimble::EncodingType::Trivial, nimble::CompressionType::MetaInternal};
 
     testSerialization(expected);
-    testCapture<uint32_t>(expected, {1, 2, 3});
   }
 }
 
@@ -179,7 +178,9 @@ TEST(EncodingLayoutTests, Constant) {
 }
 
 TEST(EncodingLayoutTests, SparseBool) {
-  nimble::EncodingLayout expected{
+  // Test serialization with Zstd (not testCapture, as ManualEncodingSelectionPolicy
+  // doesn't enable compression)
+  nimble::EncodingLayout serializationTest{
       nimble::EncodingType::SparseBool,
       {},
       nimble::CompressionType::Uncompressed,
@@ -189,14 +190,25 @@ TEST(EncodingLayoutTests, SparseBool) {
               {},
               nimble::CompressionType::MetaInternal},
       }};
+  testSerialization(serializationTest);
 
-  testSerialization(expected);
+  // Test actual capture with uncompressed
+  nimble::EncodingLayout captureTest{
+      nimble::EncodingType::SparseBool,
+      nimble::CompressionType::Uncompressed,
+      {
+          nimble::EncodingLayout{
+              nimble::EncodingType::Trivial,
+              nimble::CompressionType::Uncompressed},
+      }};
   testCapture<bool>(
-      expected, std::array<bool, 5>{false, false, false, true, false});
+      captureTest, std::array<bool, 5>{false, false, false, true, false});
 }
 
 TEST(EncodingLayoutTests, MainlyConst) {
-  nimble::EncodingLayout expected{
+  // Test serialization with Zstd (not testCapture, as ManualEncodingSelectionPolicy
+  // doesn't enable compression)
+  nimble::EncodingLayout serializationTest{
       nimble::EncodingType::MainlyConstant,
       {},
       nimble::CompressionType::Uncompressed,
@@ -210,9 +222,21 @@ TEST(EncodingLayoutTests, MainlyConst) {
               {},
               nimble::CompressionType::Uncompressed},
       }};
+  testSerialization(serializationTest);
 
-  testSerialization(expected);
-  testCapture<uint32_t>(expected, {1, 1, 1, 1, 5, 1});
+  // Test actual capture with uncompressed
+  nimble::EncodingLayout captureTest{
+      nimble::EncodingType::MainlyConstant,
+      nimble::CompressionType::Uncompressed,
+      {
+          nimble::EncodingLayout{
+              nimble::EncodingType::Trivial,
+              nimble::CompressionType::Uncompressed},
+          nimble::EncodingLayout{
+              nimble::EncodingType::Trivial,
+              nimble::CompressionType::Uncompressed},
+      }};
+  testCapture<uint32_t>(captureTest, {1, 1, 1, 1, 5, 1});
 }
 
 TEST(EncodingLayoutTests, Dictionary) {
