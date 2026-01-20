@@ -109,6 +109,11 @@ enum class EncodingType {
   // Huffman encoding while maintaining random access. Rows are reordered to
   // group same-length codes together into partitions.
   FrequencyPartition = 12,
+  // Frame of Reference encoding: divides data into fixed-size frames and
+  // stores each value as an offset from the frame's minimum value (reference).
+  // Offsets are bit-packed for compression. Supports true O(1) random access
+  // without delta dependencies. Order is preserved.
+  FOR = 13,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);
