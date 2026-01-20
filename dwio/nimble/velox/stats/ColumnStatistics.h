@@ -154,8 +154,8 @@ class DeduplicatedColumnStatistics : public virtual ColumnStatistics {
 
  protected:
   std::unique_ptr<ColumnStatistics> baseStatistics_;
-  uint64_t dedupedCount_;
-  uint64_t dedupedLogicalSize_;
+  uint64_t dedupedCount_{0};
+  uint64_t dedupedLogicalSize_{0};
 };
 
 // The statistics collectors are ways to abstract away different
