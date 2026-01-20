@@ -98,11 +98,11 @@ class FrequencyPartitionEncoding
     uint32_t startRow;       // Starting row index in the reordered data
     uint32_t size;           // Number of rows in this partition
 
-    TierInfo(velox::memory::MemoryPool& pool)
+    TierInfo(velox::memory::MemoryPool* pool)
         : keyBits(0),
           capacity(0),
-          dictionary{pool},
-          indices{pool},
+          dictionary(pool),
+          indices(pool),
           startRow(0),
           size(0) {}
   };
@@ -194,7 +194,7 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
     if (i < sizeof(keyBitOptions) / sizeof(keyBitOptions[0]) &&
         keyBitOptions[i] <= maxKeyBits) {
       // This is a coded tier
-      TierInfo tier{this->pool_};
+      TierInfo tier(this->pool_);
       tier.keyBits = keyBitOptions[i];
       tier.capacity = getCapacity(tier.keyBits);
       tier.startRow = partitionOffsets[i];
@@ -393,7 +393,7 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
     folly::F14FastMap<physicalType, uint32_t> valueToKey;
 
     explicit TierAssignment(velox::memory::MemoryPool& pool)
-        : keyBits(0), capacity(0), dictionary{pool} {}
+        : keyBits(0), capacity(0), dictionary(&pool) {}
   };
 
   std::vector<TierAssignment> tierAssignments;
@@ -458,8 +458,8 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
   }
 
   // Calculate partition offsets and sizes
-  Vector<uint32_t> partitionOffsets{buffer.getMemoryPool()};
-  Vector<uint32_t> partitionSizes{buffer.getMemoryPool()};
+  Vector<uint32_t> partitionOffsets(&buffer.getMemoryPool());
+  Vector<uint32_t> partitionSizes(&buffer.getMemoryPool());
   partitionOffsets.reserve(tierRows.size());
   partitionSizes.reserve(tierRows.size());
 
@@ -504,7 +504,7 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
         tempBuffer));
 
     // Build keys for this tier
-    Vector<uint32_t> keys{buffer.getMemoryPool()};
+    Vector<uint32_t> keys(&buffer.getMemoryPool());
     keys.reserve(rows.size());
     for (uint32_t row : rows) {
       const auto& value = values[row];
@@ -520,7 +520,7 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
   // Encode unencoded partition
   std::string_view serializedUnencoded;
   if (!tierRows.back().empty()) {
-    Vector<physicalType> unencodedValues{buffer.getMemoryPool()};
+    Vector<physicalType> unencodedValues(&buffer.getMemoryPool());
     unencodedValues.reserve(tierRows.back().size());
     for (uint32_t row : tierRows.back()) {
       unencodedValues.push_back(values[row]);
