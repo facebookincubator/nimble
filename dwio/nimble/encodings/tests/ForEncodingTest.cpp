@@ -45,7 +45,6 @@ class ForEncodingTest : public ::testing::Test {
   std::unique_ptr<nimble::Buffer> buffer_;
 };
 
-// Test basic encode/decode with simple data
 TEST_F(ForEncodingTest, BasicEncodeDecode) {
   nimble::Vector<int32_t> data(pool_.get());
   data.push_back(100);
@@ -63,14 +62,12 @@ TEST_F(ForEncodingTest, BasicEncodeDecode) {
   nimble::Vector<int32_t> result(pool_.get(), 6);
   encoding->materialize(6, result.data());
 
-  // ForEncoding preserves order
   ASSERT_EQ(data.size(), result.size());
   for (size_t i = 0; i < data.size(); ++i) {
     ASSERT_EQ(result[i], data[i]) << "Mismatch at index " << i;
   }
 }
 
-// Test with all zeros (minimum bit width)
 TEST_F(ForEncodingTest, AllZeros) {
   nimble::Vector<int32_t> data(pool_.get());
   for (int i = 0; i < 1000; ++i) {
@@ -649,8 +646,6 @@ TEST_F(ForEncodingTest, BatchSelectiveReads) {
   }
 }
 
-// Note: readWithVisitor() is implemented and supports true O(1) random access.
-// Full testing of readWithVisitor requires Velox's SelectiveColumnReader
-// infrastructure, which is tested through integration tests in the Velox layer.
-// The above tests verify the underlying O(1) random access capability using
-// skip() and materialize() which exercise the same decodeValue() path.
+// readWithVisitor() is implemented and supports O(1) random access.
+// Full testing requires Velox's SelectiveColumnReader infrastructure.
+// Tests above verify the O(1) access through skip() and materialize().

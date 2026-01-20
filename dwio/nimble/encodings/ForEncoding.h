@@ -30,37 +30,20 @@
 #include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/encodings/EncodingSelection.h"
 
-// Frame of Reference (FOR) Encoding
+// Frame of Reference encoding. Divides data into fixed-size frames, storing
+// a reference value per frame and bit-packing the exceptions (value - ref).
+// Supports O(1) random access when BitOffsets are enabled.
 //
-// Plain Frame of Reference encoding WITHOUT delta encoding.
-// Unlike P-FOR Delta, this encoding supports TRUE O(1) random access to any
-// value without needing to decode neighboring values.
-//
-// ALGORITHM:
-// 1. Divide values into fixed-size frames (power of 2: 64, 128, 256, etc.)
-// 2. For each frame:
-//    - Find minimum value (reference)
-//    - Compute exceptions: value - reference
-//    - Determine minimum bit width (power of 2: 1, 2, 4, 8, 16, 32)
-//    - Bit-pack exceptions
-//
-// DATA LAYOUT:
+// Data layout is:
 // Encoding::kPrefixSize bytes: standard Encoding prefix
 // 1 byte: compression type
-// 4 bytes: frame size (power of 2)
+// 4 bytes: frame size
 // 4 bytes: number of frames
-// 1 byte: enableBitOffsets flag (0 or 1)
-// XX bytes: BitWidths array encoding (1 byte per frame)
-// YY bytes: References array encoding (physicalType per frame)
-// ZZ bytes: BitOffsets array encoding (optional, 8 bytes per frame if enabled)
-// WW bytes: Bit-packed exceptions
-//
-// RANDOM ACCESS:
-// With BitOffsets enabled (default): O(1) per value
-// Without BitOffsets: O(frameIdx) to compute offset, then O(1) per value
-//
-// COMPRESSION:
-// Supports optional compression (Zstd) on top of bit-packed data
+// 1 byte: enableBitOffsets flag
+// XX bytes: BitWidths array encoding (nested)
+// YY bytes: References array encoding (nested)
+// ZZ bytes: BitOffsets array encoding (nested, optional)
+// WW bytes: bit-packed exceptions data
 
 namespace facebook::nimble {
 
@@ -94,40 +77,34 @@ class ForEncoding final
   std::string debugString(int offset) const final;
 
  private:
-  // Frame metadata
   struct FrameInfo {
-    physicalType reference;  // Minimum value in frame
-    uint8_t bitWidth;        // Bits per exception (power of 2: 1,2,4,8,16,32)
-    uint64_t bitOffset;      // Bit offset where this frame's data starts
-    uint32_t size;           // Number of values in this frame
+    physicalType reference;
+    uint8_t bitWidth;
+    uint64_t bitOffset;
+    uint32_t size;
   };
 
   uint32_t frameSize_;
   uint32_t numFrames_;
   bool enableBitOffsets_;
   Vector<FrameInfo> frames_;
-  const char* packedData_;  // Pointer to bit-packed exceptions
+  const char* packedData_;
   uint32_t currentRow_;
   Vector<char> uncompressedData_;
   Vector<physicalType> buffer_;
 
-  // Helper: read N bits from packed data at given bit offset
   uint64_t readBits(uint64_t bitOffset, uint8_t numBits) const;
 
-  // Helper: get frame index for a row
   uint32_t getFrameIndex(uint32_t row) const {
     return row / frameSize_;
   }
 
-  // Helper: get position within frame
   uint32_t getPositionInFrame(uint32_t row) const {
     return row % frameSize_;
   }
 
-  // Helper: decode single value at specific row
   physicalType decodeValue(uint32_t row) const;
 };
-
 //
 // Implementation
 //
@@ -141,7 +118,6 @@ ForEncoding<T>::ForEncoding(
       currentRow_(0),
       uncompressedData_{&memoryPool},
       buffer_{&memoryPool} {
-  // Only support integral types
   static_assert(
       std::is_integral_v<physicalType>,
       "ForEncoding only supports integral types");
@@ -184,7 +160,6 @@ ForEncoding<T>::ForEncoding(
     bitOffsetsEncoding->materialize(numFrames_, bitOffsets.data());
   }
 
-  // Read packed data size and handle decompression
   const uint32_t packedDataSize = encoding::readUint32(pos);
   std::string_view packedDataView{pos, packedDataSize};
 
@@ -207,7 +182,6 @@ ForEncoding<T>::ForEncoding(
     frame.bitOffset =
         enableBitOffsets_ ? bitOffsets[i] : cumulativeBitOffset;
 
-    // Calculate frame size (last frame may be smaller)
     uint32_t startRow = i * frameSize_;
     uint32_t endRow = std::min(startRow + frameSize_, this->rowCount_);
     frame.size = endRow - startRow;
@@ -270,11 +244,10 @@ typename ForEncoding<T>::physicalType ForEncoding<T>::decodeValue(
 
   const auto& frame = frames_[frameIdx];
 
-  // Read exception bits
   uint64_t bitPos = frame.bitOffset + posInFrame * frame.bitWidth;
   uint64_t exception = readBits(bitPos, frame.bitWidth);
 
-  // Reconstruct value: exception + reference
+  // Reconstruct value
   if constexpr (std::is_signed_v<physicalType>) {
     return static_cast<physicalType>(
         static_cast<int64_t>(exception) + static_cast<int64_t>(frame.reference));
@@ -299,7 +272,6 @@ template <typename V>
 void ForEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  // FOR supports true O(1) random access
   detail::readWithVisitorSlow(visitor, params, nullptr, [&] {
     return decodeValue(visitor.rowIndex());
   });
@@ -315,7 +287,6 @@ std::string ForEncoding<T>::debugString(int offset) const {
       numFrames_,
       enableBitOffsets_);
 
-  // Show bit width distribution
   std::map<uint8_t, uint32_t> bitWidthCounts;
   for (const auto& frame : frames_) {
     bitWidthCounts[frame.bitWidth]++;
@@ -351,7 +322,6 @@ std::string_view ForEncoding<T>::encode(
 
   const uint32_t numFrames = (rowCount + frameSize - 1) / frameSize;
 
-  // Collect frame metadata
   Vector<uint8_t> bitWidths(&buffer.getMemoryPool(), numFrames);
   Vector<physicalType> references(&buffer.getMemoryPool(), numFrames);
   Vector<uint64_t> bitOffsets(&buffer.getMemoryPool());
@@ -359,13 +329,11 @@ std::string_view ForEncoding<T>::encode(
     bitOffsets.resize(numFrames);
   }
 
-  // Bit packing helpers
   Vector<char> packedData(&buffer.getMemoryPool());
   uint64_t bitBuffer = 0;
   size_t bitBufferLen = 0;
 
   auto writeBits = [&](uint64_t value, uint8_t numBits) {
-    // Handle writing bits that may not fit entirely in the current buffer
     size_t bitsToWrite = numBits;
     
     while (bitsToWrite > 0) {
@@ -389,7 +357,6 @@ std::string_view ForEncoding<T>::encode(
     }
   };
 
-  // Available bit widths (powers of 2) - support up to 64 bits for int64/uint64
   constexpr std::array<uint8_t, 7> BIT_WIDTHS = {1, 2, 4, 8, 16, 32, 64};
 
   auto findMinBitWidth = [&](uint64_t maxValue) -> uint8_t {
@@ -401,10 +368,9 @@ std::string_view ForEncoding<T>::encode(
       if (width >= bitsNeeded) return width;
     }
 
-    return 64;  // Max width for 64-bit types
+    return 64;
   };
 
-  // Encode each frame
   uint64_t totalBits = 0;
 
   for (uint32_t frameIdx = 0; frameIdx < numFrames; ++frameIdx) {
@@ -412,7 +378,6 @@ std::string_view ForEncoding<T>::encode(
     uint32_t frameEnd = std::min(frameStart + frameSize, rowCount);
     uint32_t frameLength = frameEnd - frameStart;
 
-    // Find min and max in frame
     physicalType minValue = values[frameStart];
     physicalType maxValue = values[frameStart];
 
@@ -421,7 +386,6 @@ std::string_view ForEncoding<T>::encode(
       maxValue = std::max(maxValue, values[i]);
     }
 
-    // Compute max exception
     uint64_t maxException = 0;
     if constexpr (std::is_signed_v<physicalType>) {
       maxException = static_cast<uint64_t>(
@@ -430,18 +394,14 @@ std::string_view ForEncoding<T>::encode(
       maxException = static_cast<uint64_t>(maxValue - minValue);
     }
 
-    // Determine bit width
     uint8_t bitWidth = findMinBitWidth(maxException);
 
-    // Store metadata
     references[frameIdx] = minValue;
     bitWidths[frameIdx] = bitWidth;
 
     if (enableBitOffsets) {
       bitOffsets[frameIdx] = totalBits;
     }
-
-    // Bit-pack exceptions
     for (uint32_t i = frameStart; i < frameEnd; ++i) {
       uint64_t exception;
       if constexpr (std::is_signed_v<physicalType>) {
@@ -456,12 +416,10 @@ std::string_view ForEncoding<T>::encode(
     totalBits += frameLength * bitWidth;
   }
 
-  // Flush remaining bits
   if (bitBufferLen > 0) {
     packedData.push_back(static_cast<char>(bitBuffer & 0xFF));
   }
 
-  // Encode metadata arrays
   Buffer tempBuffer{buffer.getMemoryPool()};
 
   std::string_view serializedBitWidths = selection.template encodeNested<uint8_t>(
@@ -482,7 +440,6 @@ std::string_view ForEncoding<T>::encode(
         tempBuffer);
   }
 
-  // Apply compression to packed data
   auto dataCompressionPolicy = selection.compressionPolicy();
   CompressionEncoder<char> compressionEncoder{
       buffer.getMemoryPool(),
@@ -497,14 +454,12 @@ std::string_view ForEncoding<T>::encode(
         return pos;
       }};
 
-  // Calculate total encoding size
   uint32_t encodingSize = Encoding::kPrefixSize + ForEncoding<T>::kPrefixSize +
       4 + serializedBitWidths.size() +       // BitWidths
       4 + serializedReferences.size() +      // References
-      (enableBitOffsets ? 4 + serializedBitOffsets.size() : 0) +  // BitOffsets (optional)
-      4 + compressionEncoder.getSize();      // Packed data
+      (enableBitOffsets ? 4 + serializedBitOffsets.size() : 0) +
+      4 + compressionEncoder.getSize();
 
-  // Write encoded data
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
 

@@ -121,15 +121,11 @@ enum class EncodingType {
   // its own baseline and bit width. Adapts per-chunk variable bit widths for
   // better compression on data with locally narrow value ranges.
   BlockBitPacking = 15,
-  // Stores data using frequency-based partitioning with variable-bit codes.
-  // Most frequent values get shorter codes (1-bit, 2-bit, etc.) similar to
-  // Huffman encoding while maintaining random access. Rows are reordered to
-  // group same-length codes together into partitions.
+  // Partitions data by value frequency. Frequent values get shorter bit-width
+  // codes. Rows are reordered to group values with same code length.
   FrequencyPartition = 17,
-  // Frame of Reference encoding: divides data into fixed-size frames and
-  // stores each value as an offset from the frame's minimum value (reference).
-  // Offsets are bit-packed for compression. Supports true O(1) random access
-  // without delta dependencies. Order is preserved.
+  // Frame of Reference: stores offsets from per-frame minimum values.
+  // Supports O(1) random access. Preserves row order.
   FOR = 18,
 };
 std::string toString(EncodingType encodingType);
