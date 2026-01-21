@@ -30,6 +30,7 @@
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/FlushPolicy.h"
+#include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/StatsGenerated.h"
 #include "dwio/nimble/velox/VeloxReader.h"
@@ -392,9 +393,26 @@ ChunkSizeResults validateChunkSize(
     nimble::VeloxReader& reader,
     const uint64_t minStreamChunkRawSize,
     const uint64_t maxStreamChunkRawSize) {
-  const double kMaxErrorRate = 0.2;
+  constexpr int kRowCountOffset = 2;
+  constexpr double kMaxErrorRate = 0.2;
   const auto& tablet = reader.tabletReader();
   auto& pool = reader.memoryPool();
+
+  std::unordered_set<uint32_t> stringStreamOffsets;
+  nimble::SchemaReader::traverseSchema(
+      reader.schema(),
+      [&](uint32_t /*level*/,
+          const nimble::Type& type,
+          const nimble::SchemaReader::NodeInfo& /*info*/) {
+        if (type.isScalar()) {
+          auto scalarKind = type.asScalar().scalarDescriptor().scalarKind();
+          if (scalarKind == nimble::ScalarKind::String ||
+              scalarKind == nimble::ScalarKind::Binary) {
+            stringStreamOffsets.insert(
+                type.asScalar().scalarDescriptor().offset());
+          }
+        }
+      });
 
   const uint32_t stripeCount = tablet.stripeCount();
   uint32_t maxChunkCount = 0;
@@ -415,21 +433,35 @@ ChunkSizeResults validateChunkSize(
       nimble::InMemoryChunkedStream chunkedStream{
           pool, std::move(streamLoaders[streamId])};
       uint32_t currentStreamChunkCount = 0;
+      const bool isStringStream = stringStreamOffsets.contains(streamId);
       while (chunkedStream.hasNext()) {
         ++currentStreamChunkCount;
         const auto chunk = chunkedStream.nextChunk();
         const uint64_t chunkRawDataSize =
             nimble::test::TestUtils::getRawDataSize(pool, chunk);
-        EXPECT_LE(chunkRawDataSize, maxStreamChunkRawSize)
-            << "Stream " << streamId << " has a chunk with size "
-            << chunkRawDataSize << " which is above max chunk size of "
-            << maxStreamChunkRawSize;
+        const uint32_t rowCount =
+            *reinterpret_cast<const uint32_t*>(chunk.data() + kRowCountOffset);
+        const double stringError =
+            isStringStream ? rowCount * sizeof(std::string_view) : 0;
+
+        // For string streams, a single row may exceed max chunk size if the
+        // string itself is larger than the limit. This is acceptable since we
+        // cannot split a single string value.
+        if (!(isStringStream && rowCount == 1)) {
+          const double maxError =
+              kMaxErrorRate * maxStreamChunkRawSize + stringError;
+          EXPECT_LE(chunkRawDataSize, maxStreamChunkRawSize + maxError)
+              << "Stream " << streamId << " has a chunk with size "
+              << chunkRawDataSize << " which is above max chunk size of "
+              << maxStreamChunkRawSize;
+        }
 
         // Validate min chunk size when not last chunk
         if (chunkedStream.hasNext() &&
             chunkRawDataSize < minStreamChunkRawSize) {
-          uint64_t difference = minStreamChunkRawSize - chunkRawDataSize;
-          EXPECT_LE(difference * 1.0 / minStreamChunkRawSize, kMaxErrorRate)
+          const double minError =
+              kMaxErrorRate * minStreamChunkRawSize + stringError;
+          EXPECT_GE(chunkRawDataSize, minStreamChunkRawSize - minError)
               << "Stream " << streamId << " has a non-last chunk with size "
               << chunkRawDataSize << " which is below min chunk size of "
               << minStreamChunkRawSize;
@@ -2248,7 +2280,8 @@ TEST_F(VeloxWriterTest, fuzzComplex) {
 
     const auto iterations = 20;
     // provide sufficient buffer between min and max chunk size thresholds
-    constexpr uint64_t chunkThresholdBuffer = sizeof(int64_t) + sizeof(bool);
+    constexpr uint64_t chunkThresholdBuffer =
+        sizeof(std::string_view) + sizeof(bool);
     for (auto i = 0; i < iterations; ++i) {
       writerOptions.minStreamChunkRawSize =
           std::uniform_int_distribution<uint64_t>(10, 4096)(rng);

@@ -356,13 +356,16 @@ class NullableContentStringStreamData final : public NullsStreamData {
   }
 
   inline uint64_t memoryUsed() const override {
+    // NOTE: This is not a bug, we multiply lengths_.size() by
+    // sizeof(std::string_view) instead of sizeof(uint64_t) to prevent reader
+    // regressions with the current default writer settings.
     return NullsStreamData::memoryUsed() + buffer_.size() +
-        lengths_.size() * sizeof(uint64_t) +
+        lengths_.size() * sizeof(std::string_view) +
         stringViews_.size() * sizeof(std::string_view);
   }
 
   inline uint64_t bufferSize() const {
-    return lengths_.size() * sizeof(uint64_t) + buffer_.size();
+    return lengths_.size() * sizeof(std::string_view) + buffer_.size();
   }
 
   inline StringBuffer mutableData() {

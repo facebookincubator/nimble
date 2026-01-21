@@ -659,7 +659,10 @@ class NullableContentStringStreamChunker final : public StreamChunker {
       if (nonNulls[idx]) {
         currentExtraMemory =
             stringLengths[lengthsOffset_ + chunkSize.dataElementCount];
-        currentTotalSize += currentExtraMemory + sizeof(uint64_t);
+        // NOTE: This is not a bug, we use sizeof(std::string_view) instead of
+        // sizeof(uint64_t) to prevent reader regressions with the current
+        // default writer settings.
+        currentTotalSize += currentExtraMemory + sizeof(std::string_view);
         ++currentDataCount;
       }
 

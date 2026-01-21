@@ -548,7 +548,8 @@ TEST_F(NullableContentStringStreamDataTest, basicOperations) {
   EXPECT_EQ(buffer.size(), 10);
   EXPECT_EQ(
       streamData.memoryUsed(),
-      nonNulls.size() + buffer.size() + lengths.size() * sizeof(uint64_t));
+      nonNulls.size() + buffer.size() +
+          lengths.size() * sizeof(std::string_view));
 
   streamData.materialize();
   const auto* views =
