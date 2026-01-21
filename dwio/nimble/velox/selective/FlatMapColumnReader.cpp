@@ -66,9 +66,10 @@ std::vector<KeyNode<T>> makeKeyNodes(
 
   // Adjust the scan spec according to the output type.
   switch (outputType) {
-    // For a kMap output, just need a scan spec for map keys and one for map
-    // values.
-    case FlatMapOutput::kMap: {
+    // For a kMap and kFlatMap output, just need a scan spec for map keys and
+    // one for map values.
+    case FlatMapOutput::kMap:
+    case FlatMapOutput::kFlatMap: {
       keysSpec = scanSpec.getOrCreateChild(
           common::Subfield(common::ScanSpec::kMapKeysFieldName));
       valuesSpec = scanSpec.getOrCreateChild(
@@ -76,18 +77,6 @@ std::vector<KeyNode<T>> makeKeyNodes(
       VELOX_CHECK(!valuesSpec->hasFilter());
       keysSpec->setProjectOut(true);
       valuesSpec->setProjectOut(true);
-      break;
-    }
-    // For a kFlatMap output, need to find the streams (distinct keys) to read
-    // from the file (nimbleType).
-    case FlatMapOutput::kFlatMap: {
-      for (int i = 0; i < childrenCount; ++i) {
-        auto key = parseKeyValue<T>(nimbleType.nameAt(i));
-        auto spec = scanSpec.getOrCreateChild(nimbleType.nameAt(i));
-        spec->setProjectOut(true);
-        spec->setChannel(i);
-        childSpecs[key] = spec;
-      }
       break;
     }
     // For a kStruct output, the streams to be read are part of the scan spec
@@ -113,7 +102,7 @@ std::vector<KeyNode<T>> makeKeyNodes(
     if (auto it = childSpecs.find(node.key);
         it != childSpecs.end() && !it->second->isConstant()) {
       childSpec = it->second;
-    } else if (outputType != FlatMapOutput::kMap) {
+    } else if (outputType == FlatMapOutput::kStruct) {
       // Column not selected in 'scanSpec', skipping it.
       continue;
     } else {
@@ -246,7 +235,6 @@ class FlatMapColumnReader
     for (int i = 0; i < keyNodes_.size(); ++i) {
       keyNodes_[i].reader->scanSpec()->setSubscript(i);
       children_[i] = keyNodes_[i].reader.get();
-
       rawKeys[i] = keyNodes_[i].key.get();
     }
   }
@@ -306,6 +294,57 @@ class FlatMapColumnReader
       final {
     // No-op, there is no index for fast skipping and we need to skip in the
     // decoders.
+  }
+
+  // Same as FlatMapAsMapColumnReader.
+  void read(int64_t offset, const RowSet& rows, const uint64_t* incomingNulls)
+      override {
+    numReads_ = scanSpec_->newRead();
+    prepareRead<char>(offset, rows, incomingNulls);
+    VELOX_DCHECK(!hasDeletion());
+    auto activeRows = rows;
+    auto* mapNulls =
+        nullsInReadRange_ ? nullsInReadRange_->as<uint64_t>() : nullptr;
+    if (scanSpec_->filter()) {
+      auto kind = scanSpec_->filter()->kind();
+      VELOX_CHECK(
+          kind == velox::common::FilterKind::kIsNull ||
+          kind == velox::common::FilterKind::kIsNotNull);
+      filterNulls<int32_t>(
+          rows, kind == velox::common::FilterKind::kIsNull, false);
+      if (outputRows_.empty()) {
+        for (auto* child : children_) {
+          child->addParentNulls(offset, mapNulls, rows);
+        }
+        readOffset_ = offset + rows.back() + 1;
+        return;
+      }
+      activeRows = outputRows_;
+    }
+    // Separate the loop to be cache friendly.
+    for (auto* child : children_) {
+      advanceFieldReader(child, offset);
+    }
+    for (auto* child : children_) {
+      child->read(offset, activeRows, mapNulls);
+      child->addParentNulls(offset, mapNulls, rows);
+    }
+    readOffset_ = offset + rows.back() + 1;
+  }
+
+  void getValues(const RowSet& rows, VectorPtr* result) override {
+    SelectiveFlatMapColumnReader::getValues(rows, result);
+
+    // After reading the flat map streams recursively, need to read the in map
+    // buffers.
+    VELOX_CHECK(result && *result);
+    auto flatMapVector = (*result)->as<FlatMapVector>();
+    VELOX_CHECK(flatMapVector);
+
+    for (int i = 0; i < keyNodes_.size(); ++i) {
+      auto& nimbleData = children_[i]->formatData().template as<NimbleData>();
+      flatMapVector->inMapsAt(i, true) = nimbleData.inMapBuffer();
+    }
   }
 
  private:

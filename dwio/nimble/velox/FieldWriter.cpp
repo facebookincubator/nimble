@@ -1206,10 +1206,6 @@ class FlatMapFieldWriter : public FieldWriter {
       return;
     }
 
-    // Only create keys on first call to write (with valid ranges). Subsequent
-    // calls must have the same set of keys, otherwise writer will throw.
-    bool populateMap = currentPassthroughFields_.empty();
-
     const auto& values = flatMapVector->mapValues();
     const auto& inMaps = flatMapVector->inMaps();
 
@@ -1228,8 +1224,13 @@ class FlatMapFieldWriter : public FieldWriter {
             "FlatMapVector keys are not distinct.");
         distinctKeySet.insert(key);
 
-        auto& writer = populateMap ? createPassthroughValueFieldWriter(key)
-                                   : findPassthroughValueFieldWriter(key);
+        // Only create keys on first call to write (with valid ranges). To
+        // account for key pruning, let's avoid failing on unfound subsequent
+        // keys.
+        auto existingPair = currentPassthroughFields_.find(key);
+        auto& writer = existingPair != currentPassthroughFields_.end()
+            ? *existingPair->second
+            : createPassthroughValueFieldWriter(key);
 
         if (inMaps[i]) {
           writer.write(values[i], inMaps[i], childRanges);
