@@ -1523,7 +1523,6 @@ TEST_P(SelectiveNimbleReaderTest, nativeFlatMap) {
 
   // Dictionary wrapped keys
   {
-    LOG(INFO) << "Dictionary wrapped keys";
     testRoundtrip(constructFlatMap(
         BaseVector::wrapInDictionary(
             nullptr,
@@ -1563,6 +1562,44 @@ TEST_P(SelectiveNimbleReaderTest, nativeFlatMap) {
             BaseVector::wrapInConstant(
                 3, 0, makeFlatVector<int32_t>({1, 2, 3})))),
         "FlatMapVector keys are not distinct.");
+  }
+
+  // Scan spec with map key filter
+  {
+    auto inputFlatMap = makeFlatMapVector<int64_t, int64_t>({
+        {{{1, 100}, {5, 500}, {10, 1000}, {15, 1500}, {20, 2000}}},
+        {{{2, 200}, {8, 800}, {12, 1200}}},
+        {{{3, 300}, {7, 700}, {18, 1800}, {25, 2500}}},
+    });
+    auto input = makeRowVector({inputFlatMap, inputFlatMap->toMapVector()});
+
+    VeloxWriterOptions writerOptions;
+    writerOptions.flatMapColumns = {"c0"};
+    auto fileContent =
+        test::createNimbleFile(*rootPool(), input, writerOptions, true);
+
+    // Test with map key filter [5, 12]
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*input->type());
+    scanSpec->childByName("c0")
+        ->childByName(common::ScanSpec::kMapKeysFieldName)
+        ->setFilter(std::make_unique<common::BigintRange>(5, 12, false));
+    scanSpec->childByName("c1")
+        ->childByName(common::ScanSpec::kMapKeysFieldName)
+        ->setFilter(std::make_unique<common::BigintRange>(5, 12, false));
+    auto readers = makeReaders(input, fileContent, scanSpec, true);
+
+    // Expected output after filtering: only keys in [5, 12] remain
+    auto expectedFlatMap = makeFlatMapVector<int64_t, int64_t>({
+        {{{5, 500}, {10, 1000}}},
+        {{{8, 800}, {12, 1200}}},
+        {{{7, 700}}},
+    });
+    auto expected =
+        makeRowVector({expectedFlatMap->toMapVector(), expectedFlatMap});
+    validate(*expected, *readers.rowReader, inputFlatMap->size(), [](auto) {
+      return true;
+    });
   }
 }
 
