@@ -121,7 +121,7 @@ class StreamChunkerTestsBase : public ::testing::Test {
             std::vector<uint64_t>(lengths.begin(), lengths.end()),
             ::testing::ElementsAreArray(expectedLength));
         expectedStreamDataSize = expectedBufferContent.size() +
-            expectedLength.size() * sizeof(uint64_t);
+            expectedLength.size() * sizeof(std::string_view);
       } else {
         NIMBLE_UNREACHABLE(
             "NullableContentStringStreamData can only be called on string data");
@@ -1139,16 +1139,16 @@ TEST_F(StreamChunkerTestsBase, nullableContentStringStreamChunking) {
   populateStringData(data, testData);
 
   // number of strings: 7
-  // size of string buffer length = 7 * 8 = 56 bytes
+  // size of string buffer length = 7 * 16 = 112 bytes
   // size of nulls = 11 * 1 = 11 bytes
   // total number of characters = 36 bytes
-  // total size of stream data = 56 + 11 + 36 = 103 bytes
-  ASSERT_EQ(stream.memoryUsed(), 103);
+  // total size of stream data = 112 + 11 + 36 = 159 bytes
+  ASSERT_EQ(stream.memoryUsed(), 159);
 
   // Test 1: Not last chunk
   {
-    const uint64_t maxChunkSize = 45;
-    const uint64_t minChunkSize = 40;
+    const uint64_t maxChunkSize = 72;
+    const uint64_t minChunkSize = 50;
     auto chunker = getStreamChunker(
         stream,
         {
@@ -1220,7 +1220,8 @@ TEST_F(StreamChunkerTestsBase, nullableContentStringStreamChunking) {
     populateData(smallNonNulls, smallNonNullsData);
 
     // Exactly what is needed to fit just the first entry
-    const uint64_t minChunkSize = smallTestData.at(0).size() + sizeof(uint64_t);
+    const uint64_t minChunkSize =
+        smallTestData.at(0).size() + sizeof(std::string_view);
     const uint64_t maxChunkSize = minChunkSize;
     auto chunker = getStreamChunker(
         stream,
@@ -1254,7 +1255,7 @@ TEST_F(StreamChunkerTestsBase, nullableContentStringStreamChunking) {
 
     const uint64_t minChunkSize = 1;
     // Size of "really really large string", string view, and null minus 1.
-    const uint64_t maxChunkSize = 24 + sizeof(uint64_t) + sizeof(bool);
+    const uint64_t maxChunkSize = 24 + sizeof(std::string_view) + sizeof(bool);
     auto chunker = getStreamChunker(
         stream,
         {
