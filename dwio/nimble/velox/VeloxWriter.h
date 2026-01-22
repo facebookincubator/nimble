@@ -136,7 +136,7 @@ class VeloxWriter {
   std::optional<KeyStream> finishKeyStream();
 
   // Returning 'true' if stripe was flushed.
-  bool evalauateFlushPolicy();
+  bool evaluateFlushPolicy();
 
   // Returning 'true' if stripe was written.
   bool writeStripe();

@@ -734,7 +734,7 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
     context_->updateRowsInStripe(numRows);
     context_->setBytesWritten(file_->size());
 
-    return evalauateFlushPolicy();
+    return evaluateFlushPolicy();
   } catch (const std::exception& e) {
     lastException_ = std::current_exception();
     context_->logger()->logException(LogOperation::Write, e.what());
@@ -1263,7 +1263,7 @@ bool VeloxWriter::writeStripe() {
   return true;
 }
 
-bool VeloxWriter::evalauateFlushPolicy() {
+bool VeloxWriter::evaluateFlushPolicy() {
   // NOTE that flush policy factory is stateful, so we need to get a new
   // policy every time we check.
   auto flushPolicy = context_->options().flushPolicyFactory();
