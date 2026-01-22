@@ -19,6 +19,7 @@
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 #include "dwio/nimble/velox/StreamChunker.h"
+#include "folly/String.h"
 
 namespace facebook::nimble::index {
 
@@ -125,10 +126,17 @@ void IndexWriter::write(const velox::VectorPtr& input, Buffer& buffer) {
     const auto& keys = keyStream_->mutableData();
     const auto startIdx = prevSize > 0 ? prevSize - 1 : 0;
     for (auto i = startIdx + 1; i < newSize; ++i) {
-      NIMBLE_USER_CHECK_GT(
-          keys[i],
-          keys[i - 1],
-          "Encoded keys must be in strictly ascending order (duplicates are not allowed)");
+      if (FOLLY_UNLIKELY(keys[i] <= keys[i - 1])) {
+        // Format keys as hex for readable error message since encoded keys
+        // contain binary data that corrupts terminal output.
+        NIMBLE_USER_FAIL(
+            "Encoded keys must be in strictly ascending order (duplicates are not allowed). "
+            "Key at index {} (hex: {}) is not greater than key at index {} (hex: {})",
+            i,
+            folly::hexlify(keys[i]),
+            i - 1,
+            folly::hexlify(keys[i - 1]));
+      }
     }
   }
 }
