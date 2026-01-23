@@ -20,6 +20,7 @@
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
+#include "folly/String.h"
 #include "folly/json.h"
 
 namespace facebook::nimble {
@@ -77,19 +78,35 @@ void TabletIndexWriter::addStripeKey(const KeyStream& keyStream) {
 
   // For the first stripe, insert both the first key (min key of the file)
   // and the last key. For subsequent stripes, insert only the last key.
-  if (rootIndex_->stripeKeys.empty()) {
+  const bool firstStripe = rootIndex_->stripeKeys.empty();
+  if (firstStripe) {
     rootIndex_->stripeKeys.emplace_back(
         rootIndex_->encodingBuffer->writeString(chunks.front().firstKey));
   }
   const auto& newKey = chunks.back().lastKey;
   // Verify that the new stripe key is strictly greater than the previous stripe
-  // key.
+  // key. For the first stripe, if it has only one row, the first key and last
+  // key could be the same, so we allow equal keys.
   if (config_.enforceKeyOrder) {
     NIMBLE_CHECK(!rootIndex_->stripeKeys.empty());
-    NIMBLE_USER_CHECK_GT(
-        newKey,
-        rootIndex_->stripeKeys.back(),
-        "Stripe keys must be in strictly ascending order (duplicates are not allowed)");
+    const auto& prevKey = rootIndex_->stripeKeys.back();
+    if (firstStripe) {
+      NIMBLE_USER_CHECK_GE(
+          newKey,
+          prevKey,
+          "Stripe keys must be in ascending order. "
+          "newKey: {}, previousKey: {}",
+          folly::hexlify(newKey),
+          folly::hexlify(prevKey));
+    } else {
+      NIMBLE_USER_CHECK_GT(
+          newKey,
+          prevKey,
+          "Stripe keys must be in strictly ascending order (duplicates are not allowed). "
+          "newKey: {}, previousKey: {}",
+          folly::hexlify(newKey),
+          folly::hexlify(prevKey));
+    }
   }
   rootIndex_->stripeKeys.emplace_back(
       rootIndex_->encodingBuffer->writeString(newKey));

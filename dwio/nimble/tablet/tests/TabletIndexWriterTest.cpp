@@ -173,6 +173,36 @@ TEST_F(TabletIndexWriterTest, stripeKeyOutOfOrderCheck) {
   }
 }
 
+// Test that the first stripe with a single row (where firstKey == lastKey)
+// is allowed when enforceKeyOrder is true.
+TEST_F(TabletIndexWriterTest, singleRowFirstStripe) {
+  TabletIndexConfig config{
+      .columns = {"col1"},
+      .sortOrders = {velox::core::kAscNullsFirst},
+      .enforceKeyOrder = true};
+  auto writer = TabletIndexWriter::create(config, *pool_);
+
+  Buffer buffer{*pool_};
+
+  // First stripe with single row: firstKey == lastKey
+  writer->ensureStripeWrite(1);
+  auto keyStream1 = createKeyStream(buffer, {{1, "aaa", "aaa"}});
+  // This should succeed because the first stripe allows equal keys
+  EXPECT_NO_THROW(writer->addStripeKey(keyStream1));
+
+  // Second stripe must have strictly greater key
+  writer->ensureStripeWrite(1);
+  auto keyStream2 = createKeyStream(buffer, {{1, "bbb", "bbb"}});
+  EXPECT_NO_THROW(writer->addStripeKey(keyStream2));
+
+  // Third stripe with duplicate key should fail
+  writer->ensureStripeWrite(1);
+  auto keyStream3 = createKeyStream(buffer, {{1, "bbb", "bbb"}});
+  NIMBLE_ASSERT_USER_THROW(
+      writer->addStripeKey(keyStream3),
+      "Stripe keys must be in strictly ascending order (duplicates are not allowed)");
+}
+
 TEST_F(TabletIndexWriterTest, checkNotFinalizedAfterWriteRootIndex) {
   TabletIndexConfig config{
       .columns = {"col1"},
