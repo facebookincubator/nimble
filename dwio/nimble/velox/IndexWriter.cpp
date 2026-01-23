@@ -112,6 +112,9 @@ IndexWriter::createEncodingPolicy() const {
 }
 
 void IndexWriter::write(const velox::VectorPtr& input, Buffer& buffer) {
+  if (input->size() == 0) {
+    return;
+  }
   const auto prevSize = keyStream_->mutableData().size();
   const auto newSize = prevSize + input->size();
   keyStream_->ensureMutableDataCapacity(newSize);
