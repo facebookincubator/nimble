@@ -242,19 +242,14 @@ TEST_F(TabletIndexWriterTest, checkNotFinalizedAfterWriteRootIndex) {
       "TabletIndexWriter has been finalized");
 }
 
-TEST_F(TabletIndexWriterTest, writeRootIndexWithEmptyStripeKeys) {
+TEST_F(TabletIndexWriterTest, emptyStripeKeys) {
   TabletIndexConfig config{
       .columns = {"col1"},
       .sortOrders = {velox::core::kAscNullsFirst},
       .enforceKeyOrder = false};
   auto writer = TabletIndexWriter::create(config, *pool_);
 
-  // Initialize but don't add any stripe keys
-  Buffer buffer{*pool_};
-  writer->ensureStripeWrite(2);
-
   TestFileIndex fileIndex;
-
   // writeRootIndex should succeed but not write anything when stripe keys are
   // empty
   EXPECT_NO_THROW(

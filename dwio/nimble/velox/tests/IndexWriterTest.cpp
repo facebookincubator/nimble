@@ -309,6 +309,89 @@ TEST_F(IndexWriterTest, emptyWriteFinishStripe) {
   EXPECT_FALSE(stream.has_value());
 }
 
+TEST_F(IndexWriterTest, writeEmptyVectorOnly) {
+  IndexConfig config{
+      .columns = {std::string(kCol1)},
+      .encodingLayout = EncodingLayout{
+          EncodingType::Trivial,
+          CompressionType::Uncompressed,
+          {EncodingLayout{
+              EncodingType::Trivial, CompressionType::Uncompressed}}}};
+  auto writer = IndexWriter::create(config, type_, pool_.get());
+  ASSERT_NE(writer, nullptr);
+
+  // Write a single empty vector.
+  auto emptyBatch = makeRowVector(
+      {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+      {makeFlatVector<velox::StringView>({}),
+       makeFlatVector<int32_t>({}),
+       makeFlatVector<velox::StringView>({})});
+
+  writer->write(emptyBatch, *buffer_);
+  EXPECT_FALSE(writer->hasKeys());
+
+  writer->encodeStream(*buffer_);
+  auto stream = writer->finishStripe(*buffer_);
+  EXPECT_FALSE(stream.has_value());
+}
+
+// Test writing empty vectors at different positions: beginning, middle, and
+// end.
+TEST_F(IndexWriterTest, writeEmptyVectorAtDifferentPositions) {
+  IndexConfig config{
+      .columns = {std::string(kCol1)},
+      .encodingLayout = EncodingLayout{
+          EncodingType::Trivial,
+          CompressionType::Uncompressed,
+          {EncodingLayout{
+              EncodingType::Trivial, CompressionType::Uncompressed}}}};
+  auto writer = IndexWriter::create(config, type_, pool_.get());
+  ASSERT_NE(writer, nullptr);
+
+  auto emptyBatch = makeRowVector(
+      {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+      {makeFlatVector<velox::StringView>({}),
+       makeFlatVector<int32_t>({}),
+       makeFlatVector<velox::StringView>({})});
+
+  // Write empty vector at the beginning.
+  writer->write(emptyBatch, *buffer_);
+  EXPECT_FALSE(writer->hasKeys());
+
+  // Write first non-empty vector.
+  auto batch1 = makeRowVector(
+      {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+      {makeFlatVector<velox::StringView>({"a", "b"}),
+       makeFlatVector<int32_t>({1, 2}),
+       makeFlatVector<velox::StringView>({"c", "d"})});
+  writer->write(batch1, *buffer_);
+  EXPECT_TRUE(writer->hasKeys());
+
+  // Write empty vector in the middle.
+  writer->write(emptyBatch, *buffer_);
+  EXPECT_TRUE(writer->hasKeys());
+
+  // Write second non-empty vector.
+  auto batch2 = makeRowVector(
+      {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+      {makeFlatVector<velox::StringView>({"e", "f", "g"}),
+       makeFlatVector<int32_t>({3, 4, 5}),
+       makeFlatVector<velox::StringView>({"h", "i", "j"})});
+  writer->write(batch2, *buffer_);
+  EXPECT_TRUE(writer->hasKeys());
+
+  // Write empty vector at the end.
+  writer->write(emptyBatch, *buffer_);
+  EXPECT_TRUE(writer->hasKeys());
+
+  writer->encodeStream(*buffer_);
+  auto stream = writer->finishStripe(*buffer_);
+  ASSERT_TRUE(stream.has_value());
+  ASSERT_EQ(stream->chunks.size(), 1);
+  // Total rows: 2 (batch1) + 3 (batch2) = 5
+  EXPECT_EQ(stream->chunks[0].rowCount, 5);
+}
+
 TEST_F(IndexWriterTest, enforceKeyOrderInvalidWithinBatch) {
   for (bool enforceKeyOrder : {true, false}) {
     SCOPED_TRACE(fmt::format("enforceKeyOrder: {}", enforceKeyOrder));

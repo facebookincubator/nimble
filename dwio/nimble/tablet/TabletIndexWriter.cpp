@@ -310,15 +310,15 @@ void TabletIndexWriter::writeRootIndex(
     const std::vector<uint32_t>& stripeGroupIndices,
     const WriteOptionalSectionFn& writeOptionalSection) {
   checkNotFinalized();
-  NIMBLE_CHECK_NOT_NULL(rootIndex_);
+  if (rootIndex_ == nullptr) {
+    return;
+  }
+  NIMBLE_CHECK(!rootIndex_->stripeKeys.empty());
 
   SCOPE_EXIT {
     rootIndex_.reset();
     finalized_ = true;
   };
-  if (rootIndex_->stripeKeys.empty()) {
-    return;
-  }
 
   flatbuffers::FlatBufferBuilder builder(kInitialFooterSize);
 

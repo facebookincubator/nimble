@@ -86,6 +86,32 @@ TEST_F(VeloxWriterTest, emptyFile) {
   ASSERT_FALSE(reader.next(1, result));
 }
 
+TEST_F(VeloxWriterTest, emptyFileWithIndexEnabled) {
+  auto type = velox::ROW({
+      {"key_col", velox::INTEGER()},
+      {"value_col", velox::VARCHAR()},
+  });
+
+  nimble::IndexConfig indexConfig{
+      .columns = {"key_col"},
+      .sortOrders = {velox::core::kAscNullsFirst},
+      .enforceKeyOrder = true,
+  };
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, {.indexConfig = indexConfig});
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+
+  velox::VectorPtr result;
+  ASSERT_FALSE(reader.next(1, result));
+}
+
 TEST_F(VeloxWriterTest, exceptionOnClose) {
   class ThrowingWriteFile final : public velox::WriteFile {
    public:
