@@ -161,7 +161,11 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     }
   }
 
-  return {encodingType, compressionType, std::move(children)};
+  return {
+      encodingType,
+      /*encodingConfig=*/{},
+      compressionType,
+      std::move(children)};
 }
 
 } // namespace facebook::nimble

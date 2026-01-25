@@ -24,6 +24,7 @@
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingLayoutCapture.h"
 #include "dwio/nimble/encodings/EncodingUtils.h"
+#include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/index/tests/TabletIndexTestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
@@ -653,10 +654,12 @@ TEST_F(VeloxWriterTest, encodingLayout) {
                    0,
                    nimble::EncodingLayout{
                        nimble::EncodingType::Dictionary,
+                       {},
                        nimble::CompressionType::Uncompressed,
                        {
                            nimble::EncodingLayout{
                                nimble::EncodingType::FixedBitWidth,
+                               {},
                                nimble::CompressionType::MetaInternal},
                            std::nullopt,
                        }},
@@ -673,11 +676,13 @@ TEST_F(VeloxWriterTest, encodingLayout) {
                         0,
                         nimble::EncodingLayout{
                             nimble::EncodingType::MainlyConstant,
+                            {},
                             nimble::CompressionType::Uncompressed,
                             {
                                 std::nullopt,
                                 nimble::EncodingLayout{
                                     nimble::EncodingType::Trivial,
+                                    {},
                                     nimble::CompressionType::MetaInternal},
                             }},
                     },
@@ -695,13 +700,16 @@ TEST_F(VeloxWriterTest, encodingLayout) {
                            0,
                            nimble::EncodingLayout{
                                nimble::EncodingType::MainlyConstant,
+                               {},
                                nimble::CompressionType::Uncompressed,
                                {
                                    nimble::EncodingLayout{
                                        nimble::EncodingType::Trivial,
+                                       {},
                                        nimble::CompressionType::Uncompressed},
                                    nimble::EncodingLayout{
                                        nimble::EncodingType::FixedBitWidth,
+                                       {},
                                        nimble::CompressionType::Uncompressed},
                                }},
                        },
@@ -715,6 +723,7 @@ TEST_F(VeloxWriterTest, encodingLayout) {
                            0,
                            nimble::EncodingLayout{
                                nimble::EncodingType::Constant,
+                               {},
                                nimble::CompressionType::Uncompressed,
                            },
                        },
@@ -900,10 +909,12 @@ TEST_F(VeloxWriterTest, encodingLayoutSchemaMismatch) {
                       0,
                       nimble::EncodingLayout{
                           nimble::EncodingType::Dictionary,
+                          {},
                           nimble::CompressionType::Uncompressed,
                           {
                               nimble::EncodingLayout{
                                   nimble::EncodingType::FixedBitWidth,
+                                  {},
                                   nimble::CompressionType::MetaInternal},
                               std::nullopt,
                           }},
@@ -959,10 +970,12 @@ TEST_F(VeloxWriterTest, encodingLayoutSchemaEvolutionMapToFlatmap) {
                    0,
                    nimble::EncodingLayout{
                        nimble::EncodingType::Dictionary,
+                       {},
                        nimble::CompressionType::Uncompressed,
                        {
                            nimble::EncodingLayout{
                                nimble::EncodingType::FixedBitWidth,
+                               {},
                                nimble::CompressionType::MetaInternal},
                            std::nullopt,
                        }},
@@ -979,11 +992,13 @@ TEST_F(VeloxWriterTest, encodingLayoutSchemaEvolutionMapToFlatmap) {
                         0,
                         nimble::EncodingLayout{
                             nimble::EncodingType::MainlyConstant,
+                            {},
                             nimble::CompressionType::Uncompressed,
                             {
                                 std::nullopt,
                                 nimble::EncodingLayout{
                                     nimble::EncodingType::Trivial,
+                                    {},
                                     nimble::CompressionType::MetaInternal},
                             }},
                     },
@@ -1043,13 +1058,16 @@ TEST_F(VeloxWriterTest, encodingLayoutSchemaEvolutionFlamapToMap) {
                            0,
                            nimble::EncodingLayout{
                                nimble::EncodingType::MainlyConstant,
+                               {},
                                nimble::CompressionType::Uncompressed,
                                {
                                    nimble::EncodingLayout{
                                        nimble::EncodingType::Trivial,
+                                       {},
                                        nimble::CompressionType::Uncompressed},
                                    nimble::EncodingLayout{
                                        nimble::EncodingType::FixedBitWidth,
+                                       {},
                                        nimble::CompressionType::Uncompressed},
                                }},
                        },
@@ -1063,6 +1081,7 @@ TEST_F(VeloxWriterTest, encodingLayoutSchemaEvolutionFlamapToMap) {
                            0,
                            nimble::EncodingLayout{
                                nimble::EncodingType::Constant,
+                               {},
                                nimble::CompressionType::Uncompressed,
                            },
                        },
@@ -1117,6 +1136,7 @@ TEST_F(VeloxWriterTest, encodingLayoutSchemaEvolutionExpandingRow) {
                    0,
                    nimble::EncodingLayout{
                        nimble::EncodingType::Trivial,
+                       {},
                        nimble::CompressionType::Uncompressed},
                },
            },
@@ -1129,6 +1149,7 @@ TEST_F(VeloxWriterTest, encodingLayoutSchemaEvolutionExpandingRow) {
                            0,
                            nimble::EncodingLayout{
                                nimble::EncodingType::Trivial,
+                               {},
                                nimble::CompressionType::Uncompressed},
                        },
                    },
@@ -2802,10 +2823,14 @@ INSTANTIATE_TEST_CASE_P(
 struct IndexTestParams {
   bool enableChunking;
   nimble::EncodingType encodingType;
+  std::optional<uint32_t> prefixRestartInterval;
 
   std::string toString() const {
     std::string name =
         encodingType == nimble::EncodingType::Prefix ? "Prefix" : "Trivial";
+    if (prefixRestartInterval.has_value()) {
+      name += "_restart" + std::to_string(prefixRestartInterval.value());
+    }
     name += enableChunking ? "_WithKeyChunking" : "_NoKeyChunking";
     return name;
   }
@@ -2821,6 +2846,10 @@ class VeloxWriterIndexTest
 
   nimble::EncodingType encodingType() const {
     return GetParam().encodingType;
+  }
+
+  std::optional<uint32_t> prefixRestartInterval() const {
+    return GetParam().prefixRestartInterval;
   }
 
   // Default type with integer key column and multiple scalar/complex non-key
@@ -2908,18 +2937,29 @@ class VeloxWriterIndexTest
         .enforceKeyOrder = enforceKeyOrder,
     };
 
-    // Set encoding layout based on test parameter
-    if (encodingType() == nimble::EncodingType::Prefix) {
-      config.encodingLayout = nimble::EncodingLayout{
-          nimble::EncodingType::Prefix, nimble::CompressionType::Zstd};
-    } else {
-      // Trivial encoding needs a nested encoding for string lengths
+    // Set encoding layout based on encoding type
+    if (encodingType() == nimble::EncodingType::Trivial) {
+      // Trivial encoding for string data needs a child encoding for lengths.
       config.encodingLayout = nimble::EncodingLayout{
           nimble::EncodingType::Trivial,
+          {},
           nimble::CompressionType::Zstd,
           {nimble::EncodingLayout{
               nimble::EncodingType::Trivial,
+              {},
               nimble::CompressionType::Uncompressed}}};
+    } else {
+      // Prefix encoding - optionally set restart interval config
+      nimble::EncodingLayout::Config layoutConfig;
+      if (prefixRestartInterval().has_value()) {
+        layoutConfig = nimble::EncodingLayout::Config{
+            {{std::string(nimble::PrefixEncoding::kRestartIntervalConfigKey),
+              std::to_string(prefixRestartInterval().value())}}};
+      }
+      config.encodingLayout = nimble::EncodingLayout{
+          encodingType(),
+          std::move(layoutConfig),
+          nimble::CompressionType::Zstd};
     }
 
     if (enableChunking()) {
@@ -3842,17 +3882,132 @@ TEST_P(VeloxWriterIndexTest, streamDeduplication) {
   verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
 }
 
+// Test that custom prefixRestartInterval in IndexConfig flows through
+// the entire E2E pipeline and is correctly applied to the PrefixEncoding.
+TEST_F(VeloxWriterTest, customPrefixRestartInterval) {
+  auto type = velox::ROW({
+      {"key_col", velox::VARCHAR()},
+      {"data_col", velox::INTEGER()},
+  });
+
+  // Test with various restart interval values including custom and default
+  const std::vector<std::optional<uint32_t>> testRestartIntervals = {
+      std::nullopt, // Test default (16)
+      1,
+      4,
+      32,
+  };
+
+  for (const auto& customRestartInterval : testRestartIntervals) {
+    SCOPED_TRACE(
+        fmt::format(
+            "prefixRestartInterval={}",
+            customRestartInterval.has_value()
+                ? std::to_string(customRestartInterval.value())
+                : "default"));
+
+    nimble::EncodingLayout::Config encodingConfig;
+    if (customRestartInterval.has_value()) {
+      encodingConfig = nimble::EncodingLayout::Config{
+          {{std::string(nimble::PrefixEncoding::kRestartIntervalConfigKey),
+            std::to_string(customRestartInterval.value())}}};
+    }
+
+    nimble::IndexConfig indexConfig{
+        .columns = {"key_col"},
+        .enforceKeyOrder = true,
+        .encodingLayout =
+            nimble::EncodingLayout{
+                nimble::EncodingType::Prefix,
+                std::move(encodingConfig),
+                nimble::CompressionType::Uncompressed},
+    };
+
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, {.indexConfig = indexConfig});
+
+    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+    // Create sorted key values
+    auto batch = vectorMaker.rowVector(
+        {"key_col", "data_col"},
+        {vectorMaker.flatVector<std::string>(
+             {"aaa", "bbb", "ccc", "ddd", "eee", "fff", "ggg", "hhh"}),
+         vectorMaker.flatVector<int32_t>({1, 2, 3, 4, 5, 6, 7, 8})});
+
+    writer.write(batch);
+    writer.close();
+
+    // Read back and verify the restart interval in the key encoding
+    velox::InMemoryReadFile readFile(file);
+    auto tablet = nimble::TabletReader::create(&readFile, *leafPool_);
+
+    const auto* index = tablet->index();
+    ASSERT_NE(index, nullptr) << "Index must exist";
+
+    // Get first stripe's index group
+    const auto stripeId = tablet->stripeIdentifier(0, /*loadIndex=*/true);
+    ASSERT_NE(stripeId.indexGroup(), nullptr)
+        << "Index group should be available";
+
+    // Get key stream region
+    const auto keyStreamRegion = stripeId.indexGroup()->keyStreamRegion(0);
+
+    // Load the key stream data
+    velox::common::Region region{
+        keyStreamRegion.offset, keyStreamRegion.length, "keyStream"};
+    folly::IOBuf iobuf;
+    readFile.preadv({&region, 1}, {&iobuf, 1});
+
+    std::string buffer;
+    buffer.resize(iobuf.computeChainDataLength());
+    size_t offset = 0;
+    for (auto range : iobuf) {
+      std::memcpy(buffer.data() + offset, range.data(), range.size());
+      offset += range.size();
+    }
+
+    // Decode the chunk to get raw encoding data
+    nimble::index::test::SingleChunkDecoder chunkDecoder(*leafPool_, buffer);
+    auto encodingData = chunkDecoder.decode();
+
+    // Decode the key encoding
+    std::vector<velox::BufferPtr> stringBuffers;
+    auto keyEncoding = nimble::EncodingFactory::decode(
+        *leafPool_, encodingData, [&](uint32_t totalLength) {
+          auto& buf = stringBuffers.emplace_back(
+              velox::AlignedBuffer::allocate<char>(
+                  totalLength, leafPool_.get()));
+          return buf->asMutable<void>();
+        });
+
+    // Verify the restart interval through debugString()
+    const std::string debug = keyEncoding->debugString(0);
+    const uint32_t expectedInterval = customRestartInterval.value_or(
+        nimble::PrefixEncoding::kDefaultRestartInterval);
+    EXPECT_TRUE(
+        debug.find("restart_interval=" + std::to_string(expectedInterval)) !=
+        std::string::npos)
+        << "Expected restart_interval=" << expectedInterval
+        << " in debugString: " << debug;
+  }
+}
+
 INSTANTIATE_TEST_SUITE_P(
     VeloxWriterIndexTestSuite,
     VeloxWriterIndexTest,
     ::testing::Values(
-        IndexTestParams{false, nimble::EncodingType::Prefix}
-#if 0
-        IndexTestParams{true, nimble::EncodingType::Prefix},
-        IndexTestParams{false, nimble::EncodingType::Trivial},
-        IndexTestParams{true, nimble::EncodingType::Trivial}
-#endif
-        ),
+        IndexTestParams{false, nimble::EncodingType::Prefix, std::nullopt},
+        IndexTestParams{false, nimble::EncodingType::Prefix, 1},
+        IndexTestParams{false, nimble::EncodingType::Prefix, 1024},
+        IndexTestParams{true, nimble::EncodingType::Prefix, std::nullopt},
+        IndexTestParams{true, nimble::EncodingType::Prefix, 1},
+        IndexTestParams{true, nimble::EncodingType::Prefix, 1024},
+        IndexTestParams{false, nimble::EncodingType::Trivial, std::nullopt},
+        IndexTestParams{true, nimble::EncodingType::Trivial, std::nullopt}),
     [](const ::testing::TestParamInfo<IndexTestParams>& info) {
       return info.param.toString();
     });

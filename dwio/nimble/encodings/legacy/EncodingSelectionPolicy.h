@@ -627,6 +627,7 @@ class ReplayedEncodingSelectionPolicy : public EncodingSelectionPolicy<TInner> {
              << encodingLayout_.encodingType());
     encodingLayout_ = EncodingLayout{
         EncodingType::Nullable,
+        {},
         CompressionType::Uncompressed,
         {
             /* Data */ std::move(encodingLayout_),

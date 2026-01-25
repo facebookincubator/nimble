@@ -89,10 +89,12 @@ TEST(EncodingLayoutTreeTests, SingleNode) {
           nimble::EncodingLayoutTree::StreamIdentifiers::Row::NullsStream,
           nimble::EncodingLayout{
               nimble::EncodingType::SparseBool,
+              {},
               nimble::CompressionType::MetaInternal,
               {
                   nimble::EncodingLayout{
                       nimble::EncodingType::FixedBitWidth,
+                      {},
                       nimble::CompressionType::Uncompressed},
               }},
       }},
@@ -110,10 +112,12 @@ TEST(EncodingLayoutTreeTests, SingleNodeMultipleStreams) {
               2,
               nimble::EncodingLayout{
                   nimble::EncodingType::SparseBool,
+                  {},
                   nimble::CompressionType::MetaInternal,
                   {
                       nimble::EncodingLayout{
                           nimble::EncodingType::FixedBitWidth,
+                          {},
                           nimble::CompressionType::Uncompressed},
                   }},
           },
@@ -121,10 +125,12 @@ TEST(EncodingLayoutTreeTests, SingleNodeMultipleStreams) {
               4,
               nimble::EncodingLayout{
                   nimble::EncodingType::Dictionary,
+                  {},
                   nimble::CompressionType::Zstd,
                   {
                       nimble::EncodingLayout{
                           nimble::EncodingType::Constant,
+                          {},
                           nimble::CompressionType::Uncompressed},
                   }},
           },
@@ -143,10 +149,12 @@ TEST(EncodingLayoutTreeTests, WithChildren) {
               1,
               nimble::EncodingLayout{
                   nimble::EncodingType::SparseBool,
+                  {},
                   nimble::CompressionType::MetaInternal,
                   {
                       nimble::EncodingLayout{
                           nimble::EncodingType::FixedBitWidth,
+                          {},
                           nimble::CompressionType::Uncompressed},
                   }},
           },
@@ -160,10 +168,12 @@ TEST(EncodingLayoutTreeTests, WithChildren) {
                       0,
                       nimble::EncodingLayout{
                           nimble::EncodingType::Trivial,
+                          {},
                           nimble::CompressionType::Zstd,
                           {
                               nimble::EncodingLayout{
                                   nimble::EncodingType::Constant,
+                                  {},
                                   nimble::CompressionType::Uncompressed},
                           }},
                   },
@@ -199,10 +209,12 @@ TEST(EncodingLayoutTreeTests, SingleNodeEmptyName) {
               9,
               nimble::EncodingLayout{
                   nimble::EncodingType::SparseBool,
+                  {},
                   nimble::CompressionType::MetaInternal,
                   {
                       nimble::EncodingLayout{
                           nimble::EncodingType::FixedBitWidth,
+                          {},
                           nimble::CompressionType::Uncompressed},
                   }},
           },

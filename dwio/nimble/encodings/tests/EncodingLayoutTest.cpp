@@ -79,7 +79,9 @@ void testCapture(nimble::EncodingLayout expected, TCollection data) {
 TEST(EncodingLayoutTests, Trivial) {
   {
     nimble::EncodingLayout expected{
-        nimble::EncodingType::Trivial, nimble::CompressionType::Uncompressed};
+        nimble::EncodingType::Trivial,
+        {},
+        nimble::CompressionType::Uncompressed};
 
     testSerialization(expected);
     testCapture<uint32_t>(expected, {1, 2, 3});
@@ -87,7 +89,9 @@ TEST(EncodingLayoutTests, Trivial) {
 
   {
     nimble::EncodingLayout expected{
-        nimble::EncodingType::Trivial, nimble::CompressionType::MetaInternal};
+        nimble::EncodingType::Trivial,
+        {},
+        nimble::CompressionType::MetaInternal};
 
     testSerialization(expected);
     testCapture<uint32_t>(expected, {1, 2, 3});
@@ -98,10 +102,12 @@ TEST(EncodingLayoutTests, TrivialString) {
   {
     nimble::EncodingLayout expected{
         nimble::EncodingType::Trivial,
+        {},
         nimble::CompressionType::Uncompressed,
         {
             nimble::EncodingLayout{
                 nimble::EncodingType::Trivial,
+                {},
                 nimble::CompressionType::Uncompressed},
         }};
 
@@ -114,6 +120,7 @@ TEST(EncodingLayoutTests, FixedBitWidth) {
   {
     nimble::EncodingLayout expected{
         nimble::EncodingType::FixedBitWidth,
+        {},
         nimble::CompressionType::Uncompressed,
     };
 
@@ -124,6 +131,7 @@ TEST(EncodingLayoutTests, FixedBitWidth) {
   {
     nimble::EncodingLayout expected{
         nimble::EncodingType::FixedBitWidth,
+        {},
         nimble::CompressionType::Zstd,
     };
 
@@ -151,6 +159,7 @@ TEST(EncodingLayoutTests, FixedBitWidth) {
 TEST(EncodingLayoutTests, Varint) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::Varint,
+      {},
       nimble::CompressionType::Uncompressed,
   };
 
@@ -161,6 +170,7 @@ TEST(EncodingLayoutTests, Varint) {
 TEST(EncodingLayoutTests, Constant) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::Constant,
+      {},
       nimble::CompressionType::Uncompressed,
   };
 
@@ -171,10 +181,12 @@ TEST(EncodingLayoutTests, Constant) {
 TEST(EncodingLayoutTests, SparseBool) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::SparseBool,
+      {},
       nimble::CompressionType::Uncompressed,
       {
           nimble::EncodingLayout{
               nimble::EncodingType::Trivial,
+              {},
               nimble::CompressionType::MetaInternal},
       }};
 
@@ -186,13 +198,16 @@ TEST(EncodingLayoutTests, SparseBool) {
 TEST(EncodingLayoutTests, MainlyConst) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::MainlyConstant,
+      {},
       nimble::CompressionType::Uncompressed,
       {
           nimble::EncodingLayout{
               nimble::EncodingType::Trivial,
+              {},
               nimble::CompressionType::MetaInternal},
           nimble::EncodingLayout{
               nimble::EncodingType::Trivial,
+              {},
               nimble::CompressionType::Uncompressed},
       }};
 
@@ -203,13 +218,16 @@ TEST(EncodingLayoutTests, MainlyConst) {
 TEST(EncodingLayoutTests, Dictionary) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::Dictionary,
+      {},
       nimble::CompressionType::Uncompressed,
       {
           nimble::EncodingLayout{
               nimble::EncodingType::Trivial,
+              {},
               nimble::CompressionType::Uncompressed},
           nimble::EncodingLayout{
               nimble::EncodingType::FixedBitWidth,
+              {},
               nimble::CompressionType::Uncompressed},
       }};
 
@@ -220,13 +238,16 @@ TEST(EncodingLayoutTests, Dictionary) {
 TEST(EncodingLayoutTests, Rle) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::RLE,
+      {},
       nimble::CompressionType::Uncompressed,
       {
           nimble::EncodingLayout{
               nimble::EncodingType::Trivial,
+              {},
               nimble::CompressionType::Uncompressed},
           nimble::EncodingLayout{
               nimble::EncodingType::FixedBitWidth,
+              {},
               nimble::CompressionType::Uncompressed},
       }};
 
@@ -237,10 +258,12 @@ TEST(EncodingLayoutTests, Rle) {
 TEST(EncodingLayoutTests, RleBool) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::RLE,
+      {},
       nimble::CompressionType::Uncompressed,
       {
           nimble::EncodingLayout{
               nimble::EncodingType::Trivial,
+              {},
               nimble::CompressionType::Uncompressed},
       }};
 
@@ -251,16 +274,20 @@ TEST(EncodingLayoutTests, RleBool) {
 TEST(EncodingLayoutTests, Nullable) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::Nullable,
+      {},
       nimble::CompressionType::Uncompressed,
       {nimble::EncodingLayout{
            nimble::EncodingType::FixedBitWidth,
+           {},
            nimble::CompressionType::Uncompressed},
        nimble::EncodingLayout{
            nimble::EncodingType::SparseBool,
+           {},
            nimble::CompressionType::Uncompressed,
            {
                nimble::EncodingLayout{
                    nimble::EncodingType::Trivial,
+                   {},
                    nimble::CompressionType::MetaInternal},
            }}}};
 
@@ -303,6 +330,7 @@ TEST(EncodingLayoutTests, SizeTooSmall) {
   {
     nimble::EncodingLayout expected{
         nimble::EncodingType::Trivial,
+        {},
         nimble::CompressionType::Uncompressed,
     };
 
@@ -315,6 +343,7 @@ TEST(EncodingLayoutTests, SizeTooSmall) {
   {
     nimble::EncodingLayout expected{
         nimble::EncodingType::Trivial,
+        {},
         nimble::CompressionType::Uncompressed,
     };
 
@@ -326,6 +355,7 @@ TEST(EncodingLayoutTests, SizeTooSmall) {
   {
     nimble::EncodingLayout expected{
         nimble::EncodingType::MainlyConstant,
+        {},
         nimble::CompressionType::Uncompressed,
         {
             std::nullopt,
@@ -342,6 +372,7 @@ TEST(EncodingLayoutTests, SizeTooSmall) {
   {
     nimble::EncodingLayout expected{
         nimble::EncodingType::MainlyConstant,
+        {},
         nimble::CompressionType::Uncompressed,
         {
             std::nullopt,
@@ -357,13 +388,16 @@ TEST(EncodingLayoutTests, SizeTooSmall) {
   {
     nimble::EncodingLayout expected{
         nimble::EncodingType::MainlyConstant,
+        {},
         nimble::CompressionType::Uncompressed,
         {
             nimble::EncodingLayout{
                 nimble::EncodingType::Trivial,
+                {},
                 nimble::CompressionType::MetaInternal},
             nimble::EncodingLayout{
                 nimble::EncodingType::Trivial,
+                {},
                 nimble::CompressionType::Uncompressed},
         }};
 
@@ -378,13 +412,16 @@ TEST(EncodingLayoutTests, SizeTooSmall) {
   {
     nimble::EncodingLayout expected{
         nimble::EncodingType::MainlyConstant,
+        {},
         nimble::CompressionType::Uncompressed,
         {
             nimble::EncodingLayout{
                 nimble::EncodingType::Trivial,
+                {},
                 nimble::CompressionType::MetaInternal},
             nimble::EncodingLayout{
                 nimble::EncodingType::Trivial,
+                {},
                 nimble::CompressionType::Uncompressed},
         }};
 

@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "dwio/nimble/velox/selective/NimbleRowReaderOptions.h"
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
@@ -34,19 +35,59 @@ using namespace velox;
 using namespace velox::common;
 using namespace velox::dwio::common;
 
+namespace {
+
+// Builds a name for prefix encoding with optional restart interval suffix.
+std::string makePrefixEncodingName(
+    std::string_view baseName,
+    std::optional<uint32_t> prefixRestartInterval) {
+  std::string name(baseName);
+  if (prefixRestartInterval.has_value()) {
+    name += "_restart" + std::to_string(prefixRestartInterval.value());
+  }
+  return name;
+}
+
+// Creates an EncodingLayout for index tests with the given parameters.
+EncodingLayout makeIndexEncodingLayout(
+    EncodingType encodingType,
+    CompressionType compressionType,
+    std::optional<uint32_t> prefixRestartInterval) {
+  std::vector<std::optional<const EncodingLayout>> children;
+  if (encodingType == EncodingType::Trivial) {
+    // Trivial encoding for string data needs a child encoding for lengths.
+    children.push_back(
+        EncodingLayout{
+            EncodingType::Trivial, {}, CompressionType::Uncompressed});
+  }
+  EncodingLayout::Config config;
+  if (prefixRestartInterval.has_value()) {
+    config = EncodingLayout::Config{
+        {{std::string(PrefixEncoding::kRestartIntervalConfigKey),
+          std::to_string(prefixRestartInterval.value())}}};
+  }
+  return EncodingLayout{
+      encodingType, std::move(config), compressionType, std::move(children)};
+}
+
+} // namespace
+
 // Defines the encoding layout configuration for index tests.
 struct IndexEncodingParam {
   std::string name;
   EncodingType encodingType;
   CompressionType compressionType;
   velox::core::SortOrder sortOrder;
+  std::optional<uint32_t> prefixRestartInterval;
 
-  static IndexEncodingParam prefix() {
+  static IndexEncodingParam prefix(
+      std::optional<uint32_t> prefixRestartInterval = std::nullopt) {
     return IndexEncodingParam{
-        "Prefix",
+        makePrefixEncodingName("Prefix", prefixRestartInterval),
         EncodingType::Prefix,
         CompressionType::Uncompressed,
-        velox::core::kAscNullsFirst};
+        velox::core::kAscNullsFirst,
+        prefixRestartInterval};
   }
 
   static IndexEncodingParam trivialZstd() {
@@ -54,15 +95,18 @@ struct IndexEncodingParam {
         "TrivialZstd",
         EncodingType::Trivial,
         CompressionType::Zstd,
-        velox::core::kAscNullsFirst};
+        velox::core::kAscNullsFirst,
+        std::nullopt};
   }
 
-  static IndexEncodingParam prefixDesc() {
+  static IndexEncodingParam prefixDesc(
+      std::optional<uint32_t> prefixRestartInterval = std::nullopt) {
     return IndexEncodingParam{
-        "PrefixDesc",
+        makePrefixEncodingName("PrefixDesc", prefixRestartInterval),
         EncodingType::Prefix,
         CompressionType::Uncompressed,
-        velox::core::kDescNullsLast};
+        velox::core::kDescNullsLast,
+        prefixRestartInterval};
   }
 
   static IndexEncodingParam trivialZstdDesc() {
@@ -70,17 +114,13 @@ struct IndexEncodingParam {
         "TrivialZstdDesc",
         EncodingType::Trivial,
         CompressionType::Zstd,
-        velox::core::kDescNullsLast};
+        velox::core::kDescNullsLast,
+        std::nullopt};
   }
 
   EncodingLayout makeEncodingLayout() const {
-    std::vector<std::optional<const EncodingLayout>> children;
-    if (encodingType == EncodingType::Trivial) {
-      // Trivial encoding for string data needs a child encoding for lengths.
-      children.push_back(
-          EncodingLayout{EncodingType::Trivial, CompressionType::Uncompressed});
-    }
-    return EncodingLayout{encodingType, compressionType, std::move(children)};
+    return makeIndexEncodingLayout(
+        encodingType, compressionType, prefixRestartInterval);
   }
 };
 
@@ -2170,8 +2210,12 @@ INSTANTIATE_TEST_SUITE_P(
     E2EIndexTest,
     ::testing::Values(
         IndexEncodingParam::prefix(),
+        IndexEncodingParam::prefix(1),
+        IndexEncodingParam::prefix(1024),
         IndexEncodingParam::trivialZstd(),
         IndexEncodingParam::prefixDesc(),
+        IndexEncodingParam::prefixDesc(1),
+        IndexEncodingParam::prefixDesc(1024),
         IndexEncodingParam::trivialZstdDesc()),
     [](const ::testing::TestParamInfo<IndexEncodingParam>& info) {
       return info.param.name;
@@ -2187,13 +2231,16 @@ struct FuzzerTestParam {
   velox::core::SortOrder sortOrder;
   EncodingType encodingType;
   CompressionType compressionType;
+  std::optional<uint32_t> restartInterval;
 
   static FuzzerTestParam make(
       uint32_t seed,
       velox::core::SortOrder sortOrder,
       EncodingType encodingType,
-      CompressionType compressionType) {
-    return FuzzerTestParam{seed, sortOrder, encodingType, compressionType};
+      CompressionType compressionType,
+      std::optional<uint32_t> restartInterval = std::nullopt) {
+    return FuzzerTestParam{
+        seed, sortOrder, encodingType, compressionType, restartInterval};
   }
 
   bool isAscending() const {
@@ -2201,13 +2248,8 @@ struct FuzzerTestParam {
   }
 
   EncodingLayout makeEncodingLayout() const {
-    std::vector<std::optional<const EncodingLayout>> children;
-    if (encodingType == EncodingType::Trivial) {
-      // Trivial encoding for string data needs a child encoding for lengths.
-      children.push_back(
-          EncodingLayout{EncodingType::Trivial, CompressionType::Uncompressed});
-    }
-    return EncodingLayout{encodingType, compressionType, std::move(children)};
+    return makeIndexEncodingLayout(
+        encodingType, compressionType, restartInterval);
   }
 
   std::string name() const {
@@ -2216,6 +2258,9 @@ struct FuzzerTestParam {
     result += encodingType == EncodingType::Prefix ? "_prefix" : "_trivial";
     if (compressionType == CompressionType::Zstd) {
       result += "_zstd";
+    }
+    if (restartInterval.has_value()) {
+      result += fmt::format("_restart{}", restartInterval.value());
     }
     return result;
   }
@@ -2826,7 +2871,26 @@ INSTANTIATE_TEST_SUITE_P(
             42,
             velox::core::kDescNullsLast,
             EncodingType::Trivial,
-            CompressionType::Zstd)),
+            CompressionType::Zstd),
+        // Prefix encoding with custom restart intervals.
+        FuzzerTestParam::make(
+            42,
+            velox::core::kAscNullsFirst,
+            EncodingType::Prefix,
+            CompressionType::Uncompressed,
+            1),
+        FuzzerTestParam::make(
+            42,
+            velox::core::kAscNullsFirst,
+            EncodingType::Prefix,
+            CompressionType::Uncompressed,
+            16),
+        FuzzerTestParam::make(
+            42,
+            velox::core::kAscNullsFirst,
+            EncodingType::Prefix,
+            CompressionType::Uncompressed,
+            1024)),
     [](const ::testing::TestParamInfo<FuzzerTestParam>& info) {
       return info.param.name();
     });

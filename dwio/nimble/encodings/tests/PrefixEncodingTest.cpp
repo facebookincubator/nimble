@@ -17,6 +17,7 @@
 #include <fmt/core.h>
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingSelection.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
@@ -42,7 +43,8 @@ class PrefixEncodingTest : public ::testing::Test {
   createSelectionPolicy() {
     // Create an EncodingLayout that specifies PrefixEncoding for the top level.
     // Nested encodings (lengths, data) will be handled by the factory.
-    EncodingLayout layout{EncodingType::Prefix, CompressionType::Uncompressed};
+    EncodingLayout layout{
+        EncodingType::Prefix, {}, CompressionType::Uncompressed};
     return std::make_unique<ReplayedEncodingSelectionPolicy<std::string_view>>(
         std::move(layout),
         CompressionOptions{},
@@ -741,6 +743,91 @@ TEST_F(PrefixEncodingTest, debugString) {
   EXPECT_TRUE(debug.find("Prefix") != std::string::npos);
   EXPECT_TRUE(debug.find("restart_interval=") != std::string::npos);
   EXPECT_TRUE(debug.find("num_restarts=") != std::string::npos);
+}
+
+// Test that custom restart interval from EncodingLayout config is respected.
+TEST_F(PrefixEncodingTest, customRestartInterval) {
+  std::vector<std::string_view> values = {
+      "apple", "application", "apply", "banana", "bandana", "band"};
+
+  // nullopt tests that the default interval is used when no config is provided
+  const std::vector<std::optional<uint32_t>> customRestartIntervals = {
+      std::nullopt, 1, 2, 3, 4, 5, 6, 10, 16, 32};
+
+  for (const auto& customRestartInterval : customRestartIntervals) {
+    SCOPED_TRACE(
+        fmt::format(
+            "restart_interval={}",
+            customRestartInterval.has_value()
+                ? std::to_string(customRestartInterval.value())
+                : "default"));
+
+    Buffer buffer{*pool_};
+
+    // Create EncodingLayout with optional custom restart interval in config
+    std::unordered_map<std::string, std::string> configMap;
+    if (customRestartInterval.has_value()) {
+      configMap[std::string(PrefixEncoding::kRestartIntervalConfigKey)] =
+          std::to_string(customRestartInterval.value());
+    }
+
+    EncodingLayout layout{
+        EncodingType::Prefix,
+        EncodingLayout::Config{std::move(configMap)},
+        CompressionType::Uncompressed};
+
+    auto policy =
+        std::make_unique<ReplayedEncodingSelectionPolicy<std::string_view>>(
+            std::move(layout),
+            CompressionOptions{},
+            encodingSelectionPolicyFactory_);
+
+    auto encoded = EncodingFactory::encode<std::string_view>(
+        std::move(policy), values, buffer);
+    stringBuffers_.clear();
+    auto encoding =
+        EncodingFactory::decode(*pool_, encoded, createStringBufferFactory());
+
+    // Verify restart interval is correctly set from config or default
+    const std::string debug = encoding->debugString();
+    const uint32_t expectedInterval =
+        customRestartInterval.value_or(PrefixEncoding::kDefaultRestartInterval);
+    EXPECT_TRUE(
+        debug.find("restart_interval=" + std::to_string(expectedInterval)) !=
+        std::string::npos)
+        << "Debug: " << debug;
+  }
+}
+
+// Test that invalid restart intervals (0 or negative) throw an exception.
+TEST_F(PrefixEncodingTest, invalidRestartIntervalThrows) {
+  const std::vector<std::string_view> values = {"apple", "banana", "cherry"};
+
+  for (const auto invalidInterval : {0, -1, -100}) {
+    SCOPED_TRACE(fmt::format("restart_interval={}", invalidInterval));
+
+    Buffer buffer{*pool_};
+
+    std::unordered_map<std::string, std::string> configMap;
+    configMap[std::string(PrefixEncoding::kRestartIntervalConfigKey)] =
+        std::to_string(invalidInterval);
+
+    EncodingLayout layout{
+        EncodingType::Prefix,
+        EncodingLayout::Config{std::move(configMap)},
+        CompressionType::Uncompressed};
+
+    auto policy =
+        std::make_unique<ReplayedEncodingSelectionPolicy<std::string_view>>(
+            std::move(layout),
+            CompressionOptions{},
+            encodingSelectionPolicyFactory_);
+
+    NIMBLE_ASSERT_THROW(
+        EncodingFactory::encode<std::string_view>(
+            std::move(policy), values, buffer),
+        "Restart interval must be greater than 0");
+  }
 }
 
 // Test encode with various input patterns and verify with materialize.

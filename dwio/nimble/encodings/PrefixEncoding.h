@@ -70,6 +70,9 @@ class PrefixEncoding final
   static constexpr int kRestartIntervalOffset = Encoding::kPrefixSize;
   static constexpr int kRestartOffsetsOffset = kRestartIntervalOffset + 4;
   static constexpr uint32_t kDefaultRestartInterval = 16;
+  // Config key for restart interval in EncodingSelectionResult::encodingConfig
+  static constexpr std::string_view kRestartIntervalConfigKey =
+      "prefix-encoding.restart-interval";
 
   PrefixEncoding(velox::memory::MemoryPool& pool, std::string_view data);
 
@@ -111,6 +114,7 @@ class PrefixEncoding final
 
  private:
   // Static helper methods for initializing const members
+  // While decoding, extracts the restart interval from the encoded block.
   static uint32_t readRestartInterval(std::string_view data);
   static const char* restartOffsets(std::string_view data);
   static const char* dataStart(std::string_view data, uint32_t numRestarts);
@@ -119,6 +123,14 @@ class PrefixEncoding final
   static uint32_t computeNumRestarts(
       uint32_t rowCount,
       uint32_t restartInterval);
+
+  // While encoding, extracts the restart interval from the encoding selection
+  // config. Returns the configured value or kDefaultRestartInterval if not set.
+  //
+  // @param selection Encoding selection with config.
+  // @return The restart interval value.
+  static uint32_t restartInterval(
+      const EncodingSelection<physicalType>& selection);
 
   // Decodes entry at current position and returns the full string.
   // Stores result in decodedValue_ buffer.

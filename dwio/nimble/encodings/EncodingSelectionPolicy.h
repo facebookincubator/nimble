@@ -614,10 +614,12 @@ class ReplayedEncodingSelectionPolicy
         CYAN << "Replaying encoding " << encodingLayout_.encodingType());
     return {
         .encodingType = encodingLayout_.encodingType(),
-        .compressionPolicyFactory = [this]() {
-          return std::make_unique<ReplayedCompressionPolicy>(
-              encodingLayout_.compressionType(), compressionOptions_);
-        }};
+        .compressionPolicyFactory =
+            [this]() {
+              return std::make_unique<ReplayedCompressionPolicy>(
+                  encodingLayout_.compressionType(), compressionOptions_);
+            },
+        .encodingConfig = encodingLayout_.config()};
   }
 
   EncodingSelectionResult selectNullable(
@@ -629,6 +631,7 @@ class ReplayedEncodingSelectionPolicy
              << encodingLayout_.encodingType());
     encodingLayout_ = EncodingLayout{
         EncodingType::Nullable,
+        {},
         CompressionType::Uncompressed,
         {
             /* Data */ std::move(encodingLayout_),

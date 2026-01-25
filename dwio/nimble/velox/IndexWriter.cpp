@@ -24,6 +24,7 @@
 namespace facebook::nimble::index {
 
 namespace {
+
 // The key stream uses a placeholder offset value (kKeyStreamId) that does
 // not correspond to any actual stream position. This offset is not used for
 // data retrieval but is required to conform to Nimble's stream typing
@@ -93,12 +94,12 @@ IndexWriter::IndexWriter(
       enforceKeyOrder_{config.enforceKeyOrder},
       minChunkSize_{config.minChunkRawSize},
       maxChunkSize_{config.maxChunkRawSize} {
-  // Key stream encoding only supports Prefix or Trivial encoding.
+  const auto encodingType = config.encodingLayout.encodingType();
   NIMBLE_CHECK(
-      encodingLayout_.encodingType() == EncodingType::Prefix ||
-          encodingLayout_.encodingType() == EncodingType::Trivial,
+      encodingType == EncodingType::Prefix ||
+          encodingType == EncodingType::Trivial,
       "Key stream encoding only supports Prefix or Trivial encoding, but got: {}",
-      encodingLayout_.encodingType());
+      encodingType);
 }
 
 std::unique_ptr<EncodingSelectionPolicy<std::string_view>>

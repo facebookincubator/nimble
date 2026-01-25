@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/EncodingLayout.h"
 #include "velox/core/PlanNode.h"
 
@@ -35,24 +36,23 @@ struct IndexConfig {
   /// If empty, defaults to ascending order with nulls first for all columns.
   /// If not empty, must have the same size as 'columns'.
   std::vector<velox::core::SortOrder> sortOrders;
-  /// Specifies the key encoding layout.
-  EncodingLayout encodingLayout = defaultEncodingLayout();
   /// If true, enforces that encoded keys must be in strictly ascending order
   /// (each key must be greater than the previous). This ensures that stripe
   /// boundaries maintain sorted order for efficient range-based filtering.
   /// An exception is thrown if keys are found to be out of order or if
   /// duplicate keys are detected.
   bool enforceKeyOrder{false};
-  /// Controls the restart interval for prefix encoding of index keys. Prefix
-  /// encoding stores each key as a shared prefix length plus a unique suffix,
-  /// which is space-efficient for sorted keys. However, to decode any key, all
-  /// previous keys must be decoded sequentially. Restart points are positions
-  /// where the full key is stored, allowing direct seeking without decoding
-  /// from the beginning. A smaller interval improves seek performance but
-  /// increases storage overhead. A larger interval saves space but slows down
-  /// random access. Default value of 16 means every 16th key is a restart
-  /// point.
-  uint32_t prefixRestartInterval{16};
+  /// The encoding layout for the key stream.
+  /// Only Prefix and Trivial encodings are supported.
+  /// Users should pass a fully constructed EncodingLayout.
+  /// For PrefixEncoding, use EncodingConfig with key "prefixRestartInterval"
+  /// to control the restart interval (default: 16).
+  /// For Trivial encoding, include a child EncodingLayout for the lengths
+  /// stream.
+  EncodingLayout encodingLayout{
+      EncodingType::Prefix,
+      {},
+      CompressionType::Uncompressed};
   /// When flushing key stream into chunks, key stream with raw data size
   /// smaller than this threshold will not be flushed.
   /// Note: this threshold is ignored when it is time to flush a stripe.
@@ -61,9 +61,6 @@ struct IndexConfig {
   /// larger than this threshold will be broken down into multiple smaller
   /// chunks.
   uint64_t maxChunkRawSize{20 << 20};
-
-  /// Returns the default encoding layout for index key stream.
-  static EncodingLayout defaultEncodingLayout();
 };
 
 } // namespace facebook::nimble
