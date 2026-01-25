@@ -211,16 +211,29 @@ std::optional<uint32_t> PrefixEncoding::seekAtOrAfter(const void* value) {
   return std::nullopt;
 }
 
+// static
+uint32_t PrefixEncoding::restartInterval(
+    const EncodingSelection<physicalType>& selection) {
+  const auto configValueOpt =
+      selection.getConfig(std::string(kRestartIntervalConfigKey));
+  if (!configValueOpt.has_value()) {
+    return kDefaultRestartInterval;
+  }
+  // Use stoll (signed) to properly detect negative values before converting
+  const auto intervalSigned = std::stoll(*configValueOpt);
+  NIMBLE_USER_CHECK_GT(
+      intervalSigned, 0, "Restart interval must be greater than 0");
+  return static_cast<uint32_t>(intervalSigned);
+}
+
 std::string_view PrefixEncoding::encode(
-    EncodingSelection<physicalType>& /* unused */,
+    EncodingSelection<physicalType>& selection,
     std::span<const physicalType> values,
     Buffer& buffer) {
   const uint32_t valueCount = values.size();
 
-  // Values must be sorted for prefix encoding to be effective
-  // In production, caller should ensure this or we can add a check
-
-  const uint32_t restartInterval = kDefaultRestartInterval;
+  // Get restart interval from config, or use default
+  const uint32_t restartInterval = PrefixEncoding::restartInterval(selection);
   const auto numRestarts = computeNumRestarts(values.size(), restartInterval);
   Vector<uint32_t> restartOffsets{&buffer.getMemoryPool()};
   restartOffsets.reserve(numRestarts);

@@ -19,6 +19,7 @@
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
+#include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/velox/IndexWriter.h"
 #include "velox/common/base/tests/GTestUtils.h"
@@ -66,12 +67,13 @@ class IndexWriterTest : public testing::Test,
   static IndexConfig indexConfig(
       EncodingType encodingType = EncodingType::Prefix) {
     EncodingLayout layout = encodingType == EncodingType::Prefix
-        ? EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}
+        ? EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}
         : EncodingLayout{
               EncodingType::Trivial,
+              {},
               CompressionType::Zstd,
               {EncodingLayout{
-                  EncodingType::Trivial, CompressionType::Uncompressed}}};
+                  EncodingType::Trivial, {}, CompressionType::Uncompressed}}};
     return IndexConfig{
         .columns = {std::string(kCol1)}, .encodingLayout = layout};
   }
@@ -99,12 +101,13 @@ TEST_F(IndexWriterTest, createWithValidConfig) {
               compressionType,
               toString(encodingType)));
       EncodingLayout layout = encodingType == EncodingType::Prefix
-          ? EncodingLayout{EncodingType::Prefix, compressionType}
+          ? EncodingLayout{EncodingType::Prefix, {}, compressionType}
           : EncodingLayout{
                 EncodingType::Trivial,
+                {},
                 compressionType,
                 {EncodingLayout{
-                    EncodingType::Trivial, CompressionType::Uncompressed}}};
+                    EncodingType::Trivial, {}, CompressionType::Uncompressed}}};
       IndexConfig config{.columns = {"col0"}, .encodingLayout = layout};
       auto writer = IndexWriter::create(config, type_, pool_.get());
       EXPECT_NE(writer, nullptr);
@@ -120,7 +123,7 @@ TEST_F(IndexWriterTest, createWithInvalidConfig) {
     IndexConfig config{
         .columns = {"non_existent_col"},
         .encodingLayout = EncodingLayout{
-            EncodingType::Trivial, CompressionType::Uncompressed}};
+            EncodingType::Trivial, {}, CompressionType::Uncompressed}};
     VELOX_ASSERT_USER_THROW(
         IndexWriter::create(config, type, pool_.get()), "Field not found");
   }
@@ -130,7 +133,7 @@ TEST_F(IndexWriterTest, createWithInvalidConfig) {
     IndexConfig config{
         .columns = {"col0"},
         .encodingLayout = EncodingLayout{
-            EncodingType::FixedBitWidth, CompressionType::Uncompressed}};
+            EncodingType::FixedBitWidth, {}, CompressionType::Uncompressed}};
     NIMBLE_ASSERT_THROW(
         IndexWriter::create(config, type, pool_.get()),
         "Key stream encoding only supports Prefix or Trivial encoding");
@@ -150,7 +153,7 @@ TEST_F(IndexWriterTest, multiColumnWithDifferentSortOrders) {
         .columns = {"col0", "col1"},
         .sortOrders = {},
         .encodingLayout =
-            EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}};
+            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
     auto writer = IndexWriter::create(config, type, pool_.get());
     EXPECT_NE(writer, nullptr);
   }
@@ -162,7 +165,7 @@ TEST_F(IndexWriterTest, multiColumnWithDifferentSortOrders) {
         .sortOrders =
             {velox::core::kAscNullsFirst, velox::core::kDescNullsLast},
         .encodingLayout =
-            EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}};
+            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
     NIMBLE_ASSERT_THROW(
         IndexWriter::create(config, type, pool_.get()),
         "sortOrders size (2) must be empty or match columns size (3)");
@@ -177,7 +180,7 @@ TEST_F(IndexWriterTest, multiColumnWithDifferentSortOrders) {
              velox::core::kDescNullsLast,
              velox::core::kAscNullsLast},
         .encodingLayout =
-            EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}};
+            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
     NIMBLE_ASSERT_THROW(
         IndexWriter::create(config, type, pool_.get()),
         "sortOrders size (3) must be empty or match columns size (2)");
@@ -196,7 +199,7 @@ TEST_F(IndexWriterTest, multiColumnWithDifferentSortOrders) {
         .columns = {"col0", "col1", "col2"},
         .sortOrders = sortOrders,
         .encodingLayout =
-            EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}};
+            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
 
     auto writer = IndexWriter::create(config, type, pool_.get());
     ASSERT_NE(writer, nullptr);
@@ -266,7 +269,7 @@ TEST_F(IndexWriterTest, multiColumnWithDifferentSortOrders) {
         .columns = {"col0"},
         .sortOrders = {velox::core::kAscNullsFirst},
         .encodingLayout =
-            EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}};
+            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
     auto writerAsc = IndexWriter::create(configAsc, singleColType, pool_.get());
     writerAsc->write(batch, buffer1);
     writerAsc->encodeStream(buffer1);
@@ -277,7 +280,7 @@ TEST_F(IndexWriterTest, multiColumnWithDifferentSortOrders) {
         .columns = {"col0"},
         .sortOrders = {velox::core::kDescNullsLast},
         .encodingLayout =
-            EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}};
+            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
     auto writerDesc =
         IndexWriter::create(configDesc, singleColType, pool_.get());
     writerDesc->write(batch, buffer2);
@@ -298,9 +301,10 @@ TEST_F(IndexWriterTest, emptyWriteFinishStripe) {
       .columns = {std::string(kCol1)},
       .encodingLayout = EncodingLayout{
           EncodingType::Trivial,
+          {},
           CompressionType::Uncompressed,
           {EncodingLayout{
-              EncodingType::Trivial, CompressionType::Uncompressed}}}};
+              EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
   auto writer = IndexWriter::create(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
@@ -314,9 +318,10 @@ TEST_F(IndexWriterTest, writeEmptyVectorOnly) {
       .columns = {std::string(kCol1)},
       .encodingLayout = EncodingLayout{
           EncodingType::Trivial,
+          {},
           CompressionType::Uncompressed,
           {EncodingLayout{
-              EncodingType::Trivial, CompressionType::Uncompressed}}}};
+              EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
   auto writer = IndexWriter::create(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
@@ -342,9 +347,10 @@ TEST_F(IndexWriterTest, writeEmptyVectorAtDifferentPositions) {
       .columns = {std::string(kCol1)},
       .encodingLayout = EncodingLayout{
           EncodingType::Trivial,
+          {},
           CompressionType::Uncompressed,
           {EncodingLayout{
-              EncodingType::Trivial, CompressionType::Uncompressed}}}};
+              EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
   auto writer = IndexWriter::create(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
@@ -400,9 +406,10 @@ TEST_F(IndexWriterTest, enforceKeyOrderInvalidWithinBatch) {
         .encodingLayout =
             EncodingLayout{
                 EncodingType::Trivial,
+                {},
                 CompressionType::Uncompressed,
                 {EncodingLayout{
-                    EncodingType::Trivial, CompressionType::Uncompressed}}},
+                    EncodingType::Trivial, {}, CompressionType::Uncompressed}}},
         .enforceKeyOrder = enforceKeyOrder};
     auto writer = IndexWriter::create(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
@@ -436,9 +443,10 @@ TEST_F(IndexWriterTest, enforceKeyOrderInvalidAcrossBatches) {
         .encodingLayout =
             EncodingLayout{
                 EncodingType::Trivial,
+                {},
                 CompressionType::Uncompressed,
                 {EncodingLayout{
-                    EncodingType::Trivial, CompressionType::Uncompressed}}},
+                    EncodingType::Trivial, {}, CompressionType::Uncompressed}}},
         .enforceKeyOrder = enforceKeyOrder};
     auto writer = IndexWriter::create(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
@@ -476,9 +484,10 @@ TEST_F(IndexWriterTest, enforceKeyOrderDuplicateKeys) {
       .encodingLayout =
           EncodingLayout{
               EncodingType::Trivial,
+              {},
               CompressionType::Uncompressed,
               {EncodingLayout{
-                  EncodingType::Trivial, CompressionType::Uncompressed}}},
+                  EncodingType::Trivial, {}, CompressionType::Uncompressed}}},
       .enforceKeyOrder = true};
   auto writer = IndexWriter::create(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
@@ -498,13 +507,18 @@ TEST_F(IndexWriterTest, enforceKeyOrderDuplicateKeys) {
 struct IndexWriterTestParam {
   EncodingType encodingType;
   velox::core::SortOrder sortOrder;
+  std::optional<uint32_t> prefixRestartInterval;
 
   std::string toString() const {
     const std::string encodingName =
         encodingType == EncodingType::Prefix ? "Prefix" : "Trivial";
     std::string sortName = sortOrder.isAscending() ? "Asc" : "Desc";
     sortName += sortOrder.isNullsFirst() ? "NullsFirst" : "NullsLast";
-    return encodingName + "_" + sortName;
+    std::string result = encodingName + "_" + sortName;
+    if (prefixRestartInterval.has_value()) {
+      result += "_restart" + std::to_string(prefixRestartInterval.value());
+    }
+    return result;
   }
 };
 
@@ -541,13 +555,25 @@ class IndexWriterDataTest
 
   IndexConfig indexConfigWithSortOrder(
       EncodingType encodingType = EncodingType::Prefix) const {
-    EncodingLayout layout = encodingType == EncodingType::Prefix
-        ? EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}
-        : EncodingLayout{
-              EncodingType::Trivial,
-              CompressionType::Zstd,
-              {EncodingLayout{
-                  EncodingType::Trivial, CompressionType::Uncompressed}}};
+    EncodingLayout layout{
+        EncodingType::Trivial, {}, CompressionType::Uncompressed};
+    if (encodingType == EncodingType::Prefix) {
+      EncodingLayout::Config config;
+      if (GetParam().prefixRestartInterval.has_value()) {
+        config = EncodingLayout::Config{
+            {{std::string(PrefixEncoding::kRestartIntervalConfigKey),
+              std::to_string(GetParam().prefixRestartInterval.value())}}};
+      }
+      layout = EncodingLayout{
+          EncodingType::Prefix, std::move(config), CompressionType::Zstd};
+    } else {
+      layout = EncodingLayout{
+          EncodingType::Trivial,
+          {},
+          CompressionType::Zstd,
+          {EncodingLayout{
+              EncodingType::Trivial, {}, CompressionType::Uncompressed}}};
+    }
     return IndexConfig{
         .columns = {std::string(kCol1)},
         .sortOrders = {sortOrder()},
@@ -1085,12 +1111,13 @@ TEST_P(IndexWriterDataTest, multiColumnIndex) {
       {"col1", velox::VARCHAR()},
   });
   EncodingLayout layout = encodingType() == EncodingType::Prefix
-      ? EncodingLayout{EncodingType::Prefix, CompressionType::Zstd}
+      ? EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}
       : EncodingLayout{
             EncodingType::Trivial,
+            {},
             CompressionType::Zstd,
             {EncodingLayout{
-                EncodingType::Trivial, CompressionType::Uncompressed}}};
+                EncodingType::Trivial, {}, CompressionType::Uncompressed}}};
   IndexConfig config{.columns = {"col0", "col1"}, .encodingLayout = layout};
   auto writer = IndexWriter::create(config, type, pool_.get());
 
@@ -1248,7 +1275,23 @@ INSTANTIATE_TEST_SUITE_P(
             velox::core::kDescNullsFirst},
         IndexWriterTestParam{
             EncodingType::Trivial,
-            velox::core::kDescNullsLast}),
+            velox::core::kDescNullsLast},
+        IndexWriterTestParam{
+            EncodingType::Prefix,
+            velox::core::kAscNullsFirst,
+            1},
+        IndexWriterTestParam{
+            EncodingType::Prefix,
+            velox::core::kDescNullsLast,
+            1},
+        IndexWriterTestParam{
+            EncodingType::Prefix,
+            velox::core::kAscNullsFirst,
+            1024},
+        IndexWriterTestParam{
+            EncodingType::Prefix,
+            velox::core::kDescNullsLast,
+            1024}),
     [](const ::testing::TestParamInfo<IndexWriterTestParam>& info) {
       return info.param.toString();
     });

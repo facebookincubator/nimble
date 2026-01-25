@@ -25,11 +25,22 @@ namespace {
 constexpr uint32_t kMinEncodingLayoutBufferSize = 5;
 }
 
+std::optional<std::string> EncodingLayout::Config::get(
+    const std::string& key) const {
+  auto it = configs_.find(key);
+  if (it == configs_.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
 EncodingLayout::EncodingLayout(
     EncodingType encodingType,
+    Config encodingConfig,
     CompressionType compressionType,
     std::vector<std::optional<const EncodingLayout>> children)
     : encodingType_{encodingType},
+      encodingConfig_{std::move(encodingConfig)},
       compressionType_{compressionType},
       children_{std::move(children)} {}
 
@@ -105,7 +116,7 @@ std::pair<EncodingLayout, uint32_t> EncodingLayout::create(
     }
   }
 
-  return {{encodingType, compressionType, std::move(children)}, offset};
+  return {{encodingType, {}, compressionType, std::move(children)}, offset};
 }
 
 EncodingType EncodingLayout::encodingType() const {
@@ -128,6 +139,10 @@ const std::optional<const EncodingLayout>& EncodingLayout::child(
       "Encoding layout identifier is out of range.");
 
   return children_[identifier];
+}
+
+const EncodingLayout::Config& EncodingLayout::config() const {
+  return encodingConfig_;
 }
 
 } // namespace facebook::nimble

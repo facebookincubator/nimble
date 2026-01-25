@@ -211,13 +211,13 @@ class ChunkedDecoderDataTest : public index::test::TabletIndexTestBase,
       // Nullable encoding needs child encodings for:
       // 0: nulls bitmap (bool)
       // 1: non-null values encoding
-      children.push_back(
-          EncodingLayout(EncodingType::Trivial, CompressionType::Uncompressed));
-      children.push_back(
-          EncodingLayout(EncodingType::Trivial, CompressionType::Uncompressed));
+      children.emplace_back(EncodingLayout(
+          EncodingType::Trivial, {}, CompressionType::Uncompressed));
+      children.emplace_back(EncodingLayout(
+          EncodingType::Trivial, {}, CompressionType::Uncompressed));
     }
     EncodingLayout layout(
-        encodingType, CompressionType::Uncompressed, std::move(children));
+        encodingType, {}, CompressionType::Uncompressed, std::move(children));
     return std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
         std::move(layout),
         CompressionOptions{},

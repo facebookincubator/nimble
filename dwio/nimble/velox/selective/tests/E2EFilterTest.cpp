@@ -1079,7 +1079,9 @@ class PrefixEncodingE2ETest : public E2EFilterTest {
                 Kind::Scalar,
                 {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
                   EncodingLayout{
-                      EncodingType::Prefix, CompressionType::Uncompressed}}},
+                      EncodingType::Prefix,
+                      {},
+                      CompressionType::Uncompressed}}},
                 std::string(childName)});
       } else {
         // For all other types, let the writer decide

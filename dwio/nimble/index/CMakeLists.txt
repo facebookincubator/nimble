@@ -13,7 +13,6 @@
 # limitations under the License.
 add_library(
   nimble_index
-  IndexConfig.cpp
   IndexFilter.cpp
   IndexReader.cpp
   StripeIndexGroup.cpp
