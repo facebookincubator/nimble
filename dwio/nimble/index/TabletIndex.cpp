@@ -20,7 +20,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
-#include "folly/json.h"
+#include "folly/json/json.h"
 
 namespace facebook::nimble::index {
 

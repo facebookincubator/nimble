@@ -25,7 +25,7 @@
 #include "dwio/nimble/encodings/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/EncodingLayout.h"
 #include "dwio/nimble/encodings/Statistics.h"
-#include "folly/json.h"
+#include "folly/json/json.h"
 
 namespace facebook::nimble {
 
