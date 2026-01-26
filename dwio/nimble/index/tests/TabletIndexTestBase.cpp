@@ -16,7 +16,7 @@
 #include "dwio/nimble/index/tests/TabletIndexTestBase.h"
 
 #include "dwio/nimble/tablet/IndexGenerated.h"
-#include "folly/json.h"
+#include "folly/json/json.h"
 #include "velox/common/testutil/TestValue.h"
 
 namespace facebook::nimble::index::test {
