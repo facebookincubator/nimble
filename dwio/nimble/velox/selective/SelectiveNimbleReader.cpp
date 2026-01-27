@@ -22,7 +22,6 @@
 
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/selective/ColumnReader.h"
-#include "dwio/nimble/velox/selective/NimbleRowReaderOptions.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
 #include "velox/common/base/RuntimeMetrics.h"
@@ -384,12 +383,9 @@ void SelectiveNimbleRowReader::initIndexBounds() {
     return;
   }
 
-  // Check if index filtering is disabled via format-specific options
-  if (auto nimbleOptions = std::dynamic_pointer_cast<NimbleRowReaderOptions>(
-          options_.formatSpecificOptions())) {
-    if (!nimbleOptions->indexEnabled()) {
-      return;
-    }
+  // Check if index filtering is disabled.
+  if (!options_.indexEnabled()) {
+    return;
   }
 
   // Verify that the file has a cluster index
