@@ -981,23 +981,23 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSize) {
             {DOUBLE(), DOUBLE(), DOUBLE(), DOUBLE(), DOUBLE(), DOUBLE()});
     auto outputType =
         ROW({"c0", "c1", "c2"}, {BOOLEAN(), MAP(TINYINT(), VARCHAR()), c2Type});
-    auto scanSpec = std::make_shared<common::ScanSpec>("root");
-    scanSpec->addAllChildFields(*outputType);
-    scanSpec->childByName("c2")->setFlatMapAsStruct(true);
+    auto structScanSpec = std::make_shared<common::ScanSpec>("root");
+    structScanSpec->addAllChildFields(*outputType);
+    structScanSpec->childByName("c2")->setFlatMapAsStruct(true);
     auto readFile = std::make_shared<InMemoryReadFile>(fileContent);
     auto factory =
         dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
     dwio::common::ReaderOptions options(pool());
-    options.setScanSpec(scanSpec);
+    options.setScanSpec(structScanSpec);
     auto reader = factory->createReader(
         std::make_unique<dwio::common::BufferedInput>(readFile, *pool()),
         options);
     dwio::common::RowReaderOptions rowOptions;
-    rowOptions.setScanSpec(scanSpec);
+    rowOptions.setScanSpec(structScanSpec);
     auto rowReader = readers.reader->createRowReader(rowOptions);
-    auto estimatedRowSize = rowReader->estimatedRowSize();
-    ASSERT_TRUE(estimatedRowSize.has_value());
-    ASSERT_EQ(*estimatedRowSize, 62);
+    auto structEstimatedRowSize = rowReader->estimatedRowSize();
+    ASSERT_TRUE(structEstimatedRowSize.has_value());
+    ASSERT_EQ(*structEstimatedRowSize, 62);
     auto result = BaseVector::create(outputType, 0, pool());
     int numRows = 0;
     while (rowReader->next(11, result) > 0) {
