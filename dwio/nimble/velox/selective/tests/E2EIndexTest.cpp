@@ -18,7 +18,6 @@
 
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
-#include "dwio/nimble/velox/selective/NimbleRowReaderOptions.h"
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 #include "velox/common/base/RandomUtil.h"
 #include "velox/common/base/RuntimeMetrics.h"
@@ -298,10 +297,8 @@ class E2EIndexTestBase : public ::testing::Test {
     auto scanSpec = createScanSpec(requestedType, filtersCopy);
     rowReaderOptions.setScanSpec(std::move(scanSpec));
 
-    // Set format-specific options to control index.
-    auto nimbleOptions = std::make_shared<NimbleRowReaderOptions>();
-    nimbleOptions->setIndexEnabled(indexEnabled);
-    rowReaderOptions.setFormatSpecificOptions(std::move(nimbleOptions));
+    // Set index enabled option.
+    rowReaderOptions.setIndexEnabled(indexEnabled);
 
     // Set up a stat writer to capture runtime stats.
     TestRuntimeStatWriter statWriter;
@@ -3268,9 +3265,7 @@ TEST_P(E2EIndexTest, filterRestorationAcrossMultipleSplits) {
   RowReaderOptions rowReaderOptions;
   rowReaderOptions.setRequestedType(rowType);
   rowReaderOptions.setScanSpec(scanSpec);
-  auto nimbleOptions = std::make_shared<NimbleRowReaderOptions>();
-  nimbleOptions->setIndexEnabled(true);
-  rowReaderOptions.setFormatSpecificOptions(std::move(nimbleOptions));
+  rowReaderOptions.setIndexEnabled(true);
 
   auto rowReader = reader->createRowReader(rowReaderOptions);
 
