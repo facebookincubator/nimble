@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -32,6 +33,12 @@ enum class StatType {
   STRING,
   DEDUPLICATED,
 };
+
+// Forward declarations for friend classes
+class StatisticsCollector;
+class IntegralStatisticsCollector;
+class FloatingPointStatisticsCollector;
+class StringStatisticsCollector;
 
 // In memory column statistics representation. The typical
 // usage pattern is for each field writer to hold their own
@@ -52,19 +59,28 @@ class ColumnStatistics {
       uint64_t logicalSize,
       uint64_t physicalSize);
 
-  uint64_t getValueCount() const;
-  uint64_t getNullCount() const;
-  uint64_t getLogicalSize() const;
-  uint64_t getPhysicalSize() const;
+  virtual uint64_t getValueCount() const;
+  virtual uint64_t getNullCount() const;
+  virtual uint64_t getLogicalSize() const;
+  virtual uint64_t getPhysicalSize() const;
 
   virtual StatType getType() const;
+
   template <typename T>
   T* as() {
     static_assert(std::is_base_of_v<ColumnStatistics, T>);
     return dynamic_cast<T*>(this);
   }
 
+  template <typename T>
+  const T* as() const {
+    static_assert(std::is_base_of_v<ColumnStatistics, T>);
+    return dynamic_cast<const T*>(this);
+  }
+
  protected:
+  friend class StatisticsCollector;
+
   uint64_t valueCount_{0};
   uint64_t nullCount_{0};
   uint64_t logicalSize_{0};
@@ -88,12 +104,13 @@ class StringStatistics : public ColumnStatistics {
   StatType getType() const override;
 
  protected:
+  friend class StringStatisticsCollector;
+
   std::optional<std::string> min_;
   std::optional<std::string> max_;
 };
 
-// TODO: Add a flag to support uint64_t range.
-class IntegralStatistics : public virtual ColumnStatistics {
+class IntegralStatistics : public ColumnStatistics {
  public:
   IntegralStatistics() = default;
   IntegralStatistics(
@@ -110,11 +127,13 @@ class IntegralStatistics : public virtual ColumnStatistics {
   StatType getType() const override;
 
  protected:
+  friend class IntegralStatisticsCollector;
+
   std::optional<int64_t> min_;
   std::optional<int64_t> max_;
 };
 
-class FloatingPointStatistics : public virtual ColumnStatistics {
+class FloatingPointStatistics : public ColumnStatistics {
  public:
   FloatingPointStatistics() = default;
   FloatingPointStatistics(
@@ -131,10 +150,15 @@ class FloatingPointStatistics : public virtual ColumnStatistics {
   StatType getType() const override;
 
  protected:
+  friend class FloatingPointStatisticsCollector;
+
   std::optional<double> min_;
   std::optional<double> max_;
 };
 
+// Deduplicated column statistics wraps a base ColumnStatistics and adds
+// deduplication-specific metrics. The base statistics is preserved to allow
+// access to specialized statistics (e.g., IntegralStatistics with min/max).
 // TODO: A prettier alternative would be to implement it with template, column
 // statistics as the policy or base class.
 // Alternatively, make deduplicated stats an optional field in column stats.
@@ -142,18 +166,30 @@ class DeduplicatedColumnStatistics : public virtual ColumnStatistics {
  public:
   DeduplicatedColumnStatistics() = default;
   DeduplicatedColumnStatistics(
-      std::unique_ptr<ColumnStatistics> baseStatistics,
+      ColumnStatistics* baseStatistics,
       uint64_t dedupedCount,
       uint64_t dedupedLogicalSize);
 
-  const ColumnStatistics& getBaseStatistics() const;
+  // Getters delegate to baseStatistics_ for base metrics
+  uint64_t getValueCount() const override;
+  uint64_t getNullCount() const override;
+  uint64_t getLogicalSize() const override;
+  uint64_t getPhysicalSize() const override;
+
   uint64_t getDedupedCount() const;
   uint64_t getDedupedLogicalSize() const;
 
   StatType getType() const override;
 
+  // Access the wrapped base statistics (e.g., to get min/max for
+  // IntegralStatistics)
+  ColumnStatistics* getBaseStatistics();
+  const ColumnStatistics* getBaseStatistics() const;
+
  protected:
-  std::unique_ptr<ColumnStatistics> baseStatistics_;
+  friend class DeduplicatedStatisticsCollector;
+
+  ColumnStatistics* baseStatistics_;
   uint64_t dedupedCount_{0};
   uint64_t dedupedLogicalSize_{0};
 };
@@ -167,7 +203,7 @@ class DeduplicatedColumnStatistics : public virtual ColumnStatistics {
 // or fork the current stats snap shot.
 // We populate local stats and rely on a separate util to roll up
 // when all local stats are complete.
-class StatisticsCollector : public ColumnStatistics {
+class StatisticsCollector {
  public:
   // We do not create stats collectors recursively. Instead, we traverse
   // the schema tree and build the stats collector for each node. We can
@@ -175,8 +211,19 @@ class StatisticsCollector : public ColumnStatistics {
   static std::unique_ptr<StatisticsCollector> create(
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type);
 
-  StatisticsCollector() = default;
+  StatisticsCollector();
   virtual ~StatisticsCollector() = default;
+
+  virtual uint64_t getValueCount() const;
+  virtual uint64_t getNullCount() const;
+  virtual uint64_t getLogicalSize() const;
+  virtual uint64_t getPhysicalSize() const;
+  virtual StatType getType() const;
+
+  // Returns a view of the underlying ColumnStatistics.
+  // Caller can cast to specific type using as<T>().
+  virtual ColumnStatistics* getStatsView();
+  virtual const ColumnStatistics* getStatsView() const;
 
   template <typename T>
   T* as() {
@@ -184,92 +231,128 @@ class StatisticsCollector : public ColumnStatistics {
     return dynamic_cast<T*>(this);
   }
 
+  virtual bool isShared() const {
+    return false;
+  }
+
+  // Mutation methods for accumulating statistics.
   void addValues(std::span<bool> values);
   virtual void addCounts(uint64_t valueCount, uint64_t nullCount);
-  // TODO: if we want to go extra, we can have a complex/aggregate type
+  // BE: if we want to go extra, we can have a complex/aggregate type
   // and limit the availability of this method.
   virtual void addLogicalSize(uint64_t logicalSize);
   virtual void addPhysicalSize(uint64_t physicalSize);
 
   virtual void merge(const StatisticsCollector& other);
+
+ protected:
+  std::unique_ptr<ColumnStatistics> stats_;
 };
 
-class IntegralStatisticsCollector : public StatisticsCollector,
-                                    public IntegralStatistics {
+class IntegralStatisticsCollector : public StatisticsCollector {
  public:
-  IntegralStatisticsCollector() = default;
+  IntegralStatisticsCollector();
 
   template <typename T>
   void addValues(std::span<T> values);
 
-  virtual void merge(const StatisticsCollector& other) override;
+  void merge(const StatisticsCollector& other) override;
 
-  // Override to resolve diamond inheritance ambiguity - use the INTEGRAL
-  // type from IntegralStatistics
-  StatType getType() const override {
-    return IntegralStatistics::getType();
-  }
+ private:
+  // Helper to access stats_ as IntegralStatistics
+  IntegralStatistics* integralStats();
 };
 
-class FloatingPointStatisticsCollector : public StatisticsCollector,
-                                         public FloatingPointStatistics {
+class FloatingPointStatisticsCollector : public StatisticsCollector {
  public:
-  FloatingPointStatisticsCollector() = default;
+  FloatingPointStatisticsCollector();
 
   template <typename T>
   void addValues(std::span<T> values);
 
-  virtual void merge(const StatisticsCollector& other) override;
+  void merge(const StatisticsCollector& other) override;
 
-  // Override to resolve diamond inheritance ambiguity - use the FLOATING_POINT
-  // type from FloatingPointStatistics
-  StatType getType() const override {
-    return FloatingPointStatistics::getType();
-  }
+ private:
+  // Helper to access stats_ as FloatingPointStatistics
+  FloatingPointStatistics* floatingPointStats();
 };
 
-class StringStatisticsCollector : public virtual StatisticsCollector,
-                                  public StringStatistics {
+class StringStatisticsCollector : public StatisticsCollector {
  public:
-  StringStatisticsCollector() = default;
+  StringStatisticsCollector();
 
   void addValues(std::span<std::string_view> values);
-  virtual void merge(const StatisticsCollector& other) override;
+  void merge(const StatisticsCollector& other) override;
 
-  // Override to resolve diamond inheritance ambiguity - use the STRING
-  // type from StringStatistics
-  StatType getType() const override {
-    return StringStatistics::getType();
-  }
+ private:
+  // Helper to access stats_ as StringStatistics
+  StringStatistics* stringStats();
 };
 
 // TODO: All ancestors of the deduplicated column will need the deduplicated
 // stats. Cleanest is adding another finalization step to
 // retroactively wrap.
-class DeduplicatedStatisticsCollector : public DeduplicatedColumnStatistics,
-                                        public virtual StatisticsCollector {
+class DeduplicatedStatisticsCollector : public StatisticsCollector {
  public:
   static std::unique_ptr<DeduplicatedStatisticsCollector> wrap(
       std::unique_ptr<StatisticsCollector> baseCollector);
   explicit DeduplicatedStatisticsCollector(
       std::unique_ptr<StatisticsCollector> baseCollector);
 
+  ColumnStatistics* getStatsView() override;
+  const ColumnStatistics* getStatsView() const override;
+
   void addCounts(uint64_t valueCount, uint64_t nullCount) override;
   void addLogicalSize(uint64_t logicalSize) override;
   void addPhysicalSize(uint64_t physicalSize) override;
 
-  StatisticsCollector* getBaseStatisticsCollector() const;
+  StatisticsCollector* getBaseCollector() const;
   void recordDeduplicatedStats(uint64_t count, uint64_t deduplicatedSize);
 
-  virtual void merge(const StatisticsCollector& other) override;
-
-  // Override to resolve diamond inheritance ambiguity - use the DEDUPLICATED
-  // type from DeduplicatedColumnStatistics
-  StatType getType() const override {
-    return DeduplicatedColumnStatistics::getType();
-  }
+  void merge(const StatisticsCollector& other) override;
 
  private:
   std::unique_ptr<StatisticsCollector> baseCollector_;
+  DeduplicatedColumnStatistics* dedupedStats_;
 };
+
+// Used for concurrent processing of stats covering multiple field writers.
+// A prime use case for this is the flat map layout.
+class SharedStatisticsCollector : public StatisticsCollector {
+ public:
+  static std::unique_ptr<SharedStatisticsCollector> wrap(
+      std::unique_ptr<StatisticsCollector> baseCollector);
+  explicit SharedStatisticsCollector(
+      std::unique_ptr<StatisticsCollector> baseCollector);
+
+  uint64_t getValueCount() const override;
+  uint64_t getNullCount() const override;
+  uint64_t getLogicalSize() const override;
+  uint64_t getPhysicalSize() const override;
+  StatType getType() const override;
+
+  ColumnStatistics* getStatsView() override;
+  const ColumnStatistics* getStatsView() const override;
+
+  void addCounts(uint64_t valueCount, uint64_t nullCount) override;
+  void addLogicalSize(uint64_t logicalSize) override;
+  void addPhysicalSize(uint64_t physicalSize) override;
+
+  bool isShared() const override {
+    return true;
+  }
+
+  // For thread unsafe read options
+  ColumnStatistics* getBaseStatistics() const;
+
+  void updateBaseCollector(
+      std::function<void(StatisticsCollector*)> updateFunc);
+
+  void merge(const StatisticsCollector& other) override;
+
+ private:
+  mutable std::mutex mutex_;
+  std::unique_ptr<StatisticsCollector> baseCollector_;
+};
+
 } // namespace facebook::nimble
