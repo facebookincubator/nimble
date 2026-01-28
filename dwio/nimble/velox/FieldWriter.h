@@ -21,6 +21,7 @@
 #include "dwio/nimble/velox/OrderedRanges.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/StreamData.h"
+#include "dwio/nimble/velox/stats/ColumnStatistics.h"
 #include "dwio/nimble/velox/stats/ColumnStatsUtils.h"
 #include "velox/dwio/common/TypeWithId.h"
 #include "velox/vector/DecodedVector.h"
@@ -131,6 +132,8 @@ class FieldWriterContext {
     resetStringBuffer();
   }
 
+  virtual ~FieldWriterContext() = default;
+
   inline MemoryPoolHolder& bufferMemoryPool() {
     return bufferMemoryPool_;
   }
@@ -162,6 +165,10 @@ class FieldWriterContext {
 
   inline void addFlatMapNodeId(uint32_t nodeId) {
     flatMapNodeIds_.insert(nodeId);
+  }
+
+  inline const folly::F14FastSet<uint32_t>& flatMapNodeIds() const {
+    return flatMapNodeIds_;
   }
 
   inline folly::F14FastSet<uint32_t>& dictionaryArrayNodeIds() {
@@ -223,12 +230,21 @@ class FieldWriterContext {
     return inputBufferGrowthStats_;
   }
 
-  inline ColumnStats& columnStats(offset_size offset) {
-    return columnStats_[offset];
-  }
-
-  inline std::unordered_map<offset_size, ColumnStats>& columnStats() {
-    return columnStats_;
+  inline std::vector<ColumnStatistics*> columnStats() {
+    if (!statsFinalized_) {
+      return {};
+    }
+    // TODO: add a build method for this pattern.
+    std::vector<ColumnStatistics*> statsViews;
+    statsViews.reserve(statsCollectors_.size());
+    for (auto& collector : statsCollectors_) {
+      // FIXME: don't need this branching.
+      statsViews.push_back(
+          collector->isShared()
+              ? collector->as<SharedStatisticsCollector>()->getBaseStatistics()
+              : collector->getStatsView());
+    }
+    return statsViews;
   }
 
   void handleFlatmapFieldAddEvent(
@@ -312,6 +328,72 @@ class FieldWriterContext {
     return disableSharedStringBuffers_;
   }
 
+  void createStatsCollector(
+      const std::shared_ptr<const velox::dwio::common::TypeWithId>& type) {
+    statsCollectors_.emplace_back(StatisticsCollector::create(type));
+    for (const auto& child : type->getChildren()) {
+      createStatsCollector(child);
+    }
+  }
+
+  void wrapSharedStatsCollector(
+      const std::shared_ptr<const velox::dwio::common::TypeWithId>& type,
+      bool shared) {
+    shared = shared || hasFlatMapNodeId(type->id());
+    if (shared) {
+      statsCollectors_[type->id()] = SharedStatisticsCollector::wrap(
+          std::move(statsCollectors_[type->id()]));
+    }
+
+    for (const auto& child : type->getChildren()) {
+      wrapSharedStatsCollector(child, shared);
+    }
+  }
+
+  void initStatsCollectors(
+      const std::shared_ptr<const velox::dwio::common::TypeWithId>& type) {
+    createStatsCollector(type);
+
+    // NOTE: When supporting deduplicated stats, we set just the stats on
+    // the deduplicated type writers only. Those nodes record logical stats as
+    // is, but then record the children's logical nodes as deduplicated at
+    // finalization.
+    for (auto id : dictionaryArrayNodeIds()) {
+      statsCollectors_[id] = DeduplicatedStatisticsCollector::wrap(
+          std::move(statsCollectors_[id]));
+    }
+
+    for (auto id : deduplicatedMapNodeIds()) {
+      statsCollectors_[id] = DeduplicatedStatisticsCollector::wrap(
+          std::move(statsCollectors_[id]));
+    }
+
+    // Wrap shared stats collector for flatmap nodes last to fully protected
+    // concurrent stats updates across flatmap value writers.
+    wrapSharedStatsCollector(type, false);
+
+    schemaWithId_ = type;
+  }
+
+  StatisticsCollector* getStatsCollector(uint32_t nodeId) const {
+    NIMBLE_CHECK_LT(
+        nodeId,
+        statsCollectors_.size(),
+        "Mismatched cardinality for stats and schema. Likely uninitialized stats collectors.");
+    return statsCollectors_[nodeId].get();
+  }
+
+  // After potential parallel process of field writers and their stats,
+  // sequentially roll up and fix up the stats according to the hierarchy.
+  // 1. roll up logical and physical sizes
+  // 2. wrap all ancestors of deduplicated types
+  // 3. backfill both known and newly wrapped deduplicated stats
+  void finalizeStatsCollectors() {
+    NIMBLE_CHECK(!statsFinalized_);
+    finalizeStatsCollector(schemaWithId_);
+    statsFinalized_ = true;
+  }
+
  protected:
   MemoryPoolHolder bufferMemoryPool_;
   std::mutex flatMapSchemaMutex_;
@@ -327,8 +409,6 @@ class FieldWriterContext {
   std::unique_ptr<InputBufferGrowthPolicy> stringBufferGrowthPolicy_;
   InputBufferGrowthStats inputBufferGrowthStats_;
 
-  std::unordered_map<offset_size, ColumnStats> columnStats_;
-
   std::function<void(const TypeBuilder&, std::string_view, const TypeBuilder&)>
       flatmapFieldAddedEventHandler_;
 
@@ -336,9 +416,121 @@ class FieldWriterContext {
       [](const TypeBuilder&) {}};
 
  private:
+  void finalizeStatsCollector(
+      const std::shared_ptr<const velox::dwio::common::TypeWithId>& type) {
+    auto statsCollector = statsCollectors_[type->id()].get();
+
+    // Known deduplicated nodes record logical stats as is, but then record the
+    // children's logical sizes as deduplicated at finalization, to avoid double
+    // counting.
+    if (statsCollector->getType() == StatType::DEDUPLICATED) {
+      // Handle the case where the collector might be wrapped in a
+      // SharedStatisticsCollector.
+      if (statsCollector->isShared()) {
+        auto sharedCollector = statsCollector->as<SharedStatisticsCollector>();
+        for (const auto& child : type->getChildren()) {
+          finalizeStatsCollector(child);
+          auto childStatsCollector = getStatsCollector(child->id());
+          sharedCollector->updateBaseCollector([&](StatisticsCollector*
+                                                       baseCollector) {
+            auto dedupedStatsCollector =
+                baseCollector->as<DeduplicatedStatisticsCollector>();
+            NIMBLE_DCHECK_NOT_NULL(
+                dedupedStatsCollector,
+                "Expected DeduplicatedStatisticsCollector for DEDUPLICATED type");
+            // Only add children's logical sizes for flatmaps, which don't
+            // include children's sizes in their own collectStatistics.
+            // Sliding window maps and array with offsets use
+            // getRawSizeFromVector which already includes children's sizes.
+            // TODO(huamengjiang): fix the behavior of deduplicated stats for
+            // flatmaps when properly supporting them.
+            if (hasFlatMapNodeId(type->id())) {
+              dedupedStatsCollector->addLogicalSize(
+                  childStatsCollector->getLogicalSize());
+            }
+            dedupedStatsCollector->recordDeduplicatedStats(
+                childStatsCollector->getValueCount(),
+                childStatsCollector->getLogicalSize());
+            dedupedStatsCollector->addPhysicalSize(
+                childStatsCollector->getPhysicalSize());
+          });
+        }
+      } else {
+        auto dedupedStatsCollector =
+            statsCollector->as<DeduplicatedStatisticsCollector>();
+        NIMBLE_DCHECK_NOT_NULL(
+            dedupedStatsCollector,
+            "Expected DeduplicatedStatisticsCollector for DEDUPLICATED type");
+        for (const auto& child : type->getChildren()) {
+          finalizeStatsCollector(child);
+          auto childStatsCollector = getStatsCollector(child->id());
+          dedupedStatsCollector->recordDeduplicatedStats(
+              childStatsCollector->getValueCount(),
+              childStatsCollector->getLogicalSize());
+          dedupedStatsCollector->addPhysicalSize(
+              childStatsCollector->getPhysicalSize());
+        }
+      }
+
+      return;
+    }
+
+    // Roll up logical and physical sizes. Find out if any child has
+    // deduplicated stats.
+    bool isDeduplicated = false;
+    for (const auto& child : type->getChildren()) {
+      finalizeStatsCollector(child);
+      auto childStatsCollector = getStatsCollector(child->id());
+      isDeduplicated |=
+          (childStatsCollector->getType() == StatType::DEDUPLICATED);
+
+      statsCollector->addLogicalSize(childStatsCollector->getLogicalSize());
+      statsCollector->addPhysicalSize(childStatsCollector->getPhysicalSize());
+    }
+
+    // Backfill deduplicated ancestors.
+    if (isDeduplicated &&
+        statsCollectors_[type->id()]->getType() != StatType::DEDUPLICATED) {
+      statsCollectors_[type->id()] = DeduplicatedStatisticsCollector::wrap(
+          std::move(statsCollectors_[type->id()]));
+
+      auto dedupedStatsCollector =
+          statsCollectors_[type->id()]->as<DeduplicatedStatisticsCollector>();
+      for (const auto& child : type->getChildren()) {
+        auto childStatsCollector = getStatsCollector(child->id());
+        if (childStatsCollector->getType() == StatType::DEDUPLICATED) {
+          if (childStatsCollector->isShared()) {
+            auto dedupedStats =
+                childStatsCollector->as<SharedStatisticsCollector>()
+                    ->getBaseStatistics()
+                    ->as<DeduplicatedColumnStatistics>();
+            dedupedStatsCollector->recordDeduplicatedStats(
+                dedupedStats->getDedupedCount(),
+                dedupedStats->getDedupedLogicalSize());
+          } else {
+            auto dedupedStats =
+                childStatsCollector->as<DeduplicatedStatisticsCollector>()
+                    ->getStatsView()
+                    ->as<DeduplicatedColumnStatistics>();
+            dedupedStatsCollector->recordDeduplicatedStats(
+                dedupedStats->getDedupedCount(),
+                dedupedStats->getDedupedLogicalSize());
+          }
+        } else {
+          dedupedStatsCollector->recordDeduplicatedStats(
+              childStatsCollector->getValueCount(),
+              childStatsCollector->getLogicalSize());
+        }
+      }
+    }
+  }
+
   std::unique_ptr<Buffer> buffer_;
   DecodingContextPool decodingContextPool_;
   std::vector<std::unique_ptr<StreamData>> streams_;
+  std::shared_ptr<const velox::dwio::common::TypeWithId> schemaWithId_;
+  std::vector<std::unique_ptr<StatisticsCollector>> statsCollectors_;
+  bool statsFinalized_{false};
 };
 
 using OrderedRanges = range_helper::OrderedRanges<velox::vector_size_t>;
@@ -358,7 +550,8 @@ class FieldWriter {
       const OrderedRanges& ranges,
       folly::Executor* executor = nullptr) = 0;
 
-  // Clears interanl state and any accumulated data in internal buffers.
+  // Collects stats and clears interanl state and any accumulated data in
+  // internal buffers.
   virtual void reset() = 0;
 
   // Called when all writes are done, allowing field writers to finalize

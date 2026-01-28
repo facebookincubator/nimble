@@ -73,7 +73,10 @@ velox::Timestamp getValue<velox::Timestamp>(velox::vector_size_t /*i*/) {
 
 template <>
 uint64_t getSize<velox::Timestamp>(velox::Timestamp /*value*/) {
-  return sizeof(int64_t) + sizeof(uint64_t);
+  // Timestamp logical size in bytes: 8 bytes for seconds (int64) + 4 bytes for
+  // nanos (int32). This matches DWRF behavior and Nimble FieldWriter's
+  // kTimestampLogicalSize, not sizeof(velox::Timestamp) which is 16 bytes.
+  return 12;
 }
 
 class RawSizeBaseTestFixture : public ::testing::Test {
