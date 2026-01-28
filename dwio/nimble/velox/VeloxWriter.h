@@ -69,7 +69,11 @@ class VeloxWriter {
     // coverage in the future.
     uint64_t inputBufferReallocCount;
     uint64_t inputBufferReallocItemCount;
-    std::unordered_map<offset_size, ColumnStats> columnStats;
+    // std::unordered_map<offset_size, ColumnStats> columnStats;
+    // Only available at file close.
+    // NOTE: expected to be exposed as a view, for merging with
+    // base stats objects. User needs to explicitly copy.
+    std::vector<ColumnStatistics*> columnStats;
   };
   RunStats getRunStats() const;
 

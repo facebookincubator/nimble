@@ -431,6 +431,8 @@ std::unique_ptr<FieldWriter> createRootFieldWriter(
     }
   }
 
+  context.initStatsCollectors(type);
+
   return FieldWriter::create(context, type, [&](const TypeBuilder& type) {
     switch (type.kind()) {
       case Kind::Row: {
@@ -707,9 +709,16 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
   NIMBLE_CHECK_NOT_NULL(file_, "Writer is already closed");
   try {
     const auto numRows = input->size();
-    // Calculate raw size.
+    // Calculate raw size using schema information to correctly handle
+    // passthrough flatmaps (ROW vectors written as MAP).
+    RawSizeContext context;
     const auto rawSize = nimble::getRawSizeFromVector(
-        input, velox::common::Ranges::of(0, numRows));
+        input,
+        velox::common::Ranges::of(0, numRows),
+        context,
+        *schema_,
+        context_->flatMapNodeIds(),
+        context_->ignoreTopLevelNulls());
     NIMBLE_CHECK_GE(rawSize, 0, "Invalid raw size");
     context_->updateFileRawSize(rawSize);
 
@@ -774,8 +783,6 @@ void VeloxWriter::writeMetadata() {
 }
 
 void VeloxWriter::writeColumnStats() {
-  nimble::aggregateStats(
-      *context_->schemaBuilder().root(), context_->columnStats());
   flatbuffers::FlatBufferBuilder builder;
   builder.Finish(serialization::CreateStats(builder, context_->fileRawSize()));
   tabletWriter_->writeOptionalSection(
@@ -834,6 +841,7 @@ void VeloxWriter::close() {
     try {
       writeStripe();
       rootWriter_->close();
+      context_->finalizeStatsCollectors();
       if (hasIndex()) {
         indexWriter_->close();
       }
@@ -925,11 +933,11 @@ void VeloxWriter::writeStreams() {
     if (context_->options().encodingExecutor) {
       velox::dwio::common::ExecutorBarrier barrier{
           context_->options().encodingExecutor};
+      // TODO: make context_->streams() vector<pair<nodeId, StreamData>>
+      // Then get stats builder for the node id and pass it into the callback.
       for (auto& streamData : context_->streams()) {
-        auto& streamSize =
-            context_->columnStats(streamData->descriptor().offset())
-                .physicalSize;
         barrier.add([&, _streamData = streamData.get()]() {
+          uint64_t streamSize = 0;
           processStream(*_streamData, streamSize, chunkSize);
         });
       }
@@ -940,9 +948,7 @@ void VeloxWriter::writeStreams() {
     } else {
       const auto& streams = context_->streams();
       for (auto& streamData : streams) {
-        auto& streamSize =
-            context_->columnStats(streamData->descriptor().offset())
-                .physicalSize;
+        uint64_t streamSize = 0;
         processStream(*streamData, streamSize, chunkSize);
       }
 
@@ -1120,9 +1126,9 @@ bool VeloxWriter::writeChunks(
       for (auto streamIndex : streamIndices) {
         auto& streamData = streams[streamIndex];
         const auto offset = streamData->descriptor().offset();
-        auto& streamSize = context_->columnStats(offset).physicalSize;
         auto& encodeStream = encodedStreams_[offset];
         barrier.add([&] {
+          uint64_t streamSize = 0;
           if (encodeStreamChunk(
                   *streamData,
                   minChunkSize,
@@ -1143,6 +1149,7 @@ bool VeloxWriter::writeChunks(
     } else {
       for (auto streamIndex : streamIndices) {
         auto* streamData = streams[streamIndex].get();
+        uint64_t streamSize = 0;
         const auto offset = streamData->descriptor().offset();
         if (encodeStreamChunk(
                 *streamData,
@@ -1150,7 +1157,7 @@ bool VeloxWriter::writeChunks(
                 maxChunkSize,
                 ensureFullChunks,
                 encodedStreams_[offset],
-                context_->columnStats()[offset].physicalSize,
+                streamSize,
                 chunkBytes,
                 logicalBytes)) {
           writtenChunk = true;

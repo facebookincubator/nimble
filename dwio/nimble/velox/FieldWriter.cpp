@@ -263,6 +263,66 @@ struct StringConverter {
   }
 };
 
+namespace {
+template <velox::TypeKind K>
+void collectScalarTypeStats(
+    StatisticsCollector* statsBuilder,
+    std::span<typename velox::TypeTraits<K>::NativeType> values) {
+  auto intStatsBuilder = statsBuilder->as<IntegralStatisticsCollector>();
+  NIMBLE_CHECK_NOT_NULL(intStatsBuilder);
+  intStatsBuilder->addValues(values);
+}
+
+template <>
+void collectScalarTypeStats<velox::TypeKind::BOOLEAN>(
+    StatisticsCollector* statsBuilder,
+    std::span<bool> values) {
+  statsBuilder->addValues(values);
+}
+
+template <>
+void collectScalarTypeStats<velox::TypeKind::REAL>(
+    StatisticsCollector* statsBuilder,
+    std::span<float> values) {
+  auto floatStatsBuilder = statsBuilder->as<FloatingPointStatisticsCollector>();
+  NIMBLE_CHECK_NOT_NULL(floatStatsBuilder);
+  floatStatsBuilder->addValues(values);
+}
+
+template <>
+void collectScalarTypeStats<velox::TypeKind::DOUBLE>(
+    StatisticsCollector* statsBuilder,
+    std::span<double> values) {
+  auto floatStatsBuilder = statsBuilder->as<FloatingPointStatisticsCollector>();
+  NIMBLE_CHECK_NOT_NULL(floatStatsBuilder);
+  floatStatsBuilder->addValues(values);
+}
+
+template <>
+void collectScalarTypeStats<velox::TypeKind::VARCHAR>(
+    StatisticsCollector* statsBuilder,
+    std::span<velox::StringView> values) {
+  NIMBLE_UNREACHABLE(
+      "Wrong call site for string stats collection. Use collectStringTypeStats instead");
+}
+
+template <>
+void collectScalarTypeStats<velox::TypeKind::VARBINARY>(
+    StatisticsCollector* statsBuilder,
+    std::span<velox::StringView> values) {
+  NIMBLE_UNREACHABLE(
+      "Wrong call site for string stats collection. Use collectStringTypeStats instead");
+}
+
+void collectStringTypeStats(
+    StatisticsCollector* statsBuilder,
+    std::span<std::string_view> values) {
+  auto stringStatsBuilder = statsBuilder->as<StringStatisticsCollector>();
+  NIMBLE_CHECK_NOT_NULL(stringStatsBuilder);
+  stringStatsBuilder->addValues(values);
+}
+} // namespace
+
 template <
     velox::TypeKind K,
     typename C = IdentityConverter<typename velox::TypeTraits<K>::NativeType>>
@@ -274,15 +334,14 @@ class SimpleFieldWriter : public FieldWriter {
       std::declval<uint64_t&>()));
 
  public:
-  explicit SimpleFieldWriter(FieldWriterContext& context)
+  explicit SimpleFieldWriter(FieldWriterContext& context, uint32_t nodeId)
       : FieldWriter(
             context,
             context.schemaBuilder().createScalarTypeBuilder(
                 NimbleTypeTraits<K>::scalarKind)),
         valuesStream_{context.createNullableContentStreamData<TargetType>(
             typeBuilder_->asScalar().scalarDescriptor())},
-        columnStats_{context.columnStats(valuesStream_.descriptor().offset())} {
-  }
+        statisticsCollector_{context.getStatsCollector(nodeId)} {}
 
   void write(
       const velox::VectorPtr& vector,
@@ -338,13 +397,10 @@ class SimpleFieldWriter : public FieldWriter {
       nullCount = size - nonNullCount;
     }
 
-    // NOTE: This logic is wrong. Will be removed with new stats changes.
-    columnStats_.logicalSize += nullCount +
-        ((K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY)
-             ? valuesStream_.extraMemory()
-             : valuesStream_.data().size());
-    columnStats_.nullCount += nullCount;
-    columnStats_.valueCount += size;
+    // NOTE: Since the stream chunker logic can compact the buffered value
+    // streams and change its content we need to collect stats immediately after
+    // writes.
+    collectStatistics(nullCount, size);
   }
 
   void reset() override {
@@ -352,21 +408,86 @@ class SimpleFieldWriter : public FieldWriter {
   }
 
  private:
+  void collectStatistics(uint64_t nullCount, uint64_t valueCount) {
+    if (!statisticsCollector_) {
+      return;
+    }
+
+    // LOG(INFO) << fmt::format(
+    //     "valuesStream_.hasNulls() = {}, valuesStream_.mutableData().size() =
+    //     {}, valuesStream_.mutableNonNulls().size() = {}",
+    //     valuesStream_.hasNulls(),
+    //     valuesStream_.mutableData().size(),
+    //     valuesStream_.mutableNonNulls().size());
+    // if (valuesStream_.hasNulls()) {
+    //   statisticsCollector_->addValues(valuesStream_.mutableNonNulls());
+    // }
+
+    // TODO: might still want the span<bool> version, else we need to manually
+    // bump the logical size by null count.
+    statisticsCollector_->addCounts(valueCount, nullCount);
+    statisticsCollector_->addLogicalSize(nullCount);
+
+    const auto batchNonNullValueCount = valueCount - nullCount;
+    if (batchNonNullValueCount == 0) {
+      return;
+    }
+
+    auto totalNonNullCount = valuesStream_.mutableData().size();
+    auto rangeStart = totalNonNullCount - batchNonNullValueCount;
+    if (statisticsCollector_->isShared()) {
+      // TODO: looks like we can just use the same converter pattern.
+      auto sharedBuilder =
+          statisticsCollector_->as<SharedStatisticsCollector>();
+      sharedBuilder->updateBaseCollector([&](StatisticsCollector* builder) {
+        if constexpr (
+            K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY) {
+          collectStringTypeStats(
+              builder,
+              std::span(
+                  valuesStream_.mutableData().data() + rangeStart,
+                  batchNonNullValueCount));
+        } else {
+          collectScalarTypeStats<K>(
+              builder,
+              std::span<typename velox::TypeTraits<K>::NativeType>(
+                  valuesStream_.mutableData().data() + rangeStart,
+                  batchNonNullValueCount));
+        }
+      });
+    } else {
+      if constexpr (
+          K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY) {
+        collectStringTypeStats(
+            statisticsCollector_,
+            std::span(
+                valuesStream_.mutableData().data() + rangeStart,
+                batchNonNullValueCount));
+      } else {
+        collectScalarTypeStats<K>(
+            statisticsCollector_,
+            std::span<typename velox::TypeTraits<K>::NativeType>(
+                valuesStream_.mutableData().data() + rangeStart,
+                batchNonNullValueCount));
+      }
+    }
+  }
+
   NullableContentStreamData<TargetType>& valuesStream_;
-  ColumnStats& columnStats_;
+  StatisticsCollector* statisticsCollector_;
 };
 
 template <velox::TypeKind K>
 class StringFieldWriter : public FieldWriter {
  public:
-  explicit StringFieldWriter(FieldWriterContext& context)
+  explicit StringFieldWriter(FieldWriterContext& context, uint32_t nodeId)
       : FieldWriter(
             context,
             context.schemaBuilder().createScalarTypeBuilder(
                 NimbleTypeTraits<K>::scalarKind)),
         valuesStream_{context.createNullableContentStringStreamData(
             typeBuilder_->asScalar().scalarDescriptor())},
-        columnStats_{context.columnStats(valuesStream_.descriptor().offset())} {
+        statisticsCollector_{context.getStatsCollector(nodeId)} {
     static_assert(
         K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY,
         "StringFieldWriter only supports VARCHAR and VARBINARY types");
@@ -381,11 +502,14 @@ class StringFieldWriter : public FieldWriter {
     const uint64_t totalBytes = getRawSizeFromVector(vector, ranges);
     valuesStream_.ensureStringBufferCapacity(size, totalBytes);
 
-    // Append to string buffer.
-    uint64_t memoryUsed = 0;
     auto stringBuffer = valuesStream_.mutableData();
+    // Track the starting position in the buffer and lengths array before this
+    // batch. We'll use these to build string_views after all strings are
+    // copied.
+    const size_t lengthsStartIdx = stringBuffer.lengths.size();
+    const size_t bufferStartOffset = stringBuffer.buffer.size();
+
     auto appendToStringBuffer = [&](velox::StringView sv) {
-      memoryUsed += sv.size();
       auto& buffer = stringBuffer.buffer;
       buffer.insert(buffer.end(), sv.begin(), sv.end());
       auto& mutableLengths = stringBuffer.lengths;
@@ -410,10 +534,24 @@ class StringFieldWriter : public FieldWriter {
           Decoded<velox::StringView>{decoded},
           appendToStringBuffer);
     }
+
+    // Build string_views from the copied data in the buffer.
+    // This avoids holding pointers to velox::StringView inline storage which
+    // may be destroyed when the lambda returns (stack-use-after-return).
+    const size_t batchNonNullCount = nonNullCount;
+    Vector<std::string_view> tempStringViews{context_.bufferMemoryPool().get()};
+    tempStringViews.reserve(batchNonNullCount);
+    size_t runningOffset = bufferStartOffset;
+    for (size_t i = lengthsStartIdx; i < lengthsStartIdx + batchNonNullCount;
+         ++i) {
+      const size_t len = stringBuffer.lengths[i];
+      tempStringViews.push_back(
+          std::string_view(stringBuffer.buffer.data() + runningOffset, len));
+      runningOffset += len;
+    }
+
     uint64_t nullCount = size - nonNullCount;
-    columnStats_.logicalSize += nullCount + memoryUsed;
-    columnStats_.nullCount += nullCount;
-    columnStats_.valueCount += size;
+    collectStatistics(nullCount, size, tempStringViews);
   }
 
   void reset() override {
@@ -421,20 +559,48 @@ class StringFieldWriter : public FieldWriter {
   }
 
  private:
+  void collectStatistics(
+      uint64_t nullCount,
+      uint64_t valueCount,
+      std::span<std::string_view> values) {
+    if (!statisticsCollector_) {
+      return;
+    }
+
+    // bump the logical size by null count.
+    statisticsCollector_->addCounts(valueCount, nullCount);
+    statisticsCollector_->addLogicalSize(nullCount);
+
+    const auto batchNonNullValueCount = valueCount - nullCount;
+    if (batchNonNullValueCount == 0) {
+      return;
+    }
+
+    if (statisticsCollector_->isShared()) {
+      // TODO: looks like we can just use the same converter pattern.
+      auto sharedBuilder =
+          statisticsCollector_->as<SharedStatisticsCollector>();
+      sharedBuilder->updateBaseCollector([&](StatisticsCollector* builder) {
+        collectStringTypeStats(builder, values);
+      });
+    } else {
+      collectStringTypeStats(statisticsCollector_, values);
+    }
+  }
+
   NullableContentStringStreamData& valuesStream_;
-  ColumnStats& columnStats_;
+  StatisticsCollector* statisticsCollector_;
 };
 
 class TimestampFieldWriter : public FieldWriter {
  public:
-  explicit TimestampFieldWriter(FieldWriterContext& context)
+  explicit TimestampFieldWriter(FieldWriterContext& context, uint32_t nodeId)
       : FieldWriter{context, context.schemaBuilder().createTimestampMicroNanoTypeBuilder()},
         microsStream_{context.createNullableContentStreamData<int64_t>(
             typeBuilder_->asTimestampMicroNano().microsDescriptor())},
         nanosStream_{context.createContentStreamData<uint16_t>(
             typeBuilder_->asTimestampMicroNano().nanosDescriptor())},
-        columnStats_{context.columnStats(microsStream_.descriptor().offset())} {
-  }
+        statisticsCollector_{context.getStatsCollector(nodeId)} {}
 
   void write(
       const velox::VectorPtr& vector,
@@ -492,12 +658,7 @@ class TimestampFieldWriter : public FieldWriter {
     }
 
     const uint64_t nullCount = size - nonNullCount;
-
-    constexpr uint64_t kTimestampLogicalSize = 12;
-    columnStats_.logicalSize +=
-        nonNullCount * kTimestampLogicalSize + nullCount;
-    columnStats_.nullCount += nullCount;
-    columnStats_.valueCount += size;
+    collectStatistics(nullCount, size);
   }
 
   void reset() override {
@@ -506,9 +667,20 @@ class TimestampFieldWriter : public FieldWriter {
   }
 
  private:
+  void collectStatistics(uint64_t nullCount, uint64_t valueCount) {
+    constexpr uint64_t kTimestampLogicalSize = 12;
+    if (!statisticsCollector_) {
+      return;
+    }
+
+    statisticsCollector_->addCounts(valueCount, nullCount);
+    statisticsCollector_->addLogicalSize(
+        (valueCount - nullCount) * kTimestampLogicalSize + nullCount);
+  }
+
   NullableContentStreamData<int64_t>& microsStream_;
   ContentStreamData<uint16_t>& nanosStream_;
-  ColumnStats& columnStats_;
+  StatisticsCollector* statisticsCollector_;
 };
 
 class RowFieldWriter : public FieldWriter {
@@ -519,7 +691,7 @@ class RowFieldWriter : public FieldWriter {
       : FieldWriter{context, context.schemaBuilder().createRowTypeBuilder(type->size())},
         nullsStream_{context_.createNullsStreamData(
             typeBuilder_->asRow().nullsDescriptor())},
-        columnStats_{context.columnStats(nullsStream_.descriptor().offset())},
+        statisticsCollector_{context.getStatsCollector(type->id())},
         ignoreNulls_{type->id() == 0 && context.ignoreTopLevelNulls()} {
     auto rowType =
         std::dynamic_pointer_cast<const velox::RowType>(type->type());
@@ -602,9 +774,7 @@ class RowFieldWriter : public FieldWriter {
       }
     }
 
-    columnStats_.logicalSize += nullCount;
-    columnStats_.nullCount += nullCount;
-    columnStats_.valueCount += size;
+    collectStatistics(nullCount, size);
   }
 
   void reset() override {
@@ -622,9 +792,18 @@ class RowFieldWriter : public FieldWriter {
   }
 
  private:
+  void collectStatistics(uint64_t nullCount, uint64_t valueCount) {
+    if (!statisticsCollector_) {
+      return;
+    }
+
+    statisticsCollector_->addCounts(valueCount, nullCount);
+    statisticsCollector_->addLogicalSize(nullCount);
+  }
+
   std::vector<std::unique_ptr<FieldWriter>> fields_;
   NullsStreamData& nullsStream_;
-  ColumnStats& columnStats_;
+  StatisticsCollector* statisticsCollector_;
   bool ignoreNulls_;
 };
 
@@ -632,19 +811,28 @@ class MultiValueFieldWriter : public FieldWriter {
  public:
   MultiValueFieldWriter(
       FieldWriterContext& context,
+      const std::shared_ptr<const velox::dwio::common::TypeWithId>& type,
       std::shared_ptr<LengthsTypeBuilder> typeBuilder)
       : FieldWriter{context, std::move(typeBuilder)},
         lengthsStream_{context.createNullableContentStreamData<uint32_t>(
             static_cast<LengthsTypeBuilder&>(*typeBuilder_)
                 .lengthsDescriptor())},
-        columnStats_{
-            context.columnStats(lengthsStream_.descriptor().offset())} {}
+        statisticsCollector_{context.getStatsCollector(type->id())} {}
 
   void reset() override {
     lengthsStream_.reset();
   }
 
  protected:
+  void collectStatistics(uint64_t nullCount, uint64_t valueCount) {
+    if (!statisticsCollector_) {
+      return;
+    }
+
+    statisticsCollector_->addCounts(valueCount, nullCount);
+    statisticsCollector_->addLogicalSize(nullCount);
+  }
+
   template <typename T>
   const T* ingestLengths(
       const velox::VectorPtr& vector,
@@ -688,15 +876,14 @@ class MultiValueFieldWriter : public FieldWriter {
           ranges, lengthsStream_.mutableNonNulls(), Decoded{decoded}, proc);
       nullCount = size - nonNullCount;
     }
-    columnStats_.logicalSize += nullCount;
-    columnStats_.nullCount += nullCount;
-    columnStats_.valueCount += size;
+
+    collectStatistics(nullCount, size);
 
     return casted;
   }
 
   NullableContentStreamData<uint32_t>& lengthsStream_;
-  ColumnStats& columnStats_;
+  StatisticsCollector* statisticsCollector_;
 };
 
 class ArrayFieldWriter : public MultiValueFieldWriter {
@@ -706,6 +893,7 @@ class ArrayFieldWriter : public MultiValueFieldWriter {
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
       : MultiValueFieldWriter{
             context,
+            type,
             context.schemaBuilder().createArrayTypeBuilder()} {
     auto arrayType =
         std::dynamic_pointer_cast<const velox::ArrayType>(type->type());
@@ -745,9 +933,8 @@ class MapFieldWriter : public MultiValueFieldWriter {
   MapFieldWriter(
       FieldWriterContext& context,
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
-      : MultiValueFieldWriter{
-            context,
-            context.schemaBuilder().createMapTypeBuilder()} {
+      : MultiValueFieldWriter{context, type, context.schemaBuilder().createMapTypeBuilder()},
+        statisticsCollector_{context.getStatsCollector(type->id())} {
     auto mapType =
         std::dynamic_pointer_cast<const velox::MapType>(type->type());
 
@@ -784,6 +971,7 @@ class MapFieldWriter : public MultiValueFieldWriter {
  private:
   std::unique_ptr<FieldWriter> keys_;
   std::unique_ptr<FieldWriter> values_;
+  StatisticsCollector* statisticsCollector_;
 };
 
 class SlidingWindowMapFieldWriter : public FieldWriter {
@@ -796,10 +984,10 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
             typeBuilder_->asSlidingWindowMap().offsetsDescriptor())},
         lengthsStream_{context.createContentStreamData<uint32_t>(
             typeBuilder_->asSlidingWindowMap().lengthsDescriptor())},
-        columnStats_{context.columnStats(lengthsStream_.descriptor().offset())},
         currentOffset_(0),
         cached_{false},
-        cachedLength_{0} {
+        cachedLength_{0},
+        statisticsCollector_{context.getStatsCollector(type->id())} {
     NIMBLE_DCHECK_EQ(type->size(), 2, "Invalid map type.");
     keys_ = FieldWriter::create(context, type->childAt(0));
     values_ = FieldWriter::create(context, type->childAt(1));
@@ -838,15 +1026,30 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
   }
 
  private:
+  // NOTE: When supporting deduplicated stats, we need to set the
+  // immediate children nodes with deduplicated stats, and then rollup from
+  // there. Deduplicated nodes will record their default stats as deduplicated.
+  void collectStatistics(
+      uint64_t nullCount,
+      uint64_t valueCount,
+      uint64_t logicalSize) {
+    if (!statisticsCollector_) {
+      return;
+    }
+
+    statisticsCollector_->addCounts(valueCount, nullCount);
+    statisticsCollector_->addLogicalSize(logicalSize);
+  }
+
   std::unique_ptr<FieldWriter> keys_;
   std::unique_ptr<FieldWriter> values_;
   NullableContentStreamData<uint32_t>& offsetsStream_;
   ContentStreamData<uint32_t>& lengthsStream_;
-  ColumnStats& columnStats_;
   uint32_t currentOffset_; /* Global Offset for the data */
   bool cached_;
   velox::vector_size_t cachedLength_;
   velox::VectorPtr cachedValue_;
+  StatisticsCollector* statisticsCollector_;
 
   const velox::MapVector* ingestOffsetsAndLengthsDeduplicated(
       const velox::VectorPtr& vector,
@@ -946,9 +1149,8 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
       // child FieldWriters, allowing them to directly calculate
       // non-deduplicated sizes from deduplicated vectors without needing to
       // rely on an external util.
-      columnStats_.logicalSize += getRawSizeFromVector(vector, ranges, context);
-      columnStats_.nullCount += nullCount;
-      columnStats_.valueCount += size;
+      collectStatistics(
+          nullCount, size, getRawSizeFromVector(vector, ranges, context));
     }
     return mapVector;
   }
@@ -961,9 +1163,7 @@ class FlatMapPassthroughValueFieldWriter {
       const StreamDescriptorBuilder& inMapDescriptor,
       std::unique_ptr<FieldWriter> valueField)
       : valueField_{std::move(valueField)},
-        inMapStream_{context.createContentStreamData<bool>(inMapDescriptor)},
-        // TODO(T226402409): Reuse same stats object for all flatmap fields.
-        columnStats_{context.columnStats(inMapStream_.descriptor().offset())} {}
+        inMapStream_{context.createContentStreamData<bool>(inMapDescriptor)} {}
 
   // Write without an explicit inMaps buffer; assume all inMap bits are set.
   void write(const velox::VectorPtr& vector, const OrderedRanges& ranges) {
@@ -995,6 +1195,10 @@ class FlatMapPassthroughValueFieldWriter {
 
   void reset() {
     inMapStream_.reset();
+    // File stats collection is done sequentially onto
+    // the same underlying object.
+    // We will allocate additional stat builders per value writer
+    // only when we have to support feature stats.
     valueField_->reset();
   }
 
@@ -1003,14 +1207,13 @@ class FlatMapPassthroughValueFieldWriter {
   }
 
  private:
+  // TODO: need to properly implement logical stats
   void writeImpl(const velox::VectorPtr& vector, const OrderedRanges& ranges) {
     valueField_->write(vector, ranges);
-    columnStats_.valueCount += ranges.size();
   }
 
   std::unique_ptr<FieldWriter> valueField_;
   ContentStreamData<bool>& inMapStream_;
-  ColumnStats& columnStats_;
 
   // Range to reuse when writing valueFields based on input inMap buffers, so we
   // don't reallocated on each write() call.
@@ -1024,9 +1227,7 @@ class FlatMapValueFieldWriter {
       const StreamDescriptorBuilder& inMapDescriptor,
       std::unique_ptr<FieldWriter> valueField)
       : valueField_{std::move(valueField)},
-        inMapStream_{context.createContentStreamData<bool>(inMapDescriptor)},
-        // TODO(T226402409): Reuse same stats object for all flatmap fields.
-        columnStats_{context.columnStats(inMapStream_.descriptor().offset())} {}
+        inMapStream_{context.createContentStreamData<bool>(inMapDescriptor)} {}
 
   // Clear the ranges and extend the inMapBuffer
   void prepare(uint32_t numValues) {
@@ -1059,7 +1260,6 @@ class FlatMapValueFieldWriter {
       valueField_->write(vector, ranges_);
     }
 
-    columnStats_.valueCount += ranges_.size();
     ranges_.clear();
   }
 
@@ -1070,6 +1270,10 @@ class FlatMapValueFieldWriter {
 
   void reset() {
     inMapStream_.reset();
+    // File stats collection is done sequentially onto
+    // the same underlying object.
+    // We will allocate additional stat builders per value writer
+    // only when we have to support feature stats.
     valueField_->reset();
   }
 
@@ -1080,7 +1284,6 @@ class FlatMapValueFieldWriter {
  private:
   std::unique_ptr<FieldWriter> valueField_;
   ContentStreamData<bool>& inMapStream_;
-  ColumnStats& columnStats_;
   OrderedRanges ranges_;
 };
 
@@ -1109,8 +1312,17 @@ class FlatMapFieldWriter : public FieldWriter {
         valueType_{type->childAt(1)},
         nodeId_{type->id()},
         nullsStream_{context_.createNullsStreamData(
-            typeBuilder_->asFlatMap().nullsDescriptor())},
-        columnStats_{context_.columnStats(nullsStream_.descriptor().offset())} {
+            typeBuilder_->asFlatMap().nullsDescriptor())} {
+    auto statsBuilder = context.getStatsCollector(type->id());
+    // Sanity check that the stats builders are shared and thread safe.
+    NIMBLE_CHECK(statsBuilder->isShared());
+    statisticsCollector_ = statsBuilder->as<SharedStatisticsCollector>();
+    auto keyStatsBuilder = context.getStatsCollector(type->childAt(0)->id());
+    NIMBLE_CHECK(keyStatsBuilder->isShared());
+    keyStatisticsCollector_ = keyStatsBuilder->as<SharedStatisticsCollector>();
+    for (auto id = valueType_->id(); id <= valueType_->maxId(); ++id) {
+      NIMBLE_CHECK(context.getStatsCollector(id)->isShared());
+    }
   }
 
   void write(
@@ -1173,6 +1385,88 @@ class FlatMapFieldWriter : public FieldWriter {
     return *existingPair->second;
   }
 
+  void collectStatistics(uint64_t nullCount, uint64_t valueCount) {
+    if (!statisticsCollector_) {
+      return;
+    }
+
+    statisticsCollector_->addCounts(valueCount, nullCount);
+    statisticsCollector_->addLogicalSize(nullCount);
+  }
+
+  // Collects key statistics for flatmap with string keys (VARCHAR/VARBINARY).
+  // Uses actual string sizes tracked during map iteration, NOT
+  // sizeof(StringView). totalKeyCount: the total number of map entries (keys)
+  // across all rows. totalKeyStringSize: the sum of all key string lengths.
+  // nullCount: the number of null rows.
+  // valueCount: the total number of rows processed.
+  void collectMapStringKeyStatistics(
+      uint64_t totalKeyCount,
+      uint64_t totalKeyStringSize,
+      uint64_t nullCount,
+      uint64_t valueCount) {
+    if (!keyStatisticsCollector_) {
+      return;
+    }
+
+    keyStatisticsCollector_->addCounts(totalKeyCount, nullCount);
+    // For string keys, use the actual total string size, not
+    // sizeof(StringView).
+    keyStatisticsCollector_->addLogicalSize(totalKeyStringSize + nullCount);
+  }
+
+  // Collects key statistics for flatmap.
+  // totalKeyCount: the total number of map entries (keys) across all rows.
+  // nullCount: the number of null rows.
+  // valueCount: the total number of rows processed.
+  void collectKeyStatistics(
+      uint64_t totalKeyCount,
+      uint64_t nullCount,
+      uint64_t valueCount) {
+    if (!keyStatisticsCollector_) {
+      return;
+    }
+
+    keyStatisticsCollector_->addCounts(totalKeyCount, nullCount);
+    // Key logical size is: (number of keys * sizeof(KeyType)) + nullCount
+    // For VARCHAR keys, this uses sizeof(velox::StringView) which is 16 bytes,
+    // NOT the actual string content length. This matches FieldWriter's
+    // current behavior for MAP ingestion.
+    // TODO: For string keys, we should track actual string lengths instead.
+    keyStatisticsCollector_->addLogicalSize(
+        totalKeyCount * sizeof(KeyType) + nullCount);
+  }
+
+  // Collects key statistics for passthrough flatmap with VARCHAR keys.
+  // For passthrough flatmaps, keys are ROW field names, so we use the actual
+  // string lengths instead of sizeof(StringView).
+  void collectPassthroughStringKeyStatistics(
+      const velox::RowVector* rowVector,
+      uint64_t nonNullCount,
+      uint64_t nullCount,
+      uint64_t valueCount) {
+    if (!keyStatisticsCollector_) {
+      return;
+    }
+
+    // For passthrough flatmaps, each non-null row has all keys present.
+    const auto& rowType = rowVector->type()->asRow();
+    const auto numKeys = rowType.size();
+    const uint64_t totalKeyCount = numKeys * nonNullCount;
+
+    keyStatisticsCollector_->addCounts(totalKeyCount, nullCount);
+
+    // Calculate the total key string size: sum of all key name lengths
+    // multiplied by the number of non-null rows.
+    uint64_t totalKeyStringSize = 0;
+    for (size_t i = 0; i < numKeys; ++i) {
+      totalKeyStringSize += rowType.nameOf(i).size();
+    }
+
+    keyStatisticsCollector_->addLogicalSize(
+        totalKeyStringSize * nonNullCount + nullCount);
+  }
+
   void ingestFlatMap(
       const velox::VectorPtr& vector,
       const OrderedRanges& ranges) {
@@ -1197,9 +1491,60 @@ class FlatMapFieldWriter : public FieldWriter {
           childRanges.add(offset, 1);
         });
 
-    columnStats_.nullCount += size - nonNullCount;
-    columnStats_.logicalSize += columnStats_.nullCount;
-    columnStats_.valueCount += size;
+    collectStatistics(size - nonNullCount, size);
+    // For FlatMapVector ingestion, we need to compute the total key count by
+    // summing up the number of keys present in each non-null row.
+    // This matches DWRF behavior where key sizes are counted per key per row.
+    // For VARCHAR keys, also track the total string size for accurate
+    // statistics.
+    uint64_t totalKeyCount = 0;
+    uint64_t totalKeyStringSize = 0;
+    const auto& inMaps = flatMapVector->inMaps();
+
+    // Helper to compute the occurrence count for a given key index.
+    auto computeKeyOccurrences = [&](size_t keyIndex) -> uint64_t {
+      if (keyIndex < inMaps.size() && inMaps[keyIndex] != nullptr) {
+        uint64_t count = 0;
+        const auto* rawInMaps = inMaps[keyIndex]->as<uint64_t>();
+        childRanges.applyEach([&](auto offset) {
+          if (velox::bits::isBitSet(rawInMaps, offset)) {
+            ++count;
+          }
+        });
+        return count;
+      } else {
+        return childRanges.size();
+      }
+    };
+
+    // Lambda to collect key statistics for both string and non-string types.
+    auto collectKeyStats = [&](const auto& keysVector) {
+      for (size_t i = 0; i < flatMapVector->numDistinctKeys(); ++i) {
+        const uint64_t keyOccurrences = computeKeyOccurrences(i);
+        totalKeyCount += keyOccurrences;
+        if constexpr (K == velox::TypeKind::VARCHAR) {
+          const velox::StringView key = keysVector.valueAt(i);
+          totalKeyStringSize += key.size() * keyOccurrences;
+        }
+      }
+    };
+
+    if (flatMapVector->distinctKeys()->isFlatEncoding()) {
+      collectKeyStats(Flat<KeyType>{flatMapVector->distinctKeys()});
+    } else {
+      auto decodingContext = context_.decodingContext();
+      OrderedRanges keyRanges;
+      keyRanges.add(0, flatMapVector->distinctKeys()->size());
+      auto& decodedKeys =
+          decodingContext.decode(flatMapVector->distinctKeys(), keyRanges);
+      collectKeyStats(Decoded<KeyType>{decodedKeys});
+    }
+
+    if constexpr (K == velox::TypeKind::VARCHAR) {
+      collectMapStringKeyStatistics(totalKeyCount, totalKeyStringSize, 0, size);
+    } else {
+      collectKeyStatistics(totalKeyCount, 0, size);
+    }
 
     // Early bail out if no ranges at the top level row vector.
     if (childRanges.size() == 0) {
@@ -1207,12 +1552,10 @@ class FlatMapFieldWriter : public FieldWriter {
     }
 
     const auto& values = flatMapVector->mapValues();
-    const auto& inMaps = flatMapVector->inMaps();
 
     // Confirm that the keys are distinct. Otherwise writing the same key
     // multiple times leads to out of bounds scan spec channels.
     std::unordered_set<std::string> distinctKeySet;
-
     auto processKeys = [&](const auto& keysVector) {
       for (velox::vector_size_t i = 0; i < flatMapVector->numDistinctKeys();
            ++i) {
@@ -1271,9 +1614,18 @@ class FlatMapFieldWriter : public FieldWriter {
           childRanges.add(offset, 1);
         });
 
-    columnStats_.nullCount += size - nonNullCount;
-    columnStats_.logicalSize += columnStats_.nullCount;
-    columnStats_.valueCount += size;
+    collectStatistics(size - nonNullCount, size);
+    // For ROW vector ingestion (passthrough flatmaps), keys are ROW field
+    // names. For VARCHAR keys, use actual string lengths instead of
+    // sizeof(StringView).
+    if constexpr (K == velox::TypeKind::VARCHAR) {
+      collectPassthroughStringKeyStatistics(rowVector, nonNullCount, 0, size);
+    } else {
+      // For non-string keys, all keys are present for all non-null rows.
+      // The total key count is: numKeys * numNonNullRows
+      // This matches DWRF behavior where key sizes are counted per key per row.
+      collectKeyStatistics(keys.size() * nonNullCount, 0, size);
+    }
 
     // Early bail out if no ranges at the top level row vector.
     if (childRanges.size() == 0) {
@@ -1303,17 +1655,24 @@ class FlatMapFieldWriter : public FieldWriter {
     const velox::vector_size_t* offsets;
     const velox::vector_size_t* lengths;
     uint32_t nonNullCount = 0;
+    uint64_t totalKeyCount = 0;
+    uint64_t totalKeyStringSize =
+        0; // Track actual string size for VARCHAR keys
     OrderedRanges keyRanges;
 
     // Lambda that iterates keys of a map and records the offsets to write to
     // a particular value node.
     auto processMap = [&](velox::vector_size_t index, auto& keysVector) {
+      totalKeyCount += lengths[index];
       for (auto elementIdx = offsets[index], end = elementIdx + lengths[index];
            elementIdx < end;
            ++elementIdx) {
+        // NOTE: check for the null key story here.
         const auto& keyVector = keysVector.valueAt(elementIdx);
-        // Accumulate logical key size.
-        columnStats_.logicalSize += sizeof(KeyType);
+        // Track string key sizes for VARCHAR keys
+        if constexpr (K == velox::TypeKind::VARCHAR) {
+          totalKeyStringSize += keyVector.size();
+        }
         auto valueField = getValueFieldWriter(keyVector, size);
         // Add the value to the buffer by recording its offset in the values
         // vector.
@@ -1397,9 +1756,17 @@ class FlatMapFieldWriter : public FieldWriter {
       }
     }
     nonNullCount_ += nonNullCount;
-    columnStats_.nullCount += size - nonNullCount;
-    columnStats_.logicalSize += columnStats_.nullCount;
-    columnStats_.valueCount += size;
+
+    collectStatistics(size - nonNullCount, size);
+    // For VARCHAR keys in MAP vectors, use the actual string sizes tracked
+    // during processMap iteration, not sizeof(StringView).
+    if constexpr (K == velox::TypeKind::VARCHAR) {
+      collectMapStringKeyStatistics(totalKeyCount, totalKeyStringSize, 0, size);
+    } else {
+      // totalKeyCount is the sum of all map entry counts tracked during
+      // processMap iteration, representing the actual number of keys written.
+      collectKeyStatistics(totalKeyCount, 0, size);
+    }
   }
 
   void reset() override {
@@ -1472,7 +1839,6 @@ class FlatMapFieldWriter : public FieldWriter {
   const uint32_t nodeId_;
 
   NullsStreamData& nullsStream_;
-  ColumnStats& columnStats_;
 
   // This map store the FlatMapValue fields used in current flush unit.
   folly::F14FastMap<KeyType, FlatMapValueFieldWriter*> currentValueFields_;
@@ -1487,6 +1853,8 @@ class FlatMapFieldWriter : public FieldWriter {
   // across the whole file.
   folly::F14FastMap<KeyType, std::unique_ptr<FlatMapValueFieldWriter>>
       allValueFields_;
+  SharedStatisticsCollector* statisticsCollector_;
+  SharedStatisticsCollector* keyStatisticsCollector_;
 };
 
 std::unique_ptr<FieldWriter> createFlatMapFieldWriter(
@@ -1538,8 +1906,10 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
             typeBuilder_->asArrayWithOffsets().offsetsDescriptor())},
         lengthsStream_{context.createContentStreamData<uint32_t>(
             typeBuilder_->asArrayWithOffsets().lengthsDescriptor())},
-        columnStats_{
-            context_.columnStats(lengthsStream_.descriptor().offset())} {
+        cached_(false),
+        cachedValue_(nullptr),
+        cachedSize_(0),
+        statisticsCollector_{context.getStatsCollector(type->id())} {
     elements_ = FieldWriter::create(context, type->childAt(0));
 
     typeBuilder_->asArrayWithOffsets().setChildren(elements_->typeBuilder());
@@ -1579,9 +1949,10 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       // child FieldWriters, allowing them to directly calculate
       // non-deduplicated sizes from deduplicated vectors without needing to
       // rely on an external util.
-      columnStats_.logicalSize += getRawSizeFromVector(vector, ranges, context);
-      columnStats_.nullCount += context.nullCount;
-      columnStats_.valueCount += ranges.size();
+      collectStatistics(
+          context.nullCount,
+          ranges.size(),
+          getRawSizeFromVector(vector, ranges, context));
     }
   }
 
@@ -1599,17 +1970,31 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
   }
 
  private:
+  // NOTE: deduplicated stats are rolled up from children nodes. So we still
+  // need to record actual logical size here.
+  void collectStatistics(
+      uint64_t nullCount,
+      uint64_t valueCount,
+      uint64_t logicalSize) {
+    if (!statisticsCollector_) {
+      return;
+    }
+
+    statisticsCollector_->addCounts(valueCount, nullCount);
+    statisticsCollector_->addLogicalSize(logicalSize);
+  }
+
   std::unique_ptr<FieldWriter> elements_;
   NullableContentStreamData<uint32_t>&
       offsetsStream_; /** offsets for each data after dedup */
   ContentStreamData<uint32_t>&
       lengthsStream_; /** lengths of the each deduped data */
-  ColumnStats& columnStats_;
   OffsetType nextOffset_{0}; /** next available offset for dedup storing */
 
   bool cached_{false};
   velox::VectorPtr cachedValue_{nullptr};
   velox::vector_size_t cachedSize_{0};
+  StatisticsCollector* statisticsCollector_;
 
   /*
    * Check if the dictionary is valid run length encoded.
@@ -2001,63 +2386,63 @@ std::unique_ptr<FieldWriter> FieldWriter::create(
   switch (type->type()->kind()) {
     case velox::TypeKind::BOOLEAN: {
       field = std::make_unique<SimpleFieldWriter<velox::TypeKind::BOOLEAN>>(
-          context);
+          context, type->id());
       break;
     }
     case velox::TypeKind::TINYINT: {
       field = std::make_unique<SimpleFieldWriter<velox::TypeKind::TINYINT>>(
-          context);
+          context, type->id());
       break;
     }
     case velox::TypeKind::SMALLINT: {
       field = std::make_unique<SimpleFieldWriter<velox::TypeKind::SMALLINT>>(
-          context);
+          context, type->id());
       break;
     }
     case velox::TypeKind::INTEGER: {
       field = std::make_unique<SimpleFieldWriter<velox::TypeKind::INTEGER>>(
-          context);
+          context, type->id());
       break;
     }
     case velox::TypeKind::BIGINT: {
-      field =
-          std::make_unique<SimpleFieldWriter<velox::TypeKind::BIGINT>>(context);
+      field = std::make_unique<SimpleFieldWriter<velox::TypeKind::BIGINT>>(
+          context, type->id());
       break;
     }
     case velox::TypeKind::REAL: {
-      field =
-          std::make_unique<SimpleFieldWriter<velox::TypeKind::REAL>>(context);
+      field = std::make_unique<SimpleFieldWriter<velox::TypeKind::REAL>>(
+          context, type->id());
       break;
     }
     case velox::TypeKind::DOUBLE: {
-      field =
-          std::make_unique<SimpleFieldWriter<velox::TypeKind::DOUBLE>>(context);
+      field = std::make_unique<SimpleFieldWriter<velox::TypeKind::DOUBLE>>(
+          context, type->id());
       break;
     }
     case velox::TypeKind::VARCHAR: {
       if (context.disableSharedStringBuffers()) {
         field = std::make_unique<StringFieldWriter<velox::TypeKind::VARCHAR>>(
-            context);
+            context, type->id());
       } else {
         field = std::make_unique<
             SimpleFieldWriter<velox::TypeKind::VARCHAR, StringConverter>>(
-            context);
+            context, type->id());
       }
       break;
     }
     case velox::TypeKind::VARBINARY: {
       if (context.disableSharedStringBuffers()) {
         field = std::make_unique<StringFieldWriter<velox::TypeKind::VARBINARY>>(
-            context);
+            context, type->id());
       } else {
         field = std::make_unique<
             SimpleFieldWriter<velox::TypeKind::VARBINARY, StringConverter>>(
-            context);
+            context, type->id());
       }
       break;
     }
     case velox::TypeKind::TIMESTAMP: {
-      field = std::make_unique<TimestampFieldWriter>(context);
+      field = std::make_unique<TimestampFieldWriter>(context, type->id());
       break;
     }
     case velox::TypeKind::ROW: {
