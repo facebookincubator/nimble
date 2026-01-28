@@ -208,17 +208,16 @@ TEST_F(ColumnStatisticsTests, DeduplicatedColumnStatistics) {
   }
 
   {
-    auto baseStat =
-        std::make_unique<IntegralStatistics>(100, 10, 1000, 500, -50, 150);
-    DeduplicatedColumnStatistics stat(std::move(baseStat), 80, 800);
+    IntegralStatistics baseStat(100, 10, 1000, 500, -50, 150);
+    DeduplicatedColumnStatistics stat(&baseStat, 80, 800);
 
     EXPECT_EQ(stat.getDedupedCount(), 80);
     EXPECT_EQ(stat.getDedupedLogicalSize(), 800);
     EXPECT_EQ(stat.getType(), StatType::DEDUPLICATED);
 
-    const auto& base = stat.getBaseStatistics();
-    EXPECT_EQ(base.getValueCount(), 100);
-    EXPECT_EQ(base.getNullCount(), 10);
+    const auto* base = stat.getBaseStatistics();
+    EXPECT_EQ(base->getValueCount(), 100);
+    EXPECT_EQ(base->getNullCount(), 10);
   }
 }
 
@@ -264,23 +263,13 @@ TEST_F(StatisticsCollectorTests, AddPhysicalSize) {
   EXPECT_EQ(collector.getPhysicalSize(), 750);
 }
 
-TEST_F(StatisticsCollectorTests, AddValuesCountsNulls) {
-  StatisticsCollector collector;
-  bool values[] = {true, false, true, false, false};
-  collector.addValues(std::span<bool>(values, 5));
-
-  EXPECT_EQ(collector.getValueCount(), 5);
-  EXPECT_EQ(collector.getNullCount(), 3);
-}
-
 TEST_F(StatisticsCollectorTests, AddBoolValues) {
   {
     StatisticsCollector collector;
     bool values[] = {true, true, true, true};
     collector.addValues(std::span<bool>(values, 4));
 
-    EXPECT_EQ(collector.getValueCount(), 4);
-    EXPECT_EQ(collector.getNullCount(), 0);
+    EXPECT_EQ(collector.getLogicalSize(), 4);
   }
 
   {
@@ -288,8 +277,15 @@ TEST_F(StatisticsCollectorTests, AddBoolValues) {
     bool values[] = {false, false, false};
     collector.addValues(std::span<bool>(values, 3));
 
-    EXPECT_EQ(collector.getValueCount(), 3);
-    EXPECT_EQ(collector.getNullCount(), 3);
+    EXPECT_EQ(collector.getLogicalSize(), 3);
+  }
+
+  {
+    StatisticsCollector collector;
+    bool values[] = {false, true, false};
+    collector.addValues(std::span<bool>(values, 3));
+
+    EXPECT_EQ(collector.getLogicalSize(), 3);
   }
 }
 
@@ -314,8 +310,10 @@ TEST_F(StatisticsCollectorTests, MergeDefaultStatisticsCollectors) {
 
 TEST_F(StatisticsCollectorTests, IntegralStatisticsCollectorCtor) {
   IntegralStatisticsCollector collector;
-  EXPECT_EQ(collector.getMin(), std::nullopt);
-  EXPECT_EQ(collector.getMax(), std::nullopt);
+  auto* stats = collector.getStatsView()->as<IntegralStatistics>();
+  ASSERT_NE(stats, nullptr);
+  EXPECT_EQ(stats->getMin(), std::nullopt);
+  EXPECT_EQ(stats->getMax(), std::nullopt);
   // Access getType() via dynamic_cast
   auto* sbPtr = dynamic_cast<StatisticsCollector*>(&collector);
   ASSERT_NE(sbPtr, nullptr);
@@ -357,8 +355,10 @@ TEST_F(StatisticsCollectorTests, IntegralStatisticsCollectorMergeWithDefault) {
 
 TEST_F(StatisticsCollectorTests, FloatingPointStatisticsCollectorCtor) {
   FloatingPointStatisticsCollector collector;
-  EXPECT_EQ(collector.getMin(), std::nullopt);
-  EXPECT_EQ(collector.getMax(), std::nullopt);
+  auto* stats = collector.getStatsView()->as<FloatingPointStatistics>();
+  ASSERT_NE(stats, nullptr);
+  EXPECT_EQ(stats->getMin(), std::nullopt);
+  EXPECT_EQ(stats->getMax(), std::nullopt);
   // Access getType() via dynamic_cast
   auto* sbPtr = dynamic_cast<StatisticsCollector*>(&collector);
   ASSERT_NE(sbPtr, nullptr);
@@ -404,8 +404,10 @@ TEST_F(
 
 TEST_F(StatisticsCollectorTests, StringStatisticsCollectorCtor) {
   StringStatisticsCollector collector;
-  EXPECT_EQ(collector.getMin(), std::nullopt);
-  EXPECT_EQ(collector.getMax(), std::nullopt);
+  auto* stats = collector.getStatsView()->as<StringStatistics>();
+  ASSERT_NE(stats, nullptr);
+  EXPECT_EQ(stats->getMin(), std::nullopt);
+  EXPECT_EQ(stats->getMax(), std::nullopt);
   // Access getType() via dynamic_cast
   auto* sbPtr = dynamic_cast<StatisticsCollector*>(&collector);
   ASSERT_NE(sbPtr, nullptr);
@@ -481,7 +483,7 @@ TEST_F(StatisticsCollectorTests, DeduplicatedStatisticsCollectorBaseCollector) {
   auto* basePtr = baseCollector.get();
   DeduplicatedStatisticsCollector dedupCollector(std::move(baseCollector));
 
-  EXPECT_EQ(dedupCollector.getBaseStatisticsCollector(), basePtr);
+  EXPECT_EQ(dedupCollector.getBaseCollector(), basePtr);
   dedupCollector.addCounts(100, 10);
   dedupCollector.addLogicalSize(1000);
   dedupCollector.addPhysicalSize(500);
@@ -499,12 +501,15 @@ TEST_F(StatisticsCollectorTests, RecordDedupedStats) {
   DeduplicatedStatisticsCollector dedupCollector(std::move(baseCollector));
 
   dedupCollector.recordDeduplicatedStats(80, 800);
-  EXPECT_EQ(dedupCollector.getDedupedCount(), 80);
-  EXPECT_EQ(dedupCollector.getDedupedLogicalSize(), 800);
+  auto* dedupStats =
+      dedupCollector.getStatsView()->as<DeduplicatedColumnStatistics>();
+  ASSERT_NE(dedupStats, nullptr);
+  EXPECT_EQ(dedupStats->getDedupedCount(), 80);
+  EXPECT_EQ(dedupStats->getDedupedLogicalSize(), 800);
 
   dedupCollector.recordDeduplicatedStats(20, 200);
-  EXPECT_EQ(dedupCollector.getDedupedCount(), 100);
-  EXPECT_EQ(dedupCollector.getDedupedLogicalSize(), 1000);
+  EXPECT_EQ(dedupStats->getDedupedCount(), 100);
+  EXPECT_EQ(dedupStats->getDedupedLogicalSize(), 1000);
 }
 
 TEST_F(StatisticsCollectorTests, DeduplicatedStatisticsCollectorMerge) {
@@ -520,8 +525,11 @@ TEST_F(StatisticsCollectorTests, DeduplicatedStatisticsCollectorMerge) {
 
   dedupCollector1.merge(dedupCollector2);
 
-  EXPECT_EQ(dedupCollector1.getDedupedCount(), 240);
-  EXPECT_EQ(dedupCollector1.getDedupedLogicalSize(), 2400);
-  EXPECT_EQ(dedupCollector1.getBaseStatisticsCollector()->getValueCount(), 300);
-  EXPECT_EQ(dedupCollector1.getBaseStatisticsCollector()->getNullCount(), 30);
+  auto* dedupStats =
+      dedupCollector1.getStatsView()->as<DeduplicatedColumnStatistics>();
+  ASSERT_NE(dedupStats, nullptr);
+  EXPECT_EQ(dedupStats->getDedupedCount(), 240);
+  EXPECT_EQ(dedupStats->getDedupedLogicalSize(), 2400);
+  EXPECT_EQ(dedupCollector1.getBaseCollector()->getValueCount(), 300);
+  EXPECT_EQ(dedupCollector1.getBaseCollector()->getNullCount(), 30);
 }
