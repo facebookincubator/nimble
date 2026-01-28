@@ -340,7 +340,8 @@ class SimpleFieldWriter : public FieldWriter {
             context.schemaBuilder().createScalarTypeBuilder(
                 NimbleTypeTraits<K>::scalarKind)),
         valuesStream_{context.createNullableContentStreamData<TargetType>(
-            typeBuilder_->asScalar().scalarDescriptor())},
+            typeBuilder_->asScalar().scalarDescriptor(),
+            nodeId)},
         statisticsCollector_{context.getStatsCollector(nodeId)} {}
 
   void write(
@@ -486,7 +487,8 @@ class StringFieldWriter : public FieldWriter {
             context.schemaBuilder().createScalarTypeBuilder(
                 NimbleTypeTraits<K>::scalarKind)),
         valuesStream_{context.createNullableContentStringStreamData(
-            typeBuilder_->asScalar().scalarDescriptor())},
+            typeBuilder_->asScalar().scalarDescriptor(),
+            nodeId)},
         statisticsCollector_{context.getStatsCollector(nodeId)} {
     static_assert(
         K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY,
@@ -597,9 +599,11 @@ class TimestampFieldWriter : public FieldWriter {
   explicit TimestampFieldWriter(FieldWriterContext& context, uint32_t nodeId)
       : FieldWriter{context, context.schemaBuilder().createTimestampMicroNanoTypeBuilder()},
         microsStream_{context.createNullableContentStreamData<int64_t>(
-            typeBuilder_->asTimestampMicroNano().microsDescriptor())},
+            typeBuilder_->asTimestampMicroNano().microsDescriptor(),
+            nodeId)},
         nanosStream_{context.createContentStreamData<uint16_t>(
-            typeBuilder_->asTimestampMicroNano().nanosDescriptor())},
+            typeBuilder_->asTimestampMicroNano().nanosDescriptor(),
+            nodeId)},
         statisticsCollector_{context.getStatsCollector(nodeId)} {}
 
   void write(
@@ -690,7 +694,8 @@ class RowFieldWriter : public FieldWriter {
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
       : FieldWriter{context, context.schemaBuilder().createRowTypeBuilder(type->size())},
         nullsStream_{context_.createNullsStreamData(
-            typeBuilder_->asRow().nullsDescriptor())},
+            typeBuilder_->asRow().nullsDescriptor(),
+            type->id())},
         statisticsCollector_{context.getStatsCollector(type->id())},
         ignoreNulls_{type->id() == 0 && context.ignoreTopLevelNulls()} {
     auto rowType =
@@ -815,8 +820,8 @@ class MultiValueFieldWriter : public FieldWriter {
       std::shared_ptr<LengthsTypeBuilder> typeBuilder)
       : FieldWriter{context, std::move(typeBuilder)},
         lengthsStream_{context.createNullableContentStreamData<uint32_t>(
-            static_cast<LengthsTypeBuilder&>(*typeBuilder_)
-                .lengthsDescriptor())},
+            static_cast<LengthsTypeBuilder&>(*typeBuilder_).lengthsDescriptor(),
+            type->id())},
         statisticsCollector_{context.getStatsCollector(type->id())} {}
 
   void reset() override {
@@ -981,9 +986,11 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
       : FieldWriter{context, context.schemaBuilder().createSlidingWindowMapTypeBuilder()},
         offsetsStream_{context.createNullableContentStreamData<uint32_t>(
-            typeBuilder_->asSlidingWindowMap().offsetsDescriptor())},
+            typeBuilder_->asSlidingWindowMap().offsetsDescriptor(),
+            type->id())},
         lengthsStream_{context.createContentStreamData<uint32_t>(
-            typeBuilder_->asSlidingWindowMap().lengthsDescriptor())},
+            typeBuilder_->asSlidingWindowMap().lengthsDescriptor(),
+            type->id())},
         currentOffset_(0),
         cached_{false},
         cachedLength_{0},
@@ -1161,9 +1168,11 @@ class FlatMapPassthroughValueFieldWriter {
   FlatMapPassthroughValueFieldWriter(
       FieldWriterContext& context,
       const StreamDescriptorBuilder& inMapDescriptor,
-      std::unique_ptr<FieldWriter> valueField)
+      std::unique_ptr<FieldWriter> valueField,
+      uint32_t nodeId)
       : valueField_{std::move(valueField)},
-        inMapStream_{context.createContentStreamData<bool>(inMapDescriptor)} {}
+        inMapStream_{
+            context.createContentStreamData<bool>(inMapDescriptor, nodeId)} {}
 
   // Write without an explicit inMaps buffer; assume all inMap bits are set.
   void write(const velox::VectorPtr& vector, const OrderedRanges& ranges) {
@@ -1225,9 +1234,11 @@ class FlatMapValueFieldWriter {
   FlatMapValueFieldWriter(
       FieldWriterContext& context,
       const StreamDescriptorBuilder& inMapDescriptor,
-      std::unique_ptr<FieldWriter> valueField)
+      std::unique_ptr<FieldWriter> valueField,
+      uint32_t nodeId)
       : valueField_{std::move(valueField)},
-        inMapStream_{context.createContentStreamData<bool>(inMapDescriptor)} {}
+        inMapStream_{
+            context.createContentStreamData<bool>(inMapDescriptor, nodeId)} {}
 
   // Clear the ranges and extend the inMapBuffer
   void prepare(uint32_t numValues) {
@@ -1312,7 +1323,8 @@ class FlatMapFieldWriter : public FieldWriter {
         valueType_{type->childAt(1)},
         nodeId_{type->id()},
         nullsStream_{context_.createNullsStreamData(
-            typeBuilder_->asFlatMap().nullsDescriptor())} {
+            typeBuilder_->asFlatMap().nullsDescriptor(),
+            type->id())} {
     auto statsBuilder = context.getStatsCollector(type->id());
     // Sanity check that the stats builders are shared and thread safe.
     NIMBLE_CHECK(statsBuilder->isShared());
@@ -1371,7 +1383,10 @@ class FlatMapFieldWriter : public FieldWriter {
                   .insert(
                       {key,
                        std::make_unique<FlatMapPassthroughValueFieldWriter>(
-                           context_, inMapDescriptor, std::move(fieldWriter))})
+                           context_,
+                           inMapDescriptor,
+                           std::move(fieldWriter),
+                           nodeId_)})
                   .first;
     return *it->second;
   }
@@ -1386,12 +1401,15 @@ class FlatMapFieldWriter : public FieldWriter {
   }
 
   void collectStatistics(uint64_t nullCount, uint64_t valueCount) {
+    LOG(INFO) << "Collecting statistics for flatmap";
     if (!statisticsCollector_) {
       return;
     }
 
     statisticsCollector_->addCounts(valueCount, nullCount);
     statisticsCollector_->addLogicalSize(nullCount);
+    LOG(INFO) << "New flatmap logical size: "
+              << statisticsCollector_->getLogicalSize();
   }
 
   // Collects key statistics for flatmap with string keys (VARCHAR/VARBINARY).
@@ -1820,7 +1838,7 @@ class FlatMapFieldWriter : public FieldWriter {
       context_.handleFlatmapFieldAddEvent(
           *typeBuilder_, stringKey, *valueFieldWriter->typeBuilder());
       auto flatMapValueField = std::make_unique<FlatMapValueFieldWriter>(
-          context_, inMapDescriptor, std::move(valueFieldWriter));
+          context_, inMapDescriptor, std::move(valueFieldWriter), nodeId_);
       flatFieldIt =
           allValueFields_.emplace(key, std::move(flatMapValueField)).first;
     }
@@ -1903,9 +1921,11 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type)
       : FieldWriter{context, context.schemaBuilder().createArrayWithOffsetsTypeBuilder()},
         offsetsStream_{context.createNullableContentStreamData<uint32_t>(
-            typeBuilder_->asArrayWithOffsets().offsetsDescriptor())},
+            typeBuilder_->asArrayWithOffsets().offsetsDescriptor(),
+            type->id())},
         lengthsStream_{context.createContentStreamData<uint32_t>(
-            typeBuilder_->asArrayWithOffsets().lengthsDescriptor())},
+            typeBuilder_->asArrayWithOffsets().lengthsDescriptor(),
+            type->id())},
         cached_(false),
         cachedValue_(nullptr),
         cachedSize_(0),

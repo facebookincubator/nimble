@@ -734,7 +734,7 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
     }
 
     uint64_t memoryUsed{0};
-    for (const auto& stream : context_->streams()) {
+    for (const auto& [_, stream] : context_->streams()) {
       memoryUsed += stream->memoryUsed();
     }
 
@@ -933,12 +933,13 @@ void VeloxWriter::writeStreams() {
     if (context_->options().encodingExecutor) {
       velox::dwio::common::ExecutorBarrier barrier{
           context_->options().encodingExecutor};
-      // TODO: make context_->streams() vector<pair<nodeId, StreamData>>
-      // Then get stats builder for the node id and pass it into the callback.
-      for (auto& streamData : context_->streams()) {
-        barrier.add([&, _streamData = streamData.get()]() {
-          uint64_t streamSize = 0;
+      for (auto& [nodeId, streamData] : context_->streams()) {
+        barrier.add([&,
+                     statsCollector = context_->getStatsCollector(nodeId),
+                     _streamData = streamData.get()]() {
+          uint64_t streamSize{0};
           processStream(*_streamData, streamSize, chunkSize);
+          statsCollector->addPhysicalSize(streamSize);
         });
       }
 
@@ -947,9 +948,11 @@ void VeloxWriter::writeStreams() {
       barrier.waitAll();
     } else {
       const auto& streams = context_->streams();
-      for (auto& streamData : streams) {
-        uint64_t streamSize = 0;
+      for (auto& [nodeId, streamData] : streams) {
+        auto statsCollector = context_->getStatsCollector(nodeId);
+        uint64_t streamSize{0};
         processStream(*streamData, streamSize, chunkSize);
+        statsCollector->addPhysicalSize(streamSize);
       }
 
       // Handle keyStream if index is enabled
@@ -1124,10 +1127,12 @@ bool VeloxWriter::writeChunks(
       velox::dwio::common::ExecutorBarrier barrier{
           context_->options().encodingExecutor};
       for (auto streamIndex : streamIndices) {
-        auto& streamData = streams[streamIndex];
+        auto& [nodeId, streamData] = streams[streamIndex];
         const auto offset = streamData->descriptor().offset();
         auto& encodeStream = encodedStreams_[offset];
-        barrier.add([&] {
+        barrier.add([&,
+                     streamData = streamData.get(),
+                     statsCollector = context_->getStatsCollector(nodeId)] {
           uint64_t streamSize = 0;
           if (encodeStreamChunk(
                   *streamData,
@@ -1140,6 +1145,7 @@ bool VeloxWriter::writeChunks(
                   logicalBytes)) {
             writtenChunk = true;
           }
+          statsCollector->addPhysicalSize(streamSize);
         });
       }
 
@@ -1148,9 +1154,10 @@ bool VeloxWriter::writeChunks(
       barrier.waitAll();
     } else {
       for (auto streamIndex : streamIndices) {
-        auto* streamData = streams[streamIndex].get();
-        uint64_t streamSize = 0;
+        auto& [nodeId, streamData] = streams[streamIndex];
         const auto offset = streamData->descriptor().offset();
+        uint64_t streamSize = 0;
+        auto statsCollector = context_->getStatsCollector(nodeId);
         if (encodeStreamChunk(
                 *streamData,
                 minChunkSize,
@@ -1162,6 +1169,7 @@ bool VeloxWriter::writeChunks(
                 logicalBytes)) {
           writtenChunk = true;
         }
+        statsCollector->addPhysicalSize(streamSize);
       }
 
       maybeEncodeKeyStreamChunk(lastChunk, ensureFullChunks);
@@ -1287,7 +1295,7 @@ bool VeloxWriter::evaluateFlushPolicy() {
         ? options.wideSchemaMaxStreamChunkRawSize
         : options.maxStreamChunkRawSize;
     for (auto streamIndex = 0; streamIndex < streams.size(); ++streamIndex) {
-      if (streams[streamIndex]->memoryUsed() >= maxChunkSize) {
+      if (streams[streamIndex].second->memoryUsed() >= maxChunkSize) {
         streamIndices.push_back(streamIndex);
       }
     }
@@ -1309,7 +1317,8 @@ bool VeloxWriter::evaluateFlushPolicy() {
           streamIndices.begin(),
           streamIndices.end(),
           [&](const uint32_t& a, const uint32_t& b) {
-            return streams[a]->memoryUsed() > streams[b]->memoryUsed();
+            return streams[a].second->memoryUsed() >
+                streams[b].second->memoryUsed();
           });
       flushChunks(streamIndices, /*ensureFullChunks=*/false, flushPolicy.get());
     }

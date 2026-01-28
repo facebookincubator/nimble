@@ -285,43 +285,63 @@ class FieldWriterContext {
     buffer_ = std::make_unique<Buffer>(*bufferMemoryPool_);
   }
 
-  inline const std::vector<std::unique_ptr<StreamData>>& streams() {
+  inline const std::vector<std::pair<uint32_t, std::unique_ptr<StreamData>>>&
+  streams() {
     return streams_;
   }
 
   inline NullsStreamData& createNullsStreamData(
-      const StreamDescriptorBuilder& descriptor) {
-    return static_cast<NullsStreamData&>(*streams_.emplace_back(
-        std::make_unique<NullsStreamData>(
-            *bufferMemoryPool_, descriptor, *inputBufferGrowthPolicy_)));
+      const StreamDescriptorBuilder& descriptor,
+      uint32_t nodeId) {
+    return static_cast<NullsStreamData&>(
+        *streams_
+             .emplace_back(
+                 nodeId,
+                 std::make_unique<NullsStreamData>(
+                     *bufferMemoryPool_, descriptor, *inputBufferGrowthPolicy_))
+             .second);
   }
 
   template <typename T>
   ContentStreamData<T>& createContentStreamData(
-      const StreamDescriptorBuilder& descriptor) {
-    return static_cast<ContentStreamData<T>&>(*streams_.emplace_back(
-        std::make_unique<ContentStreamData<T>>(
-            *bufferMemoryPool_, descriptor, *inputBufferGrowthPolicy_)));
+      const StreamDescriptorBuilder& descriptor,
+      uint32_t nodeId) {
+    return static_cast<ContentStreamData<T>&>(
+        *streams_
+             .emplace_back(
+                 nodeId,
+                 std::make_unique<ContentStreamData<T>>(
+                     *bufferMemoryPool_, descriptor, *inputBufferGrowthPolicy_))
+             .second);
   }
 
   template <typename T>
   NullableContentStreamData<T>& createNullableContentStreamData(
-      const StreamDescriptorBuilder& descriptor) {
-    return static_cast<NullableContentStreamData<T>&>(*streams_.emplace_back(
-        std::make_unique<NullableContentStreamData<T>>(
-            *bufferMemoryPool_, descriptor, *inputBufferGrowthPolicy_)));
+      const StreamDescriptorBuilder& descriptor,
+      uint32_t nodeId) {
+    return static_cast<NullableContentStreamData<T>&>(
+        *streams_
+             .emplace_back(
+                 nodeId,
+                 std::make_unique<NullableContentStreamData<T>>(
+                     *bufferMemoryPool_, descriptor, *inputBufferGrowthPolicy_))
+             .second);
   }
 
   nimble::NullableContentStringStreamData&
   createNullableContentStringStreamData(
-      const nimble::StreamDescriptorBuilder& descriptor) {
+      const nimble::StreamDescriptorBuilder& descriptor,
+      uint32_t nodeId) {
     return static_cast<nimble::NullableContentStringStreamData&>(
-        *streams_.emplace_back(
-            std::make_unique<nimble::NullableContentStringStreamData>(
-                *bufferMemoryPool_,
-                descriptor,
-                *inputBufferGrowthPolicy_,
-                *stringBufferGrowthPolicy_)));
+        *streams_
+             .emplace_back(
+                 nodeId,
+                 std::make_unique<nimble::NullableContentStringStreamData>(
+                     *bufferMemoryPool_,
+                     descriptor,
+                     *inputBufferGrowthPolicy_,
+                     *stringBufferGrowthPolicy_))
+             .second);
   }
 
   inline bool disableSharedStringBuffers() const {
@@ -527,7 +547,7 @@ class FieldWriterContext {
 
   std::unique_ptr<Buffer> buffer_;
   DecodingContextPool decodingContextPool_;
-  std::vector<std::unique_ptr<StreamData>> streams_;
+  std::vector<std::pair<uint32_t, std::unique_ptr<StreamData>>> streams_;
   std::shared_ptr<const velox::dwio::common::TypeWithId> schemaWithId_;
   std::vector<std::unique_ptr<StatisticsCollector>> statsCollectors_;
   bool statsFinalized_{false};
