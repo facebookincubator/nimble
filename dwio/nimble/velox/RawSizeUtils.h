@@ -15,27 +15,57 @@
  */
 #pragma once
 
+#include <folly/container/F14Set.h>
 #include "dwio/nimble/velox/RawSizeContext.h"
 #include "velox/dwio/common/Range.h"
+#include "velox/dwio/common/TypeWithId.h"
 #include "velox/vector/BaseVector.h"
+
+#include <optional>
 
 namespace facebook::nimble {
 
 constexpr uint64_t NULL_SIZE = 1;
 
+// Get raw size from vector with schema and flatmap node IDs.
+// flatMapNodeIds contains the node IDs that are configured as flatmaps.
+// A passthrough flatmap is detected when:
+// 1. The node's id is in flatMapNodeIds, AND
+// 2. The vector at that level is a ROW vector
+// ignoreTopLevelNulls: when true, top-level row nulls are ignored (treated as
+// non-null) to match FieldWriter behavior when that option is enabled.
 uint64_t getRawSizeFromVector(
     const velox::VectorPtr& vector,
     const velox::common::Ranges& ranges,
-    RawSizeContext& context);
-
-uint64_t getRawSizeFromVector(
-    const velox::VectorPtr& vector,
-    const velox::common::Ranges& ranges);
+    RawSizeContext& context,
+    const velox::dwio::common::TypeWithId& type,
+    const folly::F14FastSet<uint32_t>& flatMapNodeIds,
+    bool ignoreTopLevelNulls = false);
 
 uint64_t getRawSizeFromRowVector(
     const velox::VectorPtr& vector,
     const velox::common::Ranges& ranges,
     RawSizeContext& context,
-    const bool topLevel = false);
+    const velox::dwio::common::TypeWithId& type,
+    const folly::F14FastSet<uint32_t>& flatMapNodeIds,
+    bool topLevel = false,
+    bool ignoreTopLevelNulls = false);
+
+// Overloads without schema - used when schema is not available.
+// These cannot detect passthrough flatmaps.
+uint64_t getRawSizeFromVector(
+    const velox::VectorPtr& vector,
+    const velox::common::Ranges& ranges,
+    RawSizeContext& context);
+
+uint64_t getRawSizeFromRowVector(
+    const velox::VectorPtr& vector,
+    const velox::common::Ranges& ranges,
+    RawSizeContext& context,
+    bool topLevel = false);
+
+uint64_t getRawSizeFromVector(
+    const velox::VectorPtr& vector,
+    const velox::common::Ranges& ranges);
 
 } // namespace facebook::nimble

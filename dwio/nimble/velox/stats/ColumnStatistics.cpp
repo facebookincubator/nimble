@@ -478,10 +478,6 @@ void DeduplicatedStatisticsCollector::merge(const StatisticsCollector& other) {
   baseCollector_->merge(*otherDedup.baseCollector_);
 }
 
-// =============================================================================
-// SharedStatisticsCollector Implementation
-// =============================================================================
-
 SharedStatisticsCollector::SharedStatisticsCollector(
     std::unique_ptr<StatisticsCollector> baseCollector)
     : baseCollector_{std::move(baseCollector)} {

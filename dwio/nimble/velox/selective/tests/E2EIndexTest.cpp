@@ -162,7 +162,7 @@ class E2EIndexTestBase : public ::testing::Test {
   void addChildSpecs(ScanSpec* spec, const TypePtr& type) {
     switch (type->kind()) {
       case TypeKind::ROW: {
-        auto rowType = std::dynamic_pointer_cast<const RowType>(type);
+        auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
         for (size_t i = 0; i < rowType->size(); ++i) {
           auto* childSpec = spec->addField(
               rowType->nameOf(i), static_cast<column_index_t>(i));

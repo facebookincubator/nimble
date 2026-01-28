@@ -66,6 +66,8 @@ add_library(
 )
 target_link_libraries(
   nimble_velox_field_writer
+  nimble_column_stats
+  nimble_column_stats_utils
   nimble_velox_schema
   nimble_velox_stream_data
   nimble_velox_schema_builder
@@ -172,8 +174,9 @@ add_library(
 )
 target_link_libraries(
   nimble_velox_writer
-  nimble_common
+  nimble_column_stats
   nimble_column_stats_utils
+  nimble_common
   nimble_encodings
   nimble_index
   nimble_tablet_writer
