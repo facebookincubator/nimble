@@ -98,9 +98,8 @@ class FieldWriterStatsTests : public ::testing::Test {
       const auto& expectedStat = expectedStats.at(i);
       EXPECT_EQ(expectedStat.logicalSize, actualStat->getLogicalSize())
           << "i = " << i;
-      // TODO: add it back in the diff where we populate physical sizes.
-      //   EXPECT_EQ(expectedStat.physicalSize, actualStat->getPhysicalSize())
-      //       << "i = " << i;
+      EXPECT_EQ(expectedStat.physicalSize, actualStat->getPhysicalSize())
+          << "i = " << i;
       EXPECT_EQ(expectedStat.nullCount, actualStat->getNullCount())
           << "i = " << i;
       EXPECT_EQ(expectedStat.valueCount, actualStat->getValueCount())
@@ -536,9 +535,10 @@ TEST_F(FieldWriterStatsTests, flatmapFieldWriterStatsStableKeySet) {
   };
 
   // Flatmap stat.
+  // physicalSize includes overhead for key null streams
   auto flatmapStat = ColumnStats{
       .logicalSize = keyStat.logicalSize + valueStat.logicalSize,
-      .physicalSize = valueStat.physicalSize + 20,
+      .physicalSize = valueStat.physicalSize + 24, // flatmap overhead
       .valueCount = 4,
   };
 
@@ -602,7 +602,7 @@ TEST_F(FieldWriterStatsTests, flatMapFieldWriterStats) {
   };
   auto key10ValueStat = ColumnStats{
       .logicalSize = sizeof(int32_t) * 1, // 1 value
-      .physicalSize = 20,
+      .physicalSize = 16,
       .valueCount = 1,
   };
 
@@ -630,10 +630,13 @@ TEST_F(FieldWriterStatsTests, flatMapFieldWriterStats) {
   // valueCount = 5 (non-null flatmap rows)
   // logicalSize = keyStat.logicalSize + valueStat.logicalSize + nullCount *
   // NULL_SIZE
+  // physicalSize includes overhead for key null streams (3 keys * 20 bytes)
+  // plus flatmap null stream (20 bytes)
   auto flatmapStat = ColumnStats{
       .logicalSize =
           keyStat.logicalSize + valueStat.logicalSize + 2 * nimble::NULL_SIZE,
-      .physicalSize = valueStat.physicalSize + 20,
+      .physicalSize = valueStat.physicalSize +
+          80, // 3 key null streams + flatmap null stream
       .nullCount = 2,
       .valueCount = 5,
   };
@@ -751,10 +754,12 @@ TEST_F(FieldWriterStatsTests, flatMapPassThroughValueFieldWriterStats) {
   // logicalSize = 2 (flatmap null bytes) + keyStat.logicalSize +
   // valueStat.logicalSize nullCount = 2 (flatmap nulls) valueCount = 5
   // (non-null flatmap rows including parent row)
+  // physicalSize includes overhead for key null streams (3 keys * ~18-19 bytes)
   auto flatmapStat = ColumnStats{
       .logicalSize =
           2 * nimble::NULL_SIZE + keyStat.logicalSize + valueStat.logicalSize,
-      .physicalSize = valueStat.physicalSize,
+      .physicalSize =
+          valueStat.physicalSize + 56, // 3 key null streams overhead
       .nullCount = 2,
       .valueCount = 5,
   };
@@ -825,13 +830,13 @@ TEST_F(FieldWriterStatsTests, flatMapWithNullValuesFieldWriterStats) {
 
   auto key0ValueStat = ColumnStats{
       .logicalSize = sizeof(int32_t) * 2 + nimble::NULL_SIZE * 2,
-      .physicalSize = 41,
+      .physicalSize = 45, // 41 + 4 for null stream overhead
       .nullCount = 2,
       .valueCount = 4,
   };
   auto key2ValueStat = ColumnStats{
       .logicalSize = sizeof(int32_t) * 2 + nimble::NULL_SIZE * 2,
-      .physicalSize = 41,
+      .physicalSize = 45, // 41 + 4 for null stream overhead
       .nullCount = 2,
       .valueCount = 4,
   };
@@ -853,10 +858,13 @@ TEST_F(FieldWriterStatsTests, flatMapWithNullValuesFieldWriterStats) {
   // Flatmap stat.
   // logicalSize = keyStat.logicalSize + valueStat.logicalSize + 1 null byte
   // (flatmap null)
+  // physicalSize includes overhead for key null streams (2 keys * 20 bytes)
+  // plus flatmap null stream (20 bytes) = 44 additional bytes
   auto flatmapStat = ColumnStats{
       .logicalSize =
           keyStat.logicalSize + valueStat.logicalSize + 1 * nimble::NULL_SIZE,
-      .physicalSize = valueStat.physicalSize + 20,
+      .physicalSize = valueStat.physicalSize +
+          44, // 2 key null streams + flatmap null stream
       .nullCount = 1,
       .valueCount = 5,
   };
@@ -911,13 +919,13 @@ TEST_F(
 
   auto key0ValueStat = ColumnStats{
       .logicalSize = sizeof(int32_t) * 2 + nimble::NULL_SIZE * 2,
-      .physicalSize = 41,
+      .physicalSize = 45, // 41 + 4 for null stream overhead
       .nullCount = 2,
       .valueCount = 4,
   };
   auto key2ValueStat = ColumnStats{
       .logicalSize = sizeof(int32_t) * 2 + nimble::NULL_SIZE * 2,
-      .physicalSize = 41,
+      .physicalSize = 45, // 41 + 4 for null stream overhead
       .nullCount = 2,
       .valueCount = 4,
   };
@@ -943,10 +951,13 @@ TEST_F(
   };
 
   // Flatmap stat.
+  // physicalSize includes overhead for key null streams (2 keys * 20 bytes)
+  // plus flatmap null stream (20 bytes) = 44 additional bytes
   auto flatmapStat = ColumnStats{
       .logicalSize =
           1 * nimble::NULL_SIZE + keyStat.logicalSize + valueStat.logicalSize,
-      .physicalSize = valueStat.physicalSize,
+      .physicalSize = valueStat.physicalSize +
+          44, // 2 key null streams + flatmap null stream
       .nullCount = 1,
       .valueCount = 5,
   };
@@ -967,6 +978,7 @@ TEST_F(
 }
 
 TEST_F(FieldWriterStatsTests, slidingWindowMapFieldWriterStats) {
+  uint64_t columnSize = 6;
   auto mapVector = vectorMaker_->mapVector<int8_t, int32_t>(
       {{{0, 1}, {2, 3}},
        {{0, 1}, {2, 3}},
@@ -976,7 +988,6 @@ TEST_F(FieldWriterStatsTests, slidingWindowMapFieldWriterStats) {
        {{4, 5}, {6, 7}}});
   mapVector->setNull(3, true);
   mapVector->setNull(4, true);
-  uint64_t columnSize = mapVector->size();
 
   // With Map Deduplication (SlidingWindowMap).
   // The schema is: Root (0) -> Map (1) -> Key (2), Value (3)
@@ -1011,6 +1022,26 @@ TEST_F(FieldWriterStatsTests, slidingWindowMapFieldWriterStats) {
       .valueCount = 5,
   };
 
+  // Stats are organized by TypeWithId tree structure:
+  // Node 0: ROW (root)
+  // Node 1: MAP (sliding window map with deduplication)
+  // Node 2: Key type (int8_t)
+  // Node 3: Value type (int32_t)
+  //
+  // For SlidingWindowMap (deduplicatedMapColumns), the stats get wrapped in
+  // DeduplicatedStatisticsBuilder which properly delegates to the base builder.
+  //
+  // Data breakdown:
+  // - 6 rows total
+  // - Rows 3, 4 are null in mapVector -> 2 map nulls, 4 non-null rows
+  // - Row 5 is null in outer row vector -> 1 null at root level
+  //
+  // Non-null map rows have key-value pairs after row 5 null:
+  // - Row 0: {0:1, 2:3} (2 pairs)
+  // - Row 1: {0:1, 2:3} (2 pairs)
+  // - Row 2: {8:9, 10:11} (2 pairs)
+  // Only 4 unique key-value pairs written
+
   auto vector = vectorMaker_->rowVector({mapVector});
   vector->setNull(5, true);
 
@@ -1040,7 +1071,7 @@ TEST_F(FieldWriterStatsTests, mixedColumnsFieldWriterStats) {
       {1, 2, std::nullopt, 4, 5, std::nullopt});
   auto intStat = ColumnStats{
       .logicalSize = sizeof(int32_t) * 4 + nimble::NULL_SIZE * 2,
-      .physicalSize = 39,
+      .physicalSize = 44,
       .nullCount = 2,
       .valueCount = columnSize,
   };
@@ -1049,7 +1080,7 @@ TEST_F(FieldWriterStatsTests, mixedColumnsFieldWriterStats) {
       {1.0f, 2.0f, 3.0f, std::nullopt, 5.0f, 6.0f});
   auto floatStat = ColumnStats{
       .logicalSize = sizeof(float) * 5 + nimble::NULL_SIZE,
-      .physicalSize = 42,
+      .physicalSize = 57,
       .nullCount = 1,
       .valueCount = columnSize,
   };
@@ -1071,7 +1102,7 @@ TEST_F(FieldWriterStatsTests, mixedColumnsFieldWriterStats) {
   };
   auto arrayStat = ColumnStats{
       .logicalSize = sizeof(int8_t) * 13,
-      .physicalSize = 40,
+      .physicalSize = 46,
       .valueCount = 6,
   };
 
@@ -1086,7 +1117,7 @@ TEST_F(FieldWriterStatsTests, mixedColumnsFieldWriterStats) {
   auto dedupedArrayStat = ColumnStats{
       .logicalSize = sizeof(int8_t) * 13,
       .dedupedLogicalSize = sizeof(int8_t) * 6,
-      .physicalSize = 49,
+      .physicalSize = 57,
       .valueCount = 6,
   };
 
@@ -1103,12 +1134,12 @@ TEST_F(FieldWriterStatsTests, mixedColumnsFieldWriterStats) {
   auto mapKeyStat = ColumnStats{
       .logicalSize = sizeof(int8_t) * 8, .physicalSize = 20, .valueCount = 8};
   auto mapValueStat = ColumnStats{
-      .logicalSize = sizeof(int32_t) * 8, .physicalSize = 35, .valueCount = 8};
+      .logicalSize = sizeof(int32_t) * 8, .physicalSize = 32, .valueCount = 8};
   auto mapStat = ColumnStats{
       .logicalSize = mapKeyStat.logicalSize + mapValueStat.logicalSize +
           nimble::NULL_SIZE * 2,
       .physicalSize =
-          mapKeyStat.physicalSize + mapValueStat.physicalSize + 43, // length
+          mapKeyStat.physicalSize + mapValueStat.physicalSize + 40, // length
       .nullCount = 2,
       .valueCount = 6, // Total rows, not just non-null.
   };
@@ -1120,12 +1151,12 @@ TEST_F(FieldWriterStatsTests, mixedColumnsFieldWriterStats) {
   // because that's how dedup collectors record stats.
   auto dedupedMapKeyStat = ColumnStats{
       .logicalSize = sizeof(int8_t) * 6, // 6 keys written (logical count)
-      .physicalSize = 16,
+      .physicalSize = 18,
       .valueCount = 6,
   };
   auto dedupedMapValueStat = ColumnStats{
       .logicalSize = sizeof(int32_t) * 6, // 6 values written (logical count)
-      .physicalSize = 19,
+      .physicalSize = 21,
       .valueCount = 6,
   };
   // Deduplicated map:
@@ -1138,7 +1169,7 @@ TEST_F(FieldWriterStatsTests, mixedColumnsFieldWriterStats) {
       .dedupedLogicalSize =
           dedupedMapKeyStat.logicalSize + dedupedMapValueStat.logicalSize,
       .physicalSize = dedupedMapKeyStat.physicalSize +
-          dedupedMapValueStat.physicalSize + 43 + 15, // offsets + lengths
+          dedupedMapValueStat.physicalSize + 44 + 15, // offsets + lengths
       .nullCount = 2,
       .valueCount = 6,
   };
