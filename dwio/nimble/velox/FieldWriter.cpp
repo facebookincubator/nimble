@@ -1401,15 +1401,12 @@ class FlatMapFieldWriter : public FieldWriter {
   }
 
   void collectStatistics(uint64_t nullCount, uint64_t valueCount) {
-    LOG(INFO) << "Collecting statistics for flatmap";
     if (!statisticsCollector_) {
       return;
     }
 
     statisticsCollector_->addCounts(valueCount, nullCount);
     statisticsCollector_->addLogicalSize(nullCount);
-    LOG(INFO) << "New flatmap logical size: "
-              << statisticsCollector_->getLogicalSize();
   }
 
   // Collects key statistics for flatmap with string keys (VARCHAR/VARBINARY).
