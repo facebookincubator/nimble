@@ -62,7 +62,8 @@ class TrackedColumnLoader : public velox::dwio::common::ColumnLoader {
       case velox::TypeKind::REAL:
       case velox::TypeKind::DOUBLE:
       case velox::TypeKind::VARCHAR:
-      case velox::TypeKind::VARBINARY: {
+      case velox::TypeKind::VARBINARY:
+      case velox::TypeKind::TIMESTAMP: {
         return true;
       }
       case velox::TypeKind::ARRAY: {
@@ -121,7 +122,8 @@ class TrackedColumnLoader : public velox::dwio::common::ColumnLoader {
       case velox::TypeKind::REAL:
       case velox::TypeKind::DOUBLE:
       case velox::TypeKind::VARCHAR:
-      case velox::TypeKind::VARBINARY: {
+      case velox::TypeKind::VARBINARY:
+      case velox::TypeKind::TIMESTAMP: {
         VLOG(1) << fmt::format(
             "updating primitive type, node id {}, vector size {}, row count {}",
             localTypeWithId.id(),
