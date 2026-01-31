@@ -84,7 +84,7 @@ class ColumnStatistics {
   uint64_t valueCount_{0};
   uint64_t nullCount_{0};
   uint64_t logicalSize_{0};
-  uint64_t physicalSize_{0};
+  std::atomic_uint64_t physicalSize_{0};
 };
 
 class StringStatistics : public ColumnStatistics {
