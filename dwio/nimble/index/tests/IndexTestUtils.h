@@ -16,8 +16,10 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "dwio/nimble/common/Exceptions.h"
@@ -25,8 +27,49 @@
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
+#include "dwio/nimble/velox/VeloxWriterOptions.h"
+#include "velox/vector/ComplexVector.h"
+#include "velox/vector/fuzzer/VectorFuzzer.h"
 
 namespace facebook::nimble::index::test {
+
+/// Generator function type for key columns.
+/// Takes (vectorIndex, numRows) and returns a VectorPtr.
+using KeyColumnGenerator =
+    std::function<velox::VectorPtr(size_t, velox::vector_size_t)>;
+
+/// Map from column name to generator function.
+using KeyColumnGeneratorMap =
+    std::unordered_map<std::string, KeyColumnGenerator>;
+
+/// Generates random data using VectorFuzzer with specified key column
+/// generators.
+/// @param rowType The type of the row vector.
+/// @param numVectors Number of vectors to generate.
+/// @param numRowsPerVector Number of rows per vector.
+/// @param keyColumnGenerators Map from column name to generator function.
+///        Generator function takes (vectorIndex, numRows) and returns a
+///        VectorPtr. Key columns are generated without nulls.
+/// @param pool Memory pool for vector allocation.
+/// @param nullRatio Null ratio for non-key columns (default 0.1).
+std::vector<velox::RowVectorPtr> generateData(
+    const velox::RowTypePtr& rowType,
+    size_t numVectors,
+    velox::vector_size_t numRowsPerVector,
+    const KeyColumnGeneratorMap& keyColumnGenerators,
+    velox::memory::MemoryPool* pool,
+    double nullRatio = 0.1);
+
+/// Writes row vectors to a Nimble file with cluster index.
+/// @param filePath Path to write the Nimble file.
+/// @param data Vector of RowVectorPtr to write.
+/// @param indexConfig Index configuration specifying columns, sort orders, etc.
+/// @param pool Memory pool for writing.
+void writeFile(
+    const std::string& filePath,
+    const std::vector<velox::RowVectorPtr>& data,
+    IndexConfig indexConfig,
+    velox::memory::MemoryPool& pool);
 
 /// Simple StreamLoader implementation for testing that holds data in memory.
 class TestStreamLoader : public StreamLoader {

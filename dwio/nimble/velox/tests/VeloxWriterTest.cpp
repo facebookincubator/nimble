@@ -26,7 +26,7 @@
 #include "dwio/nimble/encodings/EncodingUtils.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
-#include "dwio/nimble/index/tests/TabletIndexTestUtils.h"
+#include "dwio/nimble/index/tests/IndexTestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"

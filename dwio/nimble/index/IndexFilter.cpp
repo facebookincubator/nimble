@@ -27,21 +27,20 @@ using namespace velox::common;
 namespace {
 
 // Dispatch macro for integer types (TINYINT, SMALLINT, INTEGER, BIGINT).
-#define INTEGER_TYPE_DISPATCH(FUNC, typeKind, ...)                       \
-  [&]() {                                                                \
-    switch (typeKind) {                                                  \
-      case TypeKind::TINYINT:                                            \
-        return FUNC<TypeKind::TINYINT>(__VA_ARGS__);                     \
-      case TypeKind::SMALLINT:                                           \
-        return FUNC<TypeKind::SMALLINT>(__VA_ARGS__);                    \
-      case TypeKind::INTEGER:                                            \
-        return FUNC<TypeKind::INTEGER>(__VA_ARGS__);                     \
-      case TypeKind::BIGINT:                                             \
-        return FUNC<TypeKind::BIGINT>(__VA_ARGS__);                      \
-      default:                                                           \
-        NIMBLE_UNREACHABLE(                                              \
-            "Unsupported integer type: {}", static_cast<int>(typeKind)); \
-    }                                                                    \
+#define INTEGER_TYPE_DISPATCH(FUNC, typeKind, ...)                    \
+  [&]() {                                                             \
+    switch (typeKind) {                                               \
+      case TypeKind::TINYINT:                                         \
+        return FUNC<TypeKind::TINYINT>(__VA_ARGS__);                  \
+      case TypeKind::SMALLINT:                                        \
+        return FUNC<TypeKind::SMALLINT>(__VA_ARGS__);                 \
+      case TypeKind::INTEGER:                                         \
+        return FUNC<TypeKind::INTEGER>(__VA_ARGS__);                  \
+      case TypeKind::BIGINT:                                          \
+        return FUNC<TypeKind::BIGINT>(__VA_ARGS__);                   \
+      default:                                                        \
+        NIMBLE_UNREACHABLE("Unsupported integer type: {}", typeKind); \
+    }                                                                 \
   }()
 
 template <TypeKind Kind>
@@ -410,6 +409,10 @@ std::optional<FilterToIndexBoundsResult> convertFilterToIndexBounds(
     if (filter == nullptr) {
       break;
     }
+    NIMBLE_CHECK(
+        childSpec->hasFilter(),
+        "Filter on index column '{}' is unexpectedly disabled",
+        columnName);
 
     // Check if the filter is convertible.
     const auto boundInfo = getFilterBoundInfo(*filter, sortOrder);
