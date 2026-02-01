@@ -14,12 +14,72 @@
  * limitations under the License.
  */
 
-#include "dwio/nimble/index/tests/TabletIndexTestUtils.h"
+#include "dwio/nimble/index/tests/IndexTestUtils.h"
 
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
+#include "dwio/nimble/velox/VeloxWriter.h"
+#include "velox/common/file/FileSystems.h"
 
 namespace facebook::nimble::index::test {
+
+std::vector<velox::RowVectorPtr> generateData(
+    const velox::RowTypePtr& rowType,
+    size_t numVectors,
+    velox::vector_size_t numRowsPerVector,
+    const KeyColumnGeneratorMap& keyColumnGenerators,
+    velox::memory::MemoryPool* pool,
+    double nullRatio) {
+  velox::VectorFuzzer::Options options;
+  options.vectorSize = numRowsPerVector;
+  options.nullRatio = nullRatio;
+  velox::VectorFuzzer fuzzer(options, pool);
+
+  std::vector<velox::RowVectorPtr> result;
+  result.reserve(numVectors);
+  for (size_t vecIdx = 0; vecIdx < numVectors; ++vecIdx) {
+    std::vector<velox::VectorPtr> children;
+    children.reserve(rowType->size());
+    for (auto i = 0; i < rowType->size(); ++i) {
+      const auto& name = rowType->nameOf(i);
+      auto it = keyColumnGenerators.find(name);
+      if (it != keyColumnGenerators.end()) {
+        children.push_back(it->second(vecIdx, numRowsPerVector));
+      } else {
+        children.push_back(fuzzer.fuzz(rowType->childAt(i)));
+      }
+    }
+    result.push_back(
+        std::make_shared<velox::RowVector>(
+            pool, rowType, nullptr, numRowsPerVector, std::move(children)));
+  }
+  return result;
+}
+
+void writeFile(
+    const std::string& filePath,
+    const std::vector<velox::RowVectorPtr>& data,
+    IndexConfig indexConfig,
+    velox::memory::MemoryPool& pool) {
+  NIMBLE_CHECK(!data.empty(), "Data must not be empty");
+
+  VeloxWriterOptions options;
+  options.enableChunking = true;
+  options.indexConfig = std::move(indexConfig);
+
+  auto fs = velox::filesystems::getFileSystem(filePath, {});
+  auto writeFile = fs->openFileForWrite(
+      filePath,
+      {.shouldCreateParentDirectories = true,
+       .shouldThrowOnFileAlreadyExists = false});
+
+  auto rowType = velox::asRowType(data[0]->type());
+  VeloxWriter writer(rowType, std::move(writeFile), pool, std::move(options));
+  for (const auto& vector : data) {
+    writer.write(vector);
+  }
+  writer.close();
+}
 
 KeyStream createKeyStream(
     Buffer& buffer,
