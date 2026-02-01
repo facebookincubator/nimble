@@ -23,7 +23,7 @@
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/index/StripeIndexGroup.h"
 #include "dwio/nimble/index/TabletIndex.h"
-#include "dwio/nimble/index/tests/TabletIndexTestUtils.h"
+#include "dwio/nimble/index/tests/IndexTestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
