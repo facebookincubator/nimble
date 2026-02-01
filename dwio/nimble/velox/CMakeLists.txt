@@ -183,6 +183,7 @@ target_link_libraries(
   nimble_velox_field_writer
   nimble_velox_layout_planner
   nimble_velox_metadata_fb
+  nimble_velox_schema_serialization
   nimble_velox_stats_fb
   raw_size_utils
   velox_dwio_common
