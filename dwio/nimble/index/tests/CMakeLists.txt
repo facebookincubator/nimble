@@ -15,8 +15,11 @@ add_library(nimble_index_test_utils IndexTestUtils.cpp)
 target_link_libraries(
   nimble_index_test_utils
   nimble_index
+  nimble_velox_writer
   nimble_common
   velox_memory
+  velox_vector_fuzzer
+  velox_file
   Folly::folly
 )
 
