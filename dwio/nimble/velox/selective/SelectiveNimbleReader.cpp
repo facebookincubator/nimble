@@ -84,7 +84,6 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
             std::make_unique<RowSizeTracker>(readerBase->fileSchemaWithId())} {
     initReadRange();
     initIndex();
-    setIndexBounds();
     if (options.eagerFirstStripeLoad()) {
       nextRowNumber();
     }
@@ -133,7 +132,7 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
 
   // Sets up index bounds for key-based filtering. Sets up
   // encodedKeyBounds_ if cluster index bounds are specified in the scan spec.
-  void setIndexBounds();
+  void maybeSetIndexBounds();
 
   // Returns true if cluster index bounds are specified for key-based
   // filtering.
@@ -213,6 +212,9 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
   // last stripe with upper index bounds.
   std::optional<int64_t> endRowInCurrentStripe_;
   std::optional<int64_t> nextRowNumber_;
+  // Flag to track whether index bounds have been set for the current scan.
+  // Reset to false on each reset() call.
+  bool hasSetIndexBounds_{false};
 
   int32_t skippedStripes_{0};
   // Tracks the number of rows from trailing stripes filtered out by upper index
@@ -235,6 +237,7 @@ int64_t SelectiveNimbleRowReader::nextRowNumber() {
   if (nextRowNumber_.has_value()) {
     return *nextRowNumber_;
   }
+  maybeSetIndexBounds();
   while (currentStripe_ < endStripe_) {
     auto numStripeRows = readerBase_->tablet().stripeRowCount(currentStripe_);
     if (rowInCurrentStripe_ == 0) {
@@ -356,6 +359,7 @@ void SelectiveNimbleRowReader::reset() {
   // the file, not the query).
   encodedKeyBounds_.reset();
   indexReader_.reset();
+  hasSetIndexBounds_ = false;
 
   // Reset statistics.
   skippedStripes_ = 0;
@@ -367,9 +371,6 @@ void SelectiveNimbleRowReader::reset() {
   // previous scan. This allows the next scan to start fresh with new I/O
   // scheduling.
   readerBase_->input().reset();
-
-  // Re-apply index bounds with current scan spec (may narrow stripe range).
-  setIndexBounds();
 }
 
 void SelectiveNimbleRowReader::initReadRange() {
@@ -464,19 +465,18 @@ bool SelectiveNimbleRowReader::hasIndexBounds() const {
   return encodedKeyBounds_.has_value();
 }
 
-void SelectiveNimbleRowReader::setIndexBounds() {
+void SelectiveNimbleRowReader::maybeSetIndexBounds() {
   // Early return if index is not available.
   if (tabletIndex_ == nullptr) {
     return;
   }
-  // Check if index filtering is disabled.
-  if (!options_.indexEnabled()) {
+
+  // Skip if already set for this scan.
+  if (hasSetIndexBounds_) {
     return;
   }
-  // Verify that the file has a cluster index
-  if (!readerBase_->tablet().hasIndex()) {
-    return;
-  }
+  hasSetIndexBounds_ = true;
+
   // Early return if there are no stripes to read based on the read range
   if (currentStripe_ >= endStripe_) {
     return;
