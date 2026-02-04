@@ -33,9 +33,11 @@
 #include "dwio/nimble/velox/FlushPolicy.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
+#include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/StatsGenerated.h"
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
+#include "dwio/nimble/velox/stats/VectorizedStatistics.h"
 #include "folly/FileUtil.h"
 #include "folly/Random.h"
 #include "velox/common/memory/HashStringAllocator.h"
@@ -2166,27 +2168,68 @@ TEST_F(VeloxWriterTest, rawSizeWritten) {
           }),
       });
 
-  std::string file;
-  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-  nimble::VeloxWriter writer(
-      vector->type(), std::move(writeFile), *rootPool_, {});
-  writer.write(vector);
-  writer.close();
+  // Test with enableVectorizedStats = false (default, uses kStatsSection)
+  {
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriterOptions options{};
+    options.enableVectorizedStats = false;
+    nimble::VeloxWriter writer(
+        vector->type(), std::move(writeFile), *rootPool_, options);
+    writer.write(vector);
+    writer.close();
 
-  auto readFilePtr = std::make_shared<velox::InMemoryReadFile>(file);
-  nimble::VeloxReader reader(readFilePtr.get(), *leafPool_);
+    auto readFilePtr = std::make_shared<velox::InMemoryReadFile>(file);
+    std::vector<std::string> preloadedOptionalSections = {
+        std::string(facebook::nimble::kStatsSection)};
+    auto tablet = facebook::nimble::TabletReader::create(
+        readFilePtr, *leafPool_, preloadedOptionalSections);
+    auto statsSection =
+        tablet->loadOptionalSection(preloadedOptionalSections[0]);
+    ASSERT_TRUE(statsSection.has_value());
 
-  std::vector<std::string> preloadedOptionalSections = {
-      std::string(facebook::nimble::kStatsSection)};
-  auto tablet = facebook::nimble::TabletReader::create(
-      readFilePtr, *leafPool_, preloadedOptionalSections);
-  auto statsSection = tablet->loadOptionalSection(preloadedOptionalSections[0]);
-  ASSERT_TRUE(statsSection.has_value());
+    // Use flatbuffers to deserialize the stats payload
+    auto rawSize = flatbuffers::GetRoot<nimble::serialization::Stats>(
+                       statsSection->content().data())
+                       ->raw_size();
+    ASSERT_EQ(expectedRawSize, rawSize);
+  }
 
-  auto rawSize = flatbuffers::GetRoot<facebook::nimble::serialization::Stats>(
-                     statsSection->content().data())
-                     ->raw_size();
-  ASSERT_EQ(expectedRawSize, rawSize);
+  // Test with enableVectorizedStats = true (uses kVectorizedStatsSection)
+  {
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriterOptions options{};
+    options.enableVectorizedStats = true;
+    nimble::VeloxWriter writer(
+        vector->type(), std::move(writeFile), *rootPool_, options);
+    writer.write(vector);
+    writer.close();
+
+    auto readFilePtr = std::make_shared<velox::InMemoryReadFile>(file);
+    std::vector<std::string> preloadedOptionalSections = {
+        std::string(facebook::nimble::kVectorizedStatsSection)};
+    auto tablet = facebook::nimble::TabletReader::create(
+        readFilePtr, *leafPool_, preloadedOptionalSections);
+    auto statsSection =
+        tablet->loadOptionalSection(preloadedOptionalSections[0]);
+    ASSERT_TRUE(statsSection.has_value());
+
+    // Use VectorizedFileStats to deserialize the stats payload
+    auto fileStats = nimble::VectorizedFileStats::deserialize(
+        statsSection->content(), *leafPool_);
+    ASSERT_NE(fileStats, nullptr);
+
+    // Convert to column statistics using schema and nimbleType
+    auto nimbleType = nimble::convertToNimbleType(*vector->type());
+    auto columnStats =
+        fileStats->toColumnStatistics(vector->type(), nimbleType);
+    ASSERT_FALSE(columnStats.empty());
+
+    // The root column statistics contains the raw size (logical size)
+    auto rawSize = columnStats.front()->getLogicalSize();
+    ASSERT_EQ(expectedRawSize, rawSize);
+  }
 }
 
 struct ChunkFlushPolicyTestCase {

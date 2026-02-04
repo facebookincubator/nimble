@@ -42,6 +42,9 @@ struct VeloxWriterOptions {
   std::unordered_map<std::string, std::string> metadata =
       detail::defaultMetadata();
 
+  // Enable vectorized stats for applicable schema shapes.
+  bool enableVectorizedStats{false};
+
   /// If set, the cluster index on the specified columns will be built during
   /// writing. The index stores the per-chunk min and max key for each stripe.
   std::optional<IndexConfig> indexConfig;

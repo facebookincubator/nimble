@@ -114,6 +114,9 @@ class TabletWriter {
       std::vector<Stream> streams,
       std::optional<KeyStream>&& keyStream = std::nullopt);
 
+  // TODO: with low memory budget, we might want to have a version of this for
+  // a vector of content to be concatenated. Right now the Buffer class prevents
+  // us from draining its content incrementally.
   void writeOptionalSection(std::string name, std::string_view content);
 
   // The number of bytes written so far.
