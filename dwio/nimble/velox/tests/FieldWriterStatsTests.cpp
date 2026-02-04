@@ -709,22 +709,22 @@ TEST_F(FieldWriterStatsTests, flatMapPassThroughValueFieldWriterStats) {
       .logicalSize =
           sizeof(int32_t) * 2 + nimble::NULL_SIZE, // 2 values + 1 null
       .physicalSize = 40,
-      .valueCount = 3,
       .nullCount = 1,
+      .valueCount = 3,
   };
   auto key2ValueStat = ColumnStats{
       .logicalSize =
           sizeof(int32_t) * 1 + 2 * nimble::NULL_SIZE, // 1 value + 2 nulls
       .physicalSize = 41,
-      .valueCount = 3,
       .nullCount = 2,
+      .valueCount = 3,
   };
   auto key10ValueStat = ColumnStats{
       .logicalSize =
           sizeof(int32_t) * 1 + 2 * nimble::NULL_SIZE, // 1 value + 2 nulls
       .physicalSize = 41,
-      .valueCount = 3,
       .nullCount = 2,
+      .valueCount = 3,
   };
 
   // Merged value stat from all keys.

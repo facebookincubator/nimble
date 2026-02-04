@@ -34,6 +34,7 @@
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "dwio/nimble/velox/StatsGenerated.h"
 #include "dwio/nimble/velox/StreamChunker.h"
+#include "dwio/nimble/velox/stats/VectorizedStatistics.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/type/Type.h"
 
@@ -783,12 +784,21 @@ void VeloxWriter::writeMetadata() {
 }
 
 void VeloxWriter::writeColumnStats() {
-  flatbuffers::FlatBufferBuilder builder;
-  builder.Finish(serialization::CreateStats(builder, context_->fileRawSize()));
-  tabletWriter_->writeOptionalSection(
-      std::string(kStatsSection),
-      {reinterpret_cast<const char*>(builder.GetBufferPointer()),
-       builder.GetSize()});
+  if (context_->options().enableVectorizedStats) {
+    VectorizedFileStats fileStats{
+        context_->columnStats(), encodingMemoryPool_.get()};
+    Buffer buffer{*encodingMemoryPool_};
+    tabletWriter_->writeOptionalSection(
+        std::string(kVectorizedStatsSection), fileStats.serialize(buffer));
+  } else {
+    flatbuffers::FlatBufferBuilder builder;
+    builder.Finish(
+        serialization::CreateStats(builder, context_->fileRawSize()));
+    tabletWriter_->writeOptionalSection(
+        std::string(kStatsSection),
+        {reinterpret_cast<const char*>(builder.GetBufferPointer()),
+         builder.GetSize()});
+  }
 }
 
 void VeloxWriter::writeSchema() {

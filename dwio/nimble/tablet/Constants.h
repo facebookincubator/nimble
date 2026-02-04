@@ -32,6 +32,8 @@ constexpr uint32_t kPostscriptChecksumedSize = 5;
 constexpr std::string_view kSchemaSection = "columnar.schema";
 constexpr std::string_view kMetadataSection = "columnar.metadata";
 constexpr std::string_view kStatsSection = "columnar.stats";
+constexpr std::string_view kVectorizedStatsSection =
+    "columnar.vectorized_stats";
 constexpr std::string_view kIndexSection = "columnar.index";
 
 } // namespace facebook::nimble
