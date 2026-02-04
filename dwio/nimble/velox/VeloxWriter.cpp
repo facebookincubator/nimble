@@ -716,7 +716,7 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
         input,
         velox::common::Ranges::of(0, numRows),
         context,
-        *schema_,
+        schema_.get(),
         context_->flatMapNodeIds(),
         context_->ignoreTopLevelNulls());
     NIMBLE_CHECK_GE(rawSize, 0, "Invalid raw size");
