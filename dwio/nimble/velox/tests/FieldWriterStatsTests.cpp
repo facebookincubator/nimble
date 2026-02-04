@@ -79,7 +79,6 @@ class FieldWriterStatsTests : public ::testing::Test {
 
     // We do support writing vectors with different schema from the input in
     // select use cases. Those might cause logical size level mismatches.
-    const bool coerseVectorSchema = rowType != nullptr;
     if (!rowType) {
       rowType = input->type();
     }
@@ -119,22 +118,36 @@ class FieldWriterStatsTests : public ::testing::Test {
       }
     }
 
-    // NOTE: Flatmap passthrough writes are lossy on logical information. Skip
-    // the raw size check since getRawSizeFromVector doesn't account for flatmap
-    // key statistics.
-    if (coerseVectorSchema) {
-      return;
-    }
-
     // Check top level stats using raw size utils.
+    // Build the schema with flatmap node IDs to match VeloxWriter behavior.
     if (!expectedStats.empty()) {
       ASSERT_FALSE(actualStats.empty());
       const auto& actualTopLevelStat = actualStats.at(0);
       nimble::RawSizeContext context;
       velox::common::Ranges ranges;
       ranges.add(0, input->size());
-      auto expectedLogicalSize =
-          nimble::getRawSizeFromVector(input, ranges, context);
+
+      // Build TypeWithId from the target schema
+      auto schema = velox::dwio::common::TypeWithId::create(rowType, 0);
+      folly::F14FastSet<uint32_t> flatMapNodeIds;
+
+      // Build flatmap node IDs by matching column names in the schema
+      if (!options.flatMapColumns.empty() &&
+          rowType->kind() == velox::TypeKind::ROW) {
+        const auto& rowTypeCast = rowType->asRow();
+        for (const auto& col : options.flatMapColumns) {
+          for (size_t i = 0; i < rowTypeCast.size(); ++i) {
+            if (rowTypeCast.nameOf(i) == col) {
+              // Child node ID is i+1 (root is 0)
+              flatMapNodeIds.insert(schema->childAt(i)->id());
+              break;
+            }
+          }
+        }
+      }
+
+      auto expectedLogicalSize = nimble::getRawSizeFromVector(
+          input, ranges, context, schema.get(), flatMapNodeIds);
       EXPECT_EQ(expectedLogicalSize, actualTopLevelStat->getLogicalSize());
       EXPECT_EQ(context.nullCount, actualTopLevelStat->getNullCount());
     }
@@ -629,7 +642,7 @@ TEST_F(FieldWriterStatsTests, flatMapFieldWriterStats) {
   // nullCount = 2 (flatmap nulls)
   // valueCount = 5 (non-null flatmap rows)
   // logicalSize = keyStat.logicalSize + valueStat.logicalSize + nullCount *
-  // kNullSize
+  // NULL_SIZE
   // physicalSize includes overhead for key null streams (3 keys * 20 bytes)
   // plus flatmap null stream (20 bytes)
   auto flatmapStat = ColumnStats{
@@ -656,16 +669,22 @@ TEST_F(FieldWriterStatsTests, flatMapFieldWriterStats) {
 }
 
 TEST_F(FieldWriterStatsTests, flatMapPassThroughValueFieldWriterStats) {
-  // Passthrough flatmap using ROW vector input.
-  // Each feature column is a child of the ROW vector.
+  // Input: A ROW vector with 3 child columns representing passthrough flatmap
+  // features. Each child column is a nullable INTEGER column. The ROW is
+  // written as MAP<TINYINT, INTEGER> where keys are the field names converted
+  // to TINYINT.
   //
   // Data layout (6 rows):
   //   row 0: feature0=1, feature2=3, feature10=null
   //   row 1: feature0=1, feature2=null, feature10=null
   //   row 2: feature0=null, feature2=null, feature10=11
-  //   row 3: null (flatmap null)
-  //   row 4: null (flatmap null)
-  //   row 5: feature0=null, feature2=null, feature10=null (parent row null)
+  //   row 3: flatmap null
+  //   row 4: flatmap null
+  //   row 5: parent row null
+  //
+  // Additionally, we set one of the child vectors (feature10) as entirely null
+  // for some rows to test the branching logic for child vectors with nulls.
+
   auto feature0 = vectorMaker_->flatVectorNullable<int32_t>(
       {{1}, {1}, std::nullopt, {1}, {1}, std::nullopt});
   auto feature2 = vectorMaker_->flatVectorNullable<int32_t>(
@@ -677,6 +696,11 @@ TEST_F(FieldWriterStatsTests, flatMapPassThroughValueFieldWriterStats) {
        std::nullopt,
        std::nullopt,
        std::nullopt});
+
+  // Set the entire feature10 vector as null at certain positions to test
+  // child vector null handling in RawSizeUtils.
+  feature10->setNull(0, true);
+  feature10->setNull(1, true);
 
   auto flatmapVector = vectorMaker_->rowVector(
       {"0", "2", "10"}, {feature0, feature2, feature10});
@@ -709,22 +733,22 @@ TEST_F(FieldWriterStatsTests, flatMapPassThroughValueFieldWriterStats) {
       .logicalSize =
           sizeof(int32_t) * 2 + nimble::kNullSize, // 2 values + 1 null
       .physicalSize = 40,
-      .valueCount = 3,
       .nullCount = 1,
+      .valueCount = 3,
   };
   auto key2ValueStat = ColumnStats{
       .logicalSize =
           sizeof(int32_t) * 1 + 2 * nimble::kNullSize, // 1 value + 2 nulls
       .physicalSize = 41,
-      .valueCount = 3,
       .nullCount = 2,
+      .valueCount = 3,
   };
   auto key10ValueStat = ColumnStats{
       .logicalSize =
           sizeof(int32_t) * 1 + 2 * nimble::kNullSize, // 1 value + 2 nulls
       .physicalSize = 41,
-      .valueCount = 3,
       .nullCount = 2,
+      .valueCount = 3,
   };
 
   // Merged value stat from all keys.
@@ -1469,4 +1493,168 @@ TEST_F(FieldWriterStatsTests, rowFieldWriterStats) {
        stat3,
        c3SubFieldStat1,
        c3SubFieldStat2});
+}
+
+TEST_F(FieldWriterStatsTests, constantEncodingMixedTypes) {
+  // Test constant encoding with a mix of all schema types:
+  // - Primitive types (int, string, bool, float, double)
+  // - Array
+  // - Map
+  // - Row (nested struct)
+
+  constexpr uint64_t columnSize = 10;
+
+  // 1. Constant integer column
+  auto intBase = vectorMaker_->flatVector<int64_t>({42});
+  auto constInt = velox::BaseVector::wrapInConstant(columnSize, 0, intBase);
+  auto constIntStat = ColumnStats{
+      .logicalSize = sizeof(int64_t) * columnSize,
+      .physicalSize = 19,
+      .valueCount = columnSize,
+  };
+
+  // 2. Constant string column
+  auto strBase =
+      vectorMaker_->flatVector<velox::StringView>({velox::StringView("hello")});
+  auto constStr = velox::BaseVector::wrapInConstant(columnSize, 0, strBase);
+  auto constStrStat = ColumnStats{
+      .logicalSize = 5 * columnSize, // "hello" is 5 bytes
+      .physicalSize = 20,
+      .valueCount = columnSize,
+  };
+
+  // 3. Constant bool column
+  auto boolBase = vectorMaker_->flatVector<bool>({true});
+  auto constBool = velox::BaseVector::wrapInConstant(columnSize, 0, boolBase);
+  auto constBoolStat = ColumnStats{
+      .logicalSize = sizeof(bool) * columnSize,
+      .physicalSize = 12,
+      .valueCount = columnSize,
+  };
+
+  // 4. Constant float column
+  auto floatBase = vectorMaker_->flatVector<float>({3.14f});
+  auto constFloat = velox::BaseVector::wrapInConstant(columnSize, 0, floatBase);
+  auto constFloatStat = ColumnStats{
+      .logicalSize = sizeof(float) * columnSize,
+      .physicalSize = 15,
+      .valueCount = columnSize,
+  };
+
+  // 5. Constant double column
+  auto doubleBase = vectorMaker_->flatVector<double>({2.71828});
+  auto constDouble =
+      velox::BaseVector::wrapInConstant(columnSize, 0, doubleBase);
+  auto constDoubleStat = ColumnStats{
+      .logicalSize = sizeof(double) * columnSize,
+      .physicalSize = 19,
+      .valueCount = columnSize,
+  };
+
+  // 6. Constant array column: array of int32_t with 3 elements [1, 2, 3]
+  auto arrayBase = vectorMaker_->arrayVectorNullable<int32_t>(
+      {{{1, 2, 3}}}); // One array with 3 elements
+  auto constArray = velox::BaseVector::wrapInConstant(columnSize, 0, arrayBase);
+  auto constArrayElemStat = ColumnStats{
+      .logicalSize = 3 * sizeof(int32_t) * columnSize, // 3 elements * 10 rows
+      .physicalSize = 54,
+      .valueCount = 3 * columnSize,
+  };
+  auto constArrayStat = rollupChildrenStats({constArrayElemStat});
+  constArrayStat.valueCount = columnSize;
+  constArrayStat.physicalSize = 69; // Actual physical size for array
+
+  // 7. Constant map column: map<int16_t, int32_t> with 2 entries {1:10, 2:20}
+  using MapPair = std::pair<int16_t, std::optional<int32_t>>;
+  std::vector<std::optional<std::vector<MapPair>>> mapData = {
+      std::vector<MapPair>{{1, 10}, {2, 20}}};
+  auto mapBase = vectorMaker_->mapVector<int16_t, int32_t>(mapData);
+  auto constMap = velox::BaseVector::wrapInConstant(columnSize, 0, mapBase);
+  auto constMapKeyStat = ColumnStats{
+      .logicalSize = 2 * sizeof(int16_t) * columnSize, // 2 keys * 10 rows
+      .physicalSize = 42,
+      .valueCount = 2 * columnSize,
+  };
+  auto constMapValueStat = ColumnStats{
+      .logicalSize = 2 * sizeof(int32_t) * columnSize, // 2 values * 10 rows
+      .physicalSize = 44,
+      .valueCount = 2 * columnSize,
+  };
+  auto constMapStat = rollupChildrenStats({constMapKeyStat, constMapValueStat});
+  constMapStat.valueCount = columnSize;
+  constMapStat.physicalSize = 101; // Actual physical size for map
+
+  // 8. Constant row column (nested struct): row<a: int8_t, b: varchar>
+  auto rowChild1 = vectorMaker_->flatVector<int8_t>({7});
+  auto rowChild2 = vectorMaker_->flatVector<velox::StringView>(
+      {velox::StringView("test")}); // 4 bytes
+  auto rowBase = vectorMaker_->rowVector({rowChild1, rowChild2});
+  auto constRow = velox::BaseVector::wrapInConstant(columnSize, 0, rowBase);
+  auto constRowChild1Stat = ColumnStats{
+      .logicalSize = sizeof(int8_t) * columnSize,
+      .physicalSize = 12,
+      .valueCount = columnSize,
+  };
+  auto constRowChild2Stat = ColumnStats{
+      .logicalSize = 4 * columnSize, // "test" is 4 bytes
+      .physicalSize = 19,
+      .valueCount = columnSize,
+  };
+  auto constRowStat =
+      rollupChildrenStats({constRowChild1Stat, constRowChild2Stat});
+  constRowStat.valueCount = columnSize;
+  constRowStat.physicalSize = 31; // Actual physical size for row
+
+  // Build the root vector with all columns
+  auto vector = vectorMaker_->rowVector(
+      {constInt,
+       constStr,
+       constBool,
+       constFloat,
+       constDouble,
+       constArray,
+       constMap,
+       constRow});
+
+  // Root stat is the rollup of all column stats
+  auto rootStat = rollupChildrenStats(
+      {constIntStat,
+       constStrStat,
+       constBoolStat,
+       constFloatStat,
+       constDoubleStat,
+       constArrayStat,
+       constMapStat,
+       constRowStat});
+  rootStat.valueCount = columnSize;
+  rootStat.physicalSize = 286; // Actual physical size for root
+
+  // Schema for verification (8 top-level columns):
+  // 0: Root row
+  // 1: int64
+  // 2: string
+  // 3: bool
+  // 4: float
+  // 5: double
+  // 6: array<int32> (2 nodes: array + elements)
+  // 7: map<int16, int32> (3 nodes: map + key + value)
+  // 8: row<int8, varchar> (3 nodes: row + 2 children)
+  // Total: 1 + 5 + 2 + 3 + 3 = 14 nodes
+
+  verifyReturnedColumnStats(
+      vector,
+      {rootStat,
+       constIntStat,
+       constStrStat,
+       constBoolStat,
+       constFloatStat,
+       constDoubleStat,
+       constArrayStat,
+       constArrayElemStat,
+       constMapStat,
+       constMapKeyStat,
+       constMapValueStat,
+       constRowStat,
+       constRowChild1Stat,
+       constRowChild2Stat});
 }

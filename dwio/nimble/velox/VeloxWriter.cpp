@@ -715,7 +715,7 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
     // the raw size.
     if (context_->options().enableStatsConsistencyCheck) {
       // Calculate raw size using schema information to correctly handle
-      // passthrough flatmaps (ROW vectors written as MAP).
+      // passthrough flatmaps.
       RawSizeContext context;
       const auto rawSize = nimble::getRawSizeFromVector(
           input,
@@ -792,12 +792,7 @@ void VeloxWriter::writeColumnStats() {
   flatbuffers::FlatBufferBuilder builder;
   // When enableStatsConsistencyCheck is true, verify that fileRawSize
   // (accumulated via RawSizeUtils) matches the root column statistics.
-  // Skip the check when passthrough flatmaps are detected because
-  // getRawSizeFromVector doesn't properly account for flatmap key
-  // statistics in a way that aligns with column stats collection.
-  // See FieldWriterStatsTests for similar workaround.
-  if (context_->options().enableStatsConsistencyCheck &&
-      !context_->hasPassthroughFlatMapWrites()) {
+  if (context_->options().enableStatsConsistencyCheck) {
     NIMBLE_CHECK_EQ(
         context_->fileRawSize(),
         context_->columnStats().front()->getLogicalSize(),

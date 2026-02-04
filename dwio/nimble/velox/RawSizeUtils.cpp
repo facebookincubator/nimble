@@ -34,7 +34,7 @@ constexpr uint64_t kTimestampLogicalSize = 12;
 // Returns the size in bytes for a given TypeKind.
 // Used for calculating key sizes in passthrough flatmaps and for
 // handling type mismatches between vector types and schema types.
-// Returns std::nullopt for variable-length types (VARCHAR, VARBINARY, etc.)
+// Returns std::nullopt for variable-length types (string or complex types)
 std::optional<size_t> getTypeSizeFromKind(velox::TypeKind kind) {
   switch (kind) {
     case velox::TypeKind::BOOLEAN:
@@ -54,7 +54,7 @@ std::optional<size_t> getTypeSizeFromKind(velox::TypeKind kind) {
     case velox::TypeKind::TIMESTAMP:
       return kTimestampLogicalSize;
     default:
-      // Variable-length types (VARCHAR, VARBINARY) or complex types
+      // Variable-length types (string or complex types)
       // don't have a fixed size
       return std::nullopt;
   }
@@ -374,63 +374,6 @@ uint64_t getRawSizeFromStringVector(
   }
 }
 
-uint64_t getRawSizeFromConstantComplexVector(
-    const velox::VectorPtr& vector,
-    const velox::common::Ranges& ranges,
-    RawSizeContext& context,
-    const velox::dwio::common::TypeWithId* type,
-    const folly::F14FastSet<uint32_t>& flatMapNodeIds,
-    const bool topLevel = false) {
-  VELOX_CHECK_NOT_NULL(vector);
-  const auto& encoding = vector->encoding();
-  VELOX_DCHECK(
-      encoding == velox::VectorEncoding::Simple::CONSTANT,
-      "Expected encoding CONSTANT. Encoding: {}.",
-      encoding);
-
-  const auto* constantVector =
-      vector->as<velox::ConstantVector<velox::ComplexType>>();
-  VELOX_CHECK_NOT_NULL(
-      constantVector,
-      "Encoding mismatch on ConstantVector. Encoding: {}. TypeKind: {}.",
-      encoding,
-      vector->typeKind());
-
-  const auto& valueVector = constantVector->valueVector();
-  const auto& index = constantVector->index();
-  velox::common::Ranges childRanges;
-  childRanges.add(index, index + 1);
-
-  uint64_t rawSize = 0;
-  if (topLevel && vector->typeKind() == velox::TypeKind::ROW) {
-    VELOX_CHECK_EQ(
-        velox::TypeKind::ROW,
-        valueVector->typeKind(),
-        "Value vector should be a RowVector");
-    rawSize = getRawSizeFromRowVector(
-        valueVector,
-        childRanges,
-        context,
-        type,
-        flatMapNodeIds,
-        /*topLevel=*/true);
-  } else {
-    rawSize = getRawSizeFromVector(
-        valueVector, childRanges, context, type, flatMapNodeIds);
-  }
-
-  context.nullCount = 0;
-  if (topLevel) {
-    // Scale up all column sizes by the number of rows
-    for (size_t i = 0; i < context.columnCount(); ++i) {
-      context.setSizeAt(i, context.sizeAt(i) * ranges.size());
-      context.setNullsAt(i, context.nullsAt(i) * ranges.size());
-    }
-  }
-  return rawSize * ranges.size();
-}
-
-// Unified getRawSizeFromArrayVector that works with optional TypeWithId*
 // When type is nullptr, uses vector's actual type for calculations.
 // When type is non-null, uses schema type for size calculations.
 uint64_t getRawSizeFromArrayVector(
@@ -441,6 +384,7 @@ uint64_t getRawSizeFromArrayVector(
     const folly::F14FastSet<uint32_t>& flatMapNodeIds) {
   VELOX_CHECK_NOT_NULL(vector);
   const auto& encoding = vector->encoding();
+
   const velox::ArrayVector* arrayVector;
   const velox::vector_size_t* offsets;
   const velox::vector_size_t* sizes;
@@ -457,6 +401,29 @@ uint64_t getRawSizeFromArrayVector(
   };
 
   switch (encoding) {
+    case velox::VectorEncoding::Simple::CONSTANT: {
+      const auto* constantVector =
+          vector->as<velox::ConstantVector<velox::ComplexType>>();
+      VELOX_CHECK_NOT_NULL(
+          constantVector,
+          "Encoding mismatch on ConstantVector. Encoding: {}. TypeKind: {}.",
+          encoding,
+          vector->typeKind());
+
+      const auto& valueVector = constantVector->valueVector();
+      const auto& index = constantVector->index();
+
+      // Get raw size for the single constant value
+      uint64_t singleRowSize = getRawSizeFromArrayVector(
+          valueVector,
+          velox::common::Ranges::of(index, index + 1),
+          context,
+          type,
+          flatMapNodeIds);
+
+      context.nullCount = 0;
+      return singleRowSize * ranges.size();
+    }
     case velox::VectorEncoding::Simple::ARRAY: {
       arrayVector = vector->as<velox::ArrayVector>();
       VELOX_CHECK_NOT_NULL(
@@ -483,10 +450,6 @@ uint64_t getRawSizeFromArrayVector(
       }
 
       break;
-    }
-    case velox::VectorEncoding::Simple::CONSTANT: {
-      return getRawSizeFromConstantComplexVector(
-          vector, ranges, context, type, flatMapNodeIds);
     }
     default: {
       // Decode the vector to handle any encoding (ARRAY, DICTIONARY, etc.)
@@ -543,8 +506,6 @@ uint64_t getRawSizeFromArrayVector(
 }
 
 namespace {
-
-// Unified getRawSizeFromMapVector that works with optional TypeWithId*
 uint64_t getRawSizeFromMapVector(
     const velox::MapVector& mapVector,
     const velox::common::Ranges& childRanges,
@@ -614,7 +575,6 @@ uint64_t getRawSizeFromFlatMapVector(
 
 } // namespace
 
-// Unified getRawSizeFromMap that works with optional TypeWithId*
 uint64_t getRawSizeFromMap(
     const velox::VectorPtr& vector,
     const velox::common::Ranges& ranges,
@@ -623,6 +583,29 @@ uint64_t getRawSizeFromMap(
     const folly::F14FastSet<uint32_t>& flatMapNodeIds) {
   VELOX_CHECK_NOT_NULL(vector);
   auto encoding = vector->encoding();
+
+  if (encoding == velox::VectorEncoding::Simple::CONSTANT) {
+    const auto* constantVector =
+        vector->as<velox::ConstantVector<velox::ComplexType>>();
+    VELOX_CHECK_NOT_NULL(
+        constantVector,
+        "Encoding mismatch on ConstantVector. Encoding: {}. TypeKind: {}.",
+        encoding,
+        vector->typeKind());
+
+    const auto& valueVector = constantVector->valueVector();
+    const auto& index = constantVector->index();
+    velox::common::Ranges childRanges;
+    childRanges.add(index, index + 1);
+
+    // Get raw size for the single constant value
+    uint64_t singleRowSize = getRawSizeFromMap(
+        valueVector, childRanges, context, type, flatMapNodeIds);
+
+    context.nullCount = 0;
+    return singleRowSize * ranges.size();
+  }
+
   const velox::MapVector* mapVector;
 
   const velox::vector_size_t* offsets;
@@ -642,11 +625,6 @@ uint64_t getRawSizeFromMap(
       childRanges.add(begin, end);
     }
   };
-
-  if (encoding == velox::VectorEncoding::Simple::CONSTANT) {
-    return getRawSizeFromConstantComplexVector(
-        vector, ranges, context, type, flatMapNodeIds);
-  }
 
   const velox::BaseVector* decoded = vector.get();
   auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
@@ -753,43 +731,73 @@ uint64_t getRawSizeFromPassthroughFlatMap(
   VELOX_CHECK_NOT_NULL(vector);
   const auto& encoding = vector->encoding();
 
-  if (encoding == velox::VectorEncoding::Simple::CONSTANT) {
-    return getRawSizeFromConstantComplexVector(
-        vector, ranges, context, &type, {}, topLevel);
-  }
-
-  // Decode the vector to handle any encoding (ROW, DICTIONARY, etc.)
-  auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
-      context.getDecodedVectorManager());
-  velox::DecodedVector& decodedVector = localDecodedVector.get();
-  decodedVector.decode(*vector);
-
-  const velox::RowVector* rowVector =
-      decodedVector.base()->as<velox::RowVector>();
-  VELOX_CHECK_NOT_NULL(
-      rowVector,
-      "Encoding mismatch on RowVector. Encoding: {}. TypeKind: {}.",
-      decodedVector.base()->encoding(),
-      decodedVector.base()->typeKind());
-
+  const velox::RowVector* rowVector;
   uint64_t nullCount = 0;
   velox::common::Ranges childRanges;
 
-  // For passthrough flatmap, we NEVER ignore top-level nulls
-  // because the ROW represents a map entry, and null means "empty map"
-  if (decodedVector.mayHaveNulls()) {
-    for (const auto& row : ranges) {
-      if (decodedVector.isNullAt(row)) {
-        ++nullCount;
-      } else {
-        auto baseIndex = decodedVector.index(row);
-        childRanges.add(baseIndex, baseIndex + 1);
+  switch (encoding) {
+    case velox::VectorEncoding::Simple::CONSTANT: {
+      const auto* constantVector =
+          vector->as<velox::ConstantVector<velox::ComplexType>>();
+      VELOX_CHECK_NOT_NULL(
+          constantVector,
+          "Encoding mismatch on ConstantVector. Encoding: {}. TypeKind: {}.",
+          encoding,
+          vector->typeKind());
+
+      const auto& valueVector = constantVector->valueVector();
+      const auto& index = constantVector->index();
+
+      // Get raw size for the single constant value
+      uint64_t singleRowSize = getRawSizeFromPassthroughFlatMap(
+          valueVector,
+          velox::common::Ranges::of(index, index + 1),
+          context,
+          type,
+          topLevel);
+
+      context.nullCount = 0;
+      if (topLevel) {
+        // Scale up all column sizes by the number of rows
+        for (size_t i = 0; i < context.columnCount(); ++i) {
+          context.setSizeAt(i, context.sizeAt(i) * ranges.size());
+          context.setNullsAt(i, context.nullsAt(i) * ranges.size());
+        }
       }
+      return singleRowSize * ranges.size();
     }
-  } else {
-    for (const auto& row : ranges) {
-      auto baseIndex = decodedVector.index(row);
-      childRanges.add(baseIndex, baseIndex + 1);
+    default: {
+      // Decode the vector to handle any encoding (ROW, DICTIONARY, etc.)
+      auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
+          context.getDecodedVectorManager());
+      velox::DecodedVector& decodedVector = localDecodedVector.get();
+      decodedVector.decode(*vector);
+
+      rowVector = decodedVector.base()->as<velox::RowVector>();
+      VELOX_CHECK_NOT_NULL(
+          rowVector,
+          "Encoding mismatch on RowVector. Encoding: {}. TypeKind: {}.",
+          decodedVector.base()->encoding(),
+          decodedVector.base()->typeKind());
+
+      // For passthrough flatmap, we NEVER ignore top-level nulls
+      // because the ROW represents a map entry, and null means "empty map"
+      if (decodedVector.mayHaveNulls()) {
+        for (const auto& row : ranges) {
+          if (decodedVector.isNullAt(row)) {
+            ++nullCount;
+          } else {
+            auto baseIndex = decodedVector.index(row);
+            childRanges.add(baseIndex, baseIndex + 1);
+          }
+        }
+      } else {
+        for (const auto& row : ranges) {
+          auto baseIndex = decodedVector.index(row);
+          childRanges.add(baseIndex, baseIndex + 1);
+        }
+      }
+      break;
     }
   }
 
@@ -809,29 +817,23 @@ uint64_t getRawSizeFromPassthroughFlatMap(
     // ROW children represent the "values" in the passthrough flatmap
     // Each field in the ROW is a key-value pair
     const auto childrenSize = rowVector->childrenSize();
+
+    // For passthrough flatmaps, keys are counted for ALL non-null flatmap rows,
+    // regardless of whether the individual value is null or not.
+    // This matches DWRF behavior where key sizes are counted per key per row.
+    // Key count = numKeys * numNonNullFlatmapRows
+    if (keyTypeSize.has_value()) {
+      rawSize += *keyTypeSize * childrenSize * nonNullCount;
+    } else {
+      // For string keys, use the field name lengths
+      for (size_t i = 0; i < childrenSize; ++i) {
+        const auto& fieldName = rowVector->type()->asRow().nameOf(i);
+        rawSize += fieldName.size() * nonNullCount;
+      }
+    }
+
     for (size_t i = 0; i < childrenSize; ++i) {
       const auto& child = rowVector->childAt(i);
-      // Key size is fixed based on schema key type
-      // We add key size for each present (non-null) value
-      velox::common::Ranges presentRanges;
-      if (child->mayHaveNulls()) {
-        for (const auto& row : childRanges) {
-          if (!child->isNullAt(row)) {
-            presentRanges.add(row, row + 1);
-          }
-        }
-      } else {
-        presentRanges = childRanges;
-      }
-
-      // Add key size for present values
-      if (keyTypeSize.has_value()) {
-        rawSize += *keyTypeSize * presentRanges.size();
-      } else {
-        // For VARCHAR keys, use the field name length
-        const auto& fieldName = rowVector->type()->asRow().nameOf(i);
-        rawSize += fieldName.size() * presentRanges.size();
-      }
 
       // Compute value sizes using schema's value type
       uint64_t childRawSize = getRawSizeFromVector(
@@ -860,8 +862,7 @@ uint64_t getRawSizeFromPassthroughFlatMap(
   return rawSize;
 }
 
-// Unified getRawSizeFromRegularRowVector that works with optional TypeWithId*
-// ignoreNulls: when true, nulls at this level are ignored
+// ignoreNulls: when true, only nulls at this level are ignored
 uint64_t getRawSizeFromRegularRowVector(
     const velox::VectorPtr& vector,
     const velox::common::Ranges& ranges,
@@ -873,41 +874,73 @@ uint64_t getRawSizeFromRegularRowVector(
   VELOX_CHECK_NOT_NULL(vector);
   const auto& encoding = vector->encoding();
 
-  if (encoding == velox::VectorEncoding::Simple::CONSTANT) {
-    return getRawSizeFromConstantComplexVector(
-        vector, ranges, context, type, flatMapNodeIds, topLevel);
-  }
-
-  // Decode the vector to handle any encoding (ROW, DICTIONARY, etc.)
-  auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
-      context.getDecodedVectorManager());
-  velox::DecodedVector& decodedVector = localDecodedVector.get();
-  decodedVector.decode(*vector);
-
-  const velox::RowVector* rowVector =
-      decodedVector.base()->as<velox::RowVector>();
-  VELOX_CHECK_NOT_NULL(
-      rowVector,
-      "Encoding mismatch on RowVector. Encoding: {}. TypeKind: {}.",
-      decodedVector.base()->encoding(),
-      decodedVector.base()->typeKind());
-
+  const velox::RowVector* rowVector;
   uint64_t nullCount = 0;
   velox::common::Ranges childRanges;
 
-  if (!ignoreNulls && decodedVector.mayHaveNulls()) {
-    for (const auto& row : ranges) {
-      if (decodedVector.isNullAt(row)) {
-        ++nullCount;
-      } else {
-        auto baseIndex = decodedVector.index(row);
-        childRanges.add(baseIndex, baseIndex + 1);
+  switch (encoding) {
+    case velox::VectorEncoding::Simple::CONSTANT: {
+      const auto* constantVector =
+          vector->as<velox::ConstantVector<velox::ComplexType>>();
+      VELOX_CHECK_NOT_NULL(
+          constantVector,
+          "Encoding mismatch on ConstantVector. Encoding: {}. TypeKind: {}.",
+          encoding,
+          vector->typeKind());
+
+      const auto& valueVector = constantVector->valueVector();
+      const auto& index = constantVector->index();
+
+      // Get raw size for the single constant value
+      uint64_t singleRowSize = getRawSizeFromRegularRowVector(
+          valueVector,
+          velox::common::Ranges::of(index, index + 1),
+          context,
+          type,
+          flatMapNodeIds,
+          topLevel,
+          ignoreNulls);
+
+      context.nullCount = 0;
+      if (topLevel) {
+        // Scale up all column sizes by the number of rows
+        for (size_t i = 0; i < context.columnCount(); ++i) {
+          context.setSizeAt(i, context.sizeAt(i) * ranges.size());
+          context.setNullsAt(i, context.nullsAt(i) * ranges.size());
+        }
       }
+      return singleRowSize * ranges.size();
     }
-  } else {
-    for (const auto& row : ranges) {
-      auto baseIndex = decodedVector.index(row);
-      childRanges.add(baseIndex, baseIndex + 1);
+    default: {
+      // Decode the vector to handle any encoding (ROW, DICTIONARY, etc.)
+      auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
+          context.getDecodedVectorManager());
+      velox::DecodedVector& decodedVector = localDecodedVector.get();
+      decodedVector.decode(*vector);
+
+      rowVector = decodedVector.base()->as<velox::RowVector>();
+      VELOX_CHECK_NOT_NULL(
+          rowVector,
+          "Encoding mismatch on RowVector. Encoding: {}. TypeKind: {}.",
+          decodedVector.base()->encoding(),
+          decodedVector.base()->typeKind());
+
+      if (!ignoreNulls && decodedVector.mayHaveNulls()) {
+        for (const auto& row : ranges) {
+          if (decodedVector.isNullAt(row)) {
+            ++nullCount;
+          } else {
+            auto baseIndex = decodedVector.index(row);
+            childRanges.add(baseIndex, baseIndex + 1);
+          }
+        }
+      } else {
+        for (const auto& row : ranges) {
+          auto baseIndex = decodedVector.index(row);
+          childRanges.add(baseIndex, baseIndex + 1);
+        }
+      }
+      break;
     }
   }
 
@@ -958,7 +991,6 @@ uint64_t getRawSizeFromRegularRowVector(
   return rawSize;
 }
 
-// Unified getRawSizeFromRowVector that works with optional TypeWithId*
 // Dispatches to either passthrough flatmap or regular row handling.
 // ignoreTopLevelNulls: when true and topLevel is true, nulls at the top level
 // are ignored
@@ -991,7 +1023,6 @@ uint64_t getRawSizeFromRowVector(
   }
 }
 
-// Unified getRawSizeFromVector that works with optional TypeWithId*
 // When type is nullptr, uses vector's actual type for calculations.
 // When type is non-null, uses schema type for size calculations (handles type
 // mismatches like int32_t vector with BIGINT schema).
