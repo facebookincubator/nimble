@@ -190,6 +190,13 @@ struct VeloxWriterOptions {
   // When true, string fields use per-field buffers instead of a shared buffer.
   // This enables incremental memory reclamation during chunking.
   bool disableSharedStringBuffers{false};
+
+  // When true, enables consistency check between fileRawSize (accumulated via
+  // RawSizeUtils) and the root column statistics during file close.
+  // This is used to validate that column statistics accurately track raw sizes,
+  // with the goal of eventually replacing RawSizeUtils accumulation with column
+  // statistics for non-deduplicated columns.
+  bool enableStatsConsistencyCheck{true};
 };
 
 } // namespace facebook::nimble
