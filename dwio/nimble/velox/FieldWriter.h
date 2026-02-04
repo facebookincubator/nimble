@@ -213,6 +213,14 @@ class FieldWriterContext {
     ignoreTopLevelNulls_ = value;
   }
 
+  inline bool hasPassthroughFlatMapWrites() const {
+    return hasPassthroughFlatMapWrites_;
+  }
+
+  inline void setHasPassthroughFlatMapWrites(bool value) {
+    hasPassthroughFlatMapWrites_ = value;
+  }
+
   inline std::unique_ptr<InputBufferGrowthPolicy>& inputBufferGrowthPolicy() {
     return inputBufferGrowthPolicy_;
   }
@@ -424,6 +432,9 @@ class FieldWriterContext {
   folly::F14FastSet<uint32_t> deduplicatedMapNodeIds_;
   bool ignoreTopLevelNulls_{false};
   bool disableSharedStringBuffers_{false};
+  // Set to true when a flatmap passthrough write is detected
+  // (ROW vector written as MAP via flatMapColumns configuration).
+  bool hasPassthroughFlatMapWrites_{false};
 
   std::unique_ptr<InputBufferGrowthPolicy> inputBufferGrowthPolicy_;
   std::unique_ptr<InputBufferGrowthPolicy> stringBufferGrowthPolicy_;

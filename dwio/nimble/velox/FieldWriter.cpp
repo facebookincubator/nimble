@@ -1614,6 +1614,11 @@ class FlatMapFieldWriter : public FieldWriter {
     NIMBLE_CHECK(
         currentValueFields_.empty() && allValueFields_.empty(),
         "Mixing map and flatmap vectors in the FlatMapFieldWriter is not supported");
+    // Mark that we have passthrough flatmap writes (ROW vector written as MAP).
+    // This is used to skip the raw size check in writeColumnStats() since
+    // getRawSizeFromVector doesn't properly align with column stats collection
+    // for passthrough flatmaps.
+    context_.setHasPassthroughFlatMapWrites(true);
     const auto& rowVector = vector->as<velox::RowVector>();
     NIMBLE_CHECK_NOT_NULL(
         rowVector,

@@ -709,18 +709,24 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
   NIMBLE_CHECK_NOT_NULL(file_, "Writer is already closed");
   try {
     const auto numRows = input->size();
-    // Calculate raw size using schema information to correctly handle
-    // passthrough flatmaps (ROW vectors written as MAP).
-    RawSizeContext context;
-    const auto rawSize = nimble::getRawSizeFromVector(
-        input,
-        velox::common::Ranges::of(0, numRows),
-        context,
-        *schema_,
-        context_->flatMapNodeIds(),
-        context_->ignoreTopLevelNulls());
-    NIMBLE_CHECK_GE(rawSize, 0, "Invalid raw size");
-    context_->updateFileRawSize(rawSize);
+    // When enableStatsConsistencyCheck is true, compute raw size using
+    // RawSizeUtils to verify consistency with column statistics.
+    // Otherwise, skip this computation as column statistics will provide
+    // the raw size.
+    if (context_->options().enableStatsConsistencyCheck) {
+      // Calculate raw size using schema information to correctly handle
+      // passthrough flatmaps (ROW vectors written as MAP).
+      RawSizeContext context;
+      const auto rawSize = nimble::getRawSizeFromVector(
+          input,
+          velox::common::Ranges::of(0, numRows),
+          context,
+          schema_.get(),
+          context_->flatMapNodeIds(),
+          context_->ignoreTopLevelNulls());
+      NIMBLE_CHECK_GE(rawSize, 0, "Invalid raw size");
+      context_->updateFileRawSize(rawSize);
+    }
 
     if (context_->options().writeExecutor) {
       velox::dwio::common::ExecutorBarrier barrier{
@@ -784,7 +790,22 @@ void VeloxWriter::writeMetadata() {
 
 void VeloxWriter::writeColumnStats() {
   flatbuffers::FlatBufferBuilder builder;
-  builder.Finish(serialization::CreateStats(builder, context_->fileRawSize()));
+  // When enableStatsConsistencyCheck is true, verify that fileRawSize
+  // (accumulated via RawSizeUtils) matches the root column statistics.
+  // Skip the check when passthrough flatmaps are detected because
+  // getRawSizeFromVector doesn't properly account for flatmap key
+  // statistics in a way that aligns with column stats collection.
+  // See FieldWriterStatsTests for similar workaround.
+  if (context_->options().enableStatsConsistencyCheck &&
+      !context_->hasPassthroughFlatMapWrites()) {
+    NIMBLE_CHECK_EQ(
+        context_->fileRawSize(),
+        context_->columnStats().front()->getLogicalSize(),
+        "Mismatched raw sizes!");
+  }
+  builder.Finish(
+      serialization::CreateStats(
+          builder, context_->columnStats().front()->getLogicalSize()));
   tabletWriter_->writeOptionalSection(
       std::string(kStatsSection),
       {reinterpret_cast<const char*>(builder.GetBufferPointer()),

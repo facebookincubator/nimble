@@ -25,7 +25,13 @@
 
 namespace facebook::nimble {
 
-constexpr uint64_t NULL_SIZE = 1;
+constexpr uint64_t kNullSize = 1;
+
+// Returns the size in bytes for a given TypeKind.
+// Used for calculating key sizes in passthrough flatmaps and for
+// handling type mismatches between vector types and schema types.
+// Returns std::nullopt for variable-length types (VARCHAR, VARBINARY, etc.)
+std::optional<size_t> getTypeSizeFromKind(velox::TypeKind kind);
 
 // Get raw size from vector with schema and flatmap node IDs.
 // flatMapNodeIds contains the node IDs that are configured as flatmaps.
@@ -34,11 +40,12 @@ constexpr uint64_t NULL_SIZE = 1;
 // 2. The vector at that level is a ROW vector
 // ignoreTopLevelNulls: when true, top-level row nulls are ignored (treated as
 // non-null) to match FieldWriter behavior when that option is enabled.
+// type can be nullptr when schema is not available.
 uint64_t getRawSizeFromVector(
     const velox::VectorPtr& vector,
     const velox::common::Ranges& ranges,
     RawSizeContext& context,
-    const velox::dwio::common::TypeWithId& type,
+    const velox::dwio::common::TypeWithId* type,
     const folly::F14FastSet<uint32_t>& flatMapNodeIds,
     bool ignoreTopLevelNulls = false);
 
@@ -46,7 +53,7 @@ uint64_t getRawSizeFromRowVector(
     const velox::VectorPtr& vector,
     const velox::common::Ranges& ranges,
     RawSizeContext& context,
-    const velox::dwio::common::TypeWithId& type,
+    const velox::dwio::common::TypeWithId* type,
     const folly::F14FastSet<uint32_t>& flatMapNodeIds,
     bool topLevel = false,
     bool ignoreTopLevelNulls = false);
