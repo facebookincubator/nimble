@@ -20,6 +20,7 @@
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 #include "dwio/nimble/velox/StreamChunker.h"
 #include "folly/String.h"
+#include "velox/common/base/Nulls.h"
 
 namespace facebook::nimble::index {
 
@@ -66,6 +67,17 @@ std::unique_ptr<velox::serializer::KeyEncoder> createKeyEncoder(
       pool);
 }
 
+std::vector<velox::column_index_t> getKeyColumnIndices(
+    const IndexConfig& config,
+    const velox::RowTypePtr& inputType) {
+  std::vector<velox::column_index_t> indices;
+  indices.reserve(config.columns.size());
+  for (const auto& columnName : config.columns) {
+    indices.push_back(inputType->getChildIdx(columnName));
+  }
+  return indices;
+}
+
 } // namespace
 
 std::unique_ptr<IndexWriter> IndexWriter::create(
@@ -92,6 +104,7 @@ IndexWriter::IndexWriter(
           keyStreamGrowthPolicy())},
       encodingLayout_{config.encodingLayout},
       enforceKeyOrder_{config.enforceKeyOrder},
+      keyColumnIndices_{getKeyColumnIndices(config, inputType)},
       minChunkSize_{config.minChunkRawSize},
       maxChunkSize_{config.maxChunkRawSize} {
   const auto encodingType = config.encodingLayout.encodingType();
@@ -100,6 +113,28 @@ IndexWriter::IndexWriter(
           encodingType == EncodingType::Trivial,
       "Key stream encoding only supports Prefix or Trivial encoding, but got: {}",
       encodingType);
+}
+
+void IndexWriter::validateNoNullKeys(const velox::VectorPtr& input) const {
+  const auto* rowVector = input->asChecked<velox::RowVector>();
+  const auto& children = rowVector->children();
+  for (const auto columnIndex : keyColumnIndices_) {
+    const auto& child = children[columnIndex];
+    if (!child->mayHaveNulls()) {
+      continue;
+    }
+    const auto* nulls = child->rawNulls();
+    if (nulls == nullptr) {
+      continue;
+    }
+    const auto nullCount = velox::bits::countNulls(nulls, 0, input->size());
+    NIMBLE_USER_CHECK_EQ(
+        nullCount,
+        0,
+        "Null value not allowed in key column at index {}: found {} null(s)",
+        columnIndex,
+        nullCount);
+  }
 }
 
 std::unique_ptr<EncodingSelectionPolicy<std::string_view>>
@@ -116,6 +151,9 @@ void IndexWriter::write(const velox::VectorPtr& input, Buffer& buffer) {
   if (input->size() == 0) {
     return;
   }
+
+  validateNoNullKeys(input);
+
   const auto prevSize = keyStream_->mutableData().size();
   const auto newSize = prevSize + input->size();
   keyStream_->ensureMutableDataCapacity(newSize);

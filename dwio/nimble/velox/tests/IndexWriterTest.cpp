@@ -140,6 +140,67 @@ TEST_F(IndexWriterTest, createWithInvalidConfig) {
   }
 }
 
+TEST_F(IndexWriterTest, rejectNullKeys) {
+  // Test that null values in key columns are rejected
+  {
+    SCOPED_TRACE("null in key column throws");
+    IndexConfig config{
+        .columns = {std::string(kCol1)},
+        .encodingLayout =
+            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
+    auto writer = IndexWriter::create(config, type_, pool_.get());
+
+    auto batch = makeRowVector(
+        {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+        {makeFlatVector<velox::StringView>({"a", "b", "c"}),
+         makeNullableFlatVector<int32_t>({1, std::nullopt, 3}),
+         makeFlatVector<velox::StringView>({"d", "e", "f"})});
+
+    NIMBLE_ASSERT_USER_THROW(
+        writer->write(batch, *buffer_),
+        "Null value not allowed in key column at index 1: found 1 null(s)");
+  }
+
+  // Test multiple nulls in key column
+  {
+    SCOPED_TRACE("multiple nulls in key column");
+    IndexConfig config{
+        .columns = {std::string(kCol1)},
+        .encodingLayout =
+            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
+    auto writer = IndexWriter::create(config, type_, pool_.get());
+
+    auto batch = makeRowVector(
+        {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+        {makeFlatVector<velox::StringView>({"a", "b", "c", "d", "e"}),
+         makeNullableFlatVector<int32_t>(
+             {std::nullopt, 2, std::nullopt, 4, std::nullopt}),
+         makeFlatVector<velox::StringView>({"f", "g", "h", "i", "j"})});
+
+    NIMBLE_ASSERT_USER_THROW(
+        writer->write(batch, *buffer_),
+        "Null value not allowed in key column at index 1: found 3 null(s)");
+  }
+
+  // Test no nulls passes validation
+  {
+    SCOPED_TRACE("no nulls in key column passes");
+    IndexConfig config{
+        .columns = {std::string(kCol1)},
+        .encodingLayout =
+            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
+    auto writer = IndexWriter::create(config, type_, pool_.get());
+
+    auto batch = makeRowVector(
+        {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+        {makeFlatVector<velox::StringView>({"a", "b", "c"}),
+         makeFlatVector<int32_t>({1, 2, 3}),
+         makeFlatVector<velox::StringView>({"d", "e", "f"})});
+
+    EXPECT_NO_THROW(writer->write(batch, *buffer_));
+  }
+}
+
 TEST_F(IndexWriterTest, multiColumnWithDifferentSortOrders) {
   const auto type = velox::ROW({
       {"col0", velox::INTEGER()},
