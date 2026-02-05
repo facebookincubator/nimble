@@ -149,6 +149,7 @@ class IndexWriter {
   const std::unique_ptr<ContentStreamData<std::string_view>> keyStream_;
   const EncodingLayout encodingLayout_;
   const bool enforceKeyOrder_;
+  const bool noDuplicateKey_;
   const uint64_t minChunkSize_;
   const uint64_t maxChunkSize_;
 

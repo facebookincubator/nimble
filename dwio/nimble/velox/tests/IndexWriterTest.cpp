@@ -403,13 +403,14 @@ TEST_F(IndexWriterTest, enforceKeyOrderInvalidWithinBatch) {
     SCOPED_TRACE(fmt::format("enforceKeyOrder: {}", enforceKeyOrder));
     IndexConfig config{
         .columns = {std::string(kCol1)},
-        .enforceKeyOrder = enforceKeyOrder,
-        .encodingLayout = EncodingLayout{
-            EncodingType::Trivial,
-            {},
-            CompressionType::Uncompressed,
-            {EncodingLayout{
-                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
+        .encodingLayout =
+            EncodingLayout{
+                EncodingType::Trivial,
+                {},
+                CompressionType::Uncompressed,
+                {EncodingLayout{
+                    EncodingType::Trivial, {}, CompressionType::Uncompressed}}},
+        .enforceKeyOrder = enforceKeyOrder};
     auto writer = IndexWriter::create(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
 
@@ -439,13 +440,14 @@ TEST_F(IndexWriterTest, enforceKeyOrderInvalidAcrossBatches) {
     SCOPED_TRACE(fmt::format("enforceKeyOrder: {}", enforceKeyOrder));
     IndexConfig config{
         .columns = {std::string(kCol1)},
-        .enforceKeyOrder = enforceKeyOrder,
-        .encodingLayout = EncodingLayout{
-            EncodingType::Trivial,
-            {},
-            CompressionType::Uncompressed,
-            {EncodingLayout{
-                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
+        .encodingLayout =
+            EncodingLayout{
+                EncodingType::Trivial,
+                {},
+                CompressionType::Uncompressed,
+                {EncodingLayout{
+                    EncodingType::Trivial, {}, CompressionType::Uncompressed}}},
+        .enforceKeyOrder = enforceKeyOrder};
     auto writer = IndexWriter::create(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
 
@@ -479,13 +481,14 @@ TEST_F(IndexWriterTest, enforceKeyOrderInvalidAcrossBatches) {
 TEST_F(IndexWriterTest, enforceKeyOrderDuplicateKeys) {
   IndexConfig config{
       .columns = {std::string(kCol1)},
-      .enforceKeyOrder = true,
-      .encodingLayout = EncodingLayout{
-          EncodingType::Trivial,
-          {},
-          CompressionType::Uncompressed,
-          {EncodingLayout{
-              EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
+      .encodingLayout =
+          EncodingLayout{
+              EncodingType::Trivial,
+              {},
+              CompressionType::Uncompressed,
+              {EncodingLayout{
+                  EncodingType::Trivial, {}, CompressionType::Uncompressed}}},
+      .enforceKeyOrder = true};
   auto writer = IndexWriter::create(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
@@ -499,6 +502,187 @@ TEST_F(IndexWriterTest, enforceKeyOrderDuplicateKeys) {
   NIMBLE_ASSERT_USER_THROW(
       writer->write(batch, *buffer_),
       "Encoded keys must be in strictly ascending order (duplicates are not allowed)");
+}
+
+TEST_F(IndexWriterTest, noDuplicate) {
+  // Test 1: When noDuplicate=true, duplicate keys are rejected
+  {
+    IndexConfig config{
+        .columns = {std::string(kCol1)},
+        .noDuplicate = true,
+        .encodingLayout = EncodingLayout{
+            EncodingType::Trivial,
+            {},
+            CompressionType::Uncompressed,
+            {EncodingLayout{
+                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
+    auto writer = IndexWriter::create(config, type_, pool_.get());
+    ASSERT_NE(writer, nullptr);
+
+    // Batch with duplicate keys (1, 1, 2, 3, 3) - should fail
+    auto batch = makeRowVector(
+        {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+        {makeFlatVector<velox::StringView>({"a", "b", "c", "d", "e"}),
+         makeFlatVector<int32_t>({1, 1, 2, 3, 3}),
+         makeFlatVector<velox::StringView>({"f", "g", "h", "i", "j"})});
+
+    NIMBLE_ASSERT_USER_THROW(
+        writer->write(batch, *buffer_),
+        "Encoded keys must be in strictly ascending order (duplicates are not allowed)");
+  }
+
+  // Test 2: When noDuplicate=true, out-of-order keys are rejected
+  {
+    IndexConfig config{
+        .columns = {std::string(kCol1)},
+        .noDuplicate = true,
+        .encodingLayout = EncodingLayout{
+            EncodingType::Trivial,
+            {},
+            CompressionType::Uncompressed,
+            {EncodingLayout{
+                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
+    auto writer = IndexWriter::create(config, type_, pool_.get());
+    ASSERT_NE(writer, nullptr);
+
+    // Batch with out-of-order keys (5, 4, 3, 2, 1) - should fail
+    auto batch = makeRowVector(
+        {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+        {makeFlatVector<velox::StringView>({"a", "b", "c", "d", "e"}),
+         makeFlatVector<int32_t>({5, 4, 3, 2, 1}),
+         makeFlatVector<velox::StringView>({"f", "g", "h", "i", "j"})});
+
+    NIMBLE_ASSERT_USER_THROW(
+        writer->write(batch, *buffer_),
+        "Encoded keys must be in strictly ascending order (duplicates are not allowed)");
+  }
+
+  // Test 3: When noDuplicate=true, duplicates across batches are rejected
+  {
+    IndexConfig config{
+        .columns = {std::string(kCol1)},
+        .noDuplicate = true,
+        .encodingLayout = EncodingLayout{
+            EncodingType::Trivial,
+            {},
+            CompressionType::Uncompressed,
+            {EncodingLayout{
+                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
+    auto writer = IndexWriter::create(config, type_, pool_.get());
+    ASSERT_NE(writer, nullptr);
+
+    auto batch1 = makeRowVector(
+        {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+        {makeFlatVector<velox::StringView>({"a", "b", "c"}),
+         makeFlatVector<int32_t>({1, 2, 3}),
+         makeFlatVector<velox::StringView>({"d", "e", "f"})});
+
+    // Second batch starts with same key as last key of first batch
+    auto batch2 = makeRowVector(
+        {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+        {makeFlatVector<velox::StringView>({"g", "h", "i"}),
+         makeFlatVector<int32_t>({3, 4, 5}),
+         makeFlatVector<velox::StringView>({"j", "k", "l"})});
+
+    writer->write(batch1, *buffer_);
+    NIMBLE_ASSERT_USER_THROW(
+        writer->write(batch2, *buffer_),
+        "Encoded keys must be in strictly ascending order (duplicates are not allowed)");
+  }
+
+  // Test 4: When noDuplicate=true, strictly ascending keys succeed
+  {
+    IndexConfig config{
+        .columns = {std::string(kCol1)},
+        .noDuplicate = true,
+        .encodingLayout = EncodingLayout{
+            EncodingType::Trivial,
+            {},
+            CompressionType::Uncompressed,
+            {EncodingLayout{
+                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
+    auto writer = IndexWriter::create(config, type_, pool_.get());
+    ASSERT_NE(writer, nullptr);
+
+    auto batch1 = makeRowVector(
+        {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+        {makeFlatVector<velox::StringView>({"a", "b", "c"}),
+         makeFlatVector<int32_t>({1, 2, 3}),
+         makeFlatVector<velox::StringView>({"d", "e", "f"})});
+
+    auto batch2 = makeRowVector(
+        {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+        {makeFlatVector<velox::StringView>({"g", "h", "i"}),
+         makeFlatVector<int32_t>({4, 5, 6}),
+         makeFlatVector<velox::StringView>({"j", "k", "l"})});
+
+    EXPECT_NO_THROW(writer->write(batch1, *buffer_));
+    EXPECT_NO_THROW(writer->write(batch2, *buffer_));
+    writer->encodeStream(*buffer_);
+    auto stream = writer->finishStripe(*buffer_);
+    ASSERT_TRUE(stream.has_value());
+    ASSERT_EQ(stream->chunks.size(), 1);
+    EXPECT_EQ(stream->chunks[0].rowCount, 6);
+  }
+
+  // Test 5: When enforceKeyOrder=true but noDuplicate=false, duplicates are
+  // allowed
+  {
+    IndexConfig config{
+        .columns = {std::string(kCol1)},
+        .enforceKeyOrder = true,
+        .noDuplicate = false,
+        .encodingLayout = EncodingLayout{
+            EncodingType::Trivial,
+            {},
+            CompressionType::Uncompressed,
+            {EncodingLayout{
+                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
+    auto writer = IndexWriter::create(config, type_, pool_.get());
+    ASSERT_NE(writer, nullptr);
+
+    // Batch with duplicate keys (1, 1, 2, 3, 3) - should succeed
+    auto batch = makeRowVector(
+        {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+        {makeFlatVector<velox::StringView>({"a", "b", "c", "d", "e"}),
+         makeFlatVector<int32_t>({1, 1, 2, 3, 3}),
+         makeFlatVector<velox::StringView>({"f", "g", "h", "i", "j"})});
+
+    EXPECT_NO_THROW(writer->write(batch, *buffer_));
+    writer->encodeStream(*buffer_);
+    auto stream = writer->finishStripe(*buffer_);
+    ASSERT_TRUE(stream.has_value());
+    ASSERT_EQ(stream->chunks.size(), 1);
+    EXPECT_EQ(stream->chunks[0].rowCount, 5);
+  }
+
+  // Test 6: When enforceKeyOrder=true but noDuplicate=false, out-of-order keys
+  // are still rejected
+  {
+    IndexConfig config{
+        .columns = {std::string(kCol1)},
+        .enforceKeyOrder = true,
+        .noDuplicate = false,
+        .encodingLayout = EncodingLayout{
+            EncodingType::Trivial,
+            {},
+            CompressionType::Uncompressed,
+            {EncodingLayout{
+                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
+    auto writer = IndexWriter::create(config, type_, pool_.get());
+    ASSERT_NE(writer, nullptr);
+
+    // Batch with out-of-order keys (5, 4, 3, 2, 1) - should fail
+    auto batch = makeRowVector(
+        {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+        {makeFlatVector<velox::StringView>({"a", "b", "c", "d", "e"}),
+         makeFlatVector<int32_t>({5, 4, 3, 2, 1}),
+         makeFlatVector<velox::StringView>({"f", "g", "h", "i", "j"})});
+
+    NIMBLE_ASSERT_USER_THROW(
+        writer->write(batch, *buffer_),
+        "Encoded keys must be in ascending order");
+  }
 }
 
 struct IndexWriterTestParam {
