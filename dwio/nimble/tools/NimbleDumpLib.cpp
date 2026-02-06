@@ -1114,4 +1114,76 @@ void NimbleDumpLib::emitOptionalSectionsMetadata(bool noHeader) {
   }
 }
 
+void NimbleDumpLib::emitIndex() {
+  auto tabletReader = TabletReader::create(file_.get(), *pool_);
+  if (!tabletReader->hasIndex()) {
+    ostream_ << "Index: Not configured" << std::endl;
+    return;
+  }
+
+  const auto* index = tabletReader->index();
+  ostream_ << CYAN(enableColors_) << "Index" << RESET_COLOR(enableColors_)
+           << std::endl;
+  ostream_ << "Index Columns: ";
+  const auto& columns = index->indexColumns();
+  const auto& sortOrders = index->sortOrders();
+  for (size_t i = 0; i < columns.size(); ++i) {
+    if (i > 0) {
+      ostream_ << ", ";
+    }
+    ostream_ << columns[i] << " ("
+             << (sortOrders[i].isAscending() ? "ASC" : "DESC")
+             << (sortOrders[i].isNullsFirst() ? " NULLS FIRST" : " NULLS LAST")
+             << ")";
+  }
+  ostream_ << std::endl;
+  ostream_ << "Number of Stripes: " << commaSeparated(index->numStripes())
+           << std::endl;
+  ostream_ << "Number of Index Groups: "
+           << commaSeparated(index->numIndexGroups()) << std::endl;
+
+  if (index->numIndexGroups() > 0) {
+    ostream_ << "Index Groups:" << std::endl;
+    TableFormatter groupFormatter(
+        ostream_,
+        enableColors_,
+        {{"Group", 8, Alignment::Right},
+         {"Compression", 15, Alignment::Left},
+         {"Offset", 15, Alignment::Right},
+         {"Size", 15, Alignment::Right}},
+        /*noHeader=*/false);
+    for (size_t i = 0; i < index->numIndexGroups(); ++i) {
+      auto metadata = index->groupIndexMetadata(i);
+      groupFormatter.writeRow({
+          std::to_string(i),
+          toString(metadata.compressionType()),
+          commaSeparated(metadata.offset()),
+          commaSeparated(metadata.size()),
+      });
+    }
+
+    // Log key stream offset and size per stripe.
+    ostream_ << "Key Streams:" << std::endl;
+    TableFormatter keyStreamFormatter(
+        ostream_,
+        enableColors_,
+        {{"Stripe", 8, Alignment::Right},
+         {"Offset", 15, Alignment::Right},
+         {"Size", 15, Alignment::Right}},
+        /*noHeader=*/false);
+    for (size_t stripeIndex = 0; stripeIndex < index->numStripes();
+         ++stripeIndex) {
+      auto stripeId =
+          tabletReader->stripeIdentifier(stripeIndex, /*loadIndex=*/true);
+      auto keyStreamRegion =
+          stripeId.indexGroup()->keyStreamRegion(stripeIndex);
+      keyStreamFormatter.writeRow({
+          std::to_string(stripeIndex),
+          commaSeparated(keyStreamRegion.offset),
+          commaSeparated(keyStreamRegion.length),
+      });
+    }
+  }
+}
+
 } // namespace facebook::nimble::tools

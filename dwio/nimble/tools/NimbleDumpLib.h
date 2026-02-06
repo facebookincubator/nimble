@@ -53,6 +53,7 @@ class NimbleDumpLib {
   void emitStripesMetadata(bool noHeader);
   void emitStripeGroupsMetadata(bool noHeader);
   void emitOptionalSectionsMetadata(bool noHeader);
+  void emitIndex();
 
  private:
   std::shared_ptr<velox::memory::MemoryPool> pool_;
