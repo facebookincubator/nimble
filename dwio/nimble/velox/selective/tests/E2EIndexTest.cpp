@@ -23,6 +23,7 @@
 #include "velox/common/base/RuntimeMetrics.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/dwio/common/ScanSpec.h"
+#include "velox/dwio/common/tests/utils/E2EFilterTestBase.h"
 #include "velox/type/Filter.h"
 #include "velox/vector/FlatVector.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
@@ -436,24 +437,30 @@ class E2EIndexTest : public E2EIndexTestBase,
   }
 
   // Generates unique sorted key data using the test parameter's sort order.
-  // KeyT: The numeric key type (int64_t, double, float).
-  // KeyGeneratorT: A callable that takes (globalIdx, numRows, ascending) and
-  // returns a key value. The keyGenerator is responsible for computing the
-  // effective index based on the sort order.
-  template <typename KeyT, typename KeyGeneratorT>
-  std::vector<RowVectorPtr> generateNumericKeyData(
+  // Uses the shared generateStrictSortedVector() utility from
+  // E2EFilterTestBase. keyType: The type of the key column (BIGINT, DOUBLE,
+  // REAL, TIMESTAMP, VARCHAR) startValue: The starting value for the
+  // monotonically increasing sequence
+  std::vector<RowVectorPtr> generateKeyData(
+      const TypePtr& keyType,
       size_t numRows,
       size_t rowsPerBatch,
-      KeyGeneratorT keyGenerator) {
+      int64_t startValue = 0) {
     const bool ascending = isAscending();
     std::vector<RowVectorPtr> batches;
-    for (size_t batchIdx = 0; batchIdx < numRows / rowsPerBatch; ++batchIdx) {
-      std::vector<KeyT> keyValues(rowsPerBatch);
-      for (size_t i = 0; i < rowsPerBatch; ++i) {
-        const size_t globalIdx = batchIdx * rowsPerBatch + i;
-        keyValues[i] = keyGenerator(globalIdx, numRows, ascending);
-      }
-      auto keyVector = vectorMaker_->flatVector(keyValues);
+    const size_t numBatches = numRows / rowsPerBatch;
+
+    for (size_t batchIdx = 0; batchIdx < numBatches; ++batchIdx) {
+      const size_t globalRowOffset = batchIdx * rowsPerBatch;
+      auto keyVector =
+          dwio::common::E2EFilterTestBase::generateStrictSortedVector(
+              keyType,
+              rowsPerBatch,
+              globalRowOffset,
+              startValue,
+              numRows,
+              ascending,
+              leafPool_.get());
       auto dataVector = makeFuzzedComplexVector(
           ARRAY(INTEGER()), rowsPerBatch, batchIdx * 12345);
       auto nestedVector = makeFuzzedComplexVector(
@@ -526,13 +533,8 @@ TEST_P(E2EIndexTest, singleBigintKey) {
            ARRAY(INTEGER()),
            ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  auto keyGenerator =
-      [](size_t idx, size_t numRows, bool ascending) -> int64_t {
-    const size_t effectiveIdx = ascending ? idx : (numRows - 1 - idx);
-    return kMinKey + effectiveIdx;
-  };
-  auto batches =
-      generateNumericKeyData<int64_t>(kNumRows, kRowsPerBatch, keyGenerator);
+  // Use the shared generateKeyData() utility with the startValue being kMinKey.
+  auto batches = generateKeyData(BIGINT(), kNumRows, kRowsPerBatch, kMinKey);
   writeDataWithParam(batches, {"key"});
 
   for (const auto& testCase : testCases) {
@@ -625,12 +627,8 @@ TEST_P(E2EIndexTest, singleDoubleKey) {
            ARRAY(INTEGER()),
            ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  auto keyGenerator = [](size_t idx, size_t numRows, bool ascending) -> double {
-    const size_t effectiveIdx = ascending ? idx : (numRows - 1 - idx);
-    return kMinKey + effectiveIdx;
-  };
-  auto batches =
-      generateNumericKeyData<double>(kNumRows, kRowsPerBatch, keyGenerator);
+  // Use the shared generateKeyData() utility with the startValue being kMinKey.
+  auto batches = generateKeyData(DOUBLE(), kNumRows, kRowsPerBatch, kMinKey);
   writeDataWithParam(batches, {"key"});
 
   for (const auto& testCase : testCases) {
@@ -727,12 +725,8 @@ TEST_P(E2EIndexTest, singleFloatKey) {
       {"key", "data", "nested"},
       {REAL(), ARRAY(INTEGER()), ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  auto keyGenerator = [](size_t idx, size_t numRows, bool ascending) -> float {
-    const size_t effectiveIdx = ascending ? idx : (numRows - 1 - idx);
-    return kMinKey + effectiveIdx;
-  };
-  auto batches =
-      generateNumericKeyData<float>(kNumRows, kRowsPerBatch, keyGenerator);
+  // Use the shared generateKeyData() utility with the startValue being kMinKey.
+  auto batches = generateKeyData(REAL(), kNumRows, kRowsPerBatch, kMinKey);
   writeDataWithParam(batches, {"key"});
 
   for (const auto& testCase : testCases) {
@@ -836,13 +830,10 @@ TEST_P(E2EIndexTest, singleTimestampKey) {
            ARRAY(INTEGER()),
            ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  auto keyGenerator =
-      [](size_t idx, size_t numRows, bool ascending) -> Timestamp {
-    const size_t effectiveIdx = ascending ? idx : (numRows - 1 - idx);
-    return Timestamp(kMinKeySeconds + effectiveIdx, 0);
-  };
+  // Use the shared generateKeyData() utility with the startValue being
+  // kMinKeySeconds.
   auto batches =
-      generateNumericKeyData<Timestamp>(kNumRows, kRowsPerBatch, keyGenerator);
+      generateKeyData(TIMESTAMP(), kNumRows, kRowsPerBatch, kMinKeySeconds);
   writeDataWithParam(batches, {"key"});
 
   for (const auto& testCase : testCases) {
@@ -1009,13 +1000,10 @@ TEST_P(E2EIndexTest, singleVarcharKey) {
            ARRAY(INTEGER()),
            ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  auto keyGenerator =
-      [&](size_t idx, size_t numRows, bool ascending) -> std::string {
-    const size_t effectiveIdx = ascending ? idx : (numRows - 1 - idx);
-    return formatKey(kMinKeyNum + effectiveIdx);
-  };
-  auto batches = generateNumericKeyData<std::string>(
-      kNumRows, kRowsPerBatch, keyGenerator);
+  // Use the shared generateKeyData() utility with the startValue being
+  // kMinKeyNum.
+  auto batches =
+      generateKeyData(VARCHAR(), kNumRows, kRowsPerBatch, kMinKeyNum);
   writeDataWithParam(batches, {"key"});
 
   for (const auto& testCase : testCases) {
@@ -3127,13 +3115,8 @@ TEST_P(E2EIndexTest, randomSkipWithIndex) {
            ARRAY(INTEGER()),
            ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  auto keyGenerator =
-      [](size_t idx, size_t numRows, bool ascending) -> int64_t {
-    const size_t effectiveIdx = ascending ? idx : (numRows - 1 - idx);
-    return kMinKey + effectiveIdx;
-  };
-  auto batches =
-      generateNumericKeyData<int64_t>(kNumRows, kRowsPerBatch, keyGenerator);
+  // Use the shared generateKeyData() utility with the startValue being kMinKey.
+  auto batches = generateKeyData(BIGINT(), kNumRows, kRowsPerBatch, kMinKey);
   writeDataWithParam(batches, {"key"});
 
   struct TestCase {
@@ -3239,13 +3222,8 @@ TEST_P(E2EIndexTest, filterRestorationAcrossMultipleSplits) {
            ARRAY(INTEGER()),
            ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  auto keyGenerator =
-      [](size_t idx, size_t numRows, bool ascending) -> int64_t {
-    const size_t effectiveIdx = ascending ? idx : (numRows - 1 - idx);
-    return kMinKey + effectiveIdx;
-  };
-  auto batches =
-      generateNumericKeyData<int64_t>(kNumRows, kRowsPerBatch, keyGenerator);
+  // Use the shared generateKeyData() utility with the startValue being kMinKey.
+  auto batches = generateKeyData(BIGINT(), kNumRows, kRowsPerBatch, kMinKey);
   writeDataWithParam(batches, {"key"});
 
   // Create a shared scan spec with a filter that will be converted to index
