@@ -414,18 +414,6 @@ class SimpleFieldWriter : public FieldWriter {
       return;
     }
 
-    // LOG(INFO) << fmt::format(
-    //     "valuesStream_.hasNulls() = {}, valuesStream_.mutableData().size() =
-    //     {}, valuesStream_.mutableNonNulls().size() = {}",
-    //     valuesStream_.hasNulls(),
-    //     valuesStream_.mutableData().size(),
-    //     valuesStream_.mutableNonNulls().size());
-    // if (valuesStream_.hasNulls()) {
-    //   statisticsCollector_->addValues(valuesStream_.mutableNonNulls());
-    // }
-
-    // TODO: might still want the span<bool> version, else we need to manually
-    // bump the logical size by null count.
     statisticsCollector_->addCounts(valueCount, nullCount);
     statisticsCollector_->addLogicalSize(nullCount);
 
@@ -437,7 +425,7 @@ class SimpleFieldWriter : public FieldWriter {
     auto totalNonNullCount = valuesStream_.mutableData().size();
     auto rangeStart = totalNonNullCount - batchNonNullValueCount;
     if (statisticsCollector_->isShared()) {
-      // TODO: looks like we can just use the same converter pattern.
+      // TODO(T253295607): consider using converter for stats collection.
       auto sharedBuilder =
           statisticsCollector_->as<SharedStatisticsCollector>();
       sharedBuilder->updateBaseCollector([&](StatisticsCollector* builder) {
