@@ -24,7 +24,8 @@ namespace {
 
 using namespace facebook::velox;
 
-class E2EFilterTest : public dwio::common::E2EFilterTestBase {
+class E2EFilterTest : public dwio::common::E2EFilterTestBase,
+                      public ::testing::WithParamInterface<bool> {
  protected:
   static void SetUpTestCase() {
     E2EFilterTestBase::SetUpTestCase();
@@ -38,6 +39,18 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase {
     testRowGroupSkip_ = false;
   }
 
+  virtual bool indexEnabled() const {
+    return GetParam();
+  }
+
+  void setUpRowReaderOptions(
+      dwio::common::RowReaderOptions& opts,
+      const std::shared_ptr<dwio::common::ScanSpec>& spec) override {
+    opts.setScanSpec(spec);
+    opts.setTimestampPrecision(TimestampPrecision::kNanoseconds);
+    opts.setIndexEnabled(indexEnabled());
+  }
+
   void testWithTypes(
       const std::string& columns,
       std::function<void()> customize,
@@ -45,6 +58,11 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase {
       const std::vector<std::string>& filterable,
       int32_t numCombinations,
       bool withRecursiveNulls = true) {
+    // Select index columns if index is enabled.
+    std::vector<std::string> indexColumns;
+    if (indexEnabled()) {
+      indexColumns = selectIndexColumns(columns, wrapInStruct);
+    }
     if (!withRecursiveNulls) {
       testScenario(
           columns,
@@ -52,7 +70,8 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase {
           wrapInStruct,
           filterable,
           numCombinations,
-          /*withRecursiveNulls=*/false);
+          /*withRecursiveNulls=*/false,
+          indexColumns);
       return;
     }
 
@@ -62,7 +81,8 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase {
         wrapInStruct,
         filterable,
         numCombinations,
-        /*withRecursiveNulls=*/true);
+        /*withRecursiveNulls=*/true,
+        indexColumns);
     auto noNullCustomize = [&] {
       customize();
       makeNotNull();
@@ -73,7 +93,42 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase {
         wrapInStruct,
         filterable,
         numCombinations,
-        /*withRecursiveNulls=*/true);
+        /*withRecursiveNulls=*/true,
+        indexColumns);
+  }
+
+  // Selects eligible index columns (integer types) from the schema.
+  // Returns 1-2 randomly selected columns.
+  std::vector<std::string> selectIndexColumns(
+      const std::string& columns,
+      bool wrapInStruct) {
+    auto rowType =
+        velox::test::DataSetBuilder::makeRowType(columns, wrapInStruct);
+    std::vector<std::string> eligibleColumns;
+    for (column_index_t i = 0; i < static_cast<column_index_t>(rowType->size());
+         ++i) {
+      const auto& childType = rowType->childAt(i);
+      // Only top-level integer and varchar types are eligible for indexing.
+      if (childType->kind() == TypeKind::TINYINT ||
+          childType->kind() == TypeKind::SMALLINT ||
+          childType->kind() == TypeKind::INTEGER ||
+          childType->kind() == TypeKind::BIGINT ||
+          childType->kind() == TypeKind::VARCHAR) {
+        eligibleColumns.push_back(rowType->nameOf(i));
+      }
+    }
+
+    if (eligibleColumns.empty()) {
+      return {};
+    }
+
+    // Randomly select 1-2 columns.
+    std::mt19937 gen(seed_);
+    std::shuffle(eligibleColumns.begin(), eligibleColumns.end(), gen);
+    const size_t numColumns =
+        std::min(eligibleColumns.size(), static_cast<size_t>(1 + gen() % 2));
+    eligibleColumns.resize(numColumns);
+    return eligibleColumns;
   }
 
   void testRunLengthDictionaryWithTypes(
@@ -124,7 +179,8 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase {
   void writeToMemory(
       const TypePtr& type,
       const std::vector<RowVectorPtr>& batches,
-      bool forRowGroupSkip) override {
+      bool forRowGroupSkip,
+      const std::vector<std::string>& indexColumns = {}) override {
     VELOX_CHECK(!forRowGroupSkip);
     rowType_ = asRowType(type);
     writeSchema_ = rowType_;
@@ -146,6 +202,13 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase {
     }
     if (!deduplicatedMapColumns_.empty()) {
       options.deduplicatedMapColumns = deduplicatedMapColumns_;
+    }
+    // Configure index if index columns are specified.
+    if (!indexColumns.empty()) {
+      IndexConfig indexConfig;
+      indexConfig.columns = indexColumns;
+      indexConfig.enforceKeyOrder = true;
+      options.indexConfig = std::move(indexConfig);
     }
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
     VeloxWriter writer(
@@ -189,7 +252,7 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase {
   RowTypePtr writeSchema_;
 };
 
-TEST_F(E2EFilterTest, byte) {
+TEST_P(E2EFilterTest, byte) {
   testWithTypes(
       "tiny_val:tinyint,"
       "bool_val:boolean,"
@@ -201,7 +264,7 @@ TEST_F(E2EFilterTest, byte) {
       20);
 }
 
-TEST_F(E2EFilterTest, integer) {
+TEST_P(E2EFilterTest, integer) {
   testWithTypes(
       "short_val:smallint,"
       "int_val:int,"
@@ -213,7 +276,7 @@ TEST_F(E2EFilterTest, integer) {
       20);
 }
 
-TEST_F(E2EFilterTest, integerLowCardinality) {
+TEST_P(E2EFilterTest, integerLowCardinality) {
   testWithTypes(
       "short_val:smallint,"
       "int_val:int,"
@@ -252,7 +315,7 @@ TEST_F(E2EFilterTest, integerLowCardinality) {
       20);
 }
 
-TEST_F(E2EFilterTest, integerRle) {
+TEST_P(E2EFilterTest, integerRle) {
   testWithTypes(
       "short_val:smallint,"
       "int_val:int,"
@@ -270,7 +333,7 @@ TEST_F(E2EFilterTest, integerRle) {
       20);
 }
 
-TEST_F(E2EFilterTest, integerRleCustomSeed_4049269257) {
+TEST_P(E2EFilterTest, integerRleCustomSeed_4049269257) {
   if (common::testutil::useRandomSeed()) {
     return;
   }
@@ -292,7 +355,7 @@ TEST_F(E2EFilterTest, integerRleCustomSeed_4049269257) {
       20);
 }
 
-TEST_F(E2EFilterTest, integerRleCustomSeed_583694982) {
+TEST_P(E2EFilterTest, integerRleCustomSeed_583694982) {
   if (common::testutil::useRandomSeed()) {
     return;
   }
@@ -314,7 +377,7 @@ TEST_F(E2EFilterTest, integerRleCustomSeed_583694982) {
       20);
 }
 
-TEST_F(E2EFilterTest, integerRleCustomSeed_2518626933) {
+TEST_P(E2EFilterTest, integerRleCustomSeed_2518626933) {
   if (common::testutil::useRandomSeed()) {
     return;
   }
@@ -336,7 +399,7 @@ TEST_F(E2EFilterTest, integerRleCustomSeed_2518626933) {
       20);
 }
 
-TEST_F(E2EFilterTest, mainlyConstant) {
+TEST_P(E2EFilterTest, mainlyConstant) {
   testWithTypes(
       "short_val:smallint,"
       "int_val:int,"
@@ -354,7 +417,7 @@ TEST_F(E2EFilterTest, mainlyConstant) {
       20);
 }
 
-TEST_F(E2EFilterTest, float) {
+TEST_P(E2EFilterTest, float) {
   testWithTypes(
       "float_val:float,"
       "double_val:double,"
@@ -366,7 +429,7 @@ TEST_F(E2EFilterTest, float) {
       20);
 }
 
-TEST_F(E2EFilterTest, string) {
+TEST_P(E2EFilterTest, string) {
   testWithTypes(
       "string_val:string,"
       "string_val_2:string",
@@ -379,7 +442,7 @@ TEST_F(E2EFilterTest, string) {
       20);
 }
 
-TEST_F(E2EFilterTest, stringDictionary) {
+TEST_P(E2EFilterTest, stringDictionary) {
   testWithTypes(
       "string_val:string,"
       "string_val_2:string",
@@ -392,7 +455,7 @@ TEST_F(E2EFilterTest, stringDictionary) {
       20);
 }
 
-TEST_F(E2EFilterTest, listAndMapNoRecursiveNulls) {
+TEST_P(E2EFilterTest, listAndMapNoRecursiveNulls) {
   int numCombinations = 20;
 #if !defined(NDEBUG) || defined(TSAN_BUILD)
   // The test is running slow under dev/debug and TSAN build; reduce the number
@@ -418,7 +481,7 @@ TEST_F(E2EFilterTest, listAndMapNoRecursiveNulls) {
       /*withRecursiveNulls=*/false);
 }
 
-TEST_F(E2EFilterTest, listAndMap) {
+TEST_P(E2EFilterTest, listAndMap) {
   int numCombinations = 20;
 #if !defined(NDEBUG) || defined(TSAN_BUILD)
   // The test is running slow under dev/debug and TSAN build; reduce the number
@@ -444,7 +507,7 @@ TEST_F(E2EFilterTest, listAndMap) {
       /*withRecursiveNulls=*/true);
 }
 
-TEST_F(E2EFilterTest, listAndMapSmallReads) {
+TEST_P(E2EFilterTest, listAndMapSmallReads) {
   int numCombinations = 20;
 #if !defined(NDEBUG) || defined(TSAN_BUILD)
   // The test is running slow under dev/debug and TSAN build; reduce the number
@@ -472,7 +535,7 @@ TEST_F(E2EFilterTest, listAndMapSmallReads) {
       /*withRecursiveNulls=*/true);
 }
 
-TEST_F(E2EFilterTest, DeduplicatedArrayNoRecursiveNulls) {
+TEST_P(E2EFilterTest, deduplicatedArrayNoRecursiveNulls) {
   int numCombinations = 20;
 #if !defined(NDEBUG) || defined(TSAN_BUILD)
   // The test is running slow under dev/debug and TSAN build; reduce the number
@@ -503,7 +566,7 @@ TEST_F(E2EFilterTest, DeduplicatedArrayNoRecursiveNulls) {
       folly::Random::rand64(gen));
 }
 
-TEST_F(E2EFilterTest, DeduplicatedArray) {
+TEST_P(E2EFilterTest, deduplicatedArray) {
   int numCombinations = 20;
 #if !defined(NDEBUG) || defined(TSAN_BUILD)
   // The test is running slow under dev/debug and TSAN build; reduce the number
@@ -537,7 +600,7 @@ TEST_F(E2EFilterTest, DeduplicatedArray) {
 // Pruning is only generated in struct_val.array_val in the normal case if
 // filter is present on top level array_val, but struct_val.array_val is not
 // deduplicated, so pruning is untested in normal case.
-TEST_F(E2EFilterTest, DeduplicatedArraySubfieldPruning) {
+TEST_P(E2EFilterTest, deduplicatedArraySubfieldPruning) {
   int numCombinations = 20;
 #if !defined(NDEBUG) || defined(TSAN_BUILD)
   // The test is running slow under dev/debug and TSAN build; reduce the number
@@ -565,7 +628,7 @@ TEST_F(E2EFilterTest, DeduplicatedArraySubfieldPruning) {
       folly::Random::rand64(gen));
 }
 
-TEST_F(E2EFilterTest, DeduplicatedArraySmallReads) {
+TEST_P(E2EFilterTest, deduplicatedArraySmallReads) {
   int numCombinations = 20;
 #if !defined(NDEBUG) || defined(TSAN_BUILD)
   // The test is running slow under dev/debug and TSAN build; reduce the number
@@ -599,7 +662,7 @@ TEST_F(E2EFilterTest, DeduplicatedArraySmallReads) {
 }
 
 // Small skips that don't reach the next dictionary run.
-TEST_F(E2EFilterTest, DeduplicatedArrayCustomSeed_ConnectedSkips) {
+TEST_P(E2EFilterTest, deduplicatedArrayCustomSeed_ConnectedSkips) {
   if (common::testutil::useRandomSeed()) {
     return;
   }
@@ -637,7 +700,7 @@ TEST_F(E2EFilterTest, DeduplicatedArrayCustomSeed_ConnectedSkips) {
 
 // Small reads that don't reach the next dictionary run and uses the cached
 // last run only.
-TEST_F(E2EFilterTest, DeduplicatedArrayCustomSeed_CachedRunOnly) {
+TEST_P(E2EFilterTest, deduplicatedArrayCustomSeed_CachedRunOnly) {
   if (common::testutil::useRandomSeed()) {
     return;
   }
@@ -673,7 +736,7 @@ TEST_F(E2EFilterTest, DeduplicatedArrayCustomSeed_CachedRunOnly) {
       /*dictionaryGenSeed=*/1729403307);
 }
 
-TEST_F(E2EFilterTest, DeduplicatedMapNoRecursiveNulls) {
+TEST_P(E2EFilterTest, deduplicatedMapNoRecursiveNulls) {
   int numCombinations = 20;
 #if !defined(NDEBUG) || defined(TSAN_BUILD)
   // The test is running slow under dev/debug and TSAN build; reduce the number
@@ -704,7 +767,7 @@ TEST_F(E2EFilterTest, DeduplicatedMapNoRecursiveNulls) {
       folly::Random::rand64(gen));
 }
 
-TEST_F(E2EFilterTest, DeduplicatedMap) {
+TEST_P(E2EFilterTest, deduplicatedMap) {
   int numCombinations = 20;
 #if !defined(NDEBUG) || defined(TSAN_BUILD)
   // The test is running slow under dev/debug and TSAN build; reduce the number
@@ -738,7 +801,7 @@ TEST_F(E2EFilterTest, DeduplicatedMap) {
 // Pruning is only generated in struct_val.map_val in the normal case if filter
 // is present on top level map_val, but struct_val.map_val is not deduplicated,
 // so pruning is untested in normal case.
-TEST_F(E2EFilterTest, DeduplicatedMapSubfieldPruning) {
+TEST_P(E2EFilterTest, deduplicatedMapSubfieldPruning) {
   int numCombinations = 20;
 #if !defined(NDEBUG) || defined(TSAN_BUILD)
   // The test is running slow under dev/debug and TSAN build; reduce the number
@@ -766,7 +829,7 @@ TEST_F(E2EFilterTest, DeduplicatedMapSubfieldPruning) {
       folly::Random::rand64(gen));
 }
 
-TEST_F(E2EFilterTest, nullCompactRanges) {
+TEST_P(E2EFilterTest, nullCompactRanges) {
   // Makes a dataset with nulls at the beginning. Tries different
   // filter combinations on progressively larger batches. tests for a
   // bug in null compaction where null bits past end of nulls buffer
@@ -783,7 +846,7 @@ TEST_F(E2EFilterTest, nullCompactRanges) {
       20);
 }
 
-TEST_F(E2EFilterTest, lazyStruct) {
+TEST_P(E2EFilterTest, lazyStruct) {
   testWithTypes(
       "long_val:bigint,"
       "outer_struct: struct<nested1:bigint, "
@@ -794,7 +857,7 @@ TEST_F(E2EFilterTest, lazyStruct) {
       10);
 }
 
-TEST_F(E2EFilterTest, filterStruct) {
+TEST_P(E2EFilterTest, filterStruct) {
 #ifdef TSAN_BUILD
   // The test is running slow under TSAN; reduce the number of combinations to
   // avoid timeout.
@@ -820,7 +883,7 @@ TEST_F(E2EFilterTest, filterStruct) {
 }
 
 // Enable once the writer support struct as flat map.
-TEST_F(E2EFilterTest, DISABLED_flatMapAsStruct) {
+TEST_P(E2EFilterTest, DISABLED_FlatMapAsStruct) {
   constexpr auto kColumns =
       "long_val:bigint,"
       "long_vals:struct<v1:bigint,v2:bigint,v3:bigint>,"
@@ -829,7 +892,7 @@ TEST_F(E2EFilterTest, DISABLED_flatMapAsStruct) {
   testWithTypes(kColumns, [] {}, false, {"long_val"}, 10);
 }
 
-TEST_F(E2EFilterTest, flatMapScalar) {
+TEST_P(E2EFilterTest, flatMapScalar) {
   constexpr auto kColumns =
       "long_val:bigint,"
       "long_vals:map<tinyint,bigint>,"
@@ -849,7 +912,7 @@ TEST_F(E2EFilterTest, flatMapScalar) {
       kColumns, customize, false, {"long_val", "long_vals"}, numCombinations);
 }
 
-TEST_F(E2EFilterTest, flatMapComplexNoRecursiveNulls) {
+TEST_P(E2EFilterTest, flatMapComplexNoRecursiveNulls) {
   constexpr auto kColumns =
       "long_val:bigint,"
       "struct_vals:map<varchar,struct<v1:bigint, v2:float>>,"
@@ -876,7 +939,7 @@ TEST_F(E2EFilterTest, flatMapComplexNoRecursiveNulls) {
       /*withRecursiveNulls=*/false);
 }
 
-TEST_F(E2EFilterTest, flatMapComplex) {
+TEST_P(E2EFilterTest, flatMapComplex) {
   constexpr auto kColumns =
       "long_val:bigint,"
       "struct_vals:map<varchar,struct<v1:bigint, v2:float>>,"
@@ -903,11 +966,11 @@ TEST_F(E2EFilterTest, flatMapComplex) {
       /*withRecursiveNulls=*/true);
 }
 
-TEST_F(E2EFilterTest, mutationCornerCases) {
+TEST_P(E2EFilterTest, mutationCornerCases) {
   testMutationCornerCases();
 }
 
-TEST_F(E2EFilterTest, timestamp) {
+TEST_P(E2EFilterTest, timestamp) {
   testWithTypes(
       "timestamp_val:timestamp,"
       "long_val:bigint,"
@@ -918,7 +981,7 @@ TEST_F(E2EFilterTest, timestamp) {
       20);
 }
 
-TEST_F(E2EFilterTest, timestampNullFilter) {
+TEST_P(E2EFilterTest, timestampNullFilter) {
   testWithTypes(
       "timestamp_val:timestamp,"
       "long_val:bigint,"
@@ -929,7 +992,7 @@ TEST_F(E2EFilterTest, timestampNullFilter) {
       20);
 }
 
-TEST_F(E2EFilterTest, timestampNoNulls) {
+TEST_P(E2EFilterTest, timestampNoNulls) {
   testWithTypes(
       "timestamp_val:timestamp,"
       "long_val:bigint",
@@ -940,7 +1003,7 @@ TEST_F(E2EFilterTest, timestampNoNulls) {
       /*withRecursiveNulls=*/false);
 }
 
-TEST_F(E2EFilterTest, timestampMultiple) {
+TEST_P(E2EFilterTest, timestampMultiple) {
   testWithTypes(
       "ts1:timestamp,"
       "ts2:timestamp,"
@@ -951,7 +1014,7 @@ TEST_F(E2EFilterTest, timestampMultiple) {
       20);
 }
 
-TEST_F(E2EFilterTest, timestampArray) {
+TEST_P(E2EFilterTest, timestampArray) {
   testWithTypes(
       "long_val:bigint,"
       "timestamp_array:array<timestamp>",
@@ -961,7 +1024,7 @@ TEST_F(E2EFilterTest, timestampArray) {
       20);
 }
 
-TEST_F(E2EFilterTest, timestampMap) {
+TEST_P(E2EFilterTest, timestampMap) {
   testWithTypes(
       "long_val:bigint,"
       "timestamp_map:map<int, timestamp>",
@@ -971,7 +1034,7 @@ TEST_F(E2EFilterTest, timestampMap) {
       20);
 }
 
-TEST_F(E2EFilterTest, timestampInStruct) {
+TEST_P(E2EFilterTest, timestampInStruct) {
   testWithTypes(
       "long_val:bigint,"
       "struct_with_ts:struct<ts:timestamp, val:bigint>",
@@ -981,7 +1044,7 @@ TEST_F(E2EFilterTest, timestampInStruct) {
       20);
 }
 
-TEST_F(E2EFilterTest, timestampNestedArray) {
+TEST_P(E2EFilterTest, timestampNestedArray) {
   testWithTypes(
       "long_val:bigint,"
       "nested_ts_array:array<array<timestamp>>",
@@ -991,7 +1054,7 @@ TEST_F(E2EFilterTest, timestampNestedArray) {
       20);
 }
 
-TEST_F(E2EFilterTest, timestampNestedStruct) {
+TEST_P(E2EFilterTest, timestampNestedStruct) {
   testWithTypes(
       "long_val:bigint,"
       "outer:struct<inner:struct<ts:timestamp>>",
@@ -1001,7 +1064,7 @@ TEST_F(E2EFilterTest, timestampNestedStruct) {
       20);
 }
 
-TEST_F(E2EFilterTest, timestampNestedMap) {
+TEST_P(E2EFilterTest, timestampNestedMap) {
   testWithTypes(
       "long_val:bigint,"
       "nested_ts_map:map<int, map<int, timestamp>>",
@@ -1011,7 +1074,7 @@ TEST_F(E2EFilterTest, timestampNestedMap) {
       20);
 }
 
-TEST_F(E2EFilterTest, timestampArrayInMap) {
+TEST_P(E2EFilterTest, timestampArrayInMap) {
   testWithTypes(
       "long_val:bigint,"
       "map_of_ts_array:map<int, array<timestamp>>",
@@ -1021,7 +1084,7 @@ TEST_F(E2EFilterTest, timestampArrayInMap) {
       20);
 }
 
-TEST_F(E2EFilterTest, timestampMapInArray) {
+TEST_P(E2EFilterTest, timestampMapInArray) {
   testWithTypes(
       "long_val:bigint,"
       "array_of_ts_map:array<map<int, timestamp>>",
@@ -1031,7 +1094,7 @@ TEST_F(E2EFilterTest, timestampMapInArray) {
       20);
 }
 
-TEST_F(E2EFilterTest, timestampStructInArray) {
+TEST_P(E2EFilterTest, timestampStructInArray) {
   testWithTypes(
       "long_val:bigint,"
       "array_of_ts_struct:array<struct<ts:timestamp, val:bigint>>",
@@ -1041,7 +1104,7 @@ TEST_F(E2EFilterTest, timestampStructInArray) {
       20);
 }
 
-TEST_F(E2EFilterTest, timestampArrayInStruct) {
+TEST_P(E2EFilterTest, timestampArrayInStruct) {
   testWithTypes(
       "long_val:bigint,"
       "struct_with_ts_array:struct<ts_array:array<timestamp>, val:bigint>",
@@ -1051,6 +1114,14 @@ TEST_F(E2EFilterTest, timestampArrayInStruct) {
       20);
 }
 
+INSTANTIATE_TEST_SUITE_P(
+    E2EFilterTests,
+    E2EFilterTest,
+    ::testing::Bool(),
+    [](const ::testing::TestParamInfo<bool>& info) {
+      return info.param ? "indexEnabled" : "indexDisabled";
+    });
+
 } // namespace
 
 // Test that PrefixEncoding's readWithVisitor works correctly when reading
@@ -1059,16 +1130,25 @@ TEST_F(E2EFilterTest, timestampArrayInStruct) {
 // PrefixEncoding for the string column.
 class PrefixEncodingE2ETest : public E2EFilterTest {
  protected:
+  // Override indexEnabled() to return false since this test uses TEST_F
+  // instead of TEST_P and therefore GetParam() is not available.
+  bool indexEnabled() const override {
+    return false;
+  }
+
   void writeToMemory(
       const TypePtr& type,
       const std::vector<RowVectorPtr>& batches,
-      bool forRowGroupSkip) final {
+      bool forRowGroupSkip,
+      const std::vector<std::string>& /*indexColumns*/ = {}) override {
     VELOX_CHECK(!forRowGroupSkip);
     rowType_ = asRowType(type);
 
     // Create encoding layout tree with prefix encoding for string columns
     std::vector<EncodingLayoutTree> children;
-    for (size_t i = 0; i < rowType_->size(); ++i) {
+    for (column_index_t i = 0;
+         i < static_cast<column_index_t>(rowType_->size());
+         ++i) {
       const auto& childType = rowType_->childAt(i);
       const auto& childName = rowType_->nameOf(i);
 
