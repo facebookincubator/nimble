@@ -25,6 +25,7 @@
 #include "dwio/nimble/velox/StreamData.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/serializers/KeyEncoder.h"
+#include "velox/vector/ComplexVector.h"
 
 namespace facebook::nimble::index {
 
@@ -144,11 +145,18 @@ class IndexWriter {
   // Resets the internal state and releases resources.
   void reset();
 
+  // Validates that no null values exist in key columns.
+  // Throws an exception if nulls are found.
+  void validateNoNullKeys(const velox::VectorPtr& input) const;
+
   velox::memory::MemoryPool* const pool_;
   const std::unique_ptr<velox::serializer::KeyEncoder> keyEncoder_;
   const std::unique_ptr<ContentStreamData<std::string_view>> keyStream_;
   const EncodingLayout encodingLayout_;
   const bool enforceKeyOrder_;
+  // Stores the indices of key columns in the input schema for efficient null
+  // validation without repeated name lookups.
+  const std::vector<velox::column_index_t> keyColumnIndices_;
   const uint64_t minChunkSize_;
   const uint64_t maxChunkSize_;
 
