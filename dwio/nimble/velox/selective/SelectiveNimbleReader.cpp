@@ -68,6 +68,20 @@ std::vector<std::string> convertIndexColumnsToFileSchema(
   return convertedIndexColumns;
 }
 
+// Converts nimble SortOrders to velox::core::SortOrders.
+// Only converts the first numBoundColumns sort orders, which corresponds to the
+// columns that were converted to index bounds (a prefix of all index columns).
+std::vector<velox::core::SortOrder> toVeloxSortOrders(
+    const std::vector<SortOrder>& sortOrders,
+    size_t numBoundColumns) {
+  std::vector<velox::core::SortOrder> veloxSortOrders;
+  veloxSortOrders.reserve(numBoundColumns);
+  for (size_t i = 0; i < numBoundColumns; ++i) {
+    veloxSortOrders.push_back(sortOrders[i].toVeloxSortOrder());
+  }
+  return veloxSortOrders;
+}
+
 } // namespace
 
 namespace {
@@ -505,9 +519,7 @@ void SelectiveNimbleRowReader::maybeSetIndexBounds() {
   auto keyEncoder = velox::serializer::KeyEncoder::create(
       result->indexBounds.indexColumns,
       asRowType(result->indexBounds.type()),
-      std::vector<velox::core::SortOrder>{
-          sortOrders.begin(),
-          sortOrders.begin() + result->indexBounds.indexColumns.size()},
+      toVeloxSortOrders(sortOrders, result->indexBounds.indexColumns.size()),
       readerBase_->pool());
   encodedKeyBounds_ = keyEncoder->encodeIndexBounds(result->indexBounds);
 

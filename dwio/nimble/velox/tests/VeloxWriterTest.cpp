@@ -97,7 +97,7 @@ TEST_F(VeloxWriterTest, emptyFileWithIndexEnabled) {
 
   nimble::IndexConfig indexConfig{
       .columns = {"key_col"},
-      .sortOrders = {velox::core::kAscNullsFirst},
+      .sortOrders = {nimble::SortOrder{.ascending = true}},
       .enforceKeyOrder = true,
   };
 
@@ -3211,10 +3211,10 @@ class VeloxWriterIndexTest
       startRow += tablet.stripeRowCount(i);
     }
 
-    // Create sort orders for KeyEncoder (all ascending, nulls first)
+    // Create sort orders for KeyEncoder (all ascending, nulls last)
     std::vector<velox::core::SortOrder> sortOrders(
         indexColumns.size(),
-        velox::core::SortOrder(true, true)); // ascending, nulls first
+        velox::core::SortOrder(true, false)); // ascending, nulls last
 
     // Create KeyEncoder for encoding row keys
     auto keyEncoder = velox::serializer::KeyEncoder::create(

@@ -21,6 +21,7 @@
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/index/IndexConfig.h"
+#include "dwio/nimble/index/SortOrder.h"
 #include "dwio/nimble/velox/IndexWriter.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/memory/Memory.h"
@@ -60,7 +61,7 @@ class IndexWriterTest : public testing::Test,
     return velox::serializer::KeyEncoder::create(
         {std::string(kCol1)},
         keyType,
-        {velox::core::SortOrder{true, true}},
+        {velox::core::SortOrder{true, false}},
         pool_.get());
   }
 
@@ -224,7 +225,7 @@ TEST_F(IndexWriterTest, multiColumnWithDifferentSortOrders) {
     IndexConfig config{
         .columns = {"col0", "col1", "col2"},
         .sortOrders =
-            {velox::core::kAscNullsFirst, velox::core::kDescNullsLast},
+            {SortOrder{.ascending = true}, SortOrder{.ascending = false}},
         .encodingLayout =
             EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
     NIMBLE_ASSERT_THROW(
@@ -237,9 +238,9 @@ TEST_F(IndexWriterTest, multiColumnWithDifferentSortOrders) {
     IndexConfig config{
         .columns = {"col0", "col1"},
         .sortOrders =
-            {velox::core::kAscNullsFirst,
-             velox::core::kDescNullsLast,
-             velox::core::kAscNullsLast},
+            {SortOrder{.ascending = true},
+             SortOrder{.ascending = false},
+             SortOrder{.ascending = true}},
         .encodingLayout =
             EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
     NIMBLE_ASSERT_THROW(
@@ -251,8 +252,12 @@ TEST_F(IndexWriterTest, multiColumnWithDifferentSortOrders) {
   // then verify the encoded keys match what KeyEncoder produces.
   {
     SCOPED_TRACE("data test: write and verify encoded keys");
-    const std::vector<velox::core::SortOrder> sortOrders = {
-        velox::core::kAscNullsFirst,
+    const std::vector<SortOrder> sortOrders = {
+        SortOrder{.ascending = true},
+        SortOrder{.ascending = false},
+        SortOrder{.ascending = true}};
+    const std::vector<velox::core::SortOrder> veloxSortOrders = {
+        velox::core::kAscNullsLast,
         velox::core::kDescNullsLast,
         velox::core::kAscNullsLast};
 
@@ -285,7 +290,7 @@ TEST_F(IndexWriterTest, multiColumnWithDifferentSortOrders) {
 
     // Create a KeyEncoder with the same configuration to verify keys.
     auto keyEncoder = velox::serializer::KeyEncoder::create(
-        {"col0", "col1", "col2"}, type, sortOrders, pool_.get());
+        {"col0", "col1", "col2"}, type, veloxSortOrders, pool_.get());
 
     // Encode first row to get firstKey.
     auto firstRow = makeRowVector(
@@ -328,7 +333,7 @@ TEST_F(IndexWriterTest, multiColumnWithDifferentSortOrders) {
     // Write with ascending order.
     IndexConfig configAsc{
         .columns = {"col0"},
-        .sortOrders = {velox::core::kAscNullsFirst},
+        .sortOrders = {SortOrder{.ascending = true}},
         .encodingLayout =
             EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
     auto writerAsc = IndexWriter::create(configAsc, singleColType, pool_.get());
@@ -339,7 +344,7 @@ TEST_F(IndexWriterTest, multiColumnWithDifferentSortOrders) {
     // Write with descending order.
     IndexConfig configDesc{
         .columns = {"col0"},
-        .sortOrders = {velox::core::kDescNullsLast},
+        .sortOrders = {SortOrder{.ascending = false}},
         .encodingLayout =
             EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
     auto writerDesc =
@@ -564,14 +569,13 @@ TEST_F(IndexWriterTest, enforceKeyOrderDuplicateKeys) {
 
 struct IndexWriterTestParam {
   EncodingType encodingType;
-  velox::core::SortOrder sortOrder;
+  SortOrder sortOrder;
   std::optional<uint32_t> prefixRestartInterval;
 
   std::string toString() const {
     const std::string encodingName =
         encodingType == EncodingType::Prefix ? "Prefix" : "Trivial";
-    std::string sortName = sortOrder.isAscending() ? "Asc" : "Desc";
-    sortName += sortOrder.isNullsFirst() ? "NullsFirst" : "NullsLast";
+    const std::string sortName = sortOrder.ascending ? "Asc" : "Desc";
     std::string result = encodingName + "_" + sortName;
     if (prefixRestartInterval.has_value()) {
       result += "_restart" + std::to_string(prefixRestartInterval.value());
@@ -600,7 +604,7 @@ class IndexWriterDataTest
     return GetParam().encodingType;
   }
 
-  velox::core::SortOrder sortOrder() const {
+  SortOrder sortOrder() const {
     return GetParam().sortOrder;
   }
 
@@ -608,7 +612,10 @@ class IndexWriterDataTest
       const {
     const auto keyType = velox::ROW({{std::string(kCol1), velox::INTEGER()}});
     return velox::serializer::KeyEncoder::create(
-        {std::string(kCol1)}, keyType, {sortOrder()}, pool_.get());
+        {std::string(kCol1)},
+        keyType,
+        {sortOrder().toVeloxSortOrder()},
+        pool_.get());
   }
 
   IndexConfig indexConfigWithSortOrder(
@@ -1318,37 +1325,25 @@ INSTANTIATE_TEST_SUITE_P(
     IndexWriterDataTestSuite,
     IndexWriterDataTest,
     ::testing::Values(
-        IndexWriterTestParam{EncodingType::Prefix, velox::core::kAscNullsFirst},
-        IndexWriterTestParam{EncodingType::Prefix, velox::core::kAscNullsLast},
         IndexWriterTestParam{
             EncodingType::Prefix,
-            velox::core::kDescNullsFirst},
-        IndexWriterTestParam{EncodingType::Prefix, velox::core::kDescNullsLast},
-        IndexWriterTestParam{
-            EncodingType::Trivial,
-            velox::core::kAscNullsFirst},
-        IndexWriterTestParam{EncodingType::Trivial, velox::core::kAscNullsLast},
-        IndexWriterTestParam{
-            EncodingType::Trivial,
-            velox::core::kDescNullsFirst},
-        IndexWriterTestParam{
-            EncodingType::Trivial,
-            velox::core::kDescNullsLast},
+            SortOrder{.ascending = true}},
         IndexWriterTestParam{
             EncodingType::Prefix,
-            velox::core::kAscNullsFirst,
+            SortOrder{.ascending = false}},
+        IndexWriterTestParam{
+            EncodingType::Trivial,
+            SortOrder{.ascending = true}},
+        IndexWriterTestParam{
+            EncodingType::Trivial,
+            SortOrder{.ascending = false}},
+        IndexWriterTestParam{
+            EncodingType::Prefix,
+            SortOrder{.ascending = false},
             1},
         IndexWriterTestParam{
             EncodingType::Prefix,
-            velox::core::kDescNullsLast,
-            1},
-        IndexWriterTestParam{
-            EncodingType::Prefix,
-            velox::core::kAscNullsFirst,
-            1024},
-        IndexWriterTestParam{
-            EncodingType::Prefix,
-            velox::core::kDescNullsLast,
+            SortOrder{.ascending = false},
             1024}),
     [](const ::testing::TestParamInfo<IndexWriterTestParam>& info) {
       return info.param.toString();

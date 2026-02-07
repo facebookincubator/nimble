@@ -77,7 +77,7 @@ struct IndexEncodingParam {
   std::string name;
   EncodingType encodingType;
   CompressionType compressionType;
-  velox::core::SortOrder sortOrder;
+  SortOrder sortOrder;
   std::optional<uint32_t> prefixRestartInterval;
 
   static IndexEncodingParam prefix(
@@ -86,7 +86,7 @@ struct IndexEncodingParam {
         makePrefixEncodingName("Prefix", prefixRestartInterval),
         EncodingType::Prefix,
         CompressionType::Uncompressed,
-        velox::core::kAscNullsFirst,
+        SortOrder{.ascending = true},
         prefixRestartInterval};
   }
 
@@ -95,7 +95,7 @@ struct IndexEncodingParam {
         "TrivialZstd",
         EncodingType::Trivial,
         CompressionType::Zstd,
-        velox::core::kAscNullsFirst,
+        SortOrder{.ascending = true},
         std::nullopt};
   }
 
@@ -105,7 +105,7 @@ struct IndexEncodingParam {
         makePrefixEncodingName("PrefixDesc", prefixRestartInterval),
         EncodingType::Prefix,
         CompressionType::Uncompressed,
-        velox::core::kDescNullsLast,
+        SortOrder{.ascending = false},
         prefixRestartInterval};
   }
 
@@ -114,7 +114,7 @@ struct IndexEncodingParam {
         "TrivialZstdDesc",
         EncodingType::Trivial,
         CompressionType::Zstd,
-        velox::core::kDescNullsLast,
+        SortOrder{.ascending = false},
         std::nullopt};
   }
 
@@ -215,7 +215,7 @@ class E2EIndexTestBase : public ::testing::Test {
       const std::vector<RowVectorPtr>& batches,
       const std::vector<std::string>& indexColumns,
       std::optional<EncodingLayout> encodingLayout = std::nullopt,
-      velox::core::SortOrder sortOrder = velox::core::kAscNullsFirst) {
+      SortOrder sortOrder = SortOrder{.ascending = true}) {
     ASSERT_FALSE(indexColumns.empty()) << "indexColumns must not be empty";
 
     sinkData_.clear();
@@ -226,7 +226,7 @@ class E2EIndexTestBase : public ::testing::Test {
     IndexConfig indexConfig;
     indexConfig.columns = indexColumns;
     indexConfig.sortOrders =
-        std::vector<velox::core::SortOrder>(indexColumns.size(), sortOrder);
+        std::vector<SortOrder>(indexColumns.size(), sortOrder);
     indexConfig.enforceKeyOrder = true;
     if (encodingLayout.has_value()) {
       indexConfig.encodingLayout = std::move(encodingLayout).value();
@@ -416,7 +416,7 @@ class E2EIndexTest : public E2EIndexTestBase,
 
   // Returns true if the sort order is ascending.
   bool isAscending() const {
-    return GetParam().sortOrder.isAscending();
+    return GetParam().sortOrder.ascending;
   }
 
   // Generates sorted key column data based on the test parameter's sort order.
@@ -891,7 +891,7 @@ TEST_P(E2EIndexTest, singleBoolKey) {
 
   // Generate strictly ordered boolean keys based on sort order.
   // Ascending: [false, true], Descending: [true, false]
-  const bool ascending = GetParam().sortOrder.isAscending();
+  const bool ascending = GetParam().sortOrder.ascending;
   std::vector<RowVectorPtr> batches;
   auto keyVector = ascending ? vectorMaker_->flatVector<bool>({false, true})
                              : vectorMaker_->flatVector<bool>({true, false});
@@ -2213,14 +2213,14 @@ INSTANTIATE_TEST_SUITE_P(
 // Parameter struct for fuzzer tests including seed and sort order.
 struct FuzzerTestParam {
   uint32_t seed;
-  velox::core::SortOrder sortOrder;
+  SortOrder sortOrder;
   EncodingType encodingType;
   CompressionType compressionType;
   std::optional<uint32_t> restartInterval;
 
   static FuzzerTestParam make(
       uint32_t seed,
-      velox::core::SortOrder sortOrder,
+      SortOrder sortOrder,
       EncodingType encodingType,
       CompressionType compressionType,
       std::optional<uint32_t> restartInterval = std::nullopt) {
@@ -2229,7 +2229,7 @@ struct FuzzerTestParam {
   }
 
   bool isAscending() const {
-    return sortOrder.isAscending();
+    return sortOrder.ascending;
   }
 
   EncodingLayout makeEncodingLayout() const {
@@ -2814,28 +2814,28 @@ INSTANTIATE_TEST_SUITE_P(
         // Ascending order with Prefix encoding.
         FuzzerTestParam::make(
             42,
-            velox::core::kAscNullsFirst,
+            SortOrder{.ascending = true},
             EncodingType::Prefix,
             CompressionType::Uncompressed),
         FuzzerTestParam::make(
             123,
-            velox::core::kAscNullsFirst,
+            SortOrder{.ascending = true},
             EncodingType::Prefix,
             CompressionType::Uncompressed),
         FuzzerTestParam::make(
             456,
-            velox::core::kAscNullsFirst,
+            SortOrder{.ascending = true},
             EncodingType::Prefix,
             CompressionType::Uncompressed),
         // Ascending order with Trivial encoding and Zstd compression.
         FuzzerTestParam::make(
             42,
-            velox::core::kAscNullsFirst,
+            SortOrder{.ascending = true},
             EncodingType::Trivial,
             CompressionType::Zstd),
         FuzzerTestParam::make(
             123,
-            velox::core::kAscNullsFirst,
+            SortOrder{.ascending = true},
             EncodingType::Trivial,
             CompressionType::Zstd),
         // Descending order with Prefix encoding.
@@ -2843,36 +2843,36 @@ INSTANTIATE_TEST_SUITE_P(
         // order.
         FuzzerTestParam::make(
             42,
-            velox::core::kDescNullsLast,
+            SortOrder{.ascending = false},
             EncodingType::Prefix,
             CompressionType::Uncompressed),
         FuzzerTestParam::make(
             123,
-            velox::core::kDescNullsLast,
+            SortOrder{.ascending = false},
             EncodingType::Prefix,
             CompressionType::Uncompressed),
         // Descending order with Trivial encoding and Zstd compression.
         FuzzerTestParam::make(
             42,
-            velox::core::kDescNullsLast,
+            SortOrder{.ascending = false},
             EncodingType::Trivial,
             CompressionType::Zstd),
         // Prefix encoding with custom restart intervals.
         FuzzerTestParam::make(
             42,
-            velox::core::kAscNullsFirst,
+            SortOrder{.ascending = true},
             EncodingType::Prefix,
             CompressionType::Uncompressed,
             1),
         FuzzerTestParam::make(
             42,
-            velox::core::kAscNullsFirst,
+            SortOrder{.ascending = true},
             EncodingType::Prefix,
             CompressionType::Uncompressed,
             16),
         FuzzerTestParam::make(
             42,
-            velox::core::kAscNullsFirst,
+            SortOrder{.ascending = true},
             EncodingType::Prefix,
             CompressionType::Uncompressed,
             1024)),

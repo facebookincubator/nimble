@@ -73,9 +73,9 @@ struct FilterBoundInfo {
 // supported yet.
 FilterBoundInfo getFilterBoundInfo(
     const Filter& filter,
-    const core::SortOrder& sortOrder) {
+    const SortOrder& sortOrder) {
   FilterBoundInfo info;
-  const bool isDesc = !sortOrder.isAscending();
+  const bool isDesc = !sortOrder.ascending;
 
   switch (filter.kind()) {
     case FilterKind::kBigintRange: {
@@ -196,7 +196,7 @@ void addColumnBound(
     const Filter& filter,
     const std::string& columnName,
     const TypePtr& columnType,
-    const core::SortOrder& sortOrder,
+    const SortOrder& sortOrder,
     std::vector<std::string>& columnNames,
     std::vector<TypePtr>& columnTypes,
     std::vector<VectorPtr>& lowerVectors,
@@ -207,7 +207,7 @@ void addColumnBound(
   columnNames.push_back(columnName);
   columnTypes.push_back(columnType);
 
-  const bool isDesc = !sortOrder.isAscending();
+  const bool isDesc = !sortOrder.ascending;
 
   // Helper to add vectors considering sort order.
   // For DESC columns, we swap lower and upper bounds.
@@ -378,7 +378,7 @@ void addColumnBound(
 
 std::optional<FilterToIndexBoundsResult> convertFilterToIndexBounds(
     const std::vector<std::string>& indexColumns,
-    const std::vector<core::SortOrder>& sortOrders,
+    const std::vector<SortOrder>& sortOrders,
     const RowTypePtr& rowType,
     ScanSpec& scanSpec,
     memory::MemoryPool* pool) {

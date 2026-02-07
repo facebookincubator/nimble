@@ -117,8 +117,8 @@ class IndexWriter {
 
   /// Returns the sort orders for each index column.
   /// The returned vector will have the same size as the index columns.
-  const std::vector<velox::core::SortOrder>& sortOrders() const {
-    return keyEncoder_->sortOrders();
+  const std::vector<SortOrder>& sortOrders() const {
+    return sortOrders_;
   }
 
   /// Closes the writer and releases resources.
@@ -150,6 +150,7 @@ class IndexWriter {
   void validateNoNullKeys(const velox::VectorPtr& input) const;
 
   velox::memory::MemoryPool* const pool_;
+  const std::vector<SortOrder> sortOrders_;
   const std::unique_ptr<velox::serializer::KeyEncoder> keyEncoder_;
   const std::unique_ptr<ContentStreamData<std::string_view>> keyStream_;
   const EncodingLayout encodingLayout_;

@@ -103,7 +103,7 @@ TEST_F(IndexFilterTest, basic) {
     NIMBLE_ASSERT_THROW(
         convertFilterToIndexBounds(
             {"a", "b"},
-            {core::kAscNullsFirst},
+            {SortOrder{.ascending = true}},
             rowType,
             *scanSpec,
             pool_.get()),
@@ -118,7 +118,7 @@ TEST_F(IndexFilterTest, basic) {
 
     auto result = convertFilterToIndexBounds(
         {"nonexistent"},
-        {core::kAscNullsFirst},
+        {SortOrder{.ascending = true}},
         rowType,
         *scanSpec,
         pool_.get());
@@ -136,7 +136,7 @@ TEST_F(IndexFilterTest, noMatchingFilter) {
     auto scanSpec = createScanSpec(rowType, filters);
 
     auto result = convertFilterToIndexBounds(
-        {"a"}, {core::kAscNullsFirst}, rowType, *scanSpec, pool_.get());
+        {"a"}, {SortOrder{.ascending = true}}, rowType, *scanSpec, pool_.get());
     EXPECT_FALSE(result.has_value());
     // Filter on "b" should still be set.
     EXPECT_NE(scanSpec->childByName("b")->filter(), nullptr);
@@ -149,7 +149,7 @@ TEST_F(IndexFilterTest, noMatchingFilter) {
     auto scanSpec = createScanSpec(rowType, filters);
 
     auto result = convertFilterToIndexBounds(
-        {"a"}, {core::kAscNullsFirst}, rowType, *scanSpec, pool_.get());
+        {"a"}, {SortOrder{.ascending = true}}, rowType, *scanSpec, pool_.get());
     EXPECT_FALSE(result.has_value());
     EXPECT_NE(scanSpec->childByName("a")->filter(), nullptr);
   }
@@ -161,7 +161,7 @@ TEST_F(IndexFilterTest, noMatchingFilter) {
     auto scanSpec = createScanSpec(rowType, filters);
 
     auto result = convertFilterToIndexBounds(
-        {"a"}, {core::kAscNullsFirst}, rowType, *scanSpec, pool_.get());
+        {"a"}, {SortOrder{.ascending = true}}, rowType, *scanSpec, pool_.get());
     EXPECT_FALSE(result.has_value());
     EXPECT_NE(scanSpec->childByName("a")->filter(), nullptr);
   }
@@ -174,7 +174,7 @@ TEST_F(IndexFilterTest, noMatchingFilter) {
     auto scanSpec = createScanSpec(rowType, filters);
 
     auto result = convertFilterToIndexBounds(
-        {"a"}, {core::kAscNullsFirst}, rowType, *scanSpec, pool_.get());
+        {"a"}, {SortOrder{.ascending = true}}, rowType, *scanSpec, pool_.get());
     EXPECT_FALSE(result.has_value());
     EXPECT_NE(scanSpec->childByName("a")->filter(), nullptr);
   }
@@ -186,7 +186,7 @@ TEST_F(IndexFilterTest, noMatchingFilter) {
     auto scanSpec = createScanSpec(rowType, filters);
 
     auto result = convertFilterToIndexBounds(
-        {"a"}, {core::kAscNullsFirst}, rowType, *scanSpec, pool_.get());
+        {"a"}, {SortOrder{.ascending = true}}, rowType, *scanSpec, pool_.get());
     EXPECT_FALSE(result.has_value());
     EXPECT_NE(scanSpec->childByName("a")->filter(), nullptr);
   }
@@ -198,7 +198,7 @@ TEST_F(IndexFilterTest, noMatchingFilter) {
     auto scanSpec = createScanSpec(rowType, filters);
 
     auto result = convertFilterToIndexBounds(
-        {"a"}, {core::kAscNullsFirst}, rowType, *scanSpec, pool_.get());
+        {"a"}, {SortOrder{.ascending = true}}, rowType, *scanSpec, pool_.get());
     EXPECT_FALSE(result.has_value());
     EXPECT_NE(scanSpec->childByName("a")->filter(), nullptr);
   }
@@ -214,7 +214,9 @@ TEST_F(IndexFilterTest, noMatchingFilter) {
 
     auto result = convertFilterToIndexBounds(
         {"a", "b", "c"},
-        {core::kAscNullsFirst, core::kAscNullsFirst, core::kAscNullsFirst},
+        {SortOrder{.ascending = true},
+         SortOrder{.ascending = true},
+         SortOrder{.ascending = true}},
         threeColRowType,
         *scanSpec,
         pool_.get());
@@ -247,7 +249,9 @@ TEST_F(IndexFilterTest, removedFilters) {
 
     auto result = convertFilterToIndexBounds(
         {"a", "b", "c"},
-        {core::kAscNullsFirst, core::kAscNullsFirst, core::kAscNullsFirst},
+        {SortOrder{.ascending = true},
+         SortOrder{.ascending = true},
+         SortOrder{.ascending = true}},
         rowType,
         *scanSpec,
         pool_.get());
@@ -270,7 +274,9 @@ TEST_F(IndexFilterTest, removedFilters) {
 
     auto result = convertFilterToIndexBounds(
         {"a", "b", "c"},
-        {core::kAscNullsFirst, core::kAscNullsFirst, core::kAscNullsFirst},
+        {SortOrder{.ascending = true},
+         SortOrder{.ascending = true},
+         SortOrder{.ascending = true}},
         rowType,
         *scanSpec,
         pool_.get());
@@ -295,7 +301,9 @@ TEST_F(IndexFilterTest, removedFilters) {
 
     auto result = convertFilterToIndexBounds(
         {"a", "b", "c"},
-        {core::kAscNullsFirst, core::kAscNullsFirst, core::kAscNullsFirst},
+        {SortOrder{.ascending = true},
+         SortOrder{.ascending = true},
+         SortOrder{.ascending = true}},
         rowType,
         *scanSpec,
         pool_.get());
@@ -317,7 +325,7 @@ TEST_F(IndexFilterTest, removedFilters) {
 
     auto result = convertFilterToIndexBounds(
         {"a", "b"},
-        {core::kAscNullsFirst, core::kAscNullsFirst},
+        {SortOrder{.ascending = true}, SortOrder{.ascending = true}},
         rowType,
         *scanSpec,
         pool_.get());
@@ -337,7 +345,7 @@ TEST_F(IndexFilterTest, removedFilters) {
     auto scanSpec = createScanSpec(rowType, filters);
 
     auto result = convertFilterToIndexBounds(
-        {"a"}, {core::kAscNullsFirst}, rowType, *scanSpec, pool_.get());
+        {"a"}, {SortOrder{.ascending = true}}, rowType, *scanSpec, pool_.get());
     EXPECT_FALSE(result.has_value());
   }
 
@@ -348,7 +356,7 @@ TEST_F(IndexFilterTest, removedFilters) {
     auto scanSpec = createScanSpec(rowType, filters);
 
     auto result = convertFilterToIndexBounds(
-        {"a"}, {core::kAscNullsFirst}, rowType, *scanSpec, pool_.get());
+        {"a"}, {SortOrder{.ascending = true}}, rowType, *scanSpec, pool_.get());
     EXPECT_FALSE(result.has_value());
   }
 }
@@ -360,13 +368,13 @@ TEST_F(IndexFilterTest, sortOrder) {
   // Loop over the last column's sort order (ASC or DESC).
   auto rowType = ROW({"a", "b", "c"}, {BIGINT(), BIGINT(), BIGINT()});
 
-  std::vector<core::SortOrder> sortOrdersToTest = {
-      core::kAscNullsFirst, core::kDescNullsFirst};
+  std::vector<SortOrder> sortOrdersToTest = {
+      SortOrder{.ascending = true}, SortOrder{.ascending = false}};
   for (const auto& lastColSortOrder : sortOrdersToTest) {
     SCOPED_TRACE(
         fmt::format(
             "lastColSortOrder: {}",
-            lastColSortOrder.isAscending() ? "ASC" : "DESC"));
+            lastColSortOrder.ascending ? "ASC" : "DESC"));
 
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
     filters["a"] = std::make_unique<BigintRange>(42, 42, false);
@@ -377,7 +385,9 @@ TEST_F(IndexFilterTest, sortOrder) {
     // Mixed sort orders: asc, desc, and lastColSortOrder for "c".
     auto result = convertFilterToIndexBounds(
         {"a", "b", "c"},
-        {core::kAscNullsFirst, core::kDescNullsFirst, lastColSortOrder},
+        {SortOrder{.ascending = true},
+         SortOrder{.ascending = false},
+         lastColSortOrder},
         rowType,
         *scanSpec,
         pool_.get());
@@ -398,7 +408,7 @@ TEST_F(IndexFilterTest, sortOrder) {
     verifyBound<int64_t>(bounds.lowerBound->bound, "b", 100);
     verifyBound<int64_t>(bounds.upperBound->bound, "b", 100);
     // Range on "c": bounds swapped for descending sort order.
-    if (lastColSortOrder.isAscending()) {
+    if (lastColSortOrder.ascending) {
       verifyBound<int64_t>(bounds.lowerBound->bound, "c", 10);
       verifyBound<int64_t>(bounds.upperBound->bound, "c", 20);
     } else {
@@ -415,18 +425,18 @@ TEST_F(IndexFilterTest, sortOrder) {
 
 class IndexFilterTestWithSortOrder
     : public IndexFilterTestBase,
-      public ::testing::WithParamInterface<core::SortOrder> {
+      public ::testing::WithParamInterface<SortOrder> {
  protected:
-  core::SortOrder sortOrder() const {
+  SortOrder sortOrder() const {
     return GetParam();
   }
 
-  std::vector<core::SortOrder> sortOrders(size_t count) const {
-    return std::vector<core::SortOrder>(count, sortOrder());
+  std::vector<SortOrder> sortOrders(size_t count) const {
+    return std::vector<SortOrder>(count, sortOrder());
   }
 
   bool isAscending() const {
-    return sortOrder().isAscending();
+    return sortOrder().ascending;
   }
 
   // For range filters, lower/upper bounds are swapped for descending sort.
@@ -1785,9 +1795,11 @@ TEST_P(IndexFilterTestWithSortOrder, mixedFilterDataTypes) {
 INSTANTIATE_TEST_SUITE_P(
     SortOrders,
     IndexFilterTestWithSortOrder,
-    ::testing::Values(core::kAscNullsFirst, core::kDescNullsFirst),
-    [](const ::testing::TestParamInfo<core::SortOrder>& info) {
-      return info.param.isAscending() ? "Ascending" : "Descending";
+    ::testing::Values(
+        SortOrder{.ascending = true},
+        SortOrder{.ascending = false}),
+    [](const ::testing::TestParamInfo<SortOrder>& info) {
+      return info.param.ascending ? "Ascending" : "Descending";
     });
 
 } // namespace facebook::nimble::index::test

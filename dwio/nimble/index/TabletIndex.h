@@ -20,8 +20,8 @@
 #include <string_view>
 #include <vector>
 
+#include "dwio/nimble/index/SortOrder.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
-#include "velox/core/PlanNode.h"
 
 namespace facebook::nimble::serialization {
 struct Index;
@@ -123,7 +123,7 @@ class TabletIndex {
   /// Returns the sort orders for each index column.
   ///
   /// @return Vector of sort orders, one per index column
-  const std::vector<velox::core::SortOrder>& sortOrders() const {
+  const std::vector<SortOrder>& sortOrders() const {
     return sortOrders_;
   }
 
@@ -152,7 +152,7 @@ class TabletIndex {
   const uint32_t numIndexGroups_;
   const std::vector<std::string_view> stripeKeys_;
   const std::vector<std::string> indexColumns_;
-  const std::vector<velox::core::SortOrder> sortOrders_;
+  const std::vector<SortOrder> sortOrders_;
 };
 
 } // namespace facebook::nimble::index

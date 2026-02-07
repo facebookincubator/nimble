@@ -92,7 +92,7 @@ TEST_F(TabletIndexWriterTest, basic) {
     TabletIndexConfig config{
         .columns = {"col1", "col2"},
         .sortOrders =
-            {velox::core::kAscNullsFirst, velox::core::kDescNullsLast},
+            {SortOrder{.ascending = true}, SortOrder{.ascending = false}},
         .enforceKeyOrder = true,
     };
     auto writer = TabletIndexWriter::create(config, *pool_);
@@ -133,7 +133,7 @@ TEST_F(TabletIndexWriterTest, basic) {
   {
     TabletIndexConfig config{
         .columns = {"col1", "col2"},
-        .sortOrders = {velox::core::kAscNullsFirst},
+        .sortOrders = {SortOrder{.ascending = true}},
         .enforceKeyOrder = false,
     };
     NIMBLE_ASSERT_USER_THROW(
@@ -148,7 +148,7 @@ TEST_F(TabletIndexWriterTest, stripeKeyOutOfOrderCheck) {
 
     TabletIndexConfig config{
         .columns = {"col1"},
-        .sortOrders = {velox::core::kAscNullsFirst},
+        .sortOrders = {SortOrder{.ascending = true}},
         .enforceKeyOrder = enforceKeyOrder};
     auto writer = TabletIndexWriter::create(config, *pool_);
 
@@ -178,7 +178,7 @@ TEST_F(TabletIndexWriterTest, stripeKeyOutOfOrderCheck) {
 TEST_F(TabletIndexWriterTest, singleRowFirstStripe) {
   TabletIndexConfig config{
       .columns = {"col1"},
-      .sortOrders = {velox::core::kAscNullsFirst},
+      .sortOrders = {SortOrder{.ascending = true}},
       .enforceKeyOrder = true};
   auto writer = TabletIndexWriter::create(config, *pool_);
 
@@ -206,7 +206,7 @@ TEST_F(TabletIndexWriterTest, singleRowFirstStripe) {
 TEST_F(TabletIndexWriterTest, checkNotFinalizedAfterWriteRootIndex) {
   TabletIndexConfig config{
       .columns = {"col1"},
-      .sortOrders = {velox::core::kAscNullsFirst},
+      .sortOrders = {SortOrder{.ascending = true}},
       .enforceKeyOrder = false};
   auto writer = TabletIndexWriter::create(config, *pool_);
 
@@ -245,7 +245,7 @@ TEST_F(TabletIndexWriterTest, checkNotFinalizedAfterWriteRootIndex) {
 TEST_F(TabletIndexWriterTest, emptyStripeKeys) {
   TabletIndexConfig config{
       .columns = {"col1"},
-      .sortOrders = {velox::core::kAscNullsFirst},
+      .sortOrders = {SortOrder{.ascending = true}},
       .enforceKeyOrder = false};
   auto writer = TabletIndexWriter::create(config, *pool_);
 
@@ -260,7 +260,7 @@ TEST_F(TabletIndexWriterTest, emptyStripeKeys) {
 TEST_F(TabletIndexWriterTest, emptyStreamInStripe) {
   TabletIndexConfig config{
       .columns = {"col1"},
-      .sortOrders = {velox::core::kAscNullsFirst},
+      .sortOrders = {SortOrder{.ascending = true}},
       .enforceKeyOrder = false};
   auto writer = TabletIndexWriter::create(config, *pool_);
 
@@ -298,7 +298,8 @@ TEST_F(TabletIndexWriterTest, emptyStreamInStripe) {
 TEST_F(TabletIndexWriterTest, writeAndReadWithSingleGroup) {
   TabletIndexConfig config{
       .columns = {"col1", "col2"},
-      .sortOrders = {velox::core::kAscNullsFirst, velox::core::kDescNullsLast},
+      .sortOrders =
+          {SortOrder{.ascending = true}, SortOrder{.ascending = false}},
       .enforceKeyOrder = true,
   };
   auto writer = TabletIndexWriter::create(config, *pool_);
@@ -408,8 +409,8 @@ TEST_F(TabletIndexWriterTest, writeAndReadWithSingleGroup) {
 
   // Verify sort orders
   ASSERT_EQ(tabletIndex->sortOrders().size(), 2);
-  EXPECT_EQ(tabletIndex->sortOrders()[0], velox::core::kAscNullsFirst);
-  EXPECT_EQ(tabletIndex->sortOrders()[1], velox::core::kDescNullsLast);
+  EXPECT_EQ(tabletIndex->sortOrders()[0], SortOrder{.ascending = true});
+  EXPECT_EQ(tabletIndex->sortOrders()[1], SortOrder{.ascending = false});
 
   // Verify stripe keys
   EXPECT_EQ(tabletIndex->minKey(), "aaa");
@@ -535,7 +536,8 @@ TEST_F(TabletIndexWriterTest, writeAndReadWithSingleGroup) {
 TEST_F(TabletIndexWriterTest, writeAndReadWithMultipleGroups) {
   TabletIndexConfig config{
       .columns = {"col1", "col2"},
-      .sortOrders = {velox::core::kAscNullsFirst, velox::core::kDescNullsLast},
+      .sortOrders =
+          {SortOrder{.ascending = true}, SortOrder{.ascending = false}},
       .enforceKeyOrder = true,
   };
   auto writer = TabletIndexWriter::create(config, *pool_);
@@ -785,7 +787,7 @@ TEST_F(TabletIndexWriterTest, writeAndReadWithMultipleGroups) {
 TEST_F(TabletIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
   TabletIndexConfig config{
       .columns = {"col1"},
-      .sortOrders = {velox::core::kAscNullsFirst},
+      .sortOrders = {SortOrder{.ascending = true}},
       .enforceKeyOrder = true,
   };
   auto writer = TabletIndexWriter::create(config, *pool_);

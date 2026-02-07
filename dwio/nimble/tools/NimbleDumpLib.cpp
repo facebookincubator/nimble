@@ -1131,10 +1131,8 @@ void NimbleDumpLib::emitIndex() {
     if (i > 0) {
       ostream_ << ", ";
     }
-    ostream_ << columns[i] << " ("
-             << (sortOrders[i].isAscending() ? "ASC" : "DESC")
-             << (sortOrders[i].isNullsFirst() ? " NULLS FIRST" : " NULLS LAST")
-             << ")";
+    ostream_ << columns[i] << " (" << (sortOrders[i].ascending ? "ASC" : "DESC")
+             << " NULLS LAST)";
   }
   ostream_ << std::endl;
   ostream_ << "Number of Stripes: " << commaSeparated(index->numStripes())

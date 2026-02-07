@@ -68,16 +68,14 @@ std::vector<std::string> getIndexColumns(
   return result;
 }
 
-std::vector<velox::core::SortOrder> getSortOrders(
-    const serialization::Index* indexRoot) {
+std::vector<SortOrder> getSortOrders(const serialization::Index* indexRoot) {
   const auto* sortOrders = indexRoot->sort_orders();
   NIMBLE_CHECK_NOT_NULL(sortOrders);
-  std::vector<velox::core::SortOrder> result;
+  std::vector<SortOrder> result;
   result.reserve(sortOrders->size());
   for (const auto* sortOrder : *sortOrders) {
     result.emplace_back(
-        velox::core::SortOrder::deserialize(
-            folly::parseJson(sortOrder->string_view())));
+        SortOrder::deserialize(folly::parseJson(sortOrder->string_view())));
   }
   return result;
 }
