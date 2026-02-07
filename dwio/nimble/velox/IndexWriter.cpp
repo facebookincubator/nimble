@@ -46,6 +46,23 @@ const InputBufferGrowthPolicy& keyStreamGrowthPolicy() {
   return *policy;
 }
 
+// Converts nimble SortOrders to velox::core::SortOrders.
+// If sortOrders is empty, returns default ascending sort orders.
+std::vector<velox::core::SortOrder> toVeloxSortOrders(
+    const std::vector<SortOrder>& sortOrders,
+    size_t columnCount) {
+  if (sortOrders.empty()) {
+    return std::vector<velox::core::SortOrder>(
+        columnCount, velox::core::SortOrder{true, false});
+  }
+  std::vector<velox::core::SortOrder> result;
+  result.reserve(sortOrders.size());
+  for (const auto& sortOrder : sortOrders) {
+    result.push_back(sortOrder.toVeloxSortOrder());
+  }
+  return result;
+}
+
 std::unique_ptr<velox::serializer::KeyEncoder> createKeyEncoder(
     const IndexConfig& config,
     const velox::RowTypePtr& inputType,
@@ -56,14 +73,11 @@ std::unique_ptr<velox::serializer::KeyEncoder> createKeyEncoder(
       "sortOrders size ({}) must be empty or match columns size ({})",
       config.sortOrders.size(),
       config.columns.size());
+
   return velox::serializer::KeyEncoder::create(
       config.columns,
       inputType,
-      config.sortOrders.empty()
-          ? std::vector<
-                velox::core::
-                    SortOrder>{config.columns.size(), velox::core::kAscNullsFirst}
-          : config.sortOrders,
+      toVeloxSortOrders(config.sortOrders, config.columns.size()),
       pool);
 }
 
@@ -97,6 +111,11 @@ IndexWriter::IndexWriter(
     const velox::RowTypePtr& inputType,
     velox::memory::MemoryPool* pool)
     : pool_{pool},
+      sortOrders_{
+          config.sortOrders.empty() ? std::vector<SortOrder>(
+                                          config.columns.size(),
+                                          SortOrder{.ascending = true})
+                                    : config.sortOrders},
       keyEncoder_{createKeyEncoder(config, inputType, pool)},
       keyStream_{std::make_unique<ContentStreamData<std::string_view>>(
           *pool_,

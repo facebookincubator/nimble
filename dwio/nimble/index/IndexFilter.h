@@ -18,8 +18,8 @@
 #include <optional>
 #include <vector>
 
+#include "dwio/nimble/index/SortOrder.h"
 #include "velox/common/memory/MemoryPool.h"
-#include "velox/core/PlanNode.h"
 #include "velox/dwio/common/ScanSpec.h"
 #include "velox/serializers/KeyEncoder.h"
 #include "velox/type/Filter.h"
@@ -86,7 +86,7 @@ struct FilterToIndexBoundsResult {
 ///         filters if filters can be converted, std::nullopt otherwise.
 std::optional<FilterToIndexBoundsResult> convertFilterToIndexBounds(
     const std::vector<std::string>& indexColumns,
-    const std::vector<velox::core::SortOrder>& sortOrders,
+    const std::vector<SortOrder>& sortOrders,
     const velox::RowTypePtr& rowType,
     velox::common::ScanSpec& scanSpec,
     velox::memory::MemoryPool* pool);

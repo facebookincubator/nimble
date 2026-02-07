@@ -20,7 +20,7 @@
 
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/EncodingLayout.h"
-#include "velox/core/PlanNode.h"
+#include "dwio/nimble/index/SortOrder.h"
 
 namespace facebook::nimble {
 
@@ -33,9 +33,9 @@ struct IndexConfig {
   /// that enable efficient data skipping during reads.
   std::vector<std::string> columns;
   /// Specifies the sort order for each index column.
-  /// If empty, defaults to ascending order with nulls first for all columns.
+  /// If empty, defaults to ascending order for all columns.
   /// If not empty, must have the same size as 'columns'.
-  std::vector<velox::core::SortOrder> sortOrders;
+  std::vector<SortOrder> sortOrders;
   /// If true, enforces that encoded keys must be in strictly ascending order
   /// (each key must be greater than the previous). This ensures that stripe
   /// boundaries maintain sorted order for efficient range-based filtering.

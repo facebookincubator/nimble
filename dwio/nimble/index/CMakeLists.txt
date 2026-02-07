@@ -15,6 +15,7 @@ add_library(
   nimble_index
   IndexFilter.cpp
   IndexReader.cpp
+  SortOrder.cpp
   StripeIndexGroup.cpp
   TabletIndex.cpp
 )
