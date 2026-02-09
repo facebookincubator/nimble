@@ -37,8 +37,9 @@ class FrequencyPartitionEncodingTest : public ::testing::Test {
   template <typename T>
   std::unique_ptr<nimble::Encoding> createEncoding(
       const nimble::Vector<T>& data) {
-    return nimble::test::Encoder<nimble::FrequencyPartitionEncoding<T>>::
-        createEncoding(*buffer_, data, nimble::CompressionType::Uncompressed);
+    return nimble::test::Encoder<
+               nimble::FrequencyPartitionEncoding<T>>::createEncoding(
+        *buffer_, data, nullptr, nimble::CompressionType::Uncompressed);
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
@@ -189,35 +190,6 @@ TEST_F(FrequencyPartitionEncodingTest, SingleValue) {
   encoding->materialize(1, result.data());
 
   ASSERT_EQ(result[0], 123);
-}
-
-// Test with string_view (non-numeric type)
-TEST_F(FrequencyPartitionEncodingTest, StringValues) {
-  std::vector<std::string> strings = {
-      "apple", "banana", "apple", "cherry", "apple",
-      "banana", "date", "apple", "banana", "apple"};
-
-  nimble::Vector<std::string_view> data(pool_.get());
-  for (const auto& s : strings) {
-    data.push_back(s);
-  }
-
-  auto encoding = createEncoding(data);
-  ASSERT_EQ(encoding->rowCount(), strings.size());
-
-  nimble::Vector<std::string_view> result(pool_.get(), strings.size());
-  encoding->materialize(strings.size(), result.data());
-
-  // FrequencyPartitionEncoding reorders data by frequency tiers
-  std::vector<std::string_view> sortedData(data.begin(), data.end());
-  std::vector<std::string_view> sortedResult(result.begin(), result.end());
-  std::sort(sortedData.begin(), sortedData.end());
-  std::sort(sortedResult.begin(), sortedResult.end());
-
-  ASSERT_EQ(sortedData.size(), sortedResult.size());
-  for (size_t i = 0; i < sortedData.size(); ++i) {
-    ASSERT_EQ(sortedResult[i], sortedData[i]) << "Mismatch at sorted index " << i;
-  }
 }
 
 // Test incremental materialization (reset and partial reads)

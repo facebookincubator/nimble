@@ -63,7 +63,8 @@ class FrequencyPartitionEncoding
 
   FrequencyPartitionEncoding(
       velox::memory::MemoryPool& pool,
-      std::string_view data);
+      std::string_view data,
+      std::function<void*(uint32_t)> stringBufferFactory = nullptr);
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -142,7 +143,8 @@ class FrequencyPartitionEncoding
 template <typename T>
 FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
     velox::memory::MemoryPool& pool,
-    std::string_view data)
+    std::string_view data,
+    std::function<void*(uint32_t)> /* stringBufferFactory */)
     : TypedEncoding<T, physicalType>{pool, data},
       unencodedValues_{this->pool_},
       unencodedStartRow_(0),
@@ -153,12 +155,16 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
 
   const uint32_t partitionOffsetsSize = encoding::readUint32(pos);
   auto partitionOffsetsEncoding =
-      EncodingFactory::decode(*this->pool_, {pos, partitionOffsetsSize});
+    EncodingFactory::decode(
+      *this->pool_, std::string_view(pos, partitionOffsetsSize),
+      [](uint32_t /*size*/) -> void* { return nullptr; });
   pos += partitionOffsetsSize;
 
   const uint32_t partitionSizesSize = encoding::readUint32(pos);
   auto partitionSizesEncoding =
-      EncodingFactory::decode(*this->pool_, {pos, partitionSizesSize});
+    EncodingFactory::decode(
+      *this->pool_, std::string_view(pos, partitionSizesSize),
+      [](uint32_t /*size*/) -> void* { return nullptr; });
   pos += partitionSizesSize;
 
   Vector<uint32_t> partitionOffsets{this->pool_};
@@ -183,8 +189,10 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
 
       if (tier.size > 0) {
         const uint32_t dictSize = encoding::readUint32(pos);
-        auto dictEncoding =
-            EncodingFactory::decode(*this->pool_, {pos, dictSize});
+    auto dictEncoding =
+      EncodingFactory::decode(
+        *this->pool_, std::string_view(pos, dictSize),
+        [](uint32_t /*size*/) -> void* { return nullptr; });
         pos += dictSize;
 
         const uint32_t dictCount = dictEncoding->rowCount();
@@ -192,8 +200,10 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
         dictEncoding->materialize(dictCount, tier.dictionary.data());
 
         const uint32_t keysSize = encoding::readUint32(pos);
-        auto keysEncoding =
-            EncodingFactory::decode(*this->pool_, {pos, keysSize});
+    auto keysEncoding =
+      EncodingFactory::decode(
+        *this->pool_, std::string_view(pos, keysSize),
+        [](uint32_t /*size*/) -> void* { return nullptr; });
         pos += keysSize;
 
         tier.indices.resize(tier.size);
@@ -207,8 +217,10 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
 
       if (unencodedSize > 0) {
         const uint32_t valuesSize = encoding::readUint32(pos);
-        auto valuesEncoding =
-            EncodingFactory::decode(*this->pool_, {pos, valuesSize});
+    auto valuesEncoding =
+      EncodingFactory::decode(
+        *this->pool_, std::string_view(pos, valuesSize),
+        [](uint32_t /*size*/) -> void* { return nullptr; });
         pos += valuesSize;
 
         unencodedValues_.resize(unencodedSize);
