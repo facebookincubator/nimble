@@ -160,7 +160,6 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
           toString(dataType));                               \
   }
 
-<<<<<<< HEAD
 #define RETURN_ENCODING_BY_NUMERIC_TYPE(Encoding, dataType) \
   switch (dataType) {                                       \
     case DataType::Int8:                                    \
@@ -224,35 +223,6 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
           toString(dataType));                                        \
   }
 
-#define RETURN_ENCODING_BY_NUMERIC_TYPE(Encoding, dataType)          \
-  switch (dataType) {                                                \
-    case DataType::Int8:                                             \
-      return std::make_unique<Encoding<int8_t>>(memoryPool, data);   \
-    case DataType::Uint8:                                            \
-      return std::make_unique<Encoding<uint8_t>>(memoryPool, data);  \
-    case DataType::Int16:                                            \
-      return std::make_unique<Encoding<int16_t>>(memoryPool, data);  \
-    case DataType::Uint16:                                           \
-      return std::make_unique<Encoding<uint16_t>>(memoryPool, data); \
-    case DataType::Int32:                                            \
-      return std::make_unique<Encoding<int32_t>>(memoryPool, data);  \
-    case DataType::Uint32:                                           \
-      return std::make_unique<Encoding<uint32_t>>(memoryPool, data); \
-    case DataType::Int64:                                            \
-      return std::make_unique<Encoding<int64_t>>(memoryPool, data);  \
-    case DataType::Uint64:                                           \
-      return std::make_unique<Encoding<uint64_t>>(memoryPool, data); \
-    case DataType::Float:                                            \
-      return std::make_unique<Encoding<float>>(memoryPool, data);    \
-    case DataType::Double:                                           \
-      return std::make_unique<Encoding<double>>(memoryPool, data);   \
-    default:                                                         \
-      NIMBLE_UNREACHABLE(                                            \
-          "Trying to deserialize a non-numeric stream for "          \
-          "a numeric data type {}.",                                 \
-          toString(dataType));                                       \
-  }
-
   switch (encodingType) {
     case EncodingType::Trivial: {
       RETURN_ENCODING_BY_LEAF_TYPE(TrivialEncoding, dataType);
@@ -293,11 +263,11 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
           "Trying to deserialize a PrefixEncoding with a non-string data type.");
       return std::make_unique<PrefixEncoding>(memoryPool, data);
     }
-    case EncodingType::FrequencyPartition: {
-      RETURN_ENCODING_BY_NON_BOOL_TYPE(FrequencyPartitionEncoding, dataType);
-    }
     case EncodingType::FOR: {
-      RETURN_ENCODING_BY_INTEGER_TYPE(ForEncoding, dataType);
+      RETURN_ENCODING_BY_NUMERIC_TYPE(ForEncoding, dataType);
+    }
+    case EncodingType::FrequencyPartition: {
+      RETURN_ENCODING_BY_NUMERIC_TYPE(FrequencyPartitionEncoding, dataType);
     }
     default: {
       NIMBLE_UNREACHABLE(
