@@ -96,7 +96,15 @@ std::pair<EncodingLayout, uint32_t> EncodingLayout::create(
 
   auto pos = encoding.data();
   const auto encodingType = encoding::read<uint8_t, EncodingType>(pos);
-  const auto compressionType = encoding::read<uint8_t, CompressionType>(pos);
+  auto compressionType = encoding::read<uint8_t, CompressionType>(pos);
+  
+#ifdef DISABLE_META_INTERNAL_COMPRESSOR
+  // When MetaInternal is not available, map it to Zstd
+  if (compressionType == CompressionType::MetaInternal) {
+    compressionType = CompressionType::Zstd;
+  }
+#endif
+  
   const auto childrenCount = encoding::read<uint8_t>(pos);
   [[maybe_unused]] const auto extraDataSize = encoding::read<uint16_t>(pos);
 
