@@ -238,7 +238,7 @@ NIMBLE_INSTANTIATE_TEST_SUITE_P(
     TrivialEncodingTestWithCompression,
     ::testing::Values(
         nimble::CompressionType::Uncompressed,
-        nimble::CompressionType::Zstd),
+        nimble::CompressionType::MetaInternal),
     [](const ::testing::TestParamInfo<nimble::CompressionType>& info) {
       return nimble::toString(info.param);
     });
