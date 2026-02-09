@@ -107,7 +107,7 @@ TEST_F(ChunkedDecoderTest, bufferedInput) {
       nullptr,
       StringIdLease{},
       fileIoStats,
-      std::make_shared<filesystems::File::IoStats>(),
+      nullptr,
       executor.get(),
       readerOpts);
 
