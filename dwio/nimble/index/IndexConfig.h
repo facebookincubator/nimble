@@ -36,12 +36,17 @@ struct IndexConfig {
   /// If empty, defaults to ascending order for all columns.
   /// If not empty, must have the same size as 'columns'.
   std::vector<SortOrder> sortOrders;
-  /// If true, enforces that encoded keys must be in strictly ascending order
-  /// (each key must be greater than the previous). This ensures that stripe
-  /// boundaries maintain sorted order for efficient range-based filtering.
-  /// An exception is thrown if keys are found to be out of order or if
-  /// duplicate keys are detected.
+  /// If true, enforces that encoded keys must be in ascending order.
+  /// This ensures that stripe boundaries maintain sorted order for efficient
+  /// range-based filtering. An exception is thrown if keys are found to be
+  /// out of order. Duplicate keys are allowed unless noDuplicateKey is also
+  /// set.
   bool enforceKeyOrder{false};
+  /// If true, enforces that encoded keys must be in strictly ascending order
+  /// with no duplicate keys allowed. If enforceKeyOrder is true, setting this
+  /// option enforces the no duplicates check. An exception is thrown if keys
+  /// are out of order or if duplicate keys are detected.
+  bool noDuplicateKey{false};
   /// The encoding layout for the key stream.
   /// Only Prefix and Trivial encodings are supported.
   /// Users should pass a fully constructed EncodingLayout.

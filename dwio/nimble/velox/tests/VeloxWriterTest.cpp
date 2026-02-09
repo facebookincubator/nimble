@@ -3685,6 +3685,7 @@ TEST_F(VeloxWriterTest, indexEnforceKeyOrder) {
       nimble::IndexConfig indexConfig{
           .columns = {"key_col"},
           .enforceKeyOrder = enforceKeyOrder,
+          .noDuplicateKey = enforceKeyOrder,
       };
 
       std::string file;

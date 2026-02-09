@@ -158,6 +158,7 @@ class IndexWriter {
   // Stores the indices of key columns in the input schema for efficient null
   // validation without repeated name lookups.
   const std::vector<velox::column_index_t> keyColumnIndices_;
+  const bool noDuplicateKey_;
   const uint64_t minChunkSize_;
   const uint64_t maxChunkSize_;
 

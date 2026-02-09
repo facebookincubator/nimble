@@ -124,6 +124,7 @@ IndexWriter::IndexWriter(
       encodingLayout_{config.encodingLayout},
       enforceKeyOrder_{config.enforceKeyOrder},
       keyColumnIndices_{getKeyColumnIndices(config, inputType)},
+      noDuplicateKey_{config.noDuplicateKey},
       minChunkSize_{config.minChunkRawSize},
       maxChunkSize_{config.maxChunkRawSize} {
   const auto encodingType = config.encodingLayout.encodingType();
@@ -182,17 +183,23 @@ void IndexWriter::write(const velox::VectorPtr& input, Buffer& buffer) {
   });
 
   // Verify that all new encoded keys (plus last previous key if exists) are in
-  // strictly ascending order (no duplicates allowed).
+  // ascending order. Whether duplicates are allowed is controlled by
+  // noDuplicateKey_.
   if (enforceKeyOrder_) {
     const auto& keys = keyStream_->mutableData();
     const auto startIdx = prevSize > 0 ? prevSize - 1 : 0;
     for (auto i = startIdx + 1; i < newSize; ++i) {
-      if (FOLLY_UNLIKELY(keys[i] <= keys[i - 1])) {
+      if (FOLLY_UNLIKELY(
+              noDuplicateKey_ ? keys[i] <= keys[i - 1]
+                              : keys[i] < keys[i - 1])) {
         // Format keys as hex for readable error message since encoded keys
         // contain binary data that corrupts terminal output.
         NIMBLE_USER_FAIL(
-            "Encoded keys must be in strictly ascending order (duplicates are not allowed). "
-            "Key at index {} (hex: {}) is not greater than key at index {} (hex: {})",
+            noDuplicateKey_
+                ? "Encoded keys must be in strictly ascending order (duplicates are not allowed). "
+                  "Key at index {} (hex: {}) is not greater than key at index {} (hex: {})"
+                : "Encoded keys must be in ascending order. "
+                  "Key at index {} (hex: {}) is less than key at index {} (hex: {})",
             i,
             folly::hexlify(keys[i]),
             i - 1,
