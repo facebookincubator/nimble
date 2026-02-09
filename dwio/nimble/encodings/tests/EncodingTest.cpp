@@ -65,8 +65,11 @@ class TestCompressPolicy : public nimble::CompressionPolicy {
     }
 
     nimble::CompressionInformation information{
-        .compressionType = nimble::CompressionType::Zstd};
-    information.parameters.zstd.compressionLevel = 9;
+        .compressionType = nimble::CompressionType::MetaInternal};
+    information.parameters.metaInternal.compressionLevel = 9;
+    information.parameters.metaInternal.decompressionLevel = 2;
+    information.parameters.metaInternal.useVariableBitWidthCompressor =
+        useVariableBitWidthCompressor_;
     return information;
   }
 
