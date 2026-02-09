@@ -528,8 +528,10 @@ class VeloxReaderTests : public ::testing::TestWithParam<bool> {
 
   template <typename T>
   void getFieldDefaultValue(nimble::Vector<T>& input, uint32_t index) {
-    static_assert(
-        T() == 0, "Default Constructor value is not zero initialized");
+    if constexpr (std::is_arithmetic_v<T>) {
+      static_assert(
+          T() == 0, "Default Constructor value is not zero initialized");
+    }
     input[index] = T();
   }
 
