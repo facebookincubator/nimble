@@ -37,8 +37,8 @@ class ForEncodingTest : public ::testing::Test {
   template <typename T>
   std::unique_ptr<nimble::Encoding> createEncoding(
       const nimble::Vector<T>& data) {
-    return nimble::test::Encoder<nimble::ForEncoding<T>>::
-        createEncoding(*buffer_, data, nimble::CompressionType::Uncompressed);
+    return nimble::test::Encoder<nimble::ForEncoding<T>>::createEncoding(
+        *buffer_, data, nullptr, nimble::CompressionType::Uncompressed);
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
@@ -321,7 +321,11 @@ TEST_F(ForEncodingTest, WithCompression) {
   }
 
   auto encoding = nimble::test::Encoder<nimble::ForEncoding<int32_t>>::
-      createEncoding(*buffer_, data, nimble::CompressionType::Zstd);
+      createEncoding(
+          *buffer_,
+          data,
+          [](uint32_t) -> void* { return nullptr; },
+          nimble::CompressionType::Zstd);
   
   ASSERT_EQ(encoding->rowCount(), 1000);
 

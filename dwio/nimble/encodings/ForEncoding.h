@@ -28,6 +28,7 @@
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/Compression.h"
 #include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingSelection.h"
 
 // Frame of Reference encoding. Divides data into fixed-size frames, storing
@@ -60,7 +61,10 @@ class ForEncoding final
   static const int kEnableBitOffsetsOffset = kNumFramesOffset + 4;
   static const int kPrefixSize = kEnableBitOffsetsOffset + 1;
 
-  ForEncoding(velox::memory::MemoryPool& memoryPool, std::string_view data);
+  ForEncoding(
+      velox::memory::MemoryPool& memoryPool,
+      std::string_view data,
+      std::function<void*(uint32_t)> stringBufferFactory = nullptr);
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -112,7 +116,8 @@ class ForEncoding final
 template <typename T>
 ForEncoding<T>::ForEncoding(
     velox::memory::MemoryPool& memoryPool,
-    std::string_view data)
+    std::string_view data,
+    std::function<void*(uint32_t)> /* stringBufferFactory */)
     : TypedEncoding<T, physicalType>{memoryPool, data},
       frames_{&memoryPool},
       currentRow_(0),
@@ -133,7 +138,9 @@ ForEncoding<T>::ForEncoding(
   // Read BitWidths array
   const uint32_t bitWidthsSize = encoding::readUint32(pos);
   auto bitWidthsEncoding =
-      EncodingFactory::decode(*this->pool_, {pos, bitWidthsSize});
+    EncodingFactory::decode(
+      *this->pool_, std::string_view(pos, bitWidthsSize),
+      [](uint32_t /*size*/) -> void* { return nullptr; });
   pos += bitWidthsSize;
 
   Vector<uint8_t> bitWidths(&memoryPool, numFrames_);
@@ -142,7 +149,9 @@ ForEncoding<T>::ForEncoding(
   // Read References array
   const uint32_t referencesSize = encoding::readUint32(pos);
   auto referencesEncoding =
-      EncodingFactory::decode(*this->pool_, {pos, referencesSize});
+    EncodingFactory::decode(
+      *this->pool_, std::string_view(pos, referencesSize),
+      [](uint32_t /*size*/) -> void* { return nullptr; });
   pos += referencesSize;
 
   Vector<physicalType> references(&memoryPool, numFrames_);
@@ -152,8 +161,10 @@ ForEncoding<T>::ForEncoding(
   Vector<uint64_t> bitOffsets(&memoryPool);
   if (enableBitOffsets_) {
     const uint32_t bitOffsetsSize = encoding::readUint32(pos);
-    auto bitOffsetsEncoding =
-        EncodingFactory::decode(*this->pool_, {pos, bitOffsetsSize});
+  auto bitOffsetsEncoding =
+    EncodingFactory::decode(
+      *this->pool_, std::string_view(pos, bitOffsetsSize),
+      [](uint32_t /*size*/) -> void* { return nullptr; });
     pos += bitOffsetsSize;
 
     bitOffsets.resize(numFrames_);
