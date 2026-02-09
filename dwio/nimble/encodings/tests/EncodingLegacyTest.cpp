@@ -134,6 +134,62 @@ class TestTrivialEncodingSelectionPolicy
   bool useVariableBitWidthCompressor_;
 };
 } // namespace
+
+// Forward declaration
+template <typename C>
+class EncodingLegacyTest;
+
+// EncodingTypeTraits helpers at namespace scope
+template <typename C, typename Encoding>
+struct EncodingTypeTraitsHelper {};
+
+template <typename C>
+struct EncodingTypeTraitsHelper<C, nimble::legacy::ConstantEncoding<typename C::cppDataType>> {
+  static inline nimble::EncodingType encodingType =
+      nimble::EncodingType::Constant;
+};
+
+template <typename C>
+struct EncodingTypeTraitsHelper<C, nimble::legacy::DictionaryEncoding<typename C::cppDataType>> {
+  static inline nimble::EncodingType encodingType =
+      nimble::EncodingType::Dictionary;
+};
+
+template <typename C>
+struct EncodingTypeTraitsHelper<C, nimble::legacy::FixedBitWidthEncoding<typename C::cppDataType>> {
+  static inline nimble::EncodingType encodingType =
+      nimble::EncodingType::FixedBitWidth;
+};
+
+template <typename C>
+struct EncodingTypeTraitsHelper<C, nimble::legacy::MainlyConstantEncoding<typename C::cppDataType>> {
+  static inline nimble::EncodingType encodingType =
+      nimble::EncodingType::MainlyConstant;
+};
+
+template <typename C>
+struct EncodingTypeTraitsHelper<C, nimble::legacy::RLEEncoding<typename C::cppDataType>> {
+  static inline nimble::EncodingType encodingType = nimble::EncodingType::RLE;
+};
+
+template <typename C>
+struct EncodingTypeTraitsHelper<C, nimble::legacy::SparseBoolEncoding> {
+  static inline nimble::EncodingType encodingType =
+      nimble::EncodingType::SparseBool;
+};
+
+template <typename C>
+struct EncodingTypeTraitsHelper<C, nimble::legacy::TrivialEncoding<typename C::cppDataType>> {
+  static inline nimble::EncodingType encodingType =
+      nimble::EncodingType::Trivial;
+};
+
+template <typename C>
+struct EncodingTypeTraitsHelper<C, nimble::legacy::VarintEncoding<typename C::cppDataType>> {
+  static inline nimble::EncodingType encodingType =
+      nimble::EncodingType::Varint;
+};
+
 // C is the encoding type.
 template <typename C>
 class EncodingLegacyTest : public ::testing::Test {
@@ -147,53 +203,9 @@ class EncodingLegacyTest : public ::testing::Test {
   }
 
   template <typename Encoding>
-  struct EncodingTypeTraits {};
-
-  template <>
-  struct EncodingTypeTraits<nimble::legacy::ConstantEncoding<E>> {
+  struct EncodingTypeTraits {
     static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Constant;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::legacy::DictionaryEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Dictionary;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::legacy::FixedBitWidthEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::FixedBitWidth;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::legacy::MainlyConstantEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::MainlyConstant;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::legacy::RLEEncoding<E>> {
-    static inline nimble::EncodingType encodingType = nimble::EncodingType::RLE;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::legacy::SparseBoolEncoding> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::SparseBool;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::legacy::TrivialEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Trivial;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::legacy::VarintEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Varint;
+        EncodingTypeTraitsHelper<C, Encoding>::encodingType;
   };
 
   std::unique_ptr<nimble::Encoding> createEncoding(
