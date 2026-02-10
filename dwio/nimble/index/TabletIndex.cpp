@@ -80,6 +80,10 @@ std::vector<SortOrder> getSortOrders(const serialization::Index* indexRoot) {
   return result;
 }
 
+bool getNoDuplicateKey(const serialization::Index* indexRoot) {
+  return indexRoot->no_duplicate_key();
+}
+
 } // namespace
 
 std::unique_ptr<TabletIndex> TabletIndex::create(Section indexSection) {
@@ -93,7 +97,8 @@ TabletIndex::TabletIndex(Section indexSection)
       numIndexGroups_{getIndexGroupCount(indexRoot_)},
       stripeKeys_{getStripeKeys(indexRoot_)},
       indexColumns_{getIndexColumns(indexRoot_)},
-      sortOrders_{getSortOrders(indexRoot_)} {
+      sortOrders_{getSortOrders(indexRoot_)},
+      noDuplicateKey_{getNoDuplicateKey(indexRoot_)} {
   NIMBLE_CHECK(!indexColumns_.empty());
   NIMBLE_CHECK_EQ(numStripes_ + 1, stripeKeys_.size());
   NIMBLE_CHECK_EQ(indexColumns_.size(), sortOrders_.size());

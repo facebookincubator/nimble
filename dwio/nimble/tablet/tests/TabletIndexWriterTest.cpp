@@ -142,65 +142,190 @@ TEST_F(TabletIndexWriterTest, basic) {
   }
 }
 
-TEST_F(TabletIndexWriterTest, stripeKeyOutOfOrderCheck) {
-  for (bool enforceKeyOrder : {false, true}) {
-    SCOPED_TRACE(fmt::format("enforceKeyOrder={}", enforceKeyOrder));
+// Test all combinations of enforceKeyOrder, noDuplicateKey, and
+// firstStripeSingleRow for stripe key enforcements validation.
+TEST_F(TabletIndexWriterTest, stripeKeyEnforcementValidation) {
+  Buffer buffer{*pool_};
 
+  // enforceKeyOrder=false: no checks are performed regardless of noDuplicateKey
+  for (bool noDuplicateKey : {false, true}) {
+    SCOPED_TRACE(
+        fmt::format(
+            "enforceKeyOrder=false, noDuplicateKey={}", noDuplicateKey));
     TabletIndexConfig config{
         .columns = {"col1"},
         .sortOrders = {SortOrder{.ascending = true}},
-        .enforceKeyOrder = enforceKeyOrder};
+        .enforceKeyOrder = false,
+        .noDuplicateKey = noDuplicateKey};
     auto writer = TabletIndexWriter::create(config, *pool_);
 
-    Buffer buffer{*pool_};
+    // Multi-row first stripe with equal keys - pass (no checks)
+    writer->ensureStripeWrite(1);
+    EXPECT_NO_THROW(
+        writer->addStripeKey(createKeyStream(buffer, {{5, "aaa", "aaa"}})));
 
-    // First stripe
-    writer->ensureStripeWrite(2);
-    auto keyStream1 = createKeyStream(buffer, {{100, "bbb", "ccc"}});
-    writer->addStripeKey(keyStream1);
+    // Duplicate key - pass (no checks)
+    writer->ensureStripeWrite(1);
+    EXPECT_NO_THROW(
+        writer->addStripeKey(createKeyStream(buffer, {{1, "aaa", "aaa"}})));
 
-    // Second stripe with key less than previous
-    writer->ensureStripeWrite(2);
-    auto keyStream2 = createKeyStream(buffer, {{100, "aaa", "aab"}});
+    // Out of order key - pass (no checks)
+    writer->ensureStripeWrite(1);
+    EXPECT_NO_THROW(
+        writer->addStripeKey(createKeyStream(buffer, {{1, "000", "000"}})));
+  }
 
-    if (enforceKeyOrder) {
+  // enforceKeyOrder=true, noDuplicateKey=false, singleRowFirstStripe=false
+  {
+    SCOPED_TRACE(
+        "enforceKeyOrder=true, noDuplicateKey=false, singleRowFirstStripe=false");
+    TabletIndexConfig config{
+        .columns = {"col1"},
+        .sortOrders = {SortOrder{.ascending = true}},
+        .enforceKeyOrder = true,
+        .noDuplicateKey = false};
+    auto writer = TabletIndexWriter::create(config, *pool_);
+
+    // Multi-row first stripe with equal keys - pass (duplicates allowed)
+    writer->ensureStripeWrite(1);
+    EXPECT_NO_THROW(
+        writer->addStripeKey(createKeyStream(buffer, {{5, "aaa", "aaa"}})));
+
+    // Duplicate key - pass (duplicates allowed)
+    writer->ensureStripeWrite(1);
+    EXPECT_NO_THROW(
+        writer->addStripeKey(createKeyStream(buffer, {{1, "aaa", "aaa"}})));
+
+    // Out of order key - fail
+    writer->ensureStripeWrite(1);
+    NIMBLE_ASSERT_USER_THROW(
+        writer->addStripeKey(createKeyStream(buffer, {{1, "000", "000"}})),
+        "Stripe keys must be in ascending order");
+  }
+
+  // enforceKeyOrder=true, noDuplicateKey=false, singleRowFirstStripe=true
+  {
+    SCOPED_TRACE(
+        "enforceKeyOrder=true, noDuplicateKey=false, singleRowFirstStripe=true");
+    TabletIndexConfig config{
+        .columns = {"col1"},
+        .sortOrders = {SortOrder{.ascending = true}},
+        .enforceKeyOrder = true,
+        .noDuplicateKey = false};
+    auto writer = TabletIndexWriter::create(config, *pool_);
+
+    // Single-row first stripe with equal keys - pass
+    writer->ensureStripeWrite(1);
+    EXPECT_NO_THROW(
+        writer->addStripeKey(createKeyStream(buffer, {{1, "aaa", "aaa"}})));
+
+    // Duplicate key - pass (duplicates allowed)
+    writer->ensureStripeWrite(1);
+    EXPECT_NO_THROW(
+        writer->addStripeKey(createKeyStream(buffer, {{1, "aaa", "aaa"}})));
+
+    // Out of order key - fail
+    writer->ensureStripeWrite(1);
+    NIMBLE_ASSERT_USER_THROW(
+        writer->addStripeKey(createKeyStream(buffer, {{1, "000", "000"}})),
+        "Stripe keys must be in ascending order");
+  }
+
+  // enforceKeyOrder=true, noDuplicateKey=true, singleRowFirstStripe=false
+  {
+    SCOPED_TRACE(
+        "enforceKeyOrder=true, noDuplicateKey=true, singleRowFirstStripe=false");
+    TabletIndexConfig config{
+        .columns = {"col1"},
+        .sortOrders = {SortOrder{.ascending = true}},
+        .enforceKeyOrder = true,
+        .noDuplicateKey = true};
+
+    // Multi-row first stripe with equal keys - fail (implies duplicates)
+    {
+      auto writer = TabletIndexWriter::create(config, *pool_);
+      writer->ensureStripeWrite(1);
       NIMBLE_ASSERT_USER_THROW(
-          writer->addStripeKey(keyStream2),
-          "(aab vs. ccc) Stripe keys must be in strictly ascending order (duplicates are not allowed)");
-    } else {
-      EXPECT_NO_THROW(writer->addStripeKey(keyStream2));
+          writer->addStripeKey(createKeyStream(buffer, {{5, "aaa", "aaa"}})),
+          "Stripe keys must be in strictly ascending order");
+    }
+
+    // Multi-row first stripe with strictly ascending keys - pass
+    {
+      auto writer = TabletIndexWriter::create(config, *pool_);
+      writer->ensureStripeWrite(1);
+      EXPECT_NO_THROW(
+          writer->addStripeKey(createKeyStream(buffer, {{5, "aaa", "bbb"}})));
+
+      // Strictly greater key across stripes - pass
+      writer->ensureStripeWrite(1);
+      EXPECT_NO_THROW(
+          writer->addStripeKey(createKeyStream(buffer, {{5, "ccc", "ddd"}})));
+
+      // Duplicate key across stripes (lastKey of prev stripe == lastKey of new
+      // stripe) - fail
+      writer->ensureStripeWrite(1);
+      NIMBLE_ASSERT_USER_THROW(
+          writer->addStripeKey(createKeyStream(buffer, {{5, "ddd", "ddd"}})),
+          "Stripe keys must be in strictly ascending order");
+    }
+
+    // Out of order key across stripes - fail
+    {
+      auto writer = TabletIndexWriter::create(config, *pool_);
+      writer->ensureStripeWrite(1);
+      EXPECT_NO_THROW(
+          writer->addStripeKey(createKeyStream(buffer, {{5, "bbb", "ccc"}})));
+
+      writer->ensureStripeWrite(1);
+      NIMBLE_ASSERT_USER_THROW(
+          writer->addStripeKey(createKeyStream(buffer, {{5, "aaa", "aab"}})),
+          "Stripe keys must be in strictly ascending order");
     }
   }
-}
 
-// Test that the first stripe with a single row (where firstKey == lastKey)
-// is allowed when enforceKeyOrder is true.
-TEST_F(TabletIndexWriterTest, singleRowFirstStripe) {
-  TabletIndexConfig config{
-      .columns = {"col1"},
-      .sortOrders = {SortOrder{.ascending = true}},
-      .enforceKeyOrder = true};
-  auto writer = TabletIndexWriter::create(config, *pool_);
+  // enforceKeyOrder=true, noDuplicateKey=true, singleRowFirstStripe=true
+  {
+    SCOPED_TRACE(
+        "enforceKeyOrder=true, noDuplicateKey=true, singleRowFirstStripe=true");
+    TabletIndexConfig config{
+        .columns = {"col1"},
+        .sortOrders = {SortOrder{.ascending = true}},
+        .enforceKeyOrder = true,
+        .noDuplicateKey = true};
 
-  Buffer buffer{*pool_};
+    // Single-row first stripe with equal keys - pass
+    // Then strictly greater key - pass
+    // Then duplicate key - fail
+    {
+      auto writer = TabletIndexWriter::create(config, *pool_);
+      writer->ensureStripeWrite(1);
+      EXPECT_NO_THROW(
+          writer->addStripeKey(createKeyStream(buffer, {{1, "aaa", "aaa"}})));
 
-  // First stripe with single row: firstKey == lastKey
-  writer->ensureStripeWrite(1);
-  auto keyStream1 = createKeyStream(buffer, {{1, "aaa", "aaa"}});
-  // This should succeed because the first stripe allows equal keys
-  EXPECT_NO_THROW(writer->addStripeKey(keyStream1));
+      writer->ensureStripeWrite(1);
+      EXPECT_NO_THROW(
+          writer->addStripeKey(createKeyStream(buffer, {{1, "bbb", "bbb"}})));
 
-  // Second stripe must have strictly greater key
-  writer->ensureStripeWrite(1);
-  auto keyStream2 = createKeyStream(buffer, {{1, "bbb", "bbb"}});
-  EXPECT_NO_THROW(writer->addStripeKey(keyStream2));
+      writer->ensureStripeWrite(1);
+      NIMBLE_ASSERT_USER_THROW(
+          writer->addStripeKey(createKeyStream(buffer, {{1, "bbb", "bbb"}})),
+          "Stripe keys must be in strictly ascending order");
+    }
 
-  // Third stripe with duplicate key should fail
-  writer->ensureStripeWrite(1);
-  auto keyStream3 = createKeyStream(buffer, {{1, "bbb", "bbb"}});
-  NIMBLE_ASSERT_USER_THROW(
-      writer->addStripeKey(keyStream3),
-      "Stripe keys must be in strictly ascending order (duplicates are not allowed)");
+    // Single-row first stripe, then out of order key - fail
+    {
+      auto writer = TabletIndexWriter::create(config, *pool_);
+      writer->ensureStripeWrite(1);
+      EXPECT_NO_THROW(
+          writer->addStripeKey(createKeyStream(buffer, {{1, "ccc", "ccc"}})));
+
+      writer->ensureStripeWrite(1);
+      NIMBLE_ASSERT_USER_THROW(
+          writer->addStripeKey(createKeyStream(buffer, {{1, "aaa", "aaa"}})),
+          "Stripe keys must be in strictly ascending order");
+    }
+  }
 }
 
 TEST_F(TabletIndexWriterTest, checkNotFinalizedAfterWriteRootIndex) {

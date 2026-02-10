@@ -38,9 +38,14 @@ struct TabletIndexConfig {
   /// Specifies the sort order for each index column.
   /// Must not be empty and must have the same size as 'columns'.
   std::vector<SortOrder> sortOrders;
-  /// If true, enforces that encoded keys must be in strictly ascending order
-  /// across stripes.
+  /// If true, enforces that encoded keys must be in ascending order
+  /// across stripes. Duplicate keys are allowed unless noDuplicateKey is set.
   bool enforceKeyOrder{false};
+  /// If true, indicates that the index was built with no duplicate keys.
+  /// This enables optimized seek operations that can return immediately
+  /// upon finding an exact match, rather than scanning for duplicates.
+  /// When set, also enforces that keys are strictly ascending (no duplicates).
+  bool noDuplicateKey{false};
 };
 
 /// TabletIndexWriter manages all index-related state and operations for
