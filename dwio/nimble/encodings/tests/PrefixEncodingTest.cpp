@@ -896,7 +896,7 @@ TEST_F(PrefixEncodingTest, encode) {
     result.reserve(n);
     for (uint32_t i = 0; i < n; ++i) {
       if (i % 5 == 0) {
-        result.push_back("");
+        result.emplace_back("");
       } else {
         result.push_back(fmt::format("str_{:04d}", i));
       }
