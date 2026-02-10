@@ -101,6 +101,7 @@ FixedBitWidthEncoding<T>::FixedBitWidthEncoding(
     uncompressedData_ = Compression::uncompress(
         memoryPool,
         compressionType,
+        TypeTraits<physicalType>::dataType,
         {pos, static_cast<size_t>(data.end() - pos)});
     fixedBitArray_ = FixedBitArray{
         {uncompressedData_.data(), uncompressedData_.size()}, bitWidth_};
