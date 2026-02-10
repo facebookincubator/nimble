@@ -57,7 +57,7 @@ EncodingLayout makeIndexEncodingLayout(
   std::vector<std::optional<const EncodingLayout>> children;
   if (encodingType == EncodingType::Trivial) {
     // Trivial encoding for string data needs a child encoding for lengths.
-    children.push_back(
+    children.emplace_back(
         EncodingLayout{
             EncodingType::Trivial, {}, CompressionType::Uncompressed});
   }
