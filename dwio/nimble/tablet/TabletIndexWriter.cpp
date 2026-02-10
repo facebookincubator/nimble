@@ -76,33 +76,72 @@ void TabletIndexWriter::addStripeKey(const KeyStream& keyStream) {
   const auto& chunks = keyStream.chunks;
   NIMBLE_CHECK(!chunks.empty());
 
+  const auto firstStripe = rootIndex_->stripeKeys.empty();
   // For the first stripe, insert both the first key (min key of the file)
   // and the last key. For subsequent stripes, insert only the last key.
-  const bool firstStripe = rootIndex_->stripeKeys.empty();
   if (firstStripe) {
     rootIndex_->stripeKeys.emplace_back(
         rootIndex_->encodingBuffer->writeString(chunks.front().firstKey));
   }
   const auto& newKey = chunks.back().lastKey;
-  // Verify that the new stripe key is strictly greater than the previous stripe
-  // key. For the first stripe, if it has only one row, the first key and last
-  // key could be the same, so we allow equal keys.
+
+  // Verify key ordering based on configuration:
+  // - enforceKeyOrder: keys must be in ascending order (duplicates allowed)
+  // - noDuplicateKey: when combined with enforceKeyOrder, keys must be strictly
+  //   ascending (no duplicates)
+  //
+  // For the first stripe, we compare firstKey (min) vs lastKey (max) within
+  // the same stripe. If noDuplicateKey is set, we only allow equality when
+  // the stripe has exactly one row (single-row stripe).
+  //
+  // For subsequent stripes, we compare across stripe boundaries: the current
+  // stripe's lastKey must be > previous stripe's lastKey when noDuplicateKey
+  // is set.
   if (config_.enforceKeyOrder) {
     NIMBLE_CHECK(!rootIndex_->stripeKeys.empty());
     const auto& prevKey = rootIndex_->stripeKeys.back();
     if (firstStripe) {
-      NIMBLE_USER_CHECK_GE(
-          newKey,
-          prevKey,
-          "Stripe keys must be in ascending order. "
-          "newKey: {}, previousKey: {}",
-          folly::hexlify(newKey),
-          folly::hexlify(prevKey));
-    } else {
+      // First stripe: comparing min vs max within same stripe
+      // Calculate total rows to determine if single-row stripe
+      uint32_t stripeRowCount = 0;
+      for (const auto& chunk : chunks) {
+        stripeRowCount += chunk.rowCount;
+      }
+      if (config_.noDuplicateKey && stripeRowCount > 1) {
+        // Multiple rows with noDuplicateKey: require strictly ascending
+        NIMBLE_USER_CHECK_GT(
+            newKey,
+            prevKey,
+            "Stripe keys must be in strictly ascending order (duplicates are not allowed). "
+            "lastKey: {}, firstKey: {}",
+            folly::hexlify(newKey),
+            folly::hexlify(prevKey));
+      } else {
+        // Single row or enforceKeyOrder only: allow equality
+        NIMBLE_USER_CHECK_GE(
+            newKey,
+            prevKey,
+            "Stripe keys must be in ascending order (firstKey <= lastKey). "
+            "lastKey: {}, firstKey: {}",
+            folly::hexlify(newKey),
+            folly::hexlify(prevKey));
+      }
+    } else if (config_.noDuplicateKey) {
+      // Subsequent stripes with noDuplicateKey: strictly ascending across
+      // stripes
       NIMBLE_USER_CHECK_GT(
           newKey,
           prevKey,
           "Stripe keys must be in strictly ascending order (duplicates are not allowed). "
+          "newKey: {}, previousKey: {}",
+          folly::hexlify(newKey),
+          folly::hexlify(prevKey));
+    } else {
+      // Subsequent stripes with enforceKeyOrder only: ascending (duplicates OK)
+      NIMBLE_USER_CHECK_GE(
+          newKey,
+          prevKey,
+          "Stripe keys must be in ascending order. "
           "newKey: {}, previousKey: {}",
           folly::hexlify(newKey),
           folly::hexlify(prevKey));
@@ -380,7 +419,8 @@ void TabletIndexWriter::writeRootIndex(
           indexColumnsVector,
           sortOrdersVector,
           stripeCountsVector,
-          stripeIndexGroupsVector));
+          stripeIndexGroupsVector,
+          config_.noDuplicateKey));
   writeOptionalSection(std::string(kIndexSection), asView(builder));
 }
 

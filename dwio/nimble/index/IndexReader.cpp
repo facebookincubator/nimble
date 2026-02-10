@@ -35,9 +35,11 @@ IndexReader::IndexReader(
     std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
     uint32_t stripeIndex,
     std::shared_ptr<StripeIndexGroup> indexGroup,
+    bool noDuplicateKey,
     velox::memory::MemoryPool* pool)
     : stripeIndex_{stripeIndex},
       indexGroup_{std::move(indexGroup)},
+      noDuplicateKey_{noDuplicateKey},
       input_{std::move(input)},
       pool_{pool} {
   NIMBLE_CHECK_NOT_NULL(input_);
@@ -48,9 +50,14 @@ std::unique_ptr<IndexReader> IndexReader::create(
     std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
     uint32_t stripeIndex,
     std::shared_ptr<StripeIndexGroup> indexGroup,
+    bool noDuplicateKey,
     velox::memory::MemoryPool* pool) {
   return std::unique_ptr<IndexReader>(new IndexReader(
-      std::move(input), stripeIndex, std::move(indexGroup), pool));
+      std::move(input),
+      stripeIndex,
+      std::move(indexGroup),
+      noDuplicateKey,
+      pool));
 }
 
 std::optional<uint32_t> IndexReader::seekAtOrAfter(

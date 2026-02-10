@@ -461,6 +461,7 @@ std::optional<TabletIndexConfig> createTabletIndexConfig(
       .columns = config->columns,
       .sortOrders = indexWriter->sortOrders(),
       .enforceKeyOrder = config->enforceKeyOrder,
+      .noDuplicateKey = config->noDuplicateKey,
   };
 }
 

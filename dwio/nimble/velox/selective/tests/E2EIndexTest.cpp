@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/encodings/PrefixEncoding.h"
+#include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 #include "velox/common/base/RandomUtil.h"
@@ -228,6 +229,7 @@ class E2EIndexTestBase : public ::testing::Test {
     indexConfig.sortOrders =
         std::vector<SortOrder>(indexColumns.size(), sortOrder);
     indexConfig.enforceKeyOrder = true;
+    indexConfig.noDuplicateKey = true;
     if (encodingLayout.has_value()) {
       indexConfig.encodingLayout = std::move(encodingLayout).value();
     }
@@ -3258,6 +3260,32 @@ TEST_P(E2EIndexTest, filterRestorationAcrossMultipleSplits) {
   // Verify filter is restored after row reader completes.
   ASSERT_NE(keySpec->filter(), nullptr);
   EXPECT_EQ(keySpec->filter()->kind(), FilterKind::kBigintRange);
+}
+
+// Test that noDuplicateKey flag is correctly persisted and can be read back.
+TEST_F(E2EIndexTest, noDuplicateKeyPersistence) {
+  // Verify IndexConfig default value for noDuplicateKey is false.
+  IndexConfig defaultConfig;
+  EXPECT_FALSE(defaultConfig.noDuplicateKey);
+
+  // Create simple sorted data with unique keys.
+  auto keyVector = vectorMaker_->flatVector<int64_t>({1, 2, 3, 4, 5});
+  auto dataVector = vectorMaker_->flatVector<int32_t>({10, 20, 30, 40, 50});
+  auto batch =
+      vectorMaker_->rowVector({"key", "data"}, {keyVector, dataVector});
+
+  // Write data with index (noDuplicateKey = true is set by default in
+  // writeData).
+  writeData({batch}, {"key"});
+
+  // Read back via TabletReader and verify noDuplicateKey is persisted.
+  auto readFile =
+      std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
+  auto tablet = TabletReader::create(readFile, *leafPool_);
+
+  ASSERT_TRUE(tablet->hasIndex());
+  ASSERT_NE(tablet->index(), nullptr);
+  EXPECT_TRUE(tablet->index()->noDuplicateKey());
 }
 
 // TODO: add schema revolution tests like column renaming to make sure selective

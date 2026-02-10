@@ -3485,6 +3485,7 @@ TEST_F(TabletWithIndexTest, keyOrderEnforcement) {
           .columns = {"col1"},
           .sortOrders = {SortOrder{.ascending = true}},
           .enforceKeyOrder = enforceKeyOrder,
+          .noDuplicateKey = enforceKeyOrder,
       };
 
       auto tabletWriter = nimble::TabletWriter::create(
