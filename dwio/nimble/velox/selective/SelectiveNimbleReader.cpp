@@ -521,7 +521,13 @@ void SelectiveNimbleRowReader::maybeSetIndexBounds() {
       asRowType(result->indexBounds.type()),
       toVeloxSortOrders(sortOrders, result->indexBounds.indexColumns.size()),
       readerBase_->pool());
-  encodedKeyBounds_ = keyEncoder->encodeIndexBounds(result->indexBounds);
+  auto encodedBounds = keyEncoder->encodeIndexBounds(result->indexBounds);
+  NIMBLE_CHECK_EQ(
+      encodedBounds.size(),
+      1,
+      "Expected single encoded bounds, got {}",
+      encodedBounds.size());
+  encodedKeyBounds_ = std::move(encodedBounds[0]);
 
   updateStartStripeFromLowerIndexBound();
   updateEndStripeFromUpperIndexBound();
