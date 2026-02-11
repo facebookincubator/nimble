@@ -81,7 +81,7 @@ void aggregateStats(
       const auto& arrayWithOffsets = builder.asArrayWithOffsets();
       offset = arrayWithOffsets.lengthsDescriptor().offset();
       columnStats[offset.value()].dedupedLogicalSize =
-          columnStats[offset.value()].nullCount * NULL_SIZE;
+          columnStats[offset.value()].nullCount * kNullSize;
       updateStats(
           arrayWithOffsets.offsetsDescriptor().offset(), offset.value());
       aggregateStats(arrayWithOffsets.elements(), columnStats, offset);
@@ -108,7 +108,7 @@ void aggregateStats(
       const auto& slidingWindowMap = builder.asSlidingWindowMap();
       offset = slidingWindowMap.lengthsDescriptor().offset();
       columnStats[offset.value()].dedupedLogicalSize =
-          columnStats[offset.value()].nullCount * NULL_SIZE;
+          columnStats[offset.value()].nullCount * kNullSize;
       updateStats(
           slidingWindowMap.offsetsDescriptor().offset(), offset.value());
       aggregateStats(slidingWindowMap.keys(), columnStats, offset);
