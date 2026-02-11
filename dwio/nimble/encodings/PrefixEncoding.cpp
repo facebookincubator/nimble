@@ -163,8 +163,6 @@ std::optional<uint32_t> PrefixEncoding::seekAtOrAfter(const void* value) {
   const auto& targetValue = *static_cast<const std::string_view*>(value);
 
   // Binary search among restart points to find the block containing the target.
-  // Since keys are unique and sorted, we find the last restart point whose
-  // value is <= targetValue.
   uint32_t left = 0;
   uint32_t right = numRestarts_;
 
@@ -173,12 +171,8 @@ std::optional<uint32_t> PrefixEncoding::seekAtOrAfter(const void* value) {
 
     seekToRestartPoint(mid);
     const std::string_view restartValue = decodeEntry();
-    if (restartValue == targetValue) {
-      // Exact match found at restart point. Since keys are unique (no
-      // duplicates), we can return immediately.
-      return currentRow_ - 1;
-    }
-    if (restartValue < targetValue) {
+
+    if (restartValue.compare(targetValue) < 0) {
       left = mid + 1;
     } else {
       right = mid;
@@ -199,9 +193,6 @@ std::optional<uint32_t> PrefixEncoding::seekAtOrAfter(const void* value) {
   // Linear scan within the block
   while (currentRow_ < rowCount_) {
     const std::string_view currentValue = decodeEntry();
-    // Return when we find either:
-    // 1. Exact match (since keys are unique, no need to scan further), or
-    // 2. First value greater than target.
     if (currentValue >= targetValue) {
       return currentRow_ - 1;
     }

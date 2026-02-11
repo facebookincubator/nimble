@@ -127,14 +127,6 @@ class TabletIndex {
     return sortOrders_;
   }
 
-  /// Returns whether the index was built with no duplicate keys.
-  /// When true, seek operations can return immediately upon exact match.
-  ///
-  /// @return True if index has no duplicate keys
-  bool noDuplicateKey() const {
-    return noDuplicateKey_;
-  }
-
   /// Returns metadata for a specific index group.
   ///
   /// @param groupIndex The zero-based stripe group index.
@@ -161,7 +153,6 @@ class TabletIndex {
   const std::vector<std::string_view> stripeKeys_;
   const std::vector<std::string> indexColumns_;
   const std::vector<SortOrder> sortOrders_;
-  const bool noDuplicateKey_;
 };
 
 } // namespace facebook::nimble::index
