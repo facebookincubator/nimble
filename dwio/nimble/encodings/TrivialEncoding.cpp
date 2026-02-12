@@ -38,6 +38,7 @@ TrivialEncoding<std::string_view>::TrivialEncoding(
     dataUncompressed_ = Compression::uncompress(
         memoryPool,
         dataCompressionType,
+        DataType::String,
         {blob_, static_cast<size_t>(data.end() - blob_)});
     blob_ = reinterpret_cast<const char*>(dataUncompressed_.data());
     uncompressedDataBytes_ = dataUncompressed_.size();
@@ -192,6 +193,7 @@ TrivialEncoding<bool>::TrivialEncoding(
     uncompressed_ = Compression::uncompress(
         pool,
         compressionType,
+        DataType::Undefined,
         {bitmap_, static_cast<size_t>(data.end() - bitmap_)});
     bitmap_ = uncompressed_.data();
     NIMBLE_CHECK(

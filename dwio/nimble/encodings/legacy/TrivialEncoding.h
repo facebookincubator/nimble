@@ -197,6 +197,7 @@ TrivialEncoding<T>::TrivialEncoding(
     uncompressed_ = Compression::uncompress(
         memoryPool,
         compressionType,
+        TypeTraits<physicalType>::dataType,
         {data.data() + kDataOffset, data.size() - kDataOffset});
     values_ = reinterpret_cast<const T*>(uncompressed_.data());
     NIMBLE_CHECK(
