@@ -114,14 +114,14 @@ TEST_F(IndexReaderTest, singleChunkSingleKey) {
       createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
   auto stripeIndexGroup =
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
+
   auto reader = IndexReader::create(
       createInputStream(encodedStream.data),
-      0,
+      /*stripeIndex=*/0,
       stripeIndexGroup,
-      /*noDuplicateKey=*/false,
       pool_.get());
 
-  // Test exact matches, keys between existing keys
+  // Test exact key match
   auto result = reader->seekAtOrAfter("key_a");
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result.value(), 0);
@@ -157,11 +157,7 @@ TEST_F(IndexReaderTest, singleChunkMultipleKeys) {
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   auto reader = IndexReader::create(
-      createInputStream(encodedStream.data),
-      0,
-      stripeIndexGroup,
-      /*noDuplicateKey=*/false,
-      pool_.get());
+      createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
 
   // Test exact matches, keys between existing keys, and keys after last key.
   // Keys between existing keys should return the next key's row.
@@ -217,11 +213,7 @@ TEST_F(IndexReaderTest, multipleChunks) {
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   auto reader = IndexReader::create(
-      createInputStream(encodedStream.data),
-      0,
-      stripeIndexGroup,
-      /*noDuplicateKey=*/false,
-      pool_.get());
+      createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
 
   // Test keys across all chunks with mixed found/not-found cases.
   // Chunk 0: row offset 0, Chunk 1: row offset 3, Chunk 2: row offset 6
@@ -281,11 +273,7 @@ TEST_F(IndexReaderTest, seekBetweenChunks) {
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   auto reader = IndexReader::create(
-      createInputStream(encodedStream.data),
-      0,
-      stripeIndexGroup,
-      /*noDuplicateKey=*/false,
-      pool_.get());
+      createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
 
   // Key falls between chunk 0's max (ccc) and chunk 1's content (ddd)
   // The index lookup should direct us to chunk 1, and we find ddd
@@ -357,11 +345,7 @@ TEST_F(IndexReaderTest, multipleStripes) {
 
   // Test reader for stripe 0
   auto reader0 = IndexReader::create(
-      createInputStream(encodedStream0.data),
-      0,
-      stripeIndexGroup,
-      /*noDuplicateKey=*/false,
-      pool_.get());
+      createInputStream(encodedStream0.data), 0, stripeIndexGroup, pool_.get());
 
   auto result = reader0->seekAtOrAfter("key_a");
   ASSERT_TRUE(result.has_value());
@@ -373,11 +357,7 @@ TEST_F(IndexReaderTest, multipleStripes) {
 
   // Test reader for stripe 1
   auto reader1 = IndexReader::create(
-      createInputStream(encodedStream1.data),
-      1,
-      stripeIndexGroup,
-      /*noDuplicateKey=*/false,
-      pool_.get());
+      createInputStream(encodedStream1.data), 1, stripeIndexGroup, pool_.get());
 
   result = reader1->seekAtOrAfter("key_d");
   ASSERT_TRUE(result.has_value());
@@ -408,11 +388,7 @@ TEST_F(IndexReaderTest, emptyStringKey) {
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   auto reader = IndexReader::create(
-      createInputStream(encodedStream.data),
-      0,
-      stripeIndexGroup,
-      /*noDuplicateKey=*/false,
-      pool_.get());
+      createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
 
   // Test empty string key
   auto result = reader->seekAtOrAfter("");
@@ -452,11 +428,7 @@ TEST_F(IndexReaderTest, largeNumberOfKeys) {
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   auto reader = IndexReader::create(
-      createInputStream(encodedStream.data),
-      0,
-      stripeIndexGroup,
-      /*noDuplicateKey=*/false,
-      pool_.get());
+      createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
 
   // Test some specific keys
   std::vector<int> testIndices = {0, 1, 10, 100, 500, 999};
@@ -512,11 +484,7 @@ TEST_F(IndexReaderTest, repeatedSeeksToSameChunk) {
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   auto reader = IndexReader::create(
-      createInputStream(encodedStream.data),
-      0,
-      stripeIndexGroup,
-      /*noDuplicateKey=*/false,
-      pool_.get());
+      createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
 
   // Test repeated seeks within each chunk and across chunks.
   // Mix forward, backward, and repeated seeks to test caching behavior.
@@ -566,11 +534,7 @@ TEST_F(IndexReaderTest, unevenChunkSizes) {
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   auto reader = IndexReader::create(
-      createInputStream(encodedStream.data),
-      0,
-      stripeIndexGroup,
-      /*noDuplicateKey=*/false,
-      pool_.get());
+      createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
 
   // Chunk 0: row offset 0, 1 key
   // Chunk 1: row offset 1, 5 keys
@@ -626,11 +590,7 @@ TEST_F(IndexReaderTest, binaryKeys) {
       createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   auto reader = IndexReader::create(
-      createInputStream(encodedStream.data),
-      0,
-      stripeIndexGroup,
-      /*noDuplicateKey=*/false,
-      pool_.get());
+      createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
 
   // Test exact matches and not-found cases for binary keys.
   // Keys after the last key should return std::nullopt.

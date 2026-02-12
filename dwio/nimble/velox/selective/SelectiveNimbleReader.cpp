@@ -611,12 +611,10 @@ void SelectiveNimbleRowReader::buildIndexReader(NimbleParams& params) {
   if ((currentStripe_ != startStripe_) && (currentStripe_ != endStripe_ - 1)) {
     return;
   }
-  NIMBLE_CHECK_NOT_NULL(tabletIndex_);
   indexReader_ = index::IndexReader::create(
       params.streams().enqueueKeyStream(),
       params.streams().stripeIndex(),
       params.streams().indexGroup(),
-      tabletIndex_->noDuplicateKey(),
       &params.pool());
 }
 

@@ -419,8 +419,7 @@ void TabletIndexWriter::writeRootIndex(
           indexColumnsVector,
           sortOrdersVector,
           stripeCountsVector,
-          stripeIndexGroupsVector,
-          config_.noDuplicateKey));
+          stripeIndexGroupsVector));
   writeOptionalSection(std::string(kIndexSection), asView(builder));
 }
 

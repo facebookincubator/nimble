@@ -17,7 +17,6 @@
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/encodings/PrefixEncoding.h"
-#include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 #include "velox/common/base/RandomUtil.h"
@@ -216,7 +215,8 @@ class E2EIndexTestBase : public ::testing::Test {
       const std::vector<RowVectorPtr>& batches,
       const std::vector<std::string>& indexColumns,
       std::optional<EncodingLayout> encodingLayout = std::nullopt,
-      SortOrder sortOrder = SortOrder{.ascending = true}) {
+      SortOrder sortOrder = SortOrder{.ascending = true},
+      bool noDuplicateKey = true) {
     ASSERT_FALSE(indexColumns.empty()) << "indexColumns must not be empty";
 
     sinkData_.clear();
@@ -229,7 +229,7 @@ class E2EIndexTestBase : public ::testing::Test {
     indexConfig.sortOrders =
         std::vector<SortOrder>(indexColumns.size(), sortOrder);
     indexConfig.enforceKeyOrder = true;
-    indexConfig.noDuplicateKey = true;
+    indexConfig.noDuplicateKey = noDuplicateKey;
     if (encodingLayout.has_value()) {
       indexConfig.encodingLayout = std::move(encodingLayout).value();
     }
@@ -438,31 +438,47 @@ class E2EIndexTest : public E2EIndexTestBase,
     return vectorMaker_->flatVector(values);
   }
 
-  // Generates unique sorted key data using the test parameter's sort order.
-  // Uses the shared generateStrictSortedVector() utility from
-  // E2EFilterTestBase. keyType: The type of the key column (BIGINT, DOUBLE,
-  // REAL, TIMESTAMP, VARCHAR) startValue: The starting value for the
-  // monotonically increasing sequence
+  // Generates sorted key data using the test parameter's sort order.
+  // Uses the shared generateStrictSortedVector() or generateSortedVector()
+  // utility from E2EFilterTestBase.
+  // keyType: The type of the key column (BIGINT, DOUBLE, REAL, TIMESTAMP,
+  //          VARCHAR)
+  // numRows: Total number of rows to generate
+  // rowsPerBatch: Number of rows per batch
+  // startValue: The starting value for the monotonically increasing sequence
+  // withDuplicates: If true, generates 1-3 random duplicates for each key
   std::vector<RowVectorPtr> generateKeyData(
       const TypePtr& keyType,
       size_t numRows,
       size_t rowsPerBatch,
-      int64_t startValue = 0) {
+      int64_t startValue = 0,
+      bool withDuplicates = false) {
     const bool ascending = isAscending();
     std::vector<RowVectorPtr> batches;
     const size_t numBatches = numRows / rowsPerBatch;
 
     for (size_t batchIdx = 0; batchIdx < numBatches; ++batchIdx) {
       const size_t globalRowOffset = batchIdx * rowsPerBatch;
-      auto keyVector =
-          dwio::common::E2EFilterTestBase::generateStrictSortedVector(
-              keyType,
-              rowsPerBatch,
-              globalRowOffset,
-              startValue,
-              numRows,
-              ascending,
-              leafPool_.get());
+      VectorPtr keyVector;
+      if (withDuplicates) {
+        keyVector = dwio::common::E2EFilterTestBase::generateSortedVector(
+            keyType,
+            rowsPerBatch,
+            globalRowOffset,
+            startValue,
+            numRows,
+            ascending,
+            leafPool_.get());
+      } else {
+        keyVector = dwio::common::E2EFilterTestBase::generateStrictSortedVector(
+            keyType,
+            rowsPerBatch,
+            globalRowOffset,
+            startValue,
+            numRows,
+            ascending,
+            leafPool_.get());
+      }
       auto dataVector = makeFuzzedComplexVector(
           ARRAY(INTEGER()), rowsPerBatch, batchIdx * 12345);
       auto nestedVector = makeFuzzedComplexVector(
@@ -478,8 +494,14 @@ class E2EIndexTest : public E2EIndexTestBase,
   // Writes data using the test parameter's encoding layout and sort order.
   void writeDataWithParam(
       const std::vector<RowVectorPtr>& batches,
-      const std::vector<std::string>& indexColumns) {
-    writeData(batches, indexColumns, getEncodingLayout(), GetParam().sortOrder);
+      const std::vector<std::string>& indexColumns,
+      bool noDuplicateKey = true) {
+    writeData(
+        batches,
+        indexColumns,
+        getEncodingLayout(),
+        GetParam().sortOrder,
+        noDuplicateKey);
   }
 };
 
@@ -496,20 +518,23 @@ TEST_P(E2EIndexTest, singleBigintKey) {
     std::string name;
     int64_t filterLower;
     int64_t filterUpper;
+    bool withDuplicates;
 
     std::string debugString() const {
       return fmt::format(
-          "name={}, filterLower={}, filterUpper={}",
+          "name={}, filterLower={}, filterUpper={}, withDuplicates={}",
           name,
           filterLower,
-          filterUpper);
+          filterUpper,
+          withDuplicates);
     }
   };
 
   const int64_t kNumericMin = std::numeric_limits<int64_t>::min();
   const int64_t kNumericMax = std::numeric_limits<int64_t>::max();
 
-  std::vector<TestCase> testCases = {
+  // Base filter configurations to test.
+  std::vector<std::tuple<std::string, int64_t, int64_t>> filterConfigs = {
       {"pointLookupMiddle", 5'000, 5'000},
       {"pointLookupAtMin", kMinKey, kMinKey},
       {"pointLookupAtMax", kMaxKey, kMaxKey},
@@ -529,18 +554,37 @@ TEST_P(E2EIndexTest, singleBigintKey) {
       {"fullNumericRange", kNumericMin, kNumericMax},
   };
 
+  // Generate test cases for both with and without duplicates.
+  // Group by withDuplicates to minimize data regeneration.
+  std::vector<TestCase> testCases;
+  for (bool withDuplicates : {false, true}) {
+    for (const auto& [name, lower, upper] : filterConfigs) {
+      std::string testName = withDuplicates ? name + "WithDuplicates" : name;
+      testCases.push_back({testName, lower, upper, withDuplicates});
+    }
+  }
+
   auto rowType =
       ROW({"key", "data", "nested"},
           {BIGINT(),
            ARRAY(INTEGER()),
            ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  // Use the shared generateKeyData() utility with the startValue being kMinKey.
-  auto batches = generateKeyData(BIGINT(), kNumRows, kRowsPerBatch, kMinKey);
-  writeDataWithParam(batches, {"key"});
+  // Track current duplicate mode to regenerate data only when needed.
+  std::optional<bool> currentWithDuplicates;
 
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(testCase.debugString());
+
+    // Regenerate data only when duplicate mode changes.
+    if (!currentWithDuplicates.has_value() ||
+        currentWithDuplicates.value() != testCase.withDuplicates) {
+      auto batches = generateKeyData(
+          BIGINT(), kNumRows, kRowsPerBatch, kMinKey, testCase.withDuplicates);
+      // noDuplicateKey should be false when data has duplicates
+      writeDataWithParam(batches, {"key"}, !testCase.withDuplicates);
+      currentWithDuplicates = testCase.withDuplicates;
+    }
 
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
     filters["key"] = std::make_unique<BigintRange>(
@@ -584,13 +628,15 @@ TEST_P(E2EIndexTest, singleDoubleKey) {
     std::string name;
     double filterLower;
     double filterUpper;
+    bool withDuplicates;
 
     std::string debugString() const {
       return fmt::format(
-          "name={}, filterLower={}, filterUpper={}",
+          "name={}, filterLower={}, filterUpper={}, withDuplicates={}",
           name,
           filterLower,
-          filterUpper);
+          filterUpper,
+          withDuplicates);
     }
   };
 
@@ -599,7 +645,8 @@ TEST_P(E2EIndexTest, singleDoubleKey) {
   const double kNegInfinity = -std::numeric_limits<double>::infinity();
   const double kPosInfinity = std::numeric_limits<double>::infinity();
 
-  std::vector<TestCase> testCases = {
+  // Base filter configurations to test.
+  std::vector<std::tuple<std::string, double, double>> filterConfigs = {
       {"pointLookupMiddle", 5'000.0, 5'000.0},
       {"pointLookupAtMin", kMinKey, kMinKey},
       {"pointLookupAtMax", kMaxKey, kMaxKey},
@@ -623,18 +670,37 @@ TEST_P(E2EIndexTest, singleDoubleKey) {
       {"fullInfinityRange", kNegInfinity, kPosInfinity},
   };
 
+  // Generate test cases for both with and without duplicates.
+  // Group by withDuplicates to minimize data regeneration.
+  std::vector<TestCase> testCases;
+  for (bool withDuplicates : {false, true}) {
+    for (const auto& [name, lower, upper] : filterConfigs) {
+      std::string testName = withDuplicates ? name + "WithDuplicates" : name;
+      testCases.push_back({testName, lower, upper, withDuplicates});
+    }
+  }
+
   auto rowType =
       ROW({"key", "data", "nested"},
           {DOUBLE(),
            ARRAY(INTEGER()),
            ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  // Use the shared generateKeyData() utility with the startValue being kMinKey.
-  auto batches = generateKeyData(DOUBLE(), kNumRows, kRowsPerBatch, kMinKey);
-  writeDataWithParam(batches, {"key"});
+  // Track current duplicate mode to regenerate data only when needed.
+  std::optional<bool> currentWithDuplicates;
 
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(testCase.debugString());
+
+    // Regenerate data only when duplicate mode changes.
+    if (!currentWithDuplicates.has_value() ||
+        currentWithDuplicates.value() != testCase.withDuplicates) {
+      auto batches = generateKeyData(
+          DOUBLE(), kNumRows, kRowsPerBatch, kMinKey, testCase.withDuplicates);
+      // noDuplicateKey should be false when data has duplicates
+      writeDataWithParam(batches, {"key"}, !testCase.withDuplicates);
+      currentWithDuplicates = testCase.withDuplicates;
+    }
 
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
     filters["key"] = std::make_unique<DoubleRange>(
@@ -684,13 +750,15 @@ TEST_P(E2EIndexTest, singleFloatKey) {
     std::string name;
     float filterLower;
     float filterUpper;
+    bool withDuplicates;
 
     std::string debugString() const {
       return fmt::format(
-          "name={}, filterLower={}, filterUpper={}",
+          "name={}, filterLower={}, filterUpper={}, withDuplicates={}",
           name,
           filterLower,
-          filterUpper);
+          filterUpper,
+          withDuplicates);
     }
   };
 
@@ -699,7 +767,8 @@ TEST_P(E2EIndexTest, singleFloatKey) {
   const float kNegInfinity = -std::numeric_limits<float>::infinity();
   const float kPosInfinity = std::numeric_limits<float>::infinity();
 
-  std::vector<TestCase> testCases = {
+  // Base filter configurations to test.
+  std::vector<std::tuple<std::string, float, float>> filterConfigs = {
       {"pointLookupMiddle", 5'000.0f, 5'000.0f},
       {"pointLookupAtMin", kMinKey, kMinKey},
       {"pointLookupAtMax", kMaxKey, kMaxKey},
@@ -723,16 +792,35 @@ TEST_P(E2EIndexTest, singleFloatKey) {
       {"fullInfinityRange", kNegInfinity, kPosInfinity},
   };
 
+  // Generate test cases for both with and without duplicates.
+  // Group by withDuplicates to minimize data regeneration.
+  std::vector<TestCase> testCases;
+  for (bool withDuplicates : {false, true}) {
+    for (const auto& [name, lower, upper] : filterConfigs) {
+      std::string testName = withDuplicates ? name + "WithDuplicates" : name;
+      testCases.push_back({testName, lower, upper, withDuplicates});
+    }
+  }
+
   auto rowType = ROW(
       {"key", "data", "nested"},
       {REAL(), ARRAY(INTEGER()), ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  // Use the shared generateKeyData() utility with the startValue being kMinKey.
-  auto batches = generateKeyData(REAL(), kNumRows, kRowsPerBatch, kMinKey);
-  writeDataWithParam(batches, {"key"});
+  // Track current duplicate mode to regenerate data only when needed.
+  std::optional<bool> currentWithDuplicates;
 
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(testCase.debugString());
+
+    // Regenerate data only when duplicate mode changes.
+    if (!currentWithDuplicates.has_value() ||
+        currentWithDuplicates.value() != testCase.withDuplicates) {
+      auto batches = generateKeyData(
+          REAL(), kNumRows, kRowsPerBatch, kMinKey, testCase.withDuplicates);
+      // noDuplicateKey should be false when data has duplicates
+      writeDataWithParam(batches, {"key"}, !testCase.withDuplicates);
+      currentWithDuplicates = testCase.withDuplicates;
+    }
 
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
     filters["key"] = std::make_unique<FloatRange>(
@@ -783,15 +871,17 @@ TEST_P(E2EIndexTest, singleTimestampKey) {
     std::string name;
     Timestamp filterLower;
     Timestamp filterUpper;
+    bool withDuplicates;
 
     std::string debugString() const {
       return fmt::format(
-          "name={}, filterLower=({}, {}), filterUpper=({}, {})",
+          "name={}, filterLower=({}, {}), filterUpper=({}, {}), withDuplicates={}",
           name,
           filterLower.getSeconds(),
           filterLower.getNanos(),
           filterUpper.getSeconds(),
-          filterUpper.getNanos());
+          filterUpper.getNanos(),
+          withDuplicates);
     }
   };
 
@@ -800,7 +890,8 @@ TEST_P(E2EIndexTest, singleTimestampKey) {
   const Timestamp kNumericMin = Timestamp::minMillis();
   const Timestamp kNumericMax = Timestamp::maxMillis();
 
-  std::vector<TestCase> testCases = {
+  // Base filter configurations to test.
+  std::vector<std::tuple<std::string, Timestamp, Timestamp>> filterConfigs = {
       {"pointLookupMiddle", Timestamp(1'005'000, 0), Timestamp(1'005'000, 0)},
       {"pointLookupAtMin", kMinKey, kMinKey},
       {"pointLookupAtMax", kMaxKey, kMaxKey},
@@ -826,20 +917,41 @@ TEST_P(E2EIndexTest, singleTimestampKey) {
       {"fullNumericRange", kNumericMin, kNumericMax},
   };
 
+  // Generate test cases for both with and without duplicates.
+  // Group by withDuplicates to minimize data regeneration.
+  std::vector<TestCase> testCases;
+  for (bool withDuplicates : {false, true}) {
+    for (const auto& [name, lower, upper] : filterConfigs) {
+      std::string testName = withDuplicates ? name + "WithDuplicates" : name;
+      testCases.push_back({testName, lower, upper, withDuplicates});
+    }
+  }
+
   auto rowType =
       ROW({"key", "data", "nested"},
           {TIMESTAMP(),
            ARRAY(INTEGER()),
            ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  // Use the shared generateKeyData() utility with the startValue being
-  // kMinKeySeconds.
-  auto batches =
-      generateKeyData(TIMESTAMP(), kNumRows, kRowsPerBatch, kMinKeySeconds);
-  writeDataWithParam(batches, {"key"});
+  // Track current duplicate mode to regenerate data only when needed.
+  std::optional<bool> currentWithDuplicates;
 
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(testCase.debugString());
+
+    // Regenerate data only when duplicate mode changes.
+    if (!currentWithDuplicates.has_value() ||
+        currentWithDuplicates.value() != testCase.withDuplicates) {
+      auto batches = generateKeyData(
+          TIMESTAMP(),
+          kNumRows,
+          kRowsPerBatch,
+          kMinKeySeconds,
+          testCase.withDuplicates);
+      // noDuplicateKey should be false when data has duplicates
+      writeDataWithParam(batches, {"key"}, !testCase.withDuplicates);
+      currentWithDuplicates = testCase.withDuplicates;
+    }
 
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
     filters["key"] = std::make_unique<TimestampRange>(
@@ -871,9 +983,12 @@ TEST_P(E2EIndexTest, singleTimestampKey) {
 }
 
 // Test with single boolean key column.
-// Boolean keys have only two unique values (false, true), so we generate
-// exactly 2 rows with strictly ordered keys.
+// Boolean keys naturally have duplicates since there are only two possible
+// values (true/false).
 TEST_P(E2EIndexTest, singleBoolKey) {
+  constexpr size_t kNumRows = 2'000;
+  constexpr size_t kRowsPerBatch = 200;
+
   struct TestCase {
     std::string name;
     bool filterValue;
@@ -891,17 +1006,30 @@ TEST_P(E2EIndexTest, singleBoolKey) {
 
   auto rowType = ROW({"key", "data"}, {BOOLEAN(), ARRAY(INTEGER())});
 
-  // Generate strictly ordered boolean keys based on sort order.
-  // Ascending: [false, true], Descending: [true, false]
+  // Generate sorted boolean keys based on sort order.
+  // Ascending: false first, then true.
+  // Descending: true first, then false.
   const bool ascending = GetParam().sortOrder.ascending;
   std::vector<RowVectorPtr> batches;
-  auto keyVector = ascending ? vectorMaker_->flatVector<bool>({false, true})
-                             : vectorMaker_->flatVector<bool>({true, false});
-  auto dataVector = makeFuzzedComplexVector(ARRAY(INTEGER()), 2, 12345);
-  batches.push_back(
-      vectorMaker_->rowVector({"key", "data"}, {keyVector, dataVector}));
+  for (size_t batchIdx = 0; batchIdx < kNumRows / kRowsPerBatch; ++batchIdx) {
+    std::vector<bool> keyValues(kRowsPerBatch);
+    for (size_t i = 0; i < kRowsPerBatch; ++i) {
+      size_t globalRow = batchIdx * kRowsPerBatch + i;
+      // First half of rows get the "smaller" value, second half get the
+      // "larger" value. For ascending: false < true. For descending: true <
+      // false.
+      bool isSecondHalf = globalRow >= kNumRows / 2;
+      keyValues[i] = ascending ? isSecondHalf : !isSecondHalf;
+    }
+    auto keyVector = vectorMaker_->flatVector(keyValues);
+    auto dataVector = makeFuzzedComplexVector(
+        ARRAY(INTEGER()), kRowsPerBatch, batchIdx * 12345);
+    batches.push_back(
+        vectorMaker_->rowVector({"key", "data"}, {keyVector, dataVector}));
+  }
 
-  writeDataWithParam(batches, {"key"});
+  // Boolean keys naturally have duplicates, so noDuplicateKey = false
+  writeDataWithParam(batches, {"key"}, false);
 
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(testCase.debugString());
@@ -955,46 +1083,64 @@ TEST_P(E2EIndexTest, singleVarcharKey) {
     std::string filterLower;
     std::string filterUpper;
     bool isPointLookup;
+    bool withDuplicates;
 
     std::string debugString() const {
       return fmt::format(
-          "name={}, filterLower={}, filterUpper={}, isPointLookup={}",
+          "name={}, filterLower={}, filterUpper={}, isPointLookup={}, withDuplicates={}",
           name,
           filterLower,
           filterUpper,
-          isPointLookup);
+          isPointLookup,
+          withDuplicates);
     }
   };
 
+  // Base filter configurations to test.
   // For point lookups, we use BytesValues filter.
   // For range queries, we use BytesRange filter.
-  std::vector<TestCase> testCases = {
-      // Point lookups using BytesValues.
-      {"pointLookupMiddle", formatKey(5'000), formatKey(5'000), true},
-      {"pointLookupAtMin", kMinKey, kMinKey, true},
-      {"pointLookupAtMax", kMaxKey, kMaxKey, true},
-      {"pointLookupBelowMin", formatKey(500), formatKey(500), true},
-      {"pointLookupAboveMax",
-       formatKey(kMaxKeyNum + 100),
-       formatKey(kMaxKeyNum + 100),
-       true},
-      // Range queries using BytesRange.
-      {"rangeMiddle", formatKey(3'000), formatKey(7'000), false},
-      {"rangeFromMin", kMinKey, formatKey(5'000), false},
-      {"rangeToMax", formatKey(5'000), kMaxKey, false},
-      {"fullRange", kMinKey, kMaxKey, false},
-      {"lowerBelowMin", formatKey(0), formatKey(5'000), false},
-      {"upperAboveMax", formatKey(5'000), formatKey(kMaxKeyNum + 1'000), false},
-      {"bothBoundsAboveMax",
-       formatKey(kMaxKeyNum + 100),
-       formatKey(kMaxKeyNum + 200),
-       false},
-      {"bothBoundsBelowMin", formatKey(0), formatKey(500), false},
-      // String boundary test cases.
-      {"lowerAtEmptyString", "", formatKey(5'000), false},
-      {"prefixRange", "key_0000", "key_0001", false},
-      {"singleCharRange", "k", "l", false},
-  };
+  std::vector<std::tuple<std::string, std::string, std::string, bool>>
+      filterConfigs = {
+          // Point lookups using BytesValues.
+          {"pointLookupMiddle", formatKey(5'000), formatKey(5'000), true},
+          {"pointLookupAtMin", kMinKey, kMinKey, true},
+          {"pointLookupAtMax", kMaxKey, kMaxKey, true},
+          {"pointLookupBelowMin", formatKey(500), formatKey(500), true},
+          {"pointLookupAboveMax",
+           formatKey(kMaxKeyNum + 100),
+           formatKey(kMaxKeyNum + 100),
+           true},
+          // Range queries using BytesRange.
+          {"rangeMiddle", formatKey(3'000), formatKey(7'000), false},
+          {"rangeFromMin", kMinKey, formatKey(5'000), false},
+          {"rangeToMax", formatKey(5'000), kMaxKey, false},
+          {"fullRange", kMinKey, kMaxKey, false},
+          {"lowerBelowMin", formatKey(0), formatKey(5'000), false},
+          {"upperAboveMax",
+           formatKey(5'000),
+           formatKey(kMaxKeyNum + 1'000),
+           false},
+          {"bothBoundsAboveMax",
+           formatKey(kMaxKeyNum + 100),
+           formatKey(kMaxKeyNum + 200),
+           false},
+          {"bothBoundsBelowMin", formatKey(0), formatKey(500), false},
+          // String boundary test cases.
+          {"lowerAtEmptyString", "", formatKey(5'000), false},
+          {"prefixRange", "key_0000", "key_0001", false},
+          {"singleCharRange", "k", "l", false},
+      };
+
+  // Generate test cases for both with and without duplicates.
+  // Group by withDuplicates to minimize data regeneration.
+  std::vector<TestCase> testCases;
+  // for (bool withDuplicates : {false, true}) {
+  for (bool withDuplicates : {false}) {
+    for (const auto& [name, lower, upper, isPoint] : filterConfigs) {
+      std::string testName = withDuplicates ? name + "WithDuplicates" : name;
+      testCases.push_back({testName, lower, upper, isPoint, withDuplicates});
+    }
+  }
 
   auto rowType =
       ROW({"key", "data", "nested"},
@@ -1002,14 +1148,25 @@ TEST_P(E2EIndexTest, singleVarcharKey) {
            ARRAY(INTEGER()),
            ROW({{"nested", MAP(INTEGER(), VARCHAR())}})});
 
-  // Use the shared generateKeyData() utility with the startValue being
-  // kMinKeyNum.
-  auto batches =
-      generateKeyData(VARCHAR(), kNumRows, kRowsPerBatch, kMinKeyNum);
-  writeDataWithParam(batches, {"key"});
+  // Track current duplicate mode to regenerate data only when needed.
+  std::optional<bool> currentWithDuplicates;
 
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(testCase.debugString());
+
+    // Regenerate data only when duplicate mode changes.
+    if (!currentWithDuplicates.has_value() ||
+        currentWithDuplicates.value() != testCase.withDuplicates) {
+      auto batches = generateKeyData(
+          VARCHAR(),
+          kNumRows,
+          kRowsPerBatch,
+          kMinKeyNum,
+          testCase.withDuplicates);
+      // noDuplicateKey should be false when data has duplicates
+      writeDataWithParam(batches, {"key"}, !testCase.withDuplicates);
+      currentWithDuplicates = testCase.withDuplicates;
+    }
 
     std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
     if (testCase.isPointLookup) {
@@ -1752,6 +1909,9 @@ TEST_P(E2EIndexTest, twoFloatKeysFilterCombinations) {
 // Two boolean keys have exactly 4 unique combinations when strictly ordered:
 // (false, false), (false, true), (true, false), (true, true).
 TEST_P(E2EIndexTest, twoBoolKeysFilterCombinations) {
+  constexpr size_t kNumRows = 4'000;
+  constexpr size_t kRowsPerBatch = 400;
+
   const auto rowType =
       ROW({"key1", "key2", "data", "nested"},
           {BOOLEAN(),
@@ -1759,29 +1919,45 @@ TEST_P(E2EIndexTest, twoBoolKeysFilterCombinations) {
            ARRAY(MAP(INTEGER(), VARCHAR())),
            ROW({{"inner", MAP(VARCHAR(), ARRAY(BIGINT()))}})});
 
-  // Generate strictly ordered boolean keys with exactly 4 rows:
-  // Ascending: (false, false), (false, true), (true, false), (true, true).
-  // Descending: (true, true), (true, false), (false, true), (false, false).
+  // Generate sorted boolean keys based on sort order.
+  // Ascending: key1 starts false then true; key2 sorted within key1 groups
+  // Descending: key1 starts true then false; key2 sorted within key1 groups
+  const bool ascending = GetParam().sortOrder.ascending;
   std::vector<RowVectorPtr> batches;
-  VectorPtr key1Vector;
-  VectorPtr key2Vector;
-  if (isAscending()) {
-    key1Vector = vectorMaker_->flatVector<bool>({false, false, true, true});
-    key2Vector = vectorMaker_->flatVector<bool>({false, true, false, true});
-  } else {
-    key1Vector = vectorMaker_->flatVector<bool>({true, true, false, false});
-    key2Vector = vectorMaker_->flatVector<bool>({true, false, true, false});
+  for (size_t batchIdx = 0; batchIdx < kNumRows / kRowsPerBatch; ++batchIdx) {
+    std::vector<bool> key1Values(kRowsPerBatch);
+    std::vector<bool> key2Values(kRowsPerBatch);
+    for (size_t i = 0; i < kRowsPerBatch; ++i) {
+      size_t globalIdx = batchIdx * kRowsPerBatch + i;
+      // key1: first half vs second half (ascending: false then true)
+      bool isSecondHalfKey1 = globalIdx >= kNumRows / 2;
+      key1Values[i] = ascending ? isSecondHalfKey1 : !isSecondHalfKey1;
+      // key2: sorted within key1 group (first half false, second half true)
+      const size_t halfSize = kNumRows / 4;
+      bool isSecondHalfKey2;
+      if (globalIdx < kNumRows / 2) {
+        isSecondHalfKey2 = (globalIdx % (kNumRows / 2)) >= halfSize;
+      } else {
+        isSecondHalfKey2 =
+            ((globalIdx - kNumRows / 2) % (kNumRows / 2)) >= halfSize;
+      }
+      key2Values[i] = ascending ? isSecondHalfKey2 : !isSecondHalfKey2;
+    }
+    auto key1Vector = vectorMaker_->flatVector(key1Values);
+    auto key2Vector = vectorMaker_->flatVector(key2Values);
+    auto dataVector = makeFuzzedComplexVector(
+        ARRAY(MAP(INTEGER(), VARCHAR())), kRowsPerBatch, batchIdx * 555);
+    auto nestedVector = makeFuzzedComplexVector(
+        ROW({{"inner", MAP(VARCHAR(), ARRAY(BIGINT()))}}),
+        kRowsPerBatch,
+        batchIdx * 666);
+    batches.push_back(vectorMaker_->rowVector(
+        {"key1", "key2", "data", "nested"},
+        {key1Vector, key2Vector, dataVector, nestedVector}));
   }
 
-  auto dataVector =
-      makeFuzzedComplexVector(ARRAY(MAP(INTEGER(), VARCHAR())), 4, 555);
-  auto nestedVector = makeFuzzedComplexVector(
-      ROW({{"inner", MAP(VARCHAR(), ARRAY(BIGINT()))}}), 4, 666);
-  batches.push_back(vectorMaker_->rowVector(
-      {"key1", "key2", "data", "nested"},
-      {key1Vector, key2Vector, dataVector, nestedVector}));
-
-  writeDataWithParam(batches, {"key1", "key2"});
+  // Boolean keys naturally have duplicates, so noDuplicateKey = false
+  writeDataWithParam(batches, {"key1", "key2"}, false);
 
   struct TestCase {
     std::string name;
@@ -2257,11 +2433,11 @@ class E2EIndexFuzzerTest
     : public E2EIndexTestBase,
       public ::testing::WithParamInterface<FuzzerTestParam> {
  protected:
-  // Supported index column types for the fuzzer.
-  // Note: BOOLEAN, TINYINT, and SMALLINT are excluded because they have
-  // limited ranges (2, 127, 32767 values respectively) and cannot generate
-  // enough unique strictly ordered values for the fuzzer's kNumRows (20,000).
-  static constexpr std::array<TypeKind, 5> kIndexableTypes = {
+  // Supported index column types.
+  static constexpr std::array<TypeKind, 8> kIndexableTypes = {
+      TypeKind::BOOLEAN,
+      TypeKind::TINYINT,
+      TypeKind::SMALLINT,
       TypeKind::INTEGER,
       TypeKind::BIGINT,
       TypeKind::REAL,
@@ -2298,9 +2474,11 @@ class E2EIndexFuzzerTest
     return complexTypes[dist(rng)];
   }
 
-  // Generates strictly ordered unique key column data.
-  // For ascending order: values increase (0, 1, 2, ...)
-  // For descending order: values decrease (numRows-1, numRows-2, ...)
+  // Generates sorted key column data.
+  // For types with limited ranges (BOOLEAN, TINYINT, SMALLINT), values will
+  // have duplicates since the number of rows exceeds the type's range. For
+  // ascending order: values increase (0, 1, 2, ...) For descending order:
+  // values decrease (numRows-1, numRows-2, ...)
   VectorPtr generateSortedKeyColumn(
       const TypePtr& type,
       size_t numRows,
@@ -2313,6 +2491,34 @@ class E2EIndexFuzzerTest
     };
 
     switch (type->kind()) {
+      case TypeKind::BOOLEAN: {
+        // Boolean only has 2 values, so we split rows into two halves.
+        // Ascending: first half = false, second half = true.
+        // Descending: first half = true, second half = false.
+        std::vector<bool> values(numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          size_t globalIdx = batchOffset + i;
+          bool isSecondHalf = globalIdx >= totalRows / 2;
+          values[i] = ascending ? isSecondHalf : !isSecondHalf;
+        }
+        return vectorMaker_->flatVector(values);
+      }
+      case TypeKind::TINYINT: {
+        constexpr int8_t kModulo = 126;
+        std::vector<int8_t> values(numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          values[i] = static_cast<int8_t>(effectiveOffset(i) % kModulo);
+        }
+        return vectorMaker_->flatVector(values);
+      }
+      case TypeKind::SMALLINT: {
+        constexpr int16_t kModulo = 32766;
+        std::vector<int16_t> values(numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          values[i] = static_cast<int16_t>(effectiveOffset(i) % kModulo);
+        }
+        return vectorMaker_->flatVector(values);
+      }
       case TypeKind::INTEGER: {
         std::vector<int32_t> values(numRows);
         for (size_t i = 0; i < numRows; ++i) {
@@ -3260,32 +3466,6 @@ TEST_P(E2EIndexTest, filterRestorationAcrossMultipleSplits) {
   // Verify filter is restored after row reader completes.
   ASSERT_NE(keySpec->filter(), nullptr);
   EXPECT_EQ(keySpec->filter()->kind(), FilterKind::kBigintRange);
-}
-
-// Test that noDuplicateKey flag is correctly persisted and can be read back.
-TEST_F(E2EIndexTest, noDuplicateKeyPersistence) {
-  // Verify IndexConfig default value for noDuplicateKey is false.
-  IndexConfig defaultConfig;
-  EXPECT_FALSE(defaultConfig.noDuplicateKey);
-
-  // Create simple sorted data with unique keys.
-  auto keyVector = vectorMaker_->flatVector<int64_t>({1, 2, 3, 4, 5});
-  auto dataVector = vectorMaker_->flatVector<int32_t>({10, 20, 30, 40, 50});
-  auto batch =
-      vectorMaker_->rowVector({"key", "data"}, {keyVector, dataVector});
-
-  // Write data with index (noDuplicateKey = true is set by default in
-  // writeData).
-  writeData({batch}, {"key"});
-
-  // Read back via TabletReader and verify noDuplicateKey is persisted.
-  auto readFile =
-      std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
-  auto tablet = TabletReader::create(readFile, *leafPool_);
-
-  ASSERT_TRUE(tablet->hasIndex());
-  ASSERT_NE(tablet->index(), nullptr);
-  EXPECT_TRUE(tablet->index()->noDuplicateKey());
 }
 
 // TODO: add schema revolution tests like column renaming to make sure selective

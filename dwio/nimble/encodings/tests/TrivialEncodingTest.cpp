@@ -156,6 +156,91 @@ TEST_P(TrivialEncodingTestWithCompression, seekExactMatch) {
   }
 }
 
+TEST_P(TrivialEncodingTestWithCompression, seekExactMatchWithDuplicateValues) {
+  const auto values = toVector(
+      {"apple", "apple", "banana", "banana", "banana", "cherry", "cherry"});
+  const auto encoding = createEncoding(values, GetParam());
+
+  struct {
+    std::string_view seekValue;
+    std::optional<uint32_t> expected;
+
+    std::string debugString() const {
+      if (expected.has_value()) {
+        return fmt::format("seek '{}' -> row {}", seekValue, expected.value());
+      }
+      return fmt::format("seek '{}' -> not found", seekValue);
+    }
+  } testCases[] = {
+      // Should return first occurrence of duplicate values
+      {"apple", 0},
+      {"banana", 2},
+      {"cherry", 5},
+      // Between values (should return first of next value)
+      {"aaa", 0},
+      {"app", 0},
+      {"az", 2},
+      {"car", 5},
+      // After all values (not found)
+      {"date", std::nullopt},
+      {"zebra", std::nullopt}};
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
+    encoding->reset();
+    auto result = encoding->seekAtOrAfter(&testCase.seekValue);
+    ASSERT_EQ(result.has_value(), testCase.expected.has_value());
+    if (testCase.expected.has_value()) {
+      EXPECT_EQ(result.value(), testCase.expected.value());
+    }
+  }
+}
+
+TEST_P(TrivialEncodingTestWithCompression, seekAfterValueWithDuplicateValues) {
+  auto compressionType = GetParam();
+  // Duplicates at beginning (apple), middle (cherry), and end (kiwi)
+  auto values = toVector(
+      {"apple", "apple", "apple", "cherry", "cherry", "grape", "kiwi", "kiwi"});
+  auto encoding = createEncoding(values, compressionType);
+
+  struct {
+    std::string_view seekValue;
+    std::optional<uint32_t> expected;
+
+    std::string debugString() const {
+      if (expected.has_value()) {
+        return fmt::format("seek '{}' -> row {}", seekValue, expected.value());
+      }
+      return fmt::format("seek '{}' -> not found", seekValue);
+    }
+  } testCases[] = {
+      // Before first duplicate group
+      {"", 0},
+      {"aaa", 0},
+      // Between apple (end) and cherry (start)
+      {"banana", 3},
+      {"car", 3},
+      // Between cherry (end) and grape
+      {"date", 5},
+      {"fig", 5},
+      // Between grape and kiwi (start of end duplicates)
+      {"honey", 6},
+      // After last duplicate group (not found)
+      {"lemon", std::nullopt},
+      {"zebra", std::nullopt},
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
+    encoding->reset();
+    auto result = encoding->seekAtOrAfter(&testCase.seekValue);
+    ASSERT_EQ(result.has_value(), testCase.expected.has_value());
+    if (testCase.expected.has_value()) {
+      EXPECT_EQ(result.value(), testCase.expected.value());
+    }
+  }
+}
+
 TEST_P(TrivialEncodingTestWithCompression, seekExactMatchWithEmptyEncoding) {
   const auto values = toVector({});
   const auto encoding = createEncoding(values, GetParam());

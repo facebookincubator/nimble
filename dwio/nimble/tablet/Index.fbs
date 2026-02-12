@@ -79,11 +79,6 @@ table Index {
   stripe_counts:[uint32];
   /// Metadata sections for each stripe index group.
   stripe_index_groups:[MetadataSection];
-  /// If true, indicates that the index was built with no duplicate keys.
-  /// This enables optimized seek operations that can return immediately
-  /// upon finding an exact match, rather than scanning for duplicates.
-  /// Defaults to false for backward compatibility.
-  no_duplicate_key:bool = false;
 }
 
 root_type Index;
