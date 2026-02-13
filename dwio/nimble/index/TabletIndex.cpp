@@ -20,7 +20,9 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
+#include "folly/String.h"
 #include "folly/json/json.h"
+#include "folly/logging/xlog.h"
 
 namespace facebook::nimble::index {
 
@@ -122,7 +124,6 @@ std::optional<StripeLocation> TabletIndex::lookup(
 
   // Calculate which stripe contains the key
   const uint32_t targetStripe = (it - stripeKeys_.begin()) - 1;
-
   // Check if the key is beyond all stripes
   if (targetStripe >= numStripes_) {
     return std::nullopt;

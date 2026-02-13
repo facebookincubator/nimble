@@ -17,8 +17,10 @@
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
+#include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/index/IndexFilter.h"
 #include "dwio/nimble/index/IndexReader.h"
+#include "dwio/nimble/velox/selective/SelectiveNimbleIndexReader.h"
 
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/selective/ColumnReader.h"
@@ -81,7 +83,6 @@ std::vector<velox::core::SortOrder> toVeloxSortOrders(
   }
   return veloxSortOrders;
 }
-
 } // namespace
 
 namespace {
@@ -97,7 +98,7 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
         rowSizeTracker_{
             std::make_unique<RowSizeTracker>(readerBase->fileSchemaWithId())} {
     initReadRange();
-    initIndex();
+    initIndexBounds();
     if (options.eagerFirstStripeLoad()) {
       nextRowNumber();
     }
@@ -125,28 +126,18 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
 
   bool allPrefetchIssued() const final;
 
-  // Resets the row reader for a new query with different scan spec/index
-  // bounds. The split boundaries (splitStartStripe_, splitEndStripe_) remain
-  // the same, but the actual read boundaries (startStripe_, endStripe_) may
-  // change based on new index bounds.
-  void reset() override;
-
  private:
   // Initializes the stripe range to read based on row offset bounds
   // specified in options. Sets startStripe_ and endStripe_.
   void initReadRange();
 
-  // Initializes the tablet index if index is enabled and available.
-  // Sets tabletIndex_ and indexColumns_ which are reused across reset() calls.
-  void initIndex();
-
   // Loads the current stripe by initializing streams and column readers.
   // Also calls setStripeRowRange() to apply index-based row range filtering.
   void loadCurrentStripe();
 
-  // Sets up index bounds for key-based filtering. Sets up
+  // Initializes index bounds for key-based filtering. Sets up tabletIndex_ and
   // encodedKeyBounds_ if cluster index bounds are specified in the scan spec.
-  void maybeSetIndexBounds();
+  void initIndexBounds();
 
   // Returns true if cluster index bounds are specified for key-based
   // filtering.
@@ -192,17 +183,8 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
 
   const std::shared_ptr<ReaderBase> readerBase_;
   const dwio::common::RowReaderOptions options_;
-
   StripeStreams streams_;
   std::vector<int64_t> stripeRowOffsets_;
-
-  // The split stripe boundaries - fixed after initReadRange(), represent the
-  // data split boundaries from options_.offset() and options_.limit().
-  int32_t splitStartStripe_{};
-  int32_t splitEndStripe_{};
-
-  // The actual stripe range to read - may be narrowed by index bounds.
-  // These are reset to split boundaries on reset().
   // The inclusive lower bound of the stripe range to read.
   int32_t startStripe_{};
   // The exclusive upper bound of the stripe range to read.
@@ -210,9 +192,6 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
 
   // Index related fields.
   const TabletIndex* tabletIndex_{nullptr};
-  // Index column names converted from nimble schema to file schema.
-  // Set once during initIndex() and reused across reset() calls.
-  std::vector<std::string> indexColumns_;
   std::optional<velox::serializer::EncodedKeyBounds> encodedKeyBounds_;
   // Index reader for seeking to row positions based on cluster index bounds.
   // Only created for the first and last stripes when index bounds are set.
@@ -226,9 +205,6 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
   // last stripe with upper index bounds.
   std::optional<int64_t> endRowInCurrentStripe_;
   std::optional<int64_t> nextRowNumber_;
-  // Flag to track whether index bounds have been set for the current scan.
-  // Reset to false on each reset() call.
-  bool hasSetIndexBounds_{false};
 
   int32_t skippedStripes_{0};
   // Tracks the number of rows from trailing stripes filtered out by upper index
@@ -251,7 +227,6 @@ int64_t SelectiveNimbleRowReader::nextRowNumber() {
   if (nextRowNumber_.has_value()) {
     return *nextRowNumber_;
   }
-  maybeSetIndexBounds();
   while (currentStripe_ < endStripe_) {
     auto numStripeRows = readerBase_->tablet().stripeRowCount(currentStripe_);
     if (rowInCurrentStripe_ == 0) {
@@ -353,44 +328,10 @@ bool SelectiveNimbleRowReader::allPrefetchIssued() const {
   return true;
 }
 
-void SelectiveNimbleRowReader::reset() {
-  // Restore any filters that were removed during previous index bound
-  // conversion. This is important because the scan spec may have filters
-  // removed when converting to index bounds.
-  restoreFilters();
-
-  // Reset actual stripe range to split boundaries.
-  startStripe_ = splitStartStripe_;
-  endStripe_ = splitEndStripe_;
-  currentStripe_ = startStripe_;
-
-  // Reset row positions.
-  rowInCurrentStripe_ = 0;
-  endRowInCurrentStripe_.reset();
-  nextRowNumber_.reset();
-
-  // Reset index-related state (tabletIndex_ is not reset since it's tied to
-  // the file, not the query).
-  encodedKeyBounds_.reset();
-  indexReader_.reset();
-  hasSetIndexBounds_ = false;
-
-  // Reset statistics.
-  skippedStripes_ = 0;
-  trailingSkippedRows_ = 0;
-
-  // Reset column reader (will be rebuilt on next loadCurrentStripe()).
-  columnReader_.reset();
-  // Reset buffered input to release cached data and prefetch state for the
-  // previous scan. This allows the next scan to start fresh with new I/O
-  // scheduling.
-  readerBase_->input().reset();
-}
-
 void SelectiveNimbleRowReader::initReadRange() {
   const auto& tablet = readerBase_->tablet();
-  splitStartStripe_ = tablet.stripeCount();
-  splitEndStripe_ = 0;
+  startStripe_ = tablet.stripeCount();
+  endStripe_ = 0;
   int64_t numRows = 0;
   stripeRowOffsets_.resize(tablet.stripeCount());
   const auto low = options_.offset();
@@ -398,40 +339,14 @@ void SelectiveNimbleRowReader::initReadRange() {
   for (int i = 0; i < tablet.stripeCount(); ++i) {
     stripeRowOffsets_[i] = numRows;
     if (low <= tablet.stripeOffset(i) && tablet.stripeOffset(i) < high) {
-      splitStartStripe_ = std::min(splitStartStripe_, i);
-      splitEndStripe_ = std::max(splitEndStripe_, i + 1);
+      startStripe_ = std::min(startStripe_, i);
+      endStripe_ = std::max(endStripe_, i + 1);
     }
     numRows += tablet.stripeRowCount(i);
   }
   // Initialize actual read boundaries to split boundaries.
-  startStripe_ = splitStartStripe_;
-  endStripe_ = splitEndStripe_;
   currentStripe_ = startStripe_;
   rowInCurrentStripe_ = 0;
-}
-
-void SelectiveNimbleRowReader::initIndex() {
-  NIMBLE_CHECK_NULL(tabletIndex_);
-
-  // Check if index filtering is disabled via row reader options.
-  if (!options_.indexEnabled()) {
-    return;
-  }
-
-  // Verify that the file has a cluster index.
-  if (!readerBase_->tablet().hasIndex()) {
-    return;
-  }
-
-  tabletIndex_ = readerBase_->tablet().index();
-  NIMBLE_CHECK_NOT_NULL(tabletIndex_);
-
-  // Convert index column names from nimble schema to file schema.
-  // This is cached and reused across reset() calls.
-  indexColumns_ = convertIndexColumnsToFileSchema(
-      tabletIndex_->indexColumns(),
-      readerBase_->nimbleSchema(),
-      readerBase_->fileSchema());
 }
 
 void SelectiveNimbleRowReader::loadCurrentStripe() {
@@ -459,6 +374,7 @@ void SelectiveNimbleRowReader::loadCurrentStripe() {
       },
       options_.passStringBuffersFromDecoder(),
       options_.preserveFlatMapsInMemory());
+
   columnReader_ = buildColumnReader(
       options_.requestedType() ? options_.requestedType()
                                : readerBase_->fileSchema(),
@@ -476,30 +392,41 @@ void SelectiveNimbleRowReader::loadCurrentStripe() {
 }
 
 bool SelectiveNimbleRowReader::hasIndexBounds() const {
-  return encodedKeyBounds_.has_value();
+  return tabletIndex_ != nullptr;
 }
 
-void SelectiveNimbleRowReader::maybeSetIndexBounds() {
-  // Early return if index is not available.
-  if (tabletIndex_ == nullptr) {
-    return;
-  }
-
-  // Skip if already set for this scan.
-  if (hasSetIndexBounds_) {
-    return;
-  }
-  hasSetIndexBounds_ = true;
-
+void SelectiveNimbleRowReader::initIndexBounds() {
+  NIMBLE_CHECK_NULL(tabletIndex_);
   // Early return if there are no stripes to read based on the read range
   if (currentStripe_ >= endStripe_) {
     return;
   }
 
+  // Check if index filtering is disabled.
+  if (!options_.indexEnabled()) {
+    return;
+  }
+
+  // Verify that the file has a cluster index
+  if (!readerBase_->tablet().hasIndex()) {
+    return;
+  }
+
+  // Load the cluster index from the file
+  auto* tabletIndex = readerBase_->tablet().index();
+  NIMBLE_CHECK_NOT_NULL(tabletIndex);
+
+  // Convert index column names from nimble schema to file schema before
+  // passing to convertFilterToIndexBounds.
+  const auto indexColumns = convertIndexColumnsToFileSchema(
+      tabletIndex->indexColumns(),
+      readerBase_->nimbleSchema(),
+      readerBase_->fileSchema());
+
   // Convert filters from scanSpec to index bounds.
-  const auto& sortOrders = tabletIndex_->sortOrders();
+  const auto& sortOrders = tabletIndex->sortOrders();
   auto result = convertFilterToIndexBounds(
-      indexColumns_,
+      indexColumns,
       sortOrders,
       readerBase_->fileSchema(),
       *options_.scanSpec(),
@@ -511,6 +438,8 @@ void SelectiveNimbleRowReader::maybeSetIndexBounds() {
 
   filtersToRestore_ = std::move(result->removedFilters);
   options_.scanSpec()->resetCachedValues(/*doReorder=*/false);
+
+  tabletIndex_ = tabletIndex;
 
   addThreadLocalRuntimeStat(
       kNumIndexFilterConversions,
@@ -630,11 +559,8 @@ void SelectiveNimbleRowReader::restoreFilters() {
   // Restore filters that were removed during index bound conversion.
   // This is needed because the scan spec may be shared across multiple
   // split readers in multiple split execution modes.
-  if (filtersToRestore_.empty()) {
-    return;
-  }
-  NIMBLE_CHECK_NOT_NULL(
-      tabletIndex_,
+  NIMBLE_DCHECK(
+      filtersToRestore_.empty() || tabletIndex_ != nullptr,
       "filtersToRestore_ should only be set when index bounds are used");
   for (auto& [columnName, filter] : filtersToRestore_) {
     auto* childSpec = options_.scanSpec()->childByName(columnName);
@@ -687,7 +613,6 @@ void SelectiveNimbleRowReader::setStripeRowRange() {
       trailingSkippedRows_ += numStripeRows - endRow.value();
     }
   }
-
   // Skip to the starting row position within the stripe. This only happens when
   // cluster index bounds are set and the lower bound maps to a non-zero row
   // position within the first stripe.
@@ -721,6 +646,9 @@ class SelectiveNimbleReader : public dwio::common::Reader {
   std::unique_ptr<dwio::common::RowReader> createRowReader(
       const dwio::common::RowReaderOptions& options) const override;
 
+  std::unique_ptr<dwio::common::IndexReader> createIndexReader(
+      const dwio::common::RowReaderOptions& options) const override;
+
  private:
   const std::shared_ptr<ReaderBase> readerBase_;
   const dwio::common::ReaderOptions options_;
@@ -747,6 +675,12 @@ SelectiveNimbleReader::typeWithId() const {
 std::unique_ptr<dwio::common::RowReader> SelectiveNimbleReader::createRowReader(
     const dwio::common::RowReaderOptions& options) const {
   return std::make_unique<SelectiveNimbleRowReader>(readerBase_, options);
+}
+
+std::unique_ptr<dwio::common::IndexReader>
+SelectiveNimbleReader::createIndexReader(
+    const dwio::common::RowReaderOptions& options) const {
+  return std::make_unique<SelectiveNimbleIndexReader>(readerBase_, options);
 }
 
 } // namespace
