@@ -2346,7 +2346,7 @@ DecodingContextPool::DecodingContextPool(
     std::function<void(void)> vectorDecoderVisitor)
     : vectorDecoderVisitor_{std::move(vectorDecoderVisitor)} {
   NIMBLE_CHECK(vectorDecoderVisitor_, "vectorDecoderVisitor must be set");
-  pool_.reserve(folly::hardware_concurrency());
+  pool_.reserve(folly::available_concurrency());
 }
 
 void DecodingContextPool::addContext(
