@@ -1,5 +1,7 @@
 # The Nimble File Format
 
+[![Linux Build](https://github.com/facebookincubator/nimble/actions/workflows/linux-build.yml/badge.svg)](https://github.com/facebookincubator/nimble/actions/workflows/linux-build.yml)
+
 Nimble (formerly known as _“Alpha”_) is a new columnar file format for large
 datasets created by Meta. Nimble is meant to be a replacement for file formats
 such as Apache Parquet and ORC.
