@@ -113,6 +113,13 @@ class TabletIndex {
     return numStripes_;
   }
 
+  /// Returns true if the index is empty (has no stripes).
+  ///
+  /// @return true if the index has no stripes, false otherwise
+  bool empty() const {
+    return numStripes_ == 0;
+  }
+
   /// Returns the index columns.
   ///
   /// @return Vector of index column names

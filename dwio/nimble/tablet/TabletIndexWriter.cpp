@@ -349,15 +349,29 @@ void TabletIndexWriter::writeRootIndex(
     const std::vector<uint32_t>& stripeGroupIndices,
     const WriteOptionalSectionFn& writeOptionalSection) {
   checkNotFinalized();
-  if (rootIndex_ == nullptr) {
-    return;
-  }
-  NIMBLE_CHECK(!rootIndex_->stripeKeys.empty());
-
   SCOPE_EXIT {
     rootIndex_.reset();
     finalized_ = true;
   };
+
+  // Handle empty file case: write config only (columns, sort orders)
+  // but no stripe keys or stripe index groups.
+  if (rootIndex_ == nullptr) {
+    writeEmptyRootIndex(writeOptionalSection);
+    return;
+  }
+
+  // If rootIndex_ exists, stripeKeys must not be empty. stripeKeys contains:
+  // first key of first stripe + last key for each stripe. For N stripes: size =
+  // 1 + N = N + 1, which is always >= 2 for N >= 1.
+  NIMBLE_CHECK(
+      !rootIndex_->stripeKeys.empty(),
+      "stripeKeys must not be empty when rootIndex exists");
+  // Size should be numStripes + 1 (first key + one last key per stripe).
+  // Since we add first key only for first stripe, and last key for all stripes:
+  // size = 1 (first key) + numStripes (last keys) = numStripes + 1
+  const size_t numStripes = rootIndex_->stripeKeys.size() - 1;
+  NIMBLE_CHECK_GT(numStripes, 0, "Must have at least one stripe");
 
   flatbuffers::FlatBufferBuilder builder(kInitialFooterSize);
 
@@ -411,6 +425,43 @@ void TabletIndexWriter::writeRootIndex(
                 static_cast<serialization::CompressionType>(
                     rootIndex_->stripeIndexGroups[i].compressionType()));
           });
+
+  builder.Finish(
+      serialization::CreateIndex(
+          builder,
+          stripeKeysVector,
+          indexColumnsVector,
+          sortOrdersVector,
+          stripeCountsVector,
+          stripeIndexGroupsVector));
+  writeOptionalSection(std::string(kIndexSection), asView(builder));
+}
+
+void TabletIndexWriter::writeEmptyRootIndex(
+    const WriteOptionalSectionFn& writeOptionalSection) {
+  flatbuffers::FlatBufferBuilder builder(kInitialFooterSize);
+
+  auto stripeKeysVector =
+      builder.CreateVector<flatbuffers::Offset<flatbuffers::String>>({});
+
+  auto indexColumnsVector =
+      builder.CreateVector<flatbuffers::Offset<flatbuffers::String>>(
+          config_.columns.size(), [&builder, this](size_t i) {
+            return builder.CreateString(config_.columns[i]);
+          });
+
+  auto sortOrdersVector =
+      builder.CreateVector<flatbuffers::Offset<flatbuffers::String>>(
+          config_.sortOrders.size(), [&builder, this](size_t i) {
+            return builder.CreateString(
+                folly::toJson(config_.sortOrders[i].serialize()));
+          });
+
+  auto stripeCountsVector = builder.CreateVector<uint32_t>({});
+
+  auto stripeIndexGroupsVector =
+      builder.CreateVector<flatbuffers::Offset<serialization::MetadataSection>>(
+          {});
 
   builder.Finish(
       serialization::CreateIndex(

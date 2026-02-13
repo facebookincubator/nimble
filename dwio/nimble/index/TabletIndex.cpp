@@ -20,9 +20,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
-#include "folly/String.h"
 #include "folly/json/json.h"
-#include "folly/logging/xlog.h"
 
 namespace facebook::nimble::index {
 
@@ -37,6 +35,10 @@ const serialization::Index* getIndexRoot(const Section& indexSection) {
 uint32_t getStripeCount(const serialization::Index* indexRoot) {
   const auto* stripeKeys = indexRoot->stripe_keys();
   NIMBLE_CHECK_NOT_NULL(stripeKeys);
+  // Empty file case: no stripe keys means no stripes.
+  if (stripeKeys->size() == 0) {
+    return 0;
+  }
   return stripeKeys->size() - 1;
 }
 
@@ -97,7 +99,13 @@ TabletIndex::TabletIndex(Section indexSection)
       indexColumns_{getIndexColumns(indexRoot_)},
       sortOrders_{getSortOrders(indexRoot_)} {
   NIMBLE_CHECK(!indexColumns_.empty());
-  NIMBLE_CHECK_EQ(numStripes_ + 1, stripeKeys_.size());
+  // For empty files: numStripes_ == 0 and stripeKeys_.size() == 0.
+  // For non-empty files: stripeKeys_.size() == numStripes_ + 1.
+  if (numStripes_ > 0) {
+    NIMBLE_CHECK_EQ(numStripes_ + 1, stripeKeys_.size());
+  } else {
+    NIMBLE_CHECK(stripeKeys_.empty());
+  }
   NIMBLE_CHECK_EQ(indexColumns_.size(), sortOrders_.size());
 
   // Validate consistency between stripe group indices and stripe index groups
@@ -109,6 +117,11 @@ TabletIndex::TabletIndex(Section indexSection)
 
 std::optional<StripeLocation> TabletIndex::lookup(
     std::string_view encodedKey) const {
+  // Handle empty index case.
+  if (numStripes_ == 0) {
+    return std::nullopt;
+  }
+
   // Check if key is before the first stripe key
   if (encodedKey < stripeKeys_[0]) {
     return std::nullopt;

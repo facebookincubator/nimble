@@ -41,7 +41,6 @@ std::vector<std::string> convertIndexColumnsToFileSchema(
     const std::shared_ptr<const Type>& nimbleSchema,
     const RowTypePtr& fileSchema) {
   const auto nimbleRowType = asRowType(convertToVeloxType(*nimbleSchema));
-
   std::vector<std::string> convertedIndexColumns;
   convertedIndexColumns.reserve(nimbleIndexColumns.size());
   for (const auto& nimbleColName : nimbleIndexColumns) {
@@ -231,6 +230,11 @@ void SelectiveNimbleIndexReader::mapRequestsToStripes() {
   stripeToRequests_.clear();
   stripeIndex_ = 0;
   requestStates_.resize(numRequests_);
+
+  // Early exit if the index is empty (no stripes).
+  if (tabletIndex_->empty()) {
+    return;
+  }
 
   for (size_t requestIdx = 0; requestIdx < numRequests_; ++requestIdx) {
     const auto& bounds = encodedKeyBounds_[requestIdx];

@@ -852,10 +852,15 @@ void TabletReader::initIndex(
   NIMBLE_CHECK(indexSection.has_value(), "Failed to load index section.");
 
   tabletIndex_ = TabletIndex::create(std::move(indexSection.value()));
+  const auto numIndexGroups = tabletIndex_->numIndexGroups();
+  // Skip preloading if there are no index groups (empty file case).
+  if (numIndexGroups == 0) {
+    return;
+  }
 
   // Preload the first stripe index group if it's already in the footer buffer
   const auto firstIndexGroupMetadata = tabletIndex_->groupIndexMetadata(0);
-  if (tabletIndex_->numIndexGroups() == 1 &&
+  if (numIndexGroups == 1 &&
       firstIndexGroupMetadata.offset() + footerIoBuf.computeChainDataLength() >=
           fileSize) {
     auto indexGroupPtr = indexGroupCache_.get(0, [&](uint32_t indexGroupIndex) {

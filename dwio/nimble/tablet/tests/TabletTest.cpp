@@ -3568,4 +3568,73 @@ TEST_F(TabletWithIndexTest, noIndex) {
   EXPECT_EQ(tablet->stripeCount(), 1);
   EXPECT_FALSE(tablet->hasOptionalSection(std::string(nimble::kIndexSection)));
 }
+
+TEST_F(TabletWithIndexTest, emptyFileWithIndexConfig) {
+  // Test writing an empty file (no stripes) with index config.
+  // The root index should contain only config (columns, sort orders)
+  // but no stripe keys or stripe index groups.
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+
+  const nimble::TabletIndexConfig indexConfig{
+      .columns = {"col1", "col2", "col3"},
+      .sortOrders =
+          {SortOrder{.ascending = true},
+           SortOrder{.ascending = false},
+           SortOrder{.ascending = true}},
+      .enforceKeyOrder = true,
+      .noDuplicateKey = false,
+  };
+
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {
+          .indexConfig = indexConfig,
+      });
+
+  // Close without writing any stripes.
+  tabletWriter->close();
+  writeFile.close();
+
+  // Verify the file can be read.
+  nimble::testing::InMemoryTrackableReadFile readFile(file, false);
+  auto tablet = nimble::TabletReader::create(&readFile, *pool_);
+
+  // Verify no stripes.
+  EXPECT_EQ(tablet->stripeCount(), 0);
+
+  // Verify index section exists (with config only).
+  EXPECT_TRUE(tablet->hasOptionalSection(std::string(nimble::kIndexSection)));
+
+  // Verify root index has config but no stripe data.
+  auto* tabletIndex = tablet->index();
+  ASSERT_NE(tabletIndex, nullptr);
+
+  // Verify index columns match config.
+  const auto& indexColumns = tabletIndex->indexColumns();
+  ASSERT_EQ(indexColumns.size(), 3);
+  EXPECT_EQ(indexColumns[0], "col1");
+  EXPECT_EQ(indexColumns[1], "col2");
+  EXPECT_EQ(indexColumns[2], "col3");
+
+  // Verify sort orders match config.
+  const auto& sortOrders = tabletIndex->sortOrders();
+  ASSERT_EQ(sortOrders.size(), 3);
+  EXPECT_TRUE(sortOrders[0].ascending);
+  EXPECT_FALSE(sortOrders[1].ascending);
+  EXPECT_TRUE(sortOrders[2].ascending);
+
+  // Verify no stripes in index.
+  EXPECT_EQ(tabletIndex->numStripes(), 0);
+  EXPECT_TRUE(tabletIndex->empty());
+
+  // Verify no index groups.
+  EXPECT_EQ(tabletIndex->numIndexGroups(), 0);
+
+  // Verify lookup returns no match for any key.
+  EXPECT_FALSE(tabletIndex->lookup("any_key").has_value());
+  EXPECT_FALSE(tabletIndex->lookup("").has_value());
+  EXPECT_FALSE(tabletIndex->lookup("zzz").has_value());
+}
 } // namespace

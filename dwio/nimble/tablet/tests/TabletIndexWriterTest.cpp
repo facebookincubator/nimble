@@ -379,7 +379,9 @@ TEST_F(TabletIndexWriterTest, emptyStripeKeys) {
   // empty
   EXPECT_NO_THROW(
       writer->writeRootIndex({}, writeRootIndexCallback(fileIndex)));
-  EXPECT_TRUE(fileIndex.rootIndexData.empty());
+  EXPECT_FALSE(fileIndex.rootIndexData.empty());
+  EXPECT_TRUE(fileIndex.keyStreamData.empty());
+  EXPECT_TRUE(fileIndex.groupMetadataSections.empty());
 }
 
 TEST_F(TabletIndexWriterTest, emptyStreamInStripe) {
@@ -1258,6 +1260,60 @@ TEST_F(TabletIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
     EXPECT_EQ(stream3Stats.chunkCounts, (std::vector<uint32_t>{2}));
     EXPECT_EQ(stream3Stats.chunkRows, (std::vector<uint32_t>{30, 100}));
   }
+}
+
+TEST_F(TabletIndexWriterTest, writeRootIndexForEmptyFile) {
+  // Test writeRootIndex handles empty file case: writes config only
+  // (columns, sort orders) but no stripe keys or stripe index groups.
+  TabletIndexConfig config{
+      .columns = {"col1", "col2", "col3"},
+      .sortOrders =
+          {SortOrder{.ascending = true},
+           SortOrder{.ascending = false},
+           SortOrder{.ascending = true}},
+      .enforceKeyOrder = true,
+      .noDuplicateKey = false,
+  };
+
+  auto writer = TabletIndexWriter::create(config, *pool_);
+
+  TestFileIndex fileIndex;
+  // Call writeRootIndex with empty stripe group indices for empty file.
+  writer->writeRootIndex({}, writeRootIndexCallback(fileIndex));
+
+  // Verify root index was written.
+  EXPECT_FALSE(fileIndex.rootIndexData.empty());
+
+  // Parse and verify the root index content.
+  auto* rootIndex = flatbuffers::GetRoot<serialization::Index>(
+      fileIndex.rootIndexData.data());
+  ASSERT_NE(rootIndex, nullptr);
+
+  // Verify stripe keys are empty.
+  EXPECT_EQ(rootIndex->stripe_keys()->size(), 0);
+
+  // Verify index columns match config.
+  ASSERT_EQ(rootIndex->index_columns()->size(), 3);
+  EXPECT_EQ(rootIndex->index_columns()->Get(0)->str(), "col1");
+  EXPECT_EQ(rootIndex->index_columns()->Get(1)->str(), "col2");
+  EXPECT_EQ(rootIndex->index_columns()->Get(2)->str(), "col3");
+
+  // Verify sort orders match config.
+  ASSERT_EQ(rootIndex->sort_orders()->size(), 3);
+  auto sortOrder0 = SortOrder::deserialize(
+      folly::parseJson(rootIndex->sort_orders()->Get(0)->str()));
+  EXPECT_TRUE(sortOrder0.ascending);
+  auto sortOrder1 = SortOrder::deserialize(
+      folly::parseJson(rootIndex->sort_orders()->Get(1)->str()));
+  EXPECT_FALSE(sortOrder1.ascending);
+  auto sortOrder2 = SortOrder::deserialize(
+      folly::parseJson(rootIndex->sort_orders()->Get(2)->str()));
+  EXPECT_TRUE(sortOrder2.ascending);
+
+  // Verify stripe counts are empty.
+  EXPECT_EQ(rootIndex->stripe_counts()->size(), 0);
+  // Verify stripe index groups are empty.
+  EXPECT_EQ(rootIndex->stripe_index_groups()->size(), 0);
 }
 
 } // namespace facebook::nimble::test

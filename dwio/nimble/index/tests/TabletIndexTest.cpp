@@ -75,6 +75,7 @@ TEST_F(TabletIndexTest, basic) {
   auto tabletIndex = createTabletIndex(indexBuffers);
 
   EXPECT_EQ(tabletIndex->numStripes(), 4);
+  EXPECT_FALSE(tabletIndex->empty());
   EXPECT_EQ(tabletIndex->minKey(), "aaa");
   EXPECT_EQ(tabletIndex->maxKey(), "eee");
 
