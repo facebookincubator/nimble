@@ -65,11 +65,15 @@ std::vector<velox::RowVectorPtr> generateData(
 /// @param data Vector of RowVectorPtr to write.
 /// @param indexConfig Index configuration specifying columns, sort orders, etc.
 /// @param pool Memory pool for writing.
+/// @param flushPolicyFactory Optional factory for custom flush policy to
+/// control
+///        stripe sizes. If not provided, uses default flush policy.
 void writeFile(
     const std::string& filePath,
     const std::vector<velox::RowVectorPtr>& data,
     IndexConfig indexConfig,
-    velox::memory::MemoryPool& pool);
+    velox::memory::MemoryPool& pool,
+    std::function<std::unique_ptr<FlushPolicy>()> flushPolicyFactory = nullptr);
 
 /// Simple StreamLoader implementation for testing that holds data in memory.
 class TestStreamLoader : public StreamLoader {

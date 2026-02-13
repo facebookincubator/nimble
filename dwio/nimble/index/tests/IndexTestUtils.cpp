@@ -60,12 +60,16 @@ void writeFile(
     const std::string& filePath,
     const std::vector<velox::RowVectorPtr>& data,
     IndexConfig indexConfig,
-    velox::memory::MemoryPool& pool) {
+    velox::memory::MemoryPool& pool,
+    std::function<std::unique_ptr<FlushPolicy>()> flushPolicyFactory) {
   NIMBLE_CHECK(!data.empty(), "Data must not be empty");
 
   VeloxWriterOptions options;
   options.enableChunking = true;
   options.indexConfig = std::move(indexConfig);
+  if (flushPolicyFactory) {
+    options.flushPolicyFactory = std::move(flushPolicyFactory);
+  }
 
   auto fs = velox::filesystems::getFileSystem(filePath, {});
   auto writeFile = fs->openFileForWrite(
