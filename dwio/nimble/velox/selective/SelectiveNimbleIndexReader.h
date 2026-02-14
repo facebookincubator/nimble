@@ -53,9 +53,7 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
 
   /// Starts a new batch lookup with the given index bounds.
   /// Encodes the bounds, looks up matching stripes, and prepares for iteration.
-  void startLookup(
-      const velox::serializer::IndexBounds& indexBounds,
-      const Options& options) override;
+  void startLookup(const velox::serializer::IndexBounds& indexBounds) override;
 
   /// Returns true if there are more results to fetch from the current lookup.
   bool hasNext() const override;
@@ -135,12 +133,12 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
       return pendingStripes == 0 && outputRows == 0;
     }
 
-    // Increments the pending stripe count when a new stripe is mapped to this
-    // request.
+    /// Increments the pending stripe count when a new stripe is mapped to this
+    /// request.
     void incPendingStripes();
 
-    // Decrements the pending stripe count when a stripe finishes processing
-    // for this request (either with data or empty).
+    /// Decrements the pending stripe count when a stripe finishes processing
+    /// for this request (either with data or empty).
     void decPendingStripes();
   };
 
@@ -157,115 +155,106 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
     void dropRef();
   };
 
-  // Initializes stripe row offsets for efficient row range calculations.
+  /// Initializes stripe row offsets for efficient row range calculations.
   void initReadRange();
 
-  // Encodes raw index bounds into Nimble-specific encoded key format.
-  // @param indexBounds The index bounds to encode.
-  // @return Vector of encoded key bounds ready for index lookup.
+  /// Encodes raw index bounds into Nimble-specific encoded key format.
+  /// @param indexBounds The index bounds to encode.
+  /// @return Vector of encoded key bounds ready for index lookup.
   std::vector<velox::serializer::EncodedKeyBounds> encodeIndexBounds(
       const velox::serializer::IndexBounds& indexBounds);
 
-  // Maps each request to the stripes it needs to read from by performing
-  // index lookups for all encoded key bounds.
+  /// Maps each request to the stripes it needs to read from by performing
+  /// index lookups for all encoded key bounds.
   void mapRequestsToStripes();
 
-  // Loads the current stripe if not already loaded.
-  // @return True if a stripe was loaded, false if no more stripes.
+  /// Loads the current stripe if not already loaded.
+  /// @return True if a stripe was loaded, false if no more stripes.
   bool loadStripe();
 
-  // Prepares a stripe for reading by initializing streams and column readers.
-  // @param stripeIndex The index of the stripe to prepare.
+  /// Prepares a stripe for reading by initializing streams and column readers.
+  /// @param stripeIndex The index of the stripe to prepare.
   void prepareStripeReading(uint32_t stripeIndex);
 
-  // Builds read segments from request ranges based on filter presence.
-  // Dispatches to mergeStripeRowRanges or splitStripeRowRanges.
+  /// Builds read segments from request ranges based on filter presence.
+  /// Dispatches to mergeStripeRowRanges or splitStripeRowRanges.
   void buildStripeReadSegments(
       const std::vector<std::pair<velox::vector_size_t, RowRange>>&
           requestRanges);
 
-  // Builds read segments by merging overlapping row ranges.
-  // Used when no filters are present for efficient reading with seek.
+  /// Builds read segments by merging overlapping row ranges.
+  /// Used when no filters are present for efficient reading with seek.
   void mergeStripeRowRanges(
       const std::vector<std::pair<velox::vector_size_t, RowRange>>&
           requestRanges);
 
-  // Builds read segments by splitting overlapping row ranges into
-  // non-overlapping segments. Used when filters are present.
+  /// Builds read segments by splitting overlapping row ranges into
+  /// non-overlapping segments. Used when filters are present.
   void splitStripeRowRanges(
       const std::vector<std::pair<velox::vector_size_t, RowRange>>&
           requestRanges);
 
-  // Loads a stripe and performs index lookup to determine row ranges.
-  // @param stripeIndex The index of the stripe to load.
+  /// Loads a stripe and performs index lookup to determine row ranges.
+  /// @param stripeIndex The index of the stripe to load.
   void loadStripeWithIndex(uint32_t stripeIndex);
 
-  // Looks up row ranges for each request within a specific stripe.
-  // @param stripeIndex The stripe to look up.
-  // @param keyBounds The encoded key bounds for each request.
-  // @return Vector of row ranges, one per request.
+  /// Looks up row ranges for each request within a specific stripe.
+  /// @param stripeIndex The stripe to look up.
+  /// @param keyBounds The encoded key bounds for each request.
+  /// @return Vector of row ranges, one per request.
   std::vector<RowRange> lookupRowRanges(
       uint32_t stripeIndex,
       const std::vector<velox::serializer::EncodedKeyBounds>& keyBounds);
 
-  // Prepares the column reader for reading the current segment by seeking to
-  // the segment's start row. Does nothing if readSegmentIndex_ is out of
-  // range.
+  /// Prepares the column reader for reading the current segment by seeking to
+  /// the segment's start row. Does nothing if readSegmentIndex_ is out of
+  /// range.
   void prepareStripeSegmentRead();
 
-  // Reads a fragment of data from the current stripe's read segment.
-  // @param output The output vector to populate.
-  // @return Number of rows read.
+  /// Reads a fragment of data from the current stripe's read segment.
+  /// @param output The output vector to populate.
+  /// @return Number of rows read.
   uint64_t readStripeFragment(velox::RowVectorPtr& output);
 
-  // Advances to the next read segment within the current stripe.
+  /// Advances to the next read segment within the current stripe.
   void advanceStripeReadSegment();
 
-  // Advances to the next stripe in the iteration.
+  /// Advances to the next stripe in the iteration.
   void advanceStripe();
 
-  // Adds output data for a segment to the output chunks and tracks references.
-  // @param segment The segment that produced this output.
-  // @param output The output data to add.
+  /// Adds output data for a segment to the output chunks and tracks references.
+  /// @param segment The segment that produced this output.
+  /// @param output The output data to add.
   void addStripeSegmentOutput(
       const ReadSegment& segment,
       velox::RowVectorPtr output);
 
-  // Tracks output references for requests in a segment.
-  // @param segment The segment containing request indices.
-  // @param outputIndex Index of the output chunk.
-  // @param outputRows Number of rows in the output.
+  /// Tracks output references for requests in a segment.
+  /// @param segment The segment containing request indices.
+  /// @param outputIndex Index of the output chunk.
+  /// @param outputRows Number of rows in the output.
   void trackStripeSegmentOutputRefs(
       const ReadSegment& segment,
       size_t outputIndex,
       velox::vector_size_t outputRows);
 
-  // Updates pending stripe counts for requests after processing a segment.
-  // @param segment The segment that was processed.
+  /// Updates pending stripe counts for requests after processing a segment.
+  /// @param segment The segment that was processed.
   void updatePendingStripes(const ReadSegment& segment);
 
-  // Updates the count of ready output requests that can be returned.
+  /// Updates the count of ready output requests that can be returned.
   void updateReadyOutputRequests();
 
-  // Checks if enough output is ready to produce results.
-  // @param maxOutputRows Maximum rows to produce.
-  // @return True if output can be produced.
+  /// Checks if enough output is ready to produce results.
+  /// @param maxOutputRows Maximum rows to produce.
+  /// @return True if output can be produced.
   bool canProduceOutput(velox::vector_size_t maxOutputRows) const;
 
-  // Produces the next batch of output results.
-  // @return Result containing output rows and request indices.
+  /// Produces the next batch of output results.
+  /// @return Result containing output rows and request indices.
   std::unique_ptr<Result> produceOutput();
 
-  // Removes a request from all stripes starting from startStripeIdx. Called
-  // when a request has reached its maxRowsPerRequest_ limit and the remaining
-  // rows will be processed within the current stripe.
-  // @param requestIdx The request index to remove from subsequent stripes.
-  // @param startStripeIdx The starting stripe index to remove from.
-  void removeRequestFromSubsequentStripes(
-      velox::vector_size_t requestIdx,
-      size_t startStripeIdx);
-
-  // Resets all state for a new lookup operation.
+  /// Resets all state for a new lookup operation.
   void reset();
 
   const std::shared_ptr<ReaderBase> readerBase_;
@@ -288,7 +277,6 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
 
   // Current lookup state.
   size_t numRequests_{0};
-  Options requestOptions_;
   std::vector<velox::serializer::EncodedKeyBounds> encodedKeyBounds_;
   std::vector<uint32_t> stripes_;
   folly::F14FastMap<uint32_t, std::vector<velox::vector_size_t>>
