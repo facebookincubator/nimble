@@ -559,7 +559,7 @@ void SelectiveNimbleRowReader::restoreFilters() {
   // Restore filters that were removed during index bound conversion.
   // This is needed because the scan spec may be shared across multiple
   // split readers in multiple split execution modes.
-  NIMBLE_DCHECK(
+  NIMBLE_CHECK(
       filtersToRestore_.empty() || tabletIndex_ != nullptr,
       "filtersToRestore_ should only be set when index bounds are used");
   for (auto& [columnName, filter] : filtersToRestore_) {

@@ -152,6 +152,8 @@ class TabletIndexWriter {
 
   /// Writes the root index as an optional section.
   /// Call this at file close to persist the file-level index.
+  /// For empty files (no stripes), writes config only (columns, sort orders)
+  /// but no stripe keys or stripe index groups.
   ///
   /// @param stripeGroupIndices Mapping of stripe index to stripe group index.
   /// @param writeOptionalSection Callback to write optional section.
@@ -163,6 +165,10 @@ class TabletIndexWriter {
   void checkNotFinalized() const {
     NIMBLE_CHECK(!finalized_, "TabletIndexWriter has been finalized");
   }
+
+  // Writes an empty root index with config only (columns, sort orders)
+  // but no stripe keys or stripe index groups.
+  void writeEmptyRootIndex(const WriteOptionalSectionFn& writeOptionalSection);
 
   TabletIndexWriter(
       const TabletIndexConfig& config,

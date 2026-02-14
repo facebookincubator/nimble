@@ -21,6 +21,7 @@ add_library(
   ReaderBase.cpp
   RowSizeTracker.cpp
   SelectiveNimbleReader.cpp
+  SelectiveNimbleIndexReader.cpp
   SelectiveNimbleReaderInitHookOSS.cpp
   StringColumnReader.cpp
   StructColumnReader.cpp
