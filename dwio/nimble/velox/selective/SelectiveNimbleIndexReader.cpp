@@ -125,16 +125,20 @@ SelectiveNimbleIndexReader::SelectiveNimbleIndexReader(
 }
 
 void SelectiveNimbleIndexReader::startLookup(
-    const velox::serializer::IndexBounds& indexBounds) {
+    const velox::serializer::IndexBounds& indexBounds,
+    const Options& options) {
   reset();
 
   numRequests_ = indexBounds.numRows();
   // Encode the index bounds.
   encodedKeyBounds_ = encodeIndexBounds(indexBounds);
-  NIMBLE_CHECK_EQ(
+  VELOX_CHECK_EQ(
       encodedKeyBounds_.size(),
       numRequests_,
       "Encoded key bounds size mismatch");
+
+  // Cache options for use during output tracking.
+  requestOptions_ = options;
 
   // Build stripe to request mapping.
   mapRequestsToStripes();
@@ -236,6 +240,7 @@ void SelectiveNimbleIndexReader::mapRequestsToStripes() {
     return;
   }
 
+  const auto& tablet = readerBase_->tablet();
   for (size_t requestIdx = 0; requestIdx < numRequests_; ++requestIdx) {
     const auto& bounds = encodedKeyBounds_[requestIdx];
     std::vector<uint32_t> requestStripes;
@@ -262,11 +267,32 @@ void SelectiveNimbleIndexReader::mapRequestsToStripes() {
         continue; // No stripes match.
       }
     }
+    VELOX_CHECK_LT(startStripe, endStripe);
 
     // Add stripes to the mapping.
+    // For no-filter case, we can prune stripes based on pre-filter row counts
+    // since input rows == output rows. However, we only consider middle stripes
+    // (not first or last) for truncation, because first and last stripes may be
+    // partial and their actual row counts are unknown until lookupRowRanges().
+    // For filter case, we cannot prune stripes since we don't know output rows
+    // ahead of time. Instead, truncation based on actual output rows happens
+    // during output tracking in trackStripeSegmentOutputRefs().
+    uint64_t fullStripeRows = 0;
     for (uint32_t stripe = startStripe; stripe < endStripe; ++stripe) {
       stripeToRequests_[stripe].push_back(requestIdx);
       requestStates_[requestIdx].incPendingStripes();
+
+      // Only consider middle stripes for truncation since first and last
+      // stripes may be partial (unknown row counts until lookupRowRanges).
+
+      if (!hasFilters_ && requestOptions_.maxRowsPerRequest > 0) {
+        const bool isMiddleStripe =
+            stripe != startStripe && stripe != endStripe - 1;
+        fullStripeRows += isMiddleStripe ? tablet.stripeRowCount(stripe) : 0;
+        if (fullStripeRows >= requestOptions_.maxRowsPerRequest) {
+          break;
+        }
+      }
     }
   }
 
@@ -282,14 +308,25 @@ bool SelectiveNimbleIndexReader::loadStripe() {
   if (stripeLoaded_) {
     return true;
   }
-  const uint32_t stripeIndex = stripes_[stripeIndex_];
-  prepareStripeReading(stripeIndex);
-  if (readSegments_.empty()) {
-    ++stripeIndex_;
-    return false;
+  // Skip stripes if all requests have been removed due to stripe pruning.
+  while (stripeIndex_ < stripes_.size()) {
+    const uint32_t stripeIndex = stripes_[stripeIndex_];
+    auto it = stripeToRequests_.find(stripeIndex);
+    VELOX_CHECK(it != stripeToRequests_.end());
+    if (it->second.empty()) {
+      VELOX_CHECK_GT(requestOptions_.maxRowsPerRequest, 0);
+      ++stripeIndex_;
+      continue;
+    }
+    prepareStripeReading(stripeIndex);
+    if (readSegments_.empty()) {
+      ++stripeIndex_;
+      continue;
+    }
+    stripeLoaded_ = true;
+    return true;
   }
-  stripeLoaded_ = true;
-  return true;
+  return false;
 }
 
 void SelectiveNimbleIndexReader::prepareStripeReading(uint32_t stripeIndex) {
@@ -317,17 +354,39 @@ void SelectiveNimbleIndexReader::prepareStripeReading(uint32_t stripeIndex) {
   NIMBLE_CHECK_EQ(stripeRowRanges.size(), requestRows.size());
 
   // Filter out empty ranges and store per-request row ranges.
+  // For no-filter case, also truncate row ranges based on
+  // requestOptions_.maxRowsPerRequest since input rows == output rows.
   std::vector<std::pair<vector_size_t, RowRange>> requestRanges;
   requestRanges.reserve(requestRows.size());
   for (size_t i = 0; i < requestRows.size(); ++i) {
-    const auto& range = stripeRowRanges[i];
-    if (!range.empty()) {
-      requestRanges.emplace_back(requestRows[i], range);
-      requestStates_[requestRows[i]].rowRange = range;
-    } else {
+    auto& state = requestStates_[requestRows[i]];
+    VELOX_CHECK_GT(state.pendingStripes, 0);
+    auto range = stripeRowRanges[i];
+    if (range.empty()) {
       // Decrement pending stripes for requests with empty row ranges.
-      requestStates_[requestRows[i]].decPendingStripes();
+      state.decPendingStripes();
+      continue;
     }
+
+    // For no-filter case, truncate row range if accumulated output would
+    // exceed requestOptions_.maxRowsPerRequest. This avoids reading
+    // unnecessary data.
+    if (!hasFilters_ && requestOptions_.maxRowsPerRequest > 0) {
+      VELOX_CHECK_GT(requestOptions_.maxRowsPerRequest, state.outputRows);
+      const auto remainingRows =
+          requestOptions_.maxRowsPerRequest - state.outputRows;
+      const auto rangeRows = range.numRows();
+      if (rangeRows >= static_cast<vector_size_t>(remainingRows)) {
+        // Truncate the row range to fit within the limit.
+        range.endRow = range.startRow + remainingRows;
+        // All the rows will be processed within this stripe, so remove the
+        // request from subsequent stripes if there are any.
+        removeRequestFromSubsequentStripes(requestRows[i], stripeIndex_ + 1);
+      }
+    }
+
+    requestRanges.emplace_back(requestRows[i], range);
+    requestStates_[requestRows[i]].rowRange = std::move(range);
   }
   // Update ready output requests after decrementing pending stripes for empty
   // row ranges. This ensures requests with no matching rows in this stripe
@@ -617,32 +676,58 @@ void SelectiveNimbleIndexReader::trackStripeSegmentOutputRefs(
 
   if (!hasFilters_) {
     // No filter: outputRows == readRows. Each request extracts its portion
-    // based on its row range.
+    // based on its row range. Row range truncation is already done in
+    // prepareStripeReading.
     NIMBLE_CHECK_EQ(outputRows, readRows);
     const auto readEndRow = segment.rowRange.endRow;
     for (vector_size_t requestIdx : segment.requestIndices) {
-      const auto& range = requestStates_[requestIdx].rowRange;
+      auto& state = requestStates_[requestIdx];
+      const auto& range = state.rowRange;
       const auto overlapStart = std::max(startRow, range.startRow);
       const auto overlapEnd = std::min(readEndRow, range.endRow);
       const auto overlapRows = overlapEnd - overlapStart;
 
-      requestStates_[requestIdx].outputRefs.emplace_back(
+      state.outputRefs.emplace_back(
           RequestState::OutputReference{
               outputIndex,
               RowRange{overlapStart - startRow, overlapEnd - startRow}});
       outputSegments_[outputIndex].addRef();
-      requestStates_[requestIdx].outputRows += overlapRows;
+      state.outputRows += overlapRows;
+      VELOX_DCHECK(
+          requestOptions_.maxRowsPerRequest == 0 ||
+              state.outputRows <= requestOptions_.maxRowsPerRequest,
+          "Output rows {} exceeds maxRowsPerRequest {} for request {}",
+          state.outputRows,
+          requestOptions_.maxRowsPerRequest,
+          requestIdx);
     }
   } else {
     // With filter: outputRows <= readRows. Each request in the segment
-    // gets the entire filtered output (since they share the same row range).
+    // gets the filtered output. Apply truncation if
+    // requestOptions_.maxRowsPerRequest is set.
     NIMBLE_CHECK_LE(outputRows, readRows);
 
     for (vector_size_t requestIdx : segment.requestIndices) {
-      requestStates_[requestIdx].outputRefs.emplace_back(
-          RequestState::OutputReference{outputIndex, RowRange{0, outputRows}});
+      auto& state = requestStates_[requestIdx];
+
+      // Calculate how many rows to add, respecting the limit.
+      auto rowsToAdd = outputRows;
+      if (requestOptions_.maxRowsPerRequest > 0) {
+        if (requestOptions_.maxRowsPerRequest == state.outputRows) {
+          continue;
+        }
+        const auto remainingRows =
+            requestOptions_.maxRowsPerRequest - state.outputRows;
+        if (outputRows >= static_cast<vector_size_t>(remainingRows)) {
+          rowsToAdd = remainingRows;
+          removeRequestFromSubsequentStripes(requestIdx, stripeIndex_ + 1);
+        }
+      }
+
+      state.outputRefs.emplace_back(
+          RequestState::OutputReference{outputIndex, RowRange{0, rowsToAdd}});
       outputSegments_[outputIndex].addRef();
-      requestStates_[requestIdx].outputRows += outputRows;
+      state.outputRows += rowsToAdd;
     }
   }
   updatePendingStripes(segment);
@@ -732,8 +817,32 @@ SelectiveNimbleIndexReader::produceOutput() {
       std::move(inputHits), std::move(output));
 }
 
+void SelectiveNimbleIndexReader::removeRequestFromSubsequentStripes(
+    velox::vector_size_t requestIdx,
+    size_t startStripeIdx) {
+  auto& state = requestStates_[requestIdx];
+  // We must have at least one pending stripe (the current stripe) that will
+  // be processed. We only remove from subsequent stripes.
+  VELOX_CHECK_GE(state.pendingStripes, 1);
+  for (size_t i = startStripeIdx;
+       i < stripes_.size() && state.pendingStripes > 1;
+       ++i) {
+    const auto stripe = stripes_[i];
+    auto& requests = stripeToRequests_[stripe];
+    auto it = std::find(requests.begin(), requests.end(), requestIdx);
+    VELOX_CHECK(
+        it != requests.end(),
+        "Request {} must exist in stripe {} as stripes are contiguous",
+        requestIdx,
+        stripe);
+    requests.erase(it);
+    state.decPendingStripes();
+  }
+}
+
 void SelectiveNimbleIndexReader::reset() {
   numRequests_ = 0;
+  requestOptions_ = {};
   encodedKeyBounds_.clear();
   stripes_.clear();
   stripeToRequests_.clear();
@@ -749,5 +858,4 @@ void SelectiveNimbleIndexReader::reset() {
   columnReader_.reset();
   indexReader_.reset();
 }
-
 } // namespace facebook::nimble
