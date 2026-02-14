@@ -2339,7 +2339,7 @@ TEST_F(VeloxWriterTest, fuzzComplex) {
                                                     : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
-  for (auto parallelismFactor : {0U, 1U, folly::hardware_concurrency()}) {
+  for (auto parallelismFactor : {0U, 1U, folly::available_concurrency()}) {
     std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
     nimble::VeloxWriterOptions writerOptions;
     writerOptions.enableChunking = true;

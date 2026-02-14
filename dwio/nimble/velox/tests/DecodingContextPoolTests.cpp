@@ -61,7 +61,7 @@ TEST(DecodingContextPoolTest, FillPool) {
 }
 
 TEST(DecodingContextPoolTest, ParallelFillPool) {
-  auto parallelismFactor = folly::hardware_concurrency();
+  auto parallelismFactor = folly::available_concurrency();
   auto executor = folly::CPUThreadPoolExecutor{parallelismFactor};
 
   DecodingContextPool pool;
