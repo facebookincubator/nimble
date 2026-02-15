@@ -6395,6 +6395,46 @@ TEST_P(VeloxReaderTests, timestampAllNulls) {
   }
 }
 
+// Test that all-null top-level row vector short-circuits correctly
+TEST_P(VeloxReaderTests, rowVectorAllNulls) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  // Create a row vector with a child column, where ALL top-level rows are null
+  constexpr velox::vector_size_t rowCount = 100;
+  auto childVector = vectorMaker.flatVector<int64_t>(
+      rowCount, [](auto i) { return i * 10; }); // child values won't be read
+
+  // Create nulls buffer where ALL rows are null
+  velox::BufferPtr nulls =
+      velox::AlignedBuffer::allocate<bool>(rowCount, leafPool_.get(), false);
+
+  auto vector = std::make_shared<velox::RowVector>(
+      leafPool_.get(),
+      velox::ROW({{"col1", velox::BIGINT()}}),
+      nulls,
+      rowCount,
+      std::vector<velox::VectorPtr>{childVector});
+
+  // Verify input: all rows should be null
+  for (auto i = 0; i < rowCount; ++i) {
+    ASSERT_TRUE(vector->isNullAt(i)) << "Input row " << i << " should be null";
+  }
+
+  auto file = nimble::test::createNimbleFile(*rootPool_, vector, {});
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(
+      &readFile, *leafPool_, nullptr, createReadParams());
+
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(rowCount, result));
+
+  ASSERT_EQ(result->size(), rowCount);
+  for (auto i = 0; i < rowCount; ++i) {
+    EXPECT_TRUE(result->isNullAt(i)) << "Result row " << i << " should be null";
+  }
+  EXPECT_EQ(result->getNullCount().value(), rowCount);
+}
+
 TEST_P(VeloxReaderTests, timestampLargeRowCount) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
