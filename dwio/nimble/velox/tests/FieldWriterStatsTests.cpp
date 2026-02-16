@@ -91,7 +91,7 @@ class FieldWriterStatsTests : public ::testing::Test {
     writer.close();
 
     // Verify returned column stats.
-    const auto& actualStats = writer.getRunStats().columnStats;
+    const auto& actualStats = writer.stats().columnStats;
     ASSERT_EQ(actualStats.size(), expectedStats.size());
     for (auto i = 0; i < actualStats.size(); ++i) {
       const auto& actualStat = actualStats.at(i);
@@ -1293,7 +1293,7 @@ TEST_F(FieldWriterStatsTests, flatmapWithDeduplicatedValuesStats) {
   writer.close();
 
   // Verify the writer completed successfully and stats are collected
-  const auto& actualStats = writer.getRunStats().columnStats;
+  const auto& actualStats = writer.stats().columnStats;
   ASSERT_FALSE(actualStats.empty());
 
   // The root stats should have non-zero logical size
@@ -1381,7 +1381,7 @@ TEST_F(FieldWriterStatsTests, flatmapWithSlidingWindowMapStats) {
   writer.close();
 
   // Verify the writer completed successfully and stats are collected
-  const auto& actualStats = writer.getRunStats().columnStats;
+  const auto& actualStats = writer.stats().columnStats;
   ASSERT_FALSE(actualStats.empty());
 
   // The root stats should have non-zero logical size
