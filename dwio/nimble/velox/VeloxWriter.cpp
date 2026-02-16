@@ -865,14 +865,14 @@ void VeloxWriter::close() {
       file_->close();
       context_->setBytesWritten(file_->size());
 
-      auto runStats = getRunStats();
+      auto stats = this->stats();
       // TODO: compute and populate input size.
       FileCloseMetrics metrics{
           .rowCount = context_->rowsInFile(),
           .stripeCount = context_->getStripeIndex(),
           .fileSize = context_->bytesWritten(),
-          .totalFlushCpuUsec = runStats.flushCpuTimeUsec,
-          .totalFlushWallTimeUsec = runStats.flushWallTimeUsec};
+          .totalFlushCpuUsec = stats.flushCpuTimeUs,
+          .totalFlushWallTimeUsec = stats.flushWallTimeUs};
       context_->logger()->logFileClose(metrics);
       file_ = nullptr;
     } catch (const std::exception& e) {
@@ -1341,15 +1341,15 @@ bool VeloxWriter::evaluateFlushPolicy() {
   return false;
 }
 
-VeloxWriter::RunStats VeloxWriter::getRunStats() const {
-  return RunStats{
+VeloxWriter::Stats VeloxWriter::stats() const {
+  return Stats{
       .bytesWritten = context_->bytesWritten(),
       .stripeCount = folly::to<uint32_t>(context_->getStripeIndex()),
       .rawSize = context_->fileRawSize(),
       .rowsPerStripe = context_->rowsPerStripe(),
-      .flushCpuTimeUsec = context_->totalFlushTiming().cpuNanos / 1'000,
-      .flushWallTimeUsec = context_->totalFlushTiming().wallNanos / 1'000,
-      .encodingSelectionCpuTimeUsec =
+      .flushCpuTimeUs = context_->totalFlushTiming().cpuNanos / 1'000,
+      .flushWallTimeUs = context_->totalFlushTiming().wallNanos / 1'000,
+      .encodingSelectionCpuTimeUs =
           context_->encodingSelectionTiming().cpuNanos / 1'000,
       .inputBufferReallocCount = context_->inputBufferGrowthStats().count,
       .inputBufferReallocItemCount =
