@@ -2483,7 +2483,7 @@ TEST_P(VeloxReaderTests, fuzzSimple) {
   auto batches = 20;
   std::mt19937 rng{seed};
 
-  for (auto parallelismFactor : {0U, 1U, folly::hardware_concurrency()}) {
+  for (auto parallelismFactor : {0U, 1U, folly::available_concurrency()}) {
     LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
 
     // Executor needs to outlive writerOptions since the latter has a keepAlive
@@ -2605,7 +2605,7 @@ TEST_P(VeloxReaderTests, fuzzComplex) {
   // the former.
   std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
 
-  for (auto parallelismFactor : {0U, 1U, folly::hardware_concurrency()}) {
+  for (auto parallelismFactor : {0U, 1U, folly::available_concurrency()}) {
     LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
 
     nimble::VeloxWriterOptions writerOptions;
