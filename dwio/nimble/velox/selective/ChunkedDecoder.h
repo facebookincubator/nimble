@@ -295,11 +295,12 @@ class ChunkedDecoder {
       numNonNulls =
           std::min<int64_t>(end - params.numScanned, remainingValues_);
     }
-    auto i = visitor.rowIndex();
-    while (i < numRows && visitor.rowAt(i) < chunkEnd) {
-      ++i;
-    }
-    return i;
+
+    return std::lower_bound(
+               visitor.rows() + visitor.rowIndex(),
+               visitor.rows() + numRows,
+               chunkEnd) -
+        visitor.rows();
   }
 
   template <bool kHasNulls, typename V>
