@@ -15,6 +15,8 @@
  */
 
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
+
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/dwio/common/TypeUtils.h"
@@ -1545,7 +1547,7 @@ TEST_P(SelectiveNimbleReaderTest, nativeFlatMap) {
             3,
             makeFlatVector<int32_t>({4, 5, 6, 7, 8, 9}))));
 
-    VELOX_ASSERT_THROW(
+    NIMBLE_ASSERT_THROW(
         testRoundtrip(constructFlatMap(
             BaseVector::wrapInDictionary(
                 nullptr,
@@ -1557,7 +1559,7 @@ TEST_P(SelectiveNimbleReaderTest, nativeFlatMap) {
 
   // Constant wrapped keys
   {
-    VELOX_ASSERT_THROW(
+    NIMBLE_ASSERT_THROW(
         testRoundtrip(constructFlatMap(
             BaseVector::wrapInConstant(
                 3, 0, makeFlatVector<int32_t>({1, 2, 3})))),
