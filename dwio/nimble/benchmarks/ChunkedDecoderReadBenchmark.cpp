@@ -47,6 +47,11 @@ FOLLY_GFLAGS_DEFINE_string(
     "",
     "File to write JSON benchmark results to.");
 
+FOLLY_GFLAGS_DEFINE_string(
+    bm_json_baseline,
+    "",
+    "File with baseline JSON results to compare against.");
+
 namespace facebook::nimble {
 namespace {
 
@@ -261,6 +266,9 @@ int main(int argc, char** argv) {
   suite.setTitle("ChunkedDecoderBenchmarks");
   if (!FLAGS_bm_json_output.empty()) {
     suite.setJsonOutputPath(FLAGS_bm_json_output);
+  }
+  if (!FLAGS_bm_json_baseline.empty()) {
+    suite.setJsonBaselinePath(FLAGS_bm_json_baseline);
   }
   suite.setOnStart([](const std::string& name) {
 #ifdef ENABLE_HW_TIMER

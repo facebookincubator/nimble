@@ -26,6 +26,8 @@
 #include <cstdint>
 #include <optional>
 #include <random>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include <folly/Benchmark.h>
@@ -47,6 +49,11 @@ FOLLY_GFLAGS_DEFINE_string(
     "",
     "File to write JSON benchmark results to.");
 
+FOLLY_GFLAGS_DEFINE_string(
+    bm_json_baseline,
+    "",
+    "File with baseline JSON results to compare against.");
+
 namespace facebook::nimble {
 namespace {
 
@@ -54,18 +61,18 @@ namespace {
 // Data generators — raw uint32_t / uint64_t vectors for encode() benchmarks.
 // ---------------------------------------------------------------------------
 
-std::vector<uint32_t> makeSmallRange32(size_t n) {
-  // Values in [0, 127] -> 8 bits required (rounded to byte).
+std::pair<std::vector<uint32_t>, uint32_t> makeSmallRange32(size_t n) {
+  // Values in [0, 7] -> 3 bits required.
   std::mt19937 rng(55);
-  std::uniform_int_distribution<uint32_t> dist(0, 127);
+  std::uniform_int_distribution<uint32_t> dist(0, 7);
   std::vector<uint32_t> vals(n);
   for (auto& v : vals) {
     v = dist(rng);
   }
-  return vals;
+  return {vals, 3};
 }
 
-std::vector<uint32_t> makeMediumRange32(size_t n) {
+std::pair<std::vector<uint32_t>, uint32_t> makeMediumRange32(size_t n) {
   // Values in [0, 65535] -> 16 bits required.
   std::mt19937 rng(42);
   std::uniform_int_distribution<uint32_t> dist(0, 65535);
@@ -73,10 +80,10 @@ std::vector<uint32_t> makeMediumRange32(size_t n) {
   for (auto& v : vals) {
     v = dist(rng);
   }
-  return vals;
+  return {vals, 16};
 }
 
-std::vector<uint32_t> makeFullRange32(size_t n) {
+std::pair<std::vector<uint32_t>, uint32_t> makeFullRange32(size_t n) {
   // Values spanning full uint32_t range -> 32 bits required.
   std::mt19937 rng(99);
   std::uniform_int_distribution<uint32_t> dist(0, UINT32_MAX);
@@ -84,10 +91,10 @@ std::vector<uint32_t> makeFullRange32(size_t n) {
   for (auto& v : vals) {
     v = dist(rng);
   }
-  return vals;
+  return {vals, 32};
 }
 
-std::vector<uint64_t> makeSmallRange64(size_t n) {
+std::pair<std::vector<uint64_t>, uint32_t> makeSmallRange64(size_t n) {
   // Values in [0, 255] -> 8 bits required, stored as uint64_t.
   std::mt19937 rng(77);
   std::uniform_int_distribution<uint64_t> dist(0, 255);
@@ -95,10 +102,10 @@ std::vector<uint64_t> makeSmallRange64(size_t n) {
   for (auto& v : vals) {
     v = dist(rng);
   }
-  return vals;
+  return {vals, 8};
 }
 
-std::vector<uint64_t> makeMediumRange64(size_t n) {
+std::pair<std::vector<uint64_t>, uint32_t> makeMediumRange64(size_t n) {
   // Values in [0, 2^24-1] -> 24 bits required.
   std::mt19937 rng(123);
   std::uniform_int_distribution<uint64_t> dist(0, (1ULL << 24) - 1);
@@ -106,7 +113,7 @@ std::vector<uint64_t> makeMediumRange64(size_t n) {
   for (auto& v : vals) {
     v = dist(rng);
   }
-  return vals;
+  return {vals, 24};
 }
 
 #ifdef ENABLE_HW_TIMER
@@ -177,13 +184,15 @@ void cleanupPool() {
 
 // --- uint32_t, small range (8-bit), varying sizes --------------------------
 
-void benchEncode32_SmallRange_500(unsigned iters) {
+BenchmarkSuite::CustomMetrics benchEncode32_SmallRange_500(unsigned iters) {
   std::vector<uint32_t> data;
+  uint32_t bitsRequired = 0;
 
   BENCHMARK_SUSPEND {
-    data = makeSmallRange32(500);
+    std::tie(data, bitsRequired) = makeSmallRange32(500);
   }
 
+  size_t encodedBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
     Buffer buffer{*pool};
 #ifdef ENABLE_HW_TIMER
@@ -194,17 +203,30 @@ void benchEncode32_SmallRange_500(unsigned iters) {
 #ifdef ENABLE_HW_TIMER
     HWT_END((*FixedBitWidthEncoding_encode));
 #endif
+    encodedBytes = encoded.size();
     folly::doNotOptimizeAway(encoded);
   }
+  size_t rawBits = data.size() * 3;
+  size_t encodedBits = encodedBytes * 8;
+  double ratio = (encodedBits > 0)
+      ? static_cast<double>(rawBits) / static_cast<double>(encodedBits)
+      : 0.0;
+  return {
+      {"raw_bits", static_cast<double>(rawBits)},
+      {"encoded_bits", static_cast<double>(encodedBits)},
+      {"bits_per_value", static_cast<double>(bitsRequired)},
+      {"compression_ratio", ratio}};
 }
 
-void benchEncode32_SmallRange_5000(unsigned iters) {
+BenchmarkSuite::CustomMetrics benchEncode32_SmallRange_5000(unsigned iters) {
   std::vector<uint32_t> data;
+  uint32_t bitsRequired = 0;
 
   BENCHMARK_SUSPEND {
-    data = makeSmallRange32(5000);
+    std::tie(data, bitsRequired) = makeSmallRange32(5000);
   }
 
+  size_t encodedBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
     Buffer buffer{*pool};
 #ifdef ENABLE_HW_TIMER
@@ -215,17 +237,30 @@ void benchEncode32_SmallRange_5000(unsigned iters) {
 #ifdef ENABLE_HW_TIMER
     HWT_END((*FixedBitWidthEncoding_encode));
 #endif
+    encodedBytes = encoded.size();
     folly::doNotOptimizeAway(encoded);
   }
+  size_t rawBits = data.size() * 3;
+  size_t encodedBits = encodedBytes * 8;
+  double ratio = (encodedBits > 0)
+      ? static_cast<double>(rawBits) / static_cast<double>(encodedBits)
+      : 0.0;
+  return {
+      {"raw_bits", static_cast<double>(rawBits)},
+      {"encoded_bits", static_cast<double>(encodedBits)},
+      {"bits_per_value", static_cast<double>(bitsRequired)},
+      {"compression_ratio", ratio}};
 }
 
-void benchEncode32_SmallRange_50000(unsigned iters) {
+BenchmarkSuite::CustomMetrics benchEncode32_SmallRange_50000(unsigned iters) {
   std::vector<uint32_t> data;
+  uint32_t bitsRequired = 0;
 
   BENCHMARK_SUSPEND {
-    data = makeSmallRange32(50000);
+    std::tie(data, bitsRequired) = makeSmallRange32(50000);
   }
 
+  size_t encodedBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
     Buffer buffer{*pool};
 #ifdef ENABLE_HW_TIMER
@@ -236,19 +271,32 @@ void benchEncode32_SmallRange_50000(unsigned iters) {
 #ifdef ENABLE_HW_TIMER
     HWT_END((*FixedBitWidthEncoding_encode));
 #endif
+    encodedBytes = encoded.size();
     folly::doNotOptimizeAway(encoded);
   }
+  size_t rawBits = data.size() * 3;
+  size_t encodedBits = encodedBytes * 8;
+  double ratio = (encodedBits > 0)
+      ? static_cast<double>(rawBits) / static_cast<double>(encodedBits)
+      : 0.0;
+  return {
+      {"raw_bits", static_cast<double>(rawBits)},
+      {"encoded_bits", static_cast<double>(encodedBits)},
+      {"bits_per_value", static_cast<double>(bitsRequired)},
+      {"compression_ratio", ratio}};
 }
 
 // --- uint32_t, medium range (16-bit) --------------------------------------
 
-void benchEncode32_MediumRange_5000(unsigned iters) {
+BenchmarkSuite::CustomMetrics benchEncode32_MediumRange_5000(unsigned iters) {
   std::vector<uint32_t> data;
+  uint32_t bitsRequired = 0;
 
   BENCHMARK_SUSPEND {
-    data = makeMediumRange32(5000);
+    std::tie(data, bitsRequired) = makeMediumRange32(5000);
   }
 
+  size_t encodedBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
     Buffer buffer{*pool};
 #ifdef ENABLE_HW_TIMER
@@ -259,19 +307,32 @@ void benchEncode32_MediumRange_5000(unsigned iters) {
 #ifdef ENABLE_HW_TIMER
     HWT_END((*FixedBitWidthEncoding_encode));
 #endif
+    encodedBytes = encoded.size();
     folly::doNotOptimizeAway(encoded);
   }
+  size_t rawBits = data.size() * 8;
+  size_t encodedBits = encodedBytes * 8;
+  double ratio = (encodedBits > 0)
+      ? static_cast<double>(rawBits) / static_cast<double>(encodedBits)
+      : 0.0;
+  return {
+      {"raw_bits", static_cast<double>(rawBits)},
+      {"encoded_bits", static_cast<double>(encodedBits)},
+      {"bits_per_value", static_cast<double>(bitsRequired)},
+      {"compression_ratio", ratio}};
 }
 
 // --- uint32_t, full range (32-bit) ----------------------------------------
 
-void benchEncode32_FullRange_5000(unsigned iters) {
+BenchmarkSuite::CustomMetrics benchEncode32_FullRange_5000(unsigned iters) {
   std::vector<uint32_t> data;
+  uint32_t bitsRequired = 0;
 
   BENCHMARK_SUSPEND {
-    data = makeFullRange32(5000);
+    std::tie(data, bitsRequired) = makeFullRange32(5000);
   }
 
+  size_t encodedBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
     Buffer buffer{*pool};
 #ifdef ENABLE_HW_TIMER
@@ -282,19 +343,32 @@ void benchEncode32_FullRange_5000(unsigned iters) {
 #ifdef ENABLE_HW_TIMER
     HWT_END((*FixedBitWidthEncoding_encode));
 #endif
+    encodedBytes = encoded.size();
     folly::doNotOptimizeAway(encoded);
   }
+  size_t rawBits = data.size() * 8;
+  size_t encodedBits = encodedBytes * 8;
+  double ratio = (encodedBits > 0)
+      ? static_cast<double>(rawBits) / static_cast<double>(encodedBits)
+      : 0.0;
+  return {
+      {"raw_bits", static_cast<double>(rawBits)},
+      {"encoded_bits", static_cast<double>(encodedBits)},
+      {"bits_per_value", static_cast<double>(bitsRequired)},
+      {"compression_ratio", ratio}};
 }
 
 // --- uint64_t, small range (8-bit) ----------------------------------------
 
-void benchEncode64_SmallRange_5000(unsigned iters) {
+BenchmarkSuite::CustomMetrics benchEncode64_SmallRange_5000(unsigned iters) {
   std::vector<uint64_t> data;
+  uint32_t bitsRequired = 0;
 
   BENCHMARK_SUSPEND {
-    data = makeSmallRange64(5000);
+    std::tie(data, bitsRequired) = makeSmallRange64(5000);
   }
 
+  size_t encodedBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
     Buffer buffer{*pool};
 #ifdef ENABLE_HW_TIMER
@@ -305,19 +379,32 @@ void benchEncode64_SmallRange_5000(unsigned iters) {
 #ifdef ENABLE_HW_TIMER
     HWT_END((*FixedBitWidthEncoding_encode));
 #endif
+    encodedBytes = encoded.size();
     folly::doNotOptimizeAway(encoded);
   }
+  size_t rawBits = data.size() * 8;
+  size_t encodedBits = encodedBytes * 8;
+  double ratio = (encodedBits > 0)
+      ? static_cast<double>(rawBits) / static_cast<double>(encodedBits)
+      : 0.0;
+  return {
+      {"raw_bits", static_cast<double>(rawBits)},
+      {"encoded_bits", static_cast<double>(encodedBits)},
+      {"bits_per_value", static_cast<double>(bitsRequired)},
+      {"compression_ratio", ratio}};
 }
 
 // --- uint64_t, medium range (24-bit) --------------------------------------
 
-void benchEncode64_MediumRange_5000(unsigned iters) {
+BenchmarkSuite::CustomMetrics benchEncode64_MediumRange_5000(unsigned iters) {
   std::vector<uint64_t> data;
+  uint32_t bitsRequired = 0;
 
   BENCHMARK_SUSPEND {
-    data = makeMediumRange64(5000);
+    std::tie(data, bitsRequired) = makeMediumRange64(5000);
   }
 
+  size_t encodedBytes = 0;
   for (unsigned i = 0; i < iters; ++i) {
     Buffer buffer{*pool};
 #ifdef ENABLE_HW_TIMER
@@ -328,8 +415,19 @@ void benchEncode64_MediumRange_5000(unsigned iters) {
 #ifdef ENABLE_HW_TIMER
     HWT_END((*FixedBitWidthEncoding_encode));
 #endif
+    encodedBytes = encoded.size();
     folly::doNotOptimizeAway(encoded);
   }
+  size_t rawBits = data.size() * 8;
+  size_t encodedBits = encodedBytes * 8;
+  double ratio = (encodedBits > 0)
+      ? static_cast<double>(rawBits) / static_cast<double>(encodedBits)
+      : 0.0;
+  return {
+      {"raw_bits", static_cast<double>(rawBits)},
+      {"encoded_bits", static_cast<double>(encodedBits)},
+      {"bits_per_value", static_cast<double>(bitsRequired)},
+      {"compression_ratio", ratio}};
 }
 
 } // namespace
@@ -343,6 +441,9 @@ int main(int argc, char** argv) {
   suite.setTitle("FixedBitWidthEncode");
   if (!FLAGS_bm_json_output.empty()) {
     suite.setJsonOutputPath(FLAGS_bm_json_output);
+  }
+  if (!FLAGS_bm_json_baseline.empty()) {
+    suite.setJsonBaselinePath(FLAGS_bm_json_baseline);
   }
   suite.setOnStart([](const std::string& name) {
 #ifdef ENABLE_HW_TIMER
@@ -366,36 +467,39 @@ int main(int argc, char** argv) {
 #endif
       });
 
-  // uint32_t — small range (8-bit), varying sizes.
+  using MetricsFn =
+      std::function<facebook::nimble::BenchmarkSuite::CustomMetrics(unsigned)>;
+
+  // uint32_t — small range (4-bit), varying sizes.
   suite.addBenchmark(
-      "Encode32_SmallRange_500",
-      facebook::nimble::benchEncode32_SmallRange_500);
+      "Encode32_3bit_500",
+      MetricsFn(facebook::nimble::benchEncode32_SmallRange_500));
   suite.addBenchmark(
-      "Encode32_SmallRange_5000",
-      facebook::nimble::benchEncode32_SmallRange_5000);
+      "Encode32_3bit_5000",
+      MetricsFn(facebook::nimble::benchEncode32_SmallRange_5000));
   suite.addBenchmark(
-      "Encode32_SmallRange_50000",
-      facebook::nimble::benchEncode32_SmallRange_50000);
+      "Encode32_3bit_50000",
+      MetricsFn(facebook::nimble::benchEncode32_SmallRange_50000));
 
   suite.addSeparator();
 
   // uint32_t — varying bit widths at 5000 rows.
   suite.addBenchmark(
-      "Encode32_MediumRange_5000",
-      facebook::nimble::benchEncode32_MediumRange_5000);
+      "Encode32_16bit_5000",
+      MetricsFn(facebook::nimble::benchEncode32_MediumRange_5000));
   suite.addBenchmark(
-      "Encode32_FullRange_5000",
-      facebook::nimble::benchEncode32_FullRange_5000);
+      "Encode32_32bit_5000",
+      MetricsFn(facebook::nimble::benchEncode32_FullRange_5000));
 
   suite.addSeparator();
 
   // uint64_t benchmarks.
   suite.addBenchmark(
-      "Encode64_SmallRange_5000",
-      facebook::nimble::benchEncode64_SmallRange_5000);
+      "Encode64_8bit_5000",
+      MetricsFn(facebook::nimble::benchEncode64_SmallRange_5000));
   suite.addBenchmark(
-      "Encode64_MediumRange_5000",
-      facebook::nimble::benchEncode64_MediumRange_5000);
+      "Encode64_24bit_5000",
+      MetricsFn(facebook::nimble::benchEncode64_MediumRange_5000));
 
   suite.run();
   facebook::nimble::cleanupPool();
