@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 #include <optional>
 
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
@@ -502,4 +503,112 @@ TEST(SchemaTests, roundTrip) {
 
   auto result = nimble::SchemaReader::getSchema(nodes);
   nimble::test::compareSchema(nodes, result);
+}
+
+// Custom context classes for testing checkedContext
+class TestStreamContext : public nimble::StreamContext {
+ public:
+  explicit TestStreamContext(int value) : value_(value) {}
+
+  int value() const {
+    return value_;
+  }
+
+ private:
+  int value_;
+};
+
+class OtherStreamContext : public nimble::StreamContext {
+ public:
+  explicit OtherStreamContext(std::string name) : name_(std::move(name)) {}
+  const std::string& name() const {
+    return name_;
+  }
+
+ private:
+  std::string name_;
+};
+
+class TestTypeBuilderContext : public nimble::TypeBuilderContext {
+ public:
+  explicit TestTypeBuilderContext(int value) : value_(value) {}
+
+  int value() const {
+    return value_;
+  }
+
+ private:
+  int value_;
+};
+
+class OtherTypeBuilderContext : public nimble::TypeBuilderContext {
+ public:
+  explicit OtherTypeBuilderContext(std::string name) : name_(std::move(name)) {}
+  const std::string& name() const {
+    return name_;
+  }
+
+ private:
+  std::string name_;
+};
+
+TEST(SchemaTests, streamDescriptorBuilderCheckedContext) {
+  nimble::SchemaBuilder builder;
+  auto scalar = builder.createScalarTypeBuilder(nimble::ScalarKind::Int32);
+  const auto& descriptor = scalar->scalarDescriptor();
+
+  // Before setting context, checkedContext should throw
+  NIMBLE_ASSERT_THROW(
+      descriptor.checkedContext<TestStreamContext>(),
+      "context is not set or not of expected type");
+
+  // Set context and verify checkedContext returns it
+  descriptor.setContext(std::make_unique<TestStreamContext>(42));
+  auto* ctx = descriptor.checkedContext<TestStreamContext>();
+  EXPECT_NE(ctx, nullptr);
+  EXPECT_EQ(ctx->value(), 42);
+
+  // context() should also work
+  auto* ctx2 = descriptor.context<TestStreamContext>();
+  EXPECT_NE(ctx2, nullptr);
+  EXPECT_EQ(ctx2->value(), 42);
+
+  // checkedContext with wrong type should throw
+  NIMBLE_ASSERT_THROW(
+      descriptor.checkedContext<OtherStreamContext>(),
+      "context is not set or not of expected type");
+
+  // context() with wrong type should return nullptr
+  auto* wrongCtx = descriptor.context<OtherStreamContext>();
+  EXPECT_EQ(wrongCtx, nullptr);
+}
+
+TEST(SchemaTests, typeBuilderCheckedContext) {
+  nimble::SchemaBuilder builder;
+  auto scalar = builder.createScalarTypeBuilder(nimble::ScalarKind::Int32);
+
+  // Before setting context, checkedContext should throw
+  NIMBLE_ASSERT_THROW(
+      scalar->checkedContext<TestTypeBuilderContext>(),
+      "context is not set or not of expected type");
+
+  // Set context and verify checkedContext returns it
+  scalar->setContext(std::make_unique<TestTypeBuilderContext>(100));
+  const auto* ctx = scalar->checkedContext<TestTypeBuilderContext>();
+  EXPECT_NE(ctx, nullptr);
+  EXPECT_EQ(ctx->value(), 100);
+
+  // context() should also work
+  const auto* ctx2 = scalar->context<TestTypeBuilderContext>();
+  EXPECT_NE(ctx2, nullptr);
+  EXPECT_EQ(ctx2->value(), 100);
+
+  // checkedContext with wrong type should throw
+  NIMBLE_ASSERT_THROW(
+      scalar->checkedContext<OtherTypeBuilderContext>(),
+      "context is not set or not of expected type");
+
+  // context() with wrong type should return nullptr
+  const auto* wrongCtx = scalar->context<OtherTypeBuilderContext>();
+  EXPECT_EQ(wrongCtx, nullptr);
 }

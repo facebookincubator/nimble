@@ -77,6 +77,15 @@ class StreamDescriptorBuilder : public StreamDescriptor {
     return dynamic_cast<T*>(context_.get());
   }
 
+  template <typename T>
+  T* checkedContext() const {
+    auto* ptr = dynamic_cast<T*>(context_.get());
+    NIMBLE_CHECK_NOT_NULL(
+        ptr,
+        "StreamDescriptorBuilder context is not set or not of expected type");
+    return ptr;
+  }
+
  private:
   mutable std::unique_ptr<StreamContext> context_;
 };
@@ -95,6 +104,14 @@ class TypeBuilder {
   template <typename T>
   const T* context() const {
     return dynamic_cast<T*>(context_.get());
+  }
+
+  template <typename T>
+  const T* checkedContext() const {
+    auto* ptr = dynamic_cast<T*>(context_.get());
+    NIMBLE_CHECK_NOT_NULL(
+        ptr, "TypeBuilder context is not set or not of expected type");
+    return ptr;
   }
 
   Kind kind() const;
