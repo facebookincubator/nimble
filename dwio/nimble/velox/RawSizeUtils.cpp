@@ -62,21 +62,162 @@ std::optional<size_t> getTypeSizeFromKind(velox::TypeKind kind) {
 
 namespace {
 
+// Adapter for flat vectors - provides unified interface for null checking and
+// index mapping.
+template <typename VectorType>
+class FlatAdapter {
+ public:
+  explicit FlatAdapter(const VectorType& vector) : vector_(vector) {}
+
+  bool mayHaveNulls() const {
+    return vector_.mayHaveNulls();
+  }
+
+  bool isNullAt(velox::vector_size_t idx) const {
+    return vector_.isNullAt(idx);
+  }
+
+  velox::vector_size_t index(velox::vector_size_t idx) const {
+    return idx;
+  }
+
+  template <typename T>
+  T valueAt(velox::vector_size_t idx) const {
+    return vector_.valueAt(idx);
+  }
+
+ private:
+  const VectorType& vector_;
+};
+
+// Adapter for decoded vectors - provides unified interface for null checking
+// and index mapping. IgnoreNulls template parameter controls whether nulls are
+// checked (like FieldWriter.cpp's Decoded<T, IgnoreNulls>).
+template <bool IgnoreNulls = false>
+class DecodedAdapter {
+ public:
+  explicit DecodedAdapter(const velox::DecodedVector& decoded)
+      : decoded_(decoded) {}
+
+  bool mayHaveNulls() const {
+    if constexpr (IgnoreNulls) {
+      return false;
+    } else {
+      return decoded_.mayHaveNulls();
+    }
+  }
+
+  bool isNullAt(velox::vector_size_t idx) const {
+    if constexpr (IgnoreNulls) {
+      return false;
+    } else {
+      return decoded_.isNullAt(idx);
+    }
+  }
+
+  velox::vector_size_t index(velox::vector_size_t idx) const {
+    return decoded_.index(idx);
+  }
+
+  template <typename T>
+  T valueAt(velox::vector_size_t idx) const {
+    return decoded_.valueAt<T>(idx);
+  }
+
+ private:
+  const velox::DecodedVector& decoded_;
+};
+
+// Helper to count nulls over a range using an adapter.
+template <typename Adapter>
+uint64_t countNulls(
+    const Adapter& adapter,
+    const velox::common::Ranges& ranges) {
+  uint64_t nullCount = 0;
+  if (adapter.mayHaveNulls()) {
+    for (const auto& row : ranges) {
+      if (adapter.isNullAt(row)) {
+        ++nullCount;
+      }
+    }
+  }
+  return nullCount;
+}
+
+// Computes total string size and null count for string vectors.
+// Works with both FlatAdapter and DecodedAdapter.
+template <typename Adapter>
+std::pair<uint64_t, uint64_t> computeStringSizeAndNulls(
+    const Adapter& adapter,
+    const velox::common::Ranges& ranges) {
+  uint64_t nullCount = 0;
+  uint64_t totalStringSize = 0;
+  if (adapter.mayHaveNulls()) {
+    for (const auto& row : ranges) {
+      if (adapter.isNullAt(row)) {
+        ++nullCount;
+      } else {
+        totalStringSize +=
+            adapter.template valueAt<velox::StringView>(row).size();
+      }
+    }
+  } else {
+    for (const auto& row : ranges) {
+      totalStringSize +=
+          adapter.template valueAt<velox::StringView>(row).size();
+    }
+  }
+  return {totalStringSize, nullCount};
+}
+
+// Builds child ranges, counting nulls. Works with both FlatAdapter and
+// DecodedAdapter. ProcessRow is a lambda that takes the mapped index and
+// processes it. Returns the number of nulls encountered.
+template <typename Adapter, typename ProcessRow>
+uint64_t buildChildRanges(
+    const Adapter& adapter,
+    const velox::common::Ranges& ranges,
+    ProcessRow&& processRow) {
+  uint64_t nullCount = 0;
+  if (adapter.mayHaveNulls()) {
+    for (const auto& row : ranges) {
+      if (adapter.isNullAt(row)) {
+        ++nullCount;
+      } else {
+        processRow(adapter.index(row));
+      }
+    }
+  } else {
+    for (const auto& row : ranges) {
+      processRow(adapter.index(row));
+    }
+  }
+  return nullCount;
+}
+
 } // namespace
 
+// Computes raw size for fixed-width scalar vectors.
+// The requestTypeWidth parameter allows overriding the physical sizeof(T) with
+// a different width (e.g., TIMESTAMP uses 12 bytes instead of 16, or when
+// upcasting from smaller to larger integer types).
 template <velox::TypeKind K>
 uint64_t getRawSizeFromFixedWidthVector(
     const velox::VectorPtr& vector,
     const velox::common::Ranges& ranges,
-    RawSizeContext& context) {
+    RawSizeContext& context,
+    std::optional<uint64_t> requestTypeWidth = std::nullopt) {
   VELOX_CHECK_NOT_NULL(vector);
   VELOX_DCHECK(
       K == velox::TypeKind::BOOLEAN || K == velox::TypeKind::TINYINT ||
           K == velox::TypeKind::SMALLINT || K == velox::TypeKind::INTEGER ||
           K == velox::TypeKind::BIGINT || K == velox::TypeKind::REAL ||
-          K == velox::TypeKind::DOUBLE,
-      "Wrong vector type. Expected BOOLEAN | TINYINT | SMALLINT | INTEGER | BIGINT | REAL | DOUBLE.");
+          K == velox::TypeKind::DOUBLE || K == velox::TypeKind::TIMESTAMP,
+      "Wrong vector type. Expected BOOLEAN | TINYINT | SMALLINT | INTEGER | BIGINT | REAL | DOUBLE | TIMESTAMP.");
   using T = typename velox::TypeTraits<K>::NativeType;
+
+  // Use provided request type width or default to sizeof(T)
+  const uint64_t elementSize = requestTypeWidth.value_or(sizeof(T));
 
   const auto& encoding = vector->encoding();
   switch (encoding) {
@@ -88,17 +229,9 @@ uint64_t getRawSizeFromFixedWidthVector(
           encoding,
           vector->typeKind());
 
-      uint64_t nullCount = 0;
-      if (flatVector->mayHaveNulls()) {
-        for (const auto& row : ranges) {
-          if (flatVector->isNullAt(row)) {
-            ++nullCount;
-          }
-        }
-      }
-
+      const uint64_t nullCount = countNulls(FlatAdapter(*flatVector), ranges);
       context.nullCount = nullCount;
-      return ((ranges.size() - nullCount) * sizeof(T)) +
+      return ((ranges.size() - nullCount) * elementSize) +
           (nullCount * kNullSize);
     }
     case velox::VectorEncoding::Simple::CONSTANT: {
@@ -111,7 +244,7 @@ uint64_t getRawSizeFromFixedWidthVector(
 
       context.nullCount = constVector->mayHaveNulls() ? ranges.size() : 0;
       return constVector->mayHaveNulls() ? ranges.size() * kNullSize
-                                         : ranges.size() * sizeof(T);
+                                         : ranges.size() * elementSize;
     }
     default: {
       // Decode the vector to handle any encoding (FLAT, DICTIONARY, etc.)
@@ -120,83 +253,10 @@ uint64_t getRawSizeFromFixedWidthVector(
       velox::DecodedVector& decodedVector = localDecodedVector.get();
       decodedVector.decode(*vector);
 
-      uint64_t nullCount = 0;
-      if (decodedVector.mayHaveNulls()) {
-        for (const auto& row : ranges) {
-          if (decodedVector.isNullAt(row)) {
-            ++nullCount;
-          }
-        }
-      }
+      const uint64_t nullCount =
+          countNulls(DecodedAdapter(decodedVector), ranges);
       context.nullCount = nullCount;
-      return ((ranges.size() - nullCount) * sizeof(T)) +
-          (nullCount * kNullSize);
-    }
-  }
-}
-
-uint64_t getRawSizeFromTimestampVector(
-    const velox::VectorPtr& vector,
-    const velox::common::Ranges& ranges,
-    RawSizeContext& context) {
-  VELOX_CHECK_NOT_NULL(vector);
-  VELOX_DCHECK(
-      vector->typeKind() == velox::TypeKind::TIMESTAMP,
-      "Wrong vector type. Expected TIMESTAMP.");
-  using T = typename velox::TypeTraits<velox::TypeKind::TIMESTAMP>::NativeType;
-  const auto& encoding = vector->encoding();
-  switch (encoding) {
-    case velox::VectorEncoding::Simple::FLAT: {
-      const auto* flatVector = vector->asFlatVector<T>();
-      VELOX_CHECK_NOT_NULL(
-          flatVector,
-          "Encoding mismatch on FlatVector. Encoding: {}. TypeKind: {}.",
-          encoding,
-          vector->typeKind());
-
-      uint64_t nullCount = 0;
-      if (flatVector->mayHaveNulls()) {
-        for (const auto& row : ranges) {
-          if (flatVector->isNullAt(row)) {
-            ++nullCount;
-          }
-        }
-      }
-
-      context.nullCount = nullCount;
-      return ((ranges.size() - nullCount) * kTimestampLogicalSize) +
-          (nullCount * kNullSize);
-    }
-    case velox::VectorEncoding::Simple::CONSTANT: {
-      const auto* constVector = vector->as<velox::ConstantVector<T>>();
-      VELOX_CHECK_NOT_NULL(
-          constVector,
-          "Encoding mismatch on ConstantVector. Encoding: {}. TypeKind: {}.",
-          encoding,
-          vector->typeKind());
-
-      context.nullCount = constVector->mayHaveNulls() ? ranges.size() : 0;
-      return constVector->mayHaveNulls()
-          ? ranges.size() * kNullSize
-          : ranges.size() * kTimestampLogicalSize;
-    }
-    default: {
-      // Decode the vector to handle any encoding (FLAT, DICTIONARY, etc.)
-      auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
-          context.getDecodedVectorManager());
-      velox::DecodedVector& decodedVector = localDecodedVector.get();
-      decodedVector.decode(*vector);
-
-      uint64_t nullCount = 0;
-      if (decodedVector.mayHaveNulls()) {
-        for (const auto& row : ranges) {
-          if (decodedVector.isNullAt(row)) {
-            ++nullCount;
-          }
-        }
-      }
-      context.nullCount = nullCount;
-      return ((ranges.size() - nullCount) * kTimestampLogicalSize) +
+      return ((ranges.size() - nullCount) * elementSize) +
           (nullCount * kNullSize);
     }
   }
@@ -222,21 +282,8 @@ uint64_t getRawSizeFromStringVector(
           encoding,
           vector->typeKind());
 
-      uint64_t nullCount = 0;
-      uint64_t totalStringSize = 0;
-      if (flatVector->mayHaveNulls()) {
-        for (const auto& row : ranges) {
-          if (flatVector->isNullAt(row)) {
-            ++nullCount;
-          } else {
-            totalStringSize += flatVector->valueAt(row).size();
-          }
-        }
-      } else {
-        for (const auto& row : ranges) {
-          totalStringSize += flatVector->valueAt(row).size();
-        }
-      }
+      auto [totalStringSize, nullCount] =
+          computeStringSizeAndNulls(FlatAdapter(*flatVector), ranges);
 
       context.nullCount = nullCount;
       return totalStringSize + (nullCount * kNullSize);
@@ -262,23 +309,8 @@ uint64_t getRawSizeFromStringVector(
       velox::DecodedVector& decodedVector = localDecodedVector.get();
       decodedVector.decode(*vector);
 
-      uint64_t nullCount = 0;
-      uint64_t totalStringSize = 0;
-      if (decodedVector.mayHaveNulls()) {
-        for (const auto& row : ranges) {
-          if (decodedVector.isNullAt(row)) {
-            ++nullCount;
-          } else {
-            totalStringSize +=
-                decodedVector.valueAt<velox::StringView>(row).size();
-          }
-        }
-      } else {
-        for (const auto& row : ranges) {
-          totalStringSize +=
-              decodedVector.valueAt<velox::StringView>(row).size();
-        }
-      }
+      auto [totalStringSize, nullCount] =
+          computeStringSizeAndNulls(DecodedAdapter(decodedVector), ranges);
 
       context.nullCount = nullCount;
       return totalStringSize + (nullCount * kNullSize);
@@ -346,20 +378,8 @@ uint64_t getRawSizeFromArrayVector(
       offsets = arrayVector->rawOffsets();
       sizes = arrayVector->rawSizes();
 
-      if (arrayVector->mayHaveNulls()) {
-        const uint64_t* nulls = arrayVector->rawNulls();
-        for (const auto& row : ranges) {
-          if (velox::bits::isBitNull(nulls, row)) {
-            ++nullCount;
-          } else {
-            processRow(row);
-          }
-        }
-      } else {
-        for (const auto& row : ranges) {
-          processRow(row);
-        }
-      }
+      nullCount =
+          buildChildRanges(FlatAdapter(*arrayVector), ranges, processRow);
 
       break;
     }
@@ -380,19 +400,8 @@ uint64_t getRawSizeFromArrayVector(
       offsets = arrayVector->rawOffsets();
       sizes = arrayVector->rawSizes();
 
-      if (decodedVector.mayHaveNulls()) {
-        for (const auto& row : ranges) {
-          if (decodedVector.isNullAt(row)) {
-            ++nullCount;
-          } else {
-            processRow(decodedVector.index(row));
-          }
-        }
-      } else {
-        for (const auto& row : ranges) {
-          processRow(decodedVector.index(row));
-        }
-      }
+      nullCount =
+          buildChildRanges(DecodedAdapter(decodedVector), ranges, processRow);
 
       break;
     }
@@ -559,19 +568,8 @@ uint64_t getRawSizeFromMap(
       offsets = mapVector->rawOffsets();
       sizes = mapVector->rawSizes();
 
-      if (decodedVector.mayHaveNulls()) {
-        for (const auto& row : ranges) {
-          if (decodedVector.isNullAt(row)) {
-            ++nullCount;
-          } else {
-            processMapRow(decodedVector.index(row));
-          }
-        }
-      } else {
-        for (const auto& row : ranges) {
-          processMapRow(decodedVector.index(row));
-        }
-      }
+      nullCount = buildChildRanges(
+          DecodedAdapter(decodedVector), ranges, processMapRow);
       rawSize += getRawSizeFromMapVector(
           *mapVector, childRanges, context, type, flatMapNodeIds);
       break;
@@ -586,21 +584,11 @@ uint64_t getRawSizeFromMap(
           encoding,
           vector->typeKind());
 
-      if (decodedVector.mayHaveNulls()) {
-        for (const auto& row : ranges) {
-          if (decodedVector.isNullAt(row)) {
-            ++nullCount;
-          } else {
-            auto baseIndex = decodedVector.index(row);
-            childRanges.add(baseIndex, baseIndex + 1);
-          }
-        }
-      } else {
-        for (const auto& row : ranges) {
-          auto baseIndex = decodedVector.index(row);
-          childRanges.add(baseIndex, baseIndex + 1);
-        }
-      }
+      auto processFlatMapRow = [&](size_t baseIndex) {
+        childRanges.add(baseIndex, baseIndex + 1);
+      };
+      nullCount = buildChildRanges(
+          DecodedAdapter(decodedVector), ranges, processFlatMapRow);
 
       rawSize +=
           getRawSizeFromFlatMapVector(*flatMapVector, childRanges, context);
@@ -693,21 +681,11 @@ uint64_t getRawSizeFromPassthroughFlatMap(
 
       // For passthrough flatmap, we NEVER ignore top-level nulls
       // because the ROW represents a map entry, and null means "empty map"
-      if (decodedVector.mayHaveNulls()) {
-        for (const auto& row : ranges) {
-          if (decodedVector.isNullAt(row)) {
-            ++nullCount;
-          } else {
-            auto baseIndex = decodedVector.index(row);
-            childRanges.add(baseIndex, baseIndex + 1);
-          }
-        }
-      } else {
-        for (const auto& row : ranges) {
-          auto baseIndex = decodedVector.index(row);
-          childRanges.add(baseIndex, baseIndex + 1);
-        }
-      }
+      auto processRow = [&](velox::vector_size_t baseIndex) {
+        childRanges.add(baseIndex, baseIndex + 1);
+      };
+      nullCount =
+          buildChildRanges(DecodedAdapter(decodedVector), ranges, processRow);
       break;
     }
   }
@@ -826,20 +804,17 @@ uint64_t getRawSizeFromRegularRowVector(
           decodedVector.base()->encoding(),
           decodedVector.base()->typeKind());
 
-      if (!ignoreNulls && decodedVector.mayHaveNulls()) {
-        for (const auto& row : ranges) {
-          if (decodedVector.isNullAt(row)) {
-            ++nullCount;
-          } else {
-            auto baseIndex = decodedVector.index(row);
-            childRanges.add(baseIndex, baseIndex + 1);
-          }
-        }
+      auto processRow = [&](velox::vector_size_t baseIndex) {
+        childRanges.add(baseIndex, baseIndex + 1);
+      };
+
+      if (ignoreNulls) {
+        // When ignoring nulls, use DecodedAdapter<true> to skip null checking
+        nullCount = buildChildRanges(
+            DecodedAdapter<true>(decodedVector), ranges, processRow);
       } else {
-        for (const auto& row : ranges) {
-          auto baseIndex = decodedVector.index(row);
-          childRanges.add(baseIndex, baseIndex + 1);
-        }
+        nullCount = buildChildRanges(
+            DecodedAdapter<>(decodedVector), ranges, processRow);
       }
       break;
     }
@@ -973,7 +948,10 @@ uint64_t getRawSizeFromVector(
           vector, ranges, context);
     }
     case velox::TypeKind::TIMESTAMP: {
-      return getRawSizeFromTimestampVector(vector, ranges, context);
+      // TIMESTAMP uses a logical size of 12 bytes (8 + 4) instead of
+      // sizeof(Timestamp) = 16
+      return getRawSizeFromFixedWidthVector<velox::TypeKind::TIMESTAMP>(
+          vector, ranges, context, kTimestampLogicalSize);
     }
     case velox::TypeKind::VARCHAR:
     case velox::TypeKind::VARBINARY: {
