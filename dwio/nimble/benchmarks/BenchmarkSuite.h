@@ -87,8 +87,10 @@ class BenchmarkSuite {
       folly::detail::BenchmarkingState<Clock> state;
 
       // Register baseline benchmarks (required by the measurement engine).
-      auto baselineName = std::string("baseline");
-      auto suspenderBaselineName = std::string("suspender_baseline");
+      // Names must match the global constants in folly/Benchmark.cpp.
+      auto baselineName = std::string("fbFollyGlobalBenchmarkBaseline");
+      auto suspenderBaselineName =
+          std::string("fbFollyGlobalBenchmarkSuspenderBaseline");
 
       state.addBenchmark(
           "BenchmarkSuite", std::move(baselineName), [](unsigned) {
