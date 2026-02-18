@@ -1883,6 +1883,375 @@ TEST_F(RawSizeTestFixture, ThrowOnDefaultEncodingVariableWidth) {
       velox::VeloxRuntimeError);
 }
 
+// Test type compatibility helper functions
+TEST_F(RawSizeTestFixture, TypeSizeFromKind) {
+  // Fixed-width types should return their sizes
+  EXPECT_EQ(
+      nimble::getTypeSizeFromKind(velox::TypeKind::BOOLEAN), sizeof(bool));
+  EXPECT_EQ(
+      nimble::getTypeSizeFromKind(velox::TypeKind::TINYINT), sizeof(int8_t));
+  EXPECT_EQ(
+      nimble::getTypeSizeFromKind(velox::TypeKind::SMALLINT), sizeof(int16_t));
+  EXPECT_EQ(
+      nimble::getTypeSizeFromKind(velox::TypeKind::INTEGER), sizeof(int32_t));
+  EXPECT_EQ(
+      nimble::getTypeSizeFromKind(velox::TypeKind::BIGINT), sizeof(int64_t));
+  EXPECT_EQ(nimble::getTypeSizeFromKind(velox::TypeKind::REAL), sizeof(float));
+  EXPECT_EQ(
+      nimble::getTypeSizeFromKind(velox::TypeKind::DOUBLE), sizeof(double));
+  // Timestamp uses 12 bytes (8 for seconds + 4 for nanos)
+  EXPECT_EQ(nimble::getTypeSizeFromKind(velox::TypeKind::TIMESTAMP), 12);
+
+  // Variable-width types should return std::nullopt
+  EXPECT_FALSE(
+      nimble::getTypeSizeFromKind(velox::TypeKind::VARCHAR).has_value());
+  EXPECT_FALSE(
+      nimble::getTypeSizeFromKind(velox::TypeKind::VARBINARY).has_value());
+  EXPECT_FALSE(nimble::getTypeSizeFromKind(velox::TypeKind::ARRAY).has_value());
+  EXPECT_FALSE(nimble::getTypeSizeFromKind(velox::TypeKind::MAP).has_value());
+  EXPECT_FALSE(nimble::getTypeSizeFromKind(velox::TypeKind::ROW).has_value());
+}
+
+// Tests for schema-aware raw size calculation with type mismatches
+class RawSizeTypeCompatibilityTestFixture : public RawSizeBaseTestFixture {
+ protected:
+  std::shared_ptr<velox::dwio::common::TypeWithId> makeTypeWithId(
+      const velox::TypePtr& type) {
+    return velox::dwio::common::TypeWithId::create(type);
+  }
+};
+
+// Test scalar type mismatch: int32_t vector with BIGINT schema
+TEST_F(RawSizeTypeCompatibilityTestFixture, ScalarIntegerToBigint) {
+  constexpr velox::vector_size_t SIZE = 10;
+  auto vector =
+      vectorMaker_->flatVector<int32_t>({1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
+  auto schemaType = makeTypeWithId(velox::BIGINT());
+  folly::F14FastSet<uint32_t> flatMapNodeIds;
+
+  ranges_.add(0, SIZE);
+
+  // Without schema: int32_t * 10 = 40 bytes
+  auto rawSizeWithoutSchema =
+      nimble::getRawSizeFromVector(vector, ranges_, context_);
+  EXPECT_EQ(rawSizeWithoutSchema, sizeof(int32_t) * SIZE);
+
+  // With schema (BIGINT): int64_t * 10 = 80 bytes
+  context_ = nimble::RawSizeContext();
+  auto rawSizeWithSchema = nimble::getRawSizeFromVector(
+      vector, ranges_, context_, schemaType.get(), flatMapNodeIds);
+  EXPECT_EQ(rawSizeWithSchema, sizeof(int64_t) * SIZE);
+}
+
+// Test scalar type mismatch with nulls: int32_t vector with BIGINT schema
+TEST_F(RawSizeTypeCompatibilityTestFixture, ScalarIntegerToBigintWithNulls) {
+  auto vector = vectorMaker_->flatVectorNullable<int32_t>(
+      {1, std::nullopt, 3, 4, std::nullopt, 6, 7, 8, 9, 10});
+  auto schemaType = makeTypeWithId(velox::BIGINT());
+  folly::F14FastSet<uint32_t> flatMapNodeIds;
+
+  ranges_.add(0, 10);
+
+  // Without schema: (int32_t * 8) + (kNullSize * 2) = 32 + 2 = 34 bytes
+  auto rawSizeWithoutSchema =
+      nimble::getRawSizeFromVector(vector, ranges_, context_);
+  EXPECT_EQ(rawSizeWithoutSchema, sizeof(int32_t) * 8 + nimble::kNullSize * 2);
+
+  // With schema (BIGINT): (int64_t * 8) + (kNullSize * 2) = 64 + 2 = 66 bytes
+  context_ = nimble::RawSizeContext();
+  auto rawSizeWithSchema = nimble::getRawSizeFromVector(
+      vector, ranges_, context_, schemaType.get(), flatMapNodeIds);
+  EXPECT_EQ(rawSizeWithSchema, sizeof(int64_t) * 8 + nimble::kNullSize * 2);
+  EXPECT_EQ(context_.nullCount, 2);
+}
+
+// Test REAL to DOUBLE promotion
+TEST_F(RawSizeTypeCompatibilityTestFixture, ScalarRealToDouble) {
+  constexpr velox::vector_size_t SIZE = 5;
+  auto vector = vectorMaker_->flatVector<float>({1.0f, 2.0f, 3.0f, 4.0f, 5.0f});
+  auto schemaType = makeTypeWithId(velox::DOUBLE());
+  folly::F14FastSet<uint32_t> flatMapNodeIds;
+
+  ranges_.add(0, SIZE);
+
+  // Without schema: float * 5 = 20 bytes
+  auto rawSizeWithoutSchema =
+      nimble::getRawSizeFromVector(vector, ranges_, context_);
+  EXPECT_EQ(rawSizeWithoutSchema, sizeof(float) * SIZE);
+
+  // With schema (DOUBLE): double * 5 = 40 bytes
+  context_ = nimble::RawSizeContext();
+  auto rawSizeWithSchema = nimble::getRawSizeFromVector(
+      vector, ranges_, context_, schemaType.get(), flatMapNodeIds);
+  EXPECT_EQ(rawSizeWithSchema, sizeof(double) * SIZE);
+}
+
+// Test SMALLINT to INTEGER promotion
+TEST_F(RawSizeTypeCompatibilityTestFixture, ScalarSmallintToInteger) {
+  constexpr velox::vector_size_t SIZE = 4;
+  auto vector = vectorMaker_->flatVector<int16_t>({1, 2, 3, 4});
+  auto schemaType = makeTypeWithId(velox::INTEGER());
+  folly::F14FastSet<uint32_t> flatMapNodeIds;
+
+  ranges_.add(0, SIZE);
+
+  // Without schema: int16_t * 4 = 8 bytes
+  auto rawSizeWithoutSchema =
+      nimble::getRawSizeFromVector(vector, ranges_, context_);
+  EXPECT_EQ(rawSizeWithoutSchema, sizeof(int16_t) * SIZE);
+
+  // With schema (INTEGER): int32_t * 4 = 16 bytes
+  context_ = nimble::RawSizeContext();
+  auto rawSizeWithSchema = nimble::getRawSizeFromVector(
+      vector, ranges_, context_, schemaType.get(), flatMapNodeIds);
+  EXPECT_EQ(rawSizeWithSchema, sizeof(int32_t) * SIZE);
+}
+
+// Test TINYINT to BIGINT promotion (largest gap)
+TEST_F(RawSizeTypeCompatibilityTestFixture, ScalarTinyintToBigint) {
+  constexpr velox::vector_size_t SIZE = 8;
+  auto vector = vectorMaker_->flatVector<int8_t>({1, 2, 3, 4, 5, 6, 7, 8});
+  auto schemaType = makeTypeWithId(velox::BIGINT());
+  folly::F14FastSet<uint32_t> flatMapNodeIds;
+
+  ranges_.add(0, SIZE);
+
+  // Without schema: int8_t * 8 = 8 bytes
+  auto rawSizeWithoutSchema =
+      nimble::getRawSizeFromVector(vector, ranges_, context_);
+  EXPECT_EQ(rawSizeWithoutSchema, sizeof(int8_t) * SIZE);
+
+  // With schema (BIGINT): int64_t * 8 = 64 bytes
+  context_ = nimble::RawSizeContext();
+  auto rawSizeWithSchema = nimble::getRawSizeFromVector(
+      vector, ranges_, context_, schemaType.get(), flatMapNodeIds);
+  EXPECT_EQ(rawSizeWithSchema, sizeof(int64_t) * SIZE);
+}
+
+// Test BOOLEAN to INTEGER promotion (boolean is now in integer family)
+TEST_F(RawSizeTypeCompatibilityTestFixture, ScalarBooleanToInteger) {
+  constexpr velox::vector_size_t SIZE = 6;
+  auto vector =
+      vectorMaker_->flatVector<bool>({true, false, true, true, false, true});
+  auto schemaType = makeTypeWithId(velox::INTEGER());
+  folly::F14FastSet<uint32_t> flatMapNodeIds;
+
+  ranges_.add(0, SIZE);
+
+  // Without schema: bool * 6 = 6 bytes
+  auto rawSizeWithoutSchema =
+      nimble::getRawSizeFromVector(vector, ranges_, context_);
+  EXPECT_EQ(rawSizeWithoutSchema, sizeof(bool) * SIZE);
+
+  // With schema (INTEGER): int32_t * 6 = 24 bytes
+  context_ = nimble::RawSizeContext();
+  auto rawSizeWithSchema = nimble::getRawSizeFromVector(
+      vector, ranges_, context_, schemaType.get(), flatMapNodeIds);
+  EXPECT_EQ(rawSizeWithSchema, sizeof(int32_t) * SIZE);
+}
+
+// Test BOOLEAN to BIGINT promotion
+TEST_F(RawSizeTypeCompatibilityTestFixture, ScalarBooleanToBigint) {
+  constexpr velox::vector_size_t SIZE = 4;
+  auto vector = vectorMaker_->flatVector<bool>({true, false, true, false});
+  auto schemaType = makeTypeWithId(velox::BIGINT());
+  folly::F14FastSet<uint32_t> flatMapNodeIds;
+
+  ranges_.add(0, SIZE);
+
+  // Without schema: bool * 4 = 4 bytes
+  auto rawSizeWithoutSchema =
+      nimble::getRawSizeFromVector(vector, ranges_, context_);
+  EXPECT_EQ(rawSizeWithoutSchema, sizeof(bool) * SIZE);
+
+  // With schema (BIGINT): int64_t * 4 = 32 bytes
+  context_ = nimble::RawSizeContext();
+  auto rawSizeWithSchema = nimble::getRawSizeFromVector(
+      vector, ranges_, context_, schemaType.get(), flatMapNodeIds);
+  EXPECT_EQ(rawSizeWithSchema, sizeof(int64_t) * SIZE);
+}
+
+// Test BOOLEAN to INTEGER with nulls
+TEST_F(RawSizeTypeCompatibilityTestFixture, ScalarBooleanToIntegerWithNulls) {
+  auto vector = vectorMaker_->flatVectorNullable<bool>(
+      {true, std::nullopt, false, true, std::nullopt});
+  auto schemaType = makeTypeWithId(velox::INTEGER());
+  folly::F14FastSet<uint32_t> flatMapNodeIds;
+
+  ranges_.add(0, 5);
+
+  // Without schema: bool * 3 + null * 2 = 3 + 2 = 5 bytes
+  auto rawSizeWithoutSchema =
+      nimble::getRawSizeFromVector(vector, ranges_, context_);
+  EXPECT_EQ(rawSizeWithoutSchema, sizeof(bool) * 3 + nimble::kNullSize * 2);
+
+  // With schema (INTEGER): int32_t * 3 + null * 2 = 12 + 2 = 14 bytes
+  context_ = nimble::RawSizeContext();
+  auto rawSizeWithSchema = nimble::getRawSizeFromVector(
+      vector, ranges_, context_, schemaType.get(), flatMapNodeIds);
+  EXPECT_EQ(rawSizeWithSchema, sizeof(int32_t) * 3 + nimble::kNullSize * 2);
+  EXPECT_EQ(context_.nullCount, 2);
+}
+
+// Test array with element type mismatch
+TEST_F(RawSizeTypeCompatibilityTestFixture, ArrayWithTypeMismatch) {
+  // Create ARRAY<int32_t> vector with 2 rows:
+  // Row 0: [1, 2, 3] (3 elements)
+  // Row 1: [4, 5] (2 elements)
+  // Total: 5 int32_t elements = 20 bytes without schema
+  auto arrayVector = vectorMaker_->arrayVector<int32_t>({{1, 2, 3}, {4, 5}});
+  auto schemaType = makeTypeWithId(velox::ARRAY(velox::BIGINT()));
+  folly::F14FastSet<uint32_t> flatMapNodeIds;
+
+  ranges_.add(0, 2);
+
+  // Without schema: int32_t * 5 = 20 bytes
+  auto rawSizeWithoutSchema =
+      nimble::getRawSizeFromVector(arrayVector, ranges_, context_);
+  EXPECT_EQ(rawSizeWithoutSchema, sizeof(int32_t) * 5);
+
+  // With schema (ARRAY<BIGINT>): int64_t * 5 = 40 bytes
+  context_ = nimble::RawSizeContext();
+  auto rawSizeWithSchema = nimble::getRawSizeFromVector(
+      arrayVector, ranges_, context_, schemaType.get(), flatMapNodeIds);
+  EXPECT_EQ(rawSizeWithSchema, sizeof(int64_t) * 5);
+}
+
+// Test map with value type mismatch
+TEST_F(RawSizeTypeCompatibilityTestFixture, MapWithValueTypeMismatch) {
+  // Create MAP<VARCHAR, int32_t> vector with 2 entries:
+  // Entry 0: {"a" -> 1}
+  // Entry 1: {"bb" -> 2}
+  // Key sizes: 1 + 2 = 3 bytes
+  // Value sizes: int32_t * 2 = 8 bytes
+  // Total without schema: 11 bytes
+  auto mapVector = vectorMaker_->mapVector<velox::StringView, int32_t>(
+      {{{velox::StringView("a"), 1}}, {{velox::StringView("bb"), 2}}});
+  auto schemaType =
+      makeTypeWithId(velox::MAP(velox::VARCHAR(), velox::BIGINT()));
+  folly::F14FastSet<uint32_t> flatMapNodeIds;
+
+  ranges_.add(0, 2);
+
+  // Without schema: 3 (keys) + 8 (int32_t values) = 11 bytes
+  auto rawSizeWithoutSchema =
+      nimble::getRawSizeFromVector(mapVector, ranges_, context_);
+  EXPECT_EQ(rawSizeWithoutSchema, 3 + sizeof(int32_t) * 2);
+
+  // With schema (MAP<VARCHAR, BIGINT>): 3 (keys) + 16 (int64_t values) = 19
+  // bytes
+  context_ = nimble::RawSizeContext();
+  auto rawSizeWithSchema = nimble::getRawSizeFromVector(
+      mapVector, ranges_, context_, schemaType.get(), flatMapNodeIds);
+  EXPECT_EQ(rawSizeWithSchema, 3 + sizeof(int64_t) * 2);
+}
+
+// Test map with key type mismatch
+TEST_F(RawSizeTypeCompatibilityTestFixture, MapWithKeyTypeMismatch) {
+  // Create MAP<int32_t, VARCHAR> vector with 2 entries:
+  // Entry 0: {1 -> "a"}
+  // Entry 1: {2 -> "bb"}
+  // Key sizes (int32_t): 4 * 2 = 8 bytes
+  // Value sizes: 1 + 2 = 3 bytes
+  // Total without schema: 11 bytes
+  auto mapVector = vectorMaker_->mapVector<int32_t, velox::StringView>(
+      {{{1, velox::StringView("a")}}, {{2, velox::StringView("bb")}}});
+  auto schemaType =
+      makeTypeWithId(velox::MAP(velox::BIGINT(), velox::VARCHAR()));
+  folly::F14FastSet<uint32_t> flatMapNodeIds;
+
+  ranges_.add(0, 2);
+
+  // Without schema: 8 (int32_t keys) + 3 (varchar values) = 11 bytes
+  auto rawSizeWithoutSchema =
+      nimble::getRawSizeFromVector(mapVector, ranges_, context_);
+  EXPECT_EQ(rawSizeWithoutSchema, sizeof(int32_t) * 2 + 3);
+
+  // With schema (MAP<BIGINT, VARCHAR>): 16 (int64_t keys) + 3 (varchar values)
+  // = 19 bytes
+  context_ = nimble::RawSizeContext();
+  auto rawSizeWithSchema = nimble::getRawSizeFromVector(
+      mapVector, ranges_, context_, schemaType.get(), flatMapNodeIds);
+  EXPECT_EQ(rawSizeWithSchema, sizeof(int64_t) * 2 + 3);
+}
+
+// Test constant vector with type mismatch
+TEST_F(RawSizeTypeCompatibilityTestFixture, ConstantVectorWithTypeMismatch) {
+  constexpr velox::vector_size_t SIZE = 100;
+  std::vector<std::optional<int32_t>> vec(SIZE, 42);
+  auto constVector = vectorMaker_->constantVector<int32_t>(vec);
+  auto schemaType = makeTypeWithId(velox::BIGINT());
+  folly::F14FastSet<uint32_t> flatMapNodeIds;
+
+  ranges_.add(0, SIZE);
+
+  // Without schema: int32_t * 100 = 400 bytes
+  auto rawSizeWithoutSchema =
+      nimble::getRawSizeFromVector(constVector, ranges_, context_);
+  EXPECT_EQ(rawSizeWithoutSchema, sizeof(int32_t) * SIZE);
+
+  // With schema (BIGINT): int64_t * 100 = 800 bytes
+  context_ = nimble::RawSizeContext();
+  auto rawSizeWithSchema = nimble::getRawSizeFromVector(
+      constVector, ranges_, context_, schemaType.get(), flatMapNodeIds);
+  EXPECT_EQ(rawSizeWithSchema, sizeof(int64_t) * SIZE);
+}
+
+// Test dictionary vector with type mismatch
+TEST_F(RawSizeTypeCompatibilityTestFixture, DictionaryVectorWithTypeMismatch) {
+  constexpr velox::vector_size_t SIZE = 10;
+  auto flatVector =
+      vectorMaker_->flatVector<int32_t>({1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
+  auto indices = randomIndices(SIZE);
+  auto dictVector = velox::BaseVector::wrapInDictionary(
+      velox::BufferPtr(nullptr), indices, SIZE, flatVector);
+
+  auto schemaType = makeTypeWithId(velox::BIGINT());
+  folly::F14FastSet<uint32_t> flatMapNodeIds;
+
+  ranges_.add(0, SIZE);
+
+  // Without schema: int32_t * 10 = 40 bytes
+  auto rawSizeWithoutSchema =
+      nimble::getRawSizeFromVector(dictVector, ranges_, context_);
+  EXPECT_EQ(rawSizeWithoutSchema, sizeof(int32_t) * SIZE);
+
+  // With schema (BIGINT): int64_t * 10 = 80 bytes
+  context_ = nimble::RawSizeContext();
+  auto rawSizeWithSchema = nimble::getRawSizeFromVector(
+      dictVector, ranges_, context_, schemaType.get(), flatMapNodeIds);
+  EXPECT_EQ(rawSizeWithSchema, sizeof(int64_t) * SIZE);
+}
+
+// Test row vector with nested type mismatches
+TEST_F(RawSizeTypeCompatibilityTestFixture, RowVectorWithTypeMismatch) {
+  // Create ROW with:
+  // - col0: int32_t values [1, 2]
+  // - col1: float values [1.0, 2.0]
+  auto childVector1 = vectorMaker_->flatVector<int32_t>({1, 2});
+  auto childVector2 = vectorMaker_->flatVector<float>({1.0f, 2.0f});
+  auto rowVector =
+      vectorMaker_->rowVector({"col0", "col1"}, {childVector1, childVector2});
+
+  // Schema declares BIGINT and DOUBLE
+  auto schemaType = makeTypeWithId(
+      velox::ROW({{"col0", velox::BIGINT()}, {"col1", velox::DOUBLE()}}));
+  folly::F14FastSet<uint32_t> flatMapNodeIds;
+
+  ranges_.add(0, 2);
+
+  // Without schema: (int32_t * 2) + (float * 2) = 8 + 8 = 16 bytes
+  auto rawSizeWithoutSchema = nimble::getRawSizeFromRowVector(
+      rowVector, ranges_, context_, nullptr, {}, true);
+  EXPECT_EQ(rawSizeWithoutSchema, sizeof(int32_t) * 2 + sizeof(float) * 2);
+
+  // With schema: (int64_t * 2) + (double * 2) = 16 + 16 = 32 bytes
+  context_ = nimble::RawSizeContext();
+  auto rawSizeWithSchema = nimble::getRawSizeFromRowVector(
+      rowVector, ranges_, context_, schemaType.get(), flatMapNodeIds, true);
+  EXPECT_EQ(rawSizeWithSchema, sizeof(int64_t) * 2 + sizeof(double) * 2);
+}
+
 TEST_F(RawSizeTestFixture, LocalDecodedVectorMoveConstructor) {
   auto localDecodedVector1 =
       facebook::nimble::DecodedVectorManager::LocalDecodedVector(

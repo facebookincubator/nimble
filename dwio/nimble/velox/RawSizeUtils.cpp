@@ -195,6 +195,93 @@ uint64_t buildChildRanges(
   return nullCount;
 }
 
+// Only allows same-family promotions: integer->integer, float->float
+// where the schema type is larger or equal.
+bool isValidUpcast(velox::TypeKind vectorType, velox::TypeKind schemaType) {
+  auto vectorSize = getTypeSizeFromKind(vectorType);
+  auto schemaSize = getTypeSizeFromKind(schemaType);
+
+  if (!vectorSize.has_value() || !schemaSize.has_value()) {
+    return false;
+  }
+
+  // Integer type family
+  const std::unordered_set<velox::TypeKind> integerTypes = {
+      velox::TypeKind::BOOLEAN,
+      velox::TypeKind::TINYINT,
+      velox::TypeKind::SMALLINT,
+      velox::TypeKind::INTEGER,
+      velox::TypeKind::BIGINT,
+  };
+
+  // Floating point type family
+  const std::unordered_set<velox::TypeKind> floatTypes = {
+      velox::TypeKind::REAL,
+      velox::TypeKind::DOUBLE,
+  };
+
+  // Integer to integer upcast
+  if (integerTypes.contains(vectorType) && integerTypes.contains(schemaType)) {
+    return *schemaSize >= *vectorSize;
+  }
+
+  // Float to float upcast
+  if (floatTypes.contains(vectorType) && floatTypes.contains(schemaType)) {
+    return *schemaSize >= *vectorSize;
+  }
+
+  return false;
+}
+
+// Computes raw size for scalar types when the vector type differs from the
+// schema type. Counts nulls from the vector's actual data but uses the schema
+// type's size for computing the final raw size. Only supports scalar types
+// (fixed-width numeric types).
+uint64_t getUpcastedRawSizeFromVector(
+    const velox::VectorPtr& vector,
+    const velox::common::Ranges& ranges,
+    RawSizeContext& context,
+    size_t schemaTypeSize) {
+  VELOX_CHECK_NOT_NULL(vector);
+
+  const auto& encoding = vector->encoding();
+  uint64_t nullCount = 0;
+
+  switch (encoding) {
+    case velox::VectorEncoding::Simple::FLAT: {
+      if (vector->mayHaveNulls()) {
+        for (const auto& row : ranges) {
+          if (vector->isNullAt(row)) {
+            ++nullCount;
+          }
+        }
+      }
+      break;
+    }
+    case velox::VectorEncoding::Simple::CONSTANT: {
+      nullCount = vector->mayHaveNulls() ? ranges.size() : 0;
+      break;
+    }
+    default: {
+      auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
+          context.getDecodedVectorManager());
+      velox::DecodedVector& decodedVector = localDecodedVector.get();
+      decodedVector.decode(*vector);
+      if (decodedVector.mayHaveNulls()) {
+        for (const auto& row : ranges) {
+          if (decodedVector.isNullAt(row)) {
+            ++nullCount;
+          }
+        }
+      }
+    }
+  }
+
+  context.nullCount = nullCount;
+  uint64_t nonNullCount = ranges.size() - nullCount;
+  return (nonNullCount * schemaTypeSize) + (nullCount * kNullSize);
+}
+
 } // namespace
 
 // Computes raw size for fixed-width scalar vectors.
@@ -917,6 +1004,31 @@ uint64_t getRawSizeFromVector(
   // Type mismatch is only allowed for leaf (scalar) types.
   // Complex type mismatches (e.g., ROW vs MAP for passthrough flatmaps) are
   // handled in the type-specific functions.
+  if (type) {
+    const auto schemaTypeKind = type->type()->kind();
+    if (vectorTypeKind != schemaTypeKind) {
+      auto schemaTypeSize = getTypeSizeFromKind(schemaTypeKind);
+
+      // Only validate and handle type mismatch for scalar (leaf) types.
+      // Complex types (ROW, MAP, ARRAY) are allowed to mismatch for cases like
+      // passthrough flatmaps and we let upstream decide whether to run the
+      // compatibility check.
+      if (schemaTypeSize.has_value()) {
+        // Validate that the upcast is valid (schema type must be same or larger
+        // in same type family)
+        VELOX_CHECK(
+            isValidUpcast(vectorTypeKind, schemaTypeKind),
+            "Invalid type coercion from {} to {}. Only upcasting within the same type family is allowed.",
+            vectorTypeKind,
+            schemaTypeKind);
+
+        // Use the dedicated upcasting function to count nulls from the vector's
+        // actual data and compute size using the schema type.
+        return getUpcastedRawSizeFromVector(
+            vector, ranges, context, *schemaTypeSize);
+      }
+    }
+  }
 
   switch (vectorTypeKind) {
     case velox::TypeKind::BOOLEAN: {
