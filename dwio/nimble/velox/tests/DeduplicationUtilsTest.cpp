@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#include <gtest/gtest.h>
 #include "dwio/nimble/velox/DeduplicationUtils.h"
+#include <gtest/gtest.h>
 #include "velox/common/memory/SharedArbitrator.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 

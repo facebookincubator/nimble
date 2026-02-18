@@ -87,7 +87,7 @@ class Flat {
   explicit Flat(const velox::VectorPtr& vector)
       : vector_{vector}, nulls_{vector->rawNulls()} {
     if constexpr (!kIsBool) {
-      if (auto casted = vector->asFlatVector<T>()) {
+      if (auto* casted = vector->asFlatVector<T>()) {
         values_ = casted->rawValues();
       }
     }
@@ -160,10 +160,10 @@ uint64_t iterateNonNulls(
     const Vector& vector,
     const Consumer& consumer,
     const IndexOp& indexOp) {
-  uint64_t nonNullCount = 0;
+  uint64_t nonNullCount{0};
   if (vector.hasNulls()) {
     ranges.applyEach([&](auto offset) {
-      auto notNull = !vector.isNullAt(offset);
+      const auto notNull = !vector.isNullAt(offset);
       if constexpr (addNulls) {
         nonNulls.push_back(notNull);
       }
@@ -424,7 +424,7 @@ class SimpleFieldWriter : public FieldWriter {
 
     auto totalNonNullCount = valuesStream_.mutableData().size();
     auto rangeStart = totalNonNullCount - batchNonNullValueCount;
-    if (statisticsCollector_->isShared()) {
+    if (statisticsCollector_->shared()) {
       // TODO(T253295607): consider using converter for stats collection.
       auto sharedBuilder =
           statisticsCollector_->as<SharedStatisticsCollector>();
@@ -566,7 +566,7 @@ class StringFieldWriter : public FieldWriter {
       return;
     }
 
-    if (statisticsCollector_->isShared()) {
+    if (statisticsCollector_->shared()) {
       // TODO: looks like we can just use the same converter pattern.
       auto sharedBuilder =
           statisticsCollector_->as<SharedStatisticsCollector>();
@@ -1313,15 +1313,14 @@ class FlatMapFieldWriter : public FieldWriter {
         nullsStream_{context_.createNullsStreamData(
             typeBuilder_->asFlatMap().nullsDescriptor(),
             type->id())} {
-    auto statsBuilder = context.getStatsCollector(type->id());
+    auto* statsBuilder = context.getStatsCollector(type->id());
     // Sanity check that the stats builders are shared and thread safe.
-    NIMBLE_CHECK(statsBuilder->isShared());
-    statisticsCollector_ = statsBuilder->as<SharedStatisticsCollector>();
+    statisticsCollector_ = statsBuilder->asChecked<SharedStatisticsCollector>();
     auto keyStatsBuilder = context.getStatsCollector(type->childAt(0)->id());
-    NIMBLE_CHECK(keyStatsBuilder->isShared());
-    keyStatisticsCollector_ = keyStatsBuilder->as<SharedStatisticsCollector>();
+    keyStatisticsCollector_ =
+        keyStatsBuilder->asChecked<SharedStatisticsCollector>();
     for (auto id = valueType_->id(); id <= valueType_->maxId(); ++id) {
-      NIMBLE_CHECK(context.getStatsCollector(id)->isShared());
+      NIMBLE_CHECK(context.getStatsCollector(id)->shared());
     }
   }
 
@@ -1344,7 +1343,6 @@ class FlatMapFieldWriter : public FieldWriter {
           case velox::VectorEncoding::Simple::FLAT_MAP:
             ingestFlatMap(vector, ranges);
             return;
-
           default:
             ingestMap(vector, ranges, executor);
             return;
@@ -1476,20 +1474,14 @@ class FlatMapFieldWriter : public FieldWriter {
     NIMBLE_CHECK(
         currentValueFields_.empty() && allValueFields_.empty(),
         "Mixing map and flatmap vectors in the FlatMapFieldWriter is not supported");
-    const auto& flatMapVector = vector->as<velox::FlatMapVector>();
-    NIMBLE_CHECK(
-        flatMapVector,
-        fmt::format(
-            "Unexpected vector type. Expected decoded FLAT_MAP but got '{}'",
-            vector->toString()));
-
+    const auto* flatMapVector = vector->asChecked<velox::FlatMapVector>();
     const auto size = ranges.size();
     nullsStream_.ensureAdditionalNullsCapacity(
         flatMapVector->mayHaveNulls(), size);
 
     // First write top-level nulls, collecting the non-nulls ranges to write.
     OrderedRanges childRanges;
-    uint64_t nonNullCount = iterateNonNullIndices<true>(
+    const uint64_t nonNullCount = iterateNonNullIndices<true>(
         ranges, nullsStream_.mutableNonNulls(), Flat{vector}, [&](auto offset) {
           childRanges.add(offset, 1);
         });
@@ -1505,7 +1497,7 @@ class FlatMapFieldWriter : public FieldWriter {
     const auto& inMaps = flatMapVector->inMaps();
 
     // Helper to compute the occurrence count for a given key index.
-    auto computeKeyOccurrences = [&](size_t keyIndex) -> uint64_t {
+    const auto computeKeyOccurrences = [&](size_t keyIndex) -> uint64_t {
       if (keyIndex < inMaps.size() && inMaps[keyIndex] != nullptr) {
         uint64_t count = 0;
         const auto* rawInMaps = inMaps[keyIndex]->as<uint64_t>();
@@ -1565,7 +1557,7 @@ class FlatMapFieldWriter : public FieldWriter {
         // Ideally we wouldn't need to convert the key to a string, but this is
         // done for backward compatibility with ingestRow().
         const auto& key = flatMapKeyToString(keysVector.valueAt(i));
-        VELOX_CHECK(
+        NIMBLE_CHECK(
             distinctKeySet.find(key) == distinctKeySet.end(),
             "FlatMapVector keys are not distinct.");
         distinctKeySet.insert(key);

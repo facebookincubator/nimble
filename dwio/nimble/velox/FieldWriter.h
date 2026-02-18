@@ -240,7 +240,7 @@ class FieldWriterContext {
     for (auto& collector : statsCollectors_) {
       // FIXME: don't need this branching.
       statsViews.push_back(
-          collector->isShared()
+          collector->shared()
               ? collector->as<SharedStatisticsCollector>()->getBaseStatistics()
               : collector->getStatsView());
     }
@@ -446,7 +446,7 @@ class FieldWriterContext {
     if (statsCollector->getType() == StatType::DEDUPLICATED) {
       // Handle the case where the collector might be wrapped in a
       // SharedStatisticsCollector.
-      if (statsCollector->isShared()) {
+      if (statsCollector->shared()) {
         auto sharedCollector = statsCollector->as<SharedStatisticsCollector>();
         for (const auto& child : type->getChildren()) {
           finalizeStatsCollector(child);
@@ -519,7 +519,7 @@ class FieldWriterContext {
       for (const auto& child : type->getChildren()) {
         auto childStatsCollector = getStatsCollector(child->id());
         if (childStatsCollector->getType() == StatType::DEDUPLICATED) {
-          if (childStatsCollector->isShared()) {
+          if (childStatsCollector->shared()) {
             auto dedupedStats =
                 childStatsCollector->as<SharedStatisticsCollector>()
                     ->getBaseStatistics()

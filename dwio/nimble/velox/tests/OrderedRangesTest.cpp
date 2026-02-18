@@ -13,10 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "dwio/nimble/velox/OrderedRanges.h"
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <numeric>
-#include "dwio/nimble/velox/OrderedRanges.h"
 
 namespace facebook::nimble::tests {
 namespace {

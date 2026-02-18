@@ -237,7 +237,15 @@ class StatisticsCollector {
     return dynamic_cast<T*>(this);
   }
 
-  virtual bool isShared() const {
+  template <typename T>
+  T* asChecked() {
+    static_assert(std::is_base_of_v<StatisticsCollector, T>);
+    auto* result = dynamic_cast<T*>(this);
+    NIMBLE_DCHECK_NOT_NULL(result, "Failed to cast StatisticsCollector");
+    return result;
+  }
+
+  virtual bool shared() const {
     return false;
   }
 
@@ -344,7 +352,7 @@ class SharedStatisticsCollector : public StatisticsCollector {
   void addLogicalSize(uint64_t logicalSize) override;
   void addPhysicalSize(uint64_t physicalSize) override;
 
-  bool isShared() const override {
+  bool shared() const override {
     return true;
   }
 
