@@ -33,22 +33,22 @@ enum class SelectionMode {
 
 struct FeatureSelection {
   std::vector<std::string> features;
-  // When mode == Include, only features appearing in 'features' will be
-  // included in returned map, otherwise,
-  // all features from the file will be returned in the map, excluding
-  // the features appearing in 'features'.
+  /// When mode == Include, only features appearing in 'features' will be
+  /// included in returned map, otherwise,
+  /// all features from the file will be returned in the map, excluding
+  /// the features appearing in 'features'.
   SelectionMode mode{SelectionMode::Include};
 };
 
 struct FieldReaderParams {
-  // Allow selecting subset of features to be included/excluded in flat maps.
-  // The key in the map is the flat map (top-level) column name.
+  /// Allow selecting subset of features to be included/excluded in flat maps.
+  /// The key in the map is the flat map (top-level) column name.
   folly::F14FastMap<std::string, FeatureSelection> flatMapFeatureSelector;
 
-  // Contains flatmap field name which we want to return as Struct
+  /// Contains flatmap field name which we want to return as Struct
   folly::F14FastSet<std::string> readFlatMapFieldAsStruct;
 
-  // Callback to populate feature projection stats when needed
+  /// Callback to populate feature projection stats when needed
   std::function<void(velox::dwio::common::flatmap::FlatMapKeySelectionStats)>
       keySelectionCallback{nullptr};
 
@@ -61,24 +61,24 @@ class FieldReader {
       velox::memory::MemoryPool& pool,
       velox::TypePtr type,
       Decoder* decoder)
-      : pool_{pool}, type_{std::move(type)}, decoder_{decoder} {}
+      : pool_{&pool}, type_{std::move(type)}, decoder_{decoder} {}
 
   virtual ~FieldReader() = default;
 
-  // Estimation of the per row size of the field on current reading stripe in
-  // bytes. Returns a pair containing the number of rows of the field and
-  // average row size in bytes of the field. This method will return nullopt if
-  // the field or encoding is not supported for estimation.
-  //
-  // NOTE: This is not the estimation based on the remaining rows, but the
-  // entire stripe's rows.
+  /// Estimation of the per row size of the field on current reading stripe in
+  /// bytes. Returns a pair containing the number of rows of the field and
+  /// average row size in bytes of the field. This method will return nullopt if
+  /// the field or encoding is not supported for estimation.
+  ///
+  /// NOTE: This is not the estimation based on the remaining rows, but the
+  /// entire stripe's rows.
   virtual std::optional<std::pair<uint32_t, uint64_t>> estimatedRowSize()
       const = 0;
 
-  // Place the next 'count' rows of data into the passed in output vector.
-  //
-  // NOTE: scatterBitmap is not for external selectivity. External callers must
-  // leave scatterBitmap nullptr
+  /// Place the next 'count' rows of data into the passed in output vector.
+  ///
+  /// NOTE: scatterBitmap is not for external selectivity. External callers must
+  /// leave scatterBitmap nullptr
   virtual void next(
       uint32_t count,
       velox::VectorPtr& output,
@@ -86,7 +86,7 @@ class FieldReader {
 
   virtual void skip(uint32_t count) = 0;
 
-  // Called at the end of stripe
+  /// Called at the end of stripe
   virtual void reset();
 
   const velox::TypePtr& type() const {
@@ -95,13 +95,13 @@ class FieldReader {
 
  protected:
   void ensureNullConstant(
+      const std::shared_ptr<const velox::Type>& type,
       uint32_t count,
-      velox::VectorPtr& output,
-      const std::shared_ptr<const velox::Type>& type) const;
+      velox::VectorPtr& output) const;
 
-  velox::memory::MemoryPool& pool_;
+  velox::memory::MemoryPool* const pool_;
   const velox::TypePtr type_;
-  Decoder* decoder_;
+  Decoder* const decoder_;
 };
 
 class FieldReaderFactory {
@@ -110,7 +110,7 @@ class FieldReaderFactory {
       velox::memory::MemoryPool& pool,
       velox::TypePtr veloxType,
       const Type* nimbleType)
-      : pool_{pool},
+      : pool_{&pool},
         veloxType_{std::move(veloxType)},
         nimbleType_{nimbleType} {}
 
@@ -124,8 +124,8 @@ class FieldReaderFactory {
     return veloxType_;
   }
 
-  // Build a field reader factory tree. Will traverse the passed in types and
-  // create matching field readers.
+  /// Build a field reader factory tree. Will traverse the passed in types and
+  /// create matching field readers.
   static std::unique_ptr<FieldReaderFactory> create(
       const FieldReaderParams& parameters,
       velox::memory::MemoryPool& pool,
@@ -139,7 +139,7 @@ class FieldReaderFactory {
  protected:
   std::unique_ptr<FieldReader> createNullColumnReader() const;
 
-  Decoder* FOLLY_NULLABLE getDecoder(
+  Decoder* getDecoder(
       const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders,
       const StreamDescriptor& streamDescriptor) const;
 
@@ -149,7 +149,7 @@ class FieldReaderFactory {
       const StreamDescriptor& nullsDecriptor,
       Args&&... args) const;
 
-  velox::memory::MemoryPool& pool_;
+  velox::memory::MemoryPool* const pool_;
   const velox::TypePtr veloxType_;
   const Type* nimbleType_;
 };

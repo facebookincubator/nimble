@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "dwio/nimble/velox/FieldReader.h"
+
 #include <velox/type/StringView.h>
 #include <cstddef>
 #include "dwio/nimble/common/Bits.h"
@@ -55,11 +56,11 @@ void zeroNulls(velox::BaseVector* vector, uint32_t rowCount) {
 }
 
 template <typename T>
-T* FOLLY_NULLABLE verifyVectorState(velox::VectorPtr& vector) {
+T* verifyVectorState(velox::VectorPtr& vector) {
   // we want vector to not be referenced by anyone else (e.g. ref count of 1)
-  if (vector) {
-    auto casted = vector->as<T>();
-    if (casted && vector.use_count() == 1) {
+  if (vector != nullptr) {
+    auto* casted = vector->as<T>();
+    if ((casted != nullptr) && (vector.use_count() == 1)) {
       return casted;
     }
     vector.reset();
@@ -130,10 +131,10 @@ struct VectorInitializer {};
 template <typename T>
 struct VectorInitializer<velox::FlatVector<T>> {
   static velox::FlatVector<T>* initialize(
-      velox::memory::MemoryPool* pool,
-      velox::VectorPtr& output,
       const velox::TypePtr& veloxType,
       uint64_t rowCount,
+      velox::memory::MemoryPool* pool,
+      velox::VectorPtr& output,
       velox::BufferPtr values = nullptr) {
     auto vector = verifyVectorState<velox::FlatVector<T>>(output);
     velox::BufferPtr nulls;
@@ -164,10 +165,10 @@ struct VectorInitializer<velox::FlatVector<T>> {
 template <>
 struct VectorInitializer<velox::ArrayVector> {
   static velox::ArrayVector* initialize(
-      velox::memory::MemoryPool* pool,
-      velox::VectorPtr& output,
       const velox::TypePtr& veloxType,
-      uint64_t rowCount) {
+      uint64_t rowCount,
+      velox::memory::MemoryPool* pool,
+      velox::VectorPtr& output) {
     auto vector = verifyVectorState<velox::ArrayVector>(output);
     velox::BufferPtr nulls, sizes, offsets;
     velox::VectorPtr elements;
@@ -203,10 +204,10 @@ struct VectorInitializer<velox::ArrayVector> {
 template <>
 struct VectorInitializer<velox::MapVector> {
   static velox::MapVector* initialize(
-      velox::memory::MemoryPool* pool,
-      velox::VectorPtr& output,
       const velox::TypePtr& veloxType,
-      uint64_t rowCount) {
+      uint64_t rowCount,
+      velox::memory::MemoryPool* pool,
+      velox::VectorPtr& output) {
     auto vector = verifyVectorState<velox::MapVector>(output);
     velox::BufferPtr nulls, sizes, offsets;
     velox::VectorPtr mapKeys, mapValues;
@@ -244,15 +245,14 @@ struct VectorInitializer<velox::MapVector> {
 template <>
 struct VectorInitializer<velox::RowVector> {
   static velox::RowVector* initialize(
-      velox::memory::MemoryPool* pool,
-      velox::VectorPtr& output,
       const velox::TypePtr& veloxType,
-      uint64_t rowCount) {
-    auto vector = verifyVectorState<velox::RowVector>(output);
+      uint64_t rowCount,
+      velox::memory::MemoryPool* pool,
+      velox::VectorPtr& output) {
+    auto* vector = verifyVectorState<velox::RowVector>(output);
     velox::BufferPtr nulls;
     std::vector<velox::VectorPtr> childrenVectors;
-
-    if (vector) {
+    if (vector != nullptr) {
       nulls = vector->nulls();
       childrenVectors = vector->children();
       resetIfNotWritable(output, nulls);
@@ -260,18 +260,17 @@ struct VectorInitializer<velox::RowVector> {
       childrenVectors.resize(veloxType->size());
     }
 
-    ensureBuffer<bool, /* ShouldAllocate */ false>(&nulls, rowCount, pool);
+    ensureBuffer<bool, /*ShouldAllocate=*/false>(&nulls, rowCount, pool);
 
-    if (!output) {
+    if (output == nullptr) {
       output = std::make_shared<velox::RowVector>(
           pool,
           veloxType,
           nulls,
           rowCount,
           std::move(childrenVectors),
-          0 /*nullCount*/);
+          /*nullCount=*/0);
     }
-
     return static_cast<velox::RowVector*>(output.get());
   }
 };
@@ -289,7 +288,7 @@ class NullColumnReader final : public FieldReader {
       uint32_t count,
       velox::VectorPtr& output,
       const bits::Bitmap* scatterBitmap) final {
-    ensureNullConstant(scatterCount(count, scatterBitmap), output, type_);
+    ensureNullConstant(type_, scatterCount(count, scatterBitmap), output);
   }
 
   void skip(uint32_t /* count */) final {}
@@ -334,7 +333,7 @@ struct ScalarFieldReaderBase<
 
   bool* ensureBuffer(uint32_t rowCount) {
     buf_.reserve(rowCount);
-    auto data = buf_.data();
+    auto* data = buf_.data();
     std::fill(data, data + rowCount, false);
     return data;
   }
@@ -446,16 +445,16 @@ class ScalarFieldReader final
       const bits::Bitmap* scatterBitmap) final {
     const auto rowCount = scatterCount(count, scatterBitmap);
     auto vector = VectorInitializer<velox::FlatVector<TRequested>>::initialize(
-        &pool_, output, type_, rowCount);
+        type_, rowCount, pool_, output);
     vector->resize(rowCount);
 
-    auto upcastNoNulls = [&vector]() {
-      auto vecRowCount = vector->size();
+    const auto upcastNoNulls = [&vector]() {
+      const auto vecRowCount = vector->size();
       if (vecRowCount == 0) {
         return;
       }
-      auto to = vector->mutableRawValues();
-      const auto from = vector->template rawValues<TData>();
+      auto* to = vector->mutableRawValues();
+      const auto* from = vector->template rawValues<TData>();
       // we can't use for (uint32_t i = vecRowCount - 1; i >= 0; --i)
       // for the loop control, because for unsigned int, i >= 0 is always true,
       // it becomes an infinite loop
@@ -465,13 +464,13 @@ class ScalarFieldReader final
       }
     };
 
-    auto upcastWithNulls = [&vector]() {
-      auto vecRowCount = vector->size();
+    const auto upcastWithNulls = [&vector]() {
+      const auto vecRowCount = vector->size();
       if (vecRowCount == 0) {
         return;
       }
-      auto to = vector->mutableRawValues();
-      const auto from = vector->template rawValues<TData>();
+      auto* to = vector->mutableRawValues();
+      const auto* from = vector->template rawValues<TData>();
       for (uint32_t i = 0; i < vecRowCount; ++i) {
         if (vector->isNullAt(vecRowCount - i - 1)) {
           to[vecRowCount - i - 1] = TRequested();
@@ -482,13 +481,12 @@ class ScalarFieldReader final
       }
     };
 
-    uint32_t nonNullCount = 0;
-
+    uint32_t nonNullCount{0};
     // Unused string buffer container for api
     std::vector<velox::BufferPtr> stringBuffers;
     if constexpr (IsBool<TRequested, TData>::value) {
       // TODO: implement method for bitpacked bool
-      auto buf = this->ensureBuffer(rowCount);
+      auto* buf = this->ensureBuffer(rowCount);
       nonNullCount = decoder_->next(
           count,
           buf,
@@ -500,7 +498,7 @@ class ScalarFieldReader final
           vector->values()->size(),
           bits::bytesRequired(rowCount),
           "Unexpected values buffer size.");
-      auto target = vector->values()->template asMutable<char>();
+      auto* target = vector->values()->template asMutable<char>();
       std::fill(target, target + bits::bytesRequired(rowCount), 0);
       for (uint32_t i = 0; i < rowCount; ++i) {
         bits::maybeSetBit(i, target, buf[i]);
@@ -662,7 +660,7 @@ class StringFieldReader final : public FieldReader {
     auto rowCount = scatterCount(count, scatterBitmap);
     auto vector =
         VectorInitializer<velox::FlatVector<velox::StringView>>::initialize(
-            &pool_, output, type_, rowCount);
+            type_, rowCount, pool_, output);
     vector->resize(rowCount);
     buffer_.resize(rowCount);
 
@@ -768,7 +766,7 @@ class LegacyStringFieldReader final : public FieldReader {
     auto rowCount = scatterCount(count, scatterBitmap);
     auto vector =
         VectorInitializer<velox::FlatVector<velox::StringView>>::initialize(
-            &pool_, output, type_, rowCount);
+            type_, rowCount, pool_, output);
     vector->resize(rowCount);
     buffer_.resize(rowCount);
 
@@ -797,7 +795,7 @@ class LegacyStringFieldReader final : public FieldReader {
     }
     // Copy the strings into a single string buffer.
     velox::BufferPtr data =
-        velox::AlignedBuffer::allocate<char>(totalLength, &pool_);
+        velox::AlignedBuffer::allocate<char>(totalLength, pool_);
     char* dataPtr = data->asMutable<char>();
     auto* valuesPtr = vector->mutableValues()->asMutable<velox::StringView>();
     int32_t currentOffset = 0;
@@ -904,7 +902,7 @@ class TimestampMicroNanoFieldReader final : public FieldReader {
     const auto rowCount = scatterCount(count, scatterBitmap);
     auto vector =
         VectorInitializer<velox::FlatVector<velox::Timestamp>>::initialize(
-            &pool_, output, type_, rowCount);
+            type_, rowCount, pool_, output);
     vector->resize(rowCount);
     microsBuffer_.resize(rowCount);
 
@@ -1050,7 +1048,7 @@ class MultiValueFieldReader : public FieldReader {
         "readCount should be less than allocationSize");
 
     auto vector = VectorInitializer<T>::initialize(
-        &pool_, output, type_, allocationSize, std::forward<Args>(args)...);
+        type_, allocationSize, pool_, output, std::forward<Args>(args)...);
     vector->resize(allocationSize);
 
     NIMBLE_DCHECK_EQ(
@@ -1258,7 +1256,7 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
         cachedLazyLoad_{false},
         cachedLazyChildrenRows_{0} {
     VectorInitializer<velox::ArrayVector>::initialize(
-        &pool_, cachedValue_, type_, 1);
+        type_, 1, pool_, cachedValue_);
   }
 
   std::optional<std::pair<uint32_t, uint64_t>> estimatedRowSize() const final {
@@ -1284,9 +1282,9 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
     } else {
       velox::VectorPtr child;
       VectorInitializer<velox::ArrayVector>::initialize(
-          &pool_, child, type_, rowCount);
+          type_, rowCount, pool_, child);
       auto indices =
-          velox::AlignedBuffer::allocate<OffsetType>(rowCount, &pool_);
+          velox::AlignedBuffer::allocate<OffsetType>(rowCount, pool_);
 
       // Note: when creating a dictionary vector, it validates the vector (in
       // debug builds) for correctness. Therefore, we allocate all the buffers
@@ -1528,10 +1526,8 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
   bool cachedLazyLoad_;
   uint32_t cachedLazyChildrenRows_;
 
-  static inline OffsetType findLastBit(
-      uint32_t rowCount,
-      bool hasNulls,
-      const void* FOLLY_NULLABLE nulls) {
+  static inline OffsetType
+  findLastBit(uint32_t rowCount, bool hasNulls, const void* nulls) {
     if (!hasNulls) {
       return rowCount - 1;
     }
@@ -1549,7 +1545,7 @@ class ArrayWithOffsetsFieldReader final : public MultiValueFieldReader {
   static inline int32_t findFirstBit(
       uint32_t rowCount,
       bool hasNulls,
-      const void* FOLLY_NULLABLE nulls,
+      const void* nulls,
       const OffsetType* indices) {
     if (!hasNulls) {
       return indices[0];
@@ -1666,7 +1662,7 @@ class SlidingWindowMapFieldReader final : public FieldReader {
         currentOffset_{0},
         cacheOffset_{0} {
     VectorInitializer<velox::MapVector>::initialize(
-        &pool_, cachedMap_, type_, 0);
+        type_, 0, pool_, cachedMap_);
   }
 
   std::optional<std::pair<uint32_t, uint64_t>> estimatedRowSize() const final {
@@ -1695,13 +1691,13 @@ class SlidingWindowMapFieldReader final : public FieldReader {
         child->resize(rowCount);
       } else {
         VectorInitializer<velox::MapVector>::initialize(
-            &pool_, dictionaryValues, type_, rowCount);
+            type_, rowCount, pool_, dictionaryValues);
       }
     } else {
       velox::VectorPtr child;
       VectorInitializer<velox::MapVector>::initialize(
-          &pool_, child, type_, rowCount);
-      auto indices = velox::AlignedBuffer::allocate<uint32_t>(rowCount, &pool_);
+          type_, rowCount, pool_, child);
+      auto indices = velox::AlignedBuffer::allocate<uint32_t>(rowCount, pool_);
 
       // Note: when creating a dictionary vector, it validates the vector (in
       // debug builds) for correctness. Therefore, we allocate all the buffers
@@ -1728,7 +1724,7 @@ class SlidingWindowMapFieldReader final : public FieldReader {
     auto indices = dictionaryVector->indices()->asMutable<uint32_t>();
     void* nullsPtr = nullptr;
     std::vector<velox::BufferPtr> stringBuffers;
-    uint32_t nonNullCount = offsetDecoder_->next(
+    const uint32_t nonNullCount = offsetDecoder_->next(
         count,
         indices,
         stringBuffers,
@@ -1872,14 +1868,14 @@ class SlidingWindowMapFieldReader final : public FieldReader {
         velox::BaseVector::ensureWritable(
             velox::SelectivityVector::empty(),
             map->mapKeys()->type(),
-            &pool_,
+            pool_,
             map->mapKeys());
       }
       if (!map->mapValues()->isWritable()) {
         velox::BaseVector::ensureWritable(
             velox::SelectivityVector::empty(),
             map->mapValues()->type(),
-            &pool_,
+            pool_,
             map->mapValues());
       }
       velox::BaseVector::CopyRange cacheRange{/* sourceIndex */ 0,
@@ -1918,7 +1914,7 @@ class SlidingWindowMapFieldReader final : public FieldReader {
         velox::BaseVector::ensureWritable(
             velox::SelectivityVector::empty(),
             cachedMap_->type(),
-            &pool_,
+            pool_,
             cachedMap_);
       }
       velox::BaseVector::CopyRange cacheRange{
@@ -2402,7 +2398,7 @@ class RowFieldReader final : public FieldReader {
       const bits::Bitmap* scatterBitmap) final {
     auto rowCount = scatterCount(count, scatterBitmap);
     auto vector = VectorInitializer<velox::RowVector>::initialize(
-        &pool_, output, type_, rowCount);
+        type_, rowCount, pool_, output);
     vector->children().resize(childrenReaders_.size());
     vector->unsafeResize(rowCount);
     const void* childrenBits = nullptr;
@@ -2533,7 +2529,7 @@ class RowFieldReaderFactory final : public FieldReaderFactory {
       folly::Executor* executor)
       : FieldReaderFactory{pool, std::move(veloxType), type},
         children_{std::move(children)},
-        boolBuffer_{&pool_},
+        boolBuffer_{pool_},
         executor_{executor} {}
 
   std::unique_ptr<FieldReader> createReader(
@@ -2552,7 +2548,7 @@ class RowFieldReaderFactory final : public FieldReaderFactory {
 
     if (!nulls) {
       return std::make_unique<RowFieldReader<false>>(
-          pool_,
+          *pool_,
           veloxType_,
           nulls,
           std::move(childrenReaders),
@@ -2561,7 +2557,7 @@ class RowFieldReaderFactory final : public FieldReaderFactory {
     }
 
     return std::make_unique<RowFieldReader<true>>(
-        pool_,
+        *pool_,
         veloxType_,
         nulls,
         std::move(childrenReaders),
@@ -2585,10 +2581,10 @@ class FlatMapKeyNode {
       std::unique_ptr<FieldReader> valueReader,
       Decoder* inMapDecoder,
       const velox::dwio::common::flatmap::KeyValue<T>& key)
-      : valueReader_{std::move(valueReader)},
+      : key_{key},
+        valueReader_{std::move(valueReader)},
         inMapDecoder_{inMapDecoder},
         inMapData_{&memoryPool},
-        key_{key},
         mergedNulls_{&memoryPool} {}
 
   ~FlatMapKeyNode() = default;
@@ -2599,14 +2595,14 @@ class FlatMapKeyNode {
       uint32_t nonNullValues,
       const Vector<bool>& mapNulls,
       Vector<char>* mergedNulls = nullptr) {
-    if (!mergedNulls) {
+    if (mergedNulls == nullptr) {
       mergedNulls = &mergedNulls_;
     }
-    auto nonNullCount =
+    const auto nonNullCount =
         mergeNulls(numValues, nonNullValues, mapNulls, *mergedNulls);
     bits::Bitmap bitmap{mergedNulls->data(), numValues};
     valueReader_->next(nonNullCount, vector, &bitmap);
-    NIMBLE_DCHECK(numValues == vector->size(), "Items not loaded");
+    NIMBLE_DCHECK_EQ(numValues, vector->size(), "Items not loaded");
   }
 
   uint32_t readInMapData(uint32_t numValues) {
@@ -2656,19 +2652,18 @@ class FlatMapKeyNode {
       const Vector<bool>& mapNulls,
       Vector<char>& mergedNulls) {
     const auto numItems = readInMapData(nonNullMaps);
-    auto requiredBytes = bits::bytesRequired(numValues);
+    const auto requiredBytes = bits::bytesRequired(numValues);
     mergedNulls.resize(requiredBytes);
-    memset(mergedNulls.data(), 0, requiredBytes);
+    ::memset(mergedNulls.data(), 0, requiredBytes);
     if (numItems == 0) {
       return 0;
     }
-
     if (nonNullMaps == numValues) {
       // All values are nonNull
       bits::packBitmap(inMapData_, mergedNulls.data());
       return numItems;
     }
-    uint32_t inMapOffset = 0;
+    uint32_t inMapOffset{0};
     for (uint32_t i = 0; i < numValues; ++i) {
       if (mapNulls[i] && inMapData_[inMapOffset++]) {
         bits::setBit(i, mergedNulls.data());
@@ -2677,10 +2672,10 @@ class FlatMapKeyNode {
     return numItems;
   }
 
-  std::unique_ptr<FieldReader> valueReader_;
-  Decoder* inMapDecoder_;
-  Vector<bool> inMapData_;
   const velox::dwio::common::flatmap::KeyValue<T>& key_;
+  const std::unique_ptr<FieldReader> valueReader_;
+  Decoder* const inMapDecoder_;
+  Vector<bool> inMapData_;
   uint32_t numValues_;
   // nulls buffer used in parallel read cases.
   Vector<char> mergedNulls_;
@@ -2772,7 +2767,7 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
       : FieldReaderFactory{pool, std::move(veloxType), type},
         inMapDescriptors_{std::move(inMapDescriptors)},
         valueReaders_{std::move(valueReaders)},
-        boolBuffer_{&pool_} {
+        boolBuffer_{pool_} {
     // inMapTypes contains all projected children, including those that don't
     // exist in the schema. selectedChildren and valuesReaders only contain
     // those that also exist in the schema.
@@ -2785,7 +2780,7 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
         valueReaders_.size(),
         "Selected children and value readers size mismatch!");
 
-    auto& flatMap = type->asFlatMap();
+    const auto& flatMap = type->asFlatMap();
     keyValues_.reserve(selectedChildren.size());
     for (auto childIdx : selectedChildren) {
       keyValues_.push_back(
@@ -2806,14 +2801,14 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
 
     std::vector<std::unique_ptr<FlatMapKeyNode<T>>> keyNodes;
     keyNodes.reserve(valueReaders_.size());
-    uint32_t childIdx = 0;
+    uint32_t childIdx{0};
     for (auto inMapDescriptor : inMapDescriptors_) {
-      if (inMapDescriptor) {
-        auto currentIdx = childIdx++;
+      if (inMapDescriptor != nullptr) {
+        const auto currentIdx = childIdx++;
         if (auto decoder = getDecoder(decoders, *inMapDescriptor)) {
           keyNodes.push_back(
               std::make_unique<FlatMapKeyNode<T>>(
-                  pool_,
+                  *pool_,
                   // @lint-ignore CLANGTIDY
                   // facebook-hte-MemberUncheckedArrayBounds
                   valueReaders_[currentIdx]->createReader(decoders),
@@ -2830,9 +2825,9 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
       }
     }
 
-    if (!nulls) {
+    if (nulls == nullptr) {
       return std::make_unique<ReaderT<false>>(
-          pool_,
+          *pool_,
           this->veloxType_,
           nulls,
           std::move(keyNodes),
@@ -2841,7 +2836,7 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
     }
 
     return std::make_unique<ReaderT<true>>(
-        pool_,
+        *pool_,
         this->veloxType_,
         nulls,
         std::move(keyNodes),
@@ -2873,8 +2868,8 @@ class StructFlatMapFieldReader : public FlatMapFieldReaderBase<T, hasNull> {
             decoder,
             std::move(keyNodes),
             boolBuffer),
-        mergedNulls_{mergedNulls},
-        executor_{executor} {}
+        executor_{executor},
+        mergedNulls_{mergedNulls} {}
 
   std::optional<std::pair<uint32_t, uint64_t>> estimatedRowSize() const final {
     uint64_t totalBytes{0};
@@ -2895,12 +2890,12 @@ class StructFlatMapFieldReader : public FlatMapFieldReaderBase<T, hasNull> {
         // This could happen when selected feature does not exist.
         continue;
       }
-      auto keyNodeSize = node->valueReader()->estimatedRowSize();
-      if (!keyNodeSize.has_value()) {
+      const auto keyNodeSizeOpt = node->valueReader()->estimatedRowSize();
+      if (!keyNodeSizeOpt.has_value()) {
         return std::nullopt;
       }
-      const auto nonNullCount = keyNodeSize.value().first;
-      const auto keyNodeBytesPerRow = keyNodeSize.value().second;
+      const auto nonNullCount = keyNodeSizeOpt.value().first;
+      const auto keyNodeBytesPerRow = keyNodeSizeOpt.value().second;
       totalBytes += keyNodeBytesPerRow * nonNullCount;
       // Adding memory for additional null overhead in outer layer
       if constexpr (hasNull) {
@@ -2927,16 +2922,15 @@ class StructFlatMapFieldReader : public FlatMapFieldReaderBase<T, hasNull> {
       velox::VectorPtr& output,
       const bits::Bitmap* scatterBitmap) final {
     NIMBLE_CHECK_NULL(scatterBitmap, "unexpected scatterBitmap");
-    auto vector = VectorInitializer<velox::RowVector>::initialize(
-        &this->pool_, output, this->type_, rowCount);
+    auto* vector = VectorInitializer<velox::RowVector>::initialize(
+        this->type_, rowCount, this->pool_, output);
     vector->unsafeResize(rowCount);
-    uint32_t nonNullCount = this->loadNulls(rowCount, vector);
-
-    if (executor_) {
+    const uint32_t nonNullCount = this->loadNulls(rowCount, vector);
+    if (executor_ != nullptr) {
       for (uint32_t i = 0; i < this->keyNodes_.size(); ++i) {
         if (this->keyNodes_[i] == nullptr) {
           this->ensureNullConstant(
-              rowCount, vector->childAt(i), this->type_->childAt(i));
+              this->type_->childAt(i), rowCount, vector->childAt(i));
         } else {
           executor_->add([this,
                           rowCount,
@@ -2951,7 +2945,7 @@ class StructFlatMapFieldReader : public FlatMapFieldReaderBase<T, hasNull> {
       for (uint32_t i = 0; i < this->keyNodes_.size(); ++i) {
         if (this->keyNodes_[i] == nullptr) {
           this->ensureNullConstant(
-              rowCount, vector->childAt(i), this->type_->childAt(i));
+              this->type_->childAt(i), rowCount, vector->childAt(i));
         } else {
           this->keyNodes_[i]->readAsChild(
               vector->childAt(i),
@@ -2965,8 +2959,8 @@ class StructFlatMapFieldReader : public FlatMapFieldReaderBase<T, hasNull> {
   }
 
  private:
+  folly::Executor* const executor_;
   Vector<char>& mergedNulls_;
-  folly::Executor* executor_;
 };
 
 template <typename T>
@@ -2991,8 +2985,8 @@ class StructFlatMapFieldReaderFactory final
             std::move(inMapDescriptors),
             std::move(valueReaders),
             selectedChildren),
-        mergedNulls_{&this->pool_},
-        executor_{executor} {
+        executor_{executor},
+        mergedNulls_{this->pool_} {
     NIMBLE_CHECK(this->nimbleType_->isFlatMap(), "Type should be a flat map.");
   }
 
@@ -3004,8 +2998,8 @@ class StructFlatMapFieldReaderFactory final
   }
 
  private:
+  folly::Executor* const executor_;
   Vector<char> mergedNulls_;
-  folly::Executor* executor_;
 };
 
 template <typename T, bool hasNull>
@@ -3045,7 +3039,7 @@ class MergedFlatMapFieldReader final
         return std::nullopt;
       }
       const auto& keyNode = this->keyNodes_.back();
-      VELOX_CHECK_NOT_NULL(keyNode, "keyNode should not be null");
+      NIMBLE_CHECK_NOT_NULL(keyNode, "keyNode should not be null");
       rowCount = keyNode->inMapDecoder()->encoding()->rowCount();
     }
 
@@ -3106,16 +3100,16 @@ class MergedFlatMapFieldReader final
       velox::VectorPtr& output,
       const bits::Bitmap* scatterBitmap) final {
     NIMBLE_CHECK_NULL(scatterBitmap, "unexpected scatterBitmap");
-    auto vector = VectorInitializer<velox::MapVector>::initialize(
-        &this->pool_, output, this->type_, rowCount);
+    auto* vector = VectorInitializer<velox::MapVector>::initialize(
+        this->type_, rowCount, this->pool_, output);
     vector->resize(rowCount);
     velox::VectorPtr& keysVector = vector->mapKeys();
     // Check the refCount for key vector
     auto flatKeysVector = VectorInitializer<velox::FlatVector<T>>::initialize(
-        &this->pool_,
-        keysVector,
         std::static_pointer_cast<const velox::MapType>(this->type_)->keyType(),
-        rowCount);
+        rowCount,
+        this->pool_,
+        keysVector);
 
     NIMBLE_DCHECK_EQ(
         vector->sizes()->size(),
@@ -3125,14 +3119,14 @@ class MergedFlatMapFieldReader final
         vector->offsets()->size(),
         (rowCount * sizeof(velox::vector_size_t)),
         "Unexpected 'offsets' buffer size.");
+
     const velox::BufferPtr& lengths = vector->sizes();
     const velox::BufferPtr& offsets = vector->offsets();
-    uint32_t nonNullCount = this->loadNulls(rowCount, vector);
-
+    const uint32_t nonNullCount = this->loadNulls(rowCount, vector);
     nodes_.clear();
-    size_t totalChildren = 0;
+    size_t totalChildren{0};
     for (auto& node : this->keyNodes_) {
-      auto numValues = node->readInMapData(nonNullCount);
+      const auto numValues = node->readInMapData(nonNullCount);
       if (numValues > 0) {
         nodes_.push_back(node.get());
         totalChildren += numValues;
@@ -3343,15 +3337,15 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
     folly::Executor* executor,
     size_t level = 0,
     const std::string* name = nullptr) {
-  auto veloxKind = veloxType->type()->kind();
+  const auto veloxKind = veloxType->type()->kind();
   // compatibleKinds are the types that can be upcasted to nimbleType
   auto checkType = [&nimbleType](
                        const std::vector<ScalarKind>& compatibleKinds) {
     return std::any_of(
         compatibleKinds.begin(),
         compatibleKinds.end(),
-        [&nimbleType](ScalarKind k) {
-          return nimbleType->asScalar().scalarDescriptor().scalarKind() == k;
+        [&nimbleType](ScalarKind kind) {
+          return nimbleType->asScalar().scalarDescriptor().scalarKind() == kind;
         });
   };
 
@@ -3656,7 +3650,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
         }
 
         auto actualType = veloxType->type();
-        auto& valueType = veloxType->childAt(1);
+        const auto& valueType = veloxType->childAt(1);
         std::vector<size_t> selectedChildren;
         std::vector<const StreamDescriptor*> inMapDescriptors;
 
@@ -3672,7 +3666,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
           for (const auto& feature : features) {
             auto it = namesToIndices.find(feature);
             if (it != namesToIndices.end()) {
-              auto childIdx = it->second;
+              const auto childIdx = it->second;
               selectedChildren.push_back(childIdx);
               auto* inMapDescriptor =
                   &nimbleFlatMap.inMapDescriptorAt(childIdx);
@@ -3736,8 +3730,8 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
               level + 1));
         }
 
-        auto& keySelectionCallback = parameters.keySelectionCallback;
-        if (keySelectionCallback) {
+        const auto& keySelectionCallback = parameters.keySelectionCallback;
+        if (keySelectionCallback != nullptr) {
           keySelectionCallback(
               {.totalKeys = childrenCount,
                .selectedKeys = selectedChildren.size()});
@@ -3763,9 +3757,9 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
 } // namespace
 
 void FieldReader::ensureNullConstant(
+    const std::shared_ptr<const velox::Type>& type,
     uint32_t rowCount,
-    velox::VectorPtr& output,
-    const std::shared_ptr<const velox::Type>& type) const {
+    velox::VectorPtr& output) const {
   // If output is already single referenced null constant, resize. Otherwise,
   // allocate new one.
   if (output && output.use_count() == 1 &&
@@ -3773,22 +3767,22 @@ void FieldReader::ensureNullConstant(
       output->isNullAt(0)) {
     output->resize(rowCount);
   } else {
-    output = velox::BaseVector::createNullConstant(type, rowCount, &pool_);
+    output = velox::BaseVector::createNullConstant(type, rowCount, pool_);
   }
 }
 
 void FieldReader::reset() {
-  if (decoder_) {
+  if (decoder_ != nullptr) {
     decoder_->reset();
   }
 }
 
 std::unique_ptr<FieldReader> FieldReaderFactory::createNullColumnReader()
     const {
-  return std::make_unique<NullColumnReader>(pool_, veloxType_);
+  return std::make_unique<NullColumnReader>(*pool_, veloxType_);
 }
 
-Decoder* FOLLY_NULLABLE FieldReaderFactory::getDecoder(
+Decoder* FieldReaderFactory::getDecoder(
     const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders,
     const StreamDescriptor& streamDescriptor) const {
   auto it = decoders.find(streamDescriptor.offset());
@@ -3798,7 +3792,6 @@ Decoder* FOLLY_NULLABLE FieldReaderFactory::getDecoder(
     // unknown streams, there won't be a matching decoder.
     return nullptr;
   }
-
   return it->second.get();
 }
 
@@ -3812,7 +3805,7 @@ std::unique_ptr<FieldReader> FieldReaderFactory::createReaderImpl(
     return createNullColumnReader();
   }
 
-  return std::make_unique<T>(pool_, veloxType_, decoder, args()...);
+  return std::make_unique<T>(*pool_, veloxType_, decoder, args()...);
 }
 
 std::unique_ptr<FieldReaderFactory> FieldReaderFactory::create(

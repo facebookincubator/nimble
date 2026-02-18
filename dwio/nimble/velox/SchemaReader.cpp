@@ -464,7 +464,7 @@ NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
 
 std::shared_ptr<const Type> SchemaReader::getSchema(
     const std::vector<SchemaNode>& nodes) {
-  offset_size index = 0;
+  offset_size index{0};
   auto namedType = getType(index, nodes);
   return namedType.type;
 }
