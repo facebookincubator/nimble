@@ -123,7 +123,7 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
     uint64_t expectedRawSize = 0;
     for (velox::vector_size_t i = 1; i <= VECTOR_SIZE; ++i) {
       if (isNullAt(i)) {
-        expectedRawSize += nimble::NULL_SIZE;
+        expectedRawSize += nimble::kNullSize;
         vec.emplace_back(std::nullopt);
       } else {
         auto value = getValue<T>(i);
@@ -145,7 +145,7 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
     uint64_t expectedRawSize = 0;
     if (isNullAt(1)) {
       vec.assign(VECTOR_SIZE, std::nullopt);
-      expectedRawSize += nimble::NULL_SIZE * VECTOR_SIZE;
+      expectedRawSize += nimble::kNullSize * VECTOR_SIZE;
     } else {
       auto valueAt = getValue<T>(1);
       expectedRawSize += getSize<T>(valueAt) * VECTOR_SIZE;
@@ -177,7 +177,7 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
     const velox::vector_size_t* data = indices->as<velox::vector_size_t>();
     for (auto i = 0; i < VECTOR_SIZE; ++i) {
       if (vec[data[i]] == std::nullopt) {
-        expectedRawSize += nimble::NULL_SIZE;
+        expectedRawSize += nimble::kNullSize;
       } else {
         expectedRawSize += getSize<T>(vec[data[i]].value());
       }
@@ -198,7 +198,7 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
     for (velox::vector_size_t i = 1; i <= VECTOR_SIZE; ++i) {
       if (isNullAt(i)) {
         vec.emplace_back(std::nullopt);
-        expectedRawSize += nimble::NULL_SIZE;
+        expectedRawSize += nimble::kNullSize;
       } else {
         std::vector<std::optional<T>> innerVec;
         velox::vector_size_t innerSize =
@@ -206,7 +206,7 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
         for (velox::vector_size_t j = 0; j < innerSize; ++j) {
           if (isNullAt(j)) {
             innerVec.emplace_back(std::nullopt);
-            expectedRawSize += nimble::NULL_SIZE;
+            expectedRawSize += nimble::kNullSize;
           } else {
             auto value = getValue<T>(j);
             expectedRawSize += getSize<T>(value);
@@ -233,7 +233,7 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
     for (velox::vector_size_t j = 0; j < innerSize; ++j) {
       if (isNullAt(j)) {
         innerVec.emplace_back(std::nullopt);
-        expectedRawSize += nimble::NULL_SIZE;
+        expectedRawSize += nimble::kNullSize;
       } else {
         auto value = getValue<T>(j);
         expectedRawSize += getSize<T>(value);
@@ -268,7 +268,7 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
             folly::Random::rand32() % VECTOR_SIZE + 1;
         for (velox::vector_size_t j = 0; j < innerSize; ++j) {
           if (isNullAt(j)) {
-            size += nimble::NULL_SIZE;
+            size += nimble::kNullSize;
             innerVec.emplace_back(std::nullopt);
           } else {
             auto value = getValue<T>(j);
@@ -285,7 +285,7 @@ class RawSizeTestFixture : public RawSizeBaseTestFixture {
     const velox::vector_size_t* data = indices->as<velox::vector_size_t>();
     for (auto i = 0; i < VECTOR_SIZE; ++i) {
       if (vec[data[i]] == std::nullopt) {
-        expectedRawSize += nimble::NULL_SIZE;
+        expectedRawSize += nimble::kNullSize;
       } else {
         expectedRawSize += indexToSize[data[i]];
       }
@@ -325,7 +325,7 @@ class RawSizeMapTestFixture
     for (velox::vector_size_t i = 1; i <= VECTOR_SIZE; ++i) {
       if (isNullAt(i)) {
         vec.emplace_back(std::nullopt);
-        expectedRawSize += nimble::NULL_SIZE;
+        expectedRawSize += nimble::kNullSize;
       } else {
         std::vector<std::pair<TKey, std::optional<TValue>>> innerVec;
         std::unordered_set<TKey> keysSeen;
@@ -343,7 +343,7 @@ class RawSizeMapTestFixture
 
             if (isNullAt(j)) {
               innerVec.emplace_back(key, std::nullopt);
-              expectedRawSize += nimble::NULL_SIZE;
+              expectedRawSize += nimble::kNullSize;
             } else {
               auto value = getValue<TValue>(j);
               expectedRawSize += getSize<TValue>(value);
@@ -384,7 +384,7 @@ class RawSizeMapTestFixture
 
         if (isNullAt(j)) {
           innerVec.emplace_back(key, std::nullopt);
-          expectedRawSize += nimble::NULL_SIZE;
+          expectedRawSize += nimble::kNullSize;
         } else {
           auto value = getValue<TValue>(j);
           expectedRawSize += getSize<TValue>(value);
@@ -435,7 +435,7 @@ class RawSizeMapTestFixture
             keysSeen.insert(key);
 
             if (isNullAt(j)) {
-              size += nimble::NULL_SIZE;
+              size += nimble::kNullSize;
               innerVec.emplace_back(key, std::nullopt);
             } else {
               auto value = getValue<TValue>(j);
@@ -456,7 +456,7 @@ class RawSizeMapTestFixture
 
     for (auto i = 0; i < VECTOR_SIZE; ++i) {
       if (vec[data[i]] == std::nullopt) {
-        expectedRawSize += nimble::NULL_SIZE;
+        expectedRawSize += nimble::kNullSize;
       } else {
         expectedRawSize += indexToSize[data[i]];
       }
@@ -1539,7 +1539,7 @@ TEST_F(RawSizeTestFixture, RowNulls) {
       rowVector, this->ranges_, context_, /*topLevel=*/true);
 
   constexpr auto expectedRawSize = sizeof(int64_t) * 5 + sizeof(bool) * 5 +
-      sizeof(int16_t) * 5 + nimble::NULL_SIZE * 1;
+      sizeof(int16_t) * 5 + nimble::kNullSize * 1;
   ASSERT_EQ(expectedRawSize, rawSize);
   ASSERT_EQ(3, context_.columnCount());
   ASSERT_EQ(sizeof(int64_t) * 5, context_.sizeAt(0));
@@ -1571,7 +1571,7 @@ TEST_F(RawSizeTestFixture, RowAllNulls) {
   auto rawSize = nimble::getRawSizeFromRowVector(
       rowVector, this->ranges_, context_, /*topLevel=*/true);
 
-  constexpr auto expectedRawSize = nimble::NULL_SIZE * VECTOR_TEST_SIZE;
+  constexpr auto expectedRawSize = nimble::kNullSize * VECTOR_TEST_SIZE;
   ASSERT_EQ(expectedRawSize, rawSize);
   ASSERT_EQ(3, context_.columnCount());
   for (size_t i = 0; i < 3; ++i) {
@@ -1593,12 +1593,12 @@ TEST_F(RawSizeTestFixture, RowNestedNull) {
       rowVector, this->ranges_, context_, /*topLevel=*/true);
 
   constexpr auto expectedRawSize = sizeof(int64_t) * 5 + (1 + 2 + 3 + 4 + 5) +
-      sizeof(int16_t) * 5 + nimble::NULL_SIZE * 3;
+      sizeof(int16_t) * 5 + nimble::kNullSize * 3;
   ASSERT_EQ(expectedRawSize, rawSize);
   ASSERT_EQ(3, context_.columnCount());
-  ASSERT_EQ(sizeof(int64_t) * 5 + nimble::NULL_SIZE, context_.sizeAt(0));
-  ASSERT_EQ(15 + nimble::NULL_SIZE, context_.sizeAt(1));
-  ASSERT_EQ(sizeof(int16_t) * 5 + nimble::NULL_SIZE, context_.sizeAt(2));
+  ASSERT_EQ(sizeof(int64_t) * 5 + nimble::kNullSize, context_.sizeAt(0));
+  ASSERT_EQ(15 + nimble::kNullSize, context_.sizeAt(1));
+  ASSERT_EQ(sizeof(int16_t) * 5 + nimble::kNullSize, context_.sizeAt(2));
 
   ASSERT_EQ(0, context_.nullCount);
   for (size_t i = 0; i < 3; ++i) {
@@ -1714,13 +1714,13 @@ TEST_F(RawSizeTestFixture, ConstRowNestedNull) {
   auto rawSize = nimble::getRawSizeFromRowVector(
       constVector, this->ranges_, context_, /*topLevel=*/true);
   constexpr auto expectedRawSize =
-      (sizeof(int64_t) + nimble::NULL_SIZE * 2) * CONST_VECTOR_SIZE;
+      (sizeof(int64_t) + nimble::kNullSize * 2) * CONST_VECTOR_SIZE;
 
   ASSERT_EQ(expectedRawSize, rawSize);
   ASSERT_EQ(3, context_.columnCount());
   ASSERT_EQ(sizeof(int64_t) * CONST_VECTOR_SIZE, context_.sizeAt(0));
-  ASSERT_EQ(nimble::NULL_SIZE * CONST_VECTOR_SIZE, context_.sizeAt(1));
-  ASSERT_EQ(nimble::NULL_SIZE * CONST_VECTOR_SIZE, context_.sizeAt(2));
+  ASSERT_EQ(nimble::kNullSize * CONST_VECTOR_SIZE, context_.sizeAt(1));
+  ASSERT_EQ(nimble::kNullSize * CONST_VECTOR_SIZE, context_.sizeAt(2));
 
   ASSERT_EQ(0, context_.nullCount);
   ASSERT_EQ(0, context_.nullsAt(0));
@@ -1795,11 +1795,11 @@ TEST_F(RawSizeTestFixture, DictRowNull) {
   auto rawSize = nimble::getRawSizeFromRowVector(
       dictVector, this->ranges_, context_, /*topLevel=*/true);
   constexpr auto expectedRawSize =
-      sizeof(int64_t) * 3 + sizeof(int16_t) * 5 + 11 + nimble::NULL_SIZE * 2;
+      sizeof(int64_t) * 3 + sizeof(int16_t) * 5 + 11 + nimble::kNullSize * 2;
 
   ASSERT_EQ(expectedRawSize, rawSize);
   ASSERT_EQ(3, context_.columnCount());
-  ASSERT_EQ(nimble::NULL_SIZE * 2 + sizeof(int64_t) * 3, context_.sizeAt(0));
+  ASSERT_EQ(nimble::kNullSize * 2 + sizeof(int64_t) * 3, context_.sizeAt(0));
   ASSERT_EQ(11, context_.sizeAt(1));
   ASSERT_EQ(sizeof(int16_t) * VECTOR_TEST_SIZE, context_.sizeAt(2));
 
@@ -1840,7 +1840,7 @@ TEST_F(RawSizeTestFixture, DictRowNullTopLevel) {
   auto rawSize = nimble::getRawSizeFromRowVector(
       dictVector, this->ranges_, context_, /*topLevel=*/true);
   constexpr auto expectedRawSize =
-      sizeof(int64_t) * 4 + sizeof(int16_t) * 4 + 9 + nimble::NULL_SIZE * 1;
+      sizeof(int64_t) * 4 + sizeof(int16_t) * 4 + 9 + nimble::kNullSize * 1;
 
   ASSERT_EQ(expectedRawSize, rawSize);
   ASSERT_EQ(sizeof(int64_t) * (VECTOR_TEST_SIZE - 1), context_.sizeAt(0));
