@@ -241,7 +241,7 @@ class StatisticsCollector {
   T* asChecked() {
     static_assert(std::is_base_of_v<StatisticsCollector, T>);
     auto* result = dynamic_cast<T*>(this);
-    NIMBLE_DCHECK_NOT_NULL(result, "Failed to cast StatisticsCollector");
+    NIMBLE_CHECK_NOT_NULL(result, "Failed to cast StatisticsCollector");
     return result;
   }
 
