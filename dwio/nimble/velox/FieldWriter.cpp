@@ -1921,6 +1921,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       folly::Executor*) override {
     OrderedRanges childFilteredRanges;
     const velox::ArrayVector* array;
+    uint64_t nullCount = 0;
     // To unwrap the dictionaryVector we need to cast into ComplexType before
     // extracting value arrayVector
     const auto dictionaryVector =
@@ -1929,9 +1930,10 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
         dictionaryVector->valueVector()->template as<velox::ArrayVector>() &&
         isDictionaryValidRunLengthEncoded(*dictionaryVector)) {
       array = ingestLengthsOffsetsAlreadyEncoded(
-          *dictionaryVector, ranges, childFilteredRanges);
+          *dictionaryVector, ranges, childFilteredRanges, nullCount);
     } else {
-      array = ingestLengthsOffsets(vector, ranges, childFilteredRanges);
+      array =
+          ingestLengthsOffsets(vector, ranges, childFilteredRanges, nullCount);
     }
     if (childFilteredRanges.size() > 0) {
       elements_->write(array->elements(), childFilteredRanges);
@@ -1947,7 +1949,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       // non-deduplicated sizes from deduplicated vectors without needing to
       // rely on an external util.
       collectStatistics(
-          context.nullCount,
+          nullCount,
           ranges.size(),
           getRawSizeFromVector(vector, ranges, context));
     }
@@ -2021,7 +2023,8 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
   velox::ArrayVector* ingestLengthsOffsetsAlreadyEncoded(
       const velox::DictionaryVector<velox::ComplexType>& dictionaryVector,
       const OrderedRanges& ranges,
-      OrderedRanges& filteredRanges) {
+      OrderedRanges& filteredRanges,
+      uint64_t& nullCount) {
     auto size = ranges.size();
     offsetsStream_.ensureAdditionalNullsCapacity(
         dictionaryVector.mayHaveNulls(), size);
@@ -2067,12 +2070,15 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       previousOffset = offsets[index];
     };
 
+    nullCount = 0;
     if (dictionaryVector.mayHaveNulls()) {
       ranges.applyEach([&](auto index) {
         auto notNull = !dictionaryVector.isNullAt(index);
         nonNulls.push_back(notNull);
         if (notNull) {
           ingestDictionaryIndex(index);
+        } else {
+          ++nullCount;
         }
       });
     } else {
@@ -2225,7 +2231,8 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
   const velox::ArrayVector* ingestLengthsOffsets(
       const velox::VectorPtr& vector,
       const OrderedRanges& ranges,
-      OrderedRanges& filteredRanges) {
+      OrderedRanges& filteredRanges,
+      uint64_t& nullCount) {
     auto size = ranges.size();
     const velox::ArrayVector* arrayVector = vector->as<velox::ArrayVector>();
     const velox::vector_size_t* rawOffsets;
@@ -2246,8 +2253,9 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       offsetsStream_.ensureAdditionalNullsCapacity(
           arrayVector->mayHaveNulls(), size);
       Flat iterableVector{vector};
-      iterateNonNullIndices<true>(
+      auto nonNullCount = iterateNonNullIndices<true>(
           ranges, offsetsStream_.mutableNonNulls(), iterableVector, proc);
+      nullCount = size - nonNullCount;
       ingestLengthsOffsetsByElements(
           arrayVector, iterableVector, ranges, childRanges, filteredRanges);
     } else {
@@ -2261,8 +2269,9 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       offsetsStream_.ensureAdditionalNullsCapacity(
           decoded.mayHaveNulls(), size);
       Decoded iterableVector{decoded};
-      iterateNonNullIndices<true>(
+      auto nonNullCount = iterateNonNullIndices<true>(
           ranges, offsetsStream_.mutableNonNulls(), iterableVector, proc);
+      nullCount = size - nonNullCount;
       ingestLengthsOffsetsByElements(
           arrayVector, iterableVector, ranges, childRanges, filteredRanges);
     }
