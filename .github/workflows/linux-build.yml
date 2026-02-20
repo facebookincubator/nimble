@@ -63,6 +63,7 @@ jobs:
             libelf-dev \
             libdwarf-dev \
             libsnappy-dev \
+            libthrift-dev \
             bison \
             flex \
             libfl-dev
