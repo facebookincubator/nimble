@@ -20,6 +20,7 @@
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
+#include "velox/type/Type.h"
 
 namespace facebook::nimble::test {
 
@@ -96,28 +97,38 @@ void schema(
     nimble::SchemaBuilder& builder,
     std::function<void(nimble::SchemaBuilder&)> factory);
 
-#define SCHEMA(schemaBuilder, types) \
-  facebook::nimble::test::schema(    \
+#define NIMBLE_SCHEMA(schemaBuilder, types) \
+  facebook::nimble::test::schema(           \
       schemaBuilder, [&](nimble::SchemaBuilder& builder) { types; })
 
-#define ROW(...) facebook::nimble::test::row(builder, __VA_ARGS__)
-#define TINYINT() builder.createScalarTypeBuilder(nimble::ScalarKind::Int8)
-#define SMALLINT() builder.createScalarTypeBuilder(nimble::ScalarKind::Int16)
-#define INTEGER() builder.createScalarTypeBuilder(nimble::ScalarKind::Int32)
-#define BIGINT() builder.createScalarTypeBuilder(nimble::ScalarKind::Int64)
-#define REAL() builder.createScalarTypeBuilder(nimble::ScalarKind::Float)
-#define DOUBLE() builder.createScalarTypeBuilder(nimble::ScalarKind::Double)
-#define BOOLEAN() builder.createScalarTypeBuilder(nimble::ScalarKind::Bool)
-#define STRING() builder.createScalarTypeBuilder(nimble::ScalarKind::String)
-#define BINARY() builder.createScalarTypeBuilder(nimble::ScalarKind::Binary)
-#define TIMESTAMPMICRONANO() builder.createTimestampMicroNanoTypeBuilder()
-#define ARRAY(elements) facebook::nimble::test::array(builder, elements)
-#define OFFSETARRAY(elements) \
+#define NIMBLE_ROW(...) facebook::nimble::test::row(builder, __VA_ARGS__)
+#define NIMBLE_TINYINT() \
+  builder.createScalarTypeBuilder(nimble::ScalarKind::Int8)
+#define NIMBLE_SMALLINT() \
+  builder.createScalarTypeBuilder(nimble::ScalarKind::Int16)
+#define NIMBLE_INTEGER() \
+  builder.createScalarTypeBuilder(nimble::ScalarKind::Int32)
+#define NIMBLE_BIGINT() \
+  builder.createScalarTypeBuilder(nimble::ScalarKind::Int64)
+#define NIMBLE_REAL() builder.createScalarTypeBuilder(nimble::ScalarKind::Float)
+#define NIMBLE_DOUBLE() \
+  builder.createScalarTypeBuilder(nimble::ScalarKind::Double)
+#define NIMBLE_BOOLEAN() \
+  builder.createScalarTypeBuilder(nimble::ScalarKind::Bool)
+#define NIMBLE_STRING() \
+  builder.createScalarTypeBuilder(nimble::ScalarKind::String)
+#define NIMBLE_BINARY() \
+  builder.createScalarTypeBuilder(nimble::ScalarKind::Binary)
+#define NIMBLE_TIMESTAMPMICRONANO() \
+  builder.createTimestampMicroNanoTypeBuilder()
+#define NIMBLE_ARRAY(elements) facebook::nimble::test::array(builder, elements)
+#define NIMBLE_OFFSETARRAY(elements) \
   facebook::nimble::test::arrayWithOffsets(builder, elements)
-#define MAP(keys, values) facebook::nimble::test::map(builder, keys, values)
-#define SLIDINGWINDOWMAP(keys, values) \
+#define NIMBLE_MAP(keys, values) \
+  facebook::nimble::test::map(builder, keys, values)
+#define NIMBLE_SLIDINGWINDOWMAP(keys, values) \
   facebook::nimble::test::slidingWindowMap(builder, keys, values)
-#define FLATMAP(keyKind, values, adder)                       \
+#define NIMBLE_FLATMAP(keyKind, values, adder)                \
   facebook::nimble::test::flatMap(                            \
       builder,                                                \
       nimble::ScalarKind::keyKind,                            \
