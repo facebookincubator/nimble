@@ -22,7 +22,7 @@
 
 #include "common/init/light.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
-#include "folly/experimental/io/FsUtil.h"
+#include "folly/io/FsUtil.h"
 
 using namespace facebook;
 
