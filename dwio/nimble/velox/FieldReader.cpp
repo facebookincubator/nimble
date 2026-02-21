@@ -55,12 +55,15 @@ void zeroNulls(velox::BaseVector* vector, uint32_t rowCount) {
   memset(ensureNulls(vector, rowCount), 0, nullBytes(rowCount));
 }
 
+// TODO: consider to use prepareForReuse in velox.
 template <typename T>
 T* verifyVectorState(velox::VectorPtr& vector) {
-  // we want vector to not be referenced by anyone else (e.g. ref count of 1)
+  // we want vector AND all its nested children to not be referenced by anyone
+  // else (e.g. ref count of 1 recursively). Use BaseVector::reusable
+  // from Velox to check this.
   if (vector != nullptr) {
     auto* casted = vector->as<T>();
-    if ((casted != nullptr) && (vector.use_count() == 1)) {
+    if ((casted != nullptr) && velox::BaseVector::recursivelyReusable(vector)) {
       return casted;
     }
     vector.reset();

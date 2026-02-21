@@ -399,7 +399,7 @@ size_t streamsReadCount(
 
 } // namespace
 
-class VeloxReaderTests : public ::testing::TestWithParam<bool> {
+class VeloxReaderTest : public ::testing::TestWithParam<bool> {
  protected:
   static void SetUpTestCase() {
     velox::memory::MemoryManager::testingSetInstance(
@@ -1204,7 +1204,7 @@ class VeloxReaderTests : public ::testing::TestWithParam<bool> {
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
 };
 
-TEST_P(VeloxReaderTests, dontReadUnselectedColumnsFromFile) {
+TEST_P(VeloxReaderTest, dontReadUnselectedColumnsFromFile) {
   auto type = velox::ROW({
       {"tinyint_val", velox::TINYINT()},
       {"smallint_val", velox::SMALLINT()},
@@ -1254,7 +1254,7 @@ TEST_P(VeloxReaderTests, dontReadUnselectedColumnsFromFile) {
   }
 }
 
-TEST_P(VeloxReaderTests, dontReadUnprojectedFeaturesFromFile) {
+TEST_P(VeloxReaderTest, dontReadUnprojectedFeaturesFromFile) {
   auto type = velox::ROW({
       {"float_features", velox::MAP(velox::INTEGER(), velox::REAL())},
   });
@@ -1365,7 +1365,7 @@ TEST_P(VeloxReaderTests, dontReadUnprojectedFeaturesFromFile) {
   }
 }
 
-TEST_P(VeloxReaderTests, readComplexData) {
+TEST_P(VeloxReaderTest, readComplexData) {
   auto type = velox::ROW({
       {"tinyint_val", velox::TINYINT()},
       {"smallint_val", velox::SMALLINT()},
@@ -1490,7 +1490,7 @@ TEST_P(VeloxReaderTests, readComplexData) {
   }
 }
 
-TEST_P(VeloxReaderTests, lifetime) {
+TEST_P(VeloxReaderTest, lifetime) {
   velox::StringView s{"012345678901234567890123456789"};
   std::vector<velox::StringView> strings{s, s, s, s, s};
   std::vector<std::vector<velox::StringView>> stringsOfStrings{
@@ -1539,7 +1539,7 @@ TEST_P(VeloxReaderTests, lifetime) {
   }
 }
 
-TEST_P(VeloxReaderTests, allValuesNulls) {
+TEST_P(VeloxReaderTest, allValuesNulls) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(
       {vectorMaker.flatVectorNullable<int32_t>(
@@ -1596,7 +1596,7 @@ TEST_P(VeloxReaderTests, allValuesNulls) {
   }
 }
 
-TEST_P(VeloxReaderTests, stringBuffers) {
+TEST_P(VeloxReaderTest, stringBuffers) {
   // Creating a string column with 10 identical strings.
   // We will perform 2 reads of 5 rows each, and compare the string buffers
   // generated.
@@ -1662,7 +1662,7 @@ TEST_P(VeloxReaderTests, stringBuffers) {
   EXPECT_EQ(bufferSizeFirst, bufferSizeSecond);
 }
 
-TEST_P(VeloxReaderTests, nullVectors) {
+TEST_P(VeloxReaderTest, nullVectors) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   // In the following table, the first 5 rows contain nulls and the last 5
@@ -1751,7 +1751,7 @@ TEST_P(VeloxReaderTests, nullVectors) {
   ASSERT_FALSE(reader.next(1, result));
 }
 
-TEST_P(VeloxReaderTests, slidingWindowMapSizeOne) {
+TEST_P(VeloxReaderTest, slidingWindowMapSizeOne) {
   verifySlidingWindowMap(
       /* deduplicatedMapCount */ 1,
       /* keys */ {1, 2},
@@ -1767,7 +1767,7 @@ TEST_P(VeloxReaderTests, slidingWindowMapSizeOne) {
       /* nulls */ {1});
 }
 
-TEST_P(VeloxReaderTests, slidingWindowMapSizeTwo) {
+TEST_P(VeloxReaderTest, slidingWindowMapSizeTwo) {
   verifySlidingWindowMap(
       /* deduplicatedMapCount */ 1,
       /* keys */ {1, 2, 1, 2},
@@ -1783,7 +1783,7 @@ TEST_P(VeloxReaderTests, slidingWindowMapSizeTwo) {
       /* nulls */ {1});
 }
 
-TEST_P(VeloxReaderTests, slidingWindowMapEmpty) {
+TEST_P(VeloxReaderTest, slidingWindowMapEmpty) {
   verifySlidingWindowMap(
       /* deduplicatedMapCount */ 1,
       /* keys */ {},
@@ -1805,7 +1805,7 @@ TEST_P(VeloxReaderTests, slidingWindowMapEmpty) {
       /* nulls */ {1});
 }
 
-TEST_P(VeloxReaderTests, slidingWindowMapMixedEmptyLength) {
+TEST_P(VeloxReaderTest, slidingWindowMapMixedEmptyLength) {
   verifySlidingWindowMap(
       /* deduplicatedMapCount */ 5,
       /* keys */ {1, 2, 2, 1, 1, 2, 4, 4},
@@ -1821,7 +1821,7 @@ TEST_P(VeloxReaderTests, slidingWindowMapMixedEmptyLength) {
       /* nulls */ {9});
 }
 
-TEST_P(VeloxReaderTests, arrayWithOffsetsCaching) {
+TEST_P(VeloxReaderTest, arrayWithOffsetsCaching) {
   auto type = velox::ROW({
       {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
   });
@@ -2087,7 +2087,7 @@ TEST_P(VeloxReaderTests, arrayWithOffsetsCaching) {
       expectedUniqueArrays);
 }
 
-TEST_P(VeloxReaderTests, dictionaryEncodedPassthrough) {
+TEST_P(VeloxReaderTest, dictionaryEncodedPassthrough) {
   // test duplicate in first index
   auto offsets = std::vector<std::optional<velox::vector_size_t>>{0, 0, 1, 2};
   auto dictionaryValues =
@@ -2199,7 +2199,7 @@ TEST_P(VeloxReaderTests, dictionaryEncodedPassthrough) {
       offsets, dictionaryValues, fullArrayVectorNullable);
 }
 
-TEST_P(VeloxReaderTests, dictionaryEncodedPassthroughDecoding) {
+TEST_P(VeloxReaderTest, dictionaryEncodedPassthroughDecoding) {
   auto offsets = std::vector<std::optional<velox::vector_size_t>>{0, 0, 1, 2};
   auto dictionaryValues =
       std::vector<std::vector<int32_t>>{{10, 15, 20}, {30, 40, 50}, {3, 4, 5}};
@@ -2230,7 +2230,7 @@ TEST_P(VeloxReaderTests, dictionaryEncodedPassthroughDecoding) {
   ASSERT_EQ(decodeDictionaryCount, 1);
 }
 
-TEST_P(VeloxReaderTests, dictionaryEncodingPassthroughCaching) {
+TEST_P(VeloxReaderTest, dictionaryEncodingPassthroughCaching) {
   auto firstWriteOffsets =
       std::vector<std::optional<velox::vector_size_t>>{0, 0, 1, 2};
   auto firstWriteDictValues =
@@ -2436,7 +2436,7 @@ TEST_P(VeloxReaderTests, dictionaryEncodingPassthroughCaching) {
   ASSERT_TRUE(true);
 }
 
-TEST_P(VeloxReaderTests, fuzzSimple) {
+TEST_P(VeloxReaderTest, fuzzSimple) {
   auto type = velox::ROW({
       {"bool_val", velox::BOOLEAN()},
       {"byte_val", velox::TINYINT()},
@@ -2519,7 +2519,7 @@ TEST_P(VeloxReaderTests, fuzzSimple) {
   }
 }
 
-TEST_P(VeloxReaderTests, fuzzComplex) {
+TEST_P(VeloxReaderTest, fuzzComplex) {
   auto type = velox::ROW(
       {{"array", velox::ARRAY(velox::REAL())},
        {"dict_array", velox::ARRAY(velox::REAL())},
@@ -2642,7 +2642,7 @@ TEST_P(VeloxReaderTests, fuzzComplex) {
   }
 }
 
-TEST_P(VeloxReaderTests, arrayWithOffsets) {
+TEST_P(VeloxReaderTest, arrayWithOffsets) {
   auto type = velox::ROW({
       {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
   });
@@ -2901,7 +2901,7 @@ TEST_P(VeloxReaderTests, arrayWithOffsets) {
   }
 }
 
-TEST_P(VeloxReaderTests, arrayWithOffsetsNullable) {
+TEST_P(VeloxReaderTest, arrayWithOffsetsNullable) {
   auto type = velox::ROW({
       {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
   });
@@ -3112,7 +3112,7 @@ TEST_P(VeloxReaderTests, arrayWithOffsetsNullable) {
   }
 }
 
-TEST_P(VeloxReaderTests, arrayWithOffsetsMultiskips) {
+TEST_P(VeloxReaderTest, arrayWithOffsetsMultiskips) {
   auto type = velox::ROW({
       {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
   });
@@ -3275,7 +3275,7 @@ bool compareMapToFlatMap(
   return true;
 }
 
-TEST_P(VeloxReaderTests, flatMapNullValues) {
+TEST_P(VeloxReaderTest, flatMapNullValues) {
   testFlatMapNullValues<int8_t>();
   testFlatMapNullValues<int16_t>();
   testFlatMapNullValues<int32_t>();
@@ -3285,7 +3285,7 @@ TEST_P(VeloxReaderTests, flatMapNullValues) {
   testFlatMapNullValues<velox::StringView>();
 }
 
-TEST_P(VeloxReaderTests, slidingWindowMapNestedInFlatMap) {
+TEST_P(VeloxReaderTest, slidingWindowMapNestedInFlatMap) {
   auto type = velox::ROW({
       {"nested_map",
        velox::MAP(
@@ -3350,7 +3350,7 @@ TEST_P(VeloxReaderTests, slidingWindowMapNestedInFlatMap) {
   }
 }
 
-TEST_P(VeloxReaderTests, flatmapPassthroughBasicTest) {
+TEST_P(VeloxReaderTest, flatmapPassthroughBasicTest) {
   // normal flatmap
   auto features = std::vector<std::string>{"123", "234", "345", "456"};
   auto valueArrays = std::vector<
@@ -3397,7 +3397,7 @@ TEST_P(VeloxReaderTests, flatmapPassthroughBasicTest) {
   verifyFlatMapPassthrough(features, valueArrays);
 }
 
-TEST_P(VeloxReaderTests, flatMapPassthroughFuzzer) {
+TEST_P(VeloxReaderTest, flatMapPassthroughFuzzer) {
   auto type = velox::ROW(
       {{"id_list_features",
         velox::MAP(velox::INTEGER(), velox::ARRAY(velox::BIGINT()))}});
@@ -3486,7 +3486,7 @@ TEST_P(VeloxReaderTests, flatMapPassthroughFuzzer) {
   }
 }
 
-TEST_P(VeloxReaderTests, mapToFlatMapAndPassthrough) {
+TEST_P(VeloxReaderTest, mapToFlatMapAndPassthrough) {
   auto mapType = velox::ROW(
       {{"id_list_features",
         velox::MAP(velox::INTEGER(), velox::ARRAY(velox::BIGINT()))}});
@@ -3595,7 +3595,7 @@ TEST_P(VeloxReaderTests, mapToFlatMapAndPassthrough) {
   ASSERT_FALSE(flatReader.next(1, lastFlatResult));
 }
 
-TEST_P(VeloxReaderTests, flatMapToStruct) {
+TEST_P(VeloxReaderTest, flatMapToStruct) {
   auto floatFeatures = velox::MAP(velox::INTEGER(), velox::REAL());
   auto idListFeatures =
       velox::MAP(velox::INTEGER(), velox::ARRAY(velox::BIGINT()));
@@ -3656,7 +3656,7 @@ TEST_P(VeloxReaderTests, flatMapToStruct) {
   }
 }
 
-TEST_P(VeloxReaderTests, flatMapToStructForComplexType) {
+TEST_P(VeloxReaderTest, flatMapToStructForComplexType) {
   auto rowColumn = velox::MAP(
       velox::INTEGER(),
       velox::ROW(
@@ -3699,7 +3699,7 @@ TEST_P(VeloxReaderTests, flatMapToStructForComplexType) {
   }
 }
 
-TEST_P(VeloxReaderTests, stringKeyFlatMapAsStruct) {
+TEST_P(VeloxReaderTest, stringKeyFlatMapAsStruct) {
   auto stringKeyFeatures = velox::MAP(velox::VARCHAR(), velox::REAL());
   auto type = velox::ROW({
       {"string_key_feature", stringKeyFeatures},
@@ -3753,7 +3753,7 @@ TEST_P(VeloxReaderTests, stringKeyFlatMapAsStruct) {
   }
 }
 
-TEST_P(VeloxReaderTests, flatMapAsMapEncoding) {
+TEST_P(VeloxReaderTest, flatMapAsMapEncoding) {
   auto floatFeatures = velox::MAP(velox::INTEGER(), velox::REAL());
   auto idListFeatures =
       velox::MAP(velox::INTEGER(), velox::ARRAY(velox::BIGINT()));
@@ -3956,7 +3956,7 @@ TEST_P(VeloxReaderTests, flatMapAsMapEncoding) {
   }
 }
 
-TEST_P(VeloxReaderTests, stringKeyFlatMapAsMapEncoding) {
+TEST_P(VeloxReaderTest, stringKeyFlatMapAsMapEncoding) {
   auto stringKeyFeatures = velox::MAP(velox::VARCHAR(), velox::REAL());
   auto type = velox::ROW({
       {"string_key_feature", stringKeyFeatures},
@@ -4126,7 +4126,7 @@ void readAndVerifyContent(
   }
 }
 
-TEST_P(VeloxReaderTests, readerSeekTest) {
+TEST_P(VeloxReaderTest, readerSeekTest) {
   // Generate an Nimble file with 3 stripes and 10 rows each
   auto vectors = createSkipSeekVectors(*leafPool_, {10, 10, 10});
   nimble::VeloxWriterOptions writerOptions;
@@ -4225,7 +4225,7 @@ TEST_P(VeloxReaderTests, readerSeekTest) {
   }
 }
 
-TEST_P(VeloxReaderTests, readerSkipTest) {
+TEST_P(VeloxReaderTest, readerSkipTest) {
   // Generate an Nimble file with 3 stripes and 10 rows each
   auto vectors = createSkipSeekVectors(*leafPool_, {10, 10, 10});
   nimble::VeloxWriterOptions writerOptions;
@@ -4448,7 +4448,7 @@ TEST_P(VeloxReaderTests, readerSkipTest) {
   }
 }
 
-TEST_P(VeloxReaderTests, readerSkipSingleStripeTest) {
+TEST_P(VeloxReaderTest, readerSkipSingleStripeTest) {
   // Generate an Nimble file with 1 stripe and 12 rows
   auto vectors = createSkipSeekVectors(*leafPool_, {12});
   nimble::VeloxWriterOptions writerOptions;
@@ -4501,7 +4501,7 @@ TEST_P(VeloxReaderTests, readerSkipSingleStripeTest) {
   }
 }
 
-TEST_P(VeloxReaderTests, readerSeekSingleStripeTest) {
+TEST_P(VeloxReaderTest, readerSeekSingleStripeTest) {
   // Generate an Nimble file with 1 stripes and 11 rows
   auto vectors = createSkipSeekVectors(*leafPool_, {11});
   nimble::VeloxWriterOptions writerOptions;
@@ -4535,7 +4535,7 @@ TEST_P(VeloxReaderTests, readerSeekSingleStripeTest) {
   }
 }
 
-TEST_P(VeloxReaderTests, readerSkipUnevenStripesTest) {
+TEST_P(VeloxReaderTest, readerSkipUnevenStripesTest) {
   // Generate an Nimble file with 4 stripes
   auto vectors = createSkipSeekVectors(*leafPool_, {12, 15, 25, 18});
   nimble::VeloxWriterOptions writerOptions;
@@ -4571,7 +4571,7 @@ TEST_P(VeloxReaderTests, readerSkipUnevenStripesTest) {
 // initialize the value for optimized builds. T() we have used a bit in the
 // code to zero out the result. This is a dummy test to fail fast if it is not
 // zero initialized for primitive types
-TEST_P(VeloxReaderTests, testPrimitiveFieldDefaultValue) {
+TEST_P(VeloxReaderTest, testPrimitiveFieldDefaultValue) {
   verifyDefaultValue<velox::vector_size_t>(2, 0, 10);
   verifyDefaultValue<int8_t>(2, 0, 30);
   verifyDefaultValue<uint8_t>(2, 0, 30);
@@ -4603,7 +4603,7 @@ struct RangeTestParams {
   std::vector<std::tuple<uint32_t, uint32_t, uint32_t>> expectedSkips;
 };
 
-TEST_P(VeloxReaderTests, rangeReads) {
+TEST_P(VeloxReaderTest, rangeReads) {
   // Generate an Nimble file with 4 stripes
   auto vectors = createSkipSeekVectors(*leafPool_, {10, 15, 25, 9});
   nimble::VeloxWriterOptions writerOptions;
@@ -4941,8 +4941,8 @@ TEST_P(VeloxReaderTests, rangeReads) {
   });
 }
 
-TEST_P(VeloxReaderTests, testScalarFieldLifeCycle) {
-  auto testScalarFieldLifeCycle =
+TEST_P(VeloxReaderTest, testScalarFieldLifeCycle) {
+  const auto testScalarFieldLifeCycle =
       [&](const std::shared_ptr<const velox::RowType> schema,
           int32_t batchSize,
           std::mt19937& rng) {
@@ -4977,24 +4977,20 @@ TEST_P(VeloxReaderTests, testScalarFieldLifeCycle) {
         EXPECT_EQ(rowPtr, result.get());
 
         rawNulls = nulls.get();
-        // Hold reference to child ScalarVector and it should use another
-        // ScalarVector along with childBuffers
+        // Don't release the child ScalarVector to row vector. With
+        // recursivelyReusable, holding a child reference makes the RowVector
+        // non-reusable, so it gets replaced along with all buffers.
         EXPECT_TRUE(reader->next(batchSize, result));
         auto child1 = result->as<velox::RowVector>()->childAt(0);
         EXPECT_NE(child, child1);
-        EXPECT_EQ(rowPtr, result.get());
-        // after VectorPtr is reset its buffer also reset
-        if (rawNulls && child1->nulls().get()) {
-          EXPECT_NE(rawNulls, child1->nulls().get());
-        }
-        EXPECT_NE(rawValues, child1->values().get());
+        EXPECT_NE(rowPtr, result.get());
       };
 
-  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
-                                              : folly::Random::rand32();
+  const uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                                    : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
-  std::vector<std::shared_ptr<const velox::RowType>> types = {
+  const std::vector<std::shared_ptr<const velox::RowType>> types = {
       velox::ROW({{"tinyInt", velox::TINYINT()}}),
       velox::ROW({{"smallInt", velox::SMALLINT()}}),
       velox::ROW({{"int", velox::INTEGER()}}),
@@ -5011,12 +5007,12 @@ TEST_P(VeloxReaderTests, testScalarFieldLifeCycle) {
   }
 }
 
-TEST_P(VeloxReaderTests, testArrayFieldLifeCycle) {
-  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
-                                              : folly::Random::rand32();
+TEST_P(VeloxReaderTest, testArrayFieldLifeCycle) {
+  const uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                                    : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
-  auto type = velox::ROW({{"arr_val", velox::ARRAY(velox::BIGINT())}});
+  const auto type = velox::ROW({{"arr_val", velox::ARRAY(velox::BIGINT())}});
   auto testArrayFieldLifeCycle =
       [&](const std::shared_ptr<const velox::RowType> type,
           int32_t batchSize,
@@ -5025,69 +5021,40 @@ TEST_P(VeloxReaderTests, testArrayFieldLifeCycle) {
         auto reader = getReaderForLifeCycleTest(type, 4 * batchSize, rng);
         EXPECT_TRUE(reader->next(batchSize, result));
         // Hold the reference to internal Buffers and element doesn't change
-        auto child = std::dynamic_pointer_cast<velox::ArrayVector>(
+        auto child = velox::checkedPointerCast<velox::ArrayVector>(
             result->as<velox::RowVector>()->childAt(0));
-        velox::BaseVector* childPtr = child.get();
-        velox::BaseVector* rowPtr = result.get();
-        velox::Buffer* rawNulls = child->nulls().get();
-        velox::Buffer* rawSizes = child->sizes().get();
         velox::BufferPtr offsets = child->offsets();
-        auto elementsPtr = child->elements().get();
         child.reset();
         EXPECT_TRUE(reader->next(batchSize, result));
-        child = std::dynamic_pointer_cast<velox::ArrayVector>(
+        child = velox::checkedPointerCast<velox::ArrayVector>(
             result->as<velox::RowVector>()->childAt(0));
-
-        auto checkAndUpdateNulls = [&rawNulls](velox::BaseVector* vector) {
-          if (rawNulls && vector->nulls().get()) {
-            EXPECT_EQ(rawNulls, vector->nulls().get());
-          }
-          rawNulls = vector->nulls().get();
-        };
-        checkAndUpdateNulls(child.get());
-        EXPECT_EQ(rawSizes, child->sizes().get());
         EXPECT_NE(offsets, child->offsets());
-        EXPECT_EQ(elementsPtr, child->elements().get());
-        EXPECT_EQ(rowPtr, result.get());
 
-        // Hold the reference to Elements vector, other buffer should be
-        // reused
+        // Hold the reference to Elements vector. With recursivelyReusable,
+        // holding the elements reference makes the ArrayVector non-reusable
+        // (even though child is reset), which makes the RowVector non-reusable.
         auto elements = child->elements();
-        velox::Buffer* rawOffsets = child->offsets().get();
-        childPtr = child.get();
         child.reset();
         EXPECT_TRUE(reader->next(batchSize, result));
-        child = std::dynamic_pointer_cast<velox::ArrayVector>(
+        child = velox::checkedPointerCast<velox::ArrayVector>(
             result->as<velox::RowVector>()->childAt(0));
-        checkAndUpdateNulls(child.get());
-        EXPECT_EQ(rawSizes, child->sizes().get());
-        EXPECT_EQ(rawOffsets, child->offsets().get());
         EXPECT_NE(elements, child->elements());
-        EXPECT_EQ(childPtr, child.get());
-        EXPECT_EQ(rowPtr, result.get());
 
-        // Don't release the Child Array vector to row vector, all the buffers
-        // in array should not be resused.
-        elementsPtr = child->elements().get();
+        // Don't release the child Array vector to row vector. With
+        // recursivelyReusable, holding a child reference makes the RowVector
+        // non-reusable, so it gets replaced along with all buffers.
         EXPECT_TRUE(reader->next(batchSize, result));
-        auto child1 = std::dynamic_pointer_cast<velox::ArrayVector>(
+        auto child1 = velox::checkedPointerCast<velox::ArrayVector>(
             result->as<velox::RowVector>()->childAt(0));
-        if (rawNulls && child1->nulls().get()) {
-          EXPECT_NE(rawNulls, child1->nulls().get());
-        }
-        EXPECT_NE(rawSizes, child1->sizes().get());
-        EXPECT_NE(rawOffsets, child1->offsets().get());
-        EXPECT_NE(elementsPtr, child1->elements().get());
-        EXPECT_NE(childPtr, child1.get());
-        EXPECT_EQ(rowPtr, result.get());
+        EXPECT_NE(child, child1);
       };
   for (int i = 0; i < 10; ++i) {
     testArrayFieldLifeCycle(type, 10, rng);
   }
 }
 
-TEST_P(VeloxReaderTests, testMapFieldLifeCycle) {
-  auto testMapFieldLifeCycle =
+TEST_P(VeloxReaderTest, testMapFieldLifeCycle) {
+  const auto testMapFieldLifeCycle =
       [&](const std::shared_ptr<const velox::RowType> type,
           int32_t batchSize,
           std::mt19937& rng) {
@@ -5095,98 +5062,52 @@ TEST_P(VeloxReaderTests, testMapFieldLifeCycle) {
         auto reader = getReaderForLifeCycleTest(type, 5 * batchSize, rng);
         EXPECT_TRUE(reader->next(batchSize, result));
         // Hold the reference to internal Buffers and element doesn't change
-        auto child = std::dynamic_pointer_cast<velox::MapVector>(
+        auto child = velox::checkedPointerCast<velox::MapVector>(
             result->as<velox::RowVector>()->childAt(0));
-        velox::BaseVector* childPtr = child.get();
-        velox::BaseVector* rowPtr = result.get();
-        velox::Buffer* rawNulls = child->nulls().get();
         velox::BufferPtr sizes = child->sizes();
-        velox::Buffer* rawOffsets = child->offsets().get();
-        auto keysPtr = child->mapKeys().get();
-        auto valuesPtr = child->mapValues().get();
         child.reset();
         EXPECT_TRUE(reader->next(batchSize, result));
-        child = std::dynamic_pointer_cast<velox::MapVector>(
+        child = velox::checkedPointerCast<velox::MapVector>(
             result->as<velox::RowVector>()->childAt(0));
-
-        auto checkAndUpdateNulls = [&rawNulls](velox::BaseVector* vector) {
-          if (rawNulls && vector->nulls().get()) {
-            EXPECT_EQ(rawNulls, vector->nulls().get());
-          }
-          rawNulls = vector->nulls().get();
-        };
-        checkAndUpdateNulls(child.get());
         EXPECT_NE(sizes, child->sizes());
-        EXPECT_EQ(rawOffsets, child->offsets().get());
-        EXPECT_EQ(keysPtr, child->mapKeys().get());
-        EXPECT_EQ(valuesPtr, child->mapValues().get());
-        EXPECT_EQ(rowPtr, result.get());
 
-        // Hold the reference to keys vector, other buffer should be reused
+        // Hold the reference to keys vector, no reused
         auto mapKeys = child->mapKeys();
-        velox::Buffer* rawSizes = child->sizes().get();
-        childPtr = child.get();
         child.reset();
         EXPECT_TRUE(reader->next(batchSize, result));
-        child = std::dynamic_pointer_cast<velox::MapVector>(
+        child = velox::checkedPointerCast<velox::MapVector>(
             result->as<velox::RowVector>()->childAt(0));
-        checkAndUpdateNulls(child.get());
-        EXPECT_EQ(rawSizes, child->sizes().get());
-        EXPECT_EQ(rawOffsets, child->offsets().get());
         EXPECT_NE(mapKeys, child->mapKeys());
-        EXPECT_EQ(valuesPtr, child->mapValues().get());
-        EXPECT_EQ(childPtr, child.get());
-        EXPECT_EQ(rowPtr, result.get());
 
         // Hold the reference to values vector, other buffer should be reused
-        keysPtr = child->mapKeys().get();
         auto mapValues = child->mapValues();
-        childPtr = child.get();
         child.reset();
         EXPECT_TRUE(reader->next(batchSize, result));
-        child = std::dynamic_pointer_cast<velox::MapVector>(
+        child = velox::checkedPointerCast<velox::MapVector>(
             result->as<velox::RowVector>()->childAt(0));
-        checkAndUpdateNulls(child.get());
-        EXPECT_EQ(rawSizes, child->sizes().get());
-        EXPECT_EQ(rawOffsets, child->offsets().get());
-        EXPECT_EQ(keysPtr, child->mapKeys().get());
         EXPECT_NE(mapValues, child->mapValues());
-        EXPECT_EQ(childPtr, child.get());
-        EXPECT_EQ(rowPtr, result.get());
 
-        // Don't release the Child map vector to row vector, all the buffers
-        // in array should not be resused.
-        valuesPtr = child->mapValues().get();
+        // Don't release the child Map vector to row vector. With
+        // recursivelyReusable, holding a child reference makes the RowVector
+        // non-reusable, so it gets replaced along with all buffers.
         EXPECT_TRUE(reader->next(batchSize, result));
-        auto child1 = std::dynamic_pointer_cast<velox::MapVector>(
+        auto child1 = velox::checkedPointerCast<velox::MapVector>(
             result->as<velox::RowVector>()->childAt(0));
-        if (rawNulls && child1->nulls().get()) {
-          EXPECT_NE(rawNulls, child1->nulls().get());
-        }
-        EXPECT_NE(rawSizes, child1->sizes().get());
-        EXPECT_NE(rawOffsets, child1->offsets().get());
-        EXPECT_NE(keysPtr, child1->mapKeys().get());
-        EXPECT_NE(valuesPtr, child1->mapValues().get());
-        EXPECT_NE(childPtr, child1.get());
-        EXPECT_EQ(rowPtr, result.get());
+        EXPECT_NE(child, child1);
       };
-  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
-                                              : folly::Random::rand32();
+  const uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                                    : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
-  auto type =
+  const auto type =
       velox::ROW({{"map_val", velox::MAP(velox::INTEGER(), velox::REAL())}});
   for (int i = 0; i < 10; ++i) {
-    if (i == 4) {
-      LOG(INFO) << i;
-    }
-    testMapFieldLifeCycle(type, 10, rng);
     testMapFieldLifeCycle(type, 10, rng);
   }
 }
 
-TEST_P(VeloxReaderTests, testFlatMapAsMapFieldLifeCycle) {
-  auto testFlatMapFieldLifeCycle =
+TEST_P(VeloxReaderTest, testFlatMapAsMapFieldLifeCycle) {
+  const auto testFlatMapFieldLifeCycle =
       [&](const std::shared_ptr<const velox::RowType> type,
           int32_t batchSize,
           std::mt19937& rng) {
@@ -5197,74 +5118,44 @@ TEST_P(VeloxReaderTests, testFlatMapAsMapFieldLifeCycle) {
             getReaderForLifeCycleTest(type, 5 * batchSize, rng, writeOptions);
         EXPECT_TRUE(reader->next(batchSize, result));
         // Hold the reference to internal Buffers and element doesn't change
-        auto child = std::dynamic_pointer_cast<velox::MapVector>(
+        auto mapChild = velox::checkedPointerCast<velox::MapVector>(
             result->as<velox::RowVector>()->childAt(0));
-        velox::BaseVector* childPtr = child.get();
-        velox::BaseVector* rowPtr = result.get();
-        velox::Buffer* rawNulls = child->nulls().get();
-        velox::BufferPtr sizes = child->sizes();
-        velox::Buffer* rawOffsets = child->offsets().get();
-        auto keysPtr = child->mapKeys().get();
-        child.reset();
+        velox::BufferPtr mapChildSizes = mapChild->sizes();
+        mapChild.reset();
         EXPECT_TRUE(reader->next(batchSize, result));
-        child = std::dynamic_pointer_cast<velox::MapVector>(
-            result->as<velox::RowVector>()->childAt(0));
-
-        auto checkAndUpdateNulls = [&rawNulls](velox::BaseVector* vector) {
-          if (rawNulls && vector->nulls().get()) {
-            EXPECT_EQ(rawNulls, vector->nulls().get());
-          }
-          rawNulls = vector->nulls().get();
-        };
-        checkAndUpdateNulls(child.get());
-        EXPECT_NE(sizes, child->sizes());
-        EXPECT_EQ(rawOffsets, child->offsets().get());
-        EXPECT_EQ(keysPtr, child->mapKeys().get());
-        EXPECT_EQ(rowPtr, result.get());
+        mapChild = velox::checkedPointerCast<velox::MapVector>(
+            result->asChecked<velox::RowVector>()->childAt(0));
+        EXPECT_NE(mapChildSizes, mapChild->sizes());
 
         // Hold the reference to keys vector, other buffer should be reused
-        auto mapKeys = child->mapKeys();
-        velox::Buffer* rawSizes = child->sizes().get();
-        childPtr = child.get();
-        child.reset();
+        auto mapKeys = mapChild->mapKeys();
+        mapChild.reset();
         EXPECT_TRUE(reader->next(batchSize, result));
-        child = std::dynamic_pointer_cast<velox::MapVector>(
-            result->as<velox::RowVector>()->childAt(0));
-        checkAndUpdateNulls(child.get());
-        EXPECT_EQ(rawSizes, child->sizes().get());
-        EXPECT_EQ(rawOffsets, child->offsets().get());
-        EXPECT_NE(mapKeys, child->mapKeys());
-        EXPECT_EQ(childPtr, child.get());
-        EXPECT_EQ(rowPtr, result.get());
-
+        mapChild = velox::checkedPointerCast<velox::MapVector>(
+            result->asChecked<velox::RowVector>()->childAt(0));
+        EXPECT_NE(mapKeys, mapChild->mapKeys());
         // Don't release the Child map vector to row vector, all the buffers
         // in array should not be resused.
+        // With recursivelyReusable, holding a child reference makes the
+        // RowVector non-reusable, so it gets replaced.
         EXPECT_TRUE(reader->next(batchSize, result));
-        auto child1 = std::dynamic_pointer_cast<velox::MapVector>(
+        auto mapChild1 = velox::checkedPointerCast<velox::MapVector>(
             result->as<velox::RowVector>()->childAt(0));
-        if (rawNulls && child1->nulls().get()) {
-          EXPECT_NE(rawNulls, child1->nulls().get());
-        }
-        EXPECT_NE(rawSizes, child1->sizes().get());
-        EXPECT_NE(rawOffsets, child1->offsets().get());
-        EXPECT_NE(keysPtr, child1->mapKeys().get());
-        EXPECT_NE(childPtr, child1.get());
-        EXPECT_EQ(rowPtr, result.get());
+        EXPECT_NE(mapChild, mapChild1);
       };
-  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
-                                              : folly::Random::rand32();
+  const uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                                    : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
-  auto type =
+  const auto type =
       velox::ROW({{"flat_map", velox::MAP(velox::INTEGER(), velox::REAL())}});
   for (int i = 0; i < 10; ++i) {
-    testFlatMapFieldLifeCycle(type, 10, rng);
     testFlatMapFieldLifeCycle(type, 10, rng);
   }
 }
 
-TEST_P(VeloxReaderTests, testRowFieldLifeCycle) {
-  auto testRowFieldLifeCycle =
+TEST_P(VeloxReaderTest, testRowFieldLifeCycle) {
+  const auto testRowFieldLifeCycle =
       [&](const std::shared_ptr<const velox::RowType> type,
           int32_t batchSize,
           std::mt19937& rng) {
@@ -5272,62 +5163,41 @@ TEST_P(VeloxReaderTests, testRowFieldLifeCycle) {
         auto reader = getReaderForLifeCycleTest(type, 5 * batchSize, rng);
         EXPECT_TRUE(reader->next(batchSize, result));
         // Hold the reference to internal Buffers and element doesn't change
-        auto child = std::dynamic_pointer_cast<velox::RowVector>(
+        auto child = velox::checkedPointerCast<velox::RowVector>(
             result->as<velox::RowVector>()->childAt(0));
-        velox::BaseVector* childPtr = child.get();
-        velox::BaseVector* rowPtr = result.get();
         velox::BufferPtr nulls = child->nulls();
-        velox::BaseVector* childPtrAtIdx0 = child->childAt(0).get();
-        velox::BaseVector* childPtrAtIdx1 = child->childAt(1).get();
         child.reset();
         EXPECT_TRUE(reader->next(batchSize, result));
-        child = std::dynamic_pointer_cast<velox::RowVector>(
+        child = velox::checkedPointerCast<velox::RowVector>(
             result->as<velox::RowVector>()->childAt(0));
         if (nulls && child->nulls()) {
           EXPECT_NE(nulls, child->nulls());
         }
-        EXPECT_EQ(childPtrAtIdx0, child->childAt(0).get());
-        EXPECT_EQ(childPtrAtIdx1, child->childAt(1).get());
-        EXPECT_EQ(rowPtr, result.get());
-
-        // Hold the reference to one of child vector, sibling should not
-        // change
+        // Hold a reference to one of child vector. With recursivelyReusable,
+        // holding a child reference makes the RowVector non-reusable, so it
+        // gets replaced.
         auto childAtIdx0 = child->childAt(0);
-        velox::Buffer* rawNulls = child->nulls().get();
-        childPtr = child.get();
         child.reset();
         EXPECT_TRUE(reader->next(batchSize, result));
-        child = std::dynamic_pointer_cast<velox::RowVector>(
+        child = velox::checkedPointerCast<velox::RowVector>(
             result->as<velox::RowVector>()->childAt(0));
-        if (rawNulls && child->nulls().get()) {
-          EXPECT_EQ(rawNulls, child->nulls().get());
-        }
-        rawNulls = child->nulls().get();
         EXPECT_NE(childAtIdx0, child->childAt(0));
-        EXPECT_EQ(childPtrAtIdx1, child->childAt(1).get());
-        EXPECT_EQ(childPtr, child.get());
-        EXPECT_EQ(rowPtr, result.get());
 
-        // Don't release the Child-row vector to row vector, all the buffers
-        // in array should not be resused.
+        // Don't release the child Row vector to row vector. With
+        // recursivelyReusable, holding a child reference makes the RowVector
+        // non-reusable, so it gets replaced along with all buffers.
         EXPECT_TRUE(reader->next(batchSize, result));
-        auto child1 = std::dynamic_pointer_cast<velox::RowVector>(
+        auto child1 = velox::checkedPointerCast<velox::RowVector>(
             result->as<velox::RowVector>()->childAt(0));
-        if (rawNulls && child1->nulls().get()) {
-          EXPECT_NE(rawNulls, child1->nulls().get());
-        }
-        EXPECT_NE(child->childAt(0), child1->childAt(0));
-        EXPECT_NE(child->childAt(1), child1->childAt(1));
-        EXPECT_NE(childPtr, child1.get());
-        EXPECT_EQ(rowPtr, result.get());
+        EXPECT_NE(child, child1);
       };
 
-  auto type = velox::ROW(
+  const auto type = velox::ROW(
       {{"row_val",
         velox::ROW(
             {{"a", velox::INTEGER()}, {"b", velox::ARRAY(velox::BIGINT())}})}});
-  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
-                                              : folly::Random::rand32();
+  const uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                                    : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
   for (int i = 0; i < 20; ++i) {
@@ -5335,7 +5205,7 @@ TEST_P(VeloxReaderTests, testRowFieldLifeCycle) {
   }
 }
 
-TEST_P(VeloxReaderTests, veloxTypeFromNimbleSchema) {
+TEST_P(VeloxReaderTest, veloxTypeFromNimbleSchema) {
   auto type = velox::ROW({
       {"tinyint_val", velox::TINYINT()},
       {"smallint_val", velox::SMALLINT()},
@@ -5372,7 +5242,7 @@ TEST_P(VeloxReaderTests, veloxTypeFromNimbleSchema) {
   testVeloxTypeFromNimbleSchema(*leafPool_, writerOptions, vector);
 }
 
-TEST_P(VeloxReaderTests, veloxTypeFromNimbleSchemaEmptyFlatMap) {
+TEST_P(VeloxReaderTest, veloxTypeFromNimbleSchemaEmptyFlatMap) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   uint32_t numRows = 5;
   auto vector = vectorMaker.rowVector(
@@ -5400,7 +5270,7 @@ TEST_P(VeloxReaderTests, veloxTypeFromNimbleSchemaEmptyFlatMap) {
   testVeloxTypeFromNimbleSchema(*leafPool_, writerOptions, vector);
 }
 
-TEST_P(VeloxReaderTests, missingMetadata) {
+TEST_P(VeloxReaderTest, missingMetadata) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector =
       vectorMaker.rowVector({vectorMaker.flatVector<int32_t>({1, 2, 3})});
@@ -5432,7 +5302,7 @@ TEST_P(VeloxReaderTests, missingMetadata) {
   }
 }
 
-TEST_P(VeloxReaderTests, withMetadata) {
+TEST_P(VeloxReaderTest, withMetadata) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector =
       vectorMaker.rowVector({vectorMaker.flatVector<int32_t>({1, 2, 3})});
@@ -5475,7 +5345,7 @@ TEST_P(VeloxReaderTests, withMetadata) {
   }
 }
 
-TEST_P(VeloxReaderTests, inaccurateSchemaWithSelection) {
+TEST_P(VeloxReaderTest, inaccurateSchemaWithSelection) {
   // Some compute engines (e.g. Presto) sometimes don't have the full schema
   // to pass into the reader (if column projection is used). The reader needs
   // the schema in order to correctly construct the output vector. However,
@@ -5546,7 +5416,7 @@ TEST_P(VeloxReaderTests, inaccurateSchemaWithSelection) {
   }
 }
 
-TEST_P(VeloxReaderTests, chunkStreamsWithNulls) {
+TEST_P(VeloxReaderTest, chunkStreamsWithNulls) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   std::vector<facebook::velox::VectorPtr> vectors{
       vectorMaker.rowVector({
@@ -5604,7 +5474,7 @@ TEST_P(VeloxReaderTests, chunkStreamsWithNulls) {
   }
 }
 
-TEST_P(VeloxReaderTests, estimatedRowSizeSimple) {
+TEST_P(VeloxReaderTest, estimatedRowSizeSimple) {
   const uint32_t rowCount = 100;
   const double kMaxErrorRate = 0.2;
   auto testPrimitive = [&, rootPool = rootPool_, leafPool = leafPool_](
@@ -5676,7 +5546,7 @@ TEST_P(VeloxReaderTests, estimatedRowSizeSimple) {
 // boost the reported retained size (without actually allocating more memory).
 // This is ok for velox compute engines because they don't use the c++ Nimble
 // batch readers.
-TEST_P(VeloxReaderTests, estimatedRowSizeComplex) {
+TEST_P(VeloxReaderTest, estimatedRowSizeComplex) {
   // For string cases and with null cases, it is really hard to get an even
   // close estimation as velox always over provision memory for vectors. Loose
   // or very loose error rate is applied to the test verification as there is no
@@ -5900,7 +5770,7 @@ TEST_P(VeloxReaderTests, estimatedRowSizeComplex) {
       /* maxErrorRateString= */ kMaxErrorRateLoose);
 }
 
-TEST_P(VeloxReaderTests, estimatedRowSizeMix) {
+TEST_P(VeloxReaderTest, estimatedRowSizeMix) {
   const double kMaxErrorRate = 0.2;
   const double kMaxErrorRateLoose = 0.4;
 
@@ -6016,7 +5886,7 @@ TEST_P(VeloxReaderTests, estimatedRowSizeMix) {
       /* maxErrorRateString= */ kMaxErrorRateLoose);
 }
 
-TEST_P(VeloxReaderTests, readNonExistingFlatMapFeature) {
+TEST_P(VeloxReaderTest, readNonExistingFlatMapFeature) {
   auto testFlatMap = [&](uint32_t rowCount,
                          uint32_t numFeatures,
                          bool readFlatMapFieldAsStruct,
@@ -6159,7 +6029,7 @@ TEST_P(VeloxReaderTests, readNonExistingFlatMapFeature) {
       /* hasNulls= */ true);
 }
 
-TEST_P(VeloxReaderTests, vectorVectorResetWithBufferReuse) {
+TEST_P(VeloxReaderTest, vectorVectorResetWithBufferReuse) {
   {
     velox::test::VectorMaker vectorMaker{leafPool_.get()};
     std::vector<facebook::velox::VectorPtr> vectors{
@@ -6371,7 +6241,7 @@ TEST_P(VeloxReaderTests, vectorVectorResetWithBufferReuse) {
 }
 
 // Timestamp tests that might not be covered by fuzzer
-TEST_P(VeloxReaderTests, timestampAllNulls) {
+TEST_P(VeloxReaderTest, timestampAllNulls) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   auto vector = vectorMaker.rowVector(
@@ -6396,7 +6266,7 @@ TEST_P(VeloxReaderTests, timestampAllNulls) {
 }
 
 // Test that all-null top-level row vector short-circuits correctly
-TEST_P(VeloxReaderTests, rowVectorAllNulls) {
+TEST_P(VeloxReaderTest, rowVectorAllNulls) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   // Create a row vector with a child column, where ALL top-level rows are null
@@ -6435,7 +6305,7 @@ TEST_P(VeloxReaderTests, rowVectorAllNulls) {
   EXPECT_EQ(result->getNullCount().value(), rowCount);
 }
 
-TEST_P(VeloxReaderTests, timestampLargeRowCount) {
+TEST_P(VeloxReaderTest, timestampLargeRowCount) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
   const velox::vector_size_t rowCount = 10'000'000;
@@ -6472,7 +6342,7 @@ TEST_P(VeloxReaderTests, timestampLargeRowCount) {
 
 INSTANTIATE_TEST_SUITE_P(
     OptimizeStringBufferHandling,
-    VeloxReaderTests,
+    VeloxReaderTest,
     ::testing::Bool(),
     [](const ::testing::TestParamInfo<bool>& info) {
       return info.param ? "OptimizeStringBufferHandlingEnabled"
