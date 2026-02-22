@@ -49,29 +49,9 @@ class RawSizeContext {
     return columnSizes_.size();
   }
 
-  void appendNullCount(uint64_t nulls) {
-    columnNullCounts_.push_back(nulls);
-  }
-
-  uint64_t nullsAt(uint64_t columnIndex) const {
-    NIMBLE_CHECK_LT(
-        columnIndex, columnNullCounts_.size(), "Column index is out of range.");
-    return columnNullCounts_.at(columnIndex);
-  }
-
-  void setNullsAt(uint64_t columnIndex, uint64_t nulls) {
-    NIMBLE_CHECK_LT(
-        columnIndex, columnNullCounts_.size(), "Column index is out of range.");
-    columnNullCounts_[columnIndex] = nulls;
-  }
-
-  // Number of nulls in last visited node
-  uint64_t nullCount{0};
-
  private:
   DecodedVectorManager decodedVectorManager_;
   std::vector<uint64_t> columnSizes_;
-  std::vector<uint64_t> columnNullCounts_;
 };
 
 } // namespace facebook::nimble
