@@ -168,15 +168,15 @@ TEST(DefaultLayoutPlannerTests, reorderFlatMap) {
   nimble::test::FlatMapChildAdder fm2;
   nimble::test::FlatMapChildAdder fm3;
 
-  SCHEMA(
+  NIMBLE_SCHEMA(
       builder,
-      ROW({
-          {"c1", TINYINT()},
-          {"c2", FLATMAP(Int8, TINYINT(), fm1)},
-          {"c3", ARRAY(TINYINT())},
-          {"c4", FLATMAP(Int8, TINYINT(), fm2)},
-          {"c5", TINYINT()},
-          {"c6", FLATMAP(Int8, ARRAY(TINYINT()), fm3)},
+      NIMBLE_ROW({
+          {"c1", NIMBLE_TINYINT()},
+          {"c2", NIMBLE_FLATMAP(Int8, NIMBLE_TINYINT(), fm1)},
+          {"c3", NIMBLE_ARRAY(NIMBLE_TINYINT())},
+          {"c4", NIMBLE_FLATMAP(Int8, NIMBLE_TINYINT(), fm2)},
+          {"c5", NIMBLE_TINYINT()},
+          {"c6", NIMBLE_FLATMAP(Int8, NIMBLE_ARRAY(NIMBLE_TINYINT()), fm3)},
       }));
 
   fm1.addChild("2");
@@ -264,12 +264,12 @@ TEST(DefaultLayoutPlannerTests, reorderFlatMapDynamicFeatures) {
 
   nimble::test::FlatMapChildAdder fm;
 
-  SCHEMA(
+  NIMBLE_SCHEMA(
       builder,
-      ROW({
-          {"c1", TINYINT()},
-          {"c2", FLATMAP(Int8, TINYINT(), fm)},
-          {"c3", ARRAY(TINYINT())},
+      NIMBLE_ROW({
+          {"c1", NIMBLE_TINYINT()},
+          {"c2", NIMBLE_FLATMAP(Int8, NIMBLE_TINYINT(), fm)},
+          {"c3", NIMBLE_ARRAY(NIMBLE_TINYINT())},
       }));
 
   fm.addChild("2");
@@ -364,12 +364,12 @@ TEST(DefaultLayoutPlannerTests, noFeatureReordering) {
 
   nimble::test::FlatMapChildAdder fm;
 
-  SCHEMA(
+  NIMBLE_SCHEMA(
       builder,
-      ROW({
-          {"c1", TINYINT()},
-          {"c2", FLATMAP(Int8, TINYINT(), fm)},
-          {"c3", ARRAY(TINYINT())},
+      NIMBLE_ROW({
+          {"c1", NIMBLE_TINYINT()},
+          {"c2", NIMBLE_FLATMAP(Int8, NIMBLE_TINYINT(), fm)},
+          {"c3", NIMBLE_ARRAY(NIMBLE_TINYINT())},
       }));
 
   fm.addChild("2");
@@ -419,13 +419,13 @@ TEST(DefaultLayoutPlannerTests, nonFlatMapOrdinalsAreIgnored) {
   nimble::test::FlatMapChildAdder fm1;
   nimble::test::FlatMapChildAdder fm2;
 
-  SCHEMA(
+  NIMBLE_SCHEMA(
       builder,
-      ROW(
-          {{"c0", TINYINT()},
-           {"c1", FLATMAP(Int8, TINYINT(), fm1)},
-           {"c2", ARRAY(TINYINT())},
-           {"c3", FLATMAP(Int8, TINYINT(), fm2)}}));
+      NIMBLE_ROW(
+          {{"c0", NIMBLE_TINYINT()},
+           {"c1", NIMBLE_FLATMAP(Int8, NIMBLE_TINYINT(), fm1)},
+           {"c2", NIMBLE_ARRAY(NIMBLE_TINYINT())},
+           {"c3", NIMBLE_FLATMAP(Int8, NIMBLE_TINYINT(), fm2)}}));
 
   fm1.addChild("2");
   fm1.addChild("5");
@@ -485,15 +485,15 @@ TEST(DefaultLayoutPlannerTests, ordinalOutOfRangeAreIgnored) {
   nimble::test::FlatMapChildAdder fm2;
   nimble::test::FlatMapChildAdder fm3;
 
-  SCHEMA(
+  NIMBLE_SCHEMA(
       builder,
-      ROW({
-          {"c0", TINYINT()},
-          {"c1", FLATMAP(Int8, TINYINT(), fm1)},
-          {"c2", ARRAY(TINYINT())},
-          {"c3", FLATMAP(Int8, TINYINT(), fm2)},
-          {"c4", TINYINT()},
-          {"c5", FLATMAP(Int8, ARRAY(TINYINT()), fm3)},
+      NIMBLE_ROW({
+          {"c0", NIMBLE_TINYINT()},
+          {"c1", NIMBLE_FLATMAP(Int8, NIMBLE_TINYINT(), fm1)},
+          {"c2", NIMBLE_ARRAY(NIMBLE_TINYINT())},
+          {"c3", NIMBLE_FLATMAP(Int8, NIMBLE_TINYINT(), fm2)},
+          {"c4", NIMBLE_TINYINT()},
+          {"c5", NIMBLE_FLATMAP(Int8, NIMBLE_ARRAY(NIMBLE_TINYINT()), fm3)},
       }));
 
   fm1.addChild("2");
@@ -549,7 +549,7 @@ TEST(DefaultLayoutPlannerTests, ordinalOutOfRangeAreIgnored) {
 TEST(DefaultLayoutPlannerTests, incompatibleSchema) {
   nimble::SchemaBuilder builder;
 
-  SCHEMA(builder, MAP(TINYINT(), STRING()));
+  NIMBLE_SCHEMA(builder, NIMBLE_MAP(NIMBLE_TINYINT(), NIMBLE_STRING()));
 
   nimble::DefaultLayoutPlanner planner{
       [&]() { return builder.root(); }, {{{3, {3, 2, 42, 21}}}}};
@@ -570,14 +570,16 @@ TEST(DefaultLayoutPlannerTests, timestampMicros) {
 
   nimble::SchemaBuilder builder;
 
-  SCHEMA(
+  NIMBLE_SCHEMA(
       builder,
-      ROW(
-          {{"c1", TINYINT()},
-           {"c2", TIMESTAMPMICRONANO()},
-           {"c3", ARRAY(TIMESTAMPMICRONANO())},
-           {"c4", MAP(TIMESTAMPMICRONANO(), TIMESTAMPMICRONANO())},
-           {"c5", ROW({{"c5a", TIMESTAMPMICRONANO()}})}}));
+      NIMBLE_ROW(
+          {{"c1", NIMBLE_TINYINT()},
+           {"c2", NIMBLE_TIMESTAMPMICRONANO()},
+           {"c3", NIMBLE_ARRAY(NIMBLE_TIMESTAMPMICRONANO())},
+           {"c4",
+            NIMBLE_MAP(
+                NIMBLE_TIMESTAMPMICRONANO(), NIMBLE_TIMESTAMPMICRONANO())},
+           {"c5", NIMBLE_ROW({{"c5a", NIMBLE_TIMESTAMPMICRONANO()}})}}));
 
   auto namedTypes = getNamedTypes(*builder.root());
 

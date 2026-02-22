@@ -48,26 +48,29 @@ TEST(SchemaTests, schemaUtils) {
   nimble::test::FlatMapChildAdder fm1;
   nimble::test::FlatMapChildAdder fm2;
 
-  SCHEMA(
+  NIMBLE_SCHEMA(
       builder,
-      ROW({
-          {"c1", TINYINT()},
-          {"c2", ARRAY(TINYINT())},
-          {"c3", FLATMAP(Int8, TINYINT(), fm1)},
-          {"c4", MAP(TINYINT(), TINYINT())},
-          {"c5", FLATMAP(Float, ARRAY(BIGINT()), fm2)},
-          {"c6", SMALLINT()},
-          {"c7", INTEGER()},
-          {"c8", BIGINT()},
-          {"c9", REAL()},
-          {"c10", DOUBLE()},
-          {"c11", BOOLEAN()},
-          {"c12", STRING()},
-          {"c13", BINARY()},
-          {"c14", OFFSETARRAY(INTEGER())},
-          {"c15", SLIDINGWINDOWMAP(INTEGER(), INTEGER())},
-          {"c16", ROW({{"d1", TINYINT()}, {"d2", ARRAY(TINYINT())}})},
-          {"c17", TIMESTAMPMICRONANO()},
+      NIMBLE_ROW({
+          {"c1", NIMBLE_TINYINT()},
+          {"c2", NIMBLE_ARRAY(NIMBLE_TINYINT())},
+          {"c3", NIMBLE_FLATMAP(Int8, NIMBLE_TINYINT(), fm1)},
+          {"c4", NIMBLE_MAP(NIMBLE_TINYINT(), NIMBLE_TINYINT())},
+          {"c5", NIMBLE_FLATMAP(Float, NIMBLE_ARRAY(NIMBLE_BIGINT()), fm2)},
+          {"c6", NIMBLE_SMALLINT()},
+          {"c7", NIMBLE_INTEGER()},
+          {"c8", NIMBLE_BIGINT()},
+          {"c9", NIMBLE_REAL()},
+          {"c10", NIMBLE_DOUBLE()},
+          {"c11", NIMBLE_BOOLEAN()},
+          {"c12", NIMBLE_STRING()},
+          {"c13", NIMBLE_BINARY()},
+          {"c14", NIMBLE_OFFSETARRAY(NIMBLE_INTEGER())},
+          {"c15", NIMBLE_SLIDINGWINDOWMAP(NIMBLE_INTEGER(), NIMBLE_INTEGER())},
+          {"c16",
+           NIMBLE_ROW(
+               {{"d1", NIMBLE_TINYINT()},
+                {"d2", NIMBLE_ARRAY(NIMBLE_TINYINT())}})},
+          {"c17", NIMBLE_TIMESTAMPMICRONANO()},
       }));
 
   auto nodes = builder.schemaNodes();
