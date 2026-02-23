@@ -16,10 +16,10 @@
 #include "dwio/nimble/velox/FieldWriter.h"
 #include <folly/system/HardwareConcurrency.h>
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/velox/DeduplicationUtils.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
+#include "dwio/nimble/velox/VectorAdapters.h"
 #include "velox/common/base/CompareFlags.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/DictionaryVector.h"
@@ -78,80 +78,7 @@ struct NimbleTypeTraits<velox::TypeKind::VARBINARY> {
   static constexpr ScalarKind scalarKind = ScalarKind::Binary;
 };
 
-// Adapters to handle flat or decoded vector using same interfaces.
-template <typename T = int8_t>
-class Flat {
-  static constexpr auto kIsBool = std::is_same_v<T, bool>;
-
- public:
-  explicit Flat(const velox::VectorPtr& vector)
-      : vector_{vector}, nulls_{vector->rawNulls()} {
-    if constexpr (!kIsBool) {
-      if (auto* casted = vector->asFlatVector<T>()) {
-        values_ = casted->rawValues();
-      }
-    }
-  }
-
-  bool hasNulls() const {
-    return vector_->mayHaveNulls();
-  }
-
-  bool isNullAt(velox::vector_size_t index) const {
-    return velox::bits::isBitNull(nulls_, index);
-  }
-
-  T valueAt(velox::vector_size_t index) const {
-    if constexpr (kIsBool) {
-      return static_cast<const velox::FlatVector<T>*>(vector_.get())
-          ->valueAtFast(index);
-    } else {
-      return values_[index];
-    }
-  }
-
-  velox::vector_size_t index(velox::vector_size_t index) const {
-    return index;
-  }
-
- private:
-  const velox::VectorPtr& vector_;
-  const uint64_t* nulls_;
-  const T* values_;
-};
-
-template <typename T = int8_t, bool IgnoreNulls = false>
-class Decoded {
- public:
-  explicit Decoded(const velox::DecodedVector& decoded) : decoded_{decoded} {}
-
-  bool hasNulls() const {
-    if constexpr (IgnoreNulls) {
-      return false;
-    } else {
-      return decoded_.mayHaveNulls();
-    }
-  }
-
-  bool isNullAt(velox::vector_size_t index) const {
-    if constexpr (IgnoreNulls) {
-      return false;
-    } else {
-      return decoded_.isNullAt(index);
-    }
-  }
-
-  T valueAt(velox::vector_size_t index) const {
-    return decoded_.valueAt<T>(index);
-  }
-
-  velox::vector_size_t index(velox::vector_size_t index) const {
-    return decoded_.index(index);
-  }
-
- private:
-  const velox::DecodedVector& decoded_;
-};
+constexpr uint64_t kTimestampLogicalSize = 12;
 
 template <bool addNulls, typename Vector, typename Consumer, typename IndexOp>
 uint64_t iterateNonNulls(
@@ -376,7 +303,7 @@ class SimpleFieldWriter : public FieldWriter {
         auto nonNullCount = iterateNonNullValues(
             ranges,
             valuesStream_.mutableNonNulls(),
-            Flat<SourceType>{vector},
+            FlatAdapter<SourceType>{vector},
             [&](SourceType value) {
               data.push_back(
                   C::convert(value, buffer, valuesStream_.extraMemory()));
@@ -390,7 +317,7 @@ class SimpleFieldWriter : public FieldWriter {
       auto nonNullCount = iterateNonNullValues(
           ranges,
           valuesStream_.mutableNonNulls(),
-          Decoded<SourceType>{decoded},
+          DecodedAdapter<SourceType>{decoded},
           [&](SourceType value) {
             data.push_back(
                 C::convert(value, buffer, valuesStream_.extraMemory()));
@@ -512,7 +439,7 @@ class StringFieldWriter : public FieldWriter {
       nonNullCount = iterateNonNullValues(
           ranges,
           valuesStream_.mutableNonNulls(),
-          Flat<velox::StringView>{vector},
+          FlatAdapter<velox::StringView>{vector},
           appendToStringBuffer);
     } else {
       auto decodingContext = context_.decodingContext();
@@ -521,7 +448,7 @@ class StringFieldWriter : public FieldWriter {
       nonNullCount = iterateNonNullValues(
           ranges,
           valuesStream_.mutableNonNulls(),
-          Decoded<velox::StringView>{decoded},
+          DecodedAdapter<velox::StringView>{decoded},
           appendToStringBuffer);
     }
 
@@ -636,7 +563,7 @@ class TimestampFieldWriter : public FieldWriter {
       nonNullCount = iterateNonNullValues(
           ranges,
           microsStream_.mutableNonNulls(),
-          Flat<velox::Timestamp>{vector},
+          FlatAdapter<velox::Timestamp>{vector},
           processTimestamp);
     } else {
       auto decodingContext = context_.decodingContext();
@@ -645,7 +572,7 @@ class TimestampFieldWriter : public FieldWriter {
       nonNullCount = iterateNonNullValues(
           ranges,
           microsStream_.mutableNonNulls(),
-          Decoded<velox::Timestamp>{decoded},
+          DecodedAdapter<velox::Timestamp>{decoded},
           processTimestamp);
     }
 
@@ -720,7 +647,7 @@ class RowFieldWriter : public FieldWriter {
         auto nonNullCount = iterateNonNullIndices<true>(
             ranges,
             nullsStream_.mutableNonNulls(),
-            Flat{vector},
+            FlatAdapter<>{vector},
             [&](auto offset) { childRanges.add(offset, 1); });
         nullCount = size - nonNullCount;
       } else {
@@ -743,12 +670,12 @@ class RowFieldWriter : public FieldWriter {
           ? iterateNonNullIndices<false>(
                 ranges,
                 nullsStream_.mutableNonNulls(),
-                Decoded<int8_t, true>{decoded},
+                DecodedAdapter<int8_t, true>{decoded},
                 [&](auto offset) { childRanges.add(offset, 1); })
           : iterateNonNullIndices<true>(
                 ranges,
                 nullsStream_.mutableNonNulls(),
-                Decoded{decoded},
+                DecodedAdapter{decoded},
                 [&](auto offset) { childRanges.add(offset, 1); });
       nullCount = size - nonNullCount;
     }
@@ -853,7 +780,10 @@ class MultiValueFieldWriter : public FieldWriter {
       lengthsStream_.ensureAdditionalNullsCapacity(
           casted->mayHaveNulls(), size);
       auto nonNullCount = iterateNonNullIndices<true>(
-          ranges, lengthsStream_.mutableNonNulls(), Flat{vector}, proc);
+          ranges,
+          lengthsStream_.mutableNonNulls(),
+          FlatAdapter<>{vector},
+          proc);
       nullCount = size - nonNullCount;
     } else {
       auto decodingContext = context_.decodingContext();
@@ -866,7 +796,10 @@ class MultiValueFieldWriter : public FieldWriter {
       lengthsStream_.ensureAdditionalNullsCapacity(
           decoded.mayHaveNulls(), size);
       auto nonNullCount = iterateNonNullIndices<true>(
-          ranges, lengthsStream_.mutableNonNulls(), Decoded{decoded}, proc);
+          ranges,
+          lengthsStream_.mutableNonNulls(),
+          DecodedAdapter<>{decoded},
+          proc);
       nullCount = size - nonNullCount;
     }
 
@@ -1097,7 +1030,7 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
       rawLengths = mapVector->rawSizes();
       offsetsStream_.ensureAdditionalNullsCapacity(
           mapVector->mayHaveNulls(), size);
-      Flat iterableVector{vector};
+      FlatAdapter<> iterableVector{vector};
       auto nonNullCount = iterateNonNullIndices<true>(
           ranges,
           offsetsStream_.mutableNonNulls(),
@@ -1113,7 +1046,7 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
       rawLengths = mapVector->rawSizes();
       offsetsStream_.ensureAdditionalNullsCapacity(
           decoded.mayHaveNulls(), size);
-      Decoded iterableVector{decoded};
+      DecodedAdapter<> iterableVector{decoded};
       auto nonNullCount = iterateNonNullIndices<true>(
           ranges,
           offsetsStream_.mutableNonNulls(),
@@ -1483,9 +1416,10 @@ class FlatMapFieldWriter : public FieldWriter {
     // First write top-level nulls, collecting the non-nulls ranges to write.
     OrderedRanges childRanges;
     const uint64_t nonNullCount = iterateNonNullIndices<true>(
-        ranges, nullsStream_.mutableNonNulls(), Flat{vector}, [&](auto offset) {
-          childRanges.add(offset, 1);
-        });
+        ranges,
+        nullsStream_.mutableNonNulls(),
+        FlatAdapter<>{vector},
+        [&](auto offset) { childRanges.add(offset, 1); });
 
     collectStatistics(size - nonNullCount, size);
     // For FlatMapVector ingestion, we need to compute the total key count by
@@ -1526,14 +1460,14 @@ class FlatMapFieldWriter : public FieldWriter {
     };
 
     if (flatMapVector->distinctKeys()->isFlatEncoding()) {
-      collectKeyStats(Flat<KeyType>{flatMapVector->distinctKeys()});
+      collectKeyStats(FlatAdapter<KeyType>{flatMapVector->distinctKeys()});
     } else {
       auto decodingContext = context_.decodingContext();
       OrderedRanges keyRanges;
       keyRanges.add(0, flatMapVector->distinctKeys()->size());
       auto& decodedKeys =
           decodingContext.decode(flatMapVector->distinctKeys(), keyRanges);
-      collectKeyStats(Decoded<KeyType>{decodedKeys});
+      collectKeyStats(DecodedAdapter<KeyType>{decodedKeys});
     }
 
     if constexpr (K == velox::TypeKind::VARCHAR) {
@@ -1580,14 +1514,14 @@ class FlatMapFieldWriter : public FieldWriter {
     };
 
     if (flatMapVector->distinctKeys()->isFlatEncoding()) {
-      processKeys(Flat<KeyType>{flatMapVector->distinctKeys()});
+      processKeys(FlatAdapter<KeyType>{flatMapVector->distinctKeys()});
     } else {
       auto decodingContext = context_.decodingContext();
       OrderedRanges keyRanges;
       keyRanges.add(0, flatMapVector->distinctKeys()->size());
       auto& decodedKeys =
           decodingContext.decode(flatMapVector->distinctKeys(), keyRanges);
-      processKeys(Decoded<KeyType>{decodedKeys});
+      processKeys(DecodedAdapter<KeyType>{decodedKeys});
     }
   }
 
@@ -1606,9 +1540,10 @@ class FlatMapFieldWriter : public FieldWriter {
 
     OrderedRanges childRanges;
     uint64_t nonNullCount = iterateNonNullIndices<true>(
-        ranges, nullsStream_.mutableNonNulls(), Flat{vector}, [&](auto offset) {
-          childRanges.add(offset, 1);
-        });
+        ranges,
+        nullsStream_.mutableNonNulls(),
+        FlatAdapter<>{vector},
+        [&](auto offset) { childRanges.add(offset, 1); });
 
     collectStatistics(size - nonNullCount, size);
     // For ROW vector ingestion (passthrough flatmaps), keys are ROW field
@@ -1691,7 +1626,7 @@ class FlatMapFieldWriter : public FieldWriter {
       const auto& mapKeys = map->mapKeys();
       if (auto* flatKeys = mapKeys->template asFlatVector<KeyType>()) {
         // Keys are flat.
-        Flat<KeyType> keysVector{mapKeys};
+        FlatAdapter<KeyType> keysVector{mapKeys};
         iterateNonNullIndices<true>(
             ranges, nullsStream_.mutableNonNulls(), vector, [&](auto offset) {
               processMap(offset, keysVector);
@@ -1702,7 +1637,7 @@ class FlatMapFieldWriter : public FieldWriter {
             ranges, nullsStream_.mutableNonNulls(), vector, computeKeyRanges);
         auto decodingContext = context_.decodingContext();
         auto& decodedKeys = decodingContext.decode(mapKeys, keyRanges);
-        Decoded<KeyType> keysVector{decodedKeys};
+        DecodedAdapter<KeyType> keysVector{decodedKeys};
         iterateNonNullIndices<true>(
             ranges, nullsStream_.mutableNonNulls(), vector, [&](auto offset) {
               processMap(offset, keysVector);
@@ -1722,7 +1657,7 @@ class FlatMapFieldWriter : public FieldWriter {
       lengths = map->rawSizes();
 
       nullsStream_.ensureAdditionalNullsCapacity(map->mayHaveNulls(), size);
-      processVector(map, Flat{vector});
+      processVector(map, FlatAdapter<>{vector});
     } else {
       // Map is encoded. Decode.
       auto decodingContext = context_.decodingContext();
@@ -1732,7 +1667,7 @@ class FlatMapFieldWriter : public FieldWriter {
       lengths = map->rawSizes();
       nullsStream_.ensureAdditionalNullsCapacity(
           decodedMap.mayHaveNulls(), size);
-      processVector(map, Decoded{decodedMap});
+      processVector(map, DecodedAdapter<>{decodedMap});
     }
 
     // Now actually ingest the map values
@@ -2251,7 +2186,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
 
       offsetsStream_.ensureAdditionalNullsCapacity(
           arrayVector->mayHaveNulls(), size);
-      Flat iterableVector{vector};
+      FlatAdapter<> iterableVector{vector};
       auto nonNullCount = iterateNonNullIndices<true>(
           ranges, offsetsStream_.mutableNonNulls(), iterableVector, proc);
       nullCount = size - nonNullCount;
@@ -2267,7 +2202,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
 
       offsetsStream_.ensureAdditionalNullsCapacity(
           decoded.mayHaveNulls(), size);
-      Decoded iterableVector{decoded};
+      DecodedAdapter<> iterableVector{decoded};
       auto nonNullCount = iterateNonNullIndices<true>(
           ranges, offsetsStream_.mutableNonNulls(), iterableVector, proc);
       nullCount = size - nonNullCount;
