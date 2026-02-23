@@ -2615,8 +2615,8 @@ class FlatMapKeyNode {
   }
 
   void loadValues(velox::VectorPtr& values) {
-    valueReader_->next(numValues_, values, /* scatterBitmap */ nullptr);
-    NIMBLE_DCHECK(numValues_ == values->size(), "Items not loaded");
+    valueReader_->next(numValues_, values, /*scatterBitmap=*/nullptr);
+    NIMBLE_DCHECK_EQ(numValues_, values->size(), "Items not loaded");
   }
 
   void skip(uint32_t numValues) {

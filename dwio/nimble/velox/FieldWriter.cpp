@@ -1236,16 +1236,17 @@ class FlatMapValueFieldWriter {
   }
 
   // Returns whether the offset is successfully recorded.
+  //
   // NOTE: this method is always called after calling prepare(), so
   // we can access the raw in map stream data without size checks.
   bool add(velox::vector_size_t offset, uint32_t mapIndex) {
     auto& data = inMapStream_.mutableData();
-    auto index = mapIndex + data.size();
+    const auto index = mapIndex + data.size();
     // The index being already populated means we have a key duplication.
     // In order to avoid another branching here, we perform the rest of the
     // method regardless, knowning that the whole write will be aborted
     // upon key duplication, and the rest of the states wouldn't matter.
-    bool keyDuplicated = data[index];
+    const bool keyDuplicated = data[index];
     ranges_.add(offset, 1);
     data[index] = true;
     return !keyDuplicated;
@@ -1646,35 +1647,35 @@ class FlatMapFieldWriter : public FieldWriter {
     NIMBLE_CHECK(
         currentPassthroughFields_.empty(),
         "Mixing map and flatmap vectors in the FlatMapFieldWriter is not supported");
-    auto size = ranges.size();
-    const velox::vector_size_t* offsets;
-    const velox::vector_size_t* lengths;
-    uint32_t nonNullCount = 0;
-    uint64_t totalKeyCount = 0;
-    uint64_t totalKeyStringSize =
-        0; // Track actual string size for VARCHAR keys
+    const auto size = ranges.size();
+    const velox::vector_size_t* offsets{nullptr};
+    const velox::vector_size_t* lengths{nullptr};
+    uint32_t nonNullCount{0};
+    uint64_t totalKeyCount{0};
+    uint64_t totalKeyStringSize{0}; // Track actual string size for VARCHAR keys
     OrderedRanges keyRanges;
 
     // Lambda that iterates keys of a map and records the offsets to write to
     // a particular value node.
-    auto processMap = [&](velox::vector_size_t index, auto& keysVector) {
+    auto processMap = [&](velox::vector_size_t index, const auto& keysVector) {
       totalKeyCount += lengths[index];
       for (auto elementIdx = offsets[index], end = elementIdx + lengths[index];
            elementIdx < end;
            ++elementIdx) {
         // NOTE: check for the null key story here.
-        const auto& keyVector = keysVector.valueAt(elementIdx);
+        const auto& keyValue = keysVector.valueAt(elementIdx);
         // Track string key sizes for VARCHAR keys
         if constexpr (K == velox::TypeKind::VARCHAR) {
-          totalKeyStringSize += keyVector.size();
+          totalKeyStringSize += keyValue.size();
         }
-        auto valueField = getValueFieldWriter(keyVector, size);
+        auto* valueField = getValueFieldWriter(keyValue, size);
         // Add the value to the buffer by recording its offset in the values
         // vector.
+        const auto ret = valueField->add(elementIdx, nonNullCount);
         NIMBLE_CHECK(
-            valueField->add(elementIdx, nonNullCount),
+            ret,
             "Duplicate key: {} at flatmap with node id {}",
-            folly::to<std::string>(keyVector),
+            folly::to<std::string>(keyValue),
             nodeId_);
       }
       ++nonNullCount;
@@ -1687,8 +1688,8 @@ class FlatMapFieldWriter : public FieldWriter {
 
     // Lambda that iterates the vector
     auto processVector = [&](const auto& map, const auto& vector) {
-      auto& mapKeys = map->mapKeys();
-      if (auto flatKeys = mapKeys->template asFlatVector<KeyType>()) {
+      const auto& mapKeys = map->mapKeys();
+      if (auto* flatKeys = mapKeys->template asFlatVector<KeyType>()) {
         // Keys are flat.
         Flat<KeyType> keysVector{mapKeys};
         iterateNonNullIndices<true>(
@@ -1715,7 +1716,7 @@ class FlatMapFieldWriter : public FieldWriter {
     }
 
     const velox::MapVector* map = vector->as<velox::MapVector>();
-    if (map) {
+    if (map != nullptr) {
       // Map is flat
       offsets = map->rawOffsets();
       lengths = map->rawSizes();
@@ -1726,11 +1727,9 @@ class FlatMapFieldWriter : public FieldWriter {
       // Map is encoded. Decode.
       auto decodingContext = context_.decodingContext();
       auto& decodedMap = decodingContext.decode(vector, ranges);
-      map = decodedMap.base()->template as<velox::MapVector>();
-      NIMBLE_CHECK_NOT_NULL(map, "Unexpected vector type");
+      map = decodedMap.base()->template asChecked<velox::MapVector>();
       offsets = map->rawOffsets();
       lengths = map->rawSizes();
-
       nullsStream_.ensureAdditionalNullsCapacity(
           decodedMap.mayHaveNulls(), size);
       processVector(map, Decoded{decodedMap});
@@ -1801,7 +1800,7 @@ class FlatMapFieldWriter : public FieldWriter {
       return it->second;
     }
 
-    auto stringKey = folly::to<std::string>(key);
+    const auto stringKey = folly::to<std::string>(key);
     NIMBLE_DCHECK(!stringKey.empty(), "String key cannot be empty for flatmap");
 
     // check whether the typebuilder for this key is already present
