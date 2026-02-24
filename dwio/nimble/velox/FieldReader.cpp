@@ -781,18 +781,18 @@ class LegacyStringFieldReader final : public FieldReader {
         stringBuffers,
         [&]() { return ensureNulls(vector, rowCount); },
         scatterBitmap);
-    int32_t totalLength = 0;
+    size_t totalLength = 0;
     const bool hasNulls = (nonNullCount != rowCount);
     if (!hasNulls) {
       vector->resetNulls();
       for (uint32_t i = 0; i < rowCount; ++i) {
-        totalLength += static_cast<int32_t>(buffer_[i].length());
+        totalLength += buffer_[i].length();
       }
     } else {
       vector->setNullCount(rowCount - nonNullCount);
       for (uint32_t i = 0; i < rowCount; ++i) {
         if (!vector->isNullAt(i)) {
-          totalLength += static_cast<int32_t>(buffer_[i].length());
+          totalLength += buffer_[i].length();
         }
       }
     }
@@ -801,7 +801,7 @@ class LegacyStringFieldReader final : public FieldReader {
         velox::AlignedBuffer::allocate<char>(totalLength, pool_);
     char* dataPtr = data->asMutable<char>();
     auto* valuesPtr = vector->mutableValues()->asMutable<velox::StringView>();
-    int32_t currentOffset = 0;
+    size_t currentOffset = 0;
     if (!hasNulls) {
       for (uint32_t i = 0; i < rowCount; ++i) {
         std::copy(buffer_[i].data(), buffer_[i].end(), dataPtr + currentOffset);
