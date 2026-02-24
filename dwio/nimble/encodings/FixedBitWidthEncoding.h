@@ -80,6 +80,10 @@ class FixedBitWidthEncoding final
       physicalType min,
       physicalType max);
 
+  /// Computes the minimum number of bits needed to represent the value range
+  /// [min, max].
+  static inline int computeBitWidth(physicalType min, physicalType max);
+
   int bitWidth_;
   physicalType baseline_;
   FixedBitArray fixedBitArray_;
@@ -91,6 +95,12 @@ class FixedBitWidthEncoding final
 //
 // End of public API. Implementations follow.
 //
+template <typename T>
+int FixedBitWidthEncoding<T>::computeBitWidth(
+    physicalType min,
+    physicalType max) {
+  return bits::bitsRequired(max - min);
+}
 
 template <typename T>
 int FixedBitWidthEncoding<T>::computeByteAlignedBitWidth(
@@ -192,11 +202,21 @@ std::string_view FixedBitWidthEncoding<T>::encode(
   // 2. Apply compression only if bit width is a multiple of 8
   // 3. Try both bit width and byte width and pick one.
   // 4. etc...
-  const int bitsRequired = computeByteAlignedBitWidth(
-      selection.statistics().min(), selection.statistics().max());
+  const auto min = selection.statistics().min();
+  const auto max = selection.statistics().max();
+  const int rawBits = computeBitWidth(min, max);
+  const int byteAlignedBits = computeByteAlignedBitWidth(min, max);
 
-  const uint64_t fixedBitArraySize =
-      FixedBitArray::bufferSize(values.size(), bitsRequired);
+  const uint32_t rawFixedBitArraySize =
+      FixedBitArray::bufferSize(values.size(), rawBits);
+  const uint32_t byteAlignedFixedBitArraySize =
+      FixedBitArray::bufferSize(values.size(), byteAlignedBits);
+
+  const uint32_t rowCount = values.size();
+
+  // Start with byte-aligned bit width for compression attempt.
+  int bitsRequired = byteAlignedBits;
+  uint32_t fixedBitArraySize = byteAlignedFixedBitArraySize;
 
   Vector<char> vector{&buffer.getMemoryPool()};
 
@@ -207,9 +227,7 @@ std::string_view FixedBitWidthEncoding<T>::encode(
     return std::span<char>{vector};
   };
 
-  const uint64_t rowCount = values.size();
-
-  auto writeData = [&, baseline = selection.statistics().min()](char*& pos) {
+  auto writeData = [&, baseline = min](char*& pos) {
     memset(pos, 0, fixedBitArraySize);
     FixedBitArray fba(pos, bitsRequired);
     if constexpr (sizeof(physicalType) == 4) {
@@ -228,14 +246,43 @@ std::string_view FixedBitWidthEncoding<T>::encode(
     return pos;
   };
 
-  CompressionEncoder<T> compressionEncoder{
-      buffer.getMemoryPool(),
-      *dataCompressionPolicy,
-      DataType::Undefined,
-      bitsRequired,
-      fixedBitArraySize,
-      allocateBuffer,
-      writeData};
+  // Try compression with byte-aligned bit width first. If compression was
+  // not applied (encoder chose Uncompressed) and the uncompressed byte-aligned
+  // size exceeds the raw (non-byte-aligned) size, use the raw bit width for
+  // tighter packing.
+  auto makeEncoder = [&]() -> CompressionEncoder<T> {
+    CompressionEncoder<T> compressed{
+        buffer.getMemoryPool(),
+        *dataCompressionPolicy,
+        DataType::Undefined,
+        bitsRequired,
+        fixedBitArraySize,
+        allocateBuffer,
+        writeData};
+
+    if (compressed.compressionType() != CompressionType::Uncompressed ||
+        compressed.getSize() <= rawFixedBitArraySize) {
+      return compressed;
+    }
+
+    // Compression was not applied and byte-aligned packing is larger than
+    // raw packing. Fall back to raw bit width without compression.
+    bitsRequired = rawBits;
+    fixedBitArraySize = rawFixedBitArraySize;
+    vector = Vector<char>{&buffer.getMemoryPool()};
+
+    NoCompressionPolicy noCompressionPolicy;
+    return CompressionEncoder<T>{
+        buffer.getMemoryPool(),
+        noCompressionPolicy,
+        DataType::Undefined,
+        bitsRequired,
+        fixedBitArraySize,
+        allocateBuffer,
+        writeData};
+  };
+
+  auto compressionEncoder = makeEncoder();
 
   const uint32_t encodingSize = Encoding::kPrefixSize +
       FixedBitWidthEncoding<T>::kPrefixSize + compressionEncoder.getSize();
