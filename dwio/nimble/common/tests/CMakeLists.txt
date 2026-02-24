@@ -25,6 +25,7 @@ add_executable(
   BitEncoderTests.cpp
   BitsTests.cpp
   ConstantsTest.cpp
+  ExceptionHelperTest.cpp
   ExceptionTests.cpp
   FixedBitArrayTests.cpp
   VarintTests.cpp

@@ -39,6 +39,7 @@ target_link_libraries(
 add_executable(
   nimble_index_tests
   IndexConstantsTest.cpp
+  IndexConfigTest.cpp
   IndexFilterTest.cpp
   IndexReaderTest.cpp
   StripeIndexGroupTest.cpp

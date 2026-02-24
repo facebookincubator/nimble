@@ -20,7 +20,14 @@ add_executable(
   #
   # E2EFilterTest.cpp
   # E2EIndexTest.cpp
+  FlatMapColumnReaderTest.cpp
+  NimbleDataTest.cpp
+  NullColumnReaderTest.cpp
+  ScalarColumnReaderTest.cpp
   SelectiveNimbleReaderTest.cpp
+  StringColumnReaderTest.cpp
+  TimestampColumnReaderTest.cpp
+  VariableLengthColumnReaderTest.cpp
 )
 add_test(nimble_velox_selective_tests nimble_velox_selective_tests)
 
