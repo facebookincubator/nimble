@@ -21,7 +21,8 @@ namespace facebook.nimble.serialization;
 /// Value index for key stream data within a stripe group.
 /// Contains stream-level and chunk-level metadata for key-based lookups.
 table StripeValueIndex {
-  /// Byte offset of key stream for each stripe (relative to file start).
+  /// Byte offset of key stream for each stripe, relative to each stripe's
+  /// data start position.
   key_stream_offsets:[uint32];
   /// Byte size of key stream for each stripe.
   key_stream_sizes:[uint32];

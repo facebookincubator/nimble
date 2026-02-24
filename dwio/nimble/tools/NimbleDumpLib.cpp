@@ -1173,8 +1173,8 @@ void NimbleDumpLib::emitIndex() {
          ++stripeIndex) {
       auto stripeId =
           tabletReader->stripeIdentifier(stripeIndex, /*loadIndex=*/true);
-      auto keyStreamRegion =
-          stripeId.indexGroup()->keyStreamRegion(stripeIndex);
+      auto keyStreamRegion = stripeId.indexGroup()->keyStreamRegion(
+          stripeIndex, tabletReader->stripeOffset(stripeIndex));
       keyStreamFormatter.writeRow({
           std::to_string(stripeIndex),
           commaSeparated(keyStreamRegion.offset),

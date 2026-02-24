@@ -241,7 +241,8 @@ uint32_t StripeIndexGroup::rowCount(uint32_t stripe, uint32_t streamId) const {
 }
 
 velox::common::Region StripeIndexGroup::keyStreamRegion(
-    uint32_t stripeIndex) const {
+    uint32_t stripeIndex,
+    uint64_t stripeBaseOffset) const {
   const uint32_t stripeOffset = this->stripeOffset(stripeIndex);
   const auto* root =
       asFlatBuffersRoot<serialization::StripeIndexGroup>(metadata_->content());
@@ -262,7 +263,9 @@ velox::common::Region StripeIndexGroup::keyStreamRegion(
   const uint32_t keyStreamOffset = offsets->Get(stripeOffset);
   const uint32_t keyStreamSize = sizes->Get(stripeOffset);
   NIMBLE_CHECK_GT(keyStreamSize, 0);
-  return velox::common::Region{keyStreamOffset, keyStreamSize};
+
+  return velox::common::Region{
+      stripeBaseOffset + keyStreamOffset, keyStreamSize};
 }
 
 std::unique_ptr<StreamIndex> StreamIndex::create(

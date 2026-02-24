@@ -566,9 +566,9 @@ void TabletWriter::writeKeyStream(const std::optional<KeyStream>& keyStream) {
   NIMBLE_CHECK(keyStream.has_value());
 
   indexWriter_->writeKeyStream(
-      file_->size(), keyStream.value().chunks, [this](std::string_view data) {
-        writeWithChecksum(data);
-      });
+      file_->size() - stripeOffsets_.back(),
+      keyStream.value().chunks,
+      [this](std::string_view data) { writeWithChecksum(data); });
 }
 
 void TabletWriter::addStreamIndex(

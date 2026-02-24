@@ -98,7 +98,93 @@ TEST_F(StripeIndexGroupTest, keyStreamRegion) {
         createStripeIndexGroup(indexBuffers, testCase.groupIndex);
     ASSERT_NE(stripeIndexGroup, nullptr);
 
-    auto region = stripeIndexGroup->keyStreamRegion(testCase.stripeIndex);
+    auto region = stripeIndexGroup->keyStreamRegion(testCase.stripeIndex, 0);
+    EXPECT_EQ(region.offset, testCase.expectedOffset);
+    EXPECT_EQ(region.length, testCase.expectedLength);
+  }
+}
+
+TEST_F(StripeIndexGroupTest, keyStreamRegionWithLargeBaseOffset) {
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "aaa";
+  std::vector<Stripe> stripes = {
+      {.streams = {{.numChunks = 1, .chunkRows = {100}, .chunkOffsets = {0}}},
+       .keyStream =
+           {.streamOffset = 0,
+            .streamSize = 100,
+            .stream = {.numChunks = 1, .chunkRows = {100}, .chunkOffsets = {0}},
+            .chunkKeys = {"bbb"}}},
+      {.streams = {{.numChunks = 1, .chunkRows = {200}, .chunkOffsets = {0}}},
+       .keyStream =
+           {.streamOffset = 100,
+            .streamSize = 150,
+            .stream = {.numChunks = 1, .chunkRows = {200}, .chunkOffsets = {0}},
+            .chunkKeys = {"ccc"}}},
+      {.streams = {{.numChunks = 1, .chunkRows = {150}, .chunkOffsets = {0}}},
+       .keyStream =
+           {.streamOffset = 250,
+            .streamSize = 200,
+            .stream = {.numChunks = 1, .chunkRows = {150}, .chunkOffsets = {0}},
+            .chunkKeys = {"ddd"}}},
+      {.streams = {{.numChunks = 1, .chunkRows = {120}, .chunkOffsets = {0}}},
+       .keyStream = {
+           .streamOffset = 450,
+           .streamSize = 50,
+           .stream = {.numChunks = 1, .chunkRows = {120}, .chunkOffsets = {0}},
+           .chunkKeys = {"eee"}}}};
+  std::vector<int> stripeGroups = {2, 2};
+
+  auto indexBuffers =
+      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
+
+  // Test cases where stripe based relative offset is able to handle
+  // large files (e.g., > 4 GB)
+  struct {
+    uint32_t groupIndex;
+    uint32_t stripeIndex;
+    uint64_t stripeBaseOffset;
+    uint64_t expectedOffset;
+    uint32_t expectedLength;
+  } testCases[] = {
+      // Base offset exactly at 4 GB boundary
+      {0,
+       0,
+       static_cast<uint64_t>(UINT32_MAX) + 1,
+       static_cast<uint64_t>(UINT32_MAX) + 1 + 0,
+       100},
+      {0,
+       1,
+       static_cast<uint64_t>(UINT32_MAX) + 1,
+       static_cast<uint64_t>(UINT32_MAX) + 1 + 100,
+       150},
+
+      // Base offset at UINT32_MAX (just under 4 GB)
+      {0, 0, UINT32_MAX, static_cast<uint64_t>(UINT32_MAX) + 0, 100},
+      {0, 1, UINT32_MAX, static_cast<uint64_t>(UINT32_MAX) + 100, 150},
+      // Large base offset with large relative offset to verify no truncation
+      {1,
+       3,
+       static_cast<uint64_t>(UINT32_MAX) + 1000,
+       static_cast<uint64_t>(UINT32_MAX) + 1000 + 450,
+       50},
+      // Zero base offset (existing behavior, sanity check)
+      {0, 0, 0, 0, 100},
+      {0, 1, 0, 100, 150},
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(
+        fmt::format(
+            "groupIndex {} stripeIndex {} stripeBaseOffset {}",
+            testCase.groupIndex,
+            testCase.stripeIndex,
+            testCase.stripeBaseOffset));
+    auto stripeIndexGroup =
+        createStripeIndexGroup(indexBuffers, testCase.groupIndex);
+    ASSERT_NE(stripeIndexGroup, nullptr);
+
+    auto region = stripeIndexGroup->keyStreamRegion(
+        testCase.stripeIndex, testCase.stripeBaseOffset);
     EXPECT_EQ(region.offset, testCase.expectedOffset);
     EXPECT_EQ(region.length, testCase.expectedLength);
   }

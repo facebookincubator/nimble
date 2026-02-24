@@ -3286,8 +3286,8 @@ class VeloxWriterIndexTest
             << stripeIndex;
 
         // Get key stream region for this stripe
-        const auto keyStreamRegion =
-            stripeId.indexGroup()->keyStreamRegion(stripeIndex);
+        const auto keyStreamRegion = stripeId.indexGroup()->keyStreamRegion(
+            stripeIndex, tablet.stripeOffset(stripeIndex));
 
         // Cache key: chunk file offset (unique across all stripes)
         const uint64_t chunkFileOffset =
@@ -4105,7 +4105,8 @@ TEST_F(VeloxWriterTest, customPrefixRestartInterval) {
         << "Index group should be available";
 
     // Get key stream region
-    const auto keyStreamRegion = stripeId.indexGroup()->keyStreamRegion(0);
+    const auto keyStreamRegion =
+        stripeId.indexGroup()->keyStreamRegion(0, tablet->stripeOffset(0));
 
     // Load the key stream data
     velox::common::Region region{
