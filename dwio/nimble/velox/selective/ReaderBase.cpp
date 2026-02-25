@@ -137,7 +137,8 @@ StripeStreams::enqueueKeyStream() {
   const auto& indexGroup = stripeIdentifier_->indexGroup();
   NIMBLE_CHECK_NOT_NULL(indexGroup);
 
-  const auto region = indexGroup->keyStreamRegion(stripe_);
+  const auto region = indexGroup->keyStreamRegion(
+      stripe_, readerBase_->tablet().stripeOffset(stripe_));
   const dwio::common::StreamIdentifier sid(kKeyStreamId);
   return readerBase_->input().enqueue(region, &sid);
 }

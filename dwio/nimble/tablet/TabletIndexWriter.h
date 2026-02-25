@@ -120,7 +120,8 @@ class TabletIndexWriter {
   /// Records chunk-level metadata including row counts, byte offsets, and
   /// last key values for each chunk.
   ///
-  /// @param keyStreamOffset File offset where the key stream starts.
+  /// @param keyStreamOffset Key stream offset relative to the stripe's data
+  ///        start position.
   /// @param keyChunks Key chunks to write.
   /// @param writeWithChecksum Callback to write data with checksum.
   /// @return Number of bytes written for the key stream.
