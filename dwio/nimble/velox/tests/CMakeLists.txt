@@ -24,14 +24,18 @@ target_link_libraries(
 add_executable(
   nimble_velox_tests
   BufferGrowthPolicyTest.cpp
+  ChunkedStreamWriterTest.cpp
+  DecodedVectorManagerTest.cpp
   EncodingLayoutTreeTest.cpp
   IndexWriterTest.cpp
   LayoutPlannerTest.cpp
   OrderedRangesTest.cpp
+  RawSizeContextTest.cpp
   RawSizeTest.cpp
   SchemaTest.cpp
   StreamChunkerTest.cpp
   StreamDataTest.cpp
+  StreamLabelsTest.cpp
   TypeTest.cpp
   VeloxReaderTest.cpp
   VeloxWriterTest.cpp
