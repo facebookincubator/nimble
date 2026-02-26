@@ -26,6 +26,7 @@
 #include <functional>
 #include <limits>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <folly/Benchmark.h>
@@ -43,6 +44,7 @@ class BenchmarkSuite {
   using StartHook = std::function<void(const std::string& name)>;
   using EndHook = std::function<
       void(const std::string& name, const folly::detail::BenchmarkResult&)>;
+  using CustomMetrics = std::unordered_map<std::string, double>;
 
   void setOnStart(StartHook hook) {
     onStart_ = std::move(hook);
@@ -59,15 +61,41 @@ class BenchmarkSuite {
     jsonOutputPath_ = std::move(path);
   }
 
+  void setJsonBaselinePath(std::string path) {
+    jsonBaselinePath_ = std::move(path);
+  }
+
   void addBenchmark(std::string name, std::function<void(unsigned)> fn) {
-    entries_.push_back(Entry{std::move(name), std::move(fn), /*sep=*/false});
+    entries_.push_back(
+        Entry{std::move(name), std::move(fn), nullptr, /*sep=*/false});
+  }
+
+  void addBenchmark(
+      std::string name,
+      std::function<CustomMetrics(unsigned)> fn) {
+    auto metrics = std::make_shared<CustomMetrics>();
+    auto metricsPtr = metrics;
+    entries_.push_back(
+        Entry{
+            std::move(name),
+            [fn = std::move(fn), metricsPtr](unsigned iters) {
+              *metricsPtr = fn(iters);
+            },
+            std::move(metrics),
+            /*sep=*/false});
   }
 
   void addSeparator() {
-    entries_.push_back(Entry{"", nullptr, /*sep=*/true});
+    entries_.push_back(Entry{"", nullptr, nullptr, /*sep=*/true});
   }
 
   void run() {
+    // Load baseline results from a previous run, if provided.
+    std::unordered_map<std::string, BaselineEntry> baseline;
+    if (!jsonBaselinePath_.empty()) {
+      baseline = loadBaselineResults(jsonBaselinePath_);
+    }
+
     std::vector<folly::detail::BenchmarkResult> allResults;
 
     // Print table header.
@@ -87,8 +115,10 @@ class BenchmarkSuite {
       folly::detail::BenchmarkingState<Clock> state;
 
       // Register baseline benchmarks (required by the measurement engine).
-      auto baselineName = std::string("baseline");
-      auto suspenderBaselineName = std::string("suspender_baseline");
+      // Names must match the global constants in folly/Benchmark.cpp.
+      auto baselineName = std::string("fbFollyGlobalBenchmarkBaseline");
+      auto suspenderBaselineName =
+          std::string("fbFollyGlobalBenchmarkSuspenderBaseline");
 
       state.addBenchmark(
           "BenchmarkSuite", std::move(baselineName), [](unsigned) {
@@ -133,6 +163,15 @@ class BenchmarkSuite {
           break;
         }
       }
+      // Populate custom metrics from the benchmark function's return value.
+      // The metrics map is written by the last invocation of the benchmark
+      // function (with the final calibrated iteration count).
+      if (entry.metrics && !entry.metrics->empty()) {
+        for (const auto& [key, value] : *entry.metrics) {
+          bmResult.counters[key] =
+              folly::UserMetric{value, folly::UserMetric::Type::CUSTOM};
+        }
+      }
       // Print separator if one was pending before this benchmark.
       if (pendingSeparator) {
         printSeparator('-');
@@ -159,12 +198,19 @@ class BenchmarkSuite {
     if (!jsonOutputPath_.empty()) {
       writeJsonResults(allResults, jsonOutputPath_);
     }
+
+    // Print comparison table if baseline was loaded.
+    if (!baseline.empty()) {
+      printf("\n");
+      printComparisonTable(allResults, baseline);
+    }
   }
 
  private:
   struct Entry {
     std::string name;
     std::function<void(unsigned)> fn;
+    std::shared_ptr<CustomMetrics> metrics;
     bool isSeparator;
   };
 
@@ -180,6 +226,9 @@ class BenchmarkSuite {
       return folly::to<std::string>(n);
     }
     const double absValue = fabs(n);
+    if (absValue == 0) {
+      return folly::stringPrintf("%.*f", decimals, 0.0);
+    }
     const ScaleInfo* scale = scales;
     while (absValue < scale[0].boundary && scale[1].suffix != nullptr) {
       ++scale;
@@ -237,6 +286,7 @@ class BenchmarkSuite {
   static constexpr const char* kBoldBlue = "\033[1;34m";
   static constexpr const char* kBoldCyan = "\033[1;36m";
   static constexpr const char* kBoldGreen = "\033[1;32m";
+  static constexpr const char* kBoldRed = "\033[1;31m";
   static constexpr const char* kBoldYellow = "\033[1;33m";
   static constexpr const char* kReset = "\033[0m";
 
@@ -276,7 +326,7 @@ class BenchmarkSuite {
     name.resize(nameWidth, ' ');
 
     printf(
-        "%s%*s%s%s%9.9s  %s%8.8s%s\n",
+        "%s%*s%s%s%9.9s  %s%8.8s%s",
         kBoldGreen,
         static_cast<int>(name.size()),
         name.c_str(),
@@ -286,6 +336,21 @@ class BenchmarkSuite {
         kBoldYellow,
         metricReadable(itersPerSec, 2).c_str(),
         kReset);
+
+    for (const auto& [metricName, metric] : r.counters) {
+      double value = std::visit(
+          [](auto v) -> double { return static_cast<double>(v); },
+          metric.value);
+      printf(
+          "  %s%s%s:%s%.4g%s",
+          kBoldGreen,
+          metricName.c_str(),
+          kReset,
+          kBoldCyan,
+          value,
+          kReset);
+    }
+    printf("\n");
   }
 
   static void writeJsonResults(
@@ -301,11 +366,219 @@ class BenchmarkSuite {
     }
   }
 
+  struct BaselineEntry {
+    double timeInNs{};
+    std::unordered_map<std::string, double> customMetrics;
+  };
+
+  static std::unordered_map<std::string, BaselineEntry> loadBaselineResults(
+      const std::string& path) {
+    std::unordered_map<std::string, BaselineEntry> baseline;
+    std::string contents;
+    if (!folly::readFile(path.c_str(), contents)) {
+      LOG(WARNING) << "Could not read baseline file: " << path;
+      return baseline;
+    }
+    try {
+      auto d = folly::parseJson(contents);
+      for (const auto& datum : d) {
+        BaselineEntry entry;
+        entry.timeInNs = datum[2].asDouble();
+        // Parse custom metrics from the optional 4th element (UserCounters).
+        if (datum.size() > 3 && datum[3].isObject()) {
+          for (const auto& [key, val] : datum[3].items()) {
+            if (val.isObject() && val.count("value")) {
+              entry.customMetrics[key.asString()] = val["value"].asDouble();
+            }
+          }
+        }
+        baseline[datum[1].asString()] = std::move(entry);
+      }
+    } catch (const std::exception& e) {
+      LOG(WARNING) << "Could not parse baseline file: " << e.what();
+    }
+    return baseline;
+  }
+
+  // Print a comparison table showing delta between current and baseline
+  // results. Columns: benchmark name, baseline time/iter, current time/iter,
+  //          absolute delta, relative percentage change.
+  // Custom metrics (if any) are shown as indented sub-rows.
+  // Color coding: green = improvement (faster), red = regression (slower),
+  //               yellow = within 1% (noise).
+  void printComparisonTable(
+      const std::vector<folly::detail::BenchmarkResult>& results,
+      const std::unordered_map<std::string, BaselineEntry>& baseline) const {
+    // Layout: name(34) + sp(1) + baseline(9) + sp(2) + current(9) +
+    //         sp(2) + delta(10) + sp(2) + pct(7) = 76
+    static constexpr unsigned int kNameWidth = kColumns - 42;
+
+    // Header.
+    printSeparator('=');
+    {
+      std::string title = "Comparison vs baseline";
+      title.resize(kNameWidth, ' ');
+      printf(
+          "%s%s%s %s%9s  %9s  %10s  %7s%s\n",
+          kBold,
+          title.c_str(),
+          kReset,
+          kBoldYellow,
+          "baseline",
+          "current",
+          "delta",
+          "pct",
+          kReset);
+    }
+    printSeparator('=');
+
+    bool first = true;
+    for (const auto& r : results) {
+      std::string name = r.name;
+      name.resize(kNameWidth, ' ');
+
+      double currNs = r.timeInNs;
+      double currSec = currNs / 1E9;
+
+      auto it = baseline.find(r.name);
+      if (it == baseline.end()) {
+        // New benchmark — no baseline to compare against.
+        if (!first) {
+          printSeparator('.');
+        }
+        printf(
+            "%s%s%s %s%9s%s  %s%9s%s  %10s  %7s\n",
+            kBoldGreen,
+            name.c_str(),
+            kReset,
+            kBoldYellow,
+            "--",
+            kReset,
+            kBoldCyan,
+            readableTime(currSec, 2).c_str(),
+            kReset,
+            "--",
+            "(new)");
+        first = false;
+        continue;
+      }
+
+      double baseNs = it->second.timeInNs;
+      double baseSec = baseNs / 1E9;
+      double deltaNs = currNs - baseNs;
+      double pct = (baseNs > 0) ? (deltaNs / baseNs * 100.0) : 0.0;
+
+      // Negative delta = faster = improvement (green).
+      // Positive delta = slower = regression (red).
+      const char* deltaColor = kBoldYellow;
+      if (pct < -1.0) {
+        deltaColor = kBoldGreen;
+      } else if (pct > 1.0) {
+        deltaColor = kBoldRed;
+      }
+
+      // Format delta with explicit sign.
+      double absDeltaSec = std::fabs(deltaNs) / 1E9;
+      std::string deltaStr;
+      if (deltaNs < 0) {
+        deltaStr = "-" + readableTime(absDeltaSec, 2);
+      } else {
+        deltaStr = "+" + readableTime(absDeltaSec, 2);
+      }
+
+      auto pctStr = folly::stringPrintf("%+.2f%%", pct);
+
+      if (!first) {
+        printSeparator('.');
+      }
+      printf(
+          "%s%s%s %s%9s%s  %s%9s%s  %s%10s  %7s%s\n",
+          kBoldGreen,
+          name.c_str(),
+          kReset,
+          kBoldCyan,
+          readableTime(baseSec, 2).c_str(),
+          kReset,
+          kBoldCyan,
+          readableTime(currSec, 2).c_str(),
+          kReset,
+          deltaColor,
+          deltaStr.c_str(),
+          pctStr.c_str(),
+          kReset);
+
+      // Print custom metric comparison sub-rows (indented).
+      const auto& baseMetrics = it->second.customMetrics;
+      for (const auto& [metricName, metric] : r.counters) {
+        double currVal = std::visit(
+            [](auto v) -> double { return static_cast<double>(v); },
+            metric.value);
+        std::string mname = "  " + metricName;
+        mname.resize(kNameWidth, ' ');
+
+        auto baseIt = baseMetrics.find(metricName);
+        if (baseIt == baseMetrics.end()) {
+          printf(
+              "%s%s%s %s%9s%s  %s%9.4g%s  %10s  %7s\n",
+              kBoldGreen,
+              mname.c_str(),
+              kReset,
+              kBoldYellow,
+              "--",
+              kReset,
+              kBoldCyan,
+              currVal,
+              kReset,
+              "--",
+              "(new)");
+          continue;
+        }
+
+        double baseVal = baseIt->second;
+        double deltaVal = currVal - baseVal;
+        double mPct = (baseVal != 0) ? (deltaVal / baseVal * 100.0) : 0.0;
+
+        const char* mColor = kBoldYellow;
+        if (mPct < -1.0) {
+          mColor = kBoldGreen;
+        } else if (mPct > 1.0) {
+          mColor = kBoldRed;
+        }
+
+        double absDelta = std::fabs(deltaVal);
+        auto mDeltaStr =
+            folly::stringPrintf("%s%.4g", deltaVal < 0 ? "-" : "+", absDelta);
+        auto mPctStr = folly::stringPrintf("%+.2f%%", mPct);
+
+        printf(
+            "%s%s%s %s%9.4g%s  %s%9.4g%s  %s%10s  %7s%s\n",
+            kBoldGreen,
+            mname.c_str(),
+            kReset,
+            kBoldCyan,
+            baseVal,
+            kReset,
+            kBoldCyan,
+            currVal,
+            kReset,
+            mColor,
+            mDeltaStr.c_str(),
+            mPctStr.c_str(),
+            kReset);
+      }
+
+      first = false;
+    }
+
+    printSeparator('=');
+  }
+
   std::vector<Entry> entries_;
   StartHook onStart_;
   EndHook onEnd_;
   std::string title_;
   std::string jsonOutputPath_;
+  std::string jsonBaselinePath_;
 };
 
 } // namespace facebook::nimble
