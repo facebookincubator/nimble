@@ -1136,7 +1136,7 @@ TEST_F(FieldWriterStatsTests, mixedColumnsFieldWriterStats) {
   auto mapKeyStat = ColumnStats{
       .logicalSize = sizeof(int8_t) * 8, .physicalSize = 20, .valueCount = 8};
   auto mapValueStat = ColumnStats{
-      .logicalSize = sizeof(int32_t) * 8, .physicalSize = 32, .valueCount = 8};
+      .logicalSize = sizeof(int32_t) * 8, .physicalSize = 28, .valueCount = 8};
   auto mapStat = ColumnStats{
       .logicalSize = mapKeyStat.logicalSize + mapValueStat.logicalSize +
           nimble::kNullSize * 2,
