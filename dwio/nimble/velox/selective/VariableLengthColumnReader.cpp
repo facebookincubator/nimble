@@ -720,10 +720,23 @@ void DeduplicatedReadHelper::makeNestedRowSet(
     int32_t maxRow) {
   auto alphabetSize = prepareDeduplicatedStates(maxRow + 1, nulls);
   auto selectedAlphabetLength = getSelectedAlphabetLength(rows, alphabetSize);
-  auto& nestedRowsHolder = columnReader_->nestedRowsHolder_;
-  nestedRowsHolder.resize(selectedAlphabetLength);
-  if (alphabetSize == 0 && !copyLastRun_) {
+  const bool skipLastRun = !startFromLastRun_ && !loadLastRun_;
+  const bool nestedRowsAllSelected =
+      (columnReader_->scanSpec_->maxArrayElementsCount() ==
+       std::numeric_limits<vector_size_t>::max()) &&
+      velox::dwio::common::isDense(selectedIndices_) && !skipLastRun;
+  vector_size_t* nestedRowsData = nullptr;
+  if (nestedRowsAllSelected) {
+    columnReader_->nestedRows_ = velox::RowSet(
+        velox::iota(selectedAlphabetLength, columnReader_->nestedRowsHolder_),
+        selectedAlphabetLength);
+  } else {
+    auto& nestedRowsHolder = columnReader_->nestedRowsHolder_;
+    nestedRowsHolder.resize(selectedAlphabetLength);
     columnReader_->nestedRows_ = nestedRowsHolder;
+    nestedRowsData = nestedRowsHolder.data();
+  }
+  if (alphabetSize == 0 && !copyLastRun_) {
     return;
   }
 
@@ -734,32 +747,30 @@ void DeduplicatedReadHelper::makeNestedRowSet(
 
   // if last run is not read, and we don't need to read it, we should
   // advance with last run length.
-  if (!startFromLastRun_ && !loadLastRun_) {
+  if (skipLastRun) {
     nestedOffset += lastRunLength_;
     skippedLastRunlength_ = lastRunLength_;
   } else {
     skippedLastRunlength_ = 0;
   }
 
-  for (; currIndex < alphabetSize; ++currIndex) {
-    if (runStartRows_[currIndex] > maxRow) {
-      break;
-    }
-
-    if (selectedIndex < selectedIndices_.size()) {
-      if (currIndex == selectedIndices_[selectedIndex]) {
-        ++selectedIndex;
-        auto lengthAtRow = columnReader_->prunedLengthAt(currIndex);
-        std::iota(
-            nestedRowsHolder.data() + nestedRow,
-            nestedRowsHolder.data() + nestedRow + lengthAtRow,
-            nestedOffset);
-        nestedRow += lengthAtRow;
-      }
+  for (; currIndex < alphabetSize && runStartRows_[currIndex] <= maxRow;
+       ++currIndex) {
+    if (!nestedRowsAllSelected && selectedIndex < selectedIndices_.size() &&
+        currIndex == selectedIndices_[selectedIndex]) {
+      ++selectedIndex;
+      auto lengthAtRow = columnReader_->prunedLengthAt(currIndex);
+      std::iota(
+          nestedRowsData + nestedRow,
+          nestedRowsData + nestedRow + lengthAtRow,
+          nestedOffset);
+      nestedRow += lengthAtRow;
     }
     nestedOffset += lengthAt(currIndex);
   }
-  VELOX_CHECK_EQ(nestedRow, selectedAlphabetLength);
+  if (!nestedRowsAllSelected) {
+    VELOX_CHECK_EQ(nestedRow, selectedAlphabetLength);
+  }
 
   loadLastRun_ = true;
   lastRunLoaded_ = false;
@@ -775,7 +786,6 @@ void DeduplicatedReadHelper::makeNestedRowSet(
     }
   }
   columnReader_->childTargetReadOffset_ += nestedOffset;
-  columnReader_->nestedRows_ = nestedRowsHolder;
 }
 
 // NOTE: this can actually be called in prepareRead, causing us to call
@@ -827,15 +837,27 @@ void DeduplicatedReadHelper::makeAlphabetOffsetsAndSizes(
   }
   vector_size_t currentOffset = skippedLastRunlength_;
   vector_size_t nestedRowIndex = 0;
-  for (vector_size_t i = 0, j = 0; i < selectedIndices_.size(); ++i) {
-    rawOffsets[i + copyLastRun_] = lastRunLength + nestedRowIndex;
-    while (j <= selectedIndices_[i]) {
-      currentOffset += lengthAt(j++);
+  if (velox::dwio::common::isDense(selectedIndices_) &&
+      velox::dwio::common::isDense(columnReader_->nestedRows_)) {
+    for (vector_size_t i = 0; i < selectedIndices_.size(); ++i) {
+      rawOffsets[i + copyLastRun_] = lastRunLength + nestedRowIndex;
+      currentOffset += lengthAt(i);
+      auto newNestedRowIndex = std::min<vector_size_t>(
+          columnReader_->nestedRows_.size(), currentOffset);
+      rawSizes[i + copyLastRun_] = newNestedRowIndex - nestedRowIndex;
+      nestedRowIndex = newNestedRowIndex;
     }
-    auto newNestedRowIndex = columnReader_->advanceNestedRows(
-        columnReader_->nestedRows_, nestedRowIndex, currentOffset);
-    rawSizes[i + copyLastRun_] = newNestedRowIndex - nestedRowIndex;
-    nestedRowIndex = newNestedRowIndex;
+  } else {
+    for (vector_size_t i = 0, j = 0; i < selectedIndices_.size(); ++i) {
+      rawOffsets[i + copyLastRun_] = lastRunLength + nestedRowIndex;
+      while (j <= selectedIndices_[i]) {
+        currentOffset += lengthAt(j++);
+      }
+      auto newNestedRowIndex = columnReader_->advanceNestedRows(
+          columnReader_->nestedRows_, nestedRowIndex, currentOffset);
+      rawSizes[i + copyLastRun_] = newNestedRowIndex - nestedRowIndex;
+      nestedRowIndex = newNestedRowIndex;
+    }
   }
 }
 
