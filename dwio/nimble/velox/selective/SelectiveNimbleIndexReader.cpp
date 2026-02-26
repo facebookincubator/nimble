@@ -150,10 +150,10 @@ void SelectiveNimbleIndexReader::startLookup(
 
   // Report lookup stats.
   addThreadLocalRuntimeStat(
-      dwio::common::IndexReader::kNumIndexLookupRequests,
+      std::string(dwio::common::IndexReader::kNumIndexLookupRequests),
       velox::RuntimeCounter(numRequests_));
   addThreadLocalRuntimeStat(
-      dwio::common::IndexReader::kNumIndexLookupStripes,
+      std::string(dwio::common::IndexReader::kNumIndexLookupStripes),
       velox::RuntimeCounter(stripes_.size()));
 }
 
@@ -417,7 +417,7 @@ void SelectiveNimbleIndexReader::buildStripeReadSegments(
 
   // Report read segment stats.
   addThreadLocalRuntimeStat(
-      dwio::common::IndexReader::kNumIndexLookupReadSegments,
+      std::string(dwio::common::IndexReader::kNumIndexLookupReadSegments),
       velox::RuntimeCounter(readSegments_.size()));
 
   readSegmentIndex_ = 0;
@@ -520,7 +520,8 @@ void SelectiveNimbleIndexReader::splitStripeRowRanges(
 
 void SelectiveNimbleIndexReader::loadStripeWithIndex(uint32_t stripeIndex) {
   addThreadLocalRuntimeStat(
-      dwio::common::RowReader::kNumStripeLoads, velox::RuntimeCounter(1));
+      std::string(dwio::common::RowReader::kNumStripeLoads),
+      velox::RuntimeCounter(1));
 
   streams_.setStripe(stripeIndex, /*loadIndex=*/true);
   NimbleParams params(
