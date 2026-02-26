@@ -350,7 +350,8 @@ void SelectiveNimbleRowReader::initReadRange() {
 }
 
 void SelectiveNimbleRowReader::loadCurrentStripe() {
-  addThreadLocalRuntimeStat(kNumStripeLoads, velox::RuntimeCounter(1));
+  addThreadLocalRuntimeStat(
+      std::string(kNumStripeLoads), velox::RuntimeCounter(1));
 
   streams_.setStripe(currentStripe_, hasIndexBounds());
   NimbleParams params(
@@ -442,7 +443,7 @@ void SelectiveNimbleRowReader::initIndexBounds() {
   tabletIndex_ = tabletIndex;
 
   addThreadLocalRuntimeStat(
-      kNumIndexFilterConversions,
+      std::string(kNumIndexFilterConversions),
       velox::RuntimeCounter(result->indexBounds.indexColumns.size()));
 
   auto keyEncoder = velox::serializer::KeyEncoder::create(
