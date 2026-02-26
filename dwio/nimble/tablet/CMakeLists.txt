@@ -56,7 +56,7 @@ target_link_libraries(
   Folly::folly
 )
 
-add_library(nimble_tablet_reader TabletReader.cpp)
+add_library(nimble_tablet_reader FileLayout.cpp TabletReader.cpp)
 target_link_libraries(nimble_tablet_reader nimble_tablet_common)
 
 add_library(nimble_tablet_writer TabletIndexWriter.cpp TabletWriter.cpp)

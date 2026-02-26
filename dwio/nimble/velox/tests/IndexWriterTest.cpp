@@ -469,15 +469,14 @@ TEST_F(IndexWriterTest, enforceKeyOrderInvalidWithinBatch) {
     SCOPED_TRACE(fmt::format("enforceKeyOrder: {}", enforceKeyOrder));
     IndexConfig config{
         .columns = {std::string(kCol1)},
-        .encodingLayout =
-            EncodingLayout{
-                EncodingType::Trivial,
-                {},
-                CompressionType::Uncompressed,
-                {EncodingLayout{
-                    EncodingType::Trivial, {}, CompressionType::Uncompressed}}},
         .enforceKeyOrder = enforceKeyOrder,
-        .noDuplicateKey = true};
+        .noDuplicateKey = true,
+        .encodingLayout = EncodingLayout{
+            EncodingType::Trivial,
+            {},
+            CompressionType::Uncompressed,
+            {EncodingLayout{
+                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
     auto writer = IndexWriter::create(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
 
@@ -507,15 +506,14 @@ TEST_F(IndexWriterTest, enforceKeyOrderInvalidAcrossBatches) {
     SCOPED_TRACE(fmt::format("enforceKeyOrder: {}", enforceKeyOrder));
     IndexConfig config{
         .columns = {std::string(kCol1)},
-        .encodingLayout =
-            EncodingLayout{
-                EncodingType::Trivial,
-                {},
-                CompressionType::Uncompressed,
-                {EncodingLayout{
-                    EncodingType::Trivial, {}, CompressionType::Uncompressed}}},
         .enforceKeyOrder = enforceKeyOrder,
-        .noDuplicateKey = true};
+        .noDuplicateKey = true,
+        .encodingLayout = EncodingLayout{
+            EncodingType::Trivial,
+            {},
+            CompressionType::Uncompressed,
+            {EncodingLayout{
+                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
     auto writer = IndexWriter::create(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
 
