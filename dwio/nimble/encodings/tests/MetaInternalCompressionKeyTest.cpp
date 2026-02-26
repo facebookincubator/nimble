@@ -27,77 +27,68 @@ class MetaInternalCompressionKeyTest : public ::testing::Test {
     MetaInternalCompressionKey deserialized =
         MetaInternalCompressionKey::fromString(serialized);
 
-    EXPECT_EQ(key.ns, deserialized.ns);
-    EXPECT_EQ(key.tableName, deserialized.tableName);
-    EXPECT_EQ(key.columnName, deserialized.columnName);
+    EXPECT_EQ(key.ns(), deserialized.ns());
+    EXPECT_EQ(key.tableName(), deserialized.tableName());
+    EXPECT_EQ(key.columnName(), deserialized.columnName());
   }
 };
 
 TEST_F(MetaInternalCompressionKeyTest, BasicRoundTrip) {
-  MetaInternalCompressionKey key{
-      .ns = "namespace", .tableName = "table", .columnName = "column"};
+  MetaInternalCompressionKey key{"namespace", "table", "column"};
 
   roundTripTest(key);
 }
 
 TEST_F(MetaInternalCompressionKeyTest, EmptyFields) {
-  MetaInternalCompressionKey key{.ns = "", .tableName = "", .columnName = ""};
+  MetaInternalCompressionKey key{"", "", ""};
 
   roundTripTest(key);
 }
 
 TEST_F(MetaInternalCompressionKeyTest, SingleFieldEmpty) {
   // Test with one field empty at a time
-  MetaInternalCompressionKey key1{
-      .ns = "", .tableName = "table", .columnName = "column"};
+  MetaInternalCompressionKey key1{"", "table", "column"};
   roundTripTest(key1);
 
-  MetaInternalCompressionKey key2{
-      .ns = "namespace", .tableName = "", .columnName = "column"};
+  MetaInternalCompressionKey key2{"namespace", "", "column"};
   roundTripTest(key2);
 
-  MetaInternalCompressionKey key3{
-      .ns = "namespace", .tableName = "table", .columnName = ""};
+  MetaInternalCompressionKey key3{"namespace", "table", ""};
   roundTripTest(key3);
 }
 
 TEST_F(MetaInternalCompressionKeyTest, ColonCharacters) {
   // Test with colon characters in various fields
-  MetaInternalCompressionKey key1{
-      .ns = "name:space", .tableName = "table", .columnName = "column"};
+  MetaInternalCompressionKey key1{"name:space", "table", "column"};
   roundTripTest(key1);
 
-  MetaInternalCompressionKey key2{
-      .ns = "namespace", .tableName = "ta:ble", .columnName = "column"};
+  MetaInternalCompressionKey key2{"namespace", "ta:ble", "column"};
   roundTripTest(key2);
 
-  MetaInternalCompressionKey key3{
-      .ns = "namespace", .tableName = "table", .columnName = "col:umn"};
+  MetaInternalCompressionKey key3{"namespace", "table", "col:umn"};
   roundTripTest(key3);
 
   // Test with multiple colons in each field
   MetaInternalCompressionKey key4{
-      .ns = "name::space:with:many:colons",
-      .tableName = "ta::ble::name",
-      .columnName = "col::umn::name"};
+      "name::space:with:many:colons", "ta::ble::name", "col::umn::name"};
   roundTripTest(key4);
 }
 
 TEST_F(MetaInternalCompressionKeyTest, SpecialCharacters) {
   // Test with various special characters that JSON should handle properly
   MetaInternalCompressionKey key{
-      .ns = "namespace\"with'quotes",
-      .tableName = "table\nwith\nnewlines",
-      .columnName = "column\\with\\backslashes"};
+      "namespace\"with'quotes",
+      "table\nwith\nnewlines",
+      "column\\with\\backslashes"};
   roundTripTest(key);
 }
 
 TEST_F(MetaInternalCompressionKeyTest, MixedSpecialCharacters) {
   // Test with a mix of challenging characters
   MetaInternalCompressionKey key{
-      .ns = "ns:with\"quotes'and\nnewlines\tand\\\\:backslashes",
-      .tableName = "table:with:many:colons:and\"quotes",
-      .columnName = "column\nwith\r\nmixed\ttabs:and\\:colons"};
+      "ns:with\"quotes'and\nnewlines\tand\\\\:backslashes",
+      "table:with:many:colons:and\"quotes",
+      "column\nwith\r\nmixed\ttabs:and\\:colons"};
   roundTripTest(key);
 }
 
@@ -141,16 +132,16 @@ TEST_F(MetaInternalCompressionKeyTest, ExtraFieldsInJson) {
   // Test that extra fields in JSON are ignored
   std::string jsonWithExtra = R"({
     "ns": "namespace",
-    "tableName": "table", 
+    "tableName": "table",
     "columnName": "column",
     "extraField": "ignored"
   })";
 
   MetaInternalCompressionKey key =
       MetaInternalCompressionKey::fromString(jsonWithExtra);
-  EXPECT_EQ(key.ns, "namespace");
-  EXPECT_EQ(key.tableName, "table");
-  EXPECT_EQ(key.columnName, "column");
+  EXPECT_EQ(key.ns(), "namespace");
+  EXPECT_EQ(key.tableName(), "table");
+  EXPECT_EQ(key.columnName(), "column");
 }
 
 TEST_F(MetaInternalCompressionKeyTest, NullValuesInJson) {
