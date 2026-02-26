@@ -30,6 +30,7 @@
 #include "dwio/nimble/encodings/EncodingLayout.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tools/EncodingUtilities.h"
 #include "dwio/nimble/tools/NimbleDumpLib.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
@@ -970,22 +971,22 @@ void NimbleDumpLib::emitFileLayout(bool noHeader) {
     uint64_t size;
   };
 
-  auto tablet = TabletReader::create(file_.get(), *pool_);
+  auto layout = FileLayout::create(file_.get(), pool_.get());
   std::vector<Entry> entries;
 
-  auto stripesMetadata = tablet->stripesMetadata();
-  if (stripesMetadata) {
+  // Stripes metadata section
+  if (!layout.stripeGroups.empty()) {
     entries.push_back({
         "Stripes Metadata",
-        toString(stripesMetadata->compressionType()),
-        stripesMetadata->offset(),
-        stripesMetadata->size(),
+        toString(layout.stripes.compressionType()),
+        layout.stripes.offset(),
+        layout.stripes.size(),
     });
   }
 
-  auto stripeGroupsMetadata = tablet->stripeGroupsMetadata();
-  for (auto i = 0; i < stripeGroupsMetadata.size(); ++i) {
-    const auto& metadata = stripeGroupsMetadata[i];
+  // Stripe groups
+  for (size_t i = 0; i < layout.stripeGroups.size(); ++i) {
+    const auto& metadata = layout.stripeGroups[i];
     entries.push_back({
         fmt::format("Stripe Group {}", i),
         toString(metadata.compressionType()),
@@ -994,19 +995,19 @@ void NimbleDumpLib::emitFileLayout(bool noHeader) {
     });
   }
 
-  traverseTablet(*pool_, *tablet, std::nullopt, [&](uint32_t stripeIndex) {
-    auto stripeIdentifier = tablet->stripeIdentifier(stripeIndex);
-    auto sizes = tablet->streamSizes(stripeIdentifier);
-    auto stripeSize = std::accumulate(sizes.begin(), sizes.end(), 0UL);
+  // Per-stripe info (includes stripe group index in name)
+  for (size_t i = 0; i < layout.stripesInfo.size(); ++i) {
+    const auto& stripeInfo = layout.stripesInfo[i];
     entries.push_back({
-        fmt::format("Stripe {}", stripeIndex),
+        fmt::format("Stripe {} (Group {})", i, stripeInfo.stripeGroupIndex),
         "NA",
-        tablet->stripeOffset(stripeIndex),
-        stripeSize,
+        stripeInfo.offset,
+        stripeInfo.size,
     });
-  });
+  }
 
-  for (const auto& [name, metadata] : tablet->optionalSections()) {
+  // Optional sections
+  for (const auto& [name, metadata] : layout.optionalSections) {
     entries.push_back({
         fmt::format("Optional Section {}", name),
         toString(metadata.compressionType()),
@@ -1015,17 +1016,21 @@ void NimbleDumpLib::emitFileLayout(bool noHeader) {
     });
   }
 
-  entries.push_back(
-      {"File Footer",
-       toString(tablet->footerCompressionType()),
-       tablet->fileSize() - tablet->footerSize() - kPostscriptSize,
-       tablet->footerSize()});
+  // Footer
+  entries.push_back({
+      "File Footer",
+      toString(layout.postscript.footer.compressionType()),
+      layout.postscript.footer.offset(),
+      layout.postscript.footer.size(),
+  });
 
-  entries.push_back(
-      {"File Postscript",
-       "NA",
-       tablet->fileSize() - kPostscriptSize,
-       kPostscriptSize});
+  // Postscript
+  entries.push_back({
+      "File Postscript",
+      "NA",
+      layout.fileSize - kPostscriptSize,
+      kPostscriptSize,
+  });
 
   std::sort(
       entries.begin(), entries.end(), [](const Entry& lhs, const Entry& rhs) {
