@@ -669,4 +669,6 @@ class ReplayedEncodingSelectionPolicy
   const EncodingSelectionPolicyFactory& encodingSelectionPolicyFactory_;
 };
 
+#undef COMMA
+
 } // namespace facebook::nimble
