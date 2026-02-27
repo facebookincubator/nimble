@@ -87,9 +87,9 @@ TEST_F(VeloxWriterTest, emptyFile) {
   velox::InMemoryReadFile readFile(file);
   auto layout = nimble::FileLayout::create(&readFile, leafPool_.get());
   EXPECT_EQ(layout.fileSize, file.size());
-  EXPECT_EQ(layout.postscript.majorVersion, nimble::kVersionMajor);
-  EXPECT_EQ(layout.postscript.minorVersion, nimble::kVersionMinor);
-  EXPECT_GT(layout.postscript.footer.size(), 0);
+  EXPECT_EQ(layout.postscript.majorVersion(), nimble::kVersionMajor);
+  EXPECT_EQ(layout.postscript.minorVersion(), nimble::kVersionMinor);
+  EXPECT_GT(layout.footer.size(), 0);
   EXPECT_TRUE(layout.stripeGroups.empty());
   EXPECT_TRUE(layout.indexGroups.empty());
   EXPECT_TRUE(layout.stripesInfo.empty());
@@ -262,7 +262,7 @@ TEST_F(VeloxWriterTest, rootHasNulls) {
   EXPECT_TRUE(layout.indexGroups.empty());
   // Stripes metadata should be valid (stripeGroups not empty)
   EXPECT_GT(layout.stripes.size(), 0);
-  EXPECT_LT(layout.stripes.offset(), layout.postscript.footer.offset());
+  EXPECT_LT(layout.stripes.offset(), layout.footer.offset());
   // Per-stripe info
   EXPECT_EQ(layout.stripesInfo.size(), 1);
   EXPECT_EQ(layout.stripesInfo[0].stripeGroupIndex, 0);
@@ -3865,7 +3865,7 @@ TEST_P(VeloxWriterIndexTest, duplicateKeys) {
     EXPECT_EQ(layout.indexGroups.size(), 1);
     // Stripes metadata should be valid
     EXPECT_GT(layout.stripes.size(), 0);
-    EXPECT_LT(layout.stripes.offset(), layout.postscript.footer.offset());
+    EXPECT_LT(layout.stripes.offset(), layout.footer.offset());
     // Index group should be before stripes section
     EXPECT_LT(layout.indexGroups[0].offset(), layout.stripes.offset());
     // Per-stripe info

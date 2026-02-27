@@ -20,7 +20,6 @@
 #include <span>
 #include <vector>
 
-#include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/index/StripeIndexGroup.h"
 #include "dwio/nimble/index/TabletIndex.h"
@@ -57,57 +56,6 @@ class TabletReaderTestHelper;
 } // namespace test
 
 using MemoryPool = facebook::velox::memory::MemoryPool;
-
-class Postscript {
- public:
-  Postscript() = default;
-
-  uint32_t footerSize() const {
-    return footerSize_;
-  }
-
-  CompressionType footerCompressionType() const {
-    return footerCompressionType_;
-  }
-
-  uint64_t checksum() const {
-    return checksum_;
-  }
-
-  ChecksumType checksumType() const {
-    return checksumType_;
-  }
-
-  uint32_t majorVersion() const {
-    return majorVersion_;
-  }
-
-  uint32_t minorVersion() const {
-    return minorVersion_;
-  }
-
-  /// Create Postscript from FileLayout (skips checksum which requires file
-  /// read).
-  static Postscript create(const FileLayout& layout);
-
-  /// Parse Postscript from raw bytes read from the end of a nimble file.
-  static Postscript parse(std::string_view data);
-
- private:
-  Postscript(
-      uint32_t footerSize,
-      CompressionType footerCompressionType,
-      ChecksumType checksumType,
-      uint16_t majorVersion,
-      uint16_t minorVersion);
-
-  uint32_t footerSize_;
-  CompressionType footerCompressionType_;
-  uint64_t checksum_;
-  ChecksumType checksumType_;
-  uint32_t majorVersion_;
-  uint32_t minorVersion_;
-};
 
 /// Stream loader abstraction.
 /// This is the returned object when loading streams from a tablet.
@@ -338,6 +286,10 @@ class TabletReader {
 
   uint64_t fileSize() const {
     return file_->size();
+  }
+
+  const Postscript& postscript() const {
+    return ps_;
   }
 
   uint32_t footerSize() const {
