@@ -3826,8 +3826,8 @@ TEST_F(TabletTest, readerOptionsFileLayoutPath) {
 
   EXPECT_EQ(tablet->stripeCount(), 1);
   EXPECT_EQ(tablet->stripeRowCount(0), 700);
-  EXPECT_EQ(tablet->majorVersion(), layout.postscript.majorVersion);
-  EXPECT_EQ(tablet->minorVersion(), layout.postscript.minorVersion);
+  EXPECT_EQ(tablet->majorVersion(), layout.postscript.majorVersion());
+  EXPECT_EQ(tablet->minorVersion(), layout.postscript.minorVersion());
 }
 
 TEST_F(TabletTest, readerOptionsFileLayoutMismatch) {
@@ -3891,8 +3891,8 @@ TEST_F(TabletTest, fileLayoutSkipsPostScriptIo) {
   auto layout = nimble::FileLayout::create(&layoutReadFile, pool_.get());
 
   // Calculate expected read size: footer + stripes section + postscript
-  const uint64_t expectedReadSize = layout.postscript.footer.size() +
-      nimble::kPostscriptSize + layout.stripes.size();
+  const uint64_t expectedReadSize =
+      layout.footer.size() + nimble::kPostscriptSize + layout.stripes.size();
   const uint64_t expectedReadOffset = file.size() - expectedReadSize;
 
   // Read using FileLayout - should do a single read for exact footer size

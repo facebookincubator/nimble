@@ -15,13 +15,66 @@
  */
 #pragma once
 
+#include <string_view>
 #include <unordered_map>
 #include <vector>
+#include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "velox/common/file/File.h"
 #include "velox/common/memory/Memory.h"
 
 namespace facebook::nimble {
+
+/// Postscript information (last 20 bytes of a Nimble file).
+/// Contains file format version, checksum, and footer metadata.
+class Postscript {
+ public:
+  Postscript() = default;
+
+  uint32_t footerSize() const {
+    return footerSize_;
+  }
+
+  CompressionType footerCompressionType() const {
+    return footerCompressionType_;
+  }
+
+  uint64_t checksum() const {
+    return checksum_;
+  }
+
+  ChecksumType checksumType() const {
+    return checksumType_;
+  }
+
+  uint32_t majorVersion() const {
+    return majorVersion_;
+  }
+
+  uint32_t minorVersion() const {
+    return minorVersion_;
+  }
+
+  static Postscript parse(std::string_view data);
+
+  /// Creates a Postscript from FileLayout metadata.
+  static Postscript create(const struct FileLayout& layout);
+
+ private:
+  Postscript(
+      uint32_t footerSize,
+      CompressionType footerCompressionType,
+      ChecksumType checksumType,
+      uint32_t majorVersion,
+      uint32_t minorVersion);
+
+  uint32_t footerSize_;
+  CompressionType footerCompressionType_;
+  uint64_t checksum_;
+  ChecksumType checksumType_;
+  uint32_t majorVersion_;
+  uint32_t minorVersion_;
+};
 
 /// Nimble Physical File Layout
 /// ============================
@@ -123,23 +176,14 @@ struct FileLayout {
     uint32_t stripeGroupIndex{0};
   };
 
-  /// Postscript information (last 20 bytes of file).
-  struct Postscript {
-    /// File format major version.
-    uint16_t majorVersion{0};
-    /// File format minor version.
-    uint16_t minorVersion{0};
-    /// Checksum type used for footer verification.
-    ChecksumType checksumType{ChecksumType::XXH3_64};
-    /// Footer section location and compression.
-    MetadataSection footer;
-  };
-
   /// Total file size in bytes.
   uint64_t fileSize{0};
 
-  /// Postscript information.
-  Postscript postscript;
+  /// Postscript information (parsed from last 20 bytes of file).
+  nimble::Postscript postscript;
+
+  /// Footer section location and compression.
+  MetadataSection footer;
 
   /// Stripes metadata section location and compression.
   /// Contains per-stripe info: row counts, file offsets, sizes, group indices.

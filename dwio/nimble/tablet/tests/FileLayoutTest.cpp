@@ -95,18 +95,18 @@ TEST_F(FileLayoutTest, nonEmptyFile) {
 
     // Verify layout fields
     EXPECT_EQ(layout.fileSize, file.size());
-    EXPECT_EQ(layout.postscript.majorVersion, nimble::kVersionMajor);
-    EXPECT_EQ(layout.postscript.minorVersion, nimble::kVersionMinor);
-    EXPECT_EQ(layout.postscript.checksumType, nimble::ChecksumType::XXH3_64);
-    EXPECT_GT(layout.postscript.footer.size(), 0);
-    EXPECT_LT(layout.postscript.footer.offset(), layout.fileSize);
+    EXPECT_EQ(layout.postscript.majorVersion(), nimble::kVersionMajor);
+    EXPECT_EQ(layout.postscript.minorVersion(), nimble::kVersionMinor);
+    EXPECT_EQ(layout.postscript.checksumType(), nimble::ChecksumType::XXH3_64);
+    EXPECT_GT(layout.footer.size(), 0);
+    EXPECT_LT(layout.footer.offset(), layout.fileSize);
     EXPECT_EQ(layout.stripeGroups.size(), 1);
     EXPECT_TRUE(layout.indexGroups.empty()); // No index configured
 
     // Verify stripe group metadata
     const auto& stripeGroup = layout.stripeGroups[0];
     EXPECT_GT(stripeGroup.size(), 0);
-    EXPECT_LT(stripeGroup.offset(), layout.postscript.footer.offset());
+    EXPECT_LT(stripeGroup.offset(), layout.footer.offset());
 
     // Verify per-stripe info
     EXPECT_EQ(layout.stripesInfo.size(), 2);
@@ -131,8 +131,8 @@ TEST_F(FileLayoutTest, emptyFile) {
   auto layout = nimble::FileLayout::create(&readFile, pool_.get());
 
   EXPECT_EQ(layout.fileSize, file.size());
-  EXPECT_EQ(layout.postscript.majorVersion, nimble::kVersionMajor);
-  EXPECT_EQ(layout.postscript.minorVersion, nimble::kVersionMinor);
+  EXPECT_EQ(layout.postscript.majorVersion(), nimble::kVersionMajor);
+  EXPECT_EQ(layout.postscript.minorVersion(), nimble::kVersionMinor);
   EXPECT_TRUE(layout.stripeGroups.empty());
   EXPECT_TRUE(layout.indexGroups.empty());
   EXPECT_TRUE(layout.stripesInfo.empty());

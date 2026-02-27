@@ -31,18 +31,12 @@ FileLayout FileLayout::create(
   FileLayout layout;
   layout.fileSize = tablet->fileSize();
 
-  // Postscript
-  const auto footerSize = tablet->footerSize();
-  layout.postscript = {
-      .majorVersion = static_cast<uint16_t>(tablet->majorVersion()),
-      .minorVersion = static_cast<uint16_t>(tablet->minorVersion()),
-      .checksumType = tablet->checksumType(),
-      .footer =
-          MetadataSection{
-              layout.fileSize - footerSize - kPostscriptSize,
-              footerSize,
-              tablet->footerCompressionType()},
-  };
+  // Postscript and footer
+  layout.postscript = tablet->postscript();
+  layout.footer = MetadataSection{
+      layout.fileSize - layout.postscript.footerSize() - kPostscriptSize,
+      layout.postscript.footerSize(),
+      layout.postscript.footerCompressionType()};
 
   // Stripes metadata
   auto stripesMetadata = tablet->stripesMetadata();

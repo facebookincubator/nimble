@@ -167,8 +167,8 @@ Postscript::Postscript(
     uint32_t footerSize,
     CompressionType footerCompressionType,
     ChecksumType checksumType,
-    uint16_t majorVersion,
-    uint16_t minorVersion)
+    uint32_t majorVersion,
+    uint32_t minorVersion)
     : footerSize_(footerSize),
       footerCompressionType_(footerCompressionType),
       checksum_(0),
@@ -178,11 +178,11 @@ Postscript::Postscript(
 
 Postscript Postscript::create(const FileLayout& layout) {
   return Postscript(
-      layout.postscript.footer.size(),
-      layout.postscript.footer.compressionType(),
-      layout.postscript.checksumType,
-      layout.postscript.majorVersion,
-      layout.postscript.minorVersion);
+      layout.footer.size(),
+      layout.footer.compressionType(),
+      layout.postscript.checksumType(),
+      layout.postscript.majorVersion(),
+      layout.postscript.minorVersion());
 }
 
 TabletReader::TabletReader(
@@ -347,7 +347,7 @@ void TabletReader::initFromFileLayout(const Options& options) {
 
   // Calculate what to read within the memory budget.
   // At minimum we need the footer and stripes section.
-  const uint64_t footerSize = layout.postscript.footer.size() + kPostscriptSize;
+  const uint64_t footerSize = layout.footer.size() + kPostscriptSize;
   uint64_t footerReadSize = footerSize;
 
   // Include stripes section if present (stored before footer).
@@ -356,7 +356,7 @@ void TabletReader::initFromFileLayout(const Options& options) {
     // Stripes section should be contiguous with footer.
     NIMBLE_CHECK_EQ(
         layout.stripes.offset() + layout.stripes.size(),
-        layout.postscript.footer.offset(),
+        layout.footer.offset(),
         "Stripes section not contiguous with footer");
     footerReadSize += layout.stripes.size();
   }

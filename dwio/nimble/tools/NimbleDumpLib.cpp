@@ -1018,9 +1018,9 @@ void NimbleDumpLib::emitFileLayout(bool noHeader) {
   // Footer
   entries.push_back({
       "File Footer",
-      toString(layout.postscript.footer.compressionType()),
-      layout.postscript.footer.offset(),
-      layout.postscript.footer.size(),
+      toString(layout.footer.compressionType()),
+      layout.footer.offset(),
+      layout.footer.size(),
   });
 
   // Postscript
