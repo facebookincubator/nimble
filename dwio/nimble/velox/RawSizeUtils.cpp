@@ -718,7 +718,8 @@ uint64_t getRawSizeFromRowVectorInternal(
   // 2. The vector at that level is a ROW vector
   const bool isPassthroughFlatMap = type &&
       flatMapNodeIds.contains(type->id()) &&
-      vector->typeKind() == velox::TypeKind::ROW;
+      vector->typeKind() == velox::TypeKind::ROW &&
+      type->type()->kind() == velox::TypeKind::MAP;
 
   if (isPassthroughFlatMap) {
     return getRawSizeFromPassthroughFlatMap(
