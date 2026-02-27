@@ -163,6 +163,28 @@ Postscript Postscript::parse(std::string_view data) {
   return ps;
 }
 
+Postscript::Postscript(
+    uint32_t footerSize,
+    CompressionType footerCompressionType,
+    ChecksumType checksumType,
+    uint16_t majorVersion,
+    uint16_t minorVersion)
+    : footerSize_(footerSize),
+      footerCompressionType_(footerCompressionType),
+      checksum_(0),
+      checksumType_(checksumType),
+      majorVersion_(majorVersion),
+      minorVersion_(minorVersion) {}
+
+Postscript Postscript::create(const FileLayout& layout) {
+  return Postscript(
+      layout.postscript.footer.size(),
+      layout.postscript.footer.compressionType(),
+      layout.postscript.checksumType,
+      layout.postscript.majorVersion,
+      layout.postscript.minorVersion);
+}
+
 TabletReader::TabletReader(
     std::shared_ptr<velox::ReadFile> readFile,
     MemoryPool& pool,
@@ -174,6 +196,7 @@ TabletReader::TabletReader(
     : pool_{&pool},
       file_{readFile.get()},
       ownedFile_{std::move(readFile)},
+      bufferedInput_{nullptr},
       ps_{std::move(postscript)},
       footer_{std::make_unique<MetadataBuffer>(pool, footer)},
       stripes_{std::make_unique<MetadataBuffer>(pool, stripes)},
@@ -203,70 +226,209 @@ TabletReader::TabletReader(
     velox::ReadFile* readFile,
     std::shared_ptr<velox::ReadFile> ownedReadFile,
     MemoryPool& pool,
-    const std::vector<std::string>& preloadOptionalSections)
+    const Options& options)
     : pool_{&pool},
       file_{readFile},
       ownedFile_{std::move(ownedReadFile)},
+      bufferedInput_{options.bufferedInput},
       stripeGroupCache_{[this](uint32_t stripeGroupIndex) {
         return loadStripeGroup(stripeGroupIndex);
       }},
       indexGroupCache_{[this](uint32_t stripeGroupIndex) {
         return loadIndexGroup(stripeGroupIndex);
       }} {
-  init(preloadOptionalSections);
+  init(options);
 }
 
-void TabletReader::init(
-    const std::vector<std::string>& preloadOptionalSections) {
-  // We make an initial read of the last piece of the file, and then do
-  // another read if our first one didn't cover the whole footer. We could
-  // make this a parameter to the constructor later.
+void TabletReader::init(const Options& options) {
   const auto fileSize = file_->size();
-  const uint64_t footerIoSize = std::min(kInitialFooterSize, fileSize);
   NIMBLE_CHECK_FILE(
-      footerIoSize >= kPostscriptSize,
-      "Corrupted file. Footer {} is smaller than postscript size {}.",
-      velox::succinctBytes(footerIoSize),
+      fileSize >= kPostscriptSize,
+      "Corrupted file. File size {} is smaller than postscript size {}.",
+      velox::succinctBytes(fileSize),
       velox::succinctBytes(kPostscriptSize));
 
-  const uint64_t footerIoOffset = fileSize - footerIoSize;
+  if (options.fileLayout.has_value()) {
+    // FileLayout provided - skip discovery, use layout directly.
+    initFromFileLayout(options);
+    return;
+  }
+
+  uint64_t footerIoSize;
+  uint64_t footerIoOffset;
+  folly::IOBuf footerIoBuf;
+
+  initPostScriptAndFooter(
+      fileSize,
+      options.footerIoBytes,
+      footerIoBuf,
+      footerIoSize,
+      footerIoOffset);
+  initStripes(fileSize, footerIoBuf, footerIoSize, footerIoOffset);
+
+  initOptionalSections(
+      footerIoBuf, footerIoOffset, options.preloadOptionalSections);
+
+  initIndex(footerIoBuf, footerIoOffset, fileSize);
+}
+
+void TabletReader::initPostScriptAndFooter(
+    uint64_t fileSize,
+    uint64_t footerIoBytes,
+    folly::IOBuf& footerIoBuf,
+    uint64_t& footerIoSize,
+    uint64_t& footerIoOffset) {
+  if (footerIoBytes == 0) {
+    // Adaptive mode: read postscript first, then exact footer size.
+    // First read: just the postscript (last 20 bytes)
+    {
+      const velox::common::Region psRegion{
+          fileSize - kPostscriptSize, kPostscriptSize, "postscript"};
+      folly::IOBuf psIoBuf;
+      file_->preadv({&psRegion, 1}, {&psIoBuf, 1});
+      ps_ = Postscript::parse(toStringView(psIoBuf));
+    }
+
+    // Second read: exact footer + postscript
+    footerIoSize = ps_.footerSize() + kPostscriptSize;
+    footerIoOffset = fileSize - footerIoSize;
+    {
+      const velox::common::Region footerIoRegion{
+          footerIoOffset, footerIoSize, "footer"};
+      file_->preadv({&footerIoRegion, 1}, {&footerIoBuf, 1});
+    }
+    NIMBLE_CHECK_EQ(footerIoSize, footerIoBuf.computeChainDataLength());
+
+    initFooter(footerIoBuf, footerIoSize);
+  } else {
+    // Speculative mode: read footerIoBytes (or fileSize if smaller)
+    footerIoSize = std::min(footerIoBytes, fileSize);
+    footerIoOffset = fileSize - footerIoSize;
+    {
+      const velox::common::Region footerIoRegion{
+          footerIoOffset, footerIoSize, "footer"};
+      file_->preadv({&footerIoRegion, 1}, {&footerIoBuf, 1});
+    }
+    NIMBLE_CHECK_EQ(footerIoSize, footerIoBuf.computeChainDataLength());
+
+    initPostScript(footerIoBuf, footerIoSize);
+
+    // If initial read didn't cover the full footer, do a second read.
+    const uint64_t requiredSize = ps_.footerSize() + kPostscriptSize;
+    if (requiredSize > footerIoSize) {
+      footerIoSize = requiredSize;
+      footerIoOffset = fileSize - footerIoSize;
+      footerIoBuf = folly::IOBuf();
+      const velox::common::Region footerIoRegion{
+          footerIoOffset, footerIoSize, "footer"};
+      file_->preadv({&footerIoRegion, 1}, {&footerIoBuf, 1});
+      NIMBLE_CHECK_EQ(footerIoSize, footerIoBuf.computeChainDataLength());
+    }
+
+    initFooter(footerIoBuf, footerIoSize);
+  }
+}
+
+void TabletReader::initFromFileLayout(const Options& options) {
+  NIMBLE_DCHECK(options.fileLayout.has_value(), "FileLayout must be provided");
+  const auto& layout = *options.fileLayout;
+  const auto fileSize = file_->size();
+
+  // Validate layout matches file
+  NIMBLE_USER_CHECK_EQ(
+      layout.fileSize,
+      fileSize,
+      "FileLayout fileSize {} doesn't match actual file size {}",
+      layout.fileSize,
+      fileSize);
+
+  // Initialize postscript from layout
+  ps_ = Postscript::create(layout);
+
+  // Calculate what to read within the memory budget.
+  // At minimum we need the footer and stripes section.
+  const uint64_t footerSize = layout.postscript.footer.size() + kPostscriptSize;
+  uint64_t footerReadSize = footerSize;
+
+  // Include stripes section if present (stored before footer).
+  // Stripes section exists when stripeGroups is not empty.
+  if (!layout.stripeGroups.empty()) {
+    // Stripes section should be contiguous with footer.
+    NIMBLE_CHECK_EQ(
+        layout.stripes.offset() + layout.stripes.size(),
+        layout.postscript.footer.offset(),
+        "Stripes section not contiguous with footer");
+    footerReadSize += layout.stripes.size();
+  }
+
+  // Try to coalesce first stripe group if it fits in budget.
+  bool preloadFirstStripeGroup = false;
+  if (!layout.stripeGroups.empty() && options.footerIoBytes > 0) {
+    const auto& firstGroup = layout.stripeGroups[0];
+    // Check if first stripe group is contiguous with stripes section.
+    if (firstGroup.offset() + firstGroup.size() == layout.stripes.offset() &&
+        footerReadSize + firstGroup.size() <= options.footerIoBytes) {
+      footerReadSize += firstGroup.size();
+      preloadFirstStripeGroup = true;
+    }
+  }
+
+  // TODO: Add support for preloading first index group if it fits in budget.
+
+  // Read footer (and potentially stripes section and first stripe group).
+  uint64_t footerIoOffset = fileSize - footerReadSize;
   folly::IOBuf footerIoBuf;
   {
     const velox::common::Region footerIoRegion{
-        footerIoOffset, footerIoSize, "footer"};
+        footerIoOffset, footerReadSize, "footer"};
     file_->preadv({&footerIoRegion, 1}, {&footerIoBuf, 1});
   }
-  NIMBLE_CHECK_EQ(footerIoSize, footerIoBuf.computeChainDataLength());
+  NIMBLE_CHECK_EQ(footerReadSize, footerIoBuf.computeChainDataLength());
 
-  initPostScript(footerIoBuf, footerIoSize);
+  initFooter(footerIoBuf, footerReadSize);
 
-  initFooter(footerIoBuf, footerIoSize);
+  // Initialize stripes
+  initStripes(fileSize, footerIoBuf, footerReadSize, footerIoOffset);
 
-  initStripes(footerIoBuf, footerIoSize, fileSize);
+  // If first stripe group was preloaded, cache it.
+  if (preloadFirstStripeGroup) {
+    const auto& firstGroup = layout.stripeGroups[0];
+    const uint64_t groupOffsetInBuf = firstGroup.offset() - footerIoOffset;
+    auto groupMetadata = std::make_unique<MetadataBuffer>(
+        *pool_,
+        footerIoBuf,
+        groupOffsetInBuf,
+        firstGroup.size(),
+        firstGroup.compressionType());
+    auto stripeGroup =
+        std::make_shared<StripeGroup>(0, *stripes_, std::move(groupMetadata));
+    firstStripeGroup_.wlock()->swap(stripeGroup);
+  }
 
-  initOptionalSections(footerIoBuf, footerIoOffset, preloadOptionalSections);
+  // Initialize optional sections (empty for now as we don't have them in
+  // buffer)
+  initOptionalSections(
+      footerIoBuf, footerIoOffset, options.preloadOptionalSections);
 
+  // Initialize index
   initIndex(footerIoBuf, footerIoOffset, fileSize);
 }
 
 void TabletReader::initPostScript(
     const folly::IOBuf& footerIoBuf,
     uint64_t footerIoSize) {
-  {
-    folly::IOBuf psIoBuf = cloneAndCoalesce(
-        footerIoBuf,
-        footerIoBuf.computeChainDataLength() - kPostscriptSize,
-        kPostscriptSize);
-    ps_ = Postscript::parse(toStringView(psIoBuf));
-  }
-
-  NIMBLE_CHECK_LE(
-      ps_.footerSize() + kPostscriptSize,
+  NIMBLE_CHECK_GE(
       footerIoSize,
-      "Unexpected footer size: {}, footer IO size: {}, ps size: {}",
-      velox::succinctBytes(ps_.footerSize()),
+      kPostscriptSize,
+      "Footer IO size {} must be at least postscript size {}",
       velox::succinctBytes(footerIoSize),
       velox::succinctBytes(kPostscriptSize));
+
+  folly::IOBuf psIoBuf = cloneAndCoalesce(
+      footerIoBuf,
+      footerIoBuf.computeChainDataLength() - kPostscriptSize,
+      kPostscriptSize);
+  ps_ = Postscript::parse(toStringView(psIoBuf));
 }
 
 void TabletReader::initFooter(
@@ -282,9 +444,10 @@ void TabletReader::initFooter(
 }
 
 void TabletReader::initStripes(
-    const folly::IOBuf& footerIoBuf,
-    uint64_t footerIoSize,
-    uint64_t fileSize) {
+    uint64_t fileSize,
+    folly::IOBuf& footerIoBuf,
+    uint64_t& footerIoSize,
+    uint64_t& footerIoOffset) {
   NIMBLE_CHECK_NOT_NULL(footer_);
   auto* footerRoot =
       asFlatBuffersRoot<serialization::Footer>(footer_->content());
@@ -297,12 +460,17 @@ void TabletReader::initStripes(
     return;
   }
 
-  // NOTE: For now, assume stripes section will always be within the initial
-  // fetch.
-  NIMBLE_CHECK_GE(
-      stripesSection->offset() + footerIoSize,
-      fileSize,
-      "Incomplete stripes metadata.");
+  // Check if stripes section is in the buffer; if not, re-read to include it.
+  const uint64_t requiredSize = fileSize - stripesSection->offset();
+  if (requiredSize > footerIoSize) {
+    footerIoSize = requiredSize;
+    footerIoOffset = fileSize - footerIoSize;
+    footerIoBuf = folly::IOBuf();
+    const velox::common::Region footerIoRegion{
+        footerIoOffset, footerIoSize, "footer+stripes"};
+    file_->preadv({&footerIoRegion, 1}, {&footerIoBuf, 1});
+    NIMBLE_CHECK_EQ(footerIoSize, footerIoBuf.computeChainDataLength());
+  }
   stripes_ = std::make_unique<MetadataBuffer>(
       *pool_,
       footerIoBuf,
@@ -474,31 +642,34 @@ void TabletReader::initOptionalSections(
 
 std::shared_ptr<TabletReader> TabletReader::create(
     velox::ReadFile* readFile,
-    MemoryPool& pool,
-    const std::vector<std::string>& preloadOptionalSections) {
+    MemoryPool* pool,
+    const Options& options) {
+  NIMBLE_CHECK_NOT_NULL(pool);
   return std::shared_ptr<TabletReader>(
-      new TabletReader(readFile, nullptr, pool, preloadOptionalSections));
+      new TabletReader(readFile, nullptr, *pool, options));
 }
 
 std::shared_ptr<TabletReader> TabletReader::create(
     std::shared_ptr<velox::ReadFile> readFile,
-    MemoryPool& pool,
-    const std::vector<std::string>& preloadOptionalSections) {
-  return std::shared_ptr<TabletReader>(new TabletReader(
-      readFile.get(), readFile, pool, preloadOptionalSections));
+    MemoryPool* pool,
+    const Options& options) {
+  NIMBLE_CHECK_NOT_NULL(pool);
+  return std::shared_ptr<TabletReader>(
+      new TabletReader(readFile.get(), readFile, *pool, options));
 }
 
 std::shared_ptr<TabletReader> TabletReader::testingCreate(
     std::shared_ptr<velox::ReadFile> readFile,
-    MemoryPool& pool,
+    MemoryPool* pool,
     Postscript postscript,
     std::string_view footer,
     std::string_view stripes,
     std::string_view stripeGroup,
     std::unordered_map<std::string, std::string_view> optionalSections) {
+  NIMBLE_CHECK_NOT_NULL(pool);
   return std::shared_ptr<TabletReader>(new TabletReader(
       std::move(readFile),
-      pool,
+      *pool,
       std::move(postscript),
       footer,
       stripes,

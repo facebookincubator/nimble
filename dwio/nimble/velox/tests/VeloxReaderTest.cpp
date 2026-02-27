@@ -372,7 +372,7 @@ size_t streamsReadCount(
     const std::vector<nimble::testing::Chunk>& chunks) {
   // Assumed for the algorithm
   NIMBLE_CHECK_EQ(false, readFile->shouldCoalesce());
-  auto tablet = nimble::TabletReader::create(readFile, pool);
+  auto tablet = nimble::TabletReader::create(readFile, &pool, {});
   NIMBLE_CHECK_GE(tablet->stripeCount(), 1);
   auto stripeIdentifier = tablet->stripeIdentifier(0);
   auto offsets = tablet->streamOffsets(stripeIdentifier);
@@ -782,7 +782,8 @@ class VeloxReaderTest : public ::testing::TestWithParam<bool> {
     std::unique_ptr<velox::InMemoryReadFile> readFile =
         std::make_unique<velox::InMemoryReadFile>(file);
 
-    auto tablet = nimble::TabletReader::create(std::move(readFile), *leafPool_);
+    auto tablet =
+        nimble::TabletReader::create(std::move(readFile), leafPool_.get(), {});
     auto selector =
         std::make_shared<velox::dwio::common::ColumnSelector>(schema);
     std::unique_ptr<nimble::VeloxReader> reader =
@@ -4045,7 +4046,7 @@ class TestNimbleReaderFactory {
   }
 
   std::shared_ptr<nimble::TabletReader> createTablet() {
-    return nimble::TabletReader::create(file_.get(), *pool_);
+    return nimble::TabletReader::create(file_.get(), pool_, {});
   }
 
  private:

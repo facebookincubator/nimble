@@ -182,6 +182,7 @@ struct StreamEqual {
 } // namespace
 
 void TabletWriter::close() {
+  checkNotClosed();
   const auto stripeCount = stripeOffsets_.size();
   NIMBLE_CHECK(
       stripeCount == stripeSizes_.size() &&
@@ -251,12 +252,15 @@ void TabletWriter::close() {
   file_->append({reinterpret_cast<const char*>(&kVersionMajor), 2});
   file_->append({reinterpret_cast<const char*>(&kVersionMinor), 2});
   file_->append({reinterpret_cast<const char*>(&kMagicNumber), 2});
+
+  state_ = State::kClosed;
 }
 
 void TabletWriter::writeStripe(
     uint32_t rowCount,
     std::vector<Stream> streams,
     std::optional<KeyStream>&& keyStream) {
+  checkNotClosed();
   if (UNLIKELY(rowCount == 0)) {
     return;
   }
@@ -407,6 +411,7 @@ MetadataSection TabletWriter::createMetadataSection(std::string_view metadata) {
 void TabletWriter::writeOptionalSection(
     std::string name,
     std::string_view content) {
+  checkNotClosed();
   NIMBLE_CHECK(!name.empty(), "Optional section name cannot be empty.");
   NIMBLE_CHECK(
       optionalSections_.find(name) == optionalSections_.end(),

@@ -26,8 +26,7 @@ namespace facebook::nimble {
 FileLayout FileLayout::create(
     velox::ReadFile* file,
     velox::memory::MemoryPool* pool) {
-  NIMBLE_CHECK_NOT_NULL(pool);
-  auto tablet = TabletReader::create(file, *pool);
+  auto tablet = TabletReader::create(file, pool, {});
 
   FileLayout layout;
   layout.fileSize = tablet->fileSize();
