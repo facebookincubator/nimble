@@ -28,8 +28,12 @@ using namespace facebook::velox;
 
 namespace {
 const std::string kSchemaSectionString(kSchemaSection);
-const std::vector<std::string> kPreloadOptionalSections = {
-    kSchemaSectionString};
+
+TabletReader::Options defaultTabletReaderOptions() {
+  TabletReader::Options options;
+  options.preloadOptionalSections = {kSchemaSectionString};
+  return options;
+}
 
 std::shared_ptr<const facebook::nimble::Type> loadSchema(
     const TabletReader& tablet) {
@@ -56,8 +60,8 @@ std::shared_ptr<ReaderBase> ReaderBase::create(
   auto tablet = TabletReader::create(
       // TODO: Make TabletReader taking BufferedInput.
       input->getReadFile().get(),
-      options.memoryPool(),
-      kPreloadOptionalSections);
+      &options.memoryPool(),
+      defaultTabletReaderOptions());
 
   auto* pool = &options.memoryPool();
   const auto& randomSkip = options.randomSkip();

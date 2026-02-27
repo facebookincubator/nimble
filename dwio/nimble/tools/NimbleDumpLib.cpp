@@ -293,10 +293,9 @@ NimbleDumpLib::NimbleDumpLib(
       enableColors_{enableColors} {}
 
 void NimbleDumpLib::emitInfo() {
-  std::vector<std::string> preloadedOptionalSections = {
-      std::string(kStatsSection)};
-  const auto tablet =
-      TabletReader::create(file_.get(), *pool_, preloadedOptionalSections);
+  TabletReader::Options options;
+  options.preloadOptionalSections = {std::string(kStatsSection)};
+  const auto tablet = TabletReader::create(file_.get(), pool_.get(), options);
   ostream_ << CYAN(enableColors_) << "Nimble File "
            << RESET_COLOR(enableColors_) << "Version " << tablet->majorVersion()
            << "." << tablet->minorVersion() << std::endl;
@@ -345,7 +344,7 @@ void NimbleDumpLib::emitInfo() {
 
   VeloxReader reader{tablet, *pool_};
 
-  auto statsSection = tablet->loadOptionalSection(preloadedOptionalSections[0]);
+  auto statsSection = tablet->loadOptionalSection(std::string(kStatsSection));
   ostream_ << "Raw Data Size: ";
   if (statsSection.has_value()) {
     auto rawSize = flatbuffers::GetRoot<nimble::serialization::Stats>(
@@ -373,7 +372,7 @@ void NimbleDumpLib::emitInfo() {
 }
 
 void NimbleDumpLib::emitSchema(bool collapseFlatMap) {
-  auto tablet = TabletReader::create(file_.get(), *pool_);
+  auto tablet = TabletReader::create(file_.get(), pool_.get(), {});
   VeloxReader reader{tablet, *pool_};
 
   auto emitOffsets = [](const Type& type) {
@@ -476,7 +475,7 @@ void NimbleDumpLib::emitSchema(bool collapseFlatMap) {
 }
 
 void NimbleDumpLib::emitStripes(bool noHeader) {
-  const auto tabletReader = TabletReader::create(file_.get(), *pool_);
+  const auto tabletReader = TabletReader::create(file_.get(), pool_.get(), {});
   TableFormatter formatter(
       ostream_,
       enableColors_,
@@ -508,7 +507,7 @@ void NimbleDumpLib::emitStreams(
     bool showStreamRawSize,
     bool showInMapStream,
     std::optional<uint32_t> stripeId) {
-  auto tabletReader = TabletReader::create(file_.get(), *pool_);
+  auto tabletReader = TabletReader::create(file_.get(), pool_.get(), {});
 
   std::vector<std::tuple<std::string, uint8_t, Alignment>> fields;
   fields.emplace_back("Stripe Id", 9, Alignment::Left);
@@ -599,7 +598,7 @@ void NimbleDumpLib::emitHistogram(
     bool topLevel,
     bool noHeader,
     std::optional<uint32_t> stripeId) {
-  auto tabletReader = TabletReader::create(file_.get(), *pool_);
+  auto tabletReader = TabletReader::create(file_.get(), pool_.get(), {});
   std::unordered_map<
       GroupingKey,
       EncodingHistogramValue,
@@ -686,7 +685,7 @@ void NimbleDumpLib::emitContent(
     uint32_t streamId,
     std::optional<uint32_t> stripeId,
     const std::string& separator) {
-  auto tabletReader = TabletReader::create(file_.get(), *pool_);
+  auto tabletReader = TabletReader::create(file_.get(), pool_.get(), {});
 
   uint32_t maxStreamCount;
   bool found = false;
@@ -738,7 +737,7 @@ void NimbleDumpLib::emitBinary(
     std::function<std::unique_ptr<std::ostream>()> outputFactory,
     uint32_t streamId,
     uint32_t stripeId) {
-  auto tabletReader = TabletReader::create(file_.get(), *pool_);
+  auto tabletReader = TabletReader::create(file_.get(), pool_.get(), {});
   auto stripeIdentifier = tabletReader->stripeIdentifier(stripeId);
   if (streamId >= tabletReader->streamCount(stripeIdentifier)) {
     throw folly::ProgramExit(
@@ -942,7 +941,7 @@ void NimbleDumpLib::emitLayout(bool noHeader, bool compressed) {
 }
 
 void NimbleDumpLib::emitStripesMetadata(bool noHeader) {
-  auto tabletReader = TabletReader::create(file_.get(), *pool_);
+  auto tabletReader = TabletReader::create(file_.get(), pool_.get(), {});
   TableFormatter formatter(
       ostream_,
       enableColors_,
@@ -1059,7 +1058,7 @@ void NimbleDumpLib::emitFileLayout(bool noHeader) {
 }
 
 void NimbleDumpLib::emitStripeGroupsMetadata(bool noHeader) {
-  auto tabletReader = TabletReader::create(file_.get(), *pool_);
+  auto tabletReader = TabletReader::create(file_.get(), pool_.get(), {});
   TableFormatter formatter(
       ostream_,
       enableColors_,
@@ -1088,7 +1087,7 @@ void NimbleDumpLib::emitOptionalSectionsMetadata(bool noHeader) {
     nimble::MetadataSection metadata;
   };
 
-  auto tabletReader = TabletReader::create(file_.get(), *pool_);
+  auto tabletReader = TabletReader::create(file_.get(), pool_.get(), {});
   std::vector<NamedMetdataSection> sections;
   sections.reserve(tabletReader->optionalSections().size());
   for (const auto& [name, metadata] : tabletReader->optionalSections()) {
@@ -1120,7 +1119,7 @@ void NimbleDumpLib::emitOptionalSectionsMetadata(bool noHeader) {
 }
 
 void NimbleDumpLib::emitIndex() {
-  auto tabletReader = TabletReader::create(file_.get(), *pool_);
+  auto tabletReader = TabletReader::create(file_.get(), pool_.get(), {});
   if (!tabletReader->hasIndex()) {
     ostream_ << "Index: Not configured" << std::endl;
     return;

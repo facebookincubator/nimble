@@ -175,7 +175,7 @@ class VeloxReader {
   // Returns the total number of rows skipped.
   uint64_t skipStripes(uint32_t startStripeIndex, uint64_t rowsToSkip);
 
-  static const std::vector<std::string>& preloadedOptionalSections();
+  static TabletReader::Options defaultTabletReaderOptions();
 
   std::unique_ptr<velox::dwio::common::UnitLoader> getUnitLoader();
 

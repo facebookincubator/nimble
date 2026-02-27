@@ -32,7 +32,6 @@ target_link_libraries(
   velox_dwio_common
   velox_memory
   velox_file
-  velox_testutil
   gtest
   gtest_main
   glog::glog

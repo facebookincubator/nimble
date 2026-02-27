@@ -28,6 +28,7 @@
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/index/tests/IndexTestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/FlushPolicy.h"
@@ -82,9 +83,18 @@ TEST_F(VeloxWriterTest, emptyFile) {
   nimble::VeloxWriter writer(type, std::move(writeFile), *rootPool_, {});
   writer.close();
 
+  // Verify FileLayout for empty file using FileLayout::create()
   velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(&readFile, *leafPool_);
+  auto layout = nimble::FileLayout::create(&readFile, leafPool_.get());
+  EXPECT_EQ(layout.fileSize, file.size());
+  EXPECT_EQ(layout.postscript.majorVersion, nimble::kVersionMajor);
+  EXPECT_EQ(layout.postscript.minorVersion, nimble::kVersionMinor);
+  EXPECT_GT(layout.postscript.footer.size(), 0);
+  EXPECT_TRUE(layout.stripeGroups.empty());
+  EXPECT_TRUE(layout.indexGroups.empty());
+  EXPECT_TRUE(layout.stripesInfo.empty());
 
+  nimble::VeloxReader reader(&readFile, *leafPool_);
   velox::VectorPtr result;
   ASSERT_FALSE(reader.next(1, result));
 }
@@ -108,9 +118,19 @@ TEST_F(VeloxWriterTest, emptyFileWithIndexEnabled) {
       type, std::move(writeFile), *rootPool_, {.indexConfig = indexConfig});
   writer.close();
 
+  // Verify FileLayout for empty file with index enabled using
+  // FileLayout::create()
   velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(&readFile, *leafPool_);
+  auto layout = nimble::FileLayout::create(&readFile, leafPool_.get());
+  EXPECT_EQ(layout.fileSize, file.size());
+  EXPECT_EQ(layout.stripesInfo.size(), 0);
+  EXPECT_EQ(layout.stripeGroups.size(), 0);
+  EXPECT_TRUE(layout.stripeGroups.empty());
+  // Index groups should be empty for empty file (no stripes to index)
+  EXPECT_TRUE(layout.indexGroups.empty());
+  EXPECT_TRUE(layout.stripesInfo.empty());
 
+  nimble::VeloxReader reader(&readFile, *leafPool_);
   velox::VectorPtr result;
   ASSERT_FALSE(reader.next(1, result));
 }
@@ -226,12 +246,29 @@ TEST_F(VeloxWriterTest, rootHasNulls) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
   nimble::VeloxWriter writer(
       vector->type(), std::move(writeFile), *rootPool_, {});
+
   writer.write(vector);
   writer.close();
 
+  // Verify FileLayout for non-empty file without index using
+  // FileLayout::create()
   velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(&readFile, *leafPool_);
+  auto layout = nimble::FileLayout::create(&readFile, leafPool_.get());
+  EXPECT_EQ(layout.fileSize, file.size());
+  EXPECT_EQ(layout.stripesInfo.size(), 1);
+  EXPECT_EQ(layout.stripeGroups.size(), 1);
+  EXPECT_EQ(layout.stripeGroups.size(), 1);
+  // No index configured
+  EXPECT_TRUE(layout.indexGroups.empty());
+  // Stripes metadata should be valid (stripeGroups not empty)
+  EXPECT_GT(layout.stripes.size(), 0);
+  EXPECT_LT(layout.stripes.offset(), layout.postscript.footer.offset());
+  // Per-stripe info
+  EXPECT_EQ(layout.stripesInfo.size(), 1);
+  EXPECT_EQ(layout.stripesInfo[0].stripeGroupIndex, 0);
+  EXPECT_GT(layout.stripesInfo[0].size, 0);
 
+  nimble::VeloxReader reader(&readFile, *leafPool_);
   velox::VectorPtr result;
   ASSERT_TRUE(reader.next(batchSize, result));
   ASSERT_EQ(result->size(), batchSize);
@@ -785,7 +822,7 @@ TEST_F(VeloxWriterTest, encodingLayout) {
   for (auto useChainedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
         file, useChainedBuffers);
-    auto tablet = nimble::TabletReader::create(&readFile, *leafPool_);
+    auto tablet = nimble::TabletReader::create(&readFile, leafPool_.get(), {});
     auto section =
         tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
     NIMBLE_CHECK(section.has_value(), "Schema not found.");
@@ -1306,7 +1343,7 @@ void testChunks(
   folly::writeFile(file, "/tmp/afile");
 
   auto tablet = nimble::TabletReader::create(
-      std::make_shared<velox::InMemoryReadFile>(file), *leafPool);
+      std::make_shared<velox::InMemoryReadFile>(file), leafPool.get(), {});
   verifier(*tablet);
 
   nimble::VeloxReader reader(
@@ -2180,12 +2217,13 @@ TEST_F(VeloxWriterTest, rawSizeWritten) {
     writer.close();
 
     auto readFilePtr = std::make_shared<velox::InMemoryReadFile>(file);
-    std::vector<std::string> preloadedOptionalSections = {
+    nimble::TabletReader::Options readerOptions;
+    readerOptions.preloadOptionalSections = {
         std::string(facebook::nimble::kStatsSection)};
     auto tablet = facebook::nimble::TabletReader::create(
-        readFilePtr, *leafPool_, preloadedOptionalSections);
+        readFilePtr, leafPool_.get(), readerOptions);
     auto statsSection =
-        tablet->loadOptionalSection(preloadedOptionalSections[0]);
+        tablet->loadOptionalSection(readerOptions.preloadOptionalSections[0]);
     ASSERT_TRUE(statsSection.has_value());
 
     // Use flatbuffers to deserialize the stats payload
@@ -2199,20 +2237,21 @@ TEST_F(VeloxWriterTest, rawSizeWritten) {
   {
     std::string file;
     auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-    nimble::VeloxWriterOptions options{};
-    options.enableVectorizedStats = true;
+    nimble::VeloxWriterOptions writerOptions{};
+    writerOptions.enableVectorizedStats = true;
     nimble::VeloxWriter writer(
-        vector->type(), std::move(writeFile), *rootPool_, options);
+        vector->type(), std::move(writeFile), *rootPool_, writerOptions);
     writer.write(vector);
     writer.close();
 
     auto readFilePtr = std::make_shared<velox::InMemoryReadFile>(file);
-    std::vector<std::string> preloadedOptionalSections = {
+    nimble::TabletReader::Options readerOptions;
+    readerOptions.preloadOptionalSections = {
         std::string(facebook::nimble::kVectorizedStatsSection)};
     auto tablet = facebook::nimble::TabletReader::create(
-        readFilePtr, *leafPool_, preloadedOptionalSections);
+        readFilePtr, leafPool_.get(), readerOptions);
     auto statsSection =
-        tablet->loadOptionalSection(preloadedOptionalSections[0]);
+        tablet->loadOptionalSection(readerOptions.preloadOptionalSections[0]);
     ASSERT_TRUE(statsSection.has_value());
 
     // Use VectorizedFileStats to deserialize the stats payload
@@ -3814,6 +3853,28 @@ TEST_P(VeloxWriterIndexTest, duplicateKeys) {
 
   // Read and verify
   velox::InMemoryReadFile readFile(file);
+
+  // Verify FileLayout for non-empty file with index using FileLayout::create()
+  {
+    auto layout = nimble::FileLayout::create(&readFile, leafPool_.get());
+    EXPECT_EQ(layout.fileSize, file.size());
+    EXPECT_EQ(layout.stripesInfo.size(), kNumBatches);
+    EXPECT_EQ(layout.stripeGroups.size(), 1);
+    EXPECT_EQ(layout.stripeGroups.size(), 1);
+    // With index enabled, should have index groups
+    EXPECT_EQ(layout.indexGroups.size(), 1);
+    // Stripes metadata should be valid
+    EXPECT_GT(layout.stripes.size(), 0);
+    EXPECT_LT(layout.stripes.offset(), layout.postscript.footer.offset());
+    // Index group should be before stripes section
+    EXPECT_LT(layout.indexGroups[0].offset(), layout.stripes.offset());
+    // Per-stripe info
+    EXPECT_EQ(layout.stripesInfo.size(), kNumBatches);
+    for (size_t i = 0; i < layout.stripesInfo.size(); ++i) {
+      EXPECT_EQ(layout.stripesInfo[i].stripeGroupIndex, 0);
+      EXPECT_GT(layout.stripesInfo[i].size, 0);
+    }
+  }
   nimble::VeloxReader reader(&readFile, *leafPool_);
 
   const auto& tablet = reader.tabletReader();
@@ -4094,7 +4155,7 @@ TEST_F(VeloxWriterTest, customPrefixRestartInterval) {
 
     // Read back and verify the restart interval in the key encoding
     velox::InMemoryReadFile readFile(file);
-    auto tablet = nimble::TabletReader::create(&readFile, *leafPool_);
+    auto tablet = nimble::TabletReader::create(&readFile, leafPool_.get(), {});
 
     const auto* index = tablet->index();
     ASSERT_NE(index, nullptr) << "Index must exist";

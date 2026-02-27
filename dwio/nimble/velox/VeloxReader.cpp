@@ -151,9 +151,10 @@ uint64_t NimbleUnit::getIoSize() {
 
 } // namespace
 
-const std::vector<std::string>& VeloxReader::preloadedOptionalSections() {
-  static std::vector<std::string> sections{std::string(kSchemaSection)};
-  return sections;
+TabletReader::Options VeloxReader::defaultTabletReaderOptions() {
+  TabletReader::Options options;
+  options.preloadOptionalSections = {std::string(kSchemaSection)};
+  return options;
 }
 
 VeloxReader::VeloxReader(
@@ -162,11 +163,7 @@ VeloxReader::VeloxReader(
     std::shared_ptr<const velox::dwio::common::ColumnSelector> selector,
     VeloxReadParams params)
     : VeloxReader(
-          TabletReader::create(
-              file,
-              pool,
-              /* preloadOptionalSections */
-              preloadedOptionalSections()),
+          TabletReader::create(file, &pool, defaultTabletReaderOptions()),
           pool,
           std::move(selector),
           std::move(params)) {}
@@ -179,8 +176,8 @@ VeloxReader::VeloxReader(
     : VeloxReader(
           TabletReader::create(
               std::move(file),
-              pool, /* preloadOptionalSections */
-              preloadedOptionalSections()),
+              &pool,
+              defaultTabletReaderOptions()),
           pool,
           std::move(selector),
           std::move(params)) {}

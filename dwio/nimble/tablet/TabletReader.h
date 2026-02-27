@@ -24,10 +24,16 @@
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/index/StripeIndexGroup.h"
 #include "dwio/nimble/index/TabletIndex.h"
+#include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "folly/Synchronized.h"
 #include "folly/io/IOBuf.h"
 #include "velox/common/file/File.h"
+
+namespace facebook::velox::dwio::common {
+class BufferedInput;
+} // namespace facebook::velox::dwio::common
 
 /// The TabletReader class is the on-disk layout for nimble.
 ///
@@ -54,6 +60,8 @@ using MemoryPool = facebook::velox::memory::MemoryPool;
 
 class Postscript {
  public:
+  Postscript() = default;
+
   uint32_t footerSize() const {
     return footerSize_;
   }
@@ -78,9 +86,21 @@ class Postscript {
     return minorVersion_;
   }
 
+  /// Create Postscript from FileLayout (skips checksum which requires file
+  /// read).
+  static Postscript create(const FileLayout& layout);
+
+  /// Parse Postscript from raw bytes read from the end of a nimble file.
   static Postscript parse(std::string_view data);
 
  private:
+  Postscript(
+      uint32_t footerSize,
+      CompressionType footerCompressionType,
+      ChecksumType checksumType,
+      uint16_t majorVersion,
+      uint16_t minorVersion);
+
   uint32_t footerSize_;
   CompressionType footerCompressionType_;
   uint64_t checksum_;
@@ -229,6 +249,28 @@ using index::TabletIndex;
 ///  the stream identifier provided in the input vector.
 class TabletReader {
  public:
+  /// Options for configuring TabletReader behavior.
+  struct Options {
+    /// Precomputed file layout from external coordinator.
+    /// When provided, skips the discovery phase and uses this layout directly.
+    std::optional<FileLayout> fileLayout;
+
+    /// Controls footer IO behavior:
+    /// - Without fileLayout: speculative tail read size (0 = adaptive mode
+    ///   that reads postscript first, then exact footer size).
+    /// - With fileLayout: memory budget for coalesced metadata reads.
+    /// Default is 8MB (same as kInitialFooterSize).
+    uint64_t footerIoBytes{8 * 1024 * 1024};
+
+    /// Optional sections to eagerly load during initialization.
+    std::vector<std::string> preloadOptionalSections;
+
+    /// Non-owning pointer for cached reads. When provided, metadata reads
+    /// go through BufferedInput for cache integration. Owned by caller
+    /// (typically nimble::ReaderBase).
+    velox::dwio::common::BufferedInput* bufferedInput{nullptr};
+  };
+
   /// Compute checksum from the beginning of the file all the way to footer
   /// size and footer compression type field in postscript.
   /// chunkSize means each time reads up to chunkSize, until all data are
@@ -240,18 +282,16 @@ class TabletReader {
 
   static std::shared_ptr<TabletReader> create(
       std::shared_ptr<velox::ReadFile> readFile,
-      MemoryPool& pool,
-      const std::vector<std::string>& preloadOptionalSections = {});
+      MemoryPool* pool,
+      const Options& options);
 
-  static std::shared_ptr<TabletReader> create(
-      velox::ReadFile* readFile,
-      MemoryPool& pool,
-      const std::vector<std::string>& preloadOptionalSections = {});
+  static std::shared_ptr<TabletReader>
+  create(velox::ReadFile* readFile, MemoryPool* pool, const Options& options);
 
   /// For testing use
   static std::shared_ptr<TabletReader> testingCreate(
       std::shared_ptr<velox::ReadFile> readFile,
-      MemoryPool& pool,
+      MemoryPool* pool,
       Postscript postscript,
       std::string_view footer,
       std::string_view stripes,
@@ -365,7 +405,7 @@ class TabletReader {
       velox::ReadFile* readFile,
       std::shared_ptr<velox::ReadFile> ownedReadFile,
       MemoryPool& pool,
-      const std::vector<std::string>& preloadOptionalSections = {});
+      const Options& options);
 
   /// For testing use
   TabletReader(
@@ -377,11 +417,21 @@ class TabletReader {
       std::string_view stripeGroup,
       std::unordered_map<std::string, std::string_view> optionalSections = {});
 
-  void init(const std::vector<std::string>& preloadOptionalSections);
+  void init(const Options& options);
+
+  // Initialize from precomputed file layout - skips discovery phase.
+  void initFromFileLayout(const Options& options);
 
   void initPostScript(const folly::IOBuf& footerIoBuf, uint64_t footerIoSize);
 
   void initFooter(const folly::IOBuf& footerIoBuf, uint64_t footerIoSize);
+
+  void initPostScriptAndFooter(
+      uint64_t fileSize,
+      uint64_t footerIoBytes,
+      folly::IOBuf& footerIoBuf,
+      uint64_t& footerIoSize,
+      uint64_t& footerIoOffset);
 
   uint32_t stripeGroupIndex(uint32_t stripeIndex) const;
 
@@ -400,9 +450,10 @@ class TabletReader {
       uint32_t stripeGroupIndex) const;
 
   void initStripes(
-      const folly::IOBuf& footerIoBuf,
-      uint64_t footerIoSize,
-      uint64_t fileSize);
+      uint64_t fileSize,
+      folly::IOBuf& footerIoBuf,
+      uint64_t& footerIoSize,
+      uint64_t& footerIoOffset);
 
   // Used by test init path.
   void initStripes();
@@ -424,6 +475,10 @@ class TabletReader {
   // Optional owned file pointer. When provided, ensures the file remains
   // valid throughout TabletReader's lifetime.
   const std::shared_ptr<velox::ReadFile> ownedFile_;
+  // Optional BufferedInput for cached reads (non-owning, owned by caller).
+  // TODO: Integrate BufferedInput for metadata IO when set, enabling cache
+  // integration for footer, stripes, and stripe group reads.
+  velox::dwio::common::BufferedInput* const bufferedInput_;
 
   Postscript ps_;
   std::unique_ptr<MetadataBuffer> footer_;

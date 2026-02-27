@@ -19,6 +19,7 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Checksum.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "dwio/nimble/tablet/TabletIndexWriter.h"
@@ -125,6 +126,12 @@ class TabletWriter {
   }
 
  private:
+  // Writer state.
+  enum class State {
+    kActive, // Writer is active and can accept data.
+    kClosed, // Writer has been closed and no more data can be written.
+  };
+
   TabletWriter(
       velox::WriteFile* file,
       velox::memory::MemoryPool& pool,
@@ -132,6 +139,12 @@ class TabletWriter {
 
   inline bool hasIndex() const {
     return indexWriter_ != nullptr;
+  }
+
+  // Checks that writer is not closed and throws if it is.
+  inline void checkNotClosed() const {
+    NIMBLE_USER_CHECK(
+        state_ == State::kActive, "TabletWriter is already closed.");
   }
 
   // Write metadata entry to file
@@ -209,6 +222,9 @@ class TabletWriter {
   std::vector<MetadataSection> stripeGroups_;
   // Optional sections
   std::unordered_map<std::string, MetadataSection> optionalSections_;
+
+  // Writer state.
+  State state_{State::kActive};
 };
 
 } // namespace facebook::nimble
