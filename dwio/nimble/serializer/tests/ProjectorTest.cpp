@@ -1567,10 +1567,7 @@ TEST_F(ProjectorTest, projectWithUpdatedNestedRowType) {
   });
 
   const int numRows = 3;
-  std::vector<int32_t> idVals;
-  for (int i = 0; i < numRows; ++i) {
-    idVals.emplace_back(i);
-  }
+  std::vector<int32_t> idVals = {0, 1, 2};
   auto ids = makeIntVector(idVals);
 
   // Create map with nested row values.

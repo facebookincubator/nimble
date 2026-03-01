@@ -167,6 +167,14 @@ class RowType : public Type {
   const std::shared_ptr<const Type>& childAt(size_t index) const;
   const std::string& nameAt(size_t index) const;
 
+  const std::vector<std::string>& names() const {
+    return names_;
+  }
+
+  const std::vector<std::shared_ptr<const Type>>& children() const {
+    return children_;
+  }
+
   /// Finds a child by name.
   /// @return Child index if found, std::nullopt otherwise.
   std::optional<size_t> findChild(std::string_view name) const;
