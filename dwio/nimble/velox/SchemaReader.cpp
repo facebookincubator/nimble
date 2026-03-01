@@ -265,6 +265,14 @@ const std::string& RowType::nameAt(size_t index) const {
   return names_[index];
 }
 
+std::optional<size_t> RowType::findChild(std::string_view name) const {
+  const auto it = std::find(names_.begin(), names_.end(), name);
+  if (it == names_.end()) {
+    return std::nullopt;
+  }
+  return it - names_.begin();
+}
+
 FlatMapType::FlatMapType(
     StreamDescriptor nullsDescriptor,
     ScalarKind keyScalarKind,
@@ -311,6 +319,14 @@ const std::shared_ptr<const Type>& FlatMapType::childAt(size_t index) const {
 const std::string& FlatMapType::nameAt(size_t index) const {
   NIMBLE_CHECK_LT(index, names_.size(), "Index out of range.");
   return names_[index];
+}
+
+std::optional<size_t> FlatMapType::findChild(std::string_view name) const {
+  const auto it = std::find(names_.begin(), names_.end(), name);
+  if (it == names_.end()) {
+    return std::nullopt;
+  }
+  return it - names_.begin();
 }
 
 ArrayWithOffsetsType::ArrayWithOffsetsType(

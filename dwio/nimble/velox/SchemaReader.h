@@ -17,6 +17,8 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string_view>
 #include <vector>
 
 #include "dwio/nimble/velox/SchemaTypes.h"
@@ -165,6 +167,10 @@ class RowType : public Type {
   const std::shared_ptr<const Type>& childAt(size_t index) const;
   const std::string& nameAt(size_t index) const;
 
+  /// Finds a child by name.
+  /// @return Child index if found, std::nullopt otherwise.
+  std::optional<size_t> findChild(std::string_view name) const;
+
  protected:
   StreamDescriptor nullsDescriptor_;
   std::vector<std::string> names_;
@@ -186,6 +192,10 @@ class FlatMapType : public Type {
   size_t childrenCount() const;
   const std::shared_ptr<const Type>& childAt(size_t index) const;
   const std::string& nameAt(size_t index) const;
+
+  /// Finds a child (key) by name.
+  /// @return Child index if found, std::nullopt otherwise.
+  std::optional<size_t> findChild(std::string_view name) const;
 
  private:
   StreamDescriptor nullsDescriptor_;

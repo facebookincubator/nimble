@@ -615,3 +615,87 @@ TEST(SchemaTests, typeBuilderCheckedContext) {
   const auto* wrongCtx = scalar->context<OtherTypeBuilderContext>();
   EXPECT_EQ(wrongCtx, nullptr);
 }
+
+TEST(SchemaTests, rowTypeFindChild) {
+  nimble::SchemaBuilder builder;
+
+  NIMBLE_SCHEMA(
+      builder,
+      NIMBLE_ROW({
+          {"alpha", NIMBLE_INTEGER()},
+          {"beta", NIMBLE_STRING()},
+          {"gamma", NIMBLE_DOUBLE()},
+      }));
+
+  auto schema = nimble::SchemaReader::getSchema(builder.schemaNodes());
+  ASSERT_TRUE(schema->isRow());
+  const auto& row = schema->asRow();
+
+  // Find existing children.
+  auto alphaIdx = row.findChild("alpha");
+  ASSERT_TRUE(alphaIdx.has_value());
+  EXPECT_EQ(*alphaIdx, 0);
+  EXPECT_EQ(row.nameAt(*alphaIdx), "alpha");
+
+  auto betaIdx = row.findChild("beta");
+  ASSERT_TRUE(betaIdx.has_value());
+  EXPECT_EQ(*betaIdx, 1);
+  EXPECT_EQ(row.nameAt(*betaIdx), "beta");
+
+  auto gammaIdx = row.findChild("gamma");
+  ASSERT_TRUE(gammaIdx.has_value());
+  EXPECT_EQ(*gammaIdx, 2);
+  EXPECT_EQ(row.nameAt(*gammaIdx), "gamma");
+
+  // Non-existent child returns nullopt.
+  auto notFound = row.findChild("nonexistent");
+  EXPECT_FALSE(notFound.has_value());
+
+  auto empty = row.findChild("");
+  EXPECT_FALSE(empty.has_value());
+}
+
+TEST(SchemaTests, flatMapTypeFindChild) {
+  nimble::SchemaBuilder builder;
+  nimble::test::FlatMapChildAdder fm;
+
+  NIMBLE_SCHEMA(
+      builder,
+      NIMBLE_ROW({
+          {"flatmap", NIMBLE_FLATMAP(String, NIMBLE_INTEGER(), fm)},
+      }));
+
+  // Add keys to the flat map.
+  fm.addChild("key_one");
+  fm.addChild("key_two");
+  fm.addChild("key_three");
+
+  auto schema = nimble::SchemaReader::getSchema(builder.schemaNodes());
+  ASSERT_TRUE(schema->isRow());
+  const auto& row = schema->asRow();
+  ASSERT_TRUE(row.childAt(0)->isFlatMap());
+  const auto& flatMap = row.childAt(0)->asFlatMap();
+
+  // Find existing keys.
+  auto keyOneIdx = flatMap.findChild("key_one");
+  ASSERT_TRUE(keyOneIdx.has_value());
+  EXPECT_EQ(*keyOneIdx, 0);
+  EXPECT_EQ(flatMap.nameAt(*keyOneIdx), "key_one");
+
+  auto keyTwoIdx = flatMap.findChild("key_two");
+  ASSERT_TRUE(keyTwoIdx.has_value());
+  EXPECT_EQ(*keyTwoIdx, 1);
+  EXPECT_EQ(flatMap.nameAt(*keyTwoIdx), "key_two");
+
+  auto keyThreeIdx = flatMap.findChild("key_three");
+  ASSERT_TRUE(keyThreeIdx.has_value());
+  EXPECT_EQ(*keyThreeIdx, 2);
+  EXPECT_EQ(flatMap.nameAt(*keyThreeIdx), "key_three");
+
+  // Non-existent key returns nullopt.
+  auto notFound = flatMap.findChild("nonexistent_key");
+  EXPECT_FALSE(notFound.has_value());
+
+  auto empty = flatMap.findChild("");
+  EXPECT_FALSE(empty.has_value());
+}
