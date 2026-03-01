@@ -653,6 +653,19 @@ TEST(SchemaTests, rowTypeFindChild) {
 
   auto empty = row.findChild("");
   EXPECT_FALSE(empty.has_value());
+
+  // Verify names() and children() accessors.
+  const auto& names = row.names();
+  ASSERT_EQ(names.size(), 3);
+  EXPECT_EQ(names[0], "alpha");
+  EXPECT_EQ(names[1], "beta");
+  EXPECT_EQ(names[2], "gamma");
+
+  const auto& children = row.children();
+  ASSERT_EQ(children.size(), 3);
+  EXPECT_EQ(children[0].get(), row.childAt(0).get());
+  EXPECT_EQ(children[1].get(), row.childAt(1).get());
+  EXPECT_EQ(children[2].get(), row.childAt(2).get());
 }
 
 TEST(SchemaTests, flatMapTypeFindChild) {

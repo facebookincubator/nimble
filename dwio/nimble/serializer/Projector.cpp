@@ -48,18 +48,14 @@ std::shared_ptr<const Type> updateRowColumnNames(
   newChildren.reserve(nimbleRow.childrenCount());
 
   bool changed{false};
-  const size_t minChildren =
+  const auto minChildren =
       std::min<size_t>(veloxRow.size(), nimbleRow.childrenCount());
   for (size_t i = 0; i < minChildren; ++i) {
     newNames.emplace_back(veloxRow.nameOf(i));
-    if (newNames.back() != nimbleRow.nameAt(i)) {
-      changed = true;
-    }
+    changed |= (newNames.back() != nimbleRow.nameAt(i));
     auto newChild =
         updateColumnNames(nimbleRow.childAt(i), *veloxRow.childAt(i));
-    if (newChild != nimbleRow.childAt(i)) {
-      changed = true;
-    }
+    changed |= (newChild != nimbleRow.childAt(i));
     newChildren.emplace_back(std::move(newChild));
   }
 
@@ -68,10 +64,14 @@ std::shared_ptr<const Type> updateRowColumnNames(
   }
 
   // Keep remaining children as-is (file has more columns than table).
-  for (size_t i = minChildren; i < nimbleRow.childrenCount(); ++i) {
-    newNames.emplace_back(nimbleRow.nameAt(i));
-    newChildren.emplace_back(nimbleRow.childAt(i));
-  }
+  newNames.insert(
+      newNames.end(),
+      nimbleRow.names().begin() + minChildren,
+      nimbleRow.names().end());
+  newChildren.insert(
+      newChildren.end(),
+      nimbleRow.children().begin() + minChildren,
+      nimbleRow.children().end());
   return std::make_shared<RowType>(
       nimbleRow.nullsDescriptor(), std::move(newNames), std::move(newChildren));
 }
@@ -81,23 +81,26 @@ std::shared_ptr<const Type> updateRowColumnNames(
 std::shared_ptr<const Type> updateArrayColumnNames(
     const std::shared_ptr<const Type>& inputType,
     const velox::ArrayType& veloxArray) {
-  const auto isArrayWithOffsets = inputType->kind() == Kind::ArrayWithOffsets;
-  const auto& elements = isArrayWithOffsets
-      ? inputType->asArrayWithOffsets().elements()
-      : inputType->asArray().elements();
-  auto newElements = updateColumnNames(elements, *veloxArray.elementType());
-  if (newElements == elements) {
-    return inputType;
-  }
-  if (isArrayWithOffsets) {
+  if (inputType->kind() == Kind::ArrayWithOffsets) {
     const auto& array = inputType->asArrayWithOffsets();
+    auto newElements =
+        updateColumnNames(array.elements(), *veloxArray.elementType());
+    if (newElements == array.elements()) {
+      return inputType;
+    }
     return std::make_shared<ArrayWithOffsetsType>(
         array.offsetsDescriptor(),
         array.lengthsDescriptor(),
         std::move(newElements));
   }
+  const auto& array = inputType->asArray();
+  auto newElements =
+      updateColumnNames(array.elements(), *veloxArray.elementType());
+  if (newElements == array.elements()) {
+    return inputType;
+  }
   return std::make_shared<ArrayType>(
-      inputType->asArray().lengthsDescriptor(), std::move(newElements));
+      array.lengthsDescriptor(), std::move(newElements));
 }
 
 // Updates column names within FlatMap value types.
@@ -112,9 +115,7 @@ std::shared_ptr<const Type> updateFlatMapColumnNames(
   for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
     auto newChild =
         updateColumnNames(flatMap.childAt(i), *veloxMap.valueType());
-    if (newChild != flatMap.childAt(i)) {
-      changed = true;
-    }
+    changed |= (newChild != flatMap.childAt(i));
     newChildren.emplace_back(std::move(newChild));
   }
   if (!changed) {
@@ -127,10 +128,9 @@ std::shared_ptr<const Type> updateFlatMapColumnNames(
   inMapDescriptors.reserve(flatMap.childrenCount());
   for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
     newNames.emplace_back(flatMap.nameAt(i));
+    const auto& desc = flatMap.inMapDescriptorAt(i);
     inMapDescriptors.emplace_back(
-        std::make_unique<StreamDescriptor>(
-            flatMap.inMapDescriptorAt(i).offset(),
-            flatMap.inMapDescriptorAt(i).scalarKind()));
+        std::make_unique<StreamDescriptor>(desc.offset(), desc.scalarKind()));
   }
   return std::make_shared<FlatMapType>(
       flatMap.nullsDescriptor(),
@@ -144,30 +144,35 @@ std::shared_ptr<const Type> updateFlatMapColumnNames(
 std::shared_ptr<const Type> updateMapColumnNames(
     const std::shared_ptr<const Type>& inputType,
     const velox::MapType& veloxMap) {
-  NIMBLE_CHECK_NE(inputType->kind(), Kind::FlatMap);
-  const auto isSlidingWindow = inputType->kind() == Kind::SlidingWindowMap;
-  const auto& keys = isSlidingWindow ? inputType->asSlidingWindowMap().keys()
-                                     : inputType->asMap().keys();
-  const auto& values = isSlidingWindow
-      ? inputType->asSlidingWindowMap().values()
-      : inputType->asMap().values();
-  auto newKeys = updateColumnNames(keys, *veloxMap.keyType());
-  auto newValues = updateColumnNames(values, *veloxMap.valueType());
-  if (newKeys == keys && newValues == values) {
-    return inputType;
+  switch (inputType->kind()) {
+    case Kind::SlidingWindowMap: {
+      const auto& map = inputType->asSlidingWindowMap();
+      auto newKeys = updateColumnNames(map.keys(), *veloxMap.keyType());
+      auto newValues = updateColumnNames(map.values(), *veloxMap.valueType());
+      if (newKeys == map.keys() && newValues == map.values()) {
+        return inputType;
+      }
+      return std::make_shared<SlidingWindowMapType>(
+          map.offsetsDescriptor(),
+          map.lengthsDescriptor(),
+          std::move(newKeys),
+          std::move(newValues));
+    }
+    case Kind::Map: {
+      const auto& map = inputType->asMap();
+      auto newKeys = updateColumnNames(map.keys(), *veloxMap.keyType());
+      auto newValues = updateColumnNames(map.values(), *veloxMap.valueType());
+      if (newKeys == map.keys() && newValues == map.values()) {
+        return inputType;
+      }
+      return std::make_shared<MapType>(
+          map.lengthsDescriptor(), std::move(newKeys), std::move(newValues));
+    }
+    default:
+      NIMBLE_UNREACHABLE(
+          "updateMapColumnNames called with unsupported kind: {}",
+          inputType->kind());
   }
-  if (isSlidingWindow) {
-    const auto& map = inputType->asSlidingWindowMap();
-    return std::make_shared<SlidingWindowMapType>(
-        map.offsetsDescriptor(),
-        map.lengthsDescriptor(),
-        std::move(newKeys),
-        std::move(newValues));
-  }
-  return std::make_shared<MapType>(
-      inputType->asMap().lengthsDescriptor(),
-      std::move(newKeys),
-      std::move(newValues));
 }
 
 // Updates column names in nimble schema to match projectType (velox) using
@@ -176,22 +181,19 @@ std::shared_ptr<const Type> updateMapColumnNames(
 std::shared_ptr<const Type> updateColumnNames(
     const std::shared_ptr<const Type>& inputType,
     const velox::Type& projectType) {
-  if (projectType.isPrimitiveType()) {
-    return inputType;
+  switch (projectType.kind()) {
+    case velox::TypeKind::ROW:
+      return updateRowColumnNames(inputType, projectType.asRow());
+    case velox::TypeKind::ARRAY:
+      return updateArrayColumnNames(inputType, projectType.asArray());
+    case velox::TypeKind::MAP:
+      if (inputType->isFlatMap()) {
+        return updateFlatMapColumnNames(inputType, projectType.asMap());
+      }
+      return updateMapColumnNames(inputType, projectType.asMap());
+    default:
+      return inputType;
   }
-  if (projectType.isRow()) {
-    return updateRowColumnNames(inputType, projectType.asRow());
-  }
-  if (projectType.isArray()) {
-    return updateArrayColumnNames(inputType, projectType.asArray());
-  }
-  if (projectType.isMap()) {
-    if (inputType->isFlatMap()) {
-      return updateFlatMapColumnNames(inputType, projectType.asMap());
-    }
-    return updateMapColumnNames(inputType, projectType.asMap());
-  }
-  return inputType;
 }
 
 // Tracks which children are selected at each RowType/FlatMapType.
