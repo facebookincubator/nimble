@@ -82,7 +82,7 @@ class FieldReader {
   virtual void next(
       uint32_t count,
       velox::VectorPtr& output,
-      const bits::Bitmap* scatterBitmap = nullptr) = 0;
+      const velox::bits::Bitmap* scatterBitmap = nullptr) = 0;
 
   virtual void skip(uint32_t count) = 0;
 

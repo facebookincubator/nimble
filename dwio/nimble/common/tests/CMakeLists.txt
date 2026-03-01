@@ -37,6 +37,7 @@ add_test(nimble_common_tests nimble_common_tests)
 target_link_libraries(
   nimble_common_tests
   nimble_common
+  velox_common_base
   gtest
   gtest_main
   glog::glog

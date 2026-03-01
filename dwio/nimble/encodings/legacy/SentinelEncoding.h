@@ -16,7 +16,6 @@
 #pragma once
 
 #include <span>
-#include "dwio/nimble/common/Bits.h"
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/FixedBitArray.h"
@@ -63,7 +62,7 @@ class SentinelEncoding final
       uint32_t rowCount,
       void* buffer,
       std::function<void*()> nulls,
-      const bits::Bitmap* scatterBitmap = nullptr,
+      const velox::bits::Bitmap* scatterBitmap = nullptr,
       uint32_t offset = 0) final;
 
   // // Our signature here for estimate size and serialize are a little
@@ -158,7 +157,7 @@ uint32_t SentinelEncoding<T>::materializeNullable(
     uint32_t rowCount,
     void* buffer,
     std::function<void*()> nulls,
-    const bits::Bitmap* scatterBitmap,
+    const velox::bits::Bitmap* scatterBitmap,
     uint32_t offset) {
   if (offset > 0) {
     buffer = static_cast<physicalType*>(buffer) + offset;
@@ -169,7 +168,7 @@ uint32_t SentinelEncoding<T>::materializeNullable(
   const physicalType localSentinel = sentinelValue_;
   auto scatterCount = scatterBitmap ? scatterBitmap->size() - offset : rowCount;
   void* nullBitmap = nulls();
-  bits::BitmapBuilder nullBits{nullBitmap, offset + scatterCount};
+  velox::bits::BitmapBuilder nullBits{nullBitmap, offset + scatterCount};
   nullBits.clear(offset, offset + scatterCount);
 
   uint32_t nonNullCount = 0;

@@ -17,8 +17,8 @@
 
 #include <cstdint>
 #include <functional>
-#include "dwio/nimble/common/Bits.h"
 #include "velox/buffer/Buffer.h"
+#include "velox/common/base/BitUtil.h"
 
 namespace facebook::nimble {
 
@@ -36,7 +36,7 @@ class Decoder {
       void* output,
       std::vector<velox::BufferPtr>& stringBuffers,
       std::function<void*()> nulls = nullptr,
-      const bits::Bitmap* scatterBitmap = nullptr) = 0;
+      const velox::bits::Bitmap* scatterBitmap = nullptr) = 0;
 
   virtual void skip(uint32_t count) = 0;
 

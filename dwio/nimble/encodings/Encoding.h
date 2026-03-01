@@ -15,11 +15,11 @@
  */
 #pragma once
 
-#include "dwio/nimble/common/Bits.h"
 #include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "velox/common/base/BitUtil.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/dwio/common/ColumnVisitors.h"
 
@@ -180,7 +180,7 @@ class Encoding {
       uint32_t rowCount,
       void* buffer,
       std::function<void*()> nulls,
-      const bits::Bitmap* scatterBitmap = nullptr,
+      const velox::bits::Bitmap* scatterBitmap = nullptr,
       uint32_t offset = 0) = 0;
 
   // Read bool values to output buffer as bits.
@@ -267,7 +267,7 @@ class TypedEncoding : public Encoding {
       uint32_t rowCount,
       void* buffer,
       std::function<void*()> nulls,
-      const bits::Bitmap* scatterBitmap,
+      const velox::bits::Bitmap* scatterBitmap,
       uint32_t offset) override {
     // 1. Read X items from the encoding.
     // 2. Spread the items read in #1 into positions in |buffer| where
@@ -291,7 +291,7 @@ class TypedEncoding : public Encoding {
 
     void* nullBitmap = nulls();
 
-    bits::BitmapBuilder nullBits{nullBitmap, offset + scatterCount};
+    velox::bits::BitmapBuilder nullBits{nullBitmap, offset + scatterCount};
     nullBits.copy(*scatterBitmap, offset, offset + scatterCount);
 
     // Scatter backward

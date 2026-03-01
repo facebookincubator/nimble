@@ -151,6 +151,7 @@ target_link_libraries(
   nimble_tablet_reader
   nimble_common
   nimble_encodings_legacy
+  velox_common_base
   Folly::folly
 )
 

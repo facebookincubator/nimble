@@ -18,10 +18,10 @@
 #include <glog/logging.h>
 #include <algorithm>
 #include <optional>
-#include "dwio/nimble/common/Bits.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
+#include "velox/common/base/BitUtil.h"
 
 namespace facebook::nimble {
 namespace detail {
@@ -432,11 +432,11 @@ struct EncodingSizeEstimation {
       // This is to match a (temporary) hack we added to FixedBitWidthEncoding,
       // to mitigate compression issue on non-rounded bit widths. See
       // dwio/nimble/encodings/FixedBitWidthEncoding.h for full details.
-      return bits::bytesRequired(
-          ((bits::bitsRequired(maxValue - minValue) + 7) & ~7) * count);
+      return velox::bits::nbytes(
+          ((velox::bits::bitsRequired(maxValue - minValue) + 7) & ~7) * count);
     } else {
-      return bits::bytesRequired(
-          bits::bitsRequired(maxValue - minValue) * count);
+      return velox::bits::nbytes(
+          velox::bits::bitsRequired(maxValue - minValue) * count);
     }
   }
 };

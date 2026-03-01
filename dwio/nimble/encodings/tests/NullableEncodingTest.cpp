@@ -230,7 +230,11 @@ void checkOutput(
     ASSERT_EQ(data[index], actualData[index]) << index;
   }
   if (hasNulls) {
-    ASSERT_EQ(nimble::bits::getBit(index, actualNulls), nulls[index]) << index;
+    ASSERT_EQ(
+        velox::bits::isBitSet(
+            reinterpret_cast<const uint8_t*>(actualNulls), index),
+        nulls[index])
+        << index;
   }
 }
 
@@ -281,7 +285,7 @@ TYPED_TEST(NullableEncodingTest, ScatteredMaterialize) {
         }
 
         auto newRowCount = scatter.size();
-        auto requiredBytes = nimble::bits::bytesRequired(newRowCount);
+        auto requiredBytes = velox::bits::nbytes(newRowCount);
         // Note: Internally, some bit implementations use word boundaries to
         // efficiently iterate on bitmaps. If the buffer doesn't end on a word
         // boundary, this leads to ASAN buffer overflow (debug builds). So for
@@ -292,7 +296,7 @@ TYPED_TEST(NullableEncodingTest, ScatteredMaterialize) {
         auto scatterPtr = scatterBuffer.reserve(requiredBytes);
         auto nullsPtr = nullsBuffer.reserve(requiredBytes);
         memset(scatterPtr, 0, requiredBytes);
-        nimble::bits::packBitmap(scatter, scatterPtr);
+        velox::bits::packBitmap(scatter, scatterPtr);
 
         nimble::Vector<E> buffer(this->pool_.get(), newRowCount);
 
@@ -305,7 +309,7 @@ TYPED_TEST(NullableEncodingTest, ScatteredMaterialize) {
                         uint32_t scatterOffset = 0,
                         uint32_t expectedOffset = 0) {
           uint32_t expectedRow = 0;
-          nimble::bits::Bitmap bitmap{
+          velox::bits::Bitmap bitmap{
               scatterBitmap, scatterOffset + scatterCount};
           auto nonNullCount = encoding->materializeNullable(
               rowCount,
@@ -327,9 +331,9 @@ TYPED_TEST(NullableEncodingTest, ScatteredMaterialize) {
             if (nonNullCount != scatterCount) {
               ASSERT_EQ(
                   isSet,
-                  nimble::bits::getBit(
-                      i + scatterOffset,
-                      reinterpret_cast<const char*>(nullsBitmap)));
+                  velox::bits::isBitSet(
+                      reinterpret_cast<const uint8_t*>(nullsBitmap),
+                      i + scatterOffset));
             }
           }
 
@@ -342,8 +346,8 @@ TYPED_TEST(NullableEncodingTest, ScatteredMaterialize) {
         encoding->reset();
         const int firstBlock = newRowCount / 2;
 
-        auto firstBlockSetBits =
-            nimble::bits::countSetBits(0, firstBlock, scatterPtr);
+        auto firstBlockSetBits = velox::bits::countBits(
+            reinterpret_cast<const uint64_t*>(scatterPtr), 0, firstBlock);
 
         // Test reading first half of the data
         test(
@@ -353,7 +357,10 @@ TYPED_TEST(NullableEncodingTest, ScatteredMaterialize) {
 
         // Test reading second half of the data
         test(
-            nimble::bits::countSetBits(firstBlock, secondBlock, scatterPtr),
+            velox::bits::countBits(
+                reinterpret_cast<const uint64_t*>(scatterPtr),
+                firstBlock,
+                firstBlock + secondBlock),
             buffer.data(),
             nullsPtr,
             secondBlock,

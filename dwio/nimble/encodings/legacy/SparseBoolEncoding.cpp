@@ -17,7 +17,6 @@
 
 #include "dwio/nimble/encodings/legacy/SparseBoolEncoding.h"
 
-#include "dwio/nimble/common/Bits.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/Compression.h"

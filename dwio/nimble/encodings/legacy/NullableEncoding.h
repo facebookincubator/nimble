@@ -16,7 +16,6 @@
 #pragma once
 
 #include <span>
-#include "dwio/nimble/common/Bits.h"
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/EncodingType.h"
@@ -62,7 +61,7 @@ class NullableEncoding final
       uint32_t rowCount,
       void* buffer,
       std::function<void*()> nulls,
-      const bits::Bitmap* scatterBitmap = nullptr,
+      const velox::bits::Bitmap* scatterBitmap = nullptr,
       uint32_t offset = 0) final;
 
   template <typename DecoderVisitor>
@@ -183,7 +182,7 @@ uint32_t NullableEncoding<T>::materializeNullable(
     uint32_t rowCount,
     void* buffer,
     std::function<void*()> nulls,
-    const bits::Bitmap* scatterBitmap,
+    const velox::bits::Bitmap* scatterBitmap,
     uint32_t offset) {
   nullBuffer_.resize(rowCount);
   nulls_->materialize(rowCount, nullBuffer_.data());
@@ -199,7 +198,7 @@ uint32_t NullableEncoding<T>::materializeNullable(
       scatterBitmap ? scatterBitmap->size() - offset : rowCount;
   if (nonNullCount != scatterSize) {
     void* nullBitmap = nulls();
-    bits::BitmapBuilder nullBits{nullBitmap, offset + scatterSize};
+    velox::bits::BitmapBuilder nullBits{nullBitmap, offset + scatterSize};
     nullBits.clear(offset, offset + scatterSize);
 
     uint32_t pos = offset + scatterSize - 1;

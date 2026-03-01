@@ -33,6 +33,7 @@ add_library(
 
 target_link_libraries(
   nimble_encodings
+  velox_common_base
   Folly::folly
   absl::flat_hash_map
   protobuf::libprotobuf
