@@ -42,7 +42,9 @@ T randomValue(RNG&& rng, nimble::Buffer& buffer) {
     auto data = buffer.reserve(size);
     for (auto i = 0; i < size; ++i) {
       data[i] = static_cast<char>(folly::Random::rand32(
-          std::numeric_limits<uint8_t>::max(), std::forward<RNG>(rng)));
+          std::numeric_limits<uint8_t>::max(),
+          // NOLINTNEXTLINE(bugprone-use-after-move)
+          std::forward<RNG>(rng)));
     }
     return std::string_view{data, size};
   } else {
@@ -61,6 +63,7 @@ generateRandomData(RNG&& rng, nimble::Buffer& buffer, int count) {
 
   for (int i = 0; i < count; ++i) {
     data.push_back(
+        // NOLINTNEXTLINE(bugprone-use-after-move)
         randomValue<T, RNG, SmallNumbers>(std::forward<RNG>(rng), buffer));
   }
 
@@ -91,9 +94,10 @@ generateFixedBitWidthData(RNG&& rng, nimble::Buffer& buffer, int count) {
 
   auto bits = 4 * sizeof(T) - 1;
   physicalType mask = (1 << bits) - 1u;
-  LOG(INFO) << nimble::bits::printBits(mask);
+  LOG(INFO) << velox::bits::printBits(mask);
   for (int i = 0; i < count; ++i) {
     physicalType value =
+        // NOLINTNEXTLINE(bugprone-use-after-move)
         randomValue<physicalType>(std::forward<RNG>(rng), buffer) & mask;
     value = value ? value : 1;
     data.push_back(value << bits);
@@ -263,7 +267,9 @@ void printScalarData(
     nulls.fill(0xff);
   }
   for (uint32_t i = 0; i < rowCount; ++i) {
-    if (stream.isNullable() && nimble::bits::getBit(i, nulls.data()) == 0) {
+    if (stream.isNullable() &&
+        velox::bits::isBitSet(
+            reinterpret_cast<const uint8_t*>(nulls.data()), i) == 0) {
       ostream << "NULL" << std::endl;
     } else {
       ostream << folly::to<std::string>(buffer[i])

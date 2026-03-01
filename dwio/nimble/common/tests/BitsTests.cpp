@@ -15,10 +15,10 @@
  */
 #include <glog/logging.h>
 #include <gtest/gtest.h>
-#include "dwio/nimble/common/Bits.h"
 #include "folly/Random.h"
+#include "velox/common/base/BitUtil.h"
 
-using namespace facebook::nimble::bits;
+using namespace facebook::velox::bits;
 
 template <typename T>
 void repeat(int32_t times, const T& t) {
@@ -35,11 +35,14 @@ TEST(BitsTests, setBits) {
     auto size = folly::Random::rand32(64 * 1024, rng) + 1;
     auto begin = folly::Random::rand32(size, rng);
     auto end = folly::Random::rand32(begin, size, rng);
-    std::vector<char> bitmap(bucketsRequired(size, 64) * 8, 0);
-    setBits(begin, end, bitmap.data());
+    std::vector<char> bitmap(divRoundUp(size, 64) * 8, 0);
+    fillBits(reinterpret_cast<uint64_t*>(bitmap.data()), begin, end, true);
     for (auto i = 0; i < size; ++i) {
       bool expected = (i >= begin && i < end);
-      EXPECT_EQ(expected, getBit(i, bitmap.data())) << i;
+      EXPECT_EQ(
+          expected,
+          isBitSet(reinterpret_cast<const uint8_t*>(bitmap.data()), i))
+          << i;
     }
   });
 }
@@ -49,11 +52,14 @@ TEST(BitsTests, clearBits) {
     auto size = folly::Random::rand32(64 * 1024, rng) + 1;
     auto begin = folly::Random::rand32(size, rng);
     auto end = folly::Random::rand32(begin, size, rng);
-    std::vector<char> bitmap(bucketsRequired(size, 64) * 8, 0xff);
-    clearBits(begin, end, bitmap.data());
+    std::vector<char> bitmap(divRoundUp(size, 64) * 8, 0xff);
+    fillBits(reinterpret_cast<uint64_t*>(bitmap.data()), begin, end, false);
     for (auto i = 0; i < size; ++i) {
       bool expected = (i < begin || i >= end);
-      EXPECT_EQ(expected, getBit(i, bitmap.data())) << i;
+      EXPECT_EQ(
+          expected,
+          isBitSet(reinterpret_cast<const uint8_t*>(bitmap.data()), i))
+          << i;
     }
   });
 }
@@ -61,15 +67,15 @@ TEST(BitsTests, clearBits) {
 TEST(BitsTests, findSetBit) {
   repeat(10, [](auto& rng) {
     auto size = folly::Random::rand32(64 * 1024, rng) + 1;
-    std::vector<char> bitmap(bucketsRequired(size, 64) * 8, 0);
+    std::vector<char> bitmap(divRoundUp(size, 64) * 8, 0);
     auto begin = folly::Random::rand32(size, rng);
     auto n = (size - begin) / 3;
-    auto setBits = 0;
+    auto numSetBits = 0;
     auto pos = size;
     for (auto i = begin; i < size; ++i) {
       if (folly::Random::oneIn(3, rng)) {
-        setBit(i, bitmap.data());
-        if (++setBits == n) {
+        setBit(reinterpret_cast<uint8_t*>(bitmap.data()), i);
+        if (++numSetBits == n) {
           pos = i;
         }
       }
@@ -84,19 +90,22 @@ TEST(BitsTests, copy) {
     auto begin = folly::Random::rand32(size, rng);
     auto end = folly::Random::oneIn(2) ? folly::Random::rand32(begin, size, rng)
                                        : size;
-    std::vector<char> src(bucketsRequired(size, 64) * 8, 0);
+    std::vector<char> src(divRoundUp(size, 64) * 8, 0);
     std::vector<char> dst(src.size(), 0);
     for (auto i = begin; i < end; ++i) {
-      maybeSetBit(i, src.data(), folly::Random::oneIn(2, rng));
+      maybeSetBit(src.data(), i, folly::Random::oneIn(2, rng));
     }
-    Bitmap srcBitmap{src.data(), size};
-    BitmapBuilder dstBitmap{dst.data(), size};
+    Bitmap srcBitmap{src.data(), static_cast<uint32_t>(size)};
+    BitmapBuilder dstBitmap{dst.data(), static_cast<uint32_t>(size)};
     dstBitmap.copy(srcBitmap, begin, end);
     for (auto i = 0; i < end; ++i) {
       if (i < begin) {
-        EXPECT_FALSE(getBit(i, dst.data()));
+        EXPECT_FALSE(isBitSet(reinterpret_cast<const uint8_t*>(dst.data()), i));
       } else {
-        EXPECT_EQ(getBit(i, src.data()), getBit(i, dst.data())) << i;
+        EXPECT_EQ(
+            isBitSet(reinterpret_cast<const uint8_t*>(src.data()), i),
+            isBitSet(reinterpret_cast<const uint8_t*>(dst.data()), i))
+            << i;
       }
     }
   });

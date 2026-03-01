@@ -244,7 +244,7 @@ void test(
           decoder.skip(outputSize);
         } else {
           std::vector<uint8_t> scatterMap;
-          std::optional<nimble::bits::Bitmap> scatterBitmap;
+          std::optional<velox::bits::Bitmap> scatterBitmap;
           auto scatterSize = outputSize;
           if (scatter) {
             scatterSize =
@@ -254,13 +254,15 @@ void test(
             std::iota(indices.begin(), indices.end(), 0);
             std::shuffle(indices.begin(), indices.end(), rng);
             for (auto i = 0; i < outputSize; ++i) {
-              nimble::bits::setBit(
-                  indices[i], reinterpret_cast<char*>(scatterMap.data()));
+              velox::bits::setBit(
+                  reinterpret_cast<uint8_t*>(scatterMap.data()), indices[i]);
             }
             for (auto i = 0; i < scatterSize; ++i) {
               LOG(INFO) << "Scatter[" << i << "]: "
-                        << nimble::bits::getBit(
-                               i, reinterpret_cast<char*>(scatterMap.data()));
+                        << velox::bits::isBitSet(
+                               reinterpret_cast<const uint8_t*>(
+                                   scatterMap.data()),
+                               i);
             }
             scatterBitmap.emplace(scatterMap.data(), scatterSize);
           }
@@ -289,10 +291,10 @@ void test(
             if (nonNullCount != scatterSize || (outputSize == 0 && scatter)) {
               EXPECT_EQ(1, count);
               EXPECT_EQ(
-                  nimble::bits::countSetBits(
+                  velox::bits::countBits(
+                      reinterpret_cast<const uint64_t*>(outputNulls.data()),
                       0,
-                      scatterSize,
-                      reinterpret_cast<const char*>(outputNulls.data())),
+                      scatterSize),
                   nonNullCount);
             } else {
               EXPECT_EQ(0, count);
@@ -307,16 +309,18 @@ void test(
               if (scatter) {
                 size_t scatterOffset = 0;
                 for (auto i = 0; i < scatterSize; ++i) {
-                  if (!nimble::bits::getBit(
-                          i,
-                          reinterpret_cast<const char*>(scatterMap.data()))) {
+                  if (!velox::bits::isBitSet(
+                          reinterpret_cast<const uint8_t*>(scatterMap.data()),
+                          i)) {
                     EXPECT_FALSE(
-                        nimble::bits::getBit(
-                            i,
-                            reinterpret_cast<const char*>(outputNulls.data())));
+                        velox::bits::isBitSet(
+                            reinterpret_cast<const uint8_t*>(
+                                outputNulls.data()),
+                            i));
                   } else {
-                    const auto isNotNull = nimble::bits::getBit(
-                        i, reinterpret_cast<const char*>(outputNulls.data()));
+                    const auto isNotNull = velox::bits::isBitSet(
+                        reinterpret_cast<const uint8_t*>(outputNulls.data()),
+                        i);
                     EXPECT_EQ(
                         getNullValue(data, nulls, offset + scatterOffset),
                         isNotNull)
@@ -333,8 +337,8 @@ void test(
                 }
               } else {
                 for (auto i = 0; i < scatterSize; ++i) {
-                  const auto isNotNull = nimble::bits::getBit(
-                      i, reinterpret_cast<const char*>(outputNulls.data()));
+                  const auto isNotNull = velox::bits::isBitSet(
+                      reinterpret_cast<const uint8_t*>(outputNulls.data()), i);
                   EXPECT_EQ(getNullValue(data, nulls, offset + i), isNotNull)
                       << "Index: " << i << ", Offset: " << offset;
                   if (isNotNull) {

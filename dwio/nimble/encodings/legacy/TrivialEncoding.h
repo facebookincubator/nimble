@@ -18,7 +18,6 @@
 #include <numeric>
 #include <span>
 
-#include "dwio/nimble/common/Bits.h"
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/EncodingType.h"
@@ -359,7 +358,10 @@ void TrivialEncoding<bool>::readWithVisitor(
       visitor,
       params,
       [&](auto toSkip) { skip(toSkip); },
-      [&] { return bits::getBit(row_++, bitmap_); });
+      [&] {
+        return velox::bits::isBitSet(
+            reinterpret_cast<const uint8_t*>(bitmap_), row_++);
+      });
 }
 
 } // namespace facebook::nimble::legacy

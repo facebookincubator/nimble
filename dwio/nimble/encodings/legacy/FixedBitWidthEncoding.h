@@ -18,7 +18,6 @@
 #include <span>
 #include <type_traits>
 
-#include "dwio/nimble/common/Bits.h"
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/EncodingType.h"
@@ -180,7 +179,7 @@ std::string_view FixedBitWidthEncoding<T>::encode(
   // 3. Try both bit width and byte width and pick one.
   // 4. etc...
   const int bitsRequired =
-      (bits::bitsRequired(
+      (velox::bits::bitsRequired(
            selection.statistics().max() - selection.statistics().min()) +
        7) &
       ~7;

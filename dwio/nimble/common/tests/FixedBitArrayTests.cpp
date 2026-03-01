@@ -345,7 +345,8 @@ TEST(FixedBitArrayTests, Equals32Random) {
       fixedBitArray.equals32(start, length, equalsValue, equalsBuffer.get());
       for (int i = 0; i < length; ++i) {
         ASSERT_EQ(
-            nimble::bits::getBit(i, equalsBuffer.get()),
+            velox::bits::isBitSet(
+                reinterpret_cast<const uint8_t*>(equalsBuffer.get()), i),
             randomValues[start + i] == equalsValue);
       }
     }

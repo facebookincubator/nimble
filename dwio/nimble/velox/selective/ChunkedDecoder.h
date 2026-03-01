@@ -146,7 +146,8 @@ class ChunkedDecoder {
         return;
       }
 
-      bits::Bitmap scatterBitmap{incomingNulls, static_cast<uint32_t>(count)};
+      velox::bits::Bitmap scatterBitmap{
+          incomingNulls, static_cast<uint32_t>(count)};
       // These are subranges in the scatter bit map for each materialize
       // call.
       uint32_t offset{0};
@@ -157,12 +158,12 @@ class ChunkedDecoder {
         }
 
         const auto numValues = std::min(totalNumValues - i, remainingValues_);
-        endOffset = bits::findSetBit(
+        endOffset = velox::bits::findSetBit(
             static_cast<const char*>(scatterBitmap.bits()),
             offset,
             scatterBitmap.size(),
             numValues + 1);
-        bits::Bitmap localBitmap{scatterBitmap.bits(), endOffset};
+        velox::bits::Bitmap localBitmap{scatterBitmap.bits(), endOffset};
         auto nonNullCount = encoding_->materializeNullable(
             numValues, data, [&]() { return nulls; }, &localBitmap, offset);
         if (nulls && nonNullCount == endOffset - offset) {

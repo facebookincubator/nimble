@@ -107,7 +107,7 @@ class DeserializerImpl : public Decoder {
       void* output,
       std::vector<velox::BufferPtr>& /* stringBuffers */,
       std::function<void*()> /* nulls */ = nullptr,
-      const bits::Bitmap* scatterBitmap = nullptr) override {
+      const velox::bits::Bitmap* scatterBitmap = nullptr) override {
     if (count == 0) {
       return 0;
     }
@@ -311,7 +311,7 @@ class DeserializerImpl : public Decoder {
       uint32_t count,
       void* output,
       uint32_t width,
-      const bits::Bitmap* scatterBitmap) {
+      const velox::bits::Bitmap* scatterBitmap) {
     const auto outputSize = scatterBitmap->size();
     // Fast path: if bitmap is dense (all bits set), read directly to output.
     // This avoids temp buffer allocation and scatter overhead.

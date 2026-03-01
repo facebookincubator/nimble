@@ -19,7 +19,6 @@
 #include <string_view>
 #include <type_traits>
 
-#include "dwio/nimble/common/Bits.h"
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/Statistics.h"
 

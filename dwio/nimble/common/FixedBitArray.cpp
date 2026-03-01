@@ -24,7 +24,7 @@ uint64_t FixedBitArray::bufferSize(uint64_t elementCount, int bitWidth) {
   // We may read up to 7 bytes beyond the last theoretically needed byte,
   // as we access whole machine words.
   constexpr int kSlopSize = 7;
-  return bits::bytesRequired(elementCount * bitWidth) + kSlopSize;
+  return velox::bits::nbytes(elementCount * bitWidth) + kSlopSize;
 }
 
 FixedBitArray::FixedBitArray(char* buffer, int bitWidth)
@@ -232,7 +232,7 @@ void bulkGet32Internal(
   // We first use the non-bulk method to align ourselves to a 64-element
   // boundary, then dispatch to the appropriate bit-width-specific code
   // for the 64-element loops, then finish with the non-bulk method.
-  const uint64_t alignedStart = bits::bucketsRequired(start, 64) << 6;
+  const uint64_t alignedStart = velox::bits::divRoundUp(start, 64) << 6;
   if (start + length < alignedStart) {
     for (uint64_t i = start; i < start + length; ++i) {
       if constexpr (withBaseline) {
@@ -458,7 +458,7 @@ void bulkSetInternal32(
   switch (fixedBitArray.bitWidth()) {
 #define BULK_SET32_SWITCH_CASE(bitWidth)                                      \
   case bitWidth: {                                                            \
-    const uint64_t alignedStart = bits::bucketsRequired(start, 64) << 6;      \
+    const uint64_t alignedStart = velox::bits::divRoundUp(start, 64) << 6;    \
     if (start + length < alignedStart) {                                      \
       for (uint64_t i = start; i < start + length; ++i) {                     \
         if constexpr (withBaseline) {                                         \
@@ -705,7 +705,7 @@ void FixedBitArray::equals32(
   // could be a written as a single word itself.
   for (uint64_t i = remainderStart; i < remainderEnd; ++i) {
     if (get32(i) == value) {
-      bits::setBit(i - start, bitVector);
+      velox::bits::setBit(reinterpret_cast<uint8_t*>(bitVector), i - start);
     }
   }
   return;

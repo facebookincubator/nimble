@@ -38,6 +38,7 @@ target_link_libraries(
   nimble_encodings_legacy
   nimble_common
   nimble_tools_common
+  velox_common_base
   gtest
   gtest_main
   Folly::folly

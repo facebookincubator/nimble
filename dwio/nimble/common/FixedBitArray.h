@@ -15,7 +15,7 @@
  */
 #pragma once
 
-#include "dwio/nimble/common/Bits.h"
+#include "velox/common/base/BitUtil.h"
 
 // Packs integers into a fixed number (1-64) of bits and retrieves them.
 // The 'bulk' API provided is particularly efficient at setting/getting

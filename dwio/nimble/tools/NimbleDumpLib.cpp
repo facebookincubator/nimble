@@ -230,7 +230,8 @@ void printScalarData(
   } else {
     for (uint32_t i = 0; i < rowCount; ++i) {
       assert(stream.isNullable());
-      if (nimble::bits::getBit(i, nulls.data()) == 0) {
+      if (velox::bits::isBitSet(
+              reinterpret_cast<const uint8_t*>(nulls.data()), i) == 0) {
         ostream << "NULL" << separator;
       } else {
         // Have to use folly::to as Int8 was getting converted to char.

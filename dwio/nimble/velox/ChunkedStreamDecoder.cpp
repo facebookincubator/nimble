@@ -30,7 +30,8 @@ void bufferStringContent(
   uint64_t size = 0;
   if (notNulls) {
     for (auto i = 0; i < count; ++i) {
-      if (bits::getBit(i + offset, reinterpret_cast<const char*>(notNulls))) {
+      if (velox::bits::isBitSet(
+              reinterpret_cast<const uint8_t*>(notNulls), i + offset)) {
         size += (source + i)->size();
       }
     }
@@ -45,7 +46,8 @@ void bufferStringContent(
 
   if (notNulls) {
     for (auto i = 0; i < count; ++i) {
-      if (bits::getBit(i + offset, reinterpret_cast<const char*>(notNulls))) {
+      if (velox::bits::isBitSet(
+              reinterpret_cast<const uint8_t*>(notNulls), i + offset)) {
         auto* value = source + i;
         auto* target = buffer.data() + targetOffset;
         if (!value->empty()) {
@@ -75,14 +77,14 @@ uint32_t ChunkedStreamDecoder::next(
     void* output,
     std::vector<velox::BufferPtr>& stringBuffers,
     std::function<void*()> nulls,
-    const bits::Bitmap* scatterBitmap) {
+    const velox::bits::Bitmap* scatterBitmap) {
   NIMBLE_DCHECK(stringBuffers.empty());
 
   if (count == 0) {
     if (nulls && scatterBitmap) {
       auto nullsPtr = nulls();
       // @lint-ignore CLANGTIDY facebook-hte-BadMemset
-      memset(nullsPtr, 0, bits::bytesRequired(scatterBitmap->size()));
+      memset(nullsPtr, 0, velox::bits::nbytes(scatterBitmap->size()));
     }
     return 0;
   }
@@ -113,12 +115,12 @@ uint32_t ChunkedStreamDecoder::next(
           rowsToRead, output, initNulls, nullptr, offset);
       endOffset = offset + rowsToRead;
     } else {
-      endOffset = bits::findSetBit(
+      endOffset = velox::bits::findSetBit(
           static_cast<const char*>(scatterBitmap->bits()),
           offset,
           scatterBitmap->size(),
           rowsToRead + 1);
-      bits::Bitmap localBitmap{scatterBitmap->bits(), endOffset};
+      velox::bits::Bitmap localBitmap{scatterBitmap->bits(), endOffset};
       chunkNonNullCount = encoding_->materializeNullable(
           rowsToRead, output, initNulls, &localBitmap, offset);
     }
@@ -126,13 +128,13 @@ uint32_t ChunkedStreamDecoder::next(
     auto chunkHasNulls = chunkNonNullCount != (endOffset - offset);
     if (chunkHasNulls && !hasNulls) {
       // back fill the nulls bitmap to all non-nulls
-      bits::BitmapBuilder builder{nullsPtr, offset};
+      velox::bits::BitmapBuilder builder{nullsPtr, offset};
       builder.set(0, offset);
     }
     hasNulls = hasNulls || chunkHasNulls;
     if (hasNulls && !chunkHasNulls) {
       // fill nulls bitmap to reflect that all values are non-null
-      bits::BitmapBuilder builder{nullsPtr, endOffset};
+      velox::bits::BitmapBuilder builder{nullsPtr, endOffset};
       builder.set(offset, endOffset);
     }
 

@@ -221,14 +221,16 @@ void TrivialEncoding<bool>::materialize(uint32_t rowCount, void* buffer) {
   const uint32_t rowsToWord = (row_ & 63) == 0 ? 0 : 64 - (row_ & 63);
   if (rowsToWord >= rowCount) {
     for (int i = 0; i < rowCount; ++i) {
-      *output = bits::getBit(row_, bitmap_);
+      *output = velox::bits::isBitSet(
+          reinterpret_cast<const uint8_t*>(bitmap_), row_);
       ++output;
       ++row_;
     }
     return;
   }
   for (uint32_t i = 0; i < rowsToWord; ++i) {
-    *output = bits::getBit(row_, bitmap_);
+    *output =
+        velox::bits::isBitSet(reinterpret_cast<const uint8_t*>(bitmap_), row_);
     ++output;
     ++row_;
   }
@@ -247,7 +249,8 @@ void TrivialEncoding<bool>::materialize(uint32_t rowCount, void* buffer) {
   }
   const uint32_t remainder = rowsRemaining - (numWords << 6);
   for (uint32_t i = 0; i < remainder; ++i) {
-    *output = bits::getBit(row_, bitmap_);
+    *output =
+        velox::bits::isBitSet(reinterpret_cast<const uint8_t*>(bitmap_), row_);
     ++output;
     ++row_;
   }
@@ -289,7 +292,7 @@ std::string_view TrivialEncoding<bool>::encode(
       [&](char*& pos) {
         memset(pos, 0, bitmapBytes);
         for (size_t i = 0; i < values.size(); ++i) {
-          bits::maybeSetBit(i, pos, values[i]);
+          velox::bits::maybeSetBit(pos, i, values[i]);
         }
         pos += bitmapBytes;
       }};
