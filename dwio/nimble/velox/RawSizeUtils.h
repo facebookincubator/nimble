@@ -37,7 +37,8 @@ std::optional<size_t> getTypeSizeFromKind(velox::TypeKind kind);
 // flatMapNodeIds contains the node IDs that are configured as flatmaps.
 // A passthrough flatmap is detected when:
 // 1. The node's id is in flatMapNodeIds, AND
-// 2. The vector at that level is a ROW vector
+// 2. The vector at that level is a ROW vector, AND
+// 3. The schema type is MAP (not ROW from readSchema conversion)
 // ignoreTopLevelNulls: when true, top-level row nulls are ignored (treated as
 // non-null) to match FieldWriter behavior when that option is enabled.
 // type can be nullptr when schema is not available.
