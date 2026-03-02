@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/velox/RawSizeUtils.h"
+#include "velox/dwio/common/TypeWithId.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
 using namespace facebook;
@@ -1847,4 +1848,38 @@ TEST_F(RawSizeTestFixture, LocalDecodedVectorMoveConstructor) {
   ASSERT_NE(&decodedVector, nullptr);
 
   // No checks on localDecodedVector1 as it's been moved
+}
+
+// Regression test: when a ROW TypeWithId node has its ID in flatMapNodeIds
+// but the schema type is ROW (not MAP), getRawSizeFromVector should treat it
+// as a regular ROW vector instead of crashing in passthrough flatmap path.
+// This happens during flatmap-as-struct rewrite where MAP is converted to ROW
+// in the readSchema.
+TEST_F(RawSizeTestFixture, RowTypeWithIdInFlatMapNodeIdsDoesNotCrash) {
+  // Create a ROW vector with a single child (simulates a flatmap column
+  // with 1 feature read as struct).
+  auto child = vectorMaker_->flatVector<int32_t>({1, 2, 3});
+  auto rowVector = vectorMaker_->rowVector({"feature0"}, {child});
+
+  // Create a ROW TypeWithId (as readSchema would produce).
+  // ID assignment: 0=root ROW, 1=child ROW (the "flatmap" column), 2=INT
+  auto schema =
+      velox::ROW({{"c0", velox::ROW({{"feature0", velox::INTEGER()}})}});
+  auto typeWithId = velox::dwio::common::TypeWithId::create(schema);
+  const auto* childTypeWithId = typeWithId->childAt(0).get();
+
+  // Mark the ROW child's node ID as a flatmap node.
+  // This simulates the rewrite flow where the ROW TypeWithId node from
+  // readSchema has its ID added to flatMapNodeIds.
+  folly::F14FastSet<uint32_t> flatMapNodeIds{childTypeWithId->id()};
+
+  ranges_.add(0, rowVector->size());
+
+  // Should not crash — the fix ensures passthrough flatmap detection
+  // requires the schema type to be MAP.
+  auto rawSize = nimble::getRawSizeFromVector(
+      rowVector, ranges_, context_, childTypeWithId, flatMapNodeIds);
+
+  // Should compute regular ROW vector raw size (3 int32 values).
+  ASSERT_EQ(rawSize, sizeof(int32_t) * 3);
 }

@@ -716,9 +716,11 @@ uint64_t getRawSizeFromRowVectorInternal(
   // Check if this is a passthrough flatmap (only when we have schema info):
   // 1. The type's node ID is in flatMapNodeIds (configured as flatmap)
   // 2. The vector at that level is a ROW vector
+  // 3. The schema type is MAP (not ROW from readSchema conversion)
   const bool isPassthroughFlatMap = type &&
       flatMapNodeIds.contains(type->id()) &&
-      vector->typeKind() == velox::TypeKind::ROW;
+      vector->typeKind() == velox::TypeKind::ROW &&
+      type->type()->kind() == velox::TypeKind::MAP;
 
   if (isPassthroughFlatMap) {
     return getRawSizeFromPassthroughFlatMap(
