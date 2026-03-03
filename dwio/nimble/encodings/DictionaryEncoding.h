@@ -47,12 +47,11 @@ class DictionaryEncoding
   using cppDataType = T;
   using physicalType = typename TypeTraits<T>::physicalType;
 
-  static const int kAlphabetSizeOffset = Encoding::kPrefixSize;
-
   DictionaryEncoding(
       velox::memory::MemoryPool& pool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::function<void*(uint32_t)> stringBufferFactory,
+      const Encoding::Options& options = {});
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -64,7 +63,8 @@ class DictionaryEncoding
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
-      Buffer& buffer);
+      Buffer& buffer,
+      const Encoding::Options& options = {});
 
   std::string debugString(int offset) const final;
 
@@ -87,14 +87,15 @@ template <typename T>
 DictionaryEncoding<T>::DictionaryEncoding(
     velox::memory::MemoryPool& pool,
     std::string_view data,
-    std::function<void*(uint32_t)> stringBufferFactory)
-    : TypedEncoding<T, physicalType>{pool, data},
+    std::function<void*(uint32_t)> stringBufferFactory,
+    const Encoding::Options& options)
+    : TypedEncoding<T, physicalType>{pool, data, options},
       alphabet_{this->pool_},
       indicesBuffer_{this->pool_} {
-  const auto* pos = data.data() + kAlphabetSizeOffset;
+  const auto* pos = data.data() + this->dataOffset();
   const uint32_t alphabetSize = encoding::readUint32(pos);
   alphabetEncoding_ = EncodingFactory::decode(
-      *this->pool_, {pos, alphabetSize}, stringBufferFactory);
+      *this->pool_, {pos, alphabetSize}, stringBufferFactory, options);
   const uint32_t alphabetCount = alphabetEncoding_->rowCount();
   alphabet_.resize(alphabetCount);
   alphabetEncoding_->materialize(alphabetCount, alphabet_.data());
@@ -103,7 +104,8 @@ DictionaryEncoding<T>::DictionaryEncoding(
   indicesEncoding_ = EncodingFactory::decode(
       *this->pool_,
       {pos, static_cast<size_t>(data.end() - pos)},
-      stringBufferFactory);
+      stringBufferFactory,
+      options);
 }
 
 template <typename T>
@@ -204,7 +206,9 @@ template <typename T>
 std::string_view DictionaryEncoding<T>::encode(
     EncodingSelection<physicalType>& selection,
     std::span<const physicalType> values,
-    Buffer& buffer) {
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const bool useVarint = options.useVarintRowCount;
   const uint32_t valueCount = values.size();
   const uint32_t alphabetCount =
       selection.statistics().uniqueCounts().value().size();
@@ -272,17 +276,28 @@ std::string_view DictionaryEncoding<T>::encode(
   Buffer tempBuffer{buffer.getMemoryPool()};
   std::string_view serializedAlphabet =
       selection.template encodeNested<physicalType>(
-          EncodingIdentifiers::Dictionary::Alphabet, {alphabet}, tempBuffer);
+          EncodingIdentifiers::Dictionary::Alphabet,
+          {alphabet},
+          tempBuffer,
+          options);
   std::string_view serializedIndices =
       selection.template encodeNested<uint32_t>(
-          EncodingIdentifiers::Dictionary::Indices, {indices}, tempBuffer);
+          EncodingIdentifiers::Dictionary::Indices,
+          {indices},
+          tempBuffer,
+          options);
 
-  const uint32_t encodingSize = Encoding::kPrefixSize + 4 +
+  const uint32_t encodingSize =
+      Encoding::serializePrefixSize(valueCount, useVarint) + 4 +
       serializedAlphabet.size() + serializedIndices.size();
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
   Encoding::serializePrefix(
-      EncodingType::Dictionary, TypeTraits<T>::dataType, valueCount, pos);
+      EncodingType::Dictionary,
+      TypeTraits<T>::dataType,
+      valueCount,
+      useVarint,
+      pos);
   encoding::writeUint32(serializedAlphabet.size(), pos);
   encoding::writeBytes(serializedAlphabet, pos);
   encoding::writeBytes(serializedIndices, pos);

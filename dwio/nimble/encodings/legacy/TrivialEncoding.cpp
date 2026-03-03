@@ -125,7 +125,7 @@ std::string_view TrivialEncoding<std::string_view>::encode(
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
   Encoding::serializePrefix(
-      EncodingType::Trivial, DataType::String, valueCount, pos);
+      EncodingType::Trivial, DataType::String, valueCount, false, pos);
   encoding::writeChar(
       static_cast<char>(compressionEncoder.compressionType()), pos);
   encoding::writeUint32(serializedLengths.size(), pos);
@@ -257,7 +257,7 @@ std::string_view TrivialEncoding<bool>::encode(
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
   Encoding::serializePrefix(
-      EncodingType::Trivial, DataType::Bool, valueCount, pos);
+      EncodingType::Trivial, DataType::Bool, valueCount, false, pos);
   encoding::writeChar(
       static_cast<char>(compressionEncoder.compressionType()), pos);
   compressionEncoder.write(pos);

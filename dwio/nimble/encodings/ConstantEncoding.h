@@ -40,8 +40,9 @@ class ConstantEncodingBase
 
   ConstantEncodingBase(
       velox::memory::MemoryPool& memoryPool,
-      std::string_view data)
-      : TypedEncoding<T, physicalType>(memoryPool, data) {}
+      std::string_view data,
+      const Encoding::Options& options = {})
+      : TypedEncoding<T, physicalType>(memoryPool, data, options) {}
 
   void reset() final {}
 
@@ -80,7 +81,9 @@ class ConstantEncodingBase
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
-      Buffer& buffer) {
+      Buffer& buffer,
+      const Encoding::Options& options = {}) {
+    const bool useVarint = options.useVarintRowCount;
     if (values.empty()) {
       NIMBLE_INCOMPATIBLE_ENCODING("ConstantEncoding cannot be empty.");
     }
@@ -90,7 +93,7 @@ class ConstantEncodingBase
     }
 
     const uint32_t rowCount = values.size();
-    uint32_t encodingSize = Encoding::kPrefixSize;
+    uint32_t encodingSize = Encoding::serializePrefixSize(rowCount, useVarint);
     if constexpr (isStringType<physicalType>()) {
       encodingSize += 4 + values[0].size();
     } else {
@@ -99,7 +102,11 @@ class ConstantEncodingBase
     char* reserved = buffer.reserve(encodingSize);
     char* pos = reserved;
     Encoding::serializePrefix(
-        EncodingType::Constant, TypeTraits<T>::dataType, rowCount, pos);
+        EncodingType::Constant,
+        TypeTraits<T>::dataType,
+        rowCount,
+        useVarint,
+        pos);
     encoding::write<physicalType>(values[0], pos);
     NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
     return {reserved, encodingSize};
@@ -118,7 +125,8 @@ class ConstantEncoding : public ConstantEncodingBase<T> {
   ConstantEncoding(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::function<void*(uint32_t)> stringBufferFactory,
+      const Encoding::Options& options = {});
 };
 
 //
@@ -129,11 +137,12 @@ template <typename T>
 ConstantEncoding<T>::ConstantEncoding(
     velox::memory::MemoryPool& memoryPool,
     std::string_view data,
-    std::function<void*(uint32_t)> stringBufferFactory)
-    : ConstantEncodingBase<T>(memoryPool, data) {
-  const char* pos = data.data() + Encoding::kPrefixSize;
+    std::function<void*(uint32_t)> /* stringBufferFactory */,
+    const Encoding::Options& options)
+    : ConstantEncodingBase<T>(memoryPool, data, options) {
+  const char* pos = data.data() + this->dataOffset();
   this->value_ = encoding::read<physicalType>(pos);
-  NIMBLE_CHECK(pos == data.end(), "Unexpected constant encoding end");
+  NIMBLE_CHECK_EQ(pos, data.end(), "Unexpected constant encoding end");
 }
 
 // Specialization for bool to override materializeBoolsAsBits
@@ -146,11 +155,12 @@ class ConstantEncoding<bool> final : public ConstantEncodingBase<bool> {
   ConstantEncoding(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory)
-      : ConstantEncodingBase<bool>(memoryPool, data) {
-    const char* pos = data.data() + Encoding::kPrefixSize;
+      std::function<void*(uint32_t)> /* stringBufferFactory */,
+      const Encoding::Options& options = {})
+      : ConstantEncodingBase<bool>(memoryPool, data, options) {
+    const char* pos = data.data() + this->dataOffset();
     this->value_ = encoding::read<physicalType>(pos);
-    NIMBLE_CHECK(pos == data.end(), "Unexpected constant encoding end");
+    NIMBLE_CHECK_EQ(pos, data.end(), "Unexpected constant encoding end");
   }
 
   void materializeBoolsAsBits(uint32_t rowCount, uint64_t* buffer, int begin)
@@ -169,6 +179,7 @@ class ConstantEncoding<std::string_view> final
   ConstantEncoding(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::function<void*(uint32_t)> stringBufferFactory,
+      const Encoding::Options& options = {});
 };
 } // namespace facebook::nimble

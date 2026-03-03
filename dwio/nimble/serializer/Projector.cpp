@@ -22,6 +22,7 @@
 
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "folly/container/F14Map.h"
 #include "velox/type/Type.h"
@@ -610,7 +611,13 @@ std::string Projector::project(std::string_view input) const {
     return std::string(input);
   }
 
-  const uint32_t rowCount = encoding::readUint32(pos);
+  // Encoded versions use varint for compact row counts.
+  uint32_t rowCount;
+  if (inputEncoded) {
+    rowCount = varint::readVarint32(&pos);
+  } else {
+    rowCount = encoding::readUint32(pos);
+  }
 
   // Parse all input streams using shared implementation.
   const auto inputStreams = detail::parseStreams(pos, end, inputVersion);

@@ -45,7 +45,8 @@ class NullableEncoding final
   NullableEncoding(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::function<void*(uint32_t)> stringBufferFactory,
+      const Encoding::Options& options = {});
 
   uint32_t nullCount() const final;
   bool isNullable() const final;
@@ -68,7 +69,8 @@ class NullableEncoding final
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
       std::span<const bool> nulls,
-      Buffer& buffer);
+      Buffer& buffer,
+      const Encoding::Options& options = {});
 
   std::string debugString(int offset) const final;
 
@@ -92,19 +94,21 @@ template <typename T>
 NullableEncoding<T>::NullableEncoding(
     velox::memory::MemoryPool& memoryPool,
     std::string_view data,
-    std::function<void*(uint32_t)> stringBufferFactory)
-    : TypedEncoding<T, physicalType>(memoryPool, data),
+    std::function<void*(uint32_t)> stringBufferFactory,
+    const Encoding::Options& options)
+    : TypedEncoding<T, physicalType>(memoryPool, data, options),
       indicesBuffer_(this->pool_),
       nullBuffer_(this->pool_) {
-  const char* pos = data.data() + Encoding::kPrefixSize;
+  const char* pos = data.data() + this->dataOffset();
   const uint32_t nonNullsBytes = encoding::readUint32(pos);
   nonNullValues_ = EncodingFactory::decode(
-      *this->pool_, {pos, nonNullsBytes}, stringBufferFactory);
+      *this->pool_, {pos, nonNullsBytes}, stringBufferFactory, options);
   pos += nonNullsBytes;
   nulls_ = EncodingFactory::decode(
       *this->pool_,
       {pos, static_cast<size_t>(data.end() - pos)},
-      stringBufferFactory);
+      stringBufferFactory,
+      options);
   NIMBLE_DCHECK_EQ(
       Encoding::rowCount(), nulls_->rowCount(), "Nulls count mismatch.");
 }
@@ -284,22 +288,29 @@ std::string_view NullableEncoding<T>::encodeNullable(
     EncodingSelection<physicalType>& selection,
     std::span<const physicalType> values,
     std::span<const bool> nulls,
-    Buffer& buffer) {
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const bool useVarint = options.useVarintRowCount;
   const uint32_t rowCount = nulls.size();
 
   Buffer tempBuffer{buffer.getMemoryPool()};
   std::string_view serializedValues =
       selection.template encodeNested<physicalType>(
-          EncodingIdentifiers::Nullable::Data, values, tempBuffer);
+          EncodingIdentifiers::Nullable::Data, values, tempBuffer, options);
   std::string_view serializedNulls = selection.template encodeNested<bool>(
-      EncodingIdentifiers::Nullable::Nulls, nulls, tempBuffer);
+      EncodingIdentifiers::Nullable::Nulls, nulls, tempBuffer, options);
 
-  const uint32_t encodingSize = Encoding::kPrefixSize + 4 +
+  const uint32_t encodingSize =
+      Encoding::serializePrefixSize(rowCount, useVarint) + 4 +
       serializedValues.size() + serializedNulls.size();
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
   Encoding::serializePrefix(
-      EncodingType::Nullable, TypeTraits<T>::dataType, rowCount, pos);
+      EncodingType::Nullable,
+      TypeTraits<T>::dataType,
+      rowCount,
+      useVarint,
+      pos);
   encoding::writeString(serializedValues, pos);
   encoding::writeBytes(serializedNulls, pos);
   NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");

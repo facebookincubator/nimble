@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/common/EncodingPrimitives.h"
+#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 
 using namespace facebook::nimble;
@@ -36,8 +37,16 @@ class WriteHeaderTest : public ::testing::Test {
     auto actualVersion = static_cast<SerializationVersion>(*pos++);
     EXPECT_EQ(actualVersion, expectedVersion);
 
-    // Read row count.
-    uint32_t actualRowCount = encoding::readUint32(pos);
+    // Read row count. Encoded versions use varint.
+    const bool useVarint =
+        (expectedVersion == SerializationVersion::kDenseEncoded ||
+         expectedVersion == SerializationVersion::kSparseEncoded);
+    uint32_t actualRowCount;
+    if (useVarint) {
+      actualRowCount = varint::readVarint32(&pos);
+    } else {
+      actualRowCount = encoding::readUint32(pos);
+    }
     EXPECT_EQ(actualRowCount, expectedRowCount);
 
     // For sparse formats, read stream count and offsets.
@@ -55,7 +64,9 @@ class WriteHeaderTest : public ::testing::Test {
     }
 
     // Verify we consumed exactly the expected amount.
-    size_t expectedSize = 1 + sizeof(uint32_t); // version + rowCount
+    size_t rowCountSize =
+        useVarint ? varint::varintSize(expectedRowCount) : sizeof(uint32_t);
+    size_t expectedSize = 1 + rowCountSize; // version + rowCount
     if (sparseFormat) {
       expectedSize +=
           sizeof(uint32_t) + expectedOffsets.size() * sizeof(uint32_t);

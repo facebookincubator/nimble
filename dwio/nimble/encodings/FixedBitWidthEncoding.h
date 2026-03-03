@@ -48,13 +48,13 @@ class FixedBitWidthEncoding final
   using cppDataType = T;
   using physicalType = typename TypeTraits<T>::physicalType;
 
-  static const int kCompressionOffset = Encoding::kPrefixSize;
   static const int kPrefixSize = 2 + sizeof(T);
 
   FixedBitWidthEncoding(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::function<void*(uint32_t)> stringBufferFactory,
+      const Encoding::Options& options = {});
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -66,7 +66,8 @@ class FixedBitWidthEncoding final
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
-      Buffer& buffer);
+      Buffer& buffer,
+      const Encoding::Options& options = {});
 
   std::string debugString(int offset) const final;
 
@@ -87,11 +88,12 @@ template <typename T>
 FixedBitWidthEncoding<T>::FixedBitWidthEncoding(
     velox::memory::MemoryPool& memoryPool,
     std::string_view data,
-    std::function<void*(uint32_t)> /* stringBufferFactory */)
-    : TypedEncoding<T, physicalType>{memoryPool, data},
+    std::function<void*(uint32_t)> /* stringBufferFactory */,
+    const Encoding::Options& options)
+    : TypedEncoding<T, physicalType>{memoryPool, data, options},
       uncompressedData_{&memoryPool},
       buffer_{&memoryPool} {
-  auto pos = data.data() + kCompressionOffset;
+  auto pos = data.data() + this->dataOffset();
   auto compressionType = static_cast<CompressionType>(encoding::readChar(pos));
   baseline_ = encoding::read<const physicalType>(pos);
   bitWidth_ = static_cast<uint32_t>(encoding::readChar(pos));
@@ -159,7 +161,9 @@ template <typename T>
 std::string_view FixedBitWidthEncoding<T>::encode(
     EncodingSelection<physicalType>& selection,
     std::span<const physicalType> values,
-    Buffer& buffer) {
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const bool useVarint = options.useVarintRowCount;
   static_assert(
       std::is_same_v<
           typename std::make_unsigned<physicalType>::type,
@@ -219,12 +223,17 @@ std::string_view FixedBitWidthEncoding<T>::encode(
         return pos;
       }};
 
-  const uint32_t encodingSize = Encoding::kPrefixSize +
+  const uint32_t encodingSize =
+      Encoding::serializePrefixSize(rowCount, useVarint) +
       FixedBitWidthEncoding<T>::kPrefixSize + compressionEncoder.getSize();
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
   Encoding::serializePrefix(
-      EncodingType::FixedBitWidth, TypeTraits<T>::dataType, rowCount, pos);
+      EncodingType::FixedBitWidth,
+      TypeTraits<T>::dataType,
+      rowCount,
+      useVarint,
+      pos);
   encoding::writeChar(
       static_cast<char>(compressionEncoder.compressionType()), pos);
   encoding::write(selection.statistics().min(), pos);

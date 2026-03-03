@@ -27,6 +27,61 @@ namespace {
 const int kNumElements = 10000;
 }
 
+TEST(VarintTests, varintSize32) {
+  // Boundary values for varint encoding.
+  EXPECT_EQ(nimble::varint::varintSize(uint32_t{0}), 1);
+  EXPECT_EQ(nimble::varint::varintSize(uint32_t{1}), 1);
+  EXPECT_EQ(nimble::varint::varintSize(uint32_t{127}), 1);
+  EXPECT_EQ(nimble::varint::varintSize(uint32_t{128}), 2);
+  EXPECT_EQ(nimble::varint::varintSize(uint32_t{16383}), 2);
+  EXPECT_EQ(nimble::varint::varintSize(uint32_t{16384}), 3);
+  EXPECT_EQ(nimble::varint::varintSize(uint32_t{2097151}), 3);
+  EXPECT_EQ(nimble::varint::varintSize(uint32_t{2097152}), 4);
+  EXPECT_EQ(nimble::varint::varintSize(uint32_t{268435455}), 4);
+  EXPECT_EQ(nimble::varint::varintSize(uint32_t{268435456}), 5);
+  EXPECT_EQ(
+      nimble::varint::varintSize(std::numeric_limits<uint32_t>::max()), 5);
+
+  // Verify consistency with writeVarint for random values.
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+  char buf[folly::kMaxVarintLength32];
+  for (int i = 0; i < kNumElements; ++i) {
+    const int bitShift = folly::Random::rand32(rng) % 32;
+    uint32_t val = folly::Random::rand32(rng) >> bitShift;
+    char* pos = buf;
+    nimble::varint::writeVarint(val, &pos);
+    ASSERT_EQ(nimble::varint::varintSize(val), static_cast<uint32_t>(pos - buf))
+        << "mismatch for val=" << val;
+  }
+}
+
+TEST(VarintTests, varintSize64) {
+  // Boundary values for varint encoding.
+  EXPECT_EQ(nimble::varint::varintSize(uint64_t{0}), 1);
+  EXPECT_EQ(nimble::varint::varintSize(uint64_t{127}), 1);
+  EXPECT_EQ(nimble::varint::varintSize(uint64_t{128}), 2);
+  EXPECT_EQ(nimble::varint::varintSize(uint64_t{16383}), 2);
+  EXPECT_EQ(nimble::varint::varintSize(uint64_t{16384}), 3);
+  EXPECT_EQ(
+      nimble::varint::varintSize(std::numeric_limits<uint64_t>::max()), 10);
+
+  // Verify consistency with writeVarint for random values.
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+  char buf[folly::kMaxVarintLength64];
+  for (int i = 0; i < kNumElements; ++i) {
+    const int bitShift = folly::Random::rand64(rng) % 64;
+    uint64_t val = folly::Random::rand64(rng) >> bitShift;
+    char* pos = buf;
+    nimble::varint::writeVarint(val, &pos);
+    ASSERT_EQ(nimble::varint::varintSize(val), static_cast<uint32_t>(pos - buf))
+        << "mismatch for val=" << val;
+  }
+}
+
 TEST(VarintTests, WriteRead32) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;

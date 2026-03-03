@@ -26,14 +26,17 @@ namespace facebook::nimble {
 SparseBoolEncoding::SparseBoolEncoding(
     velox::memory::MemoryPool& memoryPool,
     std::string_view data,
-    std::function<void*(uint32_t)> stringBufferFactory)
-    : TypedEncoding<bool, bool>{memoryPool, data},
-      sparseValue_{static_cast<bool>(data[kSparseValueOffset])},
+    std::function<void*(uint32_t)> stringBufferFactory,
+    const Encoding::Options& options)
+    : TypedEncoding<bool, bool>{memoryPool, data, options},
+      sparseValue_{static_cast<bool>(data[this->dataOffset()])},
       indicesUncompressed_{&memoryPool},
       indices_{EncodingFactory::decode(
           memoryPool,
-          {data.data() + kIndicesOffset, data.size() - kIndicesOffset},
-          stringBufferFactory)} {
+          {data.data() + this->dataOffset() + kPrefixSize,
+           data.size() - this->dataOffset() - kPrefixSize},
+          stringBufferFactory,
+          options)} {
   reset();
 }
 
@@ -92,7 +95,9 @@ void SparseBoolEncoding::materializeBoolsAsBits(
 std::string_view SparseBoolEncoding::encode(
     EncodingSelection<bool>& selection,
     std::span<const bool> values,
-    Buffer& buffer) {
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const bool useVarint = options.useVarintRowCount;
   // Decide the polarity of the encoding.
   const uint64_t valueCount = values.size();
   const uint64_t setCount =
@@ -130,14 +135,18 @@ std::string_view SparseBoolEncoding::encode(
   Buffer tempBuffer{buffer.getMemoryPool()};
   std::string_view serializedIndices =
       selection.template encodeNested<uint32_t>(
-          EncodingIdentifiers::SparseBool::Indices, indices, tempBuffer);
+          EncodingIdentifiers::SparseBool::Indices,
+          indices,
+          tempBuffer,
+          options);
 
-  const uint32_t encodingSize = Encoding::kPrefixSize +
+  const uint32_t encodingSize =
+      Encoding::serializePrefixSize(valueCount, useVarint) +
       SparseBoolEncoding::kPrefixSize + serializedIndices.size();
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
   Encoding::serializePrefix(
-      EncodingType::SparseBool, DataType::Bool, valueCount, pos);
+      EncodingType::SparseBool, DataType::Bool, valueCount, useVarint, pos);
   encoding::writeChar(sparseValue, pos);
   encoding::writeBytes(serializedIndices, pos);
 

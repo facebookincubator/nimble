@@ -67,14 +67,15 @@ class PrefixEncoding final
   using cppDataType = std::string_view;
   using physicalType = std::string_view;
 
-  static constexpr int kRestartIntervalOffset = Encoding::kPrefixSize;
-  static constexpr int kRestartOffsetsOffset = kRestartIntervalOffset + 4;
   static constexpr uint32_t kDefaultRestartInterval = 16;
   // Config key for restart interval in EncodingSelectionResult::encodingConfig
   static constexpr std::string_view kRestartIntervalConfigKey =
       "prefix-encoding.restart-interval";
 
-  PrefixEncoding(velox::memory::MemoryPool& pool, std::string_view data);
+  PrefixEncoding(
+      velox::memory::MemoryPool& pool,
+      std::string_view data,
+      const Encoding::Options& options = {});
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -108,16 +109,22 @@ class PrefixEncoding final
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
-      Buffer& buffer);
+      Buffer& buffer,
+      const Encoding::Options& options = {});
 
   std::string debugString(int offset) const final;
 
  private:
-  // Static helper methods for initializing const members
-  // While decoding, extracts the restart interval from the encoded block.
-  static uint32_t readRestartInterval(std::string_view data);
-  static const char* restartOffsets(std::string_view data);
-  static const char* dataStart(std::string_view data, uint32_t numRestarts);
+  // Static helper methods for initializing const members.
+  // startOffset is where encoding-specific data begins (after the base prefix).
+  static uint32_t readRestartInterval(
+      std::string_view data,
+      uint32_t startOffset);
+  static const char* restartOffsets(
+      std::string_view data,
+      uint32_t startOffset);
+  static const char*
+  dataStart(std::string_view data, uint32_t startOffset, uint32_t numRestarts);
 
   // Computes numRestarts from rowCount and restartInterval
   static uint32_t computeNumRestarts(

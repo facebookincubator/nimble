@@ -21,16 +21,17 @@ namespace facebook::nimble {
 MainlyConstantEncoding<std::string_view>::MainlyConstantEncoding(
     velox::memory::MemoryPool& memoryPool,
     std::string_view data,
-    std::function<void*(uint32_t)> stringBufferFactory)
-    : MainlyConstantEncodingBase<std::string_view>(memoryPool, data) {
-  const char* pos = data.data() + Encoding::kPrefixSize;
+    std::function<void*(uint32_t)> stringBufferFactory,
+    const Encoding::Options& options)
+    : MainlyConstantEncodingBase<std::string_view>(memoryPool, data, options) {
+  const char* pos = data.data() + this->dataOffset();
   const uint32_t isCommonBytes = encoding::readUint32(pos);
   isCommon_ = EncodingFactory::decode(
-      *this->pool_, {pos, isCommonBytes}, stringBufferFactory);
+      *this->pool_, {pos, isCommonBytes}, stringBufferFactory, options);
   pos += isCommonBytes;
   const uint32_t otherValuesBytes = encoding::readUint32(pos);
   otherValues_ = EncodingFactory::decode(
-      *this->pool_, {pos, otherValuesBytes}, stringBufferFactory);
+      *this->pool_, {pos, otherValuesBytes}, stringBufferFactory, options);
   pos += otherValuesBytes;
   commonValue_ = encoding::read<physicalType>(pos);
   NIMBLE_CHECK(pos == data.end(), "Unexpected mainly constant encoding end");
@@ -43,7 +44,9 @@ MainlyConstantEncoding<std::string_view>::MainlyConstantEncoding(
 std::string_view MainlyConstantEncoding<std::string_view>::encode(
     EncodingSelection<physicalType>& selection,
     std::span<const physicalType> values,
-    Buffer& buffer) {
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const bool useVarint = options.useVarintRowCount;
   if (values.empty()) {
     NIMBLE_INCOMPATIBLE_ENCODING("MainlyConstantEncoding cannot be empty.");
   }
@@ -71,15 +74,19 @@ std::string_view MainlyConstantEncoding<std::string_view>::encode(
 
   Buffer tempBuffer{buffer.getMemoryPool()};
   std::string_view serializedIsCommon = selection.template encodeNested<bool>(
-      EncodingIdentifiers::MainlyConstant::IsCommon, isCommon, tempBuffer);
+      EncodingIdentifiers::MainlyConstant::IsCommon,
+      isCommon,
+      tempBuffer,
+      options);
   std::string_view serializedOtherValues =
       selection.template encodeNested<physicalType>(
           EncodingIdentifiers::MainlyConstant::OtherValues,
           otherValues,
-          tempBuffer);
+          tempBuffer,
+          options);
 
-  uint32_t encodingSize = Encoding::kPrefixSize + 8 +
-      serializedIsCommon.size() + serializedOtherValues.size();
+  uint32_t encodingSize = Encoding::serializePrefixSize(entryCount, useVarint) +
+      8 + serializedIsCommon.size() + serializedOtherValues.size();
   if constexpr (isNumericType<physicalType>()) {
     encodingSize += sizeof(physicalType);
   } else {
@@ -91,6 +98,7 @@ std::string_view MainlyConstantEncoding<std::string_view>::encode(
       EncodingType::MainlyConstant,
       TypeTraits<std::string_view>::dataType,
       entryCount,
+      useVarint,
       pos);
   encoding::writeString(serializedIsCommon, pos);
   encoding::writeString(serializedOtherValues, pos);

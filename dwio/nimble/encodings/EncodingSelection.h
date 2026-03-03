@@ -221,7 +221,8 @@ class EncodingSelection {
   std::string_view encodeNested(
       NestedEncodingIdentifier identifier,
       std::span<const NestedT> values,
-      Buffer& buffer);
+      Buffer& buffer,
+      const Encoding::Options& options = {});
 
  private:
   EncodingSelectionResult selectionResult_;
@@ -297,7 +298,8 @@ template <typename NestedT>
 std::string_view EncodingSelection<T>::encodeNested(
     NestedEncodingIdentifier identifier,
     std::span<const NestedT> values,
-    Buffer& buffer) {
+    Buffer& buffer,
+    const Encoding::Options& options) {
   // Create the nested encoding selection policy instance, and cast it to the
   // strongly templated type.
   auto nestedPolicy = std::unique_ptr<EncodingSelectionPolicy<NestedT>>(
@@ -313,7 +315,8 @@ std::string_view EncodingSelection<T>::encodeNested(
           std::move(statistics),
           std::move(nestedPolicy)},
       values,
-      buffer);
+      buffer,
+      options);
 }
 
 } // namespace facebook::nimble

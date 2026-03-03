@@ -246,7 +246,7 @@ std::string_view TrivialEncoding<T>::encode(
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
   Encoding::serializePrefix(
-      EncodingType::Trivial, TypeTraits<T>::dataType, rowCount, pos);
+      EncodingType::Trivial, TypeTraits<T>::dataType, rowCount, false, pos);
   encoding::writeChar(
       static_cast<char>(compressionEncoder.compressionType()), pos);
   compressionEncoder.write(pos);
