@@ -21,7 +21,6 @@ add_library(
   Encoding.cpp
   EncodingFactory.cpp
   EncodingLayout.cpp
-  EncodingLayoutCapture.cpp
   MainlyConstantEncoding.cpp
   PrefixEncoding.cpp
   RleEncoding.cpp
