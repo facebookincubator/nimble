@@ -326,7 +326,7 @@ class FlatMapColumnReader
       advanceFieldReader(child, offset);
     }
     for (auto* child : children_) {
-      child->read(offset, activeRows, mapNulls);
+      child->readWithTiming(offset, activeRows, mapNulls);
       child->addParentNulls(offset, mapNulls, rows);
     }
     readOffset_ = offset + rows.back() + 1;
