@@ -22,7 +22,7 @@
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingLayoutCapture.h"
+#include "dwio/nimble/encodings/EncodingLayout.h"
 #include "dwio/nimble/encodings/EncodingUtils.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"

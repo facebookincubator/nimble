@@ -18,6 +18,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -72,6 +73,15 @@ class EncodingLayout {
   CompressionType compressionType_;
 
   std::vector<std::optional<const EncodingLayout>> children_;
+};
+
+class EncodingLayoutCapture {
+ public:
+  /// Captures an encoding tree from an encoded stream.
+  /// It traverses the encoding headers in the stream and produces a serialized
+  /// encoding tree layout.
+  /// |encoding| - The serialized encoding
+  static EncodingLayout capture(std::string_view encoding);
 };
 
 } // namespace facebook::nimble
