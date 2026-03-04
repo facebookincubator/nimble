@@ -15,10 +15,13 @@
  */
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <thread>
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Checksum.h"
@@ -37,7 +40,13 @@
 #include "folly/executors/CPUThreadPoolExecutor.h"
 #include "velox/common/file/File.h"
 
+#include "velox/common/caching/AsyncDataCache.h"
+#include "velox/common/caching/FileIds.h"
+#include "velox/common/memory/MallocAllocator.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/dwio/common/BufferedInput.h"
+#include "velox/dwio/common/CachedBufferedInput.h"
+#include "velox/dwio/common/DirectBufferedInput.h"
 #include "velox/dwio/common/ExecutorBarrier.h"
 
 using namespace facebook;
@@ -56,6 +65,32 @@ DEFINE_uint32(
 
 // Total size of the fields after the flatbuffer.
 constexpr uint32_t kPostscriptSize = 20;
+
+/// BufferedInput test modes for parameterized testing.
+enum class BufferedInputMode {
+  /// No BufferedInput - direct file reads.
+  kNone,
+  /// Base BufferedInput class (no cache).
+  kBufferedInput,
+  /// DirectBufferedInput (no cache, but with coalescing).
+  kDirectBufferedInput,
+  /// CachedBufferedInput with AsyncDataCache.
+  kCachedBufferedInput,
+};
+
+std::string bufferedInputModeToString(BufferedInputMode mode) {
+  switch (mode) {
+    case BufferedInputMode::kNone:
+      return "None";
+    case BufferedInputMode::kBufferedInput:
+      return "BufferedInput";
+    case BufferedInputMode::kDirectBufferedInput:
+      return "DirectBufferedInput";
+    case BufferedInputMode::kCachedBufferedInput:
+      return "CachedBufferedInput";
+  }
+  return "Unknown";
+}
 
 struct StripeSpecifications {
   uint32_t rowCount;
@@ -112,13 +147,124 @@ std::vector<StripeData> createStripesData(
   return stripesData;
 }
 
-class TabletTest : public ::testing::Test {
+class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
  protected:
   static void SetUpTestCase() {
     velox::memory::MemoryManager::testingSetInstance({});
   }
 
-  void SetUp() override {}
+  void SetUp() override {
+    executor_ = std::make_unique<folly::CPUThreadPoolExecutor>(2);
+    ioStatistics_ = std::make_shared<velox::dwio::common::IoStatistics>();
+  }
+
+  void TearDown() override {
+    bufferedInput_.reset();
+    if (cache_) {
+      cache_->shutdown();
+      cache_.reset();
+    }
+    allocator_.reset();
+    executor_.reset();
+  }
+
+  /// Creates a BufferedInput based on the test mode.
+  /// Returns nullptr for kNone mode.
+  velox::dwio::common::BufferedInput* createBufferedInput(
+      std::shared_ptr<velox::ReadFile> readFile) {
+    auto mode = GetParam();
+
+    auto& ids = velox::fileIds();
+    fileId_ = std::make_unique<velox::StringIdLease>(ids, "testFile");
+    groupId_ = std::make_unique<velox::StringIdLease>(ids, "testGroup");
+
+    velox::io::ReaderOptions readerOptions(pool_.get());
+
+    switch (mode) {
+      case BufferedInputMode::kNone:
+        return nullptr;
+
+      case BufferedInputMode::kBufferedInput:
+        bufferedInput_ = std::make_unique<velox::dwio::common::BufferedInput>(
+            readFile, *pool_);
+        return bufferedInput_.get();
+
+      case BufferedInputMode::kDirectBufferedInput:
+        tracker_ = std::make_shared<velox::cache::ScanTracker>(
+            "testTracker", nullptr, 256 << 10);
+        bufferedInput_ =
+            std::make_unique<velox::dwio::common::DirectBufferedInput>(
+                readFile,
+                velox::dwio::common::MetricsLog::voidLog(),
+                std::move(*fileId_),
+                tracker_,
+                std::move(*groupId_),
+                ioStatistics_,
+                nullptr,
+                executor_.get(),
+                readerOptions);
+        return bufferedInput_.get();
+
+      case BufferedInputMode::kCachedBufferedInput:
+        if (!allocator_) {
+          allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+              1UL << 30, 0 /* reservationByteLimit */);
+        }
+        if (!cache_) {
+          cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+        }
+        tracker_ = std::make_shared<velox::cache::ScanTracker>(
+            "testTracker", nullptr, 256 << 10);
+        bufferedInput_ =
+            std::make_unique<velox::dwio::common::CachedBufferedInput>(
+                readFile,
+                velox::dwio::common::MetricsLog::voidLog(),
+                std::move(*fileId_),
+                cache_.get(),
+                tracker_,
+                std::move(*groupId_),
+                ioStatistics_,
+                nullptr,
+                executor_.get(),
+                readerOptions);
+        return bufferedInput_.get();
+    }
+    return nullptr;
+  }
+
+  bool expectHasCache() const {
+    return GetParam() == BufferedInputMode::kCachedBufferedInput;
+  }
+
+  /// Creates a TabletReader with BufferedInput configured based on test mode.
+  /// This is the primary method tests should use to create readers.
+  std::shared_ptr<nimble::TabletReader> createTabletReader(
+      std::shared_ptr<velox::ReadFile> readFile,
+      nimble::TabletReader::Options options = {}) {
+    readFile_ = readFile;
+    auto* bufferedInput = createBufferedInput(readFile_);
+    options.bufferedInput = bufferedInput;
+    return nimble::TabletReader::create(readFile_.get(), pool_.get(), options);
+  }
+
+  /// Overload for string file content (creates InMemoryReadFile internally).
+  std::shared_ptr<nimble::TabletReader> createTabletReader(
+      const std::string& fileContent,
+      nimble::TabletReader::Options options = {}) {
+    return createTabletReader(
+        std::make_shared<velox::InMemoryReadFile>(fileContent),
+        std::move(options));
+  }
+
+  std::shared_ptr<velox::ReadFile> readFile_;
+  std::unique_ptr<folly::CPUThreadPoolExecutor> executor_;
+  std::shared_ptr<velox::dwio::common::IoStatistics> ioStatistics_;
+  std::shared_ptr<velox::memory::MallocAllocator> allocator_;
+  std::shared_ptr<velox::cache::AsyncDataCache> cache_;
+  std::shared_ptr<velox::cache::ScanTracker> tracker_;
+  std::unique_ptr<velox::StringIdLease> fileId_;
+  std::unique_ptr<velox::StringIdLease> groupId_;
+  std::unique_ptr<velox::dwio::common::BufferedInput> bufferedInput_;
 
   // Runs a single write/read test using input parameters
   void parameterizedTest(
@@ -638,12 +784,14 @@ class TabletTest : public ::testing::Test {
       rootPool_->addLeafChild("TabletTest")};
 };
 
-TEST_F(TabletTest, emptyWrite) {
+// --- TabletTest parameterized tests ---
+
+TEST_P(TabletTest, emptyWrite) {
   // Creating an Nimble file without writing any stripes
   test(/* stripes */ {});
 }
 
-TEST_F(TabletTest, writeDifferentStreamsPerStripe) {
+TEST_P(TabletTest, writeDifferentStreamsPerStripe) {
   // Write different subset of streams in each stripe
   test(
       /* stripes */
@@ -654,7 +802,7 @@ TEST_F(TabletTest, writeDifferentStreamsPerStripe) {
       });
 }
 
-TEST_F(TabletTest, checksumValidation) {
+TEST_P(TabletTest, checksumValidation) {
   std::vector<uint32_t> metadataCompressionThresholds{
       // use size 0 here so it will always force a footer compression
       0,
@@ -684,7 +832,7 @@ TEST_F(TabletTest, checksumValidation) {
   }
 }
 
-TEST_F(TabletTest, optionalSections) {
+TEST_P(TabletTest, optionalSections) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
@@ -803,7 +951,7 @@ TEST_F(TabletTest, optionalSections) {
   }
 }
 
-TEST_F(TabletTest, optionalSectionsEmpty) {
+TEST_P(TabletTest, optionalSectionsEmpty) {
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
   auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
@@ -822,7 +970,7 @@ TEST_F(TabletTest, optionalSectionsEmpty) {
   }
 }
 
-TEST_F(TabletTest, hasOptionalSection) {
+TEST_P(TabletTest, hasOptionalSection) {
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
   auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
@@ -849,7 +997,7 @@ TEST_F(TabletTest, hasOptionalSection) {
   EXPECT_FALSE(tablet->hasOptionalSection(std::string(nimble::kIndexSection)));
 }
 
-TEST_F(TabletTest, hasOptionalSectionEmpty) {
+TEST_P(TabletTest, hasOptionalSectionEmpty) {
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
   auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
@@ -865,7 +1013,7 @@ TEST_F(TabletTest, hasOptionalSectionEmpty) {
   EXPECT_FALSE(tablet->hasOptionalSection("any_name"));
 }
 
-TEST_F(TabletTest, optionalSectionsPreload) {
+TEST_P(TabletTest, optionalSectionsPreload) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
@@ -1063,7 +1211,7 @@ class Guard {
   Actions& actions_;
 };
 
-TEST_F(TabletTest, referenceCountedCache) {
+TEST_P(TabletTest, referenceCountedCache) {
   Actions actions;
   facebook::nimble::ReferenceCountedCache<int, Guard> cache{
       [&](int id) { return std::make_shared<Guard>(id, actions); }};
@@ -1159,7 +1307,7 @@ TEST_F(TabletTest, referenceCountedCache) {
            {ActionEnum::kDestroyed, 0}}));
 }
 
-TEST_F(TabletTest, referenceCountedCacheStressParallelDuplicates) {
+TEST_P(TabletTest, referenceCountedCacheStressParallelDuplicates) {
   std::atomic_int counter{0};
   facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
     ++counter;
@@ -1181,7 +1329,7 @@ TEST_F(TabletTest, referenceCountedCacheStressParallelDuplicates) {
   EXPECT_GE(counter.load(), kEntryIds);
 }
 
-TEST_F(TabletTest, referenceCountedCacheStressParallelDuplicatesSaveEntries) {
+TEST_P(TabletTest, referenceCountedCacheStressParallelDuplicatesSaveEntries) {
   std::atomic_int counter{0};
   facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
     ++counter;
@@ -1205,7 +1353,7 @@ TEST_F(TabletTest, referenceCountedCacheStressParallelDuplicatesSaveEntries) {
   EXPECT_EQ(counter.load(), kEntryIds);
 }
 
-TEST_F(TabletTest, referenceCountedCacheStress) {
+TEST_P(TabletTest, referenceCountedCacheStress) {
   std::atomic_int counter{0};
   facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
     ++counter;
@@ -1227,7 +1375,7 @@ TEST_F(TabletTest, referenceCountedCacheStress) {
   EXPECT_GE(counter.load(), kEntryIds);
 }
 
-TEST_F(TabletTest, referenceCountedCacheStressSaveEntries) {
+TEST_P(TabletTest, referenceCountedCacheStressSaveEntries) {
   std::atomic_int counter{0};
   facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
     ++counter;
@@ -1251,7 +1399,7 @@ TEST_F(TabletTest, referenceCountedCacheStressSaveEntries) {
   EXPECT_EQ(counter.load(), kEntryIds);
 }
 
-TEST_F(TabletTest, deduplicateStreams) {
+TEST_P(TabletTest, deduplicateStreams) {
   auto seed = FLAGS_tablet_tests_seed > 0 ? FLAGS_tablet_tests_seed
                                           : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
@@ -1266,7 +1414,7 @@ TEST_F(TabletTest, deduplicateStreams) {
   }
 }
 
-TEST_F(TabletTest, chunkContentSize) {
+TEST_P(TabletTest, chunkContentSize) {
   nimble::Chunk chunk;
   EXPECT_EQ(chunk.contentSize(), 0);
 
@@ -1473,7 +1621,7 @@ class TabletWithIndexTest : public TabletTest {
   }
 };
 
-TEST_F(TabletWithIndexTest, stripeIdentifier) {
+TEST_P(TabletWithIndexTest, stripeIdentifier) {
   // Test that stripeIdentifier correctly returns index group based on loadIndex
   // parameter. When loadIndex=false (default), indexGroup should be nullptr.
   // When loadIndex=true, indexGroup should be set.
@@ -1528,7 +1676,7 @@ TEST_F(TabletWithIndexTest, stripeIdentifier) {
   }
 }
 
-TEST_F(TabletWithIndexTest, singleGroup) {
+TEST_P(TabletWithIndexTest, singleGroup) {
   // Test writing a tablet with index configuration and reading it back.
   // Each stream has multiple chunks with varying row counts and sizes.
   // Different streams are not synchronized in chunk count, rows, or size.
@@ -1947,7 +2095,7 @@ TEST_F(TabletWithIndexTest, singleGroup) {
       });
 }
 
-TEST_F(TabletWithIndexTest, multipleGroups) {
+TEST_P(TabletWithIndexTest, multipleGroups) {
   // Test writing a tablet with index configuration and multiple stripe groups.
   // With metadataFlushThreshold = 0, each stripe is in its own group:
   // - Group 0: stripe 0
@@ -2322,7 +2470,7 @@ TEST_F(TabletWithIndexTest, multipleGroups) {
       });
 }
 
-TEST_F(TabletWithIndexTest, singleGroupWithEmptyStream) {
+TEST_P(TabletWithIndexTest, singleGroupWithEmptyStream) {
   // Test writing a tablet with 4 streams where some streams are empty in
   // certain stripes. This tests the position index handles missing streams
   // correctly.
@@ -2736,7 +2884,7 @@ TEST_F(TabletWithIndexTest, singleGroupWithEmptyStream) {
       });
 }
 
-TEST_F(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
+TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   // Test writing a tablet with 4 streams where some streams are empty in
   // certain stripes, with multiple stripe groups (one per stripe).
   // This tests the position index handles missing streams correctly across
@@ -3208,7 +3356,7 @@ TEST_F(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
       });
 }
 
-TEST_F(TabletWithIndexTest, streamDeduplication) {
+TEST_P(TabletWithIndexTest, streamDeduplication) {
   // Test writing a tablet with stream deduplication enabled and index
   // configuration. Some streams have identical content and should be
   // deduplicated. This test verifies the position index correctly handles
@@ -3472,7 +3620,7 @@ TEST_F(TabletWithIndexTest, streamDeduplication) {
   }
 }
 
-TEST_F(TabletWithIndexTest, keyOrderEnforcement) {
+TEST_P(TabletWithIndexTest, keyOrderEnforcement) {
   // Test key order enforcement behavior with enforceKeyOrder = true/false
   for (bool enforceKeyOrder : {true, false}) {
     SCOPED_TRACE(fmt::format("enforceKeyOrder={}", enforceKeyOrder));
@@ -3546,7 +3694,7 @@ TEST_F(TabletWithIndexTest, keyOrderEnforcement) {
   }
 }
 
-TEST_F(TabletWithIndexTest, noIndex) {
+TEST_P(TabletWithIndexTest, noIndex) {
   // Test that without index config, no index section is written
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
@@ -3577,7 +3725,7 @@ TEST_F(TabletWithIndexTest, noIndex) {
   EXPECT_FALSE(tablet->hasOptionalSection(std::string(nimble::kIndexSection)));
 }
 
-TEST_F(TabletWithIndexTest, emptyFileWithIndexConfig) {
+TEST_P(TabletWithIndexTest, emptyFileWithIndexConfig) {
   // Test writing an empty file (no stripes) with index config.
   // The root index should contain only config (columns, sort orders)
   // but no stripe keys or stripe index groups.
@@ -3646,7 +3794,7 @@ TEST_F(TabletWithIndexTest, emptyFileWithIndexConfig) {
   EXPECT_FALSE(tabletIndex->lookup("zzz").has_value());
 }
 
-TEST_F(TabletWithIndexTest, fileLayoutWithIndex) {
+TEST_P(TabletWithIndexTest, fileLayoutWithIndex) {
   // Test FileLayout::create() with non-empty file that has index enabled.
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
@@ -3697,7 +3845,141 @@ TEST_F(TabletWithIndexTest, fileLayoutWithIndex) {
   }
 }
 
-TEST_F(TabletTest, writeAfterCloseThrows) {
+TEST_P(TabletWithIndexTest, cacheWarmPath) {
+  // Test that a second TabletReader on an indexed file initializes from
+  // AsyncDataCache with zero file IO, and that index data is also served
+  // from cache on the warm path.
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Cache warm path only applies to CachedBufferedInput";
+  }
+
+  // Write a file with multiple stripes and index.
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  nimble::TabletIndexConfig indexConfig{
+      .columns = {"col1"},
+      .sortOrders = {SortOrder{.ascending = true}},
+      .enforceKeyOrder = true,
+  };
+
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {
+          .metadataFlushThreshold = 1024 * 1024 * 1024,
+          .streamDeduplicationEnabled = false,
+          .indexConfig = indexConfig,
+      });
+
+  constexpr int kNumStripes = 3;
+  std::vector<std::string> firstKeys = {"aaa", "ccc", "eee"};
+  std::vector<std::string> lastKeys = {"bbb", "ddd", "fff"};
+  for (int i = 0; i < kNumStripes; ++i) {
+    auto streams = createStreams(
+        buffer, {{.offset = 0, .chunks = {{.rowCount = 100, .size = 50}}}});
+    auto keyStream = createKeyStream(
+        buffer,
+        {{.rowCount = 100, .firstKey = firstKeys[i], .lastKey = lastKeys[i]}});
+    tabletWriter->writeStripe(100, std::move(streams), std::move(keyStream));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  // Initialize cache before the cold reader so we can verify it starts empty.
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      1UL << 30, 0 /* reservationByteLimit */);
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  auto coldCacheStats = cache_->refreshStats();
+  EXPECT_EQ(coldCacheStats.numEntries, 0);
+
+  // Cold path: first reader populates the cache.
+  {
+    auto coldReader = createTabletReader(readFile);
+    EXPECT_EQ(coldReader->stripeCount(), kNumStripes);
+    EXPECT_EQ(coldReader->tabletRowCount(), kNumStripes * 100);
+    EXPECT_TRUE(coldReader->hasIndex());
+    EXPECT_NE(coldReader->index(), nullptr);
+
+    // Cold init bypasses CachedBufferedInput — no IoStatistics tracking.
+    EXPECT_EQ(ioStatistics_->ramHit().count(), 0);
+    EXPECT_EQ(ioStatistics_->ssdRead().count(), 0);
+    EXPECT_EQ(ioStatistics_->read().count(), 0);
+    EXPECT_EQ(ioStatistics_->prefetch().count(), 0);
+
+    // Verify stripe groups and index groups are accessible.
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = coldReader->stripeIdentifier(i, /*loadIndex=*/true);
+      EXPECT_NE(stripeId.stripeGroup(), nullptr);
+      EXPECT_NE(stripeId.indexGroup(), nullptr);
+    }
+
+    // Verify index lookup works.
+    auto location = coldReader->index()->lookup("bbb");
+    ASSERT_TRUE(location.has_value());
+    EXPECT_EQ(location->stripeIndex, 0);
+  }
+
+  coldCacheStats = cache_->refreshStats();
+  EXPECT_GT(coldCacheStats.numEntries, 0);
+  EXPECT_GT(coldCacheStats.numNew, 0);
+  EXPECT_EQ(coldCacheStats.numEvict, 0);
+
+  // Reset IO stats for the warm path.
+  ioStatistics_ = std::make_shared<velox::dwio::common::IoStatistics>();
+
+  // Warm path: second reader should initialize from cache with zero IO.
+  {
+    auto warmReader = createTabletReader(readFile);
+    EXPECT_EQ(warmReader->stripeCount(), kNumStripes);
+    EXPECT_EQ(warmReader->tabletRowCount(), kNumStripes * 100);
+    EXPECT_TRUE(warmReader->hasIndex());
+    EXPECT_NE(warmReader->index(), nullptr);
+
+    // Warm path should serve all data from RAM cache.
+    EXPECT_GT(ioStatistics_->ramHit().count(), 0);
+    EXPECT_EQ(ioStatistics_->ssdRead().count(), 0);
+    EXPECT_EQ(ioStatistics_->read().count(), 0);
+    EXPECT_EQ(ioStatistics_->prefetch().count(), 0);
+
+    // Verify stripe groups and index groups are accessible from cache.
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = warmReader->stripeIdentifier(i, /*loadIndex=*/true);
+      EXPECT_NE(stripeId.stripeGroup(), nullptr);
+      EXPECT_NE(stripeId.indexGroup(), nullptr);
+    }
+
+    // Verify index lookup still works from cache.
+    auto location = warmReader->index()->lookup("ddd");
+    ASSERT_TRUE(location.has_value());
+    EXPECT_EQ(location->stripeIndex, 1);
+  }
+
+  // Warm reader should have additional cache hits, no new entries or evictions.
+  auto warmCacheStats = cache_->refreshStats();
+  EXPECT_EQ(warmCacheStats.numEntries, coldCacheStats.numEntries);
+  EXPECT_GT(warmCacheStats.numHit, coldCacheStats.numHit);
+  EXPECT_EQ(warmCacheStats.numNew, coldCacheStats.numNew);
+  EXPECT_EQ(warmCacheStats.numEvict, 0);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    BufferedInputModes,
+    TabletWithIndexTest,
+    ::testing::Values(
+        BufferedInputMode::kNone,
+        BufferedInputMode::kBufferedInput,
+        BufferedInputMode::kDirectBufferedInput,
+        BufferedInputMode::kCachedBufferedInput),
+    [](const ::testing::TestParamInfo<BufferedInputMode>& info) {
+      return bufferedInputModeToString(info.param);
+    });
+
+TEST_P(TabletTest, writeAfterCloseThrows) {
   // Test that write operations throw after close().
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
@@ -3732,8 +4014,8 @@ TEST_F(TabletTest, writeAfterCloseThrows) {
       tabletWriter->close(), "TabletWriter is already closed");
 }
 
-TEST_F(TabletTest, readerOptionsAdaptiveMode) {
-  // Test adaptive mode (footerIoBytes=0) which reads postscript first,
+TEST_P(TabletTest, readerOptionsAdaptiveMode) {
+  // Test adaptive mode (maxFooterIoBytes=0) which reads postscript first,
   // then exact footer size.
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
@@ -3753,18 +4035,18 @@ TEST_F(TabletTest, readerOptionsAdaptiveMode) {
   tabletWriter->close();
   writeFile.close();
 
-  // Read with adaptive mode (footerIoBytes=0)
+  // Read with adaptive mode (maxFooterIoBytes=0)
   nimble::testing::InMemoryTrackableReadFile readFile(file, false);
   nimble::TabletReader::Options options;
-  options.footerIoBytes = 0; // Adaptive mode
+  options.maxFooterIoBytes = 0; // Adaptive mode
   auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), options);
 
   EXPECT_EQ(tablet->stripeCount(), 1);
   EXPECT_EQ(tablet->stripeRowCount(0), 500);
 }
 
-TEST_F(TabletTest, readerOptionsSpeculativeMode) {
-  // Test speculative mode (non-zero footerIoBytes).
+TEST_P(TabletTest, readerOptionsSpeculativeMode) {
+  // Test speculative mode (non-zero maxFooterIoBytes).
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
   nimble::Buffer buffer(*pool_);
@@ -3786,167 +4068,312 @@ TEST_F(TabletTest, readerOptionsSpeculativeMode) {
   // Read with speculative mode
   nimble::testing::InMemoryTrackableReadFile readFile(file, false);
   nimble::TabletReader::Options options;
-  options.footerIoBytes = 1024; // Small speculative read
+  options.maxFooterIoBytes = 1024; // Small speculative read
   auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), options);
 
   EXPECT_EQ(tablet->stripeCount(), 1);
   EXPECT_EQ(tablet->stripeRowCount(0), 600);
 }
 
-TEST_F(TabletTest, readerOptionsFileLayoutPath) {
-  // Test fileLayout path which uses precomputed layout.
+TEST_P(TabletTest, bufferedInputMetadataReads) {
+  // Test that BufferedInput is used for metadata reads when provided.
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
   nimble::Buffer buffer(*pool_);
 
   auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
 
-  std::vector<nimble::Stream> streams;
-  const auto size = 100;
-  auto pos = buffer.reserve(size);
-  std::memset(pos, 'z', size);
-  streams.push_back({
-      .offset = 0,
-      .chunks = {{.content = {std::string_view(pos, size)}}},
-  });
-  tabletWriter->writeStripe(700, std::move(streams));
+  // Write multiple stripes to ensure we have stripe group metadata to read.
+  for (int i = 0; i < 3; ++i) {
+    std::vector<nimble::Stream> streams;
+    const auto size = 100;
+    auto pos = buffer.reserve(size);
+    std::memset(pos, 'a' + i, size);
+    streams.push_back({
+        .offset = 0,
+        .chunks = {{.rowCount = 100, .content = {std::string_view(pos, size)}}},
+    });
+    tabletWriter->writeStripe(100, std::move(streams));
+  }
   tabletWriter->close();
   writeFile.close();
 
-  // Get layout using FileLayout::create()
-  velox::InMemoryReadFile layoutReadFile(file);
-  auto layout = nimble::FileLayout::create(&layoutReadFile, pool_.get());
+  auto tablet = createTabletReader(file);
 
-  // Read using the precomputed layout
-  nimble::testing::InMemoryTrackableReadFile readFile(file, false);
-  nimble::TabletReader::Options options;
-  options.fileLayout = layout;
-  options.footerIoBytes = 8 * 1024 * 1024; // Memory budget for coalescing
-  auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), options);
+  nimble::test::TabletReaderTestHelper tabletHelper(tablet.get());
+  EXPECT_EQ(tabletHelper.hasCache(), expectHasCache());
+  EXPECT_EQ(tablet->stripeCount(), 3);
 
-  EXPECT_EQ(tablet->stripeCount(), 1);
-  EXPECT_EQ(tablet->stripeRowCount(0), 700);
-  EXPECT_EQ(tablet->majorVersion(), layout.postscript.majorVersion());
-  EXPECT_EQ(tablet->minorVersion(), layout.postscript.minorVersion());
+  // Verify we can read stripe data.
+  auto stripeId = tablet->stripeIdentifier(0);
+  EXPECT_EQ(stripeId.stripeId(), 0);
+  EXPECT_NE(stripeId.stripeGroup(), nullptr);
 }
 
-TEST_F(TabletTest, readerOptionsFileLayoutMismatch) {
-  // Test that fileLayout with wrong fileSize is rejected.
+TEST_P(TabletTest, cacheWarmPath) {
+  // Test that a second TabletReader on the same file initializes from
+  // AsyncDataCache with zero file IO when file-metadata-cache is enabled.
+  // Only meaningful for CachedBufferedInput mode.
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Cache warm path only applies to CachedBufferedInput";
+  }
+
+  // Write a file with multiple stripes.
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
   nimble::Buffer buffer(*pool_);
 
   auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
-
-  std::vector<nimble::Stream> streams;
-  const auto size = 100;
-  auto pos = buffer.reserve(size);
-  std::memset(pos, 'w', size);
-  streams.push_back({
-      .offset = 0,
-      .chunks = {{.content = {std::string_view(pos, size)}}},
-  });
-  tabletWriter->writeStripe(800, std::move(streams));
+  constexpr int kNumStripes = 3;
+  for (int i = 0; i < kNumStripes; ++i) {
+    std::vector<nimble::Stream> streams;
+    const auto size = 100;
+    auto pos = buffer.reserve(size);
+    std::memset(pos, 'a' + i, size);
+    streams.push_back({
+        .offset = 0,
+        .chunks = {{.rowCount = 100, .content = {std::string_view(pos, size)}}},
+    });
+    tabletWriter->writeStripe(100, std::move(streams));
+  }
   tabletWriter->close();
   writeFile.close();
 
-  // Get layout using FileLayout::create()
-  velox::InMemoryReadFile layoutReadFile(file);
-  auto layout = nimble::FileLayout::create(&layoutReadFile, pool_.get());
-  // Corrupt the layout
-  layout.fileSize = layout.fileSize + 100;
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
 
-  nimble::testing::InMemoryTrackableReadFile readFile(file, false);
-  nimble::TabletReader::Options options;
-  options.fileLayout = layout;
+  // Initialize cache before the cold reader so we can verify it starts empty.
+  // Normally lazy-initialized in createBufferedInput.
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      1UL << 30, 0 /* reservationByteLimit */);
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
 
-  NIMBLE_ASSERT_USER_THROW(
-      nimble::TabletReader::create(&readFile, pool_.get(), options),
-      "doesn't match actual file size");
+  // Cache should be empty before the cold reader.
+  auto coldCacheStats = cache_->refreshStats();
+  EXPECT_EQ(coldCacheStats.numEntries, 0);
+  EXPECT_EQ(coldCacheStats.numHit, 0);
+  EXPECT_EQ(coldCacheStats.numNew, 0);
+
+  // Cold path: first reader populates the cache.
+  {
+    auto coldReader = createTabletReader(readFile);
+    EXPECT_EQ(coldReader->stripeCount(), kNumStripes);
+    EXPECT_EQ(coldReader->tabletRowCount(), kNumStripes * 100);
+
+    // Cold init uses direct file_->preadv() which bypasses
+    // CachedBufferedInput, so no reads are tracked through IoStatistics.
+    EXPECT_EQ(ioStatistics_->ramHit().count(), 0);
+    EXPECT_EQ(ioStatistics_->ssdRead().count(), 0);
+    EXPECT_EQ(ioStatistics_->read().count(), 0);
+    EXPECT_EQ(ioStatistics_->prefetch().count(), 0);
+
+    auto stripeId = coldReader->stripeIdentifier(0);
+    EXPECT_EQ(stripeId.stripeId(), 0);
+    EXPECT_NE(stripeId.stripeGroup(), nullptr);
+  }
+
+  // Cold reader should have populated the cache with metadata entries.
+  // numHit may be > 0 from self-hits within the cold reader (coalesced IO can
+  // populate a cache entry that is then hit by a subsequent read).
+  coldCacheStats = cache_->refreshStats();
+  EXPECT_GT(coldCacheStats.numEntries, 0);
+  EXPECT_GT(coldCacheStats.numNew, 0);
+  EXPECT_EQ(coldCacheStats.numEvict, 0);
+
+  // Reset IO stats for the warm path.
+  ioStatistics_ = std::make_shared<velox::dwio::common::IoStatistics>();
+
+  // Warm path: second reader should initialize from cache with zero IO.
+  {
+    auto warmReader = createTabletReader(readFile);
+    EXPECT_EQ(warmReader->stripeCount(), kNumStripes);
+    EXPECT_EQ(warmReader->tabletRowCount(), kNumStripes * 100);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      EXPECT_EQ(warmReader->stripeRowCount(i), 100);
+    }
+
+    // Warm path should serve all data from RAM cache with zero storage reads.
+    EXPECT_GT(ioStatistics_->ramHit().count(), 0);
+    EXPECT_EQ(ioStatistics_->ssdRead().count(), 0);
+    EXPECT_EQ(ioStatistics_->read().count(), 0);
+    EXPECT_EQ(ioStatistics_->prefetch().count(), 0);
+
+    auto stripeId = warmReader->stripeIdentifier(0);
+    EXPECT_EQ(stripeId.stripeId(), 0);
+    EXPECT_NE(stripeId.stripeGroup(), nullptr);
+  }
+
+  // Warm reader should have additional cache hits beyond what the cold reader
+  // generated, with no new entries or evictions.
+  auto warmCacheStats = cache_->refreshStats();
+  EXPECT_EQ(warmCacheStats.numEntries, coldCacheStats.numEntries);
+  EXPECT_GT(warmCacheStats.numHit, coldCacheStats.numHit);
+  EXPECT_EQ(warmCacheStats.numNew, coldCacheStats.numNew);
+  EXPECT_EQ(warmCacheStats.numEvict, 0);
 }
 
-TEST_F(TabletTest, fileLayoutSkipsPostScriptIo) {
-  // Test that FileLayout path skips postscript IO and reads exactly the
-  // footer size.
+INSTANTIATE_TEST_SUITE_P(
+    BufferedInputModes,
+    TabletTest,
+    ::testing::Values(
+        BufferedInputMode::kNone,
+        BufferedInputMode::kBufferedInput,
+        BufferedInputMode::kDirectBufferedInput,
+        BufferedInputMode::kCachedBufferedInput),
+    [](const ::testing::TestParamInfo<BufferedInputMode>& info) {
+      return bufferedInputModeToString(info.param);
+    });
+
+// Stress test: concurrent readers with mixed BufferedInput modes and periodic
+// cache eviction. Exercises race conditions between cache population, cache
+// eviction, and reader initialization.
+TEST(TabletStressTest, concurrentReadersWithCacheEviction) {
+  velox::memory::MemoryManager::testingSetInstance({});
+  auto pool =
+      velox::memory::MemoryManager::getInstance()->addRootPool("stressTest");
+
+  // Write a file with multiple stripes.
   std::string file;
-  velox::InMemoryWriteFile writeFile(&file);
-  nimble::Buffer buffer(*pool_);
+  {
+    auto writerPool = pool->addLeafChild("writer");
+    velox::InMemoryWriteFile writeFile(&file);
+    nimble::Buffer buffer(*writerPool);
+    auto tabletWriter =
+        nimble::TabletWriter::create(&writeFile, *writerPool, {});
+    constexpr int kNumStripes = 5;
+    for (int i = 0; i < kNumStripes; ++i) {
+      std::vector<nimble::Stream> streams;
+      const auto size = 200;
+      auto pos = buffer.reserve(size);
+      std::memset(pos, 'a' + i, size);
+      streams.push_back({
+          .offset = 0,
+          .chunks =
+              {{.rowCount = 200, .content = {std::string_view(pos, size)}}},
+      });
+      tabletWriter->writeStripe(200, std::move(streams));
+    }
+    tabletWriter->close();
+    writeFile.close();
+  }
 
-  auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
 
-  std::vector<nimble::Stream> streams;
-  const auto size = 100;
-  auto pos = buffer.reserve(size);
-  std::memset(pos, 'a', size);
-  streams.push_back({
-      .offset = 0,
-      .chunks = {{.content = {std::string_view(pos, size)}}},
+  // Shared cache infrastructure.
+  auto allocator = std::make_shared<velox::memory::MallocAllocator>(
+      1UL << 30, 0 /* reservationByteLimit */);
+  auto cache = velox::cache::AsyncDataCache::create(allocator.get());
+  auto executor = std::make_unique<folly::CPUThreadPoolExecutor>(4);
+
+  constexpr int kNumReaderThreads = 8;
+  constexpr auto kTestDuration = std::chrono::seconds(20);
+  std::atomic_bool stop{false};
+  std::atomic_uint64_t readCount{0};
+
+  auto readerFunc = [&](int threadId) {
+    auto threadPool = pool->addLeafChild(fmt::format("reader_{}", threadId));
+    auto& ids = velox::fileIds();
+
+    while (!stop.load(std::memory_order_relaxed)) {
+      // Each thread cycles through a fixed BufferedInput mode.
+      auto mode = static_cast<BufferedInputMode>(threadId % 4);
+      std::unique_ptr<velox::dwio::common::BufferedInput> bi;
+      auto ioStats = std::make_shared<velox::dwio::common::IoStatistics>();
+      std::shared_ptr<velox::cache::ScanTracker> tracker;
+      velox::io::ReaderOptions readerOptions(threadPool.get());
+      nimble::TabletReader::Options options;
+
+      switch (mode) {
+        case BufferedInputMode::kNone:
+          break;
+
+        case BufferedInputMode::kBufferedInput:
+          bi = std::make_unique<velox::dwio::common::BufferedInput>(
+              readFile, *threadPool);
+          options.bufferedInput = bi.get();
+          break;
+
+        case BufferedInputMode::kDirectBufferedInput: {
+          tracker = std::make_shared<velox::cache::ScanTracker>(
+              "tracker", nullptr, 256 << 10);
+          velox::StringIdLease fileId(ids, fmt::format("stress_{}", threadId));
+          velox::StringIdLease groupId(ids, "stressGroup");
+          bi = std::make_unique<velox::dwio::common::DirectBufferedInput>(
+              readFile,
+              velox::dwio::common::MetricsLog::voidLog(),
+              std::move(fileId),
+              tracker,
+              std::move(groupId),
+              ioStats,
+              nullptr,
+              executor.get(),
+              readerOptions);
+          options.bufferedInput = bi.get();
+          break;
+        }
+
+        case BufferedInputMode::kCachedBufferedInput: {
+          tracker = std::make_shared<velox::cache::ScanTracker>(
+              "tracker", nullptr, 256 << 10);
+          velox::StringIdLease fileId(ids, "stressFile");
+          velox::StringIdLease groupId(ids, "stressGroup");
+          bi = std::make_unique<velox::dwio::common::CachedBufferedInput>(
+              readFile,
+              velox::dwio::common::MetricsLog::voidLog(),
+              std::move(fileId),
+              cache.get(),
+              tracker,
+              std::move(groupId),
+              ioStats,
+              nullptr,
+              executor.get(),
+              readerOptions);
+          options.bufferedInput = bi.get();
+          break;
+        }
+      }
+
+      auto reader = nimble::TabletReader::create(
+          readFile.get(), threadPool.get(), options);
+      EXPECT_EQ(reader->stripeCount(), 5);
+      EXPECT_EQ(reader->tabletRowCount(), 1000);
+
+      // Verify stripe data is accessible.
+      for (uint32_t i = 0; i < reader->stripeCount(); ++i) {
+        auto stripeId = reader->stripeIdentifier(i);
+        EXPECT_NE(stripeId.stripeGroup(), nullptr);
+      }
+      readCount.fetch_add(1, std::memory_order_relaxed);
+    }
+  };
+
+  // Start reader threads.
+  std::vector<std::thread> threads;
+  for (int i = 0; i < kNumReaderThreads; ++i) {
+    threads.emplace_back(readerFunc, i);
+  }
+
+  // Control thread: periodically evict all cache entries to force transitions
+  // between warm and cold init paths.
+  auto controlThread = std::thread([&] {
+    while (!stop.load(std::memory_order_relaxed)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      cache->shrink(1);
+    }
   });
-  tabletWriter->writeStripe(800, std::move(streams));
-  tabletWriter->close();
-  writeFile.close();
 
-  // Get layout using FileLayout::create()
-  velox::InMemoryReadFile layoutReadFile(file);
-  auto layout = nimble::FileLayout::create(&layoutReadFile, pool_.get());
+  std::this_thread::sleep_for(kTestDuration);
+  stop.store(true, std::memory_order_relaxed);
 
-  // Calculate expected read size: footer + stripes section + postscript
-  const uint64_t expectedReadSize =
-      layout.footer.size() + nimble::kPostscriptSize + layout.stripes.size();
-  const uint64_t expectedReadOffset = file.size() - expectedReadSize;
+  for (auto& t : threads) {
+    t.join();
+  }
+  controlThread.join();
 
-  // Read using FileLayout - should do a single read for exact footer size
-  nimble::testing::InMemoryTrackableReadFile readFile(file, false);
-  nimble::TabletReader::Options options;
-  options.fileLayout = layout;
-  options.footerIoBytes = expectedReadSize; // Exact size, no extra coalescing
-  auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), options);
+  LOG(INFO) << "Stress test: " << readCount.load() << " successful reads in "
+            << kTestDuration.count() << "s";
+  EXPECT_GT(readCount.load(), 0);
 
-  // Verify the tablet was created correctly
-  EXPECT_EQ(tablet->stripeCount(), 1);
-  EXPECT_EQ(tablet->stripeRowCount(0), 800);
-
-  // Verify IO pattern: with FileLayout, we should have exactly 1 read
-  // at the exact offset and size (no postscript discovery read)
-  auto chunks = readFile.chunks();
-  ASSERT_EQ(chunks.size(), 1);
-  EXPECT_EQ(chunks[0].offset, expectedReadOffset);
-  EXPECT_EQ(chunks[0].size, expectedReadSize);
-
-  // Compare with non-FileLayout path (adaptive mode) which does multiple reads:
-  // 1. First read: just the postscript (20 bytes)
-  // 2. Second read: footer + postscript
-  // 3. Potentially more reads if stripes section needs to be fetched
-  nimble::testing::InMemoryTrackableReadFile readFile2(file, false);
-  nimble::TabletReader::Options options2;
-  options2.footerIoBytes = 0; // Adaptive mode
-  auto tablet2 =
-      nimble::TabletReader::create(&readFile2, pool_.get(), options2);
-
-  auto chunks2 = readFile2.chunks();
-  // Adaptive mode does at least 2 reads (postscript discovery + footer)
-  EXPECT_GE(chunks2.size(), 2);
-  // First read is just the postscript (20 bytes at end of file)
-  EXPECT_EQ(chunks2[0].offset, file.size() - nimble::kPostscriptSize);
-  EXPECT_EQ(chunks2[0].size, nimble::kPostscriptSize);
-
-  // Key verification: FileLayout path (1 read) is more efficient than
-  // adaptive mode (>= 2 reads)
-  EXPECT_LT(chunks.size(), chunks2.size());
-
-  // Test with 8MB footerIoBytes (or entire file size) - speculative mode
-  // should also read everything in one IO when buffer is large enough
-  nimble::testing::InMemoryTrackableReadFile readFile3(file, false);
-  nimble::TabletReader::Options options3;
-  options3.footerIoBytes = 8 * 1024 * 1024; // 8MB - larger than file
-  auto tablet3 =
-      nimble::TabletReader::create(&readFile3, pool_.get(), options3);
-
-  auto chunks3 = readFile3.chunks();
-  // With large footerIoBytes, speculative mode reads entire file in one IO
-  ASSERT_EQ(chunks3.size(), 1);
-  // Should read the entire file (or at least footerIoBytes from the end)
-  EXPECT_EQ(chunks3[0].offset, 0);
-  EXPECT_EQ(chunks3[0].size, file.size());
+  cache->shutdown();
 }
+
 } // namespace

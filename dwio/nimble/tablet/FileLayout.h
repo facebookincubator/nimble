@@ -57,9 +57,6 @@ class Postscript {
 
   static Postscript parse(std::string_view data);
 
-  /// Creates a Postscript from FileLayout metadata.
-  static Postscript create(const struct FileLayout& layout);
-
  private:
   Postscript(
       uint32_t footerSize,

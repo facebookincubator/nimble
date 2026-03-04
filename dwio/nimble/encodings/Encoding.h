@@ -106,11 +106,11 @@ class Encoding {
     bool useVarintRowCount;
   };
 
-  // The binary layout for each Encoding begins with the same prefix:
-  // 1 byte: EncodingType
-  // 1 byte: DataType
-  // 4 bytes: uint32_t num rows (fixed format)
-  //   OR 1-5 bytes: varint num rows (when useVarintRowCount option is set)
+  /// The binary layout for each Encoding begins with the same prefix:
+  /// 1 byte: EncodingType
+  /// 1 byte: DataType
+  /// 4 bytes: uint32_t num rows (fixed format)
+  ///   OR 1-5 bytes: varint num rows (when useVarintRowCount option is set)
   static constexpr int kEncodingTypeOffset = 0;
   static constexpr int kDataTypeOffset = 1;
   static constexpr int kRowCountOffset = 2;

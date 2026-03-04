@@ -45,7 +45,7 @@ class TabletReaderTestHelper {
 
   /// Returns true if the stripe group at the given index is cached.
   bool hasStripeGroupCached(uint32_t groupIndex) const {
-    return tabletReader_->stripeGroupCache_.testingHasCachedEntry(groupIndex);
+    return tabletReader_->stripeGroupCache_.hasCachedEntry(groupIndex);
   }
 
   /// Returns true if the first stripe group is cached and it's the only one.
@@ -63,7 +63,7 @@ class TabletReaderTestHelper {
 
   /// Returns true if the index group at the given index is cached.
   bool hasIndexGroupCached(uint32_t groupIndex) const {
-    return tabletReader_->indexGroupCache_.testingHasCachedEntry(groupIndex);
+    return tabletReader_->indexGroupCache_.hasCachedEntry(groupIndex);
   }
 
   /// Returns true if the first index group is cached and it's the only one.
@@ -82,6 +82,12 @@ class TabletReaderTestHelper {
       offsets.push_back(tabletReader_->stripeOffsets_[i]);
     }
     return offsets;
+  }
+
+  // Returns true if this reader is backed by a BufferedInput with Velox
+  // async data cache.
+  bool hasCache() const {
+    return tabletReader_->hasCache();
   }
 
   /// Returns the stripe sizes array.

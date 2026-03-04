@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -27,11 +28,12 @@
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "folly/Synchronized.h"
-#include "folly/io/IOBuf.h"
 #include "velox/common/file/File.h"
+#include "velox/dwio/common/MetricsLog.h"
 
 namespace facebook::velox::dwio::common {
 class BufferedInput;
+class SeekableInputStream;
 } // namespace facebook::velox::dwio::common
 
 /// The TabletReader class is the on-disk layout for nimble.
@@ -93,8 +95,8 @@ class ReferenceCountedCache {
     return count;
   }
 
-  /// Returns whether the given key has a non-expired cached entry for testing.
-  bool testingHasCachedEntry(Key key) const {
+  /// Returns whether the given key has a non-expired cached entry.
+  bool hasCachedEntry(Key key) const {
     auto rlockedCache = cache_.rlock();
     auto it = rlockedCache->find(key);
     if (it == rlockedCache->end()) {
@@ -199,16 +201,10 @@ class TabletReader {
  public:
   /// Options for configuring TabletReader behavior.
   struct Options {
-    /// Precomputed file layout from external coordinator.
-    /// When provided, skips the discovery phase and uses this layout directly.
-    std::optional<FileLayout> fileLayout;
-
-    /// Controls footer IO behavior:
-    /// - Without fileLayout: speculative tail read size (0 = adaptive mode
-    ///   that reads postscript first, then exact footer size).
-    /// - With fileLayout: memory budget for coalesced metadata reads.
-    /// Default is 8MB (same as kInitialFooterSize).
-    uint64_t footerIoBytes{8 * 1024 * 1024};
+    /// Speculative tail read size (0 = adaptive mode that reads postscript
+    /// first, then exact footer size). Default is 8MB (same as
+    /// kInitialFooterSize).
+    uint64_t maxFooterIoBytes{8 * 1024 * 1024};
 
     /// Optional sections to eagerly load during initialization.
     std::vector<std::string> preloadOptionalSections;
@@ -285,7 +281,7 @@ class TabletReader {
   }
 
   uint64_t fileSize() const {
-    return file_->size();
+    return fileSize_;
   }
 
   const Postscript& postscript() const {
@@ -359,7 +355,7 @@ class TabletReader {
       MemoryPool& pool,
       const Options& options);
 
-  /// For testing use
+  // For testing use.
   TabletReader(
       std::shared_ptr<velox::ReadFile> readFile,
       MemoryPool& pool,
@@ -371,25 +367,72 @@ class TabletReader {
 
   void init(const Options& options);
 
-  // Initialize from precomputed file layout - skips discovery phase.
-  void initFromFileLayout(const Options& options);
+  // Cache init path.
+  //
+  // Returns true if this reader is backed by a BufferedInput with Velox
+  // async data cache.
+  bool hasCache() const;
 
+  // Tries to initialize entirely from Velox async data cache (zero file IO).
+  // Probes the cache for footer+PS at synthetic offset fileSize, parses PS and
+  // footer, then loads all remaining metadata via cache hits. Returns true on
+  // success, false on cache miss (caller falls through to cold path).
+  bool tryInitFromCache(const Options& options);
+
+  // Tries to parse PS and footer from cached footer+PS entry at synthetic
+  // offset fileSize. Returns true on cache hit, false on miss.
+  bool tryLoadAndInitFooterFromCache();
+
+  // Populates AsyncDataCache with exact-size metadata entries from the
+  // speculative tail read IOBuf. Enables zero-IO init for subsequent readers.
+  // No-op if there is no cache.
+  void cacheMetadata(const folly::IOBuf& footerIoBuf, uint64_t footerIoOffset);
+
+  // Footer/postscript parsing.
+  //
+  // Parses the postscript from the last kPostscriptSize bytes of footerIoBuf.
   void initPostScript(const folly::IOBuf& footerIoBuf, uint64_t footerIoSize);
 
+  // Parses the footer from footerIoBuf using the already-parsed postscript.
   void initFooter(const folly::IOBuf& footerIoBuf, uint64_t footerIoSize);
 
-  void initPostScriptAndFooter(
-      uint64_t fileSize,
-      uint64_t footerIoBytes,
+  // Reads and parses both postscript and footer from file. Supports two modes:
+  // - Adaptive (maxFooterIoBytes=0): reads postscript first, then exact footer.
+  // - Speculative: reads maxFooterIoBytes, re-reads if footer is larger.
+  void loadAndInitFooter(
+      uint64_t maxFooterIoBytes,
       folly::IOBuf& footerIoBuf,
       uint64_t& footerIoSize,
       uint64_t& footerIoOffset);
 
+  // Stripes.
+  //
+  // Loads stripes_ from the footerIoBuf. Handles both single-read and re-read
+  // cases when the speculative read didn't capture the full stripes section.
+  void loadStripes(
+      folly::IOBuf& footerIoBuf,
+      uint64_t& footerIoSize,
+      uint64_t& footerIoOffset);
+
+  // Parses stripes_ to populate stripe metadata (counts, offsets, etc.).
+  // Used by test init path.
+  void initStripes();
+
+  // Stripe groups.
+  //
   uint32_t stripeGroupIndex(uint32_t stripeIndex) const;
+
+  std::shared_ptr<StripeGroup> stripeGroup(uint32_t stripeGroupIndex) const;
 
   std::shared_ptr<StripeGroup> loadStripeGroup(uint32_t stripeGroupIndex) const;
 
-  std::shared_ptr<StripeGroup> stripeGroup(uint32_t stripeGroupIndex) const;
+  // Eagerly caches the first stripe group if it's already in the footer IOBuf.
+  // Skipped when cache is present — on-demand reads will hit the cache.
+  void preloadStripeGroup(const folly::IOBuf& footerIoBuf);
+
+  // Index.
+  //
+  void initIndex();
 
   // Returns the cached StripeIndexGroup for the given stripe group index.
   // The StripeIndexGroup contains index metadata for efficient data filtering
@@ -401,24 +444,79 @@ class TabletReader {
   std::shared_ptr<StripeIndexGroup> loadIndexGroup(
       uint32_t stripeGroupIndex) const;
 
-  void initStripes(
-      uint64_t fileSize,
-      folly::IOBuf& footerIoBuf,
-      uint64_t& footerIoSize,
-      uint64_t& footerIoOffset);
+  // Eagerly caches the first index group if it's already in the footer IOBuf.
+  // Skipped when cache is present — on-demand reads will hit the cache.
+  void preloadIndexGroup(const folly::IOBuf& footerIoBuf);
 
-  // Used by test init path.
-  void initStripes();
+  // Loads both stripe group and index group together using coalesced IO when
+  // BufferedInput is available. Falls back to separate loads otherwise.
+  std::pair<std::shared_ptr<StripeGroup>, std::shared_ptr<StripeIndexGroup>>
+  loadStripeAndIndexGroup(uint32_t stripeGroupIndex) const;
 
-  void initOptionalSections(
+  // Optional sections.
+  //
+  // Parses optional sections metadata from footer into optionalSections_ map.
+  void initOptionalSections();
+
+  // Returns the list of optional section names to preload: the user-specified
+  // sections plus the index section if present.
+  std::vector<std::string> preloadSectionNames(const Options& options) const;
+
+  // Preloads optional sections into optionalSectionsCache_ using the provided
+  // loader callback to read each section.
+  using SectionLoader = std::function<std::unique_ptr<MetadataBuffer>(
+      const MetadataSection& section)>;
+  void preloadOptionalSections(
+      const Options& options,
+      const SectionLoader& loader);
+
+  // Creates a SectionLoader that tries to extract from footerIoBuf first
+  // (for sections at offset >= footerIoOffset), falling back to readMetadata.
+  SectionLoader makeSectionLoader(
       const folly::IOBuf& footerIoBuf,
-      uint64_t footerIoOffset,
-      const std::vector<std::string>& preloadOptionalSections);
+      uint64_t footerIoOffset) const;
 
-  void initIndex(
-      const folly::IOBuf& footerIoBuf,
-      uint64_t footerIoOffset,
-      uint64_t fileSize);
+  // BufferedInput coalesced IO.
+  //
+  // Holds a section enqueued for coalesced IO via BufferedInput.
+  // After bufferedInput_->load(), the stream can be read to get section data.
+  struct EnqueuedSection {
+    std::string name;
+    MetadataSection section;
+    std::unique_ptr<velox::dwio::common::SeekableInputStream> stream;
+  };
+
+  // Loads stripes and optional sections via BufferedInput's enqueue/load
+  // pattern for coalesced IO. Populates stripes_ and optionalSectionsCache_.
+  // No-op for empty files (no stripes). Caller must call initStripes() after.
+  void loadStripesAndSections(const Options& options);
+
+  // Enqueues a read for the stripes section via BufferedInput. Returns nullopt
+  // if no stripes (empty file). Caller must call bufferedInput_->load() after.
+  std::optional<EnqueuedSection> enqueueStripesSection();
+
+  // Enqueues reads for the given optional section names via BufferedInput.
+  // Skips names not found in optionalSections_. Caller must call
+  // bufferedInput_->load() after this to execute the coalesced IO.
+  std::vector<EnqueuedSection> enqueueOptionalSections(
+      const std::vector<std::string>& sectionNames);
+
+  // Reads enqueued sections and inserts them into optionalSectionsCache_.
+  // Must be called after bufferedInput_->load().
+  void loadEnqueuedOptionalSections(std::vector<EnqueuedSection>&& sections);
+
+  // Low-level IO.
+  //
+  // Reads metadata from a MetadataSection (offset + size + compressionType).
+  // Uses BufferedInput when available, otherwise reads directly from file.
+  std::unique_ptr<MetadataBuffer> readMetadata(
+      const MetadataSection& section,
+      velox::dwio::common::LogType logType) const;
+
+  // Reads metadata from a pre-loaded stream (e.g. from enqueue/load pattern).
+  std::unique_ptr<MetadataBuffer> readMetadata(
+      std::unique_ptr<velox::dwio::common::SeekableInputStream> stream,
+      const MetadataSection& section) const;
 
   MemoryPool* const pool_;
   // Non-owning pointer to the file for reading. Always valid during the
@@ -428,10 +526,11 @@ class TabletReader {
   // valid throughout TabletReader's lifetime.
   const std::shared_ptr<velox::ReadFile> ownedFile_;
   // Optional BufferedInput for cached reads (non-owning, owned by caller).
-  // TODO: Integrate BufferedInput for metadata IO when set, enabling cache
-  // integration for footer, stripes, and stripe group reads.
+  // When set, metadata reads (stripe groups, index groups) go through
+  // BufferedInput for cache integration.
   velox::dwio::common::BufferedInput* const bufferedInput_;
 
+  uint64_t fileSize_{0};
   Postscript ps_;
   std::unique_ptr<MetadataBuffer> footer_;
   std::unique_ptr<MetadataBuffer> stripes_;
