@@ -56,12 +56,14 @@ TypePtr getFileSchema(
 std::shared_ptr<ReaderBase> ReaderBase::create(
     std::unique_ptr<velox::dwio::common::BufferedInput> input,
     const velox::dwio::common::ReaderOptions& options) {
-  // Initialize all members
+  // Initialize tablet reader options with BufferedInput for metadata IO.
+  auto tabletOptions = defaultTabletReaderOptions();
+  if (options.fileMetadataCacheEnabled()) {
+    tabletOptions.bufferedInput = input.get();
+  }
+
   auto tablet = TabletReader::create(
-      // TODO: Make TabletReader taking BufferedInput.
-      input->getReadFile().get(),
-      &options.memoryPool(),
-      defaultTabletReaderOptions());
+      input->getReadFile().get(), &options.memoryPool(), tabletOptions);
 
   auto* pool = &options.memoryPool();
   const auto& randomSkip = options.randomSkip();

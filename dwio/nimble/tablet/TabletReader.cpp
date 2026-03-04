@@ -19,6 +19,8 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
+#include "velox/dwio/common/BufferedInput.h"
+#include "velox/dwio/common/SeekableInputStream.h"
 
 #include "folly/io/Cursor.h"
 
@@ -50,6 +52,48 @@ namespace {
 template <typename T>
 const T* asFlatBuffersRoot(std::string_view content) {
   return flatbuffers::GetRoot<T>(content.data());
+}
+
+inline const serialization::Footer* footerRoot(const MetadataBuffer& footer) {
+  return asFlatBuffersRoot<serialization::Footer>(footer.content());
+}
+
+inline const serialization::Stripes* stripesRoot(
+    const MetadataBuffer& stripes) {
+  return asFlatBuffersRoot<serialization::Stripes>(stripes.content());
+}
+
+inline void validateOptionalSections(
+    const serialization::OptionalMetadataSections* sections) {
+  NIMBLE_CHECK_NOT_NULL(sections, "Optional sections is null.");
+  NIMBLE_CHECK(sections->names(), "Optional sections names is null.");
+  NIMBLE_CHECK(sections->offsets(), "Optional sections offsets is null.");
+  NIMBLE_CHECK(sections->sizes(), "Optional sections sizes is null.");
+  NIMBLE_CHECK(
+      sections->compression_types(),
+      "Optional sections compression_types is null.");
+  NIMBLE_CHECK_EQ(
+      sections->names()->size(),
+      sections->offsets()->size(),
+      "Optional sections names and offsets size mismatch.");
+  NIMBLE_CHECK_EQ(
+      sections->names()->size(),
+      sections->sizes()->size(),
+      "Optional sections names and sizes size mismatch.");
+  NIMBLE_CHECK_EQ(
+      sections->names()->size(),
+      sections->compression_types()->size(),
+      "Optional sections names and compression_types size mismatch.");
+}
+
+// Converts a FlatBuffers section (with offset/size/compression_type fields)
+// to a MetadataSection.
+template <typename T>
+MetadataSection toMetadataSection(const T* fbSection) {
+  return MetadataSection{
+      fbSection->offset(),
+      fbSection->size(),
+      static_cast<CompressionType>(fbSection->compression_type())};
 }
 
 size_t copyTo(const folly::IOBuf& source, void* target, size_t size) {
@@ -89,8 +133,7 @@ StripeGroup::StripeGroup(
     : metadata_{std::move(stripeGroup)}, index_{stripeGroupIndex} {
   const auto* metadataRoot =
       asFlatBuffersRoot<serialization::StripeGroup>(metadata_->content());
-  const auto* stripesRoot =
-      asFlatBuffersRoot<serialization::Stripes>(stripes.content());
+  const auto* stripesParsed = stripesRoot(stripes);
 
   const auto streamCount = metadataRoot->stream_offsets()->size();
   NIMBLE_CHECK_EQ(
@@ -106,9 +149,9 @@ StripeGroup::StripeGroup(
   streamSizes_ = metadataRoot->stream_sizes()->data();
 
   // Find the first stripe that use this stripe group
-  auto* groupIndices = stripesRoot->group_indices()->data();
+  auto* groupIndices = stripesParsed->group_indices()->data();
   for (uint32_t stripeIndex = 0,
-                groupIndicesSize = stripesRoot->group_indices()->size();
+                groupIndicesSize = stripesParsed->group_indices()->size();
        stripeIndex < groupIndicesSize;
        ++stripeIndex) {
     if (groupIndices[stripeIndex] == stripeGroupIndex) {
@@ -176,15 +219,6 @@ Postscript::Postscript(
       majorVersion_(majorVersion),
       minorVersion_(minorVersion) {}
 
-Postscript Postscript::create(const FileLayout& layout) {
-  return Postscript(
-      layout.footer.size(),
-      layout.footer.compressionType(),
-      layout.postscript.checksumType(),
-      layout.postscript.majorVersion(),
-      layout.postscript.minorVersion());
-}
-
 TabletReader::TabletReader(
     std::shared_ptr<velox::ReadFile> readFile,
     MemoryPool& pool,
@@ -241,16 +275,14 @@ TabletReader::TabletReader(
 }
 
 void TabletReader::init(const Options& options) {
-  const auto fileSize = file_->size();
+  fileSize_ = file_->size();
   NIMBLE_CHECK_FILE(
-      fileSize >= kPostscriptSize,
+      fileSize_ >= kPostscriptSize,
       "Corrupted file. File size {} is smaller than postscript size {}.",
-      velox::succinctBytes(fileSize),
+      velox::succinctBytes(fileSize_),
       velox::succinctBytes(kPostscriptSize));
 
-  if (options.fileLayout.has_value()) {
-    // FileLayout provided - skip discovery, use layout directly.
-    initFromFileLayout(options);
+  if (tryInitFromCache(options)) {
     return;
   }
 
@@ -258,32 +290,36 @@ void TabletReader::init(const Options& options) {
   uint64_t footerIoOffset;
   folly::IOBuf footerIoBuf;
 
-  initPostScriptAndFooter(
-      fileSize,
-      options.footerIoBytes,
-      footerIoBuf,
-      footerIoSize,
-      footerIoOffset);
-  initStripes(fileSize, footerIoBuf, footerIoSize, footerIoOffset);
+  loadAndInitFooter(
+      options.maxFooterIoBytes, footerIoBuf, footerIoSize, footerIoOffset);
+  loadStripes(footerIoBuf, footerIoSize, footerIoOffset);
+  initStripes();
+  if (stripeCount_ > 0) {
+    preloadStripeGroup(footerIoBuf);
+  }
 
-  initOptionalSections(
-      footerIoBuf, footerIoOffset, options.preloadOptionalSections);
+  initOptionalSections();
+  preloadOptionalSections(
+      options, makeSectionLoader(footerIoBuf, footerIoOffset));
 
-  initIndex(footerIoBuf, footerIoOffset, fileSize);
+  initIndex();
+  preloadIndexGroup(footerIoBuf);
+
+  cacheMetadata(footerIoBuf, footerIoOffset);
 }
 
-void TabletReader::initPostScriptAndFooter(
-    uint64_t fileSize,
-    uint64_t footerIoBytes,
+void TabletReader::loadAndInitFooter(
+    uint64_t maxFooterIoBytes,
     folly::IOBuf& footerIoBuf,
     uint64_t& footerIoSize,
     uint64_t& footerIoOffset) {
-  if (footerIoBytes == 0) {
+  footerIoBuf = folly::IOBuf();
+  if (maxFooterIoBytes == 0) {
     // Adaptive mode: read postscript first, then exact footer size.
     // First read: just the postscript (last 20 bytes)
     {
       const velox::common::Region psRegion{
-          fileSize - kPostscriptSize, kPostscriptSize, "postscript"};
+          fileSize_ - kPostscriptSize, kPostscriptSize, "postscript"};
       folly::IOBuf psIoBuf;
       file_->preadv({&psRegion, 1}, {&psIoBuf, 1});
       ps_ = Postscript::parse(toStringView(psIoBuf));
@@ -291,7 +327,7 @@ void TabletReader::initPostScriptAndFooter(
 
     // Second read: exact footer + postscript
     footerIoSize = ps_.footerSize() + kPostscriptSize;
-    footerIoOffset = fileSize - footerIoSize;
+    footerIoOffset = fileSize_ - footerIoSize;
     {
       const velox::common::Region footerIoRegion{
           footerIoOffset, footerIoSize, "footer"};
@@ -301,9 +337,9 @@ void TabletReader::initPostScriptAndFooter(
 
     initFooter(footerIoBuf, footerIoSize);
   } else {
-    // Speculative mode: read footerIoBytes (or fileSize if smaller)
-    footerIoSize = std::min(footerIoBytes, fileSize);
-    footerIoOffset = fileSize - footerIoSize;
+    // Speculative mode: read maxFooterIoBytes (or fileSize_ if smaller)
+    footerIoSize = std::min(maxFooterIoBytes, fileSize_);
+    footerIoOffset = fileSize_ - footerIoSize;
     {
       const velox::common::Region footerIoRegion{
           footerIoOffset, footerIoSize, "footer"};
@@ -317,8 +353,7 @@ void TabletReader::initPostScriptAndFooter(
     const uint64_t requiredSize = ps_.footerSize() + kPostscriptSize;
     if (requiredSize > footerIoSize) {
       footerIoSize = requiredSize;
-      footerIoOffset = fileSize - footerIoSize;
-      footerIoBuf = folly::IOBuf();
+      footerIoOffset = fileSize_ - footerIoSize;
       const velox::common::Region footerIoRegion{
           footerIoOffset, footerIoSize, "footer"};
       file_->preadv({&footerIoRegion, 1}, {&footerIoBuf, 1});
@@ -327,91 +362,6 @@ void TabletReader::initPostScriptAndFooter(
 
     initFooter(footerIoBuf, footerIoSize);
   }
-}
-
-void TabletReader::initFromFileLayout(const Options& options) {
-  NIMBLE_DCHECK(options.fileLayout.has_value(), "FileLayout must be provided");
-  const auto& layout = *options.fileLayout;
-  const auto fileSize = file_->size();
-
-  // Validate layout matches file
-  NIMBLE_USER_CHECK_EQ(
-      layout.fileSize,
-      fileSize,
-      "FileLayout fileSize {} doesn't match actual file size {}",
-      layout.fileSize,
-      fileSize);
-
-  // Initialize postscript from layout
-  ps_ = Postscript::create(layout);
-
-  // Calculate what to read within the memory budget.
-  // At minimum we need the footer and stripes section.
-  const uint64_t footerSize = layout.footer.size() + kPostscriptSize;
-  uint64_t footerReadSize = footerSize;
-
-  // Include stripes section if present (stored before footer).
-  // Stripes section exists when stripeGroups is not empty.
-  if (!layout.stripeGroups.empty()) {
-    // Stripes section should be contiguous with footer.
-    NIMBLE_CHECK_EQ(
-        layout.stripes.offset() + layout.stripes.size(),
-        layout.footer.offset(),
-        "Stripes section not contiguous with footer");
-    footerReadSize += layout.stripes.size();
-  }
-
-  // Try to coalesce first stripe group if it fits in budget.
-  bool preloadFirstStripeGroup = false;
-  if (!layout.stripeGroups.empty() && options.footerIoBytes > 0) {
-    const auto& firstGroup = layout.stripeGroups[0];
-    // Check if first stripe group is contiguous with stripes section.
-    if (firstGroup.offset() + firstGroup.size() == layout.stripes.offset() &&
-        footerReadSize + firstGroup.size() <= options.footerIoBytes) {
-      footerReadSize += firstGroup.size();
-      preloadFirstStripeGroup = true;
-    }
-  }
-
-  // TODO: Add support for preloading first index group if it fits in budget.
-
-  // Read footer (and potentially stripes section and first stripe group).
-  uint64_t footerIoOffset = fileSize - footerReadSize;
-  folly::IOBuf footerIoBuf;
-  {
-    const velox::common::Region footerIoRegion{
-        footerIoOffset, footerReadSize, "footer"};
-    file_->preadv({&footerIoRegion, 1}, {&footerIoBuf, 1});
-  }
-  NIMBLE_CHECK_EQ(footerReadSize, footerIoBuf.computeChainDataLength());
-
-  initFooter(footerIoBuf, footerReadSize);
-
-  // Initialize stripes
-  initStripes(fileSize, footerIoBuf, footerReadSize, footerIoOffset);
-
-  // If first stripe group was preloaded, cache it.
-  if (preloadFirstStripeGroup) {
-    const auto& firstGroup = layout.stripeGroups[0];
-    const uint64_t groupOffsetInBuf = firstGroup.offset() - footerIoOffset;
-    auto groupMetadata = std::make_unique<MetadataBuffer>(
-        *pool_,
-        footerIoBuf,
-        groupOffsetInBuf,
-        firstGroup.size(),
-        firstGroup.compressionType());
-    auto stripeGroup =
-        std::make_shared<StripeGroup>(0, *stripes_, std::move(groupMetadata));
-    firstStripeGroup_.wlock()->swap(stripeGroup);
-  }
-
-  // Initialize optional sections (empty for now as we don't have them in
-  // buffer)
-  initOptionalSections(
-      footerIoBuf, footerIoOffset, options.preloadOptionalSections);
-
-  // Initialize index
-  initIndex(footerIoBuf, footerIoOffset, fileSize);
 }
 
 void TabletReader::initPostScript(
@@ -443,29 +393,31 @@ void TabletReader::initFooter(
       ps_.footerCompressionType());
 }
 
-void TabletReader::initStripes(
-    uint64_t fileSize,
+void TabletReader::loadStripes(
     folly::IOBuf& footerIoBuf,
     uint64_t& footerIoSize,
     uint64_t& footerIoOffset) {
   NIMBLE_CHECK_NOT_NULL(footer_);
-  auto* footerRoot =
-      asFlatBuffersRoot<serialization::Footer>(footer_->content());
-  NIMBLE_CHECK_EQ(tabletRowCount_, 0);
-  tabletRowCount_ = footerRoot->row_count();
+  NIMBLE_CHECK_NULL(stripes_);
 
-  auto* stripesSection = footerRoot->stripes();
+  const auto* footer = footerRoot(*footer_);
+  auto* stripesSection = footer->stripes();
   if (stripesSection == nullptr) {
-    NIMBLE_CHECK_EQ(tabletRowCount_, 0);
+    NIMBLE_CHECK_EQ(footer->row_count(), 0);
     return;
   }
 
-  // Check if stripes section is in the buffer; if not, re-read to include it.
-  const uint64_t requiredSize = fileSize - stripesSection->offset();
+  // Compute the lowest offset we need in the buffer: stripes section and
+  // index section (if present, may be at a lower offset than stripes).
+  uint64_t requiredOffset = stripesSection->offset();
+  auto indexIt = optionalSections_.find(std::string{kIndexSection});
+  if (indexIt != optionalSections_.end()) {
+    requiredOffset = std::min(requiredOffset, indexIt->second.offset());
+  }
+  const uint64_t requiredSize = fileSize_ - requiredOffset;
   if (requiredSize > footerIoSize) {
     footerIoSize = requiredSize;
-    footerIoOffset = fileSize - footerIoSize;
-    footerIoBuf = folly::IOBuf();
+    footerIoOffset = fileSize_ - footerIoSize;
     const velox::common::Region footerIoRegion{
         footerIoOffset, footerIoSize, "footer+stripes"};
     file_->preadv({&footerIoRegion, 1}, {&footerIoBuf, 1});
@@ -474,68 +426,21 @@ void TabletReader::initStripes(
   stripes_ = std::make_unique<MetadataBuffer>(
       *pool_,
       footerIoBuf,
-      stripesSection->offset() + footerIoSize - fileSize,
+      stripesSection->offset() + footerIoSize - fileSize_,
       stripesSection->size(),
       static_cast<CompressionType>(stripesSection->compression_type()));
-
-  const auto* stripes =
-      asFlatBuffersRoot<serialization::Stripes>(stripes_->content());
-  auto* stripeGroups = footerRoot->stripe_groups();
-  NIMBLE_CHECK_NOT_NULL(stripeGroups, "Stripe groups is null.");
-  NIMBLE_CHECK_EQ(
-      stripeGroups->size(),
-      *stripes->group_indices()->rbegin() + 1,
-      "Unexpected stripe group count");
-
-  // Always eagerly load if it's the only stripe group and is already
-  // fetched
-  const auto stripeGroup = stripeGroups->Get(0);
-  if (stripeGroups->size() == 1 &&
-      stripeGroup->offset() + footerIoSize >= fileSize) {
-    auto stripeGroupPtr =
-        stripeGroupCache_.get(0, [&](uint32_t stripeGroupIndex) {
-          return std::make_shared<StripeGroup>(
-              stripeGroupIndex,
-              *stripes_,
-              std::make_unique<MetadataBuffer>(
-                  *pool_,
-                  footerIoBuf,
-                  stripeGroup->offset() + footerIoSize - fileSize,
-                  stripeGroup->size(),
-                  static_cast<CompressionType>(
-                      stripeGroup->compression_type())));
-        });
-    *firstStripeGroup_.wlock() = std::move(stripeGroupPtr);
-  }
-
-  NIMBLE_CHECK_EQ(stripeCount_, 0);
-  stripeCount_ = stripes->row_counts()->size();
-  NIMBLE_CHECK_GT(stripeCount_, 0, "Unexpected stripe count");
-  NIMBLE_CHECK_EQ(
-      stripeCount_, stripes->offsets()->size(), "Unexpected stripe count");
-  NIMBLE_CHECK_EQ(
-      stripeCount_, stripes->sizes()->size(), "Unexpected stripe count");
-  NIMBLE_CHECK_EQ(
-      stripeCount_,
-      stripes->group_indices()->size(),
-      "Unexpected stripe count");
-
-  stripeRowCounts_ = stripes->row_counts()->data();
-  stripeOffsets_ = stripes->offsets()->data();
 }
 
 void TabletReader::initStripes() {
-  const auto* footerRoot =
-      asFlatBuffersRoot<serialization::Footer>(footer_->content());
+  const auto* footer = footerRoot(*footer_);
   NIMBLE_CHECK_EQ(tabletRowCount_, 0);
-  tabletRowCount_ = footerRoot->row_count();
+  tabletRowCount_ = footer->row_count();
   if (stripes_ == nullptr) {
     NIMBLE_CHECK_EQ(tabletRowCount_, 0);
     return;
   }
 
-  const auto* stripes =
-      asFlatBuffersRoot<serialization::Stripes>(stripes_->content());
+  const auto* stripes = stripesRoot(*stripes_);
 
   stripeCount_ = stripes->row_counts()->size();
   NIMBLE_CHECK_GT(stripeCount_, 0, "Unexpected stripe count");
@@ -551,40 +456,17 @@ void TabletReader::initStripes() {
   stripeOffsets_ = stripes->offsets()->data();
 }
 
-void TabletReader::initOptionalSections(
-    const folly::IOBuf& footerIoBuf,
-    uint64_t footerIoOffset,
-    const std::vector<std::string>& preloadOptionalSections) {
-  auto footerRoot =
-      asFlatBuffersRoot<serialization::Footer>(footer_->content());
+void TabletReader::initOptionalSections() {
+  const auto* footer = footerRoot(*footer_);
 
-  auto* optionalSections = footerRoot->optional_sections();
+  auto* optionalSections = footer->optional_sections();
   if (optionalSections == nullptr) {
     return;
   }
 
-  NIMBLE_CHECK(optionalSections->names(), "Optional sections names is null.");
-  NIMBLE_CHECK(
-      optionalSections->offsets(), "Optional sections offsets is null.");
-  NIMBLE_CHECK(optionalSections->sizes(), "Optional sections sizes is null.");
-  NIMBLE_CHECK(
-      optionalSections->compression_types(),
-      "Optional sections compression_types is null.");
-  NIMBLE_CHECK_EQ(
-      optionalSections->names()->size(),
-      optionalSections->offsets()->size(),
-      "Optional sections names and offsets size mismatch.");
-  NIMBLE_CHECK_EQ(
-      optionalSections->names()->size(),
-      optionalSections->sizes()->size(),
-      "Optional sections names and sizes size mismatch.");
-  NIMBLE_CHECK_EQ(
-      optionalSections->names()->size(),
-      optionalSections->compression_types()->size(),
-      "Optional sections names and compression_types size mismatch.");
+  validateOptionalSections(optionalSections);
 
   optionalSections_.reserve(optionalSections->names()->size());
-
   for (auto i = 0; i < optionalSections->names()->size(); ++i) {
     optionalSections_.insert(
         std::make_pair(
@@ -595,49 +477,45 @@ void TabletReader::initOptionalSections(
                 static_cast<CompressionType>(
                     optionalSections->compression_types()->Get(i))}));
   }
+}
 
-  std::vector<velox::common::Region> mustRead;
-  for (const auto& preload : preloadOptionalSections) {
-    auto it = optionalSections_.find(preload);
+std::vector<std::string> TabletReader::preloadSectionNames(
+    const Options& options) const {
+  auto names = options.preloadOptionalSections;
+  if (hasIndex()) {
+    names.emplace_back(kIndexSection);
+  }
+  return names;
+}
+
+void TabletReader::preloadOptionalSections(
+    const Options& options,
+    const SectionLoader& loader) {
+  for (const auto& name : preloadSectionNames(options)) {
+    auto it = optionalSections_.find(name);
     if (it == optionalSections_.end()) {
       continue;
     }
-
-    const auto sectionOffset = it->second.offset();
-    const auto sectionSize = it->second.size();
-    const auto sectionCompressionType = it->second.compressionType();
-
-    if (sectionOffset < footerIoOffset) {
-      // Section was not read yet. Need to read from file.
-      mustRead.emplace_back(sectionOffset, sectionSize, preload);
-    } else {
-      // Section already loaded from file
-      auto metadata = std::make_unique<MetadataBuffer>(
-          *pool_,
-          footerIoBuf,
-          sectionOffset - footerIoOffset,
-          sectionSize,
-          sectionCompressionType);
-      optionalSectionsCache_.wlock()->insert({preload, std::move(metadata)});
-    }
+    optionalSectionsCache_.wlock()->insert({name, loader(it->second)});
   }
+}
 
-  if (mustRead.empty()) {
-    return;
-  }
-  std::vector<folly::IOBuf> result(mustRead.size());
-  file_->preadv(mustRead, {result.data(), result.size()});
-  NIMBLE_CHECK_EQ(
-      result.size(),
-      mustRead.size(),
-      "Region and IOBuf vector sizes don't match");
-  for (size_t i = 0; i < result.size(); ++i) {
-    auto iobuf = std::move(result[i]);
-    const std::string preload{mustRead[i].label};
-    auto metadata = std::make_unique<MetadataBuffer>(
-        *pool_, iobuf, optionalSections_.at(preload).compressionType());
-    optionalSectionsCache_.wlock()->insert({preload, std::move(metadata)});
-  }
+TabletReader::SectionLoader TabletReader::makeSectionLoader(
+    const folly::IOBuf& footerIoBuf,
+    uint64_t footerIoOffset) const {
+  return
+      [this, &footerIoBuf, footerIoOffset](
+          const MetadataSection& section) -> std::unique_ptr<MetadataBuffer> {
+        if (section.offset() >= footerIoOffset) {
+          return std::make_unique<MetadataBuffer>(
+              *pool_,
+              footerIoBuf,
+              section.offset() - footerIoOffset,
+              section.size(),
+              section.compressionType());
+        }
+        return readMetadata(section, velox::dwio::common::LogType::FILE);
+      };
 }
 
 std::shared_ptr<TabletReader> TabletReader::create(
@@ -757,31 +635,148 @@ struct RegionEqual {
 } // namespace
 
 uint32_t TabletReader::stripeGroupIndex(uint32_t stripeIndex) const {
-  const auto* stripesRoot =
-      asFlatBuffersRoot<serialization::Stripes>(stripes_->content());
-  return stripesRoot->group_indices()->Get(stripeIndex);
+  return stripesRoot(*stripes_)->group_indices()->Get(stripeIndex);
+}
+
+bool TabletReader::hasCache() const {
+  return bufferedInput_ != nullptr && bufferedInput_->hasCache();
+}
+
+bool TabletReader::tryLoadAndInitFooterFromCache() {
+  // Try to read footer+PS from cache at synthetic offset fileSize_.
+  // fileSize_ is a well-known key computable without any file IO.
+  auto cached = bufferedInput_->findCachedRegion(fileSize_);
+  if (!cached.has_value()) {
+    return false;
+  }
+
+  // Warm path: parse PS + footer from cached data, zero file IO.
+  // Data layout: [footer | PS] (file's natural byte order).
+  const auto size = cached->size();
+  NIMBLE_CHECK_GE(size, kPostscriptSize, "Cached footer+PS entry too small");
+
+  // PS is only 20 bytes at the tail. The last range always covers it since
+  // cache pages are at least 4KB.
+  const auto& ranges = cached->ranges();
+  const auto& lastRange = ranges.back();
+  NIMBLE_CHECK_GE(
+      lastRange.size(),
+      kPostscriptSize,
+      "Last cache range too small to cover postscript");
+  ps_ = Postscript::parse(
+      std::string_view{
+          lastRange.data() + lastRange.size() - kPostscriptSize,
+          kPostscriptSize});
+  NIMBLE_CHECK_EQ(
+      ps_.footerSize() + kPostscriptSize,
+      size,
+      "Cached footer+PS size mismatch");
+
+  // Build footer MetadataBuffer from an IOBuf chain wrapping the cached
+  // ranges (zero-copy). MetadataBuffer copies from the IOBuf cursor
+  // internally — no intermediate contiguous copy needed.
+  footer_ = std::make_unique<MetadataBuffer>(
+      *pool_,
+      cached->toIOBuf(),
+      0,
+      ps_.footerSize(),
+      ps_.footerCompressionType());
+  return true;
+}
+
+bool TabletReader::tryInitFromCache(const Options& options) {
+  if (!hasCache()) {
+    return false;
+  }
+
+  if (!tryLoadAndInitFooterFromCache()) {
+    return false;
+  }
+  initOptionalSections();
+
+  loadStripesAndSections(options);
+
+  initStripes();
+  initIndex();
+  return true;
+}
+
+void TabletReader::loadStripesAndSections(const Options& options) {
+  // Enqueue all needed reads, then load once for coalesced IO.
+  auto enqueuedStripes = enqueueStripesSection();
+  if (!enqueuedStripes.has_value()) {
+    return;
+  }
+  auto enqueuedSections = enqueueOptionalSections(preloadSectionNames(options));
+
+  // Single load — BufferedInput coalesces adjacent regions.
+  bufferedInput_->load(velox::dwio::common::LogType::FOOTER);
+
+  loadEnqueuedOptionalSections(std::move(enqueuedSections));
+
+  stripes_ = readMetadata(
+      std::move(enqueuedStripes->stream), enqueuedStripes->section);
+}
+
+std::unique_ptr<MetadataBuffer> TabletReader::readMetadata(
+    const MetadataSection& section,
+    velox::dwio::common::LogType logType) const {
+  if (bufferedInput_ != nullptr) {
+    return readMetadata(
+        bufferedInput_->read(section.offset(), section.size(), logType),
+        section);
+  }
+
+  // Direct file read path.
+  folly::IOBuf buffer;
+  velox::common::Region region{section.offset(), section.size(), "metadata"};
+  file_->preadv({&region, 1}, {&buffer, 1});
+  return std::make_unique<MetadataBuffer>(
+      *pool_, buffer, section.compressionType());
+}
+
+std::unique_ptr<MetadataBuffer> TabletReader::readMetadata(
+    std::unique_ptr<velox::dwio::common::SeekableInputStream> stream,
+    const MetadataSection& section) const {
+  const void* data{nullptr};
+  int32_t size{0};
+  // Try zero-copy: get contiguous data from stream.
+  if (stream->Next(&data, &size) &&
+      static_cast<uint64_t>(size) >= section.size()) {
+    return std::make_unique<MetadataBuffer>(
+        *pool_,
+        std::string_view{static_cast<const char*>(data), section.size()},
+        section.compressionType());
+  }
+
+  // Data is fragmented — copy into IOBuf.
+  if (size > 0) {
+    stream->BackUp(size);
+  }
+  folly::IOBuf buffer(folly::IOBuf::CREATE, section.size());
+  stream->readFully(
+      reinterpret_cast<char*>(buffer.writableData()), section.size());
+  buffer.append(section.size());
+  return std::make_unique<MetadataBuffer>(
+      *pool_,
+      std::string_view{
+          reinterpret_cast<const char*>(buffer.data()), buffer.length()},
+      section.compressionType());
 }
 
 std::shared_ptr<StripeGroup> TabletReader::loadStripeGroup(
     uint32_t stripeGroupIndex) const {
-  auto* footerRoot =
-      asFlatBuffersRoot<serialization::Footer>(footer_->content());
-  auto stripeGroupInfo = footerRoot->stripe_groups()->Get(stripeGroupIndex);
-  velox::common::Region stripeGroupRegion{
-      stripeGroupInfo->offset(), stripeGroupInfo->size(), "StripeGroup"};
-  folly::IOBuf buffer;
-  file_->preadv({&stripeGroupRegion, 1}, {&buffer, 1});
+  const auto* footer = footerRoot(*footer_);
+  auto stripeGroupInfo = footer->stripe_groups()->Get(stripeGroupIndex);
 
-  // Reset the first stripe group that was loaded when we load another one
+  // Reset the first stripe group that was loaded when we load another one.
   firstStripeGroup_.wlock()->reset();
 
+  const auto section = toMetadataSection(stripeGroupInfo);
   return std::make_shared<StripeGroup>(
       stripeGroupIndex,
       *stripes_,
-      std::make_unique<MetadataBuffer>(
-          *pool_,
-          buffer,
-          static_cast<CompressionType>(stripeGroupInfo->compression_type())));
+      readMetadata(section, velox::dwio::common::LogType::GROUP));
 }
 
 std::shared_ptr<StripeGroup> TabletReader::stripeGroup(
@@ -797,23 +792,59 @@ std::shared_ptr<StripeIndexGroup> TabletReader::indexGroup(
 std::shared_ptr<StripeIndexGroup> TabletReader::loadIndexGroup(
     uint32_t stripeGroupIndex) const {
   NIMBLE_CHECK_NOT_NULL(tabletIndex_, "Index not initialized.");
+
+  // Reset the first index group that was loaded when we load another one.
   firstIndexGroup_.wlock()->reset();
 
   const auto section = tabletIndex_->groupIndexMetadata(stripeGroupIndex);
-  velox::common::Region indexGroupRegion{
-      section.offset(), section.size(), "StripeIndexGroup"};
-  folly::IOBuf buffer;
-  file_->preadv({&indexGroupRegion, 1}, {&buffer, 1});
-
-  // Reset the first index group that was loaded when we load another one
-
   return StripeIndexGroup::create(
       stripeGroupIndex,
       tabletIndex_->rootIndex(),
-      std::make_unique<MetadataBuffer>(
-          *pool_,
-          buffer,
-          static_cast<CompressionType>(section.compressionType())));
+      readMetadata(section, velox::dwio::common::LogType::GROUP_INDEX));
+}
+
+std::pair<std::shared_ptr<StripeGroup>, std::shared_ptr<StripeIndexGroup>>
+TabletReader::loadStripeAndIndexGroup(uint32_t stripeGroupIndex) const {
+  NIMBLE_CHECK_NOT_NULL(tabletIndex_, "Index not initialized.");
+
+  const auto* footer = footerRoot(*footer_);
+  const auto indexSection = tabletIndex_->groupIndexMetadata(stripeGroupIndex);
+  const auto groupSection =
+      toMetadataSection(footer->stripe_groups()->Get(stripeGroupIndex));
+
+  // Reset strong references when loading different groups.
+  firstStripeGroup_.wlock()->reset();
+  firstIndexGroup_.wlock()->reset();
+
+  std::unique_ptr<MetadataBuffer> groupMetadata;
+  std::unique_ptr<MetadataBuffer> indexMetadata;
+
+  if (bufferedInput_ != nullptr) {
+    // Use enqueue/load pattern for coalesced IO. BufferedInput will coalesce
+    // adjacent regions into a single read when possible.
+    auto groupStream = bufferedInput_->enqueue(
+        {groupSection.offset(), groupSection.size(), "stripe_group"});
+    auto indexStream = bufferedInput_->enqueue(
+        {indexSection.offset(), indexSection.size(), "index_group"});
+
+    // Single load() call - BufferedInput coalesces adjacent regions.
+    bufferedInput_->load(velox::dwio::common::LogType::GROUP);
+
+    groupMetadata = readMetadata(std::move(groupStream), groupSection);
+    indexMetadata = readMetadata(std::move(indexStream), indexSection);
+  } else {
+    // Fall back to separate direct file reads.
+    groupMetadata =
+        readMetadata(groupSection, velox::dwio::common::LogType::GROUP);
+    indexMetadata =
+        readMetadata(indexSection, velox::dwio::common::LogType::GROUP_INDEX);
+  }
+
+  auto stripeGroup = std::make_shared<StripeGroup>(
+      stripeGroupIndex, *stripes_, std::move(groupMetadata));
+  auto indexGroup = StripeIndexGroup::create(
+      stripeGroupIndex, tabletIndex_->rootIndex(), std::move(indexMetadata));
+  return {std::move(stripeGroup), std::move(indexGroup)};
 }
 
 std::span<const uint32_t> TabletReader::streamOffsets(
@@ -837,11 +868,46 @@ StripeIdentifier TabletReader::stripeIdentifier(
     uint32_t stripeIndex,
     bool loadIndex) const {
   NIMBLE_CHECK_LT(stripeIndex, stripeCount_, "Stripe is out of range.");
-  const auto stripeGroupIndex = this->stripeGroupIndex(stripeIndex);
+  const auto groupIndex = this->stripeGroupIndex(stripeIndex);
+
+  if (!loadIndex) {
+    // Index not requested - load stripe group only.
+    return StripeIdentifier{
+        stripeIndex, stripeGroup(groupIndex), /*indexGroup=*/nullptr};
+  }
+
+  // Index requested - ensure it exists.
+  NIMBLE_CHECK_NOT_NULL(
+      tabletIndex_,
+      "Index loading requested but file has no index. Check index() before requesting index loading.");
+
+  // Both stripe group and index group are needed. Check if either is already
+  // cached to avoid unnecessary coalesced loading.
+  const bool stripeGroupCached = stripeGroupCache_.hasCachedEntry(groupIndex);
+  const bool indexGroupCached = indexGroupCache_.hasCachedEntry(groupIndex);
+
+  if (stripeGroupCached || indexGroupCached) {
+    // At least one is already cached — no benefit from coalesced IO, so load
+    // each individually (the cached one is a no-op, the other reads from file).
+    return StripeIdentifier{
+        stripeIndex, stripeGroup(groupIndex), indexGroup(groupIndex)};
+  }
+
+  // Neither is cached - use coalesced loading for adjacent metadata sections.
+  auto [loadedStripeGroup, loadedIndexGroup] =
+      loadStripeAndIndexGroup(groupIndex);
+
+  // Inject into caches using custom builder that returns the already-loaded
+  // objects. This ensures the cache holds the reference.
+  auto cachedStripeGroup = stripeGroupCache_.get(
+      groupIndex,
+      [&loadedStripeGroup](uint32_t) { return std::move(loadedStripeGroup); });
+  auto cachedIndexGroup = indexGroupCache_.get(
+      groupIndex,
+      [&loadedIndexGroup](uint32_t) { return std::move(loadedIndexGroup); });
+
   return StripeIdentifier{
-      stripeIndex,
-      stripeGroup(stripeGroupIndex),
-      loadIndex ? indexGroup(stripeGroupIndex) : nullptr};
+      stripeIndex, std::move(cachedStripeGroup), std::move(cachedIndexGroup)};
 }
 
 std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
@@ -932,23 +998,18 @@ uint64_t TabletReader::totalStreamSize(
 }
 
 std::optional<MetadataSection> TabletReader::stripesMetadata() const {
-  auto* footerRoot =
-      asFlatBuffersRoot<serialization::Footer>(footer_->content());
-  auto* stripes = footerRoot->stripes();
+  const auto* footer = footerRoot(*footer_);
+  auto* stripes = footer->stripes();
   if (stripes == nullptr) {
     return std::nullopt;
   }
-  return MetadataSection{
-      stripes->offset(),
-      stripes->size(),
-      static_cast<CompressionType>(stripes->compression_type())};
+  return toMetadataSection(stripes);
 }
 
 std::vector<MetadataSection> TabletReader::stripeGroupsMetadata() const {
   std::vector<MetadataSection> groupsMetadata;
-  auto* footerRoot =
-      asFlatBuffersRoot<serialization::Footer>(footer_->content());
-  auto* stripeGroups = footerRoot->stripe_groups();
+  const auto* footer = footerRoot(*footer_);
+  auto* stripeGroups = footer->stripe_groups();
   if (stripeGroups == nullptr) {
     return groupsMetadata;
   }
@@ -957,12 +1018,7 @@ std::vector<MetadataSection> TabletReader::stripeGroupsMetadata() const {
       stripeGroups->cbegin(),
       stripeGroups->cend(),
       std::back_inserter(groupsMetadata),
-      [](const auto& stripeGroup) {
-        return MetadataSection{
-            stripeGroup->offset(),
-            stripeGroup->size(),
-            static_cast<CompressionType>(stripeGroup->compression_type())};
-      });
+      [](const auto& stripeGroup) { return toMetadataSection(stripeGroup); });
   return groupsMetadata;
 }
 
@@ -975,6 +1031,11 @@ std::optional<Section> TabletReader::loadOptionalSection(
     const std::string& name,
     bool keepCache) const {
   NIMBLE_CHECK(!name.empty(), "Optional section name cannot be empty.");
+  auto it = optionalSections_.find(name);
+  if (it == optionalSections_.end()) {
+    return std::nullopt;
+  }
+
   {
     auto optionalSectionsCache = optionalSectionsCache_.wlock();
     auto itCache = optionalSectionsCache->find(name);
@@ -988,30 +1049,15 @@ std::optional<Section> TabletReader::loadOptionalSection(
       }
     }
   }
-
-  auto it = optionalSections_.find(name);
-  if (it == optionalSections_.end()) {
-    return std::nullopt;
-  }
-
-  const auto offset = it->second.offset();
-  const auto size = it->second.size();
-  const auto compressionType = it->second.compressionType();
-
-  velox::common::Region region{offset, size, name};
-  folly::IOBuf iobuf;
-  file_->preadv({&region, 1}, {&iobuf, 1});
-  return Section{MetadataBuffer{*pool_, iobuf, compressionType}};
+  return Section{
+      std::move(*readMetadata(it->second, velox::dwio::common::LogType::FILE))};
 }
 
 bool TabletReader::hasIndex() const {
   return hasOptionalSection(std::string{kIndexSection});
 }
 
-void TabletReader::initIndex(
-    const folly::IOBuf& footerIoBuf,
-    uint64_t footerIoOffset,
-    uint64_t fileSize) {
+void TabletReader::initIndex() {
   NIMBLE_CHECK_NULL(tabletIndex_, "Index already initialized.");
 
   if (!hasIndex()) {
@@ -1023,17 +1069,62 @@ void TabletReader::initIndex(
   NIMBLE_CHECK(indexSection.has_value(), "Failed to load index section.");
 
   tabletIndex_ = TabletIndex::create(std::move(indexSection.value()));
+}
+
+void TabletReader::preloadStripeGroup(const folly::IOBuf& footerIoBuf) {
+  NIMBLE_CHECK_NOT_NULL(stripes_);
+  if (hasCache()) {
+    return;
+  }
+
+  const auto* footer = footerRoot(*footer_);
+  const auto* stripes = stripesRoot(*stripes_);
+  auto* stripeGroups = footer->stripe_groups();
+  NIMBLE_CHECK_NOT_NULL(stripeGroups, "Stripe groups is null.");
+  NIMBLE_CHECK_EQ(
+      stripeGroups->size(),
+      *stripes->group_indices()->rbegin() + 1,
+      "Unexpected stripe group count");
+
+  // Eagerly cache the first stripe group if it's already in the footer buffer.
+  const auto* stripeGroup = stripeGroups->Get(0);
+  if (stripeGroups->size() == 1 &&
+      stripeGroup->offset() + footerIoBuf.computeChainDataLength() >=
+          fileSize_) {
+    auto stripeGroupPtr =
+        stripeGroupCache_.get(0, [&](uint32_t stripeGroupIndex) {
+          return std::make_shared<StripeGroup>(
+              stripeGroupIndex,
+              *stripes_,
+              std::make_unique<MetadataBuffer>(
+                  *pool_,
+                  footerIoBuf,
+                  stripeGroup->offset() + footerIoBuf.computeChainDataLength() -
+                      fileSize_,
+                  stripeGroup->size(),
+                  static_cast<CompressionType>(
+                      stripeGroup->compression_type())));
+        });
+    *firstStripeGroup_.wlock() = std::move(stripeGroupPtr);
+  }
+}
+
+void TabletReader::preloadIndexGroup(const folly::IOBuf& footerIoBuf) {
+  // Skip when cache is available — on-demand reads will hit the cache.
+  if (tabletIndex_ == nullptr || hasCache()) {
+    return;
+  }
+
   const auto numIndexGroups = tabletIndex_->numIndexGroups();
-  // Skip preloading if there are no index groups (empty file case).
   if (numIndexGroups == 0) {
     return;
   }
 
-  // Preload the first stripe index group if it's already in the footer buffer
+  // Eagerly cache the first index group if it's already in the footer buffer.
   const auto firstIndexGroupMetadata = tabletIndex_->groupIndexMetadata(0);
   if (numIndexGroups == 1 &&
       firstIndexGroupMetadata.offset() + footerIoBuf.computeChainDataLength() >=
-          fileSize) {
+          fileSize_) {
     auto indexGroupPtr = indexGroupCache_.get(0, [&](uint32_t indexGroupIndex) {
       return StripeIndexGroup::create(
           indexGroupIndex,
@@ -1042,12 +1133,122 @@ void TabletReader::initIndex(
               *pool_,
               footerIoBuf,
               firstIndexGroupMetadata.offset() +
-                  footerIoBuf.computeChainDataLength() - fileSize,
+                  footerIoBuf.computeChainDataLength() - fileSize_,
               firstIndexGroupMetadata.size(),
               static_cast<CompressionType>(
                   firstIndexGroupMetadata.compressionType())));
     });
     *firstIndexGroup_.wlock() = std::move(indexGroupPtr);
+  }
+}
+
+std::vector<TabletReader::EnqueuedSection>
+TabletReader::enqueueOptionalSections(
+    const std::vector<std::string>& sectionNames) {
+  std::vector<EnqueuedSection> enqueuedSections;
+  for (const auto& name : sectionNames) {
+    auto it = optionalSections_.find(name);
+    if (it == optionalSections_.end()) {
+      continue;
+    }
+    enqueuedSections.push_back(
+        {name,
+         it->second,
+         bufferedInput_->enqueue(
+             {it->second.offset(), it->second.size(), "optional"})});
+  }
+  return enqueuedSections;
+}
+
+void TabletReader::loadEnqueuedOptionalSections(
+    std::vector<EnqueuedSection>&& sections) {
+  auto cache = optionalSectionsCache_.wlock();
+  for (auto& entry : sections) {
+    cache->insert(
+        {entry.name, readMetadata(std::move(entry.stream), entry.section)});
+  }
+}
+
+std::optional<TabletReader::EnqueuedSection>
+TabletReader::enqueueStripesSection() {
+  const auto* footer = footerRoot(*footer_);
+  auto* stripesSection = footer->stripes();
+  if (stripesSection == nullptr) {
+    NIMBLE_CHECK_EQ(footer->row_count(), 0);
+    return std::nullopt;
+  }
+  NIMBLE_CHECK_GT(footer->row_count(), 0);
+  NIMBLE_CHECK_NOT_NULL(bufferedInput_);
+  const auto section = toMetadataSection(stripesSection);
+  return EnqueuedSection{
+      "stripes",
+      section,
+      bufferedInput_->enqueue({section.offset(), section.size(), "stripes"})};
+}
+
+void TabletReader::cacheMetadata(
+    const folly::IOBuf& footerIoBuf,
+    uint64_t footerIoOffset) {
+  if (!hasCache()) {
+    return;
+  }
+
+  const auto footerIoSize = footerIoBuf.computeChainDataLength();
+
+  // Extracts a region from the IOBuf and caches it without coalescing.
+  // Regions outside the buffer are silently skipped. cacheOffset overrides the
+  // region offset as the cache key — used for footer+PS which is cached at
+  // synthetic key fileSize_ (computable without file IO).
+  auto extract = [&](uint64_t regionOffset,
+                     uint64_t regionSize,
+                     std::optional<uint64_t> cacheOffset = std::nullopt) {
+    if (regionOffset < footerIoOffset) {
+      return;
+    }
+    const uint64_t ioBufOffset = regionOffset - footerIoOffset;
+    if (ioBufOffset + regionSize > footerIoSize) {
+      return;
+    }
+    bufferedInput_->cacheRegion(
+        cacheOffset.value_or(regionOffset),
+        regionSize,
+        footerIoBuf,
+        ioBufOffset);
+  };
+
+  // Cache footer+PS at synthetic offset fileSize_ (beyond EOF). This lets
+  // tryLoadAndInitFooterFromCache probe the cache using only the file size
+  // (known without any IO), avoiding the circular dependency of needing
+  // footerSize (from the postscript) to compute the real offset.
+  const uint64_t footerPsSize = ps_.footerSize() + kPostscriptSize;
+  extract(fileSize_ - footerPsSize, footerPsSize, fileSize_);
+
+  const auto* footer = footerRoot(*footer_);
+
+  // Cache stripes section.
+  if (auto* stripesSection = footer->stripes()) {
+    extract(stripesSection->offset(), stripesSection->size());
+  }
+
+  // Cache first stripe group.
+  if (auto* stripeGroups = footer->stripe_groups();
+      stripeGroups != nullptr && stripeGroups->size() > 0) {
+    auto* stripeGroup = stripeGroups->Get(0);
+    extract(stripeGroup->offset(), stripeGroup->size());
+  }
+
+  // Cache index section.
+  if (tabletIndex_ == nullptr) {
+    return;
+  }
+  auto indexIt = optionalSections_.find(std::string{kIndexSection});
+  NIMBLE_CHECK(indexIt != optionalSections_.end());
+  extract(indexIt->second.offset(), indexIt->second.size());
+
+  // Cache first index group.
+  if (tabletIndex_->numIndexGroups() > 0) {
+    const auto indexGroup = tabletIndex_->groupIndexMetadata(0);
+    extract(indexGroup.offset(), indexGroup.size());
   }
 }
 
