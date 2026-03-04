@@ -42,7 +42,22 @@ const char* bulkVarintSkip(uint64_t n, const char* pos);
 uint64_t bulkVarintSize32(std::span<const uint32_t> values);
 uint64_t bulkVarintSize64(std::span<const uint64_t> values);
 
-// Inline non-bulk methods follow below.
+/// Inline non-bulk methods follow below.
+
+/// Returns the number of bytes needed to varint-encode a single value.
+/// Uses CLZ (count leading zeros) for O(1) computation instead of a loop.
+template <typename T>
+inline constexpr uint32_t varintSize(T val) noexcept {
+  if constexpr (sizeof(T) <= 4) {
+    // `| 1` avoids undefined behavior from __builtin_clz(0) and correctly
+    // returns 1 byte for val=0.
+    uint32_t bitsNeeded = 32 - __builtin_clz(static_cast<uint32_t>(val) | 1);
+    return (bitsNeeded + 6) / 7;
+  } else {
+    uint32_t bitsNeeded = 64 - __builtin_clzll(static_cast<uint64_t>(val) | 1);
+    return (bitsNeeded + 6) / 7;
+  }
+}
 
 template <typename T>
 inline void writeVarint(T val, char** pos) noexcept {

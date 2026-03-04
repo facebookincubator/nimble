@@ -389,7 +389,11 @@ std::string_view MainlyConstantEncoding<T>::encode(
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
   Encoding::serializePrefix(
-      EncodingType::MainlyConstant, TypeTraits<T>::dataType, entryCount, pos);
+      EncodingType::MainlyConstant,
+      TypeTraits<T>::dataType,
+      entryCount,
+      false,
+      pos);
   // TODO: Reorder these so that metadata is at the beginning.
   encoding::writeString(serializedIsCommon, pos);
   encoding::writeString(serializedOtherValues, pos);

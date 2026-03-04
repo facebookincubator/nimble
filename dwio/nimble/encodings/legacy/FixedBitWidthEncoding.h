@@ -225,7 +225,11 @@ std::string_view FixedBitWidthEncoding<T>::encode(
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
   Encoding::serializePrefix(
-      EncodingType::FixedBitWidth, TypeTraits<T>::dataType, rowCount, pos);
+      EncodingType::FixedBitWidth,
+      TypeTraits<T>::dataType,
+      rowCount,
+      false,
+      pos);
   encoding::writeChar(
       static_cast<char>(compressionEncoder.compressionType()), pos);
   encoding::write(selection.statistics().min(), pos);

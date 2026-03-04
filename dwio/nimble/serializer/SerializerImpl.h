@@ -20,6 +20,7 @@
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
+#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/StreamData.h"
@@ -83,8 +84,18 @@ void writeHeader(
   }
 
   // Write row count.
-  auto* rowCountPos = extend(buffer, sizeof(uint32_t));
-  encoding::writeUint32(rowCount, rowCountPos);
+  // Encoded versions (kDenseEncoded, kSparseEncoded) use varint for compact
+  // row counts.
+  const bool useVarint = version.has_value() &&
+      (version.value() == SerializationVersion::kDenseEncoded ||
+       version.value() == SerializationVersion::kSparseEncoded);
+  if (useVarint) {
+    auto* rowCountPos = extend(buffer, varint::varintSize(rowCount));
+    varint::writeVarint(rowCount, &rowCountPos);
+  } else {
+    auto* rowCountPos = extend(buffer, sizeof(uint32_t));
+    encoding::writeUint32(rowCount, rowCountPos);
+  }
 
   // Sparse format: write stream count and offsets.
   if (sparseFormat) {
@@ -212,8 +223,13 @@ std::string_view encodeTyped(
     typedPolicy.reset(rawTypedPolicy);
   }
 
+  // Encoded versions always use varint for compact row counts in encoding
+  // prefixes.
   return EncodingFactory::encode<T>(
-      std::move(typedPolicy), values, encodingBuffer);
+      std::move(typedPolicy),
+      values,
+      encodingBuffer,
+      Encoding::Options{.useVarintRowCount = true});
 }
 
 /// Dispatch to typed nimble encoding based on ScalarKind.

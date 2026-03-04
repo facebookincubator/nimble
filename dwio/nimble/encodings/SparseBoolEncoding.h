@@ -48,13 +48,12 @@ class SparseBoolEncoding final : public TypedEncoding<bool, bool> {
   using cppDataType = bool;
 
   static constexpr int kPrefixSize = 1;
-  static constexpr int kSparseValueOffset = Encoding::kPrefixSize;
-  static constexpr int kIndicesOffset = Encoding::kPrefixSize + 1;
 
   SparseBoolEncoding(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::function<void*(uint32_t)> stringBufferFactory,
+      const Encoding::Options& options = {});
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -69,7 +68,8 @@ class SparseBoolEncoding final : public TypedEncoding<bool, bool> {
   static std::string_view encode(
       EncodingSelection<bool>& selection,
       std::span<const bool> values,
-      Buffer& buffer);
+      Buffer& buffer,
+      const Encoding::Options& options = {});
 
  private:
   // If true, then indices give the position of the set bits; if false they give

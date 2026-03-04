@@ -133,10 +133,18 @@ class TestTrivialEncodingSelectionPolicy
 };
 } // namespace
 
-// C is the encoding type.
-template <typename C>
+template <typename EncodingType, bool UseVarint>
+struct TestConfig {
+  using encoding_type = EncodingType;
+  static constexpr bool useVarint = UseVarint;
+};
+
+#define TC(T) TestConfig<T, false>, TestConfig<T, true>
+
+template <typename Config>
 class EncodingTest : public ::testing::Test {
  protected:
+  using C = typename Config::encoding_type;
   using E = typename C::cppDataType;
 
   void SetUp() override {
@@ -200,6 +208,7 @@ class EncodingTest : public ::testing::Test {
       bool compress,
       bool useVariableBitWidthCompressor,
       std::function<void*(uint32_t)> stringBufferFactory) {
+    constexpr bool useVarint = Config::useVarint;
     using physicalType = typename nimble::TypeTraits<E>::physicalType;
     auto physicalValues = std::span<const physicalType>(
         reinterpret_cast<const physicalType*>(values.data()), values.size());
@@ -214,8 +223,10 @@ class EncodingTest : public ::testing::Test {
         std::make_unique<TestTrivialEncodingSelectionPolicy<E>>(
             compress, useVariableBitWidthCompressor)};
 
-    auto encoded = C::encode(selection, physicalValues, *buffer_);
-    return std::make_unique<C>(*this->pool_, encoded, stringBufferFactory);
+    nimble::Encoding::Options options{.useVarintRowCount = useVarint};
+    auto encoded = C::encode(selection, physicalValues, *buffer_, options);
+    return std::make_unique<C>(
+        *this->pool_, encoded, stringBufferFactory, options);
   }
 
   // Each unit test runs on randomized data this many times before
@@ -232,21 +243,24 @@ class EncodingTest : public ::testing::Test {
   std::unique_ptr<nimble::testing::Util> util_;
 };
 
-#define VARINT_TYPES(EncodingName)                                      \
-  EncodingName<int32_t>, EncodingName<int64_t>, EncodingName<uint32_t>, \
-      EncodingName<uint64_t>, EncodingName<float>, EncodingName<double>
+#define VARINT_TYPES(EncodingName)                            \
+  TC(EncodingName<int32_t>), TC(EncodingName<int64_t>),       \
+      TC(EncodingName<uint32_t>), TC(EncodingName<uint64_t>), \
+      TC(EncodingName<float>), TC(EncodingName<double>)
 
-#define NUMERIC_TYPES(EncodingName)                                        \
-  VARINT_TYPES(EncodingName), EncodingName<int8_t>, EncodingName<uint8_t>, \
-      EncodingName<int16_t>, EncodingName<uint16_t>
+#define NUMERIC_TYPES(EncodingName)                         \
+  VARINT_TYPES(EncodingName), TC(EncodingName<int8_t>),     \
+      TC(EncodingName<uint8_t>), TC(EncodingName<int16_t>), \
+      TC(EncodingName<uint16_t>)
 
 #define NON_BOOL_TYPES(EncodingName) \
-  NUMERIC_TYPES(EncodingName), EncodingName<std::string_view>
+  NUMERIC_TYPES(EncodingName), TC(EncodingName<std::string_view>)
 
-#define ALL_TYPES(EncodingName) NON_BOOL_TYPES(EncodingName), EncodingName<bool>
+#define ALL_TYPES(EncodingName) \
+  NON_BOOL_TYPES(EncodingName), TC(EncodingName<bool>)
 
 using TestTypes = ::testing::Types<
-    nimble::SparseBoolEncoding,
+    TC(nimble::SparseBoolEncoding),
     VARINT_TYPES(nimble::VarintEncoding),
     NUMERIC_TYPES(nimble::FixedBitWidthEncoding),
     NON_BOOL_TYPES(nimble::DictionaryEncoding),
@@ -262,7 +276,7 @@ TYPED_TEST(EncodingTest, materialize) {
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng(seed);
 
-  using E = typename TypeParam::cppDataType;
+  using E = typename TypeParam::encoding_type::cppDataType;
 
   for (int run = 0; run < this->kNumRandomRuns; ++run) {
     const std::vector<nimble::Vector<E>> dataPatterns =
@@ -271,6 +285,11 @@ TYPED_TEST(EncodingTest, materialize) {
     for (const auto& data : dataPatterns) {
       for (auto compress : {false, true}) {
         for (auto useVariableBitWidthCompressor : {false, true}) {
+          SCOPED_TRACE(
+              fmt::format(
+                  "compress {}, variableBitWidth {}",
+                  compress,
+                  useVariableBitWidthCompressor));
           const int rowCount = data.size();
           ASSERT_GT(rowCount, 0);
           std::unique_ptr<nimble::Encoding> encoding;
@@ -294,6 +313,7 @@ TYPED_TEST(EncodingTest, materialize) {
             throw;
           }
           ASSERT_EQ(encoding->dataType(), nimble::TypeTraits<E>::dataType);
+          ASSERT_EQ(encoding->rowCount(), rowCount);
           nimble::Vector<E> buffer(this->pool_.get(), rowCount);
 
           encoding->materialize(rowCount, buffer.data());
@@ -371,7 +391,7 @@ void checkScatteredOutput(
 }
 
 TYPED_TEST(EncodingTest, scatteredMaterialize) {
-  using E = typename TypeParam::cppDataType;
+  using E = typename TypeParam::encoding_type::cppDataType;
 
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;

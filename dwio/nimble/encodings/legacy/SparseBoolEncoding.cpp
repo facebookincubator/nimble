@@ -138,7 +138,7 @@ std::string_view SparseBoolEncoding::encode(
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
   Encoding::serializePrefix(
-      EncodingType::SparseBool, DataType::Bool, valueCount, pos);
+      EncodingType::SparseBool, DataType::Bool, valueCount, false, pos);
   encoding::writeChar(sparseValue, pos);
   encoding::writeBytes(serializedIndices, pos);
 

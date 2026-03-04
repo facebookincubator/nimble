@@ -57,14 +57,16 @@ class RLEEncodingBase
   RLEEncodingBase(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory)
-      : TypedEncoding<T, physicalType>(memoryPool, data),
+      std::function<void*(uint32_t)> stringBufferFactory,
+      const Encoding::Options& options = {})
+      : TypedEncoding<T, physicalType>(memoryPool, data, options),
         materializedRunLengths_{EncodingFactory::decode(
             memoryPool,
-            {data.data() + Encoding::kPrefixSize + 4,
+            {data.data() + this->dataOffset() + 4,
              *reinterpret_cast<const uint32_t*>(
-                 data.data() + Encoding::kPrefixSize)},
-            stringBufferFactory)} {}
+                 data.data() + this->dataOffset())},
+            stringBufferFactory,
+            options)} {}
 
   void reset() {
     materializedRunLengths_.reset();
@@ -125,7 +127,9 @@ class RLEEncodingBase
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
-      Buffer& buffer) {
+      Buffer& buffer,
+      const Encoding::Options& options = {}) {
+    const bool useVarint = options.useVarintRowCount;
     const uint32_t valueCount = values.size();
     Vector<uint32_t> runLengths(&buffer.getMemoryPool());
     Vector<physicalType> runValues(&buffer.getMemoryPool());
@@ -134,17 +138,21 @@ class RLEEncodingBase
     Buffer tempBuffer{buffer.getMemoryPool()};
     std::string_view serializedRunLengths =
         selection.template encodeNested<uint32_t>(
-            EncodingIdentifiers::RunLength::RunLengths, runLengths, tempBuffer);
+            EncodingIdentifiers::RunLength::RunLengths,
+            runLengths,
+            tempBuffer,
+            options);
 
     std::string_view serializedRunValues =
-        getSerializedRunValues(selection, runValues, tempBuffer);
+        getSerializedRunValues(selection, runValues, tempBuffer, options);
 
-    const uint32_t encodingSize = Encoding::kPrefixSize + 4 +
+    const uint32_t encodingSize =
+        Encoding::serializePrefixSize(valueCount, useVarint) + 4 +
         serializedRunLengths.size() + serializedRunValues.size();
     char* reserved = buffer.reserve(encodingSize);
     char* pos = reserved;
     Encoding::serializePrefix(
-        EncodingType::RLE, TypeTraits<T>::dataType, valueCount, pos);
+        EncodingType::RLE, TypeTraits<T>::dataType, valueCount, useVarint, pos);
     encoding::writeString(serializedRunLengths, pos);
     encoding::writeBytes(serializedRunValues, pos);
     NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
@@ -152,9 +160,9 @@ class RLEEncodingBase
   }
 
   const char* getValuesStart() const {
-    return this->data_.data() + Encoding::kPrefixSize + 4 +
+    return this->data_.data() + this->dataOffset() + 4 +
         *reinterpret_cast<const uint32_t*>(
-               this->data_.data() + Encoding::kPrefixSize);
+               this->data_.data() + this->dataOffset());
   }
 
   RLEEncoding& derived() {
@@ -166,8 +174,10 @@ class RLEEncodingBase
   static std::string_view getSerializedRunValues(
       EncodingSelection<physicalType>& selection,
       const Vector<physicalType>& runValues,
-      Buffer& buffer) {
-    return RLEEncoding::getSerializedRunValues(selection, runValues, buffer);
+      Buffer& buffer,
+      const Encoding::Options& options = {}) {
+    return RLEEncoding::getSerializedRunValues(
+        selection, runValues, buffer, options);
   }
 
   uint32_t copiesRemaining_ = 0;
@@ -189,16 +199,18 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
   explicit RLEEncoding(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::function<void*(uint32_t)> stringBufferFactory,
+      const Encoding::Options& options = {});
 
   physicalType nextValue();
   void resetValues();
   static std::string_view getSerializedRunValues(
       EncodingSelection<physicalType>& selection,
       const Vector<physicalType>& runValues,
-      Buffer& buffer) {
+      Buffer& buffer,
+      const Encoding::Options& options = {}) {
     return selection.template encodeNested<physicalType>(
-        EncodingIdentifiers::RunLength::RunValues, runValues, buffer);
+        EncodingIdentifiers::RunLength::RunValues, runValues, buffer, options);
   }
 
   template <typename DecoderVisitor>
@@ -235,14 +247,16 @@ class RLEEncoding<bool> final
   RLEEncoding(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::function<void*(uint32_t)> stringBufferFactory,
+      const Encoding::Options& options = {});
 
   bool nextValue();
   void resetValues();
   static std::string_view getSerializedRunValues(
       EncodingSelection<bool>& /* selection */,
       const Vector<bool>& runValues,
-      Buffer& buffer) {
+      Buffer& buffer,
+      const Encoding::Options& /* options */ = {}) {
     char* reserved = buffer.reserve(sizeof(char));
     *reserved = runValues[0];
     return {reserved, 1};
@@ -264,18 +278,21 @@ template <typename T>
 RLEEncoding<T>::RLEEncoding(
     velox::memory::MemoryPool& memoryPool,
     std::string_view data,
-    std::function<void*(uint32_t)> stringBufferFactory)
+    std::function<void*(uint32_t)> stringBufferFactory,
+    const Encoding::Options& options)
     : internal::RLEEncodingBase<T, RLEEncoding<T>>(
           memoryPool,
           data,
-          stringBufferFactory),
+          stringBufferFactory,
+          options),
       values_{EncodingFactory::decode(
           memoryPool,
           {internal::RLEEncodingBase<T, RLEEncoding<T>>::getValuesStart(),
            static_cast<size_t>(
                data.end() -
                internal::RLEEncodingBase<T, RLEEncoding<T>>::getValuesStart())},
-          stringBufferFactory)} {
+          stringBufferFactory,
+          options)} {
   internal::RLEEncodingBase<T, RLEEncoding<T>>::reset();
 }
 

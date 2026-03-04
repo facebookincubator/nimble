@@ -45,14 +45,13 @@ class VarintEncoding final
   using cppDataType = T;
   using physicalType = typename TypeTraits<T>::physicalType;
 
-  static const int kBaselineOffset = Encoding::kPrefixSize;
-  static const int kDataOffset = kBaselineOffset + sizeof(T);
-  static const int kPrefixSize = kDataOffset - kBaselineOffset;
+  static constexpr int kPrefixSize = sizeof(T);
 
   VarintEncoding(
       velox::memory::MemoryPool& pool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::function<void*(uint32_t)> stringBufferFactory,
+      const Encoding::Options& options = {});
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -64,7 +63,8 @@ class VarintEncoding final
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
-      Buffer& buffer);
+      Buffer& buffer,
+      const Encoding::Options& options = {});
 
  private:
   const physicalType baseValue_;
@@ -81,10 +81,11 @@ template <typename T>
 VarintEncoding<T>::VarintEncoding(
     velox::memory::MemoryPool& pool,
     std::string_view data,
-    std::function<void*(uint32_t)> /* stringBufferFactory */)
-    : TypedEncoding<T, physicalType>(pool, data),
+    std::function<void*(uint32_t)> /* stringBufferFactory */,
+    const Encoding::Options& options)
+    : TypedEncoding<T, physicalType>(pool, data, options),
       baseValue_{*reinterpret_cast<const physicalType*>(
-          data.data() + kBaselineOffset)},
+          data.data() + this->dataOffset())},
       buf_{this->pool_} {
   reset();
 }
@@ -92,7 +93,7 @@ VarintEncoding<T>::VarintEncoding(
 template <typename T>
 void VarintEncoding<T>::reset() {
   row_ = 0;
-  pos_ = Encoding::data_.data() + Encoding::kPrefixSize +
+  pos_ = Encoding::data_.data() + this->dataOffset() +
       VarintEncoding<T>::kPrefixSize;
 }
 
@@ -150,7 +151,9 @@ template <typename T>
 std::string_view VarintEncoding<T>::encode(
     EncodingSelection<physicalType>& selection,
     std::span<const physicalType> values,
-    Buffer& buffer) {
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const bool useVarint = options.useVarintRowCount;
   static_assert(
       std::is_same_v<
           typename std::make_unsigned<physicalType>::type,
@@ -170,15 +173,20 @@ std::string_view VarintEncoding<T>::encode(
         // to consume 2 bytes, etc.
         return sum + (bucketSize * (++index));
       });
-  const uint32_t encodingSize =
-      dataSize + Encoding::kPrefixSize + VarintEncoding<T>::kPrefixSize;
+  const uint32_t encodingSize = dataSize +
+      Encoding::serializePrefixSize(valueCount, useVarint) +
+      VarintEncoding<T>::kPrefixSize;
 
   // Adding 7 bytes, to allow bulk materialization to access the last 64 bit
   // word, even if it is not full.
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
   Encoding::serializePrefix(
-      EncodingType::Varint, TypeTraits<T>::dataType, valueCount, pos);
+      EncodingType::Varint,
+      TypeTraits<T>::dataType,
+      valueCount,
+      useVarint,
+      pos);
   encoding::write(selection.statistics().min(), pos);
   for (auto value : values) {
     varint::writeVarint(value - selection.statistics().min(), &pos);

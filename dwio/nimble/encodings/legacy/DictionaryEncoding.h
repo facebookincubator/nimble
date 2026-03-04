@@ -281,7 +281,11 @@ std::string_view DictionaryEncoding<T>::encode(
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
   Encoding::serializePrefix(
-      EncodingType::Dictionary, TypeTraits<T>::dataType, valueCount, pos);
+      EncodingType::Dictionary,
+      TypeTraits<T>::dataType,
+      valueCount,
+      false,
+      pos);
   encoding::writeUint32(serializedAlphabet.size(), pos);
   encoding::writeBytes(serializedAlphabet, pos);
   encoding::writeBytes(serializedIndices, pos);

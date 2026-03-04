@@ -23,20 +23,23 @@ namespace facebook::nimble {
 
 PrefixEncoding::PrefixEncoding(
     velox::memory::MemoryPool& pool,
-    std::string_view data)
-    : TypedEncoding<std::string_view, std::string_view>{pool, data},
-      restartInterval_{readRestartInterval(data)},
+    std::string_view data,
+    const Encoding::Options& options)
+    : TypedEncoding<std::string_view, std::string_view>{pool, data, options},
+      restartInterval_{readRestartInterval(data, dataOffset())},
       numRestarts_{computeNumRestarts(rowCount_, restartInterval_)},
-      restartOffsets_{restartOffsets(data)},
-      dataStart_{dataStart(data, numRestarts_)},
+      restartOffsets_{restartOffsets(data, dataOffset())},
+      dataStart_{dataStart(data, dataOffset(), numRestarts_)},
       decodedValue_{pool_},
       materializedValues_{pool_} {
   reset();
 }
 
 // static
-uint32_t PrefixEncoding::readRestartInterval(std::string_view data) {
-  const auto* pos = data.data() + kRestartIntervalOffset;
+uint32_t PrefixEncoding::readRestartInterval(
+    std::string_view data,
+    uint32_t startOffset) {
+  const auto* pos = data.data() + startOffset;
   return encoding::readUint32(pos);
 }
 
@@ -48,15 +51,18 @@ uint32_t PrefixEncoding::computeNumRestarts(
 }
 
 // static
-const char* PrefixEncoding::restartOffsets(std::string_view data) {
-  return data.data() + kRestartOffsetsOffset;
+const char* PrefixEncoding::restartOffsets(
+    std::string_view data,
+    uint32_t startOffset) {
+  return data.data() + startOffset + 4;
 }
 
 // static
 const char* PrefixEncoding::dataStart(
     std::string_view data,
+    uint32_t startOffset,
     uint32_t numRestarts) {
-  return data.data() + kRestartOffsetsOffset + (numRestarts * sizeof(uint32_t));
+  return data.data() + startOffset + 4 + (numRestarts * sizeof(uint32_t));
 }
 
 void PrefixEncoding::reset() {
@@ -220,7 +226,9 @@ uint32_t PrefixEncoding::restartInterval(
 std::string_view PrefixEncoding::encode(
     EncodingSelection<physicalType>& selection,
     std::span<const physicalType> values,
-    Buffer& buffer) {
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const bool useVarint = options.useVarintRowCount;
   const uint32_t valueCount = values.size();
 
   // Get restart interval from config, or use default
@@ -281,7 +289,8 @@ std::string_view PrefixEncoding::encode(
       numRestarts, restartOffsets.size(), "Restart count mismatch");
   const uint32_t restartOffsetsSize = numRestarts * sizeof(uint32_t);
   const uint32_t encodingSize =
-      kRestartOffsetsOffset + restartOffsetsSize + encodedData.size();
+      Encoding::serializePrefixSize(valueCount, useVarint) + 4 +
+      restartOffsetsSize + encodedData.size();
 
   // Write encoded data to buffer
   char* reserved = buffer.reserve(encodingSize);
@@ -292,6 +301,7 @@ std::string_view PrefixEncoding::encode(
       EncodingType::Prefix,
       TypeTraits<std::string_view>::dataType,
       valueCount,
+      useVarint,
       pos);
 
   // Write restart interval

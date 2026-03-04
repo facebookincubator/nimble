@@ -27,7 +27,15 @@
 
 using namespace facebook;
 
-template <typename C>
+template <typename DataType, bool UseVarint>
+struct TestConfig {
+  using data_type = DataType;
+  static constexpr bool useVarint = UseVarint;
+};
+
+#define TC(T) TestConfig<T, false>, TestConfig<T, true>
+
+template <typename Config>
 class ConstantEncodingTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -121,14 +129,16 @@ class ConstantEncodingTest : public ::testing::Test {
   std::unique_ptr<nimble::Buffer> buffer_;
 };
 
-#define NUM_TYPES int32_t, double, float
+#define NUM_TYPES TC(int32_t), TC(double), TC(float)
 
 using TestTypes = ::testing::Types<NUM_TYPES>;
 
 TYPED_TEST_CASE(ConstantEncodingTest, TestTypes);
 
 TYPED_TEST(ConstantEncodingTest, SerializeThenDeserialize) {
-  using D = TypeParam;
+  using D = typename TypeParam::data_type;
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
 
   auto valueGroups = this->template prepareValues<D>();
   std::vector<velox::BufferPtr> newStringBuffers;
@@ -140,7 +150,11 @@ TYPED_TEST(ConstantEncodingTest, SerializeThenDeserialize) {
   for (const auto& values : valueGroups) {
     auto encoding =
         nimble::test::Encoder<nimble::ConstantEncoding<D>>::createEncoding(
-            *this->buffer_, values, stringBufferFactory);
+            *this->buffer_,
+            values,
+            stringBufferFactory,
+            nimble::CompressionType::Uncompressed,
+            options);
 
     uint32_t rowCount = values.size();
     nimble::Vector<D> result(this->pool_.get(), rowCount);
@@ -156,7 +170,9 @@ TYPED_TEST(ConstantEncodingTest, SerializeThenDeserialize) {
 }
 
 TYPED_TEST(ConstantEncodingTest, NonConstantFailure) {
-  using D = TypeParam;
+  using D = typename TypeParam::data_type;
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
 
   auto valueGroups = this->template prepareFailureValues<D>();
   std::vector<velox::BufferPtr> newStringBuffers;
@@ -168,7 +184,11 @@ TYPED_TEST(ConstantEncodingTest, NonConstantFailure) {
   for (const auto& values : valueGroups) {
     try {
       nimble::test::Encoder<nimble::ConstantEncoding<D>>::createEncoding(
-          *this->buffer_, values, stringBufferFactory);
+          *this->buffer_,
+          values,
+          stringBufferFactory,
+          nimble::CompressionType::Uncompressed,
+          options);
       FAIL() << "ConstantEncodingTest should fail due to non constant data";
     } catch (const nimble::NimbleUserError& e) {
       EXPECT_EQ(nimble::error_code::IncompatibleEncoding, e.errorCode());

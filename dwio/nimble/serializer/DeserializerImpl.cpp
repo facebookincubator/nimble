@@ -21,6 +21,7 @@
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 
 namespace facebook::nimble::serde {
@@ -117,13 +118,20 @@ void StreamData::prepareForDecoding(std::string_view data) {
 
   // Use nimble EncodingFactory to decode the data.
   // The encoded data is self-describing with type information.
+  // Encoded serializer versions always use varint for encoding prefix row
+  // counts.
   // For string types, provide a stringBufferFactory that allocates separate
   // buffers using velox::AlignedBuffer for memory tracking.
-  encoding_ = EncodingFactory::decode(*pool_, data, [this](uint32_t size) {
-    auto& buffer = stringBuffers_.emplace_back(
-        velox::AlignedBuffer::allocate<char>(size, pool_));
-    return buffer->asMutable<void>();
-  });
+  Encoding::Options options{.useVarintRowCount = true};
+  encoding_ = EncodingFactory::decode(
+      *pool_,
+      data,
+      [this](uint32_t size) {
+        auto& buffer = stringBuffers_.emplace_back(
+            velox::AlignedBuffer::allocate<char>(size, pool_));
+        return buffer->asMutable<void>();
+      },
+      options);
 }
 
 uint32_t StreamData::decode(
@@ -204,6 +212,11 @@ uint32_t StreamDataReader::initialize(std::string_view data) {
         version,
         *options_.version);
     ++pos_;
+  }
+  // Encoded versions (kDenseEncoded, kSparseEncoded) use varint for compact
+  // row counts.
+  if (options_.enableEncoding()) {
+    return varint::readVarint32(&pos_);
   }
   return encoding::readUint32(pos_);
 }

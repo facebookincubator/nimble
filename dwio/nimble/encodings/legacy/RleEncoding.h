@@ -144,7 +144,7 @@ class RLEEncodingBase
     char* reserved = buffer.reserve(encodingSize);
     char* pos = reserved;
     Encoding::serializePrefix(
-        EncodingType::RLE, TypeTraits<T>::dataType, valueCount, pos);
+        EncodingType::RLE, TypeTraits<T>::dataType, valueCount, false, pos);
     encoding::writeString(serializedRunLengths, pos);
     encoding::writeBytes(serializedRunValues, pos);
     NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");

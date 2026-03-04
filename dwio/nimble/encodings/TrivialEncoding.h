@@ -48,14 +48,12 @@ class TrivialEncoding final
   using physicalType = typename TypeTraits<T>::physicalType;
 
   static constexpr int kPrefixSize = 1;
-  static constexpr int kCompressionTypeOffset = Encoding::kPrefixSize;
-  static constexpr int kDataOffset =
-      Encoding::kPrefixSize + TrivialEncoding<T>::kPrefixSize;
 
   TrivialEncoding(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::function<void*(uint32_t)> stringBufferFactory,
+      const Encoding::Options& options = {});
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -75,7 +73,8 @@ class TrivialEncoding final
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
-      Buffer& buffer);
+      Buffer& buffer,
+      const Encoding::Options& options = {});
 
  private:
   uint32_t row_;
@@ -96,15 +95,12 @@ class TrivialEncoding<std::string_view> final
   using cppDataType = std::string_view;
 
   static constexpr int kPrefixSize = 5;
-  static constexpr int kDataCompressionOffset = Encoding::kPrefixSize;
-  static constexpr int kBlobOffsetOffset = Encoding::kPrefixSize + 1;
-  static constexpr int kLengthOffset =
-      Encoding::kPrefixSize + TrivialEncoding<std::string_view>::kPrefixSize;
 
   TrivialEncoding(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::function<void*(uint32_t)> stringBufferFactory,
+      const Encoding::Options& options = {});
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -121,7 +117,8 @@ class TrivialEncoding<std::string_view> final
   static std::string_view encode(
       EncodingSelection<std::string_view>& selection,
       std::span<const std::string_view> values,
-      Buffer& buffer);
+      Buffer& buffer,
+      const Encoding::Options& options = {});
 
  private:
   uint32_t row_;
@@ -148,14 +145,12 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
   using cppDataType = bool;
 
   static constexpr int kPrefixSize = 1;
-  static constexpr int kCompressionTypeOffset = Encoding::kPrefixSize;
-  static constexpr int kDataOffset =
-      Encoding::kPrefixSize + TrivialEncoding<bool>::kPrefixSize;
 
   TrivialEncoding(
       velox::memory::MemoryPool& pool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::function<void*(uint32_t)> stringBufferFactory,
+      const Encoding::Options& options = {});
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -170,7 +165,8 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
   static std::string_view encode(
       EncodingSelection<bool>& selection,
       std::span<const bool> values,
-      Buffer& buffer);
+      Buffer& buffer,
+      const Encoding::Options& options = {});
 
  private:
   uint32_t row_{0};
@@ -186,19 +182,21 @@ template <typename T>
 TrivialEncoding<T>::TrivialEncoding(
     velox::memory::MemoryPool& memoryPool,
     std::string_view data,
-    std::function<void*(uint32_t)> /* stringBufferFactory */)
-    : TypedEncoding<T, physicalType>{memoryPool, data},
+    std::function<void*(uint32_t)> /* stringBufferFactory */,
+    const Encoding::Options& options)
+    : TypedEncoding<T, physicalType>{memoryPool, data, options},
       row_{0},
-      values_{reinterpret_cast<const T*>(data.data() + kDataOffset)},
+      values_{reinterpret_cast<const T*>(
+          data.data() + this->dataOffset() + kPrefixSize)},
       uncompressed_{&memoryPool} {
-  auto compressionType =
-      static_cast<CompressionType>(data[kCompressionTypeOffset]);
+  const auto valuesOffset = this->dataOffset() + kPrefixSize;
+  auto compressionType = static_cast<CompressionType>(data[this->dataOffset()]);
   if (compressionType != CompressionType::Uncompressed) {
     uncompressed_ = Compression::uncompress(
         memoryPool,
         compressionType,
         TypeTraits<physicalType>::dataType,
-        {data.data() + kDataOffset, data.size() - kDataOffset});
+        {data.data() + valuesOffset, data.size() - valuesOffset});
     values_ = reinterpret_cast<const T*>(uncompressed_.data());
     NIMBLE_CHECK(
         reinterpret_cast<const char*>(values_ + this->rowCount()) ==
@@ -232,7 +230,9 @@ template <typename T>
 std::string_view TrivialEncoding<T>::encode(
     EncodingSelection<physicalType>& selection,
     std::span<const physicalType> values,
-    Buffer& buffer) {
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const bool useVarint = options.useVarintRowCount;
   const uint32_t rowCount = values.size();
   const uint32_t uncompressedSize = sizeof(T) * rowCount;
 
@@ -243,11 +243,13 @@ std::string_view TrivialEncoding<T>::encode(
       TypeTraits<physicalType>::dataType,
       {reinterpret_cast<const char*>(values.data()), uncompressedSize}};
 
-  const uint32_t encodingSize = kDataOffset + compressionEncoder.getSize();
+  const uint32_t encodingSize =
+      Encoding::serializePrefixSize(rowCount, useVarint) + kPrefixSize +
+      compressionEncoder.getSize();
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
   Encoding::serializePrefix(
-      EncodingType::Trivial, TypeTraits<T>::dataType, rowCount, pos);
+      EncodingType::Trivial, TypeTraits<T>::dataType, rowCount, useVarint, pos);
   encoding::writeChar(
       static_cast<char>(compressionEncoder.compressionType()), pos);
   compressionEncoder.write(pos);

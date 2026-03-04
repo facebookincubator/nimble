@@ -34,34 +34,39 @@ class EncodingFactory {
   static std::unique_ptr<Encoding> decode(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::function<void*(uint32_t)> stringBufferFactory,
+      const Encoding::Options& options = {});
 
   template <typename T>
   static std::string_view encode(
       std::unique_ptr<EncodingSelectionPolicy<T>>&& selectorPolicy,
       std::span<const T> values,
-      Buffer& buffer);
+      Buffer& buffer,
+      const Encoding::Options& options = {});
 
   template <typename T>
   static std::string_view encodeNullable(
       std::unique_ptr<EncodingSelectionPolicy<T>>&& selectorPolicy,
       std::span<const T> values,
       std::span<const bool> nulls,
-      Buffer& buffer);
+      Buffer& buffer,
+      const Encoding::Options& options = {});
 
  private:
   template <typename T>
   static std::string_view encode(
       EncodingSelection<typename TypeTraits<T>::physicalType>&& selection,
       std::span<const typename TypeTraits<T>::physicalType> values,
-      Buffer& buffer);
+      Buffer& buffer,
+      const Encoding::Options& options = {});
 
   template <typename T>
   static std::string_view encodeNullable(
       EncodingSelection<typename TypeTraits<T>::physicalType>&& selection,
       std::span<const typename TypeTraits<T>::physicalType> values,
       std::span<const bool> nulls,
-      Buffer& buffer);
+      Buffer& buffer,
+      const Encoding::Options& options = {});
 
   friend class EncodingSelection<int8_t>;
   friend class EncodingSelection<uint8_t>;

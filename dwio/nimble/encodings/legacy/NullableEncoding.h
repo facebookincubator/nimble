@@ -302,7 +302,7 @@ std::string_view NullableEncoding<T>::encodeNullable(
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
   Encoding::serializePrefix(
-      EncodingType::Nullable, TypeTraits<T>::dataType, rowCount, pos);
+      EncodingType::Nullable, TypeTraits<T>::dataType, rowCount, false, pos);
   encoding::writeString(serializedValues, pos);
   encoding::writeBytes(serializedNulls, pos);
   NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
