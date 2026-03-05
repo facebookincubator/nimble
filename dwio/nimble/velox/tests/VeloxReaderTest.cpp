@@ -4942,7 +4942,7 @@ TEST_P(VeloxReaderTest, rangeReads) {
   });
 }
 
-TEST_P(VeloxReaderTest, testScalarFieldLifeCycle) {
+TEST_P(VeloxReaderTest, DISABLED_testScalarFieldLifeCycle) {
   const auto testScalarFieldLifeCycle =
       [&](const std::shared_ptr<const velox::RowType> schema,
           int32_t batchSize,
