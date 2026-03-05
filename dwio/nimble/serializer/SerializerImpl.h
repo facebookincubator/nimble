@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <optional>
 
 #include "dwio/nimble/common/Buffer.h"
@@ -24,6 +25,7 @@
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/StreamData.h"
+#include "folly/container/F14Map.h"
 #include "velox/common/Casts.h"
 #include "velox/common/memory/Memory.h"
 
@@ -139,6 +141,13 @@ inline std::string_view readStream(const char*& pos) {
   return data;
 }
 
+/// Skips a single stream in the buffer without reading its data.
+/// Advances pos past [size:u32][data...].
+inline void skipStream(const char*& pos) {
+  const uint32_t size = encoding::readUint32(pos);
+  pos += size;
+}
+
 /// Parses all streams from a serialized buffer.
 /// Returns a vector of stream data indexed by their original offset.
 ///
@@ -183,6 +192,98 @@ parseStreams(const char* pos, const char* end, SerializationVersion version) {
     // Each stream: [size:u32][data...]
     while (pos < end) {
       streams.emplace_back(readStream(pos));
+    }
+  }
+
+  return streams;
+}
+
+struct ProjectedStream {
+  // Index into selectedIndices (0-based output stream index).
+  uint32_t index;
+  std::string_view data;
+
+  bool operator<(const ProjectedStream& other) const {
+    return index < other.index;
+  }
+};
+
+/// Parses only selected streams from a serialized buffer, skipping empty ones.
+/// Returns projected streams sorted by output offset (0-based, compact).
+///
+/// @param pos Pointer past the header (version + rowCount already read)
+/// @param end End of buffer
+/// @param version Serialization format version
+/// @param selectedIndices Sorted input stream indices to extract
+/// @return Non-empty projected streams sorted by output offset
+inline std::vector<ProjectedStream> projectStreams(
+    const char* pos,
+    const char* end,
+    SerializationVersion version,
+    const std::vector<uint32_t>& selectedIndices) {
+  std::vector<ProjectedStream> streams;
+  streams.reserve(selectedIndices.size());
+
+  const bool sparseFormat =
+      (version == SerializationVersion::kSparse ||
+       version == SerializationVersion::kSparseEncoded);
+  if (sparseFormat) {
+    // Sparse: read offsets, then selectively read only needed stream data.
+    const uint32_t streamCount = encoding::readUint32(pos);
+    std::vector<uint32_t> offsets(streamCount);
+    for (uint32_t i = 0; i < streamCount; ++i) {
+      offsets[i] = encoding::readUint32(pos);
+    }
+
+    // Build lookup: input offset -> output index.
+    folly::F14FastMap<uint32_t, uint32_t> projectedOffsets;
+    projectedOffsets.reserve(selectedIndices.size());
+    for (uint32_t i = 0; i < selectedIndices.size(); ++i) {
+      projectedOffsets[selectedIndices[i]] = i;
+    }
+
+    bool needsSort = false;
+    for (uint32_t i = 0; i < streamCount; ++i) {
+      auto it = projectedOffsets.find(offsets[i]);
+      if (it != projectedOffsets.end()) {
+        auto data = readStream(pos);
+        if (!data.empty()) {
+          // Sparse offsets are typically written in order by the serializer,
+          // but the format does not guarantee it.
+          if (FOLLY_UNLIKELY(
+                  !streams.empty() && it->second < streams.back().index)) {
+            needsSort = true;
+          }
+          streams.push_back({it->second, data});
+        }
+      } else {
+        skipStream(pos);
+      }
+    }
+
+    if (needsSort) {
+      std::sort(streams.begin(), streams.end());
+    }
+  } else {
+    NIMBLE_CHECK(
+        version == SerializationVersion::kDense ||
+            version == SerializationVersion::kDenseEncoded,
+        "unexpected version {}",
+        version);
+    // Dense: read streams sequentially, skip unneeded ones.
+    // selectedIndices is sorted, so we walk through in order.
+    for (uint32_t streamIdx = 0, nextProjected = 0;
+         pos < end && nextProjected < selectedIndices.size();
+         ++streamIdx) {
+      if (streamIdx == selectedIndices[nextProjected]) {
+        auto data = readStream(pos);
+        if (!data.empty()) {
+          streams.push_back({nextProjected, data});
+        }
+        ++nextProjected;
+      } else {
+        skipStream(pos);
+      }
     }
   }
 

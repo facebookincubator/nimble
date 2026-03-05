@@ -641,71 +641,43 @@ std::string Projector::project(std::string_view input) const {
     rowCount = encoding::readUint32(pos);
   }
 
-  // Parse all input streams using shared implementation.
-  const auto inputStreams = detail::parseStreams(pos, end, inputVersion);
+  // Parse only selected streams, skipping empty ones.
+  auto projectedStreams =
+      detail::projectStreams(pos, end, inputVersion, inputStreamIndices_);
 
-  // Collect streams to project.
-  // For sparse output, only include non-empty streams.
-  // For dense output, include all streams (empty data written as size=0).
-  const bool inputSparse =
-      (inputVersion == SerializationVersion::kSparse ||
-       inputVersion == SerializationVersion::kSparseEncoded);
   const bool outputSparse =
       (options_.projectVersion == SerializationVersion::kSparse ||
        options_.projectVersion == SerializationVersion::kSparseEncoded);
 
-  std::vector<std::pair<uint32_t, std::string_view>> streamsToWrite;
-  streamsToWrite.reserve(inputStreamIndices_.size());
-
-  for (uint32_t outputIdx = 0; outputIdx < inputStreamIndices_.size();
-       ++outputIdx) {
-    const uint32_t inputIdx = inputStreamIndices_[outputIdx];
-
-    // For sparse input, stream may not exist (missing or 0-row input).
-    // For dense input, all streams are present.
-    std::string_view data;
-    if (inputSparse) {
-      if (inputIdx < inputStreams.size()) {
-        data = inputStreams[inputIdx];
-      }
-    } else {
-      // Dense input: all streams must be present.
-      NIMBLE_CHECK_LT(
-          inputIdx,
-          inputStreams.size(),
-          "Stream index {} out of range (have {} streams)",
-          inputIdx,
-          inputStreams.size());
-      data = inputStreams[inputIdx];
-    }
-
-    // Skip empty streams for sparse output.
-    if (outputSparse && data.empty()) {
-      continue;
-    }
-
-    streamsToWrite.emplace_back(outputIdx, data);
-  }
-
   // Build output buffer.
   std::string output;
-  output.reserve(input.size()); // Pessimistic reserve.
+  output.reserve(input.size());
 
-  // Build stream offsets for sparse format.
-  std::vector<uint32_t> streamOffsets;
   if (outputSparse) {
-    streamOffsets.reserve(streamsToWrite.size());
-    for (const auto& [outputIdx, _] : streamsToWrite) {
-      streamOffsets.emplace_back(outputIdx);
+    // Sparse output: write only non-empty streams with their offsets.
+    std::vector<uint32_t> streamOffsets;
+    streamOffsets.reserve(projectedStreams.size());
+    for (const auto& stream : projectedStreams) {
+      streamOffsets.emplace_back(stream.index);
     }
-  }
-
-  // Write header using shared implementation.
-  detail::writeHeader(output, options_.projectVersion, rowCount, streamOffsets);
-
-  // Copy projected streams.
-  for (const auto& [_, data] : streamsToWrite) {
-    detail::writeStream(output, data);
+    detail::writeHeader(
+        output, options_.projectVersion, rowCount, streamOffsets);
+    for (const auto& stream : projectedStreams) {
+      detail::writeStream(output, stream.data);
+    }
+  } else {
+    // Dense output: write all selected streams in order, including empty ones.
+    detail::writeHeader(output, options_.projectVersion, rowCount, {});
+    uint32_t nextProjected = 0;
+    for (uint32_t i = 0; i < inputStreamIndices_.size(); ++i) {
+      if (nextProjected < projectedStreams.size() &&
+          projectedStreams[nextProjected].index == i) {
+        detail::writeStream(output, projectedStreams[nextProjected].data);
+        ++nextProjected;
+      } else {
+        detail::writeStream(output, {});
+      }
+    }
   }
 
   return output;

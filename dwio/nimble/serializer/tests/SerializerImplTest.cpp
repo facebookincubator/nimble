@@ -440,3 +440,239 @@ TEST_F(ParseStreamsTest, sparseFormatOutOfOrder) {
     EXPECT_EQ(streams[2], "two");
   }
 }
+
+// Tests for projectStreams
+
+class ProjectStreamsTest : public ParseStreamsTest {};
+
+TEST_F(ProjectStreamsTest, denseSelectAll) {
+  auto buffer = buildDenseBuffer({"aaa", "bbb", "ccc"});
+
+  for (auto version :
+       {SerializationVersion::kDense, SerializationVersion::kDenseEncoded}) {
+    SCOPED_TRACE(static_cast<int>(version));
+    std::vector<uint32_t> selected = {0, 1, 2};
+    auto streams = serde::detail::projectStreams(
+        buffer.data(), buffer.data() + buffer.size(), version, selected);
+
+    ASSERT_EQ(streams.size(), 3);
+    EXPECT_EQ(streams[0].index, 0);
+    EXPECT_EQ(streams[0].data, "aaa");
+    EXPECT_EQ(streams[1].index, 1);
+    EXPECT_EQ(streams[1].data, "bbb");
+    EXPECT_EQ(streams[2].index, 2);
+    EXPECT_EQ(streams[2].data, "ccc");
+  }
+}
+
+TEST_F(ProjectStreamsTest, denseSelectSubset) {
+  auto buffer = buildDenseBuffer({"aaa", "bbb", "ccc", "ddd", "eee"});
+
+  for (auto version :
+       {SerializationVersion::kDense, SerializationVersion::kDenseEncoded}) {
+    SCOPED_TRACE(static_cast<int>(version));
+    std::vector<uint32_t> selected = {1, 3};
+    auto streams = serde::detail::projectStreams(
+        buffer.data(), buffer.data() + buffer.size(), version, selected);
+
+    ASSERT_EQ(streams.size(), 2);
+    EXPECT_EQ(streams[0].index, 0);
+    EXPECT_EQ(streams[0].data, "bbb");
+    EXPECT_EQ(streams[1].index, 1);
+    EXPECT_EQ(streams[1].data, "ddd");
+  }
+}
+
+TEST_F(ProjectStreamsTest, denseSelectFirst) {
+  auto buffer = buildDenseBuffer({"aaa", "bbb", "ccc"});
+
+  for (auto version :
+       {SerializationVersion::kDense, SerializationVersion::kDenseEncoded}) {
+    SCOPED_TRACE(static_cast<int>(version));
+    std::vector<uint32_t> selected = {0};
+    auto streams = serde::detail::projectStreams(
+        buffer.data(), buffer.data() + buffer.size(), version, selected);
+
+    ASSERT_EQ(streams.size(), 1);
+    EXPECT_EQ(streams[0].index, 0);
+    EXPECT_EQ(streams[0].data, "aaa");
+  }
+}
+
+TEST_F(ProjectStreamsTest, denseSelectLast) {
+  auto buffer = buildDenseBuffer({"aaa", "bbb", "ccc"});
+
+  for (auto version :
+       {SerializationVersion::kDense, SerializationVersion::kDenseEncoded}) {
+    SCOPED_TRACE(static_cast<int>(version));
+    std::vector<uint32_t> selected = {2};
+    auto streams = serde::detail::projectStreams(
+        buffer.data(), buffer.data() + buffer.size(), version, selected);
+
+    ASSERT_EQ(streams.size(), 1);
+    EXPECT_EQ(streams[0].index, 0);
+    EXPECT_EQ(streams[0].data, "ccc");
+  }
+}
+
+TEST_F(ProjectStreamsTest, denseSkipsEmptyStreams) {
+  auto buffer = buildDenseBuffer({"aaa", "", "ccc"});
+
+  for (auto version :
+       {SerializationVersion::kDense, SerializationVersion::kDenseEncoded}) {
+    SCOPED_TRACE(static_cast<int>(version));
+    std::vector<uint32_t> selected = {0, 1, 2};
+    auto streams = serde::detail::projectStreams(
+        buffer.data(), buffer.data() + buffer.size(), version, selected);
+
+    // Empty stream at index 1 is skipped.
+    ASSERT_EQ(streams.size(), 2);
+    EXPECT_EQ(streams[0].index, 0);
+    EXPECT_EQ(streams[0].data, "aaa");
+    EXPECT_EQ(streams[1].index, 2);
+    EXPECT_EQ(streams[1].data, "ccc");
+  }
+}
+
+TEST_F(ProjectStreamsTest, denseAllEmpty) {
+  auto buffer = buildDenseBuffer({"", "", ""});
+
+  for (auto version :
+       {SerializationVersion::kDense, SerializationVersion::kDenseEncoded}) {
+    SCOPED_TRACE(static_cast<int>(version));
+    std::vector<uint32_t> selected = {0, 1, 2};
+    auto streams = serde::detail::projectStreams(
+        buffer.data(), buffer.data() + buffer.size(), version, selected);
+    EXPECT_TRUE(streams.empty());
+  }
+}
+
+TEST_F(ProjectStreamsTest, sparseSelectAll) {
+  auto buffer = buildSparseBuffer({{0, "aaa"}, {1, "bbb"}, {2, "ccc"}});
+
+  for (auto version :
+       {SerializationVersion::kSparse, SerializationVersion::kSparseEncoded}) {
+    SCOPED_TRACE(static_cast<int>(version));
+    std::vector<uint32_t> selected = {0, 1, 2};
+    auto streams = serde::detail::projectStreams(
+        buffer.data(), buffer.data() + buffer.size(), version, selected);
+
+    ASSERT_EQ(streams.size(), 3);
+    EXPECT_EQ(streams[0].index, 0);
+    EXPECT_EQ(streams[0].data, "aaa");
+    EXPECT_EQ(streams[1].index, 1);
+    EXPECT_EQ(streams[1].data, "bbb");
+    EXPECT_EQ(streams[2].index, 2);
+    EXPECT_EQ(streams[2].data, "ccc");
+  }
+}
+
+TEST_F(ProjectStreamsTest, sparseSelectSubset) {
+  auto buffer = buildSparseBuffer(
+      {{0, "aaa"}, {1, "bbb"}, {2, "ccc"}, {3, "ddd"}, {4, "eee"}});
+
+  for (auto version :
+       {SerializationVersion::kSparse, SerializationVersion::kSparseEncoded}) {
+    SCOPED_TRACE(static_cast<int>(version));
+    std::vector<uint32_t> selected = {1, 3};
+    auto streams = serde::detail::projectStreams(
+        buffer.data(), buffer.data() + buffer.size(), version, selected);
+
+    ASSERT_EQ(streams.size(), 2);
+    EXPECT_EQ(streams[0].index, 0);
+    EXPECT_EQ(streams[0].data, "bbb");
+    EXPECT_EQ(streams[1].index, 1);
+    EXPECT_EQ(streams[1].data, "ddd");
+  }
+}
+
+TEST_F(ProjectStreamsTest, sparseWithGaps) {
+  // Input has gaps (offsets 0, 2, 5). Select 0 and 5.
+  auto buffer = buildSparseBuffer({{0, "zero"}, {2, "two"}, {5, "five"}});
+
+  for (auto version :
+       {SerializationVersion::kSparse, SerializationVersion::kSparseEncoded}) {
+    SCOPED_TRACE(static_cast<int>(version));
+    std::vector<uint32_t> selected = {0, 5};
+    auto streams = serde::detail::projectStreams(
+        buffer.data(), buffer.data() + buffer.size(), version, selected);
+
+    ASSERT_EQ(streams.size(), 2);
+    EXPECT_EQ(streams[0].index, 0);
+    EXPECT_EQ(streams[0].data, "zero");
+    EXPECT_EQ(streams[1].index, 1);
+    EXPECT_EQ(streams[1].data, "five");
+  }
+}
+
+TEST_F(ProjectStreamsTest, sparseSelectedNotInInput) {
+  // Input has offsets {0, 2}. Select {0, 1, 2} — offset 1 is missing.
+  auto buffer = buildSparseBuffer({{0, "zero"}, {2, "two"}});
+
+  for (auto version :
+       {SerializationVersion::kSparse, SerializationVersion::kSparseEncoded}) {
+    SCOPED_TRACE(static_cast<int>(version));
+    std::vector<uint32_t> selected = {0, 1, 2};
+    auto streams = serde::detail::projectStreams(
+        buffer.data(), buffer.data() + buffer.size(), version, selected);
+
+    // Offset 1 not in input, so only 2 non-empty streams returned.
+    ASSERT_EQ(streams.size(), 2);
+    EXPECT_EQ(streams[0].index, 0);
+    EXPECT_EQ(streams[0].data, "zero");
+    EXPECT_EQ(streams[1].index, 2);
+    EXPECT_EQ(streams[1].data, "two");
+  }
+}
+
+TEST_F(ProjectStreamsTest, sparseEmpty) {
+  auto buffer = buildSparseBuffer({});
+
+  for (auto version :
+       {SerializationVersion::kSparse, SerializationVersion::kSparseEncoded}) {
+    SCOPED_TRACE(static_cast<int>(version));
+    std::vector<uint32_t> selected = {0, 1};
+    auto streams = serde::detail::projectStreams(
+        buffer.data(), buffer.data() + buffer.size(), version, selected);
+    EXPECT_TRUE(streams.empty());
+  }
+}
+
+TEST_F(ProjectStreamsTest, sparseOutOfOrder) {
+  // Sparse offsets written out of order: {2, 0, 1}.
+  auto buffer = buildSparseBuffer({{2, "two"}, {0, "zero"}, {1, "one"}});
+
+  for (auto version :
+       {SerializationVersion::kSparse, SerializationVersion::kSparseEncoded}) {
+    SCOPED_TRACE(static_cast<int>(version));
+    std::vector<uint32_t> selected = {0, 2};
+    auto streams = serde::detail::projectStreams(
+        buffer.data(), buffer.data() + buffer.size(), version, selected);
+
+    // Results sorted by output offset.
+    ASSERT_EQ(streams.size(), 2);
+    EXPECT_EQ(streams[0].index, 0);
+    EXPECT_EQ(streams[0].data, "zero");
+    EXPECT_EQ(streams[1].index, 1);
+    EXPECT_EQ(streams[1].data, "two");
+  }
+}
+
+TEST_F(ProjectStreamsTest, sparseSkipsEmptyStreams) {
+  auto buffer = buildSparseBuffer({{0, "aaa"}, {1, ""}, {2, "ccc"}});
+
+  for (auto version :
+       {SerializationVersion::kSparse, SerializationVersion::kSparseEncoded}) {
+    SCOPED_TRACE(static_cast<int>(version));
+    std::vector<uint32_t> selected = {0, 1, 2};
+    auto streams = serde::detail::projectStreams(
+        buffer.data(), buffer.data() + buffer.size(), version, selected);
+
+    // Empty stream at offset 1 is skipped.
+    ASSERT_EQ(streams.size(), 2);
+    EXPECT_EQ(streams[0].index, 0);
+    EXPECT_EQ(streams[0].data, "aaa");
+    EXPECT_EQ(streams[1].index, 2);
+    EXPECT_EQ(streams[1].data, "ccc");
+  }
+}
