@@ -24,6 +24,7 @@
 
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/SchemaReader.h"
+#include "folly/container/F14Map.h"
 #include "velox/type/Subfield.h"
 #include "velox/type/Type.h"
 
@@ -125,7 +126,13 @@ class Projector {
   }
 
  private:
-  // Const members (set in init list).
+  using SelectedChildrenMap = folly::F14FastMap<const Type*, std::set<size_t>>;
+
+  // Builds projectedSchema_ from inputSchema_. Maps input stream offsets
+  // to output indices based on inputStreamIndices_ so that schema offsets
+  // match the data layout produced by project().
+  void buildProjectedSchema(const SelectedChildrenMap& selectedChildren);
+
   const Options options_;
 
   std::shared_ptr<const Type> inputSchema_;
