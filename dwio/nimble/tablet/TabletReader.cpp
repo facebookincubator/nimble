@@ -894,17 +894,16 @@ StripeIdentifier TabletReader::stripeIdentifier(
   }
 
   // Neither is cached - use coalesced loading for adjacent metadata sections.
-  auto [loadedStripeGroup, loadedIndexGroup] =
-      loadStripeAndIndexGroup(groupIndex);
+  auto loadedGroups = loadStripeAndIndexGroup(groupIndex);
 
   // Inject into caches using custom builder that returns the already-loaded
   // objects. This ensures the cache holds the reference.
   auto cachedStripeGroup = stripeGroupCache_.get(
       groupIndex,
-      [&loadedStripeGroup](uint32_t) { return std::move(loadedStripeGroup); });
+      [&loadedGroups](uint32_t) { return std::move(loadedGroups.first); });
   auto cachedIndexGroup = indexGroupCache_.get(
       groupIndex,
-      [&loadedIndexGroup](uint32_t) { return std::move(loadedIndexGroup); });
+      [&loadedGroups](uint32_t) { return std::move(loadedGroups.second); });
 
   return StripeIdentifier{
       stripeIndex, std::move(cachedStripeGroup), std::move(cachedIndexGroup)};
