@@ -1772,4 +1772,159 @@ TEST_F(ProjectorTest, projectNestedFieldUnderFlatMapValue) {
   EXPECT_EQ(nestedProjectedRow.nameAt(0), "new_value");
 }
 
+// Test projecting keys from multiple FlatMap columns at the same Row level.
+// This validates that projected schema offsets match the data layout when
+// input stream offsets from different FlatMap subtrees interleave numerically
+// (e.g., map_b nulls offset falls between map_a nulls and map_a's first child).
+TEST_F(ProjectorTest, projectMultipleFlatMapColumns) {
+  // Row with two FlatMap columns.
+  auto type = ROW({
+      {"map_a", MAP(VARCHAR(), INTEGER())},
+      {"map_b", MAP(VARCHAR(), BIGINT())},
+  });
+
+  const vector_size_t numRows = 3;
+
+  // Build map_a: keys "x", "y" with int32 values.
+  const int aEntriesPerRow = 2;
+  const int aTotalEntries = numRows * aEntriesPerRow;
+
+  auto aOffsets = allocateOffsets(numRows, pool_.get());
+  auto aSizes = allocateSizes(numRows, pool_.get());
+  auto* aRawOffsets = aOffsets->asMutable<vector_size_t>();
+  auto* aRawSizes = aSizes->asMutable<vector_size_t>();
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    aRawOffsets[i] = i * aEntriesPerRow;
+    aRawSizes[i] = aEntriesPerRow;
+  }
+  auto aKeys = BaseVector::create<FlatVector<StringView>>(
+      VARCHAR(), aTotalEntries, pool_.get());
+  auto aValues = BaseVector::create<FlatVector<int32_t>>(
+      INTEGER(), aTotalEntries, pool_.get());
+  std::vector<std::string> aKeyNames = {"x", "y"};
+  for (int i = 0; i < aTotalEntries; ++i) {
+    aKeys->set(i, StringView(aKeyNames[i % aEntriesPerRow]));
+    aValues->set(i, (i + 1) * 10);
+  }
+  auto mapA = std::make_shared<MapVector>(
+      pool_.get(),
+      MAP(VARCHAR(), INTEGER()),
+      nullptr,
+      numRows,
+      aOffsets,
+      aSizes,
+      aKeys,
+      aValues);
+
+  // Build map_b: keys "p", "q" with int64 values.
+  const int bEntriesPerRow = 2;
+  const int bTotalEntries = numRows * bEntriesPerRow;
+
+  auto bOffsets = allocateOffsets(numRows, pool_.get());
+  auto bSizes = allocateSizes(numRows, pool_.get());
+  auto* bRawOffsets = bOffsets->asMutable<vector_size_t>();
+  auto* bRawSizes = bSizes->asMutable<vector_size_t>();
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    bRawOffsets[i] = i * bEntriesPerRow;
+    bRawSizes[i] = bEntriesPerRow;
+  }
+  auto bKeys = BaseVector::create<FlatVector<StringView>>(
+      VARCHAR(), bTotalEntries, pool_.get());
+  auto bValues = BaseVector::create<FlatVector<int64_t>>(
+      BIGINT(), bTotalEntries, pool_.get());
+  std::vector<std::string> bKeyNames = {"p", "q"};
+  for (int i = 0; i < bTotalEntries; ++i) {
+    bKeys->set(i, StringView(bKeyNames[i % bEntriesPerRow]));
+    bValues->set(i, (i + 1) * 100L);
+  }
+  auto mapB = std::make_shared<MapVector>(
+      pool_.get(),
+      MAP(VARCHAR(), BIGINT()),
+      nullptr,
+      numRows,
+      bOffsets,
+      bSizes,
+      bKeys,
+      bValues);
+
+  auto vec = std::make_shared<RowVector>(
+      pool_.get(), type, nullptr, numRows, std::vector<VectorPtr>{mapA, mapB});
+
+  // Serialize both maps as FlatMaps.
+  SerializerOptions serOpts{
+      .version = SerializationVersion::kSparseEncoded,
+      .flatMapColumns = {"map_a", "map_b"},
+  };
+  auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
+
+  // Verify stream offset interleaving: map_b nulls offset should fall between
+  // map_a nulls and map_a's first child stream.
+  const auto& inputRow = inputSchema->asRow();
+  const auto& mapASchema = inputRow.childAt(0)->asFlatMap();
+  const auto& mapBSchema = inputRow.childAt(1)->asFlatMap();
+  ASSERT_LT(
+      mapASchema.nullsDescriptor().offset(),
+      mapASchema.childAt(0)->asScalar().scalarDescriptor().offset())
+      << "map_a nulls should be before map_a children";
+  ASSERT_LT(
+      mapBSchema.nullsDescriptor().offset(),
+      mapASchema.childAt(0)->asScalar().scalarDescriptor().offset())
+      << "map_b nulls should interleave with map_a streams";
+
+  // Project one key from each FlatMap.
+  auto subfields = makeSubfields({"map_a[\"x\"]", "map_b[\"q\"]"});
+  Projector projector(
+      inputSchema,
+      subfields,
+      {.inputHasVersionHeader = true,
+       .projectVersion = SerializationVersion::kSparseEncoded});
+
+  auto outputSchema = projector.projectedSchema();
+
+  // Verify output schema structure.
+  const auto& outRow = outputSchema->asRow();
+  ASSERT_EQ(outRow.childrenCount(), 2);
+  const auto& outMapA = outRow.childAt(0)->asFlatMap();
+  ASSERT_EQ(outMapA.childrenCount(), 1);
+  EXPECT_EQ(outMapA.nameAt(0), "x");
+  const auto& outMapB = outRow.childAt(1)->asFlatMap();
+  ASSERT_EQ(outMapB.childrenCount(), 1);
+  EXPECT_EQ(outMapB.nameAt(0), "q");
+
+  // Project and deserialize — this was crashing before the fix due to
+  // misaligned stream offsets between schema and data.
+  auto projected = projector.project(serialized);
+  auto result = deserialize(
+      projected,
+      outputSchema,
+      {.version = SerializationVersion::kSparseEncoded});
+
+  ASSERT_EQ(result->size(), numRows);
+  auto resultRow = result->as<RowVector>();
+
+  // Verify map_a projected values (key "x").
+  auto resultMapA = resultRow->childAt(0)->as<MapVector>();
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    ASSERT_EQ(resultMapA->sizeAt(i), 1);
+    auto keyIdx = resultMapA->offsetAt(i);
+    auto keyVec = resultMapA->mapKeys()->as<FlatVector<StringView>>();
+    EXPECT_EQ(keyVec->valueAt(keyIdx).str(), "x");
+    auto valVec = resultMapA->mapValues()->as<FlatVector<int32_t>>();
+    // key "x" is at even positions (0, 2, 4) in the input.
+    EXPECT_EQ(valVec->valueAt(keyIdx), (i * aEntriesPerRow + 1) * 10);
+  }
+
+  // Verify map_b projected values (key "q").
+  auto resultMapB = resultRow->childAt(1)->as<MapVector>();
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    ASSERT_EQ(resultMapB->sizeAt(i), 1);
+    auto keyIdx = resultMapB->offsetAt(i);
+    auto keyVec = resultMapB->mapKeys()->as<FlatVector<StringView>>();
+    EXPECT_EQ(keyVec->valueAt(keyIdx).str(), "q");
+    auto valVec = resultMapB->mapValues()->as<FlatVector<int64_t>>();
+    // key "q" is at odd positions (1, 3, 5) in the input.
+    EXPECT_EQ(valVec->valueAt(keyIdx), (i * bEntriesPerRow + 2) * 100L);
+  }
+}
+
 } // namespace facebook::nimble::serde
