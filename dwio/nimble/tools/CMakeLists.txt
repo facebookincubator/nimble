@@ -1,4 +1,4 @@
-# Copyright (c) Meta Platforms, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,9 +15,26 @@ add_library(nimble_tools_common EncodingUtilities.cpp)
 
 target_link_libraries(nimble_tools_common nimble_common)
 
+add_library(nimble_dump_lib NimbleDumpLib.cpp)
+target_link_libraries(
+  nimble_dump_lib
+  nimble_tools_common
+  nimble_common
+  nimble_encodings
+  nimble_encodings_tests_utils
+  nimble_tablet_common
+  nimble_tablet_reader
+  nimble_velox_reader
+  nimble_velox_writer
+  nimble_velox_stats_fb
+  velox_file
+  Folly::folly
+)
+
 add_library(nimble_dsl_lib NimbleDslLib.cpp)
 target_link_libraries(
   nimble_dsl_lib
+  nimble_dump_lib
   nimble_tools_common
   nimble_common
   nimble_tablet_reader
