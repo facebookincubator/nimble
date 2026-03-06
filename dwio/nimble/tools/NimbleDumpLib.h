@@ -25,9 +25,14 @@ namespace facebook::nimble::tools {
 class NimbleDumpLib {
  public:
   NimbleDumpLib(
-      std::ostream& ostream,
+      const std::string& filePath,
       bool enableColors,
-      const std::string& file);
+      std::ostream& ostream);
+
+  NimbleDumpLib(
+      std::shared_ptr<velox::ReadFile> file,
+      bool enableColors,
+      std::ostream& ostream);
 
   void emitInfo();
   void emitSchema(bool collapseFlatMap = true);
