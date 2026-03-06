@@ -23,7 +23,6 @@
 #include <utility>
 
 #include "common/strings/Zstd.h"
-#include "dwio/common/filesystem/FileSystem.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
@@ -37,6 +36,7 @@
 #include "dwio/nimble/velox/StatsGenerated.h"
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "folly/cli/NestedCommandLineApp.h"
+#include "velox/common/file/FileSystems.h"
 
 namespace facebook::nimble::tools {
 #undef RED
@@ -275,21 +275,31 @@ void printScalarType(
 
 template <typename T>
 auto commaSeparated(T value) {
-  return fmt::format(std::locale("en_US.UTF-8"), "{:L}", value);
+  try {
+    return fmt::format(std::locale("en_US.UTF-8"), "{:L}", value);
+  } catch (const std::runtime_error&) {
+    return fmt::format("{}", value);
+  }
 }
 
 } // namespace
 
 NimbleDumpLib::NimbleDumpLib(
-    std::ostream& ostream,
+    const std::string& filePath,
     bool enableColors,
-    const std::string& file)
+    std::ostream& ostream)
     : pool_{velox::memory::deprecatedAddDefaultLeafMemoryPool()},
-      file_{dwio::file_system::FileSystem::openForRead(
-          file,
-          dwio::common::request::AccessDescriptorBuilder()
-              .withClientId("nimble_dump")
-              .build())},
+      file_{velox::filesystems::getFileSystem(filePath, nullptr)
+                ->openFileForRead(filePath)},
+      ostream_{ostream},
+      enableColors_{enableColors} {}
+
+NimbleDumpLib::NimbleDumpLib(
+    std::shared_ptr<velox::ReadFile> file,
+    bool enableColors,
+    std::ostream& ostream)
+    : pool_{velox::memory::deprecatedAddDefaultLeafMemoryPool()},
+      file_{std::move(file)},
       ostream_{ostream},
       enableColors_{enableColors} {}
 
@@ -353,10 +363,7 @@ void NimbleDumpLib::emitInfo() {
                        ->raw_size();
     ostream_ << commaSeparated(rawSize) << std::endl;
     const auto compressionRate = (double)rawSize / tablet->fileSize();
-    ostream_ << fmt::format(
-                    std::locale("en_US.UTF-8"),
-                    "Compression Rate: {:.2Lf}x",
-                    compressionRate)
+    ostream_ << "Compression Rate: " << fmt::format("{:.2f}x", compressionRate)
              << std::endl;
   } else {
     ostream_ << "N/A" << std::endl;

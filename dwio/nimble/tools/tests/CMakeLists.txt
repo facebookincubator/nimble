@@ -1,4 +1,4 @@
-# Copyright (c) Meta Platforms, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,21 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_library(nimble_tools_common EncodingUtilities.cpp)
-
-target_link_libraries(nimble_tools_common nimble_common)
-
-add_library(nimble_dsl_lib NimbleDslLib.cpp)
+add_executable(nimble_dsl_tests NimbleDslTest.cpp)
+add_test(nimble_dsl_tests nimble_dsl_tests)
 target_link_libraries(
+  nimble_dsl_tests
   nimble_dsl_lib
-  nimble_tools_common
-  nimble_common
-  nimble_tablet_reader
-  nimble_velox_reader
-  nimble_velox_schema_reader
-  nimble_column_stats
+  nimble_common_file_writer
   velox_file
   velox_memory
+  velox_vector_test_lib
+  gtest
+  gtest_main
 )
-
-add_subdirectory(tests)

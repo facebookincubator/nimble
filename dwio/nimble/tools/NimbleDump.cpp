@@ -86,7 +86,7 @@ int main(int argc, char* argv[]) {
              const po::variables_map& options,
              const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, enableColors, options["file"].as<std::string>()}
+               options["file"].as<std::string>(), enableColors, std::cout}
                .emitInfo();
          },
          makePositionalArgs())
@@ -104,7 +104,7 @@ int main(int argc, char* argv[]) {
              const po::variables_map& options,
              const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, enableColors, options["file"].as<std::string>()}
+               options["file"].as<std::string>(), enableColors, std::cout}
                .emitFileLayout(options["no_header"].as<bool>());
          },
          makePositionalArgs())
@@ -130,7 +130,7 @@ int main(int argc, char* argv[]) {
              const po::variables_map& options,
              const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, enableColors, options["file"].as<std::string>()}
+               options["file"].as<std::string>(), enableColors, std::cout}
                .emitSchema(!options["full"].as<bool>());
          },
          makePositionalArgs())
@@ -156,7 +156,7 @@ int main(int argc, char* argv[]) {
              const po::variables_map& options,
              const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, enableColors, options["file"].as<std::string>()}
+               options["file"].as<std::string>(), enableColors, std::cout}
                .emitStripes(options["no_header"].as<bool>());
          },
          makePositionalArgs())
@@ -182,7 +182,7 @@ int main(int argc, char* argv[]) {
              const po::variables_map& options,
              const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, enableColors, options["file"].as<std::string>()}
+               options["file"].as<std::string>(), enableColors, std::cout}
                .emitStreams(
                    options["no_header"].as<bool>(),
                    options["labels"].as<bool>(),
@@ -232,7 +232,7 @@ int main(int argc, char* argv[]) {
              const po::variables_map& options,
              const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, enableColors, options["file"].as<std::string>()}
+               options["file"].as<std::string>(), enableColors, std::cout}
                .emitHistogram(
                    options["root_only"].as<bool>(),
                    options["no_header"].as<bool>(),
@@ -271,7 +271,7 @@ int main(int argc, char* argv[]) {
              const po::variables_map& options,
              const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, enableColors, options["file"].as<std::string>()}
+               options["file"].as<std::string>(), enableColors, std::cout}
                .emitContent(
                    options["stream"].as<uint32_t>(),
                    getOptional<uint32_t>(options["stripe"]),
@@ -309,7 +309,7 @@ int main(int argc, char* argv[]) {
              const po::variables_map& options,
              const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, enableColors, options["file"].as<std::string>()}
+               options["file"].as<std::string>(), enableColors, std::cout}
                .emitBinary(
                    [path = options["output"].as<std::string>()]() {
                      return std::make_unique<std::ofstream>(
@@ -350,7 +350,7 @@ int main(int argc, char* argv[]) {
              const po::variables_map& options,
              const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, enableColors, options["file"].as<std::string>()}
+               options["file"].as<std::string>(), enableColors, std::cout}
                .emitLayout(
                    options["no_header"].as<bool>(),
                    !options["uncompressed"].as<bool>());
@@ -383,7 +383,7 @@ int main(int argc, char* argv[]) {
              const po::variables_map& options,
              const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, enableColors, options["file"].as<std::string>()}
+               options["file"].as<std::string>(), enableColors, std::cout}
                .emitStripesMetadata(options["no_header"].as<bool>());
          },
          makePositionalArgs())
@@ -409,7 +409,7 @@ int main(int argc, char* argv[]) {
              const po::variables_map& options,
              const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, enableColors, options["file"].as<std::string>()}
+               options["file"].as<std::string>(), enableColors, std::cout}
                .emitStripeGroupsMetadata(options["no_header"].as<bool>());
          },
          makePositionalArgs())
@@ -434,7 +434,7 @@ int main(int argc, char* argv[]) {
              const po::variables_map& options,
              const std::vector<std::string>& /*args*/) {
            nimble::tools::NimbleDumpLib{
-               std::cout, enableColors, options["file"].as<std::string>()}
+               options["file"].as<std::string>(), enableColors, std::cout}
                .emitOptionalSectionsMetadata(options["no_header"].as<bool>());
          },
          makePositionalArgs())
