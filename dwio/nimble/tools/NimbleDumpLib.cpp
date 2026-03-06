@@ -22,7 +22,7 @@
 #include <unordered_set>
 #include <utility>
 
-#include "common/strings/Zstd.h"
+#include <zstd.h>
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
@@ -892,10 +892,17 @@ void NimbleDumpLib::emitLayout(bool noHeader, bool compressed) {
   buffer.resize(size);
   file_->pread(0, size, buffer.data());
   if (compressed) {
-    std::string uncompressed;
+    auto const decompressedSize =
+        ZSTD_getFrameContentSize(buffer.data(), buffer.size());
     NIMBLE_CHECK(
-        strings::zstdDecompress(buffer, &uncompressed),
-        "Decompress failed during `emitLayout`");
+        decompressedSize != ZSTD_CONTENTSIZE_ERROR &&
+            decompressedSize != ZSTD_CONTENTSIZE_UNKNOWN,
+        "Decompress failed during `emitLayout`: unable to determine decompressed size");
+    std::string uncompressed;
+    uncompressed.resize(decompressedSize);
+    auto const ret = ZSTD_decompress(
+        uncompressed.data(), uncompressed.size(), buffer.data(), buffer.size());
+    NIMBLE_CHECK(!ZSTD_isError(ret), "Decompress failed during `emitLayout`");
     buffer = std::move(uncompressed);
   }
 
