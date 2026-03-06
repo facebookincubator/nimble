@@ -106,30 +106,45 @@ class NimbleDslLib {
   ///                 Otherwise, show streams for all stripes.
   void showStreams(std::optional<uint32_t> stripeId);
 
-  /// Display encoding histogram: encoding type, data type, compression,
-  /// instance count, storage bytes, and storage percentage.
+  /// Display per-stream encoding information: the encoding tree (encoding
+  /// types, data types, compression) for each stream in each stripe.
   ///
-  /// @param stripeId If set, show histogram for this stripe only.
-  void showHistogram(std::optional<uint32_t> stripeId);
+  /// @param stripeId If set, show encodings for this stripe only.
+  ///                 Otherwise, show encodings for all stripes.
+  void showEncoding(std::optional<uint32_t> stripeId);
 
-  /// Display raw decoded content of a specific stream.
+  /// Display index information: index columns with sort orders,
+  /// index group metadata, and key stream regions per stripe.
+  void showIndex();
+
+  /// Display encoding type distribution with instance counts and
+  /// storage percentage of the file size.
   ///
-  /// @param streamId The stream to display content for.
+  /// @param topLevel If true, only show top-level encodings (don't recurse).
+  /// @param stripeId If set, show histogram for this stripe only.
+  void showHistogram(bool topLevel, std::optional<uint32_t> stripeId);
+
+  /// Dump raw decoded stream values for a given stream ID.
+  ///
+  /// @param streamId The stream to decode and display.
   /// @param stripeId If set, show content for this stripe only.
   void showContent(uint32_t streamId, std::optional<uint32_t> stripeId);
 
-  /// Display the physical file layout: offsets and sizes of all sections
-  /// (stripes, stripe groups, optional sections, footer, postscript).
+  /// Display the physical file layout: offsets, sizes, and compression
+  /// for each section (stripes, stripe groups, optional sections,
+  /// footer, postscript).
   void showFileLayout();
 
-  /// Display index information: index columns, sort orders, index groups,
-  /// and key streams per stripe.
-  void showIndex();
+  /// Display stripes metadata section details: offset, size,
+  /// and compression type.
+  void showStripesMetadata();
 
-  /// Display stripe group metadata: group ID, offset, size, and compression.
-  void showStripeGroups();
+  /// Display stripe groups metadata: group ID, offset, size,
+  /// and compression type for each stripe group.
+  void showStripeGroupsMetadata();
 
-  /// Display optional sections metadata: name, compression, offset, and size.
+  /// Display optional sections metadata: name, compression,
+  /// offset, and size for each optional section.
   void showOptionalSections();
 
  private:

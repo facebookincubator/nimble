@@ -16,7 +16,13 @@
 #include <iomanip>
 #include <locale>
 
+#include "dwio/nimble/common/FixedBitArray.h"
+#include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/index/StripeIndexGroup.h"
+#include "dwio/nimble/index/TabletIndex.h"
 #include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/tablet/FileLayout.h"
+#include "dwio/nimble/tools/EncodingUtilities.h"
 #include "dwio/nimble/tools/NimbleDslLib.h"
 #include "dwio/nimble/velox/StreamLabels.h"
 #include "dwio/nimble/velox/VeloxReader.h"
@@ -121,6 +127,122 @@ auto commaSeparated(T value) {
     return fmt::format(std::locale("en_US.UTF-8"), "{:L}", value);
   } catch (const std::runtime_error&) {
     return fmt::format("{}", value);
+  }
+}
+
+struct GroupingKey {
+  EncodingType encodingType;
+  DataType dataType;
+  std::optional<CompressionType> compressinType;
+};
+
+struct GroupingKeyHash {
+  size_t operator()(const GroupingKey& key) const {
+    size_t h1 = std::hash<EncodingType>()(key.encodingType);
+    size_t h2 = std::hash<DataType>()(key.dataType);
+    size_t h3 = std::hash<std::optional<CompressionType>>()(key.compressinType);
+    return h1 ^ (h2 << 1) ^ (h3 << 2);
+  }
+};
+
+struct GroupingKeyEqual {
+  bool operator()(const GroupingKey& lhs, const GroupingKey& rhs) const {
+    return lhs.encodingType == rhs.encodingType &&
+        lhs.dataType == rhs.dataType &&
+        lhs.compressinType == rhs.compressinType;
+  }
+};
+
+struct EncodingHistogramValue {
+  size_t count;
+  size_t bytes;
+};
+
+struct HistogramRowCompare {
+  size_t operator()(
+      const std::unordered_map<GroupingKey, EncodingHistogramValue>::
+          const_iterator& lhs,
+      const std::unordered_map<GroupingKey, EncodingHistogramValue>::
+          const_iterator& rhs) const {
+    const auto lhsEncoding = lhs->first.encodingType;
+    const auto rhsEncoding = rhs->first.encodingType;
+    const auto lhsSize = lhs->second.bytes;
+    const auto rhsSize = rhs->second.bytes;
+    if (lhsEncoding != rhsEncoding) {
+      return lhsEncoding < rhsEncoding;
+    } else {
+      return lhsSize > rhsSize;
+    }
+  }
+};
+
+constexpr uint32_t kContentBufferSize = 1000;
+
+template <typename T>
+void printScalarData(
+    std::ostream& ostream,
+    velox::memory::MemoryPool& pool,
+    Encoding& stream,
+    uint32_t rowCount,
+    const std::string& separator) {
+  nimble::Vector<T> buffer(&pool);
+  nimble::Vector<char> nulls(&pool);
+  buffer.resize(rowCount);
+  nulls.resize((nimble::FixedBitArray::bufferSize(rowCount, 1)));
+  nulls.zero_out();
+  uint32_t nonNullCount = rowCount;
+  if (stream.isNullable()) {
+    nonNullCount = stream.materializeNullable(
+        rowCount, buffer.data(), [&]() { return nulls.data(); });
+  } else {
+    stream.materialize(rowCount, buffer.data());
+  }
+
+  if (nonNullCount == rowCount) {
+    for (uint32_t i = 0; i < rowCount; ++i) {
+      ostream << folly::to<std::string>(buffer[i]) << separator;
+    }
+  } else {
+    for (uint32_t i = 0; i < rowCount; ++i) {
+      if (velox::bits::isBitSet(
+              reinterpret_cast<const uint8_t*>(nulls.data()), i) == 0) {
+        ostream << "NULL" << separator;
+      } else {
+        ostream << folly::to<std::string>(buffer[i]) << separator;
+      }
+    }
+  }
+}
+
+void printScalarType(
+    std::ostream& ostream,
+    velox::memory::MemoryPool& pool,
+    Encoding& stream,
+    uint32_t rowCount,
+    const std::string& separator) {
+  switch (stream.dataType()) {
+#define CASE(KIND, cppType)                                               \
+  case DataType::KIND: {                                                  \
+    printScalarData<cppType>(ostream, pool, stream, rowCount, separator); \
+    break;                                                                \
+  }
+    CASE(Int8, int8_t);
+    CASE(Uint8, uint8_t);
+    CASE(Int16, int16_t);
+    CASE(Uint16, uint16_t);
+    CASE(Int32, int32_t);
+    CASE(Uint32, uint32_t);
+    CASE(Int64, int64_t);
+    CASE(Uint64, uint64_t);
+    CASE(Float, float);
+    CASE(Double, double);
+    CASE(Bool, bool);
+    CASE(String, std::string_view);
+#undef CASE
+    case DataType::Undefined: {
+      NIMBLE_UNREACHABLE(
+          fmt::format("Undefined type for stream: {}", stream.dataType()));
+    }
   }
 }
 
@@ -406,13 +528,14 @@ void NimbleDslLib::showInfo() {
 }
 
 void NimbleDslLib::showStats() {
-  TabletReader::Options options;
-  options.preloadOptionalSections = {std::string(kVectorizedStatsSection)};
-  auto tablet = TabletReader::create(file_.get(), pool_.get(), options);
+  TabletReader::Options tabletOptions;
+  tabletOptions.preloadOptionalSections = {
+      std::string(kVectorizedStatsSection)};
+  auto tablet = TabletReader::create(file_.get(), pool_.get(), tabletOptions);
   VeloxReader reader{tablet, *pool_};
 
   auto statsSection =
-      tablet->loadOptionalSection(std::string(kVectorizedStatsSection));
+      tablet->loadOptionalSection(tabletOptions.preloadOptionalSections[0]);
   if (!statsSection.has_value()) {
     ostream_ << YELLOW(enableColors_)
              << "No vectorized statistics available in this file."
@@ -477,14 +600,21 @@ void NimbleDslLib::showStreams(std::optional<uint32_t> stripeId) {
       stripeId);
 }
 
-void NimbleDslLib::showHistogram(std::optional<uint32_t> stripeId) {
-  dumpLib_.emitHistogram(/*topLevel=*/false, /*noHeader=*/false, stripeId);
+void NimbleDslLib::showHistogram(
+    bool topLevel,
+    std::optional<uint32_t> stripeId) {
+  dumpLib_.emitHistogram(topLevel, /*noHeader=*/false, stripeId);
 }
 
 void NimbleDslLib::showContent(
     uint32_t streamId,
     std::optional<uint32_t> stripeId) {
-  dumpLib_.emitContent(streamId, stripeId, "\n");
+  try {
+    dumpLib_.emitContent(streamId, stripeId, "\n");
+  } catch (const std::exception& e) {
+    ostream_ << RED(enableColors_) << "Error: " << e.what()
+             << RESET_COLOR(enableColors_) << std::endl;
+  }
 }
 
 void NimbleDslLib::showFileLayout() {
@@ -495,12 +625,61 @@ void NimbleDslLib::showIndex() {
   dumpLib_.emitIndex();
 }
 
-void NimbleDslLib::showStripeGroups() {
+void NimbleDslLib::showStripesMetadata() {
+  dumpLib_.emitStripesMetadata(/*noHeader=*/false);
+}
+
+void NimbleDslLib::showStripeGroupsMetadata() {
   dumpLib_.emitStripeGroupsMetadata(/*noHeader=*/false);
 }
 
 void NimbleDslLib::showOptionalSections() {
   dumpLib_.emitOptionalSectionsMetadata(/*noHeader=*/false);
+}
+
+void NimbleDslLib::showEncoding(std::optional<uint32_t> stripeId) {
+  auto tablet = TabletReader::create(file_.get(), pool_.get(), {});
+  VeloxReader reader{tablet, *pool_};
+  StreamLabels labels{reader.schema()};
+
+  TableFormatter formatter{
+      ostream_,
+      enableColors_,
+      {{"Stripe Id", 9, Alignment::Left},
+       {"Stream Id", 9, Alignment::Left},
+       {"Stream Label", 25, Alignment::Left},
+       {"Encoding", 60, Alignment::Left}}};
+
+  if (tablet->stripeCount() == 0) {
+    return;
+  }
+
+  uint32_t startStripe = stripeId.value_or(0);
+  uint32_t endStripe = stripeId.value_or(tablet->stripeCount() - 1);
+
+  std::optional<StripeIdentifier> stripeIdentifier;
+  for (uint32_t i = startStripe; i <= endStripe; ++i) {
+    stripeIdentifier = tablet->stripeIdentifier(i);
+    std::vector<uint32_t> streamIdentifiers(
+        tablet->streamCount(stripeIdentifier.value()));
+    std::iota(streamIdentifiers.begin(), streamIdentifiers.end(), 0);
+    auto streams = tablet->load(
+        stripeIdentifier.value(),
+        {streamIdentifiers.cbegin(), streamIdentifiers.cend()});
+    for (uint32_t j = 0; j < streams.size(); ++j) {
+      auto& stream = streams[j];
+      if (stream) {
+        InMemoryChunkedStream chunkedStream{*pool_, std::move(stream)};
+        auto encodingLabel = getStreamInputLabel(chunkedStream);
+        formatter.writeRow({
+            std::to_string(i),
+            std::to_string(j),
+            std::string(labels.streamLabel(j)),
+            encodingLabel,
+        });
+      }
+    }
+  }
 }
 
 } // namespace facebook::nimble::tools
