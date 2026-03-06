@@ -26,6 +26,7 @@
 #include "folly/cli/NestedCommandLineApp.h"
 #include "folly/logging/Init.h"
 #include "velox/common/base/StatsReporter.h"
+#include "velox/common/file/FileSystems.h"
 
 using namespace facebook;
 namespace po = ::boost::program_options;
@@ -54,6 +55,8 @@ int main(int argc, char* argv[]) {
 
   auto init = init::InitFacebookLight{
       &argc, &argv, folly::InitOptions().useGFlags(false)};
+
+  velox::filesystems::registerLocalFileSystem();
 
   // Enable colored output if we are running in a terminal
   bool enableColors = isColorfulTty();
