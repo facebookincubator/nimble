@@ -362,7 +362,7 @@ void resolveSubfield(
 
 using OffsetMap = folly::F14FastMap<uint32_t, uint32_t>;
 
-uint32_t mapOffset(const OffsetMap& offsetMap, uint32_t inputOffset) {
+inline uint32_t mapOffset(const OffsetMap& offsetMap, uint32_t inputOffset) {
   const auto it = offsetMap.find(inputOffset);
   NIMBLE_CHECK(
       it != offsetMap.end(),

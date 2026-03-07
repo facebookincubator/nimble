@@ -252,6 +252,8 @@ struct ProjectedStream {
   uint32_t index;
   std::string_view data;
 
+  ProjectedStream(uint32_t idx, std::string_view d) : index(idx), data(d) {}
+
   bool operator<(const ProjectedStream& other) const {
     return index < other.index;
   }
@@ -315,7 +317,7 @@ inline std::vector<ProjectedStream> projectStreams(
       if (streamIdx == selectedStreamIndices[nextProjected]) {
         auto data = readStream<false>(pos);
         if (!data.empty()) {
-          streams.emplace_back(ProjectedStream{nextProjected, data});
+          streams.emplace_back(nextProjected, data);
         }
         ++nextProjected;
       } else {
