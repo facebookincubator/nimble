@@ -30,6 +30,7 @@
 #include "folly/Synchronized.h"
 #include "velox/common/file/File.h"
 #include "velox/dwio/common/MetricsLog.h"
+#include "velox/dwio/common/Options.h"
 
 namespace facebook::velox::dwio::common {
 class BufferedInput;
@@ -231,6 +232,14 @@ class TabletReader {
 
   static std::shared_ptr<TabletReader>
   create(velox::ReadFile* readFile, MemoryPool* pool, const Options& options);
+
+  /// Configures TabletReader::Options from Velox ReaderOptions.
+  /// @param options The Velox reader options.
+  /// @param bufferedInput Optional BufferedInput for metadata caching
+  ///        (only used when options.fileMetadataCacheEnabled() is true).
+  static Options configureOptions(
+      const velox::dwio::common::ReaderOptions& options,
+      velox::dwio::common::BufferedInput* bufferedInput = nullptr);
 
   /// For testing use
   static std::shared_ptr<TabletReader> testingCreate(
