@@ -38,104 +38,26 @@ namespace facebook::nimble::serde {
 // version.
 struct FormatParam {
   std::optional<SerializationVersion> inputVersion;
-  SerializationVersion outputVersion;
 
-  // For test naming.
+  // For test naming. Output is always kCompact.
   std::string name() const {
-    std::string inputName;
     if (!inputVersion.has_value()) {
-      inputName = "NoVersion";
-    } else {
-      switch (inputVersion.value()) {
-        case SerializationVersion::kDense:
-          inputName = "Dense";
-          break;
-        case SerializationVersion::kDenseEncoded:
-          inputName = "DenseEncoded";
-          break;
-        case SerializationVersion::kSparse:
-          inputName = "Sparse";
-          break;
-        case SerializationVersion::kSparseEncoded:
-          inputName = "SparseEncoded";
-          break;
-      }
+      return "NoVersion";
     }
-
-    std::string outputName;
-    switch (outputVersion) {
-      case SerializationVersion::kDense:
-        outputName = "Dense";
-        break;
-      case SerializationVersion::kDenseEncoded:
-        outputName = "DenseEncoded";
-        break;
-      case SerializationVersion::kSparse:
-        outputName = "Sparse";
-        break;
-      case SerializationVersion::kSparseEncoded:
-        outputName = "SparseEncoded";
-        break;
+    switch (inputVersion.value()) {
+      case SerializationVersion::kLegacy:
+        return "Legacy";
+      case SerializationVersion::kCompact:
+        return "Dense";
     }
-
-    return inputName + "_to_" + outputName;
   }
 };
 
-// Check if input/output format combination is compatible.
-// Projector copies raw bytes, so encoding type must match:
-// - kDense/kSparse use legacy raw encoding
-// - kDenseEncoded/kSparseEncoded use nimble encoding
-// - No-version (legacy) uses raw encoding
-bool isCompatibleFormat(
-    std::optional<SerializationVersion> input,
-    SerializationVersion output) {
-  // No-version (legacy) is raw encoding, compatible with kDense/kSparse.
-  if (!input.has_value()) {
-    return output == SerializationVersion::kDense ||
-        output == SerializationVersion::kSparse;
-  }
-
-  const bool inputEncoded =
-      (input.value() == SerializationVersion::kDenseEncoded ||
-       input.value() == SerializationVersion::kSparseEncoded);
-  const bool outputEncoded =
-      (output == SerializationVersion::kDenseEncoded ||
-       output == SerializationVersion::kSparseEncoded);
-
-  return inputEncoded == outputEncoded;
-}
-
-// Generate compatible format combinations.
+// Generate format combinations. Both input and output must be kCompact.
 std::vector<FormatParam> allFormatCombinations() {
-  std::vector<FormatParam> params;
-
-  // Input versions: 4 with version header + 1 without (legacy dense).
-  std::vector<std::optional<SerializationVersion>> inputVersions = {
-      SerializationVersion::kDense,
-      SerializationVersion::kDenseEncoded,
-      SerializationVersion::kSparse,
-      SerializationVersion::kSparseEncoded,
-      std::nullopt, // No version header (legacy dense format).
+  return {
+      {SerializationVersion::kCompact},
   };
-
-  // Output versions: always has version header.
-  std::vector<SerializationVersion> outputVersions = {
-      SerializationVersion::kDense,
-      SerializationVersion::kDenseEncoded,
-      SerializationVersion::kSparse,
-      SerializationVersion::kSparseEncoded,
-  };
-
-  for (const auto& input : inputVersions) {
-    for (const auto& output : outputVersions) {
-      if (isCompatibleFormat(input, output)) {
-        params.push_back({input, output});
-      }
-    }
-  }
-
-  return params;
 }
 
 // Base test fixture with helper methods.
@@ -262,25 +184,22 @@ class ProjectorFormatTest : public ProjectorTestBase,
   SerializerOptions inputSerializerOptions() const {
     const auto& param = GetParam();
     if (!param.inputVersion.has_value()) {
-      // No version header - use default (legacy dense).
       return SerializerOptions{};
     }
     return SerializerOptions{.version = param.inputVersion.value()};
   }
 
-  // Get projector options.
+  // Get projector options. Output is always kCompact.
   Projector::Options projectorOptions() const {
     const auto& param = GetParam();
     return Projector::Options{
         .inputHasVersionHeader = param.inputVersion.has_value(),
-        .projectVersion = param.outputVersion,
     };
   }
 
-  // Get deserializer options for output format.
+  // Get deserializer options for output format. Always kCompact.
   DeserializerOptions outputDeserializerOptions() const {
-    const auto& param = GetParam();
-    return {.version = param.outputVersion};
+    return {.version = SerializationVersion::kCompact};
   }
 };
 
@@ -305,7 +224,7 @@ TEST_P(ProjectorFormatTest, projectSingleColumn) {
 
   // Project only column "b".
   auto subfields = makeSubfields({"b"});
-  Projector projector(inputSchema, subfields, projectorOptions());
+  Projector projector(inputSchema, subfields, pool_.get(), projectorOptions());
   auto outputSchema = projector.projectedSchema();
 
   // Verify output schema has only one column.
@@ -363,7 +282,7 @@ TEST_P(ProjectorFormatTest, projectMultipleColumns) {
 
   // Project columns "a" and "c".
   auto subfields = makeSubfields({"a", "c"});
-  Projector projector(inputSchema, subfields, projectorOptions());
+  Projector projector(inputSchema, subfields, pool_.get(), projectorOptions());
   auto outputSchema = projector.projectedSchema();
 
   ASSERT_EQ(outputSchema->asRow().childrenCount(), 2);
@@ -425,7 +344,7 @@ TEST_P(ProjectorFormatTest, projectNestedField) {
 
   // Project only "outer.inner1".
   auto subfields = makeSubfields({"outer.inner1"});
-  Projector projector(inputSchema, subfields, projectorOptions());
+  Projector projector(inputSchema, subfields, pool_.get(), projectorOptions());
   auto outputSchema = projector.projectedSchema();
 
   // Output schema: ROW { outer: ROW { inner1: INTEGER } }
@@ -498,7 +417,7 @@ TEST_P(ProjectorFormatTest, projectArrayColumn) {
 
   // Project only "arr".
   auto subfields = makeSubfields({"arr"});
-  Projector projector(inputSchema, subfields, projectorOptions());
+  Projector projector(inputSchema, subfields, pool_.get(), projectorOptions());
   auto outputSchema = projector.projectedSchema();
 
   ASSERT_EQ(outputSchema->asRow().childrenCount(), 1);
@@ -543,7 +462,7 @@ TEST_P(ProjectorFormatTest, emptyInput) {
   auto inputSchema = getNimbleSchema(type, inputSerializerOptions());
 
   auto subfields = makeSubfields({"a"});
-  Projector projector(inputSchema, subfields, projectorOptions());
+  Projector projector(inputSchema, subfields, pool_.get(), projectorOptions());
   auto outputSchema = projector.projectedSchema();
 
   // Helper to verify result.
@@ -589,83 +508,19 @@ TEST_F(ProjectorTest, incompatibleFormatsRejected) {
 
   auto subfields = makeSubfields({"a"});
 
-  // Test encoded input -> raw output (incompatible).
+  // Test kLegacy output version — rejected in constructor.
   {
-    SerializerOptions serOpts{.version = SerializationVersion::kDenseEncoded};
-    auto serialized = serialize(vec, type, serOpts);
-    auto inputSchema = getNimbleSchema(type, serOpts);
-
-    Projector projector(
-        inputSchema,
-        subfields,
-        {.inputHasVersionHeader = true,
-         .projectVersion = SerializationVersion::kDense});
+    auto inputSchema =
+        getNimbleSchema(type, {.version = SerializationVersion::kCompact});
 
     NIMBLE_ASSERT_THROW(
-        projector.project(serialized), "Incompatible input/output formats");
-  }
-
-  {
-    SerializerOptions serOpts{.version = SerializationVersion::kSparseEncoded};
-    auto serialized = serialize(vec, type, serOpts);
-    auto inputSchema = getNimbleSchema(type, serOpts);
-
-    Projector projector(
-        inputSchema,
-        subfields,
-        {.inputHasVersionHeader = true,
-         .projectVersion = SerializationVersion::kSparse});
-
-    NIMBLE_ASSERT_THROW(
-        projector.project(serialized), "Incompatible input/output formats");
-  }
-
-  // Test raw input -> encoded output (incompatible).
-  {
-    SerializerOptions serOpts{.version = SerializationVersion::kDense};
-    auto serialized = serialize(vec, type, serOpts);
-    auto inputSchema = getNimbleSchema(type, serOpts);
-
-    Projector projector(
-        inputSchema,
-        subfields,
-        {.inputHasVersionHeader = true,
-         .projectVersion = SerializationVersion::kDenseEncoded});
-
-    NIMBLE_ASSERT_THROW(
-        projector.project(serialized), "Incompatible input/output formats");
-  }
-
-  {
-    SerializerOptions serOpts{.version = SerializationVersion::kSparse};
-    auto serialized = serialize(vec, type, serOpts);
-    auto inputSchema = getNimbleSchema(type, serOpts);
-
-    Projector projector(
-        inputSchema,
-        subfields,
-        {.inputHasVersionHeader = true,
-         .projectVersion = SerializationVersion::kSparseEncoded});
-
-    NIMBLE_ASSERT_THROW(
-        projector.project(serialized), "Incompatible input/output formats");
-  }
-
-  // Test no-version (legacy raw) -> encoded output (incompatible).
-  {
-    // Legacy format has no version header.
-    SerializerOptions serOpts{};
-    auto serialized = serialize(vec, type, serOpts);
-    auto inputSchema = getNimbleSchema(type, serOpts);
-
-    Projector projector(
-        inputSchema,
-        subfields,
-        {.inputHasVersionHeader = false,
-         .projectVersion = SerializationVersion::kDenseEncoded});
-
-    NIMBLE_ASSERT_THROW(
-        projector.project(serialized), "Incompatible input/output formats");
+        Projector(
+            inputSchema,
+            subfields,
+            pool_.get(),
+            {.inputHasVersionHeader = true,
+             .projectVersion = SerializationVersion::kLegacy}),
+        "Projection output version must be kCompact");
   }
 }
 
@@ -676,7 +531,7 @@ TEST_F(ProjectorTest, emptyProjectionInvalid) {
       {"b", BIGINT()},
   });
 
-  SerializerOptions serOpts{.version = SerializationVersion::kDenseEncoded};
+  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
   auto inputSchema = getNimbleSchema(type, serOpts);
 
   // Empty subfields should throw.
@@ -685,8 +540,9 @@ TEST_F(ProjectorTest, emptyProjectionInvalid) {
       Projector(
           inputSchema,
           emptySubfields,
+          pool_.get(),
           {.inputHasVersionHeader = true,
-           .projectVersion = SerializationVersion::kDenseEncoded}),
+           .projectVersion = SerializationVersion::kCompact}),
       "Must project at least one subfield");
 }
 
@@ -706,81 +562,25 @@ TEST_F(ProjectorTest, fullProjectionPassThrough) {
           makeStringVector({"x", "y", "z"}),
       });
 
-  // Test all 4 versions - pass through when input and output match.
-  for (auto version :
-       {SerializationVersion::kDense,
-        SerializationVersion::kDenseEncoded,
-        SerializationVersion::kSparse,
-        SerializationVersion::kSparseEncoded}) {
-    SCOPED_TRACE(static_cast<int>(version));
-
-    SerializerOptions serOpts{.version = version};
-    auto serialized = serialize(vec, type, serOpts);
-    auto inputSchema = getNimbleSchema(type, serOpts);
-
-    // Full projection - all columns selected, same format.
-    auto subfields = makeSubfields({"a", "b", "c"});
-    Projector projector(
-        inputSchema,
-        subfields,
-        {.inputHasVersionHeader = true, .projectVersion = version});
-
-    auto projected = projector.project(serialized);
-
-    // Fast path: output should be identical to input (pass through).
-    EXPECT_EQ(projected, serialized);
-
-    // Verify can still deserialize correctly.
-    auto outputSchema = projector.projectedSchema();
-    auto result = deserialize(projected, outputSchema, {.version = version});
-    ASSERT_EQ(result->size(), 3);
-
-    auto resultRow = result->as<RowVector>();
-    EXPECT_EQ(resultRow->childAt(0)->as<FlatVector<int32_t>>()->valueAt(0), 1);
-    EXPECT_EQ(
-        resultRow->childAt(1)->as<FlatVector<int64_t>>()->valueAt(0), 100);
-  }
-}
-
-// Test full projection with format conversion (no fast path).
-TEST_F(ProjectorTest, fullProjectionFormatConversion) {
-  auto type = ROW({
-      {"a", INTEGER()},
-      {"b", BIGINT()},
-  });
-
-  auto vec = makeSimpleRowVector(
-      {"a", "b"},
-      {
-          makeIntVector<int32_t>({1, 2}),
-          makeIntVector<int64_t>({100, 200}),
-      });
-
-  // Input: dense encoded format.
-  SerializerOptions serOpts{.version = SerializationVersion::kDenseEncoded};
+  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
   auto serialized = serialize(vec, type, serOpts);
   auto inputSchema = getNimbleSchema(type, serOpts);
 
-  // Full projection but converting to sparse format.
-  auto subfields = makeSubfields({"a", "b"});
+  // Full projection - all columns selected, same format.
+  auto subfields = makeSubfields({"a", "b", "c"});
   Projector projector(
-      inputSchema,
-      subfields,
-      {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kSparseEncoded});
+      inputSchema, subfields, pool_.get(), {.inputHasVersionHeader = true});
 
   auto projected = projector.project(serialized);
 
-  // Not a fast path - output differs from input (different format).
-  EXPECT_NE(projected, serialized);
+  // Fast path: output should be identical to input (pass through).
+  EXPECT_EQ(projected, serialized);
 
-  // But still deserializes correctly.
+  // Verify can still deserialize correctly.
   auto outputSchema = projector.projectedSchema();
   auto result = deserialize(
-      projected,
-      outputSchema,
-      {.version = SerializationVersion::kSparseEncoded});
-  ASSERT_EQ(result->size(), 2);
+      projected, outputSchema, {.version = SerializationVersion::kCompact});
+  ASSERT_EQ(result->size(), 3);
 
   auto resultRow = result->as<RowVector>();
   EXPECT_EQ(resultRow->childAt(0)->as<FlatVector<int32_t>>()->valueAt(0), 1);
@@ -791,7 +591,7 @@ TEST_F(ProjectorTest, fullProjectionFormatConversion) {
 TEST_F(ProjectorTest, unsupportedArraySubscript) {
   auto type = ROW({{"arr", ARRAY(INTEGER())}});
 
-  SerializerOptions serOpts{.version = SerializationVersion::kDenseEncoded};
+  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
   auto inputSchema = getNimbleSchema(type, serOpts);
 
   // Array subscripts are not supported.
@@ -801,8 +601,9 @@ TEST_F(ProjectorTest, unsupportedArraySubscript) {
       Projector(
           inputSchema,
           subfields,
+          pool_.get(),
           {.inputHasVersionHeader = true,
-           .projectVersion = SerializationVersion::kDenseEncoded}),
+           .projectVersion = SerializationVersion::kCompact}),
       "Unsupported subfield kind");
 }
 
@@ -810,7 +611,7 @@ TEST_F(ProjectorTest, unsupportedArraySubscript) {
 TEST_F(ProjectorTest, unsupportedMapKeyProjection) {
   auto type = ROW({{"m", MAP(VARCHAR(), INTEGER())}});
 
-  SerializerOptions serOpts{.version = SerializationVersion::kDenseEncoded};
+  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
   auto inputSchema = getNimbleSchema(type, serOpts);
 
   // Regular map subscripts are not supported (would need re-encoding).
@@ -820,8 +621,9 @@ TEST_F(ProjectorTest, unsupportedMapKeyProjection) {
       Projector(
           inputSchema,
           subfields,
+          pool_.get(),
           {.inputHasVersionHeader = true,
-           .projectVersion = SerializationVersion::kDenseEncoded}),
+           .projectVersion = SerializationVersion::kCompact}),
       "String subscript");
 }
 
@@ -877,16 +679,14 @@ TEST_F(ProjectorTest, flatMapSerializeDeserializeNoProjction) {
 
   // Serialize with FlatMap encoding.
   SerializerOptions serOpts{
-      .version = SerializationVersion::kDenseEncoded,
+      .version = SerializationVersion::kCompact,
       .flatMapColumns = {"features"},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
 
   // Deserialize directly (no projection).
   auto result = deserialize(
-      serialized,
-      inputSchema,
-      {.version = SerializationVersion::kDenseEncoded});
+      serialized, inputSchema, {.version = SerializationVersion::kCompact});
 
   ASSERT_EQ(result->size(), 2);
   auto resultRow = result->as<RowVector>();
@@ -950,7 +750,7 @@ TEST_F(ProjectorTest, projectEntireFlatMapColumn) {
 
   // Serialize with FlatMap encoding.
   SerializerOptions serOpts{
-      .version = SerializationVersion::kDenseEncoded,
+      .version = SerializationVersion::kCompact,
       .flatMapColumns = {"features"},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -960,17 +760,16 @@ TEST_F(ProjectorTest, projectEntireFlatMapColumn) {
   Projector projector(
       inputSchema,
       subfields,
+      pool_.get(),
       {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kDenseEncoded});
+       .projectVersion = SerializationVersion::kCompact});
 
   auto outputSchema = projector.projectedSchema();
   auto projected = projector.project(serialized);
 
   // Deserialize and verify.
   auto result = deserialize(
-      projected,
-      outputSchema,
-      {.version = SerializationVersion::kDenseEncoded});
+      projected, outputSchema, {.version = SerializationVersion::kCompact});
 
   ASSERT_EQ(result->size(), 2);
   auto resultRow = result->as<RowVector>();
@@ -1034,7 +833,7 @@ TEST_F(ProjectorTest, projectFlatMapAllKeys) {
 
   // Serialize with FlatMap encoding.
   SerializerOptions serOpts{
-      .version = SerializationVersion::kDenseEncoded,
+      .version = SerializationVersion::kCompact,
       .flatMapColumns = {"features"},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -1045,17 +844,16 @@ TEST_F(ProjectorTest, projectFlatMapAllKeys) {
   Projector projector(
       inputSchema,
       subfields,
+      pool_.get(),
       {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kDenseEncoded});
+       .projectVersion = SerializationVersion::kCompact});
 
   auto outputSchema = projector.projectedSchema();
   auto projected = projector.project(serialized);
 
   // Deserialize and verify.
   auto result = deserialize(
-      projected,
-      outputSchema,
-      {.version = SerializationVersion::kDenseEncoded});
+      projected, outputSchema, {.version = SerializationVersion::kCompact});
 
   ASSERT_EQ(result->size(), 2);
   auto resultRow = result->as<RowVector>();
@@ -1119,7 +917,7 @@ TEST_F(ProjectorTest, flatMapStreamIndices) {
 
   // Serialize with FlatMap encoding.
   SerializerOptions serOpts{
-      .version = SerializationVersion::kDenseEncoded,
+      .version = SerializationVersion::kCompact,
       .flatMapColumns = {"features"},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -1153,8 +951,9 @@ TEST_F(ProjectorTest, flatMapStreamIndices) {
   Projector projector(
       inputSchema,
       subfields,
+      pool_.get(),
       {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kDenseEncoded});
+       .projectVersion = SerializationVersion::kCompact});
 
   const auto& indices = projector.testingInputStreamIndices();
   LOG(INFO) << "Projected stream indices: ";
@@ -1243,7 +1042,7 @@ TEST_F(ProjectorTest, projectFlatMapSingleKey) {
   // Use serializeWithSchema to get schema AFTER serialization (when FlatMap
   // keys are discovered).
   SerializerOptions serOpts{
-      .version = SerializationVersion::kDenseEncoded,
+      .version = SerializationVersion::kCompact,
       .flatMapColumns = {"features"},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -1253,8 +1052,9 @@ TEST_F(ProjectorTest, projectFlatMapSingleKey) {
   Projector projector(
       inputSchema,
       subfields,
+      pool_.get(),
       {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kDenseEncoded});
+       .projectVersion = SerializationVersion::kCompact});
 
   auto outputSchema = projector.projectedSchema();
 
@@ -1269,9 +1069,7 @@ TEST_F(ProjectorTest, projectFlatMapSingleKey) {
   // Project and deserialize.
   auto projected = projector.project(serialized);
   auto result = deserialize(
-      projected,
-      outputSchema,
-      {.version = SerializationVersion::kDenseEncoded});
+      projected, outputSchema, {.version = SerializationVersion::kCompact});
 
   ASSERT_EQ(result->size(), 3);
   auto resultRow = result->as<RowVector>();
@@ -1337,7 +1135,7 @@ TEST_F(ProjectorTest, projectFlatMapMultipleKeys) {
   // Serialize with FlatMap encoding.
   // Use serializeWithSchema to get schema AFTER serialization.
   SerializerOptions serOpts{
-      .version = SerializationVersion::kDenseEncoded,
+      .version = SerializationVersion::kCompact,
       .flatMapColumns = {"features"},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -1347,8 +1145,9 @@ TEST_F(ProjectorTest, projectFlatMapMultipleKeys) {
   Projector projector(
       inputSchema,
       subfields,
+      pool_.get(),
       {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kDenseEncoded});
+       .projectVersion = SerializationVersion::kCompact});
 
   auto outputSchema = projector.projectedSchema();
 
@@ -1361,9 +1160,7 @@ TEST_F(ProjectorTest, projectFlatMapMultipleKeys) {
   // Project and deserialize.
   auto projected = projector.project(serialized);
   auto result = deserialize(
-      projected,
-      outputSchema,
-      {.version = SerializationVersion::kDenseEncoded});
+      projected, outputSchema, {.version = SerializationVersion::kCompact});
 
   ASSERT_EQ(result->size(), 2);
   auto resultRow = result->as<RowVector>();
@@ -1427,7 +1224,7 @@ TEST_F(ProjectorTest, projectFlatMapNonExistentKey) {
 
   // Serialize with FlatMap encoding to discover keys 1, 2, 3.
   SerializerOptions serOpts{
-      .version = SerializationVersion::kDenseEncoded,
+      .version = SerializationVersion::kCompact,
       .flatMapColumns = {"features"},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -1440,8 +1237,9 @@ TEST_F(ProjectorTest, projectFlatMapNonExistentKey) {
       Projector(
           inputSchema,
           subfields,
+          pool_.get(),
           {.inputHasVersionHeader = true,
-           .projectVersion = SerializationVersion::kDenseEncoded}),
+           .projectVersion = SerializationVersion::kCompact}),
       "Key '999' not found in FlatMapType");
 }
 
@@ -1454,7 +1252,7 @@ TEST_F(ProjectorTest, streamIndicesCorrect) {
   });
   // Stream 0 is root row nulls.
 
-  SerializerOptions serOpts{.version = SerializationVersion::kDenseEncoded};
+  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
   auto inputSchema = getNimbleSchema(type, serOpts);
 
   // Project "b" only - should include streams 0 (root nulls) and 2 (b data).
@@ -1462,8 +1260,9 @@ TEST_F(ProjectorTest, streamIndicesCorrect) {
   Projector projector(
       inputSchema,
       subfields,
+      pool_.get(),
       {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kDenseEncoded});
+       .projectVersion = SerializationVersion::kCompact});
 
   const auto& indices = projector.testingInputStreamIndices();
   ASSERT_EQ(indices.size(), 2);
@@ -1508,7 +1307,7 @@ TEST_F(ProjectorTest, projectWithUpdatedRowType) {
       std::vector<VectorPtr>{ids, names, values});
 
   // Serialize with old column names.
-  SerializerOptions serOpts{.version = SerializationVersion::kDenseEncoded};
+  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
   auto [serialized, inputSchema] = serializeWithSchema(vec, inputType, serOpts);
 
   // Query uses new column names from projectType.
@@ -1519,17 +1318,18 @@ TEST_F(ProjectorTest, projectWithUpdatedRowType) {
       Projector(
           inputSchema,
           subfields,
+          pool_.get(),
           {.inputHasVersionHeader = true,
-           .projectVersion = SerializationVersion::kDenseEncoded}),
+           .projectVersion = SerializationVersion::kCompact}),
       "Field 'new_id' not found in RowType");
 
   // With projectType, name mapping is auto-computed and projection succeeds.
   Projector::Options opts{
       .inputHasVersionHeader = true,
-      .projectVersion = SerializationVersion::kDenseEncoded,
+      .projectVersion = SerializationVersion::kCompact,
       .projectType = projectType,
   };
-  Projector projector(inputSchema, subfields, opts);
+  Projector projector(inputSchema, subfields, pool_.get(), opts);
 
   auto projected = projector.project(serialized);
   ASSERT_FALSE(projected.empty());
@@ -1617,7 +1417,7 @@ TEST_F(ProjectorTest, projectWithUpdatedNestedRowType) {
 
   // Serialize with FlatMap to discover keys.
   SerializerOptions serOpts{
-      .version = SerializationVersion::kDenseEncoded,
+      .version = SerializationVersion::kCompact,
       .flatMapColumns = {"features"},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, inputType, serOpts);
@@ -1630,8 +1430,9 @@ TEST_F(ProjectorTest, projectWithUpdatedNestedRowType) {
     Projector projectorNoType(
         inputSchema,
         subfields,
+        pool_.get(),
         {.inputHasVersionHeader = true,
-         .projectVersion = SerializationVersion::kDenseEncoded});
+         .projectVersion = SerializationVersion::kCompact});
     const auto& nestedRow = projectorNoType.projectedSchema()
                                 ->asRow()
                                 .childAt(0)
@@ -1644,10 +1445,10 @@ TEST_F(ProjectorTest, projectWithUpdatedNestedRowType) {
   // With projectType, nested row field is renamed.
   Projector::Options opts{
       .inputHasVersionHeader = true,
-      .projectVersion = SerializationVersion::kDenseEncoded,
+      .projectVersion = SerializationVersion::kCompact,
       .projectType = projectType,
   };
-  Projector projector(inputSchema, subfields, opts);
+  Projector projector(inputSchema, subfields, pool_.get(), opts);
 
   auto projected = projector.project(serialized);
   ASSERT_FALSE(projected.empty());
@@ -1733,7 +1534,7 @@ TEST_F(ProjectorTest, projectNestedFieldUnderFlatMapValue) {
       std::vector<VectorPtr>{ids, mapVector});
 
   SerializerOptions serOpts{
-      .version = SerializationVersion::kDenseEncoded,
+      .version = SerializationVersion::kCompact,
       .flatMapColumns = {"features"},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, inputType, serOpts);
@@ -1746,16 +1547,18 @@ TEST_F(ProjectorTest, projectNestedFieldUnderFlatMapValue) {
       Projector(
           inputSchema,
           subfields,
+          pool_.get(),
           {.inputHasVersionHeader = true,
-           .projectVersion = SerializationVersion::kDenseEncoded}),
+           .projectVersion = SerializationVersion::kCompact}),
       "Field 'new_value' not found in RowType");
 
   // With projectType, nested field is renamed and projection succeeds.
   Projector projector(
       inputSchema,
       subfields,
+      pool_.get(),
       {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kDenseEncoded,
+       .projectVersion = SerializationVersion::kCompact,
        .projectType = projectType});
 
   auto projected = projector.project(serialized);
@@ -1852,7 +1655,7 @@ TEST_F(ProjectorTest, projectMultipleFlatMapColumns) {
 
   // Serialize both maps as FlatMaps.
   SerializerOptions serOpts{
-      .version = SerializationVersion::kSparseEncoded,
+      .version = SerializationVersion::kCompact,
       .flatMapColumns = {"map_a", "map_b"},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -1876,8 +1679,9 @@ TEST_F(ProjectorTest, projectMultipleFlatMapColumns) {
   Projector projector(
       inputSchema,
       subfields,
+      pool_.get(),
       {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kSparseEncoded});
+       .projectVersion = SerializationVersion::kCompact});
 
   auto outputSchema = projector.projectedSchema();
 
@@ -1895,9 +1699,7 @@ TEST_F(ProjectorTest, projectMultipleFlatMapColumns) {
   // misaligned stream offsets between schema and data.
   auto projected = projector.project(serialized);
   auto result = deserialize(
-      projected,
-      outputSchema,
-      {.version = SerializationVersion::kSparseEncoded});
+      projected, outputSchema, {.version = SerializationVersion::kCompact});
 
   ASSERT_EQ(result->size(), numRows);
   auto resultRow = result->as<RowVector>();

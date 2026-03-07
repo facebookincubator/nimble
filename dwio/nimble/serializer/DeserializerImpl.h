@@ -130,7 +130,9 @@ void StreamData::materialize(uint32_t count, T* output) {
 
 class StreamDataReader {
  public:
-  explicit StreamDataReader(const DeserializerOptions& options);
+  StreamDataReader(
+      velox::memory::MemoryPool* pool,
+      const DeserializerOptions& options);
 
   /// Returns number of rows serialized.
   /// Validates that the version in serialized data matches options.
@@ -140,8 +142,13 @@ class StreamDataReader {
       const std::function<void(uint32_t offset, std::string_view data)>&
           callback);
 
+  bool encodingEnabled() const {
+    return options_.enableEncoding();
+  }
+
  private:
   const DeserializerOptions& options_;
+  velox::memory::MemoryPool* const pool_;
   const char* pos_{nullptr};
   const char* end_{nullptr};
 };

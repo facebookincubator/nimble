@@ -30,20 +30,19 @@
 namespace facebook::nimble {
 
 /// Serialization format version.
-/// Combines stream format (Dense/Sparse) with encoding type (legacy/nimble).
 ///
-/// Stream formats:
-/// - Dense: Streams in offset order, zeros for missing streams
-/// - Sparse: Explicit stream_count and offsets array
+/// - kLegacy: Simple zstd compression with inline u32 sizes.
+///   Wire:
+///   [version:1B][rowCount:u32][size_0:u32][stream_data_0]...[size_N:u32][stream_data_N]
 ///
-/// Encoding types:
-/// - Legacy: Simple zstd compression [size:u32][compression_type:i8][data...]
-/// - Encoded: Nimble encoding framework (Dictionary, RLE, etc.)
+/// - kCompact: Nimble encoding with a dense sizes trailer.
+///   Wire: [version:1B][rowCount:varint][stream_data_0]...[stream_data_N]
+///         [encoded_stream_sizes][stream_sizes_encoded_size:u32]
+///   The trailer contains nimble-encoded stream sizes (sizes[i] = byte size
+///   of stream i, 0 for missing) followed by the encoded sizes length (u32).
 enum class SerializationVersion : uint8_t {
-  kDense = 0, // Dense format, legacy compression
-  kSparse = 1, // Sparse format, legacy compression
-  kDenseEncoded = 2, // Dense format, nimble encoding
-  kSparseEncoded = 3, // Sparse format, nimble encoding
+  kLegacy = 0,
+  kCompact = 1,
 };
 
 std::string toString(SerializationVersion version);
@@ -60,16 +59,16 @@ struct SerializerOptions {
   int32_t compressionLevel{0};
 
   /// Serialization format version.
-  /// - nullopt (default): Dense format with no version header (kDense).
-  /// - kDense/kSparse: Legacy compression format.
-  /// - kDenseEncoded/kSparseEncoded: Nimble encoding format.
+  /// - nullopt (default): Legacy format with no version header (kLegacy).
+  /// - kLegacy: Legacy compression format.
+  /// - kCompact: Nimble encoding format with dense sizes header.
   std::optional<SerializationVersion> version{};
 
   /// Columns that should be encoded as flat maps.
   folly::F14FastSet<std::string> flatMapColumns{};
 
   /// Factory for creating encoding selection policies.
-  /// Only used when version is kDenseEncoded or kSparseEncoded.
+  /// Only used when version is kCompact.
   /// Falls back to this when encodingLayoutTree doesn't have a layout for a
   /// stream.
   EncodingSelectionPolicyFactory encodingSelectionPolicyFactory =
@@ -78,7 +77,7 @@ struct SerializerOptions {
   };
 
   /// Compression options for encodings.
-  /// Only used when version is kDenseEncoded or kSparseEncoded.
+  /// Only used when version is kCompact.
   CompressionOptions compressionOptions{};
 
   /// Optional captured encoding layout tree.
@@ -89,27 +88,37 @@ struct SerializerOptions {
   /// tree.
   std::optional<EncodingLayoutTree> encodingLayoutTree{};
 
-  // Helper methods for version checks
+  /// Optional encoding type for stream sizes in the sizes header.
+  /// When specified, forces sizes to use this encoding type.
+  /// When nullopt (default), uses cost-based selection via
+  /// ManualEncodingSelectionPolicyFactory.
+  std::optional<EncodingType> streamSizesEncodingType{};
+
+  /// Returns true if the serialized data has a version header byte.
   bool hasVersionHeader() const;
+
+  /// Returns the effective serialization version.
   SerializationVersion serializationVersion() const;
+
+  /// Returns true if nimble encoding is enabled (version is kCompact).
   bool enableEncoding() const;
-  bool denseFormat() const;
-  bool sparseFormat() const;
 };
 
 struct DeserializerOptions {
   /// Serialization format version expected in the input.
-  /// - nullopt (default): Dense format (version 0) with no version header.
-  /// - kDense/kSparse: Legacy compression format.
-  /// - kDenseEncoded/kSparseEncoded: Nimble encoding format.
+  /// - nullopt (default): Legacy format (version 0) with no version header.
+  /// - kLegacy: Legacy compression format.
+  /// - kCompact: Nimble encoding format with dense sizes header.
   std::optional<SerializationVersion> version{};
 
-  // Helper methods for version checks
+  /// Returns true if the serialized data has a version header byte.
   bool hasVersionHeader() const;
+
+  /// Returns the effective serialization version.
   SerializationVersion serializationVersion() const;
+
+  /// Returns true if nimble encoding is enabled (version is kCompact).
   bool enableEncoding() const;
-  bool denseFormat() const;
-  bool sparseFormat() const;
 };
 
 } // namespace facebook::nimble

@@ -31,13 +31,12 @@ using namespace facebook;
 using namespace facebook::nimble;
 
 // Test parameters for parameterized tests.
-// For encoding modes (kDenseEncoded, kSparseEncoded), we test both with and
-// without compression to exercise the compressionOptions path in
-// ReplayedEncodingSelectionPolicy.
+// For kCompact mode, we test both with and without compression to exercise the
+// compressionOptions path in ReplayedEncodingSelectionPolicy.
 struct TestParams {
   std::optional<SerializationVersion> version;
-  // Compression options for encoding modes. Only used when encodingLayoutTree
-  // is specified and version is kDenseEncoded or kSparseEncoded.
+  // Compression options for kCompact mode. Only used when encodingLayoutTree
+  // is specified.
   CompressionOptions compressionOptions{};
   // Whether compression is enabled (for test naming).
   bool compressionEnabled{false};
@@ -194,20 +193,14 @@ namespace {
 std::string formatName(const ::testing::TestParamInfo<TestParams>& info) {
   std::string name;
   if (!info.param.version.has_value()) {
-    name = "DenseFormat";
+    name = "LegacyFormat";
   } else {
     switch (*info.param.version) {
-      case SerializationVersion::kDense:
+      case SerializationVersion::kLegacy:
+        name = "LegacyFormat";
+        break;
+      case SerializationVersion::kCompact:
         name = "DenseFormat";
-        break;
-      case SerializationVersion::kSparse:
-        name = "SparseFormat";
-        break;
-      case SerializationVersion::kDenseEncoded:
-        name = "DenseEncodedFormat";
-        break;
-      case SerializationVersion::kSparseEncoded:
-        name = "SparseEncodedFormat";
         break;
     }
   }
@@ -1254,8 +1247,8 @@ TEST_P(SerializationTest, nullsNotSupported) {
         "nulls not supported");
   }
 
-  // Test 4: FlatMap with null value (only for sparse formats).
-  if (SerializerOptions{.version = version()}.sparseFormat()) {
+  // Test 4: FlatMap with null value (only for kCompact format).
+  if (SerializerOptions{.version = version()}.enableEncoding()) {
     auto type = velox::ROW({
         {"id", velox::BIGINT()},
         {"features", velox::MAP(velox::INTEGER(), velox::DOUBLE())},
@@ -1477,17 +1470,15 @@ TEST_P(SerializationTest, versionMismatch) {
   auto serialized =
       serializer.serialize(input, OrderedRanges::of(0, input->size()));
 
-  // Try to deserialize with sparse format (expects version header).
-  // The first byte is rowCount (not version), so it will be read as version.
-  // If rowCount > 1 (kSparse), it will fail the version check.
+  // Try to deserialize with kCompact (expects version header).
+  // The first byte is rowCount (not version), so it will be read as version
+  // and fail the version check.
   Deserializer deserializer{
       SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
       pool_.get(),
-      DeserializerOptions{.version = SerializationVersion::kSparse}};
+      DeserializerOptions{.version = SerializationVersion::kCompact}};
 
   velox::VectorPtr output;
-  // The version check should fail because the first byte (part of rowCount)
-  // is likely > 1, which exceeds the maximum supported version (kSparse = 1).
   NIMBLE_ASSERT_THROW(
       deserializer.deserialize(serialized, output), "Unsupported version");
 }
@@ -1878,8 +1869,8 @@ TEST_P(SerializationTest, encodingLayoutTreeFlatMap) {
 
   SerializerOptions options{
       .version = version(),
-      .compressionOptions = compressionOptions(),
       .flatMapColumns = {"features", "tags"},
+      .compressionOptions = compressionOptions(),
       .encodingLayoutTree = layoutTree,
   };
 
@@ -2157,21 +2148,14 @@ INSTANTIATE_TEST_SUITE_P(
     AllFormats,
     SerializationTest,
     ::testing::Values(
-        // Non-encoding modes (compression options don't apply).
-        TestParams{.version = std::nullopt}, // Dense format
-        TestParams{.version = SerializationVersion::kSparse},
-        // Encoding modes without compression.
-        TestParams{.version = SerializationVersion::kDenseEncoded},
-        TestParams{.version = SerializationVersion::kSparseEncoded},
-        // Encoding modes with compression enabled (for encodingLayoutTree
+        // Legacy format (no nimble encoding).
+        TestParams{.version = std::nullopt},
+        // kCompact format without compression.
+        TestParams{.version = SerializationVersion::kCompact},
+        // kCompact format with compression enabled (for encodingLayoutTree
         // tests).
         TestParams{
-            .version = SerializationVersion::kDenseEncoded,
-            .compressionOptions =
-                {.compressionAcceptRatio = 1.0f, .zstdMinCompressionSize = 0},
-            .compressionEnabled = true},
-        TestParams{
-            .version = SerializationVersion::kSparseEncoded,
+            .version = SerializationVersion::kCompact,
             .compressionOptions =
                 {.compressionAcceptRatio = 1.0f, .zstdMinCompressionSize = 0},
             .compressionEnabled = true}),

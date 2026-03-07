@@ -20,14 +20,10 @@ namespace facebook::nimble {
 
 std::string toString(SerializationVersion version) {
   switch (version) {
-    case SerializationVersion::kDense:
-      return "kDense";
-    case SerializationVersion::kSparse:
-      return "kSparse";
-    case SerializationVersion::kDenseEncoded:
-      return "kDenseEncoded";
-    case SerializationVersion::kSparseEncoded:
-      return "kSparseEncoded";
+    case SerializationVersion::kLegacy:
+      return "kLegacy";
+    case SerializationVersion::kCompact:
+      return "kCompact";
   }
   return fmt::format("Unknown({})", static_cast<uint8_t>(version));
 }
@@ -37,23 +33,11 @@ bool SerializerOptions::hasVersionHeader() const {
 }
 
 SerializationVersion SerializerOptions::serializationVersion() const {
-  return version.value_or(SerializationVersion::kDense);
+  return version.value_or(SerializationVersion::kLegacy);
 }
 
 bool SerializerOptions::enableEncoding() const {
-  auto v = serializationVersion();
-  return v == SerializationVersion::kDenseEncoded ||
-      v == SerializationVersion::kSparseEncoded;
-}
-
-bool SerializerOptions::denseFormat() const {
-  return !sparseFormat();
-}
-
-bool SerializerOptions::sparseFormat() const {
-  auto v = serializationVersion();
-  return v == SerializationVersion::kSparse ||
-      v == SerializationVersion::kSparseEncoded;
+  return serializationVersion() == SerializationVersion::kCompact;
 }
 
 bool DeserializerOptions::hasVersionHeader() const {
@@ -61,23 +45,11 @@ bool DeserializerOptions::hasVersionHeader() const {
 }
 
 SerializationVersion DeserializerOptions::serializationVersion() const {
-  return version.value_or(SerializationVersion::kDense);
+  return version.value_or(SerializationVersion::kLegacy);
 }
 
 bool DeserializerOptions::enableEncoding() const {
-  auto v = serializationVersion();
-  return v == SerializationVersion::kDenseEncoded ||
-      v == SerializationVersion::kSparseEncoded;
-}
-
-bool DeserializerOptions::denseFormat() const {
-  return !sparseFormat();
-}
-
-bool DeserializerOptions::sparseFormat() const {
-  const auto v = serializationVersion();
-  return v == SerializationVersion::kSparse ||
-      v == SerializationVersion::kSparseEncoded;
+  return serializationVersion() == SerializationVersion::kCompact;
 }
 
 } // namespace facebook::nimble

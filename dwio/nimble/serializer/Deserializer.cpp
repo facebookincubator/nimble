@@ -540,7 +540,7 @@ void Deserializer::deserialize(
   // Iterate batches and add stream data with row offsets. Streams missing from
   // a batch will have gaps that are filled later during reading.
   uint32_t rowOffset{0};
-  serde::StreamDataReader reader{options_};
+  serde::StreamDataReader reader{pool_, options_};
   for (auto sv : data) {
     const auto batchRows = reader.initialize(sv);
     reader.iterateStreams([&](uint32_t offset, std::string_view streamData) {

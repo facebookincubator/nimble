@@ -25,6 +25,7 @@
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "folly/container/F14Map.h"
+#include "velox/common/memory/Memory.h"
 #include "velox/type/Subfield.h"
 #include "velox/type/Type.h"
 
@@ -73,12 +74,13 @@ class Projector {
     /// If false, input is assumed to be legacy dense format (raw encoding).
     bool inputHasVersionHeader{false};
 
-    /// Output serialization format version.
-    /// The output always has a version header.
-    /// Must be compatible with input encoding type:
-    /// - Raw formats (kDense/kSparse) for legacy or raw input
-    /// - Encoded formats (kDenseEncoded/kSparseEncoded) for encoded input
-    SerializationVersion projectVersion{SerializationVersion::kSparseEncoded};
+    /// Output serialization format version. Must be kCompact.
+    SerializationVersion projectVersion{SerializationVersion::kCompact};
+
+    /// Optional encoding type for stream sizes in the sizes header.
+    /// When specified, forces sizes to use this encoding type.
+    /// When nullopt (default), uses cost-based selection.
+    std::optional<EncodingType> streamSizesEncodingType{};
 
     /// Optional velox type with up-to-date column names from the current
     /// table schema. After schema evolution (e.g., column renames), the
@@ -92,11 +94,14 @@ class Projector {
   /// @param inputSchema Nimble schema of serialized data.
   /// @param projectSubfields Columns to project (using projectType names if
   ///        set).
+  /// @param pool Memory pool for encoding/decoding offsets in sparse format.
+  ///        Must not be null.
   /// @param options Includes optional projectType for schema evolution.
   /// @throws If a subfield path cannot be resolved against the schema.
   Projector(
       std::shared_ptr<const Type> inputSchema,
       const std::vector<Subfield>& projectSubfields,
+      velox::memory::MemoryPool* pool,
       Options options);
 
   /// Projects a single input buffer.
@@ -133,6 +138,7 @@ class Projector {
   // match the data layout produced by project().
   void buildProjectedSchema(const SelectedChildrenMap& selectedChildren);
 
+  velox::memory::MemoryPool* const pool_;
   const Options options_;
 
   std::shared_ptr<const Type> inputSchema_;
