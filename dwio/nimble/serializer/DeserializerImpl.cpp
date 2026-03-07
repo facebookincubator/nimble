@@ -23,6 +23,7 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/serializer/SerializerImpl.h"
 
 namespace facebook::nimble::serde {
 
@@ -47,6 +48,9 @@ uint32_t StreamData::copyTo(char* output, uint32_t bufferSize) {
 }
 
 uint32_t StreamData::decodeStrings(uint32_t count, std::string_view* output) {
+  if (encodingEnabled_) {
+    return decode(output, /*offset=*/0, count, /*width=*/0);
+  }
   uint32_t index = 0;
   while (pos_ < end_ && index < count) {
     output[index++] = encoding::readString(pos_);
@@ -191,19 +195,23 @@ uint32_t StreamData::decode(
   return count;
 }
 
-StreamDataReader::StreamDataReader(const DeserializerOptions& options)
-    : options_{options} {}
+StreamDataReader::StreamDataReader(
+    velox::memory::MemoryPool* pool,
+    const DeserializerOptions& options)
+    : options_{options}, pool_{pool} {
+  NIMBLE_CHECK_NOT_NULL(pool_);
+}
 
 uint32_t StreamDataReader::initialize(std::string_view data) {
   pos_ = data.data();
   end_ = data.end();
   if (options_.hasVersionHeader()) {
     const auto version = static_cast<SerializationVersion>(*pos_);
-    NIMBLE_CHECK_LE(
-        version,
-        SerializationVersion::kSparseEncoded,
+    NIMBLE_CHECK(
+        version == SerializationVersion::kLegacy ||
+            version == SerializationVersion::kCompact,
         "Unsupported version {}",
-        version);
+        static_cast<uint8_t>(version));
     // Verify the version read from serialized data matches options.
     NIMBLE_CHECK_EQ(
         version,
@@ -213,9 +221,8 @@ uint32_t StreamDataReader::initialize(std::string_view data) {
         *options_.version);
     ++pos_;
   }
-  // Encoded versions (kDenseEncoded, kSparseEncoded) use varint for compact
-  // row counts.
   if (options_.enableEncoding()) {
+    // kCompact: varint row count.
     return varint::readVarint32(&pos_);
   }
   return encoding::readUint32(pos_);
@@ -224,34 +231,33 @@ uint32_t StreamDataReader::initialize(std::string_view data) {
 void StreamDataReader::iterateStreams(
     const std::function<void(uint32_t offset, std::string_view data)>&
         callback) {
-  if (options_.sparseFormat()) {
-    // Sparse format: [stream_count][offsets...][data...]
-    NIMBLE_CHECK_LE(
-        pos_ + sizeof(uint32_t), end_, "Truncated data: missing stream count");
-    const uint32_t streamCount = encoding::readUint32(pos_);
+  if (options_.enableEncoding()) {
+    // kCompact format:
+    // [stream_data_0]...[stream_data_N][encoded_stream_sizes][stream_sizes_encoded_size:u32]
+    // Read stream_sizes_encoded_size from last 4 bytes, decode sizes from
+    // trailer.
+    const uint32_t streamSizesEncodedSize =
+        detail::readStreamSizesEncodedSize(end_);
+    const auto streamSizes = detail::decodeStreamSizes(
+        {end_ - sizeof(uint32_t) - streamSizesEncodedSize,
+         streamSizesEncodedSize},
+        pool_);
 
-    // Sanity check: stream count should be reasonable.
-    const size_t remainingBytes = end_ - pos_;
-    NIMBLE_CHECK_LE(
-        streamCount,
-        remainingBytes / sizeof(uint32_t),
-        "Invalid stream count exceeds remaining data");
-
-    std::vector<uint32_t> offsets(streamCount);
-    for (uint32_t i = 0; i < streamCount; ++i) {
-      offsets[i] = encoding::readUint32(pos_);
+    for (uint32_t i = 0; i < streamSizes.size(); ++i) {
+      std::string_view streamData(pos_, streamSizes[i]);
+      pos_ += streamSizes[i];
+      if (!streamData.empty()) {
+        callback(i, streamData);
+      }
     }
-
-    for (uint32_t i = 0; i < streamCount; ++i) {
-      auto streamData = encoding::readString(pos_);
-      callback(offsets[i], streamData);
-    }
+    pos_ = end_; // Skip past trailer.
   } else {
-    NIMBLE_CHECK(options_.denseFormat());
-    // Dense format (version 0): streams in order with zeros for missing.
+    // kLegacy format: streams in order with inline u32 sizes.
     uint32_t offset = 0;
     while (pos_ < end_) {
-      auto streamData = encoding::readString(pos_);
+      uint32_t size = encoding::readUint32(pos_);
+      std::string_view streamData(pos_, size);
+      pos_ += size;
       if (!streamData.empty()) {
         callback(offset, streamData);
       }

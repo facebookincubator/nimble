@@ -82,8 +82,6 @@ class Serializer {
   mutable FieldWriterContext context_;
   std::unique_ptr<FieldWriter> writer_;
   mutable Vector<char> buffer_;
-  // Reusable buffer for collecting non-empty streams during serialization.
-  mutable std::vector<const StreamData*> nonEmptyStreams_;
   // Map from stream offset to encoding layout for replaying captured encodings.
   // Only populated when options_.encodingLayoutTree is set.
   // Mutable because FlatMap keys can be added during const serialize().
@@ -98,38 +96,16 @@ void Serializer::serialize(
     T& buffer) const {
   writer_->write(vector, ranges);
 
-  // For kSparse format, collect non-empty streams upfront (needed for header).
-  // For kDense format, we iterate over all streams and skip empty ones.
-  if (options_.sparseFormat()) {
-    NIMBLE_CHECK(nonEmptyStreams_.empty());
-    nonEmptyStreams_.reserve(context_.streams().size());
-    for (auto& [_, streamData] : context_.streams()) {
-      if (!streamData->data().empty() || !streamData->nonNulls().empty()) {
-        nonEmptyStreams_.push_back(streamData.get());
-      }
-    }
-  }
-
-  // Write header and stream data.
   serde::StreamDataWriter<T> streamWriter{
       options_,
       buffer,
       static_cast<uint32_t>(ranges.size()),
-      nonEmptyStreams_,
       pool_,
       getStreamEncodingLayouts()};
-  if (options_.sparseFormat()) {
-    for (const auto* streamData : nonEmptyStreams_) {
-      streamWriter.writeData(*streamData);
-    }
-    nonEmptyStreams_.clear();
-  } else {
-    NIMBLE_CHECK(options_.denseFormat());
-    for (auto& [_, streamData] : context_.streams()) {
-      streamWriter.writeData(*streamData);
-    }
+  for (auto& [_, streamData] : context_.streams()) {
+    streamWriter.writeData(*streamData);
   }
-  // Pass nodeCount for SerializationVersion::kDense to fill trailing zeros.
+  // Pass nodeCount for kLegacy to fill trailing zeros.
   streamWriter.close(context_.schemaBuilder().nodeCount());
 
   writer_->reset();

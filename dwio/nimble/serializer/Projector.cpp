@@ -197,7 +197,6 @@ std::shared_ptr<const Type> updateColumnNames(
   }
 }
 
-// Tracks which children are selected at each RowType/FlatMapType.
 // Matches Projector::SelectedChildrenMap.
 using SelectedChildrenMap = folly::F14FastMap<const Type*, std::set<size_t>>;
 
@@ -565,14 +564,22 @@ void Projector::buildProjectedSchema(
 Projector::Projector(
     std::shared_ptr<const Type> inputSchema,
     const std::vector<Subfield>& projectSubfields,
+    velox::memory::MemoryPool* pool,
     Options options)
-    : options_(std::move(options)), inputSchema_(std::move(inputSchema)) {
+    : pool_(pool),
+      options_(std::move(options)),
+      inputSchema_(std::move(inputSchema)) {
+  NIMBLE_CHECK_NOT_NULL(pool_, "Memory pool cannot be null");
   NIMBLE_CHECK_NOT_NULL(inputSchema_, "Input schema cannot be null");
   NIMBLE_CHECK(
       inputSchema_->isRow(),
       "Input schema must be a RowType, got: {}",
       inputSchema_->kind());
   NIMBLE_CHECK(!projectSubfields.empty(), "Must project at least one subfield");
+  NIMBLE_CHECK_EQ(
+      options_.projectVersion,
+      SerializationVersion::kCompact,
+      "Projection output version must be kCompact");
 
   // Update inputSchema_ with projectType names for schema evolution.
   if (options_.projectType) {
@@ -604,81 +611,46 @@ std::string Projector::project(std::string_view input) const {
   const char* end = input.data() + input.size();
 
   // Parse input header.
-  SerializationVersion inputVersion = SerializationVersion::kDense;
+  SerializationVersion inputVersion = SerializationVersion::kLegacy;
   if (options_.inputHasVersionHeader) {
     inputVersion = static_cast<SerializationVersion>(*pos++);
   }
 
-  // Verify input/output format compatibility.
-  // Projector copies raw bytes, so encoding type must match:
-  // - kDense/kSparse use legacy raw encoding
-  // - kDenseEncoded/kSparseEncoded use nimble encoding
-  const bool inputEncoded =
-      (inputVersion == SerializationVersion::kDenseEncoded ||
-       inputVersion == SerializationVersion::kSparseEncoded);
-  const bool outputEncoded =
-      (options_.projectVersion == SerializationVersion::kDenseEncoded ||
-       options_.projectVersion == SerializationVersion::kSparseEncoded);
+  // Input must also be kCompact — projector copies raw bytes, so encoding
+  // format must match. kLegacy uses zstd compression while kCompact uses
+  // nimble encoding; cross-format projection would require re-encoding.
   NIMBLE_CHECK_EQ(
-      inputEncoded,
-      outputEncoded,
-      "Incompatible input/output formats: input={}, output={}. "
-      "Cannot project between raw and encoded formats.",
-      static_cast<int>(inputVersion),
-      static_cast<int>(options_.projectVersion));
+      inputVersion,
+      SerializationVersion::kCompact,
+      "Input must be kCompact format, got: {}",
+      inputVersion);
 
   // Fast path: pass-through when all streams selected and formats match.
-  if (passThrough_ && options_.inputHasVersionHeader &&
-      inputVersion == options_.projectVersion) {
+  if (passThrough_ && options_.inputHasVersionHeader) {
     return std::string(input);
   }
 
-  // Encoded versions use varint for compact row counts.
-  uint32_t rowCount;
-  if (inputEncoded) {
-    rowCount = varint::readVarint32(&pos);
-  } else {
-    rowCount = encoding::readUint32(pos);
-  }
+  const uint32_t rowCount = varint::readVarint32(&pos);
 
   // Parse only selected streams, skipping empty ones.
-  auto projectedStreams =
-      detail::projectStreams(pos, end, inputVersion, inputStreamIndices_);
+  auto projectedStreams = detail::projectStreams(
+      pos, end, inputVersion, inputStreamIndices_, pool_);
 
-  const bool outputSparse =
-      (options_.projectVersion == SerializationVersion::kSparse ||
-       options_.projectVersion == SerializationVersion::kSparseEncoded);
-
-  // Build output buffer.
+  // Build output buffer: header, stream data, then trailer with sizes.
   std::string output;
   output.reserve(input.size());
 
-  if (outputSparse) {
-    // Sparse output: write only non-empty streams with their offsets.
-    std::vector<uint32_t> streamOffsets;
-    streamOffsets.reserve(projectedStreams.size());
-    for (const auto& stream : projectedStreams) {
-      streamOffsets.emplace_back(stream.index);
-    }
-    detail::writeHeader(
-        output, options_.projectVersion, rowCount, streamOffsets);
-    for (const auto& stream : projectedStreams) {
-      detail::writeStream(output, stream.data);
-    }
-  } else {
-    // Dense output: write all selected streams in order, including empty ones.
-    detail::writeHeader(output, options_.projectVersion, rowCount, {});
-    uint32_t nextProjected = 0;
-    for (uint32_t i = 0; i < inputStreamIndices_.size(); ++i) {
-      if (nextProjected < projectedStreams.size() &&
-          projectedStreams[nextProjected].index == i) {
-        detail::writeStream(output, projectedStreams[nextProjected].data);
-        ++nextProjected;
-      } else {
-        detail::writeStream(output, {});
-      }
-    }
+  std::vector<uint32_t> streamSizes(inputStreamIndices_.size(), 0);
+  for (const auto& stream : projectedStreams) {
+    streamSizes[stream.index] = stream.data.size();
   }
+  detail::writeHeader(output, options_.projectVersion, rowCount);
+  for (const auto& stream : projectedStreams) {
+    auto* dataPos = detail::extend(output, stream.data.size());
+    std::memcpy(dataPos, stream.data.data(), stream.data.size());
+  }
+  detail::writeTrailer(
+      streamSizes, options_.streamSizesEncodingType, pool_, output);
 
   return output;
 }
