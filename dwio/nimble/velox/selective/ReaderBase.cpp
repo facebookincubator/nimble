@@ -29,12 +29,6 @@ using namespace facebook::velox;
 namespace {
 const std::string kSchemaSectionString(kSchemaSection);
 
-TabletReader::Options defaultTabletReaderOptions() {
-  TabletReader::Options options;
-  options.preloadOptionalSections = {kSchemaSectionString};
-  return options;
-}
-
 std::shared_ptr<const facebook::nimble::Type> loadSchema(
     const TabletReader& tablet) {
   auto section = tablet.loadOptionalSection(kSchemaSectionString);
@@ -56,11 +50,7 @@ TypePtr getFileSchema(
 std::shared_ptr<ReaderBase> ReaderBase::create(
     std::unique_ptr<velox::dwio::common::BufferedInput> input,
     const velox::dwio::common::ReaderOptions& options) {
-  // Initialize tablet reader options with BufferedInput for metadata IO.
-  auto tabletOptions = defaultTabletReaderOptions();
-  if (options.fileMetadataCacheEnabled()) {
-    tabletOptions.bufferedInput = input.get();
-  }
+  auto tabletOptions = TabletReader::configureOptions(options, input.get());
 
   auto tablet = TabletReader::create(
       input->getReadFile().get(), &options.memoryPool(), tabletOptions);
