@@ -7,7 +7,7 @@ datasets created by Meta. Nimble is meant to be a replacement for file formats
 such as Apache Parquet and ORC.
 
 Watch [this talk](https://www.youtube.com/watch?v=bISBNVtXZ6M) to learn more
-about Nimble’s internals.
+about Nimble's internals.
 
 Nimble has the following design principles:
 
@@ -27,7 +27,7 @@ Nimble has the following design principles:
   themselves.
 
 - **Unified:** More than a specification, Nimble is a product. We strongly
-  discourage developers to (re-)implement Nimble’s spec to prevent environmental
+  discourage developers to (re-)implement Nimble's spec to prevent environmental
   fragmentation issues observed with similar projects in the past. We encourage
   developers to leverage the single unified Nimble library, and create
   high-quality bindings to other languages as needed.
@@ -64,7 +64,7 @@ stable release. Use it at your own risk.
 
 ## Build
 
-Nimble’s CMake build system is self-sufficient and able to either locate its
+Nimble's CMake build system is self-sufficient and able to either locate its
 main dependencies or compile them locally. In order to compile it, one can
 simply:
 
@@ -112,7 +112,7 @@ $ sudo apt install -y \
     clang-format
 ```
 
-Although Nimble’s codebase is today closely coupled with velox, we intend to
+Although Nimble's codebase is today closely coupled with velox, we intend to
 decouple them in the future.
 
 ## License
