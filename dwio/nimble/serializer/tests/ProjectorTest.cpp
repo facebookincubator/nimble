@@ -34,6 +34,16 @@ using namespace facebook::velox;
 
 namespace facebook::nimble::serde {
 
+// Coalesces an IOBuf chain into a single string for test comparisons.
+std::string toString(const folly::IOBuf& buf) {
+  std::string result;
+  result.reserve(buf.computeChainDataLength());
+  for (auto range : buf) {
+    result.append(reinterpret_cast<const char*>(range.data()), range.size());
+  }
+  return result;
+}
+
 // Test parameter: input version (nullopt = no version header) and output
 // version.
 struct FormatParam {
@@ -247,14 +257,14 @@ TEST_P(ProjectorFormatTest, projectSingleColumn) {
 
   // Test single projection.
   auto projected = projector.project(serialized);
-  verifyResult(projected);
+  verifyResult(toString(projected));
 
   // Test batch projection.
   std::vector<std::string_view> inputs = {serialized, serialized};
   auto batchResults = projector.project(inputs);
   ASSERT_EQ(batchResults.size(), 2);
-  verifyResult(batchResults[0]);
-  verifyResult(batchResults[1]);
+  verifyResult(toString(batchResults[0]));
+  verifyResult(toString(batchResults[1]));
 }
 
 // Test projecting multiple columns.
@@ -306,12 +316,12 @@ TEST_P(ProjectorFormatTest, projectMultipleColumns) {
   };
 
   // Test single and batch projection.
-  verifyResult(projector.project(serialized));
+  verifyResult(toString(projector.project(serialized)));
 
   auto batchResults = projector.project({serialized, serialized});
   ASSERT_EQ(batchResults.size(), 2);
-  verifyResult(batchResults[0]);
-  verifyResult(batchResults[1]);
+  verifyResult(toString(batchResults[0]));
+  verifyResult(toString(batchResults[1]));
 }
 
 // Test projecting nested struct fields.
@@ -371,12 +381,12 @@ TEST_P(ProjectorFormatTest, projectNestedField) {
   };
 
   // Test single and batch projection.
-  verifyResult(projector.project(serialized));
+  verifyResult(toString(projector.project(serialized)));
 
   auto batchResults = projector.project({serialized, serialized});
   ASSERT_EQ(batchResults.size(), 2);
-  verifyResult(batchResults[0]);
-  verifyResult(batchResults[1]);
+  verifyResult(toString(batchResults[0]));
+  verifyResult(toString(batchResults[1]));
 }
 
 // Test projecting with array type (entire array column).
@@ -436,12 +446,12 @@ TEST_P(ProjectorFormatTest, projectArrayColumn) {
   };
 
   // Test single and batch projection.
-  verifyResult(projector.project(serialized));
+  verifyResult(toString(projector.project(serialized)));
 
   auto batchResults = projector.project({serialized, serialized});
   ASSERT_EQ(batchResults.size(), 2);
-  verifyResult(batchResults[0]);
-  verifyResult(batchResults[1]);
+  verifyResult(toString(batchResults[0]));
+  verifyResult(toString(batchResults[1]));
 }
 
 // Test empty input (0 rows).
@@ -473,12 +483,12 @@ TEST_P(ProjectorFormatTest, emptyInput) {
   };
 
   // Test single and batch projection.
-  verifyResult(projector.project(serialized));
+  verifyResult(toString(projector.project(serialized)));
 
   auto batchResults = projector.project({serialized, serialized});
   ASSERT_EQ(batchResults.size(), 2);
-  verifyResult(batchResults[0]);
-  verifyResult(batchResults[1]);
+  verifyResult(toString(batchResults[0]));
+  verifyResult(toString(batchResults[1]));
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -574,12 +584,14 @@ TEST_F(ProjectorTest, fullProjectionPassThrough) {
   auto projected = projector.project(serialized);
 
   // Fast path: output should be identical to input (pass through).
-  EXPECT_EQ(projected, serialized);
+  EXPECT_EQ(toString(projected), std::string_view(serialized));
 
   // Verify can still deserialize correctly.
   auto outputSchema = projector.projectedSchema();
   auto result = deserialize(
-      projected, outputSchema, {.version = SerializationVersion::kCompact});
+      toString(projected),
+      outputSchema,
+      {.version = SerializationVersion::kCompact});
   ASSERT_EQ(result->size(), 3);
 
   auto resultRow = result->as<RowVector>();
@@ -769,7 +781,9 @@ TEST_F(ProjectorTest, projectEntireFlatMapColumn) {
 
   // Deserialize and verify.
   auto result = deserialize(
-      projected, outputSchema, {.version = SerializationVersion::kCompact});
+      toString(projected),
+      outputSchema,
+      {.version = SerializationVersion::kCompact});
 
   ASSERT_EQ(result->size(), 2);
   auto resultRow = result->as<RowVector>();
@@ -853,7 +867,9 @@ TEST_F(ProjectorTest, projectFlatMapAllKeys) {
 
   // Deserialize and verify.
   auto result = deserialize(
-      projected, outputSchema, {.version = SerializationVersion::kCompact});
+      toString(projected),
+      outputSchema,
+      {.version = SerializationVersion::kCompact});
 
   ASSERT_EQ(result->size(), 2);
   auto resultRow = result->as<RowVector>();
@@ -1069,7 +1085,9 @@ TEST_F(ProjectorTest, projectFlatMapSingleKey) {
   // Project and deserialize.
   auto projected = projector.project(serialized);
   auto result = deserialize(
-      projected, outputSchema, {.version = SerializationVersion::kCompact});
+      toString(projected),
+      outputSchema,
+      {.version = SerializationVersion::kCompact});
 
   ASSERT_EQ(result->size(), 3);
   auto resultRow = result->as<RowVector>();
@@ -1160,7 +1178,9 @@ TEST_F(ProjectorTest, projectFlatMapMultipleKeys) {
   // Project and deserialize.
   auto projected = projector.project(serialized);
   auto result = deserialize(
-      projected, outputSchema, {.version = SerializationVersion::kCompact});
+      toString(projected),
+      outputSchema,
+      {.version = SerializationVersion::kCompact});
 
   ASSERT_EQ(result->size(), 2);
   auto resultRow = result->as<RowVector>();
@@ -1699,7 +1719,9 @@ TEST_F(ProjectorTest, projectMultipleFlatMapColumns) {
   // misaligned stream offsets between schema and data.
   auto projected = projector.project(serialized);
   auto result = deserialize(
-      projected, outputSchema, {.version = SerializationVersion::kCompact});
+      toString(projected),
+      outputSchema,
+      {.version = SerializationVersion::kCompact});
 
   ASSERT_EQ(result->size(), numRows);
   auto resultRow = result->as<RowVector>();

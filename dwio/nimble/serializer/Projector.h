@@ -18,13 +18,13 @@
 
 #include <memory>
 #include <set>
-#include <string>
 #include <string_view>
 #include <vector>
 
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "folly/container/F14Map.h"
+#include "folly/io/IOBuf.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/type/Subfield.h"
 #include "velox/type/Type.h"
@@ -106,16 +106,18 @@ class Projector {
 
   /// Projects a single input buffer.
   /// @param input Serialized Nimble buffer.
-  /// @return Projected buffer.
+  /// @return Projected buffer as IOBuf (possibly chained) for zero-copy
+  ///         network transfer.
   ///
-  // TODO: Return folly::IOBuf instead of std::string for network transfer
-  // efficiency (avoids copy when sending to client).
-  std::string project(std::string_view input) const;
+  // TODO: Add an overload taking folly::IOBuf input to enable zero-copy
+  // projection — stream data sections can be IOBuf views into the input
+  // instead of copies.
+  folly::IOBuf project(std::string_view input) const;
 
   /// Projects multiple input buffers.
   /// @param inputs Vector of serialized Nimble buffers.
   /// @return Vector of projected buffers.
-  std::vector<std::string> project(
+  std::vector<folly::IOBuf> project(
       const std::vector<std::string_view>& inputs) const;
 
   /// Returns the projected schema.

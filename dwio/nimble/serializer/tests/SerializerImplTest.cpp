@@ -163,6 +163,92 @@ TEST_F(WriteHeaderTest, noVersionHeader) {
   EXPECT_EQ(rowCount, 100);
 }
 
+// Tests for estimateHeaderSize
+
+TEST_F(WriteHeaderTest, estimateHeaderSizeCompact) {
+  struct TestParam {
+    uint32_t rowCount;
+    std::string debugString() const {
+      return fmt::format("rowCount {}", rowCount);
+    }
+  };
+  std::vector<TestParam> testSettings = {
+      {0},
+      {1},
+      {127},
+      {128},
+      {16383},
+      {16384},
+      {1000000},
+      {std::numeric_limits<uint32_t>::max()}};
+  for (const auto& testData : testSettings) {
+    SCOPED_TRACE(testData.debugString());
+    std::string buffer;
+    serde::detail::writeHeader(
+        buffer, SerializationVersion::kCompact, testData.rowCount);
+    EXPECT_EQ(
+        serde::detail::estimateHeaderSize(
+            SerializationVersion::kCompact, testData.rowCount),
+        buffer.size());
+  }
+}
+
+TEST_F(WriteHeaderTest, estimateHeaderSizeLegacy) {
+  struct TestParam {
+    uint32_t rowCount;
+    std::string debugString() const {
+      return fmt::format("rowCount {}", rowCount);
+    }
+  };
+  std::vector<TestParam> testSettings = {
+      {0}, {1}, {1000}, {std::numeric_limits<uint32_t>::max()}};
+  for (const auto& testData : testSettings) {
+    SCOPED_TRACE(testData.debugString());
+    std::string buffer;
+    serde::detail::writeHeader(
+        buffer, SerializationVersion::kLegacy, testData.rowCount);
+    EXPECT_EQ(
+        serde::detail::estimateHeaderSize(
+            SerializationVersion::kLegacy, testData.rowCount),
+        buffer.size());
+  }
+}
+
+TEST_F(WriteHeaderTest, estimateHeaderSizeNoVersion) {
+  std::string buffer;
+  serde::detail::writeHeader(buffer, std::nullopt, 100);
+  EXPECT_EQ(
+      serde::detail::estimateHeaderSize(std::nullopt, 100), buffer.size());
+}
+
+// Tests for estimateTrailerSize
+
+TEST_F(WriteHeaderTest, estimateTrailerSize) {
+  struct TestParam {
+    std::vector<uint32_t> sizes;
+    std::string debugString() const {
+      return fmt::format("numStreams {}", sizes.size());
+    }
+  };
+  std::vector<TestParam> testSettings = {
+      {{}},
+      {{10}},
+      {{10, 20, 30}},
+      {{0, 0, 0, 0, 5}},
+      {std::vector<uint32_t>(100, 42)},
+      {std::vector<uint32_t>(500, 0)}};
+  for (const auto& testData : testSettings) {
+    SCOPED_TRACE(testData.debugString());
+    std::string buffer;
+    serde::detail::writeTrailer(
+        testData.sizes, std::nullopt, pool_.get(), buffer);
+    EXPECT_GE(
+        serde::detail::estimateTrailerSize(testData.sizes.size()),
+        buffer.size())
+        << "Estimate must be >= actual trailer size";
+  }
+}
+
 class WriteStreamTest : public ::testing::Test {
  protected:
   void verifyStream(
