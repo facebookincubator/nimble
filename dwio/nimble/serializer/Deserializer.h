@@ -58,6 +58,16 @@ class Deserializer {
   // --- Mutable members (modified during deserialization) ---
   mutable folly::F14FastMap<uint32_t, std::unique_ptr<Decoder>> deserializers_;
   mutable std::vector<std::string_view> inputBuffer_;
+
+  // Map from in-map stream offset to the child value type for detecting
+  // present in-map streams. When an in-map stream is missing from a batch but
+  // its value streams are present, the key is present in every row (skipped by
+  // the serializer). Only populated for top-level FlatMap types (depth 1).
+  folly::F14FastMap<uint32_t, const Type*> inMapChildTypes_;
+
+  // Reusable set of stream offsets present in the current batch. Cleared per
+  // batch in deserialize(). Only used when inMapChildTypes_ is non-empty.
+  mutable folly::F14FastSet<uint32_t> presentStreamOffsets_;
 };
 
 } // namespace facebook::nimble

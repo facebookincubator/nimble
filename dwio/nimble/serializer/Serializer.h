@@ -19,6 +19,7 @@
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "dwio/nimble/velox/FieldWriter.h"
+#include "folly/container/F14Set.h"
 #include "velox/dwio/common/TypeWithId.h"
 #include "velox/vector/BaseVector.h"
 
@@ -87,6 +88,9 @@ class Serializer {
   // Mutable because FlatMap keys can be added during const serialize().
   mutable std::unordered_map<uint32_t, const EncodingLayout*>
       streamEncodingLayouts_;
+  // In-map stream offsets for constant stream skipping.
+  // Mutable because FlatMap keys can be added during const serialize().
+  mutable folly::F14FastSet<uint32_t> inMapStreamOffsets_;
 };
 
 template <typename T>
@@ -103,6 +107,18 @@ void Serializer::serialize(
       pool_,
       getStreamEncodingLayouts()};
   for (auto& [_, streamData] : context_.streams()) {
+    // Skip constant in-map boolean streams. When all-false (no row has this
+    // key) or all-true (every row has this key), omit the stream. The
+    // deserializer uses hasValueStreams() to distinguish the two cases.
+    if (!inMapStreamOffsets_.empty()) {
+      const auto streamOffset = streamData->descriptor().offset();
+      if (inMapStreamOffsets_.contains(streamOffset)) {
+        streamData->materialize();
+        if (isConstantBoolStream(streamData->data())) {
+          continue;
+        }
+      }
+    }
     streamWriter.writeData(*streamData);
   }
   // Pass nodeCount for kLegacy to fill trailing zeros.

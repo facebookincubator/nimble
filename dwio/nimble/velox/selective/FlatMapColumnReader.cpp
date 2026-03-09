@@ -16,6 +16,7 @@
 
 #include "dwio/nimble/velox/selective/FlatMapColumnReader.h"
 
+#include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/selective/ChunkedDecoder.h"
 #include "dwio/nimble/velox/selective/ColumnReader.h"
 #include "dwio/nimble/velox/selective/StructColumnReader.h"
@@ -114,14 +115,26 @@ std::vector<KeyNode<T>> makeKeyNodes(
     }
     auto inMapInput =
         params.streams().enqueue(nimbleType.inMapDescriptorAt(i).offset());
-    if (!inMapInput) {
-      continue;
+    if (inMapInput != nullptr) {
+      node.inMap = std::make_unique<ChunkedDecoder>(
+          std::move(inMapInput),
+          /*decodeValuesWithNulls=*/false,
+          /*streamIndex=*/nullptr,
+          &memoryPool);
+    } else {
+      // Missing in-map stream: either the writer skipped it because all rows
+      // are in-map (value streams exist), or the key has no data in this
+      // stripe (value streams also absent). Check value streams to distinguish.
+      // For FlatMap value types, iterate children since individual keys are
+      // independent and the first child may not have data.
+      if (!hasValueStreams(
+              *nimbleType.childAt(i),
+              [&streams = params.streams()](offset_size offset) {
+                return streams.hasStream(offset);
+              })) {
+        continue;
+      }
     }
-    node.inMap = std::make_unique<ChunkedDecoder>(
-        std::move(inMapInput),
-        /*decodeValuesWithNulls=*/false,
-        /*streamIndex=*/nullptr,
-        &memoryPool);
     auto childParams = params.makeChildParams(nimbleType.childAt(i));
     childParams.setInMapDecoder(node.inMap.get());
     node.reader = buildColumnReader(

@@ -56,9 +56,35 @@ Serializer::Serializer(
   context_.initStatsCollectors(typeWithId);
   writer_ = FieldWriter::create(context_, typeWithId);
 
-  // Set up encoding layout support if encodingLayoutTree is specified.
-  // Must be called after writer_ is created so we can traverse the schema.
   buildStreamEncodingLayouts();
+
+  // Register handler for dynamically discovered FlatMap keys.
+  // Combines in-map offset tracking with optional encoding layout lookup.
+  if (!options_.flatMapColumns.empty()) {
+    context_.setFlatmapFieldAddedEventHandler(
+        [this](
+            const TypeBuilder& flatmap,
+            std::string_view fieldKey,
+            const TypeBuilder& fieldType) {
+          // Track in-map stream offset for constant stream skipping.
+          const auto& flatmapBuilder = flatmap.asFlatMap();
+          inMapStreamOffsets_.insert(
+              flatmapBuilder
+                  .inMapDescriptorAt(flatmapBuilder.childrenCount() - 1)
+                  .offset());
+
+          // Handle encoding layout if configured.
+          if (options_.encodingLayoutTree.has_value()) {
+            auto* ctx = flatmap.context<FlatmapEncodingLayoutContext>();
+            if (ctx != nullptr) {
+              auto it = ctx->keyEncodings_.find(fieldKey);
+              if (it != ctx->keyEncodings_.end()) {
+                initEncodingLayouts(*it->second, fieldType);
+              }
+            }
+          }
+        });
+  }
 }
 
 std::string_view Serializer::serialize(
@@ -74,24 +100,9 @@ void Serializer::buildStreamEncodingLayouts() {
     return;
   }
 
-  // Register handler for dynamically discovered FlatMap keys.
-  // When a new key is found during writing, look up its encoding layout
-  // and add it to streamEncodingLayouts_.
-  context_.setFlatmapFieldAddedEventHandler([this](
-                                                const TypeBuilder& flatmap,
-                                                std::string_view fieldKey,
-                                                const TypeBuilder& fieldType) {
-    // Context may be null if this FlatMap isn't covered by the encoding
-    // layout tree (e.g., schema evolution from Map, or tree doesn't
-    // include this column).
-    auto* ctx = flatmap.context<FlatmapEncodingLayoutContext>();
-    if (ctx != nullptr) {
-      auto it = ctx->keyEncodings_.find(fieldKey);
-      if (it != ctx->keyEncodings_.end()) {
-        initEncodingLayouts(*it->second, fieldType);
-      }
-    }
-  });
+  // NOTE: The event handler for dynamically discovered FlatMap keys is
+  // registered in the constructor, which combines both in-map offset tracking
+  // and encoding layout lookup in a single handler.
 
   // Traverse the encoding layout tree to build the stream encoding layouts map.
   const auto& rootType = context_.schemaBuilder().root();

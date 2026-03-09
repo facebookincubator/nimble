@@ -18,12 +18,13 @@
 
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/serializer/Deserializer.h"
+#include "dwio/nimble/serializer/DeserializerImpl.h"
 #include "dwio/nimble/serializer/Serializer.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
+#include "folly/container/F14Set.h"
 #include "velox/vector/BaseVector.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/DecodedVector.h"
-#include "velox/vector/NullsBuilder.h"
 #include "velox/vector/SelectivityVector.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 
@@ -2142,6 +2143,214 @@ TEST_P(SerializationTest, encodingLayoutTreeMapForFlatMap) {
   NIMBLE_ASSERT_THROW(
       Serializer(options, type, pool_.get()),
       "Incompatible encoding layout node. Expecting flatmap node.");
+}
+
+TEST_P(SerializationTest, flatMapInMapStreamSkipping) {
+  // Test that serializer skips constant in-map boolean streams: both all-false
+  // (key absent from a batch) and all-true (key present in every row). The
+  // deserializer uses hasValueStreams() to distinguish the two cases.
+  auto type = velox::ROW({
+      {"id", velox::BIGINT()},
+      {"flat_map", velox::MAP(velox::VARCHAR(), velox::DOUBLE())},
+  });
+
+  const velox::vector_size_t batchSize = 10;
+
+  // Helper to create a batch with specific keys present.
+  auto generateBatch =
+      [&](const std::vector<std::string>& keys) -> velox::VectorPtr {
+    const auto numKeys = static_cast<velox::vector_size_t>(keys.size());
+    const velox::vector_size_t totalEntries = batchSize * numKeys;
+
+    auto ids =
+        velox::BaseVector::create(velox::BIGINT(), batchSize, pool_.get());
+    auto mapKeys =
+        velox::BaseVector::create(velox::VARCHAR(), totalEntries, pool_.get());
+    auto mapValues =
+        velox::BaseVector::create(velox::DOUBLE(), totalEntries, pool_.get());
+
+    for (velox::vector_size_t i = 0; i < batchSize; ++i) {
+      ids->asFlatVector<int64_t>()->set(i, i);
+    }
+
+    velox::vector_size_t idx = 0;
+    for (velox::vector_size_t row = 0; row < batchSize; ++row) {
+      for (const auto& key : keys) {
+        mapKeys->asFlatVector<velox::StringView>()->set(
+            idx, velox::StringView(key));
+        mapValues->asFlatVector<double>()->set(idx, row * 10.0 + idx);
+        ++idx;
+      }
+    }
+
+    auto mapVector = std::make_shared<velox::MapVector>(
+        pool_.get(),
+        velox::MAP(velox::VARCHAR(), velox::DOUBLE()),
+        nullptr,
+        batchSize,
+        velox::allocateOffsets(batchSize, pool_.get()),
+        velox::allocateSizes(batchSize, pool_.get()),
+        mapKeys,
+        mapValues);
+
+    auto* rawOffsets =
+        mapVector->mutableOffsets(batchSize)->asMutable<velox::vector_size_t>();
+    auto* rawSizes =
+        mapVector->mutableSizes(batchSize)->asMutable<velox::vector_size_t>();
+    for (velox::vector_size_t i = 0; i < batchSize; ++i) {
+      rawOffsets[i] = i * numKeys;
+      rawSizes[i] = numKeys;
+    }
+
+    return std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        batchSize,
+        std::vector<velox::VectorPtr>{ids, mapVector});
+  };
+
+  SerializerOptions options{
+      .compressionType = CompressionType::Zstd,
+      .compressionThreshold = 32,
+      .compressionLevel = 3,
+      .version = version(),
+      .flatMapColumns = {"flat_map"},
+  };
+  Serializer serializer{options, type, pool_.get()};
+
+  // Batch 1: keys "a" and "b" (both in-map streams are all-true -> skipped)
+  auto batch1 = generateBatch({"a", "b"});
+  auto serialized1 = std::string(
+      serializer.serialize(batch1, OrderedRanges::of(0, batch1->size())));
+
+  // Batch 2: only key "a" (key "b" absent -> all-false in-map, skipped)
+  auto batch2 = generateBatch({"a"});
+  auto serialized2 = std::string(
+      serializer.serialize(batch2, OrderedRanges::of(0, batch2->size())));
+
+  // Batch 3: keys "a", "b", and "c" (new key "c" discovered)
+  auto batch3 = generateBatch({"a", "b", "c"});
+  auto serialized3 = std::string(
+      serializer.serialize(batch3, OrderedRanges::of(0, batch3->size())));
+
+  // Batch 4: keys "a" and "b" again (key "a" and "b" all-true in-map, key "c"
+  // all-false in-map -> all three in-map streams are constant, all skipped)
+  auto batch4 = generateBatch({"a", "b"});
+  auto serialized4 = std::string(
+      serializer.serialize(batch4, OrderedRanges::of(0, batch4->size())));
+
+  // Helper to collect stream offsets present in serialized data.
+  auto collectStreamOffsets =
+      [&](std::string_view data) -> folly::F14FastSet<uint32_t> {
+    DeserializerOptions desOpts{.version = version()};
+    serde::StreamDataReader reader{pool_.get(), desOpts};
+    reader.initialize(data);
+    folly::F14FastSet<uint32_t> offsets;
+    reader.iterateStreams(
+        [&](uint32_t offset, std::string_view) { offsets.insert(offset); });
+    return offsets;
+  };
+
+  // Get in-map stream offsets from the schema.
+  auto nimbleSchema =
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
+  const auto& flatMap = nimbleSchema->asRow().childAt(1)->asFlatMap();
+  std::vector<uint32_t> inMapOffsets;
+  inMapOffsets.reserve(flatMap.childrenCount());
+  for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
+    inMapOffsets.push_back(flatMap.inMapDescriptorAt(i).offset());
+  }
+  // After batch 3, schema has keys "a", "b", "c" → 3 in-map streams.
+  ASSERT_EQ(inMapOffsets.size(), 3);
+
+  // Verify constant in-map streams are NOT stored in serialized data.
+  {
+    // Batch 1: keys "a" and "b" all-true → in-map "a" and "b" skipped.
+    // Key "c" not yet discovered.
+    auto offsets1 = collectStreamOffsets(serialized1);
+    EXPECT_FALSE(offsets1.contains(inMapOffsets[0]))
+        << "in-map 'a' should be skipped (all-true)";
+    EXPECT_FALSE(offsets1.contains(inMapOffsets[1]))
+        << "in-map 'b' should be skipped (all-true)";
+
+    // Batch 2: key "a" all-true, key "b" all-false → both skipped.
+    auto offsets2 = collectStreamOffsets(serialized2);
+    EXPECT_FALSE(offsets2.contains(inMapOffsets[0]))
+        << "in-map 'a' should be skipped (all-true)";
+    EXPECT_FALSE(offsets2.contains(inMapOffsets[1]))
+        << "in-map 'b' should be skipped (all-false)";
+
+    // Batch 3: keys "a", "b", "c" all present → all in-map all-true → skipped.
+    auto offsets3 = collectStreamOffsets(serialized3);
+    EXPECT_FALSE(offsets3.contains(inMapOffsets[0]))
+        << "in-map 'a' should be skipped (all-true)";
+    EXPECT_FALSE(offsets3.contains(inMapOffsets[1]))
+        << "in-map 'b' should be skipped (all-true)";
+    EXPECT_FALSE(offsets3.contains(inMapOffsets[2]))
+        << "in-map 'c' should be skipped (all-true)";
+
+    // Batch 4: keys "a" and "b" all-true, key "c" all-false → all skipped.
+    auto offsets4 = collectStreamOffsets(serialized4);
+    EXPECT_FALSE(offsets4.contains(inMapOffsets[0]))
+        << "in-map 'a' should be skipped (all-true)";
+    EXPECT_FALSE(offsets4.contains(inMapOffsets[1]))
+        << "in-map 'b' should be skipped (all-true)";
+    EXPECT_FALSE(offsets4.contains(inMapOffsets[2]))
+        << "in-map 'c' should be skipped (all-false)";
+  }
+
+  // Deserialize and verify correctness. This exercises three cases where
+  // DeserializerImpl::contiguousRead encounters empty batchSegments_:
+  // 1. Row nulls stream omitted (all non-null) — the Row wrapper.
+  // 2. In-map boolean stream omitted (constant all-true or all-false).
+  // 3. Value stream absent (key not present in batch, e.g. key "c" in
+  //    batches 1/2/4, key "b" value in batch 2).
+  Deserializer deserializer{
+      nimbleSchema,
+      pool_.get(),
+      DeserializerOptions{
+          .version = version(),
+      }};
+
+  // Verify each batch individually.
+  std::vector<velox::VectorPtr> inputs = {batch1, batch2, batch3, batch4};
+  std::vector<std::string> serializedData = {
+      serialized1, serialized2, serialized3, serialized4};
+
+  velox::VectorPtr output;
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    SCOPED_TRACE(fmt::format("batch {}", i));
+    deserializer.deserialize(serializedData[i], output);
+    ASSERT_EQ(output->size(), inputs[i]->size());
+    for (velox::vector_size_t j = 0; j < inputs[i]->size(); ++j) {
+      ASSERT_TRUE(vectorEquals(output, inputs[i], j))
+          << "index " << j << "\nExpected: " << inputs[i]->toString(j)
+          << "\nActual: " << output->toString(j);
+    }
+  }
+
+  // Verify multi-batch deserialization.
+  std::vector<std::string_view> allBatches;
+  allBatches.reserve(serializedData.size());
+  for (const auto& s : serializedData) {
+    allBatches.push_back(s);
+  }
+  deserializer.deserialize(allBatches, output);
+
+  velox::VectorPtr expected = inputs[0];
+  for (size_t i = 1; i < inputs.size(); ++i) {
+    auto oldSize = expected->size();
+    expected->resize(oldSize + inputs[i]->size());
+    expected->copy(inputs[i].get(), oldSize, 0, inputs[i]->size());
+  }
+
+  ASSERT_EQ(output->size(), expected->size());
+  for (velox::vector_size_t j = 0; j < expected->size(); ++j) {
+    ASSERT_TRUE(vectorEquals(output, expected, j))
+        << "Multi-batch index " << j << "\nExpected: " << expected->toString(j)
+        << "\nActual: " << output->toString(j);
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(

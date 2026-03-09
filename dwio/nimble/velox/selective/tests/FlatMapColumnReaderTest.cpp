@@ -21,6 +21,7 @@
 #include "velox/dwio/common/TypeUtils.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
+#include <fmt/format.h>
 #include <gtest/gtest.h>
 
 namespace facebook::nimble {
@@ -30,7 +31,7 @@ using namespace facebook::velox;
 
 // Tests for FlatMapAsStructColumnReader, FlatMapAsMapColumnReader, and
 // FlatMapColumnReader (native).
-class FlatMapColumnReaderTest : public ::testing::Test,
+class FlatMapColumnReaderTest : public ::testing::TestWithParam<bool>,
                                 public velox::test::VectorTestBase {
  protected:
   static void SetUpTestCase() {
@@ -56,6 +57,7 @@ class FlatMapColumnReaderTest : public ::testing::Test,
       const std::string& flatMapColumn = "c0") {
     VeloxWriterOptions writerOptions;
     writerOptions.flatMapColumns = {flatMapColumn};
+    writerOptions.skipConstantFlatMapInMapStreams = GetParam();
     return test::createNimbleFile(*rootPool(), input, writerOptions);
   }
 
@@ -110,7 +112,7 @@ class FlatMapColumnReaderTest : public ::testing::Test,
 // input (MAP-typed) for requestedType, set setFlatMapAsStruct on scanSpec,
 // then read into a batch created with outType (struct-typed).
 
-TEST_F(FlatMapColumnReaderTest, asStructBasic) {
+TEST_P(FlatMapColumnReaderTest, asStructBasic) {
   auto input = makeRowVector({
       makeMapVector<int32_t, int64_t>({
           {{1, 10}, {2, 20}, {3, 30}},
@@ -137,7 +139,7 @@ TEST_F(FlatMapColumnReaderTest, asStructBasic) {
   velox::test::assertEqualVectors(expected, batch);
 }
 
-TEST_F(FlatMapColumnReaderTest, asStructInt8Keys) {
+TEST_P(FlatMapColumnReaderTest, asStructInt8Keys) {
   auto input = makeRowVector({
       makeMapVector<int8_t, int64_t>({
           {{1, 100}, {2, 200}},
@@ -161,7 +163,7 @@ TEST_F(FlatMapColumnReaderTest, asStructInt8Keys) {
   velox::test::assertEqualVectors(expected, batch);
 }
 
-TEST_F(FlatMapColumnReaderTest, asStructInt16Keys) {
+TEST_P(FlatMapColumnReaderTest, asStructInt16Keys) {
   auto input = makeRowVector({
       makeMapVector<int16_t, int64_t>({
           {{10, 100}, {20, 200}},
@@ -185,7 +187,7 @@ TEST_F(FlatMapColumnReaderTest, asStructInt16Keys) {
   velox::test::assertEqualVectors(expected, batch);
 }
 
-TEST_F(FlatMapColumnReaderTest, asStructInt64Keys) {
+TEST_P(FlatMapColumnReaderTest, asStructInt64Keys) {
   auto input = makeRowVector({
       makeMapVector<int64_t, int64_t>({
           {{100, 1}, {200, 2}},
@@ -209,7 +211,7 @@ TEST_F(FlatMapColumnReaderTest, asStructInt64Keys) {
   velox::test::assertEqualVectors(expected, batch);
 }
 
-TEST_F(FlatMapColumnReaderTest, asStructStringKeys) {
+TEST_P(FlatMapColumnReaderTest, asStructStringKeys) {
   auto input = makeRowVector({
       makeMapVector<StringView, int64_t>({
           {{"a", 1}, {"b", 2}, {"c", 3}},
@@ -236,7 +238,7 @@ TEST_F(FlatMapColumnReaderTest, asStructStringKeys) {
   velox::test::assertEqualVectors(expected, batch);
 }
 
-TEST_F(FlatMapColumnReaderTest, asStructMultiBatch) {
+TEST_P(FlatMapColumnReaderTest, asStructMultiBatch) {
   // 50 rows, batch size 7 — multi-batch transitions.
   auto input = makeRowVector({
       makeMapVector<int32_t, int64_t>(
@@ -271,7 +273,7 @@ TEST_F(FlatMapColumnReaderTest, asStructMultiBatch) {
   ASSERT_EQ(totalRead, 50);
 }
 
-TEST_F(FlatMapColumnReaderTest, asStructSubsetOfKeys) {
+TEST_P(FlatMapColumnReaderTest, asStructSubsetOfKeys) {
   // Request only keys {"2", "4"} from {1, 2, 3, 4, 5} — subfield pruning.
   auto input = makeRowVector({
       makeMapVector<int32_t, int64_t>({
@@ -296,7 +298,7 @@ TEST_F(FlatMapColumnReaderTest, asStructSubsetOfKeys) {
   velox::test::assertEqualVectors(expected, batch);
 }
 
-TEST_F(FlatMapColumnReaderTest, asStructWithNulls) {
+TEST_P(FlatMapColumnReaderTest, asStructWithNulls) {
   // Some null map rows — null propagation to struct output.
   auto input = makeRowVector({
       makeNullableMapVector<int32_t, int64_t>({
@@ -324,7 +326,7 @@ TEST_F(FlatMapColumnReaderTest, asStructWithNulls) {
   ASSERT_TRUE(c0->isNullAt(3));
 }
 
-TEST_F(FlatMapColumnReaderTest, asStructAllEmpty) {
+TEST_P(FlatMapColumnReaderTest, asStructAllEmpty) {
   // All rows have empty maps — all struct fields should be null.
   auto input = makeRowVector({
       makeMapVector<int32_t, int64_t>({{}, {}, {}}),
@@ -343,7 +345,7 @@ TEST_F(FlatMapColumnReaderTest, asStructAllEmpty) {
   velox::test::assertEqualVectors(expected, batch);
 }
 
-TEST_F(FlatMapColumnReaderTest, asStructComplexValues) {
+TEST_P(FlatMapColumnReaderTest, asStructComplexValues) {
   // MAP(INT, ARRAY(BIGINT)) as struct — complex value types.
   auto inner = makeArrayVector<int64_t>({{1, 2}, {3}, {4, 5, 6}});
   auto keys = makeFlatVector<int32_t>({1, 2, 1});
@@ -374,7 +376,7 @@ TEST_F(FlatMapColumnReaderTest, asStructComplexValues) {
 
 // ----- FlatMapAsMap tests -----
 
-TEST_F(FlatMapColumnReaderTest, asMapBasic) {
+TEST_P(FlatMapColumnReaderTest, asMapBasic) {
   auto input = makeRowVector({
       makeMapVector<int32_t, int64_t>({
           {{1, 10}, {2, 20}},
@@ -389,7 +391,7 @@ TEST_F(FlatMapColumnReaderTest, asMapBasic) {
   validate(*input, *readers.rowReader, 10);
 }
 
-TEST_F(FlatMapColumnReaderTest, asMapMultiBatch) {
+TEST_P(FlatMapColumnReaderTest, asMapMultiBatch) {
   // 30 rows, batch size 5.
   auto input = makeRowVector({
       makeMapVector<int32_t, int64_t>(
@@ -405,7 +407,7 @@ TEST_F(FlatMapColumnReaderTest, asMapMultiBatch) {
   validate(*input, *readers.rowReader, 5);
 }
 
-TEST_F(FlatMapColumnReaderTest, asMapWithNulls) {
+TEST_P(FlatMapColumnReaderTest, asMapWithNulls) {
   auto input = makeRowVector({
       makeNullableMapVector<int32_t, int64_t>({
           {{{{1, 10}, {2, 20}}}},
@@ -422,7 +424,7 @@ TEST_F(FlatMapColumnReaderTest, asMapWithNulls) {
   validate(*input, *readers.rowReader, 3);
 }
 
-TEST_F(FlatMapColumnReaderTest, asMapKeyFilter) {
+TEST_P(FlatMapColumnReaderTest, asMapKeyFilter) {
   auto input = makeRowVector({
       makeMapVector<int64_t, int64_t>({
           {{1, 100}, {5, 500}, {10, 1000}},
@@ -447,7 +449,7 @@ TEST_F(FlatMapColumnReaderTest, asMapKeyFilter) {
   validate(*expected, *readers.rowReader, 10);
 }
 
-TEST_F(FlatMapColumnReaderTest, asMapComplexValues) {
+TEST_P(FlatMapColumnReaderTest, asMapComplexValues) {
   // MAP(INT, ROW({BIGINT})) — struct-valued flat map as map.
   auto values =
       makeRowVector({"val"}, {makeFlatVector<int64_t>({100, 200, 300, 400})});
@@ -471,7 +473,7 @@ TEST_F(FlatMapColumnReaderTest, asMapComplexValues) {
 
 // ----- Native FlatMapColumnReader tests (preserveFlatMapsInMemory) -----
 
-TEST_F(FlatMapColumnReaderTest, nativeMultiBatch) {
+TEST_P(FlatMapColumnReaderTest, nativeMultiBatch) {
   // 40 rows, batch size 7 — FlatMapVector multi-batch.
   std::vector<std::vector<std::pair<int32_t, std::optional<int64_t>>>> data;
   for (int i = 0; i < 40; ++i) {
@@ -486,6 +488,7 @@ TEST_F(FlatMapColumnReaderTest, nativeMultiBatch) {
   auto input = makeRowVector({flatMap, flatMap->toMapVector()});
   VeloxWriterOptions writerOptions;
   writerOptions.flatMapColumns = {"c0"};
+  writerOptions.skipConstantFlatMapInMapStreams = GetParam();
   auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
@@ -497,7 +500,7 @@ TEST_F(FlatMapColumnReaderTest, nativeMultiBatch) {
   validate(*expected, *readers.rowReader, 7);
 }
 
-TEST_F(FlatMapColumnReaderTest, nativeWithNulls) {
+TEST_P(FlatMapColumnReaderTest, nativeWithNulls) {
   auto flatMap = makeNullableFlatMapVector<int32_t, int64_t>({
       {{{1, 10}, {2, 20}}},
       std::nullopt,
@@ -508,6 +511,7 @@ TEST_F(FlatMapColumnReaderTest, nativeWithNulls) {
   auto input = makeRowVector({flatMap, flatMap->toMapVector()});
   VeloxWriterOptions writerOptions;
   writerOptions.flatMapColumns = {"c0"};
+  writerOptions.skipConstantFlatMapInMapStreams = GetParam();
   auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
@@ -516,6 +520,14 @@ TEST_F(FlatMapColumnReaderTest, nativeWithNulls) {
   auto expected = makeRowVector({flatMap->toMapVector(), flatMap});
   validate(*expected, *readers.rowReader, 3);
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    FlatMapColumnReaderTests,
+    FlatMapColumnReaderTest,
+    ::testing::Bool(),
+    [](const ::testing::TestParamInfo<bool>& info) {
+      return fmt::format("skipConstantInMap_{}", info.param);
+    });
 
 } // namespace
 } // namespace facebook::nimble

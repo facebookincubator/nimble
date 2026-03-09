@@ -24,6 +24,7 @@
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/legacy/NullableEncoding.h"
 #include "dwio/nimble/encodings/legacy/TrivialEncoding.h"
+#include "dwio/nimble/velox/SchemaReader.h"
 #include "velox/dwio/common/FlatMapHelper.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/DictionaryVector.h"
@@ -2613,7 +2614,14 @@ class FlatMapKeyNode {
 
   uint32_t readInMapData(uint32_t numValues) {
     inMapData_.resize(numValues);
-    numValues_ = readBooleanValues(inMapDecoder_, inMapData_.data(), numValues);
+    if (inMapDecoder_ == nullptr) {
+      // Missing in-map stream means all rows are in-map.
+      std::fill(inMapData_.data(), inMapData_.data() + numValues, true);
+      numValues_ = numValues;
+    } else {
+      numValues_ =
+          readBooleanValues(inMapDecoder_, inMapData_.data(), numValues);
+    }
     return numValues_;
   }
 
@@ -2646,7 +2654,9 @@ class FlatMapKeyNode {
   }
 
   void reset() {
-    inMapDecoder_->reset();
+    if (inMapDecoder_ != nullptr) {
+      inMapDecoder_->reset();
+    }
     valueReader_->reset();
   }
 
@@ -2760,6 +2770,15 @@ class FlatMapFieldReaderBase : public FieldReader {
   Vector<bool>& boolBuffer_;
 };
 
+// The decoders map may contain entries with null unique_ptr for streams that
+// don't have data in the current stripe, so we check the pointer itself.
+inline bool hasDecoderStream(
+    offset_size offset,
+    const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders) {
+  auto it = decoders.find(offset);
+  return it != decoders.end() && it->second != nullptr;
+}
+
 template <typename T>
 class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
  public:
@@ -2788,10 +2807,12 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
 
     const auto& flatMap = type->asFlatMap();
     keyValues_.reserve(selectedChildren.size());
+    valueTypes_.reserve(selectedChildren.size());
     for (auto childIdx : selectedChildren) {
       keyValues_.push_back(
           velox::dwio::common::flatmap::parseKeyValue<T>(
               flatMap.nameAt(childIdx)));
+      valueTypes_.push_back(flatMap.childAt(childIdx).get());
     }
   }
 
@@ -2811,7 +2832,16 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
     for (auto inMapDescriptor : inMapDescriptors_) {
       if (inMapDescriptor != nullptr) {
         const auto currentIdx = childIdx++;
-        if (auto decoder = getDecoder(decoders, *inMapDescriptor)) {
+        auto* decoder = getDecoder(decoders, *inMapDescriptor);
+        NIMBLE_CHECK_LT(
+            currentIdx,
+            valueTypes_.size(),
+            "currentIdx out of range for valueTypes_");
+        if (decoder != nullptr ||
+            hasValueStreams(
+                *valueTypes_[currentIdx], [&decoders](offset_size offset) {
+                  return hasDecoderStream(offset, decoders);
+                })) {
           keyNodes.push_back(
               std::make_unique<FlatMapKeyNode<T>>(
                   *pool_,
@@ -2854,6 +2884,9 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
   std::vector<const StreamDescriptor*> inMapDescriptors_;
   std::vector<std::unique_ptr<FieldReaderFactory>> valueReaders_;
   std::vector<velox::dwio::common::flatmap::KeyValue<T>> keyValues_;
+  // Value types for each selected child, used to check if value streams
+  // exist when the in-map decoder is missing.
+  std::vector<const Type*> valueTypes_;
   Vector<bool> boolBuffer_;
 };
 
@@ -3008,6 +3041,15 @@ class StructFlatMapFieldReaderFactory final
   Vector<char> mergedNulls_;
 };
 
+// Reads a flat map and produces a Velox MapVector. Each flat map key becomes a
+// FlatMapKeyNode with its own in-map boolean stream and value stream. The
+// reader transposes from column-wise (per-key) layout to row-wise map entries:
+//   1. Reads in-map bitmaps for all keys and builds a row-wise in-map mask.
+//   2. Computes per-row offsets and lengths from the mask.
+//   3. Iterates key-by-key, copying value data into the merged MapVector.
+//
+// Contrast with StructFlatMapFieldReader, which reads a flat map as a Velox
+// RowVector (one child per key) without transposing to map layout.
 template <typename T, bool hasNull>
 class MergedFlatMapFieldReader final
     : public FlatMapFieldReaderBase<T, hasNull> {
@@ -3044,9 +3086,29 @@ class MergedFlatMapFieldReader final
         // returned to indicate unsupported.
         return std::nullopt;
       }
-      const auto& keyNode = this->keyNodes_.back();
-      NIMBLE_CHECK_NOT_NULL(keyNode, "keyNode should not be null");
-      rowCount = keyNode->inMapDecoder()->encoding()->rowCount();
+      // Find the row count from an in-map decoder, or fall back to a value
+      // reader's estimate. The in-map decoder may be null when the writer
+      // omitted the all-true in-map stream.
+      bool found = false;
+      for (const auto& keyNode : this->keyNodes_) {
+        NIMBLE_CHECK_NOT_NULL(
+            keyNode,
+            "MergedFlatMapFieldReader is created with includeMissing=false");
+        if (keyNode->inMapDecoder() != nullptr) {
+          rowCount = keyNode->inMapDecoder()->encoding()->rowCount();
+          found = true;
+          break;
+        }
+        if (const auto estimatedSize =
+                keyNode->valueReader()->estimatedRowSize()) {
+          rowCount = estimatedSize->first;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        return std::nullopt;
+      }
     }
 
     // Adding memory for velox::ArrayVectorBase::offsets_ and

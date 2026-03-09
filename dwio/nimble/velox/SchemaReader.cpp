@@ -646,4 +646,45 @@ std::ostream& operator<<(
   return out;
 }
 
+bool hasValueStreams(
+    const Type& type,
+    const std::function<bool(offset_size)>& hasStream) {
+  switch (type.kind()) {
+    case Kind::Scalar:
+      return hasStream(type.asScalar().scalarDescriptor().offset());
+    case Kind::TimestampMicroNano:
+      return hasStream(type.asTimestampMicroNano().microsDescriptor().offset());
+    case Kind::Array:
+      return hasStream(type.asArray().lengthsDescriptor().offset());
+    case Kind::ArrayWithOffsets:
+      return hasStream(type.asArrayWithOffsets().offsetsDescriptor().offset());
+    case Kind::Map:
+      return hasStream(type.asMap().lengthsDescriptor().offset());
+    case Kind::SlidingWindowMap:
+      return hasStream(type.asSlidingWindowMap().offsetsDescriptor().offset());
+    case Kind::Row:
+      // Null stream can be omitted when all non-null. Check first child.
+      NIMBLE_CHECK_GT(
+          type.asRow().childrenCount(),
+          0,
+          "Row type must have at least one child");
+      return hasValueStreams(*type.asRow().childAt(0), hasStream);
+    case Kind::FlatMap: {
+      // FlatMap children are independent keys — iterate all children.
+      NIMBLE_CHECK_GT(
+          type.asFlatMap().childrenCount(),
+          0,
+          "FlatMap type must have at least one child");
+      for (size_t i = 0; i < type.asFlatMap().childrenCount(); ++i) {
+        if (hasValueStreams(*type.asFlatMap().childAt(i), hasStream)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    default:
+      NIMBLE_UNREACHABLE("Unsupported type kind: {}", type.kind());
+  }
+}
+
 } // namespace facebook::nimble

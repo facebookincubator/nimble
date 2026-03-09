@@ -52,6 +52,16 @@ struct VeloxWriterOptions {
   // Columns that should be encoded as flat maps
   folly::F14FastSet<std::string> flatMapColumns;
 
+  // When true, the writer skips encoding flat map in-map boolean streams that
+  // are all-true (every row has the key) or all-false (no row has the key).
+  // The reader infers the in-map state from value stream presence: all-true
+  // keys have value streams, all-false keys do not.
+  //
+  // NOTE: old readers that don't understand missing in-map streams will
+  // misinterpret data. Keep this false until the new reader is fully rolled
+  // out, then default to true and eventually remove the option.
+  bool skipConstantFlatMapInMapStreams{false};
+
   // Columns that should be encoded as dictionary arrays
   // NOTE: For each column, ALL the arrays inside this column will be encoded
   // using dictionary arrays. In the future we'll have finer control on
