@@ -1916,7 +1916,9 @@ TEST_F(ProjectorTestBase, flatMapInMapStreamSkipping) {
     SCOPED_TRACE(fmt::format("batch {}", i));
     auto projected = projector.project(serializedData[i]);
     auto result = deserialize(
-        projected, outputSchema, {.version = SerializationVersion::kCompact});
+        toString(projected),
+        outputSchema,
+        {.version = SerializationVersion::kCompact});
     ASSERT_EQ(result->size(), inputs[i]->size());
     for (vector_size_t j = 0; j < inputs[i]->size(); ++j) {
       ASSERT_TRUE(result->equalValueAt(inputs[i].get(), j, j))
