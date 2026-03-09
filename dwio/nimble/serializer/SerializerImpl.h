@@ -118,6 +118,18 @@ inline std::vector<uint32_t> decodeStreamSizes(
   return values;
 }
 
+/// Returns the exact byte size of the serialization header.
+/// Use to pre-allocate buffers before calling writeHeader().
+inline size_t estimateHeaderSize(
+    std::optional<SerializationVersion> version,
+    uint32_t rowCount) {
+  size_t size = version.has_value() ? 1 : 0;
+  const bool isCompact =
+      version.has_value() && version.value() == SerializationVersion::kCompact;
+  size += isCompact ? varint::varintSize(rowCount) : sizeof(uint32_t);
+  return size;
+}
+
 /// Writes serialization header to buffer.
 /// Works with any buffer type that has size(), resize(), and data() methods.
 ///
@@ -153,6 +165,21 @@ void writeHeader(
     auto* rowCountPos = extend(buffer, sizeof(uint32_t));
     encoding::writeUint32(rowCount, rowCountPos);
   }
+}
+
+/// Returns an upper-bound estimate of the kCompact trailer size.
+/// The actual size depends on the encoding selected for stream sizes, so
+/// this is a conservative estimate (trivial encoding = raw uint32 values +
+/// encoding header overhead + trailing u32).
+///
+/// @param numStreams Number of streams (size of the streamSizes array).
+inline size_t estimateTrailerSize(size_t numStreams) {
+  // Encoding header overhead (encoding type, row count varint, nested headers).
+  constexpr size_t kEncodingHeaderOverhead = 32;
+  // Trivial encoding: raw uint32 values.
+  // Trailing u32: stores the encoded sizes byte count.
+  return numStreams * sizeof(uint32_t) + kEncodingHeaderOverhead +
+      sizeof(uint32_t);
 }
 
 /// Writes the kCompact trailer: appends

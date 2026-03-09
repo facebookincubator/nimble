@@ -33,6 +33,46 @@ using SubfieldKind = velox::common::SubfieldKind;
 
 namespace {
 
+// Lightweight adapter for writing small sections (header, trailer) directly
+// into an IOBuf. Satisfies the size()/resize()/data() interface required by
+// detail::extend/writeHeader/writeTrailer. Avoids the std::string → IOBuf
+// copy that would occur if writing into a temporary std::string first.
+class IOBufSection {
+ public:
+  explicit IOBufSection(size_t initialCapacity)
+      : buf_(folly::IOBuf::create(initialCapacity)) {}
+
+  size_t size() const {
+    return size_;
+  }
+
+  void resize(size_t newSize) {
+    if (newSize > buf_->capacity()) {
+      auto newBuf =
+          folly::IOBuf::create(std::max(newSize, buf_->capacity() * 2));
+      if (size_ > 0) {
+        std::memcpy(newBuf->writableData(), buf_->data(), size_);
+      }
+      buf_ = std::move(newBuf);
+    }
+    size_ = newSize;
+  }
+
+  char* data() {
+    return reinterpret_cast<char*>(buf_->writableData());
+  }
+
+  // Finalizes the IOBuf by setting its length and returns it.
+  std::unique_ptr<folly::IOBuf> build() && {
+    buf_->append(size_);
+    return std::move(buf_);
+  }
+
+ private:
+  std::unique_ptr<folly::IOBuf> buf_;
+  size_t size_{0};
+};
+
 // Forward declaration for recursive calls from per-type helpers.
 std::shared_ptr<const Type> updateColumnNames(
     const std::shared_ptr<const Type>& inputType,
@@ -606,7 +646,7 @@ Projector::Projector(
       (inputStreamIndices_.size() == countTotalStreams(*inputSchema_));
 }
 
-std::string Projector::project(std::string_view input) const {
+folly::IOBuf Projector::project(std::string_view input) const {
   const char* pos = input.data();
   const char* end = input.data() + input.size();
 
@@ -627,7 +667,7 @@ std::string Projector::project(std::string_view input) const {
 
   // Fast path: pass-through when all streams selected and formats match.
   if (passThrough_ && options_.inputHasVersionHeader) {
-    return std::string(input);
+    return std::move(*folly::IOBuf::copyBuffer(input));
   }
 
   const uint32_t rowCount = varint::readVarint32(&pos);
@@ -636,28 +676,36 @@ std::string Projector::project(std::string_view input) const {
   auto projectedStreams = detail::projectStreams(
       pos, end, inputVersion, inputStreamIndices_, pool_);
 
-  // Build output buffer: header, stream data, then trailer with sizes.
-  std::string output;
-  output.reserve(input.size());
+  // Build output as a chain of IOBufs: header + stream data + trailer.
+  // Each piece is written directly into its own IOBuf, avoiding resize copies
+  // and intermediate std::string → IOBuf copies.
 
+  // Header (version byte + varint rowCount).
+  IOBufSection header(
+      detail::estimateHeaderSize(options_.projectVersion, rowCount));
+  detail::writeHeader(header, options_.projectVersion, rowCount);
+  auto result = std::move(header).build();
+
+  // Stream data — each stream copied into an exactly-sized IOBuf.
   std::vector<uint32_t> streamSizes(inputStreamIndices_.size(), 0);
   for (const auto& stream : projectedStreams) {
     streamSizes[stream.index] = stream.data.size();
+    result->appendToChain(
+        folly::IOBuf::copyBuffer(stream.data.data(), stream.data.size()));
   }
-  detail::writeHeader(output, options_.projectVersion, rowCount);
-  for (const auto& stream : projectedStreams) {
-    auto* dataPos = detail::extend(output, stream.data.size());
-    std::memcpy(dataPos, stream.data.data(), stream.data.size());
-  }
-  detail::writeTrailer(
-      streamSizes, options_.streamSizesEncodingType, pool_, output);
 
-  return output;
+  // Trailer (encoded stream sizes + u32 encoded size).
+  IOBufSection trailer(detail::estimateTrailerSize(streamSizes.size()));
+  detail::writeTrailer(
+      streamSizes, options_.streamSizesEncodingType, pool_, trailer);
+  result->appendToChain(std::move(trailer).build());
+
+  return std::move(*result);
 }
 
-std::vector<std::string> Projector::project(
+std::vector<folly::IOBuf> Projector::project(
     const std::vector<std::string_view>& inputs) const {
-  std::vector<std::string> results;
+  std::vector<folly::IOBuf> results;
   results.reserve(inputs.size());
 
   for (const auto& input : inputs) {
