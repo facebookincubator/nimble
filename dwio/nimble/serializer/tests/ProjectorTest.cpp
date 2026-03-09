@@ -22,9 +22,11 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/serializer/Deserializer.h"
+#include "dwio/nimble/serializer/DeserializerImpl.h"
 #include "dwio/nimble/serializer/Projector.h"
 #include "dwio/nimble/serializer/Serializer.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
+#include "folly/container/F14Set.h"
 #include "velox/type/Subfield.h"
 #include "velox/vector/BaseVector.h"
 #include "velox/vector/ComplexVector.h"
@@ -1726,6 +1728,179 @@ TEST_F(ProjectorTest, projectMultipleFlatMapColumns) {
     auto valVec = resultMapB->mapValues()->as<FlatVector<int64_t>>();
     // key "q" is at odd positions (1, 3, 5) in the input.
     EXPECT_EQ(valVec->valueAt(keyIdx), (i * bEntriesPerRow + 2) * 100L);
+  }
+}
+
+// Verifies that the projector correctly handles serialized FlatMap data with
+// constant in-map stream skipping (both all-false and all-true cases).
+TEST_F(ProjectorTestBase, flatMapInMapStreamSkipping) {
+  auto type = ROW({
+      {"id", BIGINT()},
+      {"flat_map", MAP(VARCHAR(), DOUBLE())},
+  });
+
+  const vector_size_t batchSize = 10;
+
+  auto generateBatch = [&](const std::vector<std::string>& keys) -> VectorPtr {
+    const auto numKeys = static_cast<vector_size_t>(keys.size());
+    const vector_size_t totalEntries = batchSize * numKeys;
+
+    auto ids = BaseVector::create(BIGINT(), batchSize, pool_.get());
+    auto mapKeys = BaseVector::create(VARCHAR(), totalEntries, pool_.get());
+    auto mapValues = BaseVector::create(DOUBLE(), totalEntries, pool_.get());
+
+    for (vector_size_t i = 0; i < batchSize; ++i) {
+      ids->asFlatVector<int64_t>()->set(i, i);
+    }
+
+    vector_size_t idx = 0;
+    for (vector_size_t row = 0; row < batchSize; ++row) {
+      for (const auto& key : keys) {
+        mapKeys->asFlatVector<StringView>()->set(idx, StringView(key));
+        mapValues->asFlatVector<double>()->set(idx, row * 10.0 + idx);
+        ++idx;
+      }
+    }
+
+    auto mapVector = std::make_shared<MapVector>(
+        pool_.get(),
+        MAP(VARCHAR(), DOUBLE()),
+        nullptr,
+        batchSize,
+        allocateOffsets(batchSize, pool_.get()),
+        allocateSizes(batchSize, pool_.get()),
+        mapKeys,
+        mapValues);
+
+    auto* rawOffsets =
+        mapVector->mutableOffsets(batchSize)->asMutable<vector_size_t>();
+    auto* rawSizes =
+        mapVector->mutableSizes(batchSize)->asMutable<vector_size_t>();
+    for (vector_size_t i = 0; i < batchSize; ++i) {
+      rawOffsets[i] = i * numKeys;
+      rawSizes[i] = numKeys;
+    }
+
+    return std::make_shared<RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        batchSize,
+        std::vector<VectorPtr>{ids, mapVector});
+  };
+
+  SerializerOptions serOpts{
+      .version = SerializationVersion::kCompact,
+      .flatMapColumns = {"flat_map"},
+  };
+
+  // Serialize multiple batches with different key sets to trigger in-map
+  // stream skipping (all-false for absent keys, all-true for present keys).
+  Serializer serializer{serOpts, type, pool_.get()};
+
+  // Batch 1: keys "a" and "b"
+  auto batch1 = generateBatch({"a", "b"});
+  auto serialized1 = std::string(
+      serializer.serialize(batch1, OrderedRanges::of(0, batch1->size())));
+
+  // Batch 2: only key "a" (key "b" all-false in-map -> skipped)
+  auto batch2 = generateBatch({"a"});
+  auto serialized2 = std::string(
+      serializer.serialize(batch2, OrderedRanges::of(0, batch2->size())));
+
+  // Batch 3: keys "a", "b", "c" (new key discovered)
+  auto batch3 = generateBatch({"a", "b", "c"});
+  auto serialized3 = std::string(
+      serializer.serialize(batch3, OrderedRanges::of(0, batch3->size())));
+
+  // Batch 4: keys "a", "b" (key "c" all-false, "a" and "b" all-true -> all
+  // three in-map streams are constant, all skipped)
+  auto batch4 = generateBatch({"a", "b"});
+  auto serialized4 = std::string(
+      serializer.serialize(batch4, OrderedRanges::of(0, batch4->size())));
+
+  auto nimbleSchema =
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
+
+  // Helper to collect stream offsets present in serialized data.
+  auto collectStreamOffsets =
+      [&](std::string_view data) -> folly::F14FastSet<uint32_t> {
+    DeserializerOptions desOpts{.version = SerializationVersion::kCompact};
+    serde::StreamDataReader reader{pool_.get(), desOpts};
+    reader.initialize(data);
+    folly::F14FastSet<uint32_t> offsets;
+    reader.iterateStreams(
+        [&](uint32_t offset, std::string_view) { offsets.insert(offset); });
+    return offsets;
+  };
+
+  // Get in-map stream offsets from the schema.
+  const auto& flatMap = nimbleSchema->asRow().childAt(1)->asFlatMap();
+  std::vector<uint32_t> inMapOffsets;
+  inMapOffsets.reserve(flatMap.childrenCount());
+  for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
+    inMapOffsets.push_back(flatMap.inMapDescriptorAt(i).offset());
+  }
+  ASSERT_EQ(inMapOffsets.size(), 3);
+
+  // Verify constant in-map streams are NOT stored in serialized data.
+  {
+    auto offsets1 = collectStreamOffsets(serialized1);
+    EXPECT_FALSE(offsets1.contains(inMapOffsets[0]))
+        << "batch1: in-map 'a' should be skipped";
+    EXPECT_FALSE(offsets1.contains(inMapOffsets[1]))
+        << "batch1: in-map 'b' should be skipped";
+
+    auto offsets2 = collectStreamOffsets(serialized2);
+    EXPECT_FALSE(offsets2.contains(inMapOffsets[0]))
+        << "batch2: in-map 'a' should be skipped";
+    EXPECT_FALSE(offsets2.contains(inMapOffsets[1]))
+        << "batch2: in-map 'b' should be skipped";
+
+    auto offsets3 = collectStreamOffsets(serialized3);
+    EXPECT_FALSE(offsets3.contains(inMapOffsets[0]))
+        << "batch3: in-map 'a' should be skipped";
+    EXPECT_FALSE(offsets3.contains(inMapOffsets[1]))
+        << "batch3: in-map 'b' should be skipped";
+    EXPECT_FALSE(offsets3.contains(inMapOffsets[2]))
+        << "batch3: in-map 'c' should be skipped";
+
+    auto offsets4 = collectStreamOffsets(serialized4);
+    EXPECT_FALSE(offsets4.contains(inMapOffsets[0]))
+        << "batch4: in-map 'a' should be skipped";
+    EXPECT_FALSE(offsets4.contains(inMapOffsets[1]))
+        << "batch4: in-map 'b' should be skipped";
+    EXPECT_FALSE(offsets4.contains(inMapOffsets[2]))
+        << "batch4: in-map 'c' should be skipped";
+  }
+
+  // Project all columns through the projector.
+  auto subfields = makeSubfields({"id", "flat_map"});
+  Projector projector(
+      nimbleSchema,
+      subfields,
+      pool_.get(),
+      Projector::Options{
+          .inputHasVersionHeader = true,
+      });
+  auto outputSchema = projector.projectedSchema();
+
+  // Verify each projected batch deserializes correctly.
+  std::vector<VectorPtr> inputs = {batch1, batch2, batch3, batch4};
+  std::vector<std::string> serializedData = {
+      serialized1, serialized2, serialized3, serialized4};
+
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    SCOPED_TRACE(fmt::format("batch {}", i));
+    auto projected = projector.project(serializedData[i]);
+    auto result = deserialize(
+        projected, outputSchema, {.version = SerializationVersion::kCompact});
+    ASSERT_EQ(result->size(), inputs[i]->size());
+    for (vector_size_t j = 0; j < inputs[i]->size(); ++j) {
+      ASSERT_TRUE(result->equalValueAt(inputs[i].get(), j, j))
+          << "index " << j << "\nExpected: " << inputs[i]->toString(j)
+          << "\nActual: " << result->toString(j);
+    }
   }
 }
 

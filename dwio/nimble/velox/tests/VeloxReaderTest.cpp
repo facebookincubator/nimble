@@ -397,9 +397,39 @@ size_t streamsReadCount(
   return readCount;
 }
 
+// Returns the set of stream offsets that exist on disk for a given stripe.
+std::unordered_set<nimble::offset_size> existingStreamOffsets(
+    velox::memory::MemoryPool& pool,
+    velox::ReadFile* readFile,
+    uint32_t stripeIndex) {
+  auto tablet = nimble::TabletReader::create(readFile, &pool, {});
+  NIMBLE_CHECK_LT(stripeIndex, tablet->stripeCount(), "Stripe out of range");
+  auto stripeId = tablet->stripeIdentifier(stripeIndex);
+  auto streamSizes = tablet->streamSizes(stripeId);
+  std::unordered_set<nimble::offset_size> result;
+  for (nimble::offset_size i = 0; i < streamSizes.size(); ++i) {
+    if (streamSizes[i] > 0) {
+      result.insert(i);
+    }
+  }
+  return result;
+}
+
 } // namespace
 
-class VeloxReaderTest : public ::testing::TestWithParam<bool> {
+struct VeloxReaderTestParam {
+  bool optimizeStringBufferHandling;
+  bool skipConstantFlatMapInMapStreams;
+
+  std::string debugString() const {
+    return fmt::format(
+        "optimizeStringBuffer_{}_skipConstantInMap_{}",
+        optimizeStringBufferHandling,
+        skipConstantFlatMapInMapStreams);
+  }
+};
+
+class VeloxReaderTest : public ::testing::TestWithParam<VeloxReaderTestParam> {
  protected:
   static void SetUpTestCase() {
     velox::memory::MemoryManager::testingSetInstance(
@@ -412,7 +442,17 @@ class VeloxReaderTest : public ::testing::TestWithParam<bool> {
   }
 
   bool optimizeStringBufferHandling() const {
-    return GetParam();
+    return GetParam().optimizeStringBufferHandling;
+  }
+
+  bool skipConstantFlatMapInMapStreams() const {
+    return GetParam().skipConstantFlatMapInMapStreams;
+  }
+
+  nimble::VeloxWriterOptions createFlatMapWriterOptions() const {
+    nimble::VeloxWriterOptions options;
+    options.skipConstantFlatMapInMapStreams = skipConstantFlatMapInMapStreams();
+    return options;
   }
 
   nimble::VeloxReadParams configureWithTestParam(
@@ -3286,6 +3326,401 @@ TEST_P(VeloxReaderTest, flatMapNullValues) {
   testFlatMapNullValues<velox::StringView>();
 }
 
+// Verify that the writer skips encoding all-true in-map streams and the reader
+// correctly handles missing in-map streams as "all rows are in-map".
+TEST_P(VeloxReaderTest, flatMapSkipAllTrueInMapStream) {
+  auto type =
+      velox::ROW({{"flat_map", velox::MAP(velox::INTEGER(), velox::BIGINT())}});
+
+  facebook::velox::test::VectorMaker vectorMaker(leafPool_.get());
+
+  // Create map data where every row has the same set of keys (1, 2, 3).
+  // This means the in-map stream for each key is all-true and should be
+  // skipped by the writer.
+  auto vector = vectorMaker.rowVector(
+      {"flat_map"},
+      {vectorMaker.mapVector<int32_t, int64_t>(
+          {{{1, 10}, {2, 20}, {3, 30}},
+           {{1, 11}, {2, 21}, {3, 31}},
+           {{1, 12}, {2, 22}, {3, 32}},
+           {{1, 13}, {2, 23}, {3, 33}}})});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  auto writerOptions = createFlatMapWriterOptions();
+  writerOptions.flatMapColumns.insert("flat_map");
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+  writer.write(vector);
+  writer.close();
+
+  // Verify in-map streams on disk. All 3 in-map streams should be absent
+  // when skipConstantFlatMapInMapStreams is enabled (all are constant
+  // all-true).
+  {
+    velox::InMemoryReadFile readFile(file);
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+    nimble::VeloxReader reader(
+        &readFile, *leafPool_, std::move(selector), createReadParams());
+    const auto& flatMap = reader.schema()->asRow().childAt(0)->asFlatMap();
+    auto offsets = existingStreamOffsets(*leafPool_, &readFile, 0);
+    for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
+      const auto inMapOffset = flatMap.inMapDescriptorAt(i).offset();
+      if (skipConstantFlatMapInMapStreams()) {
+        EXPECT_FALSE(offsets.count(inMapOffset))
+            << "in-map stream for key " << flatMap.nameAt(i)
+            << " should be absent on disk (all-true, skipped)";
+      } else {
+        EXPECT_TRUE(offsets.count(inMapOffset))
+            << "in-map stream for key " << flatMap.nameAt(i)
+            << " should be present on disk (optimization disabled)";
+      }
+    }
+  }
+
+  // Read back as map and verify roundtrip.
+  {
+    velox::InMemoryReadFile readFile(file);
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+    nimble::VeloxReader reader(
+        &readFile, *leafPool_, std::move(selector), createReadParams());
+    velox::VectorPtr output;
+    uint64_t rowCount = 4;
+    ASSERT_TRUE(reader.next(rowCount, output));
+    ASSERT_EQ(output->size(), 4);
+    for (auto i = 0; i < 4; ++i) {
+      EXPECT_TRUE(vectorEquals(vector, output, i)) << "Mismatch at row " << i;
+    }
+  }
+
+  // Read back as struct (flatmap feature selection) and verify.
+  {
+    velox::InMemoryReadFile readFile(file);
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+    nimble::VeloxReadParams readParams = createReadParams();
+    readParams.readFlatMapFieldAsStruct.insert("flat_map");
+    readParams.flatMapFeatureSelector["flat_map"].features = {"1", "2", "3"};
+    nimble::VeloxReader reader(
+        &readFile, *leafPool_, std::move(selector), readParams);
+    velox::VectorPtr output;
+    uint64_t rowCount = 4;
+    ASSERT_TRUE(reader.next(rowCount, output));
+    auto* rowVector = output->as<velox::RowVector>();
+    ASSERT_NE(rowVector, nullptr);
+    auto* structChild = rowVector->childAt(0)->as<velox::RowVector>();
+    ASSERT_NE(structChild, nullptr);
+    // All 3 keys should be present as struct children.
+    ASSERT_EQ(structChild->childrenSize(), 3);
+    for (auto i = 0; i < 4; ++i) {
+      // No nulls — every row has all keys.
+      for (size_t k = 0; k < 3; ++k) {
+        EXPECT_FALSE(structChild->childAt(k)->isNullAt(i))
+            << "Key " << k << " should not be null at row " << i;
+      }
+    }
+  }
+}
+
+// Verify mixed in-map streams: some keys present in all rows (all-true,
+// skipped), some keys present in only some rows (not all-true, written).
+TEST_P(VeloxReaderTest, flatMapSkipAllTrueInMapStreamMixed) {
+  auto type =
+      velox::ROW({{"flat_map", velox::MAP(velox::INTEGER(), velox::BIGINT())}});
+
+  facebook::velox::test::VectorMaker vectorMaker(leafPool_.get());
+
+  // Key 1 is in all rows (in-map stream all-true, should be skipped).
+  // Key 2 is in rows 0,1 only (in-map stream has false, should be written).
+  // Key 3 is in rows 2,3 only (in-map stream has false, should be written).
+  auto vector = vectorMaker.rowVector(
+      {"flat_map"},
+      {vectorMaker.mapVector<int32_t, int64_t>(
+          {{{1, 10}, {2, 20}},
+           {{1, 11}, {2, 21}},
+           {{1, 12}, {3, 32}},
+           {{1, 13}, {3, 33}}})});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  auto writerOptions = createFlatMapWriterOptions();
+  writerOptions.flatMapColumns.insert("flat_map");
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+  writer.write(vector);
+  writer.close();
+
+  // Verify in-map streams on disk. Key 1 is all-true (should be absent when
+  // enabled). Keys 2 and 3 are mixed (should always be present).
+  {
+    velox::InMemoryReadFile readFile(file);
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+    nimble::VeloxReader reader(
+        &readFile, *leafPool_, std::move(selector), createReadParams());
+    const auto& flatMap = reader.schema()->asRow().childAt(0)->asFlatMap();
+    auto offsets = existingStreamOffsets(*leafPool_, &readFile, 0);
+    // Key 1: all-true.
+    const auto inMap0 = flatMap.inMapDescriptorAt(0).offset();
+    if (skipConstantFlatMapInMapStreams()) {
+      EXPECT_FALSE(offsets.count(inMap0))
+          << "in-map for key 1 should be absent (all-true, skipped)";
+    } else {
+      EXPECT_TRUE(offsets.count(inMap0))
+          << "in-map for key 1 should be present (optimization disabled)";
+    }
+    // Keys 2 and 3: mixed, always present.
+    EXPECT_TRUE(offsets.count(flatMap.inMapDescriptorAt(1).offset()))
+        << "in-map for key 2 should be present (mixed)";
+    EXPECT_TRUE(offsets.count(flatMap.inMapDescriptorAt(2).offset()))
+        << "in-map for key 3 should be present (mixed)";
+  }
+
+  // Read back as map and verify.
+  {
+    velox::InMemoryReadFile readFile(file);
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+    nimble::VeloxReader reader(
+        &readFile, *leafPool_, std::move(selector), createReadParams());
+    velox::VectorPtr output;
+    uint64_t rowCount = 4;
+    ASSERT_TRUE(reader.next(rowCount, output));
+    ASSERT_EQ(output->size(), 4);
+    for (auto i = 0; i < 4; ++i) {
+      EXPECT_TRUE(vectorEquals(vector, output, i)) << "Mismatch at row " << i;
+    }
+  }
+
+  // Read back as struct selecting all keys.
+  {
+    velox::InMemoryReadFile readFile(file);
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+    nimble::VeloxReadParams readParams = createReadParams();
+    readParams.readFlatMapFieldAsStruct.insert("flat_map");
+    readParams.flatMapFeatureSelector["flat_map"].features = {"1", "2", "3"};
+    nimble::VeloxReader reader(
+        &readFile, *leafPool_, std::move(selector), readParams);
+    velox::VectorPtr output;
+    uint64_t rowCount = 4;
+    ASSERT_TRUE(reader.next(rowCount, output));
+    auto* rowVector = output->as<velox::RowVector>();
+    auto* structChild = rowVector->childAt(0)->as<velox::RowVector>();
+    ASSERT_EQ(structChild->childrenSize(), 3);
+    // Key 1 (index 0): present in all rows.
+    for (auto i = 0; i < 4; ++i) {
+      EXPECT_FALSE(structChild->childAt(0)->isNullAt(i));
+    }
+    // Key 2 (index 1): present in rows 0,1 only.
+    EXPECT_FALSE(structChild->childAt(1)->isNullAt(0));
+    EXPECT_FALSE(structChild->childAt(1)->isNullAt(1));
+    EXPECT_TRUE(structChild->childAt(1)->isNullAt(2));
+    EXPECT_TRUE(structChild->childAt(1)->isNullAt(3));
+    // Key 3 (index 2): present in rows 2,3 only.
+    EXPECT_TRUE(structChild->childAt(2)->isNullAt(0));
+    EXPECT_TRUE(structChild->childAt(2)->isNullAt(1));
+    EXPECT_FALSE(structChild->childAt(2)->isNullAt(2));
+    EXPECT_FALSE(structChild->childAt(2)->isNullAt(3));
+  }
+}
+
+// Verify that the writer skips encoding all-false in-map streams (key absent
+// from all rows in a stripe) and the reader correctly handles this by skipping
+// the key. Uses multi-stripe write where key 3 appears only in stripe 2.
+TEST_P(VeloxReaderTest, flatMapSkipAllFalseInMapStream) {
+  auto type =
+      velox::ROW({{"flat_map", velox::MAP(velox::INTEGER(), velox::BIGINT())}});
+
+  facebook::velox::test::VectorMaker vectorMaker(leafPool_.get());
+
+  // Stripe 1: keys 1,2 only. Key 3 will be all-false in this stripe.
+  auto batch1 = vectorMaker.rowVector(
+      {"flat_map"},
+      {vectorMaker.mapVector<int32_t, int64_t>(
+          {{{1, 10}, {2, 20}}, {{1, 11}, {2, 21}}})});
+
+  // Stripe 2: keys 1,3 only. Key 2 will be all-false in this stripe.
+  auto batch2 = vectorMaker.rowVector(
+      {"flat_map"},
+      {vectorMaker.mapVector<int32_t, int64_t>(
+          {{{1, 12}, {3, 32}}, {{1, 13}, {3, 33}}})});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  auto writerOptions = createFlatMapWriterOptions();
+  writerOptions.flatMapColumns.insert("flat_map");
+  // Force a flush after each batch to create separate stripes.
+  writerOptions.flushPolicyFactory = [&]() {
+    return std::make_unique<nimble::LambdaFlushPolicy>(
+        [](auto&) { return true; });
+  };
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+  writer.write(batch1);
+  writer.write(batch2);
+  writer.close();
+
+  // Verify in-map streams on disk per stripe.
+  {
+    velox::InMemoryReadFile readFile(file);
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+    nimble::VeloxReader reader(
+        &readFile, *leafPool_, std::move(selector), createReadParams());
+    const auto& flatMap = reader.schema()->asRow().childAt(0)->asFlatMap();
+    ASSERT_EQ(flatMap.childrenCount(), 3);
+    const auto inMap0 = flatMap.inMapDescriptorAt(0).offset(); // key 1
+    const auto inMap1 = flatMap.inMapDescriptorAt(1).offset(); // key 2
+    const auto inMap2 = flatMap.inMapDescriptorAt(2).offset(); // key 3
+
+    // Stripe 0: keys 1,2 present (all-true), key 3 absent (all-false).
+    auto offsets0 = existingStreamOffsets(*leafPool_, &readFile, 0);
+    if (skipConstantFlatMapInMapStreams()) {
+      EXPECT_FALSE(offsets0.count(inMap0))
+          << "key 1 in-map should be absent (all-true)";
+      EXPECT_FALSE(offsets0.count(inMap1))
+          << "key 2 in-map should be absent (all-true)";
+      EXPECT_FALSE(offsets0.count(inMap2))
+          << "key 3 in-map should be absent (all-false)";
+    } else {
+      EXPECT_TRUE(offsets0.count(inMap0)) << "key 1 in-map should be present";
+      EXPECT_TRUE(offsets0.count(inMap1)) << "key 2 in-map should be present";
+      // key 3 not yet discovered in stripe 0 — may not exist in schema at all
+    }
+
+    // Stripe 1: keys 1,3 present (all-true), key 2 absent (all-false).
+    auto offsets1 = existingStreamOffsets(*leafPool_, &readFile, 1);
+    if (skipConstantFlatMapInMapStreams()) {
+      EXPECT_FALSE(offsets1.count(inMap0))
+          << "key 1 in-map should be absent (all-true)";
+      EXPECT_FALSE(offsets1.count(inMap1))
+          << "key 2 in-map should be absent (all-false)";
+      EXPECT_FALSE(offsets1.count(inMap2))
+          << "key 3 in-map should be absent (all-true)";
+    } else {
+      EXPECT_TRUE(offsets1.count(inMap0)) << "key 1 in-map should be present";
+      // key 2 all-false — even without optimization, all-false in-map is
+      // already skipped by the writer.
+      EXPECT_TRUE(offsets1.count(inMap2)) << "key 3 in-map should be present";
+    }
+  }
+
+  // Read back as map and verify both stripes.
+  {
+    velox::InMemoryReadFile readFile(file);
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+    nimble::VeloxReader reader(
+        &readFile, *leafPool_, std::move(selector), createReadParams());
+    velox::VectorPtr output;
+    uint64_t rowCount = 2;
+    // Stripe 1: {1:10, 2:20}, {1:11, 2:21}
+    ASSERT_TRUE(reader.next(rowCount, output));
+    ASSERT_EQ(output->size(), 2);
+    for (auto i = 0; i < 2; ++i) {
+      EXPECT_TRUE(vectorEquals(batch1, output, i)) << "Mismatch at row " << i;
+    }
+    // Stripe 2: {1:12, 3:32}, {1:13, 3:33}
+    ASSERT_TRUE(reader.next(rowCount, output));
+    ASSERT_EQ(output->size(), 2);
+    for (auto i = 0; i < 2; ++i) {
+      EXPECT_TRUE(vectorEquals(batch2, output, i)) << "Mismatch at row " << i;
+    }
+  }
+
+  // Read back as struct selecting all keys and verify null pattern.
+  {
+    velox::InMemoryReadFile readFile(file);
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+    nimble::VeloxReadParams readParams = createReadParams();
+    readParams.readFlatMapFieldAsStruct.insert("flat_map");
+    readParams.flatMapFeatureSelector["flat_map"].features = {"1", "2", "3"};
+    nimble::VeloxReader reader(
+        &readFile, *leafPool_, std::move(selector), readParams);
+    velox::VectorPtr output;
+    uint64_t rowCount = 2;
+
+    // Stripe 1: key 1 and 2 present, key 3 absent (all-false, skipped).
+    ASSERT_TRUE(reader.next(rowCount, output));
+    auto* rowVector = output->as<velox::RowVector>();
+    auto* structChild = rowVector->childAt(0)->as<velox::RowVector>();
+    ASSERT_EQ(structChild->childrenSize(), 3);
+    for (auto i = 0; i < 2; ++i) {
+      EXPECT_FALSE(structChild->childAt(0)->isNullAt(i)) << "key 1, row " << i;
+      EXPECT_FALSE(structChild->childAt(1)->isNullAt(i)) << "key 2, row " << i;
+      EXPECT_TRUE(structChild->childAt(2)->isNullAt(i)) << "key 3, row " << i;
+    }
+
+    // Stripe 2: key 1 and 3 present, key 2 absent (all-false, skipped).
+    ASSERT_TRUE(reader.next(rowCount, output));
+    rowVector = output->as<velox::RowVector>();
+    structChild = rowVector->childAt(0)->as<velox::RowVector>();
+    ASSERT_EQ(structChild->childrenSize(), 3);
+    for (auto i = 0; i < 2; ++i) {
+      EXPECT_FALSE(structChild->childAt(0)->isNullAt(i)) << "key 1, row " << i;
+      EXPECT_TRUE(structChild->childAt(1)->isNullAt(i)) << "key 2, row " << i;
+      EXPECT_FALSE(structChild->childAt(2)->isNullAt(i)) << "key 3, row " << i;
+    }
+  }
+}
+
+// Verify roundtrip with null map rows alongside all-true in-map streams.
+TEST_P(VeloxReaderTest, flatMapSkipAllTrueInMapStreamWithNulls) {
+  auto type =
+      velox::ROW({{"flat_map", velox::MAP(velox::INTEGER(), velox::BIGINT())}});
+
+  facebook::velox::test::VectorMaker vectorMaker(leafPool_.get());
+
+  // Rows: {1:10, 2:20}, null, {1:12, 2:22}, {1:13, 2:23}
+  // For non-null rows, both keys are always present (all-true in-map).
+  auto keys = vectorMaker.flatVector<int32_t>({1, 2, 1, 2, 1, 2});
+  auto values = vectorMaker.flatVector<int64_t>({10, 20, 12, 22, 13, 23});
+  auto offsets = velox::allocateOffsets(4, leafPool_.get());
+  auto sizes = velox::allocateSizes(4, leafPool_.get());
+  auto rawOffsets = offsets->asMutable<velox::vector_size_t>();
+  auto rawSizes = sizes->asMutable<velox::vector_size_t>();
+  rawOffsets[0] = 0;
+  rawSizes[0] = 2;
+  rawOffsets[1] = 0;
+  rawSizes[1] = 0;
+  rawOffsets[2] = 2;
+  rawSizes[2] = 2;
+  rawOffsets[3] = 4;
+  rawSizes[3] = 2;
+  auto nulls = velox::allocateNulls(4, leafPool_.get());
+  auto rawNulls = nulls->asMutable<uint64_t>();
+  velox::bits::setNull(rawNulls, 1);
+  auto mapVector = std::make_shared<velox::MapVector>(
+      leafPool_.get(),
+      velox::MAP(velox::INTEGER(), velox::BIGINT()),
+      nulls,
+      4,
+      offsets,
+      sizes,
+      keys,
+      values);
+  auto vector = vectorMaker.rowVector({"flat_map"}, {mapVector});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  auto writerOptions = createFlatMapWriterOptions();
+  writerOptions.flatMapColumns.insert("flat_map");
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+  writer.write(vector);
+  writer.close();
+
+  // Read back as map and verify.
+  {
+    velox::InMemoryReadFile readFile(file);
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+    nimble::VeloxReader reader(
+        &readFile, *leafPool_, std::move(selector), createReadParams());
+    velox::VectorPtr output;
+    uint64_t rowCount = 4;
+    ASSERT_TRUE(reader.next(rowCount, output));
+    ASSERT_EQ(output->size(), 4);
+    for (auto i = 0; i < 4; ++i) {
+      EXPECT_TRUE(vectorEquals(vector, output, i)) << "Mismatch at row " << i;
+    }
+  }
+}
+
 TEST_P(VeloxReaderTest, slidingWindowMapNestedInFlatMap) {
   auto type = velox::ROW({
       {"nested_map",
@@ -3778,7 +4213,7 @@ TEST_P(VeloxReaderTest, flatMapAsMapEncoding) {
   };
   VeloxMapGenerator generator(leafPool_.get(), generatorConfig);
 
-  nimble::VeloxWriterOptions writerOptions;
+  auto writerOptions = createFlatMapWriterOptions();
   writerOptions.flatMapColumns.emplace("float_features");
   writerOptions.flatMapColumns.emplace("id_list_features");
   writerOptions.flatMapColumns.emplace("id_score_list_features");
@@ -6342,10 +6777,13 @@ TEST_P(VeloxReaderTest, timestampLargeRowCount) {
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    OptimizeStringBufferHandling,
+    VeloxReaderTestSuite,
     VeloxReaderTest,
-    ::testing::Bool(),
-    [](const ::testing::TestParamInfo<bool>& info) {
-      return info.param ? "OptimizeStringBufferHandlingEnabled"
-                        : "OptimizeStringBufferHandlingDisabled";
+    ::testing::Values(
+        VeloxReaderTestParam{false, false},
+        VeloxReaderTestParam{true, false},
+        VeloxReaderTestParam{false, true},
+        VeloxReaderTestParam{true, true}),
+    [](const ::testing::TestParamInfo<VeloxReaderTestParam>& info) {
+      return info.param.debugString();
     });

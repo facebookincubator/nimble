@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <cstring>
 #include <span>
 #include <string_view>
 
@@ -440,5 +441,19 @@ class NullableContentStringStreamData final : public NullsStreamData {
 
   bool materialized_{false};
 };
+
+/// Returns true if the boolean stream data is constant — all bytes are the
+/// same value (all-true or all-false), or the data is empty.
+inline bool isConstantBoolStream(std::string_view data) {
+  if (data.empty()) {
+    return true;
+  }
+  // Check all-true: no zero byte found.
+  if (::memchr(data.data(), 0, data.size()) == nullptr) {
+    return true;
+  }
+  // Check all-false: no non-zero byte found.
+  return ::memchr(data.data(), 1, data.size()) == nullptr;
+}
 
 } // namespace facebook::nimble

@@ -249,8 +249,34 @@ class NullsAsDataStreamData : public StreamData {
 
 class WriterStreamContext : public StreamContext {
  public:
-  bool isNullStream = false;
-  const EncodingLayout* encoding;
+  bool isNullStream() const {
+    return isNullStream_;
+  }
+
+  void setIsNullStream(bool value) {
+    isNullStream_ = value;
+  }
+
+  bool isInMapStream() const {
+    return isInMapStream_;
+  }
+
+  void setIsInMapStream(bool value) {
+    isInMapStream_ = value;
+  }
+
+  const EncodingLayout* encoding() const {
+    return encoding_;
+  }
+
+  void setEncoding(const EncodingLayout* value) {
+    encoding_ = value;
+  }
+
+ private:
+  bool isNullStream_{false};
+  bool isInMapStream_{false};
+  const EncodingLayout* encoding_{nullptr};
 };
 
 class FlatmapEncodingLayoutContext : public TypeBuilderContext {
@@ -312,8 +338,8 @@ std::string_view encodeStreamTyped(
       streamData.descriptor().context<WriterStreamContext>();
 
   std::optional<EncodingLayout> encodingLayout;
-  if (streamContext && streamContext->encoding) {
-    encodingLayout.emplace(*streamContext->encoding);
+  if (streamContext && streamContext->encoding()) {
+    encodingLayout.emplace(*streamContext->encoding());
   }
 
   try {
@@ -436,12 +462,12 @@ std::unique_ptr<FieldWriter> createRootFieldWriter(
   return FieldWriter::create(context, type, [&](const TypeBuilder& type) {
     switch (type.kind()) {
       case Kind::Row: {
-        getStreamContext(type.asRow().nullsDescriptor()).isNullStream = true;
+        getStreamContext(type.asRow().nullsDescriptor()).setIsNullStream(true);
         break;
       }
       case Kind::FlatMap: {
-        getStreamContext(type.asFlatMap().nullsDescriptor()).isNullStream =
-            true;
+        getStreamContext(type.asFlatMap().nullsDescriptor())
+            .setIsNullStream(true);
         break;
       }
       default:
@@ -468,11 +494,10 @@ void initializeEncodingLayouts(
     const TypeBuilder& typeBuilder,
     const EncodingLayoutTree& encodingLayoutTree) {
   {
-#define SET_STREAM_CONTEXT(builder, descriptor, identifier)       \
-  if (auto* encodingLayout = encodingLayoutTree.encodingLayout(   \
-          EncodingLayoutTree::StreamIdentifiers::identifier)) {   \
-    auto& streamContext = getStreamContext(builder.descriptor()); \
-    streamContext.encoding = encodingLayout;                      \
+#define SET_STREAM_CONTEXT(builder, descriptor, identifier)             \
+  if (auto* encodingLayout = encodingLayoutTree.encodingLayout(         \
+          EncodingLayoutTree::StreamIdentifiers::identifier)) {         \
+    getStreamContext(builder.descriptor()).setEncoding(encodingLayout); \
   }
 
     if (typeBuilder.kind() == Kind::FlatMap) {
@@ -682,19 +707,28 @@ VeloxWriter::VeloxWriter(
                indexWriter_.get())})} {
   NIMBLE_CHECK_NOT_NULL(file_);
 
+  context_->setFlatmapFieldAddedEventHandler([this](
+                                                 const TypeBuilder& flatmap,
+                                                 std::string_view fieldKey,
+                                                 const TypeBuilder& fieldType) {
+    // Mark the newly added child's in-map stream descriptor.
+    auto& flatmapBuilder = flatmap.asFlatMap();
+    getStreamContext(
+        flatmapBuilder.inMapDescriptorAt(flatmapBuilder.childrenCount() - 1))
+        .setIsInMapStream(true);
+
+    // Handle encoding layout if configured.
+    if (context_->options().encodingLayoutTree.has_value()) {
+      auto* ctx = flatmap.context<FlatmapEncodingLayoutContext>();
+      if (ctx != nullptr) {
+        auto it = ctx->keyEncodings.find(fieldKey);
+        if (it != ctx->keyEncodings.end()) {
+          initializeEncodingLayouts(fieldType, it->second);
+        }
+      }
+    }
+  });
   if (context_->options().encodingLayoutTree.has_value()) {
-    context_->setFlatmapFieldAddedEventHandler(
-        [&](const TypeBuilder& flatmap,
-            std::string_view fieldKey,
-            const TypeBuilder& fieldType) {
-          auto* context = flatmap.context<FlatmapEncodingLayoutContext>();
-          if (context != nullptr) {
-            auto it = context->keyEncodings.find(fieldKey);
-            if (it != context->keyEncodings.end()) {
-              initializeEncodingLayouts(fieldType, it->second);
-            }
-          }
-        });
     initializeEncodingLayouts(
         *rootWriter_->typeBuilder(),
         context_->options().encodingLayoutTree.value());
@@ -1011,7 +1045,7 @@ void VeloxWriter::processStream(
   const auto offset = streamData.descriptor().offset();
   const auto* context = streamData.descriptor().context<WriterStreamContext>();
   NIMBLE_CHECK(encodedStreams_[offset].chunks.empty());
-  if ((context != nullptr) && context->isNullStream) {
+  if ((context != nullptr) && context->isNullStream()) {
     // For null streams we promote the null values to be written as
     // boolean data.
     // We still apply the same null logic, where if all values are
@@ -1019,6 +1053,22 @@ void VeloxWriter::processStream(
     if (streamData.hasNulls()) {
       NullsAsDataStreamData nullsStreamData{streamData};
       encodeStream(nullsStreamData, streamSize, chunkSize);
+    }
+  } else if (
+      (context != nullptr) && context->isInMapStream() &&
+      context_->options().skipConstantFlatMapInMapStreams) {
+    // When enabled, skip encoding in-map streams that are all-true (every row
+    // has the key) or all-false (no row has the key). The reader distinguishes
+    // these by checking value stream presence: all-true keys have value
+    // streams, all-false keys do not.
+    //
+    // NOTE: old readers that don't understand missing in-map streams will
+    // misinterpret data. This must stay behind the
+    // skipConstantFlatMapInMapStreams option until the new reader is fully
+    // rolled out.
+    streamData.materialize();
+    if (!isConstantBoolStream(streamData.data())) {
+      encodeStream(streamData, streamSize, chunkSize);
     }
   } else {
     streamData.materialize();

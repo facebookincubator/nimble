@@ -581,4 +581,22 @@ TEST_F(NullableContentStringStreamDataTest, ensureStringBufferCapacity) {
   streamData.ensureStringBufferCapacity(0, 100);
   EXPECT_EQ(memoryPool_->stats().numAllocs, 2);
 }
+TEST(StreamDataUtilTest, isConstantBoolStream) {
+  // Empty → constant.
+  EXPECT_TRUE(isConstantBoolStream(""));
+
+  // All-false → constant.
+  EXPECT_TRUE(isConstantBoolStream(std::string_view("\0\0\0", 3)));
+
+  // All-true → constant.
+  EXPECT_TRUE(isConstantBoolStream(std::string_view("\1\1\1", 3)));
+  EXPECT_TRUE(isConstantBoolStream(std::string_view("\1", 1)));
+
+  // Mixed → not constant.
+  EXPECT_FALSE(isConstantBoolStream(std::string_view("\0\1", 2)));
+  EXPECT_FALSE(isConstantBoolStream(std::string_view("\1\0", 2)));
+  EXPECT_FALSE(isConstantBoolStream(std::string_view("\0\1\0", 3)));
+  EXPECT_FALSE(isConstantBoolStream(std::string_view("\1\0\1", 3)));
+}
+
 } // namespace facebook::nimble

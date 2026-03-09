@@ -712,3 +712,219 @@ TEST(SchemaTests, flatMapTypeFindChild) {
   auto empty = flatMap.findChild("");
   EXPECT_FALSE(empty.has_value());
 }
+
+TEST(SchemaTests, hasValueStreamsScalar) {
+  nimble::SchemaBuilder builder;
+  NIMBLE_SCHEMA(builder, NIMBLE_BIGINT());
+
+  auto schema = nimble::SchemaReader::getSchema(builder.schemaNodes());
+  const auto expectedOffset = schema->asScalar().scalarDescriptor().offset();
+
+  for (bool streamExists : {true, false}) {
+    SCOPED_TRACE(fmt::format("streamExists={}", streamExists));
+    std::vector<nimble::offset_size> queriedOffsets;
+    auto hasStream = [&](nimble::offset_size offset) {
+      queriedOffsets.push_back(offset);
+      return streamExists;
+    };
+
+    EXPECT_EQ(nimble::hasValueStreams(*schema, hasStream), streamExists);
+    ASSERT_EQ(queriedOffsets.size(), 1);
+    EXPECT_EQ(queriedOffsets[0], expectedOffset);
+  }
+}
+
+TEST(SchemaTests, hasValueStreamsArray) {
+  nimble::SchemaBuilder builder;
+  NIMBLE_SCHEMA(builder, NIMBLE_ARRAY(NIMBLE_BIGINT()));
+
+  auto schema = nimble::SchemaReader::getSchema(builder.schemaNodes());
+  const auto expectedOffset = schema->asArray().lengthsDescriptor().offset();
+
+  for (bool streamExists : {true, false}) {
+    SCOPED_TRACE(fmt::format("streamExists={}", streamExists));
+    std::vector<nimble::offset_size> queriedOffsets;
+    auto hasStream = [&](nimble::offset_size offset) {
+      queriedOffsets.push_back(offset);
+      return streamExists;
+    };
+
+    EXPECT_EQ(nimble::hasValueStreams(*schema, hasStream), streamExists);
+    ASSERT_EQ(queriedOffsets.size(), 1);
+    EXPECT_EQ(queriedOffsets[0], expectedOffset);
+  }
+}
+
+TEST(SchemaTests, hasValueStreamsMap) {
+  nimble::SchemaBuilder builder;
+  NIMBLE_SCHEMA(builder, NIMBLE_MAP(NIMBLE_STRING(), NIMBLE_BIGINT()));
+
+  auto schema = nimble::SchemaReader::getSchema(builder.schemaNodes());
+  const auto expectedOffset = schema->asMap().lengthsDescriptor().offset();
+
+  for (bool streamExists : {true, false}) {
+    SCOPED_TRACE(fmt::format("streamExists={}", streamExists));
+    std::vector<nimble::offset_size> queriedOffsets;
+    auto hasStream = [&](nimble::offset_size offset) {
+      queriedOffsets.push_back(offset);
+      return streamExists;
+    };
+
+    EXPECT_EQ(nimble::hasValueStreams(*schema, hasStream), streamExists);
+    ASSERT_EQ(queriedOffsets.size(), 1);
+    EXPECT_EQ(queriedOffsets[0], expectedOffset);
+  }
+}
+
+TEST(SchemaTests, hasValueStreamsRowRecursesToFirstChild) {
+  nimble::SchemaBuilder builder;
+  NIMBLE_SCHEMA(
+      builder,
+      NIMBLE_ROW({
+          {"c1", NIMBLE_BIGINT()},
+          {"c2", NIMBLE_STRING()},
+      }));
+
+  auto schema = nimble::SchemaReader::getSchema(builder.schemaNodes());
+  const auto expectedOffset =
+      schema->asRow().childAt(0)->asScalar().scalarDescriptor().offset();
+
+  for (bool streamExists : {true, false}) {
+    SCOPED_TRACE(fmt::format("streamExists={}", streamExists));
+    std::vector<nimble::offset_size> queriedOffsets;
+    auto hasStream = [&](nimble::offset_size offset) {
+      queriedOffsets.push_back(offset);
+      return streamExists;
+    };
+
+    EXPECT_EQ(nimble::hasValueStreams(*schema, hasStream), streamExists);
+    // Row recurses to first child (c1 - BIGINT).
+    ASSERT_EQ(queriedOffsets.size(), 1);
+    EXPECT_EQ(queriedOffsets[0], expectedOffset);
+  }
+}
+
+TEST(SchemaTests, hasValueStreamsFlatMap) {
+  nimble::SchemaBuilder builder;
+  nimble::test::FlatMapChildAdder fm;
+  NIMBLE_SCHEMA(builder, NIMBLE_FLATMAP(String, NIMBLE_BIGINT(), fm));
+  fm.addChild("key1");
+
+  auto schema = nimble::SchemaReader::getSchema(builder.schemaNodes());
+  const auto expectedOffset =
+      schema->asFlatMap().childAt(0)->asScalar().scalarDescriptor().offset();
+
+  for (bool streamExists : {true, false}) {
+    SCOPED_TRACE(fmt::format("streamExists={}", streamExists));
+    std::vector<nimble::offset_size> queriedOffsets;
+    auto hasStream = [&](nimble::offset_size offset) {
+      queriedOffsets.push_back(offset);
+      return streamExists;
+    };
+
+    EXPECT_EQ(nimble::hasValueStreams(*schema, hasStream), streamExists);
+    // FlatMap iterates children until one has stream.
+    ASSERT_EQ(queriedOffsets.size(), 1);
+    EXPECT_EQ(queriedOffsets[0], expectedOffset);
+  }
+}
+
+TEST(SchemaTests, hasValueStreamsFlatMapIteratesAllChildren) {
+  nimble::SchemaBuilder builder;
+  nimble::test::FlatMapChildAdder fm;
+  NIMBLE_SCHEMA(
+      builder,
+      NIMBLE_FLATMAP(
+          String,
+          NIMBLE_ROW({
+              {"f1", NIMBLE_BIGINT()},
+              {"f2", NIMBLE_STRING()},
+          }),
+          fm));
+  fm.addChild("key1");
+  fm.addChild("key2");
+  fm.addChild("key3");
+
+  auto schema = nimble::SchemaReader::getSchema(builder.schemaNodes());
+  const auto& flatMap = schema->asFlatMap();
+  ASSERT_EQ(flatMap.childrenCount(), 3);
+
+  // Collect expected offsets for each key's Row's first child.
+  std::vector<nimble::offset_size> expectedOffsets;
+  expectedOffsets.reserve(flatMap.childrenCount());
+  for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
+    expectedOffsets.push_back(flatMap.childAt(i)
+                                  ->asRow()
+                                  .childAt(0)
+                                  ->asScalar()
+                                  .scalarDescriptor()
+                                  .offset());
+  }
+
+  // All 3 children exist in the schema (have valid offsets). Test that when
+  // hasStream returns false for some children, the search continues until
+  // finding one where hasStream returns true.
+  // childWithStream=-1: hasStream returns false for all -> queries all 3,
+  // returns false childWithStream=0: hasStream returns true for key1 -> queries
+  // 1, returns true childWithStream=1: hasStream returns false for key1, true
+  // for key2 -> queries 2, returns true childWithStream=2: hasStream returns
+  // false for key1/key2, true for key3 -> queries 3, returns true
+  for (int childWithStream = -1; childWithStream < 3; ++childWithStream) {
+    SCOPED_TRACE(fmt::format("childWithStream={}", childWithStream));
+    std::vector<nimble::offset_size> queriedOffsets;
+    auto hasStream = [&](nimble::offset_size offset) {
+      queriedOffsets.push_back(offset);
+      if (childWithStream < 0) {
+        return false;
+      }
+      return offset == expectedOffsets[childWithStream];
+    };
+
+    const bool expectedResult = childWithStream >= 0;
+    EXPECT_EQ(nimble::hasValueStreams(*schema, hasStream), expectedResult);
+    // When no stream exists, checks all children.
+    // When stream exists at position N, checks N+1 children (0..N).
+    const size_t expectedQueries =
+        childWithStream < 0 ? 3 : childWithStream + 1;
+    EXPECT_EQ(queriedOffsets.size(), expectedQueries);
+    // Verify queries are in order and match expected offsets.
+    for (size_t i = 0; i < queriedOffsets.size(); ++i) {
+      EXPECT_EQ(queriedOffsets[i], expectedOffsets[i]);
+    }
+  }
+}
+
+TEST(SchemaTests, hasValueStreamsNestedRow) {
+  nimble::SchemaBuilder builder;
+  NIMBLE_SCHEMA(
+      builder,
+      NIMBLE_ROW({
+          {"outer",
+           NIMBLE_ROW({
+               {"inner", NIMBLE_BIGINT()},
+           })},
+      }));
+
+  auto schema = nimble::SchemaReader::getSchema(builder.schemaNodes());
+  const auto expectedOffset = schema->asRow()
+                                  .childAt(0)
+                                  ->asRow()
+                                  .childAt(0)
+                                  ->asScalar()
+                                  .scalarDescriptor()
+                                  .offset();
+
+  for (bool streamExists : {true, false}) {
+    SCOPED_TRACE(fmt::format("streamExists={}", streamExists));
+    std::vector<nimble::offset_size> queriedOffsets;
+    auto hasStream = [&](nimble::offset_size offset) {
+      queriedOffsets.push_back(offset);
+      return streamExists;
+    };
+
+    EXPECT_EQ(nimble::hasValueStreams(*schema, hasStream), streamExists);
+    // Should recurse: outer Row -> inner Row -> BIGINT scalar.
+    ASSERT_EQ(queriedOffsets.size(), 1);
+    EXPECT_EQ(queriedOffsets[0], expectedOffset);
+  }
+}

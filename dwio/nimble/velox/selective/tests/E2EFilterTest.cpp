@@ -24,8 +24,20 @@ namespace {
 
 using namespace facebook::velox;
 
+struct E2EFilterTestParam {
+  bool indexEnabled;
+  bool skipConstantFlatMapInMapStreams;
+
+  std::string debugString() const {
+    return fmt::format(
+        "index_{}_skipConstantInMap_{}",
+        indexEnabled,
+        skipConstantFlatMapInMapStreams);
+  }
+};
+
 class E2EFilterTest : public dwio::common::E2EFilterTestBase,
-                      public ::testing::WithParamInterface<bool> {
+                      public ::testing::WithParamInterface<E2EFilterTestParam> {
  protected:
   static void SetUpTestCase() {
     E2EFilterTestBase::SetUpTestCase();
@@ -40,7 +52,11 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase,
   }
 
   virtual bool indexEnabled() const {
-    return GetParam();
+    return GetParam().indexEnabled;
+  }
+
+  bool skipConstantFlatMapInMapStreams() const {
+    return GetParam().skipConstantFlatMapInMapStreams;
   }
 
   void setUpRowReaderOptions(
@@ -185,6 +201,7 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase,
     rowType_ = asRowType(type);
     writeSchema_ = rowType_;
     VeloxWriterOptions options;
+    options.skipConstantFlatMapInMapStreams = skipConstantFlatMapInMapStreams();
     options.enableChunking = true;
     auto i = 0;
     options.flushPolicyFactory = [&] {
@@ -1117,9 +1134,13 @@ TEST_P(E2EFilterTest, timestampArrayInStruct) {
 INSTANTIATE_TEST_SUITE_P(
     E2EFilterTests,
     E2EFilterTest,
-    ::testing::Bool(),
-    [](const ::testing::TestParamInfo<bool>& info) {
-      return info.param ? "indexEnabled" : "indexDisabled";
+    ::testing::Values(
+        E2EFilterTestParam{false, false},
+        E2EFilterTestParam{true, false},
+        E2EFilterTestParam{false, true},
+        E2EFilterTestParam{true, true}),
+    [](const ::testing::TestParamInfo<E2EFilterTestParam>& info) {
+      return info.param.debugString();
     });
 
 } // namespace
