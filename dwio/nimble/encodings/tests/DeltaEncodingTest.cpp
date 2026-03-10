@@ -15,6 +15,7 @@
  */
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include <gtest/gtest.h>
+#include <array>
 #include <limits>
 #include <numeric>
 #include <vector>
@@ -694,4 +695,286 @@ TYPED_TEST(DeltaEncodingTest, SingleRestatementAtEnd) {
     EXPECT_TRUE(nimble::NimbleCompare<D>::equals(result[i], values[i]))
         << "SingleRestatementAtEnd mismatch at " << i;
   }
+}
+
+// Verifies round-trip correctness when values increase from negative to
+// positive. The negative-to-positive transition must be treated as a
+// restatement (not a delta) to avoid signed overflow.
+TYPED_TEST(DeltaEncodingTest, ZeroCrossingNegativeToPositive) {
+  using D = typename TypeParam::data_type;
+  if constexpr (nimble::isSignedIntegralType<D>()) {
+    const nimble::Encoding::Options options{
+        .useVarintRowCount = TypeParam::useVarint};
+
+    auto values = this->template toVector<D>({-3, -1, 2, 5});
+
+    std::vector<velox::BufferPtr> newStringBuffers;
+    const auto stringBufferFactory = [&](uint32_t totalLength) {
+      auto& buffer = newStringBuffers.emplace_back(
+          velox::AlignedBuffer::allocate<char>(totalLength, this->pool_.get()));
+      return buffer->template asMutable<void>();
+    };
+    auto encoding =
+        nimble::test::Encoder<nimble::DeltaEncoding<D>>::createEncoding(
+            *this->buffer_,
+            values,
+            stringBufferFactory,
+            nimble::CompressionType::Uncompressed,
+            options);
+    nimble::Vector<D> result(this->pool_.get(), values.size());
+    encoding->materialize(values.size(), result.data());
+
+    for (uint32_t i = 0; i < values.size(); ++i) {
+      EXPECT_TRUE(nimble::NimbleCompare<D>::equals(result[i], values[i]))
+          << "Mismatch at index " << i << ": expected " << values[i] << " got "
+          << result[i];
+    }
+  } else {
+    GTEST_SKIP() << "Zero crossing only applies to signed types";
+  }
+}
+
+// Verifies round-trip when values cross zero multiple times, mixing
+// increasing crossings (restatement) and decreasing crossings (also
+// restatement due to decrease).
+TYPED_TEST(DeltaEncodingTest, ZeroCrossingMultipleCrossings) {
+  using D = typename TypeParam::data_type;
+  if constexpr (nimble::isSignedIntegralType<D>()) {
+    const nimble::Encoding::Options options{
+        .useVarintRowCount = TypeParam::useVarint};
+
+    // -5→3 crosses zero upward (restatement), 3→-2 decreases (restatement),
+    // -2→7 crosses zero upward (restatement), 7→-1 decreases (restatement),
+    // -1→4 crosses zero upward (restatement).
+    auto values = this->template toVector<D>({-5, 3, -2, 7, -1, 4});
+
+    std::vector<velox::BufferPtr> newStringBuffers;
+    const auto stringBufferFactory = [&](uint32_t totalLength) {
+      auto& buffer = newStringBuffers.emplace_back(
+          velox::AlignedBuffer::allocate<char>(totalLength, this->pool_.get()));
+      return buffer->template asMutable<void>();
+    };
+    auto encoding =
+        nimble::test::Encoder<nimble::DeltaEncoding<D>>::createEncoding(
+            *this->buffer_,
+            values,
+            stringBufferFactory,
+            nimble::CompressionType::Uncompressed,
+            options);
+    nimble::Vector<D> result(this->pool_.get(), values.size());
+    encoding->materialize(values.size(), result.data());
+
+    for (uint32_t i = 0; i < values.size(); ++i) {
+      EXPECT_TRUE(nimble::NimbleCompare<D>::equals(result[i], values[i]))
+          << "Mismatch at index " << i << ": expected " << values[i] << " got "
+          << result[i];
+    }
+  } else {
+    GTEST_SKIP() << "Zero crossing only applies to signed types";
+  }
+}
+
+// Values that pass through zero itself ({-2, -1, 0, 1, 2}) should NOT trigger
+// the crossesZero path, because 0 is neither > 0 nor < 0. All transitions
+// are plain deltas.
+TYPED_TEST(DeltaEncodingTest, ZeroCrossingThroughZeroValue) {
+  using D = typename TypeParam::data_type;
+  if constexpr (nimble::isSignedIntegralType<D>()) {
+    const nimble::Encoding::Options options{
+        .useVarintRowCount = TypeParam::useVarint};
+
+    auto values = this->template toVector<D>({-2, -1, 0, 1, 2});
+
+    std::vector<velox::BufferPtr> newStringBuffers;
+    const auto stringBufferFactory = [&](uint32_t totalLength) {
+      auto& buffer = newStringBuffers.emplace_back(
+          velox::AlignedBuffer::allocate<char>(totalLength, this->pool_.get()));
+      return buffer->template asMutable<void>();
+    };
+    auto encoding =
+        nimble::test::Encoder<nimble::DeltaEncoding<D>>::createEncoding(
+            *this->buffer_,
+            values,
+            stringBufferFactory,
+            nimble::CompressionType::Uncompressed,
+            options);
+    nimble::Vector<D> result(this->pool_.get(), values.size());
+    encoding->materialize(values.size(), result.data());
+
+    for (uint32_t i = 0; i < values.size(); ++i) {
+      EXPECT_TRUE(nimble::NimbleCompare<D>::equals(result[i], values[i]))
+          << "Mismatch at index " << i << ": expected " << values[i] << " got "
+          << result[i];
+    }
+  } else {
+    GTEST_SKIP() << "Zero crossing only applies to signed types";
+  }
+}
+
+// Verifies that skip correctly handles zero-crossing restatements.
+TYPED_TEST(DeltaEncodingTest, ZeroCrossingWithSkipAndMaterialize) {
+  using D = typename TypeParam::data_type;
+  if constexpr (nimble::isSignedIntegralType<D>()) {
+    const nimble::Encoding::Options options{
+        .useVarintRowCount = TypeParam::useVarint};
+
+    // Skip past the zero crossing at index 2 (-1→2), then read the rest.
+    auto values = this->template toVector<D>({-5, -1, 2, 4, 6, 8});
+
+    std::vector<velox::BufferPtr> newStringBuffers;
+    const auto stringBufferFactory = [&](uint32_t totalLength) {
+      auto& buffer = newStringBuffers.emplace_back(
+          velox::AlignedBuffer::allocate<char>(totalLength, this->pool_.get()));
+      return buffer->template asMutable<void>();
+    };
+    auto encoding =
+        nimble::test::Encoder<nimble::DeltaEncoding<D>>::createEncoding(
+            *this->buffer_,
+            values,
+            stringBufferFactory,
+            nimble::CompressionType::Uncompressed,
+            options);
+
+    // Skip past the zero crossing point.
+    encoding->skip(3);
+    nimble::Vector<D> result(this->pool_.get(), 3);
+    encoding->materialize(3, result.data());
+
+    for (uint32_t i = 0; i < 3; ++i) {
+      EXPECT_TRUE(nimble::NimbleCompare<D>::equals(result[i], values[3 + i]))
+          << "Mismatch at index " << i << ": expected " << values[3 + i]
+          << " got " << result[i];
+    }
+
+    // Reset and materialize one-by-one across the crossing.
+    encoding->reset();
+    for (uint32_t i = 0; i < values.size(); ++i) {
+      D val;
+      encoding->materialize(1, &val);
+      EXPECT_TRUE(nimble::NimbleCompare<D>::equals(val, values[i]))
+          << "One-at-a-time mismatch at index " << i;
+    }
+  } else {
+    GTEST_SKIP() << "Zero crossing only applies to signed types";
+  }
+}
+
+// Directly tests internal::computeDeltas to verify that zero-crossing
+// transitions produce the correct decomposition into deltas, restatements,
+// and isRestatements vectors.
+TEST(ComputeDeltasTest, ZeroCrossingDecomposition) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+
+  // Input: {-3, -1, 2, 5}
+  // Transition analysis:
+  //   -1 >= -3 (delta, no crossing)        → delta = 2
+  //   2 >= -1  (increasing, crosses zero)  → restatement = 2
+  //   5 >= 2   (delta, no crossing)        → delta = 3
+  const std::array<int32_t, 4> values = {-3, -1, 2, 5};
+
+  nimble::Vector<int32_t> deltas(pool.get());
+  nimble::Vector<int32_t> restatements(pool.get());
+  nimble::Vector<bool> isRestatements(pool.get());
+
+  nimble::internal::computeDeltas<int32_t>(
+      std::span<const int32_t>(values),
+      &deltas,
+      &restatements,
+      &isRestatements);
+
+  ASSERT_EQ(isRestatements.size(), 4);
+  EXPECT_TRUE(isRestatements[0]); // first element always restatement
+  EXPECT_FALSE(isRestatements[1]); // -1 >= -3, no zero crossing
+  EXPECT_TRUE(isRestatements[2]); // 2 >= -1, crosses zero → restatement
+  EXPECT_FALSE(isRestatements[3]); // 5 >= 2, no zero crossing
+
+  const nimble::Vector<int32_t> expectedDeltas = [&] {
+    nimble::Vector<int32_t> v(pool.get());
+    v.push_back(2); // -1 - (-3)
+    v.push_back(3); // 5 - 2
+    return v;
+  }();
+  ASSERT_EQ(deltas.size(), expectedDeltas.size());
+  for (uint32_t i = 0; i < deltas.size(); ++i) {
+    EXPECT_EQ(deltas[i], expectedDeltas[i]) << "delta mismatch at " << i;
+  }
+
+  const nimble::Vector<int32_t> expectedRestatements = [&] {
+    nimble::Vector<int32_t> v(pool.get());
+    v.push_back(-3); // first value
+    v.push_back(2); // zero-crossing value
+    return v;
+  }();
+  ASSERT_EQ(restatements.size(), expectedRestatements.size());
+  for (uint32_t i = 0; i < restatements.size(); ++i) {
+    EXPECT_EQ(restatements[i], expectedRestatements[i])
+        << "restatement mismatch at " << i;
+  }
+}
+
+// Verifies that passing through zero (touching the value 0 exactly) does NOT
+// trigger zero-crossing restatements. The crossesZero check requires
+// values[i] > 0 && values[i-1] < 0, so transitions involving 0 are plain
+// deltas.
+TEST(ComputeDeltasTest, ThroughZeroNoZeroCrossing) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+
+  // -1 → 0: isDelta=true, crossesZero=false (0 is not > 0) → delta
+  // 0 → 1:  isDelta=true, crossesZero=false (0 is not < 0) → delta
+  const std::array<int32_t, 3> values = {-1, 0, 1};
+
+  nimble::Vector<int32_t> deltas(pool.get());
+  nimble::Vector<int32_t> restatements(pool.get());
+  nimble::Vector<bool> isRestatements(pool.get());
+
+  nimble::internal::computeDeltas<int32_t>(
+      std::span<const int32_t>(values),
+      &deltas,
+      &restatements,
+      &isRestatements);
+
+  ASSERT_EQ(isRestatements.size(), 3);
+  EXPECT_TRUE(isRestatements[0]); // first element always restatement
+  EXPECT_FALSE(isRestatements[1]); // -1 → 0, no crossing
+  EXPECT_FALSE(isRestatements[2]); // 0 → 1, no crossing
+
+  // All transitions are deltas (none cross zero).
+  ASSERT_EQ(deltas.size(), 2);
+  EXPECT_EQ(deltas[0], 1); // 0 - (-1)
+  EXPECT_EQ(deltas[1], 1); // 1 - 0
+
+  ASSERT_EQ(restatements.size(), 1);
+  EXPECT_EQ(restatements[0], -1); // only the first value
+}
+
+// Verifies that unsigned types never trigger zero-crossing logic.
+TEST(ComputeDeltasTest, UnsignedNoZeroCrossing) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+
+  // All increasing — every transition is a delta for unsigned types.
+  const std::array<uint32_t, 5> values = {1, 2, 3, 4, 5};
+
+  nimble::Vector<uint32_t> deltas(pool.get());
+  nimble::Vector<uint32_t> restatements(pool.get());
+  nimble::Vector<bool> isRestatements(pool.get());
+
+  nimble::internal::computeDeltas<uint32_t>(
+      std::span<const uint32_t>(values),
+      &deltas,
+      &restatements,
+      &isRestatements);
+
+  ASSERT_EQ(isRestatements.size(), 5);
+  EXPECT_TRUE(isRestatements[0]);
+  for (uint32_t i = 1; i < 5; ++i) {
+    EXPECT_FALSE(isRestatements[i]) << "Unexpected restatement at " << i;
+  }
+
+  ASSERT_EQ(deltas.size(), 4);
+  for (uint32_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(deltas[i], 1u) << "delta mismatch at " << i;
+  }
+
+  ASSERT_EQ(restatements.size(), 1);
+  EXPECT_EQ(restatements[0], 1u);
 }

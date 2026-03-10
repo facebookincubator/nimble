@@ -209,32 +209,45 @@ void computeDeltas(
     Vector<physicalType>* deltas,
     Vector<physicalType>* restatements,
     Vector<bool>* isRestatements) {
-  isRestatements->push_back(true);
-  restatements->push_back(values[0]);
-  // For signed integer types we avoid the potential overflow in the
-  // delta by restating whenever the last value was negative and the
-  // next is positive. We could be more elegant by storing the
-  // deltas as the appropriate unsigned type.
-  if constexpr (isSignedIntegralType<physicalType>()) {
-    for (uint32_t i = 1; i < values.size(); ++i) {
-      const bool crossesZero = values[i] > 0 && values[i - 1] < 0;
-      if (values[i] >= values[i - 1] && !crossesZero) {
-        isRestatements->push_back(false);
-        deltas->push_back(values[i] - values[i - 1]);
-      } else {
-        isRestatements->push_back(true);
-        restatements->push_back(values[i]);
-      }
-    }
-  } else {
-    for (uint32_t i = 1; i < values.size(); ++i) {
-      if (values[i] >= values[i - 1]) {
-        isRestatements->push_back(false);
-        deltas->push_back(values[i] - values[i - 1]);
-      } else {
-        isRestatements->push_back(true);
-        restatements->push_back(values[i]);
-      }
+  const uint32_t n = static_cast<uint32_t>(values.size());
+
+  // Pass 1: Count how many elements use deltas vs restatements.
+  // Must mirror the logic in Pass 2: a transition that crosses zero
+  // (negative → positive) is treated as a restatement even when increasing,
+  // to avoid signed overflow in the delta.
+  uint32_t numDeltas = 0;
+  for (uint32_t i = 1; i < n; ++i) {
+    const bool isDelta = values[i] >= values[i - 1];
+    const bool crossesZero = isSignedIntegralType<physicalType>() &&
+        values[i] > 0 && values[i - 1] < 0;
+    numDeltas += static_cast<uint32_t>(isDelta && !crossesZero);
+  }
+  const uint32_t numRestatements = (n - 1) - numDeltas;
+
+  // Pre-allocate all outputs with exact sizes — eliminates per-element
+  // capacity checks from push_back and the intermediate useDelta vector.
+  isRestatements->resize(n);
+  deltas->resize(numDeltas);
+  restatements->resize(numRestatements + 1);
+
+  isRestatements->data()[0] = true;
+  restatements->data()[0] = values[0];
+
+  // Pass 2: Scatter into pre-allocated outputs via raw pointers.
+  bool* isRestPtr = isRestatements->data() + 1;
+  physicalType* deltaPtr = deltas->data();
+  physicalType* restPtr = restatements->data() + 1;
+
+  for (uint32_t i = 1; i < n; ++i) {
+    const bool isDelta = values[i] >= values[i - 1];
+    const bool crossesZero = isSignedIntegralType<physicalType>() &&
+        values[i] > 0 && values[i - 1] < 0;
+
+    *isRestPtr++ = !isDelta || crossesZero;
+    if (isDelta && !crossesZero) {
+      *deltaPtr++ = values[i] - values[i - 1];
+    } else {
+      *restPtr++ = values[i];
     }
   }
 }
