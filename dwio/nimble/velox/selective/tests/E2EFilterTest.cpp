@@ -1245,4 +1245,130 @@ TEST_F(PrefixEncodingE2ETest, filterOnString) {
   }
 }
 
+// Test that DeltaEncoding's readWithVisitor works correctly when reading
+// integer data through the selective reader. This test derives from
+// E2EFilterTest and overrides writeToMemory to explicitly specify
+// DeltaEncoding for integer columns.
+class DeltaEncodingE2ETest : public E2EFilterTest {
+ protected:
+  bool indexEnabled() const override {
+    return false;
+  }
+
+  void writeToMemory(
+      const TypePtr& type,
+      const std::vector<RowVectorPtr>& batches,
+      bool forRowGroupSkip,
+      const std::vector<std::string>& /*indexColumns*/ = {}) override {
+    VELOX_CHECK(!forRowGroupSkip);
+    rowType_ = asRowType(type);
+
+    // Force Delta encoding for integer columns via
+    // ManualEncodingSelectionPolicyFactory.
+    std::vector<std::pair<EncodingType, float>> readFactors = {
+        {EncodingType::Delta, 1.0},
+    };
+    ManualEncodingSelectionPolicyFactory encodingFactory(readFactors);
+
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions options;
+    options.encodingSelectionPolicyFactory = [&](DataType dataType) {
+      return encodingFactory.createPolicy(dataType);
+    };
+    VeloxWriter writer(
+        rowType_, std::move(writeFile), *rootPool_, std::move(options));
+    for (auto& batch : batches) {
+      writer.write(batch);
+    }
+    writer.close();
+  }
+};
+
+TEST_F(DeltaEncodingE2ETest, withoutFilterOnDelta) {
+  for (bool withRecursiveNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("withRecursiveNulls={}", withRecursiveNulls));
+    testWithTypes(
+        "long_val:bigint,"
+        "string_val:string",
+        [&]() { makeStringUnique("string_val"); },
+        /*wrapInStruct=*/false,
+        /*filterable=*/{"string_val"},
+        /*numCombinations=*/5,
+        withRecursiveNulls);
+  }
+}
+
+TEST_F(DeltaEncodingE2ETest, filterOnDelta) {
+  for (bool withRecursiveNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("withRecursiveNulls={}", withRecursiveNulls));
+    testWithTypes(
+        "long_val:bigint,"
+        "long_val_2:bigint,"
+        "string_val:string",
+        [&]() { makeStringUnique("string_val"); },
+        /*wrapInStruct=*/false,
+        {"long_val", "string_val"},
+        /*numCombinations=*/5,
+        withRecursiveNulls);
+  }
+}
+
+TEST_F(DeltaEncodingE2ETest, filterMultipleIntegerTypes) {
+  for (bool withRecursiveNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("withRecursiveNulls={}", withRecursiveNulls));
+    testWithTypes(
+        "tiny_val:tinyint,"
+        "short_val:smallint,"
+        "int_val:int,"
+        "long_val:bigint",
+        [&]() {},
+        /*wrapInStruct=*/false,
+        {"tiny_val", "short_val", "int_val", "long_val"},
+        /*numCombinations=*/5,
+        withRecursiveNulls);
+  }
+}
+
+TEST_F(DeltaEncodingE2ETest, filterOnMultipleDeltaColumns) {
+  for (bool withRecursiveNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("withRecursiveNulls={}", withRecursiveNulls));
+    testWithTypes(
+        "long_val:bigint,"
+        "long_val_2:bigint",
+        [&]() {},
+        /*wrapInStruct=*/false,
+        {"long_val", "long_val_2"},
+        /*numCombinations=*/5,
+        withRecursiveNulls);
+  }
+}
+
+TEST_F(DeltaEncodingE2ETest, filterWrappedInStruct) {
+  for (bool withRecursiveNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("withRecursiveNulls={}", withRecursiveNulls));
+    testWithTypes(
+        "int_val:int,"
+        "long_val:bigint",
+        [&]() {},
+        /*wrapInStruct=*/true,
+        {"int_val", "long_val"},
+        /*numCombinations=*/5,
+        withRecursiveNulls);
+  }
+}
+
+TEST_F(DeltaEncodingE2ETest, filterWithIsNull) {
+  for (bool withRecursiveNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("withRecursiveNulls={}", withRecursiveNulls));
+    testWithTypes(
+        "long_val:bigint,"
+        "long_null:bigint",
+        [&]() { makeAllNulls("long_null"); },
+        /*wrapInStruct=*/false,
+        {"long_val", "long_null"},
+        /*numCombinations=*/5,
+        withRecursiveNulls);
+  }
+}
+
 } // namespace facebook::nimble

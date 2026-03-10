@@ -16,6 +16,7 @@
 #pragma once
 
 #include "dwio/nimble/encodings/ConstantEncoding.h"
+#include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
@@ -123,6 +124,12 @@ class Encoder {
   struct EncodingTypeTraits<nimble::DictionaryEncoding<T>> {
     static constexpr inline nimble::EncodingType encodingType =
         nimble::EncodingType::Dictionary;
+  };
+
+  template <>
+  struct EncodingTypeTraits<nimble::DeltaEncoding<T>> {
+    static constexpr inline nimble::EncodingType encodingType =
+        nimble::EncodingType::Delta;
   };
 
   template <>
