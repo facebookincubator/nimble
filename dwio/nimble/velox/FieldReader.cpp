@@ -727,33 +727,45 @@ class LegacyStringFieldReader final : public FieldReader {
     if (encoding->isNullable()) {
       // Adding memory for velox::BaseVector::nulls_
       totalBytes += rowCount / 8;
-      const auto* nullableEncoding =
-          dynamic_cast<const legacy::NullableEncoding<std::string_view>*>(
-              encoding);
-      NIMBLE_CHECK_NOT_NULL(
-          nullableEncoding,
-          "NullableEncoding is not used for nullable string field.");
-      innerEncoding = nullableEncoding->nonNulls();
+      if (const auto* ne =
+              dynamic_cast<const NullableEncoding<std::string_view>*>(
+                  encoding)) {
+        innerEncoding = ne->nonNulls();
+      } else if (
+          const auto* legacyNe =
+              dynamic_cast<const legacy::NullableEncoding<std::string_view>*>(
+                  encoding)) {
+        innerEncoding = legacyNe->nonNulls();
+      } else {
+        NIMBLE_CHECK(
+            false, "NullableEncoding is not used for nullable string field.");
+      }
     }
 
     // TODO: support more encodings (or do encoding traversal), DICT, RLE, etc.
     // We currently only estimate trivial encoded string field.
     if (const auto* trivialEncoding =
-            dynamic_cast<const legacy::TrivialEncoding<std::string_view>*>(
+            dynamic_cast<const TrivialEncoding<std::string_view>*>(
                 innerEncoding)) {
-      // Adding overhead for velox::StringView. 4 bytes for inline, 16 bytes for
-      // non-inline
       const auto nonNullCount = trivialEncoding->rowCount();
       const auto payloadBytes = trivialEncoding->uncompressedDataBytes();
-      // Non-null entries overhead
       totalBytes +=
           ((payloadBytes / nonNullCount) > velox::StringView::kInlineSize ? 16
                                                                           : 4) *
           nonNullCount;
-      // Null entries overhead
       totalBytes += (rowCount - nonNullCount) * 16;
-
-      // Adding actual string content payload size
+      totalBytes += payloadBytes;
+    } else if (
+        const auto* legacyTrivialEncoding =
+            dynamic_cast<const legacy::TrivialEncoding<std::string_view>*>(
+                innerEncoding)) {
+      const auto nonNullCount = legacyTrivialEncoding->rowCount();
+      const auto payloadBytes = legacyTrivialEncoding->uncompressedDataBytes();
+      totalBytes +=
+          ((payloadBytes / nonNullCount) > velox::StringView::kInlineSize ? 16
+                                                                          : 4) *
+          nonNullCount;
+      totalBytes += (rowCount - nonNullCount) * 16;
       totalBytes += payloadBytes;
     } else {
       return std::nullopt;

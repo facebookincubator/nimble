@@ -151,6 +151,26 @@ struct EncodingSizeEstimation {
           return std::nullopt;
         }
       }
+      case EncodingType::Delta: {
+        // Estimate the size of delta encoding.
+        // We approximate by assuming the best case: all values are
+        // monotonically non-decreasing, so all entries are deltas (no
+        // restatements). The deltas range from 0 to (max - min).
+        // The isRestatements stream is all-false and will compress well.
+        const auto deltasSize =
+            bitPackedBytes(0, statistics.max() - statistics.min(), entryCount);
+        const auto restatementsSize = sizeof(physicalType);
+        const auto isRestatementsBitmapSize =
+            getEncodingOverhead<EncodingType::SparseBool, bool>();
+        uint32_t overhead =
+            getEncodingOverhead<EncodingType::Trivial, physicalType>() +
+            getEncodingOverhead<EncodingType::FixedBitWidth, physicalType>() +
+            getEncodingOverhead<EncodingType::Trivial, physicalType>() +
+            // Two uint32 offsets for child stream sizes
+            8;
+        return overhead + deltasSize + restatementsSize +
+            isRestatementsBitmapSize;
+      }
       default: {
         return std::nullopt;
       }
