@@ -101,13 +101,24 @@ bool ChunkedDecoder::ensureInputIncremental_hack(int size, const char*& pos) {
 
 // After this function is called, we ensure these:
 // 1. `inputBuffer_' is allocated and at least `size' bytes large.
-// 2. The first `inputSize_' bytes in `inputData_' before the call are copied to
-//    the beginning of `inputBuffer_'.
-// 3. `inputData_' is pointing to `inputBuffer_'.
+// 2. The first `inputSize_' bytes in `inputData_' before the call are in
+//    `inputBuffer_' (either at their current position or compacted to the
+//    front).
+// 3. `inputData_' points into `inputBuffer_' with at least `size - inputSize_'
+//    bytes of trailing space available for appending.
 void ChunkedDecoder::prepareInputBuffer(int32_t size) {
   NIMBLE_DCHECK_LE(inputSize_, size);
   if (inputBuffer_ && size <= inputBuffer_->capacity()) {
     if (inputData_ == inputBuffer_->as<char>()) {
+      return;
+    }
+    // Check if we already point into the buffer and the remaining data plus
+    // the new data fit without compacting to the front.
+    const char* bufStart = inputBuffer_->as<char>();
+    const char* bufEnd = bufStart + inputBuffer_->capacity();
+    if (inputData_ >= bufStart && inputData_ < bufEnd &&
+        inputData_ + size <= bufEnd) {
+      // Enough trailing space — skip the memmove.
       return;
     }
     char* newInputData = inputBuffer_->asMutable<char>();
