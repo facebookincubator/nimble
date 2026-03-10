@@ -51,6 +51,12 @@ struct EncodingIdentifiers {
   struct Trivial {
     static constexpr NestedEncodingIdentifier Lengths = 0;
   };
+
+  struct Delta {
+    static constexpr NestedEncodingIdentifier Deltas = 0;
+    static constexpr NestedEncodingIdentifier Restatements = 1;
+    static constexpr NestedEncodingIdentifier IsRestatements = 2;
+  };
 };
 
 } // namespace facebook::nimble

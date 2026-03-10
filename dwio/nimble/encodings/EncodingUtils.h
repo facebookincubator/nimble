@@ -16,6 +16,7 @@
 #pragma once
 
 #include "dwio/nimble/encodings/ConstantEncoding.h"
+#include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
@@ -127,6 +128,12 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       return f(static_cast<ConstantEncoding<T>&>(encoding));
     case EncodingType::MainlyConstant:
       return f(static_cast<MainlyConstantEncoding<T>&>(encoding));
+    case EncodingType::Delta:
+      if constexpr (isIntegralType<T>()) {
+        return f(static_cast<DeltaEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
     default:
       NIMBLE_UNSUPPORTED(toString(encoding.encodingType()));
   }

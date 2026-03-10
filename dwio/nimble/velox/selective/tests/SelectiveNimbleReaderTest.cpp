@@ -1909,6 +1909,52 @@ TEST_P(SelectiveNimbleReaderTest, mapAsStructAllNulls) {
   velox::test::assertEqualVectors(expected, batch);
 }
 
+TEST_P(SelectiveNimbleReaderTest, delta) {
+  const bool passStringBuffersFromDecoder = GetParam();
+  auto makeData = [&](bool hasNulls) {
+    return makeFlatVector<int64_t>(
+        201, [](auto i) { return i * 3; }, hasNulls ? nullEvery(11) : nullptr);
+  };
+  // Force Delta encoding via ManualEncodingSelectionPolicyFactory.
+  std::vector<std::pair<EncodingType, float>> readFactors = {
+      {EncodingType::Delta, 1.0},
+  };
+  ManualEncodingSelectionPolicyFactory encodingFactory(readFactors);
+  VeloxWriterOptions writerOptions;
+  writerOptions.encodingSelectionPolicyFactory = [&](DataType dataType) {
+    return encodingFactory.createPolicy(dataType);
+  };
+  for (bool hasNulls : {false, true}) {
+    auto data = makeData(hasNulls);
+    auto input = makeRowVector({data, data});
+    auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
+    for (auto filterType : {kNone, kKeep, kDrop}) {
+      SCOPED_TRACE(
+          fmt::format("hasNulls={} filterType={}", hasNulls, filterType));
+      int dropColumn = -1;
+      auto scanSpec = std::make_shared<common::ScanSpec>("root");
+      scanSpec->addAllChildFields(*input->type());
+      if (filterType != kNone) {
+        scanSpec->childByName("c0")->setFilter(
+            std::make_unique<common::BigintRange>(30, 300, false));
+        if (filterType == kDrop) {
+          scanSpec->childByName("c0")->setProjectOut(false);
+          scanSpec->childByName("c0")->setChannel(common::ScanSpec::kNoChannel);
+          scanSpec->childByName("c1")->setChannel(0);
+          dropColumn = 0;
+        }
+      }
+      auto readers =
+          makeReaders(input, file, scanSpec, passStringBuffersFromDecoder);
+      validate(*input, *readers.rowReader, 23, dropColumn, [&](auto i) {
+        return filterType == kNone ||
+            (!data->isNullAt(i) && data->valueAt(i) >= 30 &&
+             data->valueAt(i) <= 300);
+      });
+    }
+  }
+}
+
 INSTANTIATE_TEST_CASE_P(
     SelectiveNimbleReaderTestSuite,
     SelectiveNimbleReaderTest,
