@@ -73,12 +73,18 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase,
       bool wrapInStruct,
       const std::vector<std::string>& filterable,
       int32_t numCombinations,
-      bool withRecursiveNulls = true) {
+      bool withRecursiveNulls = true,
+      std::optional<std::vector<std::pair<EncodingType, float>>>
+          encodingFactors = std::nullopt) {
     // Select index columns if index is enabled.
     std::vector<std::string> indexColumns;
     if (indexEnabled()) {
       indexColumns = selectIndexColumns(columns, wrapInStruct);
     }
+
+    // Set encoding factors for this test run.
+    encodingFactors_ = encodingFactors;
+
     if (!withRecursiveNulls) {
       testScenario(
           columns,
@@ -88,6 +94,7 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase,
           numCombinations,
           /*withRecursiveNulls=*/false,
           indexColumns);
+      encodingFactors_.reset();
       return;
     }
 
@@ -111,6 +118,9 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase,
         numCombinations,
         /*withRecursiveNulls=*/true,
         indexColumns);
+
+    // Clear encoding factors after test run.
+    encodingFactors_.reset();
   }
 
   // Selects eligible index columns (integer types) from the schema.
@@ -203,6 +213,17 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase,
     VeloxWriterOptions options;
     options.skipConstantFlatMapInMapStreams = skipConstantFlatMapInMapStreams();
     options.enableChunking = true;
+
+    // Use custom encoding factors if set.
+    // Capture by value to avoid dangling reference.
+    if (encodingFactors_.has_value()) {
+      auto factors = encodingFactors_.value();
+      options.encodingSelectionPolicyFactory = [factors](DataType dataType) {
+        ManualEncodingSelectionPolicyFactory factory(factors);
+        return factory.createPolicy(dataType);
+      };
+    }
+
     auto i = 0;
     options.flushPolicyFactory = [&] {
       return std::make_unique<LambdaFlushPolicy>(
@@ -248,6 +269,53 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase,
   folly::F14FastSet<std::string> deduplicatedArrayColumns_;
   folly::F14FastSet<std::string> deduplicatedMapColumns_;
 
+  // Optional encoding factors for ManualEncodingSelectionPolicyFactory.
+  // When set, writeToMemory will use these factors instead of the default
+  // encoding selection policy. Clear after test to avoid affecting other tests.
+  std::optional<std::vector<std::pair<EncodingType, float>>> encodingFactors_;
+
+  // Generates encoding factors that strongly favor a specific encoding type.
+  // Encodings with lower read factors are preferred (factor represents CPU
+  // cost). The favored encoding gets a low factor (0.1), while others get high
+  // factors (100.0). Only includes encodings in the pool; omitting encodings
+  // from the pool prevents them from being selected. Trivial encoding is always
+  // included as a fallback.
+  static std::vector<std::pair<EncodingType, float>> biasedEncodingFactors(
+      EncodingType favored) {
+    std::vector<std::pair<EncodingType, float>> factors;
+
+    // Trivial is always needed as a fallback when other encodings don't apply.
+    // Use a high factor to discourage it unless necessary.
+    factors.emplace_back(EncodingType::Trivial, 100.0);
+
+    // Add the favored encoding with a low factor (strongly preferred).
+    if (favored != EncodingType::Trivial) {
+      factors.emplace_back(favored, 0.1);
+    } else {
+      // If Trivial is favored, just use it with low factor.
+      factors[0].second = 0.1;
+    }
+
+    // For certain encodings, we need to include additional encodings in the
+    // pool to handle edge cases (e.g., constant values).
+    switch (favored) {
+      case EncodingType::FixedBitWidth:
+      case EncodingType::RLE:
+      case EncodingType::Varint:
+        // These may fall back to Constant for constant data.
+        factors.emplace_back(EncodingType::Constant, 100.0);
+        break;
+      case EncodingType::MainlyConstant:
+        // MainlyConstant needs Constant for the common value.
+        factors.emplace_back(EncodingType::Constant, 100.0);
+        break;
+      default:
+        break;
+    }
+
+    return factors;
+  }
+
  private:
   void setUpFlatMapColumns() {
     auto rowTypeWithId = dwio::common::TypeWithId::create(rowType_);
@@ -291,6 +359,90 @@ TEST_P(E2EFilterTest, integer) {
       true,
       {"short_val", "int_val", "long_val"},
       20);
+}
+
+// Biased variant that forces FixedBitWidth encoding selection.
+TEST_P(E2EFilterTest, integerBiasedFixedBitWidth) {
+  testWithTypes(
+      "short_val:smallint,"
+      "int_val:int,"
+      "long_val:bigint",
+      [&]() {
+        makeIntDistribution<int16_t>(
+            "short_val",
+            /*min=*/10,
+            /*max=*/1000,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+        makeIntDistribution<int32_t>(
+            "int_val",
+            /*min=*/100,
+            /*max=*/100000,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+        makeIntDistribution<int64_t>(
+            "long_val",
+            /*min=*/1000,
+            /*max=*/1000000,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+      },
+      /*wrapInStruct=*/false,
+      {"short_val", "int_val", "long_val"},
+      /*numCombinations=*/20,
+      /*withRecursiveNulls=*/true,
+      biasedEncodingFactors(EncodingType::FixedBitWidth));
+}
+
+// Biased variant that forces Trivial encoding selection.
+TEST_P(E2EFilterTest, integerBiasedTrivial) {
+  testWithTypes(
+      "short_val:smallint,"
+      "int_val:int,"
+      "long_val:bigint",
+      [&]() {
+        makeIntDistribution<int16_t>(
+            "short_val",
+            /*min=*/10,
+            /*max=*/1000,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+        makeIntDistribution<int32_t>(
+            "int_val",
+            /*min=*/100,
+            /*max=*/100000,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+        makeIntDistribution<int64_t>(
+            "long_val",
+            /*min=*/1000,
+            /*max=*/1000000,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+      },
+      /*wrapInStruct=*/false,
+      {"short_val", "int_val", "long_val"},
+      /*numCombinations=*/20,
+      /*withRecursiveNulls=*/true,
+      biasedEncodingFactors(EncodingType::Trivial));
 }
 
 TEST_P(E2EFilterTest, integerLowCardinality) {
@@ -348,6 +500,27 @@ TEST_P(E2EFilterTest, integerRle) {
       true,
       {"short_val", "int_val", "long_val"},
       20);
+}
+
+// Biased variant that forces RLE encoding selection.
+TEST_P(E2EFilterTest, integerRleBiased) {
+  testWithTypes(
+      "short_val:smallint,"
+      "int_val:int,"
+      "long_val:bigint",
+      [&]() {
+        makeIntRle<int16_t>("short_val");
+        makeIntRle<int32_t>("int_val");
+        makeIntRle<int64_t>("long_val");
+        makeIntRle<int16_t>("struct_val.short_val");
+        makeIntRle<int32_t>("struct_val.int_val");
+        makeIntRle<int64_t>("struct_val.long_val");
+      },
+      /*wrapInStruct=*/true,
+      {"short_val", "int_val", "long_val"},
+      /*numCombinations=*/20,
+      /*withRecursiveNulls=*/true,
+      biasedEncodingFactors(EncodingType::RLE));
 }
 
 TEST_P(E2EFilterTest, integerRleCustomSeed_4049269257) {
@@ -432,6 +605,24 @@ TEST_P(E2EFilterTest, mainlyConstant) {
       true,
       {"short_val", "int_val", "long_val"},
       20);
+}
+
+// Biased variant that forces MainlyConstant encoding selection.
+TEST_P(E2EFilterTest, mainlyConstantBiased) {
+  testWithTypes(
+      "short_val:smallint,"
+      "int_val:int,"
+      "long_val:bigint",
+      [&]() {
+        makeIntMainlyConstant<int16_t>("short_val");
+        makeIntMainlyConstant<int32_t>("int_val");
+        makeIntMainlyConstant<int64_t>("long_val");
+      },
+      /*wrapInStruct=*/false,
+      {"short_val", "int_val", "long_val"},
+      /*numCombinations=*/20,
+      /*withRecursiveNulls=*/true,
+      biasedEncodingFactors(EncodingType::MainlyConstant));
 }
 
 TEST_P(E2EFilterTest, float) {

@@ -1914,5 +1914,141 @@ INSTANTIATE_TEST_CASE_P(
     SelectiveNimbleReaderTest,
     testing::Values(false, true));
 
+// Tests for FixedBitWidthEncoding fast path.
+// The fast path is used for 4-byte integral types without filters or hooks.
+
+TEST_P(SelectiveNimbleReaderTest, fixedBitWidthFastPathSameType) {
+  // Tests that the fast path works correctly for same-type reads (int32 →
+  // int32). This exercises the memcpy branch in bulkScan.
+  const bool passStringBuffersFromDecoder = GetParam();
+  for (bool hasNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("hasNulls={}", hasNulls));
+    auto data = makeFlatVector<int32_t>(
+        1000, [](auto i) { return i * 7; }, hasNulls ? nullEvery(17) : nullptr);
+    auto input = makeRowVector({data});
+    auto file = test::createNimbleFile(*rootPool(), input);
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*input->type());
+    auto readers =
+        makeReaders(input, file, scanSpec, passStringBuffersFromDecoder);
+    // Read in a single large batch to exercise the dense fast path.
+    validate(*input, *readers.rowReader, 1000, -1, [](auto) { return true; });
+  }
+}
+
+TEST_P(SelectiveNimbleReaderTest, fixedBitWidthFastPathUpcast) {
+  // Tests that the fast path works correctly for upcast reads (int32 →
+  // int64). This exercises the upcast loop branch in bulkScan.
+  const bool passStringBuffersFromDecoder = GetParam();
+  for (bool hasNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("hasNulls={}", hasNulls));
+    // Write as int32.
+    auto writeData = makeFlatVector<int32_t>(
+        1000, [](auto i) { return i * 7; }, hasNulls ? nullEvery(17) : nullptr);
+    auto input = makeRowVector({writeData});
+    auto file = test::createNimbleFile(*rootPool(), input);
+
+    // Read as int64 (schema evolution / upcast).
+    auto readData = makeFlatVector<int64_t>(
+        1000, [](auto i) { return i * 7; }, hasNulls ? nullEvery(17) : nullptr);
+    auto expected = makeRowVector({readData});
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*expected->type());
+    auto readers =
+        makeReaders(expected, file, scanSpec, passStringBuffersFromDecoder);
+    // Read in a single large batch to exercise the dense fast path.
+    validate(
+        *expected, *readers.rowReader, 1000, -1, [](auto) { return true; });
+  }
+}
+
+TEST_P(SelectiveNimbleReaderTest, fixedBitWidthFastPathMultipleBatches) {
+  // Tests that the fast path works correctly with multiple batches.
+  // This exercises the row tracking and position management.
+  const bool passStringBuffersFromDecoder = GetParam();
+  for (bool hasNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("hasNulls={}", hasNulls));
+    auto data = makeFlatVector<int32_t>(
+        500,
+        [](auto i) { return i * 3 + 1; },
+        hasNulls ? nullEvery(11) : nullptr);
+    auto input = makeRowVector({data});
+    auto file = test::createNimbleFile(*rootPool(), input);
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*input->type());
+    auto readers =
+        makeReaders(input, file, scanSpec, passStringBuffersFromDecoder);
+    // Read in small batches to test batch boundary handling.
+    validate(*input, *readers.rowReader, 37, -1, [](auto) { return true; });
+  }
+}
+
+TEST_P(SelectiveNimbleReaderTest, fixedBitWidthFastPathLargeValues) {
+  // Tests that the fast path handles large values correctly.
+  // This verifies baseline handling in the encoding.
+  const bool passStringBuffersFromDecoder = GetParam();
+  for (bool hasNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("hasNulls={}", hasNulls));
+    auto data = makeFlatVector<int32_t>(
+        200,
+        [](auto i) { return static_cast<int32_t>(1'000'000'000 + i * 100); },
+        hasNulls ? nullEvery(13) : nullptr);
+    auto input = makeRowVector({data});
+    auto file = test::createNimbleFile(*rootPool(), input);
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*input->type());
+    auto readers =
+        makeReaders(input, file, scanSpec, passStringBuffersFromDecoder);
+    validate(*input, *readers.rowReader, 200, -1, [](auto) { return true; });
+  }
+}
+
+TEST_P(SelectiveNimbleReaderTest, fixedBitWidthFastPathNegativeValues) {
+  // Tests that the fast path handles negative values correctly.
+  const bool passStringBuffersFromDecoder = GetParam();
+  for (bool hasNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("hasNulls={}", hasNulls));
+    auto data = makeFlatVector<int32_t>(
+        300,
+        [](auto i) { return static_cast<int32_t>(i) - 150; },
+        hasNulls ? nullEvery(19) : nullptr);
+    auto input = makeRowVector({data});
+    auto file = test::createNimbleFile(*rootPool(), input);
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*input->type());
+    auto readers =
+        makeReaders(input, file, scanSpec, passStringBuffersFromDecoder);
+    validate(*input, *readers.rowReader, 300, -1, [](auto) { return true; });
+  }
+}
+
+TEST_P(SelectiveNimbleReaderTest, fixedBitWidthFastPathUpcastNegative) {
+  // Tests that the fast path handles upcast with negative values correctly.
+  // This verifies sign extension works properly.
+  const bool passStringBuffersFromDecoder = GetParam();
+  for (bool hasNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("hasNulls={}", hasNulls));
+    // Write as int32.
+    auto writeData = makeFlatVector<int32_t>(
+        200,
+        [](auto i) { return static_cast<int32_t>(i) - 100; },
+        hasNulls ? nullEvery(11) : nullptr);
+    auto input = makeRowVector({writeData});
+    auto file = test::createNimbleFile(*rootPool(), input);
+
+    // Read as int64.
+    auto readData = makeFlatVector<int64_t>(
+        200,
+        [](auto i) { return static_cast<int64_t>(i) - 100; },
+        hasNulls ? nullEvery(11) : nullptr);
+    auto expected = makeRowVector({readData});
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*expected->type());
+    auto readers =
+        makeReaders(expected, file, scanSpec, passStringBuffersFromDecoder);
+    validate(*expected, *readers.rowReader, 200, -1, [](auto) { return true; });
+  }
+}
+
 } // namespace
 } // namespace facebook::nimble

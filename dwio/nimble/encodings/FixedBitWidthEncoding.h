@@ -63,6 +63,17 @@ class FixedBitWidthEncoding final
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
 
+  // Bulk scan method for fast path decoding.
+  // Reads multiple values at once and processes them through the visitor.
+  // This is used by readWithVisitorFast for efficient batch processing.
+  template <bool kHasNulls, typename Visitor>
+  void bulkScan(
+      Visitor& visitor,
+      uint32_t nonNullsSoFar,
+      const int32_t* rows,
+      int32_t numRows,
+      const int32_t* scatterRows);
+
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
@@ -147,6 +158,27 @@ template <typename V>
 void FixedBitWidthEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
+  // Fast path: use bulk scan for 4-byte integral types with no filter and no
+  // hook. This is common for dictionary indices (uint32_t).
+  // The fast path only supports ExtractToReader (not hooks).
+  // We also check that the output type is compatible:
+  // - Same type: direct memcpy
+  // - Widening (larger output type): loop with conversion
+  using OutputType = detail::ValueType<typename V::DataType>;
+  constexpr bool kExtractToReader =
+      std::is_same_v<typename V::Extract, velox::dwio::common::ExtractToReader>;
+  constexpr bool kSameType = std::is_same_v<physicalType, OutputType>;
+  constexpr bool kIsWidening = sizeof(OutputType) > sizeof(physicalType) &&
+      std::is_integral_v<OutputType> && std::is_integral_v<physicalType>;
+  constexpr bool kCanUseFastPath = isFourByteIntegralType<physicalType>() &&
+      !V::kHasFilter && !V::kHasHook && kExtractToReader &&
+      (kSameType || kIsWidening);
+  if constexpr (kCanUseFastPath) {
+    auto* nulls = visitor.reader().rawNullsInReadRange();
+    detail::readWithVisitorFast(*this, visitor, params, nulls);
+    return;
+  }
+  // Slow path: process one value at a time.
   detail::readWithVisitorSlow(
       visitor,
       params,
@@ -155,6 +187,77 @@ void FixedBitWidthEncoding<T>::readWithVisitor(
         physicalType value = fixedBitArray_.get(row_++) + baseline_;
         return value;
       });
+}
+
+template <typename T>
+template <bool kHasNulls, typename V>
+void FixedBitWidthEncoding<T>::bulkScan(
+    V& visitor,
+    uint32_t currentRow,
+    const int32_t* nonNullRows,
+    int32_t numNonNulls,
+    const int32_t* scatterRows) {
+  using DataType = typename V::DataType;
+  using OutputType = detail::ValueType<DataType>;
+  static_assert(
+      isFourByteIntegralType<physicalType>(),
+      "bulkScan only supports 4-byte integral types");
+
+  if (numNonNulls == 0) {
+    return;
+  }
+
+  const auto numRows = visitor.numRows() - visitor.rowIndex();
+
+  // Calculate offset between our internal position and the external row number.
+  // This handles cases where the encoding position (row_) differs from the
+  // logical row number (currentRow).
+  const auto offset =
+      static_cast<int32_t>(row_) - static_cast<int32_t>(currentRow);
+
+  // Get the output buffer.
+  auto* values = detail::mutableValues<OutputType>(visitor, numRows);
+
+  // Check type compatibility:
+  // - Same type or same-size integral types: use fast memcpy
+  //   (e.g., uint32_t vs int32_t have same bit representation)
+  // - Widening (e.g., int32 → int64): use loop with implicit conversion
+  constexpr bool kSameSize = sizeof(physicalType) == sizeof(OutputType);
+  constexpr bool kIsUpcast = sizeof(OutputType) > sizeof(physicalType) &&
+      std::is_integral_v<OutputType> && std::is_integral_v<physicalType>;
+
+  if constexpr (V::dense) {
+    // Dense case: values are contiguous, read in bulk.
+    buffer_.resize(numNonNulls);
+    fixedBitArray_.bulkGetWithBaseline32(
+        nonNullRows[0] + offset,
+        numNonNulls,
+        reinterpret_cast<uint32_t*>(buffer_.data()),
+        baseline_);
+
+    if constexpr (kSameSize) {
+      // Same size types: use fast memcpy (works for same type or
+      // signed/unsigned variants like int32_t vs uint32_t).
+      std::memcpy(values, buffer_.data(), numNonNulls * sizeof(physicalType));
+    } else if constexpr (kIsUpcast) {
+      // Widening case: copy with implicit type conversion.
+      // Compilers typically auto-vectorize this pattern.
+      for (int32_t i = 0; i < numNonNulls; ++i) {
+        values[i] = static_cast<OutputType>(buffer_[i]);
+      }
+    }
+  } else {
+    // Sparse case: read individual values at specified positions.
+    for (int32_t i = 0; i < numNonNulls; ++i) {
+      values[i] = fixedBitArray_.get(nonNullRows[i] + offset) + baseline_;
+    }
+  }
+
+  // Update row_ based on the last row read.
+  row_ += nonNullRows[numNonNulls - 1] - currentRow + 1;
+
+  visitor.addNumValues(V::dense ? numRows : numNonNulls);
+  visitor.setRowIndex(visitor.numRows());
 }
 
 template <typename T>
