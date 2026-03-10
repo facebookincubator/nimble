@@ -85,22 +85,17 @@ inline ScalarKind getScalarKindForType(const Type& type) {
 // Decoder implementation for deserializing stream data from multiple batches.
 class DeserializerImpl : public Decoder {
  public:
-  // topLevelFlatMap: true for top-level FlatMap streams (depth 1) where row
-  // count matches top-level row count. Enables gap detection and filling for
-  // keys missing from some batches. Nested FlatMaps (depth > 1) are not
-  // supported as their row counts depend on parent inMap streams.
-  //
   // inMapStream: true for FlatMap inMap streams (fills with 'false' when
   // missing), false for nulls streams (fills with 'true' when missing).
+  // FlatMap is only supported at depth 1 (top-level columns), so gap detection
+  // is enabled whenever the type is FlatMap.
   explicit DeserializerImpl(
       const Type* type,
       velox::memory::MemoryPool* pool,
-      bool topLevelFlatMap = false,
       bool inMapStream = false,
       bool enableEncoding = false)
       : type_{type},
         pool_{pool},
-        topLevelFlatMap_{topLevelFlatMap},
         inMapStream_{inMapStream},
         encodingEnabled_{enableEncoding} {}
 
@@ -117,14 +112,13 @@ class DeserializerImpl : public Decoder {
     const auto typeStorageWidth = getTypeStorageWidth(*type_);
 
     // Three read paths based on stream type:
-    // readTopLevelFlatMap: For top-level FlatMap nulls/inMap with gap detection
-    // (handles empty batchSegments_ internally)
+    // readFlatMap: For FlatMap nulls/inMap with gap detection
     // scatteredRead: For scatterBitmap (StructFlatMapFieldReader values)
     // contiguousRead: For nested types - simple contiguous read
-    if (topLevelFlatMap_) {
+    if (type_->isFlatMap()) {
       NIMBLE_CHECK_NULL(
-          scatterBitmap, "scatterBitmap not used for topLevelFlatMap streams");
-      return readTopLevelFlatMap(count, output, typeStorageWidth);
+          scatterBitmap, "scatterBitmap not used for FlatMap streams");
+      return readFlatMap(count, output, typeStorageWidth);
     }
 
     if (scatterBitmap != nullptr) {
@@ -153,11 +147,11 @@ class DeserializerImpl : public Decoder {
   // Clear all state (called at the start of deserialization).
   void clear() {
     batchSegments_.clear();
-    presentInMapBatches_.clear();
+    presentInMapSegments_.clear();
     topLevelRows_ = 0;
-    flatMapCurrentRow_ = 0;
+    currentFlatMapRow_ = 0;
     currentSegment_ = 0;
-    currentInMapBatch_ = 0;
+    currentInMapSegment_ = 0;
   }
 
   // Add data starting at the given row offset.
@@ -178,20 +172,20 @@ class DeserializerImpl : public Decoder {
             serde::StreamData(scalarKind, encodingEnabled_, data, pool_)});
   }
 
-  // Record a batch where this key is present in every row (in-map stream
+  // Record a segment where this key is present in every row (in-map stream
   // skipped by the serializer). Used by fillMissingFlatMapRows to fill gaps
   // with true (present) instead of false (absent).
-  void addPresentInMapBatch(uint32_t startRow, uint32_t rowCount) {
+  void addPresentInMapSegment(uint32_t startRow, uint32_t rowCount) {
     NIMBLE_CHECK(
-        topLevelFlatMap_ && inMapStream_,
-        "addPresentInMapBatch requires top-level FlatMap in-map stream");
+        type_->isFlatMap() && inMapStream_,
+        "addPresentInMapSegment requires FlatMap in-map stream");
     const uint32_t endRow = startRow + rowCount;
-    // Merge with the previous batch if contiguous.
-    if (!presentInMapBatches_.empty() &&
-        presentInMapBatches_.back().endRow == startRow) {
-      presentInMapBatches_.back().endRow = endRow;
+    // Merge with the previous segment if contiguous.
+    if (!presentInMapSegments_.empty() &&
+        presentInMapSegments_.back().endRow == startRow) {
+      presentInMapSegments_.back().endRow = endRow;
     } else {
-      presentInMapBatches_.emplace_back(InMapBatch{startRow, endRow});
+      presentInMapSegments_.emplace_back(InMapSegment{startRow, endRow});
     }
   }
 
@@ -230,7 +224,7 @@ class DeserializerImpl : public Decoder {
   // Simple contiguous read for nested types. Reads `count` values from
   // segments directly to output without gap detection or scattering.
   uint32_t contiguousRead(uint32_t count, void* output, uint32_t width) {
-    NIMBLE_CHECK(!topLevelFlatMap_, "contiguousRead not used for FlatMap");
+    NIMBLE_CHECK(!type_->isFlatMap(), "contiguousRead not used for FlatMap");
 
     // Handle empty batchSegments_ for Row nulls streams. The serializer omits
     // Row nulls when all values are non-null. Fill with true (all non-null).
@@ -261,39 +255,38 @@ class DeserializerImpl : public Decoder {
     return count;
   }
 
-  // Read for top-level FlatMap nulls/inMap streams with gap detection.
-  // Detects gaps between batches (where certain keys are missing) and fills
-  // with placeholder data. Uses flatMapCurrentRow_ to track position and
+  // Read for FlatMap nulls/inMap streams with gap detection.
+  // Detects gaps between segments (where certain keys are missing) and fills
+  // with placeholder data. Uses currentFlatMapRow_ to track position and
   // compare with segment startRow.
-  uint32_t readTopLevelFlatMap(uint32_t count, void* output, uint32_t width) {
-    NIMBLE_CHECK(topLevelFlatMap_, "readTopLevelFlatMap not used for FlatMap");
+  uint32_t readFlatMap(uint32_t count, void* output, uint32_t width) {
+    NIMBLE_CHECK(type_->isFlatMap(), "readFlatMap requires FlatMap type");
     // Only used for FlatMap nulls/inMap streams which are boolean.
-    NIMBLE_CHECK_EQ(
-        width, sizeof(bool), "readTopLevelFlatMap expects bool width");
+    NIMBLE_CHECK_EQ(width, sizeof(bool), "readFlatMap expects bool width");
 
     uint32_t rowsRead = 0;
     while (rowsRead < count) {
       // Gap detection: fill missing rows before current segment starts.
       if (currentSegment_ < batchSegments_.size() &&
-          flatMapCurrentRow_ < batchSegments_[currentSegment_].startRow) {
+          currentFlatMapRow_ < batchSegments_[currentSegment_].startRow) {
         const uint32_t segmentStartRow =
             batchSegments_[currentSegment_].startRow;
         const uint32_t numMissingRows =
-            std::min(segmentStartRow - flatMapCurrentRow_, count - rowsRead);
+            std::min(segmentStartRow - currentFlatMapRow_, count - rowsRead);
         fillMissingFlatMapRows(output, rowsRead, numMissingRows, width);
         rowsRead += numMissingRows;
-        flatMapCurrentRow_ += numMissingRows;
+        currentFlatMapRow_ += numMissingRows;
         continue;
       }
 
       if (currentSegment_ >= batchSegments_.size()) {
         // No more segments - fill remaining with placeholder.
-        if (flatMapCurrentRow_ < topLevelRows_) {
+        if (currentFlatMapRow_ < topLevelRows_) {
           const uint32_t numMissingRows =
-              std::min(topLevelRows_ - flatMapCurrentRow_, count - rowsRead);
+              std::min(topLevelRows_ - currentFlatMapRow_, count - rowsRead);
           fillMissingFlatMapRows(output, rowsRead, numMissingRows, width);
           rowsRead += numMissingRows;
-          flatMapCurrentRow_ += numMissingRows;
+          currentFlatMapRow_ += numMissingRows;
           continue;
         }
         NIMBLE_FAIL("Incomplete read: no more segments and beyond totalRows");
@@ -307,7 +300,7 @@ class DeserializerImpl : public Decoder {
         ++currentSegment_;
       } else {
         rowsRead += numRowsRead;
-        flatMapCurrentRow_ += numRowsRead;
+        currentFlatMapRow_ += numRowsRead;
         if (numRowsRead < rowsToRead) {
           ++currentSegment_;
         }
@@ -404,55 +397,55 @@ class DeserializerImpl : public Decoder {
     return count;
   }
 
-  // Fill missing rows for top-level FlatMap streams (nulls or in-map).
+  // Fill missing rows for FlatMap streams (nulls or in-map).
   // For nulls streams, delegates to fillMissingRows (fills with true).
-  // For in-map streams, a gap can span multiple batches — some with key
-  // present in every row (serializer skipped), some absent (key missing from
-  // batch). Default fills with false, then overlays present batches.
+  // For in-map streams, a gap can span multiple segments — some with key
+  // present in every row (serializer skipped), some absent (key missing).
+  // Default fills with false, then overlays present segments.
   void fillMissingFlatMapRows(
       void* output,
       uint32_t offset,
       uint32_t count,
       uint32_t width) {
     NIMBLE_CHECK(
-        topLevelFlatMap_, "fillMissingFlatMapRows requires topLevelFlatMap");
+        type_->isFlatMap(), "fillMissingFlatMapRows requires FlatMap type");
 
-    if (!inMapStream_ || presentInMapBatches_.empty()) {
+    if (!inMapStream_ || presentInMapSegments_.empty()) {
       fillMissingRows(output, offset, count, width);
       return;
     }
 
     auto* bools = static_cast<bool*>(output) + offset;
-    const uint32_t startRow = flatMapCurrentRow_;
+    const uint32_t startRow = currentFlatMapRow_;
     const uint32_t endRow = startRow + count;
 
-    // Fast path: single present batch covers the entire gap.
-    if (currentInMapBatch_ < presentInMapBatches_.size()) {
-      const auto& batch = presentInMapBatches_[currentInMapBatch_];
-      if (batch.startRow <= startRow && batch.endRow >= endRow) {
+    // Fast path: single present segment covers the entire gap.
+    if (currentInMapSegment_ < presentInMapSegments_.size()) {
+      const auto& segment = presentInMapSegments_[currentInMapSegment_];
+      if (segment.startRow <= startRow && segment.endRow >= endRow) {
         std::memset(bools, 1, count);
         return;
       }
     }
 
-    // General path: default fill with false, then overlay present batches.
-    // Batches are sorted by startRow, so advance currentInMapBatch_ past
-    // consumed batches to avoid re-scanning.
+    // General path: default fill with false, then overlay present segments.
+    // Segments are sorted by startRow, so advance currentInMapSegment_ past
+    // consumed segments to avoid re-scanning.
     std::memset(bools, 0, count);
-    while (currentInMapBatch_ < presentInMapBatches_.size()) {
-      const auto& batch = presentInMapBatches_[currentInMapBatch_];
-      if (batch.startRow >= endRow) {
+    while (currentInMapSegment_ < presentInMapSegments_.size()) {
+      const auto& segment = presentInMapSegments_[currentInMapSegment_];
+      if (segment.startRow >= endRow) {
         break;
       }
-      if (batch.endRow > startRow) {
-        const uint32_t overlapStart = std::max(batch.startRow, startRow);
-        const uint32_t overlapEnd = std::min(batch.endRow, endRow);
+      if (segment.endRow > startRow) {
+        const uint32_t overlapStart = std::max(segment.startRow, startRow);
+        const uint32_t overlapEnd = std::min(segment.endRow, endRow);
         std::memset(
             bools + (overlapStart - startRow), 1, overlapEnd - overlapStart);
       }
-      // Advance past batches fully consumed by this gap.
-      if (batch.endRow <= endRow) {
-        ++currentInMapBatch_;
+      // Advance past segments fully consumed by this gap.
+      if (segment.endRow <= endRow) {
+        ++currentInMapSegment_;
       } else {
         break;
       }
@@ -494,20 +487,16 @@ class DeserializerImpl : public Decoder {
     serde::StreamData data; // Actual stream data
   };
 
-  // Row range [startRow, endRow) for batches where this key is present in every
-  // row. The serializer skips the in-map stream for these batches, and
+  // Row range [startRow, endRow) for segments where this key is present in
+  // every row. The serializer skips the in-map stream for these segments, and
   // fillMissingFlatMapRows fills with true (present) instead of false (absent).
-  struct InMapBatch {
+  struct InMapSegment {
     uint32_t startRow;
     uint32_t endRow;
   };
 
   const Type* const type_;
   velox::memory::MemoryPool* const pool_;
-  // True for top-level FlatMap streams where row count matches top-level count.
-  // Enables gap detection and filling placeholder data for keys missing from
-  // some batches.
-  const bool topLevelFlatMap_;
   // True for inMap streams (fills with 'false' when missing), false for nulls
   // streams (fills with 'true' when missing).
   const bool inMapStream_;
@@ -515,17 +504,24 @@ class DeserializerImpl : public Decoder {
   const bool encodingEnabled_;
 
   // --- Batch decode state (reset in clear()) ---
-  // Total top-level rows across all batches. Used for gap detection in
-  // top-level FlatMap streams to fill missing rows at the end.
+  // Total top-level rows across all batches. Used for FlatMap gap detection to
+  // fill missing rows at the end.
   uint32_t topLevelRows_{0};
   std::vector<BatchSegment> batchSegments_;
-  // Batches where this key is present in every row (in-map stream skipped).
-  // Used by fillMissingFlatMapRows to fill with true (present).
-  std::vector<InMapBatch> presentInMapBatches_;
-  // Current read position for top-level FlatMap gap detection.
-  uint32_t flatMapCurrentRow_{0};
   size_t currentSegment_{0}; // Current index into batchSegments_
-  size_t currentInMapBatch_{0}; // Current index into presentInMapBatches_
+
+  // --- FlatMap state (reset in clear()) ---
+  // FlatMap is only supported at depth 1 (top-level columns). Gap detection is
+  // enabled whenever type_->isFlatMap(). These fields are unused for
+  // non-FlatMap types.
+
+  // Current read position for FlatMap gap detection.
+  uint32_t currentFlatMapRow_{0};
+  // Segments where this key is present in every row (in-map stream skipped).
+  // Used by fillMissingFlatMapRows to fill with true (present).
+  std::vector<InMapSegment> presentInMapSegments_;
+  size_t currentInMapSegment_{0}; // Current index into presentInMapSegments_
+
   // Temp buffer for scattered reads (reused to avoid repeated allocations).
   // Used for both fixed-width types (as char*) and strings (as string_view*).
   velox::BufferPtr scatterBuffer_;
@@ -581,22 +577,15 @@ Deserializer::Deserializer(
 void Deserializer::createDeserializersForType(
     const Type& type,
     uint32_t depth) {
-  // topLevelFlatMap only for FlatMap columns at depth 1.
-  // FlatMap keys can vary across batches, causing gaps in nulls/inMap streams.
-  // - Root Row (depth 0): No gaps - every batch has Row's nulls stream.
-  // - FlatMap at depth 1: Gaps possible - keys may be missing in some batches.
-  // - Nested types (depth > 1): Row counts don't match top-level row offset.
-  const bool topLevelFlatMap = type.isFlatMap() && depth == 1;
   deserializers_[getMainDescriptor(type).offset()] =
       std::make_unique<DeserializerImpl>(
           &type,
           pool_,
-          topLevelFlatMap,
           /*inMapStream=*/false,
           options_.enableEncoding());
-  // FlatMap has additional inMap streams for each child that need
-  // deserializers. Pass isFlatMapInMapStream=true so placeholder fills with
-  // 'false' (key not present) instead of 'true'.
+  // FlatMap is only supported at depth 1 (top-level columns). FlatMap keys can
+  // vary across batches, causing gaps in nulls/inMap streams. Gap detection is
+  // enabled in DeserializerImpl whenever type->isFlatMap().
   if (type.isFlatMap()) {
     NIMBLE_CHECK_EQ(
         depth, 1, "FlatMap is only supported as a top-level column (depth 1)");
@@ -606,7 +595,6 @@ void Deserializer::createDeserializersForType(
       deserializers_[inMapOffset] = std::make_unique<DeserializerImpl>(
           &type,
           pool_,
-          topLevelFlatMap,
           /*inMapStream=*/true,
           options_.enableEncoding());
       inMapChildTypes_[inMapOffset] = flatMap.childAt(i).get();
@@ -654,7 +642,7 @@ void Deserializer::deserialize(
             return presentStreamOffsets_.contains(offset);
           })) {
         DeserializerImpl::toDecoderImpl(deserializers_[inMapOffset].get())
-            ->addPresentInMapBatch(rowOffset, batchRows);
+            ->addPresentInMapSegment(rowOffset, batchRows);
       }
     }
 
