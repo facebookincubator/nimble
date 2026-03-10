@@ -203,6 +203,12 @@ class EncodingTest : public ::testing::Test {
         nimble::EncodingType::Varint;
   };
 
+  template <>
+  struct EncodingTypeTraits<nimble::DeltaEncoding<E>> {
+    static inline nimble::EncodingType encodingType =
+        nimble::EncodingType::Delta;
+  };
+
   std::unique_ptr<nimble::Encoding> createEncoding(
       const nimble::Vector<E>& values,
       bool compress,
@@ -263,6 +269,7 @@ using TestTypes = ::testing::Types<
     TC(nimble::SparseBoolEncoding),
     VARINT_TYPES(nimble::VarintEncoding),
     NUMERIC_TYPES(nimble::FixedBitWidthEncoding),
+    NUMERIC_TYPES(nimble::DeltaEncoding),
     NON_BOOL_TYPES(nimble::DictionaryEncoding),
     NON_BOOL_TYPES(nimble::MainlyConstantEncoding),
     ALL_TYPES(nimble::TrivialEncoding),

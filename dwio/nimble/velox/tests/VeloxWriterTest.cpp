@@ -22,6 +22,7 @@
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/EncodingLayout.h"
 #include "dwio/nimble/encodings/EncodingUtils.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
@@ -4224,5 +4225,380 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<IndexTestParams>& info) {
       return info.param.toString();
     });
+
+TEST_F(VeloxWriterTest, deltaEncodingRoundTrip) {
+  // Write monotonically increasing data that is ideal for delta encoding,
+  // force Delta via ManualEncodingSelectionPolicyFactory, then read back
+  // and verify correctness.
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto vector = vectorMaker.rowVector(
+      {"int_col", "bigint_col"},
+      {vectorMaker.flatVector<int32_t>(
+           100, [](auto row) { return static_cast<int32_t>(row * 3); }),
+       vectorMaker.flatVector<int64_t>(
+           100, [](auto row) { return static_cast<int64_t>(row * 7 + 100); })});
+
+  nimble::VeloxWriterOptions writerOptions;
+  writerOptions.encodingSelectionPolicyFactory =
+      [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{{
+           {nimble::EncodingType::Constant, 1000.0},
+           {nimble::EncodingType::Trivial, 1000.0},
+           {nimble::EncodingType::FixedBitWidth, 1000.0},
+           {nimble::EncodingType::MainlyConstant, 1000.0},
+           {nimble::EncodingType::SparseBool, 1000.0},
+           {nimble::EncodingType::Dictionary, 1000.0},
+           {nimble::EncodingType::RLE, 1000.0},
+           {nimble::EncodingType::Varint, 1000.0},
+           {nimble::EncodingType::Delta, 0.001},
+       }}](nimble::DataType dataType)
+      -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
+    return encodingFactory.createPolicy(dataType);
+  };
+
+  auto file = nimble::test::createNimbleFile(*rootPool_, vector, writerOptions);
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(100, result));
+
+  auto resultRow = result->as<velox::RowVector>();
+  auto intCol = resultRow->childAt(0)->asFlatVector<int32_t>();
+  auto bigintCol = resultRow->childAt(1)->asFlatVector<int64_t>();
+  ASSERT_EQ(100, intCol->size());
+  ASSERT_EQ(100, bigintCol->size());
+  for (int i = 0; i < 100; ++i) {
+    EXPECT_EQ(i * 3, intCol->valueAt(i));
+    EXPECT_EQ(i * 7 + 100, bigintCol->valueAt(i));
+  }
+}
+
+TEST_F(VeloxWriterTest, deltaEncodingLayout) {
+  // Force Delta encoding via EncodingLayoutTree and verify the encoding
+  // is actually used in the written file.
+  nimble::EncodingLayoutTree expected{
+      nimble::Kind::Row,
+      {},
+      "",
+      {
+          {nimble::Kind::Scalar,
+           {
+               {
+                   0,
+                   nimble::EncodingLayout{
+                       nimble::EncodingType::Delta,
+                       {},
+                       nimble::CompressionType::Uncompressed,
+                       {
+                           std::nullopt, // Deltas
+                           std::nullopt, // Restatements
+                           std::nullopt, // IsRestatements
+                       }},
+               },
+           },
+           ""},
+      }};
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  // Monotonically increasing data — ideal for delta encoding.
+  auto vector = vectorMaker.rowVector(
+      {"col"}, {vectorMaker.flatVector<int64_t>(50, [](auto row) {
+        return static_cast<int64_t>(row * 10);
+      })});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  nimble::VeloxWriter writer(
+      vector->type(),
+      std::move(writeFile),
+      *rootPool_,
+      {
+          .encodingLayoutTree = std::move(expected),
+      });
+  writer.write(vector);
+  writer.close();
+
+  // Verify the encoding is Delta by inspecting the raw stream.
+  velox::InMemoryReadFile readFile(file);
+  auto tablet = nimble::TabletReader::create(&readFile, leafPool_.get(), {});
+  auto section =
+      tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
+  NIMBLE_CHECK(section.has_value(), "Schema not found.");
+  auto schema =
+      nimble::SchemaDeserializer::deserialize(section->content().data());
+  auto& scalarNode = schema->asRow().childAt(0)->asScalar();
+
+  for (uint32_t i = 0; i < tablet->stripeCount(); ++i) {
+    auto stripeIdentifier = tablet->stripeIdentifier(i);
+    std::vector<uint32_t> identifiers{scalarNode.scalarDescriptor().offset()};
+    auto streams = tablet->load(stripeIdentifier, identifiers);
+
+    nimble::InMemoryChunkedStream chunkedStream{
+        *leafPool_, std::move(streams[0])};
+    ASSERT_TRUE(chunkedStream.hasNext());
+    auto capture =
+        nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+    EXPECT_EQ(nimble::EncodingType::Delta, capture.encodingType());
+  }
+
+  // Also verify the data reads back correctly.
+  velox::InMemoryReadFile readFile2(file);
+  nimble::VeloxReader reader(&readFile2, *leafPool_);
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(50, result));
+  auto col =
+      result->as<velox::RowVector>()->childAt(0)->asFlatVector<int64_t>();
+  ASSERT_EQ(50, col->size());
+  for (int i = 0; i < 50; ++i) {
+    EXPECT_EQ(i * 10, col->valueAt(i));
+  }
+}
+
+TEST_F(VeloxWriterTest, deltaEncodingNonMonotonic) {
+  // Test delta encoding with non-monotonic data that triggers restatements.
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  // Sawtooth pattern: 0,1,2,...,19, 0,1,2,...,19, ...
+  auto vector = vectorMaker.rowVector(
+      {"col"}, {vectorMaker.flatVector<int32_t>(100, [](auto row) {
+        return static_cast<int32_t>(row % 20);
+      })});
+
+  nimble::VeloxWriterOptions writerOptions;
+  writerOptions.encodingSelectionPolicyFactory =
+      [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{{
+           {nimble::EncodingType::Constant, 1000.0},
+           {nimble::EncodingType::Trivial, 1000.0},
+           {nimble::EncodingType::FixedBitWidth, 1000.0},
+           {nimble::EncodingType::MainlyConstant, 1000.0},
+           {nimble::EncodingType::SparseBool, 1000.0},
+           {nimble::EncodingType::Dictionary, 1000.0},
+           {nimble::EncodingType::RLE, 1000.0},
+           {nimble::EncodingType::Varint, 1000.0},
+           {nimble::EncodingType::Delta, 0.001},
+       }}](nimble::DataType dataType)
+      -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
+    return encodingFactory.createPolicy(dataType);
+  };
+
+  auto file = nimble::test::createNimbleFile(*rootPool_, vector, writerOptions);
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(100, result));
+
+  auto col =
+      result->as<velox::RowVector>()->childAt(0)->asFlatVector<int32_t>();
+  ASSERT_EQ(100, col->size());
+  for (int i = 0; i < 100; ++i) {
+    EXPECT_EQ(i % 20, col->valueAt(i));
+  }
+}
+
+TEST_F(VeloxWriterTest, deltaEncodingWithNulls) {
+  // Write nullable integer columns forced to Delta encoding. Verify nulls
+  // and non-null values read back correctly.
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  constexpr int kRowCount = 100;
+  auto vector = vectorMaker.rowVector(
+      {"col"},
+      {vectorMaker.flatVector<int64_t>(
+          kRowCount,
+          /*valueAt=*/
+          [](auto row) { return static_cast<int64_t>(row * 3 + 10); },
+          /*isNullAt=*/[](auto row) { return row % 5 == 0; })});
+
+  nimble::VeloxWriterOptions writerOptions;
+  writerOptions.encodingSelectionPolicyFactory =
+      [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{{
+           {nimble::EncodingType::Constant, 1000.0},
+           {nimble::EncodingType::Trivial, 1000.0},
+           {nimble::EncodingType::FixedBitWidth, 1000.0},
+           {nimble::EncodingType::MainlyConstant, 1000.0},
+           {nimble::EncodingType::SparseBool, 1000.0},
+           {nimble::EncodingType::Dictionary, 1000.0},
+           {nimble::EncodingType::RLE, 1000.0},
+           {nimble::EncodingType::Varint, 1000.0},
+           {nimble::EncodingType::Delta, 0.001},
+       }}](nimble::DataType dataType)
+      -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
+    return encodingFactory.createPolicy(dataType);
+  };
+
+  auto file = nimble::test::createNimbleFile(*rootPool_, vector, writerOptions);
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(kRowCount, result));
+
+  auto col =
+      result->as<velox::RowVector>()->childAt(0)->asFlatVector<int64_t>();
+  ASSERT_EQ(kRowCount, col->size());
+  for (int i = 0; i < kRowCount; ++i) {
+    if (i % 5 == 0) {
+      EXPECT_TRUE(col->isNullAt(i)) << "Expected null at row " << i;
+    } else {
+      EXPECT_FALSE(col->isNullAt(i)) << "Unexpected null at row " << i;
+      EXPECT_EQ(static_cast<int64_t>(i * 3 + 10), col->valueAt(i));
+    }
+  }
+}
+
+TEST_F(VeloxWriterTest, deltaEncodingMultipleStripes) {
+  // Write enough data to trigger multiple stripes with Delta encoding.
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  constexpr int kRowsPerBatch = 50;
+  constexpr int kNumBatches = 5;
+
+  std::vector<velox::VectorPtr> batches;
+  for (int b = 0; b < kNumBatches; ++b) {
+    auto batch = vectorMaker.rowVector(
+        {"col"}, {vectorMaker.flatVector<int64_t>(kRowsPerBatch, [b](auto row) {
+          return static_cast<int64_t>(b * kRowsPerBatch + row);
+        })});
+    batches.push_back(batch);
+  }
+
+  nimble::VeloxWriterOptions writerOptions;
+  // Force flush after every batch to create multiple stripes.
+  auto flushCounter = std::make_shared<int>(0);
+  writerOptions.flushPolicyFactory = [flushCounter]() {
+    return std::make_unique<nimble::LambdaFlushPolicy>(
+        [flushCounter](auto&) { return (++(*flushCounter)) % 2 == 0; });
+  };
+  writerOptions.encodingSelectionPolicyFactory =
+      [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{{
+           {nimble::EncodingType::Constant, 1000.0},
+           {nimble::EncodingType::Trivial, 1000.0},
+           {nimble::EncodingType::FixedBitWidth, 1000.0},
+           {nimble::EncodingType::MainlyConstant, 1000.0},
+           {nimble::EncodingType::SparseBool, 1000.0},
+           {nimble::EncodingType::Dictionary, 1000.0},
+           {nimble::EncodingType::RLE, 1000.0},
+           {nimble::EncodingType::Varint, 1000.0},
+           {nimble::EncodingType::Delta, 0.001},
+       }}](nimble::DataType dataType)
+      -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
+    return encodingFactory.createPolicy(dataType);
+  };
+
+  auto file =
+      nimble::test::createNimbleFile(*rootPool_, batches, writerOptions);
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+
+  uint32_t totalRead = 0;
+  velox::VectorPtr result;
+  while (reader.next(kRowsPerBatch, result)) {
+    auto col =
+        result->as<velox::RowVector>()->childAt(0)->asFlatVector<int64_t>();
+    for (int i = 0; i < col->size(); ++i) {
+      EXPECT_EQ(static_cast<int64_t>(totalRead + i), col->valueAt(i))
+          << "deltaEncodingMultipleStripes mismatch at row " << totalRead + i;
+    }
+    totalRead += result->size();
+  }
+  EXPECT_EQ(totalRead, kRowsPerBatch * kNumBatches);
+}
+
+TEST_F(VeloxWriterTest, deltaEncodingSignedNegatives) {
+  // Write signed data that crosses zero (negative to positive and vice versa).
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  constexpr int kRowCount = 100;
+  auto vector = vectorMaker.rowVector(
+      {"col"}, {vectorMaker.flatVector<int32_t>(kRowCount, [](auto row) {
+        // Range: -50 to +49
+        return static_cast<int32_t>(row) - 50;
+      })});
+
+  nimble::VeloxWriterOptions writerOptions;
+  writerOptions.encodingSelectionPolicyFactory =
+      [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{{
+           {nimble::EncodingType::Constant, 1000.0},
+           {nimble::EncodingType::Trivial, 1000.0},
+           {nimble::EncodingType::FixedBitWidth, 1000.0},
+           {nimble::EncodingType::MainlyConstant, 1000.0},
+           {nimble::EncodingType::SparseBool, 1000.0},
+           {nimble::EncodingType::Dictionary, 1000.0},
+           {nimble::EncodingType::RLE, 1000.0},
+           {nimble::EncodingType::Varint, 1000.0},
+           {nimble::EncodingType::Delta, 0.001},
+       }}](nimble::DataType dataType)
+      -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
+    return encodingFactory.createPolicy(dataType);
+  };
+
+  auto file = nimble::test::createNimbleFile(*rootPool_, vector, writerOptions);
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(kRowCount, result));
+
+  auto col =
+      result->as<velox::RowVector>()->childAt(0)->asFlatVector<int32_t>();
+  ASSERT_EQ(kRowCount, col->size());
+  for (int i = 0; i < kRowCount; ++i) {
+    EXPECT_EQ(static_cast<int32_t>(i) - 50, col->valueAt(i));
+  }
+}
+
+TEST_F(VeloxWriterTest, deltaEncodingAllIntegerTypes) {
+  // Write columns of all integer types simultaneously with Delta encoding.
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  constexpr int kRowCount = 80;
+  auto vector = vectorMaker.rowVector(
+      {"tiny", "small", "int", "bigint"},
+      {vectorMaker.flatVector<int8_t>(
+           kRowCount, [](auto row) { return static_cast<int8_t>(row % 100); }),
+       vectorMaker.flatVector<int16_t>(
+           kRowCount, [](auto row) { return static_cast<int16_t>(row * 2); }),
+       vectorMaker.flatVector<int32_t>(
+           kRowCount, [](auto row) { return static_cast<int32_t>(row * 10); }),
+       vectorMaker.flatVector<int64_t>(kRowCount, [](auto row) {
+         return static_cast<int64_t>(row * 100);
+       })});
+
+  nimble::VeloxWriterOptions writerOptions;
+  writerOptions.encodingSelectionPolicyFactory =
+      [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{{
+           {nimble::EncodingType::Constant, 1000.0},
+           {nimble::EncodingType::Trivial, 1000.0},
+           {nimble::EncodingType::FixedBitWidth, 1000.0},
+           {nimble::EncodingType::MainlyConstant, 1000.0},
+           {nimble::EncodingType::SparseBool, 1000.0},
+           {nimble::EncodingType::Dictionary, 1000.0},
+           {nimble::EncodingType::RLE, 1000.0},
+           {nimble::EncodingType::Varint, 1000.0},
+           {nimble::EncodingType::Delta, 0.001},
+       }}](nimble::DataType dataType)
+      -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
+    return encodingFactory.createPolicy(dataType);
+  };
+
+  auto file = nimble::test::createNimbleFile(*rootPool_, vector, writerOptions);
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(kRowCount, result));
+
+  auto row = result->as<velox::RowVector>();
+  auto tinyCol = row->childAt(0)->asFlatVector<int8_t>();
+  auto smallCol = row->childAt(1)->asFlatVector<int16_t>();
+  auto intCol = row->childAt(2)->asFlatVector<int32_t>();
+  auto bigintCol = row->childAt(3)->asFlatVector<int64_t>();
+
+  ASSERT_EQ(kRowCount, tinyCol->size());
+  for (int i = 0; i < kRowCount; ++i) {
+    EXPECT_EQ(static_cast<int8_t>(i % 100), tinyCol->valueAt(i));
+    EXPECT_EQ(static_cast<int16_t>(i * 2), smallCol->valueAt(i));
+    EXPECT_EQ(static_cast<int32_t>(i * 10), intCol->valueAt(i));
+    EXPECT_EQ(static_cast<int64_t>(i * 100), bigintCol->valueAt(i));
+  }
+}
 
 } // namespace facebook

@@ -359,6 +359,7 @@ class ManualEncodingSelectionPolicyFactory {
         EncodingType::Dictionary,
         EncodingType::RLE,
         EncodingType::Varint,
+        EncodingType::Delta,
     };
   }
 
@@ -372,6 +373,7 @@ class ManualEncodingSelectionPolicyFactory {
         {EncodingType::Dictionary, 1.0},
         {EncodingType::RLE, 1.0},
         {EncodingType::Varint, 1.0},
+        {EncodingType::Delta, 1.0},
     };
   }
 
@@ -523,6 +525,7 @@ class LearnedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
         EncodingType::Dictionary,
         EncodingType::RLE,
         EncodingType::Varint,
+        EncodingType::Delta,
     };
   }
 
