@@ -87,6 +87,17 @@ std::vector<velox::core::SortOrder> toVeloxSortOrders(
 
 namespace {
 
+void registerColumnMetrics(
+    const velox::dwio::common::TypeWithId& node,
+    velox::dwio::common::ColumnMetricsSet& metricsSet) {
+  metricsSet.getOrCreate(node.id(), node.type()->kind());
+  for (uint32_t i = 0; i < node.size(); ++i) {
+    if (const auto* child = node.childAt(i).get()) {
+      registerColumnMetrics(*child, metricsSet);
+    }
+  }
+}
+
 class SelectiveNimbleRowReader : public dwio::common::RowReader {
  public:
   SelectiveNimbleRowReader(
@@ -97,6 +108,12 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
         streams_(readerBase_),
         rowSizeTracker_{
             std::make_unique<RowSizeTracker>(readerBase->fileSchemaWithId())} {
+    if (options.collectColumnStats()) {
+      columnReaderStatistics_.columnMetricsSet.emplace();
+      registerColumnMetrics(
+          *readerBase_->fileSchemaWithId(),
+          *columnReaderStatistics_.columnMetricsSet);
+    }
     initReadRange();
     initIndexBounds();
     if (options.eagerFirstStripeLoad()) {
@@ -303,6 +320,7 @@ uint64_t SelectiveNimbleRowReader::next(
 void SelectiveNimbleRowReader::updateRuntimeStats(
     dwio::common::RuntimeStatistics& stats) const {
   stats.skippedStrides += skippedStripes_;
+  stats.columnReaderStats.mergeFrom(columnReaderStatistics_);
 }
 
 void SelectiveNimbleRowReader::resetFilterCaches() {
