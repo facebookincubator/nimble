@@ -49,6 +49,16 @@ struct VeloxWriterOptions {
   /// writing. The index stores the per-chunk min and max key for each stripe.
   std::optional<IndexConfig> indexConfig;
 
+  /// Number of leading index columns to use as stripe boundaries. When > 0,
+  /// the writer detects value transitions in the first N index columns during
+  /// write() and flushes at boundaries. Requires indexConfig to be set, and
+  /// the value must be <= indexConfig.columns.size(). Input data must be
+  /// pre-sorted/clustered by these columns.
+  /// NOTE: The size-based flush policy still applies as a safety valve. If a
+  /// single boundary group exceeds the flush policy threshold, the stripe may
+  /// be flushed mid-group to bound memory usage.
+  uint32_t stripeBoundaryColumnCount{0};
+
   // Columns that should be encoded as flat maps
   folly::F14FastSet<std::string> flatMapColumns;
 

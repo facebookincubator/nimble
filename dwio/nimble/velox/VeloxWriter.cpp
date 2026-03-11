@@ -733,6 +733,22 @@ VeloxWriter::VeloxWriter(
         *rootWriter_->typeBuilder(),
         context_->options().encodingLayoutTree.value());
   }
+
+  const auto boundaryCount = context_->options().stripeBoundaryColumnCount;
+  if (boundaryCount > 0) {
+    NIMBLE_USER_CHECK(
+        context_->options().indexConfig.has_value(),
+        "stripeBoundaryColumnCount requires indexConfig to be set");
+    const auto& indexColumns = context_->options().indexConfig->columns;
+    NIMBLE_USER_CHECK_LE(
+        boundaryCount,
+        indexColumns.size(),
+        "stripeBoundaryColumnCount exceeds number of index columns");
+    const auto& rowType = velox::asRowType(schema_->type());
+    for (uint32_t i = 0; i < boundaryCount; ++i) {
+      boundaryColumnIndices_.push_back(rowType->getChildIdx(indexColumns[i]));
+    }
+  }
 }
 
 VeloxWriter::~VeloxWriter() {}
@@ -744,42 +760,10 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
 
   NIMBLE_CHECK_NOT_NULL(file_, "Writer is already closed");
   try {
-    const auto numRows = input->size();
-    // Calculate raw size using schema information to correctly handle
-    // passthrough flatmaps (ROW vectors written as MAP).
-    RawSizeContext context;
-    const auto rawSize = nimble::getRawSizeFromVector(
-        input,
-        velox::common::Ranges::of(0, numRows),
-        context,
-        schema_.get(),
-        context_->flatMapNodeIds(),
-        context_->ignoreTopLevelNulls());
-    NIMBLE_CHECK_GE(rawSize, 0, "Invalid raw size");
-    context_->updateFileRawSize(rawSize);
-
-    if (context_->options().writeExecutor) {
-      velox::dwio::common::ExecutorBarrier barrier{
-          context_->options().writeExecutor};
-      rootWriter_->write(input, OrderedRanges::of(0, numRows), &barrier);
-      addIndexKey(input, &barrier);
-      barrier.waitAll();
-    } else {
-      rootWriter_->write(input, OrderedRanges::of(0, numRows));
-      addIndexKey(input);
+    if (boundaryColumnIndices_.empty()) {
+      return writeBatch(input);
     }
-
-    uint64_t memoryUsed{0};
-    for (const auto& [_, stream] : context_->streams()) {
-      memoryUsed += stream->memoryUsed();
-    }
-
-    context_->setMemoryUsed(memoryUsed);
-    context_->updateRowsInFile(numRows);
-    context_->updateRowsInStripe(numRows);
-    context_->setBytesWritten(file_->size());
-
-    return evaluateFlushPolicy();
+    return writeBoundaryAware(input);
   } catch (const std::exception& e) {
     lastException_ = std::current_exception();
     context_->logger()->logException(LogOperation::Write, e.what());
@@ -791,6 +775,106 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
         folly::to<std::string>(folly::exceptionStr(std::current_exception())));
     throw;
   }
+}
+
+bool VeloxWriter::writeBatch(const velox::VectorPtr& input) {
+  const auto numRows = input->size();
+  // Calculate raw size using schema information to correctly handle
+  // passthrough flatmaps (ROW vectors written as MAP).
+  RawSizeContext context;
+  const auto rawSize = nimble::getRawSizeFromVector(
+      input,
+      velox::common::Ranges::of(0, numRows),
+      context,
+      schema_.get(),
+      context_->flatMapNodeIds(),
+      context_->ignoreTopLevelNulls());
+  NIMBLE_CHECK_GE(rawSize, 0, "Invalid raw size");
+  context_->updateFileRawSize(rawSize);
+
+  if (context_->options().writeExecutor) {
+    velox::dwio::common::ExecutorBarrier barrier{
+        context_->options().writeExecutor};
+    rootWriter_->write(input, OrderedRanges::of(0, numRows), &barrier);
+    addIndexKey(input, &barrier);
+    barrier.waitAll();
+  } else {
+    rootWriter_->write(input, OrderedRanges::of(0, numRows));
+    addIndexKey(input);
+  }
+
+  uint64_t memoryUsed{0};
+  for (const auto& [_, stream] : context_->streams()) {
+    memoryUsed += stream->memoryUsed();
+  }
+
+  context_->setMemoryUsed(memoryUsed);
+  context_->updateRowsInFile(numRows);
+  context_->updateRowsInStripe(numRows);
+  context_->setBytesWritten(file_->size());
+
+  return evaluateFlushPolicy();
+}
+
+velox::vector_size_t VeloxWriter::findNextBoundaryTransition(
+    const velox::VectorPtr& input,
+    velox::vector_size_t numRows) const {
+  const auto* rowVector = input->asChecked<velox::RowVector>();
+  for (velox::vector_size_t row = 1; row < numRows; ++row) {
+    for (auto colIdx : boundaryColumnIndices_) {
+      const auto& child = rowVector->childAt(colIdx);
+      if (!child->equalValueAt(child.get(), 0, row)) {
+        return row;
+      }
+    }
+  }
+  return numRows;
+}
+
+bool VeloxWriter::writeBoundaryAware(const velox::VectorPtr& input) {
+  bool flushed = false;
+  const auto numRows = input->size();
+
+  if (numRows == 0) {
+    return false;
+  }
+
+  // Cross-batch: flush if first row differs from previous last row.
+  if (lastBoundaryValues_ != nullptr) {
+    const auto* lastRow = lastBoundaryValues_->asChecked<velox::RowVector>();
+    const auto* curRow = input->asChecked<velox::RowVector>();
+    for (auto colIdx : boundaryColumnIndices_) {
+      if (!lastRow->childAt(colIdx)->equalValueAt(
+              curRow->childAt(colIdx).get(), 0, 0)) {
+        writeStripe();
+        flushed = true;
+        break;
+      }
+    }
+  }
+
+  // Intra-batch: scan for transitions, slice and write at each boundary.
+  velox::vector_size_t start = 0;
+  while (start < numRows) {
+    auto slice = (start == 0) ? input : input->slice(start, numRows - start);
+    auto boundary = findNextBoundaryTransition(slice, slice->size());
+    auto batch =
+        (boundary == slice->size()) ? slice : slice->slice(0, boundary);
+
+    if (start > 0) {
+      writeStripe();
+      flushed = true;
+    }
+
+    if (writeBatch(batch)) {
+      flushed = true;
+    }
+    start += boundary;
+  }
+
+  // Save last row for cross-batch detection.
+  lastBoundaryValues_ = input->slice(numRows - 1, 1);
+  return flushed;
 }
 
 void VeloxWriter::writeMetadata() {

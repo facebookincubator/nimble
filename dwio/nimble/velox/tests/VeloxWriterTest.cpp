@@ -4225,4 +4225,608 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.toString();
     });
 
+// Tests for stripe boundary column cutting feature.
+class StripeBoundaryTest : public VeloxWriterTest {};
+
+TEST_F(StripeBoundaryTest, intraBatchTransitions) {
+  auto type = velox::ROW({
+      {"key", velox::INTEGER()},
+      {"value", velox::VARCHAR()},
+  });
+
+  nimble::IndexConfig indexConfig{
+      .columns = {"key"},
+      .sortOrders = {nimble::SortOrder{.ascending = true}},
+      .enforceKeyOrder = true,
+  };
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  // [1,1,1,2,2,3] -> should produce 3 stripes with rows [3,2,1]
+  auto batch = vectorMaker.rowVector(
+      {"key", "value"},
+      {vectorMaker.flatVector<int32_t>({1, 1, 1, 2, 2, 3}),
+       vectorMaker.flatVector<velox::StringView>(
+           {"a", "b", "c", "d", "e", "f"})});
+
+  nimble::VeloxWriter writer(
+      type,
+      std::move(writeFile),
+      *rootPool_,
+      {.indexConfig = indexConfig, .stripeBoundaryColumnCount = 1});
+  writer.write(batch);
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+  EXPECT_EQ(reader.tabletReader().stripeCount(), 3);
+
+  // Verify data integrity.
+  velox::VectorPtr result;
+  uint32_t rowOffset = 0;
+  while (reader.next(100, result)) {
+    for (velox::vector_size_t i = 0; i < result->size(); ++i) {
+      ASSERT_TRUE(result->equalValueAt(batch.get(), i, rowOffset + i));
+    }
+    rowOffset += result->size();
+  }
+  EXPECT_EQ(rowOffset, 6);
+}
+
+TEST_F(StripeBoundaryTest, crossBatchTransition) {
+  auto type = velox::ROW({
+      {"key", velox::INTEGER()},
+      {"value", velox::INTEGER()},
+  });
+
+  nimble::IndexConfig indexConfig{
+      .columns = {"key"},
+      .sortOrders = {nimble::SortOrder{.ascending = true}},
+      .enforceKeyOrder = true,
+  };
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto batch1 = vectorMaker.rowVector(
+      {"key", "value"},
+      {vectorMaker.flatVector<int32_t>({1, 1}),
+       vectorMaker.flatVector<int32_t>({10, 20})});
+  auto batch2 = vectorMaker.rowVector(
+      {"key", "value"},
+      {vectorMaker.flatVector<int32_t>({2, 2}),
+       vectorMaker.flatVector<int32_t>({30, 40})});
+
+  nimble::VeloxWriter writer(
+      type,
+      std::move(writeFile),
+      *rootPool_,
+      {.indexConfig = indexConfig, .stripeBoundaryColumnCount = 1});
+  writer.write(batch1);
+  writer.write(batch2);
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+  EXPECT_EQ(reader.tabletReader().stripeCount(), 2);
+}
+
+TEST_F(StripeBoundaryTest, noCrossBatchTransition) {
+  auto type = velox::ROW({
+      {"key", velox::INTEGER()},
+      {"value", velox::INTEGER()},
+  });
+
+  nimble::IndexConfig indexConfig{
+      .columns = {"key"},
+      .sortOrders = {nimble::SortOrder{.ascending = true}},
+      .enforceKeyOrder = true,
+  };
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto batch1 = vectorMaker.rowVector(
+      {"key", "value"},
+      {vectorMaker.flatVector<int32_t>({1, 1}),
+       vectorMaker.flatVector<int32_t>({10, 20})});
+  auto batch2 = vectorMaker.rowVector(
+      {"key", "value"},
+      {vectorMaker.flatVector<int32_t>({1, 1}),
+       vectorMaker.flatVector<int32_t>({30, 40})});
+
+  nimble::VeloxWriter writer(
+      type,
+      std::move(writeFile),
+      *rootPool_,
+      {.indexConfig = indexConfig, .stripeBoundaryColumnCount = 1});
+  writer.write(batch1);
+  writer.write(batch2);
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+  // No transition between batches, so all in one stripe.
+  EXPECT_EQ(reader.tabletReader().stripeCount(), 1);
+}
+
+TEST_F(StripeBoundaryTest, multipleBoundaryColumns) {
+  auto type = velox::ROW({
+      {"key1", velox::INTEGER()},
+      {"key2", velox::VARCHAR()},
+      {"value", velox::INTEGER()},
+  });
+
+  nimble::IndexConfig indexConfig{
+      .columns = {"key1", "key2"},
+      .sortOrders =
+          {nimble::SortOrder{.ascending = true},
+           nimble::SortOrder{.ascending = true}},
+      .enforceKeyOrder = true,
+  };
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  // key1 is same, key2 transitions: [a,a,b,b] -> 2 stripes
+  auto batch = vectorMaker.rowVector(
+      {"key1", "key2", "value"},
+      {vectorMaker.flatVector<int32_t>({1, 1, 1, 1}),
+       vectorMaker.flatVector<velox::StringView>({"a", "a", "b", "b"}),
+       vectorMaker.flatVector<int32_t>({10, 20, 30, 40})});
+
+  nimble::VeloxWriter writer(
+      type,
+      std::move(writeFile),
+      *rootPool_,
+      {.indexConfig = indexConfig, .stripeBoundaryColumnCount = 2});
+  writer.write(batch);
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+  EXPECT_EQ(reader.tabletReader().stripeCount(), 2);
+}
+
+TEST_F(StripeBoundaryTest, allSameValues) {
+  auto type = velox::ROW({
+      {"key", velox::INTEGER()},
+      {"value", velox::INTEGER()},
+  });
+
+  nimble::IndexConfig indexConfig{
+      .columns = {"key"},
+      .sortOrders = {nimble::SortOrder{.ascending = true}},
+  };
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto batch = vectorMaker.rowVector(
+      {"key", "value"},
+      {vectorMaker.flatVector<int32_t>({5, 5, 5, 5}),
+       vectorMaker.flatVector<int32_t>({1, 2, 3, 4})});
+
+  nimble::VeloxWriter writer(
+      type,
+      std::move(writeFile),
+      *rootPool_,
+      {.indexConfig = indexConfig, .stripeBoundaryColumnCount = 1});
+  writer.write(batch);
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+  EXPECT_EQ(reader.tabletReader().stripeCount(), 1);
+}
+
+TEST_F(StripeBoundaryTest, everyRowDifferent) {
+  auto type = velox::ROW({
+      {"key", velox::INTEGER()},
+      {"value", velox::INTEGER()},
+  });
+
+  nimble::IndexConfig indexConfig{
+      .columns = {"key"},
+      .sortOrders = {nimble::SortOrder{.ascending = true}},
+      .enforceKeyOrder = true,
+  };
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto batch = vectorMaker.rowVector(
+      {"key", "value"},
+      {vectorMaker.flatVector<int32_t>({1, 2, 3, 4}),
+       vectorMaker.flatVector<int32_t>({10, 20, 30, 40})});
+
+  nimble::VeloxWriter writer(
+      type,
+      std::move(writeFile),
+      *rootPool_,
+      {.indexConfig = indexConfig, .stripeBoundaryColumnCount = 1});
+  writer.write(batch);
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+  // Each row is a different key -> 4 stripes.
+  EXPECT_EQ(reader.tabletReader().stripeCount(), 4);
+
+  // Verify data integrity.
+  velox::VectorPtr result;
+  uint32_t rowOffset = 0;
+  while (reader.next(100, result)) {
+    for (velox::vector_size_t i = 0; i < result->size(); ++i) {
+      ASSERT_TRUE(result->equalValueAt(batch.get(), i, rowOffset + i));
+    }
+    rowOffset += result->size();
+  }
+  EXPECT_EQ(rowOffset, 4);
+}
+
+TEST_F(StripeBoundaryTest, singleRowBatches) {
+  auto type = velox::ROW({
+      {"key", velox::INTEGER()},
+      {"value", velox::INTEGER()},
+  });
+
+  nimble::IndexConfig indexConfig{
+      .columns = {"key"},
+      .sortOrders = {nimble::SortOrder{.ascending = true}},
+      .enforceKeyOrder = true,
+  };
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  nimble::VeloxWriter writer(
+      type,
+      std::move(writeFile),
+      *rootPool_,
+      {.indexConfig = indexConfig, .stripeBoundaryColumnCount = 1});
+
+  for (int32_t i = 1; i <= 3; ++i) {
+    auto batch = vectorMaker.rowVector(
+        {"key", "value"},
+        {vectorMaker.flatVector<int32_t>({i}),
+         vectorMaker.flatVector<int32_t>({i * 10})});
+    writer.write(batch);
+  }
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+  // Each batch has a different key -> 3 stripes.
+  EXPECT_EQ(reader.tabletReader().stripeCount(), 3);
+}
+
+TEST_F(StripeBoundaryTest, validationCountExceedsIndexColumns) {
+  auto type = velox::ROW({
+      {"key", velox::INTEGER()},
+      {"value", velox::INTEGER()},
+  });
+
+  nimble::IndexConfig indexConfig{
+      .columns = {"key"},
+      .sortOrders = {nimble::SortOrder{.ascending = true}},
+  };
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  EXPECT_THROW(
+      nimble::VeloxWriter(
+          type,
+          std::move(writeFile),
+          *rootPool_,
+          {.indexConfig = indexConfig, .stripeBoundaryColumnCount = 2}),
+      nimble::NimbleUserError);
+}
+
+TEST_F(StripeBoundaryTest, validationNoIndexConfig) {
+  auto type = velox::ROW({
+      {"key", velox::INTEGER()},
+      {"value", velox::INTEGER()},
+  });
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  EXPECT_THROW(
+      nimble::VeloxWriter(
+          type,
+          std::move(writeFile),
+          *rootPool_,
+          {.stripeBoundaryColumnCount = 1}),
+      nimble::NimbleUserError);
+}
+
+TEST_F(StripeBoundaryTest, dataIntegrity) {
+  auto type = velox::ROW({
+      {"key", velox::INTEGER()},
+      {"value", velox::VARCHAR()},
+  });
+
+  nimble::IndexConfig indexConfig{
+      .columns = {"key"},
+      .sortOrders = {nimble::SortOrder{.ascending = true}},
+      .enforceKeyOrder = true,
+  };
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  // Write multiple batches with transitions.
+  std::vector<velox::RowVectorPtr> batches;
+  batches.push_back(vectorMaker.rowVector(
+      {"key", "value"},
+      {vectorMaker.flatVector<int32_t>({1, 1, 2, 2}),
+       vectorMaker.flatVector<velox::StringView>({"a", "b", "c", "d"})}));
+  batches.push_back(vectorMaker.rowVector(
+      {"key", "value"},
+      {vectorMaker.flatVector<int32_t>({2, 3, 3}),
+       vectorMaker.flatVector<velox::StringView>({"e", "f", "g"})}));
+  batches.push_back(vectorMaker.rowVector(
+      {"key", "value"},
+      {vectorMaker.flatVector<int32_t>({4, 4}),
+       vectorMaker.flatVector<velox::StringView>({"h", "i"})}));
+
+  nimble::VeloxWriter writer(
+      type,
+      std::move(writeFile),
+      *rootPool_,
+      {.indexConfig = indexConfig, .stripeBoundaryColumnCount = 1});
+  for (const auto& batch : batches) {
+    writer.write(batch);
+  }
+  writer.close();
+
+  // Concatenate all expected data.
+  auto expected = vectorMaker.rowVector(
+      {"key", "value"},
+      {vectorMaker.flatVector<int32_t>({1, 1, 2, 2, 2, 3, 3, 4, 4}),
+       vectorMaker.flatVector<velox::StringView>(
+           {"a", "b", "c", "d", "e", "f", "g", "h", "i"})});
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+  // Keys: 1(2), 2(3), 3(2), 4(2) -> 4 stripes
+  EXPECT_EQ(reader.tabletReader().stripeCount(), 4);
+
+  // Read back all data and verify.
+  velox::VectorPtr result;
+  uint32_t rowOffset = 0;
+  while (reader.next(100, result)) {
+    for (velox::vector_size_t i = 0; i < result->size(); ++i) {
+      ASSERT_TRUE(result->equalValueAt(expected.get(), i, rowOffset + i))
+          << "Mismatch at row " << rowOffset + i;
+    }
+    rowOffset += result->size();
+  }
+  EXPECT_EQ(rowOffset, 9);
+}
+
+TEST_F(StripeBoundaryTest, userSequenceBenchmark) {
+  // Simulates user sequence storage: each user has a variable number of events.
+  // With stripeBoundaryColumnCount=1 on user_id, each user should get their
+  // own stripe(s), reducing read amplification.
+  auto type = velox::ROW({
+      {"user_id", velox::BIGINT()},
+      {"event_ts", velox::BIGINT()},
+      {"event_type", velox::INTEGER()},
+      {"payload", velox::VARCHAR()},
+  });
+
+  nimble::IndexConfig indexConfig{
+      .columns = {"user_id"},
+      .sortOrders = {nimble::SortOrder{.ascending = true}},
+      .enforceKeyOrder = true,
+  };
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  // Generate realistic data: 50 users, each with 10-100 events,
+  // delivered in batches of ~200 rows (spanning multiple users).
+  constexpr int64_t kNumUsers = 50;
+  constexpr int64_t kMinEventsPerUser = 10;
+  constexpr int64_t kMaxEventsPerUser = 100;
+  constexpr velox::vector_size_t kBatchSize = 200;
+
+  // Build all rows sorted by user_id.
+  std::vector<int64_t> allUserIds;
+  std::vector<int64_t> allTimestamps;
+  std::vector<int32_t> allEventTypes;
+  std::vector<std::string> allPayloads;
+
+  folly::Random::DefaultGenerator rng(42);
+  std::map<int64_t, int64_t> userEventCounts;
+
+  for (int64_t userId = 1; userId <= kNumUsers; ++userId) {
+    auto numEvents = kMinEventsPerUser +
+        folly::Random::rand32(kMaxEventsPerUser - kMinEventsPerUser, rng);
+    userEventCounts[userId] = numEvents;
+    int64_t ts = userId * 1000000;
+    for (int64_t e = 0; e < numEvents; ++e) {
+      allUserIds.push_back(userId);
+      allTimestamps.push_back(ts + e * 1000);
+      allEventTypes.push_back(folly::Random::rand32(10, rng));
+      allPayloads.push_back(
+          "event_" + std::to_string(userId) + "_" + std::to_string(e));
+    }
+  }
+
+  const auto totalRows = allUserIds.size();
+
+  // Split into batches.
+  std::vector<velox::RowVectorPtr> batches;
+  for (size_t offset = 0; offset < totalRows; offset += kBatchSize) {
+    auto count = std::min<size_t>(kBatchSize, totalRows - offset);
+    std::vector<int64_t> batchUserIds(
+        allUserIds.begin() + offset, allUserIds.begin() + offset + count);
+    std::vector<int64_t> batchTimestamps(
+        allTimestamps.begin() + offset,
+        allTimestamps.begin() + offset + count);
+    std::vector<int32_t> batchEventTypes(
+        allEventTypes.begin() + offset,
+        allEventTypes.begin() + offset + count);
+    std::vector<velox::StringView> batchPayloads;
+    for (size_t i = offset; i < offset + count; ++i) {
+      batchPayloads.emplace_back(allPayloads[i]);
+    }
+
+    batches.push_back(vectorMaker.rowVector(
+        {"user_id", "event_ts", "event_type", "payload"},
+        {vectorMaker.flatVector<int64_t>(batchUserIds),
+         vectorMaker.flatVector<int64_t>(batchTimestamps),
+         vectorMaker.flatVector<int32_t>(batchEventTypes),
+         vectorMaker.flatVector<velox::StringView>(batchPayloads)}));
+  }
+
+  // --- Write WITHOUT boundary columns (baseline) ---
+  std::string fileBaseline;
+  {
+    auto writeFile =
+        std::make_unique<velox::InMemoryWriteFile>(&fileBaseline);
+    nimble::VeloxWriter writer(
+        type,
+        std::move(writeFile),
+        *rootPool_,
+        {.indexConfig = indexConfig});
+    for (const auto& batch : batches) {
+      writer.write(batch);
+    }
+    writer.close();
+  }
+
+  // --- Write WITH boundary columns ---
+  std::string fileBoundary;
+  {
+    auto writeFile =
+        std::make_unique<velox::InMemoryWriteFile>(&fileBoundary);
+    nimble::VeloxWriter writer(
+        type,
+        std::move(writeFile),
+        *rootPool_,
+        {.indexConfig = indexConfig, .stripeBoundaryColumnCount = 1});
+    for (const auto& batch : batches) {
+      writer.write(batch);
+    }
+    writer.close();
+  }
+
+  // --- Verify stripe counts ---
+  uint32_t baselineStripeCount;
+  {
+    velox::InMemoryReadFile readFile(fileBaseline);
+    nimble::VeloxReader reader(&readFile, *leafPool_);
+    baselineStripeCount = reader.tabletReader().stripeCount();
+  }
+
+  uint32_t boundaryStripeCount;
+  {
+    velox::InMemoryReadFile readFile(fileBoundary);
+    nimble::VeloxReader reader(&readFile, *leafPool_);
+    boundaryStripeCount = reader.tabletReader().stripeCount();
+  }
+
+  // Baseline should have 1 stripe (all data fits in 256MB default).
+  // Boundary should have exactly kNumUsers stripes.
+  EXPECT_EQ(baselineStripeCount, 1)
+      << "Baseline: all data fits in single stripe";
+  EXPECT_EQ(boundaryStripeCount, kNumUsers)
+      << "Boundary: one stripe per user";
+
+  LOG(INFO) << "=== User Sequence Benchmark Results ===";
+  LOG(INFO) << "Total rows: " << totalRows;
+  LOG(INFO) << "Total users: " << kNumUsers;
+  LOG(INFO) << "Batches: " << batches.size() << " (batch_size=" << kBatchSize
+            << ")";
+  LOG(INFO) << "Baseline: " << baselineStripeCount
+            << " stripe(s), file_size=" << fileBaseline.size();
+  LOG(INFO) << "Boundary: " << boundaryStripeCount
+            << " stripe(s), file_size=" << fileBoundary.size();
+
+  // --- Verify data integrity of boundary file ---
+  {
+    velox::InMemoryReadFile readFile(fileBoundary);
+    nimble::VeloxReader reader(&readFile, *leafPool_);
+    velox::VectorPtr result;
+    uint32_t readRowOffset = 0;
+    while (reader.next(1000, result)) {
+      const auto* rowResult = result->asChecked<velox::RowVector>();
+      for (velox::vector_size_t i = 0; i < result->size(); ++i) {
+        auto globalIdx = readRowOffset + i;
+        // Verify user_id column.
+        auto userId = rowResult->childAt(0)
+                          ->asChecked<velox::FlatVector<int64_t>>()
+                          ->valueAt(i);
+        ASSERT_EQ(userId, allUserIds[globalIdx])
+            << "user_id mismatch at row " << globalIdx;
+        // Verify event_ts column.
+        auto ts = rowResult->childAt(1)
+                      ->asChecked<velox::FlatVector<int64_t>>()
+                      ->valueAt(i);
+        ASSERT_EQ(ts, allTimestamps[globalIdx])
+            << "event_ts mismatch at row " << globalIdx;
+      }
+      readRowOffset += result->size();
+    }
+    EXPECT_EQ(readRowOffset, totalRows)
+        << "Total row count mismatch after read-back";
+  }
+
+  // --- Verify each stripe contains exactly one user ---
+  {
+    velox::InMemoryReadFile readFile(fileBoundary);
+    nimble::VeloxReader reader(&readFile, *leafPool_);
+    std::set<int64_t> usersFound;
+    for (uint32_t stripeIdx = 0; stripeIdx < boundaryStripeCount;
+         ++stripeIdx) {
+      // Read this stripe by seeking and reading.
+      // Since VeloxReader reads sequentially, we just read the next stripe.
+      velox::VectorPtr result;
+      ASSERT_TRUE(reader.next(10000, result));
+      const auto* rowResult = result->asChecked<velox::RowVector>();
+      auto* userIdVec =
+          rowResult->childAt(0)->asChecked<velox::FlatVector<int64_t>>();
+
+      // All rows in this stripe should have the same user_id.
+      auto firstUserId = userIdVec->valueAt(0);
+      for (velox::vector_size_t i = 1; i < result->size(); ++i) {
+        ASSERT_EQ(userIdVec->valueAt(i), firstUserId)
+            << "Stripe " << stripeIdx << " contains mixed users at row " << i
+            << ": expected " << firstUserId << " got "
+            << userIdVec->valueAt(i);
+      }
+
+      ASSERT_EQ(usersFound.count(firstUserId), 0)
+          << "User " << firstUserId << " found in multiple stripes";
+      usersFound.insert(firstUserId);
+
+      // Verify row count matches expected events for this user.
+      EXPECT_EQ(result->size(), userEventCounts[firstUserId])
+          << "Stripe " << stripeIdx << " for user " << firstUserId
+          << " has wrong row count";
+
+      LOG(INFO) << "Stripe " << stripeIdx << ": user_id=" << firstUserId
+                << " rows=" << result->size();
+    }
+    EXPECT_EQ(usersFound.size(), kNumUsers);
+  }
+
+  LOG(INFO) << "=== All verifications passed ===";
+}
+
 } // namespace facebook
