@@ -151,6 +151,21 @@ class VeloxWriter {
   // Returning 'true' if stripe was flushed.
   bool evaluateFlushPolicy();
 
+  /// Writes a single contiguous batch: computes raw size, invokes field
+  /// writers, adds index keys, updates memory/row tracking, and evaluates
+  /// flush policy. Shared by both normal and boundary-aware write paths.
+  bool writeBatch(const velox::VectorPtr& input);
+
+  /// Write implementation for boundary-aware path. Detects value transitions
+  /// in boundary columns and flushes stripes at boundaries.
+  bool writeBoundaryAware(const velox::VectorPtr& input);
+
+  /// Finds the first row where any boundary column differs from row 0.
+  /// Returns numRows if no transition found.
+  velox::vector_size_t findNextBoundaryTransition(
+      const velox::VectorPtr& input,
+      velox::vector_size_t numRows) const;
+
   // Returning 'true' if stripe was written.
   bool writeStripe();
 
@@ -193,6 +208,12 @@ class VeloxWriter {
   std::unique_ptr<Buffer> encodingBuffer_;
   std::vector<Stream> encodedStreams_;
   std::exception_ptr lastException_;
+
+  /// Column indices for boundary columns, resolved in constructor.
+  std::vector<velox::column_index_t> boundaryColumnIndices_;
+
+  /// Last row of previous write() for cross-batch boundary detection.
+  velox::VectorPtr lastBoundaryValues_;
 };
 
 } // namespace facebook::nimble
