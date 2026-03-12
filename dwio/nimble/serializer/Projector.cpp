@@ -25,6 +25,7 @@
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "folly/container/F14Map.h"
+#include "folly/io/Cursor.h"
 #include "velox/type/Type.h"
 
 namespace facebook::nimble::serde {
@@ -72,6 +73,20 @@ class IOBufSection {
   std::unique_ptr<folly::IOBuf> buf_;
   size_t size_{0};
 };
+
+// Reads a varint32 from a Cursor, advancing past the encoded bytes.
+uint32_t readVarint32(folly::io::Cursor& cursor) {
+  uint32_t value = 0;
+  uint32_t shift = 0;
+  while (true) {
+    auto byte = cursor.read<uint8_t>();
+    value |= static_cast<uint32_t>(byte & 0x7f) << shift;
+    if (!(byte & 0x80)) {
+      return value;
+    }
+    shift += 7;
+  }
+}
 
 // Forward declaration for recursive calls from per-type helpers.
 std::shared_ptr<const Type> updateColumnNames(
@@ -646,68 +661,190 @@ Projector::Projector(
       (inputStreamIndices_.size() == countTotalStreams(*inputSchema_));
 }
 
-folly::IOBuf Projector::project(std::string_view input) const {
-  const char* pos = input.data();
-  const char* end = input.data() + input.size();
+namespace {
 
-  // Parse input header.
-  SerializationVersion inputVersion = SerializationVersion::kLegacy;
-  if (options_.inputHasVersionHeader) {
-    inputVersion = static_cast<SerializationVersion>(*pos++);
-  }
-
-  // Input must also be kCompact — projector copies raw bytes, so encoding
-  // format must match. kLegacy uses zstd compression while kCompact uses
-  // nimble encoding; cross-format projection would require re-encoding.
+// Validates the input version header is kCompact.
+void validateInputVersion(const folly::IOBuf& input) {
+  const auto version = static_cast<SerializationVersion>(*input.data());
   NIMBLE_CHECK_EQ(
-      inputVersion,
+      version,
       SerializationVersion::kCompact,
       "Input must be kCompact format, got: {}",
-      inputVersion);
+      version);
+}
 
-  // Fast path: pass-through when all streams selected and formats match.
-  if (passThrough_ && options_.inputHasVersionHeader) {
-    return std::move(*folly::IOBuf::copyBuffer(input));
+// Parses the trailer (encoded stream sizes) from a chained IOBuf.
+// Tries the fast path first: read directly from the tail segment (O(1)).
+// Falls back to cursor + pull() if the trailer spans a chain boundary.
+inline std::vector<uint32_t> parseEncodedStreamSizes(
+    const folly::IOBuf& input,
+    velox::memory::MemoryPool* pool) {
+  const auto* tail = input.prev();
+  if (tail->length() >= sizeof(uint32_t)) {
+    const auto* tailEnd =
+        reinterpret_cast<const char*>(tail->data()) + tail->length();
+    const uint32_t encodedSize = detail::readStreamSizesEncodedSize(tailEnd);
+    if (tail->length() >= sizeof(uint32_t) + encodedSize) {
+      return detail::decodeStreamSizes(
+          {tailEnd - sizeof(uint32_t) - encodedSize, encodedSize}, pool);
+    }
   }
 
+  // Fallback: trailer spans chain boundary — use cursor + pull().
+  const auto totalLength = input.computeChainDataLength();
+  folly::io::Cursor trailerCursor(&input);
+  trailerCursor.skip(totalLength - sizeof(uint32_t));
+  const uint32_t encodedSize = trailerCursor.read<uint32_t>();
+
+  folly::io::Cursor sizesCursor(&input);
+  sizesCursor.skip(totalLength - sizeof(uint32_t) - encodedSize);
+  std::string encodedSizesBuf(encodedSize, '\0');
+  sizesCursor.pull(encodedSizesBuf.data(), encodedSize);
+  return detail::decodeStreamSizes(encodedSizesBuf, pool);
+}
+
+// Projects selected streams from a contiguous IOBuf into the output chain.
+// Uses cloneOne() + trim for zero-copy sub-range views.
+std::vector<uint32_t> projectStreams(
+    const folly::IOBuf& input,
+    size_t streamOffset,
+    const std::vector<uint32_t>& streamSizes,
+    const std::vector<uint32_t>& selectedIndices,
+    std::unique_ptr<folly::IOBuf>& output) {
+  std::vector<uint32_t> outputSizes(selectedIndices.size(), 0);
+  size_t nextSelectedIdx = 0;
+  for (size_t i = 0;
+       i < streamSizes.size() && nextSelectedIdx < selectedIndices.size();
+       ++i) {
+    if (i == selectedIndices[nextSelectedIdx]) {
+      if (streamSizes[i] > 0) {
+        auto streamBuf = input.cloneOne();
+        streamBuf->trimStart(streamOffset);
+        streamBuf->trimEnd(streamBuf->length() - streamSizes[i]);
+        outputSizes[nextSelectedIdx] = streamSizes[i];
+        output->appendToChain(std::move(streamBuf));
+      }
+      ++nextSelectedIdx;
+    }
+    streamOffset += streamSizes[i];
+  }
+  return outputSizes;
+}
+
+// Projects selected streams from a chained IOBuf via cursor.clone().
+std::vector<uint32_t> projectStreams(
+    folly::io::Cursor& cursor,
+    const std::vector<uint32_t>& streamSizes,
+    const std::vector<uint32_t>& selectedIndices,
+    std::unique_ptr<folly::IOBuf>& output) {
+  std::vector<uint32_t> outputSizes(selectedIndices.size(), 0);
+  size_t nextSelectedIdx = 0;
+  for (size_t i = 0;
+       i < streamSizes.size() && nextSelectedIdx < selectedIndices.size();
+       ++i) {
+    if (i == selectedIndices[nextSelectedIdx]) {
+      if (streamSizes[i] > 0) {
+        std::unique_ptr<folly::IOBuf> streamBuf;
+        cursor.clone(streamBuf, streamSizes[i]);
+        outputSizes[nextSelectedIdx] = streamSizes[i];
+        output->appendToChain(std::move(streamBuf));
+      }
+      ++nextSelectedIdx;
+    } else {
+      cursor.skip(streamSizes[i]);
+    }
+  }
+  return outputSizes;
+}
+
+} // namespace
+
+folly::IOBuf Projector::buildProjectedOutput(
+    const std::vector<uint32_t>& outputStreamSizes,
+    std::unique_ptr<folly::IOBuf> output) const {
+  IOBufSection trailer(detail::estimateTrailerSize(outputStreamSizes.size()));
+  detail::writeTrailer(
+      outputStreamSizes, options_.streamSizesEncodingType, pool_, trailer);
+  output->appendToChain(std::move(trailer).build());
+  return std::move(*output);
+}
+
+folly::IOBuf Projector::project(const folly::IOBuf& input) const {
+  validateInputVersion(input);
+
+  // Fast path: pass-through when all streams selected.
+  if (passThrough_) {
+    return input.cloneAsValue();
+  }
+
+  if (!input.isChained()) {
+    return projectContiguous(input);
+  }
+  return projectChained(input);
+}
+
+folly::IOBuf Projector::projectContiguous(const folly::IOBuf& input) const {
+  const auto* data = reinterpret_cast<const char*>(input.data());
+  const auto* pos = data + sizeof(uint8_t);
   const uint32_t rowCount = varint::readVarint32(&pos);
 
-  // Parse only selected streams, skipping empty ones.
-  auto projectedStreams = detail::projectStreams(
-      pos, end, inputVersion, inputStreamIndices_, pool_);
-
-  // Build output as a chain of IOBufs: header + stream data + trailer.
-  // Each piece is written directly into its own IOBuf, avoiding resize copies
-  // and intermediate std::string → IOBuf copies.
-
-  // Header (version byte + varint rowCount).
+  // Build header: [version byte][varint rowCount].
   IOBufSection header(
       detail::estimateHeaderSize(options_.projectVersion, rowCount));
   detail::writeHeader(header, options_.projectVersion, rowCount);
-  auto result = std::move(header).build();
+  auto output = std::move(header).build();
 
-  // Stream data — each stream copied into an exactly-sized IOBuf.
-  std::vector<uint32_t> streamSizes(inputStreamIndices_.size(), 0);
-  for (const auto& stream : projectedStreams) {
-    streamSizes[stream.index] = stream.data.size();
-    result->appendToChain(
-        folly::IOBuf::copyBuffer(stream.data.data(), stream.data.size()));
-  }
+  const auto inputStreamSizes = parseEncodedStreamSizes(input, pool_);
 
-  // Trailer (encoded stream sizes + u32 encoded size).
-  IOBufSection trailer(detail::estimateTrailerSize(streamSizes.size()));
-  detail::writeTrailer(
-      streamSizes, options_.streamSizesEncodingType, pool_, trailer);
-  result->appendToChain(std::move(trailer).build());
+  // Extract selected streams as zero-copy sub-range clones.
+  auto outputStreamSizes = projectStreams(
+      input,
+      /*streamOffset=*/pos - data,
+      inputStreamSizes,
+      inputStreamIndices_,
+      output);
 
-  return std::move(*result);
+  return buildProjectedOutput(outputStreamSizes, std::move(output));
+}
+
+folly::IOBuf Projector::projectChained(const folly::IOBuf& input) const {
+  folly::io::Cursor cursor(&input);
+  cursor.skip(sizeof(uint8_t));
+  const uint32_t rowCount = readVarint32(cursor);
+
+  // Build header: [version byte][varint rowCount].
+  IOBufSection header(
+      detail::estimateHeaderSize(options_.projectVersion, rowCount));
+  detail::writeHeader(header, options_.projectVersion, rowCount);
+  auto output = std::move(header).build();
+
+  const auto inputStreamSizes = parseEncodedStreamSizes(input, pool_);
+
+  // Extract selected streams as zero-copy clones via cursor.
+  auto outputStreamSizes =
+      projectStreams(cursor, inputStreamSizes, inputStreamIndices_, output);
+
+  return buildProjectedOutput(outputStreamSizes, std::move(output));
+}
+
+folly::IOBuf Projector::project(std::string_view input) const {
+  return project(folly::IOBuf::wrapBufferAsValue(input.data(), input.size()));
 }
 
 std::vector<folly::IOBuf> Projector::project(
     const std::vector<std::string_view>& inputs) const {
   std::vector<folly::IOBuf> results;
   results.reserve(inputs.size());
+  for (const auto& input : inputs) {
+    results.emplace_back(project(input));
+  }
+  return results;
+}
 
+std::vector<folly::IOBuf> Projector::project(
+    const std::vector<folly::IOBuf>& inputs) const {
+  std::vector<folly::IOBuf> results;
+  results.reserve(inputs.size());
   for (const auto& input : inputs) {
     results.emplace_back(project(input));
   }

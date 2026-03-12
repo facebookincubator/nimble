@@ -56,8 +56,7 @@ using Subfield = velox::common::Subfield;
 ///       Subfield("flatmap[\"key1\"]"),
 ///   };
 ///
-///   Projector projector(inputSchema, subfields, {.inputHasVersionHeader =
-///   true});
+///   Projector projector(inputSchema, subfields, pool, {});
 ///
 ///   // Project multiple buffers
 ///   for (const auto& buffer : buffers) {
@@ -70,10 +69,6 @@ using Subfield = velox::common::Subfield;
 class Projector {
  public:
   struct Options {
-    /// Whether the input buffer has a version header byte.
-    /// If false, input is assumed to be legacy dense format (raw encoding).
-    bool inputHasVersionHeader{false};
-
     /// Output serialization format version. Must be kCompact.
     SerializationVersion projectVersion{SerializationVersion::kCompact};
 
@@ -104,21 +99,30 @@ class Projector {
       velox::memory::MemoryPool* pool,
       Options options);
 
-  /// Projects a single input buffer.
+  /// Projects a single input buffer. The output IOBuf chain references the
+  /// input memory via zero-copy cloning — the input data must remain valid
+  /// while the output is in use.
   /// @param input Serialized Nimble buffer.
-  /// @return Projected buffer as IOBuf (possibly chained) for zero-copy
-  ///         network transfer.
-  ///
-  // TODO: Add an overload taking folly::IOBuf input to enable zero-copy
-  // projection — stream data sections can be IOBuf views into the input
-  // instead of copies.
+  /// @return Projected buffer as IOBuf (possibly chained).
   folly::IOBuf project(std::string_view input) const;
 
-  /// Projects multiple input buffers.
+  /// Projects multiple input buffers. Each output references its corresponding
+  /// input memory — all inputs must remain valid while outputs are in use.
   /// @param inputs Vector of serialized Nimble buffers.
   /// @return Vector of projected buffers.
   std::vector<folly::IOBuf> project(
       const std::vector<std::string_view>& inputs) const;
+
+  /// Projects a single input IOBuf (may be chained). The output IOBuf chain
+  /// shares underlying memory with the input via zero-copy cloning — the input
+  /// must remain valid while the output is in use.
+  folly::IOBuf project(const folly::IOBuf& input) const;
+
+  /// Projects multiple input IOBufs. Each output shares memory with its
+  /// corresponding input — all inputs must remain valid while outputs are in
+  /// use.
+  std::vector<folly::IOBuf> project(
+      const std::vector<folly::IOBuf>& inputs) const;
 
   /// Returns the projected schema.
   /// The schema has compact stream indices starting from 0.
@@ -139,6 +143,17 @@ class Projector {
   // to output indices based on inputStreamIndices_ so that schema offsets
   // match the data layout produced by project().
   void buildProjectedSchema(const SelectedChildrenMap& selectedChildren);
+
+  // Projects a contiguous (non-chained) IOBuf using raw pointer arithmetic.
+  folly::IOBuf projectContiguous(const folly::IOBuf& input) const;
+
+  // Projects a chained IOBuf using folly::io::Cursor.
+  folly::IOBuf projectChained(const folly::IOBuf& input) const;
+
+  // Appends the trailer to the output IOBuf chain and returns it.
+  folly::IOBuf buildProjectedOutput(
+      const std::vector<uint32_t>& outputStreamSizes,
+      std::unique_ptr<folly::IOBuf> output) const;
 
   velox::memory::MemoryPool* const pool_;
   const Options options_;
