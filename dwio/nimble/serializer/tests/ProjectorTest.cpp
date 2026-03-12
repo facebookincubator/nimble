@@ -173,6 +173,19 @@ class ProjectorTestBase : public ::testing::Test {
     return vector;
   }
 
+  // Projects using either string_view or IOBuf API based on useIOBuf flag.
+  static folly::IOBuf projectInput(
+      const Projector& projector,
+      const std::string& serialized,
+      bool useIOBuf) {
+    if (useIOBuf) {
+      auto buf =
+          folly::IOBuf::wrapBufferAsValue(serialized.data(), serialized.size());
+      return projector.project(buf);
+    }
+    return projector.project(std::string_view(serialized));
+  }
+
   std::shared_ptr<memory::MemoryPool> rootPool_;
   std::shared_ptr<memory::MemoryPool> pool_;
 };
@@ -203,10 +216,7 @@ class ProjectorFormatTest : public ProjectorTestBase,
 
   // Get projector options. Output is always kCompact.
   Projector::Options projectorOptions() const {
-    const auto& param = GetParam();
-    return Projector::Options{
-        .inputHasVersionHeader = param.inputVersion.has_value(),
-    };
+    return Projector::Options{};
   }
 
   // Get deserializer options for output format. Always kCompact.
@@ -257,16 +267,11 @@ TEST_P(ProjectorFormatTest, projectSingleColumn) {
     EXPECT_EQ(bCol->valueAt(2), 300);
   };
 
-  // Test single projection.
-  auto projected = projector.project(serialized);
-  verifyResult(toString(projected));
-
-  // Test batch projection.
-  std::vector<std::string_view> inputs = {serialized, serialized};
-  auto batchResults = projector.project(inputs);
-  ASSERT_EQ(batchResults.size(), 2);
-  verifyResult(toString(batchResults[0]));
-  verifyResult(toString(batchResults[1]));
+  for (bool useIOBuf : {false, true}) {
+    SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
+    auto projected = projectInput(projector, serialized, useIOBuf);
+    verifyResult(toString(projected));
+  }
 }
 
 // Test projecting multiple columns.
@@ -317,13 +322,11 @@ TEST_P(ProjectorFormatTest, projectMultipleColumns) {
     EXPECT_EQ(cCol->valueAt(1).str(), "y");
   };
 
-  // Test single and batch projection.
-  verifyResult(toString(projector.project(serialized)));
-
-  auto batchResults = projector.project({serialized, serialized});
-  ASSERT_EQ(batchResults.size(), 2);
-  verifyResult(toString(batchResults[0]));
-  verifyResult(toString(batchResults[1]));
+  for (bool useIOBuf : {false, true}) {
+    SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
+    auto projected = projectInput(projector, serialized, useIOBuf);
+    verifyResult(toString(projected));
+  }
 }
 
 // Test projecting nested struct fields.
@@ -382,13 +385,11 @@ TEST_P(ProjectorFormatTest, projectNestedField) {
     EXPECT_EQ(inner1Col->valueAt(1), 20);
   };
 
-  // Test single and batch projection.
-  verifyResult(toString(projector.project(serialized)));
-
-  auto batchResults = projector.project({serialized, serialized});
-  ASSERT_EQ(batchResults.size(), 2);
-  verifyResult(toString(batchResults[0]));
-  verifyResult(toString(batchResults[1]));
+  for (bool useIOBuf : {false, true}) {
+    SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
+    auto projected = projectInput(projector, serialized, useIOBuf);
+    verifyResult(toString(projected));
+  }
 }
 
 // Test projecting with array type (entire array column).
@@ -447,13 +448,11 @@ TEST_P(ProjectorFormatTest, projectArrayColumn) {
     EXPECT_EQ(arrResult->sizeAt(1), 3);
   };
 
-  // Test single and batch projection.
-  verifyResult(toString(projector.project(serialized)));
-
-  auto batchResults = projector.project({serialized, serialized});
-  ASSERT_EQ(batchResults.size(), 2);
-  verifyResult(toString(batchResults[0]));
-  verifyResult(toString(batchResults[1]));
+  for (bool useIOBuf : {false, true}) {
+    SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
+    auto projected = projectInput(projector, serialized, useIOBuf);
+    verifyResult(toString(projected));
+  }
 }
 
 // Test empty input (0 rows).
@@ -484,13 +483,11 @@ TEST_P(ProjectorFormatTest, emptyInput) {
     EXPECT_EQ(result->size(), 0);
   };
 
-  // Test single and batch projection.
-  verifyResult(toString(projector.project(serialized)));
-
-  auto batchResults = projector.project({serialized, serialized});
-  ASSERT_EQ(batchResults.size(), 2);
-  verifyResult(toString(batchResults[0]));
-  verifyResult(toString(batchResults[1]));
+  for (bool useIOBuf : {false, true}) {
+    SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
+    auto projected = projectInput(projector, serialized, useIOBuf);
+    verifyResult(toString(projected));
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -530,8 +527,7 @@ TEST_F(ProjectorTest, incompatibleFormatsRejected) {
             inputSchema,
             subfields,
             pool_.get(),
-            {.inputHasVersionHeader = true,
-             .projectVersion = SerializationVersion::kLegacy}),
+            {.projectVersion = SerializationVersion::kLegacy}),
         "Projection output version must be kCompact");
   }
 }
@@ -553,8 +549,7 @@ TEST_F(ProjectorTest, emptyProjectionInvalid) {
           inputSchema,
           emptySubfields,
           pool_.get(),
-          {.inputHasVersionHeader = true,
-           .projectVersion = SerializationVersion::kCompact}),
+          {.projectVersion = SerializationVersion::kCompact}),
       "Must project at least one subfield");
 }
 
@@ -580,25 +575,28 @@ TEST_F(ProjectorTest, fullProjectionPassThrough) {
 
   // Full projection - all columns selected, same format.
   auto subfields = makeSubfields({"a", "b", "c"});
-  Projector projector(
-      inputSchema, subfields, pool_.get(), {.inputHasVersionHeader = true});
+  Projector projector(inputSchema, subfields, pool_.get(), {});
 
-  auto projected = projector.project(serialized);
-
-  // Fast path: output should be identical to input (pass through).
-  EXPECT_EQ(toString(projected), std::string_view(serialized));
-
-  // Verify can still deserialize correctly.
   auto outputSchema = projector.projectedSchema();
-  auto result = deserialize(
-      toString(projected),
-      outputSchema,
-      {.version = SerializationVersion::kCompact});
-  ASSERT_EQ(result->size(), 3);
+  for (bool useIOBuf : {false, true}) {
+    SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
+    auto projected = projectInput(projector, serialized, useIOBuf);
 
-  auto resultRow = result->as<RowVector>();
-  EXPECT_EQ(resultRow->childAt(0)->as<FlatVector<int32_t>>()->valueAt(0), 1);
-  EXPECT_EQ(resultRow->childAt(1)->as<FlatVector<int64_t>>()->valueAt(0), 100);
+    // Fast path: output should be identical to input (pass through).
+    EXPECT_EQ(toString(projected), std::string_view(serialized));
+
+    // Verify can still deserialize correctly.
+    auto result = deserialize(
+        toString(projected),
+        outputSchema,
+        {.version = SerializationVersion::kCompact});
+    ASSERT_EQ(result->size(), 3);
+
+    auto resultRow = result->as<RowVector>();
+    EXPECT_EQ(resultRow->childAt(0)->as<FlatVector<int32_t>>()->valueAt(0), 1);
+    EXPECT_EQ(
+        resultRow->childAt(1)->as<FlatVector<int64_t>>()->valueAt(0), 100);
+  }
 }
 
 // Test that unsupported operations throw.
@@ -616,8 +614,7 @@ TEST_F(ProjectorTest, unsupportedArraySubscript) {
           inputSchema,
           subfields,
           pool_.get(),
-          {.inputHasVersionHeader = true,
-           .projectVersion = SerializationVersion::kCompact}),
+          {.projectVersion = SerializationVersion::kCompact}),
       "Unsupported subfield kind");
 }
 
@@ -636,8 +633,7 @@ TEST_F(ProjectorTest, unsupportedMapKeyProjection) {
           inputSchema,
           subfields,
           pool_.get(),
-          {.inputHasVersionHeader = true,
-           .projectVersion = SerializationVersion::kCompact}),
+          {.projectVersion = SerializationVersion::kCompact}),
       "String subscript");
 }
 
@@ -775,25 +771,27 @@ TEST_F(ProjectorTest, projectEntireFlatMapColumn) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kCompact});
+      {.projectVersion = SerializationVersion::kCompact});
 
   auto outputSchema = projector.projectedSchema();
-  auto projected = projector.project(serialized);
+  for (bool useIOBuf : {false, true}) {
+    SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
+    auto projected = projectInput(projector, serialized, useIOBuf);
 
-  // Deserialize and verify.
-  auto result = deserialize(
-      toString(projected),
-      outputSchema,
-      {.version = SerializationVersion::kCompact});
+    // Deserialize and verify.
+    auto result = deserialize(
+        toString(projected),
+        outputSchema,
+        {.version = SerializationVersion::kCompact});
 
-  ASSERT_EQ(result->size(), 2);
-  auto resultRow = result->as<RowVector>();
-  auto featuresMap = resultRow->childAt(0)->as<MapVector>();
+    ASSERT_EQ(result->size(), 2);
+    auto resultRow = result->as<RowVector>();
+    auto featuresMap = resultRow->childAt(0)->as<MapVector>();
 
-  // Each row should have 3 entries (all keys).
-  for (vector_size_t i = 0; i < numRows; ++i) {
-    EXPECT_EQ(featuresMap->sizeAt(i), 3);
+    // Each row should have 3 entries (all keys).
+    for (vector_size_t i = 0; i < numRows; ++i) {
+      EXPECT_EQ(featuresMap->sizeAt(i), 3);
+    }
   }
 }
 
@@ -861,25 +859,27 @@ TEST_F(ProjectorTest, projectFlatMapAllKeys) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kCompact});
+      {.projectVersion = SerializationVersion::kCompact});
 
   auto outputSchema = projector.projectedSchema();
-  auto projected = projector.project(serialized);
+  for (bool useIOBuf : {false, true}) {
+    SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
+    auto projected = projectInput(projector, serialized, useIOBuf);
 
-  // Deserialize and verify.
-  auto result = deserialize(
-      toString(projected),
-      outputSchema,
-      {.version = SerializationVersion::kCompact});
+    // Deserialize and verify.
+    auto result = deserialize(
+        toString(projected),
+        outputSchema,
+        {.version = SerializationVersion::kCompact});
 
-  ASSERT_EQ(result->size(), 2);
-  auto resultRow = result->as<RowVector>();
-  auto featuresMap = resultRow->childAt(0)->as<MapVector>();
+    ASSERT_EQ(result->size(), 2);
+    auto resultRow = result->as<RowVector>();
+    auto featuresMap = resultRow->childAt(0)->as<MapVector>();
 
-  // Each row should have 3 entries (all keys).
-  for (vector_size_t i = 0; i < numRows; ++i) {
-    EXPECT_EQ(featuresMap->sizeAt(i), 3);
+    // Each row should have 3 entries (all keys).
+    for (vector_size_t i = 0; i < numRows; ++i) {
+      EXPECT_EQ(featuresMap->sizeAt(i), 3);
+    }
   }
 }
 
@@ -970,8 +970,7 @@ TEST_F(ProjectorTest, flatMapStreamIndices) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kCompact});
+      {.projectVersion = SerializationVersion::kCompact});
 
   const auto& indices = projector.testingInputStreamIndices();
   LOG(INFO) << "Projected stream indices: ";
@@ -1071,8 +1070,7 @@ TEST_F(ProjectorTest, projectFlatMapSingleKey) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kCompact});
+      {.projectVersion = SerializationVersion::kCompact});
 
   auto outputSchema = projector.projectedSchema();
 
@@ -1085,19 +1083,22 @@ TEST_F(ProjectorTest, projectFlatMapSingleKey) {
   ASSERT_EQ(outputSchema->asRow().childAt(0)->asFlatMap().nameAt(0), "2");
 
   // Project and deserialize.
-  auto projected = projector.project(serialized);
-  auto result = deserialize(
-      toString(projected),
-      outputSchema,
-      {.version = SerializationVersion::kCompact});
+  for (bool useIOBuf : {false, true}) {
+    SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
+    auto projected = projectInput(projector, serialized, useIOBuf);
+    auto result = deserialize(
+        toString(projected),
+        outputSchema,
+        {.version = SerializationVersion::kCompact});
 
-  ASSERT_EQ(result->size(), 3);
-  auto resultRow = result->as<RowVector>();
-  auto featuresMap = resultRow->childAt(0)->as<MapVector>();
+    ASSERT_EQ(result->size(), 3);
+    auto resultRow = result->as<RowVector>();
+    auto featuresMap = resultRow->childAt(0)->as<MapVector>();
 
-  // Each row should have 1 entry (key 2).
-  for (vector_size_t i = 0; i < numRows; ++i) {
-    EXPECT_EQ(featuresMap->sizeAt(i), 1);
+    // Each row should have 1 entry (key 2).
+    for (vector_size_t i = 0; i < numRows; ++i) {
+      EXPECT_EQ(featuresMap->sizeAt(i), 1);
+    }
   }
 }
 
@@ -1166,8 +1167,7 @@ TEST_F(ProjectorTest, projectFlatMapMultipleKeys) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kCompact});
+      {.projectVersion = SerializationVersion::kCompact});
 
   auto outputSchema = projector.projectedSchema();
 
@@ -1178,19 +1178,22 @@ TEST_F(ProjectorTest, projectFlatMapMultipleKeys) {
   ASSERT_EQ(outputSchema->asRow().childAt(0)->asFlatMap().nameAt(1), "c");
 
   // Project and deserialize.
-  auto projected = projector.project(serialized);
-  auto result = deserialize(
-      toString(projected),
-      outputSchema,
-      {.version = SerializationVersion::kCompact});
+  for (bool useIOBuf : {false, true}) {
+    SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
+    auto projected = projectInput(projector, serialized, useIOBuf);
+    auto result = deserialize(
+        toString(projected),
+        outputSchema,
+        {.version = SerializationVersion::kCompact});
 
-  ASSERT_EQ(result->size(), 2);
-  auto resultRow = result->as<RowVector>();
-  auto featuresMap = resultRow->childAt(0)->as<MapVector>();
+    ASSERT_EQ(result->size(), 2);
+    auto resultRow = result->as<RowVector>();
+    auto featuresMap = resultRow->childAt(0)->as<MapVector>();
 
-  // Each row should have 2 entries (keys a and c).
-  for (vector_size_t i = 0; i < numRows; ++i) {
-    EXPECT_EQ(featuresMap->sizeAt(i), 2);
+    // Each row should have 2 entries (keys a and c).
+    for (vector_size_t i = 0; i < numRows; ++i) {
+      EXPECT_EQ(featuresMap->sizeAt(i), 2);
+    }
   }
 }
 
@@ -1260,8 +1263,7 @@ TEST_F(ProjectorTest, projectFlatMapNonExistentKey) {
           inputSchema,
           subfields,
           pool_.get(),
-          {.inputHasVersionHeader = true,
-           .projectVersion = SerializationVersion::kCompact}),
+          {.projectVersion = SerializationVersion::kCompact}),
       "Key '999' not found in FlatMapType");
 }
 
@@ -1283,8 +1285,7 @@ TEST_F(ProjectorTest, streamIndicesCorrect) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kCompact});
+      {.projectVersion = SerializationVersion::kCompact});
 
   const auto& indices = projector.testingInputStreamIndices();
   ASSERT_EQ(indices.size(), 2);
@@ -1341,20 +1342,21 @@ TEST_F(ProjectorTest, projectWithUpdatedRowType) {
           inputSchema,
           subfields,
           pool_.get(),
-          {.inputHasVersionHeader = true,
-           .projectVersion = SerializationVersion::kCompact}),
+          {.projectVersion = SerializationVersion::kCompact}),
       "Field 'new_id' not found in RowType");
 
   // With projectType, name mapping is auto-computed and projection succeeds.
   Projector::Options opts{
-      .inputHasVersionHeader = true,
       .projectVersion = SerializationVersion::kCompact,
       .projectType = projectType,
   };
   Projector projector(inputSchema, subfields, pool_.get(), opts);
 
-  auto projected = projector.project(serialized);
-  ASSERT_FALSE(projected.empty());
+  for (bool useIOBuf : {false, true}) {
+    SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
+    auto projected = projectInput(projector, serialized, useIOBuf);
+    ASSERT_FALSE(projected.empty());
+  }
 
   // Verify projected schema uses new names from projectType.
   auto projectedSchema = projector.projectedSchema();
@@ -1453,8 +1455,7 @@ TEST_F(ProjectorTest, projectWithUpdatedNestedRowType) {
         inputSchema,
         subfields,
         pool_.get(),
-        {.inputHasVersionHeader = true,
-         .projectVersion = SerializationVersion::kCompact});
+        {.projectVersion = SerializationVersion::kCompact});
     const auto& nestedRow = projectorNoType.projectedSchema()
                                 ->asRow()
                                 .childAt(0)
@@ -1466,14 +1467,16 @@ TEST_F(ProjectorTest, projectWithUpdatedNestedRowType) {
 
   // With projectType, nested row field is renamed.
   Projector::Options opts{
-      .inputHasVersionHeader = true,
       .projectVersion = SerializationVersion::kCompact,
       .projectType = projectType,
   };
   Projector projector(inputSchema, subfields, pool_.get(), opts);
 
-  auto projected = projector.project(serialized);
-  ASSERT_FALSE(projected.empty());
+  for (bool useIOBuf : {false, true}) {
+    SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
+    auto projected = projectInput(projector, serialized, useIOBuf);
+    ASSERT_FALSE(projected.empty());
+  }
 
   // Verify projected FlatMap has key_a with nested row using new field name.
   auto projectedSchema = projector.projectedSchema();
@@ -1570,8 +1573,7 @@ TEST_F(ProjectorTest, projectNestedFieldUnderFlatMapValue) {
           inputSchema,
           subfields,
           pool_.get(),
-          {.inputHasVersionHeader = true,
-           .projectVersion = SerializationVersion::kCompact}),
+          {.projectVersion = SerializationVersion::kCompact}),
       "Field 'new_value' not found in RowType");
 
   // With projectType, nested field is renamed and projection succeeds.
@@ -1579,12 +1581,14 @@ TEST_F(ProjectorTest, projectNestedFieldUnderFlatMapValue) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kCompact,
+      {.projectVersion = SerializationVersion::kCompact,
        .projectType = projectType});
 
-  auto projected = projector.project(serialized);
-  ASSERT_FALSE(projected.empty());
+  for (bool useIOBuf : {false, true}) {
+    SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
+    auto projected = projectInput(projector, serialized, useIOBuf);
+    ASSERT_FALSE(projected.empty());
+  }
 
   // Verify projected schema: features -> key_a -> row with new_value.
   auto projectedSchema = projector.projectedSchema();
@@ -1702,8 +1706,7 @@ TEST_F(ProjectorTest, projectMultipleFlatMapColumns) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.inputHasVersionHeader = true,
-       .projectVersion = SerializationVersion::kCompact});
+      {.projectVersion = SerializationVersion::kCompact});
 
   auto outputSchema = projector.projectedSchema();
 
@@ -1719,37 +1722,40 @@ TEST_F(ProjectorTest, projectMultipleFlatMapColumns) {
 
   // Project and deserialize — this was crashing before the fix due to
   // misaligned stream offsets between schema and data.
-  auto projected = projector.project(serialized);
-  auto result = deserialize(
-      toString(projected),
-      outputSchema,
-      {.version = SerializationVersion::kCompact});
+  for (bool useIOBuf : {false, true}) {
+    SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
+    auto projected = projectInput(projector, serialized, useIOBuf);
+    auto result = deserialize(
+        toString(projected),
+        outputSchema,
+        {.version = SerializationVersion::kCompact});
 
-  ASSERT_EQ(result->size(), numRows);
-  auto resultRow = result->as<RowVector>();
+    ASSERT_EQ(result->size(), numRows);
+    auto resultRow = result->as<RowVector>();
 
-  // Verify map_a projected values (key "x").
-  auto resultMapA = resultRow->childAt(0)->as<MapVector>();
-  for (vector_size_t i = 0; i < numRows; ++i) {
-    ASSERT_EQ(resultMapA->sizeAt(i), 1);
-    auto keyIdx = resultMapA->offsetAt(i);
-    auto keyVec = resultMapA->mapKeys()->as<FlatVector<StringView>>();
-    EXPECT_EQ(keyVec->valueAt(keyIdx).str(), "x");
-    auto valVec = resultMapA->mapValues()->as<FlatVector<int32_t>>();
-    // key "x" is at even positions (0, 2, 4) in the input.
-    EXPECT_EQ(valVec->valueAt(keyIdx), (i * aEntriesPerRow + 1) * 10);
-  }
+    // Verify map_a projected values (key "x").
+    auto resultMapA = resultRow->childAt(0)->as<MapVector>();
+    for (vector_size_t i = 0; i < numRows; ++i) {
+      ASSERT_EQ(resultMapA->sizeAt(i), 1);
+      auto keyIdx = resultMapA->offsetAt(i);
+      auto keyVec = resultMapA->mapKeys()->as<FlatVector<StringView>>();
+      EXPECT_EQ(keyVec->valueAt(keyIdx).str(), "x");
+      auto valVec = resultMapA->mapValues()->as<FlatVector<int32_t>>();
+      // key "x" is at even positions (0, 2, 4) in the input.
+      EXPECT_EQ(valVec->valueAt(keyIdx), (i * aEntriesPerRow + 1) * 10);
+    }
 
-  // Verify map_b projected values (key "q").
-  auto resultMapB = resultRow->childAt(1)->as<MapVector>();
-  for (vector_size_t i = 0; i < numRows; ++i) {
-    ASSERT_EQ(resultMapB->sizeAt(i), 1);
-    auto keyIdx = resultMapB->offsetAt(i);
-    auto keyVec = resultMapB->mapKeys()->as<FlatVector<StringView>>();
-    EXPECT_EQ(keyVec->valueAt(keyIdx).str(), "q");
-    auto valVec = resultMapB->mapValues()->as<FlatVector<int64_t>>();
-    // key "q" is at odd positions (1, 3, 5) in the input.
-    EXPECT_EQ(valVec->valueAt(keyIdx), (i * bEntriesPerRow + 2) * 100L);
+    // Verify map_b projected values (key "q").
+    auto resultMapB = resultRow->childAt(1)->as<MapVector>();
+    for (vector_size_t i = 0; i < numRows; ++i) {
+      ASSERT_EQ(resultMapB->sizeAt(i), 1);
+      auto keyIdx = resultMapB->offsetAt(i);
+      auto keyVec = resultMapB->mapKeys()->as<FlatVector<StringView>>();
+      EXPECT_EQ(keyVec->valueAt(keyIdx).str(), "q");
+      auto valVec = resultMapB->mapValues()->as<FlatVector<int64_t>>();
+      // key "q" is at odd positions (1, 3, 5) in the input.
+      EXPECT_EQ(valVec->valueAt(keyIdx), (i * bEntriesPerRow + 2) * 100L);
+    }
   }
 }
 
@@ -1899,12 +1905,7 @@ TEST_F(ProjectorTestBase, flatMapInMapStreamSkipping) {
   // Project all columns through the projector.
   auto subfields = makeSubfields({"id", "flat_map"});
   Projector projector(
-      nimbleSchema,
-      subfields,
-      pool_.get(),
-      Projector::Options{
-          .inputHasVersionHeader = true,
-      });
+      nimbleSchema, subfields, pool_.get(), Projector::Options{});
   auto outputSchema = projector.projectedSchema();
 
   // Verify each projected batch deserializes correctly.
@@ -1914,18 +1915,74 @@ TEST_F(ProjectorTestBase, flatMapInMapStreamSkipping) {
 
   for (size_t i = 0; i < inputs.size(); ++i) {
     SCOPED_TRACE(fmt::format("batch {}", i));
-    auto projected = projector.project(serializedData[i]);
-    auto result = deserialize(
-        toString(projected),
-        outputSchema,
-        {.version = SerializationVersion::kCompact});
-    ASSERT_EQ(result->size(), inputs[i]->size());
-    for (vector_size_t j = 0; j < inputs[i]->size(); ++j) {
-      ASSERT_TRUE(result->equalValueAt(inputs[i].get(), j, j))
-          << "index " << j << "\nExpected: " << inputs[i]->toString(j)
-          << "\nActual: " << result->toString(j);
+    for (bool useIOBuf : {false, true}) {
+      SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
+      auto projected = projectInput(projector, serializedData[i], useIOBuf);
+      auto result = deserialize(
+          toString(projected),
+          outputSchema,
+          {.version = SerializationVersion::kCompact});
+      ASSERT_EQ(result->size(), inputs[i]->size());
+      for (vector_size_t j = 0; j < inputs[i]->size(); ++j) {
+        ASSERT_TRUE(result->equalValueAt(inputs[i].get(), j, j))
+            << "index " << j << "\nExpected: " << inputs[i]->toString(j)
+            << "\nActual: " << result->toString(j);
+      }
     }
   }
+}
+
+// Test that chained IOBuf input works correctly.
+TEST_F(ProjectorTest, chainedIOBufInput) {
+  auto type = ROW({
+      {"a", INTEGER()},
+      {"b", BIGINT()},
+      {"c", VARCHAR()},
+  });
+
+  auto vec = makeSimpleRowVector(
+      {"a", "b", "c"},
+      {
+          makeIntVector<int32_t>({1, 2, 3}),
+          makeIntVector<int64_t>({100, 200, 300}),
+          makeStringVector({"x", "y", "z"}),
+      });
+
+  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
+  auto serialized = serialize(vec, type, serOpts);
+  auto inputSchema = getNimbleSchema(type, serOpts);
+
+  // Split the serialized buffer into two chained IOBuf segments at midpoint.
+  ASSERT_GT(serialized.size(), 2);
+  const auto mid = serialized.size() / 2;
+  auto chainedBuf = folly::IOBuf::copyBuffer(serialized.data(), mid);
+  chainedBuf->appendToChain(
+      folly::IOBuf::copyBuffer(
+          serialized.data() + mid, serialized.size() - mid));
+
+  // Project column "b" from chained input.
+  auto subfields = makeSubfields({"b"});
+  Projector projector(inputSchema, subfields, pool_.get(), {});
+  auto outputSchema = projector.projectedSchema();
+
+  auto projected = projector.project(*chainedBuf);
+  auto result = deserialize(
+      toString(projected),
+      outputSchema,
+      {.version = SerializationVersion::kCompact});
+  ASSERT_EQ(result->size(), 3);
+
+  auto resultRow = result->as<RowVector>();
+  auto bCol = resultRow->childAt(0)->as<FlatVector<int64_t>>();
+  EXPECT_EQ(bCol->valueAt(0), 100);
+  EXPECT_EQ(bCol->valueAt(1), 200);
+  EXPECT_EQ(bCol->valueAt(2), 300);
+
+  // Verify pass-through also works with chained IOBuf.
+  auto allSubfields = makeSubfields({"a", "b", "c"});
+  Projector passThroughProjector(inputSchema, allSubfields, pool_.get(), {});
+  auto passThrough = passThroughProjector.project(*chainedBuf);
+  EXPECT_EQ(toString(passThrough), serialized);
 }
 
 } // namespace facebook::nimble::serde
