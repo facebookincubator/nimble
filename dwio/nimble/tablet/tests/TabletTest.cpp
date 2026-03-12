@@ -208,7 +208,7 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
       case BufferedInputMode::kCachedBufferedInput:
         if (!allocator_) {
           allocator_ = std::make_shared<velox::memory::MallocAllocator>(
-              velox::memory::MallocAllocator::Options{
+              velox::memory::MemoryAllocator::Options{
                   .capacity = 1UL << 30, .reservationByteLimit = 0});
         }
         if (!cache_) {
@@ -3892,7 +3892,7 @@ TEST_P(TabletWithIndexTest, cacheWarmPath) {
 
   // Initialize cache before the cold reader so we can verify it starts empty.
   allocator_ = std::make_shared<velox::memory::MallocAllocator>(
-      velox::memory::MallocAllocator::Options{
+      velox::memory::MemoryAllocator::Options{
           .capacity = 1UL << 30, .reservationByteLimit = 0});
   cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
 
@@ -4146,7 +4146,7 @@ TEST_P(TabletTest, cacheWarmPath) {
   // Initialize cache before the cold reader so we can verify it starts empty.
   // Normally lazy-initialized in createBufferedInput.
   allocator_ = std::make_shared<velox::memory::MallocAllocator>(
-      velox::memory::MallocAllocator::Options{
+      velox::memory::MemoryAllocator::Options{
           .capacity = 1UL << 30, .reservationByteLimit = 0});
   cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
 
@@ -4263,7 +4263,7 @@ TEST(TabletStressTest, concurrentReadersWithCacheEviction) {
 
   // Shared cache infrastructure.
   auto allocator = std::make_shared<velox::memory::MallocAllocator>(
-      velox::memory::MallocAllocator::Options{
+      velox::memory::MemoryAllocator::Options{
           .capacity = 1UL << 30, .reservationByteLimit = 0});
   auto cache = velox::cache::AsyncDataCache::create(allocator.get());
   auto executor = std::make_unique<folly::CPUThreadPoolExecutor>(4);
