@@ -27,11 +27,10 @@ namespace facebook::nimble {
 
 constexpr uint64_t kNullSize = 1;
 
-// Returns the size in bytes for a given TypeKind.
-// Used for calculating key sizes in passthrough flatmaps and for
-// handling type mismatches between vector types and schema types.
-// Returns std::nullopt for variable-length types (VARCHAR, VARBINARY, etc.)
-std::optional<size_t> getTypeSizeFromKind(velox::TypeKind kind);
+/// Returns the logical byte size for a fixed-width Velox type.
+/// For TIMESTAMP returns 12 bytes (8 + 4) to match DWRF/Nimble convention.
+/// Returns std::nullopt for variable-length or complex types.
+std::optional<size_t> getTypeSize(const velox::Type& type);
 
 // Get raw size from vector with schema and flatmap node IDs.
 // flatMapNodeIds contains the node IDs that are configured as flatmaps.
