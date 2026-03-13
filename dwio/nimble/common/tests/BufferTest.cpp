@@ -122,4 +122,90 @@ TEST_F(BufferTest, GetMemoryPool) {
   EXPECT_GT(poolRef.capacity(), 0);
 }
 
+TEST_F(BufferTest, resetReusesFirstChunk) {
+  Buffer buffer(*pool_, 4096);
+  EXPECT_EQ(buffer.testingChunkCount(), 1);
+  EXPECT_EQ(buffer.testingCurrentChunkIndex(), 0);
+
+  // Reserve within the first chunk.
+  char* ptr1 = buffer.reserve(100);
+  std::memset(ptr1, 'A', 100);
+
+  // Reset and reserve again — should reuse the same chunk.
+  buffer.reset();
+  EXPECT_EQ(buffer.testingChunkCount(), 1);
+  EXPECT_EQ(buffer.testingCurrentChunkIndex(), 0);
+
+  char* ptr2 = buffer.reserve(100);
+  ASSERT_NE(ptr2, nullptr);
+  // Should get the same pointer since we reset to the beginning.
+  EXPECT_EQ(ptr1, ptr2);
+}
+
+TEST_F(BufferTest, resetReusesMultipleChunks) {
+  // Use a small initial chunk so we can force multiple chunks.
+  Buffer buffer(*pool_, 4096);
+  EXPECT_EQ(buffer.testingChunkCount(), 1);
+
+  // Force a second chunk by reserving more than kMinChunkSize.
+  constexpr uint64_t bigSize = 2 * 1024 * 1024;
+  char* bigPtr1 = buffer.reserve(bigSize);
+  std::memset(bigPtr1, 'B', bigSize);
+  EXPECT_EQ(buffer.testingChunkCount(), 2);
+  EXPECT_EQ(buffer.testingCurrentChunkIndex(), 1);
+
+  // Reset — should go back to chunk 0, but keep both chunks.
+  buffer.reset();
+  EXPECT_EQ(buffer.testingChunkCount(), 2);
+  EXPECT_EQ(buffer.testingCurrentChunkIndex(), 0);
+
+  // Small reserve fits in first chunk.
+  char* smallPtr = buffer.reserve(100);
+  ASSERT_NE(smallPtr, nullptr);
+  EXPECT_EQ(buffer.testingCurrentChunkIndex(), 0);
+
+  // Large reserve should reuse the second chunk via tryAdvanceToNextChunk,
+  // not allocate a third.
+  char* bigPtr2 = buffer.reserve(bigSize);
+  ASSERT_NE(bigPtr2, nullptr);
+  EXPECT_EQ(buffer.testingChunkCount(), 2);
+  EXPECT_EQ(buffer.testingCurrentChunkIndex(), 1);
+  // Should be the same underlying memory.
+  EXPECT_EQ(bigPtr1, bigPtr2);
+}
+
+TEST_F(BufferTest, tryAdvanceSkipsTooSmallChunks) {
+  // kMinChunkSize is 1MB. Initial chunk is 1MB.
+  Buffer buffer(*pool_, 4096);
+  EXPECT_EQ(buffer.testingChunkCount(), 1);
+
+  // Force a second 2MB chunk.
+  constexpr uint64_t bigSize = 2 * 1024 * 1024;
+  buffer.reserve(bigSize);
+  EXPECT_EQ(buffer.testingChunkCount(), 2);
+
+  // Reset, then request 3MB — neither chunk (1MB or 2MB) can satisfy it,
+  // so a third chunk must be allocated.
+  constexpr uint64_t hugeSize = 3 * 1024 * 1024;
+  buffer.reset();
+  buffer.reserve(hugeSize);
+  EXPECT_EQ(buffer.testingChunkCount(), 3);
+  EXPECT_EQ(buffer.testingCurrentChunkIndex(), 2);
+}
+
+TEST_F(BufferTest, resetMultipleTimes) {
+  Buffer buffer(*pool_, 4096);
+
+  // Cycle reset+reserve multiple times — chunk count should stay stable.
+  for (int i = 0; i < 5; ++i) {
+    buffer.reset();
+    char* ptr = buffer.reserve(2048);
+    ASSERT_NE(ptr, nullptr);
+    std::memset(ptr, static_cast<char>('A' + i), 2048);
+    EXPECT_EQ(ptr[0], static_cast<char>('A' + i));
+  }
+  // Only the initial chunk should exist — no growth.
+  EXPECT_EQ(buffer.testingChunkCount(), 1);
+}
+
 } // namespace facebook::nimble::test

@@ -34,8 +34,8 @@
 
 namespace facebook::nimble {
 
-// Internally manages memory in chunks. Releases memory only upon destruction.
-// Buffer is NOT threadsafe: external locking is required.
+/// Internally manages memory in chunks. Releases memory only upon destruction.
+/// Buffer is NOT threadsafe: external locking is required.
 class Buffer {
   using MemoryPool = facebook::velox::memory::MemoryPool;
 
@@ -43,26 +43,17 @@ class Buffer {
   explicit Buffer(
       MemoryPool& memoryPool,
       uint64_t initialChunkSize = kMinChunkSize)
-      : memoryPool_(memoryPool) {
+      : memoryPool_(&memoryPool) {
     addChunk(initialChunkSize);
     reserveEnd_ = pos_;
   }
 
-  // Returns a pointer to a block of memory of size bytes that can be written
-  // to, and guarantees for the lifetime of *this that that region will remain
-  // valid. Does NOT guarantee that the region is initially 0'd.
-  char* reserve(uint64_t bytes) {
-    std::scoped_lock<std::mutex> l(mutex_);
-    if (reserveEnd_ + bytes <= chunkEnd_) {
-      pos_ = reserveEnd_;
-      reserveEnd_ += bytes;
-    } else {
-      addChunk(bytes);
-    }
-    return pos_;
-  }
+  /// Returns a pointer to a block of memory of size bytes that can be written
+  /// to, and guarantees for the lifetime of *this that that region will remain
+  /// valid. Does NOT guarantee that the region is initially 0'd.
+  char* reserve(uint64_t bytes);
 
-  // Copies |data| into the chunk, returning a view to the copied data.
+  /// Copies |data| into the chunk, returning a view to the copied data.
   std::string_view writeString(std::string_view data) {
     char* pos = reserve(data.size());
     // @lint-ignore CLANGSECURITY facebook-security-vulnerable-memcpy
@@ -71,7 +62,7 @@ class Buffer {
   }
 
   MemoryPool& getMemoryPool() {
-    return memoryPool_;
+    return *memoryPool_;
   }
 
   std::string_view takeOwnership(velox::BufferPtr&& bufferPtr) {
@@ -80,29 +71,46 @@ class Buffer {
     return chunk;
   }
 
+  /// Resets write pointers to the beginning of the first chunk.
+  /// Keeps all allocated chunks around for reuse. Previously returned
+  /// pointers/string_views are invalidated.
+  void reset();
+
+  /// Returns the number of allocated chunks. Only for testing.
+  uint32_t testingChunkCount() const {
+    return chunks_.size();
+  }
+
+  /// Returns the current chunk index. Only for testing.
+  uint32_t testingCurrentChunkIndex() const {
+    return chunkIndex_;
+  }
+
  private:
   static constexpr uint64_t kMinChunkSize = 1LL << 20;
 
-  void addChunk(uint64_t bytes) {
-    const uint64_t chunkSize = std::max(bytes, kMinChunkSize);
-    auto bufferPtr =
-        velox::AlignedBuffer::allocate<char>(chunkSize, &memoryPool_);
-    pos_ = bufferPtr->asMutable<char>();
-    chunkEnd_ = pos_ + chunkSize;
-    reserveEnd_ = pos_ + bytes;
-    chunks_.push_back(std::move(bufferPtr));
-  }
+  // Tries to advance to the next existing chunk that can fit 'bytes'.
+  // Returns true if a suitable chunk was found, false if a new allocation
+  // is needed. Must be called under mutex_.
+  bool tryAdvanceToNextChunk(uint64_t bytes);
 
-  char* chunkEnd_;
-  char* pos_;
-  char* reserveEnd_;
-  std::vector<velox::BufferPtr> chunks_;
-  MemoryPool& memoryPool_;
+  void addChunk(uint64_t bytes);
+
+  // --- Const members ---
+  MemoryPool* const memoryPool_;
+
+  // --- Mutable members (protected by mutex_) ---
+
   // NOTE: this is temporary fix, to quickly enable parallel access to the
   // buffer class. In the near future, we are going to templatize this class to
   // produce a concurrent and a non-concurrent variants, and change the call
   // sites to use each variant when needed.
   std::mutex mutex_;
+  char* chunkEnd_;
+  char* pos_;
+  char* reserveEnd_;
+  uint32_t chunkIndex_{0};
+  std::vector<velox::BufferPtr> chunks_;
 };
 
 } // namespace facebook::nimble
