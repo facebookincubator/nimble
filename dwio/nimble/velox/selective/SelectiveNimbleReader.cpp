@@ -97,6 +97,8 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
         streams_(readerBase_),
         rowSizeTracker_{
             std::make_unique<RowSizeTracker>(readerBase->fileSchemaWithId())} {
+    columnReaderStatistics_.initColumnStatsCollection(
+        *readerBase_->fileSchemaWithId(), options);
     initReadRange();
     initIndexBounds();
     if (options.eagerFirstStripeLoad()) {
@@ -303,6 +305,7 @@ uint64_t SelectiveNimbleRowReader::next(
 void SelectiveNimbleRowReader::updateRuntimeStats(
     dwio::common::RuntimeStatistics& stats) const {
   stats.skippedStrides += skippedStripes_;
+  stats.columnReaderStats.mergeFrom(columnReaderStatistics_);
 }
 
 void SelectiveNimbleRowReader::resetFilterCaches() {
