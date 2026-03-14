@@ -54,6 +54,9 @@ inline std::ostream& operator<<(
 }
 
 struct SerializerOptions {
+  /// Legacy (kLegacy) compression settings. These only apply when version is
+  /// kLegacy or nullopt. For kCompact, compression is controlled by
+  /// 'compressionOptions' below.
   CompressionType compressionType{CompressionType::Uncompressed};
   uint32_t compressionThreshold{0};
   int32_t compressionLevel{0};
@@ -77,7 +80,11 @@ struct SerializerOptions {
   };
 
   /// Compression options for encodings.
-  /// Only used when version is kCompact.
+  /// Only used when version is kCompact. To disable compression, set
+  /// compressionOptions.compressionAcceptRatio to 0 and override
+  /// encodingSelectionPolicyFactory to pass the options through (the default
+  /// factory constructs ManualEncodingSelectionPolicyFactory{} which uses its
+  /// own default CompressionOptions, ignoring this field).
   CompressionOptions compressionOptions{};
 
   /// Optional captured encoding layout tree.
