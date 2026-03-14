@@ -203,6 +203,9 @@ std::string formatName(const ::testing::TestParamInfo<TestParams>& info) {
       case SerializationVersion::kCompact:
         name = "DenseFormat";
         break;
+      case SerializationVersion::kCompactRaw:
+        name = "CompactRawFormat";
+        break;
     }
   }
   // Add compression suffix for encoding modes.
@@ -2367,5 +2370,7 @@ INSTANTIATE_TEST_SUITE_P(
             .version = SerializationVersion::kCompact,
             .compressionOptions =
                 {.compressionAcceptRatio = 1.0f, .zstdMinCompressionSize = 0},
-            .compressionEnabled = true}),
+            .compressionEnabled = true},
+        // kCompactRaw format without compression.
+        TestParams{.version = SerializationVersion::kCompactRaw}),
     formatName);

@@ -15,6 +15,7 @@
  */
 #include <gtest/gtest.h>
 
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/serializer/Options.h"
 
 using namespace facebook::nimble;
@@ -113,4 +114,36 @@ TEST(OptionsTest, deserializerOptionsWithDenseVersion) {
   EXPECT_TRUE(options.hasVersionHeader());
   EXPECT_EQ(options.serializationVersion(), SerializationVersion::kCompact);
   EXPECT_TRUE(options.enableEncoding());
+}
+
+TEST(OptionsTest, isCompactFormat) {
+  EXPECT_FALSE(isCompactFormat(SerializationVersion::kLegacy));
+  EXPECT_TRUE(isCompactFormat(SerializationVersion::kCompact));
+  EXPECT_TRUE(isCompactFormat(SerializationVersion::kCompactRaw));
+}
+
+TEST(OptionsTest, isCompactFormatOptional) {
+  EXPECT_FALSE(isCompactFormat(std::nullopt));
+  EXPECT_FALSE(isCompactFormat(std::optional{SerializationVersion::kLegacy}));
+  EXPECT_TRUE(isCompactFormat(std::optional{SerializationVersion::kCompact}));
+  EXPECT_TRUE(
+      isCompactFormat(std::optional{SerializationVersion::kCompactRaw}));
+}
+
+TEST(OptionsTest, getRawEncodingTypeBasic) {
+  EXPECT_EQ(getRawEncodingType(std::nullopt), EncodingType::Trivial);
+  EXPECT_EQ(getRawEncodingType(EncodingType::Trivial), EncodingType::Trivial);
+  EXPECT_EQ(getRawEncodingType(EncodingType::Varint), EncodingType::Varint);
+}
+
+TEST(OptionsTest, getRawEncodingTypeError) {
+  NIMBLE_ASSERT_THROW(
+      getRawEncodingType(EncodingType::RLE),
+      "Unsupported EncodingType for kCompactRaw");
+  NIMBLE_ASSERT_THROW(
+      getRawEncodingType(EncodingType::Dictionary),
+      "Unsupported EncodingType for kCompactRaw");
+  NIMBLE_ASSERT_THROW(
+      getRawEncodingType(EncodingType::FixedBitWidth),
+      "Unsupported EncodingType for kCompactRaw");
 }

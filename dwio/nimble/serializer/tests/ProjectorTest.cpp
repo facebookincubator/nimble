@@ -46,29 +46,24 @@ std::string toString(const folly::IOBuf& buf) {
   return result;
 }
 
-// Test parameter: input version (nullopt = no version header) and output
-// version.
+// Test parameter: input serialization version and output (project) version.
 struct FormatParam {
-  std::optional<SerializationVersion> inputVersion;
+  SerializationVersion inputVersion;
+  SerializationVersion projectVersion;
 
-  // For test naming. Output is always kCompact.
   std::string name() const {
-    if (!inputVersion.has_value()) {
-      return "NoVersion";
-    }
-    switch (inputVersion.value()) {
-      case SerializationVersion::kLegacy:
-        return "Legacy";
-      case SerializationVersion::kCompact:
-        return "Dense";
-    }
+    return fmt::format(
+        "{}To{}", toString(inputVersion), toString(projectVersion));
   }
 };
 
-// Generate format combinations. Both input and output must be kCompact.
+// Generate all legal input × output version combinations.
 std::vector<FormatParam> allFormatCombinations() {
   return {
-      {SerializationVersion::kCompact},
+      {SerializationVersion::kCompact, SerializationVersion::kCompact},
+      {SerializationVersion::kCompact, SerializationVersion::kCompactRaw},
+      {SerializationVersion::kCompactRaw, SerializationVersion::kCompact},
+      {SerializationVersion::kCompactRaw, SerializationVersion::kCompactRaw},
   };
 }
 
@@ -207,21 +202,17 @@ class ProjectorFormatTest : public ProjectorTestBase,
  protected:
   // Get serializer options for input format.
   SerializerOptions inputSerializerOptions() const {
-    const auto& param = GetParam();
-    if (!param.inputVersion.has_value()) {
-      return SerializerOptions{};
-    }
-    return SerializerOptions{.version = param.inputVersion.value()};
+    return SerializerOptions{.version = GetParam().inputVersion};
   }
 
-  // Get projector options. Output is always kCompact.
+  // Get projector options for output format.
   Projector::Options projectorOptions() const {
-    return Projector::Options{};
+    return Projector::Options{.projectVersion = GetParam().projectVersion};
   }
 
-  // Get deserializer options for output format. Always kCompact.
+  // Get deserializer options for output format.
   DeserializerOptions outputDeserializerOptions() const {
-    return {.version = SerializationVersion::kCompact};
+    return {.version = GetParam().projectVersion};
   }
 };
 

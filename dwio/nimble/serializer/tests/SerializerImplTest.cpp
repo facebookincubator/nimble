@@ -36,14 +36,28 @@ class WriteHeaderTest : public ::testing::Test {
   }
 
   // Helper to build a complete kCompact buffer: header + data + trailer.
-  std::string buildDenseHeaderTrailer(
+  std::string buildCompactHeaderTrailer(
       uint32_t rowCount,
       const std::vector<uint32_t>& sizes,
       std::optional<EncodingType> encodingType = std::nullopt) {
     std::string buffer;
     serde::detail::writeHeader(
         buffer, SerializationVersion::kCompact, rowCount);
-    serde::detail::writeTrailer(sizes, encodingType, pool_.get(), buffer);
+    facebook::nimble::Buffer encodingBuffer{*pool_};
+    serde::detail::writeCompactTrailer(
+        sizes, encodingType, encodingBuffer, buffer);
+    return buffer;
+  }
+
+  // Helper to build a complete kCompactRaw buffer: header + raw trailer.
+  std::string buildCompactRawHeaderTrailer(
+      uint32_t rowCount,
+      const std::vector<uint32_t>& sizes,
+      EncodingType encodingType = EncodingType::Trivial) {
+    std::string buffer;
+    serde::detail::writeHeader(
+        buffer, SerializationVersion::kCompactRaw, rowCount);
+    serde::detail::writeRawTrailer(sizes, encodingType, buffer);
     return buffer;
   }
 
@@ -62,20 +76,19 @@ class WriteHeaderTest : public ::testing::Test {
     EXPECT_EQ(actualVersion, expectedVersion);
 
     // Read row count. kCompact uses varint, kLegacy uses u32.
-    const bool isDense = (expectedVersion == SerializationVersion::kCompact);
+    const bool isCompact = isCompactFormat(expectedVersion);
     uint32_t actualRowCount;
-    if (isDense) {
+    if (isCompact) {
       actualRowCount = varint::readVarint32(&pos);
     } else {
       actualRowCount = encoding::readUint32(pos);
     }
     EXPECT_EQ(actualRowCount, expectedRowCount);
 
-    // For kCompact format, read sizesSize from last 4 bytes of trailer.
-    if (isDense) {
-      const uint32_t sizesSize = serde::detail::readStreamSizesEncodedSize(end);
-      auto actualSizes = serde::detail::decodeStreamSizes(
-          {end - sizeof(uint32_t) - sizesSize, sizesSize}, pool_.get());
+    // For kCompact/kCompactRaw, verify stream sizes from trailer.
+    if (isCompactFormat(expectedVersion)) {
+      auto actualSizes =
+          serde::detail::readStreamSizes(end, expectedVersion, pool_.get());
       EXPECT_EQ(actualSizes, expectedSizes);
     }
   }
@@ -89,26 +102,51 @@ TEST_F(WriteHeaderTest, legacyFormat) {
   verifyHeader(buffer, SerializationVersion::kLegacy, 100, {});
 }
 
-TEST_F(WriteHeaderTest, denseFormatWithSizes) {
-  // Dense sizes array: sizes[0]=10, sizes[1]=20, sizes[2]=30.
+TEST_F(WriteHeaderTest, compactFormatWithSizes) {
   std::vector<uint32_t> sizes = {10, 20, 30};
-  auto buffer = buildDenseHeaderTrailer(200, sizes);
+  auto buffer = buildCompactHeaderTrailer(200, sizes);
   verifyHeader(buffer, SerializationVersion::kCompact, 200, sizes);
 }
 
-TEST_F(WriteHeaderTest, denseFormatEmptySizes) {
-  auto buffer = buildDenseHeaderTrailer(10, {});
+TEST_F(WriteHeaderTest, compactFormatEmptySizes) {
+  auto buffer = buildCompactHeaderTrailer(10, {});
   verifyHeader(buffer, SerializationVersion::kCompact, 10, {});
 }
 
-TEST_F(WriteHeaderTest, denseFormatManySizes) {
-  // Dense sizes array with 200 entries (100 non-zero interleaved with zeros).
+TEST_F(WriteHeaderTest, compactFormatManySizes) {
+  // Sizes array with 200 entries (100 non-zero interleaved with zeros).
   std::vector<uint32_t> sizes(200, 0);
   for (uint32_t i = 0; i < 100; ++i) {
     sizes[i * 2] = i + 1;
   }
-  auto buffer = buildDenseHeaderTrailer(1000, sizes);
+  auto buffer = buildCompactHeaderTrailer(1000, sizes);
   verifyHeader(buffer, SerializationVersion::kCompact, 1000, sizes);
+}
+
+TEST_F(WriteHeaderTest, compactRawFormatTrivial) {
+  std::vector<uint32_t> sizes = {10, 20, 30};
+  auto buffer = buildCompactRawHeaderTrailer(200, sizes, EncodingType::Trivial);
+  verifyHeader(buffer, SerializationVersion::kCompactRaw, 200, sizes);
+}
+
+TEST_F(WriteHeaderTest, compactRawFormatVarint) {
+  std::vector<uint32_t> sizes = {10, 20, 30};
+  auto buffer = buildCompactRawHeaderTrailer(200, sizes, EncodingType::Varint);
+  verifyHeader(buffer, SerializationVersion::kCompactRaw, 200, sizes);
+}
+
+TEST_F(WriteHeaderTest, compactRawFormatEmptySizes) {
+  auto buffer = buildCompactRawHeaderTrailer(10, {});
+  verifyHeader(buffer, SerializationVersion::kCompactRaw, 10, {});
+}
+
+TEST_F(WriteHeaderTest, compactRawFormatManySizes) {
+  std::vector<uint32_t> sizes(200, 0);
+  for (uint32_t i = 0; i < 100; ++i) {
+    sizes[i * 2] = i + 1;
+  }
+  auto buffer = buildCompactRawHeaderTrailer(1000, sizes);
+  verifyHeader(buffer, SerializationVersion::kCompactRaw, 1000, sizes);
 }
 
 TEST_F(WriteHeaderTest, zeroRowCount) {
@@ -120,8 +158,13 @@ TEST_F(WriteHeaderTest, zeroRowCount) {
   }
   {
     SCOPED_TRACE("kCompact");
-    auto buffer = buildDenseHeaderTrailer(0, {});
+    auto buffer = buildCompactHeaderTrailer(0, {});
     verifyHeader(buffer, SerializationVersion::kCompact, 0, {});
+  }
+  {
+    SCOPED_TRACE("kCompactRaw");
+    auto buffer = buildCompactRawHeaderTrailer(0, {});
+    verifyHeader(buffer, SerializationVersion::kCompactRaw, 0, {});
   }
 }
 
@@ -142,10 +185,20 @@ TEST_F(WriteHeaderTest, maxRowCount) {
   {
     SCOPED_TRACE("kCompact");
     auto buffer =
-        buildDenseHeaderTrailer(std::numeric_limits<uint32_t>::max(), {});
+        buildCompactHeaderTrailer(std::numeric_limits<uint32_t>::max(), {});
     verifyHeader(
         buffer,
         SerializationVersion::kCompact,
+        std::numeric_limits<uint32_t>::max(),
+        {});
+  }
+  {
+    SCOPED_TRACE("kCompactRaw");
+    auto buffer =
+        buildCompactRawHeaderTrailer(std::numeric_limits<uint32_t>::max(), {});
+    verifyHeader(
+        buffer,
+        SerializationVersion::kCompactRaw,
         std::numeric_limits<uint32_t>::max(),
         {});
   }
@@ -214,6 +267,34 @@ TEST_F(WriteHeaderTest, estimateHeaderSizeLegacy) {
   }
 }
 
+TEST_F(WriteHeaderTest, estimateHeaderSizeCompactRaw) {
+  struct TestParam {
+    uint32_t rowCount;
+    std::string debugString() const {
+      return fmt::format("rowCount {}", rowCount);
+    }
+  };
+  std::vector<TestParam> testSettings = {
+      {0},
+      {1},
+      {127},
+      {128},
+      {16383},
+      {16384},
+      {1000000},
+      {std::numeric_limits<uint32_t>::max()}};
+  for (const auto& testData : testSettings) {
+    SCOPED_TRACE(testData.debugString());
+    std::string buffer;
+    serde::detail::writeHeader(
+        buffer, SerializationVersion::kCompactRaw, testData.rowCount);
+    EXPECT_EQ(
+        serde::detail::estimateHeaderSize(
+            SerializationVersion::kCompactRaw, testData.rowCount),
+        buffer.size());
+  }
+}
+
 TEST_F(WriteHeaderTest, estimateHeaderSizeNoVersion) {
   std::string buffer;
   serde::detail::writeHeader(buffer, std::nullopt, 100);
@@ -221,9 +302,9 @@ TEST_F(WriteHeaderTest, estimateHeaderSizeNoVersion) {
       serde::detail::estimateHeaderSize(std::nullopt, 100), buffer.size());
 }
 
-// Tests for estimateTrailerSize
+// Tests for estimateCompactTrailerSize
 
-TEST_F(WriteHeaderTest, estimateTrailerSize) {
+TEST_F(WriteHeaderTest, estimateCompactTrailerSize) {
   struct TestParam {
     std::vector<uint32_t> sizes;
     std::string debugString() const {
@@ -240,10 +321,11 @@ TEST_F(WriteHeaderTest, estimateTrailerSize) {
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.debugString());
     std::string buffer;
-    serde::detail::writeTrailer(
-        testData.sizes, std::nullopt, pool_.get(), buffer);
+    facebook::nimble::Buffer encodingBuffer{*pool_};
+    serde::detail::writeCompactTrailer(
+        testData.sizes, std::nullopt, encodingBuffer, buffer);
     EXPECT_GE(
-        serde::detail::estimateTrailerSize(testData.sizes.size()),
+        serde::detail::estimateCompactTrailerSize(testData.sizes.size()),
         buffer.size())
         << "Estimate must be >= actual trailer size";
   }
@@ -466,7 +548,8 @@ TEST_F(ParseStreamsTest, denseFormatEmpty) {
   // Write header + trailer with empty sizes array, then parse.
   std::string buffer;
   serde::detail::writeHeader(buffer, SerializationVersion::kCompact, 10);
-  serde::detail::writeTrailer({}, std::nullopt, pool_.get(), buffer);
+  facebook::nimble::Buffer encodingBuffer{*pool_};
+  serde::detail::writeCompactTrailer({}, std::nullopt, encodingBuffer, buffer);
 
   auto streams = serde::detail::parseStreams(
       // Skip version byte and row count varint.
@@ -490,7 +573,9 @@ TEST_F(ParseStreamsTest, denseFormatSequential) {
   for (const auto& d : data) {
     buffer.append(d);
   }
-  serde::detail::writeTrailer(sizes, std::nullopt, pool_.get(), buffer);
+  facebook::nimble::Buffer encodingBuffer{*pool_};
+  serde::detail::writeCompactTrailer(
+      sizes, std::nullopt, encodingBuffer, buffer);
 
   // Skip version byte + varint row count.
   const char* pos = buffer.data() + 1;
@@ -518,7 +603,9 @@ TEST_F(ParseStreamsTest, denseFormatWithGaps) {
   buffer.append("zero");
   buffer.append("two");
   buffer.append("five");
-  serde::detail::writeTrailer(sizes, std::nullopt, pool_.get(), buffer);
+  facebook::nimble::Buffer encodingBuffer{*pool_};
+  serde::detail::writeCompactTrailer(
+      sizes, std::nullopt, encodingBuffer, buffer);
 
   const char* pos = buffer.data() + 1;
   varint::readVarint32(&pos);
@@ -546,7 +633,9 @@ TEST_F(ParseStreamsTest, denseFormatOnlyLastStream) {
   std::string buffer;
   serde::detail::writeHeader(buffer, SerializationVersion::kCompact, 100);
   buffer.append("hello");
-  serde::detail::writeTrailer(sizes, std::nullopt, pool_.get(), buffer);
+  facebook::nimble::Buffer encodingBuffer{*pool_};
+  serde::detail::writeCompactTrailer(
+      sizes, std::nullopt, encodingBuffer, buffer);
 
   const char* pos = buffer.data() + 1;
   varint::readVarint32(&pos);
@@ -565,7 +654,7 @@ TEST_F(ParseStreamsTest, denseFormatOnlyLastStream) {
   EXPECT_EQ(streams[4], "hello");
 }
 
-// Tests for encodeTyped / decodeStreamSizes roundtrip.
+// Tests for readStreamSizes roundtrip (kCompact).
 
 class EncodeDecodeTest : public ::testing::Test {
  protected:
@@ -577,22 +666,19 @@ class EncodeDecodeTest : public ::testing::Test {
     pool_ = memory::memoryManager()->addLeafPool("encode_decode_test");
   }
 
-  // Helper to encode a uint32_t array using nimble encoding.
-  // Returns the raw encoded buffer (no size prefix).
-  std::string encodeAndWrite(const std::vector<uint32_t>& values) {
+  // Helper to build a kCompact trailer (encoded sizes + trailer size u32).
+  std::string buildCompactTrailer(const std::vector<uint32_t>& values) {
+    std::string buffer;
     facebook::nimble::Buffer encodingBuffer{*pool_};
-    ManualEncodingSelectionPolicyFactory factory;
-    auto encoded = serde::detail::encodeTyped<uint32_t>(
-        values, encodingBuffer, [&factory](DataType dataType) {
-          return factory.createPolicy(dataType);
-        });
-    return std::string(encoded.data(), encoded.size());
+    serde::detail::writeCompactTrailer(
+        values, std::nullopt, encodingBuffer, buffer);
+    return buffer;
   }
 
   std::shared_ptr<memory::MemoryPool> pool_;
 };
 
-TEST_F(EncodeDecodeTest, decodeStreamSizesRoundtrip) {
+TEST_F(EncodeDecodeTest, readStreamSizesRoundtrip) {
   struct TestParam {
     std::vector<uint32_t> values;
     std::string debugString() const {
@@ -609,20 +695,26 @@ TEST_F(EncodeDecodeTest, decodeStreamSizesRoundtrip) {
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.debugString());
 
-    auto buffer = encodeAndWrite(testData.values);
-    auto decoded = serde::detail::decodeStreamSizes(buffer, pool_.get());
+    auto buffer = buildCompactTrailer(testData.values);
+    auto decoded = serde::detail::readStreamSizes(
+        buffer.data() + buffer.size(),
+        SerializationVersion::kCompact,
+        pool_.get());
     EXPECT_EQ(decoded, testData.values);
   }
 }
 
-TEST_F(EncodeDecodeTest, decodeStreamSizesLargeValues) {
+TEST_F(EncodeDecodeTest, readStreamSizesLargeValues) {
   std::vector<uint32_t> values;
   for (uint32_t i = 0; i < 1000; ++i) {
-    values.push_back(i * 3);
+    values.emplace_back(i * 3);
   }
 
-  auto buffer = encodeAndWrite(values);
-  auto decoded = serde::detail::decodeStreamSizes(buffer, pool_.get());
+  auto buffer = buildCompactTrailer(values);
+  auto decoded = serde::detail::readStreamSizes(
+      buffer.data() + buffer.size(),
+      SerializationVersion::kCompact,
+      pool_.get());
   EXPECT_EQ(decoded, values);
 }
 
@@ -640,7 +732,9 @@ TEST_F(EncodeDecodeTest, streamSizesEncodingType) {
     buffer.append("s0");
     buffer.append("s1");
     buffer.append("s2");
-    serde::detail::writeTrailer(sizes, encodingType, pool_.get(), buffer);
+    facebook::nimble::Buffer encodingBuffer{*pool_};
+    serde::detail::writeCompactTrailer(
+        sizes, encodingType, encodingBuffer, buffer);
 
     const char* pos = buffer.data() + 1;
     varint::readVarint32(&pos);
@@ -665,7 +759,9 @@ TEST_F(EncodeDecodeTest, streamSizesEncodingTypeDefault) {
   buffer.append("a");
   buffer.append("b");
   buffer.append("c");
-  serde::detail::writeTrailer(sizes, std::nullopt, pool_.get(), buffer);
+  facebook::nimble::Buffer encodingBuffer{*pool_};
+  serde::detail::writeCompactTrailer(
+      sizes, std::nullopt, encodingBuffer, buffer);
 
   const char* pos = buffer.data() + 1;
   varint::readVarint32(&pos);
@@ -682,6 +778,76 @@ TEST_F(EncodeDecodeTest, streamSizesEncodingTypeDefault) {
 }
 
 // Tests for projectStreams
+
+namespace {
+
+struct ProjectedStream {
+  uint32_t index;
+  std::string_view data;
+
+  ProjectedStream(uint32_t idx, std::string_view d) : index(idx), data(d) {}
+
+  bool operator<(const ProjectedStream& other) const {
+    return index < other.index;
+  }
+};
+
+std::vector<ProjectedStream> projectStreams(
+    const char* pos,
+    const char* end,
+    SerializationVersion version,
+    const std::vector<uint32_t>& selectedStreamIndices,
+    facebook::velox::memory::MemoryPool* pool) {
+  NIMBLE_CHECK_NOT_NULL(pool);
+  std::vector<ProjectedStream> streams;
+  streams.reserve(selectedStreamIndices.size());
+
+  if (isCompactFormat(version)) {
+    auto streamSizes = serde::detail::readStreamSizes(end, version, pool);
+    const char* dataStart = pos;
+
+    uint32_t dataOffset = 0;
+    uint32_t nextSelectedStreamIdx = 0;
+    const uint32_t numStreams = streamSizes.size();
+    for (uint32_t i = 0;
+         i < numStreams && nextSelectedStreamIdx < selectedStreamIndices.size();
+         ++i) {
+      if (i == selectedStreamIndices[nextSelectedStreamIdx]) {
+        if (streamSizes[i] > 0) {
+          streams.emplace_back(
+              ProjectedStream{
+                  nextSelectedStreamIdx,
+                  {dataStart + dataOffset, streamSizes[i]}});
+        }
+        ++nextSelectedStreamIdx;
+      }
+      dataOffset += streamSizes[i];
+    }
+  } else {
+    NIMBLE_CHECK_EQ(
+        version,
+        SerializationVersion::kLegacy,
+        "unexpected version {}",
+        version);
+    for (uint32_t streamIdx = 0, nextProjected = 0;
+         pos < end && nextProjected < selectedStreamIndices.size();
+         ++streamIdx) {
+      if (streamIdx == selectedStreamIndices[nextProjected]) {
+        auto data = serde::detail::readStream<false>(pos);
+        if (!data.empty()) {
+          streams.emplace_back(nextProjected, data);
+        }
+        ++nextProjected;
+      } else {
+        serde::detail::skipStream<false>(pos);
+      }
+    }
+  }
+
+  return streams;
+}
+
+} // namespace
 
 class ProjectStreamsTest : public ParseStreamsTest {
  protected:
@@ -712,7 +878,9 @@ class ProjectStreamsTest : public ParseStreamsTest {
     }
 
     // Write trailer with encoded sizes.
-    serde::detail::writeTrailer(sizes, std::nullopt, pool_.get(), buffer);
+    facebook::nimble::Buffer encodingBuffer{*pool_};
+    serde::detail::writeCompactTrailer(
+        sizes, std::nullopt, encodingBuffer, buffer);
 
     // Skip version byte + varint row count to get to streams position.
     const char* pos = buffer.data() + 1;
@@ -725,7 +893,7 @@ class ProjectStreamsTest : public ParseStreamsTest {
 TEST_F(ProjectStreamsTest, legacySelectAll) {
   auto buffer = buildLegacyBuffer({"aaa", "bbb", "ccc"});
   std::vector<uint32_t> selected = {0, 1, 2};
-  auto streams = serde::detail::projectStreams(
+  auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
       SerializationVersion::kLegacy,
@@ -744,7 +912,7 @@ TEST_F(ProjectStreamsTest, legacySelectAll) {
 TEST_F(ProjectStreamsTest, legacySelectSubset) {
   auto buffer = buildLegacyBuffer({"aaa", "bbb", "ccc", "ddd", "eee"});
   std::vector<uint32_t> selected = {1, 3};
-  auto streams = serde::detail::projectStreams(
+  auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
       SerializationVersion::kLegacy,
@@ -761,7 +929,7 @@ TEST_F(ProjectStreamsTest, legacySelectSubset) {
 TEST_F(ProjectStreamsTest, legacySelectFirst) {
   auto buffer = buildLegacyBuffer({"aaa", "bbb", "ccc"});
   std::vector<uint32_t> selected = {0};
-  auto streams = serde::detail::projectStreams(
+  auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
       SerializationVersion::kLegacy,
@@ -776,7 +944,7 @@ TEST_F(ProjectStreamsTest, legacySelectFirst) {
 TEST_F(ProjectStreamsTest, legacySelectLast) {
   auto buffer = buildLegacyBuffer({"aaa", "bbb", "ccc"});
   std::vector<uint32_t> selected = {2};
-  auto streams = serde::detail::projectStreams(
+  auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
       SerializationVersion::kLegacy,
@@ -791,7 +959,7 @@ TEST_F(ProjectStreamsTest, legacySelectLast) {
 TEST_F(ProjectStreamsTest, legacySkipsEmptyStreams) {
   auto buffer = buildLegacyBuffer({"aaa", "", "ccc"});
   std::vector<uint32_t> selected = {0, 1, 2};
-  auto streams = serde::detail::projectStreams(
+  auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
       SerializationVersion::kLegacy,
@@ -809,7 +977,7 @@ TEST_F(ProjectStreamsTest, legacySkipsEmptyStreams) {
 TEST_F(ProjectStreamsTest, legacyAllEmpty) {
   auto buffer = buildLegacyBuffer({"", "", ""});
   std::vector<uint32_t> selected = {0, 1, 2};
-  auto streams = serde::detail::projectStreams(
+  auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
       SerializationVersion::kLegacy,
@@ -822,7 +990,7 @@ TEST_F(ProjectStreamsTest, denseSelectAll) {
   auto buffer = buildDenseBuffer({{0, "aaa"}, {1, "bbb"}, {2, "ccc"}});
 
   std::vector<uint32_t> selected = {0, 1, 2};
-  auto streams = serde::detail::projectStreams(
+  auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
       SerializationVersion::kCompact,
@@ -843,7 +1011,7 @@ TEST_F(ProjectStreamsTest, denseSelectSubset) {
       {{0, "aaa"}, {1, "bbb"}, {2, "ccc"}, {3, "ddd"}, {4, "eee"}});
 
   std::vector<uint32_t> selected = {1, 3};
-  auto streams = serde::detail::projectStreams(
+  auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
       SerializationVersion::kCompact,
@@ -862,7 +1030,7 @@ TEST_F(ProjectStreamsTest, denseWithGaps) {
   auto buffer = buildDenseBuffer({{0, "zero"}, {2, "two"}, {5, "five"}});
 
   std::vector<uint32_t> selected = {0, 5};
-  auto streams = serde::detail::projectStreams(
+  auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
       SerializationVersion::kCompact,
@@ -881,7 +1049,7 @@ TEST_F(ProjectStreamsTest, denseSelectedNotInInput) {
   auto buffer = buildDenseBuffer({{0, "zero"}, {2, "two"}});
 
   std::vector<uint32_t> selected = {0, 1, 2};
-  auto streams = serde::detail::projectStreams(
+  auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
       SerializationVersion::kCompact,
@@ -900,7 +1068,7 @@ TEST_F(ProjectStreamsTest, denseEmpty) {
   auto buffer = buildDenseBuffer({});
 
   std::vector<uint32_t> selected = {0, 1};
-  auto streams = serde::detail::projectStreams(
+  auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
       SerializationVersion::kCompact,
@@ -913,7 +1081,7 @@ TEST_F(ProjectStreamsTest, denseSelectFirstAndLast) {
   auto buffer = buildDenseBuffer({{0, "zero"}, {1, "one"}, {2, "two"}});
 
   std::vector<uint32_t> selected = {0, 2};
-  auto streams = serde::detail::projectStreams(
+  auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
       SerializationVersion::kCompact,
@@ -931,7 +1099,7 @@ TEST_F(ProjectStreamsTest, denseSkipsEmptyStreams) {
   auto buffer = buildDenseBuffer({{0, "aaa"}, {1, ""}, {2, "ccc"}});
 
   std::vector<uint32_t> selected = {0, 1, 2};
-  auto streams = serde::detail::projectStreams(
+  auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
       SerializationVersion::kCompact,

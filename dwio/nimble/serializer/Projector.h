@@ -21,6 +21,7 @@
 #include <string_view>
 #include <vector>
 
+#include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "folly/container/F14Map.h"
@@ -69,12 +70,14 @@ using Subfield = velox::common::Subfield;
 class Projector {
  public:
   struct Options {
-    /// Output serialization format version. Must be kCompact.
+    /// Output serialization format version. Must be kCompact or kCompactRaw.
     SerializationVersion projectVersion{SerializationVersion::kCompact};
 
     /// Optional encoding type for stream sizes in the sizes header.
-    /// When specified, forces sizes to use this encoding type.
-    /// When nullopt (default), uses cost-based selection.
+    /// For kCompact: when specified, forces nimble encoding to this type.
+    /// For kCompactRaw: only Trivial and Varint are supported.
+    ///   When nullopt, defaults to Trivial.
+    /// When nullopt (default), uses cost-based selection for kCompact.
     std::optional<EncodingType> streamSizesEncodingType{};
 
     /// Optional velox type with up-to-date column names from the current
@@ -145,10 +148,14 @@ class Projector {
   void buildProjectedSchema(const SelectedChildrenMap& selectedChildren);
 
   // Projects a contiguous (non-chained) IOBuf using raw pointer arithmetic.
-  folly::IOBuf projectContiguous(const folly::IOBuf& input) const;
+  folly::IOBuf projectContiguous(
+      const folly::IOBuf& input,
+      SerializationVersion inputVersion) const;
 
   // Projects a chained IOBuf using folly::io::Cursor.
-  folly::IOBuf projectChained(const folly::IOBuf& input) const;
+  folly::IOBuf projectChained(
+      const folly::IOBuf& input,
+      SerializationVersion inputVersion) const;
 
   // Appends the trailer to the output IOBuf chain and returns it.
   folly::IOBuf buildProjectedOutput(
@@ -157,6 +164,9 @@ class Projector {
 
   velox::memory::MemoryPool* const pool_;
   const Options options_;
+
+  // Reusable encoding buffer for stream sizes trailer. Reset before each use.
+  mutable nimble::Buffer streamSizesEncodingBuffer_;
 
   std::shared_ptr<const Type> inputSchema_;
   // Built during construction.
