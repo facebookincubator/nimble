@@ -16,6 +16,8 @@
 
 #include "dwio/nimble/serializer/Options.h"
 
+#include "dwio/nimble/common/Exceptions.h"
+
 namespace facebook::nimble {
 
 std::string toString(SerializationVersion version) {
@@ -24,8 +26,26 @@ std::string toString(SerializationVersion version) {
       return "kLegacy";
     case SerializationVersion::kCompact:
       return "kCompact";
+    case SerializationVersion::kCompactRaw:
+      return "kCompactRaw";
+    default:
+      NIMBLE_FAIL(
+          "Unknown SerializationVersion: {}", static_cast<int>(version));
   }
-  return fmt::format("Unknown({})", static_cast<uint8_t>(version));
+}
+
+EncodingType getRawEncodingType(std::optional<EncodingType> encodingType) {
+  if (!encodingType.has_value()) {
+    return EncodingType::Trivial;
+  }
+  switch (*encodingType) {
+    case EncodingType::Trivial:
+    case EncodingType::Varint:
+      return *encodingType;
+    default:
+      NIMBLE_FAIL(
+          "Unsupported EncodingType for kCompactRaw: {}", *encodingType);
+  }
 }
 
 bool SerializerOptions::hasVersionHeader() const {
@@ -37,7 +57,7 @@ SerializationVersion SerializerOptions::serializationVersion() const {
 }
 
 bool SerializerOptions::enableEncoding() const {
-  return serializationVersion() == SerializationVersion::kCompact;
+  return isCompactFormat(serializationVersion());
 }
 
 bool DeserializerOptions::hasVersionHeader() const {
@@ -49,7 +69,7 @@ SerializationVersion DeserializerOptions::serializationVersion() const {
 }
 
 bool DeserializerOptions::enableEncoding() const {
-  return serializationVersion() == SerializationVersion::kCompact;
+  return isCompactFormat(serializationVersion());
 }
 
 } // namespace facebook::nimble

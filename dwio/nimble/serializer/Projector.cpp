@@ -623,6 +623,7 @@ Projector::Projector(
     Options options)
     : pool_(pool),
       options_(std::move(options)),
+      streamSizesEncodingBuffer_(*pool, /*initialChunkSize=*/4096),
       inputSchema_(std::move(inputSchema)) {
   NIMBLE_CHECK_NOT_NULL(pool_, "Memory pool cannot be null");
   NIMBLE_CHECK_NOT_NULL(inputSchema_, "Input schema cannot be null");
@@ -631,10 +632,10 @@ Projector::Projector(
       "Input schema must be a RowType, got: {}",
       inputSchema_->kind());
   NIMBLE_CHECK(!projectSubfields.empty(), "Must project at least one subfield");
-  NIMBLE_CHECK_EQ(
-      options_.projectVersion,
-      SerializationVersion::kCompact,
-      "Projection output version must be kCompact");
+  NIMBLE_CHECK(
+      isCompactFormat(options_.projectVersion),
+      "Projection output version must be kCompact or kCompactRaw, got: {}",
+      options_.projectVersion);
 
   // Update inputSchema_ with projectType names for schema evolution.
   if (options_.projectType) {
@@ -663,97 +664,108 @@ Projector::Projector(
 
 namespace {
 
-// Validates the input version header is kCompact.
-void validateInputVersion(const folly::IOBuf& input) {
+// Validates the input version header is kCompact or kCompactRaw.
+SerializationVersion getAndValidateInputVersion(const folly::IOBuf& input) {
   const auto version = static_cast<SerializationVersion>(*input.data());
-  NIMBLE_CHECK_EQ(
-      version,
-      SerializationVersion::kCompact,
-      "Input must be kCompact format, got: {}",
+  NIMBLE_CHECK(
+      isCompactFormat(version),
+      "Input must be kCompact or kCompactRaw format, got: {}",
       version);
-}
-
-// Parses the trailer (encoded stream sizes) from a chained IOBuf.
-// Tries the fast path first: read directly from the tail segment (O(1)).
-// Falls back to cursor + pull() if the trailer spans a chain boundary.
-inline std::vector<uint32_t> parseEncodedStreamSizes(
-    const folly::IOBuf& input,
-    velox::memory::MemoryPool* pool) {
-  const auto* tail = input.prev();
-  if (tail->length() >= sizeof(uint32_t)) {
-    const auto* tailEnd =
-        reinterpret_cast<const char*>(tail->data()) + tail->length();
-    const uint32_t encodedSize = detail::readStreamSizesEncodedSize(tailEnd);
-    if (tail->length() >= sizeof(uint32_t) + encodedSize) {
-      return detail::decodeStreamSizes(
-          {tailEnd - sizeof(uint32_t) - encodedSize, encodedSize}, pool);
-    }
-  }
-
-  // Fallback: trailer spans chain boundary — use cursor + pull().
-  const auto totalLength = input.computeChainDataLength();
-  folly::io::Cursor trailerCursor(&input);
-  trailerCursor.skip(totalLength - sizeof(uint32_t));
-  const uint32_t encodedSize = trailerCursor.read<uint32_t>();
-
-  folly::io::Cursor sizesCursor(&input);
-  sizesCursor.skip(totalLength - sizeof(uint32_t) - encodedSize);
-  std::string encodedSizesBuf(encodedSize, '\0');
-  sizesCursor.pull(encodedSizesBuf.data(), encodedSize);
-  return detail::decodeStreamSizes(encodedSizesBuf, pool);
+  return version;
 }
 
 // Projects selected streams from a contiguous IOBuf into the output chain.
-// Uses cloneOne() + trim for zero-copy sub-range views.
-std::vector<uint32_t> projectStreams(
+// Merges contiguous selected streams into a single zero-copy IOBuf clone to
+// minimize allocations and chain linking overhead. The input IOBuf must outlive
+// the output chain.
+std::vector<uint32_t> projectStreamsContiguous(
     const folly::IOBuf& input,
     size_t streamOffset,
     const std::vector<uint32_t>& streamSizes,
     const std::vector<uint32_t>& selectedIndices,
     std::unique_ptr<folly::IOBuf>& output) {
   std::vector<uint32_t> outputSizes(selectedIndices.size(), 0);
+
+  // Track the start offset and byte count of a contiguous run.
+  size_t runStart = 0;
+  size_t runBytes = 0;
+
+  auto flushRun = [&]() {
+    if (runBytes == 0) {
+      return;
+    }
+    // Zero-copy: clone the input and trim to the run's sub-range.
+    auto buf = input.cloneOne();
+    buf->trimStart(runStart);
+    buf->trimEnd(buf->length() - runBytes);
+    output->appendToChain(std::move(buf));
+    runBytes = 0;
+  };
+
   size_t nextSelectedIdx = 0;
+  size_t offset = streamOffset;
   for (size_t i = 0;
        i < streamSizes.size() && nextSelectedIdx < selectedIndices.size();
        ++i) {
     if (i == selectedIndices[nextSelectedIdx]) {
       if (streamSizes[i] > 0) {
-        auto streamBuf = input.cloneOne();
-        streamBuf->trimStart(streamOffset);
-        streamBuf->trimEnd(streamBuf->length() - streamSizes[i]);
         outputSizes[nextSelectedIdx] = streamSizes[i];
-        output->appendToChain(std::move(streamBuf));
+        if (runBytes == 0) {
+          runStart = offset;
+        }
+        runBytes += streamSizes[i];
       }
       ++nextSelectedIdx;
+    } else if (streamSizes[i] > 0 && runBytes > 0) {
+      flushRun();
     }
-    streamOffset += streamSizes[i];
+    offset += streamSizes[i];
   }
+  flushRun();
+
   return outputSizes;
 }
 
-// Projects selected streams from a chained IOBuf via cursor.clone().
-std::vector<uint32_t> projectStreams(
+// Projects selected streams from a chained IOBuf via cursor.
+// Merges contiguous selected streams into zero-copy IOBuf clones.
+std::vector<uint32_t> projectStreamsChained(
     folly::io::Cursor& cursor,
     const std::vector<uint32_t>& streamSizes,
     const std::vector<uint32_t>& selectedIndices,
     std::unique_ptr<folly::IOBuf>& output) {
   std::vector<uint32_t> outputSizes(selectedIndices.size(), 0);
   size_t nextSelectedIdx = 0;
+  size_t runBytes = 0;
+
+  auto flushRun = [&]() {
+    if (runBytes == 0) {
+      return;
+    }
+    // Zero-copy: clone the run's sub-range from the cursor, sharing the
+    // underlying IOBuf buffers via refcounting.
+    std::unique_ptr<folly::IOBuf> buf;
+    cursor.clone(buf, runBytes);
+    output->appendToChain(std::move(buf));
+    runBytes = 0;
+  };
+
   for (size_t i = 0;
        i < streamSizes.size() && nextSelectedIdx < selectedIndices.size();
        ++i) {
     if (i == selectedIndices[nextSelectedIdx]) {
       if (streamSizes[i] > 0) {
-        std::unique_ptr<folly::IOBuf> streamBuf;
-        cursor.clone(streamBuf, streamSizes[i]);
         outputSizes[nextSelectedIdx] = streamSizes[i];
-        output->appendToChain(std::move(streamBuf));
+        runBytes += streamSizes[i];
       }
       ++nextSelectedIdx;
-    } else {
+    } else if (streamSizes[i] > 0) {
+      if (runBytes > 0) {
+        flushRun();
+      }
       cursor.skip(streamSizes[i]);
     }
   }
+  flushRun();
   return outputSizes;
 }
 
@@ -762,15 +774,23 @@ std::vector<uint32_t> projectStreams(
 folly::IOBuf Projector::buildProjectedOutput(
     const std::vector<uint32_t>& outputStreamSizes,
     std::unique_ptr<folly::IOBuf> output) const {
-  IOBufSection trailer(detail::estimateTrailerSize(outputStreamSizes.size()));
+  IOBufSection trailer(
+      detail::estimateTrailerSize(
+          options_.projectVersion,
+          outputStreamSizes.size(),
+          options_.streamSizesEncodingType));
   detail::writeTrailer(
-      outputStreamSizes, options_.streamSizesEncodingType, pool_, trailer);
+      options_.projectVersion,
+      outputStreamSizes,
+      options_.streamSizesEncodingType,
+      streamSizesEncodingBuffer_,
+      trailer);
   output->appendToChain(std::move(trailer).build());
   return std::move(*output);
 }
 
 folly::IOBuf Projector::project(const folly::IOBuf& input) const {
-  validateInputVersion(input);
+  const auto inputVersion = getAndValidateInputVersion(input);
 
   // Fast path: pass-through when all streams selected.
   if (passThrough_) {
@@ -778,13 +798,16 @@ folly::IOBuf Projector::project(const folly::IOBuf& input) const {
   }
 
   if (!input.isChained()) {
-    return projectContiguous(input);
+    return projectContiguous(input, inputVersion);
   }
-  return projectChained(input);
+  return projectChained(input, inputVersion);
 }
 
-folly::IOBuf Projector::projectContiguous(const folly::IOBuf& input) const {
+folly::IOBuf Projector::projectContiguous(
+    const folly::IOBuf& input,
+    SerializationVersion inputVersion) const {
   const auto* data = reinterpret_cast<const char*>(input.data());
+  // Skip version byte (already validated and passed in).
   const auto* pos = data + sizeof(uint8_t);
   const uint32_t rowCount = varint::readVarint32(&pos);
 
@@ -794,10 +817,11 @@ folly::IOBuf Projector::projectContiguous(const folly::IOBuf& input) const {
   detail::writeHeader(header, options_.projectVersion, rowCount);
   auto output = std::move(header).build();
 
-  const auto inputStreamSizes = parseEncodedStreamSizes(input, pool_);
+  const auto inputStreamSizes =
+      detail::readStreamSizes(input, inputVersion, pool_);
 
   // Extract selected streams as zero-copy sub-range clones.
-  auto outputStreamSizes = projectStreams(
+  auto outputStreamSizes = projectStreamsContiguous(
       input,
       /*streamOffset=*/pos - data,
       inputStreamSizes,
@@ -807,8 +831,11 @@ folly::IOBuf Projector::projectContiguous(const folly::IOBuf& input) const {
   return buildProjectedOutput(outputStreamSizes, std::move(output));
 }
 
-folly::IOBuf Projector::projectChained(const folly::IOBuf& input) const {
+folly::IOBuf Projector::projectChained(
+    const folly::IOBuf& input,
+    SerializationVersion inputVersion) const {
   folly::io::Cursor cursor(&input);
+  // Skip version byte (already validated and passed in).
   cursor.skip(sizeof(uint8_t));
   const uint32_t rowCount = readVarint32(cursor);
 
@@ -818,11 +845,12 @@ folly::IOBuf Projector::projectChained(const folly::IOBuf& input) const {
   detail::writeHeader(header, options_.projectVersion, rowCount);
   auto output = std::move(header).build();
 
-  const auto inputStreamSizes = parseEncodedStreamSizes(input, pool_);
+  const auto inputStreamSizes =
+      detail::readStreamSizes(input, inputVersion, pool_);
 
   // Extract selected streams as zero-copy clones via cursor.
-  auto outputStreamSizes =
-      projectStreams(cursor, inputStreamSizes, inputStreamIndices_, output);
+  auto outputStreamSizes = projectStreamsChained(
+      cursor, inputStreamSizes, inputStreamIndices_, output);
 
   return buildProjectedOutput(outputStreamSizes, std::move(output));
 }

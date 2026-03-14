@@ -209,7 +209,8 @@ uint32_t StreamDataReader::initialize(std::string_view data) {
     const auto version = static_cast<SerializationVersion>(*pos_);
     NIMBLE_CHECK(
         version == SerializationVersion::kLegacy ||
-            version == SerializationVersion::kCompact,
+            version == SerializationVersion::kCompact ||
+            version == SerializationVersion::kCompactRaw,
         "Unsupported version {}",
         static_cast<uint8_t>(version));
     // Verify the version read from serialized data matches options.
@@ -232,16 +233,9 @@ void StreamDataReader::iterateStreams(
     const std::function<void(uint32_t offset, std::string_view data)>&
         callback) {
   if (options_.enableEncoding()) {
-    // kCompact format:
-    // [stream_data_0]...[stream_data_N][encoded_stream_sizes][stream_sizes_encoded_size:u32]
-    // Read stream_sizes_encoded_size from last 4 bytes, decode sizes from
-    // trailer.
-    const uint32_t streamSizesEncodedSize =
-        detail::readStreamSizesEncodedSize(end_);
-    const auto streamSizes = detail::decodeStreamSizes(
-        {end_ - sizeof(uint32_t) - streamSizesEncodedSize,
-         streamSizesEncodedSize},
-        pool_);
+    // kCompact/kCompactRaw format: read stream sizes from trailer.
+    const auto streamSizes =
+        detail::readStreamSizes(end_, options_.serializationVersion(), pool_);
 
     for (uint32_t i = 0; i < streamSizes.size(); ++i) {
       std::string_view streamData(pos_, streamSizes[i]);

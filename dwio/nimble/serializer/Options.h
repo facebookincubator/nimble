@@ -40,12 +40,37 @@ namespace facebook::nimble {
 ///         [encoded_stream_sizes][stream_sizes_encoded_size:u32]
 ///   The trailer contains nimble-encoded stream sizes (sizes[i] = byte size
 ///   of stream i, 0 for missing) followed by the encoded sizes length (u32).
+///
+/// - kCompactRaw: Same as kCompact but uses raw encoding for stream sizes
+///   instead of the nimble encoding framework. Stream values still use
+///   nimble encoding.
+///   Wire: [version:1B][rowCount:varint][stream_data_0]...[stream_data_N]
+///         [encodingType:1B][raw_sizes_payload][trailer_size:u32]
+///   trailer_size = 1 + len(raw_sizes_payload).
+///   Only EncodingType::Trivial and EncodingType::Varint are supported.
+///   See getRawEncodingType() for validation.
 enum class SerializationVersion : uint8_t {
   kLegacy = 0,
   kCompact = 1,
+  kCompactRaw = 2,
 };
 
 std::string toString(SerializationVersion version);
+
+/// Returns true if the version uses compact encoding (kCompact or kCompactRaw).
+inline bool isCompactFormat(SerializationVersion version) {
+  return version == SerializationVersion::kCompact ||
+      version == SerializationVersion::kCompactRaw;
+}
+
+/// Returns true if the optional version uses compact encoding.
+inline bool isCompactFormat(std::optional<SerializationVersion> version) {
+  return version.has_value() && isCompactFormat(version.value());
+}
+
+/// Validates and returns the EncodingType for kCompactRaw stream sizes.
+/// Only Trivial and Varint are supported. Defaults to Trivial when nullopt.
+EncodingType getRawEncodingType(std::optional<EncodingType> encodingType);
 
 inline std::ostream& operator<<(
     std::ostream& os,
@@ -100,7 +125,8 @@ struct SerializerOptions {
   /// Returns the effective serialization version.
   SerializationVersion serializationVersion() const;
 
-  /// Returns true if nimble encoding is enabled (version is kCompact).
+  /// Returns true if nimble encoding is enabled (version is kCompact or
+  /// kCompactRaw).
   bool enableEncoding() const;
 };
 
@@ -109,6 +135,7 @@ struct DeserializerOptions {
   /// - nullopt (default): Legacy format (version 0) with no version header.
   /// - kLegacy: Legacy compression format.
   /// - kCompact: Nimble encoding format with dense sizes header.
+  /// - kCompactRaw: Raw-encoded stream sizes (no nimble encoding overhead).
   std::optional<SerializationVersion> version{};
 
   /// Returns true if the serialized data has a version header byte.
@@ -117,7 +144,8 @@ struct DeserializerOptions {
   /// Returns the effective serialization version.
   SerializationVersion serializationVersion() const;
 
-  /// Returns true if nimble encoding is enabled (version is kCompact).
+  /// Returns true if nimble encoding is enabled (version is kCompact or
+  /// kCompactRaw).
   bool enableEncoding() const;
 };
 
