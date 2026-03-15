@@ -79,15 +79,9 @@ TEST(TypesTest, DataTypeStreamOperator) {
   EXPECT_EQ(ss.str(), "Int32");
 }
 
-TEST(TypesTest, DataTypeFormatAs) {
-  // format_as returns the underlying integer value
-  EXPECT_EQ(format_as(DataType::Int8), 1);
-  EXPECT_EQ(format_as(DataType::String), 12);
-}
-
 TEST(TypesTest, DataTypeFmtFormat) {
-  auto str = fmt::format("{}", DataType::Int32);
-  EXPECT_EQ(str, "5");
+  EXPECT_EQ(fmt::format("{}", DataType::Int32), "Int32");
+  EXPECT_EQ(fmt::format("{}", DataType::String), "String");
 }
 
 // --- toString for CompressionType ---

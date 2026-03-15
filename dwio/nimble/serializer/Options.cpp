@@ -34,17 +34,13 @@ std::string toString(SerializationVersion version) {
   }
 }
 
-EncodingType getRawEncodingType(std::optional<EncodingType> encodingType) {
-  if (!encodingType.has_value()) {
-    return EncodingType::Trivial;
-  }
-  switch (*encodingType) {
+EncodingType getRawEncodingType(EncodingType encodingType) {
+  switch (encodingType) {
     case EncodingType::Trivial:
     case EncodingType::Varint:
-      return *encodingType;
+      return encodingType;
     default:
-      NIMBLE_FAIL(
-          "Unsupported EncodingType for kCompactRaw: {}", *encodingType);
+      NIMBLE_FAIL("Unsupported EncodingType for kCompactRaw: {}", encodingType);
   }
 }
 

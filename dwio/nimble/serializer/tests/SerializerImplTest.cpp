@@ -18,6 +18,8 @@
 
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Varint.h"
+#include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/EncodingLayout.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "velox/common/memory/Memory.h"
 
@@ -39,7 +41,7 @@ class WriteHeaderTest : public ::testing::Test {
   std::string buildCompactHeaderTrailer(
       uint32_t rowCount,
       const std::vector<uint32_t>& sizes,
-      std::optional<EncodingType> encodingType = std::nullopt) {
+      EncodingType encodingType = EncodingType::Trivial) {
     std::string buffer;
     serde::detail::writeHeader(
         buffer, SerializationVersion::kCompact, rowCount);
@@ -323,7 +325,7 @@ TEST_F(WriteHeaderTest, estimateCompactTrailerSize) {
     std::string buffer;
     facebook::nimble::Buffer encodingBuffer{*pool_};
     serde::detail::writeCompactTrailer(
-        testData.sizes, std::nullopt, encodingBuffer, buffer);
+        testData.sizes, EncodingType::Trivial, encodingBuffer, buffer);
     EXPECT_GE(
         serde::detail::estimateCompactTrailerSize(testData.sizes.size()),
         buffer.size())
@@ -549,7 +551,8 @@ TEST_F(ParseStreamsTest, denseFormatEmpty) {
   std::string buffer;
   serde::detail::writeHeader(buffer, SerializationVersion::kCompact, 10);
   facebook::nimble::Buffer encodingBuffer{*pool_};
-  serde::detail::writeCompactTrailer({}, std::nullopt, encodingBuffer, buffer);
+  serde::detail::writeCompactTrailer(
+      {}, EncodingType::Trivial, encodingBuffer, buffer);
 
   auto streams = serde::detail::parseStreams(
       // Skip version byte and row count varint.
@@ -575,7 +578,7 @@ TEST_F(ParseStreamsTest, denseFormatSequential) {
   }
   facebook::nimble::Buffer encodingBuffer{*pool_};
   serde::detail::writeCompactTrailer(
-      sizes, std::nullopt, encodingBuffer, buffer);
+      sizes, EncodingType::Trivial, encodingBuffer, buffer);
 
   // Skip version byte + varint row count.
   const char* pos = buffer.data() + 1;
@@ -605,7 +608,7 @@ TEST_F(ParseStreamsTest, denseFormatWithGaps) {
   buffer.append("five");
   facebook::nimble::Buffer encodingBuffer{*pool_};
   serde::detail::writeCompactTrailer(
-      sizes, std::nullopt, encodingBuffer, buffer);
+      sizes, EncodingType::Trivial, encodingBuffer, buffer);
 
   const char* pos = buffer.data() + 1;
   varint::readVarint32(&pos);
@@ -635,7 +638,7 @@ TEST_F(ParseStreamsTest, denseFormatOnlyLastStream) {
   buffer.append("hello");
   facebook::nimble::Buffer encodingBuffer{*pool_};
   serde::detail::writeCompactTrailer(
-      sizes, std::nullopt, encodingBuffer, buffer);
+      sizes, EncodingType::Trivial, encodingBuffer, buffer);
 
   const char* pos = buffer.data() + 1;
   varint::readVarint32(&pos);
@@ -671,7 +674,7 @@ class EncodeDecodeTest : public ::testing::Test {
     std::string buffer;
     facebook::nimble::Buffer encodingBuffer{*pool_};
     serde::detail::writeCompactTrailer(
-        values, std::nullopt, encodingBuffer, buffer);
+        values, EncodingType::Trivial, encodingBuffer, buffer);
     return buffer;
   }
 
@@ -761,7 +764,7 @@ TEST_F(EncodeDecodeTest, streamSizesEncodingTypeDefault) {
   buffer.append("c");
   facebook::nimble::Buffer encodingBuffer{*pool_};
   serde::detail::writeCompactTrailer(
-      sizes, std::nullopt, encodingBuffer, buffer);
+      sizes, EncodingType::Trivial, encodingBuffer, buffer);
 
   const char* pos = buffer.data() + 1;
   varint::readVarint32(&pos);
@@ -880,7 +883,7 @@ class ProjectStreamsTest : public ParseStreamsTest {
     // Write trailer with encoded sizes.
     facebook::nimble::Buffer encodingBuffer{*pool_};
     serde::detail::writeCompactTrailer(
-        sizes, std::nullopt, encodingBuffer, buffer);
+        sizes, EncodingType::Trivial, encodingBuffer, buffer);
 
     // Skip version byte + varint row count to get to streams position.
     const char* pos = buffer.data() + 1;
@@ -1095,6 +1098,50 @@ TEST_F(ProjectStreamsTest, denseSelectFirstAndLast) {
   EXPECT_EQ(streams[1].data, "two");
 }
 
+// Verifies that writeCompactTrailer does not compress stream sizes,
+// even when the default encoding selection policy enables compression.
+TEST_F(EncodeDecodeTest, compactTrailerNoCompression) {
+  // Generate enough stream sizes that compression would normally be applied.
+  std::vector<uint32_t> sizes(500);
+  for (uint32_t i = 0; i < sizes.size(); ++i) {
+    sizes[i] = i * 7 + 1;
+  }
+
+  std::string buffer;
+  facebook::nimble::Buffer encodingBuffer{*pool_};
+  serde::detail::writeCompactTrailer(
+      sizes, EncodingType::Trivial, encodingBuffer, buffer);
+
+  // Read the trailer: last 4 bytes are trailerSize, preceding bytes are
+  // the encoded stream sizes.
+  const auto* end = buffer.data() + buffer.size();
+  const uint32_t trailerSize = serde::detail::readTrailerSize(end);
+  const auto* trailerStart = end - sizeof(uint32_t) - trailerSize;
+
+  // The encoded stream sizes use nimble encoding. The encoding prefix is:
+  //   EncodingType (1B) + DataType (1B) + rowCount (varint)
+  // For TrivialEncoding, the next byte after the prefix is the compression
+  // type. Verify it is Uncompressed regardless of encoding type.
+  auto encoding = EncodingFactory::decode(
+      *pool_,
+      {trailerStart, trailerSize},
+      nullptr,
+      Encoding::Options{.useVarintRowCount = true});
+  EXPECT_EQ(encoding->rowCount(), sizes.size());
+
+  // Verify roundtrip produces correct values (ensuring the encoding works).
+  std::vector<uint32_t> decoded(sizes.size());
+  encoding->materialize(sizes.size(), decoded.data());
+  EXPECT_EQ(decoded, sizes);
+
+  // Verify the compression byte in the raw encoding is Uncompressed.
+  // After the encoding prefix (EncodingType + DataType + varint rowCount),
+  // TrivialEncoding stores a 1-byte compression type.
+  const auto compressionByte =
+      static_cast<CompressionType>(trailerStart[encoding->dataOffset()]);
+  EXPECT_EQ(compressionByte, CompressionType::Uncompressed);
+}
+
 TEST_F(ProjectStreamsTest, denseSkipsEmptyStreams) {
   auto buffer = buildDenseBuffer({{0, "aaa"}, {1, ""}, {2, "ccc"}});
 
@@ -1112,4 +1159,154 @@ TEST_F(ProjectStreamsTest, denseSkipsEmptyStreams) {
   EXPECT_EQ(streams[0].data, "aaa");
   EXPECT_EQ(streams[1].index, 2);
   EXPECT_EQ(streams[1].data, "ccc");
+}
+
+// Tests for compressionOptions interaction with encoding layout tree.
+
+class EncodeTypedCompressionTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
+  }
+
+  void SetUp() override {
+    pool_ = memory::memoryManager()->addLeafPool("encode_typed_compression");
+  }
+
+  // Helper to verify leaf compression types in captured encoding layout.
+  void verifyLeafCompression(
+      const EncodingLayout& layout,
+      CompressionType expectedType) {
+    if (layout.encodingType() == EncodingType::Trivial ||
+        layout.encodingType() == EncodingType::FixedBitWidth) {
+      EXPECT_EQ(layout.compressionType(), expectedType);
+    }
+    for (uint32_t i = 0; i < layout.childrenCount(); ++i) {
+      auto child = layout.child(i);
+      if (child.has_value()) {
+        verifyLeafCompression(child.value(), expectedType);
+      }
+    }
+  }
+
+  std::shared_ptr<memory::MemoryPool> pool_;
+};
+
+// Verify that compressionOptions controls compression when encoding layout tree
+// is provided to encodeTyped.
+TEST_F(EncodeTypedCompressionTest, withEncodingLayout) {
+  Buffer buffer(*pool_);
+
+  ManualEncodingSelectionPolicyFactory factory{
+      ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      /*compressionOptions=*/std::nullopt};
+  auto policyFactory = [&factory](DataType dataType) {
+    return factory.createPolicy(dataType);
+  };
+
+  std::vector<uint32_t> data(100, 42);
+  EncodingLayout layout{
+      EncodingType::Trivial, {}, CompressionType::Uncompressed};
+
+  struct TestParam {
+    std::optional<CompressionOptions> compressionOptions;
+    std::string debugString() const {
+      return fmt::format("compress {}", compressionOptions.has_value());
+    }
+  };
+  std::vector<TestParam> testSettings = {
+      {std::nullopt},
+      {CompressionOptions{}},
+  };
+  for (const auto& testData : testSettings) {
+    SCOPED_TRACE(testData.debugString());
+    buffer.reset();
+
+    auto encoded = serde::detail::encodeTyped<uint32_t>(
+        std::span<const uint32_t>(data),
+        buffer,
+        policyFactory,
+        &layout,
+        testData.compressionOptions);
+
+    // Decode and verify round-trip.
+    auto encoding = EncodingFactory::decode(
+        *pool_,
+        encoded,
+        [&](uint32_t totalLength) -> void* {
+          return pool_->allocate(totalLength);
+        },
+        Encoding::Options{.useVarintRowCount = true});
+    EXPECT_EQ(encoding->encodingType(), EncodingType::Trivial);
+    EXPECT_EQ(encoding->rowCount(), data.size());
+
+    std::vector<uint32_t> decoded(data.size());
+    encoding->materialize(data.size(), decoded.data());
+    EXPECT_EQ(decoded, data);
+
+    // Verify compression type in the encoded output.
+    auto capturedLayout = EncodingLayoutCapture::capture(encoded);
+    if (!testData.compressionOptions.has_value()) {
+      verifyLeafCompression(capturedLayout, CompressionType::Uncompressed);
+    }
+  }
+}
+
+// Verify that compressionOptions has no effect when no encoding layout is
+// provided (manual policy path). The policy factory's own compression settings
+// are used instead.
+TEST_F(EncodeTypedCompressionTest, withoutEncodingLayout) {
+  Buffer buffer(*pool_);
+
+  // Factory with compression disabled.
+  ManualEncodingSelectionPolicyFactory noCompressFactory{
+      ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      /*compressionOptions=*/std::nullopt};
+  auto noCompressPolicyFactory = [&noCompressFactory](DataType dataType) {
+    return noCompressFactory.createPolicy(dataType);
+  };
+
+  std::vector<uint32_t> data(100, 42);
+
+  // Even though compressionOptions is set, it should be ignored because
+  // no encoding layout is provided — the factory's own settings are used.
+  buffer.reset();
+  auto encoded = serde::detail::encodeTyped<uint32_t>(
+      std::span<const uint32_t>(data),
+      buffer,
+      noCompressPolicyFactory,
+      /*encodingLayout=*/nullptr,
+      /*compressionOptions=*/CompressionOptions{});
+
+  auto capturedLayout = EncodingLayoutCapture::capture(encoded);
+  verifyLeafCompression(capturedLayout, CompressionType::Uncompressed);
+
+  // Verify round-trip.
+  auto encoding = EncodingFactory::decode(
+      *pool_,
+      encoded,
+      [&](uint32_t totalLength) -> void* {
+        return pool_->allocate(totalLength);
+      },
+      Encoding::Options{.useVarintRowCount = true});
+  std::vector<uint32_t> decoded(data.size());
+  encoding->materialize(data.size(), decoded.data());
+  EXPECT_EQ(decoded, data);
+}
+
+// Verify that the default SerializerOptions.encodingSelectionPolicyFactory
+// creates policies with compression disabled.
+TEST_F(EncodeTypedCompressionTest, defaultFactoryNoCompression) {
+  SerializerOptions options{};
+
+  auto policy = options.encodingSelectionPolicyFactory(DataType::Uint32);
+  auto* typed = dynamic_cast<EncodingSelectionPolicy<uint32_t>*>(policy.get());
+  ASSERT_NE(typed, nullptr);
+
+  std::vector<uint32_t> data(1000, 42);
+  auto result = typed->select(data, Statistics<uint32_t>::create(data));
+  auto compressionPolicy = result.compressionPolicyFactory();
+  EXPECT_EQ(
+      compressionPolicy->compression().compressionType,
+      CompressionType::Uncompressed);
 }

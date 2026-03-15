@@ -36,11 +36,9 @@ using namespace facebook::nimble;
 // compressionOptions path in ReplayedEncodingSelectionPolicy.
 struct TestParams {
   std::optional<SerializationVersion> version;
-  // Compression options for kCompact mode. Only used when encodingLayoutTree
-  // is specified.
-  CompressionOptions compressionOptions{};
-  // Whether compression is enabled (for test naming).
-  bool compressionEnabled{false};
+  // Compression options used with encodingLayoutTree.
+  // nullopt (default) means no compression.
+  std::optional<CompressionOptions> compressionOptions{};
 };
 
 class SerializationTest : public ::testing::TestWithParam<TestParams> {
@@ -59,12 +57,8 @@ class SerializationTest : public ::testing::TestWithParam<TestParams> {
     return GetParam().version;
   }
 
-  const CompressionOptions& compressionOptions() const {
+  const std::optional<CompressionOptions>& compressionOptions() const {
     return GetParam().compressionOptions;
-  }
-
-  bool compressionEnabled() const {
-    return GetParam().compressionEnabled;
   }
 
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
@@ -209,7 +203,7 @@ std::string formatName(const ::testing::TestParamInfo<TestParams>& info) {
     }
   }
   // Add compression suffix for encoding modes.
-  if (info.param.compressionEnabled) {
+  if (info.param.compressionOptions.has_value()) {
     name += "_Compressed";
   }
   return name;
@@ -1592,8 +1586,8 @@ TEST_P(SerializationTest, encodingLayoutTree) {
 
   SerializerOptions options{
       .version = version(),
-      .compressionOptions = compressionOptions(),
       .encodingLayoutTree = layoutTree,
+      .compressionOptions = compressionOptions(),
   };
 
   Serializer serializer{options, type, pool_.get()};
@@ -1874,8 +1868,8 @@ TEST_P(SerializationTest, encodingLayoutTreeFlatMap) {
   SerializerOptions options{
       .version = version(),
       .flatMapColumns = {"features", "tags"},
-      .compressionOptions = compressionOptions(),
       .encodingLayoutTree = layoutTree,
+      .compressionOptions = compressionOptions(),
   };
 
   Serializer serializer{options, type, pool_.get()};
@@ -2369,8 +2363,9 @@ INSTANTIATE_TEST_SUITE_P(
         TestParams{
             .version = SerializationVersion::kCompact,
             .compressionOptions =
-                {.compressionAcceptRatio = 1.0f, .zstdMinCompressionSize = 0},
-            .compressionEnabled = true},
+                CompressionOptions{
+                    .compressionAcceptRatio = 1.0f,
+                    .zstdMinCompressionSize = 0}},
         // kCompactRaw format without compression.
         TestParams{.version = SerializationVersion::kCompactRaw}),
     formatName);

@@ -20,11 +20,14 @@
 #include <utility>
 
 #include "dwio/nimble/common/Exceptions.h"
+
 #include "dwio/nimble/common/tests/GTestUtils.h"
+#include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/serializer/Deserializer.h"
 #include "dwio/nimble/serializer/DeserializerImpl.h"
 #include "dwio/nimble/serializer/Projector.h"
 #include "dwio/nimble/serializer/Serializer.h"
+#include "dwio/nimble/serializer/SerializerImpl.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "folly/container/F14Set.h"
 #include "velox/type/Subfield.h"
@@ -1974,6 +1977,50 @@ TEST_F(ProjectorTest, chainedIOBufInput) {
   Projector passThroughProjector(inputSchema, allSubfields, pool_.get(), {});
   auto passThrough = passThroughProjector.project(*chainedBuf);
   EXPECT_EQ(toString(passThrough), serialized);
+}
+
+// Verifies that projected output does not compress stream sizes in the trailer.
+TEST_F(ProjectorTest, projectedTrailerNoCompression) {
+  // Create a row with many columns to produce a large stream sizes trailer.
+  std::vector<std::string> names;
+  std::vector<VectorPtr> children;
+  const int numColumns = 50;
+  for (int i = 0; i < numColumns; ++i) {
+    names.push_back(fmt::format("c{}", i));
+    children.push_back(makeIntVector<int32_t>({i, i + 1, i + 2}));
+  }
+  auto type = ROW(std::vector<std::string>(names), extractTypes(children));
+  auto vec = makeSimpleRowVector(names, children);
+
+  // Serialize with kCompact.
+  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
+  auto serialized = serialize(vec, type, serOpts);
+  auto inputSchema = getNimbleSchema(type, serOpts);
+
+  // Project a subset of columns.
+  auto subfields = makeSubfields({"c0", "c10", "c20", "c30", "c49"});
+  Projector projector(inputSchema, subfields, pool_.get(), {});
+
+  auto projected = projector.project(std::string_view(serialized));
+  auto projectedStr = toString(projected);
+
+  // Extract the trailer from the projected output.
+  const auto* end = projectedStr.data() + projectedStr.size();
+  const uint32_t trailerSize = detail::readTrailerSize(end);
+  const auto* trailerStart = end - sizeof(uint32_t) - trailerSize;
+
+  // Decode the encoded stream sizes and check the compression type.
+  auto encoding = EncodingFactory::decode(
+      *pool_,
+      {trailerStart, trailerSize},
+      nullptr,
+      Encoding::Options{.useVarintRowCount = true});
+  EXPECT_GT(encoding->rowCount(), 0);
+
+  // Verify the compression byte in the encoding is Uncompressed.
+  const auto compressionByte =
+      static_cast<CompressionType>(trailerStart[encoding->dataOffset()]);
+  EXPECT_EQ(compressionByte, CompressionType::Uncompressed);
 }
 
 } // namespace facebook::nimble::serde
