@@ -3192,20 +3192,26 @@ class MergedFlatMapFieldReader final
     const velox::BufferPtr& offsets = vector->offsets();
     const uint32_t nonNullCount = this->loadNulls(rowCount, vector);
     nodes_.clear();
-    size_t totalChildren{0};
+    size_t totalMapEntries{0};
     for (auto& node : this->keyNodes_) {
       const auto numValues = node->readInMapData(nonNullCount);
       if (numValues > 0) {
         nodes_.push_back(node.get());
-        totalChildren += numValues;
+        totalMapEntries += numValues;
       }
     }
 
-    velox::VectorPtr nodeValues;
     velox::VectorPtr& valuesVector = vector->mapValues();
-    if (totalChildren > 0) {
-      keysVector->resize(totalChildren, false);
-      velox::BaseVector::prepareForReuse(valuesVector, totalChildren);
+    if (totalMapEntries > 0) {
+      keysVector->resize(totalMapEntries, false);
+      velox::BaseVector::prepareForReuse(valuesVector, totalMapEntries);
+    }
+
+    // Pre-load node values to enable direct element copy for ArrayVector
+    // values, bypassing copyRangesImpl's incremental resize.
+    nodeValues_.resize(nodes_.size());
+    for (size_t j = 0; j < nodes_.size(); ++j) {
+      nodes_[j]->loadValues(nodeValues_[j]);
     }
 
     auto* offsetsPtr = offsets->asMutable<velox::vector_size_t>();
@@ -3216,28 +3222,40 @@ class MergedFlatMapFieldReader final
     // Always access inMap and value streams node-wise to avoid large striding
     // through the memory and destroying CPU cache performance.
     //
-    // Index symbology used in this class:
-    // i : Row index
-    // j : Node index
-    for (size_t j = 0; j < nodes_.size(); ++j) {
-      copyRanges_.clear();
-      for (velox::vector_size_t i = 0; i < rowCount; ++i) {
-        if (!velox::bits::isBitSet(
-                rowWiseInMap_.data(), j + i * nodes_.size())) {
-          continue;
+    // Index symbology:
+    // i : Node index
+    // j : Row index
+    // For ArrayVector values (e.g., Map<K, Array<V>>), bypass copyRangesImpl
+    // and directly copy inner elements into a pre-sized buffer to avoid
+    // incremental realloc+memcpy. For other value types (FlatVector, etc.),
+    // fall through to the copyRanges path which has no resize overhead.
+    auto* arrayValues =
+        totalMapEntries > 0 ? valuesVector->as<velox::ArrayVector>() : nullptr;
+
+    if (arrayValues != nullptr) {
+      copyArrayValues(
+          arrayValues, flatKeysVector, rowCount, totalMapEntries, offsetsPtr);
+    } else {
+      // Non-array values (FlatVector, etc): use copyRanges.
+      for (size_t i = 0; i < nodes_.size(); ++i) {
+        copyRanges_.clear();
+        for (velox::vector_size_t j = 0; j < rowCount; ++j) {
+          if (!velox::bits::isBitSet(
+                  rowWiseInMap_.data(), i + j * nodes_.size())) {
+            continue;
+          }
+          const velox::vector_size_t sourceIndex = copyRanges_.size();
+          copyRanges_.push_back({sourceIndex, offsetsPtr[j], 1});
+          flatKeysVector->set(offsetsPtr[j], nodes_[i]->key().get());
+          ++offsetsPtr[j];
         }
-        const velox::vector_size_t sourceIndex = copyRanges_.size();
-        copyRanges_.push_back({sourceIndex, offsetsPtr[i], 1});
-        flatKeysVector->set(offsetsPtr[i], nodes_[j]->key().get());
-        ++offsetsPtr[i];
+        valuesVector->copyRanges(nodeValues_[i].get(), copyRanges_);
       }
-      nodes_[j]->loadValues(nodeValues);
-      valuesVector->copyRanges(nodeValues.get(), copyRanges_);
     }
     if (rowCount > 0) {
       NIMBLE_CHECK_EQ(
           offsetsPtr[rowCount - 1],
-          totalChildren,
+          totalMapEntries,
           "Total map entry size mismatch");
       // We updated `offsetsPtr' during the copy process, so that now it was
       // shifted to the left by 1 element (i.e. offsetsPtr[i] is really
@@ -3253,6 +3271,93 @@ class MergedFlatMapFieldReader final
   }
 
  private:
+  // Pre-allocates inner elements to the exact final size and directly copies,
+  // bypassing copyRangesImpl's incremental resize which causes O(N) reallocs.
+  void copyArrayValues(
+      velox::ArrayVector* arrayValues,
+      velox::FlatVector<T>* flatKeysVector,
+      velox::vector_size_t rowCount,
+      size_t totalMapEntries,
+      velox::vector_size_t* offsetsPtr) {
+    velox::vector_size_t totalElements = 0;
+    for (auto& nodeValue : nodeValues_) {
+      auto* sourceArray =
+          nodeValue->wrappedVector()->asUnchecked<velox::ArrayVector>();
+      for (velox::vector_size_t i = 0; i < nodeValue->size(); ++i) {
+        if (!nodeValue->isNullAt(i)) {
+          totalElements += sourceArray->sizeAt(nodeValue->wrappedIndex(i));
+        }
+      }
+    }
+
+    auto& elements = arrayValues->elements();
+    elements->resize(totalElements);
+    auto* valuesOffsets = arrayValues->mutableOffsets(totalMapEntries)
+                              ->asMutable<velox::vector_size_t>();
+    auto* valuesSizes = arrayValues->mutableSizes(totalMapEntries)
+                            ->asMutable<velox::vector_size_t>();
+
+    velox::vector_size_t elementOffset = 0;
+    for (size_t i = 0; i < nodes_.size(); ++i) {
+      auto* sourceArray =
+          nodeValues_[i]->wrappedVector()->asUnchecked<velox::ArrayVector>();
+      velox::vector_size_t sourceIndex = 0;
+
+      auto copyValue = [&](velox::vector_size_t j) {
+        const auto targetIndex = offsetsPtr[j];
+        flatKeysVector->set(targetIndex, nodes_[i]->key().get());
+        arrayValues->setNull(targetIndex, false);
+        const auto wrappedIndex = nodeValues_[i]->wrappedIndex(sourceIndex);
+        const auto copySize = sourceArray->sizeAt(wrappedIndex);
+        valuesOffsets[targetIndex] = elementOffset;
+        valuesSizes[targetIndex] = copySize;
+        if (copySize > 0) {
+          elements->copy(
+              sourceArray->elements().get(),
+              elementOffset,
+              sourceArray->offsetAt(wrappedIndex),
+              copySize);
+          elementOffset += copySize;
+        }
+        ++sourceIndex;
+        ++offsetsPtr[j];
+      };
+
+      auto copyNull = [&](velox::vector_size_t j) {
+        const auto targetIndex = offsetsPtr[j];
+        flatKeysVector->set(targetIndex, nodes_[i]->key().get());
+        arrayValues->setNull(targetIndex, true);
+        valuesOffsets[targetIndex] = elementOffset;
+        valuesSizes[targetIndex] = 0;
+        ++sourceIndex;
+        ++offsetsPtr[j];
+      };
+
+      if (nodeValues_[i]->mayHaveNulls()) {
+        for (velox::vector_size_t j = 0; j < rowCount; ++j) {
+          if (!velox::bits::isBitSet(
+                  rowWiseInMap_.data(), i + j * nodes_.size())) {
+            continue;
+          }
+          if (nodeValues_[i]->isNullAt(sourceIndex)) {
+            copyNull(j);
+          } else {
+            copyValue(j);
+          }
+        }
+      } else {
+        for (velox::vector_size_t j = 0; j < rowCount; ++j) {
+          if (!velox::bits::isBitSet(
+                  rowWiseInMap_.data(), i + j * nodes_.size())) {
+            continue;
+          }
+          copyValue(j);
+        }
+      }
+    }
+    NIMBLE_CHECK_EQ(elementOffset, totalElements, "Element count mismatch");
+  }
+
   void initRowWiseInMap(velox::vector_size_t rowCount) {
     rowWiseInMap_.resize(velox::bits::nwords(nodes_.size() * rowCount));
     std::fill(rowWiseInMap_.begin(), rowWiseInMap_.end(), 0);
@@ -3283,6 +3388,10 @@ class MergedFlatMapFieldReader final
 
   // All the nodes that is selected to be read.
   std::vector<FlatMapKeyNode<T>*> nodes_;
+
+  // Pre-loaded node values, used to compute total inner elements for
+  // capacity pre-allocation before copying.
+  std::vector<velox::VectorPtr> nodeValues_;
 
   // In-map mask (1 bit per value), organized in row first layout.
   std::vector<uint64_t> rowWiseInMap_;
