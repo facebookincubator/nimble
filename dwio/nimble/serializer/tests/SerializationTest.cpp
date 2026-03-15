@@ -21,6 +21,7 @@
 #include "dwio/nimble/serializer/DeserializerImpl.h"
 #include "dwio/nimble/serializer/Serializer.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
+#include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/container/F14Set.h"
 #include "velox/vector/BaseVector.h"
 #include "velox/vector/ComplexVector.h"
@@ -69,6 +70,135 @@ class SerializationTest : public ::testing::TestWithParam<TestParams> {
       const velox::VectorPtr& actual,
       velox::vector_size_t index) {
     return expected->equalValueAt(actual.get(), index, index);
+  }
+
+  /// Builds a Velox RowType from a nimble schema, converting FlatMap columns to
+  /// ROW types so the deserializer reads them as structs.
+  static velox::RowTypePtr buildOutputTypeForFlatMapAsStruct(
+      const Type& schema) {
+    const auto& root = schema.asRow();
+    std::vector<std::string> names;
+    std::vector<velox::TypePtr> types;
+    names.reserve(root.childrenCount());
+    types.reserve(root.childrenCount());
+    for (size_t i = 0; i < root.childrenCount(); ++i) {
+      names.push_back(root.nameAt(i));
+      const auto* child = root.childAt(i).get();
+      if (child->isFlatMap()) {
+        const auto& flatMap = child->asFlatMap();
+        std::vector<std::string> fieldNames;
+        std::vector<velox::TypePtr> fieldTypes;
+        fieldNames.reserve(flatMap.childrenCount());
+        fieldTypes.reserve(flatMap.childrenCount());
+        for (size_t j = 0; j < flatMap.childrenCount(); ++j) {
+          fieldNames.push_back(flatMap.nameAt(j));
+          fieldTypes.push_back(convertToVeloxType(*flatMap.childAt(j)));
+        }
+        types.push_back(
+            std::make_shared<const velox::RowType>(
+                std::move(fieldNames), std::move(fieldTypes)));
+      } else {
+        types.push_back(convertToVeloxType(*child));
+      }
+    }
+    return std::make_shared<const velox::RowType>(
+        std::move(names), std::move(types));
+  }
+
+  /// Verifies that flatmap data serialized as map can be correctly deserialized
+  /// as struct (ROW). For each flatmap column, the struct fields should match
+  /// the corresponding map key values. Rows where a key is absent should have
+  /// null struct field values.
+  void verifyFlatMapAsStruct(
+      const Serializer& serializer,
+      const std::vector<std::string>& serializedData,
+      const std::vector<velox::VectorPtr>& inputs) {
+    auto schema =
+        SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
+    auto outputType = buildOutputTypeForFlatMapAsStruct(*schema);
+
+    Deserializer structDeserializer{
+        schema,
+        pool_.get(),
+        DeserializerOptions{
+            .version = version(),
+            .outputType = outputType,
+        }};
+
+    velox::VectorPtr structOutput;
+    for (size_t i = 0; i < inputs.size(); ++i) {
+      SCOPED_TRACE(fmt::format("flatMapAsStruct batch {}", i));
+      structDeserializer.deserialize(serializedData[i], structOutput);
+      ASSERT_EQ(structOutput->size(), inputs[i]->size());
+
+      auto* outputRow = structOutput->as<velox::RowVector>();
+      auto* inputRow = inputs[i]->as<velox::RowVector>();
+      ASSERT_NE(outputRow, nullptr);
+      ASSERT_NE(inputRow, nullptr);
+
+      // For each column, verify struct fields match map values.
+      for (size_t col = 0; col < outputRow->childrenSize(); ++col) {
+        if (outputType->childAt(col)->kind() != velox::TypeKind::ROW) {
+          // Non-flatmap column: direct comparison.
+          for (velox::vector_size_t row = 0; row < inputRow->size(); ++row) {
+            ASSERT_TRUE(outputRow->childAt(col)->equalValueAt(
+                inputRow->childAt(col).get(), row, row))
+                << "Non-flatmap column " << col << " mismatch at row " << row;
+          }
+          continue;
+        }
+
+        // FlatMap column read as struct: verify each struct field matches the
+        // corresponding map key value.
+        auto* structVec = outputRow->childAt(col)->as<velox::RowVector>();
+        auto* mapVec = inputRow->childAt(col)->as<velox::MapVector>();
+        ASSERT_NE(structVec, nullptr);
+        ASSERT_NE(mapVec, nullptr);
+
+        const auto& structType = outputType->childAt(col)->asRow();
+        for (size_t field = 0; field < structType.size(); ++field) {
+          const auto& keyName = structType.nameOf(field);
+          auto* fieldVec = structVec->childAt(field).get();
+
+          for (velox::vector_size_t row = 0; row < mapVec->size(); ++row) {
+            // Find the key in the map for this row.
+            bool found = false;
+            auto mapOffset = mapVec->offsetAt(row);
+            auto mapSize = mapVec->sizeAt(row);
+            for (velox::vector_size_t entry = 0; entry < mapSize; ++entry) {
+              auto keyIdx = mapOffset + entry;
+              std::string mapKey;
+              auto* mapKeys = mapVec->mapKeys().get();
+              if (mapKeys->type()->kind() == velox::TypeKind::INTEGER) {
+                mapKey = std::to_string(
+                    mapKeys->asFlatVector<int32_t>()->valueAt(keyIdx));
+              } else if (mapKeys->type()->kind() == velox::TypeKind::VARCHAR) {
+                mapKey = std::string(
+                    mapKeys->asFlatVector<velox::StringView>()->valueAt(
+                        keyIdx));
+              } else {
+                FAIL() << "Unsupported map key type: "
+                       << mapKeys->type()->toString();
+              }
+
+              if (mapKey == keyName) {
+                found = true;
+                ASSERT_TRUE(fieldVec->equalValueAt(
+                    mapVec->mapValues().get(), row, keyIdx))
+                    << "FlatMap column " << col << " key " << keyName
+                    << " value mismatch at row " << row;
+                break;
+              }
+            }
+            if (!found) {
+              ASSERT_TRUE(fieldVec->isNullAt(row))
+                  << "FlatMap column " << col << " key " << keyName
+                  << " should be null at row " << row;
+            }
+          }
+        }
+      }
+    }
   }
 
   template <typename T = int32_t>
@@ -584,6 +714,9 @@ TEST_P(SerializationTest, flatMapEncoding) {
           << "\nResult: " << output->toString(j);
     }
   }
+
+  // Also verify reading flatmap as struct.
+  verifyFlatMapAsStruct(serializer, serializedData, inputs);
 }
 
 TEST_P(SerializationTest, flatMapEncodingWithVaryingKeys) {
@@ -927,6 +1060,9 @@ TEST_P(SerializationTest, flatMapEncodingWithNestedTypes) {
           << "\nResult: " << output->toString(j);
     }
   }
+
+  // Also verify reading flatmap as struct.
+  verifyFlatMapAsStruct(serializer, serializedData, inputs);
 }
 
 TEST_P(SerializationTest, nestedFlatMapWithVaryingInnerKeys) {
@@ -2347,6 +2483,234 @@ TEST_P(SerializationTest, flatMapInMapStreamSkipping) {
     ASSERT_TRUE(vectorEquals(output, expected, j))
         << "Multi-batch index " << j << "\nExpected: " << expected->toString(j)
         << "\nActual: " << output->toString(j);
+  }
+}
+
+TEST_P(SerializationTest, flatMapAsStruct) {
+  // Test deserializing a flatmap column as a struct (ROW) instead of a map.
+  // The serializer writes MAP data as FlatMap encoding, and the deserializer
+  // reads it back as a ROW vector using outputType to control the conversion.
+  auto type = velox::ROW({
+      {"id", velox::BIGINT()},
+      {"features", velox::MAP(velox::INTEGER(), velox::DOUBLE())},
+  });
+
+  const size_t batchSize = 20;
+  const std::vector<int32_t> allKeys = {1, 2, 3};
+
+  auto generateInput = [&]() -> velox::VectorPtr {
+    const auto numRows = static_cast<velox::vector_size_t>(batchSize);
+    const auto numKeys = static_cast<velox::vector_size_t>(allKeys.size());
+
+    auto ids = velox::BaseVector::create(velox::BIGINT(), numRows, pool_.get());
+    for (velox::vector_size_t i = 0; i < numRows; ++i) {
+      ids->asFlatVector<int64_t>()->set(i, i);
+    }
+
+    auto keysFlat = velox::BaseVector::create(
+        velox::INTEGER(), numRows * numKeys, pool_.get());
+    auto valuesFlat = velox::BaseVector::create(
+        velox::DOUBLE(), numRows * numKeys, pool_.get());
+    velox::vector_size_t offset = 0;
+    for (velox::vector_size_t i = 0; i < numRows; ++i) {
+      for (auto key : allKeys) {
+        keysFlat->asFlatVector<int32_t>()->set(offset, key);
+        valuesFlat->asFlatVector<double>()->set(offset, i * 10.0 + key);
+        ++offset;
+      }
+    }
+
+    auto mapVector = std::make_shared<velox::MapVector>(
+        pool_.get(),
+        velox::MAP(velox::INTEGER(), velox::DOUBLE()),
+        nullptr,
+        numRows,
+        velox::allocateOffsets(numRows, pool_.get()),
+        velox::allocateSizes(numRows, pool_.get()),
+        keysFlat,
+        valuesFlat);
+    auto* rawOffsets =
+        mapVector->mutableOffsets(numRows)->asMutable<velox::vector_size_t>();
+    auto* rawSizes =
+        mapVector->mutableSizes(numRows)->asMutable<velox::vector_size_t>();
+    for (velox::vector_size_t i = 0; i < numRows; ++i) {
+      rawOffsets[i] = i * numKeys;
+      rawSizes[i] = numKeys;
+    }
+
+    return std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        numRows,
+        std::vector<velox::VectorPtr>{ids, mapVector});
+  };
+
+  // Serialize with FlatMap encoding.
+  const SerializerOptions serOptions{
+      .compressionType = CompressionType::Zstd,
+      .compressionThreshold = 32,
+      .compressionLevel = 3,
+      .version = version(),
+      .flatMapColumns = {"features"},
+  };
+  Serializer serializer{serOptions, type, pool_.get()};
+
+  auto input = generateInput();
+  auto serializedData =
+      serializer.serialize(input, OrderedRanges::of(0, input->size()));
+
+  auto nimbleSchema =
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
+
+  // Deserialize as struct: select keys "1" and "3" (skip "2").
+  auto outputType = velox::ROW({
+      {"id", velox::BIGINT()},
+      {"features",
+       velox::ROW({{"1", velox::DOUBLE()}, {"3", velox::DOUBLE()}})},
+  });
+
+  Deserializer deserializer{
+      nimbleSchema,
+      pool_.get(),
+      DeserializerOptions{
+          .version = version(),
+          .outputType = outputType,
+      }};
+
+  velox::VectorPtr output;
+  deserializer.deserialize(std::string{serializedData}, output);
+
+  ASSERT_EQ(output->size(), batchSize);
+  auto* outputRow = output->as<velox::RowVector>();
+  ASSERT_EQ(outputRow->childrenSize(), 2);
+
+  // Verify id column.
+  auto* idVector = outputRow->childAt(0)->asFlatVector<int64_t>();
+  for (velox::vector_size_t i = 0; i < output->size(); ++i) {
+    EXPECT_EQ(idVector->valueAt(i), i);
+  }
+
+  // Verify features column is ROW with 2 children (keys "1" and "3").
+  auto* featuresRow = outputRow->childAt(1)->as<velox::RowVector>();
+  ASSERT_NE(featuresRow, nullptr);
+  ASSERT_EQ(featuresRow->childrenSize(), 2);
+
+  auto* key1Values = featuresRow->childAt(0)->asFlatVector<double>();
+  auto* key3Values = featuresRow->childAt(1)->asFlatVector<double>();
+  for (velox::vector_size_t i = 0; i < output->size(); ++i) {
+    EXPECT_FALSE(key1Values->isNullAt(i));
+    EXPECT_DOUBLE_EQ(key1Values->valueAt(i), i * 10.0 + 1);
+    EXPECT_FALSE(key3Values->isNullAt(i));
+    EXPECT_DOUBLE_EQ(key3Values->valueAt(i), i * 10.0 + 3);
+  }
+}
+
+TEST_P(SerializationTest, flatMapAsStructWithMissingKeys) {
+  // Test deserializing a flatmap as struct when some requested keys don't
+  // exist in the flatmap schema. Missing keys should be filled with nulls.
+  auto type = velox::ROW({
+      {"features", velox::MAP(velox::INTEGER(), velox::DOUBLE())},
+  });
+
+  const size_t batchSize = 10;
+  const std::vector<int32_t> allKeys = {1, 2};
+
+  auto generateInput = [&]() -> velox::VectorPtr {
+    const auto numRows = static_cast<velox::vector_size_t>(batchSize);
+    const auto numKeys = static_cast<velox::vector_size_t>(allKeys.size());
+
+    auto keysFlat = velox::BaseVector::create(
+        velox::INTEGER(), numRows * numKeys, pool_.get());
+    auto valuesFlat = velox::BaseVector::create(
+        velox::DOUBLE(), numRows * numKeys, pool_.get());
+    velox::vector_size_t offset = 0;
+    for (velox::vector_size_t i = 0; i < numRows; ++i) {
+      for (auto key : allKeys) {
+        keysFlat->asFlatVector<int32_t>()->set(offset, key);
+        valuesFlat->asFlatVector<double>()->set(offset, key * 100.0 + i);
+        ++offset;
+      }
+    }
+
+    auto mapVector = std::make_shared<velox::MapVector>(
+        pool_.get(),
+        velox::MAP(velox::INTEGER(), velox::DOUBLE()),
+        nullptr,
+        numRows,
+        velox::allocateOffsets(numRows, pool_.get()),
+        velox::allocateSizes(numRows, pool_.get()),
+        keysFlat,
+        valuesFlat);
+    auto* rawOffsets =
+        mapVector->mutableOffsets(numRows)->asMutable<velox::vector_size_t>();
+    auto* rawSizes =
+        mapVector->mutableSizes(numRows)->asMutable<velox::vector_size_t>();
+    for (velox::vector_size_t i = 0; i < numRows; ++i) {
+      rawOffsets[i] = i * numKeys;
+      rawSizes[i] = numKeys;
+    }
+
+    return std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        numRows,
+        std::vector<velox::VectorPtr>{mapVector});
+  };
+
+  const SerializerOptions serOptions{
+      .version = version(),
+      .flatMapColumns = {"features"},
+  };
+  Serializer serializer{serOptions, type, pool_.get()};
+
+  auto input = generateInput();
+  auto serializedData =
+      serializer.serialize(input, OrderedRanges::of(0, input->size()));
+
+  auto nimbleSchema =
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
+
+  // Request keys "1", "999" (missing), and "2".
+  auto outputType = velox::ROW({
+      {"features",
+       velox::ROW(
+           {{"1", velox::DOUBLE()},
+            {"999", velox::DOUBLE()},
+            {"2", velox::DOUBLE()}})},
+  });
+
+  Deserializer deserializer{
+      nimbleSchema,
+      pool_.get(),
+      DeserializerOptions{
+          .version = version(),
+          .outputType = outputType,
+      }};
+
+  velox::VectorPtr output;
+  deserializer.deserialize(std::string{serializedData}, output);
+
+  ASSERT_EQ(output->size(), batchSize);
+  auto* outputRow = output->as<velox::RowVector>();
+  auto* featuresRow = outputRow->childAt(0)->as<velox::RowVector>();
+  ASSERT_NE(featuresRow, nullptr);
+  ASSERT_EQ(featuresRow->childrenSize(), 3);
+
+  auto* key1Values = featuresRow->childAt(0)->asFlatVector<double>();
+  auto* key999Values = featuresRow->childAt(1).get();
+  auto* key2Values = featuresRow->childAt(2)->asFlatVector<double>();
+
+  for (velox::vector_size_t i = 0; i < output->size(); ++i) {
+    EXPECT_FALSE(key1Values->isNullAt(i));
+    EXPECT_DOUBLE_EQ(key1Values->valueAt(i), 100.0 + i);
+
+    // Key "999" doesn't exist in the flatmap - should be all nulls.
+    EXPECT_TRUE(key999Values->isNullAt(i));
+
+    EXPECT_FALSE(key2Values->isNullAt(i));
+    EXPECT_DOUBLE_EQ(key2Values->valueAt(i), 200.0 + i);
   }
 }
 
