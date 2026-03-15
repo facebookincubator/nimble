@@ -42,31 +42,42 @@ std::vector<uint32_t> decodeCompactStreamSizes(
 std::vector<uint32_t> decodeRawStreamSizes(
     const char* trailerStart,
     uint32_t trailerSize) {
+  const auto* end = trailerStart + trailerSize;
   const auto encodingType =
       static_cast<EncodingType>(static_cast<uint8_t>(*trailerStart));
   const char* payload = trailerStart + sizeof(uint8_t);
   const uint32_t payloadSize = trailerSize - sizeof(uint8_t);
+  std::vector<uint32_t> sizes;
 
   switch (encodingType) {
     case EncodingType::Trivial: {
       const uint32_t count = payloadSize / sizeof(uint32_t);
-      std::vector<uint32_t> sizes(count);
+      sizes.resize(count);
       if (count > 0) {
         std::memcpy(sizes.data(), payload, count * sizeof(uint32_t));
+        payload += count * sizeof(uint32_t);
       }
-      return sizes;
+      break;
     }
     case EncodingType::Varint: {
       const uint32_t count = varint::readVarint32(&payload);
-      std::vector<uint32_t> sizes(count);
+      sizes.resize(count);
       for (uint32_t i = 0; i < count; ++i) {
         sizes[i] = varint::readVarint32(&payload);
       }
-      return sizes;
+      break;
     }
     default:
       NIMBLE_FAIL("Unsupported EncodingType for kCompactRaw: {}", encodingType);
   }
+
+  NIMBLE_CHECK_EQ(
+      payload,
+      end,
+      "Raw trailer size mismatch: read {} bytes, expected {}",
+      payload - trailerStart,
+      trailerSize);
+  return sizes;
 }
 
 } // namespace
@@ -176,6 +187,56 @@ std::vector<uint32_t> readStreamSizes(
     return decodeRawStreamSizes(trailerBuf.data(), trailerSize);
   }
   return decodeCompactStreamSizes(trailerBuf, pool);
+}
+
+size_t estimateRawTrailerSize(size_t numStreams, EncodingType encodingType) {
+  const auto resolvedType = getRawEncodingType(encodingType);
+  // [encodingType:1B][payload][trailer_size:u32]
+  size_t payloadSize{0};
+  switch (resolvedType) {
+    case EncodingType::Trivial:
+      payloadSize = numStreams * sizeof(uint32_t);
+      break;
+    case EncodingType::Varint:
+      // Upper bound: count varint + N varints (max 5 bytes each).
+      payloadSize = 5 + numStreams * 5;
+      break;
+    default:
+      NIMBLE_FAIL("Unsupported EncodingType for kCompactRaw: {}", resolvedType);
+  }
+  return sizeof(uint8_t) + payloadSize + sizeof(uint32_t);
+}
+
+std::vector<std::string_view> parseStreams(
+    const char* pos,
+    const char* end,
+    SerializationVersion version,
+    velox::memory::MemoryPool* pool) {
+  NIMBLE_CHECK_NOT_NULL(pool, "Memory pool cannot be null");
+
+  std::vector<std::string_view> streams;
+
+  if (isCompactFormat(version)) {
+    auto streamSizes = readStreamSizes(end, version, pool);
+    streams.resize(streamSizes.size());
+
+    for (uint32_t i = 0; i < streamSizes.size(); ++i) {
+      streams[i] = std::string_view(pos, streamSizes[i]);
+      pos += streamSizes[i];
+    }
+  } else {
+    NIMBLE_CHECK_EQ(
+        version,
+        SerializationVersion::kLegacy,
+        "unexpected version {}",
+        version);
+    // kLegacy format: inline [size:u32][data]...
+    while (pos < end) {
+      streams.emplace_back(readStream<false>(pos));
+    }
+  }
+
+  return streams;
 }
 
 } // namespace facebook::nimble::serde::detail

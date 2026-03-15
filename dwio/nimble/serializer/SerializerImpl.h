@@ -23,6 +23,7 @@
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/StreamData.h"
 #include "folly/io/Cursor.h"
@@ -65,28 +66,26 @@ char* extend(T& buffer, uint32_t size) {
 }
 
 /// Encode typed values using a given encoding selection policy factory.
-/// When encodingLayout is provided, replays the captured encoding.
-/// Otherwise, uses the policy factory to select encoding.
+/// When encodingLayout is provided, replays the captured encoding with
+/// compressionOptions. policyFactory is used as fallback for nested encodings
+/// not captured in the layout tree. When encodingLayout is not provided, uses
+/// policyFactory directly and compressionOptions is ignored.
 template <typename T>
 std::string_view encodeTyped(
     std::span<const T> values,
     nimble::Buffer& encodingBuffer,
     const EncodingSelectionPolicyFactory& policyFactory,
-    const CompressionOptions& compressionOptions = {},
-    const EncodingLayout* encodingLayout = nullptr) {
+    const EncodingLayout* encodingLayout = nullptr,
+    std::optional<CompressionOptions> compressionOptions = std::nullopt) {
   std::unique_ptr<EncodingSelectionPolicy<T>> typedPolicy;
   if (encodingLayout != nullptr) {
+    // Replay the captured encoding layout. policyFactory is used as fallback
+    // for nested encodings not in the layout tree.
     typedPolicy = std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
         *encodingLayout, compressionOptions, policyFactory);
   } else {
-    auto policy = policyFactory(TypeTraits<T>::dataType);
-    auto* rawTypedPolicy =
-        dynamic_cast<EncodingSelectionPolicy<T>*>(policy.release());
-    NIMBLE_CHECK_NOT_NULL(
-        rawTypedPolicy,
-        "Policy type mismatch for {}",
-        toString(TypeTraits<T>::dataType));
-    typedPolicy.reset(rawTypedPolicy);
+    typedPolicy = velox::checkedPointerCast<EncodingSelectionPolicy<T>>(
+        policyFactory(TypeTraits<T>::dataType));
   }
   return EncodingFactory::encode<T>(
       std::move(typedPolicy),
@@ -175,36 +174,17 @@ inline size_t estimateCompactTrailerSize(size_t numStreams) {
 }
 
 /// Returns the exact byte size of the kCompactRaw trailer.
-inline size_t estimateRawTrailerSize(
-    size_t numStreams,
-    std::optional<EncodingType> encodingType = std::nullopt) {
-  const auto resolvedType = getRawEncodingType(encodingType);
-  // [encodingType:1B][payload][trailer_size:u32]
-  size_t payloadSize{0};
-  switch (resolvedType) {
-    case EncodingType::Trivial:
-      payloadSize = numStreams * sizeof(uint32_t);
-      break;
-    case EncodingType::Varint:
-      // Upper bound: count varint + N varints (max 5 bytes each).
-      payloadSize = 5 + numStreams * 5;
-      break;
-    default:
-      NIMBLE_FAIL("Unsupported EncodingType for kCompactRaw: {}", resolvedType);
-  }
-  return sizeof(uint8_t) + payloadSize + sizeof(uint32_t);
-}
+size_t estimateRawTrailerSize(size_t numStreams, EncodingType encodingType);
 
 /// Returns an upper-bound estimate of the trailer size for the given
 /// serialization version (kCompact or kCompactRaw).
 inline size_t estimateTrailerSize(
     SerializationVersion outputVersion,
     size_t numStreams,
-    std::optional<EncodingType> encodingType = std::nullopt) {
-  if (outputVersion == SerializationVersion::kCompactRaw) {
-    return estimateRawTrailerSize(numStreams, encodingType);
-  }
-  return estimateCompactTrailerSize(numStreams);
+    EncodingType encodingType) {
+  return outputVersion == SerializationVersion::kCompactRaw
+      ? estimateRawTrailerSize(numStreams, encodingType)
+      : estimateCompactTrailerSize(numStreams);
 }
 
 /// Writes the kCompactRaw trailer: appends
@@ -212,7 +192,7 @@ inline size_t estimateTrailerSize(
 template <typename T>
 void writeRawTrailer(
     const std::vector<uint32_t>& streamSizes,
-    std::optional<EncodingType> encodingType,
+    EncodingType encodingType,
     T& buffer) {
   const auto resolvedType = getRawEncodingType(encodingType);
   const auto streamCount = streamSizes.size();
@@ -256,29 +236,33 @@ void writeRawTrailer(
 ///
 /// @param streamSizes Dense stream sizes array. sizes[i] = byte size of
 ///        stream i (0 for missing).
-/// @param encodingType Optional encoding type override.
+/// @param encodingType Encoding type for stream sizes.
 /// @param encodingBuffer Encoding buffer for nimble encoding output.
-///        Caller must call reset() before each call if reusing.
 /// @param buffer Output buffer.
-/// @param encodingLayout Optional encoding layout for replaying captured
-///        encoding. Skips encoding selection and statistics computation.
 template <typename T>
 void writeCompactTrailer(
     const std::vector<uint32_t>& streamSizes,
-    std::optional<EncodingType> encodingType,
+    EncodingType encodingType,
     nimble::Buffer& encodingBuffer,
-    T& buffer,
-    const EncodingLayout* encodingLayout = nullptr) {
+    T& buffer) {
   encodingBuffer.reset();
-  auto factory = encodingType.has_value()
-      ? ManualEncodingSelectionPolicyFactory({{*encodingType, 1.0}})
-      : ManualEncodingSelectionPolicyFactory();
-  auto encodedStreamSizes = encodeTyped<uint32_t>(
-      streamSizes,
+  auto factory = ManualEncodingSelectionPolicyFactory(
+      ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      /*compressionOptions=*/std::nullopt);
+  auto policyFactory = [&factory](DataType dataType) {
+    return factory.createPolicy(dataType);
+  };
+  EncodingLayout layout{encodingType, {}, CompressionType::Uncompressed};
+  auto policy = std::make_unique<ReplayedEncodingSelectionPolicy<uint32_t>>(
+      std::move(layout),
+      /*compressionOptions=*/std::nullopt,
+      policyFactory);
+  auto encodedStreamSizes = EncodingFactory::encode<uint32_t>(
+      std::move(policy),
+      std::span<const uint32_t>(streamSizes),
       encodingBuffer,
-      [&factory](DataType dataType) { return factory.createPolicy(dataType); },
-      /*compressionOptions=*/{},
-      encodingLayout);
+      Encoding::Options{.useVarintRowCount = true});
+
   const uint32_t encodedSize = encodedStreamSizes.size();
   auto* encodedStreamSizesPos = extend(buffer, encodedSize);
   std::memcpy(encodedStreamSizesPos, encodedStreamSizes.data(), encodedSize);
@@ -288,24 +272,21 @@ void writeCompactTrailer(
 }
 
 /// Writes the stream sizes trailer for the given serialization version.
-/// Dispatches to writeRawTrailer (kCompactRaw) or writeTrailer
+/// Dispatches to writeRawTrailer (kCompactRaw) or writeCompactTrailer
 /// (kCompact) based on outputVersion.
 ///
 /// @param outputVersion Must be kCompact or kCompactRaw.
 /// @param streamSizes Dense stream sizes array.
-/// @param encodingType Optional encoding type override.
+/// @param encodingType Encoding type for stream sizes.
 /// @param encodingBuffer Encoding buffer for kCompact nimble encoding.
 /// @param buffer Output buffer.
-/// @param encodingLayout Optional encoding layout for replaying captured
-///        encoding. Only used for kCompact. Ignored for kCompactRaw.
 template <typename T>
 void writeTrailer(
     SerializationVersion outputVersion,
     const std::vector<uint32_t>& streamSizes,
-    std::optional<EncodingType> encodingType,
+    EncodingType encodingType,
     nimble::Buffer& encodingBuffer,
-    T& buffer,
-    const EncodingLayout* encodingLayout = nullptr) {
+    T& buffer) {
   if (outputVersion == SerializationVersion::kCompactRaw) {
     writeRawTrailer(streamSizes, encodingType, buffer);
     return;
@@ -316,8 +297,7 @@ void writeTrailer(
       SerializationVersion::kCompact,
       "writeTrailer requires kCompact or kCompactRaw, got {}",
       outputVersion);
-  writeCompactTrailer(
-      streamSizes, encodingType, encodingBuffer, buffer, encodingLayout);
+  writeCompactTrailer(streamSizes, encodingType, encodingBuffer, buffer);
 }
 
 /// Writes a single stream to the buffer.
@@ -408,37 +388,11 @@ std::vector<uint32_t> readStreamSizes(
 /// @param version Serialization format version
 /// @param pool Memory pool for decoding nimble-encoded sizes.
 /// @return Vector of stream data (may have gaps for kLegacy format)
-inline std::vector<std::string_view> parseStreams(
+std::vector<std::string_view> parseStreams(
     const char* pos,
     const char* end,
     SerializationVersion version,
-    velox::memory::MemoryPool* pool) {
-  NIMBLE_CHECK_NOT_NULL(pool, "Memory pool cannot be null");
-
-  std::vector<std::string_view> streams;
-
-  if (isCompactFormat(version)) {
-    auto streamSizes = readStreamSizes(end, version, pool);
-    streams.resize(streamSizes.size());
-
-    for (uint32_t i = 0; i < streamSizes.size(); ++i) {
-      streams[i] = std::string_view(pos, streamSizes[i]);
-      pos += streamSizes[i];
-    }
-  } else {
-    NIMBLE_CHECK_EQ(
-        version,
-        SerializationVersion::kLegacy,
-        "unexpected version {}",
-        version);
-    // kLegacy format: inline [size:u32][data]...
-    while (pos < end) {
-      streams.emplace_back(readStream<false>(pos));
-    }
-  }
-
-  return streams;
-}
+    velox::memory::MemoryPool* pool);
 
 /// Encode scalar data using nimble encoding framework with serializer options.
 template <typename T, typename Buffer>
@@ -454,8 +408,8 @@ std::string_view encodeTyped(
       values,
       encodingBuffer,
       options.encodingSelectionPolicyFactory,
-      options.compressionOptions,
-      encodingLayout);
+      encodingLayout,
+      options.compressionOptions);
 }
 
 /// Dispatch to typed nimble encoding based on ScalarKind.

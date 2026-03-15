@@ -126,7 +126,6 @@ enum class DataType : uint8_t {
 
 std::string toString(DataType dataType);
 std::ostream& operator<<(std::ostream& out, DataType dataType);
-fmt::underlying_t<DataType> format_as(DataType dataType);
 
 // General string compression. Make sure values here match those in the footer
 // specification
@@ -328,6 +327,13 @@ struct fmt::formatter<facebook::nimble::CompressionType>
 template <>
 struct fmt::formatter<facebook::nimble::EncodingType> : formatter<std::string> {
   auto format(facebook::nimble::EncodingType s, format_context& ctx) const {
+    return formatter<std::string>::format(facebook::nimble::toString(s), ctx);
+  }
+};
+
+template <>
+struct fmt::formatter<facebook::nimble::DataType> : formatter<std::string> {
+  auto format(facebook::nimble::DataType s, format_context& ctx) const {
     return formatter<std::string>::format(facebook::nimble::toString(s), ctx);
   }
 };
