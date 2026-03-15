@@ -139,7 +139,8 @@ void IndexReader::loadChunk() {
             velox::AlignedBuffer::allocate<char>(totalLength, pool_));
         return buffer->asMutable<void>();
       });
-  NIMBLE_CHECK_EQ(encoding_->dataType(), DataType::String);
+  NIMBLE_CHECK_EQ(
+      encoding_->dataType(), DataType::String, "Expected String data type");
   NIMBLE_CHECK(
       encoding_->encodingType() == EncodingType::Trivial ||
           encoding_->encodingType() == EncodingType::Prefix,

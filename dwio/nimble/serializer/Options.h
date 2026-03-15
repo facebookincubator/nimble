@@ -69,8 +69,8 @@ inline bool isCompactFormat(std::optional<SerializationVersion> version) {
 }
 
 /// Validates and returns the EncodingType for kCompactRaw stream sizes.
-/// Only Trivial and Varint are supported. Defaults to Trivial when nullopt.
-EncodingType getRawEncodingType(std::optional<EncodingType> encodingType);
+/// Only Trivial and Varint are supported.
+EncodingType getRawEncodingType(EncodingType encodingType);
 
 inline std::ostream& operator<<(
     std::ostream& os,
@@ -97,20 +97,16 @@ struct SerializerOptions {
 
   /// Factory for creating encoding selection policies.
   /// Only used when version is kCompact.
-  /// Falls back to this when encodingLayoutTree doesn't have a layout for a
-  /// stream.
+  /// When encodingLayoutTree is specified, used as fallback for streams or
+  /// nested encodings not captured in the layout tree. When encodingLayoutTree
+  /// is not specified, used directly for all streams.
   EncodingSelectionPolicyFactory encodingSelectionPolicyFactory =
       [](DataType dataType) -> std::unique_ptr<EncodingSelectionPolicyBase> {
-    return ManualEncodingSelectionPolicyFactory{}.createPolicy(dataType);
+    return ManualEncodingSelectionPolicyFactory{
+        ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+        /*compressionOptions=*/std::nullopt}
+        .createPolicy(dataType);
   };
-
-  /// Compression options for encodings.
-  /// Only used when version is kCompact. To disable compression, set
-  /// compressionOptions.compressionAcceptRatio to 0 and override
-  /// encodingSelectionPolicyFactory to pass the options through (the default
-  /// factory constructs ManualEncodingSelectionPolicyFactory{} which uses its
-  /// own default CompressionOptions, ignoring this field).
-  CompressionOptions compressionOptions{};
 
   /// Optional captured encoding layout tree.
   /// When specified, encodings are replayed from this tree instead of using
@@ -120,11 +116,15 @@ struct SerializerOptions {
   /// tree.
   std::optional<EncodingLayoutTree> encodingLayoutTree{};
 
-  /// Optional encoding type for stream sizes in the sizes header.
-  /// When specified, forces sizes to use this encoding type.
-  /// When nullopt (default), uses cost-based selection via
-  /// ManualEncodingSelectionPolicyFactory.
-  std::optional<EncodingType> streamSizesEncodingType{};
+  /// Compression options used with encodingLayoutTree.
+  /// When encodingLayoutTree is specified, these options are passed to
+  /// ReplayedEncodingSelectionPolicy to control compression during encoding
+  /// replay. When nullopt (default), compression is disabled.
+  std::optional<CompressionOptions> compressionOptions{};
+
+  /// Encoding type for stream sizes in the sizes header.
+  /// Defaults to Trivial encoding.
+  EncodingType streamSizesEncodingType{EncodingType::Trivial};
 
   /// Returns true if the serialized data has a version header byte.
   bool hasVersionHeader() const;
