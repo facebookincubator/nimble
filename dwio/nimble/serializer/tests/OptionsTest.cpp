@@ -41,6 +41,10 @@ TEST(OptionsTest, serializerOptionsDefaults) {
   EXPECT_EQ(options.serializationVersion(), SerializationVersion::kLegacy);
   EXPECT_FALSE(options.enableEncoding());
 
+  // Verify encoding layout tree and compression options defaults.
+  EXPECT_FALSE(options.encodingLayoutTree.has_value());
+  EXPECT_FALSE(options.compressionOptions.has_value());
+
   // Verify default encoding selection policy factory creates a valid policy.
   auto policy = options.encodingSelectionPolicyFactory(DataType::Int32);
   EXPECT_NE(policy, nullptr);
@@ -131,7 +135,6 @@ TEST(OptionsTest, isCompactFormatOptional) {
 }
 
 TEST(OptionsTest, getRawEncodingTypeBasic) {
-  EXPECT_EQ(getRawEncodingType(std::nullopt), EncodingType::Trivial);
   EXPECT_EQ(getRawEncodingType(EncodingType::Trivial), EncodingType::Trivial);
   EXPECT_EQ(getRawEncodingType(EncodingType::Varint), EncodingType::Varint);
 }

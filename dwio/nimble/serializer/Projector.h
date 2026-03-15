@@ -73,12 +73,11 @@ class Projector {
     /// Output serialization format version. Must be kCompact or kCompactRaw.
     SerializationVersion projectVersion{SerializationVersion::kCompact};
 
-    /// Optional encoding type for stream sizes in the sizes header.
-    /// For kCompact: when specified, forces nimble encoding to this type.
+    /// Encoding type for stream sizes in the sizes header.
+    /// For kCompact: forces nimble encoding to this type.
     /// For kCompactRaw: only Trivial and Varint are supported.
-    ///   When nullopt, defaults to Trivial.
-    /// When nullopt (default), uses cost-based selection for kCompact.
-    std::optional<EncodingType> streamSizesEncodingType{};
+    /// Defaults to Trivial.
+    EncodingType streamSizesEncodingType{EncodingType::Trivial};
 
     /// Optional velox type with up-to-date column names from the current
     /// table schema. After schema evolution (e.g., column renames), the

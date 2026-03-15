@@ -1001,3 +1001,392 @@ TEST(EncodingSelectionTests, TestNullable) {
 
   LOG(INFO) << "Final size: " << serialized.size();
 }
+
+TEST(ManualEncodingSelectionPolicyTest, noCompressFlag) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Buffer buffer{*pool};
+
+  // Create data that will trigger compression when enabled.
+  std::vector<uint32_t> data(1000, 42);
+
+  // Encode with compression enabled (explicit CompressionOptions).
+  auto compressPolicy =
+      std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
+          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          nimble::CompressionOptions{},
+          std::nullopt);
+  auto result =
+      compressPolicy->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto compressionPolicy = result.compressionPolicyFactory();
+  // Compression should be attempted (non-Uncompressed type).
+  EXPECT_NE(
+      compressionPolicy->compression().compressionType,
+      nimble::CompressionType::Uncompressed);
+
+  // Default factory parameters — compression should also be enabled.
+  {
+    auto defaultFactory = nimble::ManualEncodingSelectionPolicyFactory{};
+    auto defaultPolicy = defaultFactory.createPolicy(nimble::DataType::Uint32);
+    auto* typedDefault =
+        dynamic_cast<nimble::EncodingSelectionPolicy<uint32_t>*>(
+            defaultPolicy.get());
+    ASSERT_NE(typedDefault, nullptr);
+    auto defaultResult =
+        typedDefault->select(data, nimble::Statistics<uint32_t>::create(data));
+    auto defaultCompressionPolicy = defaultResult.compressionPolicyFactory();
+    EXPECT_NE(
+        defaultCompressionPolicy->compression().compressionType,
+        nimble::CompressionType::Uncompressed);
+  }
+
+  // Encode with compression disabled (nullopt).
+  auto noCompressPolicy =
+      std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
+          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          /*compressionOptions=*/std::nullopt,
+          std::nullopt);
+  auto noCompressResult = noCompressPolicy->select(
+      data, nimble::Statistics<uint32_t>::create(data));
+  auto noCompressionPolicy = noCompressResult.compressionPolicyFactory();
+  // Compression should be Uncompressed (default NoCompressionPolicy).
+  EXPECT_EQ(
+      noCompressionPolicy->compression().compressionType,
+      nimble::CompressionType::Uncompressed);
+
+  // Both should select the same encoding type.
+  EXPECT_EQ(result.encodingType, noCompressResult.encodingType);
+}
+
+TEST(ManualEncodingSelectionPolicyTest, noCompressFlagPropagesToNested) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+
+  // Create a no-compress policy and verify nested policies also have
+  // compression disabled.
+  auto policy =
+      std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
+          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          /*compressionOptions=*/std::nullopt,
+          std::nullopt);
+
+  // Create a nested policy (simulating what happens during encoding selection).
+  auto nested = policy->template create<uint32_t>(
+      nimble::EncodingType::Dictionary,
+      nimble::EncodingIdentifiers::Dictionary::Alphabet);
+  auto* typedNested =
+      dynamic_cast<nimble::EncodingSelectionPolicy<uint32_t>*>(nested.get());
+  ASSERT_NE(typedNested, nullptr);
+
+  // The nested policy should also disable compression.
+  std::vector<uint32_t> data(100, 7);
+  auto nestedResult =
+      typedNested->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto nestedCompressionPolicy = nestedResult.compressionPolicyFactory();
+  EXPECT_EQ(
+      nestedCompressionPolicy->compression().compressionType,
+      nimble::CompressionType::Uncompressed);
+}
+
+TEST(ManualEncodingSelectionPolicyFactoryTest, noCompressFactory) {
+  // Factory with nullopt compressionOptions should create policies that skip
+  // compression.
+  nimble::ManualEncodingSelectionPolicyFactory factory{
+      nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      /*compressionOptions=*/std::nullopt};
+
+  auto policy = factory.createPolicy(nimble::DataType::Uint32);
+  auto* typed =
+      dynamic_cast<nimble::EncodingSelectionPolicy<uint32_t>*>(policy.get());
+  ASSERT_NE(typed, nullptr);
+
+  std::vector<uint32_t> data(100, 42);
+  auto result = typed->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto compressionPolicy = result.compressionPolicyFactory();
+  EXPECT_EQ(
+      compressionPolicy->compression().compressionType,
+      nimble::CompressionType::Uncompressed);
+}
+
+TEST(
+    ManualEncodingSelectionPolicyFactoryTest,
+    noCompressFactoryPropagesToNested) {
+  // Factory with nullopt compressionOptions should create policies whose
+  // nested children also have compression disabled.
+  nimble::ManualEncodingSelectionPolicyFactory factory{
+      nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      /*compressionOptions=*/std::nullopt};
+
+  auto policy = factory.createPolicy(nimble::DataType::Uint32);
+  auto* typed =
+      dynamic_cast<nimble::EncodingSelectionPolicy<uint32_t>*>(policy.get());
+  ASSERT_NE(typed, nullptr);
+
+  // Create a nested policy (simulating what happens during encoding selection).
+  auto nested = typed->template create<uint32_t>(
+      nimble::EncodingType::Dictionary,
+      nimble::EncodingIdentifiers::Dictionary::Alphabet);
+  auto* typedNested =
+      dynamic_cast<nimble::EncodingSelectionPolicy<uint32_t>*>(nested.get());
+  ASSERT_NE(typedNested, nullptr);
+
+  // The nested policy should also disable compression.
+  std::vector<uint32_t> data(100, 7);
+  auto nestedResult =
+      typedNested->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto nestedCompressionPolicy = nestedResult.compressionPolicyFactory();
+  EXPECT_EQ(
+      nestedCompressionPolicy->compression().compressionType,
+      nimble::CompressionType::Uncompressed);
+}
+
+TEST(ReplayedEncodingSelectionPolicyTest, encodingRoundTrip) {
+  // Verify that ReplayedEncodingSelectionPolicy with a known encoding type
+  // produces valid encoded output and round-trips correctly.
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Buffer buffer(*pool);
+
+  nimble::ManualEncodingSelectionPolicyFactory factory{
+      nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      /*compressionOptions=*/std::nullopt};
+  nimble::EncodingSelectionPolicyFactory policyFactory =
+      [&factory](nimble::DataType dataType) {
+        return factory.createPolicy(dataType);
+      };
+
+  struct TestParam {
+    nimble::EncodingType encodingType;
+    std::optional<nimble::CompressionOptions> compressionOptions;
+    std::vector<uint32_t> data;
+    // Children layouts for compound encodings (e.g., RLE needs RunLengths
+    // and RunValues slots). nullopt children fall back to policyFactory.
+    std::vector<std::optional<const nimble::EncodingLayout>> children;
+    std::string debugString() const {
+      return fmt::format(
+          "encodingType {}, compress {}",
+          nimble::toString(encodingType),
+          compressionOptions.has_value());
+    }
+  };
+  std::vector<TestParam> testSettings = {
+      {nimble::EncodingType::Trivial, std::nullopt, {10, 20, 30, 40, 50}, {}},
+      {nimble::EncodingType::Trivial,
+       nimble::CompressionOptions{},
+       {10, 20, 30, 40, 50},
+       {}},
+      {nimble::EncodingType::Constant, std::nullopt, {42, 42, 42, 42, 42}, {}},
+      {nimble::EncodingType::RLE,
+       std::nullopt,
+       {1, 1, 1, 2, 2, 2, 3, 3, 3},
+       {std::nullopt, std::nullopt}},
+  };
+  for (const auto& testData : testSettings) {
+    SCOPED_TRACE(testData.debugString());
+    buffer.reset();
+
+    nimble::EncodingLayout layout{
+        testData.encodingType,
+        {},
+        nimble::CompressionType::Uncompressed,
+        testData.children};
+    auto policy =
+        std::make_unique<nimble::ReplayedEncodingSelectionPolicy<uint32_t>>(
+            std::move(layout), testData.compressionOptions, policyFactory);
+
+    auto encoded = nimble::EncodingFactory::encode<uint32_t>(
+        std::move(policy), std::span<const uint32_t>(testData.data), buffer);
+
+    // Decode and verify round-trip correctness.
+    auto encoding = nimble::EncodingFactory::decode(
+        *pool, encoded, [&](uint32_t totalLength) -> void* {
+          return pool->allocate(totalLength);
+        });
+    EXPECT_EQ(encoding->encodingType(), testData.encodingType);
+    EXPECT_EQ(encoding->dataType(), nimble::DataType::Uint32);
+    EXPECT_EQ(encoding->rowCount(), testData.data.size());
+
+    // For leaf encodings (Trivial), verify compression type stored in the
+    // encoded data. The compression type byte is at dataOffset().
+    if (testData.encodingType == nimble::EncodingType::Trivial) {
+      auto compressionType =
+          static_cast<nimble::CompressionType>(encoded[encoding->dataOffset()]);
+      if (!testData.compressionOptions.has_value()) {
+        EXPECT_EQ(compressionType, nimble::CompressionType::Uncompressed);
+      }
+    }
+
+    std::vector<uint32_t> decoded(testData.data.size());
+    encoding->materialize(testData.data.size(), decoded.data());
+    EXPECT_EQ(decoded, testData.data);
+  }
+}
+
+TEST(ManualEncodingSelectionPolicyTest, nestedEncodingCompressionType) {
+  // Verify that ManualEncodingSelectionPolicy propagates compression options
+  // to nested encodings and the compression type is correctly stored in the
+  // encoded output.
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Buffer buffer(*pool);
+
+  // Data with repeated values — ManualEncodingSelectionPolicy may select
+  // Dictionary or RLE, both of which have nested leaf encodings.
+  std::vector<uint32_t> data = {1, 2, 3, 1, 2, 3, 1, 2, 3};
+
+  struct TestParam {
+    std::optional<nimble::CompressionOptions> compressionOptions;
+    std::string debugString() const {
+      return fmt::format("compress {}", compressionOptions.has_value());
+    }
+  };
+  std::vector<TestParam> testSettings = {
+      {std::nullopt},
+      {nimble::CompressionOptions{}},
+  };
+  for (const auto& testData : testSettings) {
+    SCOPED_TRACE(testData.debugString());
+    buffer.reset();
+
+    nimble::ManualEncodingSelectionPolicyFactory factory{
+        nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+        testData.compressionOptions};
+    auto basePolicy = factory.createPolicy(nimble::DataType::Uint32);
+    auto* rawTyped = dynamic_cast<nimble::EncodingSelectionPolicy<uint32_t>*>(
+        basePolicy.get());
+    ASSERT_NE(rawTyped, nullptr);
+    basePolicy.release();
+    auto policy =
+        std::unique_ptr<nimble::EncodingSelectionPolicy<uint32_t>>(rawTyped);
+
+    auto encoded = nimble::EncodingFactory::encode<uint32_t>(
+        std::move(policy), std::span<const uint32_t>(data), buffer);
+
+    // Capture the encoding layout tree from the encoded output and verify
+    // compression types at each level.
+    auto capturedLayout = nimble::EncodingLayoutCapture::capture(encoded);
+
+    // Verify leaf compression types in the captured tree.
+    // Walk through all children and check leaf nodes.
+    std::function<void(const nimble::EncodingLayout&)> verifyCompression =
+        [&](const nimble::EncodingLayout& layout) {
+          // Leaf encodings (Trivial, FixedBitWidth) store compression type.
+          if (layout.encodingType() == nimble::EncodingType::Trivial ||
+              layout.encodingType() == nimble::EncodingType::FixedBitWidth) {
+            if (!testData.compressionOptions.has_value()) {
+              EXPECT_EQ(
+                  layout.compressionType(),
+                  nimble::CompressionType::Uncompressed);
+            }
+          }
+          for (uint32_t i = 0; i < layout.childrenCount(); ++i) {
+            const auto& child = layout.child(i);
+            if (child.has_value()) {
+              verifyCompression(child.value());
+            }
+          }
+        };
+    verifyCompression(capturedLayout);
+
+    // Verify round-trip correctness.
+    auto encoding = nimble::EncodingFactory::decode(
+        *pool, encoded, [&](uint32_t totalLength) -> void* {
+          return pool->allocate(totalLength);
+        });
+    EXPECT_EQ(encoding->rowCount(), data.size());
+
+    std::vector<uint32_t> decoded(data.size());
+    encoding->materialize(data.size(), decoded.data());
+    EXPECT_EQ(decoded, data);
+  }
+}
+
+TEST(ReplayedEncodingSelectionPolicyTest, nestedEncodingCompressionType) {
+  // Verify that ReplayedEncodingSelectionPolicy propagates compression options
+  // to nested encodings and the compression type is correctly stored in the
+  // encoded output.
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Buffer buffer(*pool);
+
+  nimble::ManualEncodingSelectionPolicyFactory fallbackFactory{
+      nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      /*compressionOptions=*/std::nullopt};
+  auto policyFactory = [&fallbackFactory](nimble::DataType dataType) {
+    return fallbackFactory.createPolicy(dataType);
+  };
+
+  // Dictionary encoding with Trivial children for alphabet and indices.
+  auto makeLayout = []() {
+    return nimble::EncodingLayout{
+        nimble::EncodingType::Dictionary,
+        {},
+        nimble::CompressionType::Uncompressed,
+        {
+            nimble::EncodingLayout{
+                nimble::EncodingType::Trivial,
+                {},
+                nimble::CompressionType::Uncompressed},
+            nimble::EncodingLayout{
+                nimble::EncodingType::Trivial,
+                {},
+                nimble::CompressionType::Uncompressed},
+        }};
+  };
+
+  // Data with repeated values suitable for dictionary encoding.
+  std::vector<uint32_t> data = {1, 2, 3, 1, 2, 3, 1, 2, 3};
+
+  struct TestParam {
+    std::optional<nimble::CompressionOptions> compressionOptions;
+    std::string debugString() const {
+      return fmt::format("compress {}", compressionOptions.has_value());
+    }
+  };
+  std::vector<TestParam> testSettings = {
+      {std::nullopt},
+      {nimble::CompressionOptions{}},
+  };
+  for (const auto& testData : testSettings) {
+    SCOPED_TRACE(testData.debugString());
+    buffer.reset();
+
+    auto policy =
+        std::make_unique<nimble::ReplayedEncodingSelectionPolicy<uint32_t>>(
+            makeLayout(), testData.compressionOptions, policyFactory);
+
+    auto encoded = nimble::EncodingFactory::encode<uint32_t>(
+        std::move(policy), std::span<const uint32_t>(data), buffer);
+
+    // Capture the encoding layout tree and verify compression types.
+    auto capturedLayout = nimble::EncodingLayoutCapture::capture(encoded);
+    EXPECT_EQ(capturedLayout.encodingType(), nimble::EncodingType::Dictionary);
+
+    // Verify leaf compression types in the captured tree.
+    std::function<void(const nimble::EncodingLayout&)> verifyCompression =
+        [&](const nimble::EncodingLayout& layout) {
+          if (layout.encodingType() == nimble::EncodingType::Trivial ||
+              layout.encodingType() == nimble::EncodingType::FixedBitWidth) {
+            if (!testData.compressionOptions.has_value()) {
+              EXPECT_EQ(
+                  layout.compressionType(),
+                  nimble::CompressionType::Uncompressed);
+            }
+          }
+          for (uint32_t i = 0; i < layout.childrenCount(); ++i) {
+            const auto& child = layout.child(i);
+            if (child.has_value()) {
+              verifyCompression(child.value());
+            }
+          }
+        };
+    verifyCompression(capturedLayout);
+
+    // Verify round-trip correctness.
+    auto encoding = nimble::EncodingFactory::decode(
+        *pool, encoded, [&](uint32_t totalLength) -> void* {
+          return pool->allocate(totalLength);
+        });
+    EXPECT_EQ(encoding->encodingType(), nimble::EncodingType::Dictionary);
+    EXPECT_EQ(encoding->rowCount(), data.size());
+
+    std::vector<uint32_t> decoded(data.size());
+    encoding->materialize(data.size(), decoded.data());
+    EXPECT_EQ(decoded, data);
+  }
+}
