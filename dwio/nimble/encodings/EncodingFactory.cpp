@@ -18,13 +18,17 @@
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/EncodingSelection.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/FixedBitWidthEncodingV2.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
+#include "dwio/nimble/encodings/MainlyConstantEncodingV2.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
+#include "dwio/nimble/encodings/RleEncodingV2.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
+#include "dwio/nimble/encodings/VarintEncodingV2.h"
 
 namespace facebook::nimble {
 
@@ -238,6 +242,18 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
           "Trying to deserialize a PrefixEncoding with a non-string data type.");
       return std::make_unique<PrefixEncoding>(memoryPool, data, options);
     }
+    case EncodingType::VarintV2: {
+      RETURN_ENCODING_BY_VARINT_TYPE(VarintEncodingV2, dataType);
+    }
+    case EncodingType::RLEV2: {
+      RETURN_ENCODING_BY_LEAF_TYPE(RLEV2Encoding, dataType);
+    }
+    case EncodingType::FixedBitWidthV2: {
+      RETURN_ENCODING_BY_NUMERIC_TYPE(FixedBitWidthEncodingV2, dataType);
+    }
+    case EncodingType::MainlyConstantV2: {
+      RETURN_ENCODING_BY_NON_BOOL_TYPE(MainlyConstantEncodingV2, dataType);
+    }
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
@@ -359,6 +375,38 @@ std::string_view EncodingFactory::encode(
             "Prefix encoding should only be selected for string_view data types.");
       } else {
         return PrefixEncoding::encode(selection, castedValues, buffer, options);
+      }
+    }
+    case EncodingType::VarintV2: {
+      if constexpr (
+          isNumericType<physicalType>() &&
+          (sizeof(physicalType) == 4 || sizeof(T) == 8)) {
+        return VarintEncodingV2<T>::encode(
+            selection, castedValues, buffer, options);
+      } else {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "VarintV2 encoding can only be selected for large numeric data types.");
+      }
+    }
+    case EncodingType::RLEV2: {
+      return RLEV2Encoding<T>::encode(selection, castedValues, buffer, options);
+    }
+    case EncodingType::FixedBitWidthV2: {
+      if constexpr (isNumericType<physicalType>()) {
+        return FixedBitWidthEncodingV2<T>::encode(
+            selection, castedValues, buffer, options);
+      } else {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "FixedBitWidthV2 encoding should not be selected for non-numeric data types.");
+      }
+    }
+    case EncodingType::MainlyConstantV2: {
+      if constexpr (std::is_same<T, bool>::value) {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "MainlyConstantV2 encoding should not be selected for bool data types.");
+      } else {
+        return MainlyConstantEncodingV2<T>::encode(
+            selection, castedValues, buffer, options);
       }
     }
     default: {

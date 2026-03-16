@@ -838,3 +838,34 @@ const char* bulkVarintDecodeBmi2(uint64_t n, const char* pos, T* output) {
 }
 
 } // namespace facebook::nimble::varint
+
+// V2 variants for independent experimentation in VarintEncodingV2.
+namespace facebook::nimble::varint_v2 {
+
+using varint::bulkVarintDecodeBmi2;
+using varint::readVarint32;
+using varint::readVarint64;
+
+const char* bulkVarintDecode32(uint64_t n, const char* pos, uint32_t* output) {
+  static bool hasBmi2 = folly::CpuId().bmi2();
+  if (hasBmi2) {
+    return bulkVarintDecodeBmi2(n, pos, output);
+  }
+  for (uint64_t i = 0; i < n; ++i) {
+    *output++ = readVarint32(&pos);
+  }
+  return pos;
+}
+
+const char* bulkVarintDecode64(uint64_t n, const char* pos, uint64_t* output) {
+  static bool hasBmi2 = folly::CpuId().bmi2();
+  if (hasBmi2) {
+    return bulkVarintDecodeBmi2(n, pos, output);
+  }
+  for (uint64_t i = 0; i < n; ++i) {
+    *output++ = readVarint64(&pos);
+  }
+  return pos;
+}
+
+} // namespace facebook::nimble::varint_v2
