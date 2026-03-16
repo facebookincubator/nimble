@@ -550,6 +550,48 @@ const StreamDescriptor& getMainDescriptor(const Type& type) {
 
 } // namespace
 
+void Deserializer::populateFlatMapAsStructParams(
+    FieldReaderParams& params) const {
+  if (options_.outputType == nullptr) {
+    return;
+  }
+
+  NIMBLE_CHECK(
+      schema_->isRow(),
+      "outputType requires Row schema root, got {}",
+      toString(schema_->kind()));
+
+  const auto& rootRow = schema_->asRow();
+  NIMBLE_CHECK_EQ(
+      rootRow.childrenCount(),
+      options_.outputType->size(),
+      "Output type field count must match schema field count");
+
+  for (size_t i = 0; i < rootRow.childrenCount(); ++i) {
+    if (!rootRow.childAt(i)->isFlatMap()) {
+      continue;
+    }
+    const auto& outputFieldType = options_.outputType->childAt(i);
+    if (outputFieldType->kind() != velox::TypeKind::ROW) {
+      continue;
+    }
+
+    const auto& columnName = rootRow.nameAt(i);
+    params.readFlatMapFieldAsStruct.insert(columnName);
+
+    const auto& rowType = outputFieldType->asRow();
+    std::vector<std::string> features;
+    features.reserve(rowType.size());
+    for (size_t j = 0; j < rowType.size(); ++j) {
+      features.push_back(rowType.nameOf(j));
+    }
+    params.flatMapFeatureSelector[columnName] = FeatureSelection{
+        .features = std::move(features),
+        .mode = SelectionMode::Include,
+    };
+  }
+}
+
 Deserializer::Deserializer(
     std::shared_ptr<const Type> schema,
     velox::memory::MemoryPool* pool)
@@ -561,6 +603,8 @@ Deserializer::Deserializer(
     DeserializerOptions options)
     : schema_{std::move(schema)}, pool_{pool}, options_{std::move(options)} {
   FieldReaderParams params;
+  populateFlatMapAsStructParams(params);
+
   std::shared_ptr<const velox::dwio::common::TypeWithId> schemaWithId =
       velox::dwio::common::TypeWithId::create(convertToVeloxType(*schema_));
   std::vector<uint32_t> offsets;

@@ -286,7 +286,8 @@ void writeTrailer(
     const std::vector<uint32_t>& streamSizes,
     EncodingType encodingType,
     nimble::Buffer& encodingBuffer,
-    T& buffer) {
+    T& buffer,
+    const EncodingLayout* encodingLayout = nullptr) {
   if (outputVersion == SerializationVersion::kCompactRaw) {
     writeRawTrailer(streamSizes, encodingType, buffer);
     return;

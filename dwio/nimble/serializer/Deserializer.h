@@ -46,6 +46,11 @@ class Deserializer {
   // Creates deserializers for a type and its FlatMap inMap streams.
   void createDeserializersForType(const Type& type, uint32_t depth);
 
+  // Populates FieldReaderParams for flatmap-as-struct deserialization based on
+  // outputType. For each top-level flatmap column whose corresponding output
+  // field is ROW, sets readFlatMapFieldAsStruct and flatMapFeatureSelector.
+  void populateFlatMapAsStructParams(FieldReaderParams& params) const;
+
   // --- Const members (set at construction, never modified) ---
   const std::shared_ptr<const Type> schema_;
   velox::memory::MemoryPool* const pool_;
