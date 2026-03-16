@@ -1064,39 +1064,33 @@ class MultiValueFieldReader : public FieldReader {
         vector->offsets()->size(),
         (allocationSize * sizeof(velox::vector_size_t)),
         "Unexpected 'offsets' buffer size.");
-    velox::vector_size_t* sizes =
-        vector->sizes()->template asMutable<velox::vector_size_t>();
-    velox::vector_size_t* offsets =
+    auto* sizes = vector->sizes()->template asMutable<velox::vector_size_t>();
+    auto* offsets =
         vector->offsets()->template asMutable<velox::vector_size_t>();
 
-    std::vector<velox::BufferPtr> stringBuffers;
     auto nonNullCount = decoder_->next(
         count,
         sizes,
-        stringBuffers,
+        stringBuffers_,
         [&]() { return ensureNulls(vector, allocationSize); },
         scatterBitmap);
 
     size_t childrenRows = 0;
     if (nonNullCount == rowCount) {
       vector->resetNulls();
-      for (uint32_t i = 0; i < rowCount; ++i) {
-        offsets[i] = static_cast<velox::vector_size_t>(childrenRows);
-        childrenRows += sizes[i];
-      }
     } else {
       vector->setNullCount(rowCount - nonNullCount);
 
-      auto notNulls = reinterpret_cast<const char*>(vector->rawNulls());
-      for (uint32_t i = 0; i < rowCount; ++i) {
-        offsets[i] = static_cast<velox::vector_size_t>(childrenRows);
-        if (velox::bits::isBitSet(
-                reinterpret_cast<const uint8_t*>(notNulls), i)) {
-          childrenRows += sizes[i];
-        } else {
-          sizes[i] = 0;
-        }
-      }
+      // Zero out sizes for null rows so the offset loop below is branchless.
+      velox::bits::forEachUnsetBit(
+          reinterpret_cast<const uint64_t*>(vector->rawNulls()),
+          0,
+          rowCount,
+          [sizes](int32_t i) { sizes[i] = 0; });
+    }
+    for (uint32_t i = 0; i < rowCount; ++i) {
+      offsets[i] = static_cast<velox::vector_size_t>(childrenRows);
+      childrenRows += sizes[i];
     }
 
     NIMBLE_CHECK_LE(
@@ -1105,6 +1099,10 @@ class MultiValueFieldReader : public FieldReader {
         "Unsupported children count");
     return static_cast<velox::vector_size_t>(childrenRows);
   }
+
+  // Reusable empty container to satisfy decoder_->next() API. Avoids heap
+  // allocation on every call for non-string types.
+  std::vector<velox::BufferPtr> stringBuffers_;
 
   uint32_t skipLengths(uint32_t count) {
     size_t childrenCount = 0;
