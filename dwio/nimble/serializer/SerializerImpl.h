@@ -34,6 +34,17 @@
 namespace facebook::nimble::serde {
 namespace detail {
 
+/// Returns a default encoding selection policy for the given data type.
+/// Uses a static factory to avoid recreating the read factors vector on every
+/// call.
+FOLLY_ALWAYS_INLINE std::unique_ptr<EncodingSelectionPolicyBase>
+createDefaultEncodingPolicy(DataType dataType) {
+  static const ManualEncodingSelectionPolicyFactory factory{
+      ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      /*compressionOptions=*/std::nullopt};
+  return factory.createPolicy(dataType);
+}
+
 /// Get total size of a string field
 uint32_t getStringsTotalSize(std::string_view input);
 
@@ -246,17 +257,12 @@ void writeCompactTrailer(
     nimble::Buffer& encodingBuffer,
     T& buffer) {
   encodingBuffer.reset();
-  auto factory = ManualEncodingSelectionPolicyFactory(
-      ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
-      /*compressionOptions=*/std::nullopt);
-  auto policyFactory = [&factory](DataType dataType) {
-    return factory.createPolicy(dataType);
-  };
+
   EncodingLayout layout{encodingType, {}, CompressionType::Uncompressed};
   auto policy = std::make_unique<ReplayedEncodingSelectionPolicy<uint32_t>>(
       std::move(layout),
       /*compressionOptions=*/std::nullopt,
-      policyFactory);
+      createDefaultEncodingPolicy);
   auto encodedStreamSizes = EncodingFactory::encode<uint32_t>(
       std::move(policy),
       std::span<const uint32_t>(streamSizes),

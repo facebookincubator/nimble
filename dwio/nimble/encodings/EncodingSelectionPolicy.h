@@ -166,6 +166,13 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
       };
     }
 
+    // Fast path: when there are no candidate encodings, fall back to Trivial.
+    if (readFactors_.empty()) {
+      return {
+          .encodingType = EncodingType::Trivial,
+      };
+    }
+
     float minCost = std::numeric_limits<float>::max();
     EncodingType selectedEncoding = EncodingType::Trivial;
     // Iterate on all candidate encodings, and pick the encoding with the

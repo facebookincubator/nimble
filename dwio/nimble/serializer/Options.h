@@ -102,11 +102,12 @@ struct SerializerOptions {
   /// nested encodings not captured in the layout tree. When encodingLayoutTree
   /// is not specified, used directly for all streams.
   EncodingSelectionPolicyFactory encodingSelectionPolicyFactory =
-      [](DataType dataType) -> std::unique_ptr<EncodingSelectionPolicyBase> {
-    return ManualEncodingSelectionPolicyFactory{
-        ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
-        /*compressionOptions=*/std::nullopt}
-        .createPolicy(dataType);
+      [factory =
+           ManualEncodingSelectionPolicyFactory{
+               ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+               /*compressionOptions=*/std::nullopt}](
+          DataType dataType) -> std::unique_ptr<EncodingSelectionPolicyBase> {
+    return factory.createPolicy(dataType);
   };
 
   /// Optional captured encoding layout tree.
