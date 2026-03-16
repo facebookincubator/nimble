@@ -26,6 +26,7 @@
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "folly/container/F14Set.h"
+#include "velox/type/Type.h"
 
 namespace facebook::nimble {
 
@@ -144,6 +145,14 @@ struct DeserializerOptions {
   /// - kCompact: Nimble encoding format with dense sizes header.
   /// - kCompactRaw: Raw-encoded stream sizes (no nimble encoding overhead).
   std::optional<SerializationVersion> version{};
+
+  /// Output type for deserializing flatmap columns as struct (ROW).
+  /// When provided, each top-level flatmap column whose corresponding field in
+  /// outputType is ROW will be deserialized as a struct instead of a map. The
+  /// ROW field names specify which flatmap keys to select and their order.
+  /// Fields not present in the flatmap schema will be filled with nulls.
+  /// When nullopt (default), all flatmap columns are deserialized as maps.
+  velox::RowTypePtr outputType{};
 
   /// Returns true if the serialized data has a version header byte.
   bool hasVersionHeader() const;
