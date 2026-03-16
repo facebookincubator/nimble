@@ -2087,8 +2087,8 @@ TEST_P(SerializationTest, encodingLayoutTreeFlatMap) {
   std::vector<std::string> tagKeyStrings;
   tagKeyStrings.reserve(totalMapEntries);
   for (velox::vector_size_t i = 0; i < numRows; ++i) {
-    tagKeyStrings.push_back("tag_a");
-    tagKeyStrings.push_back("tag_b");
+    tagKeyStrings.emplace_back("tag_a");
+    tagKeyStrings.emplace_back("tag_b");
   }
   auto tagKeys =
       velox::BaseVector::create(velox::VARCHAR(), totalMapEntries, pool_.get());
