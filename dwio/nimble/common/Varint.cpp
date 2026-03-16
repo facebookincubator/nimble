@@ -21,6 +21,10 @@
 #include "common/aarch64/compat.h"
 #endif //__aarch64__
 
+#include <cstring>
+
+#include <xsimd/xsimd.hpp>
+
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Varint.h"
 #include "folly/CpuId.h"
@@ -846,71 +850,100 @@ using varint::bulkVarintDecodeBmi2;
 using varint::readVarint32;
 using varint::readVarint64;
 
-// Expand a single 8-byte word of single-byte varints into output elements.
+// Zero-extend 8 consecutive bytes into T-sized output elements using xsimd
+// batch construction and store.
 template <typename T>
-inline void expandByteWord(uint64_t word, T* output) {
-  output[0] = static_cast<T>(word & 0xFF);
-  output[1] = static_cast<T>((word >> 8) & 0xFF);
-  output[2] = static_cast<T>((word >> 16) & 0xFF);
-  output[3] = static_cast<T>((word >> 24) & 0xFF);
-  output[4] = static_cast<T>((word >> 32) & 0xFF);
-  output[5] = static_cast<T>((word >> 40) & 0xFF);
-  output[6] = static_cast<T>((word >> 48) & 0xFF);
-  output[7] = static_cast<T>((word >> 56) & 0xFF);
+inline void expandByteWord(const uint8_t* bytes, T* output) {
+  using batch_type = xsimd::batch<T>;
+  constexpr auto kBatchSize = batch_type::size;
+
+  if constexpr (kBatchSize >= 8) {
+    batch_type(
+        static_cast<T>(bytes[0]),
+        static_cast<T>(bytes[1]),
+        static_cast<T>(bytes[2]),
+        static_cast<T>(bytes[3]),
+        static_cast<T>(bytes[4]),
+        static_cast<T>(bytes[5]),
+        static_cast<T>(bytes[6]),
+        static_cast<T>(bytes[7]))
+        .store_unaligned(output);
+  } else if constexpr (kBatchSize == 4) {
+    batch_type(
+        static_cast<T>(bytes[0]),
+        static_cast<T>(bytes[1]),
+        static_cast<T>(bytes[2]),
+        static_cast<T>(bytes[3]))
+        .store_unaligned(output);
+    batch_type(
+        static_cast<T>(bytes[4]),
+        static_cast<T>(bytes[5]),
+        static_cast<T>(bytes[6]),
+        static_cast<T>(bytes[7]))
+        .store_unaligned(output + 4);
+  } else if constexpr (kBatchSize == 2) {
+    batch_type(static_cast<T>(bytes[0]), static_cast<T>(bytes[1]))
+        .store_unaligned(output);
+    batch_type(static_cast<T>(bytes[2]), static_cast<T>(bytes[3]))
+        .store_unaligned(output + 2);
+    batch_type(static_cast<T>(bytes[4]), static_cast<T>(bytes[5]))
+        .store_unaligned(output + 4);
+    batch_type(static_cast<T>(bytes[6]), static_cast<T>(bytes[7]))
+        .store_unaligned(output + 6);
+  }
 }
 
-// Process runs of single-byte varints using 8-byte word reads.
-// Unrolled 4x (32 elements per iteration) for the common case where
-// most values are single-byte (0-127).
+// Process runs of single-byte varints using xsimd for both the high-bit
+// check and byte-to-element widening. Works with uint8_t* throughout,
+// avoiding reinterpret_cast to uint64_t* (alignment/strict-aliasing issues).
 // Returns the number of elements remaining after processing.
 template <typename T>
 inline uint64_t
 bulkDecodeSingleByteRun(uint64_t n, const char*& pos, T*& output) {
-  constexpr uint64_t kHighBits = 0x8080808080808080ULL;
-  constexpr uint64_t batchSize = 32;
+  using u8_batch = xsimd::batch<uint8_t>;
+  constexpr auto kU8Size = u8_batch::size;
   constexpr uint64_t wordSize = 8;
 
-  // Process 32 elements (4 words) at a time.
-  while (n >= batchSize) {
-    uint64_t w0 = *reinterpret_cast<const uint64_t*>(pos);
-    uint64_t w1 = *reinterpret_cast<const uint64_t*>(pos + wordSize);
-    uint64_t w2 = *reinterpret_cast<const uint64_t*>(pos + 2 * wordSize);
-    uint64_t w3 = *reinterpret_cast<const uint64_t*>(pos + 3 * wordSize);
-    if ((w0 | w1 | w2 | w3) & kHighBits) {
+  const auto* src = reinterpret_cast<const uint8_t*>(pos);
+
+  // Process kU8BatchSize bytes at a time (32 on AVX2, 16 on SSE/NEON).
+  // Single wide load + vptest replaces 4 separate uint64_t loads + OR chain.
+  while (n >= kU8Size) {
+    auto bytes = u8_batch::load_unaligned(src);
+    if (xsimd::any((bytes & u8_batch(0x80)) != u8_batch(0))) {
       break;
     }
-    expandByteWord(w0, output);
-    expandByteWord(w1, output + wordSize);
-    expandByteWord(w2, output + (2 * wordSize));
-    expandByteWord(w3, output + (3 * wordSize));
-    pos += batchSize;
-    output += batchSize;
-    n -= batchSize;
+    for (size_t i = 0; i < kU8Size; i += wordSize) {
+      expandByteWord(src + i, output + i);
+    }
+    src += kU8Size;
+    output += kU8Size;
+    n -= kU8Size;
   }
 
-  // Process 8 elements (1 word) at a time.
+  // Process 8 bytes at a time. Use memcpy for the high-bit check to avoid
+  // reinterpret_cast<const uint64_t*> strict-aliasing/alignment issues.
   while (n >= wordSize) {
-    uint64_t word = *reinterpret_cast<const uint64_t*>(pos);
-    if (word & kHighBits) {
+    uint64_t word;
+    std::memcpy(&word, src, sizeof(word));
+
+    if (word & 0x8080808080808080ULL) {
       break;
     }
-    expandByteWord(word, output);
-    pos += wordSize;
+    expandByteWord(src, output);
+    src += wordSize;
     output += wordSize;
     n -= wordSize;
   }
 
   // Handle trailing single-byte varints one at a time.
-  while (n > 0) {
-    uint8_t byte = static_cast<uint8_t>(*pos);
-    if (byte & 0x80) {
-      break;
-    }
-    *output++ = static_cast<T>(byte);
-    ++pos;
+  while (n > 0 && !(src[0] & 0x80)) {
+    *output++ = static_cast<T>(src[0]);
+    ++src;
     --n;
   }
 
+  pos = reinterpret_cast<const char*>(src);
   return n;
 }
 
