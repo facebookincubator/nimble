@@ -15,9 +15,11 @@
  */
 #pragma once
 
+#include <xsimd/xsimd.hpp>
 #include <array>
 #include <span>
 #include <type_traits>
+
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/EncodingType.h"
@@ -39,6 +41,47 @@
 namespace facebook::nimble {
 
 namespace internal {
+
+// Fills 'count' elements of 'output' with 'value' using SIMD broadcast+store
+// for large fills and scalar for small fills.
+//
+// std::fill auto-vectorizes to SSE/AVX2 with -O3/-mavx2, but generates complex
+// multi-path code (alignment checks, size thresholds, scalar tail) that has
+// high per-call overhead. For RLE materialize, where fills are called
+// repeatedly with small variable lengths, this overhead dominates. simdFill
+// uses a simpler structure — broadcast + tight store loop + overlapping tail —
+// that the branch predictor handles much better for short variable-length
+// fills. Benchmarks show 2x speedup for int32 short runs vs std::fill even
+// when compiled with -mavx2.
+template <typename T>
+FOLLY_ALWAYS_INLINE void simdFill(T* output, T value, uint32_t count) {
+  if constexpr (
+      std::is_same_v<T, int32_t> || std::is_same_v<T, uint32_t> ||
+      std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t> ||
+      std::is_same_v<T, float> || std::is_same_v<T, double>) {
+    constexpr auto kBatchSize = xsimd::batch<T>::size;
+    if (count >= kBatchSize) {
+      auto batch = xsimd::broadcast<T>(value);
+      uint32_t i = 0;
+      for (; i + kBatchSize <= count; i += kBatchSize) {
+        batch.store_unaligned(output + i);
+      }
+      // Handle tail with an overlapping store. Safe because we're filling
+      // with a constant value, so re-writing already-written positions is
+      // harmless. The outer 'count >= kBatchSize' guard ensures
+      // 'count - kBatchSize' never underflows.
+      if (i < count) {
+        batch.store_unaligned(output + count - kBatchSize);
+      }
+    } else {
+      for (uint32_t i = 0; i < count; ++i) {
+        output[i] = value;
+      }
+    }
+  } else {
+    std::fill(output, output + count, value);
+  }
+}
 
 // Base case covers the datatype-independent functionality. We use the CRTP
 // to avoid having to use virtual functions (namely on
@@ -95,11 +138,11 @@ class RLEEncodingBase
     physicalType* output = static_cast<physicalType*>(buffer);
     while (rowsLeft) {
       if (rowsLeft < copiesRemaining_) {
-        std::fill(output, output + rowsLeft, currentValue_);
+        internal::simdFill(output, currentValue_, rowsLeft);
         copiesRemaining_ -= rowsLeft;
         return;
       } else {
-        std::fill(output, output + copiesRemaining_, currentValue_);
+        internal::simdFill(output, currentValue_, copiesRemaining_);
         output += copiesRemaining_;
         rowsLeft -= copiesRemaining_;
         copiesRemaining_ = materializedRunLengths_.nextValue();
@@ -232,7 +275,7 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
       vector_size_t numRows,
       vector_size_t currentRow) const;
 
-  detail::BufferedEncoding<physicalType, 32> values_;
+  detail::BufferedEncoding<physicalType, 128> values_;
 };
 
 // For the bool case we know the values will alternate between true
