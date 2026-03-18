@@ -118,6 +118,82 @@ uint64_t buildChildRanges(
   return nullCount;
 }
 
+// RawSizeUtils is used by writer libraries. An upcast happens when the
+// input vector's type is narrower than the writer's target schema type.
+// e.g. when writing a BIGINT column, the input vector may be an INTEGER.
+// Only allows same-family promotions: integer->integer, float->float
+// where the schema type is larger or equal.
+bool isValidUpcast(velox::TypeKind vectorType, velox::TypeKind schemaType) {
+  const auto vectorSize =
+      facebook::nimble::getTypeSize(*velox::createScalarType(vectorType));
+  const auto schemaSize =
+      facebook::nimble::getTypeSize(*velox::createScalarType(schemaType));
+
+  if (!vectorSize.has_value() || !schemaSize.has_value()) {
+    return false;
+  }
+
+  // Integer type family
+  static const std::unordered_set<velox::TypeKind> integerTypes = {
+      velox::TypeKind::BOOLEAN,
+      velox::TypeKind::TINYINT,
+      velox::TypeKind::SMALLINT,
+      velox::TypeKind::INTEGER,
+      velox::TypeKind::BIGINT,
+  };
+
+  // Floating point type family
+  static const std::unordered_set<velox::TypeKind> floatTypes = {
+      velox::TypeKind::REAL,
+      velox::TypeKind::DOUBLE,
+  };
+
+  // Integer to integer upcast
+  if (integerTypes.contains(vectorType) && integerTypes.contains(schemaType)) {
+    return *schemaSize >= *vectorSize;
+  }
+
+  // Float to float upcast
+  if (floatTypes.contains(vectorType) && floatTypes.contains(schemaType)) {
+    return *schemaSize >= *vectorSize;
+  }
+
+  return false;
+}
+
+// Returns the size of the requested type for fixed width request type size.
+// Returns std::nullopt if vector type is variable length or incompatible with
+// the schema type.
+std::optional<uint64_t> getFixedWidthRequestTypeSize(
+    const velox::VectorPtr& vector,
+    const velox::dwio::common::TypeWithId* type) {
+  if (type == nullptr) {
+    return facebook::nimble::getTypeSize(*vector->type());
+  }
+
+  const auto vectorTypeKind = vector->typeKind();
+  const auto schemaTypeKind = type->type()->kind();
+  if (vectorTypeKind == schemaTypeKind) {
+    return facebook::nimble::getTypeSize(*type->type());
+  }
+
+  auto schemaTypeSize = facebook::nimble::getTypeSize(*type->type());
+
+  // Only validate and handle type mismatch for scalar (leaf) types.
+  // Complex types (ROW, MAP, ARRAY) are allowed to mismatch for cases like
+  // passthrough flatmaps and we let upstream decide whether to run the
+  // compatibility check.
+  if (schemaTypeSize.has_value()) {
+    VELOX_CHECK(
+        isValidUpcast(vectorTypeKind, schemaTypeKind),
+        "Invalid type coercion from {} to {}. Only upcasting within the same type family is allowed.",
+        vectorTypeKind,
+        schemaTypeKind);
+    return schemaTypeSize;
+  }
+
+  return std::nullopt;
+}
 } // namespace
 
 // Computes raw size for fixed-width scalar vectors.
@@ -128,8 +204,8 @@ template <velox::TypeKind K>
 uint64_t getRawSizeFromFixedWidthVector(
     const velox::VectorPtr& vector,
     const velox::common::Ranges& ranges,
-    RawSizeContext& context,
-    std::optional<uint64_t> requestTypeWidth = std::nullopt) {
+    uint64_t requestTypeWidth,
+    RawSizeContext& context) {
   VELOX_CHECK_NOT_NULL(vector);
   VELOX_DCHECK(
       K == velox::TypeKind::BOOLEAN || K == velox::TypeKind::TINYINT ||
@@ -139,8 +215,7 @@ uint64_t getRawSizeFromFixedWidthVector(
       "Wrong vector type. Expected BOOLEAN | TINYINT | SMALLINT | INTEGER | BIGINT | REAL | DOUBLE | TIMESTAMP.");
   using T = typename velox::TypeTraits<K>::NativeType;
 
-  // Use provided request type width or default to sizeof(T)
-  const uint64_t elementSize = requestTypeWidth.value_or(sizeof(T));
+  const uint64_t elementSize = requestTypeWidth;
 
   const auto& encoding = vector->encoding();
   switch (encoding) {
@@ -746,47 +821,46 @@ uint64_t getRawSizeFromVectorInternal(
     bool ignoreTopLevelNulls) {
   VELOX_CHECK_NOT_NULL(vector);
 
-  auto vectorTypeKind = vector->typeKind();
+  const auto vectorTypeKind = vector->typeKind();
 
-  // If we have schema info and there's a type mismatch, handle it.
-  // Type mismatch is only allowed for leaf (scalar) types.
-  // Complex type mismatches (e.g., ROW vs MAP for passthrough flatmaps) are
-  // handled in the type-specific functions.
+  // If we have schema info and there's a scalar type mismatch (e.g., int32_t
+  // vector with BIGINT schema), we use the schema type's size for the raw size
+  // calculation. This is passed as requestTypeWidth into the normal dispatch
+  // below, so the existing getRawSizeFromFixedWidthVector handles it uniformly.
+  const auto requestTypeWidth = getFixedWidthRequestTypeSize(vector, type);
 
   switch (vectorTypeKind) {
     case velox::TypeKind::BOOLEAN: {
       return getRawSizeFromFixedWidthVector<velox::TypeKind::BOOLEAN>(
-          vector, ranges, context);
+          vector, ranges, *requestTypeWidth, context);
     }
     case velox::TypeKind::TINYINT: {
       return getRawSizeFromFixedWidthVector<velox::TypeKind::TINYINT>(
-          vector, ranges, context);
+          vector, ranges, *requestTypeWidth, context);
     }
     case velox::TypeKind::SMALLINT: {
       return getRawSizeFromFixedWidthVector<velox::TypeKind::SMALLINT>(
-          vector, ranges, context);
+          vector, ranges, *requestTypeWidth, context);
     }
     case velox::TypeKind::INTEGER: {
       return getRawSizeFromFixedWidthVector<velox::TypeKind::INTEGER>(
-          vector, ranges, context);
+          vector, ranges, *requestTypeWidth, context);
     }
     case velox::TypeKind::BIGINT: {
       return getRawSizeFromFixedWidthVector<velox::TypeKind::BIGINT>(
-          vector, ranges, context);
+          vector, ranges, *requestTypeWidth, context);
     }
     case velox::TypeKind::REAL: {
       return getRawSizeFromFixedWidthVector<velox::TypeKind::REAL>(
-          vector, ranges, context);
+          vector, ranges, *requestTypeWidth, context);
     }
     case velox::TypeKind::DOUBLE: {
       return getRawSizeFromFixedWidthVector<velox::TypeKind::DOUBLE>(
-          vector, ranges, context);
+          vector, ranges, *requestTypeWidth, context);
     }
     case velox::TypeKind::TIMESTAMP: {
-      // TIMESTAMP uses a logical size of 12 bytes (8 + 4) instead of
-      // sizeof(Timestamp) = 16
       return getRawSizeFromFixedWidthVector<velox::TypeKind::TIMESTAMP>(
-          vector, ranges, context, kTimestampLogicalSize);
+          vector, ranges, *requestTypeWidth, context);
     }
     case velox::TypeKind::VARCHAR:
     case velox::TypeKind::VARBINARY: {
