@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 #include "dwio/nimble/velox/ChunkedStream.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
+#include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/tablet/Compression.h"
 #include "folly/io/Cursor.h"
@@ -37,11 +37,10 @@ std::string_view InMemoryChunkedStream::nextChunk() {
   ensureLoaded();
   uncompressed_.clear();
   NIMBLE_CHECK_LE(
-      sizeof(uint32_t) + sizeof(char),
+      kChunkHeaderSize,
       stream_.size() - (pos_ - stream_.data()),
       "Read beyond end of stream");
-  auto length = encoding::readUint32(pos_);
-  auto compressionType = static_cast<CompressionType>(encoding::readChar(pos_));
+  const auto [length, compressionType] = readChunkHeader(pos_);
   NIMBLE_CHECK_LE(
       length,
       stream_.size() - (pos_ - stream_.data()),
@@ -70,10 +69,10 @@ std::string_view InMemoryChunkedStream::nextChunk() {
 CompressionType InMemoryChunkedStream::peekCompressionType() {
   ensureLoaded();
   NIMBLE_CHECK_LE(
-      sizeof(uint32_t) + sizeof(char),
+      kChunkHeaderSize,
       stream_.size() - (pos_ - stream_.data()),
       "Read beyond end of stream");
-  auto pos = pos_ + sizeof(uint32_t);
+  auto* pos = pos_ + sizeof(uint32_t);
   return static_cast<CompressionType>(encoding::readChar(pos));
 }
 

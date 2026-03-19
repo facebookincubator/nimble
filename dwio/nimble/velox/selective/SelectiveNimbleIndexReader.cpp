@@ -69,11 +69,6 @@ std::vector<velox::core::SortOrder> toVeloxSortOrders(
 
 } // namespace
 
-size_t SelectiveNimbleIndexReader::RowRangeHash::operator()(
-    const RowRange& range) const {
-  return folly::hash::hash_combine(range.startRow, range.endRow);
-}
-
 void SelectiveNimbleIndexReader::RequestState::incPendingStripes() {
   ++pendingStripes;
 }
@@ -564,8 +559,7 @@ void SelectiveNimbleIndexReader::loadStripeWithIndex(uint32_t stripeIndex) {
   streams_.load();
 }
 
-std::vector<SelectiveNimbleIndexReader::RowRange>
-SelectiveNimbleIndexReader::lookupRowRanges(
+std::vector<RowRange> SelectiveNimbleIndexReader::lookupRowRanges(
     uint32_t stripeIndex,
     const std::vector<velox::serializer::EncodedKeyBounds>& keyBounds) {
   NIMBLE_CHECK_NOT_NULL(indexReader_);

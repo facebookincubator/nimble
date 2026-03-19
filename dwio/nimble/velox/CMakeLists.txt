@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 add_library(nimble_velox_common SchemaUtils.cpp)
-target_link_libraries(nimble_velox_common nimble_common velox_type)
+target_link_libraries(nimble_velox_common nimble_common velox_type Folly::folly fmt::fmt)
 
 add_library(nimble_velox_schema SchemaTypes.cpp)
 target_link_libraries(nimble_velox_schema nimble_common Folly::folly)

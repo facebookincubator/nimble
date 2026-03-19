@@ -22,6 +22,7 @@
 
 #include "dwio/nimble/index/IndexReader.h"
 #include "dwio/nimble/index/TabletIndex.h"
+#include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
 #include "velox/connectors/Connector.h"
@@ -66,41 +67,6 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
   std::unique_ptr<Result> next(velox::vector_size_t maxOutputRows) override;
 
  private:
-  // Represents a row range within a stripe [startRow, endRow).
-  struct RowRange {
-    velox::vector_size_t startRow{0}; // Inclusive
-    velox::vector_size_t endRow{0}; // Exclusive
-
-    RowRange() = default;
-    RowRange(velox::vector_size_t _startRow, velox::vector_size_t _endRow)
-        : startRow(_startRow), endRow(_endRow) {}
-
-    velox::vector_size_t numRows() const {
-      return endRow - startRow;
-    }
-
-    bool empty() const {
-      return startRow >= endRow;
-    }
-
-    // Returns true if this range fully contains other.
-    bool contains(const RowRange& other) const {
-      return startRow <= other.startRow && other.endRow <= endRow;
-    }
-
-    bool operator==(const RowRange& other) const {
-      return startRow == other.startRow && endRow == other.endRow;
-    }
-
-    std::string toString() const {
-      return fmt::format("[{}, {})", startRow, endRow);
-    }
-  };
-
-  struct RowRangeHash {
-    size_t operator()(const RowRange& range) const;
-  };
-
   using RowRangeMap = folly::F14FastMap<RowRange, size_t, RowRangeHash>;
 
   // Represents a read segment - a contiguous row range to read from the file.
