@@ -36,7 +36,7 @@ TabletReader::Options TabletReader::configureOptions(
     const velox::dwio::common::ReaderOptions& options,
     velox::dwio::common::BufferedInput* bufferedInput) {
   Options tabletOptions;
-  tabletOptions.maxFooterIoBytes = options.footerEstimatedSize();
+  tabletOptions.maxFooterIoBytes = options.footerSpeculativeIoSize();
   tabletOptions.preloadOptionalSections = {std::string(kSchemaSection)};
   if (options.fileMetadataCacheEnabled() && bufferedInput != nullptr) {
     tabletOptions.bufferedInput = bufferedInput;
