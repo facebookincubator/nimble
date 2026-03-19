@@ -570,7 +570,8 @@ uint64_t getRawSizeFromPassthroughFlatMap(
     const bool topLevel) {
   VELOX_CHECK_NOT_NULL(vector);
   const auto& encoding = vector->encoding();
-  const velox::RowVector* rowVector = nullptr;
+
+  const velox::RowVector* rowVector;
   uint64_t nullCount = 0;
   velox::common::Ranges childRanges;
 
@@ -622,22 +623,32 @@ uint64_t getRawSizeFromPassthroughFlatMap(
   // Schema: MAP<keyType, valueType>
   // - type.childAt(0) is the key type (determines key size)
   // - type.childAt(1) is the value type (used for computing value sizes)
-  const auto& schemaKeyType = type.childAt(0)->type();
+  const auto& schemaKeyType = type.childAt(0);
   const auto& schemaValueType = type.childAt(1);
-  auto keyTypeSize = getTypeSize(*schemaKeyType);
+  auto keyTypeSize = getTypeSize(*schemaKeyType->type());
 
   uint64_t rawSize = 0;
   const auto nonNullCount = childRanges.size();
 
   if (nonNullCount > 0) {
-    // Add key sizes: each ROW field name is written as a key for each non-null
-    // row
+    // ROW children represent the "values" in the passthrough flatmap
+    // Each field in the ROW is a key-value pair
     const auto childrenSize = rowVector->childrenSize();
+
+    // For passthrough flatmaps, keys are counted for ALL non-null flatmap rows,
+    // regardless of whether the individual value is null or not.
+    // This matches DWRF behavior where key sizes are counted per key per row.
+    // Key count = numKeys * numNonNullFlatmapRows
     if (keyTypeSize.has_value()) {
       rawSize += *keyTypeSize * childrenSize * nonNullCount;
+    } else {
+      // For string keys, use the field name lengths
+      for (size_t i = 0; i < childrenSize; ++i) {
+        const auto& fieldName = rowVector->type()->asRow().nameOf(i);
+        rawSize += fieldName.size() * nonNullCount;
+      }
     }
 
-    // Add value sizes: all children use the same value type from the MAP schema
     for (size_t i = 0; i < childrenSize; ++i) {
       const auto& child = rowVector->childAt(i);
 
