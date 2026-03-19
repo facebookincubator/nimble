@@ -14,20 +14,8 @@
  * limitations under the License.
  */
 
-#include <gtest/gtest.h>
-
-#include "dwio/nimble/common/Constants.h"
-
 namespace facebook::nimble::test {
 
-TEST(ConstantsTest, kChunkHeaderSize) {
-  // Chunk header format:
-  //   - 4 bytes (uint32_t) for compressed chunk length
-  //   - 1 byte for compression type
-  // This constant must remain 5 to maintain backward compatibility with
-  // existing Nimble files.
-  EXPECT_EQ(kChunkHeaderSize, 5);
-  EXPECT_EQ(kChunkHeaderSize, sizeof(uint32_t) + 1);
-}
+// kChunkHeaderSize tests moved to ChunkHeaderTest.cpp.
 
 } // namespace facebook::nimble::test

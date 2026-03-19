@@ -16,8 +16,7 @@
 
 #include "dwio/nimble/velox/selective/ChunkedDecoder.h"
 
-#include "dwio/nimble/common/Constants.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
+#include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "velox/common/testutil/TestValue.h"
@@ -33,9 +32,7 @@ using namespace facebook::velox;
 void ChunkedDecoder::loadNextChunk() {
   auto ret = ensureInput(kChunkHeaderSize);
   NIMBLE_CHECK(ret, "Failed to read chunk header");
-  auto length = encoding::readUint32(inputData_);
-  const auto compressionType =
-      static_cast<CompressionType>(encoding::readChar(inputData_));
+  const auto [length, compressionType] = readChunkHeader(inputData_);
   inputSize_ -= kChunkHeaderSize;
   ret = ensureInput(length);
   NIMBLE_CHECK(ret);

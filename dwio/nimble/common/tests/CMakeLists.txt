@@ -24,6 +24,7 @@ add_executable(
   nimble_common_tests
   BitEncoderTests.cpp
   BitsTests.cpp
+  ChunkHeaderTest.cpp
   ConstantsTest.cpp
   ExceptionHelperTest.cpp
   ExceptionTests.cpp

@@ -32,6 +32,7 @@ add_executable(
   OrderedRangesTest.cpp
   RawSizeContextTest.cpp
   RawSizeTest.cpp
+  RowRangeTest.cpp
   SchemaTest.cpp
   StreamChunkerTest.cpp
   StreamDataTest.cpp
