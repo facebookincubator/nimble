@@ -34,6 +34,7 @@ add_executable(
   RawSizeTest.cpp
   RowRangeTest.cpp
   SchemaTest.cpp
+  SchemaUtilsTest.cpp
   StreamChunkerTest.cpp
   StreamDataTest.cpp
   StreamLabelsTest.cpp
