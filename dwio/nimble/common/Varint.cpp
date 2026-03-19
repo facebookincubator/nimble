@@ -69,8 +69,37 @@ __attribute__((__target__("bmi2")))
 // __attribute__ ((optimize("Os")))
 const char* bulkVarintDecodeBmi2(uint64_t n, const char* pos, T* output);
 
+// Process runs of single-byte varints using 8-byte word reads.
+// Returns the number of elements remaining after processing.
+template <typename T>
+inline uint64_t
+bulkDecodeSingleByteRun(uint64_t n, const char*& pos, T*& output) {
+  while (n >= 8) {
+    uint64_t word = *reinterpret_cast<const uint64_t*>(pos);
+    if (word & 0x8080808080808080ULL) {
+      break;
+    }
+    output[0] = static_cast<T>(word & 0xFF);
+    output[1] = static_cast<T>((word >> 8) & 0xFF);
+    output[2] = static_cast<T>((word >> 16) & 0xFF);
+    output[3] = static_cast<T>((word >> 24) & 0xFF);
+    output[4] = static_cast<T>((word >> 32) & 0xFF);
+    output[5] = static_cast<T>((word >> 40) & 0xFF);
+    output[6] = static_cast<T>((word >> 48) & 0xFF);
+    output[7] = static_cast<T>((word >> 56) & 0xFF);
+    pos += 8;
+    output += 8;
+    n -= 8;
+  }
+  return n;
+}
+
 const char* bulkVarintDecode32(uint64_t n, const char* pos, uint32_t* output) {
   static bool hasBmi2 = folly::CpuId().bmi2();
+  n = bulkDecodeSingleByteRun(n, pos, output);
+  if (n == 0) {
+    return pos;
+  }
   if (hasBmi2) {
     return bulkVarintDecodeBmi2(n, pos, output);
   }
@@ -82,6 +111,10 @@ const char* bulkVarintDecode32(uint64_t n, const char* pos, uint32_t* output) {
 
 const char* bulkVarintDecode64(uint64_t n, const char* pos, uint64_t* output) {
   static bool hasBmi2 = folly::CpuId().bmi2();
+  n = bulkDecodeSingleByteRun(n, pos, output);
+  if (n == 0) {
+    return pos;
+  }
   if (hasBmi2) {
     return bulkVarintDecodeBmi2(n, pos, output);
   }
