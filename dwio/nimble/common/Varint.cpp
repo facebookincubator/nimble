@@ -282,11 +282,16 @@ static constexpr auto kDecodeTable = [] {
 }();
 
 // Table-driven BMI2 varint decode. Reads extraction masks from a lookup table.
+// Takes n and output by reference so the caller can re-dispatch to fast paths
+// after this function yields on a single-byte or two-byte run boundary.
 template <typename T>
 __attribute__((__target__("bmi2"))) const char*
-bulkVarintDecodeBmi2Table(uint64_t n, const char* pos, T* output) {
+bulkVarintDecodeBmi2Table(uint64_t& n, const char* pos, T*& output) {
   constexpr uint64_t kControlMask = 0x0000808080808080ULL;
   constexpr int kChunkLen = 6;
+  // Control bit pattern for uniform single-byte chunks.
+  // cb=0: all 6 bytes are terminators (6 single-byte varints).
+  constexpr uint64_t kAllSingleByteCb = 0;
 
   uint64_t carryover = 0;
   int carryoverBits = 0;
@@ -298,6 +303,12 @@ bulkVarintDecodeBmi2Table(uint64_t n, const char* pos, T* output) {
     uint64_t word;
     std::memcpy(&word, pos, sizeof(word));
     const uint64_t cb = _pext_u64(word, kControlMask);
+
+    // If there is no carryover from a previous chunk and we see a run of
+    // single-byte varints, break out so the caller can use the SIMD fast path.
+    if (carryoverBits == 0 && cb == kAllSingleByteCb) {
+      return pos;
+    }
 
     // Case 63 (all continuation bytes) requires accumulating carryover
     // rather than replacing it. This case is extremely rare
@@ -341,32 +352,38 @@ bulkVarintDecodeBmi2Table(uint64_t n, const char* pos, T* output) {
         *output++ = readVarint64(&pos);
       }
     }
+    n = 0;
+  }
+  return pos;
+}
+
+// Dispatch loop: cycles between fast paths and the general BMI2 decoder.
+// When the BMI2 decoder detects a uniform single-byte or two-byte chunk
+// boundary (with no carryover), it yields back here so the dedicated fast
+// paths can handle the run efficiently.
+template <typename T>
+inline const char*
+bulkVarintDecodeDispatch(uint64_t n, const char* pos, T* output) {
+  while (n > 0) {
+    n = bulkDecodeSingleByteRun(n, pos, output);
+    if (n == 0) {
+      break;
+    }
+    n = bulkDecodeTwoByteRun(n, pos, output);
+    if (n == 0) {
+      break;
+    }
+    pos = bulkVarintDecodeBmi2Table(n, pos, output);
   }
   return pos;
 }
 
 const char* bulkVarintDecode32(uint64_t n, const char* pos, uint32_t* output) {
-  n = bulkDecodeSingleByteRun(n, pos, output);
-  if (n == 0) {
-    return pos;
-  }
-  n = bulkDecodeTwoByteRun(n, pos, output);
-  if (n == 0) {
-    return pos;
-  }
-  return bulkVarintDecodeBmi2Table(n, pos, output);
+  return bulkVarintDecodeDispatch(n, pos, output);
 }
 
 const char* bulkVarintDecode64(uint64_t n, const char* pos, uint64_t* output) {
-  n = bulkDecodeSingleByteRun(n, pos, output);
-  if (n == 0) {
-    return pos;
-  }
-  n = bulkDecodeTwoByteRun(n, pos, output);
-  if (n == 0) {
-    return pos;
-  }
-  return bulkVarintDecodeBmi2Table(n, pos, output);
+  return bulkVarintDecodeDispatch(n, pos, output);
 }
 
 } // namespace facebook::nimble::varint
