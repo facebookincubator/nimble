@@ -385,6 +385,16 @@ class ChunkedDecoder {
 
   void prepareInputBuffer(int32_t size);
 
+  // Returns true if inputData_ points into inputBuffer_.
+  bool fromInputBuffer() const {
+    if (!inputBuffer_) {
+      return false;
+    }
+    const char* bufStart = inputBuffer_->as<char>();
+    return inputData_ >= bufStart &&
+        inputData_ < bufStart + inputBuffer_->capacity();
+  }
+
   // Seek to a specific chunk by offset.
   // Positions the decoder at the beginning of the chunk at the given offset.
   // The caller is responsible for updating rowPosition_ after this call.

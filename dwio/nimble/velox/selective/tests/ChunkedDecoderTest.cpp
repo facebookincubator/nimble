@@ -56,6 +56,23 @@ class ChunkedDecoderTestHelper {
     decoder_->inputSize_ -= size;
   }
 
+  bool fromInputBuffer() const {
+    return decoder_->fromInputBuffer();
+  }
+
+  int64_t inputBufferCapacity() const {
+    return decoder_->inputBuffer_ ? decoder_->inputBuffer_->capacity() : 0;
+  }
+
+  const char* inputBufferStart() const {
+    return decoder_->inputBuffer_ ? decoder_->inputBuffer_->as<char>()
+                                  : nullptr;
+  }
+
+  const char* inputDataPtr() const {
+    return decoder_->inputData_;
+  }
+
  private:
   ChunkedDecoder* const decoder_;
 };
@@ -146,6 +163,134 @@ TEST_F(ChunkedDecoderTest, ensureInput) {
   checkNext("gh");
   ASSERT_TRUE(helper.inputData().empty());
   ASSERT_FALSE(helper.ensureInput(1));
+}
+
+// Verify that ensureInput correctly appends data when inputData_ is mid-buffer
+// (the memmove-skip optimization in prepareInputBuffer fires).
+// Regression test: the old code used inputBuffer_->asMutable<char>() +
+// inputSize_ for the memcpy destination, which is wrong when inputData_ doesn't
+// point to the start of inputBuffer_. The fix uses
+// const_cast<char*>(inputData_) + inputSize_.
+TEST_F(ChunkedDecoderTest, ensureInputMemmoveSkip) {
+  // Build 32 bytes of deterministic data.
+  std::string data(32, '\0');
+  for (size_t i = 0; i < data.size(); ++i) {
+    data[i] = 'a' + (i % 26);
+  }
+
+  // block_size = 3: Next() returns 3 bytes at a time, forcing ensureInput to
+  // loop and accumulate data in inputBuffer_.
+  ChunkedDecoder decoder(
+      std::make_unique<dwio::common::SeekableArrayInputStream>(
+          data.data(), data.size(), /*block_size=*/3),
+      false,
+      nullptr,
+      &pool());
+  ChunkedDecoderTestHelper helper(&decoder);
+
+  // Step 1: Fill the internal buffer with 9 bytes ("abcdefghi").
+  // This forces inputBuffer_ allocation; Velox AlignedBuffer rounds capacity
+  // up (typically to 64 bytes), so there is plenty of trailing space.
+  helper.ensureInput(9);
+  ASSERT_EQ(helper.inputData().substr(0, 9), data.substr(0, 9));
+
+  // Step 2: Consume 3 bytes. inputData_ advances to bufStart+3, inputSize_=6.
+  // Now inputData_ no longer points to the start of inputBuffer_.
+  helper.advanceInputData(3);
+  ASSERT_EQ(helper.inputData(), data.substr(3, 6));
+
+  // Step 3: Request 9 bytes total (have 6, need 3 more from the stream).
+  // prepareInputBuffer sees inputData_ mid-buffer with enough trailing space
+  // and skips the memmove. Then Next() returns 3 more bytes that must be
+  // appended right after the existing 6 bytes — i.e. at inputData_+6
+  // (= bufStart+9), NOT at bufStart+6.
+  // With the old bug, the memcpy destination was bufStart+inputSize_ =
+  // bufStart+6, which overwrote the tail of the existing data, corrupting it.
+  helper.ensureInput(9);
+  ASSERT_EQ(helper.inputData().substr(0, 9), data.substr(3, 9));
+}
+
+// Test the memmove compaction path: inputData_ is mid-buffer and there is NOT
+// enough trailing space, so prepareInputBuffer must memmove data to the front.
+TEST_F(ChunkedDecoderTest, ensureInputMemmoveCompaction) {
+  // Use a large enough dataset to exhaust trailing space.
+  // AlignedBuffer typically rounds up to 64 bytes.
+  const int kDataSize = 256;
+  std::string data(kDataSize, '\0');
+  for (int i = 0; i < kDataSize; ++i) {
+    data[i] = 'a' + (i % 26);
+  }
+
+  // block_size = 10: Next() returns 10 bytes at a time.
+  ChunkedDecoder decoder(
+      std::make_unique<dwio::common::SeekableArrayInputStream>(
+          data.data(), data.size(), /*block_size=*/10),
+      false,
+      nullptr,
+      &pool());
+  ChunkedDecoderTestHelper helper(&decoder);
+
+  // Step 1: Fill buffer with 30 bytes.
+  helper.ensureInput(30);
+  ASSERT_EQ(helper.inputData().substr(0, 30), data.substr(0, 30));
+  const auto capacity = helper.inputBufferCapacity();
+  ASSERT_TRUE(helper.fromInputBuffer());
+
+  // Step 2: Consume most of the buffer, leaving just 2 bytes.
+  helper.advanceInputData(28);
+  ASSERT_EQ(helper.inputData(), data.substr(28, 2));
+
+  // Step 3: Request more data than trailing space allows.
+  // inputData_ is at bufStart+28, inputSize_=2, capacity ~64.
+  // We request capacity bytes total — this exceeds trailing space,
+  // forcing memmove compaction to the front.
+  const auto requestSize = static_cast<int>(capacity - 20);
+  helper.ensureInput(requestSize);
+  ASSERT_EQ(
+      helper.inputData().substr(0, requestSize), data.substr(28, requestSize));
+  // After compaction, inputData_ should be at the start of the buffer.
+  ASSERT_EQ(helper.inputDataPtr(), helper.inputBufferStart());
+}
+
+// Test the reallocation path: the requested size exceeds inputBuffer_ capacity,
+// forcing allocation of a new larger buffer.
+TEST_F(ChunkedDecoderTest, ensureInputReallocation) {
+  const int kDataSize = 256;
+  std::string data(kDataSize, '\0');
+  for (int i = 0; i < kDataSize; ++i) {
+    data[i] = 'a' + (i % 26);
+  }
+
+  // block_size = 5: Next() returns 5 bytes at a time.
+  ChunkedDecoder decoder(
+      std::make_unique<dwio::common::SeekableArrayInputStream>(
+          data.data(), data.size(), /*block_size=*/5),
+      false,
+      nullptr,
+      &pool());
+  ChunkedDecoderTestHelper helper(&decoder);
+
+  // Step 1: Fill buffer with 10 bytes to get initial allocation.
+  helper.ensureInput(10);
+  ASSERT_EQ(helper.inputData().substr(0, 10), data.substr(0, 10));
+  const auto initialCapacity = helper.inputBufferCapacity();
+  ASSERT_GT(initialCapacity, 0);
+
+  // Step 2: Consume 5 bytes.
+  helper.advanceInputData(5);
+  ASSERT_EQ(helper.inputData(), data.substr(5, 5));
+
+  // Step 3: Request much more than the current buffer capacity.
+  // This forces reallocation: a new larger buffer is allocated,
+  // existing data is copied, and inputData_ is reset to the new buffer start.
+  const auto bigRequest = static_cast<int>(initialCapacity + 50);
+  helper.ensureInput(bigRequest);
+  ASSERT_EQ(
+      helper.inputData().substr(0, bigRequest), data.substr(5, bigRequest));
+  // Buffer should have grown.
+  ASSERT_GT(helper.inputBufferCapacity(), initialCapacity);
+  // After reallocation, inputData_ should be at the start of the new buffer.
+  ASSERT_EQ(helper.inputDataPtr(), helper.inputBufferStart());
 }
 
 // Test fixture for ChunkedDecoder data operations with parameterized
