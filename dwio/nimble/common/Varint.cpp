@@ -21,13 +21,14 @@
 #include "common/aarch64/compat.h"
 #endif //__aarch64__
 
+#include <array>
 #include <cstring>
 
 #include <xsimd/xsimd.hpp>
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Varint.h"
-#include "folly/CpuId.h"
+#include "folly/Likely.h"
 
 namespace facebook::nimble::varint {
 
@@ -171,768 +172,117 @@ bulkDecodeSingleByteRun(uint64_t n, const char*& pos, T*& output) {
   return n;
 }
 
-const char* bulkVarintDecode32(uint64_t n, const char* pos, uint32_t* output) {
-  static bool hasBmi2 = folly::CpuId().bmi2();
-  n = bulkDecodeSingleByteRun(n, pos, output);
-  if (n == 0) {
-    return pos;
-  }
-  if (hasBmi2) {
-    return bulkVarintDecodeBmi2(n, pos, output);
-  }
-  for (uint64_t i = 0; i < n; ++i) {
-    *output++ = readVarint32(&pos);
-  }
-  return pos;
-}
+constexpr std::size_t kCacheLineBytes = 64;
+constexpr std::size_t kMaxControlBitsValue = 64;
+constexpr std::size_t kMaskLength = 6;
 
-const char* bulkVarintDecode64(uint64_t n, const char* pos, uint64_t* output) {
-  static bool hasBmi2 = folly::CpuId().bmi2();
-  n = bulkDecodeSingleByteRun(n, pos, output);
-  if (n == 0) {
-    return pos;
-  }
-  if (hasBmi2) {
-    return bulkVarintDecodeBmi2(n, pos, output);
-  }
-  for (uint64_t i = 0; i < n; ++i) {
-    *output++ = readVarint64(&pos);
-  }
-  return pos;
-}
+// Lookup table entry for table-driven BMI2 varint decode.
+struct alignas(kCacheLineBytes) VarintLookupEntry {
+  // Extraction masks for up to 6 completed varints. Unused slots are 0
+  uint64_t valueMasks[kMaskLength];
+  // Extraction mask for carryover bytes (partial varint at end of chunk), and
+  // zero when the chunk ends on a clean varint boundary.
+  uint64_t carryOverMask;
+  uint8_t numCompleted;
+  uint8_t carryOverBits;
+  uint8_t padding[6];
+};
 
-// Codegen for the cases below. Useful if we want to try to tweak something
-// (different mask length, etc) in the future.
+static_assert(
+    sizeof(VarintLookupEntry) == kCacheLineBytes,
+    "Must fit one cache line");
 
-// std::string codegenVarintMask(int endByte, int len) {
-//   CHECK_GE(endByte + 1,  len);
-//   std::string s = "0x0000000000000000ULL";
-//   int offset = 5 + endByte * 2;
-//   for (int i = 0; i < len; ++i) {
-//     *(s.end() - offset) = '7';
-//     *(s.end() - offset + 1) = 'f';
-//     offset -= 2;
-//   }
-//   return s;
-// }
+// We build the full 64-entry/kMaxControlBitsValue for control bit lookup table
+// at compile time.
+static constexpr auto kDecodeTable = [] {
+  std::array<VarintLookupEntry, kMaxControlBitsValue> table{};
+  for (int i = 0; i < kMaxControlBitsValue; ++i) {
+    VarintLookupEntry entry{};
+    uint64_t currentMask = 0;
 
-// std::string codegen32(uint64_t controlBits, int maskLength) {
-//   CHECK(controlBits < (1 << maskLength));
-//   std::string s = absl::Substitute(
-//       "      case $0ULL: {", controlBits);
-//   int lastZero = -1;
-//   int numVariants = 0;
-//   bool carryoverUsed = false;
-//   for (int nextBit = 0; nextBit < maskLength; ++nextBit) {
-//     // A zero control bit means we detected the end of a varint, so
-//     // we can construct a mask of the bottom 7 bits starting at the end
-//     // of the nextBit byte and going back (nextBit - lastZero) bytes.
-//     if ((controlBits & (1ULL << nextBit)) == 0) {
-//       if (carryoverUsed) {
-//         s += absl::Substitute("\n        *output++ = _pext_u64(word, $0);",
-//                               CodegenVarintMask(nextBit, nextBit -
-//                               lastZero));
-//       } else {
-//         s += absl::Substitute("\n        const uint64_t firstValue = "
-//                               "_pext_u64(word, $0);",
-//                               CodegenVarintMask(nextBit, nextBit -
-//                               lastZero));
-//         s += "\n        *output++ = (firstValue << carryoverBits) |
-//         carryover;"; carryoverUsed = true;
-//       }
-//       lastZero = nextBit;
-//       ++numVariants;
-//     }
-//   }
-//   // Ending on a complete varint, not completing any varint, and completing
-//   // at least 1 varint but no ending on one are all distinct cases.
-//   if (lastZero == -1) {
-//     s += absl::Substitute("\n        carryover |= "
-//                           "_pext_u64(word, $0) << carryoverBits;",
-//                           CodegenVarintMask(maskLength - 1, maskLength));
-//     s += absl::Substitute("\n        carryoverBits += $0;", 7 * maskLength);
-//   } else if (lastZero == maskLength - 1) {
-//     s += "\n        carryover = 0ULL;";
-//     s += "\n        carryoverBits = 0;";
-//     s += absl::Substitute("\n        n -= $0;", numVariants);
-//   } else {
-//     s += absl::Substitute("\n        carryover = _pext_u64(word, $0);",
-//                           CodegenVarintMask(maskLength - 1,
-//                                             maskLength - 1 - lastZero));
-//     s += absl::Substitute("\n        carryoverBits = $0;",
-//                           7 * (maskLength - 1 - lastZero));
-//     s += absl::Substitute("\n        n -= $0;", numVariants);
-//   }
-//   // s += absl::Substitute("\n        pos += $0;", maskLength);
-//   s += "\n        continue;";
-//   s += "\n      }";
-//   return s;
-// }
+    int lastZero = -1, numCompleted = 0;
+    const uint8_t controlBits = static_cast<uint8_t>(i);
+    for (int j = 0; j < kMaskLength; ++j) {
+      currentMask |= uint64_t(0x7f) << (j * 8);
+      if (!((controlBits >> j) & 1)) {
+        entry.valueMasks[numCompleted] = currentMask;
+        ++numCompleted;
 
-template <typename T>
-const char* bulkVarintDecodeBmi2(uint64_t n, const char* pos, T* output) {
-  constexpr uint64_t mask = 0x0000808080808080;
-  // Note that we could of course use a maskLength of up to 8. But I found
-  // that with maskLength > 6 we start to spill out of the l1i cache in
-  // opt mode and that counterbalances the gain. Plus the first run and/or
-  // small n are more expensive as we have to load more instructions.
-  constexpr int maskLength = 6;
-  uint64_t carryover = 0;
-  int carryoverBits = 0;
-  pos -= maskLength;
-  // Also note that a handful of these cases are impossible for 32-bit varints.
-  // We could save a tiny bit of program size by pruning them out.
-  while (n >= 8) {
-    pos += maskLength;
-    uint64_t word = *reinterpret_cast<const uint64_t*>(pos);
-    const uint64_t controlBits = _pext_u64(word, mask);
-    switch (controlBits) {
-      case 0ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000000000007f00ULL);
-        *output++ = _pext_u64(word, 0x00000000007f0000ULL);
-        *output++ = _pext_u64(word, 0x000000007f000000ULL);
-        *output++ = _pext_u64(word, 0x0000007f00000000ULL);
-        *output++ = _pext_u64(word, 0x00007f0000000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 6;
-        continue;
-      }
-      case 1ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000000000007f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00000000007f0000ULL);
-        *output++ = _pext_u64(word, 0x000000007f000000ULL);
-        *output++ = _pext_u64(word, 0x0000007f00000000ULL);
-        *output++ = _pext_u64(word, 0x00007f0000000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 5;
-        continue;
-      }
-      case 2ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00000000007f7f00ULL);
-        *output++ = _pext_u64(word, 0x000000007f000000ULL);
-        *output++ = _pext_u64(word, 0x0000007f00000000ULL);
-        *output++ = _pext_u64(word, 0x00007f0000000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 5;
-        continue;
-      }
-      case 3ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x00000000007f7f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x000000007f000000ULL);
-        *output++ = _pext_u64(word, 0x0000007f00000000ULL);
-        *output++ = _pext_u64(word, 0x00007f0000000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 4;
-        continue;
-      }
-      case 4ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000000000007f00ULL);
-        *output++ = _pext_u64(word, 0x000000007f7f0000ULL);
-        *output++ = _pext_u64(word, 0x0000007f00000000ULL);
-        *output++ = _pext_u64(word, 0x00007f0000000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 5;
-        continue;
-      }
-      case 5ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000000000007f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x000000007f7f0000ULL);
-        *output++ = _pext_u64(word, 0x0000007f00000000ULL);
-        *output++ = _pext_u64(word, 0x00007f0000000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 4;
-        continue;
-      }
-      case 6ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x000000007f7f7f00ULL);
-        *output++ = _pext_u64(word, 0x0000007f00000000ULL);
-        *output++ = _pext_u64(word, 0x00007f0000000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 4;
-        continue;
-      }
-      case 7ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000007f7f7f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000007f00000000ULL);
-        *output++ = _pext_u64(word, 0x00007f0000000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 3;
-        continue;
-      }
-      case 8ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000000000007f00ULL);
-        *output++ = _pext_u64(word, 0x00000000007f0000ULL);
-        *output++ = _pext_u64(word, 0x0000007f7f000000ULL);
-        *output++ = _pext_u64(word, 0x00007f0000000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 5;
-        continue;
-      }
-      case 9ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000000000007f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00000000007f0000ULL);
-        *output++ = _pext_u64(word, 0x0000007f7f000000ULL);
-        *output++ = _pext_u64(word, 0x00007f0000000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 4;
-        continue;
-      }
-      case 10ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00000000007f7f00ULL);
-        *output++ = _pext_u64(word, 0x0000007f7f000000ULL);
-        *output++ = _pext_u64(word, 0x00007f0000000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 4;
-        continue;
-      }
-      case 11ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x00000000007f7f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000007f7f000000ULL);
-        *output++ = _pext_u64(word, 0x00007f0000000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 3;
-        continue;
-      }
-      case 12ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000000000007f00ULL);
-        *output++ = _pext_u64(word, 0x0000007f7f7f0000ULL);
-        *output++ = _pext_u64(word, 0x00007f0000000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 4;
-        continue;
-      }
-      case 13ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000000000007f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000007f7f7f0000ULL);
-        *output++ = _pext_u64(word, 0x00007f0000000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 3;
-        continue;
-      }
-      case 14ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000007f7f7f7f00ULL);
-        *output++ = _pext_u64(word, 0x00007f0000000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 3;
-        continue;
-      }
-      case 15ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000007f7f7f7f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00007f0000000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 2;
-        continue;
-      }
-      case 16ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000000000007f00ULL);
-        *output++ = _pext_u64(word, 0x00000000007f0000ULL);
-        *output++ = _pext_u64(word, 0x000000007f000000ULL);
-        *output++ = _pext_u64(word, 0x00007f7f00000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 5;
-        continue;
-      }
-      case 17ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000000000007f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00000000007f0000ULL);
-        *output++ = _pext_u64(word, 0x000000007f000000ULL);
-        *output++ = _pext_u64(word, 0x00007f7f00000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 4;
-        continue;
-      }
-      case 18ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00000000007f7f00ULL);
-        *output++ = _pext_u64(word, 0x000000007f000000ULL);
-        *output++ = _pext_u64(word, 0x00007f7f00000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 4;
-        continue;
-      }
-      case 19ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x00000000007f7f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x000000007f000000ULL);
-        *output++ = _pext_u64(word, 0x00007f7f00000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 3;
-        continue;
-      }
-      case 20ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000000000007f00ULL);
-        *output++ = _pext_u64(word, 0x000000007f7f0000ULL);
-        *output++ = _pext_u64(word, 0x00007f7f00000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 4;
-        continue;
-      }
-      case 21ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000000000007f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x000000007f7f0000ULL);
-        *output++ = _pext_u64(word, 0x00007f7f00000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 3;
-        continue;
-      }
-      case 22ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x000000007f7f7f00ULL);
-        *output++ = _pext_u64(word, 0x00007f7f00000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 3;
-        continue;
-      }
-      case 23ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000007f7f7f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00007f7f00000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 2;
-        continue;
-      }
-      case 24ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000000000007f00ULL);
-        *output++ = _pext_u64(word, 0x00000000007f0000ULL);
-        *output++ = _pext_u64(word, 0x00007f7f7f000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 4;
-        continue;
-      }
-      case 25ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000000000007f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00000000007f0000ULL);
-        *output++ = _pext_u64(word, 0x00007f7f7f000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 3;
-        continue;
-      }
-      case 26ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00000000007f7f00ULL);
-        *output++ = _pext_u64(word, 0x00007f7f7f000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 3;
-        continue;
-      }
-      case 27ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x00000000007f7f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00007f7f7f000000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 2;
-        continue;
-      }
-      case 28ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000000000007f00ULL);
-        *output++ = _pext_u64(word, 0x00007f7f7f7f0000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 3;
-        continue;
-      }
-      case 29ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000000000007f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00007f7f7f7f0000ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 2;
-        continue;
-      }
-      case 30ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00007f7f7f7f7f00ULL);
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 2;
-        continue;
-      }
-      case 31ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x00007f7f7f7f7f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        carryover = 0ULL;
-        carryoverBits = 0;
-        n -= 1;
-        continue;
-      }
-      case 32ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000000000007f00ULL);
-        *output++ = _pext_u64(word, 0x00000000007f0000ULL);
-        *output++ = _pext_u64(word, 0x000000007f000000ULL);
-        *output++ = _pext_u64(word, 0x0000007f00000000ULL);
-        carryover = _pext_u64(word, 0x00007f0000000000ULL);
-        carryoverBits = 7;
-        n -= 5;
-        continue;
-      }
-      case 33ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000000000007f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00000000007f0000ULL);
-        *output++ = _pext_u64(word, 0x000000007f000000ULL);
-        *output++ = _pext_u64(word, 0x0000007f00000000ULL);
-        carryover = _pext_u64(word, 0x00007f0000000000ULL);
-        carryoverBits = 7;
-        n -= 4;
-        continue;
-      }
-      case 34ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00000000007f7f00ULL);
-        *output++ = _pext_u64(word, 0x000000007f000000ULL);
-        *output++ = _pext_u64(word, 0x0000007f00000000ULL);
-        carryover = _pext_u64(word, 0x00007f0000000000ULL);
-        carryoverBits = 7;
-        n -= 4;
-        continue;
-      }
-      case 35ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x00000000007f7f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x000000007f000000ULL);
-        *output++ = _pext_u64(word, 0x0000007f00000000ULL);
-        carryover = _pext_u64(word, 0x00007f0000000000ULL);
-        carryoverBits = 7;
-        n -= 3;
-        continue;
-      }
-      case 36ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000000000007f00ULL);
-        *output++ = _pext_u64(word, 0x000000007f7f0000ULL);
-        *output++ = _pext_u64(word, 0x0000007f00000000ULL);
-        carryover = _pext_u64(word, 0x00007f0000000000ULL);
-        carryoverBits = 7;
-        n -= 4;
-        continue;
-      }
-      case 37ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000000000007f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x000000007f7f0000ULL);
-        *output++ = _pext_u64(word, 0x0000007f00000000ULL);
-        carryover = _pext_u64(word, 0x00007f0000000000ULL);
-        carryoverBits = 7;
-        n -= 3;
-        continue;
-      }
-      case 38ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x000000007f7f7f00ULL);
-        *output++ = _pext_u64(word, 0x0000007f00000000ULL);
-        carryover = _pext_u64(word, 0x00007f0000000000ULL);
-        carryoverBits = 7;
-        n -= 3;
-        continue;
-      }
-      case 39ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000007f7f7f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000007f00000000ULL);
-        carryover = _pext_u64(word, 0x00007f0000000000ULL);
-        carryoverBits = 7;
-        n -= 2;
-        continue;
-      }
-      case 40ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000000000007f00ULL);
-        *output++ = _pext_u64(word, 0x00000000007f0000ULL);
-        *output++ = _pext_u64(word, 0x0000007f7f000000ULL);
-        carryover = _pext_u64(word, 0x00007f0000000000ULL);
-        carryoverBits = 7;
-        n -= 4;
-        continue;
-      }
-      case 41ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000000000007f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00000000007f0000ULL);
-        *output++ = _pext_u64(word, 0x0000007f7f000000ULL);
-        carryover = _pext_u64(word, 0x00007f0000000000ULL);
-        carryoverBits = 7;
-        n -= 3;
-        continue;
-      }
-      case 42ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00000000007f7f00ULL);
-        *output++ = _pext_u64(word, 0x0000007f7f000000ULL);
-        carryover = _pext_u64(word, 0x00007f0000000000ULL);
-        carryoverBits = 7;
-        n -= 3;
-        continue;
-      }
-      case 43ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x00000000007f7f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000007f7f000000ULL);
-        carryover = _pext_u64(word, 0x00007f0000000000ULL);
-        carryoverBits = 7;
-        n -= 2;
-        continue;
-      }
-      case 44ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000000000007f00ULL);
-        *output++ = _pext_u64(word, 0x0000007f7f7f0000ULL);
-        carryover = _pext_u64(word, 0x00007f0000000000ULL);
-        carryoverBits = 7;
-        n -= 3;
-        continue;
-      }
-      case 45ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000000000007f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000007f7f7f0000ULL);
-        carryover = _pext_u64(word, 0x00007f0000000000ULL);
-        carryoverBits = 7;
-        n -= 2;
-        continue;
-      }
-      case 46ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000007f7f7f7f00ULL);
-        carryover = _pext_u64(word, 0x00007f0000000000ULL);
-        carryoverBits = 7;
-        n -= 2;
-        continue;
-      }
-      case 47ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000007f7f7f7f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        carryover = _pext_u64(word, 0x00007f0000000000ULL);
-        carryoverBits = 7;
-        n -= 1;
-        continue;
-      }
-      case 48ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000000000007f00ULL);
-        *output++ = _pext_u64(word, 0x00000000007f0000ULL);
-        *output++ = _pext_u64(word, 0x000000007f000000ULL);
-        carryover = _pext_u64(word, 0x00007f7f00000000ULL);
-        carryoverBits = 14;
-        n -= 4;
-        continue;
-      }
-      case 49ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000000000007f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00000000007f0000ULL);
-        *output++ = _pext_u64(word, 0x000000007f000000ULL);
-        carryover = _pext_u64(word, 0x00007f7f00000000ULL);
-        carryoverBits = 14;
-        n -= 3;
-        continue;
-      }
-      case 50ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00000000007f7f00ULL);
-        *output++ = _pext_u64(word, 0x000000007f000000ULL);
-        carryover = _pext_u64(word, 0x00007f7f00000000ULL);
-        carryoverBits = 14;
-        n -= 3;
-        continue;
-      }
-      case 51ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x00000000007f7f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x000000007f000000ULL);
-        carryover = _pext_u64(word, 0x00007f7f00000000ULL);
-        carryoverBits = 14;
-        n -= 2;
-        continue;
-      }
-      case 52ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000000000007f00ULL);
-        *output++ = _pext_u64(word, 0x000000007f7f0000ULL);
-        carryover = _pext_u64(word, 0x00007f7f00000000ULL);
-        carryoverBits = 14;
-        n -= 3;
-        continue;
-      }
-      case 53ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000000000007f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x000000007f7f0000ULL);
-        carryover = _pext_u64(word, 0x00007f7f00000000ULL);
-        carryoverBits = 14;
-        n -= 2;
-        continue;
-      }
-      case 54ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x000000007f7f7f00ULL);
-        carryover = _pext_u64(word, 0x00007f7f00000000ULL);
-        carryoverBits = 14;
-        n -= 2;
-        continue;
-      }
-      case 55ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000007f7f7f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        carryover = _pext_u64(word, 0x00007f7f00000000ULL);
-        carryoverBits = 14;
-        n -= 1;
-        continue;
-      }
-      case 56ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000000000007f00ULL);
-        *output++ = _pext_u64(word, 0x00000000007f0000ULL);
-        carryover = _pext_u64(word, 0x00007f7f7f000000ULL);
-        carryoverBits = 21;
-        n -= 3;
-        continue;
-      }
-      case 57ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000000000007f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00000000007f0000ULL);
-        carryover = _pext_u64(word, 0x00007f7f7f000000ULL);
-        carryoverBits = 21;
-        n -= 2;
-        continue;
-      }
-      case 58ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x00000000007f7f00ULL);
-        carryover = _pext_u64(word, 0x00007f7f7f000000ULL);
-        carryoverBits = 21;
-        n -= 2;
-        continue;
-      }
-      case 59ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x00000000007f7f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        carryover = _pext_u64(word, 0x00007f7f7f000000ULL);
-        carryoverBits = 21;
-        n -= 1;
-        continue;
-      }
-      case 60ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        *output++ = _pext_u64(word, 0x0000000000007f00ULL);
-        carryover = _pext_u64(word, 0x00007f7f7f7f0000ULL);
-        carryoverBits = 28;
-        n -= 2;
-        continue;
-      }
-      case 61ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x0000000000007f7fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        carryover = _pext_u64(word, 0x00007f7f7f7f0000ULL);
-        carryoverBits = 28;
-        n -= 1;
-        continue;
-      }
-      case 62ULL: {
-        const uint64_t firstValue = _pext_u64(word, 0x000000000000007fULL);
-        *output++ = (firstValue << carryoverBits) | carryover;
-        carryover = _pext_u64(word, 0x00007f7f7f7f7f00ULL);
-        carryoverBits = 35;
-        n -= 1;
-        continue;
-      }
-      case 63ULL: {
-        carryover |= _pext_u64(word, 0x00007f7f7f7f7f7fULL) << carryoverBits;
-        carryoverBits += 42;
-        continue;
-      }
-      default: {
-        NIMBLE_UNREACHABLE("Control bits must be < 64");
+        lastZero = j;
+        currentMask = 0;
       }
     }
+
+    entry.numCompleted = static_cast<uint8_t>(numCompleted);
+
+    entry.carryOverMask = 0;
+    entry.carryOverBits = 0;
+
+    if (lastZero < 5) {
+      // Partial varint at end of chunk.
+      entry.carryOverMask = currentMask;
+      entry.carryOverBits = static_cast<uint8_t>(7 * (5 - lastZero));
+    } else if (lastZero == -1) {
+      // All 6 bytes are continuation bytes (case 63). Accumulate carryover.
+      // This is a rare case
+      entry.carryOverMask = currentMask;
+      entry.carryOverBits = 42;
+    }
+    table[i] = entry;
   }
-  pos += maskLength;
+  return table;
+}();
+
+// Table-driven BMI2 varint decode. Reads extraction masks from a lookup table.
+template <typename T>
+__attribute__((__target__("bmi2"))) const char*
+bulkVarintDecodeBmi2Table(uint64_t n, const char* pos, T* output) {
+  constexpr uint64_t kControlMask = 0x0000808080808080ULL;
+  constexpr int kChunkLen = 6;
+
+  uint64_t carryover = 0;
+  int carryoverBits = 0;
+  pos -= kChunkLen;
+
+  while (n >= 8) {
+    pos += kChunkLen;
+
+    uint64_t word;
+    std::memcpy(&word, pos, sizeof(word));
+    const uint64_t cb = _pext_u64(word, kControlMask);
+
+    // Case 63 (all continuation bytes) requires accumulating carryover
+    // rather than replacing it. This case is extremely rare
+    if (FOLLY_UNLIKELY(cb == 63)) {
+      carryover |= _pext_u64(word, 0x00007f7f7f7f7f7fULL) << carryoverBits;
+      carryoverBits += 42;
+      continue;
+    }
+
+    const auto& info = kDecodeTable[cb];
+
+    // Extract and store up to 6 values. Unused mask slots are 0, producing
+    // harmless zero writes that will be overwritten by subsequent iterations
+    output[0] = static_cast<T>(
+        (_pext_u64(word, info.valueMasks[0]) << carryoverBits) | carryover);
+    output[1] = static_cast<T>(_pext_u64(word, info.valueMasks[1]));
+    output[2] = static_cast<T>(_pext_u64(word, info.valueMasks[2]));
+    output[3] = static_cast<T>(_pext_u64(word, info.valueMasks[3]));
+    output[4] = static_cast<T>(_pext_u64(word, info.valueMasks[4]));
+    output[5] = static_cast<T>(_pext_u64(word, info.valueMasks[5]));
+
+    output += info.numCompleted;
+    n -= info.numCompleted;
+
+    // Update carryover. When carryoverMask is 0, _pext returns 0 and
+    // carryoverBits is 0, effectively clearing the carryover state.
+    carryover = _pext_u64(word, info.carryOverMask);
+    carryoverBits = info.carryOverBits;
+  }
+
+  pos += kChunkLen;
   if (n > 0) {
-    if constexpr (std::is_same<T, uint32_t>::value) {
+    if constexpr (std::is_same_v<T, uint32_t>) {
       *output++ = readVarint32(&pos) << carryoverBits | carryover;
       for (uint64_t i = 1; i < n; ++i) {
         *output++ = readVarint32(&pos);
@@ -945,6 +295,22 @@ const char* bulkVarintDecodeBmi2(uint64_t n, const char* pos, T* output) {
     }
   }
   return pos;
+}
+
+const char* bulkVarintDecode32(uint64_t n, const char* pos, uint32_t* output) {
+  n = bulkDecodeSingleByteRun(n, pos, output);
+  if (n == 0) {
+    return pos;
+  }
+  return bulkVarintDecodeBmi2Table(n, pos, output);
+}
+
+const char* bulkVarintDecode64(uint64_t n, const char* pos, uint64_t* output) {
+  n = bulkDecodeSingleByteRun(n, pos, output);
+  if (n == 0) {
+    return pos;
+  }
+  return bulkVarintDecodeBmi2Table(n, pos, output);
 }
 
 } // namespace facebook::nimble::varint
