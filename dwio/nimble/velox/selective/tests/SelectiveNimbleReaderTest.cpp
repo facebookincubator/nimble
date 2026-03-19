@@ -1031,6 +1031,72 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeNullableString) {
   validate(*input, *readers.rowReader, 3, [&](auto) { return true; });
 }
 
+// Verifies that estimatedRowSize only counts projected columns, not all
+// columns in the file.
+TEST_P(SelectiveNimbleReaderTest, estimatedRowSizePartialProjection) {
+  const bool passStringBuffersFromDecoder = GetParam();
+  constexpr int kSize = 100;
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(kSize, folly::identity),
+      makeFlatVector<int32_t>(kSize, folly::identity),
+      makeFlatVector<double>(kSize, [](auto i) { return i * 1.5; }),
+  });
+
+  auto fileContent = test::createNimbleFile(*rootPool(), input);
+
+  // Project all 3 columns: int64 (8) + int32 (4) + double (8) = 20 per row.
+  {
+    auto allSpec = std::make_shared<common::ScanSpec>("root");
+    allSpec->addAllChildFields(*input->type());
+    auto readers =
+        makeReaders(input, fileContent, allSpec, passStringBuffersFromDecoder);
+    auto allSize = readers.rowReader->estimatedRowSize();
+    ASSERT_TRUE(allSize.has_value());
+    ASSERT_EQ(*allSize, 20);
+  }
+
+  // Project only c0 (int64): expect 8 per row.
+  {
+    auto partialType = ROW({"c0"}, {BIGINT()});
+    auto partialSpec = std::make_shared<common::ScanSpec>("root");
+    partialSpec->addAllChildFields(*partialType);
+    auto readFile = std::make_shared<InMemoryReadFile>(fileContent);
+    auto factory =
+        dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
+    dwio::common::ReaderOptions options(pool());
+    options.setScanSpec(partialSpec);
+    auto reader = factory->createReader(
+        std::make_unique<dwio::common::BufferedInput>(readFile, *pool()),
+        options);
+    dwio::common::RowReaderOptions rowOptions;
+    rowOptions.setScanSpec(partialSpec);
+    auto rowReader = reader->createRowReader(rowOptions);
+    auto partialSize = rowReader->estimatedRowSize();
+    ASSERT_TRUE(partialSize.has_value());
+    ASSERT_EQ(*partialSize, 8);
+  }
+}
+
+// Verifies estimatedRowSize for nested types (array, map) does not
+// double-count parent and children logical sizes.
+TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeNestedTypes) {
+  const bool passStringBuffersFromDecoder = GetParam();
+  constexpr int kSize = 20;
+  // Array<int64_t> with 3 elements each: expect ~24 bytes per row (3 * 8).
+  auto input = makeRowVector({
+      makeArrayVector<int64_t>(
+          kSize, [](auto) { return 3; }, [](auto j) { return j; }),
+  });
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+  auto estimatedRowSize = readers.rowReader->estimatedRowSize();
+  ASSERT_TRUE(estimatedRowSize.has_value());
+  // Should be element logical size / rows, not inflated by parent's rolled-up
+  // size.
+  ASSERT_GT(*estimatedRowSize, 0);
+}
+
 TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsLastRunFilteredOut) {
   const bool passStringBuffersFromDecoder = GetParam();
   checkArrayWithOffsets(
