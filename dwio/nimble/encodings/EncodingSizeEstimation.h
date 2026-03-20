@@ -45,7 +45,8 @@ struct EncodingSizeEstimation {
                   physicalType>()}
             : std::nullopt;
       }
-      case EncodingType::MainlyConstant: {
+      case EncodingType::MainlyConstant:
+      case EncodingType::MainlyConstantV2: {
         // Assumptions:
         // We store one entry for the common value.
         // Number of uncommon values is total item count minus the max unique
@@ -85,7 +86,8 @@ struct EncodingSizeEstimation {
         return getEncodingOverhead<EncodingType::Trivial, physicalType>() +
             (entryCount * sizeof(physicalType));
       }
-      case EncodingType::FixedBitWidth: {
+      case EncodingType::FixedBitWidth:
+      case EncodingType::FixedBitWidthV2: {
         return getEncodingOverhead<
                    EncodingType::FixedBitWidth,
                    physicalType>() +
@@ -108,7 +110,8 @@ struct EncodingSizeEstimation {
             getEncodingOverhead<EncodingType::FixedBitWidth, uint32_t>();
         return overhead + alphabetSize + indicesSize;
       }
-      case EncodingType::RLE: {
+      case EncodingType::RLE:
+      case EncodingType::RLEV2: {
         // Assumptions:
         // Run values are stored bit-packed (with bit width needed to store max
         // value). Run lengths are stored using bit-packing (with bit width
@@ -130,7 +133,8 @@ struct EncodingSizeEstimation {
             getEncodingOverhead<EncodingType::FixedBitWidth, uint32_t>();
         return overhead + runValuesSize + runLengthsSize;
       }
-      case EncodingType::Varint: {
+      case EncodingType::Varint:
+      case EncodingType::VarintV2: {
         // Note: the condition below actually support floating point numbers as
         // well, as we use physicalType, which, for floating point numbers, is
         // an integer.
@@ -188,7 +192,8 @@ struct EncodingSizeEstimation {
         return getEncodingOverhead<EncodingType::Trivial, physicalType>() +
             FixedBitArray::bufferSize(entryCount, 1);
       }
-      case EncodingType::RLE: {
+      case EncodingType::RLE:
+      case EncodingType::RLEV2: {
         // Assumptions:
         // Run lengths are stored using bit-packing (with bit width
         // needed to store max repetition count).
@@ -222,7 +227,8 @@ struct EncodingSizeEstimation {
                   physicalType>(maxStringSize)}
             : std::nullopt;
       }
-      case EncodingType::MainlyConstant: {
+      case EncodingType::MainlyConstant:
+      case EncodingType::MainlyConstantV2: {
         // Assumptions:
         // We store one entry for the common value.
         // For each uncommon value we store the its value.
@@ -315,7 +321,8 @@ struct EncodingSizeEstimation {
             getEncodingOverhead<EncodingType::FixedBitWidth, uint32_t>();
         return overhead + alphabetSize + indicesSize;
       }
-      case EncodingType::RLE: {
+      case EncodingType::RLE:
+      case EncodingType::RLEV2: {
         // Assumptions:
         // Run values are stored using dictionary (and inside, trivial +
         // bit-packing). Run lengths are stored using bit-packing (with bit

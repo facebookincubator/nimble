@@ -29,7 +29,8 @@ void extractCompressionType(
     // Compression type is the byte right after the encoding header for both
     // encodings.
     case EncodingType::Trivial:
-    case EncodingType::FixedBitWidth: {
+    case EncodingType::FixedBitWidth:
+    case EncodingType::FixedBitWidthV2: {
       auto pos = stream.data() + kEncodingPrefixSize;
       properties.insert(
           {EncodingPropertyType::Compression,
@@ -40,14 +41,17 @@ void extractCompressionType(
       break;
     }
     case EncodingType::RLE:
+    case EncodingType::RLEV2:
     case EncodingType::Dictionary:
     case EncodingType::Sentinel:
     case EncodingType::Nullable:
     case EncodingType::SparseBool:
     case EncodingType::Varint:
+    case EncodingType::VarintV2:
     case EncodingType::Delta:
     case EncodingType::Constant:
     case EncodingType::MainlyConstant:
+    case EncodingType::MainlyConstantV2:
     case EncodingType::Prefix:
       break;
   }
@@ -99,7 +103,9 @@ void traverseEncodings(
 
   switch (encodingType) {
     case EncodingType::FixedBitWidth:
+    case EncodingType::FixedBitWidthV2:
     case EncodingType::Varint:
+    case EncodingType::VarintV2:
     case EncodingType::Constant:
     case EncodingType::Prefix: {
       // don't have any nested encoding
@@ -124,7 +130,8 @@ void traverseEncodings(
           visitor);
       break;
     }
-    case EncodingType::MainlyConstant: {
+    case EncodingType::MainlyConstant:
+    case EncodingType::MainlyConstantV2: {
       const char* pos = stream.data() + kEncodingPrefixSize;
       const uint32_t isCommonBytes = encoding::readUint32(pos);
       traverseEncodings(
@@ -149,7 +156,8 @@ void traverseEncodings(
           visitor);
       break;
     }
-    case EncodingType::RLE: {
+    case EncodingType::RLE:
+    case EncodingType::RLEV2: {
       const char* pos = stream.data() + kEncodingPrefixSize;
       const uint32_t runLengthBytes = encoding::readUint32(pos);
       traverseEncodings(

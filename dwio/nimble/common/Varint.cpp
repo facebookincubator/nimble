@@ -21,6 +21,10 @@
 #include "common/aarch64/compat.h"
 #endif //__aarch64__
 
+#include <cstring>
+
+#include <xsimd/xsimd.hpp>
+
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Varint.h"
 #include "folly/CpuId.h"
@@ -838,3 +842,139 @@ const char* bulkVarintDecodeBmi2(uint64_t n, const char* pos, T* output) {
 }
 
 } // namespace facebook::nimble::varint
+
+// V2 variants for independent experimentation in VarintEncodingV2.
+namespace facebook::nimble::varint_v2 {
+
+using varint::bulkVarintDecodeBmi2;
+using varint::readVarint32;
+using varint::readVarint64;
+
+// Zero-extend 8 consecutive bytes into T-sized output elements using xsimd
+// batch construction and store.
+template <typename T>
+inline void expandByteWord(const uint8_t* bytes, T* output) {
+  using batch_type = xsimd::batch<T>;
+  constexpr auto kBatchSize = batch_type::size;
+
+  if constexpr (kBatchSize >= 8) {
+    batch_type(
+        static_cast<T>(bytes[0]),
+        static_cast<T>(bytes[1]),
+        static_cast<T>(bytes[2]),
+        static_cast<T>(bytes[3]),
+        static_cast<T>(bytes[4]),
+        static_cast<T>(bytes[5]),
+        static_cast<T>(bytes[6]),
+        static_cast<T>(bytes[7]))
+        .store_unaligned(output);
+  } else if constexpr (kBatchSize == 4) {
+    batch_type(
+        static_cast<T>(bytes[0]),
+        static_cast<T>(bytes[1]),
+        static_cast<T>(bytes[2]),
+        static_cast<T>(bytes[3]))
+        .store_unaligned(output);
+    batch_type(
+        static_cast<T>(bytes[4]),
+        static_cast<T>(bytes[5]),
+        static_cast<T>(bytes[6]),
+        static_cast<T>(bytes[7]))
+        .store_unaligned(output + 4);
+  } else if constexpr (kBatchSize == 2) {
+    batch_type(static_cast<T>(bytes[0]), static_cast<T>(bytes[1]))
+        .store_unaligned(output);
+    batch_type(static_cast<T>(bytes[2]), static_cast<T>(bytes[3]))
+        .store_unaligned(output + 2);
+    batch_type(static_cast<T>(bytes[4]), static_cast<T>(bytes[5]))
+        .store_unaligned(output + 4);
+    batch_type(static_cast<T>(bytes[6]), static_cast<T>(bytes[7]))
+        .store_unaligned(output + 6);
+  }
+}
+
+// Process runs of single-byte varints using xsimd for both the high-bit
+// check and byte-to-element widening. Works with uint8_t* throughout,
+// avoiding reinterpret_cast to uint64_t* (alignment/strict-aliasing issues).
+// Returns the number of elements remaining after processing.
+template <typename T>
+inline uint64_t
+bulkDecodeSingleByteRun(uint64_t n, const char*& pos, T*& output) {
+  using u8_batch = xsimd::batch<uint8_t>;
+  constexpr auto kU8Size = u8_batch::size;
+  constexpr uint64_t wordSize = 8;
+
+  const auto* src = reinterpret_cast<const uint8_t*>(pos);
+
+  // Process kU8BatchSize bytes at a time (32 on AVX2, 16 on SSE/NEON).
+  // Single wide load + vptest replaces 4 separate uint64_t loads + OR chain.
+  while (n >= kU8Size) {
+    auto bytes = u8_batch::load_unaligned(src);
+    if (xsimd::any((bytes & u8_batch(0x80)) != u8_batch(0))) {
+      break;
+    }
+    for (size_t i = 0; i < kU8Size; i += wordSize) {
+      expandByteWord(src + i, output + i);
+    }
+    src += kU8Size;
+    output += kU8Size;
+    n -= kU8Size;
+  }
+
+  // Process 8 bytes at a time. Use memcpy for the high-bit check to avoid
+  // reinterpret_cast<const uint64_t*> strict-aliasing/alignment issues.
+  while (n >= wordSize) {
+    uint64_t word;
+    std::memcpy(&word, src, sizeof(word));
+
+    if (word & 0x8080808080808080ULL) {
+      break;
+    }
+    expandByteWord(src, output);
+    src += wordSize;
+    output += wordSize;
+    n -= wordSize;
+  }
+
+  // Handle trailing single-byte varints one at a time.
+  while (n > 0 && !(src[0] & 0x80)) {
+    *output++ = static_cast<T>(src[0]);
+    ++src;
+    --n;
+  }
+
+  pos = reinterpret_cast<const char*>(src);
+  return n;
+}
+
+const char* bulkVarintDecode32(uint64_t n, const char* pos, uint32_t* output) {
+  static bool hasBmi2 = folly::CpuId().bmi2();
+  n = bulkDecodeSingleByteRun(n, pos, output);
+  if (n == 0) {
+    return pos;
+  }
+  if (hasBmi2) {
+    return bulkVarintDecodeBmi2(n, pos, output);
+  }
+  for (uint64_t i = 0; i < n; ++i) {
+    *output++ = readVarint32(&pos);
+  }
+  return pos;
+}
+
+const char* bulkVarintDecode64(uint64_t n, const char* pos, uint64_t* output) {
+  static bool hasBmi2 = folly::CpuId().bmi2();
+  n = bulkDecodeSingleByteRun(n, pos, output);
+  if (n == 0) {
+    return pos;
+  }
+  if (hasBmi2) {
+    return bulkVarintDecodeBmi2(n, pos, output);
+  }
+  for (uint64_t i = 0; i < n; ++i) {
+    *output++ = readVarint64(&pos);
+  }
+  return pos;
+}
+
+} // namespace facebook::nimble::varint_v2

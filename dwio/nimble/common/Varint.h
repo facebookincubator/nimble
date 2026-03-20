@@ -136,3 +136,11 @@ inline uint64_t readVarint64(const char** pos) noexcept {
 }
 
 } // namespace facebook::nimble::varint
+
+// V2 variants of bulk varint decode for independent experimentation.
+namespace facebook::nimble::varint_v2 {
+
+const char* bulkVarintDecode32(uint64_t n, const char* pos, uint32_t* output);
+const char* bulkVarintDecode64(uint64_t n, const char* pos, uint64_t* output);
+
+} // namespace facebook::nimble::varint_v2
