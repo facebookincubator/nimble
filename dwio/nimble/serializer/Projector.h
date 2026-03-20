@@ -17,14 +17,13 @@
 #pragma once
 
 #include <memory>
-#include <set>
 #include <string_view>
 #include <vector>
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/serializer/Options.h"
-#include "dwio/nimble/velox/SchemaReader.h"
-#include "folly/container/F14Map.h"
+#include "dwio/nimble/velox/SchemaUtils.h"
+#include "folly/io/Cursor.h"
 #include "folly/io/IOBuf.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/type/Subfield.h"
@@ -138,13 +137,18 @@ class Projector {
     return inputStreamIndices_;
   }
 
- private:
-  using SelectedChildrenMap = folly::F14FastMap<const Type*, std::set<size_t>>;
+  /// Returns whether input stream indices are sorted (fast path eligible).
+  /// Only for testing.
+  bool testingInputStreamsSorted() const {
+    return inputStreamsSorted_;
+  }
 
-  // Builds projectedSchema_ from inputSchema_. Maps input stream offsets
-  // to output indices based on inputStreamIndices_ so that schema offsets
-  // match the data layout produced by project().
-  void buildProjectedSchema(const SelectedChildrenMap& selectedChildren);
+ private:
+  // Maps an input stream index to its output stream index.
+  struct StreamMapping {
+    uint32_t inputStreamIdx;
+    size_t outputStreamIdx;
+  };
 
   // Projects a contiguous (non-chained) IOBuf using raw pointer arithmetic.
   folly::IOBuf projectContiguous(
@@ -155,6 +159,36 @@ class Projector {
   folly::IOBuf projectChained(
       const folly::IOBuf& input,
       SerializationVersion inputVersion) const;
+
+  // Projects selected streams from a contiguous IOBuf in unsorted order.
+  static std::vector<uint32_t> projectStreamsContiguousUnsorted(
+      const folly::IOBuf& input,
+      size_t dataOffset,
+      const std::vector<uint32_t>& streamSizes,
+      const std::vector<uint32_t>& selectedIndices,
+      std::unique_ptr<folly::IOBuf>& output);
+
+  // Projects selected streams from a contiguous IOBuf in sorted order.
+  static std::vector<uint32_t> projectStreamsContiguousSorted(
+      const folly::IOBuf& input,
+      size_t dataOffset,
+      const std::vector<uint32_t>& streamSizes,
+      const std::vector<uint32_t>& selectedIndices,
+      std::unique_ptr<folly::IOBuf>& output);
+
+  // Projects selected streams from a chained IOBuf in sorted order.
+  static std::vector<uint32_t> projectStreamsChainedSorted(
+      folly::io::Cursor& cursor,
+      const std::vector<uint32_t>& streamSizes,
+      const std::vector<uint32_t>& selectedIndices,
+      std::unique_ptr<folly::IOBuf>& output);
+
+  // Projects selected streams from a chained IOBuf in unsorted order.
+  static std::vector<uint32_t> projectStreamsChainedUnsorted(
+      folly::io::Cursor& cursor,
+      const std::vector<uint32_t>& streamSizes,
+      const std::vector<StreamMapping>& sortedStreamMappings,
+      std::unique_ptr<folly::IOBuf>& output);
 
   // Appends the trailer to the output IOBuf chain and returns it.
   folly::IOBuf buildProjectedOutput(
@@ -172,9 +206,16 @@ class Projector {
   std::shared_ptr<const Type> projectedSchema_;
   std::vector<uint32_t> inputStreamIndices_;
 
-  // True if all streams are selected and formats match, enabling pass-through
-  // (copy input directly to output without parsing/rewriting streams).
-  bool passThrough_{false};
+  // True when inputStreamIndices_ is already sorted (no FlatMap key
+  // reordering). Enables fast-path projection that avoids sorting and
+  // reordering overhead.
+  bool inputStreamsSorted_{false};
+
+  // Cached mapping from input stream index to output stream index, sorted by
+  // input stream index. Built once in the constructor when
+  // !inputStreamsSorted_. Empty when inputStreamsSorted_ is true.
+  // Used by projectStreamsChainedUnsorted() for forward pass extraction.
+  std::vector<StreamMapping> sortedStreamMappings_;
 };
 
 } // namespace facebook::nimble::serde

@@ -27,6 +27,7 @@ target_link_libraries(
   nimble_serializer_impl
   nimble_serializer_options
   nimble_projector
+  nimble_tablet_reader
   nimble_common
   nimble_velox_common
   nimble_velox_schema_builder

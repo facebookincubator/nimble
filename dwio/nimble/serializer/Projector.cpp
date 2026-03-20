@@ -18,19 +18,16 @@
 
 #include <algorithm>
 #include <numeric>
-#include <set>
 
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
-#include "folly/container/F14Map.h"
+#include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/io/Cursor.h"
 #include "velox/type/Type.h"
 
 namespace facebook::nimble::serde {
-
-using SubfieldKind = velox::common::SubfieldKind;
 
 namespace {
 
@@ -252,369 +249,7 @@ std::shared_ptr<const Type> updateColumnNames(
   }
 }
 
-// Matches Projector::SelectedChildrenMap.
-using SelectedChildrenMap = folly::F14FastMap<const Type*, std::set<size_t>>;
-
-// Inserts a stream offset and asserts it's unique.
-inline void insertUniqueStream(std::set<uint32_t>& indices, uint32_t offset) {
-  const auto [_, inserted] = indices.insert(offset);
-  NIMBLE_CHECK(inserted, "Duplicate stream offset: {}", offset);
-}
-
-// Collects all stream indices for a type subtree.
-inline void collectTypeStreams(const Type& type, std::set<uint32_t>& indices) {
-  switch (type.kind()) {
-    case Kind::Scalar: {
-      insertUniqueStream(indices, type.asScalar().scalarDescriptor().offset());
-      break;
-    }
-
-    case Kind::TimestampMicroNano: {
-      const auto& ts = type.asTimestampMicroNano();
-      insertUniqueStream(indices, ts.microsDescriptor().offset());
-      insertUniqueStream(indices, ts.nanosDescriptor().offset());
-      break;
-    }
-
-    case Kind::Row: {
-      const auto& row = type.asRow();
-      insertUniqueStream(indices, row.nullsDescriptor().offset());
-      for (size_t i = 0; i < row.childrenCount(); ++i) {
-        collectTypeStreams(*row.childAt(i), indices);
-      }
-      break;
-    }
-
-    case Kind::Array: {
-      const auto& array = type.asArray();
-      insertUniqueStream(indices, array.lengthsDescriptor().offset());
-      collectTypeStreams(*array.elements(), indices);
-      break;
-    }
-
-    case Kind::ArrayWithOffsets: {
-      const auto& array = type.asArrayWithOffsets();
-      insertUniqueStream(indices, array.offsetsDescriptor().offset());
-      insertUniqueStream(indices, array.lengthsDescriptor().offset());
-      collectTypeStreams(*array.elements(), indices);
-      break;
-    }
-
-    case Kind::Map: {
-      const auto& map = type.asMap();
-      insertUniqueStream(indices, map.lengthsDescriptor().offset());
-      collectTypeStreams(*map.keys(), indices);
-      collectTypeStreams(*map.values(), indices);
-      break;
-    }
-
-    case Kind::SlidingWindowMap: {
-      const auto& map = type.asSlidingWindowMap();
-      insertUniqueStream(indices, map.offsetsDescriptor().offset());
-      insertUniqueStream(indices, map.lengthsDescriptor().offset());
-      collectTypeStreams(*map.keys(), indices);
-      collectTypeStreams(*map.values(), indices);
-      break;
-    }
-
-    case Kind::FlatMap: {
-      const auto& flatMap = type.asFlatMap();
-      insertUniqueStream(indices, flatMap.nullsDescriptor().offset());
-      for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
-        insertUniqueStream(indices, flatMap.inMapDescriptorAt(i).offset());
-        collectTypeStreams(*flatMap.childAt(i), indices);
-      }
-      break;
-    }
-
-    default:
-      NIMBLE_FAIL("Unsupported type kind: {}", static_cast<int>(type.kind()));
-  }
-}
-
-// Counts total number of streams in a type tree.
-inline size_t countTotalStreams(const Type& type) {
-  std::set<uint32_t> indices;
-  collectTypeStreams(type, indices);
-  return indices.size();
-}
-
-// Resolves a subfield path to a type node and collects its stream indices.
-// Also tracks which children are selected for building output schema.
-void resolveSubfield(
-    const Type* inputSchema,
-    const Subfield& subfield,
-    std::set<uint32_t>& indices,
-    SelectedChildrenMap& selectedChildren) {
-  const auto& path = subfield.path();
-  NIMBLE_CHECK(!path.empty(), "Empty subfield path");
-
-  const Type* current = inputSchema;
-
-  // Traverse the path.
-  for (const auto& element : path) {
-    const auto kind = element->kind();
-    if (kind == SubfieldKind::kNestedField) {
-      const auto* nested = element->asChecked<Subfield::NestedField>();
-      const auto& name = nested->name();
-
-      if (current->isRow()) {
-        const auto& row = current->asRow();
-        const auto childIdx = row.findChild(name);
-        NIMBLE_CHECK(
-            childIdx.has_value(), "Field '{}' not found in RowType", name);
-
-        // Include parent's nulls stream only on first child selection.
-        const bool firstChild = selectedChildren[current].empty();
-        selectedChildren[current].insert(*childIdx);
-        if (firstChild) {
-          indices.insert(row.nullsDescriptor().offset());
-        }
-
-        current = row.childAt(*childIdx).get();
-      } else {
-        NIMBLE_FAIL(
-            "Cannot access nested field '{}' on non-Row type in path '{}'",
-            name,
-            subfield.toString());
-      }
-    } else if (kind == SubfieldKind::kStringSubscript) {
-      const auto* subscript = element->asChecked<Subfield::StringSubscript>();
-      const auto& keyName = subscript->index();
-
-      if (current->isFlatMap()) {
-        const auto& flatMap = current->asFlatMap();
-        const auto childIdx = flatMap.findChild(keyName);
-        NIMBLE_CHECK(
-            childIdx.has_value(), "Key '{}' not found in FlatMapType", keyName);
-
-        // Include flatmap's nulls stream only on first key selection.
-        const bool firstKey = selectedChildren[current].empty();
-        selectedChildren[current].insert(*childIdx);
-        if (firstKey) {
-          indices.insert(flatMap.nullsDescriptor().offset());
-        }
-        indices.insert(flatMap.inMapDescriptorAt(*childIdx).offset());
-
-        current = flatMap.childAt(*childIdx).get();
-      } else {
-        NIMBLE_FAIL(
-            "String subscript '{}' only supported on FlatMap in path '{}'",
-            keyName,
-            subfield.toString());
-      }
-    } else {
-      NIMBLE_FAIL(
-          "Unsupported subfield kind {} in path '{}'",
-          static_cast<int>(kind),
-          subfield.toString());
-    }
-  }
-
-  // Collect all streams for the final resolved type.
-  collectTypeStreams(*current, indices);
-}
-
-using OffsetMap = folly::F14FastMap<uint32_t, uint32_t>;
-
-inline uint32_t mapOffset(const OffsetMap& offsetMap, uint32_t inputOffset) {
-  const auto it = offsetMap.find(inputOffset);
-  NIMBLE_CHECK(
-      it != offsetMap.end(),
-      "Input stream offset {} not found in offset map",
-      inputOffset);
-  return it->second;
-}
-
-std::shared_ptr<const Type> buildProjectedType(
-    const Type* inputType,
-    const OffsetMap& offsetMap,
-    const SelectedChildrenMap& selectedChildren) {
-  const auto kind = inputType->kind();
-  switch (kind) {
-    case Kind::Scalar: {
-      const auto inputOffset =
-          inputType->asScalar().scalarDescriptor().offset();
-      return std::make_shared<ScalarType>(StreamDescriptor{
-          mapOffset(offsetMap, inputOffset),
-          inputType->asScalar().scalarDescriptor().scalarKind()});
-    }
-
-    case Kind::TimestampMicroNano: {
-      const auto& ts = inputType->asTimestampMicroNano();
-      return std::make_shared<TimestampMicroNanoType>(
-          StreamDescriptor{
-              mapOffset(offsetMap, ts.microsDescriptor().offset()),
-              ts.microsDescriptor().scalarKind()},
-          StreamDescriptor{
-              mapOffset(offsetMap, ts.nanosDescriptor().offset()),
-              ts.nanosDescriptor().scalarKind()});
-    }
-
-    case Kind::Row: {
-      const auto& row = inputType->asRow();
-      auto nullsDesc = StreamDescriptor{
-          mapOffset(offsetMap, row.nullsDescriptor().offset()),
-          row.nullsDescriptor().scalarKind()};
-
-      std::vector<std::string> names;
-      std::vector<std::shared_ptr<const Type>> children;
-
-      const auto it = selectedChildren.find(inputType);
-      if (it != selectedChildren.end()) {
-        names.reserve(it->second.size());
-        children.reserve(it->second.size());
-        for (size_t idx : it->second) {
-          names.emplace_back(row.nameAt(idx));
-          children.emplace_back(buildProjectedType(
-              row.childAt(idx).get(), offsetMap, selectedChildren));
-        }
-      } else {
-        names.reserve(row.childrenCount());
-        children.reserve(row.childrenCount());
-        for (size_t i = 0; i < row.childrenCount(); ++i) {
-          names.emplace_back(row.nameAt(i));
-          children.emplace_back(buildProjectedType(
-              row.childAt(i).get(), offsetMap, selectedChildren));
-        }
-      }
-
-      return std::make_shared<RowType>(
-          std::move(nullsDesc), std::move(names), std::move(children));
-    }
-
-    case Kind::Array: {
-      const auto& array = inputType->asArray();
-      auto lengthsDesc = StreamDescriptor{
-          mapOffset(offsetMap, array.lengthsDescriptor().offset()),
-          array.lengthsDescriptor().scalarKind()};
-      auto elements = buildProjectedType(
-          array.elements().get(), offsetMap, selectedChildren);
-      return std::make_shared<ArrayType>(
-          std::move(lengthsDesc), std::move(elements));
-    }
-
-    case Kind::ArrayWithOffsets: {
-      const auto& array = inputType->asArrayWithOffsets();
-      auto offsetsDesc = StreamDescriptor{
-          mapOffset(offsetMap, array.offsetsDescriptor().offset()),
-          array.offsetsDescriptor().scalarKind()};
-      auto lengthsDesc = StreamDescriptor{
-          mapOffset(offsetMap, array.lengthsDescriptor().offset()),
-          array.lengthsDescriptor().scalarKind()};
-      auto elements = buildProjectedType(
-          array.elements().get(), offsetMap, selectedChildren);
-      return std::make_shared<ArrayWithOffsetsType>(
-          std::move(offsetsDesc), std::move(lengthsDesc), std::move(elements));
-    }
-
-    case Kind::Map: {
-      const auto& map = inputType->asMap();
-      auto lengthsDesc = StreamDescriptor{
-          mapOffset(offsetMap, map.lengthsDescriptor().offset()),
-          map.lengthsDescriptor().scalarKind()};
-      auto keys =
-          buildProjectedType(map.keys().get(), offsetMap, selectedChildren);
-      auto values =
-          buildProjectedType(map.values().get(), offsetMap, selectedChildren);
-      return std::make_shared<MapType>(
-          std::move(lengthsDesc), std::move(keys), std::move(values));
-    }
-
-    case Kind::SlidingWindowMap: {
-      const auto& map = inputType->asSlidingWindowMap();
-      auto offsetsDesc = StreamDescriptor{
-          mapOffset(offsetMap, map.offsetsDescriptor().offset()),
-          map.offsetsDescriptor().scalarKind()};
-      auto lengthsDesc = StreamDescriptor{
-          mapOffset(offsetMap, map.lengthsDescriptor().offset()),
-          map.lengthsDescriptor().scalarKind()};
-      auto keys =
-          buildProjectedType(map.keys().get(), offsetMap, selectedChildren);
-      auto values =
-          buildProjectedType(map.values().get(), offsetMap, selectedChildren);
-      return std::make_shared<SlidingWindowMapType>(
-          std::move(offsetsDesc),
-          std::move(lengthsDesc),
-          std::move(keys),
-          std::move(values));
-    }
-
-    case Kind::FlatMap: {
-      const auto& flatMap = inputType->asFlatMap();
-      auto nullsDesc = StreamDescriptor{
-          mapOffset(offsetMap, flatMap.nullsDescriptor().offset()),
-          flatMap.nullsDescriptor().scalarKind()};
-
-      std::vector<std::string> names;
-      std::vector<std::unique_ptr<StreamDescriptor>> inMapDescriptors;
-      std::vector<std::shared_ptr<const Type>> children;
-
-      auto it = selectedChildren.find(inputType);
-      if (it != selectedChildren.end()) {
-        names.reserve(it->second.size());
-        inMapDescriptors.reserve(it->second.size());
-        children.reserve(it->second.size());
-        for (size_t idx : it->second) {
-          names.emplace_back(flatMap.nameAt(idx));
-          children.emplace_back(buildProjectedType(
-              flatMap.childAt(idx).get(), offsetMap, selectedChildren));
-          inMapDescriptors.emplace_back(
-              std::make_unique<StreamDescriptor>(
-                  mapOffset(offsetMap, flatMap.inMapDescriptorAt(idx).offset()),
-                  flatMap.inMapDescriptorAt(idx).scalarKind()));
-        }
-      } else {
-        names.reserve(flatMap.childrenCount());
-        inMapDescriptors.reserve(flatMap.childrenCount());
-        children.reserve(flatMap.childrenCount());
-        for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
-          names.emplace_back(flatMap.nameAt(i));
-          children.emplace_back(buildProjectedType(
-              flatMap.childAt(i).get(), offsetMap, selectedChildren));
-          inMapDescriptors.emplace_back(
-              std::make_unique<StreamDescriptor>(
-                  mapOffset(offsetMap, flatMap.inMapDescriptorAt(i).offset()),
-                  flatMap.inMapDescriptorAt(i).scalarKind()));
-        }
-      }
-
-      return std::make_shared<FlatMapType>(
-          std::move(nullsDesc),
-          flatMap.keyScalarKind(),
-          std::move(names),
-          std::move(inMapDescriptors),
-          std::move(children));
-    }
-
-    default:
-      NIMBLE_FAIL("Unsupported type kind for output schema: {}", kind);
-  }
-}
-
 } // namespace
-
-void Projector::buildProjectedSchema(
-    const SelectedChildrenMap& selectedChildren) {
-  NIMBLE_CHECK_NULL(projectedSchema_, "Projected schema already built");
-
-  folly::F14FastMap<uint32_t, uint32_t> offsetMap;
-  offsetMap.reserve(inputStreamIndices_.size());
-  for (uint32_t i = 0; i < inputStreamIndices_.size(); ++i) {
-    offsetMap[inputStreamIndices_[i]] = i;
-  }
-  projectedSchema_ =
-      buildProjectedType(inputSchema_.get(), offsetMap, selectedChildren);
-
-  // Sanity check: verify all offsets were used by validating projected schema
-  // stream count matches selected input streams.
-  std::set<uint32_t> projectedIndices;
-  collectTypeStreams(*projectedSchema_, projectedIndices);
-  NIMBLE_CHECK_EQ(
-      projectedIndices.size(),
-      inputStreamIndices_.size(),
-      "Stream count mismatch");
-}
 
 Projector::Projector(
     std::shared_ptr<const Type> inputSchema,
@@ -642,24 +277,28 @@ Projector::Projector(
     inputSchema_ = updateColumnNames(inputSchema_, *options_.projectType);
   }
 
-  // Build projection plan: resolve subfields and collect stream indices.
-  std::set<uint32_t> uniqueIndices;
-  SelectedChildrenMap selectedChildren;
-
   for (const auto& subfield : projectSubfields) {
     NIMBLE_CHECK(subfield.valid(), "Invalid subfield: {}", subfield.toString());
-    resolveSubfield(
-        inputSchema_.get(), subfield, uniqueIndices, selectedChildren);
   }
 
-  // Assign sorted indices for sequential access during projection.
-  inputStreamIndices_.assign(uniqueIndices.begin(), uniqueIndices.end());
+  projectedSchema_ = buildProjectedNimbleType(
+      inputSchema_.get(), projectSubfields, inputStreamIndices_);
 
-  buildProjectedSchema(selectedChildren);
+  inputStreamsSorted_ =
+      std::is_sorted(inputStreamIndices_.begin(), inputStreamIndices_.end());
 
-  // Check if all streams are selected (enables pass-through optimization).
-  passThrough_ =
-      (inputStreamIndices_.size() == countTotalStreams(*inputSchema_));
+  if (!inputStreamsSorted_) {
+    sortedStreamMappings_.reserve(inputStreamIndices_.size());
+    for (size_t i = 0; i < inputStreamIndices_.size(); ++i) {
+      sortedStreamMappings_.push_back({inputStreamIndices_[i], i});
+    }
+    std::sort(
+        sortedStreamMappings_.begin(),
+        sortedStreamMappings_.end(),
+        [](const auto& lhs, const auto& rhs) {
+          return lhs.inputStreamIdx < rhs.inputStreamIdx;
+        });
+  }
 }
 
 namespace {
@@ -674,102 +313,257 @@ SerializationVersion getAndValidateInputVersion(const folly::IOBuf& input) {
   return version;
 }
 
+} // namespace
+
 // Projects selected streams from a contiguous IOBuf into the output chain.
-// Merges contiguous selected streams into a single zero-copy IOBuf clone to
-// minimize allocations and chain linking overhead. The input IOBuf must outlive
-// the output chain.
-std::vector<uint32_t> projectStreamsContiguous(
+// Streams are output in the order of selectedIndices (output stream order),
+// which may differ from sorted input order for interleaved schemas (e.g.,
+// multiple FlatMap columns). Merges adjacent output entries that are contiguous
+// in the input into a single zero-copy IOBuf clone to minimize IOBuf
+// allocations. The input IOBuf must outlive the output chain.
+// static
+std::vector<uint32_t> Projector::projectStreamsContiguousUnsorted(
     const folly::IOBuf& input,
-    size_t streamOffset,
+    size_t dataOffset,
     const std::vector<uint32_t>& streamSizes,
     const std::vector<uint32_t>& selectedIndices,
     std::unique_ptr<folly::IOBuf>& output) {
   std::vector<uint32_t> outputSizes(selectedIndices.size(), 0);
 
+  // Pre-compute byte offset for each input stream.
+  std::vector<size_t> streamOffsets(streamSizes.size());
+  size_t streamOffset = dataOffset;
+  for (size_t i = 0; i < streamSizes.size(); ++i) {
+    streamOffsets[i] = streamOffset;
+    streamOffset += streamSizes[i];
+  }
+
   // Track the start offset and byte count of a contiguous run.
   size_t runStart = 0;
-  size_t runBytes = 0;
+  size_t numRunBytes = 0;
 
   auto flushRun = [&]() {
-    if (runBytes == 0) {
+    if (numRunBytes == 0) {
       return;
     }
     // Zero-copy: clone the input and trim to the run's sub-range.
     auto buf = input.cloneOne();
     buf->trimStart(runStart);
-    buf->trimEnd(buf->length() - runBytes);
+    buf->trimEnd(buf->length() - numRunBytes);
     output->appendToChain(std::move(buf));
-    runBytes = 0;
+    numRunBytes = 0;
   };
 
-  size_t nextSelectedIdx = 0;
-  size_t offset = streamOffset;
-  for (size_t i = 0;
-       i < streamSizes.size() && nextSelectedIdx < selectedIndices.size();
-       ++i) {
-    if (i == selectedIndices[nextSelectedIdx]) {
-      if (streamSizes[i] > 0) {
-        outputSizes[nextSelectedIdx] = streamSizes[i];
-        if (runBytes == 0) {
-          runStart = offset;
-        }
-        runBytes += streamSizes[i];
-      }
-      ++nextSelectedIdx;
-    } else if (streamSizes[i] > 0 && runBytes > 0) {
-      flushRun();
+  // Output streams in output order, merging entries that are contiguous in
+  // input.
+  for (size_t i = 0; i < selectedIndices.size(); ++i) {
+    const auto streamIdx = selectedIndices[i];
+    // Streams beyond streamSizes are treated as empty. This happens when the
+    // serializer omits constant in-map boolean streams (all-true/all-false),
+    // making the serialized stream count smaller than the schema's max offset.
+    if (streamIdx >= streamSizes.size() || streamSizes[streamIdx] == 0) {
+      continue;
     }
-    offset += streamSizes[i];
+    outputSizes[i] = streamSizes[streamIdx];
+    if (numRunBytes > 0 && streamOffsets[streamIdx] == runStart + numRunBytes) {
+      numRunBytes += streamSizes[streamIdx];
+    } else {
+      flushRun();
+      runStart = streamOffsets[streamIdx];
+      numRunBytes = streamSizes[streamIdx];
+    }
   }
   flushRun();
 
   return outputSizes;
 }
 
-// Projects selected streams from a chained IOBuf via cursor.
-// Merges contiguous selected streams into zero-copy IOBuf clones.
-std::vector<uint32_t> projectStreamsChained(
+// Fast path for projectStreamsContiguousUnsorted when inputStreamIndices are
+// sorted (no FlatMap key reordering). Avoids pre-computing byte offsets for all
+// streams — instead uses a single forward scan tracking the current offset.
+// static
+std::vector<uint32_t> Projector::projectStreamsContiguousSorted(
+    const folly::IOBuf& input,
+    size_t dataOffset,
+    const std::vector<uint32_t>& streamSizes,
+    const std::vector<uint32_t>& selectedIndices,
+    std::unique_ptr<folly::IOBuf>& output) {
+  std::vector<uint32_t> outputSizes(selectedIndices.size(), 0);
+
+  size_t curOffset = dataOffset;
+  size_t nextSelected = 0;
+
+  // Track the start offset and byte count of a contiguous run.
+  size_t runStart = 0;
+  size_t numRunBytes = 0;
+
+  auto flushRun = [&]() {
+    if (numRunBytes == 0) {
+      return;
+    }
+    // Zero-copy: clone the input and trim to the run's sub-range.
+    auto buf = input.cloneOne();
+    buf->trimStart(runStart);
+    buf->trimEnd(buf->length() - numRunBytes);
+    output->appendToChain(std::move(buf));
+    numRunBytes = 0;
+  };
+
+  for (size_t i = 0;
+       i < streamSizes.size() && nextSelected < selectedIndices.size();
+       ++i) {
+    if (i == selectedIndices[nextSelected]) {
+      if (streamSizes[i] > 0) {
+        outputSizes[nextSelected] = streamSizes[i];
+        if (numRunBytes > 0 && curOffset == runStart + numRunBytes) {
+          numRunBytes += streamSizes[i];
+        } else {
+          flushRun();
+          runStart = curOffset;
+          numRunBytes = streamSizes[i];
+        }
+      }
+      ++nextSelected;
+    }
+    curOffset += streamSizes[i];
+  }
+  flushRun();
+
+  return outputSizes;
+}
+
+// Fast path for projectStreamsChainedUnsorted when inputStreamIndices are
+// sorted (no FlatMap key reordering). Single forward pass with run merging — no
+// sorting or reordering needed since input and output order already match.
+// static
+std::vector<uint32_t> Projector::projectStreamsChainedSorted(
     folly::io::Cursor& cursor,
     const std::vector<uint32_t>& streamSizes,
     const std::vector<uint32_t>& selectedIndices,
     std::unique_ptr<folly::IOBuf>& output) {
   std::vector<uint32_t> outputSizes(selectedIndices.size(), 0);
-  size_t nextSelectedIdx = 0;
-  size_t runBytes = 0;
+  size_t nextSelected = 0;
 
-  auto flushRun = [&]() {
-    if (runBytes == 0) {
+  // Track how many contiguous selected streams we can merge.
+  size_t numRunBytes = 0;
+
+  auto flushRun = [&](std::unique_ptr<folly::IOBuf>& out) {
+    if (numRunBytes == 0) {
       return;
     }
-    // Zero-copy: clone the run's sub-range from the cursor, sharing the
-    // underlying IOBuf buffers via refcounting.
     std::unique_ptr<folly::IOBuf> buf;
-    cursor.clone(buf, runBytes);
-    output->appendToChain(std::move(buf));
-    runBytes = 0;
+    cursor.clone(buf, numRunBytes);
+    out->appendToChain(std::move(buf));
+    numRunBytes = 0;
   };
 
   for (size_t i = 0;
-       i < streamSizes.size() && nextSelectedIdx < selectedIndices.size();
+       i < streamSizes.size() && nextSelected < selectedIndices.size();
        ++i) {
-    if (i == selectedIndices[nextSelectedIdx]) {
+    if (i == selectedIndices[nextSelected]) {
+      outputSizes[nextSelected] = streamSizes[i];
       if (streamSizes[i] > 0) {
-        outputSizes[nextSelectedIdx] = streamSizes[i];
-        runBytes += streamSizes[i];
+        numRunBytes += streamSizes[i];
       }
-      ++nextSelectedIdx;
-    } else if (streamSizes[i] > 0) {
-      if (runBytes > 0) {
-        flushRun();
-      }
+      ++nextSelected;
+      continue;
+    }
+    // Not selected — flush any pending run and skip this stream.
+    flushRun(output);
+    if (streamSizes[i] > 0) {
       cursor.skip(streamSizes[i]);
     }
   }
-  flushRun();
+  flushRun(output);
+
   return outputSizes;
 }
 
-} // namespace
+// Projects selected streams from a chained IOBuf via cursor.
+// Streams are output in the order of selectedIndices (output stream order).
+// Uses a sorted forward pass to extract IOBufs via cursor, merging contiguous
+// runs that are also adjacent in output order into single zero-copy clones.
+// Non-mergeable streams are extracted individually and reordered in a second
+// pass.
+
+// static
+std::vector<uint32_t> Projector::projectStreamsChainedUnsorted(
+    folly::io::Cursor& cursor,
+    const std::vector<uint32_t>& streamSizes,
+    const std::vector<StreamMapping>& sortedStreamMappings,
+    std::unique_ptr<folly::IOBuf>& output) {
+  std::vector<uint32_t> outputSizes(sortedStreamMappings.size(), 0);
+
+  // Holds the extracted IOBuf for one or more merged output streams.
+  struct OutputStreamBuffer {
+    // Start output stream index. When multiple contiguous input streams are
+    // merged, this is the index of the first output stream in the merged run.
+    size_t outputStreamIdx;
+    std::unique_ptr<folly::IOBuf> buf;
+  };
+
+  // Forward pass: extract selected streams via cursor in sorted input order.
+  // Merges contiguous input streams that are also adjacent in output order into
+  // a single cursor.clone() call, reducing allocations. Each merged run
+  // produces one OutputStreamBuffer entry — typically far fewer than the total
+  // number of selected streams.
+  std::vector<OutputStreamBuffer> outputStreamBufs;
+  outputStreamBufs.reserve(sortedStreamMappings.size());
+  size_t nextSortedIdx = 0;
+  for (size_t i = 0;
+       i < streamSizes.size() && nextSortedIdx < sortedStreamMappings.size();) {
+    if (i != sortedStreamMappings[nextSortedIdx].inputStreamIdx) {
+      if (streamSizes[i] > 0) {
+        cursor.skip(streamSizes[i]);
+      }
+      ++i;
+      continue;
+    }
+
+    // Found a selected stream. Try to extend a contiguous run: consecutive
+    // in input AND adjacent in output order.
+    const auto runOutputStreamIdx =
+        sortedStreamMappings[nextSortedIdx].outputStreamIdx;
+    size_t numRunBytes = 0;
+    size_t numRunOutputStreams = 0;
+    while (nextSortedIdx + numRunOutputStreams < sortedStreamMappings.size() &&
+           sortedStreamMappings[nextSortedIdx + numRunOutputStreams]
+                   .inputStreamIdx == i + numRunOutputStreams &&
+           i + numRunOutputStreams < streamSizes.size() &&
+           sortedStreamMappings[nextSortedIdx + numRunOutputStreams]
+                   .outputStreamIdx ==
+               runOutputStreamIdx + numRunOutputStreams) {
+      const auto inputStreamIdx =
+          sortedStreamMappings[nextSortedIdx + numRunOutputStreams]
+              .inputStreamIdx;
+      outputSizes[runOutputStreamIdx + numRunOutputStreams] =
+          streamSizes[inputStreamIdx];
+      numRunBytes += streamSizes[inputStreamIdx];
+      ++numRunOutputStreams;
+    }
+
+    if (numRunBytes > 0) {
+      // Zero-copy: clone the merged run.
+      std::unique_ptr<folly::IOBuf> buf;
+      cursor.clone(buf, numRunBytes);
+      outputStreamBufs.push_back({runOutputStreamIdx, std::move(buf)});
+    }
+    nextSortedIdx += numRunOutputStreams;
+    i += numRunOutputStreams;
+  }
+
+  // Sort by output stream index and chain in order.
+  std::sort(
+      outputStreamBufs.begin(),
+      outputStreamBufs.end(),
+      [](const auto& lhs, const auto& rhs) {
+        return lhs.outputStreamIdx < rhs.outputStreamIdx;
+      });
+  for (auto& streamBuf : outputStreamBufs) {
+    output->appendToChain(std::move(streamBuf.buf));
+  }
+  return outputSizes;
+}
 
 folly::IOBuf Projector::buildProjectedOutput(
     const std::vector<uint32_t>& outputStreamSizes,
@@ -791,11 +585,6 @@ folly::IOBuf Projector::buildProjectedOutput(
 
 folly::IOBuf Projector::project(const folly::IOBuf& input) const {
   const auto inputVersion = getAndValidateInputVersion(input);
-
-  // Fast path: pass-through when all streams selected.
-  if (passThrough_) {
-    return input.cloneAsValue();
-  }
 
   if (!input.isChained()) {
     return projectContiguous(input, inputVersion);
@@ -821,12 +610,12 @@ folly::IOBuf Projector::projectContiguous(
       detail::readStreamSizes(input, inputVersion, pool_);
 
   // Extract selected streams as zero-copy sub-range clones.
-  auto outputStreamSizes = projectStreamsContiguous(
-      input,
-      /*streamOffset=*/pos - data,
-      inputStreamSizes,
-      inputStreamIndices_,
-      output);
+  const auto dataOffset = static_cast<size_t>(pos - data);
+  auto outputStreamSizes = inputStreamsSorted_
+      ? projectStreamsContiguousSorted(
+            input, dataOffset, inputStreamSizes, inputStreamIndices_, output)
+      : projectStreamsContiguousUnsorted(
+            input, dataOffset, inputStreamSizes, inputStreamIndices_, output);
 
   return buildProjectedOutput(outputStreamSizes, std::move(output));
 }
@@ -849,8 +638,11 @@ folly::IOBuf Projector::projectChained(
       detail::readStreamSizes(input, inputVersion, pool_);
 
   // Extract selected streams as zero-copy clones via cursor.
-  auto outputStreamSizes = projectStreamsChained(
-      cursor, inputStreamSizes, inputStreamIndices_, output);
+  auto outputStreamSizes = inputStreamsSorted_
+      ? projectStreamsChainedSorted(
+            cursor, inputStreamSizes, inputStreamIndices_, output)
+      : projectStreamsChainedUnsorted(
+            cursor, inputStreamSizes, sortedStreamMappings_, output);
 
   return buildProjectedOutput(outputStreamSizes, std::move(output));
 }

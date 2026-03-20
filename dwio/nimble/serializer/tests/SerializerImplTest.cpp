@@ -15,11 +15,14 @@
  */
 
 #include <gtest/gtest.h>
+#include <zstd.h>
 
+#include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingLayout.h"
+#include "dwio/nimble/serializer/DeserializerImpl.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "velox/common/memory/Memory.h"
 
@@ -1309,4 +1312,249 @@ TEST_F(EncodeTypedCompressionTest, defaultFactoryNoCompression) {
   EXPECT_EQ(
       compressionPolicy->compression().compressionType,
       CompressionType::Uncompressed);
+}
+
+// Tests for kTabletRaw chunk header stripping in StreamDataReader.
+// kTabletRaw streams contain chunk headers:
+//   [chunkSize:u32][compressionType:1B][encoded_data...]
+// StreamDataReader must strip these headers and decompress as needed.
+
+class TabletRawChunkStripTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
+  }
+
+  void SetUp() override {
+    pool_ = memory::memoryManager()->addLeafPool("tablet_raw_chunk_test");
+  }
+
+  // Builds a single uncompressed chunk: [length:u32][Uncompressed:1B][data].
+  static std::string buildUncompressedChunk(std::string_view data) {
+    std::string chunk(kChunkHeaderSize + data.size(), '\0');
+    auto* pos = chunk.data();
+    writeChunkHeader(
+        static_cast<uint32_t>(data.size()), CompressionType::Uncompressed, pos);
+    std::memcpy(pos, data.data(), data.size());
+    return chunk;
+  }
+
+  // Builds a single zstd-compressed chunk: [length:u32][Zstd:1B][compressed].
+  static std::string buildCompressedChunk(std::string_view data) {
+    const auto maxCompressedSize = ZSTD_compressBound(data.size());
+    std::string compressed(maxCompressedSize, '\0');
+    const auto compressedSize = ZSTD_compress(
+        compressed.data(), maxCompressedSize, data.data(), data.size(), 1);
+    NIMBLE_CHECK(!ZSTD_isError(compressedSize));
+    compressed.resize(compressedSize);
+
+    std::string chunk(kChunkHeaderSize + compressedSize, '\0');
+    auto* pos = chunk.data();
+    writeChunkHeader(
+        static_cast<uint32_t>(compressedSize), CompressionType::Zstd, pos);
+    std::memcpy(pos, compressed.data(), compressedSize);
+    return chunk;
+  }
+
+  // Concatenates multiple chunks into a single stream.
+  static std::string concatChunks(const std::vector<std::string>& chunks) {
+    std::string result;
+    for (const auto& chunk : chunks) {
+      result.append(chunk);
+    }
+    return result;
+  }
+
+  // Assembles a kTabletRaw buffer from streams and returns the data collected
+  // by iterateStreams.
+  // Each entry in 'streams' is the raw stream bytes (with chunk headers).
+  std::vector<std::pair<uint32_t, std::string>> deserializeTabletRaw(
+      uint32_t rowCount,
+      const std::vector<std::pair<uint32_t, std::string>>& streams) {
+    // Build dense sizes array.
+    uint32_t maxOffset = 0;
+    for (const auto& [offset, _] : streams) {
+      maxOffset = std::max(maxOffset, offset);
+    }
+    std::vector<uint32_t> streamSizes(streams.empty() ? 0 : maxOffset + 1, 0);
+    std::string streamData;
+    for (const auto& [offset, data] : streams) {
+      streamSizes[offset] = static_cast<uint32_t>(data.size());
+      streamData.append(data);
+    }
+
+    // Assemble: [header][stream data][trailer].
+    std::string buffer;
+    serde::detail::writeHeader(
+        buffer, SerializationVersion::kTabletRaw, rowCount);
+    buffer.append(streamData);
+    serde::detail::writeRawTrailer(streamSizes, EncodingType::Trivial, buffer);
+
+    // Parse via StreamDataReader.
+    DeserializerOptions options;
+    options.version = SerializationVersion::kTabletRaw;
+    StreamDataReader reader(pool_.get(), options);
+    auto actualRows = reader.initialize(std::string_view(buffer));
+    EXPECT_EQ(actualRows, rowCount);
+
+    std::vector<std::pair<uint32_t, std::string>> result;
+    reader.iterateStreams([&](uint32_t offset, std::string_view data) {
+      result.emplace_back(offset, std::string(data));
+    });
+    return result;
+  }
+
+  std::shared_ptr<memory::MemoryPool> pool_;
+};
+
+TEST_F(TabletRawChunkStripTest, singleChunkUncompressed) {
+  std::string payload = "hello world test data";
+  auto stream = buildUncompressedChunk(payload);
+  auto result = deserializeTabletRaw(10, {{0, stream}});
+
+  ASSERT_EQ(result.size(), 1);
+  EXPECT_EQ(result[0].first, 0);
+  EXPECT_EQ(result[0].second, payload);
+}
+
+TEST_F(TabletRawChunkStripTest, singleChunkCompressed) {
+  std::string payload = "compressed data that should be zstd encoded";
+  auto stream = buildCompressedChunk(payload);
+  auto result = deserializeTabletRaw(10, {{0, stream}});
+
+  ASSERT_EQ(result.size(), 1);
+  EXPECT_EQ(result[0].first, 0);
+  EXPECT_EQ(result[0].second, payload);
+}
+
+TEST_F(TabletRawChunkStripTest, multipleChunksAllUncompressed) {
+  std::string part1 = "first chunk data";
+  std::string part2 = "second chunk data";
+  std::string part3 = "third chunk data";
+  auto stream = concatChunks(
+      {buildUncompressedChunk(part1),
+       buildUncompressedChunk(part2),
+       buildUncompressedChunk(part3)});
+  auto result = deserializeTabletRaw(10, {{0, stream}});
+
+  ASSERT_EQ(result.size(), 1);
+  EXPECT_EQ(result[0].first, 0);
+  EXPECT_EQ(result[0].second, part1 + part2 + part3);
+}
+
+TEST_F(TabletRawChunkStripTest, multipleChunksAllCompressed) {
+  std::string part1 = "first chunk of compressed data here";
+  std::string part2 = "second chunk of compressed data here";
+  auto stream =
+      concatChunks({buildCompressedChunk(part1), buildCompressedChunk(part2)});
+  auto result = deserializeTabletRaw(10, {{0, stream}});
+
+  ASSERT_EQ(result.size(), 1);
+  EXPECT_EQ(result[0].first, 0);
+  EXPECT_EQ(result[0].second, part1 + part2);
+}
+
+TEST_F(TabletRawChunkStripTest, multipleChunksMixed) {
+  std::string part1 = "uncompressed chunk one";
+  std::string part2 = "compressed chunk two with some data";
+  std::string part3 = "another uncompressed chunk three";
+  auto stream = concatChunks(
+      {buildUncompressedChunk(part1),
+       buildCompressedChunk(part2),
+       buildUncompressedChunk(part3)});
+  auto result = deserializeTabletRaw(10, {{0, stream}});
+
+  ASSERT_EQ(result.size(), 1);
+  EXPECT_EQ(result[0].first, 0);
+  EXPECT_EQ(result[0].second, part1 + part2 + part3);
+}
+
+TEST_F(TabletRawChunkStripTest, multipleStreams) {
+  std::string payload1 = "stream zero payload";
+  std::string payload2 = "stream two payload data";
+  auto stream0 = buildUncompressedChunk(payload1);
+  auto stream2 = buildCompressedChunk(payload2);
+  // Stream offsets 0 and 2 (gap at 1).
+  auto result = deserializeTabletRaw(10, {{0, stream0}, {2, stream2}});
+
+  ASSERT_EQ(result.size(), 2);
+  EXPECT_EQ(result[0].first, 0);
+  EXPECT_EQ(result[0].second, payload1);
+  EXPECT_EQ(result[1].first, 2);
+  EXPECT_EQ(result[1].second, payload2);
+}
+
+TEST_F(TabletRawChunkStripTest, multipleStreamsMultipleChunks) {
+  // Stream 0: two uncompressed chunks.
+  std::string s0p1 = "stream0 part1";
+  std::string s0p2 = "stream0 part2";
+  auto stream0 = concatChunks(
+      {buildUncompressedChunk(s0p1), buildUncompressedChunk(s0p2)});
+
+  // Stream 1: one compressed chunk.
+  std::string s1p1 = "stream1 compressed single chunk";
+  auto stream1 = buildCompressedChunk(s1p1);
+
+  // Stream 2: mixed chunks.
+  std::string s2p1 = "stream2 uncompressed";
+  std::string s2p2 = "stream2 compressed part";
+  auto stream2 =
+      concatChunks({buildUncompressedChunk(s2p1), buildCompressedChunk(s2p2)});
+
+  auto result =
+      deserializeTabletRaw(10, {{0, stream0}, {1, stream1}, {2, stream2}});
+
+  ASSERT_EQ(result.size(), 3);
+  EXPECT_EQ(result[0].first, 0);
+  EXPECT_EQ(result[0].second, s0p1 + s0p2);
+  EXPECT_EQ(result[1].first, 1);
+  EXPECT_EQ(result[1].second, s1p1);
+  EXPECT_EQ(result[2].first, 2);
+  EXPECT_EQ(result[2].second, s2p1 + s2p2);
+}
+
+TEST_F(TabletRawChunkStripTest, emptyPayloadChunk) {
+  // Single uncompressed chunk with empty payload.
+  // The chunk header is still present (5 bytes), so iterateStreams calls the
+  // callback with the stripped (empty) data.
+  auto stream = buildUncompressedChunk("");
+  auto result = deserializeTabletRaw(10, {{0, stream}});
+  ASSERT_EQ(result.size(), 1);
+  EXPECT_EQ(result[0].first, 0);
+  EXPECT_TRUE(result[0].second.empty());
+}
+
+TEST_F(TabletRawChunkStripTest, largePayload) {
+  // Large payload to exercise buffer growth.
+  std::string payload(100'000, 'x');
+  for (size_t i = 0; i < payload.size(); ++i) {
+    payload[i] = static_cast<char>('a' + (i % 26));
+  }
+
+  // Test single compressed chunk with large data.
+  auto stream = buildCompressedChunk(payload);
+  auto result = deserializeTabletRaw(10, {{0, stream}});
+  ASSERT_EQ(result.size(), 1);
+  EXPECT_EQ(result[0].second, payload);
+}
+
+TEST_F(TabletRawChunkStripTest, largePayloadMultipleChunks) {
+  // Split large payload across multiple chunks of different types.
+  std::string payload(50'000, '\0');
+  for (size_t i = 0; i < payload.size(); ++i) {
+    payload[i] = static_cast<char>(i % 256);
+  }
+
+  std::string part1 = payload.substr(0, 20'000);
+  std::string part2 = payload.substr(20'000, 15'000);
+  std::string part3 = payload.substr(35'000);
+
+  auto stream = concatChunks(
+      {buildUncompressedChunk(part1),
+       buildCompressedChunk(part2),
+       buildCompressedChunk(part3)});
+  auto result = deserializeTabletRaw(10, {{0, stream}});
+
+  ASSERT_EQ(result.size(), 1);
+  EXPECT_EQ(result[0].second, payload);
 }

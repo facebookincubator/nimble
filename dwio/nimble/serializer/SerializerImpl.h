@@ -119,11 +119,12 @@ inline size_t versionSize(std::optional<SerializationVersion> version) {
 }
 
 /// Returns the byte size of the row count encoding for the given version.
+/// All non-legacy formats use varint; kLegacy uses fixed u32.
 inline size_t rowCountSize(
     std::optional<SerializationVersion> version,
     uint32_t rowCount) {
-  return isCompactFormat(version) ? varint::varintSize(rowCount)
-                                  : sizeof(uint32_t);
+  return usesVarintRowCount(version) ? varint::varintSize(rowCount)
+                                     : sizeof(uint32_t);
 }
 
 /// Returns the exact byte size of the serialization header.
@@ -144,7 +145,7 @@ inline size_t estimateHeaderSize(
 ///   [version:1B][rowCount:varint][stream_data_0][stream_data_1]...[encoded_stream_sizes][stream_sizes_encoded_size:u32]
 ///
 /// For kLegacy: writes [optional_version:1B][rowCount:u32]
-/// For kCompact: writes [version:1B][rowCount:varint]
+/// For kCompact/kCompactRaw/kTabletRaw: writes [version:1B][rowCount:varint]
 ///
 /// @param buffer Output buffer (std::string, velox::Buffer, etc.)
 /// @param version Serialization format version (nullopt = no version byte)
@@ -160,7 +161,7 @@ void writeHeader(
     *versionPos = static_cast<char>(version.value());
   }
 
-  if (isCompactFormat(version)) {
+  if (usesVarintRowCount(version)) {
     auto* rowCountPos = extend(buffer, varint::varintSize(rowCount));
     varint::writeVarint(rowCount, &rowCountPos);
   } else {
@@ -188,14 +189,16 @@ inline size_t estimateCompactTrailerSize(size_t numStreams) {
 size_t estimateRawTrailerSize(size_t numStreams, EncodingType encodingType);
 
 /// Returns an upper-bound estimate of the trailer size for the given
-/// serialization version (kCompact or kCompactRaw).
+/// serialization version (kCompact, kCompactRaw, or kTabletRaw).
 inline size_t estimateTrailerSize(
     SerializationVersion outputVersion,
     size_t numStreams,
-    EncodingType encodingType) {
-  return outputVersion == SerializationVersion::kCompactRaw
-      ? estimateRawTrailerSize(numStreams, encodingType)
-      : estimateCompactTrailerSize(numStreams);
+    std::optional<EncodingType> encodingType = std::nullopt) {
+  if (isRawFormat(outputVersion)) {
+    return estimateRawTrailerSize(
+        numStreams, encodingType.value_or(EncodingType::Trivial));
+  }
+  return estimateCompactTrailerSize(numStreams);
 }
 
 /// Writes the kCompactRaw trailer: appends
@@ -278,14 +281,16 @@ void writeCompactTrailer(
 }
 
 /// Writes the stream sizes trailer for the given serialization version.
-/// Dispatches to writeRawTrailer (kCompactRaw) or writeCompactTrailer
-/// (kCompact) based on outputVersion.
+/// Dispatches to writeRawTrailer (kCompactRaw/kTabletRaw) or
+/// writeCompactTrailer (kCompact) based on outputVersion.
 ///
-/// @param outputVersion Must be kCompact or kCompactRaw.
+/// @param outputVersion Must be kCompact, kCompactRaw, or kTabletRaw.
 /// @param streamSizes Dense stream sizes array.
 /// @param encodingType Encoding type for stream sizes.
 /// @param encodingBuffer Encoding buffer for kCompact nimble encoding.
 /// @param buffer Output buffer.
+/// @param encodingLayout Optional encoding layout for replaying captured
+///        encoding. Only used for kCompact. Ignored for kCompactRaw/kTabletRaw.
 template <typename T>
 void writeTrailer(
     SerializationVersion outputVersion,
@@ -294,7 +299,7 @@ void writeTrailer(
     nimble::Buffer& encodingBuffer,
     T& buffer,
     const EncodingLayout* encodingLayout = nullptr) {
-  if (outputVersion == SerializationVersion::kCompactRaw) {
+  if (isRawFormat(outputVersion)) {
     writeRawTrailer(streamSizes, encodingType, buffer);
     return;
   }
@@ -302,7 +307,7 @@ void writeTrailer(
   NIMBLE_CHECK_EQ(
       outputVersion,
       SerializationVersion::kCompact,
-      "writeTrailer requires kCompact or kCompactRaw, got {}",
+      "writeTrailer requires kCompact, kCompactRaw, or kTabletRaw, got {}",
       outputVersion);
   writeCompactTrailer(streamSizes, encodingType, encodingBuffer, buffer);
 }

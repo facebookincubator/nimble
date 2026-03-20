@@ -50,23 +50,69 @@ namespace facebook::nimble {
 ///   trailer_size = 1 + len(raw_sizes_payload).
 ///   Only EncodingType::Trivial and EncodingType::Varint are supported.
 ///   See getRawEncodingType() for validation.
+///
+/// - kTabletRaw: Raw tablet stream passthrough format. Like kCompactRaw but:
+///   (1) Each stream's data includes tablet chunk headers:
+///       [chunkSize:u32][compressionType:1B][encoded_data...]
+///       which the Deserializer strips before decoding.
+///   (2) Encoding headers within streams use fixed u32 row counts
+///       (useVarintRowCount=false), matching the tablet's default format.
+///   Wire: [version:1B][rowCount:varint][stream_data_0]...[stream_data_N]
+///         [encodingType:1B][raw_sizes_payload][trailer_size:u32]
 enum class SerializationVersion : uint8_t {
   kLegacy = 0,
   kCompact = 1,
   kCompactRaw = 2,
+  kTabletRaw = 3,
 };
 
 std::string toString(SerializationVersion version);
 
 /// Returns true if the version uses compact encoding (kCompact or kCompactRaw).
+/// Note: kTabletRaw is NOT a compact format (has chunk headers in streams).
 inline bool isCompactFormat(SerializationVersion version) {
   return version == SerializationVersion::kCompact ||
       version == SerializationVersion::kCompactRaw;
 }
 
+/// Returns true if the version uses raw stream sizes (kCompactRaw or
+/// kTabletRaw) instead of nimble-encoded stream sizes.
+inline bool isRawFormat(SerializationVersion version) {
+  return version == SerializationVersion::kCompactRaw ||
+      version == SerializationVersion::kTabletRaw;
+}
+
+/// Returns true if the optional version uses raw stream sizes.
+inline bool isRawFormat(std::optional<SerializationVersion> version) {
+  return version.has_value() && isRawFormat(version.value());
+}
+
+/// Returns true if the version is the tablet raw passthrough format.
+inline bool isTabletRawFormat(SerializationVersion version) {
+  return version == SerializationVersion::kTabletRaw;
+}
+
+/// Returns true if the version is the tablet raw passthrough format.
+inline bool isTabletRawFormat(std::optional<SerializationVersion> version) {
+  return version.has_value() && isTabletRawFormat(version.value());
+}
+
 /// Returns true if the optional version uses compact encoding.
 inline bool isCompactFormat(std::optional<SerializationVersion> version) {
   return version.has_value() && isCompactFormat(version.value());
+}
+
+/// Returns true if the version uses varint for the header row count.
+/// All non-legacy versioned formats (kCompact, kCompactRaw, kTabletRaw) use
+/// varint row counts in the header. The raw stream bodies inside kTabletRaw
+/// may use fixed u32 row counts in their encoding headers.
+inline bool usesVarintRowCount(SerializationVersion version) {
+  return version != SerializationVersion::kLegacy;
+}
+
+/// Returns true if the optional version uses varint for the header row count.
+inline bool usesVarintRowCount(std::optional<SerializationVersion> version) {
+  return version.has_value() && usesVarintRowCount(version.value());
 }
 
 /// Validates and returns the EncodingType for kCompactRaw stream sizes.
@@ -145,6 +191,7 @@ struct DeserializerOptions {
   /// - kLegacy: Legacy compression format.
   /// - kCompact: Nimble encoding format with dense sizes header.
   /// - kCompactRaw: Raw-encoded stream sizes (no nimble encoding overhead).
+  /// - kTabletRaw: Raw tablet stream passthrough (chunk headers in streams).
   std::optional<SerializationVersion> version{};
 
   /// Output type for deserializing flatmap columns as struct (ROW).
@@ -161,8 +208,8 @@ struct DeserializerOptions {
   /// Returns the effective serialization version.
   SerializationVersion serializationVersion() const;
 
-  /// Returns true if nimble encoding is enabled (version is kCompact or
-  /// kCompactRaw).
+  /// Returns true if nimble encoding is enabled (version is kCompact,
+  /// kCompactRaw, or kTabletRaw).
   bool enableEncoding() const;
 };
 
