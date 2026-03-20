@@ -176,6 +176,54 @@ constexpr std::size_t kCacheLineBytes = 64;
 constexpr std::size_t kMaxControlBitsValue = 64;
 constexpr std::size_t kMaskLength = 6;
 
+// Process runs of two-byte varints. Each 2-byte varint has continuation bit
+// set on byte 0 and clear on byte 1. We detect this pattern in 8-byte words
+// and decode 4 varints at a time using simple scalar ops.
+// Returns the number of elements remaining after processing.
+template <typename T>
+inline uint64_t bulkDecodeTwoByteRun(uint64_t n, const char*& pos, T*& output) {
+  const auto* src = reinterpret_cast<const uint8_t*>(pos);
+
+  // In a run of 2-byte varints, each 8-byte word has alternating high bits:
+  // bytes 0,2,4,6 have 0x80 set (continuation), bytes 1,3,5,7 have 0x80
+  // clear (terminator). This gives the pattern 0x0080008000800080.
+  constexpr uint64_t kHighBits = 0x8080808080808080ULL;
+  constexpr uint64_t kTwoBytePattern = 0x0080008000800080ULL;
+  constexpr uint64_t wordSize = 8;
+
+  // Process 8 bytes at a time (4 two-byte varints).
+  while (n >= 4) {
+    uint64_t word;
+    std::memcpy(&word, src, sizeof(word));
+
+    if ((word & kHighBits) != kTwoBytePattern) {
+      break;
+    }
+
+    output[0] = static_cast<T>((src[0] & 0x7f) | (uint32_t(src[1]) << 7));
+    output[1] = static_cast<T>((src[2] & 0x7f) | (uint32_t(src[3]) << 7));
+    output[2] = static_cast<T>((src[4] & 0x7f) | (uint32_t(src[5]) << 7));
+    output[3] = static_cast<T>((src[6] & 0x7f) | (uint32_t(src[7]) << 7));
+
+    src += wordSize;
+    output += 4;
+    n -= 4;
+  }
+
+  // Handle trailing 2-byte varints one at a time. After bulkDecodeSingleByteRun
+  // we know the first byte has high bit set (otherwise it would have been
+  // consumed as a 1-byte varint), so we just check that the second byte is a
+  // terminator.
+  while (n > 0 && (src[0] & 0x80) && !(src[1] & 0x80)) {
+    *output++ = static_cast<T>((src[0] & 0x7f) | (uint32_t(src[1]) << 7));
+    src += 2;
+    --n;
+  }
+
+  pos = reinterpret_cast<const char*>(src);
+  return n;
+}
+
 // Lookup table entry for table-driven BMI2 varint decode.
 struct alignas(kCacheLineBytes) VarintLookupEntry {
   // Extraction masks for up to 6 completed varints. Unused slots are 0
@@ -302,11 +350,19 @@ const char* bulkVarintDecode32(uint64_t n, const char* pos, uint32_t* output) {
   if (n == 0) {
     return pos;
   }
+  n = bulkDecodeTwoByteRun(n, pos, output);
+  if (n == 0) {
+    return pos;
+  }
   return bulkVarintDecodeBmi2Table(n, pos, output);
 }
 
 const char* bulkVarintDecode64(uint64_t n, const char* pos, uint64_t* output) {
   n = bulkDecodeSingleByteRun(n, pos, output);
+  if (n == 0) {
+    return pos;
+  }
+  n = bulkDecodeTwoByteRun(n, pos, output);
   if (n == 0) {
     return pos;
   }
