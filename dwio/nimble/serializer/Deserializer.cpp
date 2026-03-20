@@ -89,15 +89,17 @@ class DeserializerImpl : public Decoder {
   // missing), false for nulls streams (fills with 'true' when missing).
   // FlatMap is only supported at depth 1 (top-level columns), so gap detection
   // is enabled whenever the type is FlatMap.
-  explicit DeserializerImpl(
+  DeserializerImpl(
       const Type* type,
-      velox::memory::MemoryPool* pool,
-      bool inMapStream = false,
-      bool enableEncoding = false)
+      bool inMapStream,
+      bool enableEncoding,
+      bool useVarintRowCount,
+      velox::memory::MemoryPool* pool)
       : type_{type},
         pool_{pool},
         inMapStream_{inMapStream},
-        encodingEnabled_{enableEncoding} {}
+        encodingEnabled_{enableEncoding},
+        useVarintRowCount_{useVarintRowCount} {}
 
   uint32_t next(
       uint32_t count,
@@ -169,7 +171,12 @@ class DeserializerImpl : public Decoder {
     batchSegments_.emplace_back(
         BatchSegment{
             rowOffset,
-            serde::StreamData(scalarKind, encodingEnabled_, data, pool_)});
+            serde::StreamData(
+                scalarKind,
+                encodingEnabled_,
+                useVarintRowCount_,
+                data,
+                pool_)});
   }
 
   // Record a segment where this key is present in every row (in-map stream
@@ -502,6 +509,8 @@ class DeserializerImpl : public Decoder {
   const bool inMapStream_;
   // True when nimble encoding is used for scalar streams.
   const bool encodingEnabled_;
+  // Whether encoding headers use varint (true) or fixed u32 (false) row counts.
+  const bool useVarintRowCount_;
 
   // --- Batch decode state (reset in clear()) ---
   // Total top-level rows across all batches. Used for FlatMap gap detection to
@@ -621,12 +630,16 @@ Deserializer::Deserializer(
 void Deserializer::createDeserializersForType(
     const Type& type,
     uint32_t depth) {
+  const bool enableEncoding = options_.enableEncoding();
+  const bool useVarintRowCount =
+      !isTabletRawFormat(options_.serializationVersion());
   deserializers_[getMainDescriptor(type).offset()] =
       std::make_unique<DeserializerImpl>(
           &type,
-          pool_,
           /*inMapStream=*/false,
-          options_.enableEncoding());
+          enableEncoding,
+          useVarintRowCount,
+          pool_);
   // FlatMap is only supported at depth 1 (top-level columns). FlatMap keys can
   // vary across batches, causing gaps in nulls/inMap streams. Gap detection is
   // enabled in DeserializerImpl whenever type->isFlatMap().
@@ -638,9 +651,10 @@ void Deserializer::createDeserializersForType(
       const auto inMapOffset = flatMap.inMapDescriptorAt(i).offset();
       deserializers_[inMapOffset] = std::make_unique<DeserializerImpl>(
           &type,
-          pool_,
           /*inMapStream=*/true,
-          options_.enableEncoding());
+          enableEncoding,
+          useVarintRowCount,
+          pool_);
       inMapChildTypes_[inMapOffset] = flatMap.childAt(i).get();
     }
   }

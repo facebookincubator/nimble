@@ -17,7 +17,9 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 
+#include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
@@ -39,11 +41,13 @@ class StreamData {
   /// @param kind Scalar kind for the stream data.
   /// @param encodingEnabled True for nimble encoding, false for legacy
   /// compression.
+  /// @param useVarintRowCount Whether encoding headers use varint row counts.
   /// @param data Stream data to initialize with.
   /// @param pool Required when encodingEnabled is true, nullptr for legacy.
   StreamData(
       ScalarKind kind,
       bool encodingEnabled,
+      bool useVarintRowCount,
       std::string_view data,
       velox::memory::MemoryPool* pool);
 
@@ -105,6 +109,9 @@ class StreamData {
   velox::memory::MemoryPool* const pool_{nullptr};
   // Whether nimble encoding is enabled. Non-const to allow reset() to change.
   bool encodingEnabled_{false};
+  // Whether encoding headers use varint row counts (true for kCompact/
+  // kCompactRaw) or fixed u32 (false for kTabletRaw).
+  const bool useVarintRowCount_{true};
 
   const char* pos_{nullptr};
   const char* end_{nullptr};
@@ -147,10 +154,34 @@ class StreamDataReader {
   }
 
  private:
+  // Strips tablet chunk headers from stream data for kTabletRaw format.
+  // Each chunk is: [chunkSize:u32][compressionType:1B][encoded_data...]
+  // Returns a view into the original data for single uncompressed chunks
+  // (zero-copy), or a view into chunkStrippingBuffer_ for compressed/
+  // multi-chunk streams.
+  std::string_view stripChunkHeaders(std::string_view streamData);
+
+  // Slow path: decompress/concatenate all chunks into chunkStrippingBuffer_.
+  std::string_view slowChunkHeaderStrip(const char* pos, const char* end);
+
+  // Returns a zero-copy view if the stream is a single uncompressed chunk.
+  // Returns std::nullopt if decompression or concatenation is needed.
+  std::optional<std::string_view> tryFastChunkHeaderStrip(
+      const char* pos,
+      const char* end);
+
+  // Appends chunk data to chunkStrippingBuffer_, decompressing if needed.
+  void appendChunkData(
+      CompressionType compression,
+      const char* data,
+      uint32_t length);
+
   const DeserializerOptions& options_;
   velox::memory::MemoryPool* const pool_;
   const char* pos_{nullptr};
   const char* end_{nullptr};
+  // Reusable buffer for chunk header stripping (compressed/multi-chunk case).
+  Vector<char> chunkStrippingBuffer_;
 };
 
 } // namespace facebook::nimble::serde

@@ -18,6 +18,7 @@
 
 #include <zstd.h>
 
+#include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
@@ -30,9 +31,13 @@ namespace facebook::nimble::serde {
 StreamData::StreamData(
     ScalarKind kind,
     bool encodingEnabled,
+    bool useVarintRowCount,
     std::string_view data,
     velox::memory::MemoryPool* pool)
-    : kind_{kind}, pool_{pool}, encodingEnabled_{encodingEnabled} {
+    : kind_{kind},
+      pool_{pool},
+      encodingEnabled_{encodingEnabled},
+      useVarintRowCount_{useVarintRowCount} {
   NIMBLE_CHECK_NOT_NULL(pool_, "Memory pool required for encoding");
   init(data);
 }
@@ -126,7 +131,7 @@ void StreamData::prepareForDecoding(std::string_view data) {
   // counts.
   // For string types, provide a stringBufferFactory that allocates separate
   // buffers using velox::AlignedBuffer for memory tracking.
-  Encoding::Options options{.useVarintRowCount = true};
+  Encoding::Options options{.useVarintRowCount = useVarintRowCount_};
   encoding_ = EncodingFactory::decode(
       *pool_,
       data,
@@ -198,7 +203,7 @@ uint32_t StreamData::decode(
 StreamDataReader::StreamDataReader(
     velox::memory::MemoryPool* pool,
     const DeserializerOptions& options)
-    : options_{options}, pool_{pool} {
+    : options_{options}, pool_{pool}, chunkStrippingBuffer_{pool_} {
   NIMBLE_CHECK_NOT_NULL(pool_);
 }
 
@@ -210,7 +215,8 @@ uint32_t StreamDataReader::initialize(std::string_view data) {
     NIMBLE_CHECK(
         version == SerializationVersion::kLegacy ||
             version == SerializationVersion::kCompact ||
-            version == SerializationVersion::kCompactRaw,
+            version == SerializationVersion::kCompactRaw ||
+            version == SerializationVersion::kTabletRaw,
         "Unsupported version {}",
         static_cast<uint8_t>(version));
     // Verify the version read from serialized data matches options.
@@ -222,8 +228,8 @@ uint32_t StreamDataReader::initialize(std::string_view data) {
         *options_.version);
     ++pos_;
   }
-  if (options_.enableEncoding()) {
-    // kCompact: varint row count.
+  // All non-legacy formats use varint row count.
+  if (usesVarintRowCount(options_.serializationVersion())) {
     return varint::readVarint32(&pos_);
   }
   return encoding::readUint32(pos_);
@@ -233,15 +239,23 @@ void StreamDataReader::iterateStreams(
     const std::function<void(uint32_t offset, std::string_view data)>&
         callback) {
   if (options_.enableEncoding()) {
-    // kCompact/kCompactRaw format: read stream sizes from trailer.
+    // kCompact/kCompactRaw/kTabletRaw format: read stream sizes from trailer.
     const auto streamSizes =
         detail::readStreamSizes(end_, options_.serializationVersion(), pool_);
+    const bool tabletRaw = isTabletRawFormat(options_.serializationVersion());
 
     for (uint32_t i = 0; i < streamSizes.size(); ++i) {
       std::string_view streamData(pos_, streamSizes[i]);
       pos_ += streamSizes[i];
       if (!streamData.empty()) {
-        callback(i, streamData);
+        if (tabletRaw) {
+          // kTabletRaw: stream data includes tablet chunk headers:
+          // [chunkSize:u32][compressionType:1B][encoded_data...]
+          // Strip headers and decompress if needed before passing to callback.
+          callback(i, stripChunkHeaders(streamData));
+        } else {
+          callback(i, streamData);
+        }
       }
     }
     pos_ = end_; // Skip past trailer.
@@ -260,6 +274,91 @@ void StreamDataReader::iterateStreams(
   }
 
   NIMBLE_CHECK_EQ(pos_, end_, "Unexpected trailing data");
+}
+
+std::string_view StreamDataReader::stripChunkHeaders(
+    std::string_view streamData) {
+  const auto* pos = streamData.data();
+  const auto* end = pos + streamData.size();
+
+  NIMBLE_CHECK_GE(
+      streamData.size(), kChunkHeaderSize, "Truncated chunk header in stream");
+
+  if (auto result = tryFastChunkHeaderStrip(pos, end)) {
+    return *result;
+  }
+  return slowChunkHeaderStrip(pos, end);
+}
+
+std::string_view StreamDataReader::slowChunkHeaderStrip(
+    const char* pos,
+    const char* end) {
+  // TODO: Consider using IOBuf chain to avoid concatenation for multi-chunk
+  // streams.
+  chunkStrippingBuffer_.clear();
+  while (pos < end) {
+    NIMBLE_CHECK_GE(
+        static_cast<size_t>(end - pos),
+        kChunkHeaderSize,
+        "Truncated chunk header in stream");
+    const auto [chunkLength, compressionType] = readChunkHeader(pos);
+    NIMBLE_CHECK_LE(
+        chunkLength,
+        static_cast<uint32_t>(end - pos),
+        "Chunk data exceeds stream boundary");
+    appendChunkData(compressionType, pos, chunkLength);
+    pos += chunkLength;
+  }
+  return {chunkStrippingBuffer_.data(), chunkStrippingBuffer_.size()};
+}
+
+std::optional<std::string_view> StreamDataReader::tryFastChunkHeaderStrip(
+    const char* pos,
+    const char* end) {
+  const auto [chunkLength, compressionType] = readChunkHeader(pos);
+  NIMBLE_CHECK_LE(
+      chunkLength,
+      static_cast<uint32_t>(end - pos),
+      "Chunk data exceeds stream boundary");
+  // Single uncompressed chunk: return a view into the original data
+  // (zero-copy).
+  if (pos + chunkLength == end &&
+      compressionType == CompressionType::Uncompressed) {
+    return std::string_view{pos, chunkLength};
+  }
+  return std::nullopt;
+}
+
+void StreamDataReader::appendChunkData(
+    CompressionType compression,
+    const char* data,
+    uint32_t length) {
+  switch (compression) {
+    case CompressionType::Uncompressed: {
+      const auto offset = chunkStrippingBuffer_.size();
+      chunkStrippingBuffer_.resize(offset + length);
+      std::memcpy(chunkStrippingBuffer_.data() + offset, data, length);
+      break;
+    }
+    case CompressionType::Zstd: {
+      const auto decompressedSize = ZSTD_getFrameContentSize(data, length);
+      NIMBLE_CHECK(
+          decompressedSize != ZSTD_CONTENTSIZE_ERROR &&
+              decompressedSize != ZSTD_CONTENTSIZE_UNKNOWN,
+          "Error determining decompressed size");
+      const auto offset = chunkStrippingBuffer_.size();
+      chunkStrippingBuffer_.resize(offset + decompressedSize);
+      const auto ret = ZSTD_decompress(
+          chunkStrippingBuffer_.data() + offset,
+          decompressedSize,
+          data,
+          length);
+      NIMBLE_CHECK(!ZSTD_isError(ret), "Error decompressing chunk data");
+      break;
+    }
+    default:
+      NIMBLE_UNSUPPORTED("Unsupported chunk compression {}", compression);
+  }
 }
 
 } // namespace facebook::nimble::serde

@@ -152,7 +152,7 @@ std::vector<uint32_t> readStreamSizes(
     velox::memory::MemoryPool* pool) {
   const uint32_t trailerSize = readTrailerSize(end);
   const char* trailerStart = end - sizeof(uint32_t) - trailerSize;
-  if (version == SerializationVersion::kCompactRaw) {
+  if (isRawFormat(version)) {
     return decodeRawStreamSizes(trailerStart, trailerSize);
   }
   return decodeCompactStreamSizes({trailerStart, trailerSize}, pool);
@@ -183,7 +183,7 @@ std::vector<uint32_t> readStreamSizes(
   sizesCursor.skip(totalLength - sizeof(uint32_t) - trailerSize);
   std::string trailerBuf(trailerSize, '\0');
   sizesCursor.pull(trailerBuf.data(), trailerSize);
-  if (version == SerializationVersion::kCompactRaw) {
+  if (isRawFormat(version)) {
     return decodeRawStreamSizes(trailerBuf.data(), trailerSize);
   }
   return decodeCompactStreamSizes(trailerBuf, pool);

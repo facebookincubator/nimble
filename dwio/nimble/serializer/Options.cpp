@@ -28,6 +28,8 @@ std::string toString(SerializationVersion version) {
       return "kCompact";
     case SerializationVersion::kCompactRaw:
       return "kCompactRaw";
+    case SerializationVersion::kTabletRaw:
+      return "kTabletRaw";
     default:
       NIMBLE_FAIL(
           "Unknown SerializationVersion: {}", static_cast<int>(version));
@@ -65,7 +67,8 @@ SerializationVersion DeserializerOptions::serializationVersion() const {
 }
 
 bool DeserializerOptions::enableEncoding() const {
-  return isCompactFormat(serializationVersion());
+  const auto version = serializationVersion();
+  return isCompactFormat(version) || isTabletRawFormat(version);
 }
 
 } // namespace facebook::nimble

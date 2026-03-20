@@ -29,6 +29,7 @@
 #include "dwio/nimble/serializer/Serializer.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
+#include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/container/F14Set.h"
 #include "velox/type/Subfield.h"
 #include "velox/vector/BaseVector.h"
@@ -184,6 +185,71 @@ class ProjectorTestBase : public ::testing::Test {
     return projector.project(std::string_view(serialized));
   }
 
+  // Verifies that buildProjectedNimbleType produces a schema consistent
+  // with the projector's schema (from buildProjectedNimbleType). For
+  // non-FlatMap and FlatMap key-level projections, schemas should match and
+  // both should decode correctly. For full FlatMap column projections (without
+  // key subscripts), buildProjectedNimbleType creates a regular Map instead
+  // of FlatMap (because key names aren't available from velox types), so we
+  // only verify the schema type mismatch.
+  void verifyProjectedSchema(
+      const TypePtr& veloxType,
+      const std::vector<common::Subfield>& subfields,
+      const std::shared_ptr<const nimble::Type>& projectorSchema,
+      std::string_view projectedData,
+      DeserializerOptions deserOptions,
+      const nimble::ColumnEncodings& columnEncodings = {}) {
+    auto convertSchema = nimble::buildProjectedNimbleType(
+        veloxType->asRow(), subfields, columnEncodings);
+
+    ASSERT_TRUE(convertSchema->isRow());
+    ASSERT_TRUE(projectorSchema->isRow());
+    const auto& convertRow = convertSchema->asRow();
+    const auto& projRow = projectorSchema->asRow();
+    ASSERT_EQ(convertRow.childrenCount(), projRow.childrenCount());
+
+    // Check if any projected child is FlatMap (schema type mismatch expected).
+    bool hasFlatMapMismatch = false;
+    for (size_t i = 0; i < projRow.childrenCount(); ++i) {
+      EXPECT_EQ(convertRow.nameAt(i), projRow.nameAt(i));
+      if (projRow.childAt(i)->isFlatMap() && convertRow.childAt(i)->isMap()) {
+        hasFlatMapMismatch = true;
+      }
+    }
+
+    if (hasFlatMapMismatch) {
+      // buildProjectedNimbleType can't produce FlatMap without key names.
+      // Only verify with projector schema.
+      Deserializer deserializer(projectorSchema, pool_.get(), deserOptions);
+      VectorPtr output;
+      deserializer.deserialize({projectedData}, output);
+      ASSERT_NE(output, nullptr);
+      ASSERT_GT(output->size(), 0);
+      return;
+    }
+
+    // Schemas should match — verify both decode the same data.
+    VectorPtr projResult;
+    {
+      Deserializer deserializer(projectorSchema, pool_.get(), deserOptions);
+      deserializer.deserialize({projectedData}, projResult);
+      ASSERT_NE(projResult, nullptr);
+    }
+
+    VectorPtr convResult;
+    {
+      Deserializer deserializer(convertSchema, pool_.get(), deserOptions);
+      deserializer.deserialize({projectedData}, convResult);
+      ASSERT_NE(convResult, nullptr);
+    }
+
+    ASSERT_EQ(projResult->size(), convResult->size());
+    for (vector_size_t i = 0; i < projResult->size(); ++i) {
+      EXPECT_TRUE(projResult->equalValueAt(convResult.get(), i, i))
+          << "Schema decode mismatch at row " << i;
+    }
+  }
+
   std::shared_ptr<memory::MemoryPool> rootPool_;
   std::shared_ptr<memory::MemoryPool> pool_;
 };
@@ -264,7 +330,14 @@ TEST_P(ProjectorFormatTest, projectSingleColumn) {
   for (bool useIOBuf : {false, true}) {
     SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
     auto projected = projectInput(projector, serialized, useIOBuf);
-    verifyResult(toString(projected));
+    auto projectedStr = toString(projected);
+    verifyResult(projectedStr);
+    verifyProjectedSchema(
+        type,
+        subfields,
+        outputSchema,
+        projectedStr,
+        outputDeserializerOptions());
   }
 }
 
@@ -319,7 +392,14 @@ TEST_P(ProjectorFormatTest, projectMultipleColumns) {
   for (bool useIOBuf : {false, true}) {
     SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
     auto projected = projectInput(projector, serialized, useIOBuf);
-    verifyResult(toString(projected));
+    auto projectedStr = toString(projected);
+    verifyResult(projectedStr);
+    verifyProjectedSchema(
+        type,
+        subfields,
+        outputSchema,
+        projectedStr,
+        outputDeserializerOptions());
   }
 }
 
@@ -382,7 +462,14 @@ TEST_P(ProjectorFormatTest, projectNestedField) {
   for (bool useIOBuf : {false, true}) {
     SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
     auto projected = projectInput(projector, serialized, useIOBuf);
-    verifyResult(toString(projected));
+    auto projectedStr = toString(projected);
+    verifyResult(projectedStr);
+    verifyProjectedSchema(
+        type,
+        subfields,
+        outputSchema,
+        projectedStr,
+        outputDeserializerOptions());
   }
 }
 
@@ -445,7 +532,14 @@ TEST_P(ProjectorFormatTest, projectArrayColumn) {
   for (bool useIOBuf : {false, true}) {
     SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
     auto projected = projectInput(projector, serialized, useIOBuf);
-    verifyResult(toString(projected));
+    auto projectedStr = toString(projected);
+    verifyResult(projectedStr);
+    verifyProjectedSchema(
+        type,
+        subfields,
+        outputSchema,
+        projectedStr,
+        outputDeserializerOptions());
   }
 }
 
@@ -480,7 +574,14 @@ TEST_P(ProjectorFormatTest, emptyInput) {
   for (bool useIOBuf : {false, true}) {
     SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
     auto projected = projectInput(projector, serialized, useIOBuf);
-    verifyResult(toString(projected));
+    auto projectedStr = toString(projected);
+    verifyResult(projectedStr);
+    verifyProjectedSchema(
+        type,
+        subfields,
+        outputSchema,
+        projectedStr,
+        outputDeserializerOptions());
   }
 }
 
@@ -511,18 +612,40 @@ TEST_F(ProjectorTest, incompatibleFormatsRejected) {
 
   auto subfields = makeSubfields({"a"});
 
+  auto inputSchema =
+      getNimbleSchema(type, {.version = SerializationVersion::kCompact});
+
   // Test kLegacy output version — rejected in constructor.
+  NIMBLE_ASSERT_THROW(
+      Projector(
+          inputSchema,
+          subfields,
+          pool_.get(),
+          {.projectVersion = SerializationVersion::kLegacy}),
+      "Projection output version must be kCompact");
+
+  // Test kTabletRaw output version — rejected in constructor.
+  NIMBLE_ASSERT_THROW(
+      Projector(
+          inputSchema,
+          subfields,
+          pool_.get(),
+          {.projectVersion = SerializationVersion::kTabletRaw}),
+      "Projection output version must be kCompact");
+
+  // Test kTabletRaw input — rejected at projection time.
   {
-    auto inputSchema =
-        getNimbleSchema(type, {.version = SerializationVersion::kCompact});
+    auto serialized =
+        serialize(vec, type, {.version = SerializationVersion::kCompact});
+    Projector projector(inputSchema, subfields, pool_.get(), {});
+
+    // Patch the version byte to kTabletRaw.
+    std::string tabletRawInput = serialized;
+    tabletRawInput[0] = static_cast<char>(SerializationVersion::kTabletRaw);
 
     NIMBLE_ASSERT_THROW(
-        Projector(
-            inputSchema,
-            subfields,
-            pool_.get(),
-            {.projectVersion = SerializationVersion::kLegacy}),
-        "Projection output version must be kCompact");
+        projector.project(std::string_view(tabletRawInput)),
+        "Input must be kCompact or kCompactRaw");
   }
 }
 
@@ -590,6 +713,13 @@ TEST_F(ProjectorTest, fullProjectionPassThrough) {
     EXPECT_EQ(resultRow->childAt(0)->as<FlatVector<int32_t>>()->valueAt(0), 1);
     EXPECT_EQ(
         resultRow->childAt(1)->as<FlatVector<int64_t>>()->valueAt(0), 100);
+
+    verifyProjectedSchema(
+        type,
+        subfields,
+        outputSchema,
+        toString(projected),
+        {.version = SerializationVersion::kCompact});
   }
 }
 
@@ -609,7 +739,7 @@ TEST_F(ProjectorTest, unsupportedArraySubscript) {
           subfields,
           pool_.get(),
           {.projectVersion = SerializationVersion::kCompact}),
-      "Unsupported subfield kind");
+      "only supported on FlatMap");
 }
 
 // Test that regular map key projection throws.
@@ -628,7 +758,7 @@ TEST_F(ProjectorTest, unsupportedMapKeyProjection) {
           subfields,
           pool_.get(),
           {.projectVersion = SerializationVersion::kCompact}),
-      "String subscript");
+      "only supported on FlatMap");
 }
 
 // Test FlatMap serialization/deserialization without projection.
@@ -702,14 +832,13 @@ TEST_F(ProjectorTest, flatMapSerializeDeserializeNoProjction) {
   }
 }
 
-// Test projecting entire FlatMap column (not individual keys).
+// Full FlatMap projection (no key subscripts) is not supported.
 TEST_F(ProjectorTest, projectEntireFlatMapColumn) {
   auto type = ROW({
       {"id", BIGINT()},
       {"features", MAP(INTEGER(), DOUBLE())},
   });
 
-  // Create test data with keys 1, 2, 3.
   const vector_size_t numRows = 2;
   auto ids = makeIntVector<int64_t>({100, 200});
 
@@ -718,8 +847,8 @@ TEST_F(ProjectorTest, projectEntireFlatMapColumn) {
 
   auto mapOffsets = allocateOffsets(numRows, pool_.get());
   auto mapSizes = allocateSizes(numRows, pool_.get());
-  auto rawOffsets = mapOffsets->asMutable<vector_size_t>();
-  auto rawSizes = mapSizes->asMutable<vector_size_t>();
+  auto* rawOffsets = mapOffsets->asMutable<vector_size_t>();
+  auto* rawSizes = mapSizes->asMutable<vector_size_t>();
   for (vector_size_t i = 0; i < numRows; ++i) {
     rawOffsets[i] = i * entriesPerRow;
     rawSizes[i] = entriesPerRow;
@@ -731,7 +860,7 @@ TEST_F(ProjectorTest, projectEntireFlatMapColumn) {
       DOUBLE(), totalEntries, pool_.get());
 
   for (int i = 0; i < totalEntries; ++i) {
-    mapKeys->set(i, (i % entriesPerRow) + 1); // Keys: 1, 2, 3
+    mapKeys->set(i, (i % entriesPerRow) + 1);
     mapValues->set(i, i * 1.5);
   }
 
@@ -752,41 +881,21 @@ TEST_F(ProjectorTest, projectEntireFlatMapColumn) {
       numRows,
       std::vector<VectorPtr>{ids, mapVector});
 
-  // Serialize with FlatMap encoding.
   SerializerOptions serOpts{
       .version = SerializationVersion::kCompact,
       .flatMapColumns = {"features"},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
 
-  // Project entire "features" column (not individual keys).
+  // Projecting entire FlatMap without key subscripts should fail.
   auto subfields = makeSubfields({"features"});
-  Projector projector(
-      inputSchema,
-      subfields,
-      pool_.get(),
-      {.projectVersion = SerializationVersion::kCompact});
-
-  auto outputSchema = projector.projectedSchema();
-  for (bool useIOBuf : {false, true}) {
-    SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
-    auto projected = projectInput(projector, serialized, useIOBuf);
-
-    // Deserialize and verify.
-    auto result = deserialize(
-        toString(projected),
-        outputSchema,
-        {.version = SerializationVersion::kCompact});
-
-    ASSERT_EQ(result->size(), 2);
-    auto resultRow = result->as<RowVector>();
-    auto featuresMap = resultRow->childAt(0)->as<MapVector>();
-
-    // Each row should have 3 entries (all keys).
-    for (vector_size_t i = 0; i < numRows; ++i) {
-      EXPECT_EQ(featuresMap->sizeAt(i), 3);
-    }
-  }
+  NIMBLE_ASSERT_THROW(
+      Projector(
+          inputSchema,
+          subfields,
+          pool_.get(),
+          {.projectVersion = SerializationVersion::kCompact}),
+      "Cannot project entire FlatMap column without key subscripts");
 }
 
 // Test FlatMap full projection (all keys) works.
@@ -856,15 +965,14 @@ TEST_F(ProjectorTest, projectFlatMapAllKeys) {
       {.projectVersion = SerializationVersion::kCompact});
 
   auto outputSchema = projector.projectedSchema();
+  DeserializerOptions deserOpts{.version = SerializationVersion::kCompact};
   for (bool useIOBuf : {false, true}) {
     SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
     auto projected = projectInput(projector, serialized, useIOBuf);
+    auto projectedStr = toString(projected);
 
     // Deserialize and verify.
-    auto result = deserialize(
-        toString(projected),
-        outputSchema,
-        {.version = SerializationVersion::kCompact});
+    auto result = deserialize(projectedStr, outputSchema, deserOpts);
 
     ASSERT_EQ(result->size(), 2);
     auto resultRow = result->as<RowVector>();
@@ -874,7 +982,194 @@ TEST_F(ProjectorTest, projectFlatMapAllKeys) {
     for (vector_size_t i = 0; i < numRows; ++i) {
       EXPECT_EQ(featuresMap->sizeAt(i), 3);
     }
+
+    nimble::ColumnEncodings encodings;
+    encodings.flatMapColumns.insert("features");
+    verifyProjectedSchema(
+        type, subfields, outputSchema, projectedStr, deserOpts, encodings);
   }
+}
+
+// Test that buildProjectedNimbleType schema matches projector schema for
+// FlatMap key projection, and both decode correctly.
+TEST_F(ProjectorTest, flatMapKeyProjectionSchemaComparison) {
+  auto type = ROW({
+      {"id", BIGINT()},
+      {"features", MAP(INTEGER(), DOUBLE())},
+  });
+
+  const vector_size_t numRows = 2;
+  auto ids = makeIntVector<int64_t>({100, 200});
+
+  const int entriesPerRow = 3;
+  const int totalEntries = numRows * entriesPerRow;
+
+  auto mapOffsets = allocateOffsets(numRows, pool_.get());
+  auto mapSizes = allocateSizes(numRows, pool_.get());
+  auto* rawOffsets = mapOffsets->asMutable<vector_size_t>();
+  auto* rawSizes = mapSizes->asMutable<vector_size_t>();
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    rawOffsets[i] = i * entriesPerRow;
+    rawSizes[i] = entriesPerRow;
+  }
+
+  auto mapKeys = BaseVector::create<FlatVector<int32_t>>(
+      INTEGER(), totalEntries, pool_.get());
+  auto mapValues = BaseVector::create<FlatVector<double>>(
+      DOUBLE(), totalEntries, pool_.get());
+  for (int i = 0; i < totalEntries; ++i) {
+    mapKeys->set(i, (i % entriesPerRow) + 1);
+    mapValues->set(i, i * 1.5);
+  }
+
+  auto mapVector = std::make_shared<MapVector>(
+      pool_.get(),
+      MAP(INTEGER(), DOUBLE()),
+      nullptr,
+      numRows,
+      mapOffsets,
+      mapSizes,
+      mapKeys,
+      mapValues);
+
+  auto vec = std::make_shared<RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      numRows,
+      std::vector<VectorPtr>{ids, mapVector});
+
+  SerializerOptions serOpts{
+      .version = SerializationVersion::kCompact,
+      .flatMapColumns = {"features"},
+  };
+  auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
+
+  // Project keys "1" and "3" (skip "2").
+  auto subfields = makeSubfields({"features[\"1\"]", "features[\"3\"]"});
+  Projector projector(
+      inputSchema,
+      subfields,
+      pool_.get(),
+      {.projectVersion = SerializationVersion::kCompact});
+  auto projectorSchema = projector.projectedSchema();
+
+  // buildProjectedNimbleType should produce matching FlatMap schema.
+  nimble::ColumnEncodings encodings;
+  encodings.flatMapColumns.insert("features");
+  auto convertSchema =
+      nimble::buildProjectedNimbleType(type->asRow(), subfields, encodings);
+
+  // Both should have Row > FlatMap with keys "1", "3".
+  ASSERT_TRUE(projectorSchema->isRow());
+  ASSERT_TRUE(convertSchema->isRow());
+  ASSERT_EQ(projectorSchema->asRow().childrenCount(), 1);
+  ASSERT_EQ(convertSchema->asRow().childrenCount(), 1);
+
+  const auto& projFlatMap = projectorSchema->asRow().childAt(0)->asFlatMap();
+  const auto& convFlatMap = convertSchema->asRow().childAt(0)->asFlatMap();
+  ASSERT_EQ(projFlatMap.childrenCount(), 2);
+  ASSERT_EQ(convFlatMap.childrenCount(), 2);
+  EXPECT_EQ(projFlatMap.nameAt(0), "1");
+  EXPECT_EQ(projFlatMap.nameAt(1), "3");
+  EXPECT_EQ(convFlatMap.nameAt(0), "1");
+  EXPECT_EQ(convFlatMap.nameAt(1), "3");
+
+  // Project the data.
+  auto projected = projector.project(serialized);
+  auto projectedStr = toString(projected);
+
+  // Both schemas should decode correctly.
+  {
+    auto result = deserialize(
+        projectedStr,
+        projectorSchema,
+        {.version = SerializationVersion::kCompact});
+    ASSERT_EQ(result->size(), numRows);
+    auto* map = result->as<RowVector>()->childAt(0)->as<MapVector>();
+    ASSERT_NE(map, nullptr);
+    for (vector_size_t i = 0; i < numRows; ++i) {
+      EXPECT_EQ(map->sizeAt(i), 2);
+    }
+  }
+  {
+    auto result = deserialize(
+        projectedStr,
+        convertSchema,
+        {.version = SerializationVersion::kCompact});
+    ASSERT_EQ(result->size(), numRows);
+    auto* map = result->as<RowVector>()->childAt(0)->as<MapVector>();
+    ASSERT_NE(map, nullptr);
+    for (vector_size_t i = 0; i < numRows; ++i) {
+      EXPECT_EQ(map->sizeAt(i), 2);
+    }
+  }
+}
+
+// Full FlatMap projection (no key subscripts) is not supported by
+// buildProjectedNimbleType — it requires explicit key selection.
+TEST_F(ProjectorTest, flatMapFullProjectionSchemaTypeMismatch) {
+  auto type = ROW({
+      {"id", BIGINT()},
+      {"features", MAP(INTEGER(), DOUBLE())},
+  });
+
+  const vector_size_t numRows = 2;
+  auto ids = makeIntVector<int64_t>({100, 200});
+
+  const int entriesPerRow = 3;
+  const int totalEntries = numRows * entriesPerRow;
+
+  auto mapOffsets = allocateOffsets(numRows, pool_.get());
+  auto mapSizes = allocateSizes(numRows, pool_.get());
+  auto* rawOffsets = mapOffsets->asMutable<vector_size_t>();
+  auto* rawSizes = mapSizes->asMutable<vector_size_t>();
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    rawOffsets[i] = i * entriesPerRow;
+    rawSizes[i] = entriesPerRow;
+  }
+
+  auto mapKeys = BaseVector::create<FlatVector<int32_t>>(
+      INTEGER(), totalEntries, pool_.get());
+  auto mapValues = BaseVector::create<FlatVector<double>>(
+      DOUBLE(), totalEntries, pool_.get());
+  for (int i = 0; i < totalEntries; ++i) {
+    mapKeys->set(i, (i % entriesPerRow) + 1);
+    mapValues->set(i, i * 1.5);
+  }
+
+  auto mapVector = std::make_shared<MapVector>(
+      pool_.get(),
+      MAP(INTEGER(), DOUBLE()),
+      nullptr,
+      numRows,
+      mapOffsets,
+      mapSizes,
+      mapKeys,
+      mapValues);
+
+  auto vec = std::make_shared<RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      numRows,
+      std::vector<VectorPtr>{ids, mapVector});
+
+  SerializerOptions serOpts{
+      .version = SerializationVersion::kCompact,
+      .flatMapColumns = {"features"},
+  };
+  auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
+
+  // Projecting entire FlatMap without key subscripts should fail.
+  auto subfields = makeSubfields({"features"});
+  NIMBLE_ASSERT_THROW(
+      Projector(
+          inputSchema,
+          subfields,
+          pool_.get(),
+          {.projectVersion = SerializationVersion::kCompact}),
+      "Cannot project entire FlatMap column without key subscripts");
 }
 
 // Test FlatMap stream indices are correct.
@@ -1077,13 +1372,12 @@ TEST_F(ProjectorTest, projectFlatMapSingleKey) {
   ASSERT_EQ(outputSchema->asRow().childAt(0)->asFlatMap().nameAt(0), "2");
 
   // Project and deserialize.
+  DeserializerOptions deserOpts{.version = SerializationVersion::kCompact};
   for (bool useIOBuf : {false, true}) {
     SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
     auto projected = projectInput(projector, serialized, useIOBuf);
-    auto result = deserialize(
-        toString(projected),
-        outputSchema,
-        {.version = SerializationVersion::kCompact});
+    auto projectedStr = toString(projected);
+    auto result = deserialize(projectedStr, outputSchema, deserOpts);
 
     ASSERT_EQ(result->size(), 3);
     auto resultRow = result->as<RowVector>();
@@ -1093,6 +1387,11 @@ TEST_F(ProjectorTest, projectFlatMapSingleKey) {
     for (vector_size_t i = 0; i < numRows; ++i) {
       EXPECT_EQ(featuresMap->sizeAt(i), 1);
     }
+
+    nimble::ColumnEncodings encodings;
+    encodings.flatMapColumns.insert("features");
+    verifyProjectedSchema(
+        type, subfields, outputSchema, projectedStr, deserOpts, encodings);
   }
 }
 
@@ -1172,13 +1471,12 @@ TEST_F(ProjectorTest, projectFlatMapMultipleKeys) {
   ASSERT_EQ(outputSchema->asRow().childAt(0)->asFlatMap().nameAt(1), "c");
 
   // Project and deserialize.
+  DeserializerOptions deserOpts{.version = SerializationVersion::kCompact};
   for (bool useIOBuf : {false, true}) {
     SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
     auto projected = projectInput(projector, serialized, useIOBuf);
-    auto result = deserialize(
-        toString(projected),
-        outputSchema,
-        {.version = SerializationVersion::kCompact});
+    auto projectedStr = toString(projected);
+    auto result = deserialize(projectedStr, outputSchema, deserOpts);
 
     ASSERT_EQ(result->size(), 2);
     auto resultRow = result->as<RowVector>();
@@ -1188,6 +1486,11 @@ TEST_F(ProjectorTest, projectFlatMapMultipleKeys) {
     for (vector_size_t i = 0; i < numRows; ++i) {
       EXPECT_EQ(featuresMap->sizeAt(i), 2);
     }
+
+    nimble::ColumnEncodings encodings;
+    encodings.flatMapColumns.insert("features");
+    verifyProjectedSchema(
+        type, subfields, outputSchema, projectedStr, deserOpts, encodings);
   }
 }
 
@@ -1896,8 +2199,10 @@ TEST_F(ProjectorTestBase, flatMapInMapStreamSkipping) {
         << "batch4: in-map 'c' should be skipped";
   }
 
-  // Project all columns through the projector.
-  auto subfields = makeSubfields({"id", "flat_map"});
+  // Project all columns through the projector. FlatMap requires explicit key
+  // subscripts — full FlatMap projection is not supported.
+  auto subfields = makeSubfields(
+      {"id", "flat_map[\"a\"]", "flat_map[\"b\"]", "flat_map[\"c\"]"});
   Projector projector(
       nimbleSchema, subfields, pool_.get(), Projector::Options{});
   auto outputSchema = projector.projectedSchema();
@@ -1972,11 +2277,318 @@ TEST_F(ProjectorTest, chainedIOBufInput) {
   EXPECT_EQ(bCol->valueAt(1), 200);
   EXPECT_EQ(bCol->valueAt(2), 300);
 
-  // Verify pass-through also works with chained IOBuf.
+  // Verify projecting all columns from chained IOBuf produces same result.
   auto allSubfields = makeSubfields({"a", "b", "c"});
-  Projector passThroughProjector(inputSchema, allSubfields, pool_.get(), {});
-  auto passThrough = passThroughProjector.project(*chainedBuf);
-  EXPECT_EQ(toString(passThrough), serialized);
+  Projector allColumnsProjector(inputSchema, allSubfields, pool_.get(), {});
+  auto allColumnsResult = allColumnsProjector.project(*chainedBuf);
+  EXPECT_EQ(toString(allColumnsResult), serialized);
+}
+
+// Verifies inputStreamsSorted_ is true for non-FlatMap projections (stream
+// indices are naturally sorted in DFS order) and that the sorted fast path
+// produces correct results for both contiguous and chained IOBuf inputs.
+TEST_F(ProjectorTest, sortedStreamIndicesFastPath) {
+  auto type = ROW({
+      {"a", INTEGER()},
+      {"b", BIGINT()},
+      {"c", VARCHAR()},
+  });
+
+  auto vec = makeSimpleRowVector(
+      {"a", "b", "c"},
+      {
+          makeIntVector<int32_t>({1, 2, 3}),
+          makeIntVector<int64_t>({100, 200, 300}),
+          makeStringVector({"x", "y", "z"}),
+      });
+
+  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
+  auto serialized = serialize(vec, type, serOpts);
+  auto inputSchema = getNimbleSchema(type, serOpts);
+
+  // Project "a" and "c" (skipping "b") — indices are sorted since no FlatMap.
+  auto subfields = makeSubfields({"a", "c"});
+  Projector projector(inputSchema, subfields, pool_.get(), {});
+
+  EXPECT_TRUE(projector.testingInputStreamsSorted());
+  const auto& indices = projector.testingInputStreamIndices();
+  EXPECT_TRUE(std::is_sorted(indices.begin(), indices.end()));
+
+  auto outputSchema = projector.projectedSchema();
+
+  DeserializerOptions deserOpts{.version = SerializationVersion::kCompact};
+
+  // Test contiguous path.
+  {
+    auto projected = projector.project(std::string_view(serialized));
+    auto result = deserialize(toString(projected), outputSchema, deserOpts);
+    ASSERT_EQ(result->size(), 3);
+    auto resultRow = result->as<RowVector>();
+    auto aCol = resultRow->childAt(0)->as<FlatVector<int32_t>>();
+    auto cCol = resultRow->childAt(1)->as<FlatVector<StringView>>();
+    for (vector_size_t i = 0; i < 3; ++i) {
+      EXPECT_EQ(aCol->valueAt(i), i + 1);
+    }
+    EXPECT_EQ(cCol->valueAt(0).str(), "x");
+    EXPECT_EQ(cCol->valueAt(1).str(), "y");
+    EXPECT_EQ(cCol->valueAt(2).str(), "z");
+  }
+
+  // Test chained IOBuf path.
+  {
+    const auto mid = serialized.size() / 2;
+    auto chainedBuf = folly::IOBuf::copyBuffer(serialized.data(), mid);
+    chainedBuf->appendToChain(
+        folly::IOBuf::copyBuffer(
+            serialized.data() + mid, serialized.size() - mid));
+    auto projected = projector.project(*chainedBuf);
+    auto result = deserialize(toString(projected), outputSchema, deserOpts);
+    ASSERT_EQ(result->size(), 3);
+    auto resultRow = result->as<RowVector>();
+    auto aCol = resultRow->childAt(0)->as<FlatVector<int32_t>>();
+    auto cCol = resultRow->childAt(1)->as<FlatVector<StringView>>();
+    for (vector_size_t i = 0; i < 3; ++i) {
+      EXPECT_EQ(aCol->valueAt(i), i + 1);
+    }
+    EXPECT_EQ(cCol->valueAt(0).str(), "x");
+    EXPECT_EQ(cCol->valueAt(1).str(), "y");
+    EXPECT_EQ(cCol->valueAt(2).str(), "z");
+  }
+}
+
+// Verifies inputStreamsSorted_ is false when multiple FlatMap columns cause
+// interleaved stream indices, and that the reorder path produces correct
+// results for both contiguous and chained IOBuf inputs.
+TEST_F(ProjectorTest, unsortedStreamIndicesReorderPath) {
+  auto type = ROW({
+      {"map_a", MAP(VARCHAR(), INTEGER())},
+      {"map_b", MAP(VARCHAR(), BIGINT())},
+  });
+
+  const vector_size_t numRows = 3;
+
+  // Build map_a: keys "x", "y".
+  const int aEntriesPerRow = 2;
+  const int aTotalEntries = numRows * aEntriesPerRow;
+  auto aOffsets = allocateOffsets(numRows, pool_.get());
+  auto aSizes = allocateSizes(numRows, pool_.get());
+  auto* aRawOffsets = aOffsets->asMutable<vector_size_t>();
+  auto* aRawSizes = aSizes->asMutable<vector_size_t>();
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    aRawOffsets[i] = i * aEntriesPerRow;
+    aRawSizes[i] = aEntriesPerRow;
+  }
+  auto aKeys = BaseVector::create<FlatVector<StringView>>(
+      VARCHAR(), aTotalEntries, pool_.get());
+  auto aValues = BaseVector::create<FlatVector<int32_t>>(
+      INTEGER(), aTotalEntries, pool_.get());
+  for (int i = 0; i < aTotalEntries; ++i) {
+    aKeys->set(i, StringView(i % 2 == 0 ? "x" : "y"));
+    aValues->set(i, (i + 1) * 10);
+  }
+  auto mapA = std::make_shared<MapVector>(
+      pool_.get(),
+      MAP(VARCHAR(), INTEGER()),
+      nullptr,
+      numRows,
+      aOffsets,
+      aSizes,
+      aKeys,
+      aValues);
+
+  // Build map_b: keys "p", "q".
+  const int bEntriesPerRow = 2;
+  const int bTotalEntries = numRows * bEntriesPerRow;
+  auto bOffsets = allocateOffsets(numRows, pool_.get());
+  auto bSizes = allocateSizes(numRows, pool_.get());
+  auto* bRawOffsets = bOffsets->asMutable<vector_size_t>();
+  auto* bRawSizes = bSizes->asMutable<vector_size_t>();
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    bRawOffsets[i] = i * bEntriesPerRow;
+    bRawSizes[i] = bEntriesPerRow;
+  }
+  auto bKeys = BaseVector::create<FlatVector<StringView>>(
+      VARCHAR(), bTotalEntries, pool_.get());
+  auto bValues = BaseVector::create<FlatVector<int64_t>>(
+      BIGINT(), bTotalEntries, pool_.get());
+  for (int i = 0; i < bTotalEntries; ++i) {
+    bKeys->set(i, StringView(i % 2 == 0 ? "p" : "q"));
+    bValues->set(i, (i + 1) * 100L);
+  }
+  auto mapB = std::make_shared<MapVector>(
+      pool_.get(),
+      MAP(VARCHAR(), BIGINT()),
+      nullptr,
+      numRows,
+      bOffsets,
+      bSizes,
+      bKeys,
+      bValues);
+
+  auto vec = std::make_shared<RowVector>(
+      pool_.get(), type, nullptr, numRows, std::vector<VectorPtr>{mapA, mapB});
+
+  SerializerOptions serOpts{
+      .version = SerializationVersion::kCompact,
+      .flatMapColumns = {"map_a", "map_b"},
+  };
+  auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
+
+  // Project one key from each FlatMap — interleaved streams cause unsorted
+  // indices.
+  auto subfields = makeSubfields({"map_a[\"x\"]", "map_b[\"q\"]"});
+  Projector projector(
+      inputSchema,
+      subfields,
+      pool_.get(),
+      {.projectVersion = SerializationVersion::kCompact});
+
+  EXPECT_FALSE(projector.testingInputStreamsSorted());
+  const auto& indices = projector.testingInputStreamIndices();
+  EXPECT_FALSE(std::is_sorted(indices.begin(), indices.end()));
+
+  auto outputSchema = projector.projectedSchema();
+
+  // Verify correct projection via both contiguous and chained paths.
+  for (bool useChained : {false, true}) {
+    SCOPED_TRACE(fmt::format("useChained={}", useChained));
+
+    folly::IOBuf projected;
+    if (useChained) {
+      const auto mid = serialized.size() / 2;
+      auto chainedBuf = folly::IOBuf::copyBuffer(serialized.data(), mid);
+      chainedBuf->appendToChain(
+          folly::IOBuf::copyBuffer(
+              serialized.data() + mid, serialized.size() - mid));
+      projected = projector.project(*chainedBuf);
+    } else {
+      projected = projector.project(std::string_view(serialized));
+    }
+
+    auto result = deserialize(
+        toString(projected),
+        outputSchema,
+        {.version = SerializationVersion::kCompact});
+    ASSERT_EQ(result->size(), numRows);
+    auto resultRow = result->as<RowVector>();
+
+    // Verify map_a key "x".
+    auto resultMapA = resultRow->childAt(0)->as<MapVector>();
+    for (vector_size_t i = 0; i < numRows; ++i) {
+      ASSERT_EQ(resultMapA->sizeAt(i), 1);
+      auto keyIdx = resultMapA->offsetAt(i);
+      EXPECT_EQ(
+          resultMapA->mapKeys()
+              ->as<FlatVector<StringView>>()
+              ->valueAt(keyIdx)
+              .str(),
+          "x");
+      EXPECT_EQ(
+          resultMapA->mapValues()->as<FlatVector<int32_t>>()->valueAt(keyIdx),
+          (i * aEntriesPerRow + 1) * 10);
+    }
+
+    // Verify map_b key "q".
+    auto resultMapB = resultRow->childAt(1)->as<MapVector>();
+    for (vector_size_t i = 0; i < numRows; ++i) {
+      ASSERT_EQ(resultMapB->sizeAt(i), 1);
+      auto keyIdx = resultMapB->offsetAt(i);
+      EXPECT_EQ(
+          resultMapB->mapKeys()
+              ->as<FlatVector<StringView>>()
+              ->valueAt(keyIdx)
+              .str(),
+          "q");
+      EXPECT_EQ(
+          resultMapB->mapValues()->as<FlatVector<int64_t>>()->valueAt(keyIdx),
+          (i * bEntriesPerRow + 2) * 100L);
+    }
+  }
+}
+
+// Verifies that a single FlatMap column with sorted keys uses the sorted
+// fast path (keys are alphabetically sorted in projected schema, and file
+// order matches alphabetical order).
+TEST_F(ProjectorTest, singleFlatMapSortedFastPath) {
+  auto type = ROW({
+      {"id", BIGINT()},
+      {"features", MAP(VARCHAR(), DOUBLE())},
+  });
+
+  const vector_size_t numRows = 2;
+  auto ids = makeIntVector<int64_t>({10, 20});
+
+  // Keys "a", "b", "c" — already alphabetical, so projected schema won't
+  // reorder them.
+  const int entriesPerRow = 3;
+  const int totalEntries = numRows * entriesPerRow;
+
+  auto offsets = allocateOffsets(numRows, pool_.get());
+  auto sizes = allocateSizes(numRows, pool_.get());
+  auto* rawOffsets = offsets->asMutable<vector_size_t>();
+  auto* rawSizes = sizes->asMutable<vector_size_t>();
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    rawOffsets[i] = i * entriesPerRow;
+    rawSizes[i] = entriesPerRow;
+  }
+
+  auto keys = BaseVector::create<FlatVector<StringView>>(
+      VARCHAR(), totalEntries, pool_.get());
+  auto values = BaseVector::create<FlatVector<double>>(
+      DOUBLE(), totalEntries, pool_.get());
+  std::vector<std::string> keyNames = {"a", "b", "c"};
+  for (int i = 0; i < totalEntries; ++i) {
+    keys->set(i, StringView(keyNames[i % entriesPerRow]));
+    values->set(i, i * 1.5);
+  }
+
+  auto mapVec = std::make_shared<MapVector>(
+      pool_.get(),
+      MAP(VARCHAR(), DOUBLE()),
+      nullptr,
+      numRows,
+      offsets,
+      sizes,
+      keys,
+      values);
+
+  auto vec = std::make_shared<RowVector>(
+      pool_.get(), type, nullptr, numRows, std::vector<VectorPtr>{ids, mapVec});
+
+  SerializerOptions serOpts{
+      .version = SerializationVersion::kCompact,
+      .flatMapColumns = {"features"},
+  };
+  auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
+
+  // Project "id" and two FlatMap keys "a", "c".
+  auto subfields = makeSubfields({"id", "features[\"a\"]", "features[\"c\"]"});
+  Projector projector(
+      inputSchema,
+      subfields,
+      pool_.get(),
+      {.projectVersion = SerializationVersion::kCompact});
+
+  // Single FlatMap with alphabetical keys — indices should be sorted.
+  EXPECT_TRUE(projector.testingInputStreamsSorted());
+
+  auto outputSchema = projector.projectedSchema();
+  auto projected = projector.project(std::string_view(serialized));
+  auto result = deserialize(
+      toString(projected),
+      outputSchema,
+      {.version = SerializationVersion::kCompact});
+  ASSERT_EQ(result->size(), numRows);
+
+  auto resultRow = result->as<RowVector>();
+  auto idCol = resultRow->childAt(0)->as<FlatVector<int64_t>>();
+  EXPECT_EQ(idCol->valueAt(0), 10);
+  EXPECT_EQ(idCol->valueAt(1), 20);
+
+  auto resultMap = resultRow->childAt(1)->as<MapVector>();
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    ASSERT_EQ(resultMap->sizeAt(i), 2); // keys "a" and "c"
+  }
 }
 
 // Verifies that projected output does not compress stream sizes in the trailer.
