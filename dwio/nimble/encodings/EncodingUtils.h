@@ -18,13 +18,17 @@
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/FixedBitWidthEncodingV2.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
+#include "dwio/nimble/encodings/MainlyConstantEncodingV2.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
+#include "dwio/nimble/encodings/RleEncodingV2.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
+#include "dwio/nimble/encodings/VarintEncodingV2.h"
 
 namespace facebook::nimble {
 
@@ -79,6 +83,11 @@ auto encodingTypeDispatchString(Encoding& encoding, F f) {
     case EncodingType::MainlyConstant:
       return f(
           static_cast<MainlyConstantEncoding<std::string_view>&>(encoding));
+    case EncodingType::MainlyConstantV2:
+      return f(
+          static_cast<MainlyConstantEncodingV2<std::string_view>&>(encoding));
+    case EncodingType::RLEV2:
+      return f(static_cast<RLEV2Encoding<std::string_view>&>(encoding));
     case EncodingType::Prefix:
       return f(static_cast<PrefixEncoding&>(encoding));
     default:
@@ -127,6 +136,25 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       return f(static_cast<ConstantEncoding<T>&>(encoding));
     case EncodingType::MainlyConstant:
       return f(static_cast<MainlyConstantEncoding<T>&>(encoding));
+    case EncodingType::VarintV2:
+      if constexpr (folly::IsOneOf<
+                        T,
+                        int32_t,
+                        uint32_t,
+                        int64_t,
+                        uint64_t,
+                        float,
+                        double>::value) {
+        return f(static_cast<VarintEncodingV2<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
+    case EncodingType::RLEV2:
+      return f(static_cast<RLEV2Encoding<T>&>(encoding));
+    case EncodingType::FixedBitWidthV2:
+      return f(static_cast<FixedBitWidthEncodingV2<T>&>(encoding));
+    case EncodingType::MainlyConstantV2:
+      return f(static_cast<MainlyConstantEncodingV2<T>&>(encoding));
     default:
       NIMBLE_UNSUPPORTED(toString(encoding.encodingType()));
   }

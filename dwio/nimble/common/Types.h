@@ -104,6 +104,11 @@ enum class EncodingType {
   // shared across consecutive entries to reduce storage. Supports seek
   // operations for efficient random access.
   Prefix = 11,
+  // V2 variants of existing encodings for benchmarking and experimentation.
+  VarintV2 = 12,
+  RLEV2 = 13,
+  FixedBitWidthV2 = 14,
+  MainlyConstantV2 = 15,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);

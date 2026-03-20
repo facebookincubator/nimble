@@ -838,3 +838,110 @@ const char* bulkVarintDecodeBmi2(uint64_t n, const char* pos, T* output) {
 }
 
 } // namespace facebook::nimble::varint
+
+// V2 variants for independent experimentation in VarintEncodingV2.
+namespace facebook::nimble::varint_v2 {
+
+using varint::bulkVarintDecodeBmi2;
+using varint::readVarint32;
+using varint::readVarint64;
+
+// Expand a single 8-byte word of single-byte varints into output elements.
+template <typename T>
+inline void expandByteWord(uint64_t word, T* output) {
+  output[0] = static_cast<T>(word & 0xFF);
+  output[1] = static_cast<T>((word >> 8) & 0xFF);
+  output[2] = static_cast<T>((word >> 16) & 0xFF);
+  output[3] = static_cast<T>((word >> 24) & 0xFF);
+  output[4] = static_cast<T>((word >> 32) & 0xFF);
+  output[5] = static_cast<T>((word >> 40) & 0xFF);
+  output[6] = static_cast<T>((word >> 48) & 0xFF);
+  output[7] = static_cast<T>((word >> 56) & 0xFF);
+}
+
+// Process runs of single-byte varints using 8-byte word reads.
+// Unrolled 4x (32 elements per iteration) for the common case where
+// most values are single-byte (0-127).
+// Returns the number of elements remaining after processing.
+template <typename T>
+inline uint64_t
+bulkDecodeSingleByteRun(uint64_t n, const char*& pos, T*& output) {
+  constexpr uint64_t kHighBits = 0x8080808080808080ULL;
+  constexpr uint64_t batchSize = 32;
+  constexpr uint64_t wordSize = 8;
+
+  // Process 32 elements (4 words) at a time.
+  while (n >= batchSize) {
+    uint64_t w0 = *reinterpret_cast<const uint64_t*>(pos);
+    uint64_t w1 = *reinterpret_cast<const uint64_t*>(pos + wordSize);
+    uint64_t w2 = *reinterpret_cast<const uint64_t*>(pos + 2 * wordSize);
+    uint64_t w3 = *reinterpret_cast<const uint64_t*>(pos + 3 * wordSize);
+    if ((w0 | w1 | w2 | w3) & kHighBits) {
+      break;
+    }
+    expandByteWord(w0, output);
+    expandByteWord(w1, output + wordSize);
+    expandByteWord(w2, output + (2 * wordSize));
+    expandByteWord(w3, output + (3 * wordSize));
+    pos += batchSize;
+    output += batchSize;
+    n -= batchSize;
+  }
+
+  // Process 8 elements (1 word) at a time.
+  while (n >= wordSize) {
+    uint64_t word = *reinterpret_cast<const uint64_t*>(pos);
+    if (word & kHighBits) {
+      break;
+    }
+    expandByteWord(word, output);
+    pos += wordSize;
+    output += wordSize;
+    n -= wordSize;
+  }
+
+  // Handle trailing single-byte varints one at a time.
+  while (n > 0) {
+    uint8_t byte = static_cast<uint8_t>(*pos);
+    if (byte & 0x80) {
+      break;
+    }
+    *output++ = static_cast<T>(byte);
+    ++pos;
+    --n;
+  }
+
+  return n;
+}
+
+const char* bulkVarintDecode32(uint64_t n, const char* pos, uint32_t* output) {
+  static bool hasBmi2 = folly::CpuId().bmi2();
+  n = bulkDecodeSingleByteRun(n, pos, output);
+  if (n == 0) {
+    return pos;
+  }
+  if (hasBmi2) {
+    return bulkVarintDecodeBmi2(n, pos, output);
+  }
+  for (uint64_t i = 0; i < n; ++i) {
+    *output++ = readVarint32(&pos);
+  }
+  return pos;
+}
+
+const char* bulkVarintDecode64(uint64_t n, const char* pos, uint64_t* output) {
+  static bool hasBmi2 = folly::CpuId().bmi2();
+  n = bulkDecodeSingleByteRun(n, pos, output);
+  if (n == 0) {
+    return pos;
+  }
+  if (hasBmi2) {
+    return bulkVarintDecodeBmi2(n, pos, output);
+  }
+  for (uint64_t i = 0; i < n; ++i) {
+    *output++ = readVarint64(&pos);
+  }
+  return pos;
+}
+
+} // namespace facebook::nimble::varint_v2
