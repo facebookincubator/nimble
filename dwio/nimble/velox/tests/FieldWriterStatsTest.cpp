@@ -269,6 +269,55 @@ TEST_F(FieldWriterStatsTests, simpleFieldWriterStats) {
   }
 }
 
+TEST_F(FieldWriterStatsTests, varbinaryFieldWriterStats) {
+  {
+    // Varbinary and int flat columns with nulls.
+    // Mirrors the first case of simpleFieldWriterStats but uses VARBINARY
+    // instead of VARCHAR.
+    auto c1 = vectorMaker_->flatVector<int32_t>({1, 2, 3});
+    c1->setNull(1, true);
+    uint64_t columnSize = c1->size();
+    auto stat1 = ColumnStats{
+        .logicalSize = sizeof(int32_t) * (columnSize - 1) + nimble::kNullSize,
+        .physicalSize = 45,
+        .nullCount = 1,
+        .valueCount = columnSize};
+
+    auto c2 = vectorMaker_->flatVector<velox::StringView>(
+        {"a", "bbbb", "ccccccccc"}, velox::VARBINARY());
+    c2->setNull(0, true);
+    c2->setNull(2, true);
+    auto stat2 = ColumnStats{
+        .logicalSize = std::string("bbbb").size() + 2 * nimble::kNullSize,
+        .physicalSize = 44,
+        .nullCount = 2,
+        .valueCount = columnSize};
+
+    auto vector = vectorMaker_->rowVector({c1, c2});
+    auto rootStat = rollupChildrenStats({stat1, stat2});
+    rootStat.valueCount = columnSize;
+    verifyReturnedColumnStats(vector, {rootStat, stat1, stat2});
+  }
+
+  {
+    // Varbinary column with no nulls.
+    // Same data as VARCHAR but typed as VARBINARY; logical size should be
+    // identical (sum of byte lengths).
+    auto c1 = vectorMaker_->flatVector<velox::StringView>(
+        {"a", "bb", "ccc", "dddd", "eeeee", "ffffff"}, velox::VARBINARY());
+    uint64_t columnSize = c1->size();
+    auto stat1 = ColumnStats{
+        .logicalSize = 1 + 2 + 3 + 4 + 5 + 6,
+        .physicalSize = 53,
+        .valueCount = columnSize};
+
+    auto vector = vectorMaker_->rowVector({c1});
+    auto rootStat = rollupChildrenStats({stat1});
+    rootStat.valueCount = columnSize;
+    verifyReturnedColumnStats(vector, {rootStat, stat1});
+  }
+}
+
 TEST_F(FieldWriterStatsTests, arrayFieldWriterStats) {
   auto simpleArrayVector =
       vectorMaker_->arrayVector<int8_t>({{0, 1, 2}, {0, 1, 2}, {0, 1, 2}});
@@ -977,6 +1026,145 @@ TEST_F(
       {rootStat, flatmapStat, keyStat, valueStat},
       {.flatMapColumns = {"c0"}},
       velox::ROW({{"c0", velox::MAP(velox::TINYINT(), velox::INTEGER())}}));
+}
+
+TEST_F(FieldWriterStatsTests, flatMapVarbinaryKeyFieldWriterStats) {
+  // Flatmap with VARBINARY keys via MAP vector ingestion.
+  // This exercises the ingestMap code path where VARBINARY keys must use
+  // collectMapStringKeyStatistics (actual string lengths) instead of
+  // collectKeyStatistics (sizeof(StringView) = 16 per key).
+  //
+  // Input MapVector with 4 rows, 2 stable keys ("ab", "cdef"):
+  //   row 0: {"ab"->1, "cdef"->2}
+  //   row 1: {"ab"->3, "cdef"->4}
+  //   row 2: {"ab"->5, "cdef"->6}
+  //   row 3: {"ab"->7, "cdef"->8}
+  auto keys = vectorMaker_->flatVector<velox::StringView>(
+      {velox::StringView("ab"),
+       velox::StringView("cdef"),
+       velox::StringView("ab"),
+       velox::StringView("cdef"),
+       velox::StringView("ab"),
+       velox::StringView("cdef"),
+       velox::StringView("ab"),
+       velox::StringView("cdef")},
+      velox::VARBINARY());
+  auto values = vectorMaker_->flatVector<int32_t>({1, 2, 3, 4, 5, 6, 7, 8});
+  auto mapVector = vectorMaker_->mapVector(
+      /*offsets=*/{0, 2, 4, 6}, keys, values, /*nulls=*/{});
+  uint64_t columnSize = mapVector->size();
+
+  auto vector = vectorMaker_->rowVector({mapVector});
+
+  auto key0ValueStat = ColumnStats{
+      .logicalSize = sizeof(int32_t) * 4,
+      .physicalSize = 19,
+      .valueCount = 4,
+  };
+  auto key1ValueStat = ColumnStats{
+      .logicalSize = sizeof(int32_t) * 4,
+      .physicalSize = 19,
+      .valueCount = 4,
+  };
+  auto valueStat = combineFlatmapValueStats({key0ValueStat, key1ValueStat});
+
+  // Key statistics:
+  //   totalKeyCount = 8 (4 rows * 2 keys)
+  //   totalKeyStringSize = "ab"(2)*4 + "cdef"(4)*4 = 24
+  //   logicalSize = totalKeyStringSize = 24
+  // Without the fix, this would incorrectly be 8 * sizeof(StringView) = 128.
+  auto keyStat = ColumnStats{
+      .logicalSize = 4 * 2 + 4 * 4, // 24
+      .physicalSize = 0,
+      .valueCount = 8,
+  };
+
+  auto flatmapStat = ColumnStats{
+      .logicalSize = keyStat.logicalSize + valueStat.logicalSize,
+      .physicalSize = valueStat.physicalSize + 24,
+      .valueCount = 4,
+  };
+
+  auto rootStat = ColumnStats{
+      .logicalSize = flatmapStat.logicalSize,
+      .physicalSize = flatmapStat.physicalSize,
+      .valueCount = columnSize,
+  };
+
+  verifyReturnedColumnStats(
+      vector,
+      {rootStat, flatmapStat, keyStat, valueStat},
+      {.flatMapColumns = {"c0"}});
+}
+
+TEST_F(FieldWriterStatsTests, flatMapPassThroughVarbinaryKeyFieldWriterStats) {
+  // Passthrough flatmap with VARBINARY keys via ROW vector ingestion.
+  // This exercises the ingestPassthrough code path where VARBINARY keys must
+  // use collectPassthroughStringKeyStatistics (actual string lengths) instead
+  // of collectKeyStatistics (sizeof(StringView) = 16 per key).
+  //
+  // Data layout (4 rows):
+  //   row 0: feature_ab=1, feature_cdef=2
+  //   row 1: feature_ab=3, feature_cdef=null
+  //   row 2: feature_ab=null, feature_cdef=4
+  //   row 3: feature_ab=5, feature_cdef=6
+  auto featureAb =
+      vectorMaker_->flatVectorNullable<int32_t>({{1}, {3}, std::nullopt, {5}});
+  auto featureCdef =
+      vectorMaker_->flatVectorNullable<int32_t>({{2}, std::nullopt, {4}, {6}});
+
+  auto flatmapVector =
+      vectorMaker_->rowVector({"ab", "cdef"}, {featureAb, featureCdef});
+  uint64_t columnSize = flatmapVector->size();
+
+  auto vector = vectorMaker_->rowVector({flatmapVector});
+
+  // Per-key VALUE contributions:
+  //   - Key "ab": row0=1, row1=3, row2=null, row3=5 → 3 values + 1 null
+  //   - Key "cdef": row0=2, row1=null, row2=4, row3=6 → 3 values + 1 null
+  auto keyAbValueStat = ColumnStats{
+      .logicalSize = sizeof(int32_t) * 3 + nimble::kNullSize,
+      .physicalSize = 43,
+      .nullCount = 1,
+      .valueCount = 4,
+  };
+  auto keyCdefValueStat = ColumnStats{
+      .logicalSize = sizeof(int32_t) * 3 + nimble::kNullSize,
+      .physicalSize = 43,
+      .nullCount = 1,
+      .valueCount = 4,
+  };
+  auto valueStat = combineFlatmapValueStats({keyAbValueStat, keyCdefValueStat});
+
+  // Key statistics for passthrough flatmap with VARBINARY keys:
+  //   numKeys = 2, numNonNullFlatmapRows = 4
+  //   totalKeyCount = 2 * 4 = 8
+  //   totalKeyStringSize = ("ab".size() + "cdef".size()) * 4 = (2+4)*4 = 24
+  //   logicalSize = totalKeyStringSize = 24
+  // Without the fix, this would incorrectly be 8 * sizeof(StringView) = 128.
+  auto keyStat = ColumnStats{
+      .logicalSize = (2 + 4) * 4, // 24
+      .physicalSize = 0,
+      .valueCount = 8,
+  };
+
+  auto flatmapStat = ColumnStats{
+      .logicalSize = keyStat.logicalSize + valueStat.logicalSize,
+      .physicalSize = valueStat.physicalSize + 24,
+      .valueCount = 4,
+  };
+
+  auto rootStat = ColumnStats{
+      .logicalSize = flatmapStat.logicalSize,
+      .physicalSize = flatmapStat.physicalSize,
+      .valueCount = columnSize,
+  };
+
+  verifyReturnedColumnStats(
+      vector,
+      {rootStat, flatmapStat, keyStat, valueStat},
+      {.flatMapColumns = {"c0"}},
+      velox::ROW({{"c0", velox::MAP(velox::VARBINARY(), velox::INTEGER())}}));
 }
 
 TEST_F(FieldWriterStatsTests, slidingWindowMapFieldWriterStats) {
