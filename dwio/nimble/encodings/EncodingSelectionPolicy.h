@@ -368,6 +368,10 @@ class ManualEncodingSelectionPolicyFactory {
         EncodingType::Dictionary,
         EncodingType::RLE,
         EncodingType::Varint,
+        EncodingType::VarintV2,
+        EncodingType::RLEV2,
+        EncodingType::FixedBitWidthV2,
+        EncodingType::MainlyConstantV2,
     };
   }
 

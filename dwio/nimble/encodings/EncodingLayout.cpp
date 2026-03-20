@@ -161,6 +161,7 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
   CompressionType compressionType = CompressionType::Uncompressed;
 
   if (encodingType == EncodingType::FixedBitWidth ||
+      encodingType == EncodingType::FixedBitWidthV2 ||
       encodingType == EncodingType::Trivial) {
     compressionType = encoding::peek<uint8_t, CompressionType>(
         encoding.data() + kEncodingPrefixSize);
@@ -169,7 +170,9 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
   std::vector<std::optional<const EncodingLayout>> children;
   switch (encodingType) {
     case EncodingType::FixedBitWidth:
+    case EncodingType::FixedBitWidthV2:
     case EncodingType::Varint:
+    case EncodingType::VarintV2:
     case EncodingType::Constant:
     case EncodingType::Prefix: {
       // Non nested encodings have zero children
@@ -195,7 +198,8 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
               encoding.substr(kEncodingPrefixSize + 1)));
       break;
     }
-    case EncodingType::MainlyConstant: {
+    case EncodingType::MainlyConstant:
+    case EncodingType::MainlyConstantV2: {
       children.reserve(2);
 
       const char* pos = encoding.data() + kEncodingPrefixSize;
@@ -226,7 +230,8 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
               {pos, encoding.size() - (pos - encoding.data())}));
       break;
     }
-    case EncodingType::RLE: {
+    case EncodingType::RLE:
+    case EncodingType::RLEV2: {
       const auto dataType =
           encoding::peek<uint8_t, DataType>(encoding.data() + 1);
 
