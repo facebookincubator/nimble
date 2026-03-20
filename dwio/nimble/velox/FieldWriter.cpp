@@ -1452,7 +1452,8 @@ class FlatMapFieldWriter : public FieldWriter {
       for (size_t i = 0; i < flatMapVector->numDistinctKeys(); ++i) {
         const uint64_t keyOccurrences = computeKeyOccurrences(i);
         totalKeyCount += keyOccurrences;
-        if constexpr (K == velox::TypeKind::VARCHAR) {
+        if constexpr (
+            K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY) {
           const velox::StringView key = keysVector.valueAt(i);
           totalKeyStringSize += key.size() * keyOccurrences;
         }
@@ -1470,7 +1471,8 @@ class FlatMapFieldWriter : public FieldWriter {
       collectKeyStats(DecodedAdapter<KeyType>{decodedKeys});
     }
 
-    if constexpr (K == velox::TypeKind::VARCHAR) {
+    if constexpr (
+        K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY) {
       collectMapStringKeyStatistics(totalKeyCount, totalKeyStringSize, 0, size);
     } else {
       collectKeyStatistics(totalKeyCount, 0, size);
@@ -1547,9 +1549,10 @@ class FlatMapFieldWriter : public FieldWriter {
 
     collectStatistics(size - nonNullCount, size);
     // For ROW vector ingestion (passthrough flatmaps), keys are ROW field
-    // names. For VARCHAR keys, use actual string lengths instead of
+    // names. For VARCHAR/VARBINARY keys, use actual string lengths instead of
     // sizeof(StringView).
-    if constexpr (K == velox::TypeKind::VARCHAR) {
+    if constexpr (
+        K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY) {
       collectPassthroughStringKeyStatistics(rowVector, nonNullCount, 0, size);
     } else {
       // For non-string keys, all keys are present for all non-null rows.
@@ -1587,7 +1590,8 @@ class FlatMapFieldWriter : public FieldWriter {
     const velox::vector_size_t* lengths{nullptr};
     uint32_t nonNullCount{0};
     uint64_t totalKeyCount{0};
-    uint64_t totalKeyStringSize{0}; // Track actual string size for VARCHAR keys
+    uint64_t totalKeyStringSize{
+        0}; // Track actual string size for VARCHAR/VARBINARY keys
     OrderedRanges keyRanges;
 
     // Lambda that iterates keys of a map and records the offsets to write to
@@ -1599,8 +1603,9 @@ class FlatMapFieldWriter : public FieldWriter {
            ++elementIdx) {
         // NOTE: check for the null key story here.
         const auto& keyValue = keysVector.valueAt(elementIdx);
-        // Track string key sizes for VARCHAR keys
-        if constexpr (K == velox::TypeKind::VARCHAR) {
+        // Track string key sizes for VARCHAR/VARBINARY keys
+        if constexpr (
+            K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY) {
           totalKeyStringSize += keyValue.size();
         }
         auto* valueField = getValueFieldWriter(keyValue, size);
@@ -1687,9 +1692,10 @@ class FlatMapFieldWriter : public FieldWriter {
     nonNullCount_ += nonNullCount;
 
     collectStatistics(size - nonNullCount, size);
-    // For VARCHAR keys in MAP vectors, use the actual string sizes tracked
-    // during processMap iteration, not sizeof(StringView).
-    if constexpr (K == velox::TypeKind::VARCHAR) {
+    // For VARCHAR/VARBINARY keys in MAP vectors, use the actual string sizes
+    // tracked during processMap iteration, not sizeof(StringView).
+    if constexpr (
+        K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY) {
       collectMapStringKeyStatistics(totalKeyCount, totalKeyStringSize, 0, size);
     } else {
       // totalKeyCount is the sum of all map entry counts tracked during
