@@ -28,6 +28,7 @@
 #include "dwio/nimble/encodings/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/EncodingSelection.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
+#include "velox/common/base/SimdUtil.h"
 
 // Holds data in RLE format. Run lengths are bit packed, and the run values
 // are stored trivially.
@@ -93,11 +94,11 @@ class RLEEncodingBase
     physicalType* output = static_cast<physicalType*>(buffer);
     while (rowsLeft) {
       if (rowsLeft < copiesRemaining_) {
-        std::fill(output, output + rowsLeft, currentValue_);
+        velox::simd::simdFill(output, currentValue_, rowsLeft);
         copiesRemaining_ -= rowsLeft;
         return;
       } else {
-        std::fill(output, output + copiesRemaining_, currentValue_);
+        velox::simd::simdFill(output, currentValue_, copiesRemaining_);
         output += copiesRemaining_;
         rowsLeft -= copiesRemaining_;
         copiesRemaining_ = materializedRunLengths_.nextValue();
@@ -365,7 +366,10 @@ void RLEEncoding<T>::bulkScan(
           numRows = numInRun;
         }
         auto* begin = values + numValues;
-        std::fill(begin, begin + numRows, detail::dataToValue(visitor, value));
+        velox::simd::simdFill(
+            begin,
+            detail::dataToValue(visitor, value),
+            static_cast<uint32_t>(numRows));
         numValues += numRows;
       }
       auto endRow = nonNullRows[nonNullRowIndex + numInRun - 1];
