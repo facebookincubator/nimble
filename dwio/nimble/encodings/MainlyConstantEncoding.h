@@ -79,47 +79,52 @@ class MainlyConstantEncodingBase
     otherValues_->reset();
   }
 
-  void skip(uint32_t rowCount) final {
-    isCommonBuffer_.resize(rowCount);
-    isCommon_->materialize(rowCount, isCommonBuffer_.data());
-    const uint32_t commonCount =
-        std::accumulate(isCommonBuffer_.begin(), isCommonBuffer_.end(), 0U);
-    const uint32_t nonCommonCount = rowCount - commonCount;
+  void skip(uint32_t rowCount) override {
+    // Use bit-packed booleans for efficient SIMD counting.
+    const auto numWords = velox::bits::nwords(rowCount);
+
+    isCommonBuffer_.resize(numWords * sizeof(uint64_t));
+
+    auto* isCommon = reinterpret_cast<uint64_t*>(isCommonBuffer_.data());
+    isCommon_->materializeBoolsAsBits(rowCount, isCommon, 0);
+
+    const uint32_t nonCommonCount =
+        rowCount - velox::bits::countBits(isCommon, 0, rowCount);
+
     if (nonCommonCount == 0) {
       return;
     }
-
     otherValues_->skip(nonCommonCount);
   }
 
-  void materialize(uint32_t rowCount, void* buffer) final {
-    isCommonBuffer_.resize(rowCount);
-    isCommon_->materialize(rowCount, isCommonBuffer_.data());
-    const uint32_t commonCount =
-        std::accumulate(isCommonBuffer_.begin(), isCommonBuffer_.end(), 0U);
-    const uint32_t nonCommonCount = rowCount - commonCount;
+  void materialize(uint32_t rowCount, void* buffer) override {
+    // Use bit-packed booleans for efficient counting and iteration.
+    const auto numWords = velox::bits::nwords(rowCount);
+    isCommonBuffer_.resize(numWords * sizeof(uint64_t));
+    auto* isCommon = reinterpret_cast<uint64_t*>(isCommonBuffer_.data());
+    isCommon_->materializeBoolsAsBits(rowCount, isCommon, 0);
+
+    const uint32_t nonCommonCount =
+        rowCount - velox::bits::countBits(isCommon, 0, rowCount);
+
+    physicalType* output = static_cast<physicalType*>(buffer);
+    std::fill(output, output + rowCount, commonValue_);
 
     if (nonCommonCount == 0) {
-      physicalType* output = static_cast<physicalType*>(buffer);
-      std::fill(output, output + rowCount, commonValue_);
       return;
     }
 
     otherValuesBuffer_.reserve(nonCommonCount);
     otherValues_->materialize(nonCommonCount, otherValuesBuffer_.data());
-    physicalType* output = static_cast<physicalType*>(buffer);
-    const physicalType* nextOtherValue = otherValuesBuffer_.begin();
-    for (uint32_t i = 0; i < rowCount; ++i) {
-      if (isCommonBuffer_[i]) {
-        *output++ = commonValue_;
-      } else {
-        *output++ = *nextOtherValue++;
-      }
-    }
-    NIMBLE_DCHECK_EQ(
-        nextOtherValue - otherValuesBuffer_.begin(),
-        nonCommonCount,
-        "Encoding size mismatch.");
+
+    uint32_t otherIdx = 0;
+
+    // Fill with commonValue then scatter non-common values into the
+    // correct positions.
+    velox::bits::forEachUnsetBit(isCommon, 0, rowCount, [&](vector_size_t i) {
+      output[i] = otherValuesBuffer_[otherIdx++];
+    });
+    NIMBLE_DCHECK_EQ(otherIdx, nonCommonCount, "Encoding size mismatch.");
   }
 
   template <typename DecoderVisitor>
