@@ -18,6 +18,7 @@
 
 #include "dwio/nimble/index/StripeIndexGroup.h"
 #include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "velox/dwio/common/BufferedInput.h"
 #include "velox/dwio/common/Options.h"
@@ -46,14 +47,43 @@ class ReaderBase {
     return randomSkip_;
   }
 
+  /// Returns the Nimble-native schema representation stored in the file.
+  /// This is the internal schema format read from the file footer, containing
+  /// Nimble-specific type information like stream descriptors, FlatMap
+  /// structure, and encoding metadata. Used for low-level stream access and
+  /// decoding.
+  ///
+  /// Column names in nimbleSchema() match those in fileSchema() since both are
+  /// derived from the same file footer.
   const std::shared_ptr<const Type>& nimbleSchema() const {
     return nimbleSchema_;
   }
 
+  /// Returns the Velox-compatible schema representation stored in the file.
+  /// Converted from nimbleSchema() to Velox RowType. Column names come from
+  /// the file footer and may differ from the table schema (from metastore) due
+  /// to schema evolution (e.g., column renames).
+  ///
+  /// Note: When reading, column matching between file schema and table schema
+  /// is done by column ID (position), not by name. The scanSpec_ uses table
+  /// schema column names for query processing. Use Reader::updateColumnNames()
+  /// to align file schema column names with table schema when needed.
   const velox::RowTypePtr& fileSchema() const {
     return fileSchema_;
   }
 
+  /// Returns the file schema with node IDs for column projection.
+  /// This is a TypeWithId wrapper around fileSchema() that assigns unique node
+  /// IDs to each schema node (columns, nested fields). These IDs are used by
+  /// column readers to map schema nodes to Nimble stream offsets during
+  /// reading.
+  ///
+  /// When scanSpec_ is provided, the TypeWithId is created with scan spec
+  /// context. The scanSpec_ uses table schema column names (from metastore),
+  /// while fileSchema_ has file column names. Column matching is done by
+  /// column ID (position), not by name.
+  ///
+  /// Lazily initialized on first access and cached for subsequent calls.
   const std::shared_ptr<const velox::dwio::common::TypeWithId>&
   fileSchemaWithId() const {
     if (!fileSchemaWithId_) {
