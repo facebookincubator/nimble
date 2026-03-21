@@ -35,6 +35,7 @@ target_link_libraries(
 add_library(nimble_deserializer_impl DeserializerImpl.cpp)
 target_link_libraries(
   nimble_deserializer_impl
+  nimble_serializer_impl
   nimble_serializer_options
   nimble_encodings
   nimble_velox_schema

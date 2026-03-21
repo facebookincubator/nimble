@@ -200,6 +200,7 @@ target_link_libraries(
   Folly::folly
 )
 
+add_subdirectory(index)
 add_subdirectory(selective)
 add_subdirectory(stats)
 add_subdirectory(tests)
