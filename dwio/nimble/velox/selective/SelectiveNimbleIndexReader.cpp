@@ -69,6 +69,49 @@ std::vector<velox::core::SortOrder> toVeloxSortOrders(
 
 } // namespace
 
+velox::RowTypePtr SelectiveNimbleIndexReader::adaptOutputTypeForReader(
+    const velox::RowTypePtr& outputType,
+    const velox::RowTypePtr& fileType,
+    const velox::common::ScanSpec& scanSpec) {
+  bool needsAdaptation = false;
+  for (size_t i = 0; i < outputType->size(); ++i) {
+    const auto* childSpec = scanSpec.childByName(outputType->nameOf(i));
+    if (childSpec && childSpec->isFlatMapAsStruct()) {
+      needsAdaptation = true;
+      break;
+    }
+  }
+  if (!needsAdaptation) {
+    return outputType;
+  }
+
+  auto columnNames = outputType->names();
+  std::vector<velox::TypePtr> columnTypes;
+  columnTypes.reserve(outputType->size());
+
+  for (size_t i = 0; i < outputType->size(); ++i) {
+    const auto& fieldName = outputType->nameOf(i);
+    const auto* childSpec = scanSpec.childByName(fieldName);
+    NIMBLE_CHECK_NOT_NULL(childSpec);
+    // fileTypeIdx may be nullopt when the column exists in the output schema
+    // but not in the file schema (schema evolution).
+    auto fileTypeIdx = fileType->getChildIdxIfExists(fieldName);
+
+    if (childSpec->isFlatMapAsStruct() && fileTypeIdx.has_value()) {
+      // Flatmap-as-struct: use the file's MAP type so the column reader knows
+      // the physical format. The ScanSpec's isFlatMapAsStruct flag tells the
+      // reader to produce struct output.
+      NIMBLE_CHECK(
+          outputType->childAt(i)->isRow() &&
+          fileType->childAt(*fileTypeIdx)->isMap());
+      columnTypes.push_back(fileType->childAt(*fileTypeIdx));
+    } else {
+      columnTypes.push_back(outputType->childAt(i));
+    }
+  }
+  return velox::ROW(std::move(columnNames), std::move(columnTypes));
+}
+
 void SelectiveNimbleIndexReader::RequestState::incPendingStripes() {
   ++pendingStripes;
 }
@@ -110,6 +153,10 @@ SelectiveNimbleIndexReader::SelectiveNimbleIndexReader(
       outputType_(
           options.requestedType() ? options.requestedType()
                                   : readerBase_->fileSchema()),
+      fileOutputType_(adaptOutputTypeForReader(
+          outputType_,
+          readerBase_->fileSchema(),
+          *options.scanSpec())),
       tabletIndex_{readerBase_->tablet().index()},
       indexColumns_{convertIndexColumnsToFileSchema(
           tabletIndex_->indexColumns(),
@@ -541,7 +588,7 @@ void SelectiveNimbleIndexReader::loadStripeWithIndex(uint32_t stripeIndex) {
       options_.preserveFlatMapsInMemory());
 
   columnReader_ = buildColumnReader(
-      outputType_,
+      fileOutputType_,
       readerBase_->fileSchemaWithId(),
       params,
       *options_.scanSpec(),
