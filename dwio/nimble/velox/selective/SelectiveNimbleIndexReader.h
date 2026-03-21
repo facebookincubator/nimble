@@ -234,11 +234,30 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
   // Resets all state for a new lookup operation.
   void reset();
 
+  // Adapts the output type for column reader construction. For
+  // flatmap-as-struct columns (where outputType has ROW but the file has MAP),
+  // replaces ROW with the file's MAP type so the column reader knows the
+  // physical format.
+  static velox::RowTypePtr adaptOutputTypeForReader(
+      const velox::RowTypePtr& outputType,
+      const velox::RowTypePtr& fileType,
+      const velox::common::ScanSpec& scanSpec);
+
   const std::shared_ptr<ReaderBase> readerBase_;
   const velox::dwio::common::RowReaderOptions options_;
   const std::unique_ptr<RowSizeTracker> rowSizeTracker_;
   const bool hasFilters_;
+
+  // The user-facing output type. For flatmap-as-struct columns, this has ROW
+  // types instead of MAP. Used when creating output batch vectors so that
+  // copy() and output assembly use the correct column types.
   const velox::RowTypePtr outputType_;
+
+  // The file-facing output type. For flatmap-as-struct columns, ROW types
+  // are replaced with the file's MAP types so the column reader knows the
+  // physical format. Used for column reader construction.
+  const velox::RowTypePtr fileOutputType_;
+
   const TabletIndex* const tabletIndex_;
   const std::vector<std::string> indexColumns_;
 
