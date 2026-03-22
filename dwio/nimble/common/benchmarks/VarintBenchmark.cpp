@@ -117,6 +117,53 @@ std::vector<uint32_t> MakeSkewedData(int num_elements = kNumElements) {
   return data;
 }
 
+// Makes data where all values fit in exactly `numBytes` varint bytes.
+std::vector<uint32_t> MakeFixedWidthData32(
+    int numBytes,
+    int num_elements = kNumElements) {
+  std::vector<uint32_t> data(num_elements);
+  uint32_t lo = (numBytes == 1) ? 0 : (1u << (7 * (numBytes - 1)));
+  uint32_t hi = (1u << (7 * numBytes)) - 1;
+  if (numBytes == 5) {
+    hi = UINT32_MAX;
+  }
+  for (int i = 0; i < num_elements; ++i) {
+    data[i] = lo + folly::Random::secureRand32() % (hi - lo + 1);
+  }
+  return data;
+}
+
+// Makes 64-bit data where all values fit in exactly `numBytes` varint bytes.
+std::vector<uint64_t> MakeFixedWidthData64(
+    int numBytes,
+    int num_elements = kNumElements) {
+  std::vector<uint64_t> data(num_elements);
+  uint64_t lo = (numBytes == 1) ? 0 : (1ull << (7 * (numBytes - 1)));
+  uint64_t hi = (numBytes >= 10) ? UINT64_MAX : ((1ull << (7 * numBytes)) - 1);
+  for (int i = 0; i < num_elements; ++i) {
+    data[i] = lo + folly::Random::secureRand64() % (hi - lo + 1);
+  }
+  return data;
+}
+
+// Encode data into a varint buffer, returns total encoded size.
+template <typename T>
+std::unique_ptr<char[]> EncodeData(
+    const std::vector<T>& data,
+    uint64_t& encodedSize) {
+  auto buf = std::make_unique<char[]>(data.size() * folly::kMaxVarintLength64);
+  char* pos = buf.get();
+  for (auto val : data) {
+    nimble::varint::writeVarint(val, &pos);
+  }
+  encodedSize = pos - buf.get();
+  return buf;
+}
+
+// ============================================================================
+// Original benchmarks (uniform + skewed, 32-bit)
+// ============================================================================
+
 BENCHMARK(Encode, iters) {
   std::vector<uint32_t> data;
   std::unique_ptr<char[]> buf;
@@ -130,44 +177,6 @@ BENCHMARK(Encode, iters) {
       nimble::varint::writeVarint(data[i], &pos);
     }
     CHECK_GE(pos - buf.get(), kNumElements);
-  }
-}
-
-BENCHMARK(FollyEncode, iters) {
-  std::vector<uint32_t> data;
-  std::unique_ptr<uint8_t[]> buf;
-  BENCHMARK_SUSPEND {
-    data = MakeUniformData();
-    buf = std::make_unique<uint8_t[]>(kNumElements * folly::kMaxVarintLength32);
-  }
-  while (iters--) {
-    uint8_t* pos = buf.get();
-    for (int i = 0; i < kNumElements; ++i) {
-      pos += folly::encodeVarint(data[i], pos);
-    }
-    CHECK_GE(pos - buf.get(), kNumElements);
-  }
-}
-
-BENCHMARK(NimbleDecodeUniform, iters) {
-  std::vector<uint32_t> data;
-  std::unique_ptr<char[]> buf;
-  std::vector<uint32_t> recovered;
-  BENCHMARK_SUSPEND {
-    recovered.resize(kNumElements);
-    data = MakeUniformData();
-    buf = std::make_unique<char[]>(kNumElements * folly::kMaxVarintLength32);
-    char* pos = buf.get();
-    for (int i = 0; i < kNumElements; ++i) {
-      nimble::varint::writeVarint(data[i], &pos);
-    }
-  }
-  while (iters--) {
-    const char* cpos = buf.get();
-    for (int i = 0; i < kNumElements; ++i) {
-      recovered[i] = nimble::varint::readVarint32(&cpos);
-    }
-    CHECK_EQ(recovered.back(), data.back());
   }
 }
 
@@ -191,90 +200,21 @@ BENCHMARK(NimbleBulkDecodeUniform, iters) {
   }
 }
 
-BENCHMARK(FollyDecodeUniform, iters) {
-  std::vector<uint32_t> data;
-  std::unique_ptr<uint8_t[]> buf;
-  uint8_t* pos;
-  std::vector<uint32_t> recovered;
-  BENCHMARK_SUSPEND {
-    recovered.resize(kNumElements);
-    data = MakeUniformData();
-    buf = std::make_unique<uint8_t[]>(kNumElements * folly::kMaxVarintLength32);
-    pos = buf.get();
-    for (int i = 0; i < kNumElements; ++i) {
-      pos += folly::encodeVarint(data[i], pos);
-    }
-  }
-  while (iters--) {
-    const uint8_t* fstart = buf.get();
-    const uint8_t* fend = buf.get() + (pos - buf.get());
-    folly::Range<const uint8_t*> frange(fstart, fend);
-    for (int i = 0; i < kNumElements; ++i) {
-      recovered[i] = folly::decodeVarint(frange);
-    }
-    CHECK_EQ(recovered.back(), data.back());
-  }
-}
+// ============================================================================
+// Fixed byte-width benchmarks (32-bit): isolate per-width performance
+// ============================================================================
 
-BENCHMARK(DwrfDecodeUniform, iters) {
-  std::vector<uint32_t> data;
-  std::unique_ptr<char[]> buf;
-  std::vector<uint32_t> recovered;
-  uint64_t varint_bytes;
-  BENCHMARK_SUSPEND {
-    recovered.resize(kNumElements);
-    data = MakeUniformData();
-    buf = std::make_unique<char[]>(kNumElements * folly::kMaxVarintLength32);
-    char* pos = buf.get();
-    for (int i = 0; i < kNumElements; ++i) {
-      nimble::varint::writeVarint(data[i], &pos);
-    }
-    varint_bytes = pos - buf.get();
-  }
-  while (iters--) {
-    const char* cpos = buf.get();
-    const char* end = cpos + varint_bytes;
-    for (int i = 0; i < kNumElements; ++i) {
-      recovered[i] = DwrfRead(&cpos, end);
-    }
-    CHECK_EQ(recovered.back(), data.back());
-  }
-}
+BENCHMARK_DRAW_LINE();
 
-BENCHMARK(NimbleDecodeSkewed, iters) {
+BENCHMARK(BulkDecode_1byte, iters) {
   std::vector<uint32_t> data;
   std::unique_ptr<char[]> buf;
   std::vector<uint32_t> recovered;
   BENCHMARK_SUSPEND {
     recovered.resize(kNumElements);
-    data = MakeSkewedData();
-    buf = std::make_unique<char[]>(kNumElements * folly::kMaxVarintLength32);
-    char* pos = buf.get();
-    for (int i = 0; i < kNumElements; ++i) {
-      nimble::varint::writeVarint(data[i], &pos);
-    }
-  }
-  while (iters--) {
-    const char* cpos = buf.get();
-    for (int i = 0; i < kNumElements; ++i) {
-      recovered[i] = nimble::varint::readVarint32(&cpos);
-    }
-    CHECK_EQ(recovered.back(), data.back());
-  }
-}
-
-BENCHMARK(NimbleBulkDecodeSkewed, iters) {
-  std::vector<uint32_t> data;
-  std::unique_ptr<char[]> buf;
-  std::vector<uint32_t> recovered;
-  BENCHMARK_SUSPEND {
-    recovered.resize(kNumElements);
-    data = MakeSkewedData();
-    buf = std::make_unique<char[]>(kNumElements * folly::kMaxVarintLength32);
-    char* pos = buf.get();
-    for (int i = 0; i < kNumElements; ++i) {
-      nimble::varint::writeVarint(data[i], &pos);
-    }
+    data = MakeFixedWidthData32(1);
+    uint64_t sz;
+    buf = EncodeData(data, sz);
   }
   while (iters--) {
     const char* cpos = buf.get();
@@ -283,55 +223,58 @@ BENCHMARK(NimbleBulkDecodeSkewed, iters) {
   }
 }
 
-BENCHMARK(FollyDecodeSkewed, iters) {
+BENCHMARK_DRAW_LINE();
+
+BENCHMARK(BulkDecode_2byte, iters) {
   std::vector<uint32_t> data;
-  std::unique_ptr<uint8_t[]> buf;
-  uint8_t* pos;
+  std::unique_ptr<char[]> buf;
   std::vector<uint32_t> recovered;
   BENCHMARK_SUSPEND {
     recovered.resize(kNumElements);
-    data = MakeSkewedData();
-    buf = std::make_unique<uint8_t[]>(kNumElements * folly::kMaxVarintLength32);
-    pos = buf.get();
-    for (int i = 0; i < kNumElements; ++i) {
-      pos += folly::encodeVarint(data[i], pos);
-    }
+    data = MakeFixedWidthData32(2);
+    uint64_t sz;
+    buf = EncodeData(data, sz);
   }
   while (iters--) {
-    const uint8_t* fstart = buf.get();
-    const uint8_t* fend = buf.get() + (pos - buf.get());
-    folly::Range<const uint8_t*> frange(fstart, fend);
-    for (int i = 0; i < kNumElements; ++i) {
-      recovered[i] = folly::decodeVarint(frange);
-    }
+    const char* cpos = buf.get();
+    nimble::varint::bulkVarintDecode32(kNumElements, cpos, recovered.data());
     CHECK_EQ(recovered.back(), data.back());
   }
 }
 
-BENCHMARK(DwrfDecodeSkewed, iters) {
-  std::vector<uint32_t> data;
-  std::unique_ptr<char[]> buf;
-  std::vector<uint32_t> recovered;
-  uint64_t varint_bytes;
-  BENCHMARK_SUSPEND {
-    recovered.resize(kNumElements);
-    data = MakeSkewedData();
-    buf = std::make_unique<char[]>(kNumElements * folly::kMaxVarintLength32);
-    char* pos = buf.get();
-    for (int i = 0; i < kNumElements; ++i) {
-      nimble::varint::writeVarint(data[i], &pos);
-    }
-    varint_bytes = pos - buf.get();
+BENCHMARK_DRAW_LINE();
+
+// ============================================================================
+// Batch size benchmarks: how does bulk decode scale with n?
+// ============================================================================
+
+BENCHMARK_DRAW_LINE();
+
+#define BATCH_SIZE_BENCH(N)                                          \
+  BENCHMARK(BulkDecode_batch##N, iters) {                            \
+    std::vector<uint32_t> data;                                      \
+    std::unique_ptr<char[]> buf;                                     \
+    std::vector<uint32_t> recovered;                                 \
+    BENCHMARK_SUSPEND {                                              \
+      recovered.resize(N);                                           \
+      data = MakeUniformData(N);                                     \
+      uint64_t sz;                                                   \
+      buf = EncodeData(data, sz);                                    \
+    }                                                                \
+    while (iters--) {                                                \
+      const char* cpos = buf.get();                                  \
+      nimble::varint::bulkVarintDecode32(N, cpos, recovered.data()); \
+      folly::doNotOptimizeAway(recovered.back());                    \
+    }                                                                \
   }
-  while (iters--) {
-    const char* cpos = buf.get();
-    const char* end = cpos + varint_bytes;
-    for (int i = 0; i < kNumElements; ++i) {
-      recovered[i] = DwrfRead(&cpos, end);
-    }
-    CHECK_EQ(recovered.back(), data.back());
-  }
-}
+
+BATCH_SIZE_BENCH(4)
+BATCH_SIZE_BENCH(8)
+BATCH_SIZE_BENCH(16)
+BATCH_SIZE_BENCH(64)
+BATCH_SIZE_BENCH(256)
+BATCH_SIZE_BENCH(1024)
+BATCH_SIZE_BENCH(4096)
 
 int main() {
   folly::runBenchmarks();
