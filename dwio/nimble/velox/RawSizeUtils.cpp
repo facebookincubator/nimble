@@ -627,6 +627,29 @@ uint64_t getRawSizeFromPassthroughFlatMap(
   const auto& schemaValueType = type.childAt(1);
   auto keyTypeSize = getTypeSize(*schemaKeyType->type());
 
+  // For VARCHAR keys, compute the total string key size from ROW field names
+  size_t stringKeySize = 0;
+  if (!keyTypeSize.has_value() &&
+      (schemaKeyType->type()->kind() == velox::TypeKind::VARCHAR ||
+       schemaKeyType->type()->kind() == velox::TypeKind::VARBINARY)) {
+    const velox::RowVector* passthroughRow = nullptr;
+    if (encoding == velox::VectorEncoding::Simple::ROW) {
+      passthroughRow = vector->as<velox::RowVector>();
+    } else if (encoding == velox::VectorEncoding::Simple::DICTIONARY) {
+      auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
+          context.getDecodedVectorManager());
+      velox::DecodedVector& decodedVector = localDecodedVector.get();
+      decodedVector.decode(*vector);
+      passthroughRow = decodedVector.base()->as<velox::RowVector>();
+    }
+    if (passthroughRow) {
+      const auto& rowType = passthroughRow->type()->asRow();
+      for (size_t i = 0; i < rowType.size(); ++i) {
+        stringKeySize += rowType.nameOf(i).size();
+      }
+    }
+  }
+
   uint64_t rawSize = 0;
   const auto nonNullCount = childRanges.size();
 
@@ -642,11 +665,11 @@ uint64_t getRawSizeFromPassthroughFlatMap(
     if (keyTypeSize.has_value()) {
       rawSize += *keyTypeSize * childrenSize * nonNullCount;
     } else {
-      // For string keys, use the field name lengths
-      for (size_t i = 0; i < childrenSize; ++i) {
-        const auto& fieldName = rowVector->type()->asRow().nameOf(i);
-        rawSize += fieldName.size() * nonNullCount;
-      }
+      NIMBLE_CHECK_GT(
+          stringKeySize,
+          0,
+          "Encountered non-supported variable flatmap key type.");
+      rawSize += stringKeySize * nonNullCount;
     }
 
     for (size_t i = 0; i < childrenSize; ++i) {
