@@ -24,8 +24,6 @@
 #include "dwio/nimble/velox/VeloxWriter.h"
 
 #include "velox/common/memory/Memory.h"
-#include "velox/dwio/common/BufferedInput.h"
-#include "velox/dwio/common/MetricsLog.h"
 #include "velox/serializers/KeyEncoder.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
@@ -90,15 +88,14 @@ class NimbleIndexProjectorTest : public ::testing::Test {
     writer.close();
   }
 
-  // Creates a ReaderBase for the written data.
-  std::shared_ptr<ReaderBase> createReaderBase() {
+  NimbleIndexProjector createProjector(
+      const std::vector<Subfield>& projectedSubfields) {
     auto readFile =
         std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
     dwio::common::ReaderOptions readerOptions(leafPool_.get());
     readerOptions.setFileFormat(FileFormat::NIMBLE);
-    auto input = std::make_unique<BufferedInput>(
-        readFile, readerOptions.memoryPool(), MetricsLog::voidLog());
-    return ReaderBase::create(std::move(input), readerOptions);
+    return NimbleIndexProjector(
+        std::move(readFile), projectedSubfields, readerOptions);
   }
 
   // Creates encoded key bounds for a point lookup on a single int64 key.
@@ -163,11 +160,10 @@ TEST_F(NimbleIndexProjectorTest, basicColumnProjection) {
 
   writeData({batch}, {"key"});
 
-  auto readerBase = createReaderBase();
   std::vector<Subfield> subfields;
   subfields.emplace_back("col_a");
   subfields.emplace_back("col_b");
-  NimbleIndexProjector projector(readerBase, subfields);
+  auto projector = createProjector(subfields);
 
   // Point lookup for key=50 (row index 5).
   auto pointBounds = makePointLookup(rowType, {"key"}, 50);
@@ -230,10 +226,9 @@ TEST_F(NimbleIndexProjectorTest, emptyResult) {
 
   writeData({batch}, {"key"});
 
-  auto readerBase = createReaderBase();
   std::vector<Subfield> subfields;
   subfields.emplace_back("value");
-  NimbleIndexProjector projector(readerBase, subfields);
+  auto projector = createProjector(subfields);
 
   // Lookup key=1000, which doesn't exist (beyond max).
   auto bounds = makePointLookup(rowType, {"key"}, 1000);
@@ -251,6 +246,8 @@ TEST_F(NimbleIndexProjectorTest, emptyResult) {
   EXPECT_EQ(projector.stats().numScannedRows, 0);
   EXPECT_EQ(projector.stats().numProjectedRows, 0);
   EXPECT_EQ(projector.stats().numReadRows, 0);
+  EXPECT_EQ(projector.stats().rawBytesRead, 0);
+  EXPECT_EQ(projector.stats().rawOverreadBytes, 0);
 }
 
 TEST_F(NimbleIndexProjectorTest, multipleRequests) {
@@ -271,10 +268,9 @@ TEST_F(NimbleIndexProjectorTest, multipleRequests) {
 
   writeData({batch}, {"key"});
 
-  auto readerBase = createReaderBase();
   std::vector<Subfield> subfields;
   subfields.emplace_back("value");
-  NimbleIndexProjector projector(readerBase, subfields);
+  auto projector = createProjector(subfields);
 
   // Multiple point lookups.
   auto bounds0 = makePointLookup(rowType, {"key"}, 5);
@@ -324,14 +320,10 @@ TEST_F(NimbleIndexProjectorTest, stats) {
   // Flush every batch to get exactly numBatches stripes.
   writeData(batches, {"key"}, {}, /*stripeSize=*/1);
 
-  auto readerBase = createReaderBase();
-  const auto numStripes = readerBase->tablet().stripeCount();
-  ASSERT_EQ(numStripes, numBatches);
-
   auto makeProjector = [&]() {
     std::vector<Subfield> subs;
     subs.emplace_back("value");
-    return NimbleIndexProjector(readerBase, subs);
+    return createProjector(subs);
   };
 
   // Empty request should yield zero stats.
@@ -343,6 +335,8 @@ TEST_F(NimbleIndexProjectorTest, stats) {
     EXPECT_EQ(proj.stats().numScannedRows, 0);
     EXPECT_EQ(proj.stats().numProjectedRows, 0);
     EXPECT_EQ(proj.stats().numReadRows, 0);
+    EXPECT_EQ(proj.stats().rawBytesRead, 0);
+    EXPECT_EQ(proj.stats().rawOverreadBytes, 0);
   }
 
   // Single point lookup: key=15 is in stripe 1 (rows 10..19).
@@ -363,6 +357,10 @@ TEST_F(NimbleIndexProjectorTest, stats) {
     EXPECT_GT(proj.stats().lookupTiming.wallNanos, 0);
     EXPECT_GT(proj.stats().scanTiming.wallNanos, 0);
     EXPECT_GT(proj.stats().projectionTiming.wallNanos, 0);
+
+    // IO stats should be non-zero for a hit.
+    EXPECT_GT(proj.stats().rawBytesRead, 0);
+    EXPECT_GE(proj.stats().rawOverreadBytes, 0);
   }
 
   // Two point lookups in first and last stripes.
@@ -379,6 +377,9 @@ TEST_F(NimbleIndexProjectorTest, stats) {
         proj.stats().numScannedRows, static_cast<uint64_t>(2 * rowsPerBatch));
     EXPECT_EQ(proj.stats().numProjectedRows, proj.stats().numScannedRows);
     EXPECT_EQ(proj.stats().numReadRows, 2);
+
+    // IO stats should reflect more data read than single lookup.
+    EXPECT_GT(proj.stats().rawBytesRead, 0);
   }
 
   // Point lookup for a missing key (beyond max) should yield zero stats.
@@ -403,10 +404,14 @@ TEST_F(NimbleIndexProjectorTest, statsToString) {
   stats.numProjectedRows = 1'000;
   stats.numReadRows = 42;
   stats.numReadBytes = 8'192;
+  stats.rawBytesRead = 10'000;
+  stats.rawOverreadBytes = 1'808;
+  stats.numStorageReads = 5;
   EXPECT_EQ(
       stats.toString(),
       "Stats(numReadStripes=3, numScannedRows=1000, numProjectedRows=1000, numReadRows=42, "
-      "numReadBytes=8192, lookupTiming=[count: 0, wallTime: 0ns, cpuTime: 0ns], "
+      "numReadBytes=8.00KB, rawBytesRead=9.77KB, rawOverreadBytes=1.77KB, numStorageReads=5, "
+      "lookupTiming=[count: 0, wallTime: 0ns, cpuTime: 0ns], "
       "scanTiming=[count: 0, wallTime: 0ns, cpuTime: 0ns], "
       "projectionTiming=[count: 0, wallTime: 0ns, cpuTime: 0ns])");
 }
@@ -444,14 +449,12 @@ TEST_F(NimbleIndexProjectorTest, flatMapProjection) {
 
   writeData({batch}, {"key"}, {"features"});
 
-  auto readerBase = createReaderBase();
-
   // Project keys in non-alphabetical order to exercise FlatMap sorting.
   std::vector<Subfield> subfields;
   subfields.emplace_back("features[\"d\"]");
   subfields.emplace_back("features[\"b\"]");
   subfields.emplace_back("features[\"e\"]");
-  NimbleIndexProjector projector(readerBase, subfields);
+  auto projector = createProjector(subfields);
 
   // Point lookup for key=50 (row index 5).
   auto pointBounds = makePointLookup(rowType, {"key"}, 50);
@@ -548,13 +551,11 @@ TEST_F(NimbleIndexProjectorTest, flatMapFullColumnProjection) {
 
   writeData({batch}, {"key"}, {"features"});
 
-  auto readerBase = createReaderBase();
-
   // Project entire column (no key subscripts) — should fail.
   std::vector<Subfield> subfields;
   subfields.emplace_back("features");
   NIMBLE_ASSERT_THROW(
-      NimbleIndexProjector(readerBase, subfields),
+      createProjector(subfields),
       "Cannot project entire FlatMap column without key subscripts");
 }
 
@@ -589,13 +590,11 @@ TEST_F(NimbleIndexProjectorTest, flatMapKeyProjectionSchemaComparison) {
 
   writeData({batch}, {"key"}, {"features"});
 
-  auto readerBase = createReaderBase();
-
   // Project keys in non-alphabetical order: ["d", "b"].
   std::vector<Subfield> subfields;
   subfields.emplace_back("features[\"d\"]");
   subfields.emplace_back("features[\"b\"]");
-  NimbleIndexProjector projector(readerBase, subfields);
+  auto projector = createProjector(subfields);
 
   // Projected schema should be FlatMap with keys sorted alphabetically.
   const auto& buildSchema = projector.projectedNimbleType();
@@ -662,14 +661,12 @@ TEST_F(NimbleIndexProjectorTest, flatMapIntKeyProjection) {
 
   writeData({batch}, {"key"}, {"features"});
 
-  auto readerBase = createReaderBase();
-
   // Project integer keys in non-sorted order: [3, 1, 4].
   std::vector<Subfield> subfields;
   subfields.emplace_back("features[3]");
   subfields.emplace_back("features[1]");
   subfields.emplace_back("features[4]");
-  NimbleIndexProjector projector(readerBase, subfields);
+  auto projector = createProjector(subfields);
 
   // Point lookup for key=50 (row index 5).
   auto pointBounds = makePointLookup(rowType, {"key"}, 50);
@@ -729,6 +726,73 @@ TEST_F(NimbleIndexProjectorTest, flatMapIntKeyProjection) {
   EXPECT_EQ(kvPairs[1], 501); // 5*100 + 1
   EXPECT_EQ(kvPairs[3], 503); // 5*100 + 3
   EXPECT_EQ(kvPairs[4], 504); // 5*100 + 4
+}
+
+TEST_F(NimbleIndexProjectorTest, flatMapMissingKeys) {
+  // Verify that missing FlatMap keys are silently skipped.
+  auto rowType = ROW({"key", "features"}, {BIGINT(), MAP(VARCHAR(), BIGINT())});
+
+  const int numRows = 200;
+  const std::vector<std::string> mapKeys = {"a", "b", "c"};
+  const auto numMapKeys = static_cast<vector_size_t>(mapKeys.size());
+
+  std::vector<StringView> mapKeyViews;
+  mapKeyViews.reserve(mapKeys.size());
+  for (const auto& k : mapKeys) {
+    mapKeyViews.emplace_back(k);
+  }
+
+  auto batch = vectorMaker_->rowVector(
+      {"key", "features"},
+      {vectorMaker_->flatVector<int64_t>(
+           numRows, [](auto row) { return row * 10; }),
+       vectorMaker_->mapVector<StringView, int64_t>(
+           numRows,
+           /*sizeAt*/ [&](auto /*row*/) { return numMapKeys; },
+           /*keyAt*/
+           [&](auto /*row*/, auto mapIndex) { return mapKeyViews[mapIndex]; },
+           /*valueAt*/
+           [](auto row, auto mapIndex) {
+             return static_cast<int64_t>(row * 100 + mapIndex);
+           })});
+
+  writeData({batch}, {"key"}, {"features"});
+
+  // Project mix of existing ("a", "c") and missing ("x", "z") keys.
+  {
+    std::vector<Subfield> subfields;
+    subfields.emplace_back("features[\"a\"]");
+    subfields.emplace_back("features[\"x\"]");
+    subfields.emplace_back("features[\"c\"]");
+    subfields.emplace_back("features[\"z\"]");
+    auto projector = createProjector(subfields);
+
+    // Projected schema should only contain existing keys, sorted: "a", "c".
+    const auto& schema = projector.projectedNimbleType();
+    ASSERT_TRUE(schema->isRow());
+    const auto& flatMap = schema->asRow().childAt(0)->asFlatMap();
+    ASSERT_EQ(flatMap.childrenCount(), 2);
+    EXPECT_EQ(flatMap.nameAt(0), "a");
+    EXPECT_EQ(flatMap.nameAt(1), "c");
+
+    // Verify data reads correctly.
+    auto pointBounds = makePointLookup(rowType, {"key"}, 50);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {pointBounds};
+    auto result = projector.project(request, {});
+    ASSERT_EQ(result.responses.size(), 1);
+    ASSERT_FALSE(result.responses[0].slices.empty());
+  }
+
+  // All requested keys missing — should fail.
+  {
+    std::vector<Subfield> subfields;
+    subfields.emplace_back("features[\"x\"]");
+    subfields.emplace_back("features[\"y\"]");
+    NIMBLE_ASSERT_THROW(
+        createProjector(subfields),
+        "Cannot project entire FlatMap column without key subscripts");
+  }
 }
 
 } // namespace facebook::nimble::test

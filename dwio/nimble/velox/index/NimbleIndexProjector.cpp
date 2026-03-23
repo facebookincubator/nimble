@@ -22,6 +22,8 @@
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/ScopeGuard.h"
+#include "velox/common/base/SuccinctPrinter.h"
+#include "velox/dwio/common/BufferedInput.h"
 
 namespace facebook::nimble {
 
@@ -30,21 +32,35 @@ using namespace facebook::velox; // NOLINT(google-build-using-namespace)
 std::string NimbleIndexProjector::Stats::toString() const {
   return fmt::format(
       "Stats(numReadStripes={}, numScannedRows={}, numProjectedRows={}, numReadRows={}, "
-      "numReadBytes={}, lookupTiming=[{}], scanTiming=[{}], projectionTiming=[{}])",
+      "numReadBytes={}, rawBytesRead={}, rawOverreadBytes={}, numStorageReads={}, "
+      "lookupTiming=[{}], scanTiming=[{}], projectionTiming=[{}])",
       numReadStripes,
       numScannedRows,
       numProjectedRows,
       numReadRows,
-      numReadBytes,
+      velox::succinctBytes(numReadBytes),
+      velox::succinctBytes(rawBytesRead),
+      velox::succinctBytes(rawOverreadBytes),
+      numStorageReads,
       lookupTiming.toString(),
       scanTiming.toString(),
       projectionTiming.toString());
 }
 
 NimbleIndexProjector::NimbleIndexProjector(
-    std::shared_ptr<ReaderBase> readerBase,
-    const std::vector<Subfield>& projectedSubfields)
-    : readerBase_(std::move(readerBase)),
+    std::shared_ptr<velox::ReadFile> readFile,
+    const std::vector<Subfield>& projectedSubfields,
+    const velox::dwio::common::ReaderOptions& options)
+    : ioStatistics_{std::make_shared<velox::io::IoStatistics>()},
+      readerBase_{ReaderBase::create(
+          std::make_unique<velox::dwio::common::BufferedInput>(
+              std::move(readFile),
+              options.memoryPool(),
+              velox::dwio::common::MetricsLog::voidLog(),
+              ioStatistics_.get(),
+              /*ioStats=*/nullptr,
+              options.maxCoalesceDistance()),
+          options)},
       pool_{readerBase_->pool()},
       tabletIndex_{readerBase_->tablet().index()},
       numStripes_{readerBase_->tablet().stripeCount()},
@@ -99,6 +115,8 @@ NimbleIndexProjector::Result NimbleIndexProjector::project(
     }
     processStripe(stripeIndex, requestIndices, result);
   }
+
+  updateIoStats();
   return result;
 }
 
@@ -307,6 +325,12 @@ NimbleIndexProjector::lookupRowRanges(
     result.emplace_back(RequestRange{requestIdx, range});
   }
   return result;
+}
+
+void NimbleIndexProjector::updateIoStats() {
+  stats_.rawBytesRead = ioStatistics_->rawBytesRead();
+  stats_.rawOverreadBytes = ioStatistics_->rawOverreadBytes();
+  stats_.numStorageReads = ioStatistics_->read().count();
 }
 
 } // namespace facebook::nimble

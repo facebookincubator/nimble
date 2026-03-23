@@ -1561,7 +1561,7 @@ TEST_F(ProjectorTest, projectFlatMapNonExistentKey) {
           subfields,
           pool_.get(),
           {.projectVersion = SerializationVersion::kCompact}),
-      "Key '999' not found in FlatMapType");
+      "Cannot project entire FlatMap column without key subscripts");
 }
 
 // Test stream indices are correct.

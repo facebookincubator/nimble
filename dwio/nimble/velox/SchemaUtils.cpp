@@ -580,8 +580,10 @@ void resolveSubfield(
           subfield.toString());
       const auto& flatMap = current->asFlatMap();
       const auto childIdx = flatMap.findChild(keyName);
-      NIMBLE_CHECK(
-          childIdx.has_value(), "Key '{}' not found in FlatMapType", keyName);
+      if (!childIdx.has_value()) {
+        // Key not in file schema — skip this subfield silently.
+        return;
+      }
 
       selectedChildren[current].insert(*childIdx);
       current = flatMap.childAt(*childIdx).get();
