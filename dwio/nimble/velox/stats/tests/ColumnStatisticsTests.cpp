@@ -237,11 +237,11 @@ TEST_F(StatisticsCollectorTests, Ctor) {
 TEST_F(StatisticsCollectorTests, AddCounts) {
   StatisticsCollector collector;
   collector.addCounts(100, 10);
-  EXPECT_EQ(collector.getValueCount(), 100);
+  EXPECT_EQ(collector.getValueCount(), 90); // nonNullCount = 100 - 10
   EXPECT_EQ(collector.getNullCount(), 10);
 
   collector.addCounts(50, 5);
-  EXPECT_EQ(collector.getValueCount(), 150);
+  EXPECT_EQ(collector.getValueCount(), 135); // 90 + 45 (50 - 5)
   EXPECT_EQ(collector.getNullCount(), 15);
 }
 
@@ -302,7 +302,7 @@ TEST_F(StatisticsCollectorTests, MergeDefaultStatisticsCollectors) {
 
   collector1.merge(collector2);
 
-  EXPECT_EQ(collector1.getValueCount(), 300);
+  EXPECT_EQ(collector1.getValueCount(), 270); // (100-10) + (200-20) = 90 + 180
   EXPECT_EQ(collector1.getNullCount(), 30);
   EXPECT_EQ(collector1.getLogicalSize(), 3000);
   EXPECT_EQ(collector1.getPhysicalSize(), 1500);
@@ -333,7 +333,7 @@ TEST_F(StatisticsCollectorTests, IntegralStatisticsCollectorMerge) {
 
   auto* sbPtr = dynamic_cast<StatisticsCollector*>(&collector1);
   ASSERT_NE(sbPtr, nullptr);
-  EXPECT_EQ(sbPtr->getValueCount(), 300);
+  EXPECT_EQ(sbPtr->getValueCount(), 270); // (100-10) + (200-20) = 90 + 180
   EXPECT_EQ(sbPtr->getNullCount(), 30);
   EXPECT_EQ(sbPtr->getLogicalSize(), 3000);
 }
@@ -349,7 +349,7 @@ TEST_F(StatisticsCollectorTests, IntegralStatisticsCollectorMergeWithDefault) {
 
   auto* sbPtr = dynamic_cast<StatisticsCollector*>(&collector1);
   ASSERT_NE(sbPtr, nullptr);
-  EXPECT_EQ(sbPtr->getValueCount(), 150);
+  EXPECT_EQ(sbPtr->getValueCount(), 135); // (100-10) + (50-5) = 90 + 45
   EXPECT_EQ(sbPtr->getNullCount(), 15);
 }
 
@@ -378,7 +378,7 @@ TEST_F(StatisticsCollectorTests, FloatingPointStatisticsCollectorMerge) {
 
   auto* sbPtr = dynamic_cast<StatisticsCollector*>(&collector1);
   ASSERT_NE(sbPtr, nullptr);
-  EXPECT_EQ(sbPtr->getValueCount(), 300);
+  EXPECT_EQ(sbPtr->getValueCount(), 270); // (100-10) + (200-20) = 90 + 180
   EXPECT_EQ(sbPtr->getNullCount(), 30);
   EXPECT_EQ(sbPtr->getLogicalSize(), 3000);
 }
@@ -396,7 +396,7 @@ TEST_F(
 
   auto* sbPtr = dynamic_cast<StatisticsCollector*>(&collector1);
   ASSERT_NE(sbPtr, nullptr);
-  EXPECT_EQ(sbPtr->getValueCount(), 150);
+  EXPECT_EQ(sbPtr->getValueCount(), 135); // (100-10) + (50-5) = 90 + 45
   EXPECT_EQ(sbPtr->getNullCount(), 15);
 }
 
@@ -449,7 +449,7 @@ TEST_F(StatisticsCollectorTests, StringStatisticsCollectorMerge) {
 
   auto* sbPtr = dynamic_cast<StatisticsCollector*>(&collector1);
   ASSERT_NE(sbPtr, nullptr);
-  EXPECT_EQ(sbPtr->getValueCount(), 300);
+  EXPECT_EQ(sbPtr->getValueCount(), 270); // (100-10) + (200-20) = 90 + 180
   EXPECT_EQ(sbPtr->getNullCount(), 30);
   EXPECT_EQ(sbPtr->getLogicalSize(), 3000);
 }
@@ -465,7 +465,7 @@ TEST_F(StatisticsCollectorTests, StringStatisticsCollectorMergeWithDefault) {
 
   auto* sbPtr = dynamic_cast<StatisticsCollector*>(&collector1);
   ASSERT_NE(sbPtr, nullptr);
-  EXPECT_EQ(sbPtr->getValueCount(), 150);
+  EXPECT_EQ(sbPtr->getValueCount(), 135); // (100-10) + (50-5) = 90 + 45
   EXPECT_EQ(sbPtr->getNullCount(), 15);
 }
 
@@ -490,7 +490,7 @@ TEST_F(StatisticsCollectorTests, DeduplicatedStatisticsCollectorBaseCollector) {
 
   auto* sbPtr = dynamic_cast<StatisticsCollector*>(basePtr);
   ASSERT_NE(sbPtr, nullptr);
-  EXPECT_EQ(sbPtr->getValueCount(), 100);
+  EXPECT_EQ(sbPtr->getValueCount(), 90); // 100 - 10 = nonNullCount
   EXPECT_EQ(sbPtr->getNullCount(), 10);
   EXPECT_EQ(sbPtr->getLogicalSize(), 1000);
   EXPECT_EQ(sbPtr->getPhysicalSize(), 500);
@@ -530,6 +530,8 @@ TEST_F(StatisticsCollectorTests, DeduplicatedStatisticsCollectorMerge) {
   ASSERT_NE(dedupStats, nullptr);
   EXPECT_EQ(dedupStats->getDedupedCount(), 240);
   EXPECT_EQ(dedupStats->getDedupedLogicalSize(), 2400);
-  EXPECT_EQ(dedupCollector1.getBaseCollector()->getValueCount(), 300);
+  EXPECT_EQ(
+      dedupCollector1.getBaseCollector()->getValueCount(),
+      270); // (100-10) + (200-20)
   EXPECT_EQ(dedupCollector1.getBaseCollector()->getNullCount(), 30);
 }

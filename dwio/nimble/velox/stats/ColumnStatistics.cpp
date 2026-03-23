@@ -198,8 +198,8 @@ void StatisticsCollector::addValues(std::span<bool> values) {
   addLogicalSize(values.size());
 }
 
-void StatisticsCollector::addCounts(uint64_t valueCount, uint64_t nullCount) {
-  stats_->valueCount_ += valueCount;
+void StatisticsCollector::addCounts(uint64_t totalCount, uint64_t nullCount) {
+  stats_->valueCount_ += (totalCount - nullCount);
   stats_->nullCount_ += nullCount;
 }
 
@@ -451,9 +451,9 @@ void DeduplicatedStatisticsCollector::recordDeduplicatedStats(
 }
 
 void DeduplicatedStatisticsCollector::addCounts(
-    uint64_t valueCount,
+    uint64_t totalCount,
     uint64_t nullCount) {
-  baseCollector_->addCounts(valueCount, nullCount);
+  baseCollector_->addCounts(totalCount, nullCount);
 }
 
 void DeduplicatedStatisticsCollector::addLogicalSize(uint64_t logicalSize) {
@@ -531,10 +531,10 @@ StatType SharedStatisticsCollector::getType() const {
 }
 
 void SharedStatisticsCollector::addCounts(
-    uint64_t valueCount,
+    uint64_t totalCount,
     uint64_t nullCount) {
   std::lock_guard<std::mutex> l{mutex_};
-  baseCollector_->addCounts(valueCount, nullCount);
+  baseCollector_->addCounts(totalCount, nullCount);
 }
 
 void SharedStatisticsCollector::addLogicalSize(uint64_t logicalSize) {

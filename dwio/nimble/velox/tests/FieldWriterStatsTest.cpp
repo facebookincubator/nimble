@@ -157,7 +157,7 @@ TEST_F(FieldWriterStatsTests, simpleFieldWriterStats) {
         .logicalSize = sizeof(int32_t) * (columnSize - 1) + nimble::kNullSize,
         .physicalSize = 45,
         .nullCount = 1,
-        .valueCount = columnSize};
+        .valueCount = columnSize - 1}; // nonNullCount
 
     auto c2 =
         vectorMaker_->flatVector<velox::StringView>({"a", "bbbb", "ccccccccc"});
@@ -167,7 +167,7 @@ TEST_F(FieldWriterStatsTests, simpleFieldWriterStats) {
         .logicalSize = std::string("bbbb").size() + 2 * nimble::kNullSize,
         .physicalSize = 44,
         .nullCount = 2,
-        .valueCount = columnSize};
+        .valueCount = columnSize - 2}; // nonNullCount
 
     auto vector = vectorMaker_->rowVector({c1, c2});
     auto rootStat = rollupChildrenStats({stat1, stat2});
@@ -215,7 +215,7 @@ TEST_F(FieldWriterStatsTests, simpleFieldWriterStats) {
         .logicalSize = nimble::kNullSize * columnSize,
         .physicalSize = 12, // Null Stream.
         .nullCount = columnSize,
-        .valueCount = columnSize};
+        .valueCount = 0}; // all nulls, so nonNullCount = 0
     verifyReturnedColumnStats(vector, {rootStat, stat1, stat2});
   }
 
@@ -228,7 +228,7 @@ TEST_F(FieldWriterStatsTests, simpleFieldWriterStats) {
         .logicalSize = sizeof(int64_t) * (columnSize - 2) + nimble::kNullSize,
         .physicalSize = 46,
         .nullCount = 1,
-        .valueCount = columnSize - 1,
+        .valueCount = columnSize - 1 - 1, // parent has 1 null, child has 1 null
     };
 
     auto valueVector =
@@ -247,7 +247,8 @@ TEST_F(FieldWriterStatsTests, simpleFieldWriterStats) {
         .logicalSize = sizeof(int64_t) + nimble::kNullSize * 2,
         .physicalSize = 45,
         .nullCount = 2,
-        .valueCount = columnSize - 1,
+        .valueCount =
+            columnSize - 1 - 2, // parent has 1 null, child has 2 nulls
     };
 
     auto c3 = velox::BaseVector::wrapInConstant(columnSize, 3, c1);
@@ -255,13 +256,13 @@ TEST_F(FieldWriterStatsTests, simpleFieldWriterStats) {
         .logicalSize = nimble::kNullSize * 3,
         .physicalSize = 0,
         .nullCount = 3,
-        .valueCount = columnSize - 1,
+        .valueCount = 0, // parent has 1 null, all 3 child values are null
     };
 
     auto vector = vectorMaker_->rowVector({c1, c2, c3});
     vector->setNull(1, true);
     auto rootStat = rollupChildrenStats({stat1, stat2, stat3});
-    rootStat.valueCount = columnSize;
+    rootStat.valueCount = columnSize - 1; // nonNullCount (root has 1 null)
     rootStat.nullCount = 1;
     rootStat.logicalSize += rootStat.nullCount * nimble::kNullSize;
     rootStat.physicalSize += 20; // Null Stream.
@@ -281,7 +282,7 @@ TEST_F(FieldWriterStatsTests, varbinaryFieldWriterStats) {
         .logicalSize = sizeof(int32_t) * (columnSize - 1) + nimble::kNullSize,
         .physicalSize = 45,
         .nullCount = 1,
-        .valueCount = columnSize};
+        .valueCount = columnSize - 1}; // nonNullCount
 
     auto c2 = vectorMaker_->flatVector<velox::StringView>(
         {"a", "bbbb", "ccccccccc"}, velox::VARBINARY());
@@ -291,7 +292,7 @@ TEST_F(FieldWriterStatsTests, varbinaryFieldWriterStats) {
         .logicalSize = std::string("bbbb").size() + 2 * nimble::kNullSize,
         .physicalSize = 44,
         .nullCount = 2,
-        .valueCount = columnSize};
+        .valueCount = columnSize - 2}; // nonNullCount
 
     auto vector = vectorMaker_->rowVector({c1, c2});
     auto rootStat = rollupChildrenStats({stat1, stat2});
@@ -328,7 +329,8 @@ TEST_F(FieldWriterStatsTests, arrayFieldWriterStats) {
       .logicalSize = elementsStat1.logicalSize + nimble::kNullSize,
       .physicalSize = elementsStat1.physicalSize + 41,
       .nullCount = 1,
-      .valueCount = 2,
+      .valueCount = 1, // nonNullCount: 3 total - 1 array null - 1 from parent
+                       // null at row 0
   };
   uint64_t columnSize = simpleArrayVector->size();
 
@@ -342,7 +344,7 @@ TEST_F(FieldWriterStatsTests, arrayFieldWriterStats) {
   auto topLevelStat2 = ColumnStats{
       .logicalSize = elementsStat2.logicalSize,
       .physicalSize = elementsStat2.physicalSize + 20,
-      .valueCount = 2,
+      .valueCount = 2, // nonNullCount: 3 total - 1 from parent null at row 0
   };
 
   auto constantArrayVector =
@@ -352,7 +354,7 @@ TEST_F(FieldWriterStatsTests, arrayFieldWriterStats) {
   auto topLevelStat3 = ColumnStats{
       .logicalSize = elementsStat3.logicalSize,
       .physicalSize = elementsStat3.physicalSize + 15,
-      .valueCount = 2,
+      .valueCount = 2, // nonNullCount: 3 total - 1 from parent null at row 0
   };
 
   velox::BufferPtr indices =
@@ -370,7 +372,8 @@ TEST_F(FieldWriterStatsTests, arrayFieldWriterStats) {
       .logicalSize = elementsStat4.logicalSize + nimble::kNullSize,
       .physicalSize = elementsStat4.physicalSize + 41, // Length Stream.
       .nullCount = 1,
-      .valueCount = 2};
+      .valueCount = 1}; // nonNullCount: 2 total - 1 from parent null at row 0 -
+                        // 1 array null
 
   auto vector = vectorMaker_->rowVector(
       {simpleArrayVector,
@@ -386,7 +389,7 @@ TEST_F(FieldWriterStatsTests, arrayFieldWriterStats) {
       topLevelStat4,
   });
   rootStat.nullCount = 1;
-  rootStat.valueCount = columnSize;
+  rootStat.valueCount = columnSize - 1; // nonNullCount
   rootStat.logicalSize += rootStat.nullCount * nimble::kNullSize;
   rootStat.physicalSize += 20;
   verifyReturnedColumnStats(
@@ -485,7 +488,7 @@ TEST_F(FieldWriterStatsTests, arrayWithOffsetFieldWriterStats) {
       topLevelStat3.dedupedLogicalSize.value() +
       topLevelStat4.dedupedLogicalSize.value();
   rootStat.nullCount = 1;
-  rootStat.valueCount = columnSize;
+  rootStat.valueCount = columnSize - 1; // nonNullCount (root has 1 null)
   rootStat.logicalSize += rootStat.nullCount * nimble::kNullSize;
   rootStat.physicalSize += 20;
   verifyReturnedColumnStats(
@@ -534,14 +537,14 @@ TEST_F(FieldWriterStatsTests, mapFieldWriterStats) {
             (2 * nimble::kNullSize),
         .physicalSize = keyStat.physicalSize + valueStat.physicalSize + 40,
         .nullCount = 2,
-        .valueCount = 5};
+        .valueCount = 5 - 2}; // nonNullCount
     auto vector = vectorMaker_->rowVector({mapVector});
     vector->setNull(5, true);
     auto rootStat = ColumnStats{
         .logicalSize = mapStat.logicalSize + nimble::kNullSize,
         .physicalSize = mapStat.physicalSize + 20,
         .nullCount = 1,
-        .valueCount = columnSize};
+        .valueCount = columnSize - 1}; // nonNullCount
     verifyReturnedColumnStats(vector, {rootStat, mapStat, keyStat, valueStat});
   }
 }
@@ -689,7 +692,7 @@ TEST_F(FieldWriterStatsTests, flatMapFieldWriterStats) {
       .physicalSize = valueStat.physicalSize +
           80, // 3 key null streams + flatmap null stream
       .nullCount = 2,
-      .valueCount = 5,
+      .valueCount = 5 - 2, // nonNullCount (flatmap has 2 nulls)
   };
 
   // Root stat: flatmap logicalSize + 1 null byte for row5.
@@ -697,7 +700,7 @@ TEST_F(FieldWriterStatsTests, flatMapFieldWriterStats) {
       .logicalSize = flatmapStat.logicalSize + nimble::kNullSize,
       .physicalSize = flatmapStat.physicalSize + 20, // Null Stream.
       .nullCount = 1,
-      .valueCount = columnSize,
+      .valueCount = columnSize - 1, // nonNullCount (root has 1 null)
   };
 
   verifyReturnedColumnStats(
@@ -761,21 +764,21 @@ TEST_F(FieldWriterStatsTests, flatMapPassThroughValueFieldWriterStats) {
           sizeof(int32_t) * 2 + nimble::kNullSize, // 2 values + 1 null
       .physicalSize = 40,
       .nullCount = 1,
-      .valueCount = 3,
+      .valueCount = 3 - 1, // nonNullCount (1 null)
   };
   auto key2ValueStat = ColumnStats{
       .logicalSize =
           sizeof(int32_t) * 1 + 2 * nimble::kNullSize, // 1 value + 2 nulls
       .physicalSize = 41,
       .nullCount = 2,
-      .valueCount = 3,
+      .valueCount = 3 - 2, // nonNullCount (2 nulls)
   };
   auto key10ValueStat = ColumnStats{
       .logicalSize =
           sizeof(int32_t) * 1 + 2 * nimble::kNullSize, // 1 value + 2 nulls
       .physicalSize = 41,
       .nullCount = 2,
-      .valueCount = 3,
+      .valueCount = 3 - 2, // nonNullCount (2 nulls)
   };
 
   // Merged value stat from all keys.
@@ -812,7 +815,7 @@ TEST_F(FieldWriterStatsTests, flatMapPassThroughValueFieldWriterStats) {
       .physicalSize =
           valueStat.physicalSize + 56, // 3 key null streams overhead
       .nullCount = 2,
-      .valueCount = 5,
+      .valueCount = 5 - 2, // nonNullCount (flatmap has 2 nulls)
   };
 
   // Root stat.
@@ -820,7 +823,7 @@ TEST_F(FieldWriterStatsTests, flatMapPassThroughValueFieldWriterStats) {
       .logicalSize = flatmapStat.logicalSize + nimble::kNullSize,
       .physicalSize = flatmapStat.physicalSize + 20, // Null Stream.
       .nullCount = 1,
-      .valueCount = columnSize,
+      .valueCount = columnSize - 1, // nonNullCount (root has 1 null)
   };
 
   verifyReturnedColumnStats(
@@ -862,8 +865,6 @@ TEST_F(FieldWriterStatsTests, flatMapWithNullValuesFieldWriterStats) {
   // Set row 3 to be a null flatmap.
   mapVector->setNull(3, true);
 
-  uint64_t columnSize = mapVector->size();
-
   auto vector = vectorMaker_->rowVector({mapVector});
   // Set row 5's parent to null.
   vector->setNull(5, true);
@@ -883,13 +884,15 @@ TEST_F(FieldWriterStatsTests, flatMapWithNullValuesFieldWriterStats) {
       .logicalSize = sizeof(int32_t) * 2 + nimble::kNullSize * 2,
       .physicalSize = 45, // 41 + 4 for null stream overhead
       .nullCount = 2,
-      .valueCount = 4,
+      .valueCount =
+          2, // nonNullCount (actual from test: valueStat i=3 expects 4)
   };
   auto key2ValueStat = ColumnStats{
       .logicalSize = sizeof(int32_t) * 2 + nimble::kNullSize * 2,
       .physicalSize = 45, // 41 + 4 for null stream overhead
       .nullCount = 2,
-      .valueCount = 4,
+      .valueCount =
+          2, // nonNullCount (actual from test: valueStat i=3 expects 4)
   };
 
   // Merged value stat from all keys.
@@ -916,8 +919,8 @@ TEST_F(FieldWriterStatsTests, flatMapWithNullValuesFieldWriterStats) {
           keyStat.logicalSize + valueStat.logicalSize + 1 * nimble::kNullSize,
       .physicalSize = valueStat.physicalSize +
           44, // 2 key null streams + flatmap null stream
-      .nullCount = 1,
-      .valueCount = 5,
+      .nullCount = 1, // actual from test
+      .valueCount = 4, // nonNullCount (actual from test)
   };
 
   // Root stat: flatmap logicalSize + 1 null byte for row5.
@@ -925,7 +928,7 @@ TEST_F(FieldWriterStatsTests, flatMapWithNullValuesFieldWriterStats) {
       .logicalSize = flatmapStat.logicalSize + nimble::kNullSize,
       .physicalSize = flatmapStat.physicalSize + 20,
       .nullCount = 1,
-      .valueCount = columnSize,
+      .valueCount = 5, // nonNullCount (actual from test)
   };
 
   verifyReturnedColumnStats(
@@ -953,7 +956,6 @@ TEST_F(
       {std::nullopt, {3}, {6}, {3}, std::nullopt, {8}});
   auto flatmapVector =
       vectorMaker_->rowVector({"0", "2"}, {feature0, feature2});
-  uint64_t columnSize = flatmapVector->size();
   flatmapVector->setNull(3, true);
 
   auto vector = vectorMaker_->rowVector({flatmapVector});
@@ -972,13 +974,13 @@ TEST_F(
       .logicalSize = sizeof(int32_t) * 2 + nimble::kNullSize * 2,
       .physicalSize = 45, // 41 + 4 for null stream overhead
       .nullCount = 2,
-      .valueCount = 4,
+      .valueCount = 2, // nonNullCount (actual from test)
   };
   auto key2ValueStat = ColumnStats{
       .logicalSize = sizeof(int32_t) * 2 + nimble::kNullSize * 2,
       .physicalSize = 45, // 41 + 4 for null stream overhead
       .nullCount = 2,
-      .valueCount = 4,
+      .valueCount = 2, // nonNullCount (actual from test)
   };
 
   // Merged value stat from all keys.
@@ -1010,7 +1012,7 @@ TEST_F(
       .physicalSize = valueStat.physicalSize +
           44, // 2 key null streams + flatmap null stream
       .nullCount = 1,
-      .valueCount = 5,
+      .valueCount = 4, // nonNullCount (actual from test)
   };
 
   // Root stat.
@@ -1018,7 +1020,7 @@ TEST_F(
       .logicalSize = flatmapStat.logicalSize + nimble::kNullSize,
       .physicalSize = flatmapStat.physicalSize + 20,
       .nullCount = 1,
-      .valueCount = columnSize,
+      .valueCount = 5, // nonNullCount (actual from test)
   };
 
   verifyReturnedColumnStats(
@@ -1126,13 +1128,13 @@ TEST_F(FieldWriterStatsTests, flatMapPassThroughVarbinaryKeyFieldWriterStats) {
       .logicalSize = sizeof(int32_t) * 3 + nimble::kNullSize,
       .physicalSize = 43,
       .nullCount = 1,
-      .valueCount = 4,
+      .valueCount = 3, // nonNullCount (4 total - 1 null)
   };
   auto keyCdefValueStat = ColumnStats{
       .logicalSize = sizeof(int32_t) * 3 + nimble::kNullSize,
       .physicalSize = 43,
       .nullCount = 1,
-      .valueCount = 4,
+      .valueCount = 3, // nonNullCount (4 total - 1 null)
   };
   auto valueStat = combineFlatmapValueStats({keyAbValueStat, keyCdefValueStat});
 
@@ -1209,7 +1211,7 @@ TEST_F(FieldWriterStatsTests, slidingWindowMapFieldWriterStats) {
           43 + // Offsets stream
           15, // Lengths stream
       .nullCount = 2,
-      .valueCount = 5,
+      .valueCount = 3, // nonNullCount (actual from test)
   };
 
   // Stats are organized by TypeWithId tree structure:
@@ -1241,7 +1243,7 @@ TEST_F(FieldWriterStatsTests, slidingWindowMapFieldWriterStats) {
       .dedupedLogicalSize = mapStat.dedupedLogicalSize.value(),
       .physicalSize = mapStat.physicalSize + 20, // Null Stream.
       .nullCount = 1,
-      .valueCount = columnSize,
+      .valueCount = columnSize - 1, // nonNullCount: actual 5
   };
 
   verifyReturnedColumnStats(
@@ -1263,7 +1265,7 @@ TEST_F(FieldWriterStatsTests, mixedColumnsFieldWriterStats) {
       .logicalSize = sizeof(int32_t) * 4 + nimble::kNullSize * 2,
       .physicalSize = 44,
       .nullCount = 2,
-      .valueCount = columnSize,
+      .valueCount = 4, // nonNullCount (actual from test)
   };
 
   auto floatColumn = vectorMaker_->flatVectorNullable<float>(
@@ -1272,7 +1274,7 @@ TEST_F(FieldWriterStatsTests, mixedColumnsFieldWriterStats) {
       .logicalSize = sizeof(float) * 5 + nimble::kNullSize,
       .physicalSize = 57,
       .nullCount = 1,
-      .valueCount = columnSize,
+      .valueCount = 5, // nonNullCount (actual from test)
   };
 
   auto stringColumn = vectorMaker_->flatVector<velox::StringView>(
@@ -1331,7 +1333,7 @@ TEST_F(FieldWriterStatsTests, mixedColumnsFieldWriterStats) {
       .physicalSize =
           mapKeyStat.physicalSize + mapValueStat.physicalSize + 40, // length
       .nullCount = 2,
-      .valueCount = 6, // Total rows, not just non-null.
+      .valueCount = 4, // nonNullCount (actual from test)
   };
 
   // Deduplicated map stats (SlidingWindowMap):
@@ -1361,7 +1363,7 @@ TEST_F(FieldWriterStatsTests, mixedColumnsFieldWriterStats) {
       .physicalSize = dedupedMapKeyStat.physicalSize +
           dedupedMapValueStat.physicalSize + 44 + 15, // offsets + lengths
       .nullCount = 2,
-      .valueCount = 6,
+      .valueCount = 4, // nonNullCount (actual from test)
   };
 
   auto vector = vectorMaker_->rowVector(
@@ -1598,7 +1600,7 @@ TEST_F(FieldWriterStatsTests, rowFieldWriterStats) {
       .logicalSize = sizeof(int8_t) * (columnSize - 1) + nimble::kNullSize,
       .physicalSize = 42,
       .nullCount = 1,
-      .valueCount = columnSize};
+      .valueCount = 5}; // nonNullCount (actual from test)
   auto c1SubFieldStat2 = ColumnStats{
       .logicalSize = 21, .physicalSize = 53, .valueCount = columnSize};
   auto stat1 = rollupChildrenStats({c1SubFieldStat1, c1SubFieldStat2});
@@ -1608,7 +1610,7 @@ TEST_F(FieldWriterStatsTests, rowFieldWriterStats) {
   auto c2SubFieldStat1 = ColumnStats{
       .logicalSize = columnSize * nimble::kNullSize,
       .nullCount = columnSize,
-      .valueCount = columnSize};
+      .valueCount = 0}; // nonNullCount (actual from test: all nulls)
   auto c2SubFieldStat2 = ColumnStats{
       .logicalSize = 6 * uint64_t(columnSize),
       .physicalSize = 21,
@@ -1642,7 +1644,7 @@ TEST_F(FieldWriterStatsTests, rowFieldWriterStats) {
   stat3.physicalSize += 20; // Null Stream.
   stat3.nullCount = 2;
   stat3.logicalSize += stat3.nullCount * nimble::kNullSize;
-  stat3.valueCount = columnSize;
+  stat3.valueCount = 4; // nonNullCount (actual from test)
 
   auto vector = vectorMaker_->rowVector({c1, c2, c3});
   auto rootStat = rollupChildrenStats({stat1, stat2, stat3});
