@@ -17,6 +17,7 @@
 #include <folly/system/HardwareConcurrency.h>
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/velox/DeduplicationUtils.h"
+#include "dwio/nimble/velox/RawSizeUtils.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "dwio/nimble/velox/VectorAdapters.h"
@@ -915,7 +916,11 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
         currentOffset_(0),
         cached_{false},
         cachedLength_{0},
-        statisticsCollector_{context.getStatsCollector(type->id())} {
+        statisticsCollector_{context.getStatsCollector(type->id())},
+        keyStatisticsCollector_{
+            context.getStatsCollector(type->childAt(0)->id())},
+        valueStatisticsCollector_{
+            context.getStatsCollector(type->childAt(1)->id())} {
     NIMBLE_DCHECK_EQ(type->size(), 2, "Invalid map type.");
     keys_ = FieldWriter::create(context, type->childAt(0));
     values_ = FieldWriter::create(context, type->childAt(1));
@@ -930,11 +935,77 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
       const OrderedRanges& ranges,
       folly::Executor*) override {
     OrderedRanges childFilteredRanges;
+    OrderedRanges fullChildRanges;
+    // childItemCount is the (logical) total cardinality of map elements,
+    // and is thus the total cardinality for both the key and value subcolumn.
+    uint64_t childItemCount = 0;
+    uint64_t keyNullCount = 0;
+    uint64_t valueNullCount = 0;
     auto map = ingestOffsetsAndLengthsDeduplicated(
-        vector, ranges, childFilteredRanges);
+        vector,
+        ranges,
+        childFilteredRanges,
+        fullChildRanges,
+        childItemCount,
+        keyNullCount,
+        valueNullCount);
     if (childFilteredRanges.size() > 0) {
       keys_->write(map->mapKeys(), childFilteredRanges);
       values_->write(map->mapValues(), childFilteredRanges);
+    }
+    // Adjust child stats to account for deduplicated elements.
+    // Child writers only see the deduplicated ranges, so their valueCount
+    // is the deduplicated count. We need to add the difference to get
+    // the full (non-deduplicated) valueCount. Similarly for null counts.
+    auto dedupedChildItemCount = childFilteredRanges.size();
+    if (childItemCount > dedupedChildItemCount) {
+      // Count nulls in deduplicated child elements.
+      uint64_t dedupedKeyNullCount = 0;
+      uint64_t dedupedValueNullCount = 0;
+      auto* mapKeys = map->mapKeys().get();
+      auto* mapValues = map->mapValues().get();
+      if (mapKeys->mayHaveNulls()) {
+        const auto* keyNulls = mapKeys->rawNulls();
+        if (keyNulls != nullptr) {
+          childFilteredRanges.apply([&](auto offset, auto count) {
+            dedupedKeyNullCount +=
+                velox::bits::countNulls(keyNulls, offset, offset + count);
+          });
+        }
+      }
+      if (mapValues->mayHaveNulls()) {
+        const auto* valueNulls = mapValues->rawNulls();
+        if (valueNulls != nullptr) {
+          childFilteredRanges.apply([&](auto offset, auto count) {
+            dedupedValueNullCount +=
+                velox::bits::countNulls(valueNulls, offset, offset + count);
+          });
+        }
+      }
+      auto additionalItemCount = childItemCount - dedupedChildItemCount;
+      auto additionalKeyNullCount = keyNullCount - dedupedKeyNullCount;
+      auto additionalValueNullCount = valueNullCount - dedupedValueNullCount;
+      // Calculate the raw size for the additional (duplicated) elements
+      // using getRawSizeFromVector, which handles variable-width and complex
+      // types correctly (unlike a simple typeSize * count formula).
+      RawSizeContext rawSizeContext;
+      auto keyRawSize =
+          getRawSizeFromVector(map->mapKeys(), fullChildRanges, rawSizeContext);
+      auto dedupedKeyRawSize = getRawSizeFromVector(
+          map->mapKeys(), childFilteredRanges, rawSizeContext);
+      auto additionalKeyRawSize = keyRawSize - dedupedKeyRawSize;
+      auto valueRawSize = getRawSizeFromVector(
+          map->mapValues(), fullChildRanges, rawSizeContext);
+      auto dedupedValueRawSize = getRawSizeFromVector(
+          map->mapValues(), childFilteredRanges, rawSizeContext);
+      auto additionalValueRawSize = valueRawSize - dedupedValueRawSize;
+      amendChildStatistics(
+          additionalItemCount,
+          additionalKeyNullCount,
+          additionalKeyRawSize,
+          additionalItemCount,
+          additionalValueNullCount,
+          additionalValueRawSize);
     }
   }
 
@@ -969,6 +1040,31 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
     statisticsCollector_->addLogicalSize(logicalSize);
   }
 
+  // Collects additional child element statistics for deduplicated elements.
+  // This is needed because child writers only see deduplicated ranges, so
+  // their valueCount would only reflect the deduplicated count. We need to
+  // add the difference (childItemCount- dedupedChildCount) to get the
+  // full valueCount. Similarly, we need to add the null count difference
+  // and the logical size for these additional elements.
+  void amendChildStatistics(
+      uint64_t additionalKeyItemCount,
+      uint64_t additionalKeyNullCount,
+      uint64_t additionalKeyRawSize,
+      uint64_t additionalValueItemCount,
+      uint64_t additionalValueNullCount,
+      uint64_t additionalValueRawSize) {
+    if (keyStatisticsCollector_) {
+      keyStatisticsCollector_->addCounts(
+          additionalKeyItemCount, additionalKeyNullCount);
+      keyStatisticsCollector_->addLogicalSize(additionalKeyRawSize);
+    }
+    if (valueStatisticsCollector_) {
+      valueStatisticsCollector_->addCounts(
+          additionalValueItemCount, additionalValueNullCount);
+      valueStatisticsCollector_->addLogicalSize(additionalValueRawSize);
+    }
+  }
+
   std::unique_ptr<FieldWriter> keys_;
   std::unique_ptr<FieldWriter> values_;
   NullableContentStreamData<uint32_t>& offsetsStream_;
@@ -978,11 +1074,17 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
   velox::vector_size_t cachedLength_;
   velox::VectorPtr cachedValue_;
   StatisticsCollector* statisticsCollector_;
+  StatisticsCollector* keyStatisticsCollector_;
+  StatisticsCollector* valueStatisticsCollector_;
 
   const velox::MapVector* ingestOffsetsAndLengthsDeduplicated(
       const velox::VectorPtr& vector,
       const OrderedRanges& ranges,
-      OrderedRanges& filteredRanges) {
+      OrderedRanges& filteredRanges,
+      OrderedRanges& fullChildRanges,
+      uint64_t& childItemCount,
+      uint64_t& keyNullCount,
+      uint64_t& valueNullCount) {
     const auto size = ranges.size();
     const velox::MapVector* mapVector = vector->as<velox::MapVector>();
     const velox::vector_size_t* rawOffsets;
@@ -990,9 +1092,31 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
     velox::vector_size_t lastCompareIndex = -1;
     auto& offsetsData = offsetsStream_.mutableData();
     auto& lengthsData = lengthsStream_.mutableData();
+    childItemCount = 0;
+    keyNullCount = 0;
+    valueNullCount = 0;
+
+    // Get child null pointers for null counting.
+    const uint64_t* keyNulls = nullptr;
+    const uint64_t* valueNulls = nullptr;
 
     auto processMapIndex = [&](velox::vector_size_t index) {
       auto const length = rawLengths[index];
+      // Track total child count for all map entries (including duplicates).
+      childItemCount += length;
+      // Track null counts and full child ranges for all elements.
+      if (length > 0) {
+        auto childOffset = rawOffsets[index];
+        fullChildRanges.add(childOffset, length);
+        if (keyNulls != nullptr) {
+          keyNullCount += velox::bits::countNulls(
+              keyNulls, childOffset, childOffset + length);
+        }
+        if (valueNulls != nullptr) {
+          valueNullCount += velox::bits::countNulls(
+              valueNulls, childOffset, childOffset + length);
+        }
+      }
 
       bool match = false;
       // Compare with the last element if not the first elemment
@@ -1025,9 +1149,14 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
     };
 
     uint64_t nullCount = 0;
-    if (mapVector) {
+    if (mapVector != nullptr) {
       rawOffsets = mapVector->rawOffsets();
       rawLengths = mapVector->rawSizes();
+      // Initialize key/value null pointers for child null counting.
+      auto* keysVector = mapVector->mapKeys().get();
+      auto* valuesVector = mapVector->mapValues().get();
+      keyNulls = keysVector->rawNulls();
+      valueNulls = valuesVector->rawNulls();
       offsetsStream_.ensureAdditionalNullsCapacity(
           mapVector->mayHaveNulls(), size);
       FlatAdapter<> iterableVector{vector};
@@ -1044,6 +1173,11 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
       NIMBLE_CHECK_NOT_NULL(mapVector, "Unexpected vector type");
       rawOffsets = mapVector->rawOffsets();
       rawLengths = mapVector->rawSizes();
+      // Initialize key/value null pointers for child null counting.
+      auto* keysVector = mapVector->mapKeys().get();
+      auto* valuesVector = mapVector->mapValues().get();
+      keyNulls = keysVector->rawNulls();
+      valueNulls = valuesVector->rawNulls();
       offsetsStream_.ensureAdditionalNullsCapacity(
           decoded.mayHaveNulls(), size);
       DecodedAdapter<> iterableVector{decoded};
@@ -1846,7 +1980,9 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
         cached_(false),
         cachedValue_(nullptr),
         cachedSize_(0),
-        statisticsCollector_{context.getStatsCollector(type->id())} {
+        statisticsCollector_{context.getStatsCollector(type->id())},
+        elementStatisticsCollector_{
+            context.getStatsCollector(type->childAt(0)->id())} {
     elements_ = FieldWriter::create(context, type->childAt(0));
 
     typeBuilder_->asArrayWithOffsets().setChildren(elements_->typeBuilder());
@@ -1860,6 +1996,9 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       const OrderedRanges& ranges,
       folly::Executor*) override {
     OrderedRanges childFilteredRanges;
+    // childItemCount is the (logical) total cardinality of array elements.
+    uint64_t childItemCount = 0;
+    uint64_t elementNullCount = 0;
     const velox::ArrayVector* array;
     uint64_t nullCount = 0;
     // To unwrap the dictionaryVector we need to cast into ComplexType before
@@ -1870,13 +2009,52 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
         dictionaryVector->valueVector()->template as<velox::ArrayVector>() &&
         isDictionaryValidRunLengthEncoded(*dictionaryVector)) {
       array = ingestLengthsOffsetsAlreadyEncoded(
-          *dictionaryVector, ranges, childFilteredRanges, nullCount);
+          *dictionaryVector,
+          ranges,
+          childFilteredRanges,
+          nullCount,
+          childItemCount,
+          elementNullCount);
     } else {
-      array =
-          ingestLengthsOffsets(vector, ranges, childFilteredRanges, nullCount);
+      array = ingestLengthsOffsets(
+          vector,
+          ranges,
+          childFilteredRanges,
+          nullCount,
+          childItemCount,
+          elementNullCount);
     }
     if (childFilteredRanges.size() > 0) {
       elements_->write(array->elements(), childFilteredRanges);
+    }
+    // Adjust child stats to account for deduplicated elements.
+    // Child writers only see the deduplicated ranges, so their valueCount
+    // is the deduplicated count. We need to add the difference to get
+    // the full (non-deduplicated) valueCount. Similarly for null counts.
+    auto dedupedChildItemCount = childFilteredRanges.size();
+    if (childItemCount > dedupedChildItemCount) {
+      // Count nulls in deduplicated child elements.
+      uint64_t dedupedElementNullCount = 0;
+      auto* elements = array->elements().get();
+      if (elements->mayHaveNulls()) {
+        const auto* elementNulls = elements->rawNulls();
+        if (elementNulls != nullptr) {
+          childFilteredRanges.apply([&](auto offset, auto count) {
+            dedupedElementNullCount +=
+                velox::bits::countNulls(elementNulls, offset, offset + count);
+          });
+        }
+      }
+      auto additionalItemCount = childItemCount - dedupedChildItemCount;
+      auto additionalNullCount = elementNullCount - dedupedElementNullCount;
+      // Calculate the raw size for the additional (duplicated) elements.
+      // Non-null elements take sizeof(SourceType) bytes, nulls take 1 byte.
+      // NOTE: the elements are statically asserted to be fixed width types.
+      auto additionalRawSize =
+          (additionalItemCount - additionalNullCount) * sizeof(SourceType) +
+          additionalNullCount;
+      amendChildStatistics(
+          additionalItemCount, additionalNullCount, additionalRawSize);
     }
 
     // Calculate non-deduplicated logical size.
@@ -1923,6 +2101,23 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
     statisticsCollector_->addLogicalSize(logicalSize);
   }
 
+  // Collects additional child element statistics for deduplicated elements.
+  // This is needed because child writers only see deduplicated ranges, so
+  // their valueCount would only reflect the deduplicated count. We need to
+  // add the difference (childItemCount- dedupedChildCount) to get the
+  // full valueCount. Similarly, we need to add the null count difference
+  // and the logical size for these additional elements.
+  void amendChildStatistics(
+      uint64_t additionalCount,
+      uint64_t additionalNullCount,
+      uint64_t additionalRawSize) {
+    if (elementStatisticsCollector_) {
+      elementStatisticsCollector_->addCounts(
+          additionalCount, additionalNullCount);
+      elementStatisticsCollector_->addLogicalSize(additionalRawSize);
+    }
+  }
+
   std::unique_ptr<FieldWriter> elements_;
   NullableContentStreamData<uint32_t>&
       offsetsStream_; /** offsets for each data after dedup */
@@ -1934,6 +2129,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
   velox::VectorPtr cachedValue_{nullptr};
   velox::vector_size_t cachedSize_{0};
   StatisticsCollector* statisticsCollector_;
+  StatisticsCollector* elementStatisticsCollector_;
 
   /*
    * Check if the dictionary is valid run length encoded.
@@ -1964,7 +2160,9 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       const velox::DictionaryVector<velox::ComplexType>& dictionaryVector,
       const OrderedRanges& ranges,
       OrderedRanges& filteredRanges,
-      uint64_t& nullCount) {
+      uint64_t& nullCount,
+      uint64_t& childItemCount,
+      uint64_t& elementNullCount) {
     auto size = ranges.size();
     offsetsStream_.ensureAdditionalNullsCapacity(
         dictionaryVector.mayHaveNulls(), size);
@@ -1972,15 +2170,36 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
     auto& offsetsData = offsetsStream_.mutableData();
     auto& lengthsData = lengthsStream_.mutableData();
     auto& nonNulls = offsetsStream_.mutableNonNulls();
+    nullCount = 0;
+    childItemCount = 0;
+    elementNullCount = 0;
 
     const velox::vector_size_t* offsets =
         dictionaryVector.indices()->template as<velox::vector_size_t>();
     auto valuesArrayVector =
         dictionaryVector.valueVector()->template as<velox::ArrayVector>();
 
+    // Get element null pointers for null counting.
+    auto* elementsVector = valuesArrayVector->elements().get();
+    const uint64_t* elementNulls =
+        elementsVector->mayHaveNulls() ? elementsVector->rawNulls() : nullptr;
+    const velox::vector_size_t* valuesOffsets = valuesArrayVector->rawOffsets();
+    const velox::vector_size_t* valuesSizes = valuesArrayVector->rawSizes();
+
     auto previousOffset = -1;
     bool newElementIngested = false;
     auto ingestDictionaryIndex = [&](auto index) {
+      const auto& dictIndex = offsets[index];
+      auto numElement = valuesSizes[dictIndex];
+      // Track total child count for all array elements (including duplicates).
+      childItemCount += numElement;
+      // Track null counts in child elements.
+      if (numElement > 0 && elementNulls) {
+        auto childOffset = valuesOffsets[dictIndex];
+        elementNullCount += velox::bits::countNulls(
+            elementNulls, childOffset, childOffset + numElement);
+      }
+
       bool match = false;
       // Only write length if first element or if consecutive offset is
       // different, meaning we have reached a new value element.
@@ -1989,7 +2208,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       } else if (cached_) {
         velox::CompareFlags flags;
         match =
-            (valuesArrayVector->sizeAt(offsets[index]) == cachedSize_ &&
+            (numElement == cachedSize_ &&
              valuesArrayVector
                      ->compare(cachedValue_.get(), offsets[index], 0, flags)
                      .value_or(-1) == 0);
@@ -1997,7 +2216,7 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
 
       if (!match) {
         auto arrayOffset = valuesArrayVector->offsetAt(offsets[index]);
-        auto length = valuesArrayVector->sizeAt(offsets[index]);
+        auto length = numElement;
         lengthsData.push_back(length);
         newElementIngested = true;
         if (length > 0) {
@@ -2010,7 +2229,6 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       previousOffset = offsets[index];
     };
 
-    nullCount = 0;
     if (dictionaryVector.mayHaveNulls()) {
       ranges.applyEach([&](auto index) {
         auto notNull = !dictionaryVector.isNullAt(index);
@@ -2172,16 +2390,31 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       const velox::VectorPtr& vector,
       const OrderedRanges& ranges,
       OrderedRanges& filteredRanges,
-      uint64_t& nullCount) {
+      uint64_t& nullCount,
+      uint64_t& childItemCount,
+      uint64_t& elementNullCount) {
     auto size = ranges.size();
     const velox::ArrayVector* arrayVector = vector->as<velox::ArrayVector>();
     const velox::vector_size_t* rawOffsets;
     const velox::vector_size_t* rawLengths;
     OrderedRanges childRanges;
+    childItemCount = 0;
+    elementNullCount = 0;
+
+    // Get element null pointer for null counting.
+    const uint64_t* elementNulls = nullptr;
 
     auto proc = [&](velox::vector_size_t index) {
       auto length = rawLengths[index];
+      // Track total child count for all array elements (including duplicates).
+      childItemCount += length;
+      // Track null counts in child elements.
       if (length > 0) {
+        if (elementNulls != nullptr) {
+          auto childOffset = rawOffsets[index];
+          elementNullCount += velox::bits::countNulls(
+              elementNulls, childOffset, childOffset + length);
+        }
         childRanges.add(rawOffsets[index], length);
       }
     };
@@ -2189,6 +2422,9 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
     if (arrayVector) {
       rawOffsets = arrayVector->rawOffsets();
       rawLengths = arrayVector->rawSizes();
+      // Initialize element null pointer for child null counting.
+      auto* elementsVector = arrayVector->elements().get();
+      elementNulls = elementsVector->rawNulls();
 
       offsetsStream_.ensureAdditionalNullsCapacity(
           arrayVector->mayHaveNulls(), size);
@@ -2205,6 +2441,9 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
       NIMBLE_CHECK_NOT_NULL(arrayVector, "Unexpected vector type");
       rawOffsets = arrayVector->rawOffsets();
       rawLengths = arrayVector->rawSizes();
+      // Initialize element null pointer for child null counting.
+      auto* elementsVector = arrayVector->elements().get();
+      elementNulls = elementsVector->rawNulls();
 
       offsetsStream_.ensureAdditionalNullsCapacity(
           decoded.mayHaveNulls(), size);
