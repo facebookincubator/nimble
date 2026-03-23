@@ -251,7 +251,7 @@ class StatisticsCollector {
 
   // Mutation methods for accumulating statistics.
   void addValues(std::span<bool> values);
-  virtual void addCounts(uint64_t valueCount, uint64_t nullCount);
+  virtual void addCounts(uint64_t totalCount, uint64_t nullCount);
   // BE: if we want to go extra, we can have a complex/aggregate type
   // and limit the availability of this method.
   virtual void addLogicalSize(uint64_t logicalSize);
@@ -316,7 +316,7 @@ class DeduplicatedStatisticsCollector : public StatisticsCollector {
   ColumnStatistics* getStatsView() override;
   const ColumnStatistics* getStatsView() const override;
 
-  void addCounts(uint64_t valueCount, uint64_t nullCount) override;
+  void addCounts(uint64_t totalCount, uint64_t nullCount) override;
   void addLogicalSize(uint64_t logicalSize) override;
   void addPhysicalSize(uint64_t physicalSize) override;
 
@@ -348,7 +348,7 @@ class SharedStatisticsCollector : public StatisticsCollector {
   ColumnStatistics* getStatsView() override;
   const ColumnStatistics* getStatsView() const override;
 
-  void addCounts(uint64_t valueCount, uint64_t nullCount) override;
+  void addCounts(uint64_t totalCount, uint64_t nullCount) override;
   void addLogicalSize(uint64_t logicalSize) override;
   void addPhysicalSize(uint64_t physicalSize) override;
 
