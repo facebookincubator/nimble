@@ -26,6 +26,7 @@
 #include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
+#include "velox/common/io/IoStatistics.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/serializers/KeyEncoder.h"
 #include "velox/type/Subfield.h"
@@ -60,8 +61,9 @@ class NimbleIndexProjector {
   // TODO: projectedSubfields currently must match file schema column names.
   // Add table-to-file column name mapping for schema evolution support.
   NimbleIndexProjector(
-      std::shared_ptr<ReaderBase> readerBase,
-      const std::vector<Subfield>& projectedSubfields);
+      std::shared_ptr<velox::ReadFile> readFile,
+      const std::vector<Subfield>& projectedSubfields,
+      const velox::dwio::common::ReaderOptions& options);
 
   ~NimbleIndexProjector() = default;
 
@@ -140,6 +142,16 @@ class NimbleIndexProjector {
     /// serialization overhead like headers and trailers).
     uint64_t numReadBytes{0};
 
+    /// Total bytes read from disk, including coalesced/merged regions and
+    /// index/key streams. Only available when created with the ReadFile
+    /// overload; 0 otherwise.
+    uint64_t rawBytesRead{0};
+    /// Bytes read from disk but not requested by the projector, due to
+    /// BufferedInput merging adjacent regions (coalescing overhead).
+    uint64_t rawOverreadBytes{0};
+    /// Number of storage read operations (pread syscalls).
+    uint64_t numStorageReads{0};
+
     /// Time spent looking up stripes and row ranges via the tablet index.
     velox::CpuWallTiming lookupTiming;
     /// Time spent loading stripe stream data from tablet.
@@ -205,6 +217,9 @@ class NimbleIndexProjector {
         readerBase_->tablet().stripeRowCount(stripeIndex));
   }
 
+  void updateIoStats();
+
+  const std::shared_ptr<velox::io::IoStatistics> ioStatistics_;
   const std::shared_ptr<ReaderBase> readerBase_;
   velox::memory::MemoryPool* const pool_;
   const TabletIndex* const tabletIndex_;
