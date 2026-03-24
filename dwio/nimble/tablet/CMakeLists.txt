@@ -74,7 +74,9 @@ target_link_libraries(
 
 add_library(nimble_tablet_reader FileLayout.cpp TabletReader.cpp)
 target_link_libraries(
-  nimble_tablet_reader nimble_tablet_common nimble_chunk_index_fb
+  nimble_tablet_reader
+  nimble_tablet_common
+  nimble_chunk_index_fb
 )
 
 add_library(
@@ -82,7 +84,9 @@ add_library(
   TabletWriter.cpp
 )
 target_link_libraries(
-  nimble_tablet_writer nimble_tablet_common nimble_cluster_index_fb
+  nimble_tablet_writer
+  nimble_tablet_common
+  nimble_cluster_index_fb
   nimble_chunk_index_fb
 )
 

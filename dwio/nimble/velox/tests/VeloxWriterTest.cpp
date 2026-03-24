@@ -445,7 +445,7 @@ TEST_F(VeloxWriterTest, featureReorderingStreamCollocation) {
     auto tablet = nimble::TabletReader::create(&readFile, leafPool_.get(), {});
     ASSERT_GE(tablet->stripeCount(), 1);
     if (enableIndex) {
-      ASSERT_NE(tablet->index(), nullptr) << "Cluster index must exist";
+      ASSERT_NE(tablet->clusterIndex(), nullptr) << "Cluster index must exist";
     }
 
     auto stripeId = tablet->stripeIdentifier(0);
