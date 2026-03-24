@@ -26,13 +26,12 @@
 
 namespace facebook::nimble {
 
-struct Chunk;
 struct KeyChunk;
 struct KeyStream;
 
 /// Configuration for cluster index in TabletWriter.
 /// Only includes fields needed at the tablet layer (columns and ordering).
-struct TabletIndexConfig {
+struct ClusterIndexConfig {
   /// Columns to be indexed for data pruning.
   std::vector<std::string> columns;
   /// Specifies the sort order for each index column.
@@ -48,55 +47,47 @@ struct TabletIndexConfig {
   bool noDuplicateKey{false};
 };
 
-/// TabletIndexWriter manages all index-related state and operations for
-/// TabletWriter.
+/// ClusterIndexWriter manages cluster index (value index + key stream)
+/// state and operations for TabletWriter.
 ///
 /// NOTE: This class is not thread-safe. All methods must be called from a
 /// single thread.
 ///
 /// It encapsulates:
 /// - Root index: stripe key boundaries for file-level key range lookups
-/// - Stripe index groups: chunk-level index data for streams and keys within
-///   each stripe group
-/// - All internal state maintenance across stripe and stripe group boundaries
-///
-/// This class separates index management concerns from the core tablet writing
-/// logic, following the same pattern as IndexWriter in the velox layer.
+/// - StripeClusterIndex: key stream chunk data within each stripe group
 ///
 /// Lifecycle:
-/// 1. Create with config and memory pool
-/// 2. For each stripe:
-///    a. Call ensureStripeWrite() to initialize stripe index structures
+/// - Create with config and memory pool
+/// - For each stripe:
+///    a. Call newStripe() to initialize key stream structures
 ///    b. Call addStripeKey() with key stream data
-///    c. Call addStreamIndex() for each stream's chunk data
-///    d. Call writeKeyStream() to persist key stream and update index
-/// 3. At stripe group boundaries:
-///    a. Call writeIndexGroup() to serialize and persist group index
-/// 4. At file close:
-///    a. Call writeRootIndex() to serialize root index as optional section
-class TabletIndexWriter {
+///    c. Call writeKeyStream() to persist key stream and update index
+/// - At stripe group boundaries:
+///    a. Call writeGroup() to serialize and persist index group
+/// - At file close:
+///    a. Call writeRoot() to serialize root index as optional section
+class ClusterIndexWriter {
  public:
-  /// Factory method to create a TabletIndexWriter instance.
+  /// Factory method to create a ClusterIndexWriter instance.
   ///
   /// @param config Optional index configuration. If not present, returns
   ///               nullptr (no indexing).
   /// @param pool Memory pool for allocations.
-  /// @return Unique pointer to TabletIndexWriter, or nullptr if config is not
+  /// @return Unique pointer to ClusterIndexWriter, or nullptr if config is not
   ///         present.
-  static std::unique_ptr<TabletIndexWriter> create(
-      const std::optional<TabletIndexConfig>& config,
+  static std::unique_ptr<ClusterIndexWriter> create(
+      const std::optional<ClusterIndexConfig>& config,
       velox::memory::MemoryPool& pool);
 
-  TabletIndexWriter(const TabletIndexWriter&) = delete;
-  TabletIndexWriter& operator=(const TabletIndexWriter&) = delete;
-  TabletIndexWriter(TabletIndexWriter&&) = delete;
-  TabletIndexWriter& operator=(TabletIndexWriter&&) = delete;
+  ClusterIndexWriter(const ClusterIndexWriter&) = delete;
+  ClusterIndexWriter& operator=(const ClusterIndexWriter&) = delete;
+  ClusterIndexWriter(ClusterIndexWriter&&) = delete;
+  ClusterIndexWriter& operator=(ClusterIndexWriter&&) = delete;
 
-  /// Initializes index structures for writing a new stripe.
+  /// Initializes key stream index structures for writing a new stripe.
   /// Must be called at the start of each stripe write.
-  ///
-  /// @param streamCount Number of streams in this stripe.
-  void ensureStripeWrite(size_t streamCount);
+  void newStripe();
 
   /// Adds stripe key boundaries to the root index.
   /// For the first stripe, stores both first and last keys.
@@ -105,13 +96,6 @@ class TabletIndexWriter {
   ///
   /// @param keyStream Key stream containing chunk key data.
   void addStripeKey(const KeyStream& keyStream);
-
-  /// Adds chunk-level index data for a stream.
-  /// Records row counts and byte offsets for each chunk.
-  ///
-  /// @param streamIndex Index of the stream.
-  /// @param chunks Chunks from the stream.
-  void addStreamIndex(uint32_t streamIndex, const std::vector<Chunk>& chunks);
 
   /// Callback type for writing data with checksum to the file.
   using WriteWithChecksumFn = std::function<void(std::string_view)>;
@@ -130,26 +114,14 @@ class TabletIndexWriter {
       const std::vector<KeyChunk>& keyChunks,
       const WriteWithChecksumFn& writeWithChecksum);
 
-  /// Callback type for creating metadata sections in the file.
-  /// This is provided by TabletWriter to write metadata sections and return
-  /// their file positions.
-  using CreateMetadataSectionFn =
-      std::function<MetadataSection(std::string_view)>;
-
   /// Writes the index group for a completed stripe group.
-  /// Serializes key stream and stream chunk data into FlatBuffers format.
+  /// Builds StripeClusterIndex from key stream data.
   ///
-  /// @param streamCount Number of streams in the stripe group.
   /// @param stripeCount Number of stripes in the stripe group.
   /// @param createMetadataSection Callback to create metadata section.
-  void writeIndexGroup(
-      size_t streamCount,
+  void writeGroup(
       size_t stripeCount,
       const CreateMetadataSectionFn& createMetadataSection);
-
-  /// Callback type for writing optional sections.
-  using WriteOptionalSectionFn =
-      std::function<void(std::string, std::string_view)>;
 
   /// Writes the root index as an optional section.
   /// Call this at file close to persist the file-level index.
@@ -158,36 +130,31 @@ class TabletIndexWriter {
   ///
   /// @param stripeGroupIndices Mapping of stripe index to stripe group index.
   /// @param writeOptionalSection Callback to write optional section.
-  void writeRootIndex(
+  void writeRoot(
       const std::vector<uint32_t>& stripeGroupIndices,
       const WriteOptionalSectionFn& writeOptionalSection);
 
  private:
   void checkNotFinalized() const {
-    NIMBLE_CHECK(!finalized_, "TabletIndexWriter has been finalized");
+    NIMBLE_CHECK(!finalized_, "ClusterIndexWriter has been finalized");
   }
 
   // Writes an empty root index with config only (columns, sort orders)
   // but no stripe keys or stripe index groups.
   void writeEmptyRootIndex(const WriteOptionalSectionFn& writeOptionalSection);
 
-  TabletIndexWriter(
-      const TabletIndexConfig& config,
+  ClusterIndexWriter(
+      const ClusterIndexConfig& config,
       velox::memory::MemoryPool& pool);
 
-  // Holds chunk-level index data for a single stream within a stripe group.
-  struct StreamIndex {
-    // Number of rows in each chunk (accumulated).
+  // Holds chunk-level index data for the key stream within a stripe.
+  struct KeyStreamIndex {
+    // Accumulated row counts per chunk.
     std::vector<uint32_t> chunkRows;
     // Byte offsets of each chunk within the stream.
     std::vector<uint32_t> chunkOffsets;
     // Number of chunks in this stripe for this stream.
     uint32_t chunkCount{0};
-  };
-
-  // Holds index data for the key stream within a stripe.
-  // Extends StreamIndex with stream-level offset/size and chunk keys.
-  struct KeyStreamIndex : public StreamIndex {
     // Byte offset of key stream for this stripe.
     uint32_t streamOffset{0};
     // Byte size of key stream for this stripe.
@@ -196,17 +163,13 @@ class TabletIndexWriter {
     std::vector<std::string_view> chunkKeys;
   };
 
-  // Holds index data for all streams in a single stripe.
+  // Holds key stream index data for all stripes in a stripe group.
   struct StripeIndex {
-    // Per-stream chunk index data.
-    std::vector<StreamIndex> streams;
-    // Key stream index data.
     KeyStreamIndex keyStream;
   };
 
-  // Holds index data for stream chunks across all stripes in a stripe group.
+  // Holds key stream index data across all stripes in a stripe group.
   struct GroupIndex {
-    // Per-stripe index data.
     std::vector<StripeIndex> stripes;
     // Buffer for encoding group index data (keys).
     std::unique_ptr<Buffer> encodingBuffer;
@@ -218,30 +181,27 @@ class TabletIndexWriter {
 
   // Holds the root index data for the entire file.
   struct RootIndex {
-    // Key values for each stripe.
-    // Contains the first key for the first stripe, and the last key for all
-    // stripes.
+    // Key values for each stripe. Contains the first key for the first stripe,
+    // and the last key for all stripes.
     std::vector<std::string_view> stripeKeys;
-    // Metadata sections for stripe index groups.
-    std::vector<MetadataSection> stripeIndexGroups;
+    // Metadata sections for each stripe group's cluster index.
+    std::vector<MetadataSection> stripeIndexes;
     // Buffer for encoding root index data.
     std::unique_ptr<Buffer> encodingBuffer;
   };
 
-  // Updates a StreamIndex with chunk data.
-  // Works with both Chunk and KeyChunk types.
-  template <typename ChunkT>
-  static void updateStreamIndex(
-      const std::vector<ChunkT>& chunks,
-      StreamIndex& index);
+  // Updates a KeyStreamIndex with chunk data.
+  static void updateKeyStreamIndex(
+      const std::vector<KeyChunk>& chunks,
+      KeyStreamIndex& index);
 
   velox::memory::MemoryPool* const pool_;
-  const TabletIndexConfig config_;
+  const ClusterIndexConfig config_;
 
   std::unique_ptr<GroupIndex> groupIndex_;
   std::unique_ptr<RootIndex> rootIndex_;
 
-  // Set to true after writeRootIndex() is called. No mutation calls are
+  // Set to true after writeRoot() is called. No mutation calls are
   // expected after this.
   bool finalized_{false};
 };

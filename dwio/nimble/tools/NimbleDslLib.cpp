@@ -18,8 +18,8 @@
 
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/index/StripeIndexGroup.h"
-#include "dwio/nimble/index/TabletIndex.h"
+#include "dwio/nimble/index/ClusterIndex.h"
+#include "dwio/nimble/index/ClusterIndexGroup.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tools/EncodingUtilities.h"

@@ -15,7 +15,10 @@
  */
 #pragma once
 
+#include <functional>
+#include <string>
 #include <string_view>
+
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "folly/io/IOBuf.h"
@@ -97,5 +100,13 @@ class MetadataSection {
   uint32_t size_;
   CompressionType compressionType_;
 };
+
+/// Callback type for creating metadata sections in the file.
+using CreateMetadataSectionFn =
+    std::function<MetadataSection(std::string_view)>;
+
+/// Callback type for writing optional sections.
+using WriteOptionalSectionFn =
+    std::function<void(std::string, std::string_view)>;
 
 } // namespace facebook::nimble

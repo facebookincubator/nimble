@@ -20,7 +20,7 @@
 
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
-#include "dwio/nimble/index/IndexReader.h"
+#include "dwio/nimble/index/ClusterIndexReader.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/selective/ColumnReader.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
@@ -157,9 +157,9 @@ SelectiveNimbleIndexReader::SelectiveNimbleIndexReader(
           outputType_,
           readerBase_->fileSchema(),
           *options.scanSpec())),
-      tabletIndex_{readerBase_->tablet().index()},
+      clusterIndex_{readerBase_->tablet().clusterIndex()},
       indexColumns_{convertIndexColumnsToFileSchema(
-          tabletIndex_->indexColumns(),
+          clusterIndex_->indexColumns(),
           readerBase_->nimbleSchema(),
           readerBase_->fileSchema())},
       streams_{readerBase_} {
@@ -259,9 +259,9 @@ void SelectiveNimbleIndexReader::initReadRange() {
 std::vector<velox::serializer::EncodedKeyBounds>
 SelectiveNimbleIndexReader::encodeIndexBounds(
     const velox::serializer::IndexBounds& indexBounds) {
-  NIMBLE_CHECK_NOT_NULL(tabletIndex_);
+  NIMBLE_CHECK_NOT_NULL(clusterIndex_);
   if (keyEncoder_ == nullptr) {
-    const auto& sortOrders = tabletIndex_->sortOrders();
+    const auto& sortOrders = clusterIndex_->sortOrders();
     keyEncoder_ = velox::serializer::KeyEncoder::create(
         indexBounds.indexColumns,
         asRowType(indexBounds.type()),
@@ -278,7 +278,7 @@ void SelectiveNimbleIndexReader::mapRequestsToStripes() {
   requestStates_.resize(numRequests_);
 
   // Early exit if the index is empty (no stripes).
-  if (tabletIndex_->empty()) {
+  if (clusterIndex_->empty()) {
     return;
   }
 
@@ -290,10 +290,10 @@ void SelectiveNimbleIndexReader::mapRequestsToStripes() {
     // Determine start stripe from lower bound.
     uint32_t startStripe = 0;
     if (bounds.lowerKey.has_value()) {
-      const auto lowerLocation = tabletIndex_->lookup(bounds.lowerKey.value());
+      const auto lowerLocation = clusterIndex_->lookup(bounds.lowerKey.value());
       if (lowerLocation.has_value()) {
         startStripe = static_cast<uint32_t>(lowerLocation->stripeIndex);
-      } else if (bounds.lowerKey.value() > tabletIndex_->maxKey()) {
+      } else if (bounds.lowerKey.value() > clusterIndex_->maxKey()) {
         continue; // No stripes match.
       }
     }
@@ -301,11 +301,11 @@ void SelectiveNimbleIndexReader::mapRequestsToStripes() {
     // Determine end stripe from upper bound.
     uint32_t endStripe = numStripes_;
     if (bounds.upperKey.has_value()) {
-      const auto upperLocation = tabletIndex_->lookup(bounds.upperKey.value());
+      const auto upperLocation = clusterIndex_->lookup(bounds.upperKey.value());
       if (upperLocation.has_value()) {
         endStripe = std::min(
             endStripe, static_cast<uint32_t>(upperLocation->stripeIndex) + 1);
-      } else if (bounds.upperKey.value() < tabletIndex_->minKey()) {
+      } else if (bounds.upperKey.value() < clusterIndex_->minKey()) {
         continue; // No stripes match.
       }
     }
@@ -564,7 +564,7 @@ void SelectiveNimbleIndexReader::loadStripeWithIndex(uint32_t stripeIndex) {
   addThreadLocalRuntimeStat(
       dwio::common::RowReader::kNumStripeLoads, velox::RuntimeCounter(1));
 
-  streams_.setStripe(stripeIndex, /*loadIndex=*/true);
+  streams_.setStripe(stripeIndex);
   NimbleParams params(
       *readerBase_->pool(),
       columnReaderStatistics_,
@@ -597,10 +597,10 @@ void SelectiveNimbleIndexReader::loadStripeWithIndex(uint32_t stripeIndex) {
   columnReader_->setIsTopLevel();
 
   // Build index reader.
-  indexReader_ = index::IndexReader::create(
+  indexReader_ = index::ClusterIndexReader::create(
       params.streams().enqueueKeyStream(),
       params.streams().stripeIndex(),
-      params.streams().indexGroup(),
+      params.streams().clusterIndex(),
       &params.pool());
 
   streams_.load();

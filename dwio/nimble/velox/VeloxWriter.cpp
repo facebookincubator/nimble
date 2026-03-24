@@ -476,13 +476,13 @@ std::unique_ptr<FieldWriter> createRootFieldWriter(
   });
 }
 
-std::optional<TabletIndexConfig> createTabletIndexConfig(
+std::optional<ClusterIndexConfig> createClusterIndexConfig(
     const std::optional<IndexConfig>& config,
     index::IndexWriter* indexWriter) {
   if (!config.has_value() || indexWriter == nullptr) {
     return std::nullopt;
   }
-  return TabletIndexConfig{
+  return ClusterIndexConfig{
       .columns = config->columns,
       .sortOrders = indexWriter->sortOrders(),
       .enforceKeyOrder = config->enforceKeyOrder,
@@ -702,7 +702,9 @@ VeloxWriter::VeloxWriter(
                    kMetadataCompressionThreshold),
            .streamDeduplicationEnabled =
                context_->options().enableStreamDeduplication,
-           .indexConfig = createTabletIndexConfig(
+           .enableChunkIndex = context_->options().enableChunkIndex,
+           .chunkIndexMinAvgChunks = context_->options().chunkIndexMinAvgChunks,
+           .indexConfig = createClusterIndexConfig(
                context_->options().indexConfig,
                indexWriter_.get())})} {
   NIMBLE_CHECK_NOT_NULL(file_);
@@ -858,14 +860,14 @@ void VeloxWriter::writeSchema() {
       serializer.serialize(context_->schemaBuilder()));
 }
 
-bool VeloxWriter::hasIndex() const {
+bool VeloxWriter::hasClusterIndex() const {
   return indexWriter_ != nullptr;
 }
 
 void VeloxWriter::addIndexKey(
     const velox::VectorPtr& input,
     velox::dwio::common::ExecutorBarrier* barrier) {
-  if (!hasIndex()) {
+  if (!hasClusterIndex()) {
     return;
   }
   ensureEncodingBuffer();
@@ -902,7 +904,7 @@ void VeloxWriter::close() {
       writeStripe();
       rootWriter_->close();
       context_->finalizeStatsCollectors();
-      if (hasIndex()) {
+      if (hasClusterIndex()) {
         indexWriter_->close();
       }
 
@@ -1027,7 +1029,7 @@ void VeloxWriter::writeStreams() {
 }
 
 void VeloxWriter::encodeKeyStreamChunk(bool lastChunk, bool ensureFullChunks) {
-  NIMBLE_CHECK(hasIndex());
+  NIMBLE_CHECK(hasClusterIndex());
   if (!indexWriter_->hasKeys()) {
     return;
   }
@@ -1095,7 +1097,7 @@ void VeloxWriter::processStream(
 
 void VeloxWriter::maybeProcessKeyStream(
     velox::dwio::common::ExecutorBarrier* barrier) {
-  if (!hasIndex()) {
+  if (!hasClusterIndex()) {
     return;
   }
   NIMBLE_CHECK(indexWriter_->hasKeys());
@@ -1111,7 +1113,7 @@ void VeloxWriter::maybeEncodeKeyStreamChunk(
     bool lastChunk,
     bool ensureFullChunks,
     velox::dwio::common::ExecutorBarrier* barrier) {
-  if (!hasIndex()) {
+  if (!hasClusterIndex()) {
     return;
   }
   auto encode = [&]() { encodeKeyStreamChunk(lastChunk, ensureFullChunks); };
@@ -1123,7 +1125,7 @@ void VeloxWriter::maybeEncodeKeyStreamChunk(
 }
 
 std::optional<KeyStream> VeloxWriter::finishKeyStream() {
-  if (!hasIndex()) {
+  if (!hasClusterIndex()) {
     return std::nullopt;
   }
   return indexWriter_->finishStripe(*encodingBuffer_);

@@ -33,20 +33,36 @@ target_include_directories(
 add_dependencies(nimble_footer_fb nimble_footer_schema_fb)
 
 build_flatbuffers(
-  "${CMAKE_CURRENT_SOURCE_DIR}/Index.fbs"
+  "${CMAKE_CURRENT_SOURCE_DIR}/ClusterIndex.fbs"
   ""
-  nimble_index_schema_fb
+  nimble_cluster_index_schema_fb
   ""
   "${CMAKE_CURRENT_BINARY_DIR}"
   ""
   ""
 )
-add_library(nimble_index_fb INTERFACE)
+add_library(nimble_cluster_index_fb INTERFACE)
 target_include_directories(
-  nimble_index_fb
+  nimble_cluster_index_fb
   INTERFACE ${PROJECT_BINARY_DIR} ${FLATBUFFERS_INCLUDE_DIR}
 )
-add_dependencies(nimble_index_fb nimble_index_schema_fb)
+add_dependencies(nimble_cluster_index_fb nimble_cluster_index_schema_fb)
+
+build_flatbuffers(
+  "${CMAKE_CURRENT_SOURCE_DIR}/ChunkIndex.fbs"
+  ""
+  nimble_chunk_index_schema_fb
+  ""
+  "${CMAKE_CURRENT_BINARY_DIR}"
+  ""
+  ""
+)
+add_library(nimble_chunk_index_fb INTERFACE)
+target_include_directories(
+  nimble_chunk_index_fb
+  INTERFACE ${PROJECT_BINARY_DIR} ${FLATBUFFERS_INCLUDE_DIR}
+)
+add_dependencies(nimble_chunk_index_fb nimble_chunk_index_schema_fb)
 
 add_library(nimble_tablet_common Compression.cpp MetadataBuffer.cpp)
 target_link_libraries(
@@ -57,9 +73,17 @@ target_link_libraries(
 )
 
 add_library(nimble_tablet_reader FileLayout.cpp TabletReader.cpp)
-target_link_libraries(nimble_tablet_reader nimble_tablet_common)
+target_link_libraries(
+  nimble_tablet_reader nimble_tablet_common nimble_chunk_index_fb
+)
 
-add_library(nimble_tablet_writer TabletIndexWriter.cpp TabletWriter.cpp)
-target_link_libraries(nimble_tablet_writer nimble_tablet_common nimble_index_fb)
+add_library(
+  nimble_tablet_writer ChunkIndexWriter.cpp ClusterIndexWriter.cpp
+  TabletWriter.cpp
+)
+target_link_libraries(
+  nimble_tablet_writer nimble_tablet_common nimble_cluster_index_fb
+  nimble_chunk_index_fb
+)
 
 add_subdirectory(tests)

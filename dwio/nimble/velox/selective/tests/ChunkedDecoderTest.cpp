@@ -23,7 +23,7 @@
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
-#include "dwio/nimble/index/tests/TabletIndexTestBase.h"
+#include "dwio/nimble/index/tests/ClusterIndexTestBase.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 #include "velox/common/base/Nulls.h"
 #include "velox/common/io/IoStatistics.h"
@@ -295,13 +295,13 @@ TEST_F(ChunkedDecoderTest, ensureInputReallocation) {
 
 // Test fixture for ChunkedDecoder data operations with parameterized
 // stream index support.
-class ChunkedDecoderDataTest : public index::test::TabletIndexTestBase,
+class ChunkedDecoderDataTest : public index::test::ClusterIndexTestBase,
                                public testing::WithParamInterface<bool> {
  protected:
-  using Stream = index::test::TabletIndexTestBase::Stream;
-  using KeyStream = index::test::TabletIndexTestBase::KeyStream;
-  using Stripe = index::test::TabletIndexTestBase::Stripe;
-  using IndexBuffers = index::test::TabletIndexTestBase::IndexBuffers;
+  using Stream = index::test::ClusterIndexTestBase::Stream;
+  using KeyStream = index::test::ClusterIndexTestBase::KeyStream;
+  using Stripe = index::test::ClusterIndexTestBase::Stripe;
+  using IndexBuffers = index::test::ClusterIndexTestBase::IndexBuffers;
 
   void SetUp() override {}
 
@@ -592,22 +592,23 @@ class ChunkedDecoderDataTest : public index::test::TabletIndexTestBase,
              .chunkKeys = {"zzz"}}}};
     std::vector<int> stripeGroups = {1};
 
-    auto testIndexBuffers =
-        createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-    testStripeIndexGroup_ = createStripeIndexGroup(testIndexBuffers, 0);
-    return testStripeIndexGroup_->createStreamIndex(0, 0);
+    testIndexBuffers_ =
+        createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+    testChunkIndex_ = createChunkIndex(testIndexBuffers_, 0);
+    return testChunkIndex_->createStreamIndex(0, 0);
   }
 
  private:
-  std::shared_ptr<index::StripeIndexGroup> testStripeIndexGroup_;
+  IndexBuffers testIndexBuffers_;
+  std::shared_ptr<index::ChunkIndexGroup> testChunkIndex_;
 };
 
-TEST_P(ChunkedDecoderDataTest, skipSingleChunk) {
+TEST_P(ChunkedDecoderDataTest, skipTwoChunks) {
   struct TestCase {
     std::string name;
     uint32_t skipCount;
-    // All values to encode (full chunk). Expected values/nulls after skip
-    // are simply allValues[skipCount:].
+    // All values to encode (split into two chunks). Expected values/nulls
+    // after skip are simply allValues[skipCount:].
     std::vector<std::optional<uint32_t>> allValues;
     // Expected error message when skip fails. Empty string means no error
     // expected. For skip with index vs without index, we may have different
@@ -679,9 +680,15 @@ TEST_P(ChunkedDecoderDataTest, skipSingleChunk) {
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(testCase.name);
 
-    // Encode stream from allValues in test case
-    auto [streamData, chunkInfos] = encodeNullableChunkedStream<uint32_t>(
-        std::vector<std::vector<std::optional<uint32_t>>>{testCase.allValues});
+    // Encode stream from allValues in two chunks so that createStreamIndex
+    // returns a valid stream index (single-chunk streams return nullptr).
+    const auto mid = testCase.allValues.size() / 2;
+    std::vector<std::optional<uint32_t>> chunk1(
+        testCase.allValues.begin(), testCase.allValues.begin() + mid);
+    std::vector<std::optional<uint32_t>> chunk2(
+        testCase.allValues.begin() + mid, testCase.allValues.end());
+    auto [streamData, chunkInfos] =
+        encodeNullableChunkedStream<uint32_t>({chunk1, chunk2});
 
     auto streamIndex = createTestStreamIndex(chunkInfos);
     ChunkedDecoder decoder(

@@ -18,279 +18,14 @@
 
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
-#include "dwio/nimble/index/StripeIndexGroup.h"
-#include "dwio/nimble/index/tests/TabletIndexTestBase.h"
-#include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/index/ChunkIndexGroup.h"
+#include "dwio/nimble/index/tests/ClusterIndexTestBase.h"
 
 namespace facebook::nimble::index::test {
 
-class StripeIndexGroupTest : public TabletIndexTestBase {};
+class ChunkIndexTest : public ClusterIndexTestBase {};
 
-TEST_F(StripeIndexGroupTest, chunkLocation) {
-  ChunkLocation loc1{100, 200};
-  EXPECT_EQ(loc1.streamOffset, 100);
-  EXPECT_EQ(loc1.rowOffset, 200);
-
-  ChunkLocation loc2{0, 0};
-  EXPECT_EQ(loc2.streamOffset, 0);
-  EXPECT_EQ(loc2.rowOffset, 0);
-
-  ChunkLocation loc3{UINT32_MAX, UINT32_MAX};
-  EXPECT_EQ(loc3.streamOffset, UINT32_MAX);
-  EXPECT_EQ(loc3.rowOffset, UINT32_MAX);
-}
-
-TEST_F(StripeIndexGroupTest, keyStreamRegion) {
-  std::vector<std::string> indexColumns = {"col1"};
-  std::string minKey = "aaa";
-  std::vector<Stripe> stripes = {
-      {.streams = {{.numChunks = 1, .chunkRows = {100}, .chunkOffsets = {0}}},
-       .keyStream =
-           {.streamOffset = 0,
-            .streamSize = 100,
-            .stream = {.numChunks = 1, .chunkRows = {100}, .chunkOffsets = {0}},
-            .chunkKeys = {"bbb"}}},
-      {.streams = {{.numChunks = 1, .chunkRows = {200}, .chunkOffsets = {0}}},
-       .keyStream =
-           {.streamOffset = 100,
-            .streamSize = 150,
-            .stream = {.numChunks = 1, .chunkRows = {200}, .chunkOffsets = {0}},
-            .chunkKeys = {"ccc"}}},
-      {.streams = {{.numChunks = 1, .chunkRows = {150}, .chunkOffsets = {0}}},
-       .keyStream =
-           {.streamOffset = 250,
-            .streamSize = 200,
-            .stream = {.numChunks = 1, .chunkRows = {150}, .chunkOffsets = {0}},
-            .chunkKeys = {"ddd"}}},
-      {.streams = {{.numChunks = 1, .chunkRows = {120}, .chunkOffsets = {0}}},
-       .keyStream = {
-           .streamOffset = 450,
-           .streamSize = 50,
-           .stream = {.numChunks = 1, .chunkRows = {120}, .chunkOffsets = {0}},
-           .chunkKeys = {"eee"}}}};
-  std::vector<int> stripeGroups = {2, 2};
-
-  auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-
-  // Test all key stream regions using parameterized test cases
-  struct {
-    uint32_t groupIndex;
-    uint32_t stripeIndex;
-    uint32_t expectedOffset;
-    uint32_t expectedLength;
-  } testCases[] = {
-      // Group 0: stripes 0, 1
-      {0, 0, 0, 100},
-      {0, 1, 100, 150},
-      // Group 1: stripes 2, 3
-      {1, 2, 250, 200},
-      {1, 3, 450, 50},
-  };
-
-  for (const auto& testCase : testCases) {
-    SCOPED_TRACE(
-        fmt::format(
-            "groupIndex {} stripeIndex {}",
-            testCase.groupIndex,
-            testCase.stripeIndex));
-    auto stripeIndexGroup =
-        createStripeIndexGroup(indexBuffers, testCase.groupIndex);
-    ASSERT_NE(stripeIndexGroup, nullptr);
-
-    auto region = stripeIndexGroup->keyStreamRegion(testCase.stripeIndex, 0);
-    EXPECT_EQ(region.offset, testCase.expectedOffset);
-    EXPECT_EQ(region.length, testCase.expectedLength);
-  }
-}
-
-TEST_F(StripeIndexGroupTest, keyStreamRegionWithLargeBaseOffset) {
-  std::vector<std::string> indexColumns = {"col1"};
-  std::string minKey = "aaa";
-  std::vector<Stripe> stripes = {
-      {.streams = {{.numChunks = 1, .chunkRows = {100}, .chunkOffsets = {0}}},
-       .keyStream =
-           {.streamOffset = 0,
-            .streamSize = 100,
-            .stream = {.numChunks = 1, .chunkRows = {100}, .chunkOffsets = {0}},
-            .chunkKeys = {"bbb"}}},
-      {.streams = {{.numChunks = 1, .chunkRows = {200}, .chunkOffsets = {0}}},
-       .keyStream =
-           {.streamOffset = 100,
-            .streamSize = 150,
-            .stream = {.numChunks = 1, .chunkRows = {200}, .chunkOffsets = {0}},
-            .chunkKeys = {"ccc"}}},
-      {.streams = {{.numChunks = 1, .chunkRows = {150}, .chunkOffsets = {0}}},
-       .keyStream =
-           {.streamOffset = 250,
-            .streamSize = 200,
-            .stream = {.numChunks = 1, .chunkRows = {150}, .chunkOffsets = {0}},
-            .chunkKeys = {"ddd"}}},
-      {.streams = {{.numChunks = 1, .chunkRows = {120}, .chunkOffsets = {0}}},
-       .keyStream = {
-           .streamOffset = 450,
-           .streamSize = 50,
-           .stream = {.numChunks = 1, .chunkRows = {120}, .chunkOffsets = {0}},
-           .chunkKeys = {"eee"}}}};
-  std::vector<int> stripeGroups = {2, 2};
-
-  auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-
-  // Test cases where stripe based relative offset is able to handle
-  // large files (e.g., > 4 GB)
-  struct {
-    uint32_t groupIndex;
-    uint32_t stripeIndex;
-    uint64_t stripeBaseOffset;
-    uint64_t expectedOffset;
-    uint32_t expectedLength;
-  } testCases[] = {
-      // Base offset exactly at 4 GB boundary
-      {0,
-       0,
-       static_cast<uint64_t>(UINT32_MAX) + 1,
-       static_cast<uint64_t>(UINT32_MAX) + 1 + 0,
-       100},
-      {0,
-       1,
-       static_cast<uint64_t>(UINT32_MAX) + 1,
-       static_cast<uint64_t>(UINT32_MAX) + 1 + 100,
-       150},
-
-      // Base offset at UINT32_MAX (just under 4 GB)
-      {0, 0, UINT32_MAX, static_cast<uint64_t>(UINT32_MAX) + 0, 100},
-      {0, 1, UINT32_MAX, static_cast<uint64_t>(UINT32_MAX) + 100, 150},
-      // Large base offset with large relative offset to verify no truncation
-      {1,
-       3,
-       static_cast<uint64_t>(UINT32_MAX) + 1000,
-       static_cast<uint64_t>(UINT32_MAX) + 1000 + 450,
-       50},
-      // Zero base offset (existing behavior, sanity check)
-      {0, 0, 0, 0, 100},
-      {0, 1, 0, 100, 150},
-  };
-
-  for (const auto& testCase : testCases) {
-    SCOPED_TRACE(
-        fmt::format(
-            "groupIndex {} stripeIndex {} stripeBaseOffset {}",
-            testCase.groupIndex,
-            testCase.stripeIndex,
-            testCase.stripeBaseOffset));
-    auto stripeIndexGroup =
-        createStripeIndexGroup(indexBuffers, testCase.groupIndex);
-    ASSERT_NE(stripeIndexGroup, nullptr);
-
-    auto region = stripeIndexGroup->keyStreamRegion(
-        testCase.stripeIndex, testCase.stripeBaseOffset);
-    EXPECT_EQ(region.offset, testCase.expectedOffset);
-    EXPECT_EQ(region.length, testCase.expectedLength);
-  }
-}
-
-TEST_F(StripeIndexGroupTest, lookupChunkWithEncodedKey) {
-  std::vector<std::string> indexColumns = {"col1"};
-  std::string minKey = "aaa";
-  std::vector<Stripe> stripes = {
-      {.streams = {{.numChunks = 1, .chunkRows = {100}, .chunkOffsets = {0}}},
-       .keyStream =
-           {.streamOffset = 0,
-            .streamSize = 100,
-            .stream =
-                {.numChunks = 3,
-                 .chunkRows = {100, 200, 300},
-                 .chunkOffsets = {0, 50, 120}},
-            .chunkKeys = {"ccc", "fff", "iii"}}},
-      {.streams = {{.numChunks = 1, .chunkRows = {200}, .chunkOffsets = {0}}},
-       .keyStream = {
-           .streamOffset = 100,
-           .streamSize = 150,
-           .stream =
-               {.numChunks = 2,
-                .chunkRows = {150, 300},
-                .chunkOffsets = {0, 80}},
-           .chunkKeys = {"mmm", "ppp"}}}};
-  std::vector<int> stripeGroups = {2};
-
-  auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto stripeIndexGroup = createStripeIndexGroup(indexBuffers, 0);
-  ASSERT_NE(stripeIndexGroup, nullptr);
-
-  struct {
-    uint32_t stripeIndex;
-    std::string encodedKey;
-    std::optional<uint32_t> expectedStreamOffset;
-    std::optional<uint32_t> expectedRowOffset;
-  } testCases[] = {
-      // Stripe 0: chunks with keys "ccc", "fff", "iii"
-      // chunkRows = {100, 200, 300}
-      // Key before first chunk locate at the first chunk as we
-      // expect the caller will locate the right stripe with tablet index.
-      {0, "aa", 0, 0},
-      {0, "aaa", 0, 0},
-      {0, "bbb", 0, 0},
-      // Key at first chunk boundary
-      {0, "ccc", 0, 0},
-      // Key between first and second chunk
-      {0, "ddd", 50, 100},
-      {0, "eee", 50, 100},
-      // Key at second chunk boundary
-      {0, "fff", 50, 100},
-      // Key between second and third chunk
-      {0, "ggg", 120, 300},
-      {0, "hhh", 120, 300},
-      // Key at third chunk boundary
-      {0, "iii", 120, 300},
-      // Key after last chunk - not found
-      {0, "jjj", std::nullopt, std::nullopt},
-      {0, "zzz", std::nullopt, std::nullopt},
-
-      // Stripe 1: chunks with keys "mmm", "ppp"
-      // chunkRows = {150, 300}
-      // Key before first chunk locate at the first chunk as we
-      // expect the caller will locate the right stripe with tablet index.
-      {1, "aaa", 0, 0},
-      {1, "lll", 0, 0},
-      // Key at first chunk boundary
-      {1, "mmm", 0, 0},
-      // Key between first and second chunk
-      {1, "nnn", 80, 150},
-      {1, "ooo", 80, 150},
-      // Key at second chunk boundary
-      {1, "ppp", 80, 150},
-      // Key after last chunk - not found
-      {1, "qqq", std::nullopt, std::nullopt},
-      {1, "zzz", std::nullopt, std::nullopt}};
-
-  for (const auto& testCase : testCases) {
-    SCOPED_TRACE(
-        fmt::format(
-            "stripeIndex {} encodedKey {}",
-            testCase.stripeIndex,
-            testCase.encodedKey));
-    auto result = stripeIndexGroup->lookupChunk(
-        testCase.stripeIndex, testCase.encodedKey);
-    if (testCase.expectedStreamOffset.has_value()) {
-      ASSERT_TRUE(result.has_value())
-          << "Expected chunk at streamOffset "
-          << testCase.expectedStreamOffset.value() << ", rowOffset "
-          << testCase.expectedRowOffset.value() << " for key '"
-          << testCase.encodedKey << "', but lookup returned nullopt";
-      EXPECT_EQ(result->streamOffset, testCase.expectedStreamOffset.value());
-      EXPECT_EQ(result->rowOffset, testCase.expectedRowOffset.value());
-    } else {
-      EXPECT_FALSE(result.has_value())
-          << "Expected nullopt for key '" << testCase.encodedKey
-          << "', but got streamOffset " << result->streamOffset
-          << ", rowOffset " << result->rowOffset;
-    }
-  }
-}
-
-TEST_F(StripeIndexGroupTest, lookupChunkWithRowId) {
+TEST_F(ChunkIndexTest, lookupChunkWithRowId) {
   std::vector<std::string> indexColumns = {"col1"};
   std::string minKey = "aaa";
   // Setup: 2 stripes, each with 2 streams with different chunk configurations
@@ -322,16 +57,16 @@ TEST_F(StripeIndexGroupTest, lookupChunkWithRowId) {
   std::vector<int> stripeGroups = {2};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto stripeIndexGroup = createStripeIndexGroup(indexBuffers, 0);
-  ASSERT_NE(stripeIndexGroup, nullptr);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto chunkIndex = createChunkIndex(indexBuffers, 0);
+  ASSERT_NE(chunkIndex, nullptr);
 
   struct {
     uint32_t stripeIndex;
     uint32_t streamId;
     uint32_t rowId;
-    std::optional<uint32_t> expectedStreamOffset;
-    std::optional<uint32_t> expectedRowOffset;
+    uint32_t expectedStreamOffset;
+    uint32_t expectedRowOffset;
   } testCases[] = {
       // Stripe 0, Stream 0: chunks at rows {100, 250, 400}, offsets {0, 50,
       // 120}
@@ -353,9 +88,6 @@ TEST_F(StripeIndexGroupTest, lookupChunkWithRowId) {
       {0, 0, 351, 120, 350},
       {0, 0, 399, 120, 350},
       {0, 0, 749, 120, 350},
-      // Row at/after last chunk boundary - not found
-      {0, 0, 750, std::nullopt, std::nullopt},
-      {0, 0, 850, std::nullopt, std::nullopt},
 
       // Stripe 0, Stream 1: chunks at rows {150, 300}, offsets {0, 80}
       // Accumulated rows: {150, 450}
@@ -370,9 +102,6 @@ TEST_F(StripeIndexGroupTest, lookupChunkWithRowId) {
       {0, 1, 200, 80, 150},
       {0, 1, 299, 80, 150},
       {0, 1, 449, 80, 150},
-      // Row at/after last chunk boundary - not found
-      {0, 1, 450, std::nullopt, std::nullopt},
-      {0, 1, 500, std::nullopt, std::nullopt},
 
       // Stripe 1, Stream 0: chunks at rows {200, 350}, offsets {0, 60}
       // Accumulated rows: {200, 550}
@@ -387,9 +116,6 @@ TEST_F(StripeIndexGroupTest, lookupChunkWithRowId) {
       {1, 0, 275, 60, 200},
       {1, 0, 400, 60, 200},
       {1, 0, 549, 60, 200},
-      // Row at/after last chunk boundary - not found
-      {1, 0, 550, std::nullopt, std::nullopt},
-      {1, 0, 600, std::nullopt, std::nullopt},
 
       // Stripe 1, Stream 1: chunks at rows {100, 200, 350}, offsets {0, 40, 90}
       // Accumulated rows: {100, 300, 650}
@@ -409,46 +135,39 @@ TEST_F(StripeIndexGroupTest, lookupChunkWithRowId) {
       // Row in third chunk [300, 650)
       {1, 1, 400, 90, 300},
       {1, 1, 500, 90, 300},
-      {1, 1, 649, 90, 300},
-      // Row at/after last chunk boundary - not found
-      {1, 1, 650, std::nullopt, std::nullopt},
-      {1, 1, 700, std::nullopt, std::nullopt}};
+      {1, 1, 649, 90, 300}};
 
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(
         fmt::format(
-            "stripeIndex {} streamId {} rowId {} expectedStreamOffset {} expectedRowOffset {}",
+            "stripeIndex {} streamId {} rowId {}",
             testCase.stripeIndex,
             testCase.streamId,
-            testCase.rowId,
-            testCase.expectedStreamOffset.has_value()
-                ? std::to_string(testCase.expectedStreamOffset.value())
-                : "nullopt",
-            testCase.expectedRowOffset.has_value()
-                ? std::to_string(testCase.expectedRowOffset.value())
-                : "nullopt"));
-    auto result = stripeIndexGroup->lookupChunk(
-        testCase.stripeIndex, testCase.streamId, testCase.rowId);
-    if (testCase.expectedStreamOffset.has_value()) {
-      ASSERT_TRUE(result.has_value())
-          << "Expected chunk at streamOffset "
-          << testCase.expectedStreamOffset.value() << ", rowOffset "
-          << testCase.expectedRowOffset.value() << " for stripe "
-          << testCase.stripeIndex << ", stream " << testCase.streamId
-          << ", rowId " << testCase.rowId << ", but lookup returned nullopt";
-      EXPECT_EQ(result->streamOffset, testCase.expectedStreamOffset.value());
-      EXPECT_EQ(result->rowOffset, testCase.expectedRowOffset.value());
-    } else {
-      EXPECT_FALSE(result.has_value())
-          << "Expected nullopt for stripe " << testCase.stripeIndex
-          << ", stream " << testCase.streamId << ", rowId " << testCase.rowId
-          << ", but got streamOffset " << result->streamOffset << ", rowOffset "
-          << result->rowOffset;
-    }
+            testCase.rowId));
+    auto streamIndex =
+        chunkIndex->createStreamIndex(testCase.stripeIndex, testCase.streamId);
+    ASSERT_NE(streamIndex, nullptr);
+    auto result = streamIndex->lookupChunk(testCase.rowId);
+    EXPECT_EQ(result.streamOffset, testCase.expectedStreamOffset);
+    EXPECT_EQ(result.rowOffset, testCase.expectedRowOffset);
   }
+
+  // Row at/after last chunk boundary — throws
+  auto s00 = chunkIndex->createStreamIndex(0, 0);
+  NIMBLE_ASSERT_THROW(s00->lookupChunk(750), "beyond the last chunk");
+  NIMBLE_ASSERT_THROW(s00->lookupChunk(850), "beyond the last chunk");
+
+  auto s01 = chunkIndex->createStreamIndex(0, 1);
+  NIMBLE_ASSERT_THROW(s01->lookupChunk(450), "beyond the last chunk");
+
+  auto s10 = chunkIndex->createStreamIndex(1, 0);
+  NIMBLE_ASSERT_THROW(s10->lookupChunk(550), "beyond the last chunk");
+
+  auto s11 = chunkIndex->createStreamIndex(1, 1);
+  NIMBLE_ASSERT_THROW(s11->lookupChunk(650), "beyond the last chunk");
 }
 
-TEST_F(StripeIndexGroupTest, createStreamIndex) {
+TEST_F(ChunkIndexTest, createStreamIndex) {
   std::vector<std::string> indexColumns = {"col1"};
   std::string minKey = "aaa";
   std::vector<Stripe> stripes = {
@@ -468,32 +187,66 @@ TEST_F(StripeIndexGroupTest, createStreamIndex) {
   std::vector<int> stripeGroups = {1};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto stripeIndexGroup = createStripeIndexGroup(indexBuffers, 0);
-  ASSERT_NE(stripeIndexGroup, nullptr);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto chunkIndex = createChunkIndex(indexBuffers, 0);
+  ASSERT_NE(chunkIndex, nullptr);
 
-  // Create StreamIndex for stream 0 in stripe 0
-  auto streamIndex = stripeIndexGroup->createStreamIndex(0, 0);
-  ASSERT_NE(streamIndex, nullptr);
+  // Multi-chunk streams return non-null StreamIndex.
+  EXPECT_NE(chunkIndex->createStreamIndex(0, 0), nullptr);
+  EXPECT_NE(chunkIndex->createStreamIndex(0, 1), nullptr);
 }
 
-TEST_F(StripeIndexGroupTest, streamIndexStreamId) {
+TEST_F(ChunkIndexTest, singleChunkStreamReturnsNullptr) {
   std::vector<std::string> indexColumns = {"col1"};
   std::string minKey = "aaa";
+  // Mix of single-chunk and multi-chunk streams across stripes.
   std::vector<Stripe> stripes = {
       {.streams =
            {{.numChunks = 1, .chunkRows = {100}, .chunkOffsets = {0}},
-            {.numChunks = 1, .chunkRows = {150}, .chunkOffsets = {0}},
+            {.numChunks = 3,
+             .chunkRows = {50, 100, 150},
+             .chunkOffsets = {0, 20, 60}},
             {.numChunks = 1, .chunkRows = {200}, .chunkOffsets = {0}}},
+       .keyStream = {
+           .streamOffset = 0,
+           .streamSize = 100,
+           .stream = {.numChunks = 1, .chunkRows = {100}, .chunkOffsets = {0}},
+           .chunkKeys = {"bbb"}}}};
+  std::vector<int> stripeGroups = {1};
+
+  auto indexBuffers =
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto chunkIndex = createChunkIndex(indexBuffers, 0);
+  ASSERT_NE(chunkIndex, nullptr);
+
+  // Single-chunk streams return nullptr.
+  EXPECT_EQ(chunkIndex->createStreamIndex(0, 0), nullptr);
+  EXPECT_EQ(chunkIndex->createStreamIndex(0, 2), nullptr);
+
+  // Multi-chunk stream returns non-null.
+  auto streamIndex = chunkIndex->createStreamIndex(0, 1);
+  ASSERT_NE(streamIndex, nullptr);
+  EXPECT_EQ(streamIndex->streamId(), 1);
+}
+
+TEST_F(ChunkIndexTest, streamIndexStreamId) {
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "aaa";
+  // Each stream needs >1 chunk so createStreamIndex returns non-null.
+  std::vector<Stripe> stripes = {
+      {.streams =
+           {{.numChunks = 2, .chunkRows = {50, 100}, .chunkOffsets = {0, 20}},
+            {.numChunks = 2, .chunkRows = {75, 150}, .chunkOffsets = {0, 30}},
+            {.numChunks = 2, .chunkRows = {100, 200}, .chunkOffsets = {0, 40}}},
        .keyStream =
            {.streamOffset = 0,
             .streamSize = 100,
             .stream = {.numChunks = 1, .chunkRows = {200}, .chunkOffsets = {0}},
             .chunkKeys = {"bbb"}}},
       {.streams =
-           {{.numChunks = 1, .chunkRows = {120}, .chunkOffsets = {0}},
-            {.numChunks = 1, .chunkRows = {180}, .chunkOffsets = {0}},
-            {.numChunks = 1, .chunkRows = {240}, .chunkOffsets = {0}}},
+           {{.numChunks = 2, .chunkRows = {60, 120}, .chunkOffsets = {0, 25}},
+            {.numChunks = 2, .chunkRows = {90, 180}, .chunkOffsets = {0, 35}},
+            {.numChunks = 2, .chunkRows = {120, 240}, .chunkOffsets = {0, 45}}},
        .keyStream = {
            .streamOffset = 100,
            .streamSize = 100,
@@ -502,9 +255,9 @@ TEST_F(StripeIndexGroupTest, streamIndexStreamId) {
   std::vector<int> stripeGroups = {2};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto stripeIndexGroup = createStripeIndexGroup(indexBuffers, 0);
-  ASSERT_NE(stripeIndexGroup, nullptr);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto chunkIndex = createChunkIndex(indexBuffers, 0);
+  ASSERT_NE(chunkIndex, nullptr);
 
   struct {
     uint32_t stripeIndex;
@@ -524,14 +277,14 @@ TEST_F(StripeIndexGroupTest, streamIndexStreamId) {
             "stripeIndex {} streamId {}",
             testCase.stripeIndex,
             testCase.streamId));
-    auto streamIndex = stripeIndexGroup->createStreamIndex(
-        testCase.stripeIndex, testCase.streamId);
+    auto streamIndex =
+        chunkIndex->createStreamIndex(testCase.stripeIndex, testCase.streamId);
     ASSERT_NE(streamIndex, nullptr);
     EXPECT_EQ(streamIndex->streamId(), testCase.streamId);
   }
 }
 
-TEST_F(StripeIndexGroupTest, streamIndexLookupChunk) {
+TEST_F(ChunkIndexTest, streamIndexLookupChunk) {
   std::vector<std::string> indexColumns = {"col1"};
   std::string minKey = "aaa";
   // Setup: 4 stripes across 2 groups, each stripe with 2 streams
@@ -589,15 +342,15 @@ TEST_F(StripeIndexGroupTest, streamIndexLookupChunk) {
   std::vector<int> stripeGroups = {2, 2};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
 
   struct {
     uint32_t groupIndex;
     uint32_t stripeIndex;
     uint32_t streamId;
     uint32_t rowId;
-    std::optional<uint32_t> expectedStreamOffset;
-    std::optional<uint32_t> expectedRowOffset;
+    uint32_t expectedStreamOffset;
+    uint32_t expectedRowOffset;
   } testCases[] = {
       // Group 0, Stripe 0, Stream 0: chunks at rows {100, 250, 400}, offsets
       // {0, 50, 120}
@@ -609,7 +362,6 @@ TEST_F(StripeIndexGroupTest, streamIndexLookupChunk) {
       {0, 0, 0, 349, 50, 100},
       {0, 0, 0, 350, 120, 350},
       {0, 0, 0, 749, 120, 350},
-      {0, 0, 0, 750, std::nullopt, std::nullopt},
 
       // Group 0, Stripe 0, Stream 1: chunks at rows {150, 300}, offsets {0, 80}
       // Accumulated rows: {150, 450}
@@ -617,7 +369,6 @@ TEST_F(StripeIndexGroupTest, streamIndexLookupChunk) {
       {0, 0, 1, 149, 0, 0},
       {0, 0, 1, 150, 80, 150},
       {0, 0, 1, 449, 80, 150},
-      {0, 0, 1, 450, std::nullopt, std::nullopt},
 
       // Group 0, Stripe 1, Stream 0: chunks at rows {200, 350}, offsets {0, 60}
       // Accumulated rows: {200, 550}
@@ -625,7 +376,6 @@ TEST_F(StripeIndexGroupTest, streamIndexLookupChunk) {
       {0, 1, 0, 199, 0, 0},
       {0, 1, 0, 200, 60, 200},
       {0, 1, 0, 549, 60, 200},
-      {0, 1, 0, 550, std::nullopt, std::nullopt},
 
       // Group 0, Stripe 1, Stream 1: chunks at rows {100, 200, 350}, offsets
       // {0, 40, 90}
@@ -636,7 +386,6 @@ TEST_F(StripeIndexGroupTest, streamIndexLookupChunk) {
       {0, 1, 1, 299, 40, 100},
       {0, 1, 1, 300, 90, 300},
       {0, 1, 1, 649, 90, 300},
-      {0, 1, 1, 650, std::nullopt, std::nullopt},
 
       // Group 1, Stripe 2, Stream 0: chunks at rows {150, 300}, offsets {0, 70}
       // Accumulated rows: {150, 450}
@@ -644,7 +393,6 @@ TEST_F(StripeIndexGroupTest, streamIndexLookupChunk) {
       {1, 2, 0, 149, 0, 0},
       {1, 2, 0, 150, 70, 150},
       {1, 2, 0, 449, 70, 150},
-      {1, 2, 0, 450, std::nullopt, std::nullopt},
 
       // Group 1, Stripe 2, Stream 1: chunks at rows {180, 360}, offsets {0, 55}
       // Accumulated rows: {180, 540}
@@ -652,7 +400,6 @@ TEST_F(StripeIndexGroupTest, streamIndexLookupChunk) {
       {1, 2, 1, 179, 0, 0},
       {1, 2, 1, 180, 55, 180},
       {1, 2, 1, 539, 55, 180},
-      {1, 2, 1, 540, std::nullopt, std::nullopt},
 
       // Group 1, Stripe 3, Stream 0: chunks at rows {80, 160, 240}, offsets {0,
       // 30, 65}
@@ -663,7 +410,6 @@ TEST_F(StripeIndexGroupTest, streamIndexLookupChunk) {
       {1, 3, 0, 239, 30, 80},
       {1, 3, 0, 240, 65, 240},
       {1, 3, 0, 479, 65, 240},
-      {1, 3, 0, 480, std::nullopt, std::nullopt},
 
       // Group 1, Stripe 3, Stream 1: chunks at rows {120, 240}, offsets {0, 45}
       // Accumulated rows: {120, 360}
@@ -671,7 +417,6 @@ TEST_F(StripeIndexGroupTest, streamIndexLookupChunk) {
       {1, 3, 1, 119, 0, 0},
       {1, 3, 1, 120, 45, 120},
       {1, 3, 1, 359, 45, 120},
-      {1, 3, 1, 360, std::nullopt, std::nullopt},
   };
 
   for (const auto& testCase : testCases) {
@@ -683,38 +428,41 @@ TEST_F(StripeIndexGroupTest, streamIndexLookupChunk) {
             testCase.streamId,
             testCase.rowId));
 
-    // Create StripeIndexGroup based on groupIndex parameter
-    auto stripeIndexGroup =
-        createStripeIndexGroup(indexBuffers, testCase.groupIndex);
-    ASSERT_NE(stripeIndexGroup, nullptr);
+    auto chunkIndex = createChunkIndex(indexBuffers, testCase.groupIndex);
+    ASSERT_NE(chunkIndex, nullptr);
 
-    // Create StreamIndex and test lookupChunk through it
-    auto streamIndex = stripeIndexGroup->createStreamIndex(
-        testCase.stripeIndex, testCase.streamId);
+    auto streamIndex =
+        chunkIndex->createStreamIndex(testCase.stripeIndex, testCase.streamId);
     ASSERT_NE(streamIndex, nullptr);
 
     auto result = streamIndex->lookupChunk(testCase.rowId);
-    if (testCase.expectedStreamOffset.has_value()) {
-      ASSERT_TRUE(result.has_value())
-          << "Expected chunk at streamOffset "
-          << testCase.expectedStreamOffset.value() << ", rowOffset "
-          << testCase.expectedRowOffset.value() << " for group "
-          << testCase.groupIndex << ", stripe " << testCase.stripeIndex
-          << ", stream " << testCase.streamId << ", rowId " << testCase.rowId
-          << ", but lookup returned nullopt";
-      EXPECT_EQ(result->streamOffset, testCase.expectedStreamOffset.value());
-      EXPECT_EQ(result->rowOffset, testCase.expectedRowOffset.value());
-    } else {
-      EXPECT_FALSE(result.has_value())
-          << "Expected nullopt for group " << testCase.groupIndex << ", stripe "
-          << testCase.stripeIndex << ", stream " << testCase.streamId
-          << ", rowId " << testCase.rowId << ", but got streamOffset "
-          << result->streamOffset << ", rowOffset " << result->rowOffset;
-    }
+    EXPECT_EQ(result.streamOffset, testCase.expectedStreamOffset);
+    EXPECT_EQ(result.rowOffset, testCase.expectedRowOffset);
   }
+
+  // Row at/after last chunk boundary — throws
+  auto ci0 = createChunkIndex(indexBuffers, 0);
+  NIMBLE_ASSERT_THROW(
+      ci0->createStreamIndex(0, 0)->lookupChunk(750), "beyond the last chunk");
+  NIMBLE_ASSERT_THROW(
+      ci0->createStreamIndex(0, 1)->lookupChunk(450), "beyond the last chunk");
+  NIMBLE_ASSERT_THROW(
+      ci0->createStreamIndex(1, 0)->lookupChunk(550), "beyond the last chunk");
+  NIMBLE_ASSERT_THROW(
+      ci0->createStreamIndex(1, 1)->lookupChunk(650), "beyond the last chunk");
+
+  auto ci1 = createChunkIndex(indexBuffers, 1);
+  NIMBLE_ASSERT_THROW(
+      ci1->createStreamIndex(2, 0)->lookupChunk(450), "beyond the last chunk");
+  NIMBLE_ASSERT_THROW(
+      ci1->createStreamIndex(2, 1)->lookupChunk(540), "beyond the last chunk");
+  NIMBLE_ASSERT_THROW(
+      ci1->createStreamIndex(3, 0)->lookupChunk(480), "beyond the last chunk");
+  NIMBLE_ASSERT_THROW(
+      ci1->createStreamIndex(3, 1)->lookupChunk(360), "beyond the last chunk");
 }
 
-TEST_F(StripeIndexGroupTest, stripeIndexAndStreamIdOutOfBound) {
+TEST_F(ChunkIndexTest, stripeIndexAndStreamIdOutOfBound) {
   std::vector<std::string> indexColumns = {"col1"};
   std::string minKey = "aaa";
   // Setup: 4 stripes across 2 groups, each stripe with 2 streams
@@ -758,56 +506,50 @@ TEST_F(StripeIndexGroupTest, stripeIndexAndStreamIdOutOfBound) {
   std::vector<int> stripeGroups = {2, 2};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
 
   // Test Group 0 (stripes 0, 1)
-  auto stripeIndexGroup0 = createStripeIndexGroup(indexBuffers, 0);
-  ASSERT_NE(stripeIndexGroup0, nullptr);
+  auto chunkIndex0 = createChunkIndex(indexBuffers, 0);
+  ASSERT_NE(chunkIndex0, nullptr);
 
-  // Stripe index before group's range (group 0 starts at stripe 0)
-  // This won't trigger "before range" since group 0 starts at stripe 0.
   // Test stripe index after group's range
   NIMBLE_ASSERT_THROW(
-      stripeIndexGroup0->lookupChunk(2, 0, 0),
-      "Stripe offset is out of range for this stripe index group");
+      chunkIndex0->createStreamIndex(2, 0),
+      "Stripe offset is out of range for this chunk index group");
   NIMBLE_ASSERT_THROW(
-      stripeIndexGroup0->lookupChunk(3, 0, 0),
-      "Stripe offset is out of range for this stripe index group");
+      chunkIndex0->createStreamIndex(3, 0),
+      "Stripe offset is out of range for this chunk index group");
 
-  // Test streamId out of range (group has 2 streams: 0, 1)
-  NIMBLE_ASSERT_THROW(
-      stripeIndexGroup0->lookupChunk(0, 2, 0), "streamId out of range");
-  NIMBLE_ASSERT_THROW(
-      stripeIndexGroup0->lookupChunk(1, 10, 0), "streamId out of range");
+  // streamId >= streamCount returns nullptr.
+  EXPECT_EQ(chunkIndex0->createStreamIndex(0, 2), nullptr);
+  EXPECT_EQ(chunkIndex0->createStreamIndex(1, 10), nullptr);
 
   // Test Group 1 (stripes 2, 3)
-  auto stripeIndexGroup1 = createStripeIndexGroup(indexBuffers, 1);
-  ASSERT_NE(stripeIndexGroup1, nullptr);
+  auto chunkIndex1 = createChunkIndex(indexBuffers, 1);
+  ASSERT_NE(chunkIndex1, nullptr);
 
   // Stripe index before group's range (group 1 starts at stripe 2)
   NIMBLE_ASSERT_THROW(
-      stripeIndexGroup1->lookupChunk(0, 0, 0),
+      chunkIndex1->createStreamIndex(0, 0),
       "Stripe index is before this group's range");
   NIMBLE_ASSERT_THROW(
-      stripeIndexGroup1->lookupChunk(1, 0, 0),
+      chunkIndex1->createStreamIndex(1, 0),
       "Stripe index is before this group's range");
 
   // Stripe index after group's range (group 1 has stripes 2, 3)
   NIMBLE_ASSERT_THROW(
-      stripeIndexGroup1->lookupChunk(4, 0, 0),
-      "Stripe offset is out of range for this stripe index group");
+      chunkIndex1->createStreamIndex(4, 0),
+      "Stripe offset is out of range for this chunk index group");
   NIMBLE_ASSERT_THROW(
-      stripeIndexGroup1->lookupChunk(5, 0, 0),
-      "Stripe offset is out of range for this stripe index group");
+      chunkIndex1->createStreamIndex(5, 0),
+      "Stripe offset is out of range for this chunk index group");
 
-  // Test streamId out of range for group 1
-  NIMBLE_ASSERT_THROW(
-      stripeIndexGroup1->lookupChunk(2, 2, 0), "streamId out of range");
-  NIMBLE_ASSERT_THROW(
-      stripeIndexGroup1->lookupChunk(3, 5, 0), "streamId out of range");
+  // streamId >= streamCount returns nullptr.
+  EXPECT_EQ(chunkIndex1->createStreamIndex(2, 2), nullptr);
+  EXPECT_EQ(chunkIndex1->createStreamIndex(3, 5), nullptr);
 }
 
-TEST_F(StripeIndexGroupTest, streamIndexRowCount) {
+TEST_F(ChunkIndexTest, streamIndexRowCount) {
   std::vector<std::string> indexColumns = {"col1"};
   std::string minKey = "aaa";
   // Setup: 4 stripes across 2 groups, each stripe with 2 streams
@@ -873,7 +615,7 @@ TEST_F(StripeIndexGroupTest, streamIndexRowCount) {
   std::vector<int> stripeGroups = {2, 2};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
 
   struct {
     uint32_t groupIndex;
@@ -906,22 +648,85 @@ TEST_F(StripeIndexGroupTest, streamIndexRowCount) {
             testCase.stripeIndex,
             testCase.streamId));
 
-    // Create StripeIndexGroup based on groupIndex parameter
-    auto stripeIndexGroup =
-        createStripeIndexGroup(indexBuffers, testCase.groupIndex);
-    ASSERT_NE(stripeIndexGroup, nullptr);
+    auto chunkIndex = createChunkIndex(indexBuffers, testCase.groupIndex);
+    ASSERT_NE(chunkIndex, nullptr);
 
-    // Test rowCount through StripeIndexGroup
-    EXPECT_EQ(
-        stripeIndexGroup->rowCount(testCase.stripeIndex, testCase.streamId),
-        testCase.expectedRowCount);
-
-    // Test rowCount through StreamIndex
-    auto streamIndex = stripeIndexGroup->createStreamIndex(
-        testCase.stripeIndex, testCase.streamId);
+    auto streamIndex =
+        chunkIndex->createStreamIndex(testCase.stripeIndex, testCase.streamId);
     ASSERT_NE(streamIndex, nullptr);
     EXPECT_EQ(streamIndex->rowCount(), testCase.expectedRowCount);
   }
+}
+
+TEST_F(ChunkIndexTest, chunkOnlyLookupByRowId) {
+  // Chunk-index-only: no value index, no key stream.
+  std::vector<ChunkOnlyStripe> stripes = {
+      {.streams =
+           {{.numChunks = 3,
+             .chunkRows = {100, 250, 400},
+             .chunkOffsets = {0, 50, 120}},
+            {.numChunks = 2,
+             .chunkRows = {150, 300},
+             .chunkOffsets = {0, 80}}}},
+      {.streams = {
+           {.numChunks = 2, .chunkRows = {200, 350}, .chunkOffsets = {0, 60}},
+           {.numChunks = 3,
+            .chunkRows = {100, 200, 350},
+            .chunkOffsets = {0, 40, 90}}}}};
+  std::vector<int> stripeGroups = {2};
+
+  auto indexBuffers = createChunkOnlyTestClusterIndex(stripes, stripeGroups);
+  auto chunkIndex = createChunkIndex(indexBuffers, 0);
+  ASSERT_NE(chunkIndex, nullptr);
+
+  struct {
+    uint32_t stripeIndex;
+    uint32_t streamId;
+    uint32_t rowId;
+    uint32_t expectedStreamOffset;
+    uint32_t expectedRowOffset;
+  } testCases[] = {
+      // Stripe 0, Stream 0: chunks at rows {100, 250, 400}, offsets {0, 50,
+      // 120}. Accumulated rows: {100, 350, 750}
+      {0, 0, 0, 0, 0},
+      {0, 0, 99, 0, 0},
+      {0, 0, 100, 50, 100},
+      {0, 0, 350, 120, 350},
+      // Stripe 0, Stream 1: chunks at rows {150, 300}, offsets {0, 80}.
+      // Accumulated rows: {150, 450}
+      {0, 1, 0, 0, 0},
+      {0, 1, 150, 80, 150},
+      // Stripe 1, Stream 0: chunks at rows {200, 350}, offsets {0, 60}.
+      // Accumulated rows: {200, 550}
+      {1, 0, 0, 0, 0},
+      {1, 0, 200, 60, 200},
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(
+        fmt::format(
+            "stripeIndex {} streamId {} rowId {}",
+            testCase.stripeIndex,
+            testCase.streamId,
+            testCase.rowId));
+    auto streamIndex =
+        chunkIndex->createStreamIndex(testCase.stripeIndex, testCase.streamId);
+    ASSERT_NE(streamIndex, nullptr);
+    auto result = streamIndex->lookupChunk(testCase.rowId);
+    EXPECT_EQ(result.streamOffset, testCase.expectedStreamOffset);
+    EXPECT_EQ(result.rowOffset, testCase.expectedRowOffset);
+  }
+
+  // Row at/after last chunk boundary — throws
+  NIMBLE_ASSERT_THROW(
+      chunkIndex->createStreamIndex(0, 0)->lookupChunk(750),
+      "beyond the last chunk");
+  NIMBLE_ASSERT_THROW(
+      chunkIndex->createStreamIndex(0, 1)->lookupChunk(450),
+      "beyond the last chunk");
+  NIMBLE_ASSERT_THROW(
+      chunkIndex->createStreamIndex(1, 0)->lookupChunk(550),
+      "beyond the last chunk");
 }
 
 } // namespace facebook::nimble::index::test

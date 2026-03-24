@@ -20,15 +20,16 @@
 #include <vector>
 
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/index/StripeIndexGroup.h"
-#include "dwio/nimble/index/TabletIndex.h"
+#include "dwio/nimble/index/ChunkIndexGroup.h"
+#include "dwio/nimble/index/ClusterIndex.h"
+#include "dwio/nimble/index/ClusterIndexGroup.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "velox/common/memory/Memory.h"
 
 namespace facebook::nimble::index::test {
 
 /// Base test class providing common test utilities for tablet index tests.
-class TabletIndexTestBase : public ::testing::Test {
+class ClusterIndexTestBase : public ::testing::Test {
  protected:
   static void SetUpTestCase();
 
@@ -54,55 +55,61 @@ class TabletIndexTestBase : public ::testing::Test {
 
   /// Structure to hold the serialized index buffers.
   struct IndexBuffers {
-    /// Serialized StripeIndexGroup flatbuffers appended sequentially.
+    /// Serialized ClusterIndexGroup flatbuffers (cluster index) appended
+    /// sequentially.
     std::string indexGroups;
+    /// Serialized ChunkIndex flatbuffers appended sequentially.
+    std::string chunkIndexGroups;
+    /// Size of each ChunkIndex flatbuffer in chunkIndexGroups.
+    std::vector<size_t> chunkIndexGroupSizes;
     /// Serialized root Index flatbuffer.
     std::string rootIndex;
   };
 
   /// Helper function to create a serialized Index flatbuffer for testing.
-  /// @param indexColumns Vector of index column names
-  /// @param sortOrders Vector of sort order strings (e.g., "ASC NULLS FIRST")
-  /// @param minKey Minimum key for the first stripe
-  /// @param stripes Vector of stripe data
-  /// @param stripeGroups Vector indicating how many stripes are in each group
-  /// @return IndexBuffers containing serialized StripeIndexGroups and root
-  /// Index
-  IndexBuffers createTestTabletIndex(
+  IndexBuffers createTestClusterIndex(
       const std::vector<std::string>& indexColumns,
       const std::vector<std::string>& sortOrders,
       const std::string& minKey,
       const std::vector<Stripe>& stripes,
       const std::vector<int>& stripeGroups);
 
-  /// Convenience wrapper that uses default ascending sort orders for all
-  /// columns.
-  IndexBuffers createTestTabletIndex(
+  /// Convenience wrapper that uses default ascending sort orders.
+  IndexBuffers createTestClusterIndex(
       const std::vector<std::string>& indexColumns,
       const std::string& minKey,
       const std::vector<Stripe>& stripes,
       const std::vector<int>& stripeGroups);
 
-  /// Creates a TabletIndex from the serialized IndexBuffers.
-  /// @param indexBuffers The serialized index buffers from
-  /// createTestTabletIndex
-  /// @return A unique pointer to a TabletIndex
-  std::unique_ptr<TabletIndex> createTabletIndex(
+  /// Creates a chunk-index-only test tablet index (no value index, no stripe
+  /// keys).
+  struct ChunkOnlyStripe {
+    std::vector<Stream> streams;
+  };
+
+  IndexBuffers createChunkOnlyTestClusterIndex(
+      const std::vector<ChunkOnlyStripe>& stripes,
+      const std::vector<int>& stripeGroups);
+
+  /// Creates a ClusterIndex from the serialized IndexBuffers.
+  std::unique_ptr<ClusterIndex> createClusterIndex(
       const IndexBuffers& indexBuffers);
 
-  /// Creates a StripeIndexGroup from the serialized IndexBuffers.
-  /// @param indexBuffers The serialized index buffers from
-  /// createTestTabletIndex
-  /// @param stripeGroupIndex The index of the stripe group to create
-  /// @return A shared pointer to a StripeIndexGroup
-  std::shared_ptr<StripeIndexGroup> createStripeIndexGroup(
+  /// Creates a ClusterIndexGroup (cluster index) from the serialized
+  /// IndexBuffers.
+  std::shared_ptr<ClusterIndexGroup> createClusterIndexGroup(
+      const IndexBuffers& indexBuffers,
+      uint32_t stripeGroupIndex);
+
+  /// Creates a ChunkIndexGroup from the serialized IndexBuffers.
+  std::shared_ptr<ChunkIndexGroup> createChunkIndex(
       const IndexBuffers& indexBuffers,
       uint32_t stripeGroupIndex);
 
   std::shared_ptr<velox::memory::MemoryPool> rootPool_{
-      velox::memory::memoryManager()->addRootPool("TabletIndexTestBase")};
+      velox::memory::memoryManager()->addRootPool("ClusterIndexTestBase")};
   std::shared_ptr<velox::memory::MemoryPool> pool_{
-      rootPool_->addLeafChild("TabletIndexTestBase")};
+      rootPool_->addLeafChild("ClusterIndexTestBase")};
 };
 
 } // namespace facebook::nimble::index::test

@@ -111,8 +111,12 @@ class Postscript {
 /// +===================================================================+
 /// |  Stripes Metadata (row_counts, offsets, sizes, group_indices)     |
 /// +-------------------------------------------------------------------+
-/// |  Optional: "index" (root Index flatbuffer with stripe_keys,       |
-/// |            index_columns, sort_orders, stripe_index_groups refs)  |
+/// |  Optional: "columnar.cluster.index" (root ClusterIndex flatbuffer |
+/// |            with stripe_keys, index_columns, sort_orders,          |
+/// |            stripe_indexes)                                        |
+/// +-------------------------------------------------------------------+
+/// |  Optional: "columnar.chunk.index" (root ChunkIndex flatbuffer     |
+/// |            with stripe_indexes)                                   |
 /// +-------------------------------------------------------------------+
 /// |  Optional: "schema", "stats", etc.                                |
 /// +===================================================================+
@@ -129,35 +133,44 @@ class Postscript {
 ///
 /// Key Layout Properties:
 /// ----------------------
-/// 1. Stripe Groups: Each stripe group contains metadata for a contiguous
-///    range of stripes. Written after all stripes in the group.
+/// Stripe Groups: Each stripe group contains metadata for a contiguous
+/// range of stripes. Written after all stripes in the group.
 ///
-/// 2. Index Groups: When indexing is enabled, each index group is written
-///    IMMEDIATELY AFTER its corresponding stripe group. This co-location
-///    enables efficient single IO to load both stripe and index metadata.
+/// Index Groups: When cluster indexing is enabled, each index group is
+/// written IMMEDIATELY AFTER its corresponding stripe group. This
+/// co-location enables efficient single IO to load both stripe and
+/// index metadata.
 ///
-/// 3. Root Index: Stored as optional section "index" containing:
-///    - stripe_keys: key boundaries for each stripe (size = stripe_count + 1)
-///    - index_columns: names of indexed columns
-///    - sort_orders: sort order per column ("ASC NULLS FIRST", etc.)
-///    - stripe_index_groups: refs to per-group StripeIndexGroup metadata
+/// Cluster Index ("columnar.cluster.index"):
+///   Root ClusterIndex flatbuffer (see ClusterIndex.fbs) containing:
+///   - stripe_keys: key boundaries per stripe (size = stripe_count + 1)
+///   - index_columns: names of indexed columns
+///   - sort_orders: sort order per column ("ASC NULLS FIRST", etc.)
+///   - stripe_indexes: refs to per-group StripeClusterIndex metadata
 ///
-/// StripeIndexGroup Layout (per stripe group, see Index.fbs):
-/// ----------------------------------------------------------
-/// +---------------------------------------------------------------+
-/// | StripeValueIndex (for key-based lookups)                      |
-/// |   - key_stream_offsets: byte offset of key stream per stripe  |
-/// |   - key_stream_sizes: byte size of key stream per stripe      |
-/// |   - key_stream_chunk_counts: accumulated chunks per stripe    |
-/// |   - key_stream_chunk_rows: accumulated rows per chunk         |
-/// |   - key_stream_chunk_offsets: byte offset per chunk           |
-/// |   - key_stream_chunk_keys: last key value per chunk           |
-/// +---------------------------------------------------------------+
-/// | StripePositionIndex (for row-based seeking)                   |
-/// |   - stream_chunk_counts: accumulated chunks per (stripe,stream)|
-/// |   - stream_chunk_rows: accumulated rows per chunk             |
-/// |   - stream_chunk_offsets: byte offset per chunk               |
-/// +---------------------------------------------------------------+
+///   StripeClusterIndex (per stripe group):
+///   +---------------------------------------------------------------+
+///   | KeyStreamLayout (always present):                              |
+///   |   - offsets: byte offset of key stream per stripe              |
+///   |   - sizes: byte size of key stream per stripe                  |
+///   | KeyStreamChunkIndex (null if single chunk per stripe):         |
+///   |   - chunk_counts: accumulated chunks per stripe                |
+///   |   - chunk_rows: accumulated rows per chunk                     |
+///   |   - chunk_offsets: byte offset per chunk                       |
+///   |   - chunk_keys: last key value per chunk                       |
+///   +---------------------------------------------------------------+
+///
+/// Chunk Index ("columnar.chunk.index"):
+///   Root ChunkIndex flatbuffer (see ChunkIndex.fbs) containing:
+///   - stripe_indexes: refs to per-group StripeChunkIndex metadata
+///
+///   StripeChunkIndex (per stripe group):
+///   +---------------------------------------------------------------+
+///   | stream_count: total number of indexed streams                   |
+///   | stream_chunk_counts: accumulated chunks per (stripe, stream)   |
+///   | stream_chunk_rows: accumulated rows per chunk                  |
+///   | stream_chunk_offsets: byte offset per chunk                    |
+///   +---------------------------------------------------------------+
 
 /// Describes the physical layout of a Nimble file, including offsets and sizes
 /// of the footer and metadata sections. This information can be used by readers

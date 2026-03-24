@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-#include "dwio/nimble/index/TabletIndex.h"
+#include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
@@ -222,7 +222,7 @@ class NimbleIndexProjector {
   const std::shared_ptr<velox::io::IoStatistics> ioStatistics_;
   const std::shared_ptr<ReaderBase> readerBase_;
   velox::memory::MemoryPool* const pool_;
-  const TabletIndex* const tabletIndex_;
+  const ClusterIndex* const tabletIndex_;
   const uint32_t numStripes_{0};
 
   // Projected nimble schema built from file nimble schema. Preserves

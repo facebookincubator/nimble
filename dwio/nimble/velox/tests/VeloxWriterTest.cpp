@@ -3109,15 +3109,20 @@ class VeloxWriterIndexTest
   void verifyPositionIndex(const nimble::TabletReader& tablet) {
     for (uint32_t stripeIdx = 0; stripeIdx < tablet.stripeCount();
          ++stripeIdx) {
-      const auto stripeId =
-          tablet.stripeIdentifier(stripeIdx, /*loadIndex=*/true);
-      ASSERT_NE(stripeId.indexGroup(), nullptr)
+      const auto stripeId = tablet.stripeIdentifier(stripeIdx);
+      ASSERT_NE(stripeId.clusterIndex(), nullptr)
           << "Index group should be available for stripe " << stripeIdx;
 
-      nimble::index::test::StripeIndexGroupTestHelper helper(
-          stripeId.indexGroup().get());
+      if (stripeId.chunkIndex() == nullptr) {
+        // Group was skipped (no streams with >1 chunk). Skip verification.
+        continue;
+      }
 
-      const uint32_t stripeOffsetInGroup = stripeIdx - helper.firstStripe();
+      nimble::index::test::ChunkIndexTestHelper chunkHelper(
+          stripeId.chunkIndex().get());
+
+      const uint32_t stripeOffsetInGroup =
+          stripeIdx - chunkHelper.firstStripe();
 
       // Load all streams for this stripe
       const uint32_t streamCount = tablet.streamCount(stripeId);
@@ -3130,7 +3135,11 @@ class VeloxWriterIndexTest
           continue;
         }
 
-        auto streamStats = helper.streamStats(streamId);
+        auto streamStats = chunkHelper.streamStats(streamId);
+        if (streamStats.chunkCounts.empty()) {
+          // Stream not indexed (0 or 1 chunk). Skip verification.
+          continue;
+        }
 
         // Get chunk count for this stripe from accumulated values
         const uint32_t prevChunkCount = (stripeOffsetInGroup == 0)
@@ -3226,8 +3235,8 @@ class VeloxWriterIndexTest
   // Verifies that the value index correctly maps each key to its row position.
   // For each row in the input batches:
   // 1. Encodes the key using KeyEncoder
-  // 2. Looks up the stripe via TabletIndex
-  // 3. Gets chunk location within stripe via StripeIndexGroup::lookupChunk
+  // 2. Looks up the stripe via ClusterIndex
+  // 3. Gets chunk location within stripe via ClusterIndexGroup::lookupChunk
   // 4. Loads the key stream chunk and decodes it
   // 5. Uses seekAtOrAfter to find the exact row within the chunk
   // 6. For duplicate keys, verifies the found row id matches the earliest row
@@ -3238,7 +3247,7 @@ class VeloxWriterIndexTest
       const velox::RowTypePtr& type,
       const std::vector<velox::RowVectorPtr>& batches,
       const std::vector<std::string>& indexColumns) {
-    const auto* index = tablet.index();
+    const auto* index = tablet.clusterIndex();
     ASSERT_NE(index, nullptr) << "Index must exist";
 
     // Pre-compute stripe start row offsets
@@ -3312,20 +3321,19 @@ class VeloxWriterIndexTest
             << "Stripe index out of range";
 
         // Get stripe identifier with index group loaded
-        const auto stripeId =
-            tablet.stripeIdentifier(stripeIndex, /*loadIndex=*/true);
-        ASSERT_NE(stripeId.indexGroup(), nullptr)
+        const auto stripeId = tablet.stripeIdentifier(stripeIndex);
+        ASSERT_NE(stripeId.clusterIndex(), nullptr)
             << "Index group should be available for stripe " << stripeIndex;
 
         // Look up chunk by encoded key to get chunk location within stripe
         const auto chunkLocation =
-            stripeId.indexGroup()->lookupChunk(stripeIndex, encodedKeyView);
+            stripeId.clusterIndex()->lookupChunk(stripeIndex, encodedKeyView);
         ASSERT_TRUE(chunkLocation.has_value())
             << "Key at row " << currentRowId << " should be found in stripe "
             << stripeIndex;
 
         // Get key stream region for this stripe
-        const auto keyStreamRegion = stripeId.indexGroup()->keyStreamRegion(
+        const auto keyStreamRegion = stripeId.clusterIndex()->keyStreamRegion(
             stripeIndex, tablet.stripeOffset(stripeIndex));
 
         // Cache key: chunk file offset (unique across all stripes)
@@ -3335,12 +3343,12 @@ class VeloxWriterIndexTest
         // Load and decode key chunk if not cached
         if (keyStreamCache.find(chunkFileOffset) == keyStreamCache.end()) {
           // Get chunk length from the index. The index stores chunk offsets
-          // in key_stream_chunk_offsets, so we can compute the length by
+          // in chunk_index.chunk_offsets, so we can compute the length by
           // looking at the next chunk offset (or stream end for the last
-          // chunk). Use helper to get chunk length from StripeIndexGroup
+          // chunk). Use helper to get chunk length from ClusterIndexGroup
           // internals.
-          nimble::index::test::StripeIndexGroupTestHelper helper(
-              stripeId.indexGroup().get());
+          nimble::index::test::ClusterIndexGroupTestHelper helper(
+              stripeId.clusterIndex().get());
           const uint32_t chunkLength = helper.keyChunkLength(
               stripeIndex, chunkLocation->streamOffset, keyStreamRegion.length);
 
@@ -3461,10 +3469,11 @@ TEST_P(VeloxWriterIndexTest, singleGroup) {
   }
 
   // Verify index section exists
-  EXPECT_TRUE(tablet.hasOptionalSection(std::string(nimble::kIndexSection)));
+  EXPECT_TRUE(
+      tablet.hasOptionalSection(std::string(nimble::kClusterIndexSection)));
 
   // Verify index is available
-  const auto* index = tablet.index();
+  const auto* index = tablet.clusterIndex();
   ASSERT_NE(index, nullptr);
 
   // Verify index columns
@@ -3545,10 +3554,11 @@ TEST_P(VeloxWriterIndexTest, multipleGroups) {
   }
 
   // Verify index section exists
-  EXPECT_TRUE(tablet.hasOptionalSection(std::string(nimble::kIndexSection)));
+  EXPECT_TRUE(
+      tablet.hasOptionalSection(std::string(nimble::kClusterIndexSection)));
 
   // Verify index is available
-  const auto* index = tablet.index();
+  const auto* index = tablet.clusterIndex();
   ASSERT_NE(index, nullptr);
 
   // Verify index columns
@@ -3572,19 +3582,12 @@ TEST_P(VeloxWriterIndexTest, multipleGroups) {
   ASSERT_TRUE(lastLocation.has_value());
   EXPECT_EQ(lastLocation->stripeIndex, index->numStripes() - 1);
 
-  // Verify stripeIdentifier with loadIndex returns index group
+  // Verify stripeIdentifier returns index group
   for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
-    auto stripeId = tablet.stripeIdentifier(i, /*loadIndex=*/true);
+    auto stripeId = tablet.stripeIdentifier(i);
     EXPECT_NE(stripeId.stripeGroup(), nullptr);
-    EXPECT_NE(stripeId.indexGroup(), nullptr)
+    EXPECT_NE(stripeId.clusterIndex(), nullptr)
         << "Index group should be available for stripe " << i;
-  }
-
-  // Verify stripeIdentifier without loadIndex does not return index group
-  {
-    auto stripeId = tablet.stripeIdentifier(0, /*loadIndex=*/false);
-    EXPECT_NE(stripeId.stripeGroup(), nullptr);
-    EXPECT_EQ(stripeId.indexGroup(), nullptr);
   }
 
   // Read back all data and verify row-by-row match with written batches
@@ -3654,7 +3657,7 @@ TEST_P(VeloxWriterIndexTest, multipleIndexColumns) {
   nimble::VeloxReader reader(&readFile, *leafPool_);
 
   const auto& tablet = reader.tabletReader();
-  const auto* index = tablet.index();
+  const auto* index = tablet.clusterIndex();
   ASSERT_NE(index, nullptr);
 
   // Verify both columns are indexed
@@ -3776,7 +3779,7 @@ TEST_F(VeloxWriterTest, indexEnforceKeyOrder) {
         velox::InMemoryReadFile readFile(file);
         nimble::VeloxReader reader(&readFile, *leafPool_);
         EXPECT_TRUE(reader.tabletReader().hasOptionalSection(
-            std::string(nimble::kIndexSection)));
+            std::string(nimble::kClusterIndexSection)));
       }
     }
   }
@@ -3880,7 +3883,7 @@ TEST_P(VeloxWriterIndexTest, duplicateKeys) {
   const auto& tablet = reader.tabletReader();
 
   // Verify index exists
-  const auto* index = tablet.index();
+  const auto* index = tablet.clusterIndex();
   ASSERT_NE(index, nullptr);
   EXPECT_EQ(index->indexColumns().size(), 1);
   EXPECT_EQ(index->indexColumns()[0], "key_col");
@@ -3947,7 +3950,7 @@ TEST_P(VeloxWriterIndexTest, chunking) {
   const auto& tablet = reader.tabletReader();
 
   // Verify index exists and works
-  const auto* index = tablet.index();
+  const auto* index = tablet.clusterIndex();
   ASSERT_NE(index, nullptr);
   EXPECT_EQ(index->indexColumns().size(), 1);
   EXPECT_EQ(index->indexColumns()[0], "key_col");
@@ -3959,8 +3962,8 @@ TEST_P(VeloxWriterIndexTest, chunking) {
 
   // Verify index group can be loaded for each stripe
   for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
-    auto stripeId = tablet.stripeIdentifier(i, /*loadIndex=*/true);
-    ASSERT_NE(stripeId.indexGroup(), nullptr);
+    auto stripeId = tablet.stripeIdentifier(i);
+    ASSERT_NE(stripeId.clusterIndex(), nullptr);
   }
 
   // Read back all data and verify row-by-row match with written batches
@@ -4062,7 +4065,7 @@ TEST_P(VeloxWriterIndexTest, streamDeduplication) {
   const auto& tablet = reader.tabletReader();
 
   // Verify index exists
-  const auto* index = tablet.index();
+  const auto* index = tablet.clusterIndex();
   ASSERT_NE(index, nullptr);
   EXPECT_EQ(index->indexColumns().size(), 1);
   EXPECT_EQ(index->indexColumns()[0], "key_col");
@@ -4157,17 +4160,17 @@ TEST_F(VeloxWriterTest, customPrefixRestartInterval) {
     velox::InMemoryReadFile readFile(file);
     auto tablet = nimble::TabletReader::create(&readFile, leafPool_.get(), {});
 
-    const auto* index = tablet->index();
+    const auto* index = tablet->clusterIndex();
     ASSERT_NE(index, nullptr) << "Index must exist";
 
     // Get first stripe's index group
-    const auto stripeId = tablet->stripeIdentifier(0, /*loadIndex=*/true);
-    ASSERT_NE(stripeId.indexGroup(), nullptr)
+    const auto stripeId = tablet->stripeIdentifier(0);
+    ASSERT_NE(stripeId.clusterIndex(), nullptr)
         << "Index group should be available";
 
     // Get key stream region
     const auto keyStreamRegion =
-        stripeId.indexGroup()->keyStreamRegion(0, tablet->stripeOffset(0));
+        stripeId.clusterIndex()->keyStreamRegion(0, tablet->stripeOffset(0));
 
     // Load the key stream data
     velox::common::Region region{

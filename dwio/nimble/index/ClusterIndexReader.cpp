@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "dwio/nimble/index/IndexReader.h"
+#include "dwio/nimble/index/ClusterIndexReader.h"
 
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
@@ -25,16 +25,10 @@ namespace facebook::nimble::index {
 
 using namespace facebook::velox;
 
-// Returns std::nullopt from the current function if the optional is empty.
-#define RETURN_IF_NULLOPT(opt) \
-  if (!(opt).has_value()) {    \
-    return std::nullopt;       \
-  }
-
-IndexReader::IndexReader(
+ClusterIndexReader::ClusterIndexReader(
     std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
     uint32_t stripeIndex,
-    std::shared_ptr<StripeIndexGroup> indexGroup,
+    std::shared_ptr<ClusterIndexGroup> indexGroup,
     velox::memory::MemoryPool* pool)
     : stripeIndex_{stripeIndex},
       indexGroup_{std::move(indexGroup)},
@@ -44,27 +38,31 @@ IndexReader::IndexReader(
   NIMBLE_CHECK_NOT_NULL(pool_);
 }
 
-std::unique_ptr<IndexReader> IndexReader::create(
+std::unique_ptr<ClusterIndexReader> ClusterIndexReader::create(
     std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
     uint32_t stripeIndex,
-    std::shared_ptr<StripeIndexGroup> indexGroup,
+    std::shared_ptr<ClusterIndexGroup> indexGroup,
     velox::memory::MemoryPool* pool) {
-  return std::unique_ptr<IndexReader>(new IndexReader(
+  return std::unique_ptr<ClusterIndexReader>(new ClusterIndexReader(
       std::move(input), stripeIndex, std::move(indexGroup), pool));
 }
 
-std::optional<uint32_t> IndexReader::seekAtOrAfter(
+std::optional<uint32_t> ClusterIndexReader::seekAtOrAfter(
     std::string_view encodedKey) {
   const auto chunkLocation = indexGroup_->lookupChunk(stripeIndex_, encodedKey);
-  RETURN_IF_NULLOPT(chunkLocation);
+  if (!chunkLocation.has_value()) {
+    return std::nullopt;
+  }
 
   const auto rowOffset =
       seekAtOrAfterInChunk(chunkLocation->streamOffset, encodedKey);
-  NIMBLE_CHECK(rowOffset.has_value());
+  if (!rowOffset.has_value()) {
+    return std::nullopt;
+  }
   return chunkLocation->rowOffset + rowOffset.value();
 }
 
-std::optional<uint32_t> IndexReader::seekAtOrAfterInChunk(
+std::optional<uint32_t> ClusterIndexReader::seekAtOrAfterInChunk(
     uint32_t chunkOffset,
     std::string_view encodedKey) {
   seekToChunk(chunkOffset);
@@ -72,7 +70,7 @@ std::optional<uint32_t> IndexReader::seekAtOrAfterInChunk(
   return encoding_->seekAtOrAfter(&encodedKey);
 }
 
-bool IndexReader::ensureInput(int size) {
+bool ClusterIndexReader::ensureInput(int size) {
   while (inputSize_ < size) {
     if (inputSize_ > 0) {
       prepareInputBuffer(inputSize_);
@@ -94,7 +92,7 @@ bool IndexReader::ensureInput(int size) {
   return true;
 }
 
-void IndexReader::seekToChunk(uint32_t chunkOffset) {
+void ClusterIndexReader::seekToChunk(uint32_t chunkOffset) {
   if ((chunkOffset_ == chunkOffset) && (encoding_ != nullptr)) {
     return;
   }
@@ -109,7 +107,7 @@ void IndexReader::seekToChunk(uint32_t chunkOffset) {
   loadChunk();
 }
 
-void IndexReader::loadChunk() {
+void ClusterIndexReader::loadChunk() {
   auto ret = ensureInput(5);
   NIMBLE_CHECK(ret);
   const auto length = encoding::readUint32(inputData_);
@@ -148,7 +146,7 @@ void IndexReader::loadChunk() {
       encoding_->encodingType());
 }
 
-void IndexReader::prepareInputBuffer(int32_t size) {
+void ClusterIndexReader::prepareInputBuffer(int32_t size) {
   NIMBLE_DCHECK_LE(inputSize_, size);
   if (inputBuffer_ && size <= inputBuffer_->capacity()) {
     if (inputData_ == inputBuffer_->as<char>()) {

@@ -20,30 +20,30 @@
 #include <string_view>
 
 #include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/index/StripeIndexGroup.h"
+#include "dwio/nimble/index/ClusterIndexGroup.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 
 namespace facebook::nimble::index {
 
 /// Reader for cluster index keys within a stripe.
 ///
-/// The IndexReader provides access to sorted keys stored in a special key
-/// stream at kKeyStreamId. It works in conjunction with StripeIndexGroup to
-/// locate and decode key data for efficient row filtering based on cluster
+/// The ClusterIndexReader provides access to sorted keys stored in a special
+/// key stream at kKeyStreamId. It works in conjunction with ClusterIndexGroup
+/// to locate and decode key data for efficient row filtering based on cluster
 /// index lookups.
 ///
 /// The key stream contains keys organized in chunks, where each chunk is
-/// independently decodable. The IndexReader performs binary search within
-/// chunks to find keys efficiently.
+/// independently decodable. The ClusterIndexReader performs binary search
+/// within chunks to find keys efficiently.
 ///
 /// TODO: Integrate with velox data cache for improved read performance.
-class IndexReader {
+class ClusterIndexReader {
  public:
-  /// Static factory method to create a IndexReader instance
-  static std::unique_ptr<IndexReader> create(
+  /// Static factory method to create a ClusterIndexReader instance
+  static std::unique_ptr<ClusterIndexReader> create(
       std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
       uint32_t stripeIndex,
-      std::shared_ptr<StripeIndexGroup> indexGroup,
+      std::shared_ptr<ClusterIndexGroup> indexGroup,
       velox::memory::MemoryPool* pool);
 
   /// Seek to the position at or after the given encoded key.
@@ -52,10 +52,10 @@ class IndexReader {
   std::optional<uint32_t> seekAtOrAfter(std::string_view encodedKey);
 
  private:
-  IndexReader(
+  ClusterIndexReader(
       std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
       uint32_t stripeIndex,
-      std::shared_ptr<StripeIndexGroup> indexGroup,
+      std::shared_ptr<ClusterIndexGroup> indexGroup,
       velox::memory::MemoryPool* pool);
 
   /// Seek to a key at or after the given encoded key within a chunk.
@@ -77,7 +77,7 @@ class IndexReader {
   void loadChunk();
 
   const uint32_t stripeIndex_;
-  const std::shared_ptr<StripeIndexGroup> indexGroup_;
+  const std::shared_ptr<ClusterIndexGroup> indexGroup_;
 
   const std::unique_ptr<velox::dwio::common::SeekableInputStream> input_;
   velox::memory::MemoryPool* const pool_;

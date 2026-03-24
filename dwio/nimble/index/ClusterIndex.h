@@ -24,7 +24,7 @@
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 
 namespace facebook::nimble::serialization {
-struct Index;
+struct ClusterIndex;
 } // namespace facebook::nimble::serialization
 
 namespace facebook::nimble::index {
@@ -40,7 +40,7 @@ struct StripeLocation {
   }
 };
 
-/// TabletIndex provides efficient key-based stripe lookup for Nimble tablets.
+/// ClusterIndex provides efficient key-based stripe lookup for Nimble tablets.
 ///
 /// The index uses a flatbuffer-backed serialized index structure that maps
 /// encoded keys to stripe locations. Internally, the class maintains minimal
@@ -54,23 +54,23 @@ struct StripeLocation {
 ///
 /// Example usage:
 ///   ...
-///   auto index = TabletIndex::create(std::move(indexSection));
+///   auto index = ClusterIndex::create(std::move(indexSection));
 ///   auto location = index->lookup(encodedKey);
 ///   if (location) {
 ///     auto stripeGroupIndex =
 ///     tabletReader.stripeGroupIndex(location->stripeIndex); auto metadata =
-///     index->groupIndexMetadata(stripeGroupIndex);
+///     index->groupMetadata(stripeGroupIndex);
 ///   }
 ///   ... read stripe data ...
 ///
-class TabletIndex {
+class ClusterIndex {
  public:
-  /// Creates a TabletIndex for efficient key-based stripe lookups.
+  /// Creates a ClusterIndex for efficient key-based stripe lookups.
   ///
   /// @param indexSection The index section containing the serialized
   ///        index data
-  /// @return A unique pointer to a newly created TabletIndex
-  static std::unique_ptr<TabletIndex> create(Section indexSection);
+  /// @return A unique pointer to a newly created ClusterIndex
+  static std::unique_ptr<ClusterIndex> create(Section indexSection);
 
   /// Looks up the stripe location containing the specified encoded key using
   /// binary search.
@@ -139,10 +139,10 @@ class TabletIndex {
   /// @param groupIndex The zero-based stripe group index.
   /// @return Metadata section containing offset, size, and
   ///         compression info for the stripe index group
-  MetadataSection groupIndexMetadata(uint32_t groupIndex) const;
+  MetadataSection groupMetadata(uint32_t groupIndex) const;
 
   /// Returns a reference to the root index metadata buffer.
-  /// This is needed by StripeIndexGroup to read stripe group information.
+  /// This is needed by ClusterIndexGroup to read stripe group information.
   const MetadataBuffer& rootIndex() const;
 
   /// Returns the number of index groups for testing purposes.
@@ -151,10 +151,10 @@ class TabletIndex {
   }
 
  private:
-  explicit TabletIndex(Section indexSection);
+  explicit ClusterIndex(Section indexSection);
 
   const Section indexSection_;
-  const serialization::Index* const indexRoot_;
+  const serialization::ClusterIndex* const indexRoot_;
   const uint32_t numStripes_;
   const uint32_t numIndexGroups_;
   const std::vector<std::string_view> stripeKeys_;

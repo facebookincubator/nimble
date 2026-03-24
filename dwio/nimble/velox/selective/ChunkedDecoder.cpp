@@ -231,11 +231,10 @@ void ChunkedDecoder::skipWithIndex(int64_t numValues) {
 
   // Lookup the chunk containing targetRow.
   const auto location = streamIndex_->lookupChunk(targetRow);
-  NIMBLE_DCHECK(location.has_value());
 
   // Seek to the chunk and skip within it.
-  seekToChunk(location->streamOffset);
-  rowPosition_ = location->rowOffset;
+  seekToChunk(location.streamOffset);
+  rowPosition_ = location.rowOffset;
 
   const uint32_t rowsToSkipInChunk = targetRow - rowPosition_;
   NIMBLE_DCHECK_LT(rowsToSkipInChunk, remainingValues_);

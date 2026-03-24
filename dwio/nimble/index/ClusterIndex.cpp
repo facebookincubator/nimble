@@ -14,25 +14,25 @@
  * limitations under the License.
  */
 
-#include "dwio/nimble/index/TabletIndex.h"
+#include "dwio/nimble/index/ClusterIndex.h"
 
 #include <algorithm>
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/tablet/IndexGenerated.h"
+#include "dwio/nimble/tablet/ClusterIndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "folly/json/json.h"
 
 namespace facebook::nimble::index {
 
 namespace {
-const serialization::Index* getIndexRoot(const Section& indexSection) {
-  const auto* indexRoot =
-      flatbuffers::GetRoot<serialization::Index>(indexSection.content().data());
+const serialization::ClusterIndex* getIndexRoot(const Section& indexSection) {
+  const auto* indexRoot = flatbuffers::GetRoot<serialization::ClusterIndex>(
+      indexSection.content().data());
   NIMBLE_CHECK_NOT_NULL(indexRoot);
   return indexRoot;
 }
 
-uint32_t getStripeCount(const serialization::Index* indexRoot) {
+uint32_t getStripeCount(const serialization::ClusterIndex* indexRoot) {
   const auto* stripeKeys = indexRoot->stripe_keys();
   NIMBLE_CHECK_NOT_NULL(stripeKeys);
   // Empty file case: no stripe keys means no stripes.
@@ -42,14 +42,14 @@ uint32_t getStripeCount(const serialization::Index* indexRoot) {
   return stripeKeys->size() - 1;
 }
 
-uint32_t getIndexGroupCount(const serialization::Index* indexRoot) {
-  const auto* stripeIndexGroups = indexRoot->stripe_index_groups();
-  NIMBLE_CHECK_NOT_NULL(stripeIndexGroups);
-  return stripeIndexGroups->size();
+uint32_t getIndexGroupCount(const serialization::ClusterIndex* indexRoot) {
+  const auto* stripeIndexes = indexRoot->stripe_indexes();
+  NIMBLE_CHECK_NOT_NULL(stripeIndexes);
+  return stripeIndexes->size();
 }
 
 std::vector<std::string_view> getStripeKeys(
-    const serialization::Index* indexRoot) {
+    const serialization::ClusterIndex* indexRoot) {
   const auto* stripeKeys = indexRoot->stripe_keys();
   NIMBLE_CHECK_NOT_NULL(stripeKeys);
   std::vector<std::string_view> result;
@@ -61,7 +61,7 @@ std::vector<std::string_view> getStripeKeys(
 }
 
 std::vector<std::string> getIndexColumns(
-    const serialization::Index* indexRoot) {
+    const serialization::ClusterIndex* indexRoot) {
   const auto* indexColumns = indexRoot->index_columns();
   NIMBLE_CHECK_NOT_NULL(indexColumns);
   std::vector<std::string> result;
@@ -72,7 +72,8 @@ std::vector<std::string> getIndexColumns(
   return result;
 }
 
-std::vector<SortOrder> getSortOrders(const serialization::Index* indexRoot) {
+std::vector<SortOrder> getSortOrders(
+    const serialization::ClusterIndex* indexRoot) {
   const auto* sortOrders = indexRoot->sort_orders();
   NIMBLE_CHECK_NOT_NULL(sortOrders);
   std::vector<SortOrder> result;
@@ -86,11 +87,12 @@ std::vector<SortOrder> getSortOrders(const serialization::Index* indexRoot) {
 
 } // namespace
 
-std::unique_ptr<TabletIndex> TabletIndex::create(Section indexSection) {
-  return std::unique_ptr<TabletIndex>(new TabletIndex(std::move(indexSection)));
+std::unique_ptr<ClusterIndex> ClusterIndex::create(Section indexSection) {
+  return std::unique_ptr<ClusterIndex>(
+      new ClusterIndex(std::move(indexSection)));
 }
 
-TabletIndex::TabletIndex(Section indexSection)
+ClusterIndex::ClusterIndex(Section indexSection)
     : indexSection_{std::move(indexSection)},
       indexRoot_{getIndexRoot(indexSection_)},
       numStripes_{getStripeCount(indexRoot_)},
@@ -115,7 +117,7 @@ TabletIndex::TabletIndex(Section indexSection)
       "Number of stripe index groups cannot exceed number of stripes");
 }
 
-std::optional<StripeLocation> TabletIndex::lookup(
+std::optional<StripeLocation> ClusterIndex::lookup(
     std::string_view encodedKey) const {
   // Handle empty index case.
   if (numStripes_ == 0) {
@@ -145,9 +147,9 @@ std::optional<StripeLocation> TabletIndex::lookup(
   return StripeLocation{targetStripe};
 }
 
-MetadataSection TabletIndex::groupIndexMetadata(uint32_t groupIndex) const {
+MetadataSection ClusterIndex::groupMetadata(uint32_t groupIndex) const {
   NIMBLE_CHECK_LT(groupIndex, numIndexGroups_);
-  const auto* indexGroupSections = indexRoot_->stripe_index_groups();
+  const auto* indexGroupSections = indexRoot_->stripe_indexes();
   NIMBLE_CHECK_NOT_NULL(indexGroupSections);
   const auto* metadata = indexGroupSections->Get(groupIndex);
   return MetadataSection{
@@ -156,7 +158,7 @@ MetadataSection TabletIndex::groupIndexMetadata(uint32_t groupIndex) const {
       static_cast<CompressionType>(metadata->compression_type())};
 }
 
-const MetadataBuffer& TabletIndex::rootIndex() const {
+const MetadataBuffer& ClusterIndex::rootIndex() const {
   return indexSection_.buffer();
 }
 } // namespace facebook::nimble::index

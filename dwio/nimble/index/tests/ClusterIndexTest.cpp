@@ -17,16 +17,16 @@
 #include <limits>
 
 #include "dwio/nimble/common/tests/TestUtils.h"
-#include "dwio/nimble/index/TabletIndex.h"
-#include "dwio/nimble/index/tests/TabletIndexTestBase.h"
+#include "dwio/nimble/index/ClusterIndex.h"
+#include "dwio/nimble/index/tests/ClusterIndexTestBase.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 
 namespace facebook::nimble::index::test {
 namespace {
 
-class TabletIndexTest : public TabletIndexTestBase {};
+class ClusterIndexTest : public ClusterIndexTestBase {};
 
-TEST_F(TabletIndexTest, stripeLocation) {
+TEST_F(ClusterIndexTest, stripeLocation) {
   StripeLocation loc1{0};
   EXPECT_EQ(loc1.stripeIndex, 0);
 
@@ -40,7 +40,7 @@ TEST_F(TabletIndexTest, stripeLocation) {
   EXPECT_EQ(loc1, loc1);
 }
 
-TEST_F(TabletIndexTest, basic) {
+TEST_F(ClusterIndexTest, basic) {
   std::vector<std::string> indexColumns = {"col1", "col2", "col3"};
   std::string minKey = "aaa";
   std::vector<Stripe> stripes = {
@@ -71,36 +71,36 @@ TEST_F(TabletIndexTest, basic) {
   std::vector<int> stripeGroups = {2, 1, 1};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto tabletIndex = createTabletIndex(indexBuffers);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndex = createClusterIndex(indexBuffers);
 
-  EXPECT_EQ(tabletIndex->numStripes(), 4);
-  EXPECT_FALSE(tabletIndex->empty());
-  EXPECT_EQ(tabletIndex->minKey(), "aaa");
-  EXPECT_EQ(tabletIndex->maxKey(), "eee");
+  EXPECT_EQ(clusterIndex->numStripes(), 4);
+  EXPECT_FALSE(clusterIndex->empty());
+  EXPECT_EQ(clusterIndex->minKey(), "aaa");
+  EXPECT_EQ(clusterIndex->maxKey(), "eee");
 
-  EXPECT_EQ(tabletIndex->stripeKey(0), "bbb");
-  EXPECT_EQ(tabletIndex->stripeKey(1), "ccc");
-  EXPECT_EQ(tabletIndex->stripeKey(2), "ddd");
-  EXPECT_EQ(tabletIndex->stripeKey(3), "eee");
+  EXPECT_EQ(clusterIndex->stripeKey(0), "bbb");
+  EXPECT_EQ(clusterIndex->stripeKey(1), "ccc");
+  EXPECT_EQ(clusterIndex->stripeKey(2), "ddd");
+  EXPECT_EQ(clusterIndex->stripeKey(3), "eee");
 
-  const auto& cols = tabletIndex->indexColumns();
+  const auto& cols = clusterIndex->indexColumns();
   EXPECT_EQ(cols.size(), 3);
   EXPECT_EQ(cols[0], "col1");
   EXPECT_EQ(cols[1], "col2");
   EXPECT_EQ(cols[2], "col3");
 
-  auto metadata0 = tabletIndex->groupIndexMetadata(0);
+  auto metadata0 = clusterIndex->groupMetadata(0);
   EXPECT_EQ(metadata0.offset(), 0);
   EXPECT_GT(metadata0.size(), 0);
   EXPECT_EQ(metadata0.compressionType(), CompressionType::Uncompressed);
 
-  auto metadata1 = tabletIndex->groupIndexMetadata(1);
+  auto metadata1 = clusterIndex->groupMetadata(1);
   EXPECT_EQ(metadata1.offset(), metadata0.size());
   EXPECT_GT(metadata1.size(), 0);
   EXPECT_EQ(metadata1.compressionType(), CompressionType::Uncompressed);
 
-  auto metadata2 = tabletIndex->groupIndexMetadata(2);
+  auto metadata2 = clusterIndex->groupMetadata(2);
   EXPECT_EQ(metadata2.offset(), metadata0.size() + metadata1.size());
   EXPECT_GT(metadata2.size(), 0);
   EXPECT_EQ(metadata2.compressionType(), CompressionType::Uncompressed);
@@ -108,7 +108,7 @@ TEST_F(TabletIndexTest, basic) {
       metadata2.offset() + metadata2.size(), indexBuffers.indexGroups.size());
 }
 
-TEST_F(TabletIndexTest, lookup) {
+TEST_F(ClusterIndexTest, lookup) {
   std::vector<std::string> indexColumns = {"key_col"};
   std::string minKey = "aaa";
   std::vector<Stripe> stripes = {
@@ -133,8 +133,8 @@ TEST_F(TabletIndexTest, lookup) {
   std::vector<int> stripeGroups = {2, 1};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto tabletIndex = createTabletIndex(indexBuffers);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndex = createClusterIndex(indexBuffers);
 
   // Stripe keys: minKey="aaa", stripe0="ccc", stripe1="fff", stripe2="iii"
   struct {
@@ -162,7 +162,7 @@ TEST_F(TabletIndexTest, lookup) {
 
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(testCase.lookupKey);
-    auto result = tabletIndex->lookup(testCase.lookupKey);
+    auto result = clusterIndex->lookup(testCase.lookupKey);
     if (testCase.expectedStripeIndex.has_value()) {
       ASSERT_TRUE(result.has_value());
       EXPECT_EQ(result->stripeIndex, testCase.expectedStripeIndex.value());
@@ -172,7 +172,7 @@ TEST_F(TabletIndexTest, lookup) {
   }
 }
 
-TEST_F(TabletIndexTest, lookupWithSameKeys) {
+TEST_F(ClusterIndexTest, lookupWithSameKeys) {
   std::vector<std::string> indexColumns = {"key_col"};
   std::string minKey = "aaa";
   std::vector<Stripe> stripes = {
@@ -197,8 +197,8 @@ TEST_F(TabletIndexTest, lookupWithSameKeys) {
   std::vector<int> stripeGroups = {2, 1};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto tabletIndex = createTabletIndex(indexBuffers);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndex = createClusterIndex(indexBuffers);
 
   // All stripe keys are the same: minKey="aaa", stripe0="aaa", stripe1="aaa",
   // stripe2="aaa"
@@ -218,7 +218,7 @@ TEST_F(TabletIndexTest, lookupWithSameKeys) {
 
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(testCase.lookupKey);
-    auto result = tabletIndex->lookup(testCase.lookupKey);
+    auto result = clusterIndex->lookup(testCase.lookupKey);
     if (testCase.expectedStripeIndex.has_value()) {
       ASSERT_TRUE(result.has_value());
       EXPECT_EQ(result->stripeIndex, testCase.expectedStripeIndex.value());
