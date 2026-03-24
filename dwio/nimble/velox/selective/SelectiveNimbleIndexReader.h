@@ -20,8 +20,8 @@
 #include <memory>
 #include <vector>
 
-#include "dwio/nimble/index/IndexReader.h"
-#include "dwio/nimble/index/TabletIndex.h"
+#include "dwio/nimble/index/ClusterIndex.h"
+#include "dwio/nimble/index/ClusterIndexReader.h"
 #include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
@@ -258,7 +258,7 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
   // physical format. Used for column reader construction.
   const velox::RowTypePtr fileOutputType_;
 
-  const TabletIndex* const tabletIndex_;
+  const ClusterIndex* const clusterIndex_;
   const std::vector<std::string> indexColumns_;
 
   StripeStreams streams_;
@@ -266,7 +266,7 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
   int32_t numStripes_{0};
 
   std::unique_ptr<velox::serializer::KeyEncoder> keyEncoder_;
-  std::unique_ptr<index::IndexReader> indexReader_;
+  std::unique_ptr<index::ClusterIndexReader> indexReader_;
 
   std::unique_ptr<velox::dwio::common::SelectiveColumnReader> columnReader_;
   velox::dwio::common::ColumnReaderStatistics columnReaderStatistics_;

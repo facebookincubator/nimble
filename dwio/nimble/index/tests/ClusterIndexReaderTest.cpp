@@ -21,8 +21,8 @@
 
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
-#include "dwio/nimble/index/IndexReader.h"
-#include "dwio/nimble/index/tests/TabletIndexTestBase.h"
+#include "dwio/nimble/index/ClusterIndexReader.h"
+#include "dwio/nimble/index/tests/ClusterIndexTestBase.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 
@@ -31,7 +31,7 @@ namespace facebook::nimble::index::test {
 using namespace facebook::velox;
 using namespace facebook::velox::dwio::common;
 
-class IndexReaderTest : public TabletIndexTestBase {
+class ClusterIndexReaderTest : public ClusterIndexTestBase {
  protected:
   // Encodes a vector of string keys into a chunked stream format.
   // Returns the encoded stream data and the chunk offsets for each key group.
@@ -97,7 +97,7 @@ class IndexReaderTest : public TabletIndexTestBase {
   }
 };
 
-TEST_F(IndexReaderTest, singleChunkSingleKey) {
+TEST_F(ClusterIndexReaderTest, singleChunkSingleKey) {
   // Create a single chunk with one key
   auto encodedStream = encodeKeyStream({{"key_a"}});
 
@@ -111,14 +111,14 @@ TEST_F(IndexReaderTest, singleChunkSingleKey) {
   std::vector<int> stripeGroups = {1};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto stripeIndexGroup =
-      createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndexGroup =
+      createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexReader::create(
+  auto reader = ClusterIndexReader::create(
       createInputStream(encodedStream.data),
       /*stripeIndex=*/0,
-      stripeIndexGroup,
+      clusterIndexGroup,
       pool_.get());
 
   // Test exact key match
@@ -136,7 +136,7 @@ TEST_F(IndexReaderTest, singleChunkSingleKey) {
   ASSERT_FALSE(result.has_value());
 }
 
-TEST_F(IndexReaderTest, singleChunkMultipleKeys) {
+TEST_F(ClusterIndexReaderTest, singleChunkMultipleKeys) {
   // Create a single chunk with multiple sorted keys
   std::vector<std::string> keys = {
       "key_aaa", "key_bbb", "key_ccc", "key_ddd", "key_eee"};
@@ -152,12 +152,12 @@ TEST_F(IndexReaderTest, singleChunkMultipleKeys) {
   std::vector<int> stripeGroups = {1};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto stripeIndexGroup =
-      createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndexGroup =
+      createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexReader::create(
-      createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
+  auto reader = ClusterIndexReader::create(
+      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
 
   // Test exact matches, keys between existing keys, and keys after last key.
   // Keys between existing keys should return the next key's row.
@@ -186,7 +186,7 @@ TEST_F(IndexReaderTest, singleChunkMultipleKeys) {
   }
 }
 
-TEST_F(IndexReaderTest, multipleChunks) {
+TEST_F(ClusterIndexReaderTest, multipleChunks) {
   // Create multiple chunks with different keys
   std::vector<std::vector<std::string>> keyChunks = {
       {"key_a", "key_b", "key_c"}, // Chunk 0: 3 keys
@@ -208,12 +208,12 @@ TEST_F(IndexReaderTest, multipleChunks) {
   std::vector<int> stripeGroups = {1};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto stripeIndexGroup =
-      createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndexGroup =
+      createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexReader::create(
-      createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
+  auto reader = ClusterIndexReader::create(
+      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
 
   // Test keys across all chunks with mixed found/not-found cases.
   // Chunk 0: row offset 0, Chunk 1: row offset 3, Chunk 2: row offset 6
@@ -247,7 +247,7 @@ TEST_F(IndexReaderTest, multipleChunks) {
   }
 }
 
-TEST_F(IndexReaderTest, seekBetweenChunks) {
+TEST_F(ClusterIndexReaderTest, seekBetweenChunks) {
   // Create multiple chunks and test seeking keys that fall between chunks
   std::vector<std::vector<std::string>> keyChunks = {
       {"key_aaa", "key_bbb", "key_ccc"}, // Chunk 0
@@ -268,12 +268,12 @@ TEST_F(IndexReaderTest, seekBetweenChunks) {
   std::vector<int> stripeGroups = {1};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto stripeIndexGroup =
-      createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndexGroup =
+      createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexReader::create(
-      createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
+  auto reader = ClusterIndexReader::create(
+      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
 
   // Key falls between chunk 0's max (ccc) and chunk 1's content (ddd)
   // The index lookup should direct us to chunk 1, and we find ddd
@@ -310,7 +310,7 @@ TEST_F(IndexReaderTest, seekBetweenChunks) {
   EXPECT_EQ(result.value(), 4);
 }
 
-TEST_F(IndexReaderTest, multipleStripes) {
+TEST_F(ClusterIndexReaderTest, multipleStripes) {
   // Create key streams for two stripes
   std::vector<std::vector<std::string>> stripe0Keys = {
       {"key_a", "key_b", "key_c"}};
@@ -339,13 +339,16 @@ TEST_F(IndexReaderTest, multipleStripes) {
   std::vector<int> stripeGroups = {2};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto stripeIndexGroup =
-      createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndexGroup =
+      createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   // Test reader for stripe 0
-  auto reader0 = IndexReader::create(
-      createInputStream(encodedStream0.data), 0, stripeIndexGroup, pool_.get());
+  auto reader0 = ClusterIndexReader::create(
+      createInputStream(encodedStream0.data),
+      0,
+      clusterIndexGroup,
+      pool_.get());
 
   auto result = reader0->seekAtOrAfter("key_a");
   ASSERT_TRUE(result.has_value());
@@ -356,8 +359,11 @@ TEST_F(IndexReaderTest, multipleStripes) {
   EXPECT_EQ(result.value(), 1);
 
   // Test reader for stripe 1
-  auto reader1 = IndexReader::create(
-      createInputStream(encodedStream1.data), 1, stripeIndexGroup, pool_.get());
+  auto reader1 = ClusterIndexReader::create(
+      createInputStream(encodedStream1.data),
+      1,
+      clusterIndexGroup,
+      pool_.get());
 
   result = reader1->seekAtOrAfter("key_d");
   ASSERT_TRUE(result.has_value());
@@ -368,7 +374,7 @@ TEST_F(IndexReaderTest, multipleStripes) {
   EXPECT_EQ(result.value(), 1);
 }
 
-TEST_F(IndexReaderTest, emptyStringKey) {
+TEST_F(ClusterIndexReaderTest, emptyStringKey) {
   // Test with empty string as a key
   std::vector<std::string> keys = {"", "a", "b"};
   auto encodedStream = encodeKeyStream({keys});
@@ -383,12 +389,12 @@ TEST_F(IndexReaderTest, emptyStringKey) {
   std::vector<int> stripeGroups = {1};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto stripeIndexGroup =
-      createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndexGroup =
+      createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexReader::create(
-      createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
+  auto reader = ClusterIndexReader::create(
+      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
 
   // Test empty string key
   auto result = reader->seekAtOrAfter("");
@@ -403,7 +409,7 @@ TEST_F(IndexReaderTest, emptyStringKey) {
   ASSERT_FALSE(result.has_value());
 }
 
-TEST_F(IndexReaderTest, largeNumberOfKeys) {
+TEST_F(ClusterIndexReaderTest, largeNumberOfKeys) {
   // Test with a large number of keys in a single chunk
   std::vector<std::string> keys;
   constexpr int numKeys = 1000;
@@ -423,12 +429,12 @@ TEST_F(IndexReaderTest, largeNumberOfKeys) {
   std::vector<int> stripeGroups = {1};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto stripeIndexGroup =
-      createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndexGroup =
+      createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexReader::create(
-      createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
+  auto reader = ClusterIndexReader::create(
+      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
 
   // Test some specific keys
   std::vector<int> testIndices = {0, 1, 10, 100, 500, 999};
@@ -450,7 +456,7 @@ TEST_F(IndexReaderTest, largeNumberOfKeys) {
   EXPECT_EQ(result.value(), 501);
 }
 
-TEST_F(IndexReaderTest, repeatedSeeksToSameChunk) {
+TEST_F(ClusterIndexReaderTest, repeatedSeeksToSameChunk) {
   // Test that repeated seeks to the same chunk work correctly
   // (tests chunk caching behavior)
   std::vector<std::vector<std::string>> keyChunks = {
@@ -479,12 +485,12 @@ TEST_F(IndexReaderTest, repeatedSeeksToSameChunk) {
   std::vector<int> stripeGroups = {1};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto stripeIndexGroup =
-      createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndexGroup =
+      createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexReader::create(
-      createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
+  auto reader = ClusterIndexReader::create(
+      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
 
   // Test repeated seeks within each chunk and across chunks.
   // Mix forward, backward, and repeated seeks to test caching behavior.
@@ -507,7 +513,7 @@ TEST_F(IndexReaderTest, repeatedSeeksToSameChunk) {
   }
 }
 
-TEST_F(IndexReaderTest, unevenChunkSizes) {
+TEST_F(ClusterIndexReaderTest, unevenChunkSizes) {
   // Test with chunks of varying sizes
   std::vector<std::vector<std::string>> keyChunks = {
       {"key_a"}, // Small chunk: 1 key
@@ -529,12 +535,12 @@ TEST_F(IndexReaderTest, unevenChunkSizes) {
   std::vector<int> stripeGroups = {1};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto stripeIndexGroup =
-      createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndexGroup =
+      createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexReader::create(
-      createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
+  auto reader = ClusterIndexReader::create(
+      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
 
   // Chunk 0: row offset 0, 1 key
   // Chunk 1: row offset 1, 5 keys
@@ -564,7 +570,7 @@ TEST_F(IndexReaderTest, unevenChunkSizes) {
   }
 }
 
-TEST_F(IndexReaderTest, binaryKeys) {
+TEST_F(ClusterIndexReaderTest, binaryKeys) {
   // Test with binary keys (keys containing null bytes and non-printable chars)
   std::vector<std::string> keys = {
       std::string("\x00\x01\x02", 3),
@@ -585,12 +591,12 @@ TEST_F(IndexReaderTest, binaryKeys) {
   std::vector<int> stripeGroups = {1};
 
   auto indexBuffers =
-      createTestTabletIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto stripeIndexGroup =
-      createStripeIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndexGroup =
+      createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
-  auto reader = IndexReader::create(
-      createInputStream(encodedStream.data), 0, stripeIndexGroup, pool_.get());
+  auto reader = ClusterIndexReader::create(
+      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
 
   // Test exact matches and not-found cases for binary keys.
   // Keys after the last key should return std::nullopt.

@@ -19,10 +19,11 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Checksum.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/tablet/ChunkIndexWriter.h"
+#include "dwio/nimble/tablet/ClusterIndexWriter.h"
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
-#include "dwio/nimble/tablet/TabletIndexWriter.h"
 #include "velox/common/file/File.h"
 #include "velox/vector/TypeAliases.h"
 
@@ -64,7 +65,7 @@ struct KeyStream {
   std::vector<KeyChunk> chunks;
 };
 
-struct TabletIndexConfig;
+struct ClusterIndexConfig;
 
 class LayoutPlanner {
  public:
@@ -85,8 +86,17 @@ class TabletWriter {
     uint32_t metadataCompressionThreshold{kMetadataCompressionThreshold};
     ChecksumType checksumType{ChecksumType::XXH3_64};
     bool streamDeduplicationEnabled{true};
+    // When true, chunk-level position index is built for all streams,
+    // enabling O(1) chunk-level seeking within stripes. Independent of
+    // the cluster index (indexConfig). When indexConfig is set, chunk
+    // index is always enabled regardless of this flag.
+    bool enableChunkIndex{false};
+    // Skip writing chunk index for a stripe group if the average number
+    // of chunks per stream is below this threshold. 0 disables chunk index
+    // skipping.
+    float chunkIndexMinAvgChunks{2};
     /// Configuration for cluster index.
-    std::optional<TabletIndexConfig> indexConfig;
+    std::optional<ClusterIndexConfig> indexConfig;
   };
 
   static std::unique_ptr<TabletWriter> create(
@@ -137,8 +147,13 @@ class TabletWriter {
       velox::memory::MemoryPool& pool,
       Options options);
 
-  inline bool hasIndex() const {
-    return indexWriter_ != nullptr;
+  bool hasChunkIndex() const {
+    return chunkIndexWriter_ != nullptr;
+  }
+
+  // Whether cluster index (key stream + value index) is enabled.
+  bool hasClusterIndex() const {
+    return clusterIndexWriter_ != nullptr;
   }
 
   // Checks that writer is not closed and throws if it is.
@@ -147,7 +162,8 @@ class TabletWriter {
         state_ == State::kActive, "TabletWriter is already closed.");
   }
 
-  // Write metadata entry to file
+  // Write metadata entry to file. Uses options_.metadataCompressionThreshold
+  // to decide whether to compress.
   CompressionType writeMetadata(std::string_view metadata);
 
   // Write stripe group metadata entry and also add that to footer sections if
@@ -190,15 +206,18 @@ class TabletWriter {
   // Writes the index group for a completed stripe group.
   void writeIndexGroup(size_t streamCount, size_t stripeCount);
 
-  // Writes the root index. This is the last call to indexWriter_.
+  // Writes the root index. This is the last call to clusterIndexWriter_.
   void writeRootIndex();
 
   velox::WriteFile* const file_;
   velox::memory::MemoryPool* const pool_;
   const Options options_;
   const std::unique_ptr<Checksum> checksum_;
-  // Index writer for managing cluster index (nullable if indexing disabled).
-  const std::unique_ptr<TabletIndexWriter> indexWriter_;
+  // Chunk-level position index (standalone or shared with cluster index).
+  const std::unique_ptr<ChunkIndexWriter> chunkIndexWriter_;
+  // Cluster index writer (key stream + value index). References
+  // chunkIndexWriter_ when both are present.
+  const std::unique_ptr<ClusterIndexWriter> clusterIndexWriter_;
 
   // Number of rows in each stripe.
   std::vector<uint32_t> stripeRowCounts_;

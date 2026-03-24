@@ -13,11 +13,13 @@
 # limitations under the License.
 add_library(
   nimble_index
+  ChunkIndex.cpp
+  ChunkIndexGroup.cpp
+  ClusterIndex.cpp
+  ClusterIndexGroup.cpp
+  ClusterIndexReader.cpp
   IndexFilter.cpp
-  IndexReader.cpp
   SortOrder.cpp
-  StripeIndexGroup.cpp
-  TabletIndex.cpp
 )
 
 target_link_libraries(
@@ -25,7 +27,8 @@ target_link_libraries(
   nimble_common
   nimble_encodings
   nimble_tablet_common
-  nimble_index_fb
+  nimble_cluster_index_fb
+  nimble_chunk_index_fb
   velox_core
   velox_type
   velox_vector

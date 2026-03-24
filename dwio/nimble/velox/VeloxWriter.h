@@ -87,7 +87,7 @@ class VeloxWriter {
   Stats stats() const;
 
  private:
-  inline bool hasIndex() const;
+  inline bool hasClusterIndex() const;
 
   // Adds index key to the index writer. If barrier is provided, the processing
   // will be added to the barrier for parallel execution.

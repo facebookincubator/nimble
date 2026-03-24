@@ -45,6 +45,17 @@ struct VeloxWriterOptions {
   // Enable vectorized stats for applicable schema shapes.
   bool enableVectorizedStats{false};
 
+  // When true, chunk-level position index is built for all streams,
+  // enabling O(1) chunk-level seeking within stripes. Independent of
+  // the cluster index (indexConfig). When indexConfig is set, chunk
+  // index is always enabled regardless of this flag.
+  bool enableChunkIndex{false};
+
+  // Skip writing chunk index for a stripe group if the average number
+  // of chunks per stream is below this threshold. 0 disables chunk index
+  // skipping.
+  float chunkIndexMinAvgChunks{2};
+
   /// If set, the cluster index on the specified columns will be built during
   /// writing. The index stores the per-chunk min and max key for each stripe.
   std::optional<IndexConfig> indexConfig;

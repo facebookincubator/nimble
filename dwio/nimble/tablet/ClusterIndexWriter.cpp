@@ -14,11 +14,12 @@
  * limitations under the License.
  */
 
-#include "dwio/nimble/tablet/TabletIndexWriter.h"
+#include "dwio/nimble/tablet/ClusterIndexWriter.h"
 
 #include "dwio/nimble/common/Exceptions.h"
+
+#include "dwio/nimble/tablet/ClusterIndexGenerated.h"
 #include "dwio/nimble/tablet/Constants.h"
-#include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "folly/String.h"
 #include "folly/json/json.h"
@@ -35,29 +36,29 @@ std::string_view asView(const flatbuffers::FlatBufferBuilder& builder) {
 
 } // namespace
 
-std::unique_ptr<TabletIndexWriter> TabletIndexWriter::create(
-    const std::optional<TabletIndexConfig>& config,
+std::unique_ptr<ClusterIndexWriter> ClusterIndexWriter::create(
+    const std::optional<ClusterIndexConfig>& config,
     velox::memory::MemoryPool& pool) {
   if (!config.has_value()) {
     return nullptr;
   }
   NIMBLE_USER_CHECK(
       !config->columns.empty(),
-      "Index columns must not be empty in TabletIndexConfig");
+      "Index columns must not be empty in ClusterIndexConfig");
   NIMBLE_USER_CHECK_EQ(
       config->columns.size(),
       config->sortOrders.size(),
-      "Index columns and sort orders must have the same size in TabletIndexConfig");
-  return std::unique_ptr<TabletIndexWriter>(
-      new TabletIndexWriter(config.value(), pool));
+      "Index columns and sort orders must have the same size in ClusterIndexConfig");
+  return std::unique_ptr<ClusterIndexWriter>(
+      new ClusterIndexWriter(config.value(), pool));
 }
 
-TabletIndexWriter::TabletIndexWriter(
-    const TabletIndexConfig& config,
+ClusterIndexWriter::ClusterIndexWriter(
+    const ClusterIndexConfig& config,
     velox::memory::MemoryPool& pool)
     : pool_{&pool}, config_{config} {}
 
-void TabletIndexWriter::ensureStripeWrite(size_t streamCount) {
+void ClusterIndexWriter::newStripe() {
   checkNotFinalized();
   if (rootIndex_ == nullptr) {
     rootIndex_ = std::make_unique<RootIndex>();
@@ -67,11 +68,10 @@ void TabletIndexWriter::ensureStripeWrite(size_t streamCount) {
     groupIndex_ = std::make_unique<GroupIndex>();
     groupIndex_->encodingBuffer = std::make_unique<Buffer>(*pool_);
   }
-  auto& stripeIndex = groupIndex_->stripes.emplace_back();
-  stripeIndex.streams.resize(streamCount);
+  groupIndex_->stripes.emplace_back();
 }
 
-void TabletIndexWriter::addStripeKey(const KeyStream& keyStream) {
+void ClusterIndexWriter::addStripeKey(const KeyStream& keyStream) {
   checkNotFinalized();
   const auto& chunks = keyStream.chunks;
   NIMBLE_CHECK(!chunks.empty());
@@ -151,10 +151,9 @@ void TabletIndexWriter::addStripeKey(const KeyStream& keyStream) {
       rootIndex_->encodingBuffer->writeString(newKey));
 }
 
-template <typename ChunkT>
-/* static */ void TabletIndexWriter::updateStreamIndex(
-    const std::vector<ChunkT>& chunks,
-    StreamIndex& index) {
+/* static */ void ClusterIndexWriter::updateKeyStreamIndex(
+    const std::vector<KeyChunk>& chunks,
+    KeyStreamIndex& index) {
   uint32_t accumulatedRows{0};
   uint32_t accumulatedOffset{0};
   for (const auto& chunk : chunks) {
@@ -166,25 +165,7 @@ template <typename ChunkT>
   }
 }
 
-// Explicit template instantiations
-template void TabletIndexWriter::updateStreamIndex(
-    const std::vector<Chunk>& chunks,
-    StreamIndex& index);
-template void TabletIndexWriter::updateStreamIndex(
-    const std::vector<KeyChunk>& chunks,
-    StreamIndex& index);
-
-void TabletIndexWriter::addStreamIndex(
-    uint32_t streamIndex,
-    const std::vector<Chunk>& chunks) {
-  checkNotFinalized();
-  NIMBLE_CHECK_NOT_NULL(groupIndex_);
-  NIMBLE_CHECK(!groupIndex_->empty());
-  NIMBLE_CHECK_LT(streamIndex, groupIndex_->stripes.back().streams.size());
-  updateStreamIndex(chunks, groupIndex_->stripes.back().streams[streamIndex]);
-}
-
-uint64_t TabletIndexWriter::writeKeyStream(
+uint64_t ClusterIndexWriter::writeKeyStream(
     uint64_t keyStreamOffset,
     const std::vector<KeyChunk>& keyChunks,
     const WriteWithChecksumFn& writeWithChecksum) {
@@ -204,7 +185,7 @@ uint64_t TabletIndexWriter::writeKeyStream(
   // Update key stream chunk index for the current stripe.
   NIMBLE_CHECK(!groupIndex_->empty());
   auto& keyStream = groupIndex_->stripes.back().keyStream;
-  updateStreamIndex(keyChunks, keyStream);
+  updateKeyStreamIndex(keyChunks, keyStream);
   for (const auto& chunk : keyChunks) {
     keyStream.chunkKeys.emplace_back(
         groupIndex_->encodingBuffer->writeString(chunk.lastKey));
@@ -217,8 +198,7 @@ uint64_t TabletIndexWriter::writeKeyStream(
   return bytesWritten;
 }
 
-void TabletIndexWriter::writeIndexGroup(
-    size_t streamCount,
+void ClusterIndexWriter::writeGroup(
     size_t stripeCount,
     const CreateMetadataSectionFn& createMetadataSection) {
   checkNotFinalized();
@@ -229,7 +209,6 @@ void TabletIndexWriter::writeIndexGroup(
 
   NIMBLE_CHECK_EQ(stripeCount, groupIndex_->stripes.size());
   NIMBLE_CHECK_GT(stripeCount, 0);
-  NIMBLE_CHECK_GT(streamCount, 0);
 
   flatbuffers::FlatBufferBuilder indexBuilder(kInitialFooterSize);
 
@@ -277,75 +256,53 @@ void TabletIndexWriter::writeIndexGroup(
         stripe.keyStream.chunkKeys.end());
   }
 
-  // Create StripeValueIndex with key stream data
-  const size_t numKeyStreamKeys = keyStreamKeys.size();
-  auto valueIndex = serialization::CreateStripeValueIndex(
-      indexBuilder,
-      indexBuilder.CreateVector(keyStreamOffsets),
-      indexBuilder.CreateVector(keyStreamSizes),
-      indexBuilder.CreateVector(keyStreamChunkCounts),
-      indexBuilder.CreateVector(keyStreamChunkRows),
-      indexBuilder.CreateVector(keyStreamChunkOffsets),
-      indexBuilder.CreateVector<flatbuffers::Offset<flatbuffers::String>>(
-          numKeyStreamKeys,
-          [&indexBuilder, streamKeys = std::move(keyStreamKeys)](size_t i) {
-            return indexBuilder.CreateString(
-                streamKeys[i].data(), streamKeys[i].size());
-          }));
+  // Build all vectors first before creating sub-tables (flatbuffers
+  // requirement: all CreateVector/CreateString calls must precede
+  // Create*Table calls).
+  auto keyStreamOffsetsVec = indexBuilder.CreateVector(keyStreamOffsets);
+  auto keyStreamSizesVec = indexBuilder.CreateVector(keyStreamSizes);
 
-  // Create StripePositionIndex with flattened stream chunk data
-  const size_t totalStreams = stripeCount * streamCount;
-  std::vector<uint32_t> flattenedStreamChunkCounts;
-  flattenedStreamChunkCounts.reserve(totalStreams);
-
-  uint32_t accumulatedChunkCount{0};
+  // Build KeyStreamChunkIndex only if multi-chunk key streams exist.
+  flatbuffers::Offset<serialization::KeyStreamChunkIndex> chunkIndexOffset = 0;
+  bool hasMultiChunkKeyStream = false;
   for (const auto& stripe : groupIndex_->stripes) {
-    for (size_t streamId = 0; streamId < streamCount; ++streamId) {
-      const uint32_t chunkCount = streamId < stripe.streams.size()
-          ? stripe.streams[streamId].chunkCount
-          : 0;
-      accumulatedChunkCount += chunkCount;
-      flattenedStreamChunkCounts.push_back(accumulatedChunkCount);
+    if (stripe.keyStream.chunkCount > 1) {
+      hasMultiChunkKeyStream = true;
+      break;
     }
   }
-
-  // Flatten stream_chunk_rows and stream_chunk_offsets
-  std::vector<uint32_t> flattenedChunkRows;
-  std::vector<uint32_t> flattenedChunkOffsets;
-  flattenedChunkRows.reserve(accumulatedChunkCount);
-  flattenedChunkOffsets.reserve(accumulatedChunkCount);
-
-  for (const auto& stripe : groupIndex_->stripes) {
-    for (const auto& stream : stripe.streams) {
-      flattenedChunkRows.insert(
-          flattenedChunkRows.end(),
-          stream.chunkRows.begin(),
-          stream.chunkRows.end());
-      flattenedChunkOffsets.insert(
-          flattenedChunkOffsets.end(),
-          stream.chunkOffsets.begin(),
-          stream.chunkOffsets.end());
-    }
+  if (hasMultiChunkKeyStream) {
+    auto chunkCountsVec = indexBuilder.CreateVector(keyStreamChunkCounts);
+    auto chunkRowsVec = indexBuilder.CreateVector(keyStreamChunkRows);
+    auto chunkOffsetsVec = indexBuilder.CreateVector(keyStreamChunkOffsets);
+    const size_t numKeyStreamKeys = keyStreamKeys.size();
+    auto chunkKeysVec =
+        indexBuilder.CreateVector<flatbuffers::Offset<flatbuffers::String>>(
+            numKeyStreamKeys,
+            [&indexBuilder, streamKeys = std::move(keyStreamKeys)](size_t i) {
+              return indexBuilder.CreateString(
+                  streamKeys[i].data(), streamKeys[i].size());
+            });
+    chunkIndexOffset = serialization::CreateKeyStreamChunkIndex(
+        indexBuilder,
+        chunkCountsVec,
+        chunkRowsVec,
+        chunkOffsetsVec,
+        chunkKeysVec);
   }
 
-  auto positionIndex = serialization::CreateStripePositionIndex(
-      indexBuilder,
-      indexBuilder.CreateVector(flattenedStreamChunkCounts),
-      indexBuilder.CreateVector(flattenedChunkRows),
-      indexBuilder.CreateVector(flattenedChunkOffsets));
+  auto keyStreamLayout = serialization::CreateKeyStreamLayout(
+      indexBuilder, keyStreamOffsetsVec, keyStreamSizesVec);
 
-  // Create StripeIndexGroup with both value and position indexes
   indexBuilder.Finish(
-      serialization::CreateStripeIndexGroup(
-          indexBuilder, valueIndex, positionIndex));
+      serialization::CreateStripeClusterIndex(
+          indexBuilder, keyStreamLayout, chunkIndexOffset));
 
-  rootIndex_->stripeIndexGroups.push_back(
+  rootIndex_->stripeIndexes.push_back(
       createMetadataSection(asView(indexBuilder)));
-
-  groupIndex_.reset();
 }
 
-void TabletIndexWriter::writeRootIndex(
+void ClusterIndexWriter::writeRoot(
     const std::vector<uint32_t>& stripeGroupIndices,
     const WriteOptionalSectionFn& writeOptionalSection) {
   checkNotFinalized();
@@ -355,7 +312,7 @@ void TabletIndexWriter::writeRootIndex(
   };
 
   // Handle empty file case: write config only (columns, sort orders)
-  // but no stripe keys or stripe index groups.
+  // but no stripe keys or stripe cluster indexes.
   if (rootIndex_ == nullptr) {
     writeEmptyRootIndex(writeOptionalSection);
     return;
@@ -414,30 +371,29 @@ void TabletIndexWriter::writeRootIndex(
   }
   auto stripeCountsVector = builder.CreateVector(stripeCounts);
 
-  // Create stripe index groups metadata sections
-  auto stripeIndexGroupsVector =
+  auto stripeIndexesVector =
       builder.CreateVector<flatbuffers::Offset<serialization::MetadataSection>>(
-          rootIndex_->stripeIndexGroups.size(), [&builder, this](size_t i) {
+          rootIndex_->stripeIndexes.size(), [&builder, this](size_t i) {
             return serialization::CreateMetadataSection(
                 builder,
-                rootIndex_->stripeIndexGroups[i].offset(),
-                rootIndex_->stripeIndexGroups[i].size(),
+                rootIndex_->stripeIndexes[i].offset(),
+                rootIndex_->stripeIndexes[i].size(),
                 static_cast<serialization::CompressionType>(
-                    rootIndex_->stripeIndexGroups[i].compressionType()));
+                    rootIndex_->stripeIndexes[i].compressionType()));
           });
 
   builder.Finish(
-      serialization::CreateIndex(
+      serialization::CreateClusterIndex(
           builder,
           stripeKeysVector,
           indexColumnsVector,
           sortOrdersVector,
           stripeCountsVector,
-          stripeIndexGroupsVector));
-  writeOptionalSection(std::string(kIndexSection), asView(builder));
+          stripeIndexesVector));
+  writeOptionalSection(std::string(kClusterIndexSection), asView(builder));
 }
 
-void TabletIndexWriter::writeEmptyRootIndex(
+void ClusterIndexWriter::writeEmptyRootIndex(
     const WriteOptionalSectionFn& writeOptionalSection) {
   flatbuffers::FlatBufferBuilder builder(kInitialFooterSize);
 
@@ -459,19 +415,19 @@ void TabletIndexWriter::writeEmptyRootIndex(
 
   auto stripeCountsVector = builder.CreateVector<uint32_t>({});
 
-  auto stripeIndexGroupsVector =
+  auto stripeIndexesVector =
       builder.CreateVector<flatbuffers::Offset<serialization::MetadataSection>>(
           {});
 
   builder.Finish(
-      serialization::CreateIndex(
+      serialization::CreateClusterIndex(
           builder,
           stripeKeysVector,
           indexColumnsVector,
           sortOrdersVector,
           stripeCountsVector,
-          stripeIndexGroupsVector));
-  writeOptionalSection(std::string(kIndexSection), asView(builder));
+          stripeIndexesVector));
+  writeOptionalSection(std::string(kClusterIndexSection), asView(builder));
 }
 
 } // namespace facebook::nimble

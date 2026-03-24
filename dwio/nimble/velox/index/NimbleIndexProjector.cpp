@@ -18,7 +18,7 @@
 
 #include <algorithm>
 
-#include "dwio/nimble/index/IndexReader.h"
+#include "dwio/nimble/index/ClusterIndexReader.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/ScopeGuard.h"
@@ -62,7 +62,7 @@ NimbleIndexProjector::NimbleIndexProjector(
               options.maxCoalesceDistance()),
           options)},
       pool_{readerBase_->pool()},
-      tabletIndex_{readerBase_->tablet().index()},
+      tabletIndex_{readerBase_->tablet().clusterIndex()},
       numStripes_{readerBase_->tablet().stripeCount()},
       streams_{readerBase_} {
   NIMBLE_CHECK_NOT_NULL(
@@ -261,13 +261,13 @@ NimbleIndexProjector::lookupRowRanges(
   velox::CpuWallTimer timer(stats_.lookupTiming);
 
   // Set up the stripe with index metadata.
-  streams_.setStripe(stripeIndex, /*loadIndex=*/true);
+  streams_.setStripe(stripeIndex);
 
   // Enqueue and load key stream for index lookup.
-  auto indexReader = index::IndexReader::create(
+  auto indexReader = index::ClusterIndexReader::create(
       streams_.enqueueKeyStream(),
       streams_.stripeIndex(),
-      streams_.indexGroup(),
+      streams_.clusterIndex(),
       pool_);
   streams_.load();
 

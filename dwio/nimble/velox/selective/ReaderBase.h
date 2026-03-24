@@ -16,7 +16,8 @@
 
 #pragma once
 
-#include "dwio/nimble/index/StripeIndexGroup.h"
+#include "dwio/nimble/index/ChunkIndexGroup.h"
+#include "dwio/nimble/index/ClusterIndexGroup.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/SchemaReader.h"
@@ -120,15 +121,9 @@ class StripeStreams {
   explicit StripeStreams(const std::shared_ptr<ReaderBase>& readerBase)
       : readerBase_(readerBase) {}
 
-  void setStripe(int stripe, bool loadIndex = false) {
+  void setStripe(int stripe) {
     stripe_ = stripe;
-    stripeIdentifier_ =
-        readerBase_->tablet().stripeIdentifier(stripe_, loadIndex);
-    if (loadIndex) {
-      NIMBLE_CHECK_NOT_NULL(
-          stripeIdentifier_->indexGroup(),
-          "Index group should be set when loadIndex is true");
-    }
+    stripeIdentifier_ = readerBase_->tablet().stripeIdentifier(stripe_);
   }
 
   bool hasStream(int streamId) const {
@@ -148,8 +143,8 @@ class StripeStreams {
     return stripe_;
   }
 
-  const std::shared_ptr<StripeIndexGroup>& indexGroup() const {
-    return stripeIdentifier_->indexGroup();
+  const std::shared_ptr<ClusterIndexGroup>& clusterIndex() const {
+    return stripeIdentifier_->clusterIndex();
   }
 
   std::shared_ptr<index::StreamIndex> streamIndex(int streamId) const;

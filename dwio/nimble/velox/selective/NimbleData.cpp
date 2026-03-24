@@ -130,6 +130,8 @@ uint64_t NimbleData::skipNulls(uint64_t numValues, bool /*nullsOnly*/) {
   if (!nullsDecoder_ && !inMapDecoder_) {
     return numValues;
   }
+
+  // Materialization path.
   constexpr uint64_t kBufferWords = 256;
   constexpr auto kBitCount = 64 * kBufferWords;
   const auto countNulls = [](ChunkedDecoder& decoder, size_t size) {

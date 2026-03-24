@@ -143,7 +143,7 @@ TEST_F(FileLayoutTest, emptyFileWithIndex) {
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
 
-  nimble::TabletIndexConfig indexConfig{
+  nimble::ClusterIndexConfig indexConfig{
       .columns = {"col1"},
       .sortOrders = {{.ascending = true}},
   };

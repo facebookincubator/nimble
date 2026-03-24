@@ -1135,12 +1135,12 @@ void NimbleDumpLib::emitOptionalSectionsMetadata(bool noHeader) {
 
 void NimbleDumpLib::emitIndex() {
   auto tabletReader = TabletReader::create(file_.get(), pool_.get(), {});
-  if (!tabletReader->hasIndex()) {
+  if (!tabletReader->hasClusterIndex()) {
     ostream_ << "Index: Not configured" << std::endl;
     return;
   }
 
-  const auto* index = tabletReader->index();
+  const auto* index = tabletReader->clusterIndex();
   ostream_ << CYAN(enableColors_) << "Index" << RESET_COLOR(enableColors_)
            << std::endl;
   ostream_ << "Index Columns: ";
@@ -1170,7 +1170,7 @@ void NimbleDumpLib::emitIndex() {
          {"Size", 15, Alignment::Right}},
         /*noHeader=*/false);
     for (size_t i = 0; i < index->numIndexGroups(); ++i) {
-      auto metadata = index->groupIndexMetadata(i);
+      auto metadata = index->groupMetadata(i);
       groupFormatter.writeRow({
           std::to_string(i),
           toString(metadata.compressionType()),
@@ -1190,9 +1190,8 @@ void NimbleDumpLib::emitIndex() {
         /*noHeader=*/false);
     for (size_t stripeIndex = 0; stripeIndex < index->numStripes();
          ++stripeIndex) {
-      auto stripeId =
-          tabletReader->stripeIdentifier(stripeIndex, /*loadIndex=*/true);
-      auto keyStreamRegion = stripeId.indexGroup()->keyStreamRegion(
+      auto stripeId = tabletReader->stripeIdentifier(stripeIndex);
+      auto keyStreamRegion = stripeId.clusterIndex()->keyStreamRegion(
           stripeIndex, tabletReader->stripeOffset(stripeIndex));
       keyStreamFormatter.writeRow({
           std::to_string(stripeIndex),

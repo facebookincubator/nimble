@@ -22,8 +22,10 @@
 #include <vector>
 
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/index/StripeIndexGroup.h"
-#include "dwio/nimble/index/TabletIndex.h"
+#include "dwio/nimble/index/ChunkIndex.h"
+#include "dwio/nimble/index/ChunkIndexGroup.h"
+#include "dwio/nimble/index/ClusterIndex.h"
+#include "dwio/nimble/index/ClusterIndexGroup.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
@@ -147,6 +149,14 @@ class StripeGroup {
     return streamCount_;
   }
 
+  uint32_t firstStripe() const {
+    return firstStripe_;
+  }
+
+  uint32_t stripeCount() const {
+    return stripeCount_;
+  }
+
   std::span<const uint32_t> streamOffsets(uint32_t stripe) const;
   std::span<const uint32_t> streamSizes(uint32_t stripe) const;
 
@@ -154,22 +164,27 @@ class StripeGroup {
   const std::unique_ptr<MetadataBuffer> metadata_;
   const uint32_t index_;
   uint32_t streamCount_;
+  uint32_t stripeCount_;
   uint32_t firstStripe_;
   const uint32_t* streamOffsets_;
   const uint32_t* streamSizes_;
 };
 
-using index::StripeIndexGroup;
+using index::ChunkIndex;
+using index::ChunkIndexGroup;
+using index::ClusterIndexGroup;
 
 class StripeIdentifier {
  public:
   StripeIdentifier(
       uint32_t stripeId,
       std::shared_ptr<StripeGroup> stripeGroup,
-      std::shared_ptr<StripeIndexGroup> indexGroup)
+      std::shared_ptr<ClusterIndexGroup> clusterIndex,
+      std::shared_ptr<ChunkIndexGroup> chunkIndex = nullptr)
       : stripeId_{stripeId},
         stripeGroup_{std::move(stripeGroup)},
-        indexGroup_{std::move(indexGroup)} {}
+        clusterIndex_{std::move(clusterIndex)},
+        chunkIndex_{std::move(chunkIndex)} {}
 
   uint32_t stripeId() const {
     return stripeId_;
@@ -179,17 +194,22 @@ class StripeIdentifier {
     return stripeGroup_;
   }
 
-  const std::shared_ptr<StripeIndexGroup>& indexGroup() const {
-    return indexGroup_;
+  const std::shared_ptr<ClusterIndexGroup>& clusterIndex() const {
+    return clusterIndex_;
+  }
+
+  const std::shared_ptr<ChunkIndexGroup>& chunkIndex() const {
+    return chunkIndex_;
   }
 
  private:
   uint32_t stripeId_;
   std::shared_ptr<StripeGroup> stripeGroup_;
-  std::shared_ptr<StripeIndexGroup> indexGroup_;
+  std::shared_ptr<ClusterIndexGroup> clusterIndex_;
+  std::shared_ptr<ChunkIndexGroup> chunkIndex_;
 };
 
-using index::TabletIndex;
+using index::ClusterIndex;
 
 /// Provides read access to a tablet written by a TabletWriter.
 /// Example usage to read all streams from stripe 0 in a file:
@@ -209,6 +229,12 @@ class TabletReader {
 
     /// Optional sections to eagerly load during initialization.
     std::vector<std::string> preloadOptionalSections;
+
+    /// Whether to load the cluster index during initialization. Default true.
+    bool loadClusterIndex{true};
+
+    /// Whether to load the chunk index during initialization. Default true.
+    bool loadChunkIndex{true};
 
     /// Non-owning pointer for cached reads. When provided, metadata reads
     /// go through BufferedInput for cache integration. Owned by caller
@@ -281,12 +307,27 @@ class TabletReader {
       const std::string& name,
       bool keepCache = false) const;
 
-  // Returns true if the file contains index data.
-  bool hasIndex() const;
+  // Returns true if the file has a chunk index optional section.
+  bool hasChunkIndexSection() const;
 
-  // Returns the tablet index if available, nullptr otherwise.
-  const TabletIndex* index() const {
-    return tabletIndex_.get();
+  // Returns true if the file has a cluster index optional section.
+  bool hasClusterIndexSection() const;
+
+  // Returns true if the cluster index is loaded.
+  inline bool hasClusterIndex() const {
+    return clusterIndex_ != nullptr;
+  }
+
+  // Returns true if the chunk index is loaded and has data for the given
+  // stripe group.
+  inline bool hasChunkIndex(uint32_t stripeGroupIndex) const {
+    return chunkIndex_ != nullptr &&
+        chunkIndex_->groupMetadata(stripeGroupIndex).size() > 0;
+  }
+
+  // Returns the cluster index if available, nullptr otherwise.
+  const ClusterIndex* clusterIndex() const {
+    return clusterIndex_.get();
   }
 
   uint64_t fileSize() const {
@@ -353,9 +394,7 @@ class TabletReader {
   /// `streamOffsets()`.
   uint32_t streamCount(const StripeIdentifier& stripe) const;
 
-  StripeIdentifier stripeIdentifier(
-      uint32_t stripeIndex,
-      bool loadIndex = false) const;
+  StripeIdentifier stripeIdentifier(uint32_t stripeIndex) const;
 
  private:
   TabletReader(
@@ -421,7 +460,8 @@ class TabletReader {
   void loadStripes(
       folly::IOBuf& footerIoBuf,
       uint64_t& footerIoSize,
-      uint64_t& footerIoOffset);
+      uint64_t& footerIoOffset,
+      const Options& options);
 
   // Parses stripes_ to populate stripe metadata (counts, offsets, etc.).
   // Used by test init path.
@@ -441,26 +481,34 @@ class TabletReader {
 
   // Index.
   //
-  void initIndex();
+  void initClusterIndex();
 
-  // Returns the cached StripeIndexGroup for the given stripe group index.
-  // The StripeIndexGroup contains index metadata for efficient data filtering
+  // Returns the cached ClusterIndexGroup for the given stripe group index.
+  // The ClusterIndexGroup contains index metadata for efficient data filtering
   // and skipping during reads.
-  std::shared_ptr<StripeIndexGroup> indexGroup(uint32_t stripeGroupIndex) const;
-
-  // Loads the StripeIndexGroup for the given stripe group index from file.
-  // This is called by the cache when the index group is not already cached.
-  std::shared_ptr<StripeIndexGroup> loadIndexGroup(
+  std::shared_ptr<ClusterIndexGroup> clusterIndexGroup(
       uint32_t stripeGroupIndex) const;
 
-  // Eagerly caches the first index group if it's already in the footer IOBuf.
-  // Skipped when cache is present — on-demand reads will hit the cache.
-  void preloadIndexGroup(const folly::IOBuf& footerIoBuf);
+  // Loads the ClusterIndexGroup for the given stripe group index from file.
+  // This is called by the cache when the index group is not already cached.
+  std::shared_ptr<ClusterIndexGroup> loadClusterIndexGroup(
+      uint32_t stripeGroupIndex) const;
 
-  // Loads both stripe group and index group together using coalesced IO when
-  // BufferedInput is available. Falls back to separate loads otherwise.
-  std::pair<std::shared_ptr<StripeGroup>, std::shared_ptr<StripeIndexGroup>>
-  loadStripeAndIndexGroup(uint32_t stripeGroupIndex) const;
+  // Eagerly caches the first cluster index group if it's already in the footer
+  // IOBuf. Skipped when cache is present — on-demand reads will hit the cache.
+  void preloadClusterIndex(const folly::IOBuf& footerIoBuf);
+
+  // Holds the result of a coalesced metadata load for a stripe group.
+  struct StripeGroupMetadata {
+    std::shared_ptr<StripeGroup> stripeGroup;
+    std::shared_ptr<ClusterIndexGroup> clusterIndex;
+    std::shared_ptr<ChunkIndexGroup> chunkIndex;
+  };
+
+  // Loads stripe group, cluster index group, and chunk index together using
+  // coalesced IO when BufferedInput is available. Falls back to separate loads
+  // otherwise.
+  StripeGroupMetadata loadStripeGroupMetadata(uint32_t stripeGroupIndex) const;
 
   // Optional sections.
   //
@@ -527,6 +575,25 @@ class TabletReader {
       std::unique_ptr<velox::dwio::common::SeekableInputStream> stream,
       const MetadataSection& section) const;
 
+  void initChunkIndex();
+
+  // Returns the cached ChunkIndexGroup for the given stripe group index.
+  std::shared_ptr<ChunkIndexGroup> chunkIndex(uint32_t stripeGroupIndex) const;
+
+  // Loads the ChunkIndexGroup for the given stripe group index from file.
+  std::shared_ptr<ChunkIndexGroup> loadChunkIndexGroup(
+      uint32_t stripeGroupIndex) const;
+
+  // Eagerly caches the first chunk index group if it's already in the footer
+  // IOBuf. Skipped when cache is present — on-demand reads will hit the cache.
+  void preloadChunkIndex(const folly::IOBuf& footerIoBuf);
+
+  // Computes first stripe index for the given stripe group.
+  uint32_t firstStripe(uint32_t stripeGroupIndex) const;
+
+  // Computes the number of stripes for the given stripe group.
+  uint32_t stripeCount(uint32_t stripeGroupIndex) const;
+
   MemoryPool* const pool_;
   // Non-owning pointer to the file for reading. Always valid during the
   // lifetime of TabletReader.
@@ -557,14 +624,23 @@ class TabletReader {
   const uint64_t* stripeOffsets_{nullptr};
 
   // Index related fields.
-  std::unique_ptr<TabletIndex> tabletIndex_;
-  mutable ReferenceCountedCache<uint32_t, StripeIndexGroup> indexGroupCache_;
-  // Holds a strong reference to the first index group when preloaded from the
-  // footer IO. This prevents the first index group from being garbage collected
-  // when it's the only index group (common case). Reset when loading a
-  // different index group.
-  mutable folly::Synchronized<std::shared_ptr<StripeIndexGroup>>
-      firstIndexGroup_;
+  std::unique_ptr<ClusterIndex> clusterIndex_;
+  mutable ReferenceCountedCache<uint32_t, ClusterIndexGroup> clusterIndexCache_;
+  // Holds a strong reference to the first cluster index group when preloaded
+  // from the footer IO. This prevents it from being garbage collected when it's
+  // the only index group (common case). Reset when loading a different group.
+  mutable folly::Synchronized<std::shared_ptr<ClusterIndexGroup>>
+      firstClusterIndexGroup_;
+
+  // Chunk index root, loaded from "chunk_index" optional section.
+  std::unique_ptr<ChunkIndex> chunkIndex_;
+  mutable ReferenceCountedCache<uint32_t, ChunkIndexGroup> chunkIndexCache_;
+  // Holds a strong reference to the first chunk index group when preloaded
+  // from the footer IO. This prevents it from being garbage collected when it's
+  // the only chunk index group (common case). Reset when loading a different
+  // group.
+  mutable folly::Synchronized<std::shared_ptr<ChunkIndexGroup>>
+      firstChunkIndexGroup_;
 
   std::unordered_map<std::string, MetadataSection> optionalSections_;
   mutable folly::Synchronized<

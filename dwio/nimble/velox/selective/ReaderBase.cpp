@@ -119,18 +119,18 @@ std::shared_ptr<index::StreamIndex> StripeStreams::streamIndex(
     int streamId) const {
   NIMBLE_CHECK(stripeIdentifier_.has_value());
 
-  const auto& indexGroup = stripeIdentifier_->indexGroup();
-  if (indexGroup == nullptr) {
+  const auto& chunkIndex = stripeIdentifier_->chunkIndex();
+  if (chunkIndex == nullptr) {
     return nullptr;
   }
-  return indexGroup->createStreamIndex(stripe_, streamId);
+  return chunkIndex->createStreamIndex(stripe_, streamId);
 }
 
 std::unique_ptr<velox::dwio::common::SeekableInputStream>
 StripeStreams::enqueueKeyStream() {
   NIMBLE_CHECK(stripeIdentifier_.has_value());
 
-  const auto& indexGroup = stripeIdentifier_->indexGroup();
+  const auto& indexGroup = stripeIdentifier_->clusterIndex();
   NIMBLE_CHECK_NOT_NULL(indexGroup);
 
   const auto region = indexGroup->keyStreamRegion(

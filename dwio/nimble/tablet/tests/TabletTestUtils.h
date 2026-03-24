@@ -58,12 +58,12 @@ class TabletReaderTestHelper {
 
   /// Returns the number of cached index groups.
   size_t cachedIndexGroupCount() const {
-    return tabletReader_->indexGroupCache_.testingCachedCount();
+    return tabletReader_->clusterIndexCache_.testingCachedCount();
   }
 
   /// Returns true if the index group at the given index is cached.
   bool hasIndexGroupCached(uint32_t groupIndex) const {
-    return tabletReader_->indexGroupCache_.hasCachedEntry(groupIndex);
+    return tabletReader_->clusterIndexCache_.hasCachedEntry(groupIndex);
   }
 
   /// Returns true if the first index group is cached and it's the only one.

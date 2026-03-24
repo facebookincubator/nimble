@@ -17,7 +17,7 @@
 #pragma once
 
 #include "dwio/nimble/encodings/EncodingUtils.h"
-#include "dwio/nimble/index/StripeIndexGroup.h"
+#include "dwio/nimble/index/ChunkIndexGroup.h"
 #include "dwio/nimble/velox/selective/NimbleData.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 
