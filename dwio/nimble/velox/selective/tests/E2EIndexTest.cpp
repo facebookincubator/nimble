@@ -79,43 +79,53 @@ struct IndexEncodingParam {
   CompressionType compressionType;
   SortOrder sortOrder;
   std::optional<uint32_t> prefixRestartInterval;
+  bool enableChunkIndex{false};
 
   static IndexEncodingParam prefix(
-      std::optional<uint32_t> prefixRestartInterval = std::nullopt) {
+      std::optional<uint32_t> prefixRestartInterval = std::nullopt,
+      bool enableChunkIndex = false) {
     return IndexEncodingParam{
-        makePrefixEncodingName("Prefix", prefixRestartInterval),
+        makePrefixEncodingName("Prefix", prefixRestartInterval) +
+            (enableChunkIndex ? "_ChunkIndex" : ""),
         EncodingType::Prefix,
         CompressionType::Uncompressed,
         SortOrder{.ascending = true},
-        prefixRestartInterval};
+        prefixRestartInterval,
+        enableChunkIndex};
   }
 
-  static IndexEncodingParam trivialZstd() {
+  static IndexEncodingParam trivialZstd(bool enableChunkIndex = false) {
     return IndexEncodingParam{
-        "TrivialZstd",
+        std::string("TrivialZstd") + (enableChunkIndex ? "_ChunkIndex" : ""),
         EncodingType::Trivial,
         CompressionType::Zstd,
         SortOrder{.ascending = true},
-        std::nullopt};
+        std::nullopt,
+        enableChunkIndex};
   }
 
   static IndexEncodingParam prefixDesc(
-      std::optional<uint32_t> prefixRestartInterval = std::nullopt) {
+      std::optional<uint32_t> prefixRestartInterval = std::nullopt,
+      bool enableChunkIndex = false) {
     return IndexEncodingParam{
-        makePrefixEncodingName("PrefixDesc", prefixRestartInterval),
+        makePrefixEncodingName("PrefixDesc", prefixRestartInterval) +
+            (enableChunkIndex ? "_ChunkIndex" : ""),
         EncodingType::Prefix,
         CompressionType::Uncompressed,
         SortOrder{.ascending = false},
-        prefixRestartInterval};
+        prefixRestartInterval,
+        enableChunkIndex};
   }
 
-  static IndexEncodingParam trivialZstdDesc() {
+  static IndexEncodingParam trivialZstdDesc(bool enableChunkIndex = false) {
     return IndexEncodingParam{
-        "TrivialZstdDesc",
+        std::string("TrivialZstdDesc") +
+            (enableChunkIndex ? "_ChunkIndex" : ""),
         EncodingType::Trivial,
         CompressionType::Zstd,
         SortOrder{.ascending = false},
-        std::nullopt};
+        std::nullopt,
+        enableChunkIndex};
   }
 
   EncodingLayout makeEncodingLayout() const {
@@ -216,7 +226,8 @@ class E2EIndexTestBase : public ::testing::Test {
       const std::vector<std::string>& indexColumns,
       std::optional<EncodingLayout> encodingLayout = std::nullopt,
       SortOrder sortOrder = SortOrder{.ascending = true},
-      bool noDuplicateKey = true) {
+      bool noDuplicateKey = true,
+      bool enableChunkIndex = false) {
     ASSERT_FALSE(indexColumns.empty()) << "indexColumns must not be empty";
 
     sinkData_.clear();
@@ -224,6 +235,7 @@ class E2EIndexTestBase : public ::testing::Test {
 
     VeloxWriterOptions options;
     options.enableChunking = true;
+    options.enableChunkIndex = enableChunkIndex;
     IndexConfig indexConfig;
     indexConfig.columns = indexColumns;
     indexConfig.sortOrders =
@@ -501,7 +513,8 @@ class E2EIndexTest : public E2EIndexTestBase,
         indexColumns,
         getEncodingLayout(),
         GetParam().sortOrder,
-        noDuplicateKey);
+        noDuplicateKey,
+        GetParam().enableChunkIndex);
   }
 };
 
@@ -2379,7 +2392,12 @@ INSTANTIATE_TEST_SUITE_P(
         IndexEncodingParam::prefixDesc(),
         IndexEncodingParam::prefixDesc(1),
         IndexEncodingParam::prefixDesc(1024),
-        IndexEncodingParam::trivialZstdDesc()),
+        IndexEncodingParam::trivialZstdDesc(),
+        // With chunk index enabled.
+        IndexEncodingParam::prefix(std::nullopt, true),
+        IndexEncodingParam::trivialZstd(true),
+        IndexEncodingParam::prefixDesc(std::nullopt, true),
+        IndexEncodingParam::trivialZstdDesc(true)),
     [](const ::testing::TestParamInfo<IndexEncodingParam>& info) {
       return info.param.name;
     });

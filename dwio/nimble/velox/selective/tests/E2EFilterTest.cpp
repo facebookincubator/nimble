@@ -27,12 +27,14 @@ using namespace facebook::velox;
 struct E2EFilterTestParam {
   bool indexEnabled;
   bool skipConstantFlatMapInMapStreams;
+  bool enableChunkIndex{false};
 
   std::string debugString() const {
     return fmt::format(
-        "index_{}_skipConstantInMap_{}",
+        "index_{}_skipConstantInMap_{}_chunkIndex_{}",
         indexEnabled,
-        skipConstantFlatMapInMapStreams);
+        skipConstantFlatMapInMapStreams,
+        enableChunkIndex);
   }
 };
 
@@ -213,6 +215,7 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase,
     VeloxWriterOptions options;
     options.skipConstantFlatMapInMapStreams = skipConstantFlatMapInMapStreams();
     options.enableChunking = true;
+    options.enableChunkIndex = GetParam().enableChunkIndex;
 
     // Use custom encoding factors if set.
     // Capture by value to avoid dangling reference.
@@ -1326,10 +1329,15 @@ INSTANTIATE_TEST_SUITE_P(
     E2EFilterTests,
     E2EFilterTest,
     ::testing::Values(
-        E2EFilterTestParam{false, false},
-        E2EFilterTestParam{true, false},
-        E2EFilterTestParam{false, true},
-        E2EFilterTestParam{true, true}),
+        E2EFilterTestParam{false, false, false},
+        E2EFilterTestParam{true, false, false},
+        E2EFilterTestParam{false, true, false},
+        E2EFilterTestParam{true, true, false},
+        // With chunk index enabled.
+        E2EFilterTestParam{false, false, true},
+        E2EFilterTestParam{true, false, true},
+        E2EFilterTestParam{false, true, true},
+        E2EFilterTestParam{true, true, true}),
     [](const ::testing::TestParamInfo<E2EFilterTestParam>& info) {
       return info.param.debugString();
     });

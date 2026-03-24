@@ -39,6 +39,14 @@ TabletReader::Options TabletReader::configureOptions(
   Options tabletOptions;
   tabletOptions.maxFooterIoBytes = options.footerSpeculativeIoSize();
   tabletOptions.preloadOptionalSections = {std::string(kSchemaSection)};
+  tabletOptions.loadClusterIndex = options.loadClusterIndex();
+  if (tabletOptions.loadClusterIndex) {
+    tabletOptions.preloadOptionalSections.emplace_back(kClusterIndexSection);
+  }
+  tabletOptions.loadChunkIndex = options.loadChunkIndex();
+  if (tabletOptions.loadChunkIndex) {
+    tabletOptions.preloadOptionalSections.emplace_back(kChunkIndexSection);
+  }
   if (options.fileMetadataCacheEnabled() && bufferedInput != nullptr) {
     tabletOptions.bufferedInput = bufferedInput;
   }
@@ -516,14 +524,7 @@ void TabletReader::initOptionalSections() {
 
 std::vector<std::string> TabletReader::preloadSectionNames(
     const Options& options) const {
-  auto names = options.preloadOptionalSections;
-  if (hasClusterIndexSection()) {
-    names.emplace_back(kClusterIndexSection);
-  }
-  if (hasChunkIndexSection()) {
-    names.emplace_back(kChunkIndexSection);
-  }
-  return names;
+  return options.preloadOptionalSections;
 }
 
 void TabletReader::preloadOptionalSections(

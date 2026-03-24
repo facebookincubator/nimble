@@ -4069,9 +4069,15 @@ TEST_P(TabletWithIndexTest, cacheWarmPath) {
   auto coldCacheStats = cache_->refreshStats();
   EXPECT_EQ(coldCacheStats.numEntries, 0);
 
+  // Preload index sections so the cache warm path can serve them from cache.
+  nimble::TabletReader::Options options;
+  options.preloadOptionalSections = {
+      std::string(nimble::kClusterIndexSection),
+      std::string(nimble::kChunkIndexSection)};
+
   // Cold path: first reader populates the cache.
   {
-    auto coldReader = createTabletReader(readFile);
+    auto coldReader = createTabletReader(readFile, options);
     EXPECT_EQ(coldReader->stripeCount(), kNumStripes);
     EXPECT_EQ(coldReader->tabletRowCount(), kNumStripes * 100);
     EXPECT_TRUE(coldReader->hasClusterIndex());
@@ -4106,7 +4112,7 @@ TEST_P(TabletWithIndexTest, cacheWarmPath) {
 
   // Warm path: second reader should initialize from cache with zero IO.
   {
-    auto warmReader = createTabletReader(readFile);
+    auto warmReader = createTabletReader(readFile, options);
     EXPECT_EQ(warmReader->stripeCount(), kNumStripes);
     EXPECT_EQ(warmReader->tabletRowCount(), kNumStripes * 100);
     EXPECT_TRUE(warmReader->hasClusterIndex());
@@ -4245,6 +4251,72 @@ TEST_P(TabletTest, readerOptionsSpeculativeMode) {
 
   EXPECT_EQ(tablet->stripeCount(), 1);
   EXPECT_EQ(tablet->stripeRowCount(0), 600);
+}
+
+TEST_P(TabletTest, configureOptionsIndexFlags) {
+  // Verify configureOptions wires loadClusterIndex/loadChunkIndex from
+  // ReaderOptions into TabletReader::Options, both as bools and as entries
+  // in preloadOptionalSections.
+  auto containsSection = [](const std::vector<std::string>& sections,
+                            std::string_view name) {
+    return std::find(sections.begin(), sections.end(), name) != sections.end();
+  };
+
+  velox::dwio::common::ReaderOptions readerOptions(pool_.get());
+
+  {
+    SCOPED_TRACE("defaults");
+    auto opts = nimble::TabletReader::configureOptions(readerOptions);
+    EXPECT_TRUE(opts.loadClusterIndex);
+    EXPECT_TRUE(opts.loadChunkIndex);
+    EXPECT_TRUE(
+        containsSection(opts.preloadOptionalSections, nimble::kSchemaSection));
+    EXPECT_TRUE(containsSection(
+        opts.preloadOptionalSections, nimble::kClusterIndexSection));
+    EXPECT_TRUE(containsSection(
+        opts.preloadOptionalSections, nimble::kChunkIndexSection));
+  }
+
+  {
+    SCOPED_TRACE("both disabled");
+    readerOptions.setLoadClusterIndex(false);
+    readerOptions.setLoadChunkIndex(false);
+    auto opts = nimble::TabletReader::configureOptions(readerOptions);
+    EXPECT_FALSE(opts.loadClusterIndex);
+    EXPECT_FALSE(opts.loadChunkIndex);
+    EXPECT_TRUE(
+        containsSection(opts.preloadOptionalSections, nimble::kSchemaSection));
+    EXPECT_FALSE(containsSection(
+        opts.preloadOptionalSections, nimble::kClusterIndexSection));
+    EXPECT_FALSE(containsSection(
+        opts.preloadOptionalSections, nimble::kChunkIndexSection));
+  }
+
+  {
+    SCOPED_TRACE("cluster only");
+    readerOptions.setLoadClusterIndex(true);
+    readerOptions.setLoadChunkIndex(false);
+    auto opts = nimble::TabletReader::configureOptions(readerOptions);
+    EXPECT_TRUE(opts.loadClusterIndex);
+    EXPECT_FALSE(opts.loadChunkIndex);
+    EXPECT_TRUE(containsSection(
+        opts.preloadOptionalSections, nimble::kClusterIndexSection));
+    EXPECT_FALSE(containsSection(
+        opts.preloadOptionalSections, nimble::kChunkIndexSection));
+  }
+
+  {
+    SCOPED_TRACE("chunk only");
+    readerOptions.setLoadClusterIndex(false);
+    readerOptions.setLoadChunkIndex(true);
+    auto opts = nimble::TabletReader::configureOptions(readerOptions);
+    EXPECT_FALSE(opts.loadClusterIndex);
+    EXPECT_TRUE(opts.loadChunkIndex);
+    EXPECT_FALSE(containsSection(
+        opts.preloadOptionalSections, nimble::kClusterIndexSection));
+    EXPECT_TRUE(containsSection(
+        opts.preloadOptionalSections, nimble::kChunkIndexSection));
+  }
 }
 
 TEST_P(TabletTest, bufferedInputMetadataReads) {
