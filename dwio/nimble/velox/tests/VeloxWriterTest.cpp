@@ -381,6 +381,125 @@ TEST_F(
   writer.close();
 }
 
+TEST_F(VeloxWriterTest, featureReorderingStreamCollocation) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  const std::vector<int64_t> reorderedKeys = {4, 2, 0};
+  const int numRows = 1'000;
+
+  for (bool enableIndex : {false, true}) {
+    SCOPED_TRACE(fmt::format("enableIndex={}", enableIndex));
+
+    // With index: schema is (key, flatmap); without: just (flatmap).
+    // The flatmap column ordinal differs accordingly.
+    auto vector = enableIndex
+        ? vectorMaker.rowVector(
+              {"key", "flatmap"},
+              {vectorMaker.flatVector<int64_t>(
+                   numRows, [](auto row) { return static_cast<int64_t>(row); }),
+               vectorMaker.mapVector<int32_t, int32_t>(
+                   numRows,
+                   [](auto) { return 5; },
+                   [](auto, auto mapIndex) { return mapIndex; },
+                   [](auto row, auto mapIndex) { return row * 10 + mapIndex; },
+                   [](auto) { return false; })})
+        : vectorMaker.rowVector(
+              {"flatmap"},
+              {vectorMaker.mapVector<int32_t, int32_t>(
+                  numRows,
+                  [](auto) { return 5; },
+                  [](auto, auto mapIndex) { return mapIndex; },
+                  [](auto row, auto mapIndex) { return row * 10 + mapIndex; },
+                  [](auto) { return false; })});
+
+    const size_t flatmapOrdinal = enableIndex ? 1 : 0;
+
+    std::string file;
+    {
+      auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+      nimble::VeloxWriterOptions options;
+      options.flatMapColumns = {"flatmap"};
+      options.featureReordering =
+          std::vector<std::tuple<size_t, std::vector<int64_t>>>{
+              {flatmapOrdinal, reorderedKeys}};
+
+      if (enableIndex) {
+        nimble::IndexConfig indexConfig;
+        indexConfig.columns = {"key"};
+        indexConfig.sortOrders = {nimble::SortOrder{.ascending = true}};
+        indexConfig.enforceKeyOrder = true;
+        indexConfig.encodingLayout = nimble::EncodingLayout{
+            nimble::EncodingType::Prefix,
+            {},
+            nimble::CompressionType::Uncompressed};
+        options.indexConfig = std::move(indexConfig);
+      }
+
+      nimble::VeloxWriter writer(
+          vector->type(), std::move(writeFile), *rootPool_, std::move(options));
+      writer.write(vector);
+      writer.close();
+    }
+
+    velox::InMemoryReadFile readFile(file);
+    auto tablet = nimble::TabletReader::create(&readFile, leafPool_.get(), {});
+    ASSERT_GE(tablet->stripeCount(), 1);
+    if (enableIndex) {
+      ASSERT_NE(tablet->index(), nullptr) << "Cluster index must exist";
+    }
+
+    auto stripeId = tablet->stripeIdentifier(0);
+    auto offsets = tablet->streamOffsets(stripeId);
+    auto sizes = tablet->streamSizes(stripeId);
+
+    nimble::VeloxReader reader(&readFile, *leafPool_);
+    const auto& flatMap =
+        reader.schema()->asRow().childAt(flatmapOrdinal)->asFlatMap();
+
+    std::unordered_map<std::string, uint32_t> keyToValueStreamId;
+    for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
+      keyToValueStreamId[flatMap.nameAt(i)] =
+          flatMap.childAt(i)->asScalar().scalarDescriptor().offset();
+    }
+
+    // Use value stream offsets for ordering since inMap streams may be
+    // constant-encoded and deduplicated when all keys are present in every row.
+    auto diskPosition = [&](const std::string& key) -> uint32_t {
+      return offsets[keyToValueStreamId.at(key)];
+    };
+
+    // Verify reordered keys appear in the specified order on disk.
+    for (size_t i = 1; i < reorderedKeys.size(); ++i) {
+      auto prevKey = folly::to<std::string>(reorderedKeys[i - 1]);
+      auto currKey = folly::to<std::string>(reorderedKeys[i]);
+      EXPECT_LT(diskPosition(prevKey), diskPosition(currKey))
+          << "Key " << prevKey << " should appear before key " << currKey
+          << " on disk";
+    }
+
+    // Verify reordered keys' value streams are contiguous (adjacent on disk).
+    for (size_t i = 1; i < reorderedKeys.size(); ++i) {
+      auto prevKey = folly::to<std::string>(reorderedKeys[i - 1]);
+      auto currKey = folly::to<std::string>(reorderedKeys[i]);
+      auto prevStreamId = keyToValueStreamId.at(prevKey);
+      auto currStreamId = keyToValueStreamId.at(currKey);
+      EXPECT_EQ(
+          offsets[prevStreamId] + sizes[prevStreamId], offsets[currStreamId])
+          << "Key " << prevKey << " value stream should be adjacent to key "
+          << currKey;
+    }
+
+    // Verify leftover keys (1, 3) appear after all reordered keys.
+    auto lastReorderedKey = folly::to<std::string>(reorderedKeys.back());
+    auto lastReorderedPos = diskPosition(lastReorderedKey);
+    for (const auto& leftoverKey : {"1", "3"}) {
+      EXPECT_GT(diskPosition(leftoverKey), lastReorderedPos)
+          << "Leftover key " << leftoverKey
+          << " should appear after last reordered key " << lastReorderedKey;
+    }
+  }
+}
+
 TEST_F(VeloxWriterTest, duplicateFlatmapKey) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   // Vector with constant but duplicate key set. Potentially omitting in map

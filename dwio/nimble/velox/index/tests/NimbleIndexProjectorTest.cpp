@@ -20,7 +20,9 @@
 
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/serializer/Deserializer.h"
+#include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
+#include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 
 #include "velox/common/memory/Memory.h"
@@ -793,6 +795,185 @@ TEST_F(NimbleIndexProjectorTest, flatMapMissingKeys) {
         createProjector(subfields),
         "Cannot project entire FlatMap column without key subscripts");
   }
+}
+
+TEST_F(NimbleIndexProjectorTest, featureReorderingStorageReads) {
+  // Schema: key (int64, sorted), features (MAP<INT, BIGINT> as FlatMap).
+  // Write with 10 FlatMap keys (0-9), project 3 keys {7, 3, 1}.
+  // With feature reordering, projected streams are adjacent on disk and require
+  // fewer storage reads when coalesce distance is small.
+  auto rowType = ROW({"key", "features"}, {BIGINT(), MAP(INTEGER(), BIGINT())});
+
+  const int numRows = 1'000;
+  const int numMapKeys = 10;
+  const std::vector<int64_t> projectedKeys = {7, 3, 1};
+
+  auto makeBatch = [&]() {
+    return vectorMaker_->rowVector(
+        {"key", "features"},
+        {vectorMaker_->flatVector<int64_t>(
+             numRows, [](auto row) { return static_cast<int64_t>(row); }),
+         vectorMaker_->mapVector<int32_t, int64_t>(
+             numRows,
+             /*sizeAt*/ [&](auto /*row*/) { return numMapKeys; },
+             /*keyAt*/
+             [](auto /*row*/, auto mapIndex) {
+               return static_cast<int32_t>(mapIndex);
+             },
+             /*valueAt*/
+             [](auto row, auto mapIndex) {
+               return static_cast<int64_t>(row * 100 + mapIndex);
+             })});
+  };
+
+  // Write data with optional feature reordering.
+  auto writeFile = [&](bool enableReordering) {
+    sinkData_.clear();
+    auto file = std::make_unique<InMemoryWriteFile>(&sinkData_);
+
+    VeloxWriterOptions options;
+    options.enableChunking = true;
+    options.flatMapColumns = {"features"};
+
+    IndexConfig indexConfig;
+    indexConfig.columns = {"key"};
+    indexConfig.sortOrders = {SortOrder{.ascending = true}};
+    indexConfig.enforceKeyOrder = true;
+    indexConfig.noDuplicateKey = true;
+    options.indexConfig = std::move(indexConfig);
+
+    if (enableReordering) {
+      // Ordinal 1 = "features" column (after "key").
+      options.featureReordering =
+          std::vector<std::tuple<size_t, std::vector<int64_t>>>{
+              {1, projectedKeys}};
+    }
+
+    auto batch = makeBatch();
+    VeloxWriter writer(
+        batch->type(), std::move(file), *rootPool_, std::move(options));
+    writer.write(batch);
+    writer.close();
+  };
+
+  // Create projector with custom coalesce distance.
+  auto makeProjector = [&](int32_t maxCoalesceDistance) {
+    auto readFile =
+        std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
+    dwio::common::ReaderOptions readerOptions(leafPool_.get());
+    readerOptions.setFileFormat(FileFormat::NIMBLE);
+    readerOptions.setMaxCoalesceDistance(maxCoalesceDistance);
+
+    std::vector<Subfield> subfields;
+    for (auto key : projectedKeys) {
+      subfields.emplace_back(fmt::format("features[{}]", key));
+    }
+    return NimbleIndexProjector(std::move(readFile), subfields, readerOptions);
+  };
+
+  // Part 1: Verify stream adjacency on disk with feature reordering.
+  {
+    writeFile(/*enableReordering=*/true);
+    auto readFile =
+        std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
+    auto tablet = TabletReader::create(readFile.get(), leafPool_.get(), {});
+    ASSERT_GE(tablet->stripeCount(), 1);
+
+    auto stripeId = tablet->stripeIdentifier(0);
+    auto offsets = tablet->streamOffsets(stripeId);
+    auto sizes = tablet->streamSizes(stripeId);
+
+    VeloxReader reader(readFile.get(), *leafPool_);
+    const auto& flatMap = reader.schema()->asRow().childAt(1)->asFlatMap();
+
+    std::unordered_map<std::string, uint32_t> keyToValueStreamId;
+    for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
+      keyToValueStreamId[flatMap.nameAt(i)] =
+          flatMap.childAt(i)->asScalar().scalarDescriptor().offset();
+    }
+
+    auto diskPosition = [&](int64_t key) -> uint32_t {
+      return offsets[keyToValueStreamId.at(folly::to<std::string>(key))];
+    };
+
+    // Verify projected keys appear in reordering order on disk.
+    for (size_t i = 1; i < projectedKeys.size(); ++i) {
+      EXPECT_LT(
+          diskPosition(projectedKeys[i - 1]), diskPosition(projectedKeys[i]))
+          << "Key " << projectedKeys[i - 1] << " should appear before key "
+          << projectedKeys[i] << " on disk";
+    }
+
+    // Verify projected keys' value streams are contiguous (adjacent on disk).
+    for (size_t i = 1; i < projectedKeys.size(); ++i) {
+      auto prevStreamId =
+          keyToValueStreamId.at(folly::to<std::string>(projectedKeys[i - 1]));
+      auto currStreamId =
+          keyToValueStreamId.at(folly::to<std::string>(projectedKeys[i]));
+      EXPECT_EQ(
+          offsets[prevStreamId] + sizes[prevStreamId], offsets[currStreamId])
+          << "Key " << projectedKeys[i - 1]
+          << " value stream should be adjacent to key " << projectedKeys[i];
+    }
+  }
+
+  // Part 2: Compare storage reads with and without feature reordering.
+  struct TestParam {
+    bool enableReordering;
+    int32_t maxCoalesceDistance;
+    std::string debugString() const {
+      return fmt::format(
+          "enableReordering={}, maxCoalesceDistance={}",
+          enableReordering,
+          maxCoalesceDistance);
+    }
+  };
+
+  std::vector<TestParam> testSettings = {
+      {false, 0},
+      {true, 0},
+      {false, 512 << 10},
+      {true, 512 << 10},
+  };
+
+  // Map from debugString to numStorageReads.
+  std::map<std::string, uint64_t> storageReads;
+
+  for (const auto& param : testSettings) {
+    SCOPED_TRACE(param.debugString());
+
+    writeFile(param.enableReordering);
+    auto projector = makeProjector(param.maxCoalesceDistance);
+
+    // Point lookup for key in the middle.
+    auto bounds = makePointLookup(rowType, {"key"}, numRows / 2);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    auto result = projector.project(request, {});
+
+    ASSERT_EQ(result.responses.size(), 1);
+    ASSERT_FALSE(result.responses[0].slices.empty());
+
+    storageReads[param.debugString()] = projector.stats().numStorageReads;
+  }
+
+  // With zero coalesce distance, feature reordering should result in fewer
+  // storage reads because projected streams are adjacent on disk.
+  auto readsReorder0 = storageReads[TestParam{true, 0}.debugString()];
+  auto readsNoReorder0 = storageReads[TestParam{false, 0}.debugString()];
+  EXPECT_LT(readsReorder0, readsNoReorder0)
+      << "Feature reordering should reduce storage reads with zero coalesce. "
+      << "With reorder: " << readsReorder0 << ", without: " << readsNoReorder0;
+
+  // With large coalesce distance, reordering should not increase reads.
+  auto readsReorderLarge =
+      storageReads[TestParam{true, 512 << 10}.debugString()];
+  auto readsNoReorderLarge =
+      storageReads[TestParam{false, 512 << 10}.debugString()];
+  EXPECT_LE(readsReorderLarge, readsNoReorderLarge)
+      << "With large coalesce, reordering should not increase reads. "
+      << "With reorder: " << readsReorderLarge
+      << ", without: " << readsNoReorderLarge;
 }
 
 } // namespace facebook::nimble::test
