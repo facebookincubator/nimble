@@ -99,6 +99,29 @@ Vector<T> makeBoundaryMixedData(
   return data;
 }
 
+template <typename T, typename RNG>
+Vector<T> makeMainlyConstantData(
+    velox::memory::MemoryPool& pool,
+    RNG& rng,
+    uint32_t rowCount,
+    Buffer* buffer) {
+  Vector<T> data(&pool);
+  data.reserve(rowCount);
+  // Generate a constant value and a few other values.
+  Vector<T> seed(&pool);
+  seed.reserve(2);
+  nimble::testing::addRandomData<T>(rng, 2, &seed, buffer);
+  // ~90% constant, ~10% other values.
+  for (uint32_t i = 0; i < rowCount; ++i) {
+    if (folly::Random::rand32(rng) % 10 == 0) {
+      data.push_back(seed[1]);
+    } else {
+      data.push_back(seed[0]);
+    }
+  }
+  return data;
+}
+
 // ============================================================================
 // Fuzzer operations
 // ============================================================================
@@ -194,6 +217,10 @@ class EncodingFuzzer {
       datasets.push_back(
           makeMonotonicData<T>(*pool_, rng, rowCount, buffer_.get()));
     }
+
+    // Mainly constant data (good for MainlyConstant encoding).
+    datasets.push_back(
+        makeMainlyConstantData<T>(*pool_, rng, rowCount, buffer_.get()));
 
     // Small data (1-3 rows) for edge cases.
     for (uint32_t sz : {1u, 2u, 3u}) {
