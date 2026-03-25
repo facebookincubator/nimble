@@ -25,6 +25,7 @@
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
 
+#include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
 #include "dwio/nimble/fuzzer/encoding/EncodingFuzzer.h"
 
@@ -50,6 +51,29 @@ class VarintFuzzerTest : public ::testing::Test {};
 TYPED_TEST_SUITE(VarintFuzzerTest, VarintTypes);
 
 TYPED_TEST(VarintFuzzerTest, Correctness) {
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+
+// MainlyConstant: all types except bool
+using MainlyConstantTypes = ::testing::Types<
+    MainlyConstantEncoding<int32_t>,
+    MainlyConstantEncoding<uint32_t>,
+    MainlyConstantEncoding<int64_t>,
+    MainlyConstantEncoding<uint64_t>,
+    MainlyConstantEncoding<float>,
+    MainlyConstantEncoding<double>,
+    MainlyConstantEncoding<std::string_view>>;
+
+template <typename E>
+class MainlyConstantFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(MainlyConstantFuzzerTest, MainlyConstantTypes);
+
+TYPED_TEST(MainlyConstantFuzzerTest, Correctness) {
   EncodingFuzzer<TypeParam> fuzzer(
       FLAGS_fuzzer_iterations,
       FLAGS_fuzzer_max_rows,
