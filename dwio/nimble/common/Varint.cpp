@@ -177,6 +177,55 @@ constexpr std::size_t kCacheLineBytes = 64;
 constexpr std::size_t kMaxControlBitsValue = 64;
 constexpr std::size_t kMaskLength = 6;
 
+// Process runs of two-byte varints. Each 2-byte varint has continuation bit
+// set on byte 0 and clear on byte 1. We detect this pattern in 8-byte words
+// and decode 4 varints at a time using simple scalar ops.
+// Returns the number of elements remaining after processing.
+template <typename T>
+inline uint64_t bulkDecodeTwoByteRun(uint64_t n, const char*& pos, T*& output) {
+  auto remaining = n;
+  const auto* src = reinterpret_cast<const uint8_t*>(pos);
+
+  // In a run of 2-byte varints, each 8-byte word has alternating high bits:
+  // bytes 0,2,4,6 have 0x80 set (continuation), bytes 1,3,5,7 have 0x80
+  // clear (terminator). This gives the pattern 0x0080008000800080.
+  constexpr uint64_t kHighBits = 0x8080808080808080ULL;
+  constexpr uint64_t kTwoBytePattern = 0x0080008000800080ULL;
+  constexpr uint64_t kWordSize = 8;
+
+  // Process 8 bytes at a time (4 two-byte varints).
+  while (remaining >= 4) {
+    uint64_t word;
+    std::memcpy(&word, src, sizeof(word));
+
+    if ((word & kHighBits) != kTwoBytePattern) {
+      break;
+    }
+
+    output[0] = static_cast<T>((src[0] & 0x7f) | (uint32_t(src[1]) << 7));
+    output[1] = static_cast<T>((src[2] & 0x7f) | (uint32_t(src[3]) << 7));
+    output[2] = static_cast<T>((src[4] & 0x7f) | (uint32_t(src[5]) << 7));
+    output[3] = static_cast<T>((src[6] & 0x7f) | (uint32_t(src[7]) << 7));
+
+    src += kWordSize;
+    output += 4;
+    remaining -= 4;
+  }
+
+  // Handle trailing 2-byte varints one at a time. After bulkDecodeSingleByteRun
+  // we know the first byte has high bit set (otherwise it would have been
+  // consumed as a 1-byte varint), so we just check that the second byte is a
+  // terminator.
+  while (remaining > 0 && (src[0] & 0x80) && !(src[1] & 0x80)) {
+    *output++ = static_cast<T>((src[0] & 0x7f) | (uint32_t(src[1]) << 7));
+    src += 2;
+    --remaining;
+  }
+
+  pos = reinterpret_cast<const char*>(src);
+  return remaining;
+}
+
 // Lookup table entry for table-driven BMI2 varint decode.
 struct alignas(kCacheLineBytes) VarintLookupEntry {
   // Extraction masks for up to 6 completed varints. Unused slots are 0
@@ -235,11 +284,16 @@ static constexpr auto kDecodeTable = [] {
 }();
 
 // Table-driven BMI2 varint decode. Reads extraction masks from a lookup table.
+// Takes n and output by reference so the caller can re-dispatch to fast paths
+// after this function yields on a single-byte or two-byte run boundary.
 template <typename T>
 __attribute__((__target__("bmi2"))) const char*
-bulkVarintDecodeBmi2Table(uint64_t n, const char* pos, T* output) {
+bulkVarintDecodeBmi2Table(uint64_t& n, const char* pos, T*& output) {
   constexpr uint64_t kControlMask = 0x0000808080808080ULL;
   constexpr int kChunkLen = 6;
+  // Control bit pattern for uniform single-byte chunks.
+  // cb=0: all 6 bytes are terminators (6 single-byte varints).
+  constexpr uint64_t kAllSingleByteCb = 0;
 
   uint64_t carryover = 0;
   int carryoverBits = 0;
@@ -251,6 +305,13 @@ bulkVarintDecodeBmi2Table(uint64_t n, const char* pos, T* output) {
     uint64_t word;
     std::memcpy(&word, pos, sizeof(word));
     const uint64_t cb = _pext_u64(word, kControlMask);
+
+    // If there is no carryover from a previous chunk and we see a run of
+    // single-byte varints, break out so the caller can use the dedicated
+    // fast path.
+    if (carryoverBits == 0 && cb == kAllSingleByteCb) {
+      return pos;
+    }
 
     // Case 63 (all continuation bytes) requires accumulating carryover
     // rather than replacing it. This case is extremely rare
@@ -294,24 +355,39 @@ bulkVarintDecodeBmi2Table(uint64_t n, const char* pos, T* output) {
         *output++ = readVarint64(&pos);
       }
     }
+    n = 0;
+  }
+  return pos;
+}
+
+// Dispatch loop: cycles between fast paths and the general BMI2 decoder.
+// When the BMI2 decoder detects a uniform single-byte or two-byte chunk
+// boundary (with no carryover), it yields back here so the dedicated fast
+// paths can handle the run efficiently.
+template <typename T>
+inline const char*
+bulkVarintDecodeDispatch(uint64_t n, const char* pos, T* output) {
+  auto remaining = n;
+  while (remaining > 0) {
+    remaining = bulkDecodeSingleByteRun(remaining, pos, output);
+    if (remaining == 0) {
+      break;
+    }
+    remaining = bulkDecodeTwoByteRun(remaining, pos, output);
+    if (remaining == 0) {
+      break;
+    }
+    pos = bulkVarintDecodeBmi2Table(remaining, pos, output);
   }
   return pos;
 }
 
 const char* bulkVarintDecode32(uint64_t n, const char* pos, uint32_t* output) {
-  auto remaining = bulkDecodeSingleByteRun(n, pos, output);
-  if (remaining == 0) {
-    return pos;
-  }
-  return bulkVarintDecodeBmi2Table(remaining, pos, output);
+  return bulkVarintDecodeDispatch(n, pos, output);
 }
 
 const char* bulkVarintDecode64(uint64_t n, const char* pos, uint64_t* output) {
-  auto remaining = bulkDecodeSingleByteRun(n, pos, output);
-  if (remaining == 0) {
-    return pos;
-  }
-  return bulkVarintDecodeBmi2Table(remaining, pos, output);
+  return bulkVarintDecodeDispatch(n, pos, output);
 }
 
 } // namespace facebook::nimble::varint
