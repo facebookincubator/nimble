@@ -20,12 +20,13 @@
 #include "dwio/nimble/index/ClusterIndexReader.h"
 #include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/index/IndexFilter.h"
-#include "dwio/nimble/velox/selective/SelectiveNimbleIndexReader.h"
-
+#include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/selective/ColumnReader.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
+#include "dwio/nimble/velox/selective/SelectiveNimbleIndexReader.h"
+#include "dwio/nimble/velox/stats/VectorizedStatistics.h"
 #include "velox/common/base/RuntimeMetrics.h"
 #include "velox/serializers/KeyEncoder.h"
 
@@ -84,6 +85,29 @@ std::vector<velox::core::SortOrder> toVeloxSortOrders(
   }
   return veloxSortOrders;
 }
+
+// Sums the logical sizes of projected top-level columns from the column stats.
+// The stats are already recursively rolled up, so each column's logicalSize
+// includes all descendants and null overhead. We just need to find the
+// projected top-level columns and sum their sizes.
+uint64_t sumProjectedLogicalSize(
+    const velox::dwio::common::TypeWithId& rootTypeWithId,
+    const std::vector<std::unique_ptr<ColumnStatistics>>& columnStats,
+    const velox::common::ScanSpec& scanSpec) {
+  uint64_t size = 0;
+  for (uint32_t i = 0; i < rootTypeWithId.size(); ++i) {
+    if (auto* childSpec =
+            scanSpec.childByName(rootTypeWithId.type()->asRow().nameOf(i));
+        childSpec != nullptr && rootTypeWithId.childAt(i) != nullptr) {
+      auto id = rootTypeWithId.childAt(i)->id();
+      if (id < columnStats.size() && columnStats[id]) {
+        size += columnStats[id]->getLogicalSize();
+      }
+    }
+  }
+  return size;
+}
+
 } // namespace
 
 namespace {
@@ -184,6 +208,11 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
   // Called from both setAtEnd() and the destructor.
   void restoreFilters();
 
+  // Computes estimated projected row size from file-level vectorized
+  // statistics. Only counts columns in the scan spec. Sets statsBasedRowSize_
+  // if stats are available.
+  void computeStatsBasedRowSize() const;
+
   const std::shared_ptr<ReaderBase> readerBase_;
   const dwio::common::RowReaderOptions options_;
   StripeStreams streams_;
@@ -218,6 +247,11 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
   std::unique_ptr<dwio::common::SelectiveColumnReader> columnReader_;
   dwio::common::ColumnReaderStatistics columnReaderStatistics_;
   std::unique_ptr<RowSizeTracker> rowSizeTracker_;
+
+  // Cached row size estimate derived from file-level statistics.
+  mutable std::optional<size_t> statsBasedRowSize_;
+  // Whether we've already attempted to compute statsBasedRowSize_.
+  mutable bool statsBasedRowSizeAttempted_{false};
 
   // Filters that were removed from the scan spec during index bound conversion.
   // These need to be restored when the row reader is destroyed, as the scan
@@ -315,11 +349,43 @@ void SelectiveNimbleRowReader::resetFilterCaches() {
   }
 }
 
+void SelectiveNimbleRowReader::computeStatsBasedRowSize() const {
+  if (statsBasedRowSizeAttempted_) {
+    return;
+  }
+  statsBasedRowSizeAttempted_ = true;
+  const auto& tablet = readerBase_->tablet();
+  auto statsSection =
+      tablet.loadOptionalSection(std::string(kVectorizedStatsSection));
+  if (!statsSection.has_value()) {
+    return;
+  }
+  auto fileStats = VectorizedFileStats::deserialize(
+      statsSection->content(), *readerBase_->pool());
+  NIMBLE_DCHECK(fileStats != nullptr, "Failed to deserialize vectorized stats");
+  if (!fileStats) {
+    return;
+  }
+  auto columnStats = fileStats->toColumnStatistics(
+      readerBase_->fileSchema(), readerBase_->nimbleSchema());
+  auto totalLogicalSize = sumProjectedLogicalSize(
+      *readerBase_->fileSchemaWithId(), columnStats, *options_.scanSpec());
+  auto totalRows = tablet.tabletRowCount();
+  if (totalRows > 0) {
+    statsBasedRowSize_ = std::max<size_t>(1, totalLogicalSize / totalRows);
+  }
+}
+
 std::optional<size_t> SelectiveNimbleRowReader::estimatedRowSize() const {
-  // TODO: Use column statistics once ready.
   if (const_cast<SelectiveNimbleRowReader*>(this)->nextRowNumber() == kAtEnd) {
     return std::nullopt;
   }
+
+  computeStatsBasedRowSize();
+  if (statsBasedRowSize_.has_value()) {
+    return statsBasedRowSize_;
+  }
+
   size_t byteSize, rowCount;
   if (!columnReader_->estimateMaterializedSize(byteSize, rowCount)) {
     return options_.trackRowSize() ? rowSizeTracker_->getCurrentMaxRowSize()
