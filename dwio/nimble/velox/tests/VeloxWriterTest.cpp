@@ -4347,4 +4347,107 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.toString();
     });
 
+TEST_F(VeloxWriterTest, disableStatsCollection) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  // Build a schema covering major field writer types:
+  // scalar, string, timestamp, array, map, flatmap, row.
+  auto type = velox::ROW(
+      {{"int_col", velox::INTEGER()},
+       {"string_col", velox::VARCHAR()},
+       {"ts_col", velox::TIMESTAMP()},
+       {"array_col", velox::ARRAY(velox::BIGINT())},
+       {"map_col", velox::MAP(velox::INTEGER(), velox::VARCHAR())},
+       {"flatmap_col", velox::MAP(velox::VARCHAR(), velox::BIGINT())}});
+
+  auto vector = vectorMaker.rowVector(
+      {"int_col",
+       "string_col",
+       "ts_col",
+       "array_col",
+       "map_col",
+       "flatmap_col"},
+      {vectorMaker.flatVector<int32_t>({1, 2, 3}),
+       vectorMaker.flatVector<velox::StringView>({"a", "bb", "ccc"}),
+       vectorMaker.flatVector<velox::Timestamp>(
+           {velox::Timestamp(1, 0),
+            velox::Timestamp(2, 0),
+            velox::Timestamp(3, 0)}),
+       vectorMaker.arrayVector<int64_t>({{1, 2}, {3}, {4, 5, 6}}),
+       vectorMaker.mapVector<int32_t, velox::StringView>(
+           {{{1, "x"}}, {{2, "y"}, {3, "z"}}, {{4, "w"}}}),
+       vectorMaker.mapVector<velox::StringView, int64_t>(
+           {{{"k1", 10}}, {{"k2", 20}}, {{"k1", 30}, {"k3", 40}}})});
+
+  // Write with stats collection disabled.
+  std::string file;
+  {
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriterOptions options;
+    options.enableStatsCollection = false;
+    options.flatMapColumns = {"flatmap_col"};
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(options));
+    writer.write(vector);
+
+    // Poll stats mid-write, before flush. columnStats must be empty.
+    {
+      auto midWriteStats = writer.stats();
+      EXPECT_TRUE(midWriteStats.columnStats.empty());
+    }
+
+    writer.flush();
+
+    // Poll stats after flush, before close.
+    {
+      auto postFlushStats = writer.stats();
+      EXPECT_TRUE(postFlushStats.columnStats.empty());
+      EXPECT_EQ(postFlushStats.stripeCount, 1);
+    }
+
+    // Write a second batch to exercise multi-stripe path.
+    writer.write(vector);
+    writer.close();
+
+    // Poll stats after close.
+    auto stats = writer.stats();
+    EXPECT_TRUE(stats.columnStats.empty());
+    EXPECT_EQ(stats.stripeCount, 2);
+  }
+
+  // Verify the file is readable and data round-trips.
+  {
+    velox::InMemoryReadFile readFile(file);
+    nimble::VeloxReader reader(&readFile, *leafPool_);
+    velox::VectorPtr result;
+    uint64_t totalRows = 0;
+    while (reader.next(100, result)) {
+      totalRows += result->size();
+    }
+    EXPECT_EQ(totalRows, 6);
+  }
+}
+
+TEST_F(VeloxWriterTest, disableStatsCollectionWithChunking) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto type = velox::ROW({{"col0", velox::INTEGER()}});
+  auto vector = vectorMaker.rowVector(
+      {"col0"}, {vectorMaker.flatVector<int32_t>({1, 2, 3})});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriterOptions options;
+  options.enableStatsCollection = false;
+  options.enableChunking = true;
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, std::move(options));
+  writer.write(vector);
+  writer.close();
+
+  auto stats = writer.stats();
+  EXPECT_TRUE(stats.columnStats.empty());
+  EXPECT_EQ(stats.stripeCount, 1);
+  EXPECT_GT(stats.bytesWritten, 0);
+}
+
 } // namespace facebook

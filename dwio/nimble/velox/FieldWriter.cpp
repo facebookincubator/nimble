@@ -1382,13 +1382,16 @@ class FlatMapFieldWriter : public FieldWriter {
             typeBuilder_->asFlatMap().nullsDescriptor(),
             type->id())} {
     auto* statsBuilder = context.getStatsCollector(type->id());
-    // Sanity check that the stats builders are shared and thread safe.
-    statisticsCollector_ = statsBuilder->asChecked<SharedStatisticsCollector>();
-    auto keyStatsBuilder = context.getStatsCollector(type->childAt(0)->id());
-    keyStatisticsCollector_ =
-        keyStatsBuilder->asChecked<SharedStatisticsCollector>();
-    for (auto id = valueType_->id(); id <= valueType_->maxId(); ++id) {
-      NIMBLE_CHECK(context.getStatsCollector(id)->shared());
+    if (statsBuilder) {
+      // Sanity check that the stats builders are shared and thread safe.
+      statisticsCollector_ =
+          statsBuilder->asChecked<SharedStatisticsCollector>();
+      auto keyStatsBuilder = context.getStatsCollector(type->childAt(0)->id());
+      keyStatisticsCollector_ =
+          keyStatsBuilder->asChecked<SharedStatisticsCollector>();
+      for (auto id = valueType_->id(); id <= valueType_->maxId(); ++id) {
+        NIMBLE_CHECK(context.getStatsCollector(id)->shared());
+      }
     }
   }
 
@@ -1922,8 +1925,8 @@ class FlatMapFieldWriter : public FieldWriter {
   // across the whole file.
   folly::F14FastMap<KeyType, std::unique_ptr<FlatMapValueFieldWriter>>
       allValueFields_;
-  SharedStatisticsCollector* statisticsCollector_;
-  SharedStatisticsCollector* keyStatisticsCollector_;
+  SharedStatisticsCollector* statisticsCollector_{nullptr};
+  SharedStatisticsCollector* keyStatisticsCollector_{nullptr};
 };
 
 std::unique_ptr<FieldWriter> createFlatMapFieldWriter(

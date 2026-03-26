@@ -396,6 +396,9 @@ class FieldWriterContext {
   }
 
   StatisticsCollector* getStatsCollector(uint32_t nodeId) const {
+    if (statsCollectors_.empty()) {
+      return nullptr;
+    }
     NIMBLE_CHECK_LT(
         nodeId,
         statsCollectors_.size(),

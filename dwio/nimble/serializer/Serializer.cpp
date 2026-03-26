@@ -53,7 +53,14 @@ Serializer::Serializer(
     }
   }
 
-  context_.initStatsCollectors(typeWithId);
+  // Store typeWithId to keep it alive — FlatMap field writers hold references
+  // to child TypeWithId nodes, so the root must outlive the writer.
+  typeWithId_ = typeWithId;
+
+  // NOTE: Stats collectors are intentionally NOT initialized here.
+  // The Serializer never reads column statistics, so skipping
+  // initStatsCollectors() avoids unnecessary per-row stats overhead
+  // in all field writers (their null statisticsCollector_ guards handle this).
   writer_ = FieldWriter::create(context_, typeWithId);
 
   buildStreamEncodingLayouts();
