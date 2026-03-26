@@ -1031,6 +1031,198 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeNullableString) {
   validate(*input, *readers.rowReader, 3, [&](auto) { return true; });
 }
 
+// Verifies that estimatedRowSize only counts projected columns, not all
+// columns in the file.
+TEST_P(SelectiveNimbleReaderTest, estimatedRowSizePartialProjection) {
+  const bool passStringBuffersFromDecoder = GetParam();
+  constexpr int kSize = 100;
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(kSize, folly::identity),
+      makeFlatVector<int32_t>(kSize, folly::identity),
+      makeFlatVector<double>(kSize, [](auto i) { return i * 1.5; }),
+  });
+
+  auto fileContent = test::createNimbleFile(*rootPool(), input);
+
+  // Project all 3 columns: int64 (8) + int32 (4) + double (8) = 20 per row.
+  {
+    auto allSpec = std::make_shared<common::ScanSpec>("root");
+    allSpec->addAllChildFields(*input->type());
+    auto readers =
+        makeReaders(input, fileContent, allSpec, passStringBuffersFromDecoder);
+    auto allSize = readers.rowReader->estimatedRowSize();
+    ASSERT_TRUE(allSize.has_value());
+    ASSERT_EQ(*allSize, 20);
+  }
+
+  // Project only c0 (int64): expect 8 per row.
+  {
+    auto partialType = ROW({"c0"}, {BIGINT()});
+    auto partialSpec = std::make_shared<common::ScanSpec>("root");
+    partialSpec->addAllChildFields(*partialType);
+    auto readFile = std::make_shared<InMemoryReadFile>(fileContent);
+    auto factory =
+        dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
+    dwio::common::ReaderOptions options(pool());
+    options.setScanSpec(partialSpec);
+    auto reader = factory->createReader(
+        std::make_unique<dwio::common::BufferedInput>(readFile, *pool()),
+        options);
+    dwio::common::RowReaderOptions rowOptions;
+    rowOptions.setScanSpec(partialSpec);
+    auto rowReader = reader->createRowReader(rowOptions);
+    auto partialSize = rowReader->estimatedRowSize();
+    ASSERT_TRUE(partialSize.has_value());
+    ASSERT_EQ(*partialSize, 8);
+  }
+}
+
+// Verifies estimatedRowSize for nested types (array, map) uses the
+// already-rolled-up column stats without double-counting.
+TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeNestedTypes) {
+  const bool passStringBuffersFromDecoder = GetParam();
+  constexpr int kSize = 20;
+
+  // Array<int64_t> with 3 elements each.
+  // The array column's rolled-up logicalSize includes element sizes + null
+  // overhead. With 20 non-null rows and 3 int64 elements each:
+  // element data = 20 * 3 * 8 = 480 bytes, plus null overhead.
+  {
+    auto input = makeRowVector({
+        makeArrayVector<int64_t>(
+            kSize, [](auto) { return 3; }, [](auto j) { return j; }),
+    });
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*input->type());
+    auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+    auto estimatedRowSize = readers.rowReader->estimatedRowSize();
+    ASSERT_TRUE(estimatedRowSize.has_value());
+    // At least 24 bytes per row (3 elements * 8 bytes each).
+    ASSERT_GE(*estimatedRowSize, 24);
+    // Should not be wildly over-estimated (no double-counting).
+    ASSERT_LE(*estimatedRowSize, 48);
+  }
+
+  // Map<int32_t, int64_t> with 2 entries each.
+  // key data = 20 * 2 * 4 = 160, value data = 20 * 2 * 8 = 320.
+  {
+    auto input = makeRowVector({
+        makeMapVector<int32_t, int64_t>(
+            kSize,
+            [](auto) { return 2; },
+            [](auto j) { return j; },
+            [](auto j) { return j * 10; }),
+    });
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*input->type());
+    auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+    auto estimatedRowSize = readers.rowReader->estimatedRowSize();
+    ASSERT_TRUE(estimatedRowSize.has_value());
+    // At least 24 bytes per row (2 * (4 + 8)).
+    ASSERT_GE(*estimatedRowSize, 24);
+    ASSERT_LE(*estimatedRowSize, 48);
+  }
+}
+
+// Verifies estimatedRowSize handles partial nested projection on a nested ROW.
+// Projects only one subfield of a nested struct, ensuring we don't count the
+// entire struct's rolled-up logicalSize.
+TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeNestedRowPartialProjection) {
+  const bool passStringBuffersFromDecoder = GetParam();
+  constexpr int kSize = 100;
+
+  // Schema: ROW{a: BIGINT, b: ROW{x: INT, y: DOUBLE}}
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(kSize, folly::identity),
+      makeRowVector({
+          makeFlatVector<int32_t>(kSize, folly::identity),
+          makeFlatVector<double>(kSize, [](auto i) { return i * 1.5; }),
+      }),
+  });
+
+  auto fileContent = test::createNimbleFile(*rootPool(), input);
+
+  // Project all: a(8) + b.x(4) + b.y(8) + null overhead = ~20+ per row.
+  {
+    auto allSpec = std::make_shared<common::ScanSpec>("root");
+    allSpec->addAllChildFields(*input->type());
+    auto readers =
+        makeReaders(input, fileContent, allSpec, passStringBuffersFromDecoder);
+    auto allSize = readers.rowReader->estimatedRowSize();
+    ASSERT_TRUE(allSize.has_value());
+    auto fullSize = *allSize;
+    ASSERT_GE(fullSize, 20);
+  }
+
+  // Project only a(8) + b.x(4): should be less than full projection.
+  {
+    auto partialType = ROW({"c0", "c1"}, {BIGINT(), ROW({"c0"}, {INTEGER()})});
+    auto partialSpec = std::make_shared<common::ScanSpec>("root");
+    partialSpec->addAllChildFields(*partialType);
+    auto readFile = std::make_shared<InMemoryReadFile>(fileContent);
+    auto factory =
+        dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
+    dwio::common::ReaderOptions options(pool());
+    options.setScanSpec(partialSpec);
+    auto reader = factory->createReader(
+        std::make_unique<dwio::common::BufferedInput>(readFile, *pool()),
+        options);
+    dwio::common::RowReaderOptions rowOptions;
+    rowOptions.setScanSpec(partialSpec);
+    auto rowReader = reader->createRowReader(rowOptions);
+    auto partialSize = rowReader->estimatedRowSize();
+    ASSERT_TRUE(partialSize.has_value());
+    // Should be roughly 12 (8 + 4) plus some null overhead, but significantly
+    // less than the full projection.
+    ASSERT_GE(*partialSize, 12);
+    ASSERT_LE(*partialSize, 20);
+  }
+}
+
+// Verifies estimatedRowSize with nullable nested types includes null overhead
+// from intermediate container nodes.
+TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeNullableNested) {
+  const bool passStringBuffersFromDecoder = GetParam();
+  constexpr int kSize = 100;
+
+  // Nested ROW with 50% nulls — the null overhead should be reflected.
+  auto input = makeRowVector({
+      makeRowVector(
+          {makeFlatVector<int64_t>(kSize, folly::identity)}, nullEvery(2)),
+  });
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+  auto estimatedRowSize = readers.rowReader->estimatedRowSize();
+  ASSERT_TRUE(estimatedRowSize.has_value());
+  // With 50% nulls on the outer ROW, the non-null rows contribute int64 (8)
+  // data, plus null overhead at the ROW level.
+  ASSERT_GE(*estimatedRowSize, 1);
+}
+
+// Verifies that estimatedRowSize falls back gracefully when vectorized stats
+// are not available in the file.
+TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeNoStats) {
+  const bool passStringBuffersFromDecoder = GetParam();
+  constexpr int kSize = 100;
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(kSize, folly::identity),
+  });
+
+  // Write file without vectorized stats by using an older writer config.
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableVectorizedStats = false;
+  auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers =
+      makeReaders(input, fileContent, scanSpec, passStringBuffersFromDecoder);
+  // The fallback may or may not return a value depending on whether
+  // estimateMaterializedSize succeeds, but it should not crash.
+  ASSERT_NO_THROW(readers.rowReader->estimatedRowSize());
+}
+
 TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsLastRunFilteredOut) {
   const bool passStringBuffersFromDecoder = GetParam();
   checkArrayWithOffsets(
