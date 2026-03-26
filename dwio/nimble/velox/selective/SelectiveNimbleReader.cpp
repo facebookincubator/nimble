@@ -684,6 +684,11 @@ std::unique_ptr<dwio::common::RowReader> SelectiveNimbleReader::createRowReader(
 std::unique_ptr<dwio::common::IndexReader>
 SelectiveNimbleReader::createIndexReader(
     const dwio::common::RowReaderOptions& options) const {
+  VELOX_CHECK_NOT_NULL(
+      readerBase_->tablet().clusterIndex(),
+      "Cannot create index reader: file has no cluster index section. "
+      "The table metadata indicates this file should have an index, "
+      "but the file was written without one.");
   return std::make_unique<SelectiveNimbleIndexReader>(readerBase_, options);
 }
 
