@@ -3486,6 +3486,38 @@ TEST_P(E2EIndexTest, filterRestorationAcrossMultipleSplits) {
   EXPECT_EQ(keySpec->filter()->kind(), FilterKind::kBigintRange);
 }
 
+// Verifies that createIndexReader() throws a clear error (not SIGSEGV) when
+// the Nimble file has no cluster index — both with data and with an empty file.
+TEST_F(E2EIndexTestBase, CreateIndexReaderWithoutClusterIndex) {
+  auto rowType = ROW({"a", "b"}, {VARCHAR(), INTEGER()});
+  auto batch = vectorMaker_->rowVector(
+      {"a", "b"},
+      {vectorMaker_->flatVector<StringView>({"foo", "bar", "baz"}),
+       vectorMaker_->flatVector<int32_t>({1, 2, 3})});
+
+  // Test with both non-empty and empty files.
+  for (bool writeRows : {true, false}) {
+    SCOPED_TRACE(fmt::format("writeRows={}", writeRows));
+    sinkData_.clear();
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions options;
+    VeloxWriter writer(
+        rowType, std::move(writeFile), *rootPool_, std::move(options));
+    if (writeRows) {
+      writer.write(batch);
+    }
+    writer.close();
+
+    auto reader = createReader();
+    RowReaderOptions rowReaderOpts;
+    rowReaderOpts.setRequestedType(rowType);
+    auto scanSpec = createScanSpec(rowType, {});
+    rowReaderOpts.setScanSpec(std::move(scanSpec));
+
+    EXPECT_THROW(reader->createIndexReader(rowReaderOpts), VeloxRuntimeError);
+  }
+}
+
 // TODO: add schema revolution tests like column renaming to make sure selective
 // reader can handle properly for the index columns.
 } // namespace facebook::nimble::test
