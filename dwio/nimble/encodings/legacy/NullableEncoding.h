@@ -279,7 +279,7 @@ void NullableEncoding<T>::readWithVisitor(
     nulls_->materializeBoolsAsBits(rowCount, nulls, params.numScanned);
   }
   params.initReturnReaderNulls();
-  callReadWithVisitor(*nonNullValues_, visitor, params);
+  legacy::callReadWithVisitor(*nonNullValues_, visitor, params);
 }
 
 template <typename T>

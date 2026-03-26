@@ -24,22 +24,33 @@ namespace {
 
 using namespace facebook::velox;
 
+using E2EFilterTestParams = std::tuple<bool, bool, bool, bool>;
+
 struct E2EFilterTestParam {
   bool indexEnabled;
   bool skipConstantFlatMapInMapStreams;
-  bool enableChunkIndex{false};
+  bool enableChunkIndex;
+  bool stringBufferOptimized;
+
+  explicit E2EFilterTestParam(const E2EFilterTestParams& t)
+      : indexEnabled{std::get<0>(t)},
+        skipConstantFlatMapInMapStreams{std::get<1>(t)},
+        enableChunkIndex{std::get<2>(t)},
+        stringBufferOptimized{std::get<3>(t)} {}
 
   std::string debugString() const {
     return fmt::format(
-        "index_{}_skipConstantInMap_{}_chunkIndex_{}",
+        "index_{}_skipConstantInMap_{}_chunkIndex_{}_stringBufferOptimized_{}",
         indexEnabled,
         skipConstantFlatMapInMapStreams,
-        enableChunkIndex);
+        enableChunkIndex,
+        stringBufferOptimized);
   }
 };
 
-class E2EFilterTest : public dwio::common::E2EFilterTestBase,
-                      public ::testing::WithParamInterface<E2EFilterTestParam> {
+class E2EFilterTest
+    : public dwio::common::E2EFilterTestBase,
+      public ::testing::WithParamInterface<E2EFilterTestParams> {
  protected:
   static void SetUpTestCase() {
     E2EFilterTestBase::SetUpTestCase();
@@ -53,12 +64,16 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase,
     testRowGroupSkip_ = false;
   }
 
+  E2EFilterTestParam param() const {
+    return E2EFilterTestParam{GetParam()};
+  }
+
   virtual bool indexEnabled() const {
-    return GetParam().indexEnabled;
+    return param().indexEnabled;
   }
 
   bool skipConstantFlatMapInMapStreams() const {
-    return GetParam().skipConstantFlatMapInMapStreams;
+    return param().skipConstantFlatMapInMapStreams;
   }
 
   void setUpRowReaderOptions(
@@ -67,6 +82,7 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase,
     opts.setScanSpec(spec);
     opts.setTimestampPrecision(TimestampPrecision::kNanoseconds);
     opts.setIndexEnabled(indexEnabled());
+    opts.setPassStringBuffersFromDecoder(param().stringBufferOptimized);
   }
 
   void testWithTypes(
@@ -215,7 +231,7 @@ class E2EFilterTest : public dwio::common::E2EFilterTestBase,
     VeloxWriterOptions options;
     options.skipConstantFlatMapInMapStreams = skipConstantFlatMapInMapStreams();
     options.enableChunking = true;
-    options.enableChunkIndex = GetParam().enableChunkIndex;
+    options.enableChunkIndex = param().enableChunkIndex;
 
     // Use custom encoding factors if set.
     // Capture by value to avoid dangling reference.
@@ -1328,18 +1344,13 @@ TEST_P(E2EFilterTest, timestampArrayInStruct) {
 INSTANTIATE_TEST_SUITE_P(
     E2EFilterTests,
     E2EFilterTest,
-    ::testing::Values(
-        E2EFilterTestParam{false, false, false},
-        E2EFilterTestParam{true, false, false},
-        E2EFilterTestParam{false, true, false},
-        E2EFilterTestParam{true, true, false},
-        // With chunk index enabled.
-        E2EFilterTestParam{false, false, true},
-        E2EFilterTestParam{true, false, true},
-        E2EFilterTestParam{false, true, true},
-        E2EFilterTestParam{true, true, true}),
-    [](const ::testing::TestParamInfo<E2EFilterTestParam>& info) {
-      return info.param.debugString();
+    testing::Combine(
+        testing::Bool(),
+        testing::Bool(),
+        testing::Bool(),
+        testing::Bool()),
+    [](const ::testing::TestParamInfo<E2EFilterTestParams>& info) {
+      return E2EFilterTestParam{info.param}.debugString();
     });
 
 } // namespace
@@ -1354,6 +1365,17 @@ class PrefixEncodingE2ETest : public E2EFilterTest {
   // instead of TEST_P and therefore GetParam() is not available.
   bool indexEnabled() const override {
     return false;
+  }
+
+  void setUpRowReaderOptions(
+      dwio::common::RowReaderOptions& opts,
+      const std::shared_ptr<dwio::common::ScanSpec>& spec) override {
+    opts.setScanSpec(spec);
+    opts.setTimestampPrecision(TimestampPrecision::kNanoseconds);
+    opts.setIndexEnabled(false);
+    // PrefixEncoding requires string buffer optimization for correct
+    // string_view lifecycle management in readWithVisitor.
+    opts.setPassStringBuffersFromDecoder(true);
   }
 
   void writeToMemory(

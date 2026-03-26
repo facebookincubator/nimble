@@ -24,8 +24,8 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Encoding.h" // Original base classes
-#include "dwio/nimble/encodings/legacy/Encoding.h" // Release namespace type aliases
+#include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/legacy/Encoding.h"
 
 // Stores integer data in a varint encoding. For now we only support encoding
 // non-negative values, but we may later add an optional zigzag encoding that

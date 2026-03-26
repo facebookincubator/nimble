@@ -25,8 +25,8 @@
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/Compression.h"
-#include "dwio/nimble/encodings/Encoding.h" // Original base classes
-#include "dwio/nimble/encodings/legacy/Encoding.h" // Release namespace type aliases
+#include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/legacy/Encoding.h"
 
 // The FixedBitWidthEncoding stores integer data in a fixed number of
 // bits equal to the number of bits required to represent the largest value in

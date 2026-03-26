@@ -165,7 +165,9 @@ ChunkedDecoder NimbleData::makeScalarDecoder() {
       streams_->enqueue(streamId),
       /*decodeValuesWithNulls=*/false,
       streams_->streamIndex(streamId),
-      pool_);
+      pool_,
+      encodingFactory_,
+      getStringBuffersFromDecoder_);
 }
 
 ChunkedDecoder NimbleData::makeMicrosDecoder() {
@@ -176,7 +178,9 @@ ChunkedDecoder NimbleData::makeMicrosDecoder() {
       streams_->enqueue(streamId),
       /*decodeValuesWithNulls=*/false,
       streams_->streamIndex(streamId),
-      pool_);
+      pool_,
+      encodingFactory_,
+      getStringBuffersFromDecoder_);
 }
 
 ChunkedDecoder NimbleData::makeNanosDecoder() {
@@ -187,7 +191,9 @@ ChunkedDecoder NimbleData::makeNanosDecoder() {
       streams_->enqueue(streamId),
       /*decodeValuesWithNulls=*/false,
       streams_->streamIndex(streamId),
-      pool_);
+      pool_,
+      encodingFactory_,
+      getStringBuffersFromDecoder_);
 }
 
 std::unique_ptr<ChunkedDecoder> NimbleData::makeLengthDecoder() {
@@ -215,7 +221,9 @@ std::unique_ptr<ChunkedDecoder> NimbleData::makeDecoder(
       std::move(input),
       decodeValuesWithNulls,
       streams_->streamIndex(descriptor.offset()),
-      pool_);
+      pool_,
+      encodingFactory_,
+      getStringBuffersFromDecoder_);
 }
 
 std::unique_ptr<velox::dwio::common::FormatData> NimbleParams::toFormatData(

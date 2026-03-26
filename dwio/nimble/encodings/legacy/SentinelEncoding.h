@@ -21,8 +21,7 @@
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Encoding.h" // Original base classes
-#include "dwio/nimble/encodings/legacy/Encoding.h" // Release namespace type aliases
+#include "dwio/nimble/encodings/Encoding.h"
 #include "folly/container/F14Set.h"
 #include "velox/common/memory/Memory.h"
 

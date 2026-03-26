@@ -15,7 +15,9 @@
  */
 
 #include "dwio/nimble/velox/selective/ColumnReader.h"
+
 #include <memory>
+#include "dwio/nimble/encodings/legacy/EncodingUtils.h"
 #include "folly/ScopeGuard.h"
 
 #include "dwio/nimble/velox/selective/ByteColumnReader.h"

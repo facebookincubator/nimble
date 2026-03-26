@@ -19,17 +19,10 @@
 #include <span>
 
 #include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/encodings/EncodingSelection.h"
-#include "dwio/nimble/encodings/legacy/Encoding.h"
 
 namespace facebook::nimble::legacy {
-
-// Import encoding selection types from original namespace
-template <typename T>
-using EncodingSelection = ::facebook::nimble::EncodingSelection<T>;
-
-template <typename T>
-using EncodingSelectionPolicy = ::facebook::nimble::EncodingSelectionPolicy<T>;
 
 class EncodingFactory {
  public:

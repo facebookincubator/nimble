@@ -15,6 +15,7 @@
  */
 
 #include "dwio/nimble/velox/selective/TimestampColumnReader.h"
+
 #include "velox/dwio/common/SelectiveColumnReaderInternal.h"
 
 namespace facebook::nimble {
