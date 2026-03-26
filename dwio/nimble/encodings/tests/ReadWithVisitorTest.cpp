@@ -29,9 +29,7 @@
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingUtils.h"
-#include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/encodings/legacy/EncodingUtils.h"
 #include "dwio/nimble/encodings/tests/EncodingLayoutTestHelper.h"
 #include "dwio/nimble/velox/selective/ByteColumnReader.h"
@@ -125,31 +123,12 @@ class ReadWithVisitorTest : public ::testing::TestWithParam<bool>,
       FileContext& ctx,
       const RowTypePtr& rowType,
       common::ScanSpec& scanSpec) {
-    using Factory = std::function<std::unique_ptr<Encoding>(
-        memory::MemoryPool&, std::string_view, std::function<void*(uint32_t)>)>;
-    Factory factory = useNonLegacy()
-        ? Factory(
-              [](memory::MemoryPool& pool,
-                 std::string_view data,
-                 std::function<void*(uint32_t)> sbf)
-                  -> std::unique_ptr<Encoding> {
-                return EncodingFactory::decode(pool, data, std::move(sbf));
-              })
-        : Factory(
-              [](memory::MemoryPool& pool,
-                 std::string_view data,
-                 std::function<void*(uint32_t)> sbf)
-                  -> std::unique_ptr<Encoding> {
-                return legacy::EncodingFactory::decode(
-                    pool, data, std::move(sbf));
-              });
     NimbleParams params(
         *pool(),
         ctx.stats,
         ctx.readerBase->nimbleSchema(),
         *ctx.streams,
         ctx.rowSizeTracker.get(),
-        std::move(factory),
         /*getStringBuffersFromDecoder=*/useNonLegacy());
 
     auto reader = buildColumnReader(
@@ -168,9 +147,9 @@ class ReadWithVisitorTest : public ::testing::TestWithParam<bool>,
       std::string_view encoded,
       velox::memory::MemoryPool& memPool) {
     if (useNonLegacy()) {
-      return EncodingFactory::decode(memPool, encoded, nullptr);
+      return DefaultEncodingTrait::decode(memPool, encoded, nullptr);
     }
-    return legacy::EncodingFactory::decode(memPool, encoded, nullptr);
+    return legacy::LegacyEncodingTrait::decode(memPool, encoded, nullptr);
   }
 
   // Dispatch callReadWithVisitor to the appropriate family.
@@ -180,9 +159,10 @@ class ReadWithVisitorTest : public ::testing::TestWithParam<bool>,
       V& visitor,
       ReadWithVisitorParams& params) {
     if (useNonLegacy()) {
-      nimble::callReadWithVisitor(encoding, visitor, params);
+      DefaultEncodingTrait::callReadWithVisitor(encoding, visitor, params);
     } else {
-      legacy::callReadWithVisitor(encoding, visitor, params);
+      legacy::LegacyEncodingTrait::callReadWithVisitor(
+          encoding, visitor, params);
     }
   }
 

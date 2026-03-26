@@ -18,7 +18,6 @@
 
 #include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
 #include "velox/common/testutil/TestValue.h"
 
 #include <cstddef>
@@ -49,14 +48,18 @@ void ChunkedDecoder::loadNextChunk() {
   inputData_ += length;
   inputSize_ -= length;
   currentStringBuffers_.clear();
-  encoding_ = encodingFactory_(
-      *pool_,
-      std::string_view(chunkData, chunkSize),
-      [&](uint32_t totalLength) {
-        auto& buffer = currentStringBuffers_.emplace_back(
-            velox::AlignedBuffer::allocate<char>(totalLength, pool_));
-        return buffer->asMutable<void>();
-      });
+  auto stringBufferFactory = [&](uint32_t totalLength) -> void* {
+    auto& buffer = currentStringBuffers_.emplace_back(
+        velox::AlignedBuffer::allocate<char>(totalLength, pool_));
+    return buffer->asMutable<void>();
+  };
+  auto data = std::string_view(chunkData, chunkSize);
+  if (getStringBuffersFromDecoder_) {
+    encoding_ = DefaultEncodingTrait::decode(*pool_, data, stringBufferFactory);
+  } else {
+    encoding_ =
+        legacy::LegacyEncodingTrait::decode(*pool_, data, stringBufferFactory);
+  }
   remainingValues_ = encoding_->rowCount();
   NIMBLE_CHECK_GT(remainingValues_, 0);
   VLOG(1) << encoding_->debugString();

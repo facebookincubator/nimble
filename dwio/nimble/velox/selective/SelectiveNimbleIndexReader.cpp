@@ -18,8 +18,6 @@
 
 #include <utility>
 
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/index/ClusterIndexReader.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/selective/ColumnReader.h"
@@ -571,19 +569,6 @@ void SelectiveNimbleIndexReader::loadStripeWithIndex(uint32_t stripeIndex) {
       readerBase_->nimbleSchema(),
       streams_,
       options_.trackRowSize() ? rowSizeTracker_.get() : nullptr,
-      options_.passStringBuffersFromDecoder()
-          ? [](velox::memory::MemoryPool& pool,
-               std::string_view data,
-               std::function<void*(uint32_t)> stringBufferFactory)
-                -> std::unique_ptr<Encoding> {
-        return EncodingFactory::decode(pool, data, std::move(stringBufferFactory));
-      }
-          : [](velox::memory::MemoryPool& pool,
-               std::string_view data,
-               std::function<void*(uint32_t)> stringBufferFactory)
-                -> std::unique_ptr<Encoding> {
-        return legacy::EncodingFactory::decode(pool, data, std::move(stringBufferFactory));
-      },
       options_.passStringBuffersFromDecoder(),
       options_.preserveFlatMapsInMemory());
 

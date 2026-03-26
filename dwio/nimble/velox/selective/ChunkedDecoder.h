@@ -33,21 +33,10 @@ class ChunkedDecoder {
       bool decodeValuesWithNulls,
       std::shared_ptr<index::StreamIndex> streamIndex,
       velox::memory::MemoryPool* pool,
-      std::function<std::unique_ptr<Encoding>(
-          velox::memory::MemoryPool&,
-          std::string_view,
-          std::function<void*(uint32_t)>)> encodingFactory =
-          [](velox::memory::MemoryPool& pool,
-             std::string_view data,
-             std::function<void*(uint32_t)> stringBufferFactory)
-          -> std::unique_ptr<Encoding> {
-        return EncodingFactory::decode(pool, data, stringBufferFactory);
-      },
       bool getStringBuffersFromDecoder = false)
       : input_{std::move(input)},
         pool_{pool},
         decodeValuesWithNulls_{decodeValuesWithNulls},
-        encodingFactory_{std::move(encodingFactory)},
         getStringBuffersFromDecoder_{getStringBuffersFromDecoder},
         streamIndex_{std::move(streamIndex)},
         streamRowCount_{
@@ -437,11 +426,6 @@ class ChunkedDecoder {
   // encode nulls alongside values). When false, decode values without nulls
   // (standard case for scalar types).
   const bool decodeValuesWithNulls_;
-  const std::function<std::unique_ptr<Encoding>(
-      velox::memory::MemoryPool&,
-      std::string_view,
-      std::function<void*(uint32_t)>)>
-      encodingFactory_;
   const bool getStringBuffersFromDecoder_{false};
   // Optional stream index for accelerating skip operations
   const std::shared_ptr<index::StreamIndex> streamIndex_;
