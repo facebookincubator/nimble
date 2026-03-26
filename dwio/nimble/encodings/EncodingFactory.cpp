@@ -236,7 +236,8 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
           dataType,
           DataType::String,
           "Trying to deserialize a PrefixEncoding with a non-string data type.");
-      return std::make_unique<PrefixEncoding>(memoryPool, data, options);
+      return std::make_unique<PrefixEncoding>(
+          memoryPool, data, stringBufferFactory, options);
     }
     default: {
       NIMBLE_UNREACHABLE(

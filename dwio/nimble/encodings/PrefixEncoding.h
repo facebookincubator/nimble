@@ -75,6 +75,7 @@ class PrefixEncoding final
   PrefixEncoding(
       velox::memory::MemoryPool& pool,
       std::string_view data,
+      std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});
 
   void reset() final;
@@ -146,11 +147,24 @@ class PrefixEncoding final
   // as decodedValue_ buffer is overwritten.
   std::string_view decodeEntry();
 
+  // Calls decodeEntry() then copies the decoded value into a string page
+  // allocated via stringBufferFactory_. Returns a stable string_view.
+  // Used by materialize() and readWithVisitor().
+  std::string_view decodeToStringBuffer();
+
   // Seeks to the restart point at the given index.
   void seekToRestartPoint(uint32_t restartIndex);
 
   // Gets the offset for the restart point at the given index.
   uint32_t restartOffset(uint32_t restartIndex) const;
+
+  // Allocates a new string page of at least minSize bytes via
+  // stringBufferFactory_.
+  void allocatePage(size_t minSize);
+
+  // Factory for allocating string buffers tracked by ChunkedDecoder.
+  // Used by decodeEntry() to allocate pages for stable string storage.
+  const std::function<void*(uint32_t)> stringBufferFactory_;
 
   // Restart interval - number of entries between restart points
   const uint32_t restartInterval_;
@@ -165,14 +179,17 @@ class PrefixEncoding final
   const char* currentPos_{nullptr};
   // Current row index being read
   uint32_t currentRow_{0};
-  // Buffer to store decoded value. The shared prefix from the previous entry
-  // is already at the beginning of this buffer, so we only need to append the
-  // suffix for each new entry.
+  // Working buffer for prefix reconstruction. The shared prefix from the
+  // previous entry is already at the beginning of this buffer, so we only
+  // need to append the suffix for each new entry.
   Vector<char> decodedValue_;
-  // Buffer to hold all materialized string data for the current batch.
-  // String views returned by materialize() point into this buffer and
-  // remain valid until the next materialize() call.
-  Vector<char> materializedValues_;
+
+  // Current string page for stable storage of decoded values.
+  char* currentPage_{nullptr};
+  size_t pageCapacity_{0};
+  size_t pageUsed_{0};
+
+  static constexpr size_t kStringPageSize = 256 * 1024;
 };
 
 /// Template implementation (remain in header)
@@ -186,7 +203,9 @@ void PrefixEncoding::readWithVisitor(
       visitor,
       params,
       [&](auto toSkip) { this->skip(toSkip); },
-      [&] { return decodeEntry(); });
+      // We need to decode to the string buffers such that decoder
+      // can directly forward the buffers to output vector.
+      [&] { return decodeToStringBuffer(); });
 }
 
 } // namespace facebook::nimble
