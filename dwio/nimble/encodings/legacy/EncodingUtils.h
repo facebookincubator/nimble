@@ -141,5 +141,4 @@ void callReadWithVisitor(
         });
   }
 }
-
 } // namespace facebook::nimble::legacy

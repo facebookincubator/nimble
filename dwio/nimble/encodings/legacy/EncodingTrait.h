@@ -16,6 +16,7 @@
 #pragma once
 
 #include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 
 namespace facebook::nimble::legacy {
 
@@ -29,9 +30,18 @@ void callReadWithVisitor(
     DecoderVisitor& visitor,
     ReadWithVisitorParams& params);
 
-/// Encoding trait for legacy encodings. Dispatches to
-/// legacy::callReadWithVisitor which casts to legacy concrete encoding types.
+/// Encoding trait for legacy encodings. Decodes using the legacy
+/// EncodingFactory and dispatches callReadWithVisitor to legacy concrete
+/// encoding types.
 struct LegacyEncodingTrait {
+  static std::unique_ptr<Encoding> decode(
+      velox::memory::MemoryPool& pool,
+      std::string_view data,
+      std::function<void*(uint32_t)> stringBufferFactory) {
+    return EncodingFactory::decode(
+        pool, data, std::move(stringBufferFactory));
+  }
+
   template <typename V>
   static void callReadWithVisitor(
       Encoding& encoding,

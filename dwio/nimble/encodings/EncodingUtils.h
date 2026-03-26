@@ -17,6 +17,7 @@
 
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
+#include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
@@ -166,9 +167,18 @@ void callReadWithVisitor(
   }
 }
 
-/// Encoding trait for non-legacy encodings. Dispatches to the standard
-/// callReadWithVisitor which casts to non-legacy concrete encoding types.
+/// Encoding trait for non-legacy encodings. Decodes using the standard
+/// EncodingFactory and dispatches callReadWithVisitor to non-legacy concrete
+/// encoding types.
 struct DefaultEncodingTrait {
+  static std::unique_ptr<Encoding> decode(
+      velox::memory::MemoryPool& pool,
+      std::string_view data,
+      std::function<void*(uint32_t)> stringBufferFactory) {
+    return EncodingFactory::decode(
+        pool, data, std::move(stringBufferFactory));
+  }
+
   template <typename V>
   static void callReadWithVisitor(
       Encoding& encoding,
