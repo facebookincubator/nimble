@@ -81,6 +81,8 @@ class Serializer {
   const SerializerOptions options_;
   velox::memory::MemoryPool* const pool_;
   mutable FieldWriterContext context_;
+  // Kept alive because FlatMap field writers hold references to child nodes.
+  std::shared_ptr<const velox::dwio::common::TypeWithId> typeWithId_;
   std::unique_ptr<FieldWriter> writer_;
   mutable Vector<char> buffer_;
   // Map from stream offset to encoding layout for replaying captured encodings.

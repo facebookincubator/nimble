@@ -457,7 +457,9 @@ std::unique_ptr<FieldWriter> createRootFieldWriter(
     }
   }
 
-  context.initStatsCollectors(type);
+  if (context.options().enableStatsCollection) {
+    context.initStatsCollectors(type);
+  }
 
   return FieldWriter::create(context, type, [&](const TypeBuilder& type) {
     switch (type.kind()) {
@@ -751,7 +753,10 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
     // RawSizeUtils to verify consistency with column statistics.
     // Otherwise, skip this computation as column statistics will provide
     // the raw size.
-    if (context_->options().enableStatsConsistencyCheck) {
+    // Skip entirely when stats collection is disabled — there is no
+    // writeColumnStats() call to consume this value.
+    if (context_->options().enableStatsCollection &&
+        context_->options().enableStatsConsistencyCheck) {
       // Calculate raw size using schema information to correctly handle
       // passthrough flatmaps.
       RawSizeContext context;
@@ -903,13 +908,17 @@ void VeloxWriter::close() {
     try {
       writeStripe();
       rootWriter_->close();
-      context_->finalizeStatsCollectors();
+      if (context_->options().enableStatsCollection) {
+        context_->finalizeStatsCollectors();
+      }
       if (hasClusterIndex()) {
         indexWriter_->close();
       }
 
       writeMetadata();
-      writeColumnStats();
+      if (context_->options().enableStatsCollection) {
+        writeColumnStats();
+      }
       writeSchema();
 
       tabletWriter_->close();
@@ -1001,7 +1010,9 @@ void VeloxWriter::writeStreams() {
                      _streamData = streamData.get()]() {
           uint64_t streamSize{0};
           processStream(*_streamData, streamSize, chunkSize);
-          statsCollector->addPhysicalSize(streamSize);
+          if (statsCollector) {
+            statsCollector->addPhysicalSize(streamSize);
+          }
         });
       }
 
@@ -1014,7 +1025,9 @@ void VeloxWriter::writeStreams() {
         auto statsCollector = context_->getStatsCollector(nodeId);
         uint64_t streamSize{0};
         processStream(*streamData, streamSize, chunkSize);
-        statsCollector->addPhysicalSize(streamSize);
+        if (statsCollector) {
+          statsCollector->addPhysicalSize(streamSize);
+        }
       }
 
       // Handle keyStream if index is enabled
@@ -1223,7 +1236,9 @@ bool VeloxWriter::writeChunks(
                   logicalBytes)) {
             writtenChunk = true;
           }
-          statsCollector->addPhysicalSize(streamSize);
+          if (statsCollector) {
+            statsCollector->addPhysicalSize(streamSize);
+          }
         });
       }
 
@@ -1247,7 +1262,9 @@ bool VeloxWriter::writeChunks(
                 logicalBytes)) {
           writtenChunk = true;
         }
-        statsCollector->addPhysicalSize(streamSize);
+        if (statsCollector) {
+          statsCollector->addPhysicalSize(streamSize);
+        }
       }
 
       maybeEncodeKeyStreamChunk(lastChunk, ensureFullChunks);

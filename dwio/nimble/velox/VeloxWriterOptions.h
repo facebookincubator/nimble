@@ -42,6 +42,10 @@ struct VeloxWriterOptions {
   std::unordered_map<std::string, std::string> metadata =
       detail::defaultMetadata();
 
+  // Enable column statistics collection. When false, the writer skips
+  // collecting per-column statistics, reducing write CPU cost.
+  bool enableStatsCollection{true};
+
   // Enable vectorized stats for applicable schema shapes.
   bool enableVectorizedStats{false};
 
