@@ -16,7 +16,6 @@
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 
 #include "dwio/nimble/common/EncodingPrimitives.h"
-#include "velox/buffer/Buffer.h"
 #include "velox/common/base/BitUtil.h"
 
 namespace facebook::nimble {
@@ -24,14 +23,15 @@ namespace facebook::nimble {
 PrefixEncoding::PrefixEncoding(
     velox::memory::MemoryPool& pool,
     std::string_view data,
+    std::function<void*(uint32_t)> stringBufferFactory,
     const Encoding::Options& options)
     : TypedEncoding<std::string_view, std::string_view>{pool, data, options},
+      stringBufferFactory_{std::move(stringBufferFactory)},
       restartInterval_{readRestartInterval(data, dataOffset())},
       numRestarts_{computeNumRestarts(rowCount_, restartInterval_)},
       restartOffsets_{restartOffsets(data, dataOffset())},
       dataStart_{dataStart(data, dataOffset(), numRestarts_)},
-      decodedValue_{pool_},
-      materializedValues_{pool_} {
+      decodedValue_{pool_} {
   reset();
 }
 
@@ -120,33 +120,33 @@ std::string_view PrefixEncoding::decodeEntry() {
   return std::string_view(decodedValue_.data(), fullLen);
 }
 
+void PrefixEncoding::allocatePage(size_t minSize) {
+  const auto size = std::max(kStringPageSize, minSize);
+  currentPage_ = static_cast<char*>(stringBufferFactory_(size));
+  pageCapacity_ = size;
+  pageUsed_ = 0;
+}
+
+std::string_view PrefixEncoding::decodeToStringBuffer() {
+  const auto decoded = decodeEntry();
+  if (decoded.empty()) {
+    return decoded;
+  }
+  if (pageUsed_ + decoded.size() > pageCapacity_) {
+    allocatePage(decoded.size());
+  }
+  std::memcpy(currentPage_ + pageUsed_, decoded.data(), decoded.size());
+  auto result = std::string_view(currentPage_ + pageUsed_, decoded.size());
+  pageUsed_ += decoded.size();
+  return result;
+}
+
 void PrefixEncoding::materialize(uint32_t rowCount, void* buffer) {
   NIMBLE_CHECK_LE(currentRow_ + rowCount, rowCount_, "Invalid row count");
 
-  // Clear the buffer from previous materialize call
-  materializedValues_.clear();
-
-  // First pass: decode all entries and accumulate total size needed
-  // Store offsets and lengths for each entry
-  Vector<std::pair<uint32_t, uint32_t>> valueOffsets{pool_};
-  valueOffsets.reserve(rowCount);
-
+  auto* output = static_cast<std::string_view*>(buffer);
   for (uint32_t i = 0; i < rowCount; ++i) {
-    const std::string_view decodedValue = decodeEntry();
-    const uint32_t valueOffset = materializedValues_.size();
-    const uint32_t valueLength = decodedValue.size();
-    materializedValues_.insert(
-        materializedValues_.end(),
-        decodedValue.data(),
-        decodedValue.data() + valueLength);
-    valueOffsets.push_back({valueOffset, valueLength});
-  }
-
-  // Second pass: create string_views pointing into materializedValues_
-  std::string_view* valueOutput = static_cast<std::string_view*>(buffer);
-  for (uint32_t i = 0; i < rowCount; ++i) {
-    const auto [offset, len] = valueOffsets[i];
-    valueOutput[i] = std::string_view(materializedValues_.data() + offset, len);
+    output[i] = decodeToStringBuffer();
   }
 }
 

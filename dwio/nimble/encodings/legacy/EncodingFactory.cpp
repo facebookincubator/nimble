@@ -20,6 +20,7 @@
 #include "dwio/nimble/encodings/legacy/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/legacy/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/NullableEncoding.h"
+#include "dwio/nimble/encodings/legacy/PrefixEncoding.h"
 #include "dwio/nimble/encodings/legacy/RleEncoding.h"
 #include "dwio/nimble/encodings/legacy/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/legacy/TrivialEncoding.h"
@@ -234,6 +235,14 @@ std::unique_ptr<Encoding> EncodingFactory::decode(
     }
     case EncodingType::MainlyConstant: {
       RETURN_ENCODING_BY_NON_BOOL_TYPE(MainlyConstantEncoding, dataType);
+    }
+    case EncodingType::Prefix: {
+      NIMBLE_CHECK_EQ(
+          dataType,
+          DataType::String,
+          "Trying to deserialize a PrefixEncoding with a non-string data type.");
+      return std::make_unique<PrefixEncoding>(
+          memoryPool, data, stringBufferFactory);
     }
     default: {
       NIMBLE_UNREACHABLE(
