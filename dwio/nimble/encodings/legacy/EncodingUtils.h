@@ -15,18 +15,18 @@
  */
 #pragma once
 
-#include "dwio/nimble/encodings/ConstantEncoding.h"
-#include "dwio/nimble/encodings/DictionaryEncoding.h"
-#include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
-#include "dwio/nimble/encodings/MainlyConstantEncoding.h"
-#include "dwio/nimble/encodings/NullableEncoding.h"
-#include "dwio/nimble/encodings/PrefixEncoding.h"
-#include "dwio/nimble/encodings/RleEncoding.h"
-#include "dwio/nimble/encodings/SparseBoolEncoding.h"
-#include "dwio/nimble/encodings/TrivialEncoding.h"
-#include "dwio/nimble/encodings/VarintEncoding.h"
+#include "dwio/nimble/encodings/EncodingUtils.h"
+#include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
+#include "dwio/nimble/encodings/legacy/DictionaryEncoding.h"
+#include "dwio/nimble/encodings/legacy/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/legacy/MainlyConstantEncoding.h"
+#include "dwio/nimble/encodings/legacy/NullableEncoding.h"
+#include "dwio/nimble/encodings/legacy/RleEncoding.h"
+#include "dwio/nimble/encodings/legacy/SparseBoolEncoding.h"
+#include "dwio/nimble/encodings/legacy/TrivialEncoding.h"
+#include "dwio/nimble/encodings/legacy/VarintEncoding.h"
 
-namespace facebook::nimble {
+namespace facebook::nimble::legacy {
 
 template <typename DecoderVisitor>
 void callReadWithVisitor(
@@ -35,28 +35,6 @@ void callReadWithVisitor(
     ReadWithVisitorParams& params);
 
 namespace detail {
-
-inline int dataTypeSize(DataType type) {
-  switch (type) {
-    case DataType::Int8:
-    case DataType::Uint8:
-    case DataType::Bool:
-      return 1;
-    case DataType::Int16:
-    case DataType::Uint16:
-      return 2;
-    case DataType::Int32:
-    case DataType::Uint32:
-    case DataType::Float:
-      return 4;
-    case DataType::Int64:
-    case DataType::Uint64:
-    case DataType::Double:
-      return 8;
-    default:
-      NIMBLE_UNSUPPORTED(toString(type));
-  }
-}
 
 template <typename F>
 auto encodingTypeDispatchString(Encoding& encoding, F f) {
@@ -79,8 +57,6 @@ auto encodingTypeDispatchString(Encoding& encoding, F f) {
     case EncodingType::MainlyConstant:
       return f(
           static_cast<MainlyConstantEncoding<std::string_view>&>(encoding));
-    case EncodingType::Prefix:
-      return f(static_cast<PrefixEncoding&>(encoding));
     default:
       NIMBLE_UNSUPPORTED(toString(encoding.encodingType()));
   }
@@ -89,7 +65,7 @@ auto encodingTypeDispatchString(Encoding& encoding, F f) {
 template <typename T, typename F>
 auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
   NIMBLE_CHECK_EQ(
-      dataTypeSize(encoding.dataType()),
+      ::facebook::nimble::detail::dataTypeSize(encoding.dataType()),
       sizeof(T),
       "{}",
       toString(encoding.dataType()));
@@ -166,16 +142,4 @@ void callReadWithVisitor(
   }
 }
 
-/// Encoding trait for non-legacy encodings. Dispatches to the standard
-/// callReadWithVisitor which casts to non-legacy concrete encoding types.
-struct DefaultEncodingTrait {
-  template <typename V>
-  static void callReadWithVisitor(
-      Encoding& encoding,
-      V& visitor,
-      ReadWithVisitorParams& params) {
-    nimble::callReadWithVisitor(encoding, visitor, params);
-  }
-};
-
-} // namespace facebook::nimble
+} // namespace facebook::nimble::legacy

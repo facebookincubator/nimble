@@ -23,8 +23,7 @@
 #include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Encoding.h" // Original base classes
-#include "dwio/nimble/encodings/legacy/Encoding.h" // Release namespace type aliases
+#include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 
 // Stores integer data in a delta encoding. We use three child encodings:

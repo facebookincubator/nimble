@@ -16,6 +16,8 @@
 
 #include "dwio/nimble/velox/selective/IntegerColumnReader.h"
 
+#include "dwio/nimble/encodings/legacy/EncodingUtils.h"
+
 namespace facebook::nimble {
 
 using namespace facebook::velox;

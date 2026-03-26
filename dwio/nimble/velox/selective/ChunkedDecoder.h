@@ -17,6 +17,7 @@
 #pragma once
 
 #include "dwio/nimble/encodings/EncodingUtils.h"
+#include "dwio/nimble/encodings/legacy/EncodingTrait.h"
 #include "dwio/nimble/index/ChunkIndexGroup.h"
 #include "dwio/nimble/velox/selective/NimbleData.h"
 #include "velox/dwio/common/SeekableInputStream.h"
@@ -41,11 +42,13 @@ class ChunkedDecoder {
              std::function<void*(uint32_t)> stringBufferFactory)
           -> std::unique_ptr<Encoding> {
         return EncodingFactory::decode(pool, data, stringBufferFactory);
-      })
+      },
+      bool getStringBuffersFromDecoder = false)
       : input_{std::move(input)},
         pool_{pool},
         decodeValuesWithNulls_{decodeValuesWithNulls},
         encodingFactory_{std::move(encodingFactory)},
+        getStringBuffersFromDecoder_{getStringBuffersFromDecoder},
         streamIndex_{std::move(streamIndex)},
         streamRowCount_{
             streamIndex_ ? std::optional<uint32_t>(streamIndex_->rowCount())
@@ -110,7 +113,7 @@ class ChunkedDecoder {
           return nulls->template asMutable<uint64_t>();
         };
       }
-      readWithVisitorImpl<true>(
+      dispatchReadWithVisitorImpl<true>(
           visitor, nulls->template as<uint64_t>(), params);
     } else {
       params.makeReaderNulls = [this, numRows, &visitor] {
@@ -121,7 +124,7 @@ class ChunkedDecoder {
         }
         return nulls->template asMutable<uint64_t>();
       };
-      readWithVisitorImpl<false>(visitor, nullptr, params);
+      dispatchReadWithVisitorImpl<false>(visitor, nullptr, params);
     }
   }
 
@@ -304,7 +307,23 @@ class ChunkedDecoder {
         visitor.rows();
   }
 
+  /// Selects the encoding trait based on getStringBuffersFromDecoder_ and
+  /// forwards to the fully-monomorphic readWithVisitorImpl.
   template <bool kHasNulls, typename V>
+  void dispatchReadWithVisitorImpl(
+      V& visitor,
+      const uint64_t* nulls,
+      ReadWithVisitorParams& params) {
+    if (getStringBuffersFromDecoder_) {
+      readWithVisitorImpl<kHasNulls, DefaultEncodingTrait>(
+          visitor, nulls, params);
+    } else {
+      readWithVisitorImpl<kHasNulls, legacy::LegacyEncodingTrait>(
+          visitor, nulls, params);
+    }
+  }
+
+  template <bool kHasNulls, typename EncodingTrait, typename V>
   void readWithVisitorImpl(
       V& visitor,
       const uint64_t* nulls,
@@ -332,7 +351,7 @@ class ChunkedDecoder {
       if (visitor.rowIndex() < nextRowIndex) {
         visitor.setRows(velox::RowSet(visitor.rows(), nextRowIndex));
         if (numNonNulls > 0) {
-          callReadWithVisitor(*encoding_, visitor, params);
+          EncodingTrait::callReadWithVisitor(*encoding_, visitor, params);
         } else if (!visitor.allowNulls()) {
           visitor.setRowIndex(nextRowIndex);
         } else {
@@ -423,6 +442,7 @@ class ChunkedDecoder {
       std::string_view,
       std::function<void*(uint32_t)>)>
       encodingFactory_;
+  const bool getStringBuffersFromDecoder_{false};
   // Optional stream index for accelerating skip operations
   const std::shared_ptr<index::StreamIndex> streamIndex_;
   // Total row count in the stream, set from stream index if available.

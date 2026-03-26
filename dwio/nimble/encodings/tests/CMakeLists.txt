@@ -23,6 +23,7 @@ add_executable(
   EncodingLegacyTest.cpp
   MainlyConstantEncodingTest.cpp
   NullableEncodingTest.cpp
+  PrefixEncodingTest.cpp
   RleEncodingTest.cpp
   SentinelEncodingTest.cpp
   StatisticsTest.cpp

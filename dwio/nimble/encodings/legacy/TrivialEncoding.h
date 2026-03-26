@@ -24,10 +24,10 @@
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/Compression.h"
-#include "dwio/nimble/encodings/Encoding.h" // Original base classes
+#include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/encodings/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/EncodingSelection.h"
-#include "dwio/nimble/encodings/legacy/Encoding.h" // Release namespace type aliases
+#include "dwio/nimble/encodings/legacy/Encoding.h"
 #include "velox/common/memory/Memory.h"
 
 // Holds data in the the 'trivial' way for each data type.

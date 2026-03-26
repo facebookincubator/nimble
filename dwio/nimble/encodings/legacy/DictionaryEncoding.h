@@ -21,9 +21,9 @@
 #include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Encoding.h" // Original base classes
+#include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/encodings/EncodingIdentifier.h"
-#include "dwio/nimble/encodings/legacy/Encoding.h" // Release namespace type aliases
+#include "dwio/nimble/encodings/legacy/Encoding.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "folly/container/F14Map.h"
 #include "velox/common/memory/Memory.h"
@@ -192,7 +192,7 @@ void DictionaryEncoding<T>::readWithVisitor(
       velox::dwio::common::ExtractToHook<detail::DictionaryIndicesHook>(
           &indicesHook));
   indicesVisitor.setRowIndex(startRowIndex);
-  callReadWithVisitor(*indicesEncoding_, indicesVisitor, params);
+  legacy::callReadWithVisitor(*indicesEncoding_, indicesVisitor, params);
   detail::readWithVisitorSlow(visitor, params, nullptr, [&] {
     const auto index = indicesBuffer_[visitor.rowIndex() - startRowIndex];
     return alphabet_[index];

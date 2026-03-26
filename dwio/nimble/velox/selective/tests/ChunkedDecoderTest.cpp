@@ -15,6 +15,7 @@
  */
 
 #include "dwio/nimble/velox/selective/ChunkedDecoder.h"
+
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
@@ -23,6 +24,7 @@
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
+#include "dwio/nimble/encodings/legacy/EncodingUtils.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestBase.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 #include "velox/common/base/Nulls.h"

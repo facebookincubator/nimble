@@ -31,6 +31,8 @@
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingUtils.h"
+#include "dwio/nimble/encodings/legacy/EncodingFactory.h"
+#include "dwio/nimble/encodings/legacy/EncodingUtils.h"
 #include "dwio/nimble/encodings/tests/EncodingLayoutTestHelper.h"
 #include "dwio/nimble/velox/selective/ByteColumnReader.h"
 #include "dwio/nimble/velox/selective/ColumnReader.h"
@@ -73,11 +75,17 @@ class IntegerColumnReaderTestAccessor : public IntegerColumnReader {
 // ---------------------------------------------------------------------------
 // Test fixture
 // ---------------------------------------------------------------------------
-class ReadWithVisitorTest : public ::testing::Test,
+// Parameter: true = non-legacy (getStringBuffersFromDecoder=true),
+//            false = legacy (getStringBuffersFromDecoder=false).
+class ReadWithVisitorTest : public ::testing::TestWithParam<bool>,
                             public velox::test::VectorTestBase {
  protected:
   static void SetUpTestCase() {
     memory::initializeMemoryManager(memory::MemoryManager::Options{});
+  }
+
+  bool useNonLegacy() const {
+    return GetParam();
   }
 
   // Holds the infrastructure needed to build column readers for a single file.
@@ -111,23 +119,38 @@ class ReadWithVisitorTest : public ::testing::Test,
   }
 
   // Build a struct column reader (root) for the given schema + scanSpec.
-  // Returns the root reader; its children() are the individual column
-  // readers whose read() we want to exercise.
+  // Uses the test parameter to select either the non-legacy or legacy
+  // encoding factory and dispatch trait.
   std::unique_ptr<dwio::common::SelectiveColumnReader> buildReader(
       FileContext& ctx,
       const RowTypePtr& rowType,
       common::ScanSpec& scanSpec) {
+    using Factory = std::function<std::unique_ptr<Encoding>(
+        memory::MemoryPool&, std::string_view, std::function<void*(uint32_t)>)>;
+    Factory factory = useNonLegacy()
+        ? Factory(
+              [](memory::MemoryPool& pool,
+                 std::string_view data,
+                 std::function<void*(uint32_t)> sbf)
+                  -> std::unique_ptr<Encoding> {
+                return EncodingFactory::decode(pool, data, std::move(sbf));
+              })
+        : Factory(
+              [](memory::MemoryPool& pool,
+                 std::string_view data,
+                 std::function<void*(uint32_t)> sbf)
+                  -> std::unique_ptr<Encoding> {
+                return legacy::EncodingFactory::decode(
+                    pool, data, std::move(sbf));
+              });
     NimbleParams params(
         *pool(),
         ctx.stats,
         ctx.readerBase->nimbleSchema(),
         *ctx.streams,
         ctx.rowSizeTracker.get(),
-        [](memory::MemoryPool& pool,
-           std::string_view data,
-           std::function<void*(uint32_t)> sbf) -> std::unique_ptr<Encoding> {
-          return EncodingFactory::decode(pool, data, std::move(sbf));
-        });
+        std::move(factory),
+        /*getStringBuffersFromDecoder=*/useNonLegacy());
 
     auto reader = buildColumnReader(
         rowType,
@@ -138,6 +161,49 @@ class ReadWithVisitorTest : public ::testing::Test,
     reader->setIsTopLevel();
     ctx.streams->load();
     return reader;
+  }
+
+  // Decode an encoded buffer with the appropriate factory.
+  std::unique_ptr<Encoding> decodeEncoding(
+      std::string_view encoded,
+      velox::memory::MemoryPool& memPool) {
+    if (useNonLegacy()) {
+      return EncodingFactory::decode(memPool, encoded, nullptr);
+    }
+    return legacy::EncodingFactory::decode(memPool, encoded, nullptr);
+  }
+
+  // Dispatch callReadWithVisitor to the appropriate family.
+  template <typename V>
+  void dispatchCallReadWithVisitor(
+      Encoding& encoding,
+      V& visitor,
+      ReadWithVisitorParams& params) {
+    if (useNonLegacy()) {
+      nimble::callReadWithVisitor(encoding, visitor, params);
+    } else {
+      legacy::callReadWithVisitor(encoding, visitor, params);
+    }
+  }
+
+  // Encode data with a custom layout, then decode with the appropriate factory.
+  template <typename T>
+  std::unique_ptr<Encoding> createFromCustomLayout(
+      const EncodingLayout& layout,
+      const std::vector<T>& data,
+      velox::memory::MemoryPool& memPool,
+      Buffer& buffer) {
+    auto policy = std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
+        layout,
+        CompressionOptions{},
+        [](DataType type) -> std::unique_ptr<EncodingSelectionPolicyBase> {
+          UNIQUE_PTR_FACTORY(type, TrivialNestedPolicy);
+        });
+    auto encoded = EncodingFactory::encode<T>(
+        std::move(policy),
+        std::span<const T>(data.data(), data.size()),
+        buffer);
+    return decodeEncoding(encoded, memPool);
   }
 
   // Build root reader, get its first child, call read(), return child.
@@ -173,7 +239,7 @@ class ReadWithVisitorTest : public ::testing::Test,
 // Exercises TrivialEncoding / FixedBitWidthEncoding readWithVisitor with
 // AlwaysTrue filter.
 // ===========================================================================
-TEST_F(ReadWithVisitorTest, denseNoFilterNoNulls) {
+TEST_P(ReadWithVisitorTest, denseNoFilterNoNulls) {
   constexpr int kRows = 200;
   auto input = makeRowVector(
       {makeFlatVector<int64_t>(kRows, [](auto i) { return i * 7; })});
@@ -200,7 +266,7 @@ TEST_F(ReadWithVisitorTest, denseNoFilterNoNulls) {
 // ===========================================================================
 // Test: Dense read, no filter, nullable int64 (exercises NullableEncoding)
 // ===========================================================================
-TEST_F(ReadWithVisitorTest, denseNoFilterWithNulls) {
+TEST_P(ReadWithVisitorTest, denseNoFilterWithNulls) {
   constexpr int kRows = 200;
   auto input = makeRowVector(
       {makeFlatVector<int64_t>(kRows, folly::identity, nullEvery(7))});
@@ -223,7 +289,7 @@ TEST_F(ReadWithVisitorTest, denseNoFilterWithNulls) {
 // ===========================================================================
 // Test: BigintRange filter, sequential data — sparse visitor output
 // ===========================================================================
-TEST_F(ReadWithVisitorTest, sparseWithBigintRange) {
+TEST_P(ReadWithVisitorTest, sparseWithBigintRange) {
   constexpr int kRows = 500;
   auto input = makeRowVector({makeFlatVector<int64_t>(kRows, folly::identity)});
   auto rowType = asRowType(input->type());
@@ -247,7 +313,7 @@ TEST_F(ReadWithVisitorTest, sparseWithBigintRange) {
 // ===========================================================================
 // Test: BigintRange filter + nullable data — filter skips nulls
 // ===========================================================================
-TEST_F(ReadWithVisitorTest, rangeFilterWithNulls) {
+TEST_P(ReadWithVisitorTest, rangeFilterWithNulls) {
   constexpr int kRows = 500;
   auto c0 = makeFlatVector<int64_t>(kRows, folly::identity, nullEvery(7));
   auto input = makeRowVector({c0});
@@ -275,7 +341,7 @@ TEST_F(ReadWithVisitorTest, rangeFilterWithNulls) {
 // ===========================================================================
 // Test: IsNotNull filter on nullable data
 // ===========================================================================
-TEST_F(ReadWithVisitorTest, isNotNullFilter) {
+TEST_P(ReadWithVisitorTest, isNotNullFilter) {
   constexpr int kRows = 300;
   auto input = makeRowVector(
       {makeFlatVector<int64_t>(kRows, folly::identity, nullEvery(5))});
@@ -301,7 +367,7 @@ TEST_F(ReadWithVisitorTest, isNotNullFilter) {
 // ===========================================================================
 // Test: Constant data → ConstantEncoding::readWithVisitor
 // ===========================================================================
-TEST_F(ReadWithVisitorTest, constantEncoding) {
+TEST_P(ReadWithVisitorTest, constantEncoding) {
   constexpr int kRows = 300;
   auto input =
       makeRowVector({makeFlatVector<int64_t>(kRows, [](auto) { return 42; })});
@@ -326,7 +392,7 @@ TEST_F(ReadWithVisitorTest, constantEncoding) {
 // ===========================================================================
 // Test: Constant data + non-matching filter → zero output rows
 // ===========================================================================
-TEST_F(ReadWithVisitorTest, constantEncodingFilterMiss) {
+TEST_P(ReadWithVisitorTest, constantEncodingFilterMiss) {
   constexpr int kRows = 300;
   auto input =
       makeRowVector({makeFlatVector<int64_t>(kRows, [](auto) { return 42; })});
@@ -348,7 +414,7 @@ TEST_F(ReadWithVisitorTest, constantEncodingFilterMiss) {
 // ===========================================================================
 // Test: Boolean data with BoolValue filter (SparseBoolEncoding)
 // ===========================================================================
-TEST_F(ReadWithVisitorTest, boolWithFilter) {
+TEST_P(ReadWithVisitorTest, boolWithFilter) {
   constexpr int kRows = 300;
   auto c0 = makeFlatVector<bool>(kRows, [](auto i) { return i % 3 != 0; });
   auto input = makeRowVector({c0});
@@ -373,7 +439,7 @@ TEST_F(ReadWithVisitorTest, boolWithFilter) {
 // ===========================================================================
 // Test: Boolean data with nulls + filter
 // ===========================================================================
-TEST_F(ReadWithVisitorTest, boolWithNullsAndFilter) {
+TEST_P(ReadWithVisitorTest, boolWithNullsAndFilter) {
   constexpr int kRows = 300;
   auto c0 = makeFlatVector<bool>(
       kRows, [](auto i) { return i % 3 != 0; }, nullEvery(7));
@@ -401,7 +467,7 @@ TEST_F(ReadWithVisitorTest, boolWithNullsAndFilter) {
 // ===========================================================================
 // Test: String data, no filter (TrivialEncoding<string_view>)
 // ===========================================================================
-TEST_F(ReadWithVisitorTest, stringNoFilter) {
+TEST_P(ReadWithVisitorTest, stringNoFilter) {
   constexpr int kRows = 200;
   auto input = makeRowVector({makeFlatVector<StringView>(kRows, [](auto i) {
     return StringView::makeInline(fmt::format("s{}", i));
@@ -423,7 +489,7 @@ TEST_F(ReadWithVisitorTest, stringNoFilter) {
 // ===========================================================================
 // Test: String data with nulls + IsNotNull filter
 // ===========================================================================
-TEST_F(ReadWithVisitorTest, stringWithNullsIsNotNull) {
+TEST_P(ReadWithVisitorTest, stringWithNullsIsNotNull) {
   constexpr int kRows = 200;
   auto c0 = makeFlatVector<StringView>(
       kRows,
@@ -450,7 +516,7 @@ TEST_F(ReadWithVisitorTest, stringWithNullsIsNotNull) {
 // ===========================================================================
 // Test: All-null data → NullableEncoding with all-null inner
 // ===========================================================================
-TEST_F(ReadWithVisitorTest, allNullData) {
+TEST_P(ReadWithVisitorTest, allNullData) {
   constexpr int kRows = 100;
   auto input = makeRowVector(
       {makeFlatVector<int64_t>(kRows, [](auto) { return 0; }, nullEvery(1))});
@@ -473,7 +539,7 @@ TEST_F(ReadWithVisitorTest, allNullData) {
 // ===========================================================================
 // Test: All-null data + IsNotNull filter → zero output
 // ===========================================================================
-TEST_F(ReadWithVisitorTest, allNullWithIsNotNull) {
+TEST_P(ReadWithVisitorTest, allNullWithIsNotNull) {
   constexpr int kRows = 100;
   auto input = makeRowVector(
       {makeFlatVector<int64_t>(kRows, [](auto) { return 0; }, nullEvery(1))});
@@ -493,7 +559,7 @@ TEST_F(ReadWithVisitorTest, allNullWithIsNotNull) {
 // ===========================================================================
 // Test: Large sequential data + range filter (multi-chunk / stripe)
 // ===========================================================================
-TEST_F(ReadWithVisitorTest, largeDataRangeFilter) {
+TEST_P(ReadWithVisitorTest, largeDataRangeFilter) {
   constexpr int kRows = 10000;
   auto c0 = makeFlatVector<int64_t>(kRows, folly::identity, nullEvery(13));
   auto input = makeRowVector({c0});
@@ -530,7 +596,7 @@ TEST_F(ReadWithVisitorTest, largeDataRangeFilter) {
 // ===========================================================================
 // Test: Multiple types (int32, double) — exercises different column readers
 // ===========================================================================
-TEST_F(ReadWithVisitorTest, multipleColumnTypesWithFilters) {
+TEST_P(ReadWithVisitorTest, multipleColumnTypesWithFilters) {
   constexpr int kRows = 300;
   auto c0 =
       makeFlatVector<int32_t>(kRows, [](auto i) { return i; }, nullEvery(11));
@@ -563,7 +629,7 @@ TEST_F(ReadWithVisitorTest, multipleColumnTypesWithFilters) {
 // Test: Filter on one column of multi-column row — exercises sparse rows
 // propagation to second column
 // ===========================================================================
-TEST_F(ReadWithVisitorTest, filterOnOneColumnInspectState) {
+TEST_P(ReadWithVisitorTest, filterOnOneColumnInspectState) {
   constexpr int kRows = 300;
   auto c0 = makeFlatVector<int64_t>(kRows, folly::identity);
   auto input = makeRowVector({c0});
@@ -604,7 +670,7 @@ TEST_F(ReadWithVisitorTest, filterOnOneColumnInspectState) {
 // ===========================================================================
 
 // Explicit readWithVisitor: BigintRange filter, dense rows, ExtractToReader.
-TEST_F(ReadWithVisitorTest, explicitReadWithVisitor_BigintRange_Dense) {
+TEST_P(ReadWithVisitorTest, explicitReadWithVisitor_BigintRange_Dense) {
   constexpr int kRows = 500;
   auto input = makeRowVector({makeFlatVector<int64_t>(kRows, folly::identity)});
   auto rowType = asRowType(input->type());
@@ -665,7 +731,7 @@ TEST_F(ReadWithVisitorTest, explicitReadWithVisitor_BigintRange_Dense) {
 }
 
 // Explicit readWithVisitor: AlwaysTrue filter (no filtering), dense rows.
-TEST_F(ReadWithVisitorTest, explicitReadWithVisitor_AlwaysTrue_Dense) {
+TEST_P(ReadWithVisitorTest, explicitReadWithVisitor_AlwaysTrue_Dense) {
   constexpr int kRows = 200;
   auto input = makeRowVector(
       {makeFlatVector<int64_t>(kRows, [](auto i) { return i * 3; })});
@@ -711,7 +777,7 @@ TEST_F(ReadWithVisitorTest, explicitReadWithVisitor_AlwaysTrue_Dense) {
 }
 
 // Explicit readWithVisitor: BigintRange filter, sparse rows (non-dense).
-TEST_F(ReadWithVisitorTest, explicitReadWithVisitor_BigintRange_Sparse) {
+TEST_P(ReadWithVisitorTest, explicitReadWithVisitor_BigintRange_Sparse) {
   constexpr int kRows = 500;
   auto input = makeRowVector({makeFlatVector<int64_t>(kRows, folly::identity)});
   auto rowType = asRowType(input->type());
@@ -760,7 +826,7 @@ TEST_F(ReadWithVisitorTest, explicitReadWithVisitor_BigintRange_Sparse) {
 }
 
 // Explicit readWithVisitor: IsNotNull filter on nullable data.
-TEST_F(ReadWithVisitorTest, explicitReadWithVisitor_IsNotNull_Nullable) {
+TEST_P(ReadWithVisitorTest, explicitReadWithVisitor_IsNotNull_Nullable) {
   constexpr int kRows = 300;
   auto input = makeRowVector(
       {makeFlatVector<int64_t>(kRows, folly::identity, nullEvery(5))});
@@ -844,7 +910,7 @@ ReadWithVisitorParams makeReadWithVisitorParams(
 // ---------------------------------------------------------------------------
 // 1. TrivialEncoding<int64_t> + BigintRange + dense
 // ---------------------------------------------------------------------------
-TEST_F(ReadWithVisitorTest, encodingLevel_Trivial_BigintRange_Dense) {
+TEST_P(ReadWithVisitorTest, encodingLevel_Trivial_BigintRange_Dense) {
   constexpr int kRows = 500;
 
   // Sequential data [0..499].
@@ -890,7 +956,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_Trivial_BigintRange_Dense) {
       visitor(filter, reader, rows, extractValues);
   auto params = makeReadWithVisitorParams(visitor, rows, pool());
 
-  callReadWithVisitor(*encoding, visitor, params);
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
 
   EXPECT_EQ(reader->numValues(), 101);
   auto outRows = reader->outputRows();
@@ -905,7 +971,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_Trivial_BigintRange_Dense) {
 // ---------------------------------------------------------------------------
 // 2. ConstantEncoding<int64_t> + AlwaysTrue + dense
 // ---------------------------------------------------------------------------
-TEST_F(ReadWithVisitorTest, encodingLevel_Constant_AlwaysTrue_Dense) {
+TEST_P(ReadWithVisitorTest, encodingLevel_Constant_AlwaysTrue_Dense) {
   constexpr int kRows = 300;
 
   // All-same data.
@@ -948,7 +1014,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_Constant_AlwaysTrue_Dense) {
       visitor(filter, reader, rows, extractValues);
   auto params = makeReadWithVisitorParams(visitor, rows, pool());
 
-  callReadWithVisitor(*encoding, visitor, params);
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
 
   EXPECT_EQ(reader->numValues(), kRows);
   auto values = getValues<int64_t>(reader);
@@ -960,7 +1026,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_Constant_AlwaysTrue_Dense) {
 // ---------------------------------------------------------------------------
 // 3. FixedBitWidthEncoding<int64_t> + BigintRange + sparse
 // ---------------------------------------------------------------------------
-TEST_F(ReadWithVisitorTest, encodingLevel_FixedBitWidth_BigintRange_Sparse) {
+TEST_P(ReadWithVisitorTest, encodingLevel_FixedBitWidth_BigintRange_Sparse) {
   constexpr int kRows = 500;
 
   // Small-range data [0..15] that fits in fixed-bit-width encoding.
@@ -1009,7 +1075,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_FixedBitWidth_BigintRange_Sparse) {
       visitor(filter, reader, rows, extractValues);
   auto params = makeReadWithVisitorParams(visitor, rows, pool());
 
-  callReadWithVisitor(*encoding, visitor, params);
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
 
   // Count expected: even-indexed rows where data[i] in [5..10].
   int expected = 0;
@@ -1030,7 +1096,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_FixedBitWidth_BigintRange_Sparse) {
 // ---------------------------------------------------------------------------
 // 4. RLEEncoding<int64_t> + AlwaysTrue + dense
 // ---------------------------------------------------------------------------
-TEST_F(ReadWithVisitorTest, encodingLevel_RLE_AlwaysTrue_Dense) {
+TEST_P(ReadWithVisitorTest, encodingLevel_RLE_AlwaysTrue_Dense) {
   constexpr int kRows = 500;
 
   // Repeated-run data: 50 copies of each value [0..9].
@@ -1076,7 +1142,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_RLE_AlwaysTrue_Dense) {
       visitor(filter, reader, rows, extractValues);
   auto params = makeReadWithVisitorParams(visitor, rows, pool());
 
-  callReadWithVisitor(*encoding, visitor, params);
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
 
   EXPECT_EQ(reader->numValues(), kRows);
   auto values = getValues<int64_t>(reader);
@@ -1090,7 +1156,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_RLE_AlwaysTrue_Dense) {
 // 5. TrivialEncoding<int64_t> + AlwaysTrue + dense + SLOW PATH
 //    hasBulkPath=false forces readWithVisitorSlow regardless of CPU features.
 // ---------------------------------------------------------------------------
-TEST_F(ReadWithVisitorTest, encodingLevel_Trivial_AlwaysTrue_Dense_SlowPath) {
+TEST_P(ReadWithVisitorTest, encodingLevel_Trivial_AlwaysTrue_Dense_SlowPath) {
   constexpr int kRows = 500;
 
   std::vector<int64_t> data(kRows);
@@ -1134,7 +1200,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_Trivial_AlwaysTrue_Dense_SlowPath) {
       visitor(filter, reader, rows, extractValues);
   auto params = makeReadWithVisitorParams(visitor, rows, pool());
 
-  callReadWithVisitor(*encoding, visitor, params);
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
 
   EXPECT_EQ(reader->numValues(), kRows);
   auto values = getValues<int64_t>(reader);
@@ -1146,7 +1212,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_Trivial_AlwaysTrue_Dense_SlowPath) {
 // ---------------------------------------------------------------------------
 // 6. RLEEncoding<int64_t> + AlwaysTrue + dense + SLOW PATH
 // ---------------------------------------------------------------------------
-TEST_F(ReadWithVisitorTest, encodingLevel_RLE_AlwaysTrue_Dense_SlowPath) {
+TEST_P(ReadWithVisitorTest, encodingLevel_RLE_AlwaysTrue_Dense_SlowPath) {
   constexpr int kRows = 500;
 
   std::vector<int64_t> data(kRows);
@@ -1193,7 +1259,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_RLE_AlwaysTrue_Dense_SlowPath) {
       visitor(filter, reader, rows, extractValues);
   auto params = makeReadWithVisitorParams(visitor, rows, pool());
 
-  callReadWithVisitor(*encoding, visitor, params);
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
 
   EXPECT_EQ(reader->numValues(), kRows);
   auto values = getValues<int64_t>(reader);
@@ -1205,7 +1271,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_RLE_AlwaysTrue_Dense_SlowPath) {
 // ---------------------------------------------------------------------------
 // 7. MainlyConstantEncoding<int64_t> + AlwaysTrue + dense (FAST path)
 // ---------------------------------------------------------------------------
-TEST_F(ReadWithVisitorTest, encodingLevel_MainlyConstant_AlwaysTrue_Dense) {
+TEST_P(ReadWithVisitorTest, encodingLevel_MainlyConstant_AlwaysTrue_Dense) {
   constexpr int kRows = 500;
 
   std::vector<int64_t> data(kRows, 42);
@@ -1251,7 +1317,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_MainlyConstant_AlwaysTrue_Dense) {
       visitor(filter, reader, rows, extractValues);
   auto params = makeReadWithVisitorParams(visitor, rows, pool());
 
-  callReadWithVisitor(*encoding, visitor, params);
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
 
   EXPECT_EQ(reader->numValues(), kRows);
   auto values = getValues<int64_t>(reader);
@@ -1264,7 +1330,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_MainlyConstant_AlwaysTrue_Dense) {
 // 8. MainlyConstantEncoding
 // 8. MainlyConstantEncoding<int64_t> + AlwaysTrue + dense + SLOW PATH
 // ---------------------------------------------------------------------------
-TEST_F(
+TEST_P(
     ReadWithVisitorTest,
     encodingLevel_MainlyConstant_AlwaysTrue_Dense_SlowPath) {
   constexpr int kRows = 500;
@@ -1314,7 +1380,7 @@ TEST_F(
       visitor(filter, reader, rows, extractValues);
   auto params = makeReadWithVisitorParams(visitor, rows, pool());
 
-  callReadWithVisitor(*encoding, visitor, params);
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
 
   EXPECT_EQ(reader->numValues(), kRows);
   auto values = getValues<int64_t>(reader);
@@ -1328,7 +1394,7 @@ TEST_F(
 // 9. DictionaryEncoding<int64_t> + AlwaysTrue + dense
 //    Dictionary always uses slow path (no bulkScan).
 // ---------------------------------------------------------------------------
-TEST_F(ReadWithVisitorTest, encodingLevel_Dictionary_AlwaysTrue_Dense) {
+TEST_P(ReadWithVisitorTest, encodingLevel_Dictionary_AlwaysTrue_Dense) {
   constexpr int kRows = 500;
 
   std::vector<int64_t> data(kRows);
@@ -1373,7 +1439,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_Dictionary_AlwaysTrue_Dense) {
       visitor(filter, reader, rows, extractValues);
   auto params = makeReadWithVisitorParams(visitor, rows, pool());
 
-  callReadWithVisitor(*encoding, visitor, params);
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
 
   EXPECT_EQ(reader->numValues(), kRows);
   auto values = getValues<int64_t>(reader);
@@ -1385,7 +1451,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_Dictionary_AlwaysTrue_Dense) {
 // ---------------------------------------------------------------------------
 // 10. DictionaryEncoding<int64_t> + BigintRange + sparse
 // ---------------------------------------------------------------------------
-TEST_F(ReadWithVisitorTest, encodingLevel_Dictionary_BigintRange_Sparse) {
+TEST_P(ReadWithVisitorTest, encodingLevel_Dictionary_BigintRange_Sparse) {
   constexpr int kRows = 500;
 
   std::vector<int64_t> data(kRows);
@@ -1432,7 +1498,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_Dictionary_BigintRange_Sparse) {
       visitor(filter, reader, rows, extractValues);
   auto params = makeReadWithVisitorParams(visitor, rows, pool());
 
-  callReadWithVisitor(*encoding, visitor, params);
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
 
   int expected = 0;
   for (int i = 0; i < kRows; i += 2) {
@@ -1452,7 +1518,7 @@ TEST_F(ReadWithVisitorTest, encodingLevel_Dictionary_BigintRange_Sparse) {
 // ---------------------------------------------------------------------------
 // 11. MainlyConstant<Dictionary> + AlwaysTrue + dense (FAST path, composite)
 // ---------------------------------------------------------------------------
-TEST_F(
+TEST_P(
     ReadWithVisitorTest,
     encodingLevel_MainlyConstant_Dictionary_AlwaysTrue_Dense) {
   constexpr int kRows = 500;
@@ -1499,7 +1565,7 @@ TEST_F(
       visitor(filter, reader, rows, extractValues);
   auto params = makeReadWithVisitorParams(visitor, rows, pool());
 
-  callReadWithVisitor(*encoding, visitor, params);
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
 
   EXPECT_EQ(reader->numValues(), kRows);
   auto values = getValues<int64_t>(reader);
@@ -1511,7 +1577,7 @@ TEST_F(
 // ---------------------------------------------------------------------------
 // 12. MainlyConstant<Dictionary> + AlwaysTrue + dense + SLOW PATH (composite)
 // ---------------------------------------------------------------------------
-TEST_F(
+TEST_P(
     ReadWithVisitorTest,
     encodingLevel_MainlyConstant_Dictionary_AlwaysTrue_Dense_SlowPath) {
   constexpr int kRows = 500;
@@ -1559,7 +1625,7 @@ TEST_F(
       visitor(filter, reader, rows, extractValues);
   auto params = makeReadWithVisitorParams(visitor, rows, pool());
 
-  callReadWithVisitor(*encoding, visitor, params);
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
 
   EXPECT_EQ(reader->numValues(), kRows);
   auto values = getValues<int64_t>(reader);
@@ -1577,7 +1643,7 @@ TEST_F(
 //       - kExtractToReader && (kSameType || kIsWidening)
 //     This test uses int32_t data to satisfy all conditions.
 // ---------------------------------------------------------------------------
-TEST_F(
+TEST_P(
     ReadWithVisitorTest,
     encodingLevel_FixedBitWidth_AlwaysTrue_Dense_Int32_FastPath) {
   constexpr int kRows = 500;
@@ -1630,7 +1696,7 @@ TEST_F(
       visitor(filter, reader, rows, extractValues);
   auto params = makeReadWithVisitorParams(visitor, rows, pool());
 
-  callReadWithVisitor(*encoding, visitor, params);
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
 
   EXPECT_EQ(reader->numValues(), kRows);
   auto values = getValues<int32_t>(reader);
@@ -1638,6 +1704,14 @@ TEST_F(
     EXPECT_EQ(values[i], i % 16) << "row " << i;
   }
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    NonLegacyAndLegacy,
+    ReadWithVisitorTest,
+    ::testing::Values(true, false),
+    [](const ::testing::TestParamInfo<bool>& info) {
+      return info.param ? "NonLegacy" : "Legacy";
+    });
 
 } // namespace
 } // namespace facebook::nimble
