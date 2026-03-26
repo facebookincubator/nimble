@@ -367,7 +367,7 @@ int main(int argc, char* argv[]) {
           velox::AlignedBuffer::allocate<char>(totalLength, pool.get()));
       return buffer->asMutable<void>();
     };
-    auto encoding = nimble::EncodingFactory::decode(
+    auto encoding = nimble::EncodingFactory().create(
         *pool, {buffer.data(), buffer.size()}, stringBufferFactory);
     auto rowCount = encoding->rowCount();
     printScalarType(std::cout, *pool, *encoding, rowCount);

@@ -89,7 +89,7 @@ void TypedVectorizedStatistic<T>::deserializeFrom(
     std::string_view payload,
     velox::memory::MemoryPool& pool) {
   auto encoding =
-      EncodingFactory::decode(pool, payload, [&](uint32_t totalLength) {
+      EncodingFactory().create(pool, payload, [&](uint32_t totalLength) {
         auto& buffer = stringBuffers_.emplace_back(
             velox::AlignedBuffer::allocate<char>(totalLength, &pool));
         return buffer->template asMutable<void>();
@@ -142,7 +142,7 @@ inline void TypedVectorizedStatistic<std::string_view>::deserializeFrom(
     std::string_view payload,
     velox::memory::MemoryPool& pool) {
   auto encoding =
-      EncodingFactory::decode(pool, payload, [&](uint32_t totalLength) {
+      EncodingFactory().create(pool, payload, [&](uint32_t totalLength) {
         auto& buffer = stringBuffers_.emplace_back(
             velox::AlignedBuffer::allocate<char>(totalLength, &pool));
         return buffer->template asMutable<void>();

@@ -61,7 +61,7 @@ class RLEEncodingBase
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory)
       : TypedEncoding<T, physicalType>(memoryPool, data),
-        materializedRunLengths_{EncodingFactory::decode(
+        materializedRunLengths_{EncodingFactory().create(
             memoryPool,
             {data.data() + Encoding::kPrefixSize + 4,
              *reinterpret_cast<const uint32_t*>(
@@ -271,7 +271,7 @@ RLEEncoding<T>::RLEEncoding(
           memoryPool,
           data,
           stringBufferFactory),
-      values_{EncodingFactory::decode(
+      values_{EncodingFactory().create(
           memoryPool,
           {internal::RLEEncodingBase<T, RLEEncoding<T>>::getValuesStart(),
            static_cast<size_t>(

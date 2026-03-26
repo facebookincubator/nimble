@@ -90,16 +90,17 @@ DictionaryEncoding<T>::DictionaryEncoding(
     : TypedEncoding<T, physicalType>{pool, data},
       alphabet_{this->pool_},
       indicesBuffer_{this->pool_} {
+  const EncodingFactory factory;
   const auto* pos = data.data() + kAlphabetSizeOffset;
   const uint32_t alphabetSize = encoding::readUint32(pos);
-  alphabetEncoding_ = EncodingFactory::decode(
-      *this->pool_, {pos, alphabetSize}, stringBufferFactory);
+  alphabetEncoding_ =
+      factory.create(*this->pool_, {pos, alphabetSize}, stringBufferFactory);
   const uint32_t alphabetCount = alphabetEncoding_->rowCount();
   alphabet_.resize(alphabetCount);
   alphabetEncoding_->materialize(alphabetCount, alphabet_.data());
 
   pos += alphabetSize;
-  indicesEncoding_ = EncodingFactory::decode(
+  indicesEncoding_ = factory.create(
       *this->pool_,
       {pos, static_cast<size_t>(data.end() - pos)},
       stringBufferFactory);

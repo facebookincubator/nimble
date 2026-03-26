@@ -129,7 +129,7 @@ void ClusterIndexReader::loadChunk() {
   inputData_ += length;
   inputSize_ -= length;
   stringBuffers_.clear();
-  encoding_ = nimble::EncodingFactory::decode(
+  encoding_ = nimble::EncodingFactory().create(
       *pool_,
       std::string_view(chunkData, chunkSize),
       [&](uint32_t totalLength) {

@@ -464,7 +464,7 @@ class VeloxReaderTest : public ::testing::TestWithParam<VeloxReaderTestParam> {
              std::string_view data,
              std::function<void*(uint32_t)> stringBufferFactory)
           -> std::unique_ptr<nimble::Encoding> {
-        return nimble::EncodingFactory::decode(
+        return nimble::EncodingFactory().create(
             pool, data, std::move(stringBufferFactory));
       };
     } else {
@@ -473,7 +473,7 @@ class VeloxReaderTest : public ::testing::TestWithParam<VeloxReaderTestParam> {
              std::string_view data,
              std::function<void*(uint32_t)> stringBufferFactory)
           -> std::unique_ptr<nimble::Encoding> {
-        return nimble::legacy::EncodingFactory::decode(
+        return nimble::legacy::EncodingFactory().create(
             pool, data, std::move(stringBufferFactory));
       };
     }

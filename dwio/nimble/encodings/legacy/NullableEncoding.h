@@ -99,12 +99,13 @@ NullableEncoding<T>::NullableEncoding(
     : TypedEncoding<T, physicalType>(memoryPool, data),
       indicesBuffer_(this->pool_),
       nullBuffer_(this->pool_) {
+  const EncodingFactory factory;
   const char* pos = data.data() + Encoding::kPrefixSize;
   const uint32_t nonNullsBytes = encoding::readUint32(pos);
-  nonNullValues_ = EncodingFactory::decode(
-      *this->pool_, {pos, nonNullsBytes}, stringBufferFactory);
+  nonNullValues_ =
+      factory.create(*this->pool_, {pos, nonNullsBytes}, stringBufferFactory);
   pos += nonNullsBytes;
-  nulls_ = EncodingFactory::decode(
+  nulls_ = factory.create(
       *this->pool_,
       {pos, static_cast<size_t>(data.end() - pos)},
       stringBufferFactory);

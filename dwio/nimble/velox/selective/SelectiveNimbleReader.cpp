@@ -95,6 +95,10 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
       const dwio::common::RowReaderOptions& options)
       : readerBase_{readerBase},
         options_{options},
+        encodingFactory_(
+            options.passStringBuffersFromDecoder()
+                ? std::make_unique<const EncodingFactory>()
+                : std::make_unique<const legacy::EncodingFactory>()),
         streams_(readerBase_),
         rowSizeTracker_{
             std::make_unique<RowSizeTracker>(readerBase->fileSchemaWithId())} {
@@ -186,6 +190,7 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
 
   const std::shared_ptr<ReaderBase> readerBase_;
   const dwio::common::RowReaderOptions options_;
+  const std::unique_ptr<const EncodingFactory> encodingFactory_;
   StripeStreams streams_;
   std::vector<int64_t> stripeRowOffsets_;
   // The inclusive lower bound of the stripe range to read.
@@ -363,19 +368,7 @@ void SelectiveNimbleRowReader::loadCurrentStripe() {
       readerBase_->nimbleSchema(),
       streams_,
       options_.trackRowSize() ? rowSizeTracker_.get() : nullptr,
-      options_.passStringBuffersFromDecoder()
-          ? [](velox::memory::MemoryPool& pool,
-               std::string_view data,
-               std::function<void*(uint32_t)> stringBufferFactory)
-                -> std::unique_ptr<Encoding> {
-        return EncodingFactory::decode(pool, data, stringBufferFactory);
-      }
-          : [](velox::memory::MemoryPool& pool,
-               std::string_view data,
-               std::function<void*(uint32_t)> stringBufferFactory)
-                -> std::unique_ptr<Encoding> {
-        return legacy::EncodingFactory::decode(pool, data, stringBufferFactory);
-      },
+      *encodingFactory_,
       options_.passStringBuffersFromDecoder(),
       options_.preserveFlatMapsInMemory());
 

@@ -31,12 +31,11 @@ SparseBoolEncoding::SparseBoolEncoding(
     : TypedEncoding<bool, bool>{memoryPool, data, options},
       sparseValue_{static_cast<bool>(data[this->dataOffset()])},
       indicesUncompressed_{&memoryPool},
-      indices_{EncodingFactory::decode(
+      indices_{EncodingFactory(options).create(
           memoryPool,
           {data.data() + this->dataOffset() + kPrefixSize,
            data.size() - this->dataOffset() - kPrefixSize},
-          stringBufferFactory,
-          options)} {
+          stringBufferFactory)} {
   reset();
 }
 

@@ -30,30 +30,22 @@ class ChunkedDecoder {
  public:
   ChunkedDecoder(
       std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
-      bool decodeValuesWithNulls,
       std::shared_ptr<index::StreamIndex> streamIndex,
+      bool decodeValuesWithNulls,
+      const EncodingFactory* encodingFactory,
       velox::memory::MemoryPool* pool,
-      std::function<std::unique_ptr<Encoding>(
-          velox::memory::MemoryPool&,
-          std::string_view,
-          std::function<void*(uint32_t)>)> encodingFactory =
-          [](velox::memory::MemoryPool& pool,
-             std::string_view data,
-             std::function<void*(uint32_t)> stringBufferFactory)
-          -> std::unique_ptr<Encoding> {
-        return EncodingFactory::decode(pool, data, stringBufferFactory);
-      },
       bool getStringBuffersFromDecoder = false)
       : input_{std::move(input)},
         pool_{pool},
         decodeValuesWithNulls_{decodeValuesWithNulls},
-        encodingFactory_{std::move(encodingFactory)},
+        encodingFactory_(encodingFactory),
         getStringBuffersFromDecoder_{getStringBuffersFromDecoder},
         streamIndex_{std::move(streamIndex)},
         streamRowCount_{
             streamIndex_ ? std::optional<uint32_t>(streamIndex_->rowCount())
                          : std::nullopt} {
     NIMBLE_CHECK_NOT_NULL(input_);
+    NIMBLE_CHECK_NOT_NULL(encodingFactory_);
   }
 
   /// Skip non null values.
@@ -437,11 +429,7 @@ class ChunkedDecoder {
   // encode nulls alongside values). When false, decode values without nulls
   // (standard case for scalar types).
   const bool decodeValuesWithNulls_;
-  const std::function<std::unique_ptr<Encoding>(
-      velox::memory::MemoryPool&,
-      std::string_view,
-      std::function<void*(uint32_t)>)>
-      encodingFactory_;
+  const EncodingFactory* const encodingFactory_;
   const bool getStringBuffersFromDecoder_{false};
   // Optional stream index for accelerating skip operations
   const std::shared_ptr<index::StreamIndex> streamIndex_;

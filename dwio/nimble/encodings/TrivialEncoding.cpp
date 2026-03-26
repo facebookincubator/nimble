@@ -33,8 +33,8 @@ TrivialEncoding<std::string_view>::TrivialEncoding(
   const auto dataCompressionType =
       static_cast<CompressionType>(encoding::readChar(pos));
   const auto lengthsSize = encoding::readUint32(pos);
-  lengths_ = EncodingFactory::decode(
-      memoryPool, {pos, lengthsSize}, stringBufferFactory, options);
+  lengths_ = EncodingFactory(options).create(
+      memoryPool, {pos, lengthsSize}, stringBufferFactory);
   blob_ = pos + lengthsSize;
 
   if (dataCompressionType != CompressionType::Uncompressed) {

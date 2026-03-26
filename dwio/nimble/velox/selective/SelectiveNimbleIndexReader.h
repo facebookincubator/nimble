@@ -20,6 +20,7 @@
 #include <memory>
 #include <vector>
 
+#include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/index/ClusterIndexReader.h"
 #include "dwio/nimble/velox/RowRange.h"
@@ -245,6 +246,7 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
 
   const std::shared_ptr<ReaderBase> readerBase_;
   const velox::dwio::common::RowReaderOptions options_;
+  const std::unique_ptr<const EncodingFactory> encodingFactory_;
   const std::unique_ptr<RowSizeTracker> rowSizeTracker_;
   const bool hasFilters_;
 

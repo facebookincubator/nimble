@@ -132,15 +132,12 @@ void StreamData::prepareForDecoding(std::string_view data) {
   // For string types, provide a stringBufferFactory that allocates separate
   // buffers using velox::AlignedBuffer for memory tracking.
   Encoding::Options options{.useVarintRowCount = useVarintRowCount_};
-  encoding_ = EncodingFactory::decode(
-      *pool_,
-      data,
-      [this](uint32_t size) {
+  encoding_ =
+      EncodingFactory(options).create(*pool_, data, [this](uint32_t size) {
         auto& buffer = stringBuffers_.emplace_back(
             velox::AlignedBuffer::allocate<char>(size, pool_));
         return buffer->asMutable<void>();
-      },
-      options);
+      });
 }
 
 uint32_t StreamData::decode(

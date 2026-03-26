@@ -118,7 +118,7 @@ std::unique_ptr<Encoding> createFromCustomLayout(
       });
   auto encoded = EncodingFactory::encode<T>(
       std::move(policy), std::span<const T>(data.data(), data.size()), buffer);
-  return EncodingFactory::decode(pool, encoded, nullptr);
+  return EncodingFactory().create(pool, encoded, nullptr);
 }
 
 // ===========================================================================
@@ -161,7 +161,7 @@ std::unique_ptr<Encoding> createNullableFromCustomLayout(
 
   auto encoded = EncodingFactory::encodeNullable<T>(
       std::move(policy), valuesSpan, nullsSpan, buffer);
-  return EncodingFactory::decode(pool, encoded, nullptr);
+  return EncodingFactory().create(pool, encoded, nullptr);
 }
 
 } // namespace facebook::nimble

@@ -95,16 +95,17 @@ DeltaEncoding<T>::DeltaEncoding(
       deltasBuffer_(&memoryPool),
       restatementsBuffer_(&memoryPool),
       isRestatementsBuffer_(&memoryPool) {
+  const EncodingFactory factory;
   auto pos = data.data() + Encoding::kPrefixSize;
   const uint32_t restatementsOffset = encoding::readUint32(pos);
   const uint32_t isRestatementsOffset = encoding::readUint32(pos);
-  deltas_ = EncodingFactory::decode(
+  deltas_ = factory.create(
       memoryPool, {pos, restatementsOffset}, stringBufferFactory);
   pos += restatementsOffset;
-  restatements_ = EncodingFactory::decode(
+  restatements_ = factory.create(
       memoryPool, {pos, isRestatementsOffset}, stringBufferFactory);
   pos += isRestatementsOffset;
-  isRestatements_ = EncodingFactory::decode(
+  isRestatements_ = factory.create(
       memoryPool,
       {pos, static_cast<size_t>(data.end() - pos)},
       stringBufferFactory);

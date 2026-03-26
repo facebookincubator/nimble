@@ -718,7 +718,7 @@ void NimbleDumpLib::emitContent(
     if (auto& stream = streams[0]) {
       InMemoryChunkedStream chunkedStream{*pool_, std::move(stream)};
       while (chunkedStream.hasNext()) {
-        auto encoding = EncodingFactory::decode(
+        auto encoding = EncodingFactory().create(
             *pool_, chunkedStream.nextChunk(), stringBufferFactory);
         uint32_t totalRows = encoding->rowCount();
         while (totalRows > 0) {

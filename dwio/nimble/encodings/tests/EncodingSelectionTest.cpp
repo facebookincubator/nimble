@@ -197,7 +197,7 @@ void test(std::span<const T> values, std::vector<EncodingDetails> expected) {
     return stringBuffer->asMutable<void>();
   };
   auto encoding =
-      nimble::EncodingFactory::decode(*pool, serialized, stringBufferFactory);
+      nimble::EncodingFactory().create(*pool, serialized, stringBufferFactory);
   nimble::Vector<T> result{pool.get()};
   result.resize(values.size());
   encoding->materialize(values.size(), result.data());
@@ -1195,7 +1195,7 @@ TEST(ReplayedEncodingSelectionPolicyTest, encodingRoundTrip) {
         std::move(policy), std::span<const uint32_t>(testData.data), buffer);
 
     // Decode and verify round-trip correctness.
-    auto encoding = nimble::EncodingFactory::decode(
+    auto encoding = nimble::EncodingFactory().create(
         *pool, encoded, [&](uint32_t totalLength) -> void* {
           return pool->allocate(totalLength);
         });
@@ -1285,7 +1285,7 @@ TEST(ManualEncodingSelectionPolicyTest, nestedEncodingCompressionType) {
     verifyCompression(capturedLayout);
 
     // Verify round-trip correctness.
-    auto encoding = nimble::EncodingFactory::decode(
+    auto encoding = nimble::EncodingFactory().create(
         *pool, encoded, [&](uint32_t totalLength) -> void* {
           return pool->allocate(totalLength);
         });
@@ -1378,7 +1378,7 @@ TEST(ReplayedEncodingSelectionPolicyTest, nestedEncodingCompressionType) {
     verifyCompression(capturedLayout);
 
     // Verify round-trip correctness.
-    auto encoding = nimble::EncodingFactory::decode(
+    auto encoding = nimble::EncodingFactory().create(
         *pool, encoded, [&](uint32_t totalLength) -> void* {
           return pool->allocate(totalLength);
         });

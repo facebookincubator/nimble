@@ -114,13 +114,14 @@ MainlyConstantEncoding<T>::MainlyConstantEncoding(
     : TypedEncoding<T, physicalType>(memoryPool, data),
       isCommonBuffer_(&memoryPool),
       otherValuesBuffer_(&memoryPool) {
+  const EncodingFactory factory;
   const char* pos = data.data() + Encoding::kPrefixSize;
   const uint32_t isCommonBytes = encoding::readUint32(pos);
-  isCommon_ = EncodingFactory::decode(
-      *this->pool_, {pos, isCommonBytes}, stringBufferFactory);
+  isCommon_ =
+      factory.create(*this->pool_, {pos, isCommonBytes}, stringBufferFactory);
   pos += isCommonBytes;
   const uint32_t otherValuesBytes = encoding::readUint32(pos);
-  otherValues_ = EncodingFactory::decode(
+  otherValues_ = factory.create(
       *this->pool_, {pos, otherValuesBytes}, stringBufferFactory);
   pos += otherValuesBytes;
   commonValue_ = encoding::read<physicalType>(pos);

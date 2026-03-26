@@ -49,7 +49,7 @@ void ChunkedDecoder::loadNextChunk() {
   inputData_ += length;
   inputSize_ -= length;
   currentStringBuffers_.clear();
-  encoding_ = encodingFactory_(
+  encoding_ = encodingFactory_->create(
       *pool_,
       std::string_view(chunkData, chunkSize),
       [&](uint32_t totalLength) {

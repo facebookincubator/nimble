@@ -31,7 +31,7 @@ SparseBoolEncoding::SparseBoolEncoding(
     : TypedEncoding<bool, bool>{memoryPool, data},
       sparseValue_{static_cast<bool>(data[kSparseValueOffset])},
       indicesUncompressed_{&memoryPool},
-      indices_{EncodingFactory::decode(
+      indices_{EncodingFactory().create(
           memoryPool,
           {data.data() + kIndicesOffset, data.size() - kIndicesOffset},
           stringBufferFactory)} {
