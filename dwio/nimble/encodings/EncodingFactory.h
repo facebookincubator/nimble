@@ -31,11 +31,20 @@ class EncodingSelectionPolicy;
 
 class EncodingFactory {
  public:
-  static std::unique_ptr<Encoding> decode(
+  explicit EncodingFactory(Encoding::Options options = {})
+      : options_{options} {}
+
+  virtual ~EncodingFactory() = default;
+
+  /// Creates an Encoding from serialized data using this factory's options.
+  virtual std::unique_ptr<Encoding> create(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory,
-      const Encoding::Options& options = {});
+      std::function<void*(uint32_t)> stringBufferFactory) const;
+
+  const Encoding::Options& options() const {
+    return options_;
+  }
 
   template <typename T>
   static std::string_view encode(
@@ -53,6 +62,8 @@ class EncodingFactory {
       const Encoding::Options& options = {});
 
  private:
+  Encoding::Options options_{};
+
   template <typename T>
   static std::string_view encode(
       EncodingSelection<typename TypeTraits<T>::physicalType>&& selection,

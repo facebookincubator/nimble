@@ -28,16 +28,13 @@ NimbleData::NimbleData(
     StripeStreams& streams,
     memory::MemoryPool& memoryPool,
     ChunkedDecoder* inMapDecoder,
-    std::function<std::unique_ptr<Encoding>(
-        velox::memory::MemoryPool&,
-        std::string_view,
-        std::function<void*(uint32_t)>)> encodingFactory,
+    const EncodingFactory& encodingFactory,
     bool getStringBuffersFromDecoder)
     : nimbleType_(nimbleType),
       streams_(&streams),
       pool_(&memoryPool),
       inMapDecoder_(inMapDecoder),
-      encodingFactory_{encodingFactory} {
+      encodingFactory_(&encodingFactory) {
   switch (nimbleType->kind()) {
     case Kind::Scalar:
       // Nulls in scalar types will be decoded along with values.
@@ -163,10 +160,10 @@ ChunkedDecoder NimbleData::makeScalarDecoder() {
   const auto streamId = nimbleType_->asScalar().scalarDescriptor().offset();
   return ChunkedDecoder(
       streams_->enqueue(streamId),
-      /*decodeValuesWithNulls=*/false,
       streams_->streamIndex(streamId),
-      pool_,
+      /*decodeValuesWithNulls=*/false,
       encodingFactory_,
+      pool_,
       getStringBuffersFromDecoder_);
 }
 
@@ -176,10 +173,10 @@ ChunkedDecoder NimbleData::makeMicrosDecoder() {
       nimbleType_->asTimestampMicroNano().microsDescriptor().offset();
   return ChunkedDecoder(
       streams_->enqueue(streamId),
-      /*decodeValuesWithNulls=*/false,
       streams_->streamIndex(streamId),
-      pool_,
+      /*decodeValuesWithNulls=*/false,
       encodingFactory_,
+      pool_,
       getStringBuffersFromDecoder_);
 }
 
@@ -189,10 +186,10 @@ ChunkedDecoder NimbleData::makeNanosDecoder() {
       nimbleType_->asTimestampMicroNano().nanosDescriptor().offset();
   return ChunkedDecoder(
       streams_->enqueue(streamId),
-      /*decodeValuesWithNulls=*/false,
       streams_->streamIndex(streamId),
-      pool_,
+      /*decodeValuesWithNulls=*/false,
       encodingFactory_,
+      pool_,
       getStringBuffersFromDecoder_);
 }
 
@@ -219,10 +216,10 @@ std::unique_ptr<ChunkedDecoder> NimbleData::makeDecoder(
   }
   return std::make_unique<ChunkedDecoder>(
       std::move(input),
-      decodeValuesWithNulls,
       streams_->streamIndex(descriptor.offset()),
-      pool_,
+      decodeValuesWithNulls,
       encodingFactory_,
+      pool_,
       getStringBuffersFromDecoder_);
 }
 
@@ -234,7 +231,7 @@ std::unique_ptr<velox::dwio::common::FormatData> NimbleParams::toFormatData(
       *streams_,
       pool(),
       inMapDecoder_,
-      encodingFactory_,
+      *encodingFactory_,
       getStringBuffersFromDecoder_);
 }
 

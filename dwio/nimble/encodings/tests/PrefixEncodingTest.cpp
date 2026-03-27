@@ -99,7 +99,7 @@ TEST_F(PrefixEncodingTest, materialize) {
         createSelectionPolicy(), testCase.values, buffer);
     stringBuffers_.clear();
     auto encoding =
-        EncodingFactory::decode(*pool_, encoded, createStringBufferFactory());
+        EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
     EXPECT_EQ(encoding->rowCount(), testCase.values.size());
     EXPECT_EQ(encoding->encodingType(), EncodingType::Prefix);
@@ -156,7 +156,7 @@ TEST_F(PrefixEncodingTest, varyingNumRestarts) {
         createSelectionPolicy(), values, buffer);
     stringBuffers_.clear();
     auto encoding =
-        EncodingFactory::decode(*pool_, encoded, createStringBufferFactory());
+        EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
     EXPECT_EQ(encoding->rowCount(), values.size());
     EXPECT_EQ(encoding->encodingType(), EncodingType::Prefix);
@@ -269,7 +269,7 @@ TEST_F(PrefixEncodingTest, skipAndMaterializeSteps) {
         createSelectionPolicy(), values, buffer);
     stringBuffers_.clear();
     auto encoding =
-        EncodingFactory::decode(*pool_, encoded, createStringBufferFactory());
+        EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
     // Run through steps twice
 
@@ -346,7 +346,7 @@ TEST_F(PrefixEncodingTest, fuzzerMaterialize) {
         createSelectionPolicy(), values, buffer);
     stringBuffers_.clear();
     auto encoding =
-        EncodingFactory::decode(*pool_, encoded, createStringBufferFactory());
+        EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
     // Generate random steps
     std::uniform_int_distribution<uint32_t> numStepsDist(1, kMaxNumSteps);
@@ -461,7 +461,7 @@ TEST_F(PrefixEncodingTest, seekExactMatch) {
         createSelectionPolicy(), values, buffer);
     stringBuffers_.clear();
     auto encoding =
-        EncodingFactory::decode(*pool_, encoded, createStringBufferFactory());
+        EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
     // Test exact match
     for (uint32_t pos : testCase.seekPositions) {
@@ -541,7 +541,7 @@ TEST_F(PrefixEncodingTest, seekNonExactMatch) {
         createSelectionPolicy(), values, buffer);
     stringBuffers_.clear();
     auto encoding =
-        EncodingFactory::decode(*pool_, encoded, createStringBufferFactory());
+        EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
     // Test non-exact match
 
@@ -588,7 +588,7 @@ TEST_F(PrefixEncodingTest, seekBeforeAll) {
       createSelectionPolicy(), values, buffer);
   stringBuffers_.clear();
   auto encoding =
-      EncodingFactory::decode(*pool_, encoded, createStringBufferFactory());
+      EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
   // Seek to value before all entries
   std::string_view target = "apple";
@@ -607,7 +607,7 @@ TEST_F(PrefixEncodingTest, seekAfterAll) {
       createSelectionPolicy(), values, buffer);
   stringBuffers_.clear();
   auto encoding =
-      EncodingFactory::decode(*pool_, encoded, createStringBufferFactory());
+      EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
   // Seek to value after all entries
   std::string_view target = "zucchini";
@@ -667,7 +667,7 @@ TEST_F(PrefixEncodingTest, fuzzerSeek) {
         createSelectionPolicy(), values, buffer);
     stringBuffers_.clear();
     auto encoding =
-        EncodingFactory::decode(*pool_, encoded, createStringBufferFactory());
+        EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
     // Helper: simple linear search
     auto linearSearch =
@@ -737,7 +737,7 @@ TEST_F(PrefixEncodingTest, debugString) {
       createSelectionPolicy(), values, buffer);
   stringBuffers_.clear();
   auto encoding =
-      EncodingFactory::decode(*pool_, encoded, createStringBufferFactory());
+      EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
   std::string debug = encoding->debugString();
   EXPECT_TRUE(debug.find("Prefix") != std::string::npos);
@@ -786,7 +786,7 @@ TEST_F(PrefixEncodingTest, customRestartInterval) {
         std::move(policy), values, buffer);
     stringBuffers_.clear();
     auto encoding =
-        EncodingFactory::decode(*pool_, encoded, createStringBufferFactory());
+        EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
     // Verify restart interval is correctly set from config or default
     const std::string debug = encoding->debugString();
@@ -980,7 +980,7 @@ TEST_F(PrefixEncodingTest, encode) {
         createSelectionPolicy(), values, buffer);
     stringBuffers_.clear();
     auto encoding =
-        EncodingFactory::decode(*pool_, encoded, createStringBufferFactory());
+        EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
     // Verify basic properties
     EXPECT_EQ(encoding->rowCount(), values.size());
@@ -1112,7 +1112,7 @@ TEST_F(PrefixEncodingTest, fuzzerEncode) {
         createSelectionPolicy(), values, buffer);
     stringBuffers_.clear();
     auto encoding =
-        EncodingFactory::decode(*pool_, encoded, createStringBufferFactory());
+        EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
     // Verify properties
     EXPECT_EQ(encoding->rowCount(), values.size());
@@ -1306,7 +1306,7 @@ TEST_F(PrefixEncodingTest, seekExactMatchWithDuplicatesAcrossRestarts) {
         createSelectionPolicy(), values, buffer);
     stringBuffers_.clear();
     auto encoding =
-        EncodingFactory::decode(*pool_, encoded, createStringBufferFactory());
+        EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
     std::string_view seekKey = testCase.seekKey;
     auto result = encoding->seekAtOrAfter(&seekKey);

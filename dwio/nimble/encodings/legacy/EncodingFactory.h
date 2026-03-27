@@ -20,16 +20,19 @@
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingSelection.h"
 
 namespace facebook::nimble::legacy {
 
-class EncodingFactory {
+class EncodingFactory : public ::facebook::nimble::EncodingFactory {
  public:
-  static std::unique_ptr<Encoding> decode(
+  using ::facebook::nimble::EncodingFactory::EncodingFactory;
+
+  std::unique_ptr<Encoding> create(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::function<void*(uint32_t)> stringBufferFactory) const override;
 
   template <typename T>
   static std::string_view encode(

@@ -118,8 +118,9 @@ std::vector<KeyNode<T>> makeKeyNodes(
     if (inMapInput != nullptr) {
       node.inMap = std::make_unique<ChunkedDecoder>(
           std::move(inMapInput),
-          /*decodeValuesWithNulls=*/false,
           /*streamIndex=*/nullptr,
+          /*decodeValuesWithNulls=*/false,
+          &params.encodingFactory(),
           &memoryPool);
     } else {
       // Missing in-map stream: either the writer skipped it because all rows

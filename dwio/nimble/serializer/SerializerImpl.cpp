@@ -28,11 +28,8 @@ std::vector<uint32_t> decodeCompactStreamSizes(
     std::string_view encodedSizes,
     velox::memory::MemoryPool* pool) {
   NIMBLE_CHECK_NOT_NULL(pool);
-  auto encoding = EncodingFactory::decode(
-      *pool,
-      encodedSizes,
-      nullptr,
-      Encoding::Options{.useVarintRowCount = true});
+  auto encoding = EncodingFactory(Encoding::Options{.useVarintRowCount = true})
+                      .create(*pool, encodedSizes, nullptr);
   const uint32_t count = encoding->rowCount();
   std::vector<uint32_t> values(count);
   encoding->materialize(count, values.data());

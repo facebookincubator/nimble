@@ -40,11 +40,11 @@ static std::span<const typename TypeTraits<T>::physicalType> toPhysicalSpan(
 }
 } // namespace
 
-std::unique_ptr<Encoding> EncodingFactory::decode(
+std::unique_ptr<Encoding> EncodingFactory::create(
     velox::memory::MemoryPool& memoryPool,
     std::string_view data,
-    std::function<void*(uint32_t)> stringBufferFactory,
-    const Encoding::Options& options) {
+    std::function<void*(uint32_t)> stringBufferFactory) const {
+  const auto& options = options_;
   // Maybe we should have a magic number of encodings too? Hrm.
   const EncodingType encodingType = static_cast<EncodingType>(data[0]);
   const DataType dataType = static_cast<DataType>(data[1]);

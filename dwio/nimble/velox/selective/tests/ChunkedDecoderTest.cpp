@@ -95,8 +95,13 @@ class ChunkedDecoderTest : public testing::Test {
     return *leafPool_;
   }
 
+  const EncodingFactory& encodingFactory() const {
+    return encodingFactory_;
+  }
+
  private:
   std::shared_ptr<MemoryPool> leafPool_;
+  EncodingFactory encodingFactory_;
 };
 
 TEST_F(ChunkedDecoderTest, bufferedInput) {
@@ -132,8 +137,9 @@ TEST_F(ChunkedDecoderTest, bufferedInput) {
 
   auto chunkedDecoder = std::make_unique<nimble::ChunkedDecoder>(
       input->read(0, kFileSize, velox::dwio::common::LogType::TEST),
-      false,
       nullptr,
+      false,
+      &encodingFactory(),
       &pool());
   ChunkedDecoderTestHelper helper(chunkedDecoder.get());
   helper.ensureInput(kFileSize);
@@ -148,8 +154,9 @@ TEST_F(ChunkedDecoderTest, ensureInput) {
   ChunkedDecoder decoder(
       std::make_unique<dwio::common::SeekableArrayInputStream>(
           data.data(), data.size(), /*block_size=*/1),
-      false,
       nullptr,
+      false,
+      &encodingFactory(),
       &pool());
   ChunkedDecoderTestHelper helper(&decoder);
   auto checkNext = [&](const std::string& expected) {
@@ -185,8 +192,9 @@ TEST_F(ChunkedDecoderTest, ensureInputMemmoveSkip) {
   ChunkedDecoder decoder(
       std::make_unique<dwio::common::SeekableArrayInputStream>(
           data.data(), data.size(), /*block_size=*/3),
-      false,
-      nullptr,
+      /*streamIndex=*/nullptr,
+      /*decodeValuesWithNulls=*/false,
+      &encodingFactory(),
       &pool());
   ChunkedDecoderTestHelper helper(&decoder);
 
@@ -227,8 +235,9 @@ TEST_F(ChunkedDecoderTest, ensureInputMemmoveCompaction) {
   ChunkedDecoder decoder(
       std::make_unique<dwio::common::SeekableArrayInputStream>(
           data.data(), data.size(), /*block_size=*/10),
-      false,
-      nullptr,
+      /*streamIndex=*/nullptr,
+      /*decodeValuesWithNulls=*/false,
+      &encodingFactory(),
       &pool());
   ChunkedDecoderTestHelper helper(&decoder);
 
@@ -267,8 +276,9 @@ TEST_F(ChunkedDecoderTest, ensureInputReallocation) {
   ChunkedDecoder decoder(
       std::make_unique<dwio::common::SeekableArrayInputStream>(
           data.data(), data.size(), /*block_size=*/5),
-      false,
-      nullptr,
+      /*streamIndex=*/nullptr,
+      /*decodeValuesWithNulls=*/false,
+      &encodingFactory(),
       &pool());
   ChunkedDecoderTestHelper helper(&decoder);
 
@@ -306,6 +316,10 @@ class ChunkedDecoderDataTest : public index::test::ClusterIndexTestBase,
   using IndexBuffers = index::test::ClusterIndexTestBase::IndexBuffers;
 
   void SetUp() override {}
+
+  const EncodingFactory& encodingFactory() const {
+    return encodingFactory_;
+  }
 
   bool useStreamIndex() const {
     return GetParam();
@@ -603,6 +617,7 @@ class ChunkedDecoderDataTest : public index::test::ClusterIndexTestBase,
  private:
   IndexBuffers testIndexBuffers_;
   std::shared_ptr<index::ChunkIndexGroup> testChunkIndex_;
+  EncodingFactory encodingFactory_;
 };
 
 TEST_P(ChunkedDecoderDataTest, skipTwoChunks) {
@@ -696,8 +711,9 @@ TEST_P(ChunkedDecoderDataTest, skipTwoChunks) {
     ChunkedDecoder decoder(
         std::make_unique<dwio::common::SeekableArrayInputStream>(
             streamData.data(), streamData.size()),
-        false,
         streamIndex,
+        false,
+        &encodingFactory(),
         pool_.get());
 
     // Check if we expect an error
@@ -840,8 +856,9 @@ TEST_P(ChunkedDecoderDataTest, skipMultipleChunks) {
       ChunkedDecoder decoder(
           std::make_unique<dwio::common::SeekableArrayInputStream>(
               streamData.data(), streamData.size()),
-          false,
           streamIndex,
+          false,
+          &encodingFactory(),
           pool_.get());
 
       // Check if we expect an error
@@ -898,8 +915,9 @@ TEST_P(ChunkedDecoderDataTest, skipWithinCurrentChunk) {
   ChunkedDecoder decoder(
       std::make_unique<dwio::common::SeekableArrayInputStream>(
           streamData.data(), streamData.size()),
-      false,
       streamIndex,
+      false,
+      &encodingFactory(),
       pool_.get());
 
   // Read 10 values first
@@ -939,8 +957,9 @@ TEST_P(ChunkedDecoderDataTest, skipEntireStream) {
   ChunkedDecoder decoder(
       std::make_unique<dwio::common::SeekableArrayInputStream>(
           streamData.data(), streamData.size()),
-      false,
       streamIndex,
+      false,
+      &encodingFactory(),
       pool_.get());
 
   // Skip all 50 values
@@ -970,8 +989,9 @@ TEST_P(ChunkedDecoderDataTest, skipAndReadMixed) {
   ChunkedDecoder decoder(
       std::make_unique<dwio::common::SeekableArrayInputStream>(
           streamData.data(), streamData.size()),
-      false,
       streamIndex,
+      false,
+      &encodingFactory(),
       pool_.get());
 
   // Read 10 values
@@ -1025,8 +1045,9 @@ DEBUG_ONLY_TEST_P(ChunkedDecoderDataTest, skipChunkWithIndexCheck) {
   ChunkedDecoder decoder(
       std::make_unique<dwio::common::SeekableArrayInputStream>(
           streamData.data(), streamData.size()),
-      false,
       streamIndex,
+      false,
+      &encodingFactory(),
       pool_.get());
 
   // Use TestValue to track skipWithIndex calls
@@ -1195,15 +1216,17 @@ TEST_F(ChunkedDecoderDataTest, fuzzer) {
     ChunkedDecoder decoderWithIndex(
         std::make_unique<dwio::common::SeekableArrayInputStream>(
             streamData.data(), streamData.size()),
-        false,
         streamIndex,
+        false,
+        &encodingFactory(),
         pool_.get());
 
     ChunkedDecoder decoderWithoutIndex(
         std::make_unique<dwio::common::SeekableArrayInputStream>(
             streamData.data(), streamData.size()),
-        false,
         nullptr,
+        false,
+        &encodingFactory(),
         pool_.get());
 
     // Generate and execute random operations on both decoders

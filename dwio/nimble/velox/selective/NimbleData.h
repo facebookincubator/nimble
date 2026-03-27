@@ -32,10 +32,7 @@ class NimbleData : public velox::dwio::common::FormatData {
       StripeStreams& streams,
       velox::memory::MemoryPool& memoryPool,
       ChunkedDecoder* inMapDecoder,
-      std::function<std::unique_ptr<Encoding>(
-          velox::memory::MemoryPool&,
-          std::string_view,
-          std::function<void*(uint32_t)>)> encodingFactory,
+      const EncodingFactory& encodingFactory,
       bool getStringBuffersFromDecoder);
 
   /// Read internal node nulls. For leaf nodes, we only copy `incomingNulls' if
@@ -110,11 +107,7 @@ class NimbleData : public velox::dwio::common::FormatData {
   ChunkedDecoder* const inMapDecoder_;
   std::unique_ptr<ChunkedDecoder> nullsDecoder_;
   velox::BufferPtr inMap_;
-  std::function<std::unique_ptr<Encoding>(
-      velox::memory::MemoryPool&,
-      std::string_view,
-      std::function<void*(uint32_t)>)>
-      encodingFactory_;
+  const EncodingFactory* const encodingFactory_;
 };
 
 class NimbleParams : public velox::dwio::common::FormatParams {
@@ -125,10 +118,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
       const std::shared_ptr<const Type>& nimbleType,
       StripeStreams& streams,
       RowSizeTracker* rowSizeTracker,
-      std::function<std::unique_ptr<Encoding>(
-          velox::memory::MemoryPool&,
-          std::string_view,
-          std::function<void*(uint32_t)>)> encodingFactory,
+      const EncodingFactory& encodingFactory,
       bool getStringBuffersFromDecoder = false,
       bool preserveFlatMapsInMemory = false)
       : FormatParams(pool, stats),
@@ -136,7 +126,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
         streams_(&streams),
         rowSizeTracker_(rowSizeTracker),
         preserveFlatMapsInMemory_(preserveFlatMapsInMemory),
-        encodingFactory_(std::move(encodingFactory)),
+        encodingFactory_(&encodingFactory),
         getStringBuffersFromDecoder_{getStringBuffersFromDecoder} {}
 
   std::unique_ptr<velox::dwio::common::FormatData> toFormatData(
@@ -150,7 +140,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
         type,
         *streams_,
         rowSizeTracker_,
-        encodingFactory_,
+        *encodingFactory_,
         getStringBuffersFromDecoder_,
         preserveFlatMapsInMemory_);
   }
@@ -175,17 +165,17 @@ class NimbleParams : public velox::dwio::common::FormatParams {
     return rowSizeTracker_;
   }
 
+  const EncodingFactory& encodingFactory() const {
+    return *encodingFactory_;
+  }
+
  private:
   const std::shared_ptr<const Type> nimbleType_;
   StripeStreams* const streams_{nullptr};
   RowSizeTracker* const rowSizeTracker_{nullptr};
   const bool preserveFlatMapsInMemory_{false};
+  const EncodingFactory* const encodingFactory_;
   ChunkedDecoder* inMapDecoder_{nullptr};
-  std::function<std::unique_ptr<Encoding>(
-      velox::memory::MemoryPool&,
-      std::string_view,
-      std::function<void*(uint32_t)> stringBufferFactory)>
-      encodingFactory_;
   bool getStringBuffersFromDecoder_{false};
 };
 

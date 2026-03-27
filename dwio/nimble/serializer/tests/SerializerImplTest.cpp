@@ -1125,11 +1125,8 @@ TEST_F(EncodeDecodeTest, compactTrailerNoCompression) {
   //   EncodingType (1B) + DataType (1B) + rowCount (varint)
   // For TrivialEncoding, the next byte after the prefix is the compression
   // type. Verify it is Uncompressed regardless of encoding type.
-  auto encoding = EncodingFactory::decode(
-      *pool_,
-      {trailerStart, trailerSize},
-      nullptr,
-      Encoding::Options{.useVarintRowCount = true});
+  auto encoding = EncodingFactory(Encoding::Options{.useVarintRowCount = true})
+                      .create(*pool_, {trailerStart, trailerSize}, nullptr);
   EXPECT_EQ(encoding->rowCount(), sizes.size());
 
   // Verify roundtrip produces correct values (ensuring the encoding works).
@@ -1233,13 +1230,11 @@ TEST_F(EncodeTypedCompressionTest, withEncodingLayout) {
         testData.compressionOptions);
 
     // Decode and verify round-trip.
-    auto encoding = EncodingFactory::decode(
-        *pool_,
-        encoded,
-        [&](uint32_t totalLength) -> void* {
-          return pool_->allocate(totalLength);
-        },
-        Encoding::Options{.useVarintRowCount = true});
+    auto encoding =
+        EncodingFactory(Encoding::Options{.useVarintRowCount = true})
+            .create(*pool_, encoded, [&](uint32_t totalLength) -> void* {
+              return pool_->allocate(totalLength);
+            });
     EXPECT_EQ(encoding->encodingType(), EncodingType::Trivial);
     EXPECT_EQ(encoding->rowCount(), data.size());
 
@@ -1285,13 +1280,11 @@ TEST_F(EncodeTypedCompressionTest, withoutEncodingLayout) {
   verifyLeafCompression(capturedLayout, CompressionType::Uncompressed);
 
   // Verify round-trip.
-  auto encoding = EncodingFactory::decode(
-      *pool_,
-      encoded,
-      [&](uint32_t totalLength) -> void* {
-        return pool_->allocate(totalLength);
-      },
-      Encoding::Options{.useVarintRowCount = true});
+  auto encoding =
+      EncodingFactory(Encoding::Options{.useVarintRowCount = true})
+          .create(*pool_, encoded, [&](uint32_t totalLength) -> void* {
+            return pool_->allocate(totalLength);
+          });
   std::vector<uint32_t> decoded(data.size());
   encoding->materialize(data.size(), decoded.data());
   EXPECT_EQ(decoded, data);

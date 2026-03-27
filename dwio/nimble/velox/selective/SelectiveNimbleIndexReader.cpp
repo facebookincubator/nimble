@@ -147,6 +147,10 @@ SelectiveNimbleIndexReader::SelectiveNimbleIndexReader(
     const dwio::common::RowReaderOptions& options)
     : readerBase_(std::move(readerBase)),
       options_(options),
+      encodingFactory_(
+          options.passStringBuffersFromDecoder()
+              ? std::make_unique<const EncodingFactory>()
+              : std::make_unique<const legacy::EncodingFactory>()),
       rowSizeTracker_(
           std::make_unique<RowSizeTracker>(readerBase_->fileSchemaWithId())),
       hasFilters_(options.scanSpec()->hasFilter()),
@@ -571,19 +575,7 @@ void SelectiveNimbleIndexReader::loadStripeWithIndex(uint32_t stripeIndex) {
       readerBase_->nimbleSchema(),
       streams_,
       options_.trackRowSize() ? rowSizeTracker_.get() : nullptr,
-      options_.passStringBuffersFromDecoder()
-          ? [](velox::memory::MemoryPool& pool,
-               std::string_view data,
-               std::function<void*(uint32_t)> stringBufferFactory)
-                -> std::unique_ptr<Encoding> {
-        return EncodingFactory::decode(pool, data, std::move(stringBufferFactory));
-      }
-          : [](velox::memory::MemoryPool& pool,
-               std::string_view data,
-               std::function<void*(uint32_t)> stringBufferFactory)
-                -> std::unique_ptr<Encoding> {
-        return legacy::EncodingFactory::decode(pool, data, std::move(stringBufferFactory));
-      },
+      *encodingFactory_,
       options_.passStringBuffersFromDecoder(),
       options_.preserveFlatMapsInMemory());
 

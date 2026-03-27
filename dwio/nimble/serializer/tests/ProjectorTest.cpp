@@ -2622,11 +2622,8 @@ TEST_F(ProjectorTest, projectedTrailerNoCompression) {
   const auto* trailerStart = end - sizeof(uint32_t) - trailerSize;
 
   // Decode the encoded stream sizes and check the compression type.
-  auto encoding = EncodingFactory::decode(
-      *pool_,
-      {trailerStart, trailerSize},
-      nullptr,
-      Encoding::Options{.useVarintRowCount = true});
+  auto encoding = EncodingFactory(Encoding::Options{.useVarintRowCount = true})
+                      .create(*pool_, {trailerStart, trailerSize}, nullptr);
   EXPECT_GT(encoding->rowCount(), 0);
 
   // Verify the compression byte in the encoding is Uncompressed.

@@ -3293,7 +3293,7 @@ class VeloxWriterIndexTest
           while (chunkedStream.hasNext()) {
             const auto chunkData = chunkedStream.nextChunk();
             std::vector<velox::BufferPtr> stringBuffers;
-            auto encoding = nimble::EncodingFactory::decode(
+            auto encoding = nimble::EncodingFactory().create(
                 *leafPool_, chunkData, [&](uint32_t totalLength) {
                   auto& buffer = stringBuffers.emplace_back(
                       velox::AlignedBuffer::allocate<char>(
@@ -3335,7 +3335,7 @@ class VeloxWriterIndexTest
               *leafPool_, chunkStreamData);
           auto encodingData = chunkDecoder.decode();
           std::vector<velox::BufferPtr> stringBuffers;
-          auto encoding = nimble::EncodingFactory::decode(
+          auto encoding = nimble::EncodingFactory().create(
               *leafPool_, encodingData, [&](uint32_t totalLength) {
                 auto& buffer = stringBuffers.emplace_back(
                     velox::AlignedBuffer::allocate<char>(
@@ -3493,7 +3493,7 @@ class VeloxWriterIndexTest
 
           // Decode the key encoding from the chunk data
 
-          keyStreamCache[chunkFileOffset] = nimble::EncodingFactory::decode(
+          keyStreamCache[chunkFileOffset] = nimble::EncodingFactory().create(
               *leafPool_, encodingData, [&](uint32_t totalLength) {
                 auto& buf = stringBuffers.emplace_back(
                     velox::AlignedBuffer::allocate<char>(
@@ -4311,7 +4311,7 @@ TEST_F(VeloxWriterTest, customPrefixRestartInterval) {
 
     // Decode the key encoding
     std::vector<velox::BufferPtr> stringBuffers;
-    auto keyEncoding = nimble::EncodingFactory::decode(
+    auto keyEncoding = nimble::EncodingFactory().create(
         *leafPool_, encodingData, [&](uint32_t totalLength) {
           auto& buf = stringBuffers.emplace_back(
               velox::AlignedBuffer::allocate<char>(

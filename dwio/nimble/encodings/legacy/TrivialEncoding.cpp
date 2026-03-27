@@ -30,7 +30,7 @@ TrivialEncoding<std::string_view>::TrivialEncoding(
   auto dataCompressionType =
       static_cast<CompressionType>(encoding::readChar(pos));
   auto lengthsSize = encoding::readUint32(pos);
-  lengths_ = EncodingFactory::decode(
+  lengths_ = EncodingFactory().create(
       memoryPool, {pos, lengthsSize}, stringBufferFactory);
   blob_ = pos + lengthsSize;
 

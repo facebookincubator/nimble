@@ -24,14 +24,15 @@ MainlyConstantEncoding<std::string_view>::MainlyConstantEncoding(
     std::function<void*(uint32_t)> stringBufferFactory,
     const Encoding::Options& options)
     : MainlyConstantEncodingBase<std::string_view>(memoryPool, data, options) {
+  const EncodingFactory factory{options};
   const char* pos = data.data() + this->dataOffset();
   const uint32_t isCommonBytes = encoding::readUint32(pos);
-  isCommon_ = EncodingFactory::decode(
-      *this->pool_, {pos, isCommonBytes}, stringBufferFactory, options);
+  isCommon_ =
+      factory.create(*this->pool_, {pos, isCommonBytes}, stringBufferFactory);
   pos += isCommonBytes;
   const uint32_t otherValuesBytes = encoding::readUint32(pos);
-  otherValues_ = EncodingFactory::decode(
-      *this->pool_, {pos, otherValuesBytes}, stringBufferFactory, options);
+  otherValues_ = factory.create(
+      *this->pool_, {pos, otherValuesBytes}, stringBufferFactory);
   pos += otherValuesBytes;
   commonValue_ = encoding::read<physicalType>(pos);
   NIMBLE_CHECK(pos == data.end(), "Unexpected mainly constant encoding end");

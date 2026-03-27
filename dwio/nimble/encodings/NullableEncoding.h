@@ -99,16 +99,16 @@ NullableEncoding<T>::NullableEncoding(
     : TypedEncoding<T, physicalType>(memoryPool, data, options),
       indicesBuffer_(this->pool_),
       nullBuffer_(this->pool_) {
+  const EncodingFactory factory{options};
   const char* pos = data.data() + this->dataOffset();
   const uint32_t nonNullsBytes = encoding::readUint32(pos);
-  nonNullValues_ = EncodingFactory::decode(
-      *this->pool_, {pos, nonNullsBytes}, stringBufferFactory, options);
+  nonNullValues_ =
+      factory.create(*this->pool_, {pos, nonNullsBytes}, stringBufferFactory);
   pos += nonNullsBytes;
-  nulls_ = EncodingFactory::decode(
+  nulls_ = factory.create(
       *this->pool_,
       {pos, static_cast<size_t>(data.end() - pos)},
-      stringBufferFactory,
-      options);
+      stringBufferFactory);
   NIMBLE_DCHECK_EQ(
       Encoding::rowCount(), nulls_->rowCount(), "Nulls count mismatch.");
 }
