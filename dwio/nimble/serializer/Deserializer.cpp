@@ -19,7 +19,6 @@
 #include "dwio/nimble/velox/Decoder.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
-#include "folly/container/F14Set.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/dwio/common/TypeWithId.h"
 
@@ -99,7 +98,9 @@ class DeserializerImpl : public Decoder {
         pool_{pool},
         inMapStream_{inMapStream},
         encodingEnabled_{enableEncoding},
-        useVarintRowCount_{useVarintRowCount} {}
+        useVarintRowCount_{useVarintRowCount},
+        scalarKind_{getScalarKindForType(*type)},
+        typeStorageWidth_{getTypeStorageWidth(*type)} {}
 
   uint32_t next(
       uint32_t count,
@@ -111,8 +112,6 @@ class DeserializerImpl : public Decoder {
       return 0;
     }
 
-    const auto typeStorageWidth = getTypeStorageWidth(*type_);
-
     // Three read paths based on stream type:
     // readFlatMap: For FlatMap nulls/inMap with gap detection
     // scatteredRead: For scatterBitmap (StructFlatMapFieldReader values)
@@ -120,14 +119,14 @@ class DeserializerImpl : public Decoder {
     if (type_->isFlatMap()) {
       NIMBLE_CHECK_NULL(
           scatterBitmap, "scatterBitmap not used for FlatMap streams");
-      return readFlatMap(count, output, typeStorageWidth);
+      return readFlatMap(count, output, typeStorageWidth_);
     }
 
     if (scatterBitmap != nullptr) {
-      return scatteredRead(count, output, typeStorageWidth, scatterBitmap);
+      return scatteredRead(count, output, typeStorageWidth_, scatterBitmap);
     }
 
-    return contiguousRead(count, output, typeStorageWidth);
+    return contiguousRead(count, output, typeStorageWidth_);
   }
 
   void skip(uint32_t /* count */) override {
@@ -161,18 +160,11 @@ class DeserializerImpl : public Decoder {
     if (data.empty()) {
       return;
     }
-    // Get the ScalarKind for proper decoding based on type.
-    // - Scalar: use the descriptor's scalarKind
-    // - Row/FlatMap: nulls streams are boolean
-    // - Array/Map: lengths streams are uint32_t
-    // - String/Binary: handled separately (no nimble encoding)
-    const ScalarKind scalarKind = getScalarKindForType(*type_);
-    NIMBLE_CHECK_NE(scalarKind, ScalarKind::Undefined);
     batchSegments_.emplace_back(
         BatchSegment{
             rowOffset,
             serde::StreamData(
-                scalarKind,
+                scalarKind_,
                 encodingEnabled_,
                 useVarintRowCount_,
                 data,
@@ -511,6 +503,9 @@ class DeserializerImpl : public Decoder {
   const bool encodingEnabled_;
   // Whether encoding headers use varint (true) or fixed u32 (false) row counts.
   const bool useVarintRowCount_;
+  // Cached from type at construction to avoid per-call dispatch.
+  const ScalarKind scalarKind_;
+  const uint32_t typeStorageWidth_;
 
   // --- Batch decode state (reset in clear()) ---
   // Total top-level rows across all batches. Used for FlatMap gap detection to
@@ -623,8 +618,22 @@ Deserializer::Deserializer(
     createDeserializersForType(type, depth);
   });
 
-  rootReader_ = rootFactory_->createReader(deserializers_);
+  rootReader_ = rootFactory_->createReader(deserializerMap_);
   inputBuffer_.resize(1);
+
+  // Build flat vector for O(1) stream offset lookup during deserialize().
+  uint32_t maxOffset = 0;
+  for (const auto& [offset, _] : deserializerMap_) {
+    maxOffset = std::max(maxOffset, offset);
+  }
+  deserializers_.resize(maxOffset + 1, nullptr);
+  for (auto& [offset, decoder] : deserializerMap_) {
+    deserializers_[offset] = decoder.get();
+  }
+  // Size inMapPresentOffsets_ to match for flatmap present tracking.
+  if (!inMapChildTypes_.empty()) {
+    inMapPresentOffsets_.resize(maxOffset + 1, false);
+  }
 }
 
 void Deserializer::createDeserializersForType(
@@ -633,7 +642,7 @@ void Deserializer::createDeserializersForType(
   const bool enableEncoding = options_.enableEncoding();
   const bool useVarintRowCount =
       !isTabletRawFormat(options_.serializationVersion());
-  deserializers_[getMainDescriptor(type).offset()] =
+  deserializerMap_[getMainDescriptor(type).offset()] =
       std::make_unique<DeserializerImpl>(
           &type,
           /*inMapStream=*/false,
@@ -649,7 +658,7 @@ void Deserializer::createDeserializersForType(
     auto& flatMap = type.asFlatMap();
     for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
       const auto inMapOffset = flatMap.inMapDescriptorAt(i).offset();
-      deserializers_[inMapOffset] = std::make_unique<DeserializerImpl>(
+      deserializerMap_[inMapOffset] = std::make_unique<DeserializerImpl>(
           &type,
           /*inMapStream=*/true,
           enableEncoding,
@@ -670,10 +679,11 @@ void Deserializer::deserialize(
     const std::vector<std::string_view>& data,
     velox::VectorPtr& vector) const {
   // Clear deserializer state from previous calls.
-  for (auto& [_, deserializer] : deserializers_) {
-    DeserializerImpl::toDecoderImpl(deserializer.get())->clear();
+  for (auto& [_, decoder] : deserializerMap_) {
+    DeserializerImpl::toDecoderImpl(decoder.get())->clear();
   }
-  presentStreamOffsets_.reserve(deserializers_.size());
+  const bool hasInMapChildren = !inMapChildTypes_.empty();
+  const auto maxStreamOffset = deserializers_.size() - 1;
 
   // Iterate batches and add stream data with row offsets. Streams missing from
   // a batch will have gaps that are filled later during reading.
@@ -681,25 +691,34 @@ void Deserializer::deserialize(
   serde::StreamDataReader reader{pool_, options_};
   for (auto sv : data) {
     const auto batchRows = reader.initialize(sv);
-    presentStreamOffsets_.clear();
-    reader.iterateStreams([&](uint32_t offset, std::string_view streamData) {
-      if (!inMapChildTypes_.empty()) {
-        presentStreamOffsets_.insert(offset);
+    // Reset present tracking from previous batch.
+    if (hasInMapChildren && !inMapPresentOffsetsList_.empty()) {
+      for (auto off : inMapPresentOffsetsList_) {
+        inMapPresentOffsets_[off] = false;
       }
-      auto it = deserializers_.find(offset);
-      if (it != deserializers_.end()) {
-        DeserializerImpl::toDecoderImpl(it->second.get())
-            ->addBatch(rowOffset, streamData);
+      inMapPresentOffsetsList_.clear();
+    }
+    reader.iterateStreams([&](uint32_t offset, std::string_view streamData) {
+      if (offset <= maxStreamOffset) {
+        if (hasInMapChildren) {
+          inMapPresentOffsets_[offset] = true;
+          inMapPresentOffsetsList_.push_back(offset);
+        }
+        auto* decoder = deserializers_[offset];
+        if (decoder != nullptr) {
+          DeserializerImpl::toDecoderImpl(decoder)->addBatch(
+              rowOffset, streamData);
+        }
       }
     });
 
     // Detect present in-map streams: in-map skipped + value streams present.
     for (const auto& [inMapOffset, childType] : inMapChildTypes_) {
-      if (!presentStreamOffsets_.contains(inMapOffset) &&
+      if (!inMapPresentOffsets_[inMapOffset] &&
           hasValueStreams(*childType, [&](offset_size offset) {
-            return presentStreamOffsets_.contains(offset);
+            return offset <= maxStreamOffset && inMapPresentOffsets_[offset];
           })) {
-        DeserializerImpl::toDecoderImpl(deserializers_[inMapOffset].get())
+        DeserializerImpl::toDecoderImpl(deserializers_[inMapOffset])
             ->addPresentInMapSegment(rowOffset, batchRows);
       }
     }
@@ -708,9 +727,8 @@ void Deserializer::deserialize(
   }
 
   // Set total top-level rows so deserializers can fill missing FlatMap data.
-  for (auto& [_, deserializer] : deserializers_) {
-    DeserializerImpl::toDecoderImpl(deserializer.get())
-        ->setTopLevelRows(rowOffset);
+  for (auto& [_, decoder] : deserializerMap_) {
+    DeserializerImpl::toDecoderImpl(decoder.get())->setTopLevelRows(rowOffset);
   }
 
   rootReader_->next(rowOffset, vector, /*scatterBitmap=*/nullptr);
