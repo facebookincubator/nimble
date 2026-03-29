@@ -24,6 +24,7 @@
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
+#include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
@@ -32,7 +33,13 @@
 #include "folly/executors/CPUThreadPoolExecutor.h"
 #include "velox/common/Casts.h"
 #include "velox/common/base/BitUtil.h"
+#include "velox/common/caching/AsyncDataCache.h"
+#include "velox/common/caching/FileIds.h"
+#include "velox/common/caching/ScanTracker.h"
+#include "velox/common/memory/MallocAllocator.h"
+#include "velox/dwio/common/CachedBufferedInput.h"
 #include "velox/dwio/common/ColumnSelector.h"
+#include "velox/dwio/common/DirectBufferedInput.h"
 #include "velox/type/CppToType.h"
 #include "velox/type/Type.h"
 #include "velox/vector/BaseVector.h"
@@ -55,7 +62,10 @@ DEFINE_uint32(
     "If provided, this seed will be used when executing tests. "
     "Otherwise, a random seed will be used.");
 
+using nimble::testing::TrackingReadFile;
+
 namespace {
+
 struct VeloxMapGeneratorConfig {
   // A RowType containing a group of map feature column types.
   std::shared_ptr<const velox::RowType> featureTypes;
@@ -417,19 +427,46 @@ std::unordered_set<nimble::offset_size> existingStreamOffsets(
 
 } // namespace
 
-struct VeloxReaderTestParam {
+struct TestParam {
   bool optimizeStringBufferHandling;
   bool skipConstantFlatMapInMapStreams;
+  bool enableCache{false};
+  bool pinFileMetadata{false};
 
   std::string debugString() const {
     return fmt::format(
-        "optimizeStringBuffer_{}_skipConstantInMap_{}",
+        "optimizeStringBuffer_{}_skipConstantInMap_{}_cache_{}_pinMetadata_{}",
         optimizeStringBufferHandling,
-        skipConstantFlatMapInMapStreams);
+        skipConstantFlatMapInMapStreams,
+        enableCache,
+        pinFileMetadata);
   }
 };
 
-class VeloxReaderTest : public ::testing::TestWithParam<VeloxReaderTestParam> {
+class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
+ public:
+  static std::vector<TestParam> getTestParams() {
+    std::vector<TestParam> params;
+    for (bool cache : {false, true}) {
+      for (bool pin : {false, true}) {
+        if (!cache && !pin) {
+          // Base case: test all combinations of the first two bools.
+          for (bool optimize : {false, true}) {
+            for (bool skip : {false, true}) {
+              params.emplace_back(TestParam{optimize, skip, cache, pin});
+            }
+          }
+        } else {
+          // Cache/pin modes: test with both false and both true for the
+          // first two bools to keep the test matrix manageable.
+          params.emplace_back(TestParam{false, false, cache, pin});
+          params.emplace_back(TestParam{true, true, cache, pin});
+        }
+      }
+    }
+    return params;
+  }
+
  protected:
   static void SetUpTestCase() {
     velox::memory::MemoryManager::testingSetInstance(
@@ -439,6 +476,25 @@ class VeloxReaderTest : public ::testing::TestWithParam<VeloxReaderTestParam> {
   void SetUp() override {
     rootPool_ = velox::memory::memoryManager()->addRootPool("default_root");
     leafPool_ = rootPool_->addLeafChild("default_leaf");
+    ioStatistics_ = std::make_shared<velox::io::IoStatistics>();
+    scanTracker_ = std::make_shared<velox::cache::ScanTracker>(
+        "testTracker", nullptr, 256 << 10);
+    ioExecutor_ = std::make_unique<folly::CPUThreadPoolExecutor>(10);
+    if (GetParam().enableCache) {
+      allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+          velox::memory::MemoryAllocator::Options{
+              .capacity = 512 << 20, .reservationByteLimit = 0});
+      cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+    }
+  }
+
+  void TearDown() override {
+    ioExecutor_.reset();
+    if (cache_ != nullptr) {
+      cache_->shutdown();
+    }
+    cache_.reset();
+    allocator_.reset();
   }
 
   bool optimizeStringBufferHandling() const {
@@ -447,6 +503,74 @@ class VeloxReaderTest : public ::testing::TestWithParam<VeloxReaderTestParam> {
 
   bool skipConstantFlatMapInMapStreams() const {
     return GetParam().skipConstantFlatMapInMapStreams;
+  }
+
+  bool enableCache() const {
+    return GetParam().enableCache;
+  }
+
+  bool pinFileMetadata() const {
+    return GetParam().pinFileMetadata;
+  }
+
+  // Creates a TabletReader with cache options applied.
+  std::shared_ptr<nimble::TabletReader> createTablet(
+      std::shared_ptr<velox::ReadFile> readFile,
+      velox::memory::MemoryPool* pool) {
+    nimble::TabletReader::Options tabletOptions;
+    tabletOptions.pinFileMetadata = pinFileMetadata();
+    if (enableCache() || pinFileMetadata()) {
+      auto& ids = velox::fileIds();
+      auto fileIdStr = fmt::format("testFile_{}", nextFileId_++);
+      velox::StringIdLease fileId(ids, fileIdStr);
+      velox::StringIdLease groupId(ids, "testGroup");
+      velox::io::ReaderOptions ioReaderOpts(pool);
+      if (cache_ != nullptr) {
+        cachedInput_ =
+            std::make_unique<velox::dwio::common::CachedBufferedInput>(
+                readFile,
+                velox::dwio::common::MetricsLog::voidLog(),
+                std::move(fileId),
+                cache_.get(),
+                scanTracker_,
+                std::move(groupId),
+                ioStatistics_,
+                nullptr, // ioStats
+                ioExecutor_.get(),
+                ioReaderOpts);
+      } else {
+        cachedInput_ =
+            std::make_unique<velox::dwio::common::DirectBufferedInput>(
+                readFile,
+                velox::dwio::common::MetricsLog::voidLog(),
+                std::move(fileId),
+                scanTracker_,
+                std::move(groupId),
+                ioStatistics_,
+                nullptr, // ioStats
+                ioExecutor_.get(),
+                ioReaderOpts);
+      }
+      tabletOptions.bufferedInput = cachedInput_.get();
+    }
+    return nimble::TabletReader::create(readFile.get(), pool, tabletOptions);
+  }
+
+  // Creates a VeloxReader with cache support when enabled.
+  std::unique_ptr<nimble::VeloxReader> createVeloxReader(
+      std::shared_ptr<velox::ReadFile> readFile,
+      velox::memory::MemoryPool& pool,
+      std::shared_ptr<const velox::dwio::common::ColumnSelector> selector =
+          nullptr,
+      nimble::VeloxReadParams params = {}) {
+    params = configureWithTestParam(std::move(params));
+    if (enableCache() || pinFileMetadata()) {
+      auto tablet = createTablet(readFile, &pool);
+      return std::make_unique<nimble::VeloxReader>(
+          std::move(tablet), pool, std::move(selector), std::move(params));
+    }
+    return std::make_unique<nimble::VeloxReader>(
+        readFile.get(), pool, std::move(selector), std::move(params));
   }
 
   nimble::VeloxWriterOptions createFlatMapWriterOptions() const {
@@ -712,7 +836,7 @@ class VeloxReaderTest : public ::testing::TestWithParam<VeloxReaderTestParam> {
     auto expected = writeFile(
         rng, type, generatorWithIndex, batchCount, file, writerOptions);
 
-    velox::InMemoryReadFile readFile(file);
+    auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
     auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
     // new pool with to limit already used memory and with tracking enabled
     auto leakDetectPool =
@@ -720,15 +844,15 @@ class VeloxReaderTest : public ::testing::TestWithParam<VeloxReaderTestParam> {
             "memory_leak_detect");
     auto readerPool = leakDetectPool->addLeafChild("reader_pool");
 
-    nimble::VeloxReader reader(
-        &readFile, *readerPool.get(), selector, readParams);
+    auto reader =
+        createVeloxReader(readFile, *readerPool, selector, readParams);
     if (folly::Random::oneIn(2, rng)) {
       LOG(INFO) << "using executor";
       readParams.decodingExecutor =
           std::make_shared<folly::CPUThreadPoolExecutor>(1);
     }
 
-    auto rootTypeFromSchema = convertToVeloxType(*reader.schema());
+    auto rootTypeFromSchema = convertToVeloxType(*reader->schema());
     EXPECT_EQ(*type, *rootTypeFromSchema)
         << "Expected: " << type->toString()
         << ", actual: " << rootTypeFromSchema->toString();
@@ -737,7 +861,7 @@ class VeloxReaderTest : public ::testing::TestWithParam<VeloxReaderTestParam> {
     velox::vector_size_t numIncrements = 0, prevMemory = 0;
     for (auto i = 0; i < expected.size(); ++i) {
       auto& current = expected.at(i);
-      ASSERT_TRUE(reader.next(current->size(), result));
+      ASSERT_TRUE(reader->next(current->size(), result));
       ASSERT_EQ(result->size(), current->size());
       if (comparator) {
         comparator(result);
@@ -755,8 +879,8 @@ class VeloxReaderTest : public ::testing::TestWithParam<VeloxReaderTestParam> {
 
       // validate skip
       if (i % 2 == 0) {
-        nimble::VeloxReader reader1(&readFile, pool, selector, readParams);
-        nimble::VeloxReader reader2(&readFile, pool, selector, readParams);
+        auto reader1 = createVeloxReader(readFile, pool, selector, readParams);
+        auto reader2 = createVeloxReader(readFile, pool, selector, readParams);
         auto rowCount = expected.at(0)->size();
         velox::vector_size_t remaining = rowCount;
         uint32_t skipCount = 0;
@@ -764,14 +888,14 @@ class VeloxReaderTest : public ::testing::TestWithParam<VeloxReaderTestParam> {
           auto toSkip = folly::Random::rand32(1, remaining, rng);
           velox::VectorPtr result1;
           velox::VectorPtr result2;
-          reader1.next(toSkip, result1);
-          reader2.skipRows(toSkip);
+          reader1->next(toSkip, result1);
+          reader2->skipRows(toSkip);
           remaining -= toSkip;
 
           if (remaining > 0) {
             auto toRead = folly::Random::rand32(1, remaining, rng);
-            reader1.next(toRead, result1);
-            reader2.next(toRead, result2);
+            reader1->next(toRead, result1);
+            reader2->next(toRead, result2);
 
             ASSERT_EQ(result1->size(), result2->size());
 
@@ -796,7 +920,7 @@ class VeloxReaderTest : public ::testing::TestWithParam<VeloxReaderTestParam> {
       }
       prevMemory = readerPool->usedBytes();
     }
-    ASSERT_FALSE(reader.next(1, result));
+    ASSERT_FALSE(reader->next(1, result));
     if (checkMemoryLeak) {
       EXPECT_LE(numIncrements, 3 * expected.size() / 4);
     }
@@ -1243,6 +1367,16 @@ class VeloxReaderTest : public ::testing::TestWithParam<VeloxReaderTestParam> {
 
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
+
+  // Cache infrastructure (only initialized when enableCache is true).
+  std::shared_ptr<velox::memory::MallocAllocator> allocator_;
+  std::shared_ptr<velox::cache::AsyncDataCache> cache_;
+  std::shared_ptr<velox::io::IoStatistics> ioStatistics_;
+  std::shared_ptr<velox::cache::ScanTracker> scanTracker_;
+  std::unique_ptr<folly::CPUThreadPoolExecutor> ioExecutor_;
+  // Held alive for the duration of createTablet/createVeloxReader.
+  std::unique_ptr<velox::dwio::common::BufferedInput> cachedInput_;
+  uint64_t nextFileId_{0};
 };
 
 TEST_P(VeloxReaderTest, dontReadUnselectedColumnsFromFile) {
@@ -6776,14 +6910,73 @@ TEST_P(VeloxReaderTest, timestampLargeRowCount) {
   ASSERT_EQ(totalReads, rowCount);
 }
 
+// Verifies that when pinFileMetadata is true and cache is disabled, the
+// second pass of reading does not re-read metadata from the file. Uses
+// TrackingReadFile to record the max read offset and checks it stays below the
+// metadata boundary (stripe group offset).
+TEST_P(VeloxReaderTest, pinnedMetadataNoReread) {
+  if (!pinFileMetadata()) {
+    GTEST_SKIP() << "Only applicable when pinFileMetadata is enabled";
+  }
+
+  velox::test::VectorMaker vectorMaker(leafPool_.get());
+  auto data = vectorMaker.flatVector<int64_t>(100, [](auto i) { return i; });
+  auto input = vectorMaker.rowVector({data});
+  auto file = nimble::test::createNimbleFile(*rootPool_, input);
+
+  auto delegate = std::make_shared<velox::InMemoryReadFile>(file);
+  auto trackingFile = std::make_shared<TrackingReadFile>(delegate);
+
+  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
+      std::dynamic_pointer_cast<const velox::RowType>(input->type()));
+
+  // Create a single TabletReader with pinFileMetadata so metadata is pinned
+  // after first access and shared across readers.
+  auto tablet = createTablet(trackingFile, leafPool_.get());
+  auto readParams = createReadParams();
+  auto reader = std::make_unique<nimble::VeloxReader>(
+      tablet, *leafPool_, selector, readParams);
+
+  // First pass: reads both data and metadata from the file.
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader->next(100, result));
+  ASSERT_EQ(result->size(), 100);
+  ASSERT_FALSE(reader->next(1, result));
+
+  // Get the metadata boundary. Stripe group metadata starts right after the
+  // last stripe's data. Any read at or above this offset is a metadata read.
+  const auto stripeGroupsMeta = tablet->stripeGroupsMetadata();
+  ASSERT_EQ(stripeGroupsMeta.size(), 1);
+  const auto metadataBoundary = stripeGroupsMeta[0].offset();
+
+  // Verify: first pass reads metadata (above boundary), confirming the file
+  // layout is correct and the tracking works.
+  ASSERT_GT(trackingFile->maxReadOffset(), metadataBoundary)
+      << "First pass should read metadata from the file. "
+      << "maxReadOffset=" << trackingFile->maxReadOffset()
+      << " metadataBoundary=" << metadataBoundary;
+
+  // Reset tracking and do a second pass with a new reader using the same
+  // tablet (metadata should already be pinned).
+  trackingFile->resetMaxReadOffset();
+  auto reader2 = std::make_unique<nimble::VeloxReader>(
+      tablet, *leafPool_, selector, readParams);
+  ASSERT_TRUE(reader2->next(100, result));
+  ASSERT_EQ(result->size(), 100);
+  ASSERT_FALSE(reader2->next(1, result));
+
+  // Verify: second-pass reads should only access data (below metadata
+  // boundary). With pinFileMetadata, all metadata is pinned in memory.
+  ASSERT_LE(trackingFile->maxReadOffset(), metadataBoundary)
+      << "Second pass should not re-read metadata from the file. "
+      << "maxReadOffset=" << trackingFile->maxReadOffset()
+      << " metadataBoundary=" << metadataBoundary;
+}
+
 INSTANTIATE_TEST_SUITE_P(
     VeloxReaderTestSuite,
     VeloxReaderTest,
-    ::testing::Values(
-        VeloxReaderTestParam{false, false},
-        VeloxReaderTestParam{true, false},
-        VeloxReaderTestParam{false, true},
-        VeloxReaderTestParam{true, true}),
-    [](const ::testing::TestParamInfo<VeloxReaderTestParam>& info) {
+    ::testing::ValuesIn(VeloxReaderTest::getTestParams()),
+    [](const ::testing::TestParamInfo<TestParam>& info) {
       return info.param.debugString();
     });

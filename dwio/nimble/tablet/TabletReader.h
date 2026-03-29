@@ -29,6 +29,7 @@
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
+#include "dwio/nimble/tablet/MetadataCache.h"
 #include "folly/Synchronized.h"
 #include "velox/common/file/File.h"
 #include "velox/dwio/common/MetricsLog.h"
@@ -68,70 +69,6 @@ class StreamLoader {
  public:
   virtual ~StreamLoader() = default;
   virtual const std::string_view getStream() const = 0;
-};
-
-template <typename Key, typename Value>
-class ReferenceCountedCache {
- public:
-  using BuilderCallback = std::function<std::shared_ptr<Value>(Key)>;
-
-  explicit ReferenceCountedCache(BuilderCallback builder)
-      : builder_{std::move(builder)} {}
-
-  std::shared_ptr<Value> get(Key key) {
-    return getPopulatedCacheEntry(key, builder_);
-  }
-
-  std::shared_ptr<Value> get(Key key, const BuilderCallback& builder) {
-    return getPopulatedCacheEntry(key, builder);
-  }
-
-  /// Returns the number of non-expired cached entries for testing purposes.
-  size_t testingCachedCount() const {
-    size_t count = 0;
-    auto rlockedCache = cache_.rlock();
-    for (const auto& [key, entry] : *rlockedCache) {
-      if (!entry.rlock()->expired()) {
-        ++count;
-      }
-    }
-    return count;
-  }
-
-  /// Returns whether the given key has a non-expired cached entry.
-  bool hasCachedEntry(Key key) const {
-    auto rlockedCache = cache_.rlock();
-    auto it = rlockedCache->find(key);
-    if (it == rlockedCache->end()) {
-      return false;
-    }
-    return !it->second.rlock()->expired();
-  }
-
- private:
-  folly::Synchronized<std::weak_ptr<Value>>& getCacheEntry(Key key) {
-    return cache_.wlock()->emplace(key, std::weak_ptr<Value>()).first->second;
-  }
-
-  std::shared_ptr<Value> getPopulatedCacheEntry(
-      Key key,
-      const BuilderCallback& builder) {
-    auto& entry = getCacheEntry(key);
-    auto wlockedEntry = entry.wlock();
-    auto sharedPtr = wlockedEntry->lock();
-    if (sharedPtr != nullptr) {
-      return sharedPtr;
-    }
-    auto element = builder(key);
-    std::weak_ptr<Value>(element).swap(*wlockedEntry);
-    NIMBLE_DCHECK(!wlockedEntry->expired(), "Shouldn't be expired");
-    return element;
-  }
-
-  const BuilderCallback builder_;
-  folly::Synchronized<
-      std::unordered_map<Key, folly::Synchronized<std::weak_ptr<Value>>>>
-      cache_;
 };
 
 class StripeGroup {
@@ -236,10 +173,18 @@ class TabletReader {
     /// Whether to load the chunk index during initialization. Default true.
     bool loadChunkIndex{true};
 
-    /// Non-owning pointer for cached reads. When provided, metadata reads
-    /// go through BufferedInput for cache integration. Owned by caller
-    /// (typically nimble::ReaderBase).
+    /// Non-owning pointer to a BufferedInput for metadata reads. When set,
+    /// TabletReader clones this internally for its own metadata IO. When
+    /// pinFileMetadata is enabled with a CachedBufferedInput, a
+    /// non-cacheable clone is created so AsyncDataCache does not retain raw
+    /// metadata bytes (MetadataCache already pins parsed objects).
     velox::dwio::common::BufferedInput* bufferedInput{nullptr};
+
+    /// If true, pins parsed metadata objects (StripeGroup, ClusterIndexGroup,
+    /// ChunkIndexGroup) in the cache with strong references so they are never
+    /// evicted. This avoids re-reading and re-parsing metadata on every stripe
+    /// access when the weak-pointer cache entries would otherwise expire.
+    bool pinFileMetadata{false};
   };
 
   /// Compute checksum from the beginning of the file all the way to footer
@@ -260,9 +205,8 @@ class TabletReader {
   create(velox::ReadFile* readFile, MemoryPool* pool, const Options& options);
 
   /// Configures TabletReader::Options from Velox ReaderOptions.
-  /// @param options The Velox reader options.
-  /// @param bufferedInput Optional BufferedInput for metadata caching
-  ///        (only used when options.fileMetadataCacheEnabled() is true).
+  /// @param bufferedInput Optional BufferedInput pointer to set on the
+  ///        returned Options for metadata reads.
   static Options configureOptions(
       const velox::dwio::common::ReaderOptions& options,
       velox::dwio::common::BufferedInput* bufferedInput = nullptr);
@@ -475,8 +419,8 @@ class TabletReader {
 
   std::shared_ptr<StripeGroup> loadStripeGroup(uint32_t stripeGroupIndex) const;
 
-  // Eagerly caches the first stripe group if it's already in the footer IOBuf.
-  // Skipped when cache is present — on-demand reads will hit the cache.
+  // Eagerly pins the first stripe group if it's already in the footer IOBuf.
+  // Pinning saves deserialization cost on subsequent accesses.
   void preloadStripeGroup(const folly::IOBuf& footerIoBuf);
 
   // Index.
@@ -494,8 +438,8 @@ class TabletReader {
   std::shared_ptr<ClusterIndexGroup> loadClusterIndexGroup(
       uint32_t stripeGroupIndex) const;
 
-  // Eagerly caches the first cluster index group if it's already in the footer
-  // IOBuf. Skipped when cache is present — on-demand reads will hit the cache.
+  // Eagerly pins the first cluster index group if it's already in the footer
+  // IOBuf. Pinning saves deserialization cost on subsequent accesses.
   void preloadClusterIndex(const folly::IOBuf& footerIoBuf);
 
   // Holds the result of a coalesced metadata load for a stripe group.
@@ -536,7 +480,8 @@ class TabletReader {
   // BufferedInput coalesced IO.
   //
   // Holds a section enqueued for coalesced IO via BufferedInput.
-  // After bufferedInput_->load(), the stream can be read to get section data.
+  // After metadataBufferedInput_->load(), the stream can be read to get section
+  // data.
   struct EnqueuedSection {
     std::string name;
     MetadataSection section;
@@ -549,17 +494,18 @@ class TabletReader {
   void loadStripesAndSections(const Options& options);
 
   // Enqueues a read for the stripes section via BufferedInput. Returns nullopt
-  // if no stripes (empty file). Caller must call bufferedInput_->load() after.
+  // if no stripes (empty file). Caller must call metadataBufferedInput_->load()
+  // after.
   std::optional<EnqueuedSection> enqueueStripesSection();
 
   // Enqueues reads for the given optional section names via BufferedInput.
   // Skips names not found in optionalSections_. Caller must call
-  // bufferedInput_->load() after this to execute the coalesced IO.
+  // metadataBufferedInput_->load() after this to execute the coalesced IO.
   std::vector<EnqueuedSection> enqueueOptionalSections(
       const std::vector<std::string>& sectionNames);
 
   // Reads enqueued sections and inserts them into optionalSectionsCache_.
-  // Must be called after bufferedInput_->load().
+  // Must be called after metadataBufferedInput_->load().
   void loadEnqueuedOptionalSections(std::vector<EnqueuedSection>&& sections);
 
   // Low-level IO.
@@ -584,8 +530,8 @@ class TabletReader {
   std::shared_ptr<ChunkIndexGroup> loadChunkIndexGroup(
       uint32_t stripeGroupIndex) const;
 
-  // Eagerly caches the first chunk index group if it's already in the footer
-  // IOBuf. Skipped when cache is present — on-demand reads will hit the cache.
+  // Eagerly pins the first chunk index group if it's already in the footer
+  // IOBuf. Pinning saves deserialization cost on subsequent accesses.
   void preloadChunkIndex(const folly::IOBuf& footerIoBuf);
 
   // Computes first stripe index for the given stripe group.
@@ -601,22 +547,18 @@ class TabletReader {
   // Optional owned file pointer. When provided, ensures the file remains
   // valid throughout TabletReader's lifetime.
   const std::shared_ptr<velox::ReadFile> ownedFile_;
-  // Optional BufferedInput for cached reads (non-owning, owned by caller).
-  // When set, metadata reads (stripe groups, index groups) go through
-  // BufferedInput for cache integration.
-  velox::dwio::common::BufferedInput* const bufferedInput_;
+  // Owned BufferedInput clone for metadata reads. Created by cloning
+  // options.bufferedInput during construction. When pinFileMetadata is
+  // enabled with CachedBufferedInput, uses a non-cacheable clone.
+  const std::unique_ptr<velox::dwio::common::BufferedInput> metadataInput_;
+  velox::dwio::common::BufferedInput* const metadataBufferedInput_;
 
   uint64_t fileSize_{0};
   Postscript ps_;
   std::unique_ptr<MetadataBuffer> footer_;
   std::unique_ptr<MetadataBuffer> stripes_;
 
-  mutable ReferenceCountedCache<uint32_t, StripeGroup> stripeGroupCache_;
-  // Holds a strong reference to the first stripe group when preloaded from the
-  // footer IO. This prevents the first stripe group from being garbage
-  // collected when it's the only stripe group (common case). Reset when loading
-  // a different stripe group.
-  mutable folly::Synchronized<std::shared_ptr<StripeGroup>> firstStripeGroup_;
+  mutable MetadataCache<uint32_t, StripeGroup> stripeGroupCache_;
 
   uint64_t tabletRowCount_{0};
   uint32_t stripeCount_{0};
@@ -625,22 +567,11 @@ class TabletReader {
 
   // Index related fields.
   std::unique_ptr<ClusterIndex> clusterIndex_;
-  mutable ReferenceCountedCache<uint32_t, ClusterIndexGroup> clusterIndexCache_;
-  // Holds a strong reference to the first cluster index group when preloaded
-  // from the footer IO. This prevents it from being garbage collected when it's
-  // the only index group (common case). Reset when loading a different group.
-  mutable folly::Synchronized<std::shared_ptr<ClusterIndexGroup>>
-      firstClusterIndexGroup_;
+  mutable MetadataCache<uint32_t, ClusterIndexGroup> clusterIndexCache_;
 
   // Chunk index root, loaded from "chunk_index" optional section.
   std::unique_ptr<ChunkIndex> chunkIndex_;
-  mutable ReferenceCountedCache<uint32_t, ChunkIndexGroup> chunkIndexCache_;
-  // Holds a strong reference to the first chunk index group when preloaded
-  // from the footer IO. This prevents it from being garbage collected when it's
-  // the only chunk index group (common case). Reset when loading a different
-  // group.
-  mutable folly::Synchronized<std::shared_ptr<ChunkIndexGroup>>
-      firstChunkIndexGroup_;
+  mutable MetadataCache<uint32_t, ChunkIndexGroup> chunkIndexCache_;
 
   std::unordered_map<std::string, MetadataSection> optionalSections_;
   mutable folly::Synchronized<

@@ -14,9 +14,18 @@
  * limitations under the License.
  */
 
+#include <folly/executors/CPUThreadPoolExecutor.h>
+
+#include <utility>
+
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
+#include "velox/common/caching/AsyncDataCache.h"
+#include "velox/common/caching/FileIds.h"
+#include "velox/common/caching/ScanTracker.h"
+#include "velox/common/memory/MallocAllocator.h"
+#include "velox/dwio/common/CachedBufferedInput.h"
 #include "velox/dwio/common/tests/utils/E2EFilterTestBase.h"
 
 namespace facebook::nimble {
@@ -24,27 +33,33 @@ namespace {
 
 using namespace facebook::velox;
 
-using E2EFilterTestParams = std::tuple<bool, bool, bool, bool>;
+using E2EFilterTestParams = std::tuple<bool, bool, bool, bool, bool, bool>;
 
 struct E2EFilterTestParam {
   bool indexEnabled;
   bool skipConstantFlatMapInMapStreams;
   bool enableChunkIndex;
   bool stringBufferOptimized;
+  bool pinFileMetadata;
+  bool enableCache;
 
   explicit E2EFilterTestParam(const E2EFilterTestParams& t)
       : indexEnabled{std::get<0>(t)},
         skipConstantFlatMapInMapStreams{std::get<1>(t)},
         enableChunkIndex{std::get<2>(t)},
-        stringBufferOptimized{std::get<3>(t)} {}
+        stringBufferOptimized{std::get<3>(t)},
+        pinFileMetadata{std::get<4>(t)},
+        enableCache{std::get<5>(t)} {}
 
   std::string debugString() const {
     return fmt::format(
-        "index_{}_skipConstantInMap_{}_chunkIndex_{}_stringBufferOptimized_{}",
+        "index_{}_skipConstantInMap_{}_chunkIndex_{}_stringBufferOptimized_{}_pinMetadata_{}_cache_{}",
         indexEnabled,
         skipConstantFlatMapInMapStreams,
         enableChunkIndex,
-        stringBufferOptimized);
+        stringBufferOptimized,
+        pinFileMetadata,
+        enableCache);
   }
 };
 
@@ -57,11 +72,30 @@ class E2EFilterTest
     registerSelectiveNimbleReaderFactory();
   }
 
-  void SetUp() final {
+  void SetUp() override {
     E2EFilterTestBase::SetUp();
     batchSize_ = 2003;
     batchCount_ = 5;
     testRowGroupSkip_ = false;
+    if (param().enableCache) {
+      allocator_ = std::make_shared<memory::MallocAllocator>(
+          memory::MemoryAllocator::Options{
+              .capacity = 512 << 20, .reservationByteLimit = 0});
+      cache_ = cache::AsyncDataCache::create(allocator_.get());
+      cacheIoStatistics_ = std::make_shared<io::IoStatistics>();
+      scanTracker_ = std::make_shared<cache::ScanTracker>(
+          "testTracker", nullptr, 256 << 10);
+      ioExecutor_ = std::make_unique<folly::CPUThreadPoolExecutor>(10);
+    }
+  }
+
+  void TearDown() override {
+    ioExecutor_.reset();
+    if (cache_ != nullptr) {
+      cache_->shutdown();
+    }
+    cache_.reset();
+    allocator_.reset();
   }
 
   E2EFilterTestParam param() const {
@@ -226,6 +260,10 @@ class E2EFilterTest
       bool forRowGroupSkip,
       const std::vector<std::string>& indexColumns = {}) override {
     VELOX_CHECK(!forRowGroupSkip);
+    // Clear cached IO data from previous writes to avoid stale cache entries.
+    if (cache_ != nullptr) {
+      cache_->clear();
+    }
     rowType_ = asRowType(type);
     writeSchema_ = rowType_;
     VeloxWriterOptions options;
@@ -279,9 +317,29 @@ class E2EFilterTest
   std::unique_ptr<dwio::common::Reader> makeReader(
       const dwio::common::ReaderOptions& opts,
       std::unique_ptr<dwio::common::BufferedInput> input) final {
+    auto readerOpts = opts;
+    readerOpts.setPinFileMetadata(param().pinFileMetadata);
+    if (param().enableCache) {
+      auto readFile = std::make_shared<InMemoryReadFile>(sinkData_);
+      auto& ids = fileIds();
+      StringIdLease fileId(ids, "testFile");
+      StringIdLease groupId(ids, "testGroup");
+      io::ReaderOptions cacheReaderOpts(&readerOpts.memoryPool());
+      input = std::make_unique<dwio::common::CachedBufferedInput>(
+          std::move(readFile),
+          dwio::common::MetricsLog::voidLog(),
+          std::move(fileId),
+          cache_.get(),
+          scanTracker_,
+          std::move(groupId),
+          cacheIoStatistics_,
+          nullptr,
+          ioExecutor_.get(),
+          cacheReaderOpts);
+    }
     auto factory =
         dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
-    return factory->createReader(std::move(input), opts);
+    return factory->createReader(std::move(input), readerOpts);
   }
 
   folly::F14FastSet<std::string> flatMapColumns_;
@@ -292,6 +350,13 @@ class E2EFilterTest
   // When set, writeToMemory will use these factors instead of the default
   // encoding selection policy. Clear after test to avoid affecting other tests.
   std::optional<std::vector<std::pair<EncodingType, float>>> encodingFactors_;
+
+  // Cache infrastructure (only initialized when enableCache is true).
+  std::shared_ptr<memory::MallocAllocator> allocator_;
+  std::shared_ptr<cache::AsyncDataCache> cache_;
+  std::shared_ptr<io::IoStatistics> cacheIoStatistics_;
+  std::shared_ptr<cache::ScanTracker> scanTracker_;
+  std::unique_ptr<folly::CPUThreadPoolExecutor> ioExecutor_;
 
   // Generates encoding factors that strongly favor a specific encoding type.
   // Encodings with lower read factors are preferred (factor represents CPU
@@ -1348,6 +1413,8 @@ INSTANTIATE_TEST_SUITE_P(
         testing::Bool(),
         testing::Bool(),
         testing::Bool(),
+        testing::Bool(),
+        testing::Bool(),
         testing::Bool()),
     [](const ::testing::TestParamInfo<E2EFilterTestParams>& info) {
       return E2EFilterTestParam{info.param}.debugString();
@@ -1361,8 +1428,6 @@ INSTANTIATE_TEST_SUITE_P(
 // PrefixEncoding for the string column.
 class PrefixEncodingE2ETest : public E2EFilterTest {
  protected:
-  // Override indexEnabled() to return false since this test uses TEST_F
-  // instead of TEST_P and therefore GetParam() is not available.
   bool indexEnabled() const override {
     return false;
   }
@@ -1384,6 +1449,10 @@ class PrefixEncodingE2ETest : public E2EFilterTest {
       bool forRowGroupSkip,
       const std::vector<std::string>& /*indexColumns*/ = {}) override {
     VELOX_CHECK(!forRowGroupSkip);
+    // Clear cached IO data from previous writes to avoid stale cache entries.
+    if (cache_ != nullptr) {
+      cache_->clear();
+    }
     rowType_ = asRowType(type);
 
     // Create encoding layout tree with prefix encoding for string columns
@@ -1428,7 +1497,21 @@ class PrefixEncodingE2ETest : public E2EFilterTest {
   }
 };
 
-TEST_F(PrefixEncodingE2ETest, withoutFilterOnString) {
+INSTANTIATE_TEST_SUITE_P(
+    PrefixEncodingE2ETests,
+    PrefixEncodingE2ETest,
+    testing::Combine(
+        testing::Bool(),
+        testing::Bool(),
+        testing::Bool(),
+        testing::Bool(),
+        testing::Bool(),
+        testing::Bool()),
+    [](const ::testing::TestParamInfo<E2EFilterTestParams>& info) {
+      return E2EFilterTestParam{info.param}.debugString();
+    });
+
+TEST_P(PrefixEncodingE2ETest, withoutFilterOnString) {
   for (bool withRecursiveNulls : {false, true}) {
     SCOPED_TRACE(fmt::format("withRecursiveNulls={}", withRecursiveNulls));
     testWithTypes(
@@ -1446,7 +1529,7 @@ TEST_F(PrefixEncodingE2ETest, withoutFilterOnString) {
   }
 }
 
-TEST_F(PrefixEncodingE2ETest, filterOnString) {
+TEST_P(PrefixEncodingE2ETest, filterOnString) {
   // Test with filter on both string and integer columns.
   // This tests the skip functionality in readWithVisitor.
   for (bool withRecursiveNulls : {false, true}) {

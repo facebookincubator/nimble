@@ -21,6 +21,7 @@
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
 #include "velox/dwio/common/BufferedInput.h"
+#include "velox/dwio/common/CachedBufferedInput.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 
 #include "folly/io/Cursor.h"
@@ -33,10 +34,37 @@
 
 namespace facebook::nimble {
 
+namespace {
+
+// Tries to create a MetadataBuffer from the footer IO buffer if the metadata
+// section fits within it. Returns nullptr if the section is not contained in
+// the footer buffer.
+std::unique_ptr<MetadataBuffer> tryCreateMetadataBufferFromFooter(
+    velox::memory::MemoryPool& pool,
+    const folly::IOBuf& footerIoBuf,
+    uint64_t fileSize,
+    const MetadataSection& section) {
+  const auto footerSize = footerIoBuf.computeChainDataLength();
+  if (section.offset() + footerSize < fileSize) {
+    return nullptr;
+  }
+  return std::make_unique<MetadataBuffer>(
+      pool,
+      footerIoBuf,
+      section.offset() + footerSize - fileSize,
+      section.size(),
+      section.compressionType());
+}
+
+} // namespace
+
 TabletReader::Options TabletReader::configureOptions(
     const velox::dwio::common::ReaderOptions& options,
     velox::dwio::common::BufferedInput* bufferedInput) {
   Options tabletOptions;
+  if (options.fileMetadataCacheEnabled()) {
+    tabletOptions.bufferedInput = bufferedInput;
+  }
   tabletOptions.maxFooterIoBytes = options.footerSpeculativeIoSize();
   tabletOptions.preloadOptionalSections = {
       std::string(kSchemaSection), std::string(kVectorizedStatsSection)};
@@ -48,9 +76,7 @@ TabletReader::Options TabletReader::configureOptions(
   if (tabletOptions.loadChunkIndex) {
     tabletOptions.preloadOptionalSections.emplace_back(kChunkIndexSection);
   }
-  if (options.fileMetadataCacheEnabled() && bufferedInput != nullptr) {
-    tabletOptions.bufferedInput = bufferedInput;
-  }
+  tabletOptions.pinFileMetadata = options.pinFileMetadata();
   return tabletOptions;
 }
 
@@ -252,7 +278,7 @@ TabletReader::TabletReader(
     : pool_{&pool},
       file_{readFile.get()},
       ownedFile_{std::move(readFile)},
-      bufferedInput_{nullptr},
+      metadataBufferedInput_{nullptr},
       ps_{std::move(postscript)},
       footer_{std::make_unique<MetadataBuffer>(pool, footer)},
       stripes_{std::make_unique<MetadataBuffer>(pool, stripes)},
@@ -265,14 +291,10 @@ TabletReader::TabletReader(
       chunkIndexCache_{[this](uint32_t stripeGroupIndex) {
         return loadChunkIndexGroup(stripeGroupIndex);
       }} {
-  auto stripeGroupPtr =
-      stripeGroupCache_.get(0, [this, stripeGroup](uint32_t stripeGroupIndex) {
-        return std::make_shared<StripeGroup>(
-            stripeGroupIndex,
-            *stripes_,
-            std::make_unique<MetadataBuffer>(*pool_, stripeGroup));
-      });
-  *firstStripeGroup_.wlock() = std::move(stripeGroupPtr);
+  stripeGroupCache_.pin(
+      0,
+      std::make_shared<StripeGroup>(
+          0, *stripes_, std::make_unique<MetadataBuffer>(*pool_, stripeGroup)));
   initStripes();
   auto optionalSectionsCacheLock = optionalSectionsCache_.wlock();
   for (auto& pair : optionalSections) {
@@ -280,6 +302,30 @@ TabletReader::TabletReader(
         {pair.first, std::make_unique<MetadataBuffer>(*pool_, pair.second)});
   }
 }
+
+namespace {
+
+// Creates an owned BufferedInput clone for metadata reads. When
+// pinFileMetadata is enabled with CachedBufferedInput, creates a
+// non-cacheable clone so AsyncDataCache does not retain raw metadata
+// bytes (MetadataCache already pins parsed objects). Otherwise, creates
+// a regular clone.
+std::unique_ptr<velox::dwio::common::BufferedInput> createMetadataInput(
+    const TabletReader::Options& options) {
+  if (options.bufferedInput == nullptr) {
+    return nullptr;
+  }
+  if (options.pinFileMetadata) {
+    auto* cachedInput = dynamic_cast<velox::dwio::common::CachedBufferedInput*>(
+        options.bufferedInput);
+    if (cachedInput != nullptr) {
+      return cachedInput->cloneNonCacheable();
+    }
+  }
+  return options.bufferedInput->clone();
+}
+
+} // namespace
 
 TabletReader::TabletReader(
     velox::ReadFile* readFile,
@@ -289,16 +335,23 @@ TabletReader::TabletReader(
     : pool_{&pool},
       file_{readFile},
       ownedFile_{std::move(ownedReadFile)},
-      bufferedInput_{options.bufferedInput},
-      stripeGroupCache_{[this](uint32_t stripeGroupIndex) {
-        return loadStripeGroup(stripeGroupIndex);
-      }},
-      clusterIndexCache_{[this](uint32_t stripeGroupIndex) {
-        return loadClusterIndexGroup(stripeGroupIndex);
-      }},
-      chunkIndexCache_{[this](uint32_t stripeGroupIndex) {
-        return loadChunkIndexGroup(stripeGroupIndex);
-      }} {
+      metadataInput_{createMetadataInput(options)},
+      metadataBufferedInput_{metadataInput_.get()},
+      stripeGroupCache_{
+          [this](uint32_t stripeGroupIndex) {
+            return loadStripeGroup(stripeGroupIndex);
+          },
+          options.pinFileMetadata},
+      clusterIndexCache_{
+          [this](uint32_t stripeGroupIndex) {
+            return loadClusterIndexGroup(stripeGroupIndex);
+          },
+          options.pinFileMetadata},
+      chunkIndexCache_{
+          [this](uint32_t stripeGroupIndex) {
+            return loadChunkIndexGroup(stripeGroupIndex);
+          },
+          options.pinFileMetadata} {
   init(options);
 }
 
@@ -679,13 +732,14 @@ uint32_t TabletReader::stripeGroupIndex(uint32_t stripeIndex) const {
 }
 
 bool TabletReader::hasCache() const {
-  return bufferedInput_ != nullptr && bufferedInput_->hasCache();
+  return metadataBufferedInput_ != nullptr &&
+      metadataBufferedInput_->hasCache();
 }
 
 bool TabletReader::tryLoadAndInitFooterFromCache() {
   // Try to read footer+PS from cache at synthetic offset fileSize_.
   // fileSize_ is a well-known key computable without any file IO.
-  auto cached = bufferedInput_->findCachedRegion(fileSize_);
+  auto cached = metadataBufferedInput_->findCachedRegion(fileSize_);
   if (!cached.has_value()) {
     return false;
   }
@@ -755,7 +809,7 @@ void TabletReader::loadStripesAndSections(const Options& options) {
   auto enqueuedSections = enqueueOptionalSections(preloadSectionNames(options));
 
   // Single load — BufferedInput coalesces adjacent regions.
-  bufferedInput_->load(velox::dwio::common::LogType::FOOTER);
+  metadataBufferedInput_->load(velox::dwio::common::LogType::FOOTER);
 
   loadEnqueuedOptionalSections(std::move(enqueuedSections));
 
@@ -766,9 +820,9 @@ void TabletReader::loadStripesAndSections(const Options& options) {
 std::unique_ptr<MetadataBuffer> TabletReader::readMetadata(
     const MetadataSection& section,
     velox::dwio::common::LogType logType) const {
-  if (bufferedInput_ != nullptr) {
+  if (metadataBufferedInput_ != nullptr) {
     return readMetadata(
-        bufferedInput_->read(section.offset(), section.size(), logType),
+        metadataBufferedInput_->read(section.offset(), section.size(), logType),
         section);
   }
 
@@ -814,9 +868,6 @@ std::shared_ptr<StripeGroup> TabletReader::loadStripeGroup(
   const auto* footer = footerRoot(*footer_);
   auto stripeGroupInfo = footer->stripe_groups()->Get(stripeGroupIndex);
 
-  // Reset the first stripe group that was loaded when we load another one.
-  firstStripeGroup_.wlock()->reset();
-
   const auto section = toMetadataSection(stripeGroupInfo);
   return std::make_shared<StripeGroup>(
       stripeGroupIndex,
@@ -826,20 +877,17 @@ std::shared_ptr<StripeGroup> TabletReader::loadStripeGroup(
 
 std::shared_ptr<StripeGroup> TabletReader::stripeGroup(
     uint32_t stripeGroupIndex) const {
-  return stripeGroupCache_.get(stripeGroupIndex);
+  return stripeGroupCache_.getOrCreate(stripeGroupIndex);
 }
 
 std::shared_ptr<ClusterIndexGroup> TabletReader::clusterIndexGroup(
     uint32_t stripeGroupIndex) const {
-  return clusterIndexCache_.get(stripeGroupIndex);
+  return clusterIndexCache_.getOrCreate(stripeGroupIndex);
 }
 
 std::shared_ptr<ClusterIndexGroup> TabletReader::loadClusterIndexGroup(
     uint32_t stripeGroupIndex) const {
   NIMBLE_CHECK_NOT_NULL(clusterIndex_, "Index not initialized.");
-
-  // Reset the first cluster index group that was loaded when we load another.
-  firstClusterIndexGroup_.wlock()->reset();
 
   const auto section = clusterIndex_->groupMetadata(stripeGroupIndex);
   return ClusterIndexGroup::create(
@@ -858,19 +906,14 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
   const bool hasClusterIndex = this->hasClusterIndex();
   const bool hasChunkIndex = this->hasChunkIndex(stripeGroupIndex);
 
-  // Reset strong references when loading different groups.
-  firstStripeGroup_.wlock()->reset();
-  firstClusterIndexGroup_.wlock()->reset();
-  firstChunkIndexGroup_.wlock()->reset();
-
   std::unique_ptr<MetadataBuffer> groupMetadata;
   std::unique_ptr<MetadataBuffer> clusterIndexMetadata;
   std::unique_ptr<MetadataBuffer> chunkIndexMetadata;
 
-  if (bufferedInput_ != nullptr) {
+  if (metadataBufferedInput_ != nullptr) {
     // Use enqueue/load pattern for coalesced IO. BufferedInput will coalesce
     // adjacent regions into a single read when possible.
-    auto groupStream = bufferedInput_->enqueue(
+    auto groupStream = metadataBufferedInput_->enqueue(
         {groupSection.offset(), groupSection.size(), "stripe_group"});
 
     std::unique_ptr<velox::dwio::common::SeekableInputStream>
@@ -878,7 +921,7 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
     MetadataSection clusterIndexSection;
     if (hasClusterIndex) {
       clusterIndexSection = clusterIndex_->groupMetadata(stripeGroupIndex);
-      clusterIndexStream = bufferedInput_->enqueue(
+      clusterIndexStream = metadataBufferedInput_->enqueue(
           {clusterIndexSection.offset(),
            clusterIndexSection.size(),
            "cluster_index_group"});
@@ -888,14 +931,14 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
     MetadataSection chunkIndexSection;
     if (hasChunkIndex) {
       chunkIndexSection = chunkIndex_->groupMetadata(stripeGroupIndex);
-      chunkIndexStream = bufferedInput_->enqueue(
+      chunkIndexStream = metadataBufferedInput_->enqueue(
           {chunkIndexSection.offset(),
            chunkIndexSection.size(),
            "chunk_index_group"});
     }
 
     // Single load() call - BufferedInput coalesces adjacent regions.
-    bufferedInput_->load(velox::dwio::common::LogType::GROUP);
+    metadataBufferedInput_->load(velox::dwio::common::LogType::GROUP);
 
     groupMetadata = readMetadata(std::move(groupStream), groupSection);
     if (hasClusterIndex) {
@@ -968,11 +1011,11 @@ StripeIdentifier TabletReader::stripeIdentifier(uint32_t stripeIndex) const {
 
   // Check which metadata is already cached.
   const bool stripeGroupCached =
-      stripeGroupCache_.hasCachedEntry(stripeGroupIndex);
+      stripeGroupCache_.hasCacheEntry(stripeGroupIndex);
   const bool clusterIndexCached =
-      hasClusterIndex && clusterIndexCache_.hasCachedEntry(stripeGroupIndex);
+      hasClusterIndex && clusterIndexCache_.hasCacheEntry(stripeGroupIndex);
   const bool chunkIndexCached =
-      hasChunkIndex && chunkIndexCache_.hasCachedEntry(stripeGroupIndex);
+      hasChunkIndex && chunkIndexCache_.hasCacheEntry(stripeGroupIndex);
 
   // If all needed metadata is cached, load each individually (cache hits).
   const bool allCached = stripeGroupCached &&
@@ -991,20 +1034,20 @@ StripeIdentifier TabletReader::stripeIdentifier(uint32_t stripeIndex) const {
 
   // Inject into caches using custom builder that returns the already-loaded
   // objects. This ensures the cache holds the reference.
-  auto cachedStripeGroup = stripeGroupCache_.get(
+  auto cachedStripeGroup = stripeGroupCache_.getOrCreate(
       stripeGroupIndex,
       [&loaded](uint32_t) { return std::move(loaded.stripeGroup); });
 
   std::shared_ptr<ClusterIndexGroup> cachedClusterIndexGroup;
   if (hasClusterIndex) {
-    cachedClusterIndexGroup = clusterIndexCache_.get(
+    cachedClusterIndexGroup = clusterIndexCache_.getOrCreate(
         stripeGroupIndex,
         [&loaded](uint32_t) { return std::move(loaded.clusterIndex); });
   }
 
   std::shared_ptr<ChunkIndexGroup> cachedChunkIndex;
   if (hasChunkIndex) {
-    cachedChunkIndex = chunkIndexCache_.get(
+    cachedChunkIndex = chunkIndexCache_.getOrCreate(
         stripeGroupIndex,
         [&loaded](uint32_t) { return std::move(loaded.chunkIndex); });
   }
@@ -1183,9 +1226,6 @@ void TabletReader::initClusterIndex() {
 
 void TabletReader::preloadStripeGroup(const folly::IOBuf& footerIoBuf) {
   NIMBLE_CHECK_NOT_NULL(stripes_);
-  if (hasCache()) {
-    return;
-  }
 
   const auto* footer = footerRoot(*footer_);
   const auto* stripes = stripesRoot(*stripes_);
@@ -1196,32 +1236,24 @@ void TabletReader::preloadStripeGroup(const folly::IOBuf& footerIoBuf) {
       *stripes->group_indices()->rbegin() + 1,
       "Unexpected stripe group count");
 
-  // Eagerly cache the first stripe group if it's already in the footer buffer.
-  const auto* stripeGroup = stripeGroups->Get(0);
-  if (stripeGroups->size() == 1 &&
-      stripeGroup->offset() + footerIoBuf.computeChainDataLength() >=
-          fileSize_) {
-    auto stripeGroupPtr =
-        stripeGroupCache_.get(0, [&](uint32_t stripeGroupIndex) {
-          return std::make_shared<StripeGroup>(
-              stripeGroupIndex,
-              *stripes_,
-              std::make_unique<MetadataBuffer>(
-                  *pool_,
-                  footerIoBuf,
-                  stripeGroup->offset() + footerIoBuf.computeChainDataLength() -
-                      fileSize_,
-                  stripeGroup->size(),
-                  static_cast<CompressionType>(
-                      stripeGroup->compression_type())));
-        });
-    *firstStripeGroup_.wlock() = std::move(stripeGroupPtr);
+  // Eagerly pin the first stripe group if it's already in the footer buffer.
+  if (stripeGroups->size() == 1) {
+    auto metadataBuffer = tryCreateMetadataBufferFromFooter(
+        *pool_,
+        footerIoBuf,
+        fileSize_,
+        toMetadataSection(stripeGroups->Get(0)));
+    if (metadataBuffer != nullptr) {
+      stripeGroupCache_.pin(
+          0,
+          std::make_shared<StripeGroup>(
+              0, *stripes_, std::move(metadataBuffer)));
+    }
   }
 }
 
 void TabletReader::preloadClusterIndex(const folly::IOBuf& footerIoBuf) {
-  // Skip when cache is available — on-demand reads will hit the cache.
-  if (clusterIndex_ == nullptr || hasCache()) {
+  if (clusterIndex_ == nullptr) {
     return;
   }
 
@@ -1230,58 +1262,41 @@ void TabletReader::preloadClusterIndex(const folly::IOBuf& footerIoBuf) {
     return;
   }
 
-  // Eagerly cache the first index group if it's already in the footer buffer.
-  const auto firstIndexGroupMetadata = clusterIndex_->groupMetadata(0);
-  if (numIndexGroups == 1 &&
-      firstIndexGroupMetadata.offset() + footerIoBuf.computeChainDataLength() >=
-          fileSize_) {
-    auto indexGroupPtr =
-        clusterIndexCache_.get(0, [&](uint32_t indexGroupIndex) {
-          return ClusterIndexGroup::create(
-              indexGroupIndex,
-              clusterIndex_->rootIndex(),
-              std::make_unique<MetadataBuffer>(
-                  *pool_,
-                  footerIoBuf,
-                  firstIndexGroupMetadata.offset() +
-                      footerIoBuf.computeChainDataLength() - fileSize_,
-                  firstIndexGroupMetadata.size(),
-                  static_cast<CompressionType>(
-                      firstIndexGroupMetadata.compressionType())));
-        });
-    *firstClusterIndexGroup_.wlock() = std::move(indexGroupPtr);
+  // Eagerly pin the first index group if it's already in the footer buffer.
+  if (numIndexGroups == 1) {
+    auto metadataBuffer = tryCreateMetadataBufferFromFooter(
+        *pool_, footerIoBuf, fileSize_, clusterIndex_->groupMetadata(0));
+    if (metadataBuffer != nullptr) {
+      clusterIndexCache_.pin(
+          0,
+          ClusterIndexGroup::create(
+              0, clusterIndex_->rootIndex(), std::move(metadataBuffer)));
+    }
   }
 }
 
 void TabletReader::preloadChunkIndex(const folly::IOBuf& footerIoBuf) {
-  // Skip when cache is available — on-demand reads will hit the cache.
-  if (chunkIndex_ == nullptr || hasCache() || chunkIndex_->numGroups() == 0) {
+  if (chunkIndex_ == nullptr) {
     return;
   }
+  NIMBLE_CHECK_GT(chunkIndex_->numGroups(), 0);
 
-  // Eagerly cache the first chunk index group if it's already in the footer
+  // Eagerly pin the first chunk index group if it's already in the footer
   // buffer.
-  const auto& firstSection = chunkIndex_->groupMetadata(0);
-  if (firstSection.size() == 0) {
+  const auto& chunkIndexGroupMetadata = chunkIndex_->groupMetadata(0);
+  if (chunkIndexGroupMetadata.size() == 0) {
     return;
   }
 
-  if (chunkIndex_->numGroups() == 1 &&
-      firstSection.offset() + footerIoBuf.computeChainDataLength() >=
-          fileSize_) {
-    auto chunkIndexPtr = chunkIndexCache_.get(0, [&](uint32_t indexGroupIndex) {
-      return ChunkIndexGroup::create(
-          firstStripe(indexGroupIndex),
-          stripeCount(indexGroupIndex),
-          std::make_unique<MetadataBuffer>(
-              *pool_,
-              footerIoBuf,
-              firstSection.offset() + footerIoBuf.computeChainDataLength() -
-                  fileSize_,
-              firstSection.size(),
-              static_cast<CompressionType>(firstSection.compressionType())));
-    });
-    *firstChunkIndexGroup_.wlock() = std::move(chunkIndexPtr);
+  if (chunkIndex_->numGroups() == 1) {
+    auto metadataBuffer = tryCreateMetadataBufferFromFooter(
+        *pool_, footerIoBuf, fileSize_, chunkIndexGroupMetadata);
+    if (metadataBuffer != nullptr) {
+      chunkIndexCache_.pin(
+          0,
+          ChunkIndexGroup::create(
+              firstStripe(0), stripeCount(0), std::move(metadataBuffer)));
+    }
   }
 }
 
@@ -1297,7 +1312,7 @@ TabletReader::enqueueOptionalSections(
     enqueuedSections.push_back(
         {name,
          it->second,
-         bufferedInput_->enqueue(
+         metadataBufferedInput_->enqueue(
              {it->second.offset(), it->second.size(), "optional"})});
   }
   return enqueuedSections;
@@ -1321,12 +1336,13 @@ TabletReader::enqueueStripesSection() {
     return std::nullopt;
   }
   NIMBLE_CHECK_GT(footer->row_count(), 0);
-  NIMBLE_CHECK_NOT_NULL(bufferedInput_);
+  NIMBLE_CHECK_NOT_NULL(metadataBufferedInput_);
   const auto section = toMetadataSection(stripesSection);
   return EnqueuedSection{
       "stripes",
       section,
-      bufferedInput_->enqueue({section.offset(), section.size(), "stripes"})};
+      metadataBufferedInput_->enqueue(
+          {section.offset(), section.size(), "stripes"})};
 }
 
 void TabletReader::cacheMetadata(
@@ -1352,7 +1368,7 @@ void TabletReader::cacheMetadata(
     if (ioBufOffset + regionSize > footerIoSize) {
       return;
     }
-    bufferedInput_->cacheRegion(
+    metadataBufferedInput_->cacheRegion(
         cacheOffset.value_or(regionOffset),
         regionSize,
         footerIoBuf,
@@ -1417,7 +1433,10 @@ void TabletReader::initChunkIndex() {
       loadOptionalSection(std::string{kChunkIndexSection}, /*keepCache=*/false);
   NIMBLE_CHECK(section.has_value(), "Failed to load chunk_index section.");
 
-  chunkIndex_ = ChunkIndex::create(std::move(section.value()));
+  auto chunkIndex = ChunkIndex::create(std::move(section.value()));
+  if (chunkIndex->numGroups() > 0) {
+    chunkIndex_ = std::move(chunkIndex);
+  }
 }
 
 uint32_t TabletReader::firstStripe(uint32_t stripeGroupIndex) const {
@@ -1452,7 +1471,7 @@ uint32_t TabletReader::stripeCount(uint32_t stripeGroupIndex) const {
 
 std::shared_ptr<ChunkIndexGroup> TabletReader::chunkIndex(
     uint32_t stripeGroupIndex) const {
-  return chunkIndexCache_.get(stripeGroupIndex);
+  return chunkIndexCache_.getOrCreate(stripeGroupIndex);
 }
 
 std::shared_ptr<ChunkIndexGroup> TabletReader::loadChunkIndexGroup(
@@ -1462,9 +1481,6 @@ std::shared_ptr<ChunkIndexGroup> TabletReader::loadChunkIndexGroup(
       stripeGroupIndex,
       chunkIndex_->numGroups(),
       "Chunk index group out of range");
-
-  // Reset the first chunk index group that was loaded when we load another.
-  firstChunkIndexGroup_.wlock()->reset();
 
   const auto& section = chunkIndex_->groupMetadata(stripeGroupIndex);
   if (section.size() == 0) {

@@ -40,12 +40,12 @@ class TabletReaderTestHelper {
 
   /// Returns the number of cached stripe groups.
   size_t cachedStripeGroupCount() const {
-    return tabletReader_->stripeGroupCache_.testingCachedCount();
+    return tabletReader_->stripeGroupCache_.testingCacheCount();
   }
 
   /// Returns true if the stripe group at the given index is cached.
   bool hasStripeGroupCached(uint32_t groupIndex) const {
-    return tabletReader_->stripeGroupCache_.hasCachedEntry(groupIndex);
+    return tabletReader_->stripeGroupCache_.hasCacheEntry(groupIndex);
   }
 
   /// Returns true if the first stripe group is cached and it's the only one.
@@ -58,12 +58,12 @@ class TabletReaderTestHelper {
 
   /// Returns the number of cached index groups.
   size_t cachedIndexGroupCount() const {
-    return tabletReader_->clusterIndexCache_.testingCachedCount();
+    return tabletReader_->clusterIndexCache_.testingCacheCount();
   }
 
   /// Returns true if the index group at the given index is cached.
   bool hasIndexGroupCached(uint32_t groupIndex) const {
-    return tabletReader_->clusterIndexCache_.hasCachedEntry(groupIndex);
+    return tabletReader_->clusterIndexCache_.hasCacheEntry(groupIndex);
   }
 
   /// Returns true if the first index group is cached and it's the only one.
@@ -72,6 +72,24 @@ class TabletReaderTestHelper {
   /// reads.
   bool hasOnlyFirstIndexGroupCached() const {
     return cachedIndexGroupCount() == 1 && hasIndexGroupCached(0);
+  }
+
+  /// Returns the number of cached chunk index groups.
+  size_t cachedChunkIndexGroupCount() const {
+    return tabletReader_->chunkIndexCache_.testingCacheCount();
+  }
+
+  /// Returns true if the chunk index group at the given index is cached.
+  bool hasChunkIndexGroupCached(uint32_t groupIndex) const {
+    return tabletReader_->chunkIndexCache_.hasCacheEntry(groupIndex);
+  }
+
+  /// Returns true if the first chunk index group is cached and it's the only
+  /// one. This is useful for verifying that when the chunk index is covered by
+  /// footer IO, the first chunk index group is pre-populated in the cache
+  /// without additional reads.
+  bool hasOnlyFirstChunkIndexGroupCached() const {
+    return cachedChunkIndexGroupCount() == 1 && hasChunkIndexGroupCached(0);
   }
 
   /// Returns the stripe offsets array.
