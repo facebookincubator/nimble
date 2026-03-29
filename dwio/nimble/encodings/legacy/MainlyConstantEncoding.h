@@ -81,9 +81,9 @@ class MainlyConstantEncoding final
   template <bool kScatter, typename Visitor>
   void bulkScan(
       Visitor& visitor,
-      vector_size_t currentNonNullRow,
-      const vector_size_t* nonNullRows,
-      vector_size_t numNonNulls,
+      vector_size_t currentRow,
+      const vector_size_t* selectedRows,
+      vector_size_t numSelected,
       const vector_size_t* scatterRows);
 
   static std::string_view encode(
@@ -189,9 +189,9 @@ template <typename T>
 template <bool kScatter, typename V>
 void MainlyConstantEncoding<T>::bulkScan(
     V& visitor,
-    vector_size_t currentNonNullRow,
-    const vector_size_t* nonNullRows,
-    vector_size_t numNonNulls,
+    vector_size_t currentRow,
+    const vector_size_t* selectedRows,
+    vector_size_t numSelected,
     const vector_size_t* scatterRows) {
   using DataType = typename V::DataType;
   using ValueType = detail::ValueType<DataType>;
@@ -208,7 +208,7 @@ void MainlyConstantEncoding<T>::bulkScan(
       std::fill(values, values + numRows, commonValue);
     }
   }
-  const auto numIsCommon = nonNullRows[numNonNulls - 1] + 1 - currentNonNullRow;
+  const auto numIsCommon = selectedRows[numSelected - 1] + 1 - currentRow;
   isCommonBuffer_.resize(velox::bits::nwords(numIsCommon) * sizeof(uint64_t));
   auto* isCommon = reinterpret_cast<uint64_t*>(isCommonBuffer_.data());
   // TODO: Wrap otherValues_ in BufferedEncoding.  This way when isCommon_ is
@@ -220,32 +220,32 @@ void MainlyConstantEncoding<T>::bulkScan(
   otherValuesBuffer_.resize(numOtherValues);
   otherValues_->materialize(numOtherValues, otherValuesBuffer_.data());
   numOtherValues = 0;
-  auto* filterHits = V::kHasFilter ? visitor.outputRows(numNonNulls) : nullptr;
-  auto* rows = kScatter ? scatterRows : nonNullRows;
+  auto* filterHits = V::kHasFilter ? visitor.outputRows(numSelected) : nullptr;
+  auto* rows = kScatter ? scatterRows : selectedRows;
   vector_size_t numValues = 0;
   vector_size_t numHits = 0;
-  vector_size_t nonNullRowIndex = 0;
+  vector_size_t selectedRowIndex = 0;
   velox::bits::forEachUnsetBit(isCommon, 0, numIsCommon, [&](vector_size_t i) {
-    i += currentNonNullRow;
-    auto commonBegin = nonNullRowIndex;
+    i += currentRow;
+    auto commonBegin = selectedRowIndex;
     if constexpr (V::dense) {
-      nonNullRowIndex += i - nonNullRows[nonNullRowIndex];
+      selectedRowIndex += i - selectedRows[selectedRowIndex];
     } else {
-      while (nonNullRows[nonNullRowIndex] < i) {
-        ++nonNullRowIndex;
+      while (selectedRows[selectedRowIndex] < i) {
+        ++selectedRowIndex;
       }
     }
-    const auto numCommon = nonNullRowIndex - commonBegin;
+    const auto numCommon = selectedRowIndex - commonBegin;
     if (V::kHasFilter && commonPassed && numCommon > 0) {
       auto* begin = rows + commonBegin;
       std::copy(begin, begin + numCommon, filterHits + numHits);
       numHits += numCommon;
     }
-    if (nonNullRows[nonNullRowIndex] > i) {
+    if (selectedRows[selectedRowIndex] > i) {
       if constexpr (!V::kFilterOnly) {
         vector_size_t numRows;
         if constexpr (kScatterValues) {
-          numRows = scatterRows[nonNullRowIndex] - visitor.rowIndex();
+          numRows = scatterRows[selectedRowIndex] - visitor.rowIndex();
           visitor.addRowIndex(numRows);
         } else {
           numRows = commonPassed * numCommon;
@@ -261,7 +261,7 @@ void MainlyConstantEncoding<T>::bulkScan(
     if constexpr (V::kHasFilter) {
       otherPassed = velox::common::applyFilter(visitor.filter(), otherData);
       if (otherPassed) {
-        filterHits[numHits++] = rows[nonNullRowIndex];
+        filterHits[numHits++] = rows[selectedRowIndex];
       }
     } else {
       otherPassed = true;
@@ -270,10 +270,10 @@ void MainlyConstantEncoding<T>::bulkScan(
       auto* begin = values + numValues;
       vector_size_t numRows;
       if constexpr (kScatterValues) {
-        begin[scatterRows[nonNullRowIndex] - visitor.rowIndex()] =
+        begin[scatterRows[selectedRowIndex] - visitor.rowIndex()] =
             detail::dataToValue(visitor, otherData);
-        auto end = nonNullRowIndex + 1;
-        if (FOLLY_UNLIKELY(end == numNonNulls)) {
+        auto end = selectedRowIndex + 1;
+        if (FOLLY_UNLIKELY(end == numSelected)) {
           numRows = visitor.numRows() - visitor.rowIndex();
         } else {
           numRows = scatterRows[end] - visitor.rowIndex();
@@ -287,12 +287,12 @@ void MainlyConstantEncoding<T>::bulkScan(
       }
       numValues += numRows;
     }
-    ++nonNullRowIndex;
+    ++selectedRowIndex;
   });
-  auto numCommon = numNonNulls - nonNullRowIndex;
+  auto numCommon = numSelected - selectedRowIndex;
   if (commonPassed && numCommon > 0) {
     if constexpr (V::kHasFilter) {
-      auto* begin = rows + nonNullRowIndex;
+      auto* begin = rows + selectedRowIndex;
       std::copy(begin, begin + numCommon, filterHits + numHits);
       numHits += numCommon;
     }
@@ -306,8 +306,8 @@ void MainlyConstantEncoding<T>::bulkScan(
   }
   visitor.setRowIndex(visitor.numRows());
   if constexpr (V::kHasHook) {
-    NIMBLE_DCHECK_EQ(numValues, numNonNulls);
-    visitor.hook().addValues(scatterRows, values, numNonNulls);
+    NIMBLE_DCHECK_EQ(numValues, numSelected);
+    visitor.hook().addValues(scatterRows, values, numSelected);
   } else {
     visitor.addNumValues(V::kFilterOnly ? numHits : numValues);
   }

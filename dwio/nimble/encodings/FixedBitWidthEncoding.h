@@ -66,13 +66,13 @@ class FixedBitWidthEncoding final
   // Bulk scan method for fast path decoding.
   // Reads multiple values at once and processes them through the visitor.
   // This is used by readWithVisitorFast for efficient batch processing.
-  template <bool kHasNulls, typename Visitor>
+  template <bool kScatter, typename Visitor>
   void bulkScan(
       Visitor& visitor,
-      uint32_t nonNullsSoFar,
-      const int32_t* rows,
-      int32_t numRows,
-      const int32_t* scatterRows);
+      vector_size_t currentRow,
+      const vector_size_t* selectedRows,
+      vector_size_t numSelected,
+      const vector_size_t* scatterRows);
 
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
@@ -190,20 +190,20 @@ void FixedBitWidthEncoding<T>::readWithVisitor(
 }
 
 template <typename T>
-template <bool kHasNulls, typename V>
+template <bool kScatter, typename V>
 void FixedBitWidthEncoding<T>::bulkScan(
     V& visitor,
-    uint32_t currentRow,
-    const int32_t* nonNullRows,
-    int32_t numNonNulls,
-    const int32_t* scatterRows) {
+    vector_size_t currentRow,
+    const vector_size_t* selectedRows,
+    vector_size_t numSelected,
+    const vector_size_t* scatterRows) {
   using DataType = typename V::DataType;
   using OutputType = detail::ValueType<DataType>;
   static_assert(
       isFourByteIntegralType<physicalType>(),
       "bulkScan only supports 4-byte integral types");
 
-  if (numNonNulls == 0) {
+  if (numSelected == 0) {
     return;
   }
 
@@ -228,35 +228,35 @@ void FixedBitWidthEncoding<T>::bulkScan(
 
   if constexpr (V::dense) {
     // Dense case: values are contiguous, read in bulk.
-    buffer_.resize(numNonNulls);
+    buffer_.resize(numSelected);
     fixedBitArray_.bulkGetWithBaseline32(
-        nonNullRows[0] + offset,
-        numNonNulls,
+        selectedRows[0] + offset,
+        numSelected,
         reinterpret_cast<uint32_t*>(buffer_.data()),
         baseline_);
 
     if constexpr (kSameSize) {
       // Same size types: use fast memcpy (works for same type or
       // signed/unsigned variants like int32_t vs uint32_t).
-      std::memcpy(values, buffer_.data(), numNonNulls * sizeof(physicalType));
+      std::memcpy(values, buffer_.data(), numSelected * sizeof(physicalType));
     } else if constexpr (kIsUpcast) {
       // Widening case: copy with implicit type conversion.
       // Compilers typically auto-vectorize this pattern.
-      for (int32_t i = 0; i < numNonNulls; ++i) {
+      for (vector_size_t i = 0; i < numSelected; ++i) {
         values[i] = static_cast<OutputType>(buffer_[i]);
       }
     }
   } else {
     // Sparse case: read individual values at specified positions.
-    for (int32_t i = 0; i < numNonNulls; ++i) {
-      values[i] = fixedBitArray_.get(nonNullRows[i] + offset) + baseline_;
+    for (vector_size_t i = 0; i < numSelected; ++i) {
+      values[i] = fixedBitArray_.get(selectedRows[i] + offset) + baseline_;
     }
   }
 
   // Update row_ based on the last row read.
-  row_ += nonNullRows[numNonNulls - 1] - currentRow + 1;
+  row_ += selectedRows[numSelected - 1] - currentRow + 1;
 
-  visitor.addNumValues(V::dense ? numRows : numNonNulls);
+  visitor.addNumValues(V::dense ? numRows : numSelected);
   visitor.setRowIndex(visitor.numRows());
 }
 
