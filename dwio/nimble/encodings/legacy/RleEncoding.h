@@ -210,8 +210,8 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
   void bulkScan(
       Visitor& visitor,
       vector_size_t currentRow,
-      const vector_size_t* nonNullRows,
-      vector_size_t numNonNulls,
+      const vector_size_t* selectedRows,
+      vector_size_t numSelected,
       const vector_size_t* scatterRows);
 
  private:
@@ -322,33 +322,33 @@ template <bool kScatter, typename V>
 void RLEEncoding<T>::bulkScan(
     V& visitor,
     vector_size_t currentRow,
-    const vector_size_t* nonNullRows,
-    vector_size_t numNonNulls,
+    const vector_size_t* selectedRows,
+    vector_size_t numSelected,
     const vector_size_t* scatterRows) {
   using DataType = typename V::DataType;
   using ValueType = detail::ValueType<DataType>;
   constexpr bool kScatterValues = kScatter && !V::kHasFilter && !V::kHasHook;
   auto* values = detail::mutableValues<ValueType>(
       visitor, visitor.numRows() - visitor.rowIndex());
-  auto* filterHits = V::kHasFilter ? visitor.outputRows(numNonNulls) : nullptr;
-  auto* rows = kScatter ? scatterRows : nonNullRows;
+  auto* filterHits = V::kHasFilter ? visitor.outputRows(numSelected) : nullptr;
+  auto* rows = kScatter ? scatterRows : selectedRows;
   vector_size_t numValues = 0;
   vector_size_t numHits = 0;
-  vector_size_t nonNullRowIndex = 0;
+  vector_size_t selectedRowIndex = 0;
   for (;;) {
     if (this->copiesRemaining_ == 0) {
       this->copiesRemaining_ = this->materializedRunLengths_.nextValue();
       this->currentValue_ = nextValue();
     }
     const auto numInRun = findNumInRun<V::dense>(
-        nonNullRows, nonNullRowIndex, numNonNulls, currentRow);
+        selectedRows, selectedRowIndex, numSelected, currentRow);
     if (numInRun > 0) {
       auto value = detail::castFromPhysicalType<DataType>(this->currentValue_);
       bool pass = true;
       if constexpr (V::kHasFilter) {
         pass = velox::common::applyFilter(visitor.filter(), value);
         if (pass) {
-          auto* begin = rows + nonNullRowIndex;
+          auto* begin = rows + selectedRowIndex;
           std::copy(begin, begin + numInRun, filterHits + numHits);
           numHits += numInRun;
         }
@@ -356,8 +356,8 @@ void RLEEncoding<T>::bulkScan(
       if (!V::kFilterOnly && pass) {
         vector_size_t numRows;
         if constexpr (kScatterValues) {
-          auto end = nonNullRowIndex + numInRun;
-          if (FOLLY_UNLIKELY(end == numNonNulls)) {
+          auto end = selectedRowIndex + numInRun;
+          if (FOLLY_UNLIKELY(end == numSelected)) {
             numRows = visitor.numRows() - visitor.rowIndex();
           } else {
             numRows = scatterRows[end] - visitor.rowIndex();
@@ -373,14 +373,14 @@ void RLEEncoding<T>::bulkScan(
             static_cast<uint32_t>(numRows));
         numValues += numRows;
       }
-      auto endRow = nonNullRows[nonNullRowIndex + numInRun - 1];
+      auto endRow = selectedRows[selectedRowIndex + numInRun - 1];
       auto consumed = endRow - currentRow + 1;
       consumed = std::min<vector_size_t>(consumed, this->copiesRemaining_);
       this->copiesRemaining_ -= consumed;
       currentRow += consumed;
-      nonNullRowIndex += numInRun;
+      selectedRowIndex += numInRun;
     }
-    if (FOLLY_UNLIKELY(nonNullRowIndex == numNonNulls)) {
+    if (FOLLY_UNLIKELY(selectedRowIndex == numSelected)) {
       break;
     }
     currentRow += this->copiesRemaining_;
@@ -392,8 +392,8 @@ void RLEEncoding<T>::bulkScan(
     visitor.setRowIndex(visitor.numRows());
   }
   if constexpr (V::kHasHook) {
-    NIMBLE_DCHECK_EQ(numValues, numNonNulls, "");
-    visitor.hook().addValues(scatterRows, values, numNonNulls);
+    NIMBLE_DCHECK_EQ(numValues, numSelected, "");
+    visitor.hook().addValues(scatterRows, values, numSelected);
   } else {
     visitor.addNumValues(V::kFilterOnly ? numHits : numValues);
   }

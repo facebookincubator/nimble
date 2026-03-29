@@ -69,8 +69,8 @@ class TrivialEncoding final
   void bulkScan(
       Visitor& visitor,
       vector_size_t currentRow,
-      const vector_size_t* nonNullRows,
-      vector_size_t numNonNulls,
+      const vector_size_t* selectedRows,
+      vector_size_t numSelected,
       const vector_size_t* scatterRows);
 
   static std::string_view encode(
@@ -258,17 +258,17 @@ template <bool kScatter, typename V>
 void TrivialEncoding<T>::bulkScan(
     V& visitor,
     vector_size_t currentRow,
-    const vector_size_t* nonNullRows,
-    vector_size_t numNonNulls,
+    const vector_size_t* selectedRows,
+    vector_size_t numSelected,
     const vector_size_t* scatterRows) {
   const auto numRows = visitor.numRows() - visitor.rowIndex();
   T* values = detail::mutableValues<T>(visitor, numRows);
   const auto offset = static_cast<vector_size_t>(row_) - currentRow;
   if constexpr (V::dense) {
-    memcpy(values, values_ + nonNullRows[0] + offset, numNonNulls * sizeof(T));
+    memcpy(values, values_ + selectedRows[0] + offset, numSelected * sizeof(T));
   } else {
-    for (vector_size_t i = 0; i < numNonNulls; ++i) {
-      values[i] = values_[nonNullRows[i] + offset];
+    for (vector_size_t i = 0; i < numSelected; ++i) {
+      values[i] = values_[selectedRows[i] + offset];
     }
   }
   if constexpr (!V::kHasHook) {
@@ -278,22 +278,22 @@ void TrivialEncoding<T>::bulkScan(
   int32_t* filterHits;
   if constexpr (V::kHasFilter) {
     NIMBLE_DCHECK_EQ(visitor.reader().numRows(), numValues, "");
-    filterHits = visitor.outputRows(numNonNulls) - numValues;
+    filterHits = visitor.outputRows(numSelected) - numValues;
   } else {
     filterHits = nullptr;
   }
   velox::dwio::common::
       processFixedWidthRun<T, V::kFilterOnly, kScatter, V::dense>(
-          velox::RowSet(nonNullRows, numNonNulls),
+          velox::RowSet(selectedRows, numSelected),
           0,
-          numNonNulls,
+          numSelected,
           scatterRows,
           values,
           filterHits,
           numValues,
           visitor.filter(),
           visitor.hook());
-  row_ += nonNullRows[numNonNulls - 1] - currentRow + 1;
+  row_ += selectedRows[numSelected - 1] - currentRow + 1;
   if constexpr (!V::kHasHook) {
     visitor.addNumValues(
         V::kHasFilter ? numValues - visitor.reader().numValues() : numRows);
@@ -325,13 +325,13 @@ void TrivialEncoding<std::string_view>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
   const auto endRow = visitor.rowAt(visitor.numRows() - 1);
-  auto numNonNulls = endRow + 1 - params.numScanned;
+  auto numSelected = endRow + 1 - params.numScanned;
   if (auto& nulls = visitor.reader().nullsInReadRange()) {
-    numNonNulls -= velox::bits::countNulls(
+    numSelected -= velox::bits::countNulls(
         nulls->template as<uint64_t>(), params.numScanned, endRow + 1);
   }
-  buffer_.resize(numNonNulls);
-  lengths_->materialize(numNonNulls, buffer_.data());
+  buffer_.resize(numSelected);
+  lengths_->materialize(numSelected, buffer_.data());
   auto* lengths = buffer_.data();
   detail::readWithVisitorSlow(
       visitor,
