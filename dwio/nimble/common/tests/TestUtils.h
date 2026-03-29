@@ -386,4 +386,93 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
   mutable folly::Synchronized<std::vector<Chunk>> chunks_;
 };
 
+// Wraps any ReadFile and tracks the maximum read offset across all pread calls.
+// Used to verify that certain reads don't access regions beyond a boundary
+// (e.g. metadata regions).
+class TrackingReadFile : public velox::ReadFile {
+ public:
+  explicit TrackingReadFile(std::shared_ptr<velox::ReadFile> delegate)
+      : delegate_(std::move(delegate)) {}
+
+  std::string_view pread(
+      uint64_t offset,
+      uint64_t length,
+      void* buf,
+      const velox::FileIoContext& context = {}) const override {
+    updateMaxReadOffset(offset + length);
+    return delegate_->pread(offset, length, buf, context);
+  }
+
+  std::string pread(
+      uint64_t offset,
+      uint64_t length,
+      const velox::FileIoContext& context = {}) const override {
+    updateMaxReadOffset(offset + length);
+    return delegate_->pread(offset, length, context);
+  }
+
+  uint64_t preadv(
+      uint64_t offset,
+      const std::vector<folly::Range<char*>>& buffers,
+      const velox::FileIoContext& context = {}) const override {
+    uint64_t totalLength = 0;
+    for (const auto& buffer : buffers) {
+      totalLength += buffer.size();
+    }
+    updateMaxReadOffset(offset + totalLength);
+    return delegate_->preadv(offset, buffers, context);
+  }
+
+  uint64_t preadv(
+      folly::Range<const velox::common::Region*> regions,
+      folly::Range<folly::IOBuf*> iobufs,
+      const velox::FileIoContext& context = {}) const override {
+    for (const auto& region : regions) {
+      updateMaxReadOffset(region.offset + region.length);
+    }
+    return delegate_->preadv(regions, iobufs, context);
+  }
+
+  uint64_t size() const override {
+    return delegate_->size();
+  }
+
+  uint64_t memoryUsage() const override {
+    return delegate_->memoryUsage();
+  }
+
+  bool shouldCoalesce() const override {
+    return delegate_->shouldCoalesce();
+  }
+
+  std::string getName() const override {
+    return delegate_->getName();
+  }
+
+  uint64_t getNaturalReadSize() const override {
+    return delegate_->getNaturalReadSize();
+  }
+
+  // Returns the maximum end offset (offset + length) across all reads.
+  uint64_t maxReadOffset() const {
+    return maxReadOffset_.load(std::memory_order_relaxed);
+  }
+
+  void resetMaxReadOffset() {
+    maxReadOffset_.store(0, std::memory_order_relaxed);
+  }
+
+ private:
+  void updateMaxReadOffset(uint64_t endOffset) const {
+    auto current = maxReadOffset_.load(std::memory_order_relaxed);
+    while (endOffset > current &&
+           !maxReadOffset_.compare_exchange_weak(
+               current, endOffset, std::memory_order_relaxed)) {
+    }
+  }
+
+  const std::shared_ptr<velox::ReadFile> delegate_;
+  mutable std::atomic_uint64_t maxReadOffset_{0};
+};
+
 } // namespace facebook::nimble::testing

@@ -319,6 +319,17 @@ TEST_F(ChunkIndexWriterTest, emptyStream) {
   EXPECT_EQ(chunkIndex->createStreamIndex(0, 3), nullptr);
 }
 
+TEST_F(ChunkIndexWriterTest, emptyFileNoStripeGroups) {
+  ChunkIndexWriter writer(*pool_);
+  TestChunkFileIndex fileIndex;
+
+  // No stripes written — writeGroup() is never called.
+  writer.writeRoot(writeRootCallback(fileIndex));
+
+  // No chunk_index section should be written.
+  EXPECT_TRUE(fileIndex.rootIndexData.empty());
+}
+
 TEST_F(ChunkIndexWriterTest, finalization) {
   ChunkIndexWriter writer(*pool_);
   Buffer buffer{*pool_};
@@ -446,7 +457,8 @@ TEST_F(ChunkIndexWriterTest, minAvgChunksPerStream) {
     float threshold;
     // Expected number of groups that are actually written (callback invoked).
     uint32_t expectedWrittenGroups;
-    // Expected total root index entries (always 3).
+    // Expected total root index entries (0 when all groups are skipped,
+    // otherwise equals the number of stripe groups including skipped ones).
     uint32_t expectedRootEntries;
     // Which groups are skipped (size=0 in root index).
     std::vector<bool> expectedSkipped;
@@ -470,8 +482,8 @@ TEST_F(ChunkIndexWriterTest, minAvgChunksPerStream) {
       {1.5f, 2, 3, {false, false, true}},
       // threshold=2.0: groups 1 (avg=1.5) and 2 (avg=1.0) are skipped.
       {2.0f, 1, 3, {false, true, true}},
-      // threshold=3.0: all groups skipped (max avg is 2.0).
-      {3.0f, 0, 3, {true, true, true}},
+      // threshold=3.0: all groups skipped — no chunk_index section written.
+      {3.0f, 0, 0, {true, true, true}},
   };
 
   for (const auto& testData : testSettings) {
@@ -503,6 +515,13 @@ TEST_F(ChunkIndexWriterTest, minAvgChunksPerStream) {
 
     ASSERT_EQ(
         fileIndex.groupMetadataSections.size(), testData.expectedWrittenGroups);
+
+    if (testData.expectedRootEntries == 0) {
+      // All groups were skipped — no chunk_index section written.
+      EXPECT_TRUE(fileIndex.rootIndexData.empty());
+      continue;
+    }
+
     ASSERT_FALSE(fileIndex.rootIndexData.empty());
 
     auto* rootChunkIndexes = flatbuffers::GetRoot<serialization::ChunkIndex>(

@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <fmt/format.h>
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <atomic>
@@ -244,8 +245,7 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
       std::shared_ptr<velox::ReadFile> readFile,
       nimble::TabletReader::Options options = {}) {
     readFile_ = readFile;
-    auto* bufferedInput = createBufferedInput(readFile_);
-    options.bufferedInput = bufferedInput;
+    options.bufferedInput = createBufferedInput(readFile_);
     return nimble::TabletReader::create(readFile_.get(), pool_.get(), options);
   }
 
@@ -311,6 +311,7 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
       folly::writeFile(file, "/tmp/test.nimble");
 
       for (auto useChainedBuffers : {false, true}) {
+        SCOPED_TRACE(fmt::format("useChainedBuffers={}", useChainedBuffers));
         nimble::testing::InMemoryTrackableReadFile readFile(
             file, useChainedBuffers);
         auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), {});
@@ -460,8 +461,11 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
 
     for (auto flushThreshold : metadataFlushThresholds) {
       for (auto compressionThreshold : metadataCompressionThresholds) {
-        VLOG(1) << "FlushThreshold: " << flushThreshold
-                << ", CompressionThreshold: " << compressionThreshold;
+        SCOPED_TRACE(
+            fmt::format(
+                "flushThreshold={}, compressionThreshold={}",
+                flushThreshold,
+                compressionThreshold));
         parameterizedTest(
             flushThreshold, compressionThreshold, stripesData, errorVerifier);
       }
@@ -1185,223 +1189,6 @@ TEST_P(TabletTest, optionalSectionsPreload) {
   }
 }
 
-enum class ActionEnum { kCreated, kDestroyed };
-
-using Action = std::pair<ActionEnum, int>;
-using Actions = std::vector<Action>;
-
-class Guard {
- public:
-  Guard(int id, Actions& actions) : id_{id}, actions_{actions} {
-    actions_.emplace_back(ActionEnum::kCreated, id_);
-  }
-
-  ~Guard() {
-    actions_.emplace_back(ActionEnum::kDestroyed, id_);
-  }
-
-  Guard(const Guard&) = delete;
-  Guard(Guard&&) = delete;
-  Guard& operator=(const Guard&) = delete;
-  Guard& operator=(Guard&&) = delete;
-
-  int id() const {
-    return id_;
-  }
-
- private:
-  int id_;
-  Actions& actions_;
-};
-
-TEST_P(TabletTest, referenceCountedCache) {
-  Actions actions;
-  facebook::nimble::ReferenceCountedCache<int, Guard> cache{
-      [&](int id) { return std::make_shared<Guard>(id, actions); }};
-
-  auto e1 = cache.get(0);
-  EXPECT_EQ(e1->id(), 0);
-  EXPECT_EQ(actions, Actions({{ActionEnum::kCreated, 0}}));
-
-  auto e2 = cache.get(0);
-  EXPECT_EQ(e2->id(), 0);
-  EXPECT_EQ(actions, Actions({{ActionEnum::kCreated, 0}}));
-  e2.reset();
-  EXPECT_EQ(actions, Actions({{ActionEnum::kCreated, 0}}));
-
-  auto e3 = cache.get(1);
-  EXPECT_EQ(e3->id(), 1);
-  EXPECT_EQ(
-      actions, Actions({{ActionEnum::kCreated, 0}, {ActionEnum::kCreated, 1}}));
-
-  e1.reset();
-  EXPECT_EQ(
-      actions,
-      Actions(
-          {{ActionEnum::kCreated, 0},
-           {ActionEnum::kCreated, 1},
-           {ActionEnum::kDestroyed, 0}}));
-
-  auto e4 = e3;
-  EXPECT_EQ(e4->id(), 1);
-  e3.reset();
-  EXPECT_EQ(
-      actions,
-      Actions(
-          {{ActionEnum::kCreated, 0},
-           {ActionEnum::kCreated, 1},
-           {ActionEnum::kDestroyed, 0}}));
-
-  e4.reset();
-  EXPECT_EQ(
-      actions,
-      Actions(
-          {{ActionEnum::kCreated, 0},
-           {ActionEnum::kCreated, 1},
-           {ActionEnum::kDestroyed, 0},
-           {ActionEnum::kDestroyed, 1}}));
-
-  auto e5 = cache.get(1);
-  EXPECT_EQ(e5->id(), 1);
-  EXPECT_EQ(
-      actions,
-      Actions(
-          {{ActionEnum::kCreated, 0},
-           {ActionEnum::kCreated, 1},
-           {ActionEnum::kDestroyed, 0},
-           {ActionEnum::kDestroyed, 1},
-           {ActionEnum::kCreated, 1}}));
-
-  auto e6 = cache.get(0);
-  EXPECT_EQ(e6->id(), 0);
-  EXPECT_EQ(
-      actions,
-      Actions(
-          {{ActionEnum::kCreated, 0},
-           {ActionEnum::kCreated, 1},
-           {ActionEnum::kDestroyed, 0},
-           {ActionEnum::kDestroyed, 1},
-           {ActionEnum::kCreated, 1},
-           {ActionEnum::kCreated, 0}}));
-
-  e5.reset();
-  EXPECT_EQ(
-      actions,
-      Actions(
-          {{ActionEnum::kCreated, 0},
-           {ActionEnum::kCreated, 1},
-           {ActionEnum::kDestroyed, 0},
-           {ActionEnum::kDestroyed, 1},
-           {ActionEnum::kCreated, 1},
-           {ActionEnum::kCreated, 0},
-           {ActionEnum::kDestroyed, 1}}));
-
-  e6.reset();
-  EXPECT_EQ(
-      actions,
-      Actions(
-          {{ActionEnum::kCreated, 0},
-           {ActionEnum::kCreated, 1},
-           {ActionEnum::kDestroyed, 0},
-           {ActionEnum::kDestroyed, 1},
-           {ActionEnum::kCreated, 1},
-           {ActionEnum::kCreated, 0},
-           {ActionEnum::kDestroyed, 1},
-           {ActionEnum::kDestroyed, 0}}));
-}
-
-TEST_P(TabletTest, referenceCountedCacheStressParallelDuplicates) {
-  std::atomic_int counter{0};
-  facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
-    ++counter;
-    return std::make_shared<int>(id);
-  }};
-  auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(10);
-  velox::dwio::common::ExecutorBarrier barrier(executor);
-  constexpr int kEntryIds = 100;
-  constexpr int kEntryDuplicates = 10;
-  for (int i = 0; i < kEntryIds; ++i) {
-    for (int n = 0; n < kEntryDuplicates; ++n) {
-      barrier.add([i, &cache]() {
-        auto e = cache.get(i);
-        EXPECT_EQ(*e, i);
-      });
-    }
-  }
-  barrier.waitAll();
-  EXPECT_GE(counter.load(), kEntryIds);
-}
-
-TEST_P(TabletTest, referenceCountedCacheStressParallelDuplicatesSaveEntries) {
-  std::atomic_int counter{0};
-  facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
-    ++counter;
-    return std::make_shared<int>(id);
-  }};
-  folly::Synchronized<std::vector<std::shared_ptr<int>>> entries;
-  auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(10);
-  velox::dwio::common::ExecutorBarrier barrier(executor);
-  constexpr int kEntryIds = 100;
-  constexpr int kEntryDuplicates = 10;
-  for (int i = 0; i < kEntryIds; ++i) {
-    for (int n = 0; n < kEntryDuplicates; ++n) {
-      barrier.add([i, &cache, &entries]() {
-        auto e = cache.get(i);
-        EXPECT_EQ(*e, i);
-        entries.wlock()->push_back(e);
-      });
-    }
-  }
-  barrier.waitAll();
-  EXPECT_EQ(counter.load(), kEntryIds);
-}
-
-TEST_P(TabletTest, referenceCountedCacheStress) {
-  std::atomic_int counter{0};
-  facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
-    ++counter;
-    return std::make_shared<int>(id);
-  }};
-  auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(10);
-  velox::dwio::common::ExecutorBarrier barrier(executor);
-  constexpr int kEntryIds = 100;
-  constexpr int kEntryDuplicates = 10;
-  for (int n = 0; n < kEntryDuplicates; ++n) {
-    for (int i = 0; i < kEntryIds; ++i) {
-      barrier.add([i, &cache]() {
-        auto e = cache.get(i);
-        EXPECT_EQ(*e, i);
-      });
-    }
-  }
-  barrier.waitAll();
-  EXPECT_GE(counter.load(), kEntryIds);
-}
-
-TEST_P(TabletTest, referenceCountedCacheStressSaveEntries) {
-  std::atomic_int counter{0};
-  facebook::nimble::ReferenceCountedCache<int, int> cache{[&](int id) {
-    ++counter;
-    return std::make_shared<int>(id);
-  }};
-  folly::Synchronized<std::vector<std::shared_ptr<int>>> entries;
-  auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(10);
-  velox::dwio::common::ExecutorBarrier barrier(executor);
-  constexpr int kEntryIds = 100;
-  constexpr int kEntryDuplicates = 10;
-  for (int n = 0; n < kEntryDuplicates; ++n) {
-    for (int i = 0; i < kEntryIds; ++i) {
-      barrier.add([i, &cache, &entries]() {
-        auto e = cache.get(i);
-        EXPECT_EQ(*e, i);
-        entries.wlock()->push_back(e);
-      });
-    }
-  }
-  barrier.waitAll();
-  EXPECT_EQ(counter.load(), kEntryIds);
-}
-
 TEST_P(TabletTest, deduplicateStreams) {
   auto seed = FLAGS_tablet_tests_seed > 0 ? FLAGS_tablet_tests_seed
                                           : folly::Random::rand32();
@@ -1411,6 +1198,12 @@ TEST_P(TabletTest, deduplicateStreams) {
   for (auto noDuplicates : {true, false}) {
     for (auto chunkCount : {1U, 2U, folly::Random::rand32(10, rng) + 1}) {
       for (auto evenChunks : {true, false}) {
+        SCOPED_TRACE(
+            fmt::format(
+                "noDuplicates={}, chunkCount={}, evenChunks={}",
+                noDuplicates,
+                chunkCount,
+                evenChunks));
         testStreamDeduplication(rng, noDuplicates, chunkCount, evenChunks);
       }
     }
@@ -1822,10 +1615,11 @@ TEST_P(TabletWithIndexTest, singleGroup) {
 
   // Verify only one index group is created
   EXPECT_EQ(index->numIndexGroups(), 1);
-  // Verify the first group and index group is cached and is the only one
-  // (covered by footer IO)
+  // Verify the first group, index group, and chunk index group is pinned
+  // and is the only one (covered by footer IO).
   EXPECT_TRUE(tabletHelper.hasOnlyFirstStripeGroupCached());
   EXPECT_TRUE(tabletHelper.hasOnlyFirstIndexGroupCached());
+  EXPECT_TRUE(tabletHelper.hasOnlyFirstChunkIndexGroupCached());
 
   // Verify index columns
   EXPECT_EQ(index->indexColumns().size(), 2);
@@ -2234,6 +2028,11 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
 
   // Verify 3 index groups are created (one per stripe)
   EXPECT_EQ(index->numIndexGroups(), 3);
+
+  // Verify no metadata is pinned from preload (more than one group).
+  EXPECT_EQ(tabletHelper.cachedStripeGroupCount(), 0);
+  EXPECT_EQ(tabletHelper.cachedIndexGroupCount(), 0);
+  EXPECT_EQ(tabletHelper.cachedChunkIndexGroupCount(), 0);
 
   // Verify index columns
   EXPECT_EQ(index->indexColumns().size(), 2);
@@ -4319,6 +4118,32 @@ TEST_P(TabletTest, configureOptionsIndexFlags) {
   }
 }
 
+TEST_P(TabletTest, configureOptionsBufferedInput) {
+  // Verify configureOptions only sets bufferedInput when
+  // fileMetadataCacheEnabled is true.
+  velox::dwio::common::ReaderOptions readerOptions(pool_.get());
+
+  // Create a dummy BufferedInput to pass as the second parameter.
+  std::string emptyFile;
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(emptyFile);
+  velox::dwio::common::BufferedInput bufferedInput(readFile, *pool_);
+
+  {
+    SCOPED_TRACE("fileMetadataCacheEnabled=false (default)");
+    auto opts =
+        nimble::TabletReader::configureOptions(readerOptions, &bufferedInput);
+    EXPECT_EQ(opts.bufferedInput, nullptr);
+  }
+
+  {
+    SCOPED_TRACE("fileMetadataCacheEnabled=true");
+    readerOptions.setFileMetadataCacheEnabled(true);
+    auto opts =
+        nimble::TabletReader::configureOptions(readerOptions, &bufferedInput);
+    EXPECT_EQ(opts.bufferedInput, &bufferedInput);
+  }
+}
+
 TEST_P(TabletTest, bufferedInputMetadataReads) {
   // Test that BufferedInput is used for metadata reads when provided.
   std::string file;
@@ -4535,7 +4360,6 @@ TEST(TabletStressTest, concurrentReadersWithCacheEviction) {
         case BufferedInputMode::kBufferedInput:
           bi = std::make_unique<velox::dwio::common::BufferedInput>(
               readFile, *threadPool);
-          options.bufferedInput = bi.get();
           break;
 
         case BufferedInputMode::kDirectBufferedInput: {
@@ -4553,7 +4377,6 @@ TEST(TabletStressTest, concurrentReadersWithCacheEviction) {
               nullptr,
               executor.get(),
               readerOptions);
-          options.bufferedInput = bi.get();
           break;
         }
 
@@ -4573,11 +4396,11 @@ TEST(TabletStressTest, concurrentReadersWithCacheEviction) {
               nullptr,
               executor.get(),
               readerOptions);
-          options.bufferedInput = bi.get();
           break;
         }
       }
 
+      options.bufferedInput = bi.get();
       auto reader = nimble::TabletReader::create(
           readFile.get(), threadPool.get(), options);
       EXPECT_EQ(reader->stripeCount(), 5);

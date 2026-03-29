@@ -16,6 +16,8 @@
 
 #include "dwio/nimble/tablet/ChunkIndexWriter.h"
 
+#include <algorithm>
+
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/tablet/ChunkIndexGenerated.h"
 #include "dwio/nimble/tablet/Constants.h"
@@ -158,6 +160,16 @@ void ChunkIndexWriter::writeRoot(
   SCOPE_EXIT {
     finalized_ = true;
   };
+
+  // Skip writing the chunk_index section if all groups were skipped or no
+  // groups were written.
+  const bool hasNonEmptyGroup = std::any_of(
+      chunkIndexSections_.begin(),
+      chunkIndexSections_.end(),
+      [](const auto& section) { return section.size() > 0; });
+  if (!hasNonEmptyGroup) {
+    return;
+  }
 
   flatbuffers::FlatBufferBuilder builder(kInitialFooterSize);
 

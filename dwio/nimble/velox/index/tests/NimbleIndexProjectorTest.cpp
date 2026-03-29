@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/common/tests/GTestUtils.h"
+#include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/serializer/Deserializer.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
@@ -35,7 +36,17 @@ using namespace velox;
 using namespace velox::dwio::common;
 using Subfield = velox::common::Subfield;
 
-class NimbleIndexProjectorTest : public ::testing::Test {
+struct TestParam {
+  bool enableCache;
+  bool pinFileMetadata;
+
+  std::string debugString() const {
+    return fmt::format(
+        "enableCache={}, pinFileMetadata={}", enableCache, pinFileMetadata);
+  }
+};
+
+class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
  protected:
   static void SetUpTestCase() {
     memory::MemoryManager::initialize({});
@@ -90,12 +101,25 @@ class NimbleIndexProjectorTest : public ::testing::Test {
     writer.close();
   }
 
+ public:
+  static std::vector<TestParam> getTestParams() {
+    return {
+        {false, false},
+        {false, true},
+        {true, false},
+        {true, true},
+    };
+  }
+
+ protected:
   NimbleIndexProjector createProjector(
       const std::vector<Subfield>& projectedSubfields) {
     auto readFile =
         std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
     dwio::common::ReaderOptions readerOptions(leafPool_.get());
     readerOptions.setFileFormat(FileFormat::NIMBLE);
+    readerOptions.setFileMetadataCacheEnabled(GetParam().enableCache);
+    readerOptions.setPinFileMetadata(GetParam().pinFileMetadata);
     return NimbleIndexProjector(
         std::move(readFile), projectedSubfields, readerOptions);
   }
@@ -133,7 +157,7 @@ class NimbleIndexProjectorTest : public ::testing::Test {
   std::unique_ptr<velox::serializer::KeyEncoder> keyEncoder_;
 };
 
-TEST_F(NimbleIndexProjectorTest, basicColumnProjection) {
+TEST_P(NimbleIndexProjectorTest, basicColumnProjection) {
   // Schema: key (int64, sorted), col_a (int32), col_b (varchar)
   auto rowType =
       ROW({"key", "col_a", "col_b"}, {BIGINT(), INTEGER(), VARCHAR()});
@@ -209,7 +233,7 @@ TEST_F(NimbleIndexProjectorTest, basicColumnProjection) {
   EXPECT_EQ(colAResult->valueAt(slice.rows.startRow), 500);
 }
 
-TEST_F(NimbleIndexProjectorTest, emptyResult) {
+TEST_P(NimbleIndexProjectorTest, emptyResult) {
   auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
 
   // Keys: 0, 10, 20, ..., 90
@@ -252,7 +276,7 @@ TEST_F(NimbleIndexProjectorTest, emptyResult) {
   EXPECT_EQ(projector.stats().rawOverreadBytes, 0);
 }
 
-TEST_F(NimbleIndexProjectorTest, multipleRequests) {
+TEST_P(NimbleIndexProjectorTest, multipleRequests) {
   auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
 
   const int numRows = 100;
@@ -297,7 +321,7 @@ TEST_F(NimbleIndexProjectorTest, multipleRequests) {
   }
 }
 
-TEST_F(NimbleIndexProjectorTest, stats) {
+TEST_P(NimbleIndexProjectorTest, stats) {
   auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
 
   // Write 4 batches of 10 rows each. The flush policy flushes every batch,
@@ -399,7 +423,7 @@ TEST_F(NimbleIndexProjectorTest, stats) {
   }
 }
 
-TEST_F(NimbleIndexProjectorTest, statsToString) {
+TEST_P(NimbleIndexProjectorTest, statsToString) {
   NimbleIndexProjector::Stats stats;
   stats.numReadStripes = 3;
   stats.numScannedRows = 1'000;
@@ -418,7 +442,7 @@ TEST_F(NimbleIndexProjectorTest, statsToString) {
       "projectionTiming=[count: 0, wallTime: 0ns, cpuTime: 0ns])");
 }
 
-TEST_F(NimbleIndexProjectorTest, flatMapProjection) {
+TEST_P(NimbleIndexProjectorTest, flatMapProjection) {
   // Schema: key (int64, sorted), features (MAP<VARCHAR, BIGINT> as FlatMap).
   // FlatMap keys in the file: "a", "b", "c", "d", "e".
   // Project keys in non-alphabetical order: ["d", "b", "e"] to verify that
@@ -522,7 +546,7 @@ TEST_F(NimbleIndexProjectorTest, flatMapProjection) {
   EXPECT_EQ(kvPairs["e"], 504); // 5*100 + 4
 }
 
-TEST_F(NimbleIndexProjectorTest, flatMapFullColumnProjection) {
+TEST_P(NimbleIndexProjectorTest, flatMapFullColumnProjection) {
   // Full FlatMap projection (no key subscripts) is not supported —
   // buildProjectedNimbleType requires explicit key selection for FlatMap.
   auto rowType = ROW({"key", "features"}, {BIGINT(), MAP(VARCHAR(), BIGINT())});
@@ -561,7 +585,7 @@ TEST_F(NimbleIndexProjectorTest, flatMapFullColumnProjection) {
       "Cannot project entire FlatMap column without key subscripts");
 }
 
-TEST_F(NimbleIndexProjectorTest, flatMapKeyProjectionSchemaComparison) {
+TEST_P(NimbleIndexProjectorTest, flatMapKeyProjectionSchemaComparison) {
   // Verify that buildProjectedNimbleType (nimble-type overload) produces
   // FlatMap with keys sorted alphabetically for key-level projection.
   auto rowType = ROW({"key", "features"}, {BIGINT(), MAP(VARCHAR(), BIGINT())});
@@ -637,7 +661,7 @@ TEST_F(NimbleIndexProjectorTest, flatMapKeyProjectionSchemaComparison) {
   EXPECT_GE(map->size(), 1);
 }
 
-TEST_F(NimbleIndexProjectorTest, flatMapIntKeyProjection) {
+TEST_P(NimbleIndexProjectorTest, flatMapIntKeyProjection) {
   // Schema: key (int64, sorted), features (MAP<INT, BIGINT> as FlatMap).
   // Tests LongSubscript handling in resolveSubfield: "features[3]" produces
   // a LongSubscript which is converted to string key "3" for FlatMap lookup.
@@ -730,7 +754,7 @@ TEST_F(NimbleIndexProjectorTest, flatMapIntKeyProjection) {
   EXPECT_EQ(kvPairs[4], 504); // 5*100 + 4
 }
 
-TEST_F(NimbleIndexProjectorTest, flatMapMissingKeys) {
+TEST_P(NimbleIndexProjectorTest, flatMapMissingKeys) {
   // Verify that missing FlatMap keys are silently skipped.
   auto rowType = ROW({"key", "features"}, {BIGINT(), MAP(VARCHAR(), BIGINT())});
 
@@ -797,7 +821,7 @@ TEST_F(NimbleIndexProjectorTest, flatMapMissingKeys) {
   }
 }
 
-TEST_F(NimbleIndexProjectorTest, featureReorderingStorageReads) {
+TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
   // Schema: key (int64, sorted), features (MAP<INT, BIGINT> as FlatMap).
   // Write with 10 FlatMap keys (0-9), project 3 keys {7, 3, 1}.
   // With feature reordering, projected streams are adjacent on disk and require
@@ -918,7 +942,7 @@ TEST_F(NimbleIndexProjectorTest, featureReorderingStorageReads) {
   }
 
   // Part 2: Compare storage reads with and without feature reordering.
-  struct TestParam {
+  struct ReorderParam {
     bool enableReordering;
     int32_t maxCoalesceDistance;
     std::string debugString() const {
@@ -929,7 +953,7 @@ TEST_F(NimbleIndexProjectorTest, featureReorderingStorageReads) {
     }
   };
 
-  std::vector<TestParam> testSettings = {
+  std::vector<ReorderParam> testSettings = {
       {false, 0},
       {true, 0},
       {false, 512 << 10},
@@ -959,21 +983,96 @@ TEST_F(NimbleIndexProjectorTest, featureReorderingStorageReads) {
 
   // With zero coalesce distance, feature reordering should result in fewer
   // storage reads because projected streams are adjacent on disk.
-  auto readsReorder0 = storageReads[TestParam{true, 0}.debugString()];
-  auto readsNoReorder0 = storageReads[TestParam{false, 0}.debugString()];
+  auto readsReorder0 = storageReads[ReorderParam{true, 0}.debugString()];
+  auto readsNoReorder0 = storageReads[ReorderParam{false, 0}.debugString()];
   EXPECT_LT(readsReorder0, readsNoReorder0)
       << "Feature reordering should reduce storage reads with zero coalesce. "
       << "With reorder: " << readsReorder0 << ", without: " << readsNoReorder0;
 
   // With large coalesce distance, reordering should not increase reads.
   auto readsReorderLarge =
-      storageReads[TestParam{true, 512 << 10}.debugString()];
+      storageReads[ReorderParam{true, 512 << 10}.debugString()];
   auto readsNoReorderLarge =
-      storageReads[TestParam{false, 512 << 10}.debugString()];
+      storageReads[ReorderParam{false, 512 << 10}.debugString()];
   EXPECT_LE(readsReorderLarge, readsNoReorderLarge)
       << "With large coalesce, reordering should not increase reads. "
       << "With reorder: " << readsReorderLarge
       << ", without: " << readsNoReorderLarge;
 }
+
+// Verifies that pinFileMetadata prevents re-reading metadata on repeated
+// project() calls within the same projector. Cross-reader caching via
+// AsyncDataCache requires CachedBufferedInput support in
+// NimbleIndexProjector (followup).
+TEST_P(NimbleIndexProjectorTest, pinnedMetadataNoReread) {
+  if (!GetParam().pinFileMetadata) {
+    GTEST_SKIP() << "Only applicable when pinFileMetadata is enabled";
+  }
+
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+
+  const int numRows = 100;
+  std::vector<int64_t> keys(numRows);
+  std::vector<int32_t> values(numRows);
+  for (int i = 0; i < numRows; ++i) {
+    keys[i] = i;
+    values[i] = i * 10;
+  }
+
+  auto batch = vectorMaker_->rowVector(
+      {"key", "value"},
+      {vectorMaker_->flatVector<int64_t>(keys),
+       vectorMaker_->flatVector<int32_t>(values)});
+
+  writeData({batch}, {"key"});
+
+  auto innerFile =
+      std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
+  auto trackingFile = std::make_shared<testing::TrackingReadFile>(innerFile);
+
+  // Compute metadata boundary: the start of the first stripe group metadata.
+  auto tablet = TabletReader::create(innerFile, leafPool_.get(), {});
+  auto stripeGroupsMeta = tablet->stripeGroupsMetadata();
+  ASSERT_FALSE(stripeGroupsMeta.empty());
+  const auto metadataBoundary = stripeGroupsMeta[0].offset();
+  tablet.reset();
+
+  dwio::common::ReaderOptions readerOptions(leafPool_.get());
+  readerOptions.setFileFormat(FileFormat::NIMBLE);
+  readerOptions.setFileMetadataCacheEnabled(GetParam().enableCache);
+  readerOptions.setPinFileMetadata(GetParam().pinFileMetadata);
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+  NimbleIndexProjector projector(trackingFile, subfields, readerOptions);
+
+  auto bounds = makePointLookup(rowType, {"key"}, 50);
+  NimbleIndexProjector::Request request;
+  request.keyBounds = {bounds};
+
+  // First project: reads both data and metadata regions.
+  projector.project(request, {});
+  ASSERT_GT(trackingFile->maxReadOffset(), metadataBoundary)
+      << "First project should read metadata beyond the boundary";
+
+  // Second project on the same projector: pinned metadata should avoid
+  // re-reading beyond the metadata boundary.
+  trackingFile->resetMaxReadOffset();
+  projector.project(request, {});
+  EXPECT_LE(trackingFile->maxReadOffset(), metadataBoundary)
+      << "Second project should not re-read metadata when "
+      << GetParam().debugString();
+}
+
+INSTANTIATE_TEST_CASE_P(
+    AllCacheParams,
+    NimbleIndexProjectorTest,
+    ::testing::ValuesIn(NimbleIndexProjectorTest::getTestParams()),
+    [](const ::testing::TestParamInfo<TestParam>& info) {
+      return fmt::format(
+          "cache{}_pin{}",
+          info.param.enableCache ? "On" : "Off",
+          info.param.pinFileMetadata ? "On" : "Off");
+    });
 
 } // namespace facebook::nimble::test

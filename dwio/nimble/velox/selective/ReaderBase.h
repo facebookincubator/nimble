@@ -123,6 +123,11 @@ class StripeStreams {
 
   void setStripe(int stripe) {
     stripe_ = stripe;
+    // Keep previous stripe's shared_ptrs (StripeGroup, ClusterIndexGroup)
+    // alive while loading the new stripe. This prevents the weak-pointer
+    // cache entries from expiring when consecutive stripes share the same
+    // group index, avoiding redundant metadata re-reads and re-parses.
+    auto prevHolder = std::move(stripeIdentifier_);
     stripeIdentifier_ = readerBase_->tablet().stripeIdentifier(stripe_);
   }
 
