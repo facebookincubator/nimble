@@ -22,17 +22,17 @@ namespace facebook::nimble {
 namespace {
 void addLabels(
     const std::shared_ptr<const Type>& node,
-    std::vector<std::string>& labels,
-    std::vector<size_t>& offsetToLabel,
     size_t labelIndex,
-    const std::string& name) {
+    const std::string& name,
+    std::vector<std::string>& labels,
+    std::vector<size_t>& offsetToLabel) {
   switch (node->kind()) {
     case Kind::Scalar: {
       const auto& scalar = node->asScalar();
       const auto offset = scalar.scalarDescriptor().offset();
       NIMBLE_DCHECK_LT(labelIndex, labels.size(), "Unexpected label index.");
       NIMBLE_DCHECK_GT(offsetToLabel.size(), offset, "Unexpected offset.");
-      labels.push_back(labels[labelIndex] + name);
+      labels.emplace_back(labels[labelIndex] + name);
       offsetToLabel[offset] = labels.size() - 1;
       break;
     }
@@ -47,7 +47,7 @@ void addLabels(
           offsetToLabel.size(), nanosOffset, "Unexpected nanos offset.");
       // linter does not recognize NIMBLE_DCHECK_LT as sufficient checks
       // @lint-ignore CLANGTIDY facebook-hte-ParameterUncheckedArrayBounds
-      labels.push_back(labels[labelIndex] + name);
+      labels.emplace_back(labels[labelIndex] + name);
       labelIndex = labels.size() - 1;
       offsetToLabel[microsOffset] = labelIndex;
       offsetToLabel[nanosOffset] = labelIndex;
@@ -58,10 +58,10 @@ void addLabels(
       const auto offset = array.lengthsDescriptor().offset();
       NIMBLE_DCHECK_LT(labelIndex, labels.size(), "Unexpected label index.");
       NIMBLE_DCHECK_GT(offsetToLabel.size(), offset, "Unexpected offset.");
-      labels.push_back(labels[labelIndex] + name);
+      labels.emplace_back(labels[labelIndex] + name);
       labelIndex = labels.size() - 1;
       offsetToLabel[offset] = labelIndex;
-      addLabels(array.elements(), labels, offsetToLabel, labelIndex, "");
+      addLabels(array.elements(), labelIndex, "", labels, offsetToLabel);
       break;
     }
     case Kind::Map: {
@@ -69,11 +69,11 @@ void addLabels(
       const auto offset = map.lengthsDescriptor().offset();
       NIMBLE_DCHECK_LT(labelIndex, labels.size(), "Unexpected label index.");
       NIMBLE_DCHECK_GT(offsetToLabel.size(), offset, "Unexpected offset.");
-      labels.push_back(labels[labelIndex] + name);
+      labels.emplace_back(labels[labelIndex] + name);
       labelIndex = labels.size() - 1;
       offsetToLabel[offset] = labelIndex;
-      addLabels(map.keys(), labels, offsetToLabel, labelIndex, "");
-      addLabels(map.values(), labels, offsetToLabel, labelIndex, "");
+      addLabels(map.keys(), labelIndex, "", labels, offsetToLabel);
+      addLabels(map.values(), labelIndex, "", labels, offsetToLabel);
       break;
     }
     case Kind::SlidingWindowMap: {
@@ -85,12 +85,12 @@ void addLabels(
           offsetToLabel.size(), offsetsOffset, "Unexpected offset.");
       NIMBLE_DCHECK_GT(
           offsetToLabel.size(), lengthsOffset, "Unexpected offset.");
-      labels.push_back(labels[labelIndex] + name);
+      labels.emplace_back(labels[labelIndex] + name);
       labelIndex = labels.size() - 1;
       offsetToLabel[offsetsOffset] = labelIndex;
       offsetToLabel[lengthsOffset] = labelIndex;
-      addLabels(map.keys(), labels, offsetToLabel, labelIndex, "");
-      addLabels(map.values(), labels, offsetToLabel, labelIndex, "");
+      addLabels(map.keys(), labelIndex, "", labels, offsetToLabel);
+      addLabels(map.values(), labelIndex, "", labels, offsetToLabel);
       break;
     }
     case Kind::Row: {
@@ -98,16 +98,16 @@ void addLabels(
       const auto offset = row.nullsDescriptor().offset();
       NIMBLE_DCHECK_LT(labelIndex, labels.size(), "Unexpected label index.");
       NIMBLE_DCHECK_GT(offsetToLabel.size(), offset, "Unexpected offset.");
-      labels.push_back(labels[labelIndex] + name + "/");
+      labels.emplace_back(labels[labelIndex] + name + "/");
       labelIndex = labels.size() - 1;
       offsetToLabel[offset] = labelIndex;
       for (auto i = 0; i < row.childrenCount(); ++i) {
         addLabels(
             row.childAt(i),
-            labels,
-            offsetToLabel,
             labelIndex,
-            folly::to<std::string>(i));
+            folly::to<std::string>(i),
+            labels,
+            offsetToLabel);
       }
       break;
     }
@@ -116,23 +116,23 @@ void addLabels(
       const auto offset = map.nullsDescriptor().offset();
       NIMBLE_DCHECK_LT(labelIndex, labels.size(), "Unexpected label index.");
       NIMBLE_DCHECK_GT(offsetToLabel.size(), offset, "Unexpected offset.");
-      labels.push_back(labels[labelIndex] + name);
+      labels.emplace_back(labels[labelIndex] + name);
       labelIndex = labels.size() - 1;
       offsetToLabel[offset] = labelIndex;
       for (auto i = 0; i < map.childrenCount(); ++i) {
         const auto inMapOffset = map.inMapDescriptorAt(i).offset();
         NIMBLE_DCHECK_GT(
             offsetToLabel.size(), inMapOffset, "Unexpected offset.");
-        labels.push_back(labels[labelIndex] + "/" + map.nameAt(i));
+        labels.emplace_back(labels[labelIndex] + "/" + map.nameAt(i));
         offsetToLabel[inMapOffset] = labels.size() - 1;
       }
       for (auto i = 0; i < map.childrenCount(); ++i) {
         addLabels(
             map.childAt(i),
-            labels,
-            offsetToLabel,
             offsetToLabel[map.inMapDescriptorAt(i).offset()],
-            "");
+            "",
+            labels,
+            offsetToLabel);
       }
       break;
     }
@@ -145,11 +145,11 @@ void addLabels(
           offsetToLabel.size(), offsetsOffset, "Unexpected offset.");
       NIMBLE_DCHECK_GT(
           offsetToLabel.size(), lengthsOffset, "Unexpected offset.");
-      labels.push_back(labels[labelIndex] + name);
+      labels.emplace_back(labels[labelIndex] + name);
       labelIndex = labels.size() - 1;
       offsetToLabel[offsetsOffset] = labelIndex;
       offsetToLabel[lengthsOffset] = labelIndex;
-      addLabels(array.elements(), labels, offsetToLabel, labelIndex, "");
+      addLabels(array.elements(), labelIndex, "", labels, offsetToLabel);
       break;
     }
   }
@@ -230,7 +230,7 @@ StreamLabels::StreamLabels(const std::shared_ptr<const Type>& root) {
   offsetToLabel_.resize(maxOffset + 1);
 
   labels_.emplace_back("");
-  addLabels(root, labels_, offsetToLabel_, 0, "");
+  addLabels(root, 0, "", labels_, offsetToLabel_);
 }
 
 std::string_view StreamLabels::streamLabel(offset_size offset) const {
