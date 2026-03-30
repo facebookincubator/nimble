@@ -173,8 +173,8 @@ TEST_F(SerializerDumpLibTest, Reset) {
 // serializations. With flat maps in kCompact format, different rows can have
 // different keys, producing different numbers of streams per serialization.
 TEST_F(SerializerDumpLibTest, varyingStreamCountsWithFlatMap) {
-  auto type = velox::ROW(
-      {{"features", velox::MAP(velox::INTEGER(), velox::BIGINT())}});
+  auto type =
+      velox::ROW({{"features", velox::MAP(velox::INTEGER(), velox::BIGINT())}});
 
   const SerializerOptions options{
       .version = SerializationVersion::kCompact,
@@ -188,14 +188,10 @@ TEST_F(SerializerDumpLibTest, varyingStreamCountsWithFlatMap) {
     const auto numRows = static_cast<velox::vector_size_t>(rowKeys.size());
     std::vector<int32_t> allKeys;
     std::vector<int64_t> allValues;
-    auto mapOffsets =
-        velox::allocateOffsets(numRows, leafPool_.get());
-    auto mapSizes =
-        velox::allocateSizes(numRows, leafPool_.get());
-    auto* rawOffsets =
-        mapOffsets->asMutable<velox::vector_size_t>();
-    auto* rawSizes =
-        mapSizes->asMutable<velox::vector_size_t>();
+    auto mapOffsets = velox::allocateOffsets(numRows, leafPool_.get());
+    auto mapSizes = velox::allocateSizes(numRows, leafPool_.get());
+    auto* rawOffsets = mapOffsets->asMutable<velox::vector_size_t>();
+    auto* rawSizes = mapSizes->asMutable<velox::vector_size_t>();
 
     for (velox::vector_size_t row = 0; row < numRows; ++row) {
       rawOffsets[row] = static_cast<velox::vector_size_t>(allKeys.size());
