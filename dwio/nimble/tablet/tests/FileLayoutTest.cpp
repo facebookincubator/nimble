@@ -87,8 +87,8 @@ TEST_F(FileLayoutTest, nonEmptyFile) {
 
     nimble::FileLayout layout;
     if (apiIndex == 0) {
-      velox::InMemoryReadFile readFile(file);
-      layout = nimble::FileLayout::create(&readFile, pool_.get());
+      auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+      layout = nimble::FileLayout::create(readFile, pool_.get());
     } else {
       layout = nimble::FileLayout::create(tmpPath, pool_.get());
     }
@@ -127,8 +127,8 @@ TEST_F(FileLayoutTest, emptyFile) {
   tabletWriter->close();
   writeFile.close();
 
-  velox::InMemoryReadFile readFile(file);
-  auto layout = nimble::FileLayout::create(&readFile, pool_.get());
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto layout = nimble::FileLayout::create(readFile, pool_.get());
 
   EXPECT_EQ(layout.fileSize, file.size());
   EXPECT_EQ(layout.postscript.majorVersion(), nimble::kVersionMajor);
@@ -157,8 +157,8 @@ TEST_F(FileLayoutTest, emptyFileWithIndex) {
   tabletWriter->close();
   writeFile.close();
 
-  velox::InMemoryReadFile readFile(file);
-  auto layout = nimble::FileLayout::create(&readFile, pool_.get());
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto layout = nimble::FileLayout::create(readFile, pool_.get());
 
   EXPECT_EQ(layout.fileSize, file.size());
   EXPECT_TRUE(layout.stripeGroups.empty());

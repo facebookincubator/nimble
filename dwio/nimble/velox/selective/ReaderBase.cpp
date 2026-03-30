@@ -53,7 +53,7 @@ std::shared_ptr<ReaderBase> ReaderBase::create(
   auto tabletOptions = TabletReader::configureOptions(options, input.get());
 
   auto tablet = TabletReader::create(
-      input->getReadFile().get(), &options.memoryPool(), tabletOptions);
+      input->getReadFile(), &options.memoryPool(), tabletOptions);
 
   auto* pool = &options.memoryPool();
   const auto& randomSkip = options.randomSkip();

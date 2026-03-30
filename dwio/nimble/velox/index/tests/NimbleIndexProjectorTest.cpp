@@ -900,7 +900,7 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
     writeFile(/*enableReordering=*/true);
     auto readFile =
         std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
-    auto tablet = TabletReader::create(readFile.get(), leafPool_.get(), {});
+    auto tablet = TabletReader::create(readFile, leafPool_.get(), {});
     ASSERT_GE(tablet->stripeCount(), 1);
 
     auto stripeId = tablet->stripeIdentifier(0);

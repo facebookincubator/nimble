@@ -217,7 +217,7 @@ struct FileLayout {
   /// @param pool Memory pool for allocations (must not be null).
   /// @return The file layout.
   static FileLayout create(
-      velox::ReadFile* file,
+      std::shared_ptr<velox::ReadFile> file,
       velox::memory::MemoryPool* pool);
 
   /// Reads file layout from a Nimble file at the given path.

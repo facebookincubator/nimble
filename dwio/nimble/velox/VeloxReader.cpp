@@ -163,7 +163,10 @@ VeloxReader::VeloxReader(
     std::shared_ptr<const velox::dwio::common::ColumnSelector> selector,
     VeloxReadParams params)
     : VeloxReader(
-          TabletReader::create(file, &pool, defaultTabletReaderOptions()),
+          TabletReader::create(
+              std::shared_ptr<velox::ReadFile>(file, [](auto*) {}),
+              &pool,
+              defaultTabletReaderOptions()),
           pool,
           std::move(selector),
           std::move(params)) {}
