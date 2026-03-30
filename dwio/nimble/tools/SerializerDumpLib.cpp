@@ -168,9 +168,19 @@ void SerializationDump::addSerialization(std::string_view serialized) {
   if (stats_.streams.empty()) {
     stats_ = std::move(stats);
   } else {
-    // Accumulate per-stream sizes.
-    for (size_t i = 0; i < stats.streams.size() && i < stats_.streams.size();
-         ++i) {
+    // Stream count can vary across serializations because flat map keys
+    // differ per row, producing different numbers of streams. Grow the
+    // accumulator when a new serialization has more streams, copying metadata
+    // (labels, encoding info) from the new stats for the new entries.
+    const auto prevSize = stats_.streams.size();
+    if (stats.streams.size() > prevSize) {
+      stats_.streams.resize(stats.streams.size());
+      for (size_t i = prevSize; i < stats.streams.size(); ++i) {
+        stats_.streams[i] = stats.streams[i];
+      }
+    }
+    // Accumulate per-stream sizes for streams that existed before the resize.
+    for (size_t i = 0; i < std::min(prevSize, stats.streams.size()); ++i) {
       stats_.streams[i].rawSize += stats.streams[i].rawSize;
       stats_.streams[i].encodedSize += stats.streams[i].encodedSize;
       stats_.streams[i].rowCount += stats.streams[i].rowCount;

@@ -37,17 +37,17 @@ class SerializationDump {
   /// Per-stream encoding statistics extracted from a nimble serialized buffer.
   struct StreamStats {
     /// Zero-based index of this stream in the serialized buffer.
-    uint32_t streamIndex{};
+    uint32_t streamIndex{0};
     /// Encoding type used to encode this stream (e.g., RLE, Dictionary).
     EncodingType encodingType{};
     /// Data type of the elements in this stream.
     DataType dataType{};
     /// Number of rows (elements) in this stream.
-    uint32_t rowCount{};
+    uint32_t rowCount{0};
     /// Uncompressed size in bytes (rowCount * element size).
-    uint64_t rawSize{};
+    uint64_t rawSize{0};
     /// Encoded (on-disk) size in bytes.
-    uint64_t encodedSize{};
+    uint64_t encodedSize{0};
     /// Human-readable schema label (e.g., "Scalar (trait_name)").
     std::string schemaLabel;
     /// True if the stream has zero encoded bytes (no data written).
@@ -59,13 +59,13 @@ class SerializationDump {
     /// Serialization format version.
     SerializationVersion version{};
     /// Total number of rows across all analyzed buffers.
-    uint32_t rowCount{};
+    uint32_t rowCount{0};
     /// Per-stream statistics.
     std::vector<StreamStats> streams;
     /// Total uncompressed size in bytes across all streams.
-    uint64_t rawSize{};
+    uint64_t rawSize{0};
     /// Total encoded (on-disk) size in bytes across all streams.
-    uint64_t encodedSize{};
+    uint64_t encodedSize{0};
 
     /// Returns a human-readable string representation of the stats.
     std::string toString() const;
