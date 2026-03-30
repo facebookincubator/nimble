@@ -201,25 +201,12 @@ class TabletReader {
       MemoryPool* pool,
       const Options& options);
 
-  static std::shared_ptr<TabletReader>
-  create(velox::ReadFile* readFile, MemoryPool* pool, const Options& options);
-
   /// Configures TabletReader::Options from Velox ReaderOptions.
   /// @param bufferedInput Optional BufferedInput pointer to set on the
   ///        returned Options for metadata reads.
   static Options configureOptions(
       const velox::dwio::common::ReaderOptions& options,
       velox::dwio::common::BufferedInput* bufferedInput = nullptr);
-
-  /// For testing use
-  static std::shared_ptr<TabletReader> testingCreate(
-      std::shared_ptr<velox::ReadFile> readFile,
-      MemoryPool* pool,
-      Postscript postscript,
-      std::string_view footer,
-      std::string_view stripes,
-      std::string_view stripeGroup,
-      std::unordered_map<std::string, std::string_view> optionalSections = {});
 
   /// Returns a collection of stream loaders for the given stripe. The stream
   /// loaders are returned in the same order as the input stream identifiers
@@ -342,20 +329,9 @@ class TabletReader {
 
  private:
   TabletReader(
-      velox::ReadFile* readFile,
-      std::shared_ptr<velox::ReadFile> ownedReadFile,
-      MemoryPool& pool,
-      const Options& options);
-
-  // For testing use.
-  TabletReader(
       std::shared_ptr<velox::ReadFile> readFile,
       MemoryPool& pool,
-      Postscript postscript,
-      std::string_view footer,
-      std::string_view stripes,
-      std::string_view stripeGroup,
-      std::unordered_map<std::string, std::string_view> optionalSections = {});
+      const Options& options);
 
   void init(const Options& options);
 
@@ -541,17 +517,11 @@ class TabletReader {
   uint32_t stripeCount(uint32_t stripeGroupIndex) const;
 
   MemoryPool* const pool_;
-  // Non-owning pointer to the file for reading. Always valid during the
-  // lifetime of TabletReader.
-  velox::ReadFile* const file_;
-  // Optional owned file pointer. When provided, ensures the file remains
-  // valid throughout TabletReader's lifetime.
-  const std::shared_ptr<velox::ReadFile> ownedFile_;
+  const std::shared_ptr<velox::ReadFile> file_;
   // Owned BufferedInput clone for metadata reads. Created by cloning
   // options.bufferedInput during construction. When pinFileMetadata is
   // enabled with CachedBufferedInput, uses a non-cacheable clone.
   const std::unique_ptr<velox::dwio::common::BufferedInput> metadataInput_;
-  velox::dwio::common::BufferedInput* const metadataBufferedInput_;
 
   uint64_t fileSize_{0};
   Postscript ps_;

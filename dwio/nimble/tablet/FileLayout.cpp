@@ -24,9 +24,9 @@
 namespace facebook::nimble {
 
 FileLayout FileLayout::create(
-    velox::ReadFile* file,
+    std::shared_ptr<velox::ReadFile> file,
     velox::memory::MemoryPool* pool) {
-  auto tablet = TabletReader::create(file, pool, {});
+  auto tablet = TabletReader::create(std::move(file), pool, {});
 
   FileLayout layout;
   layout.fileSize = tablet->fileSize();
@@ -81,7 +81,7 @@ FileLayout FileLayout::create(
     velox::memory::MemoryPool* pool) {
   auto fs = velox::filesystems::getFileSystem(path, nullptr);
   auto file = fs->openFileForRead(path);
-  return create(file.get(), pool);
+  return create(std::move(file), pool);
 }
 
 } // namespace facebook::nimble

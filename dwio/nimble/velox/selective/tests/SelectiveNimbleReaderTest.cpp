@@ -2589,7 +2589,7 @@ TEST_P(SelectiveNimbleReaderTest, pinnedMetadataNoReread) {
 
   // Get the metadata boundary. Stripe group metadata starts right after the
   // last stripe's data. Any read at or above this offset is a metadata read.
-  auto tablet = TabletReader::create(delegate.get(), pool(), {});
+  auto tablet = TabletReader::create(delegate, pool(), {});
   const auto stripeGroupsMeta = tablet->stripeGroupsMetadata();
   ASSERT_EQ(stripeGroupsMeta.size(), 1);
   const auto metadataBoundary = stripeGroupsMeta[0].offset();

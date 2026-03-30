@@ -267,42 +267,6 @@ Postscript::Postscript(
       majorVersion_(majorVersion),
       minorVersion_(minorVersion) {}
 
-TabletReader::TabletReader(
-    std::shared_ptr<velox::ReadFile> readFile,
-    MemoryPool& pool,
-    Postscript postscript,
-    std::string_view footer,
-    std::string_view stripes,
-    std::string_view stripeGroup,
-    std::unordered_map<std::string, std::string_view> optionalSections)
-    : pool_{&pool},
-      file_{readFile.get()},
-      ownedFile_{std::move(readFile)},
-      metadataBufferedInput_{nullptr},
-      ps_{std::move(postscript)},
-      footer_{std::make_unique<MetadataBuffer>(pool, footer)},
-      stripes_{std::make_unique<MetadataBuffer>(pool, stripes)},
-      stripeGroupCache_{[this](uint32_t stripeGroupIndex) {
-        return loadStripeGroup(stripeGroupIndex);
-      }},
-      clusterIndexCache_{[this](uint32_t stripeGroupIndex) {
-        return loadClusterIndexGroup(stripeGroupIndex);
-      }},
-      chunkIndexCache_{[this](uint32_t stripeGroupIndex) {
-        return loadChunkIndexGroup(stripeGroupIndex);
-      }} {
-  stripeGroupCache_.pin(
-      0,
-      std::make_shared<StripeGroup>(
-          0, *stripes_, std::make_unique<MetadataBuffer>(*pool_, stripeGroup)));
-  initStripes();
-  auto optionalSectionsCacheLock = optionalSectionsCache_.wlock();
-  for (auto& pair : optionalSections) {
-    optionalSectionsCacheLock->insert(
-        {pair.first, std::make_unique<MetadataBuffer>(*pool_, pair.second)});
-  }
-}
-
 namespace {
 
 // Creates an owned BufferedInput clone for metadata reads. When
@@ -328,15 +292,12 @@ std::unique_ptr<velox::dwio::common::BufferedInput> createMetadataInput(
 } // namespace
 
 TabletReader::TabletReader(
-    velox::ReadFile* readFile,
-    std::shared_ptr<velox::ReadFile> ownedReadFile,
+    std::shared_ptr<velox::ReadFile> readFile,
     MemoryPool& pool,
     const Options& options)
     : pool_{&pool},
-      file_{readFile},
-      ownedFile_{std::move(ownedReadFile)},
+      file_{std::move(readFile)},
       metadataInput_{createMetadataInput(options)},
-      metadataBufferedInput_{metadataInput_.get()},
       stripeGroupCache_{
           [this](uint32_t stripeGroupIndex) {
             return loadStripeGroup(stripeGroupIndex);
@@ -612,40 +573,12 @@ TabletReader::SectionLoader TabletReader::makeSectionLoader(
 }
 
 std::shared_ptr<TabletReader> TabletReader::create(
-    velox::ReadFile* readFile,
-    MemoryPool* pool,
-    const Options& options) {
-  NIMBLE_CHECK_NOT_NULL(pool);
-  return std::shared_ptr<TabletReader>(
-      new TabletReader(readFile, nullptr, *pool, options));
-}
-
-std::shared_ptr<TabletReader> TabletReader::create(
     std::shared_ptr<velox::ReadFile> readFile,
     MemoryPool* pool,
     const Options& options) {
   NIMBLE_CHECK_NOT_NULL(pool);
   return std::shared_ptr<TabletReader>(
-      new TabletReader(readFile.get(), readFile, *pool, options));
-}
-
-std::shared_ptr<TabletReader> TabletReader::testingCreate(
-    std::shared_ptr<velox::ReadFile> readFile,
-    MemoryPool* pool,
-    Postscript postscript,
-    std::string_view footer,
-    std::string_view stripes,
-    std::string_view stripeGroup,
-    std::unordered_map<std::string, std::string_view> optionalSections) {
-  NIMBLE_CHECK_NOT_NULL(pool);
-  return std::shared_ptr<TabletReader>(new TabletReader(
-      std::move(readFile),
-      *pool,
-      std::move(postscript),
-      footer,
-      stripes,
-      stripeGroup,
-      std::move(optionalSections)));
+      new TabletReader(std::move(readFile), *pool, options));
 }
 
 uint64_t TabletReader::calculateChecksum(
@@ -732,14 +665,13 @@ uint32_t TabletReader::stripeGroupIndex(uint32_t stripeIndex) const {
 }
 
 bool TabletReader::hasCache() const {
-  return metadataBufferedInput_ != nullptr &&
-      metadataBufferedInput_->hasCache();
+  return metadataInput_ != nullptr && metadataInput_->hasCache();
 }
 
 bool TabletReader::tryLoadAndInitFooterFromCache() {
   // Try to read footer+PS from cache at synthetic offset fileSize_.
   // fileSize_ is a well-known key computable without any file IO.
-  auto cached = metadataBufferedInput_->findCachedRegion(fileSize_);
+  auto cached = metadataInput_->findCachedRegion(fileSize_);
   if (!cached.has_value()) {
     return false;
   }
@@ -809,7 +741,7 @@ void TabletReader::loadStripesAndSections(const Options& options) {
   auto enqueuedSections = enqueueOptionalSections(preloadSectionNames(options));
 
   // Single load — BufferedInput coalesces adjacent regions.
-  metadataBufferedInput_->load(velox::dwio::common::LogType::FOOTER);
+  metadataInput_->load(velox::dwio::common::LogType::FOOTER);
 
   loadEnqueuedOptionalSections(std::move(enqueuedSections));
 
@@ -820,9 +752,9 @@ void TabletReader::loadStripesAndSections(const Options& options) {
 std::unique_ptr<MetadataBuffer> TabletReader::readMetadata(
     const MetadataSection& section,
     velox::dwio::common::LogType logType) const {
-  if (metadataBufferedInput_ != nullptr) {
+  if (metadataInput_ != nullptr) {
     return readMetadata(
-        metadataBufferedInput_->read(section.offset(), section.size(), logType),
+        metadataInput_->read(section.offset(), section.size(), logType),
         section);
   }
 
@@ -910,10 +842,10 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
   std::unique_ptr<MetadataBuffer> clusterIndexMetadata;
   std::unique_ptr<MetadataBuffer> chunkIndexMetadata;
 
-  if (metadataBufferedInput_ != nullptr) {
+  if (metadataInput_ != nullptr) {
     // Use enqueue/load pattern for coalesced IO. BufferedInput will coalesce
     // adjacent regions into a single read when possible.
-    auto groupStream = metadataBufferedInput_->enqueue(
+    auto groupStream = metadataInput_->enqueue(
         {groupSection.offset(), groupSection.size(), "stripe_group"});
 
     std::unique_ptr<velox::dwio::common::SeekableInputStream>
@@ -921,7 +853,7 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
     MetadataSection clusterIndexSection;
     if (hasClusterIndex) {
       clusterIndexSection = clusterIndex_->groupMetadata(stripeGroupIndex);
-      clusterIndexStream = metadataBufferedInput_->enqueue(
+      clusterIndexStream = metadataInput_->enqueue(
           {clusterIndexSection.offset(),
            clusterIndexSection.size(),
            "cluster_index_group"});
@@ -931,14 +863,14 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
     MetadataSection chunkIndexSection;
     if (hasChunkIndex) {
       chunkIndexSection = chunkIndex_->groupMetadata(stripeGroupIndex);
-      chunkIndexStream = metadataBufferedInput_->enqueue(
+      chunkIndexStream = metadataInput_->enqueue(
           {chunkIndexSection.offset(),
            chunkIndexSection.size(),
            "chunk_index_group"});
     }
 
     // Single load() call - BufferedInput coalesces adjacent regions.
-    metadataBufferedInput_->load(velox::dwio::common::LogType::GROUP);
+    metadataInput_->load(velox::dwio::common::LogType::GROUP);
 
     groupMetadata = readMetadata(std::move(groupStream), groupSection);
     if (hasClusterIndex) {
@@ -1312,7 +1244,7 @@ TabletReader::enqueueOptionalSections(
     enqueuedSections.push_back(
         {name,
          it->second,
-         metadataBufferedInput_->enqueue(
+         metadataInput_->enqueue(
              {it->second.offset(), it->second.size(), "optional"})});
   }
   return enqueuedSections;
@@ -1336,13 +1268,12 @@ TabletReader::enqueueStripesSection() {
     return std::nullopt;
   }
   NIMBLE_CHECK_GT(footer->row_count(), 0);
-  NIMBLE_CHECK_NOT_NULL(metadataBufferedInput_);
+  NIMBLE_CHECK_NOT_NULL(metadataInput_);
   const auto section = toMetadataSection(stripesSection);
   return EnqueuedSection{
       "stripes",
       section,
-      metadataBufferedInput_->enqueue(
-          {section.offset(), section.size(), "stripes"})};
+      metadataInput_->enqueue({section.offset(), section.size(), "stripes"})};
 }
 
 void TabletReader::cacheMetadata(
@@ -1368,7 +1299,7 @@ void TabletReader::cacheMetadata(
     if (ioBufOffset + regionSize > footerIoSize) {
       return;
     }
-    metadataBufferedInput_->cacheRegion(
+    metadataInput_->cacheRegion(
         cacheOffset.value_or(regionOffset),
         regionSize,
         footerIoBuf,

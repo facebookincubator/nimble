@@ -335,7 +335,7 @@ void NimbleDslLib::select(
     uint64_t limit,
     uint64_t offset,
     std::optional<uint32_t> stripeId) {
-  auto tablet = TabletReader::create(file_.get(), pool_.get(), {});
+  auto tablet = TabletReader::create(file_, pool_.get(), {});
 
   // First create a reader without projection to get the full schema.
   VeloxReader schemaReader{tablet, *pool_};
@@ -438,7 +438,7 @@ void NimbleDslLib::select(
 }
 
 void NimbleDslLib::describe() {
-  auto tablet = TabletReader::create(file_.get(), pool_.get(), {});
+  auto tablet = TabletReader::create(file_, pool_.get(), {});
   VeloxReader reader{tablet, *pool_};
   const auto& veloxType = reader.type();
 
@@ -531,7 +531,7 @@ void NimbleDslLib::showStats() {
   TabletReader::Options tabletOptions;
   tabletOptions.preloadOptionalSections = {
       std::string(kVectorizedStatsSection)};
-  auto tablet = TabletReader::create(file_.get(), pool_.get(), tabletOptions);
+  auto tablet = TabletReader::create(file_, pool_.get(), tabletOptions);
   VeloxReader reader{tablet, *pool_};
 
   auto statsSection =
@@ -638,7 +638,7 @@ void NimbleDslLib::showOptionalSections() {
 }
 
 void NimbleDslLib::showEncoding(std::optional<uint32_t> stripeId) {
-  auto tablet = TabletReader::create(file_.get(), pool_.get(), {});
+  auto tablet = TabletReader::create(file_, pool_.get(), {});
   VeloxReader reader{tablet, *pool_};
   StreamLabels labels{reader.schema()};
 

@@ -246,7 +246,7 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
       nimble::TabletReader::Options options = {}) {
     readFile_ = readFile;
     options.bufferedInput = createBufferedInput(readFile_);
-    return nimble::TabletReader::create(readFile_.get(), pool_.get(), options);
+    return nimble::TabletReader::create(readFile_, pool_.get(), options);
   }
 
   /// Overload for string file content (creates InMemoryReadFile internally).
@@ -312,9 +312,10 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
 
       for (auto useChainedBuffers : {false, true}) {
         SCOPED_TRACE(fmt::format("useChainedBuffers={}", useChainedBuffers));
-        nimble::testing::InMemoryTrackableReadFile readFile(
-            file, useChainedBuffers);
-        auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), {});
+        auto readFile =
+            std::make_shared<nimble::testing::InMemoryTrackableReadFile>(
+                file, useChainedBuffers);
+        auto tablet = nimble::TabletReader::create(readFile, pool_.get(), {});
 
         // Get stripe group count through the read path
         nimble::test::TabletReaderTestHelper tabletHelper(tablet.get());
@@ -354,7 +355,7 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
           EXPECT_EQ(
               stripesData[stripe].rowCount, tablet->stripeRowCount(stripe));
 
-          readFile.resetChunks();
+          readFile->resetChunks();
           auto stripeIdentifier = tablet->stripeIdentifier(stripe);
           std::vector<uint32_t> identifiers(
               tablet->streamCount(stripeIdentifier));
@@ -368,7 +369,7 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
             }
           }
           EXPECT_EQ(totalStreamSize[stripe], totalStreamSizeExpected);
-          auto chunks = readFile.chunks();
+          auto chunks = readFile->chunks();
           auto expectedReads = stripesData[stripe].streams.size();
           if (expectedReadsPerStripe.has_value()) {
             expectedReads = expectedReadsPerStripe.value()(stripe);
@@ -508,16 +509,17 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
 
     for (auto useChainedBuffers : {false, true}) {
       // Velidate checksum on a good file
-      nimble::testing::InMemoryTrackableReadFile readFile(
-          file, useChainedBuffers);
+      auto readFile =
+          std::make_shared<nimble::testing::InMemoryTrackableReadFile>(
+              file, useChainedBuffers);
       auto tablet =
-          nimble::TabletReader::create(&readFile, this->pool_.get(), {});
+          nimble::TabletReader::create(readFile, this->pool_.get(), {});
       auto storedChecksum = tablet->checksum();
       EXPECT_EQ(
           storedChecksum,
           nimble::TabletReader::calculateChecksum(
               *pool_,
-              &readFile,
+              readFile.get(),
               checksumChunked ? writeFile.size() / 3 : writeFile.size()))
           << "metadataCompressionThreshold: " << metadataCompressionThreshold
           << ", checksumType: " << nimble::toString(checksumType)
@@ -885,9 +887,10 @@ TEST_P(TabletTest, optionalSections) {
   facebook::velox::dwio::common::ExecutorBarrier barrier{executor};
 
   for (auto useChainedBuffers : {false, true}) {
-    nimble::testing::InMemoryTrackableReadFile readFile(
-        file, useChainedBuffers);
-    auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), {});
+    auto readFile =
+        std::make_shared<nimble::testing::InMemoryTrackableReadFile>(
+            file, useChainedBuffers);
+    auto tablet = nimble::TabletReader::create(readFile, pool_.get(), {});
 
     ASSERT_EQ(tablet->optionalSections().size(), 4);
 
@@ -965,9 +968,10 @@ TEST_P(TabletTest, optionalSectionsEmpty) {
   tabletWriter->close();
 
   for (auto useChainedBuffers : {false, true}) {
-    nimble::testing::InMemoryTrackableReadFile readFile(
-        file, useChainedBuffers);
-    auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), {});
+    auto readFile =
+        std::make_shared<nimble::testing::InMemoryTrackableReadFile>(
+            file, useChainedBuffers);
+    auto tablet = nimble::TabletReader::create(readFile, pool_.get(), {});
 
     ASSERT_TRUE(tablet->optionalSections().empty());
 
@@ -988,8 +992,9 @@ TEST_P(TabletTest, hasOptionalSection) {
 
   tabletWriter->close();
 
-  nimble::testing::InMemoryTrackableReadFile readFile(file, true);
-  auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), {});
+  auto readFile =
+      std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, true);
+  auto tablet = nimble::TabletReader::create(readFile, pool_.get(), {});
 
   // Test that hasOptionalSection returns true for existing sections
   EXPECT_TRUE(tablet->hasOptionalSection("section1"));
@@ -1011,8 +1016,9 @@ TEST_P(TabletTest, hasOptionalSectionEmpty) {
 
   tabletWriter->close();
 
-  nimble::testing::InMemoryTrackableReadFile readFile(file, true);
-  auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), {});
+  auto readFile =
+      std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, true);
+  auto tablet = nimble::TabletReader::create(readFile, pool_.get(), {});
 
   // Test that hasOptionalSection returns false when there are no sections
   EXPECT_FALSE(tablet->hasOptionalSection("section1"));
@@ -1050,15 +1056,16 @@ TEST_P(TabletTest, optionalSectionsPreload) {
                       std::vector<std::tuple<std::string, size_t, std::string>>
                           expected) {
       for (auto useChainedBuffers : {false, true}) {
-        nimble::testing::InMemoryTrackableReadFile readFile(
-            file, useChainedBuffers);
+        auto readFile =
+            std::make_shared<nimble::testing::InMemoryTrackableReadFile>(
+                file, useChainedBuffers);
         nimble::TabletReader::Options options;
         options.preloadOptionalSections = preload;
         auto tablet =
-            nimble::TabletReader::create(&readFile, pool_.get(), options);
+            nimble::TabletReader::create(readFile, pool_.get(), options);
 
         // Expecting only the initial footer read.
-        ASSERT_EQ(expectedInitialReads, readFile.chunks().size());
+        ASSERT_EQ(expectedInitialReads, readFile->chunks().size());
 
         for (const auto& e : expected) {
           auto expectedSection = std::get<0>(e);
@@ -1067,7 +1074,7 @@ TEST_P(TabletTest, optionalSectionsPreload) {
           auto section = tablet->loadOptionalSection(expectedSection);
           ASSERT_TRUE(section.has_value());
           ASSERT_EQ(expectedContent, section->content());
-          ASSERT_EQ(expectedReads, readFile.chunks().size());
+          ASSERT_EQ(expectedReads, readFile->chunks().size());
         }
       }
     };
@@ -1446,8 +1453,8 @@ TEST_P(TabletWithIndexTest, stripeIdentifier) {
   tabletWriter->close();
 
   // Read and verify
-  auto tablet = nimble::TabletReader::create(
-      std::make_shared<velox::InMemoryReadFile>(file), pool_.get(), {});
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tablet = nimble::TabletReader::create(readFile, pool_.get(), {});
 
   ASSERT_EQ(tablet->stripeCount(), 1);
   ASSERT_NE(tablet->clusterIndex(), nullptr);
@@ -1591,8 +1598,9 @@ TEST_P(TabletWithIndexTest, singleGroup) {
   writeFile.close();
 
   // Read and verify the tablet
-  nimble::testing::InMemoryTrackableReadFile readFile(file, false);
-  auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), {});
+  auto readFile =
+      std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
+  auto tablet = nimble::TabletReader::create(readFile, pool_.get(), {});
 
   // Use test helper to verify stripe group count through the read path
   nimble::test::TabletReaderTestHelper tabletHelper(tablet.get());
@@ -2004,8 +2012,9 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
   writeFile.close();
 
   // Read and verify the tablet
-  nimble::testing::InMemoryTrackableReadFile readFile(file, false);
-  auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), {});
+  auto readFile =
+      std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
+  auto tablet = nimble::TabletReader::create(readFile, pool_.get(), {});
 
   // Use test helper to verify stripe group count
   nimble::test::TabletReaderTestHelper tabletHelper(tablet.get());
@@ -2468,8 +2477,9 @@ TEST_P(TabletWithIndexTest, singleGroupWithEmptyStream) {
   writeFile.close();
 
   // Read and verify the tablet
-  nimble::testing::InMemoryTrackableReadFile readFile(file, false);
-  auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), {});
+  auto readFile =
+      std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
+  auto tablet = nimble::TabletReader::create(readFile, pool_.get(), {});
 
   // Use test helper to verify stripe group count
   nimble::test::TabletReaderTestHelper tabletHelper(tablet.get());
@@ -2890,8 +2900,9 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   writeFile.close();
 
   // Read and verify the tablet
-  nimble::testing::InMemoryTrackableReadFile readFile(file, false);
-  auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), {});
+  auto readFile =
+      std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
+  auto tablet = nimble::TabletReader::create(readFile, pool_.get(), {});
 
   // Use test helper to verify stripe group count
   nimble::test::TabletReaderTestHelper tabletHelper(tablet.get());
@@ -3320,8 +3331,9 @@ TEST_P(TabletWithIndexTest, streamDeduplication) {
   writeFile.close();
 
   // Read and verify the tablet
-  nimble::testing::InMemoryTrackableReadFile readFile(file, false);
-  auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), {});
+  auto readFile =
+      std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
+  auto tablet = nimble::TabletReader::create(readFile, pool_.get(), {});
 
   // Use test helper to verify stripe group count
   nimble::test::TabletReaderTestHelper tabletHelper(tablet.get());
@@ -3500,8 +3512,10 @@ TEST_P(TabletWithIndexTest, keyOrderEnforcement) {
         writeFile.close();
 
         // Verify file is readable
-        nimble::testing::InMemoryTrackableReadFile readFile(file, false);
-        auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), {});
+        auto readFile =
+            std::make_shared<nimble::testing::InMemoryTrackableReadFile>(
+                file, false);
+        auto tablet = nimble::TabletReader::create(readFile, pool_.get(), {});
         EXPECT_EQ(tablet->stripeCount(), 2);
         EXPECT_TRUE(tablet->hasOptionalSection(
             std::string(nimble::kClusterIndexSection)));
@@ -3535,8 +3549,9 @@ TEST_P(TabletWithIndexTest, noIndex) {
   writeFile.close();
 
   // Verify no index section and no chunk index section
-  nimble::testing::InMemoryTrackableReadFile readFile(file, false);
-  auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), {});
+  auto readFile =
+      std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
+  auto tablet = nimble::TabletReader::create(readFile, pool_.get(), {});
   EXPECT_EQ(tablet->stripeCount(), 1);
   EXPECT_FALSE(
       tablet->hasOptionalSection(std::string(nimble::kClusterIndexSection)));
@@ -3641,8 +3656,10 @@ TEST_F(TabletWithIndexTest, configCombinations) {
     writeFile.close();
 
     // Read back
-    nimble::testing::InMemoryTrackableReadFile readFile(file, false);
-    auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), {});
+    auto readFile =
+        std::make_shared<nimble::testing::InMemoryTrackableReadFile>(
+            file, false);
+    auto tablet = nimble::TabletReader::create(readFile, pool_.get(), {});
     EXPECT_EQ(tablet->stripeCount(), 2);
 
     // Verify optional sections
@@ -3723,8 +3740,9 @@ TEST_P(TabletWithIndexTest, emptyFileWithIndexConfig) {
   writeFile.close();
 
   // Verify the file can be read.
-  nimble::testing::InMemoryTrackableReadFile readFile(file, false);
-  auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), {});
+  auto readFile =
+      std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
+  auto tablet = nimble::TabletReader::create(readFile, pool_.get(), {});
 
   // Verify no stripes.
   EXPECT_EQ(tablet->stripeCount(), 0);
@@ -3798,8 +3816,8 @@ TEST_P(TabletWithIndexTest, fileLayoutWithIndex) {
   tabletWriter->close();
   writeFile.close();
 
-  velox::InMemoryReadFile readFile(file);
-  auto layout = nimble::FileLayout::create(&readFile, pool_.get());
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto layout = nimble::FileLayout::create(readFile, pool_.get());
 
   EXPECT_EQ(layout.fileSize, file.size());
   EXPECT_EQ(layout.stripesInfo.size(), 2);
@@ -4013,10 +4031,11 @@ TEST_P(TabletTest, readerOptionsAdaptiveMode) {
   writeFile.close();
 
   // Read with adaptive mode (maxFooterIoBytes=0)
-  nimble::testing::InMemoryTrackableReadFile readFile(file, false);
+  auto readFile =
+      std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
   nimble::TabletReader::Options options;
   options.maxFooterIoBytes = 0; // Adaptive mode
-  auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), options);
+  auto tablet = nimble::TabletReader::create(readFile, pool_.get(), options);
 
   EXPECT_EQ(tablet->stripeCount(), 1);
   EXPECT_EQ(tablet->stripeRowCount(0), 500);
@@ -4043,10 +4062,11 @@ TEST_P(TabletTest, readerOptionsSpeculativeMode) {
   writeFile.close();
 
   // Read with speculative mode
-  nimble::testing::InMemoryTrackableReadFile readFile(file, false);
+  auto readFile =
+      std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
   nimble::TabletReader::Options options;
   options.maxFooterIoBytes = 1024; // Small speculative read
-  auto tablet = nimble::TabletReader::create(&readFile, pool_.get(), options);
+  auto tablet = nimble::TabletReader::create(readFile, pool_.get(), options);
 
   EXPECT_EQ(tablet->stripeCount(), 1);
   EXPECT_EQ(tablet->stripeRowCount(0), 600);
@@ -4401,8 +4421,8 @@ TEST(TabletStressTest, concurrentReadersWithCacheEviction) {
       }
 
       options.bufferedInput = bi.get();
-      auto reader = nimble::TabletReader::create(
-          readFile.get(), threadPool.get(), options);
+      auto reader =
+          nimble::TabletReader::create(readFile, threadPool.get(), options);
       EXPECT_EQ(reader->stripeCount(), 5);
       EXPECT_EQ(reader->tabletRowCount(), 1000);
 
