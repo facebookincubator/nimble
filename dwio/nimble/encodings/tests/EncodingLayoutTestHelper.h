@@ -46,6 +46,13 @@ struct SparseBoolEnc {
   operator EncodingLayout() const;
 };
 
+struct DeltaEnc {
+  EncodingLayout deltas = TrivialEnc{};
+  EncodingLayout restatements = TrivialEnc{};
+  EncodingLayout isRestatements = TrivialEnc{};
+  operator EncodingLayout() const;
+};
+
 // ===========================================================================
 // Compound encoding structs (with named children, defaulting to TrivialEnc{})
 // ===========================================================================

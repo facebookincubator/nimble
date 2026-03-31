@@ -1687,6 +1687,193 @@ TEST_P(
   }
 }
 
+// ---------------------------------------------------------------------------
+// 14. DeltaEncoding<int64_t> + AlwaysTrue + dense
+//     Delta always uses slow path (no bulkScan).
+// ---------------------------------------------------------------------------
+TEST_P(ReadWithVisitorTest, encodingLevel_Delta_AlwaysTrue_Dense) {
+  constexpr int kRows = 500;
+
+  // Monotonically increasing data suitable for delta encoding.
+  std::vector<int64_t> data(kRows);
+  for (int i = 0; i < kRows; ++i) {
+    data[i] = i * 3;
+  }
+
+  auto input = makeRowVector(
+      {makeFlatVector<int64_t>(kRows, [](auto i) { return i * 3; })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  std::vector<vector_size_t> rowVec(kRows);
+  std::iota(rowVec.begin(), rowVec.end(), 0);
+  RowSet rows(rowVec.data(), rowVec.size());
+
+  reader->doPrepareRead<int64_t>(0, rows, nullptr);
+
+  Buffer buffer(*pool());
+  auto encoding =
+      createFromCustomLayout<int64_t>(DeltaEnc{}, data, *pool(), buffer);
+
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = true;
+  DecoderVisitor<
+      int64_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
+
+  EXPECT_EQ(reader->numValues(), kRows);
+  auto values = getValues<int64_t>(reader);
+  for (int i = 0; i < kRows; ++i) {
+    EXPECT_EQ(values[i], i * 3) << "row " << i;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 15. DeltaEncoding<int64_t> + BigintRange + sparse
+// ---------------------------------------------------------------------------
+TEST_P(ReadWithVisitorTest, encodingLevel_Delta_BigintRange_Sparse) {
+  constexpr int kRows = 500;
+
+  // Monotonically increasing data with occasional restatements.
+  std::vector<int64_t> data(kRows);
+  for (int i = 0; i < kRows; ++i) {
+    // Every 50 rows, reset to a lower value to trigger restatements.
+    data[i] = (i % 50) * 2 + (i / 50) * 10;
+  }
+
+  auto input = makeRowVector({makeFlatVector<int64_t>(data)});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(20, 60, false));
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  // Sparse RowSet: every other row.
+  std::vector<vector_size_t> rowVec;
+  for (int i = 0; i < kRows; i += 2) {
+    rowVec.push_back(i);
+  }
+  RowSet rows(rowVec.data(), rowVec.size());
+
+  reader->doPrepareRead<int64_t>(0, rows, nullptr);
+
+  Buffer buffer(*pool());
+  auto encoding =
+      createFromCustomLayout<int64_t>(DeltaEnc{}, data, *pool(), buffer);
+
+  common::BigintRange filter(20, 60, false);
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = false;
+  DecoderVisitor<
+      int64_t,
+      common::BigintRange,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
+
+  int expected = 0;
+  for (int i = 0; i < kRows; i += 2) {
+    if (data[i] >= 20 && data[i] <= 60) {
+      ++expected;
+    }
+  }
+  EXPECT_EQ(reader->numValues(), expected);
+
+  auto values = getValues<int64_t>(reader);
+  for (int i = 0; i < reader->numValues(); ++i) {
+    EXPECT_GE(values[i], 20);
+    EXPECT_LE(values[i], 60);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 16. DeltaEncoding<int64_t> + AlwaysTrue + dense + SLOW PATH
+// ---------------------------------------------------------------------------
+TEST_P(ReadWithVisitorTest, encodingLevel_Delta_AlwaysTrue_Dense_SlowPath) {
+  constexpr int kRows = 500;
+
+  std::vector<int64_t> data(kRows);
+  for (int i = 0; i < kRows; ++i) {
+    data[i] = i * 3;
+  }
+
+  auto input = makeRowVector(
+      {makeFlatVector<int64_t>(kRows, [](auto i) { return i * 3; })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  std::vector<vector_size_t> rowVec(kRows);
+  std::iota(rowVec.begin(), rowVec.end(), 0);
+  RowSet rows(rowVec.data(), rowVec.size());
+
+  reader->doPrepareRead<int64_t>(0, rows, nullptr);
+
+  Buffer buffer(*pool());
+  auto encoding =
+      createFromCustomLayout<int64_t>(DeltaEnc{}, data, *pool(), buffer);
+
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = true;
+  constexpr bool kHasBulkPath = false;
+  velox::dwio::common::ColumnVisitor<
+      int64_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      kIsDense,
+      kHasBulkPath>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
+
+  EXPECT_EQ(reader->numValues(), kRows);
+  auto values = getValues<int64_t>(reader);
+  for (int i = 0; i < kRows; ++i) {
+    EXPECT_EQ(values[i], i * 3) << "row " << i;
+  }
+}
+
 INSTANTIATE_TEST_SUITE_P(
     NonLegacyAndLegacy,
     ReadWithVisitorTest,

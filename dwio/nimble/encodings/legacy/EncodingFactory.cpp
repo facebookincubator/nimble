@@ -16,6 +16,7 @@
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingSelection.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
+#include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
 #include "dwio/nimble/encodings/legacy/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/legacy/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/legacy/MainlyConstantEncoding.h"
@@ -235,6 +236,9 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     }
     case EncodingType::MainlyConstant: {
       RETURN_ENCODING_BY_NON_BOOL_TYPE(MainlyConstantEncoding, dataType);
+    }
+    case EncodingType::Delta: {
+      RETURN_ENCODING_BY_NUMERIC_TYPE(DeltaEncoding, dataType);
     }
     case EncodingType::Prefix: {
       NIMBLE_CHECK_EQ(

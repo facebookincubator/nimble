@@ -23,7 +23,12 @@
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
+#include "dwio/nimble/encodings/EncodingLayout.h"
+#include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/velox/ChunkedStream.h"
+#include "dwio/nimble/velox/SchemaSerialization.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileIds.h"
@@ -302,6 +307,46 @@ class SelectiveNimbleReaderTest
             *expected, *readers.rowReader, batchSize, dropColumn, [&](auto i) {
               return filterType == kNone || validationFilter(data, i);
             });
+      }
+    }
+  }
+
+  // Verifies that the first scalar column in the file uses the expected
+  // encoding type on disk. For nullable columns, the data stream is at
+  // child offset 1 (offset 0 is the nulls stream).
+  void verifyEncodingOnDisk(
+      const std::string& file,
+      EncodingType expectedEncodingType,
+      bool isNullable = true) {
+    auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+    auto tablet = TabletReader::create(readFile, pool(), {});
+    auto section =
+        tablet->loadOptionalSection(std::string(kSchemaSection));
+    ASSERT_TRUE(section.has_value());
+    auto schema =
+        SchemaDeserializer::deserialize(section->content().data());
+    auto& scalarNode = schema->asRow().childAt(0)->asScalar();
+
+    for (auto i = 0; i < tablet->stripeCount(); ++i) {
+      auto stripeIdentifier = tablet->stripeIdentifier(i);
+      std::vector<uint32_t> identifiers{scalarNode.scalarDescriptor().offset()};
+      auto streams = tablet->load(stripeIdentifier, identifiers);
+
+      InMemoryChunkedStream chunkedStream{*pool(), std::move(streams[0])};
+      ASSERT_TRUE(chunkedStream.hasNext());
+      auto capture =
+          EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+      if (isNullable) {
+        // Nullable encoding wraps the data encoding. The data child is at
+        // index 1 (index 0 is the nulls bool stream).
+        ASSERT_EQ(EncodingType::Nullable, capture.encodingType())
+            << "Stripe " << i;
+        ASSERT_TRUE(capture.child(1).has_value()) << "Stripe " << i;
+        EXPECT_EQ(expectedEncodingType, capture.child(1)->encodingType())
+            << "Stripe " << i;
+      } else {
+        EXPECT_EQ(expectedEncodingType, capture.encodingType())
+            << "Stripe " << i;
       }
     }
   }
@@ -2612,6 +2657,319 @@ TEST_P(SelectiveNimbleReaderTest, pinnedMetadataNoReread) {
       << "Second pass should not re-read metadata from the file. "
       << "maxReadOffset=" << trackingFile->maxReadOffset()
       << " metadataBoundary=" << metadataBoundary;
+}
+
+// ---------------------------------------------------------------------------
+// DeltaEncoding: monotonically increasing data with filter
+// ---------------------------------------------------------------------------
+TEST_P(SelectiveNimbleReaderTest, delta) {
+  const bool passStringBuffersFromDecoder =
+      this->passStringBuffersFromDecoder();
+  runTestCase(
+      [&](bool hasNulls) {
+        return makeFlatVector<int64_t>(
+            101,
+            [](auto i) { return i * 3; },
+            hasNulls ? nullEvery(11) : nullptr);
+      },
+      common::BigintRange(50, 200, false),
+      23,
+      [&](auto& data, auto i) {
+        return !data->isNullAt(i) && data->valueAt(i) >= 50 &&
+            data->valueAt(i) <= 200;
+      },
+      passStringBuffersFromDecoder);
+}
+
+// ---------------------------------------------------------------------------
+// DeltaEncoding: forced via ManualEncodingSelectionPolicyFactory
+// ---------------------------------------------------------------------------
+TEST_P(SelectiveNimbleReaderTest, deltaForcedEncoding) {
+  const bool passStringBuffersFromDecoder =
+      this->passStringBuffersFromDecoder();
+  // Monotonically increasing data ideal for delta encoding.
+  auto c0 =
+      makeFlatVector<int64_t>(501, [](auto i) { return i * 7; }, nullEvery(13));
+  auto input = makeRowVector({c0});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(100, 2000, false));
+  auto file = test::createNimbleFile(
+      *rootPool(),
+      input,
+      {.encodingLayoutTree = EncodingLayoutTree{
+           Kind::Row,
+           {},
+           "",
+           {{Kind::Scalar,
+             {{0,
+               EncodingLayout{
+                   EncodingType::Delta,
+                   {},
+                   CompressionType::Uncompressed,
+                   {EncodingLayout{
+                        EncodingType::Trivial,
+                        {},
+                        CompressionType::Uncompressed},
+                    EncodingLayout{
+                        EncodingType::Trivial,
+                        {},
+                        CompressionType::Uncompressed},
+                    EncodingLayout{
+                        EncodingType::Trivial,
+                        {},
+                        CompressionType::Uncompressed}}}}},
+             ""}}}});
+  verifyEncodingOnDisk(file, EncodingType::Delta, /*isNullable=*/false);
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      passStringBuffersFromDecoder);
+  validate(*input, *readers.rowReader, 101, [&](auto i) {
+    return !c0->isNullAt(i) && c0->valueAt(i) >= 100 && c0->valueAt(i) <= 2000;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// DeltaEncoding: data with restatements (non-monotonic)
+// ---------------------------------------------------------------------------
+TEST_P(SelectiveNimbleReaderTest, deltaWithRestatements) {
+  const bool passStringBuffersFromDecoder =
+      this->passStringBuffersFromDecoder();
+  // Data that resets periodically, causing restatements in delta encoding.
+  auto c0 = makeFlatVector<int64_t>(
+      301,
+      [](auto i) { return static_cast<int64_t>((i % 50) * 2 + (i / 50) * 10); },
+      nullEvery(17));
+  auto input = makeRowVector({c0});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(20, 80, false));
+  auto file = test::createNimbleFile(
+      *rootPool(),
+      input,
+      {.encodingLayoutTree = EncodingLayoutTree{
+           Kind::Row,
+           {},
+           "",
+           {{Kind::Scalar,
+             {{0,
+               EncodingLayout{
+                   EncodingType::Delta,
+                   {},
+                   CompressionType::Uncompressed,
+                   {EncodingLayout{
+                        EncodingType::Trivial,
+                        {},
+                        CompressionType::Uncompressed},
+                    EncodingLayout{
+                        EncodingType::Trivial,
+                        {},
+                        CompressionType::Uncompressed},
+                    EncodingLayout{
+                        EncodingType::Trivial,
+                        {},
+                        CompressionType::Uncompressed}}}}},
+             ""}}}});
+  verifyEncodingOnDisk(file, EncodingType::Delta, /*isNullable=*/false);
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      passStringBuffersFromDecoder);
+  validate(*input, *readers.rowReader, 50, [&](auto i) {
+    return !c0->isNullAt(i) && c0->valueAt(i) >= 20 && c0->valueAt(i) <= 80;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// DeltaEncoding: int32_t data (verifies non-int64 types work through the
+// selective reader with Delta encoding).
+// ---------------------------------------------------------------------------
+TEST_P(SelectiveNimbleReaderTest, deltaInt32) {
+  const bool passStringBuffersFromDecoder =
+      this->passStringBuffersFromDecoder();
+  auto c0 =
+      makeFlatVector<int32_t>(401, [](auto i) { return i * 3; }, nullEvery(11));
+  auto input = makeRowVector({c0});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(50, 800, false));
+  auto file = test::createNimbleFile(
+      *rootPool(),
+      input,
+      {.encodingLayoutTree = EncodingLayoutTree{
+           Kind::Row,
+           {},
+           "",
+           {{Kind::Scalar,
+             {{0,
+               EncodingLayout{
+                   EncodingType::Delta,
+                   {},
+                   CompressionType::Uncompressed,
+                   {EncodingLayout{
+                        EncodingType::Trivial,
+                        {},
+                        CompressionType::Uncompressed},
+                    EncodingLayout{
+                        EncodingType::Trivial,
+                        {},
+                        CompressionType::Uncompressed},
+                    EncodingLayout{
+                        EncodingType::Trivial,
+                        {},
+                        CompressionType::Uncompressed}}}}},
+             ""}}}});
+  verifyEncodingOnDisk(file, EncodingType::Delta, /*isNullable=*/false);
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      passStringBuffersFromDecoder);
+  validate(*input, *readers.rowReader, 80, [&](auto i) {
+    return !c0->isNullAt(i) && c0->valueAt(i) >= 50 && c0->valueAt(i) <= 800;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// DeltaEncoding: no filter applied — reads all rows from a delta-encoded file.
+// ---------------------------------------------------------------------------
+TEST_P(SelectiveNimbleReaderTest, deltaNoFilter) {
+  const bool passStringBuffersFromDecoder =
+      this->passStringBuffersFromDecoder();
+  auto c0 = makeFlatVector<int64_t>(200, [](auto i) { return i * 5; });
+  auto input = makeRowVector({c0});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto file = test::createNimbleFile(
+      *rootPool(),
+      input,
+      {.encodingLayoutTree = EncodingLayoutTree{
+           Kind::Row,
+           {},
+           "",
+           {{Kind::Scalar,
+             {{0,
+               EncodingLayout{
+                   EncodingType::Delta,
+                   {},
+                   CompressionType::Uncompressed,
+                   {EncodingLayout{
+                        EncodingType::Trivial,
+                        {},
+                        CompressionType::Uncompressed},
+                    EncodingLayout{
+                        EncodingType::Trivial,
+                        {},
+                        CompressionType::Uncompressed},
+                    EncodingLayout{
+                        EncodingType::Trivial,
+                        {},
+                        CompressionType::Uncompressed}}}}},
+             ""}}}});
+  verifyEncodingOnDisk(file, EncodingType::Delta, /*isNullable=*/false);
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      passStringBuffersFromDecoder);
+  validate(*input, *readers.rowReader, 50, [](auto) { return true; });
+}
+
+// ---------------------------------------------------------------------------
+// DeltaEncoding: two columns both using delta encoding with different data
+// patterns, verifying multi-column delta support in selective reader.
+// ---------------------------------------------------------------------------
+TEST_P(SelectiveNimbleReaderTest, deltaTwoColumns) {
+  const bool passStringBuffersFromDecoder =
+      this->passStringBuffersFromDecoder();
+  auto c0 = makeFlatVector<int64_t>(300, [](auto i) { return i * 7; });
+  auto c1 = makeFlatVector<int32_t>(
+      300,
+      [](auto i) { return static_cast<int32_t>((i % 30) * 2); });
+  auto input = makeRowVector({c0, c1});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(100, 1500, false));
+  EncodingLayout deltaLayout{
+      EncodingType::Delta,
+      {},
+      CompressionType::Uncompressed,
+      {EncodingLayout{EncodingType::Trivial, {}, CompressionType::Uncompressed},
+       EncodingLayout{EncodingType::Trivial, {}, CompressionType::Uncompressed},
+       EncodingLayout{
+           EncodingType::Trivial, {}, CompressionType::Uncompressed}}};
+  auto file = test::createNimbleFile(
+      *rootPool(),
+      input,
+      {.encodingLayoutTree = EncodingLayoutTree{
+           Kind::Row,
+           {},
+           "",
+           {{Kind::Scalar, {{0, deltaLayout}}, ""},
+            {Kind::Scalar, {{0, deltaLayout}}, ""}}}});
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      passStringBuffersFromDecoder);
+  validate(*input, *readers.rowReader, 60, [&](auto i) {
+    return c0->valueAt(i) >= 100 && c0->valueAt(i) <= 1500;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// DeltaEncoding: sawtooth pattern with small batch reads to exercise
+// chunk boundary handling.
+// ---------------------------------------------------------------------------
+TEST_P(SelectiveNimbleReaderTest, deltaSawtoothSmallBatches) {
+  const bool passStringBuffersFromDecoder =
+      this->passStringBuffersFromDecoder();
+  auto c0 = makeFlatVector<int64_t>(
+      200, [](auto i) { return static_cast<int64_t>((i % 20) * 5); });
+  auto input = makeRowVector({c0});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto file = test::createNimbleFile(
+      *rootPool(),
+      input,
+      {.encodingLayoutTree = EncodingLayoutTree{
+           Kind::Row,
+           {},
+           "",
+           {{Kind::Scalar,
+             {{0,
+               EncodingLayout{
+                   EncodingType::Delta,
+                   {},
+                   CompressionType::Uncompressed,
+                   {EncodingLayout{
+                        EncodingType::Trivial,
+                        {},
+                        CompressionType::Uncompressed},
+                    EncodingLayout{
+                        EncodingType::Trivial,
+                        {},
+                        CompressionType::Uncompressed},
+                    EncodingLayout{
+                        EncodingType::Trivial,
+                        {},
+                        CompressionType::Uncompressed}}}}},
+             ""}}}});
+  verifyEncodingOnDisk(file, EncodingType::Delta, /*isNullable=*/false);
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      passStringBuffersFromDecoder);
+  // Small batch size (7) to exercise partial-read boundaries.
+  validate(*input, *readers.rowReader, 7, [](auto) { return true; });
 }
 
 INSTANTIATE_TEST_CASE_P(

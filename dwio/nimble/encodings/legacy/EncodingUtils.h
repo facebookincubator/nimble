@@ -17,6 +17,7 @@
 
 #include "dwio/nimble/encodings/EncodingUtils.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
+#include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
 #include "dwio/nimble/encodings/legacy/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/legacy/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/legacy/MainlyConstantEncoding.h"
@@ -103,6 +104,8 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       return f(static_cast<ConstantEncoding<T>&>(encoding));
     case EncodingType::MainlyConstant:
       return f(static_cast<MainlyConstantEncoding<T>&>(encoding));
+    case EncodingType::Delta:
+      return f(static_cast<DeltaEncoding<T>&>(encoding));
     default:
       NIMBLE_UNSUPPORTED(toString(encoding.encodingType()));
   }
