@@ -1478,7 +1478,21 @@ TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsDenseWithEmpties) {
   const bool passStringBuffersFromDecoder =
       this->passStringBuffersFromDecoder();
   checkArrayWithOffsets(
-      {{{}}, {{1}}, {{}}, {{2}}, {{}}}, {}, {5}, passStringBuffersFromDecoder);
+    {
+      std::optional<std::vector<std::optional<int64_t>>>{
+        std::vector<std::optional<int64_t>>{}},
+      std::optional<std::vector<std::optional<int64_t>>>{
+        std::vector<std::optional<int64_t>>{1}},
+      std::optional<std::vector<std::optional<int64_t>>>{
+        std::vector<std::optional<int64_t>>{}},
+      std::optional<std::vector<std::optional<int64_t>>>{
+        std::vector<std::optional<int64_t>>{2}},
+      std::optional<std::vector<std::optional<int64_t>>>{
+        std::vector<std::optional<int64_t>>{}},
+    },
+    {},
+    {5},
+    passStringBuffersFromDecoder);
 }
 
 // When subfield pruning is enabled, the dense fast path in makeNestedRowSet is
