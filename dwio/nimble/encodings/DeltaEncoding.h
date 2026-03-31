@@ -74,6 +74,9 @@ class DeltaEncoding final
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
 
+  template <typename DecoderVisitor>
+  void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
+
   std::string debugString(int offset) const final;
 
   static std::string_view encode(
@@ -187,6 +190,29 @@ void DeltaEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
     }
     *castValue++ = currentValue_;
   }
+}
+
+template <typename T>
+template <typename DecoderVisitor>
+void DeltaEncoding<T>::readWithVisitor(
+    DecoderVisitor& visitor,
+    ReadWithVisitorParams& params) {
+  detail::readWithVisitorSlow(
+      visitor,
+      params,
+      [&](auto toSkip) { skip(toSkip); },
+      [&] {
+        bool isRestatement;
+        isRestatements_->materialize(1, &isRestatement);
+        if (isRestatement) {
+          restatements_->materialize(1, &currentValue_);
+        } else {
+          physicalType delta;
+          deltas_->materialize(1, &delta);
+          currentValue_ += delta;
+        }
+        return currentValue_;
+      });
 }
 
 namespace internal {

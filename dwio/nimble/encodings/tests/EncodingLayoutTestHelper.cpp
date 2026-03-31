@@ -49,6 +49,24 @@ SparseBoolEnc::operator EncodingLayout() const {
       EncodingType::SparseBool, {}, CompressionType::Uncompressed);
 }
 
+DeltaEnc::operator EncodingLayout() const {
+  constexpr auto kDeltas = EncodingIdentifiers::Delta::Deltas;
+  constexpr auto kRestatements = EncodingIdentifiers::Delta::Restatements;
+  constexpr auto kIsRestatements = EncodingIdentifiers::Delta::IsRestatements;
+  static_assert(kDeltas == 0 && kRestatements == 1 && kIsRestatements == 2);
+
+  std::vector<std::optional<const EncodingLayout>> children;
+  children.reserve(3);
+  children.emplace_back(deltas);
+  children.emplace_back(restatements);
+  children.emplace_back(isRestatements);
+  return EncodingLayout(
+      EncodingType::Delta,
+      {},
+      CompressionType::Uncompressed,
+      std::move(children));
+}
+
 // ===========================================================================
 // Compound encoding conversions
 // ===========================================================================

@@ -18,7 +18,12 @@
 
 #include <utility>
 
+#include "dwio/nimble/encodings/EncodingLayout.h"
+#include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
+#include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 #include "velox/common/caching/AsyncDataCache.h"
@@ -271,9 +276,37 @@ class E2EFilterTest
     options.enableChunking = true;
     options.enableChunkIndex = param().enableChunkIndex;
 
-    // Use custom encoding factors if set.
-    // Capture by value to avoid dangling reference.
-    if (encodingFactors_.has_value()) {
+    // Force a specific encoding via layout tree, or use biased factors.
+    if (forcedEncodingType_.has_value()) {
+      auto encodingType = forcedEncodingType_.value();
+      std::vector<EncodingLayoutTree> children;
+      for (column_index_t col = 0;
+           col < static_cast<column_index_t>(rowType_->size());
+           ++col) {
+        EncodingLayout layout{
+            encodingType,
+            {},
+            CompressionType::Uncompressed,
+            {EncodingLayout{
+                 EncodingType::Trivial, {}, CompressionType::Uncompressed},
+             EncodingLayout{
+                 EncodingType::Trivial, {}, CompressionType::Uncompressed},
+             EncodingLayout{
+                 EncodingType::Trivial, {}, CompressionType::Uncompressed}}};
+        children.push_back(EncodingLayoutTree{
+            Kind::Scalar,
+            {{0, std::move(layout)}},
+            std::string(rowType_->nameOf(col))});
+      }
+      options.encodingLayoutTree.emplace(
+          Kind::Row,
+          std::unordered_map<EncodingLayoutTree::StreamIdentifier,
+                             EncodingLayout>{},
+          "",
+          std::move(children));
+    } else if (encodingFactors_.has_value()) {
+      // Use custom encoding factors if set.
+      // Capture by value to avoid dangling reference.
       auto factors = encodingFactors_.value();
       options.encodingSelectionPolicyFactory = [factors](DataType dataType) {
         ManualEncodingSelectionPolicyFactory factory(factors);
@@ -351,6 +384,11 @@ class E2EFilterTest
   // encoding selection policy. Clear after test to avoid affecting other tests.
   std::optional<std::vector<std::pair<EncodingType, float>>> encodingFactors_;
 
+  // Optional forced encoding type. When set, writeToMemory builds an
+  // EncodingLayoutTree that forces every scalar column to use this encoding.
+  // Takes precedence over encodingFactors_.
+  std::optional<EncodingType> forcedEncodingType_;
+
   // Cache infrastructure (only initialized when enableCache is true).
   std::shared_ptr<memory::MallocAllocator> allocator_;
   std::shared_ptr<cache::AsyncDataCache> cache_;
@@ -393,11 +431,57 @@ class E2EFilterTest
         // MainlyConstant needs Constant for the common value.
         factors.emplace_back(EncodingType::Constant, 100.0);
         break;
+      case EncodingType::Delta:
+        // Delta uses child encodings for deltas, restatements, and
+        // isRestatements that may fall back to Constant.
+        factors.emplace_back(EncodingType::Constant, 100.0);
+        break;
       default:
         break;
     }
 
     return factors;
+  }
+
+  // Verifies that all scalar columns in the file written to sinkData_ use
+  // the expected encoding type. Accounts for nullable wrapping.
+  void verifyColumnEncodingsOnDisk(EncodingType expectedEncodingType) {
+    auto readFile = std::make_shared<InMemoryReadFile>(sinkData_);
+    auto& pool = *leafPool_;
+    auto tablet = TabletReader::create(readFile, &pool, {});
+    auto section =
+        tablet->loadOptionalSection(std::string(kSchemaSection));
+    ASSERT_TRUE(section.has_value());
+    auto schema =
+        SchemaDeserializer::deserialize(section->content().data());
+
+    for (uint32_t col = 0; col < schema->asRow().childrenCount(); ++col) {
+      auto& childNode = schema->asRow().childAt(col)->asScalar();
+      for (auto i = 0; i < tablet->stripeCount(); ++i) {
+        auto stripeIdentifier = tablet->stripeIdentifier(i);
+        std::vector<uint32_t> identifiers{
+            childNode.scalarDescriptor().offset()};
+        auto streams = tablet->load(stripeIdentifier, identifiers);
+
+        InMemoryChunkedStream chunkedStream{pool, std::move(streams[0])};
+        if (!chunkedStream.hasNext()) {
+          continue;
+        }
+        auto capture =
+            EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+        // The top-level encoding may be Nullable (wrapping the data encoding)
+        // or the data encoding directly.
+        if (capture.encodingType() == EncodingType::Nullable) {
+          ASSERT_TRUE(capture.child(1).has_value())
+              << "Column " << col << " stripe " << i;
+          EXPECT_EQ(expectedEncodingType, capture.child(1)->encodingType())
+              << "Column " << col << " stripe " << i;
+        } else {
+          EXPECT_EQ(expectedEncodingType, capture.encodingType())
+              << "Column " << col << " stripe " << i;
+        }
+      }
+    }
   }
 
  private:
@@ -707,6 +791,52 @@ TEST_P(E2EFilterTest, mainlyConstantBiased) {
       /*numCombinations=*/20,
       /*withRecursiveNulls=*/true,
       biasedEncodingFactors(EncodingType::MainlyConstant));
+}
+
+// Forces Delta encoding via encoding layout tree and verifies it on disk.
+TEST_P(E2EFilterTest, integerBiasedDelta) {
+  forcedEncodingType_ = EncodingType::Delta;
+  testWithTypes(
+      "short_val:smallint,"
+      "int_val:int,"
+      "long_val:bigint",
+      [&]() {
+        makeIntDistribution<int16_t>(
+            "short_val",
+            /*min=*/10,
+            /*max=*/1000,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+        makeIntDistribution<int32_t>(
+            "int_val",
+            /*min=*/100,
+            /*max=*/100000,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+        makeIntDistribution<int64_t>(
+            "long_val",
+            /*min=*/1000,
+            /*max=*/1000000,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+      },
+      /*wrapInStruct=*/false,
+      {"short_val", "int_val", "long_val"},
+      /*numCombinations=*/20,
+      /*withRecursiveNulls=*/true);
+  forcedEncodingType_.reset();
+  // Verify the on-disk encoding is Delta (sinkData_ holds the last written
+  // file from testWithTypes).
+  verifyColumnEncodingsOnDisk(EncodingType::Delta);
 }
 
 TEST_P(E2EFilterTest, float) {
