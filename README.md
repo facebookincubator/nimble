@@ -1,8 +1,9 @@
 # The Nimble File Format
 
 [![Linux Build](https://github.com/facebookincubator/nimble/actions/workflows/linux-build.yml/badge.svg)](https://github.com/facebookincubator/nimble/actions/workflows/linux-build.yml)
+[![Velox](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/<GIST_OWNER>/<GIST_ID>/raw/velox-status.json)](https://github.com/facebookincubator/velox)
 
-Nimble (formerly known as _“Alpha”_) is a new columnar file format for large
+Nimble (formerly known as _”Alpha”_) is a new columnar file format for large
 datasets created by Meta. Nimble is meant to be a replacement for file formats
 such as Apache Parquet and ORC.
 
@@ -114,6 +115,29 @@ $ sudo apt install -y \
 
 Although Nimble's codebase is today closely coupled with velox, we intend to
 decouple them in the future.
+
+## Advance Velox Version
+
+Nimble integrates Velox as a Git submodule, referencing a specific commit of the
+Velox repository. The Velox badge at the top of this README shows the current
+commit and how far behind it is from Velox main.
+
+[See what changed since the current Velox commit.](https://github.com/facebookincubator/velox/compare/6566eba401dc2e235b42e947867fba0004dd371a...main)
+<!-- pre-commit check-velox-readme validates the SHA above matches the submodule -->
+
+Advance Velox when your changes depend on code in Velox that
+is not available in the current commit, or when the submodule falls too far
+behind. To update the Velox version, follow these steps:
+
+```bash
+git -C velox checkout main
+git -C velox pull
+git add velox
+```
+
+Build and run tests to ensure everything works. The pre-commit hook will
+automatically update the Velox compare link in this README. Submit a PR, get
+it approved and merged.
 
 ## License
 

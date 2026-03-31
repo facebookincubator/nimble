@@ -1,0 +1,105 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Updates a shields.io badge in README.md showing the Velox submodule version.
+#
+# Badge shows: commit hash, date, title, and how many commits behind main.
+# Color: green (<=7 days old), yellow (<=30 days), red (>30 days).
+#
+# Setup:
+#   1. Create a GitHub Gist with a file named velox-status.json.
+#   2. Create a personal access token with 'gist' scope.
+#   3. Add the token as a repository secret named GIST_TOKEN.
+#
+# TODO: Update the preview and gist URLs below after creating the Gist.
+name: Velox Status Badge
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    # Run daily to update the "commits behind" count even if no PRs land.
+    - cron: '0 8 * * *'
+permissions:
+  contents: read
+jobs:
+  update-badge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Compute Velox submodule status
+        id: velox
+        run: |
+          # Get the submodule commit without cloning the full repo.
+          SUBMODULE_SHA=$(git ls-tree HEAD velox | awk '{print $3}')
+
+          # Fetch commit metadata from GitHub API.
+          HASH=$(gh api repos/facebookincubator/velox/commits/$SUBMODULE_SHA --jq '.sha[:10]')
+          DATE=$(gh api repos/facebookincubator/velox/commits/$SUBMODULE_SHA --jq '.commit.committer.date[:10]')
+          TITLE=$(gh api repos/facebookincubator/velox/commits/$SUBMODULE_SHA --jq '.commit.message | split("\n")[0]')
+
+          # Count commits between submodule and latest main.
+          BEHIND=$(gh api "repos/facebookincubator/velox/compare/${SUBMODULE_SHA}...main" --jq '.ahead_by')
+
+          # Determine color based on age.
+          # Green: <=7 days, Yellow: <=30 days, Red: >30 days.
+          COMMIT_DATE_EPOCH=$(date -d "$DATE" +%s)
+          NOW_EPOCH=$(date +%s)
+          DAYS_OLD=$(( (NOW_EPOCH - COMMIT_DATE_EPOCH) / 86400 ))
+          if [ "$DAYS_OLD" -le 7 ]; then
+            COLOR="28A745"
+          elif [ "$DAYS_OLD" -le 30 ]; then
+            COLOR="DBAB09"
+          else
+            COLOR="CB2431"
+          fi
+
+          MESSAGE="$HASH ($DATE) $TITLE — $BEHIND commits behind"
+
+          # Check if the badge already has the same content.
+          # TODO: Update this URL after creating the Gist.
+          CURRENT=$(curl -sf "https://gist.githubusercontent.com/<GIST_OWNER>/<GIST_ID>/raw/velox-status.json?$(date +%s)" || echo "{}")
+          CURRENT_MESSAGE=$(echo "$CURRENT" | jq -r '.message // ""')
+          CURRENT_COLOR=$(echo "$CURRENT" | jq -r '.color // ""')
+
+          if [ "$CURRENT_MESSAGE" = "$MESSAGE" ] && [ "$CURRENT_COLOR" = "$COLOR" ]; then
+            echo "Badge is already up to date, skipping."
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "message=$MESSAGE" >> $GITHUB_OUTPUT
+          echo "color=$COLOR" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Update badge
+        if: steps.velox.outputs.skip != 'true'
+        uses: schneegans/dynamic-badges-action@e9a478b16159b4d31420099ba146cdc50f134483 # v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          # TODO: Update this after creating the Gist.
+          gistID: <GIST_ID>
+          filename: velox-status.json
+          label: velox
+          message: ${{ steps.velox.outputs.message }}
+          color: ${{ steps.velox.outputs.color }}
+          labelColor: "24292E"

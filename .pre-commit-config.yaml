@@ -24,3 +24,12 @@ repos:
     hooks:
       - id: gersemi
         name: CMake formatter
+  - repo: local
+    hooks:
+      - id: check-velox-readme
+        name: check-velox-readme
+        description: Verify Velox compare link in README matches submodule.
+        entry: ./scripts/check-velox-readme.sh
+        language: script
+        files: ^(README\.md|velox)$
+        pass_filenames: false
