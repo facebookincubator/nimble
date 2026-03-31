@@ -249,16 +249,15 @@ class Encoding {
 
  protected:
   static void serializePrefix(
-      EncodingType encodingType,
-      DataType dataType,
-      uint32_t rowCount,
-      bool useVarint,
-      char*& pos);
+    EncodingType encodingType,
+    DataType dataType,
+    uint32_t rowCount,
+    bool useVarint,
+    char*& pos);
 
   // Compute the prefix size for serialization. Returns kPrefixSize for fixed
   // format, or 2 + varintSize(rowCount) for varint format.
   static uint32_t serializePrefixSize(uint32_t rowCount, bool useVarint);
-
   // Static helpers for initializer list computation.
   static DataType readDataType(std::string_view data);
   static uint32_t readRowCount(std::string_view data, bool useVarint);

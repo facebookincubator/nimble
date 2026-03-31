@@ -64,7 +64,8 @@ class FrequencyPartitionEncoding
   FrequencyPartitionEncoding(
       velox::memory::MemoryPool& pool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory = nullptr);
+    std::function<void*(uint32_t)> stringBufferFactory = nullptr,
+    const Encoding::Options& options = {});
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -76,7 +77,8 @@ class FrequencyPartitionEncoding
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
-      Buffer& buffer);
+    Buffer& buffer,
+    const Encoding::Options& options = {});
 
   std::string debugString(int offset) const final;
 
@@ -144,8 +146,9 @@ template <typename T>
 FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
     velox::memory::MemoryPool& pool,
     std::string_view data,
-    std::function<void*(uint32_t)> /* stringBufferFactory */)
-    : TypedEncoding<T, physicalType>{pool, data},
+  std::function<void*(uint32_t)> /* stringBufferFactory */,
+  const Encoding::Options& options)
+  : TypedEncoding<T, physicalType>{pool, data, options},
       unencodedValues_{this->pool_},
       unencodedStartRow_(0),
       currentTier_(0),
@@ -342,7 +345,9 @@ template <typename T>
 std::string_view FrequencyPartitionEncoding<T>::encode(
     EncodingSelection<physicalType>& selection,
     std::span<const physicalType> values,
-    Buffer& buffer) {
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const bool useVarint = options.useVarintRowCount;
   const uint32_t valueCount = values.size();
 
   // Build frequency map
@@ -517,7 +522,9 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
   }
 
   // Calculate total encoding size
-  uint32_t encodingSize = Encoding::kPrefixSize + 4 + // num partitions
+  uint32_t encodingSize =
+    Encoding::serializePrefixSize(valueCount, useVarint) +
+    4 + // num partitions
       4 + serializedOffsets.size() + // partition offsets
       4 + serializedSizes.size(); // partition sizes
 
@@ -543,6 +550,7 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
       EncodingType::FrequencyPartition,
       TypeTraits<T>::dataType,
       valueCount,
+    useVarint,
       pos);
   encoding::writeUint32(tierRows.size(), pos); // num partitions
   encoding::writeUint32(serializedOffsets.size(), pos);

@@ -387,12 +387,12 @@ std::string_view EncodingFactory::encode(
             "FrequencyPartition encoding should not be selected for bool data types.");
       } else {
         return FrequencyPartitionEncoding<T>::encode(
-            selection, castedValues, buffer);
+            selection, castedValues, buffer, options);
       }
     }
     case EncodingType::FOR: {
       if constexpr (std::is_integral<physicalType>::value && !std::is_same<T, bool>::value) {
-        return ForEncoding<T>::encode(selection, castedValues, buffer);
+        return ForEncoding<T>::encode(selection, castedValues, buffer, options);
       } else {
         NIMBLE_INCOMPATIBLE_ENCODING(
             "For encoding can only be selected for integral data types (not bool).");

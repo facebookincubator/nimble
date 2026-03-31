@@ -19,7 +19,6 @@
 #include <type_traits>
 #include <vector>
 
-#include "dwio/nimble/common/Bits.h"
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/EncodingType.h"
@@ -64,7 +63,8 @@ class ForEncoding final
   ForEncoding(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory = nullptr);
+    std::function<void*(uint32_t)> stringBufferFactory = nullptr,
+    const Encoding::Options& options = {});
 
   void reset() final;
   void skip(uint32_t rowCount) final;
@@ -76,7 +76,8 @@ class ForEncoding final
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
-      Buffer& buffer);
+    Buffer& buffer,
+    const Encoding::Options& options = {});
 
   std::string debugString(int offset) const final;
 
@@ -117,8 +118,9 @@ template <typename T>
 ForEncoding<T>::ForEncoding(
     velox::memory::MemoryPool& memoryPool,
     std::string_view data,
-    std::function<void*(uint32_t)> /* stringBufferFactory */)
-    : TypedEncoding<T, physicalType>{memoryPool, data},
+  std::function<void*(uint32_t)> /* stringBufferFactory */,
+  const Encoding::Options& options)
+  : TypedEncoding<T, physicalType>{memoryPool, data, options},
       frames_{&memoryPool},
       currentRow_(0),
       uncompressedData_{&memoryPool},
@@ -176,7 +178,7 @@ ForEncoding<T>::ForEncoding(
 
   if (compressionType != CompressionType::Uncompressed) {
     uncompressedData_ = Compression::uncompress(
-        *this->pool_, compressionType, packedDataView);
+        *this->pool_, compressionType, DataType::Undefined, packedDataView);
     packedData_ = uncompressedData_.data();
   } else {
     packedData_ = packedDataView.data();
@@ -317,11 +319,13 @@ template <typename T>
 std::string_view ForEncoding<T>::encode(
     EncodingSelection<physicalType>& selection,
     std::span<const physicalType> values,
-    Buffer& buffer) {
+    Buffer& buffer,
+    const Encoding::Options& options) {
   static_assert(
       std::is_integral_v<physicalType>,
       "ForEncoding only supports integral types");
 
+  const bool useVarint = options.useVarintRowCount;
   const uint32_t rowCount = values.size();
   if (rowCount == 0) {
     NIMBLE_UNSUPPORTED("Cannot encode empty data with ForEncoding");
@@ -465,7 +469,9 @@ std::string_view ForEncoding<T>::encode(
         return pos;
       }};
 
-  uint32_t encodingSize = Encoding::kPrefixSize + ForEncoding<T>::kPrefixSize +
+  uint32_t encodingSize =
+    Encoding::serializePrefixSize(rowCount, useVarint) +
+    ForEncoding<T>::kPrefixSize +
       4 + serializedBitWidths.size() +       // BitWidths
       4 + serializedReferences.size() +      // References
       (enableBitOffsets ? 4 + serializedBitOffsets.size() : 0) +
@@ -475,7 +481,11 @@ std::string_view ForEncoding<T>::encode(
   char* pos = reserved;
 
   Encoding::serializePrefix(
-      EncodingType::FOR, TypeTraits<T>::dataType, rowCount, pos);
+    EncodingType::FOR,
+    TypeTraits<T>::dataType,
+    rowCount,
+    useVarint,
+    pos);
 
   encoding::writeChar(
       static_cast<char>(compressionEncoder.compressionType()), pos);
