@@ -18,13 +18,17 @@
 #include <numeric>
 #include <span>
 
+#include <folly/Likely.h>
+
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/EncodingIdentifier.h"
+#include "dwio/nimble/encodings/EncodingSelection.h"
 
 // Stores integer data in a delta encoding. We use three child encodings:
 // one for whether each row is a delta from the last or a restatement,
@@ -63,13 +67,20 @@ class DeltaEncoding final
   DeltaEncoding(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory);
+      std::function<void*(uint32_t)> stringBufferFactory,
+      const Encoding::Options& options = {});
 
   void reset() final;
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
 
   std::string debugString(int offset) const final;
+
+  static std::string_view encode(
+      EncodingSelection<physicalType>& selection,
+      std::span<const physicalType> values,
+      Buffer& buffer,
+      const Encoding::Options& options = {});
 
  private:
   physicalType currentValue_;
@@ -90,13 +101,14 @@ template <typename T>
 DeltaEncoding<T>::DeltaEncoding(
     velox::memory::MemoryPool& memoryPool,
     std::string_view data,
-    std::function<void*(uint32_t)> stringBufferFactory)
-    : TypedEncoding<T, physicalType>(memoryPool, data),
+    std::function<void*(uint32_t)> stringBufferFactory,
+    const Encoding::Options& options)
+    : TypedEncoding<T, physicalType>(memoryPool, data, options),
       deltasBuffer_(&memoryPool),
       restatementsBuffer_(&memoryPool),
       isRestatementsBuffer_(&memoryPool) {
-  const EncodingFactory factory;
-  auto pos = data.data() + Encoding::kPrefixSize;
+  const EncodingFactory factory{options};
+  auto pos = data.data() + this->dataOffset();
   const uint32_t restatementsOffset = encoding::readUint32(pos);
   const uint32_t isRestatementsOffset = encoding::readUint32(pos);
   deltas_ = factory.create(
@@ -108,7 +120,7 @@ DeltaEncoding<T>::DeltaEncoding(
   isRestatements_ = factory.create(
       memoryPool,
       {pos, static_cast<size_t>(data.end() - pos)},
-      stringBufferFactory);
+      std::move(stringBufferFactory));
 }
 
 template <typename T>
@@ -138,13 +150,16 @@ void DeltaEncoding<T>::skip(uint32_t rowCount) {
   if (lastRestatement >= 0) {
     restatements_->skip(numRestatements - 1);
     restatements_->materialize(1, &currentValue_);
-    const uint32_t deltasToSkip = lastRestatement -
-        std::accumulate(isRestatementsBuffer_.begin(),
-                        isRestatementsBuffer_.begin() + lastRestatement,
-                        0UL);
+    const uint32_t deltasToSkip = static_cast<uint32_t>(
+        lastRestatement -
+        std::accumulate(
+            isRestatementsBuffer_.begin(),
+            isRestatementsBuffer_.begin() + lastRestatement,
+            0UL));
     deltas_->skip(deltasToSkip);
   }
-  const uint32_t deltasToAccumulate = rowCount - 1 - lastRestatement;
+  const uint32_t deltasToAccumulate =
+      static_cast<uint32_t>(rowCount - 1 - lastRestatement);
   deltasBuffer_.resize(deltasToAccumulate);
   deltas_->materialize(deltasToAccumulate, deltasBuffer_.data());
   currentValue_ += std::accumulate(
@@ -174,162 +189,111 @@ void DeltaEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   }
 }
 
-// namespace internal {
+namespace internal {
 
-// template <typename physicalType>
-// void computeDeltas(
-//     std::span<const physicalType> values,
-//     Vector<physicalType>* deltas,
-//     Vector<physicalType>* restatements,
-//     Vector<bool>* isRestatements) {
-//   isRestatements->push_back(true);
-//   restatements->push_back(values[0]);
-//   // For signed integer types we avoid the potential overflow in the
-//   // delta by restating whenever the last value was negative and the
-//   // next is positive. We could be more elegant by storing the
-//   // deltas as the appropriate unsigned type.
-//   if constexpr (isSignedIntegralType<physicalType>()) {
-//     for (uint32_t i = 1; i < values.size(); ++i) {
-//       const bool crossesZero = values[i] > 0 && values[i - 1] < 0;
-//       if (values[i] >= values[i - 1] && !crossesZero) {
-//         isRestatements->push_back(false);
-//         deltas->push_back(values[i] - values[i - 1]);
-//       } else {
-//         isRestatements->push_back(true);
-//         restatements->push_back(values[i]);
-//       }
-//     }
-//   } else {
-//     for (uint32_t i = 1; i < values.size(); ++i) {
-//       if (values[i] >= values[i - 1]) {
-//         isRestatements->push_back(false);
-//         deltas->push_back(values[i] - values[i - 1]);
-//       } else {
-//         isRestatements->push_back(true);
-//         restatements->push_back(values[i]);
-//       }
-//     }
-//   }
-// }
+template <typename physicalType>
+void computeDeltas(
+    std::span<const physicalType> values,
+    Vector<physicalType>* deltas,
+    Vector<physicalType>* restatements,
+    Vector<bool>* isRestatements) {
+  isRestatements->emplace_back(true);
+  restatements->emplace_back(values[0]);
+  // For signed integer types we avoid the potential overflow in the
+  // delta by restating whenever the last value was negative and the
+  // next is positive. We could be more elegant by storing the
+  // deltas as the appropriate unsigned type.
+  if constexpr (isSignedIntegralType<physicalType>()) {
+    for (uint32_t i = 1; i < values.size(); ++i) {
+      const bool crossesZero = values[i] > 0 && values[i - 1] < 0;
 
-// } // namespace internal
+      if (FOLLY_LIKELY(values[i] >= values[i - 1] && !crossesZero)) {
+        isRestatements->emplace_back(false);
+        deltas->emplace_back(values[i] - values[i - 1]);
+      } else {
+        isRestatements->emplace_back(true);
+        restatements->emplace_back(values[i]);
+      }
+    }
+  } else {
+    for (uint32_t i = 1; i < values.size(); ++i) {
+      if (FOLLY_LIKELY(values[i] >= values[i - 1])) {
+        isRestatements->emplace_back(false);
+        deltas->emplace_back(values[i] - values[i - 1]);
+      } else {
+        isRestatements->emplace_back(true);
+        restatements->emplace_back(values[i]);
+      }
+    }
+  }
+}
 
-// template <typename T>
-// bool DeltaEncoding<T>::estimateSize(
-//     velox::memory::MemoryPool& memoryPool,
-//     std::span<const T> dataValues,
-//     OptimalSearchParams searchParams,
-//     encodings::EncodingParameters& encodingParameters,
-//     uint32_t* size) {
-//   auto values =
-//   EncodingPhysicalType<T>::asEncodingPhysicalTypeSpan(dataValues); if
-//   (values.empty()) {
-//     return false;
-//   }
-//   Vector<physicalType> deltas(&memoryPool);
-//   Vector<physicalType> restatements(&memoryPool);
-//   Vector<bool> isRestatements(&memoryPool);
-//   internal::computeDeltas(values, &deltas, &restatements, &isRestatements);
-//   uint32_t deltasSize;
-//   auto& deltaEncodingParameters = encodingParameters.set_delta();
-//   estimateOptimalEncodingSize<physicalType>(
-//       memoryPool,
-//       deltas,
-//       searchParams,
-//       &deltasSize,
-//       deltaEncodingParameters.deltasParameters().ensure());
-//   uint32_t restatementsSize;
-//   estimateOptimalEncodingSize<physicalType>(
-//       memoryPool,
-//       restatements,
-//       searchParams,
-//       &restatementsSize,
-//       deltaEncodingParameters.restatementsParameters().ensure());
-//   uint32_t isRestatementsSize;
-//   estimateOptimalEncodingSize<bool>(
-//       memoryPool,
-//       isRestatements,
-//       searchParams,
-//       &isRestatementsSize,
-//       deltaEncodingParameters.isRestatementsParameters().ensure());
-//   *size = Encoding::kPrefixSize + 8 + deltasSize + restatementsSize +
-//       isRestatementsSize;
-//   return true;
-// }
+} // namespace internal
 
-// template <typename T>
-// std::string_view DeltaEncoding<T>::serialize(
-//     std::span<const T> values,
-//     Buffer* buffer) {
-//   uint32_t unusedSize;
-//   encodings::EncodingParameters encodingParameters;
-//   // Hrm should we pass these in? This call won't normally be used outside of
-//   // testing.
-//   OptimalSearchParams searchParams;
-//   estimateSize(
-//       buffer->getMemoryPool(),
-//       values,
-//       searchParams,
-//       encodingParameters,
-//       &unusedSize);
-//   return serialize(values, encodingParameters, buffer);
-// }
+template <typename T>
+std::string_view DeltaEncoding<T>::encode(
+    EncodingSelection<physicalType>& selection,
+    std::span<const physicalType> values,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const bool useVarint = options.useVarintRowCount;
 
-// template <typename T>
-// std::string_view DeltaEncoding<T>::serialize(
-//     std::span<const T> dataValues,
-//     const encodings::EncodingParameters& encodingParameters,
-//     Buffer* buffer) {
-//   auto values =
-//   EncodingPhysicalType<T>::asEncodingPhysicalTypeSpan(dataValues); if
-//   (values.empty()) {
-//     NIMBLE_INCOMPATIBLE_ENCODING("DeltaEncoding can't be used with 0 rows.");
-//   }
-//   NIMBLE_CHECK(
-//       encodingParameters.getType() ==
-//               encodings::EncodingParameters::Type::delta &&
-//           encodingParameters.delta_ref().has_value() &&
-//           encodingParameters.delta_ref()->deltasParameters().has_value() &&
-//           encodingParameters.delta_ref()
-//               ->restatementsParameters()
-//               .has_value() &&
-//           encodingParameters.delta_ref()
-//               ->isRestatementsParameters()
-//               .has_value(),
-//       "Incomplete or incompatible Delta encoding parameters.");
+  // Fail on empty input.
+  if (values.empty()) {
+    NIMBLE_INCOMPATIBLE_ENCODING("DeltaEncoding can't be used with 0 rows.");
+  }
 
-//   auto& memoryPool = buffer->getMemoryPool();
-//   const uint32_t rowCount = values.size();
-//   Vector<physicalType> deltas(&memoryPool);
-//   Vector<physicalType> restatements(&memoryPool);
-//   Vector<bool> isRestatements(&memoryPool);
-//   auto& deltaEncodingParameters = encodingParameters.delta_ref().value();
-//   internal::computeDeltas(values, &deltas, &restatements, &isRestatements);
-//   std::string_view serializedDeltas = serializeEncoding<physicalType>(
-//       deltas, deltaEncodingParameters.deltasParameters().value(), buffer);
-//   std::string_view serializedRestatements = serializeEncoding<physicalType>(
-//       restatements,
-//       deltaEncodingParameters.restatementsParameters().value(),
-//       buffer);
-//   std::string_view serializedIsRestatements = serializeEncoding<bool>(
-//       isRestatements,
-//       deltaEncodingParameters.isRestatementsParameters().value(),
-//       buffer);
-//   const uint32_t encodingSize = Encoding::kPrefixSize + 8 +
-//       serializedDeltas.size() + serializedRestatements.size() +
-//       serializedIsRestatements.size();
-//   char* reserved = buffer->reserve(encodingSize);
-//   char* pos = reserved;
-//   Encoding::serializePrefix(
-//       EncodingType::Delta, TypeTraits<T>::dataType, rowCount, pos);
-//   encoding::writeUint32(serializedDeltas.size(), pos);
-//   encoding::writeUint32(serializedRestatements.size(), pos);
-//   encoding::writeBytes(serializedDeltas, pos);
-//   encoding::writeBytes(serializedRestatements, pos);
-//   encoding::writeBytes(serializedIsRestatements, pos);
-//   NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
-//   return {reserved, encodingSize};
-// }
+  const uint32_t rowCount = static_cast<uint32_t>(values.size());
+  Vector<physicalType> deltas(&buffer.getMemoryPool());
+  Vector<physicalType> restatements(&buffer.getMemoryPool());
+  Vector<bool> isRestatements(&buffer.getMemoryPool());
+
+  internal::computeDeltas(values, &deltas, &restatements, &isRestatements);
+
+  Buffer tempBuffer{buffer.getMemoryPool()};
+
+  const std::string_view serializedDeltas =
+      selection.template encodeNested<physicalType>(
+          EncodingIdentifiers::Delta::Deltas, deltas, tempBuffer, options);
+  const std::string_view serializedRestatements =
+      selection.template encodeNested<physicalType>(
+          EncodingIdentifiers::Delta::Restatements,
+          restatements,
+          tempBuffer,
+          options);
+  const std::string_view serializedIsRestatements =
+      selection.template encodeNested<bool>(
+          EncodingIdentifiers::Delta::IsRestatements,
+          isRestatements,
+          tempBuffer,
+          options);
+
+  const uint32_t encodingSize =
+      Encoding::serializePrefixSize(rowCount, useVarint) + 8 +
+      static_cast<uint32_t>(serializedDeltas.size()) +
+      static_cast<uint32_t>(serializedRestatements.size()) +
+      static_cast<uint32_t>(serializedIsRestatements.size());
+
+  char* reserved = buffer.reserve(encodingSize);
+  char* pos = reserved;
+  Encoding::serializePrefix(
+      EncodingType::Delta, TypeTraits<T>::dataType, rowCount, useVarint, pos);
+
+  // Data layout (after prefix):
+  // 4 bytes: restatement relative offset (X = serializedDeltas.size())
+  // 4 bytes: is-restatement relative offset (Y = serializedRestatements.size())
+  // X bytes: delta encoding bytes
+  // Y bytes: restatement encoding bytes
+  // Z bytes: is-restatement encoding bytes
+  encoding::writeUint32(static_cast<uint32_t>(serializedDeltas.size()), pos);
+  encoding::writeUint32(
+      static_cast<uint32_t>(serializedRestatements.size()), pos);
+  encoding::writeBytes(serializedDeltas, pos);
+  encoding::writeBytes(serializedRestatements, pos);
+  encoding::writeBytes(serializedIsRestatements, pos);
+  NIMBLE_CHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
+  return {reserved, encodingSize};
+}
 
 template <typename T>
 std::string DeltaEncoding<T>::debugString(int offset) const {

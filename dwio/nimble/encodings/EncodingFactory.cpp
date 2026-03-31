@@ -15,6 +15,7 @@
  */
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
+#include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/EncodingSelection.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
@@ -239,6 +240,9 @@ std::unique_ptr<Encoding> EncodingFactory::create(
       return std::make_unique<PrefixEncoding>(
           memoryPool, data, stringBufferFactory, options);
     }
+    case EncodingType::Delta: {
+      RETURN_ENCODING_BY_NUMERIC_TYPE(DeltaEncoding, dataType);
+    }
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
@@ -360,6 +364,16 @@ std::string_view EncodingFactory::encode(
             "Prefix encoding should only be selected for string_view data types.");
       } else {
         return PrefixEncoding::encode(selection, castedValues, buffer, options);
+      }
+    }
+    case EncodingType::Delta: {
+      if constexpr (isNumericType<physicalType>()) {
+        return DeltaEncoding<T>::encode(
+            selection, castedValues, buffer, options);
+      } else {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "Delta encoding should not be selected for non-numeric data type: {}.",
+            toString(TypeTraits<T>::dataType));
       }
     }
     default: {
