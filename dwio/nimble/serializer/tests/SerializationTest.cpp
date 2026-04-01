@@ -588,15 +588,17 @@ TEST_P(SerializationTest, flatMapEncodingFuzz) {
   struct TestCase {
     std::string name;
     velox::TypePtr type;
-    folly::F14FastSet<std::string> flatMapColumns;
+    folly::F14FastMap<std::string, std::set<std::string>> flatMapColumns;
   };
 
   std::vector<TestCase> testCases = {
-      {"scalar", scalarType, {"int_features", "string_features"}},
-      {"nested", nestedType, {"nested_features"}},
-      {"mixed", mixedType, {"scalar_features", "nested_features"}},
-      {"mapOfArray", mapOfArrayType, {"array_features"}},
-      {"mapOfNestedArray", mapOfNestedArrayType, {"nested_array_features"}},
+      {"scalar", scalarType, {{"int_features", {}}, {"string_features", {}}}},
+      {"nested", nestedType, {{"nested_features", {}}}},
+      {"mixed", mixedType, {{"scalar_features", {}}, {"nested_features", {}}}},
+      {"mapOfArray", mapOfArrayType, {{"array_features", {}}}},
+      {"mapOfNestedArray",
+       mapOfNestedArrayType,
+       {{"nested_array_features", {}}}},
   };
 
   for (const auto& testCase : testCases) {
@@ -870,7 +872,7 @@ TEST_P(SerializationTest, flatMapEncoding) {
       .compressionThreshold = 32,
       .compressionLevel = 3,
       .version = version(),
-      .flatMapColumns = {"float_features", "string_features"},
+      .flatMapColumns = {{"float_features", {}}, {"string_features", {}}},
   };
   Serializer serializer{options, type, pool_.get()};
 
@@ -1015,7 +1017,7 @@ TEST_P(SerializationTest, flatMapEncodingWithVaryingKeys) {
       .compressionThreshold = 32,
       .compressionLevel = 3,
       .version = version(),
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   Serializer serializer{options, type, pool_.get()};
 
@@ -1216,7 +1218,7 @@ TEST_P(SerializationTest, flatMapEncodingWithNestedTypes) {
   SerializerOptions options{
       .compressionType = CompressionType::Uncompressed,
       .version = version(),
-      .flatMapColumns = {"nested_features", "struct_features"},
+      .flatMapColumns = {{"nested_features", {}}, {"struct_features", {}}},
   };
   Serializer serializer{options, type, pool_.get()};
 
@@ -1388,7 +1390,7 @@ TEST_P(SerializationTest, nestedFlatMapWithVaryingInnerKeys) {
       .compressionThreshold = 32,
       .compressionLevel = 3,
       .version = version(),
-      .flatMapColumns = {"nested_map"},
+      .flatMapColumns = {{"nested_map", {}}},
   };
   Serializer serializer{options, type, pool_.get()};
 
@@ -1630,7 +1632,7 @@ TEST_P(SerializationTest, nullsNotSupported) {
 
     SerializerOptions options{
         .version = version(),
-        .flatMapColumns = {"features"},
+        .flatMapColumns = {{"features", {}}},
     };
     Serializer serializer{options, type, pool_.get()};
 
@@ -1749,7 +1751,7 @@ TEST_P(SerializationTest, flatMapSparseKeysScatterBitmap) {
       .compressionThreshold = 32,
       .compressionLevel = 3,
       .version = version(),
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   Serializer serializer{options, type, pool_.get()};
   auto serialized =
@@ -2198,7 +2200,7 @@ TEST_P(SerializationTest, encodingLayoutTreeFlatMap) {
 
   SerializerOptions options{
       .version = version(),
-      .flatMapColumns = {"features", "tags"},
+      .flatMapColumns = {{"features", {}}, {"tags", {}}},
       .encodingLayoutTree = layoutTree,
       .compressionOptions = compressionOptions(),
   };
@@ -2464,7 +2466,7 @@ TEST_P(SerializationTest, encodingLayoutTreeMapForFlatMap) {
 
   SerializerOptions options{
       .version = version(),
-      .flatMapColumns = {"map_val"},
+      .flatMapColumns = {{"map_val", {}}},
       .encodingLayoutTree = layoutTree,
   };
 
@@ -2543,7 +2545,7 @@ TEST_P(SerializationTest, flatMapInMapStreamSkipping) {
       .compressionThreshold = 32,
       .compressionLevel = 3,
       .version = version(),
-      .flatMapColumns = {"flat_map"},
+      .flatMapColumns = {{"flat_map", {}}},
   };
   Serializer serializer{options, type, pool_.get()};
 
@@ -2747,7 +2749,7 @@ TEST_P(SerializationTest, flatMapAsStruct) {
       .compressionThreshold = 32,
       .compressionLevel = 3,
       .version = version(),
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   Serializer serializer{serOptions, type, pool_.get()};
 
@@ -2856,7 +2858,7 @@ TEST_P(SerializationTest, flatMapAsStructWithMissingKeys) {
 
   const SerializerOptions serOptions{
       .version = version(),
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   Serializer serializer{serOptions, type, pool_.get()};
 
@@ -3017,7 +3019,7 @@ TEST_P(SerializationTest, flatMapDeserializeWithFlatMapSchema) {
   // Serialize with FlatMap encoding.
   const SerializerOptions options{
       .version = version(),
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   Serializer serializer{options, type, pool_.get()};
   auto serialized =
@@ -3165,6 +3167,308 @@ TEST_P(SerializationTest, arrayWithOffsetsAndSlidingMapWindows) {
         << "Mismatch at row " << i << "\nExpected: " << input->toString(i)
         << "\nActual: " << output->toString(i);
   }
+}
+
+namespace {
+
+// Helper to create a MapVector with given integer keys and float values.
+velox::VectorPtr createMapVector(
+    velox::memory::MemoryPool* pool,
+    const velox::TypePtr& type,
+    const std::vector<std::vector<int32_t>>& rowKeys,
+    const std::vector<std::vector<float>>& rowValues) {
+  const auto numRows = static_cast<velox::vector_size_t>(rowKeys.size());
+  velox::vector_size_t totalEntries = 0;
+  for (const auto& keys : rowKeys) {
+    totalEntries += keys.size();
+  }
+
+  auto keysFlat =
+      velox::BaseVector::create(velox::INTEGER(), totalEntries, pool);
+  auto valuesFlat =
+      velox::BaseVector::create(velox::REAL(), totalEntries, pool);
+  auto offsets = velox::allocateOffsets(numRows, pool);
+  auto sizes = velox::allocateSizes(numRows, pool);
+  auto* rawOffsets = offsets->asMutable<velox::vector_size_t>();
+  auto* rawSizes = sizes->asMutable<velox::vector_size_t>();
+
+  velox::vector_size_t offset = 0;
+  for (velox::vector_size_t i = 0; i < numRows; ++i) {
+    rawOffsets[i] = offset;
+    rawSizes[i] = static_cast<velox::vector_size_t>(rowKeys[i].size());
+    for (size_t j = 0; j < rowKeys[i].size(); ++j) {
+      keysFlat->asFlatVector<int32_t>()->set(offset, rowKeys[i][j]);
+      valuesFlat->asFlatVector<float>()->set(offset, rowValues[i][j]);
+      ++offset;
+    }
+  }
+
+  return std::make_shared<velox::MapVector>(
+      pool,
+      type,
+      nullptr,
+      numRows,
+      std::move(offsets),
+      std::move(sizes),
+      keysFlat,
+      valuesFlat);
+}
+
+} // namespace
+
+TEST_P(SerializationTest, flatmapColumnsKeysSchemaConsistency) {
+  // Two serializers with the same 8 predefined keys, 200 rows each, should
+  // produce identical schemas regardless of data arrival order.
+  auto type = velox::ROW({
+      {"id", velox::BIGINT()},
+      {"m", velox::MAP(velox::INTEGER(), velox::REAL())},
+  });
+
+  const auto mapType = velox::MAP(velox::INTEGER(), velox::REAL());
+  const std::vector<std::string> keysList = {
+      "20", "5", "13", "8", "17", "2", "11", "19"};
+  const std::set<std::string> predefinedKeys(keysList.begin(), keysList.end());
+  constexpr int32_t kNumKeys = 8;
+  constexpr int32_t kNumRows = 200;
+
+  auto buildInput = [&](bool reverseKeys) {
+    // Build keys and values arrays for kNumRows rows.
+    std::vector<std::vector<int32_t>> rowKeys(kNumRows);
+    std::vector<std::vector<float>> rowValues(kNumRows);
+    for (int32_t r = 0; r < kNumRows; ++r) {
+      int32_t numKeysInRow = (r % kNumKeys) + 1;
+      for (int32_t k = 0; k < numKeysInRow; ++k) {
+        int32_t keyIdx =
+            reverseKeys ? (kNumKeys - 1 - k) % kNumKeys : k % kNumKeys;
+        rowKeys[r].push_back(folly::to<int32_t>(keysList[keyIdx]));
+        rowValues[r].push_back(static_cast<float>(r * 100 + k));
+      }
+    }
+    auto ids =
+        velox::BaseVector::create(velox::BIGINT(), kNumRows, pool_.get());
+    for (int32_t r = 0; r < kNumRows; ++r) {
+      ids->asFlatVector<int64_t>()->set(r, r);
+    }
+    auto map = createMapVector(pool_.get(), mapType, rowKeys, rowValues);
+    return std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        kNumRows,
+        std::vector<velox::VectorPtr>{ids, map});
+  };
+
+  // Serializer 1: keys in forward order
+  SerializerOptions options1{
+      .version = version(),
+      .flatMapColumns = {{"m", predefinedKeys}},
+  };
+  Serializer serializer1{options1, type, pool_.get()};
+  serializer1.serialize(buildInput(false), OrderedRanges::of(0, kNumRows));
+
+  // Serializer 2: keys in reverse order
+  SerializerOptions options2{
+      .version = version(),
+      .flatMapColumns = {{"m", predefinedKeys}},
+  };
+  Serializer serializer2{options2, type, pool_.get()};
+  serializer2.serialize(buildInput(true), OrderedRanges::of(0, kNumRows));
+
+  // Both serializers must produce identical schemas.
+  auto schema1 = serializer1.schemaBuilder().schemaNodes();
+  auto schema2 = serializer2.schemaBuilder().schemaNodes();
+  ASSERT_EQ(schema1.size(), schema2.size());
+  for (size_t i = 0; i < schema1.size(); ++i) {
+    EXPECT_EQ(schema1[i].kind(), schema2[i].kind()) << "Mismatch at node " << i;
+    EXPECT_EQ(schema1[i].childrenCount(), schema2[i].childrenCount())
+        << "Mismatch at node " << i;
+    EXPECT_EQ(schema1[i].name(), schema2[i].name()) << "Mismatch at node " << i;
+  }
+}
+
+TEST_P(SerializationTest, flatmapColumnsKeysRoundtrip) {
+  // Serialize 500 rows with 6 predefined keys across 5 serialize calls,
+  // deserialize and verify correctness.
+  auto type = velox::ROW({
+      {"id", velox::BIGINT()},
+      {"m", velox::MAP(velox::INTEGER(), velox::REAL())},
+  });
+
+  const auto mapType = velox::MAP(velox::INTEGER(), velox::REAL());
+  const std::vector<std::string> keysList = {"5", "3", "7", "11", "2", "9"};
+  const std::set<std::string> predefinedKeys(keysList.begin(), keysList.end());
+  constexpr int32_t kNumKeys = 6;
+  constexpr int32_t kRowsPerBatch = 100;
+  constexpr int32_t kBatches = 5;
+
+  SerializerOptions options{
+      .version = version(),
+      .flatMapColumns = {{"m", predefinedKeys}},
+  };
+  Serializer serializer{options, type, pool_.get()};
+
+  std::shared_ptr<const nimble::Type> schema;
+  std::unique_ptr<Deserializer> deserializer;
+
+  for (int32_t b = 0; b < kBatches; ++b) {
+    // Build input batch.
+    std::vector<std::vector<int32_t>> rowKeys(kRowsPerBatch);
+    std::vector<std::vector<float>> rowValues(kRowsPerBatch);
+    auto ids =
+        velox::BaseVector::create(velox::BIGINT(), kRowsPerBatch, pool_.get());
+    for (int32_t r = 0; r < kRowsPerBatch; ++r) {
+      ids->asFlatVector<int64_t>()->set(r, b * kRowsPerBatch + r);
+      int32_t numKeysInRow = (r % kNumKeys) + 1;
+      for (int32_t k = 0; k < numKeysInRow; ++k) {
+        // Use different key subsets per batch by rotating starting offset.
+        rowKeys[r].push_back(folly::to<int32_t>(keysList[(b + k) % kNumKeys]));
+        rowValues[r].push_back(static_cast<float>(b * 1000 + r * 10 + k));
+      }
+    }
+    auto map = createMapVector(pool_.get(), mapType, rowKeys, rowValues);
+    auto input = std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        kRowsPerBatch,
+        std::vector<velox::VectorPtr>{ids, map});
+
+    auto serialized =
+        serializer.serialize(input, OrderedRanges::of(0, kRowsPerBatch));
+
+    // Create deserializer after first serialize so schema includes flatmap
+    // keys.
+    if (!deserializer) {
+      schema =
+          SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
+      deserializer = std::make_unique<Deserializer>(
+          schema, pool_.get(), DeserializerOptions{.version = version()});
+    }
+
+    velox::VectorPtr output;
+    deserializer->deserialize(serialized, output);
+
+    ASSERT_EQ(output->size(), input->size());
+    for (velox::vector_size_t i = 0; i < input->size(); ++i) {
+      ASSERT_TRUE(input->equalValueAt(output.get(), i, i))
+          << "Mismatch at batch " << b << " row " << i
+          << "\nExpected: " << input->toString(i)
+          << "\nActual: " << output->toString(i);
+    }
+  }
+}
+
+TEST_P(SerializationTest, flatmapColumnsKeysUnknownKeyRejection) {
+  // Pre-register 5 keys, feed 100 rows where each row includes unknown key 99.
+  auto type = velox::ROW({
+      {"m", velox::MAP(velox::INTEGER(), velox::REAL())},
+  });
+
+  const auto mapType = velox::MAP(velox::INTEGER(), velox::REAL());
+  constexpr int32_t kNumRows = 100;
+
+  SerializerOptions options{
+      .version = version(),
+      .flatMapColumns = {{"m", {"11", "2", "3", "5", "7"}}},
+  };
+  Serializer serializer{options, type, pool_.get()};
+
+  // Each row has one valid key and one unknown key (99).
+  std::vector<std::vector<int32_t>> rowKeys(kNumRows);
+  std::vector<std::vector<float>> rowValues(kNumRows);
+  for (int32_t r = 0; r < kNumRows; ++r) {
+    rowKeys[r] = {(r % 5) * 2 + 1, 99}; // valid key + unknown key
+    rowValues[r] = {static_cast<float>(r), static_cast<float>(r + 1)};
+  }
+  // Fix valid keys to match predefined set.
+  for (int32_t r = 0; r < kNumRows; ++r) {
+    const std::vector<int32_t> validKeys = {5, 3, 7, 11, 2};
+    rowKeys[r][0] = validKeys[r % 5];
+  }
+  auto map = createMapVector(pool_.get(), mapType, rowKeys, rowValues);
+  auto input = std::make_shared<velox::RowVector>(
+      pool_.get(), type, nullptr, kNumRows, std::vector<velox::VectorPtr>{map});
+
+  EXPECT_THROW(
+      serializer.serialize(input, OrderedRanges::of(0, kNumRows)),
+      NimbleUserError);
+}
+
+TEST_P(SerializationTest, flatmapColumnsKeysEmptyData) {
+  // Pre-register 8 keys, serialize 200 rows of empty maps across 4 serialize
+  // calls. Schema should still contain all predefined keys.
+  auto type = velox::ROW({
+      {"m", velox::MAP(velox::INTEGER(), velox::REAL())},
+  });
+
+  const auto mapType = velox::MAP(velox::INTEGER(), velox::REAL());
+  const std::set<std::string> predefinedKeys = {
+      "5", "3", "7", "11", "2", "9", "14", "1"};
+  const std::vector<std::string> sortedKeys(
+      predefinedKeys.begin(), predefinedKeys.end());
+  constexpr int32_t kNumKeys = 8;
+  constexpr int32_t kRowsPerBatch = 50;
+  constexpr int32_t kBatches = 4;
+
+  SerializerOptions options{
+      .version = version(),
+      .flatMapColumns = {{"m", predefinedKeys}},
+  };
+  Serializer serializer{options, type, pool_.get()};
+
+  for (int32_t b = 0; b < kBatches; ++b) {
+    // All empty maps.
+    std::vector<std::vector<int32_t>> rowKeys(kRowsPerBatch);
+    std::vector<std::vector<float>> rowValues(kRowsPerBatch);
+    auto map = createMapVector(pool_.get(), mapType, rowKeys, rowValues);
+    auto input = std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        kRowsPerBatch,
+        std::vector<velox::VectorPtr>{map});
+    serializer.serialize(input, OrderedRanges::of(0, kRowsPerBatch));
+  }
+
+  // Verify schema contains all 8 predefined keys in sorted order.
+  auto schema =
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
+  const auto& root = schema->asRow();
+  ASSERT_EQ(root.childrenCount(), 1);
+  const auto& flatMap = root.childAt(0)->asFlatMap();
+  ASSERT_EQ(flatMap.childrenCount(), kNumKeys);
+  for (int i = 0; i < kNumKeys; ++i) {
+    EXPECT_EQ(flatMap.nameAt(i), sortedKeys[i]);
+  }
+}
+
+TEST_P(SerializationTest, flatmapColumnsKeysRejectsRowIngestion) {
+  // When flatMapColumns keys are configured, passing a ROW vector (instead of
+  // MAP) should throw. Test with 100 rows and 5 predefined keys.
+  auto mapType = velox::MAP(velox::INTEGER(), velox::REAL());
+  auto type = velox::ROW({{"m", mapType}});
+
+  constexpr int32_t kNumRows = 100;
+
+  SerializerOptions options{
+      .version = version(),
+      .flatMapColumns = {{"m", {"11", "2", "3", "5", "7"}}},
+  };
+  Serializer serializer{options, type, pool_.get()};
+
+  // Build a ROW vector to pass as the flatmap child (triggers ingestRow).
+  auto rowChild = velox::BaseVector::create(
+      velox::ROW({{"a", velox::REAL()}}), kNumRows, pool_.get());
+  auto input = std::make_shared<velox::RowVector>(
+      pool_.get(),
+      velox::ROW({{"m", rowChild->type()}}),
+      nullptr,
+      kNumRows,
+      std::vector<velox::VectorPtr>{rowChild});
+
+  EXPECT_THROW(
+      serializer.serialize(input, OrderedRanges::of(0, kNumRows)),
+      NimbleUserError);
 }
 
 INSTANTIATE_TEST_SUITE_P(

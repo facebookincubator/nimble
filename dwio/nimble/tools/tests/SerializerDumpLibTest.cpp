@@ -178,7 +178,7 @@ TEST_F(SerializerDumpLibTest, varyingStreamCountsWithFlatMap) {
 
   const SerializerOptions options{
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   Serializer serializer{options, type, leafPool_.get()};
 

@@ -45,28 +45,19 @@ Serializer::Serializer(
   const std::shared_ptr<const velox::dwio::common::TypeWithId> typeWithId =
       velox::dwio::common::TypeWithId::create(type);
 
-  // Set up flat map node IDs if specified.
+  // Set up flat map node IDs and predefined keys if specified.
   if (!options_.flatMapColumns.empty()) {
-    context_.clearAndReserveFlatMapNodeIds(options_.flatMapColumns.size());
-    for (const auto& column : options_.flatMapColumns) {
-      context_.addFlatMapNodeId(typeWithId->childByName(column)->id());
+    context_.reserveFlatMapNodes(options_.flatMapColumns.size());
+    for (const auto& [columnName, keys] : options_.flatMapColumns) {
+      auto nodeId = typeWithId->childByName(columnName)->id();
+      context_.addFlatMapNodeId(nodeId, keys);
     }
   }
 
-  // Store typeWithId to keep it alive — FlatMap field writers hold references
-  // to child TypeWithId nodes, so the root must outlive the writer.
   typeWithId_ = typeWithId;
 
-  // NOTE: Stats collectors are intentionally NOT initialized here.
-  // The Serializer never reads column statistics, so skipping
-  // initStatsCollectors() avoids unnecessary per-row stats overhead
-  // in all field writers (their null statisticsCollector_ guards handle this).
-  writer_ = FieldWriter::create(context_, typeWithId);
-
-  buildStreamEncodingLayouts();
-
-  // Register handler for dynamically discovered FlatMap keys.
-  // Combines in-map offset tracking with optional encoding layout lookup.
+  // Register handler for dynamically discovered FlatMap keys before creating
+  // the writer tree, so that predefined keys also trigger the handler.
   if (!options_.flatMapColumns.empty()) {
     context_.setFlatmapFieldAddedEventHandler(
         [this](
@@ -92,6 +83,14 @@ Serializer::Serializer(
           }
         });
   }
+
+  // NOTE: Stats collectors are intentionally NOT initialized here.
+  // The Serializer never reads column statistics, so skipping
+  // initStatsCollectors() avoids unnecessary per-row stats overhead
+  // in all field writers (their null statisticsCollector_ guards handle this).
+  writer_ = FieldWriter::create(context_, typeWithId);
+
+  buildStreamEncodingLayouts();
 }
 
 std::string_view Serializer::serialize(

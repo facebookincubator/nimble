@@ -69,7 +69,8 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
   void writeData(
       const std::vector<RowVectorPtr>& batches,
       const std::vector<std::string>& indexColumns,
-      const folly::F14FastSet<std::string>& flatMapColumns = {},
+      const folly::F14FastMap<std::string, std::set<std::string>>&
+          flatMapColumns = {},
       uint64_t stripeSize = 4 << 10 /* 4KB */) {
     sinkData_.clear();
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
@@ -473,7 +474,7 @@ TEST_P(NimbleIndexProjectorTest, flatMapProjection) {
              return static_cast<int64_t>(row * 100 + mapIndex);
            })});
 
-  writeData({batch}, {"key"}, {"features"});
+  writeData({batch}, {"key"}, {{"features", {}}});
 
   // Project keys in non-alphabetical order to exercise FlatMap sorting.
   std::vector<Subfield> subfields;
@@ -575,7 +576,7 @@ TEST_P(NimbleIndexProjectorTest, flatMapFullColumnProjection) {
              return static_cast<int64_t>(row * 100 + mapIndex);
            })});
 
-  writeData({batch}, {"key"}, {"features"});
+  writeData({batch}, {"key"}, {{"features", {}}});
 
   // Project entire column (no key subscripts) — should fail.
   std::vector<Subfield> subfields;
@@ -614,7 +615,7 @@ TEST_P(NimbleIndexProjectorTest, flatMapKeyProjectionSchemaComparison) {
              return static_cast<int64_t>(row * 100 + mapIndex);
            })});
 
-  writeData({batch}, {"key"}, {"features"});
+  writeData({batch}, {"key"}, {{"features", {}}});
 
   // Project keys in non-alphabetical order: ["d", "b"].
   std::vector<Subfield> subfields;
@@ -685,7 +686,7 @@ TEST_P(NimbleIndexProjectorTest, flatMapIntKeyProjection) {
              return static_cast<int64_t>(row * 100 + mapIndex);
            })});
 
-  writeData({batch}, {"key"}, {"features"});
+  writeData({batch}, {"key"}, {{"features", {}}});
 
   // Project integer keys in non-sorted order: [3, 1, 4].
   std::vector<Subfield> subfields;
@@ -782,7 +783,7 @@ TEST_P(NimbleIndexProjectorTest, flatMapMissingKeys) {
              return static_cast<int64_t>(row * 100 + mapIndex);
            })});
 
-  writeData({batch}, {"key"}, {"features"});
+  writeData({batch}, {"key"}, {{"features", {}}});
 
   // Project mix of existing ("a", "c") and missing ("x", "z") keys.
   {
@@ -857,7 +858,7 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
 
     VeloxWriterOptions options;
     options.enableChunking = true;
-    options.flatMapColumns = {"features"};
+    options.flatMapColumns = {{"features", {}}};
 
     IndexConfig indexConfig;
     indexConfig.columns = {"key"};

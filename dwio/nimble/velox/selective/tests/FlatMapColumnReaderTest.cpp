@@ -56,7 +56,7 @@ class FlatMapColumnReaderTest : public ::testing::TestWithParam<bool>,
       const RowVectorPtr& input,
       const std::string& flatMapColumn = "c0") {
     VeloxWriterOptions writerOptions;
-    writerOptions.flatMapColumns = {flatMapColumn};
+    writerOptions.flatMapColumns = {{flatMapColumn, {}}};
     writerOptions.skipConstantFlatMapInMapStreams = GetParam();
     return test::createNimbleFile(*rootPool(), input, writerOptions);
   }
@@ -487,7 +487,7 @@ TEST_P(FlatMapColumnReaderTest, nativeMultiBatch) {
   auto flatMap = makeFlatMapVector<int32_t, int64_t>(data);
   auto input = makeRowVector({flatMap, flatMap->toMapVector()});
   VeloxWriterOptions writerOptions;
-  writerOptions.flatMapColumns = {"c0"};
+  writerOptions.flatMapColumns = {{"c0", {}}};
   writerOptions.skipConstantFlatMapInMapStreams = GetParam();
   auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
@@ -510,7 +510,7 @@ TEST_P(FlatMapColumnReaderTest, nativeWithNulls) {
   });
   auto input = makeRowVector({flatMap, flatMap->toMapVector()});
   VeloxWriterOptions writerOptions;
-  writerOptions.flatMapColumns = {"c0"};
+  writerOptions.flatMapColumns = {{"c0", {}}};
   writerOptions.skipConstantFlatMapInMapStreams = GetParam();
   auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
   auto scanSpec = std::make_shared<common::ScanSpec>("root");

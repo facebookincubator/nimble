@@ -613,7 +613,7 @@ TEST_F(FieldWriterStatsTests, flatmapFieldWriterStatsStableKeySet) {
   verifyReturnedColumnStats(
       vector,
       {rootStat, flatmapStat, keyStat, valueStat},
-      {.flatMapColumns = {"c0"}});
+      {.flatMapColumns = {{"c0", {}}}});
 }
 
 TEST_F(FieldWriterStatsTests, flatMapFieldWriterStats) {
@@ -713,7 +713,7 @@ TEST_F(FieldWriterStatsTests, flatMapFieldWriterStats) {
   verifyReturnedColumnStats(
       vector,
       {rootStat, flatmapStat, keyStat, valueStat},
-      {.flatMapColumns = {"c0"}});
+      {.flatMapColumns = {{"c0", {}}}});
 }
 
 TEST_F(FieldWriterStatsTests, flatMapPassThroughValueFieldWriterStats) {
@@ -836,7 +836,7 @@ TEST_F(FieldWriterStatsTests, flatMapPassThroughValueFieldWriterStats) {
   verifyReturnedColumnStats(
       vector,
       {rootStat, flatmapStat, keyStat, valueStat},
-      {.flatMapColumns = {"c0"}},
+      {.flatMapColumns = {{"c0", {}}}},
       velox::ROW({{"c0", velox::MAP(velox::TINYINT(), velox::INTEGER())}}));
 }
 
@@ -941,7 +941,7 @@ TEST_F(FieldWriterStatsTests, flatMapWithNullValuesFieldWriterStats) {
   verifyReturnedColumnStats(
       vector,
       {rootStat, flatmapStat, keyStat, valueStat},
-      {.flatMapColumns = {"c0"}});
+      {.flatMapColumns = {{"c0", {}}}});
 }
 
 TEST_F(
@@ -1033,7 +1033,7 @@ TEST_F(
   verifyReturnedColumnStats(
       vector,
       {rootStat, flatmapStat, keyStat, valueStat},
-      {.flatMapColumns = {"c0"}},
+      {.flatMapColumns = {{"c0", {}}}},
       velox::ROW({{"c0", velox::MAP(velox::TINYINT(), velox::INTEGER())}}));
 }
 
@@ -1103,7 +1103,7 @@ TEST_F(FieldWriterStatsTests, flatMapVarbinaryKeyFieldWriterStats) {
   verifyReturnedColumnStats(
       vector,
       {rootStat, flatmapStat, keyStat, valueStat},
-      {.flatMapColumns = {"c0"}});
+      {.flatMapColumns = {{"c0", {}}}});
 }
 
 TEST_F(FieldWriterStatsTests, flatMapPassThroughVarbinaryKeyFieldWriterStats) {
@@ -1172,7 +1172,7 @@ TEST_F(FieldWriterStatsTests, flatMapPassThroughVarbinaryKeyFieldWriterStats) {
   verifyReturnedColumnStats(
       vector,
       {rootStat, flatmapStat, keyStat, valueStat},
-      {.flatMapColumns = {"c0"}},
+      {.flatMapColumns = {{"c0", {}}}},
       velox::ROW({{"c0", velox::MAP(velox::VARBINARY(), velox::INTEGER())}}));
 }
 
@@ -1488,7 +1488,7 @@ TEST_F(FieldWriterStatsTests, flatmapWithDeduplicatedValuesStats) {
 
   // Write with flatmap + dictionaryArray configuration
   nimble::VeloxWriterOptions options;
-  options.flatMapColumns.insert("c0");
+  options.flatMapColumns["c0"];
   options.dictionaryArrayColumns.insert("c0");
 
   // Write Nimble file and check it doesn't crash
@@ -1576,7 +1576,7 @@ TEST_F(FieldWriterStatsTests, flatmapWithSlidingWindowMapStats) {
 
   // Write with flatmap + deduplicatedMap configuration
   nimble::VeloxWriterOptions options;
-  options.flatMapColumns.insert("c0");
+  options.flatMapColumns["c0"];
   options.deduplicatedMapColumns.insert("c0");
 
   // Write Nimble file and check it doesn't crash

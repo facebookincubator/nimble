@@ -22,7 +22,10 @@
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/FlushPolicy.h"
+#include "folly/container/F14Map.h"
 #include "folly/container/F14Set.h"
+
+#include <set>
 #include "velox/common/base/SpillConfig.h"
 #include "velox/type/Type.h"
 
@@ -64,8 +67,13 @@ struct VeloxWriterOptions {
   /// writing. The index stores the per-chunk min and max key for each stripe.
   std::optional<IndexConfig> indexConfig;
 
-  // Columns that should be encoded as flat maps
-  folly::F14FastSet<std::string> flatMapColumns;
+  /// Columns that should be encoded as flat maps. Maps column name to a set
+  /// of predefined key strings. When the set is empty, the column is
+  /// treated as a flat map with dynamic key discovery. When non-empty, keys
+  /// are predefined in sorted order to ensure all writers produce
+  /// identical schemas regardless of data arrival order. Unknown keys not in
+  /// the set will cause an error during writing.
+  folly::F14FastMap<std::string, std::set<std::string>> flatMapColumns;
 
   // When true, the writer skips encoding flat map in-map boolean streams that
   // are all-true (every row has the key) or all-false (no row has the key).

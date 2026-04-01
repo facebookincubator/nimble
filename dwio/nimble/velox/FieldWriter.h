@@ -23,7 +23,10 @@
 #include "dwio/nimble/velox/StreamData.h"
 #include "dwio/nimble/velox/stats/ColumnStatistics.h"
 #include "dwio/nimble/velox/stats/ColumnStatsUtils.h"
+#include "folly/container/F14Map.h"
 #include "velox/dwio/common/TypeWithId.h"
+
+#include <set>
 #include "velox/vector/DecodedVector.h"
 
 namespace facebook::nimble {
@@ -155,20 +158,42 @@ class FieldWriterContext {
   }
 
   inline bool hasFlatMapNodeId(uint32_t nodeId) const {
-    return flatMapNodeIds_.contains(nodeId);
+    return flatMapNodes_.contains(nodeId);
   }
 
-  inline void clearAndReserveFlatMapNodeIds(size_t size) {
-    flatMapNodeIds_.clear();
-    flatMapNodeIds_.reserve(size);
+  /// Registers a flat map node by ID, optionally with predefined keys.
+  /// Empty set means dynamic key discovery; non-empty set means predefined
+  /// keys in sorted order.
+  void addFlatMapNodeId(uint32_t nodeId, std::set<std::string> keys = {}) {
+    NIMBLE_CHECK(
+        flatMapNodes_.find(nodeId) == flatMapNodes_.end(),
+        "Flat map column already set for node {}",
+        nodeId);
+    flatMapNodes_[nodeId] = std::move(keys);
   }
 
-  inline void addFlatMapNodeId(uint32_t nodeId) {
-    flatMapNodeIds_.insert(nodeId);
+  /// Returns predefined keys for a flat map node, or nullptr if the
+  /// node has no predefined keys or is not a flat map node.
+  const std::set<std::string>* getFlatMapNodeKeys(uint32_t nodeId) const {
+    auto it = flatMapNodes_.find(nodeId);
+    if (it == flatMapNodes_.end() || it->second.empty()) {
+      return nullptr;
+    }
+    return &it->second;
   }
 
-  inline const folly::F14FastSet<uint32_t>& flatMapNodeIds() const {
-    return flatMapNodeIds_;
+  inline void reserveFlatMapNodes(size_t size) {
+    flatMapNodes_.reserve(size);
+  }
+
+  /// Returns the set of flat map node IDs.
+  inline folly::F14FastSet<uint32_t> flatMapNodeIds() const {
+    folly::F14FastSet<uint32_t> ids;
+    ids.reserve(flatMapNodes_.size());
+    for (const auto& [nodeId, _] : flatMapNodes_) {
+      ids.insert(nodeId);
+    }
+    return ids;
   }
 
   inline folly::F14FastSet<uint32_t>& dictionaryArrayNodeIds() {
@@ -422,7 +447,7 @@ class FieldWriterContext {
   std::mutex flatMapSchemaMutex_;
   SchemaBuilder schemaBuilder_;
 
-  folly::F14FastSet<uint32_t> flatMapNodeIds_;
+  folly::F14FastMap<uint32_t, std::set<std::string>> flatMapNodes_;
   folly::F14FastSet<uint32_t> dictionaryArrayNodeIds_;
   folly::F14FastSet<uint32_t> deduplicatedMapNodeIds_;
   bool ignoreTopLevelNulls_{false};
