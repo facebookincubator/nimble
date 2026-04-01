@@ -1,7 +1,7 @@
 # The Nimble File Format
 
 [![Linux Build](https://github.com/facebookincubator/nimble/actions/workflows/linux-build.yml/badge.svg)](https://github.com/facebookincubator/nimble/actions/workflows/linux-build.yml)
-[![Velox](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/<GIST_OWNER>/<GIST_ID>/raw/velox-status.json)](https://github.com/facebookincubator/velox)
+[![Velox](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/srsuryadev/e3263c7396c5b33486ac167d8b52ec02/raw/67292508e2e4891ef4ff168bc69ac4176b9a4a7a/velox-status.json)](https://github.com/facebookincubator/velox)
 
 Nimble (formerly known as _”Alpha”_) is a new columnar file format for large
 datasets created by Meta. Nimble is meant to be a replacement for file formats
