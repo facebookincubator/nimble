@@ -86,7 +86,18 @@ ReaderBase::ReaderBase(
       randomSkip_{randomSkip},
       scanSpec_{scanSpec},
       nimbleSchema_{std::move(nimbleSchema)},
-      fileSchema_{std::move(fileSchema)} {}
+      fileSchema_{std::move(fileSchema)} {
+  auto statsSection =
+      tablet_->loadOptionalSection(std::string(kVectorizedStatsSection));
+  if (statsSection.has_value()) {
+    auto fileStats =
+        VectorizedFileStats::deserialize(statsSection->content(), *pool_);
+    if (fileStats) {
+      fileColumnStats_ =
+          fileStats->toColumnStatistics(fileSchema_, nimbleSchema_);
+    }
+  }
+}
 
 std::optional<common::Region> StripeStreams::streamRegion(int streamId) const {
   NIMBLE_CHECK(stripeIdentifier_.has_value());
