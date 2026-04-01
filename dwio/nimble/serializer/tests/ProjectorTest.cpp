@@ -814,7 +814,7 @@ TEST_F(ProjectorTest, flatMapSerializeDeserializeNoProjction) {
   // Serialize with FlatMap encoding.
   SerializerOptions serOpts{
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
 
@@ -883,7 +883,7 @@ TEST_F(ProjectorTest, projectEntireFlatMapColumn) {
 
   SerializerOptions serOpts{
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
 
@@ -951,7 +951,7 @@ TEST_F(ProjectorTest, projectFlatMapAllKeys) {
   // Serialize with FlatMap encoding.
   SerializerOptions serOpts{
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
 
@@ -1041,7 +1041,7 @@ TEST_F(ProjectorTest, flatMapKeyProjectionSchemaComparison) {
 
   SerializerOptions serOpts{
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
 
@@ -1157,7 +1157,7 @@ TEST_F(ProjectorTest, flatMapFullProjectionSchemaTypeMismatch) {
 
   SerializerOptions serOpts{
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
 
@@ -1225,7 +1225,7 @@ TEST_F(ProjectorTest, flatMapStreamIndices) {
   // Serialize with FlatMap encoding.
   SerializerOptions serOpts{
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
 
@@ -1349,7 +1349,7 @@ TEST_F(ProjectorTest, projectFlatMapSingleKey) {
   // keys are discovered).
   SerializerOptions serOpts{
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
 
@@ -1450,7 +1450,7 @@ TEST_F(ProjectorTest, projectFlatMapMultipleKeys) {
   // Use serializeWithSchema to get schema AFTER serialization.
   SerializerOptions serOpts{
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
 
@@ -1547,7 +1547,7 @@ TEST_F(ProjectorTest, projectFlatMapNonExistentKey) {
   // Serialize with FlatMap encoding to discover keys 1, 2, 3.
   SerializerOptions serOpts{
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
   (void)serialized; // Not used, just needed to discover keys.
@@ -1739,7 +1739,7 @@ TEST_F(ProjectorTest, projectWithUpdatedNestedRowType) {
   // Serialize with FlatMap to discover keys.
   SerializerOptions serOpts{
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, inputType, serOpts);
 
@@ -1857,7 +1857,7 @@ TEST_F(ProjectorTest, projectNestedFieldUnderFlatMapValue) {
 
   SerializerOptions serOpts{
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, inputType, serOpts);
 
@@ -1979,7 +1979,7 @@ TEST_F(ProjectorTest, projectMultipleFlatMapColumns) {
   // Serialize both maps as FlatMaps.
   SerializerOptions serOpts{
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"map_a", "map_b"},
+      .flatMapColumns = {{"map_a", {}}, {"map_b", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
 
@@ -2116,7 +2116,7 @@ TEST_F(ProjectorTestBase, flatMapInMapStreamSkipping) {
 
   SerializerOptions serOpts{
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"flat_map"},
+      .flatMapColumns = {{"flat_map", {}}},
   };
 
   // Serialize multiple batches with different key sets to trigger in-map
@@ -2430,7 +2430,7 @@ TEST_F(ProjectorTest, unsortedStreamIndicesReorderPath) {
 
   SerializerOptions serOpts{
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"map_a", "map_b"},
+      .flatMapColumns = {{"map_a", {}}, {"map_b", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
 
@@ -2557,7 +2557,7 @@ TEST_F(ProjectorTest, singleFlatMapSortedFastPath) {
 
   SerializerOptions serOpts{
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"features"},
+      .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
 

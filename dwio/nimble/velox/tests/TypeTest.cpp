@@ -337,7 +337,7 @@ TEST_F(TypeTests, FlatMapFeatureSelection) {
   }
 
   nimble::VeloxWriterOptions options{
-      .flatMapColumns = {"map"},
+      .flatMapColumns = {{"map", {}}},
   };
   auto file =
       nimble::test::createNimbleFile(*rootPool_, vector, std::move(options));

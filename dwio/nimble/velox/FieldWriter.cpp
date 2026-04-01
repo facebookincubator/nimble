@@ -1429,6 +1429,44 @@ class FlatMapFieldWriter : public FieldWriter {
         "Unsupported vector type for flat map writer.", vector->toString());
   }
 
+  // Adds all predefined keys, creating value field writers in sorted order
+  // to ensure deterministic stream IDs across serializers. Must be called
+  // after construction and before any writes. No-op if no predefined keys
+  // are configured for this node.
+  void addPredefinedKeys() {
+    auto* keys = context_.getFlatMapNodeKeys(nodeId_);
+    if (keys == nullptr) {
+      return;
+    }
+    NIMBLE_CHECK(
+        allValueFields_.empty(),
+        "addPredefinedKeys() must be called before any writes for node {}",
+        nodeId_);
+    for (const auto& keyName : *keys) {
+      KeyType key;
+      if constexpr (
+          K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY) {
+        key = KeyType(keyName);
+      } else {
+        key = folly::to<KeyType>(keyName);
+      }
+      // std::set guarantees uniqueness, so duplicates should not occur.
+      NIMBLE_DCHECK(
+          allValueFields_.find(key) == allValueFields_.end(),
+          "Duplicate predefined key: {}",
+          keyName);
+      auto valueFieldWriter = FieldWriter::create(context_, valueType_);
+      const auto& inMapDescriptor = typeBuilder_->asFlatMap().addChild(
+          keyName, valueFieldWriter->typeBuilder());
+      context_.handleFlatmapFieldAddEvent(
+          *typeBuilder_, keyName, *valueFieldWriter->typeBuilder());
+      allValueFields_.emplace(
+          key,
+          std::make_unique<FlatMapValueFieldWriter>(
+              context_, inMapDescriptor, std::move(valueFieldWriter), nodeId_));
+    }
+  }
+
   FlatMapPassthroughValueFieldWriter& createPassthroughValueFieldWriter(
       const std::string& key) {
     auto fieldWriter = FieldWriter::create(context_, valueType_);
@@ -1542,6 +1580,11 @@ class FlatMapFieldWriter : public FieldWriter {
   void ingestFlatMap(
       const velox::VectorPtr& vector,
       const OrderedRanges& ranges) {
+    // TODO: Add support for predefined flatmap key ordering with FlatMapVector
+    // ingestion.
+    NIMBLE_USER_CHECK(
+        !hasPredefinedKeys(),
+        "Predefined flatmap key ordering is not supported with FlatMapVector ingestion");
     NIMBLE_CHECK(
         currentValueFields_.empty() && allValueFields_.empty(),
         "Mixing map and flatmap vectors in the FlatMapFieldWriter is not supported");
@@ -1665,6 +1708,11 @@ class FlatMapFieldWriter : public FieldWriter {
   }
 
   void ingestRow(const velox::VectorPtr& vector, const OrderedRanges& ranges) {
+    // TODO: Add support for predefined flatmap key ordering with ROW vector
+    // ingestion.
+    NIMBLE_USER_CHECK(
+        !hasPredefinedKeys(),
+        "Predefined flatmap key ordering is not supported with ROW vector ingestion");
     NIMBLE_CHECK(
         currentValueFields_.empty() && allValueFields_.empty(),
         "Mixing map and flatmap vectors in the FlatMapFieldWriter is not supported");
@@ -1872,6 +1920,10 @@ class FlatMapFieldWriter : public FieldWriter {
   }
 
  private:
+  inline bool hasPredefinedKeys() const {
+    return context_.getFlatMapNodeKeys(nodeId_) != nullptr;
+  }
+
   FlatMapValueFieldWriter* getValueFieldWriter(KeyType key, uint32_t size) {
     auto it = currentValueFields_.find(key);
     if (it != currentValueFields_.end()) {
@@ -1884,6 +1936,11 @@ class FlatMapFieldWriter : public FieldWriter {
     // check whether the typebuilder for this key is already present
     auto flatFieldIt = allValueFields_.find(key);
     if (flatFieldIt == allValueFields_.end()) {
+      NIMBLE_USER_CHECK(
+          !hasPredefinedKeys(),
+          "Unknown flatmap key '{}' not in predefined key list for node {}",
+          key,
+          nodeId_);
       std::scoped_lock<std::mutex> lock{context_.flatMapSchemaMutex()};
 
       auto valueFieldWriter = FieldWriter::create(context_, valueType_);
@@ -1929,6 +1986,15 @@ class FlatMapFieldWriter : public FieldWriter {
   SharedStatisticsCollector* keyStatisticsCollector_{nullptr};
 };
 
+template <velox::TypeKind K>
+std::unique_ptr<FieldWriter> createTypedFlatMapFieldWriter(
+    FieldWriterContext& context,
+    const std::shared_ptr<const velox::dwio::common::TypeWithId>& type) {
+  auto writer = std::make_unique<FlatMapFieldWriter<K>>(context, type);
+  writer->addPredefinedKeys();
+  return writer;
+}
+
 std::unique_ptr<FieldWriter> createFlatMapFieldWriter(
     FieldWriterContext& context,
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& type) {
@@ -1940,22 +2006,22 @@ std::unique_ptr<FieldWriter> createFlatMapFieldWriter(
   auto kind = type->childAt(0)->type()->kind();
   switch (kind) {
     case velox::TypeKind::TINYINT:
-      return std::make_unique<FlatMapFieldWriter<velox::TypeKind::TINYINT>>(
+      return createTypedFlatMapFieldWriter<velox::TypeKind::TINYINT>(
           context, type);
     case velox::TypeKind::SMALLINT:
-      return std::make_unique<FlatMapFieldWriter<velox::TypeKind::SMALLINT>>(
+      return createTypedFlatMapFieldWriter<velox::TypeKind::SMALLINT>(
           context, type);
     case velox::TypeKind::INTEGER:
-      return std::make_unique<FlatMapFieldWriter<velox::TypeKind::INTEGER>>(
+      return createTypedFlatMapFieldWriter<velox::TypeKind::INTEGER>(
           context, type);
     case velox::TypeKind::BIGINT:
-      return std::make_unique<FlatMapFieldWriter<velox::TypeKind::BIGINT>>(
+      return createTypedFlatMapFieldWriter<velox::TypeKind::BIGINT>(
           context, type);
     case velox::TypeKind::VARCHAR:
-      return std::make_unique<FlatMapFieldWriter<velox::TypeKind::VARCHAR>>(
+      return createTypedFlatMapFieldWriter<velox::TypeKind::VARCHAR>(
           context, type);
     case velox::TypeKind::VARBINARY:
-      return std::make_unique<FlatMapFieldWriter<velox::TypeKind::VARBINARY>>(
+      return createTypedFlatMapFieldWriter<velox::TypeKind::VARBINARY>(
           context, type);
     default:
       NIMBLE_UNSUPPORTED(

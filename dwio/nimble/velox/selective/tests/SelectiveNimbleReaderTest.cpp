@@ -25,9 +25,9 @@
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/encodings/EncodingLayout.h"
 #include "dwio/nimble/tablet/Constants.h"
-#include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
+#include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/caching/AsyncDataCache.h"
@@ -320,11 +320,9 @@ class SelectiveNimbleReaderTest
       bool isNullable = true) {
     auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
     auto tablet = TabletReader::create(readFile, pool(), {});
-    auto section =
-        tablet->loadOptionalSection(std::string(kSchemaSection));
+    auto section = tablet->loadOptionalSection(std::string(kSchemaSection));
     ASSERT_TRUE(section.has_value());
-    auto schema =
-        SchemaDeserializer::deserialize(section->content().data());
+    auto schema = SchemaDeserializer::deserialize(section->content().data());
     auto& scalarNode = schema->asRow().childAt(0)->asScalar();
 
     for (auto i = 0; i < tablet->stripeCount(); ++i) {
@@ -334,8 +332,7 @@ class SelectiveNimbleReaderTest
 
       InMemoryChunkedStream chunkedStream{*pool(), std::move(streams[0])};
       ASSERT_TRUE(chunkedStream.hasNext());
-      auto capture =
-          EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+      auto capture = EncodingLayoutCapture::capture(chunkedStream.nextChunk());
       if (isNullable) {
         // Nullable encoding wraps the data encoding. The data child is at
         // index 1 (index 0 is the nulls bool stream).
@@ -692,7 +689,7 @@ TEST_P(SelectiveNimbleReaderTest, allNulls) {
           BaseVector::createNullConstant(INTEGER(), 103, pool())),
   });
   VeloxWriterOptions writerOptions;
-  writerOptions.flatMapColumns = {"c4"};
+  writerOptions.flatMapColumns = {{"c4", {}}};
   auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
 
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
@@ -1144,7 +1141,7 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSize) {
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
   VeloxWriterOptions writerOptions;
-  writerOptions.flatMapColumns = {"c2"};
+  writerOptions.flatMapColumns = {{"c2", {}}};
   auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
   auto readers =
       makeReaders(input, fileContent, scanSpec, passStringBuffersFromDecoder);
@@ -1665,7 +1662,7 @@ TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsReuseNullResult) {
           })),
   });
   VeloxWriterOptions writerOptions;
-  writerOptions.flatMapColumns = {"c0"};
+  writerOptions.flatMapColumns = {{"c0", {}}};
   writerOptions.dictionaryArrayColumns = {"c0"};
   auto fileContent = test::createNimbleFile(*rootPool(), vector, writerOptions);
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
@@ -2080,7 +2077,7 @@ TEST_P(SelectiveNimbleReaderTest, nativeFlatMap) {
     auto input = makeRowVector({inputFlatMap, inputFlatMap->toMapVector()});
 
     VeloxWriterOptions writerOptions;
-    writerOptions.flatMapColumns = {"c0"};
+    writerOptions.flatMapColumns = {{"c0", {}}};
     auto fileContent =
         test::createNimbleFile(*rootPool(), input, writerOptions);
     auto scanSpec = std::make_shared<common::ScanSpec>("root");
@@ -2206,7 +2203,7 @@ TEST_P(SelectiveNimbleReaderTest, nativeFlatMap) {
     auto input = makeRowVector({inputFlatMap, inputFlatMap->toMapVector()});
 
     VeloxWriterOptions writerOptions;
-    writerOptions.flatMapColumns = {"c0"};
+    writerOptions.flatMapColumns = {{"c0", {}}};
     auto fileContent =
         test::createNimbleFile(*rootPool(), input, writerOptions, true);
 
@@ -2722,11 +2719,8 @@ TEST_P(SelectiveNimbleReaderTest, deltaForcedEncoding) {
                         CompressionType::Uncompressed}}}}},
              ""}}}});
   verifyEncodingOnDisk(file, EncodingType::Delta, /*isNullable=*/false);
-  auto readers = makeReaders(
-      input,
-      file,
-      scanSpec,
-      passStringBuffersFromDecoder);
+  auto readers =
+      makeReaders(input, file, scanSpec, passStringBuffersFromDecoder);
   validate(*input, *readers.rowReader, 101, [&](auto i) {
     return !c0->isNullAt(i) && c0->valueAt(i) >= 100 && c0->valueAt(i) <= 2000;
   });
@@ -2775,11 +2769,8 @@ TEST_P(SelectiveNimbleReaderTest, deltaWithRestatements) {
                         CompressionType::Uncompressed}}}}},
              ""}}}});
   verifyEncodingOnDisk(file, EncodingType::Delta, /*isNullable=*/false);
-  auto readers = makeReaders(
-      input,
-      file,
-      scanSpec,
-      passStringBuffersFromDecoder);
+  auto readers =
+      makeReaders(input, file, scanSpec, passStringBuffersFromDecoder);
   validate(*input, *readers.rowReader, 50, [&](auto i) {
     return !c0->isNullAt(i) && c0->valueAt(i) >= 20 && c0->valueAt(i) <= 80;
   });
@@ -2826,11 +2817,8 @@ TEST_P(SelectiveNimbleReaderTest, deltaInt32) {
                         CompressionType::Uncompressed}}}}},
              ""}}}});
   verifyEncodingOnDisk(file, EncodingType::Delta, /*isNullable=*/false);
-  auto readers = makeReaders(
-      input,
-      file,
-      scanSpec,
-      passStringBuffersFromDecoder);
+  auto readers =
+      makeReaders(input, file, scanSpec, passStringBuffersFromDecoder);
   validate(*input, *readers.rowReader, 80, [&](auto i) {
     return !c0->isNullAt(i) && c0->valueAt(i) >= 50 && c0->valueAt(i) <= 800;
   });
@@ -2873,11 +2861,8 @@ TEST_P(SelectiveNimbleReaderTest, deltaNoFilter) {
                         CompressionType::Uncompressed}}}}},
              ""}}}});
   verifyEncodingOnDisk(file, EncodingType::Delta, /*isNullable=*/false);
-  auto readers = makeReaders(
-      input,
-      file,
-      scanSpec,
-      passStringBuffersFromDecoder);
+  auto readers =
+      makeReaders(input, file, scanSpec, passStringBuffersFromDecoder);
   validate(*input, *readers.rowReader, 50, [](auto) { return true; });
 }
 
@@ -2890,8 +2875,7 @@ TEST_P(SelectiveNimbleReaderTest, deltaTwoColumns) {
       this->passStringBuffersFromDecoder();
   auto c0 = makeFlatVector<int64_t>(300, [](auto i) { return i * 7; });
   auto c1 = makeFlatVector<int32_t>(
-      300,
-      [](auto i) { return static_cast<int32_t>((i % 30) * 2); });
+      300, [](auto i) { return static_cast<int32_t>((i % 30) * 2); });
   auto input = makeRowVector({c0, c1});
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
@@ -2914,11 +2898,8 @@ TEST_P(SelectiveNimbleReaderTest, deltaTwoColumns) {
            "",
            {{Kind::Scalar, {{0, deltaLayout}}, ""},
             {Kind::Scalar, {{0, deltaLayout}}, ""}}}});
-  auto readers = makeReaders(
-      input,
-      file,
-      scanSpec,
-      passStringBuffersFromDecoder);
+  auto readers =
+      makeReaders(input, file, scanSpec, passStringBuffersFromDecoder);
   validate(*input, *readers.rowReader, 60, [&](auto i) {
     return c0->valueAt(i) >= 100 && c0->valueAt(i) <= 1500;
   });
@@ -2963,11 +2944,8 @@ TEST_P(SelectiveNimbleReaderTest, deltaSawtoothSmallBatches) {
                         CompressionType::Uncompressed}}}}},
              ""}}}});
   verifyEncodingOnDisk(file, EncodingType::Delta, /*isNullable=*/false);
-  auto readers = makeReaders(
-      input,
-      file,
-      scanSpec,
-      passStringBuffersFromDecoder);
+  auto readers =
+      makeReaders(input, file, scanSpec, passStringBuffersFromDecoder);
   // Small batch size (7) to exercise partial-read boundaries.
   validate(*input, *readers.rowReader, 7, [](auto) { return true; });
 }

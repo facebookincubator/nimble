@@ -25,7 +25,10 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
+#include "folly/container/F14Map.h"
 #include "folly/container/F14Set.h"
+
+#include <set>
 #include "velox/type/Type.h"
 
 namespace facebook::nimble {
@@ -139,8 +142,13 @@ struct SerializerOptions {
   /// - kCompact: Nimble encoding format with dense sizes header.
   std::optional<SerializationVersion> version{};
 
-  /// Columns that should be encoded as flat maps.
-  folly::F14FastSet<std::string> flatMapColumns{};
+  /// Columns that should be encoded as flat maps. Maps column name to a set
+  /// of predefined key strings. When the set is empty, the column is
+  /// treated as a flat map with dynamic key discovery. When non-empty, keys
+  /// are predefined in sorted order to ensure all serializers produce
+  /// identical schemas regardless of data arrival order. Unknown keys not in
+  /// the set will cause an error during serialization.
+  folly::F14FastMap<std::string, std::set<std::string>> flatMapColumns{};
 
   /// Factory for creating encoding selection policies.
   /// Only used when version is kCompact.

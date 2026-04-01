@@ -186,10 +186,10 @@ class VeloxWriter {
   MemoryPoolHolder encodingMemoryPool_;
   const std::unique_ptr<detail::WriterContext> context_;
   std::unique_ptr<velox::WriteFile> file_;
-  const std::unique_ptr<FieldWriter> rootWriter_;
   const std::unique_ptr<IndexWriter> indexWriter_;
   const std::unique_ptr<TabletWriter> tabletWriter_;
 
+  std::unique_ptr<FieldWriter> rootWriter_;
   std::unique_ptr<Buffer> encodingBuffer_;
   std::vector<Stream> encodedStreams_;
   std::exception_ptr lastException_;

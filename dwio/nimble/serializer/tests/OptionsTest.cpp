@@ -98,7 +98,7 @@ TEST(OptionsTest, serializerOptionsWithFlatMapColumns) {
       .compressionType = CompressionType::Zstd,
       .compressionLevel = 3,
       .version = SerializationVersion::kCompact,
-      .flatMapColumns = {"col1", "col2"},
+      .flatMapColumns = {{"col1", {}}, {"col2", {}}},
   };
 
   EXPECT_EQ(options.compressionType, CompressionType::Zstd);

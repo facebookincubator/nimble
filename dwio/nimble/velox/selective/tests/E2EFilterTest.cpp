@@ -293,15 +293,17 @@ class E2EFilterTest
                  EncodingType::Trivial, {}, CompressionType::Uncompressed},
              EncodingLayout{
                  EncodingType::Trivial, {}, CompressionType::Uncompressed}}};
-        children.push_back(EncodingLayoutTree{
-            Kind::Scalar,
-            {{0, std::move(layout)}},
-            std::string(rowType_->nameOf(col))});
+        children.push_back(
+            EncodingLayoutTree{
+                Kind::Scalar,
+                {{0, std::move(layout)}},
+                std::string(rowType_->nameOf(col))});
       }
       options.encodingLayoutTree.emplace(
           Kind::Row,
-          std::unordered_map<EncodingLayoutTree::StreamIdentifier,
-                             EncodingLayout>{},
+          std::unordered_map<
+              EncodingLayoutTree::StreamIdentifier,
+              EncodingLayout>{},
           "",
           std::move(children));
     } else if (encodingFactors_.has_value()) {
@@ -375,7 +377,7 @@ class E2EFilterTest
     return factory->createReader(std::move(input), readerOpts);
   }
 
-  folly::F14FastSet<std::string> flatMapColumns_;
+  folly::F14FastMap<std::string, std::set<std::string>> flatMapColumns_;
   folly::F14FastSet<std::string> deduplicatedArrayColumns_;
   folly::F14FastSet<std::string> deduplicatedMapColumns_;
 
@@ -449,11 +451,9 @@ class E2EFilterTest
     auto readFile = std::make_shared<InMemoryReadFile>(sinkData_);
     auto& pool = *leafPool_;
     auto tablet = TabletReader::create(readFile, &pool, {});
-    auto section =
-        tablet->loadOptionalSection(std::string(kSchemaSection));
+    auto section = tablet->loadOptionalSection(std::string(kSchemaSection));
     ASSERT_TRUE(section.has_value());
-    auto schema =
-        SchemaDeserializer::deserialize(section->content().data());
+    auto schema = SchemaDeserializer::deserialize(section->content().data());
 
     for (uint32_t col = 0; col < schema->asRow().childrenCount(); ++col) {
       auto& childNode = schema->asRow().childAt(col)->asScalar();
@@ -1310,7 +1310,7 @@ TEST_P(E2EFilterTest, DISABLED_FlatMapAsStruct) {
       "long_val:bigint,"
       "long_vals:struct<v1:bigint,v2:bigint,v3:bigint>,"
       "struct_vals:struct<nested1:struct<v1:bigint, v2:float>,nested2:struct<v1:bigint, v2:float>>";
-  flatMapColumns_ = {"long_vals", "struct_vals"};
+  flatMapColumns_ = {{"long_vals", {}}, {"struct_vals", {}}};
   testWithTypes(kColumns, [] {}, false, {"long_val"}, 10);
 }
 
@@ -1319,7 +1319,7 @@ TEST_P(E2EFilterTest, flatMapScalar) {
       "long_val:bigint,"
       "long_vals:map<tinyint,bigint>,"
       "string_vals:map<string,string>";
-  flatMapColumns_ = {"long_vals", "string_vals"};
+  flatMapColumns_ = {{"long_vals", {}}, {"string_vals", {}}};
   auto customize = [this] {
     dataSetBuilder_->makeUniformMapKeys(common::Subfield("string_vals"));
     dataSetBuilder_->makeMapStringValues(common::Subfield("string_vals"));
@@ -1339,7 +1339,7 @@ TEST_P(E2EFilterTest, flatMapComplexNoRecursiveNulls) {
       "long_val:bigint,"
       "struct_vals:map<varchar,struct<v1:bigint, v2:float>>,"
       "array_vals:map<tinyint,array<int>>";
-  flatMapColumns_ = {"struct_vals", "array_vals"};
+  flatMapColumns_ = {{"struct_vals", {}}, {"array_vals", {}}};
   auto customize = [this] {
     dataSetBuilder_->makeUniformMapKeys(common::Subfield("struct_vals"));
   };
@@ -1366,7 +1366,7 @@ TEST_P(E2EFilterTest, flatMapComplex) {
       "long_val:bigint,"
       "struct_vals:map<varchar,struct<v1:bigint, v2:float>>,"
       "array_vals:map<tinyint,array<int>>";
-  flatMapColumns_ = {"struct_vals", "array_vals"};
+  flatMapColumns_ = {{"struct_vals", {}}, {"array_vals", {}}};
   auto customize = [this] {
     dataSetBuilder_->makeUniformMapKeys(common::Subfield("struct_vals"));
   };

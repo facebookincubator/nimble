@@ -424,10 +424,10 @@ std::unique_ptr<FieldWriter> createRootFieldWriter(
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& type,
     detail::WriterContext& context) {
   if (!context.options().flatMapColumns.empty()) {
-    context.clearAndReserveFlatMapNodeIds(
-        context.options().flatMapColumns.size());
-    for (const auto& column : context.options().flatMapColumns) {
-      context.addFlatMapNodeId(type->childByName(column)->id());
+    context.reserveFlatMapNodes(context.options().flatMapColumns.size());
+    for (const auto& [columnName, keys] : context.options().flatMapColumns) {
+      auto nodeId = type->childByName(columnName)->id();
+      context.addFlatMapNodeId(nodeId, keys);
     }
   }
 
@@ -686,7 +686,6 @@ VeloxWriter::VeloxWriter(
           *writerMemoryPool_,
           std::move(options))},
       file_{std::move(file)},
-      rootWriter_{createRootFieldWriter(schema_, *context_)},
       indexWriter_{IndexWriter::create(
           context_->options().indexConfig,
           type,
@@ -711,6 +710,8 @@ VeloxWriter::VeloxWriter(
                indexWriter_.get())})} {
   NIMBLE_CHECK_NOT_NULL(file_);
 
+  // Register handler for dynamically discovered FlatMap keys before creating
+  // the writer tree, so that predefined keys also trigger the handler.
   context_->setFlatmapFieldAddedEventHandler([this](
                                                  const TypeBuilder& flatmap,
                                                  std::string_view fieldKey,
@@ -732,6 +733,9 @@ VeloxWriter::VeloxWriter(
       }
     }
   });
+
+  rootWriter_ = createRootFieldWriter(schema_, *context_);
+
   if (context_->options().encodingLayoutTree.has_value()) {
     initializeEncodingLayouts(
         *rootWriter_->typeBuilder(),
