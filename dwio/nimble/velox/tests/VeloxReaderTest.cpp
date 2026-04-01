@@ -44,6 +44,7 @@
 #include "velox/type/Type.h"
 #include "velox/vector/BaseVector.h"
 #include "velox/vector/ComplexVector.h"
+#include "velox/vector/FlatMapVector.h"
 #include "velox/vector/NullsBuilder.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
@@ -3448,6 +3449,81 @@ bool compareMapToFlatMap(
     }
   }
   return true;
+}
+
+TEST_P(VeloxReaderTest, flatMapDictionaryWrappedFlatMapVector) {
+  auto type =
+      velox::ROW({{"flat_map", velox::MAP(velox::INTEGER(), velox::BIGINT())}});
+
+  facebook::velox::test::VectorMaker vectorMaker(leafPool_.get());
+
+  constexpr int numRows = 4;
+  constexpr int numKeys = 3;
+  auto keysVector = vectorMaker.flatVector<int32_t>({1, 2, 3});
+  std::vector<velox::VectorPtr> mapValues;
+  mapValues.push_back(vectorMaker.flatVector<int64_t>({10, 11, 12, 13}));
+  mapValues.push_back(vectorMaker.flatVector<int64_t>({20, 21, 22, 23}));
+  mapValues.push_back(vectorMaker.flatVector<int64_t>({30, 31, 32, 33}));
+
+  std::vector<velox::BufferPtr> inMaps;
+  for (int i = 0; i < numKeys; ++i) {
+    auto inMap = velox::AlignedBuffer::allocate<bool>(numRows, leafPool_.get());
+    auto rawInMap = inMap->asMutable<uint64_t>();
+    for (int row = 0; row < numRows; ++row) {
+      velox::bits::setBit(rawInMap, row, true);
+    }
+    inMaps.push_back(std::move(inMap));
+  }
+
+  auto flatMapVector = std::make_shared<velox::FlatMapVector>(
+      leafPool_.get(),
+      velox::MAP(velox::INTEGER(), velox::BIGINT()),
+      velox::BufferPtr(nullptr),
+      numRows,
+      keysVector,
+      std::move(mapValues),
+      std::move(inMaps));
+
+  auto indices = velox::AlignedBuffer::allocate<velox::vector_size_t>(
+      numRows, leafPool_.get());
+  auto rawIndices = indices->asMutable<velox::vector_size_t>();
+  rawIndices[0] = 2;
+  rawIndices[1] = 0;
+  rawIndices[2] = 3;
+  rawIndices[3] = 1;
+  auto dictionaryWrapped = velox::BaseVector::wrapInDictionary(
+      velox::BufferPtr(nullptr), indices, numRows, flatMapVector);
+
+  auto rowVector = vectorMaker.rowVector({"flat_map"}, {dictionaryWrapped});
+
+  auto expected = vectorMaker.rowVector(
+      {"flat_map"},
+      {vectorMaker.mapVector<int32_t, int64_t>(
+          {{{1, 12}, {2, 22}, {3, 32}},
+           {{1, 10}, {2, 20}, {3, 30}},
+           {{1, 13}, {2, 23}, {3, 33}},
+           {{1, 11}, {2, 21}, {3, 31}}})});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  auto writerOptions = createFlatMapWriterOptions();
+  writerOptions.flatMapColumns["flat_map"];
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+  writer.write(rowVector);
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+  nimble::VeloxReader reader(
+      &readFile, *leafPool_, std::move(selector), createReadParams());
+  velox::VectorPtr output;
+  uint64_t rowCount = numRows;
+  ASSERT_TRUE(reader.next(rowCount, output));
+  ASSERT_EQ(output->size(), numRows);
+  for (auto i = 0; i < numRows; ++i) {
+    EXPECT_TRUE(vectorEquals(expected, output, i)) << "Mismatch at row " << i;
+  }
 }
 
 TEST_P(VeloxReaderTest, flatMapNullValues) {
