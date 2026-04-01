@@ -140,25 +140,28 @@ void DeltaEncoding<T>::skip(uint32_t rowCount) {
   }
   isRestatementsBuffer_.resize(rowCount);
   isRestatements_->materialize(rowCount, isRestatementsBuffer_.data());
-  const uint32_t numRestatements = std::accumulate(
-      isRestatementsBuffer_.begin(), isRestatementsBuffer_.end(), 0UL);
-  // Find the last restatement, then accumulate deltas forward from it.
-  int64_t lastRestatement = rowCount - 1;
-  while (lastRestatement >= 0) {
-    if (isRestatementsBuffer_[lastRestatement]) {
-      break;
+
+  // Single reverse scan: find the last restatement position and count
+  // total restatements in one pass from the end.
+  const bool* isRestData = isRestatementsBuffer_.data();
+  int64_t lastRestatement = -1;
+  uint32_t totalRestatements = 0;
+  for (int64_t i = static_cast<int64_t>(rowCount) - 1; i >= 0; --i) {
+    if (isRestData[i]) {
+      if (lastRestatement < 0) {
+        lastRestatement = i;
+      }
+      ++totalRestatements;
     }
-    --lastRestatement;
   }
+
   if (lastRestatement >= 0) {
-    restatements_->skip(numRestatements - 1);
+    restatements_->skip(totalRestatements - 1);
     restatements_->materialize(1, &currentValue_);
-    const uint32_t deltasToSkip = static_cast<uint32_t>(
-        lastRestatement -
-        std::accumulate(
-            isRestatementsBuffer_.begin(),
-            isRestatementsBuffer_.begin() + lastRestatement,
-            0UL));
+    // Count deltas before the last restatement = positions before it minus
+    // restatements before it. Restatements before it = total - 1.
+    const uint32_t deltasToSkip =
+        static_cast<uint32_t>(lastRestatement) - (totalRestatements - 1);
     deltas_->skip(deltasToSkip);
   }
   const uint32_t deltasToAccumulate =
@@ -183,10 +186,10 @@ void DeltaEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   physicalType* nextRestatement = restatementsBuffer_.begin();
   physicalType* nextDelta = deltasBuffer_.begin();
   for (uint32_t i = 0; i < rowCount; ++i) {
-    if (isRestatementsBuffer_[i]) {
-      currentValue_ = *nextRestatement++;
-    } else {
+    if (FOLLY_LIKELY(!isRestatementsBuffer_[i])) {
       currentValue_ += *nextDelta++;
+    } else {
+      currentValue_ = *nextRestatement++;
     }
     *castValue++ = currentValue_;
   }
@@ -225,14 +228,9 @@ void computeDeltas(
     Vector<bool>* isRestatements) {
   isRestatements->emplace_back(true);
   restatements->emplace_back(values[0]);
-  // For signed integer types we avoid the potential overflow in the
-  // delta by restating whenever the last value was negative and the
-  // next is positive. We could be more elegant by storing the
-  // deltas as the appropriate unsigned type.
   if constexpr (isSignedIntegralType<physicalType>()) {
     for (uint32_t i = 1; i < values.size(); ++i) {
       const bool crossesZero = values[i] > 0 && values[i - 1] < 0;
-
       if (FOLLY_LIKELY(values[i] >= values[i - 1] && !crossesZero)) {
         isRestatements->emplace_back(false);
         deltas->emplace_back(values[i] - values[i - 1]);

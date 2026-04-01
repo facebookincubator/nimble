@@ -16,6 +16,7 @@
 #pragma once
 
 #include "dwio/nimble/encodings/ConstantEncoding.h"
+#include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
@@ -117,6 +118,12 @@ class Encoder {
   struct EncodingTypeTraits<nimble::ConstantEncoding<T>> {
     static constexpr inline nimble::EncodingType encodingType =
         nimble::EncodingType::Constant;
+  };
+
+  template <>
+  struct EncodingTypeTraits<nimble::DeltaEncoding<T>> {
+    static constexpr inline nimble::EncodingType encodingType =
+        nimble::EncodingType::Delta;
   };
 
   template <>
@@ -222,7 +229,7 @@ class Encoder {
   static std::unique_ptr<nimble::Encoding> createEncoding(
       nimble::Buffer& buffer,
       const nimble::Vector<T>& values,
-      std::function<void*(uint32_t)> stringBufferFactory,
+      const std::function<void*(uint32_t)>& stringBufferFactory,
       CompressionType compressionType = CompressionType::Uncompressed,
       const nimble::Encoding::Options& options = {}) {
     return std::make_unique<E>(
@@ -236,7 +243,7 @@ class Encoder {
       nimble::Buffer& buffer,
       const nimble::Vector<T>& values,
       const nimble::Vector<bool>& nulls,
-      std::function<void*(uint32_t)> stringBufferFactory,
+      const std::function<void*(uint32_t)>& stringBufferFactory,
       CompressionType compressionType = CompressionType::Uncompressed,
       const nimble::Encoding::Options& options = {}) {
     return std::make_unique<E>(
