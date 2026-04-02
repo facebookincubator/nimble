@@ -214,7 +214,7 @@ TEST_P(NimbleIndexProjectorTest, basicColumnProjection) {
   auto projectedVeloxType = ROW({"col_a", "col_b"}, {INTEGER(), VARCHAR()});
   auto projectedNimbleSchema = convertToNimbleType(*projectedVeloxType);
   DeserializerOptions deserOptions;
-  deserOptions.version = SerializationVersion::kTabletRaw;
+  deserOptions.hasHeader = true;
   Deserializer deserializer(
       projectedNimbleSchema, leafPool_.get(), deserOptions);
 
@@ -501,7 +501,7 @@ TEST_P(NimbleIndexProjectorTest, flatMapProjection) {
   // for FlatMap key sorting (keys sorted alphabetically: "b", "d", "e").
   auto coalesced = chunk.data.cloneCoalescedAsValue();
   DeserializerOptions deserOptions;
-  deserOptions.version = SerializationVersion::kTabletRaw;
+  deserOptions.hasHeader = true;
   Deserializer deserializer(
       projector.projectedNimbleType(), leafPool_.get(), deserOptions);
 
@@ -651,7 +651,7 @@ TEST_P(NimbleIndexProjectorTest, flatMapKeyProjectionSchemaComparison) {
       reinterpret_cast<const char*>(coalesced.data()), coalesced.length());
 
   DeserializerOptions deserOptions;
-  deserOptions.version = SerializationVersion::kTabletRaw;
+  deserOptions.hasHeader = true;
   Deserializer deserializer(buildSchema, leafPool_.get(), deserOptions);
   VectorPtr output;
   deserializer.deserialize(data, output);
@@ -712,7 +712,7 @@ TEST_P(NimbleIndexProjectorTest, flatMapIntKeyProjection) {
   // Deserialize using the projector's projected nimble type.
   auto coalesced = chunk.data.cloneCoalescedAsValue();
   DeserializerOptions deserOptions;
-  deserOptions.version = SerializationVersion::kTabletRaw;
+  deserOptions.hasHeader = true;
   Deserializer deserializer(
       projector.projectedNimbleType(), leafPool_.get(), deserOptions);
 

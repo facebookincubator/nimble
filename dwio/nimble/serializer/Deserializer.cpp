@@ -91,14 +91,10 @@ class DeserializerImpl : public Decoder {
   DeserializerImpl(
       const Type* type,
       bool inMapStream,
-      bool enableEncoding,
-      bool useVarintRowCount,
       velox::memory::MemoryPool* pool)
       : type_{type},
         pool_{pool},
         inMapStream_{inMapStream},
-        encodingEnabled_{enableEncoding},
-        useVarintRowCount_{useVarintRowCount},
         scalarKind_{getScalarKindForType(*type)},
         typeStorageWidth_{getTypeStorageWidth(*type)} {}
 
@@ -156,19 +152,18 @@ class DeserializerImpl : public Decoder {
   }
 
   // Add data starting at the given row offset.
-  void addBatch(uint32_t rowOffset, std::string_view data) {
+  // version: the auto-detected serialization version, used to determine
+  // encoding enabled and varint row count settings.
+  void addBatch(
+      uint32_t rowOffset,
+      std::string_view data,
+      SerializationVersion version) {
     if (data.empty()) {
       return;
     }
     batchSegments_.emplace_back(
         BatchSegment{
-            rowOffset,
-            serde::StreamData(
-                scalarKind_,
-                encodingEnabled_,
-                useVarintRowCount_,
-                data,
-                pool_)});
+            rowOffset, serde::StreamData(scalarKind_, version, data, pool_)});
   }
 
   // Record a segment where this key is present in every row (in-map stream
@@ -499,10 +494,6 @@ class DeserializerImpl : public Decoder {
   // True for inMap streams (fills with 'false' when missing), false for nulls
   // streams (fills with 'true' when missing).
   const bool inMapStream_;
-  // True when nimble encoding is used for scalar streams.
-  const bool encodingEnabled_;
-  // Whether encoding headers use varint (true) or fixed u32 (false) row counts.
-  const bool useVarintRowCount_;
   // Cached from type at construction to avoid per-call dispatch.
   const ScalarKind scalarKind_;
   const uint32_t typeStorageWidth_;
@@ -639,15 +630,10 @@ Deserializer::Deserializer(
 void Deserializer::createDeserializersForType(
     const Type& type,
     uint32_t depth) {
-  const bool enableEncoding = options_.enableEncoding();
-  const bool useVarintRowCount =
-      !isTabletRawFormat(options_.serializationVersion());
   deserializerMap_[getMainDescriptor(type).offset()] =
       std::make_unique<DeserializerImpl>(
           &type,
           /*inMapStream=*/false,
-          enableEncoding,
-          useVarintRowCount,
           pool_);
   // FlatMap is only supported at depth 1 (top-level columns). FlatMap keys can
   // vary across batches, causing gaps in nulls/inMap streams. Gap detection is
@@ -661,8 +647,6 @@ void Deserializer::createDeserializersForType(
       deserializerMap_[inMapOffset] = std::make_unique<DeserializerImpl>(
           &type,
           /*inMapStream=*/true,
-          enableEncoding,
-          useVarintRowCount,
           pool_);
       inMapChildTypes_[inMapOffset] = flatMap.childAt(i).get();
     }
@@ -691,6 +675,7 @@ void Deserializer::deserialize(
   serde::StreamDataReader reader{pool_, options_};
   for (auto sv : data) {
     const auto batchRows = reader.initialize(sv);
+    const auto version = reader.version();
     // Reset present tracking from previous batch.
     if (hasInMapChildren && !inMapPresentOffsetsList_.empty()) {
       for (auto off : inMapPresentOffsetsList_) {
@@ -707,7 +692,7 @@ void Deserializer::deserialize(
         auto* decoder = deserializers_[offset];
         if (decoder != nullptr) {
           DeserializerImpl::toDecoderImpl(decoder)->addBatch(
-              rowOffset, streamData);
+              rowOffset, streamData, version);
         }
       }
     });

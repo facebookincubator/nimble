@@ -51,7 +51,7 @@ namespace facebook::nimble {
 ///   Wire: [version:1B][rowCount:varint][stream_data_0]...[stream_data_N]
 ///         [encodingType:1B][raw_sizes_payload][trailer_size:u32]
 ///   trailer_size = 1 + len(raw_sizes_payload).
-///   Only EncodingType::Trivial and EncodingType::Varint are supported.
+///   Supported EncodingTypes: Trivial, Varint, Delta.
 ///   See getRawEncodingType() for validation.
 ///
 /// - kTabletRaw: Raw tablet stream passthrough format. Like kCompactRaw but:
@@ -70,6 +70,13 @@ enum class SerializationVersion : uint8_t {
 };
 
 std::string toString(SerializationVersion version);
+
+/// Returns true if the version is any non-legacy format (kCompact, kCompactRaw,
+/// or kTabletRaw). All non-legacy formats have a version header, encoded
+/// streams, and a stream sizes trailer.
+inline bool nonLegacyFormat(SerializationVersion version) {
+  return version != SerializationVersion::kLegacy;
+}
 
 /// Returns true if the version uses compact encoding (kCompact or kCompactRaw).
 /// Note: kTabletRaw is NOT a compact format (has chunk headers in streams).
@@ -119,7 +126,7 @@ inline bool usesVarintRowCount(std::optional<SerializationVersion> version) {
 }
 
 /// Validates and returns the EncodingType for kCompactRaw stream sizes.
-/// Only Trivial and Varint are supported.
+/// Supported: Trivial, Varint, Delta.
 EncodingType getRawEncodingType(EncodingType encodingType);
 
 inline std::ostream& operator<<(
@@ -194,13 +201,10 @@ struct SerializerOptions {
 };
 
 struct DeserializerOptions {
-  /// Serialization format version expected in the input.
-  /// - nullopt (default): Legacy format (version 0) with no version header.
-  /// - kLegacy: Legacy compression format.
-  /// - kCompact: Nimble encoding format with dense sizes header.
-  /// - kCompactRaw: Raw-encoded stream sizes (no nimble encoding overhead).
-  /// - kTabletRaw: Raw tablet stream passthrough (chunk headers in streams).
-  std::optional<SerializationVersion> version{};
+  /// Whether the serialized data has a header byte.
+  /// - false (default): Legacy format (version 0) with no header.
+  /// - true: Version is auto-detected from the first byte of serialized data.
+  bool hasHeader{false};
 
   /// Output type for deserializing flatmap columns as struct (ROW).
   /// When provided, each top-level flatmap column whose corresponding field in
@@ -209,16 +213,6 @@ struct DeserializerOptions {
   /// Fields not present in the flatmap schema will be filled with nulls.
   /// When nullopt (default), all flatmap columns are deserialized as maps.
   velox::RowTypePtr outputType{};
-
-  /// Returns true if the serialized data has a version header byte.
-  bool hasVersionHeader() const;
-
-  /// Returns the effective serialization version.
-  SerializationVersion serializationVersion() const;
-
-  /// Returns true if nimble encoding is enabled (version is kCompact,
-  /// kCompactRaw, or kTabletRaw).
-  bool enableEncoding() const;
 };
 
 } // namespace facebook::nimble

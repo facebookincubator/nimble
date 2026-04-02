@@ -67,7 +67,7 @@ class WriteHeaderTest : public ::testing::Test {
   }
 
   // Helper to verify header by writing and parsing back using roundtrip.
-  // For kCompact format, verifies the dense sizes array from trailer.
+  // For kCompact format, verifies the dense offsets array from trailer.
   void verifyHeader(
       const std::string& buffer,
       SerializationVersion expectedVersion,
@@ -138,6 +138,31 @@ TEST_F(WriteHeaderTest, compactRawFormatVarint) {
   std::vector<uint32_t> sizes = {10, 20, 30};
   auto buffer = buildCompactRawHeaderTrailer(200, sizes, EncodingType::Varint);
   verifyHeader(buffer, SerializationVersion::kCompactRaw, 200, sizes);
+}
+
+TEST_F(WriteHeaderTest, compactRawFormatDelta) {
+  std::vector<uint32_t> sizes = {10, 20, 30};
+  auto buffer = buildCompactRawHeaderTrailer(200, sizes, EncodingType::Delta);
+  verifyHeader(buffer, SerializationVersion::kCompactRaw, 200, sizes);
+}
+
+TEST_F(WriteHeaderTest, compactRawFormatDeltaSimilarSizes) {
+  // Stream sizes that are very similar benefit most from delta encoding.
+  std::vector<uint32_t> sizes = {1'000, 1'002, 998, 1'001, 999, 1'003};
+  auto buffer = buildCompactRawHeaderTrailer(500, sizes, EncodingType::Delta);
+  verifyHeader(buffer, SerializationVersion::kCompactRaw, 500, sizes);
+}
+
+TEST_F(WriteHeaderTest, compactRawFormatDeltaWithZeros) {
+  std::vector<uint32_t> sizes = {100, 0, 0, 50, 0, 200};
+  auto buffer = buildCompactRawHeaderTrailer(300, sizes, EncodingType::Delta);
+  verifyHeader(buffer, SerializationVersion::kCompactRaw, 300, sizes);
+}
+
+TEST_F(WriteHeaderTest, compactRawFormatDeltaSingleElement) {
+  std::vector<uint32_t> sizes = {42};
+  auto buffer = buildCompactRawHeaderTrailer(100, sizes, EncodingType::Delta);
+  verifyHeader(buffer, SerializationVersion::kCompactRaw, 100, sizes);
 }
 
 TEST_F(WriteHeaderTest, compactRawFormatEmptySizes) {
@@ -783,6 +808,35 @@ TEST_F(EncodeDecodeTest, streamSizesEncodingTypeDefault) {
   EXPECT_EQ(streams[2], "c");
 }
 
+TEST_F(EncodeDecodeTest, streamSizesEncodingTypeCompactRaw) {
+  std::vector<uint32_t> sizes = {10, 20, 30};
+
+  for (auto encodingType :
+       {EncodingType::Trivial, EncodingType::Varint, EncodingType::Delta}) {
+    SCOPED_TRACE(toString(encodingType));
+
+    std::string buffer;
+    serde::detail::writeHeader(buffer, SerializationVersion::kCompactRaw, 100);
+    buffer.append(std::string(10, 'a'));
+    buffer.append(std::string(20, 'b'));
+    buffer.append(std::string(30, 'c'));
+    serde::detail::writeRawTrailer(sizes, encodingType, buffer);
+
+    const char* pos = buffer.data() + 1;
+    varint::readVarint32(&pos);
+    auto streams = serde::detail::parseStreams(
+        pos,
+        buffer.data() + buffer.size(),
+        SerializationVersion::kCompactRaw,
+        pool_.get());
+
+    ASSERT_EQ(streams.size(), 3);
+    EXPECT_EQ(streams[0], std::string(10, 'a'));
+    EXPECT_EQ(streams[1], std::string(20, 'b'));
+    EXPECT_EQ(streams[2], std::string(30, 'c'));
+  }
+}
+
 // Tests for projectStreams
 
 namespace {
@@ -1369,10 +1423,10 @@ class TabletRawChunkStripTest : public ::testing::Test {
     for (const auto& [offset, _] : streams) {
       maxOffset = std::max(maxOffset, offset);
     }
-    std::vector<uint32_t> streamSizes(streams.empty() ? 0 : maxOffset + 1, 0);
+    std::vector<uint32_t> sizes(streams.empty() ? 0 : maxOffset + 1, 0);
     std::string streamData;
     for (const auto& [offset, data] : streams) {
-      streamSizes[offset] = static_cast<uint32_t>(data.size());
+      sizes[offset] = static_cast<uint32_t>(data.size());
       streamData.append(data);
     }
 
@@ -1381,11 +1435,10 @@ class TabletRawChunkStripTest : public ::testing::Test {
     serde::detail::writeHeader(
         buffer, SerializationVersion::kTabletRaw, rowCount);
     buffer.append(streamData);
-    serde::detail::writeRawTrailer(streamSizes, EncodingType::Trivial, buffer);
+    serde::detail::writeRawTrailer(sizes, EncodingType::Trivial, buffer);
 
     // Parse via StreamDataReader.
-    DeserializerOptions options;
-    options.version = SerializationVersion::kTabletRaw;
+    DeserializerOptions options{.hasHeader = true};
     StreamDataReader reader(pool_.get(), options);
     auto actualRows = reader.initialize(std::string_view(buffer));
     EXPECT_EQ(actualRows, rowCount);

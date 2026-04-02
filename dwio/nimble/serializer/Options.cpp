@@ -40,6 +40,7 @@ EncodingType getRawEncodingType(EncodingType encodingType) {
   switch (encodingType) {
     case EncodingType::Trivial:
     case EncodingType::Varint:
+    case EncodingType::Delta:
       return encodingType;
     default:
       NIMBLE_FAIL("Unsupported EncodingType for kCompactRaw: {}", encodingType);
@@ -56,19 +57,6 @@ SerializationVersion SerializerOptions::serializationVersion() const {
 
 bool SerializerOptions::enableEncoding() const {
   return isCompactFormat(serializationVersion());
-}
-
-bool DeserializerOptions::hasVersionHeader() const {
-  return version.has_value();
-}
-
-SerializationVersion DeserializerOptions::serializationVersion() const {
-  return version.value_or(SerializationVersion::kLegacy);
-}
-
-bool DeserializerOptions::enableEncoding() const {
-  const auto version = serializationVersion();
-  return isCompactFormat(version) || isTabletRawFormat(version);
 }
 
 } // namespace facebook::nimble

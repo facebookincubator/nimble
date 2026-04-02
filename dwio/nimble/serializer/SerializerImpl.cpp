@@ -64,6 +64,18 @@ std::vector<uint32_t> decodeRawStreamSizes(
       }
       break;
     }
+    case EncodingType::Delta: {
+      const uint32_t count = varint::readVarint32(&payload);
+      sizes.resize(count);
+      if (count > 0) {
+        sizes[0] = varint::readVarint32(&payload);
+        for (uint32_t i = 1; i < count; ++i) {
+          const auto delta = varint::readVarint32(&payload);
+          sizes[i] = sizes[i - 1] + delta;
+        }
+      }
+      break;
+    }
     default:
       NIMBLE_FAIL("Unsupported EncodingType for kCompactRaw: {}", encodingType);
   }
@@ -198,6 +210,11 @@ size_t estimateRawTrailerSize(size_t numStreams, EncodingType encodingType) {
       // Upper bound: count varint + N varints (max 5 bytes each).
       payloadSize = 5 + numStreams * 5;
       break;
+    case EncodingType::Delta:
+      // Upper bound: count varint + first offset varint + (N-1) delta
+      // varints (max 5 bytes each).
+      payloadSize = 5 + numStreams * 5;
+      break;
     default:
       NIMBLE_FAIL("Unsupported EncodingType for kCompactRaw: {}", resolvedType);
   }
@@ -214,7 +231,7 @@ std::vector<std::string_view> parseStreams(
   std::vector<std::string_view> streams;
 
   if (isCompactFormat(version)) {
-    auto streamSizes = readStreamSizes(end, version, pool);
+    const auto streamSizes = readStreamSizes(end, version, pool);
     streams.resize(streamSizes.size());
 
     for (uint32_t i = 0; i < streamSizes.size(); ++i) {

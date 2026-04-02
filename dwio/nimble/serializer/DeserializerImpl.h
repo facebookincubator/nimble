@@ -39,15 +39,13 @@ class StreamData {
       : kind_{kind}, pool_{pool}, encodingEnabled_{false} {}
 
   /// @param kind Scalar kind for the stream data.
-  /// @param encodingEnabled True for nimble encoding, false for legacy
-  /// compression.
-  /// @param useVarintRowCount Whether encoding headers use varint row counts.
+  /// @param version Serialization version. Determines encoding and row count
+  ///        format.
   /// @param data Stream data to initialize with.
-  /// @param pool Required when encodingEnabled is true, nullptr for legacy.
+  /// @param pool Required when version != kLegacy, nullptr for legacy.
   StreamData(
       ScalarKind kind,
-      bool encodingEnabled,
-      bool useVarintRowCount,
+      SerializationVersion version,
       std::string_view data,
       velox::memory::MemoryPool* pool);
 
@@ -71,8 +69,9 @@ class StreamData {
 
   /// Reset the stream with new data. Used by thrift decoder between rows.
   /// @param data New stream data to initialize with.
-  /// @param encodingEnabled True for nimble encoding, false for legacy.
-  void reset(std::string_view data, bool encodingEnabled);
+  /// @param version Serialization version determining encoding and row count
+  ///        format.
+  void reset(std::string_view data, SerializationVersion version);
 
   ScalarKind kind() const {
     return kind_;
@@ -110,8 +109,9 @@ class StreamData {
   // Whether nimble encoding is enabled. Non-const to allow reset() to change.
   bool encodingEnabled_{false};
   // Whether encoding headers use varint row counts (true for kCompact/
-  // kCompactRaw) or fixed u32 (false for kTabletRaw).
-  const bool useVarintRowCount_{true};
+  // kCompactRaw) or fixed u32 (false for kTabletRaw). Non-const to allow
+  // reset() to change.
+  bool useVarintRowCount_{true};
 
   const char* pos_{nullptr};
   const char* end_{nullptr};
@@ -149,11 +149,24 @@ class StreamDataReader {
       const std::function<void(uint32_t offset, std::string_view data)>&
           callback);
 
+  /// Returns the auto-detected serialization version.
+  /// Only valid after initialize() has been called.
+  SerializationVersion version() const {
+    return version_;
+  }
+
+  /// Returns true if nimble encoding is enabled based on the auto-detected
+  /// version. Only valid after initialize() has been called.
   bool encodingEnabled() const {
-    return options_.enableEncoding();
+    return nonLegacyFormat(version_);
   }
 
  private:
+  // Reads and validates the serialization version from the data header.
+  // Sets version_ from the first byte if hasHeader is true, otherwise defaults
+  // to kLegacy. Advances pos_ past the version byte.
+  void readVersion();
+
   // Strips tablet chunk headers from stream data for kTabletRaw format.
   // Each chunk is: [chunkSize:u32][compressionType:1B][encoded_data...]
   // Returns a view into the original data for single uncompressed chunks
@@ -178,6 +191,11 @@ class StreamDataReader {
 
   const DeserializerOptions& options_;
   velox::memory::MemoryPool* const pool_;
+
+  // Serialization version detected from data. If the data has a version
+  // header, this is read from the first byte; otherwise defaults to kLegacy.
+  // When options specify a version, the data version is validated against it.
+  SerializationVersion version_{SerializationVersion::kLegacy};
   const char* pos_{nullptr};
   const char* end_{nullptr};
   // Reusable buffer for chunk header stripping (compressed/multi-chunk case).

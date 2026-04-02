@@ -30,11 +30,13 @@
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
+#include "folly/Random.h"
 #include "folly/container/F14Set.h"
 #include "velox/type/Subfield.h"
 #include "velox/vector/BaseVector.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/FlatVector.h"
+#include "velox/vector/fuzzer/VectorFuzzer.h"
 
 using namespace facebook::velox;
 
@@ -54,10 +56,15 @@ std::string toString(const folly::IOBuf& buf) {
 struct FormatParam {
   SerializationVersion inputVersion;
   SerializationVersion projectVersion;
+  EncodingType streamSizesEncodingType{EncodingType::Trivial};
 
   std::string name() const {
-    return fmt::format(
-        "{}To{}", toString(inputVersion), toString(projectVersion));
+    auto base =
+        fmt::format("{}To{}", toString(inputVersion), toString(projectVersion));
+    if (streamSizesEncodingType != EncodingType::Trivial) {
+      base += "_DeltaStreamSizes";
+    }
+    return base;
   }
 };
 
@@ -68,6 +75,13 @@ std::vector<FormatParam> allFormatCombinations() {
       {SerializationVersion::kCompact, SerializationVersion::kCompactRaw},
       {SerializationVersion::kCompactRaw, SerializationVersion::kCompact},
       {SerializationVersion::kCompactRaw, SerializationVersion::kCompactRaw},
+      // Delta stream sizes encoding for kCompactRaw output.
+      {SerializationVersion::kCompactRaw,
+       SerializationVersion::kCompactRaw,
+       EncodingType::Delta},
+      {SerializationVersion::kCompact,
+       SerializationVersion::kCompactRaw,
+       EncodingType::Delta},
   };
 }
 
@@ -276,12 +290,14 @@ class ProjectorFormatTest : public ProjectorTestBase,
 
   // Get projector options for output format.
   Projector::Options projectorOptions() const {
-    return Projector::Options{.projectVersion = GetParam().projectVersion};
+    return Projector::Options{
+        .projectVersion = GetParam().projectVersion,
+        .streamSizesEncodingType = GetParam().streamSizesEncodingType};
   }
 
   // Get deserializer options for output format.
   DeserializerOptions outputDeserializerOptions() const {
-    return {.version = GetParam().projectVersion};
+    return {.hasHeader = true};
   }
 };
 
@@ -703,10 +719,8 @@ TEST_F(ProjectorTest, fullProjectionPassThrough) {
     EXPECT_EQ(toString(projected), std::string_view(serialized));
 
     // Verify can still deserialize correctly.
-    auto result = deserialize(
-        toString(projected),
-        outputSchema,
-        {.version = SerializationVersion::kCompact});
+    auto result =
+        deserialize(toString(projected), outputSchema, {.hasHeader = true});
     ASSERT_EQ(result->size(), 3);
 
     auto resultRow = result->as<RowVector>();
@@ -719,7 +733,7 @@ TEST_F(ProjectorTest, fullProjectionPassThrough) {
         subfields,
         outputSchema,
         toString(projected),
-        {.version = SerializationVersion::kCompact});
+        {.hasHeader = true});
   }
 }
 
@@ -819,8 +833,7 @@ TEST_F(ProjectorTest, flatMapSerializeDeserializeNoProjction) {
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
 
   // Deserialize directly (no projection).
-  auto result = deserialize(
-      serialized, inputSchema, {.version = SerializationVersion::kCompact});
+  auto result = deserialize(serialized, inputSchema, {.hasHeader = true});
 
   ASSERT_EQ(result->size(), 2);
   auto resultRow = result->as<RowVector>();
@@ -965,7 +978,7 @@ TEST_F(ProjectorTest, projectFlatMapAllKeys) {
       {.projectVersion = SerializationVersion::kCompact});
 
   auto outputSchema = projector.projectedSchema();
-  DeserializerOptions deserOpts{.version = SerializationVersion::kCompact};
+  DeserializerOptions deserOpts{.hasHeader = true};
   for (bool useIOBuf : {false, true}) {
     SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
     auto projected = projectInput(projector, serialized, useIOBuf);
@@ -1081,10 +1094,8 @@ TEST_F(ProjectorTest, flatMapKeyProjectionSchemaComparison) {
 
   // Both schemas should decode correctly.
   {
-    auto result = deserialize(
-        projectedStr,
-        projectorSchema,
-        {.version = SerializationVersion::kCompact});
+    auto result =
+        deserialize(projectedStr, projectorSchema, {.hasHeader = true});
     ASSERT_EQ(result->size(), numRows);
     auto* map = result->as<RowVector>()->childAt(0)->as<MapVector>();
     ASSERT_NE(map, nullptr);
@@ -1093,10 +1104,7 @@ TEST_F(ProjectorTest, flatMapKeyProjectionSchemaComparison) {
     }
   }
   {
-    auto result = deserialize(
-        projectedStr,
-        convertSchema,
-        {.version = SerializationVersion::kCompact});
+    auto result = deserialize(projectedStr, convertSchema, {.hasHeader = true});
     ASSERT_EQ(result->size(), numRows);
     auto* map = result->as<RowVector>()->childAt(0)->as<MapVector>();
     ASSERT_NE(map, nullptr);
@@ -1372,7 +1380,7 @@ TEST_F(ProjectorTest, projectFlatMapSingleKey) {
   ASSERT_EQ(outputSchema->asRow().childAt(0)->asFlatMap().nameAt(0), "2");
 
   // Project and deserialize.
-  DeserializerOptions deserOpts{.version = SerializationVersion::kCompact};
+  DeserializerOptions deserOpts{.hasHeader = true};
   for (bool useIOBuf : {false, true}) {
     SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
     auto projected = projectInput(projector, serialized, useIOBuf);
@@ -1471,7 +1479,7 @@ TEST_F(ProjectorTest, projectFlatMapMultipleKeys) {
   ASSERT_EQ(outputSchema->asRow().childAt(0)->asFlatMap().nameAt(1), "c");
 
   // Project and deserialize.
-  DeserializerOptions deserOpts{.version = SerializationVersion::kCompact};
+  DeserializerOptions deserOpts{.hasHeader = true};
   for (bool useIOBuf : {false, true}) {
     SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
     auto projected = projectInput(projector, serialized, useIOBuf);
@@ -2022,10 +2030,8 @@ TEST_F(ProjectorTest, projectMultipleFlatMapColumns) {
   for (bool useIOBuf : {false, true}) {
     SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
     auto projected = projectInput(projector, serialized, useIOBuf);
-    auto result = deserialize(
-        toString(projected),
-        outputSchema,
-        {.version = SerializationVersion::kCompact});
+    auto result =
+        deserialize(toString(projected), outputSchema, {.hasHeader = true});
 
     ASSERT_EQ(result->size(), numRows);
     auto resultRow = result->as<RowVector>();
@@ -2150,7 +2156,7 @@ TEST_F(ProjectorTestBase, flatMapInMapStreamSkipping) {
   // Helper to collect stream offsets present in serialized data.
   auto collectStreamOffsets =
       [&](std::string_view data) -> folly::F14FastSet<uint32_t> {
-    DeserializerOptions desOpts{.version = SerializationVersion::kCompact};
+    DeserializerOptions desOpts{.hasHeader = true};
     serde::StreamDataReader reader{pool_.get(), desOpts};
     reader.initialize(data);
     folly::F14FastSet<uint32_t> offsets;
@@ -2217,10 +2223,8 @@ TEST_F(ProjectorTestBase, flatMapInMapStreamSkipping) {
     for (bool useIOBuf : {false, true}) {
       SCOPED_TRACE(fmt::format("useIOBuf={}", useIOBuf));
       auto projected = projectInput(projector, serializedData[i], useIOBuf);
-      auto result = deserialize(
-          toString(projected),
-          outputSchema,
-          {.version = SerializationVersion::kCompact});
+      auto result =
+          deserialize(toString(projected), outputSchema, {.hasHeader = true});
       ASSERT_EQ(result->size(), inputs[i]->size());
       for (vector_size_t j = 0; j < inputs[i]->size(); ++j) {
         ASSERT_TRUE(result->equalValueAt(inputs[i].get(), j, j))
@@ -2265,10 +2269,8 @@ TEST_F(ProjectorTest, chainedIOBufInput) {
   auto outputSchema = projector.projectedSchema();
 
   auto projected = projector.project(*chainedBuf);
-  auto result = deserialize(
-      toString(projected),
-      outputSchema,
-      {.version = SerializationVersion::kCompact});
+  auto result =
+      deserialize(toString(projected), outputSchema, {.hasHeader = true});
   ASSERT_EQ(result->size(), 3);
 
   auto resultRow = result->as<RowVector>();
@@ -2316,7 +2318,7 @@ TEST_F(ProjectorTest, sortedStreamIndicesFastPath) {
 
   auto outputSchema = projector.projectedSchema();
 
-  DeserializerOptions deserOpts{.version = SerializationVersion::kCompact};
+  DeserializerOptions deserOpts{.hasHeader = true};
 
   // Test contiguous path.
   {
@@ -2465,10 +2467,8 @@ TEST_F(ProjectorTest, unsortedStreamIndicesReorderPath) {
       projected = projector.project(std::string_view(serialized));
     }
 
-    auto result = deserialize(
-        toString(projected),
-        outputSchema,
-        {.version = SerializationVersion::kCompact});
+    auto result =
+        deserialize(toString(projected), outputSchema, {.hasHeader = true});
     ASSERT_EQ(result->size(), numRows);
     auto resultRow = result->as<RowVector>();
 
@@ -2574,10 +2574,8 @@ TEST_F(ProjectorTest, singleFlatMapSortedFastPath) {
 
   auto outputSchema = projector.projectedSchema();
   auto projected = projector.project(std::string_view(serialized));
-  auto result = deserialize(
-      toString(projected),
-      outputSchema,
-      {.version = SerializationVersion::kCompact});
+  auto result =
+      deserialize(toString(projected), outputSchema, {.hasHeader = true});
   ASSERT_EQ(result->size(), numRows);
 
   auto resultRow = result->as<RowVector>();
@@ -2630,6 +2628,121 @@ TEST_F(ProjectorTest, projectedTrailerNoCompression) {
   const auto compressionByte =
       static_cast<CompressionType>(trailerStart[encoding->dataOffset()]);
   EXPECT_EQ(compressionByte, CompressionType::Uncompressed);
+}
+
+// Fuzz test: serialize batches with different versions, project, and verify
+// deserialization correctness.
+TEST_F(ProjectorTest, fuzzMixedVersionProjection) {
+  auto type = ROW({
+      {"bool_val", BOOLEAN()},
+      {"int_val", INTEGER()},
+      {"long_val", BIGINT()},
+      {"double_val", DOUBLE()},
+      {"string_val", VARCHAR()},
+  });
+
+  const auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+
+  const size_t batchSize = 20;
+  VectorFuzzer fuzzer(
+      {
+          .vectorSize = batchSize,
+          .nullRatio = 0,
+          .stringLength = 20,
+          .stringVariableLength = true,
+      },
+      pool_.get(),
+      seed);
+
+  // Versions to cycle through for each batch.
+  const std::vector<SerializerOptions> inputVersions = {
+      {.version = SerializationVersion::kCompact},
+      {.version = SerializationVersion::kCompactRaw},
+      {.version = SerializationVersion::kCompactRaw,
+       .streamSizesEncodingType = EncodingType::Delta},
+  };
+
+  // Output projection versions.
+  const std::vector<Projector::Options> outputVersions = {
+      {.projectVersion = SerializationVersion::kCompact},
+      {.projectVersion = SerializationVersion::kCompactRaw},
+      {.projectVersion = SerializationVersion::kCompactRaw,
+       .streamSizesEncodingType = EncodingType::Delta},
+  };
+
+  // Columns to project (subset of the full schema).
+  auto subfields = makeSubfields({"int_val", "string_val"});
+
+  const auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
+
+  const int iterations = 10;
+  const int batchesPerIteration = 6;
+  for (int iter = 0; iter < iterations; ++iter) {
+    SCOPED_TRACE(fmt::format("iteration {}", iter));
+
+    // Pick a random output version for this iteration.
+    const auto& outputOpts = outputVersions[iter % outputVersions.size()];
+
+    // Serialize batches with cycling input versions, project each, and
+    // collect projected buffers + expected vectors.
+    std::vector<std::string> projectedBuffers;
+    VectorPtr expected;
+
+    // Use the first input version to get schema (all versions produce the
+    // same schema for the same type).
+    auto inputSchema = getNimbleSchema(type, inputVersions[0]);
+    Projector projector(inputSchema, subfields, pool_.get(), outputOpts);
+    auto outputSchema = projector.projectedSchema();
+
+    for (int i = 0; i < batchesPerIteration; ++i) {
+      const auto& inputOpts = inputVersions[i % inputVersions.size()];
+
+      auto input = fuzzer.fuzzInputRow(rowType);
+      auto serialized = serialize(input, type, inputOpts);
+
+      auto projected = projector.project(std::string_view(serialized));
+      projectedBuffers.push_back(toString(projected));
+
+      // Build expected output: extract projected columns from input.
+      auto projectedInput = std::make_shared<RowVector>(
+          pool_.get(),
+          ROW({{"int_val", INTEGER()}, {"string_val", VARCHAR()}}),
+          nullptr,
+          input->size(),
+          std::vector<VectorPtr>{
+              input->as<RowVector>()->childAt(1),
+              input->as<RowVector>()->childAt(4)});
+
+      if (expected == nullptr) {
+        expected = projectedInput;
+      } else {
+        const auto oldSize = expected->size();
+        expected->resize(oldSize + projectedInput->size());
+        expected->copy(
+            projectedInput.get(), oldSize, 0, projectedInput->size());
+      }
+    }
+
+    // Deserialize all projected buffers together.
+    std::vector<std::string_view> projectedSVs;
+    projectedSVs.reserve(projectedBuffers.size());
+    for (const auto& buf : projectedBuffers) {
+      projectedSVs.push_back(buf);
+    }
+
+    Deserializer deserializer(
+        outputSchema, pool_.get(), DeserializerOptions{.hasHeader = true});
+    VectorPtr output;
+    deserializer.deserialize(projectedSVs, output);
+
+    ASSERT_EQ(output->size(), expected->size());
+    for (vector_size_t i = 0; i < expected->size(); ++i) {
+      ASSERT_TRUE(output->equalValueAt(expected.get(), i, i))
+          << "Mismatch at row " << i << "\nExpected: " << expected->toString(i)
+          << "\nActual: " << output->toString(i);
+    }
+  }
 }
 
 } // namespace facebook::nimble::serde
