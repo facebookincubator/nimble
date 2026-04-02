@@ -45,6 +45,8 @@ std::string toString(EncodingType encodingType) {
       return "Constant";
     case EncodingType::MainlyConstant:
       return "MainlyConstant";
+    case EncodingType::FrequencyPartition:
+      return "FrequencyPartition";
     case EncodingType::Sentinel:
       return "Sentinel";
     case EncodingType::Prefix:

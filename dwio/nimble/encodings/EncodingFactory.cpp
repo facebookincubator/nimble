@@ -19,6 +19,7 @@
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/EncodingSelection.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
@@ -243,6 +244,9 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     case EncodingType::Delta: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(DeltaEncoding, dataType);
     }
+    case EncodingType::FrequencyPartition: {
+      RETURN_ENCODING_BY_NON_BOOL_TYPE(FrequencyPartitionEncoding, dataType);
+    }
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
@@ -347,6 +351,15 @@ std::string_view EncodingFactory::encode(
       } else {
         return MainlyConstantEncoding<T>::encode(
             selection, castedValues, buffer, options);
+      }
+    }
+    case EncodingType::FrequencyPartition: {
+      if constexpr (std::is_same<T, bool>::value) {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "FrequencyPartition encoding should not be selected for bool data types.");
+      } else {
+        return FrequencyPartitionEncoding<T>::encode(
+            selection, castedValues, buffer);
       }
     }
     case EncodingType::SparseBool: {

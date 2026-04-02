@@ -104,6 +104,11 @@ enum class EncodingType {
   // shared across consecutive entries to reduce storage. Supports seek
   // operations for efficient random access.
   Prefix = 11,
+  // Stores data using frequency-based partitioning with variable-bit codes.
+  // Most frequent values get shorter codes (1-bit, 2-bit, etc.) similar to
+  // Huffman encoding while maintaining random access. Rows are reordered to
+  // group same-length codes together into partitions.
+  FrequencyPartition = 12,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);
