@@ -699,12 +699,7 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
     input[index] = T();
   }
 
-  template <>
-  void getFieldDefaultValue(
-      nimble::Vector<std::string>& input,
-      uint32_t index) {
-    input[index] = std::string();
-  }
+  // Specialization moved outside class - see below
 
   template <typename T>
   void
