@@ -112,34 +112,13 @@ TEST(OptionsTest, serializerOptionsWithFlatMapColumns) {
 TEST(OptionsTest, deserializerOptionsDefaults) {
   DeserializerOptions options{};
 
-  // Verify default values.
-  EXPECT_FALSE(options.version.has_value());
-
-  // Verify helper methods with defaults (nullopt = legacy format).
-  EXPECT_FALSE(options.hasVersionHeader());
-  EXPECT_EQ(options.serializationVersion(), SerializationVersion::kLegacy);
-  EXPECT_FALSE(options.enableEncoding());
+  EXPECT_FALSE(options.hasHeader);
 }
 
-TEST(OptionsTest, deserializerOptionsWithLegacyVersion) {
-  // Explicit kLegacy still means version header is expected.
-  DeserializerOptions options{.version = SerializationVersion::kLegacy};
+TEST(OptionsTest, deserializerOptionsWithVersion) {
+  DeserializerOptions options{.hasHeader = true};
 
-  EXPECT_TRUE(options.version.has_value());
-  EXPECT_EQ(*options.version, SerializationVersion::kLegacy);
-  EXPECT_TRUE(options.hasVersionHeader());
-  EXPECT_EQ(options.serializationVersion(), SerializationVersion::kLegacy);
-  EXPECT_FALSE(options.enableEncoding());
-}
-
-TEST(OptionsTest, deserializerOptionsWithDenseVersion) {
-  DeserializerOptions options{.version = SerializationVersion::kCompact};
-
-  EXPECT_TRUE(options.version.has_value());
-  EXPECT_EQ(*options.version, SerializationVersion::kCompact);
-  EXPECT_TRUE(options.hasVersionHeader());
-  EXPECT_EQ(options.serializationVersion(), SerializationVersion::kCompact);
-  EXPECT_TRUE(options.enableEncoding());
+  EXPECT_TRUE(options.hasHeader);
 }
 
 TEST(OptionsTest, serializerOptionsWithCompactRawVersion) {
@@ -150,22 +129,11 @@ TEST(OptionsTest, serializerOptionsWithCompactRawVersion) {
   EXPECT_TRUE(options.enableEncoding());
 }
 
-TEST(OptionsTest, deserializerOptionsWithCompactRawVersion) {
-  DeserializerOptions options{.version = SerializationVersion::kCompactRaw};
-
-  EXPECT_TRUE(options.hasVersionHeader());
-  EXPECT_EQ(options.serializationVersion(), SerializationVersion::kCompactRaw);
-  EXPECT_TRUE(options.enableEncoding());
-}
-
-TEST(OptionsTest, deserializerOptionsWithTabletRawVersion) {
-  DeserializerOptions options{.version = SerializationVersion::kTabletRaw};
-
-  EXPECT_TRUE(options.hasVersionHeader());
-  EXPECT_EQ(options.serializationVersion(), SerializationVersion::kTabletRaw);
-  // kTabletRaw enables encoding (streams use nimble encoding, just with
-  // chunk headers).
-  EXPECT_TRUE(options.enableEncoding());
+TEST(OptionsTest, nonLegacyFormat) {
+  EXPECT_FALSE(nonLegacyFormat(SerializationVersion::kLegacy));
+  EXPECT_TRUE(nonLegacyFormat(SerializationVersion::kCompact));
+  EXPECT_TRUE(nonLegacyFormat(SerializationVersion::kCompactRaw));
+  EXPECT_TRUE(nonLegacyFormat(SerializationVersion::kTabletRaw));
 }
 
 TEST(OptionsTest, isCompactFormat) {
@@ -225,6 +193,7 @@ TEST(OptionsTest, usesVarintRowCountOptional) {
 TEST(OptionsTest, getRawEncodingTypeBasic) {
   EXPECT_EQ(getRawEncodingType(EncodingType::Trivial), EncodingType::Trivial);
   EXPECT_EQ(getRawEncodingType(EncodingType::Varint), EncodingType::Varint);
+  EXPECT_EQ(getRawEncodingType(EncodingType::Delta), EncodingType::Delta);
 }
 
 TEST(OptionsTest, getRawEncodingTypeError) {

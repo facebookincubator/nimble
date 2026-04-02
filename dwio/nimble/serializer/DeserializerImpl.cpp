@@ -30,14 +30,13 @@ namespace facebook::nimble::serde {
 
 StreamData::StreamData(
     ScalarKind kind,
-    bool encodingEnabled,
-    bool useVarintRowCount,
+    SerializationVersion version,
     std::string_view data,
     velox::memory::MemoryPool* pool)
     : kind_{kind},
       pool_{pool},
-      encodingEnabled_{encodingEnabled},
-      useVarintRowCount_{useVarintRowCount} {
+      encodingEnabled_{nonLegacyFormat(version)},
+      useVarintRowCount_{!isTabletRawFormat(version)} {
   NIMBLE_CHECK_NOT_NULL(pool_, "Memory pool required for encoding");
   init(data);
 }
@@ -63,11 +62,12 @@ uint32_t StreamData::decodeStrings(uint32_t count, std::string_view* output) {
   return index;
 }
 
-void StreamData::reset(std::string_view data, bool encodingEnabled) {
+void StreamData::reset(std::string_view data, SerializationVersion version) {
   readRows_ = 0;
   encoding_.reset();
   stringBuffers_.clear();
-  encodingEnabled_ = encodingEnabled;
+  encodingEnabled_ = nonLegacyFormat(version);
+  useVarintRowCount_ = !isTabletRawFormat(version);
   // Re-initialize with new data.
   init(data);
 }
@@ -207,39 +207,37 @@ StreamDataReader::StreamDataReader(
 uint32_t StreamDataReader::initialize(std::string_view data) {
   pos_ = data.data();
   end_ = data.end();
-  if (options_.hasVersionHeader()) {
-    const auto version = static_cast<SerializationVersion>(*pos_);
-    NIMBLE_CHECK(
-        version == SerializationVersion::kLegacy ||
-            version == SerializationVersion::kCompact ||
-            version == SerializationVersion::kCompactRaw ||
-            version == SerializationVersion::kTabletRaw,
-        "Unsupported version {}",
-        static_cast<uint8_t>(version));
-    // Verify the version read from serialized data matches options.
-    NIMBLE_CHECK_EQ(
-        version,
-        *options_.version,
-        "Version mismatch: data has version {}, options expect {}",
-        version,
-        *options_.version);
-    ++pos_;
-  }
+  readVersion();
   // All non-legacy formats use varint row count.
-  if (usesVarintRowCount(options_.serializationVersion())) {
+  if (usesVarintRowCount(version_)) {
     return varint::readVarint32(&pos_);
   }
   return encoding::readUint32(pos_);
 }
 
+void StreamDataReader::readVersion() {
+  if (!options_.hasHeader) {
+    version_ = SerializationVersion::kLegacy;
+    return;
+  }
+  version_ = static_cast<SerializationVersion>(*pos_);
+  NIMBLE_CHECK(
+      version_ == SerializationVersion::kLegacy ||
+          version_ == SerializationVersion::kCompact ||
+          version_ == SerializationVersion::kCompactRaw ||
+          version_ == SerializationVersion::kTabletRaw,
+      "Unsupported version {}",
+      static_cast<uint8_t>(version_));
+  ++pos_;
+}
+
 void StreamDataReader::iterateStreams(
     const std::function<void(uint32_t offset, std::string_view data)>&
         callback) {
-  if (options_.enableEncoding()) {
+  if (nonLegacyFormat(version_)) {
     // kCompact/kCompactRaw/kTabletRaw format: read stream sizes from trailer.
-    const auto streamSizes =
-        detail::readStreamSizes(end_, options_.serializationVersion(), pool_);
-    const bool tabletRaw = isTabletRawFormat(options_.serializationVersion());
+    const auto streamSizes = detail::readStreamSizes(end_, version_, pool_);
+    const bool tabletRaw = isTabletRawFormat(version_);
 
     for (uint32_t i = 0; i < streamSizes.size(); ++i) {
       std::string_view streamData(pos_, streamSizes[i]);
