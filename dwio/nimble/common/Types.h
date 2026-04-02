@@ -121,6 +121,11 @@ enum class EncodingType {
   // its own baseline and bit width. Adapts per-chunk variable bit widths for
   // better compression on data with locally narrow value ranges.
   BlockBitPacking = 15,
+  // Stores data using frequency-based partitioning with variable-bit codes.
+  // Most frequent values get shorter codes (1-bit, 2-bit, etc.) similar to
+  // Huffman encoding while maintaining random access. Rows are reordered to
+  // group same-length codes together into partitions.
+  FrequencyPartition = 17,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);
