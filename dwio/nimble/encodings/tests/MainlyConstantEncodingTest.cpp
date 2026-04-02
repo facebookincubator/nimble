@@ -36,9 +36,55 @@ struct TestConfig {
 
 #define TC(T) TestConfig<T, false>, TestConfig<T, true>
 
+// Forward declaration
+template <typename Config>
+class MainlyConstantEncodingTest;
+
+// Helper to prepare values - must be at namespace scope
+template <typename T, typename TestClass>
+struct MainlyConstantValuesPreparer {
+  static std::vector<nimble::Vector<T>> prepareValues(TestClass* test) {
+    FAIL() << "unspecialized prepareValues() should not be called";
+    return {};
+  }
+};
+
+template <typename TestClass>
+struct MainlyConstantValuesPreparer<double, TestClass> {
+  static std::vector<nimble::Vector<double>> prepareValues(TestClass* test) {
+    return {
+        test->toVector({0.0}),
+        test->toVector({0.0, 0.00, 0.12}),
+        test->toVector({-2.1, -2.1, -2.3, -2.1, -2.1}),
+        test->toVector({test->dNaN0, test->dNaN0, test->dNaN1, test->dNaN2, test->dNaN0})};
+  }
+};
+
+template <typename TestClass>
+struct MainlyConstantValuesPreparer<float, TestClass> {
+  static std::vector<nimble::Vector<float>> prepareValues(TestClass* test) {
+    return {
+        test->toVector({0.0f}),
+        test->toVector({0.0f, 0.00f, 0.12f}),
+        test->toVector({-2.1f, -2.1f, -2.3f, -2.1f, -2.1f}),
+        test->toVector({test->fNaN0, test->fNaN0, test->fNaN1, test->fNaN2, test->fNaN2})};
+  }
+};
+
+template <typename TestClass>
+struct MainlyConstantValuesPreparer<int32_t, TestClass> {
+  static std::vector<nimble::Vector<int32_t>> prepareValues(TestClass* test) {
+    return {test->toVector({3, 3, 3, 1, 3})};
+  }
+};
+
 template <typename Config>
 class MainlyConstantEncodingTest : public ::testing::Test {
  protected:
+  // Make helper templates friends so they can access protected members
+  template <typename T, typename TestClass>
+  friend struct MainlyConstantValuesPreparer;
+
   void SetUp() override {
     pool_ = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
     buffer_ = std::make_unique<nimble::Buffer>(*pool_);

@@ -30,6 +30,7 @@
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/FrequencyPartitioningEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
@@ -70,11 +71,8 @@ class TestCompressPolicy : public nimble::CompressionPolicy {
     }
 
     nimble::CompressionInformation information{
-        .compressionType = nimble::CompressionType::MetaInternal};
-    information.parameters.metaInternal.compressionLevel = 9;
-    information.parameters.metaInternal.decompressionLevel = 2;
-    information.parameters.metaInternal.useVariableBitWidthCompressor =
-        useVariableBitWidthCompressor_;
+        .compressionType = nimble::CompressionType::Zstd};
+    information.parameters.zstd.compressionLevel = 9;
     return information;
   }
 
@@ -401,6 +399,56 @@ struct TestConfig {
 
 #define TC(T) TestConfig<T, false>, TestConfig<T, true>
 
+// Helper template to get encoding type for each encoding class
+template <typename Encoding>
+struct EncodingTypeGetter;
+
+template <typename T>
+struct EncodingTypeGetter<nimble::ConstantEncoding<T>> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::Constant;
+};
+
+template <typename T>
+struct EncodingTypeGetter<nimble::DictionaryEncoding<T>> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::Dictionary;
+};
+
+template <typename T>
+struct EncodingTypeGetter<nimble::FixedBitWidthEncoding<T>> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::FixedBitWidth;
+};
+
+template <typename T>
+struct EncodingTypeGetter<nimble::FrequencyPartitionEncoding<T>> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::FrequencyPartition;
+};
+
+template <typename T>
+struct EncodingTypeGetter<nimble::MainlyConstantEncoding<T>> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::MainlyConstant;
+};
+
+template <typename T>
+struct EncodingTypeGetter<nimble::RLEEncoding<T>> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::RLE;
+};
+
+template <>
+struct EncodingTypeGetter<nimble::SparseBoolEncoding> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::SparseBool;
+};
+
+template <typename T>
+struct EncodingTypeGetter<nimble::TrivialEncoding<T>> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::Trivial;
+};
+
+template <typename T>
+struct EncodingTypeGetter<nimble::VarintEncoding<T>> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::Varint;
+};
+
+// C is the encoding type.
 template <typename Config>
 class EncodingTest : public ::testing::Test {
  protected:
@@ -423,7 +471,7 @@ class EncodingTest : public ::testing::Test {
     auto physicalValues = std::span<const physicalType>(
         reinterpret_cast<const physicalType*>(values.data()), values.size());
     nimble::EncodingSelection<physicalType> selection{
-        {.encodingType = EncodingTypeTraits<C>::encodingType,
+        {.encodingType = EncodingTypeGetter<C>::value,
          .compressionPolicyFactory =
              [compress, useVariableBitWidthCompressor]() {
                return std::make_unique<TestCompressPolicy>(

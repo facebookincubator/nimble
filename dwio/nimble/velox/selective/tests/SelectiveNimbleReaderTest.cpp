@@ -2062,9 +2062,9 @@ TEST_P(SelectiveNimbleReaderTest, slidingWindowMapLengthDedup) {
   checkSlidingWindowMap(
       {
           {{{1, {2}}}},
-          {{}},
+          std::vector<std::pair<int64_t, std::optional<int64_t>>>{},
           {{{3, {4}}}},
-          {{}},
+          std::vector<std::pair<int64_t, std::optional<int64_t>>>{},
           {{{5, {6}}}},
       },
       {},

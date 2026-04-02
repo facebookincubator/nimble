@@ -21,6 +21,7 @@
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/FrequencyPartitioningEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
@@ -241,6 +242,12 @@ class Encoder {
   };
 
   template <>
+  struct EncodingTypeTraits<nimble::FrequencyPartitionEncoding<T>> {
+    static constexpr inline nimble::EncodingType encodingType =
+        nimble::EncodingType::FrequencyPartition;
+  };
+
+  template <>
   struct EncodingTypeTraits<nimble::MainlyConstantEncoding<T>> {
     static constexpr inline nimble::EncodingType encodingType =
         nimble::EncodingType::MainlyConstant;
@@ -296,7 +303,7 @@ class Encoder {
 
  public:
   static constexpr EncodingType encodingType() {
-    return EncodingTypeTraits<E>::encodingType;
+    return EncodingTypeTraits<E, T>::encodingType;
   }
 
   static std::string_view encode(
@@ -309,7 +316,7 @@ class Encoder {
     auto physicalValues = std::span<const physicalType>(
         reinterpret_cast<const physicalType*>(values.data()), values.size());
     nimble::EncodingSelection<physicalType> selection{
-        {.encodingType = EncodingTypeTraits<E>::encodingType,
+        {.encodingType = EncodingTypeTraits<E, T>::encodingType,
          .compressionPolicyFactory =
              [compressionType]() {
                return std::make_unique<TestCompressPolicy>(compressionType);
@@ -333,7 +340,7 @@ class Encoder {
     auto physicalValues = std::span<const physicalType>(
         reinterpret_cast<const physicalType*>(values.data()), values.size());
     nimble::EncodingSelection<physicalType> selection{
-        {.encodingType = EncodingTypeTraits<E>::encodingType,
+        {.encodingType = EncodingTypeTraits<E, T>::encodingType,
          .compressionPolicyFactory =
              [compressionType]() {
                return std::make_unique<TestCompressPolicy>(compressionType);
