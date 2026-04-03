@@ -21,7 +21,7 @@
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
-#include "dwio/nimble/encodings/FrequencyPartitioningEncoding.h"
+#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
@@ -70,6 +70,12 @@ template <typename T>
 struct EncodingTypeTraits<nimble::FixedBitWidthEncoding<T>> {
   static constexpr inline nimble::EncodingType encodingType =
       nimble::EncodingType::FixedBitWidth;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::FrequencyPartitionEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::FrequencyPartition;
 };
 
 template <typename T>

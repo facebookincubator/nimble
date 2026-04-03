@@ -30,7 +30,7 @@
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
-#include "dwio/nimble/encodings/FrequencyPartitioningEncoding.h"
+#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
