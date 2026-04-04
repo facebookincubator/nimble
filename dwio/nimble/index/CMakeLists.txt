@@ -13,6 +13,7 @@
 # limitations under the License.
 add_library(
   nimble_index
+  BloomFilter.cpp
   ChunkIndex.cpp
   ChunkIndexGroup.cpp
   ClusterIndex.cpp
