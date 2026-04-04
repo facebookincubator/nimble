@@ -64,6 +64,38 @@ target_include_directories(
 )
 add_dependencies(nimble_chunk_index_fb nimble_chunk_index_schema_fb)
 
+build_flatbuffers(
+  "${CMAKE_CURRENT_SOURCE_DIR}/BloomFilter.fbs"
+  ""
+  nimble_bloom_filter_schema_fb
+  ""
+  "${CMAKE_CURRENT_BINARY_DIR}"
+  ""
+  ""
+)
+add_library(nimble_bloom_filter_fb INTERFACE)
+target_include_directories(
+  nimble_bloom_filter_fb
+  INTERFACE ${PROJECT_BINARY_DIR} ${FLATBUFFERS_INCLUDE_DIR}
+)
+add_dependencies(nimble_bloom_filter_fb nimble_bloom_filter_schema_fb)
+
+build_flatbuffers(
+  "${CMAKE_CURRENT_SOURCE_DIR}/DenseIndex.fbs"
+  "${CMAKE_CURRENT_SOURCE_DIR}"
+  nimble_dense_index_schema_fb
+  ""
+  "${CMAKE_CURRENT_BINARY_DIR}"
+  ""
+  ""
+)
+add_library(nimble_dense_index_fb INTERFACE)
+target_include_directories(
+  nimble_dense_index_fb
+  INTERFACE ${PROJECT_BINARY_DIR} ${FLATBUFFERS_INCLUDE_DIR}
+)
+add_dependencies(nimble_dense_index_fb nimble_dense_index_schema_fb)
+
 add_library(nimble_tablet_common Compression.cpp MetadataBuffer.cpp)
 target_link_libraries(
   nimble_tablet_common
