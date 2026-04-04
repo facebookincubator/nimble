@@ -32,9 +32,11 @@ StreamData::StreamData(
     ScalarKind kind,
     SerializationVersion version,
     std::string_view data,
-    velox::memory::MemoryPool* pool)
+    velox::memory::MemoryPool* pool,
+    ZSTD_DCtx* dctx)
     : kind_{kind},
       pool_{pool},
+      dctx_{dctx},
       encodingEnabled_{nonLegacyFormat(version)},
       useVarintRowCount_{!isTabletRawFormat(version)} {
   NIMBLE_CHECK_NOT_NULL(pool_, "Memory pool required for encoding");
@@ -62,10 +64,14 @@ uint32_t StreamData::decodeStrings(uint32_t count, std::string_view* output) {
   return index;
 }
 
-void StreamData::reset(std::string_view data, SerializationVersion version) {
+void StreamData::reset(
+    std::string_view data,
+    SerializationVersion version,
+    ZSTD_DCtx* dctx) {
   readRows_ = 0;
   encoding_.reset();
   stringBuffers_.clear();
+  dctx_ = dctx;
   encodingEnabled_ = nonLegacyFormat(version);
   useVarintRowCount_ = !isTabletRawFormat(version);
   // Re-initialize with new data.
@@ -109,8 +115,17 @@ void StreamData::decompress() {
               decompressedSize != ZSTD_CONTENTSIZE_UNKNOWN,
           "Error determining decompressed size");
       decompressionBuffer_.resize(decompressedSize);
-      const auto ret = ZSTD_decompress(
-          decompressionBuffer_.data(), decompressedSize, pos_, compressedSize);
+      const auto ret = dctx_ ? ZSTD_decompressDCtx(
+                                   dctx_,
+                                   decompressionBuffer_.data(),
+                                   decompressedSize,
+                                   pos_,
+                                   compressedSize)
+                             : ZSTD_decompress(
+                                   decompressionBuffer_.data(),
+                                   decompressedSize,
+                                   pos_,
+                                   compressedSize);
       NIMBLE_CHECK(!ZSTD_isError(ret), "Error decompressing data");
       pos_ = decompressionBuffer_.data();
       end_ = pos_ + decompressionBuffer_.size();
@@ -199,8 +214,12 @@ uint32_t StreamData::decode(
 
 StreamDataReader::StreamDataReader(
     velox::memory::MemoryPool* pool,
-    const DeserializerOptions& options)
-    : options_{options}, pool_{pool}, chunkStrippingBuffer_{pool_} {
+    const DeserializerOptions& options,
+    ZSTD_DCtx* dctx)
+    : options_{options},
+      pool_{pool},
+      dctx_{dctx},
+      chunkStrippingBuffer_{pool_} {
   NIMBLE_CHECK_NOT_NULL(pool_);
 }
 
@@ -343,11 +362,17 @@ void StreamDataReader::appendChunkData(
           "Error determining decompressed size");
       const auto offset = chunkStrippingBuffer_.size();
       chunkStrippingBuffer_.resize(offset + decompressedSize);
-      const auto ret = ZSTD_decompress(
-          chunkStrippingBuffer_.data() + offset,
-          decompressedSize,
-          data,
-          length);
+      const auto ret = dctx_ ? ZSTD_decompressDCtx(
+                                   dctx_,
+                                   chunkStrippingBuffer_.data() + offset,
+                                   decompressedSize,
+                                   data,
+                                   length)
+                             : ZSTD_decompress(
+                                   chunkStrippingBuffer_.data() + offset,
+                                   decompressedSize,
+                                   data,
+                                   length);
       NIMBLE_CHECK(!ZSTD_isError(ret), "Error decompressing chunk data");
       break;
     }

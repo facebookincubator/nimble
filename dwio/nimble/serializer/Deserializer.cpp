@@ -154,16 +154,19 @@ class DeserializerImpl : public Decoder {
   // Add data starting at the given row offset.
   // version: the auto-detected serialization version, used to determine
   // encoding enabled and varint row count settings.
+  // dctx: optional reusable ZSTD decompression context.
   void addBatch(
       uint32_t rowOffset,
       std::string_view data,
-      SerializationVersion version) {
+      SerializationVersion version,
+      ZSTD_DCtx* dctx = nullptr) {
     if (data.empty()) {
       return;
     }
     batchSegments_.emplace_back(
         BatchSegment{
-            rowOffset, serde::StreamData(scalarKind_, version, data, pool_)});
+            rowOffset,
+            serde::StreamData(scalarKind_, version, data, pool_, dctx)});
   }
 
   // Record a segment where this key is present in every row (in-map stream
@@ -672,7 +675,8 @@ void Deserializer::deserialize(
   // Iterate batches and add stream data with row offsets. Streams missing from
   // a batch will have gaps that are filled later during reading.
   uint32_t rowOffset{0};
-  serde::StreamDataReader reader{pool_, options_};
+  auto* dctx = dctx_.get();
+  serde::StreamDataReader reader{pool_, options_, dctx};
   for (auto sv : data) {
     const auto batchRows = reader.initialize(sv);
     const auto version = reader.version();
@@ -692,7 +696,7 @@ void Deserializer::deserialize(
         auto* decoder = deserializers_[offset];
         if (decoder != nullptr) {
           DeserializerImpl::toDecoderImpl(decoder)->addBatch(
-              rowOffset, streamData, version);
+              rowOffset, streamData, version, dctx);
         }
       }
     });
