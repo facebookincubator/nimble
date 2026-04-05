@@ -28,6 +28,7 @@
 #include "dwio/nimble/velox/selective/SelectiveNimbleIndexReader.h"
 #include "dwio/nimble/velox/stats/VectorizedStatistics.h"
 #include "velox/common/base/RuntimeMetrics.h"
+#include "velox/dwio/common/Statistics.h"
 #include "velox/serializers/KeyEncoder.h"
 
 namespace facebook::nimble {
@@ -255,8 +256,6 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
 
   // Cached row size estimate derived from file-level statistics.
   mutable std::optional<size_t> statsBasedRowSize_;
-  // Whether we've already attempted to compute statsBasedRowSize_.
-  mutable bool statsBasedRowSizeAttempted_{false};
 
   // Filters that were removed from the scan spec during index bound conversion.
   // These need to be restored when the row reader is destroyed, as the scan
@@ -355,27 +354,16 @@ void SelectiveNimbleRowReader::resetFilterCaches() {
 }
 
 void SelectiveNimbleRowReader::computeStatsBasedRowSize() const {
-  if (statsBasedRowSizeAttempted_) {
+  if (statsBasedRowSize_.has_value()) {
     return;
   }
-  statsBasedRowSizeAttempted_ = true;
-  const auto& tablet = readerBase_->tablet();
-  auto statsSection =
-      tablet.loadOptionalSection(std::string(kVectorizedStatsSection));
-  if (!statsSection.has_value()) {
+  const auto& columnStats = readerBase_->fileColumnStats();
+  if (columnStats.empty()) {
     return;
   }
-  auto fileStats = VectorizedFileStats::deserialize(
-      statsSection->content(), *readerBase_->pool());
-  NIMBLE_DCHECK(fileStats != nullptr, "Failed to deserialize vectorized stats");
-  if (!fileStats) {
-    return;
-  }
-  auto columnStats = fileStats->toColumnStatistics(
-      readerBase_->fileSchema(), readerBase_->nimbleSchema());
   auto totalLogicalSize = sumProjectedLogicalSize(
       *readerBase_->fileSchemaWithId(), columnStats, *options_.scanSpec());
-  auto totalRows = tablet.tabletRowCount();
+  auto totalRows = readerBase_->tablet().tabletRowCount();
   if (totalRows > 0) {
     statsBasedRowSize_ = std::max<size_t>(1, totalLogicalSize / totalRows);
   }
@@ -686,6 +674,75 @@ void SelectiveNimbleRowReader::setStripeRowRange() {
   }
 }
 
+// Converts a nimble::ColumnStatistics to the dwio::common::ColumnStatistics
+// hierarchy so that file-level stats can be used for filter pushdown in
+// HiveConnectorUtil::testFilters().
+std::unique_ptr<dwio::common::ColumnStatistics> toCommonColumnStatistics(
+    const ColumnStatistics* nimbleStats) {
+  if (nimbleStats == nullptr) {
+    return nullptr;
+  }
+
+  const auto valueCount =
+      std::make_optional<uint64_t>(nimbleStats->getValueCount());
+  const auto hasNull =
+      std::make_optional<bool>(nimbleStats->getNullCount() > 0);
+  const auto rawSize =
+      std::make_optional<uint64_t>(nimbleStats->getLogicalSize());
+  const auto size =
+      std::make_optional<uint64_t>(nimbleStats->getPhysicalSize());
+
+  switch (nimbleStats->getType()) {
+    case StatType::INTEGRAL: {
+      const auto* intStats = nimbleStats->as<const IntegralStatistics>();
+      if (intStats != nullptr) {
+        return std::make_unique<dwio::common::IntegerColumnStatistics>(
+            valueCount,
+            hasNull,
+            rawSize,
+            size,
+            intStats->getMin(),
+            intStats->getMax(),
+            std::nullopt);
+      }
+      break;
+    }
+    case StatType::FLOATING_POINT: {
+      const auto* fpStats = nimbleStats->as<const FloatingPointStatistics>();
+      if (fpStats != nullptr) {
+        return std::make_unique<dwio::common::DoubleColumnStatistics>(
+            valueCount,
+            hasNull,
+            rawSize,
+            size,
+            fpStats->getMin(),
+            fpStats->getMax(),
+            std::nullopt);
+      }
+      break;
+    }
+    case StatType::STRING: {
+      const auto* strStats = nimbleStats->as<const StringStatistics>();
+      if (strStats != nullptr) {
+        return std::make_unique<dwio::common::StringColumnStatistics>(
+            valueCount,
+            hasNull,
+            rawSize,
+            size,
+            strStats->getMin(),
+            strStats->getMax(),
+            std::nullopt);
+      }
+      break;
+    }
+    default:
+      break;
+  }
+
+  return std::make_unique<dwio::common::ColumnStatistics>(
+      valueCount, hasNull, rawSize, size);
+}
+
 class SelectiveNimbleReader : public dwio::common::Reader {
  public:
   SelectiveNimbleReader(
@@ -722,8 +779,12 @@ std::optional<uint64_t> SelectiveNimbleReader::numberOfRows() const {
 }
 
 std::unique_ptr<dwio::common::ColumnStatistics>
-SelectiveNimbleReader::columnStatistics(uint32_t /*index*/) const {
-  return nullptr;
+SelectiveNimbleReader::columnStatistics(uint32_t index) const {
+  const auto& stats = readerBase_->fileColumnStats();
+  if (index >= stats.size() || !stats[index]) {
+    return nullptr;
+  }
+  return toCommonColumnStatistics(stats[index].get());
 }
 
 const RowTypePtr& SelectiveNimbleReader::rowType() const {
