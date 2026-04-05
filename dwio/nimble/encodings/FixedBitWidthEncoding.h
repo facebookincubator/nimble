@@ -26,6 +26,7 @@
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/Compression.h"
 #include "dwio/nimble/encodings/Encoding.h"
+#include "velox/dwio/common/DecoderUtil.h"
 
 // The FixedBitWidthEncoding stores integer data in a fixed number of
 // bits equal to the number of bits required to represent the largest value in
@@ -161,18 +162,16 @@ void FixedBitWidthEncoding<T>::readWithVisitor(
   // Fast path: use bulk scan for 4-byte integral types with no filter and no
   // hook. This is common for dictionary indices (uint32_t).
   // The fast path only supports ExtractToReader (not hooks).
-  // We also check that the output type is compatible:
-  // - Same type: direct memcpy
-  // - Widening (larger output type): loop with conversion
+  // We also check that the output type is compatible (integral and at least
+  // as wide as the physical type).
   using OutputType = detail::ValueType<typename V::DataType>;
   constexpr bool kExtractToReader =
       std::is_same_v<typename V::Extract, velox::dwio::common::ExtractToReader>;
-  constexpr bool kSameType = std::is_same_v<physicalType, OutputType>;
-  constexpr bool kIsWidening = sizeof(OutputType) > sizeof(physicalType) &&
-      std::is_integral_v<OutputType> && std::is_integral_v<physicalType>;
+  constexpr bool kCompatibleType =
+      std::is_integral_v<physicalType> && std::is_integral_v<OutputType> &&
+      sizeof(OutputType) >= sizeof(physicalType);
   constexpr bool kCanUseFastPath = isFourByteIntegralType<physicalType>() &&
-      !V::kHasFilter && !V::kHasHook && kExtractToReader &&
-      (kSameType || kIsWidening);
+      !V::kHasFilter && !V::kHasHook && kExtractToReader && kCompatibleType;
   if constexpr (kCanUseFastPath) {
     auto* nulls = visitor.reader().rawNullsInReadRange();
     detail::readWithVisitorFast(*this, visitor, params, nulls);
@@ -197,8 +196,7 @@ void FixedBitWidthEncoding<T>::bulkScan(
     const vector_size_t* selectedRows,
     vector_size_t numSelected,
     const vector_size_t* scatterRows) {
-  using DataType = typename V::DataType;
-  using OutputType = detail::ValueType<DataType>;
+  using OutputType = detail::ValueType<typename V::DataType>;
   static_assert(
       isFourByteIntegralType<physicalType>(),
       "bulkScan only supports 4-byte integral types");
@@ -253,10 +251,34 @@ void FixedBitWidthEncoding<T>::bulkScan(
     }
   }
 
-  // Update row_ based on the last row read.
+  // Delegate scatter/filter/hook processing to processFixedWidthRun.
+  if constexpr (!V::kHasHook) {
+    values = reinterpret_cast<OutputType*>(visitor.reader().rawValues());
+  }
+  int32_t numValues = visitor.reader().numValues();
+  int32_t* filterHits;
+  if constexpr (V::kHasFilter) {
+    NIMBLE_DCHECK_EQ(visitor.reader().numRows(), numValues, "");
+    filterHits = visitor.outputRows(numSelected) - numValues;
+  } else {
+    filterHits = nullptr;
+  }
+  velox::dwio::common::
+      processFixedWidthRun<OutputType, V::kFilterOnly, kScatter, V::dense>(
+          velox::RowSet(selectedRows, numSelected),
+          0,
+          numSelected,
+          scatterRows,
+          values,
+          filterHits,
+          numValues,
+          visitor.filter(),
+          visitor.hook());
   row_ += selectedRows[numSelected - 1] - currentRow + 1;
-
-  visitor.addNumValues(V::dense ? numRows : numSelected);
+  if constexpr (!V::kHasHook) {
+    visitor.addNumValues(
+        V::kHasFilter ? numValues - visitor.reader().numValues() : numRows);
+  }
   visitor.setRowIndex(visitor.numRows());
 }
 

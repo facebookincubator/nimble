@@ -1688,6 +1688,161 @@ TEST_P(
 }
 
 // ---------------------------------------------------------------------------
+// 13b. FixedBitWidthEncoding<int32_t> + AlwaysTrue + dense + FAST PATH + NULLS
+//      Tests the scatter path in bulkScan when encoding-level nulls are present
+//      (as set by NullableEncoding). Non-null values must land at their correct
+//      scattered positions in the output buffer.
+// ---------------------------------------------------------------------------
+TEST_P(
+    ReadWithVisitorTest,
+    encodingLevel_FixedBitWidth_AlwaysTrue_Dense_Int32_FastPath_WithNulls) {
+  constexpr int kRows = 500;
+
+  // Build null bitmap: every 5th row is null.
+  auto nulls = velox::allocateNulls(kRows, pool(), velox::bits::kNotNull);
+  auto* rawNulls = nulls->asMutable<uint64_t>();
+  int expectedNonNull = 0;
+  for (int i = 0; i < kRows; ++i) {
+    if (i % 5 == 0) {
+      velox::bits::setNull(rawNulls, i);
+    } else {
+      ++expectedNonNull;
+    }
+  }
+
+  // Small-range int32 data for all rows (non-null values use i % 16).
+  std::vector<int32_t> nonNullData(expectedNonNull);
+  {
+    int j = 0;
+    for (int i = 0; i < kRows; ++i) {
+      if (i % 5 != 0) {
+        nonNullData[j++] = i % 16;
+      }
+    }
+  }
+
+  auto input = makeRowVector({makeFlatVector<int32_t>(
+      kRows, [](auto i) { return static_cast<int32_t>(i % 16); })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  std::vector<vector_size_t> rowVec(kRows);
+  std::iota(rowVec.begin(), rowVec.end(), 0);
+  RowSet rows(rowVec.data(), rowVec.size());
+
+  reader->doPrepareRead<int32_t>(0, rows, nullptr);
+
+  // Set encoding-level nulls (simulates NullableEncoding wrapping FBW).
+  reader->nullsInReadRange() = nulls;
+
+  // Create FBW encoding with only the non-null values.
+  Buffer buffer(*pool());
+  auto encoding = createFromCustomLayout<int32_t>(
+      FixedBitWidthEnc{}, nonNullData, *pool(), buffer);
+
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = true;
+  DecoderVisitor<
+      int32_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
+
+  // With nulls, numValues should be kRows (non-null values scattered to their
+  // correct positions, null positions left untouched).
+  EXPECT_EQ(reader->numValues(), kRows);
+  auto values = getValues<int32_t>(reader);
+  for (int i = 0; i < kRows; ++i) {
+    if (i % 5 != 0) {
+      EXPECT_EQ(values[i], i % 16) << "non-null row " << i;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 13c. FixedBitWidthEncoding<int32_t> + AlwaysTrue + sparse + FAST PATH
+//      Exercises the sparse branch of bulkScan (individual value reads at
+//      specified positions) followed by processFixedWidthRun. A subset of rows
+//      is selected to make the read non-dense.
+// ---------------------------------------------------------------------------
+TEST_P(
+    ReadWithVisitorTest,
+    encodingLevel_FixedBitWidth_AlwaysTrue_Sparse_Int32_FastPath) {
+  constexpr int kTotalRows = 500;
+
+  // Small-range int32 data.
+  std::vector<int32_t> data(kTotalRows);
+  for (int i = 0; i < kTotalRows; ++i) {
+    data[i] = i % 16;
+  }
+
+  auto input = makeRowVector({makeFlatVector<int32_t>(
+      kTotalRows, [](auto i) { return static_cast<int32_t>(i % 16); })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  // Select every other row to make the read sparse.
+  std::vector<vector_size_t> rowVec;
+  for (int i = 0; i < kTotalRows; i += 2) {
+    rowVec.push_back(i);
+  }
+  RowSet rows(rowVec.data(), rowVec.size());
+
+  reader->doPrepareRead<int32_t>(0, rows, nullptr);
+
+  Buffer buffer(*pool());
+  auto encoding = createFromCustomLayout<int32_t>(
+      FixedBitWidthEnc{}, data, *pool(), buffer);
+
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = false;
+  DecoderVisitor<
+      int32_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
+
+  auto numSelected = static_cast<int>(rowVec.size());
+  EXPECT_EQ(reader->numValues(), numSelected);
+  auto values = getValues<int32_t>(reader);
+  for (int i = 0; i < numSelected; ++i) {
+    EXPECT_EQ(values[i], rowVec[i] % 16) << "selected row index " << i;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 14. DeltaEncoding<int64_t> + AlwaysTrue + dense
 //     Delta always uses slow path (no bulkScan).
 // ---------------------------------------------------------------------------
