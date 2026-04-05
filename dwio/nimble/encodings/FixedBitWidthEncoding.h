@@ -137,17 +137,15 @@ void FixedBitWidthEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   if constexpr (isFourByteIntegralType<physicalType>()) {
     fixedBitArray_.bulkGetWithBaseline32(
         row_, rowCount, static_cast<uint32_t*>(buffer), baseline_);
+  } else if constexpr (isEightByteIntegralType<physicalType>()) {
+    fixedBitArray_.bulkGet64WithBaseline(
+        row_, rowCount, static_cast<uint64_t*>(buffer), baseline_);
   } else {
-    if (sizeof(physicalType) == 8 && bitWidth_ <= 32) {
-      fixedBitArray_.bulkGetWithBaseline32Into64(
-          row_, rowCount, static_cast<uint64_t*>(buffer), baseline_);
-    } else {
-      const uint32_t start = row_;
-      const uint32_t end = start + rowCount;
-      physicalType* output = static_cast<physicalType*>(buffer);
-      for (uint32_t i = start; i < end; ++i) {
-        *output++ = fixedBitArray_.get(i) + baseline_;
-      }
+    const uint32_t start = row_;
+    const uint32_t end = start + rowCount;
+    physicalType* output = static_cast<physicalType*>(buffer);
+    for (uint32_t i = start; i < end; ++i) {
+      *output++ = fixedBitArray_.get(i) + baseline_;
     }
   }
   row_ += rowCount;
@@ -158,10 +156,10 @@ template <typename V>
 void FixedBitWidthEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  // Fast path: use bulk scan for 4-byte integral types with no filter and no
-  // hook. This is common for dictionary indices (uint32_t).
-  // The fast path only supports ExtractToReader (not hooks).
-  // We also check that the output type is compatible:
+  // Fast path: use bulk scan for integral types with no filter and no hook.
+  // Supports 4-byte types (common for dictionary indices) and 8-byte types
+  // (int64/uint64 columns). The fast path only supports ExtractToReader.
+  // Output type must be compatible:
   // - Same type: direct memcpy
   // - Widening (larger output type): loop with conversion
   using OutputType = detail::ValueType<typename V::DataType>;
@@ -170,7 +168,9 @@ void FixedBitWidthEncoding<T>::readWithVisitor(
   constexpr bool kSameType = std::is_same_v<physicalType, OutputType>;
   constexpr bool kIsWidening = sizeof(OutputType) > sizeof(physicalType) &&
       std::is_integral_v<OutputType> && std::is_integral_v<physicalType>;
-  constexpr bool kCanUseFastPath = isFourByteIntegralType<physicalType>() &&
+  constexpr bool kIsFourByte = isFourByteIntegralType<physicalType>();
+  constexpr bool kIsEightByteIntegral = isEightByteIntegralType<physicalType>();
+  constexpr bool kCanUseFastPath = (kIsFourByte || kIsEightByteIntegral) &&
       !V::kHasFilter && !V::kHasHook && kExtractToReader &&
       (kSameType || kIsWidening);
   if constexpr (kCanUseFastPath) {
@@ -200,8 +200,9 @@ void FixedBitWidthEncoding<T>::bulkScan(
   using DataType = typename V::DataType;
   using OutputType = detail::ValueType<DataType>;
   static_assert(
-      isFourByteIntegralType<physicalType>(),
-      "bulkScan only supports 4-byte integral types");
+      isFourByteIntegralType<physicalType>() ||
+          isEightByteIntegralType<physicalType>(),
+      "bulkScan only supports 4-byte or 8-byte integral types");
 
   if (numSelected == 0) {
     return;
@@ -227,24 +228,32 @@ void FixedBitWidthEncoding<T>::bulkScan(
       std::is_integral_v<OutputType> && std::is_integral_v<physicalType>;
 
   if constexpr (V::dense) {
-    // Dense case: values are contiguous, read in bulk.
-    buffer_.resize(numSelected);
-    fixedBitArray_.bulkGetWithBaseline32(
-        selectedRows[0] + offset,
-        numSelected,
-        reinterpret_cast<uint32_t*>(buffer_.data()),
-        baseline_);
+    if constexpr (isFourByteIntegralType<physicalType>()) {
+      // 4-byte path: use the optimized template-unrolled bulk decode.
+      buffer_.resize(numSelected);
+      fixedBitArray_.bulkGetWithBaseline32(
+          selectedRows[0] + offset,
+          numSelected,
+          reinterpret_cast<uint32_t*>(buffer_.data()),
+          baseline_);
 
-    if constexpr (kSameSize) {
-      // Same size types: use fast memcpy (works for same type or
-      // signed/unsigned variants like int32_t vs uint32_t).
-      std::memcpy(values, buffer_.data(), numSelected * sizeof(physicalType));
-    } else if constexpr (kIsUpcast) {
-      // Widening case: copy with implicit type conversion.
-      // Compilers typically auto-vectorize this pattern.
-      for (vector_size_t i = 0; i < numSelected; ++i) {
-        values[i] = static_cast<OutputType>(buffer_[i]);
+      if constexpr (kSameSize) {
+        std::memcpy(values, buffer_.data(), numSelected * sizeof(physicalType));
+      } else if constexpr (kIsUpcast) {
+        for (vector_size_t i = 0; i < numSelected; ++i) {
+          values[i] = static_cast<OutputType>(buffer_[i]);
+        }
       }
+    } else {
+      // 8-byte path: use bulkGet64WithBaseline which handles all bit widths
+      // including branchless byte-aligned loads for bitWidth <= 56.
+      static_assert(isEightByteIntegralType<physicalType>());
+      static_assert(kSameSize, "8-byte bulkScan requires same-size output");
+      fixedBitArray_.bulkGet64WithBaseline(
+          selectedRows[0] + offset,
+          numSelected,
+          reinterpret_cast<uint64_t*>(values),
+          baseline_);
     }
   } else {
     // Sparse case: read individual values at specified positions.

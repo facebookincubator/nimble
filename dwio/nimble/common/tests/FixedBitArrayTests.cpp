@@ -14,9 +14,11 @@
  * limitations under the License.
  */
 #include <gtest/gtest.h>
+#include <cstring>
 #include <memory>
 
 #include "dwio/nimble/common/FixedBitArray.h"
+#include "fmt/format.h"
 #include "folly/Benchmark.h"
 #include "folly/Random.h"
 
@@ -253,6 +255,112 @@ TEST(FixedBitArrayTests, BulkGetWithBaseline32Random) {
         fixedBitArray.bulkGetWithBaseline32Into64(i, 1, &element, baseline);
         ASSERT_EQ(element, randomValues[i] + baseline);
       }
+    }
+  }
+}
+
+TEST(FixedBitArrayTests, bulkGet64WithBaseline) {
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+
+  // Test all three code paths:
+  // - bitWidth <= 32: delegates to bulkGetWithBaseline32Into64
+  // - bitWidth 33-56: branchless byte-aligned loads
+  // - bitWidth > 56: per-element get() fallback
+  for (int bitWidth = 1; bitWidth <= 64; ++bitWidth) {
+    SCOPED_TRACE(fmt::format("bitWidth={}", bitWidth));
+    const uint64_t maxElement = bitWidth == 64
+        ? std::numeric_limits<uint64_t>::max()
+        : (1ULL << bitWidth) - 1;
+    const uint64_t baseline = folly::Random::rand64(rng) % (maxElement / 2 + 1);
+    const uint64_t valueRange = maxElement - baseline;
+
+    for (int test = 0; test < kNumTestsPerBitWidth; ++test) {
+      const int elementCount = folly::Random::rand32(rng) % kMaxElements;
+      auto buffer = std::make_unique<char[]>(
+          nimble::FixedBitArray::bufferSize(elementCount, bitWidth));
+      // Zero-initialize buffer since set() uses OR semantics.
+      std::memset(
+          buffer.get(),
+          0,
+          nimble::FixedBitArray::bufferSize(elementCount, bitWidth));
+      nimble::FixedBitArray fixedBitArray(buffer.get(), bitWidth);
+
+      std::vector<uint64_t> randomValues(elementCount);
+      for (int i = 0; i < elementCount; ++i) {
+        randomValues[i] = valueRange == std::numeric_limits<uint64_t>::max()
+            ? folly::Random::rand64(rng)
+            : folly::Random::rand64(rng) % (valueRange + 1);
+      }
+      for (int i = 0; i < elementCount; ++i) {
+        fixedBitArray.set(i, randomValues[i]);
+      }
+
+      // Bulk read all elements.
+      std::vector<uint64_t> values(elementCount);
+      fixedBitArray.bulkGet64WithBaseline(
+          0, elementCount, values.data(), baseline);
+      for (int i = 0; i < elementCount; ++i) {
+        ASSERT_EQ(values[i], randomValues[i] + baseline)
+            << "bitWidth: " << bitWidth << ", i: " << i;
+      }
+
+      // Single-element reads at each position.
+      for (int i = 0; i < elementCount; ++i) {
+        uint64_t element;
+        fixedBitArray.bulkGet64WithBaseline(i, 1, &element, baseline);
+        ASSERT_EQ(element, randomValues[i] + baseline);
+      }
+
+      // Read from a random offset.
+      if (elementCount > 1) {
+        const int offset = folly::Random::rand32(rng) % (elementCount - 1);
+        const int count = elementCount - offset;
+        std::vector<uint64_t> partial(count);
+        fixedBitArray.bulkGet64WithBaseline(
+            offset, count, partial.data(), baseline);
+        for (int i = 0; i < count; ++i) {
+          ASSERT_EQ(partial[i], randomValues[offset + i] + baseline);
+        }
+      }
+    }
+  }
+}
+
+TEST(FixedBitArrayTests, bulkGet64WithBaselineZeroBaseline) {
+  // Verify bulkGet64WithBaseline with baseline=0 matches per-element get().
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+
+  for (int bitWidth : {1, 8, 16, 32, 40, 48, 56, 60, 64}) {
+    SCOPED_TRACE(fmt::format("bitWidth={}", bitWidth));
+    const int elementCount = 100 + folly::Random::rand32(rng) % 200;
+    const uint64_t maxElement = bitWidth == 64
+        ? std::numeric_limits<uint64_t>::max()
+        : (1ULL << bitWidth) - 1;
+    auto buffer = std::make_unique<char[]>(
+        nimble::FixedBitArray::bufferSize(elementCount, bitWidth));
+    std::memset(
+        buffer.get(),
+        0,
+        nimble::FixedBitArray::bufferSize(elementCount, bitWidth));
+    nimble::FixedBitArray fixedBitArray(buffer.get(), bitWidth);
+
+    for (int i = 0; i < elementCount; ++i) {
+      const uint64_t value = bitWidth == 64
+          ? folly::Random::rand64(rng)
+          : folly::Random::rand64(rng) % (maxElement + 1);
+      fixedBitArray.set(i, value);
+    }
+
+    std::vector<uint64_t> bulkValues(elementCount);
+    fixedBitArray.bulkGet64WithBaseline(0, elementCount, bulkValues.data(), 0);
+
+    for (int i = 0; i < elementCount; ++i) {
+      ASSERT_EQ(bulkValues[i], fixedBitArray.get(i))
+          << "bitWidth: " << bitWidth << ", i: " << i;
     }
   }
 }

@@ -356,6 +356,36 @@ void FixedBitArray::bulkGetWithBaseline32Into64(
       *this, buffer_, start, length, values, baseline);
 }
 
+void FixedBitArray::bulkGet64WithBaseline(
+    uint64_t start,
+    uint64_t length,
+    uint64_t* values,
+    uint64_t baseline) const {
+  if (bitWidth_ <= 32) {
+    // Delegate to the optimized template-unrolled 32-bit path.
+    bulkGetWithBaseline32Into64(start, length, values, baseline);
+    return;
+  }
+  if (bitWidth_ <= 57) {
+    // Branchless byte-aligned loads: since the sub-byte offset is at most 7,
+    // bitWidth + remainder <= 57 + 7 = 64, so each value fits in a single
+    // 64-bit load — no cross-word boundary branch needed.
+    for (uint64_t i = 0; i < length; ++i) {
+      const uint64_t bits = (start + i) * bitWidth_;
+      const uint64_t offset = bits >> 3;
+      const uint64_t remainder = bits & 7;
+      const uint64_t word =
+          *reinterpret_cast<const uint64_t*>(buffer_ + offset);
+      values[i] = ((word >> remainder) & mask_) + baseline;
+    }
+  } else {
+    // Wide bit widths (> 57): need cross-word boundary handling.
+    for (uint64_t i = 0; i < length; ++i) {
+      values[i] = get(start + i) + baseline;
+    }
+  }
+}
+
 template <int bitWidth, int loopPosition, bool withBaseline>
 void bulkSet32Loop(
     uint64_t** nextWord,
