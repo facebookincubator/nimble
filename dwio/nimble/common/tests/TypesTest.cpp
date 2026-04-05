@@ -265,6 +265,15 @@ TEST(TypesTest, IsFourByteIntegralType) {
   EXPECT_FALSE(isFourByteIntegralType<float>());
 }
 
+TEST(TypesTest, isEightByteIntegralType) {
+  EXPECT_TRUE(isEightByteIntegralType<int64_t>());
+  EXPECT_TRUE(isEightByteIntegralType<uint64_t>());
+  EXPECT_FALSE(isEightByteIntegralType<int32_t>());
+  EXPECT_FALSE(isEightByteIntegralType<uint32_t>());
+  EXPECT_FALSE(isEightByteIntegralType<int16_t>());
+  EXPECT_FALSE(isEightByteIntegralType<double>());
+}
+
 TEST(TypesTest, IsFloatingPointType) {
   EXPECT_TRUE(isFloatingPointType<float>());
   EXPECT_TRUE(isFloatingPointType<double>());
