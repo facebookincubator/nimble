@@ -22,7 +22,7 @@
 #include "dwio/nimble/common/NimbleException.h"
 #include "folly/FixedString.h"
 #include "folly/Preprocessor.h"
-#include "folly/debugging/symbolizer/Symbolizer.h"
+#include "folly/experimental/symbolizer/Symbolizer.h"
 
 // Standard errors used throughout the codebase.
 
