@@ -71,6 +71,10 @@ class NimbleIndexProjector {
   struct Options {
     /// Maximum number of rows per lookup. 0 means no limit.
     uint64_t maxRowsPerRequest{0};
+    /// Maximum bytes of serialized chunk data per lookup. 0 means no limit.
+    /// Operates at stripe granularity: at least one stripe is always included,
+    /// then subsequent stripes are skipped if the byte budget is exceeded.
+    uint64_t maxBytesPerRequest{0};
   };
 
   /// Request for a batch of index lookups.
@@ -207,7 +211,10 @@ class NimbleIndexProjector {
   Chunk serializeStripe(uint32_t stripeIndex, InputStreams& inputStreams);
 
   // Maps the serialized stripe chunk to request results based on row ranges.
+  // Uses precomputed resume keys from lookupRowRanges() for row-based
+  // truncation, and computes byte-based resume keys from the tablet index.
   void buildStripeResult(
+      uint32_t stripeIndex,
       Chunk&& chunk,
       const std::vector<RequestRange>& requestRanges,
       Result& result);
@@ -238,6 +245,7 @@ class NimbleIndexProjector {
   const Request* request_{nullptr};
   const Options* options_{nullptr};
   std::vector<uint64_t> rowsPerRequest_;
+  std::vector<uint64_t> bytesPerRequest_;
   // Resume keys for truncated lookups, indexed by request index.
   std::vector<std::optional<velox::serializer::EncodedKeyBounds>> resumeKeys_;
 };

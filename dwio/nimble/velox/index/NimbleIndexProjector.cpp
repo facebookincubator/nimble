@@ -85,6 +85,7 @@ NimbleIndexProjector::Result NimbleIndexProjector::project(
     request_ = nullptr;
     options_ = nullptr;
     rowsPerRequest_.clear();
+    bytesPerRequest_.clear();
     resumeKeys_.clear();
   };
 
@@ -103,17 +104,23 @@ NimbleIndexProjector::Result NimbleIndexProjector::project(
   }
 
   rowsPerRequest_.assign(numRequests, 0);
+  bytesPerRequest_.assign(numRequests, 0);
   resumeKeys_.assign(numRequests, std::nullopt);
 
   for (auto& [stripeIndex, requestIndices] : stripeMapping) {
-    // Remove requests that have already read maxRowsPerRequest.
+    // Remove requests that have already reached either budget limit.
     if (options_->maxRowsPerRequest > 0) {
       std::erase_if(requestIndices, [&](auto idx) {
         return rowsPerRequest_[idx] >= options_->maxRowsPerRequest;
       });
-      if (requestIndices.empty()) {
-        continue;
-      }
+    }
+    if (options_->maxBytesPerRequest > 0) {
+      std::erase_if(requestIndices, [&](auto idx) {
+        return bytesPerRequest_[idx] >= options_->maxBytesPerRequest;
+      });
+    }
+    if (requestIndices.empty()) {
+      continue;
     }
     processStripe(stripeIndex, requestIndices, result);
   }
@@ -176,7 +183,7 @@ void NimbleIndexProjector::processStripe(
   // values. The result references a portion of it based on the row range.
   auto inputStreams = loadStripe();
   auto stripeChunk = serializeStripe(stripeIndex, inputStreams);
-  buildStripeResult(std::move(stripeChunk), requestRanges, result);
+  buildStripeResult(stripeIndex, std::move(stripeChunk), requestRanges, result);
 }
 
 NimbleIndexProjector::InputStreams NimbleIndexProjector::loadStripe() {
@@ -239,10 +246,12 @@ NimbleIndexProjector::Chunk NimbleIndexProjector::serializeStripe(
 }
 
 void NimbleIndexProjector::buildStripeResult(
+    uint32_t stripeIndex,
     Chunk&& chunk,
     const std::vector<RequestRange>& requestRanges,
     Result& result) {
   const auto chunkIndex = static_cast<uint32_t>(result.chunks.size());
+  const auto chunkBytes = chunk.data.computeChainDataLength();
 
   for (const auto& requestRange : requestRanges) {
     ChunkSlice slice;
@@ -251,8 +260,24 @@ void NimbleIndexProjector::buildStripeResult(
     const auto reqIdx = requestRange.requestIndex;
     result.responses[reqIdx].slices.emplace_back(slice);
     rowsPerRequest_[reqIdx] += requestRange.rowRange.numRows();
-    if (resumeKeys_[reqIdx].has_value()) {
+    bytesPerRequest_[reqIdx] += chunkBytes;
+
+    const bool rowSaturated = options_->maxRowsPerRequest > 0 &&
+        rowsPerRequest_[reqIdx] >= options_->maxRowsPerRequest;
+    const bool byteSaturated = options_->maxBytesPerRequest > 0 &&
+        bytesPerRequest_[reqIdx] >= options_->maxBytesPerRequest;
+    if (rowSaturated) {
+      // Row-based resume keys have mid-stripe precision (precomputed in
+      // lookupRowRanges).
       result.responses[reqIdx].resumeKey = resumeKeys_[reqIdx];
+    } else if (byteSaturated) {
+      // Byte-based resume keys use stripe-level precision. Compute directly
+      // from the tablet index, avoiding precomputation in lookupRowRanges
+      // where the per-stripe index reader would otherwise be needed.
+      auto lastKey = std::string(tabletIndex_->stripeKey(stripeIndex));
+      lastKey.push_back('\0');
+      result.responses[reqIdx].resumeKey = velox::serializer::EncodedKeyBounds{
+          std::move(lastKey), request_->keyBounds[reqIdx].upperKey};
     }
   }
 
@@ -326,7 +351,7 @@ NimbleIndexProjector::lookupRowRanges(
         range.endRow = range.startRow + static_cast<vector_size_t>(remaining);
       }
 
-      // Set resume key when this range consumes all remaining budget.
+      // Set resume key when this range consumes all remaining row budget.
       // This covers both truncation (endRow was reduced above) and exact
       // consumption (range naturally ends at exactly the remaining budget).
       if (static_cast<uint64_t>(range.numRows()) >= remaining) {
@@ -341,11 +366,11 @@ NimbleIndexProjector::lookupRowRanges(
           auto lastKey = indexReader->keyAtRow(range.endRow - 1);
           lastKey.push_back('\0');
           resumeKeys_[requestIdx] = velox::serializer::EncodedKeyBounds{
-              std::move(lastKey),
-              request_->keyBounds[requestIdx].upperKey};
+              std::move(lastKey), request_->keyBounds[requestIdx].upperKey};
         }
       }
     }
+
     stats_.numReadRows += range.numRows();
     result.emplace_back(RequestRange{requestIdx, range});
   }
