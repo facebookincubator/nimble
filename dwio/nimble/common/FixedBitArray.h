@@ -98,6 +98,17 @@ class FixedBitArray {
       uint64_t* values,
       uint64_t baseline) const;
 
+  // Retrieves a contiguous subarray from slots [start, start + length) into
+  // 64-bit output values, adding baseline to each. Supports any bit width
+  // up to 64. For bitWidth <= 32, delegates to the optimized bulkGet32 path.
+  // For bitWidth 33-57, uses branchless byte-aligned loads (single 64-bit
+  // load per value). For bitWidth > 57, handles cross-word boundary overflow.
+  void bulkGet64WithBaseline(
+      uint64_t start,
+      uint64_t length,
+      uint64_t* values,
+      uint64_t baseline) const;
+
   // Sets a contiguous subarray of slots from [start, start + length).
   // Considerably faster than looping/ a get call. Only callable when bitWidth
   // <= 32. Same semantics as set -- see the warning there.

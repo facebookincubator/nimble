@@ -278,6 +278,11 @@ constexpr bool isFourByteIntegralType() {
 }
 
 template <typename T>
+constexpr bool isEightByteIntegralType() {
+  return std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>;
+}
+
+template <typename T>
 constexpr bool isSignedIntegralType() {
   return std::is_same_v<T, int32_t> || std::is_same_v<T, int64_t> ||
       std::is_same_v<T, int8_t> || std::is_same_v<T, int16_t>;

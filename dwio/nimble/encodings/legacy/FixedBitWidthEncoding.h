@@ -125,17 +125,15 @@ void FixedBitWidthEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   if constexpr (isFourByteIntegralType<physicalType>()) {
     fixedBitArray_.bulkGetWithBaseline32(
         row_, rowCount, static_cast<uint32_t*>(buffer), baseline_);
+  } else if constexpr (isEightByteIntegralType<physicalType>()) {
+    fixedBitArray_.bulkGet64WithBaseline(
+        row_, rowCount, static_cast<uint64_t*>(buffer), baseline_);
   } else {
-    if (sizeof(physicalType) == 8 && bitWidth_ <= 32) {
-      fixedBitArray_.bulkGetWithBaseline32Into64(
-          row_, rowCount, static_cast<uint64_t*>(buffer), baseline_);
-    } else {
-      const uint32_t start = row_;
-      const uint32_t end = start + rowCount;
-      physicalType* output = static_cast<physicalType*>(buffer);
-      for (uint32_t i = start; i < end; ++i) {
-        *output++ = fixedBitArray_.get(i) + baseline_;
-      }
+    const uint32_t start = row_;
+    const uint32_t end = start + rowCount;
+    physicalType* output = static_cast<physicalType*>(buffer);
+    for (uint32_t i = start; i < end; ++i) {
+      *output++ = fixedBitArray_.get(i) + baseline_;
     }
   }
   row_ += rowCount;

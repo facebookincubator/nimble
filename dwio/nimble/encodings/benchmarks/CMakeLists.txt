@@ -11,31 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_subdirectory(benchmarks)
-add_subdirectory(tests)
-add_subdirectory(legacy)
-
-add_library(
-  nimble_encodings
-  Compression.cpp
-  ConstantEncoding.cpp
-  Encoding.cpp
-  EncodingFactory.cpp
-  EncodingLayout.cpp
-  MainlyConstantEncoding.cpp
-  PrefixEncoding.cpp
-  RleEncoding.cpp
-  SparseBoolEncoding.cpp
-  Statistics.cpp
-  TrivialEncoding.cpp
-  ZstdCompressor.cpp
-)
+add_executable(nimble_fixed_bit_width_benchmark FixedBitWidthBenchmark.cpp)
 
 target_link_libraries(
-  nimble_encodings
+  nimble_fixed_bit_width_benchmark
+  nimble_encodings_tests_utils
   nimble_common
-  velox_common_base
+  Folly::follybenchmark
   Folly::folly
-  absl::flat_hash_map
-  protobuf::libprotobuf
+  velox_memory
 )
