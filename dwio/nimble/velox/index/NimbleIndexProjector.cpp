@@ -85,6 +85,7 @@ NimbleIndexProjector::Result NimbleIndexProjector::project(
     request_ = nullptr;
     options_ = nullptr;
     rowsPerRequest_.clear();
+    resumeKeys_.clear();
   };
 
   const auto numRequests = request_->keyBounds.size();
@@ -102,6 +103,7 @@ NimbleIndexProjector::Result NimbleIndexProjector::project(
   }
 
   rowsPerRequest_.assign(numRequests, 0);
+  resumeKeys_.assign(numRequests, std::nullopt);
 
   for (auto& [stripeIndex, requestIndices] : stripeMapping) {
     // Remove requests that have already read maxRowsPerRequest.
@@ -246,9 +248,12 @@ void NimbleIndexProjector::buildStripeResult(
     ChunkSlice slice;
     slice.chunkIndex = chunkIndex;
     slice.rows = requestRange.rowRange;
-    result.responses[requestRange.requestIndex].slices.emplace_back(slice);
-    rowsPerRequest_[requestRange.requestIndex] +=
-        requestRange.rowRange.numRows();
+    const auto reqIdx = requestRange.requestIndex;
+    result.responses[reqIdx].slices.emplace_back(slice);
+    rowsPerRequest_[reqIdx] += requestRange.rowRange.numRows();
+    if (resumeKeys_[reqIdx].has_value()) {
+      result.responses[reqIdx].resumeKey = resumeKeys_[reqIdx];
+    }
   }
 
   result.chunks.emplace_back(std::move(chunk));
@@ -319,6 +324,26 @@ NimbleIndexProjector::lookupRowRanges(
 
       if (static_cast<uint64_t>(range.numRows()) > remaining) {
         range.endRow = range.startRow + static_cast<vector_size_t>(remaining);
+      }
+
+      // Set resume key when this range consumes all remaining budget.
+      // This covers both truncation (endRow was reduced above) and exact
+      // consumption (range naturally ends at exactly the remaining budget).
+      if (static_cast<uint64_t>(range.numRows()) >= remaining) {
+        if (range.endRow < numStripeRows) {
+          resumeKeys_[requestIdx] = velox::serializer::EncodedKeyBounds{
+              indexReader->keyAtRow(range.endRow),
+              request_->keyBounds[requestIdx].upperKey};
+        } else {
+          // Budget consumed exactly at stripe end. We can't read key at
+          // endRow (out of bounds), so read the last key and append '\0'
+          // to create a key strictly greater than the last read key.
+          auto lastKey = indexReader->keyAtRow(range.endRow - 1);
+          lastKey.push_back('\0');
+          resumeKeys_[requestIdx] = velox::serializer::EncodedKeyBounds{
+              std::move(lastKey),
+              request_->keyBounds[requestIdx].upperKey};
+        }
       }
     }
     stats_.numReadRows += range.numRows();

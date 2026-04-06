@@ -53,6 +53,12 @@ class ClusterIndexGroup {
       uint32_t stripe,
       std::string_view encodedKey) const;
 
+  /// Lookup chunk by stripe and row position.
+  /// Returns the chunk's stream offset and row offset.
+  /// When there is no chunk index (single chunk per stripe), returns default
+  /// location {0, 0}.
+  std::optional<ChunkLocation> lookupChunk(uint32_t stripe, uint32_t row) const;
+
   /// Returns the region for the key stream of the specified stripe.
   /// The key stream is stored in the ClusterIndexGroup metadata.
   velox::common::Region keyStreamRegion(

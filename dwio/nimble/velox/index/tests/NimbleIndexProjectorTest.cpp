@@ -151,6 +151,56 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
     return encoded[0];
   }
 
+  // Creates encoded key bounds for a range lookup [lower, upper) on int64 keys.
+  velox::serializer::EncodedKeyBounds makeRangeLookup(
+      const RowTypePtr& keyType,
+      const std::vector<std::string>& indexColumns,
+      int64_t lowerKey,
+      int64_t upperKey) {
+    if (keyEncoder_ == nullptr) {
+      std::vector<velox::core::SortOrder> sortOrders(
+          indexColumns.size(), velox::core::SortOrder{true, false});
+      keyEncoder_ = velox::serializer::KeyEncoder::create(
+          indexColumns, keyType, sortOrders, leafPool_.get());
+    }
+
+    auto lowerVector = vectorMaker_->rowVector(
+        indexColumns, {vectorMaker_->flatVector<int64_t>({lowerKey})});
+    auto upperVector = vectorMaker_->rowVector(
+        indexColumns, {vectorMaker_->flatVector<int64_t>({upperKey})});
+
+    velox::serializer::IndexBounds bounds;
+    bounds.indexColumns = indexColumns;
+    bounds.set(
+        velox::serializer::IndexBound{lowerVector, true},
+        velox::serializer::IndexBound{upperVector, false});
+
+    auto encoded = keyEncoder_->encodeIndexBounds(bounds);
+    EXPECT_EQ(encoded.size(), 1);
+    return encoded[0];
+  }
+
+  // Writes 10 stripes × 100 rows = 1000 rows.
+  // Keys 0..999 (sorted), values key×10.
+  void writeResumeKeyTestData() {
+    constexpr int kNumBatches = 10;
+    constexpr int kRowsPerBatch = 100;
+    std::vector<RowVectorPtr> batches;
+    for (int b = 0; b < kNumBatches; ++b) {
+      std::vector<int64_t> keys(kRowsPerBatch);
+      std::vector<int32_t> values(kRowsPerBatch);
+      for (int i = 0; i < kRowsPerBatch; ++i) {
+        keys[i] = b * kRowsPerBatch + i;
+        values[i] = keys[i] * 10;
+      }
+      batches.emplace_back(vectorMaker_->rowVector(
+          {"key", "value"},
+          {vectorMaker_->flatVector<int64_t>(keys),
+           vectorMaker_->flatVector<int32_t>(values)}));
+    }
+    writeData(batches, {"key"}, {}, /*stripeSize=*/1);
+  }
+
   std::shared_ptr<memory::MemoryPool> rootPool_;
   std::shared_ptr<memory::MemoryPool> leafPool_;
   std::unique_ptr<velox::test::VectorMaker> vectorMaker_;
@@ -1063,6 +1113,225 @@ TEST_P(NimbleIndexProjectorTest, pinnedMetadataNoReread) {
   EXPECT_LE(trackingFile->maxReadOffset(), metadataBoundary)
       << "Second project should not re-read metadata when "
       << GetParam().debugString();
+}
+
+TEST_P(NimbleIndexProjectorTest, resumeKeyOnTruncation) {
+  writeResumeKeyTestData();
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+  auto projector = createProjector(subfields);
+
+  // Range scan [50, 350) spans 300 rows across multiple stripes.
+  // Truncate to 25 rows.
+  auto bounds = makeRangeLookup(rowType, {"key"}, 50, 350);
+  NimbleIndexProjector::Request request;
+  request.keyBounds = {bounds};
+  NimbleIndexProjector::Options options;
+  options.maxRowsPerRequest = 25;
+
+  auto result = projector.project(request, options);
+  ASSERT_EQ(result.responses.size(), 1);
+  const auto& response = result.responses[0];
+  ASSERT_FALSE(response.slices.empty());
+
+  ASSERT_TRUE(response.resumeKey.has_value());
+  EXPECT_TRUE(response.resumeKey->lowerKey.has_value());
+  EXPECT_EQ(response.resumeKey->upperKey, bounds.upperKey);
+  EXPECT_EQ(projector.stats().numReadRows, 25);
+}
+
+TEST_P(NimbleIndexProjectorTest, resumeKeyNotSetWithoutTruncation) {
+  writeResumeKeyTestData();
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+
+  // maxRowsPerRequest=0 (unlimited) -> no truncation, no resume key.
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 100, 300);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    auto result = projector.project(request, {});
+    ASSERT_EQ(result.responses.size(), 1);
+    EXPECT_FALSE(result.responses[0].resumeKey.has_value());
+  }
+
+  // maxRowsPerRequest larger than result -> no truncation, no resume key.
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 100, 300);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxRowsPerRequest = 10000;
+    auto result = projector.project(request, options);
+    ASSERT_EQ(result.responses.size(), 1);
+    EXPECT_FALSE(result.responses[0].resumeKey.has_value());
+  }
+
+  // Point lookup -> single row, no truncation.
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makePointLookup(rowType, {"key"}, 500);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxRowsPerRequest = 100;
+    auto result = projector.project(request, options);
+    ASSERT_EQ(result.responses.size(), 1);
+    EXPECT_FALSE(result.responses[0].resumeKey.has_value());
+  }
+}
+
+TEST_P(NimbleIndexProjectorTest, resumeKeyExactlyAtStripeBoundary) {
+  writeResumeKeyTestData();
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+
+  // Range starts at stripe 1 start (row 100). maxRowsPerRequest = 100 = exactly
+  // one stripe worth of rows. The budget is exactly consumed at the stripe
+  // boundary, so a resume key should be set to allow pagination to continue
+  // with the remaining stripes.
+  {
+    auto projector = createProjector(subfields);
+    // [100, 500) spans stripes 1..4. Limit to exactly 100 rows = 1 stripe.
+    auto bounds = makeRangeLookup(rowType, {"key"}, 100, 500);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxRowsPerRequest = 100;
+    auto result = projector.project(request, options);
+    ASSERT_EQ(result.responses.size(), 1);
+    EXPECT_EQ(projector.stats().numReadRows, 100);
+    // Budget exactly consumed at stripe boundary — resume key is set so
+    // the caller can continue reading the remaining stripes.
+    ASSERT_TRUE(result.responses[0].resumeKey.has_value());
+    EXPECT_EQ(result.responses[0].resumeKey->upperKey, bounds.upperKey);
+  }
+
+  // Limit to 99: truncation happens within the first stripe.
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 100, 500);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxRowsPerRequest = 99;
+    auto result = projector.project(request, options);
+    ASSERT_EQ(result.responses.size(), 1);
+    EXPECT_EQ(projector.stats().numReadRows, 99);
+    ASSERT_TRUE(result.responses[0].resumeKey.has_value());
+    EXPECT_EQ(result.responses[0].resumeKey->upperKey, bounds.upperKey);
+  }
+
+  // Limit to 101: first stripe fully read (100 rows), second stripe truncated
+  // at 1 row.
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 100, 500);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxRowsPerRequest = 101;
+    auto result = projector.project(request, options);
+    ASSERT_EQ(result.responses.size(), 1);
+    EXPECT_EQ(projector.stats().numReadRows, 101);
+    ASSERT_TRUE(result.responses[0].resumeKey.has_value());
+  }
+}
+
+TEST_P(NimbleIndexProjectorTest, resumeKeyPagination) {
+  writeResumeKeyTestData();
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+
+  // Helper: paginate through a range and return total rows read.
+  auto paginate = [&](int64_t lowerKey,
+                      int64_t upperKey,
+                      uint64_t pageSize) -> uint64_t {
+    auto currentBounds = makeRangeLookup(rowType, {"key"}, lowerKey, upperKey);
+    uint64_t totalReadRows = 0;
+    int iterations = 0;
+    const int maxIterations = 1100;
+
+    while (iterations < maxIterations) {
+      ++iterations;
+      auto projector = createProjector(subfields);
+      NimbleIndexProjector::Request request;
+      request.keyBounds = {currentBounds};
+      NimbleIndexProjector::Options options;
+      options.maxRowsPerRequest = pageSize;
+
+      auto result = projector.project(request, options);
+      EXPECT_EQ(result.responses.size(), 1);
+      totalReadRows += projector.stats().numReadRows;
+
+      const auto& response = result.responses[0];
+      if (!response.resumeKey.has_value()) {
+        break;
+      }
+      currentBounds = response.resumeKey.value();
+    }
+    EXPECT_LT(iterations, maxIterations);
+    return totalReadRows;
+  };
+
+  // Full range [0, 1000) with various page sizes.
+  EXPECT_EQ(paginate(0, 1000, 1), 1000); // Page size 1: 1000 pages.
+  EXPECT_EQ(paginate(0, 1000, 7), 1000); // Non-aligned with stripes.
+  EXPECT_EQ(paginate(0, 1000, 100), 1000); // Exactly stripe-aligned.
+  EXPECT_EQ(paginate(0, 1000, 150), 1000); // Crosses stripe boundaries.
+  EXPECT_EQ(paginate(0, 1000, 999), 1000); // One short of total.
+  EXPECT_EQ(paginate(0, 1000, 1000), 1000); // Exactly total, single page.
+  EXPECT_EQ(paginate(0, 1000, 2000), 1000); // Larger than total.
+
+  // Partial range [150, 750): 600 rows across stripes 1..7.
+  EXPECT_EQ(paginate(150, 750, 1), 600);
+  EXPECT_EQ(paginate(150, 750, 50), 600); // Mid-stripe start/end.
+  EXPECT_EQ(paginate(150, 750, 100), 600); // Stripe-sized pages.
+  EXPECT_EQ(paginate(150, 750, 250), 600); // Multi-stripe pages.
+
+  // Range within a single stripe [200, 300): 100 rows, all in stripe 2.
+  EXPECT_EQ(paginate(200, 300, 1), 100);
+  EXPECT_EQ(paginate(200, 300, 33), 100);
+  EXPECT_EQ(paginate(200, 300, 100), 100); // Exact fit, single page.
+}
+
+TEST_P(NimbleIndexProjectorTest, resumeKeyMultipleRequests) {
+  writeResumeKeyTestData();
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+  auto projector = createProjector(subfields);
+
+  // Two range lookups with different sizes, same maxRowsPerRequest.
+  // Request 0: [50, 250) = 200 rows, will be truncated.
+  // Request 1: [800, 810) = 10 rows, won't be truncated.
+  auto bounds0 = makeRangeLookup(rowType, {"key"}, 50, 250);
+  auto bounds1 = makeRangeLookup(rowType, {"key"}, 800, 810);
+  NimbleIndexProjector::Request request;
+  request.keyBounds = {bounds0, bounds1};
+  NimbleIndexProjector::Options options;
+  options.maxRowsPerRequest = 50;
+
+  auto result = projector.project(request, options);
+  ASSERT_EQ(result.responses.size(), 2);
+
+  // Request 0: truncated, resume key set.
+  ASSERT_TRUE(result.responses[0].resumeKey.has_value());
+  EXPECT_EQ(result.responses[0].resumeKey->upperKey, bounds0.upperKey);
+
+  // Request 1: not truncated, no resume key.
+  EXPECT_FALSE(result.responses[1].resumeKey.has_value());
 }
 
 INSTANTIATE_TEST_CASE_P(

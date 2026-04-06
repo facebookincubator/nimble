@@ -622,4 +622,112 @@ TEST_F(ClusterIndexReaderTest, binaryKeys) {
   }
 }
 
+TEST_F(ClusterIndexReaderTest, keyAtRowSingleChunk) {
+  std::vector<std::string> keys = {"key_a", "key_b", "key_c", "key_d", "key_e"};
+  auto encodedStream = encodeKeyStream({keys});
+
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "key_0";
+  std::vector<Stripe> stripes = {createStripe(
+      {.streamOffset = 0,
+       .streamSize = static_cast<uint32_t>(encodedStream.data.size()),
+       .stream = {.numChunks = 1, .chunkRows = {5}, .chunkOffsets = {0}},
+       .chunkKeys = {"key_e"}})};
+  std::vector<int> stripeGroups = {1};
+
+  auto indexBuffers =
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndexGroup =
+      createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
+
+  auto reader = ClusterIndexReader::create(
+      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
+
+  // Read each key by row position.
+  for (size_t i = 0; i < keys.size(); ++i) {
+    SCOPED_TRACE(fmt::format("row: {}", i));
+    EXPECT_EQ(reader->keyAtRow(i), keys[i]);
+  }
+}
+
+TEST_F(ClusterIndexReaderTest, keyAtRowMultipleChunks) {
+  std::vector<std::vector<std::string>> keyChunks = {
+      {"key_a", "key_b", "key_c"}, // Chunk 0: rows 0-2
+      {"key_d", "key_e", "key_f"}, // Chunk 1: rows 3-5
+      {"key_g", "key_h"}, // Chunk 2: rows 6-7
+  };
+  auto encodedStream = encodeKeyStream(keyChunks);
+
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "key_0";
+  std::vector<Stripe> stripes = {createStripe(
+      {.streamOffset = 0,
+       .streamSize = static_cast<uint32_t>(encodedStream.data.size()),
+       .stream =
+           {.numChunks = 3,
+            .chunkRows = {3, 3, 2},
+            .chunkOffsets = encodedStream.chunkOffsets},
+       .chunkKeys = {"key_c", "key_f", "key_h"}})};
+  std::vector<int> stripeGroups = {1};
+
+  auto indexBuffers =
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndexGroup =
+      createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
+
+  auto reader = ClusterIndexReader::create(
+      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
+
+  // All keys in order across chunks.
+  std::vector<std::string> allKeys = {
+      "key_a", "key_b", "key_c", "key_d", "key_e", "key_f", "key_g", "key_h"};
+  for (size_t i = 0; i < allKeys.size(); ++i) {
+    SCOPED_TRACE(fmt::format("row: {}", i));
+    EXPECT_EQ(reader->keyAtRow(i), allKeys[i]);
+  }
+
+  // Read in non-sequential order to test chunk switching.
+  EXPECT_EQ(reader->keyAtRow(7), "key_h"); // Last row
+  EXPECT_EQ(reader->keyAtRow(0), "key_a"); // First row
+  EXPECT_EQ(reader->keyAtRow(3), "key_d"); // Chunk boundary
+  EXPECT_EQ(reader->keyAtRow(5), "key_f"); // Last in chunk 1
+  EXPECT_EQ(reader->keyAtRow(6), "key_g"); // First in chunk 2
+}
+
+TEST_F(ClusterIndexReaderTest, keyAtRowChunkBoundary) {
+  std::vector<std::vector<std::string>> keyChunks = {
+      {"key_a", "key_b"}, // Chunk 0: rows 0-1
+      {"key_c", "key_d"}, // Chunk 1: rows 2-3
+  };
+  auto encodedStream = encodeKeyStream(keyChunks);
+
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "key_0";
+  std::vector<Stripe> stripes = {createStripe(
+      {.streamOffset = 0,
+       .streamSize = static_cast<uint32_t>(encodedStream.data.size()),
+       .stream =
+           {.numChunks = 2,
+            .chunkRows = {2, 2},
+            .chunkOffsets = encodedStream.chunkOffsets},
+       .chunkKeys = {"key_b", "key_d"}})};
+  std::vector<int> stripeGroups = {1};
+
+  auto indexBuffers =
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndexGroup =
+      createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
+
+  auto reader = ClusterIndexReader::create(
+      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
+
+  // First row of each chunk.
+  EXPECT_EQ(reader->keyAtRow(0), "key_a");
+  EXPECT_EQ(reader->keyAtRow(2), "key_c");
+
+  // Last row of each chunk.
+  EXPECT_EQ(reader->keyAtRow(1), "key_b");
+  EXPECT_EQ(reader->keyAtRow(3), "key_d");
+}
+
 } // namespace facebook::nimble::index::test

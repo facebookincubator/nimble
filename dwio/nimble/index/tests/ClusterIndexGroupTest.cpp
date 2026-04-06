@@ -288,4 +288,76 @@ TEST_F(ClusterIndexGroupTest, lookupChunkWithEncodedKey) {
   }
 }
 
+TEST_F(ClusterIndexGroupTest, lookupChunk) {
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "aaa";
+  std::vector<Stripe> stripes = {
+      {.streams = {{.numChunks = 1, .chunkRows = {100}, .chunkOffsets = {0}}},
+       .keyStream =
+           {.streamOffset = 0,
+            .streamSize = 100,
+            .stream =
+                {.numChunks = 3,
+                 .chunkRows = {100, 200, 300},
+                 .chunkOffsets = {0, 50, 120}},
+            .chunkKeys = {"ccc", "fff", "iii"}}},
+      {.streams = {{.numChunks = 1, .chunkRows = {200}, .chunkOffsets = {0}}},
+       .keyStream = {
+           .streamOffset = 100,
+           .streamSize = 150,
+           .stream =
+               {.numChunks = 2,
+                .chunkRows = {150, 300},
+                .chunkOffsets = {0, 80}},
+           .chunkKeys = {"mmm", "ppp"}}}};
+  std::vector<int> stripeGroups = {2};
+
+  auto indexBuffers =
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndexGroup = createClusterIndexGroup(indexBuffers, 0);
+  ASSERT_NE(clusterIndexGroup, nullptr);
+
+  struct {
+    uint32_t stripeIndex;
+    uint32_t row;
+    std::optional<uint32_t> expectedStreamOffset;
+    std::optional<uint32_t> expectedRowOffset;
+  } testCases[] = {
+      // Stripe 0: per-chunk rows = {100, 200, 300}, cumulative = {100, 300,
+      // 600}. Chunk 0: rows [0, 100), Chunk 1: rows [100, 300), Chunk 2: rows
+      // [300, 600). chunkOffsets = {0, 50, 120}
+      {0, 0, 0, 0}, // First row of chunk 0
+      {0, 99, 0, 0}, // Last row of chunk 0
+      {0, 100, 50, 100}, // First row of chunk 1
+      {0, 299, 50, 100}, // Last row of chunk 1
+      {0, 300, 120, 300}, // First row of chunk 2
+      {0, 599, 120, 300}, // Last row of chunk 2
+      {0, 600, std::nullopt, std::nullopt}, // Out of range
+
+      // Stripe 1: per-chunk rows = {150, 300}, cumulative = {150, 450}
+      // Chunk 0: rows [0, 150), Chunk 1: rows [150, 450)
+      // chunkOffsets = {0, 80}
+      {1, 0, 0, 0}, // First row of chunk 0
+      {1, 149, 0, 0}, // Last row of chunk 0
+      {1, 150, 80, 150}, // First row of chunk 1
+      {1, 449, 80, 150}, // Last row of chunk 1
+      {1, 450, std::nullopt, std::nullopt}, // Out of range
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(
+        fmt::format(
+            "stripeIndex {} row {}", testCase.stripeIndex, testCase.row));
+    auto result =
+        clusterIndexGroup->lookupChunk(testCase.stripeIndex, testCase.row);
+    if (testCase.expectedStreamOffset.has_value()) {
+      ASSERT_TRUE(result.has_value());
+      EXPECT_EQ(result->streamOffset, testCase.expectedStreamOffset.value());
+      EXPECT_EQ(result->rowOffset, testCase.expectedRowOffset.value());
+    } else {
+      EXPECT_FALSE(result.has_value());
+    }
+  }
+}
+
 } // namespace facebook::nimble::index::test
