@@ -55,6 +55,15 @@ class Vector {
 #endif
   }
 
+  /// Constructs a vector by adopting an existing buffer. The pool is extracted
+  /// from the buffer for future allocations. Size is set to 0 (no valid data).
+  explicit Vector(velox::BufferPtr buf)
+      : pool_{buf->pool()},
+        data_{std::move(buf)},
+        capacity_{data_->capacity() / sizeof(InnerType)},
+        size_{0},
+        dataRawPtr_{reinterpret_cast<T*>(data_->asMutable<InnerType>())} {}
+
   /// Constructs a vector from an iterator range.
   template <typename It>
   Vector(velox::memory::MemoryPool* pool, It first, It last) : pool_{pool} {
@@ -289,6 +298,7 @@ class Vector {
   }
 
   /// Releases ownership of the underlying buffer and returns it.
+  /// Sets the buffer's size to match the vector's logical size.
   /// The vector is left in an empty state after this call.
   velox::BufferPtr releaseOwnership() {
     velox::BufferPtr tmp = std::move(data_);
@@ -301,6 +311,24 @@ class Vector {
     dataRawPtr_ = placeholder_.data();
 #endif
     return tmp;
+  }
+
+  /// Releases the underlying buffer without setting its size.
+  /// Returns nullptr if the vector has no buffer.
+  /// The vector is left in an empty state after this call.
+  velox::BufferPtr releaseBuffer() {
+    auto tmp = std::move(data_);
+    capacity_ = 0;
+    size_ = 0;
+    dataRawPtr_ = nullptr;
+#ifndef NDEBUG
+    dataRawPtr_ = placeholder_.data();
+#endif
+    return tmp;
+  }
+
+  const velox::BufferPtr& testingBuffer() const {
+    return data_;
   }
 
  private:

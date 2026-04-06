@@ -49,6 +49,8 @@ struct TestParams {
   std::optional<CompressionOptions> compressionOptions{};
   // Encoding type for stream sizes in compact trailer.
   EncodingType streamSizesEncodingType{EncodingType::Trivial};
+  // Whether to enable buffer pool for encoding scratch buffer reuse.
+  bool enableBufferPool{true};
 };
 
 class SerializationTest : public ::testing::TestWithParam<TestParams> {
@@ -77,6 +79,17 @@ class SerializationTest : public ::testing::TestWithParam<TestParams> {
 
   const std::optional<CompressionOptions>& compressionOptions() const {
     return GetParam().compressionOptions;
+  }
+
+  bool enableBufferPool() const {
+    return GetParam().enableBufferPool;
+  }
+
+  DeserializerOptions deserializerOptions() const {
+    return DeserializerOptions{
+        .hasHeader = hasHeader(),
+        .enableBufferPool = enableBufferPool(),
+    };
   }
 
   // Result of serializing input vectors.
@@ -159,13 +172,9 @@ class SerializationTest : public ::testing::TestWithParam<TestParams> {
         SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
     auto outputType = buildOutputTypeForFlatMapAsStruct(*schema);
 
-    Deserializer structDeserializer{
-        schema,
-        pool_.get(),
-        DeserializerOptions{
-            .hasHeader = hasHeader(),
-            .outputType = outputType,
-        }};
+    auto opts = deserializerOptions();
+    opts.outputType = outputType;
+    Deserializer structDeserializer{schema, pool_.get(), opts};
 
     velox::VectorPtr structOutput;
     for (size_t i = 0; i < inputs.size(); ++i) {
@@ -265,9 +274,7 @@ class SerializationTest : public ::testing::TestWithParam<TestParams> {
     Deserializer deserializer{
         SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
         pool,
-        DeserializerOptions{
-            .hasHeader = hasHeader(),
-        }};
+        deserializerOptions()};
 
     velox::VectorPtr output;
     velox::VectorPtr expected;
@@ -443,6 +450,9 @@ std::string formatName(const ::testing::TestParamInfo<TestParams>& info) {
   }
   if (info.param.streamSizesEncodingType != EncodingType::Trivial) {
     name += "_DeltaStreamSizes";
+  }
+  if (!info.param.enableBufferPool) {
+    name += "_NoBufferPool";
   }
   return name;
 }
@@ -664,9 +674,7 @@ TEST_P(SerializationTest, flatMapEncodingFuzz) {
     Deserializer deserializer{
         SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
         pool_.get(),
-        DeserializerOptions{
-            .hasHeader = hasHeader(),
-        }};
+        deserializerOptions()};
 
     // Deserialize and verify each batch.
     velox::VectorPtr output;
@@ -910,9 +918,7 @@ TEST_P(SerializationTest, flatMapEncoding) {
   Deserializer deserializer{
       SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
       pool_.get(),
-      DeserializerOptions{
-          .hasHeader = hasHeader(),
-      }};
+      deserializerOptions()};
 
   // Deserialize and verify each batch.
   velox::VectorPtr output;
@@ -1055,9 +1061,7 @@ TEST_P(SerializationTest, flatMapEncodingWithVaryingKeys) {
   Deserializer deserializer{
       SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
       pool_.get(),
-      DeserializerOptions{
-          .hasHeader = hasHeader(),
-      }};
+      deserializerOptions()};
 
   // Deserialize and verify each batch.
   velox::VectorPtr output;
@@ -1256,9 +1260,7 @@ TEST_P(SerializationTest, flatMapEncodingWithNestedTypes) {
   Deserializer deserializer{
       SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
       pool_.get(),
-      DeserializerOptions{
-          .hasHeader = hasHeader(),
-      }};
+      deserializerOptions()};
 
   // Deserialize and verify each batch.
   velox::VectorPtr output;
@@ -1439,9 +1441,7 @@ TEST_P(SerializationTest, nestedFlatMapWithVaryingInnerKeys) {
   Deserializer deserializer{
       SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
       pool_.get(),
-      DeserializerOptions{
-          .hasHeader = hasHeader(),
-      }};
+      deserializerOptions()};
 
   // Test 1: Deserialize each batch individually - should work.
   velox::VectorPtr output;
@@ -1777,7 +1777,7 @@ TEST_P(SerializationTest, flatMapSparseKeysScatterBitmap) {
   Deserializer deserializer{
       SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
       pool_.get(),
-      DeserializerOptions{.hasHeader = hasHeader()}};
+      deserializerOptions()};
 
   velox::VectorPtr output;
   deserializer.deserialize(serialized, output);
@@ -2087,11 +2087,10 @@ TEST_P(SerializationTest, encodingLayoutTree) {
       serializer.serialize(input, OrderedRanges::of(0, input->size()));
 
   // Deserialize and verify.
-  DeserializerOptions deserializerOptions{.hasHeader = hasHeader()};
   Deserializer deserializer{
       SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
       pool_.get(),
-      deserializerOptions};
+      deserializerOptions()};
 
   velox::VectorPtr output;
   deserializer.deserialize(serialized, output);
@@ -2401,11 +2400,10 @@ TEST_P(SerializationTest, encodingLayoutTreeFlatMap) {
       serializer.serialize(input, OrderedRanges::of(0, input->size()));
 
   // Deserialize and verify.
-  DeserializerOptions deserializerOptions{.hasHeader = hasHeader()};
   Deserializer deserializer{
       SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
       pool_.get(),
-      deserializerOptions};
+      deserializerOptions()};
 
   velox::VectorPtr output;
   deserializer.deserialize(serialized, output);
@@ -2613,7 +2611,7 @@ TEST_P(SerializationTest, flatMapInMapStreamSkipping) {
   // Helper to collect stream offsets present in serialized data.
   auto collectStreamOffsets =
       [&](std::string_view data) -> folly::F14FastSet<uint32_t> {
-    DeserializerOptions desOpts{.hasHeader = hasHeader()};
+    auto desOpts = deserializerOptions();
     serde::StreamDataReader reader{pool_.get(), desOpts};
     reader.initialize(data);
     folly::F14FastSet<uint32_t> offsets;
@@ -2676,12 +2674,7 @@ TEST_P(SerializationTest, flatMapInMapStreamSkipping) {
   // 2. In-map boolean stream omitted (constant all-true or all-false).
   // 3. Value stream absent (key not present in batch, e.g. key "c" in
   //    batches 1/2/4, key "b" value in batch 2).
-  Deserializer deserializer{
-      nimbleSchema,
-      pool_.get(),
-      DeserializerOptions{
-          .hasHeader = hasHeader(),
-      }};
+  Deserializer deserializer{nimbleSchema, pool_.get(), deserializerOptions()};
 
   // Verify each batch individually.
   std::vector<velox::VectorPtr> inputs = {batch1, batch2, batch3, batch4};
@@ -2807,13 +2800,9 @@ TEST_P(SerializationTest, flatMapAsStruct) {
        velox::ROW({{"1", velox::DOUBLE()}, {"3", velox::DOUBLE()}})},
   });
 
-  Deserializer deserializer{
-      nimbleSchema,
-      pool_.get(),
-      DeserializerOptions{
-          .hasHeader = hasHeader(),
-          .outputType = outputType,
-      }};
+  auto desOpts = deserializerOptions();
+  desOpts.outputType = outputType;
+  Deserializer deserializer{nimbleSchema, pool_.get(), desOpts};
 
   velox::VectorPtr output;
   deserializer.deserialize(std::string{serializedData}, output);
@@ -2918,13 +2907,9 @@ TEST_P(SerializationTest, flatMapAsStructWithMissingKeys) {
             {"2", velox::DOUBLE()}})},
   });
 
-  Deserializer deserializer{
-      nimbleSchema,
-      pool_.get(),
-      DeserializerOptions{
-          .hasHeader = hasHeader(),
-          .outputType = outputType,
-      }};
+  auto desOpts = deserializerOptions();
+  desOpts.outputType = outputType;
+  Deserializer deserializer{nimbleSchema, pool_.get(), desOpts};
 
   velox::VectorPtr output;
   deserializer.deserialize(std::string{serializedData}, output);
@@ -3082,9 +3067,7 @@ TEST_P(SerializationTest, flatMapDeserializeWithFlatMapSchema) {
   // Deserialize with the FlatMap schema — should work.
   {
     Deserializer deserializer{
-        flatMapSchema,
-        pool_.get(),
-        DeserializerOptions{.hasHeader = hasHeader()}};
+        flatMapSchema, pool_.get(), deserializerOptions()};
     velox::VectorPtr output;
     deserializer.deserialize(serialized, output);
     ASSERT_NE(output, nullptr);
@@ -3194,8 +3177,7 @@ TEST_P(SerializationTest, arrayWithOffsetsAndSlidingMapWindows) {
 
   auto schema =
       SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
-  Deserializer deserializer{
-      schema, pool_.get(), DeserializerOptions{.hasHeader = hasHeader()}};
+  Deserializer deserializer{schema, pool_.get(), deserializerOptions()};
   velox::VectorPtr output;
   deserializer.deserialize(serialized, output);
 
@@ -3382,7 +3364,7 @@ TEST_P(SerializationTest, flatmapColumnsKeysRoundtrip) {
       schema =
           SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
       deserializer = std::make_unique<Deserializer>(
-          schema, pool_.get(), DeserializerOptions{.hasHeader = hasHeader()});
+          schema, pool_.get(), deserializerOptions());
     }
 
     velox::VectorPtr output;
@@ -3621,5 +3603,24 @@ INSTANTIATE_TEST_SUITE_P(
         // kCompactRaw format with Delta stream sizes encoding.
         TestParams{
             .version = SerializationVersion::kCompactRaw,
-            .streamSizesEncodingType = EncodingType::Delta}),
+            .streamSizesEncodingType = EncodingType::Delta},
+        // Buffer pool disabled variants.
+        TestParams{.version = std::nullopt, .enableBufferPool = false},
+        TestParams{
+            .version = SerializationVersion::kCompact,
+            .enableBufferPool = false},
+        TestParams{
+            .version = SerializationVersion::kCompact,
+            .compressionOptions =
+                CompressionOptions{
+                    .compressionAcceptRatio = 1.0f,
+                    .zstdMinCompressionSize = 0},
+            .enableBufferPool = false},
+        TestParams{
+            .version = SerializationVersion::kCompactRaw,
+            .enableBufferPool = false},
+        TestParams{
+            .version = SerializationVersion::kCompactRaw,
+            .streamSizesEncodingType = EncodingType::Delta,
+            .enableBufferPool = false}),
     formatName);
