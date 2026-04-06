@@ -19,6 +19,7 @@
 #include <functional>
 #include <optional>
 
+#include "dwio/nimble/common/BufferPool.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/serializer/Options.h"
@@ -30,6 +31,14 @@ namespace facebook::nimble::serde {
 
 class StreamData {
  public:
+  /// Decode configuration for stream data.
+  struct Options {
+    /// Serialization version. Determines encoding and row count format.
+    SerializationVersion version;
+    /// Optional pool for encoding scratch buffers.
+    BufferPool* bufferPool{nullptr};
+  };
+
   /// Constructor for thrift decoder: creates an empty stream that will be
   /// populated later via reset().
   /// @param kind Scalar kind for the stream data.
@@ -39,15 +48,14 @@ class StreamData {
       : kind_{kind}, pool_{pool}, encodingEnabled_{false} {}
 
   /// @param kind Scalar kind for the stream data.
-  /// @param version Serialization version. Determines encoding and row count
-  ///        format.
   /// @param data Stream data to initialize with.
-  /// @param pool Required when version != kLegacy, nullptr for legacy.
+  /// @param pool Memory pool for encoding buffer allocation.
+  /// @param options Decode configuration (version, bufferPool).
   StreamData(
       ScalarKind kind,
-      SerializationVersion version,
       std::string_view data,
-      velox::memory::MemoryPool* pool);
+      velox::memory::MemoryPool* pool,
+      const Options& options);
 
   uint32_t copyTo(char* output, uint32_t bufferSize);
 
@@ -112,6 +120,9 @@ class StreamData {
   // kCompactRaw) or fixed u32 (false for kTabletRaw). Non-const to allow
   // reset() to change.
   bool useVarintRowCount_{true};
+  // Optional pool for encoding scratch buffers. Owned externally
+  // (typically by DeserializerImpl) to persist across StreamData lifetimes.
+  BufferPool* const bufferPool_{nullptr};
 
   const char* pos_{nullptr};
   const char* end_{nullptr};

@@ -30,13 +30,14 @@ namespace facebook::nimble::serde {
 
 StreamData::StreamData(
     ScalarKind kind,
-    SerializationVersion version,
     std::string_view data,
-    velox::memory::MemoryPool* pool)
+    velox::memory::MemoryPool* pool,
+    const Options& options)
     : kind_{kind},
       pool_{pool},
-      encodingEnabled_{nonLegacyFormat(version)},
-      useVarintRowCount_{!isTabletRawFormat(version)} {
+      encodingEnabled_{nonLegacyFormat(options.version)},
+      useVarintRowCount_{!isTabletRawFormat(options.version)},
+      bufferPool_{options.bufferPool} {
   NIMBLE_CHECK_NOT_NULL(pool_, "Memory pool required for encoding");
   init(data);
 }
@@ -131,7 +132,8 @@ void StreamData::prepareForDecoding(std::string_view data) {
   // counts.
   // For string types, provide a stringBufferFactory that allocates separate
   // buffers using velox::AlignedBuffer for memory tracking.
-  Encoding::Options options{.useVarintRowCount = useVarintRowCount_};
+  Encoding::Options options{
+      .useVarintRowCount = useVarintRowCount_, .bufferPool = bufferPool_};
   encoding_ =
       EncodingFactory(options).create(*pool_, data, [this](uint32_t size) {
         auto& buffer = stringBuffers_.emplace_back(

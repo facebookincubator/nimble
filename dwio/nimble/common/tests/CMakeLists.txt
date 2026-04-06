@@ -30,7 +30,7 @@ add_executable(
   ExceptionTests.cpp
   FixedBitArrayTests.cpp
   VarintTests.cpp
-  VectorTests.cpp
+  VectorTest.cpp
 )
 
 add_test(nimble_common_tests nimble_common_tests)

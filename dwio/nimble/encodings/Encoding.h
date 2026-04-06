@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "dwio/nimble/common/BufferPool.h"
 #include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
@@ -100,6 +101,13 @@ class Encoding {
     /// fixed 4-byte uint32. Determined from file format version or serializer
     /// version.
     bool useVarintRowCount;
+
+    /// Optional buffer pool for reusing scratch buffers across encoding
+    /// lifetimes. When set, encodings like MainlyConstant will return their
+    /// scratch buffers to the pool on destruction and grab pre-allocated
+    /// buffers on construction, avoiding MemoryPool alloc/free overhead.
+    /// Value-initialized to nullptr when omitted from aggregate initialization.
+    BufferPool* bufferPool;
   };
 
   /// The binary layout for each Encoding begins with the same prefix:

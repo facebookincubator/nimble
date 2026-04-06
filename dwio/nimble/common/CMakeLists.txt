@@ -16,6 +16,7 @@ add_subdirectory(tests)
 add_library(
   nimble_common
   Buffer.cpp
+  BufferPool.cpp
   Checksum.cpp
   Exceptions.cpp
   FixedBitArray.cpp

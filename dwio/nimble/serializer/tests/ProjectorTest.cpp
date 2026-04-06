@@ -57,12 +57,16 @@ struct FormatParam {
   SerializationVersion inputVersion;
   SerializationVersion projectVersion;
   EncodingType streamSizesEncodingType{EncodingType::Trivial};
+  bool enableBufferPool{true};
 
   std::string name() const {
     auto base =
         fmt::format("{}To{}", toString(inputVersion), toString(projectVersion));
     if (streamSizesEncodingType != EncodingType::Trivial) {
       base += "_DeltaStreamSizes";
+    }
+    if (!enableBufferPool) {
+      base += "_NoBufferPool";
     }
     return base;
   }
@@ -82,6 +86,31 @@ std::vector<FormatParam> allFormatCombinations() {
       {SerializationVersion::kCompact,
        SerializationVersion::kCompactRaw,
        EncodingType::Delta},
+      // Buffer pool disabled variants.
+      {SerializationVersion::kCompact,
+       SerializationVersion::kCompact,
+       EncodingType::Trivial,
+       /*enableBufferPool=*/false},
+      {SerializationVersion::kCompact,
+       SerializationVersion::kCompactRaw,
+       EncodingType::Trivial,
+       /*enableBufferPool=*/false},
+      {SerializationVersion::kCompactRaw,
+       SerializationVersion::kCompact,
+       EncodingType::Trivial,
+       /*enableBufferPool=*/false},
+      {SerializationVersion::kCompactRaw,
+       SerializationVersion::kCompactRaw,
+       EncodingType::Trivial,
+       /*enableBufferPool=*/false},
+      {SerializationVersion::kCompactRaw,
+       SerializationVersion::kCompactRaw,
+       EncodingType::Delta,
+       /*enableBufferPool=*/false},
+      {SerializationVersion::kCompact,
+       SerializationVersion::kCompactRaw,
+       EncodingType::Delta,
+       /*enableBufferPool=*/false},
   };
 }
 
@@ -297,7 +326,10 @@ class ProjectorFormatTest : public ProjectorTestBase,
 
   // Get deserializer options for output format.
   DeserializerOptions outputDeserializerOptions() const {
-    return {.hasHeader = true};
+    return {
+        .hasHeader = true,
+        .enableBufferPool = GetParam().enableBufferPool,
+    };
   }
 };
 

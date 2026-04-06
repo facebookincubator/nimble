@@ -213,6 +213,12 @@ struct DeserializerOptions {
   /// Fields not present in the flatmap schema will be filled with nulls.
   /// When nullopt (default), all flatmap columns are deserialized as maps.
   velox::RowTypePtr outputType{};
+
+  /// Whether to enable BufferPool for recycling encoding scratch buffers.
+  /// When true, a BufferPool is created per DeserializerImpl to cache and
+  /// reuse buffers across encoding lifetimes, reducing MemoryPool allocation
+  /// overhead.
+  bool enableBufferPool{true};
 };
 
 } // namespace facebook::nimble

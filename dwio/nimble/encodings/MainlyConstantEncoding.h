@@ -17,6 +17,7 @@
 
 #include <span>
 #include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/common/BufferPool.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Exceptions.h"
@@ -52,6 +53,22 @@
 
 namespace facebook::nimble {
 
+namespace detail {
+
+template <typename V>
+Vector<V> getPooledBuffer(
+    velox::memory::MemoryPool& pool,
+    BufferPool* bufferPool) {
+  if (bufferPool != nullptr) {
+    if (auto buf = bufferPool->get()) {
+      return Vector<V>(std::move(buf));
+    }
+  }
+  return Vector<V>(&pool);
+}
+
+} // namespace detail
+
 // Data layout is:
 // Encoding::kPrefixSize bytes: standard Encoding prefix
 // 4 bytes: num isCommon encoding bytes (X)
@@ -68,12 +85,24 @@ class MainlyConstantEncodingBase
   using physicalType = typename TypeTraits<T>::physicalType;
 
   MainlyConstantEncodingBase(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       const Encoding::Options& options = {})
-      : TypedEncoding<T, physicalType>(memoryPool, data, options),
-        isCommonBuffer_(&memoryPool),
-        otherValuesBuffer_(&memoryPool) {}
+      : TypedEncoding<T, physicalType>(pool, data, options),
+        isCommonBuffer_(
+            detail::getPooledBuffer<bool>(pool, this->options_.bufferPool)),
+        otherValuesBuffer_(
+            detail::getPooledBuffer<physicalType>(
+                pool,
+                this->options_.bufferPool)) {}
+
+  ~MainlyConstantEncodingBase() override {
+    auto* bufferPool = this->options_.bufferPool;
+    if (bufferPool != nullptr) {
+      bufferPool->release(isCommonBuffer_.releaseBuffer());
+      bufferPool->release(otherValuesBuffer_.releaseBuffer());
+    }
+  }
 
   void reset() final {
     isCommon_->reset();

@@ -91,12 +91,15 @@ class DeserializerImpl : public Decoder {
   DeserializerImpl(
       const Type* type,
       bool inMapStream,
+      bool enableBufferPool,
       velox::memory::MemoryPool* pool)
       : type_{type},
         pool_{pool},
         inMapStream_{inMapStream},
         scalarKind_{getScalarKindForType(*type)},
-        typeStorageWidth_{getTypeStorageWidth(*type)} {}
+        typeStorageWidth_{getTypeStorageWidth(*type)},
+        bufferPool_{
+            enableBufferPool ? std::make_unique<BufferPool>() : nullptr} {}
 
   uint32_t next(
       uint32_t count,
@@ -163,7 +166,13 @@ class DeserializerImpl : public Decoder {
     }
     batchSegments_.emplace_back(
         BatchSegment{
-            rowOffset, serde::StreamData(scalarKind_, version, data, pool_)});
+            rowOffset,
+            serde::StreamData(
+                scalarKind_,
+                data,
+                pool_,
+                serde::StreamData::Options{
+                    .version = version, .bufferPool = bufferPool_.get()})});
   }
 
   // Record a segment where this key is present in every row (in-map stream
@@ -489,6 +498,7 @@ class DeserializerImpl : public Decoder {
     uint32_t endRow;
   };
 
+  // --- Const members (set at construction, never modified) ---
   const Type* const type_;
   velox::memory::MemoryPool* const pool_;
   // True for inMap streams (fills with 'false' when missing), false for nulls
@@ -497,6 +507,11 @@ class DeserializerImpl : public Decoder {
   // Cached from type at construction to avoid per-call dispatch.
   const ScalarKind scalarKind_;
   const uint32_t typeStorageWidth_;
+  // Pool for encoding scratch buffers (e.g. MainlyConstant's isCommon and
+  // otherValues buffers). Persists across clear()/addBatch() cycles so buffers
+  // are reused instead of being allocated/freed through MemoryPool each time.
+  // Null when buffer pooling is disabled via DeserializerOptions.
+  const std::unique_ptr<BufferPool> bufferPool_;
 
   // --- Batch decode state (reset in clear()) ---
   // Total top-level rows across all batches. Used for FlatMap gap detection to
@@ -634,6 +649,7 @@ void Deserializer::createDeserializersForType(
       std::make_unique<DeserializerImpl>(
           &type,
           /*inMapStream=*/false,
+          options_.enableBufferPool,
           pool_);
   // FlatMap is only supported at depth 1 (top-level columns). FlatMap keys can
   // vary across batches, causing gaps in nulls/inMap streams. Gap detection is
@@ -647,6 +663,7 @@ void Deserializer::createDeserializersForType(
       deserializerMap_[inMapOffset] = std::make_unique<DeserializerImpl>(
           &type,
           /*inMapStream=*/true,
+          options_.enableBufferPool,
           pool_);
       inMapChildTypes_[inMapOffset] = flatMap.childAt(i).get();
     }
