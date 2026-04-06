@@ -51,6 +51,10 @@ class ClusterIndexReader {
   /// the range (i.e., greater than all stripe keys).
   std::optional<uint32_t> seekAtOrAfter(std::string_view encodedKey);
 
+  /// Returns the encoded key at the given row position within the stripe.
+  /// Used to compute resume keys when lookup results are truncated.
+  std::string keyAtRow(uint32_t row);
+
  private:
   ClusterIndexReader(
       std::unique_ptr<velox::dwio::common::SeekableInputStream> input,

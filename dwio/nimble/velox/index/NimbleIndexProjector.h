@@ -69,8 +69,12 @@ class NimbleIndexProjector {
 
   /// Options for controlling projection behavior.
   struct Options {
-    /// Maximum number of rows per request. 0 means no limit.
+    /// Maximum number of rows per lookup. 0 means no limit.
     uint64_t maxRowsPerRequest{0};
+    /// Maximum bytes of serialized chunk data per lookup. 0 means no limit.
+    /// Operates at stripe granularity: at least one stripe is always included,
+    /// then subsequent stripes are skipped if the byte budget is exceeded.
+    uint64_t maxBytesPerRequest{0};
   };
 
   /// Request for a batch of index lookups.
@@ -87,34 +91,34 @@ class NimbleIndexProjector {
     uint32_t numRows{0};
   };
 
-  /// Slice into a shared chunk for a specific request.
+  /// Slice into a shared chunk for a specific lookup.
   struct ChunkSlice {
-    /// Index into Result::chunks.
+    /// Index into Response::chunks.
     uint32_t chunkIndex{0};
     /// Row range within the chunk.
     RowRange rows;
   };
 
-  /// Response for a single request.
+  /// Result of a single lookup (one entry in Request::keyBounds).
   struct Response {
-    /// Slices into Result::chunks for this request. Empty for miss.
+    /// Slices into Response::chunks for this lookup. Empty for miss.
     std::vector<ChunkSlice> slices;
 
-    /// If the result was truncated (e.g. by maxResultBytes), the encoded
+    /// If the result was truncated (e.g. by maxRowsPerRequest), the encoded
     /// resume key for the next project() call. nullopt if complete or miss.
     std::optional<velox::serializer::EncodedKeyBounds> resumeKey;
   };
 
   /// Result of a project() call.
   struct Result {
-    /// Serialized chunks (shared across requests that overlap).
+    /// Serialized chunks (shared across lookups that overlap).
     std::vector<Chunk> chunks;
-    /// One entry per request, in request order.
+    /// One entry per lookup, in request order.
     std::vector<Response> responses;
   };
 
   /// Projects the requested columns for the given batch of index lookups.
-  /// Returns one Response per request, in order. Processes all relevant
+  /// Returns one LookupResult per key bound, in order. Processes all relevant
   /// stripes internally.
   Result project(const Request& request, const Options& options);
 
@@ -135,7 +139,7 @@ class NimbleIndexProjector {
     /// numScannedRows since we project entire stripes. With fine-grained
     /// row range fetches (value fetch), this will be smaller.
     uint64_t numProjectedRows{0};
-    /// Number of rows read by request row ranges (may be less than matched
+    /// Number of rows read by lookup row ranges (may be less than matched
     /// rows when truncated by maxRowsPerRequest).
     uint64_t numReadRows{0};
     /// Total bytes read from tablet stream data (raw encoded bytes, excluding
@@ -189,7 +193,7 @@ class NimbleIndexProjector {
   };
 
   // Sets up the stripe with index metadata, creates an index reader, and looks
-  // up row ranges for requests within the stripe. Indexes into
+  // up row ranges for lookups within the stripe. Indexes into
   // request_->keyBounds via requestIndices. Filters empty ranges and applies
   // maxRowsPerRequest truncation.
   std::vector<RequestRange> lookupRowRanges(
@@ -207,7 +211,10 @@ class NimbleIndexProjector {
   Chunk serializeStripe(uint32_t stripeIndex, InputStreams& inputStreams);
 
   // Maps the serialized stripe chunk to request results based on row ranges.
+  // Uses precomputed resume keys from lookupRowRanges() for row-based
+  // truncation, and computes byte-based resume keys from the tablet index.
   void buildStripeResult(
+      uint32_t stripeIndex,
       Chunk&& chunk,
       const std::vector<RequestRange>& requestRanges,
       Result& result);
@@ -238,6 +245,9 @@ class NimbleIndexProjector {
   const Request* request_{nullptr};
   const Options* options_{nullptr};
   std::vector<uint64_t> rowsPerRequest_;
+  std::vector<uint64_t> bytesPerRequest_;
+  // Resume keys for truncated lookups, indexed by request index.
+  std::vector<std::optional<velox::serializer::EncodedKeyBounds>> resumeKeys_;
 };
 
 } // namespace facebook::nimble

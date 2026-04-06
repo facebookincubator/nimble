@@ -70,6 +70,28 @@ std::optional<uint32_t> ClusterIndexReader::seekAtOrAfterInChunk(
   return encoding_->seekAtOrAfter(&encodedKey);
 }
 
+std::string ClusterIndexReader::keyAtRow(uint32_t row) {
+  const auto chunkLocation = indexGroup_->lookupChunk(stripeIndex_, row);
+  NIMBLE_CHECK(
+      chunkLocation.has_value(),
+      "Row {} is out of range for stripe {}",
+      row,
+      stripeIndex_);
+
+  seekToChunk(chunkLocation->streamOffset);
+  NIMBLE_CHECK_NOT_NULL(encoding_);
+
+  encoding_->reset();
+  const uint32_t skipCount = row - chunkLocation->rowOffset;
+  if (skipCount > 0) {
+    encoding_->skip(skipCount);
+  }
+
+  std::string_view result;
+  encoding_->materialize(1, &result);
+  return std::string(result);
+}
+
 bool ClusterIndexReader::ensureInput(int size) {
   while (inputSize_ < size) {
     if (inputSize_ > 0) {

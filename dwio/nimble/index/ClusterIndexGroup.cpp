@@ -53,6 +53,50 @@ uint32_t getFirstStripe(
   return stripeGroupIndex == 0 ? 0 : stripeCounts->Get(stripeGroupIndex - 1);
 }
 
+/// Parsed chunk index for a stripe's chunk range.
+struct StripeChunkRange {
+  uint32_t startChunkIndex;
+  uint32_t endChunkIndex;
+  const flatbuffers::Vector<uint32_t>* chunkRows;
+  const flatbuffers::Vector<uint32_t>* chunkOffsets;
+  const serialization::KeyStreamChunkIndex* chunkIndex;
+
+  ChunkLocation locationAt(uint32_t chunkOffset) const {
+    const uint32_t rowOffset =
+        chunkOffset == startChunkIndex ? 0 : chunkRows->Get(chunkOffset - 1);
+    return ChunkLocation{chunkOffsets->Get(chunkOffset), rowOffset};
+  }
+};
+
+/// Returns the chunk range for a stripe, or nullopt if the stripe has no
+/// chunk index (single chunk per stripe).
+std::optional<StripeChunkRange> getStripeChunkRange(
+    const serialization::StripeClusterIndex* root,
+    uint32_t stripeOffset,
+    uint32_t stripeCount) {
+  const auto* chunkIndex = root->chunk_index();
+  if (chunkIndex == nullptr) {
+    return std::nullopt;
+  }
+
+  const auto* chunkCounts = chunkIndex->chunk_counts();
+  NIMBLE_CHECK_NOT_NULL(chunkCounts);
+  NIMBLE_CHECK_EQ(stripeCount, chunkCounts->size());
+
+  const uint32_t startChunkIndex =
+      stripeOffset == 0 ? 0 : chunkCounts->Get(stripeOffset - 1);
+  const uint32_t endChunkIndex = chunkCounts->Get(stripeOffset);
+
+  const auto* chunkRows = chunkIndex->chunk_rows();
+  NIMBLE_CHECK_NOT_NULL(chunkRows);
+
+  const auto* chunkOffsets = chunkIndex->chunk_offsets();
+  NIMBLE_CHECK_NOT_NULL(chunkOffsets);
+
+  return StripeChunkRange{
+      startChunkIndex, endChunkIndex, chunkRows, chunkOffsets, chunkIndex};
+}
+
 } // namespace
 
 std::shared_ptr<ClusterIndexGroup> ClusterIndexGroup::create(
@@ -79,60 +123,57 @@ ClusterIndexGroup::ClusterIndexGroup(
 std::optional<ChunkLocation> ClusterIndexGroup::lookupChunk(
     uint32_t stripe,
     std::string_view encodedKey) const {
-  const uint32_t stripeOffset = this->stripeOffset(stripe);
   const auto* root = asFlatBuffersRoot<serialization::StripeClusterIndex>(
       metadata_->content());
-
-  // No chunk index sub-table means single chunk per stripe — return default
-  // location at offset 0.
-  const auto* chunkIndex = root->chunk_index();
-  if (chunkIndex == nullptr) {
+  auto range = getStripeChunkRange(root, stripeOffset(stripe), stripeCount_);
+  if (!range.has_value()) {
     return ChunkLocation{0, 0};
   }
 
-  // Get chunk counts to determine the search range for this stripe.
-  const auto* chunkCounts = chunkIndex->chunk_counts();
-  NIMBLE_CHECK_NOT_NULL(chunkCounts);
-  NIMBLE_CHECK_EQ(stripeCount_, chunkCounts->size());
-
-  // Determine the chunk range for this stripe
-  const uint32_t startChunkIndex =
-      stripeOffset == 0 ? 0 : chunkCounts->Get(stripeOffset - 1);
-  const uint32_t endChunkIndex = chunkCounts->Get(stripeOffset);
-
-  const auto* chunkKeys = chunkIndex->chunk_keys();
+  const auto* chunkKeys = range->chunkIndex->chunk_keys();
   NIMBLE_CHECK_NOT_NULL(chunkKeys);
-  NIMBLE_CHECK_LE(endChunkIndex, chunkKeys->size());
+  NIMBLE_CHECK_LE(range->endChunkIndex, chunkKeys->size());
 
   // Binary search for the chunk key within this stripe's range.
   // Chunk keys are the last key in each chunk. lower_bound finds the first
   // chunk whose last key >= encodedKey, meaning the chunk that may contain
   // the target key.
   auto it = std::lower_bound(
-      chunkKeys->begin() + startChunkIndex,
-      chunkKeys->begin() + endChunkIndex,
+      chunkKeys->begin() + range->startChunkIndex,
+      chunkKeys->begin() + range->endChunkIndex,
       encodedKey,
       [](const flatbuffers::String* a, std::string_view b) {
         return a->string_view() < b;
       });
-  if (it == chunkKeys->begin() + endChunkIndex) {
+  if (it == chunkKeys->begin() + range->endChunkIndex) {
     return std::nullopt;
   }
+  return range->locationAt(it - chunkKeys->begin());
+}
 
-  const uint32_t chunkOffset = it - chunkKeys->begin();
+std::optional<ChunkLocation> ClusterIndexGroup::lookupChunk(
+    uint32_t stripe,
+    uint32_t row) const {
+  const auto* root = asFlatBuffersRoot<serialization::StripeClusterIndex>(
+      metadata_->content());
+  auto range = getStripeChunkRange(root, stripeOffset(stripe), stripeCount_);
+  if (!range.has_value()) {
+    return ChunkLocation{0, 0};
+  }
 
-  const auto* chunkRows = chunkIndex->chunk_rows();
-  NIMBLE_CHECK_NOT_NULL(chunkRows);
-  NIMBLE_CHECK_EQ(chunkRows->size(), chunkKeys->size());
-
-  const auto* chunkOffsets = chunkIndex->chunk_offsets();
-  NIMBLE_CHECK_NOT_NULL(chunkOffsets);
-  NIMBLE_CHECK_EQ(chunkOffsets->size(), chunkKeys->size());
-
-  // Return the found chunk location.
-  const uint32_t rowOffset =
-      chunkOffset == startChunkIndex ? 0 : chunkRows->Get(chunkOffset - 1);
-  return ChunkLocation{chunkOffsets->Get(chunkOffset), rowOffset};
+  // Binary search on cumulative chunk_rows to find the chunk containing the
+  // target row.
+  auto it = std::lower_bound(
+      range->chunkRows->begin() + range->startChunkIndex,
+      range->chunkRows->begin() + range->endChunkIndex,
+      row + 1,
+      [](uint32_t chunkRowCount, uint32_t target) {
+        return chunkRowCount < target;
+      });
+  if (it == range->chunkRows->begin() + range->endChunkIndex) {
+    return std::nullopt;
+  }
+  return range->locationAt(it - range->chunkRows->begin());
 }
 
 velox::common::Region ClusterIndexGroup::keyStreamRegion(
