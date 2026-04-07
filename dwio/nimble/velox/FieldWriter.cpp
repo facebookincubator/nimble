@@ -1410,7 +1410,7 @@ class FlatMapFieldWriter : public FieldWriter {
         return;
 
       case velox::TypeKind::MAP: {
-        switch (vector->encoding()) {
+        switch (vector->wrappedVector()->encoding()) {
           case velox::VectorEncoding::Simple::FLAT_MAP:
             ingestFlatMap(vector, ranges);
             return;
@@ -1588,18 +1588,32 @@ class FlatMapFieldWriter : public FieldWriter {
     NIMBLE_CHECK(
         currentValueFields_.empty() && allValueFields_.empty(),
         "Mixing map and flatmap vectors in the FlatMapFieldWriter is not supported");
-    const auto* flatMapVector = vector->asChecked<velox::FlatMapVector>();
     const auto size = ranges.size();
-    nullsStream_.ensureAdditionalNullsCapacity(
-        flatMapVector->mayHaveNulls(), size);
+    const velox::FlatMapVector* flatMapVector =
+        vector->as<velox::FlatMapVector>();
 
-    // First write top-level nulls, collecting the non-nulls ranges to write.
     OrderedRanges childRanges;
-    const uint64_t nonNullCount = iterateNonNullIndices<true>(
-        ranges,
-        nullsStream_.mutableNonNulls(),
-        FlatAdapter<>{vector},
-        [&](auto offset) { childRanges.add(offset, 1); });
+    uint64_t nonNullCount;
+    if (flatMapVector) {
+      nullsStream_.ensureAdditionalNullsCapacity(
+          flatMapVector->mayHaveNulls(), size);
+      nonNullCount = iterateNonNullIndices<true>(
+          ranges,
+          nullsStream_.mutableNonNulls(),
+          FlatAdapter<>{vector},
+          [&](auto offset) { childRanges.add(offset, 1); });
+    } else {
+      auto decodingContext = context_.decodingContext();
+      auto& decoded = decodingContext.decode(vector, ranges);
+      flatMapVector =
+          decoded.base()->template asChecked<velox::FlatMapVector>();
+      nullsStream_.ensureAdditionalNullsCapacity(decoded.mayHaveNulls(), size);
+      nonNullCount = iterateNonNullIndices<true>(
+          ranges,
+          nullsStream_.mutableNonNulls(),
+          DecodedAdapter<>{decoded},
+          [&](auto offset) { childRanges.add(offset, 1); });
+    }
 
     collectStatistics(size - nonNullCount, size);
     // For FlatMapVector ingestion, we need to compute the total key count by
