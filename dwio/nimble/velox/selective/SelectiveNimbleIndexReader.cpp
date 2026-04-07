@@ -22,10 +22,12 @@
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/index/ClusterIndexReader.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
+#include "dwio/nimble/velox/selective/ChunkedDecoder.h"
 #include "dwio/nimble/velox/selective/ColumnReader.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
 #include "velox/common/base/RuntimeMetrics.h"
+#include "velox/common/time/CpuWallTimer.h"
 #include "velox/serializers/KeyEncoder.h"
 
 namespace facebook::nimble {
@@ -449,6 +451,17 @@ void SelectiveNimbleIndexReader::prepareStripeReading(uint32_t stripeIndex) {
     return;
   }
 
+  // Track total row-range rows for selectivity analysis.
+  {
+    int64_t rowRangeRows = 0;
+    for (const auto& [_, range] : requestRanges) {
+      rowRangeRows += range.numRows();
+    }
+    addThreadLocalRuntimeStat(
+        dwio::common::IndexReader::kNumIndexMatchedRows,
+        velox::RuntimeCounter(rowRangeRows));
+  }
+
   buildStripeReadSegments(requestRanges);
 }
 
@@ -567,35 +580,53 @@ void SelectiveNimbleIndexReader::splitStripeRowRanges(
 void SelectiveNimbleIndexReader::loadStripeWithIndex(uint32_t stripeIndex) {
   addThreadLocalRuntimeStat(
       dwio::common::RowReader::kNumStripeLoads, velox::RuntimeCounter(1));
+  addThreadLocalRuntimeStat(
+      dwio::common::IndexReader::kNumIndexStripeTotalRows,
+      velox::RuntimeCounter(readerBase_->tablet().stripeRowCount(stripeIndex)));
 
-  streams_.setStripe(stripeIndex);
-  NimbleParams params(
-      *readerBase_->pool(),
-      columnReaderStatistics_,
-      readerBase_->nimbleSchema(),
-      streams_,
-      options_.trackRowSize() ? rowSizeTracker_.get() : nullptr,
-      *encodingFactory_,
-      options_.passStringBuffersFromDecoder(),
-      options_.preserveFlatMapsInMemory());
+  velox::CpuWallTiming stripeLoadTiming;
+  {
+    velox::DeltaCpuWallTimeStopWatch stopWatch;
+    streams_.setStripe(stripeIndex);
+    NimbleParams params(
+        *readerBase_->pool(),
+        columnReaderStatistics_,
+        readerBase_->nimbleSchema(),
+        streams_,
+        options_.trackRowSize() ? rowSizeTracker_.get() : nullptr,
+        *encodingFactory_,
+        options_.passStringBuffersFromDecoder(),
+        options_.preserveFlatMapsInMemory());
 
-  columnReader_ = buildColumnReader(
-      fileOutputType_,
-      readerBase_->fileSchemaWithId(),
-      params,
-      *options_.scanSpec(),
-      true);
-  rowSizeTracker_->finalizeProjection();
-  columnReader_->setIsTopLevel();
+    columnReader_ = buildColumnReader(
+        fileOutputType_,
+        readerBase_->fileSchemaWithId(),
+        params,
+        *options_.scanSpec(),
+        true);
+    rowSizeTracker_->finalizeProjection();
+    columnReader_->setIsTopLevel();
 
-  // Build index reader.
-  indexReader_ = index::ClusterIndexReader::create(
-      params.streams().enqueueKeyStream(),
-      params.streams().stripeIndex(),
-      params.streams().clusterIndex(),
-      &params.pool());
+    // Build index reader.
+    indexReader_ = index::ClusterIndexReader::create(
+        params.streams().enqueueKeyStream(),
+        params.streams().stripeIndex(),
+        params.streams().clusterIndex(),
+        &params.pool());
 
-  streams_.load();
+    streams_.load();
+    stripeLoadTiming = stopWatch.elapsed();
+  }
+  addThreadLocalRuntimeStat(
+      kStripeLoadWallNanos,
+      velox::RuntimeCounter(
+          static_cast<int64_t>(stripeLoadTiming.wallNanos),
+          velox::RuntimeCounter::Unit::kNanos));
+  addThreadLocalRuntimeStat(
+      kStripeLoadCpuNanos,
+      velox::RuntimeCounter(
+          static_cast<int64_t>(stripeLoadTiming.cpuNanos),
+          velox::RuntimeCounter::Unit::kNanos));
 }
 
 std::vector<RowRange> SelectiveNimbleIndexReader::lookupRowRanges(
@@ -632,6 +663,26 @@ std::vector<RowRange> SelectiveNimbleIndexReader::lookupRowRanges(
     }
     result.emplace_back(startRow, endRow);
   }
+
+  // Forward ClusterIndexReader stats.
+  const auto& idxStats = indexReader_->stats();
+  addThreadLocalRuntimeStat(
+      kChunkLoadWallNanos,
+      velox::RuntimeCounter(
+          static_cast<int64_t>(idxStats.chunkLoadNanos),
+          velox::RuntimeCounter::Unit::kNanos));
+  addThreadLocalRuntimeStat(
+      kChunkLoadCpuNanos,
+      velox::RuntimeCounter(
+          static_cast<int64_t>(idxStats.chunkLoadCpuNanos),
+          velox::RuntimeCounter::Unit::kNanos));
+  addThreadLocalRuntimeStat(
+      kChunkCacheHits,
+      velox::RuntimeCounter(static_cast<int64_t>(idxStats.chunkCacheHits)));
+  addThreadLocalRuntimeStat(
+      kNumIndexSeeks,
+      velox::RuntimeCounter(static_cast<int64_t>(idxStats.numSeeks)));
+
   return result;
 }
 
@@ -644,13 +695,38 @@ uint64_t SelectiveNimbleIndexReader::readStripeFragment(RowVectorPtr& output) {
   const auto rowsToRead = segment.rowRange.endRow - segment.rowRange.startRow;
   VELOX_CHECK_GT(rowsToRead, 0);
 
-  VectorPtr readOutput =
-      BaseVector::create(outputType_, 0, readerBase_->pool());
-  columnReader_->next(rowsToRead, readOutput, /*mutation=*/nullptr);
-  if (readOutput->size() > 0) {
-    readOutput->loadedVector();
+  // Reset thread-local ChunkedDecoder stats before the read.
+  auto& decoderStats = ChunkedDecoderStats::threadLocal();
+  decoderStats.reset();
+
+  velox::CpuWallTiming dataReadTiming;
+  {
+    velox::DeltaCpuWallTimeStopWatch stopWatch;
+    VectorPtr readOutput =
+        BaseVector::create(outputType_, 0, readerBase_->pool());
+    columnReader_->next(rowsToRead, readOutput, /*mutation=*/nullptr);
+    if (readOutput->size() > 0) {
+      readOutput->loadedVector();
+    }
+    output = checkedPointerCast<RowVector>(readOutput);
+    dataReadTiming = stopWatch.elapsed();
   }
-  output = checkedPointerCast<RowVector>(readOutput);
+  addThreadLocalRuntimeStat(
+      kDataReadWallNanos,
+      velox::RuntimeCounter(
+          static_cast<int64_t>(dataReadTiming.wallNanos),
+          velox::RuntimeCounter::Unit::kNanos));
+  addThreadLocalRuntimeStat(
+      kDataReadCpuNanos,
+      velox::RuntimeCounter(
+          static_cast<int64_t>(dataReadTiming.cpuNanos),
+          velox::RuntimeCounter::Unit::kNanos));
+
+  // Forward ChunkedDecoder chunk load count.
+  addThreadLocalRuntimeStat(
+      kDataChunkLoads,
+      velox::RuntimeCounter(static_cast<int64_t>(decoderStats.numChunkLoads)));
+
   return rowsToRead;
 }
 
