@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string_view>
 
@@ -24,6 +25,19 @@
 #include "velox/dwio/common/SeekableInputStream.h"
 
 namespace facebook::nimble::index {
+
+/// Accumulated timing stats from ClusterIndexReader::seekAtOrAfter() calls.
+struct ClusterIndexReaderStats {
+  /// Total wall time in nanoseconds for seekToChunk (chunk I/O + decode).
+  uint64_t chunkLoadNanos{0};
+  /// Total CPU time in nanoseconds for seekToChunk (chunk I/O + decode).
+  /// Wall - CPU = I/O wait time.
+  uint64_t chunkLoadCpuNanos{0};
+  /// Number of times seekToChunk found the chunk already loaded (cache hit).
+  uint64_t chunkCacheHits{0};
+  /// Total number of seekAtOrAfter calls.
+  uint64_t numSeeks{0};
+};
 
 /// Reader for cluster index keys within a stripe.
 ///
@@ -50,6 +64,11 @@ class ClusterIndexReader {
   /// Returns the row position if found, or std::nullopt if the key is beyond
   /// the range (i.e., greater than all stripe keys).
   std::optional<uint32_t> seekAtOrAfter(std::string_view encodedKey);
+
+  /// Returns accumulated timing stats from seekAtOrAfter calls.
+  const ClusterIndexReaderStats& stats() const {
+    return stats_;
+  }
 
  private:
   ClusterIndexReader(
@@ -93,6 +112,9 @@ class ClusterIndexReader {
   std::unique_ptr<nimble::Encoding> encoding_;
   // Buffers holding string data for the current encoding
   std::vector<velox::BufferPtr> stringBuffers_;
+
+  // Accumulated timing stats.
+  ClusterIndexReaderStats stats_;
 };
 
 } // namespace facebook::nimble::index

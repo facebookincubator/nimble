@@ -24,6 +24,21 @@
 
 namespace facebook::nimble {
 
+/// Thread-local counters for ChunkedDecoder activity.
+/// Reset and read by SelectiveNimbleIndexReader around columnReader_->next().
+struct ChunkedDecoderStats {
+  uint64_t numChunkLoads{0};
+
+  void reset() {
+    numChunkLoads = 0;
+  }
+
+  static ChunkedDecoderStats& threadLocal() {
+    thread_local ChunkedDecoderStats stats;
+    return stats;
+  }
+};
+
 class ChunkedDecoderTestHelper;
 
 class ChunkedDecoder {

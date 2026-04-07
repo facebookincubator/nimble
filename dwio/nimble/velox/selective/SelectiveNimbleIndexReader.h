@@ -68,6 +68,27 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
   std::unique_ptr<Result> next(velox::vector_size_t maxOutputRows) override;
 
  private:
+  // Timing stat names for sub-phases of the index read path.
+  // Each I/O-heavy phase tracks both wall time and CPU time separately.
+  // Wall - CPU = I/O wait time.
+  static constexpr std::string_view kStripeLoadWallNanos =
+      "nimbleIndexStripeLoadWallNanos";
+  static constexpr std::string_view kStripeLoadCpuNanos =
+      "nimbleIndexStripeLoadCpuNanos";
+  static constexpr std::string_view kDataReadWallNanos =
+      "nimbleIndexDataReadWallNanos";
+  static constexpr std::string_view kDataReadCpuNanos =
+      "nimbleIndexDataReadCpuNanos";
+  static constexpr std::string_view kChunkLoadWallNanos =
+      "nimbleIndexChunkLoadWallNanos";
+  static constexpr std::string_view kChunkLoadCpuNanos =
+      "nimbleIndexChunkLoadCpuNanos";
+  static constexpr std::string_view kChunkCacheHits =
+      "nimbleIndexChunkCacheHits";
+  static constexpr std::string_view kNumIndexSeeks = "nimbleIndexNumSeeks";
+  static constexpr std::string_view kDataChunkLoads =
+      "nimbleIndexDataChunkLoads";
+
   using RowRangeMap = folly::F14FastMap<RowRange, size_t, RowRangeHash>;
 
   // Represents a read segment - a contiguous row range to read from the file.

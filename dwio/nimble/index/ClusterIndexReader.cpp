@@ -16,10 +16,13 @@
 
 #include "dwio/nimble/index/ClusterIndexReader.h"
 
+#include <chrono>
+
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
+#include "velox/common/process/ProcessBase.h"
 
 namespace facebook::nimble::index {
 
@@ -49,6 +52,8 @@ std::unique_ptr<ClusterIndexReader> ClusterIndexReader::create(
 
 std::optional<uint32_t> ClusterIndexReader::seekAtOrAfter(
     std::string_view encodedKey) {
+  ++stats_.numSeeks;
+
   const auto chunkLocation = indexGroup_->lookupChunk(stripeIndex_, encodedKey);
   if (!chunkLocation.has_value()) {
     return std::nullopt;
@@ -65,7 +70,17 @@ std::optional<uint32_t> ClusterIndexReader::seekAtOrAfter(
 std::optional<uint32_t> ClusterIndexReader::seekAtOrAfterInChunk(
     uint32_t chunkOffset,
     std::string_view encodedKey) {
-  seekToChunk(chunkOffset);
+  // Phase 2: Seek to chunk (I/O + decode). Track both wall and CPU time.
+  {
+    auto wallStart = std::chrono::steady_clock::now();
+    auto cpuStart = velox::process::threadCpuNanos();
+    seekToChunk(chunkOffset);
+    stats_.chunkLoadCpuNanos += velox::process::threadCpuNanos() - cpuStart;
+    stats_.chunkLoadNanos +=
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - wallStart)
+            .count();
+  }
   NIMBLE_CHECK_NOT_NULL(encoding_);
   return encoding_->seekAtOrAfter(&encodedKey);
 }
@@ -94,6 +109,7 @@ bool ClusterIndexReader::ensureInput(int size) {
 
 void ClusterIndexReader::seekToChunk(uint32_t chunkOffset) {
   if ((chunkOffset_ == chunkOffset) && (encoding_ != nullptr)) {
+    ++stats_.chunkCacheHits;
     return;
   }
 
