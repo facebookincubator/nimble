@@ -2976,6 +2976,10 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsInteger) {
   auto* intStats =
       dynamic_cast<dwio::common::IntegerColumnStatistics*>(stats.get());
   ASSERT_NE(intStats, nullptr);
+  ASSERT_TRUE(intStats->getMinimum().has_value());
+  EXPECT_EQ(intStats->getMinimum().value(), 0);
+  ASSERT_TRUE(intStats->getMaximum().has_value());
+  EXPECT_EQ(intStats->getMaximum().value(), 297);
 }
 
 // Verifies columnStatistics returns DoubleColumnStatistics for DOUBLE columns.
@@ -2999,6 +3003,10 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsDouble) {
   ASSERT_NE(fpStats, nullptr);
   ASSERT_TRUE(stats->getNumberOfValues().has_value());
   EXPECT_EQ(stats->getNumberOfValues().value(), kSize);
+  ASSERT_TRUE(fpStats->getMinimum().has_value());
+  EXPECT_DOUBLE_EQ(fpStats->getMinimum().value(), 0.0);
+  ASSERT_TRUE(fpStats->getMaximum().has_value());
+  EXPECT_DOUBLE_EQ(fpStats->getMaximum().value(), 73.5);
 }
 
 // Verifies columnStatistics returns StringColumnStatistics for VARCHAR columns.
@@ -3021,6 +3029,10 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsString) {
   ASSERT_NE(strStats, nullptr);
   ASSERT_TRUE(stats->getNumberOfValues().has_value());
   EXPECT_EQ(stats->getNumberOfValues().value(), 3);
+  ASSERT_TRUE(strStats->getMinimum().has_value());
+  EXPECT_EQ(strStats->getMinimum().value(), "apple");
+  ASSERT_TRUE(strStats->getMaximum().has_value());
+  EXPECT_EQ(strStats->getMaximum().value(), "cherry");
 }
 
 // Verifies columnStatistics returns nullptr for out-of-range indices and
@@ -3108,6 +3120,8 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsAllNull) {
   auto* intStats =
       dynamic_cast<dwio::common::IntegerColumnStatistics*>(stats.get());
   ASSERT_NE(intStats, nullptr);
+  EXPECT_EQ(intStats->getMinimum(), std::nullopt);
+  EXPECT_EQ(intStats->getMaximum(), std::nullopt);
 }
 
 INSTANTIATE_TEST_CASE_P(

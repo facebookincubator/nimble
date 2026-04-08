@@ -508,6 +508,24 @@ TEST_F(StatisticsCollectorTests, IntegralStatisticsCollectorMergeWithDefault) {
   EXPECT_EQ(sbPtr->getNullCount(), 15);
 }
 
+// Regression test: addCounts() is called before addValues() in
+// FieldWriter::collectStatistics. The min/max initialization guard must not
+// depend on getValueCount() being zero.
+TEST_F(StatisticsCollectorTests, IntegralMinMaxAfterAddCounts) {
+  IntegralStatisticsCollector collector;
+  // Simulate FieldWriter calling addCounts before addValues.
+  dynamic_cast<StatisticsCollector&>(collector).addCounts(10, 0);
+  std::vector<int64_t> values = {5, -3, 12, 7};
+  collector.addValues(std::span<int64_t>(values));
+
+  auto* stats = collector.getStatsView()->as<IntegralStatistics>();
+  ASSERT_NE(stats, nullptr);
+  ASSERT_TRUE(stats->getMin().has_value());
+  EXPECT_EQ(stats->getMin().value(), -3);
+  ASSERT_TRUE(stats->getMax().has_value());
+  EXPECT_EQ(stats->getMax().value(), 12);
+}
+
 TEST_F(StatisticsCollectorTests, FloatingPointStatisticsCollectorCtor) {
   FloatingPointStatisticsCollector collector;
   auto* stats = collector.getStatsView()->as<FloatingPointStatistics>();
@@ -555,6 +573,21 @@ TEST_F(
   EXPECT_EQ(sbPtr->getNullCount(), 15);
 }
 
+// Regression test: same as IntegralMinMaxAfterAddCounts but for floating-point.
+TEST_F(StatisticsCollectorTests, FloatingPointMinMaxAfterAddCounts) {
+  FloatingPointStatisticsCollector collector;
+  dynamic_cast<StatisticsCollector&>(collector).addCounts(10, 0);
+  std::vector<double> values = {1.5, -2.7, 99.9, 0.0};
+  collector.addValues(std::span<double>(values));
+
+  auto* stats = collector.getStatsView()->as<FloatingPointStatistics>();
+  ASSERT_NE(stats, nullptr);
+  ASSERT_TRUE(stats->getMin().has_value());
+  EXPECT_DOUBLE_EQ(stats->getMin().value(), -2.7);
+  ASSERT_TRUE(stats->getMax().has_value());
+  EXPECT_DOUBLE_EQ(stats->getMax().value(), 99.9);
+}
+
 // StringStatisticsCollector Tests
 
 TEST_F(StatisticsCollectorTests, StringStatisticsCollectorCtor) {
@@ -589,6 +622,21 @@ TEST_F(StatisticsCollectorTests, AddStringValues) {
     ASSERT_NE(sbPtr, nullptr);
     EXPECT_EQ(sbPtr->getLogicalSize(), 0);
   }
+}
+
+// Regression test: same as IntegralMinMaxAfterAddCounts but for strings.
+TEST_F(StatisticsCollectorTests, StringMinMaxAfterAddCounts) {
+  StringStatisticsCollector collector;
+  dynamic_cast<StatisticsCollector&>(collector).addCounts(10, 0);
+  std::vector<std::string_view> values = {"banana", "apple", "cherry"};
+  collector.addValues(std::span<std::string_view>(values));
+
+  auto* stats = collector.getStatsView()->as<StringStatistics>();
+  ASSERT_NE(stats, nullptr);
+  ASSERT_TRUE(stats->getMin().has_value());
+  EXPECT_EQ(stats->getMin().value(), "apple");
+  ASSERT_TRUE(stats->getMax().has_value());
+  EXPECT_EQ(stats->getMax().value(), "cherry");
 }
 
 TEST_F(StatisticsCollectorTests, StringStatisticsCollectorMerge) {
