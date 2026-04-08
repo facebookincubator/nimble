@@ -16,6 +16,9 @@
 #pragma once
 
 #include <span>
+
+#include <folly/CPortability.h>
+
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/BufferPool.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
@@ -112,32 +115,40 @@ class MainlyConstantEncodingBase
   void skip(uint32_t rowCount) override {
     // Use bit-packed booleans for efficient SIMD counting.
     const auto numWords = velox::bits::nwords(rowCount);
-
     isCommonBuffer_.resize(numWords * sizeof(uint64_t));
-
     auto* isCommon = reinterpret_cast<uint64_t*>(isCommonBuffer_.data());
-    // isCommon_ is used to encode bool stream so
-    // materializeBoolsAsBits is always implemented
+    // isCommon_ encodes a bool stream so materializeBoolsAsBits is always
+    // implemented.
     isCommon_->materializeBoolsAsBits(rowCount, isCommon, 0);
 
-    const uint32_t nonCommonCount =
-        rowCount - velox::bits::countBits(isCommon, 0, rowCount);
-
-    if (nonCommonCount == 0) {
-      return;
+    // Mask tail bits once so the count loop is branchless.
+    const auto tailBits = rowCount & 63;
+    if (tailBits != 0) {
+      isCommon[numWords - 1] |= ~((1ULL << tailBits) - 1);
     }
-    otherValues_->skip(nonCommonCount);
+
+    const uint32_t nonCommonCount = countNonCommon(isCommon, numWords);
+    if (nonCommonCount != 0) {
+      otherValues_->skip(nonCommonCount);
+    }
   }
 
   void materialize(uint32_t rowCount, void* buffer) override {
-    // Use bit-packed booleans for efficient counting and iteration.
+    // Use bit-packed booleans for efficient SIMD counting.
+    // isCommon_ encodes a bool stream so materializeBoolsAsBits is always
+    // implemented.
     const auto numWords = velox::bits::nwords(rowCount);
     isCommonBuffer_.resize(numWords * sizeof(uint64_t));
     auto* isCommon = reinterpret_cast<uint64_t*>(isCommonBuffer_.data());
     isCommon_->materializeBoolsAsBits(rowCount, isCommon, 0);
 
-    const uint32_t nonCommonCount =
-        rowCount - velox::bits::countBits(isCommon, 0, rowCount);
+    // Mask tail bits once so both count and scatter loops are branchless.
+    const auto tailBits = rowCount & 63;
+    if (tailBits != 0) {
+      isCommon[numWords - 1] |= ~((1ULL << tailBits) - 1);
+    }
+
+    const uint32_t nonCommonCount = countNonCommon(isCommon, numWords);
 
     physicalType* output = static_cast<physicalType*>(buffer);
     velox::simd::simdFill(output, commonValue_, rowCount);
@@ -149,13 +160,17 @@ class MainlyConstantEncodingBase
     otherValuesBuffer_.reserve(nonCommonCount);
     otherValues_->materialize(nonCommonCount, otherValuesBuffer_.data());
 
+    // Scatter non-common values. Tail bits already masked in the bitmap,
+    // so ~isCommon[w] naturally has zeros in tail positions.
     uint32_t otherIdx = 0;
-
-    // Fill with commonValue then scatter non-common values into the
-    // correct positions.
-    velox::bits::forEachUnsetBit(isCommon, 0, rowCount, [&](vector_size_t i) {
-      output[i] = otherValuesBuffer_[otherIdx++];
-    });
+    for (uint32_t w = 0; w < numWords; ++w) {
+      uint64_t unset = ~isCommon[w];
+      const uint32_t base = w * 64;
+      while (unset) {
+        output[base + __builtin_ctzll(unset)] = otherValuesBuffer_[otherIdx++];
+        unset &= unset - 1;
+      }
+    }
     NIMBLE_CHECK_EQ(otherIdx, nonCommonCount, "Encoding size mismatch.");
   }
 
@@ -330,6 +345,18 @@ class MainlyConstantEncodingBase
   }
 
  protected:
+  // Counts unset bits across all words. Caller must mask tail bits
+  // before calling (set garbage tail bits to 1 in the last word).
+  FOLLY_ALWAYS_INLINE static uint32_t countNonCommon(
+      const uint64_t* isCommon,
+      uint32_t numWords) {
+    uint32_t count = 0;
+    for (uint32_t w = 0; w < numWords; ++w) {
+      count += 64 - __builtin_popcountll(isCommon[w]);
+    }
+    return count;
+  }
+
   std::unique_ptr<Encoding> isCommon_;
   std::unique_ptr<Encoding> otherValues_;
   physicalType commonValue_;
