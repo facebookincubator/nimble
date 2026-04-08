@@ -313,16 +313,20 @@ void IntegralStatisticsCollector::addValues(std::span<T> values) {
   static_assert(std::is_integral_v<T>);
   addLogicalSize(values.size() * sizeof(T));
 
-  auto* stats = integralStats();
-  if (UNLIKELY(stats->getValueCount() == 0 && !values.empty())) {
-    stats->min_ = static_cast<int64_t>(values.front());
-    stats->max_ = static_cast<int64_t>(values.front());
-  }
+  if (!values.empty()) {
+    auto* stats = integralStats();
+    if (UNLIKELY(!stats->min_.has_value())) {
+      stats->min_ = static_cast<int64_t>(values.front());
+    }
+    if (UNLIKELY(!stats->max_.has_value())) {
+      stats->max_ = static_cast<int64_t>(values.front());
+    }
 
-  for (const auto& value : values) {
-    auto v = static_cast<int64_t>(value);
-    stats->min_ = stats->min_ > v ? std::make_optional(v) : stats->min_;
-    stats->max_ = stats->max_ < v ? std::make_optional(v) : stats->max_;
+    for (const auto& value : values) {
+      auto v = static_cast<int64_t>(value);
+      stats->min_ = stats->min_ > v ? std::make_optional(v) : stats->min_;
+      stats->max_ = stats->max_ < v ? std::make_optional(v) : stats->max_;
+    }
   }
 }
 
@@ -374,16 +378,20 @@ void FloatingPointStatisticsCollector::addValues(std::span<T> values) {
   static_assert(std::is_floating_point_v<T>);
   addLogicalSize(values.size() * sizeof(T));
 
-  auto* stats = floatingPointStats();
-  if (UNLIKELY(stats->getValueCount() == 0 && !values.empty())) {
-    stats->min_ = static_cast<double>(values.front());
-    stats->max_ = static_cast<double>(values.front());
-  }
+  if (!values.empty()) {
+    auto* stats = floatingPointStats();
+    if (UNLIKELY(!stats->min_.has_value())) {
+      stats->min_ = static_cast<double>(values.front());
+    }
+    if (UNLIKELY(!stats->max_.has_value())) {
+      stats->max_ = static_cast<double>(values.front());
+    }
 
-  for (const auto& value : values) {
-    auto v = static_cast<double>(value);
-    stats->min_ = stats->min_ > v ? std::make_optional(v) : stats->min_;
-    stats->max_ = stats->max_ < v ? std::make_optional(v) : stats->max_;
+    for (const auto& value : values) {
+      auto v = static_cast<double>(value);
+      stats->min_ = stats->min_ > v ? std::make_optional(v) : stats->min_;
+      stats->max_ = stats->max_ < v ? std::make_optional(v) : stats->max_;
+    }
   }
 }
 
@@ -428,18 +436,22 @@ StringStatistics* StringStatisticsCollector::stringStats() {
 }
 
 void StringStatisticsCollector::addValues(std::span<std::string_view> values) {
-  auto* stats = stringStats();
-  if (UNLIKELY(stats->getValueCount() == 0 && !values.empty())) {
-    stats->min_ = std::string(values.front());
-    stats->max_ = std::string(values.front());
-  }
+  if (!values.empty()) {
+    auto* stats = stringStats();
+    if (UNLIKELY(!stats->min_.has_value())) {
+      stats->min_ = std::string(values.front());
+    }
+    if (UNLIKELY(!stats->max_.has_value())) {
+      stats->max_ = std::string(values.front());
+    }
 
-  for (const auto& value : values) {
-    addLogicalSize(value.size());
-    stats->min_ = stats->min_ > value ? std::make_optional(std::string(value))
-                                      : stats->min_;
-    stats->max_ = stats->max_ < value ? std::make_optional(std::string(value))
-                                      : stats->max_;
+    for (const auto& value : values) {
+      addLogicalSize(value.size());
+      stats->min_ = stats->min_ > value ? std::make_optional(std::string(value))
+                                        : stats->min_;
+      stats->max_ = stats->max_ < value ? std::make_optional(std::string(value))
+                                        : stats->max_;
+    }
   }
 }
 
