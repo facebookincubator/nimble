@@ -221,6 +221,161 @@ TEST_F(ColumnStatisticsTests, DeduplicatedColumnStatistics) {
   }
 }
 
+// toCommonStatistics Tests
+
+TEST_F(ColumnStatisticsTests, ToCommonStatisticsIntegral) {
+  IntegralStatistics stat(100, 10, 1000, 500, -50, 150);
+  auto common = stat.toCommonStatistics();
+  ASSERT_NE(common, nullptr);
+
+  ASSERT_TRUE(common->getNumberOfValues().has_value());
+  EXPECT_EQ(common->getNumberOfValues().value(), 100);
+  ASSERT_TRUE(common->hasNull().has_value());
+  EXPECT_TRUE(common->hasNull().value());
+  ASSERT_TRUE(common->getRawSize().has_value());
+  EXPECT_EQ(common->getRawSize().value(), 1000);
+  ASSERT_TRUE(common->getSize().has_value());
+  EXPECT_EQ(common->getSize().value(), 500);
+
+  auto* intStats =
+      dynamic_cast<velox::dwio::common::IntegerColumnStatistics*>(common.get());
+  ASSERT_NE(intStats, nullptr);
+  ASSERT_TRUE(intStats->getMinimum().has_value());
+  EXPECT_EQ(intStats->getMinimum().value(), -50);
+  ASSERT_TRUE(intStats->getMaximum().has_value());
+  EXPECT_EQ(intStats->getMaximum().value(), 150);
+  EXPECT_EQ(intStats->getSum(), std::nullopt);
+}
+
+TEST_F(ColumnStatisticsTests, ToCommonStatisticsIntegralNoMinMax) {
+  IntegralStatistics stat(50, 0, 400, 200, std::nullopt, std::nullopt);
+  auto common = stat.toCommonStatistics();
+  ASSERT_NE(common, nullptr);
+
+  ASSERT_TRUE(common->hasNull().has_value());
+  EXPECT_FALSE(common->hasNull().value());
+
+  auto* intStats =
+      dynamic_cast<velox::dwio::common::IntegerColumnStatistics*>(common.get());
+  ASSERT_NE(intStats, nullptr);
+  EXPECT_EQ(intStats->getMinimum(), std::nullopt);
+  EXPECT_EQ(intStats->getMaximum(), std::nullopt);
+}
+
+TEST_F(ColumnStatisticsTests, ToCommonStatisticsFloatingPoint) {
+  FloatingPointStatistics stat(200, 5, 2000, 800, -1.5, 99.9);
+  auto common = stat.toCommonStatistics();
+  ASSERT_NE(common, nullptr);
+
+  ASSERT_TRUE(common->getNumberOfValues().has_value());
+  EXPECT_EQ(common->getNumberOfValues().value(), 200);
+  ASSERT_TRUE(common->hasNull().has_value());
+  EXPECT_TRUE(common->hasNull().value());
+
+  auto* fpStats =
+      dynamic_cast<velox::dwio::common::DoubleColumnStatistics*>(common.get());
+  ASSERT_NE(fpStats, nullptr);
+  ASSERT_TRUE(fpStats->getMinimum().has_value());
+  EXPECT_DOUBLE_EQ(fpStats->getMinimum().value(), -1.5);
+  ASSERT_TRUE(fpStats->getMaximum().has_value());
+  EXPECT_DOUBLE_EQ(fpStats->getMaximum().value(), 99.9);
+  EXPECT_EQ(fpStats->getSum(), std::nullopt);
+}
+
+TEST_F(ColumnStatisticsTests, ToCommonStatisticsFloatingPointNoMinMax) {
+  FloatingPointStatistics stat(30, 0, 240, 120, std::nullopt, std::nullopt);
+  auto common = stat.toCommonStatistics();
+  ASSERT_NE(common, nullptr);
+
+  ASSERT_TRUE(common->hasNull().has_value());
+  EXPECT_FALSE(common->hasNull().value());
+
+  auto* fpStats =
+      dynamic_cast<velox::dwio::common::DoubleColumnStatistics*>(common.get());
+  ASSERT_NE(fpStats, nullptr);
+  EXPECT_EQ(fpStats->getMinimum(), std::nullopt);
+  EXPECT_EQ(fpStats->getMaximum(), std::nullopt);
+}
+
+TEST_F(ColumnStatisticsTests, ToCommonStatisticsString) {
+  StringStatistics stat(300, 20, 3000, 1500, "apple", "zebra");
+  auto common = stat.toCommonStatistics();
+  ASSERT_NE(common, nullptr);
+
+  ASSERT_TRUE(common->getNumberOfValues().has_value());
+  EXPECT_EQ(common->getNumberOfValues().value(), 300);
+  ASSERT_TRUE(common->hasNull().has_value());
+  EXPECT_TRUE(common->hasNull().value());
+
+  auto* strStats =
+      dynamic_cast<velox::dwio::common::StringColumnStatistics*>(common.get());
+  ASSERT_NE(strStats, nullptr);
+  ASSERT_TRUE(strStats->getMinimum().has_value());
+  EXPECT_EQ(strStats->getMinimum().value(), "apple");
+  ASSERT_TRUE(strStats->getMaximum().has_value());
+  EXPECT_EQ(strStats->getMaximum().value(), "zebra");
+  EXPECT_EQ(strStats->getTotalLength(), std::nullopt);
+}
+
+TEST_F(ColumnStatisticsTests, ToCommonStatisticsStringNoMinMax) {
+  StringStatistics stat(10, 0, 80, 40, std::nullopt, std::nullopt);
+  auto common = stat.toCommonStatistics();
+  ASSERT_NE(common, nullptr);
+
+  ASSERT_TRUE(common->hasNull().has_value());
+  EXPECT_FALSE(common->hasNull().value());
+
+  auto* strStats =
+      dynamic_cast<velox::dwio::common::StringColumnStatistics*>(common.get());
+  ASSERT_NE(strStats, nullptr);
+  EXPECT_EQ(strStats->getMinimum(), std::nullopt);
+  EXPECT_EQ(strStats->getMaximum(), std::nullopt);
+}
+
+TEST_F(ColumnStatisticsTests, ToCommonStatisticsDefault) {
+  ColumnStatistics stat(500, 0, 4000, 2000);
+  auto common = stat.toCommonStatistics();
+  ASSERT_NE(common, nullptr);
+
+  ASSERT_TRUE(common->getNumberOfValues().has_value());
+  EXPECT_EQ(common->getNumberOfValues().value(), 500);
+  ASSERT_TRUE(common->hasNull().has_value());
+  EXPECT_FALSE(common->hasNull().value());
+  ASSERT_TRUE(common->getRawSize().has_value());
+  EXPECT_EQ(common->getRawSize().value(), 4000);
+  ASSERT_TRUE(common->getSize().has_value());
+  EXPECT_EQ(common->getSize().value(), 2000);
+
+  // Should not cast to any typed subclass.
+  EXPECT_EQ(
+      dynamic_cast<velox::dwio::common::IntegerColumnStatistics*>(common.get()),
+      nullptr);
+  EXPECT_EQ(
+      dynamic_cast<velox::dwio::common::DoubleColumnStatistics*>(common.get()),
+      nullptr);
+  EXPECT_EQ(
+      dynamic_cast<velox::dwio::common::StringColumnStatistics*>(common.get()),
+      nullptr);
+}
+
+TEST_F(ColumnStatisticsTests, ToCommonStatisticsDeduplicated) {
+  IntegralStatistics baseStat(100, 10, 1000, 500, -50, 150);
+  DeduplicatedColumnStatistics stat(&baseStat, 80, 800);
+  // DEDUPLICATED falls through to the base ColumnStatistics path.
+  auto common = stat.toCommonStatistics();
+  ASSERT_NE(common, nullptr);
+
+  ASSERT_TRUE(common->getNumberOfValues().has_value());
+  EXPECT_EQ(common->getNumberOfValues().value(), 100);
+  ASSERT_TRUE(common->hasNull().has_value());
+  EXPECT_TRUE(common->hasNull().value());
+
+  // Should produce base ColumnStatistics, not IntegerColumnStatistics.
+  EXPECT_EQ(
+      dynamic_cast<velox::dwio::common::IntegerColumnStatistics*>(common.get()),
+      nullptr);
+}
+
 class StatisticsCollectorTests : public ::testing::Test {};
 
 // Base StatisticsCollector Tests

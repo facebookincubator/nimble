@@ -18,9 +18,11 @@
 
 #include "dwio/nimble/index/ChunkIndexGroup.h"
 #include "dwio/nimble/index/ClusterIndexGroup.h"
+#include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/SchemaReader.h"
+#include "dwio/nimble/velox/stats/VectorizedStatistics.h"
 #include "velox/dwio/common/BufferedInput.h"
 #include "velox/dwio/common/Options.h"
 
@@ -95,6 +97,13 @@ class ReaderBase {
     return fileSchemaWithId_;
   }
 
+  /// File-level column statistics from the vectorized stats optional section.
+  /// Empty if absent.
+  const std::vector<std::unique_ptr<ColumnStatistics>>& fileColumnStats()
+      const {
+    return fileColumnStats_;
+  }
+
  private:
   ReaderBase(
       std::unique_ptr<velox::dwio::common::BufferedInput> input,
@@ -112,6 +121,9 @@ class ReaderBase {
   const std::shared_ptr<velox::common::ScanSpec> scanSpec_;
   const std::shared_ptr<const Type> nimbleSchema_;
   const velox::RowTypePtr fileSchema_;
+  // File-level column statistics deserialized from the vectorized stats
+  // optional section at construction.
+  const std::vector<std::unique_ptr<ColumnStatistics>> fileColumnStats_;
   mutable std::shared_ptr<const velox::dwio::common::TypeWithId>
       fileSchemaWithId_;
 };
