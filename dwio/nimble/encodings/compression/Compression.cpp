@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/encodings/Compression.h"
+#include "dwio/nimble/encodings/compression/Compression.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/encodings/ZstdCompressor.h"
