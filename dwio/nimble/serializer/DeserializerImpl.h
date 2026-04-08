@@ -44,16 +44,29 @@ class StreamData {
   /// @param kind Scalar kind for the stream data.
   /// @param pool Memory pool for encoding buffer allocation. Required when
   ///             reset() will be called with encodingEnabled=true.
-  StreamData(ScalarKind kind, velox::memory::MemoryPool* pool)
-      : kind_{kind}, pool_{pool}, encodingEnabled_{false} {}
+  /// @param stringBuffers External vector where string buffers from encoding
+  ///        are stored. The caller must keep the vector alive while
+  ///        string_views from this StreamData are in use.
+  StreamData(
+      ScalarKind kind,
+      std::vector<velox::BufferPtr>& stringBuffers,
+      velox::memory::MemoryPool* pool)
+      : kind_{kind},
+        pool_{pool},
+        encodingEnabled_{false},
+        stringBuffers_{&stringBuffers} {}
 
   /// @param kind Scalar kind for the stream data.
   /// @param data Stream data to initialize with.
   /// @param pool Memory pool for encoding buffer allocation.
   /// @param options Decode configuration (version, bufferPool).
+  /// @param stringBuffers External vector where string buffers from encoding
+  ///        are stored. The caller must keep the vector alive while
+  ///        string_views from this StreamData are in use.
   StreamData(
       ScalarKind kind,
       std::string_view data,
+      std::vector<velox::BufferPtr>& stringBuffers,
       velox::memory::MemoryPool* pool,
       const Options& options);
 
@@ -130,10 +143,10 @@ class StreamData {
   std::unique_ptr<Encoding> encoding_;
   // Track consumed rows for nimble encoding path.
   uint32_t readRows_{0};
-  // Buffers for string data from nimble encoding.
-  // Each buffer is allocated separately to avoid pointer invalidation when
-  // the vector grows. Uses velox::AlignedBuffer for memory tracking.
-  std::vector<velox::BufferPtr> stringBuffers_;
+  // External storage for string buffers from encoding. Owned by the caller
+  // (DeserializerImpl or thrift Decoder). Each buffer is allocated separately
+  // to avoid pointer invalidation when the vector grows.
+  std::vector<velox::BufferPtr>* const stringBuffers_;
 };
 
 template <typename T>

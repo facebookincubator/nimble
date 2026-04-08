@@ -104,7 +104,7 @@ class DeserializerImpl : public Decoder {
   uint32_t next(
       uint32_t count,
       void* output,
-      std::vector<velox::BufferPtr>& /* stringBuffers */,
+      std::vector<velox::BufferPtr>& stringBuffers,
       std::function<void*()> /* nulls */ = nullptr,
       const velox::bits::Bitmap* scatterBitmap = nullptr) override {
     if (count == 0) {
@@ -118,14 +118,13 @@ class DeserializerImpl : public Decoder {
     if (type_->isFlatMap()) {
       NIMBLE_CHECK_NULL(
           scatterBitmap, "scatterBitmap not used for FlatMap streams");
-      return readFlatMap(count, output, typeStorageWidth_);
+      return readFlatMap(count, output, typeStorageWidth_, stringBuffers);
     }
-
     if (scatterBitmap != nullptr) {
-      return scatteredRead(count, output, typeStorageWidth_, scatterBitmap);
+      return scatteredRead(
+          count, output, typeStorageWidth_, scatterBitmap, stringBuffers);
     }
-
-    return contiguousRead(count, output, typeStorageWidth_);
+    return contiguousRead(count, output, typeStorageWidth_, stringBuffers);
   }
 
   void skip(uint32_t /* count */) override {
@@ -147,6 +146,7 @@ class DeserializerImpl : public Decoder {
   // Clear all state (called at the start of deserialization).
   void clear() {
     batchSegments_.clear();
+    streamData_.reset();
     presentInMapSegments_.clear();
     topLevelRows_ = 0;
     currentFlatMapRow_ = 0;
@@ -154,9 +154,11 @@ class DeserializerImpl : public Decoder {
     currentInMapSegment_ = 0;
   }
 
-  // Add data starting at the given row offset.
-  // version: the auto-detected serialization version, used to determine
-  // encoding enabled and varint row count settings.
+  // Add data starting at the given row offset. Stores the raw data without
+  // creating encoding objects. Encodings are created lazily when the segment
+  // is first read, ensuring only one encoding tree exists at a time. This
+  // avoids the memory locality and allocation overhead of creating hundreds
+  // of encoding trees simultaneously in batch decode.
   void addBatch(
       uint32_t rowOffset,
       std::string_view data,
@@ -164,15 +166,7 @@ class DeserializerImpl : public Decoder {
     if (data.empty()) {
       return;
     }
-    batchSegments_.emplace_back(
-        BatchSegment{
-            rowOffset,
-            serde::StreamData(
-                scalarKind_,
-                data,
-                pool_,
-                serde::StreamData::Options{
-                    .version = version, .bufferPool = bufferPool_.get()})});
+    batchSegments_.emplace_back(BatchSegment{rowOffset, data, version});
   }
 
   // Record a segment where this key is present in every row (in-map stream
@@ -197,36 +191,71 @@ class DeserializerImpl : public Decoder {
   }
 
  private:
+  // Lazily creates StreamData for the given segment index.
+  // Destroys the previous StreamData so the allocator reuses the same
+  // cache-hot memory (matching non-batch mode's sequential pattern).
+  // Ensures streamData_ is initialized for the current segment. Creates a new
+  // StreamData lazily on first access or after advanceSegment() resets it.
+  // String buffers from encoding are pushed directly into the caller's
+  // stringBuffers vector, so no explicit release is needed.
+  serde::StreamData& ensureStreamData(
+      std::vector<velox::BufferPtr>& stringBuffers) {
+    if (streamData_.has_value()) {
+      return *streamData_;
+    }
+
+    NIMBLE_CHECK_LT(currentSegment_, batchSegments_.size());
+    const auto& segment = batchSegments_[currentSegment_];
+    const serde::StreamData::Options options{
+        .version = segment.version,
+        .bufferPool = bufferPool_.get(),
+    };
+    streamData_.emplace(
+        scalarKind_, segment.data, stringBuffers, pool_, options);
+    return *streamData_;
+  }
+
+  // Advances to the next segment. Destroys current StreamData so the next
+  // ensureStreamData() creates a fresh one for the new segment.
+  void advanceSegment() {
+    streamData_.reset();
+    ++currentSegment_;
+  }
+
   uint32_t readFromBatchSegment(
       void* output,
       uint32_t offset,
       uint32_t count,
-      uint32_t width) {
-    NIMBLE_CHECK_LT(currentSegment_, batchSegments_.size());
-    auto& segment = batchSegments_[currentSegment_];
+      uint32_t width,
+      std::vector<velox::BufferPtr>& stringBuffers) {
+    auto& streamData = ensureStreamData(stringBuffers);
 
     // Nimble encoding path: decode dispatches by type width.
     // Returns actual count decoded (may be less than requested if encoding
     // has fewer remaining rows).
-    if (segment.data.hasEncoding()) {
-      return segment.data.decode(output, offset, count, width);
+    if (streamData.hasEncoding()) {
+      return streamData.decode(output, offset, count, width);
     }
 
     // Legacy path.
     if (width > 0) {
       auto* dest = static_cast<char*>(output) + offset * width;
-      const auto copied = segment.data.copyTo(dest, count * width);
+      const auto copied = streamData.copyTo(dest, count * width);
       return copied / width;
     } else {
       // String type.
       auto* dest = static_cast<std::string_view*>(output) + offset;
-      return segment.data.decodeStrings(count, dest);
+      return streamData.decodeStrings(count, dest);
     }
   }
 
   // Simple contiguous read for nested types. Reads `count` values from
   // segments directly to output without gap detection or scattering.
-  uint32_t contiguousRead(uint32_t count, void* output, uint32_t width) {
+  uint32_t contiguousRead(
+      uint32_t count,
+      void* output,
+      uint32_t width,
+      std::vector<velox::BufferPtr>& stringBuffers) {
     NIMBLE_CHECK(!type_->isFlatMap(), "contiguousRead not used for FlatMap");
 
     // Handle empty batchSegments_ for Row nulls streams. The serializer omits
@@ -243,14 +272,14 @@ class DeserializerImpl : public Decoder {
     uint32_t valuesRead{0};
     while (valuesRead < count && currentSegment_ < batchSegments_.size()) {
       const uint32_t toRead = count - valuesRead;
-      const uint32_t read =
-          readFromBatchSegment(output, valuesRead, toRead, width);
+      const uint32_t read = readFromBatchSegment(
+          output, valuesRead, toRead, width, stringBuffers);
       if (read == 0) {
-        ++currentSegment_;
+        advanceSegment();
       } else {
         valuesRead += read;
         if (read < toRead) {
-          ++currentSegment_;
+          advanceSegment();
         }
       }
     }
@@ -262,7 +291,11 @@ class DeserializerImpl : public Decoder {
   // Detects gaps between segments (where certain keys are missing) and fills
   // with placeholder data. Uses currentFlatMapRow_ to track position and
   // compare with segment startRow.
-  uint32_t readFlatMap(uint32_t count, void* output, uint32_t width) {
+  uint32_t readFlatMap(
+      uint32_t count,
+      void* output,
+      uint32_t width,
+      std::vector<velox::BufferPtr>& stringBuffers) {
     NIMBLE_CHECK(type_->isFlatMap(), "readFlatMap requires FlatMap type");
     // Only used for FlatMap nulls/inMap streams which are boolean.
     NIMBLE_CHECK_EQ(width, sizeof(bool), "readFlatMap expects bool width");
@@ -297,15 +330,15 @@ class DeserializerImpl : public Decoder {
 
       // Read from current segment.
       const uint32_t rowsToRead = count - rowsRead;
-      const uint32_t numRowsRead =
-          readFromBatchSegment(output, /*offset=*/rowsRead, rowsToRead, width);
+      const uint32_t numRowsRead = readFromBatchSegment(
+          output, /*offset=*/rowsRead, rowsToRead, width, stringBuffers);
       if (numRowsRead == 0) {
-        ++currentSegment_;
+        advanceSegment();
       } else {
         rowsRead += numRowsRead;
         currentFlatMapRow_ += numRowsRead;
         if (numRowsRead < rowsToRead) {
-          ++currentSegment_;
+          advanceSegment();
         }
       }
     }
@@ -328,12 +361,13 @@ class DeserializerImpl : public Decoder {
       uint32_t count,
       void* output,
       uint32_t width,
-      const velox::bits::Bitmap* scatterBitmap) {
+      const velox::bits::Bitmap* scatterBitmap,
+      std::vector<velox::BufferPtr>& stringBuffers) {
     const auto outputSize = scatterBitmap->size();
     // Fast path: if bitmap is dense (all bits set), read directly to output.
     // This avoids temp buffer allocation and scatter overhead.
     if (count == outputSize) {
-      return contiguousRead(count, output, width);
+      return contiguousRead(count, output, width, stringBuffers);
     }
 
     if (width > 0) {
@@ -341,17 +375,17 @@ class DeserializerImpl : public Decoder {
       auto* buffer = ensureScatterBuffer((size_t)count * width);
       uint32_t valuesRead = 0;
       while (valuesRead < count && currentSegment_ < batchSegments_.size()) {
-        auto& segment = batchSegments_[currentSegment_];
+        auto& streamData = ensureStreamData(stringBuffers);
         auto* dest = buffer + valuesRead * width;
         const auto toRead = count - valuesRead;
-        const auto copied = segment.data.copyTo(dest, toRead * width);
+        const auto copied = streamData.copyTo(dest, toRead * width);
         const auto read = copied / width;
         if (read == 0) {
-          ++currentSegment_;
+          advanceSegment();
         } else {
           valuesRead += read;
           if (read < toRead) {
-            ++currentSegment_;
+            advanceSegment();
           }
         }
       }
@@ -372,16 +406,16 @@ class DeserializerImpl : public Decoder {
           ensureScatterBuffer(count * sizeof(std::string_view)));
       uint32_t valuesRead = 0;
       while (valuesRead < count && currentSegment_ < batchSegments_.size()) {
-        auto& segment = batchSegments_[currentSegment_];
+        auto& streamData = ensureStreamData(stringBuffers);
         const auto toRead = count - valuesRead;
         const auto read =
-            segment.data.decodeStrings(toRead, stringBuffer + valuesRead);
+            streamData.decodeStrings(toRead, stringBuffer + valuesRead);
         if (read == 0) {
-          ++currentSegment_;
+          advanceSegment();
         } else {
           valuesRead += read;
           if (read < toRead) {
-            ++currentSegment_;
+            advanceSegment();
           }
         }
       }
@@ -482,12 +516,13 @@ class DeserializerImpl : public Decoder {
     }
   }
 
-  // Batch segment with row offset for gap detection in multi-batch scenarios.
-  // When FlatMap keys are missing in some batches, we detect gaps by comparing
-  // segment start rows and fill missing data.
+  // Batch segment storing raw data for lazy StreamData creation.
+  // Encoding objects are created on-demand when the segment is first read,
+  // ensuring only one encoding tree exists at a time for better cache locality.
   struct BatchSegment {
-    uint32_t startRow; // Row offset where this segment starts
-    serde::StreamData data; // Actual stream data
+    uint32_t startRow; // Row offset where this segment starts.
+    std::string_view data; // Raw stream data (valid for lifetime of input).
+    SerializationVersion version;
   };
 
   // Row range [startRow, endRow) for segments where this key is present in
@@ -519,6 +554,10 @@ class DeserializerImpl : public Decoder {
   uint32_t topLevelRows_{0};
   std::vector<BatchSegment> batchSegments_;
   size_t currentSegment_{0}; // Current index into batchSegments_
+
+  // Lazily-created StreamData. Only one exists at a time — destroyed before
+  // creating the next so the allocator reuses cache-hot memory.
+  std::optional<serde::StreamData> streamData_;
 
   // --- FlatMap state (reset in clear()) ---
   // FlatMap is only supported at depth 1 (top-level columns). Gap detection is
