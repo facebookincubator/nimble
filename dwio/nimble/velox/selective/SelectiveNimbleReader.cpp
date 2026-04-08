@@ -20,14 +20,13 @@
 #include "dwio/nimble/index/ClusterIndexReader.h"
 #include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/index/IndexFilter.h"
-#include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/selective/ColumnReader.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
 #include "dwio/nimble/velox/selective/SelectiveNimbleIndexReader.h"
-#include "dwio/nimble/velox/stats/VectorizedStatistics.h"
 #include "velox/common/base/RuntimeMetrics.h"
+#include "velox/dwio/common/Statistics.h"
 #include "velox/serializers/KeyEncoder.h"
 
 namespace facebook::nimble {
@@ -359,23 +358,13 @@ void SelectiveNimbleRowReader::computeStatsBasedRowSize() const {
     return;
   }
   statsBasedRowSizeAttempted_ = true;
-  const auto& tablet = readerBase_->tablet();
-  auto statsSection =
-      tablet.loadOptionalSection(std::string(kVectorizedStatsSection));
-  if (!statsSection.has_value()) {
+  const auto& columnStats = readerBase_->fileColumnStats();
+  if (columnStats.empty()) {
     return;
   }
-  auto fileStats = VectorizedFileStats::deserialize(
-      statsSection->content(), *readerBase_->pool());
-  NIMBLE_DCHECK(fileStats != nullptr, "Failed to deserialize vectorized stats");
-  if (!fileStats) {
-    return;
-  }
-  auto columnStats = fileStats->toColumnStatistics(
-      readerBase_->fileSchema(), readerBase_->nimbleSchema());
   auto totalLogicalSize = sumProjectedLogicalSize(
       *readerBase_->fileSchemaWithId(), columnStats, *options_.scanSpec());
-  auto totalRows = tablet.tabletRowCount();
+  auto totalRows = readerBase_->tablet().tabletRowCount();
   if (totalRows > 0) {
     statsBasedRowSize_ = std::max<size_t>(1, totalLogicalSize / totalRows);
   }
@@ -722,8 +711,14 @@ std::optional<uint64_t> SelectiveNimbleReader::numberOfRows() const {
 }
 
 std::unique_ptr<dwio::common::ColumnStatistics>
-SelectiveNimbleReader::columnStatistics(uint32_t /*index*/) const {
-  return nullptr;
+SelectiveNimbleReader::columnStatistics(uint32_t index) const {
+  const auto& stats = readerBase_->fileColumnStats();
+  // Return nullptr if the index is out of range (e.g., no vectorized stats
+  // section) or if the column has no statistics (e.g., unsupported type).
+  if (index >= stats.size() || !stats[index]) {
+    return nullptr;
+  }
+  return stats[index]->toCommonStatistics();
 }
 
 const RowTypePtr& SelectiveNimbleReader::rowType() const {

@@ -28,6 +28,7 @@
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "velox/buffer/Buffer.h"
+#include "velox/dwio/common/Statistics.h"
 #include "velox/dwio/common/TypeWithId.h"
 
 namespace facebook::nimble {
@@ -71,6 +72,11 @@ class ColumnStatistics {
   virtual uint64_t getPhysicalSize() const;
 
   virtual StatType getType() const;
+
+  /// Converts this nimble ColumnStatistics to dwio::common::ColumnStatistics
+  /// for use in file-level filter pushdown.
+  std::unique_ptr<velox::dwio::common::ColumnStatistics> toCommonStatistics()
+      const;
 
   template <typename T>
   T* as() {

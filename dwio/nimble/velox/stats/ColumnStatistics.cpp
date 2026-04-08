@@ -49,6 +49,61 @@ StatType ColumnStatistics::getType() const {
   return StatType::DEFAULT;
 }
 
+std::unique_ptr<velox::dwio::common::ColumnStatistics>
+ColumnStatistics::toCommonStatistics() const {
+  const auto valueCount = std::make_optional<uint64_t>(getValueCount());
+  const auto hasNull = std::make_optional<bool>(getNullCount() > 0);
+  const auto rawSize = std::make_optional<uint64_t>(getLogicalSize());
+  const auto size = std::make_optional<uint64_t>(getPhysicalSize());
+
+  switch (getType()) {
+    case StatType::INTEGRAL: {
+      const auto* intStats = as<const IntegralStatistics>();
+      NIMBLE_DCHECK(
+          intStats != nullptr, "Failed to cast to IntegralStatistics");
+      return std::make_unique<velox::dwio::common::IntegerColumnStatistics>(
+          valueCount,
+          hasNull,
+          rawSize,
+          size,
+          intStats->getMin(),
+          intStats->getMax(),
+          std::nullopt);
+    }
+    case StatType::FLOATING_POINT: {
+      const auto* fpStats = as<const FloatingPointStatistics>();
+      NIMBLE_DCHECK(
+          fpStats != nullptr, "Failed to cast to FloatingPointStatistics");
+      return std::make_unique<velox::dwio::common::DoubleColumnStatistics>(
+          valueCount,
+          hasNull,
+          rawSize,
+          size,
+          fpStats->getMin(),
+          fpStats->getMax(),
+          std::nullopt);
+    }
+    case StatType::STRING: {
+      const auto* strStats = as<const StringStatistics>();
+      NIMBLE_DCHECK(strStats != nullptr, "Failed to cast to StringStatistics");
+      return std::make_unique<velox::dwio::common::StringColumnStatistics>(
+          valueCount,
+          hasNull,
+          rawSize,
+          size,
+          strStats->getMin(),
+          strStats->getMax(),
+          std::nullopt);
+    }
+    case StatType::DEFAULT:
+    case StatType::DEDUPLICATED:
+      break;
+  }
+
+  return std::make_unique<velox::dwio::common::ColumnStatistics>(
+      valueCount, hasNull, rawSize, size);
+}
+
 StringStatistics::StringStatistics(
     uint64_t valueCount,
     uint64_t nullCount,

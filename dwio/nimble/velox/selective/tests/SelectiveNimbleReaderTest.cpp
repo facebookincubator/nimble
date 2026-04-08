@@ -36,6 +36,7 @@
 #include "velox/common/memory/MallocAllocator.h"
 #include "velox/dwio/common/CachedBufferedInput.h"
 #include "velox/dwio/common/DirectBufferedInput.h"
+#include "velox/dwio/common/Statistics.h"
 #include "velox/dwio/common/TypeUtils.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
@@ -2948,6 +2949,165 @@ TEST_P(SelectiveNimbleReaderTest, deltaSawtoothSmallBatches) {
       makeReaders(input, file, scanSpec, passStringBuffersFromDecoder);
   // Small batch size (7) to exercise partial-read boundaries.
   validate(*input, *readers.rowReader, 7, [](auto) { return true; });
+}
+
+// Verifies columnStatistics returns IntegerColumnStatistics for BIGINT columns
+// with correct value count and null status.
+TEST_P(SelectiveNimbleReaderTest, columnStatisticsInteger) {
+  constexpr int kSize = 100;
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(kSize, [](auto i) { return i * 3; }),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableVectorizedStats = true;
+  auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(
+      input, fileContent, scanSpec, this->passStringBuffersFromDecoder());
+
+  // Column 0 is the root ROW — column 1 is the first child (c0).
+  auto stats = readers.reader->columnStatistics(1);
+  ASSERT_NE(stats, nullptr);
+  ASSERT_TRUE(stats->getNumberOfValues().has_value());
+  EXPECT_EQ(stats->getNumberOfValues().value(), kSize);
+  ASSERT_TRUE(stats->hasNull().has_value());
+  EXPECT_FALSE(stats->hasNull().value());
+  auto* intStats =
+      dynamic_cast<dwio::common::IntegerColumnStatistics*>(stats.get());
+  ASSERT_NE(intStats, nullptr);
+}
+
+// Verifies columnStatistics returns DoubleColumnStatistics for DOUBLE columns.
+TEST_P(SelectiveNimbleReaderTest, columnStatisticsDouble) {
+  constexpr int kSize = 50;
+  auto input = makeRowVector({
+      makeFlatVector<double>(kSize, [](auto i) { return i * 1.5; }),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableVectorizedStats = true;
+  auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(
+      input, fileContent, scanSpec, this->passStringBuffersFromDecoder());
+
+  auto stats = readers.reader->columnStatistics(1);
+  ASSERT_NE(stats, nullptr);
+  auto* fpStats =
+      dynamic_cast<dwio::common::DoubleColumnStatistics*>(stats.get());
+  ASSERT_NE(fpStats, nullptr);
+  ASSERT_TRUE(stats->getNumberOfValues().has_value());
+  EXPECT_EQ(stats->getNumberOfValues().value(), kSize);
+}
+
+// Verifies columnStatistics returns StringColumnStatistics for VARCHAR columns.
+TEST_P(SelectiveNimbleReaderTest, columnStatisticsString) {
+  auto input = makeRowVector({
+      makeFlatVector<std::string>({"apple", "banana", "cherry"}),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableVectorizedStats = true;
+  auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(
+      input, fileContent, scanSpec, this->passStringBuffersFromDecoder());
+
+  auto stats = readers.reader->columnStatistics(1);
+  ASSERT_NE(stats, nullptr);
+  auto* strStats =
+      dynamic_cast<dwio::common::StringColumnStatistics*>(stats.get());
+  ASSERT_NE(strStats, nullptr);
+  ASSERT_TRUE(stats->getNumberOfValues().has_value());
+  EXPECT_EQ(stats->getNumberOfValues().value(), 3);
+}
+
+// Verifies columnStatistics returns nullptr for out-of-range indices and
+// returns base ColumnStatistics for the root ROW column.
+TEST_P(SelectiveNimbleReaderTest, columnStatisticsOutOfRange) {
+  constexpr int kSize = 10;
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(kSize, folly::identity),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableVectorizedStats = true;
+  auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(
+      input, fileContent, scanSpec, this->passStringBuffersFromDecoder());
+
+  // Out-of-range index returns nullptr.
+  EXPECT_EQ(readers.reader->columnStatistics(999), nullptr);
+
+  // Column 0 is the root ROW — should return base ColumnStatistics.
+  auto rootStats = readers.reader->columnStatistics(0);
+  ASSERT_NE(rootStats, nullptr);
+  ASSERT_TRUE(rootStats->getNumberOfValues().has_value());
+}
+
+// Verifies columnStatistics returns nullptr when vectorized stats are absent.
+TEST_P(SelectiveNimbleReaderTest, columnStatisticsNoStats) {
+  constexpr int kSize = 10;
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(kSize, folly::identity),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableVectorizedStats = false;
+  auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(
+      input, fileContent, scanSpec, this->passStringBuffersFromDecoder());
+
+  EXPECT_EQ(readers.reader->columnStatistics(0), nullptr);
+  EXPECT_EQ(readers.reader->columnStatistics(1), nullptr);
+}
+
+// Verifies columnStatistics correctly reports hasNull for nullable columns.
+TEST_P(SelectiveNimbleReaderTest, columnStatisticsWithNulls) {
+  constexpr int kSize = 100;
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(kSize, folly::identity, nullEvery(5)),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableVectorizedStats = true;
+  auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(
+      input, fileContent, scanSpec, this->passStringBuffersFromDecoder());
+
+  auto stats = readers.reader->columnStatistics(1);
+  ASSERT_NE(stats, nullptr);
+  ASSERT_TRUE(stats->hasNull().has_value());
+  EXPECT_TRUE(stats->hasNull().value());
+}
+
+// Verifies columnStatistics for an all-null column: hasNull is true and
+// min/max are absent.
+TEST_P(SelectiveNimbleReaderTest, columnStatisticsAllNull) {
+  constexpr int kSize = 50;
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(
+          kSize, folly::identity, [](auto) { return true; }),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableVectorizedStats = true;
+  auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(
+      input, fileContent, scanSpec, this->passStringBuffersFromDecoder());
+
+  auto stats = readers.reader->columnStatistics(1);
+  ASSERT_NE(stats, nullptr);
+  ASSERT_TRUE(stats->hasNull().has_value());
+  EXPECT_TRUE(stats->hasNull().value());
+  auto* intStats =
+      dynamic_cast<dwio::common::IntegerColumnStatistics*>(stats.get());
+  ASSERT_NE(intStats, nullptr);
 }
 
 INSTANTIATE_TEST_CASE_P(
