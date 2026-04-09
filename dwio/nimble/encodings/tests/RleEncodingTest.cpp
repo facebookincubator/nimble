@@ -35,9 +35,101 @@ struct TestConfig {
 
 #define TC(T) TestConfig<T, false>, TestConfig<T, true>
 
+// Forward declaration
+template <typename Config>
+class RleEncodingTest;
+
+// Helper to prepare values - must be at namespace scope
+template <typename T, typename TestClass>
+struct RleValuesPreparer {
+  static std::vector<nimble::Vector<T>> prepareValues(TestClass* test) {
+    FAIL() << "unspecialized prepareValues() should not be called";
+    return {};
+  }
+};
+
+template <typename TestClass>
+struct RleValuesPreparer<double, TestClass> {
+  static std::vector<nimble::Vector<double>> prepareValues(TestClass* test) {
+    return {
+        test->toVector({0.0, -0.0}),
+        test->toVector({-0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0}),
+        test->toVector({-0.0, -0.0, -0.0, +0.0, -0.0, +0.0, -0.0, -0.0, -0.0, -0.0}),
+        test->toVector({-2.1, -0.0, -0.0, 3.54, 9.87, -0.0, -0.0, -0.0, -0.0, 10.6}),
+        test->toVector({0.00, 1.11, 2.22, 3.33, 4.44, 5.55, 6.66, 7.77, 8.88, 9.99}),
+        test->toVector(
+            {test->dNaN0, test->dNaN0, test->dNaN0, test->dNaN1, test->dNaN1, test->dNaN2, test->dNaN3, test->dNaN3, test->dNaN0})};
+  }
+};
+
+template <typename TestClass>
+struct RleValuesPreparer<float, TestClass> {
+  static std::vector<nimble::Vector<float>> prepareValues(TestClass* test) {
+    return {
+        test->toVector({0.0f, -0.0f}),
+        test->toVector(
+            {-0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f}),
+        test->toVector(
+            {-0.0f,
+             -0.0f,
+             -0.0f,
+             +0.0f,
+             -0.0f,
+             +0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f}),
+        test->toVector(
+            {-2.1f,
+             -0.0f,
+             -0.0f,
+             3.54f,
+             9.87f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             10.6f}),
+        test->toVector(
+            {0.00f,
+             1.11f,
+             2.22f,
+             3.33f,
+             4.44f,
+             5.55f,
+             6.66f,
+             7.77f,
+             8.88f,
+             9.99f}),
+        test->toVector(
+            {test->fNaN0, test->fNaN0, test->fNaN0, test->fNaN1, test->fNaN1, test->fNaN2, test->fNaN3, test->fNaN3, test->fNaN0})};
+  }
+};
+
+template <typename TestClass>
+struct RleValuesPreparer<int32_t, TestClass> {
+  static std::vector<nimble::Vector<int32_t>> prepareValues(TestClass* test) {
+    return {test->toVector({2, 3, 3}), test->toVector({1, 2, 2, 3, 3, 3, 4, 4, 4, 4})};
+  }
+};
+
 template <typename Config>
 class RleEncodingTest : public ::testing::Test {
  protected:
+  // Make helper templates friends so they can access protected members
+  template <typename T, typename TestClass>
+  friend struct RleValuesPreparer;
+
   void SetUp() override {
     pool_ = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
     buffer_ = std::make_unique<nimble::Buffer>(*pool_);
@@ -45,8 +137,7 @@ class RleEncodingTest : public ::testing::Test {
 
   template <typename T>
   std::vector<nimble::Vector<T>> prepareValues() {
-    FAIL() << "unspecialized prepapreValues() should not be called";
-    return {};
+    return RleValuesPreparer<T, RleEncodingTest<Config>>::prepareValues(this);
   }
 
   template <typename T>
@@ -66,81 +157,12 @@ class RleEncodingTest : public ::testing::Test {
   double dNaN3 = ET<double>::asEncodingLogicalType(
       (ET<double>::asEncodingPhysicalType(dNaN0) | 0x5));
 
-  template <>
-  std::vector<nimble::Vector<double>> prepareValues() {
-    return {
-        toVector({0.0, -0.0}),
-        toVector({-0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0}),
-        toVector({-0.0, -0.0, -0.0, +0.0, -0.0, +0.0, -0.0, -0.0, -0.0, -0.0}),
-        toVector({-2.1, -0.0, -0.0, 3.54, 9.87, -0.0, -0.0, -0.0, -0.0, 10.6}),
-        toVector({0.00, 1.11, 2.22, 3.33, 4.44, 5.55, 6.66, 7.77, 8.88, 9.99}),
-        toVector(
-            {dNaN0, dNaN0, dNaN0, dNaN1, dNaN1, dNaN2, dNaN3, dNaN3, dNaN0})};
-  }
-
   float fNaN0 = std::numeric_limits<float>::quiet_NaN();
   float fNaN1 = std::numeric_limits<float>::signaling_NaN();
   float fNaN2 = ET<float>::asEncodingLogicalType(
       (ET<float>::asEncodingPhysicalType(fNaN0) | 0x3));
   float fNaN3 = ET<float>::asEncodingLogicalType(
       (ET<float>::asEncodingPhysicalType(fNaN0) | 0x5));
-
-  template <>
-  std::vector<nimble::Vector<float>> prepareValues() {
-    return {
-        toVector({0.0f, -0.0f}),
-        toVector(
-            {-0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f}),
-        toVector(
-            {-0.0f,
-             -0.0f,
-             -0.0f,
-             +0.0f,
-             -0.0f,
-             +0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f}),
-        toVector(
-            {-2.1f,
-             -0.0f,
-             -0.0f,
-             3.54f,
-             9.87f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             -0.0f,
-             10.6f}),
-        toVector(
-            {0.00f,
-             1.11f,
-             2.22f,
-             3.33f,
-             4.44f,
-             5.55f,
-             6.66f,
-             7.77f,
-             8.88f,
-             9.99f}),
-        toVector(
-            {fNaN0, fNaN0, fNaN0, fNaN1, fNaN1, fNaN2, fNaN3, fNaN3, fNaN0})};
-  }
-
-  template <>
-  std::vector<nimble::Vector<int32_t>> prepareValues() {
-    return {toVector({2, 3, 3}), toVector({1, 2, 2, 3, 3, 3, 4, 4, 4, 4})};
-  }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::unique_ptr<nimble::Buffer> buffer_;

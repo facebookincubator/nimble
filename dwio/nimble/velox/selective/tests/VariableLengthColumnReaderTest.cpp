@@ -162,14 +162,20 @@ TEST_F(VariableLengthColumnReaderTest, listMixedNullsAndEmpty) {
   // Interleaved null/empty/populated arrays.
   std::vector<std::optional<std::vector<std::optional<int64_t>>>> data = {
       std::nullopt, // null
-      {{}}, // empty
-      {{{1, 2, 3}}}, // populated
+    std::optional<std::vector<std::optional<int64_t>>>{
+      std::vector<std::optional<int64_t>>{}}, // empty
+    std::optional<std::vector<std::optional<int64_t>>>{
+      std::vector<std::optional<int64_t>>{1, 2, 3}}, // populated
       std::nullopt, // null
-      {{}}, // empty
-      {{{4, 5}}}, // populated
+    std::optional<std::vector<std::optional<int64_t>>>{
+      std::vector<std::optional<int64_t>>{}}, // empty
+    std::optional<std::vector<std::optional<int64_t>>>{
+      std::vector<std::optional<int64_t>>{4, 5}}, // populated
       std::nullopt, // null
-      {{{6}}}, // populated
-      {{}}, // empty
+    std::optional<std::vector<std::optional<int64_t>>>{
+      std::vector<std::optional<int64_t>>{6}}, // populated
+    std::optional<std::vector<std::optional<int64_t>>>{
+      std::vector<std::optional<int64_t>>{}}, // empty
   };
   auto input = makeRowVector({makeNullableArrayVector<int64_t>(data)});
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
@@ -266,7 +272,10 @@ TEST_F(VariableLengthColumnReaderTest, mapEmptyContainers) {
   // 10 rows of non-null empty maps — verifies empty != null.
   std::vector<
       std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>>
-      data(10, {{}});
+    data(
+      10,
+      std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>{
+        std::vector<std::pair<int64_t, std::optional<int64_t>>>{}});
   auto input = makeRowVector({makeNullableMapVector<int64_t, int64_t>(data)});
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
@@ -293,14 +302,20 @@ TEST_F(VariableLengthColumnReaderTest, mapMixedNullsAndEmpty) {
       std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>>
       data = {
           std::nullopt,
-          {{}},
-          {{{{1, 10}, {2, 20}}}},
+      std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>{
+        std::vector<std::pair<int64_t, std::optional<int64_t>>>{}},
+      std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>{
+        std::vector<std::pair<int64_t, std::optional<int64_t>>>{{1, 10}, {2, 20}}},
           std::nullopt,
-          {{}},
-          {{{{3, 30}}}},
+      std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>{
+        std::vector<std::pair<int64_t, std::optional<int64_t>>>{}},
+      std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>{
+        std::vector<std::pair<int64_t, std::optional<int64_t>>>{{3, 30}}},
           std::nullopt,
-          {{{{4, 40}, {5, 50}, {6, 60}}}},
-          {{}},
+      std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>{
+        std::vector<std::pair<int64_t, std::optional<int64_t>>>{{4, 40}, {5, 50}, {6, 60}}},
+      std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>{
+        std::vector<std::pair<int64_t, std::optional<int64_t>>>{}},
       };
   auto input = makeRowVector({makeNullableMapVector<int64_t, int64_t>(data)});
   auto scanSpec = std::make_shared<common::ScanSpec>("root");

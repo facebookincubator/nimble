@@ -43,6 +43,14 @@ struct CompressorRegistry {
 
 ICompressor& getCompressor(CompressionType compressionType) {
   static CompressorRegistry registry;
+  
+#ifdef DISABLE_META_INTERNAL_COMPRESSOR
+  // When MetaInternal is not available, redirect to Zstd
+  if (compressionType == CompressionType::MetaInternal) {
+    compressionType = CompressionType::Zstd;
+  }
+#endif
+  
   auto it = registry.compressors.find(compressionType);
   NIMBLE_CHECK(
       it != registry.compressors.end(),
@@ -50,6 +58,45 @@ ICompressor& getCompressor(CompressionType compressionType) {
       toString(compressionType));
   return *it->second;
 }
+
+#ifdef DISABLE_META_INTERNAL_COMPRESSOR
+// Wrapper to redirect MetaInternal compression to Zstd
+class MetaInternalToZstdPolicy : public CompressionPolicy {
+ public:
+  explicit MetaInternalToZstdPolicy(const CompressionPolicy& base)
+      : base_(base) {}
+
+  CompressionInformation compression() const override {
+    auto info = base_.compression();
+    if (info.compressionType == CompressionType::MetaInternal) {
+      // Convert MetaInternal parameters to Zstd
+      CompressionInformation zstdInfo{
+          .compressionType = CompressionType::Zstd,
+          .minCompressionSize = info.minCompressionSize};
+      // Map MetaInternal compression level to Zstd compression level
+      zstdInfo.parameters.zstd.compressionLevel = 
+          info.parameters.metaInternal.compressionLevel;
+      return zstdInfo;
+    }
+    return info;
+  }
+
+  bool shouldAccept(
+      CompressionType compressionType,
+      uint64_t uncompressedSize,
+      uint64_t compressedSize) const override {
+    // Redirect MetaInternal to Zstd for acceptance check
+    if (compressionType == CompressionType::MetaInternal) {
+      compressionType = CompressionType::Zstd;
+    }
+    return base_.shouldAccept(compressionType, uncompressedSize, compressedSize);
+  }
+
+ private:
+  const CompressionPolicy& base_;
+};
+#endif
+
 } // namespace
 
 /* static */ CompressionResult Compression::compress(
@@ -59,6 +106,16 @@ ICompressor& getCompressor(CompressionType compressionType) {
     int bitWidth,
     const CompressionPolicy& compressionPolicy) {
   auto compression = compressionPolicy.compression();
+
+#ifdef DISABLE_META_INTERNAL_COMPRESSOR
+  // Wrap the policy to redirect MetaInternal to Zstd
+  if (compression.compressionType == CompressionType::MetaInternal) {
+    MetaInternalToZstdPolicy wrapper(compressionPolicy);
+    compression = wrapper.compression();
+    return getCompressor(compression.compressionType)
+        .compress(memoryPool, data, dataType, bitWidth, wrapper);
+  }
+#endif
 
   return getCompressor(compression.compressionType)
       .compress(memoryPool, data, dataType, bitWidth, compressionPolicy);

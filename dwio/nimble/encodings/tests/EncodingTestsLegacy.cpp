@@ -64,11 +64,8 @@ class TestCompressPolicy : public nimble::CompressionPolicy {
     }
 
     nimble::CompressionInformation information{
-        .compressionType = nimble::CompressionType::MetaInternal};
-    information.parameters.metaInternal.compressionLevel = 9;
-    information.parameters.metaInternal.decompressionLevel = 2;
-    information.parameters.metaInternal.useVariableBitWidthCompressor =
-        useVariableBitWidthCompressor_;
+        .compressionType = nimble::CompressionType::Zstd};
+    information.parameters.zstd.compressionLevel = 9;
     return information;
   }
 
@@ -133,6 +130,51 @@ class TestTrivialEncodingSelectionPolicy
   bool shouldCompress_;
   bool useVariableBitWidthCompressor_;
 };
+
+// Helper to get encoding type for legacy encodings
+template <typename T>
+struct LegacyEncodingTypeGetter;
+
+template <typename T>
+struct LegacyEncodingTypeGetter<nimble::legacy::ConstantEncoding<T>> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::Constant;
+};
+
+template <typename T>
+struct LegacyEncodingTypeGetter<nimble::legacy::DictionaryEncoding<T>> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::Dictionary;
+};
+
+template <typename T>
+struct LegacyEncodingTypeGetter<nimble::legacy::FixedBitWidthEncoding<T>> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::FixedBitWidth;
+};
+
+template <typename T>
+struct LegacyEncodingTypeGetter<nimble::legacy::MainlyConstantEncoding<T>> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::MainlyConstant;
+};
+
+template <typename T>
+struct LegacyEncodingTypeGetter<nimble::legacy::RLEEncoding<T>> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::RLE;
+};
+
+template <>
+struct LegacyEncodingTypeGetter<nimble::legacy::SparseBoolEncoding> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::SparseBool;
+};
+
+template <typename T>
+struct LegacyEncodingTypeGetter<nimble::legacy::TrivialEncoding<T>> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::Trivial;
+};
+
+template <typename T>
+struct LegacyEncodingTypeGetter<nimble::legacy::VarintEncoding<T>> {
+  static constexpr nimble::EncodingType value = nimble::EncodingType::Varint;
+};
+
 } // namespace
 // C is the encoding type.
 template <typename C>
@@ -146,56 +188,6 @@ class EncodingTestsLegacy : public ::testing::Test {
     util_ = std::make_unique<nimble::testing::Util>(*this->pool_);
   }
 
-  template <typename Encoding>
-  struct EncodingTypeTraits {};
-
-  template <>
-  struct EncodingTypeTraits<nimble::legacy::ConstantEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Constant;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::legacy::DictionaryEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Dictionary;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::legacy::FixedBitWidthEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::FixedBitWidth;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::legacy::MainlyConstantEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::MainlyConstant;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::legacy::RLEEncoding<E>> {
-    static inline nimble::EncodingType encodingType = nimble::EncodingType::RLE;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::legacy::SparseBoolEncoding> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::SparseBool;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::legacy::TrivialEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Trivial;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::legacy::VarintEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Varint;
-  };
-
   std::unique_ptr<nimble::Encoding> createEncoding(
       const nimble::Vector<E>& values,
       bool compress,
@@ -205,7 +197,7 @@ class EncodingTestsLegacy : public ::testing::Test {
     auto physicalValues = std::span<const physicalType>(
         reinterpret_cast<const physicalType*>(values.data()), values.size());
     nimble::EncodingSelection<physicalType> selection{
-        {.encodingType = EncodingTypeTraits<C>::encodingType,
+        {.encodingType = LegacyEncodingTypeGetter<C>::value,
          .compressionPolicyFactory =
              [compress, useVariableBitWidthCompressor]() {
                return std::make_unique<TestCompressPolicy>(
