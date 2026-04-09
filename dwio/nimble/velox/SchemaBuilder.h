@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include <deque>
+
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "folly/container/F14Set.h"
@@ -272,7 +274,10 @@ class FlatMapTypeBuilder : public TypeBuilder {
 
   ScalarKind keyScalarKind_;
   StreamDescriptorBuilder nullsDescriptor_;
-  std::vector<std::string> names_;
+  // Uses deque for pointer stability: FlatMapFieldWriter stores StringView
+  // keys pointing at these strings, so they must not be invalidated on
+  // push_back.
+  std::deque<std::string> names_;
   std::vector<std::unique_ptr<StreamDescriptorBuilder>> inMapDescriptors_;
   std::vector<std::shared_ptr<const TypeBuilder>> children_;
 

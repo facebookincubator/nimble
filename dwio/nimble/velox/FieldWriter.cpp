@@ -1460,8 +1460,10 @@ class FlatMapFieldWriter : public FieldWriter {
           keyName, valueFieldWriter->typeBuilder());
       context_.handleFlatmapFieldAddEvent(
           *typeBuilder_, keyName, *valueFieldWriter->typeBuilder());
+      auto ownedKey =
+          stableKey(key, typeBuilder_->asFlatMap().childrenCount() - 1);
       allValueFields_.emplace(
-          key,
+          ownedKey,
           std::make_unique<FlatMapValueFieldWriter>(
               context_, inMapDescriptor, std::move(valueFieldWriter), nodeId_));
     }
@@ -1938,6 +1940,19 @@ class FlatMapFieldWriter : public FieldWriter {
     return context_.getFlatMapNodeKeys(nodeId_) != nullptr;
   }
 
+  // Returns a key whose underlying string data has stable lifetime. For
+  // StringView keys, returns a view pointing at the owned string in the type
+  // builder's names_ deque (which guarantees pointer stability on push_back).
+  // For non-string keys, returns the key as-is.
+  KeyType stableKey(KeyType key, size_t childIndex) const {
+    if constexpr (
+        K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY) {
+      return KeyType(typeBuilder_->asFlatMap().nameAt(childIndex));
+    } else {
+      return key;
+    }
+  }
+
   FlatMapValueFieldWriter* getValueFieldWriter(KeyType key, uint32_t size) {
     auto it = currentValueFields_.find(key);
     if (it != currentValueFields_.end()) {
@@ -1964,11 +1979,17 @@ class FlatMapFieldWriter : public FieldWriter {
           *typeBuilder_, stringKey, *valueFieldWriter->typeBuilder());
       auto flatMapValueField = std::make_unique<FlatMapValueFieldWriter>(
           context_, inMapDescriptor, std::move(valueFieldWriter), nodeId_);
+      auto ownedKey =
+          stableKey(key, typeBuilder_->asFlatMap().childrenCount() - 1);
       flatFieldIt =
-          allValueFields_.emplace(key, std::move(flatMapValueField)).first;
+          allValueFields_.emplace(ownedKey, std::move(flatMapValueField)).first;
     }
     // TODO: assert on not having too many keys?
-    it = currentValueFields_.emplace(key, flatFieldIt->second.get()).first;
+    // Use the key stored in allValueFields_ (which points to owned memory)
+    // rather than the input key (which may point to transient vector buffers).
+    it = currentValueFields_
+             .emplace(flatFieldIt->first, flatFieldIt->second.get())
+             .first;
 
     // At this point we will have at max nonNullCount_ for the field which we
     // backfill to false, later when ingest is completed (using scatter write)

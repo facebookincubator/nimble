@@ -7050,6 +7050,75 @@ TEST_P(VeloxReaderTest, pinnedMetadataNoReread) {
       << " metadataBoundary=" << metadataBoundary;
 }
 
+// Regression test: string-keyed flatmap writers store StringView keys in
+// F14FastMap. StringView is non-owning, so if the underlying string data (from
+// the input vector) is freed before a rehash, the map keys become dangling.
+// This test reproduces the issue by writing many batches with distinct string
+// keys, where each batch vector is destroyed before the next write.
+TEST_P(VeloxReaderTest, flatMapStringKeyOwnership) {
+  auto type =
+      velox::ROW({{"flat_map", velox::MAP(velox::VARCHAR(), velox::BIGINT())}});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  auto writerOptions = createFlatMapWriterOptions();
+  writerOptions.flatMapColumns["flat_map"];
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+
+  facebook::velox::test::VectorMaker vectorMaker(leafPool_.get());
+
+  // Write many batches, each with new unique string keys. The vector from each
+  // batch is destroyed before the next write, so any StringView pointing into
+  // the vector's string buffers becomes dangling. With enough keys, F14FastMap
+  // will rehash and access the dangling keys.
+  constexpr int kBatches = 50;
+  constexpr int kKeysPerBatch = 20;
+  for (int batch = 0; batch < kBatches; ++batch) {
+    // Build key and value flat vectors for this batch's single row.
+    // Generate key strings first so StringViews can reference them.
+    std::vector<std::string> keyStrings;
+    keyStrings.reserve(kKeysPerBatch);
+    for (int k = 0; k < kKeysPerBatch; ++k) {
+      keyStrings.push_back(fmt::format("key_batch_{}_col_{}", batch, k));
+    }
+    auto keys = vectorMaker.flatVector<velox::StringView>(kKeysPerBatch);
+    auto values = vectorMaker.flatVector<int64_t>(kKeysPerBatch);
+    for (int k = 0; k < kKeysPerBatch; ++k) {
+      keys->set(k, velox::StringView(keyStrings[k]));
+      values->set(k, batch * 100 + k);
+    }
+    // Single row: offset=0, size=kKeysPerBatch.
+    auto offsets = velox::allocateOffsets(1, leafPool_.get());
+    auto sizes = velox::allocateSizes(1, leafPool_.get());
+    offsets->asMutable<velox::vector_size_t>()[0] = 0;
+    sizes->asMutable<velox::vector_size_t>()[0] = kKeysPerBatch;
+    auto mapVector = std::make_shared<velox::MapVector>(
+        leafPool_.get(),
+        velox::MAP(velox::VARCHAR(), velox::BIGINT()),
+        nullptr,
+        1,
+        offsets,
+        sizes,
+        keys,
+        values);
+    auto vector = vectorMaker.rowVector({"flat_map"}, {mapVector});
+    writer.write(vector);
+    // Vector is destroyed here, freeing string buffers.
+  }
+  writer.close();
+
+  // Read back and verify all rows are present.
+  velox::InMemoryReadFile readFile(file);
+  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+  nimble::VeloxReader reader(
+      &readFile, *leafPool_, std::move(selector), createReadParams());
+  velox::VectorPtr output;
+  uint64_t totalRows = kBatches;
+  ASSERT_TRUE(reader.next(totalRows, output));
+  ASSERT_EQ(output->size(), kBatches);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     VeloxReaderTestSuite,
     VeloxReaderTest,
