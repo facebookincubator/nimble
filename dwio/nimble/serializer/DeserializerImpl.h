@@ -19,12 +19,12 @@
 #include <functional>
 #include <optional>
 
-#include "dwio/nimble/common/BufferPool.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "velox/buffer/Buffer.h"
+#include "velox/buffer/BufferPool.h"
 #include "velox/common/memory/Memory.h"
 
 namespace facebook::nimble::serde {
@@ -36,7 +36,7 @@ class StreamData {
     /// Serialization version. Determines encoding and row count format.
     SerializationVersion version;
     /// Optional pool for encoding scratch buffers.
-    BufferPool* bufferPool{nullptr};
+    velox::BufferPool* bufferPool{nullptr};
   };
 
   /// Constructor for thrift decoder: creates an empty stream that will be
@@ -135,7 +135,7 @@ class StreamData {
   bool useVarintRowCount_{true};
   // Optional pool for encoding scratch buffers. Owned externally
   // (typically by DeserializerImpl) to persist across StreamData lifetimes.
-  BufferPool* const bufferPool_{nullptr};
+  velox::BufferPool* const bufferPool_{nullptr};
 
   const char* pos_{nullptr};
   const char* end_{nullptr};

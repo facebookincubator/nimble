@@ -15,11 +15,11 @@
  */
 #pragma once
 
-#include "dwio/nimble/common/BufferPool.h"
 #include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "velox/buffer/BufferPool.h"
 #include "velox/common/base/BitUtil.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/dwio/common/ColumnVisitors.h"
@@ -107,7 +107,7 @@ class Encoding {
     /// scratch buffers to the pool on destruction and grab pre-allocated
     /// buffers on construction, avoiding MemoryPool alloc/free overhead.
     /// Value-initialized to nullptr when omitted from aggregate initialization.
-    BufferPool* bufferPool;
+    velox::BufferPool* bufferPool;
   };
 
   /// The binary layout for each Encoding begins with the same prefix:

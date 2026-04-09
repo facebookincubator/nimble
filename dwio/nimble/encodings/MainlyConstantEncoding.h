@@ -20,7 +20,6 @@
 #include <folly/CPortability.h>
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/BufferPool.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Exceptions.h"
@@ -30,6 +29,7 @@
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/EncodingSelection.h"
+#include "velox/buffer/BufferPool.h"
 #include "velox/common/base/SimdUtil.h"
 #include "velox/common/memory/Memory.h"
 
@@ -61,7 +61,7 @@ namespace detail {
 template <typename V>
 Vector<V> getPooledBuffer(
     velox::memory::MemoryPool& pool,
-    BufferPool* bufferPool) {
+    velox::BufferPool* bufferPool) {
   if (bufferPool != nullptr) {
     if (auto buf = bufferPool->get()) {
       return Vector<V>(std::move(buf));

@@ -99,7 +99,8 @@ class DeserializerImpl : public Decoder {
         scalarKind_{getScalarKindForType(*type)},
         typeStorageWidth_{getTypeStorageWidth(*type)},
         bufferPool_{
-            enableBufferPool ? std::make_unique<BufferPool>() : nullptr} {}
+            enableBufferPool ? std::make_unique<velox::BufferPool>()
+                             : nullptr} {}
 
   uint32_t next(
       uint32_t count,
@@ -546,7 +547,7 @@ class DeserializerImpl : public Decoder {
   // otherValues buffers). Persists across clear()/addBatch() cycles so buffers
   // are reused instead of being allocated/freed through MemoryPool each time.
   // Null when buffer pooling is disabled via DeserializerOptions.
-  const std::unique_ptr<BufferPool> bufferPool_;
+  const std::unique_ptr<velox::BufferPool> bufferPool_;
 
   // --- Batch decode state (reset in clear()) ---
   // Total top-level rows across all batches. Used for FlatMap gap detection to
