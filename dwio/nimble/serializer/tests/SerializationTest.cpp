@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include <folly/Random.h>
+#include <folly/executors/CPUThreadPoolExecutor.h>
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/common/tests/GTestUtils.h"
@@ -28,6 +29,7 @@
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "folly/container/F14Set.h"
+#include "velox/common/testutil/TestValue.h"
 #include "velox/dwio/common/BufferedInput.h"
 #include "velox/dwio/common/MetricsLog.h"
 #include "velox/vector/BaseVector.h"
@@ -3579,6 +3581,667 @@ TEST_F(SerializationTest, fuzzMixedVersionSerialization) {
           << "Mismatch at row " << i << "\nExpected: " << expected->toString(i)
           << "\nActual: " << output->toString(i);
     }
+  }
+}
+
+// Verifies that parallel decode is triggered via coroutine-based batched
+// dispatch and produces correct results for RowFieldReader.
+DEBUG_ONLY_TEST_P(SerializationTest, parallelDecodeRow) {
+  velox::common::testutil::TestValue::enable();
+
+  auto type = velox::ROW({
+      {"a", velox::BIGINT()},
+      {"b", velox::INTEGER()},
+      {"c", velox::DOUBLE()},
+      {"d", velox::REAL()},
+      {"e", velox::VARCHAR()},
+      {"f", velox::BIGINT()},
+      {"g", velox::INTEGER()},
+      {"h", velox::DOUBLE()},
+  });
+
+  const size_t batchSize = 50;
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  velox::VectorFuzzer fuzzer(
+      {.vectorSize = batchSize, .nullRatio = 0, .stringLength = 10},
+      pool_.get(),
+      seed);
+
+  SerializerOptions serOptions{
+      .compressionType = CompressionType::Zstd,
+      .compressionThreshold = 32,
+      .compressionLevel = 3,
+      .version = version(),
+  };
+  Serializer serializer{serOptions, type, pool_.get()};
+
+  const size_t numBatches = 5;
+  std::vector<velox::VectorPtr> inputs;
+  std::vector<std::string> serialized;
+  for (size_t i = 0; i < numBatches; ++i) {
+    auto input = fuzzer.fuzzInputRow(
+        std::dynamic_pointer_cast<const velox::RowType>(type));
+    serialized.emplace_back(
+        serializer.serialize(input, OrderedRanges::of(0, input->size())));
+    inputs.emplace_back(std::move(input));
+  }
+
+  auto schema =
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
+
+  struct ParallelDecodeParam {
+    uint32_t maxDecodeParallelism;
+    uint32_t minStreamsPerDecodeUnit;
+    uint32_t expectedTaskCount;
+
+    std::string debugString() const {
+      return fmt::format(
+          "maxParallel={}, minStreams={}, expectedTasks={}",
+          maxDecodeParallelism,
+          minStreamsPerDecodeUnit,
+          expectedTaskCount);
+    }
+  };
+
+  // 8 children: test different parallelism combinations.
+  // parallelDecodeEnabled requires numChildren >= minStreamsPerDecodeUnit * 2,
+  // so all test cases must satisfy 8 >= minStreams * 2.
+  const std::vector<ParallelDecodeParam> testCases = {
+      {2, 1, 2}, // 2 tasks, 4 children each
+      {4, 1, 4}, // 4 tasks, 2 children each
+      {8, 1, 8}, // 8 tasks, 1 child each
+      {4, 4, 2}, // min 4 streams/task -> 8/4=2 tasks
+      {8, 4, 2}, // min 4 streams/task -> 8/4=2 tasks
+      {100, 1, 8}, // clamped to numChildren=8
+  };
+
+  folly::CPUThreadPoolExecutor executor(4);
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
+
+    auto opts = deserializerOptions();
+    opts.decodeExecutor = &executor;
+    opts.maxDecodeParallelism = testCase.maxDecodeParallelism;
+    opts.minStreamsPerDecodeUnit = testCase.minStreamsPerDecodeUnit;
+
+    Deserializer deserializer{schema, pool_.get(), opts};
+
+    uint32_t parallelDecodeCount = 0;
+    std::vector<uint32_t> observedTaskCounts;
+    SCOPED_TESTVALUE_SET(
+        "facebook::nimble::RowFieldReader::co_next",
+        std::function<void(const uint32_t*)>([&](const uint32_t* taskCount) {
+          ++parallelDecodeCount;
+          observedTaskCounts.emplace_back(*taskCount);
+        }));
+
+    velox::VectorPtr output;
+    for (size_t i = 0; i < numBatches; ++i) {
+      deserializer.deserialize(serialized[i], output);
+      ASSERT_EQ(output->size(), inputs[i]->size());
+      for (velox::vector_size_t row = 0; row < output->size(); ++row) {
+        ASSERT_TRUE(output->equalValueAt(inputs[i].get(), row, row))
+            << "Mismatch at batch " << i << " row " << row;
+      }
+    }
+
+    EXPECT_EQ(parallelDecodeCount, numBatches);
+    for (const auto taskCount : observedTaskCounts) {
+      EXPECT_EQ(taskCount, testCase.expectedTaskCount);
+    }
+  }
+}
+
+// Verifies that parallel decode is triggered for StructFlatMapFieldReader
+// when deserializing flatmap-as-struct with parallel decode options.
+DEBUG_ONLY_TEST_P(SerializationTest, parallelDecodeFlatMapAsStruct) {
+  velox::common::testutil::TestValue::enable();
+
+  auto type = velox::ROW({
+      {"id", velox::BIGINT()},
+      {"features", velox::MAP(velox::INTEGER(), velox::DOUBLE())},
+  });
+
+  const size_t batchSize = 50;
+  const std::vector<int32_t> allKeys = {1, 2, 3, 4, 5, 6, 7, 8};
+
+  auto generateInput = [&]() -> velox::VectorPtr {
+    const auto numRows = static_cast<velox::vector_size_t>(batchSize);
+    const auto numKeys = static_cast<velox::vector_size_t>(allKeys.size());
+
+    auto ids = velox::BaseVector::create(velox::BIGINT(), numRows, pool_.get());
+    for (velox::vector_size_t i = 0; i < numRows; ++i) {
+      ids->asFlatVector<int64_t>()->set(i, i);
+    }
+
+    auto keysFlat = velox::BaseVector::create(
+        velox::INTEGER(), numRows * numKeys, pool_.get());
+    auto valuesFlat = velox::BaseVector::create(
+        velox::DOUBLE(), numRows * numKeys, pool_.get());
+    velox::vector_size_t offset = 0;
+    for (velox::vector_size_t i = 0; i < numRows; ++i) {
+      for (auto key : allKeys) {
+        keysFlat->asFlatVector<int32_t>()->set(offset, key);
+        valuesFlat->asFlatVector<double>()->set(offset, i * 10.0 + key);
+        ++offset;
+      }
+    }
+
+    auto mapVector = std::make_shared<velox::MapVector>(
+        pool_.get(),
+        velox::MAP(velox::INTEGER(), velox::DOUBLE()),
+        nullptr,
+        numRows,
+        velox::allocateOffsets(numRows, pool_.get()),
+        velox::allocateSizes(numRows, pool_.get()),
+        keysFlat,
+        valuesFlat);
+    auto* rawOffsets =
+        mapVector->mutableOffsets(numRows)->asMutable<velox::vector_size_t>();
+    auto* rawSizes =
+        mapVector->mutableSizes(numRows)->asMutable<velox::vector_size_t>();
+    for (velox::vector_size_t i = 0; i < numRows; ++i) {
+      rawOffsets[i] = i * numKeys;
+      rawSizes[i] = numKeys;
+    }
+
+    return std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        numRows,
+        std::vector<velox::VectorPtr>{ids, mapVector});
+  };
+
+  const SerializerOptions serOptions{
+      .compressionType = CompressionType::Zstd,
+      .compressionThreshold = 32,
+      .compressionLevel = 3,
+      .version = version(),
+      .flatMapColumns = {{"features", {}}},
+  };
+  Serializer serializer{serOptions, type, pool_.get()};
+
+  const size_t numBatches = 5;
+  std::vector<velox::VectorPtr> inputs;
+  std::vector<std::string> serialized;
+  for (size_t i = 0; i < numBatches; ++i) {
+    auto input = generateInput();
+    serialized.emplace_back(
+        serializer.serialize(input, OrderedRanges::of(0, input->size())));
+    inputs.emplace_back(std::move(input));
+  }
+
+  auto schema =
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
+
+  // Build struct output type from flatmap keys.
+  auto outputType = buildOutputTypeForFlatMapAsStruct(*schema);
+
+  struct ParallelDecodeParam {
+    uint32_t maxDecodeParallelism;
+    uint32_t minStreamsPerDecodeUnit;
+    // Expected task count for the StructFlatMapFieldReader (8 keys).
+    uint32_t expectedFlatMapTaskCount;
+    // Whether parallel decode is expected for the Row (2 children: id +
+    // features). Depends on whether 2 >= minStreamsPerDecodeUnit * 2.
+    bool rowParallelExpected;
+
+    std::string debugString() const {
+      return fmt::format(
+          "maxParallel={}, minStreams={}, expectedFlatMapTasks={}, rowParallel={}",
+          maxDecodeParallelism,
+          minStreamsPerDecodeUnit,
+          expectedFlatMapTaskCount,
+          rowParallelExpected);
+    }
+  };
+
+  // 8 flatmap keys -> 8 children in StructFlatMapFieldReader.
+  // parallelDecodeEnabled requires numChildren >= minStreamsPerDecodeUnit * 2.
+  const std::vector<ParallelDecodeParam> testCases = {
+      {2, 1, 2, true},
+      {4, 1, 4, true},
+      {4, 4, 2, false}, // Row: 2 < 4*2=8
+      {100, 1, 8, true},
+  };
+
+  folly::CPUThreadPoolExecutor executor(4);
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
+
+    auto opts = deserializerOptions();
+    opts.outputType = outputType;
+    opts.decodeExecutor = &executor;
+    opts.maxDecodeParallelism = testCase.maxDecodeParallelism;
+    opts.minStreamsPerDecodeUnit = testCase.minStreamsPerDecodeUnit;
+
+    Deserializer deserializer{schema, pool_.get(), opts};
+
+    uint32_t rowParallelCount = 0;
+    uint32_t flatMapParallelCount = 0;
+    std::vector<uint32_t> flatMapTaskCounts;
+    SCOPED_TESTVALUE_SET(
+        "facebook::nimble::RowFieldReader::co_next",
+        std::function<void(const uint32_t*)>(
+            [&](const uint32_t*) { ++rowParallelCount; }));
+    SCOPED_TESTVALUE_SET(
+        "facebook::nimble::StructFlatMapFieldReader::co_next",
+        std::function<void(const uint32_t*)>([&](const uint32_t* taskCount) {
+          ++flatMapParallelCount;
+          flatMapTaskCounts.emplace_back(*taskCount);
+        }));
+
+    velox::VectorPtr output;
+    for (size_t i = 0; i < numBatches; ++i) {
+      deserializer.deserialize(serialized[i], output);
+      ASSERT_EQ(output->size(), batchSize);
+
+      auto* outputRow = output->as<velox::RowVector>();
+      ASSERT_NE(outputRow, nullptr);
+
+      // Verify id column.
+      auto* idVector = outputRow->childAt(0)->asFlatVector<int64_t>();
+      for (velox::vector_size_t row = 0; row < output->size(); ++row) {
+        EXPECT_EQ(idVector->valueAt(row), row);
+      }
+
+      // Verify features struct.
+      auto* featuresRow = outputRow->childAt(1)->as<velox::RowVector>();
+      ASSERT_NE(featuresRow, nullptr);
+      ASSERT_EQ(featuresRow->childrenSize(), allKeys.size());
+      for (size_t k = 0; k < allKeys.size(); ++k) {
+        auto* values = featuresRow->childAt(k)->asFlatVector<double>();
+        for (velox::vector_size_t row = 0; row < output->size(); ++row) {
+          EXPECT_DOUBLE_EQ(values->valueAt(row), row * 10.0 + allKeys[k]);
+        }
+      }
+    }
+
+    EXPECT_EQ(rowParallelCount, testCase.rowParallelExpected ? numBatches : 0);
+    EXPECT_EQ(flatMapParallelCount, numBatches);
+    for (const auto taskCount : flatMapTaskCounts) {
+      EXPECT_EQ(taskCount, testCase.expectedFlatMapTaskCount);
+    }
+  }
+}
+
+// Verifies that parallel decode is not triggered for StructFlatMapFieldReader
+// when only 1 key is present (not enough non-null children for parallelism).
+DEBUG_ONLY_TEST_P(SerializationTest, parallelDecodeSkippedFewKeys) {
+  velox::common::testutil::TestValue::enable();
+
+  auto type = velox::ROW({
+      {"id", velox::BIGINT()},
+      {"features", velox::MAP(velox::INTEGER(), velox::DOUBLE())},
+  });
+
+  const size_t batchSize = 50;
+  // Only 1 key in the data.
+  const std::vector<int32_t> dataKeys = {1};
+
+  auto generateInput = [&]() -> velox::VectorPtr {
+    const auto numRows = static_cast<velox::vector_size_t>(batchSize);
+    const auto numKeys = static_cast<velox::vector_size_t>(dataKeys.size());
+
+    auto ids = velox::BaseVector::create(velox::BIGINT(), numRows, pool_.get());
+    for (velox::vector_size_t i = 0; i < numRows; ++i) {
+      ids->asFlatVector<int64_t>()->set(i, i);
+    }
+
+    auto keysFlat = velox::BaseVector::create(
+        velox::INTEGER(), numRows * numKeys, pool_.get());
+    auto valuesFlat = velox::BaseVector::create(
+        velox::DOUBLE(), numRows * numKeys, pool_.get());
+    velox::vector_size_t offset = 0;
+    for (velox::vector_size_t i = 0; i < numRows; ++i) {
+      for (auto key : dataKeys) {
+        keysFlat->asFlatVector<int32_t>()->set(offset, key);
+        valuesFlat->asFlatVector<double>()->set(offset, i * 10.0 + key);
+        ++offset;
+      }
+    }
+
+    auto mapVector = std::make_shared<velox::MapVector>(
+        pool_.get(),
+        velox::MAP(velox::INTEGER(), velox::DOUBLE()),
+        nullptr,
+        numRows,
+        velox::allocateOffsets(numRows, pool_.get()),
+        velox::allocateSizes(numRows, pool_.get()),
+        keysFlat,
+        valuesFlat);
+    auto* rawOffsets =
+        mapVector->mutableOffsets(numRows)->asMutable<velox::vector_size_t>();
+    auto* rawSizes =
+        mapVector->mutableSizes(numRows)->asMutable<velox::vector_size_t>();
+    for (velox::vector_size_t i = 0; i < numRows; ++i) {
+      rawOffsets[i] = i * numKeys;
+      rawSizes[i] = numKeys;
+    }
+
+    return std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        numRows,
+        std::vector<velox::VectorPtr>{ids, mapVector});
+  };
+
+  const SerializerOptions serOptions{
+      .compressionType = CompressionType::Zstd,
+      .compressionThreshold = 32,
+      .compressionLevel = 3,
+      .version = version(),
+      .flatMapColumns = {{"features", {}}},
+  };
+  Serializer serializer{serOptions, type, pool_.get()};
+
+  const size_t numBatches = 3;
+  std::vector<velox::VectorPtr> inputs;
+  std::vector<std::string> serialized;
+  for (size_t i = 0; i < numBatches; ++i) {
+    auto input = generateInput();
+    serialized.emplace_back(
+        serializer.serialize(input, OrderedRanges::of(0, input->size())));
+    inputs.emplace_back(std::move(input));
+  }
+
+  auto schema =
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
+  auto outputType = buildOutputTypeForFlatMapAsStruct(*schema);
+
+  folly::CPUThreadPoolExecutor executor(4);
+
+  auto opts = deserializerOptions();
+  opts.outputType = outputType;
+  opts.decodeExecutor = &executor;
+  opts.maxDecodeParallelism = 4;
+  opts.minStreamsPerDecodeUnit = 1;
+
+  Deserializer deserializer{schema, pool_.get(), opts};
+
+  std::vector<uint32_t> flatMapTaskCounts;
+  SCOPED_TESTVALUE_SET(
+      "facebook::nimble::StructFlatMapFieldReader::co_next",
+      std::function<void(const uint32_t*)>([&](const uint32_t* taskCount) {
+        flatMapTaskCounts.emplace_back(*taskCount);
+      }));
+
+  velox::VectorPtr output;
+  for (size_t i = 0; i < numBatches; ++i) {
+    deserializer.deserialize(serialized[i], output);
+    ASSERT_EQ(output->size(), batchSize);
+
+    auto* outputRow = output->as<velox::RowVector>();
+    auto* featuresRow = outputRow->childAt(1)->as<velox::RowVector>();
+    ASSERT_EQ(featuresRow->childrenSize(), 1);
+    auto* values = featuresRow->childAt(0)->asFlatVector<double>();
+    for (velox::vector_size_t row = 0; row < output->size(); ++row) {
+      EXPECT_DOUBLE_EQ(values->valueAt(row), row * 10.0 + dataKeys[0]);
+    }
+  }
+
+  // Only 1 non-null key node -> taskCount should be 1 (single coroutine task,
+  // no parallelism benefit).
+  for (const auto taskCount : flatMapTaskCounts) {
+    EXPECT_EQ(taskCount, 1);
+  }
+}
+
+// Verifies that parallel decode is NOT triggered when the executor is not set
+// or maxDecodeParallelism <= 1, even when the data has enough children to be
+// eligible for parallel decode.
+DEBUG_ONLY_TEST_P(SerializationTest, parallelDecodeDisabled) {
+  velox::common::testutil::TestValue::enable();
+
+  // 8 children — enough for parallel decode if settings were enabled.
+  auto type = velox::ROW({
+      {"a", velox::BIGINT()},
+      {"b", velox::INTEGER()},
+      {"c", velox::DOUBLE()},
+      {"d", velox::REAL()},
+      {"e", velox::VARCHAR()},
+      {"f", velox::BIGINT()},
+      {"g", velox::INTEGER()},
+      {"h", velox::DOUBLE()},
+  });
+
+  const size_t batchSize = 50;
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  velox::VectorFuzzer fuzzer(
+      {.vectorSize = batchSize, .nullRatio = 0, .stringLength = 10},
+      pool_.get(),
+      seed);
+
+  SerializerOptions serOptions{.version = version()};
+  Serializer serializer{serOptions, type, pool_.get()};
+
+  const size_t numBatches = 3;
+  std::vector<velox::VectorPtr> inputs;
+  std::vector<std::string> serialized;
+  for (size_t i = 0; i < numBatches; ++i) {
+    auto input = fuzzer.fuzzInputRow(
+        std::dynamic_pointer_cast<const velox::RowType>(type));
+    serialized.emplace_back(
+        serializer.serialize(input, OrderedRanges::of(0, input->size())));
+    inputs.emplace_back(std::move(input));
+  }
+
+  auto schema =
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
+
+  struct TestParam {
+    std::string label;
+    bool hasExecutor;
+    uint32_t maxDecodeParallelism;
+
+    std::string debugString() const {
+      return fmt::format(
+          "{}: hasExecutor={}, maxParallel={}",
+          label,
+          hasExecutor,
+          maxDecodeParallelism);
+    }
+  };
+
+  const std::vector<TestParam> testCases = {
+      {"no executor", false, 4},
+      {"maxParallel=0", true, 0},
+      {"maxParallel=1", true, 1},
+  };
+
+  folly::CPUThreadPoolExecutor executor(4);
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
+
+    auto opts = deserializerOptions();
+    opts.decodeExecutor = testCase.hasExecutor ? &executor : nullptr;
+    opts.maxDecodeParallelism = testCase.maxDecodeParallelism;
+    opts.minStreamsPerDecodeUnit = 1;
+
+    Deserializer deserializer{schema, pool_.get(), opts};
+
+    uint32_t rowParallelCount = 0;
+    SCOPED_TESTVALUE_SET(
+        "facebook::nimble::RowFieldReader::co_next",
+        std::function<void(const uint32_t*)>(
+            [&](const uint32_t*) { ++rowParallelCount; }));
+
+    velox::VectorPtr output;
+    for (size_t i = 0; i < numBatches; ++i) {
+      deserializer.deserialize(serialized[i], output);
+      ASSERT_EQ(output->size(), inputs[i]->size());
+      for (velox::vector_size_t row = 0; row < output->size(); ++row) {
+        ASSERT_TRUE(output->equalValueAt(inputs[i].get(), row, row))
+            << "Mismatch at batch " << i << " row " << row;
+      }
+    }
+
+    EXPECT_EQ(rowParallelCount, 0)
+        << "Parallel decode should NOT be triggered for: "
+        << testCase.debugString();
+  }
+}
+
+// Verifies that parallel decode is NOT triggered for flatmap-as-struct when
+// the executor is not set or maxDecodeParallelism <= 1, even when the data
+// has enough keys (8) to be eligible.
+DEBUG_ONLY_TEST_P(SerializationTest, parallelDecodeDisabledFlatMap) {
+  velox::common::testutil::TestValue::enable();
+
+  auto type = velox::ROW({
+      {"id", velox::BIGINT()},
+      {"features", velox::MAP(velox::INTEGER(), velox::DOUBLE())},
+  });
+
+  const size_t batchSize = 50;
+  const std::vector<int32_t> allKeys = {1, 2, 3, 4, 5, 6, 7, 8};
+
+  auto generateInput = [&]() -> velox::VectorPtr {
+    const auto numRows = static_cast<velox::vector_size_t>(batchSize);
+    const auto numKeys = static_cast<velox::vector_size_t>(allKeys.size());
+
+    auto ids = velox::BaseVector::create(velox::BIGINT(), numRows, pool_.get());
+    for (velox::vector_size_t i = 0; i < numRows; ++i) {
+      ids->asFlatVector<int64_t>()->set(i, i);
+    }
+
+    auto keysFlat = velox::BaseVector::create(
+        velox::INTEGER(), numRows * numKeys, pool_.get());
+    auto valuesFlat = velox::BaseVector::create(
+        velox::DOUBLE(), numRows * numKeys, pool_.get());
+    velox::vector_size_t offset = 0;
+    for (velox::vector_size_t i = 0; i < numRows; ++i) {
+      for (auto key : allKeys) {
+        keysFlat->asFlatVector<int32_t>()->set(offset, key);
+        valuesFlat->asFlatVector<double>()->set(offset, i * 10.0 + key);
+        ++offset;
+      }
+    }
+
+    auto mapVector = std::make_shared<velox::MapVector>(
+        pool_.get(),
+        velox::MAP(velox::INTEGER(), velox::DOUBLE()),
+        nullptr,
+        numRows,
+        velox::allocateOffsets(numRows, pool_.get()),
+        velox::allocateSizes(numRows, pool_.get()),
+        keysFlat,
+        valuesFlat);
+    auto* rawOffsets =
+        mapVector->mutableOffsets(numRows)->asMutable<velox::vector_size_t>();
+    auto* rawSizes =
+        mapVector->mutableSizes(numRows)->asMutable<velox::vector_size_t>();
+    for (velox::vector_size_t i = 0; i < numRows; ++i) {
+      rawOffsets[i] = i * numKeys;
+      rawSizes[i] = numKeys;
+    }
+
+    return std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        numRows,
+        std::vector<velox::VectorPtr>{ids, mapVector});
+  };
+
+  const SerializerOptions serOptions{
+      .version = version(),
+      .flatMapColumns = {{"features", {}}},
+  };
+  Serializer serializer{serOptions, type, pool_.get()};
+
+  const size_t numBatches = 3;
+  std::vector<velox::VectorPtr> inputs;
+  std::vector<std::string> serialized;
+  for (size_t i = 0; i < numBatches; ++i) {
+    auto input = generateInput();
+    serialized.emplace_back(
+        serializer.serialize(input, OrderedRanges::of(0, input->size())));
+    inputs.emplace_back(std::move(input));
+  }
+
+  auto schema =
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
+  auto outputType = buildOutputTypeForFlatMapAsStruct(*schema);
+
+  struct TestParam {
+    std::string label;
+    bool hasExecutor;
+    uint32_t maxDecodeParallelism;
+
+    std::string debugString() const {
+      return fmt::format(
+          "{}: hasExecutor={}, maxParallel={}",
+          label,
+          hasExecutor,
+          maxDecodeParallelism);
+    }
+  };
+
+  const std::vector<TestParam> testCases = {
+      {"no executor", false, 4},
+      {"maxParallel=0", true, 0},
+      {"maxParallel=1", true, 1},
+  };
+
+  folly::CPUThreadPoolExecutor executor(4);
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
+
+    auto opts = deserializerOptions();
+    opts.outputType = outputType;
+    opts.decodeExecutor = testCase.hasExecutor ? &executor : nullptr;
+    opts.maxDecodeParallelism = testCase.maxDecodeParallelism;
+    opts.minStreamsPerDecodeUnit = 1;
+
+    Deserializer deserializer{schema, pool_.get(), opts};
+
+    uint32_t rowParallelCount = 0;
+    uint32_t flatMapParallelCount = 0;
+    SCOPED_TESTVALUE_SET(
+        "facebook::nimble::RowFieldReader::co_next",
+        std::function<void(const uint32_t*)>(
+            [&](const uint32_t*) { ++rowParallelCount; }));
+    SCOPED_TESTVALUE_SET(
+        "facebook::nimble::StructFlatMapFieldReader::co_next",
+        std::function<void(const uint32_t*)>(
+            [&](const uint32_t*) { ++flatMapParallelCount; }));
+
+    velox::VectorPtr output;
+    for (size_t i = 0; i < numBatches; ++i) {
+      deserializer.deserialize(serialized[i], output);
+      ASSERT_EQ(output->size(), batchSize);
+
+      auto* outputRow = output->as<velox::RowVector>();
+      auto* idVector = outputRow->childAt(0)->asFlatVector<int64_t>();
+      for (velox::vector_size_t row = 0; row < output->size(); ++row) {
+        EXPECT_EQ(idVector->valueAt(row), row);
+      }
+
+      auto* featuresRow = outputRow->childAt(1)->as<velox::RowVector>();
+      ASSERT_EQ(featuresRow->childrenSize(), allKeys.size());
+      for (size_t k = 0; k < allKeys.size(); ++k) {
+        auto* values = featuresRow->childAt(k)->asFlatVector<double>();
+        for (velox::vector_size_t row = 0; row < output->size(); ++row) {
+          EXPECT_DOUBLE_EQ(values->valueAt(row), row * 10.0 + allKeys[k]);
+        }
+      }
+    }
+
+    EXPECT_EQ(rowParallelCount, 0)
+        << "Row parallel decode should NOT be triggered for: "
+        << testCase.debugString();
+    EXPECT_EQ(flatMapParallelCount, 0)
+        << "FlatMap parallel decode should NOT be triggered for: "
+        << testCase.debugString();
   }
 }
 

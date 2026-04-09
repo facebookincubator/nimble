@@ -25,6 +25,7 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
+#include "folly/Executor.h"
 #include "folly/container/F14Map.h"
 #include "folly/container/F14Set.h"
 
@@ -219,6 +220,22 @@ struct DeserializerOptions {
   /// reuse buffers across encoding lifetimes, reducing MemoryPool allocation
   /// overhead.
   bool enableBufferPool{true};
+
+  /// Executor for parallel decoding of child fields.
+  /// When set, RowFieldReader and StructFlatMapFieldReader dispatch child reads
+  /// as coroutines to this executor, using co_await to yield threads back to
+  /// the pool. This prevents deadlock from nested parallelism.
+  /// When nullptr (default), child reads are performed sequentially.
+  folly::Executor* decodeExecutor{nullptr};
+
+  /// Maximum number of parallel coroutine tasks for child field decoding.
+  /// Children are grouped into this many batches, each decoded sequentially
+  /// within a single coroutine task. 0 disables parallel decoding.
+  uint32_t maxDecodeParallelism{0};
+
+  /// Minimum number of child streams per parallel decode task. Ensures each
+  /// coroutine task has enough work to amortize threading overhead.
+  uint32_t minStreamsPerDecodeUnit{1};
 };
 
 } // namespace facebook::nimble

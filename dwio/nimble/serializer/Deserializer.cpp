@@ -599,10 +599,13 @@ const StreamDescriptor& getMainDescriptor(const Type& type) {
 
 } // namespace
 
-void Deserializer::populateFlatMapAsStructParams(
-    FieldReaderParams& params) const {
+FieldReaderParams Deserializer::createFieldReaderParams() const {
+  FieldReaderParams params;
+  params.decodeExecutor = options_.decodeExecutor;
+  params.maxDecodeParallelism = options_.maxDecodeParallelism;
+  params.minStreamsPerDecodeUnit = options_.minStreamsPerDecodeUnit;
   if (options_.outputType == nullptr) {
-    return;
+    return params;
   }
 
   NIMBLE_CHECK(
@@ -639,6 +642,7 @@ void Deserializer::populateFlatMapAsStructParams(
         .mode = SelectionMode::Include,
     };
   }
+  return params;
 }
 
 Deserializer::Deserializer(
@@ -651,14 +655,13 @@ Deserializer::Deserializer(
     velox::memory::MemoryPool* pool,
     DeserializerOptions options)
     : schema_{std::move(schema)}, pool_{pool}, options_{std::move(options)} {
-  FieldReaderParams params;
-  populateFlatMapAsStructParams(params);
+  const auto params = createFieldReaderParams();
 
   std::shared_ptr<const velox::dwio::common::TypeWithId> schemaWithId =
       velox::dwio::common::TypeWithId::create(convertToVeloxType(*schema_));
   std::vector<uint32_t> offsets;
   rootFactory_ = FieldReaderFactory::create(
-      params, *pool_, schema_, schemaWithId, offsets);
+      params, schema_, schemaWithId, offsets, [](auto) { return true; }, pool_);
   SchemaReader::traverseSchema(schema_, [this](auto depth, auto& type, auto&) {
     createDeserializersForType(type, depth);
   });
