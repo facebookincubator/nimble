@@ -50,7 +50,7 @@ struct VeloxWriterOptions {
   bool enableStatsCollection{true};
 
   // Enable vectorized stats for applicable schema shapes.
-  bool enableVectorizedStats{false};
+  bool enableVectorizedStats{true};
 
   // When true, chunk-level position index is built for all streams,
   // enabling O(1) chunk-level seeking within stripes. Independent of

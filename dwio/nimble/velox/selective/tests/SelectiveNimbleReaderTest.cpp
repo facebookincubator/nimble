@@ -616,7 +616,7 @@ TEST_P(SelectiveNimbleReaderTest, basic) {
   auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
   auto estimatedRowSize = readers.rowReader->estimatedRowSize();
   ASSERT_TRUE(estimatedRowSize.has_value());
-  ASSERT_EQ(*estimatedRowSize, 24);
+  ASSERT_EQ(*estimatedRowSize, 21);
   validate(*input, *readers.rowReader, 101, [&](auto i) {
     return !c0->isNullAt(i) && rawC0[i] <= 502;
   });
@@ -1148,7 +1148,7 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSize) {
       makeReaders(input, fileContent, scanSpec, passStringBuffersFromDecoder);
   auto estimatedRowSize = readers.rowReader->estimatedRowSize();
   ASSERT_TRUE(estimatedRowSize.has_value());
-  ASSERT_EQ(*estimatedRowSize, 102);
+  ASSERT_EQ(*estimatedRowSize, 37);
   {
     SCOPED_TRACE("Read flatmap as struct");
     auto c2Type =
@@ -1172,7 +1172,7 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSize) {
     auto rowReader = readers.reader->createRowReader(rowOptions);
     auto structEstimatedRowSize = rowReader->estimatedRowSize();
     ASSERT_TRUE(structEstimatedRowSize.has_value());
-    ASSERT_EQ(*structEstimatedRowSize, 62);
+    ASSERT_EQ(*structEstimatedRowSize, 37);
     auto result = BaseVector::create(outputType, 0, pool());
     int numRows = 0;
     while (rowReader->next(11, result) > 0) {
@@ -1201,7 +1201,7 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeNullableString) {
   auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
   auto estimatedRowSize = readers.rowReader->estimatedRowSize();
   ASSERT_TRUE(estimatedRowSize.has_value());
-  ASSERT_EQ(*estimatedRowSize, 6);
+  ASSERT_EQ(*estimatedRowSize, 2);
   validate(*input, *readers.rowReader, 3, [&](auto) { return true; });
 }
 

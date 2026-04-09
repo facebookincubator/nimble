@@ -285,8 +285,10 @@ TEST_F(NimbleDslTest, ExecShowStatsNoStats) {
   auto vector =
       maker.rowVector({"col"}, {maker.flatVector<int32_t>({1, 2, 3})});
 
-  // Default writer options don't include vectorized stats.
-  auto fileData = nimble::test::createNimbleFile(*rootPool_, vector);
+  // Explicitly disable vectorized stats to test the no-stats path.
+  nimble::VeloxWriterOptions options;
+  options.enableVectorizedStats = false;
+  auto fileData = nimble::test::createNimbleFile(*rootPool_, vector, options);
 
   std::ostringstream out;
   auto sql = createDslLib(out, fileData);
