@@ -17,6 +17,7 @@
 
 #include <velox/type/StringView.h>
 #include <cstddef>
+
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
@@ -25,6 +26,11 @@
 #include "dwio/nimble/encodings/legacy/NullableEncoding.h"
 #include "dwio/nimble/encodings/legacy/TrivialEncoding.h"
 #include "dwio/nimble/velox/SchemaReader.h"
+
+#include <folly/coro/BlockingWait.h>
+#include <folly/coro/Collect.h>
+#include <folly/coro/Invoke.h>
+#include "velox/common/testutil/TestValue.h"
 #include "velox/dwio/common/FlatMapHelper.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/DictionaryVector.h"
@@ -302,9 +308,10 @@ class NullColumnReader final : public FieldReader {
 class NullFieldReaderFactory final : public FieldReaderFactory {
  public:
   NullFieldReaderFactory(
-      velox::memory::MemoryPool& pool,
-      velox::TypePtr veloxType)
-      : FieldReaderFactory{pool, std::move(veloxType), nullptr} {}
+      velox::TypePtr veloxType,
+      velox::memory::MemoryPool* pool)
+      : FieldReaderFactory{std::move(veloxType), /*nimbleType=*/nullptr, pool} {
+  }
 
   std::unique_ptr<FieldReader> createReader(
       const folly::F14FastMap<
@@ -543,10 +550,10 @@ template <typename T>
 class ScalarFieldReaderFactory final : public FieldReaderFactory {
  public:
   ScalarFieldReaderFactory(
-      velox::memory::MemoryPool& pool,
       velox::TypePtr veloxType,
-      const Type* type)
-      : FieldReaderFactory{pool, std::move(veloxType), type} {}
+      const Type* type,
+      velox::memory::MemoryPool* pool)
+      : FieldReaderFactory{std::move(veloxType), type, pool} {}
 
   std::unique_ptr<FieldReader> createReader(
       const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders)
@@ -836,11 +843,11 @@ class LegacyStringFieldReader final : public FieldReader {
 class StringFieldReaderFactory final : public FieldReaderFactory {
  public:
   StringFieldReaderFactory(
-      velox::memory::MemoryPool& pool,
       velox::TypePtr veloxType,
       const Type* type,
-      bool optimizeStringBufferHandling)
-      : FieldReaderFactory{pool, std::move(veloxType), type},
+      bool optimizeStringBufferHandling,
+      velox::memory::MemoryPool* pool)
+      : FieldReaderFactory{std::move(veloxType), type, pool},
         optimizeStringBufferHandling_{optimizeStringBufferHandling} {}
 
   std::unique_ptr<FieldReader> createReader(
@@ -1013,10 +1020,10 @@ class TimestampMicroNanoFieldReader final : public FieldReader {
 class TimestampMicroNanoFieldReaderFactory final : public FieldReaderFactory {
  public:
   TimestampMicroNanoFieldReaderFactory(
-      velox::memory::MemoryPool& pool,
       velox::TypePtr veloxType,
-      const Type* type)
-      : FieldReaderFactory{pool, std::move(veloxType), type} {}
+      const Type* type,
+      velox::memory::MemoryPool* pool)
+      : FieldReaderFactory{std::move(veloxType), type, pool} {}
 
   std::unique_ptr<FieldReader> createReader(
       const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders)
@@ -1221,11 +1228,11 @@ class ArrayFieldReaderFactory final : public FieldReaderFactory {
  public:
   // Here the index is the index of the array lengths.
   ArrayFieldReaderFactory(
-      velox::memory::MemoryPool& pool,
       velox::TypePtr veloxType,
       const Type* type,
-      std::unique_ptr<FieldReaderFactory> elements)
-      : FieldReaderFactory{pool, std::move(veloxType), type},
+      std::unique_ptr<FieldReaderFactory> elements,
+      velox::memory::MemoryPool* pool)
+      : FieldReaderFactory{std::move(veloxType), type, pool},
         elements_{std::move(elements)} {}
 
   std::unique_ptr<FieldReader> createReader(
@@ -1626,11 +1633,11 @@ class ArrayWithOffsetsFieldReaderFactory final : public FieldReaderFactory {
  public:
   // Here the index is the index of the array lengths.
   ArrayWithOffsetsFieldReaderFactory(
-      velox::memory::MemoryPool& pool,
       velox::TypePtr veloxType,
       const Type* type,
-      std::unique_ptr<FieldReaderFactory> elements)
-      : FieldReaderFactory{pool, std::move(veloxType), type},
+      std::unique_ptr<FieldReaderFactory> elements,
+      velox::memory::MemoryPool* pool)
+      : FieldReaderFactory{std::move(veloxType), type, pool},
         elements_{std::move(elements)} {}
 
   std::unique_ptr<FieldReader> createReader(
@@ -1769,8 +1776,8 @@ class SlidingWindowMapFieldReader final : public FieldReader {
         }
         // First non-null item
         if (deduplicatedOffsets.empty()) {
-          deduplicatedOffsets.push_back(indices[idx]);
-          deduplicatedLengths.push_back(lengthBuffer[idx - nullCount]);
+          deduplicatedOffsets.emplace_back(indices[idx]);
+          deduplicatedLengths.emplace_back(lengthBuffer[idx - nullCount]);
           startOffset = deduplicatedOffsets.back();
           endOffset = deduplicatedOffsets.back() + deduplicatedLengths.back();
           uniqueCount = 1;
@@ -1779,8 +1786,8 @@ class SlidingWindowMapFieldReader final : public FieldReader {
             // If not, update deduplicatedOffsets and deduplicatedLengths
             deduplicatedOffsets.back() != indices[idx] ||
             deduplicatedLengths.back() != lengthBuffer[idx - nullCount]) {
-          deduplicatedOffsets.push_back(indices[idx]);
-          deduplicatedLengths.push_back(lengthBuffer[idx - nullCount]);
+          deduplicatedOffsets.emplace_back(indices[idx]);
+          deduplicatedLengths.emplace_back(lengthBuffer[idx - nullCount]);
           endOffset = std::max(
               deduplicatedOffsets.back() + deduplicatedLengths.back(),
               endOffset);
@@ -1791,8 +1798,8 @@ class SlidingWindowMapFieldReader final : public FieldReader {
       NIMBLE_CHECK_EQ(
           nonNullCount + nullCount, rowCount, "Null Count is not matching");
     } else {
-      deduplicatedOffsets.push_back(indices[0]);
-      deduplicatedLengths.push_back(lengthBuffer[0]);
+      deduplicatedOffsets.emplace_back(indices[0]);
+      deduplicatedLengths.emplace_back(lengthBuffer[0]);
       startOffset = deduplicatedOffsets.back();
       endOffset = deduplicatedOffsets.back() + deduplicatedLengths.back();
       indices[0] = 0;
@@ -1802,8 +1809,8 @@ class SlidingWindowMapFieldReader final : public FieldReader {
       for (uint32_t idx = 1; idx < rowCount; ++idx) {
         if (deduplicatedOffsets.back() != indices[idx] ||
             deduplicatedLengths.back() != lengthBuffer[idx]) {
-          deduplicatedOffsets.push_back(indices[idx]);
-          deduplicatedLengths.push_back(lengthBuffer[idx]);
+          deduplicatedOffsets.emplace_back(indices[idx]);
+          deduplicatedLengths.emplace_back(lengthBuffer[idx]);
           endOffset = std::max(
               deduplicatedOffsets.back() + deduplicatedLengths.back(),
               endOffset);
@@ -2130,12 +2137,12 @@ class SlidingWindowMapFieldReaderFactory final : public FieldReaderFactory {
  public:
   // Here the index is the index of the array lengths.
   SlidingWindowMapFieldReaderFactory(
-      velox::memory::MemoryPool& pool,
       velox::TypePtr veloxType,
       const Type* type,
       std::unique_ptr<FieldReaderFactory> keys,
-      std::unique_ptr<FieldReaderFactory> values)
-      : FieldReaderFactory{pool, std::move(veloxType), type},
+      std::unique_ptr<FieldReaderFactory> values,
+      velox::memory::MemoryPool* pool)
+      : FieldReaderFactory{std::move(veloxType), type, pool},
         keys_{std::move(keys)},
         values_{std::move(values)} {}
 
@@ -2241,12 +2248,12 @@ class MapFieldReaderFactory final : public FieldReaderFactory {
  public:
   // Here the index is the index of the array lengths.
   MapFieldReaderFactory(
-      velox::memory::MemoryPool& pool,
       velox::TypePtr veloxType,
       const Type* type,
       std::unique_ptr<FieldReaderFactory> keys,
-      std::unique_ptr<FieldReaderFactory> values)
-      : FieldReaderFactory{pool, std::move(veloxType), type},
+      std::unique_ptr<FieldReaderFactory> values,
+      velox::memory::MemoryPool* pool)
+      : FieldReaderFactory{std::move(veloxType), type, pool},
         keys_{std::move(keys)},
         values_{std::move(values)} {}
 
@@ -2341,16 +2348,15 @@ template <bool hasNull>
 class RowFieldReader final : public FieldReader {
  public:
   RowFieldReader(
-      velox::memory::MemoryPool& pool,
       velox::TypePtr type,
       Decoder* decoder,
       std::vector<std::unique_ptr<FieldReader>> childrenReaders,
       Vector<bool>& boolBuffer,
-      folly::Executor* executor)
-      : FieldReader{pool, std::move(type), decoder},
+      velox::memory::MemoryPool* pool,
+      const FieldReader::Options& options)
+      : FieldReader{*pool, std::move(type), decoder, options},
         childrenReaders_{std::move(childrenReaders)},
-        boolBuffer_{boolBuffer},
-        executor_{executor} {}
+        boolBuffer_{boolBuffer} {}
 
   std::optional<std::pair<uint32_t, uint64_t>> estimatedRowSize() const final {
     uint64_t totalBytes{0};
@@ -2401,96 +2407,96 @@ class RowFieldReader final : public FieldReader {
       uint32_t count,
       velox::VectorPtr& output,
       const velox::bits::Bitmap* scatterBitmap) final {
-    auto rowCount = scatterCount(count, scatterBitmap);
-    auto vector = VectorInitializer<velox::RowVector>::initialize(
-        type_, rowCount, pool_, output);
-    vector->children().resize(childrenReaders_.size());
-    vector->unsafeResize(rowCount);
-    const void* childrenBits = nullptr;
-    uint32_t selectedNonNullCount = 0;
-
-    if constexpr (hasNull) {
-      zeroNulls(vector, rowCount);
-      // if it is a scattered read case then we can't read the rowCount
-      // values from the nulls, we count the set value in scatterBitmap and
-      // read only those values, if there is no scatter then we can read
-      // rowCount values
-      boolBuffer_.resize(count);
-      std::vector<velox::BufferPtr> stringBuffers;
-      decoder_->next(count, boolBuffer_.data(), stringBuffers);
-
-      auto* nullBuffer = ensureNulls(vector, rowCount);
-      velox::bits::BitmapBuilder nullBits{nullBuffer, rowCount};
-      if (scatterBitmap) {
-        uint32_t boolBufferOffset = 0;
-        for (uint32_t i = 0; i < rowCount; ++i) {
-          if (scatterBitmap->test(i) && boolBuffer_[boolBufferOffset++]) {
-            nullBits.set(i);
-            ++selectedNonNullCount;
-          }
-        }
-      } else {
-        for (uint32_t i = 0; i < rowCount; ++i) {
-          if (boolBuffer_[i]) {
-            nullBits.set(i);
-            ++selectedNonNullCount;
-          }
-        }
+    if (parallelDecodeEnabled(childrenReaders_.size())) {
+      folly::coro::blockingWait(co_next(count, output, scatterBitmap));
+      return;
+    }
+    const auto outputContext = prepareOutput(count, output, scatterBitmap);
+    velox::bits::Bitmap bitmap{
+        outputContext.scatterNullBits, outputContext.rowCount};
+    auto* bitmapPtr =
+        outputContext.scatterNullBits != nullptr ? &bitmap : nullptr;
+    for (uint32_t i = 0; i < childrenReaders_.size(); ++i) {
+      auto& reader = childrenReaders_[i];
+      if (reader != nullptr) {
+        reader->next(
+            outputContext.selectedNonNullCount,
+            outputContext.vector->childAt(i),
+            bitmapPtr);
       }
-      if (UNLIKELY(selectedNonNullCount == rowCount)) {
-        vector->resetNulls();
-      } else {
-        vector->setNullCount(rowCount - selectedNonNullCount);
-        childrenBits = nullBuffer;
-      }
-    } else {
-      selectedNonNullCount = count;
-      if (scatterBitmap) {
-        auto requiredBytes = velox::bits::nbytes(rowCount);
-        auto* nullBuffer = ensureNulls(vector, rowCount);
-        // @lint-ignore CLANGSECURITY facebook-security-vulnerable-memcpy
-        std::memcpy(
-            nullBuffer,
-            static_cast<const char*>(scatterBitmap->bits()),
-            requiredBytes);
-        vector->setNullCount(rowCount - count);
-        childrenBits = scatterBitmap->bits();
-      } else {
-        vector->resetNulls();
+    }
+  }
+
+  folly::coro::Task<void> co_next(
+      uint32_t count,
+      velox::VectorPtr& output,
+      const velox::bits::Bitmap* scatterBitmap) final {
+    const auto outputContext = prepareOutput(count, output, scatterBitmap);
+
+    // Collect indices of non-null child readers.
+    std::vector<uint32_t> nonNullChildren;
+    nonNullChildren.reserve(childrenReaders_.size());
+    for (uint32_t i = 0; i < childrenReaders_.size(); ++i) {
+      if (childrenReaders_[i] != nullptr) {
+        nonNullChildren.emplace_back(i);
       }
     }
 
-    if (executor_) {
-      for (uint32_t i = 0; i < childrenReaders_.size(); ++i) {
-        auto& reader = childrenReaders_[i];
-        if (reader) {
-          executor_->add([selectedNonNullCount,
-                          childrenBits,
-                          rowCount,
-                          &reader,
-                          &child = vector->childAt(i)]() {
-            velox::bits::Bitmap childrenBitmap{childrenBits, rowCount};
-            auto bitmapPtr = childrenBits ? &childrenBitmap : nullptr;
-            reader->next(selectedNonNullCount, child, bitmapPtr);
-          });
-        }
-      }
-    } else {
-      velox::bits::Bitmap childrenBitmap{childrenBits, rowCount};
-      auto bitmapPtr = childrenBits ? &childrenBitmap : nullptr;
-      for (uint32_t i = 0; i < childrenReaders_.size(); ++i) {
-        auto& reader = childrenReaders_[i];
-        if (reader) {
-          reader->next(selectedNonNullCount, vector->childAt(i), bitmapPtr);
-        }
-      }
+    if (nonNullChildren.empty()) {
+      co_return;
     }
+
+    const uint32_t taskCount =
+        computeParallelDecodeTaskCount(nonNullChildren.size());
+    velox::common::testutil::TestValue::adjust(
+        "facebook::nimble::RowFieldReader::co_next",
+        const_cast<uint32_t*>(&taskCount));
+
+    const uint32_t childrenPerTask = nonNullChildren.size() / taskCount;
+    const uint32_t numRemainderChildren = nonNullChildren.size() % taskCount;
+
+    // Decodes children in [startIdx, endIdx) synchronously.
+    auto decodeRange = [this, &outputContext, &nonNullChildren](
+                           uint32_t startIdx, uint32_t endIdx) {
+      velox::bits::Bitmap bitmap{
+          outputContext.scatterNullBits, outputContext.rowCount};
+      auto* bitmapPtr =
+          outputContext.scatterNullBits != nullptr ? &bitmap : nullptr;
+      for (uint32_t idx = startIdx; idx < endIdx; ++idx) {
+        const auto i = nonNullChildren[idx];
+        childrenReaders_[i]->next(
+            outputContext.selectedNonNullCount,
+            outputContext.vector->childAt(i),
+            bitmapPtr);
+      }
+    };
+
+    // First 'numRemainderChildren' tasks get one extra child each.
+    std::vector<folly::coro::TaskWithExecutor<void>> tasks;
+    tasks.reserve(taskCount);
+    uint32_t nextChildIdx = 0;
+    for (uint32_t task = 0; task < taskCount; ++task) {
+      const uint32_t endChildIdx = nextChildIdx + childrenPerTask +
+          (task < numRemainderChildren ? 1 : 0);
+      tasks.emplace_back(
+          folly::coro::co_invoke(
+              [&decodeRange,
+               nextChildIdx,
+               endChildIdx]() -> folly::coro::Task<void> {
+                decodeRange(nextChildIdx, endChildIdx);
+                co_return;
+              })
+              .scheduleOn(decodeExecutor_));
+      nextChildIdx = endChildIdx;
+    }
+
+    co_await folly::coro::collectAllRange(std::move(tasks));
   }
 
   void skip(uint32_t count) final {
     uint32_t childRowCount = count;
     if constexpr (hasNull) {
-      std::array<bool, kSkipBatchSize> buffer;
+      std::array<bool, kSkipBatchSize> buffer{};
       childRowCount = 0;
       while (count > 0) {
         auto readSize = std::min(count, kSkipBatchSize);
@@ -2518,24 +2524,102 @@ class RowFieldReader final : public FieldReader {
   }
 
  private:
+  struct OutputContext {
+    // Initialized output row vector.
+    velox::RowVector* vector;
+    // Number of non-null rows after scatter filtering.
+    uint32_t selectedNonNullCount;
+    // Scatter bitmap bits for child null propagation, or nullptr if all
+    // non-null.
+    const void* scatterNullBits;
+    // Total number of rows including nulls and scattered positions.
+    uint32_t rowCount;
+  };
+
+  OutputContext prepareOutput(
+      uint32_t count,
+      velox::VectorPtr& output,
+      const velox::bits::Bitmap* scatterBitmap) {
+    const auto rowCount = scatterCount(count, scatterBitmap);
+    auto* vector = VectorInitializer<velox::RowVector>::initialize(
+        type_, rowCount, pool_, output);
+    vector->children().resize(childrenReaders_.size());
+    vector->unsafeResize(rowCount);
+    const void* scatterNullBits = nullptr;
+    uint32_t selectedNonNullCount = 0;
+
+    if constexpr (hasNull) {
+      zeroNulls(vector, rowCount);
+      // if it is a scattered read case then we can't read the rowCount
+      // values from the nulls, we count the set value in scatterBitmap and
+      // read only those values, if there is no scatter then we can read
+      // rowCount values in its original place without removal
+      boolBuffer_.resize(count);
+      std::vector<velox::BufferPtr> stringBuffers;
+      decoder_->next(count, boolBuffer_.data(), stringBuffers);
+
+      auto* nullBuffer = ensureNulls(vector, rowCount);
+      velox::bits::BitmapBuilder nullBits{nullBuffer, rowCount};
+      if (scatterBitmap != nullptr) {
+        uint32_t boolBufferOffset = 0;
+        for (uint32_t i = 0; i < rowCount; ++i) {
+          if (scatterBitmap->test(i) && boolBuffer_[boolBufferOffset++]) {
+            nullBits.set(i);
+            ++selectedNonNullCount;
+          }
+        }
+      } else {
+        for (uint32_t i = 0; i < rowCount; ++i) {
+          if (boolBuffer_[i]) {
+            nullBits.set(i);
+            ++selectedNonNullCount;
+          }
+        }
+      }
+      if (UNLIKELY(selectedNonNullCount == rowCount)) {
+        vector->resetNulls();
+      } else {
+        vector->setNullCount(rowCount - selectedNonNullCount);
+        scatterNullBits = nullBuffer;
+      }
+    } else {
+      selectedNonNullCount = count;
+      if (scatterBitmap != nullptr) {
+        const auto requiredBytes = velox::bits::nbytes(rowCount);
+        auto* nullBuffer = ensureNulls(vector, rowCount);
+        // @lint-ignore CLANGSECURITY facebook-security-vulnerable-memcpy
+        std::memcpy(
+            nullBuffer,
+            static_cast<const char*>(scatterBitmap->bits()),
+            requiredBytes);
+        vector->setNullCount(rowCount - count);
+        scatterNullBits = scatterBitmap->bits();
+      } else {
+        vector->resetNulls();
+      }
+    }
+    return {vector, selectedNonNullCount, scatterNullBits, rowCount};
+  }
+
   std::vector<std::unique_ptr<FieldReader>> childrenReaders_;
   Vector<bool>& boolBuffer_;
-  folly::Executor* executor_;
 };
 
 class RowFieldReaderFactory final : public FieldReaderFactory {
  public:
   // Here the index is the index of the null decoder.
   RowFieldReaderFactory(
-      velox::memory::MemoryPool& pool,
       velox::TypePtr veloxType,
       const Type* type,
       std::vector<std::unique_ptr<FieldReaderFactory>> children,
-      folly::Executor* executor)
-      : FieldReaderFactory{pool, std::move(veloxType), type},
+      velox::memory::MemoryPool* pool,
+      const FieldReaderParams& params)
+      : FieldReaderFactory{std::move(veloxType), type, pool},
+        decodeExecutor_{params.decodeExecutor},
+        maxDecodeParallelism_{params.maxDecodeParallelism},
+        minStreamsPerDecodeUnit_{params.minStreamsPerDecodeUnit},
         children_{std::move(children)},
-        boolBuffer_{pool_},
-        executor_{executor} {}
+        boolBuffer_{pool_} {}
 
   std::unique_ptr<FieldReader> createReader(
       const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders)
@@ -2551,29 +2635,33 @@ class RowFieldReaderFactory final : public FieldReaderFactory {
       }
     }
 
+    const FieldReader::Options options{
+        decodeExecutor_, maxDecodeParallelism_, minStreamsPerDecodeUnit_};
     if (!nulls) {
       return std::make_unique<RowFieldReader<false>>(
-          *pool_,
           veloxType_,
           nulls,
           std::move(childrenReaders),
           boolBuffer_,
-          executor_);
+          pool_,
+          options);
     }
 
     return std::make_unique<RowFieldReader<true>>(
-        *pool_,
         veloxType_,
         nulls,
         std::move(childrenReaders),
         boolBuffer_,
-        executor_);
+        pool_,
+        options);
   }
 
  private:
+  folly::Executor* const decodeExecutor_;
+  const uint32_t maxDecodeParallelism_;
+  const uint32_t minStreamsPerDecodeUnit_;
   std::vector<std::unique_ptr<FieldReaderFactory>> children_;
   Vector<bool> boolBuffer_;
-  folly::Executor* executor_;
 };
 
 // Represent a keyed value node for flat map
@@ -2703,8 +2791,9 @@ class FlatMapFieldReaderBase : public FieldReader {
       velox::TypePtr type,
       Decoder* decoder,
       std::vector<std::unique_ptr<FlatMapKeyNode<T>>> keyNodes,
-      Vector<bool>& boolBuffer)
-      : FieldReader{pool, std::move(type), decoder},
+      Vector<bool>& boolBuffer,
+      const FieldReader::Options& options = {})
+      : FieldReader{pool, std::move(type), decoder, options},
         keyNodes_{std::move(keyNodes)},
         boolBuffer_{boolBuffer} {}
 
@@ -2781,13 +2870,13 @@ template <typename T>
 class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
  public:
   FlatMapFieldReaderFactoryBase(
-      velox::memory::MemoryPool& pool,
       velox::TypePtr veloxType,
       const Type* type,
       std::vector<const StreamDescriptor*> inMapDescriptors,
       std::vector<std::unique_ptr<FieldReaderFactory>> valueReaders,
-      const std::vector<size_t>& selectedChildren)
-      : FieldReaderFactory{pool, std::move(veloxType), type},
+      const std::vector<size_t>& selectedChildren,
+      velox::memory::MemoryPool* pool)
+      : FieldReaderFactory{std::move(veloxType), type, pool},
         inMapDescriptors_{std::move(inMapDescriptors)},
         valueReaders_{std::move(valueReaders)},
         boolBuffer_{pool_} {
@@ -2807,10 +2896,10 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
     keyValues_.reserve(selectedChildren.size());
     valueTypes_.reserve(selectedChildren.size());
     for (auto childIdx : selectedChildren) {
-      keyValues_.push_back(
+      keyValues_.emplace_back(
           velox::dwio::common::flatmap::parseKeyValue<T>(
               flatMap.nameAt(childIdx)));
-      valueTypes_.push_back(flatMap.childAt(childIdx).get());
+      valueTypes_.emplace_back(flatMap.childAt(childIdx).get());
     }
   }
 
@@ -2840,7 +2929,7 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
                 *valueTypes_[currentIdx], [&decoders](offset_size offset) {
                   return hasDecoderStream(offset, decoders);
                 })) {
-          keyNodes.push_back(
+          keyNodes.emplace_back(
               std::make_unique<FlatMapKeyNode<T>>(
                   *pool_,
                   // @lint-ignore CLANGTIDY
@@ -2855,26 +2944,26 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
       }
 
       if constexpr (includeMissing) {
-        keyNodes.push_back(nullptr);
+        keyNodes.emplace_back(nullptr);
       }
     }
 
     if (nulls == nullptr) {
       return std::make_unique<ReaderT<false>>(
-          *pool_,
           this->veloxType_,
           nulls,
           std::move(keyNodes),
           boolBuffer_,
+          pool_,
           std::forward<Args>(args)...);
     }
 
     return std::make_unique<ReaderT<true>>(
-        *pool_,
         this->veloxType_,
         nulls,
         std::move(keyNodes),
         boolBuffer_,
+        pool_,
         std::forward<Args>(args)...);
   }
 
@@ -2892,20 +2981,20 @@ template <typename T, bool hasNull>
 class StructFlatMapFieldReader : public FlatMapFieldReaderBase<T, hasNull> {
  public:
   StructFlatMapFieldReader(
-      velox::memory::MemoryPool& pool,
       velox::TypePtr type,
       Decoder* decoder,
       std::vector<std::unique_ptr<FlatMapKeyNode<T>>> keyNodes,
       Vector<bool>& boolBuffer,
+      velox::memory::MemoryPool* pool,
       Vector<char>& mergedNulls,
-      folly::Executor* executor)
+      const FieldReader::Options& options)
       : FlatMapFieldReaderBase<T, hasNull>(
-            pool,
+            *pool,
             std::move(type),
             decoder,
             std::move(keyNodes),
-            boolBuffer),
-        executor_{executor},
+            boolBuffer,
+            options),
         mergedNulls_{mergedNulls} {}
 
   std::optional<std::pair<uint32_t, uint64_t>> estimatedRowSize() const final {
@@ -2959,44 +3048,114 @@ class StructFlatMapFieldReader : public FlatMapFieldReaderBase<T, hasNull> {
       velox::VectorPtr& output,
       const velox::bits::Bitmap* scatterBitmap) final {
     NIMBLE_CHECK_NULL(scatterBitmap, "unexpected scatterBitmap");
-    auto* vector = VectorInitializer<velox::RowVector>::initialize(
-        this->type_, rowCount, this->pool_, output);
-    vector->unsafeResize(rowCount);
-    const uint32_t nonNullCount = this->loadNulls(rowCount, vector);
-    if (executor_ != nullptr) {
-      for (uint32_t i = 0; i < this->keyNodes_.size(); ++i) {
-        if (this->keyNodes_[i] == nullptr) {
-          this->ensureNullConstant(
-              this->type_->childAt(i), rowCount, vector->childAt(i));
-        } else {
-          executor_->add([this,
-                          rowCount,
-                          nonNullCount,
-                          &node = this->keyNodes_[i],
-                          &child = vector->childAt(i)] {
-            node->readAsChild(child, rowCount, nonNullCount, this->boolBuffer_);
-          });
-        }
-      }
-    } else {
-      for (uint32_t i = 0; i < this->keyNodes_.size(); ++i) {
-        if (this->keyNodes_[i] == nullptr) {
-          this->ensureNullConstant(
-              this->type_->childAt(i), rowCount, vector->childAt(i));
-        } else {
-          this->keyNodes_[i]->readAsChild(
-              vector->childAt(i),
-              rowCount,
-              nonNullCount,
-              this->boolBuffer_,
-              &mergedNulls_);
-        }
+    if (this->parallelDecodeEnabled(this->keyNodes_.size())) {
+      folly::coro::blockingWait(co_next(rowCount, output, scatterBitmap));
+      return;
+    }
+    const auto outputContext = prepareOutput(rowCount, output);
+    for (uint32_t i = 0; i < this->keyNodes_.size(); ++i) {
+      if (this->keyNodes_[i] == nullptr) {
+        this->ensureNullConstant(
+            this->type_->childAt(i),
+            rowCount,
+            outputContext.vector->childAt(i));
+      } else {
+        this->keyNodes_[i]->readAsChild(
+            outputContext.vector->childAt(i),
+            rowCount,
+            outputContext.nonNullCount,
+            this->boolBuffer_,
+            &mergedNulls_);
       }
     }
   }
 
+  folly::coro::Task<void> co_next(
+      uint32_t rowCount,
+      velox::VectorPtr& output,
+      const velox::bits::Bitmap* scatterBitmap) final {
+    NIMBLE_CHECK_NULL(scatterBitmap, "unexpected scatterBitmap");
+    const auto outputContext = prepareOutput(rowCount, output);
+
+    // Handle null constants inline (cheap) before dispatching parallel tasks.
+    // Collect indices of non-null key nodes.
+    std::vector<uint32_t> nonNullChildren;
+    nonNullChildren.reserve(this->keyNodes_.size());
+    for (uint32_t i = 0; i < this->keyNodes_.size(); ++i) {
+      if (this->keyNodes_[i] == nullptr) {
+        this->ensureNullConstant(
+            this->type_->childAt(i),
+            rowCount,
+            outputContext.vector->childAt(i));
+      } else {
+        nonNullChildren.emplace_back(i);
+      }
+    }
+
+    if (nonNullChildren.empty()) {
+      co_return;
+    }
+
+    const uint32_t taskCount =
+        this->computeParallelDecodeTaskCount(nonNullChildren.size());
+    velox::common::testutil::TestValue::adjust(
+        "facebook::nimble::StructFlatMapFieldReader::co_next",
+        const_cast<uint32_t*>(&taskCount));
+
+    const uint32_t childrenPerTask = nonNullChildren.size() / taskCount;
+    const uint32_t numRemainderChildren = nonNullChildren.size() % taskCount;
+
+    // Decodes children in [startIdx, endIdx).
+    auto decodeRange = [this, rowCount, &outputContext, &nonNullChildren](
+                           uint32_t startIdx, uint32_t endIdx) {
+      for (uint32_t idx = startIdx; idx < endIdx; ++idx) {
+        const auto i = nonNullChildren[idx];
+        this->keyNodes_[i]->readAsChild(
+            outputContext.vector->childAt(i),
+            rowCount,
+            outputContext.nonNullCount,
+            this->boolBuffer_);
+      }
+    };
+
+    // First 'numRemainderChildren' tasks get one extra child each.
+    std::vector<folly::coro::TaskWithExecutor<void>> tasks;
+    tasks.reserve(taskCount);
+    uint32_t nextChildIdx = 0;
+    for (uint32_t task = 0; task < taskCount; ++task) {
+      const uint32_t endChildIdx = nextChildIdx + childrenPerTask +
+          (task < numRemainderChildren ? 1 : 0);
+      tasks.emplace_back(
+          folly::coro::co_invoke(
+              [&decodeRange,
+               nextChildIdx,
+               endChildIdx]() -> folly::coro::Task<void> {
+                decodeRange(nextChildIdx, endChildIdx);
+                co_return;
+              })
+              .scheduleOn(this->decodeExecutor_));
+      nextChildIdx = endChildIdx;
+    }
+
+    co_await folly::coro::collectAllRange(std::move(tasks));
+  }
+
  private:
-  folly::Executor* const executor_;
+  struct OutputContext {
+    // Initialized output row vector.
+    velox::RowVector* vector;
+    // Number of non-null rows.
+    uint32_t nonNullCount;
+  };
+
+  OutputContext prepareOutput(uint32_t rowCount, velox::VectorPtr& output) {
+    auto* vector = VectorInitializer<velox::RowVector>::initialize(
+        this->type_, rowCount, this->pool_, output);
+    vector->unsafeResize(rowCount);
+    const uint32_t nonNullCount = this->loadNulls(rowCount, vector);
+    return {vector, nonNullCount};
+  }
+
   Vector<char>& mergedNulls_;
 };
 
@@ -3008,21 +3167,23 @@ class StructFlatMapFieldReaderFactory final
 
  public:
   StructFlatMapFieldReaderFactory(
-      velox::memory::MemoryPool& pool,
       velox::TypePtr veloxType,
       const Type* type,
       std::vector<const StreamDescriptor*> inMapDescriptors,
       std::vector<std::unique_ptr<FieldReaderFactory>> valueReaders,
       const std::vector<size_t>& selectedChildren,
-      folly::Executor* executor)
+      velox::memory::MemoryPool* pool,
+      const FieldReaderParams& params)
       : FlatMapFieldReaderFactoryBase<T>(
-            pool,
             std::move(veloxType),
             type,
             std::move(inMapDescriptors),
             std::move(valueReaders),
-            selectedChildren),
-        executor_{executor},
+            selectedChildren,
+            pool),
+        decodeExecutor_{params.decodeExecutor},
+        maxDecodeParallelism_{params.maxDecodeParallelism},
+        minStreamsPerDecodeUnit_{params.minStreamsPerDecodeUnit},
         mergedNulls_{this->pool_} {
     NIMBLE_CHECK(this->nimbleType_->isFlatMap(), "Type should be a flat map.");
   }
@@ -3030,12 +3191,16 @@ class StructFlatMapFieldReaderFactory final
   std::unique_ptr<FieldReader> createReader(
       const folly::F14FastMap<offset_size, std::unique_ptr<Decoder>>& decoders)
       final {
+    const FieldReader::Options options{
+        decodeExecutor_, maxDecodeParallelism_, minStreamsPerDecodeUnit_};
     return this->template createFlatMapReader<ReaderType, true>(
-        decoders, mergedNulls_, executor_);
+        decoders, mergedNulls_, options);
   }
 
  private:
-  folly::Executor* const executor_;
+  folly::Executor* const decodeExecutor_;
+  const uint32_t maxDecodeParallelism_;
+  const uint32_t minStreamsPerDecodeUnit_;
   Vector<char> mergedNulls_;
 };
 
@@ -3053,13 +3218,13 @@ class MergedFlatMapFieldReader final
     : public FlatMapFieldReaderBase<T, hasNull> {
  public:
   MergedFlatMapFieldReader(
-      velox::memory::MemoryPool& pool,
       velox::TypePtr type,
       Decoder* decoder,
       std::vector<std::unique_ptr<FlatMapKeyNode<T>>> keyNodes,
-      Vector<bool>& boolBuffer)
+      Vector<bool>& boolBuffer,
+      velox::memory::MemoryPool* pool)
       : FlatMapFieldReaderBase<T, hasNull>(
-            pool,
+            *pool,
             std::move(type),
             decoder,
             std::move(keyNodes),
@@ -3194,7 +3359,7 @@ class MergedFlatMapFieldReader final
     for (auto& node : this->keyNodes_) {
       const auto numValues = node->readInMapData(nonNullCount);
       if (numValues > 0) {
-        nodes_.push_back(node.get());
+        nodes_.emplace_back(node.get());
         totalMapEntries += numValues;
       }
     }
@@ -3415,7 +3580,7 @@ class MergedFlatMapFieldReaderFactory final
 };
 
 std::unique_ptr<FieldReaderFactory> createFlatMapReaderFactory(
-    velox::memory::MemoryPool& pool,
+    velox::memory::MemoryPool* pool,
     velox::TypeKind keyKind,
     velox::TypePtr veloxType,
     const Type* type,
@@ -3423,27 +3588,27 @@ std::unique_ptr<FieldReaderFactory> createFlatMapReaderFactory(
     std::vector<std::unique_ptr<FieldReaderFactory>> valueReaders,
     const std::vector<size_t>& selectedChildren,
     bool flatMapAsStruct,
-    folly::Executor* executor) {
+    const FieldReaderParams& params) {
   switch (keyKind) {
 #define SCALAR_CASE(veloxKind, fieldType)                                  \
   case velox::TypeKind::veloxKind: {                                       \
     if (flatMapAsStruct) {                                                 \
       return std::make_unique<StructFlatMapFieldReaderFactory<fieldType>>( \
-          pool,                                                            \
           std::move(veloxType),                                            \
           type,                                                            \
           std::move(inMapDescriptors),                                     \
           std::move(valueReaders),                                         \
           selectedChildren,                                                \
-          executor);                                                       \
+          pool,                                                            \
+          params);                                                         \
     } else {                                                               \
       return std::make_unique<MergedFlatMapFieldReaderFactory<fieldType>>( \
-          pool,                                                            \
           std::move(veloxType),                                            \
           type,                                                            \
           std::move(inMapDescriptors),                                     \
           std::move(valueReaders),                                         \
-          selectedChildren);                                               \
+          selectedChildren,                                                \
+          pool);                                                           \
     }                                                                      \
   }
 
@@ -3504,14 +3669,13 @@ velox::TypePtr inferType(
 // string field reader.
 std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
     const FieldReaderParams& parameters,
-    velox::memory::MemoryPool& pool,
     const std::shared_ptr<const Type>& nimbleType,
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& veloxType,
     std::vector<uint32_t>& offsets,
     const std::function<bool(uint32_t)>& isSelected,
-    folly::Executor* executor,
-    size_t level = 0,
-    const std::string* name = nullptr) {
+    size_t level,
+    const std::string* name,
+    velox::memory::MemoryPool* pool) {
   const auto veloxKind = veloxType->type()->kind();
   // compatibleKinds are the types that can be upcasted to nimbleType
   auto checkType = [&nimbleType](
@@ -3545,14 +3709,14 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
   }
 
   switch (veloxKind) {
-#define SCALAR_CASE(veloxKind, cppType, compitableKinds)                   \
-  case velox::TypeKind::veloxKind: {                                       \
-    NIMBLE_CHECK(                                                          \
-        nimbleType->isScalar() && checkType(compitableKinds),              \
-        "Provided schema doesn't match file schema.");                     \
-    offsets.push_back(nimbleType->asScalar().scalarDescriptor().offset()); \
-    return std::make_unique<ScalarFieldReaderFactory<cppType>>(            \
-        pool, veloxType->type(), nimbleType.get());                        \
+#define SCALAR_CASE(veloxKind, cppType, compatibleKinds)                      \
+  case velox::TypeKind::veloxKind: {                                          \
+    NIMBLE_CHECK(                                                             \
+        nimbleType->isScalar() && checkType(compatibleKinds),                 \
+        "Provided schema doesn't match file schema.");                        \
+    offsets.emplace_back(nimbleType->asScalar().scalarDescriptor().offset()); \
+    return std::make_unique<ScalarFieldReaderFactory<cppType>>(               \
+        veloxType->type(), nimbleType.get(), pool);                           \
   }
 
     SCALAR_CASE(BOOLEAN, bool, BOOLEAN_COMPATIBLE);
@@ -3575,23 +3739,23 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
                    nimbleType->asScalar().scalarDescriptor().scalarKind() ==
                        ScalarKind::Binary),
           "Provided schema doesn't match file schema.");
-      offsets.push_back(nimbleType->asScalar().scalarDescriptor().offset());
+      offsets.emplace_back(nimbleType->asScalar().scalarDescriptor().offset());
       return std::make_unique<StringFieldReaderFactory>(
-          pool,
           veloxType->type(),
           nimbleType.get(),
-          parameters.optimizeStringBufferHandling);
+          parameters.optimizeStringBufferHandling,
+          pool);
     }
     case velox::TypeKind::TIMESTAMP: {
       NIMBLE_CHECK(
           nimbleType->isTimestampMicroNano(),
           "Provided schema doesn't match file schema.");
-      offsets.push_back(
+      offsets.emplace_back(
           nimbleType->asTimestampMicroNano().microsDescriptor().offset());
-      offsets.push_back(
+      offsets.emplace_back(
           nimbleType->asTimestampMicroNano().nanosDescriptor().offset());
       return std::make_unique<TimestampMicroNanoFieldReaderFactory>(
-          pool, veloxType->type(), nimbleType.get());
+          veloxType->type(), nimbleType.get(), pool);
     }
     case velox::TypeKind::ARRAY: {
       NIMBLE_CHECK(
@@ -3604,41 +3768,43 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
       if (nimbleType->isArray()) {
         auto& nimbleArray = nimbleType->asArray();
         auto& elementType = veloxType->childAt(0);
-        offsets.push_back(nimbleArray.lengthsDescriptor().offset());
+        offsets.emplace_back(nimbleArray.lengthsDescriptor().offset());
         auto elements = isSelected(elementType->id())
             ? createFieldReaderFactory(
                   parameters,
-                  pool,
                   nimbleArray.elements(),
                   elementType,
                   offsets,
                   isSelected,
-                  executor,
-                  level + 1)
+                  level + 1,
+                  /*name=*/nullptr,
+                  pool)
             : std::make_unique<NullFieldReaderFactory>(
-                  pool, elementType->type());
+                  elementType->type(), pool);
         return std::make_unique<ArrayFieldReaderFactory>(
-            pool, veloxType->type(), nimbleType.get(), std::move(elements));
+            veloxType->type(), nimbleType.get(), std::move(elements), pool);
       } else {
         auto& nimbleArrayWithOffsets = nimbleType->asArrayWithOffsets();
-        offsets.push_back(nimbleArrayWithOffsets.lengthsDescriptor().offset());
-        offsets.push_back(nimbleArrayWithOffsets.offsetsDescriptor().offset());
+        offsets.emplace_back(
+            nimbleArrayWithOffsets.lengthsDescriptor().offset());
+        offsets.emplace_back(
+            nimbleArrayWithOffsets.offsetsDescriptor().offset());
 
         auto& elementType = veloxType->childAt(0);
         auto elements = isSelected(elementType->id())
             ? createFieldReaderFactory(
                   parameters,
-                  pool,
                   nimbleArrayWithOffsets.elements(),
                   elementType,
                   offsets,
                   isSelected,
-                  executor,
-                  level + 1)
+                  level + 1,
+                  /*name=*/nullptr,
+                  pool)
             : std::make_unique<NullFieldReaderFactory>(
-                  pool, elementType->type());
+                  elementType->type(), pool);
         return std::make_unique<ArrayWithOffsetsFieldReaderFactory>(
-            pool, veloxType->type(), nimbleType.get(), std::move(elements));
+            veloxType->type(), nimbleType.get(), std::move(elements), pool);
       }
     }
     case velox::TypeKind::ROW: {
@@ -3651,7 +3817,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
       std::vector<velox::TypePtr> childTypes;
       children.reserve(veloxType->size());
       childTypes.reserve(veloxType->size());
-      offsets.push_back(nimbleRow.nullsDescriptor().offset());
+      offsets.emplace_back(nimbleRow.nullsDescriptor().offset());
 
       for (auto i = 0; i < veloxType->size(); ++i) {
         auto& child = veloxType->childAt(i);
@@ -3660,26 +3826,25 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
           if (i < nimbleRow.childrenCount()) {
             factory = createFieldReaderFactory(
                 parameters,
-                pool,
                 nimbleRow.childAt(i),
                 child,
                 offsets,
                 isSelected,
-                executor,
                 level + 1,
-                &veloxRow.nameOf(i));
+                &veloxRow.nameOf(i),
+                pool);
           } else {
             factory = std::make_unique<NullFieldReaderFactory>(
-                pool,
                 inferType(
                     parameters,
                     veloxRow.nameOf(i),
                     veloxRow.childAt(i),
-                    level + 1));
+                    level + 1),
+                pool);
           }
         }
-        childTypes.push_back(factory ? factory->veloxType() : child->type());
-        children.push_back(std::move(factory));
+        childTypes.emplace_back(factory ? factory->veloxType() : child->type());
+        children.emplace_back(std::move(factory));
       }
 
       // Underlying reader may return a different vector type than what's
@@ -3687,13 +3852,13 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
       // on child types. Note this special logic is only for Row type based
       // on the constraint that flatmap can only be top level fields.
       return std::make_unique<RowFieldReaderFactory>(
-          pool,
           velox::ROW(
               std::vector<std::string>(veloxRow.names()),
               std::move(childTypes)),
           nimbleType.get(),
           std::move(children),
-          executor);
+          pool,
+          parameters);
     }
     case velox::TypeKind::MAP: {
       NIMBLE_CHECK(
@@ -3708,73 +3873,73 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
       if (nimbleType->isMap()) {
         const auto& nimbleMap = nimbleType->asMap();
         auto& keyType = veloxType->childAt(0);
-        offsets.push_back(nimbleMap.lengthsDescriptor().offset());
+        offsets.emplace_back(nimbleMap.lengthsDescriptor().offset());
         auto keys = isSelected(keyType->id())
             ? createFieldReaderFactory(
                   parameters,
-                  pool,
                   nimbleMap.keys(),
                   keyType,
                   offsets,
                   isSelected,
-                  executor,
-                  level + 1)
-            : std::make_unique<NullFieldReaderFactory>(pool, keyType->type());
+                  level + 1,
+                  /*name=*/nullptr,
+                  pool)
+            : std::make_unique<NullFieldReaderFactory>(keyType->type(), pool);
         auto& valueType = veloxType->childAt(1);
         auto values = isSelected(valueType->id())
             ? createFieldReaderFactory(
                   parameters,
-                  pool,
                   nimbleMap.values(),
                   valueType,
                   offsets,
                   isSelected,
-                  executor,
-                  level + 1)
-            : std::make_unique<NullFieldReaderFactory>(pool, valueType->type());
+                  level + 1,
+                  /*name=*/nullptr,
+                  pool)
+            : std::make_unique<NullFieldReaderFactory>(valueType->type(), pool);
         return std::make_unique<MapFieldReaderFactory>(
-            pool,
             veloxType->type(),
             nimbleType.get(),
             std::move(keys),
-            std::move(values));
+            std::move(values),
+            pool);
       } else if (nimbleType->isSlidingWindowMap()) {
         const auto& nimbleMap = nimbleType->asSlidingWindowMap();
-        offsets.push_back(nimbleMap.offsetsDescriptor().offset());
-        offsets.push_back(nimbleMap.lengthsDescriptor().offset());
+        offsets.emplace_back(nimbleMap.offsetsDescriptor().offset());
+        offsets.emplace_back(nimbleMap.lengthsDescriptor().offset());
         auto& keyType = veloxType->childAt(0);
         auto keys = isSelected(keyType->id())
             ? createFieldReaderFactory(
                   parameters,
-                  pool,
                   nimbleMap.keys(),
                   keyType,
                   offsets,
                   isSelected,
-                  executor,
-                  level + 1)
-            : std::make_unique<NullFieldReaderFactory>(pool, keyType->type());
+                  level + 1,
+                  /*name=*/nullptr,
+                  pool)
+            : std::make_unique<NullFieldReaderFactory>(keyType->type(), pool);
         auto& valueType = veloxType->childAt(1);
         auto values = isSelected(valueType->id())
             ? createFieldReaderFactory(
                   parameters,
-                  pool,
                   nimbleMap.values(),
                   valueType,
                   offsets,
                   isSelected,
-                  executor,
-                  level + 1)
-            : std::make_unique<NullFieldReaderFactory>(pool, valueType->type());
+                  level + 1,
+                  /*name=*/nullptr,
+                  pool)
+            : std::make_unique<NullFieldReaderFactory>(valueType->type(), pool);
         return std::make_unique<SlidingWindowMapFieldReaderFactory>(
-            pool,
             veloxType->type(),
             nimbleType.get(),
             std::move(keys),
-            std::move(values));
+            std::move(values),
+            pool);
       } else {
         auto& nimbleFlatMap = nimbleType->asFlatMap();
-        offsets.push_back(nimbleFlatMap.nullsDescriptor().offset());
+        offsets.emplace_back(nimbleFlatMap.nullsDescriptor().offset());
         NIMBLE_CHECK(
             level == 1 && name != nullptr,
             "Flat map is only supported as top level fields");
@@ -3842,13 +4007,13 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
             auto it = namesToIndices.find(feature);
             if (it != namesToIndices.end()) {
               const auto childIdx = it->second;
-              selectedChildren.push_back(childIdx);
+              selectedChildren.emplace_back(childIdx);
               auto* inMapDescriptor =
                   &nimbleFlatMap.inMapDescriptorAt(childIdx);
-              inMapDescriptors.push_back(inMapDescriptor);
-              offsets.push_back(inMapDescriptor->offset());
+              inMapDescriptors.emplace_back(inMapDescriptor);
+              offsets.emplace_back(inMapDescriptor->offset());
             } else {
-              inMapDescriptors.push_back(nullptr);
+              inMapDescriptors.emplace_back(nullptr);
             }
           }
         } else if (childrenCount > 0) {
@@ -3857,7 +4022,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
           if (!hasFeatureSelection) {
             selectedChildren.reserve(childrenCount);
             for (auto i = 0; i < childrenCount; ++i) {
-              selectedChildren.push_back(i);
+              selectedChildren.emplace_back(i);
             }
           } else {
             auto& features = featuresIt->second.features;
@@ -3868,7 +4033,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
               for (auto& feature : features) {
                 auto it = namesToIndices.find(feature);
                 if (it != namesToIndices.end()) {
-                  selectedChildren.push_back(it->second);
+                  selectedChildren.emplace_back(it->second);
                 }
               }
             } else {
@@ -3877,7 +4042,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
               selectedChildren.reserve(childrenCount);
               for (auto i = 0; i < childrenCount; ++i) {
                 if (!exclusions.contains(nimbleFlatMap.nameAt(i))) {
-                  selectedChildren.push_back(i);
+                  selectedChildren.emplace_back(i);
                 }
               }
             }
@@ -3886,23 +4051,23 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
           inMapDescriptors.reserve(selectedChildren.size());
           for (auto childIdx : selectedChildren) {
             auto* inMapDescriptor = &nimbleFlatMap.inMapDescriptorAt(childIdx);
-            inMapDescriptors.push_back(inMapDescriptor);
-            offsets.push_back(inMapDescriptor->offset());
+            inMapDescriptors.emplace_back(inMapDescriptor);
+            offsets.emplace_back(inMapDescriptor->offset());
           }
         }
 
         std::vector<std::unique_ptr<FieldReaderFactory>> valueReaders;
         valueReaders.reserve(selectedChildren.size());
         for (auto childIdx : selectedChildren) {
-          valueReaders.push_back(createFieldReaderFactory(
+          valueReaders.emplace_back(createFieldReaderFactory(
               parameters,
-              pool,
               nimbleFlatMap.childAt(childIdx),
               valueType,
               offsets,
               isSelected,
-              executor,
-              level + 1));
+              level + 1,
+              nullptr,
+              pool));
         }
 
         const auto& keySelectionCallback = parameters.keySelectionCallback;
@@ -3921,7 +4086,7 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
             std::move(valueReaders),
             selectedChildren,
             flatMapAsStruct,
-            executor);
+            parameters);
       }
     }
     default:
@@ -3930,6 +4095,35 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
 }
 
 } // namespace
+
+FieldReader::FieldReader(
+    velox::memory::MemoryPool& pool,
+    velox::TypePtr type,
+    Decoder* decoder)
+    : FieldReader(pool, std::move(type), decoder, Options{}) {}
+
+FieldReader::FieldReader(
+    velox::memory::MemoryPool& pool,
+    velox::TypePtr type,
+    Decoder* decoder,
+    const Options& options)
+    : pool_{&pool},
+      type_{std::move(type)},
+      decoder_{decoder},
+      decodeExecutor_{options.decodeExecutor},
+      maxDecodeParallelism_{options.maxDecodeParallelism},
+      minStreamsPerDecodeUnit_{options.minStreamsPerDecodeUnit} {}
+
+uint32_t FieldReader::computeParallelDecodeTaskCount(
+    uint32_t numStreamChildren) const {
+  if (numStreamChildren == 0) {
+    return 0;
+  }
+  const uint32_t maxByStreams =
+      numStreamChildren / std::max(1u, minStreamsPerDecodeUnit_);
+  return std::clamp(
+      std::min(maxDecodeParallelism_, maxByStreams), 1u, numStreamChildren);
+}
 
 void FieldReader::ensureNullConstant(
     const std::shared_ptr<const velox::Type>& type,
@@ -3985,14 +4179,20 @@ std::unique_ptr<FieldReader> FieldReaderFactory::createReaderImpl(
 
 std::unique_ptr<FieldReaderFactory> FieldReaderFactory::create(
     const FieldReaderParams& parameters,
-    velox::memory::MemoryPool& pool,
     const std::shared_ptr<const Type>& nimbleType,
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& veloxType,
     std::vector<uint32_t>& offsets,
     const std::function<bool(uint32_t)>& isSelected,
-    folly::Executor* executor) {
+    velox::memory::MemoryPool* pool) {
   return createFieldReaderFactory(
-      parameters, pool, nimbleType, veloxType, offsets, isSelected, executor);
+      parameters,
+      nimbleType,
+      veloxType,
+      offsets,
+      isSelected,
+      /*level=*/0,
+      /*name=*/nullptr,
+      pool);
 }
 
 } // namespace facebook::nimble

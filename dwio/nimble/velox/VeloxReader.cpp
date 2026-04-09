@@ -214,12 +214,11 @@ VeloxReader::VeloxReader(
   auto schemaWithId = selector->getSchemaWithId();
   rootFieldReaderFactory_ = FieldReaderFactory::create(
       parameters_,
-      pool_,
       schema_,
       schemaWithId,
       offsets_,
       [selector](auto nodeId) { return selector->shouldReadNode(nodeId); },
-      barrier_.get());
+      &pool_);
 
   // We scope down the allowed stripes based on the passed in offset ranges.
   // These ranges represent file splits.
