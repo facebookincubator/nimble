@@ -19,6 +19,8 @@
 #include <functional>
 #include <optional>
 
+#include <zstd.h>
+
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/serializer/Options.h"
@@ -63,12 +65,16 @@ class StreamData {
   /// @param stringBuffers External vector where string buffers from encoding
   ///        are stored. The caller must keep the vector alive while
   ///        string_views from this StreamData are in use.
+  /// @param dctx Optional reusable ZSTD decompression context. When non-null,
+  ///        ZSTD_decompressDCtx is used instead of ZSTD_decompress, avoiding
+  ///        per-call allocation of a ~100-200KB DCtx.
   StreamData(
       ScalarKind kind,
       std::string_view data,
       std::vector<velox::BufferPtr>& stringBuffers,
       velox::memory::MemoryPool* pool,
-      const Options& options);
+      const Options& options,
+      ZSTD_DCtx* dctx = nullptr);
 
   uint32_t copyTo(char* output, uint32_t bufferSize);
 
@@ -92,7 +98,11 @@ class StreamData {
   /// @param data New stream data to initialize with.
   /// @param version Serialization version determining encoding and row count
   ///        format.
-  void reset(std::string_view data, SerializationVersion version);
+  /// @param dctx Optional reusable ZSTD decompression context.
+  void reset(
+      std::string_view data,
+      SerializationVersion version,
+      ZSTD_DCtx* dctx = nullptr);
 
   ScalarKind kind() const {
     return kind_;
@@ -127,6 +137,9 @@ class StreamData {
 
   const ScalarKind kind_{ScalarKind::Undefined};
   velox::memory::MemoryPool* const pool_{nullptr};
+  // Optional reusable ZSTD decompression context. Non-owning; caller manages
+  // lifetime. When non-null, avoids per-call ZSTD_DCtx allocation (~100-200KB).
+  ZSTD_DCtx* dctx_{nullptr};
   // Whether nimble encoding is enabled. Non-const to allow reset() to change.
   bool encodingEnabled_{false};
   // Whether encoding headers use varint row counts (true for kCompact/
@@ -163,7 +176,8 @@ class StreamDataReader {
  public:
   StreamDataReader(
       velox::memory::MemoryPool* pool,
-      const DeserializerOptions& options);
+      const DeserializerOptions& options,
+      ZSTD_DCtx* dctx = nullptr);
 
   /// Returns number of rows serialized.
   /// Validates that the version in serialized data matches options.
@@ -215,6 +229,7 @@ class StreamDataReader {
 
   const DeserializerOptions& options_;
   velox::memory::MemoryPool* const pool_;
+  ZSTD_DCtx* const dctx_{nullptr};
 
   // Serialization version detected from data. If the data has a version
   // header, this is read from the first byte; otherwise defaults to kLegacy.

@@ -1604,3 +1604,156 @@ TEST_F(TabletRawChunkStripTest, largePayloadMultipleChunks) {
   ASSERT_EQ(result.size(), 1);
   EXPECT_EQ(result[0].second, payload);
 }
+
+// Tests for ZSTD_DCtx reuse in StreamData and StreamDataReader (D99456594).
+// Inherits from TabletRawChunkStripTest for shared helpers
+// (buildCompressedChunk, pool_, etc.).
+
+class ZstdDCtxReuseTest : public TabletRawChunkStripTest {
+ protected:
+  void SetUp() override {
+    TabletRawChunkStripTest::SetUp();
+    dctx_.reset(ZSTD_createDCtx());
+  }
+
+  // Build legacy-format compressed stream data for a non-string scalar:
+  // [CompressionType::Zstd (1B)][ZSTD-compressed payload]
+  static std::string buildLegacyCompressedData(std::string_view payload) {
+    std::string result;
+    result.push_back(static_cast<char>(CompressionType::Zstd));
+    const auto maxSize = ZSTD_compressBound(payload.size());
+    const auto offset = result.size();
+    result.resize(offset + maxSize);
+    const auto compressedSize = ZSTD_compress(
+        result.data() + offset, maxSize, payload.data(), payload.size(), 1);
+    NIMBLE_CHECK(!ZSTD_isError(compressedSize));
+    result.resize(offset + compressedSize);
+    return result;
+  }
+
+  // Like TabletRawChunkStripTest::deserializeTabletRaw, but passes
+  // the fixture's shared dctx to StreamDataReader.
+  std::vector<std::pair<uint32_t, std::string>> deserializeTabletRawWithDCtx(
+      uint32_t rowCount,
+      const std::vector<std::pair<uint32_t, std::string>>& streams) {
+    uint32_t maxOffset = 0;
+    for (const auto& [offset, _] : streams) {
+      maxOffset = std::max(maxOffset, offset);
+    }
+    std::vector<uint32_t> sizes(streams.empty() ? 0 : maxOffset + 1, 0);
+    std::string streamData;
+    for (const auto& [offset, data] : streams) {
+      sizes[offset] = static_cast<uint32_t>(data.size());
+      streamData.append(data);
+    }
+
+    std::string buffer;
+    serde::detail::writeHeader(
+        buffer, SerializationVersion::kTabletRaw, rowCount);
+    buffer.append(streamData);
+    serde::detail::writeRawTrailer(sizes, EncodingType::Trivial, buffer);
+
+    DeserializerOptions options{.hasHeader = true};
+    StreamDataReader reader(pool_.get(), options, dctx_.get());
+    auto actualRows = reader.initialize(std::string_view(buffer));
+    EXPECT_EQ(actualRows, rowCount);
+
+    std::vector<std::pair<uint32_t, std::string>> result;
+    reader.iterateStreams([&](uint32_t offset, std::string_view data) {
+      result.emplace_back(offset, std::string(data));
+    });
+    return result;
+  }
+
+  struct DCtxDeleter {
+    void operator()(ZSTD_DCtx* ctx) const {
+      ZSTD_freeDCtx(ctx);
+    }
+  };
+
+  std::unique_ptr<ZSTD_DCtx, DCtxDeleter> dctx_;
+};
+
+TEST_F(ZstdDCtxReuseTest, streamDataLegacyZstdWithDCtx) {
+  const std::vector<int32_t> expected = {10, 20, 30, 40};
+  std::string_view payload(
+      reinterpret_cast<const char*>(expected.data()),
+      expected.size() * sizeof(int32_t));
+  auto compressed = buildLegacyCompressedData(payload);
+
+  std::vector<BufferPtr> stringBuffers;
+  serde::StreamData sd(
+      ScalarKind::Int32,
+      compressed,
+      stringBuffers,
+      pool_.get(),
+      serde::StreamData::Options{.version = SerializationVersion::kLegacy},
+      dctx_.get());
+
+  std::vector<int32_t> output(expected.size());
+  sd.copyTo(
+      reinterpret_cast<char*>(output.data()), output.size() * sizeof(int32_t));
+  EXPECT_EQ(output, expected);
+}
+
+TEST_F(ZstdDCtxReuseTest, streamDataDCtxReusedAcrossReset) {
+  const std::vector<int32_t> values1 = {1, 2, 3};
+  std::string_view payload1(
+      reinterpret_cast<const char*>(values1.data()),
+      values1.size() * sizeof(int32_t));
+  auto compressed1 = buildLegacyCompressedData(payload1);
+
+  const std::vector<int32_t> values2 = {100, 200};
+  std::string_view payload2(
+      reinterpret_cast<const char*>(values2.data()),
+      values2.size() * sizeof(int32_t));
+  auto compressed2 = buildLegacyCompressedData(payload2);
+
+  // First decompression with dctx.
+  std::vector<BufferPtr> stringBuffers;
+  serde::StreamData sd(
+      ScalarKind::Int32,
+      compressed1,
+      stringBuffers,
+      pool_.get(),
+      serde::StreamData::Options{.version = SerializationVersion::kLegacy},
+      dctx_.get());
+
+  std::vector<int32_t> output1(values1.size());
+  sd.copyTo(
+      reinterpret_cast<char*>(output1.data()),
+      output1.size() * sizeof(int32_t));
+  EXPECT_EQ(output1, values1);
+
+  // Reset with new data, same dctx.
+  sd.reset(compressed2, SerializationVersion::kLegacy, dctx_.get());
+
+  std::vector<int32_t> output2(values2.size());
+  sd.copyTo(
+      reinterpret_cast<char*>(output2.data()),
+      output2.size() * sizeof(int32_t));
+  EXPECT_EQ(output2, values2);
+}
+
+TEST_F(ZstdDCtxReuseTest, streamDataReaderCompressedChunkWithDCtx) {
+  std::string payload = "compressed data that should be zstd encoded for test";
+  auto chunk = buildCompressedChunk(payload);
+  auto result = deserializeTabletRawWithDCtx(10, {{0, chunk}});
+
+  ASSERT_EQ(result.size(), 1);
+  EXPECT_EQ(result[0].first, 0);
+  EXPECT_EQ(result[0].second, payload);
+}
+
+TEST_F(ZstdDCtxReuseTest, streamDataReaderDCtxReusedAcrossStreams) {
+  std::string payload1 = "first compressed stream payload data";
+  std::string payload2 = "second compressed stream payload data";
+  auto chunk1 = buildCompressedChunk(payload1);
+  auto chunk2 = buildCompressedChunk(payload2);
+
+  auto result = deserializeTabletRawWithDCtx(10, {{0, chunk1}, {1, chunk2}});
+
+  ASSERT_EQ(result.size(), 2);
+  EXPECT_EQ(result[0].second, payload1);
+  EXPECT_EQ(result[1].second, payload2);
+}
