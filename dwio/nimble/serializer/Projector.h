@@ -125,6 +125,12 @@ class Projector {
   std::vector<folly::IOBuf> project(
       const std::vector<folly::IOBuf>& inputs) const;
 
+  /// Projects input directly into a contiguous output string, avoiding IOBuf
+  /// chain construction. The output string is resized as needed but can be
+  /// reused across calls to amortize allocation. The input data must remain
+  /// valid during this call.
+  void project(std::string_view input, std::string& output) const;
+
   /// Returns the projected schema.
   /// The schema has compact stream indices starting from 0.
   std::shared_ptr<const Type> projectedSchema() const {
