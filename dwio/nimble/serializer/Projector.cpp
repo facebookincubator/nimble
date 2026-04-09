@@ -651,6 +651,107 @@ folly::IOBuf Projector::project(std::string_view input) const {
   return project(folly::IOBuf::wrapBufferAsValue(input.data(), input.size()));
 }
 
+void Projector::project(std::string_view input, std::string& output) const {
+  const auto inputVersion = static_cast<SerializationVersion>(
+      *reinterpret_cast<const uint8_t*>(input.data()));
+  NIMBLE_CHECK(
+      isCompactFormat(inputVersion),
+      "Input must be kCompact or kCompactRaw format, got: {}",
+      inputVersion);
+
+  const auto* data = input.data();
+  const auto* pos = data + sizeof(uint8_t);
+  const uint32_t rowCount = varint::readVarint32(&pos);
+  const size_t dataOffset = static_cast<size_t>(pos - data);
+
+  // Read input stream sizes from trailer.
+  const auto* end = data + input.size();
+  const auto inputStreamSizes =
+      detail::readStreamSizes(end, inputVersion, pool_);
+
+  // Compute output stream sizes and total data bytes.
+  std::vector<uint32_t> outputStreamSizes(inputStreamIndices_.size());
+  std::transform(
+      inputStreamIndices_.begin(),
+      inputStreamIndices_.end(),
+      outputStreamSizes.begin(),
+      [&](auto idx) -> uint32_t {
+        return idx < inputStreamSizes.size() ? inputStreamSizes[idx] : 0;
+      });
+  const size_t totalDataBytes = std::accumulate(
+      outputStreamSizes.begin(), outputStreamSizes.end(), size_t{0});
+
+  // Estimate total output size and pre-allocate.
+  const size_t headerSize =
+      detail::estimateHeaderSize(options_.projectVersion, rowCount);
+  const size_t trailerEstimate = detail::estimateTrailerSize(
+      options_.projectVersion,
+      outputStreamSizes.size(),
+      options_.streamSizesEncodingType);
+
+  output.clear();
+  output.reserve(headerSize + totalDataBytes + trailerEstimate);
+
+  // Write header.
+  detail::writeHeader(output, options_.projectVersion, rowCount);
+
+  if (inputStreamsSorted_) {
+    // Fast path: input indices are sorted, single forward pass with run
+    // merging via memcpy.
+    size_t curOffset = dataOffset;
+    size_t nextSelected = 0;
+
+    size_t runStart = 0;
+    size_t numRunBytes = 0;
+
+    for (size_t i = 0; i < inputStreamSizes.size() &&
+         nextSelected < inputStreamIndices_.size();
+         ++i) {
+      if (i == inputStreamIndices_[nextSelected]) {
+        if (inputStreamSizes[i] > 0) {
+          if (numRunBytes > 0 && curOffset == runStart + numRunBytes) {
+            numRunBytes += inputStreamSizes[i];
+          } else {
+            if (numRunBytes > 0) {
+              output.append(data + runStart, numRunBytes);
+            }
+            runStart = curOffset;
+            numRunBytes = inputStreamSizes[i];
+          }
+        }
+        ++nextSelected;
+      }
+      curOffset += inputStreamSizes[i];
+    }
+    if (numRunBytes > 0) {
+      output.append(data + runStart, numRunBytes);
+    }
+  } else {
+    // Unsorted path: compute input stream offsets, then copy in output order.
+    std::vector<size_t> inputOffsets(inputStreamSizes.size());
+    std::exclusive_scan(
+        inputStreamSizes.begin(),
+        inputStreamSizes.end(),
+        inputOffsets.begin(),
+        dataOffset);
+    for (size_t i = 0; i < inputStreamIndices_.size(); ++i) {
+      const auto idx = inputStreamIndices_[i];
+      if (idx < inputStreamSizes.size() && idx < inputOffsets.size() &&
+          inputStreamSizes[idx] > 0) {
+        output.append(data + inputOffsets[idx], inputStreamSizes[idx]);
+      }
+    }
+  }
+
+  // Write trailer.
+  detail::writeTrailer(
+      options_.projectVersion,
+      outputStreamSizes,
+      options_.streamSizesEncodingType,
+      streamSizesEncodingBuffer_,
+      output);
+}
+
 std::vector<folly::IOBuf> Projector::project(
     const std::vector<std::string_view>& inputs) const {
   std::vector<folly::IOBuf> results;
