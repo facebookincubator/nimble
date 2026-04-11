@@ -26,6 +26,7 @@
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/Compression.h"
 #include "dwio/nimble/encodings/Encoding.h"
+#include "velox/dwio/common/DecoderUtil.h"
 
 // The FixedBitWidthEncoding stores integer data in a fixed number of
 // bits equal to the number of bits required to represent the largest value in
@@ -156,27 +157,25 @@ template <typename V>
 void FixedBitWidthEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  // Fast path: use bulk scan for integral types with no filter and no hook.
-  // Supports 4-byte types (common for dictionary indices) and 8-byte types
-  // (int64/uint64 columns). The fast path only supports ExtractToReader.
-  // Output type must be compatible:
-  // - Same type: direct memcpy
-  // - Widening (larger output type): loop with conversion
+  // Fast path: use bulk scan for 4-byte and 8-byte integral types.
+  // Compile-time: type constraints (FBW physical type, ExtractToReader,
+  // compatible integral output type at least as wide as the physical type).
+  // Runtime (useFastPath): deterministic filter, AVX2, bulk path enabled,
+  // null+filter/hook compatibility.
   using OutputType = detail::ValueType<typename V::DataType>;
-  constexpr bool kExtractToReader =
-      std::is_same_v<typename V::Extract, velox::dwio::common::ExtractToReader>;
-  constexpr bool kSameType = std::is_same_v<physicalType, OutputType>;
-  constexpr bool kIsWidening = sizeof(OutputType) > sizeof(physicalType) &&
-      std::is_integral_v<OutputType> && std::is_integral_v<physicalType>;
-  constexpr bool kIsFourByte = isFourByteIntegralType<physicalType>();
-  constexpr bool kIsEightByteIntegral = isEightByteIntegralType<physicalType>();
-  constexpr bool kCanUseFastPath = (kIsFourByte || kIsEightByteIntegral) &&
-      !V::kHasFilter && !V::kHasHook && kExtractToReader &&
-      (kSameType || kIsWidening);
-  if constexpr (kCanUseFastPath) {
+  if constexpr (
+      (isFourByteIntegralType<physicalType>() ||
+       isEightByteIntegralType<physicalType>()) &&
+      std::is_same_v<
+          typename V::Extract,
+          velox::dwio::common::ExtractToReader> &&
+      std::is_integral_v<physicalType> && std::is_integral_v<OutputType> &&
+      sizeof(OutputType) >= sizeof(physicalType)) {
     auto* nulls = visitor.reader().rawNullsInReadRange();
-    detail::readWithVisitorFast(*this, visitor, params, nulls);
-    return;
+    if (velox::dwio::common::useFastPath(visitor, nulls)) {
+      detail::readWithVisitorFast(*this, visitor, params, nulls);
+      return;
+    }
   }
   // Slow path: process one value at a time.
   detail::readWithVisitorSlow(
@@ -197,8 +196,7 @@ void FixedBitWidthEncoding<T>::bulkScan(
     const vector_size_t* selectedRows,
     vector_size_t numSelected,
     const vector_size_t* scatterRows) {
-  using DataType = typename V::DataType;
-  using OutputType = detail::ValueType<DataType>;
+  using OutputType = detail::ValueType<typename V::DataType>;
   static_assert(
       isFourByteIntegralType<physicalType>() ||
           isEightByteIntegralType<physicalType>(),
@@ -262,10 +260,49 @@ void FixedBitWidthEncoding<T>::bulkScan(
     }
   }
 
-  // Update row_ based on the last row read.
+  // Phase 2: Post-decode processing.
+  // processFixedWidthRun handles three concerns:
+  //   - Scatter (kScatter=true): move values from packed non-null positions to
+  //     their correct output positions using scatterRows (null gaps).
+  //   - Filter: evaluate the filter on decoded values and record passing row
+  //     numbers in filterHits. numValues is updated in-place by the call.
+  //   - Hook: forward values to the hook callback instead of the reader buffer.
+  //
+  // For non-hook visitors, re-read the values pointer from rawValues() because
+  // processFixedWidthRun expects the canonical buffer pointer.
+  if constexpr (!V::kHasHook) {
+    values = reinterpret_cast<OutputType*>(visitor.reader().rawValues());
+  }
+
+  // Snapshot numValues before the call — processFixedWidthRun updates it
+  // in-place. The delta (post - pre) gives the count of filter-passing rows.
+  int32_t numValues = visitor.reader().numValues();
+  int32_t* filterHits;
+  if constexpr (V::kHasFilter) {
+    NIMBLE_DCHECK_EQ(visitor.reader().numRows(), numValues, "");
+    filterHits = visitor.outputRows(numSelected) - numValues;
+  } else {
+    filterHits = nullptr;
+  }
+
+  velox::dwio::common::
+      processFixedWidthRun<OutputType, V::kFilterOnly, kScatter, V::dense>(
+          velox::RowSet(selectedRows, numSelected),
+          0,
+          numSelected,
+          scatterRows,
+          values,
+          filterHits,
+          numValues,
+          visitor.filter(),
+          visitor.hook());
+
   row_ += selectedRows[numSelected - 1] - currentRow + 1;
 
-  visitor.addNumValues(V::dense ? numRows : numSelected);
+  if constexpr (!V::kHasHook) {
+    visitor.addNumValues(
+        V::kHasFilter ? numValues - visitor.reader().numValues() : numRows);
+  }
   visitor.setRowIndex(visitor.numRows());
 }
 
