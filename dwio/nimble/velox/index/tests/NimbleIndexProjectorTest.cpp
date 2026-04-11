@@ -215,6 +215,7 @@ TEST_P(NimbleIndexProjectorTest, basicColumnProjection) {
   auto projectedNimbleSchema = convertToNimbleType(*projectedVeloxType);
   DeserializerOptions deserOptions;
   deserOptions.hasHeader = true;
+  deserOptions.useVarintRowCount = projector.useVarintRowCount();
   Deserializer deserializer(
       projectedNimbleSchema, leafPool_.get(), deserOptions);
 
@@ -502,6 +503,7 @@ TEST_P(NimbleIndexProjectorTest, flatMapProjection) {
   auto coalesced = chunk.data.cloneCoalescedAsValue();
   DeserializerOptions deserOptions;
   deserOptions.hasHeader = true;
+  deserOptions.useVarintRowCount = projector.useVarintRowCount();
   Deserializer deserializer(
       projector.projectedNimbleType(), leafPool_.get(), deserOptions);
 
@@ -652,6 +654,7 @@ TEST_P(NimbleIndexProjectorTest, flatMapKeyProjectionSchemaComparison) {
 
   DeserializerOptions deserOptions;
   deserOptions.hasHeader = true;
+  deserOptions.useVarintRowCount = projector.useVarintRowCount();
   Deserializer deserializer(buildSchema, leafPool_.get(), deserOptions);
   VectorPtr output;
   deserializer.deserialize(data, output);
@@ -713,6 +716,7 @@ TEST_P(NimbleIndexProjectorTest, flatMapIntKeyProjection) {
   auto coalesced = chunk.data.cloneCoalescedAsValue();
   DeserializerOptions deserOptions;
   deserOptions.hasHeader = true;
+  deserOptions.useVarintRowCount = projector.useVarintRowCount();
   Deserializer deserializer(
       projector.projectedNimbleType(), leafPool_.get(), deserOptions);
 

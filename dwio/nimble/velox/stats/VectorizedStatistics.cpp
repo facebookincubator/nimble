@@ -76,24 +76,31 @@ std::optional<T> TypedVectorizedStatistic<T>::valueAt(size_t idx) const {
 template <typename T>
 std::string_view TypedVectorizedStatistic<T>::serialize(
     const EncodingSelectionPolicyFactory& encodingSelectionPolicyFactory,
-    nimble::Buffer& buffer) {
+    nimble::Buffer& buffer,
+    bool useVarintRowCount) {
   auto policy = std::unique_ptr<EncodingSelectionPolicy<T>>(
       static_cast<EncodingSelectionPolicy<T>*>(
           encodingSelectionPolicyFactory(TypeTraits<T>::dataType).release()));
   return EncodingFactory::encodeNullable<T>(
-      std::move(policy), values_, isValid_, buffer);
+      std::move(policy),
+      values_,
+      isValid_,
+      buffer,
+      Encoding::Options{.useVarintRowCount = useVarintRowCount});
 }
 
 template <typename T>
 void TypedVectorizedStatistic<T>::deserializeFrom(
     std::string_view payload,
+    bool useVarintRowCount,
     velox::memory::MemoryPool& pool) {
-  auto encoding =
-      EncodingFactory().create(pool, payload, [&](uint32_t totalLength) {
-        auto& buffer = stringBuffers_.emplace_back(
-            velox::AlignedBuffer::allocate<char>(totalLength, &pool));
-        return buffer->template asMutable<void>();
-      });
+  const EncodingFactory factory{
+      Encoding::Options{.useVarintRowCount = useVarintRowCount}};
+  auto encoding = factory.create(pool, payload, [&](uint32_t totalLength) {
+    auto& buffer = stringBuffers_.emplace_back(
+        velox::AlignedBuffer::allocate<char>(totalLength, &pool));
+    return buffer->template asMutable<void>();
+  });
   NIMBLE_CHECK_NOT_NULL(encoding);
   const auto& rowCount = encoding->rowCount();
   velox::BufferPtr nullsBuffer =
@@ -140,13 +147,15 @@ void TypedVectorizedStatistic<T>::deserializeFrom(
 template <>
 inline void TypedVectorizedStatistic<std::string_view>::deserializeFrom(
     std::string_view payload,
+    bool useVarintRowCount,
     velox::memory::MemoryPool& pool) {
-  auto encoding =
-      EncodingFactory().create(pool, payload, [&](uint32_t totalLength) {
-        auto& buffer = stringBuffers_.emplace_back(
-            velox::AlignedBuffer::allocate<char>(totalLength, &pool));
-        return buffer->template asMutable<void>();
-      });
+  const EncodingFactory factory{
+      Encoding::Options{.useVarintRowCount = useVarintRowCount}};
+  auto encoding = factory.create(pool, payload, [&](uint32_t totalLength) {
+    auto& buffer = stringBuffers_.emplace_back(
+        velox::AlignedBuffer::allocate<char>(totalLength, &pool));
+    return buffer->template asMutable<void>();
+  });
   NIMBLE_CHECK_NOT_NULL(encoding);
   const auto rowCount = encoding->rowCount();
   velox::BufferPtr nullsBuffer =
@@ -380,7 +389,9 @@ void VectorizedFileStats::addColumnStat(ColumnStatistics* stat) {
 // lengths encoding flag: 1 byte (0 = unencoded)
 // stat stream lengths: 8 bytes each, one per stat stream type
 // stat streams: independent encodings
-std::string_view VectorizedFileStats::serialize(nimble::Buffer& buffer) {
+std::string_view VectorizedFileStats::serialize(
+    nimble::Buffer& buffer,
+    bool useVarintRowCount) {
   uint64_t totalLength = 0;
   // add version
   totalLength += sizeof(uint16_t);
@@ -400,8 +411,8 @@ std::string_view VectorizedFileStats::serialize(nimble::Buffer& buffer) {
   // Serialize each stat stream
   std::vector<std::string_view> encodedStatStreams{};
   for (auto& statStream : statStreams_) {
-    auto encoded =
-        statStream.second->serialize(encodingSelectionPolicyFactory_, buffer);
+    auto encoded = statStream.second->serialize(
+        encodingSelectionPolicyFactory_, buffer, useVarintRowCount);
     encodedStatStreams.push_back(encoded);
     totalLength += encoded.size();
   }
@@ -444,6 +455,7 @@ std::string_view VectorizedFileStats::serialize(nimble::Buffer& buffer) {
 /* static */ std::unique_ptr<VectorizedFileStats>
 VectorizedFileStats::deserialize(
     const std::string_view payload,
+    bool useVarintRowCount,
     velox::memory::MemoryPool& pool) {
   auto pos = payload.data();
   auto totalLength = payload.size();
@@ -476,6 +488,7 @@ VectorizedFileStats::deserialize(
       statStreamTypes,
       streamLengths,
       std::string_view{pos, totalLength - (pos - payload.data())},
+      useVarintRowCount,
       pool));
 }
 
@@ -483,12 +496,16 @@ VectorizedFileStats::VectorizedFileStats(
     const std::vector<StatStreamType>& streamTypes,
     const std::vector<uint64_t>& streamLengths,
     std::string_view statStreams,
+    bool useVarintRowCount,
     velox::memory::MemoryPool& pool) {
   NIMBLE_CHECK_EQ(streamTypes.size(), streamLengths.size());
   auto pos = statStreams.data();
   for (size_t i = 0; i < streamTypes.size(); ++i) {
     if (auto vectorizedStat = deserializeVectorizedStatistic(
-            streamTypes[i], std::string_view{pos, streamLengths[i]}, pool)) {
+            streamTypes[i],
+            std::string_view{pos, streamLengths[i]},
+            useVarintRowCount,
+            pool)) {
       statStreams_.emplace(streamTypes[i], std::move(vectorizedStat));
       switch (streamTypes[i]) {
         case StatStreamType::VALUE_COUNT:
@@ -523,6 +540,7 @@ std::unique_ptr<VectorizedStatistic>
 VectorizedFileStats::deserializeVectorizedStatistic(
     StatStreamType streamType,
     std::string_view payload,
+    bool useVarintRowCount,
     velox::memory::MemoryPool& pool) {
   auto stat = VectorizedStatistic::create(streamType, &pool);
   if (UNLIKELY(!stat)) {
@@ -530,7 +548,7 @@ VectorizedFileStats::deserializeVectorizedStatistic(
               << static_cast<uint8_t>(streamType);
     return stat;
   }
-  stat->deserializeFrom(payload, pool);
+  stat->deserializeFrom(payload, useVarintRowCount, pool);
   return stat;
 }
 

@@ -559,6 +559,7 @@ void NimbleDumpLib::emitStreams(
     }
   }
 
+  const bool useVarint = tabletReader->useVarintRowCount();
   traverseTablet(
       *pool_,
       *tabletReader,
@@ -568,12 +569,16 @@ void NimbleDumpLib::emitStreams(
         auto stripeIdentifier = tabletReader->stripeIdentifier(stripeId);
         uint32_t itemCount = 0;
         uint64_t rawStreamSize = 0;
+        const EncodingFactory factory{
+            Encoding::Options{.useVarintRowCount = useVarint}};
         while (stream.hasNext()) {
           auto chunk = stream.nextChunk();
-          itemCount += *reinterpret_cast<const uint32_t*>(chunk.data() + 2);
+          auto encoding =
+              factory.create(*pool_, chunk, [](uint32_t) { return nullptr; });
+          itemCount += encoding->rowCount();
           if (showStreamRawSize) {
-            rawStreamSize +=
-                nimble::test::TestUtils::getRawDataSize(*pool_, chunk);
+            rawStreamSize += nimble::test::TestUtils::getRawDataSize(
+                *pool_, chunk, useVarint);
           }
         }
 
@@ -597,7 +602,7 @@ void NimbleDumpLib::emitStreams(
         if (showInMapStream) {
           values.emplace_back(inMapStreams.contains(streamId) ? "T" : "F");
         }
-        values.push_back(getStreamInputLabel(stream));
+        values.push_back(getStreamInputLabel(stream, useVarint));
         formatter.writeRow(values);
       });
 }
@@ -618,6 +623,7 @@ void NimbleDumpLib::emitHistogram(
       {toString(CompressionType::Zstd), CompressionType::Zstd},
       {toString(CompressionType::MetaInternal), CompressionType::MetaInternal},
   };
+  const bool useVarint = tabletReader->useVarintRowCount();
   traverseTablet(
       *pool_,
       *tabletReader,
@@ -627,6 +633,7 @@ void NimbleDumpLib::emitHistogram(
         while (stream.hasNext()) {
           traverseEncodings(
               stream.nextChunk(),
+              useVarint,
               [&](EncodingType encodingType,
                   DataType dataType,
                   uint32_t level,
@@ -715,10 +722,13 @@ void NimbleDumpLib::emitContent(
           velox::AlignedBuffer::allocate<char>(totalLength, pool_.get()));
       return buffer->asMutable<void>();
     };
+    const bool useVarint = tabletReader->useVarintRowCount();
     if (auto& stream = streams[0]) {
+      const EncodingFactory factory{
+          Encoding::Options{.useVarintRowCount = useVarint}};
       InMemoryChunkedStream chunkedStream{*pool_, std::move(stream)};
       while (chunkedStream.hasNext()) {
-        auto encoding = EncodingFactory().create(
+        auto encoding = factory.create(
             *pool_, chunkedStream.nextChunk(), stringBufferFactory);
         uint32_t totalRows = encoding->rowCount();
         while (totalRows > 0) {

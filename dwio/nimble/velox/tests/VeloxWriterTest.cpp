@@ -626,8 +626,8 @@ ChunkSizeResults validateChunkSize(
         const auto chunk = chunkedStream.nextChunk();
         const uint64_t chunkRawDataSize =
             nimble::test::TestUtils::getRawDataSize(pool, chunk);
-        const uint32_t rowCount =
-            *reinterpret_cast<const uint32_t*>(chunk.data() + kRowCountOffset);
+        const char* rowCountPos = chunk.data() + kRowCountOffset;
+        const uint32_t rowCount = nimble::encoding::peek<uint32_t>(rowCountPos);
         const double stringError =
             isStringStream ? rowCount * sizeof(std::string_view) : 0;
 
@@ -2388,7 +2388,7 @@ TEST_F(VeloxWriterTest, rawSizeWritten) {
 
     // Use VectorizedFileStats to deserialize the stats payload
     auto fileStats = nimble::VectorizedFileStats::deserialize(
-        statsSection->content(), *leafPool_);
+        statsSection->content(), /*useVarintRowCount=*/false, *leafPool_);
     ASSERT_NE(fileStats, nullptr);
 
     // Convert to column statistics using schema and nimbleType
@@ -3306,13 +3306,15 @@ class VeloxWriterIndexTest
           while (chunkedStream.hasNext()) {
             const auto chunkData = chunkedStream.nextChunk();
             std::vector<velox::BufferPtr> stringBuffers;
-            auto encoding = nimble::EncodingFactory().create(
-                *leafPool_, chunkData, [&](uint32_t totalLength) {
-                  auto& buffer = stringBuffers.emplace_back(
-                      velox::AlignedBuffer::allocate<char>(
-                          totalLength, leafPool_.get()));
-                  return buffer->asMutable<void>();
-                });
+            auto encoding =
+                nimble::EncodingFactory(
+                    nimble::Encoding::Options{.useVarintRowCount = true})
+                    .create(*leafPool_, chunkData, [&](uint32_t totalLength) {
+                      auto& buffer = stringBuffers.emplace_back(
+                          velox::AlignedBuffer::allocate<char>(
+                              totalLength, leafPool_.get()));
+                      return buffer->asMutable<void>();
+                    });
             EXPECT_EQ(encoding->rowCount(), expectedChunkRowCounts[chunkIndex])
                 << "Stripe " << stripeIdx << " stream " << streamId << " chunk "
                 << chunkIndex << " row count mismatch (sequential)";
@@ -3349,13 +3351,15 @@ class VeloxWriterIndexTest
               *leafPool_, chunkStreamData);
           auto encodingData = chunkDecoder.decode();
           std::vector<velox::BufferPtr> stringBuffers;
-          auto encoding = nimble::EncodingFactory().create(
-              *leafPool_, encodingData, [&](uint32_t totalLength) {
-                auto& buffer = stringBuffers.emplace_back(
-                    velox::AlignedBuffer::allocate<char>(
-                        totalLength, leafPool_.get()));
-                return buffer->asMutable<void>();
-              });
+          auto encoding =
+              nimble::EncodingFactory(
+                  nimble::Encoding::Options{.useVarintRowCount = true})
+                  .create(*leafPool_, encodingData, [&](uint32_t totalLength) {
+                    auto& buffer = stringBuffers.emplace_back(
+                        velox::AlignedBuffer::allocate<char>(
+                            totalLength, leafPool_.get()));
+                    return buffer->asMutable<void>();
+                  });
 
           EXPECT_EQ(encoding->rowCount(), expectedChunkRowCounts[i])
               << "Stripe " << stripeIdx << " stream " << streamId << " chunk "
@@ -3507,13 +3511,15 @@ class VeloxWriterIndexTest
 
           // Decode the key encoding from the chunk data
 
-          keyStreamCache[chunkFileOffset] = nimble::EncodingFactory().create(
-              *leafPool_, encodingData, [&](uint32_t totalLength) {
-                auto& buf = stringBuffers.emplace_back(
-                    velox::AlignedBuffer::allocate<char>(
-                        totalLength, leafPool_.get()));
-                return buf->asMutable<void>();
-              });
+          keyStreamCache[chunkFileOffset] =
+              nimble::EncodingFactory(
+                  nimble::Encoding::Options{.useVarintRowCount = true})
+                  .create(*leafPool_, encodingData, [&](uint32_t totalLength) {
+                    auto& buf = stringBuffers.emplace_back(
+                        velox::AlignedBuffer::allocate<char>(
+                            totalLength, leafPool_.get()));
+                    return buf->asMutable<void>();
+                  });
         }
 
         auto* keyEncoding = keyStreamCache[chunkFileOffset].get();
@@ -4328,13 +4334,15 @@ TEST_F(VeloxWriterTest, customPrefixRestartInterval) {
 
     // Decode the key encoding
     std::vector<velox::BufferPtr> stringBuffers;
-    auto keyEncoding = nimble::EncodingFactory().create(
-        *leafPool_, encodingData, [&](uint32_t totalLength) {
-          auto& buf = stringBuffers.emplace_back(
-              velox::AlignedBuffer::allocate<char>(
-                  totalLength, leafPool_.get()));
-          return buf->asMutable<void>();
-        });
+    auto keyEncoding =
+        nimble::EncodingFactory(
+            nimble::Encoding::Options{.useVarintRowCount = true})
+            .create(*leafPool_, encodingData, [&](uint32_t totalLength) {
+              auto& buf = stringBuffers.emplace_back(
+                  velox::AlignedBuffer::allocate<char>(
+                      totalLength, leafPool_.get()));
+              return buf->asMutable<void>();
+            });
 
     // Verify the restart interval through debugString()
     const std::string debug = keyEncoding->debugString(0);

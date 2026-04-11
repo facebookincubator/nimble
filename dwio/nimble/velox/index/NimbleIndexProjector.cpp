@@ -20,6 +20,7 @@
 
 #include "dwio/nimble/index/ClusterIndexReader.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
+#include "dwio/nimble/tablet/NimbleFeatureVersion.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/ScopeGuard.h"
 #include "velox/common/base/SuccinctPrinter.h"
@@ -64,6 +65,7 @@ NimbleIndexProjector::NimbleIndexProjector(
       pool_{readerBase_->pool()},
       tabletIndex_{readerBase_->tablet().clusterIndex()},
       numStripes_{readerBase_->tablet().stripeCount()},
+      useVarintRowCount_{readerBase_->tablet().useVarintRowCount()},
       streams_{readerBase_} {
   NIMBLE_CHECK_NOT_NULL(
       tabletIndex_, "NimbleIndexProjector requires a tablet with an index");
@@ -268,6 +270,8 @@ NimbleIndexProjector::lookupRowRanges(
       streams_.enqueueKeyStream(),
       streams_.stripeIndex(),
       streams_.clusterIndex(),
+      EncodingFactory{
+          Encoding::Options{.useVarintRowCount = useVarintRowCount_}},
       pool_);
   streams_.load();
 

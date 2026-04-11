@@ -333,7 +333,8 @@ class SelectiveNimbleReaderTest
 
       InMemoryChunkedStream chunkedStream{*pool(), std::move(streams[0])};
       ASSERT_TRUE(chunkedStream.hasNext());
-      auto capture = EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+      auto capture = EncodingLayoutCapture::capture(
+          chunkedStream.nextChunk(), /*useVarintRowCount=*/false);
       if (isNullable) {
         // Nullable encoding wraps the data encoding. The data child is at
         // index 1 (index 0 is the nulls bool stream).

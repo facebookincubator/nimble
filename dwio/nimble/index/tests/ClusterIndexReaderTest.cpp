@@ -119,6 +119,7 @@ TEST_F(ClusterIndexReaderTest, singleChunkSingleKey) {
       createInputStream(encodedStream.data),
       /*stripeIndex=*/0,
       clusterIndexGroup,
+      EncodingFactory{},
       pool_.get());
 
   // Test exact key match
@@ -157,7 +158,11 @@ TEST_F(ClusterIndexReaderTest, singleChunkMultipleKeys) {
       createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   auto reader = ClusterIndexReader::create(
-      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
+      createInputStream(encodedStream.data),
+      0,
+      clusterIndexGroup,
+      EncodingFactory{},
+      pool_.get());
 
   // Test exact matches, keys between existing keys, and keys after last key.
   // Keys between existing keys should return the next key's row.
@@ -213,7 +218,11 @@ TEST_F(ClusterIndexReaderTest, multipleChunks) {
       createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   auto reader = ClusterIndexReader::create(
-      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
+      createInputStream(encodedStream.data),
+      0,
+      clusterIndexGroup,
+      EncodingFactory{},
+      pool_.get());
 
   // Test keys across all chunks with mixed found/not-found cases.
   // Chunk 0: row offset 0, Chunk 1: row offset 3, Chunk 2: row offset 6
@@ -273,7 +282,11 @@ TEST_F(ClusterIndexReaderTest, seekBetweenChunks) {
       createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   auto reader = ClusterIndexReader::create(
-      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
+      createInputStream(encodedStream.data),
+      0,
+      clusterIndexGroup,
+      EncodingFactory{},
+      pool_.get());
 
   // Key falls between chunk 0's max (ccc) and chunk 1's content (ddd)
   // The index lookup should direct us to chunk 1, and we find ddd
@@ -348,6 +361,7 @@ TEST_F(ClusterIndexReaderTest, multipleStripes) {
       createInputStream(encodedStream0.data),
       0,
       clusterIndexGroup,
+      EncodingFactory{},
       pool_.get());
 
   auto result = reader0->seekAtOrAfter("key_a");
@@ -363,6 +377,7 @@ TEST_F(ClusterIndexReaderTest, multipleStripes) {
       createInputStream(encodedStream1.data),
       1,
       clusterIndexGroup,
+      EncodingFactory{},
       pool_.get());
 
   result = reader1->seekAtOrAfter("key_d");
@@ -394,7 +409,11 @@ TEST_F(ClusterIndexReaderTest, emptyStringKey) {
       createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   auto reader = ClusterIndexReader::create(
-      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
+      createInputStream(encodedStream.data),
+      0,
+      clusterIndexGroup,
+      EncodingFactory{},
+      pool_.get());
 
   // Test empty string key
   auto result = reader->seekAtOrAfter("");
@@ -434,7 +453,11 @@ TEST_F(ClusterIndexReaderTest, largeNumberOfKeys) {
       createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   auto reader = ClusterIndexReader::create(
-      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
+      createInputStream(encodedStream.data),
+      0,
+      clusterIndexGroup,
+      EncodingFactory{},
+      pool_.get());
 
   // Test some specific keys
   std::vector<int> testIndices = {0, 1, 10, 100, 500, 999};
@@ -490,7 +513,11 @@ TEST_F(ClusterIndexReaderTest, repeatedSeeksToSameChunk) {
       createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   auto reader = ClusterIndexReader::create(
-      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
+      createInputStream(encodedStream.data),
+      0,
+      clusterIndexGroup,
+      EncodingFactory{},
+      pool_.get());
 
   // Test repeated seeks within each chunk and across chunks.
   // Mix forward, backward, and repeated seeks to test caching behavior.
@@ -540,7 +567,11 @@ TEST_F(ClusterIndexReaderTest, unevenChunkSizes) {
       createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   auto reader = ClusterIndexReader::create(
-      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
+      createInputStream(encodedStream.data),
+      0,
+      clusterIndexGroup,
+      EncodingFactory{},
+      pool_.get());
 
   // Chunk 0: row offset 0, 1 key
   // Chunk 1: row offset 1, 5 keys
@@ -596,7 +627,11 @@ TEST_F(ClusterIndexReaderTest, binaryKeys) {
       createClusterIndexGroup(indexBuffers, /*stripeGroupIndex=*/0);
 
   auto reader = ClusterIndexReader::create(
-      createInputStream(encodedStream.data), 0, clusterIndexGroup, pool_.get());
+      createInputStream(encodedStream.data),
+      0,
+      clusterIndexGroup,
+      EncodingFactory{},
+      pool_.get());
 
   // Test exact matches and not-found cases for binary keys.
   // Keys after the last key should return std::nullopt.

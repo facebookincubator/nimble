@@ -67,6 +67,7 @@ void verifyEncodingTree(
   std::vector<EncodingDetails> actual;
   nimble::tools::traverseEncodings(
       stream,
+      false,
       [&](auto encodingType,
           auto dataType,
           auto level,
@@ -158,6 +159,7 @@ void test(std::span<const T> values, std::vector<EncodingDetails> expected) {
   std::vector<EncodingDetails> actual;
   nimble::tools::traverseEncodings(
       serialized,
+      false,
       [&](auto encodingType,
           auto dataType,
           auto level,

@@ -258,6 +258,7 @@ class TestUtils {
  public:
   static uint64_t getRawDataSize(
       velox::memory::MemoryPool& memoryPool,
-      std::string_view encodingStr);
+      std::string_view encodingStr,
+      bool useVarintRowCount = false);
 };
 } // namespace facebook::nimble::test

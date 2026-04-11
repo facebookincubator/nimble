@@ -81,7 +81,11 @@ class EncodingLayoutCapture {
   /// It traverses the encoding headers in the stream and produces a serialized
   /// encoding tree layout.
   /// |encoding| - The serialized encoding
-  static EncodingLayout capture(std::string_view encoding);
+  /// |useVarintRowCount| - If true, expect varint-encoded row counts instead of
+  /// fixed 4-byte row counts in encoding prefixes.
+  static EncodingLayout capture(
+      std::string_view encoding,
+      bool useVarintRowCount = false);
 };
 
 } // namespace facebook::nimble

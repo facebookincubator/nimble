@@ -320,12 +320,18 @@ std::string_view encode(
                 .release()));
   }
 
+  // TODO: Varint row counts are currently bundled with the index feature to
+  // allow safe rollout with mixed file/reader versions. Once all readers
+  // support varint row counts (version >= 0.2), we can enable varint
+  // unconditionally and remove this index check.
+  const Encoding::Options options{
+      .useVarintRowCount = context.options().indexConfig.has_value()};
   if (streamData.hasNulls()) {
     std::span<const bool> notNulls = streamData.nonNulls();
     return EncodingFactory::encodeNullable(
-        std::move(policy), data, notNulls, buffer);
+        std::move(policy), data, notNulls, buffer, options);
   } else {
-    return EncodingFactory::encode(std::move(policy), data, buffer);
+    return EncodingFactory::encode(std::move(policy), data, buffer, options);
   }
 }
 
@@ -849,8 +855,14 @@ void VeloxWriter::writeColumnStats() {
     VectorizedFileStats fileStats{
         context_->columnStats(), encodingMemoryPool_.get()};
     Buffer buffer{*encodingMemoryPool_};
+    // TODO: Varint row counts are currently bundled with the index feature to
+    // allow safe rollout with mixed file/reader versions. Once all readers
+    // support varint row counts (version >= 0.2), we can enable varint
+    // unconditionally and remove this index check.
+    const bool useVarintRowCount = context_->options().indexConfig.has_value();
     tabletWriter_->writeOptionalSection(
-        std::string(kVectorizedStatsSection), fileStats.serialize(buffer));
+        std::string(kVectorizedStatsSection),
+        fileStats.serialize(buffer, useVarintRowCount));
   } else {
     flatbuffers::FlatBufferBuilder builder;
     builder.Finish(

@@ -37,6 +37,10 @@ class StreamData {
     SerializationVersion version;
     /// Optional pool for encoding scratch buffers.
     velox::BufferPool* bufferPool{nullptr};
+    /// Override for varint row count. When set, uses this value instead of
+    /// deriving from the serialization version. Used for kTabletRaw format
+    /// where the source file may have varint row counts.
+    std::optional<bool> useVarintRowCountOverride{std::nullopt};
   };
 
   /// Constructor for thrift decoder: creates an empty stream that will be
@@ -129,10 +133,14 @@ class StreamData {
   velox::memory::MemoryPool* const pool_{nullptr};
   // Whether nimble encoding is enabled. Non-const to allow reset() to change.
   bool encodingEnabled_{false};
-  // Whether encoding headers use varint row counts (true for kCompact/
-  // kCompactRaw) or fixed u32 (false for kTabletRaw). Non-const to allow
-  // reset() to change.
+  // Whether encoding headers use varint row counts. True for kCompact and
+  // kCompactRaw. For kTabletRaw, depends on whether the source tablet file
+  // had index enabled (varint row counts are bundled with index). Non-const to
+  // allow reset() to change.
   bool useVarintRowCount_{true};
+  // Override for varint row count. When set, reset() uses this value instead
+  // of deriving from the serialization version.
+  std::optional<bool> useVarintRowCountOverride_{std::nullopt};
   // Optional pool for encoding scratch buffers. Owned externally
   // (typically by DeserializerImpl) to persist across StreamData lifetimes.
   velox::BufferPool* const bufferPool_{nullptr};

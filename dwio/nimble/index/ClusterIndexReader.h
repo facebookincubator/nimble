@@ -20,6 +20,7 @@
 #include <string_view>
 
 #include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/index/ClusterIndexGroup.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 
@@ -44,6 +45,7 @@ class ClusterIndexReader {
       std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
       uint32_t stripeIndex,
       std::shared_ptr<ClusterIndexGroup> indexGroup,
+      const EncodingFactory& encodingFactory,
       velox::memory::MemoryPool* pool);
 
   /// Seek to the position at or after the given encoded key.
@@ -56,6 +58,7 @@ class ClusterIndexReader {
       std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
       uint32_t stripeIndex,
       std::shared_ptr<ClusterIndexGroup> indexGroup,
+      const EncodingFactory& encodingFactory,
       velox::memory::MemoryPool* pool);
 
   /// Seek to a key at or after the given encoded key within a chunk.
@@ -81,6 +84,7 @@ class ClusterIndexReader {
 
   const std::unique_ptr<velox::dwio::common::SeekableInputStream> input_;
   velox::memory::MemoryPool* const pool_;
+  const EncodingFactory encodingFactory_;
 
   const char* inputData_{nullptr};
   int64_t inputSize_{0};

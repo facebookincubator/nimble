@@ -66,7 +66,8 @@ void logEncodingSelection(const std::vector<std::string>& source) {
       nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
 
   LOG(INFO) << "Encoding: " << GREEN
-            << nimble::tools::getEncodingLabel(serialized) << RESET_COLOR;
+            << nimble::tools::getEncodingLabel(serialized, false)
+            << RESET_COLOR;
 }
 
 int main(int argc, char* argv[]) {

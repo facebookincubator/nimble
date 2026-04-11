@@ -301,12 +301,16 @@ class ChunkedDecoder {
 
   /// Selects the encoding trait based on getStringBuffersFromDecoder_ and
   /// forwards to the fully-monomorphic readWithVisitorImpl.
+  /// When useVarintRowCount is enabled, we must use DefaultEncodingTrait
+  /// because the non-legacy EncodingFactory creates non-legacy encoding types
+  /// that cannot be static_cast to legacy types.
   template <bool kHasNulls, typename V>
   void dispatchReadWithVisitorImpl(
       V& visitor,
       const uint64_t* nulls,
       ReadWithVisitorParams& params) {
-    if (getStringBuffersFromDecoder_) {
+    if (getStringBuffersFromDecoder_ ||
+        encodingFactory_->options().useVarintRowCount) {
       readWithVisitorImpl<kHasNulls, DefaultEncodingTrait>(
           visitor, nulls, params);
     } else {
@@ -429,6 +433,9 @@ class ChunkedDecoder {
   // encode nulls alongside values). When false, decode values without nulls
   // (standard case for scalar types).
   const bool decodeValuesWithNulls_;
+  // TODO: Remove encodingDecoder_ (or at least its useVarintRowCount) when
+  // column stats is fully supported (we won't need the raw row count for
+  // estimation anymore).
   const EncodingFactory* const encodingFactory_;
   const bool getStringBuffersFromDecoder_{false};
   // Optional stream index for accelerating skip operations

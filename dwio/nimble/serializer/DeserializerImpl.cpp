@@ -37,7 +37,9 @@ StreamData::StreamData(
     : kind_{kind},
       pool_{pool},
       encodingEnabled_{nonLegacyFormat(options.version)},
-      useVarintRowCount_{!isTabletRawFormat(options.version)},
+      useVarintRowCount_{options.useVarintRowCountOverride.value_or(
+          !isTabletRawFormat(options.version))},
+      useVarintRowCountOverride_{options.useVarintRowCountOverride},
       bufferPool_{options.bufferPool},
       stringBuffers_{&stringBuffers} {
   NIMBLE_CHECK_NOT_NULL(pool_, "Memory pool required for encoding");
@@ -69,7 +71,8 @@ void StreamData::reset(std::string_view data, SerializationVersion version) {
   readRows_ = 0;
   encoding_.reset();
   encodingEnabled_ = nonLegacyFormat(version);
-  useVarintRowCount_ = !isTabletRawFormat(version);
+  useVarintRowCount_ =
+      useVarintRowCountOverride_.value_or(!isTabletRawFormat(version));
   // Re-initialize with new data.
   init(data);
 }
