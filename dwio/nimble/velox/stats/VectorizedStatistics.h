@@ -70,10 +70,12 @@ class VectorizedStatistic {
 
   virtual std::string_view serialize(
       const EncodingSelectionPolicyFactory& encodingSelectionPolicyFactory,
-      nimble::Buffer& buffer) = 0;
+      nimble::Buffer& buffer,
+      bool useVarintRowCount = false) = 0;
 
   virtual void deserializeFrom(
       std::string_view payload,
+      bool useVarintRowCount,
       velox::memory::MemoryPool& pool) = 0;
 
   static std::unique_ptr<VectorizedStatistic> create(
@@ -102,10 +104,12 @@ class TypedVectorizedStatistic : public VectorizedStatistic {
 
   std::string_view serialize(
       const EncodingSelectionPolicyFactory& encodingSelectionPolicyFactory,
-      nimble::Buffer& buffer) override;
+      nimble::Buffer& buffer,
+      bool useVarintRowCount = false) override;
 
   void deserializeFrom(
       std::string_view payload,
+      bool useVarintRowCount,
       velox::memory::MemoryPool& pool) override;
 
  protected:
@@ -124,10 +128,13 @@ class VectorizedFileStats {
       const std::vector<ColumnStatistics*>& columnStats,
       velox::memory::MemoryPool* pool);
 
-  std::string_view serialize(nimble::Buffer& buffer);
+  std::string_view serialize(
+      nimble::Buffer& buffer,
+      bool useVarintRowCount = false);
 
   static std::unique_ptr<VectorizedFileStats> deserialize(
       const std::string_view payload,
+      bool useVarintRowCount,
       velox::memory::MemoryPool& pool);
 
   std::vector<std::unique_ptr<ColumnStatistics>> toColumnStatistics(
@@ -139,6 +146,7 @@ class VectorizedFileStats {
       const std::vector<StatStreamType>& streamTypes,
       const std::vector<uint64_t>& streamLengths,
       std::string_view statStreams,
+      bool useVarintRowCount,
       velox::memory::MemoryPool& pool);
 
   std::vector<StatStreamType> getStatStreamTypes() const;
@@ -152,6 +160,7 @@ class VectorizedFileStats {
   std::unique_ptr<VectorizedStatistic> deserializeVectorizedStatistic(
       StatStreamType streamType,
       std::string_view payload,
+      bool useVarintRowCount,
       velox::memory::MemoryPool& pool);
 
   std::set<StatType> statTypes_;

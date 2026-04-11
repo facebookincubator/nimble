@@ -20,6 +20,7 @@
 #include "dwio/nimble/index/ClusterIndexReader.h"
 #include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/index/IndexFilter.h"
+#include "dwio/nimble/tablet/NimbleFeatureVersion.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/selective/ColumnReader.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
@@ -118,10 +119,9 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
       const dwio::common::RowReaderOptions& options)
       : readerBase_{readerBase},
         options_{options},
-        encodingFactory_(
-            options.passStringBuffersFromDecoder()
-                ? std::make_unique<const EncodingFactory>()
-                : std::make_unique<const legacy::EncodingFactory>()),
+        encodingFactory_(makeEncodingFactory(
+            readerBase->tablet().useVarintRowCount(),
+            options.passStringBuffersFromDecoder())),
         streams_(readerBase_),
         rowSizeTracker_{
             std::make_unique<RowSizeTracker>(readerBase->fileSchemaWithId())} {
@@ -596,6 +596,7 @@ void SelectiveNimbleRowReader::buildIndexReader(NimbleParams& params) {
       params.streams().enqueueKeyStream(),
       params.streams().stripeIndex(),
       params.streams().clusterIndex(),
+      params.encodingFactory(),
       &params.pool());
 }
 

@@ -18,6 +18,7 @@
 
 #include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "velox/common/testutil/TestValue.h"
 
@@ -282,16 +283,24 @@ std::optional<size_t> ChunkedDecoder::estimateRowCount() const {
       kChunkCompressionTypeOffset + /*chunkCompressionType=*/1;
   constexpr int kChunkRowCountOffset =
       kEncodingOffset + Encoding::kRowCountOffset;
+  const bool useVarintRowCount = encodingFactory_->options().useVarintRowCount;
+  // With varint, row count may be up to 5 bytes; with fixed format, 4 bytes.
+  const int rowCountMaxBytes = useVarintRowCount ? 5 : 4;
   NIMBLE_CHECK(
       const_cast<ChunkedDecoder*>(this)->ensureInput(
-          kChunkRowCountOffset + sizeof(uint32_t)));
+          kChunkRowCountOffset + rowCountMaxBytes));
   if (static_cast<CompressionType>(inputData_[kChunkCompressionTypeOffset]) !=
       CompressionType::Uncompressed) {
     rowCountEstimate_ = std::nullopt;
     return rowCountEstimate_;
   }
-  rowCountEstimate_ =
-      folly::loadUnaligned<uint32_t>(inputData_ + kChunkRowCountOffset);
+  if (useVarintRowCount) {
+    const char* pos = inputData_ + kChunkRowCountOffset;
+    rowCountEstimate_ = varint::readVarint32(&pos);
+  } else {
+    rowCountEstimate_ =
+        folly::loadUnaligned<uint32_t>(inputData_ + kChunkRowCountOffset);
+  }
   return rowCountEstimate_;
 }
 
@@ -302,8 +311,13 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
   constexpr int kChunkCompressionTypeOffset{4};
   constexpr int kEncodingOffset{
       kChunkCompressionTypeOffset + /*chunkCompressionType=*/1};
+  // Ensure enough bytes to read through the encoding prefix (encoding type +
+  // data type + row count). Varint row count is up to 5 bytes; fixed is 4.
+  constexpr int kMaxVarintRowCountBytes = 5;
   NIMBLE_CHECK(
-      const_cast<ChunkedDecoder*>(this)->ensureInput(kEncodingOffset + 6));
+      const_cast<ChunkedDecoder*>(this)->ensureInput(
+          kEncodingOffset + Encoding::kRowCountOffset +
+          kMaxVarintRowCountBytes));
   auto* pos = inputData_;
   const auto chunkSize = encoding::readUint32(pos);
   const auto compressionType =
@@ -314,25 +328,42 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
     stringDataSizeEstimate_ = std::nullopt;
     return stringDataSizeEstimate_;
   }
-  auto encodingStart = kEncodingOffset;
+  const bool useVarintRowCount = encodingFactory_->options().useVarintRowCount;
   size_t totalSize = pos + chunkSize - inputData_;
   auto encodingType = static_cast<EncodingType>(encoding::readChar(pos));
   NIMBLE_CHECK_EQ(
       static_cast<DataType>(encoding::readChar(pos)), DataType::String);
-  const auto rowCount = encoding::readUint32(pos);
+  uint32_t rowCount;
+  if (useVarintRowCount) {
+    rowCount = varint::readVarint32(const_cast<const char**>(&pos));
+  } else {
+    rowCount = encoding::readUint32(pos);
+  }
+  // Track where the current encoding's data starts (after its prefix).
+  auto* encodingDataStart = pos;
   // Peel off nullable encoding.
   if (encodingType == EncodingType::Nullable) {
-    encodingStart += Encoding::kPrefixSize + /*nonNullEncodingSize=*/4;
+    // Ensure we have enough bytes to read the nonNulls size (4 bytes).
     NIMBLE_CHECK(
         const_cast<ChunkedDecoder*>(this)->ensureInputIncremental_hack(
-            encodingStart + 6, pos));
+            static_cast<int>((pos - inputData_) + sizeof(uint32_t)), pos));
     const auto nonNullsBytes = encoding::readUint32(pos);
+    NIMBLE_CHECK(
+        const_cast<ChunkedDecoder*>(this)->ensureInputIncremental_hack(
+            static_cast<int>((pos - inputData_) + nonNullsBytes), pos));
     // TODO: it might not require an update here.
     totalSize = pos + nonNullsBytes - inputData_;
     encodingType = static_cast<EncodingType>(encoding::readChar(pos));
     NIMBLE_CHECK_EQ(
         static_cast<DataType>(encoding::readChar(pos)), DataType::String);
-    NIMBLE_CHECK_LE(encoding::readUint32(pos), rowCount);
+    uint32_t innerRowCount;
+    if (useVarintRowCount) {
+      innerRowCount = varint::readVarint32(const_cast<const char**>(&pos));
+    } else {
+      innerRowCount = encoding::readUint32(pos);
+    }
+    NIMBLE_CHECK_LE(innerRowCount, rowCount);
+    encodingDataStart = pos;
   }
   // TODO: we will soon add simple support for other encodings before we have
   // column stats implementation. In the vast majority of cases, String types
@@ -344,8 +375,9 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
   {
     const auto ensured =
         const_cast<ChunkedDecoder*>(this)->ensureInputIncremental_hack(
-            encodingStart + Encoding::kPrefixSize +
-                TrivialEncoding<std::string_view>::kPrefixSize,
+            static_cast<int>(
+                (encodingDataStart - inputData_) +
+                TrivialEncoding<std::string_view>::kPrefixSize),
             pos);
     NIMBLE_CHECK(ensured);
   }

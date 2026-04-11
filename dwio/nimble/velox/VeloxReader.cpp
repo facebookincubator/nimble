@@ -19,6 +19,7 @@
 #include <optional>
 #include <vector>
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/velox/ChunkedStreamDecoder.h"
 #include "dwio/nimble/velox/MetadataGenerated.h"
@@ -185,6 +186,30 @@ VeloxReader::VeloxReader(
           std::move(selector),
           std::move(params)) {}
 
+namespace {
+
+VeloxReadParams adjustParamsForVersion(
+    VeloxReadParams params,
+    const TabletReader& tabletReader) {
+  if (tabletReader.useVarintRowCount()) {
+    params.encodingFactory =
+        [](velox::memory::MemoryPool& memPool,
+           std::string_view data,
+           std::function<void*(uint32_t)> stringBufferFactory)
+        -> std::unique_ptr<Encoding> {
+      const EncodingFactory factory{
+          Encoding::Options{.useVarintRowCount = true}};
+      return factory.create(memPool, data, std::move(stringBufferFactory));
+    };
+    // Non-legacy encodings require optimized string buffer handling, as
+    // LegacyStringFieldReader cannot work with non-legacy encodings.
+    params.optimizeStringBufferHandling = true;
+  }
+  return params;
+}
+
+} // namespace
+
 VeloxReader::VeloxReader(
     std::shared_ptr<const TabletReader> tabletReader,
     velox::memory::MemoryPool& pool,
@@ -192,7 +217,7 @@ VeloxReader::VeloxReader(
     VeloxReadParams params)
     : pool_{pool},
       tabletReader_{std::move(tabletReader)},
-      parameters_{std::move(params)},
+      parameters_{adjustParamsForVersion(std::move(params), *tabletReader_)},
       schema_{loadSchema(*tabletReader_)},
       type_{
           selector ? selector->getSchema()

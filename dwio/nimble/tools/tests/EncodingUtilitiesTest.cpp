@@ -101,7 +101,7 @@ TEST_F(EncodingUtilitiesTest, EncodingPropertyTypeStreamOperator) {
 
 TEST_F(EncodingUtilitiesTest, GetEncodingLabelTrivial) {
   auto stream = buildTrivialUint32Stream({10, 20, 30});
-  auto label = getEncodingLabel(stream);
+  auto label = getEncodingLabel(stream, false);
   // Should contain "Trivial" and "Uint32"
   EXPECT_NE(label.find("Trivial"), std::string::npos);
   EXPECT_NE(label.find("Uint32"), std::string::npos);
@@ -111,7 +111,7 @@ TEST_F(EncodingUtilitiesTest, GetEncodingLabelTrivial) {
 
 TEST_F(EncodingUtilitiesTest, GetEncodingLabelConstant) {
   auto stream = buildConstantUint32Stream(42, 100);
-  auto label = getEncodingLabel(stream);
+  auto label = getEncodingLabel(stream, false);
   EXPECT_NE(label.find("Constant"), std::string::npos);
   EXPECT_NE(label.find("Uint32"), std::string::npos);
 }
@@ -125,6 +125,7 @@ TEST_F(EncodingUtilitiesTest, TraverseEncodingsTrivialVisitor) {
 
   traverseEncodings(
       stream,
+      false,
       [&](EncodingType encodingType,
           DataType dataType,
           uint32_t level,
@@ -158,6 +159,7 @@ TEST_F(EncodingUtilitiesTest, TraverseEncodingsConstantVisitor) {
 
   traverseEncodings(
       stream,
+      false,
       [&](EncodingType encodingType,
           DataType dataType,
           uint32_t level,
@@ -188,6 +190,7 @@ TEST_F(EncodingUtilitiesTest, TraverseEncodingsEarlyStop) {
 
   traverseEncodings(
       stream,
+      false,
       [&](EncodingType /* encodingType */,
           DataType /* dataType */,
           uint32_t /* level */,
@@ -208,6 +211,7 @@ TEST_F(EncodingUtilitiesTest, TraverseEncodingsEncodedSizeValue) {
 
   traverseEncodings(
       stream,
+      false,
       [&](EncodingType /* encodingType */,
           DataType /* dataType */,
           uint32_t /* level */,
@@ -238,7 +242,7 @@ TEST_F(EncodingUtilitiesTest, GetEncodingLabelWithRealTrivialEncoding) {
   auto encoded =
       nimble::test::Encoder<nimble::TrivialEncoding<uint32_t>>::encode(
           buffer, values);
-  auto label = getEncodingLabel(encoded);
+  auto label = getEncodingLabel(encoded, false);
   EXPECT_NE(label.find("Trivial"), std::string::npos);
   EXPECT_NE(label.find("Uint32"), std::string::npos);
 }
@@ -253,7 +257,7 @@ TEST_F(EncodingUtilitiesTest, GetEncodingLabelWithRealConstantEncoding) {
   auto encoded =
       nimble::test::Encoder<nimble::ConstantEncoding<uint32_t>>::encode(
           buffer, values);
-  auto label = getEncodingLabel(encoded);
+  auto label = getEncodingLabel(encoded, false);
   EXPECT_NE(label.find("Constant"), std::string::npos);
   EXPECT_NE(label.find("Uint32"), std::string::npos);
 }

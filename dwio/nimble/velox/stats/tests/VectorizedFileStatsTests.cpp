@@ -114,7 +114,8 @@ TEST_F(VectorizedFileStatsTests, RoundTripDefaultStats) {
   auto serialized = fileStats.serialize(buffer);
   EXPECT_FALSE(serialized.empty());
 
-  auto deserialized = VectorizedFileStats::deserialize(serialized, *leafPool_);
+  auto deserialized = VectorizedFileStats::deserialize(
+      serialized, /*useVarintRowCount=*/false, *leafPool_);
   EXPECT_NE(deserialized, nullptr);
 
   // Serialize again and compare
@@ -136,7 +137,8 @@ TEST_F(VectorizedFileStatsTests, RoundTripIntegralStats) {
   auto serialized = fileStats.serialize(buffer);
   EXPECT_FALSE(serialized.empty());
 
-  auto deserialized = VectorizedFileStats::deserialize(serialized, *leafPool_);
+  auto deserialized = VectorizedFileStats::deserialize(
+      serialized, /*useVarintRowCount=*/false, *leafPool_);
   EXPECT_NE(deserialized, nullptr);
 
   nimble::Buffer buffer2(*leafPool_);
@@ -158,7 +160,8 @@ TEST_F(VectorizedFileStatsTests, RoundTripFloatingPointStats) {
   auto serialized = fileStats.serialize(buffer);
   EXPECT_FALSE(serialized.empty());
 
-  auto deserialized = VectorizedFileStats::deserialize(serialized, *leafPool_);
+  auto deserialized = VectorizedFileStats::deserialize(
+      serialized, /*useVarintRowCount=*/false, *leafPool_);
   EXPECT_NE(deserialized, nullptr);
 
   nimble::Buffer buffer2(*leafPool_);
@@ -179,7 +182,8 @@ TEST_F(VectorizedFileStatsTests, RoundTripStringStats) {
   auto serialized = fileStats.serialize(buffer);
   EXPECT_FALSE(serialized.empty());
 
-  auto deserialized = VectorizedFileStats::deserialize(serialized, *leafPool_);
+  auto deserialized = VectorizedFileStats::deserialize(
+      serialized, /*useVarintRowCount=*/false, *leafPool_);
   EXPECT_NE(deserialized, nullptr);
 
   nimble::Buffer buffer2(*leafPool_);
@@ -202,7 +206,8 @@ TEST_F(VectorizedFileStatsTests, RoundTripMixedStats) {
   auto serialized = fileStats.serialize(buffer);
   EXPECT_FALSE(serialized.empty());
 
-  auto deserialized = VectorizedFileStats::deserialize(serialized, *leafPool_);
+  auto deserialized = VectorizedFileStats::deserialize(
+      serialized, /*useVarintRowCount=*/false, *leafPool_);
   EXPECT_NE(deserialized, nullptr);
 
   nimble::Buffer buffer2(*leafPool_);
@@ -218,7 +223,8 @@ TEST_F(VectorizedFileStatsTests, RoundTripEmptyStats) {
   nimble::Buffer buffer(*leafPool_);
   auto serialized = fileStats.serialize(buffer);
 
-  auto deserialized = VectorizedFileStats::deserialize(serialized, *leafPool_);
+  auto deserialized = VectorizedFileStats::deserialize(
+      serialized, /*useVarintRowCount=*/false, *leafPool_);
   EXPECT_NE(deserialized, nullptr);
 }
 
@@ -240,7 +246,8 @@ TEST_F(VectorizedFileStatsTests, RoundTripLargeNumberOfStats) {
   auto serialized = fileStats.serialize(buffer);
   EXPECT_FALSE(serialized.empty());
 
-  auto deserialized = VectorizedFileStats::deserialize(serialized, *leafPool_);
+  auto deserialized = VectorizedFileStats::deserialize(
+      serialized, /*useVarintRowCount=*/false, *leafPool_);
   EXPECT_NE(deserialized, nullptr);
 
   nimble::Buffer buffer2(*leafPool_);
@@ -469,7 +476,8 @@ TEST_F(VectorizedFileStatsTests, SchemaBasedRoundTripFlatRow) {
   EXPECT_FALSE(serialized.empty());
 
   // Deserialize and convert back to column statistics
-  auto deserialized = VectorizedFileStats::deserialize(serialized, *leafPool_);
+  auto deserialized = VectorizedFileStats::deserialize(
+      serialized, /*useVarintRowCount=*/false, *leafPool_);
   EXPECT_NE(deserialized, nullptr);
 
   auto roundTrippedStats = deserialized->toColumnStatistics(schema, nimbleType);
@@ -522,7 +530,8 @@ TEST_F(VectorizedFileStatsTests, SchemaBasedRoundTripNestedRow) {
   nimble::Buffer buffer(*leafPool_);
   auto serialized = fileStats.serialize(buffer);
 
-  auto deserialized = VectorizedFileStats::deserialize(serialized, *leafPool_);
+  auto deserialized = VectorizedFileStats::deserialize(
+      serialized, /*useVarintRowCount=*/false, *leafPool_);
   auto roundTrippedStats = deserialized->toColumnStatistics(schema, nimbleType);
   ASSERT_EQ(roundTrippedStats.size(), 5);
 
@@ -564,7 +573,8 @@ TEST_F(VectorizedFileStatsTests, SchemaBasedRoundTripWithArray) {
   nimble::Buffer buffer(*leafPool_);
   auto serialized = fileStats.serialize(buffer);
 
-  auto deserialized = VectorizedFileStats::deserialize(serialized, *leafPool_);
+  auto deserialized = VectorizedFileStats::deserialize(
+      serialized, /*useVarintRowCount=*/false, *leafPool_);
   auto roundTrippedStats = deserialized->toColumnStatistics(schema, nimbleType);
   ASSERT_EQ(roundTrippedStats.size(), 4);
 
@@ -599,7 +609,8 @@ TEST_F(VectorizedFileStatsTests, SchemaBasedRoundTripWithMap) {
   nimble::Buffer buffer(*leafPool_);
   auto serialized = fileStats.serialize(buffer);
 
-  auto deserialized = VectorizedFileStats::deserialize(serialized, *leafPool_);
+  auto deserialized = VectorizedFileStats::deserialize(
+      serialized, /*useVarintRowCount=*/false, *leafPool_);
   auto roundTrippedStats = deserialized->toColumnStatistics(schema, nimbleType);
   ASSERT_EQ(roundTrippedStats.size(), 4);
 
@@ -638,7 +649,8 @@ TEST_F(VectorizedFileStatsTests, SchemaBasedRoundTripWithNulloptMinMax) {
   nimble::Buffer buffer(*leafPool_);
   auto serialized = fileStats.serialize(buffer);
 
-  auto deserialized = VectorizedFileStats::deserialize(serialized, *leafPool_);
+  auto deserialized = VectorizedFileStats::deserialize(
+      serialized, /*useVarintRowCount=*/false, *leafPool_);
   auto roundTrippedStats = deserialized->toColumnStatistics(schema, nimbleType);
   ASSERT_EQ(roundTrippedStats.size(), 4);
 
@@ -675,7 +687,8 @@ TEST_F(VectorizedFileStatsTests, SchemaBasedRoundTripWithTimestamp) {
   nimble::Buffer buffer(*leafPool_);
   auto serialized = fileStats.serialize(buffer);
 
-  auto deserialized = VectorizedFileStats::deserialize(serialized, *leafPool_);
+  auto deserialized = VectorizedFileStats::deserialize(
+      serialized, /*useVarintRowCount=*/false, *leafPool_);
   auto roundTrippedStats = deserialized->toColumnStatistics(schema, nimbleType);
   ASSERT_EQ(roundTrippedStats.size(), 3);
 
@@ -728,7 +741,8 @@ TEST_F(VectorizedFileStatsTests, SchemaBasedRoundTripComplexNested) {
   nimble::Buffer buffer(*leafPool_);
   auto serialized = fileStats.serialize(buffer);
 
-  auto deserialized = VectorizedFileStats::deserialize(serialized, *leafPool_);
+  auto deserialized = VectorizedFileStats::deserialize(
+      serialized, /*useVarintRowCount=*/false, *leafPool_);
   auto roundTrippedStats = deserialized->toColumnStatistics(schema, nimbleType);
   ASSERT_EQ(roundTrippedStats.size(), 8);
 
@@ -783,7 +797,8 @@ TEST_F(VectorizedFileStatsTests, SchemaBasedRoundTripAllIntegralTypes) {
   nimble::Buffer buffer(*leafPool_);
   auto serialized = fileStats.serialize(buffer);
 
-  auto deserialized = VectorizedFileStats::deserialize(serialized, *leafPool_);
+  auto deserialized = VectorizedFileStats::deserialize(
+      serialized, /*useVarintRowCount=*/false, *leafPool_);
   auto roundTrippedStats = deserialized->toColumnStatistics(schema, nimbleType);
   ASSERT_EQ(roundTrippedStats.size(), 5);
 
@@ -814,7 +829,8 @@ TEST_F(VectorizedFileStatsTests, SchemaBasedRoundTripAllFloatingPointTypes) {
   nimble::Buffer buffer(*leafPool_);
   auto serialized = fileStats.serialize(buffer);
 
-  auto deserialized = VectorizedFileStats::deserialize(serialized, *leafPool_);
+  auto deserialized = VectorizedFileStats::deserialize(
+      serialized, /*useVarintRowCount=*/false, *leafPool_);
   auto roundTrippedStats = deserialized->toColumnStatistics(schema, nimbleType);
   ASSERT_EQ(roundTrippedStats.size(), 3);
 

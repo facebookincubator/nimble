@@ -125,6 +125,13 @@ class NimbleIndexProjector {
     return projectedNimbleType_;
   }
 
+  /// Returns true if the projected output uses varint-encoded row counts.
+  /// Callers must set DeserializerOptions::useVarintRowCount accordingly
+  /// when deserializing the kTabletRaw output.
+  bool useVarintRowCount() const {
+    return useVarintRowCount_;
+  }
+
   /// Statistics captured during project().
   struct Stats {
     /// Number of stripes read from the tablet.
@@ -224,6 +231,7 @@ class NimbleIndexProjector {
   velox::memory::MemoryPool* const pool_;
   const ClusterIndex* const tabletIndex_;
   const uint32_t numStripes_{0};
+  const bool useVarintRowCount_{false};
 
   // Projected nimble schema built from file nimble schema. Preserves
   // encoding-specific types (ArrayWithOffsets, SlidingWindowMap, FlatMap).

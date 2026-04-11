@@ -80,3 +80,25 @@ class EncodingFactory : public ::facebook::nimble::EncodingFactory {
 };
 
 } // namespace facebook::nimble::legacy
+
+namespace facebook::nimble {
+
+/// Creates the appropriate EncodingFactory based on file version and options.
+/// When useVarintRowCount is true, returns a non-legacy EncodingFactory with
+/// varint row count support. When passStringBuffersFromDecoder is true, returns
+/// a non-legacy EncodingFactory with default options. Otherwise, returns a
+/// legacy EncodingFactory.
+inline std::unique_ptr<const EncodingFactory> makeEncodingFactory(
+    bool useVarintRowCount,
+    bool passStringBuffersFromDecoder) {
+  if (useVarintRowCount) {
+    return std::make_unique<EncodingFactory>(
+        Encoding::Options{.useVarintRowCount = true});
+  }
+  if (passStringBuffersFromDecoder) {
+    return std::make_unique<EncodingFactory>();
+  }
+  return std::make_unique<legacy::EncodingFactory>();
+}
+
+} // namespace facebook::nimble

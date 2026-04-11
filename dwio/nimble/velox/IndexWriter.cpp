@@ -282,7 +282,10 @@ uint32_t IndexWriter::encodeChunkData(
     Buffer& buffer,
     KeyChunk& chunk) {
   const auto encoded = EncodingFactory::encode<std::string_view>(
-      createEncodingPolicy(), data, buffer);
+      createEncodingPolicy(),
+      data,
+      buffer,
+      Encoding::Options{.useVarintRowCount = true});
   NIMBLE_CHECK(!encoded.empty());
 
   chunk.rowCount = data.size();

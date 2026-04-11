@@ -20,7 +20,7 @@ namespace facebook::nimble {
 constexpr uint16_t kMagicNumber = 0xA1FA;
 constexpr uint64_t kInitialFooterSize = 8 * 1024 * 1024; // 8MB
 constexpr uint16_t kVersionMajor = 0;
-constexpr uint16_t kVersionMinor = 1;
+constexpr uint16_t kVersionMinor = 2;
 
 // Total size of the fields after the flatbuffer.
 constexpr uint32_t kPostscriptSize = 20;

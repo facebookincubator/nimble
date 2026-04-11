@@ -147,10 +147,9 @@ SelectiveNimbleIndexReader::SelectiveNimbleIndexReader(
     const dwio::common::RowReaderOptions& options)
     : readerBase_(std::move(readerBase)),
       options_(options),
-      encodingFactory_(
-          options.passStringBuffersFromDecoder()
-              ? std::make_unique<const EncodingFactory>()
-              : std::make_unique<const legacy::EncodingFactory>()),
+      encodingFactory_(makeEncodingFactory(
+          readerBase_->tablet().useVarintRowCount(),
+          options.passStringBuffersFromDecoder())),
       rowSizeTracker_(
           std::make_unique<RowSizeTracker>(readerBase_->fileSchemaWithId())),
       hasFilters_(options.scanSpec()->hasFilter()),
@@ -593,6 +592,7 @@ void SelectiveNimbleIndexReader::loadStripeWithIndex(uint32_t stripeIndex) {
       params.streams().enqueueKeyStream(),
       params.streams().stripeIndex(),
       params.streams().clusterIndex(),
+      params.encodingFactory(),
       &params.pool());
 
   streams_.load();

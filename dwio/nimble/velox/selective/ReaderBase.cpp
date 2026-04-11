@@ -93,8 +93,8 @@ ReaderBase::ReaderBase(
         if (!statsSection.has_value()) {
           return {};
         }
-        auto fileStats =
-            VectorizedFileStats::deserialize(statsSection->content(), *pool_);
+        auto fileStats = VectorizedFileStats::deserialize(
+            statsSection->content(), tablet_->useVarintRowCount(), *pool_);
         if (!fileStats) {
           return {};
         }

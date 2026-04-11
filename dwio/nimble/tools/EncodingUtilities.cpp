@@ -15,22 +15,35 @@
  */
 #include "dwio/nimble/tools/EncodingUtilities.h"
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/common/Varint.h"
 
 namespace facebook::nimble::tools {
 namespace {
-constexpr uint32_t kEncodingPrefixSize = 6;
+constexpr uint32_t kFixedEncodingPrefixSize = 6;
+
+// Computes the encoding prefix size (encoding type + data type + row count).
+// Row count is either 4 bytes (fixed) or varint-encoded.
+uint32_t encodingPrefixSize(std::string_view stream, bool useVarintRowCount) {
+  if (!useVarintRowCount) {
+    return kFixedEncodingPrefixSize;
+  }
+  const char* pos = stream.data() + 2;
+  varint::skipVarint(&pos);
+  return static_cast<uint32_t>(pos - stream.data());
+}
 
 void extractCompressionType(
     EncodingType encodingType,
     DataType /* dataType */,
     std::string_view stream,
+    bool useVarintRowCount,
     std::unordered_map<EncodingPropertyType, EncodingProperty>& properties) {
   switch (encodingType) {
     // Compression type is the byte right after the encoding header for both
     // encodings.
     case EncodingType::Trivial:
     case EncodingType::FixedBitWidth: {
-      auto pos = stream.data() + kEncodingPrefixSize;
+      auto pos = stream.data() + encodingPrefixSize(stream, useVarintRowCount);
       properties.insert(
           {EncodingPropertyType::Compression,
            EncodingProperty{
@@ -57,9 +70,11 @@ std::unordered_map<EncodingPropertyType, EncodingProperty>
 extractEncodingProperties(
     EncodingType encodingType,
     DataType dataType,
-    std::string_view stream) {
+    std::string_view stream,
+    bool useVarintRowCount) {
   std::unordered_map<EncodingPropertyType, EncodingProperty> properties{};
-  extractCompressionType(encodingType, dataType, stream, properties);
+  extractCompressionType(
+      encodingType, dataType, stream, useVarintRowCount, properties);
   properties.insert(
       {EncodingPropertyType::EncodedSize,
        {.value = folly::to<std::string>(stream.size())}});
@@ -68,6 +83,7 @@ extractEncodingProperties(
 
 void traverseEncodings(
     std::string_view stream,
+    bool useVarintRowCount,
     uint32_t level,
     uint32_t index,
     const std::string& nestedEncodingName,
@@ -80,8 +96,8 @@ void traverseEncodings(
         std::unordered_map<
             EncodingPropertyType,
             EncodingProperty> /* properties */)> visitor) {
-  NIMBLE_CHECK(
-      stream.size() >= kEncodingPrefixSize, "Unexpected end of stream.");
+  const uint32_t prefixSize = encodingPrefixSize(stream, useVarintRowCount);
+  NIMBLE_CHECK(stream.size() >= prefixSize, "Unexpected end of stream.");
 
   const EncodingType encodingType = static_cast<EncodingType>(stream[0]);
   auto dataType = static_cast<DataType>(stream[1]);
@@ -91,7 +107,8 @@ void traverseEncodings(
       level,
       index,
       nestedEncodingName,
-      extractEncodingProperties(encodingType, dataType, stream));
+      extractEncodingProperties(
+          encodingType, dataType, stream, useVarintRowCount));
 
   if (!continueTraversal) {
     return;
@@ -107,17 +124,23 @@ void traverseEncodings(
     }
     case EncodingType::Trivial: {
       if (dataType == DataType::String) {
-        const char* pos = stream.data() + kEncodingPrefixSize + 1;
+        const char* pos = stream.data() + prefixSize + 1;
         const uint32_t lengthsBytes = encoding::readUint32(pos);
         traverseEncodings(
-            {pos, lengthsBytes}, level + 1, 0, "Lengths", visitor);
+            {pos, lengthsBytes},
+            useVarintRowCount,
+            level + 1,
+            0,
+            "Lengths",
+            visitor);
       }
       break;
     }
     case EncodingType::SparseBool: {
-      const char* pos = stream.data() + kEncodingPrefixSize + 1;
+      const char* pos = stream.data() + prefixSize + 1;
       traverseEncodings(
           {pos, stream.size() - (pos - stream.data())},
+          useVarintRowCount,
           level + 1,
           0,
           "Indices",
@@ -125,24 +148,40 @@ void traverseEncodings(
       break;
     }
     case EncodingType::MainlyConstant: {
-      const char* pos = stream.data() + kEncodingPrefixSize;
+      const char* pos = stream.data() + prefixSize;
       const uint32_t isCommonBytes = encoding::readUint32(pos);
       traverseEncodings(
-          {pos, isCommonBytes}, level + 1, 0, "IsCommon", visitor);
+          {pos, isCommonBytes},
+          useVarintRowCount,
+          level + 1,
+          0,
+          "IsCommon",
+          visitor);
       pos += isCommonBytes;
       const uint32_t otherValueBytes = encoding::readUint32(pos);
       traverseEncodings(
-          {pos, otherValueBytes}, level + 1, 1, "OtherValues", visitor);
+          {pos, otherValueBytes},
+          useVarintRowCount,
+          level + 1,
+          1,
+          "OtherValues",
+          visitor);
       break;
     }
     case EncodingType::Dictionary: {
-      const char* pos = stream.data() + kEncodingPrefixSize;
+      const char* pos = stream.data() + prefixSize;
       const uint32_t alphabetBytes = encoding::readUint32(pos);
       traverseEncodings(
-          {pos, alphabetBytes}, level + 1, 0, "Alphabet", visitor);
+          {pos, alphabetBytes},
+          useVarintRowCount,
+          level + 1,
+          0,
+          "Alphabet",
+          visitor);
       pos += alphabetBytes;
       traverseEncodings(
           {pos, stream.size() - (pos - stream.data())},
+          useVarintRowCount,
           level + 1,
           1,
           "Indices",
@@ -150,14 +189,20 @@ void traverseEncodings(
       break;
     }
     case EncodingType::RLE: {
-      const char* pos = stream.data() + kEncodingPrefixSize;
+      const char* pos = stream.data() + prefixSize;
       const uint32_t runLengthBytes = encoding::readUint32(pos);
       traverseEncodings(
-          {pos, runLengthBytes}, level + 1, 0, "Lengths", visitor);
+          {pos, runLengthBytes},
+          useVarintRowCount,
+          level + 1,
+          0,
+          "Lengths",
+          visitor);
       if (dataType != DataType::Bool) {
         pos += runLengthBytes;
         traverseEncodings(
             {pos, stream.size() - (pos - stream.data())},
+            useVarintRowCount,
             level + 1,
             1,
             "Values",
@@ -166,16 +211,28 @@ void traverseEncodings(
       break;
     }
     case EncodingType::Delta: {
-      const char* pos = stream.data() + kEncodingPrefixSize;
+      const char* pos = stream.data() + prefixSize;
       const uint32_t deltaBytes = encoding::readUint32(pos);
       const uint32_t restatementBytes = encoding::readUint32(pos);
-      traverseEncodings({pos, deltaBytes}, level + 1, 0, "Deltas", visitor);
+      traverseEncodings(
+          {pos, deltaBytes},
+          useVarintRowCount,
+          level + 1,
+          0,
+          "Deltas",
+          visitor);
       pos += deltaBytes;
       traverseEncodings(
-          {pos, restatementBytes}, level + 1, 1, "Restatements", visitor);
+          {pos, restatementBytes},
+          useVarintRowCount,
+          level + 1,
+          1,
+          "Restatements",
+          visitor);
       pos += restatementBytes;
       traverseEncodings(
           {pos, stream.size() - (pos - stream.data())},
+          useVarintRowCount,
           level + 1,
           2,
           "IsRestatements",
@@ -183,12 +240,14 @@ void traverseEncodings(
       break;
     }
     case EncodingType::Nullable: {
-      const char* pos = stream.data() + kEncodingPrefixSize;
+      const char* pos = stream.data() + prefixSize;
       const uint32_t dataBytes = encoding::readUint32(pos);
-      traverseEncodings({pos, dataBytes}, level + 1, 0, "Data", visitor);
+      traverseEncodings(
+          {pos, dataBytes}, useVarintRowCount, level + 1, 0, "Data", visitor);
       pos += dataBytes;
       traverseEncodings(
           {pos, stream.size() - (pos - stream.data())},
+          useVarintRowCount,
           level + 1,
           1,
           "Nulls",
@@ -196,9 +255,10 @@ void traverseEncodings(
       break;
     }
     case EncodingType::Sentinel: {
-      const char* pos = stream.data() + kEncodingPrefixSize + 8;
+      const char* pos = stream.data() + prefixSize + 8;
       traverseEncodings(
           {pos, stream.size() - (pos - stream.data())},
+          useVarintRowCount,
           level + 1,
           0,
           "Sentinels",
@@ -221,6 +281,7 @@ std::ostream& operator<<(std::ostream& out, EncodingPropertyType propertyType) {
 
 void traverseEncodings(
     std::string_view stream,
+    bool useVarintRowCount,
     std::function<bool(
         EncodingType,
         DataType,
@@ -230,10 +291,12 @@ void traverseEncodings(
         std::unordered_map<
             EncodingPropertyType,
             EncodingProperty> /* properties */)> visitor) {
-  traverseEncodings(stream, 0, 0, "", visitor);
+  traverseEncodings(stream, useVarintRowCount, 0, 0, "", visitor);
 }
 
-std::string getStreamInputLabel(nimble::ChunkedStream& stream) {
+std::string getStreamInputLabel(
+    nimble::ChunkedStream& stream,
+    bool useVarintRowCount) {
   std::string label;
   uint32_t chunkId = 0;
   while (stream.hasNext()) {
@@ -242,7 +305,7 @@ std::string getStreamInputLabel(nimble::ChunkedStream& stream) {
     if (compression != CompressionType::Uncompressed) {
       label += "{" + toString(compression) + "}";
     }
-    label += ":" + getEncodingLabel(stream.nextChunk());
+    label += ":" + getEncodingLabel(stream.nextChunk(), useVarintRowCount);
 
     if (stream.hasNext()) {
       label += ";";
@@ -251,12 +314,13 @@ std::string getStreamInputLabel(nimble::ChunkedStream& stream) {
   return label;
 }
 
-std::string getEncodingLabel(std::string_view stream) {
+std::string getEncodingLabel(std::string_view stream, bool useVarintRowCount) {
   std::string label;
   uint32_t currentLevel = 0;
 
   traverseEncodings(
       stream,
+      useVarintRowCount,
       [&](EncodingType encodingType,
           DataType dataType,
           uint32_t level,

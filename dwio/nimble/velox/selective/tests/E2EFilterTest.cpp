@@ -467,8 +467,13 @@ class E2EFilterTest
         if (!chunkedStream.hasNext()) {
           continue;
         }
-        auto capture =
-            EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+        // TODO: Varint row counts are currently bundled with the index
+        // feature to allow safe rollout with mixed file/reader versions.
+        // Once all readers support varint row counts (version >= 0.2), we
+        // can enable varint unconditionally and remove this index check.
+        auto capture = EncodingLayoutCapture::capture(
+            chunkedStream.nextChunk(),
+            /*useVarintRowCount=*/tablet->hasClusterIndexSection());
         // The top-level encoding may be Nullable (wrapping the data encoding)
         // or the data encoding directly.
         if (capture.encodingType() == EncodingType::Nullable) {

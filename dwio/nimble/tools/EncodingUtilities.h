@@ -39,6 +39,7 @@ struct EncodingProperty {
 
 void traverseEncodings(
     std::string_view stream,
+    bool useVarintRowCount,
     std::function<bool(
         EncodingType,
         DataType,
@@ -49,7 +50,9 @@ void traverseEncodings(
             EncodingPropertyType,
             EncodingProperty> /* properties */)> visitor);
 
-std::string getStreamInputLabel(nimble::ChunkedStream& stream);
-std::string getEncodingLabel(std::string_view stream);
+std::string getStreamInputLabel(
+    nimble::ChunkedStream& stream,
+    bool useVarintRowCount);
+std::string getEncodingLabel(std::string_view stream, bool useVarintRowCount);
 
 } // namespace facebook::nimble::tools

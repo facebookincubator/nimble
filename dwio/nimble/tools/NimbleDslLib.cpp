@@ -543,8 +543,8 @@ void NimbleDslLib::showStats() {
     return;
   }
 
-  auto fileStats =
-      VectorizedFileStats::deserialize(statsSection->content(), *pool_);
+  auto fileStats = VectorizedFileStats::deserialize(
+      statsSection->content(), tablet->useVarintRowCount(), *pool_);
   if (!fileStats) {
     ostream_ << RED(enableColors_) << "Failed to deserialize statistics."
              << RESET_COLOR(enableColors_) << std::endl;
@@ -650,6 +650,8 @@ void NimbleDslLib::showEncoding(std::optional<uint32_t> stripeId) {
        {"Stream Label", 25, Alignment::Left},
        {"Encoding", 60, Alignment::Left}}};
 
+  const bool useVarint = tablet->useVarintRowCount();
+
   if (tablet->stripeCount() == 0) {
     return;
   }
@@ -670,7 +672,7 @@ void NimbleDslLib::showEncoding(std::optional<uint32_t> stripeId) {
       auto& stream = streams[j];
       if (stream) {
         InMemoryChunkedStream chunkedStream{*pool_, std::move(stream)};
-        auto encodingLabel = getStreamInputLabel(chunkedStream);
+        auto encodingLabel = getStreamInputLabel(chunkedStream, useVarint);
         formatter.writeRow({
             std::to_string(i),
             std::to_string(j),

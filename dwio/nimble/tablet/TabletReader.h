@@ -30,6 +30,7 @@
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "dwio/nimble/tablet/MetadataCache.h"
+#include "dwio/nimble/tablet/NimbleFeatureVersion.h"
 #include "folly/Synchronized.h"
 #include "velox/common/file/File.h"
 #include "velox/dwio/common/MetricsLog.h"
@@ -243,6 +244,15 @@ class TabletReader {
 
   // Returns true if the file has a cluster index optional section.
   bool hasClusterIndexSection() const;
+
+  // Returns true if this file uses varint-encoded row counts in encoding
+  // prefixes. Combines version check (>= 0.2) with index section presence.
+  // TODO: Once all readers support varint row counts (version >= 0.2), enable
+  // varint unconditionally and remove the index check.
+  bool useVarintRowCount() const {
+    return hasVarintRowCount(majorVersion(), minorVersion()) &&
+        hasClusterIndexSection();
+  }
 
   // Returns true if the cluster index is loaded.
   inline bool hasClusterIndex() const {

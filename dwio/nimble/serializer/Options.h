@@ -59,8 +59,9 @@ namespace facebook::nimble {
 ///   (1) Each stream's data includes tablet chunk headers:
 ///       [chunkSize:u32][compressionType:1B][encoded_data...]
 ///       which the Deserializer strips before decoding.
-///   (2) Encoding headers within streams use fixed u32 row counts
-///       (useVarintRowCount=false), matching the tablet's default format.
+///   (2) Encoding headers within streams use the row count format of the
+///       source tablet file (fixed u32 for non-indexed files, varint for
+///       indexed files with tablet format v0.2+).
 ///   Wire: [version:1B][rowCount:varint][stream_data_0]...[stream_data_N]
 ///         [encodingType:1B][raw_sizes_payload][trailer_size:u32]
 enum class SerializationVersion : uint8_t {
@@ -236,6 +237,13 @@ struct DeserializerOptions {
   /// Minimum number of child streams per parallel decode task. Ensures each
   /// coroutine task has enough work to amortize threading overhead.
   uint32_t minStreamsPerDecodeUnit{1};
+
+  /// Whether encoding headers in kTabletRaw streams use varint row counts.
+  /// Only relevant for kTabletRaw format. When true, encoding prefixes in the
+  /// raw tablet bytes use varint-encoded row counts instead of fixed 4-byte
+  /// uint32. Set this when the source tablet file was written with version
+  /// >= 0.2 and had index enabled.
+  bool useVarintRowCount{false};
 };
 
 } // namespace facebook::nimble

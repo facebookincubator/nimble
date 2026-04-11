@@ -19,7 +19,6 @@
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
 
 namespace facebook::nimble::index {
 
@@ -29,11 +28,13 @@ ClusterIndexReader::ClusterIndexReader(
     std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
     uint32_t stripeIndex,
     std::shared_ptr<ClusterIndexGroup> indexGroup,
+    const EncodingFactory& encodingFactory,
     velox::memory::MemoryPool* pool)
     : stripeIndex_{stripeIndex},
       indexGroup_{std::move(indexGroup)},
       input_{std::move(input)},
-      pool_{pool} {
+      pool_{pool},
+      encodingFactory_{encodingFactory} {
   NIMBLE_CHECK_NOT_NULL(input_);
   NIMBLE_CHECK_NOT_NULL(pool_);
 }
@@ -42,9 +43,14 @@ std::unique_ptr<ClusterIndexReader> ClusterIndexReader::create(
     std::unique_ptr<velox::dwio::common::SeekableInputStream> input,
     uint32_t stripeIndex,
     std::shared_ptr<ClusterIndexGroup> indexGroup,
+    const EncodingFactory& encodingFactory,
     velox::memory::MemoryPool* pool) {
   return std::unique_ptr<ClusterIndexReader>(new ClusterIndexReader(
-      std::move(input), stripeIndex, std::move(indexGroup), pool));
+      std::move(input),
+      stripeIndex,
+      std::move(indexGroup),
+      encodingFactory,
+      pool));
 }
 
 std::optional<uint32_t> ClusterIndexReader::seekAtOrAfter(
@@ -129,7 +135,7 @@ void ClusterIndexReader::loadChunk() {
   inputData_ += length;
   inputSize_ -= length;
   stringBuffers_.clear();
-  encoding_ = nimble::EncodingFactory().create(
+  encoding_ = encodingFactory_.create(
       *pool_,
       std::string_view(chunkData, chunkSize),
       [&](uint32_t totalLength) {

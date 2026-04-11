@@ -92,12 +92,14 @@ class DeserializerImpl : public Decoder {
       const Type* type,
       bool inMapStream,
       bool enableBufferPool,
+      std::optional<bool> useVarintRowCountOverride,
       velox::memory::MemoryPool* pool)
       : type_{type},
         pool_{pool},
         inMapStream_{inMapStream},
         scalarKind_{getScalarKindForType(*type)},
         typeStorageWidth_{getTypeStorageWidth(*type)},
+        useVarintRowCountOverride_{useVarintRowCountOverride},
         bufferPool_{
             enableBufferPool ? std::make_unique<velox::BufferPool>()
                              : nullptr} {}
@@ -210,6 +212,7 @@ class DeserializerImpl : public Decoder {
     const serde::StreamData::Options options{
         .version = segment.version,
         .bufferPool = bufferPool_.get(),
+        .useVarintRowCountOverride = useVarintRowCountOverride_,
     };
     streamData_.emplace(
         scalarKind_, segment.data, stringBuffers, pool_, options);
@@ -543,6 +546,8 @@ class DeserializerImpl : public Decoder {
   // Cached from type at construction to avoid per-call dispatch.
   const ScalarKind scalarKind_;
   const uint32_t typeStorageWidth_;
+  // Override for varint row count format in kTabletRaw streams.
+  const std::optional<bool> useVarintRowCountOverride_;
   // Pool for encoding scratch buffers (e.g. MainlyConstant's isCommon and
   // otherValues buffers). Persists across clear()/addBatch() cycles so buffers
   // are reused instead of being allocated/freed through MemoryPool each time.
@@ -688,11 +693,14 @@ Deserializer::Deserializer(
 void Deserializer::createDeserializersForType(
     const Type& type,
     uint32_t depth) {
+  const auto useVarintOverride =
+      options_.useVarintRowCount ? std::optional<bool>{true} : std::nullopt;
   deserializerMap_[getMainDescriptor(type).offset()] =
       std::make_unique<DeserializerImpl>(
           &type,
           /*inMapStream=*/false,
           options_.enableBufferPool,
+          useVarintOverride,
           pool_);
   // FlatMap is only supported at depth 1 (top-level columns). FlatMap keys can
   // vary across batches, causing gaps in nulls/inMap streams. Gap detection is
@@ -707,6 +715,7 @@ void Deserializer::createDeserializersForType(
           &type,
           /*inMapStream=*/true,
           options_.enableBufferPool,
+          useVarintOverride,
           pool_);
       inMapChildTypes_[inMapOffset] = flatMap.childAt(i).get();
     }
