@@ -44,6 +44,14 @@ struct RowRange {
     return startRow <= other.startRow && other.endRow <= endRow;
   }
 
+  /// Returns the overlap between this range and 'other', or an empty range if
+  /// they don't overlap.
+  inline RowRange intersect(const RowRange& other) const {
+    const auto start = std::max(startRow, other.startRow);
+    const auto end = std::min(endRow, other.endRow);
+    return start < end ? RowRange(start, end) : RowRange();
+  }
+
   inline bool operator==(const RowRange& other) const {
     return startRow == other.startRow && endRow == other.endRow;
   }

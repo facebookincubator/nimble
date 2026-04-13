@@ -53,6 +53,48 @@ TEST(RowRangeTest, contains) {
   EXPECT_FALSE(outer.contains(RowRange(5, 60)));
 }
 
+TEST(RowRangeTest, intersect) {
+  struct TestCase {
+    RowRange a;
+    RowRange b;
+    RowRange expected;
+
+    std::string debugString() const {
+      return fmt::format(
+          "{}.intersect({}) == {}",
+          a.toString(),
+          b.toString(),
+          expected.toString());
+    }
+  };
+
+  const std::vector<TestCase> testCases = {
+      // Overlapping ranges.
+      {{10, 30}, {20, 40}, {20, 30}},
+      {{20, 40}, {10, 30}, {20, 30}},
+      // One contains the other.
+      {{10, 50}, {20, 30}, {20, 30}},
+      {{20, 30}, {10, 50}, {20, 30}},
+      // Identical ranges.
+      {{10, 20}, {10, 20}, {10, 20}},
+      // Adjacent (non-overlapping).
+      {{10, 20}, {20, 30}, {0, 0}},
+      // Disjoint.
+      {{10, 20}, {30, 40}, {0, 0}},
+      // One empty range.
+      {{10, 20}, {0, 0}, {0, 0}},
+      {{0, 0}, {10, 20}, {0, 0}},
+      // Single-row range.
+      {{10, 20}, {15, 16}, {15, 16}},
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
+    const auto result = testCase.a.intersect(testCase.b);
+    EXPECT_EQ(result, testCase.expected);
+  }
+}
+
 TEST(RowRangeTest, equality) {
   EXPECT_EQ(RowRange(10, 20), RowRange(10, 20));
   EXPECT_NE(RowRange(10, 20), RowRange(10, 30));
