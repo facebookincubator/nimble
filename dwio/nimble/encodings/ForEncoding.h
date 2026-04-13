@@ -98,8 +98,6 @@ class ForEncoding final
   Vector<char> uncompressedData_;
   Vector<physicalType> buffer_;
 
-  uint64_t readBits(uint64_t bitOffset, uint8_t numBits) const;
-
   uint32_t getFrameIndex(uint32_t row) const {
     return row / frameSize_;
   }
@@ -107,6 +105,11 @@ class ForEncoding final
   uint32_t getPositionInFrame(uint32_t row) const {
     return row % frameSize_;
   }
+
+  void decodeRange(
+      uint32_t startRow,
+      uint32_t rowCount,
+      physicalType* output) const;
 
   physicalType decodeValue(uint32_t row) const;
 };
@@ -221,61 +224,139 @@ void ForEncoding<T>::skip(uint32_t rowCount) {
 }
 
 template <typename T>
-uint64_t ForEncoding<T>::readBits(uint64_t bitOffset, uint8_t numBits) const {
-  if (numBits == 0) {
-    return 0;
+void ForEncoding<T>::decodeRange(
+    uint32_t startRow,
+    uint32_t rowCount,
+    physicalType* output) const {
+  NIMBLE_DCHECK(
+      startRow + rowCount <= this->rowCount_,
+      "Decoding past end of encoding");
+
+  // Streaming bit-cursor decoder: reads rowsToDecode values of frame.bitWidth bits
+  // from byteCursor at bitOffsetInByte, writing results via decodeException.
+  auto decodeBitStream = [](
+      const uint8_t* byteCursor,
+      uint8_t bitOffsetInByte,
+      uint8_t bitWidth,
+      uint32_t rowsToDecode,
+      auto&& decodeException) {
+
+    uint64_t bitBuffer = 0;
+    uint32_t bitsInBuffer = 0;
+
+    // Consume the partial first byte if not byte-aligned
+    if (bitOffsetInByte != 0) {
+      bitBuffer = static_cast<uint8_t>(*byteCursor) >> bitOffsetInByte;
+      bitsInBuffer = 8u - bitOffsetInByte;
+      ++byteCursor;
+    }
+
+    const uint64_t mask = (bitWidth == 64) ? ~0ULL : ((1ULL << bitWidth) - 1);
+
+    for (uint32_t i = 0; i < rowsToDecode; ++i) {
+      while (bitsInBuffer < bitWidth) {
+        bitBuffer |= static_cast<uint64_t>(static_cast<uint8_t>(*byteCursor)) << bitsInBuffer;
+        ++byteCursor;
+        bitsInBuffer += 8;
+      }
+      decodeException(i, bitBuffer & mask);
+      bitBuffer >>= bitWidth;
+      bitsInBuffer -= bitWidth;
+    }
+  };
+
+  uint32_t currentRow = startRow;
+  uint32_t outputOffset = 0;
+  uint32_t remainingRowCount = rowCount;
+
+  while (remainingRowCount > 0) {
+    const uint32_t frameIndex = getFrameIndex(currentRow);
+    const auto& frame = frames_[frameIndex];
+    const uint32_t positionInFrame = getPositionInFrame(currentRow);
+    const uint32_t rowsAvailableInFrame = frame.size - positionInFrame;
+    const uint32_t rowsToDecode = std::min(remainingRowCount, rowsAvailableInFrame);
+
+    // Per-frame reference application — captures frame by ref
+    auto decodeException = [&](uint32_t i, uint64_t residual) {
+      if constexpr (std::is_signed_v<physicalType>) {
+        output[outputOffset + i] = static_cast<physicalType>(
+            static_cast<int64_t>(residual) + static_cast<int64_t>(frame.reference));
+      } else {
+        output[outputOffset + i] =
+            static_cast<physicalType>(residual + frame.reference);
+      }
+    };
+
+    if (frame.bitWidth == 0) {
+      // All values in frame are identical to reference
+      std::fill(output + outputOffset, output + outputOffset + rowsToDecode, frame.reference);
+
+    } else {
+      const uint64_t bitPosition =
+          frame.bitOffset + static_cast<uint64_t>(positionInFrame) * frame.bitWidth;
+      const uint8_t bitOffsetInByte = static_cast<uint8_t>(bitPosition & 7U);
+      const uint8_t* byteCursor =
+          reinterpret_cast<const uint8_t*>(packedData_) + (bitPosition / 8);
+
+      if (bitOffsetInByte == 0) {
+        // Byte-aligned: use typed loads for power-of-two widths, bit-stream otherwise
+        switch (frame.bitWidth) {
+          case 8:
+            for (uint32_t i = 0; i < rowsToDecode; ++i) {
+              decodeException(i, byteCursor[i]);
+            }
+            break;
+          case 16:
+            for (uint32_t i = 0; i < rowsToDecode; ++i) {
+              uint16_t v;
+              std::memcpy(&v, byteCursor + i * sizeof(uint16_t), sizeof(uint16_t));
+              decodeException(i, v);
+            }
+            break;
+          case 32:
+            for (uint32_t i = 0; i < rowsToDecode; ++i) {
+              uint32_t v;
+              std::memcpy(&v, byteCursor + i * sizeof(uint32_t), sizeof(uint32_t));
+              decodeException(i, v);
+            }
+            break;
+          case 64:
+            for (uint32_t i = 0; i < rowsToDecode; ++i) {
+              uint64_t v;
+              std::memcpy(&v, byteCursor + i * sizeof(uint64_t), sizeof(uint64_t));
+              decodeException(i, v);
+            }
+            break;
+          default:
+            // Non-power-of-two width, byte-aligned start: bitOffsetInByte == 0
+            decodeBitStream(byteCursor, 0, frame.bitWidth, rowsToDecode, decodeException);
+            break;
+        }
+      } else {
+        // Unaligned: always use the bit-streaming path
+        decodeBitStream(byteCursor, bitOffsetInByte, frame.bitWidth, rowsToDecode, decodeException);
+      }
+    }
+
+    currentRow += rowsToDecode;
+    outputOffset += rowsToDecode;
+    remainingRowCount -= rowsToDecode;
   }
-
-  uint64_t byteOffset = bitOffset / 8;
-  uint64_t bitInByte = bitOffset % 8;
-
-  uint64_t result = 0;
-  uint64_t bitsRead = 0;
-
-  while (bitsRead < numBits) {
-    uint64_t bitsAvailable = 8 - bitInByte;
-    uint64_t bitsToRead = std::min(bitsAvailable, numBits - bitsRead);
-
-    uint8_t byte = static_cast<uint8_t>(packedData_[byteOffset]);
-    uint64_t mask = ((1ULL << bitsToRead) - 1) << bitInByte;
-    uint64_t bits = (byte & mask) >> bitInByte;
-    result |= bits << bitsRead;
-
-    bitsRead += bitsToRead;
-    byteOffset++;
-    bitInByte = 0;
-  }
-
-  return result;
 }
 
 template <typename T>
 typename ForEncoding<T>::physicalType ForEncoding<T>::decodeValue(
     uint32_t row) const {
-  uint32_t frameIdx = getFrameIndex(row);
-  uint32_t posInFrame = getPositionInFrame(row);
-
-  const auto& frame = frames_[frameIdx];
-
-  uint64_t bitPos = frame.bitOffset + posInFrame * frame.bitWidth;
-  uint64_t exception = readBits(bitPos, frame.bitWidth);
-
-  // Reconstruct value
-  if constexpr (std::is_signed_v<physicalType>) {
-    return static_cast<physicalType>(
-        static_cast<int64_t>(exception) + static_cast<int64_t>(frame.reference));
-  } else {
-    return static_cast<physicalType>(exception + frame.reference);
-  }
+  physicalType value{};
+  decodeRange(row, 1, &value);
+  return value;
 }
 
 template <typename T>
 void ForEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   physicalType* output = static_cast<physicalType*>(buffer);
 
-  for (uint32_t i = 0; i < rowCount; ++i) {
-    output[i] = decodeValue(currentRow_ + i);
-  }
+  decodeRange(currentRow_, rowCount, output);
 
   currentRow_ += rowCount;
 }
