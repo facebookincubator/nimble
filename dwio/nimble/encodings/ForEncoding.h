@@ -118,7 +118,7 @@ template <typename T>
 ForEncoding<T>::ForEncoding(
     velox::memory::MemoryPool& memoryPool,
     std::string_view data,
-  std::function<void*(uint32_t)> /* stringBufferFactory */,
+  std::function<void*(uint32_t)> stringBufferFactory,
   const Encoding::Options& options)
   : TypedEncoding<T, physicalType>{memoryPool, data, options},
       frames_{&memoryPool},
@@ -130,6 +130,12 @@ ForEncoding<T>::ForEncoding(
       "ForEncoding only supports integral types");
 
   const char* pos = data.data() + kCompressionOffset;
+  const EncodingFactory encodingFactory(options);
+  const auto nullStringBufferFactory =
+    [](uint32_t /*size*/) -> void* { return nullptr; };
+  const auto& decodeStringBufferFactory =
+    stringBufferFactory ? stringBufferFactory : nullStringBufferFactory;
+
   CompressionType compressionType =
       static_cast<CompressionType>(encoding::readChar(pos));
 
@@ -139,10 +145,8 @@ ForEncoding<T>::ForEncoding(
 
   // Read BitWidths array
   const uint32_t bitWidthsSize = encoding::readUint32(pos);
-  auto bitWidthsEncoding =
-    EncodingFactory::decode(
-      *this->pool_, std::string_view(pos, bitWidthsSize),
-      [](uint32_t /*size*/) -> void* { return nullptr; });
+  auto bitWidthsEncoding = encodingFactory.create(
+      *this->pool_, std::string_view(pos, bitWidthsSize), decodeStringBufferFactory);
   pos += bitWidthsSize;
 
   Vector<uint8_t> bitWidths(&memoryPool, numFrames_);
@@ -150,10 +154,8 @@ ForEncoding<T>::ForEncoding(
 
   // Read References array
   const uint32_t referencesSize = encoding::readUint32(pos);
-  auto referencesEncoding =
-    EncodingFactory::decode(
-      *this->pool_, std::string_view(pos, referencesSize),
-      [](uint32_t /*size*/) -> void* { return nullptr; });
+  auto referencesEncoding = encodingFactory.create(
+      *this->pool_, std::string_view(pos, referencesSize), decodeStringBufferFactory);
   pos += referencesSize;
 
   Vector<physicalType> references(&memoryPool, numFrames_);
@@ -163,10 +165,8 @@ ForEncoding<T>::ForEncoding(
   Vector<uint64_t> bitOffsets(&memoryPool);
   if (enableBitOffsets_) {
     const uint32_t bitOffsetsSize = encoding::readUint32(pos);
-  auto bitOffsetsEncoding =
-    EncodingFactory::decode(
-      *this->pool_, std::string_view(pos, bitOffsetsSize),
-      [](uint32_t /*size*/) -> void* { return nullptr; });
+    auto bitOffsetsEncoding = encodingFactory.create(
+        *this->pool_, std::string_view(pos, bitOffsetsSize), decodeStringBufferFactory);
     pos += bitOffsetsSize;
 
     bitOffsets.resize(numFrames_);
