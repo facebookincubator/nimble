@@ -301,11 +301,14 @@ void FrequencyPartitionEncoding<T>::materialize(
       const uint32_t availableUnencoded = 
           static_cast<uint32_t>(unencodedValues_.size()) - currentTierOffset_;
       const uint32_t toRead = std::min(remaining, availableUnencoded);
-      
-      for (uint32_t i = 0; i < toRead; ++i) {
-        output[outputIdx++] = unencodedValues_[currentTierOffset_ + i];
-      }
-      
+
+      std::memcpy(
+        output + outputIdx,
+        unencodedValues_.data() + currentTierOffset_,
+        toRead * sizeof(T)
+      );
+
+      outputIdx += toRead;
       currentTierOffset_ += toRead;
       remaining -= toRead;
       
