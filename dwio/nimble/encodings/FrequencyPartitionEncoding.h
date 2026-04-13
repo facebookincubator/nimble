@@ -418,10 +418,13 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
     tierAssignments.push_back(std::move(tier));
   }
 
-  // Map remaining values to unencoded partition
-  folly::F14FastSet<physicalType> unencodedSet;
-  for (uint32_t i = valuesAssigned; i < uniqueCount; ++i) {
-    unencodedSet.insert(freqVec[i].first);
+  // Build value-to-tier mapping for O(1) row assignment.
+  folly::F14FastMap<physicalType, uint32_t> valueToTier;
+  valueToTier.reserve(valuesAssigned);
+  for (size_t tierIdx = 0; tierIdx < tierAssignments.size(); ++tierIdx) {
+    for (const auto& valueAndKey : tierAssignments[tierIdx].valueToKey) {
+      valueToTier[valueAndKey.first] = tierIdx;
+    }
   }
 
   // Build tier assignment for each row and collect rows per partition
@@ -433,20 +436,12 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
   // Assign rows to tiers
   for (uint32_t row = 0; row < valueCount; ++row) {
     const auto& value = values[row];
-    bool found = false;
-
-    for (size_t tierIdx = 0; tierIdx < tierAssignments.size(); ++tierIdx) {
-      if (tierAssignments[tierIdx].valueToKey.find(value) !=
-          tierAssignments[tierIdx].valueToKey.end()) {
-        tierRows[tierIdx].push_back(row);
-        found = true;
-        break;
-      }
-    }
-
-    if (!found) {
-      // Unencoded partition
+    auto tierIt = valueToTier.find(value);
+    if (tierIt == valueToTier.end()) {
+      // Unencoded partition.
       tierRows.back().push_back(row);
+    } else {
+      tierRows[tierIt->second].push_back(row);
     }
   }
 
