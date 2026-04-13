@@ -77,6 +77,9 @@ class VeloxWriter {
     uint64_t inputBufferReallocCount;
     /// Number of items moved during input buffer reallocations.
     uint64_t inputBufferReallocItemCount;
+    /// Cumulative encoded size distribution across all chunks written under
+    /// memory pressure. Empty when chunking is not triggered.
+    folly::StreamingStats<uint64_t> chunkSizeStats;
     /// Per-column statistics. Only available at file close.
     /// NOTE: expected to be exposed as a view, for merging with base stats
     /// objects. User needs to explicitly copy.

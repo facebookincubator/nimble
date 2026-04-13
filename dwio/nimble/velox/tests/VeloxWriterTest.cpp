@@ -3029,6 +3029,68 @@ INSTANTIATE_TEST_CASE_P(
             .expectedMinChunkCount = 1,
             .chunkedStreamBatchSize = 10}));
 
+TEST_F(VeloxWriterTest, chunkSizeStatsPopulatedWhenChunkingTriggered) {
+  const auto type = velox::ROW({{"c0", velox::BIGINT()}});
+
+  // Use ChunkFlushPolicy with low thresholds and enough data to guarantee
+  // chunking fires (mirrors ChunkFlushPolicyIntegration test setup).
+  nimble::VeloxWriterOptions options{
+      .minStreamChunkRawSize = 100,
+      .maxStreamChunkRawSize = 128 << 10,
+      .flushPolicyFactory = []() -> std::unique_ptr<nimble::FlushPolicy> {
+        return std::make_unique<nimble::ChunkFlushPolicy>(
+            nimble::ChunkFlushPolicyConfig{
+                .writerMemoryHighThresholdBytes = 80 << 10,
+                .writerMemoryLowThresholdBytes = 75 << 10,
+                .targetStripeSizeBytes = 250 << 10,
+                .estimatedCompressionFactor = 1.3,
+            });
+      },
+      .enableChunking = true,
+  };
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, std::move(options));
+
+  const auto batches = generateBatches(
+      type, /*batchCount=*/20, /*size=*/4000, /*seed=*/42, *leafPool_);
+  for (const auto& batch : batches) {
+    writer.write(batch);
+  }
+  writer.close();
+
+  const auto stats = writer.stats();
+  EXPECT_GT(stats.chunkSizeStats.count(), 0);
+  EXPECT_GT(stats.chunkSizeStats.mean(), 0);
+  EXPECT_LE(stats.chunkSizeStats.minimum(), stats.chunkSizeStats.maximum());
+}
+
+TEST_F(VeloxWriterTest, chunkSizeStatsEmptyWhenChunkingNotTriggered) {
+  const auto type = velox::ROW({{"c0", velox::BIGINT()}});
+
+  nimble::VeloxWriterOptions options{
+      .flushPolicyFactory = []() -> std::unique_ptr<nimble::FlushPolicy> {
+        return std::make_unique<nimble::StripeRawSizeFlushPolicy>(
+            256ULL << 20); // 256MB — will never flush in this test
+      },
+      .enableChunking = false,
+  };
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, std::move(options));
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  writer.write(vectorMaker.rowVector(
+      {"c0"}, {vectorMaker.flatVector<int64_t>({1, 2, 3, 4, 5})}));
+  writer.close();
+
+  EXPECT_EQ(writer.stats().chunkSizeStats.count(), 0);
+}
+
 // Parameterized test fixture for index tests.
 // When enableChunking is false, sets very high minChunkRawSize and
 // maxChunkRawSize to prevent chunking (one chunk per stream).
