@@ -474,22 +474,22 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
   // Encode each tier
   std::vector<std::string_view> serializedDicts;
   std::vector<std::string_view> serializedKeys;
+  serializedDicts.resize(tierAssignments.size());
+  serializedKeys.resize(tierAssignments.size());
 
   for (size_t tierIdx = 0; tierIdx < tierAssignments.size(); ++tierIdx) {
     const auto& tier = tierAssignments[tierIdx];
     const auto& rows = tierRows[tierIdx];
 
     if (rows.empty()) {
-      serializedDicts.push_back({});
-      serializedKeys.push_back({});
       continue;
     }
 
     // Encode dictionary
-    serializedDicts.push_back(selection.template encodeNested<physicalType>(
+    serializedDicts[tierIdx] = selection.template encodeNested<physicalType>(
         EncodingIdentifiers::FrequencyPartition::Dict1Bit + tierIdx,
         {tier.dictionary},
-        tempBuffer));
+        tempBuffer);
 
     // Build keys for this tier
     Vector<uint32_t> keys(&buffer.getMemoryPool());
@@ -499,10 +499,10 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
       keys.push_back(tier.valueToKey.at(value));
     }
 
-    serializedKeys.push_back(selection.template encodeNested<uint32_t>(
+  serializedKeys[tierIdx] = selection.template encodeNested<uint32_t>(
         EncodingIdentifiers::FrequencyPartition::Keys1Bit + tierIdx,
         {keys},
-        tempBuffer));
+        tempBuffer);
   }
 
   // Encode unencoded partition
