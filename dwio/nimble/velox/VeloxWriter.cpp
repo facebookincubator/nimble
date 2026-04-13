@@ -1284,6 +1284,9 @@ bool VeloxWriter::writeChunks(
   }
 
   context_->addStripeFlushTiming(flushTiming);
+  if (writtenChunk) {
+    context_->recordChunkSize(chunkBytes);
+  }
   VLOG(1) << "writeChunk time: " << velox::succinctNanos(flushTiming.wallNanos)
           << ", chunk size: " << velox::succinctBytes(chunkBytes);
   return writtenChunk;
@@ -1442,6 +1445,7 @@ VeloxWriter::Stats VeloxWriter::stats() const {
       .inputBufferReallocCount = context_->inputBufferGrowthStats().count,
       .inputBufferReallocItemCount =
           context_->inputBufferGrowthStats().itemCount,
+      .chunkSizeStats = context_->chunkSizeStats(),
       .columnStats = context_->columnStats(),
   };
 }
