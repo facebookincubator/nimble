@@ -32,7 +32,9 @@ namespace facebook::nimble::test {
 class PrefixEncodingTest : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
-    velox::memory::MemoryManager::initialize({});
+    if (!velox::memory::MemoryManager::testInstance()) {
+      velox::memory::MemoryManager::initialize({});
+    }
   }
 
   void SetUp() override {
