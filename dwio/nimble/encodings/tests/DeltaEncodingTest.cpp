@@ -729,7 +729,7 @@ TYPED_TEST(DeltaEncodingTest, ZeroCrossingNegativeToPositive) {
           << result[i];
     }
   } else {
-    GTEST_SKIP() << "Zero crossing only applies to signed types";
+    GTEST_SUCCEED() << "Zero crossing only applies to signed types";
   }
 }
 
@@ -769,7 +769,7 @@ TYPED_TEST(DeltaEncodingTest, ZeroCrossingMultipleCrossings) {
           << result[i];
     }
   } else {
-    GTEST_SKIP() << "Zero crossing only applies to signed types";
+    GTEST_SUCCEED() << "Zero crossing only applies to signed types";
   }
 }
 
@@ -806,7 +806,7 @@ TYPED_TEST(DeltaEncodingTest, ZeroCrossingThroughZeroValue) {
           << result[i];
     }
   } else {
-    GTEST_SKIP() << "Zero crossing only applies to signed types";
+    GTEST_SUCCEED() << "Zero crossing only applies to signed types";
   }
 }
 
@@ -854,7 +854,7 @@ TYPED_TEST(DeltaEncodingTest, ZeroCrossingWithSkipAndMaterialize) {
           << "One-at-a-time mismatch at index " << i;
     }
   } else {
-    GTEST_SKIP() << "Zero crossing only applies to signed types";
+    GTEST_SUCCEED() << "Zero crossing only applies to signed types";
   }
 }
 
