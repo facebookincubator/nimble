@@ -221,6 +221,7 @@ class Encoder {
     CompressionType compressionType_;
   };
 
+<<<<<<< HEAD
   template <typename Encoding>
   struct EncodingTypeTraits {};
 
@@ -314,6 +315,8 @@ class Encoder {
         nimble::EncodingType::SimdForBitpack;
   };
 
+=======
+>>>>>>> b53cf5a ([encodings/tests] remove redundant EncodingTypeTraits system)
  public:
   static constexpr EncodingType encodingType() {
     return EncodingTypeTraits<E, T>::encodingType;
