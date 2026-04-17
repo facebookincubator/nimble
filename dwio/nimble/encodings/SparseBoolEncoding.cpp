@@ -54,6 +54,9 @@ void SparseBoolEncoding::skip(uint32_t rowCount) {
 }
 
 void SparseBoolEncoding::materialize(uint32_t rowCount, void* buffer) {
+  if (rowCount == 0) {
+    return;
+  }
   const uint32_t end = row_ + rowCount;
   if (sparseValue_) {
     memset(buffer, 0, rowCount);
@@ -75,6 +78,9 @@ void SparseBoolEncoding::materializeBoolsAsBits(
     uint32_t rowCount,
     uint64_t* buffer,
     int begin) {
+  if (rowCount == 0) {
+    return;
+  }
   velox::bits::fillBits(buffer, begin, begin + rowCount, !sparseValue_);
   const auto end = row_ + rowCount;
   if (sparseValue_) {

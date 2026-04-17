@@ -35,6 +35,7 @@
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
+#include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "folly/Random.h"
 #include "velox/common/base/BitUtil.h"
 #include "velox/common/memory/Memory.h"
@@ -270,6 +271,114 @@ using TestTypes = ::testing::Types<
     ALL_TYPES(nimble::ConstantEncoding)>;
 
 TYPED_TEST_CASE(EncodingTest, TestTypes);
+
+// Regression test for SparseBoolEncoding null pointer crash when rowCount == 0.
+// memset(nullptr, 0, 0) is undefined behavior per the C/C++ standard.
+class SparseBoolZeroRowTest : public ::testing::Test {
+ protected:
+  static void SetUpTestCase() {
+    velox::memory::MemoryManager::testingSetInstance({});
+  }
+
+  void SetUp() override {
+    pool_ = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+    buffer_ = std::make_unique<nimble::Buffer>(*pool_);
+  }
+
+  std::function<void*(uint32_t)> makeStringBufferFactory() {
+    return [this](uint32_t totalLength) {
+      auto& buf = stringBuffers_.emplace_back(
+          velox::AlignedBuffer::allocate<char>(totalLength, pool_.get()));
+      return buf->asMutable<void>();
+    };
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> pool_;
+  std::unique_ptr<nimble::Buffer> buffer_;
+  std::vector<velox::BufferPtr> stringBuffers_;
+};
+
+TEST_F(SparseBoolZeroRowTest, materializeZeroRows) {
+  // Create encoding with sparse true values (few trues among mostly false).
+  nimble::Vector<bool> values{pool_.get()};
+  for (int i = 0; i < 100; ++i) {
+    values.push_back(i == 50);
+  }
+
+  auto encoding = facebook::nimble::test::Encoder<nimble::SparseBoolEncoding>::
+      createEncoding(*buffer_, values, makeStringBufferFactory());
+
+  // Materializing zero rows with nullptr must not crash.
+  encoding->materialize(0, nullptr);
+
+  // Encoding should still work correctly after zero-row materialize.
+  nimble::Vector<bool> result(pool_.get(), 100);
+  encoding->materialize(100, result.data());
+  for (int i = 0; i < 100; ++i) {
+    ASSERT_EQ(result[i], values[i]) << "i: " << i;
+  }
+}
+
+TEST_F(SparseBoolZeroRowTest, materializeZeroRowsMidStream) {
+  nimble::Vector<bool> values{pool_.get()};
+  for (int i = 0; i < 100; ++i) {
+    values.push_back(i == 50);
+  }
+
+  auto encoding = facebook::nimble::test::Encoder<nimble::SparseBoolEncoding>::
+      createEncoding(*buffer_, values, makeStringBufferFactory());
+
+  // Read some rows, then do a zero-row materialize, then continue reading.
+  nimble::Vector<bool> result(pool_.get(), 100);
+  encoding->materialize(30, result.data());
+  encoding->materialize(0, nullptr);
+  encoding->materialize(70, result.data());
+  for (int i = 0; i < 70; ++i) {
+    ASSERT_EQ(result[i], values[30 + i]) << "i: " << i;
+  }
+}
+
+TEST_F(SparseBoolZeroRowTest, materializeBoolsAsBitsZeroRows) {
+  nimble::Vector<bool> values{pool_.get()};
+  for (int i = 0; i < 100; ++i) {
+    values.push_back(i == 50);
+  }
+
+  auto encoding = facebook::nimble::test::Encoder<nimble::SparseBoolEncoding>::
+      createEncoding(*buffer_, values, makeStringBufferFactory());
+  auto* sparseBool = dynamic_cast<nimble::SparseBoolEncoding*>(encoding.get());
+  ASSERT_NE(sparseBool, nullptr);
+
+  // materializeBoolsAsBits with zero rows and nullptr must not crash.
+  sparseBool->materializeBoolsAsBits(0, nullptr, 0);
+
+  // Should still work correctly after the zero-row call.
+  uint64_t bits[2] = {};
+  sparseBool->materializeBoolsAsBits(100, bits, 0);
+  for (int i = 0; i < 100; ++i) {
+    ASSERT_EQ(velox::bits::isBitSet(bits, i), values[i]) << "i: " << i;
+  }
+}
+
+TEST_F(SparseBoolZeroRowTest, materializeZeroRowsSparseValueFalse) {
+  // Create encoding with sparse false values (few falses among mostly true).
+  nimble::Vector<bool> values{pool_.get()};
+  for (int i = 0; i < 100; ++i) {
+    values.push_back(i != 50);
+  }
+
+  auto encoding = facebook::nimble::test::Encoder<nimble::SparseBoolEncoding>::
+      createEncoding(*buffer_, values, makeStringBufferFactory());
+
+  // Materializing zero rows with nullptr must not crash.
+  encoding->materialize(0, nullptr);
+
+  nimble::Vector<bool> result(pool_.get(), 100);
+  encoding->materialize(100, result.data());
+  for (int i = 0; i < 100; ++i) {
+    ASSERT_EQ(result[i], values[i]) << "i: " << i;
+  }
+}
 
 TYPED_TEST(EncodingTest, materialize) {
   auto seed = folly::Random::rand32();

@@ -592,3 +592,106 @@ TYPED_TEST(EncodingLegacyTest, scatteredMaterialize) {
     }
   }
 }
+
+// Regression test for legacy SparseBoolEncoding null pointer crash when
+// rowCount == 0. memset(nullptr, 0, 0) is undefined behavior.
+class LegacySparseBoolZeroRowTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    pool_ = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+    buffer_ = std::make_unique<nimble::Buffer>(*pool_);
+  }
+
+  std::unique_ptr<nimble::legacy::SparseBoolEncoding> createSparseBoolEncoding(
+      const nimble::Vector<bool>& values) {
+    auto physicalValues = std::span<const bool>(values.data(), values.size());
+    nimble::EncodingSelection<bool> selection{
+        {.encodingType = nimble::EncodingType::SparseBool,
+         .compressionPolicyFactory =
+             []() {
+               return std::make_unique<TestCompressPolicy>(false, false);
+             }},
+        nimble::Statistics<bool>::create(physicalValues),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<bool>>(
+            false, false)};
+    auto encoded = nimble::legacy::SparseBoolEncoding::encode(
+        selection, physicalValues, *buffer_);
+    return std::make_unique<nimble::legacy::SparseBoolEncoding>(
+        *pool_, encoded, nullptr);
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> pool_;
+  std::unique_ptr<nimble::Buffer> buffer_;
+};
+
+TEST_F(LegacySparseBoolZeroRowTest, materializeZeroRows) {
+  nimble::Vector<bool> values{pool_.get()};
+  for (int i = 0; i < 100; ++i) {
+    values.push_back(i == 50);
+  }
+
+  auto encoding = createSparseBoolEncoding(values);
+
+  // Materializing zero rows with nullptr must not crash.
+  encoding->materialize(0, nullptr);
+
+  // Encoding should still work correctly after zero-row materialize.
+  nimble::Vector<bool> result(pool_.get(), 100);
+  encoding->materialize(100, result.data());
+  for (int i = 0; i < 100; ++i) {
+    ASSERT_EQ(result[i], values[i]) << "i: " << i;
+  }
+}
+
+TEST_F(LegacySparseBoolZeroRowTest, materializeZeroRowsMidStream) {
+  nimble::Vector<bool> values{pool_.get()};
+  for (int i = 0; i < 100; ++i) {
+    values.push_back(i == 50);
+  }
+
+  auto encoding = createSparseBoolEncoding(values);
+
+  nimble::Vector<bool> result(pool_.get(), 100);
+  encoding->materialize(30, result.data());
+  encoding->materialize(0, nullptr);
+  encoding->materialize(70, result.data());
+  for (int i = 0; i < 70; ++i) {
+    ASSERT_EQ(result[i], values[30 + i]) << "i: " << i;
+  }
+}
+
+TEST_F(LegacySparseBoolZeroRowTest, materializeBoolsAsBitsZeroRows) {
+  nimble::Vector<bool> values{pool_.get()};
+  for (int i = 0; i < 100; ++i) {
+    values.push_back(i == 50);
+  }
+
+  auto encoding = createSparseBoolEncoding(values);
+
+  // materializeBoolsAsBits with zero rows and nullptr must not crash.
+  encoding->materializeBoolsAsBits(0, nullptr, 0);
+
+  // Should still work correctly after the zero-row call.
+  uint64_t bits[2] = {};
+  encoding->materializeBoolsAsBits(100, bits, 0);
+  for (int i = 0; i < 100; ++i) {
+    ASSERT_EQ(velox::bits::isBitSet(bits, i), values[i]) << "i: " << i;
+  }
+}
+
+TEST_F(LegacySparseBoolZeroRowTest, materializeZeroRowsSparseValueFalse) {
+  nimble::Vector<bool> values{pool_.get()};
+  for (int i = 0; i < 100; ++i) {
+    values.push_back(i != 50);
+  }
+
+  auto encoding = createSparseBoolEncoding(values);
+
+  encoding->materialize(0, nullptr);
+
+  nimble::Vector<bool> result(pool_.get(), 100);
+  encoding->materialize(100, result.data());
+  for (int i = 0; i < 100; ++i) {
+    ASSERT_EQ(result[i], values[i]) << "i: " << i;
+  }
+}
