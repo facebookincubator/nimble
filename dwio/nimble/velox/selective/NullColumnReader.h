@@ -51,10 +51,10 @@ class NullColumnReader : public velox::dwio::common::SelectiveColumnReader {
     if (scanSpec_->isFlatMapAsStruct()) {
       NIMBLE_CHECK(result->get() && result->get()->type()->isRow());
       *result = velox::BaseVector::createNullConstant(
-          result->get()->type(), rows.size(), memoryPool_);
+          result->get()->type(), rows.size(), pool_);
     } else {
       *result = velox::BaseVector::createNullConstant(
-          requestedType_, rows.size(), memoryPool_);
+          requestedType_, rows.size(), pool_);
     }
   }
 

@@ -166,7 +166,7 @@ class FlatMapAsStructColumnReader : public StructColumnReaderBase {
                 params,
                 scanSpec,
                 dwio::common::flatmap::FlatMapOutput::kStruct,
-                *memoryPool_)) {
+                *pool_)) {
     children_.resize(keyNodes_.size());
     for (auto& childSpec : scanSpec.children()) {
       childSpec->setSubscript(kConstantChildSpecSubscript);
@@ -237,7 +237,7 @@ class FlatMapColumnReader
                 params,
                 scanSpec,
                 dwio::common::flatmap::FlatMapOutput::kFlatMap,
-                *memoryPool_)) {
+                *pool_)) {
     // Instantiate and populate distinct keys vector.
     keysVector_ = BaseVector::create(
         CppToType<T>::create(),
@@ -387,7 +387,7 @@ class FlatMapAsMapColumnReader : public StructColumnReaderBase {
                 params,
                 scanSpec,
                 dwio::common::flatmap::FlatMapOutput::kMap,
-                *memoryPool_)) {}
+                *pool_)) {}
 
   void read(int64_t offset, const RowSet& rows, const uint64_t* incomingNulls)
       override {
