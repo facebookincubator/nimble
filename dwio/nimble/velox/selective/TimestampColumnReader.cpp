@@ -32,9 +32,8 @@ uint64_t TimestampColumnReader::skip(uint64_t numValues) {
   // Read micros to temp buffer to count non-null values.
   // We need this count because the nanos stream only contains values for
   // non-null micros positions.
-  auto microsBuffer =
-      velox::AlignedBuffer::allocate<int64_t>(numValues, memoryPool_);
-  auto nullsBuffer = velox::allocateNulls(numValues, memoryPool_);
+  auto microsBuffer = velox::AlignedBuffer::allocate<int64_t>(numValues, pool_);
+  auto nullsBuffer = velox::allocateNulls(numValues, pool_);
 
   microsDecoder_.decodeNullable<int64_t>(
       nullsBuffer->asMutable<uint64_t>(),
@@ -77,8 +76,7 @@ void TimestampColumnReader::readHelper(
 
   if (!microsBuffer_ || !microsBuffer_->unique() ||
       microsBuffer_->capacity() < scannedPositions * sizeof(int64_t)) {
-    microsBuffer_ =
-        AlignedBuffer::allocate<int64_t>(scannedPositions, memoryPool_);
+    microsBuffer_ = AlignedBuffer::allocate<int64_t>(scannedPositions, pool_);
   }
   auto* microsData = microsBuffer_->asMutable<int64_t>();
 
@@ -88,7 +86,7 @@ void TimestampColumnReader::readHelper(
     // No incoming nulls and buffer is reusable.
     nullsBuffer = nullsInReadRange_;
   } else {
-    nullsBuffer = velox::allocateNulls(scannedPositions, memoryPool_);
+    nullsBuffer = velox::allocateNulls(scannedPositions, pool_);
   }
   auto* nullsData = nullsBuffer->asMutable<uint64_t>();
 
@@ -108,7 +106,7 @@ void TimestampColumnReader::readHelper(
 
   if (!nanosBuffer_ || !nanosBuffer_->unique() ||
       nanosBuffer_->capacity() < nonNullCount * sizeof(uint16_t)) {
-    nanosBuffer_ = AlignedBuffer::allocate<uint16_t>(nonNullCount, memoryPool_);
+    nanosBuffer_ = AlignedBuffer::allocate<uint16_t>(nonNullCount, pool_);
   }
   auto* nanosData = nanosBuffer_->asMutable<uint16_t>();
   if (nonNullCount > 0) {
@@ -121,7 +119,7 @@ void TimestampColumnReader::readHelper(
 
   if (!values_ || !values_->unique() ||
       values_->capacity() < numValues_ * sizeof(Timestamp)) {
-    values_ = AlignedBuffer::allocate<Timestamp>(numValues_, memoryPool_);
+    values_ = AlignedBuffer::allocate<Timestamp>(numValues_, pool_);
   }
   rawValues_ = values_->asMutable<char>();
   auto rawTs = values_->asMutable<Timestamp>();
@@ -129,7 +127,7 @@ void TimestampColumnReader::readHelper(
   // Create nulls buffer for the rows we are actually returning.
   if (!resultNulls_ || !resultNulls_->unique() ||
       resultNulls_->capacity() < velox::bits::nbytes(numValues_)) {
-    resultNulls_ = velox::allocateNulls(numValues_, memoryPool_);
+    resultNulls_ = velox::allocateNulls(numValues_, pool_);
   }
   rawResultNulls_ = resultNulls_->asMutable<uint64_t>();
   // Forces resultNulls() to use resultNulls_/rawResultNulls_

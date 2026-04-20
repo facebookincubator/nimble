@@ -332,11 +332,11 @@ void ListColumnReader::readLengths(
 
 uint64_t ListColumnReader::skip(uint64_t numValues) {
   auto nullsBuffer = velox::AlignedBuffer::allocate<uint64_t>(
-      velox::bits::nwords(numValues), memoryPool_);
+      velox::bits::nwords(numValues), pool_);
   auto nulls = nullsBuffer->as<uint64_t>();
   formatData_->readNulls(numValues, nullptr, nullsBuffer);
   if (child_) {
-    nimble::Vector<int32_t> buffer{memoryPool_, numValues};
+    nimble::Vector<int32_t> buffer{pool_, numValues};
     uint64_t childElements = 0;
     readLengths(buffer.data(), numValues, nullptr);
     for (size_t i = 0; i < numValues; ++i) {
@@ -458,7 +458,7 @@ void MapColumnReader::readLengths(
 uint64_t MapColumnReader::skip(uint64_t numValues) {
   return skipMapChildren(
       numValues,
-      memoryPool_,
+      pool_,
       *formatData_,
       keyReader_.get(),
       elementReader_.get(),
@@ -513,7 +513,7 @@ void MapAsStructColumnReader::readLengths(
 uint64_t MapAsStructColumnReader::skip(uint64_t numValues) {
   return skipMapChildren(
       numValues,
-      memoryPool_,
+      pool_,
       *formatData_,
       keyReader_.get(),
       elementReader_.get(),
@@ -625,7 +625,7 @@ size_t DeduplicatedReadHelper::prepareDeduplicatedStates(
   if (!runStartRowsHolder_ ||
       runStartRowsHolder_->capacity() < alphabetSize * sizeof(vector_size_t)) {
     runStartRowsHolder_ =
-        velox::allocateIndices(alphabetSize, columnReader_->memoryPool_);
+        velox::allocateIndices(alphabetSize, columnReader_->pool_);
     runStartRows_ = runStartRowsHolder_->asMutable<vector_size_t>();
   }
 
@@ -945,7 +945,7 @@ void DeduplicatedArrayColumnReader::makeNestedRowSet(
 uint64_t DeduplicatedArrayColumnReader::skip(uint64_t numValues) {
   VLOG(1) << "Skipping " << numValues << " values";
   auto nullsBuffer = velox::AlignedBuffer::allocate<uint64_t>(
-      velox::bits::nwords(numValues), memoryPool_);
+      velox::bits::nwords(numValues), pool_);
   auto nulls = nullsBuffer->as<uint64_t>();
   formatData_->readNulls(numValues, nullptr, nullsBuffer);
   if (child_) {
@@ -981,8 +981,8 @@ void DeduplicatedArrayColumnReader::getValues(
   // TODO: looks like elements of the alphabet is not properly
   // referenced, and thus we are already in the elements of the
   // next batch in lazy vector scenario.
-  auto dictionaryVector = prepareDictionaryArrayResult(
-      *result, requestedType_, rows.size(), memoryPool_);
+  auto dictionaryVector =
+      prepareDictionaryArrayResult(*result, requestedType_, rows.size(), pool_);
   if (!rows.empty()) {
     setComplexNulls(rows, *result);
   }
@@ -1083,7 +1083,7 @@ void DeduplicatedMapColumnReader::makeNestedRowSet(
 uint64_t DeduplicatedMapColumnReader::skip(uint64_t numValues) {
   VLOG(1) << "Skipping " << numValues << " values";
   auto nullsBuffer = velox::AlignedBuffer::allocate<uint64_t>(
-      velox::bits::nwords(numValues), memoryPool_);
+      velox::bits::nwords(numValues), pool_);
   auto nulls = nullsBuffer->as<uint64_t>();
   formatData_->readNulls(numValues, nullptr, nullsBuffer);
   if (keyReader_ || elementReader_) {
@@ -1124,8 +1124,8 @@ void DeduplicatedMapColumnReader::getValues(
   // TODO: looks like elements of the alphabet is not properly
   // referenced, and thus we are already in the elements of the
   // next batch in lazy vector scenario.
-  auto dictionaryVector = prepareDictionaryMapResult(
-      *result, requestedType_, rows.size(), memoryPool_);
+  auto dictionaryVector =
+      prepareDictionaryMapResult(*result, requestedType_, rows.size(), pool_);
   if (!rows.empty()) {
     setComplexNulls(rows, *result);
   }
