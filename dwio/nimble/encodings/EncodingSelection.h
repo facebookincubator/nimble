@@ -25,6 +25,7 @@
 #include "dwio/nimble/encodings/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/EncodingLayout.h"
 #include "dwio/nimble/encodings/Statistics.h"
+#include "dwio/nimble/encodings/compression/CompressionPolicy.h"
 #include "folly/json/json.h"
 
 namespace facebook::nimble {
@@ -64,108 +65,6 @@ namespace facebook::nimble {
 /// encoding for the nested stream.
 
 class EncodingSelectionPolicyBase;
-
-///
-/// Compression policy type definitions:
-/// A compression policy defines which compression algorithm to apply on the
-/// data (if any) and what parameters to use for this compression algorithm. In
-/// addition, once compression is applied to the data, the compression policy
-/// can decide if the compressed result is statisfactory or if it should be
-/// discarded.
-struct ZstdCompressionParameters {
-  int16_t compressionLevel = 3;
-};
-
-/// An identifier for the meta internal compression policy.
-class MetaInternalCompressionKey {
- public:
-  MetaInternalCompressionKey() = default;
-
-  MetaInternalCompressionKey(
-      std::string ns,
-      std::string tableName,
-      std::string columnName)
-      : ns_{std::move(ns)},
-        tableName_{std::move(tableName)},
-        columnName_{std::move(columnName)} {}
-
-  const std::string& ns() const {
-    return ns_;
-  }
-
-  const std::string& tableName() const {
-    return tableName_;
-  }
-
-  const std::string& columnName() const {
-    return columnName_;
-  }
-
-  std::string toString() const {
-    folly::dynamic json = folly::dynamic::object("ns", ns_)(
-        "tableName", tableName_)("columnName", columnName_);
-    return folly::toJson(json);
-  }
-
-  static MetaInternalCompressionKey fromString(const std::string& str) {
-    // will throw upon failure to parse or missing fields
-    auto json = folly::parseJson(str);
-    return MetaInternalCompressionKey{
-        json["ns"].asString(),
-        json["tableName"].asString(),
-        json["columnName"].asString()};
-  }
-
- private:
-  std::string ns_;
-  std::string tableName_;
-  std::string columnName_;
-};
-
-struct MetaInternalCompressionParameters {
-  int16_t compressionLevel = 0;
-  int16_t decompressionLevel = 0;
-  bool useVariableBitWidthCompressor = true;
-  MetaInternalCompressionKey compressionKey;
-};
-
-struct CompressionParameters {
-  ZstdCompressionParameters zstd{};
-  MetaInternalCompressionParameters metaInternal{};
-};
-
-struct CompressionInformation {
-  CompressionType compressionType{};
-  CompressionParameters parameters{};
-  uint64_t minCompressionSize = 0;
-};
-
-class CompressionPolicy {
- public:
-  virtual CompressionInformation compression() const = 0;
-  virtual bool shouldAccept(
-      CompressionType /* compressionType */,
-      uint64_t /* uncompressedSize */,
-      uint64_t /* compressedSize */) const = 0;
-
-  virtual ~CompressionPolicy() = default;
-};
-
-/// Default compression policy. Default behavior (if not compression policy is
-/// provided) is to not compress.
-class NoCompressionPolicy : public CompressionPolicy {
- public:
-  CompressionInformation compression() const override {
-    return {.compressionType = CompressionType::Uncompressed};
-  }
-
-  virtual bool shouldAccept(
-      CompressionType /* compressionType */,
-      uint64_t /* uncompressedSize */,
-      uint64_t /* compressedSize */) const override {
-    return false;
-  }
-};
 
 /// Type representing a selected encoding.
 /// This is the result type returned from the select() method of an encoding

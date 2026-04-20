@@ -20,6 +20,8 @@
 #include <zstd_errors.h>
 #include <optional>
 
+#include "dwio/nimble/common/EncodingPrimitives.h"
+
 namespace facebook::nimble {
 
 CompressionResult ZstdCompressor::compress(
