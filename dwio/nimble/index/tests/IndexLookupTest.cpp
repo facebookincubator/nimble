@@ -1,0 +1,204 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <gtest/gtest.h>
+
+#include <sstream>
+
+#include "dwio/nimble/common/tests/GTestUtils.h"
+#include "dwio/nimble/index/IndexLookup.h"
+
+namespace facebook::nimble::index::test {
+namespace {
+
+using LookupRequest = IndexLookup::LookupRequest;
+using LookupResult = IndexLookup::LookupResult;
+using LookupOptions = IndexLookup::LookupOptions;
+
+class IndexLookupTest : public ::testing::Test {
+ protected:
+  static velox::serializer::EncodedKeyBounds makePointKey(
+      const std::string& key) {
+    return {.lowerKey = key, .upperKey = key};
+  }
+
+  static velox::serializer::EncodedKeyBounds makeRangeKey(
+      const std::string& lower,
+      const std::string& upper) {
+    return {.lowerKey = lower, .upperKey = upper};
+  }
+};
+
+TEST_F(IndexLookupTest, basicRequest) {
+  std::vector<velox::serializer::EncodedKeyBounds> keys = {
+      makePointKey("aaa"), makePointKey("bbb")};
+  LookupRequest request(keys);
+
+  EXPECT_EQ(request.size(), 2);
+  EXPECT_TRUE(request.keyBound(0).isPointLookup());
+  EXPECT_EQ(request.keyBound(0).lowerKey.value(), "aaa");
+  EXPECT_EQ(request.keyBound(1).lowerKey.value(), "bbb");
+  EXPECT_FALSE(request.options().rowRange.has_value());
+}
+
+TEST_F(IndexLookupTest, withOptions) {
+  std::vector<velox::serializer::EncodedKeyBounds> keys = {makePointKey("key")};
+  LookupRequest request(keys, {.rowRange = RowRange(10, 100)});
+
+  EXPECT_EQ(request.size(), 1);
+  EXPECT_TRUE(request.options().rowRange.has_value());
+  EXPECT_EQ(request.options().rowRange->startRow, 10);
+  EXPECT_EQ(request.options().rowRange->endRow, 100);
+}
+
+TEST_F(IndexLookupTest, moveConstruction) {
+  std::vector<velox::serializer::EncodedKeyBounds> keys = {
+      makePointKey("aaa"), makePointKey("bbb"), makePointKey("ccc")};
+  LookupRequest request(std::move(keys));
+
+  EXPECT_EQ(request.size(), 3);
+  EXPECT_EQ(request.keyBound(2).lowerKey.value(), "ccc");
+}
+
+TEST_F(IndexLookupTest, emptyKeyBoundsThrows) {
+  NIMBLE_ASSERT_THROW(LookupRequest({}), "");
+}
+
+TEST_F(IndexLookupTest, rangeKeys) {
+  std::vector<velox::serializer::EncodedKeyBounds> keys = {
+      makeRangeKey("aaa", "zzz")};
+  LookupRequest request(keys);
+
+  EXPECT_FALSE(request.keyBound(0).isPointLookup());
+  EXPECT_EQ(request.keyBound(0).lowerKey.value(), "aaa");
+  EXPECT_EQ(request.keyBound(0).upperKey.value(), "zzz");
+}
+
+TEST_F(IndexLookupTest, singleKeyWithResult) {
+  std::vector<RowRange> rowRanges = {RowRange(10, 20)};
+  std::vector<uint32_t> resultOffsets = {0, 1};
+  LookupResult result(std::move(rowRanges), std::move(resultOffsets));
+
+  EXPECT_EQ(result.size(), 1);
+  EXPECT_EQ(result[0].size(), 1);
+  EXPECT_EQ(result[0][0].startRow, 10);
+  EXPECT_EQ(result[0][0].endRow, 20);
+}
+
+TEST_F(IndexLookupTest, singleKeyMultiResults) {
+  std::vector<RowRange> rowRanges = {
+      RowRange(10, 20), RowRange(50, 60), RowRange(100, 110)};
+  std::vector<uint32_t> resultOffsets = {0, 3};
+  LookupResult result(std::move(rowRanges), std::move(resultOffsets));
+
+  EXPECT_EQ(result.size(), 1);
+  EXPECT_EQ(result[0].size(), 3);
+  EXPECT_EQ(result[0][0].startRow, 10);
+  EXPECT_EQ(result[0][1].startRow, 50);
+  EXPECT_EQ(result[0][2].startRow, 100);
+}
+
+TEST_F(IndexLookupTest, singleKeyNoResult) {
+  std::vector<RowRange> rowRanges;
+  std::vector<uint32_t> resultOffsets = {0, 0};
+  LookupResult result(std::move(rowRanges), std::move(resultOffsets));
+
+  EXPECT_EQ(result.size(), 1);
+  EXPECT_TRUE(result[0].empty());
+}
+
+TEST_F(IndexLookupTest, multipleKeys) {
+  std::vector<RowRange> rowRanges = {
+      RowRange(0, 10), RowRange(50, 60), RowRange(100, 110)};
+  // key0 → 1 result, key1 → 0 results, key2 → 2 results
+  std::vector<uint32_t> resultOffsets = {0, 1, 1, 3};
+  LookupResult result(std::move(rowRanges), std::move(resultOffsets));
+
+  EXPECT_EQ(result.size(), 3);
+
+  EXPECT_EQ(result[0].size(), 1);
+  EXPECT_EQ(result[0][0].startRow, 0);
+
+  EXPECT_TRUE(result[1].empty());
+
+  EXPECT_EQ(result[2].size(), 2);
+  EXPECT_EQ(result[2][0].startRow, 50);
+  EXPECT_EQ(result[2][1].startRow, 100);
+}
+
+TEST_F(IndexLookupTest, allKeysEmpty) {
+  std::vector<RowRange> rowRanges;
+  std::vector<uint32_t> resultOffsets = {0, 0, 0, 0};
+  LookupResult result(std::move(rowRanges), std::move(resultOffsets));
+
+  EXPECT_EQ(result.size(), 3);
+  EXPECT_TRUE(result[0].empty());
+  EXPECT_TRUE(result[1].empty());
+  EXPECT_TRUE(result[2].empty());
+  NIMBLE_ASSERT_THROW(result[3], "");
+}
+
+TEST_F(IndexLookupTest, tooFewOffsets) {
+  NIMBLE_ASSERT_THROW(LookupResult({}, {0}), "");
+}
+
+TEST_F(IndexLookupTest, emptyOffsets) {
+  NIMBLE_ASSERT_THROW(LookupResult({}, {}), "");
+}
+
+TEST_F(IndexLookupTest, offsetsBeyondRowRanges) {
+  std::vector<RowRange> rowRanges = {RowRange(0, 10)};
+  // Offset 2 references beyond the single-element rowRanges vector.
+  NIMBLE_ASSERT_THROW(LookupResult(std::move(rowRanges), {0, 2}), "");
+}
+
+TEST_F(IndexLookupTest, offsetsBeyondRowRangesMultiKey) {
+  std::vector<RowRange> rowRanges = {RowRange(0, 10), RowRange(20, 30)};
+  // Last offset 3 references beyond the 2-element rowRanges vector.
+  NIMBLE_ASSERT_THROW(LookupResult(std::move(rowRanges), {0, 1, 3}), "");
+}
+
+TEST_F(IndexLookupTest, nonMonotonicOffsets) {
+  std::vector<RowRange> rowRanges = {RowRange(0, 10), RowRange(20, 30)};
+  // Offsets go backwards: 0, 2, 1 — violates monotonic invariant.
+  LookupResult result(std::move(rowRanges), {0, 2, 1});
+  EXPECT_EQ(result.size(), 2);
+  // First key access is valid.
+  EXPECT_EQ(result[0].size(), 2);
+  // Second key access triggers DCHECK on non-monotonic offsets.
+  NIMBLE_ASSERT_THROW(result[1], "");
+}
+
+TEST_F(IndexLookupTest, toString) {
+  EXPECT_EQ(toString(IndexType::Cluster), "Cluster");
+  EXPECT_EQ(toString(IndexType::Dense), "Dense");
+}
+
+TEST_F(IndexLookupTest, ostream) {
+  std::ostringstream oss;
+  oss << IndexType::Cluster << " " << IndexType::Dense;
+  EXPECT_EQ(oss.str(), "Cluster Dense");
+}
+
+TEST_F(IndexLookupTest, fmtFormat) {
+  EXPECT_EQ(fmt::format("{}", IndexType::Cluster), "Cluster");
+  EXPECT_EQ(fmt::format("{}", IndexType::Dense), "Dense");
+  EXPECT_EQ(
+      fmt::format("type={}, count={}", IndexType::Dense, 42),
+      "type=Dense, count=42");
+}
+
+} // namespace
+} // namespace facebook::nimble::index::test
