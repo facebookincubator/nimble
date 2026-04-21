@@ -42,6 +42,7 @@ add_executable(
   IndexConstantsTest.cpp
   IndexConfigTest.cpp
   IndexFilterTest.cpp
+  IndexLookupTest.cpp
   ClusterIndexReaderTest.cpp
   ClusterIndexGroupTest.cpp
   ClusterIndexTest.cpp
