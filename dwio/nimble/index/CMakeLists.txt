@@ -20,6 +20,7 @@ add_library(
   ClusterIndexGroup.cpp
   ClusterIndexReader.cpp
   IndexFilter.cpp
+  IndexLookup.cpp
   SortOrder.cpp
 )
 
@@ -33,7 +34,9 @@ target_link_libraries(
   velox_core
   velox_type
   velox_vector
+  nimble_velox_common
   velox_key_encoder
+  fmt::fmt
   velox_dwio_common
   velox_memory
   Folly::folly
