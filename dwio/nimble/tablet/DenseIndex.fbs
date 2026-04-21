@@ -28,9 +28,6 @@ namespace facebook.nimble.serialization;
 ///   3. Scan keys in bucket by exact key match
 ///   4. Return matching row numbers
 table DenseIndex {
-  /// Names of columns forming the composite key.
-  index_columns:[string];
-
   /// Total number of rows indexed.
   row_count:uint64;
 
@@ -41,11 +38,6 @@ table DenseIndex {
   num_keys:uint64;
   /// Load factor used during construction (for diagnostics).
   load_factor:float;
-
-  /// Accumulated row counts per stripe (prefix sum).
-  /// Enables translating global row number to (stripe, stripe-local row).
-  /// Size = stripe_count.
-  stripe_row_counts:[uint32];
 
   /// Optional bloom filter for fast negative lookups.
   bloom_filter:BloomFilter;
@@ -75,7 +67,7 @@ table DenseIndexPartition {
   /// Binary-encoded composite keys for this partition. Aligned with
   /// row_numbers: encoded_keys[i] corresponds to row_numbers[i].
   encoded_keys:[string];
-  /// Global row numbers for this partition. Aligned with encoded_keys.
+  /// File row numbers for this partition. Aligned with encoded_keys.
   row_numbers:[uint32];
 }
 
