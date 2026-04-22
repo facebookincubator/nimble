@@ -611,7 +611,7 @@ class ChunkedDecoderDataTest : public index::test::ClusterIndexTestBase,
     testIndexBuffers_ =
         createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
     testChunkIndex_ = createChunkIndex(testIndexBuffers_, 0);
-    return testChunkIndex_->createStreamIndex(0, 0);
+    return testChunkIndex_->createStreamIndex(0, 0, /*streamSize=*/1000);
   }
 
  private:

@@ -126,30 +126,37 @@ TEST_F(ChunkIndexWriterTest, singleStripe) {
   EXPECT_EQ(stream1Stats.chunkOffsets, (std::vector<uint32_t>{0, 20}));
 
   // Lookup via StreamIndex (public API).
-  auto stream0 = chunkIndex->createStreamIndex(0, 0);
+  // Stream 0: 3 chunks, sizes {10, 15, 8}, total = 33.
+  auto stream0 = chunkIndex->createStreamIndex(0, 0, 33);
   ASSERT_NE(stream0, nullptr);
 
   auto r00 = stream0->lookupChunk(0);
-  EXPECT_EQ(r00.streamOffset, 0);
+  EXPECT_EQ(r00.chunkOffset, 0);
+  EXPECT_EQ(r00.chunkSize, 10);
   EXPECT_EQ(r00.rowOffset, 0);
 
   auto r01 = stream0->lookupChunk(30);
-  EXPECT_EQ(r01.streamOffset, 10);
+  EXPECT_EQ(r01.chunkOffset, 10);
+  EXPECT_EQ(r01.chunkSize, 15);
   EXPECT_EQ(r01.rowOffset, 30);
 
   auto r02 = stream0->lookupChunk(75);
-  EXPECT_EQ(r02.streamOffset, 25);
+  EXPECT_EQ(r02.chunkOffset, 25);
+  EXPECT_EQ(r02.chunkSize, 8);
   EXPECT_EQ(r02.rowOffset, 75);
 
-  auto stream1 = chunkIndex->createStreamIndex(0, 1);
+  // Stream 1: 2 chunks, sizes {20, 12}, total = 32.
+  auto stream1 = chunkIndex->createStreamIndex(0, 1, 32);
   ASSERT_NE(stream1, nullptr);
 
   auto r10 = stream1->lookupChunk(0);
-  EXPECT_EQ(r10.streamOffset, 0);
+  EXPECT_EQ(r10.chunkOffset, 0);
+  EXPECT_EQ(r10.chunkSize, 20);
   EXPECT_EQ(r10.rowOffset, 0);
 
   auto r11 = stream1->lookupChunk(60);
-  EXPECT_EQ(r11.streamOffset, 20);
+  EXPECT_EQ(r11.chunkOffset, 20);
+  EXPECT_EQ(r11.chunkSize, 12);
   EXPECT_EQ(r11.rowOffset, 60);
 }
 
@@ -271,7 +278,7 @@ TEST_F(ChunkIndexWriterTest, multipleStripeGroups) {
     EXPECT_EQ(stats.chunkRows, (std::vector<uint32_t>{200}));
     EXPECT_EQ(stats.chunkOffsets, (std::vector<uint32_t>{0}));
     // Single-chunk stream returns nullptr.
-    EXPECT_EQ(ci->createStreamIndex(2, 0), nullptr);
+    EXPECT_EQ(ci->createStreamIndex(2, 0, 30), nullptr);
   }
 }
 
@@ -313,10 +320,10 @@ TEST_F(ChunkIndexWriterTest, emptyStream) {
   EXPECT_EQ(stream2.chunkOffsets, (std::vector<uint32_t>{0}));
 
   // createStreamIndex returns nullptr for streams with ≤1 chunk.
-  EXPECT_EQ(chunkIndex->createStreamIndex(0, 1), nullptr);
-  EXPECT_EQ(chunkIndex->createStreamIndex(0, 2), nullptr);
+  EXPECT_EQ(chunkIndex->createStreamIndex(0, 1, 0), nullptr);
+  EXPECT_EQ(chunkIndex->createStreamIndex(0, 2, 25), nullptr);
   // streamId out of range returns nullptr.
-  EXPECT_EQ(chunkIndex->createStreamIndex(0, 3), nullptr);
+  EXPECT_EQ(chunkIndex->createStreamIndex(0, 3, 0), nullptr);
 }
 
 TEST_F(ChunkIndexWriterTest, emptyFileNoStripeGroups) {
@@ -439,7 +446,7 @@ TEST_F(ChunkIndexWriterTest, multipleStripesInMultipleGroups) {
     EXPECT_EQ(s1.chunkCounts, (std::vector<uint32_t>{1}));
     EXPECT_EQ(s1.chunkRows, (std::vector<uint32_t>{100}));
     EXPECT_EQ(s1.chunkOffsets, (std::vector<uint32_t>{0}));
-    EXPECT_EQ(ci->createStreamIndex(2, 1), nullptr);
+    EXPECT_EQ(ci->createStreamIndex(2, 1, 20), nullptr);
   }
 }
 

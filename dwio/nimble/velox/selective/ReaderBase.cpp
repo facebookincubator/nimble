@@ -136,7 +136,9 @@ std::shared_ptr<index::StreamIndex> StripeStreams::streamIndex(
   if (chunkIndex == nullptr) {
     return nullptr;
   }
-  return chunkIndex->createStreamIndex(stripe_, streamId);
+  const uint32_t streamSize =
+      readerBase_->tablet().streamSize(*stripeIdentifier_, streamId);
+  return chunkIndex->createStreamIndex(stripe_, streamId, streamSize);
 }
 
 std::unique_ptr<velox::dwio::common::SeekableInputStream>

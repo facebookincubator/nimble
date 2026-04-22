@@ -321,6 +321,10 @@ class TabletReader {
   /// `streamOffsets()`.
   std::span<const uint32_t> streamSizes(const StripeIdentifier& stripe) const;
 
+  /// Returns the byte size of a single stream in the specified stripe.
+  /// Returns 0 if the stream does not exist in this stripe.
+  uint32_t streamSize(const StripeIdentifier& stripe, uint32_t streamId) const;
+
   /// Returns stream count for the specified stripe. Has same constraint as
   /// `streamOffsets()`.
   uint32_t streamCount(const StripeIdentifier& stripe) const;
