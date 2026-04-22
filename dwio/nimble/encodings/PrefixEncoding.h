@@ -93,10 +93,7 @@ class PrefixEncoding final
 
   /// Seeks to the position at or after the given value.
   ///
-  /// @param value Pointer to target value to seek.
-  /// @return Row index if found, std::nullopt if value is greater than all
-  /// entries.
-  std::optional<uint32_t> seekAtOrAfter(const void* value) final;
+  std::optional<uint32_t> seek(const void* value, bool inclusive) final;
 
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);

@@ -91,8 +91,9 @@ uint64_t TrivialEncoding<std::string_view>::uncompressedDataBytes() const {
   return uncompressedDataBytes_;
 }
 
-std::optional<uint32_t> TrivialEncoding<std::string_view>::seekAtOrAfter(
-    const void* value) {
+std::optional<uint32_t> TrivialEncoding<std::string_view>::seek(
+    const void* value,
+    bool inclusive) {
   const auto* seekValue = static_cast<const std::string_view*>(value);
   NIMBLE_CHECK_NOT_NULL(seekValue);
 
@@ -114,11 +115,14 @@ std::optional<uint32_t> TrivialEncoding<std::string_view>::seekAtOrAfter(
     pos += buffer_[i];
   }
 
-  auto it = std::lower_bound(
-      values.begin(),
-      values.end(),
-      *seekValue,
-      [](std::string_view a, std::string_view b) { return a < b; });
+  // inclusive: first row >= value (lower_bound).
+  // exclusive: first row > value (upper_bound).
+  const auto comparator = [](std::string_view a, std::string_view b) {
+    return a < b;
+  };
+  const auto it = inclusive
+      ? std::lower_bound(values.begin(), values.end(), *seekValue, comparator)
+      : std::upper_bound(values.begin(), values.end(), *seekValue, comparator);
 
   if (it == values.end()) {
     return std::nullopt;

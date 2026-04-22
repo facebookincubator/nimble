@@ -150,7 +150,9 @@ void PrefixEncoding::seekToRestartPoint(uint32_t restartIndex) {
   decodedValue_.clear();
 }
 
-std::optional<uint32_t> PrefixEncoding::seekAtOrAfter(const void* value) {
+std::optional<uint32_t> PrefixEncoding::seek(
+    const void* value,
+    bool inclusive) {
   const auto& targetValue = *static_cast<const std::string_view*>(value);
 
   uint32_t left = 0;
@@ -175,10 +177,17 @@ std::optional<uint32_t> PrefixEncoding::seekAtOrAfter(const void* value) {
 
   seekToRestartPoint(left);
 
-  while (currentRow_ < rowCount_) {
-    const std::string_view currentValue = decodeEntry();
-    if (currentValue >= targetValue) {
-      return currentRow_ - 1;
+  if (inclusive) {
+    while (currentRow_ < rowCount_) {
+      if (decodeEntry() >= targetValue) {
+        return currentRow_ - 1;
+      }
+    }
+  } else {
+    while (currentRow_ < rowCount_) {
+      if (decodeEntry() > targetValue) {
+        return currentRow_ - 1;
+      }
     }
   }
 

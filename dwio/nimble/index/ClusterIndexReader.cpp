@@ -67,7 +67,7 @@ std::optional<uint32_t> ClusterIndexReader::seekAtOrAfterInChunk(
     std::string_view encodedKey) {
   seekToChunk(chunkOffset);
   NIMBLE_CHECK_NOT_NULL(encoding_);
-  return encoding_->seekAtOrAfter(&encodedKey);
+  return encoding_->seek(&encodedKey, /*inclusive=*/true);
 }
 
 bool ClusterIndexReader::ensureInput(int size) {
