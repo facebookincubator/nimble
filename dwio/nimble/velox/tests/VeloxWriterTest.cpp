@@ -3533,7 +3533,7 @@ class VeloxWriterIndexTest
 
         // Cache key: chunk file offset (unique across all stripes)
         const uint64_t chunkFileOffset =
-            keyStreamRegion.offset + chunkLocation->streamOffset;
+            keyStreamRegion.offset + chunkLocation->chunkOffset;
 
         // Load and decode key chunk if not cached
         if (keyStreamCache.find(chunkFileOffset) == keyStreamCache.end()) {
@@ -3545,7 +3545,7 @@ class VeloxWriterIndexTest
           nimble::index::test::ClusterIndexGroupTestHelper helper(
               stripeId.clusterIndex().get());
           const uint32_t chunkLength = helper.keyChunkLength(
-              stripeIndex, chunkLocation->streamOffset, keyStreamRegion.length);
+              stripeIndex, chunkLocation->chunkOffset, keyStreamRegion.length);
 
           // Load the key chunk data from file
           velox::common::Region region{

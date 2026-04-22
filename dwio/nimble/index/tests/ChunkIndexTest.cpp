@@ -144,26 +144,26 @@ TEST_F(ChunkIndexTest, lookupChunkWithRowId) {
             testCase.stripeIndex,
             testCase.streamId,
             testCase.rowId));
-    auto streamIndex =
-        chunkIndex->createStreamIndex(testCase.stripeIndex, testCase.streamId);
+    auto streamIndex = chunkIndex->createStreamIndex(
+        testCase.stripeIndex, testCase.streamId, /*streamSize=*/1000);
     ASSERT_NE(streamIndex, nullptr);
     auto result = streamIndex->lookupChunk(testCase.rowId);
-    EXPECT_EQ(result.streamOffset, testCase.expectedStreamOffset);
+    EXPECT_EQ(result.chunkOffset, testCase.expectedStreamOffset);
     EXPECT_EQ(result.rowOffset, testCase.expectedRowOffset);
   }
 
   // Row at/after last chunk boundary — throws
-  auto s00 = chunkIndex->createStreamIndex(0, 0);
+  auto s00 = chunkIndex->createStreamIndex(0, 0, /*streamSize=*/1000);
   NIMBLE_ASSERT_THROW(s00->lookupChunk(750), "beyond the last chunk");
   NIMBLE_ASSERT_THROW(s00->lookupChunk(850), "beyond the last chunk");
 
-  auto s01 = chunkIndex->createStreamIndex(0, 1);
+  auto s01 = chunkIndex->createStreamIndex(0, 1, /*streamSize=*/1000);
   NIMBLE_ASSERT_THROW(s01->lookupChunk(450), "beyond the last chunk");
 
-  auto s10 = chunkIndex->createStreamIndex(1, 0);
+  auto s10 = chunkIndex->createStreamIndex(1, 0, /*streamSize=*/1000);
   NIMBLE_ASSERT_THROW(s10->lookupChunk(550), "beyond the last chunk");
 
-  auto s11 = chunkIndex->createStreamIndex(1, 1);
+  auto s11 = chunkIndex->createStreamIndex(1, 1, /*streamSize=*/1000);
   NIMBLE_ASSERT_THROW(s11->lookupChunk(650), "beyond the last chunk");
 }
 
@@ -192,8 +192,8 @@ TEST_F(ChunkIndexTest, createStreamIndex) {
   ASSERT_NE(chunkIndex, nullptr);
 
   // Multi-chunk streams return non-null StreamIndex.
-  EXPECT_NE(chunkIndex->createStreamIndex(0, 0), nullptr);
-  EXPECT_NE(chunkIndex->createStreamIndex(0, 1), nullptr);
+  EXPECT_NE(chunkIndex->createStreamIndex(0, 0, /*streamSize=*/1000), nullptr);
+  EXPECT_NE(chunkIndex->createStreamIndex(0, 1, /*streamSize=*/1000), nullptr);
 }
 
 TEST_F(ChunkIndexTest, singleChunkStreamReturnsNullptr) {
@@ -220,11 +220,11 @@ TEST_F(ChunkIndexTest, singleChunkStreamReturnsNullptr) {
   ASSERT_NE(chunkIndex, nullptr);
 
   // Single-chunk streams return nullptr.
-  EXPECT_EQ(chunkIndex->createStreamIndex(0, 0), nullptr);
-  EXPECT_EQ(chunkIndex->createStreamIndex(0, 2), nullptr);
+  EXPECT_EQ(chunkIndex->createStreamIndex(0, 0, /*streamSize=*/1000), nullptr);
+  EXPECT_EQ(chunkIndex->createStreamIndex(0, 2, /*streamSize=*/1000), nullptr);
 
   // Multi-chunk stream returns non-null.
-  auto streamIndex = chunkIndex->createStreamIndex(0, 1);
+  auto streamIndex = chunkIndex->createStreamIndex(0, 1, /*streamSize=*/1000);
   ASSERT_NE(streamIndex, nullptr);
   EXPECT_EQ(streamIndex->streamId(), 1);
 }
@@ -277,8 +277,8 @@ TEST_F(ChunkIndexTest, streamIndexStreamId) {
             "stripeIndex {} streamId {}",
             testCase.stripeIndex,
             testCase.streamId));
-    auto streamIndex =
-        chunkIndex->createStreamIndex(testCase.stripeIndex, testCase.streamId);
+    auto streamIndex = chunkIndex->createStreamIndex(
+        testCase.stripeIndex, testCase.streamId, /*streamSize=*/1000);
     ASSERT_NE(streamIndex, nullptr);
     EXPECT_EQ(streamIndex->streamId(), testCase.streamId);
   }
@@ -431,35 +431,43 @@ TEST_F(ChunkIndexTest, streamIndexLookupChunk) {
     auto chunkIndex = createChunkIndex(indexBuffers, testCase.groupIndex);
     ASSERT_NE(chunkIndex, nullptr);
 
-    auto streamIndex =
-        chunkIndex->createStreamIndex(testCase.stripeIndex, testCase.streamId);
+    auto streamIndex = chunkIndex->createStreamIndex(
+        testCase.stripeIndex, testCase.streamId, /*streamSize=*/1000);
     ASSERT_NE(streamIndex, nullptr);
 
     auto result = streamIndex->lookupChunk(testCase.rowId);
-    EXPECT_EQ(result.streamOffset, testCase.expectedStreamOffset);
+    EXPECT_EQ(result.chunkOffset, testCase.expectedStreamOffset);
     EXPECT_EQ(result.rowOffset, testCase.expectedRowOffset);
   }
 
   // Row at/after last chunk boundary — throws
   auto ci0 = createChunkIndex(indexBuffers, 0);
   NIMBLE_ASSERT_THROW(
-      ci0->createStreamIndex(0, 0)->lookupChunk(750), "beyond the last chunk");
+      ci0->createStreamIndex(0, 0, /*streamSize=*/1000)->lookupChunk(750),
+      "beyond the last chunk");
   NIMBLE_ASSERT_THROW(
-      ci0->createStreamIndex(0, 1)->lookupChunk(450), "beyond the last chunk");
+      ci0->createStreamIndex(0, 1, /*streamSize=*/1000)->lookupChunk(450),
+      "beyond the last chunk");
   NIMBLE_ASSERT_THROW(
-      ci0->createStreamIndex(1, 0)->lookupChunk(550), "beyond the last chunk");
+      ci0->createStreamIndex(1, 0, /*streamSize=*/1000)->lookupChunk(550),
+      "beyond the last chunk");
   NIMBLE_ASSERT_THROW(
-      ci0->createStreamIndex(1, 1)->lookupChunk(650), "beyond the last chunk");
+      ci0->createStreamIndex(1, 1, /*streamSize=*/1000)->lookupChunk(650),
+      "beyond the last chunk");
 
   auto ci1 = createChunkIndex(indexBuffers, 1);
   NIMBLE_ASSERT_THROW(
-      ci1->createStreamIndex(2, 0)->lookupChunk(450), "beyond the last chunk");
+      ci1->createStreamIndex(2, 0, /*streamSize=*/1000)->lookupChunk(450),
+      "beyond the last chunk");
   NIMBLE_ASSERT_THROW(
-      ci1->createStreamIndex(2, 1)->lookupChunk(540), "beyond the last chunk");
+      ci1->createStreamIndex(2, 1, /*streamSize=*/1000)->lookupChunk(540),
+      "beyond the last chunk");
   NIMBLE_ASSERT_THROW(
-      ci1->createStreamIndex(3, 0)->lookupChunk(480), "beyond the last chunk");
+      ci1->createStreamIndex(3, 0, /*streamSize=*/1000)->lookupChunk(480),
+      "beyond the last chunk");
   NIMBLE_ASSERT_THROW(
-      ci1->createStreamIndex(3, 1)->lookupChunk(360), "beyond the last chunk");
+      ci1->createStreamIndex(3, 1, /*streamSize=*/1000)->lookupChunk(360),
+      "beyond the last chunk");
 }
 
 TEST_F(ChunkIndexTest, stripeIndexAndStreamIdOutOfBound) {
@@ -514,15 +522,16 @@ TEST_F(ChunkIndexTest, stripeIndexAndStreamIdOutOfBound) {
 
   // Test stripe index after group's range
   NIMBLE_ASSERT_THROW(
-      chunkIndex0->createStreamIndex(2, 0),
+      chunkIndex0->createStreamIndex(2, 0, /*streamSize=*/1000),
       "Stripe offset is out of range for this chunk index group");
   NIMBLE_ASSERT_THROW(
-      chunkIndex0->createStreamIndex(3, 0),
+      chunkIndex0->createStreamIndex(3, 0, /*streamSize=*/1000),
       "Stripe offset is out of range for this chunk index group");
 
   // streamId >= streamCount returns nullptr.
-  EXPECT_EQ(chunkIndex0->createStreamIndex(0, 2), nullptr);
-  EXPECT_EQ(chunkIndex0->createStreamIndex(1, 10), nullptr);
+  EXPECT_EQ(chunkIndex0->createStreamIndex(0, 2, /*streamSize=*/1000), nullptr);
+  EXPECT_EQ(
+      chunkIndex0->createStreamIndex(1, 10, /*streamSize=*/1000), nullptr);
 
   // Test Group 1 (stripes 2, 3)
   auto chunkIndex1 = createChunkIndex(indexBuffers, 1);
@@ -530,23 +539,23 @@ TEST_F(ChunkIndexTest, stripeIndexAndStreamIdOutOfBound) {
 
   // Stripe index before group's range (group 1 starts at stripe 2)
   NIMBLE_ASSERT_THROW(
-      chunkIndex1->createStreamIndex(0, 0),
+      chunkIndex1->createStreamIndex(0, 0, /*streamSize=*/1000),
       "Stripe index is before this group's range");
   NIMBLE_ASSERT_THROW(
-      chunkIndex1->createStreamIndex(1, 0),
+      chunkIndex1->createStreamIndex(1, 0, /*streamSize=*/1000),
       "Stripe index is before this group's range");
 
   // Stripe index after group's range (group 1 has stripes 2, 3)
   NIMBLE_ASSERT_THROW(
-      chunkIndex1->createStreamIndex(4, 0),
+      chunkIndex1->createStreamIndex(4, 0, /*streamSize=*/1000),
       "Stripe offset is out of range for this chunk index group");
   NIMBLE_ASSERT_THROW(
-      chunkIndex1->createStreamIndex(5, 0),
+      chunkIndex1->createStreamIndex(5, 0, /*streamSize=*/1000),
       "Stripe offset is out of range for this chunk index group");
 
   // streamId >= streamCount returns nullptr.
-  EXPECT_EQ(chunkIndex1->createStreamIndex(2, 2), nullptr);
-  EXPECT_EQ(chunkIndex1->createStreamIndex(3, 5), nullptr);
+  EXPECT_EQ(chunkIndex1->createStreamIndex(2, 2, /*streamSize=*/1000), nullptr);
+  EXPECT_EQ(chunkIndex1->createStreamIndex(3, 5, /*streamSize=*/1000), nullptr);
 }
 
 TEST_F(ChunkIndexTest, streamIndexRowCount) {
@@ -651,8 +660,8 @@ TEST_F(ChunkIndexTest, streamIndexRowCount) {
     auto chunkIndex = createChunkIndex(indexBuffers, testCase.groupIndex);
     ASSERT_NE(chunkIndex, nullptr);
 
-    auto streamIndex =
-        chunkIndex->createStreamIndex(testCase.stripeIndex, testCase.streamId);
+    auto streamIndex = chunkIndex->createStreamIndex(
+        testCase.stripeIndex, testCase.streamId, /*streamSize=*/1000);
     ASSERT_NE(streamIndex, nullptr);
     EXPECT_EQ(streamIndex->rowCount(), testCase.expectedRowCount);
   }
@@ -709,23 +718,26 @@ TEST_F(ChunkIndexTest, chunkOnlyLookupByRowId) {
             testCase.stripeIndex,
             testCase.streamId,
             testCase.rowId));
-    auto streamIndex =
-        chunkIndex->createStreamIndex(testCase.stripeIndex, testCase.streamId);
+    auto streamIndex = chunkIndex->createStreamIndex(
+        testCase.stripeIndex, testCase.streamId, /*streamSize=*/1000);
     ASSERT_NE(streamIndex, nullptr);
     auto result = streamIndex->lookupChunk(testCase.rowId);
-    EXPECT_EQ(result.streamOffset, testCase.expectedStreamOffset);
+    EXPECT_EQ(result.chunkOffset, testCase.expectedStreamOffset);
     EXPECT_EQ(result.rowOffset, testCase.expectedRowOffset);
   }
 
   // Row at/after last chunk boundary — throws
   NIMBLE_ASSERT_THROW(
-      chunkIndex->createStreamIndex(0, 0)->lookupChunk(750),
+      chunkIndex->createStreamIndex(0, 0, /*streamSize=*/1000)
+          ->lookupChunk(750),
       "beyond the last chunk");
   NIMBLE_ASSERT_THROW(
-      chunkIndex->createStreamIndex(0, 1)->lookupChunk(450),
+      chunkIndex->createStreamIndex(0, 1, /*streamSize=*/1000)
+          ->lookupChunk(450),
       "beyond the last chunk");
   NIMBLE_ASSERT_THROW(
-      chunkIndex->createStreamIndex(1, 0)->lookupChunk(550),
+      chunkIndex->createStreamIndex(1, 0, /*streamSize=*/1000)
+          ->lookupChunk(550),
       "beyond the last chunk");
 }
 

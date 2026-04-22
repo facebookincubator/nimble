@@ -55,7 +55,7 @@ std::optional<uint32_t> ClusterIndexReader::seekAtOrAfter(
   }
 
   const auto rowOffset =
-      seekAtOrAfterInChunk(chunkLocation->streamOffset, encodedKey);
+      seekAtOrAfterInChunk(chunkLocation->chunkOffset, encodedKey);
   if (!rowOffset.has_value()) {
     return std::nullopt;
   }

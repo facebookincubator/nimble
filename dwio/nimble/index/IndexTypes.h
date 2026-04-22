@@ -20,15 +20,20 @@
 namespace facebook::nimble::index {
 
 /// Represents the location of a chunk within a stream.
-/// Both offsets are relative:
-/// - streamOffset: relative to the stream start offset within the stripe
-/// - rowOffset: relative to the stripe start row id
+/// Both offsets are relative to the containing unit:
+/// - For chunk index: relative to the stripe (stream start offset and stripe
+///   start row).
+/// - For cluster index: relative to the index partition (key data blob offset
+///   and partition start row).
 struct ChunkLocation {
-  uint32_t streamOffset;
+  uint32_t chunkOffset;
+  uint32_t chunkSize;
   uint32_t rowOffset;
 
-  ChunkLocation(uint32_t _streamOffset, uint32_t _rowOffset)
-      : streamOffset(_streamOffset), rowOffset(_rowOffset) {}
+  ChunkLocation(uint32_t _chunkOffset, uint32_t _chunkSize, uint32_t _rowOffset)
+      : chunkOffset(_chunkOffset),
+        chunkSize(_chunkSize),
+        rowOffset(_rowOffset) {}
 };
 
 } // namespace facebook::nimble::index

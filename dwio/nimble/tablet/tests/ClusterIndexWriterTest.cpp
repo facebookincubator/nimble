@@ -1514,19 +1514,23 @@ TEST_F(ClusterIndexWriterTest, chunkIndexOnlyWriteAndRead) {
 
   // Lookup via StreamIndex (public API).
   // Stream 0: chunks at rows {50, 50} -> accumulated {50, 100}
-  auto stream0 = chunkIndex->createStreamIndex(0, 0);
+  // Stream 0: 2 chunks of {50 rows, 10 bytes} and {50 rows, 12 bytes}.
+  // Total stream size = 10 + 12 = 22.
+  auto stream0 = chunkIndex->createStreamIndex(0, 0, 22);
   ASSERT_NE(stream0, nullptr);
 
   auto result00 = stream0->lookupChunk(0);
-  EXPECT_EQ(result00.streamOffset, 0);
+  EXPECT_EQ(result00.chunkOffset, 0);
+  EXPECT_EQ(result00.chunkSize, 10);
   EXPECT_EQ(result00.rowOffset, 0);
 
   auto result01 = stream0->lookupChunk(50);
-  EXPECT_EQ(result01.streamOffset, 10);
+  EXPECT_EQ(result01.chunkOffset, 10);
+  EXPECT_EQ(result01.chunkSize, 12);
   EXPECT_EQ(result01.rowOffset, 50);
 
   // Stream 1: 1 chunk → createStreamIndex returns nullptr.
-  EXPECT_EQ(chunkIndex->createStreamIndex(0, 1), nullptr);
+  EXPECT_EQ(chunkIndex->createStreamIndex(0, 1, 25), nullptr);
 }
 
 } // namespace facebook::nimble::test

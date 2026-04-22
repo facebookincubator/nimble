@@ -19,6 +19,7 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Checksum.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/tablet/Chunk.h"
 #include "dwio/nimble/tablet/ChunkIndexWriter.h"
 #include "dwio/nimble/tablet/ClusterIndexWriter.h"
 #include "dwio/nimble/tablet/FileLayout.h"
@@ -28,26 +29,6 @@
 #include "velox/vector/TypeAliases.h"
 
 namespace facebook::nimble {
-/// Represents a single chunk of encoded data within a stream.
-/// A stream may be divided into multiple chunks to control memory usage during
-/// writing. Each chunk contains the encoded data and row count.
-struct Chunk {
-  /// Number of rows contained in this chunk.
-  uint32_t rowCount{0};
-
-  /// The encoded and compressed data content of this chunk, stored as a vector
-  /// of string views. Each string_view points to a buffer containing a portion
-  /// of the chunk's data. Multiple buffers may be used for large chunks.
-  std::vector<std::string_view> content;
-
-  /// Returns the total byte size of all content in this chunk.
-  uint32_t contentSize() const;
-};
-
-struct Stream {
-  uint32_t offset{0};
-  std::vector<Chunk> chunks;
-};
 
 /// Represents a chunk in a key stream with key boundaries.
 /// Used to enable efficient range-based lookups during reads.
@@ -63,6 +44,12 @@ struct KeyChunk : public Chunk {
 /// instead of Chunk and doesn't need offset tracking.
 struct KeyStream {
   std::vector<KeyChunk> chunks;
+};
+
+/// Represents a stream of chunks with a file offset.
+struct Stream {
+  uint32_t offset{0};
+  std::vector<Chunk> chunks;
 };
 
 struct ClusterIndexConfig;

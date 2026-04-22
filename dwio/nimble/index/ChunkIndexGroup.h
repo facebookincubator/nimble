@@ -53,9 +53,11 @@ class ChunkIndexGroup : public std::enable_shared_from_this<ChunkIndexGroup> {
 
   /// Creates a StreamIndex for the specified stripe and stream ID.
   /// Returns nullptr if the stream is not indexed (has ≤1 chunk).
+  /// @param streamSize Total byte size of the stream in this stripe.
   std::shared_ptr<StreamIndex> createStreamIndex(
       uint32_t stripe,
-      uint32_t streamId) const;
+      uint32_t streamId,
+      uint32_t streamSize) const;
 
  private:
   ChunkIndexGroup(
@@ -93,7 +95,8 @@ class StreamIndex {
       std::shared_ptr<const ChunkIndexGroup> chunkIndex,
       uint32_t streamId,
       uint32_t startChunkOffset,
-      uint32_t endChunkOffset);
+      uint32_t endChunkOffset,
+      uint32_t streamSize);
 
   /// Lookup chunk by row ID within the stream's row range.
   ChunkLocation lookupChunk(uint32_t rowId) const;
@@ -111,7 +114,8 @@ class StreamIndex {
       std::shared_ptr<const ChunkIndexGroup> chunkIndex,
       uint32_t streamId,
       uint32_t startChunkOffset,
-      uint32_t endChunkOffset);
+      uint32_t endChunkOffset,
+      uint32_t streamSize);
 
   // Kept alive to ensure metadata_ stays valid.
   const std::shared_ptr<const ChunkIndexGroup> chunkIndex_;
@@ -120,6 +124,9 @@ class StreamIndex {
   // flattened chunk_rows/chunk_offsets arrays.
   const uint32_t startChunkOffset_;
   const uint32_t endChunkOffset_;
+  // Total byte size of the stream in this stripe, used to compute
+  // the last chunk's size.
+  const uint32_t streamSize_;
 };
 
 } // namespace facebook::nimble::index

@@ -25,16 +25,19 @@ namespace facebook::nimble::index::test {
 class ClusterIndexGroupTest : public ClusterIndexTestBase {};
 
 TEST_F(ClusterIndexGroupTest, chunkLocation) {
-  ChunkLocation loc1{100, 200};
-  EXPECT_EQ(loc1.streamOffset, 100);
+  ChunkLocation loc1{100, 50, 200};
+  EXPECT_EQ(loc1.chunkOffset, 100);
+  EXPECT_EQ(loc1.chunkSize, 50);
   EXPECT_EQ(loc1.rowOffset, 200);
 
-  ChunkLocation loc2{0, 0};
-  EXPECT_EQ(loc2.streamOffset, 0);
+  ChunkLocation loc2{0, 0, 0};
+  EXPECT_EQ(loc2.chunkOffset, 0);
+  EXPECT_EQ(loc2.chunkSize, 0);
   EXPECT_EQ(loc2.rowOffset, 0);
 
-  ChunkLocation loc3{UINT32_MAX, UINT32_MAX};
-  EXPECT_EQ(loc3.streamOffset, UINT32_MAX);
+  ChunkLocation loc3{UINT32_MAX, UINT32_MAX, UINT32_MAX};
+  EXPECT_EQ(loc3.chunkOffset, UINT32_MAX);
+  EXPECT_EQ(loc3.chunkSize, UINT32_MAX);
   EXPECT_EQ(loc3.rowOffset, UINT32_MAX);
 }
 
@@ -220,7 +223,7 @@ TEST_F(ClusterIndexGroupTest, lookupChunkWithEncodedKey) {
   struct {
     uint32_t stripeIndex;
     std::string encodedKey;
-    std::optional<uint32_t> expectedStreamOffset;
+    std::optional<uint32_t> expectedChunkOffset;
     std::optional<uint32_t> expectedRowOffset;
   } testCases[] = {
       // Stripe 0: chunks with keys "ccc", "fff", "iii"
@@ -271,19 +274,19 @@ TEST_F(ClusterIndexGroupTest, lookupChunkWithEncodedKey) {
             testCase.encodedKey));
     auto result = clusterIndexGroup->lookupChunk(
         testCase.stripeIndex, testCase.encodedKey);
-    if (testCase.expectedStreamOffset.has_value()) {
+    if (testCase.expectedChunkOffset.has_value()) {
       ASSERT_TRUE(result.has_value())
           << "Expected chunk at streamOffset "
-          << testCase.expectedStreamOffset.value() << ", rowOffset "
+          << testCase.expectedChunkOffset.value() << ", rowOffset "
           << testCase.expectedRowOffset.value() << " for key '"
           << testCase.encodedKey << "', but lookup returned nullopt";
-      EXPECT_EQ(result->streamOffset, testCase.expectedStreamOffset.value());
+      EXPECT_EQ(result->chunkOffset, testCase.expectedChunkOffset.value());
       EXPECT_EQ(result->rowOffset, testCase.expectedRowOffset.value());
     } else {
       EXPECT_FALSE(result.has_value())
           << "Expected nullopt for key '" << testCase.encodedKey
-          << "', but got streamOffset " << result->streamOffset
-          << ", rowOffset " << result->rowOffset;
+          << "', but got streamOffset " << result->chunkOffset << ", rowOffset "
+          << result->rowOffset;
     }
   }
 }
