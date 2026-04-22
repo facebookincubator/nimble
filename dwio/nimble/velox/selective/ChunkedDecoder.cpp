@@ -233,7 +233,7 @@ void ChunkedDecoder::skipWithIndex(int64_t numValues) {
   const auto location = streamIndex_->lookupChunk(targetRow);
 
   // Seek to the chunk and skip within it.
-  seekToChunk(location.streamOffset);
+  seekToChunk(location.chunkOffset);
   rowPosition_ = location.rowOffset;
 
   const uint32_t rowsToSkipInChunk = targetRow - rowPosition_;

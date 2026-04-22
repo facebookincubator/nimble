@@ -74,7 +74,7 @@ class IndexLookup {
       NIMBLE_CHECK(!keyBounds_.empty());
     }
 
-    uint32_t size() const {
+    size_t size() const {
       return keyBounds_.size();
     }
 
@@ -110,7 +110,7 @@ class IndexLookup {
           "Result offsets reference beyond rowRanges");
     }
 
-    uint32_t size() const {
+    size_t size() const {
       return resultOffsets_.size() - 1;
     }
 

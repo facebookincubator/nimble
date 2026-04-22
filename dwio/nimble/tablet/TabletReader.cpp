@@ -929,6 +929,13 @@ std::span<const uint32_t> TabletReader::streamSizes(
   return stripe.stripeGroup()->streamSizes(stripe.stripeId());
 }
 
+uint32_t TabletReader::streamSize(
+    const StripeIdentifier& stripe,
+    uint32_t streamId) const {
+  const auto sizes = streamSizes(stripe);
+  return streamId < sizes.size() ? sizes[streamId] : 0;
+}
+
 uint32_t TabletReader::streamCount(const StripeIdentifier& stripe) const {
   NIMBLE_DCHECK_LT(stripe.stripeId(), stripeCount_, "Stripe is out of range.");
   return stripe.stripeGroup()->streamCount();

@@ -52,7 +52,8 @@ ChunkIndexGroup::ChunkIndexGroup(
 
 std::shared_ptr<StreamIndex> ChunkIndexGroup::createStreamIndex(
     uint32_t stripe,
-    uint32_t streamId) const {
+    uint32_t streamId,
+    uint32_t streamSize) const {
   if (streamId >= streamCount_) {
     return nullptr;
   }
@@ -78,27 +79,38 @@ std::shared_ptr<StreamIndex> ChunkIndexGroup::createStreamIndex(
   }
 
   return StreamIndex::create(
-      shared_from_this(), streamId, startChunkOffset, endChunkOffset);
+      shared_from_this(),
+      streamId,
+      startChunkOffset,
+      endChunkOffset,
+      streamSize);
 }
 
 std::shared_ptr<StreamIndex> StreamIndex::create(
     std::shared_ptr<const ChunkIndexGroup> chunkIndex,
     uint32_t streamId,
     uint32_t startChunkOffset,
-    uint32_t endChunkOffset) {
+    uint32_t endChunkOffset,
+    uint32_t streamSize) {
   return std::shared_ptr<StreamIndex>(new StreamIndex(
-      std::move(chunkIndex), streamId, startChunkOffset, endChunkOffset));
+      std::move(chunkIndex),
+      streamId,
+      startChunkOffset,
+      endChunkOffset,
+      streamSize));
 }
 
 StreamIndex::StreamIndex(
     std::shared_ptr<const ChunkIndexGroup> chunkIndex,
     uint32_t streamId,
     uint32_t startChunkOffset,
-    uint32_t endChunkOffset)
+    uint32_t endChunkOffset,
+    uint32_t streamSize)
     : chunkIndex_(std::move(chunkIndex)),
       streamId_(streamId),
       startChunkOffset_(startChunkOffset),
-      endChunkOffset_(endChunkOffset) {
+      endChunkOffset_(endChunkOffset),
+      streamSize_(streamSize) {
   NIMBLE_CHECK_NOT_NULL(chunkIndex_);
 }
 
@@ -124,7 +136,11 @@ ChunkLocation StreamIndex::lookupChunk(uint32_t rowId) const {
   NIMBLE_CHECK_NOT_NULL(chunkOffsets);
   const uint32_t rowOffset =
       chunkOffset == startChunkOffset_ ? 0 : chunkRows->Get(chunkOffset - 1);
-  return ChunkLocation{chunkOffsets->Get(chunkOffset), rowOffset};
+  const uint32_t streamOffset = chunkOffsets->Get(chunkOffset);
+  const uint32_t nextOffset = (chunkOffset + 1 < endChunkOffset_)
+      ? chunkOffsets->Get(chunkOffset + 1)
+      : streamSize_;
+  return ChunkLocation{streamOffset, nextOffset - streamOffset, rowOffset};
 }
 
 uint32_t StreamIndex::rowCount() const {

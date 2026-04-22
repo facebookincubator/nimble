@@ -1231,6 +1231,88 @@ TEST_P(TabletTest, chunkContentSize) {
   EXPECT_EQ(chunk.contentSize(), 3);
 }
 
+TEST_P(TabletTest, streamSize) {
+  // Write a file with 2 stripes and verify streamSize API.
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.streamDeduplicationEnabled = false, .enableChunkIndex = true});
+
+  nimble::Buffer buffer{*pool_};
+
+  // Stripe 0: 3 streams with sizes 10, 20, 8.
+  {
+    std::vector<nimble::Stream> streams;
+    streams.push_back(
+        nimble::index::test::createStream(
+            buffer, {.offset = 0, .chunks = {{.rowCount = 50, .size = 10}}}));
+    streams.push_back(
+        nimble::index::test::createStream(
+            buffer, {.offset = 1, .chunks = {{.rowCount = 50, .size = 20}}}));
+    streams.push_back(
+        nimble::index::test::createStream(
+            buffer, {.offset = 2, .chunks = {{.rowCount = 50, .size = 8}}}));
+    tabletWriter->writeStripe(50, std::move(streams));
+  }
+
+  // Stripe 1: 2 streams (fewer than stripe 0).
+  {
+    std::vector<nimble::Stream> streams;
+    streams.push_back(
+        nimble::index::test::createStream(
+            buffer, {.offset = 0, .chunks = {{.rowCount = 30, .size = 15}}}));
+    streams.push_back(
+        nimble::index::test::createStream(
+            buffer, {.offset = 1, .chunks = {{.rowCount = 30, .size = 25}}}));
+    tabletWriter->writeStripe(30, std::move(streams));
+  }
+
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile =
+      std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
+  auto tablet = createTabletReader(readFile, nimble::TabletReader::Options{});
+
+  struct TestCase {
+    uint32_t stripeIndex;
+    uint32_t streamId;
+    uint32_t expectedSize;
+
+    std::string debugString() const {
+      return fmt::format(
+          "stripe {}, stream {}, expected {}",
+          stripeIndex,
+          streamId,
+          expectedSize);
+    }
+  };
+
+  std::vector<TestCase> testCases = {
+      // Stripe 0: 3 streams with sizes 10, 20, 8.
+      {0, 0, 10},
+      {0, 1, 20},
+      {0, 2, 8},
+      // Out of range returns 0.
+      {0, 3, 0},
+      {0, 100, 0},
+      // Stripe 1: 2 streams with sizes 15, 25.
+      {1, 0, 15},
+      {1, 1, 25},
+      // Stream 2 doesn't exist in stripe 1.
+      {1, 2, 0},
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
+    auto stripe = tablet->stripeIdentifier(testCase.stripeIndex);
+    EXPECT_EQ(
+        tablet->streamSize(stripe, testCase.streamId), testCase.expectedSize);
+  }
+}
+
 // TabletWithIndexTest is a derived test fixture for tablet index related tests.
 // It inherits the memory pool and helper methods from TabletTest.
 class TabletWithIndexTest : public TabletTest {
