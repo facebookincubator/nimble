@@ -99,6 +99,18 @@ SerializationDump::SerializationStats SerializationDump::serializationStats(
     const char* rowCountPos = pos + 2;
     si.rowCount = varint::readVarint32(&rowCountPos);
 
+    // Read compression type byte for TrivialEncoding only.
+    // TrivialEncoding layout:
+    //   [EncodingType][DataType][rowCount:varint][CompressionType:1B][data]
+    // Other encodings (Varint, RLE, FixedBitWidth, etc.) have encoding-specific
+    // prefix bytes at this position, so we only parse compression type for
+    // Trivial.
+    if (si.encodingType == EncodingType::Trivial &&
+        rowCountPos < pos + streamSize) {
+      si.compressionType =
+          static_cast<CompressionType>(static_cast<uint8_t>(*rowCountPos));
+    }
+
     uint32_t elemSize = dataTypeElementSize(si.dataType);
     si.rawSize = static_cast<uint64_t>(si.rowCount) * elemSize;
     si.encodedSize = streamSize;
@@ -133,11 +145,12 @@ std::string SerializationDump::SerializationStats::toString() const {
     double ratio =
         si.rawSize > 0 ? static_cast<double>(si.encodedSize) / si.rawSize : 0;
     result += fmt::format(
-        "  stream[{}]: encoding={}, dataType={}, rows={}, raw={} bytes,"
+        "  stream[{}]: encoding={}, dataType={}, compression={}, rows={}, raw={} bytes,"
         " encoded={} bytes, ratio={:.2f}{}\n",
         si.streamIndex,
         nimble::toString(si.encodingType),
         nimble::toString(si.dataType),
+        nimble::toString(si.compressionType),
         si.rowCount,
         si.rawSize,
         si.encodedSize,
