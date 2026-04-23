@@ -17,7 +17,7 @@ BUILD_BASE_DIR=_build
 BUILD_DIR=release
 BUILD_TYPE=Release
 
-CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
+CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DVELOX_ENABLE_GEO=OFF
 
 # Use Ninja if available. If Ninja is used, pass through parallelism control flags.
 USE_NINJA ?= 1

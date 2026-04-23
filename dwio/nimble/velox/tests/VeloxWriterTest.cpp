@@ -3433,7 +3433,7 @@ class VeloxWriterIndexTest
   // 2. Looks up the stripe via ClusterIndex
   // 3. Gets chunk location within stripe via ClusterIndexGroup::lookupChunk
   // 4. Loads the key stream chunk and decodes it
-  // 5. Uses seekAtOrAfter to find the exact row within the chunk
+  // 5. Uses seek to find the exact row within the chunk
   // 6. For duplicate keys, verifies the found row id matches the earliest row
   //    with the same key value
   void verifyValueIndex(
@@ -3464,7 +3464,7 @@ class VeloxWriterIndexTest
         indexColumns, type, sortOrders, leafPool_.get());
 
     // Pre-encode all keys and build a map from encoded key to earliest row
-    // id. This handles duplicate keys where seekAtOrAfter returns the first
+    // id. This handles duplicate keys where seek returns the first
     // occurrence.
     std::map<std::string, uint64_t> keyToEarliestRowId;
     std::vector<std::string> allEncodedKeys;
@@ -3584,19 +3584,20 @@ class VeloxWriterIndexTest
         // Reset encoding and seek to find the row within the chunk
         keyEncoding->reset();
 
-        // Use seekAtOrAfter to find the exact row position within the
+        // Use seek to find the exact row position within the
         // remaining rows
-        auto seekResult = keyEncoding->seekAtOrAfter(&encodedKeyView);
+        auto seekResult =
+            keyEncoding->seek(&encodedKeyView, /*inclusive=*/true);
         ASSERT_TRUE(seekResult.has_value())
-            << "seekAtOrAfter should find key at row " << currentRowId;
+            << "seek should find key at row " << currentRowId;
 
         // Calculate the actual file row id
-        // seekAtOrAfter returns the offset from current position where the
+        // seek returns the offset from current position where the
         // key was found
         uint64_t fileRowId = stripeStartRows[stripeIndex] +
             chunkLocation->rowOffset + seekResult.value();
 
-        // For duplicate keys, seekAtOrAfter returns the first occurrence.
+        // For duplicate keys, seek returns the first occurrence.
         // Verify that the found row id matches the earliest row with the same
         // key.
         uint64_t expectedFileRowId = keyToEarliestRowId.at(encodedKey);

@@ -157,13 +157,14 @@ class Encoding {
   // iterator; if you need to move your row pointer back, reset() and skip().
   virtual void skip(uint32_t rowCount) = 0;
 
-  /// Seeks to the position at or after the given value.
+  /// Seeks to the first row matching the target value.
   ///
   /// @param value Pointer to target value to seek.
-  /// @return Row index if found, std::nullopt if value is greater than all
-  /// entries.
-  virtual std::optional<uint32_t> seekAtOrAfter(const void* value) {
-    NIMBLE_UNSUPPORTED("seekAtOrAfter is not supported.");
+  /// @param inclusive When true, returns the first row >= value.
+  ///        When false, returns the first row > value.
+  /// @return Row index if found, std::nullopt if no matching row exists.
+  virtual std::optional<uint32_t> seek(const void* value, bool inclusive) {
+    NIMBLE_UNSUPPORTED("seek is not supported.");
   }
 
   // Materializes the next |rowCount| rows into buffer. Advances

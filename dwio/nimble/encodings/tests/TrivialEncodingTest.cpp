@@ -122,6 +122,7 @@ TEST_P(TrivialEncodingTestWithCompression, seekExactMatch) {
   struct {
     std::string_view seekValue;
     std::optional<uint32_t> expected;
+    std::optional<uint32_t> expectedExclusive;
 
     std::string debugString() const {
       if (expected.has_value()) {
@@ -130,28 +131,33 @@ TEST_P(TrivialEncodingTestWithCompression, seekExactMatch) {
       return fmt::format("seek '{}' -> not found", seekValue);
     }
   } testCases[] = {
-      // Exact matches
-      {"", 0},
-      {"apple", 1},
-      {"banana", 2},
-      {"cherry", 3},
-      {"date", 4},
-      {"elderberry", 5},
-      // Between values (should return next value)
-      {"carrot", 3},
-      {"aaa", 1},
-      {"coconut", 4},
-      // After all values (not found)
-      {"zebra", std::nullopt},
-      {"fig", std::nullopt}};
+      // Exact matches: exclusive returns next row after match
+      {"", 0, 1},
+      {"apple", 1, 2},
+      {"banana", 2, 3},
+      {"cherry", 3, 4},
+      {"date", 4, 5},
+      {"elderberry", 5, std::nullopt},
+      // Between values (should return next value): same for both
+      {"carrot", 3, 3},
+      {"aaa", 1, 1},
+      {"coconut", 4, 4},
+      // After all values (not found): same for both
+      {"zebra", std::nullopt, std::nullopt},
+      {"fig", std::nullopt, std::nullopt}};
 
-  for (const auto& testCase : testCases) {
-    SCOPED_TRACE(testCase.debugString());
-    encoding->reset();
-    auto result = encoding->seekAtOrAfter(&testCase.seekValue);
-    ASSERT_EQ(result.has_value(), testCase.expected.has_value());
-    if (testCase.expected.has_value()) {
-      EXPECT_EQ(result.value(), testCase.expected.value());
+  for (bool inclusive : {true, false}) {
+    SCOPED_TRACE(fmt::format("inclusive={}", inclusive));
+    for (const auto& testCase : testCases) {
+      SCOPED_TRACE(testCase.debugString());
+      encoding->reset();
+      auto result = encoding->seek(&testCase.seekValue, inclusive);
+      const auto& expectedResult =
+          inclusive ? testCase.expected : testCase.expectedExclusive;
+      ASSERT_EQ(result.has_value(), expectedResult.has_value());
+      if (expectedResult.has_value()) {
+        EXPECT_EQ(result.value(), expectedResult.value());
+      }
     }
   }
 }
@@ -164,6 +170,7 @@ TEST_P(TrivialEncodingTestWithCompression, seekExactMatchWithDuplicateValues) {
   struct {
     std::string_view seekValue;
     std::optional<uint32_t> expected;
+    std::optional<uint32_t> expectedExclusive;
 
     std::string debugString() const {
       if (expected.has_value()) {
@@ -172,26 +179,31 @@ TEST_P(TrivialEncodingTestWithCompression, seekExactMatchWithDuplicateValues) {
       return fmt::format("seek '{}' -> not found", seekValue);
     }
   } testCases[] = {
-      // Should return first occurrence of duplicate values
-      {"apple", 0},
-      {"banana", 2},
-      {"cherry", 5},
-      // Between values (should return first of next value)
-      {"aaa", 0},
-      {"app", 0},
-      {"az", 2},
-      {"car", 5},
-      // After all values (not found)
-      {"date", std::nullopt},
-      {"zebra", std::nullopt}};
+      // Exact matches: exclusive skips past ALL duplicates
+      {"apple", 0, 2},
+      {"banana", 2, 5},
+      {"cherry", 5, std::nullopt},
+      // Between values (should return first of next value): same for both
+      {"aaa", 0, 0},
+      {"app", 0, 0},
+      {"az", 2, 2},
+      {"car", 5, 5},
+      // After all values (not found): same for both
+      {"date", std::nullopt, std::nullopt},
+      {"zebra", std::nullopt, std::nullopt}};
 
-  for (const auto& testCase : testCases) {
-    SCOPED_TRACE(testCase.debugString());
-    encoding->reset();
-    auto result = encoding->seekAtOrAfter(&testCase.seekValue);
-    ASSERT_EQ(result.has_value(), testCase.expected.has_value());
-    if (testCase.expected.has_value()) {
-      EXPECT_EQ(result.value(), testCase.expected.value());
+  for (bool inclusive : {true, false}) {
+    SCOPED_TRACE(fmt::format("inclusive={}", inclusive));
+    for (const auto& testCase : testCases) {
+      SCOPED_TRACE(testCase.debugString());
+      encoding->reset();
+      auto result = encoding->seek(&testCase.seekValue, inclusive);
+      const auto& expectedResult =
+          inclusive ? testCase.expected : testCase.expectedExclusive;
+      ASSERT_EQ(result.has_value(), expectedResult.has_value());
+      if (expectedResult.has_value()) {
+        EXPECT_EQ(result.value(), expectedResult.value());
+      }
     }
   }
 }
@@ -206,6 +218,7 @@ TEST_P(TrivialEncodingTestWithCompression, seekAfterValueWithDuplicateValues) {
   struct {
     std::string_view seekValue;
     std::optional<uint32_t> expected;
+    std::optional<uint32_t> expectedExclusive;
 
     std::string debugString() const {
       if (expected.has_value()) {
@@ -214,29 +227,34 @@ TEST_P(TrivialEncodingTestWithCompression, seekAfterValueWithDuplicateValues) {
       return fmt::format("seek '{}' -> not found", seekValue);
     }
   } testCases[] = {
-      // Before first duplicate group
-      {"", 0},
-      {"aaa", 0},
-      // Between apple (end) and cherry (start)
-      {"banana", 3},
-      {"car", 3},
-      // Between cherry (end) and grape
-      {"date", 5},
-      {"fig", 5},
-      // Between grape and kiwi (start of end duplicates)
-      {"honey", 6},
-      // After last duplicate group (not found)
-      {"lemon", std::nullopt},
-      {"zebra", std::nullopt},
+      // Before first duplicate group: non-match, same for both
+      {"", 0, 0},
+      {"aaa", 0, 0},
+      // Between apple (end) and cherry (start): non-match, same for both
+      {"banana", 3, 3},
+      {"car", 3, 3},
+      // Between cherry (end) and grape: non-match, same for both
+      {"date", 5, 5},
+      {"fig", 5, 5},
+      // Between grape and kiwi (start of end duplicates): non-match, same
+      {"honey", 6, 6},
+      // After last duplicate group (not found): same for both
+      {"lemon", std::nullopt, std::nullopt},
+      {"zebra", std::nullopt, std::nullopt},
   };
 
-  for (const auto& testCase : testCases) {
-    SCOPED_TRACE(testCase.debugString());
-    encoding->reset();
-    auto result = encoding->seekAtOrAfter(&testCase.seekValue);
-    ASSERT_EQ(result.has_value(), testCase.expected.has_value());
-    if (testCase.expected.has_value()) {
-      EXPECT_EQ(result.value(), testCase.expected.value());
+  for (bool inclusive : {true, false}) {
+    SCOPED_TRACE(fmt::format("inclusive={}", inclusive));
+    for (const auto& testCase : testCases) {
+      SCOPED_TRACE(testCase.debugString());
+      encoding->reset();
+      auto result = encoding->seek(&testCase.seekValue, inclusive);
+      const auto& expectedResult =
+          inclusive ? testCase.expected : testCase.expectedExclusive;
+      ASSERT_EQ(result.has_value(), expectedResult.has_value());
+      if (expectedResult.has_value()) {
+        EXPECT_EQ(result.value(), expectedResult.value());
+      }
     }
   }
 }
@@ -248,6 +266,7 @@ TEST_P(TrivialEncodingTestWithCompression, seekExactMatchWithEmptyEncoding) {
   struct {
     std::string_view seekValue;
     std::optional<uint32_t> expected;
+    std::optional<uint32_t> expectedExclusive;
 
     std::string debugString() const {
       if (expected.has_value()) {
@@ -257,18 +276,23 @@ TEST_P(TrivialEncodingTestWithCompression, seekExactMatchWithEmptyEncoding) {
     }
   } testCases[] = {
       // All seeks should return not found for empty encoding
-      {"", std::nullopt},
-      {"apple", std::nullopt},
-      {"test", std::nullopt},
+      {"", std::nullopt, std::nullopt},
+      {"apple", std::nullopt, std::nullopt},
+      {"test", std::nullopt, std::nullopt},
   };
 
-  for (const auto& testCase : testCases) {
-    SCOPED_TRACE(testCase.debugString());
-    encoding->reset();
-    auto result = encoding->seekAtOrAfter(&testCase.seekValue);
-    ASSERT_EQ(result.has_value(), testCase.expected.has_value());
-    if (testCase.expected.has_value()) {
-      EXPECT_EQ(result.value(), testCase.expected.value());
+  for (bool inclusive : {true, false}) {
+    SCOPED_TRACE(fmt::format("inclusive={}", inclusive));
+    for (const auto& testCase : testCases) {
+      SCOPED_TRACE(testCase.debugString());
+      encoding->reset();
+      auto result = encoding->seek(&testCase.seekValue, inclusive);
+      const auto& expectedResult =
+          inclusive ? testCase.expected : testCase.expectedExclusive;
+      ASSERT_EQ(result.has_value(), expectedResult.has_value());
+      if (expectedResult.has_value()) {
+        EXPECT_EQ(result.value(), expectedResult.value());
+      }
     }
   }
 }
@@ -281,6 +305,7 @@ TEST_P(TrivialEncodingTestWithCompression, seekAfterValue) {
   struct {
     std::string_view seekValue;
     std::optional<uint32_t> expected;
+    std::optional<uint32_t> expectedExclusive;
 
     std::string debugString() const {
       if (expected.has_value()) {
@@ -289,31 +314,36 @@ TEST_P(TrivialEncodingTestWithCompression, seekAfterValue) {
       return fmt::format("seek '{}' -> not found", seekValue);
     }
   } testCases[] = {
-      // Before first value
-      {"", 0},
-      {"aaa", 0},
-      // Between apple and cherry
-      {"banana", 1},
-      {"cat", 1},
-      // Between cherry and elderberry
-      {"date", 2},
-      {"duck", 2},
-      // Between elderberry and grape
-      {"fig", 3},
-      // Between grape and kiwi
-      {"honey", 4},
-      {"ice", 4},
-      // After last value (not found)
-      {"lemon", std::nullopt},
-      {"mango", std::nullopt}};
+      // Before first value: non-match, same for both
+      {"", 0, 0},
+      {"aaa", 0, 0},
+      // Between apple and cherry: non-match, same for both
+      {"banana", 1, 1},
+      {"cat", 1, 1},
+      // Between cherry and elderberry: non-match, same for both
+      {"date", 2, 2},
+      {"duck", 2, 2},
+      // Between elderberry and grape: non-match, same for both
+      {"fig", 3, 3},
+      // Between grape and kiwi: non-match, same for both
+      {"honey", 4, 4},
+      {"ice", 4, 4},
+      // After last value (not found): same for both
+      {"lemon", std::nullopt, std::nullopt},
+      {"mango", std::nullopt, std::nullopt}};
 
-  for (const auto& testCase : testCases) {
-    SCOPED_TRACE(testCase.debugString());
-    encoding->reset();
-    auto result = encoding->seekAtOrAfter(&testCase.seekValue);
-    ASSERT_EQ(result.has_value(), testCase.expected.has_value());
-    if (testCase.expected.has_value()) {
-      EXPECT_EQ(result.value(), testCase.expected.value());
+  for (bool inclusive : {true, false}) {
+    SCOPED_TRACE(fmt::format("inclusive={}", inclusive));
+    for (const auto& testCase : testCases) {
+      SCOPED_TRACE(testCase.debugString());
+      encoding->reset();
+      auto result = encoding->seek(&testCase.seekValue, inclusive);
+      const auto& expectedResult =
+          inclusive ? testCase.expected : testCase.expectedExclusive;
+      ASSERT_EQ(result.has_value(), expectedResult.has_value());
+      if (expectedResult.has_value()) {
+        EXPECT_EQ(result.value(), expectedResult.value());
+      }
     }
   }
 }
@@ -352,7 +382,8 @@ TEST_F(TrivialEncodingTest, seekUnsupportedEncodings) {
         nimble::test::Encoder<nimble::RLEEncoding<std::string_view>>::
             createEncoding(*buffer_, values, makeStringBufferFactory());
     NIMBLE_ASSERT_THROW(
-        encoding->seekAtOrAfter(&seekValue), "seekAtOrAfter is not supported");
+        encoding->seek(&seekValue, /*inclusive=*/true),
+        "seek is not supported");
   }
 
   // Dictionary encoding
@@ -365,7 +396,8 @@ TEST_F(TrivialEncodingTest, seekUnsupportedEncodings) {
         nimble::test::Encoder<nimble::DictionaryEncoding<std::string_view>>::
             createEncoding(*buffer_, values, makeStringBufferFactory());
     NIMBLE_ASSERT_THROW(
-        encoding->seekAtOrAfter(&seekValue), "seekAtOrAfter is not supported");
+        encoding->seek(&seekValue, /*inclusive=*/true),
+        "seek is not supported");
   }
 
   // Constant encoding
@@ -377,7 +409,8 @@ TEST_F(TrivialEncodingTest, seekUnsupportedEncodings) {
         nimble::test::Encoder<nimble::ConstantEncoding<std::string_view>>::
             createEncoding(*buffer_, values, makeStringBufferFactory());
     NIMBLE_ASSERT_THROW(
-        encoding->seekAtOrAfter(&seekValue), "seekAtOrAfter is not supported");
+        encoding->seek(&seekValue, /*inclusive=*/true),
+        "seek is not supported");
   }
 
   // MainlyConstant encoding
@@ -391,7 +424,8 @@ TEST_F(TrivialEncodingTest, seekUnsupportedEncodings) {
         nimble::MainlyConstantEncoding<std::string_view>>::
         createEncoding(*buffer_, values, makeStringBufferFactory());
     NIMBLE_ASSERT_THROW(
-        encoding->seekAtOrAfter(&seekValue), "seekAtOrAfter is not supported");
+        encoding->seek(&seekValue, /*inclusive=*/true),
+        "seek is not supported");
   }
 
   // Nullable encoding
@@ -408,7 +442,8 @@ TEST_F(TrivialEncodingTest, seekUnsupportedEncodings) {
             createNullableEncoding(
                 *buffer_, values, nulls, makeStringBufferFactory());
     NIMBLE_ASSERT_THROW(
-        encoding->seekAtOrAfter(&seekValue), "seekAtOrAfter is not supported");
+        encoding->seek(&seekValue, /*inclusive=*/true),
+        "seek is not supported");
   }
 
   // Trivial encoding for non-string types
@@ -421,8 +456,8 @@ TEST_F(TrivialEncodingTest, seekUnsupportedEncodings) {
             *buffer_, intValues, makeStringBufferFactory());
     int32_t intSeekValue = 1;
     NIMBLE_ASSERT_THROW(
-        encoding->seekAtOrAfter(&intSeekValue),
-        "seekAtOrAfter is not supported");
+        encoding->seek(&intSeekValue, /*inclusive=*/true),
+        "seek is not supported");
   }
 
   // FixedBitWidth encoding (integer only)
@@ -435,8 +470,8 @@ TEST_F(TrivialEncodingTest, seekUnsupportedEncodings) {
             createEncoding(*buffer_, intValues, makeStringBufferFactory());
     uint32_t intSeekValue = 1;
     NIMBLE_ASSERT_THROW(
-        encoding->seekAtOrAfter(&intSeekValue),
-        "seekAtOrAfter is not supported");
+        encoding->seek(&intSeekValue, /*inclusive=*/true),
+        "seek is not supported");
   }
 
   // Varint encoding (integer only)
@@ -449,8 +484,8 @@ TEST_F(TrivialEncodingTest, seekUnsupportedEncodings) {
             *buffer_, intValues, makeStringBufferFactory());
     uint32_t intSeekValue = 1;
     NIMBLE_ASSERT_THROW(
-        encoding->seekAtOrAfter(&intSeekValue),
-        "seekAtOrAfter is not supported");
+        encoding->seek(&intSeekValue, /*inclusive=*/true),
+        "seek is not supported");
   }
 
   // RLE encoding for integers
@@ -464,8 +499,8 @@ TEST_F(TrivialEncodingTest, seekUnsupportedEncodings) {
             *buffer_, intValues, makeStringBufferFactory());
     int32_t intSeekValue = 1;
     NIMBLE_ASSERT_THROW(
-        encoding->seekAtOrAfter(&intSeekValue),
-        "seekAtOrAfter is not supported");
+        encoding->seek(&intSeekValue, /*inclusive=*/true),
+        "seek is not supported");
   }
 
   // SparseBool encoding
@@ -479,7 +514,7 @@ TEST_F(TrivialEncodingTest, seekUnsupportedEncodings) {
             *buffer_, boolValues, makeStringBufferFactory());
     bool boolSeekValue = true;
     NIMBLE_ASSERT_THROW(
-        encoding->seekAtOrAfter(&boolSeekValue),
-        "seekAtOrAfter is not supported");
+        encoding->seek(&boolSeekValue, /*inclusive=*/true),
+        "seek is not supported");
   }
 }

@@ -412,7 +412,7 @@ TEST_F(PrefixEncodingTest, fuzzerMaterialize) {
   }
 }
 
-// Test seekAtOrAfter with exact match and no-match scenarios.
+// Test seek with exact match and no-match scenarios.
 // For each test case, we test seeking at specified positions.
 TEST_F(PrefixEncodingTest, seekExactMatch) {
   struct TestCase {
@@ -463,25 +463,40 @@ TEST_F(PrefixEncodingTest, seekExactMatch) {
     auto encoding =
         EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
-    // Test exact match
-    for (uint32_t pos : testCase.seekPositions) {
-      SCOPED_TRACE(fmt::format("seek position {}", pos));
-      auto result = encoding->seekAtOrAfter(&values[pos]);
-      ASSERT_TRUE(result.has_value());
-      EXPECT_EQ(result.value(), pos);
-    }
+    for (bool inclusive : {true, false}) {
+      SCOPED_TRACE(fmt::format("inclusive={}", inclusive));
 
-    // Test no match (value larger than max)
-    {
-      SCOPED_TRACE("value larger than max");
-      std::string_view largerValue = "zzz_larger_than_all";
-      auto result = encoding->seekAtOrAfter(&largerValue);
-      EXPECT_FALSE(result.has_value());
+      // Test exact match
+      for (uint32_t pos : testCase.seekPositions) {
+        SCOPED_TRACE(fmt::format("seek position {}", pos));
+        auto result = encoding->seek(&values[pos], inclusive);
+        if (inclusive) {
+          ASSERT_TRUE(result.has_value());
+          EXPECT_EQ(result.value(), pos);
+        } else {
+          // inclusive=false: first row > target. For exact match, that's pos+1.
+          // If pos is the last row, result is nullopt.
+          if (pos + 1 < testCase.numValues) {
+            ASSERT_TRUE(result.has_value());
+            EXPECT_EQ(result.value(), pos + 1);
+          } else {
+            EXPECT_FALSE(result.has_value());
+          }
+        }
+      }
+
+      // Test no match (value larger than max)
+      {
+        SCOPED_TRACE("value larger than max");
+        std::string_view largerValue = "zzz_larger_than_all";
+        auto result = encoding->seek(&largerValue, inclusive);
+        EXPECT_FALSE(result.has_value());
+      }
     }
   }
 }
 
-// Test seekAtOrAfter with non-exact match scenarios.
+// Test seek with non-exact match scenarios.
 // Values are generated with gaps (e.g., key_0, key_2, key_4, ...) so we can
 // seek for values that don't exist (e.g., key_1, key_3) and verify we get
 // the next value.
@@ -543,38 +558,43 @@ TEST_F(PrefixEncodingTest, seekNonExactMatch) {
     auto encoding =
         EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
-    // Test non-exact match
+    for (bool inclusive : {true, false}) {
+      SCOPED_TRACE(fmt::format("inclusive={}", inclusive));
 
-    // Test non-exact match: seek for value that doesn't exist (odd keys)
-    // e.g., seek for key_001 should return position of key_002 (index 1)
-    for (uint32_t pos : testCase.seekBeforePositions) {
-      SCOPED_TRACE(fmt::format("seek before position {}", pos));
-      // Create a key that falls between values[pos-1] and values[pos]
-      // values[pos] = key_(pos*2), so we seek for key_(pos*2-1)
-      // Zero-pad to 3 digits to match the value format
-      std::string targetKey = fmt::format("key_{:03d}", pos * 2 - 1);
-      std::string_view target = targetKey;
-      auto result = encoding->seekAtOrAfter(&target);
-      ASSERT_TRUE(result.has_value());
-      // Should return pos since key_(pos*2-1) < key_(pos*2)
-      EXPECT_EQ(result.value(), pos);
-    }
+      // Test non-exact match: seek for value that doesn't exist (odd keys)
+      // e.g., seek for key_001 should return position of key_002 (index 1)
+      // For non-exact matches, inclusive and exclusive give the same result
+      // since the target doesn't exist in the data.
+      for (uint32_t pos : testCase.seekBeforePositions) {
+        SCOPED_TRACE(fmt::format("seek before position {}", pos));
+        // Create a key that falls between values[pos-1] and values[pos]
+        // values[pos] = key_(pos*2), so we seek for key_(pos*2-1)
+        // Zero-pad to 3 digits to match the value format
+        std::string targetKey = fmt::format("key_{:03d}", pos * 2 - 1);
+        std::string_view target = targetKey;
+        auto result = encoding->seek(&target, inclusive);
+        ASSERT_TRUE(result.has_value());
+        // Should return pos since key_(pos*2-1) < key_(pos*2)
+        // Same for both inclusive and exclusive (target not in data).
+        EXPECT_EQ(result.value(), pos);
+      }
 
-    // Test seeking before all values
-    {
-      SCOPED_TRACE("value before all");
-      std::string_view beforeAll = "aaa_before_all";
-      auto result = encoding->seekAtOrAfter(&beforeAll);
-      ASSERT_TRUE(result.has_value());
-      EXPECT_EQ(result.value(), 0);
-    }
+      // Test seeking before all values
+      {
+        SCOPED_TRACE("value before all");
+        std::string_view beforeAll = "aaa_before_all";
+        auto result = encoding->seek(&beforeAll, inclusive);
+        ASSERT_TRUE(result.has_value());
+        EXPECT_EQ(result.value(), 0);
+      }
 
-    // Test no match (value larger than max)
-    {
-      SCOPED_TRACE("value larger than max");
-      std::string_view largerValue = "zzz_larger_than_all";
-      auto result = encoding->seekAtOrAfter(&largerValue);
-      EXPECT_FALSE(result.has_value());
+      // Test no match (value larger than max)
+      {
+        SCOPED_TRACE("value larger than max");
+        std::string_view largerValue = "zzz_larger_than_all";
+        auto result = encoding->seek(&largerValue, inclusive);
+        EXPECT_FALSE(result.has_value());
+      }
     }
   }
 }
@@ -590,12 +610,14 @@ TEST_F(PrefixEncodingTest, seekBeforeAll) {
   auto encoding =
       EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
-  // Seek to value before all entries
   std::string_view target = "apple";
-  auto result = encoding->seekAtOrAfter(&target);
-
-  ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(result.value(), 0); // Should point to first entry
+  for (bool inclusive : {true, false}) {
+    SCOPED_TRACE(fmt::format("inclusive={}", inclusive));
+    encoding->reset();
+    auto result = encoding->seek(&target, inclusive);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), 0);
+  }
 }
 
 TEST_F(PrefixEncodingTest, seekAfterAll) {
@@ -609,11 +631,13 @@ TEST_F(PrefixEncodingTest, seekAfterAll) {
   auto encoding =
       EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
-  // Seek to value after all entries
   std::string_view target = "zucchini";
-  auto result = encoding->seekAtOrAfter(&target);
-
-  EXPECT_FALSE(result.has_value());
+  for (bool inclusive : {true, false}) {
+    SCOPED_TRACE(fmt::format("inclusive={}", inclusive));
+    encoding->reset();
+    auto result = encoding->seek(&target, inclusive);
+    EXPECT_FALSE(result.has_value());
+  }
 }
 
 // Fuzzer-style test with random inputs and random seek targets.
@@ -669,61 +693,64 @@ TEST_F(PrefixEncodingTest, fuzzerSeek) {
     auto encoding =
         EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
-    // Helper: simple linear search
-    auto linearSearch =
-        [&values](std::string_view target) -> std::optional<uint32_t> {
+    // Linear search reference implementation.
+    auto linearSearch = [&values](
+                            std::string_view target,
+                            bool inclusive) -> std::optional<uint32_t> {
       for (size_t i = 0; i < values.size(); ++i) {
-        if (values[i] >= target) {
+        const bool found = inclusive ? values[i] >= target : values[i] > target;
+        if (found) {
           return static_cast<uint32_t>(i);
         }
       }
       return std::nullopt;
     };
 
-    // Perform random seeks
-    for (uint32_t s = 0; s < kSeeksPerIteration; ++s) {
-      // Generate random seek target
-      // Range: 0 to numValues*2+1 to cover before, within, and after all values
-      std::uniform_int_distribution<uint32_t> targetDist(0, numValues * 2 + 1);
-      uint32_t targetIdx = targetDist(rng);
-      // Zero-pad to 3 digits to match the value format
-      std::string targetKey = fmt::format("key_{:03d}", targetIdx);
-      std::string_view target = targetKey;
+    for (bool inclusive : {true, false}) {
+      SCOPED_TRACE(fmt::format("inclusive={}", inclusive));
 
-      auto expected = linearSearch(target);
-      auto actual = encoding->seekAtOrAfter(&target);
+      // Perform random seeks.
+      for (uint32_t s = 0; s < kSeeksPerIteration; ++s) {
+        std::uniform_int_distribution<uint32_t> targetDist(
+            0, numValues * 2 + 1);
+        uint32_t targetIdx = targetDist(rng);
+        std::string targetKey = fmt::format("key_{:03d}", targetIdx);
+        std::string_view target = targetKey;
 
-      if (expected.has_value()) {
-        ASSERT_TRUE(actual.has_value())
-            << "Expected position " << expected.value() << " for target "
-            << targetKey;
-        EXPECT_EQ(actual.value(), expected.value())
-            << "Mismatch for target " << targetKey;
-      } else {
-        EXPECT_FALSE(actual.has_value())
-            << "Expected nullopt for target " << targetKey << " but got "
-            << actual.value();
+        auto expected = linearSearch(target, inclusive);
+        auto actual = encoding->seek(&target, inclusive);
+
+        if (expected.has_value()) {
+          ASSERT_TRUE(actual.has_value())
+              << "Expected position " << expected.value() << " for target "
+              << targetKey;
+          EXPECT_EQ(actual.value(), expected.value())
+              << "Mismatch for target " << targetKey;
+        } else {
+          EXPECT_FALSE(actual.has_value())
+              << "Expected nullopt for target " << targetKey << " but got "
+              << actual.value();
+        }
       }
-    }
 
-    // Also test edge cases for this iteration
-    // 1. Value before all
-    {
-      std::string_view beforeAll = "aaa_before";
-      auto expected = linearSearch(beforeAll);
-      auto actual = encoding->seekAtOrAfter(&beforeAll);
-      ASSERT_TRUE(expected.has_value());
-      ASSERT_TRUE(actual.has_value());
-      EXPECT_EQ(actual.value(), expected.value());
-    }
+      // Edge case: value before all.
+      {
+        std::string_view beforeAll = "aaa_before";
+        auto expected = linearSearch(beforeAll, inclusive);
+        auto actual = encoding->seek(&beforeAll, inclusive);
+        ASSERT_TRUE(expected.has_value());
+        ASSERT_TRUE(actual.has_value());
+        EXPECT_EQ(actual.value(), expected.value());
+      }
 
-    // 2. Value after all
-    {
-      std::string_view afterAll = "zzz_after";
-      auto expected = linearSearch(afterAll);
-      auto actual = encoding->seekAtOrAfter(&afterAll);
-      EXPECT_FALSE(expected.has_value());
-      EXPECT_FALSE(actual.has_value());
+      // Edge case: value after all.
+      {
+        std::string_view afterAll = "zzz_after";
+        auto expected = linearSearch(afterAll, inclusive);
+        auto actual = encoding->seek(&afterAll, inclusive);
+        EXPECT_FALSE(expected.has_value());
+        EXPECT_FALSE(actual.has_value());
+      }
     }
   }
 }
@@ -1157,7 +1184,7 @@ TEST_F(PrefixEncodingTest, fuzzerEncode) {
   }
 }
 
-// Test seekAtOrAfter with duplicate keys that span across restart intervals.
+// Test seek with duplicate keys that span across restart intervals.
 // This specifically tests the fix where seeking for a key that matches
 // a restart point value should return the earliest occurrence, which may be
 // in the previous restart interval.
@@ -1170,6 +1197,9 @@ TEST_F(PrefixEncodingTest, seekExactMatchWithDuplicatesAcrossRestarts) {
     std::vector<std::string> values;
     std::string seekKey;
     uint32_t expectedPosition;
+    // Expected position for inclusive=false (first row > seekKey).
+    // nullopt means no such row exists.
+    std::optional<uint32_t> expectedExclusivePosition;
   };
 
   const std::vector<TestCase> testCases = {
@@ -1195,7 +1225,8 @@ TEST_F(PrefixEncodingTest, seekExactMatchWithDuplicatesAcrossRestarts) {
          return v;
        }(),
        "key_16",
-       14},
+       14,
+       18},
 
       // Duplicate key at restart point with more duplicates before
       // Restart point at index 32, duplicates at indices 28-35
@@ -1216,7 +1247,8 @@ TEST_F(PrefixEncodingTest, seekExactMatchWithDuplicatesAcrossRestarts) {
          return v;
        }(),
        "key_32",
-       28},
+       28,
+       36},
 
       // Single duplicate before restart point
       {"single duplicate before restart point",
@@ -1235,7 +1267,8 @@ TEST_F(PrefixEncodingTest, seekExactMatchWithDuplicatesAcrossRestarts) {
          return v;
        }(),
        "key_16",
-       15},
+       15,
+       17},
 
       // Duplicates spanning multiple restart intervals
       // Restart points at 16, 32; duplicates from index 14 to 34
@@ -1256,7 +1289,8 @@ TEST_F(PrefixEncodingTest, seekExactMatchWithDuplicatesAcrossRestarts) {
          return v;
        }(),
        "key_dup",
-       14},
+       14,
+       std::nullopt},
 
       // Duplicates at restart point but none before (should still work)
       {"duplicates at restart point only",
@@ -1276,7 +1310,8 @@ TEST_F(PrefixEncodingTest, seekExactMatchWithDuplicatesAcrossRestarts) {
          return v;
        }(),
        "key_20",
-       16},
+       16,
+       21},
 
       // All same values (extreme case)
       {"all same values",
@@ -1289,7 +1324,8 @@ TEST_F(PrefixEncodingTest, seekExactMatchWithDuplicatesAcrossRestarts) {
          return v;
        }(),
        "same_key",
-       0},
+       0,
+       std::nullopt},
   };
 
   for (const auto& testCase : testCases) {
@@ -1308,24 +1344,57 @@ TEST_F(PrefixEncodingTest, seekExactMatchWithDuplicatesAcrossRestarts) {
     auto encoding =
         EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
 
-    std::string_view seekKey = testCase.seekKey;
-    auto result = encoding->seekAtOrAfter(&seekKey);
-    ASSERT_TRUE(result.has_value())
-        << "Expected to find key: " << testCase.seekKey;
-    EXPECT_EQ(result.value(), testCase.expectedPosition)
-        << "Expected position " << testCase.expectedPosition << " for key "
-        << testCase.seekKey << " but got " << result.value();
+    for (bool inclusive : {true, false}) {
+      SCOPED_TRACE(fmt::format("inclusive={}", inclusive));
 
-    // Also verify that the value at the returned position matches
-    encoding->reset();
-    if (result.value() > 0) {
-      encoding->skip(result.value());
+      std::string_view seekKey = testCase.seekKey;
+      auto result = encoding->seek(&seekKey, inclusive);
+
+      if (inclusive) {
+        ASSERT_TRUE(result.has_value())
+            << "Expected to find key: " << testCase.seekKey;
+        EXPECT_EQ(result.value(), testCase.expectedPosition)
+            << "Expected position " << testCase.expectedPosition << " for key "
+            << testCase.seekKey << " but got " << result.value();
+
+        // Also verify that the value at the returned position matches
+        encoding->reset();
+        if (result.value() > 0) {
+          encoding->skip(result.value());
+        }
+        std::string_view decoded;
+        encoding->materialize(1, &decoded);
+        EXPECT_EQ(decoded, testCase.seekKey)
+            << "Value at position " << result.value() << " should be "
+            << testCase.seekKey;
+      } else {
+        if (testCase.expectedExclusivePosition.has_value()) {
+          ASSERT_TRUE(result.has_value())
+              << "Expected to find position "
+              << testCase.expectedExclusivePosition.value() << " for key "
+              << testCase.seekKey;
+          EXPECT_EQ(result.value(), testCase.expectedExclusivePosition.value())
+              << "Expected exclusive position "
+              << testCase.expectedExclusivePosition.value() << " for key "
+              << testCase.seekKey << " but got " << result.value();
+
+          // Verify the value at returned position is strictly greater
+          encoding->reset();
+          if (result.value() > 0) {
+            encoding->skip(result.value());
+          }
+          std::string_view decoded;
+          encoding->materialize(1, &decoded);
+          EXPECT_GT(decoded, testCase.seekKey)
+              << "Value at position " << result.value() << " should be > "
+              << testCase.seekKey;
+        } else {
+          EXPECT_FALSE(result.has_value())
+              << "Expected nullopt for exclusive seek of key "
+              << testCase.seekKey << " but got " << result.value();
+        }
+      }
     }
-    std::string_view decoded;
-    encoding->materialize(1, &decoded);
-    EXPECT_EQ(decoded, testCase.seekKey)
-        << "Value at position " << result.value() << " should be "
-        << testCase.seekKey;
   }
 }
 } // namespace facebook::nimble::test
