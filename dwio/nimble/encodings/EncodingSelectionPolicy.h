@@ -102,6 +102,11 @@ using EncodingSelectionPolicyFactory =
 
 struct CompressionOptions {
   float compressionAcceptRatio = 0.98f;
+#ifndef DISABLE_META_INTERNAL_COMPRESSOR
+  CompressionType compressionType = CompressionType::MetaInternal;
+#else
+  CompressionType compressionType = CompressionType::Zstd;
+#endif
   uint64_t zstdMinCompressionSize = kZstdMinCompressionSize;
   uint32_t zstdCompressionLevel = 3;
   uint64_t internalMinCompressionSize = kMetaInternalMinCompressionSize;
@@ -212,7 +217,14 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
           : compressionOptions_{std::move(compressionOptions)} {}
 
       CompressionInformation compression() const override {
-#ifndef DISABLE_META_INTERNAL_COMPRESSOR
+        if (compressionOptions_.compressionType == CompressionType::Zstd) {
+          CompressionInformation information{
+              .compressionType = CompressionType::Zstd,
+              .minCompressionSize = compressionOptions_.zstdMinCompressionSize};
+          information.parameters.zstd.compressionLevel =
+              compressionOptions_.zstdCompressionLevel;
+          return information;
+        }
         CompressionInformation information{
             .compressionType = CompressionType::MetaInternal,
             .minCompressionSize =
@@ -226,14 +238,6 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
         information.parameters.metaInternal.compressionKey =
             compressionOptions_.metaInternalCompressionKey;
         return information;
-#else
-        CompressionInformation information{
-            .compressionType = CompressionType::Zstd,
-            .minCompressionSize = compressionOptions_.zstdMinCompressionSize};
-        information.parameters.zstd.compressionLevel =
-            compressionOptions_.zstdCompressionLevel;
-        return information;
-#endif
       }
 
       virtual bool shouldAccept(

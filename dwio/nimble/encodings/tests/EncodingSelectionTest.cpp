@@ -1390,3 +1390,108 @@ TEST(ReplayedEncodingSelectionPolicyTest, nestedEncodingCompressionType) {
     EXPECT_EQ(decoded, data);
   }
 }
+
+TEST(ManualEncodingSelectionPolicyTest, defaultCompressionType) {
+  // Verify that default CompressionOptions uses the compile-time default
+  // compression type.
+  std::vector<uint32_t> data(1000, 42);
+
+  auto policy =
+      std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
+          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          nimble::CompressionOptions{},
+          std::nullopt);
+  auto result =
+      policy->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto compressionPolicy = result.compressionPolicyFactory();
+  auto info = compressionPolicy->compression();
+
+#ifndef DISABLE_META_INTERNAL_COMPRESSOR
+  EXPECT_EQ(info.compressionType, nimble::CompressionType::MetaInternal);
+#else
+  EXPECT_EQ(info.compressionType, nimble::CompressionType::Zstd);
+#endif
+}
+
+TEST(ManualEncodingSelectionPolicyTest, explicitZstdCompressionType) {
+  // Verify that explicitly setting compressionType to Zstd overrides the
+  // compile-time default.
+  std::vector<uint32_t> data(1000, 42);
+
+  nimble::CompressionOptions options{
+      .compressionType = nimble::CompressionType::Zstd,
+  };
+  auto policy =
+      std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
+          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          options,
+          std::nullopt);
+  auto result =
+      policy->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto compressionPolicy = result.compressionPolicyFactory();
+  auto info = compressionPolicy->compression();
+
+  EXPECT_EQ(info.compressionType, nimble::CompressionType::Zstd);
+  EXPECT_EQ(
+      info.parameters.zstd.compressionLevel, options.zstdCompressionLevel);
+}
+
+TEST(ManualEncodingSelectionPolicyTest, explicitMetaInternalCompressionType) {
+  // Verify that explicitly setting compressionType to MetaInternal overrides
+  // the compile-time default.
+  std::vector<uint32_t> data(1000, 42);
+
+  nimble::CompressionOptions options{
+      .compressionType = nimble::CompressionType::MetaInternal,
+      .internalCompressionLevel = 7,
+      .internalDecompressionLevel = 3,
+  };
+  auto policy =
+      std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
+          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          options,
+          std::nullopt);
+  auto result =
+      policy->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto compressionPolicy = result.compressionPolicyFactory();
+  auto info = compressionPolicy->compression();
+
+  EXPECT_EQ(info.compressionType, nimble::CompressionType::MetaInternal);
+  EXPECT_EQ(
+      info.parameters.metaInternal.compressionLevel,
+      options.internalCompressionLevel);
+  EXPECT_EQ(
+      info.parameters.metaInternal.decompressionLevel,
+      options.internalDecompressionLevel);
+}
+
+TEST(ManualEncodingSelectionPolicyTest, compressionTypeRoundTrip) {
+  // Verify that data encoded with an explicit compression type can be
+  // decoded correctly.
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Buffer buffer(*pool);
+
+  std::vector<uint32_t> data(1000, 42);
+
+  nimble::CompressionOptions options{
+      .compressionType = nimble::CompressionType::Zstd,
+  };
+  auto policy =
+      std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
+          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          options,
+          std::nullopt);
+
+  auto encoded = nimble::EncodingFactory::encode<uint32_t>(
+      std::move(policy), std::span<const uint32_t>(data), buffer);
+
+  auto encoding = nimble::EncodingFactory().create(
+      *pool, encoded, [&](uint32_t totalLength) -> void* {
+        return pool->allocate(totalLength);
+      });
+  EXPECT_EQ(encoding->rowCount(), data.size());
+
+  std::vector<uint32_t> decoded(data.size());
+  encoding->materialize(static_cast<uint32_t>(data.size()), decoded.data());
+  EXPECT_EQ(decoded, data);
+}
