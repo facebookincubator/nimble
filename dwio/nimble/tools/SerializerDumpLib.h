@@ -42,6 +42,8 @@ class SerializationDump {
     EncodingType encodingType{};
     /// Data type of the elements in this stream.
     DataType dataType{};
+    /// Compression type applied to this stream's encoded data.
+    CompressionType compressionType{CompressionType::Uncompressed};
     /// Number of rows (elements) in this stream.
     uint32_t rowCount{0};
     /// Uncompressed size in bytes (rowCount * element size).
