@@ -2989,6 +2989,110 @@ TEST_F(SerializationTest, tabletRawDeserialization) {
   }
 }
 
+// Verifies that the Deserializer constructed with
+// shareZstdDecompressionContext=true successfully round-trips a kTabletRaw
+// stream containing zstd-compressed chunks. Exercises the shared ZSTD_DCtx
+// path through StreamDataReader and StreamData.
+TEST_F(SerializationTest, shareZstdDecompressionContextRoundTrip) {
+  auto rowType = velox::ROW(
+      {{"col_a", velox::INTEGER()},
+       {"col_b", velox::BIGINT()},
+       {"col_c", velox::VARCHAR()}});
+
+  const int numRows = 100;
+  velox::VectorFuzzer fuzzer(
+      {.vectorSize = static_cast<size_t>(numRows),
+       .nullRatio = 0,
+       .stringLength = 20,
+       .stringVariableLength = true},
+      pool_.get());
+  auto input = fuzzer.fuzzInputRow(rowType);
+
+  auto tabletRaw =
+      serializeTabletRaw(rowType, {input}, /*enableChunking=*/true);
+
+  nimble::Deserializer deserializer(
+      tabletRaw.schema,
+      pool_.get(),
+      DeserializerOptions{
+          .hasHeader = true,
+          .shareZstdDecompressionContext = true,
+      });
+
+  velox::VectorPtr deserialized;
+  for (const auto& assembled : tabletRaw.serialized) {
+    velox::VectorPtr stripeOutput;
+    deserializer.deserialize(std::string_view(assembled), stripeOutput);
+    ASSERT_NE(stripeOutput, nullptr);
+
+    if (deserialized == nullptr) {
+      deserialized = stripeOutput;
+    } else {
+      auto oldSize = deserialized->size();
+      deserialized->resize(oldSize + stripeOutput->size());
+      deserialized->copy(stripeOutput.get(), oldSize, 0, stripeOutput->size());
+    }
+  }
+
+  ASSERT_NE(deserialized, nullptr);
+  ASSERT_EQ(deserialized->size(), numRows);
+
+  for (velox::vector_size_t i = 0; i < numRows; ++i) {
+    ASSERT_TRUE(input->equalValueAt(deserialized.get(), i, i))
+        << "Mismatch at row " << i << "\nExpected: " << input->toString(i)
+        << "\nActual: " << deserialized->toString(i);
+  }
+}
+
+// shareZstdDecompressionContext is incompatible with parallel decoding
+// because a single ZSTD_DCtx is not safe to use concurrently. The
+// Deserializer constructor must reject the combination.
+TEST_F(SerializationTest, shareZstdDecompressionContextRejectsDecodeExecutor) {
+  auto rowType = velox::ROW({{"col_a", velox::INTEGER()}});
+  auto tabletRaw = serializeTabletRaw(
+      rowType,
+      {velox::VectorFuzzer({.vectorSize = 4}, pool_.get())
+           .fuzzInputRow(rowType)},
+      /*enableChunking=*/true);
+
+  folly::CPUThreadPoolExecutor executor(1);
+  NIMBLE_ASSERT_USER_THROW(
+      nimble::Deserializer(
+          tabletRaw.schema,
+          pool_.get(),
+          DeserializerOptions{
+              .hasHeader = true,
+              .decodeExecutor = &executor,
+              .maxDecodeParallelism = 2,
+              .shareZstdDecompressionContext = true,
+          }),
+      "shareZstdDecompressionContext is mutually exclusive");
+}
+
+TEST_F(
+    SerializationTest,
+    shareZstdDecompressionContextRejectsMaxDecodeParallelism) {
+  auto rowType = velox::ROW({{"col_a", velox::INTEGER()}});
+  auto tabletRaw = serializeTabletRaw(
+      rowType,
+      {velox::VectorFuzzer({.vectorSize = 4}, pool_.get())
+           .fuzzInputRow(rowType)},
+      /*enableChunking=*/true);
+
+  // decodeExecutor is null but maxDecodeParallelism alone still triggers
+  // rejection.
+  NIMBLE_ASSERT_USER_THROW(
+      nimble::Deserializer(
+          tabletRaw.schema,
+          pool_.get(),
+          DeserializerOptions{
+              .hasHeader = true,
+              .maxDecodeParallelism = 2,
+              .shareZstdDecompressionContext = true,
+          }),
+      "shareZstdDecompressionContext is mutually exclusive");
+}
+
 TEST_P(SerializationTest, flatMapDeserializeWithFlatMapSchema) {
   // Verifies that FlatMap-encoded data round-trips correctly when deserialized
   // with the FlatMap schema from the serializer (no projection).

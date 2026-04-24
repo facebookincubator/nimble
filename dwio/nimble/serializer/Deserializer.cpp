@@ -92,9 +92,11 @@ class DeserializerImpl : public Decoder {
       const Type* type,
       bool inMapStream,
       bool enableBufferPool,
-      velox::memory::MemoryPool* pool)
+      velox::memory::MemoryPool* pool,
+      ZSTD_DCtx* dctx)
       : type_{type},
         pool_{pool},
+        dctx_{dctx},
         inMapStream_{inMapStream},
         scalarKind_{getScalarKindForType(*type)},
         typeStorageWidth_{getTypeStorageWidth(*type)},
@@ -212,7 +214,7 @@ class DeserializerImpl : public Decoder {
         .bufferPool = bufferPool_.get(),
     };
     streamData_.emplace(
-        scalarKind_, segment.data, stringBuffers, pool_, options);
+        scalarKind_, segment.data, stringBuffers, pool_, options, dctx_);
     return *streamData_;
   }
 
@@ -537,6 +539,7 @@ class DeserializerImpl : public Decoder {
   // --- Const members (set at construction, never modified) ---
   const Type* const type_;
   velox::memory::MemoryPool* const pool_;
+  ZSTD_DCtx* const dctx_;
   // True for inMap streams (fills with 'false' when missing), false for nulls
   // streams (fills with 'true' when missing).
   const bool inMapStream_;
@@ -656,6 +659,17 @@ Deserializer::Deserializer(
     velox::memory::MemoryPool* pool,
     DeserializerOptions options)
     : schema_{std::move(schema)}, pool_{pool}, options_{std::move(options)} {
+  NIMBLE_USER_CHECK(
+      !(options_.shareZstdDecompressionContext &&
+        (options_.decodeExecutor != nullptr ||
+         options_.maxDecodeParallelism != 0)),
+      "shareZstdDecompressionContext is mutually exclusive with parallel "
+      "decoding (decodeExecutor and maxDecodeParallelism); a single "
+      "ZSTD_DCtx is not safe to use concurrently");
+  if (options_.shareZstdDecompressionContext) {
+    dctx_.reset(ZSTD_createDCtx());
+  }
+
   const auto params = createFieldReaderParams();
 
   std::shared_ptr<const velox::dwio::common::TypeWithId> schemaWithId =
@@ -693,7 +707,8 @@ void Deserializer::createDeserializersForType(
           &type,
           /*inMapStream=*/false,
           options_.enableBufferPool,
-          pool_);
+          pool_,
+          dctx_.get());
   // FlatMap is only supported at depth 1 (top-level columns). FlatMap keys can
   // vary across batches, causing gaps in nulls/inMap streams. Gap detection is
   // enabled in DeserializerImpl whenever type->isFlatMap().
@@ -707,7 +722,8 @@ void Deserializer::createDeserializersForType(
           &type,
           /*inMapStream=*/true,
           options_.enableBufferPool,
-          pool_);
+          pool_,
+          dctx_.get());
       inMapChildTypes_[inMapOffset] = flatMap.childAt(i).get();
     }
   }
@@ -732,7 +748,7 @@ void Deserializer::deserialize(
   // Iterate batches and add stream data with row offsets. Streams missing from
   // a batch will have gaps that are filled later during reading.
   uint32_t rowOffset{0};
-  serde::StreamDataReader reader{pool_, options_};
+  serde::StreamDataReader reader{pool_, options_, dctx_.get()};
   for (auto sv : data) {
     const auto batchRows = reader.initialize(sv);
     const auto version = reader.version();
