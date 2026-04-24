@@ -21,7 +21,6 @@
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/tablet/Chunk.h"
 #include "dwio/nimble/tablet/ChunkIndexWriter.h"
-#include "dwio/nimble/tablet/ClusterIndexWriter.h"
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
@@ -30,29 +29,11 @@
 
 namespace facebook::nimble {
 
-/// Represents a chunk in a key stream with key boundaries.
-/// Used to enable efficient range-based lookups during reads.
-struct KeyChunk : public Chunk {
-  /// First key value in this chunk.
-  std::string_view firstKey;
-  /// Last key value in this chunk.
-  std::string_view lastKey;
-};
-
-/// KeyStream holds key chunks for efficient range lookups in indexed data.
-/// Unlike Stream, KeyStream is a standalone struct since it uses KeyChunk
-/// instead of Chunk and doesn't need offset tracking.
-struct KeyStream {
-  std::vector<KeyChunk> chunks;
-};
-
 /// Represents a stream of chunks with a file offset.
 struct Stream {
   uint32_t offset{0};
   std::vector<Chunk> chunks;
 };
-
-struct ClusterIndexConfig;
 
 class LayoutPlanner {
  public:
@@ -67,6 +48,20 @@ constexpr uint32_t kMetadataCompressionThreshold = 64 * 1024; // 64kB
 /// Writes a new nimble file.
 class TabletWriter {
  public:
+  /// Called AFTER stripe group and chunk index metadata are written.
+  /// Writes partition data (key stream + metadata) aligned with stripe groups.
+  using StripeGroupFlushCallback = std::function<void(
+      size_t stripeCount,
+      const WriteDataFn& writeData,
+      const CreateMetadataSectionFn& createMetadataSection)>;
+
+  /// Called during close() after all stripe groups have been flushed,
+  /// before the chunk index root and footer are written. Used by index
+  /// writers to finalize and write the root index as an optional section.
+  using CloseCallback = std::function<void(
+      const WriteOptionalSectionFn& writeOptionalSection,
+      const CreateMetadataSectionFn& createMetadataSection)>;
+
   struct Options {
     std::unique_ptr<LayoutPlanner> layoutPlanner{nullptr};
     uint32_t metadataFlushThreshold{kMetadataFlushThreshold};
@@ -74,16 +69,17 @@ class TabletWriter {
     ChecksumType checksumType{ChecksumType::XXH3_64};
     bool streamDeduplicationEnabled{true};
     // When true, chunk-level position index is built for all streams,
-    // enabling O(1) chunk-level seeking within stripes. Independent of
-    // the cluster index (indexConfig). When indexConfig is set, chunk
-    // index is always enabled regardless of this flag.
+    // enabling O(1) chunk-level seeking within stripes.
     bool enableChunkIndex{false};
     // Skip writing chunk index for a stripe group if the average number
     // of chunks per stream is below this threshold. 0 disables chunk index
     // skipping.
     float chunkIndexMinAvgChunks{2};
-    /// Configuration for cluster index.
-    std::optional<ClusterIndexConfig> indexConfig;
+    // Callback invoked at stripe group flush boundaries. Used by index
+    // writers (e.g., ClusterIndexWriter) to write partition data aligned
+    // with stripe groups.
+    StripeGroupFlushCallback stripeGroupFlushCallback;
+    CloseCallback closeCallback;
   };
 
   static std::unique_ptr<TabletWriter> create(
@@ -107,17 +103,22 @@ class TabletWriter {
   // level or other params.
   //
   // A stream's type must be the same across all stripes.
-  void writeStripe(
-      uint32_t rowCount,
-      std::vector<Stream> streams,
-      std::optional<KeyStream>&& keyStream = std::nullopt);
+  void writeStripe(uint32_t rowCount, std::vector<Stream> streams);
 
   // TODO: with low memory budget, we might want to have a version of this for
   // a vector of content to be concatenated. Right now the Buffer class prevents
   // us from draining its content incrementally.
+  void invokeCloseCallback();
+  void invokeStripeGroupFlushCallback(size_t stripeCount);
+
   void writeOptionalSection(std::string name, std::string_view content);
 
-  // The number of bytes written so far.
+  /// Writes metadata to the file and returns a MetadataSection describing
+  /// its location. Used by index writers to store sub-index entries as
+  /// separate sections.
+  MetadataSection createMetadataSection(std::string_view metadata);
+
+  /// The number of bytes written so far.
   uint64_t size() const {
     return file_->size();
   }
@@ -136,11 +137,6 @@ class TabletWriter {
 
   bool hasChunkIndex() const {
     return chunkIndexWriter_ != nullptr;
-  }
-
-  // Whether cluster index (key stream + value index) is enabled.
-  bool hasClusterIndex() const {
-    return clusterIndexWriter_ != nullptr;
   }
 
   // Checks that writer is not closed and throws if it is.
@@ -163,9 +159,6 @@ class TabletWriter {
   // Write stripes metadata section
   MetadataSection writeStripes(size_t stripeCount);
 
-  // Create metadata section in the file
-  MetadataSection createMetadataSection(std::string_view metadata);
-
   static flatbuffers::Offset<serialization::OptionalMetadataSections>
   createOptionalMetadataSection(
       flatbuffers::FlatBufferBuilder& builder,
@@ -175,36 +168,28 @@ class TabletWriter {
   void writeWithChecksum(std::string_view data);
   void writeWithChecksum(const folly::IOBuf& buf);
 
-  template <typename T>
-  void writeStreamWithChecksum(const T& stream);
+  void writeStreamWithChecksum(const Stream& stream);
 
-  // Indexing related methods
-  // Starts index writing for a new stripe.
-  void startStripeIndexWrite(
-      size_t streamCount,
-      const std::optional<KeyStream>& keyStream);
-
-  // Writes key stream to file via index writer if indexing is enabled.
-  void writeKeyStream(const std::optional<KeyStream>& keyStream);
+  // Starts chunk index writing for a new stripe.
+  void finishStripeChunkIndex(size_t streamCount);
 
   // Adds chunk-level index data for a stream.
-  void addStreamIndex(uint32_t streamIndex, const std::vector<Chunk>& chunks);
+  void addStreamChunkIndex(
+      uint32_t streamIndex,
+      const std::vector<Chunk>& chunks);
 
-  // Writes the index group for a completed stripe group.
-  void writeIndexGroup(size_t streamCount, size_t stripeCount);
+  // Writes the chunk index group for a completed stripe group.
+  void writeChunkIndexGroup(size_t streamCount, size_t stripeCount);
 
-  // Writes the root index. This is the last call to clusterIndexWriter_.
-  void writeRootIndex();
+  // Writes the chunk index root.
+  void writeChunkIndexRoot();
 
   velox::WriteFile* const file_;
   velox::memory::MemoryPool* const pool_;
   const Options options_;
   const std::unique_ptr<Checksum> checksum_;
-  // Chunk-level position index (standalone or shared with cluster index).
+  // Chunk-level position index.
   const std::unique_ptr<ChunkIndexWriter> chunkIndexWriter_;
-  // Cluster index writer (key stream + value index). References
-  // chunkIndexWriter_ when both are present.
-  const std::unique_ptr<ClusterIndexWriter> clusterIndexWriter_;
 
   // Number of rows in each stripe.
   std::vector<uint32_t> stripeRowCounts_;

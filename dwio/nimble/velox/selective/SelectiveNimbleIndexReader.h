@@ -22,7 +22,6 @@
 
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/index/ClusterIndex.h"
-#include "dwio/nimble/index/ClusterIndexReader.h"
 #include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
@@ -74,6 +73,8 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
   // Multiple requests may reference the same segment (when they share row
   // ranges).
   struct ReadSegment {
+    // Stripe-relative row range to read. Reset per stripe in
+    // buildStripeReadSegments().
     RowRange rowRange;
     // Request indices that reference this segment.
     std::vector<velox::vector_size_t> requestIndices;
@@ -86,10 +87,16 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
     // Number of stripes still pending for this request.
     int32_t pendingStripes{0};
 
-    // Row range for this request within the current stripe.
+    // File-level row range from the batch lookup. Set once in
+    // resolveRequestStripes().
     RowRange rowRange;
 
+    // Stripe-relative row range for output assembly. Set per stripe in
+    // prepareStripeReading(). May be truncated by maxRowsPerRequest.
+    RowRange stripeRowRange;
+
     velox::vector_size_t outputRows{0};
+
     struct OutputReference {
       size_t chunkIndex{};
       RowRange rowRange;
@@ -124,8 +131,30 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
     void dropRef();
   };
 
-  // Initializes stripe row offsets for efficient row range calculations.
-  void initReadRange();
+  velox::vector_size_t stripeRowOffset(uint32_t stripe) const {
+    return static_cast<velox::vector_size_t>(
+        readerBase_->tablet().stripeStartRow(stripe));
+  }
+
+  velox::vector_size_t stripeRowCount(uint32_t stripe) const {
+    return static_cast<velox::vector_size_t>(
+        readerBase_->tablet().stripeRowCount(stripe));
+  }
+
+  // Computes the stripe-relative row range by intersecting the file-level
+  // rowRangeLimit with the stripe boundaries.
+  RowRange stripeRowRange(uint32_t stripe, const RowRange& rowRangeLimit)
+      const {
+    const auto stripeStart = stripeRowOffset(stripe);
+    const auto stripeEnd =
+        stripeStart + static_cast<velox::vector_size_t>(stripeRowCount(stripe));
+    const auto startRow = std::max(rowRangeLimit.startRow, stripeStart);
+    const auto endRow = std::min(rowRangeLimit.endRow, stripeEnd);
+    if (startRow >= endRow) {
+      return RowRange{};
+    }
+    return RowRange(startRow - stripeStart, endRow - stripeStart);
+  }
 
   // Encodes raw index bounds into Nimble-specific encoded key format.
   // @param indexBounds The index bounds to encode.
@@ -135,7 +164,7 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
 
   // Maps each request to the stripes it needs to read from by performing
   // index lookups for all encoded key bounds.
-  void mapRequestsToStripes();
+  void resolveRequestStripes();
 
   // Loads the current stripe if not already loaded.
   // @return True if a stripe was loaded, false if no more stripes.
@@ -165,15 +194,7 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
 
   // Loads a stripe and performs index lookup to determine row ranges.
   // @param stripeIndex The index of the stripe to load.
-  void loadStripeWithIndex(uint32_t stripeIndex);
-
-  // Looks up row ranges for each request within a specific stripe.
-  // @param stripeIndex The stripe to look up.
-  // @param keyBounds The encoded key bounds for each request.
-  // @return Vector of row ranges, one per request.
-  std::vector<RowRange> lookupRowRanges(
-      uint32_t stripeIndex,
-      const std::vector<velox::serializer::EncodedKeyBounds>& keyBounds);
+  void initStripeColumnReader(uint32_t stripeIndex);
 
   // Prepares the column reader for reading the current segment by seeking to
   // the segment's start row. Does nothing if readSegmentIndex_ is out of
@@ -264,11 +285,9 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
   const std::vector<std::string> indexColumns_;
 
   StripeStreams streams_;
-  std::vector<int64_t> stripeRowOffsets_;
   int32_t numStripes_{0};
 
   std::unique_ptr<velox::serializer::KeyEncoder> keyEncoder_;
-  std::unique_ptr<index::ClusterIndexReader> indexReader_;
 
   std::unique_ptr<velox::dwio::common::SelectiveColumnReader> columnReader_;
   velox::dwio::common::ColumnReaderStatistics columnReaderStatistics_;

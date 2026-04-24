@@ -16,8 +16,6 @@
 
 #include "dwio/nimble/tablet/TabletWriter.h"
 
-#include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/tablet/ClusterIndexGenerated.h"
 #include "dwio/nimble/tablet/Compression.h"
 #include "dwio/nimble/tablet/Constants.h"
 
@@ -40,13 +38,10 @@ TabletWriter::TabletWriter(
       options_(std::move(options)),
       checksum_{ChecksumFactory::create(options_.checksumType)},
       chunkIndexWriter_{
-          (options_.enableChunkIndex || options_.indexConfig.has_value())
-              ? std::make_unique<ChunkIndexWriter>(
-                    pool,
-                    options_.chunkIndexMinAvgChunks)
-              : nullptr},
-      clusterIndexWriter_{
-          ClusterIndexWriter::create(options_.indexConfig, pool)} {}
+          options_.enableChunkIndex ? std::make_unique<ChunkIndexWriter>(
+                                          pool,
+                                          options_.chunkIndexMinAvgChunks)
+                                    : nullptr} {}
 
 namespace {
 template <typename Source, typename Target = Source>
@@ -189,11 +184,13 @@ void TabletWriter::close() {
           stripeCount == stripeGroupIndices_.size(),
       "Stripe count mismatch.");
 
-  // write remaining stripe groups
+  // Write remaining stripe groups.
   tryWriteStripeGroup(true);
 
-  // write key index
-  writeRootIndex();
+  invokeCloseCallback();
+
+  // Write chunk index root.
+  writeChunkIndexRoot();
 
   // write stripes
   MetadataSection stripes = writeStripes(stripeCount);
@@ -255,10 +252,7 @@ void TabletWriter::close() {
   state_ = State::kClosed;
 }
 
-void TabletWriter::writeStripe(
-    uint32_t rowCount,
-    std::vector<Stream> streams,
-    std::optional<KeyStream>&& keyStream) {
+void TabletWriter::writeStripe(uint32_t rowCount, std::vector<Stream> streams) {
   checkNotClosed();
   if (UNLIKELY(rowCount == 0)) {
     return;
@@ -280,7 +274,7 @@ void TabletWriter::writeStripe(
   auto& stripeStreamOffsets = streamOffsets_.emplace_back(streamCount, 0);
   auto& stripeStreamSizes = streamSizes_.emplace_back(streamCount, 0);
 
-  startStripeIndexWrite(streamCount, keyStream);
+  finishStripeChunkIndex(streamCount);
 
   if (options_.layoutPlanner != nullptr) {
     streams = options_.layoutPlanner->getLayout(std::move(streams));
@@ -319,7 +313,7 @@ void TabletWriter::writeStripe(
             static_cast<uint32_t>(file_->size() - stripeOffsets_.back());
 
         writeStreamWithChecksum(stream);
-        addStreamIndex(stream.offset, stream.chunks);
+        addStreamChunkIndex(stream.offset, stream.chunks);
 
         NIMBLE_DCHECK_LT(
             file_->size() -
@@ -340,7 +334,7 @@ void TabletWriter::writeStripe(
         stripeStreamOffsets[index] = it.first->second.first;
         // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
         stripeStreamSizes[index] = it.first->second.second;
-        addStreamIndex(index, it.first->first->chunks);
+        addStreamChunkIndex(index, it.first->first->chunks);
       }
     }
   } else {
@@ -364,7 +358,7 @@ void TabletWriter::writeStripe(
           static_cast<uint32_t>(file_->size() - stripeOffsets_.back());
 
       writeStreamWithChecksum(stream);
-      addStreamIndex(stream.offset, stream.chunks);
+      addStreamChunkIndex(stream.offset, stream.chunks);
 
       NIMBLE_DCHECK_LT(
           file_->size() - (stripeStreamOffsets[index] + stripeOffsets_.back()),
@@ -375,9 +369,8 @@ void TabletWriter::writeStripe(
           file_->size() - (stripeStreamOffsets[index] + stripeOffsets_.back()));
     }
   }
-  stripeSizes_.push_back(file_->size() - stripeOffsets_.back());
 
-  writeKeyStream(keyStream);
+  stripeSizes_.push_back(file_->size() - stripeOffsets_.back());
 
   stripeGroupIndices_.push_back(stripeGroupIndex_);
   // Write stripe group if size of column offsets/sizes is too large.
@@ -405,6 +398,38 @@ MetadataSection TabletWriter::createMetadataSection(std::string_view metadata) {
   auto compressionType = writeMetadata(metadata);
   auto size = static_cast<uint32_t>(file_->size() - offset);
   return MetadataSection{offset, size, compressionType};
+}
+
+void TabletWriter::invokeCloseCallback() {
+  if (options_.closeCallback == nullptr) {
+    return;
+  }
+  auto writeOptionalSectionFn =
+      [this](std::string name, std::string_view content) {
+        writeOptionalSection(std::move(name), content);
+      };
+  auto createMetadataFn = [this](std::string_view metadata) {
+    return createMetadataSection(metadata);
+  };
+  options_.closeCallback(writeOptionalSectionFn, createMetadataFn);
+}
+
+void TabletWriter::invokeStripeGroupFlushCallback(size_t stripeCount) {
+  if (options_.stripeGroupFlushCallback == nullptr) {
+    return;
+  }
+  auto writeDataFn = [this](const std::vector<std::string_view>& segments) {
+    const auto offset = file_->size();
+    for (const auto& segment : segments) {
+      writeWithChecksum(segment);
+    }
+    return std::make_pair(
+        offset, static_cast<uint32_t>(file_->size() - offset));
+  };
+  auto createMetadataFn = [this](std::string_view metadata) {
+    return createMetadataSection(metadata);
+  };
+  options_.stripeGroupFlushCallback(stripeCount, writeDataFn, createMetadataFn);
 }
 
 void TabletWriter::writeOptionalSection(
@@ -514,7 +539,9 @@ void TabletWriter::tryWriteStripeGroup(bool force) {
   // these is handled by the |createFlattenedVector| function.
   writeStripeGroup(streamCount, stripeCount);
 
-  writeIndexGroup(streamCount, stripeCount);
+  writeChunkIndexGroup(streamCount, stripeCount);
+
+  invokeStripeGroupFlushCallback(stripeCount);
 
   finishStripeGroup();
 }
@@ -538,8 +565,7 @@ void TabletWriter::writeWithChecksum(const folly::IOBuf& buf) {
   }
 }
 
-template <typename T>
-void TabletWriter::writeStreamWithChecksum(const T& stream) {
+void TabletWriter::writeStreamWithChecksum(const Stream& stream) {
   for (const auto& chunk : stream.chunks) {
     for (const auto& content : chunk.content) {
       writeWithChecksum(content);
@@ -547,36 +573,13 @@ void TabletWriter::writeStreamWithChecksum(const T& stream) {
   }
 }
 
-// Explicit template instantiations
-template void TabletWriter::writeStreamWithChecksum(const Stream& stream);
-template void TabletWriter::writeStreamWithChecksum(const KeyStream& stream);
-
-void TabletWriter::startStripeIndexWrite(
-    size_t streamCount,
-    const std::optional<KeyStream>& keyStream) {
+void TabletWriter::finishStripeChunkIndex(size_t streamCount) {
   if (hasChunkIndex()) {
     chunkIndexWriter_->newStripe(streamCount);
   }
-  if (hasClusterIndex()) {
-    clusterIndexWriter_->newStripe();
-    NIMBLE_CHECK(keyStream.has_value());
-    clusterIndexWriter_->addStripeKey(keyStream.value());
-  }
 }
 
-void TabletWriter::writeKeyStream(const std::optional<KeyStream>& keyStream) {
-  if (!hasClusterIndex()) {
-    return;
-  }
-  NIMBLE_CHECK(keyStream.has_value());
-
-  clusterIndexWriter_->writeKeyStream(
-      file_->size() - stripeOffsets_.back(),
-      keyStream.value().chunks,
-      [this](std::string_view data) { writeWithChecksum(data); });
-}
-
-void TabletWriter::addStreamIndex(
+void TabletWriter::addStreamChunkIndex(
     uint32_t streamIndex,
     const std::vector<Chunk>& chunks) {
   if (!hasChunkIndex()) {
@@ -585,28 +588,24 @@ void TabletWriter::addStreamIndex(
   chunkIndexWriter_->addStream(streamIndex, chunks);
 }
 
-void TabletWriter::writeIndexGroup(size_t streamCount, size_t stripeCount) {
-  auto createMetadataFn = [this](std::string_view metadata) {
-    return createMetadataSection(metadata);
-  };
+void TabletWriter::writeChunkIndexGroup(
+    size_t streamCount,
+    size_t stripeCount) {
   if (hasChunkIndex()) {
+    auto createMetadataFn = [this](std::string_view metadata) {
+      return createMetadataSection(metadata);
+    };
     chunkIndexWriter_->writeGroup(streamCount, stripeCount, createMetadataFn);
-  }
-  if (hasClusterIndex()) {
-    clusterIndexWriter_->writeGroup(stripeCount, createMetadataFn);
   }
 }
 
-void TabletWriter::writeRootIndex() {
-  auto writeOptionalSectionFn =
-      [this](std::string name, std::string_view content) {
-        writeOptionalSection(std::move(name), content);
-      };
+void TabletWriter::writeChunkIndexRoot() {
   if (hasChunkIndex()) {
+    auto writeOptionalSectionFn =
+        [this](std::string name, std::string_view content) {
+          writeOptionalSection(std::move(name), content);
+        };
     chunkIndexWriter_->writeRoot(writeOptionalSectionFn);
-  }
-  if (hasClusterIndex()) {
-    clusterIndexWriter_->writeRoot(stripeGroupIndices_, writeOptionalSectionFn);
   }
 }
 } // namespace facebook::nimble

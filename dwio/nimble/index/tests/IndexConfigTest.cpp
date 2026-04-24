@@ -21,7 +21,7 @@
 namespace facebook::nimble::index::test {
 
 TEST(IndexConfigTest, defaultValues) {
-  IndexConfig config;
+  ClusterIndexConfig config;
   EXPECT_TRUE(config.columns.empty());
   EXPECT_TRUE(config.sortOrders.empty());
   EXPECT_FALSE(config.enforceKeyOrder);
@@ -29,12 +29,10 @@ TEST(IndexConfigTest, defaultValues) {
   EXPECT_EQ(config.encodingLayout.encodingType(), EncodingType::Prefix);
   EXPECT_EQ(
       config.encodingLayout.compressionType(), CompressionType::Uncompressed);
-  EXPECT_EQ(config.minChunkRawSize, 512 << 10);
-  EXPECT_EQ(config.maxChunkRawSize, 20 << 20);
 }
 
 TEST(IndexConfigTest, customValues) {
-  IndexConfig config{
+  ClusterIndexConfig config{
       .columns = {"col1", "col2"},
       .sortOrders = {{.ascending = true}, {.ascending = false}},
       .enforceKeyOrder = true,
@@ -50,16 +48,8 @@ TEST(IndexConfigTest, customValues) {
   EXPECT_TRUE(config.noDuplicateKey);
 }
 
-TEST(IndexConfigTest, chunkSizeThresholds) {
-  IndexConfig config;
-  config.minChunkRawSize = 1024;
-  config.maxChunkRawSize = 4096;
-  EXPECT_EQ(config.minChunkRawSize, 1024);
-  EXPECT_EQ(config.maxChunkRawSize, 4096);
-}
-
 TEST(IndexConfigTest, customEncodingLayout) {
-  IndexConfig config;
+  ClusterIndexConfig config;
   config.encodingLayout =
       EncodingLayout{EncodingType::Trivial, {}, CompressionType::Zstd};
   EXPECT_EQ(config.encodingLayout.encodingType(), EncodingType::Trivial);

@@ -17,7 +17,7 @@
 #pragma once
 
 #include "dwio/nimble/index/ChunkIndexGroup.h"
-#include "dwio/nimble/index/ClusterIndexGroup.h"
+#include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/RowRange.h"
@@ -135,7 +135,7 @@ class StripeStreams {
 
   void setStripe(int stripe) {
     stripe_ = stripe;
-    // Keep previous stripe's shared_ptrs (StripeGroup, ClusterIndexGroup)
+    // Keep previous stripe's shared_ptrs (StripeGroup, ChunkIndexGroup)
     // alive while loading the new stripe. This prevents the weak-pointer
     // cache entries from expiring when consecutive stripes share the same
     // group index, avoiding redundant metadata re-reads and re-parses.
@@ -150,8 +150,6 @@ class StripeStreams {
   std::unique_ptr<velox::dwio::common::SeekableInputStream> enqueue(
       int streamId);
 
-  std::unique_ptr<velox::dwio::common::SeekableInputStream> enqueueKeyStream();
-
   void load() {
     readerBase_->input().load(velox::dwio::common::LogType::STREAM_BUNDLE);
   }
@@ -160,8 +158,8 @@ class StripeStreams {
     return stripe_;
   }
 
-  const std::shared_ptr<ClusterIndexGroup>& clusterIndex() const {
-    return stripeIdentifier_->clusterIndex();
+  const index::ClusterIndex* clusterIndex() const {
+    return readerBase_->tablet().clusterIndex();
   }
 
   std::shared_ptr<index::StreamIndex> streamIndex(int streamId) const;

@@ -24,7 +24,7 @@
 #include "dwio/nimble/index/ChunkIndexGroup.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/index/ClusterIndexGroup.h"
-#include "dwio/nimble/index/tests/IndexTestUtils.h"
+#include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
 #include "dwio/nimble/tablet/ChunkIndexWriter.h"
 
 #include "dwio/nimble/tablet/ClusterIndexGenerated.h"
@@ -582,7 +582,7 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithSingleGroup) {
 
   // Verify basic properties
   EXPECT_EQ(clusterIndex->numStripes(), 3);
-  EXPECT_EQ(clusterIndex->numIndexGroups(), 1);
+  EXPECT_EQ(clusterIndex->numPartitions(), 1);
   EXPECT_EQ(clusterIndex->indexColumns().size(), 2);
   EXPECT_EQ(clusterIndex->indexColumns()[0], "col1");
   EXPECT_EQ(clusterIndex->indexColumns()[1], "col2");
@@ -841,7 +841,7 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroups) {
 
   // Verify basic properties
   EXPECT_EQ(clusterIndex->numStripes(), 3);
-  EXPECT_EQ(clusterIndex->numIndexGroups(), 3);
+  EXPECT_EQ(clusterIndex->numPartitions(), 3);
   EXPECT_EQ(clusterIndex->indexColumns().size(), 2);
   EXPECT_EQ(clusterIndex->indexColumns()[0], "col1");
   EXPECT_EQ(clusterIndex->indexColumns()[1], "col2");
@@ -1181,7 +1181,7 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
 
   // Verify basic properties
   EXPECT_EQ(clusterIndex->numStripes(), 4);
-  EXPECT_EQ(clusterIndex->numIndexGroups(), 4);
+  EXPECT_EQ(clusterIndex->numPartitions(), 4);
 
   // Verify key lookups
   EXPECT_EQ(clusterIndex->lookup("aaa")->stripeIndex, 0);

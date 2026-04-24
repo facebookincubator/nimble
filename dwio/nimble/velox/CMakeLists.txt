@@ -175,7 +175,6 @@ add_library(
   nimble_velox_writer
   EncodingLayoutTree.cpp
   FlushPolicy.cpp
-  IndexWriter.cpp
   VeloxWriter.cpp
   ChunkedStreamWriter.cpp
   VeloxWriterDefaultMetadataOSS.cpp

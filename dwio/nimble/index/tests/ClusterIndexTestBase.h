@@ -22,7 +22,6 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/index/ChunkIndexGroup.h"
 #include "dwio/nimble/index/ClusterIndex.h"
-#include "dwio/nimble/index/ClusterIndexGroup.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "velox/common/memory/Memory.h"
 
@@ -57,13 +56,17 @@ class ClusterIndexTestBase : public ::testing::Test {
   struct IndexBuffers {
     /// Serialized ClusterIndexGroup flatbuffers (cluster index) appended
     /// sequentially.
-    std::string indexGroups;
+    std::string indexPartitions;
     /// Serialized ChunkIndex flatbuffers appended sequentially.
     std::string chunkIndexGroups;
     /// Size of each ChunkIndex flatbuffer in chunkIndexGroups.
     std::vector<size_t> chunkIndexGroupSizes;
     /// Serialized root Index flatbuffer.
     std::string rootIndex;
+    /// Per-stripe row counts (from test data).
+    std::vector<uint32_t> stripeRowCounts;
+    /// Per-stripe group indices (which partition each stripe belongs to).
+    std::vector<uint32_t> stripeGroupIndices;
   };
 
   /// Helper function to create a serialized Index flatbuffer for testing.
@@ -92,14 +95,16 @@ class ClusterIndexTestBase : public ::testing::Test {
       const std::vector<int>& stripeGroups);
 
   /// Creates a ClusterIndex from the serialized IndexBuffers.
+  /// @param loadData Callback to load key stream data.
+  /// @param pool Memory pool for key stream reader allocations.
+  std::unique_ptr<ClusterIndex> createClusterIndex(
+      const IndexBuffers& indexBuffers,
+      LoadDataFn loadData,
+      velox::memory::MemoryPool* pool);
+
+  /// Convenience overload with a no-op key stream loader.
   std::unique_ptr<ClusterIndex> createClusterIndex(
       const IndexBuffers& indexBuffers);
-
-  /// Creates a ClusterIndexGroup (cluster index) from the serialized
-  /// IndexBuffers.
-  std::shared_ptr<ClusterIndexGroup> createClusterIndexGroup(
-      const IndexBuffers& indexBuffers,
-      uint32_t stripeGroupIndex);
 
   /// Creates a ChunkIndexGroup from the serialized IndexBuffers.
   std::shared_ptr<ChunkIndexGroup> createChunkIndex(

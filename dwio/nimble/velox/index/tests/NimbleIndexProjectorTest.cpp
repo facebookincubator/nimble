@@ -78,13 +78,13 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
     VeloxWriterOptions options;
     options.enableChunking = true;
     options.flatMapColumns = flatMapColumns;
-    IndexConfig indexConfig;
-    indexConfig.columns = indexColumns;
-    indexConfig.sortOrders = std::vector<SortOrder>(
+    ClusterIndexConfig clusterIndexConfig;
+    clusterIndexConfig.columns = indexColumns;
+    clusterIndexConfig.sortOrders = std::vector<SortOrder>(
         indexColumns.size(), SortOrder{.ascending = true});
-    indexConfig.enforceKeyOrder = true;
-    indexConfig.noDuplicateKey = true;
-    options.indexConfig = std::move(indexConfig);
+    clusterIndexConfig.enforceKeyOrder = true;
+    clusterIndexConfig.noDuplicateKey = true;
+    options.clusterIndexConfig = std::move(clusterIndexConfig);
 
     options.flushPolicyFactory = [stripeSize]() {
       return std::make_unique<LambdaFlushPolicy>(
@@ -353,17 +353,12 @@ TEST_P(NimbleIndexProjectorTest, stats) {
     return createProjector(subs);
   };
 
-  // Empty request should yield zero stats.
+  // Empty request should throw.
   {
     auto proj = makeProjector();
     NimbleIndexProjector::Request request;
-    proj.project(request, {});
-    EXPECT_EQ(proj.stats().numReadStripes, 0);
-    EXPECT_EQ(proj.stats().numScannedRows, 0);
-    EXPECT_EQ(proj.stats().numProjectedRows, 0);
-    EXPECT_EQ(proj.stats().numReadRows, 0);
-    EXPECT_EQ(proj.stats().rawBytesRead, 0);
-    EXPECT_EQ(proj.stats().rawOverreadBytes, 0);
+    NIMBLE_ASSERT_THROW(
+        proj.project(request, {}), "keyBounds must not be empty");
   }
 
   // Single point lookup: key=15 is in stripe 1 (rows 10..19).
@@ -860,12 +855,12 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
     options.enableChunking = true;
     options.flatMapColumns = {{"features", {}}};
 
-    IndexConfig indexConfig;
-    indexConfig.columns = {"key"};
-    indexConfig.sortOrders = {SortOrder{.ascending = true}};
-    indexConfig.enforceKeyOrder = true;
-    indexConfig.noDuplicateKey = true;
-    options.indexConfig = std::move(indexConfig);
+    ClusterIndexConfig clusterIndexConfig;
+    clusterIndexConfig.columns = {"key"};
+    clusterIndexConfig.sortOrders = {SortOrder{.ascending = true}};
+    clusterIndexConfig.enforceKeyOrder = true;
+    clusterIndexConfig.noDuplicateKey = true;
+    options.clusterIndexConfig = std::move(clusterIndexConfig);
 
     if (enableReordering) {
       // Ordinal 1 = "features" column (after "key").

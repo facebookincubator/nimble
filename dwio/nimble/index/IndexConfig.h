@@ -27,7 +27,7 @@ namespace facebook::nimble {
 /// Configuration for index generation.
 /// The index allows efficient filtering and pruning of data based on
 /// the specified index columns.
-struct IndexConfig {
+struct ClusterIndexConfig {
   /// Columns to be indexed for data pruning.
   /// These columns will be encoded using KeyWriter to generate index keys
   /// that enable efficient data skipping during reads.
@@ -58,14 +58,11 @@ struct IndexConfig {
       EncodingType::Prefix,
       {},
       CompressionType::Uncompressed};
-  /// When flushing key stream into chunks, key stream with raw data size
-  /// smaller than this threshold will not be flushed.
-  /// Note: this threshold is ignored when it is time to flush a stripe.
-  uint64_t minChunkRawSize{512 << 10};
-  /// When flushing key stream into chunks, key stream with raw data size
-  /// larger than this threshold will be broken down into multiple smaller
-  /// chunks.
-  uint64_t maxChunkRawSize{20 << 20};
+  /// Maximum rows per chunk within a partition. Controls in-memory search
+  /// granularity — chunks have start/end keys for binary search. Smaller values
+  /// give finer-grained lookups at the cost of more metadata.
+  /// 0 means no splitting (one chunk per partition).
+  uint64_t maxRowsPerKeyChunk{0};
 };
 
 } // namespace facebook::nimble

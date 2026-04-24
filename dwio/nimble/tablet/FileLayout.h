@@ -148,16 +148,15 @@ class Postscript {
 ///   - sort_orders: sort order per column ("ASC NULLS FIRST", etc.)
 ///   - stripe_indexes: refs to per-group StripeClusterIndex metadata
 ///
-///   StripeClusterIndex (per stripe group):
+///   ClusterIndexPartition (per stripe group / partition):
 ///   +---------------------------------------------------------------+
-///   | KeyStreamLayout (always present):                              |
-///   |   - offsets: byte offset of key stream per stripe              |
-///   |   - sizes: byte size of key stream per stripe                  |
-///   | KeyStreamChunkIndex (null if single chunk per stripe):         |
-///   |   - chunk_counts: accumulated chunks per stripe                |
-///   |   - chunk_rows: accumulated rows per chunk                     |
-///   |   - chunk_offsets: byte offset per chunk                       |
-///   |   - chunk_keys: last key value per chunk                       |
+///   | key_data_offset: file offset of key data blob                  |
+///   | key_data_size: total size of key data blob                     |
+///   | SubPartitionIndex (null if single sub-partition):              |
+///   |   - sub_partition_rows: accumulated rows per sub-partition     |
+///   |   - sub_partition_offsets: byte offset per sub-partition       |
+///   |   - sub_partition_keys: last key value per sub-partition       |
+///   | stripe_row_counts: row count per stripe                        |
 ///   +---------------------------------------------------------------+
 ///
 /// Chunk Index ("columnar.chunk.index"):
@@ -203,8 +202,8 @@ struct FileLayout {
   /// Stripe group metadata sections (per-stream offsets/sizes within stripes).
   std::vector<MetadataSection> stripeGroups;
 
-  /// Index group metadata sections (empty if indexing not enabled).
-  std::vector<MetadataSection> indexGroups;
+  /// Index partition metadata sections (empty if indexing not enabled).
+  std::vector<MetadataSection> indexPartitions;
 
   /// Per-stripe layout information.
   std::vector<StripeInfo> stripesInfo;

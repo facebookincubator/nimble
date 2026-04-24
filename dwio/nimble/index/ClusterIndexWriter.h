@@ -1,0 +1,215 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#pragma once
+
+#include <memory>
+#include <optional>
+
+#include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/index/IndexConfig.h"
+#include "dwio/nimble/index/IndexWriter.h"
+#include "dwio/nimble/index/SortOrder.h"
+#include "dwio/nimble/tablet/Chunk.h"
+#include "dwio/nimble/tablet/MetadataBuffer.h"
+#include "dwio/nimble/velox/StreamData.h"
+#include "velox/common/memory/Memory.h"
+#include "velox/serializers/KeyEncoder.h"
+#include "velox/vector/ComplexVector.h"
+
+namespace facebook::nimble::index {
+
+/// ClusterIndexWriter builds a cluster index for sorted data during file write.
+///
+/// It uses KeyEncoder to transform specified index columns into byte-comparable
+/// keys that enable efficient range-based filtering during reads. Key encoding,
+/// chunking, and partition flushing are all handled internally.
+///
+/// Lifecycle:
+///   1. Create with config and input schema
+///   2. For each batch: write(batch) to encode keys (auto-encodes chunks
+///      when row count threshold is reached)
+///   3. At stripe group boundaries: flushPartition() writes key stream data
+///      and partition metadata
+///   4. At file close: finalize() to build and serialize the root index
+///
+/// Example usage:
+///   auto writer = ClusterIndexWriter::create(config, inputType, pool);
+///   writer->write(batch);
+///   // ... write more batches ...
+///   writer->finishStripe();
+///   // ... more stripes ...
+///   auto rootIndex = writer->finalize(createMetadataSection);
+///   writer->close();
+class ClusterIndexWriter : public IndexWriter {
+ public:
+  /// Factory method to create a ClusterIndexWriter instance.
+  ///
+  /// @param config Optional index configuration. If not present, returns
+  ///               nullptr (no indexing).
+  /// @param inputType Type of input data containing the index columns.
+  /// @param pool Memory pool for allocations.
+  /// @return Unique pointer to ClusterIndexWriter, or nullptr if config is not
+  ///         present.
+  static std::unique_ptr<ClusterIndexWriter> create(
+      const std::optional<ClusterIndexConfig>& config,
+      const velox::TypePtr& inputType,
+      velox::memory::MemoryPool* pool);
+
+  ~ClusterIndexWriter() override = default;
+
+  ClusterIndexWriter(const ClusterIndexWriter&) = delete;
+  ClusterIndexWriter& operator=(const ClusterIndexWriter&) = delete;
+  ClusterIndexWriter(ClusterIndexWriter&&) = delete;
+  ClusterIndexWriter& operator=(ClusterIndexWriter&&) = delete;
+
+  /// Encodes index keys from the input vector. Internally encodes a chunk
+  /// when accumulated rows reach the row count threshold.
+  ///
+  /// @param input Input vector containing rows to encode.
+  void write(const velox::VectorPtr& input) override;
+
+  /// Builds and serializes the root index. Called at file close.
+  /// Returns the serialized root index FlatBuffer to be stored as an optional
+  /// section. Partition data sections are written via createMetadataSection
+  /// during stripe group flushes (before this call).
+  ///
+  /// After finalize(), no further write() or finishStripe() calls are allowed.
+  std::string finalize(
+      const CreateMetadataSectionFn& createMetadataSection) override;
+
+  /// Releases internal resources. Must be called after finalize().
+  void close() override;
+
+  /// Flushes partition data at stripe group boundary.
+  /// Writes encoded key data blob to file via writeData, then writes
+  /// partition metadata (chunk index) via createMetadataSection.
+  void flushPartition(
+      size_t stripeCount,
+      const WriteDataFn& writeData,
+      const CreateMetadataSectionFn& createMetadataSection) override;
+
+ private:
+  ClusterIndexWriter(
+      const ClusterIndexConfig& config,
+      const velox::RowTypePtr& inputType,
+      velox::memory::MemoryPool* pool);
+
+  // Chunk in a key stream with key boundaries.
+  struct KeyChunk : public Chunk {
+    // Last key in the chunk of keys.
+    std::string key;
+  };
+
+  // Encodes accumulated keys into chunks. When force is false, encoding is
+  // skipped if accumulated rows are below maxRowsPerKeyChunk_. When force is
+  // true (e.g., at partition flush), all remaining keys are encoded.
+  void encodeKeyChunks(bool force = false);
+
+  // Encodes a span of keys into a KeyChunk.
+  void encodeKeyChunk(std::span<const std::string_view> keys, KeyChunk& chunk);
+
+  // Creates a new encoding policy instance for key encoding.
+  std::unique_ptr<EncodingSelectionPolicy<std::string_view>>
+  createEncodingPolicy() const;
+
+  // Validates that no null values exist in key columns.
+  void validateNoNullKeys(const velox::VectorPtr& input) const;
+
+  // Validates all new encoded keys are in ascending order. Compares against
+  // the previous key in the buffer or lastEncodedKey_ across clears.
+  void validateKeyOrder(size_t newKeyStart);
+
+  // Lazily initializes rootIndex_ on first use.
+  void ensureIndexRoot();
+
+  // Lazily initializes indexPartition_ on first use.
+  void ensureIndexPartition();
+
+  // Holds all partition-scoped state (reset per partition flush).
+  struct IndexPartition {
+    // Accumulated row counts per chunk (prefix sum).
+    std::vector<uint32_t> chunkRows;
+    // Byte offset of each chunk within the key stream blob.
+    std::vector<uint32_t> chunkOffsets;
+    // Last key of each chunk for binary search (owned copies).
+    std::vector<std::string> chunkKeys;
+    // Encoded key stream segments from all chunks (flattened). Each chunk may
+    // produce multiple segments via ChunkedStreamWriter. Concatenated and
+    // written to file during flushPartition().
+    // Views into encodingBuffer.
+    std::vector<std::string_view> encodedChunks;
+
+    // Buffer for encoded chunk stream data within this partition.
+    // Backs encodedChunks. Reset after flushPartition() writes the blob
+    // to file.
+    std::unique_ptr<Buffer> encodingBuffer;
+    // Current write offset in the partition's key stream blob. Equals the
+    // total encoded bytes so far. Used as the offset for the next chunk.
+    uint32_t keyStreamOffset{0};
+
+    // File-level offset and size after flushPartition() writes the key
+    // data blob.
+    uint64_t keyStreamFileOffset{0};
+    uint32_t keyStreamFileSize{0};
+
+    bool empty() const {
+      return chunkKeys.empty();
+    }
+  };
+
+  // Holds the root index data for the entire file.
+  struct IndexRoot {
+    std::vector<MetadataSection> indexPartitions;
+    // Keys for root-level binary search across all partitions.
+    // Layout: [firstKey, lastKey0, lastKey1, ..., lastKeyN]
+    // firstKey is pushed during the first encodeKeyChunks() call.
+    // Each flushPartition() appends a lastKey.
+    std::vector<std::string> partitionKeys;
+    // Row count per partition, derived from chunkRows.back().
+    std::vector<uint32_t> partitionRowCounts;
+  };
+
+  velox::memory::MemoryPool* const pool_;
+  const std::vector<std::string> columns_;
+  const std::vector<SortOrder> sortOrders_;
+  const std::unique_ptr<velox::serializer::KeyEncoder> keyEncoder_;
+  const EncodingLayout encodingLayout_;
+  const bool enforceKeyOrder_;
+  const std::vector<velox::column_index_t> keyColumnIndices_;
+  const bool noDuplicateKey_;
+  const uint64_t maxRowsPerKeyChunk_;
+  const std::unique_ptr<ContentStreamData<std::string_view>> keyStream_;
+
+  // Last encoded key from the previous write() or encodeKeyChunks() call.
+  // Used to validate key ordering across batches after keyStream_ is cleared.
+  // Optional because an empty string is a valid encoded key value.
+  std::optional<std::string> lastEncodedKey_;
+
+  // Buffer for raw key values from keyEncoder_->encode(). The string_views
+  // in keyStream_ point into this buffer. Reset after encodeKeyChunks()
+  // processes the keys into encoded chunks.
+  std::unique_ptr<Buffer> keyBuffer_;
+
+  // Partition-level state accumulator.
+  std::unique_ptr<IndexPartition> indexPartition_;
+  // Root-level index accumulator.
+  std::unique_ptr<IndexRoot> indexRoot_;
+
+  bool finalized_{false};
+};
+
+} // namespace facebook::nimble::index

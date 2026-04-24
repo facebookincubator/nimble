@@ -27,7 +27,6 @@ add_executable(
   ChunkedStreamWriterTest.cpp
   DecodedVectorManagerTest.cpp
   EncodingLayoutTreeTest.cpp
-  IndexWriterTest.cpp
   LayoutPlannerTest.cpp
   OrderedRangesTest.cpp
   RawSizeContextTest.cpp

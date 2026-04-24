@@ -1,0 +1,480 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "dwio/nimble/index/ClusterIndexWriter.h"
+
+#include "dwio/nimble/index/IndexConstants.h"
+#include "dwio/nimble/tablet/ClusterIndexGenerated.h"
+#include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/velox/BufferGrowthPolicy.h"
+#include "dwio/nimble/velox/ChunkedStreamWriter.h"
+#include "folly/String.h"
+#include "folly/json/json.h"
+#include "velox/common/base/Nulls.h"
+
+namespace facebook::nimble::index {
+
+namespace {
+
+// The key stream uses a placeholder offset value (kKeyStreamId) that does
+// not correspond to any actual stream position. This offset is not used for
+// data retrieval but is required to conform to Nimble's stream typing
+// framework, which expects all streams to have an associated offset.
+// Returns a reference to a static descriptor to ensure lifetime validity for
+// ContentStreamData which stores a reference to the descriptor.
+const StreamDescriptorBuilder& keyStreamDescriptor() {
+  static const StreamDescriptorBuilder descriptor{
+      kKeyStreamId, ScalarKind::Binary};
+  return descriptor;
+}
+
+// Returns a reference to a static growth policy to ensure lifetime validity for
+// ContentStreamData which stores a reference to the policy.
+const InputBufferGrowthPolicy& keyStreamGrowthPolicy() {
+  static const auto policy =
+      DefaultInputBufferGrowthPolicy::withDefaultRanges();
+  return *policy;
+}
+
+// Converts nimble SortOrders to velox::core::SortOrders.
+// If sortOrders is empty, returns default ascending sort orders.
+std::vector<velox::core::SortOrder> toVeloxSortOrders(
+    const std::vector<SortOrder>& sortOrders,
+    size_t columnCount) {
+  if (sortOrders.empty()) {
+    return std::vector<velox::core::SortOrder>(
+        columnCount, velox::core::SortOrder{true, false});
+  }
+  std::vector<velox::core::SortOrder> result;
+  result.reserve(sortOrders.size());
+  for (const auto& sortOrder : sortOrders) {
+    result.push_back(sortOrder.toVeloxSortOrder());
+  }
+  return result;
+}
+
+std::unique_ptr<velox::serializer::KeyEncoder> createKeyEncoder(
+    const ClusterIndexConfig& config,
+    const velox::RowTypePtr& inputType,
+    velox::memory::MemoryPool* pool) {
+  NIMBLE_CHECK(
+      config.sortOrders.empty() ||
+          config.sortOrders.size() == config.columns.size(),
+      "sortOrders size ({}) must be empty or match columns size ({})",
+      config.sortOrders.size(),
+      config.columns.size());
+
+  return velox::serializer::KeyEncoder::create(
+      config.columns,
+      inputType,
+      toVeloxSortOrders(config.sortOrders, config.columns.size()),
+      pool);
+}
+
+std::vector<velox::column_index_t> getKeyColumnIndices(
+    const ClusterIndexConfig& config,
+    const velox::RowTypePtr& inputType) {
+  std::vector<velox::column_index_t> indices;
+  indices.reserve(config.columns.size());
+  for (const auto& columnName : config.columns) {
+    indices.push_back(inputType->getChildIdx(columnName));
+  }
+  return indices;
+}
+
+std::string_view asView(const flatbuffers::FlatBufferBuilder& builder) {
+  return {
+      reinterpret_cast<const char*>(builder.GetBufferPointer()),
+      builder.GetSize()};
+}
+
+uint32_t accumulateRowCount(
+    const std::vector<uint32_t>& accumulatedRows,
+    uint32_t newRows) {
+  const uint32_t prev = accumulatedRows.empty() ? 0 : accumulatedRows.back();
+  NIMBLE_CHECK_LE(
+      prev + static_cast<uint64_t>(newRows),
+      std::numeric_limits<uint32_t>::max(),
+      "Partition accumulated row count overflow: {}",
+      prev + static_cast<uint64_t>(newRows));
+  return prev + newRows;
+}
+
+} // namespace
+
+std::unique_ptr<ClusterIndexWriter> ClusterIndexWriter::create(
+    const std::optional<ClusterIndexConfig>& config,
+    const velox::TypePtr& inputType,
+    velox::memory::MemoryPool* pool) {
+  if (!config.has_value()) {
+    return nullptr;
+  }
+  NIMBLE_CHECK_NOT_NULL(pool, "memory pool must not be null");
+  return std::unique_ptr<ClusterIndexWriter>(new ClusterIndexWriter(
+      config.value(), velox::asRowType(inputType), pool));
+}
+
+ClusterIndexWriter::ClusterIndexWriter(
+    const ClusterIndexConfig& config,
+    const velox::RowTypePtr& inputType,
+    velox::memory::MemoryPool* pool)
+    : pool_{pool},
+      columns_{config.columns},
+      sortOrders_{
+          config.sortOrders.empty() ? std::vector<SortOrder>(
+                                          config.columns.size(),
+                                          SortOrder{.ascending = true})
+                                    : config.sortOrders},
+      keyEncoder_{createKeyEncoder(config, inputType, pool)},
+      encodingLayout_{config.encodingLayout},
+      enforceKeyOrder_{config.enforceKeyOrder},
+      keyColumnIndices_{getKeyColumnIndices(config, inputType)},
+      noDuplicateKey_{config.noDuplicateKey},
+      maxRowsPerKeyChunk_{config.maxRowsPerKeyChunk},
+      keyStream_{std::make_unique<ContentStreamData<std::string_view>>(
+          *pool_,
+          keyStreamDescriptor(),
+          keyStreamGrowthPolicy())},
+      keyBuffer_{std::make_unique<Buffer>(*pool)} {
+  const auto encodingType = config.encodingLayout.encodingType();
+  NIMBLE_CHECK(
+      encodingType == EncodingType::Prefix ||
+          encodingType == EncodingType::Trivial,
+      "Key stream encoding only supports Prefix or Trivial encoding, but got: {}",
+      encodingType);
+}
+
+void ClusterIndexWriter::validateNoNullKeys(
+    const velox::VectorPtr& input) const {
+  const auto* rowVector = input->asChecked<velox::RowVector>();
+  const auto& children = rowVector->children();
+  for (const auto columnIndex : keyColumnIndices_) {
+    const auto& child = children[columnIndex];
+    if (!child->mayHaveNulls()) {
+      continue;
+    }
+    const auto* nulls = child->rawNulls();
+    if (nulls == nullptr) {
+      continue;
+    }
+    const auto nullCount = velox::bits::countNulls(nulls, 0, input->size());
+    NIMBLE_USER_CHECK_EQ(
+        nullCount,
+        0,
+        "Null value not allowed in key column at index {}: found {} null(s)",
+        columnIndex,
+        nullCount);
+  }
+}
+
+std::unique_ptr<EncodingSelectionPolicy<std::string_view>>
+ClusterIndexWriter::createEncodingPolicy() const {
+  return std::make_unique<ReplayedEncodingSelectionPolicy<std::string_view>>(
+      encodingLayout_,
+      CompressionOptions{},
+      [](DataType) -> std::unique_ptr<EncodingSelectionPolicyBase> {
+        return nullptr;
+      });
+}
+
+void ClusterIndexWriter::write(const velox::VectorPtr& input) {
+  NIMBLE_CHECK(!finalized_, "ClusterIndexWriter has been finalized");
+
+  if (input->size() == 0) {
+    return;
+  }
+
+  validateNoNullKeys(input);
+
+  const auto newKeyStart = keyStream_->mutableData().size();
+  keyStream_->ensureMutableDataCapacity(newKeyStart + input->size());
+
+  keyEncoder_->encode(input, keyStream_->mutableData(), [this](size_t size) {
+    return keyBuffer_->reserve(size);
+  });
+
+  validateKeyOrder(newKeyStart);
+
+  // Encode chunks when enough keys have accumulated.
+  encodeKeyChunks();
+}
+
+void ClusterIndexWriter::validateKeyOrder(size_t newKeyStart) {
+  if (!enforceKeyOrder_) {
+    return;
+  }
+
+  const auto& keys = keyStream_->mutableData();
+
+  // Helper to check ordering between two keys.
+  auto checkOrder = [&](std::string_view current,
+                        std::string_view previous,
+                        size_t currentIdx,
+                        size_t previousIdx) {
+    if (FOLLY_LIKELY(
+            noDuplicateKey_ ? current > previous : current >= previous)) {
+      return;
+    }
+    // Format keys as hex for readable error message since encoded keys
+    // contain binary data that corrupts terminal output.
+    NIMBLE_USER_FAIL(
+        noDuplicateKey_
+            ? "Encoded keys must be in strictly ascending order (duplicates are not allowed). "
+              "Key at index {} (hex: {}) is not greater than key at index {} (hex: {})"
+            : "Encoded keys must be in ascending order. "
+              "Key at index {} (hex: {}) is less than key at index {} (hex: {})",
+        currentIdx,
+        folly::hexlify(current),
+        previousIdx,
+        folly::hexlify(previous));
+  };
+
+  // Cross-boundary check: when newKeyStart == 0 (buffer was cleared by
+  // encodeKeyChunks), compare the first new key against lastEncodedKey_
+  // which tracks the last key across clears.
+  if (newKeyStart == 0 && lastEncodedKey_.has_value()) {
+    checkOrder(keys[0], lastEncodedKey_.value(), 0, 0);
+  }
+
+  // Check ordering of all new keys. When newKeyStart > 0, also verify
+  // continuity with the last key from the previous batch still in the buffer.
+  const size_t startIdx = newKeyStart > 0 ? newKeyStart : 1;
+  for (auto i = startIdx; i < keys.size(); ++i) {
+    checkOrder(keys[i], keys[i - 1], i, i - 1);
+  }
+}
+
+void ClusterIndexWriter::encodeKeyChunks(bool force) {
+  const auto& keys = keyStream_->mutableData();
+  if (keys.empty()) {
+    return;
+  }
+
+  if (!force) {
+    if (maxRowsPerKeyChunk_ == 0 || keys.size() < maxRowsPerKeyChunk_) {
+      return;
+    }
+  }
+
+  const uint64_t maxRows =
+      maxRowsPerKeyChunk_ > 0 ? maxRowsPerKeyChunk_ : keys.size();
+
+  ensureIndexPartition();
+
+  for (size_t offset = 0; offset < keys.size();) {
+    const auto remaining = static_cast<uint64_t>(keys.size() - offset);
+    // Absorb tail if splitting would create a chunk smaller than maxRows.
+    const auto chunkSize = remaining < 2 * maxRows ? remaining : maxRows;
+
+    auto span =
+        std::span<const std::string_view>(keys.data() + offset, chunkSize);
+
+    KeyChunk keyChunk;
+    encodeKeyChunk(span, keyChunk);
+
+    // Push first key to partition keys for root-level early pruning.
+    // Layout: [firstKey, lastKey0, lastKey1, ..., lastKeyN]
+    ensureIndexRoot();
+    if (indexRoot_->partitionKeys.empty()) {
+      indexRoot_->partitionKeys.emplace_back(span[0]);
+    }
+
+    // Record chunk metadata directly in the partition.
+    const auto chunkOffset = indexPartition_->keyStreamOffset;
+    uint32_t chunkEncodedSize = 0;
+    for (const auto& content : keyChunk.content) {
+      indexPartition_->encodedChunks.emplace_back(content);
+      chunkEncodedSize += content.size();
+    }
+    indexPartition_->keyStreamOffset += chunkEncodedSize;
+
+    indexPartition_->chunkRows.emplace_back(
+        accumulateRowCount(indexPartition_->chunkRows, chunkSize));
+    indexPartition_->chunkOffsets.emplace_back(chunkOffset);
+    indexPartition_->chunkKeys.emplace_back(std::move(keyChunk.key));
+
+    offset += chunkSize;
+  }
+
+  // Save last key before clearing keyStream_ so cross-batch order validation
+  // can compare against it.
+  lastEncodedKey_ = std::string(keys.back());
+  keyStream_->reset();
+  keyBuffer_ = std::make_unique<Buffer>(*pool_);
+}
+
+void ClusterIndexWriter::encodeKeyChunk(
+    std::span<const std::string_view> keys,
+    KeyChunk& chunk) {
+  auto& encodingBuffer = *indexPartition_->encodingBuffer;
+  const auto encoded = EncodingFactory::encode<std::string_view>(
+      createEncodingPolicy(), keys, encodingBuffer);
+  NIMBLE_CHECK(!encoded.empty());
+
+  chunk.rowCount = keys.size();
+  chunk.key = std::string(keys.back());
+
+  ChunkedStreamWriter chunkWriter{encodingBuffer};
+  for (auto& contentBuffer : chunkWriter.encode(encoded)) {
+    chunk.content.push_back(std::move(contentBuffer));
+  }
+}
+
+void ClusterIndexWriter::close() {
+  keyStream_->reset();
+  keyBuffer_.reset();
+  indexPartition_.reset();
+  indexRoot_.reset();
+  finalized_ = true;
+}
+
+void ClusterIndexWriter::ensureIndexRoot() {
+  if (indexRoot_ == nullptr) {
+    indexRoot_ = std::make_unique<IndexRoot>();
+  }
+}
+
+void ClusterIndexWriter::ensureIndexPartition() {
+  if (indexPartition_ == nullptr) {
+    indexPartition_ = std::make_unique<IndexPartition>();
+    indexPartition_->encodingBuffer = std::make_unique<Buffer>(*pool_);
+  }
+}
+
+void ClusterIndexWriter::flushPartition(
+    size_t stripeCount,
+    const WriteDataFn& writeData,
+    const CreateMetadataSectionFn& createMetadataSection) {
+  NIMBLE_CHECK(!finalized_, "ClusterIndexWriter has been finalized");
+  NIMBLE_CHECK_GT(stripeCount, 0);
+
+  // Force-encode any remaining accumulated keys. This must happen before the
+  // indexPartition_ null check because when key chunking is disabled
+  // (maxRowsPerKeyChunk_ == 0), encodeKeyChunks() returns early during write()
+  // and the partition is only created here.
+  encodeKeyChunks(/*force=*/true);
+
+  NIMBLE_CHECK_NOT_NULL(indexPartition_);
+  NIMBLE_CHECK(!indexPartition_->empty());
+
+  // Write key stream data to file.
+  const auto [fileOffset, fileSize] = writeData(indexPartition_->encodedChunks);
+  indexPartition_->keyStreamFileOffset = fileOffset;
+  indexPartition_->keyStreamFileSize = fileSize;
+
+  // Build ClusterIndexPartition FlatBuffer.
+  ensureIndexRoot();
+
+  flatbuffers::FlatBufferBuilder indexBuilder(kInitialFooterSize);
+
+  auto chunkRowsVec = indexBuilder.CreateVector(indexPartition_->chunkRows);
+  auto chunkOffsetsVec =
+      indexBuilder.CreateVector(indexPartition_->chunkOffsets);
+  auto chunkKeysVec =
+      indexBuilder.CreateVector<flatbuffers::Offset<flatbuffers::String>>(
+          indexPartition_->chunkKeys.size(), [&indexBuilder, this](size_t i) {
+            return indexBuilder.CreateString(indexPartition_->chunkKeys[i]);
+          });
+
+  indexBuilder.Finish(
+      serialization::CreateClusterIndexPartition(
+          indexBuilder,
+          indexPartition_->keyStreamFileOffset,
+          indexPartition_->keyStreamFileSize,
+          chunkRowsVec,
+          chunkOffsetsVec,
+          chunkKeysVec));
+
+  indexRoot_->indexPartitions.push_back(
+      createMetadataSection(asView(indexBuilder)));
+
+  // Record last key and row count for root-level index.
+  NIMBLE_CHECK(!indexPartition_->chunkKeys.empty());
+  indexRoot_->partitionKeys.emplace_back(indexPartition_->chunkKeys.back());
+  indexRoot_->partitionRowCounts.emplace_back(
+      indexPartition_->chunkRows.back());
+
+  // Reset partition state.
+  indexPartition_.reset();
+}
+
+std::string ClusterIndexWriter::finalize(
+    const CreateMetadataSectionFn& createMetadataSection) {
+  NIMBLE_CHECK(!finalized_, "ClusterIndexWriter has been finalized");
+
+  finalized_ = true;
+
+  if (indexRoot_ == nullptr) {
+    return {};
+  }
+
+  NIMBLE_CHECK(
+      !indexRoot_->indexPartitions.empty(), "Must have at least one partition");
+
+  // Validate partition keys layout: [firstKey, lastKey0, lastKey1, ...,
+  // lastKeyN]. The firstKey was pushed during the first encodeKeyChunks() call,
+  // and each flushPartition() appends a lastKey.
+  NIMBLE_CHECK_EQ(
+      indexRoot_->partitionKeys.size(),
+      indexRoot_->indexPartitions.size() + 1,
+      "Partition keys must have one more element than index partitions");
+
+  flatbuffers::FlatBufferBuilder builder(kInitialFooterSize);
+
+  auto indexColumnsVector =
+      builder.CreateVector<flatbuffers::Offset<flatbuffers::String>>(
+          columns_.size(), [&builder, this](size_t i) {
+            return builder.CreateString(columns_[i]);
+          });
+
+  auto sortOrdersVector =
+      builder.CreateVector<flatbuffers::Offset<flatbuffers::String>>(
+          sortOrders_.size(), [&builder, this](size_t i) {
+            return builder.CreateString(
+                folly::toJson(sortOrders_[i].serialize()));
+          });
+
+  auto partitionsVector =
+      builder.CreateVector<flatbuffers::Offset<serialization::MetadataSection>>(
+          indexRoot_->indexPartitions.size(), [&builder, this](size_t i) {
+            return serialization::CreateMetadataSection(
+                builder,
+                indexRoot_->indexPartitions[i].offset(),
+                indexRoot_->indexPartitions[i].size(),
+                static_cast<serialization::CompressionType>(
+                    indexRoot_->indexPartitions[i].compressionType()));
+          });
+
+  auto partitionKeysVector =
+      builder.CreateVector<flatbuffers::Offset<flatbuffers::String>>(
+          indexRoot_->partitionKeys.size(), [&builder, this](size_t i) {
+            return builder.CreateString(indexRoot_->partitionKeys[i]);
+          });
+
+  auto partitionRowCountsVector =
+      builder.CreateVector(indexRoot_->partitionRowCounts);
+
+  builder.Finish(
+      serialization::CreateClusterIndex(
+          builder,
+          indexColumnsVector,
+          sortOrdersVector,
+          partitionsVector,
+          partitionKeysVector,
+          partitionRowCountsVector));
+  return std::string(asView(builder));
+}
+
+} // namespace facebook::nimble::index

@@ -17,9 +17,11 @@
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
-#include "dwio/nimble/index/ClusterIndexReader.h"
+#include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/index/IndexFilter.h"
+#include "dwio/nimble/index/IndexLookup.h"
+
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/selective/ColumnReader.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
@@ -165,33 +167,17 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
   // Also calls setStripeRowRange() to apply index-based row range filtering.
   void loadCurrentStripe();
 
-  // Initializes index bounds for key-based filtering. Sets up clusterIndex_ and
-  // encodedKeyBounds_ if cluster index bounds are specified in the scan spec.
+  // Initializes index bounds for key-based filtering. Performs a single
+  // lookup to get the exact file-level row range and derives stripe
+  // boundaries from it.
   void initIndexBounds();
 
-  // Returns true if cluster index bounds are specified for key-based
-  // filtering.
+  // Returns true if index bounds are active.
   bool hasIndexBounds() const;
-
-  // Updates the start stripe based on the lower index bound.
-  // Uses ClusterIndex lookup to find the first stripe containing keys at or
-  // after the lower bound. If no matching stripe is found, sets startStripe_
-  // to endStripe_ to skip reading.
-  void updateStartStripeFromLowerIndexBound();
-
-  // Updates the end stripe based on the upper index bound.
-  // Uses ClusterIndex lookup to find the last stripe containing keys at or
-  // before the upper bound. Sets endStripe_ to one past the matching stripe
-  // to create an exclusive upper bound.
-  void updateEndStripeFromUpperIndexBound();
 
   // Advances to the next stripe by incrementing the stripe index and resetting
   // the row position state.
   void advanceToNextStripe();
-
-  // Builds the index reader for the current stripe. Only called when index
-  // bounds are set.
-  void buildIndexReader(NimbleParams& params);
 
   // Sets the row range to read within the current stripe based on cluster
   // index bounds. For the first stripe, adjusts rowInCurrentStripe_ to the
@@ -228,10 +214,8 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
 
   // Index related fields.
   const ClusterIndex* clusterIndex_{nullptr};
-  std::optional<velox::serializer::EncodedKeyBounds> encodedKeyBounds_;
-  // Index reader for seeking to row positions based on cluster index bounds.
-  // Only created for the first and last stripes when index bounds are set.
-  std::unique_ptr<index::ClusterIndexReader> indexReader_;
+  // File-level row range from index lookup, if index bounds are active.
+  std::optional<RowRange> indexRowRange_;
 
   // The current stripe being read.
   int32_t currentStripe_{};
@@ -436,46 +420,36 @@ void SelectiveNimbleRowReader::loadCurrentStripe() {
       true);
   rowSizeTracker_->finalizeProjection();
   columnReader_->setIsTopLevel();
-  // Enqueue the key stream before the stripe IO load for potential IO
-  // coalescing with data streams.
-  buildIndexReader(params);
   streams_.load();
   setStripeRowRange();
 }
 
 bool SelectiveNimbleRowReader::hasIndexBounds() const {
-  return clusterIndex_ != nullptr;
+  return indexRowRange_.has_value();
 }
 
 void SelectiveNimbleRowReader::initIndexBounds() {
   NIMBLE_CHECK_NULL(clusterIndex_);
-  // Early return if there are no stripes to read based on the read range
   if (currentStripe_ >= endStripe_) {
     return;
   }
 
-  // Check if index filtering is disabled.
   if (!options_.indexEnabled()) {
     return;
   }
 
-  // Verify that the file has a cluster index
   if (!readerBase_->tablet().hasClusterIndex()) {
     return;
   }
 
-  // Load the cluster index from the file
   auto* clusterIndex = readerBase_->tablet().clusterIndex();
   NIMBLE_CHECK_NOT_NULL(clusterIndex);
 
-  // Convert index column names from nimble schema to file schema before
-  // passing to convertFilterToIndexBounds.
   const auto indexColumns = convertIndexColumnsToFileSchema(
       clusterIndex->indexColumns(),
       readerBase_->nimbleSchema(),
       readerBase_->fileSchema());
 
-  // Convert filters from scanSpec to index bounds.
   const auto& sortOrders = clusterIndex->sortOrders();
   auto result = convertFilterToIndexBounds(
       indexColumns,
@@ -508,95 +482,54 @@ void SelectiveNimbleRowReader::initIndexBounds() {
       1,
       "Expected single encoded bounds, got {}",
       encodedBounds.size());
-  encodedKeyBounds_ = std::move(encodedBounds[0]);
 
-  updateStartStripeFromLowerIndexBound();
-  updateEndStripeFromUpperIndexBound();
-  // Reset currentStripe_ to startStripe_ since startStripe_ may have been
-  // updated by updateStartStripeFromLowerIndexBound().
-  currentStripe_ = startStripe_;
-}
-
-void SelectiveNimbleRowReader::updateStartStripeFromLowerIndexBound() {
-  NIMBLE_CHECK(encodedKeyBounds_.has_value());
-  if (!encodedKeyBounds_->lowerKey.has_value()) {
-    return;
-  }
-
-  const auto originalStartStripe = startStripe_;
-
-  // Lookup the first stripe that matches the lower bound
-  const auto lowerLocation =
-      clusterIndex_->lookup(encodedKeyBounds_->lowerKey.value());
-  if (lowerLocation.has_value()) {
-    startStripe_ =
-        std::max(startStripe_, static_cast<int>(lowerLocation->stripeIndex));
-  } else if (encodedKeyBounds_->lowerKey.value() > clusterIndex_->maxKey()) {
-    // If the lower bound key is greater than the max key, skip all the
-    // stripes entirely.
-    startStripe_ = endStripe_;
-  }
-
-  // Update random skip tracker for rows in stripes that are filtered out
-  // entirely.
-  if (startStripe_ > originalStartStripe) {
-    int64_t rowsSkipped{0};
-    for (int stripe = originalStartStripe; stripe < startStripe_; ++stripe) {
+  // Single lookup to get the exact file-level row range.
+  const auto lookupResult = clusterIndex_->lookup(
+      index::IndexLookup::LookupRequest::rangeScan({encodedBounds}));
+  const auto rowRanges = lookupResult[0];
+  if (rowRanges.empty()) {
+    int64_t rowsSkipped = 0;
+    for (int stripe = startStripe_; stripe < endStripe_; ++stripe) {
       rowsSkipped += readerBase_->tablet().stripeRowCount(stripe);
     }
     maybeUpdateRandomSkip(rowsSkipped);
-  }
-}
-
-void SelectiveNimbleRowReader::updateEndStripeFromUpperIndexBound() {
-  NIMBLE_CHECK(encodedKeyBounds_.has_value());
-  if (!encodedKeyBounds_->upperKey.has_value()) {
-    return;
-  }
-  // Early return if the lower bound filtering already filtered out all stripes.
-  if (startStripe_ >= endStripe_) {
+    startStripe_ = endStripe_;
+    currentStripe_ = startStripe_;
     return;
   }
 
+  NIMBLE_CHECK_EQ(rowRanges.size(), 1, "Expected single row range per lookup");
+  indexRowRange_ = rowRanges[0];
+  const auto& rowRange = indexRowRange_.value();
+
+  const auto& tablet = readerBase_->tablet();
+  const auto originalStartStripe = startStripe_;
   const auto originalEndStripe = endStripe_;
 
-  const auto& upperKey = encodedKeyBounds_->upperKey.value();
-  // Lookup the last stripe that matches the upper bound
-  const auto upperLocation = clusterIndex_->lookup(upperKey);
-  if (upperLocation.has_value()) {
-    endStripe_ =
-        std::min(endStripe_, static_cast<int>(upperLocation->stripeIndex + 1));
-  } else if (encodedKeyBounds_->upperKey.value() <= clusterIndex_->minKey()) {
-    // If the upper bound key is less than the min key, skip all the stripes
-    // entirely.
-    endStripe_ = startStripe_;
+  // Derive stripe range from the file-level row range.
+  startStripe_ = std::max(
+      startStripe_, static_cast<int>(tablet.rowToStripe(rowRange.startRow)));
+  endStripe_ = std::min(
+      endStripe_,
+      static_cast<int>(tablet.rowToStripe(rowRange.endRow - 1) + 1));
+
+  // Update random skip tracker for leading skipped stripes.
+  if (startStripe_ > originalStartStripe) {
+    int64_t rowsSkipped = 0;
+    for (int stripe = originalStartStripe; stripe < startStripe_; ++stripe) {
+      rowsSkipped += tablet.stripeRowCount(stripe);
+    }
+    maybeUpdateRandomSkip(rowsSkipped);
   }
 
-  // Track rows from trailing stripes that are filtered out entirely.
-  // These will be combined with rows skipped at the end of the last stripe
-  // when updating the random skip tracker.
+  // Track trailing skipped stripes.
   if (endStripe_ < originalEndStripe) {
     for (int stripe = endStripe_; stripe < originalEndStripe; ++stripe) {
-      trailingSkippedRows_ += readerBase_->tablet().stripeRowCount(stripe);
+      trailingSkippedRows_ += tablet.stripeRowCount(stripe);
     }
   }
-}
 
-void SelectiveNimbleRowReader::buildIndexReader(NimbleParams& params) {
-  if (!hasIndexBounds()) {
-    return;
-  }
-  // We only need row position seek in the first and the last stripe to find
-  // the start and end row positions based on index bounds. Note that the first
-  // and the last stripe can also be the same one.
-  if ((currentStripe_ != startStripe_) && (currentStripe_ != endStripe_ - 1)) {
-    return;
-  }
-  indexReader_ = index::ClusterIndexReader::create(
-      params.streams().enqueueKeyStream(),
-      params.streams().stripeIndex(),
-      params.streams().clusterIndex(),
-      &params.pool());
+  currentStripe_ = startStripe_;
 }
 
 void SelectiveNimbleRowReader::maybeUpdateRandomSkip(int64_t rowsSkipped) {
@@ -630,44 +563,35 @@ void SelectiveNimbleRowReader::setAtEnd() {
 }
 
 void SelectiveNimbleRowReader::setStripeRowRange() {
-  if (indexReader_ == nullptr) {
+  if (!hasIndexBounds()) {
+    return;
+  }
+  // Only the first and last stripes need row-level narrowing.
+  if (currentStripe_ != startStripe_ && currentStripe_ != endStripe_ - 1) {
     return;
   }
 
-  // For the first stripe, seek to the lower bound position
-  if (currentStripe_ == startStripe_ &&
-      encodedKeyBounds_->lowerKey.has_value()) {
-    const auto startRow =
-        indexReader_->seekAtOrAfter(encodedKeyBounds_->lowerKey.value());
-    NIMBLE_CHECK(
-        startRow.has_value(),
-        "Failed to seek to lower bound key in stripe {}",
-        currentStripe_);
-    // Update current stripe row to start from the position at or after
-    // lower bound
-    rowInCurrentStripe_ = startRow.value();
+  const auto& rowRange = indexRowRange_.value();
+  const auto stripeStart = stripeRowOffsets_[currentStripe_];
+  const auto numStripeRows =
+      readerBase_->tablet().stripeRowCount(currentStripe_);
+
+  // For the first stripe, narrow the start row.
+  if (currentStripe_ == startStripe_ && rowRange.startRow > stripeStart) {
+    rowInCurrentStripe_ = rowRange.startRow - stripeStart;
     maybeUpdateRandomSkip(rowInCurrentStripe_);
   }
 
-  // For the last stripe, set the end row based on upper bound
-  if (currentStripe_ == endStripe_ - 1 &&
-      encodedKeyBounds_->upperKey.has_value()) {
-    const auto endRow =
-        indexReader_->seekAtOrAfter(encodedKeyBounds_->upperKey.value());
-    if (endRow.has_value()) {
-      // Set the end row for the current stripe
-      endRowInCurrentStripe_ = endRow.value();
-      const auto numStripeRows =
-          readerBase_->tablet().stripeRowCount(currentStripe_);
-      // Accumulate rows skipped at the end of the last stripe.
-      // Combined with trailingSkippedRows_ and updated in nextRowNumber()
-      // when we reach kAtEnd.
-      trailingSkippedRows_ += numStripeRows - endRow.value();
+  // For the last stripe, narrow the end row.
+  if (currentStripe_ == endStripe_ - 1) {
+    const auto stripeEnd = stripeStart + numStripeRows;
+    if (rowRange.endRow < stripeEnd) {
+      endRowInCurrentStripe_ = rowRange.endRow - stripeStart;
+      trailingSkippedRows_ += stripeEnd - rowRange.endRow;
     }
   }
-  // Skip to the starting row position within the stripe. This only happens when
-  // cluster index bounds are set and the lower bound maps to a non-zero row
-  // position within the first stripe.
+
+  // Skip to the starting row position within the stripe.
   if (rowInCurrentStripe_ > 0 &&
       (!endRowInCurrentStripe_.has_value() ||
        endRowInCurrentStripe_.value() > rowInCurrentStripe_)) {
@@ -738,11 +662,11 @@ std::unique_ptr<dwio::common::RowReader> SelectiveNimbleReader::createRowReader(
 std::unique_ptr<dwio::common::IndexReader>
 SelectiveNimbleReader::createIndexReader(
     const dwio::common::RowReaderOptions& options) const {
-  VELOX_CHECK_NOT_NULL(
-      readerBase_->tablet().clusterIndex(),
-      "Cannot create index reader: file has no cluster index section. "
-      "The table metadata indicates this file should have an index, "
-      "but the file was written without one.");
+  // Empty files (no stripes) have no cluster index even when index config
+  // is set. Return nullptr so the caller handles it as no-index.
+  if (readerBase_->tablet().clusterIndex() == nullptr) {
+    return nullptr;
+  }
   return std::make_unique<SelectiveNimbleIndexReader>(readerBase_, options);
 }
 

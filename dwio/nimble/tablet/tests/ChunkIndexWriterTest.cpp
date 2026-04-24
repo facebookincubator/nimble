@@ -21,7 +21,7 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/index/ChunkIndexGroup.h"
-#include "dwio/nimble/index/tests/IndexTestUtils.h"
+#include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
 
 #include "dwio/nimble/tablet/ChunkIndexGenerated.h"
 #include "dwio/nimble/tablet/Constants.h"

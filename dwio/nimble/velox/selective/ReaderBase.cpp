@@ -16,7 +16,6 @@
 
 #include "dwio/nimble/velox/selective/ReaderBase.h"
 
-#include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
@@ -139,19 +138,6 @@ std::shared_ptr<index::StreamIndex> StripeStreams::streamIndex(
   const uint32_t streamSize =
       readerBase_->tablet().streamSize(*stripeIdentifier_, streamId);
   return chunkIndex->createStreamIndex(stripe_, streamId, streamSize);
-}
-
-std::unique_ptr<velox::dwio::common::SeekableInputStream>
-StripeStreams::enqueueKeyStream() {
-  NIMBLE_CHECK(stripeIdentifier_.has_value());
-
-  const auto& indexGroup = stripeIdentifier_->clusterIndex();
-  NIMBLE_CHECK_NOT_NULL(indexGroup);
-
-  const auto region = indexGroup->keyStreamRegion(
-      stripe_, readerBase_->tablet().stripeOffset(stripe_));
-  const dwio::common::StreamIdentifier sid(kKeyStreamId);
-  return readerBase_->input().enqueue(region, &sid);
 }
 
 } // namespace facebook::nimble

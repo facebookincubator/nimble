@@ -51,14 +51,25 @@ std::ostream& operator<<(std::ostream& out, IndexType indexType);
 /// enabling the reader to select the best index for a given query without
 /// knowing the concrete type.
 ///
-/// The lookup semantics differ by index type:
-/// - Cluster index: returns file-level RowRanges spanning matching rows
-/// - Dense index: returns file-level RowRanges for exact single rows
+/// Two lookup modes:
+/// - Point lookup: find rows matching exact keys. Works on both index types.
+/// - Range scan: find rows in [lower, upper) ranges with exclusive upper
+///   bound. Only supported on cluster index.
 class IndexLookup {
  public:
-  /// Batch lookup request. Contains encoded key bounds and options.
+  /// Batch lookup request. Contains encoded keys or key bounds and options.
   class LookupRequest {
    public:
+    /// Lookup mode determines how key bounds are interpreted.
+    enum class Mode {
+      /// Point lookup: find rows where key == encodedKey.
+      /// Each key bound has lowerKey == upperKey == the lookup key.
+      PointLookup,
+      /// Range scan: find rows where key in [lower, upper).
+      /// Upper bound is exclusive.
+      RangeScan,
+    };
+
     /// Options for controlling lookup behavior.
     struct Options {
       /// Limit results to this file-level row range. Rows outside this range
@@ -67,20 +78,41 @@ class IndexLookup {
       std::optional<RowRange> rowRange;
     };
 
-    LookupRequest(
-        const std::vector<velox::serializer::EncodedKeyBounds>& keyBounds,
-        Options options = {})
-        : keyBounds_{keyBounds}, options_{options} {
-      NIMBLE_CHECK(!keyBounds_.empty());
+    /// Creates a point lookup request for exact key matching.
+    static LookupRequest pointLookup(
+        std::vector<std::string> encodedKeys,
+        Options options = {}) {
+      return LookupRequest(std::move(encodedKeys), options);
+    }
+
+    /// Creates a range scan request with exclusive upper bounds.
+    static LookupRequest rangeScan(
+        std::vector<velox::serializer::EncodedKeyBounds> keyBounds,
+        Options options = {}) {
+      return LookupRequest(std::move(keyBounds), options);
+    }
+
+    Mode mode() const {
+      return mode_;
     }
 
     size_t size() const {
-      return keyBounds_.size();
+      return mode_ == Mode::PointLookup ? pointKeys_.size()
+                                        : rangeBounds_.size();
     }
 
-    const velox::serializer::EncodedKeyBounds& keyBound(uint32_t idx) const {
-      NIMBLE_DCHECK_LT(idx, keyBounds_.size());
-      return keyBounds_[idx];
+    /// Returns the encoded key at the given index (point lookup only).
+    std::string_view pointKey(uint32_t idx) const {
+      NIMBLE_CHECK_EQ(mode_, Mode::PointLookup);
+      NIMBLE_CHECK_LT(idx, pointKeys_.size());
+      return pointKeys_[idx];
+    }
+
+    /// Returns the key bounds at the given index (range scan only).
+    const velox::serializer::EncodedKeyBounds& rangeBound(uint32_t idx) const {
+      NIMBLE_CHECK_EQ(mode_, Mode::RangeScan);
+      NIMBLE_CHECK_LT(idx, rangeBounds_.size());
+      return rangeBounds_[idx];
     }
 
     const Options& options() const {
@@ -88,7 +120,29 @@ class IndexLookup {
     }
 
    private:
-    const std::vector<velox::serializer::EncodedKeyBounds> keyBounds_;
+    // Point lookup constructor.
+    LookupRequest(std::vector<std::string> keys, Options options)
+        : mode_{Mode::PointLookup},
+          pointKeys_{std::move(keys)},
+          options_{options} {
+      NIMBLE_CHECK(!pointKeys_.empty());
+    }
+
+    // Range scan constructor.
+    LookupRequest(
+        std::vector<velox::serializer::EncodedKeyBounds> keyBounds,
+        Options options)
+        : mode_{Mode::RangeScan},
+          rangeBounds_{std::move(keyBounds)},
+          options_{options} {
+      NIMBLE_CHECK(!rangeBounds_.empty());
+    }
+
+    const Mode mode_;
+    // Point lookup: single encoded keys.
+    const std::vector<std::string> pointKeys_;
+    // Range scan: key bounds with lower/upper.
+    const std::vector<velox::serializer::EncodedKeyBounds> rangeBounds_;
     const Options options_;
   };
 
@@ -148,6 +202,23 @@ class IndexLookup {
   virtual LookupResult lookup(const LookupRequest& request) const = 0;
 };
 
+inline std::string toString(IndexLookup::LookupRequest::Mode mode) {
+  switch (mode) {
+    case IndexLookup::LookupRequest::Mode::PointLookup:
+      return "PointLookup";
+    case IndexLookup::LookupRequest::Mode::RangeScan:
+      return "RangeScan";
+    default:
+      NIMBLE_UNREACHABLE("Unknown Mode: {}", static_cast<int>(mode));
+  }
+}
+
+inline std::ostream& operator<<(
+    std::ostream& out,
+    IndexLookup::LookupRequest::Mode mode) {
+  return out << toString(mode);
+}
+
 } // namespace facebook::nimble::index
 
 template <>
@@ -156,5 +227,16 @@ struct fmt::formatter<facebook::nimble::index::IndexType>
   auto format(facebook::nimble::index::IndexType s, format_context& ctx) const {
     return formatter<std::string>::format(
         facebook::nimble::index::toString(s), ctx);
+  }
+};
+
+template <>
+struct fmt::formatter<facebook::nimble::index::IndexLookup::LookupRequest::Mode>
+    : formatter<std::string> {
+  auto format(
+      facebook::nimble::index::IndexLookup::LookupRequest::Mode mode,
+      format_context& ctx) const {
+    return formatter<std::string>::format(
+        facebook::nimble::index::toString(mode), ctx);
   }
 };
