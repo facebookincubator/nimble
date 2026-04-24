@@ -26,6 +26,7 @@
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/Compression.h"
 #include "dwio/nimble/encodings/Encoding.h"
+#include "velox/dwio/common/DecoderUtil.h"
 
 // The FixedBitWidthEncoding stores integer data in a fixed number of
 // bits equal to the number of bits required to represent the largest value in
@@ -156,24 +157,21 @@ template <typename V>
 void FixedBitWidthEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  // Fast path: use bulk scan for integral types with no filter and no hook.
-  // Supports 4-byte types (common for dictionary indices) and 8-byte types
-  // (int64/uint64 columns). The fast path only supports ExtractToReader.
-  // Output type must be compatible:
-  // - Same type: direct memcpy
-  // - Widening (larger output type): loop with conversion
   using OutputType = detail::ValueType<typename V::DataType>;
-  constexpr bool kExtractToReader =
-      std::is_same_v<typename V::Extract, velox::dwio::common::ExtractToReader>;
-  constexpr bool kSameType = std::is_same_v<physicalType, OutputType>;
-  constexpr bool kIsWidening = sizeof(OutputType) > sizeof(physicalType) &&
+  constexpr bool kIsSuitableWidth =
+      (isFourByteIntegralType<physicalType>() ||
+       isEightByteIntegralType<physicalType>());
+  constexpr bool kIsFluidCast = sizeof(OutputType) >= sizeof(physicalType) &&
       std::is_integral_v<OutputType> && std::is_integral_v<physicalType>;
-  constexpr bool kIsFourByte = isFourByteIntegralType<physicalType>();
-  constexpr bool kIsEightByteIntegral = isEightByteIntegralType<physicalType>();
-  constexpr bool kCanUseFastPath = (kIsFourByte || kIsEightByteIntegral) &&
-      !V::kHasFilter && !V::kHasHook && kExtractToReader &&
-      (kSameType || kIsWidening);
-  if constexpr (kCanUseFastPath) {
+  // Fast path: use bulk scan for 4-byte and 8-byte integral types with no
+  // filter and no hook. Supports both signed and unsigned types as long as
+  // the output type is integral and at least as wide as the physical type.
+  if constexpr (
+      kIsSuitableWidth && !V::kHasFilter && !V::kHasHook &&
+      std::is_same_v<
+          typename V::Extract,
+          velox::dwio::common::ExtractToReader> &&
+      kIsFluidCast) {
     auto* nulls = visitor.reader().rawNullsInReadRange();
     detail::readWithVisitorFast(*this, visitor, params, nulls);
     return;
@@ -197,8 +195,7 @@ void FixedBitWidthEncoding<T>::bulkScan(
     const vector_size_t* selectedRows,
     vector_size_t numSelected,
     const vector_size_t* scatterRows) {
-  using DataType = typename V::DataType;
-  using OutputType = detail::ValueType<DataType>;
+  using OutputType = detail::ValueType<typename V::DataType>;
   static_assert(
       isFourByteIntegralType<physicalType>() ||
           isEightByteIntegralType<physicalType>(),
@@ -262,10 +259,18 @@ void FixedBitWidthEncoding<T>::bulkScan(
     }
   }
 
-  // Update row_ based on the last row read.
+  // Scatter: when nulls are present (kScatter=true), values are packed
+  // contiguously but need to be placed at their correct output positions.
+  // Process in reverse to avoid overwriting unread values.
+  if constexpr (kScatter) {
+    for (int32_t i = numSelected - 1; i >= 0; --i) {
+      values[scatterRows[i]] = values[i];
+    }
+  }
+
   row_ += selectedRows[numSelected - 1] - currentRow + 1;
 
-  visitor.addNumValues(V::dense ? numRows : numSelected);
+  visitor.addNumValues(numRows);
   visitor.setRowIndex(visitor.numRows());
 }
 
