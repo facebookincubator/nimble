@@ -113,6 +113,9 @@ TEST(OptionsTest, deserializerOptionsDefaults) {
   DeserializerOptions options{};
 
   EXPECT_FALSE(options.hasHeader);
+  EXPECT_FALSE(options.shareZstdDecompressionContext);
+  EXPECT_EQ(options.decodeExecutor, nullptr);
+  EXPECT_EQ(options.maxDecodeParallelism, 0u);
 }
 
 TEST(OptionsTest, deserializerOptionsWithVersion) {

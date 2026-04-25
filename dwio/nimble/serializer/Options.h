@@ -236,6 +236,13 @@ struct DeserializerOptions {
   /// Minimum number of child streams per parallel decode task. Ensures each
   /// coroutine task has enough work to amortize threading overhead.
   uint32_t minStreamsPerDecodeUnit{1};
+
+  /// When true, the Deserializer creates a single ZSTD_DCtx and shares it
+  /// across all StreamData objects to avoid per-call allocation of a
+  /// ~100-200KB DCtx by ZSTD_decompress(). Mutually exclusive with parallel
+  /// decoding (decodeExecutor != nullptr or maxDecodeParallelism != 0),
+  /// because a single ZSTD_DCtx is not safe to use concurrently.
+  bool shareZstdDecompressionContext{false};
 };
 
 } // namespace facebook::nimble
