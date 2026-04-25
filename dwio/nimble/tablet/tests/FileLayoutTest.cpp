@@ -101,7 +101,7 @@ TEST_F(FileLayoutTest, nonEmptyFile) {
     EXPECT_GT(layout.footer.size(), 0);
     EXPECT_LT(layout.footer.offset(), layout.fileSize);
     EXPECT_EQ(layout.stripeGroups.size(), 1);
-    EXPECT_TRUE(layout.indexGroups.empty()); // No index configured
+    EXPECT_TRUE(layout.indexPartitions.empty()); // No index configured
 
     // Verify stripe group metadata
     const auto& stripeGroup = layout.stripeGroups[0];
@@ -134,25 +134,20 @@ TEST_F(FileLayoutTest, emptyFile) {
   EXPECT_EQ(layout.postscript.majorVersion(), nimble::kVersionMajor);
   EXPECT_EQ(layout.postscript.minorVersion(), nimble::kVersionMinor);
   EXPECT_TRUE(layout.stripeGroups.empty());
-  EXPECT_TRUE(layout.indexGroups.empty());
+  EXPECT_TRUE(layout.indexPartitions.empty());
   EXPECT_TRUE(layout.stripesInfo.empty());
 }
 
-TEST_F(FileLayoutTest, emptyFileWithIndex) {
-  // Test FileLayout::create() with empty file that has index enabled.
+TEST_F(FileLayoutTest, emptyFileWithChunkIndex) {
+  // Test FileLayout::create() with empty file that has chunk index enabled.
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
-
-  nimble::ClusterIndexConfig indexConfig{
-      .columns = {"col1"},
-      .sortOrders = {{.ascending = true}},
-  };
 
   auto tabletWriter = nimble::TabletWriter::create(
       &writeFile,
       *pool_,
       {
-          .indexConfig = indexConfig,
+          .enableChunkIndex = true,
       });
   tabletWriter->close();
   writeFile.close();
@@ -162,7 +157,7 @@ TEST_F(FileLayoutTest, emptyFileWithIndex) {
 
   EXPECT_EQ(layout.fileSize, file.size());
   EXPECT_TRUE(layout.stripeGroups.empty());
-  // Empty file with index still has no index groups (no stripes to index)
-  EXPECT_TRUE(layout.indexGroups.empty());
+  // Empty file with chunk index still has no index groups (no stripes to index)
+  EXPECT_TRUE(layout.indexPartitions.empty());
   EXPECT_TRUE(layout.stripesInfo.empty());
 }

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_library(nimble_index_test_utils IndexTestUtils.cpp)
+add_library(nimble_index_test_utils ClusterIndexTestUtils.cpp)
 target_link_libraries(
   nimble_index_test_utils
   nimble_index
@@ -43,8 +43,6 @@ add_executable(
   IndexConfigTest.cpp
   IndexFilterTest.cpp
   IndexLookupTest.cpp
-  ClusterIndexReaderTest.cpp
-  ClusterIndexGroupTest.cpp
   ClusterIndexTest.cpp
   ClusterIndexTestBase.cpp
 )
@@ -54,8 +52,11 @@ add_test(nimble_index_tests nimble_index_tests)
 target_link_libraries(
   nimble_index_tests
   nimble_index
+  nimble_tablet_reader
+  nimble_velox_reader
   nimble_velox_writer
   velox_core
+  velox_file
   velox_vector
   velox_vector_test_lib
   velox_memory

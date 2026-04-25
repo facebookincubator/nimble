@@ -25,7 +25,6 @@
 #include "dwio/nimble/index/ChunkIndex.h"
 #include "dwio/nimble/index/ChunkIndexGroup.h"
 #include "dwio/nimble/index/ClusterIndex.h"
-#include "dwio/nimble/index/ClusterIndexGroup.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
@@ -109,18 +108,15 @@ class StripeGroup {
 
 using index::ChunkIndex;
 using index::ChunkIndexGroup;
-using index::ClusterIndexGroup;
 
 class StripeIdentifier {
  public:
   StripeIdentifier(
       uint32_t stripeId,
       std::shared_ptr<StripeGroup> stripeGroup,
-      std::shared_ptr<ClusterIndexGroup> clusterIndex,
       std::shared_ptr<ChunkIndexGroup> chunkIndex = nullptr)
       : stripeId_{stripeId},
         stripeGroup_{std::move(stripeGroup)},
-        clusterIndex_{std::move(clusterIndex)},
         chunkIndex_{std::move(chunkIndex)} {}
 
   uint32_t stripeId() const {
@@ -131,10 +127,6 @@ class StripeIdentifier {
     return stripeGroup_;
   }
 
-  const std::shared_ptr<ClusterIndexGroup>& clusterIndex() const {
-    return clusterIndex_;
-  }
-
   const std::shared_ptr<ChunkIndexGroup>& chunkIndex() const {
     return chunkIndex_;
   }
@@ -142,7 +134,6 @@ class StripeIdentifier {
  private:
   uint32_t stripeId_;
   std::shared_ptr<StripeGroup> stripeGroup_;
-  std::shared_ptr<ClusterIndexGroup> clusterIndex_;
   std::shared_ptr<ChunkIndexGroup> chunkIndex_;
 };
 
@@ -180,10 +171,10 @@ class TabletReader {
     /// metadata bytes (MetadataCache already pins parsed objects).
     velox::dwio::common::BufferedInput* bufferedInput{nullptr};
 
-    /// If true, pins parsed metadata objects (StripeGroup, ClusterIndexGroup,
-    /// ChunkIndexGroup) in the cache with strong references so they are never
-    /// evicted. This avoids re-reading and re-parsing metadata on every stripe
-    /// access when the weak-pointer cache entries would otherwise expire.
+    /// If true, pins parsed metadata objects (StripeGroup, ChunkIndexGroup)
+    /// in the cache with strong references so they are never evicted. This
+    /// avoids re-reading and re-parsing metadata on every stripe access when
+    /// the weak-pointer cache entries would otherwise expire.
     bool pinFileMetadata{false};
   };
 
@@ -300,12 +291,23 @@ class TabletReader {
 
   /// The number of rows in the given stripe. These sum to tabletRowCount().
   uint32_t stripeRowCount(uint32_t stripe) const {
-    return stripeRowCounts_[stripe];
+    NIMBLE_CHECK_LT(stripe, stripeCount_);
+    return static_cast<uint32_t>(stripeRows_[stripe + 1] - stripeRows_[stripe]);
   }
 
   /// The number of stripes in the tablet.
   uint32_t stripeCount() const {
     return stripeCount_;
+  }
+
+  /// Returns the stripe index containing the given file-level row.
+  /// Uses binary search on cumulative stripe row counts.
+  uint32_t rowToStripe(uint64_t row) const;
+
+  /// Returns the file-level start row of the given stripe.
+  uint64_t stripeStartRow(uint32_t stripe) const {
+    NIMBLE_CHECK_LE(stripe, stripeCount_);
+    return stripeRows_[stripe];
   }
 
   uint64_t stripeOffset(uint32_t stripe) const {
@@ -407,25 +409,9 @@ class TabletReader {
   //
   void initClusterIndex();
 
-  // Returns the cached ClusterIndexGroup for the given stripe group index.
-  // The ClusterIndexGroup contains index metadata for efficient data filtering
-  // and skipping during reads.
-  std::shared_ptr<ClusterIndexGroup> clusterIndexGroup(
-      uint32_t stripeGroupIndex) const;
-
-  // Loads the ClusterIndexGroup for the given stripe group index from file.
-  // This is called by the cache when the index group is not already cached.
-  std::shared_ptr<ClusterIndexGroup> loadClusterIndexGroup(
-      uint32_t stripeGroupIndex) const;
-
-  // Eagerly pins the first cluster index group if it's already in the footer
-  // IOBuf. Pinning saves deserialization cost on subsequent accesses.
-  void preloadClusterIndex(const folly::IOBuf& footerIoBuf);
-
   // Holds the result of a coalesced metadata load for a stripe group.
   struct StripeGroupMetadata {
     std::shared_ptr<StripeGroup> stripeGroup;
-    std::shared_ptr<ClusterIndexGroup> clusterIndex;
     std::shared_ptr<ChunkIndexGroup> chunkIndex;
   };
 
@@ -536,12 +522,14 @@ class TabletReader {
 
   uint64_t tabletRowCount_{0};
   uint32_t stripeCount_{0};
-  const uint32_t* stripeRowCounts_{nullptr};
   const uint64_t* stripeOffsets_{nullptr};
+  // Prefix sum of stripe row counts for O(log n) rowToStripe lookup.
+  // stripeRows_[i] = total rows in stripes [0, i).
+  // Size is stripeCount_ + 1, with stripeRows_[0] = 0.
+  std::vector<uint64_t> stripeRows_;
 
   // Index related fields.
   std::unique_ptr<ClusterIndex> clusterIndex_;
-  mutable MetadataCache<uint32_t, ClusterIndexGroup> clusterIndexCache_;
 
   // Chunk index root, loaded from "chunk_index" optional section.
   std::unique_ptr<ChunkIndex> chunkIndex_;

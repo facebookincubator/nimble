@@ -41,21 +41,30 @@ class IndexLookupTest : public ::testing::Test {
   }
 };
 
-TEST_F(IndexLookupTest, basicRequest) {
-  std::vector<velox::serializer::EncodedKeyBounds> keys = {
-      makePointKey("aaa"), makePointKey("bbb")};
-  LookupRequest request(keys);
+TEST_F(IndexLookupTest, pointLookupRequest) {
+  auto request = LookupRequest::pointLookup({"aaa", "bbb"});
 
+  EXPECT_EQ(request.mode(), LookupRequest::Mode::PointLookup);
   EXPECT_EQ(request.size(), 2);
-  EXPECT_TRUE(request.keyBound(0).isPointLookup());
-  EXPECT_EQ(request.keyBound(0).lowerKey.value(), "aaa");
-  EXPECT_EQ(request.keyBound(1).lowerKey.value(), "bbb");
+  EXPECT_EQ(request.pointKey(0), "aaa");
+  EXPECT_EQ(request.pointKey(1), "bbb");
   EXPECT_FALSE(request.options().rowRange.has_value());
 }
 
+TEST_F(IndexLookupTest, rangeScanRequest) {
+  std::vector<velox::serializer::EncodedKeyBounds> keys = {
+      makeRangeKey("aaa", "zzz")};
+  auto request = LookupRequest::rangeScan(keys);
+
+  EXPECT_EQ(request.mode(), LookupRequest::Mode::RangeScan);
+  EXPECT_EQ(request.size(), 1);
+  EXPECT_EQ(request.rangeBound(0).lowerKey.value(), "aaa");
+  EXPECT_EQ(request.rangeBound(0).upperKey.value(), "zzz");
+}
+
 TEST_F(IndexLookupTest, withOptions) {
-  std::vector<velox::serializer::EncodedKeyBounds> keys = {makePointKey("key")};
-  LookupRequest request(keys, {.rowRange = RowRange(10, 100)});
+  auto request =
+      LookupRequest::pointLookup({"key"}, {.rowRange = RowRange(10, 100)});
 
   EXPECT_EQ(request.size(), 1);
   EXPECT_TRUE(request.options().rowRange.has_value());
@@ -63,27 +72,9 @@ TEST_F(IndexLookupTest, withOptions) {
   EXPECT_EQ(request.options().rowRange->endRow, 100);
 }
 
-TEST_F(IndexLookupTest, moveConstruction) {
-  std::vector<velox::serializer::EncodedKeyBounds> keys = {
-      makePointKey("aaa"), makePointKey("bbb"), makePointKey("ccc")};
-  LookupRequest request(std::move(keys));
-
-  EXPECT_EQ(request.size(), 3);
-  EXPECT_EQ(request.keyBound(2).lowerKey.value(), "ccc");
-}
-
 TEST_F(IndexLookupTest, emptyKeyBoundsThrows) {
-  NIMBLE_ASSERT_THROW(LookupRequest({}), "");
-}
-
-TEST_F(IndexLookupTest, rangeKeys) {
-  std::vector<velox::serializer::EncodedKeyBounds> keys = {
-      makeRangeKey("aaa", "zzz")};
-  LookupRequest request(keys);
-
-  EXPECT_FALSE(request.keyBound(0).isPointLookup());
-  EXPECT_EQ(request.keyBound(0).lowerKey.value(), "aaa");
-  EXPECT_EQ(request.keyBound(0).upperKey.value(), "zzz");
+  NIMBLE_ASSERT_THROW(LookupRequest::pointLookup({}), "");
+  NIMBLE_ASSERT_THROW(LookupRequest::rangeScan({}), "");
 }
 
 TEST_F(IndexLookupTest, singleKeyWithResult) {

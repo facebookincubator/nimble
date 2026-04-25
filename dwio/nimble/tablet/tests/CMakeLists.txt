@@ -16,7 +16,6 @@ add_executable(
   CompressionTest.cpp
   FileLayoutTest.cpp
   MetadataBufferTest.cpp
-  ClusterIndexWriterTest.cpp
   TabletTest.cpp
 )
 

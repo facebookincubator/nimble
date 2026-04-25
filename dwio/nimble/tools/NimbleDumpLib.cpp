@@ -1141,25 +1141,24 @@ void NimbleDumpLib::emitIndex() {
   }
 
   const auto* index = tabletReader->clusterIndex();
+  const auto indexLayout = index->layout();
+
   ostream_ << CYAN(enableColors_) << "Index" << RESET_COLOR(enableColors_)
            << std::endl;
   ostream_ << "Index Columns: ";
-  const auto& columns = index->indexColumns();
-  const auto& sortOrders = index->sortOrders();
-  for (size_t i = 0; i < columns.size(); ++i) {
+  for (size_t i = 0; i < indexLayout.indexColumns.size(); ++i) {
     if (i > 0) {
       ostream_ << ", ";
     }
-    ostream_ << columns[i] << " (" << (sortOrders[i].ascending ? "ASC" : "DESC")
+    ostream_ << indexLayout.indexColumns[i] << " ("
+             << (indexLayout.sortOrders[i].ascending ? "ASC" : "DESC")
              << " NULLS LAST)";
   }
   ostream_ << std::endl;
-  ostream_ << "Number of Stripes: " << commaSeparated(index->numStripes())
-           << std::endl;
-  ostream_ << "Number of Index Groups: "
-           << commaSeparated(index->numIndexGroups()) << std::endl;
+  ostream_ << "Number of Partitions: "
+           << commaSeparated(indexLayout.numPartitions) << std::endl;
 
-  if (index->numIndexGroups() > 0) {
+  if (!indexLayout.partitions.empty()) {
     ostream_ << "Index Groups:" << std::endl;
     TableFormatter groupFormatter(
         ostream_,
@@ -1169,36 +1168,48 @@ void NimbleDumpLib::emitIndex() {
          {"Offset", 15, Alignment::Right},
          {"Size", 15, Alignment::Right}},
         /*noHeader=*/false);
-    for (size_t i = 0; i < index->numIndexGroups(); ++i) {
-      auto metadata = index->groupMetadata(i);
+    for (size_t i = 0; i < indexLayout.partitions.size(); ++i) {
+      const auto& part = indexLayout.partitions[i];
       groupFormatter.writeRow({
           std::to_string(i),
-          toString(metadata.compressionType()),
-          commaSeparated(metadata.offset()),
-          commaSeparated(metadata.size()),
+          toString(part.metadataSection.compressionType()),
+          commaSeparated(part.metadataSection.offset()),
+          commaSeparated(part.metadataSection.size()),
       });
     }
 
-    // Log key stream offset and size per stripe.
-    ostream_ << "Key Streams:" << std::endl;
-    TableFormatter keyStreamFormatter(
+    ostream_ << "Partition Details:" << std::endl;
+    TableFormatter partitionFormatter(
         ostream_,
         enableColors_,
-        {{"Stripe", 8, Alignment::Right},
-         {"Offset", 15, Alignment::Right},
-         {"Size", 15, Alignment::Right}},
+        {{"Partition", 10, Alignment::Right},
+         {"Chunks", 10, Alignment::Right},
+         {"Rows", 12, Alignment::Right},
+         {"Key Stream", 15, Alignment::Right},
+         {"Metadata", 15, Alignment::Right},
+         {"Key Offset", 15, Alignment::Right}},
         /*noHeader=*/false);
-    for (size_t stripeIndex = 0; stripeIndex < index->numStripes();
-         ++stripeIndex) {
-      auto stripeId = tabletReader->stripeIdentifier(stripeIndex);
-      auto keyStreamRegion = stripeId.clusterIndex()->keyStreamRegion(
-          stripeIndex, tabletReader->stripeOffset(stripeIndex));
-      keyStreamFormatter.writeRow({
-          std::to_string(stripeIndex),
-          commaSeparated(keyStreamRegion.offset),
-          commaSeparated(keyStreamRegion.length),
+    uint64_t totalChunks = 0;
+    uint64_t totalKeyStreamBytes = 0;
+    uint64_t totalMetadataBytes = 0;
+    for (size_t i = 0; i < indexLayout.partitions.size(); ++i) {
+      const auto& part = indexLayout.partitions[i];
+      partitionFormatter.writeRow({
+          std::to_string(i),
+          commaSeparated(part.numChunks),
+          commaSeparated(part.numRows),
+          commaSeparated(part.keyStreamRegion.length),
+          commaSeparated(part.metadataSizeBytes),
+          commaSeparated(part.keyStreamRegion.offset),
       });
+      totalChunks += part.numChunks;
+      totalKeyStreamBytes += part.keyStreamRegion.length;
+      totalMetadataBytes += part.metadataSizeBytes;
     }
+    ostream_ << "Total Chunks: " << commaSeparated(totalChunks)
+             << ", Key Stream: " << commaSeparated(totalKeyStreamBytes)
+             << " bytes, Metadata: " << commaSeparated(totalMetadataBytes)
+             << " bytes" << std::endl;
   }
 }
 

@@ -13,7 +13,7 @@
 # limitations under the License.
 add_library(nimble_tools_common EncodingUtilities.cpp)
 
-target_link_libraries(nimble_tools_common nimble_common)
+target_link_libraries(nimble_tools_common nimble_common nimble_tablet_reader)
 
 add_library(nimble_dump_lib NimbleDumpLib.cpp)
 target_link_libraries(

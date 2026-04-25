@@ -47,12 +47,13 @@ FileLayout FileLayout::create(
   // Stripe groups
   layout.stripeGroups = tablet->stripeGroupsMetadata();
 
-  // Index groups (from ClusterIndex if present)
+  // Index partitions (from ClusterIndex if present).
   const auto* clusterIndex = tablet->clusterIndex();
   if (clusterIndex != nullptr) {
-    layout.indexGroups.reserve(clusterIndex->numIndexGroups());
-    for (size_t i = 0; i < clusterIndex->numIndexGroups(); ++i) {
-      layout.indexGroups.push_back(clusterIndex->groupMetadata(i));
+    const auto indexLayout = clusterIndex->layout(/*detail=*/false);
+    layout.indexPartitions.reserve(indexLayout.partitions.size());
+    for (const auto& part : indexLayout.partitions) {
+      layout.indexPartitions.push_back(part.metadataSection);
     }
   }
 

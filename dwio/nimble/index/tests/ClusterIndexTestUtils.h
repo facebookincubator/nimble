@@ -24,7 +24,7 @@
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/index/ChunkIndexGroup.h"
-#include "dwio/nimble/index/ClusterIndexGroup.h"
+#include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
@@ -64,7 +64,8 @@ std::vector<velox::RowVectorPtr> generateData(
 /// Writes row vectors to a Nimble file with cluster index.
 /// @param filePath Path to write the Nimble file.
 /// @param data Vector of RowVectorPtr to write.
-/// @param indexConfig Index configuration specifying columns, sort orders, etc.
+/// @param clusterIndexConfig Index configuration specifying columns, sort
+/// orders, etc.
 /// @param pool Memory pool for writing.
 /// @param flushPolicyFactory Optional factory for custom flush policy to
 /// control
@@ -72,7 +73,7 @@ std::vector<velox::RowVectorPtr> generateData(
 void writeFile(
     const std::string& filePath,
     const std::vector<velox::RowVectorPtr>& data,
-    IndexConfig indexConfig,
+    ClusterIndexConfig clusterIndexConfig,
     velox::memory::MemoryPool& pool,
     std::function<std::unique_ptr<FlushPolicy>()> flushPolicyFactory = nullptr);
 
@@ -111,19 +112,15 @@ class SingleChunkDecoder {
   InMemoryChunkedStream stream_;
 };
 
-/// Holds key stream statistics extracted from a ClusterIndexGroup for testing.
-struct KeyStreamStats {
-  /// Byte offset of key stream for each stripe.
-  std::vector<uint32_t> offsets;
-  /// Byte size of key stream for each stripe.
-  std::vector<uint32_t> sizes;
-  /// Accumulated chunk counts per stripe.
-  std::vector<uint32_t> chunkCounts;
-  /// Accumulated row counts per chunk.
+/// Holds partition-level cluster index statistics for testing.
+struct PartitionStats {
+  /// File offset of the key data blob.
+  uint64_t keyStreamOffset{0};
+  /// Total size of the key data blob.
+  uint32_t keyStreamSize{0};
+  /// Chunk-level stats (search boundaries).
   std::vector<uint32_t> chunkRows;
-  /// Byte offset of each chunk within its key stream.
   std::vector<uint32_t> chunkOffsets;
-  /// Last key value for each chunk.
   std::vector<std::string> chunkKeys;
 };
 
@@ -152,15 +149,8 @@ struct StreamSpec {
 /// Specification for a key chunk (for test data creation).
 struct KeyChunkSpec {
   uint32_t rowCount;
-  std::string firstKey;
-  std::string lastKey;
+  std::string key;
 };
-
-/// Creates a KeyStream with test data from the given chunk specifications.
-/// The buffer is used to store the chunk content and key data.
-KeyStream createKeyStream(
-    Buffer& buffer,
-    const std::vector<KeyChunkSpec>& chunkSpecs);
 
 /// Creates chunks for a stream from the given chunk specifications.
 /// The buffer is used to store the chunk content.
@@ -172,42 +162,42 @@ std::vector<Chunk> createChunks(
 /// The buffer is used to store the chunk content.
 Stream createStream(Buffer& buffer, const StreamSpec& spec);
 
-/// Test helper class for ClusterIndexGroup that provides access
-/// to private members for testing purposes. This is a friend class of
-/// ClusterIndexGroup.
-class ClusterIndexGroupTestHelper {
+/// Test helper class for ClusterIndex that provides access to private members
+/// for testing purposes. This is a friend class of ClusterIndex.
+class ClusterIndexTestHelper {
  public:
-  explicit ClusterIndexGroupTestHelper(const ClusterIndexGroup* indexGroup)
-      : indexGroup_(indexGroup) {}
+  explicit ClusterIndexTestHelper(const ClusterIndex* clusterIndex)
+      : clusterIndex_(clusterIndex) {}
 
-  /// Returns the group index.
-  uint32_t groupIndex() const {
-    return indexGroup_->groupIndex_;
+  /// Returns the partition-level statistics for the given partition.
+  PartitionStats partitionStats(uint32_t partitionIndex) const;
+
+  /// Returns the partition keys from the root index.
+  const std::vector<std::string_view>& partitionKeys() const {
+    return clusterIndex_->partitionKeys_;
   }
 
-  /// Returns the first stripe index in this group.
-  uint32_t firstStripe() const {
-    return indexGroup_->firstStripe_;
+  /// Lookup chunk by encoded key within a partition.
+  ChunkLocation lookupChunk(
+      uint32_t partitionIndex,
+      std::string_view encodedKey) const {
+    return clusterIndex_->lookupChunk(
+        clusterIndex_->loadPartition(partitionIndex), encodedKey);
   }
 
-  /// Returns the number of stripes in this group.
-  uint32_t stripeCount() const {
-    return indexGroup_->stripeCount_;
+  MetadataSection partitionSection(uint32_t partitionIndex) const {
+    return clusterIndex_->partitionSection(partitionIndex);
   }
 
-  /// Returns the key stream statistics for testing verification.
-  KeyStreamStats keyStreamStats() const;
-
-  /// Returns the length of a key chunk given its stream offset within a stripe.
-  /// Uses the next chunk offset (if exists) or stream length for the last
-  /// chunk.
-  uint32_t keyChunkLength(
-      uint32_t stripeIndex,
-      uint32_t chunkStreamOffset,
-      uint32_t keyStreamLength) const;
+  velox::common::Region keyStreamRegion(uint32_t partitionIndex) const {
+    const auto* partition = clusterIndex_->loadPartition(partitionIndex);
+    return velox::common::Region{
+        partition->index->key_stream_offset(),
+        partition->index->key_stream_size()};
+  }
 
  private:
-  const ClusterIndexGroup* const indexGroup_;
+  const ClusterIndex* const clusterIndex_;
 };
 
 /// Test helper class for ChunkIndexGroup.
@@ -233,6 +223,83 @@ class ChunkIndexTestHelper {
 
  private:
   const ChunkIndexGroup* const chunkIndex_;
+};
+
+/// Test-only cluster index metadata writer for tablet-level tests.
+/// Handles stripe key tracking and FlatBuffer serialization of
+/// ClusterIndexPartition and ClusterIndex root index.
+/// Does NOT perform key encoding — accepts key chunk specs directly.
+///
+/// Usage:
+///   auto helper = TestClusterIndexMetadataWriter(columns, sortOrders, ...);
+///   // For each stripe:
+///   helper.addStripe({{.rowCount = 100, .key = "aaa"}});
+///   // Wire into TabletWriter options:
+///   .stripeGroupFlushCallback = helper.createStripeGroupFlushCallback()
+///   .closeCallback = helper.createCloseCallback()
+class TestClusterIndexMetadataWriter {
+ public:
+  TestClusterIndexMetadataWriter(
+      velox::memory::MemoryPool& pool,
+      std::vector<std::string> columns,
+      std::vector<SortOrder> sortOrders,
+      bool enforceKeyOrder = false,
+      bool noDuplicateKey = false);
+
+  /// Tracks stripe key boundaries and chunk metadata from key chunk specs.
+  /// Call once per stripe, before TabletWriter::writeStripe().
+  void addStripe(const std::vector<KeyChunkSpec>& chunkSpecs);
+
+  /// Returns a stripe group flush callback for TabletWriter::Options.
+  TabletWriter::StripeGroupFlushCallback createStripeGroupFlushCallback();
+
+  /// Returns a close callback for TabletWriter::Options.
+  /// Writes the root index as an optional section during file close.
+  TabletWriter::CloseCallback createCloseCallback();
+
+ private:
+  struct ChunkIndex {
+    std::vector<uint32_t> chunkRows;
+    std::vector<uint32_t> chunkOffsets;
+    std::vector<std::string_view> chunkKeys;
+  };
+
+  struct IndexPartition {
+    ChunkIndex chunks;
+    std::unique_ptr<Buffer> encodingBuffer;
+    // File-level offset and size after flushKeyStream() writes the key data
+    // blob.
+    uint64_t keyStreamFileOffset{0};
+    uint32_t keyStreamFileSize{0};
+  };
+
+  void writeRoot(const WriteOptionalSectionFn& writeOptionalSection);
+
+  void flushKeyStream(size_t stripeCount, const WriteDataFn& writeData);
+
+  void flushPartitionMetadata(
+      size_t stripeCount,
+      const CreateMetadataSectionFn& createMetadataSection);
+
+  velox::memory::MemoryPool* const pool_;
+  const std::vector<std::string> columns_;
+  const std::vector<SortOrder> sortOrders_;
+  const bool enforceKeyOrder_;
+  const bool noDuplicateKey_;
+
+  // Buffered encoded key data within current partition.
+  std::string encodedKeyData_;
+
+  std::unique_ptr<IndexPartition> partitionIndex_;
+  std::vector<std::string_view> stripeKeys_;
+  std::vector<MetadataSection> indexPartitions_;
+  // Number of stripes in each partition.
+  std::vector<uint32_t> stripesPerPartition_;
+  // Row count for each partition.
+  std::vector<uint32_t> rowsPerPartition_;
+  // Number of stripes added since the last partition flush.
+  uint32_t currentPartitionStripes_{0};
+  std::unique_ptr<Buffer> rootBuffer_;
 };
 
 } // namespace facebook::nimble::index::test

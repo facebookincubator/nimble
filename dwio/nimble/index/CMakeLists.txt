@@ -17,8 +17,7 @@ add_library(
   ChunkIndex.cpp
   ChunkIndexGroup.cpp
   ClusterIndex.cpp
-  ClusterIndexGroup.cpp
-  ClusterIndexReader.cpp
+  ClusterIndexWriter.cpp
   IndexFilter.cpp
   IndexLookup.cpp
   SortOrder.cpp

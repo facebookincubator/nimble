@@ -294,16 +294,16 @@ class E2EIndexTestBase : public ::testing::Test {
     VeloxWriterOptions options;
     options.enableChunking = true;
     options.enableChunkIndex = enableChunkIndex;
-    IndexConfig indexConfig;
-    indexConfig.columns = indexColumns;
-    indexConfig.sortOrders =
+    ClusterIndexConfig clusterIndexConfig;
+    clusterIndexConfig.columns = indexColumns;
+    clusterIndexConfig.sortOrders =
         std::vector<SortOrder>(indexColumns.size(), sortOrder);
-    indexConfig.enforceKeyOrder = true;
-    indexConfig.noDuplicateKey = noDuplicateKey;
+    clusterIndexConfig.enforceKeyOrder = true;
+    clusterIndexConfig.noDuplicateKey = noDuplicateKey;
     if (encodingLayout.has_value()) {
-      indexConfig.encodingLayout = std::move(encodingLayout).value();
+      clusterIndexConfig.encodingLayout = std::move(encodingLayout).value();
     }
-    options.indexConfig = std::move(indexConfig);
+    options.clusterIndexConfig = std::move(clusterIndexConfig);
 
     // Use small stripe and chunk sizes to generate multiple stripes and write
     // groups for better index test coverage.
@@ -3634,7 +3634,8 @@ TEST_F(E2EIndexTestBase, CreateIndexReaderWithoutClusterIndex) {
     auto scanSpec = createScanSpec(rowType, {});
     rowReaderOpts.setScanSpec(std::move(scanSpec));
 
-    EXPECT_THROW(reader->createIndexReader(rowReaderOpts), VeloxRuntimeError);
+    // Files without cluster index return nullptr instead of throwing.
+    EXPECT_EQ(reader->createIndexReader(rowReaderOpts), nullptr);
   }
 }
 

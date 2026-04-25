@@ -31,7 +31,8 @@
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/index/ChunkIndexGroup.h"
-#include "dwio/nimble/index/tests/IndexTestUtils.h"
+#include "dwio/nimble/index/IndexLookup.h"
+#include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/TabletReader.h"
@@ -299,8 +300,7 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
       };
 
       for (auto& stripe : stripesData) {
-        tabletWriter->writeStripe(
-            stripe.rowCount, stripe.streams, /*keyStream=*/std::nullopt);
+        tabletWriter->writeStripe(stripe.rowCount, stripe.streams);
       }
 
       tabletWriter->close();
@@ -498,8 +498,7 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
     auto stripesData = createStripesData(rng, stripes, buffer);
 
     for (auto& stripe : stripesData) {
-      tabletWriter->writeStripe(
-          stripe.rowCount, stripe.streams, /*keyStream=*/std::nullopt);
+      tabletWriter->writeStripe(stripe.rowCount, stripe.streams);
     }
 
     tabletWriter->close();
@@ -1325,12 +1324,12 @@ class TabletWithIndexTest : public TabletTest {
   // Specification for testing index lookup results
   struct LookupTestCase {
     std::string key;
-    std::optional<uint32_t>
-        expectedStripeIndex; // nullopt means no match expected
+    std::optional<nimble::RowRange>
+        expectedRange; // nullopt means no match expected
   };
 
   // Specification for key lookup verification through
-  // ClusterIndexGroup::lookupChunk
+  // ClusterIndex::lookupChunk
   struct KeyLookupTestCase {
     std::string key; // The key to look up
     uint32_t expectedStripeIndex; // Expected stripe index
@@ -1356,29 +1355,26 @@ class TabletWithIndexTest : public TabletTest {
     return streams;
   }
 
-  // Helper to create a KeyStream using the shared implementation
-  static nimble::KeyStream createKeyStream(
-      nimble::Buffer& buffer,
-      const std::vector<KeyChunkSpec>& chunkSpecs) {
-    return nimble::index::test::createKeyStream(buffer, chunkSpecs);
-  }
-
-  // Helper to verify tablet index lookups
+  // Helper to verify tablet index lookups.
+  // Uses lower-bound-only lookup to test key-to-row resolution:
+  // startRow = first row >= key, endRow = total file rows.
+  // Keys beyond all partitions produce empty results.
   static void verifyClusterIndexLookups(
       const nimble::ClusterIndex* index,
       const std::vector<LookupTestCase>& testCases) {
     for (const auto& testCase : testCases) {
-      auto location = index->lookup(testCase.key);
-      if (testCase.expectedStripeIndex.has_value()) {
-        ASSERT_TRUE(location.has_value())
-            << "Expected key '" << testCase.key << "' to match stripe "
-            << testCase.expectedStripeIndex.value() << ", but got no match";
-        EXPECT_EQ(location->stripeIndex, testCase.expectedStripeIndex.value())
-            << "Key '" << testCase.key << "' matched wrong stripe";
+      SCOPED_TRACE(fmt::format("key '{}'", testCase.key));
+      std::vector<velox::serializer::EncodedKeyBounds> keyBounds = {
+          {.lowerKey = testCase.key}};
+      auto result = index->lookup(
+          nimble::index::IndexLookup::LookupRequest::rangeScan(keyBounds));
+      ASSERT_EQ(result.size(), 1);
+      if (testCase.expectedRange.has_value()) {
+        ASSERT_EQ(result[0].size(), 1);
+        EXPECT_EQ(result[0][0].startRow, testCase.expectedRange->startRow);
+        EXPECT_EQ(result[0][0].endRow, testCase.expectedRange->endRow);
       } else {
-        EXPECT_FALSE(location.has_value())
-            << "Expected key '" << testCase.key
-            << "' to have no match, but got stripe " << location->stripeIndex;
+        EXPECT_TRUE(result[0].empty());
       }
     }
   }
@@ -1396,13 +1392,8 @@ class TabletWithIndexTest : public TabletTest {
       const nimble::index::test::StreamStats& streamStats) {
     auto stripeIdentifier = tablet.stripeIdentifier(stripeIdx);
 
-    ASSERT_NE(stripeIdentifier.clusterIndex(), nullptr)
-        << "Index group should be available for stripe " << stripeIdx;
     ASSERT_NE(stripeIdentifier.stripeGroup(), nullptr)
         << "Stripe group should be available for stripe " << stripeIdx;
-
-    nimble::index::test::ClusterIndexGroupTestHelper indexGroupHelper(
-        stripeIdentifier.clusterIndex().get());
 
     // Get stream sizes from stripe group metadata
     auto streamSizes = tablet.streamSizes(stripeIdentifier);
@@ -1411,9 +1402,11 @@ class TabletWithIndexTest : public TabletTest {
 
     const uint32_t streamSize = streamSizes[streamId];
 
-    // Calculate stripe offset within the index group
-    const uint32_t stripeOffsetInGroup =
-        stripeIdx - indexGroupHelper.firstStripe();
+    // Calculate stripe offset within the chunk index group.
+    // Use the ChunkIndexTestHelper to get the first stripe of the group.
+    nimble::index::test::ChunkIndexTestHelper chunkHelper(
+        stripeIdentifier.chunkIndex().get());
+    const uint32_t stripeOffsetInGroup = stripeIdx - chunkHelper.firstStripe();
 
     // streamStats.chunkCounts now contains accumulated chunk counts for this
     // stream only across stripes. We can directly use these to calculate
@@ -1454,17 +1447,21 @@ class TabletWithIndexTest : public TabletTest {
     }
   }
 
-  // Helper to verify key lookups through ClusterIndexGroup::lookupChunk.
+  // Helper to verify key lookups through ClusterIndex::lookupChunk.
   // This verifies that:
-  // 1. Each key can be looked up through the index group
-  // 2. The returned row offset within the stripe is correct
-  // 3. The file row ID (stripe start row + row offset) matches expected value
+  // 1. Each key can be looked up through the cluster index
+  // 2. The returned row offset is correct (partition-wide)
+  // 3. The file row ID (partition start row + row offset) matches expected
+  // value
   //
-  // File row ID = sum of row counts of all previous stripes + row offset within
-  // stripe
+  // lookupChunk returns partition-wide row offsets (accumulated across all
+  // sub-partitions in the partition). File row ID = start row of partition's
+  // first stripe + row offset.
   static void verifyKeyLookupFileRowIds(
       const nimble::TabletReader& tablet,
       const std::vector<KeyLookupTestCase>& testCases) {
+    nimble::test::TabletReaderTestHelper tabletHelper(&tablet);
+
     // Pre-compute stripe start row offsets
     std::vector<uint64_t> stripeStartRows;
     stripeStartRows.reserve(tablet.stripeCount());
@@ -1474,32 +1471,42 @@ class TabletWithIndexTest : public TabletTest {
       startRow += tablet.stripeRowCount(i);
     }
 
+    // Pre-compute partition start rows (row offset of first stripe in each
+    // partition).
+    uint32_t maxPartition = 0;
+    for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
+      maxPartition = std::max(maxPartition, tabletHelper.stripeGroupIndex(i));
+    }
+    std::vector<uint64_t> partitionStartRows(maxPartition + 1, UINT64_MAX);
+    for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
+      const uint32_t partitionIndex = tabletHelper.stripeGroupIndex(i);
+      if (partitionStartRows[partitionIndex] == UINT64_MAX) {
+        partitionStartRows[partitionIndex] = stripeStartRows[i];
+      }
+    }
+
+    const auto* clusterIndex = tablet.clusterIndex();
+    ASSERT_NE(clusterIndex, nullptr) << "Cluster index should be available";
+    nimble::index::test::ClusterIndexTestHelper indexHelper(clusterIndex);
+
     for (const auto& testCase : testCases) {
-      // Get stripe identifier with index loaded
-      auto stripeId = tablet.stripeIdentifier(testCase.expectedStripeIndex);
-      ASSERT_NE(stripeId.clusterIndex(), nullptr)
-          << "Index group should be available for stripe "
-          << testCase.expectedStripeIndex << " when looking up key '"
-          << testCase.key << "'";
+      const uint32_t partitionIndex =
+          tabletHelper.stripeGroupIndex(testCase.expectedStripeIndex);
 
-      // Lookup chunk by encoded key
-      auto chunkLocation = stripeId.clusterIndex()->lookupChunk(
-          testCase.expectedStripeIndex, testCase.key);
-      ASSERT_TRUE(chunkLocation.has_value())
-          << "Key '" << testCase.key << "' should be found in stripe "
-          << testCase.expectedStripeIndex;
+      // lookupChunk returns partition-wide row offsets.
+      const auto chunkLocation =
+          indexHelper.lookupChunk(partitionIndex, testCase.key);
 
-      // Calculate global row ID
-      uint64_t globalRowId = stripeStartRows[testCase.expectedStripeIndex] +
-          chunkLocation->rowOffset;
+      // Convert partition-wide row offset to file-level row ID.
+      const uint64_t globalRowId =
+          partitionStartRows[partitionIndex] + chunkLocation.rowOffset;
 
       EXPECT_EQ(globalRowId, testCase.expectedFileRowId)
           << "Key '" << testCase.key << "' in stripe "
           << testCase.expectedStripeIndex << ": expected file row ID "
           << testCase.expectedFileRowId << ", got " << globalRowId
-          << " (stripe start row = "
-          << stripeStartRows[testCase.expectedStripeIndex]
-          << ", row offset = " << chunkLocation->rowOffset << ")";
+          << " (partition start row = " << partitionStartRows[partitionIndex]
+          << ", row offset = " << chunkLocation.rowOffset << ")";
     }
   }
 };
@@ -1509,11 +1516,11 @@ TEST_P(TabletWithIndexTest, stripeIdentifier) {
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
 
-  nimble::ClusterIndexConfig indexConfig{
-      .columns = {"col1"},
-      .sortOrders = {SortOrder{.ascending = true}},
-      .enforceKeyOrder = true,
-  };
+  nimble::index::test::TestClusterIndexMetadataWriter indexHelper(
+      *pool_,
+      {"col1"},
+      {SortOrder{.ascending = true}},
+      /*enforceKeyOrder=*/true);
 
   auto tabletWriter = nimble::TabletWriter::create(
       &writeFile,
@@ -1521,7 +1528,10 @@ TEST_P(TabletWithIndexTest, stripeIdentifier) {
       {
           .metadataFlushThreshold = 1024 * 1024 * 1024,
           .streamDeduplicationEnabled = false,
-          .indexConfig = indexConfig,
+          .enableChunkIndex = true,
+          .stripeGroupFlushCallback =
+              indexHelper.createStripeGroupFlushCallback(),
+          .closeCallback = indexHelper.createCloseCallback(),
       });
 
   nimble::Buffer buffer{*pool_};
@@ -1529,9 +1539,8 @@ TEST_P(TabletWithIndexTest, stripeIdentifier) {
   // Write single stripe with index
   auto streams = createStreams(
       buffer, {{.offset = 0, .chunks = {{.rowCount = 100, .size = 10}}}});
-  auto keyStream = createKeyStream(
-      buffer, {{.rowCount = 100, .firstKey = "aaa", .lastKey = "bbb"}});
-  tabletWriter->writeStripe(100, std::move(streams), std::move(keyStream));
+  indexHelper.addStripe({{.rowCount = 100, .key = "bbb"}});
+  tabletWriter->writeStripe(100, std::move(streams));
   tabletWriter->close();
 
   // Read and verify
@@ -1543,7 +1552,6 @@ TEST_P(TabletWithIndexTest, stripeIdentifier) {
 
   auto stripeId = tablet->stripeIdentifier(0);
   EXPECT_NE(stripeId.stripeGroup(), nullptr);
-  EXPECT_NE(stripeId.clusterIndex(), nullptr);
 }
 
 TEST_P(TabletWithIndexTest, singleGroup) {
@@ -1554,12 +1562,11 @@ TEST_P(TabletWithIndexTest, singleGroup) {
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
 
-  nimble::ClusterIndexConfig indexConfig{
-      .columns = {"col1", "col2"},
-      .sortOrders =
-          {SortOrder{.ascending = true}, SortOrder{.ascending = true}},
-      .enforceKeyOrder = true,
-  };
+  nimble::index::test::TestClusterIndexMetadataWriter indexHelper(
+      *pool_,
+      {"col1", "col2"},
+      {SortOrder{.ascending = true}, SortOrder{.ascending = true}},
+      /*enforceKeyOrder=*/true);
 
   auto tabletWriter = nimble::TabletWriter::create(
       &writeFile,
@@ -1568,7 +1575,10 @@ TEST_P(TabletWithIndexTest, singleGroup) {
           // Set a large threshold to ensure all stripes stay in one group
           .metadataFlushThreshold = 1024 * 1024 * 1024,
           .streamDeduplicationEnabled = false,
-          .indexConfig = indexConfig,
+          .enableChunkIndex = true,
+          .stripeGroupFlushCallback =
+              indexHelper.createStripeGroupFlushCallback(),
+          .closeCallback = indexHelper.createCloseCallback(),
       });
 
   nimble::Buffer buffer{*pool_};
@@ -1576,7 +1586,7 @@ TEST_P(TabletWithIndexTest, singleGroup) {
   // Write stripe 1: Total rows: 100
   // Stream 0: 3 chunks (rows: 30, 45, 25)
   // Stream 1: 2 chunks (rows: 60, 40)
-  // Key stream: 2 chunks (rows: 50, 50), keys: "aaa"->"bbb", "bbb"->"ccc"
+  // Key stream: 2 chunks (rows: 50, 50), keys: "bbb", "ccc"
   {
     auto streams = createStreams(
         buffer,
@@ -1596,21 +1606,18 @@ TEST_P(TabletWithIndexTest, singleGroup) {
                  }},
         });
 
-    auto keyStream = createKeyStream(
-        buffer,
-        {
-            {.rowCount = 50, .firstKey = "aaa", .lastKey = "bbb"},
-            {.rowCount = 50, .firstKey = "bbb", .lastKey = "ccc"},
-        });
-
-    tabletWriter->writeStripe(100, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe({
+        {.rowCount = 50, .key = "bbb"},
+        {.rowCount = 50, .key = "ccc"},
+    });
+    tabletWriter->writeStripe(100, std::move(streams));
   }
 
   // Write stripe 2: Total rows: 200
   // Stream 0: 4 chunks (rows: 40, 55, 65, 40)
   // Stream 1: 1 chunk (rows: 200)
-  // Key stream: 4 chunks (rows: 50, 50, 50, 50), keys: "ccc"->"ddd",
-  // "ddd"->"eee", "eee"->"fff", "fff"->"ggg"
+  // Key stream: 4 chunks (rows: 50, 50, 50, 50), keys: "ddd",
+  // "eee", "fff", "ggg"
   {
     auto streams = createStreams(
         buffer,
@@ -1630,22 +1637,19 @@ TEST_P(TabletWithIndexTest, singleGroup) {
                  }},
         });
 
-    auto keyStream = createKeyStream(
-        buffer,
-        {
-            {.rowCount = 50, .firstKey = "ccc", .lastKey = "ddd"},
-            {.rowCount = 50, .firstKey = "ddd", .lastKey = "eee"},
-            {.rowCount = 50, .firstKey = "eee", .lastKey = "fff"},
-            {.rowCount = 50, .firstKey = "fff", .lastKey = "ggg"},
-        });
-
-    tabletWriter->writeStripe(200, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe({
+        {.rowCount = 50, .key = "ddd"},
+        {.rowCount = 50, .key = "eee"},
+        {.rowCount = 50, .key = "fff"},
+        {.rowCount = 50, .key = "ggg"},
+    });
+    tabletWriter->writeStripe(200, std::move(streams));
   }
 
   // Write stripe 3: Total rows: 150
   // Stream 0: 2 chunks (rows: 100, 50)
   // Stream 1: 5 chunks (rows: 20, 35, 40, 25, 30)
-  // Key stream: 1 chunk (rows: 150), keys: "ggg"->"hhh"
+  // Key stream: 1 chunk (rows: 150), key: "hhh"
   {
     auto streams = createStreams(
         buffer,
@@ -1667,13 +1671,10 @@ TEST_P(TabletWithIndexTest, singleGroup) {
                  }},
         });
 
-    auto keyStream = createKeyStream(
-        buffer,
-        {
-            {.rowCount = 150, .firstKey = "ggg", .lastKey = "hhh"},
-        });
-
-    tabletWriter->writeStripe(150, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe({
+        {.rowCount = 150, .key = "hhh"},
+    });
+    tabletWriter->writeStripe(150, std::move(streams));
   }
 
   tabletWriter->close();
@@ -1704,11 +1705,10 @@ TEST_P(TabletWithIndexTest, singleGroup) {
   ASSERT_NE(index, nullptr);
 
   // Verify only one index group is created
-  EXPECT_EQ(index->numIndexGroups(), 1);
+  EXPECT_EQ(index->layout().numPartitions, 1);
   // Verify the first group, index group, and chunk index group is pinned
   // and is the only one (covered by footer IO).
   EXPECT_TRUE(tabletHelper.hasOnlyFirstStripeGroupCached());
-  EXPECT_TRUE(tabletHelper.hasOnlyFirstIndexGroupCached());
   EXPECT_TRUE(tabletHelper.hasOnlyFirstChunkIndexGroupCached());
 
   // Verify index columns
@@ -1716,79 +1716,77 @@ TEST_P(TabletWithIndexTest, singleGroup) {
   EXPECT_EQ(index->indexColumns()[0], "col1");
   EXPECT_EQ(index->indexColumns()[1], "col2");
 
-  // Verify stripe count
-  EXPECT_EQ(index->numStripes(), 3);
-
-  // Verify stripe keys
-  // First stripe: firstKey="aaa", lastKey="ccc"
-  // Second stripe: lastKey="fff"
-  // Third stripe: lastKey="hhh"
-  // minKey="aaa", stripeKey(0)="ccc", stripeKey(1)="fff", stripeKey(2)="hhh"
-  EXPECT_EQ(index->minKey(), "aaa");
-  EXPECT_EQ(index->stripeKey(0), "ccc");
-  EXPECT_EQ(index->stripeKey(1), "ggg");
-  EXPECT_EQ(index->stripeKey(2), "hhh");
-  EXPECT_EQ(index->maxKey(), "hhh");
-
-  // Verify key lookups - test all possible keys at boundaries
-  // Key boundaries:
-  // - minKey = "aaa", maxKey = "hhh"
-  // - Stripe 0: covers ["aaa", "ccc"], keys: "aaa"->"bbb", "bbb"->"ccc"
-  // - Stripe 1: covers ("ccc", "ggg"], keys: "ccc"->"ddd", "ddd"->"eee",
-  //   "eee"->"fff", "fff"->"ggg"
-  // - Stripe 2: covers ("ggg", "hhh"], keys: "ggg"->"hhh"
+  // Verify key lookups - test all possible keys at boundaries.
+  // lookup() returns chunk-level precision: the range starts at the first
+  // chunk whose max key >= the query key, and extends to partition end.
+  //
+  // Chunk layout (all in partition 0, rows 0-449):
+  //   Chunk 0: rows [0, 50),   max key "bbb"
+  //   Chunk 1: rows [50, 100), max key "ccc"
+  //   Chunk 2: rows [100, 150), max key "ddd"
+  //   Chunk 3: rows [150, 200), max key "eee"
+  //   Chunk 4: rows [200, 250), max key "fff"
+  //   Chunk 5: rows [250, 300), max key "ggg"
+  //   Chunk 6: rows [300, 450), max key "hhh"
+  const nimble::RowRange chunk0(0, 450);
+  const nimble::RowRange chunk1(50, 450);
+  const nimble::RowRange chunk2(100, 450);
+  const nimble::RowRange chunk3(150, 450);
+  const nimble::RowRange chunk4(200, 450);
+  const nimble::RowRange chunk5(250, 450);
+  const nimble::RowRange chunk6(300, 450);
   verifyClusterIndexLookups(
       index,
       {
-          // Keys before minKey - should return nullopt
-          {"000", std::nullopt},
-          {"9", std::nullopt},
-          {"a", std::nullopt},
-          {"aa", std::nullopt},
+          // Keys <= "bbb" → chunk 0 (first chunk contains all keys <= "bbb")
+          {"000", chunk0},
+          {"9", chunk0},
+          {"a", chunk0},
+          {"aa", chunk0},
+          {"aaa", chunk0},
+          {"aab", chunk0},
+          {"aaZ", chunk0},
+          {"abb", chunk0},
+          {"b", chunk0},
+          {"bb", chunk0},
+          {"bba", chunk0},
+          {"bbb", chunk0},
 
-          // minKey boundary - stripe 0
-          {"aaa", 0},
+          // Keys in (bbb, ccc] → chunk 1
+          {"bbc", chunk1},
+          {"c", chunk1},
+          {"cc", chunk1},
+          {"ccb", chunk1},
+          {"ccc", chunk1},
 
-          // Keys within stripe 0
-          {"aab", 0},
-          {"aaZ", std::nullopt},
-          {"abb", 0},
-          {"b", 0},
-          {"bbb", 0},
-          {"bbc", 0},
-          {"c", 0},
-          {"cc", 0},
-          {"ccb", 0},
+          // Keys in (ccc, ddd] → chunk 2
+          {"ccd", chunk2},
+          {"d", chunk2},
+          {"ddd", chunk2},
 
-          // Stripe 0/1 boundary (stripeKey(0) = "ccc")
-          {"ccc", 0},
+          // Keys in (ddd, eee] → chunk 3
+          {"dde", chunk3},
+          {"e", chunk3},
+          {"eee", chunk3},
 
-          // Keys within stripe 1
-          {"ccd", 1},
-          {"d", 1},
-          {"ddd", 1},
-          {"dde", 1},
-          {"e", 1},
-          {"eee", 1},
-          {"eef", 1},
-          {"f", 1},
-          {"fff", 1},
-          {"ffg", 1},
-          {"g", 1},
-          {"gg", 1},
-          {"ggf", 1},
+          // Keys in (eee, fff] → chunk 4
+          {"eef", chunk4},
+          {"f", chunk4},
+          {"fff", chunk4},
 
-          // Stripe 1/2 boundary (stripeKey(1) = "ggg")
-          {"ggg", 1},
+          // Keys in (fff, ggg] → chunk 5
+          {"ffg", chunk5},
+          {"g", chunk5},
+          {"gg", chunk5},
+          {"ggf", chunk5},
+          {"ggg", chunk5},
 
-          // Keys within stripe 2
-          {"ggh", 2},
-          {"h", 2},
-          {"hh", 2},
-          {"hhg", 2},
-
-          // maxKey boundary - stripe 2
-          {"hhh", 2},
+          // Keys in (ggg, hhh] → chunk 6
+          {"ggh", chunk6},
+          {"h", chunk6},
+          {"hh", chunk6},
+          {"hhg", chunk6},
+          {"hhh", chunk6},
 
           // Keys after maxKey - should return nullopt
           {"hhi", std::nullopt},
@@ -1798,46 +1796,38 @@ TEST_P(TabletWithIndexTest, singleGroup) {
           {"zzz", std::nullopt},
       });
 
-  // Verify stripeIdentifier returns both stripe group and cluster index
+  // Verify stripeIdentifier returns stripe group and cluster index content
   {
     auto stripeIdWithIndex = tablet->stripeIdentifier(0);
     EXPECT_NE(stripeIdWithIndex.stripeGroup(), nullptr);
-    EXPECT_NE(stripeIdWithIndex.clusterIndex(), nullptr);
 
-    // Verify the stripe index group content using test helper
-    nimble::index::test::ClusterIndexGroupTestHelper indexGroupHelper(
-        stripeIdWithIndex.clusterIndex().get());
-    EXPECT_EQ(indexGroupHelper.groupIndex(), 0);
-    EXPECT_EQ(indexGroupHelper.firstStripe(), 0);
-    EXPECT_EQ(indexGroupHelper.stripeCount(), 3);
+    nimble::index::test::ClusterIndexTestHelper clusterIndexTestHelper(
+        tablet->clusterIndex());
 
     nimble::index::test::ChunkIndexTestHelper chunkHelper(
         stripeIdWithIndex.chunkIndex().get());
     // We have 2 streams per stripe
     EXPECT_EQ(chunkHelper.streamCount(), 2);
 
-    // Verify key stream stats persisted in the index
-    // Stripe 0: 2 chunks (rows: 50, 50), keys: "aaa"->"bbb", "bbb"->"ccc"
-    // Stripe 1: 4 chunks (rows: 50, 50, 50, 50), keys: "ccc"->"ddd",
-    // "ddd"->"eee", "eee"->"fff", "fff"->"ggg"
-    // Stripe 2: 1 chunk (rows: 150), keys: "ggg"->"hhh"
+    // Verify partition stats persisted in the index
+    // Stripe 0: 2 chunks (rows: 50, 50), keys: "bbb", "ccc"
+    // Stripe 1: 4 chunks (rows: 50, 50, 50, 50), keys: "ddd",
+    // "eee", "fff", "ggg"
+    // Stripe 2: 1 chunk (rows: 150), key: "hhh"
     {
-      const auto keyStats = indexGroupHelper.keyStreamStats();
+      const auto stats = clusterIndexTestHelper.partitionStats(0);
 
-      // Accumulated chunk counts per stripe: 2, 2+4=6, 6+1=7
-      EXPECT_EQ(keyStats.chunkCounts, (std::vector<uint32_t>{2, 6, 7}));
-
-      // Accumulated row counts per chunk (within each stripe, reset per stripe)
+      // Accumulated row counts per chunk (cumulative across partition)
       // Stripe 0: 50, 100
-      // Stripe 1: 50, 100, 150, 200
-      // Stripe 2: 150
+      // Stripe 1: 100+50=150, 100+100=200, 100+150=250, 100+200=300
+      // Stripe 2: 300+150=450
       EXPECT_EQ(
-          keyStats.chunkRows,
-          (std::vector<uint32_t>{50, 100, 50, 100, 150, 200, 150}));
+          stats.chunkRows,
+          (std::vector<uint32_t>{50, 100, 150, 200, 250, 300, 450}));
 
-      // Last key for each chunk (chunkKeys stores last keys)
+      // Last key for each sub-partition
       EXPECT_EQ(
-          keyStats.chunkKeys,
+          stats.chunkKeys,
           (std::vector<std::string>{
               "bbb", "ccc", "ddd", "eee", "fff", "ggg", "hhh"}));
     }
@@ -1900,9 +1890,7 @@ TEST_P(TabletWithIndexTest, singleGroup) {
       }
     }
   }
-  EXPECT_TRUE(tabletHelper.hasOnlyFirstIndexGroupCached());
-
-  // Verify key lookups through ClusterIndexGroup::lookupChunk return correct
+  // Verify key lookups through ClusterIndex::lookupChunk return correct
   // global row IDs.
   // Global row ID = stripe start row + row offset within stripe
   //
@@ -1922,7 +1910,7 @@ TEST_P(TabletWithIndexTest, singleGroup) {
       *tablet,
       {
           // Stripe 0: global rows 0-99
-          // Keys in chunk 0 ["aaa", "bbb"]: rowOffset = 0, globalRowId = 0 + 0
+          // Keys in chunk 0 (<=  "bbb"): rowOffset = 0, globalRowId = 0 + 0
           // = 0
           {"aaa", 0, 0},
           {"aab", 0, 0},
@@ -1970,12 +1958,11 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
 
-  nimble::ClusterIndexConfig indexConfig{
-      .columns = {"col1", "col2"},
-      .sortOrders =
-          {SortOrder{.ascending = true}, SortOrder{.ascending = true}},
-      .enforceKeyOrder = true,
-  };
+  nimble::index::test::TestClusterIndexMetadataWriter indexHelper(
+      *pool_,
+      {"col1", "col2"},
+      {SortOrder{.ascending = true}, SortOrder{.ascending = true}},
+      /*enforceKeyOrder=*/true);
 
   auto tabletWriter = nimble::TabletWriter::create(
       &writeFile,
@@ -1984,7 +1971,10 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
           // Set threshold to 0 to force flush after every stripe
           .metadataFlushThreshold = 0,
           .streamDeduplicationEnabled = false,
-          .indexConfig = indexConfig,
+          .enableChunkIndex = true,
+          .stripeGroupFlushCallback =
+              indexHelper.createStripeGroupFlushCallback(),
+          .closeCallback = indexHelper.createCloseCallback(),
       });
 
   nimble::Buffer buffer{*pool_};
@@ -1992,7 +1982,7 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
   // Write stripe 0 (Group 0): Total rows: 100
   // Stream 0: 2 chunks (rows: 50, 50)
   // Stream 1: 3 chunks (rows: 30, 40, 30)
-  // Key stream: 2 chunks (rows: 50, 50), keys: "aaa"->"bbb", "bbb"->"ccc"
+  // Key stream: 2 chunks (rows: 50, 50), keys: "bbb", "ccc"
   {
     auto streams = createStreams(
         buffer,
@@ -2012,21 +2002,18 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
                  }},
         });
 
-    auto keyStream = createKeyStream(
-        buffer,
-        {
-            {50, "aaa", "bbb"},
-            {50, "bbb", "ccc"},
-        });
-
-    tabletWriter->writeStripe(100, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe({
+        {.rowCount = 50, .key = "bbb"},
+        {.rowCount = 50, .key = "ccc"},
+    });
+    tabletWriter->writeStripe(100, std::move(streams));
   }
 
   // Write stripe 1 (Group 1): Total rows: 150
   // Stream 0: 3 chunks (rows: 40, 60, 50)
   // Stream 1: 2 chunks (rows: 80, 70)
-  // Key stream: 3 chunks (rows: 50, 50, 50), keys: "ccc"->"ddd", "ddd"->"eee",
-  // "eee"->"fff"
+  // Key stream: 3 chunks (rows: 50, 50, 50), keys: "ddd", "eee",
+  // "fff"
   {
     auto streams = createStreams(
         buffer,
@@ -2046,20 +2033,18 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
                  }},
         });
 
-    auto keyStream = createKeyStream(
-        buffer,
-        {
-            {.rowCount = 50, .firstKey = "ccc", .lastKey = "ddd"},
-            {.rowCount = 50, .firstKey = "ddd", .lastKey = "eee"},
-            {.rowCount = 50, .firstKey = "eee", .lastKey = "fff"},
-        });
-    tabletWriter->writeStripe(150, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe({
+        {.rowCount = 50, .key = "ddd"},
+        {.rowCount = 50, .key = "eee"},
+        {.rowCount = 50, .key = "fff"},
+    });
+    tabletWriter->writeStripe(150, std::move(streams));
   }
 
   // Write stripe 2 (Group 2): Total rows: 120
   // Stream 0: 2 chunks (rows: 70, 50)
   // Stream 1: 4 chunks (rows: 25, 35, 30, 30)
-  // Key stream: 2 chunks (rows: 60, 60), keys: "fff"->"ggg", "ggg"->"hhh"
+  // Key stream: 2 chunks (rows: 60, 60), keys: "ggg", "hhh"
   {
     auto streams = createStreams(
         buffer,
@@ -2080,14 +2065,11 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
                  }},
         });
 
-    auto keyStream = createKeyStream(
-        buffer,
-        {
-            {.rowCount = 60, .firstKey = "fff", .lastKey = "ggg"},
-            {.rowCount = 60, .firstKey = "ggg", .lastKey = "hhh"},
-        });
-
-    tabletWriter->writeStripe(120, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe({
+        {.rowCount = 60, .key = "ggg"},
+        {.rowCount = 60, .key = "hhh"},
+    });
+    tabletWriter->writeStripe(120, std::move(streams));
   }
 
   tabletWriter->close();
@@ -2118,11 +2100,10 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
   ASSERT_NE(index, nullptr);
 
   // Verify 3 index groups are created (one per stripe)
-  EXPECT_EQ(index->numIndexGroups(), 3);
+  EXPECT_EQ(index->layout().numPartitions, 3);
 
   // Verify no metadata is pinned from preload (more than one group).
   EXPECT_EQ(tabletHelper.cachedStripeGroupCount(), 0);
-  EXPECT_EQ(tabletHelper.cachedIndexGroupCount(), 0);
   EXPECT_EQ(tabletHelper.cachedChunkIndexGroupCount(), 0);
 
   // Verify index columns
@@ -2130,73 +2111,69 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
   EXPECT_EQ(index->indexColumns()[0], "col1");
   EXPECT_EQ(index->indexColumns()[1], "col2");
 
-  // Verify stripe count
-  EXPECT_EQ(index->numStripes(), 3);
-
-  // Verify stripe keys
-  // Stripe 0: "aaa"->"ccc"
-  // Stripe 1: "ccc"->"fff"
-  // Stripe 2: "fff"->"hhh"
-  EXPECT_EQ(index->minKey(), "aaa");
-  EXPECT_EQ(index->stripeKey(0), "ccc");
-  EXPECT_EQ(index->stripeKey(1), "fff");
-  EXPECT_EQ(index->stripeKey(2), "hhh");
-  EXPECT_EQ(index->maxKey(), "hhh");
-
-  // Verify key lookups across all stripes and group boundaries
+  // Verify key lookups across all partitions with chunk-level precision.
+  // Partition 0 (stripe 0, rows 0-99):
+  //   Chunk 0: 50 rows, key "bbb"   → rows [0, 50)
+  //   Chunk 1: 50 rows, key "ccc"   → rows [50, 100)
+  // Partition 1 (stripe 1, rows 100-249):
+  //   Chunk 0: 50 rows, key "ddd"   → rows [100, 150)
+  //   Chunk 1: 50 rows, key "eee"   → rows [150, 200)
+  //   Chunk 2: 50 rows, key "fff"   → rows [200, 250)
+  // Partition 2 (stripe 2, rows 250-369):
+  //   Chunk 0: 60 rows, key "ggg"   → rows [250, 310)
+  //   Chunk 1: 60 rows, key "hhh"   → rows [310, 370)
   verifyClusterIndexLookups(
       index,
       {
-          // Keys before minKey
-          {"9", std::nullopt},
-          {"aa", std::nullopt},
+          // Keys before minKey ("bbb") return full file range.
+          {"9", nimble::RowRange(0, 370)},
+          {"aa", nimble::RowRange(0, 370)},
+          {"aaa", nimble::RowRange(0, 370)},
+          {"aab", nimble::RowRange(0, 370)},
+          {"b", nimble::RowRange(0, 370)},
 
-          // Stripe 0 (Group 0): ["aaa", "ccc"]
-          {"aaa", 0},
-          {"aab", 0},
-          {"b", 0},
-          {"bbb", 0},
-          {"ccc", 0},
+          // Partition 0: keys ≤ "bbb" → row 0
+          {"bbb", nimble::RowRange(0, 370)},
+          // Partition 0: keys in (bbb, ccc] → row 50
+          {"ccc", nimble::RowRange(50, 370)},
 
-          // Stripe 1 (Group 1): ("ccc", "fff"]
-          {"ccd", 1},
-          {"d", 1},
-          {"ddd", 1},
-          {"eee", 1},
-          {"fff", 1},
+          // Partition 1: keys in (ccc, ddd] → row 100
+          {"ccd", nimble::RowRange(100, 370)},
+          {"d", nimble::RowRange(100, 370)},
+          {"ddd", nimble::RowRange(100, 370)},
+          // Partition 1: keys in (ddd, eee] → row 150
+          {"eee", nimble::RowRange(150, 370)},
+          // Partition 1: keys in (eee, fff] → row 200
+          {"fff", nimble::RowRange(200, 370)},
 
-          // Stripe 2 (Group 2): ("fff", "hhh"]
-          {"ffg", 2},
-          {"g", 2},
-          {"ggg", 2},
-          {"hhh", 2},
+          // Partition 2: keys in (fff, ggg] → row 250
+          {"ffg", nimble::RowRange(250, 370)},
+          {"g", nimble::RowRange(250, 370)},
+          {"ggg", nimble::RowRange(250, 370)},
+          // Partition 2: keys in (ggg, hhh] → row 310
+          {"hhh", nimble::RowRange(310, 370)},
 
           // Keys after maxKey
           {"hhi", std::nullopt},
           {"i", std::nullopt},
       });
 
-  // Verify stripeIdentifier and index group structure for each group
+  // Verify partition stats and chunk index structure for each group
+  nimble::index::test::ClusterIndexTestHelper clusterIndexTestHelper(
+      tablet->clusterIndex());
+
   // Group 0: stripe 0 only
   {
     auto stripeId = tablet->stripeIdentifier(0);
-    ASSERT_NE(stripeId.clusterIndex(), nullptr);
-
-    nimble::index::test::ClusterIndexGroupTestHelper helper(
-        stripeId.clusterIndex().get());
-    EXPECT_EQ(helper.groupIndex(), 0);
-    EXPECT_EQ(helper.firstStripe(), 0);
-    EXPECT_EQ(helper.stripeCount(), 1);
 
     nimble::index::test::ChunkIndexTestHelper chunkHelper(
         stripeId.chunkIndex().get());
     EXPECT_EQ(chunkHelper.streamCount(), 2);
 
-    // Verify key stream stats for group 0
-    const auto keyStats = helper.keyStreamStats();
-    EXPECT_EQ(keyStats.chunkCounts, (std::vector<uint32_t>{2}));
-    EXPECT_EQ(keyStats.chunkRows, (std::vector<uint32_t>{50, 100}));
-    EXPECT_EQ(keyStats.chunkKeys, (std::vector<std::string>{"bbb", "ccc"}));
+    // Verify partition stats for group 0
+    const auto stats = clusterIndexTestHelper.partitionStats(0);
+    EXPECT_EQ(stats.chunkRows, (std::vector<uint32_t>{50, 100}));
+    EXPECT_EQ(stats.chunkKeys, (std::vector<std::string>{"bbb", "ccc"}));
 
     // Verify stream 0 stats for group 0: 2 chunks (rows: 50, 50)
     auto stream0Stats = chunkHelper.streamStats(0);
@@ -2212,25 +2189,16 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
   // Group 1: stripe 1 only
   {
     auto stripeId = tablet->stripeIdentifier(1);
-    ASSERT_NE(stripeId.clusterIndex(), nullptr);
-
-    nimble::index::test::ClusterIndexGroupTestHelper helper(
-        stripeId.clusterIndex().get());
-    EXPECT_EQ(helper.groupIndex(), 1);
-    EXPECT_EQ(helper.firstStripe(), 1);
-    EXPECT_EQ(helper.stripeCount(), 1);
 
     nimble::index::test::ChunkIndexTestHelper chunkHelper(
         stripeId.chunkIndex().get());
     EXPECT_EQ(chunkHelper.streamCount(), 2);
 
-    // Verify key stream stats for group 1
-    // Stripe 1: 3 chunks
-    const auto keyStats = helper.keyStreamStats();
-    EXPECT_EQ(keyStats.chunkCounts, (std::vector<uint32_t>{3}));
-    EXPECT_EQ(keyStats.chunkRows, (std::vector<uint32_t>{50, 100, 150}));
-    EXPECT_EQ(
-        keyStats.chunkKeys, (std::vector<std::string>{"ddd", "eee", "fff"}));
+    // Verify partition stats for group 1
+    // Stripe 1: 3 sub-partitions
+    const auto stats = clusterIndexTestHelper.partitionStats(1);
+    EXPECT_EQ(stats.chunkRows, (std::vector<uint32_t>{50, 100, 150}));
+    EXPECT_EQ(stats.chunkKeys, (std::vector<std::string>{"ddd", "eee", "fff"}));
 
     // Verify stream 0 stats for group 1
     // Stripe 1: 3 chunks (rows: 40, 60, 50)
@@ -2248,24 +2216,16 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
   // Group 2: stripe 2 only
   {
     auto stripeId = tablet->stripeIdentifier(2);
-    ASSERT_NE(stripeId.clusterIndex(), nullptr);
-
-    nimble::index::test::ClusterIndexGroupTestHelper helper(
-        stripeId.clusterIndex().get());
-    EXPECT_EQ(helper.groupIndex(), 2);
-    EXPECT_EQ(helper.firstStripe(), 2);
-    EXPECT_EQ(helper.stripeCount(), 1);
 
     nimble::index::test::ChunkIndexTestHelper chunkHelper(
         stripeId.chunkIndex().get());
     EXPECT_EQ(chunkHelper.streamCount(), 2);
 
-    // Verify key stream stats for group 2
-    // Stripe 2: 2 chunks
-    const auto keyStats = helper.keyStreamStats();
-    EXPECT_EQ(keyStats.chunkCounts, (std::vector<uint32_t>{2}));
-    EXPECT_EQ(keyStats.chunkRows, (std::vector<uint32_t>{60, 120}));
-    EXPECT_EQ(keyStats.chunkKeys, (std::vector<std::string>{"ggg", "hhh"}));
+    // Verify partition stats for group 2
+    // Stripe 2: 2 sub-partitions
+    const auto stats = clusterIndexTestHelper.partitionStats(2);
+    EXPECT_EQ(stats.chunkRows, (std::vector<uint32_t>{60, 120}));
+    EXPECT_EQ(stats.chunkKeys, (std::vector<std::string>{"ggg", "hhh"}));
 
     // Verify stream 0 stats for group 2
     // Stripe 2: 2 chunks (rows: 70, 50)
@@ -2294,7 +2254,7 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
     }
   }
 
-  // Verify key lookups through ClusterIndexGroup::lookupChunk return correct
+  // Verify key lookups through ClusterIndex::lookupChunk return correct
   // global row IDs.
   // Global row ID = stripe start row + row offset within stripe
   //
@@ -2314,7 +2274,7 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
       *tablet,
       {
           // Stripe 0 (Group 0): global rows 0-99
-          // Keys in chunk 0 ["aaa", "bbb"]: rowOffset = 0, globalRowId = 0 + 0
+          // Keys in chunk 0 (<= "bbb"): rowOffset = 0, globalRowId = 0 + 0
           // = 0
           {"aaa", 0, 0},
           {"bbb", 0, 0},
@@ -2363,11 +2323,11 @@ TEST_P(TabletWithIndexTest, singleGroupWithEmptyStream) {
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
 
-  nimble::ClusterIndexConfig indexConfig{
-      .columns = {"col1"},
-      .sortOrders = {SortOrder{.ascending = true}},
-      .enforceKeyOrder = true,
-  };
+  nimble::index::test::TestClusterIndexMetadataWriter indexHelper(
+      *pool_,
+      {"col1"},
+      {SortOrder{.ascending = true}},
+      /*enforceKeyOrder=*/true);
 
   auto tabletWriter = nimble::TabletWriter::create(
       &writeFile,
@@ -2376,7 +2336,10 @@ TEST_P(TabletWithIndexTest, singleGroupWithEmptyStream) {
           // Set a large threshold to ensure all stripes stay in one group
           .metadataFlushThreshold = 1024 * 1024 * 1024,
           .streamDeduplicationEnabled = false,
-          .indexConfig = indexConfig,
+          .enableChunkIndex = true,
+          .stripeGroupFlushCallback =
+              indexHelper.createStripeGroupFlushCallback(),
+          .closeCallback = indexHelper.createCloseCallback(),
       });
 
   nimble::Buffer buffer{*pool_};
@@ -2386,7 +2349,7 @@ TEST_P(TabletWithIndexTest, singleGroupWithEmptyStream) {
   // Stream 1: 2 chunks (rows: 50, 50)
   // Stream 2: 3 chunks (rows: 30, 40, 30)
   // Stream 3: 2 chunks (rows: 60, 40)
-  // Key stream: 2 chunks (rows: 50, 50), keys: "aaa"->"bbb", "bbb"->"ccc"
+  // Key stream: 2 chunks (rows: 50, 50), keys: "bbb", "ccc"
   {
     auto streams = createStreams(
         buffer,
@@ -2413,14 +2376,11 @@ TEST_P(TabletWithIndexTest, singleGroupWithEmptyStream) {
                  }},
         });
 
-    auto keyStream = createKeyStream(
-        buffer,
-        {
-            {50, "aaa", "bbb"},
-            {50, "bbb", "ccc"},
-        });
-
-    tabletWriter->writeStripe(100, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe({
+        {.rowCount = 50, .key = "bbb"},
+        {.rowCount = 50, .key = "ccc"},
+    });
+    tabletWriter->writeStripe(100, std::move(streams));
   }
 
   // Write stripe 1: Total rows: 150
@@ -2428,8 +2388,8 @@ TEST_P(TabletWithIndexTest, singleGroupWithEmptyStream) {
   // Stream 1: EMPTY (no data in middle stripe)
   // Stream 2: 2 chunks (rows: 80, 70)
   // Stream 3: 1 chunk (rows: 150)
-  // Key stream: 3 chunks (rows: 50, 50, 50), keys: "ccc"->"ddd", "ddd"->"eee",
-  // "eee"->"fff"
+  // Key stream: 3 chunks (rows: 50, 50, 50), keys: "ddd", "eee",
+  // "fff"
   {
     auto streams = createStreams(
         buffer,
@@ -2455,15 +2415,12 @@ TEST_P(TabletWithIndexTest, singleGroupWithEmptyStream) {
                  }},
         });
 
-    auto keyStream = createKeyStream(
-        buffer,
-        {
-            {50, "ccc", "ddd"},
-            {50, "ddd", "eee"},
-            {50, "eee", "fff"},
-        });
-
-    tabletWriter->writeStripe(150, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe({
+        {.rowCount = 50, .key = "ddd"},
+        {.rowCount = 50, .key = "eee"},
+        {.rowCount = 50, .key = "fff"},
+    });
+    tabletWriter->writeStripe(150, std::move(streams));
   }
 
   // Write stripe 2: Total rows: 120
@@ -2471,7 +2428,7 @@ TEST_P(TabletWithIndexTest, singleGroupWithEmptyStream) {
   // Stream 1: 4 chunks (rows: 25, 35, 30, 30)
   // Stream 2: EMPTY (no data in this stripe)
   // Stream 3: 3 chunks (rows: 40, 40, 40)
-  // Key stream: 2 chunks (rows: 60, 60), keys: "fff"->"ggg", "ggg"->"hhh"
+  // Key stream: 2 chunks (rows: 60, 60), keys: "ggg", "hhh"
   {
     auto streams = createStreams(
         buffer,
@@ -2500,14 +2457,11 @@ TEST_P(TabletWithIndexTest, singleGroupWithEmptyStream) {
                  }},
         });
 
-    auto keyStream = createKeyStream(
-        buffer,
-        {
-            {60, "fff", "ggg"},
-            {60, "ggg", "hhh"},
-        });
-
-    tabletWriter->writeStripe(120, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe({
+        {.rowCount = 60, .key = "ggg"},
+        {.rowCount = 60, .key = "hhh"},
+    });
+    tabletWriter->writeStripe(120, std::move(streams));
   }
 
   // Write stripe 3: Total rows: 100 - ALL STREAMS HAVE DATA
@@ -2515,7 +2469,7 @@ TEST_P(TabletWithIndexTest, singleGroupWithEmptyStream) {
   // Stream 1: 2 chunks (rows: 40, 60)
   // Stream 2: 1 chunk (rows: 100)
   // Stream 3: 2 chunks (rows: 30, 70)
-  // Key stream: 2 chunks (rows: 50, 50), keys: "hhh"->"iii", "iii"->"jjj"
+  // Key stream: 2 chunks (rows: 50, 50), keys: "iii", "jjj"
   {
     auto streams = createStreams(
         buffer,
@@ -2545,14 +2499,11 @@ TEST_P(TabletWithIndexTest, singleGroupWithEmptyStream) {
                  }},
         });
 
-    auto keyStream = createKeyStream(
-        buffer,
-        {
-            {.rowCount = 50, .firstKey = "hhh", .lastKey = "iii"},
-            {.rowCount = 50, .firstKey = "iii", .lastKey = "jjj"},
-        });
-
-    tabletWriter->writeStripe(100, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe({
+        {.rowCount = 50, .key = "iii"},
+        {.rowCount = 50, .key = "jjj"},
+    });
+    tabletWriter->writeStripe(100, std::move(streams));
   }
 
   tabletWriter->close();
@@ -2584,17 +2535,13 @@ TEST_P(TabletWithIndexTest, singleGroupWithEmptyStream) {
   ASSERT_NE(index, nullptr);
 
   // Verify only one index group is created
-  EXPECT_EQ(index->numIndexGroups(), 1);
+  EXPECT_EQ(index->layout().numPartitions, 1);
 
-  // Load index group and verify stream stats
+  // Load partition and verify stream stats
+  nimble::index::test::ClusterIndexTestHelper clusterIndexTestHelper(
+      tablet->clusterIndex());
+
   auto stripeId = tablet->stripeIdentifier(0);
-  ASSERT_NE(stripeId.clusterIndex(), nullptr);
-
-  nimble::index::test::ClusterIndexGroupTestHelper helper(
-      stripeId.clusterIndex().get());
-  EXPECT_EQ(helper.groupIndex(), 0);
-  EXPECT_EQ(helper.firstStripe(), 0);
-  EXPECT_EQ(helper.stripeCount(), 4);
 
   nimble::index::test::ChunkIndexTestHelper chunkHelper(
       stripeId.chunkIndex().get());
@@ -2691,38 +2638,54 @@ TEST_P(TabletWithIndexTest, singleGroupWithEmptyStream) {
         (std::vector<uint32_t>{60, 100, 150, 40, 80, 120, 30, 100}));
   }
 
-  // Verify key stream stats
+  // Verify partition stats
   {
-    const auto keyStats = helper.keyStreamStats();
-    // Accumulated chunk counts per stripe: 2, 2+3=5, 5+2=7, 7+2=9
-    EXPECT_EQ(keyStats.chunkCounts, (std::vector<uint32_t>{2, 5, 7, 9}));
+    const auto stats = clusterIndexTestHelper.partitionStats(0);
+    // Accumulated row counts per chunk (cumulative across partition)
+    // Stripe 0: 50, 100
+    // Stripe 1: 100+50=150, 100+100=200, 100+150=250
+    // Stripe 2: 250+60=310, 250+120=370
+    // Stripe 3: 370+50=420, 370+100=470
     EXPECT_EQ(
-        keyStats.chunkRows,
-        (std::vector<uint32_t>{50, 100, 50, 100, 150, 60, 120, 50, 100}));
+        stats.chunkRows,
+        (std::vector<uint32_t>{50, 100, 150, 200, 250, 310, 370, 420, 470}));
     EXPECT_EQ(
-        keyStats.chunkKeys,
+        stats.chunkKeys,
         (std::vector<std::string>{
             "bbb", "ccc", "ddd", "eee", "fff", "ggg", "hhh", "iii", "jjj"}));
   }
 
-  // Verify key lookups
-  verifyClusterIndexLookups(
-      index,
-      {
-          {"aaa", 0},
-          {"bbb", 0},
-          {"ccc", 0},
-          {"ddd", 1},
-          {"eee", 1},
-          {"fff", 1},
-          {"ggg", 2},
-          {"hhh", 2},
-          {"iii", 3},
-          {"jjj", 3},
-          {"kkk", std::nullopt},
-      });
+  // Verify key lookups with chunk-level precision.
+  // Chunk layout (all in partition 0, rows 0-469):
+  //   Chunk 0: rows [0, 50),     key "bbb"
+  //   Chunk 1: rows [50, 100),   key "ccc"
+  //   Chunk 2: rows [100, 150),  key "ddd"
+  //   Chunk 3: rows [150, 200),  key "eee"
+  //   Chunk 4: rows [200, 250),  key "fff"
+  //   Chunk 5: rows [250, 310),  key "ggg"
+  //   Chunk 6: rows [310, 370),  key "hhh"
+  //   Chunk 7: rows [370, 420),  key "iii"
+  //   Chunk 8: rows [420, 470),  key "jjj"
+  {
+    verifyClusterIndexLookups(
+        index,
+        {
+            {"aaa", nimble::RowRange(0, 470)},
+            {"b", nimble::RowRange(0, 470)},
+            {"bbb", nimble::RowRange(0, 470)},
+            {"ccc", nimble::RowRange(50, 470)},
+            {"ddd", nimble::RowRange(100, 470)},
+            {"eee", nimble::RowRange(150, 470)},
+            {"fff", nimble::RowRange(200, 470)},
+            {"ggg", nimble::RowRange(250, 470)},
+            {"hhh", nimble::RowRange(310, 470)},
+            {"iii", nimble::RowRange(370, 470)},
+            {"jjj", nimble::RowRange(420, 470)},
+            {"kkk", std::nullopt},
+        });
+  }
 
-  // Verify key lookups through ClusterIndexGroup::lookupChunk return correct
+  // Verify key lookups through ClusterIndex::lookupChunk return correct
   // global row IDs.
   // Global row ID = stripe start row + row offset within stripe
   //
@@ -2783,11 +2746,11 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
 
-  nimble::ClusterIndexConfig indexConfig{
-      .columns = {"col1"},
-      .sortOrders = {SortOrder{.ascending = true}},
-      .enforceKeyOrder = true,
-  };
+  nimble::index::test::TestClusterIndexMetadataWriter indexHelper(
+      *pool_,
+      {"col1"},
+      {SortOrder{.ascending = true}},
+      /*enforceKeyOrder=*/true);
 
   auto tabletWriter = nimble::TabletWriter::create(
       &writeFile,
@@ -2796,10 +2759,13 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
           // Set threshold to 0 to force flush after every stripe
           .metadataFlushThreshold = 0,
           .streamDeduplicationEnabled = false,
+          .enableChunkIndex = true,
           // Disable chunk index skipping so all groups get a chunk index,
           // even when empty streams reduce the average chunks per stream.
           .chunkIndexMinAvgChunks = 0,
-          .indexConfig = indexConfig,
+          .stripeGroupFlushCallback =
+              indexHelper.createStripeGroupFlushCallback(),
+          .closeCallback = indexHelper.createCloseCallback(),
       });
 
   nimble::Buffer buffer{*pool_};
@@ -2809,7 +2775,7 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   // Stream 1: 2 chunks (rows: 50, 50)
   // Stream 2: 3 chunks (rows: 30, 40, 30)
   // Stream 3: 2 chunks (rows: 60, 40)
-  // Key stream: 2 chunks (rows: 50, 50), keys: "aaa"->"bbb", "bbb"->"ccc"
+  // Key stream: 2 chunks (rows: 50, 50), keys: "bbb", "ccc"
   {
     auto streams = createStreams(
         buffer,
@@ -2836,14 +2802,11 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
                  }},
         });
 
-    auto keyStream = createKeyStream(
-        buffer,
-        {
-            {50, "aaa", "bbb"},
-            {50, "bbb", "ccc"},
-        });
-
-    tabletWriter->writeStripe(100, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe({
+        {.rowCount = 50, .key = "bbb"},
+        {.rowCount = 50, .key = "ccc"},
+    });
+    tabletWriter->writeStripe(100, std::move(streams));
   }
 
   // Write stripe 1 (Group 1): Total rows: 150
@@ -2851,8 +2814,8 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   // Stream 1: EMPTY (no data in middle stripe)
   // Stream 2: 2 chunks (rows: 80, 70)
   // Stream 3: 1 chunk (rows: 150)
-  // Key stream: 3 chunks (rows: 50, 50, 50), keys: "ccc"->"ddd", "ddd"->"eee",
-  // "eee"->"fff"
+  // Key stream: 3 chunks (rows: 50, 50, 50), keys: "ddd", "eee",
+  // "fff"
   {
     auto streams = createStreams(
         buffer,
@@ -2878,15 +2841,12 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
                  }},
         });
 
-    auto keyStream = createKeyStream(
-        buffer,
-        {
-            {50, "ccc", "ddd"},
-            {50, "ddd", "eee"},
-            {50, "eee", "fff"},
-        });
-
-    tabletWriter->writeStripe(150, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe({
+        {.rowCount = 50, .key = "ddd"},
+        {.rowCount = 50, .key = "eee"},
+        {.rowCount = 50, .key = "fff"},
+    });
+    tabletWriter->writeStripe(150, std::move(streams));
   }
 
   // Write stripe 2 (Group 2): Total rows: 120
@@ -2894,7 +2854,7 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   // Stream 1: 4 chunks (rows: 25, 35, 30, 30)
   // Stream 2: EMPTY (no data in this stripe)
   // Stream 3: 3 chunks (rows: 40, 40, 40)
-  // Key stream: 2 chunks (rows: 60, 60), keys: "fff"->"ggg", "ggg"->"hhh"
+  // Key stream: 2 chunks (rows: 60, 60), keys: "ggg", "hhh"
   {
     auto streams = createStreams(
         buffer,
@@ -2923,14 +2883,11 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
                  }},
         });
 
-    auto keyStream = createKeyStream(
-        buffer,
-        {
-            {60, "fff", "ggg"},
-            {60, "ggg", "hhh"},
-        });
-
-    tabletWriter->writeStripe(120, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe({
+        {.rowCount = 60, .key = "ggg"},
+        {.rowCount = 60, .key = "hhh"},
+    });
+    tabletWriter->writeStripe(120, std::move(streams));
   }
 
   // Write stripe 3 (Group 3): Total rows: 100 - ALL STREAMS HAVE DATA
@@ -2938,7 +2895,7 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   // Stream 1: 2 chunks (rows: 40, 60)
   // Stream 2: 1 chunk (rows: 100)
   // Stream 3: 2 chunks (rows: 30, 70)
-  // Key stream: 2 chunks (rows: 50, 50), keys: "hhh"->"iii", "iii"->"jjj"
+  // Key stream: 2 chunks (rows: 50, 50), keys: "iii", "jjj"
   {
     auto streams = createStreams(
         buffer,
@@ -2968,14 +2925,11 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
                  }},
         });
 
-    auto keyStream = createKeyStream(
-        buffer,
-        {
-            {50, "hhh", "iii"},
-            {50, "iii", "jjj"},
-        });
-
-    tabletWriter->writeStripe(100, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe({
+        {.rowCount = 50, .key = "iii"},
+        {.rowCount = 50, .key = "jjj"},
+    });
+    tabletWriter->writeStripe(100, std::move(streams));
   }
 
   tabletWriter->close();
@@ -3007,24 +2961,35 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   ASSERT_NE(index, nullptr);
 
   // Verify 4 index groups are created (one per stripe)
-  EXPECT_EQ(index->numIndexGroups(), 4);
+  EXPECT_EQ(index->layout().numPartitions, 4);
 
-  // Verify key lookups across all stripes and group boundaries
-  verifyClusterIndexLookups(
-      index,
-      {
-          {"aaa", 0},
-          {"bbb", 0},
-          {"ccc", 0},
-          {"ddd", 1},
-          {"eee", 1},
-          {"fff", 1},
-          {"ggg", 2},
-          {"hhh", 2},
-          {"iii", 3},
-          {"jjj", 3},
-          {"kkk", std::nullopt},
-      });
+  // Verify key lookups with chunk-level precision.
+  // Partition 0 (rows 0-99):   chunks [0,50) "bbb", [50,100) "ccc"
+  // Partition 1 (rows 100-249): chunks [100,150) "ddd", [150,200) "eee",
+  //                                    [200,250) "fff"
+  // Partition 2 (rows 250-369): chunks [250,310) "ggg", [310,370) "hhh"
+  // Partition 3 (rows 370-469): chunks [370,420) "iii", [420,470) "jjj"
+  {
+    verifyClusterIndexLookups(
+        index,
+        {
+            {"aaa", nimble::RowRange(0, 470)},
+            {"b", nimble::RowRange(0, 470)},
+            {"bbb", nimble::RowRange(0, 470)},
+            {"ccc", nimble::RowRange(50, 470)},
+            {"ddd", nimble::RowRange(100, 470)},
+            {"eee", nimble::RowRange(150, 470)},
+            {"fff", nimble::RowRange(200, 470)},
+            {"ggg", nimble::RowRange(250, 470)},
+            {"hhh", nimble::RowRange(310, 470)},
+            {"iii", nimble::RowRange(370, 470)},
+            {"jjj", nimble::RowRange(420, 470)},
+            {"kkk", std::nullopt},
+        });
+  }
+
+  nimble::index::test::ClusterIndexTestHelper clusterIndexTestHelper(
+      tablet->clusterIndex());
 
   // Group 0: stripe 0 only
   // Stream 0: EMPTY
@@ -3033,24 +2998,16 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   // Stream 3: 2 chunks (rows: 60, 40)
   {
     auto stripeId = tablet->stripeIdentifier(0);
-    ASSERT_NE(stripeId.clusterIndex(), nullptr);
-
-    nimble::index::test::ClusterIndexGroupTestHelper helper(
-        stripeId.clusterIndex().get());
-    EXPECT_EQ(helper.groupIndex(), 0);
-    EXPECT_EQ(helper.firstStripe(), 0);
-    EXPECT_EQ(helper.stripeCount(), 1);
 
     nimble::index::test::ChunkIndexTestHelper chunkHelper(
         stripeId.chunkIndex().get());
     // All 4 streams indexed (chunkIndexMinAvgChunks = 0).
     EXPECT_EQ(chunkHelper.streamCount(), 4);
 
-    // Verify key stream stats for group 0
-    const auto keyStats = helper.keyStreamStats();
-    EXPECT_EQ(keyStats.chunkCounts, (std::vector<uint32_t>{2}));
-    EXPECT_EQ(keyStats.chunkRows, (std::vector<uint32_t>{50, 100}));
-    EXPECT_EQ(keyStats.chunkKeys, (std::vector<std::string>{"bbb", "ccc"}));
+    // Verify partition stats for group 0
+    const auto stats = clusterIndexTestHelper.partitionStats(0);
+    EXPECT_EQ(stats.chunkRows, (std::vector<uint32_t>{50, 100}));
+    EXPECT_EQ(stats.chunkKeys, (std::vector<std::string>{"bbb", "ccc"}));
 
     // Stream 0: EMPTY → 0 chunks.
     auto stream0Stats = chunkHelper.streamStats(0);
@@ -3080,25 +3037,16 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   // Stream 3: 1 chunk (rows: 150)
   {
     auto stripeId = tablet->stripeIdentifier(1);
-    ASSERT_NE(stripeId.clusterIndex(), nullptr);
-
-    nimble::index::test::ClusterIndexGroupTestHelper helper(
-        stripeId.clusterIndex().get());
-    EXPECT_EQ(helper.groupIndex(), 1);
-    EXPECT_EQ(helper.firstStripe(), 1);
-    EXPECT_EQ(helper.stripeCount(), 1);
 
     nimble::index::test::ChunkIndexTestHelper chunkHelper(
         stripeId.chunkIndex().get());
     // All 4 streams indexed (chunkIndexMinAvgChunks = 0).
     EXPECT_EQ(chunkHelper.streamCount(), 4);
 
-    // Verify key stream stats for group 1
-    const auto keyStats = helper.keyStreamStats();
-    EXPECT_EQ(keyStats.chunkCounts, (std::vector<uint32_t>{3}));
-    EXPECT_EQ(keyStats.chunkRows, (std::vector<uint32_t>{50, 100, 150}));
-    EXPECT_EQ(
-        keyStats.chunkKeys, (std::vector<std::string>{"ddd", "eee", "fff"}));
+    // Verify partition stats for group 1
+    const auto stats = clusterIndexTestHelper.partitionStats(1);
+    EXPECT_EQ(stats.chunkRows, (std::vector<uint32_t>{50, 100, 150}));
+    EXPECT_EQ(stats.chunkKeys, (std::vector<std::string>{"ddd", "eee", "fff"}));
 
     // Stream 0: 3 chunks (rows: 40, 60, 50)
     auto stream0Stats = chunkHelper.streamStats(0);
@@ -3128,24 +3076,16 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   // Stream 3: 3 chunks (rows: 40, 40, 40)
   {
     auto stripeId = tablet->stripeIdentifier(2);
-    ASSERT_NE(stripeId.clusterIndex(), nullptr);
-
-    nimble::index::test::ClusterIndexGroupTestHelper helper(
-        stripeId.clusterIndex().get());
-    EXPECT_EQ(helper.groupIndex(), 2);
-    EXPECT_EQ(helper.firstStripe(), 2);
-    EXPECT_EQ(helper.stripeCount(), 1);
 
     nimble::index::test::ChunkIndexTestHelper chunkHelper(
         stripeId.chunkIndex().get());
     // All 4 streams indexed (chunkIndexMinAvgChunks = 0).
     EXPECT_EQ(chunkHelper.streamCount(), 4);
 
-    // Verify key stream stats for group 2
-    const auto keyStats = helper.keyStreamStats();
-    EXPECT_EQ(keyStats.chunkCounts, (std::vector<uint32_t>{2}));
-    EXPECT_EQ(keyStats.chunkRows, (std::vector<uint32_t>{60, 120}));
-    EXPECT_EQ(keyStats.chunkKeys, (std::vector<std::string>{"ggg", "hhh"}));
+    // Verify partition stats for group 2
+    const auto stats = clusterIndexTestHelper.partitionStats(2);
+    EXPECT_EQ(stats.chunkRows, (std::vector<uint32_t>{60, 120}));
+    EXPECT_EQ(stats.chunkKeys, (std::vector<std::string>{"ggg", "hhh"}));
 
     // Stream 0: 2 chunks (rows: 70, 50)
     auto stream0Stats = chunkHelper.streamStats(0);
@@ -3175,24 +3115,16 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   // Stream 3: 2 chunks (rows: 30, 70)
   {
     auto stripeId = tablet->stripeIdentifier(3);
-    ASSERT_NE(stripeId.clusterIndex(), nullptr);
-
-    nimble::index::test::ClusterIndexGroupTestHelper helper(
-        stripeId.clusterIndex().get());
-    EXPECT_EQ(helper.groupIndex(), 3);
-    EXPECT_EQ(helper.firstStripe(), 3);
-    EXPECT_EQ(helper.stripeCount(), 1);
 
     nimble::index::test::ChunkIndexTestHelper chunkHelper(
         stripeId.chunkIndex().get());
     // All 4 streams indexed (chunkIndexMinAvgChunks = 0).
     EXPECT_EQ(chunkHelper.streamCount(), 4);
 
-    // Verify key stream stats for group 3
-    const auto keyStats = helper.keyStreamStats();
-    EXPECT_EQ(keyStats.chunkCounts, (std::vector<uint32_t>{2}));
-    EXPECT_EQ(keyStats.chunkRows, (std::vector<uint32_t>{50, 100}));
-    EXPECT_EQ(keyStats.chunkKeys, (std::vector<std::string>{"iii", "jjj"}));
+    // Verify partition stats for group 3
+    const auto stats = clusterIndexTestHelper.partitionStats(3);
+    EXPECT_EQ(stats.chunkRows, (std::vector<uint32_t>{50, 100}));
+    EXPECT_EQ(stats.chunkKeys, (std::vector<std::string>{"iii", "jjj"}));
 
     // Stream 0: 2 chunks (rows: 50, 50)
     auto stream0Stats = chunkHelper.streamStats(0);
@@ -3215,7 +3147,7 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
     EXPECT_EQ(stream3Stats.chunkRows, (std::vector<uint32_t>{30, 100}));
   }
 
-  // Verify key lookups through ClusterIndexGroup::lookupChunk return correct
+  // Verify key lookups through ClusterIndex::lookupChunk return correct
   // file row IDs.
   // File row ID = stripe start row + row offset within stripe
   //
@@ -3277,11 +3209,11 @@ TEST_P(TabletWithIndexTest, streamDeduplication) {
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
 
-  nimble::ClusterIndexConfig indexConfig{
-      .columns = {"col1"},
-      .sortOrders = {SortOrder{.ascending = true}},
-      .enforceKeyOrder = true,
-  };
+  nimble::index::test::TestClusterIndexMetadataWriter indexHelper(
+      *pool_,
+      {"col1"},
+      {SortOrder{.ascending = true}},
+      /*enforceKeyOrder=*/true);
 
   auto tabletWriter = nimble::TabletWriter::create(
       &writeFile,
@@ -3289,7 +3221,10 @@ TEST_P(TabletWithIndexTest, streamDeduplication) {
       {
           .metadataFlushThreshold = 1024 * 1024 * 1024,
           .streamDeduplicationEnabled = true,
-          .indexConfig = indexConfig,
+          .enableChunkIndex = true,
+          .stripeGroupFlushCallback =
+              indexHelper.createStripeGroupFlushCallback(),
+          .closeCallback = indexHelper.createCloseCallback(),
       });
 
   nimble::Buffer buffer{*pool_};
@@ -3310,7 +3245,7 @@ TEST_P(TabletWithIndexTest, streamDeduplication) {
   // Stream 1: content A (duplicate of stream 0), 2 chunks (rows: 50, 50)
   // Stream 2: content B, 3 chunks (rows: 30, 40, 30)
   // Stream 3: content B (duplicate of stream 2), 3 chunks (rows: 35, 35, 30)
-  // Key stream: 2 chunks (rows: 50, 50), keys: "aaa"->"bbb", "bbb"->"ccc"
+  // Key stream: 2 chunks (rows: 50, 50), keys: "bbb", "ccc"
   {
     std::vector<nimble::Stream> streams;
 
@@ -3399,14 +3334,11 @@ TEST_P(TabletWithIndexTest, streamDeduplication) {
       streams.push_back(std::move(stream));
     }
 
-    auto keyStream = createKeyStream(
-        buffer,
-        {
-            {50, "aaa", "bbb"},
-            {50, "bbb", "ccc"},
-        });
-
-    tabletWriter->writeStripe(100, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe({
+        {.rowCount = 50, .key = "bbb"},
+        {.rowCount = 50, .key = "ccc"},
+    });
+    tabletWriter->writeStripe(100, std::move(streams));
   }
 
   tabletWriter->close();
@@ -3435,38 +3367,36 @@ TEST_P(TabletWithIndexTest, streamDeduplication) {
   ASSERT_NE(index, nullptr);
 
   // Verify only one index group is created
-  EXPECT_EQ(index->numIndexGroups(), 1);
+  EXPECT_EQ(index->layout().numPartitions, 1);
 
-  // Verify key lookups
-  verifyClusterIndexLookups(
-      index,
-      {
-          {"aaa", 0},
-          {"bbb", 0},
-          {"ccc", 0},
-          {"ddd", std::nullopt},
-      });
+  // Verify key lookups with chunk-level precision (single stripe: rows 0-99).
+  // Chunk 0: rows [0, 50), key "bbb". Chunk 1: rows [50, 100), key "ccc".
+  {
+    verifyClusterIndexLookups(
+        index,
+        {
+            {"aaa", nimble::RowRange(0, 100)},
+            {"bbb", nimble::RowRange(0, 100)},
+            {"ccc", nimble::RowRange(50, 100)},
+            {"ddd", std::nullopt},
+        });
+  }
 
-  // Load index group and verify stream stats
+  // Load partition and verify stream stats
+  nimble::index::test::ClusterIndexTestHelper clusterIndexTestHelper(
+      tablet->clusterIndex());
+
   auto stripeId = tablet->stripeIdentifier(0);
-  ASSERT_NE(stripeId.clusterIndex(), nullptr);
-
-  nimble::index::test::ClusterIndexGroupTestHelper helper(
-      stripeId.clusterIndex().get());
-  EXPECT_EQ(helper.groupIndex(), 0);
-  EXPECT_EQ(helper.firstStripe(), 0);
-  EXPECT_EQ(helper.stripeCount(), 1);
 
   nimble::index::test::ChunkIndexTestHelper chunkHelper(
       stripeId.chunkIndex().get());
   EXPECT_EQ(chunkHelper.streamCount(), 4);
 
-  // Verify key stream stats
+  // Verify partition stats
   {
-    const auto keyStats = helper.keyStreamStats();
-    EXPECT_EQ(keyStats.chunkCounts, (std::vector<uint32_t>{2}));
-    EXPECT_EQ(keyStats.chunkRows, (std::vector<uint32_t>{50, 100}));
-    EXPECT_EQ(keyStats.chunkKeys, (std::vector<std::string>{"bbb", "ccc"}));
+    const auto stats = clusterIndexTestHelper.partitionStats(0);
+    EXPECT_EQ(stats.chunkRows, (std::vector<uint32_t>{50, 100}));
+    EXPECT_EQ(stats.chunkKeys, (std::vector<std::string>{"bbb", "ccc"}));
   }
 
   // Verify stream stats - all streams should have their own position index
@@ -3538,18 +3468,21 @@ TEST_P(TabletWithIndexTest, keyOrderEnforcement) {
     std::string file;
     velox::InMemoryWriteFile writeFile(&file);
 
-    nimble::ClusterIndexConfig indexConfig{
-        .columns = {"col1"},
-        .sortOrders = {SortOrder{.ascending = true}},
-        .enforceKeyOrder = enforceKeyOrder,
-        .noDuplicateKey = enforceKeyOrder,
-    };
+    nimble::index::test::TestClusterIndexMetadataWriter indexHelper(
+        *pool_,
+        {"col1"},
+        {SortOrder{.ascending = true}},
+        /*enforceKeyOrder=*/enforceKeyOrder,
+        /*noDuplicateKey=*/enforceKeyOrder);
 
     auto tabletWriter = nimble::TabletWriter::create(
         &writeFile,
         *pool_,
         {
-            .indexConfig = indexConfig,
+            .enableChunkIndex = true,
+            .stripeGroupFlushCallback =
+                indexHelper.createStripeGroupFlushCallback(),
+            .closeCallback = indexHelper.createCloseCallback(),
         });
 
     nimble::Buffer buffer{*pool_};
@@ -3562,9 +3495,8 @@ TEST_P(TabletWithIndexTest, keyOrderEnforcement) {
       streams.push_back(
           {.offset = 0, .chunks = {{.rowCount = 100, .content = {{pos, 10}}}}});
 
-      auto keyStream = createKeyStream(
-          buffer, {{.rowCount = 100, .firstKey = "ccc", .lastKey = "ddd"}});
-      tabletWriter->writeStripe(100, std::move(streams), std::move(keyStream));
+      indexHelper.addStripe({{.rowCount = 100, .key = "ddd"}});
+      tabletWriter->writeStripe(100, std::move(streams));
     }
 
     // Write second stripe with key ending before "ddd" (out of order)
@@ -3576,19 +3508,16 @@ TEST_P(TabletWithIndexTest, keyOrderEnforcement) {
           {.offset = 0, .chunks = {{.rowCount = 100, .content = {{pos, 10}}}}});
 
       // Key "bbb" < "ddd", out of order
-      auto keyStream = createKeyStream(
-          buffer, {{.rowCount = 100, .firstKey = "aaa", .lastKey = "bbb"}});
-
       if (enforceKeyOrder) {
         // Should throw when enforceKeyOrder is true
         NIMBLE_ASSERT_USER_THROW(
-            tabletWriter->writeStripe(
-                100, std::move(streams), std::move(keyStream)),
+            indexHelper.addStripe({{.rowCount = 100, .key = "bbb"}}),
             "Stripe keys must be in strictly ascending order");
       } else {
         // Should NOT throw when enforceKeyOrder is false
-        EXPECT_NO_THROW(tabletWriter->writeStripe(
-            100, std::move(streams), std::move(keyStream)));
+        EXPECT_NO_THROW(
+            indexHelper.addStripe({{.rowCount = 100, .key = "bbb"}}));
+        tabletWriter->writeStripe(100, std::move(streams));
 
         tabletWriter->close();
         writeFile.close();
@@ -3626,7 +3555,7 @@ TEST_P(TabletWithIndexTest, noIndex) {
   streams.push_back(
       {.offset = 0, .chunks = {{.rowCount = 100, .content = {{pos, 10}}}}});
 
-  tabletWriter->writeStripe(100, std::move(streams), std::nullopt);
+  tabletWriter->writeStripe(100, std::move(streams));
   tabletWriter->close();
   writeFile.close();
 
@@ -3642,10 +3571,10 @@ TEST_P(TabletWithIndexTest, noIndex) {
 }
 
 // Tests all four orthogonal config combinations of enableChunkIndex ×
-// indexConfig to verify:
+// cluster index (via indexHelper) to verify:
 // 1. Neither: no optional sections
 // 2. Chunk index only: chunk_index section exists, lookupChunk works
-// 3. Cluster index only (indexConfig): both sections exist (chunk index is
+// 3. Cluster index only (via indexHelper): both sections exist (chunk index is
 //    auto-enabled), key lookup and chunk lookup work
 // 4. Both explicitly: same as #3
 TEST_F(TabletWithIndexTest, configCombinations) {
@@ -3682,13 +3611,14 @@ TEST_F(TabletWithIndexTest, configCombinations) {
     std::string file;
     velox::InMemoryWriteFile writeFile(&file);
 
-    std::optional<nimble::ClusterIndexConfig> indexConfig;
+    std::optional<nimble::index::test::TestClusterIndexMetadataWriter>
+        indexHelper;
     if (config.enableIndexConfig) {
-      indexConfig = nimble::ClusterIndexConfig{
-          .columns = {"col1"},
-          .sortOrders = {SortOrder{.ascending = true}},
-          .enforceKeyOrder = true,
-      };
+      indexHelper.emplace(
+          *pool_,
+          std::vector<std::string>{"col1"},
+          std::vector<SortOrder>{SortOrder{.ascending = true}},
+          /*enforceKeyOrder=*/true);
     }
 
     auto tabletWriter = nimble::TabletWriter::create(
@@ -3696,8 +3626,14 @@ TEST_F(TabletWithIndexTest, configCombinations) {
         *pool_,
         {
             .metadataFlushThreshold = 1024 * 1024 * 1024,
-            .enableChunkIndex = config.enableChunkIndex,
-            .indexConfig = indexConfig,
+            .enableChunkIndex =
+                config.enableChunkIndex || config.enableIndexConfig,
+            .stripeGroupFlushCallback = indexHelper
+                ? indexHelper->createStripeGroupFlushCallback()
+                : nimble::TabletWriter::StripeGroupFlushCallback{},
+            .closeCallback = indexHelper
+                ? indexHelper->createCloseCallback()
+                : nimble::TabletWriter::CloseCallback{},
         });
 
     nimble::Buffer buffer{*pool_};
@@ -3720,18 +3656,14 @@ TEST_F(TabletWithIndexTest, configCombinations) {
                    }},
           });
 
-      std::optional<nimble::KeyStream> keyStream;
       if (config.enableIndexConfig) {
-        std::string firstKey = stripe == 0 ? "aaa" : "ccc";
-        std::string lastKey = stripe == 0 ? "bbb" : "ddd";
-        keyStream = createKeyStream(
-            buffer,
-            {
-                {.rowCount = 50, .firstKey = firstKey, .lastKey = lastKey},
-            });
+        std::string key = stripe == 0 ? "bbb" : "ddd";
+        indexHelper->addStripe({
+            {.rowCount = 50, .key = key},
+        });
       }
 
-      tabletWriter->writeStripe(50, std::move(streams), std::move(keyStream));
+      tabletWriter->writeStripe(50, std::move(streams));
     }
 
     tabletWriter->close();
@@ -3773,16 +3705,24 @@ TEST_F(TabletWithIndexTest, configCombinations) {
       EXPECT_TRUE(tablet->hasClusterIndex());
       const auto* idx = tablet->clusterIndex();
       ASSERT_NE(idx, nullptr);
-      EXPECT_EQ(idx->numStripes(), 2);
-      EXPECT_EQ(idx->minKey(), "aaa");
-      EXPECT_EQ(idx->maxKey(), "ddd");
+      EXPECT_EQ(idx->layout().numPartitions, 1);
 
-      // Key lookup
-      EXPECT_EQ(idx->lookup("aaa")->stripeIndex, 0);
-      EXPECT_EQ(idx->lookup("bbb")->stripeIndex, 0);
-      EXPECT_EQ(idx->lookup("ccc")->stripeIndex, 1);
-      EXPECT_EQ(idx->lookup("ddd")->stripeIndex, 1);
-      EXPECT_FALSE(idx->lookup("eee").has_value());
+      // Key lookup — 1 partition with 2 chunks (50 rows each), keys
+      // "bbb" and "ddd". Chunk-level precision narrows the start row.
+      const nimble::RowRange chunk0(0, 100);
+      const nimble::RowRange chunk1(50, 100);
+      auto lookupKey = [&](const std::string& key) {
+        std::vector<velox::serializer::EncodedKeyBounds> keyBounds = {
+            {.lowerKey = key}};
+        return idx->lookup(
+            nimble::index::IndexLookup::LookupRequest::rangeScan(keyBounds));
+      };
+      ASSERT_EQ(lookupKey("aaa")[0].size(), 1);
+      EXPECT_EQ(lookupKey("aaa")[0][0], chunk0);
+      EXPECT_EQ(lookupKey("bbb")[0][0], chunk0);
+      EXPECT_EQ(lookupKey("ccc")[0][0], chunk1);
+      EXPECT_EQ(lookupKey("ddd")[0][0], chunk1);
+      EXPECT_TRUE(lookupKey("eee")[0].empty());
     }
 
     // When chunk index is not enabled, chunkIndex should be null
@@ -3800,21 +3740,23 @@ TEST_P(TabletWithIndexTest, emptyFileWithIndexConfig) {
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
 
-  const nimble::ClusterIndexConfig indexConfig{
-      .columns = {"col1", "col2", "col3"},
-      .sortOrders =
-          {SortOrder{.ascending = true},
-           SortOrder{.ascending = false},
-           SortOrder{.ascending = true}},
-      .enforceKeyOrder = true,
-      .noDuplicateKey = false,
-  };
+  nimble::index::test::TestClusterIndexMetadataWriter indexHelper(
+      *pool_,
+      {"col1", "col2", "col3"},
+      {SortOrder{.ascending = true},
+       SortOrder{.ascending = false},
+       SortOrder{.ascending = true}},
+      /*enforceKeyOrder=*/true,
+      /*noDuplicateKey=*/false);
 
   auto tabletWriter = nimble::TabletWriter::create(
       &writeFile,
       *pool_,
       {
-          .indexConfig = indexConfig,
+          .enableChunkIndex = true,
+          .stripeGroupFlushCallback =
+              indexHelper.createStripeGroupFlushCallback(),
+          .closeCallback = indexHelper.createCloseCallback(),
       });
 
   // Close without writing any stripes.
@@ -3829,39 +3771,10 @@ TEST_P(TabletWithIndexTest, emptyFileWithIndexConfig) {
   // Verify no stripes.
   EXPECT_EQ(tablet->stripeCount(), 0);
 
-  // Verify index section exists (with config only).
-  EXPECT_TRUE(
+  // Empty file: no data was written, so no cluster index section is produced.
+  EXPECT_FALSE(
       tablet->hasOptionalSection(std::string(nimble::kClusterIndexSection)));
-
-  // Verify root index has config but no stripe data.
-  auto* clusterIndex = tablet->clusterIndex();
-  ASSERT_NE(clusterIndex, nullptr);
-
-  // Verify index columns match config.
-  const auto& indexColumns = clusterIndex->indexColumns();
-  ASSERT_EQ(indexColumns.size(), 3);
-  EXPECT_EQ(indexColumns[0], "col1");
-  EXPECT_EQ(indexColumns[1], "col2");
-  EXPECT_EQ(indexColumns[2], "col3");
-
-  // Verify sort orders match config.
-  const auto& sortOrders = clusterIndex->sortOrders();
-  ASSERT_EQ(sortOrders.size(), 3);
-  EXPECT_TRUE(sortOrders[0].ascending);
-  EXPECT_FALSE(sortOrders[1].ascending);
-  EXPECT_TRUE(sortOrders[2].ascending);
-
-  // Verify no stripes in index.
-  EXPECT_EQ(clusterIndex->numStripes(), 0);
-  EXPECT_TRUE(clusterIndex->empty());
-
-  // Verify no index groups.
-  EXPECT_EQ(clusterIndex->numIndexGroups(), 0);
-
-  // Verify lookup returns no match for any key.
-  EXPECT_FALSE(clusterIndex->lookup("any_key").has_value());
-  EXPECT_FALSE(clusterIndex->lookup("").has_value());
-  EXPECT_FALSE(clusterIndex->lookup("zzz").has_value());
+  EXPECT_FALSE(tablet->hasClusterIndex());
 }
 
 TEST_P(TabletWithIndexTest, fileLayoutWithIndex) {
@@ -3870,10 +3783,8 @@ TEST_P(TabletWithIndexTest, fileLayoutWithIndex) {
   velox::InMemoryWriteFile writeFile(&file);
   nimble::Buffer buffer(*pool_);
 
-  nimble::ClusterIndexConfig indexConfig{
-      .columns = {"col1"},
-      .sortOrders = {SortOrder{.ascending = true}},
-  };
+  nimble::index::test::TestClusterIndexMetadataWriter indexHelper(
+      *pool_, {"col1"}, {SortOrder{.ascending = true}});
 
   auto tabletWriter = nimble::TabletWriter::create(
       &writeFile,
@@ -3881,19 +3792,19 @@ TEST_P(TabletWithIndexTest, fileLayoutWithIndex) {
       {
           .metadataFlushThreshold = 1024 * 1024 * 1024,
           .streamDeduplicationEnabled = false,
-          .indexConfig = indexConfig,
+          .enableChunkIndex = true,
+          .stripeGroupFlushCallback =
+              indexHelper.createStripeGroupFlushCallback(),
+          .closeCallback = indexHelper.createCloseCallback(),
       });
 
   // Write two stripes with index
   for (int stripe = 0; stripe < 2; ++stripe) {
     auto streams = createStreams(
         buffer, {{.offset = 0, .chunks = {{.rowCount = 100, .size = 50}}}});
-    auto keyStream = createKeyStream(
-        buffer,
-        {{.rowCount = 100,
-          .firstKey = std::to_string(stripe * 100),
-          .lastKey = std::to_string(stripe * 100 + 99)}});
-    tabletWriter->writeStripe(100, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe(
+        {{.rowCount = 100, .key = std::to_string(stripe * 100 + 99)}});
+    tabletWriter->writeStripe(100, std::move(streams));
   }
   tabletWriter->close();
   writeFile.close();
@@ -3905,14 +3816,109 @@ TEST_P(TabletWithIndexTest, fileLayoutWithIndex) {
   EXPECT_EQ(layout.stripesInfo.size(), 2);
   EXPECT_EQ(layout.stripeGroups.size(), 1);
   // With index and stripes, should have index groups
-  EXPECT_EQ(layout.indexGroups.size(), 1);
-  EXPECT_GT(layout.indexGroups[0].size(), 0);
+  EXPECT_EQ(layout.indexPartitions.size(), 1);
+  EXPECT_GT(layout.indexPartitions[0].size(), 0);
   // Per-stripe info
   EXPECT_EQ(layout.stripesInfo.size(), 2);
   for (size_t i = 0; i < layout.stripesInfo.size(); ++i) {
     EXPECT_EQ(layout.stripesInfo[i].stripeGroupIndex, 0);
     EXPECT_GT(layout.stripesInfo[i].size, 0);
   }
+}
+
+TEST_P(TabletWithIndexTest, fileLayoutOrdering) {
+  // Verify the physical layout ordering of a Nimble file with cluster index:
+  //   [stripe data] → [stripe group metadata] → [index partition metadata]
+  //   → [stripes metadata] → [optional sections] → [footer] → [postscript]
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  nimble::index::test::TestClusterIndexMetadataWriter indexHelper(
+      *pool_, {"col1"}, {SortOrder{.ascending = true}});
+
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {
+          .metadataFlushThreshold = 1'024 * 1'024 * 1'024,
+          .streamDeduplicationEnabled = false,
+          .enableChunkIndex = true,
+          .stripeGroupFlushCallback =
+              indexHelper.createStripeGroupFlushCallback(),
+          .closeCallback = indexHelper.createCloseCallback(),
+      });
+
+  constexpr int kNumStripes = 3;
+  for (int stripe = 0; stripe < kNumStripes; ++stripe) {
+    auto streams = createStreams(
+        buffer, {{.offset = 0, .chunks = {{.rowCount = 100, .size = 50}}}});
+    indexHelper.addStripe(
+        {{.rowCount = 100, .key = fmt::format("key_{:03d}", stripe)}});
+    tabletWriter->writeStripe(100, std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  const auto layout = nimble::FileLayout::create(readFile, pool_.get());
+
+  // Verify basic structure.
+  ASSERT_EQ(layout.stripesInfo.size(), kNumStripes);
+  ASSERT_EQ(layout.stripeGroups.size(), 1);
+  ASSERT_EQ(layout.indexPartitions.size(), 1);
+  EXPECT_GT(layout.footer.size(), 0);
+
+  // Verify stripe data comes first.
+  for (size_t i = 0; i < layout.stripesInfo.size(); ++i) {
+    SCOPED_TRACE(fmt::format("stripe {}", i));
+    EXPECT_GT(layout.stripesInfo[i].size, 0);
+    if (i > 0) {
+      EXPECT_GE(
+          layout.stripesInfo[i].offset,
+          layout.stripesInfo[i - 1].offset + layout.stripesInfo[i - 1].size)
+          << "Stripes should be in ascending order";
+    }
+  }
+
+  // Stripe group metadata comes after all stripe data.
+  const auto lastStripeEnd =
+      layout.stripesInfo.back().offset + layout.stripesInfo.back().size;
+  EXPECT_GE(layout.stripeGroups[0].offset(), lastStripeEnd)
+      << "Stripe group metadata should come after stripe data";
+
+  // Index partition metadata comes after stripe group metadata.
+  EXPECT_GT(layout.indexPartitions[0].offset(), layout.stripeGroups[0].offset())
+      << "Index partition metadata should come after stripe group metadata";
+
+  // Optional sections (cluster index, chunk index) come after index partitions.
+  const auto clusterIndexIt =
+      layout.optionalSections.find(std::string(nimble::kClusterIndexSection));
+  ASSERT_NE(clusterIndexIt, layout.optionalSections.end());
+  EXPECT_GT(clusterIndexIt->second.offset(), layout.indexPartitions[0].offset())
+      << "Cluster index should come after index partition metadata";
+
+  const auto chunkIndexIt =
+      layout.optionalSections.find(std::string(nimble::kChunkIndexSection));
+  ASSERT_NE(chunkIndexIt, layout.optionalSections.end());
+  EXPECT_GT(chunkIndexIt->second.offset(), layout.indexPartitions[0].offset())
+      << "Chunk index should come after index partition metadata";
+
+  // Stripes metadata comes after optional sections.
+  EXPECT_GT(layout.stripes.offset(), clusterIndexIt->second.offset())
+      << "Stripes metadata should come after cluster index";
+  EXPECT_GT(layout.stripes.offset(), chunkIndexIt->second.offset())
+      << "Stripes metadata should come after chunk index";
+
+  // Footer comes after stripes metadata.
+  EXPECT_GT(layout.footer.offset(), layout.stripes.offset())
+      << "Footer should come after stripes metadata";
+
+  // Postscript is the last 20 bytes.
+  EXPECT_EQ(
+      layout.footer.offset() + layout.footer.size() + nimble::kPostscriptSize,
+      layout.fileSize)
+      << "Footer + postscript should end at file size";
 }
 
 TEST_P(TabletWithIndexTest, cacheWarmPath) {
@@ -3928,11 +3934,11 @@ TEST_P(TabletWithIndexTest, cacheWarmPath) {
   velox::InMemoryWriteFile writeFile(&file);
   nimble::Buffer buffer(*pool_);
 
-  nimble::ClusterIndexConfig indexConfig{
-      .columns = {"col1"},
-      .sortOrders = {SortOrder{.ascending = true}},
-      .enforceKeyOrder = true,
-  };
+  nimble::index::test::TestClusterIndexMetadataWriter indexHelper(
+      *pool_,
+      {"col1"},
+      {SortOrder{.ascending = true}},
+      /*enforceKeyOrder=*/true);
 
   auto tabletWriter = nimble::TabletWriter::create(
       &writeFile,
@@ -3940,19 +3946,19 @@ TEST_P(TabletWithIndexTest, cacheWarmPath) {
       {
           .metadataFlushThreshold = 1024 * 1024 * 1024,
           .streamDeduplicationEnabled = false,
-          .indexConfig = indexConfig,
+          .enableChunkIndex = true,
+          .stripeGroupFlushCallback =
+              indexHelper.createStripeGroupFlushCallback(),
+          .closeCallback = indexHelper.createCloseCallback(),
       });
 
   constexpr int kNumStripes = 3;
-  std::vector<std::string> firstKeys = {"aaa", "ccc", "eee"};
-  std::vector<std::string> lastKeys = {"bbb", "ddd", "fff"};
+  std::vector<std::string> keys = {"bbb", "ddd", "fff"};
   for (int i = 0; i < kNumStripes; ++i) {
     auto streams = createStreams(
         buffer, {{.offset = 0, .chunks = {{.rowCount = 100, .size = 50}}}});
-    auto keyStream = createKeyStream(
-        buffer,
-        {{.rowCount = 100, .firstKey = firstKeys[i], .lastKey = lastKeys[i]}});
-    tabletWriter->writeStripe(100, std::move(streams), std::move(keyStream));
+    indexHelper.addStripe({{.rowCount = 100, .key = keys[i]}});
+    tabletWriter->writeStripe(100, std::move(streams));
   }
   tabletWriter->close();
   writeFile.close();
@@ -3988,17 +3994,20 @@ TEST_P(TabletWithIndexTest, cacheWarmPath) {
     EXPECT_EQ(ioStatistics_->read().count(), 0);
     EXPECT_EQ(ioStatistics_->prefetch().count(), 0);
 
-    // Verify stripe groups and index groups are accessible.
+    // Verify stripe groups are accessible.
     for (uint32_t i = 0; i < kNumStripes; ++i) {
       auto stripeId = coldReader->stripeIdentifier(i);
       EXPECT_NE(stripeId.stripeGroup(), nullptr);
-      EXPECT_NE(stripeId.clusterIndex(), nullptr);
     }
 
-    // Verify index lookup works.
-    auto location = coldReader->clusterIndex()->lookup("bbb");
-    ASSERT_TRUE(location.has_value());
-    EXPECT_EQ(location->stripeIndex, 0);
+    // Verify index lookup works — all stripes in one partition [0, 300).
+    std::vector<velox::serializer::EncodedKeyBounds> keyBounds = {
+        {.lowerKey = "bbb"}};
+    auto result = coldReader->clusterIndex()->lookup(
+        nimble::index::IndexLookup::LookupRequest::rangeScan(keyBounds));
+    ASSERT_EQ(result.size(), 1);
+    ASSERT_EQ(result[0].size(), 1);
+    EXPECT_EQ(result[0][0], nimble::RowRange(0, 300));
   }
 
   coldCacheStats = cache_->refreshStats();
@@ -4023,24 +4032,29 @@ TEST_P(TabletWithIndexTest, cacheWarmPath) {
     EXPECT_EQ(ioStatistics_->read().count(), 0);
     EXPECT_EQ(ioStatistics_->prefetch().count(), 0);
 
-    // Verify stripe groups and index groups are accessible from cache.
+    // Verify stripe groups are accessible from cache.
     for (uint32_t i = 0; i < kNumStripes; ++i) {
       auto stripeId = warmReader->stripeIdentifier(i);
       EXPECT_NE(stripeId.stripeGroup(), nullptr);
-      EXPECT_NE(stripeId.clusterIndex(), nullptr);
     }
 
-    // Verify index lookup still works from cache.
-    auto location = warmReader->clusterIndex()->lookup("ddd");
-    ASSERT_TRUE(location.has_value());
-    EXPECT_EQ(location->stripeIndex, 1);
+    // Verify index lookup still works from cache — same partition [0, 300).
+    std::vector<velox::serializer::EncodedKeyBounds> warmKeyBounds = {
+        {.lowerKey = "ddd"}};
+    auto warmResult = warmReader->clusterIndex()->lookup(
+        nimble::index::IndexLookup::LookupRequest::rangeScan(warmKeyBounds));
+    ASSERT_EQ(warmResult.size(), 1);
+    ASSERT_EQ(warmResult[0].size(), 1);
+    EXPECT_EQ(warmResult[0][0], nimble::RowRange(100, 300));
   }
 
-  // Warm reader should have additional cache hits, no new entries or evictions.
+  // Warm reader should have cache hits and no evictions. The warm reader
+  // creates one additional cache entry for the partition metadata (loaded
+  // on demand during lookup via loadPartition).
   auto warmCacheStats = cache_->refreshStats();
-  EXPECT_EQ(warmCacheStats.numEntries, coldCacheStats.numEntries);
+  EXPECT_EQ(warmCacheStats.numEntries, coldCacheStats.numEntries + 1);
   EXPECT_GT(warmCacheStats.numHit, coldCacheStats.numHit);
-  EXPECT_EQ(warmCacheStats.numNew, coldCacheStats.numNew);
+  EXPECT_EQ(warmCacheStats.numNew, coldCacheStats.numNew + 1);
   EXPECT_EQ(warmCacheStats.numEvict, 0);
 }
 
@@ -4381,6 +4395,106 @@ TEST_P(TabletTest, cacheWarmPath) {
   EXPECT_GT(warmCacheStats.numHit, coldCacheStats.numHit);
   EXPECT_EQ(warmCacheStats.numNew, coldCacheStats.numNew);
   EXPECT_EQ(warmCacheStats.numEvict, 0);
+}
+
+TEST_P(TabletTest, rowToStripe) {
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
+  // Write 3 stripes with row counts: 100, 200, 150 (total 450).
+  const std::vector<uint32_t> rowCounts = {100, 200, 150};
+  for (const auto rowCount : rowCounts) {
+    std::vector<nimble::Stream> streams;
+    const auto size = 50;
+    auto pos = buffer.reserve(size);
+    std::memset(pos, 'x', size);
+    streams.push_back({
+        .offset = 0,
+        .chunks = {{.content = {std::string_view(pos, size)}}},
+    });
+    tabletWriter->writeStripe(rowCount, std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tablet = createTabletReader(readFile);
+  ASSERT_EQ(tablet->stripeCount(), 3);
+  ASSERT_EQ(tablet->tabletRowCount(), 450);
+
+  // Verify stripeStartRow.
+  EXPECT_EQ(tablet->stripeStartRow(0), 0);
+  EXPECT_EQ(tablet->stripeStartRow(1), 100);
+  EXPECT_EQ(tablet->stripeStartRow(2), 300);
+  // Sentinel: stripeStartRow(stripeCount) == tabletRowCount.
+  EXPECT_EQ(tablet->stripeStartRow(3), 450);
+
+  // Verify stripeRowCount.
+  EXPECT_EQ(tablet->stripeRowCount(0), 100);
+  EXPECT_EQ(tablet->stripeRowCount(1), 200);
+  EXPECT_EQ(tablet->stripeRowCount(2), 150);
+
+  // Verify rowToStripe.
+  // Stripe 0: rows [0, 100)
+  EXPECT_EQ(tablet->rowToStripe(0), 0);
+  EXPECT_EQ(tablet->rowToStripe(50), 0);
+  EXPECT_EQ(tablet->rowToStripe(99), 0);
+
+  // Stripe 1: rows [100, 300)
+  EXPECT_EQ(tablet->rowToStripe(100), 1);
+  EXPECT_EQ(tablet->rowToStripe(200), 1);
+  EXPECT_EQ(tablet->rowToStripe(299), 1);
+
+  // Stripe 2: rows [300, 450)
+  EXPECT_EQ(tablet->rowToStripe(300), 2);
+  EXPECT_EQ(tablet->rowToStripe(400), 2);
+  EXPECT_EQ(tablet->rowToStripe(449), 2);
+
+  // Out-of-range checks.
+  NIMBLE_ASSERT_THROW(
+      tablet->rowToStripe(tablet->tabletRowCount()), "exceeds total row count");
+  NIMBLE_ASSERT_THROW(
+      tablet->rowToStripe(tablet->tabletRowCount() + 1'000),
+      "exceeds total row count");
+  NIMBLE_ASSERT_THROW(tablet->stripeRowCount(3), "(3 vs. 3)");
+  NIMBLE_ASSERT_THROW(tablet->stripeStartRow(4), "(4 vs. 3)");
+}
+
+TEST_P(TabletTest, rowToStripeSingleStripe) {
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
+  const auto size = 50;
+  auto pos = buffer.reserve(size);
+  std::memset(pos, 'x', size);
+  std::vector<nimble::Stream> streams;
+  streams.push_back({
+      .offset = 0,
+      .chunks = {{.content = {std::string_view(pos, size)}}},
+  });
+  tabletWriter->writeStripe(500, std::move(streams));
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tablet = createTabletReader(readFile);
+  ASSERT_EQ(tablet->stripeCount(), 1);
+  ASSERT_EQ(tablet->tabletRowCount(), 500);
+
+  EXPECT_EQ(tablet->stripeStartRow(0), 0);
+  EXPECT_EQ(tablet->stripeStartRow(1), 500);
+  EXPECT_EQ(tablet->stripeRowCount(0), 500);
+
+  EXPECT_EQ(tablet->rowToStripe(0), 0);
+  EXPECT_EQ(tablet->rowToStripe(250), 0);
+  EXPECT_EQ(tablet->rowToStripe(499), 0);
+
+  NIMBLE_ASSERT_THROW(
+      tablet->rowToStripe(tablet->tabletRowCount()), "exceeds total row count");
 }
 
 INSTANTIATE_TEST_SUITE_P(

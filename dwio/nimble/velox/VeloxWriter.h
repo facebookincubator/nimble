@@ -16,9 +16,9 @@
 #pragma once
 
 #include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/index/ClusterIndexWriter.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/velox/FieldWriter.h"
-#include "dwio/nimble/velox/IndexWriter.h"
 #include "dwio/nimble/velox/VeloxWriterOptions.h"
 #include "velox/common/file/File.h"
 #include "velox/dwio/common/ExecutorBarrier.h"
@@ -36,8 +36,6 @@ namespace detail {
 class WriterContext;
 
 } // namespace detail
-
-using index::IndexWriter;
 
 /// Writer that takes velox vector as input and produces nimble file.
 class VeloxWriter {
@@ -91,10 +89,14 @@ class VeloxWriter {
 
  private:
   inline bool hasClusterIndex() const;
-
-  // Adds index key to the index writer. If barrier is provided, the processing
-  // will be added to the barrier for parallel execution.
+  // Adds index keys to the cluster index writer.
+  // If barrier is provided, the processing will be added to the barrier
+  // for parallel execution.
   void addIndexKey(
+      const velox::VectorPtr& input,
+      velox::dwio::common::ExecutorBarrier* barrier = nullptr);
+
+  void addClusterIndexKey(
       const velox::VectorPtr& input,
       velox::dwio::common::ExecutorBarrier* barrier = nullptr);
 
@@ -117,8 +119,6 @@ class VeloxWriter {
       std::atomic_uint64_t& chunkBytes,
       std::atomic_uint64_t& logicalBytes);
 
-  void encodeKeyStreamChunk(bool lastChunk, bool ensureFullChunks);
-
   // Encodes a single chunk view and writes it to the encoded chunk.
   // Returns the number of bytes written to the encoded chunk.
   uint32_t encodeChunk(const StreamData& chunkView, Chunk& chunk);
@@ -132,24 +132,6 @@ class VeloxWriter {
       StreamData& streamData,
       uint64_t& streamSize,
       std::atomic_uint64_t& chunkSize);
-
-  // Processes the key stream if index is enabled. This is a no-op if index is
-  // not enabled. If barrier is provided, the processing will be added to the
-  // barrier for parallel execution.
-  void maybeProcessKeyStream(
-      velox::dwio::common::ExecutorBarrier* barrier = nullptr);
-
-  // Encodes key stream chunks if index is enabled. This is a no-op if index is
-  // not enabled. If barrier is provided, the encoding will be added to the
-  // barrier for parallel execution.
-  void maybeEncodeKeyStreamChunk(
-      bool lastChunk,
-      bool ensureFullChunks,
-      velox::dwio::common::ExecutorBarrier* barrier = nullptr);
-
-  // Finishes the key stream for the current stripe and returns it.
-  // Returns std::nullopt if index is not enabled.
-  std::optional<KeyStream> finishKeyStream();
 
   // Returning 'true' if stripe was flushed.
   bool evaluateFlushPolicy();
@@ -177,6 +159,10 @@ class VeloxWriter {
   void writeMetadata();
   void writeColumnStats();
   void writeSchema();
+  // Finalizes and writes all indexes. Called via TabletWriter close callback.
+  void writeIndexes(
+      const CreateMetadataSectionFn& createMetadataSection,
+      const WriteOptionalSectionFn& writeOptionalSection);
 
   void ensureEncodingBuffer();
   void clearEncodingBuffer();
@@ -189,7 +175,7 @@ class VeloxWriter {
   MemoryPoolHolder encodingMemoryPool_;
   const std::unique_ptr<detail::WriterContext> context_;
   std::unique_ptr<velox::WriteFile> file_;
-  const std::unique_ptr<IndexWriter> indexWriter_;
+  const std::unique_ptr<index::ClusterIndexWriter> clusterIndexWriter_;
   const std::unique_ptr<TabletWriter> tabletWriter_;
 
   std::unique_ptr<FieldWriter> rootWriter_;

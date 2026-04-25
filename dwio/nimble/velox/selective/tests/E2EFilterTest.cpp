@@ -335,10 +335,10 @@ class E2EFilterTest
     }
     // Configure index if index columns are specified.
     if (!indexColumns.empty()) {
-      IndexConfig indexConfig;
-      indexConfig.columns = indexColumns;
-      indexConfig.enforceKeyOrder = true;
-      options.indexConfig = std::move(indexConfig);
+      ClusterIndexConfig clusterIndexConfig;
+      clusterIndexConfig.columns = indexColumns;
+      clusterIndexConfig.enforceKeyOrder = true;
+      options.clusterIndexConfig = std::move(clusterIndexConfig);
     }
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
     VeloxWriter writer(

@@ -478,20 +478,6 @@ std::unique_ptr<FieldWriter> createRootFieldWriter(
   });
 }
 
-std::optional<ClusterIndexConfig> createClusterIndexConfig(
-    const std::optional<IndexConfig>& config,
-    index::IndexWriter* indexWriter) {
-  if (!config.has_value() || indexWriter == nullptr) {
-    return std::nullopt;
-  }
-  return ClusterIndexConfig{
-      .columns = config->columns,
-      .sortOrders = indexWriter->sortOrders(),
-      .enforceKeyOrder = config->enforceKeyOrder,
-      .noDuplicateKey = config->noDuplicateKey,
-  };
-}
-
 void initializeEncodingLayouts(
     const TypeBuilder& typeBuilder,
     const EncodingLayoutTree& encodingLayoutTree) {
@@ -686,8 +672,8 @@ VeloxWriter::VeloxWriter(
           *writerMemoryPool_,
           std::move(options))},
       file_{std::move(file)},
-      indexWriter_{IndexWriter::create(
-          context_->options().indexConfig,
+      clusterIndexWriter_{index::ClusterIndexWriter::create(
+          context_->options().clusterIndexConfig,
           type,
           &(*context_->bufferMemoryPool()))},
       tabletWriter_{TabletWriter::create(
@@ -705,9 +691,22 @@ VeloxWriter::VeloxWriter(
                context_->options().enableStreamDeduplication,
            .enableChunkIndex = context_->options().enableChunkIndex,
            .chunkIndexMinAvgChunks = context_->options().chunkIndexMinAvgChunks,
-           .indexConfig = createClusterIndexConfig(
-               context_->options().indexConfig,
-               indexWriter_.get())})} {
+           .stripeGroupFlushCallback = clusterIndexWriter_ != nullptr
+               ? TabletWriter::StripeGroupFlushCallback(
+                     [this](
+                         size_t stripeCount,
+                         const WriteDataFn& writeData,
+                         const CreateMetadataSectionFn& createMetadataSection) {
+                       clusterIndexWriter_->flushPartition(
+                           stripeCount, writeData, createMetadataSection);
+                     })
+               : nullptr,
+           .closeCallback =
+               [this](
+                   const WriteOptionalSectionFn& writeOptionalSection,
+                   const CreateMetadataSectionFn& createMetadataSection) {
+                 writeIndexes(createMetadataSection, writeOptionalSection);
+               }})} {
   NIMBLE_CHECK_NOT_NULL(file_);
 
   // Register handler for dynamically discovered FlatMap keys before creating
@@ -870,20 +869,38 @@ void VeloxWriter::writeSchema() {
 }
 
 bool VeloxWriter::hasClusterIndex() const {
-  return indexWriter_ != nullptr;
+  return clusterIndexWriter_ != nullptr;
 }
 
 void VeloxWriter::addIndexKey(
     const velox::VectorPtr& input,
     velox::dwio::common::ExecutorBarrier* barrier) {
+  addClusterIndexKey(input, barrier);
+}
+
+void VeloxWriter::addClusterIndexKey(
+    const velox::VectorPtr& input,
+    velox::dwio::common::ExecutorBarrier* barrier) {
   if (!hasClusterIndex()) {
     return;
   }
-  ensureEncodingBuffer();
   if (barrier != nullptr) {
-    barrier->add([&]() { indexWriter_->write(input, *encodingBuffer_); });
+    barrier->add([&]() { clusterIndexWriter_->write(input); });
   } else {
-    indexWriter_->write(input, *encodingBuffer_);
+    clusterIndexWriter_->write(input);
+  }
+}
+
+void VeloxWriter::writeIndexes(
+    const CreateMetadataSectionFn& createMetadataSection,
+    const WriteOptionalSectionFn& writeOptionalSection) {
+  if (hasClusterIndex()) {
+    const auto serialized =
+        clusterIndexWriter_->finalize(createMetadataSection);
+    if (!serialized.empty()) {
+      writeOptionalSection(std::string(kClusterIndexSection), serialized);
+    }
+    clusterIndexWriter_->close();
   }
 }
 
@@ -914,9 +931,6 @@ void VeloxWriter::close() {
       rootWriter_->close();
       if (context_->options().enableStatsCollection) {
         context_->finalizeStatsCollectors();
-      }
-      if (hasClusterIndex()) {
-        indexWriter_->close();
       }
 
       writeMetadata();
@@ -1020,8 +1034,6 @@ void VeloxWriter::writeStreams() {
         });
       }
 
-      // Handle keyStream if index is enabled
-      maybeProcessKeyStream(&barrier);
       barrier.waitAll();
     } else {
       const auto& streams = context_->streams();
@@ -1033,9 +1045,6 @@ void VeloxWriter::writeStreams() {
           statsCollector->addPhysicalSize(streamSize);
         }
       }
-
-      // Handle keyStream if index is enabled
-      maybeProcessKeyStream();
     }
     resetFieldWriter();
   }
@@ -1043,15 +1052,6 @@ void VeloxWriter::writeStreams() {
   context_->addStripeFlushTiming(flushTiming);
   VLOG(1) << "writeChunk time: " << velox::succinctNanos(flushTiming.wallNanos)
           << ", chunk size: " << velox::succinctBytes(chunkSize);
-}
-
-void VeloxWriter::encodeKeyStreamChunk(bool lastChunk, bool ensureFullChunks) {
-  NIMBLE_CHECK(hasClusterIndex());
-  if (!indexWriter_->hasKeys()) {
-    return;
-  }
-  // IndexWriter accumulates chunks internally, accessed via finishStripe()
-  indexWriter_->encodeChunk(ensureFullChunks, lastChunk, *encodingBuffer_);
 }
 
 void VeloxWriter::encodeStream(
@@ -1110,42 +1110,6 @@ void VeloxWriter::processStream(
       encodeStream(streamData, streamSize, chunkSize);
     }
   }
-}
-
-void VeloxWriter::maybeProcessKeyStream(
-    velox::dwio::common::ExecutorBarrier* barrier) {
-  if (!hasClusterIndex()) {
-    return;
-  }
-  NIMBLE_CHECK(indexWriter_->hasKeys());
-  auto encode = [this]() { indexWriter_->encodeStream(*encodingBuffer_); };
-  if (barrier != nullptr) {
-    barrier->add(std::move(encode));
-  } else {
-    encode();
-  }
-}
-
-void VeloxWriter::maybeEncodeKeyStreamChunk(
-    bool lastChunk,
-    bool ensureFullChunks,
-    velox::dwio::common::ExecutorBarrier* barrier) {
-  if (!hasClusterIndex()) {
-    return;
-  }
-  auto encode = [&]() { encodeKeyStreamChunk(lastChunk, ensureFullChunks); };
-  if (barrier != nullptr) {
-    barrier->add(std::move(encode));
-  } else {
-    encode();
-  }
-}
-
-std::optional<KeyStream> VeloxWriter::finishKeyStream() {
-  if (!hasClusterIndex()) {
-    return std::nullopt;
-  }
-  return indexWriter_->finishStripe(*encodingBuffer_);
 }
 
 bool VeloxWriter::encodeStreamChunk(
@@ -1246,8 +1210,6 @@ bool VeloxWriter::writeChunks(
         });
       }
 
-      maybeEncodeKeyStreamChunk(lastChunk, ensureFullChunks, &barrier);
-
       barrier.waitAll();
     } else {
       for (auto streamIndex : streamIndices) {
@@ -1270,8 +1232,6 @@ bool VeloxWriter::writeChunks(
           statsCollector->addPhysicalSize(streamSize);
         }
       }
-
-      maybeEncodeKeyStreamChunk(lastChunk, ensureFullChunks);
     }
 
     if (lastChunk) {
@@ -1345,13 +1305,9 @@ bool VeloxWriter::writeStripe() {
     }
     encodedStreams_.resize(nonEmptyCount);
 
-    std::optional<KeyStream> keyStream = finishKeyStream();
-
     const uint64_t startSize = tabletWriter_->size();
     tabletWriter_->writeStripe(
-        context_->rowsInStripe(),
-        std::move(encodedStreams_),
-        std::move(keyStream));
+        context_->rowsInStripe(), std::move(encodedStreams_));
     stripeSize = tabletWriter_->size() - startSize;
     clearEncodingBuffer();
     // TODO: once chunked string fields are supported, move string buffer

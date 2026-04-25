@@ -17,8 +17,8 @@
 #pragma once
 
 #include <folly/io/IOBuf.h>
-#include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -168,33 +168,54 @@ class NimbleIndexProjector {
   }
 
  private:
-  // Map from stripe index to request indices that need data from it.
-  // Sorted by stripe index for sequential I/O.
-  using StripeMapping = std::map<uint32_t, std::vector<velox::vector_size_t>>;
-
-  // Maps requests to stripes using the tablet index.
-  StripeMapping lookupStripes();
-
-  // Processes a single stripe: loads index + data, looks up row ranges,
-  // reads and serializes segments.
-  void processStripe(
-      uint32_t stripeIndex,
-      const std::vector<velox::vector_size_t>& requestIndices,
-      Result& result);
-
-  // Row range for a specific request within a stripe.
-  struct RequestRange {
+  // A request index paired with its stripe-relative row range.
+  struct StripeRowRange {
     velox::vector_size_t requestIndex{};
+    // Stripe-relative row range, already intersected with stripe boundaries.
     RowRange rowRange;
   };
 
-  // Sets up the stripe with index metadata, creates an index reader, and looks
-  // up row ranges for requests within the stripe. Indexes into
-  // request_->keyBounds via requestIndices. Filters empty ranges and applies
-  // maxRowsPerRequest truncation.
-  std::vector<RequestRange> lookupRowRanges(
-      uint32_t stripeIndex,
-      const std::vector<velox::vector_size_t>& requestIndices);
+  // CSR (compressed sparse row) layout mapping stripes to request row ranges.
+  // All StripeRowRanges stored in a single flat vector, with stripeOffsets
+  // indicating where each stripe's entries begin.
+  struct StripeRangeMap {
+    uint32_t startStripe{0};
+    uint32_t numStripes{0};
+    // All stripe row ranges, grouped by stripe in order.
+    std::vector<StripeRowRange> rowRanges;
+    // stripeOffsets[i] = start index in rowRanges for stripe (startStripe + i).
+    // Size = numStripes + 1.
+    std::vector<uint32_t> stripeOffsets;
+
+    std::span<const StripeRowRange> stripeRowRanges(uint32_t stripeIdx) const {
+      NIMBLE_CHECK_GE(stripeIdx, startStripe);
+      NIMBLE_CHECK_LT(stripeIdx, startStripe + numStripes);
+      const auto stripeOffset = stripeIdx - startStripe;
+      return {
+          rowRanges.data() + stripeOffsets[stripeOffset],
+          stripeOffsets[stripeOffset + 1] - stripeOffsets[stripeOffset]};
+    }
+
+    void clear() {
+      startStripe = 0;
+      numStripes = 0;
+      rowRanges.clear();
+      stripeOffsets.clear();
+    }
+  };
+
+  // Looks up all requests via the cluster index and maps them to stripes.
+  // Populates stripeRangeMap_.
+  void lookupStripes();
+
+  // Copies stripeRowRanges to stripeRowRanges_ and removes saturated
+  // requests. Returns true if there are remaining requests to process.
+  bool pruneStripeRowRanges(std::span<const StripeRowRange> stripeRowRanges);
+
+  // Processes a single stripe: loads data streams, serializes projected
+  // columns, and builds results with maxRowsPerRequest truncation.
+  // Uses stripeRowRanges_ populated by pruneStripeRowRanges().
+  void processStripe(uint32_t stripeIndex, Result& result);
 
   using InputStreams =
       std::vector<std::unique_ptr<velox::dwio::common::SeekableInputStream>>;
@@ -207,14 +228,28 @@ class NimbleIndexProjector {
   Chunk serializeStripe(uint32_t stripeIndex, InputStreams& inputStreams);
 
   // Maps the serialized stripe chunk to request results based on row ranges.
-  void buildStripeResult(
-      Chunk&& chunk,
-      const std::vector<RequestRange>& requestRanges,
-      Result& result);
+  // Applies maxRowsPerRequest truncation.
+  // Uses stripeRowRanges_ populated by pruneStripeRowRanges().
+  void buildStripeResult(Chunk&& chunk, Result& result);
 
-  inline uint32_t stripeRowCount(uint32_t stripeIndex) const {
-    return static_cast<uint32_t>(
-        readerBase_->tablet().stripeRowCount(stripeIndex));
+  inline uint32_t stripeRowCount(uint32_t stripe) const {
+    return static_cast<uint32_t>(readerBase_->tablet().stripeRowCount(stripe));
+  }
+
+  // Computes the stripe-relative row range by intersecting the file-level
+  // rowRangeLimit with the stripe boundaries.
+  RowRange stripeRowRange(uint32_t stripe, const RowRange& rowRangeLimit)
+      const {
+    const auto stripeStart = static_cast<velox::vector_size_t>(
+        readerBase_->tablet().stripeStartRow(stripe));
+    const auto stripeEnd =
+        stripeStart + static_cast<velox::vector_size_t>(stripeRowCount(stripe));
+    const auto startRow = std::max(rowRangeLimit.startRow, stripeStart);
+    const auto endRow = std::min(rowRangeLimit.endRow, stripeEnd);
+    if (startRow >= endRow) {
+      return RowRange{};
+    }
+    return RowRange(startRow - stripeStart, endRow - stripeStart);
   }
 
   void updateIoStats();
@@ -222,7 +257,7 @@ class NimbleIndexProjector {
   const std::shared_ptr<velox::io::IoStatistics> ioStatistics_;
   const std::shared_ptr<ReaderBase> readerBase_;
   velox::memory::MemoryPool* const pool_;
-  const ClusterIndex* const tabletIndex_;
+  const ClusterIndex* const clusterIndex_;
   const uint32_t numStripes_{0};
 
   // Projected nimble schema built from file nimble schema. Preserves
@@ -237,7 +272,15 @@ class NimbleIndexProjector {
   // Set during project() and cleared on return.
   const Request* request_{nullptr};
   const Options* options_{nullptr};
+
+  // Accumulated rows read per request for maxRowsPerRequest enforcement.
   std::vector<uint64_t> rowsPerRequest_;
+  // Current stripe's row ranges after pruning saturated requests.
+  // Populated by pruneStripeRowRanges(), consumed by processStripe().
+  std::vector<StripeRowRange> stripeRowRanges_;
+  // CSR mapping from stripes to request row ranges. Populated by
+  // lookupStripes(), read-only during stripe processing.
+  StripeRangeMap stripeRangeMap_;
 };
 
 } // namespace facebook::nimble

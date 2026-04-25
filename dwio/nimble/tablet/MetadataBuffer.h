@@ -18,6 +18,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
@@ -104,6 +105,11 @@ class MetadataSection {
 /// Callback type for creating metadata sections in the file.
 using CreateMetadataSectionFn =
     std::function<MetadataSection(std::string_view)>;
+
+/// Callback type for writing raw data segments to the file.
+/// Writes all segments contiguously and returns the (offset, totalSize).
+using WriteDataFn = std::function<std::pair<uint64_t, uint32_t>(
+    const std::vector<std::string_view>&)>;
 
 /// Callback type for writing optional sections.
 using WriteOptionalSectionFn =

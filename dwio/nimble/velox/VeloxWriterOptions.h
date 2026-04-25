@@ -54,8 +54,8 @@ struct VeloxWriterOptions {
 
   // When true, chunk-level position index is built for all streams,
   // enabling O(1) chunk-level seeking within stripes. Independent of
-  // the cluster index (indexConfig). When indexConfig is set, chunk
-  // index is always enabled regardless of this flag.
+  // the cluster index (clusterIndexConfig). When clusterIndexConfig is set,
+  // chunk index is always enabled regardless of this flag.
   bool enableChunkIndex{false};
 
   // Skip writing chunk index for a stripe group if the average number
@@ -65,9 +65,9 @@ struct VeloxWriterOptions {
 
   /// If set, the cluster index on the specified columns will be built during
   /// writing. The index stores the per-chunk min and max key for each stripe.
-  std::optional<IndexConfig> indexConfig;
+  std::optional<ClusterIndexConfig> clusterIndexConfig;
 
-  /// Columns that should be encoded as flat maps. Maps column name to a set
+  // Columns that should be encoded as flat maps. Maps column name to a set
   /// of predefined key strings. When the set is empty, the column is
   /// treated as a flat map with dynamic key discovery. When non-empty, keys
   /// are predefined in sorted order to ensure all writers produce

@@ -56,24 +56,6 @@ class TabletReaderTestHelper {
     return cachedStripeGroupCount() == 1 && hasStripeGroupCached(0);
   }
 
-  /// Returns the number of cached index groups.
-  size_t cachedIndexGroupCount() const {
-    return tabletReader_->clusterIndexCache_.testingCacheCount();
-  }
-
-  /// Returns true if the index group at the given index is cached.
-  bool hasIndexGroupCached(uint32_t groupIndex) const {
-    return tabletReader_->clusterIndexCache_.hasCacheEntry(groupIndex);
-  }
-
-  /// Returns true if the first index group is cached and it's the only one.
-  /// This is useful for verifying that when the index is covered by footer IO,
-  /// the first index group is pre-populated in the cache without additional
-  /// reads.
-  bool hasOnlyFirstIndexGroupCached() const {
-    return cachedIndexGroupCount() == 1 && hasIndexGroupCached(0);
-  }
-
   /// Returns the number of cached chunk index groups.
   size_t cachedChunkIndexGroupCount() const {
     return tabletReader_->chunkIndexCache_.testingCacheCount();

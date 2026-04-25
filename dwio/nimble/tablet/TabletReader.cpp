@@ -303,11 +303,6 @@ TabletReader::TabletReader(
             return loadStripeGroup(stripeGroupIndex);
           },
           options.pinFileMetadata},
-      clusterIndexCache_{
-          [this](uint32_t stripeGroupIndex) {
-            return loadClusterIndexGroup(stripeGroupIndex);
-          },
-          options.pinFileMetadata},
       chunkIndexCache_{
           [this](uint32_t stripeGroupIndex) {
             return loadChunkIndexGroup(stripeGroupIndex);
@@ -346,7 +341,6 @@ void TabletReader::init(const Options& options) {
 
   if (options.loadClusterIndex) {
     initClusterIndex();
-    preloadClusterIndex(footerIoBuf);
   }
 
   if (options.loadChunkIndex) {
@@ -510,8 +504,15 @@ void TabletReader::initStripes() {
       stripeCount_,
       stripes->group_indices()->size(),
       "Unexpected stripe count");
-  stripeRowCounts_ = stripes->row_counts()->data();
   stripeOffsets_ = stripes->offsets()->data();
+
+  // Build prefix sum for O(log n) rowToStripe lookup.
+  const auto* rowCounts = stripes->row_counts()->data();
+  stripeRows_.resize(stripeCount_ + 1);
+  stripeRows_[0] = 0;
+  for (uint32_t i = 0; i < stripeCount_; ++i) {
+    stripeRows_[i + 1] = stripeRows_[i] + rowCounts[i];
+  }
 }
 
 void TabletReader::initOptionalSections() {
@@ -812,34 +813,15 @@ std::shared_ptr<StripeGroup> TabletReader::stripeGroup(
   return stripeGroupCache_.getOrCreate(stripeGroupIndex);
 }
 
-std::shared_ptr<ClusterIndexGroup> TabletReader::clusterIndexGroup(
-    uint32_t stripeGroupIndex) const {
-  return clusterIndexCache_.getOrCreate(stripeGroupIndex);
-}
-
-std::shared_ptr<ClusterIndexGroup> TabletReader::loadClusterIndexGroup(
-    uint32_t stripeGroupIndex) const {
-  NIMBLE_CHECK_NOT_NULL(clusterIndex_, "Index not initialized.");
-
-  const auto section = clusterIndex_->groupMetadata(stripeGroupIndex);
-  return ClusterIndexGroup::create(
-      stripeGroupIndex,
-      clusterIndex_->rootIndex(),
-      readMetadata(section, velox::dwio::common::LogType::GROUP_INDEX));
-}
-
 TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
     uint32_t stripeGroupIndex) const {
   const auto* footer = footerRoot(*footer_);
   const auto groupSection =
       toMetadataSection(footer->stripe_groups()->Get(stripeGroupIndex));
 
-  // Determine which optional metadata to load.
-  const bool hasClusterIndex = this->hasClusterIndex();
   const bool hasChunkIndex = this->hasChunkIndex(stripeGroupIndex);
 
   std::unique_ptr<MetadataBuffer> groupMetadata;
-  std::unique_ptr<MetadataBuffer> clusterIndexMetadata;
   std::unique_ptr<MetadataBuffer> chunkIndexMetadata;
 
   if (metadataInput_ != nullptr) {
@@ -847,17 +829,6 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
     // adjacent regions into a single read when possible.
     auto groupStream = metadataInput_->enqueue(
         {groupSection.offset(), groupSection.size(), "stripe_group"});
-
-    std::unique_ptr<velox::dwio::common::SeekableInputStream>
-        clusterIndexStream;
-    MetadataSection clusterIndexSection;
-    if (hasClusterIndex) {
-      clusterIndexSection = clusterIndex_->groupMetadata(stripeGroupIndex);
-      clusterIndexStream = metadataInput_->enqueue(
-          {clusterIndexSection.offset(),
-           clusterIndexSection.size(),
-           "cluster_index_group"});
-    }
 
     std::unique_ptr<velox::dwio::common::SeekableInputStream> chunkIndexStream;
     MetadataSection chunkIndexSection;
@@ -873,10 +844,6 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
     metadataInput_->load(velox::dwio::common::LogType::GROUP);
 
     groupMetadata = readMetadata(std::move(groupStream), groupSection);
-    if (hasClusterIndex) {
-      clusterIndexMetadata =
-          readMetadata(std::move(clusterIndexStream), clusterIndexSection);
-    }
     if (hasChunkIndex) {
       chunkIndexMetadata =
           readMetadata(std::move(chunkIndexStream), chunkIndexSection);
@@ -885,12 +852,6 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
     // Fall back to separate direct file reads.
     groupMetadata =
         readMetadata(groupSection, velox::dwio::common::LogType::GROUP);
-    if (hasClusterIndex) {
-      const auto clusterIndexSection =
-          clusterIndex_->groupMetadata(stripeGroupIndex);
-      clusterIndexMetadata = readMetadata(
-          clusterIndexSection, velox::dwio::common::LogType::GROUP_INDEX);
-    }
     if (hasChunkIndex) {
       const auto& chunkIndexSection =
           chunkIndex_->groupMetadata(stripeGroupIndex);
@@ -902,12 +863,6 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
   StripeGroupMetadata result;
   result.stripeGroup = std::make_shared<StripeGroup>(
       stripeGroupIndex, *stripes_, std::move(groupMetadata));
-  if (hasClusterIndex) {
-    result.clusterIndex = ClusterIndexGroup::create(
-        stripeGroupIndex,
-        clusterIndex_->rootIndex(),
-        std::move(clusterIndexMetadata));
-  }
   if (hasChunkIndex) {
     result.chunkIndex = ChunkIndexGroup::create(
         result.stripeGroup->firstStripe(),
@@ -945,26 +900,21 @@ StripeIdentifier TabletReader::stripeIdentifier(uint32_t stripeIndex) const {
   NIMBLE_CHECK_LT(stripeIndex, stripeCount_, "Stripe is out of range.");
   const auto stripeGroupIndex = this->stripeGroupIndex(stripeIndex);
 
-  const bool hasClusterIndex = this->hasClusterIndex();
   const bool hasChunkIndex = this->hasChunkIndex(stripeGroupIndex);
 
   // Check which metadata is already cached.
   const bool stripeGroupCached =
       stripeGroupCache_.hasCacheEntry(stripeGroupIndex);
-  const bool clusterIndexCached =
-      hasClusterIndex && clusterIndexCache_.hasCacheEntry(stripeGroupIndex);
   const bool chunkIndexCached =
       hasChunkIndex && chunkIndexCache_.hasCacheEntry(stripeGroupIndex);
 
   // If all needed metadata is cached, load each individually (cache hits).
-  const bool allCached = stripeGroupCached &&
-      (!hasClusterIndex || clusterIndexCached) &&
-      (!hasChunkIndex || chunkIndexCached);
+  const bool allCached =
+      stripeGroupCached && (!hasChunkIndex || chunkIndexCached);
   if (allCached) {
     return StripeIdentifier{
         stripeIndex,
         stripeGroup(stripeGroupIndex),
-        hasClusterIndex ? clusterIndexGroup(stripeGroupIndex) : nullptr,
         hasChunkIndex ? chunkIndex(stripeGroupIndex) : nullptr};
   }
 
@@ -977,13 +927,6 @@ StripeIdentifier TabletReader::stripeIdentifier(uint32_t stripeIndex) const {
       stripeGroupIndex,
       [&loaded](uint32_t) { return std::move(loaded.stripeGroup); });
 
-  std::shared_ptr<ClusterIndexGroup> cachedClusterIndexGroup;
-  if (hasClusterIndex) {
-    cachedClusterIndexGroup = clusterIndexCache_.getOrCreate(
-        stripeGroupIndex,
-        [&loaded](uint32_t) { return std::move(loaded.clusterIndex); });
-  }
-
   std::shared_ptr<ChunkIndexGroup> cachedChunkIndex;
   if (hasChunkIndex) {
     cachedChunkIndex = chunkIndexCache_.getOrCreate(
@@ -992,10 +935,7 @@ StripeIdentifier TabletReader::stripeIdentifier(uint32_t stripeIndex) const {
   }
 
   return StripeIdentifier{
-      stripeIndex,
-      std::move(cachedStripeGroup),
-      std::move(cachedClusterIndexGroup),
-      std::move(cachedChunkIndex)};
+      stripeIndex, std::move(cachedStripeGroup), std::move(cachedChunkIndex)};
 }
 
 std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
@@ -1160,7 +1100,30 @@ void TabletReader::initClusterIndex() {
       std::string{kClusterIndexSection}, /*keepCache=*/false);
   NIMBLE_CHECK(indexSection.has_value(), "Failed to load index section.");
 
-  clusterIndex_ = ClusterIndex::create(std::move(indexSection.value()));
+  clusterIndex_ = ClusterIndex::create(
+      std::move(indexSection.value()),
+      [this](const MetadataSection& section) {
+        return readMetadata(section, velox::dwio::common::LogType::GROUP_INDEX);
+      },
+      [this](const velox::common::Region& region)
+          -> std::unique_ptr<velox::dwio::common::SeekableInputStream> {
+        if (metadataInput_ != nullptr) {
+          return metadataInput_->read(
+              region.offset,
+              region.length,
+              velox::dwio::common::LogType::GROUP_INDEX);
+        }
+        // Fall back to direct file read when no BufferedInput is available.
+        auto input =
+            std::make_shared<velox::dwio::common::ReadFileInputStream>(file_);
+        return std::make_unique<velox::dwio::common::SeekableFileInputStream>(
+            std::move(input),
+            region.offset,
+            region.length,
+            *pool_,
+            velox::dwio::common::LogType::GROUP_INDEX);
+      },
+      pool_);
 }
 
 void TabletReader::preloadStripeGroup(const folly::IOBuf& footerIoBuf) {
@@ -1187,29 +1150,6 @@ void TabletReader::preloadStripeGroup(const folly::IOBuf& footerIoBuf) {
           0,
           std::make_shared<StripeGroup>(
               0, *stripes_, std::move(metadataBuffer)));
-    }
-  }
-}
-
-void TabletReader::preloadClusterIndex(const folly::IOBuf& footerIoBuf) {
-  if (clusterIndex_ == nullptr) {
-    return;
-  }
-
-  const auto numIndexGroups = clusterIndex_->numIndexGroups();
-  if (numIndexGroups == 0) {
-    return;
-  }
-
-  // Eagerly pin the first index group if it's already in the footer buffer.
-  if (numIndexGroups == 1) {
-    auto metadataBuffer = tryCreateMetadataBufferFromFooter(
-        *pool_, footerIoBuf, fileSize_, clusterIndex_->groupMetadata(0));
-    if (metadataBuffer != nullptr) {
-      clusterIndexCache_.pin(
-          0,
-          ClusterIndexGroup::create(
-              0, clusterIndex_->rootIndex(), std::move(metadataBuffer)));
     }
   }
 }
@@ -1341,11 +1281,9 @@ void TabletReader::cacheMetadata(
     NIMBLE_CHECK(clusterIndexIt != optionalSections_.end());
     extract(clusterIndexIt->second.offset(), clusterIndexIt->second.size());
 
-    // Cache first cluster index group.
-    if (clusterIndex_->numIndexGroups() > 0) {
-      const auto indexGroup = clusterIndex_->groupMetadata(0);
-      extract(indexGroup.offset(), indexGroup.size());
-    }
+    // Cache first partition index metadata.
+    const auto partitionIndexSection = clusterIndex_->partitionSection(0);
+    extract(partitionIndexSection.offset(), partitionIndexSection.size());
   }
 
   // Cache chunk index section.
@@ -1390,6 +1328,22 @@ uint32_t TabletReader::firstStripe(uint32_t stripeGroupIndex) const {
   }
   NIMBLE_UNREACHABLE(
       fmt::format("No stripes found for group {}", stripeGroupIndex));
+}
+
+uint32_t TabletReader::rowToStripe(uint64_t row) const {
+  NIMBLE_CHECK_GT(stripeCount_, 0u);
+  NIMBLE_CHECK_LT(
+      row,
+      stripeRows_[stripeCount_],
+      "File row {} exceeds total row count {}",
+      row,
+      stripeRows_[stripeCount_]);
+  // Binary search on the prefix sum array.
+  // upper_bound finds the first element > row, then subtract 1 to get the
+  // stripe containing row.
+  const auto it = std::upper_bound(
+      stripeRows_.begin(), stripeRows_.begin() + stripeCount_ + 1, row);
+  return static_cast<uint32_t>(it - stripeRows_.begin() - 1);
 }
 
 uint32_t TabletReader::stripeCount(uint32_t stripeGroupIndex) const {
