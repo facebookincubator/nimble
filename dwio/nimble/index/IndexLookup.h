@@ -24,9 +24,11 @@
 
 #include <fmt/format.h>
 #include <folly/Range.h>
+#include <folly/container/F14Map.h>
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/velox/RowRange.h"
+#include "velox/common/base/RuntimeMetrics.h"
 #include "velox/serializers/KeyEncoder.h"
 
 namespace facebook::nimble::index {
@@ -38,16 +40,16 @@ enum class IndexType {
   Cluster,
   /// Hash-based index for point lookups on unsorted data. Maps composite key
   /// columns to exact row numbers.
-  Dense,
+  Hash,
 };
 
 std::string toString(IndexType indexType);
 std::ostream& operator<<(std::ostream& out, IndexType indexType);
 
-/// Unified index interface for both cluster and dense indices.
+/// Unified index interface for both cluster and hash indices.
 ///
 /// This provides a common abstraction for index metadata and lookup
-/// capabilities. Both ClusterIndex and DenseIndex implement this interface,
+/// capabilities. Both ClusterIndex and HashIndex implement this interface,
 /// enabling the reader to select the best index for a given query without
 /// knowing the concrete type.
 ///
@@ -185,7 +187,9 @@ class IndexLookup {
   virtual ~IndexLookup() = default;
 
   /// Returns the type of this index.
-  virtual IndexType indexType() const = 0;
+  IndexType type() const {
+    return type_;
+  }
 
   /// Returns the column names this index covers, in index definition order.
   virtual const std::vector<std::string>& indexColumns() const = 0;
@@ -194,12 +198,23 @@ class IndexLookup {
   ///
   /// For cluster index: supports both point lookups and range lookups.
   ///   Returns file-level RowRanges spanning matching rows.
-  /// For dense index: only supports point lookups. Returns file-level
+  /// For hash index: only supports point lookups. Returns file-level
   ///   RowRanges for exact single rows (may return multiple per key).
   ///
   /// Results are indexed by input key position: result[i] returns the
   /// RowRanges for request.keyBounds()[i].
   virtual LookupResult lookup(const LookupRequest& request) const = 0;
+
+  /// Returns runtime statistics accumulated during lookups.
+  virtual folly::F14FastMap<std::string, velox::RuntimeMetric> stats() const {
+    return {};
+  }
+
+ protected:
+  explicit IndexLookup(IndexType type) : type_{type} {}
+
+ private:
+  const IndexType type_;
 };
 
 inline std::string toString(IndexLookup::LookupRequest::Mode mode) {

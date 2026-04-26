@@ -174,21 +174,26 @@ TEST_F(IndexLookupTest, nonMonotonicOffsets) {
 
 TEST_F(IndexLookupTest, toString) {
   EXPECT_EQ(toString(IndexType::Cluster), "Cluster");
-  EXPECT_EQ(toString(IndexType::Dense), "Dense");
+  EXPECT_EQ(toString(IndexType::Hash), "Hash");
 }
 
 TEST_F(IndexLookupTest, ostream) {
   std::ostringstream oss;
-  oss << IndexType::Cluster << " " << IndexType::Dense;
-  EXPECT_EQ(oss.str(), "Cluster Dense");
+  oss << IndexType::Cluster << " " << IndexType::Hash;
+  EXPECT_EQ(oss.str(), "Cluster Hash");
 }
 
 TEST_F(IndexLookupTest, fmtFormat) {
   EXPECT_EQ(fmt::format("{}", IndexType::Cluster), "Cluster");
-  EXPECT_EQ(fmt::format("{}", IndexType::Dense), "Dense");
+  EXPECT_EQ(fmt::format("{}", IndexType::Hash), "Hash");
   EXPECT_EQ(
-      fmt::format("type={}, count={}", IndexType::Dense, 42),
-      "type=Dense, count=42");
+      fmt::format("type={}, count={}", IndexType::Hash, 42),
+      "type=Hash, count=42");
+}
+
+TEST_F(IndexLookupTest, unknownIndexType) {
+  const auto unknown = static_cast<IndexType>(99);
+  NIMBLE_ASSERT_THROW(toString(unknown), "Unknown IndexType: 99");
 }
 
 } // namespace

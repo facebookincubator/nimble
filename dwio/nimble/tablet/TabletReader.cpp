@@ -348,6 +348,10 @@ void TabletReader::init(const Options& options) {
     preloadChunkIndex(footerIoBuf);
   }
 
+  if (options.loadDenseIndexes) {
+    initDenseIndexes();
+  }
+
   cacheMetadata(footerIoBuf, footerIoOffset);
 }
 
@@ -729,6 +733,9 @@ bool TabletReader::tryInitFromCache(const Options& options) {
   }
   if (options.loadChunkIndex) {
     initChunkIndex();
+  }
+  if (options.loadDenseIndexes) {
+    initDenseIndexes();
   }
   return true;
 }
@@ -1122,6 +1129,30 @@ void TabletReader::initClusterIndex() {
             region.length,
             *pool_,
             velox::dwio::common::LogType::GROUP_INDEX);
+      },
+      pool_);
+}
+
+const index::HashIndex* TabletReader::denseIndex(
+    const std::vector<std::string>& columns) const {
+  if (denseIndexRegistry_ == nullptr) {
+    return nullptr;
+  }
+  return denseIndexRegistry_->findIndex(columns);
+}
+
+void TabletReader::initDenseIndexes() {
+  auto section =
+      loadOptionalSection(std::string{kHashIndexSection}, /*keepCache=*/false);
+  if (!section.has_value()) {
+    return;
+  }
+
+  denseIndexRegistry_ = DenseIndexRegistry::create(
+      std::move(section.value()),
+      [this](const MetadataSection& metadataSection) {
+        return readMetadata(
+            metadataSection, velox::dwio::common::LogType::FOOTER);
       },
       pool_);
 }

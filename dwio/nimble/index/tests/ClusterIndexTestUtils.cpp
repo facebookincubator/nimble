@@ -296,16 +296,14 @@ void TestClusterIndexMetadataWriter::addStripe(
 TabletWriter::StripeGroupFlushCallback
 TestClusterIndexMetadataWriter::createStripeGroupFlushCallback() {
   return [this](
-             size_t stripeCount,
-             const WriteDataFn& writeData,
-             const CreateMetadataSectionFn& createMetadataSection) {
-    flushKeyStream(stripeCount, writeData);
-    flushPartitionMetadata(stripeCount, createMetadataSection);
+             const WriteDataFn& writeDataFn,
+             const CreateMetadataSectionFn& createMetadataFn) {
+    flushKeyStream(writeDataFn);
+    flushPartitionMetadata(createMetadataFn);
   };
 }
 
 void TestClusterIndexMetadataWriter::flushKeyStream(
-    size_t stripeCount,
     const WriteDataFn& writeData) {
   if (encodedKeyData_.empty()) {
     return;
@@ -319,7 +317,6 @@ void TestClusterIndexMetadataWriter::flushKeyStream(
 }
 
 void TestClusterIndexMetadataWriter::flushPartitionMetadata(
-    size_t stripeCount,
     const CreateMetadataSectionFn& createMetadataSection) {
   if (partitionIndex_ == nullptr) {
     return;
@@ -362,9 +359,9 @@ void TestClusterIndexMetadataWriter::flushPartitionMetadata(
 TabletWriter::CloseCallback
 TestClusterIndexMetadataWriter::createCloseCallback() {
   return [this](
-             const WriteOptionalSectionFn& writeOptionalSection,
-             const CreateMetadataSectionFn& /*createMetadataSection*/) {
-    writeRoot(writeOptionalSection);
+             const CreateMetadataSectionFn& /*createMetadataFn*/,
+             const WriteOptionalSectionFn& writeMetadataFn) {
+    writeRoot(writeMetadataFn);
   };
 }
 

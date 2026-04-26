@@ -25,6 +25,7 @@
 #include "dwio/nimble/index/ChunkIndex.h"
 #include "dwio/nimble/index/ChunkIndexGroup.h"
 #include "dwio/nimble/index/ClusterIndex.h"
+#include "dwio/nimble/index/HashIndex.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
@@ -138,6 +139,8 @@ class StripeIdentifier {
 };
 
 using index::ClusterIndex;
+using index::DenseIndexRegistry;
+using index::HashIndex;
 
 /// Provides read access to a tablet written by a TabletWriter.
 /// Example usage to read all streams from stripe 0 in a file:
@@ -163,6 +166,9 @@ class TabletReader {
 
     /// Whether to load the chunk index during initialization. Default true.
     bool loadChunkIndex{true};
+
+    /// Whether to load the dense indexes during initialization. Default true.
+    bool loadDenseIndexes{true};
 
     /// Non-owning pointer to a BufferedInput for metadata reads. When set,
     /// TabletReader clones this internally for its own metadata IO. When
@@ -251,6 +257,10 @@ class TabletReader {
   const ClusterIndex* clusterIndex() const {
     return clusterIndex_.get();
   }
+
+  /// Finds the dense index matching the given columns, or nullptr if none.
+  const index::HashIndex* denseIndex(
+      const std::vector<std::string>& columns) const;
 
   uint64_t fileSize() const {
     return fileSize_;
@@ -487,6 +497,8 @@ class TabletReader {
       std::unique_ptr<velox::dwio::common::SeekableInputStream> stream,
       const MetadataSection& section) const;
 
+  void initDenseIndexes();
+
   void initChunkIndex();
 
   // Returns the cached ChunkIndexGroup for the given stripe group index.
@@ -530,6 +542,9 @@ class TabletReader {
 
   // Index related fields.
   std::unique_ptr<ClusterIndex> clusterIndex_;
+
+  // Dense index registry, loaded from "columnar.hash.index" optional section.
+  std::unique_ptr<DenseIndexRegistry> denseIndexRegistry_;
 
   // Chunk index root, loaded from "chunk_index" optional section.
   std::unique_ptr<ChunkIndex> chunkIndex_;

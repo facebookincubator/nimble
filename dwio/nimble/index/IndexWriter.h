@@ -22,14 +22,13 @@
 
 namespace facebook::nimble::index {
 
-/// Base interface for index writers (ClusterIndexWriter, DenseIndexWriter).
+/// Base interface for index writers (ClusterIndexWriter, HashIndexWriter).
 ///
 /// Lifecycle:
 ///   1. Create with config and input schema
 ///   2. For each batch: write(batch)
-///   3. At stripe group boundaries: flushPartition() to write index data
-///   4. At file close: finalize() to build and serialize the root index
-///   5. close() to release resources
+///   3. At stripe group boundaries: flush() to write index data
+///   4. At file close: close() to finalize, serialize, and release resources
 class IndexWriter {
  public:
   virtual ~IndexWriter() = default;
@@ -37,21 +36,16 @@ class IndexWriter {
   /// Processes a batch of input data for indexing.
   virtual void write(const velox::VectorPtr& input) = 0;
 
-  /// Builds and serializes the index. Called at file close.
-  /// Returns the serialized index to be stored as an optional section.
-  virtual std::string finalize(
-      const CreateMetadataSectionFn& createMetadataSection) = 0;
+  /// Flushes index data at stripe group boundaries.
+  virtual void flush(
+      const WriteDataFn& writeDataFn,
+      const CreateMetadataSectionFn& createMetadataFn) {}
 
-  /// Releases internal resources. Must be called after finalize().
-  virtual void close() = 0;
-
-  /// Flushes partition data at stripe group boundaries.
-  /// Writes key stream data via writeData, then writes partition metadata
-  /// via createMetadataSection.
-  virtual void flushPartition(
-      size_t stripeCount,
-      const WriteDataFn& writeData,
-      const CreateMetadataSectionFn& createMetadataSection) {}
+  /// Finalizes the index, writes it as an optional section, and releases
+  /// resources.
+  virtual void close(
+      const CreateMetadataSectionFn& createMetadataFn,
+      const WriteOptionalSectionFn& writeMetadataFn) = 0;
 };
 
 } // namespace facebook::nimble::index

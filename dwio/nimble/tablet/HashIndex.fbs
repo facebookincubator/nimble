@@ -19,7 +19,7 @@ include "Footer.fbs";
 
 namespace facebook.nimble.serialization;
 
-/// A single dense hash index on a set of composite key columns.
+/// A single hash index on a set of composite key columns.
 /// Uses a two-level hash table: bucket directory + key arrays.
 ///
 /// Lookup flow:
@@ -27,7 +27,7 @@ namespace facebook.nimble.serialization;
 ///   2. Hash(encodedKey) mod num_buckets → bucket
 ///   3. Scan keys in bucket by exact key match
 ///   4. Return matching row numbers
-table DenseIndex {
+table HashIndex {
   /// Total number of rows indexed.
   row_count:uint64;
 
@@ -43,27 +43,26 @@ table DenseIndex {
   bloom_filter:BloomFilter;
 
   /// Partitions. The hash table is always split into one or more partitions,
-  /// each stored as a separate DenseIndexPartition section. Small indices
+  /// each stored as a separate HashIndexPartition section. Small indices
   /// use a single partition; large indices are split by maxPartitionSizeBytes.
   /// Starting bucket index in the global bucket space (inclusive).
-  /// Size = partition_count.
+  /// Size = partition_count. Bucket count for partition i is derived from
+  /// partition_start_buckets[i+1] - partition_start_buckets[i], or
+  /// num_buckets - partition_start_buckets[i] for the last partition.
   partition_start_buckets:[uint32];
-  /// Number of buckets in each partition.
-  /// Size = partition_count.
-  partition_bucket_counts:[uint32];
-  /// References to the serialized DenseIndexPartition for each partition.
+  /// References to the serialized HashIndexPartition for each partition.
   /// Size = partition_count.
   partition_sections:[MetadataSection];
 }
 
-/// Data for a single partition of a dense index.
+/// Data for a single partition of a hash index.
 /// Stored as a separate section, loaded on-demand during lookup.
-table DenseIndexPartition {
-  /// Bucket directory for this partition. Indices are relative to the
-  /// partition's key arrays (encoded_keys and row_numbers).
+table HashIndexPartition {
+  /// Bucket directory for this partition. Size = bucketCount + 1.
+  /// bucket_offsets[i] is the start index and bucket_offsets[i+1] is the
+  /// end index (exclusive) in encoded_keys/row_numbers for bucket i.
+  /// The last element is the total number of entries.
   bucket_offsets:[uint32];
-  /// Number of keys in each bucket.
-  bucket_counts:[uint16];
   /// Binary-encoded composite keys for this partition. Aligned with
   /// row_numbers: encoded_keys[i] corresponds to row_numbers[i].
   encoded_keys:[string];
@@ -71,26 +70,26 @@ table DenseIndexPartition {
   row_numbers:[uint32];
 }
 
-/// Lightweight descriptor for a dense index.
+/// Lightweight descriptor for a hash index.
 /// Stores the index columns for lookup dispatch and a MetadataSection
-/// pointing to the serialized DenseIndex data.
-table DenseIndexSection {
+/// pointing to the serialized HashIndex data.
+table HashIndexSection {
   /// Names of columns forming the composite key.
   /// Duplicated here so the reader can find the right index
-  /// without loading the full DenseIndex data.
+  /// without loading the full HashIndex data.
   index_columns:[string];
-  /// Reference to the serialized DenseIndex stored as a
+  /// Reference to the serialized HashIndex stored as a
   /// separate section in the file.
   section:MetadataSection;
 }
 
-/// Root table for the dense index optional section.
-/// Supports multiple independent dense indices per file,
+/// Root table for the hash index optional section.
+/// Supports multiple independent hash indices per file,
 /// each on a different set of composite key columns.
-/// Stored in optional section "columnar.dense.index".
-table DenseIndexDirectory {
-  /// One descriptor per dense index defined on the file.
-  indices:[DenseIndexSection];
+/// Stored in optional section "columnar.hash.index".
+table HashIndexDirectory {
+  /// One descriptor per hash index defined on the file.
+  indices:[HashIndexSection];
 }
 
-root_type DenseIndexDirectory;
+root_type HashIndexDirectory;

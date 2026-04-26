@@ -275,10 +275,9 @@ class TestClusterIndexMetadataWriter {
 
   void writeRoot(const WriteOptionalSectionFn& writeOptionalSection);
 
-  void flushKeyStream(size_t stripeCount, const WriteDataFn& writeData);
+  void flushKeyStream(const WriteDataFn& writeData);
 
   void flushPartitionMetadata(
-      size_t stripeCount,
       const CreateMetadataSectionFn& createMetadataSection);
 
   velox::memory::MemoryPool* const pool_;

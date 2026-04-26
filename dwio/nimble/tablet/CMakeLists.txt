@@ -81,20 +81,20 @@ target_include_directories(
 add_dependencies(nimble_bloom_filter_fb nimble_bloom_filter_schema_fb)
 
 build_flatbuffers(
-  "${CMAKE_CURRENT_SOURCE_DIR}/DenseIndex.fbs"
+  "${CMAKE_CURRENT_SOURCE_DIR}/HashIndex.fbs"
   "${CMAKE_CURRENT_SOURCE_DIR}"
-  nimble_dense_index_schema_fb
+  nimble_hash_index_schema_fb
   ""
   "${CMAKE_CURRENT_BINARY_DIR}"
   ""
   ""
 )
-add_library(nimble_dense_index_fb INTERFACE)
+add_library(nimble_hash_index_fb INTERFACE)
 target_include_directories(
-  nimble_dense_index_fb
+  nimble_hash_index_fb
   INTERFACE ${PROJECT_BINARY_DIR} ${FLATBUFFERS_INCLUDE_DIR}
 )
-add_dependencies(nimble_dense_index_fb nimble_dense_index_schema_fb)
+add_dependencies(nimble_hash_index_fb nimble_hash_index_schema_fb)
 
 add_library(nimble_tablet_common Compression.cpp MetadataBuffer.cpp)
 target_link_libraries(
@@ -108,6 +108,7 @@ add_library(nimble_tablet_reader FileLayout.cpp TabletReader.cpp)
 target_link_libraries(
   nimble_tablet_reader
   PUBLIC nimble_tablet_common nimble_cluster_index_fb nimble_chunk_index_fb
+    nimble_hash_index_fb
 )
 
 add_library(nimble_tablet_writer ChunkIndexWriter.cpp TabletWriter.cpp)

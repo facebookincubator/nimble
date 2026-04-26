@@ -51,16 +51,15 @@ class TabletWriter {
   /// Called AFTER stripe group and chunk index metadata are written.
   /// Writes partition data (key stream + metadata) aligned with stripe groups.
   using StripeGroupFlushCallback = std::function<void(
-      size_t stripeCount,
-      const WriteDataFn& writeData,
-      const CreateMetadataSectionFn& createMetadataSection)>;
+      const WriteDataFn& writeDataFn,
+      const CreateMetadataSectionFn& createMetadataFn)>;
 
   /// Called during close() after all stripe groups have been flushed,
   /// before the chunk index root and footer are written. Used by index
   /// writers to finalize and write the root index as an optional section.
   using CloseCallback = std::function<void(
-      const WriteOptionalSectionFn& writeOptionalSection,
-      const CreateMetadataSectionFn& createMetadataSection)>;
+      const CreateMetadataSectionFn& createMetadataFn,
+      const WriteOptionalSectionFn& writeMetadataFn)>;
 
   struct Options {
     std::unique_ptr<LayoutPlanner> layoutPlanner{nullptr};
@@ -109,7 +108,7 @@ class TabletWriter {
   // a vector of content to be concatenated. Right now the Buffer class prevents
   // us from draining its content incrementally.
   void invokeCloseCallback();
-  void invokeStripeGroupFlushCallback(size_t stripeCount);
+  void invokeStripeGroupFlushCallback();
 
   void writeOptionalSection(std::string name, std::string_view content);
 

@@ -81,12 +81,6 @@ class ClusterIndex : public IndexLookup {
       LoadDataFn loadData,
       velox::memory::MemoryPool* pool);
 
-  // -- IndexLookup interface --
-
-  IndexType indexType() const override {
-    return IndexType::Cluster;
-  }
-
   const std::vector<std::string>& indexColumns() const override {
     return indexColumns_;
   }
