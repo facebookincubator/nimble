@@ -404,17 +404,16 @@ void TabletWriter::invokeCloseCallback() {
   if (options_.closeCallback == nullptr) {
     return;
   }
-  auto writeOptionalSectionFn =
-      [this](std::string name, std::string_view content) {
-        writeOptionalSection(std::move(name), content);
-      };
   auto createMetadataFn = [this](std::string_view metadata) {
     return createMetadataSection(metadata);
   };
-  options_.closeCallback(writeOptionalSectionFn, createMetadataFn);
+  auto writeMetadataFn = [this](std::string name, std::string_view content) {
+    writeOptionalSection(std::move(name), content);
+  };
+  options_.closeCallback(createMetadataFn, writeMetadataFn);
 }
 
-void TabletWriter::invokeStripeGroupFlushCallback(size_t stripeCount) {
+void TabletWriter::invokeStripeGroupFlushCallback() {
   if (options_.stripeGroupFlushCallback == nullptr) {
     return;
   }
@@ -429,7 +428,7 @@ void TabletWriter::invokeStripeGroupFlushCallback(size_t stripeCount) {
   auto createMetadataFn = [this](std::string_view metadata) {
     return createMetadataSection(metadata);
   };
-  options_.stripeGroupFlushCallback(stripeCount, writeDataFn, createMetadataFn);
+  options_.stripeGroupFlushCallback(writeDataFn, createMetadataFn);
 }
 
 void TabletWriter::writeOptionalSection(
@@ -541,7 +540,7 @@ void TabletWriter::tryWriteStripeGroup(bool force) {
 
   writeChunkIndexGroup(streamCount, stripeCount);
 
-  invokeStripeGroupFlushCallback(stripeCount);
+  invokeStripeGroupFlushCallback();
 
   finishStripeGroup();
 }

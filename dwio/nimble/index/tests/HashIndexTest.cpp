@@ -1,0 +1,491 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include <gtest/gtest.h>
+#include <deque>
+
+#include "dwio/nimble/common/tests/GTestUtils.h"
+#include "dwio/nimble/index/HashIndex.h"
+#include "dwio/nimble/index/IndexConfig.h"
+#include "dwio/nimble/index/IndexLookup.h"
+
+#include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/velox/VeloxReader.h"
+#include "dwio/nimble/velox/VeloxWriter.h"
+#include "velox/common/file/FileSystems.h"
+#include "velox/common/memory/Memory.h"
+#include "velox/common/testutil/TempDirectoryPath.h"
+#include "velox/vector/FlatVector.h"
+
+namespace facebook::nimble::index {
+namespace {
+
+class HashIndexTestBase {
+ protected:
+  // Schema: {id: INTEGER, value: VARCHAR}.
+  // Both columns have unique values derived from row index.
+  static velox::RowTypePtr rowType() {
+    return velox::ROW({{"id", velox::INTEGER()}, {"value", velox::VARCHAR()}});
+  }
+
+  // Creates a batch of numRows with id=[startRow, startRow+numRows) and
+  // value="v_{id}".
+  velox::VectorPtr makeBatch(int32_t startRow, int32_t numRows) {
+    auto ids =
+        velox::BaseVector::create(velox::INTEGER(), numRows, leafPool_.get());
+    auto values =
+        velox::BaseVector::create(velox::VARCHAR(), numRows, leafPool_.get());
+    auto* flatIds = ids->asFlatVector<int32_t>();
+    auto* flatValues = values->asFlatVector<velox::StringView>();
+    for (int i = 0; i < numRows; ++i) {
+      const int32_t id = startRow + i;
+      flatIds->set(i, id);
+      valueStrings_.emplace_back("v_" + std::to_string(id));
+      flatValues->set(i, velox::StringView(valueStrings_.back()));
+    }
+    return std::make_shared<velox::RowVector>(
+        leafPool_.get(),
+        rowType(),
+        nullptr,
+        numRows,
+        std::vector<velox::VectorPtr>{ids, values});
+  }
+
+  // Writes batches to a file with the given schema and writer options.
+  void writeFile(
+      const std::string& filePath,
+      const velox::RowTypePtr& schema,
+      const std::vector<velox::VectorPtr>& batches,
+      VeloxWriterOptions options) {
+    auto fs = velox::filesystems::getFileSystem(filePath, {});
+    auto file = fs->openFileForWrite(
+        filePath,
+        {.shouldCreateParentDirectories = true,
+         .shouldThrowOnFileAlreadyExists = false});
+
+    VeloxWriter writer(schema, std::move(file), *pool_, std::move(options));
+    for (const auto& batch : batches) {
+      writer.write(batch);
+    }
+    writer.close();
+  }
+
+  // Convenience overload using the default schema.
+  void writeFile(
+      const std::string& filePath,
+      const std::vector<velox::VectorPtr>& batches,
+      HashIndexConfig indexConfig,
+      std::optional<uint64_t> flushSize = std::nullopt) {
+    VeloxWriterOptions options;
+    options.hashIndexConfigs.push_back(std::move(indexConfig));
+    if (flushSize.has_value()) {
+      options.flushPolicyFactory = [size = flushSize.value()]() {
+        return std::make_unique<StripeRawSizeFlushPolicy>(size);
+      };
+    }
+    writeFile(filePath, rowType(), batches, std::move(options));
+  }
+
+  // Opens a file and returns the TabletReader.
+  std::shared_ptr<TabletReader> openTablet(const std::string& filePath) {
+    auto fs = velox::filesystems::getFileSystem(filePath, {});
+    auto readFile = fs->openFileForRead(filePath);
+    return TabletReader::create(std::move(readFile), leafPool_.get(), {});
+  }
+
+  // Encodes a lookup key for a single row and returns the encoded key.
+  std::string encodeLookupKey(
+      const std::vector<std::string>& columns,
+      int32_t idValue) {
+    auto encoder = velox::serializer::KeyEncoder::create(
+        columns,
+        rowType(),
+        std::vector<velox::core::SortOrder>(
+            columns.size(), velox::core::SortOrder{true, false}),
+        leafPool_.get());
+
+    auto idCol =
+        velox::BaseVector::create(velox::INTEGER(), 1, leafPool_.get());
+    idCol->asFlatVector<int32_t>()->set(0, idValue);
+
+    auto valStr = "v_" + std::to_string(idValue);
+    auto valCol =
+        velox::BaseVector::create(velox::VARCHAR(), 1, leafPool_.get());
+    valCol->asFlatVector<velox::StringView>()->set(
+        0, velox::StringView(valStr));
+
+    auto lookupRow = std::make_shared<velox::RowVector>(
+        leafPool_.get(),
+        rowType(),
+        nullptr,
+        1,
+        std::vector<velox::VectorPtr>{idCol, valCol});
+
+    Buffer buffer(*leafPool_);
+    std::vector<std::string_view> encodedKeys;
+    encoder->encode(lookupRow, encodedKeys, [&buffer](size_t size) {
+      return buffer.reserve(size);
+    });
+    return std::string(encodedKeys[0]);
+  }
+
+  // Performs a point lookup and returns the result.
+  IndexLookup::LookupResult pointLookup(
+      const HashIndex* hashIndex,
+      const std::vector<std::string>& columns,
+      int32_t idValue) {
+    auto key = encodeLookupKey(columns, idValue);
+    return hashIndex->lookup(
+        IndexLookup::LookupRequest::pointLookup({std::move(key)}));
+  }
+
+  std::string tempFilePath(const std::string& name) {
+    return tempDir_->getPath() + "/" + name;
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> pool_;
+  std::shared_ptr<velox::memory::MemoryPool> leafPool_;
+  std::shared_ptr<velox::common::testutil::TempDirectoryPath> tempDir_;
+  // Deque for pointer stability across push_back calls, since StringViews
+  // in FlatVector reference these strings.
+  std::deque<std::string> valueStrings_;
+};
+
+// Non-parameterized fixture.
+class HashIndexTest : public HashIndexTestBase, public ::testing::Test {
+ protected:
+  static void SetUpTestCase() {
+    velox::filesystems::registerLocalFileSystem();
+    velox::memory::MemoryManager::testingSetInstance({});
+  }
+
+  void SetUp() override {
+    pool_ = velox::memory::memoryManager()->addRootPool("HashIndexTest");
+    leafPool_ = pool_->addLeafChild("leaf");
+    tempDir_ = velox::common::testutil::TempDirectoryPath::create();
+  }
+};
+
+// Parameterized fixture: single-column vs composite-key index.
+struct HashIndexTestParam {
+  std::vector<std::string> columns;
+
+  std::string debugString() const {
+    return fmt::format("columns: [{}]", fmt::join(columns, ", "));
+  }
+};
+
+class HashIndexParamTest : public HashIndexTestBase,
+                           public ::testing::TestWithParam<HashIndexTestParam> {
+ protected:
+  static void SetUpTestCase() {
+    velox::filesystems::registerLocalFileSystem();
+    velox::memory::MemoryManager::testingSetInstance({});
+  }
+
+  void SetUp() override {
+    pool_ = velox::memory::memoryManager()->addRootPool("HashIndexParamTest");
+    leafPool_ = pool_->addLeafChild("leaf");
+    tempDir_ = velox::common::testutil::TempDirectoryPath::create();
+  }
+
+  const std::vector<std::string>& columns() const {
+    return GetParam().columns;
+  }
+
+  HashIndexConfig indexConfig() const {
+    return HashIndexConfig{
+        .columns = columns(),
+        .bloomFilter = BloomFilterConfig{},
+    };
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    SingleAndCompositeKey,
+    HashIndexParamTest,
+    testing::Values(
+        HashIndexTestParam{{"id"}},
+        HashIndexTestParam{{"id", "value"}}),
+    [](const testing::TestParamInfo<HashIndexTestParam>& info) {
+      return fmt::format("columns_{}", fmt::join(info.param.columns, "_"));
+    });
+
+TEST_P(HashIndexParamTest, roundTrip) {
+  std::vector<velox::VectorPtr> batches;
+  for (int b = 0; b < 3; ++b) {
+    batches.push_back(makeBatch(b * 100, 100));
+  }
+
+  const auto filePath = tempFilePath("round_trip");
+  auto config = indexConfig();
+  config.loadFactor = 0.5f;
+  writeFile(filePath, batches, std::move(config), /*flushSize=*/512);
+
+  auto tablet = openTablet(filePath);
+  auto* hashIndex = tablet->denseIndex(columns());
+  ASSERT_NE(hashIndex, nullptr);
+  EXPECT_EQ(hashIndex->type(), IndexType::Hash);
+  EXPECT_EQ(hashIndex->indexColumns(), columns());
+}
+
+TEST_P(HashIndexParamTest, pointLookup) {
+  std::vector<velox::VectorPtr> batches;
+  batches.push_back(makeBatch(0, 50));
+
+  const auto filePath = tempFilePath("point_lookup");
+  writeFile(filePath, batches, indexConfig());
+
+  auto tablet = openTablet(filePath);
+  auto* hashIndex = tablet->denseIndex(columns());
+  ASSERT_NE(hashIndex, nullptr);
+
+  {
+    auto result = pointLookup(hashIndex, columns(), 20);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 1);
+  }
+
+  {
+    auto result = pointLookup(hashIndex, columns(), 999);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 0);
+  }
+
+  const auto stats = hashIndex->stats();
+  EXPECT_EQ(stats.at(HashIndex::kNumLookups).sum, 2);
+  EXPECT_EQ(stats.at(HashIndex::kNumMatchedRows).sum, 1);
+  // Bloom filter may or may not skip the non-existent key depending on the
+  // hash — just verify the stats entry is present if skips occurred.
+  if (stats.count(HashIndex::kNumBloomFilterSkips) > 0) {
+    EXPECT_LE(stats.at(HashIndex::kNumBloomFilterSkips).sum, 1);
+  }
+}
+
+TEST_P(HashIndexParamTest, bloomFilterSkips) {
+  std::vector<velox::VectorPtr> batches;
+  batches.push_back(makeBatch(0, 50));
+
+  const auto filePath = tempFilePath("bloom_filter");
+  // Use high bitsPerKey to eliminate false positives, making bloom filter
+  // behavior fully deterministic for this test.
+  auto config = indexConfig();
+  config.bloomFilter = BloomFilterConfig{.bitsPerKey = 40.0f};
+  writeFile(filePath, batches, std::move(config));
+
+  auto tablet = openTablet(filePath);
+  auto* hashIndex = tablet->denseIndex(columns());
+  ASSERT_NE(hashIndex, nullptr);
+
+  const int32_t kNumExisting = 4;
+  for (int32_t key : {0, 10, 25, 49}) {
+    auto result = pointLookup(hashIndex, columns(), key);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 1);
+  }
+  {
+    const auto stats = hashIndex->stats();
+    EXPECT_EQ(stats.at(HashIndex::kNumLookups).sum, kNumExisting);
+    EXPECT_EQ(stats.count(HashIndex::kNumBloomFilterSkips), 0);
+    EXPECT_EQ(stats.at(HashIndex::kNumMatchedRows).sum, kNumExisting);
+  }
+
+  const int32_t kNumNonExistent = 100;
+  for (int32_t key = 1'000; key < 1'000 + kNumNonExistent; ++key) {
+    auto result = pointLookup(hashIndex, columns(), key);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 0);
+  }
+  {
+    const auto stats = hashIndex->stats();
+    EXPECT_EQ(
+        stats.at(HashIndex::kNumLookups).sum, kNumExisting + kNumNonExistent);
+    EXPECT_EQ(stats.at(HashIndex::kNumBloomFilterSkips).sum, kNumNonExistent);
+    EXPECT_EQ(stats.at(HashIndex::kNumMatchedRows).sum, kNumExisting);
+  }
+}
+
+TEST_P(HashIndexParamTest, rangeScanThrows) {
+  std::vector<velox::VectorPtr> batches;
+  batches.push_back(makeBatch(0, 10));
+
+  const auto filePath = tempFilePath("range_scan_throws");
+  writeFile(filePath, batches, indexConfig());
+
+  auto tablet = openTablet(filePath);
+  auto* hashIndex = tablet->denseIndex(columns());
+  ASSERT_NE(hashIndex, nullptr);
+
+  auto key = encodeLookupKey(columns(), 5);
+  NIMBLE_ASSERT_THROW(
+      hashIndex->lookup(
+          IndexLookup::LookupRequest::rangeScan(
+              {velox::serializer::EncodedKeyBounds{key, key}})),
+      "Hash index only supports point lookups");
+}
+
+TEST_P(HashIndexParamTest, multipleStripes) {
+  std::vector<velox::VectorPtr> batches;
+  for (int b = 0; b < 5; ++b) {
+    batches.push_back(makeBatch(b * 20, 20));
+  }
+
+  const auto filePath = tempFilePath("multi_batch");
+  writeFile(filePath, batches, indexConfig(), /*flushSize=*/256);
+
+  auto tablet = openTablet(filePath);
+  auto* hashIndex = tablet->denseIndex(columns());
+  ASSERT_NE(hashIndex, nullptr);
+  EXPECT_GT(tablet->stripeCount(), 1);
+
+  auto result = pointLookup(hashIndex, columns(), 50);
+  ASSERT_EQ(result.size(), 1);
+  EXPECT_FALSE(result[0].empty());
+}
+
+TEST_P(HashIndexParamTest, partitionedIndex) {
+  std::vector<velox::VectorPtr> batches;
+  batches.push_back(makeBatch(0, 200));
+
+  const auto filePath = tempFilePath("partitioned");
+  auto config = indexConfig();
+  config.maxPartitionSizeBytes = 64;
+  writeFile(filePath, batches, std::move(config));
+
+  auto tablet = openTablet(filePath);
+  auto* hashIndex = tablet->denseIndex(columns());
+  ASSERT_NE(hashIndex, nullptr);
+
+  for (int32_t lookupValue : {0, 50, 99, 150, 199}) {
+    SCOPED_TRACE(fmt::format("key={}", lookupValue));
+    auto result = pointLookup(hashIndex, columns(), lookupValue);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 1);
+  }
+
+  // Non-existent key.
+  auto result = pointLookup(hashIndex, columns(), 999);
+  ASSERT_EQ(result.size(), 1);
+  EXPECT_EQ(result[0].size(), 0);
+}
+
+TEST_P(HashIndexParamTest, partitionedMultipleBatches) {
+  std::vector<velox::VectorPtr> batches;
+  for (int b = 0; b < 5; ++b) {
+    batches.push_back(makeBatch(b * 40, 40));
+  }
+
+  const auto filePath = tempFilePath("partitioned_multi_batch");
+  auto config = indexConfig();
+  config.maxPartitionSizeBytes = 128;
+  writeFile(filePath, batches, std::move(config), /*flushSize=*/256);
+
+  auto tablet = openTablet(filePath);
+  auto* hashIndex = tablet->denseIndex(columns());
+  ASSERT_NE(hashIndex, nullptr);
+  EXPECT_GT(tablet->stripeCount(), 1);
+
+  for (int32_t lookupValue : {0, 50, 100, 150, 199}) {
+    SCOPED_TRACE(fmt::format("key={}", lookupValue));
+    auto result = pointLookup(hashIndex, columns(), lookupValue);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_FALSE(result[0].empty());
+  }
+}
+
+TEST_F(HashIndexTest, multipleIndices) {
+  auto colAType = velox::ROW({
+      {"col_a", velox::INTEGER()},
+      {"col_b", velox::VARCHAR()},
+      {"col_c", velox::BIGINT()},
+  });
+
+  const int32_t numRows = 20;
+  auto colA =
+      velox::BaseVector::create(velox::INTEGER(), numRows, leafPool_.get());
+  auto colB =
+      velox::BaseVector::create(velox::VARCHAR(), numRows, leafPool_.get());
+  auto colC =
+      velox::BaseVector::create(velox::BIGINT(), numRows, leafPool_.get());
+  auto* flatA = colA->asFlatVector<int32_t>();
+  auto* flatB = colB->asFlatVector<velox::StringView>();
+  auto* flatC = colC->asFlatVector<int64_t>();
+  std::vector<std::string> bStrings;
+  for (int i = 0; i < numRows; ++i) {
+    flatA->set(i, i);
+    bStrings.emplace_back("b_" + std::to_string(i));
+    flatB->set(i, velox::StringView(bStrings.back()));
+    flatC->set(i, i * 1'000);
+  }
+  auto batch = std::make_shared<velox::RowVector>(
+      leafPool_.get(),
+      colAType,
+      nullptr,
+      numRows,
+      std::vector<velox::VectorPtr>{colA, colB, colC});
+
+  const auto filePath = tempFilePath("multi_indices");
+  {
+    VeloxWriterOptions options;
+    options.hashIndexConfigs.push_back(HashIndexConfig{.columns = {"col_a"}});
+    options.hashIndexConfigs.push_back(
+        HashIndexConfig{.columns = {"col_b", "col_c"}});
+    writeFile(filePath, colAType, {batch}, std::move(options));
+  }
+
+  {
+    auto tablet = openTablet(filePath);
+
+    auto* index0 = tablet->denseIndex({"col_a"});
+    ASSERT_NE(index0, nullptr);
+    EXPECT_EQ(index0->indexColumns(), std::vector<std::string>{"col_a"});
+
+    auto* index1 = tablet->denseIndex({"col_b", "col_c"});
+    ASSERT_NE(index1, nullptr);
+    const std::vector<std::string> expected{"col_b", "col_c"};
+    EXPECT_EQ(index1->indexColumns(), expected);
+
+    EXPECT_EQ(tablet->denseIndex({"col_c"}), nullptr);
+    EXPECT_EQ(tablet->denseIndex({"col_a", "col_b"}), nullptr);
+  }
+}
+
+TEST_F(HashIndexTest, noHashIndexConfig) {
+  auto noIndexType = velox::ROW({{"x", velox::INTEGER()}});
+
+  auto col = velox::BaseVector::create(velox::INTEGER(), 10, leafPool_.get());
+  auto* flat = col->asFlatVector<int32_t>();
+  for (int i = 0; i < 10; ++i) {
+    flat->set(i, i);
+  }
+  auto batch = std::make_shared<velox::RowVector>(
+      leafPool_.get(),
+      noIndexType,
+      nullptr,
+      10,
+      std::vector<velox::VectorPtr>{col});
+
+  const auto filePath = tempFilePath("no_index");
+  writeFile(filePath, noIndexType, {batch}, VeloxWriterOptions{});
+
+  {
+    auto tablet = openTablet(filePath);
+    EXPECT_EQ(tablet->denseIndex({"x"}), nullptr);
+  }
+}
+
+} // namespace
+} // namespace facebook::nimble::index

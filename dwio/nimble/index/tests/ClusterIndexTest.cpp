@@ -138,7 +138,7 @@ TEST_F(ClusterIndexTest, basic) {
       createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
   auto clusterIndex = createClusterIndex(indexBuffers);
 
-  EXPECT_EQ(clusterIndex->indexType(), IndexType::Cluster);
+  EXPECT_EQ(clusterIndex->type(), IndexType::Cluster);
   EXPECT_EQ(clusterIndex->layout().numPartitions, 3);
 
   const auto& cols = clusterIndex->indexColumns();

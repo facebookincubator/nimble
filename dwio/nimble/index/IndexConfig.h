@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -63,6 +64,39 @@ struct ClusterIndexConfig {
   /// give finer-grained lookups at the cost of more metadata.
   /// 0 means no splitting (one chunk per partition).
   uint64_t maxRowsPerKeyChunk{0};
+};
+
+/// Configuration for bloom filter.
+/// Shared by hash index and sorted index.
+struct BloomFilterConfig {
+  /// Bits per key for the bloom filter.
+  /// Higher values reduce false positive rate at the cost of more memory.
+  /// 10 bits/key ≈ 1% FPR, 7 bits/key ≈ 3% FPR.
+  float bitsPerKey{10.0f};
+};
+
+/// Configuration for hash index generation.
+/// A hash index provides point lookups from composite key columns to row
+/// numbers without requiring data to be sorted. Multiple hash indices can
+/// coexist per file, each on a different set of columns.
+struct HashIndexConfig {
+  /// Columns forming the composite key for point lookups.
+  std::vector<std::string> columns;
+
+  /// Target load factor for the hash table. numBuckets is computed as
+  /// nextPowerOfTwo(numKeys / loadFactor). Lower values reduce collisions
+  /// at the cost of more buckets.
+  float loadFactor{0.7f};
+
+  /// Optional bloom filter for fast negative lookups.
+  std::optional<BloomFilterConfig> bloomFilter;
+
+  /// Maximum partition size in bytes for on-demand loading.
+  /// When the serialized index data exceeds this threshold, buckets are
+  /// split into independently loadable partitions. Each partition is stored
+  /// as a separate section and loaded lazily during lookup.
+  /// 0 means no partitioning (all data in a single section).
+  uint64_t maxPartitionSizeBytes{0};
 };
 
 } // namespace facebook::nimble

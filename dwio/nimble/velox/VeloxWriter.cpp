@@ -676,6 +676,10 @@ VeloxWriter::VeloxWriter(
           context_->options().clusterIndexConfig,
           type,
           &(*context_->bufferMemoryPool()))},
+      hashIndexWriter_{index::HashIndexWriter::create(
+          context_->options().hashIndexConfigs,
+          type,
+          &(*context_->bufferMemoryPool()))},
       tabletWriter_{TabletWriter::create(
           file_.get(),
           *encodingMemoryPool_,
@@ -694,19 +698,17 @@ VeloxWriter::VeloxWriter(
            .stripeGroupFlushCallback = clusterIndexWriter_ != nullptr
                ? TabletWriter::StripeGroupFlushCallback(
                      [this](
-                         size_t stripeCount,
-                         const WriteDataFn& writeData,
-                         const CreateMetadataSectionFn& createMetadataSection) {
-                       clusterIndexWriter_->flushPartition(
-                           stripeCount, writeData, createMetadataSection);
+                         const WriteDataFn& writeDataFn,
+                         const CreateMetadataSectionFn& createMetadataFn) {
+                       clusterIndexWriter_->flush(
+                           writeDataFn, createMetadataFn);
                      })
                : nullptr,
-           .closeCallback =
-               [this](
-                   const WriteOptionalSectionFn& writeOptionalSection,
-                   const CreateMetadataSectionFn& createMetadataSection) {
-                 writeIndexes(createMetadataSection, writeOptionalSection);
-               }})} {
+           .closeCallback = [this](
+                                const CreateMetadataSectionFn& createMetadataFn,
+                                const WriteOptionalSectionFn& writeMetadataFn) {
+             writeIndexes(createMetadataFn, writeMetadataFn);
+           }})} {
   NIMBLE_CHECK_NOT_NULL(file_);
 
   // Register handler for dynamically discovered FlatMap keys before creating
@@ -872,10 +874,15 @@ bool VeloxWriter::hasClusterIndex() const {
   return clusterIndexWriter_ != nullptr;
 }
 
+bool VeloxWriter::hasHashIndex() const {
+  return hashIndexWriter_ != nullptr;
+}
+
 void VeloxWriter::addIndexKey(
     const velox::VectorPtr& input,
     velox::dwio::common::ExecutorBarrier* barrier) {
   addClusterIndexKey(input, barrier);
+  addHashIndexKey(input, barrier);
 }
 
 void VeloxWriter::addClusterIndexKey(
@@ -891,16 +898,27 @@ void VeloxWriter::addClusterIndexKey(
   }
 }
 
+void VeloxWriter::addHashIndexKey(
+    const velox::VectorPtr& input,
+    velox::dwio::common::ExecutorBarrier* barrier) {
+  if (!hasHashIndex()) {
+    return;
+  }
+  if (barrier != nullptr) {
+    barrier->add([&]() { hashIndexWriter_->write(input); });
+  } else {
+    hashIndexWriter_->write(input);
+  }
+}
+
 void VeloxWriter::writeIndexes(
-    const CreateMetadataSectionFn& createMetadataSection,
-    const WriteOptionalSectionFn& writeOptionalSection) {
+    const CreateMetadataSectionFn& createMetadataFn,
+    const WriteOptionalSectionFn& writeMetadataFn) {
+  if (hasHashIndex()) {
+    hashIndexWriter_->close(createMetadataFn, writeMetadataFn);
+  }
   if (hasClusterIndex()) {
-    const auto serialized =
-        clusterIndexWriter_->finalize(createMetadataSection);
-    if (!serialized.empty()) {
-      writeOptionalSection(std::string(kClusterIndexSection), serialized);
-    }
-    clusterIndexWriter_->close();
+    clusterIndexWriter_->close(createMetadataFn, writeMetadataFn);
   }
 }
 

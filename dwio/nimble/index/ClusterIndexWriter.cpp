@@ -20,6 +20,7 @@
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
+#include "folly/ScopeGuard.h"
 #include "folly/String.h"
 #include "folly/json/json.h"
 #include "velox/common/base/Nulls.h"
@@ -190,7 +191,7 @@ ClusterIndexWriter::createEncodingPolicy() const {
 }
 
 void ClusterIndexWriter::write(const velox::VectorPtr& input) {
-  NIMBLE_CHECK(!finalized_, "ClusterIndexWriter has been finalized");
+  NIMBLE_CHECK(!closed_, "ClusterIndexWriter has been closed");
 
   if (input->size() == 0) {
     return;
@@ -332,100 +333,25 @@ void ClusterIndexWriter::encodeKeyChunk(
   }
 }
 
-void ClusterIndexWriter::close() {
-  keyStream_->reset();
-  keyBuffer_.reset();
-  indexPartition_.reset();
-  indexRoot_.reset();
-  finalized_ = true;
-}
+void ClusterIndexWriter::close(
+    const CreateMetadataSectionFn& createMetadataFn,
+    const WriteOptionalSectionFn& writeMetadataFn) {
+  NIMBLE_CHECK(!closed_, "ClusterIndexWriter has been closed");
 
-void ClusterIndexWriter::ensureIndexRoot() {
-  if (indexRoot_ == nullptr) {
-    indexRoot_ = std::make_unique<IndexRoot>();
-  }
-}
-
-void ClusterIndexWriter::ensureIndexPartition() {
-  if (indexPartition_ == nullptr) {
-    indexPartition_ = std::make_unique<IndexPartition>();
-    indexPartition_->encodingBuffer = std::make_unique<Buffer>(*pool_);
-  }
-}
-
-void ClusterIndexWriter::flushPartition(
-    size_t stripeCount,
-    const WriteDataFn& writeData,
-    const CreateMetadataSectionFn& createMetadataSection) {
-  NIMBLE_CHECK(!finalized_, "ClusterIndexWriter has been finalized");
-  NIMBLE_CHECK_GT(stripeCount, 0);
-
-  // Force-encode any remaining accumulated keys. This must happen before the
-  // indexPartition_ null check because when key chunking is disabled
-  // (maxRowsPerKeyChunk_ == 0), encodeKeyChunks() returns early during write()
-  // and the partition is only created here.
-  encodeKeyChunks(/*force=*/true);
-
-  NIMBLE_CHECK_NOT_NULL(indexPartition_);
-  NIMBLE_CHECK(!indexPartition_->empty());
-
-  // Write key stream data to file.
-  const auto [fileOffset, fileSize] = writeData(indexPartition_->encodedChunks);
-  indexPartition_->keyStreamFileOffset = fileOffset;
-  indexPartition_->keyStreamFileSize = fileSize;
-
-  // Build ClusterIndexPartition FlatBuffer.
-  ensureIndexRoot();
-
-  flatbuffers::FlatBufferBuilder indexBuilder(kInitialFooterSize);
-
-  auto chunkRowsVec = indexBuilder.CreateVector(indexPartition_->chunkRows);
-  auto chunkOffsetsVec =
-      indexBuilder.CreateVector(indexPartition_->chunkOffsets);
-  auto chunkKeysVec =
-      indexBuilder.CreateVector<flatbuffers::Offset<flatbuffers::String>>(
-          indexPartition_->chunkKeys.size(), [&indexBuilder, this](size_t i) {
-            return indexBuilder.CreateString(indexPartition_->chunkKeys[i]);
-          });
-
-  indexBuilder.Finish(
-      serialization::CreateClusterIndexPartition(
-          indexBuilder,
-          indexPartition_->keyStreamFileOffset,
-          indexPartition_->keyStreamFileSize,
-          chunkRowsVec,
-          chunkOffsetsVec,
-          chunkKeysVec));
-
-  indexRoot_->indexPartitions.push_back(
-      createMetadataSection(asView(indexBuilder)));
-
-  // Record last key and row count for root-level index.
-  NIMBLE_CHECK(!indexPartition_->chunkKeys.empty());
-  indexRoot_->partitionKeys.emplace_back(indexPartition_->chunkKeys.back());
-  indexRoot_->partitionRowCounts.emplace_back(
-      indexPartition_->chunkRows.back());
-
-  // Reset partition state.
-  indexPartition_.reset();
-}
-
-std::string ClusterIndexWriter::finalize(
-    const CreateMetadataSectionFn& createMetadataSection) {
-  NIMBLE_CHECK(!finalized_, "ClusterIndexWriter has been finalized");
-
-  finalized_ = true;
+  SCOPE_EXIT {
+    closed_ = true;
+    keyStream_->reset();
+    keyBuffer_.reset();
+    indexPartition_.reset();
+    indexRoot_.reset();
+  };
 
   if (indexRoot_ == nullptr) {
-    return {};
+    return;
   }
 
   NIMBLE_CHECK(
       !indexRoot_->indexPartitions.empty(), "Must have at least one partition");
-
-  // Validate partition keys layout: [firstKey, lastKey0, lastKey1, ...,
-  // lastKeyN]. The firstKey was pushed during the first encodeKeyChunks() call,
-  // and each flushPartition() appends a lastKey.
   NIMBLE_CHECK_EQ(
       indexRoot_->partitionKeys.size(),
       indexRoot_->indexPartitions.size() + 1,
@@ -474,7 +400,76 @@ std::string ClusterIndexWriter::finalize(
           partitionsVector,
           partitionKeysVector,
           partitionRowCountsVector));
-  return std::string(asView(builder));
+
+  writeMetadataFn(std::string(kClusterIndexSection), asView(builder));
+}
+
+void ClusterIndexWriter::ensureIndexRoot() {
+  if (indexRoot_ == nullptr) {
+    indexRoot_ = std::make_unique<IndexRoot>();
+  }
+}
+
+void ClusterIndexWriter::ensureIndexPartition() {
+  if (indexPartition_ == nullptr) {
+    indexPartition_ = std::make_unique<IndexPartition>();
+    indexPartition_->encodingBuffer = std::make_unique<Buffer>(*pool_);
+  }
+}
+
+void ClusterIndexWriter::flush(
+    const WriteDataFn& writeDataFn,
+    const CreateMetadataSectionFn& createMetadataFn) {
+  NIMBLE_CHECK(!closed_, "ClusterIndexWriter has been closed");
+
+  // Force-encode any remaining accumulated keys. This must happen before the
+  // indexPartition_ null check because when key chunking is disabled
+  // (maxRowsPerKeyChunk_ == 0), encodeKeyChunks() returns early during write()
+  // and the partition is only created here.
+  encodeKeyChunks(/*force=*/true);
+
+  NIMBLE_CHECK_NOT_NULL(indexPartition_);
+  NIMBLE_CHECK(!indexPartition_->empty());
+
+  // Write key stream data to file.
+  const auto [fileOffset, fileSize] =
+      writeDataFn(indexPartition_->encodedChunks);
+  indexPartition_->keyStreamFileOffset = fileOffset;
+  indexPartition_->keyStreamFileSize = fileSize;
+
+  // Build ClusterIndexPartition FlatBuffer.
+  ensureIndexRoot();
+
+  flatbuffers::FlatBufferBuilder indexBuilder(kInitialFooterSize);
+
+  auto chunkRowsVec = indexBuilder.CreateVector(indexPartition_->chunkRows);
+  auto chunkOffsetsVec =
+      indexBuilder.CreateVector(indexPartition_->chunkOffsets);
+  auto chunkKeysVec =
+      indexBuilder.CreateVector<flatbuffers::Offset<flatbuffers::String>>(
+          indexPartition_->chunkKeys.size(), [&indexBuilder, this](size_t i) {
+            return indexBuilder.CreateString(indexPartition_->chunkKeys[i]);
+          });
+
+  indexBuilder.Finish(
+      serialization::CreateClusterIndexPartition(
+          indexBuilder,
+          indexPartition_->keyStreamFileOffset,
+          indexPartition_->keyStreamFileSize,
+          chunkRowsVec,
+          chunkOffsetsVec,
+          chunkKeysVec));
+
+  indexRoot_->indexPartitions.push_back(createMetadataFn(asView(indexBuilder)));
+
+  // Record last key and row count for root-level index.
+  NIMBLE_CHECK(!indexPartition_->chunkKeys.empty());
+  indexRoot_->partitionKeys.emplace_back(indexPartition_->chunkKeys.back());
+  indexRoot_->partitionRowCounts.emplace_back(
+      indexPartition_->chunkRows.back());
+
+  // Reset partition state.
+  indexPartition_.reset();
 }
 
 } // namespace facebook::nimble::index

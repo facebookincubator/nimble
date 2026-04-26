@@ -42,9 +42,9 @@ namespace facebook::nimble::index {
 ///   1. Create with config and input schema
 ///   2. For each batch: write(batch) to encode keys (auto-encodes chunks
 ///      when row count threshold is reached)
-///   3. At stripe group boundaries: flushPartition() writes key stream data
+///   3. At stripe group boundaries: flush() writes key stream data
 ///      and partition metadata
-///   4. At file close: finalize() to build and serialize the root index
+///   4. At file close: close() to finalize, serialize, and release resources
 ///
 /// Example usage:
 ///   auto writer = ClusterIndexWriter::create(config, inputType, pool);
@@ -52,8 +52,7 @@ namespace facebook::nimble::index {
 ///   // ... write more batches ...
 ///   writer->finishStripe();
 ///   // ... more stripes ...
-///   auto rootIndex = writer->finalize(createMetadataSection);
-///   writer->close();
+///   writer->close(createMetadataSection, writeOptionalSection);
 class ClusterIndexWriter : public IndexWriter {
  public:
   /// Factory method to create a ClusterIndexWriter instance.
@@ -82,25 +81,14 @@ class ClusterIndexWriter : public IndexWriter {
   /// @param input Input vector containing rows to encode.
   void write(const velox::VectorPtr& input) override;
 
-  /// Builds and serializes the root index. Called at file close.
-  /// Returns the serialized root index FlatBuffer to be stored as an optional
-  /// section. Partition data sections are written via createMetadataSection
-  /// during stripe group flushes (before this call).
-  ///
-  /// After finalize(), no further write() or finishStripe() calls are allowed.
-  std::string finalize(
-      const CreateMetadataSectionFn& createMetadataSection) override;
+  /// Flushes index data at stripe group boundary.
+  void flush(
+      const WriteDataFn& writeDataFn,
+      const CreateMetadataSectionFn& createMetadataFn) override;
 
-  /// Releases internal resources. Must be called after finalize().
-  void close() override;
-
-  /// Flushes partition data at stripe group boundary.
-  /// Writes encoded key data blob to file via writeData, then writes
-  /// partition metadata (chunk index) via createMetadataSection.
-  void flushPartition(
-      size_t stripeCount,
-      const WriteDataFn& writeData,
-      const CreateMetadataSectionFn& createMetadataSection) override;
+  void close(
+      const CreateMetadataSectionFn& createMetadataFn,
+      const WriteOptionalSectionFn& writeMetadataFn) override;
 
  private:
   ClusterIndexWriter(
@@ -149,19 +137,19 @@ class ClusterIndexWriter : public IndexWriter {
     std::vector<std::string> chunkKeys;
     // Encoded key stream segments from all chunks (flattened). Each chunk may
     // produce multiple segments via ChunkedStreamWriter. Concatenated and
-    // written to file during flushPartition().
+    // written to file during flush().
     // Views into encodingBuffer.
     std::vector<std::string_view> encodedChunks;
 
     // Buffer for encoded chunk stream data within this partition.
-    // Backs encodedChunks. Reset after flushPartition() writes the blob
+    // Backs encodedChunks. Reset after flush() writes the blob
     // to file.
     std::unique_ptr<Buffer> encodingBuffer;
     // Current write offset in the partition's key stream blob. Equals the
     // total encoded bytes so far. Used as the offset for the next chunk.
     uint32_t keyStreamOffset{0};
 
-    // File-level offset and size after flushPartition() writes the key
+    // File-level offset and size after flush() writes the key
     // data blob.
     uint64_t keyStreamFileOffset{0};
     uint32_t keyStreamFileSize{0};
@@ -177,7 +165,7 @@ class ClusterIndexWriter : public IndexWriter {
     // Keys for root-level binary search across all partitions.
     // Layout: [firstKey, lastKey0, lastKey1, ..., lastKeyN]
     // firstKey is pushed during the first encodeKeyChunks() call.
-    // Each flushPartition() appends a lastKey.
+    // Each flush() appends a lastKey.
     std::vector<std::string> partitionKeys;
     // Row count per partition, derived from chunkRows.back().
     std::vector<uint32_t> partitionRowCounts;
@@ -209,7 +197,7 @@ class ClusterIndexWriter : public IndexWriter {
   // Root-level index accumulator.
   std::unique_ptr<IndexRoot> indexRoot_;
 
-  bool finalized_{false};
+  bool closed_{false};
 };
 
 } // namespace facebook::nimble::index

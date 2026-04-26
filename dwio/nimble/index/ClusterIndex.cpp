@@ -161,7 +161,8 @@ ClusterIndex::ClusterIndex(
     LoadMetadataFn loadMetadata,
     LoadDataFn loadData,
     velox::memory::MemoryPool* pool)
-    : rootSection_{std::move(rootSection)},
+    : IndexLookup{IndexType::Cluster},
+      rootSection_{std::move(rootSection)},
       indexRoot_{getIndexRoot(rootSection_)},
       numPartitions_{getIndexPartitionCount(indexRoot_)},
       indexColumns_{getIndexColumns(indexRoot_)},

@@ -13,25 +13,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/index/IndexLookup.h"
+#pragma once
 
-#include "dwio/nimble/common/Exceptions.h"
+#include <cstdint>
+#include <string_view>
+
+#include "folly/hash/Hash.h"
 
 namespace facebook::nimble::index {
 
-std::string toString(IndexType indexType) {
-  switch (indexType) {
-    case IndexType::Cluster:
-      return "Cluster";
-    case IndexType::Hash:
-      return "Hash";
-    default:
-      NIMBLE_UNREACHABLE("Unknown IndexType: {}", static_cast<int>(indexType));
-  }
-}
-
-std::ostream& operator<<(std::ostream& out, IndexType indexType) {
-  return out << toString(indexType);
+/// Computes the bucket index for an encoded key using FNV-1a hash.
+/// Used by both HashIndexWriter (write path) and HashIndex (read path).
+inline uint32_t bucketIndex(std::string_view key, uint32_t bucketMask) {
+  return static_cast<uint32_t>(
+             folly::hash::fnva64_buf(key.data(), key.size())) &
+      bucketMask;
 }
 
 } // namespace facebook::nimble::index

@@ -904,29 +904,35 @@ TEST_P(ClusterIndexWriterDataTest, close) {
   ASSERT_NE(writer, nullptr);
 
   writer->write(makeInput({1, 2, 3}));
-  writer->close();
+  uint32_t nextSectionId = 0;
+  CreateMetadataSectionFn createMetadataFn = [&](std::string_view) {
+    return MetadataSection{nextSectionId++, 0, CompressionType::Uncompressed};
+  };
+  WriteOptionalSectionFn noopWriteFn = [](const std::string&,
+                                          std::string_view) {};
+  writer->close(createMetadataFn, noopWriteFn);
 }
 
-TEST_P(ClusterIndexWriterDataTest, writeAfterFinalize) {
+TEST_P(ClusterIndexWriterDataTest, writeAfterClose) {
   auto config = indexConfig(encodingType());
   auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
   writer->write(makeInput({1, 2, 3}));
   uint32_t nextSectionId = 0;
-  CreateMetadataSectionFn createMetadataSection = [&](std::string_view) {
+  CreateMetadataSectionFn createMetadataFn = [&](std::string_view) {
     return MetadataSection{nextSectionId++, 0, CompressionType::Uncompressed};
   };
-  writer->finalize(createMetadataSection);
+  WriteOptionalSectionFn noopWriteFn = [](const std::string&,
+                                          std::string_view) {};
+  writer->close(createMetadataFn, noopWriteFn);
 
   NIMBLE_ASSERT_THROW(
       writer->write(makeInput({4, 5, 6})),
-      "ClusterIndexWriter has been finalized");
+      "ClusterIndexWriter has been closed");
   NIMBLE_ASSERT_THROW(
-      writer->finalize(createMetadataSection),
-      "ClusterIndexWriter has been finalized");
-
-  writer->close();
+      writer->close(createMetadataFn, noopWriteFn),
+      "ClusterIndexWriter has been closed");
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -1074,11 +1080,15 @@ TEST_P(ClusterIndexWriterChunkTest, maxRowsPerKeyChunk) {
     partitionMetadata.emplace_back(metadata);
     return MetadataSection(0, metadata.size(), CompressionType::Uncompressed);
   };
-  writer->flushPartition(1, writeDataFn, createMetadataFn);
+  writer->flush(writeDataFn, createMetadataFn);
 
-  // Finalize root index.
-  auto rootIndexData = writer->finalize(createMetadataFn);
-  writer->close();
+  // Close the writer and capture the root index data.
+  std::string rootIndexData;
+  writer->close(
+      createMetadataFn,
+      [&rootIndexData](const std::string&, std::string_view content) {
+        rootIndexData = std::string(content);
+      });
 
   ASSERT_FALSE(rootIndexData.empty());
   ASSERT_EQ(partitionMetadata.size(), 1);

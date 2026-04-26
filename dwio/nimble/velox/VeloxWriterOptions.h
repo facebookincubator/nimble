@@ -67,6 +67,11 @@ struct VeloxWriterOptions {
   /// writing. The index stores the per-chunk min and max key for each stripe.
   std::optional<ClusterIndexConfig> clusterIndexConfig;
 
+  /// Hash index configurations. Each config builds an independent hash-based
+  /// point lookup index on the specified columns. Unlike cluster index, hash
+  /// index does not require sorted data.
+  std::vector<HashIndexConfig> hashIndexConfigs;
+
   // Columns that should be encoded as flat maps. Maps column name to a set
   /// of predefined key strings. When the set is empty, the column is
   /// treated as a flat map with dynamic key discovery. When non-empty, keys
