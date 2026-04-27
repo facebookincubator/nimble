@@ -57,7 +57,7 @@ class ScalarColumnReaderTest : public ::testing::Test,
       const RowVectorPtr& expected,
       const std::string& file,
       const std::shared_ptr<common::ScanSpec>& scanSpec,
-      bool passStringBuffersFromDecoder) {
+      bool stringDecoderZeroCopy) {
     auto readFile = std::make_shared<InMemoryReadFile>(file);
     auto factory =
         dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
@@ -71,7 +71,7 @@ class ScalarColumnReaderTest : public ::testing::Test,
     dwio::common::RowReaderOptions rowOptions;
     rowOptions.setScanSpec(scanSpec);
     rowOptions.setRequestedType(type);
-    rowOptions.setPassStringBuffersFromDecoder(passStringBuffersFromDecoder);
+    rowOptions.setStringDecoderZeroCopy(stringDecoderZeroCopy);
     readers.rowReader = readers.reader->createRowReader(rowOptions);
     return readers;
   }
@@ -79,12 +79,12 @@ class ScalarColumnReaderTest : public ::testing::Test,
   Readers makeReaders(
       const RowVectorPtr& input,
       const std::shared_ptr<common::ScanSpec>& scanSpec,
-      bool passStringBuffersFromDecoder) {
+      bool stringDecoderZeroCopy) {
     return makeReaders(
         input,
         test::createNimbleFile(*rootPool(), input),
         scanSpec,
-        passStringBuffersFromDecoder);
+        stringDecoderZeroCopy);
   }
 
   // Read with a given readType that may differ from the write type
@@ -93,7 +93,7 @@ class ScalarColumnReaderTest : public ::testing::Test,
       const RowVectorPtr& input,
       const RowTypePtr& readType,
       const std::shared_ptr<common::ScanSpec>& scanSpec,
-      bool passStringBuffersFromDecoder) {
+      bool stringDecoderZeroCopy) {
     auto file = test::createNimbleFile(*rootPool(), input);
     auto readFile = std::make_shared<InMemoryReadFile>(file);
     auto factory =
@@ -107,7 +107,7 @@ class ScalarColumnReaderTest : public ::testing::Test,
     dwio::common::RowReaderOptions rowOptions;
     rowOptions.setScanSpec(scanSpec);
     rowOptions.setRequestedType(readType);
-    rowOptions.setPassStringBuffersFromDecoder(passStringBuffersFromDecoder);
+    rowOptions.setStringDecoderZeroCopy(stringDecoderZeroCopy);
     readers.rowReader = readers.reader->createRowReader(rowOptions);
     return readers;
   }
@@ -169,43 +169,43 @@ class ScalarColumnReaderTest : public ::testing::Test,
 // ----- ByteColumnReader (BOOLEAN) tests -----
 
 TEST_P(ScalarColumnReaderTest, booleanDenseRead) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto input = makeRowVector({
       makeFlatVector<bool>(100, [](auto i) { return i % 3 == 0; }),
   });
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
-  auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
   validate(*input, *readers.rowReader, 100);
 }
 
 TEST_P(ScalarColumnReaderTest, booleanWithNulls) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto input = makeRowVector({
       makeFlatVector<bool>(
           100, [](auto i) { return i % 2 == 0; }, nullEvery(5)),
   });
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
-  auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
   validate(*input, *readers.rowReader, 13);
 }
 
 TEST_P(ScalarColumnReaderTest, booleanFilter) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto c0 = makeFlatVector<bool>(100, [](auto i) { return i % 3 == 0; });
   auto input = makeRowVector({c0});
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
   scanSpec->childByName("c0")->setFilter(
       std::make_unique<common::BoolValue>(true, false));
-  auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
   validateWithFilter(
       *input, *readers.rowReader, 23, [](auto i) { return i % 3 == 0; });
 }
 
 TEST_P(ScalarColumnReaderTest, tinyintWithFilter) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto c0 = makeFlatVector<int8_t>(
       100, [](auto i) { return static_cast<int8_t>(i); });
   auto input = makeRowVector({c0});
@@ -213,14 +213,14 @@ TEST_P(ScalarColumnReaderTest, tinyintWithFilter) {
   scanSpec->addAllChildFields(*input->type());
   scanSpec->childByName("c0")->setFilter(
       std::make_unique<common::BigintRange>(20, 50, false));
-  auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
   validateWithFilter(*input, *readers.rowReader, 17, [](auto i) {
     return i >= 20 && i <= 50;
   });
 }
 
 TEST_P(ScalarColumnReaderTest, tinyintToBigintEvolution) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto input = makeRowVector({
       makeFlatVector<int8_t>(50, [](auto i) { return static_cast<int8_t>(i); }),
   });
@@ -231,58 +231,58 @@ TEST_P(ScalarColumnReaderTest, tinyintToBigintEvolution) {
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*readType);
   auto readers = makeReadersWithEvolution(
-      input, readType, scanSpec, passStringBuffersFromDecoder);
+      input, readType, scanSpec, stringDecoderZeroCopy);
   validate(*expected, *readers.rowReader, 50);
 }
 
 // ----- IntegerColumnReader tests -----
 
 TEST_P(ScalarColumnReaderTest, smallintRead) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto input = makeRowVector({
       makeFlatVector<int16_t>(
           100, [](auto i) { return static_cast<int16_t>(i * 3); }),
   });
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
-  auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
   validate(*input, *readers.rowReader, 23);
 }
 
 TEST_P(ScalarColumnReaderTest, integerWithFilter) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto c0 = makeFlatVector<int32_t>(200, [](auto i) { return i * 7; });
   auto input = makeRowVector({c0});
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
   scanSpec->childByName("c0")->setFilter(
       std::make_unique<common::BigintRange>(100, 500, false));
-  auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
   validateWithFilter(*input, *readers.rowReader, 31, [](auto i) {
     return i * 7 >= 100 && i * 7 <= 500;
   });
 }
 
 TEST_P(ScalarColumnReaderTest, bigintWithNulls) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto input = makeRowVector({
       makeFlatVector<int64_t>(
           200, [](auto i) { return i * 100; }, nullEvery(7)),
   });
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
-  auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
   validate(*input, *readers.rowReader, 19);
 }
 
 TEST_P(ScalarColumnReaderTest, integerAllNulls) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto input = makeRowVector({
       makeConstant<int32_t>(std::nullopt, 100),
   });
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
-  auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
   auto result = BaseVector::create(input->type(), 0, pool());
   ASSERT_EQ(readers.rowReader->next(100, result), 100);
   auto* row = result->asUnchecked<RowVector>();
@@ -292,19 +292,19 @@ TEST_P(ScalarColumnReaderTest, integerAllNulls) {
 }
 
 TEST_P(ScalarColumnReaderTest, integerSkipAndRead) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto input = makeRowVector({
       makeFlatVector<int32_t>(100, folly::identity),
   });
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
-  auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
   // Read in small batches to exercise skip between batches.
   validate(*input, *readers.rowReader, 7);
 }
 
 TEST_P(ScalarColumnReaderTest, smallintToBigintEvolution) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto input = makeRowVector({
       makeFlatVector<int16_t>(
           50, [](auto i) { return static_cast<int16_t>(i * 10); }),
@@ -316,12 +316,12 @@ TEST_P(ScalarColumnReaderTest, smallintToBigintEvolution) {
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*readType);
   auto readers = makeReadersWithEvolution(
-      input, readType, scanSpec, passStringBuffersFromDecoder);
+      input, readType, scanSpec, stringDecoderZeroCopy);
   validate(*expected, *readers.rowReader, 50);
 }
 
 TEST_P(ScalarColumnReaderTest, integerToBigintEvolution) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto input = makeRowVector({
       makeFlatVector<int32_t>(50, [](auto i) { return i * 1000; }),
   });
@@ -332,26 +332,26 @@ TEST_P(ScalarColumnReaderTest, integerToBigintEvolution) {
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*readType);
   auto readers = makeReadersWithEvolution(
-      input, readType, scanSpec, passStringBuffersFromDecoder);
+      input, readType, scanSpec, stringDecoderZeroCopy);
   validate(*expected, *readers.rowReader, 50);
 }
 
 // ----- FloatingPointColumnReader tests -----
 
 TEST_P(ScalarColumnReaderTest, floatRead) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto input = makeRowVector({
       makeFlatVector<float>(
           100, [](auto i) { return static_cast<float>(i) * 0.5f; }),
   });
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
-  auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
   validate(*input, *readers.rowReader, 23);
 }
 
 TEST_P(ScalarColumnReaderTest, doubleWithFilter) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto c0 = makeFlatVector<double>(100, [](auto i) { return sin(i); });
   auto input = makeRowVector({c0});
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
@@ -359,26 +359,26 @@ TEST_P(ScalarColumnReaderTest, doubleWithFilter) {
   scanSpec->childByName("c0")->setFilter(
       std::make_unique<common::FloatingPointRange<double>>(
           -INFINITY, true, false, 0.0, false, false, false));
-  auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
   validateWithFilter(
       *input, *readers.rowReader, 17, [](auto i) { return sin(i) <= 0.0; });
 }
 
 TEST_P(ScalarColumnReaderTest, floatWithNulls) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto c0 = makeFlatVector<float>(
       100, [](auto i) { return static_cast<float>(i) * 1.5f; }, nullEvery(3));
   auto input = makeRowVector({c0});
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
   scanSpec->childByName("c0")->setFilter(std::make_unique<common::IsNotNull>());
-  auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
   validateWithFilter(
       *input, *readers.rowReader, 19, [](auto i) { return i % 3 != 0; });
 }
 
 TEST_P(ScalarColumnReaderTest, floatToDoubleEvolution) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto input = makeRowVector({
       makeFlatVector<float>(
           50, [](auto i) { return static_cast<float>(i) * 0.1f; }),
@@ -394,12 +394,12 @@ TEST_P(ScalarColumnReaderTest, floatToDoubleEvolution) {
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*readType);
   auto readers = makeReadersWithEvolution(
-      input, readType, scanSpec, passStringBuffersFromDecoder);
+      input, readType, scanSpec, stringDecoderZeroCopy);
   validate(*expected, *readers.rowReader, 50);
 }
 
 TEST_P(ScalarColumnReaderTest, specialFloatValues) {
-  const bool passStringBuffersFromDecoder = GetParam();
+  const bool stringDecoderZeroCopy = GetParam();
   auto input = makeRowVector({
       makeFlatVector<double>({
           std::numeric_limits<double>::quiet_NaN(),
@@ -414,7 +414,7 @@ TEST_P(ScalarColumnReaderTest, specialFloatValues) {
   });
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
-  auto readers = makeReaders(input, scanSpec, passStringBuffersFromDecoder);
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
   auto result = BaseVector::create(input->type(), 0, pool());
   ASSERT_EQ(readers.rowReader->next(8, result), 8);
   auto* row = result->asUnchecked<RowVector>();

@@ -44,7 +44,7 @@ struct E2EFilterTestParam {
   bool indexEnabled;
   bool skipConstantFlatMapInMapStreams;
   bool enableChunkIndex;
-  bool stringBufferOptimized;
+  bool stringDecoderZeroCopy;
   bool pinFileMetadata;
   bool enableCache;
 
@@ -52,17 +52,17 @@ struct E2EFilterTestParam {
       : indexEnabled{std::get<0>(t)},
         skipConstantFlatMapInMapStreams{std::get<1>(t)},
         enableChunkIndex{std::get<2>(t)},
-        stringBufferOptimized{std::get<3>(t)},
+        stringDecoderZeroCopy{std::get<3>(t)},
         pinFileMetadata{std::get<4>(t)},
         enableCache{std::get<5>(t)} {}
 
   std::string debugString() const {
     return fmt::format(
-        "index_{}_skipConstantInMap_{}_chunkIndex_{}_stringBufferOptimized_{}_pinMetadata_{}_cache_{}",
+        "index_{}_skipConstantInMap_{}_chunkIndex_{}_stringDecoderZeroCopy_{}_pinMetadata_{}_cache_{}",
         indexEnabled,
         skipConstantFlatMapInMapStreams,
         enableChunkIndex,
-        stringBufferOptimized,
+        stringDecoderZeroCopy,
         pinFileMetadata,
         enableCache);
   }
@@ -121,7 +121,7 @@ class E2EFilterTest
     opts.setScanSpec(spec);
     opts.setTimestampPrecision(TimestampPrecision::kNanoseconds);
     opts.setIndexEnabled(indexEnabled());
-    opts.setPassStringBuffersFromDecoder(param().stringBufferOptimized);
+    opts.setStringDecoderZeroCopy(param().stringDecoderZeroCopy);
   }
 
   void testWithTypes(
@@ -1570,7 +1570,7 @@ class PrefixEncodingE2ETest : public E2EFilterTest {
     opts.setIndexEnabled(false);
     // PrefixEncoding requires string buffer optimization for correct
     // string_view lifecycle management in readWithVisitor.
-    opts.setPassStringBuffersFromDecoder(true);
+    opts.setStringDecoderZeroCopy(true);
   }
 
   void writeToMemory(

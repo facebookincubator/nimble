@@ -34,12 +34,12 @@ class ChunkedDecoder {
       bool decodeValuesWithNulls,
       const EncodingFactory* encodingFactory,
       velox::memory::MemoryPool* pool,
-      bool getStringBuffersFromDecoder = false)
+      bool stringDecoderZeroCopy = false)
       : input_{std::move(input)},
         pool_{pool},
         decodeValuesWithNulls_{decodeValuesWithNulls},
         encodingFactory_(encodingFactory),
-        getStringBuffersFromDecoder_{getStringBuffersFromDecoder},
+        stringDecoderZeroCopy_{stringDecoderZeroCopy},
         streamIndex_{std::move(streamIndex)},
         streamRowCount_{
             streamIndex_ ? std::optional<uint32_t>(streamIndex_->rowCount())
@@ -299,14 +299,14 @@ class ChunkedDecoder {
         visitor.rows();
   }
 
-  /// Selects the encoding trait based on getStringBuffersFromDecoder_ and
+  /// Selects the encoding trait based on stringDecoderZeroCopy_ and
   /// forwards to the fully-monomorphic readWithVisitorImpl.
   template <bool kHasNulls, typename V>
   void dispatchReadWithVisitorImpl(
       V& visitor,
       const uint64_t* nulls,
       ReadWithVisitorParams& params) {
-    if (getStringBuffersFromDecoder_) {
+    if (stringDecoderZeroCopy_) {
       readWithVisitorImpl<kHasNulls, DefaultEncodingTrait>(
           visitor, nulls, params);
     } else {
@@ -376,7 +376,7 @@ class ChunkedDecoder {
       }
     }
 
-    if (visitor.reader().formatData().getStringBuffersFromDecoder()) {
+    if (visitor.reader().formatData().stringDecoderZeroCopy()) {
       visitor.reader().setStringBuffers(std::move(stringBuffers));
     }
   }
@@ -430,7 +430,7 @@ class ChunkedDecoder {
   // (standard case for scalar types).
   const bool decodeValuesWithNulls_;
   const EncodingFactory* const encodingFactory_;
-  const bool getStringBuffersFromDecoder_{false};
+  const bool stringDecoderZeroCopy_{false};
   // Optional stream index for accelerating skip operations
   const std::shared_ptr<index::StreamIndex> streamIndex_;
   // Total row count in the stream, set from stream index if available.
