@@ -87,6 +87,7 @@ class ClusterIndexWriter : public IndexWriter {
       const CreateMetadataSectionFn& createMetadataFn) override;
 
   void close(
+      const WriteDataFn& writeDataFn,
       const CreateMetadataSectionFn& createMetadataFn,
       const WriteOptionalSectionFn& writeMetadataFn) override;
 
@@ -113,9 +114,6 @@ class ClusterIndexWriter : public IndexWriter {
   // Creates a new encoding policy instance for key encoding.
   std::unique_ptr<EncodingSelectionPolicy<std::string_view>>
   createEncodingPolicy() const;
-
-  // Validates that no null values exist in key columns.
-  void validateNoNullKeys(const velox::VectorPtr& input) const;
 
   // Validates all new encoded keys are in ascending order. Compares against
   // the previous key in the buffer or lastEncodedKey_ across clears.
@@ -196,8 +194,6 @@ class ClusterIndexWriter : public IndexWriter {
   std::unique_ptr<IndexPartition> indexPartition_;
   // Root-level index accumulator.
   std::unique_ptr<IndexRoot> indexRoot_;
-
-  bool closed_{false};
 };
 
 } // namespace facebook::nimble::index

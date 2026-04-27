@@ -66,7 +66,7 @@ std::vector<velox::core::SortOrder> toVeloxSortOrders(
   return result;
 }
 
-std::unique_ptr<velox::serializer::KeyEncoder> createKeyEncoder(
+std::unique_ptr<velox::serializer::KeyEncoder> createClusterKeyEncoder(
     const ClusterIndexConfig& config,
     const velox::RowTypePtr& inputType,
     velox::memory::MemoryPool* pool) {
@@ -82,17 +82,6 @@ std::unique_ptr<velox::serializer::KeyEncoder> createKeyEncoder(
       inputType,
       toVeloxSortOrders(config.sortOrders, config.columns.size()),
       pool);
-}
-
-std::vector<velox::column_index_t> getKeyColumnIndices(
-    const ClusterIndexConfig& config,
-    const velox::RowTypePtr& inputType) {
-  std::vector<velox::column_index_t> indices;
-  indices.reserve(config.columns.size());
-  for (const auto& columnName : config.columns) {
-    indices.push_back(inputType->getChildIdx(columnName));
-  }
-  return indices;
 }
 
 std::string_view asView(const flatbuffers::FlatBufferBuilder& builder) {
@@ -138,10 +127,10 @@ ClusterIndexWriter::ClusterIndexWriter(
                                           config.columns.size(),
                                           SortOrder{.ascending = true})
                                     : config.sortOrders},
-      keyEncoder_{createKeyEncoder(config, inputType, pool)},
+      keyEncoder_{createClusterKeyEncoder(config, inputType, pool)},
       encodingLayout_{config.encodingLayout},
       enforceKeyOrder_{config.enforceKeyOrder},
-      keyColumnIndices_{getKeyColumnIndices(config, inputType)},
+      keyColumnIndices_{getKeyColumnIndices({config.columns}, inputType)},
       noDuplicateKey_{config.noDuplicateKey},
       maxRowsPerKeyChunk_{config.maxRowsPerKeyChunk},
       keyStream_{std::make_unique<ContentStreamData<std::string_view>>(
@@ -157,29 +146,6 @@ ClusterIndexWriter::ClusterIndexWriter(
       encodingType);
 }
 
-void ClusterIndexWriter::validateNoNullKeys(
-    const velox::VectorPtr& input) const {
-  const auto* rowVector = input->asChecked<velox::RowVector>();
-  const auto& children = rowVector->children();
-  for (const auto columnIndex : keyColumnIndices_) {
-    const auto& child = children[columnIndex];
-    if (!child->mayHaveNulls()) {
-      continue;
-    }
-    const auto* nulls = child->rawNulls();
-    if (nulls == nullptr) {
-      continue;
-    }
-    const auto nullCount = velox::bits::countNulls(nulls, 0, input->size());
-    NIMBLE_USER_CHECK_EQ(
-        nullCount,
-        0,
-        "Null value not allowed in key column at index {}: found {} null(s)",
-        columnIndex,
-        nullCount);
-  }
-}
-
 std::unique_ptr<EncodingSelectionPolicy<std::string_view>>
 ClusterIndexWriter::createEncodingPolicy() const {
   return std::make_unique<ReplayedEncodingSelectionPolicy<std::string_view>>(
@@ -191,13 +157,13 @@ ClusterIndexWriter::createEncodingPolicy() const {
 }
 
 void ClusterIndexWriter::write(const velox::VectorPtr& input) {
-  NIMBLE_CHECK(!closed_, "ClusterIndexWriter has been closed");
+  checkNotClosed();
 
   if (input->size() == 0) {
     return;
   }
 
-  validateNoNullKeys(input);
+  validateNoNullKeys(input, keyColumnIndices_);
 
   const auto newKeyStart = keyStream_->mutableData().size();
   keyStream_->ensureMutableDataCapacity(newKeyStart + input->size());
@@ -334,12 +300,12 @@ void ClusterIndexWriter::encodeKeyChunk(
 }
 
 void ClusterIndexWriter::close(
+    const WriteDataFn& /*writeDataFn*/,
     const CreateMetadataSectionFn& createMetadataFn,
     const WriteOptionalSectionFn& writeMetadataFn) {
-  NIMBLE_CHECK(!closed_, "ClusterIndexWriter has been closed");
+  setClosed();
 
   SCOPE_EXIT {
-    closed_ = true;
     keyStream_->reset();
     keyBuffer_.reset();
     indexPartition_.reset();
@@ -420,7 +386,7 @@ void ClusterIndexWriter::ensureIndexPartition() {
 void ClusterIndexWriter::flush(
     const WriteDataFn& writeDataFn,
     const CreateMetadataSectionFn& createMetadataFn) {
-  NIMBLE_CHECK(!closed_, "ClusterIndexWriter has been closed");
+  checkNotClosed();
 
   // Force-encode any remaining accumulated keys. This must happen before the
   // indexPartition_ null check because when key chunking is disabled

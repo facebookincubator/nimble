@@ -359,6 +359,7 @@ void TestClusterIndexMetadataWriter::flushPartitionMetadata(
 TabletWriter::CloseCallback
 TestClusterIndexMetadataWriter::createCloseCallback() {
   return [this](
+             const WriteDataFn& /*writeDataFn*/,
              const CreateMetadataSectionFn& /*createMetadataFn*/,
              const WriteOptionalSectionFn& writeMetadataFn) {
     writeRoot(writeMetadataFn);

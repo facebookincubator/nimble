@@ -144,11 +144,11 @@ class HashIndexTestBase {
 
   // Performs a point lookup and returns the result.
   IndexLookup::LookupResult pointLookup(
-      const HashIndex* hashIndex,
+      const IndexLookup* index,
       const std::vector<std::string>& columns,
       int32_t idValue) {
     auto key = encodeLookupKey(columns, idValue);
-    return hashIndex->lookup(
+    return index->lookup(
         IndexLookup::LookupRequest::pointLookup({std::move(key)}));
   }
 
@@ -240,6 +240,9 @@ TEST_P(HashIndexParamTest, roundTrip) {
   ASSERT_NE(hashIndex, nullptr);
   EXPECT_EQ(hashIndex->type(), IndexType::Hash);
   EXPECT_EQ(hashIndex->indexColumns(), columns());
+  EXPECT_FALSE(hashIndex->minKey().empty());
+  EXPECT_FALSE(hashIndex->maxKey().empty());
+  EXPECT_LE(hashIndex->minKey(), hashIndex->maxKey());
 }
 
 TEST_P(HashIndexParamTest, pointLookup) {
@@ -252,6 +255,9 @@ TEST_P(HashIndexParamTest, pointLookup) {
   auto tablet = openTablet(filePath);
   auto* hashIndex = tablet->denseIndex(columns());
   ASSERT_NE(hashIndex, nullptr);
+  EXPECT_FALSE(hashIndex->minKey().empty());
+  EXPECT_FALSE(hashIndex->maxKey().empty());
+  EXPECT_LE(hashIndex->minKey(), hashIndex->maxKey());
 
   {
     auto result = pointLookup(hashIndex, columns(), 20);
@@ -313,7 +319,16 @@ TEST_P(HashIndexParamTest, bloomFilterSkips) {
     const auto stats = hashIndex->stats();
     EXPECT_EQ(
         stats.at(HashIndex::kNumLookups).sum, kNumExisting + kNumNonExistent);
-    EXPECT_EQ(stats.at(HashIndex::kNumBloomFilterSkips).sum, kNumNonExistent);
+    // Non-existent keys are skipped by min/max check and/or bloom filter.
+    // All non-existent keys should be skipped by one of the two filters.
+    const int64_t numMinMaxSkips = stats.count(HashIndex::kNumMinMaxSkips) > 0
+        ? stats.at(HashIndex::kNumMinMaxSkips).sum
+        : 0;
+    const int64_t numBloomFilterSkips =
+        stats.count(HashIndex::kNumBloomFilterSkips) > 0
+        ? stats.at(HashIndex::kNumBloomFilterSkips).sum
+        : 0;
+    EXPECT_EQ(numMinMaxSkips + numBloomFilterSkips, kNumNonExistent);
     EXPECT_EQ(stats.at(HashIndex::kNumMatchedRows).sum, kNumExisting);
   }
 }

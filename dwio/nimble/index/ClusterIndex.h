@@ -24,6 +24,7 @@
 
 #include "dwio/nimble/index/IndexLookup.h"
 #include "dwio/nimble/index/IndexTypes.h"
+#include "dwio/nimble/index/KeyChunkDecoder.h"
 #include "dwio/nimble/index/SortOrder.h"
 #include "dwio/nimble/tablet/Callbacks.h"
 #include "dwio/nimble/tablet/ClusterIndexGenerated.h"
@@ -90,12 +91,12 @@ class ClusterIndex : public IndexLookup {
   // -- ClusterIndex-specific methods --
 
   /// Returns the minimum key across all partitions.
-  std::string_view minKey() const {
+  std::string_view minKey() const override {
     return firstKey_;
   }
 
   /// Returns the maximum key across all partitions.
-  std::string_view maxKey() const {
+  std::string_view maxKey() const override {
     return lastKey_;
   }
 
@@ -150,18 +151,15 @@ class ClusterIndex : public IndexLookup {
       LoadDataFn loadData,
       velox::memory::MemoryPool* pool);
 
-  // Decoded chunk encoding, one cached per IndexPartition.
+  // Cached decoded chunk, one per IndexPartition.
   struct DecodedChunk {
-    ~DecodedChunk();
-
-    void reset(uint32_t _chunkOffset);
+    void reset(uint32_t newChunkOffset) {
+      chunkOffset = newChunkOffset;
+      data = {};
+    }
 
     uint32_t chunkOffset{0};
-    // Zero-copy path: stream kept alive so its buffer backs the encoding.
-    std::unique_ptr<velox::dwio::common::SeekableInputStream> dataStream;
-    std::unique_ptr<nimble::Encoding> encoding;
-    // Buffers for encoding string data.
-    std::vector<velox::BufferPtr> stringBuffers;
+    DecodedKeyChunk data;
   };
 
   // Parsed partition metadata, cached on demand.
@@ -214,7 +212,7 @@ class ClusterIndex : public IndexLookup {
   // The partition's last key must be >= encodedKey (guaranteed by the caller's
   // binary search on partition keys).
   // @param inclusive true for first row >= key, false for first row > key.
-  velox::vector_size_t resolvePartitionRow(
+  uint32_t resolvePartitionRow(
       const IndexPartition* partition,
       std::string_view encodedKey,
       bool inclusive) const;
@@ -233,13 +231,13 @@ class ClusterIndex : public IndexLookup {
     // true for lower bound (first row >= key), false for upper bound
     // (first row > key).
     bool inclusive;
-    velox::vector_size_t* targetRow;
+    uint32_t* targetRow;
 
     PartitionLookup(
         uint32_t _partitionId,
         std::string_view _encodedKey,
         bool _inclusive,
-        velox::vector_size_t* _targetRow)
+        uint32_t* _targetRow)
         : partitionId{_partitionId},
           encodedKey{_encodedKey},
           inclusive{_inclusive},
@@ -302,10 +300,10 @@ class ClusterIndex : public IndexLookup {
   // partitionRows_[i] is the start row of partition i.
   // partitionRows_[numPartitions_] == numRows_.
   // Size = numPartitions_ + 1.
-  const std::vector<velox::vector_size_t> partitionRows_;
+  const std::vector<uint32_t> partitionRows_;
 
   // Total number of rows in the file.
-  const velox::vector_size_t numRows_;
+  const uint32_t numRows_;
 
   const LoadDataFn loadData_;
   const LoadMetadataFn loadMetadata_;

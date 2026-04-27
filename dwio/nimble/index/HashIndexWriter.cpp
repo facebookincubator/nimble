@@ -36,32 +36,14 @@ namespace facebook::nimble::index {
 
 namespace {
 
-std::unique_ptr<velox::serializer::KeyEncoder> createEncoder(
-    const HashIndexConfig& config,
-    const velox::RowTypePtr& inputType,
-    velox::memory::MemoryPool* pool) {
-  // Hash index uses ascending sort order for key encoding (order doesn't
-  // matter for point lookups, but we need a consistent encoding).
-  std::vector<velox::core::SortOrder> sortOrders(
-      config.columns.size(), velox::core::SortOrder{true, false});
-  return velox::serializer::KeyEncoder::create(
-      config.columns, inputType, std::move(sortOrders), pool);
-}
-
-std::vector<velox::column_index_t> getKeyColumnIndices(
-    const std::vector<HashIndexConfig>& configs,
-    const velox::RowTypePtr& inputType) {
-  std::set<velox::column_index_t> indexSet;
-  std::vector<velox::column_index_t> indices;
+std::vector<std::vector<std::string>> extractColumnSets(
+    const std::vector<HashIndexConfig>& configs) {
+  std::vector<std::vector<std::string>> columnSets;
+  columnSets.reserve(configs.size());
   for (const auto& config : configs) {
-    for (const auto& columnName : config.columns) {
-      const auto idx = inputType->getChildIdx(columnName);
-      if (indexSet.insert(idx).second) {
-        indices.emplace_back(idx);
-      }
-    }
+    columnSets.emplace_back(config.columns);
   }
-  return indices;
+  return columnSets;
 }
 
 } // namespace
@@ -140,6 +122,16 @@ void HashIndexWriter::buildIndexFlatBuffer(
     flatbuffers::FlatBufferBuilder& builder,
     const IndexAccumulator& accumulator,
     const CreateMetadataSectionFn& createMetadataFn) const {
+  NIMBLE_CHECK(!accumulator.entries.empty());
+  const auto minIt = std::min_element(
+      accumulator.entries.begin(),
+      accumulator.entries.end(),
+      [](const auto& a, const auto& b) { return a.key < b.key; });
+  const auto maxIt = std::max_element(
+      accumulator.entries.begin(),
+      accumulator.entries.end(),
+      [](const auto& a, const auto& b) { return a.key < b.key; });
+
   const uint64_t numKeys = accumulator.entries.size();
   const uint32_t numBuckets = static_cast<uint32_t>(velox::bits::nextPowerOfTwo(
       std::max(
@@ -211,6 +203,10 @@ void HashIndexWriter::buildIndexFlatBuffer(
 
   auto partitionStartBucketsVec = builder.CreateVector(partitionStartBuckets);
   auto partitionSectionsVec = builder.CreateVector(partitionSections);
+  auto minKeyOffset =
+      builder.CreateString(minIt->key.data(), minIt->key.size());
+  auto maxKeyOffset =
+      builder.CreateString(maxIt->key.data(), maxIt->key.size());
 
   auto hashIndex = serialization::CreateHashIndex(
       builder,
@@ -219,6 +215,8 @@ void HashIndexWriter::buildIndexFlatBuffer(
       numKeys,
       actualLoadFactor,
       bloomFilterOffset,
+      minKeyOffset,
+      maxKeyOffset,
       partitionStartBucketsVec,
       partitionSectionsVec);
   builder.Finish(hashIndex);
@@ -277,7 +275,9 @@ HashIndexWriter::HashIndexWriter(
     const std::vector<HashIndexConfig>& configs,
     const velox::RowTypePtr& inputType,
     velox::memory::MemoryPool* pool)
-    : pool_{pool}, keyColumnIndices_{getKeyColumnIndices(configs, inputType)} {
+    : pool_{pool},
+      keyColumnIndices_{
+          getKeyColumnIndices(extractColumnSets(configs), inputType)} {
   NIMBLE_CHECK(!configs.empty(), "Hash index configs must not be empty");
   accumulators_.reserve(configs.size());
   for (const auto& config : configs) {
@@ -295,35 +295,13 @@ HashIndexWriter::HashIndexWriter(
     accumulators_.emplace_back(
         IndexAccumulator{
             .config = config,
-            .encoder = createEncoder(config, inputType, pool),
+            .encoder = createKeyEncoder(config.columns, inputType, pool),
         });
   }
 }
 
-void HashIndexWriter::validateNoNullKeys(const velox::VectorPtr& input) const {
-  const auto* rowVector = input->asChecked<velox::RowVector>();
-  const auto& children = rowVector->children();
-  for (const auto columnIndex : keyColumnIndices_) {
-    const auto& child = children[columnIndex];
-    if (!child->mayHaveNulls()) {
-      continue;
-    }
-    const auto* nulls = child->rawNulls();
-    if (nulls == nullptr) {
-      continue;
-    }
-    const auto nullCount = velox::bits::countNulls(nulls, 0, input->size());
-    NIMBLE_USER_CHECK_EQ(
-        nullCount,
-        0,
-        "Null value not allowed in hash index key column at index {}: found {} null(s)",
-        columnIndex,
-        nullCount);
-  }
-}
-
 void HashIndexWriter::write(const velox::VectorPtr& input) {
-  NIMBLE_CHECK(!closed_, "Cannot write after close");
+  checkNotClosed();
   if (input->size() == 0) {
     return;
   }
@@ -333,7 +311,7 @@ void HashIndexWriter::write(const velox::VectorPtr& input) {
       static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()),
       "Hash index row count exceeds uint32 limit");
 
-  validateNoNullKeys(input);
+  validateNoNullKeys(input, keyColumnIndices_);
   ensureEncodingBuffer();
 
   for (auto& accumulator : accumulators_) {
@@ -359,10 +337,10 @@ void HashIndexWriter::write(const velox::VectorPtr& input) {
 }
 
 void HashIndexWriter::close(
+    const WriteDataFn& /*writeDataFn*/,
     const CreateMetadataSectionFn& createMetadataFn,
     const WriteOptionalSectionFn& writeMetadataFn) {
-  NIMBLE_CHECK(!closed_, "close() already called");
-  closed_ = true;
+  setClosed();
 
   if (numRows_ == 0) {
     return;

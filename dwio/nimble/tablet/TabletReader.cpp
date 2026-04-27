@@ -1133,7 +1133,7 @@ void TabletReader::initClusterIndex() {
       pool_);
 }
 
-const index::HashIndex* TabletReader::denseIndex(
+const index::IndexLookup* TabletReader::denseIndex(
     const std::vector<std::string>& columns) const {
   if (denseIndexRegistry_ == nullptr) {
     return nullptr;
@@ -1142,18 +1142,32 @@ const index::HashIndex* TabletReader::denseIndex(
 }
 
 void TabletReader::initDenseIndexes() {
-  auto section =
-      loadOptionalSection(std::string{kHashIndexSection}, /*keepCache=*/false);
-  if (!section.has_value()) {
-    return;
-  }
+  auto loadMetadataFn = [this](const MetadataSection& metadataSection) {
+    return readMetadata(metadataSection, velox::dwio::common::LogType::FOOTER);
+  };
+
+  auto loadDataFn = [this](const velox::common::Region& region)
+      -> std::unique_ptr<velox::dwio::common::SeekableInputStream> {
+    if (metadataInput_ != nullptr) {
+      return metadataInput_->read(
+          region.offset, region.length, velox::dwio::common::LogType::FOOTER);
+    }
+    auto input =
+        std::make_shared<velox::dwio::common::ReadFileInputStream>(file_);
+    return std::make_unique<velox::dwio::common::SeekableFileInputStream>(
+        std::move(input),
+        region.offset,
+        region.length,
+        *pool_,
+        velox::dwio::common::LogType::FOOTER);
+  };
 
   denseIndexRegistry_ = DenseIndexRegistry::create(
-      std::move(section.value()),
-      [this](const MetadataSection& metadataSection) {
-        return readMetadata(
-            metadataSection, velox::dwio::common::LogType::FOOTER);
-      },
+      loadOptionalSection(std::string{kHashIndexSection}, /*keepCache=*/false),
+      loadOptionalSection(
+          std::string{kSortedIndexSection}, /*keepCache=*/false),
+      loadMetadataFn,
+      std::move(loadDataFn),
       pool_);
 }
 

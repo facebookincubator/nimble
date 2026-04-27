@@ -18,10 +18,15 @@ add_library(
   ChunkIndexGroup.cpp
   ClusterIndex.cpp
   ClusterIndexWriter.cpp
+  DenseIndexRegistry.cpp
   HashIndex.cpp
   HashIndexWriter.cpp
   IndexFilter.cpp
+  KeyChunkDecoder.cpp
+  SortedIndex.cpp
+  SortedIndexWriter.cpp
   IndexLookup.cpp
+  IndexWriter.cpp
   SortOrder.cpp
 )
 
@@ -34,6 +39,7 @@ target_link_libraries(
   nimble_chunk_index_fb
   nimble_hash_index_fb
   nimble_bloom_filter_fb
+  nimble_sorted_index_fb
   velox_core
   velox_type
   velox_vector

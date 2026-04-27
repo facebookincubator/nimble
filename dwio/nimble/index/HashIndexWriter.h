@@ -97,6 +97,7 @@ class HashIndexWriter : public IndexWriter {
   void write(const velox::VectorPtr& input) override;
 
   void close(
+      const WriteDataFn& writeDataFn,
       const CreateMetadataSectionFn& createMetadataFn,
       const WriteOptionalSectionFn& writeMetadataFn) override;
 
@@ -143,9 +144,6 @@ class HashIndexWriter : public IndexWriter {
       uint32_t startBucket,
       uint32_t bucketCount);
 
-  // Validates that no null values exist in any key columns.
-  void validateNoNullKeys(const velox::VectorPtr& input) const;
-
   // Builds a bloom filter FlatBuffer offset, or 0 if bloom filter is disabled.
   flatbuffers::Offset<serialization::BloomFilter> buildBloomFilter(
       flatbuffers::FlatBufferBuilder& builder,
@@ -187,7 +185,6 @@ class HashIndexWriter : public IndexWriter {
   std::unique_ptr<Buffer> encodingBuffer_;
   std::vector<IndexAccumulator> accumulators_;
   uint32_t numRows_{0};
-  bool closed_{false};
 
   friend class test::HashIndexWriterTestHelper;
 };

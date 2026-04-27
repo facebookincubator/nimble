@@ -199,7 +199,7 @@ void NimbleIndexProjector::lookupStripes() {
          ++stripe) {
       const auto stripeOffset = stripe - minStripe;
       stripeRangeMap_.rowRanges[writeCursors[stripeOffset]++] = StripeRowRange{
-          static_cast<velox::vector_size_t>(requestIdx),
+          static_cast<uint32_t>(requestIdx),
           stripeRowRange(stripe, requestRange.rowRange)};
     }
   }
@@ -324,8 +324,7 @@ void NimbleIndexProjector::buildStripeResult(Chunk&& chunk, Result& result) {
           options_->maxRowsPerRequest - rowsPerRequest_[request.requestIndex];
 
       if (static_cast<uint64_t>(rowRange.numRows()) > remaining) {
-        rowRange.endRow =
-            rowRange.startRow + static_cast<vector_size_t>(remaining);
+        rowRange.endRow = rowRange.startRow + static_cast<uint32_t>(remaining);
       }
     }
     stats_.numReadRows += rowRange.numRows();

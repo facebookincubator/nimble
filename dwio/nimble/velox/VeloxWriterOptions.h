@@ -72,6 +72,11 @@ struct VeloxWriterOptions {
   /// index does not require sorted data.
   std::vector<HashIndexConfig> hashIndexConfigs;
 
+  /// Sorted index configurations. Each config builds an independent sorted
+  /// key stream index supporting both point lookups and range scans on
+  /// unsorted data.
+  std::vector<SortedIndexConfig> sortedIndexConfigs;
+
   // Columns that should be encoded as flat maps. Maps column name to a set
   /// of predefined key strings. When the set is empty, the column is
   /// treated as a flat map with dynamic key discovery. When non-empty, keys
