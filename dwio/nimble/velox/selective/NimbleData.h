@@ -33,7 +33,7 @@ class NimbleData : public velox::dwio::common::FormatData {
       velox::memory::MemoryPool& memoryPool,
       ChunkedDecoder* inMapDecoder,
       const EncodingFactory& encodingFactory,
-      bool getStringBuffersFromDecoder);
+      bool stringDecoderZeroCopy);
 
   /// Read internal node nulls. For leaf nodes, we only copy `incomingNulls' if
   /// it exists.
@@ -119,7 +119,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
       StripeStreams& streams,
       RowSizeTracker* rowSizeTracker,
       const EncodingFactory& encodingFactory,
-      bool getStringBuffersFromDecoder = false,
+      bool stringDecoderZeroCopy = false,
       bool preserveFlatMapsInMemory = false)
       : FormatParams(pool, stats),
         nimbleType_(nimbleType),
@@ -127,7 +127,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
         rowSizeTracker_(rowSizeTracker),
         preserveFlatMapsInMemory_(preserveFlatMapsInMemory),
         encodingFactory_(&encodingFactory),
-        getStringBuffersFromDecoder_{getStringBuffersFromDecoder} {}
+        stringDecoderZeroCopy_{stringDecoderZeroCopy} {}
 
   std::unique_ptr<velox::dwio::common::FormatData> toFormatData(
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& /*type*/,
@@ -141,7 +141,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
         *streams_,
         rowSizeTracker_,
         *encodingFactory_,
-        getStringBuffersFromDecoder_,
+        stringDecoderZeroCopy_,
         preserveFlatMapsInMemory_);
   }
 
@@ -176,7 +176,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
   const bool preserveFlatMapsInMemory_{false};
   const EncodingFactory* const encodingFactory_;
   ChunkedDecoder* inMapDecoder_{nullptr};
-  bool getStringBuffersFromDecoder_{false};
+  bool stringDecoderZeroCopy_{false};
 };
 
 } // namespace facebook::nimble

@@ -121,7 +121,7 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
       : readerBase_{readerBase},
         options_{options},
         encodingFactory_(
-            options.passStringBuffersFromDecoder()
+            options.stringDecoderZeroCopy()
                 ? std::make_unique<const EncodingFactory>()
                 : std::make_unique<const legacy::EncodingFactory>()),
         streams_(readerBase_),
@@ -408,7 +408,7 @@ void SelectiveNimbleRowReader::loadCurrentStripe() {
       streams_,
       options_.trackRowSize() ? rowSizeTracker_.get() : nullptr,
       *encodingFactory_,
-      options_.passStringBuffersFromDecoder(),
+      options_.stringDecoderZeroCopy(),
       options_.preserveFlatMapsInMemory());
 
   columnReader_ = buildColumnReader(

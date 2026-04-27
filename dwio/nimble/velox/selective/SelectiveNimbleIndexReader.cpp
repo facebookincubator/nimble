@@ -148,7 +148,7 @@ SelectiveNimbleIndexReader::SelectiveNimbleIndexReader(
     : readerBase_(std::move(readerBase)),
       options_(options),
       encodingFactory_(
-          options.passStringBuffersFromDecoder()
+          options.stringDecoderZeroCopy()
               ? std::make_unique<const EncodingFactory>()
               : std::make_unique<const legacy::EncodingFactory>()),
       rowSizeTracker_(
@@ -507,7 +507,7 @@ void SelectiveNimbleIndexReader::initStripeColumnReader(uint32_t stripeIndex) {
       streams_,
       options_.trackRowSize() ? rowSizeTracker_.get() : nullptr,
       *encodingFactory_,
-      options_.passStringBuffersFromDecoder(),
+      options_.stringDecoderZeroCopy(),
       options_.preserveFlatMapsInMemory());
 
   columnReader_ = buildColumnReader(

@@ -29,7 +29,7 @@ NimbleData::NimbleData(
     memory::MemoryPool& memoryPool,
     ChunkedDecoder* inMapDecoder,
     const EncodingFactory& encodingFactory,
-    bool getStringBuffersFromDecoder)
+    bool stringDecoderZeroCopy)
     : nimbleType_(nimbleType),
       streams_(&streams),
       pool_(&memoryPool),
@@ -83,7 +83,7 @@ NimbleData::NimbleData(
     default:
       NIMBLE_UNSUPPORTED("{}", toString(nimbleType->kind()));
   }
-  getStringBuffersFromDecoder_ = getStringBuffersFromDecoder;
+  stringDecoderZeroCopy_ = stringDecoderZeroCopy;
 }
 
 void NimbleData::readNulls(
@@ -164,7 +164,7 @@ ChunkedDecoder NimbleData::makeScalarDecoder() {
       /*decodeValuesWithNulls=*/false,
       encodingFactory_,
       pool_,
-      getStringBuffersFromDecoder_);
+      stringDecoderZeroCopy_);
 }
 
 ChunkedDecoder NimbleData::makeMicrosDecoder() {
@@ -177,7 +177,7 @@ ChunkedDecoder NimbleData::makeMicrosDecoder() {
       /*decodeValuesWithNulls=*/false,
       encodingFactory_,
       pool_,
-      getStringBuffersFromDecoder_);
+      stringDecoderZeroCopy_);
 }
 
 ChunkedDecoder NimbleData::makeNanosDecoder() {
@@ -190,7 +190,7 @@ ChunkedDecoder NimbleData::makeNanosDecoder() {
       /*decodeValuesWithNulls=*/false,
       encodingFactory_,
       pool_,
-      getStringBuffersFromDecoder_);
+      stringDecoderZeroCopy_);
 }
 
 std::unique_ptr<ChunkedDecoder> NimbleData::makeLengthDecoder() {
@@ -220,7 +220,7 @@ std::unique_ptr<ChunkedDecoder> NimbleData::makeDecoder(
       decodeValuesWithNulls,
       encodingFactory_,
       pool_,
-      getStringBuffersFromDecoder_);
+      stringDecoderZeroCopy_);
 }
 
 std::unique_ptr<velox::dwio::common::FormatData> NimbleParams::toFormatData(
@@ -232,7 +232,7 @@ std::unique_ptr<velox::dwio::common::FormatData> NimbleParams::toFormatData(
       pool(),
       inMapDecoder_,
       *encodingFactory_,
-      getStringBuffersFromDecoder_);
+      stringDecoderZeroCopy_);
 }
 
 } // namespace facebook::nimble

@@ -75,8 +75,8 @@ class IntegerColumnReaderTestAccessor : public IntegerColumnReader {
 // ---------------------------------------------------------------------------
 // Test fixture
 // ---------------------------------------------------------------------------
-// Parameter: true = non-legacy (getStringBuffersFromDecoder=true),
-//            false = legacy (getStringBuffersFromDecoder=false).
+// Parameter: true = non-legacy (stringDecoderZeroCopy=true),
+//            false = legacy (stringDecoderZeroCopy=false).
 class ReadWithVisitorTest : public ::testing::TestWithParam<bool>,
                             public velox::test::VectorTestBase {
  protected:
