@@ -59,6 +59,18 @@ uint32_t getNumBuckets(const MetadataBuffer& metadata) {
   return numBuckets;
 }
 
+std::string_view getMinKey(const MetadataBuffer& metadata) {
+  const auto* minKey = getHashIndexRoot(metadata)->min_key();
+  NIMBLE_CHECK_NOT_NULL(minKey);
+  return minKey->string_view();
+}
+
+std::string_view getMaxKey(const MetadataBuffer& metadata) {
+  const auto* maxKey = getHashIndexRoot(metadata)->max_key();
+  NIMBLE_CHECK_NOT_NULL(maxKey);
+  return maxKey->string_view();
+}
+
 std::unique_ptr<BloomFilter> buildBloomFilter(
     const MetadataBuffer& metadata,
     velox::memory::MemoryPool* pool) {
@@ -88,9 +100,7 @@ std::vector<RowRange> resolveRowRanges(
 
   std::vector<RowRange> result;
   const auto addRange = [&](uint32_t start, uint32_t end) {
-    RowRange range{
-        static_cast<velox::vector_size_t>(start),
-        static_cast<velox::vector_size_t>(end)};
+    RowRange range{start, end};
     if (filterRange.has_value()) {
       range = range.intersect(filterRange.value());
     }
@@ -132,6 +142,8 @@ HashIndex::HashIndex(
       pool_{pool},
       numBuckets_{getNumBuckets(*indexMetadata_)},
       bucketMask_{numBuckets_ - 1},
+      minKey_{getMinKey(*indexMetadata_)},
+      maxKey_{getMaxKey(*indexMetadata_)},
       bloomFilter_{buildBloomFilter(*indexMetadata_, pool_)},
       partitions_{buildPartitionDescriptors(*indexMetadata_, numBuckets_)},
       partitionCache_{
@@ -189,6 +201,14 @@ std::unique_ptr<HashIndex> HashIndex::create(
       pool));
 }
 
+std::string_view HashIndex::minKey() const {
+  return minKey_;
+}
+
+std::string_view HashIndex::maxKey() const {
+  return maxKey_;
+}
+
 IndexLookup::LookupResult HashIndex::lookup(
     const LookupRequest& request) const {
   NIMBLE_CHECK_EQ(
@@ -205,6 +225,13 @@ IndexLookup::LookupResult HashIndex::lookup(
   for (uint32_t i = 0; i < request.size(); ++i) {
     const auto key = request.pointKey(i);
     ++numLookups_;
+
+    // Check min/max key range for fast negative.
+    if (key < minKey_ || key > maxKey_) {
+      ++numMinMaxSkips_;
+      resultOffsets.push_back(rowRanges.size());
+      continue;
+    }
 
     // Check bloom filter for fast negative.
     if (bloomFilter_ != nullptr && !bloomFilter_->testKey(key)) {
@@ -239,6 +266,10 @@ folly::F14FastMap<std::string, velox::RuntimeMetric> HashIndex::stats() const {
   const auto numLookups = numLookups_.load();
   if (numLookups > 0) {
     result.emplace(kNumLookups, velox::RuntimeMetric(numLookups));
+  }
+  const auto numMinMaxSkips = numMinMaxSkips_.load();
+  if (numMinMaxSkips > 0) {
+    result.emplace(kNumMinMaxSkips, velox::RuntimeMetric(numMinMaxSkips));
   }
   const auto numBloomFilterSkips = numBloomFilterSkips_.load();
   if (numBloomFilterSkips > 0) {
@@ -320,101 +351,4 @@ std::shared_ptr<HashIndex::Partition> HashIndex::Partition::create(
   return std::shared_ptr<Partition>(new Partition(
       std::move(metadata), bucketOffsets->data(), keys, rows->data()));
 }
-
-// ---------------------------------------------------------------------------
-// DenseIndexRegistry
-// ---------------------------------------------------------------------------
-
-std::unique_ptr<DenseIndexRegistry> DenseIndexRegistry::create(
-    Section directorySection,
-    LoadMetadataFn loadMetadata,
-    velox::memory::MemoryPool* pool) {
-  const auto* root = flatbuffers::GetRoot<serialization::HashIndexDirectory>(
-      directorySection.content().data());
-  NIMBLE_CHECK_NOT_NULL(root);
-  const auto* indices = root->indices();
-  if (indices == nullptr) {
-    return nullptr;
-  }
-  NIMBLE_CHECK_GT(
-      indices->size(), 0u, "Hash index directory must not be empty");
-  return std::unique_ptr<DenseIndexRegistry>(new DenseIndexRegistry(
-      std::move(directorySection), std::move(loadMetadata), pool));
-}
-
-DenseIndexRegistry::DenseIndexRegistry(
-    Section directorySection,
-    LoadMetadataFn loadMetadata,
-    velox::memory::MemoryPool* pool)
-    : directorySection_{std::move(directorySection)},
-      indexCache_{
-          [this, loadMetadata = std::move(loadMetadata), pool](
-              uint32_t index) -> std::shared_ptr<HashIndex> {
-            const auto& descriptor = indexDescriptors_[index];
-            auto indexMetadata = loadMetadata(descriptor.section);
-            NIMBLE_CHECK_NOT_NULL(indexMetadata);
-            return HashIndex::create(
-                descriptor.columns,
-                std::move(indexMetadata),
-                loadMetadata,
-                pool);
-          },
-          /*pinEntries=*/true} {
-  parseIndexDescriptors();
-}
-
-void DenseIndexRegistry::parseIndexDescriptors() {
-  NIMBLE_CHECK(
-      indexDescriptors_.empty(), "Index descriptors already initialized");
-
-  const auto* root = flatbuffers::GetRoot<serialization::HashIndexDirectory>(
-      directorySection_.content().data());
-  NIMBLE_CHECK_NOT_NULL(root);
-  const auto* indices = root->indices();
-  NIMBLE_CHECK_NOT_NULL(indices);
-
-  indexDescriptors_.reserve(indices->size());
-  for (const auto* indexSection : *indices) {
-    NIMBLE_CHECK_NOT_NULL(indexSection);
-    const auto* columns = indexSection->index_columns();
-    NIMBLE_CHECK_NOT_NULL(columns);
-    NIMBLE_CHECK_GT(columns->size(), 0u, "Hash index must have columns");
-
-    std::vector<std::string> columnNames;
-    columnNames.reserve(columns->size());
-    for (const auto* col : *columns) {
-      columnNames.emplace_back(col->string_view());
-    }
-
-    // Check for duplicate index columns.
-    for (const auto& indexDescriptor : indexDescriptors_) {
-      NIMBLE_CHECK(
-          !columnsMatch(indexDescriptor.columns, columnNames),
-          "Duplicate hash index columns: [{}]",
-          fmt::join(columnNames, ", "));
-    }
-
-    const auto* sectionRef = indexSection->section();
-    NIMBLE_CHECK_NOT_NULL(sectionRef);
-    indexDescriptors_.emplace_back(
-        IndexDescriptor{
-            std::move(columnNames),
-            MetadataSection{
-                sectionRef->offset(),
-                sectionRef->size(),
-                static_cast<CompressionType>(sectionRef->compression_type())}});
-  }
-}
-
-const HashIndex* DenseIndexRegistry::findIndex(
-    const std::vector<std::string>& queryColumns) const {
-  NIMBLE_CHECK(!queryColumns.empty(), "queryColumns must not be empty");
-  for (uint32_t i = 0; i < indexDescriptors_.size(); ++i) {
-    if (columnsMatch(indexDescriptors_[i].columns, queryColumns)) {
-      return indexCache_.getOrCreate(i).get();
-    }
-  }
-  return nullptr;
-}
-
 } // namespace facebook::nimble::index

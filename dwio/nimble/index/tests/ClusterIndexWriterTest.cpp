@@ -155,7 +155,7 @@ TEST_F(ClusterIndexWriterTest, rejectNullKeys) {
 
     NIMBLE_ASSERT_USER_THROW(
         writer->write(batch),
-        "Null value not allowed in key column at index 1: found 1 null(s)");
+        "Null value not allowed in index key column at index 1: found 1 null(s)");
   }
 
   // Test multiple nulls in key column
@@ -176,7 +176,7 @@ TEST_F(ClusterIndexWriterTest, rejectNullKeys) {
 
     NIMBLE_ASSERT_USER_THROW(
         writer->write(batch),
-        "Null value not allowed in key column at index 1: found 3 null(s)");
+        "Null value not allowed in index key column at index 1: found 3 null(s)");
   }
 
   // Test no nulls passes validation
@@ -910,7 +910,9 @@ TEST_P(ClusterIndexWriterDataTest, close) {
   };
   WriteOptionalSectionFn noopWriteFn = [](const std::string&,
                                           std::string_view) {};
-  writer->close(createMetadataFn, noopWriteFn);
+  WriteDataFn noopWriteDataFn = [](const std::vector<std::string_view>&)
+      -> std::pair<uint64_t, uint32_t> { return {0, 0}; };
+  writer->close(noopWriteDataFn, createMetadataFn, noopWriteFn);
 }
 
 TEST_P(ClusterIndexWriterDataTest, writeAfterClose) {
@@ -925,14 +927,15 @@ TEST_P(ClusterIndexWriterDataTest, writeAfterClose) {
   };
   WriteOptionalSectionFn noopWriteFn = [](const std::string&,
                                           std::string_view) {};
-  writer->close(createMetadataFn, noopWriteFn);
+  WriteDataFn noopWriteDataFn = [](const std::vector<std::string_view>&)
+      -> std::pair<uint64_t, uint32_t> { return {0, 0}; };
+  writer->close(noopWriteDataFn, createMetadataFn, noopWriteFn);
 
   NIMBLE_ASSERT_THROW(
-      writer->write(makeInput({4, 5, 6})),
-      "ClusterIndexWriter has been closed");
+      writer->write(makeInput({4, 5, 6})), "IndexWriter has been closed");
   NIMBLE_ASSERT_THROW(
-      writer->close(createMetadataFn, noopWriteFn),
-      "ClusterIndexWriter has been closed");
+      writer->close(noopWriteDataFn, createMetadataFn, noopWriteFn),
+      "close() already called");
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -1084,7 +1087,10 @@ TEST_P(ClusterIndexWriterChunkTest, maxRowsPerKeyChunk) {
 
   // Close the writer and capture the root index data.
   std::string rootIndexData;
+  WriteDataFn noopWriteDataFn2 = [](const std::vector<std::string_view>&)
+      -> std::pair<uint64_t, uint32_t> { return {0, 0}; };
   writer->close(
+      noopWriteDataFn2,
       createMetadataFn,
       [&rootIndexData](const std::string&, std::string_view content) {
         rootIndexData = std::string(content);

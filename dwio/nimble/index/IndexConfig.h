@@ -99,4 +99,23 @@ struct HashIndexConfig {
   uint64_t maxPartitionSizeBytes{0};
 };
 
+/// Configuration for sorted index generation.
+/// A sorted index stores a sorted key stream with embedded row IDs for
+/// point lookups and range scans on unsorted data. Unlike ClusterIndex
+/// (which requires sorted data), this is a secondary index.
+struct SortedIndexConfig {
+  /// Columns forming the composite key.
+  std::vector<std::string> columns;
+  /// The encoding layout for the key stream.
+  /// Only Prefix and Trivial encodings are supported.
+  EncodingLayout encodingLayout{
+      EncodingType::Prefix,
+      {},
+      CompressionType::Uncompressed};
+  /// Maximum rows per chunk within a partition. Controls in-memory search
+  /// granularity — chunks have boundary keys for binary search.
+  /// 0 means no splitting (one chunk per partition).
+  uint64_t maxRowsPerKeyChunk{0};
+};
+
 } // namespace facebook::nimble

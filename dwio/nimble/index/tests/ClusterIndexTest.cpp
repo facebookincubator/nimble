@@ -147,6 +147,9 @@ TEST_F(ClusterIndexTest, basic) {
   EXPECT_EQ(cols[1], "col2");
   EXPECT_EQ(cols[2], "col3");
 
+  EXPECT_EQ(clusterIndex->minKey(), "aaa");
+  EXPECT_EQ(clusterIndex->maxKey(), "eee");
+
   ClusterIndexTestHelper helper(clusterIndex.get());
   auto metadata0 = helper.partitionSection(0);
   EXPECT_EQ(metadata0.offset(), 0);
@@ -212,6 +215,9 @@ TEST_F(ClusterIndexTest, lookup) {
   // Partition 0: rows 0-1 (keys "ccc", "fff")
   // Partition 1: rows 2 (key "iii")
   // Total: 3 rows.
+
+  EXPECT_EQ(clusterIndex->minKey(), "aaa");
+  EXPECT_EQ(clusterIndex->maxKey(), "iii");
 
   // Key before minKey returns full file range.
   {

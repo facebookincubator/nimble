@@ -170,7 +170,7 @@ class NimbleIndexProjector {
  private:
   // A request index paired with its stripe-relative row range.
   struct StripeRowRange {
-    velox::vector_size_t requestIndex{};
+    uint32_t requestIndex{};
     // Stripe-relative row range, already intersected with stripe boundaries.
     RowRange rowRange;
   };
@@ -240,10 +240,9 @@ class NimbleIndexProjector {
   // rowRangeLimit with the stripe boundaries.
   RowRange stripeRowRange(uint32_t stripe, const RowRange& rowRangeLimit)
       const {
-    const auto stripeStart = static_cast<velox::vector_size_t>(
-        readerBase_->tablet().stripeStartRow(stripe));
-    const auto stripeEnd =
-        stripeStart + static_cast<velox::vector_size_t>(stripeRowCount(stripe));
+    const auto stripeStart =
+        static_cast<uint32_t>(readerBase_->tablet().stripeStartRow(stripe));
+    const auto stripeEnd = stripeStart + stripeRowCount(stripe);
     const auto startRow = std::max(rowRangeLimit.startRow, stripeStart);
     const auto endRow = std::min(rowRangeLimit.endRow, stripeEnd);
     if (startRow >= endRow) {

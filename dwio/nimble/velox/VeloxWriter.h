@@ -18,6 +18,7 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/index/ClusterIndexWriter.h"
 #include "dwio/nimble/index/HashIndexWriter.h"
+#include "dwio/nimble/index/SortedIndexWriter.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/velox/FieldWriter.h"
 #include "dwio/nimble/velox/VeloxWriterOptions.h"
@@ -91,10 +92,10 @@ class VeloxWriter {
  private:
   inline bool hasClusterIndex() const;
   inline bool hasHashIndex() const;
+  inline bool hasSortedIndex() const;
 
-  // Adds index keys to all configured index writers (cluster index and hash
-  // index). If barrier is provided, the processing will be added to the barrier
-  // for parallel execution.
+  // Adds index keys to all configured index writers. If barrier is provided,
+  // the processing will be added to the barrier for parallel execution.
   void addIndexKey(
       const velox::VectorPtr& input,
       velox::dwio::common::ExecutorBarrier* barrier = nullptr);
@@ -104,6 +105,10 @@ class VeloxWriter {
       velox::dwio::common::ExecutorBarrier* barrier = nullptr);
 
   void addHashIndexKey(
+      const velox::VectorPtr& input,
+      velox::dwio::common::ExecutorBarrier* barrier = nullptr);
+
+  void addSortedIndexKey(
       const velox::VectorPtr& input,
       velox::dwio::common::ExecutorBarrier* barrier = nullptr);
 
@@ -168,6 +173,7 @@ class VeloxWriter {
   void writeSchema();
   // Finalizes and writes all indexes. Called via TabletWriter close callback.
   void writeIndexes(
+      const WriteDataFn& writeDataFn,
       const CreateMetadataSectionFn& createMetadataFn,
       const WriteOptionalSectionFn& writeMetadataFn);
 
@@ -184,6 +190,7 @@ class VeloxWriter {
   std::unique_ptr<velox::WriteFile> file_;
   const std::unique_ptr<index::ClusterIndexWriter> clusterIndexWriter_;
   const std::unique_ptr<index::HashIndexWriter> hashIndexWriter_;
+  const std::unique_ptr<index::SortedIndexWriter> sortedIndexWriter_;
   const std::unique_ptr<TabletWriter> tabletWriter_;
 
   std::unique_ptr<FieldWriter> rootWriter_;

@@ -58,6 +58,7 @@ class TabletWriter {
   /// before the chunk index root and footer are written. Used by index
   /// writers to finalize and write the root index as an optional section.
   using CloseCallback = std::function<void(
+      const WriteDataFn& writeDataFn,
       const CreateMetadataSectionFn& createMetadataFn,
       const WriteOptionalSectionFn& writeMetadataFn)>;
 

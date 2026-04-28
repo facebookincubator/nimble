@@ -25,7 +25,8 @@
 #include "dwio/nimble/index/ChunkIndex.h"
 #include "dwio/nimble/index/ChunkIndexGroup.h"
 #include "dwio/nimble/index/ClusterIndex.h"
-#include "dwio/nimble/index/HashIndex.h"
+#include "dwio/nimble/index/DenseIndexRegistry.h"
+#include "dwio/nimble/index/IndexLookup.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
@@ -140,7 +141,6 @@ class StripeIdentifier {
 
 using index::ClusterIndex;
 using index::DenseIndexRegistry;
-using index::HashIndex;
 
 /// Provides read access to a tablet written by a TabletWriter.
 /// Example usage to read all streams from stripe 0 in a file:
@@ -259,7 +259,7 @@ class TabletReader {
   }
 
   /// Finds the dense index matching the given columns, or nullptr if none.
-  const index::HashIndex* denseIndex(
+  const index::IndexLookup* denseIndex(
       const std::vector<std::string>& columns) const;
 
   uint64_t fileSize() const {
@@ -543,7 +543,7 @@ class TabletReader {
   // Index related fields.
   std::unique_ptr<ClusterIndex> clusterIndex_;
 
-  // Dense index registry, loaded from "columnar.hash.index" optional section.
+  // Unified dense index registry for hash and sorted indices.
   std::unique_ptr<DenseIndexRegistry> denseIndexRegistry_;
 
   // Chunk index root, loaded from "chunk_index" optional section.

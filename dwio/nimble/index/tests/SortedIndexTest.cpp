@@ -1,0 +1,693 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include <gtest/gtest.h>
+#include <deque>
+
+#include "dwio/nimble/common/tests/GTestUtils.h"
+#include "dwio/nimble/index/IndexConfig.h"
+#include "dwio/nimble/index/IndexLookup.h"
+#include "dwio/nimble/index/SortedIndex.h"
+#include "dwio/nimble/index/SortedIndexWriter.h"
+#include "dwio/nimble/index/tests/SortedIndexTestUtils.h"
+#include "velox/common/base/tests/GTestUtils.h"
+
+#include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/velox/VeloxReader.h"
+#include "dwio/nimble/velox/VeloxWriter.h"
+#include "velox/common/file/FileSystems.h"
+#include "velox/common/memory/Memory.h"
+#include "velox/common/testutil/TempDirectoryPath.h"
+#include "velox/vector/FlatVector.h"
+
+namespace facebook::nimble::index {
+namespace {
+
+class SortedIndexTestBase {
+ protected:
+  static velox::RowTypePtr rowType() {
+    return velox::ROW({{"id", velox::INTEGER()}, {"value", velox::VARCHAR()}});
+  }
+
+  velox::VectorPtr makeBatch(int32_t startRow, int32_t numRows) {
+    auto ids =
+        velox::BaseVector::create(velox::INTEGER(), numRows, leafPool_.get());
+    auto values =
+        velox::BaseVector::create(velox::VARCHAR(), numRows, leafPool_.get());
+    auto* flatIds = ids->asFlatVector<int32_t>();
+    auto* flatValues = values->asFlatVector<velox::StringView>();
+    for (int i = 0; i < numRows; ++i) {
+      const int32_t id = startRow + i;
+      flatIds->set(i, id);
+      valueStrings_.emplace_back("v_" + std::to_string(id));
+      flatValues->set(i, velox::StringView(valueStrings_.back()));
+    }
+    return std::make_shared<velox::RowVector>(
+        leafPool_.get(),
+        rowType(),
+        nullptr,
+        numRows,
+        std::vector<velox::VectorPtr>{ids, values});
+  }
+
+  void writeFile(
+      const std::string& filePath,
+      const velox::RowTypePtr& schema,
+      const std::vector<velox::VectorPtr>& batches,
+      VeloxWriterOptions options) {
+    auto fs = velox::filesystems::getFileSystem(filePath, {});
+    auto file = fs->openFileForWrite(
+        filePath,
+        {.shouldCreateParentDirectories = true,
+         .shouldThrowOnFileAlreadyExists = false});
+
+    VeloxWriter writer(schema, std::move(file), *pool_, std::move(options));
+    for (const auto& batch : batches) {
+      writer.write(batch);
+    }
+    writer.close();
+  }
+
+  void writeFile(
+      const std::string& filePath,
+      const std::vector<velox::VectorPtr>& batches,
+      SortedIndexConfig indexConfig,
+      std::optional<uint64_t> flushSize = std::nullopt) {
+    VeloxWriterOptions options;
+    options.sortedIndexConfigs.push_back(std::move(indexConfig));
+    if (flushSize.has_value()) {
+      options.flushPolicyFactory = [size = flushSize.value()]() {
+        return std::make_unique<StripeRawSizeFlushPolicy>(size);
+      };
+    }
+    writeFile(filePath, rowType(), batches, std::move(options));
+  }
+
+  std::shared_ptr<TabletReader> openTablet(const std::string& filePath) {
+    auto fs = velox::filesystems::getFileSystem(filePath, {});
+    auto readFile = fs->openFileForRead(filePath);
+    return TabletReader::create(std::move(readFile), leafPool_.get(), {});
+  }
+
+  std::string encodeLookupKey(
+      const std::vector<std::string>& columns,
+      int32_t idValue) {
+    auto encoder = velox::serializer::KeyEncoder::create(
+        columns,
+        rowType(),
+        std::vector<velox::core::SortOrder>(
+            columns.size(), velox::core::SortOrder{true, false}),
+        leafPool_.get());
+
+    auto idCol =
+        velox::BaseVector::create(velox::INTEGER(), 1, leafPool_.get());
+    idCol->asFlatVector<int32_t>()->set(0, idValue);
+
+    auto valStr = "v_" + std::to_string(idValue);
+    auto valCol =
+        velox::BaseVector::create(velox::VARCHAR(), 1, leafPool_.get());
+    valCol->asFlatVector<velox::StringView>()->set(
+        0, velox::StringView(valStr));
+
+    auto lookupRow = std::make_shared<velox::RowVector>(
+        leafPool_.get(),
+        rowType(),
+        nullptr,
+        1,
+        std::vector<velox::VectorPtr>{idCol, valCol});
+
+    Buffer buffer(*leafPool_);
+    std::vector<std::string_view> encodedKeys;
+    encoder->encode(lookupRow, encodedKeys, [&buffer](size_t size) {
+      return buffer.reserve(size);
+    });
+    return std::string(encodedKeys[0]);
+  }
+
+  IndexLookup::LookupResult pointLookup(
+      const IndexLookup* index,
+      const std::vector<std::string>& columns,
+      int32_t idValue) {
+    auto key = encodeLookupKey(columns, idValue);
+    return index->lookup(
+        IndexLookup::LookupRequest::pointLookup({std::move(key)}));
+  }
+
+  IndexLookup::LookupResult rangeScan(
+      const IndexLookup* index,
+      const std::vector<std::string>& columns,
+      int32_t lowerValue,
+      int32_t upperValue) {
+    auto lowerKey = encodeLookupKey(columns, lowerValue);
+    auto upperKey = encodeLookupKey(columns, upperValue);
+    return index->lookup(
+        IndexLookup::LookupRequest::rangeScan(
+            {velox::serializer::EncodedKeyBounds{
+                std::move(lowerKey), std::move(upperKey)}}));
+  }
+
+  std::string tempFilePath(const std::string& name) {
+    return tempDir_->getPath() + "/" + name;
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> pool_;
+  std::shared_ptr<velox::memory::MemoryPool> leafPool_;
+  std::shared_ptr<velox::common::testutil::TempDirectoryPath> tempDir_;
+  std::deque<std::string> valueStrings_;
+};
+
+class SortedIndexTest : public SortedIndexTestBase, public ::testing::Test {
+ protected:
+  static void SetUpTestCase() {
+    velox::filesystems::registerLocalFileSystem();
+    velox::memory::MemoryManager::testingSetInstance({});
+  }
+
+  void SetUp() override {
+    pool_ = velox::memory::memoryManager()->addRootPool("SortedIndexTest");
+    leafPool_ = pool_->addLeafChild("leaf");
+    tempDir_ = velox::common::testutil::TempDirectoryPath::create();
+  }
+};
+
+struct SortedIndexTestParam {
+  std::vector<std::string> columns;
+  EncodingType encodingType{EncodingType::Prefix};
+
+  std::string debugString() const {
+    return fmt::format(
+        "columns: [{}], encoding: {}", fmt::join(columns, ", "), encodingType);
+  }
+};
+
+class SortedIndexParamTest
+    : public SortedIndexTestBase,
+      public ::testing::TestWithParam<SortedIndexTestParam> {
+ protected:
+  static void SetUpTestCase() {
+    velox::filesystems::registerLocalFileSystem();
+    velox::memory::MemoryManager::testingSetInstance({});
+  }
+
+  void SetUp() override {
+    pool_ = velox::memory::memoryManager()->addRootPool("SortedIndexParamTest");
+    leafPool_ = pool_->addLeafChild("leaf");
+    tempDir_ = velox::common::testutil::TempDirectoryPath::create();
+  }
+
+  const std::vector<std::string>& columns() const {
+    return GetParam().columns;
+  }
+
+  SortedIndexConfig indexConfig() const {
+    const auto encodingType = GetParam().encodingType;
+    auto layout = encodingType == EncodingType::Prefix
+        ? EncodingLayout{EncodingType::Prefix, {}, CompressionType::Uncompressed}
+        : EncodingLayout{
+              EncodingType::Trivial,
+              {},
+              CompressionType::Uncompressed,
+              {EncodingLayout{
+                  EncodingType::Trivial, {}, CompressionType::Uncompressed}}};
+    return SortedIndexConfig{
+        .columns = columns(), .encodingLayout = std::move(layout)};
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    SingleAndCompositeKey,
+    SortedIndexParamTest,
+    testing::Values(
+        SortedIndexTestParam{{"id"}, EncodingType::Prefix},
+        SortedIndexTestParam{{"id"}, EncodingType::Trivial},
+        SortedIndexTestParam{{"id", "value"}, EncodingType::Prefix},
+        SortedIndexTestParam{{"id", "value"}, EncodingType::Trivial}),
+    [](const testing::TestParamInfo<SortedIndexTestParam>& info) {
+      return fmt::format(
+          "columns_{}_{}",
+          fmt::join(info.param.columns, "_"),
+          info.param.encodingType);
+    });
+
+TEST_P(SortedIndexParamTest, roundTrip) {
+  std::vector<velox::VectorPtr> batches;
+  batches.push_back(makeBatch(0, 100));
+
+  const auto filePath = tempFilePath("round_trip");
+  writeFile(filePath, batches, indexConfig());
+
+  auto tablet = openTablet(filePath);
+  auto* sortedIdx = tablet->denseIndex(columns());
+  ASSERT_NE(sortedIdx, nullptr);
+  EXPECT_EQ(sortedIdx->type(), IndexType::Sorted);
+  EXPECT_EQ(sortedIdx->indexColumns(), columns());
+
+  // Verify min/max keys are populated and ordered.
+  const auto minKey = sortedIdx->minKey();
+  const auto maxKey = sortedIdx->maxKey();
+  EXPECT_FALSE(minKey.empty());
+  EXPECT_FALSE(maxKey.empty());
+  EXPECT_LE(minKey, maxKey);
+
+  // Min key should match the encoded key for id=0, max for id=99.
+  EXPECT_EQ(minKey, encodeLookupKey(columns(), 0));
+  EXPECT_EQ(maxKey, encodeLookupKey(columns(), 99));
+}
+
+TEST_P(SortedIndexParamTest, pointLookup) {
+  std::vector<velox::VectorPtr> batches;
+  batches.push_back(makeBatch(0, 50));
+
+  const auto filePath = tempFilePath("point_lookup");
+  writeFile(filePath, batches, indexConfig());
+
+  auto tablet = openTablet(filePath);
+  auto* sortedIdx = tablet->denseIndex(columns());
+  ASSERT_NE(sortedIdx, nullptr);
+
+  {
+    auto result = pointLookup(sortedIdx, columns(), 20);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 1);
+  }
+
+  {
+    auto result = pointLookup(sortedIdx, columns(), 999);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 0);
+  }
+
+  const auto stats = sortedIdx->stats();
+  EXPECT_EQ(stats.at(SortedIndex::kNumPointLookups).sum, 2);
+  EXPECT_EQ(stats.count(SortedIndex::kNumRangeScans), 0);
+  EXPECT_EQ(stats.at(SortedIndex::kNumMinMaxSkips).sum, 1);
+  EXPECT_EQ(stats.at(SortedIndex::kNumMatchedRows).sum, 1);
+}
+
+TEST_P(SortedIndexParamTest, rangeScan) {
+  std::vector<velox::VectorPtr> batches;
+  batches.push_back(makeBatch(0, 50));
+
+  const auto filePath = tempFilePath("range_scan");
+  writeFile(filePath, batches, indexConfig());
+
+  auto tablet = openTablet(filePath);
+  auto* sortedIdx = tablet->denseIndex(columns());
+  ASSERT_NE(sortedIdx, nullptr);
+
+  // Range [10, 20) should return 10 rows.
+  {
+    auto result = rangeScan(sortedIdx, columns(), 10, 20);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 10);
+  }
+
+  // Range [100, 200) is beyond max key — skipped by min/max filter.
+  {
+    auto result = rangeScan(sortedIdx, columns(), 100, 200);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 0);
+  }
+
+  const auto stats = sortedIdx->stats();
+  EXPECT_EQ(stats.count(SortedIndex::kNumPointLookups), 0);
+  EXPECT_EQ(stats.at(SortedIndex::kNumRangeScans).sum, 2);
+  EXPECT_EQ(stats.at(SortedIndex::kNumMinMaxSkips).sum, 1);
+  EXPECT_EQ(stats.at(SortedIndex::kNumMatchedRows).sum, 10);
+}
+
+TEST_P(SortedIndexParamTest, rangeScanExclusiveUpperBound) {
+  std::vector<velox::VectorPtr> batches;
+  batches.push_back(makeBatch(0, 10));
+
+  const auto filePath = tempFilePath("range_exclusive");
+  writeFile(filePath, batches, indexConfig());
+
+  auto tablet = openTablet(filePath);
+  auto* sortedIdx = tablet->denseIndex(columns());
+  ASSERT_NE(sortedIdx, nullptr);
+
+  // Range [0, 10) should return all 10 rows.
+  {
+    auto result = rangeScan(sortedIdx, columns(), 0, 10);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 10);
+  }
+
+  // Range [0, 5) should return 5 rows.
+  {
+    auto result = rangeScan(sortedIdx, columns(), 0, 5);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 5);
+  }
+
+  // Range [5, 5) should return 0 rows (empty range).
+  {
+    auto result = rangeScan(sortedIdx, columns(), 5, 5);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 0);
+  }
+}
+
+TEST_P(SortedIndexParamTest, multipleStripes) {
+  std::vector<velox::VectorPtr> batches;
+  for (int b = 0; b < 5; ++b) {
+    batches.push_back(makeBatch(b * 20, 20));
+  }
+
+  const auto filePath = tempFilePath("multi_stripe");
+  writeFile(filePath, batches, indexConfig(), /*flushSize=*/256);
+
+  auto tablet = openTablet(filePath);
+  auto* sortedIdx = tablet->denseIndex(columns());
+  ASSERT_NE(sortedIdx, nullptr);
+  EXPECT_GT(tablet->stripeCount(), 1);
+
+  auto result = pointLookup(sortedIdx, columns(), 50);
+  ASSERT_EQ(result.size(), 1);
+  EXPECT_FALSE(result[0].empty());
+}
+
+TEST_F(SortedIndexTest, noSortedIndexConfig) {
+  auto noIndexType = velox::ROW({{"x", velox::INTEGER()}});
+
+  auto col = velox::BaseVector::create(velox::INTEGER(), 10, leafPool_.get());
+  auto* flat = col->asFlatVector<int32_t>();
+  for (int i = 0; i < 10; ++i) {
+    flat->set(i, i);
+  }
+  auto batch = std::make_shared<velox::RowVector>(
+      leafPool_.get(),
+      noIndexType,
+      nullptr,
+      10,
+      std::vector<velox::VectorPtr>{col});
+
+  const auto filePath = tempFilePath("no_index");
+  writeFile(filePath, noIndexType, {batch}, VeloxWriterOptions{});
+
+  auto tablet = openTablet(filePath);
+  EXPECT_EQ(tablet->denseIndex({"x"}), nullptr);
+}
+
+TEST_F(SortedIndexTest, multipleIndices) {
+  std::vector<velox::VectorPtr> batches;
+  batches.push_back(makeBatch(0, 20));
+
+  const auto filePath = tempFilePath("multi_indices");
+  {
+    VeloxWriterOptions options;
+    options.sortedIndexConfigs.push_back(SortedIndexConfig{.columns = {"id"}});
+    options.sortedIndexConfigs.push_back(
+        SortedIndexConfig{.columns = {"id", "value"}});
+    writeFile(filePath, rowType(), batches, std::move(options));
+  }
+
+  auto tablet = openTablet(filePath);
+
+  auto* index0 = tablet->denseIndex({"id"});
+  ASSERT_NE(index0, nullptr);
+  EXPECT_EQ(index0->indexColumns(), std::vector<std::string>{"id"});
+
+  auto* index1 = tablet->denseIndex({"id", "value"});
+  ASSERT_NE(index1, nullptr);
+  const std::vector<std::string> expected{"id", "value"};
+  EXPECT_EQ(index1->indexColumns(), expected);
+
+  EXPECT_EQ(tablet->denseIndex({"value"}), nullptr);
+  EXPECT_EQ(tablet->denseIndex({"value", "id"}), nullptr);
+}
+
+TEST_P(SortedIndexParamTest, duplicateKeys) {
+  // Write data with duplicate id values to verify they are all found.
+  auto ids = velox::BaseVector::create(velox::INTEGER(), 6, leafPool_.get());
+  auto values = velox::BaseVector::create(velox::VARCHAR(), 6, leafPool_.get());
+  auto* flatIds = ids->asFlatVector<int32_t>();
+  auto* flatValues = values->asFlatVector<velox::StringView>();
+  // ids: [1, 2, 1, 3, 2, 1]
+  std::vector<int32_t> idVals = {1, 2, 1, 3, 2, 1};
+  for (int i = 0; i < 6; ++i) {
+    flatIds->set(i, idVals[i]);
+    valueStrings_.emplace_back("v_" + std::to_string(idVals[i]));
+    flatValues->set(i, velox::StringView(valueStrings_.back()));
+  }
+  auto batch = std::make_shared<velox::RowVector>(
+      leafPool_.get(),
+      rowType(),
+      nullptr,
+      6,
+      std::vector<velox::VectorPtr>{ids, values});
+
+  const auto filePath = tempFilePath("duplicate_keys");
+  VeloxWriterOptions options;
+  options.sortedIndexConfigs.push_back(indexConfig());
+  writeFile(filePath, rowType(), {batch}, std::move(options));
+
+  auto tablet = openTablet(filePath);
+  auto* sortedIdx = tablet->denseIndex(columns());
+  ASSERT_NE(sortedIdx, nullptr);
+
+  // Key=1 appears 3 times.
+  {
+    auto result = pointLookup(sortedIdx, columns(), 1);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 3);
+  }
+
+  // Key=2 appears 2 times.
+  {
+    auto result = pointLookup(sortedIdx, columns(), 2);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 2);
+  }
+
+  // Key=3 appears 1 time.
+  {
+    auto result = pointLookup(sortedIdx, columns(), 3);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 1);
+  }
+
+  // Key=999 doesn't exist.
+  {
+    auto result = pointLookup(sortedIdx, columns(), 999);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 0);
+  }
+
+  // Range [1, 3) should return keys 1 and 2: 3 + 2 = 5 rows.
+  {
+    auto result = rangeScan(sortedIdx, columns(), 1, 3);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 5);
+  }
+
+  // Range [2, 4) should return keys 2 and 3: 2 + 1 = 3 rows.
+  {
+    auto result = rangeScan(sortedIdx, columns(), 2, 4);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 3);
+  }
+
+  // Range [1, 4) should return all 6 rows.
+  {
+    auto result = rangeScan(sortedIdx, columns(), 1, 4);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 6);
+  }
+
+  // Range [100, 200) is beyond max — empty.
+  {
+    auto result = rangeScan(sortedIdx, columns(), 100, 200);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 0);
+  }
+}
+
+TEST_F(SortedIndexTest, duplicateKeysAcrossChunks) {
+  // Write data where duplicate keys span chunk boundaries.
+  // Use maxRowsPerKeyChunk=3 so that 6 entries with the same key span 2 chunks.
+  const int32_t numRows = 10;
+  auto ids =
+      velox::BaseVector::create(velox::INTEGER(), numRows, leafPool_.get());
+  auto values =
+      velox::BaseVector::create(velox::VARCHAR(), numRows, leafPool_.get());
+  auto* flatIds = ids->asFlatVector<int32_t>();
+  auto* flatValues = values->asFlatVector<velox::StringView>();
+  // ids: [1, 1, 1, 1, 1, 1, 2, 2, 3, 3]
+  // After sorting by key, chunk boundary at row 3 splits key=1 across chunks.
+  const std::vector<int32_t> idVals = {1, 1, 1, 1, 1, 1, 2, 2, 3, 3};
+  for (int i = 0; i < numRows; ++i) {
+    flatIds->set(i, idVals[i]);
+    valueStrings_.emplace_back("v_" + std::to_string(idVals[i]));
+    flatValues->set(i, velox::StringView(valueStrings_.back()));
+  }
+  auto batch = std::make_shared<velox::RowVector>(
+      leafPool_.get(),
+      rowType(),
+      nullptr,
+      numRows,
+      std::vector<velox::VectorPtr>{ids, values});
+
+  const auto filePath = tempFilePath("dup_across_chunks");
+  VeloxWriterOptions options;
+  SortedIndexConfig config{.columns = {"id"}, .maxRowsPerKeyChunk = 3};
+  options.sortedIndexConfigs.push_back(std::move(config));
+  writeFile(filePath, rowType(), {batch}, std::move(options));
+
+  auto tablet = openTablet(filePath);
+  auto* sortedIdx = tablet->denseIndex({"id"});
+  ASSERT_NE(sortedIdx, nullptr);
+
+  // Key=1 appears 6 times, spanning at least 2 chunks (3 entries per chunk).
+  {
+    auto result = pointLookup(sortedIdx, {"id"}, 1);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 6);
+  }
+
+  // Key=2 appears 2 times.
+  {
+    auto result = pointLookup(sortedIdx, {"id"}, 2);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 2);
+  }
+
+  // Key=3 appears 2 times.
+  {
+    auto result = pointLookup(sortedIdx, {"id"}, 3);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 2);
+  }
+
+  // Non-existent key.
+  {
+    auto result = pointLookup(sortedIdx, {"id"}, 999);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 0);
+  }
+
+  // Range [1, 2) spans 2 chunks of key=1: 6 rows.
+  {
+    auto result = rangeScan(sortedIdx, {"id"}, 1, 2);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 6);
+  }
+
+  // Range [1, 3) includes keys 1 and 2: 6 + 2 = 8 rows.
+  {
+    auto result = rangeScan(sortedIdx, {"id"}, 1, 3);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 8);
+  }
+
+  // Range [1, 4) includes all keys: 6 + 2 + 2 = 10 rows.
+  {
+    auto result = rangeScan(sortedIdx, {"id"}, 1, 4);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 10);
+  }
+
+  // Range [2, 4) includes keys 2 and 3: 2 + 2 = 4 rows.
+  {
+    auto result = rangeScan(sortedIdx, {"id"}, 2, 4);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 4);
+  }
+
+  // Range beyond max — empty.
+  {
+    auto result = rangeScan(sortedIdx, {"id"}, 100, 200);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 0);
+  }
+}
+
+TEST_F(SortedIndexTest, createWithEmptyConfigs) {
+  auto writer = SortedIndexWriter::create({}, rowType(), leafPool_.get());
+  EXPECT_EQ(writer, nullptr);
+}
+
+TEST_F(SortedIndexTest, createWithNullPool) {
+  NIMBLE_ASSERT_THROW(
+      SortedIndexWriter::create(
+          {SortedIndexConfig{.columns = {"id"}}}, rowType(), nullptr),
+      "memory pool must not be null");
+}
+
+TEST_F(SortedIndexTest, createWithEmptyColumns) {
+  NIMBLE_ASSERT_THROW(
+      SortedIndexWriter::create(
+          {SortedIndexConfig{.columns = {}}}, rowType(), leafPool_.get()),
+      "Sorted index must have at least one column");
+}
+
+TEST_F(SortedIndexTest, createWithNonExistentColumn) {
+  VELOX_ASSERT_USER_THROW(
+      SortedIndexWriter::create(
+          {SortedIndexConfig{.columns = {"non_existent"}}},
+          rowType(),
+          leafPool_.get()),
+      "Field not found");
+}
+
+TEST_F(SortedIndexTest, createWithDuplicateColumns) {
+  NIMBLE_ASSERT_THROW(
+      SortedIndexWriter::create(
+          {SortedIndexConfig{.columns = {"id"}},
+           SortedIndexConfig{.columns = {"id"}}},
+          rowType(),
+          leafPool_.get()),
+      "Duplicate sorted index columns");
+
+  // Same columns in different order are allowed.
+  auto writer = SortedIndexWriter::create(
+      {SortedIndexConfig{.columns = {"id", "value"}},
+       SortedIndexConfig{.columns = {"value", "id"}}},
+      rowType(),
+      leafPool_.get());
+  EXPECT_NE(writer, nullptr);
+}
+
+TEST_F(SortedIndexTest, rowCountOverflow) {
+  auto overflowType = velox::ROW({{"key", velox::INTEGER()}});
+
+  SortedIndexConfig config{.columns = {"key"}};
+  auto writer =
+      SortedIndexWriter::create({config}, overflowType, leafPool_.get());
+  ASSERT_NE(writer, nullptr);
+
+  test::SortedIndexWriterTestHelper helper(writer.get());
+  helper.setNumRows(std::numeric_limits<uint32_t>::max() - 5);
+
+  auto keys = velox::BaseVector::create(velox::INTEGER(), 10, leafPool_.get());
+  auto* flatKeys = keys->asFlatVector<int32_t>();
+  for (int i = 0; i < 10; ++i) {
+    flatKeys->set(i, i);
+  }
+  auto batch = std::make_shared<velox::RowVector>(
+      leafPool_.get(),
+      overflowType,
+      nullptr,
+      10,
+      std::vector<velox::VectorPtr>{keys});
+
+  NIMBLE_ASSERT_USER_THROW(
+      writer->write(batch), "Sorted index row count exceeds uint32 limit");
+}
+
+} // namespace
+} // namespace facebook::nimble::index

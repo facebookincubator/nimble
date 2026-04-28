@@ -404,13 +404,21 @@ void TabletWriter::invokeCloseCallback() {
   if (options_.closeCallback == nullptr) {
     return;
   }
+  auto writeDataFn = [this](const std::vector<std::string_view>& segments) {
+    const auto offset = file_->size();
+    for (const auto& segment : segments) {
+      writeWithChecksum(segment);
+    }
+    return std::make_pair(
+        offset, static_cast<uint32_t>(file_->size() - offset));
+  };
   auto createMetadataFn = [this](std::string_view metadata) {
     return createMetadataSection(metadata);
   };
   auto writeMetadataFn = [this](std::string name, std::string_view content) {
     writeOptionalSection(std::move(name), content);
   };
-  options_.closeCallback(createMetadataFn, writeMetadataFn);
+  options_.closeCallback(writeDataFn, createMetadataFn, writeMetadataFn);
 }
 
 void TabletWriter::invokeStripeGroupFlushCallback() {

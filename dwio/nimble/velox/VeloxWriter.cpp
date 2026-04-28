@@ -680,6 +680,10 @@ VeloxWriter::VeloxWriter(
           context_->options().hashIndexConfigs,
           type,
           &(*context_->bufferMemoryPool()))},
+      sortedIndexWriter_{index::SortedIndexWriter::create(
+          context_->options().sortedIndexConfigs,
+          type,
+          &(*context_->bufferMemoryPool()))},
       tabletWriter_{TabletWriter::create(
           file_.get(),
           *encodingMemoryPool_,
@@ -705,9 +709,10 @@ VeloxWriter::VeloxWriter(
                      })
                : nullptr,
            .closeCallback = [this](
+                                const WriteDataFn& writeDataFn,
                                 const CreateMetadataSectionFn& createMetadataFn,
                                 const WriteOptionalSectionFn& writeMetadataFn) {
-             writeIndexes(createMetadataFn, writeMetadataFn);
+             writeIndexes(writeDataFn, createMetadataFn, writeMetadataFn);
            }})} {
   NIMBLE_CHECK_NOT_NULL(file_);
 
@@ -878,11 +883,16 @@ bool VeloxWriter::hasHashIndex() const {
   return hashIndexWriter_ != nullptr;
 }
 
+bool VeloxWriter::hasSortedIndex() const {
+  return sortedIndexWriter_ != nullptr;
+}
+
 void VeloxWriter::addIndexKey(
     const velox::VectorPtr& input,
     velox::dwio::common::ExecutorBarrier* barrier) {
   addClusterIndexKey(input, barrier);
   addHashIndexKey(input, barrier);
+  addSortedIndexKey(input, barrier);
 }
 
 void VeloxWriter::addClusterIndexKey(
@@ -911,14 +921,31 @@ void VeloxWriter::addHashIndexKey(
   }
 }
 
+void VeloxWriter::addSortedIndexKey(
+    const velox::VectorPtr& input,
+    velox::dwio::common::ExecutorBarrier* barrier) {
+  if (!hasSortedIndex()) {
+    return;
+  }
+  if (barrier != nullptr) {
+    barrier->add([&]() { sortedIndexWriter_->write(input); });
+  } else {
+    sortedIndexWriter_->write(input);
+  }
+}
+
 void VeloxWriter::writeIndexes(
+    const WriteDataFn& writeDataFn,
     const CreateMetadataSectionFn& createMetadataFn,
     const WriteOptionalSectionFn& writeMetadataFn) {
   if (hasHashIndex()) {
-    hashIndexWriter_->close(createMetadataFn, writeMetadataFn);
+    hashIndexWriter_->close(writeDataFn, createMetadataFn, writeMetadataFn);
+  }
+  if (hasSortedIndex()) {
+    sortedIndexWriter_->close(writeDataFn, createMetadataFn, writeMetadataFn);
   }
   if (hasClusterIndex()) {
-    clusterIndexWriter_->close(createMetadataFn, writeMetadataFn);
+    clusterIndexWriter_->close(writeDataFn, createMetadataFn, writeMetadataFn);
   }
 }
 

@@ -461,7 +461,7 @@ void SelectiveNimbleIndexReader::splitStripeRowRanges(
   // Each segment is read separately, and requests reference their segments.
 
   // Collect all unique boundary points.
-  std::vector<vector_size_t> boundaries;
+  std::vector<uint32_t> boundaries;
   boundaries.reserve(requestRanges.size() * 2);
   for (const auto& [_, range] : requestRanges) {
     boundaries.push_back(range.startRow);
@@ -644,7 +644,8 @@ void SelectiveNimbleIndexReader::trackStripeSegmentOutputRefs(
       }
 
       state.outputRefs.emplace_back(
-          RequestState::OutputReference{outputIndex, RowRange{0, rowsToAdd}});
+          RequestState::OutputReference{
+              outputIndex, RowRange{0, static_cast<uint32_t>(rowsToAdd)}});
       outputSegments_[outputIndex].addRef();
       state.outputRows += rowsToAdd;
     }

@@ -41,6 +41,9 @@ enum class IndexType {
   /// Hash-based index for point lookups on unsorted data. Maps composite key
   /// columns to exact row numbers.
   Hash,
+  /// Sorted key stream index for point lookups and range scans on unsorted
+  /// data. Stores sorted encoded_key || row_id entries.
+  Sorted,
 };
 
 std::string toString(IndexType indexType);
@@ -204,6 +207,12 @@ class IndexLookup {
   /// Results are indexed by input key position: result[i] returns the
   /// RowRanges for request.keyBounds()[i].
   virtual LookupResult lookup(const LookupRequest& request) const = 0;
+
+  /// Returns the minimum key in this index.
+  virtual std::string_view minKey() const = 0;
+
+  /// Returns the maximum key in this index.
+  virtual std::string_view maxKey() const = 0;
 
   /// Returns runtime statistics accumulated during lookups.
   virtual folly::F14FastMap<std::string, velox::RuntimeMetric> stats() const {

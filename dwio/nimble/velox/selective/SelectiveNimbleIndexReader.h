@@ -131,14 +131,12 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
     void dropRef();
   };
 
-  velox::vector_size_t stripeRowOffset(uint32_t stripe) const {
-    return static_cast<velox::vector_size_t>(
-        readerBase_->tablet().stripeStartRow(stripe));
+  uint32_t stripeRowOffset(uint32_t stripe) const {
+    return static_cast<uint32_t>(readerBase_->tablet().stripeStartRow(stripe));
   }
 
-  velox::vector_size_t stripeRowCount(uint32_t stripe) const {
-    return static_cast<velox::vector_size_t>(
-        readerBase_->tablet().stripeRowCount(stripe));
+  uint32_t stripeRowCount(uint32_t stripe) const {
+    return static_cast<uint32_t>(readerBase_->tablet().stripeRowCount(stripe));
   }
 
   // Computes the stripe-relative row range by intersecting the file-level
@@ -146,8 +144,7 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
   RowRange stripeRowRange(uint32_t stripe, const RowRange& rowRangeLimit)
       const {
     const auto stripeStart = stripeRowOffset(stripe);
-    const auto stripeEnd =
-        stripeStart + static_cast<velox::vector_size_t>(stripeRowCount(stripe));
+    const auto stripeEnd = stripeStart + stripeRowCount(stripe);
     const auto startRow = std::max(rowRangeLimit.startRow, stripeStart);
     const auto endRow = std::min(rowRangeLimit.endRow, stripeEnd);
     if (startRow >= endRow) {

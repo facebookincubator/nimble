@@ -16,28 +16,31 @@
 
 #pragma once
 
+#include <cstdint>
+
 #include <fmt/format.h>
 #include <folly/hash/Hash.h>
-
-#include "velox/vector/TypeAliases.h"
 
 namespace facebook::nimble {
 
 /// Row range within a stripe [startRow, endRow).
 struct RowRange {
-  velox::vector_size_t startRow{0};
-  velox::vector_size_t endRow{0};
+  uint32_t startRow{0};
+  uint32_t endRow{0};
 
   RowRange() = default;
-  RowRange(velox::vector_size_t start, velox::vector_size_t end)
-      : startRow(start), endRow(end) {}
+  RowRange(uint32_t start, uint32_t end) : startRow(start), endRow(end) {}
 
-  inline velox::vector_size_t numRows() const {
+  inline uint32_t numRows() const {
     return endRow - startRow;
   }
 
   inline bool empty() const {
     return startRow >= endRow;
+  }
+
+  inline bool contains(uint32_t row) const {
+    return row >= startRow && row < endRow;
   }
 
   inline bool contains(const RowRange& other) const {

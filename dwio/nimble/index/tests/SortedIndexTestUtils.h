@@ -13,27 +13,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/index/IndexLookup.h"
 
-#include "dwio/nimble/common/Exceptions.h"
+#pragma once
 
-namespace facebook::nimble::index {
+#include "dwio/nimble/index/SortedIndexWriter.h"
 
-std::string toString(IndexType indexType) {
-  switch (indexType) {
-    case IndexType::Cluster:
-      return "Cluster";
-    case IndexType::Hash:
-      return "Hash";
-    case IndexType::Sorted:
-      return "Sorted";
-    default:
-      NIMBLE_UNREACHABLE("Unknown IndexType: {}", static_cast<int>(indexType));
+namespace facebook::nimble::index::test {
+
+class SortedIndexWriterTestHelper {
+ public:
+  explicit SortedIndexWriterTestHelper(SortedIndexWriter* writer)
+      : writer_(writer) {}
+
+  void setNumRows(uint32_t rows) {
+    writer_->numRows_ = rows;
   }
-}
 
-std::ostream& operator<<(std::ostream& out, IndexType indexType) {
-  return out << toString(indexType);
-}
+ private:
+  SortedIndexWriter* const writer_;
+};
 
-} // namespace facebook::nimble::index
+} // namespace facebook::nimble::index::test

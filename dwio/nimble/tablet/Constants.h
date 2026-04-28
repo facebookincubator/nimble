@@ -37,5 +37,6 @@ constexpr std::string_view kVectorizedStatsSection =
 constexpr std::string_view kClusterIndexSection = "columnar.cluster.index";
 constexpr std::string_view kChunkIndexSection = "columnar.chunk.index";
 constexpr std::string_view kHashIndexSection = "columnar.hash.index";
+constexpr std::string_view kSortedIndexSection = "columnar.sorted.index";
 
 } // namespace facebook::nimble

@@ -51,6 +51,14 @@ TEST(RowRangeTest, contains) {
   EXPECT_FALSE(outer.contains(RowRange(5, 20)));
   EXPECT_FALSE(outer.contains(RowRange(30, 60)));
   EXPECT_FALSE(outer.contains(RowRange(5, 60)));
+
+  // Single row containment.
+  EXPECT_TRUE(outer.contains(10u));
+  EXPECT_TRUE(outer.contains(30u));
+  EXPECT_TRUE(outer.contains(49u));
+  EXPECT_FALSE(outer.contains(9u));
+  EXPECT_FALSE(outer.contains(50u));
+  EXPECT_FALSE(outer.contains(100u));
 }
 
 TEST(RowRangeTest, intersect) {

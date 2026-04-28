@@ -64,12 +64,18 @@ class HashIndex : public IndexLookup {
       "hashIndex.numBloomFilterSkips"};
   // Number of row ranges returned across all lookups.
   static constexpr std::string_view kNumMatchedRows{"hashIndex.numMatchedRows"};
+  // Number of key lookups skipped by the min/max key check.
+  static constexpr std::string_view kNumMinMaxSkips{"hashIndex.numMinMaxSkips"};
 
   const std::vector<std::string>& indexColumns() const override {
     return columns_;
   }
 
   LookupResult lookup(const LookupRequest& request) const override;
+
+  std::string_view minKey() const override;
+
+  std::string_view maxKey() const override;
 
   folly::F14FastMap<std::string, velox::RuntimeMetric> stats() const override;
 
@@ -141,6 +147,8 @@ class HashIndex : public IndexLookup {
 
   const uint32_t numBuckets_;
   const uint32_t bucketMask_;
+  const std::string_view minKey_;
+  const std::string_view maxKey_;
 
   // Constructed from FlatBuffer data during initialization.
   const std::unique_ptr<BloomFilter> bloomFilter_;
@@ -151,59 +159,9 @@ class HashIndex : public IndexLookup {
   mutable MetadataCache<uint32_t, Partition> partitionCache_;
 
   mutable std::atomic_uint64_t numLookups_{0};
+  mutable std::atomic_uint64_t numMinMaxSkips_{0};
   mutable std::atomic_uint64_t numBloomFilterSkips_{0};
   mutable std::atomic_uint64_t numMatchedRows_{0};
-};
-
-/// Registry of hash indices for a Nimble file.
-///
-/// Loaded from the "columnar.hash.index" optional section. Owns individual
-/// HashIndex objects, each covering a different set of composite key columns.
-/// TabletReader owns this registry and callers look up the appropriate
-/// HashIndex by column names.
-class DenseIndexRegistry {
- public:
-  /// Creates a DenseIndexRegistry from the serialized directory section.
-  ///
-  /// @param directorySection The section containing the HashIndexDirectory
-  ///        with HashIndexSection entries.
-  /// @param loadMetadata Callback to load a MetadataSection from the file.
-  /// @param pool Memory pool for bloom filter data allocation.
-  /// @return A unique pointer to the registry, or nullptr if the section
-  ///         contains no indices.
-  static std::unique_ptr<DenseIndexRegistry> create(
-      Section directorySection,
-      LoadMetadataFn loadMetadata,
-      velox::memory::MemoryPool* pool);
-
-  /// Returns the number of hash indices in this registry.
-  size_t numIndices() const {
-    return indexDescriptors_.size();
-  }
-
-  /// Finds the hash index matching the given columns (lazy loaded).
-  /// Returns nullptr if no index matches.
-  const HashIndex* findIndex(
-      const std::vector<std::string>& queryColumns) const;
-
- private:
-  // Lightweight descriptor parsed from the directory section.
-  struct IndexDescriptor {
-    std::vector<std::string> columns;
-    MetadataSection section;
-  };
-
-  DenseIndexRegistry(
-      Section directorySection,
-      LoadMetadataFn loadMetadata,
-      velox::memory::MemoryPool* pool);
-
-  // Parses index descriptors from the directory section.
-  void parseIndexDescriptors();
-
-  Section directorySection_;
-  std::vector<IndexDescriptor> indexDescriptors_;
-  mutable MetadataCache<uint32_t, HashIndex> indexCache_;
 };
 
 } // namespace facebook::nimble::index

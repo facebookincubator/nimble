@@ -18,11 +18,9 @@
 
 #include <algorithm>
 
-#include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/Exceptions.h"
-
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/index/KeyChunkDecoder.h"
 #include "dwio/nimble/tablet/ClusterIndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "folly/ScopeGuard.h"
@@ -110,17 +108,17 @@ std::vector<SortOrder> getSortOrders(
 
 // Builds cumulative row offsets from partition_row_counts in the FlatBuffer.
 // Returns a prefix-sum vector of size numPartitions + 1.
-std::vector<velox::vector_size_t> getPartitionRows(
+std::vector<uint32_t> getPartitionRows(
     const serialization::ClusterIndex* indexRoot) {
   const auto* rowCounts = indexRoot->partition_row_counts();
   NIMBLE_CHECK_NOT_NULL(rowCounts);
   NIMBLE_CHECK_GT(rowCounts->size(), 0, "partition_row_counts cannot be empty");
 
-  std::vector<velox::vector_size_t> offsets;
+  std::vector<uint32_t> offsets;
   offsets.reserve(rowCounts->size() + 1);
   offsets.emplace_back(0);
   for (uint32_t i = 0; i < rowCounts->size(); ++i) {
-    const auto count = static_cast<velox::vector_size_t>(rowCounts->Get(i));
+    const auto count = static_cast<uint32_t>(rowCounts->Get(i));
     NIMBLE_CHECK_GT(count, 0, "Partition {} has zero rows", i);
     offsets.emplace_back(offsets.back() + count);
   }
@@ -132,15 +130,6 @@ std::vector<velox::vector_size_t> getPartitionRows(
 // ---------------------------------------------------------------------------
 // ClusterIndex
 // ---------------------------------------------------------------------------
-
-ClusterIndex::DecodedChunk::~DecodedChunk() = default;
-
-void ClusterIndex::DecodedChunk::reset(uint32_t _chunkOffset) {
-  chunkOffset = _chunkOffset;
-  encoding.reset();
-  dataStream.reset();
-  stringBuffers.clear();
-}
 
 ClusterIndex::~ClusterIndex() = default;
 
@@ -331,15 +320,14 @@ IndexLookup::LookupResult ClusterIndex::lookup(
   return buildLookupResult(request.options());
 }
 
-velox::vector_size_t ClusterIndex::resolvePartitionRow(
+uint32_t ClusterIndex::resolvePartitionRow(
     const IndexPartition* partition,
     std::string_view encodedKey,
     bool inclusive) const {
   const auto chunkLocation = lookupChunk(partition, encodedKey);
   const auto partitionRow =
       seekInChunk(partition, chunkLocation, encodedKey, inclusive);
-  return static_cast<velox::vector_size_t>(
-      partitionRows_[partition->id] + partitionRow);
+  return partitionRows_[partition->id] + partitionRow;
 }
 
 MetadataSection ClusterIndex::partitionSection(uint32_t partitionId) const {
@@ -472,7 +460,7 @@ const ClusterIndex::DecodedChunk& ClusterIndex::getDecodedChunk(
     const ChunkLocation& chunkLocation) const {
   NIMBLE_DCHECK_NOT_NULL(partition);
   auto& decodedChunk = partition->decodedChunk;
-  if (decodedChunk.encoding != nullptr &&
+  if (decodedChunk.data.encoding != nullptr &&
       decodedChunk.chunkOffset == chunkLocation.chunkOffset) {
     return decodedChunk;
   }
@@ -480,58 +468,12 @@ const ClusterIndex::DecodedChunk& ClusterIndex::getDecodedChunk(
   decodedChunk.reset(chunkLocation.chunkOffset);
 
   const auto region = partition->chunkStreamRegion(chunkLocation);
-  auto inputStream = loadData_(region);
-
-  const void* buf;
-  int bufLen{0};
-  NIMBLE_CHECK(inputStream->Next(&buf, &bufLen));
-  NIMBLE_CHECK_GE(bufLen, kChunkHeaderSize);
-  const auto* header = static_cast<const char*>(buf);
-  const auto chunkHeader = readChunkHeader(header);
+  decodedChunk.data =
+      decodeKeyChunk(loadData_(region), *pool_, partition->dataBuffer);
   NIMBLE_CHECK_EQ(
-      chunkHeader.compressionType,
-      CompressionType::Uncompressed,
-      "Compressed key chunks are not supported");
-  const auto dataLen = chunkHeader.length;
-
-  // Read chunk payload. Zero-copy when data is contiguous in stream buffer.
-  bufLen -= kChunkHeaderSize;
-  const char* chunkData;
-  if (bufLen >= static_cast<int>(dataLen)) {
-    // All chunk data in current buffer — point directly at it.
-    // Keep inputStream alive so the buffer remains valid.
-    decodedChunk.dataStream = std::move(inputStream);
-    chunkData = header;
-  } else {
-    // Data spans multiple buffers — copy into reusable partition buffer.
-    auto* dest = partition->ensureDataBuffer(dataLen, pool_);
-    std::memcpy(dest, header, bufLen);
-    int copied = bufLen;
-    while (copied < static_cast<int>(dataLen)) {
-      NIMBLE_CHECK(inputStream->Next(&buf, &bufLen));
-      const int toCopy = std::min(bufLen, static_cast<int>(dataLen) - copied);
-      std::memcpy(dest + copied, buf, toCopy);
-      copied += toCopy;
-    }
-    chunkData = dest;
-    decodedChunk.dataStream.reset();
-  }
-
-  decodedChunk.encoding = nimble::EncodingFactory().create(
-      *pool_, std::string_view(chunkData, dataLen), [&](uint32_t totalLength) {
-        auto& buffer = decodedChunk.stringBuffers.emplace_back(
-            velox::AlignedBuffer::allocate<char>(totalLength, pool_));
-        return buffer->asMutable<void>();
-      });
-  NIMBLE_CHECK_EQ(
-      decodedChunk.encoding->dataType(),
+      decodedChunk.data.encoding->dataType(),
       DataType::String,
       "Expected String data type");
-  NIMBLE_CHECK(
-      decodedChunk.encoding->encodingType() == EncodingType::Trivial ||
-          decodedChunk.encoding->encodingType() == EncodingType::Prefix,
-      "Unsupported encoding type: {}",
-      decodedChunk.encoding->encodingType());
 
   return decodedChunk;
 }
@@ -542,12 +484,12 @@ uint32_t ClusterIndex::seekInChunk(
     std::string_view encodedKey,
     bool inclusive) const {
   const auto& chunk = getDecodedChunk(partition, chunkLocation);
-  const auto rowInChunk = chunk.encoding->seek(&encodedKey, inclusive);
+  const auto rowInChunk = chunk.data.encoding->seek(&encodedKey, inclusive);
   if (!rowInChunk.has_value()) {
     // For exclusive seek (inclusive=false), no row > key means the end is
     // past all rows in this partition.
     if (!inclusive) {
-      return chunkLocation.rowOffset + chunk.encoding->rowCount();
+      return chunkLocation.rowOffset + chunk.data.encoding->rowCount();
     }
     NIMBLE_CHECK(false, "Key must be found within a matched chunk");
   }
