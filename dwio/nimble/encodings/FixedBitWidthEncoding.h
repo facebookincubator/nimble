@@ -163,18 +163,22 @@ void FixedBitWidthEncoding<T>::readWithVisitor(
        isEightByteIntegralType<physicalType>());
   constexpr bool kIsFluidCast = sizeof(OutputType) >= sizeof(physicalType) &&
       std::is_integral_v<OutputType> && std::is_integral_v<physicalType>;
-  // Fast path: use bulk scan for 4-byte and 8-byte integral types with no
-  // filter and no hook. Supports both signed and unsigned types as long as
-  // the output type is integral and at least as wide as the physical type.
+  // Fast path: use bulk scan for 4-byte and 8-byte integral types.
+  // Compile-time: type constraints (FBW physical type, ExtractToReader,
+  // compatible integral output type at least as wide as the physical type).
+  // Runtime (useFastPath): deterministic filter, AVX2, bulk path enabled,
+  // null+filter/hook compatibility.
   if constexpr (
-      kIsSuitableWidth && !V::kHasFilter && !V::kHasHook &&
+      kIsSuitableWidth &&
       std::is_same_v<
           typename V::Extract,
           velox::dwio::common::ExtractToReader> &&
       kIsFluidCast) {
     auto* nulls = visitor.reader().rawNullsInReadRange();
-    detail::readWithVisitorFast(*this, visitor, params, nulls);
-    return;
+    if (velox::dwio::common::useFastPath(visitor, nulls)) {
+      detail::readWithVisitorFast(*this, visitor, params, nulls);
+      return;
+    }
   }
   // Slow path: process one value at a time.
   detail::readWithVisitorSlow(
@@ -255,22 +259,51 @@ void FixedBitWidthEncoding<T>::bulkScan(
   } else {
     // Sparse case: read individual values at specified positions.
     for (vector_size_t i = 0; i < numSelected; ++i) {
-      values[i] = fixedBitArray_.get(selectedRows[i] + offset) + baseline_;
-    }
-  }
-
-  // Scatter: when nulls are present (kScatter=true), values are packed
-  // contiguously but need to be placed at their correct output positions.
-  // Process in reverse to avoid overwriting unread values.
-  if constexpr (kScatter) {
-    for (int32_t i = numSelected - 1; i >= 0; --i) {
-      values[scatterRows[i]] = values[i];
+      values[i] = static_cast<OutputType>(
+          fixedBitArray_.get(selectedRows[i] + offset) + baseline_);
     }
   }
 
   row_ += selectedRows[numSelected - 1] - currentRow + 1;
 
-  visitor.addNumValues(numRows);
+  // No scatter, filter, or hook: values are already in the output buffer.
+  if constexpr (!kScatter && !V::kHasFilter && !V::kHasHook) {
+    visitor.addNumValues(numRows);
+    visitor.setRowIndex(visitor.numRows());
+    return;
+  }
+
+  // processFixedWidthRun handles scatter (null gaps), filter evaluation,
+  // and hook forwarding. For non-hook paths, values points to the reader's
+  // output buffer (rawValues). For hooks, values stays as the local decode
+  // buffer since hook.addValue() consumes values without writing to the reader.
+  if constexpr (!V::kHasHook) {
+    values = reinterpret_cast<OutputType*>(visitor.reader().rawValues());
+  }
+
+  auto numValues = visitor.reader().numValues();
+  int32_t* filterHits = nullptr;
+  if constexpr (V::kHasFilter) {
+    filterHits = visitor.outputRows(numSelected) - numValues;
+  }
+
+  velox::dwio::common::
+      processFixedWidthRun<OutputType, V::kFilterOnly, kScatter, V::dense>(
+          velox::RowSet(selectedRows, numSelected),
+          0,
+          numSelected,
+          scatterRows,
+          values,
+          filterHits,
+          numValues,
+          visitor.filter(),
+          visitor.hook());
+
+  if constexpr (!V::kHasHook) {
+    // Filter: count passing rows; no filter: all rows produce values.
+    visitor.addNumValues(
+        V::kHasFilter ? numValues - visitor.reader().numValues() : numRows);
+  }
   visitor.setRowIndex(visitor.numRows());
 }
 
