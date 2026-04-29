@@ -17,6 +17,7 @@
 #include "dwio/nimble/common/NimbleException.h"
 
 #include <folly/Conv.h>
+#include <folly/debugging/symbolizer/Symbolizer.h>
 #include <glog/logging.h>
 
 namespace facebook::nimble {
