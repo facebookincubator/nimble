@@ -66,6 +66,20 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
   /// returned before any results for request N+1.
   std::unique_ptr<Result> next(velox::vector_size_t maxOutputRows) override;
 
+  /// Returns accumulated runtime stats for this index reader.
+  folly::F14FastMap<std::string, velox::RuntimeMetric> stats() const override;
+
+  static constexpr std::string_view kStripeLoadWallNanos =
+      "nimbleIndexStripeLoadWallNanos";
+  static constexpr std::string_view kStripeLoadCpuNanos =
+      "nimbleIndexStripeLoadCpuNanos";
+  static constexpr std::string_view kDataReadWallNanos =
+      "nimbleIndexDataReadWallNanos";
+  static constexpr std::string_view kDataReadCpuNanos =
+      "nimbleIndexDataReadCpuNanos";
+  static constexpr std::string_view kNumDistinctStripesLoaded =
+      "nimbleIndexDistinctStripesLoaded";
+
  private:
   using RowRangeMap = folly::F14FastMap<RowRange, size_t, RowRangeHash>;
 
@@ -307,6 +321,16 @@ class SelectiveNimbleIndexReader : public velox::dwio::common::IndexReader {
   velox::vector_size_t nextOutputRequest_{0};
   velox::vector_size_t lastReadyOutputRequest_{-1};
   velox::vector_size_t readyOutputRows_{0};
+
+  void addStat(std::string_view name, int64_t value) {
+    stats_[std::string(name)].addValue(value);
+  }
+
+  // Tracks distinct stripes loaded for the numDistinctStripesLoaded metric.
+  folly::F14FastSet<uint32_t> loadedStripes_;
+
+  // Accumulated runtime stats, returned via stats().
+  folly::F14FastMap<std::string, velox::RuntimeMetric> stats_;
 };
 
 } // namespace facebook::nimble

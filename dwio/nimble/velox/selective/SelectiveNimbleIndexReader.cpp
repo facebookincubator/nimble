@@ -25,12 +25,13 @@
 #include "dwio/nimble/velox/selective/ColumnReader.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
-#include "velox/common/base/RuntimeMetrics.h"
+#include "velox/common/time/CpuWallTimer.h"
 #include "velox/serializers/KeyEncoder.h"
 
 namespace facebook::nimble {
 
 using namespace facebook::velox;
+using RuntimeCounter = velox::RuntimeCounter;
 
 namespace {
 
@@ -167,7 +168,17 @@ SelectiveNimbleIndexReader::SelectiveNimbleIndexReader(
           readerBase_->nimbleSchema(),
           readerBase_->fileSchema())},
       streams_{readerBase_},
-      numStripes_{static_cast<int32_t>(readerBase_->tablet().stripeCount())} {}
+      numStripes_{static_cast<int32_t>(readerBase_->tablet().stripeCount())},
+      stats_{
+          {std::string(kStripeLoadWallNanos),
+           velox::RuntimeMetric(velox::RuntimeCounter::Unit::kNanos)},
+          {std::string(kStripeLoadCpuNanos),
+           velox::RuntimeMetric(velox::RuntimeCounter::Unit::kNanos)},
+          {std::string(kDataReadWallNanos),
+           velox::RuntimeMetric(velox::RuntimeCounter::Unit::kNanos)},
+          {std::string(kDataReadCpuNanos),
+           velox::RuntimeMetric(velox::RuntimeCounter::Unit::kNanos)},
+      } {}
 
 void SelectiveNimbleIndexReader::startLookup(
     const velox::serializer::IndexBounds& indexBounds,
@@ -194,12 +205,7 @@ void SelectiveNimbleIndexReader::startLookup(
   readyOutputRows_ = 0;
 
   // Report lookup stats.
-  addThreadLocalRuntimeStat(
-      dwio::common::IndexReader::kNumIndexLookupRequests,
-      velox::RuntimeCounter(numRequests_));
-  addThreadLocalRuntimeStat(
-      dwio::common::IndexReader::kNumIndexLookupStripes,
-      velox::RuntimeCounter(stripes_.size()));
+  addStat(dwio::common::IndexReader::kNumIndexLookupRequests, numRequests_);
 }
 
 bool SelectiveNimbleIndexReader::hasNext() const {
@@ -262,12 +268,14 @@ void SelectiveNimbleIndexReader::resolveRequestStripes() {
   const auto result = clusterIndex_->lookup(
       index::IndexLookup::LookupRequest::rangeScan(encodedKeyBounds_));
 
+  uint64_t totalMatchedRows = 0;
   for (size_t requestIdx = 0; requestIdx < numRequests_; ++requestIdx) {
     const auto locations = result[requestIdx];
     if (locations.empty()) {
       continue;
     }
 
+    totalMatchedRows += locations[0].numRows();
     requestStates_[requestIdx].rowRange = locations[0];
 
     const auto startStripe =
@@ -303,10 +311,15 @@ void SelectiveNimbleIndexReader::resolveRequestStripes() {
 
   // Collect and sort unique stripes.
   stripes_.reserve(stripeToRequests_.size());
+  uint64_t totalStripeRows = 0;
   for (const auto& [stripe, _] : stripeToRequests_) {
     stripes_.push_back(stripe);
+    totalStripeRows += stripeRowCount(stripe);
   }
   std::sort(stripes_.begin(), stripes_.end());
+
+  addStat(dwio::common::IndexReader::kNumIndexScannedRows, totalStripeRows);
+  addStat(dwio::common::IndexReader::kNumIndexMatchedRows, totalMatchedRows);
 }
 
 bool SelectiveNimbleIndexReader::loadStripe() {
@@ -391,11 +404,9 @@ void SelectiveNimbleIndexReader::buildStripeReadSegments(
     splitStripeRowRanges(requestRanges);
   }
   NIMBLE_CHECK(!readSegments_.empty());
-
-  // Report read segment stats.
-  addThreadLocalRuntimeStat(
+  addStat(
       dwio::common::IndexReader::kNumIndexLookupReadSegments,
-      velox::RuntimeCounter(readSegments_.size()));
+      readSegments_.size());
 
   readSegmentIndex_ = 0;
   prepareStripeSegmentRead();
@@ -496,30 +507,36 @@ void SelectiveNimbleIndexReader::splitStripeRowRanges(
 }
 
 void SelectiveNimbleIndexReader::initStripeColumnReader(uint32_t stripeIndex) {
-  addThreadLocalRuntimeStat(
-      dwio::common::RowReader::kNumStripeLoads, velox::RuntimeCounter(1));
+  addStat(dwio::common::RowReader::kNumStripeLoads, 1);
+  loadedStripes_.insert(stripeIndex);
 
-  streams_.setStripe(stripeIndex);
-  NimbleParams params(
-      *readerBase_->pool(),
-      columnReaderStatistics_,
-      readerBase_->nimbleSchema(),
-      streams_,
-      options_.trackRowSize() ? rowSizeTracker_.get() : nullptr,
-      *encodingFactory_,
-      options_.stringDecoderZeroCopy(),
-      options_.preserveFlatMapsInMemory());
+  CpuWallTiming timing;
+  {
+    CpuWallTimer timer(timing);
+    streams_.setStripe(stripeIndex);
+    NimbleParams params(
+        *readerBase_->pool(),
+        columnReaderStatistics_,
+        readerBase_->nimbleSchema(),
+        streams_,
+        options_.trackRowSize() ? rowSizeTracker_.get() : nullptr,
+        *encodingFactory_,
+        options_.stringDecoderZeroCopy(),
+        options_.preserveFlatMapsInMemory());
 
-  columnReader_ = buildColumnReader(
-      fileOutputType_,
-      readerBase_->fileSchemaWithId(),
-      params,
-      *options_.scanSpec(),
-      true);
-  rowSizeTracker_->finalizeProjection();
-  columnReader_->setIsTopLevel();
+    columnReader_ = buildColumnReader(
+        fileOutputType_,
+        readerBase_->fileSchemaWithId(),
+        params,
+        *options_.scanSpec(),
+        true);
+    rowSizeTracker_->finalizeProjection();
+    columnReader_->setIsTopLevel();
 
-  streams_.load();
+    streams_.load();
+  }
+  addStat(kStripeLoadWallNanos, timing.wallNanos);
+  addStat(kStripeLoadCpuNanos, timing.cpuNanos);
 }
 
 uint64_t SelectiveNimbleIndexReader::readStripeFragment(RowVectorPtr& output) {
@@ -533,7 +550,13 @@ uint64_t SelectiveNimbleIndexReader::readStripeFragment(RowVectorPtr& output) {
 
   VectorPtr readOutput =
       BaseVector::create(outputType_, 0, readerBase_->pool());
-  columnReader_->next(rowsToRead, readOutput, /*mutation=*/nullptr);
+  CpuWallTiming timing;
+  {
+    CpuWallTimer timer(timing);
+    columnReader_->next(rowsToRead, readOutput, /*mutation=*/nullptr);
+  }
+  addStat(kDataReadWallNanos, timing.wallNanos);
+  addStat(kDataReadCpuNanos, timing.cpuNanos);
   if (readOutput->size() > 0) {
     readOutput->loadedVector();
   }
@@ -777,4 +800,15 @@ void SelectiveNimbleIndexReader::reset() {
   readyOutputRows_ = 0;
   columnReader_.reset();
 }
+
+folly::F14FastMap<std::string, velox::RuntimeMetric>
+SelectiveNimbleIndexReader::stats() const {
+  auto result = stats_;
+  if (!loadedStripes_.empty()) {
+    result[std::string(kNumDistinctStripesLoaded)] =
+        RuntimeMetric(static_cast<int64_t>(loadedStripes_.size()));
+  }
+  return result;
+}
+
 } // namespace facebook::nimble
