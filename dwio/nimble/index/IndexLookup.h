@@ -174,9 +174,9 @@ class IndexLookup {
     }
 
     folly::Range<const RowRange*> operator[](uint32_t idx) const {
-      NIMBLE_DCHECK_LT(idx, size());
-      NIMBLE_DCHECK_LE(resultOffsets_[idx], resultOffsets_[idx + 1]);
-      NIMBLE_DCHECK_LE(resultOffsets_[idx + 1], rowRanges_.size());
+      NIMBLE_CHECK_LT(idx, size());
+      NIMBLE_CHECK_LE(resultOffsets_[idx], resultOffsets_[idx + 1]);
+      NIMBLE_CHECK_LE(resultOffsets_[idx + 1], rowRanges_.size());
       return {
           rowRanges_.data() + resultOffsets_[idx],
           rowRanges_.data() + resultOffsets_[idx + 1]};
