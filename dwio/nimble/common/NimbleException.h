@@ -16,7 +16,6 @@
 #pragma once
 
 #include <folly/FixedString.h>
-#include <folly/debugging/symbolizer/Symbolizer.h>
 #include <folly/synchronization/CallOnce.h>
 #include <exception>
 #include <string>
