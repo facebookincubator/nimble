@@ -359,7 +359,10 @@ class E2EFilterTest
       auto& ids = fileIds();
       StringIdLease fileId(ids, "testFile");
       StringIdLease groupId(ids, "testGroup");
-      io::ReaderOptions cacheReaderOpts(&readerOpts.memoryPool());
+      io::ReaderOptions cacheReaderOpts(
+          &readerOpts.memoryPool(),
+          cacheIoStatistics_.get(),
+          cacheIoStatistics_.get());
       input = std::make_unique<dwio::common::CachedBufferedInput>(
           std::move(readFile),
           dwio::common::MetricsLog::voidLog(),

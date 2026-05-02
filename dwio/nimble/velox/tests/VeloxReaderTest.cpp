@@ -36,6 +36,7 @@
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileIds.h"
 #include "velox/common/caching/ScanTracker.h"
+#include "velox/common/io/IoStatistics.h"
 #include "velox/common/memory/MallocAllocator.h"
 #include "velox/dwio/common/CachedBufferedInput.h"
 #include "velox/dwio/common/ColumnSelector.h"
@@ -479,7 +480,6 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
   void SetUp() override {
     rootPool_ = velox::memory::memoryManager()->addRootPool("default_root");
     leafPool_ = rootPool_->addLeafChild("default_leaf");
-    ioStatistics_ = std::make_shared<velox::io::IoStatistics>();
     scanTracker_ = std::make_shared<velox::cache::ScanTracker>(
         "testTracker", nullptr, 256 << 10);
     ioExecutor_ = std::make_unique<folly::CPUThreadPoolExecutor>(10);
@@ -527,7 +527,8 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
       auto fileIdStr = fmt::format("testFile_{}", nextFileId_++);
       velox::StringIdLease fileId(ids, fileIdStr);
       velox::StringIdLease groupId(ids, "testGroup");
-      velox::io::ReaderOptions ioReaderOpts(pool);
+      velox::io::ReaderOptions ioReaderOpts(
+          pool, dataIoStats_.get(), metadataIoStats_.get());
       if (cache_ != nullptr) {
         cachedInput_ =
             std::make_unique<velox::dwio::common::CachedBufferedInput>(
@@ -537,7 +538,7 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
                 cache_.get(),
                 scanTracker_,
                 std::move(groupId),
-                ioStatistics_,
+                dataIoStats_,
                 nullptr, // ioStats
                 ioExecutor_.get(),
                 ioReaderOpts);
@@ -549,7 +550,7 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
                 std::move(fileId),
                 scanTracker_,
                 std::move(groupId),
-                ioStatistics_,
+                dataIoStats_,
                 nullptr, // ioStats
                 ioExecutor_.get(),
                 ioReaderOpts);
@@ -1372,7 +1373,10 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
   // Cache infrastructure (only initialized when enableCache is true).
   std::shared_ptr<velox::memory::MallocAllocator> allocator_;
   std::shared_ptr<velox::cache::AsyncDataCache> cache_;
-  std::shared_ptr<velox::io::IoStatistics> ioStatistics_;
+  const std::shared_ptr<velox::io::IoStatistics> dataIoStats_{
+      std::make_shared<velox::io::IoStatistics>()};
+  const std::shared_ptr<velox::io::IoStatistics> metadataIoStats_{
+      std::make_shared<velox::io::IoStatistics>()};
   std::shared_ptr<velox::cache::ScanTracker> scanTracker_;
   std::unique_ptr<folly::CPUThreadPoolExecutor> ioExecutor_;
   // Held alive for the duration of createTablet/createVeloxReader.

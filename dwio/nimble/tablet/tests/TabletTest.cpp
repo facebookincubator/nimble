@@ -45,6 +45,7 @@
 
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileIds.h"
+#include "velox/common/io/IoStatistics.h"
 #include "velox/common/memory/MallocAllocator.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/dwio/common/BufferedInput.h"
@@ -158,7 +159,6 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
 
   void SetUp() override {
     executor_ = std::make_unique<folly::CPUThreadPoolExecutor>(2);
-    ioStatistics_ = std::make_shared<velox::dwio::common::IoStatistics>();
   }
 
   void TearDown() override {
@@ -181,7 +181,8 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
     fileId_ = std::make_unique<velox::StringIdLease>(ids, "testFile");
     groupId_ = std::make_unique<velox::StringIdLease>(ids, "testGroup");
 
-    velox::io::ReaderOptions readerOptions(pool_.get());
+    velox::io::ReaderOptions readerOptions(
+        pool_.get(), dataIoStats_.get(), metadataIoStats_.get());
 
     switch (mode) {
       case BufferedInputMode::kNone:
@@ -202,7 +203,7 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
                 std::move(*fileId_),
                 tracker_,
                 std::move(*groupId_),
-                ioStatistics_,
+                dataIoStats_,
                 nullptr,
                 executor_.get(),
                 readerOptions);
@@ -227,7 +228,7 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
                 cache_.get(),
                 tracker_,
                 std::move(*groupId_),
-                ioStatistics_,
+                dataIoStats_,
                 nullptr,
                 executor_.get(),
                 readerOptions);
@@ -259,9 +260,13 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
         std::move(options));
   }
 
+  std::shared_ptr<velox::io::IoStatistics> dataIoStats_{
+      std::make_shared<velox::io::IoStatistics>()};
+  std::shared_ptr<velox::io::IoStatistics> metadataIoStats_{
+      std::make_shared<velox::io::IoStatistics>()};
+
   std::shared_ptr<velox::ReadFile> readFile_;
   std::unique_ptr<folly::CPUThreadPoolExecutor> executor_;
-  std::shared_ptr<velox::dwio::common::IoStatistics> ioStatistics_;
   std::shared_ptr<velox::memory::MallocAllocator> allocator_;
   std::shared_ptr<velox::cache::AsyncDataCache> cache_;
   std::shared_ptr<velox::cache::ScanTracker> tracker_;
@@ -3989,10 +3994,10 @@ TEST_P(TabletWithIndexTest, cacheWarmPath) {
     EXPECT_NE(coldReader->clusterIndex(), nullptr);
 
     // Cold init bypasses CachedBufferedInput — no IoStatistics tracking.
-    EXPECT_EQ(ioStatistics_->ramHit().count(), 0);
-    EXPECT_EQ(ioStatistics_->ssdRead().count(), 0);
-    EXPECT_EQ(ioStatistics_->read().count(), 0);
-    EXPECT_EQ(ioStatistics_->prefetch().count(), 0);
+    EXPECT_EQ(dataIoStats_->ramHit().count(), 0);
+    EXPECT_EQ(dataIoStats_->ssdRead().count(), 0);
+    EXPECT_EQ(dataIoStats_->read().count(), 0);
+    EXPECT_EQ(dataIoStats_->prefetch().count(), 0);
 
     // Verify stripe groups are accessible.
     for (uint32_t i = 0; i < kNumStripes; ++i) {
@@ -4016,7 +4021,7 @@ TEST_P(TabletWithIndexTest, cacheWarmPath) {
   EXPECT_EQ(coldCacheStats.numEvict, 0);
 
   // Reset IO stats for the warm path.
-  ioStatistics_ = std::make_shared<velox::dwio::common::IoStatistics>();
+  dataIoStats_ = std::make_shared<velox::dwio::common::IoStatistics>();
 
   // Warm path: second reader should initialize from cache with zero IO.
   {
@@ -4027,10 +4032,10 @@ TEST_P(TabletWithIndexTest, cacheWarmPath) {
     EXPECT_NE(warmReader->clusterIndex(), nullptr);
 
     // Warm path should serve all data from RAM cache.
-    EXPECT_GT(ioStatistics_->ramHit().count(), 0);
-    EXPECT_EQ(ioStatistics_->ssdRead().count(), 0);
-    EXPECT_EQ(ioStatistics_->read().count(), 0);
-    EXPECT_EQ(ioStatistics_->prefetch().count(), 0);
+    EXPECT_GT(dataIoStats_->ramHit().count(), 0);
+    EXPECT_EQ(dataIoStats_->ssdRead().count(), 0);
+    EXPECT_EQ(dataIoStats_->read().count(), 0);
+    EXPECT_EQ(dataIoStats_->prefetch().count(), 0);
 
     // Verify stripe groups are accessible from cache.
     for (uint32_t i = 0; i < kNumStripes; ++i) {
@@ -4347,10 +4352,10 @@ TEST_P(TabletTest, cacheWarmPath) {
 
     // Cold init uses direct file_->preadv() which bypasses
     // CachedBufferedInput, so no reads are tracked through IoStatistics.
-    EXPECT_EQ(ioStatistics_->ramHit().count(), 0);
-    EXPECT_EQ(ioStatistics_->ssdRead().count(), 0);
-    EXPECT_EQ(ioStatistics_->read().count(), 0);
-    EXPECT_EQ(ioStatistics_->prefetch().count(), 0);
+    EXPECT_EQ(dataIoStats_->ramHit().count(), 0);
+    EXPECT_EQ(dataIoStats_->ssdRead().count(), 0);
+    EXPECT_EQ(dataIoStats_->read().count(), 0);
+    EXPECT_EQ(dataIoStats_->prefetch().count(), 0);
 
     auto stripeId = coldReader->stripeIdentifier(0);
     EXPECT_EQ(stripeId.stripeId(), 0);
@@ -4366,7 +4371,7 @@ TEST_P(TabletTest, cacheWarmPath) {
   EXPECT_EQ(coldCacheStats.numEvict, 0);
 
   // Reset IO stats for the warm path.
-  ioStatistics_ = std::make_shared<velox::dwio::common::IoStatistics>();
+  dataIoStats_ = std::make_shared<velox::dwio::common::IoStatistics>();
 
   // Warm path: second reader should initialize from cache with zero IO.
   {
@@ -4378,10 +4383,10 @@ TEST_P(TabletTest, cacheWarmPath) {
     }
 
     // Warm path should serve all data from RAM cache with zero storage reads.
-    EXPECT_GT(ioStatistics_->ramHit().count(), 0);
-    EXPECT_EQ(ioStatistics_->ssdRead().count(), 0);
-    EXPECT_EQ(ioStatistics_->read().count(), 0);
-    EXPECT_EQ(ioStatistics_->prefetch().count(), 0);
+    EXPECT_GT(dataIoStats_->ramHit().count(), 0);
+    EXPECT_EQ(dataIoStats_->ssdRead().count(), 0);
+    EXPECT_EQ(dataIoStats_->read().count(), 0);
+    EXPECT_EQ(dataIoStats_->prefetch().count(), 0);
 
     auto stripeId = warmReader->stripeIdentifier(0);
     EXPECT_EQ(stripeId.stripeId(), 0);
@@ -4512,8 +4517,7 @@ INSTANTIATE_TEST_SUITE_P(
 // Stress test: concurrent readers with mixed BufferedInput modes and periodic
 // cache eviction. Exercises race conditions between cache population, cache
 // eviction, and reader initialization.
-TEST(TabletStressTest, concurrentReadersWithCacheEviction) {
-  velox::memory::MemoryManager::testingSetInstance({});
+TEST_F(TabletTest, concurrentReadersWithCacheEviction) {
   auto pool =
       velox::memory::MemoryManager::getInstance()->addRootPool("stressTest");
 
@@ -4564,9 +4568,9 @@ TEST(TabletStressTest, concurrentReadersWithCacheEviction) {
       // Each thread cycles through a fixed BufferedInput mode.
       auto mode = static_cast<BufferedInputMode>(threadId % 4);
       std::unique_ptr<velox::dwio::common::BufferedInput> bi;
-      auto ioStats = std::make_shared<velox::dwio::common::IoStatistics>();
       std::shared_ptr<velox::cache::ScanTracker> tracker;
-      velox::io::ReaderOptions readerOptions(threadPool.get());
+      velox::io::ReaderOptions readerOptions(
+          threadPool.get(), dataIoStats_.get(), metadataIoStats_.get());
       nimble::TabletReader::Options options;
 
       switch (mode) {
@@ -4589,7 +4593,7 @@ TEST(TabletStressTest, concurrentReadersWithCacheEviction) {
               std::move(fileId),
               tracker,
               std::move(groupId),
-              ioStats,
+              dataIoStats_,
               nullptr,
               executor.get(),
               readerOptions);
@@ -4608,7 +4612,7 @@ TEST(TabletStressTest, concurrentReadersWithCacheEviction) {
               cache.get(),
               tracker,
               std::move(groupId),
-              ioStats,
+              dataIoStats_,
               nullptr,
               executor.get(),
               readerOptions);

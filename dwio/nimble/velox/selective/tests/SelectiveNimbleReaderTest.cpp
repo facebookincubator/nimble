@@ -33,6 +33,7 @@
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileIds.h"
 #include "velox/common/caching/ScanTracker.h"
+#include "velox/common/io/IoStatistics.h"
 #include "velox/common/memory/MallocAllocator.h"
 #include "velox/dwio/common/CachedBufferedInput.h"
 #include "velox/dwio/common/DirectBufferedInput.h"
@@ -98,7 +99,6 @@ class SelectiveNimbleReaderTest
   }
 
   void SetUp() override {
-    ioStatistics_ = std::make_shared<io::IoStatistics>();
     scanTracker_ =
         std::make_shared<cache::ScanTracker>("testTracker", nullptr, 256 << 10);
     ioExecutor_ = std::make_unique<folly::CPUThreadPoolExecutor>(10);
@@ -149,7 +149,8 @@ class SelectiveNimbleReaderTest
     const auto readerId = readerIdCounter_++;
     StringIdLease fileId(ids, fmt::format("testFile_{}", readerId));
     StringIdLease groupId(ids, fmt::format("testGroup_{}", readerId));
-    io::ReaderOptions ioReaderOpts(pool());
+    io::ReaderOptions ioReaderOpts(
+        pool(), dataIoStats_.get(), metadataIoStats_.get());
     if (cache_ != nullptr) {
       input = std::make_unique<dwio::common::CachedBufferedInput>(
           readFile,
@@ -158,7 +159,7 @@ class SelectiveNimbleReaderTest
           cache_.get(),
           scanTracker_,
           std::move(groupId),
-          ioStatistics_,
+          dataIoStats_,
           nullptr,
           ioExecutor_.get(),
           ioReaderOpts);
@@ -169,7 +170,7 @@ class SelectiveNimbleReaderTest
           std::move(fileId),
           scanTracker_,
           std::move(groupId),
-          ioStatistics_,
+          dataIoStats_,
           nullptr,
           ioExecutor_.get(),
           ioReaderOpts);
@@ -205,7 +206,10 @@ class SelectiveNimbleReaderTest
   // Cache infrastructure (only initialized when enableCache is true).
   std::shared_ptr<memory::MallocAllocator> allocator_;
   std::shared_ptr<cache::AsyncDataCache> cache_;
-  std::shared_ptr<io::IoStatistics> ioStatistics_;
+  const std::shared_ptr<io::IoStatistics> dataIoStats_{
+      std::make_shared<io::IoStatistics>()};
+  const std::shared_ptr<io::IoStatistics> metadataIoStats_{
+      std::make_shared<io::IoStatistics>()};
   std::shared_ptr<cache::ScanTracker> scanTracker_;
   std::unique_ptr<folly::CPUThreadPoolExecutor> ioExecutor_;
 
@@ -2489,7 +2493,8 @@ TEST_P(SelectiveNimbleReaderTest, pinnedMetadataNoReread) {
   const auto readerId = readerIdCounter_++;
   StringIdLease fileId(ids, fmt::format("testFile_{}", readerId));
   StringIdLease groupId(ids, fmt::format("testGroup_{}", readerId));
-  io::ReaderOptions ioReaderOpts(pool());
+  io::ReaderOptions ioReaderOpts(
+      pool(), dataIoStats_.get(), metadataIoStats_.get());
   std::unique_ptr<dwio::common::BufferedInput> bufferedInput;
   if (cache_ != nullptr) {
     bufferedInput = std::make_unique<dwio::common::CachedBufferedInput>(
@@ -2499,7 +2504,7 @@ TEST_P(SelectiveNimbleReaderTest, pinnedMetadataNoReread) {
         cache_.get(),
         scanTracker_,
         std::move(groupId),
-        ioStatistics_,
+        dataIoStats_,
         nullptr,
         ioExecutor_.get(),
         ioReaderOpts);
@@ -2510,7 +2515,7 @@ TEST_P(SelectiveNimbleReaderTest, pinnedMetadataNoReread) {
         std::move(fileId),
         scanTracker_,
         std::move(groupId),
-        ioStatistics_,
+        dataIoStats_,
         nullptr,
         ioExecutor_.get(),
         ioReaderOpts);
