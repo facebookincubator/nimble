@@ -198,7 +198,8 @@ class E2EIndexTestBase : public ::testing::Test {
     rootPool_ = memory::memoryManager()->addRootPool("E2EIndexTest");
     leafPool_ = rootPool_->addLeafChild("E2EIndexTestLeaf");
     vectorMaker_ = std::make_unique<velox::test::VectorMaker>(leafPool_.get());
-    ioStatistics_ = std::make_shared<io::IoStatistics>();
+    dataIoStats_ = std::make_shared<io::IoStatistics>();
+    metadataIoStats_ = std::make_shared<io::IoStatistics>();
     scanTracker_ =
         std::make_shared<cache::ScanTracker>("testTracker", nullptr, 256 << 10);
     ioExecutor_ = std::make_unique<folly::CPUThreadPoolExecutor>(10);
@@ -352,7 +353,10 @@ class E2EIndexTestBase : public ::testing::Test {
     const auto readerId = readerIdCounter_++;
     StringIdLease fileId(ids, fmt::format("testFile_{}", readerId));
     StringIdLease groupId(ids, fmt::format("testGroup_{}", readerId));
-    io::ReaderOptions ioReaderOpts(&readerOptions.memoryPool());
+    io::ReaderOptions ioReaderOpts(
+        &readerOptions.memoryPool(),
+        dataIoStats_.get(),
+        metadataIoStats_.get());
     if (cache_ != nullptr) {
       input = std::make_unique<CachedBufferedInput>(
           readFile,
@@ -361,7 +365,7 @@ class E2EIndexTestBase : public ::testing::Test {
           cache_.get(),
           scanTracker_,
           std::move(groupId),
-          ioStatistics_,
+          dataIoStats_,
           nullptr,
           ioExecutor_.get(),
           ioReaderOpts);
@@ -372,7 +376,7 @@ class E2EIndexTestBase : public ::testing::Test {
           std::move(fileId),
           scanTracker_,
           std::move(groupId),
-          ioStatistics_,
+          dataIoStats_,
           nullptr,
           ioExecutor_.get(),
           ioReaderOpts);
@@ -513,7 +517,8 @@ class E2EIndexTestBase : public ::testing::Test {
   // Cache infrastructure (only initialized when enableCache is true).
   std::shared_ptr<memory::MallocAllocator> allocator_;
   std::shared_ptr<cache::AsyncDataCache> cache_;
-  std::shared_ptr<io::IoStatistics> ioStatistics_;
+  std::shared_ptr<io::IoStatistics> dataIoStats_;
+  std::shared_ptr<io::IoStatistics> metadataIoStats_;
   std::shared_ptr<cache::ScanTracker> scanTracker_;
   std::unique_ptr<folly::CPUThreadPoolExecutor> ioExecutor_;
 };
