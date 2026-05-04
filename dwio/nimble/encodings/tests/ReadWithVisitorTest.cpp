@@ -41,9 +41,11 @@
 #include "dwio/nimble/velox/selective/ReaderBase.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
 #include "dwio/nimble/velox/selective/StringColumnReader.h"
+#include "folly/Random.h"
 #include "velox/dwio/common/ColumnVisitors.h"
 #include "velox/dwio/common/SelectiveColumnReader.h"
 #include "velox/dwio/common/SelectiveStructColumnReader.h"
+#include "velox/vector/fuzzer/VectorFuzzer.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
 namespace facebook::nimble {
@@ -65,6 +67,40 @@ class IntegerColumnReaderTestAccessor : public IntegerColumnReader {
   void
   doPrepareRead(int64_t offset, const RowSet& rows, const uint64_t* nulls) {
     this->template prepareRead<T>(offset, rows, nulls);
+  }
+
+  const int32_t* rawIndices() const {
+    return reinterpret_cast<const int32_t*>(rawValues_);
+  }
+
+  void advanceReadOffset(const RowSet& rows) {
+    readOffset_ += rows.back() + 1;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Test-only accessor for StringColumnReader: exposes prepareRead<int32_t>
+// and rawValues_ so tests can call readIndicesWithVisitor and verify the
+// indices stored in the reader's buffer.
+// No new data members — static_cast from StringColumnReader* is layout-safe.
+// ---------------------------------------------------------------------------
+class StringColumnReaderTestAccessor : public StringColumnReader {
+ public:
+  using StringColumnReader::StringColumnReader;
+
+  void doPrepareReadAsIndices(
+      int64_t offset,
+      const RowSet& rows,
+      const uint64_t* nulls) {
+    this->template prepareRead<int32_t>(offset, rows, nulls);
+  }
+
+  ChunkedDecoder& chunkedDecoder() {
+    return decoder_;
+  }
+
+  const int32_t* rawIndices() const {
+    return reinterpret_cast<const int32_t*>(rawValues_);
   }
 
   void advanceReadOffset(const RowSet& rows) {
@@ -2260,6 +2296,760 @@ TEST_P(ReadWithVisitorTest, encodingLevel_Delta_AlwaysTrue_Dense_SlowPath) {
   auto values = getValues<int64_t>(reader);
   for (int i = 0; i < kRows; ++i) {
     EXPECT_EQ(values[i], i * 3) << "row " << i;
+  }
+}
+
+// ===========================================================================
+// Test: readIndicesWithVisitor at the encoding level.
+TEST_P(ReadWithVisitorTest, readIndicesWithVisitorString) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP() << "readIndicesWithVisitor requires non-legacy encoding";
+  }
+  constexpr int kRows = 50;
+  constexpr std::string_view kAlphabet[] = {"alpha", "bravo", "charlie"};
+
+  // Write the same data to get reader infrastructure.
+  auto input = makeRowVector({makeFlatVector<StringView>(
+      kRows, [&](auto i) { return StringView(kAlphabet[i % 3]); })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader =
+      static_cast<StringColumnReaderTestAccessor*>(structReader->children()[0]);
+  ASSERT_NE(reader, nullptr);
+
+  std::vector<vector_size_t> rowVec(kRows);
+  std::iota(rowVec.begin(), rowVec.end(), 0);
+  RowSet rows(rowVec.data(), rowVec.size());
+  reader->doPrepareReadAsIndices(0, rows, nullptr);
+
+  // Encode the same data as DictionaryEncoding independently.
+  nimble::Vector<std::string_view> vec{pool()};
+  for (int i = 0; i < kRows; ++i) {
+    vec.push_back(kAlphabet[i % 3]);
+  }
+  auto span = std::span<const std::string_view>(vec.data(), vec.size());
+  nimble::EncodingSelection<std::string_view> selection{
+      {.encodingType = nimble::EncodingType::Dictionary},
+      nimble::Statistics<std::string_view>::create(span),
+      std::make_unique<TrivialNestedPolicy<std::string_view>>()};
+  Buffer encBuffer(*pool());
+  auto encoded = nimble::DictionaryEncoding<std::string_view>::encode(
+      selection, span, encBuffer);
+  std::vector<velox::BufferPtr> stringBuffers;
+  auto encoding =
+      std::make_unique<nimble::DictionaryEncoding<std::string_view>>(
+          *pool(), encoded, [&](uint32_t size) {
+            stringBuffers.push_back(
+                velox::AlignedBuffer::allocate<char>(size, pool()));
+            return stringBuffers.back()->asMutable<void>();
+          });
+
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+  const auto alphabetSize = encoding->dictionarySize();
+  const auto* alphabet =
+      static_cast<const std::string_view*>(encoding->dictionaryEntries());
+
+  // Build visitor that writes int32 indices to the reader's rawValues_.
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  DecoderVisitor<
+      int32_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      /*isDense=*/true>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  encoding->readIndicesWithVisitor(visitor, params);
+
+  ASSERT_EQ(reader->numValues(), kRows);
+  const auto* indices = reader->rawIndices();
+  for (int i = 0; i < kRows; ++i) {
+    ASSERT_GE(indices[i], 0) << "row " << i;
+    ASSERT_LT(indices[i], static_cast<int32_t>(alphabetSize)) << "row " << i;
+    EXPECT_EQ(alphabet[indices[i]], kAlphabet[i % 3]) << "row " << i;
+  }
+}
+
+// Test: Fuzz readIndicesWithVisitor at the encoding level.
+// Random string data, verifies indices map to correct alphabet entries.
+TEST_P(ReadWithVisitorTest, fuzzReadIndicesWithVisitorString) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP() << "readIndicesWithVisitor requires non-legacy encoding";
+  }
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+
+  constexpr int kNumRuns = 10;
+
+  for (int run = 0; run < kNumRuns; ++run) {
+    const int numRows = 20 + rng() % 100;
+    const int cardinality = 2 + rng() % 8;
+
+    SCOPED_TRACE(fmt::format("run={} seed={} numRows={}", run, seed, numRows));
+
+    // Generate random alphabet.
+    std::vector<std::string> pool;
+    for (int j = 0; j < cardinality; ++j) {
+      int len = rng() % 20;
+      std::string s = fmt::format("{}:", j);
+      for (int k = 0; k < len; ++k) {
+        s += static_cast<char>('a' + rng() % 26);
+      }
+      pool.push_back(std::move(s));
+    }
+
+    // Generate data sampling from the pool.
+    std::vector<std::string_view> data;
+    data.reserve(numRows);
+    for (int i = 0; i < numRows; ++i) {
+      data.push_back(pool[rng() % pool.size()]);
+    }
+
+    // Build reader infrastructure from the same data.
+    auto input = makeRowVector({makeFlatVector<StringView>(
+        numRows, [&](auto i) { return StringView(data[i]); })});
+    auto rowType = asRowType(input->type());
+    auto ctx = makeFileContext(input);
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*rowType);
+    auto root = buildReader(*ctx, rowType, *scanSpec);
+
+    auto* structReader =
+        dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(
+            root.get());
+    auto* reader = static_cast<StringColumnReaderTestAccessor*>(
+        structReader->children()[0]);
+
+    std::vector<vector_size_t> rowVec(numRows);
+    std::iota(rowVec.begin(), rowVec.end(), 0);
+    RowSet rows(rowVec.data(), rowVec.size());
+    reader->doPrepareReadAsIndices(0, rows, nullptr);
+
+    // Encode independently as DictionaryEncoding.
+    nimble::Vector<std::string_view> vec{this->pool()};
+    for (auto& d : data) {
+      vec.push_back(d);
+    }
+    auto span = std::span<const std::string_view>(vec.data(), vec.size());
+    nimble::EncodingSelection<std::string_view> selection{
+        {.encodingType = nimble::EncodingType::Dictionary},
+        nimble::Statistics<std::string_view>::create(span),
+        std::make_unique<TrivialNestedPolicy<std::string_view>>()};
+    Buffer encBuffer(*this->pool());
+    auto encoded = nimble::DictionaryEncoding<std::string_view>::encode(
+        selection, span, encBuffer);
+    std::vector<velox::BufferPtr> stringBuffers;
+    auto encoding =
+        std::make_unique<nimble::DictionaryEncoding<std::string_view>>(
+            *this->pool(), encoded, [&](uint32_t size) {
+              stringBuffers.push_back(
+                  velox::AlignedBuffer::allocate<char>(size, this->pool()));
+              return stringBuffers.back()->asMutable<void>();
+            });
+
+    const auto alphabetSize = encoding->dictionarySize();
+    const auto* alphabet =
+        static_cast<const std::string_view*>(encoding->dictionaryEntries());
+
+    common::AlwaysTrue filter;
+    dwio::common::ExtractToReader extractValues(reader);
+    DecoderVisitor<
+        int32_t,
+        common::AlwaysTrue,
+        dwio::common::ExtractToReader,
+        /*isDense=*/true>
+        visitor(filter, reader, rows, extractValues);
+    auto params = makeReadWithVisitorParams(visitor, rows, this->pool());
+
+    encoding->readIndicesWithVisitor(visitor, params);
+
+    ASSERT_EQ(reader->numValues(), numRows);
+    const auto* indices = reader->rawIndices();
+    for (int i = 0; i < numRows; ++i) {
+      ASSERT_GE(indices[i], 0) << "row " << i;
+      ASSERT_LT(indices[i], static_cast<int32_t>(alphabetSize)) << "row " << i;
+      EXPECT_EQ(alphabet[indices[i]], data[i]) << "row " << i;
+    }
+  }
+}
+
+// ===========================================================================
+// Test: readIndicesWithVisitor on integer DictionaryEncoding (multiple types).
+// ===========================================================================
+TEST_P(ReadWithVisitorTest, readIndicesWithVisitorInteger) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP() << "readIndicesWithVisitor requires non-legacy encoding";
+  }
+
+  auto runForType = [&]<typename T>(T) {
+    SCOPED_TRACE(fmt::format("type size = {}", sizeof(T)));
+    constexpr int kRows = 50;
+    const T kAlphabet[] = {T(10), T(20), T(30)};
+
+    auto input = makeRowVector(
+        {makeFlatVector<T>(kRows, [&](auto i) { return kAlphabet[i % 3]; })});
+    auto rowType = asRowType(input->type());
+    auto ctx = makeFileContext(input);
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*rowType);
+    auto root = buildReader(*ctx, rowType, *scanSpec);
+
+    auto* structReader =
+        dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(
+            root.get());
+    auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+        dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+    ASSERT_NE(reader, nullptr);
+
+    std::vector<vector_size_t> rowVec(kRows);
+    std::iota(rowVec.begin(), rowVec.end(), 0);
+    RowSet rows(rowVec.data(), rowVec.size());
+    reader->doPrepareRead<int32_t>(0, rows, nullptr);
+
+    using PhysicalType = nimble::TypeTraits<T>::physicalType;
+    nimble::Vector<T> vec{pool()};
+    for (int i = 0; i < kRows; ++i) {
+      vec.push_back(kAlphabet[i % 3]);
+    }
+    auto span = std::span<const PhysicalType>(
+        reinterpret_cast<const PhysicalType*>(vec.data()), vec.size());
+    nimble::EncodingSelection<PhysicalType> selection{
+        {.encodingType = nimble::EncodingType::Dictionary},
+        nimble::Statistics<PhysicalType>::create(span),
+        std::make_unique<TrivialNestedPolicy<T>>()};
+    Buffer encBuffer(*pool());
+    auto encoded =
+        nimble::DictionaryEncoding<T>::encode(selection, span, encBuffer);
+    auto encoding = std::make_unique<nimble::DictionaryEncoding<T>>(
+        *pool(), encoded, nullptr);
+
+    ASSERT_TRUE(encoding->dictionaryEnabled());
+    const auto alphabetSize = encoding->dictionarySize();
+    const auto* alphabet = static_cast<const T*>(encoding->dictionaryEntries());
+
+    common::AlwaysTrue filter;
+    dwio::common::ExtractToReader extractValues(reader);
+    DecoderVisitor<
+        int32_t,
+        common::AlwaysTrue,
+        dwio::common::ExtractToReader,
+        /*isDense=*/true>
+        visitor(filter, reader, rows, extractValues);
+    auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+    encoding->readIndicesWithVisitor(visitor, params);
+
+    ASSERT_EQ(reader->numValues(), kRows);
+    const auto* indices = reader->rawIndices();
+    for (int i = 0; i < kRows; ++i) {
+      ASSERT_GE(indices[i], 0) << "row " << i;
+      ASSERT_LT(indices[i], static_cast<int32_t>(alphabetSize)) << "row " << i;
+      EXPECT_EQ(alphabet[indices[i]], kAlphabet[i % 3]) << "row " << i;
+    }
+  };
+
+  runForType(int16_t{});
+  runForType(int32_t{});
+  runForType(int64_t{});
+}
+
+// ===========================================================================
+// Test: Fuzz readIndicesWithVisitor on integer DictionaryEncoding.
+// ===========================================================================
+TEST_P(ReadWithVisitorTest, fuzzReadIndicesWithVisitorInteger) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP() << "readIndicesWithVisitor requires non-legacy encoding";
+  }
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+
+  constexpr int kNumRuns = 10;
+
+  auto runForType = [&]<typename T>(T, int run) {
+    const int numRows = 20 + rng() % 100;
+    const int cardinality = 2 + rng() % 8;
+
+    SCOPED_TRACE(
+        fmt::format(
+            "run={} seed={} numRows={} typeSize={}",
+            run,
+            seed,
+            numRows,
+            sizeof(T)));
+
+    std::vector<T> alphabet;
+    for (int j = 0; j < cardinality; ++j) {
+      alphabet.push_back(static_cast<T>(j * 7 + 1));
+    }
+
+    std::vector<T> data;
+    data.reserve(numRows);
+    for (int i = 0; i < numRows; ++i) {
+      data.push_back(alphabet[rng() % alphabet.size()]);
+    }
+
+    auto input = makeRowVector(
+        {makeFlatVector<T>(numRows, [&](auto i) { return data[i]; })});
+    auto rowType = asRowType(input->type());
+    auto ctx = makeFileContext(input);
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*rowType);
+    auto root = buildReader(*ctx, rowType, *scanSpec);
+
+    auto* structReader =
+        dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(
+            root.get());
+    auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+        dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+    ASSERT_NE(reader, nullptr);
+
+    std::vector<vector_size_t> rowVec(numRows);
+    std::iota(rowVec.begin(), rowVec.end(), 0);
+    RowSet rows(rowVec.data(), rowVec.size());
+    reader->doPrepareRead<int32_t>(0, rows, nullptr);
+
+    using PhysicalType = nimble::TypeTraits<T>::physicalType;
+    nimble::Vector<T> vec{this->pool()};
+    for (auto& d : data) {
+      vec.push_back(d);
+    }
+    auto span = std::span<const PhysicalType>(
+        reinterpret_cast<const PhysicalType*>(vec.data()), vec.size());
+    nimble::EncodingSelection<PhysicalType> selection{
+        {.encodingType = nimble::EncodingType::Dictionary},
+        nimble::Statistics<PhysicalType>::create(span),
+        std::make_unique<TrivialNestedPolicy<T>>()};
+    Buffer encBuffer(*this->pool());
+    auto encoded =
+        nimble::DictionaryEncoding<T>::encode(selection, span, encBuffer);
+    auto encoding = std::make_unique<nimble::DictionaryEncoding<T>>(
+        *this->pool(), encoded, nullptr);
+
+    ASSERT_TRUE(encoding->dictionaryEnabled());
+    const auto alphabetSize = encoding->dictionarySize();
+    const auto* entries = static_cast<const T*>(encoding->dictionaryEntries());
+
+    common::AlwaysTrue filter;
+    dwio::common::ExtractToReader extractValues(reader);
+    DecoderVisitor<
+        int32_t,
+        common::AlwaysTrue,
+        dwio::common::ExtractToReader,
+        /*isDense=*/true>
+        visitor(filter, reader, rows, extractValues);
+    auto params = makeReadWithVisitorParams(visitor, rows, this->pool());
+
+    encoding->readIndicesWithVisitor(visitor, params);
+
+    ASSERT_EQ(reader->numValues(), numRows);
+    const auto* indices = reader->rawIndices();
+    for (int i = 0; i < numRows; ++i) {
+      ASSERT_GE(indices[i], 0) << "row " << i;
+      ASSERT_LT(indices[i], static_cast<int32_t>(alphabetSize)) << "row " << i;
+      EXPECT_EQ(entries[indices[i]], data[i]) << "row " << i;
+    }
+  };
+
+  for (int run = 0; run < kNumRuns; ++run) {
+    switch (run % 3) {
+      case 0:
+        runForType(int16_t{}, run);
+        break;
+      case 1:
+        runForType(int32_t{}, run);
+        break;
+      case 2:
+        runForType(int64_t{}, run);
+        break;
+    }
+  }
+}
+
+// ===========================================================================
+// Test: readIndicesWithVisitor on NullableEncoding<DictionaryEncoding<string>>.
+// ===========================================================================
+TEST_P(ReadWithVisitorTest, readIndicesWithVisitorNullable) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP() << "readIndicesWithVisitor requires non-legacy encoding";
+  }
+  constexpr int kRows = 50;
+  constexpr std::string_view kAlphabet[] = {"alpha", "bravo", "charlie"};
+
+  auto input = makeRowVector({makeFlatVector<StringView>(
+      kRows,
+      [&](auto i) { return StringView(kAlphabet[i % 3]); },
+      nullEvery(5))});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader =
+      static_cast<StringColumnReaderTestAccessor*>(structReader->children()[0]);
+  ASSERT_NE(reader, nullptr);
+
+  std::vector<vector_size_t> rowVec(kRows);
+  std::iota(rowVec.begin(), rowVec.end(), 0);
+  RowSet rows(rowVec.data(), rowVec.size());
+  reader->doPrepareReadAsIndices(0, rows, nullptr);
+
+  nimble::Vector<std::string_view> nonNullVec{pool()};
+  for (int i = 0; i < kRows; ++i) {
+    if (i % 5 != 0) {
+      nonNullVec.push_back(kAlphabet[i % 3]);
+    }
+  }
+  auto nonNullSpan =
+      std::span<const std::string_view>(nonNullVec.data(), nonNullVec.size());
+  nimble::EncodingSelection<std::string_view> valSelection{
+      {.encodingType = nimble::EncodingType::Dictionary},
+      nimble::Statistics<std::string_view>::create(nonNullSpan),
+      std::make_unique<TrivialNestedPolicy<std::string_view>>()};
+  Buffer valBuffer(*pool());
+  auto serializedValues = nimble::DictionaryEncoding<std::string_view>::encode(
+      valSelection, nonNullSpan, valBuffer);
+
+  nimble::Vector<bool> nullBits{pool()};
+  for (int i = 0; i < kRows; ++i) {
+    nullBits.push_back(i % 5 != 0);
+  }
+  auto nullSpan = std::span<const bool>(nullBits.data(), nullBits.size());
+  nimble::EncodingSelection<bool> nullSelection{
+      {.encodingType = nimble::EncodingType::Trivial},
+      nimble::Statistics<bool>::create(nullSpan),
+      std::make_unique<TrivialNestedPolicy<bool>>()};
+  Buffer nullBuffer(*pool());
+  auto serializedNulls = nimble::TrivialEncoding<bool>::encode(
+      nullSelection, nullSpan, nullBuffer);
+
+  const uint32_t encodingSize = nimble::Encoding::kPrefixSize + 4 +
+      serializedValues.size() + serializedNulls.size();
+  Buffer assemblyBuffer(*pool());
+  char* reserved = assemblyBuffer.reserve(encodingSize);
+  char* pos = reserved;
+  nimble::encoding::writeChar(
+      static_cast<char>(nimble::EncodingType::Nullable), pos);
+  nimble::encoding::writeChar(static_cast<char>(nimble::DataType::String), pos);
+  nimble::encoding::writeUint32(kRows, pos);
+  nimble::encoding::writeString(serializedValues, pos);
+  nimble::encoding::writeBytes(serializedNulls, pos);
+
+  std::vector<velox::BufferPtr> stringBuffers;
+  auto encoding = nimble::EncodingFactory().create(
+      *pool(), std::string_view(reserved, encodingSize), [&](uint32_t size) {
+        stringBuffers.push_back(
+            velox::AlignedBuffer::allocate<char>(size, pool()));
+        return stringBuffers.back()->asMutable<void>();
+      });
+
+  ASSERT_TRUE(encoding->isNullable());
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+  const auto alphabetSize = encoding->dictionarySize();
+  const auto* alphabet =
+      static_cast<const std::string_view*>(encoding->dictionaryEntries());
+
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  DecoderVisitor<
+      int32_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      /*isDense=*/true>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  static_cast<NullableEncoding<std::string_view>&>(*encoding)
+      .readIndicesWithVisitor(visitor, params);
+
+  ASSERT_EQ(reader->numValues(), kRows);
+  const auto* indices = reader->rawIndices();
+  for (int i = 0; i < kRows; ++i) {
+    if (i % 5 == 0) {
+      continue;
+    }
+    ASSERT_GE(indices[i], 0) << "row " << i;
+    ASSERT_LT(indices[i], static_cast<int32_t>(alphabetSize)) << "row " << i;
+    EXPECT_EQ(alphabet[indices[i]], kAlphabet[i % 3]) << "row " << i;
+  }
+}
+
+// ===========================================================================
+// Test: Fuzz readIndicesWithVisitor on NullableEncoding<DictionaryEncoding>.
+// ===========================================================================
+TEST_P(ReadWithVisitorTest, fuzzReadIndicesWithVisitorNullable) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP() << "readIndicesWithVisitor requires non-legacy encoding";
+  }
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+
+  constexpr int kNumRuns = 10;
+
+  for (int run = 0; run < kNumRuns; ++run) {
+    const int numRows = 20 + rng() % 100;
+    const int cardinality = 2 + rng() % 8;
+
+    SCOPED_TRACE(fmt::format("run={} seed={} numRows={}", run, seed, numRows));
+
+    std::vector<std::string> stringPool;
+    for (int j = 0; j < cardinality; ++j) {
+      int len = rng() % 20;
+      std::string s = fmt::format("{}:", j);
+      for (int k = 0; k < len; ++k) {
+        s += static_cast<char>('a' + rng() % 26);
+      }
+      stringPool.push_back(std::move(s));
+    }
+
+    std::vector<std::string_view> data;
+    nimble::Vector<bool> nullBits{pool()};
+    data.reserve(numRows);
+    for (int i = 0; i < numRows; ++i) {
+      bool isNull = (rng() % 5 == 0);
+      nullBits.push_back(!isNull);
+      data.push_back(stringPool[rng() % stringPool.size()]);
+    }
+
+    nimble::Vector<std::string_view> nonNullVec{pool()};
+    for (int i = 0; i < numRows; ++i) {
+      if (nullBits[i]) {
+        nonNullVec.push_back(data[i]);
+      }
+    }
+
+    if (nonNullVec.empty()) {
+      continue;
+    }
+
+    auto input = makeRowVector({makeFlatVector<StringView>(
+        numRows,
+        [&](auto i) { return StringView(data[i]); },
+        [&](auto i) { return !nullBits[i]; })});
+    auto rowType = asRowType(input->type());
+    auto ctx = makeFileContext(input);
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*rowType);
+    auto root = buildReader(*ctx, rowType, *scanSpec);
+
+    auto* structReader =
+        dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(
+            root.get());
+    auto* reader = static_cast<StringColumnReaderTestAccessor*>(
+        structReader->children()[0]);
+
+    std::vector<vector_size_t> rowVec(numRows);
+    std::iota(rowVec.begin(), rowVec.end(), 0);
+    RowSet rows(rowVec.data(), rowVec.size());
+    reader->doPrepareReadAsIndices(0, rows, nullptr);
+
+    auto nonNullSpan =
+        std::span<const std::string_view>(nonNullVec.data(), nonNullVec.size());
+    nimble::EncodingSelection<std::string_view> valSelection{
+        {.encodingType = nimble::EncodingType::Dictionary},
+        nimble::Statistics<std::string_view>::create(nonNullSpan),
+        std::make_unique<TrivialNestedPolicy<std::string_view>>()};
+    Buffer valBuffer(*this->pool());
+    auto serializedValues =
+        nimble::DictionaryEncoding<std::string_view>::encode(
+            valSelection, nonNullSpan, valBuffer);
+
+    auto nullSpan = std::span<const bool>(nullBits.data(), nullBits.size());
+    nimble::EncodingSelection<bool> nullSelection{
+        {.encodingType = nimble::EncodingType::Trivial},
+        nimble::Statistics<bool>::create(nullSpan),
+        std::make_unique<TrivialNestedPolicy<bool>>()};
+    Buffer nullBuffer(*this->pool());
+    auto serializedNulls = nimble::TrivialEncoding<bool>::encode(
+        nullSelection, nullSpan, nullBuffer);
+
+    const uint32_t encodingSize = nimble::Encoding::kPrefixSize + 4 +
+        serializedValues.size() + serializedNulls.size();
+    Buffer assemblyBuffer(*this->pool());
+    char* reserved = assemblyBuffer.reserve(encodingSize);
+    char* pos = reserved;
+    nimble::encoding::writeChar(
+        static_cast<char>(nimble::EncodingType::Nullable), pos);
+    nimble::encoding::writeChar(
+        static_cast<char>(nimble::DataType::String), pos);
+    nimble::encoding::writeUint32(numRows, pos);
+    nimble::encoding::writeString(serializedValues, pos);
+    nimble::encoding::writeBytes(serializedNulls, pos);
+
+    std::vector<velox::BufferPtr> stringBuffers;
+    auto encoding = nimble::EncodingFactory().create(
+        *this->pool(),
+        std::string_view(reserved, encodingSize),
+        [&](uint32_t size) {
+          stringBuffers.push_back(
+              velox::AlignedBuffer::allocate<char>(size, this->pool()));
+          return stringBuffers.back()->asMutable<void>();
+        });
+
+    ASSERT_TRUE(encoding->isNullable());
+    ASSERT_TRUE(encoding->dictionaryEnabled());
+    const auto alphabetSize = encoding->dictionarySize();
+    const auto* alphabet =
+        static_cast<const std::string_view*>(encoding->dictionaryEntries());
+
+    common::AlwaysTrue filter;
+    dwio::common::ExtractToReader extractValues(reader);
+    DecoderVisitor<
+        int32_t,
+        common::AlwaysTrue,
+        dwio::common::ExtractToReader,
+        /*isDense=*/true>
+        visitor(filter, reader, rows, extractValues);
+    auto params = makeReadWithVisitorParams(visitor, rows, this->pool());
+
+    static_cast<NullableEncoding<std::string_view>&>(*encoding)
+        .readIndicesWithVisitor(visitor, params);
+
+    ASSERT_EQ(reader->numValues(), numRows);
+    const auto* indices = reader->rawIndices();
+    for (int i = 0; i < numRows; ++i) {
+      if (!nullBits[i]) {
+        continue;
+      }
+      ASSERT_GE(indices[i], 0) << "row " << i;
+      ASSERT_LT(indices[i], static_cast<int32_t>(alphabetSize)) << "row " << i;
+      EXPECT_EQ(alphabet[indices[i]], data[i]) << "row " << i;
+    }
+  }
+}
+
+// ===========================================================================
+// Test: Dictionary-encoded string data read through the flat path.
+// Verifies that DictionaryEncoding::readWithVisitor correctly decodes
+// dictionary indices → alphabet lookup → StringView output.
+// ===========================================================================
+TEST_P(ReadWithVisitorTest, stringDictionaryEncoded) {
+  constexpr int kRows = 100;
+  constexpr std::string_view kExpected[] = {"alpha", "bravo", "charlie"};
+  auto input = makeRowVector({makeFlatVector<StringView>(
+      kRows, [&](auto i) { return StringView(kExpected[i % 3]); })});
+  auto rowType = asRowType(input->type());
+
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+  auto* child = readColumn(root.get(), kRows);
+
+  ASSERT_EQ(child->numValues(), kRows);
+  auto values = getValues<StringView>(child);
+  for (int i = 0; i < kRows; ++i) {
+    EXPECT_EQ(
+        std::string_view(values[i].data(), values[i].size()), kExpected[i % 3])
+        << "row " << i;
+  }
+}
+
+// ===========================================================================
+// Test: Nullable dictionary-encoded string data.
+// Verifies correct value output when NullableEncoding wraps DictionaryEncoding.
+// ===========================================================================
+TEST_P(ReadWithVisitorTest, stringDictionaryEncodedNullable) {
+  constexpr int kRows = 100;
+  constexpr std::string_view kExpected[] = {"x", "y", "z"};
+  auto input = makeRowVector({makeFlatVector<StringView>(
+      kRows,
+      [&](auto i) { return StringView(kExpected[i % 3]); },
+      nullEvery(7))});
+  auto rowType = asRowType(input->type());
+
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+  auto* child = readColumn(root.get(), kRows);
+
+  ASSERT_EQ(child->numValues(), kRows);
+  auto values = getValues<StringView>(child);
+  for (int i = 0; i < kRows; ++i) {
+    if (i % 7 == 0) {
+      continue;
+    }
+    EXPECT_EQ(
+        std::string_view(values[i].data(), values[i].size()), kExpected[i % 3])
+        << "row " << i;
+  }
+}
+
+// ===========================================================================
+// Test: Fuzz string data with VectorFuzzer — exercises DictionaryEncoding
+// readWithVisitor with randomized alphabet content and null patterns.
+// ===========================================================================
+TEST_P(ReadWithVisitorTest, fuzzStringDictionaryEncoded) {
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+
+  constexpr int kNumRuns = 10;
+
+  for (int run = 0; run < kNumRuns; ++run) {
+    auto runSeed = seed + run;
+    velox::VectorFuzzer::Options opts;
+    opts.vectorSize = 50 + runSeed % 200;
+    opts.nullRatio = (runSeed % 3 == 0) ? 0.0 : 0.2;
+    opts.stringLength = 1 + runSeed % 20;
+    opts.stringVariableLength = true;
+    velox::VectorFuzzer fuzzer(opts, pool(), runSeed);
+
+    SCOPED_TRACE(
+        fmt::format(
+            "run={} seed={} vectorSize={} nullRatio={}",
+            run,
+            runSeed,
+            opts.vectorSize,
+            opts.nullRatio));
+
+    auto c0 = fuzzer.fuzzFlat(velox::VARCHAR());
+    auto input = makeRowVector({c0});
+    auto rowType = asRowType(input->type());
+
+    auto ctx = makeFileContext(input);
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*rowType);
+    scanSpec->childByName("c0")->setFilter(
+        std::make_unique<common::AlwaysTrue>());
+
+    auto root = buildReader(*ctx, rowType, *scanSpec);
+    auto* child = readColumn(root.get(), opts.vectorSize);
+
+    // Build expected values from the input vector (AlwaysTrue passes all rows).
+    auto* flat = c0->asFlatVector<StringView>();
+    int expectedCount = opts.vectorSize;
+    ASSERT_EQ(child->numValues(), expectedCount);
+
+    auto values = getValues<StringView>(child);
+    for (int i = 0; i < expectedCount; ++i) {
+      if (flat->isNullAt(i)) {
+        continue;
+      }
+      auto expected = flat->valueAt(i);
+      EXPECT_EQ(
+          std::string_view(values[i].data(), values[i].size()),
+          std::string_view(expected.data(), expected.size()))
+          << "row " << i;
+    }
   }
 }
 

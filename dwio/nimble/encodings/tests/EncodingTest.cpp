@@ -15,11 +15,14 @@
  */
 #include "dwio/nimble/encodings/Encoding.h"
 #include <glog/logging.h>
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <memory>
+#include <set>
 #include <span>
 #include <vector>
 #include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
@@ -31,6 +34,7 @@
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
+#include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
@@ -132,6 +136,7 @@ class TestTrivialEncodingSelectionPolicy
   bool shouldCompress_;
   bool useVariableBitWidthCompressor_;
 };
+
 } // namespace
 
 template <typename EncodingType, bool UseVarint>
@@ -718,5 +723,466 @@ TYPED_TEST(EncodingTest, scatteredMaterialize) {
         }
       }
     }
+  }
+}
+
+// Templatized dictionary API tests covering all DictionaryEncoding-compatible
+// types: numeric types + string_view + bool.
+template <typename T>
+class DictionaryApiTypedTest : public ::testing::Test {
+ protected:
+  using PhysicalType = typename nimble::TypeTraits<T>::physicalType;
+
+  void SetUp() override {
+    pool_ = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
+    buffer_ = std::make_unique<nimble::Buffer>(*pool_);
+  }
+
+  std::unique_ptr<nimble::Encoding> encodeDictionary(
+      const std::vector<T>& values) {
+    nimble::Vector<T> vec{pool_.get()};
+    for (auto v : values) {
+      vec.push_back(v);
+    }
+    auto physicalValues = std::span<const PhysicalType>(
+        reinterpret_cast<const PhysicalType*>(vec.data()), vec.size());
+    nimble::EncodingSelection<PhysicalType> selection{
+        {.encodingType = nimble::EncodingType::Dictionary},
+        nimble::Statistics<PhysicalType>::create(physicalValues),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(false, false)};
+    auto encoded = nimble::DictionaryEncoding<T>::encode(
+        selection, physicalValues, *buffer_);
+    return std::make_unique<nimble::DictionaryEncoding<T>>(
+        *pool_, encoded, [this](uint32_t size) {
+          stringBuffers_.push_back(
+              velox::AlignedBuffer::allocate<char>(size, pool_.get()));
+          return stringBuffers_.back()->asMutable<void>();
+        });
+  }
+
+  std::unique_ptr<nimble::Encoding> encodeNullableDictionary(
+      const std::vector<T>& values,
+      const nimble::Vector<bool>& nulls) {
+    NIMBLE_CHECK_EQ(values.size(), nulls.size());
+    const uint32_t rowCount = values.size();
+
+    // Encode non-null values as DictionaryEncoding.
+    nimble::Vector<T> nonNullVec{pool_.get()};
+    for (size_t i = 0; i < values.size(); ++i) {
+      if (nulls[i]) {
+        nonNullVec.push_back(values[i]);
+      }
+    }
+    auto nonNullSpan = std::span<const PhysicalType>(
+        reinterpret_cast<const PhysicalType*>(nonNullVec.data()),
+        nonNullVec.size());
+    nimble::Buffer valBuffer{*pool_};
+    nimble::EncodingSelection<PhysicalType> valSelection{
+        {.encodingType = nimble::EncodingType::Dictionary},
+        nimble::Statistics<PhysicalType>::create(nonNullSpan),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(false, false)};
+    auto serializedValues = nimble::DictionaryEncoding<T>::encode(
+        valSelection, nonNullSpan, valBuffer);
+
+    // Encode nulls as TrivialEncoding<bool>.
+    auto nullSpan = std::span<const bool>(nulls.data(), nulls.size());
+    nimble::Buffer nullBuffer{*pool_};
+    nimble::EncodingSelection<bool> nullSelection{
+        {.encodingType = nimble::EncodingType::Trivial},
+        nimble::Statistics<bool>::create(nullSpan),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<bool>>(
+            false, false)};
+    auto serializedNulls = nimble::TrivialEncoding<bool>::encode(
+        nullSelection, nullSpan, nullBuffer);
+
+    // Assemble the NullableEncoding binary format:
+    // [EncodingType:1][DataType:1][rowCount:4] | uint32(valSize) | valBytes |
+    // nullBytes
+    const uint32_t encodingSize = nimble::Encoding::kPrefixSize + 4 +
+        serializedValues.size() + serializedNulls.size();
+    char* reserved = buffer_->reserve(encodingSize);
+    char* pos = reserved;
+    nimble::encoding::writeChar(
+        static_cast<char>(nimble::EncodingType::Nullable), pos);
+    nimble::encoding::writeChar(
+        static_cast<char>(nimble::TypeTraits<T>::dataType), pos);
+    nimble::encoding::writeUint32(rowCount, pos);
+    nimble::encoding::writeString(serializedValues, pos);
+    nimble::encoding::writeBytes(serializedNulls, pos);
+
+    return nimble::EncodingFactory().create(
+        *pool_,
+        std::string_view(reserved, encodingSize),
+        [this](uint32_t size) {
+          stringBuffers_.push_back(
+              velox::AlignedBuffer::allocate<char>(size, pool_.get()));
+          return stringBuffers_.back()->asMutable<void>();
+        });
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> pool_;
+  std::unique_ptr<nimble::Buffer> buffer_;
+  std::vector<velox::BufferPtr> stringBuffers_;
+  std::vector<std::string> stringPool_;
+};
+
+using DictionaryApiTypes = ::testing::Types<
+    int8_t,
+    int16_t,
+    int32_t,
+    int64_t,
+    uint8_t,
+    uint16_t,
+    uint32_t,
+    uint64_t,
+    float,
+    double,
+    std::string_view>;
+
+TYPED_TEST_SUITE(DictionaryApiTypedTest, DictionaryApiTypes);
+
+TYPED_TEST(DictionaryApiTypedTest, basics) {
+  using T = TypeParam;
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    data = {"alpha", "bravo", "alpha", "charlie", "bravo"};
+  } else {
+    data = {T(1), T(2), T(1), T(3), T(2)};
+  }
+
+  auto encoding = this->encodeDictionary(data);
+  EXPECT_TRUE(encoding->dictionaryEnabled());
+  EXPECT_EQ(encoding->dictionarySize(), 3);
+
+  const auto* entries = static_cast<const T*>(encoding->dictionaryEntries());
+  ASSERT_NE(entries, nullptr);
+  std::set<T> actualUniques(entries, entries + 3);
+
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    EXPECT_THAT(
+        actualUniques,
+        ::testing::UnorderedElementsAre("alpha", "bravo", "charlie"));
+  } else {
+    EXPECT_THAT(
+        actualUniques, ::testing::UnorderedElementsAre(T(1), T(2), T(3)));
+  }
+
+  for (uint32_t i = 0; i < 3; ++i) {
+    const auto* entry = static_cast<const T*>(encoding->dictionaryEntry(i));
+    EXPECT_EQ(*entry, entries[i]);
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, fuzz) {
+  using T = TypeParam;
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+
+  constexpr int kNumRuns = 10;
+  constexpr int kMaxRows = 300;
+
+  for (int run = 0; run < kNumRuns; ++run) {
+    const int numRows = 2 + rng() % kMaxRows;
+    const int cardinality = 2 + rng() % 10;
+
+    // For string types, build a pool of unique random strings per run.
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      this->stringPool_.clear();
+      for (int j = 0; j < cardinality; ++j) {
+        const int len = rng() % 30;
+        std::string s = fmt::format("{}:", j);
+        for (int k = 0; k < len; ++k) {
+          s += static_cast<char>('a' + rng() % 26);
+        }
+        this->stringPool_.push_back(std::move(s));
+      }
+    }
+
+    std::vector<T> data;
+    std::set<T> expectedUniques;
+    data.reserve(numRows);
+    for (int i = 0; i < numRows; ++i) {
+      T val;
+      if constexpr (std::is_same_v<T, std::string_view>) {
+        val = std::string_view(this->stringPool_[rng() % cardinality]);
+      } else {
+        val = static_cast<T>(rng() % cardinality);
+      }
+      data.push_back(val);
+      expectedUniques.insert(val);
+    }
+
+    SCOPED_TRACE(fmt::format("run={} seed={} numRows={}", run, seed, numRows));
+
+    auto encoding = this->encodeDictionary(data);
+    ASSERT_TRUE(encoding->dictionaryEnabled());
+    ASSERT_EQ(encoding->dictionarySize(), expectedUniques.size());
+
+    const auto* entries = static_cast<const T*>(encoding->dictionaryEntries());
+    std::set<T> actualUniques(entries, entries + encoding->dictionarySize());
+    EXPECT_EQ(actualUniques, expectedUniques);
+
+    for (uint32_t i = 0; i < encoding->dictionarySize(); ++i) {
+      const auto* entry = static_cast<const T*>(encoding->dictionaryEntry(i));
+      EXPECT_EQ(*entry, entries[i]);
+    }
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, nullableBasics) {
+  using T = TypeParam;
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    data = {"alpha", "bravo", "alpha", "charlie", "bravo"};
+  } else {
+    data = {T(1), T(2), T(1), T(3), T(2)};
+  }
+  nimble::Vector<bool> nulls{this->pool_.get()};
+  for (bool b : {true, true, false, true, true}) {
+    nulls.push_back(b);
+  }
+
+  auto encoding = this->encodeNullableDictionary(data, nulls);
+  ASSERT_TRUE(encoding->isNullable());
+  EXPECT_TRUE(encoding->dictionaryEnabled());
+  EXPECT_EQ(encoding->dictionarySize(), 3);
+
+  const auto* entries = static_cast<const T*>(encoding->dictionaryEntries());
+  ASSERT_NE(entries, nullptr);
+  std::set<T> actualUniques(entries, entries + 3);
+
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    EXPECT_THAT(
+        actualUniques,
+        ::testing::UnorderedElementsAre("alpha", "bravo", "charlie"));
+  } else {
+    EXPECT_THAT(
+        actualUniques, ::testing::UnorderedElementsAre(T(1), T(2), T(3)));
+  }
+
+  for (uint32_t i = 0; i < 3; ++i) {
+    const auto* entry = static_cast<const T*>(encoding->dictionaryEntry(i));
+    EXPECT_EQ(*entry, entries[i]);
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, nullableFuzz) {
+  using T = TypeParam;
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+
+  constexpr int kNumRuns = 10;
+  constexpr int kMaxRows = 300;
+
+  for (int run = 0; run < kNumRuns; ++run) {
+    const int numRows = 2 + rng() % kMaxRows;
+    const int cardinality = 2 + rng() % 10;
+
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      this->stringPool_.clear();
+      for (int j = 0; j < cardinality; ++j) {
+        const int len = rng() % 30;
+        std::string s = fmt::format("{}:", j);
+        for (int k = 0; k < len; ++k) {
+          s += static_cast<char>('a' + rng() % 26);
+        }
+        this->stringPool_.push_back(std::move(s));
+      }
+    }
+
+    std::vector<T> data;
+    nimble::Vector<bool> nulls{this->pool_.get()};
+    std::set<T> expectedUniques;
+    data.reserve(numRows);
+    nulls.reserve(numRows);
+    for (int i = 0; i < numRows; ++i) {
+      bool isNull = (rng() % 5 == 0);
+      nulls.push_back(!isNull);
+      T val;
+      if constexpr (std::is_same_v<T, std::string_view>) {
+        val = std::string_view(this->stringPool_[rng() % cardinality]);
+      } else {
+        val = static_cast<T>(rng() % cardinality);
+      }
+      data.push_back(val);
+      if (!isNull) {
+        expectedUniques.insert(val);
+      }
+    }
+
+    if (expectedUniques.empty()) {
+      continue;
+    }
+
+    SCOPED_TRACE(fmt::format("run={} seed={} numRows={}", run, seed, numRows));
+
+    auto encoding = this->encodeNullableDictionary(data, nulls);
+    ASSERT_TRUE(encoding->isNullable());
+    ASSERT_TRUE(encoding->dictionaryEnabled());
+    ASSERT_EQ(encoding->dictionarySize(), expectedUniques.size());
+
+    const auto* entries = static_cast<const T*>(encoding->dictionaryEntries());
+    std::set<T> actualUniques(entries, entries + encoding->dictionarySize());
+    EXPECT_EQ(actualUniques, expectedUniques);
+
+    for (uint32_t i = 0; i < encoding->dictionarySize(); ++i) {
+      const auto* entry = static_cast<const T*>(encoding->dictionaryEntry(i));
+      EXPECT_EQ(*entry, entries[i]);
+    }
+  }
+}
+
+// Non-templated test for unsupported encodings and bool dictionary.
+class DictionaryApiTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    pool_ = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
+    buffer_ = std::make_unique<nimble::Buffer>(*pool_);
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> pool_;
+  std::unique_ptr<nimble::Buffer> buffer_;
+  std::vector<velox::BufferPtr> stringBuffers_;
+};
+
+// Verifies that every non-dictionary encoding type returns
+// dictionaryEnabled()=false and aborts on dictionary-specific methods.
+TEST_F(DictionaryApiTest, unsupportedEncodings) {
+  auto verifyUnsupported = [](nimble::Encoding& enc, const char* name) {
+    SCOPED_TRACE(name);
+    EXPECT_FALSE(enc.dictionaryEnabled());
+    EXPECT_THROW(enc.dictionarySize(), nimble::NimbleInternalError);
+    EXPECT_THROW(enc.dictionaryEntry(0), nimble::NimbleInternalError);
+    EXPECT_THROW(enc.dictionaryEntries(), nimble::NimbleInternalError);
+  };
+
+  // Trivial<string_view>
+  {
+    nimble::Vector<std::string_view> vals{pool_.get()};
+    vals.push_back("a");
+    vals.push_back("b");
+    auto span = std::span<const std::string_view>(vals.data(), vals.size());
+    nimble::EncodingSelection<std::string_view> sel{
+        {.encodingType = nimble::EncodingType::Trivial},
+        nimble::Statistics<std::string_view>::create(span),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<std::string_view>>(
+            false, false)};
+    auto encoded =
+        nimble::TrivialEncoding<std::string_view>::encode(sel, span, *buffer_);
+    auto enc = nimble::EncodingFactory().create(
+        *pool_, encoded, [this](uint32_t size) {
+          stringBuffers_.push_back(
+              velox::AlignedBuffer::allocate<char>(size, pool_.get()));
+          return stringBuffers_.back()->asMutable<void>();
+        });
+    verifyUnsupported(*enc, "Trivial");
+  }
+
+  // Constant<uint32_t>
+  {
+    std::vector<uint32_t> data(10, 42);
+    auto span = std::span<const uint32_t>(data);
+    nimble::EncodingSelection<uint32_t> sel{
+        {.encodingType = nimble::EncodingType::Constant},
+        nimble::Statistics<uint32_t>::create(span),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<uint32_t>>(
+            false, false)};
+    auto encoded =
+        nimble::ConstantEncoding<uint32_t>::encode(sel, span, *buffer_);
+    auto enc = nimble::EncodingFactory().create(*pool_, encoded, nullptr);
+    verifyUnsupported(*enc, "Constant");
+  }
+
+  // RLE<uint32_t>
+  {
+    std::vector<uint32_t> data(10, 5);
+    auto span = std::span<const uint32_t>(data);
+    nimble::EncodingSelection<uint32_t> sel{
+        {.encodingType = nimble::EncodingType::RLE},
+        nimble::Statistics<uint32_t>::create(span),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<uint32_t>>(
+            false, false)};
+    auto encoded = nimble::RLEEncoding<uint32_t>::encode(sel, span, *buffer_);
+    auto enc = nimble::EncodingFactory().create(*pool_, encoded, nullptr);
+    verifyUnsupported(*enc, "RLE");
+  }
+
+  // FixedBitWidth<uint32_t>
+  {
+    std::vector<uint32_t> data = {1, 3, 7, 15};
+    auto span = std::span<const uint32_t>(data);
+    nimble::EncodingSelection<uint32_t> sel{
+        {.encodingType = nimble::EncodingType::FixedBitWidth},
+        nimble::Statistics<uint32_t>::create(span),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<uint32_t>>(
+            false, false)};
+    auto encoded =
+        nimble::FixedBitWidthEncoding<uint32_t>::encode(sel, span, *buffer_);
+    auto enc = nimble::EncodingFactory().create(*pool_, encoded, nullptr);
+    verifyUnsupported(*enc, "FixedBitWidth");
+  }
+
+  // MainlyConstant<uint32_t>
+  {
+    std::vector<uint32_t> data(10, 99);
+    data.push_back(1);
+    auto span = std::span<const uint32_t>(data);
+    nimble::EncodingSelection<uint32_t> sel{
+        {.encodingType = nimble::EncodingType::MainlyConstant},
+        nimble::Statistics<uint32_t>::create(span),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<uint32_t>>(
+            false, false)};
+    auto encoded =
+        nimble::MainlyConstantEncoding<uint32_t>::encode(sel, span, *buffer_);
+    auto enc = nimble::EncodingFactory().create(*pool_, encoded, nullptr);
+    verifyUnsupported(*enc, "MainlyConstant");
+  }
+
+  // SparseBool
+  {
+    nimble::Vector<bool> vals{pool_.get()};
+    for (int i = 0; i < 10; ++i) {
+      vals.push_back(i != 5);
+    }
+    auto span = std::span<const bool>(vals.data(), vals.size());
+    nimble::EncodingSelection<bool> sel{
+        {.encodingType = nimble::EncodingType::SparseBool},
+        nimble::Statistics<bool>::create(span),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<bool>>(
+            false, false)};
+    auto encoded = nimble::SparseBoolEncoding::encode(sel, span, *buffer_);
+    auto enc = nimble::EncodingFactory().create(*pool_, encoded, nullptr);
+    verifyUnsupported(*enc, "SparseBool");
+  }
+
+  // Varint<uint64_t>
+  {
+    std::vector<uint64_t> data = {100, 200, 300};
+    auto span = std::span<const uint64_t>(data);
+    nimble::EncodingSelection<uint64_t> sel{
+        {.encodingType = nimble::EncodingType::Varint},
+        nimble::Statistics<uint64_t>::create(span),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<uint64_t>>(
+            false, false)};
+    auto encoded =
+        nimble::VarintEncoding<uint64_t>::encode(sel, span, *buffer_);
+    auto enc = nimble::EncodingFactory().create(*pool_, encoded, nullptr);
+    verifyUnsupported(*enc, "Varint");
+  }
+
+  // Delta<uint32_t>
+  {
+    std::vector<uint32_t> data = {10, 20, 30};
+    auto span = std::span<const uint32_t>(data);
+    nimble::EncodingSelection<uint32_t> sel{
+        {.encodingType = nimble::EncodingType::Delta},
+        nimble::Statistics<uint32_t>::create(span),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<uint32_t>>(
+            false, false)};
+    auto encoded = nimble::DeltaEncoding<uint32_t>::encode(sel, span, *buffer_);
+    auto enc = nimble::EncodingFactory().create(*pool_, encoded, nullptr);
+    verifyUnsupported(*enc, "Delta");
   }
 }
