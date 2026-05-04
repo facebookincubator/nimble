@@ -26,40 +26,40 @@
 
 #include <type_traits>
 
-// The Encoding class defines an interface for interacting with encodings
-// (aka vectors, aka arrays) of encoded data. The API is tailored for
-// typical usage patterns within query engines, and is designed to be
-// easily extensible.
-//
-// Some general notes:
-//  1. Output bitmaps are compatible with the FixedBitArray class. In
-//     particular this means you must use FixedBitArray::bufferSize to
-//     determine the space needed for the bitmaps you pass to, e.g.,
-//     the output buffer of Encoding::Equals.
-//  2. When passing types into functions via the void* interfaces,
-//     and when materializing data, numeric types are input/output via
-//     their native types, while string are passed via std::string_view
-//     -- NOT std::string!
-//  3. We refer to the 'row pointer' in various places. Think of this as
-//     the iterator over the encoding's data. Encoding::Reset() is like
-//     rp = vec.begin(), advancing N rows is like rp = rp + N, etc.
-//  4. An Encoding doesn't own the underlying data. If you want to create two
-//     copies for some reason on the same data go ahead, they are totally
-//     independent.
-//  5. Each subclass of Encoding will provide its own serialization methods.
-//     The resulting string should be passed to the subclass's constructor
-//     at read time.
-//  6. Although serialized Encodings can be stored independently if desired
-//     (as they are just strings), when written to disk they are normally
-//     stored together in a Tablet (see tablet.h).
-//  7. We consistently use 4 byte unsigned integers for things like offsets
-//     and row counts. Encodings, and indeed entire Tablets, are required to
-//     fit within a uint32_t in size. This is enforced in the normal
-//     ingestion pathways. If you directly use the serialization methods,
-//     be careful that this remains true!
-//  8. See the notes in the Encoding class about array encodings. These
-//  encodings
-//     have slightly different semantics than other encodings.
+/// The Encoding class defines an interface for interacting with encodings
+/// (aka vectors, aka arrays) of encoded data. The API is tailored for
+/// typical usage patterns within query engines, and is designed to be
+/// easily extensible.
+///
+/// Some general notes:
+///  1. Output bitmaps are compatible with the FixedBitArray class. In
+///     particular this means you must use FixedBitArray::bufferSize to
+///     determine the space needed for the bitmaps you pass to, e.g.,
+///     the output buffer of Encoding::Equals.
+///  2. When passing types into functions via the void* interfaces,
+///     and when materializing data, numeric types are input/output via
+///     their native types, while string are passed via std::string_view
+///     -- NOT std::string!
+///  3. We refer to the 'row pointer' in various places. Think of this as
+///     the iterator over the encoding's data. Encoding::Reset() is like
+///     rp = vec.begin(), advancing N rows is like rp = rp + N, etc.
+///  4. An Encoding doesn't own the underlying data. If you want to create two
+///     copies for some reason on the same data go ahead, they are totally
+///     independent.
+///  5. Each subclass of Encoding will provide its own serialization methods.
+///     The resulting string should be passed to the subclass's constructor
+///     at read time.
+///  6. Although serialized Encodings can be stored independently if desired
+///     (as they are just strings), when written to disk they are normally
+///     stored together in a Tablet (see tablet.h).
+///  7. We consistently use 4 byte unsigned integers for things like offsets
+///     and row counts. Encodings, and indeed entire Tablets, are required to
+///     fit within a uint32_t in size. This is enforced in the normal
+///     ingestion pathways. If you directly use the serialization methods,
+///     be careful that this remains true!
+///  8. See the notes in the Encoding class about array encodings. These
+///  encodings
+///     have slightly different semantics than other encodings.
 
 namespace facebook::nimble {
 
@@ -150,11 +150,11 @@ class Encoding {
     return 0;
   }
 
-  // Resets the internal state (e.g. row pointer) to newly constructed form.
+  /// Resets the internal state (e.g. row pointer) to newly constructed form.
   virtual void reset() = 0;
 
-  // Advances the row pointer N rows. Note that we don't provide a 'backwards'
-  // iterator; if you need to move your row pointer back, reset() and skip().
+  /// Advances the row pointer N rows. Note that we don't provide a 'backwards'
+  /// iterator; if you need to move your row pointer back, reset() and skip().
   virtual void skip(uint32_t rowCount) = 0;
 
   /// Seeks to the first row matching the target value.
@@ -167,39 +167,39 @@ class Encoding {
     NIMBLE_UNSUPPORTED("seek is not supported.");
   }
 
-  // Materializes the next |rowCount| rows into buffer. Advances
-  // the row pointer |rowCount|.
-  //
-  // Remember that buffer is interpreted as a physicalType*, with
-  // std::string_view* for strings and bool* (not a bitmap) for bool. For
-  // non-POD types, namely string data, note that the materialized values are
-  // only guaranteed valid until the next non-const call to *this.
-  //
-  // If this->isNullable(), null rows are materialized as physicalType(). To be
-  // able to distinguish between nulls and non-null physicalType() values, use
-  // MaterializeNullable.
+  /// Materializes the next |rowCount| rows into buffer. Advances
+  /// the row pointer |rowCount|.
+  ///
+  /// Remember that buffer is interpreted as a physicalType*, with
+  /// std::string_view* for strings and bool* (not a bitmap) for bool. For
+  /// non-POD types, namely string data, note that the materialized values are
+  /// only guaranteed valid until the next non-const call to *this.
+  ///
+  /// If this->isNullable(), null rows are materialized as physicalType(). To be
+  /// able to distinguish between nulls and non-null physicalType() values, use
+  /// MaterializeNullable.
   virtual void materialize(uint32_t rowCount, void* buffer) = 0;
 
-  // Nullable method.
-  // Like Materialize, but also sets the ith bit of bitmap to reflect whether
-  // ith row was null or not. 0 means null, 1 means not null. Null rows are left
-  // untouched instead of being filled with default values.
-  //
-  // If |scatterBitmap| is provided, |rowCount| still indicates how many items
-  // to be read from the encoding. However, instead of placing them sequentially
-  // in the output |buffer|, the items are scattered. This means that item will
-  // be place into the slot where the corresponding positional bit is set to 1
-  // in |scatterBitmap|, (note that the value being read may be null). For every
-  // positional scatter bit set to 0, it will fill a null in the poisition in
-  // the output |buffer|. |rowCount| should match the number of bits set to 1 in
-  // |scatterBitmap|. For scattered reads, |buffer| and |nulls| should
-  // have enough space to accommodate |scatterBitmap.size()| items. When
-  // |offset| is specified, use the |scatterBitmap| starting from |offset| and
-  // scatter to |buffer| and |nulls| starting from |offset|.
-  //
-  // Returns number of items that are not null. In the case when all values are
-  // non null, |nulls| will not be filled with all 1s. It's expected that
-  // caller explicitly checks for that condition.
+  /// Nullable method.
+  /// Like Materialize, but also sets the ith bit of bitmap to reflect whether
+  /// ith row was null or not. 0 means null, 1 means not null. Null rows are
+  /// left untouched instead of being filled with default values.
+  ///
+  /// If |scatterBitmap| is provided, |rowCount| still indicates how many items
+  /// to be read from the encoding. However, instead of placing them
+  /// sequentially in the output |buffer|, the items are scattered. This means
+  /// that item will be place into the slot where the corresponding positional
+  /// bit is set to 1 in |scatterBitmap|, (note that the value being read may be
+  /// null). For every positional scatter bit set to 0, it will fill a null in
+  /// the poisition in the output |buffer|. |rowCount| should match the number
+  /// of bits set to 1 in |scatterBitmap|. For scattered reads, |buffer| and
+  /// |nulls| should have enough space to accommodate |scatterBitmap.size()|
+  /// items. When |offset| is specified, use the |scatterBitmap| starting from
+  /// |offset| and scatter to |buffer| and |nulls| starting from |offset|.
+  ///
+  /// Returns number of items that are not null. In the case when all values are
+  /// non null, |nulls| will not be filled with all 1s. It's expected that
+  /// caller explicitly checks for that condition.
   virtual uint32_t materializeNullable(
       uint32_t rowCount,
       void* buffer,
@@ -207,7 +207,7 @@ class Encoding {
       const velox::bits::Bitmap* scatterBitmap = nullptr,
       uint32_t offset = 0) = 0;
 
-  // Read bool values to output buffer as bits.
+  /// Read bool values to output buffer as bits.
   virtual void materializeBoolsAsBits(
       uint32_t /*rowCount*/,
       uint64_t* /*buffer*/,
@@ -215,40 +215,48 @@ class Encoding {
     NIMBLE_NOT_IMPLEMENTED(typeid(*this).name());
   }
 
-  // Whether this encoding is nullable, i.e. contains any nulls. This property
-  // modifies how engines need to interpret many of the function results, and a
-  // number of functions are only callable if isNullable() returns true.
+  /// Whether this encoding is nullable, i.e. contains any nulls. This property
+  /// modifies how engines need to interpret many of the function results, and a
+  /// number of functions are only callable if isNullable() returns true.
   virtual bool isNullable() const {
     return false;
   }
 
-  // A number of functions are legal to call only if the encoding is dictionary
-  // enabled, such as retrieving the dictionary indices or looking up a value
-  // by dictionary index.
-  virtual bool isDictionaryEnabled() const {
+  /// Returns true if this encoding stores dictionary-encoded data.
+  /// When true, dictionarySize(), dictionaryEntry(), and dictionaryEntries()
+  /// are valid to call.
+  virtual bool dictionaryEnabled() const {
     return false;
   }
 
-  // Dictionary method.
-  // The size of the dictionary, which is equal to the number of unique values.
+  /// Returns the number of unique values in the dictionary.
   virtual uint32_t dictionarySize() const {
-    NIMBLE_UNSUPPORTED("Data is not dictionary encoded.");
+    NIMBLE_UNREACHABLE("dictionarySize on non-dictionary encoding");
   }
 
-  // Dictionary method.
-  // Returns the value at the given index, which must be in [0, num_entries).
-  // This pointer is only guaranteed valid until the next Entry call.
+  /// Returns a pointer to the value at the given dictionary index.
+  /// The index must be in [0, dictionarySize()). The pointer is valid for
+  /// the lifetime of the encoding.
   virtual const void* dictionaryEntry(uint32_t /* index */) const {
-    NIMBLE_UNSUPPORTED("Data is not dictionary encoded.");
+    NIMBLE_UNREACHABLE("dictionaryEntry on non-dictionary encoding");
   }
 
-  // Dictionary method.
-  // Materializes the next |rowCount| dictionary indices into buffer. Advances
-  // The row pointer |rowCount|.
+  /// Returns a pointer to the contiguous dictionary alphabet data.
+  /// The pointer is valid for the lifetime of the encoding. The caller
+  /// must cast to the appropriate type (e.g., `const std::string_view*`).
+  /// For NullableEncoding, unwraps and delegates to the inner encoding.
+  /// Future stacks should extend to recursively find the inner
+  /// DictionaryEncoding through MainlyConstant and RLE wrappers.
+  virtual const void* dictionaryEntries() const {
+    NIMBLE_UNREACHABLE("dictionaryEntries on non-dictionary encoding");
+  }
+
+  /// Materializes the next |rowCount| dictionary indices into buffer.
+  /// Advances the row pointer |rowCount|.
   virtual void materializeIndices(
       uint32_t /* rowCount */,
       uint32_t* /* buffer */) {
-    NIMBLE_UNSUPPORTED("Data is not dictionary encoded.");
+    NIMBLE_UNREACHABLE("materializeIndices on non-dictionary encoding");
   }
 
   // A string for debugging/iteration that gives details about *this.

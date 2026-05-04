@@ -20,6 +20,7 @@
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingIdentifier.h"
@@ -65,6 +66,15 @@ class NullableEncoding final
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
 
+  /// Reads dictionary indices from a NullableEncoding that wraps a
+  /// DictionaryEncoding. Handles nulls, then delegates to the inner
+  /// DictionaryEncoding's readIndicesWithVisitor().
+  /// Non-legacy encodings only.
+  template <typename IndicesVisitor>
+  void readIndicesWithVisitor(
+      IndicesVisitor& visitor,
+      ReadWithVisitorParams& params);
+
   static std::string_view encodeNullable(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
@@ -74,7 +84,29 @@ class NullableEncoding final
 
   std::string debugString(int offset) const final;
 
+  // Dictionary API — delegates to the inner (non-null) encoding.
+  bool dictionaryEnabled() const override {
+    return nonNulls()->dictionaryEnabled();
+  }
+
+  uint32_t dictionarySize() const override {
+    return nonNulls()->dictionarySize();
+  }
+
+  const void* dictionaryEntry(uint32_t index) const override {
+    return nonNulls()->dictionaryEntry(index);
+  }
+
+  const void* dictionaryEntries() const override {
+    return nonNulls()->dictionaryEntries();
+  }
+
  private:
+  /// Materializes null bits into the visitor's reader null bitmap.
+  /// Shared by readWithVisitor and readIndicesWithVisitor.
+  template <typename V>
+  void materializeNullsForVisitor(V& visitor, ReadWithVisitorParams& params);
+
   // One bit for each row. A true bit represents a row with a non-null value.
   const char* bitmap_;
   std::unique_ptr<Encoding> nonNullValues_;
@@ -246,7 +278,7 @@ uint32_t NullableEncoding<T>::materializeNullable(
 
 template <typename T>
 template <typename V>
-void NullableEncoding<T>::readWithVisitor(
+void NullableEncoding<T>::materializeNullsForVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
   const auto endRow = visitor.rowAt(visitor.numRows() - 1);
@@ -280,7 +312,31 @@ void NullableEncoding<T>::readWithVisitor(
     nulls_->materializeBoolsAsBits(rowCount, nulls, params.numScanned);
   }
   params.initReturnReaderNulls();
+}
+
+template <typename T>
+template <typename V>
+void NullableEncoding<T>::readWithVisitor(
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  materializeNullsForVisitor(visitor, params);
   callReadWithVisitor(*nonNullValues_, visitor, params);
+}
+
+template <typename T>
+template <typename V>
+void NullableEncoding<T>::readIndicesWithVisitor(
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  materializeNullsForVisitor(visitor, params);
+  NIMBLE_CHECK_EQ(
+      nonNullValues_->encodingType(),
+      EncodingType::Dictionary,
+      "readIndicesWithVisitor called on NullableEncoding with non-dictionary "
+      "inner encoding: {}",
+      nonNullValues_->encodingType());
+  auto& dictEnc = static_cast<DictionaryEncoding<T>&>(*nonNullValues_);
+  dictEnc.readIndicesWithVisitor(visitor, params);
 }
 
 template <typename T>

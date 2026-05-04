@@ -40,6 +40,7 @@ target_link_libraries(
   nimble_common
   nimble_tools_common
   velox_common_base
+  gmock
   gtest
   gtest_main
   Folly::folly

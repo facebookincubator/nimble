@@ -43,12 +43,13 @@ class StringColumnReader : public velox::dwio::common::SelectiveColumnReader {
   bool estimateMaterializedSize(size_t& byteSize, size_t& rowCount)
       const override;
 
+ protected:
+  ChunkedDecoder decoder_;
+
  private:
   bool readsNullsOnly() const final {
     return false;
   }
-
-  ChunkedDecoder decoder_;
 };
 
 } // namespace facebook::nimble

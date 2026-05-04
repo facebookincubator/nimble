@@ -60,6 +60,12 @@ class DictionaryEncoding
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
 
+  /// Reads dictionary indices only, without looking up values from the
+  /// alphabet. This is used for dictionary-aware readers that return
+  /// DictionaryVector. Non-legacy encodings only.
+  template <typename V>
+  void readIndicesWithVisitor(V& visitor, ReadWithVisitorParams& params);
+
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
@@ -67,6 +73,26 @@ class DictionaryEncoding
       const Encoding::Options& options = {});
 
   std::string debugString(int offset) const final;
+
+  bool dictionaryEnabled() const override {
+    return true;
+  }
+
+  uint32_t dictionarySize() const override {
+    return alphabet_.size();
+  }
+
+  const void* dictionaryEntry(uint32_t index) const override {
+    return &alphabet_[index];
+  }
+
+  const void* dictionaryEntries() const override {
+    return alphabet_.data();
+  }
+
+  const Encoding* indicesEncoding() const {
+    return indicesEncoding_.get();
+  }
 
  private:
   // Stores pre-loaded alphabet
@@ -200,6 +226,18 @@ void DictionaryEncoding<T>::readWithVisitor(
     const auto index = indicesBuffer_[visitor.rowIndex() - startRowIndex];
     return alphabet_[index];
   });
+}
+
+/// Reads indices only without looking up values from the alphabet.
+/// This is used for dictionary-aware readers that return DictionaryVector.
+template <typename T>
+template <typename V>
+void DictionaryEncoding<T>::readIndicesWithVisitor(
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  // Call readWithVisitor on the indices encoding directly.
+  // The visitor is expected to handle int32_t values (dictionary indices).
+  callReadWithVisitor(*indicesEncoding_, visitor, params);
 }
 
 template <typename T>
