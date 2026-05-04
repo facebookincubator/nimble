@@ -1089,8 +1089,12 @@ class MultiValueFieldReader : public FieldReader {
       vector->setNullCount(rowCount - nonNullCount);
 
       // Zero out sizes for null rows so the offset loop below is branchless.
+      const auto* rawNulls = vector->rawNulls();
+      NIMBLE_CHECK_NOT_NULL(
+          rawNulls,
+          "rawNulls must be initialized when nonNullCount < rowCount");
       velox::bits::forEachUnsetBit(
-          reinterpret_cast<const uint64_t*>(vector->rawNulls()),
+          reinterpret_cast<const uint64_t*>(rawNulls),
           0,
           rowCount,
           [sizes](int32_t i) { sizes[i] = 0; });
