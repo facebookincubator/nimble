@@ -81,6 +81,29 @@ inline ScalarKind getScalarKindForType(const Type& type) {
   NIMBLE_UNSUPPORTED("Unsupported type: {}", toString(type.kind()));
 }
 
+// Initializes the nulls buffer on the Velox vector for scattered reads.
+// When count=0, all rows are absent so all bits are cleared (all null).
+// When count < bitmap size, copies the scatter bitmap as the nulls buffer.
+inline void ensureNulls(
+    const std::function<void*()>& nulls,
+    const velox::bits::Bitmap* scatterBitmap,
+    uint32_t count) {
+  if (!nulls || scatterBitmap == nullptr) {
+    return;
+  }
+  auto* nullsBuffer = static_cast<uint64_t*>(nulls());
+  if (count == 0) {
+    velox::bits::fillBits(nullsBuffer, 0, scatterBitmap->size(), false);
+  } else if (count < scatterBitmap->size()) {
+    velox::bits::copyBits(
+        static_cast<const uint64_t*>(scatterBitmap->bits()),
+        0,
+        nullsBuffer,
+        0,
+        scatterBitmap->size());
+  }
+}
+
 // Decoder implementation for deserializing stream data from multiple batches.
 class DeserializerImpl : public Decoder {
  public:
@@ -108,9 +131,10 @@ class DeserializerImpl : public Decoder {
       uint32_t count,
       void* output,
       std::vector<velox::BufferPtr>& stringBuffers,
-      std::function<void*()> /* nulls */ = nullptr,
+      std::function<void*()> nulls = nullptr,
       const velox::bits::Bitmap* scatterBitmap = nullptr) override {
     if (count == 0) {
+      ensureNulls(nulls, scatterBitmap, count);
       return 0;
     }
 
@@ -124,6 +148,7 @@ class DeserializerImpl : public Decoder {
       return readFlatMap(count, output, typeStorageWidth_, stringBuffers);
     }
     if (scatterBitmap != nullptr) {
+      ensureNulls(nulls, scatterBitmap, count);
       return scatteredRead(
           count, output, typeStorageWidth_, scatterBitmap, stringBuffers);
     }
@@ -378,11 +403,9 @@ class DeserializerImpl : public Decoder {
       auto* buffer = ensureScatterBuffer((size_t)count * width);
       uint32_t valuesRead = 0;
       while (valuesRead < count && currentSegment_ < batchSegments_.size()) {
-        auto& streamData = ensureStreamData(stringBuffers);
-        auto* dest = buffer + valuesRead * width;
         const auto toRead = count - valuesRead;
-        const auto copied = streamData.copyTo(dest, toRead * width);
-        const auto read = copied / width;
+        const auto read = readFromBatchSegment(
+            buffer, valuesRead, toRead, width, stringBuffers);
         if (read == 0) {
           advanceSegment();
         } else {
@@ -409,10 +432,9 @@ class DeserializerImpl : public Decoder {
           ensureScatterBuffer(count * sizeof(std::string_view)));
       uint32_t valuesRead = 0;
       while (valuesRead < count && currentSegment_ < batchSegments_.size()) {
-        auto& streamData = ensureStreamData(stringBuffers);
         const auto toRead = count - valuesRead;
-        const auto read =
-            streamData.decodeStrings(toRead, stringBuffer + valuesRead);
+        const auto read = readFromBatchSegment(
+            stringBuffer, valuesRead, toRead, width, stringBuffers);
         if (read == 0) {
           advanceSegment();
         } else {

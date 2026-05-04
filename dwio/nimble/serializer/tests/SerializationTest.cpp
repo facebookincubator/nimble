@@ -3189,6 +3189,134 @@ TEST_P(SerializationTest, flatMapDeserializeWithFlatMapSchema) {
   }
 }
 
+// Exercises the scatteredRead path in Deserializer when flat-map keys are
+// sparse (absent in some rows). Deserializing with outputType (struct mode)
+// triggers scatter bitmaps for each key. Without the nulls initialization fix
+// in DeserializerImpl::next(), this crashes in loadOffsets() accessing
+// rawNulls() on an unallocated buffer.
+TEST_P(SerializationTest, flatMapScatteredReadWithSparseKeys) {
+  if (!version().has_value() || version() == SerializationVersion::kLegacy) {
+    GTEST_SKIP() << "Legacy format does not support struct flat-map reads";
+  }
+  // Map<int, Array<bigint>> — similar to EBF's data column.
+  auto type = velox::ROW({
+      {"data", velox::MAP(velox::INTEGER(), velox::ARRAY(velox::BIGINT()))},
+  });
+
+  const velox::vector_size_t numRows = 6;
+
+  // Sparse keys: key 1 in rows 0,2,4; key 2 in rows 1,3,5.
+  // Each key is absent in half the rows → exercises scattered read.
+  // Row 0: {1: [10,20]}    Row 1: {2: [30,40]}
+  // Row 2: {1: [50,60]}    Row 3: {2: [70,80]}
+  // Row 4: {1: [90,100]}   Row 5: {2: [110,120]}
+  const int totalMapEntries = 6; // 1 entry per row
+  const int totalArrayElements = 12; // 2 elements per entry
+
+  auto mapOffsetsBuffer = velox::allocateOffsets(numRows, pool_.get());
+  auto mapSizesBuffer = velox::allocateSizes(numRows, pool_.get());
+  auto* rawMapOffsets = mapOffsetsBuffer->asMutable<velox::vector_size_t>();
+  auto* rawMapSizes = mapSizesBuffer->asMutable<velox::vector_size_t>();
+  for (velox::vector_size_t i = 0; i < numRows; ++i) {
+    rawMapOffsets[i] = i;
+    rawMapSizes[i] = 1; // every row has exactly 1 map entry
+  }
+
+  auto mapKeys =
+      velox::BaseVector::create(velox::INTEGER(), totalMapEntries, pool_.get());
+  for (int i = 0; i < totalMapEntries; ++i) {
+    // Even rows get key=1, odd rows get key=2
+    mapKeys->asFlatVector<int32_t>()->set(i, (i % 2 == 0) ? 1 : 2);
+  }
+
+  auto arrayElements = velox::BaseVector::create(
+      velox::BIGINT(), totalArrayElements, pool_.get());
+  for (int i = 0; i < totalArrayElements; ++i) {
+    arrayElements->asFlatVector<int64_t>()->set(i, (i + 1) * 10);
+  }
+  auto arrayOffsetsBuffer =
+      velox::allocateOffsets(totalMapEntries, pool_.get());
+  auto arraySizesBuffer = velox::allocateSizes(totalMapEntries, pool_.get());
+  for (int i = 0; i < totalMapEntries; ++i) {
+    arrayOffsetsBuffer->asMutable<velox::vector_size_t>()[i] = i * 2;
+    arraySizesBuffer->asMutable<velox::vector_size_t>()[i] = 2;
+  }
+  auto mapValues = std::make_shared<velox::ArrayVector>(
+      pool_.get(),
+      velox::ARRAY(velox::BIGINT()),
+      nullptr,
+      totalMapEntries,
+      arrayOffsetsBuffer,
+      arraySizesBuffer,
+      arrayElements);
+
+  auto mapVector = std::make_shared<velox::MapVector>(
+      pool_.get(),
+      velox::MAP(velox::INTEGER(), velox::ARRAY(velox::BIGINT())),
+      nullptr, // no nulls on map itself
+      numRows,
+      mapOffsetsBuffer,
+      mapSizesBuffer,
+      mapKeys,
+      mapValues);
+
+  auto input = std::make_shared<velox::RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      numRows,
+      std::vector<velox::VectorPtr>{mapVector});
+
+  const SerializerOptions options{
+      .version = version(),
+      .flatMapColumns = {{"data", {}}},
+  };
+  Serializer serializer{options, type, pool_.get()};
+  auto serialized =
+      serializer.serialize(input, OrderedRanges::of(0, input->size()));
+
+  auto schema =
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
+
+  // Request both keys in struct mode. Key 1 is absent in odd rows, key 2 in
+  // even rows → each key triggers scattered read with ~50% nulls.
+  auto structType = velox::ROW(
+      {{"1", velox::ARRAY(velox::BIGINT())},
+       {"2", velox::ARRAY(velox::BIGINT())}});
+  auto outputType = velox::ROW({{"data", structType}});
+
+  DeserializerOptions deserOptions{.hasHeader = true};
+  deserOptions.outputType = outputType;
+  Deserializer deserializer{schema, pool_.get(), deserOptions};
+  velox::VectorPtr output;
+  deserializer.deserialize(serialized, output);
+
+  ASSERT_NE(output, nullptr);
+  ASSERT_EQ(output->size(), numRows);
+
+  auto* resultRow = output->as<velox::RowVector>();
+  auto* dataStruct = resultRow->childAt(0)->as<velox::RowVector>();
+  ASSERT_NE(dataStruct, nullptr);
+  ASSERT_EQ(dataStruct->childrenSize(), 2);
+
+  // Key "1": present in even rows, null in odd rows
+  auto* key1 = dataStruct->childAt(0).get();
+  // Key "2": present in odd rows, null in even rows
+  auto* key2 = dataStruct->childAt(1).get();
+  ASSERT_EQ(key1->size(), numRows);
+  ASSERT_EQ(key2->size(), numRows);
+
+  for (velox::vector_size_t i = 0; i < numRows; ++i) {
+    if (i % 2 == 0) {
+      EXPECT_FALSE(key1->isNullAt(i)) << "Key 1 row " << i;
+      EXPECT_TRUE(key2->isNullAt(i)) << "Key 2 row " << i;
+    } else {
+      EXPECT_TRUE(key1->isNullAt(i)) << "Key 1 row " << i;
+      EXPECT_FALSE(key2->isNullAt(i)) << "Key 2 row " << i;
+    }
+  }
+}
+
 // Tests serialization of arrays and maps with non-trivial offsets.
 // "Sliding window" means each row's elements overlap with the previous row's:
 // row 0 → elements[0..2], row 1 → elements[1..3], row 2 → elements[2..4], etc.
