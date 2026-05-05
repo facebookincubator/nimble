@@ -77,12 +77,13 @@ TEST_F(KeyChunkDecoderTest, decodeAndMaterialize) {
   auto chunkData = encodeChunk(keys);
 
   auto result = decodeKeyChunk(makeStream(chunkData), *leafPool_, dataBuffer_);
-  ASSERT_NE(result.encoding, nullptr);
-  EXPECT_EQ(result.encoding->rowCount(), 3);
-  EXPECT_EQ(result.encoding->encodingType(), EncodingType::Trivial);
+  ASSERT_NE(result, nullptr);
+  ASSERT_NE(result->encoding, nullptr);
+  EXPECT_EQ(result->encoding->rowCount(), 3);
+  EXPECT_EQ(result->encoding->encodingType(), EncodingType::Trivial);
 
   std::vector<std::string_view> materialized(3);
-  result.encoding->materialize(3, materialized.data());
+  result->encoding->materialize(3, materialized.data());
   EXPECT_EQ(materialized[0], "apple");
   EXPECT_EQ(materialized[1], "banana");
   EXPECT_EQ(materialized[2], "cherry");
@@ -93,20 +94,21 @@ TEST_F(KeyChunkDecoderTest, seekAndSelectiveMaterialize) {
   auto chunkData = encodeChunk(keys);
 
   auto result = decodeKeyChunk(makeStream(chunkData), *leafPool_, dataBuffer_);
-  ASSERT_NE(result.encoding, nullptr);
-  EXPECT_EQ(result.encoding->rowCount(), 5);
+  ASSERT_NE(result, nullptr);
+  ASSERT_NE(result->encoding, nullptr);
+  EXPECT_EQ(result->encoding->rowCount(), 5);
 
   // Seek to "ccc" (position 2).
   const std::string_view target = "ccc";
-  auto pos = result.encoding->seek(&target, /*inclusive=*/true);
+  auto pos = result->encoding->seek(&target, /*inclusive=*/true);
   ASSERT_TRUE(pos.has_value());
   EXPECT_EQ(pos.value(), 2);
 
   // Selectively materialize 2 entries from position 2.
-  result.encoding->reset();
-  result.encoding->skip(2);
+  result->encoding->reset();
+  result->encoding->skip(2);
   std::vector<std::string_view> entries(2);
-  result.encoding->materialize(2, entries.data());
+  result->encoding->materialize(2, entries.data());
   EXPECT_EQ(entries[0], "ccc");
   EXPECT_EQ(entries[1], "ddd");
 }
@@ -116,11 +118,12 @@ TEST_F(KeyChunkDecoderTest, singleEntry) {
   auto chunkData = encodeChunk(keys);
 
   auto result = decodeKeyChunk(makeStream(chunkData), *leafPool_, dataBuffer_);
-  ASSERT_NE(result.encoding, nullptr);
-  EXPECT_EQ(result.encoding->rowCount(), 1);
+  ASSERT_NE(result, nullptr);
+  ASSERT_NE(result->encoding, nullptr);
+  EXPECT_EQ(result->encoding->rowCount(), 1);
 
   std::vector<std::string_view> materialized(1);
-  result.encoding->materialize(1, materialized.data());
+  result->encoding->materialize(1, materialized.data());
   EXPECT_EQ(materialized[0], "only");
 }
 

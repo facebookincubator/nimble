@@ -155,11 +155,11 @@ class ClusterIndex : public IndexLookup {
   struct DecodedChunk {
     void reset(uint32_t newChunkOffset) {
       chunkOffset = newChunkOffset;
-      data = {};
+      data.reset();
     }
 
     uint32_t chunkOffset{0};
-    DecodedKeyChunk data;
+    std::shared_ptr<DecodedKeyChunk> data;
   };
 
   // Parsed partition metadata, cached on demand.

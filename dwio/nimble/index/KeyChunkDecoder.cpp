@@ -21,7 +21,7 @@
 
 namespace facebook::nimble::index {
 
-DecodedKeyChunk decodeKeyChunk(
+std::shared_ptr<DecodedKeyChunk> decodeKeyChunk(
     std::unique_ptr<velox::dwio::common::SeekableInputStream> inputStream,
     velox::memory::MemoryPool& pool,
     velox::BufferPtr& dataBuffer) {
@@ -37,7 +37,7 @@ DecodedKeyChunk decodeKeyChunk(
       "Compressed key chunks are not supported");
 
   const auto dataLen = chunkHeader.length;
-  DecodedKeyChunk result;
+  auto result = std::make_shared<DecodedKeyChunk>();
 
   // Determine the contiguous data pointer. If the first buffer contains all
   // the data, use it directly (zero-copy). Otherwise, copy across buffers.
@@ -46,7 +46,7 @@ DecodedKeyChunk decodeKeyChunk(
   const char* chunkData;
   bufLen -= kChunkHeaderSize;
   if (bufLen >= static_cast<int>(dataLen)) {
-    result.dataStream = std::move(inputStream);
+    result->dataStream = std::move(inputStream);
     chunkData = header;
   } else {
     if (dataBuffer == nullptr || dataBuffer->capacity() < dataLen) {
@@ -65,17 +65,20 @@ DecodedKeyChunk decodeKeyChunk(
     chunkData = dest;
   }
 
-  result.encoding = nimble::EncodingFactory().create(
-      pool, std::string_view(chunkData, dataLen), [&](uint32_t totalLength) {
-        auto& buffer = result.stringBuffers.emplace_back(
+  auto* raw = result.get();
+  result->encoding = nimble::EncodingFactory().create(
+      pool,
+      std::string_view(chunkData, dataLen),
+      [raw, &pool](uint32_t totalLength) {
+        auto& buffer = raw->stringBuffers.emplace_back(
             velox::AlignedBuffer::allocate<char>(totalLength, &pool));
         return buffer->asMutable<void>();
       });
   NIMBLE_CHECK(
-      result.encoding->encodingType() == EncodingType::Trivial ||
-          result.encoding->encodingType() == EncodingType::Prefix,
+      result->encoding->encodingType() == EncodingType::Trivial ||
+          result->encoding->encodingType() == EncodingType::Prefix,
       "Unsupported encoding type: {}",
-      result.encoding->encodingType());
+      result->encoding->encodingType());
   return result;
 }
 

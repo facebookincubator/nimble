@@ -37,11 +37,15 @@ struct DecodedKeyChunk {
 /// compression and encoding type, and creates the encoding. Handles both
 /// contiguous (zero-copy) and multi-buffer reads.
 ///
+/// Returns a shared_ptr so the encoding's string allocator lambda (which
+/// captures a pointer to the DecodedKeyChunk) remains valid when the caller
+/// moves or reassigns the shared_ptr.
+///
 /// @param dataBuffer Reusable buffer for multi-buffer reads. When the data
 ///        spans multiple stream buffers, this buffer is resized and reused
 ///        instead of allocating a new one. The caller retains ownership and the
 ///        buffer must outlive the returned DecodedKeyChunk.
-DecodedKeyChunk decodeKeyChunk(
+std::shared_ptr<DecodedKeyChunk> decodeKeyChunk(
     std::unique_ptr<velox::dwio::common::SeekableInputStream> inputStream,
     velox::memory::MemoryPool& pool,
     velox::BufferPtr& dataBuffer);

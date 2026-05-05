@@ -122,7 +122,8 @@ std::optional<uint32_t> SortedIndex::findChunkIndex(
   return static_cast<uint32_t>(std::distance(chunkKeys->begin(), it));
 }
 
-DecodedKeyChunk SortedIndex::loadChunk(uint32_t chunkIdx) const {
+std::shared_ptr<DecodedKeyChunk> SortedIndex::loadChunk(
+    uint32_t chunkIdx) const {
   const uint64_t streamOffset = sortedIndex_->key_stream_offset();
   const uint32_t chunkOffset = this->chunkOffset(chunkIdx);
   const uint32_t chunkSize = this->chunkSize(chunkIdx);
@@ -185,13 +186,13 @@ void SortedIndex::scanEntries(
     }
 
     auto chunk = loadChunk(ci);
-    const uint32_t rowCount = chunk.encoding->rowCount();
+    const uint32_t rowCount = chunk->encoding->rowCount();
 
     // Seek only in the first chunk. For continuation chunks, the loop guard
     // ensures entries are in range, so start at 0.
     const uint32_t startPos = (ci != startChunk)
         ? 0
-        : chunk.encoding->seek(&startSeekKey, /*inclusive=*/true)
+        : chunk->encoding->seek(&startSeekKey, /*inclusive=*/true)
               .value_or(rowCount);
     if (startPos >= rowCount) {
       break;
@@ -200,16 +201,16 @@ void SortedIndex::scanEntries(
     // If all remaining entries in this chunk match, skip the end seek.
     const uint32_t endPos = hasMoreEntries(ci)
         ? rowCount
-        : chunk.encoding->seek(&endSeekKey, /*inclusive=*/!isPointLookup)
+        : chunk->encoding->seek(&endSeekKey, /*inclusive=*/!isPointLookup)
               .value_or(rowCount);
     if (startPos >= endPos) {
       break;
     }
 
-    chunk.encoding->reset();
-    chunk.encoding->skip(startPos);
+    chunk->encoding->reset();
+    chunk->encoding->skip(startPos);
     std::vector<std::string_view> entries(endPos - startPos);
-    chunk.encoding->materialize(endPos - startPos, entries.data());
+    chunk->encoding->materialize(endPos - startPos, entries.data());
     for (const auto& entry : entries) {
       matchedRows.emplace_back(extractRowId(entry));
     }
