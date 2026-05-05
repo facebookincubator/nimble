@@ -1611,13 +1611,6 @@ TEST_F(TabletRawChunkStripTest, largePayloadMultipleChunks) {
 
 class ZstdDCtxReuseTest : public TabletRawChunkStripTest {
  protected:
-  void SetUp() override {
-    TabletRawChunkStripTest::SetUp();
-    dctx_.reset(ZSTD_createDCtx());
-  }
-
-  // Build legacy-format compressed stream data for a non-string scalar:
-  // [CompressionType::Zstd (1B)][ZSTD-compressed payload]
   static std::string buildLegacyCompressedData(std::string_view payload) {
     std::string result;
     result.push_back(static_cast<char>(CompressionType::Zstd));
@@ -1654,7 +1647,7 @@ class ZstdDCtxReuseTest : public TabletRawChunkStripTest {
     serde::detail::writeRawTrailer(sizes, EncodingType::Trivial, buffer);
 
     DeserializerOptions options{.hasHeader = true};
-    StreamDataReader reader(pool_.get(), options, dctx_.get());
+    StreamDataReader reader(pool_.get(), options);
     auto actualRows = reader.initialize(std::string_view(buffer));
     EXPECT_EQ(actualRows, rowCount);
 
@@ -1664,14 +1657,6 @@ class ZstdDCtxReuseTest : public TabletRawChunkStripTest {
     });
     return result;
   }
-
-  struct DCtxDeleter {
-    void operator()(ZSTD_DCtx* ctx) const {
-      ZSTD_freeDCtx(ctx);
-    }
-  };
-
-  std::unique_ptr<ZSTD_DCtx, DCtxDeleter> dctx_;
 };
 
 TEST_F(ZstdDCtxReuseTest, streamDataLegacyZstdWithDCtx) {
@@ -1687,8 +1672,7 @@ TEST_F(ZstdDCtxReuseTest, streamDataLegacyZstdWithDCtx) {
       compressed,
       stringBuffers,
       pool_.get(),
-      serde::StreamData::Options{.version = SerializationVersion::kLegacy},
-      dctx_.get());
+      serde::StreamData::Options{.version = SerializationVersion::kLegacy});
 
   std::vector<int32_t> output(expected.size());
   sd.copyTo(
@@ -1715,8 +1699,7 @@ TEST_F(ZstdDCtxReuseTest, streamDataDCtxReusedAcrossReset) {
       compressed1,
       stringBuffers,
       pool_.get(),
-      serde::StreamData::Options{.version = SerializationVersion::kLegacy},
-      dctx_.get());
+      serde::StreamData::Options{.version = SerializationVersion::kLegacy});
 
   std::vector<int32_t> output1(values1.size());
   sd.copyTo(

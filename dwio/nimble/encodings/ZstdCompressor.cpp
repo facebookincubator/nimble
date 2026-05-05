@@ -18,6 +18,7 @@
 
 #include <zstd.h>
 #include <zstd_errors.h>
+#include <memory>
 #include <optional>
 
 namespace facebook::nimble {
@@ -52,6 +53,20 @@ CompressionResult ZstdCompressor::compress(
   };
 }
 
+namespace {
+ZSTD_DCtx* getThreadLocalDCtx() {
+  struct DCtxDeleter {
+    void operator()(ZSTD_DCtx* ctx) const {
+      ZSTD_freeDCtx(ctx);
+    }
+  };
+  static thread_local std::unique_ptr<ZSTD_DCtx, DCtxDeleter> ctx{
+      ZSTD_createDCtx()};
+  NIMBLE_CHECK(ctx != nullptr, "Failed to create ZSTD decompression context");
+  return ctx.get();
+}
+} // namespace
+
 Vector<char> ZstdCompressor::uncompress(
     velox::memory::MemoryPool& memoryPool,
     const CompressionType compressionType,
@@ -60,8 +75,12 @@ Vector<char> ZstdCompressor::uncompress(
   auto pos = data.data();
   const uint32_t uncompressedSize = encoding::readUint32(pos);
   Vector<char> buffer{&memoryPool, uncompressedSize};
-  auto ret = ZSTD_decompress(
-      buffer.data(), buffer.size(), pos, data.size() - sizeof(uint32_t));
+  auto ret = ZSTD_decompressDCtx(
+      getThreadLocalDCtx(),
+      buffer.data(),
+      buffer.size(),
+      pos,
+      data.size() - sizeof(uint32_t));
   NIMBLE_CHECK(
       !ZSTD_isError(ret),
       "Error uncompressing data: {}",
