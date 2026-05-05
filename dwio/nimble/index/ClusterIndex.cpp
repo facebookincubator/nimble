@@ -460,7 +460,7 @@ const ClusterIndex::DecodedChunk& ClusterIndex::getDecodedChunk(
     const ChunkLocation& chunkLocation) const {
   NIMBLE_DCHECK_NOT_NULL(partition);
   auto& decodedChunk = partition->decodedChunk;
-  if (decodedChunk.data.encoding != nullptr &&
+  if (decodedChunk.data != nullptr &&
       decodedChunk.chunkOffset == chunkLocation.chunkOffset) {
     return decodedChunk;
   }
@@ -471,7 +471,7 @@ const ClusterIndex::DecodedChunk& ClusterIndex::getDecodedChunk(
   decodedChunk.data =
       decodeKeyChunk(loadData_(region), *pool_, partition->dataBuffer);
   NIMBLE_CHECK_EQ(
-      decodedChunk.data.encoding->dataType(),
+      decodedChunk.data->encoding->dataType(),
       DataType::String,
       "Expected String data type");
 
@@ -484,12 +484,12 @@ uint32_t ClusterIndex::seekInChunk(
     std::string_view encodedKey,
     bool inclusive) const {
   const auto& chunk = getDecodedChunk(partition, chunkLocation);
-  const auto rowInChunk = chunk.data.encoding->seek(&encodedKey, inclusive);
+  const auto rowInChunk = chunk.data->encoding->seek(&encodedKey, inclusive);
   if (!rowInChunk.has_value()) {
     // For exclusive seek (inclusive=false), no row > key means the end is
     // past all rows in this partition.
     if (!inclusive) {
-      return chunkLocation.rowOffset + chunk.data.encoding->rowCount();
+      return chunkLocation.rowOffset + chunk.data->encoding->rowCount();
     }
     NIMBLE_CHECK(false, "Key must be found within a matched chunk");
   }
