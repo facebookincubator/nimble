@@ -42,6 +42,7 @@
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
 #include "dwio/nimble/velox/selective/StringColumnReader.h"
 #include "folly/Random.h"
+#include "velox/common/io/IoStatistics.h"
 #include "velox/dwio/common/ColumnVisitors.h"
 #include "velox/dwio/common/SelectiveColumnReader.h"
 #include "velox/dwio/common/SelectiveStructColumnReader.h"
@@ -141,7 +142,8 @@ class ReadWithVisitorTest : public ::testing::TestWithParam<bool>,
     ctx->fileData = test::createNimbleFile(*rootPool_, input);
 
     auto readFile = std::make_shared<InMemoryReadFile>(ctx->fileData);
-    dwio::common::ReaderOptions readerOpts(pool());
+    dwio::common::ReaderOptions readerOpts(
+        pool(), dataIoStats_.get(), metadataIoStats_.get());
     ctx->readerBase = ReaderBase::create(
         std::make_unique<dwio::common::BufferedInput>(readFile, *pool()),
         readerOpts);
@@ -250,6 +252,11 @@ class ReadWithVisitorTest : public ::testing::TestWithParam<bool>,
     auto* raw = reinterpret_cast<const T*>(reader->rawValues());
     return std::vector<T>(raw, raw + reader->numValues());
   }
+
+  const std::shared_ptr<io::IoStatistics> dataIoStats_{
+      std::make_shared<io::IoStatistics>()};
+  const std::shared_ptr<io::IoStatistics> metadataIoStats_{
+      std::make_shared<io::IoStatistics>()};
 };
 
 // ===========================================================================

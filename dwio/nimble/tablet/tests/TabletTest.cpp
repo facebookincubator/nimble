@@ -4182,7 +4182,8 @@ TEST_P(TabletTest, configureOptionsIndexFlags) {
     return std::find(sections.begin(), sections.end(), name) != sections.end();
   };
 
-  velox::dwio::common::ReaderOptions readerOptions(pool_.get());
+  velox::dwio::common::ReaderOptions readerOptions(
+      pool_.get(), dataIoStats_.get(), metadataIoStats_.get());
 
   {
     SCOPED_TRACE("defaults");
@@ -4242,7 +4243,8 @@ TEST_P(TabletTest, configureOptionsIndexFlags) {
 TEST_P(TabletTest, configureOptionsBufferedInput) {
   // Verify configureOptions only sets bufferedInput when
   // fileMetadataCacheEnabled is true.
-  velox::dwio::common::ReaderOptions readerOptions(pool_.get());
+  velox::dwio::common::ReaderOptions readerOptions(
+      pool_.get(), dataIoStats_.get(), metadataIoStats_.get());
 
   // Create a dummy BufferedInput to pass as the second parameter.
   std::string emptyFile;
