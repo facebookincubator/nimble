@@ -22,6 +22,7 @@
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
+#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
@@ -130,6 +131,12 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       return f(static_cast<MainlyConstantEncoding<T>&>(encoding));
     case EncodingType::Delta:
       return f(static_cast<DeltaEncoding<T>&>(encoding));
+    case EncodingType::SubIntSplit:
+      if constexpr (isNumericType<T>() && sizeof(T) >= 4) {
+        return f(static_cast<SubIntSplitEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
     default:
       NIMBLE_UNSUPPORTED(toString(encoding.encodingType()));
   }

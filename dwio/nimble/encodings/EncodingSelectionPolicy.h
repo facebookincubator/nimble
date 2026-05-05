@@ -372,6 +372,7 @@ class ManualEncodingSelectionPolicyFactory {
         EncodingType::Dictionary,
         EncodingType::RLE,
         EncodingType::Varint,
+        EncodingType::SubIntSplit,
     };
   }
 
@@ -385,6 +386,14 @@ class ManualEncodingSelectionPolicyFactory {
         {EncodingType::Dictionary, 1.0},
         {EncodingType::RLE, 1.0},
         {EncodingType::Varint, 1.0},
+        // SubIntSplit decomposes structured wide integers into bit-range
+        // sub-streams; each section is encoded independently. The read factor
+        // is slightly higher than Trivial (0.7) to reflect the extra OR-combine
+        // work at decode time, but lower than FixedBitWidth (0.9) to signal
+        // preference when the range filter in estimateSize passes.
+        // estimateSize returns nullopt for random-looking data (range ≥ 3/4 of
+        // type width), so SubIntSplit is only considered for structured values.
+        {EncodingType::SubIntSplit, 0.85},
     };
   }
 
