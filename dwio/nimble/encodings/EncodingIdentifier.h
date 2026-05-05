@@ -57,6 +57,13 @@ struct EncodingIdentifiers {
     static constexpr NestedEncodingIdentifier Restatements = 1;
     static constexpr NestedEncodingIdentifier IsRestatements = 2;
   };
+
+  struct SubIntSplit {
+    // Section identifiers equal the section index (0..splitCount-1).
+    // Maximum 64 sections (one per bit of a 64-bit integer).
+    // The identifier is written directly as section_index, so no named
+    // constants are defined here; callers use the index directly.
+  };
 };
 
 } // namespace facebook::nimble
