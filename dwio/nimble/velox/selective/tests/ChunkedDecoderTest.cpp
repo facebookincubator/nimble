@@ -99,6 +99,10 @@ class ChunkedDecoderTest : public testing::Test {
     return encodingFactory_;
   }
 
+ protected:
+  io::IoStatistics dataIoStats_;
+  io::IoStatistics metadataIoStats_;
+
  private:
   std::shared_ptr<MemoryPool> leafPool_;
   EncodingFactory encodingFactory_;
@@ -121,7 +125,8 @@ TEST_F(ChunkedDecoderTest, bufferedInput) {
   }
 
   auto file = std::make_shared<InMemoryReadFile>(fileContent);
-  dwio::common::ReaderOptions readerOpts{&pool()};
+  dwio::common::ReaderOptions readerOpts{
+      &pool(), &dataIoStats_, &metadataIoStats_};
   readerOpts.setLoadQuantum(kLoadQuantum);
   auto executor = std::make_unique<folly::IOThreadPoolExecutor>(10, 10);
   auto input = std::make_unique<dwio::common::DirectBufferedInput>(

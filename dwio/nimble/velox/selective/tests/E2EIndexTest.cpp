@@ -337,7 +337,8 @@ class E2EIndexTestBase : public ::testing::Test {
       uint32_t randomSeed = 0) {
     auto readFile =
         std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
-    dwio::common::ReaderOptions readerOptions(leafPool_.get());
+    dwio::common::ReaderOptions readerOptions(
+        leafPool_.get(), dataIoStats_.get(), metadataIoStats_.get());
     readerOptions.setFileFormat(FileFormat::NIMBLE);
     setUpReaderOptions(readerOptions);
 

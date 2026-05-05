@@ -26,6 +26,7 @@
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 
+#include "velox/common/io/IoStatistics.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/serializers/KeyEncoder.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
@@ -117,7 +118,8 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
       const std::vector<Subfield>& projectedSubfields) {
     auto readFile =
         std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
-    dwio::common::ReaderOptions readerOptions(leafPool_.get());
+    dwio::common::ReaderOptions readerOptions(
+        leafPool_.get(), dataIoStats_.get(), metadataIoStats_.get());
     readerOptions.setFileFormat(FileFormat::NIMBLE);
     readerOptions.setFileMetadataCacheEnabled(GetParam().enableCache);
     readerOptions.setPinFileMetadata(GetParam().pinFileMetadata);
@@ -150,6 +152,11 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
     EXPECT_EQ(encoded.size(), 1);
     return encoded[0];
   }
+
+  const std::shared_ptr<io::IoStatistics> dataIoStats_{
+      std::make_shared<io::IoStatistics>()};
+  const std::shared_ptr<io::IoStatistics> metadataIoStats_{
+      std::make_shared<io::IoStatistics>()};
 
   std::shared_ptr<memory::MemoryPool> rootPool_;
   std::shared_ptr<memory::MemoryPool> leafPool_;
@@ -880,7 +887,8 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
   auto makeProjector = [&](int32_t maxCoalesceDistance) {
     auto readFile =
         std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
-    dwio::common::ReaderOptions readerOptions(leafPool_.get());
+    dwio::common::ReaderOptions readerOptions(
+        leafPool_.get(), dataIoStats_.get(), metadataIoStats_.get());
     readerOptions.setFileFormat(FileFormat::NIMBLE);
     readerOptions.setMaxCoalesceDistance(maxCoalesceDistance);
 
@@ -1033,7 +1041,8 @@ TEST_P(NimbleIndexProjectorTest, pinnedMetadataNoReread) {
   const auto metadataBoundary = stripeGroupsMeta[0].offset();
   tablet.reset();
 
-  dwio::common::ReaderOptions readerOptions(leafPool_.get());
+  dwio::common::ReaderOptions readerOptions(
+      leafPool_.get(), dataIoStats_.get(), metadataIoStats_.get());
   readerOptions.setFileFormat(FileFormat::NIMBLE);
   readerOptions.setFileMetadataCacheEnabled(GetParam().enableCache);
   readerOptions.setPinFileMetadata(GetParam().pinFileMetadata);
