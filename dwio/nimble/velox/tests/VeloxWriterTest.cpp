@@ -4896,11 +4896,10 @@ TEST_F(VeloxWriterTest, encodingLayoutDeltaMultiStripe) {
       batches[0]->type(),
       std::move(writeFile),
       *rootPool_,
-      {.flushPolicyFactory =
-           []() {
-             return std::make_unique<nimble::StripeRawSizeFlushPolicy>(1024);
-           },
-       .encodingLayoutTree = std::move(layoutTree)});
+      {.encodingLayoutTree = std::move(layoutTree),
+       .flushPolicyFactory = []() {
+         return std::make_unique<nimble::StripeRawSizeFlushPolicy>(1024);
+       }});
 
   for (const auto& batch : batches) {
     writer.write(batch);
@@ -5179,11 +5178,10 @@ TEST_F(VeloxWriterTest, encodingLayoutDeltaMultiStripeLegacyRead) {
       batches[0]->type(),
       std::move(writeFile),
       *rootPool_,
-      {.flushPolicyFactory =
-           []() {
-             return std::make_unique<nimble::StripeRawSizeFlushPolicy>(1024);
-           },
-       .encodingLayoutTree = std::move(layoutTree)});
+      {.encodingLayoutTree = std::move(layoutTree),
+       .flushPolicyFactory = []() {
+         return std::make_unique<nimble::StripeRawSizeFlushPolicy>(1024);
+       }});
 
   for (const auto& batch : batches) {
     writer.write(batch);
