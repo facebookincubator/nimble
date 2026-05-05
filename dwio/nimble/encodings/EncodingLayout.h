@@ -39,6 +39,10 @@ class EncodingLayout {
     /// Returns a config value for the given key, or std::nullopt if not found.
     std::optional<std::string> get(const std::string& key) const;
 
+    const std::unordered_map<std::string, std::string>& values() const {
+      return configs_;
+    }
+
    private:
     std::unordered_map<std::string, std::string> configs_;
   };
