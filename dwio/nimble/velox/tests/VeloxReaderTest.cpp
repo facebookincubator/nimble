@@ -686,16 +686,13 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
 
   template <typename T>
   void getFieldDefaultValue(nimble::Vector<T>& input, uint32_t index) {
-    static_assert(
-        T() == 0, "Default Constructor value is not zero initialized");
-    input[index] = T();
-  }
-
-  template <>
-  void getFieldDefaultValue(
-      nimble::Vector<std::string>& input,
-      uint32_t index) {
-    input[index] = std::string();
+    if constexpr (std::is_same_v<T, std::string>) {
+      input[index] = std::string();
+    } else {
+      static_assert(
+          T() == 0, "Default Constructor value is not zero initialized");
+      input[index] = T();
+    }
   }
 
   template <typename T>
