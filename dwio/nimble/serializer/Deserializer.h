@@ -15,8 +15,6 @@
  */
 #pragma once
 
-#include <zstd.h>
-
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/FieldReader.h"
 #include "folly/container/F14Map.h"
@@ -43,12 +41,6 @@ class Deserializer {
       velox::VectorPtr& vector) const;
 
  private:
-  struct ZstdDCtxDeleter {
-    void operator()(ZSTD_DCtx* ctx) const {
-      ZSTD_freeDCtx(ctx);
-    }
-  };
-
   // Creates deserializers for a type and its FlatMap inMap streams.
   void createDeserializersForType(const Type& type, uint32_t depth);
 
@@ -87,9 +79,6 @@ class Deserializer {
   // Offsets that were set in inMapPresentOffsets_ this batch (for efficient
   // reset).
   mutable std::vector<uint32_t> inMapPresentOffsetsList_;
-
-  // Created only when options.shareZstdDecompressionContext is true.
-  mutable std::unique_ptr<ZSTD_DCtx, ZstdDCtxDeleter> dctx_;
 };
 
 } // namespace facebook::nimble
