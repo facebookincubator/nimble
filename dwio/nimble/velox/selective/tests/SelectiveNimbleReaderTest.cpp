@@ -51,6 +51,43 @@ namespace {
 
 using namespace facebook::velox;
 
+struct NullableArrayData {
+  std::optional<std::vector<std::optional<int64_t>>> value;
+
+  NullableArrayData(std::nullopt_t) : value(std::nullopt) {}
+
+  NullableArrayData(std::initializer_list<int64_t> values)
+      : value(std::in_place) {
+    value->reserve(values.size());
+    for (auto element : values) {
+      value->emplace_back(element);
+    }
+  }
+
+  operator std::optional<std::vector<std::optional<int64_t>>>() const {
+    return value;
+  }
+};
+
+struct NullableMapData {
+  std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>> value;
+
+  NullableMapData(std::nullopt_t) : value(std::nullopt) {}
+
+  NullableMapData(std::initializer_list<std::pair<int64_t, int64_t>> values)
+      : value(std::in_place) {
+    value->reserve(values.size());
+    for (const auto& [key, mapped] : values) {
+      value->emplace_back(key, mapped);
+    }
+  }
+
+  operator std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>()
+      const {
+    return value;
+  }
+};
+
 enum FilterType { kNone, kKeep, kDrop };
 auto format_as(FilterType filterType) {
   return fmt::underlying(filterType);
@@ -471,6 +508,27 @@ class SelectiveNimbleReaderTest
     ASSERT_EQ(readers.rowReader->next(1, result), 0);
   }
 
+  void checkArrayWithOffsets(
+      std::initializer_list<NullableArrayData> data,
+      const std::vector<bool>& filter,
+      const std::vector<int>& readSizes,
+      bool stringDecoderZeroCopy,
+      std::optional<int> maxArrayElementsCount = std::nullopt,
+      bool filterAfterRead = false) {
+    std::vector<std::optional<std::vector<std::optional<int64_t>>>> converted;
+    converted.reserve(data.size());
+    for (const auto& item : data) {
+      converted.push_back(item);
+    }
+    checkArrayWithOffsets(
+        converted,
+        filter,
+        readSizes,
+        stringDecoderZeroCopy,
+        maxArrayElementsCount,
+        filterAfterRead);
+  }
+
   void checkSlidingWindowMap(
       const std::vector<std::optional<
           std::vector<std::pair<int64_t, std::optional<int64_t>>>>>& data,
@@ -584,6 +642,28 @@ class SelectiveNimbleReaderTest
     }
     ASSERT_EQ(totalScanned, data.size());
     ASSERT_EQ(readers.rowReader->next(1, result), 0);
+  }
+
+  void checkSlidingWindowMap(
+      std::initializer_list<NullableMapData> data,
+      const std::vector<bool>& rowFilter,
+      const common::Filter* keyFilter,
+      const std::vector<int>& readSizes,
+      bool stringDecoderZeroCopy,
+      bool filterAfterRead = false) {
+    std::vector<
+        std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>> converted;
+    converted.reserve(data.size());
+    for (const auto& item : data) {
+      converted.push_back(item);
+    }
+    checkSlidingWindowMap(
+        converted,
+        rowFilter,
+        keyFilter,
+        readSizes,
+        stringDecoderZeroCopy,
+        filterAfterRead);
   }
 
  private:
@@ -1637,32 +1717,32 @@ TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsLastRowSetLifeCycle) {
   // smaller size.
   for (int i = 0; i < 16; ++i) {
     c0.emplace_back(std::nullopt);
-    c1.push_back({{1}});
-    c2.push_back({{}});
+    c1.push_back(NullableArrayData{{1}});
+    c2.push_back(NullableArrayData{{}});
   }
-  c0.push_back({{}});
-  c1.push_back({{1}});
-  c2.push_back({{}});
+  c0.push_back(NullableArrayData{{}});
+  c1.push_back(NullableArrayData{{1}});
+  c2.push_back(NullableArrayData{{}});
   // Second batch, all filtered out by c2, but c1 reads some value without
   // calling getValues.
   c0.emplace_back(std::nullopt);
   // Add a null to force setComplexNulls to read last row set before batch 3.
   c1.emplace_back(std::nullopt);
-  c2.push_back({{}});
+  c2.push_back(NullableArrayData{{}});
   for (int i = 0; i < 15; ++i) {
     c0.emplace_back(std::nullopt);
-    c1.push_back({{2}});
-    c2.push_back({{}});
+    c1.push_back(NullableArrayData{{2}});
+    c2.push_back(NullableArrayData{{}});
   }
-  c0.push_back({{}});
-  c1.push_back({{2}});
+  c0.push_back(NullableArrayData{{}});
+  c1.push_back(NullableArrayData{{2}});
   c2.emplace_back(std::nullopt);
   // Third batch, nothing is filtered out, and force outputRows_ buffer
   // reallocation.
   for (int i = 0; i < 17; ++i) {
-    c0.push_back({{}});
-    c1.push_back({{2}});
-    c2.push_back({{}});
+    c0.push_back(NullableArrayData{{}});
+    c1.push_back(NullableArrayData{{2}});
+    c2.push_back(NullableArrayData{{}});
   }
   auto vector = makeRowVector({
       makeNullableArrayVector<int64_t>(c0),

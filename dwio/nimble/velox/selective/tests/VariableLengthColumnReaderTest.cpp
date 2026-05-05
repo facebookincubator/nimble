@@ -29,6 +29,25 @@ namespace {
 
 using namespace facebook::velox;
 
+template <typename T>
+using NullableArray = std::optional<std::vector<std::optional<T>>>;
+
+template <typename T>
+NullableArray<T> makeNullableArray(
+    std::initializer_list<std::optional<T>> values) {
+  return NullableArray<T>{std::in_place, values.begin(), values.end()};
+}
+
+template <typename T>
+using NullableMap =
+    std::optional<std::vector<std::pair<int64_t, std::optional<T>>>>;
+
+template <typename T>
+NullableMap<T> makeNullableMap(
+    std::initializer_list<std::pair<int64_t, std::optional<T>>> values) {
+  return NullableMap<T>{std::in_place, values.begin(), values.end()};
+}
+
 // Tests for ListColumnReader and MapColumnReader (variable-length containers).
 class VariableLengthColumnReaderTest : public ::testing::Test,
                                        public velox::test::VectorTestBase {
@@ -170,14 +189,14 @@ TEST_F(VariableLengthColumnReaderTest, listMixedNullsAndEmpty) {
   // Interleaved null/empty/populated arrays.
   std::vector<std::optional<std::vector<std::optional<int64_t>>>> data = {
       std::nullopt, // null
-      {{}}, // empty
-      {{{1, 2, 3}}}, // populated
+      makeNullableArray<int64_t>({}), // empty
+      makeNullableArray<int64_t>({1, 2, 3}), // populated
       std::nullopt, // null
-      {{}}, // empty
-      {{{4, 5}}}, // populated
+      makeNullableArray<int64_t>({}), // empty
+      makeNullableArray<int64_t>({4, 5}), // populated
       std::nullopt, // null
-      {{{6}}}, // populated
-      {{}}, // empty
+      makeNullableArray<int64_t>({6}), // populated
+      makeNullableArray<int64_t>({}), // empty
   };
   auto input = makeRowVector({makeNullableArrayVector<int64_t>(data)});
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
@@ -274,7 +293,7 @@ TEST_F(VariableLengthColumnReaderTest, mapEmptyContainers) {
   // 10 rows of non-null empty maps — verifies empty != null.
   std::vector<
       std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>>
-      data(10, {{}});
+      data(10, makeNullableMap<int64_t>({}));
   auto input = makeRowVector({makeNullableMapVector<int64_t, int64_t>(data)});
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
@@ -301,14 +320,14 @@ TEST_F(VariableLengthColumnReaderTest, mapMixedNullsAndEmpty) {
       std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>>
       data = {
           std::nullopt,
-          {{}},
-          {{{{1, 10}, {2, 20}}}},
+      makeNullableMap<int64_t>({}),
+      makeNullableMap<int64_t>({{1, 10}, {2, 20}}),
           std::nullopt,
-          {{}},
-          {{{{3, 30}}}},
+      makeNullableMap<int64_t>({}),
+      makeNullableMap<int64_t>({{3, 30}}),
           std::nullopt,
-          {{{{4, 40}, {5, 50}, {6, 60}}}},
-          {{}},
+      makeNullableMap<int64_t>({{4, 40}, {5, 50}, {6, 60}}),
+      makeNullableMap<int64_t>({}),
       };
   auto input = makeRowVector({makeNullableMapVector<int64_t, int64_t>(data)});
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
