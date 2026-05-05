@@ -120,7 +120,7 @@ add_link_options(-Wl,--gc-sections)
 include(CTest) # include after project() but before add_subdirectory()
 
 find_package(flatbuffers)
-set(NIMBLE_NEED_BUNDLED_BUILD_FLAT_BUFFERS FLASE)
+set(NIMBLE_NEED_BUNDLED_BUILD_FLAT_BUFFERS FALSE)
 if(flatbuffers_FOUND)
   if(flatbuffers_VERSION VERSION_LESS "22.9.4")
     set(NIMBLE_NEED_BUNDLED_BUILD_FLAT_BUFFERS TRUE)
