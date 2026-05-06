@@ -134,6 +134,8 @@ enum class CompressionType : uint8_t {
   // Zstd doesn't require us to externally store level or any other info.
   Zstd = 1,
   MetaInternal = 2,
+  // LZ4 block mode; requires externally stored uncompressed size.
+  LZ4 = 3,
 };
 
 std::string toString(CompressionType compressionType);

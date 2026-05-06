@@ -16,6 +16,10 @@
 
 #include "dwio/nimble/serializer/SerializerImpl.h"
 
+#include <limits>
+
+#include <lz4.h>
+#include <lz4hc.h>
 #include <zstd.h>
 #include <zstd_errors.h>
 
@@ -136,6 +140,34 @@ encode(const SerializerOptions& options, std::string_view input, char* output) {
           // Fall back to uncompressed
         } else {
           size = ret;
+          writeUncompressed = false;
+        }
+        break;
+      }
+      case CompressionType::LZ4: {
+        // LZ4 block mode is not self-descriptive (unlike ZSTD frames), so we
+        // prepend the uncompressed size as a uint32 before the compressed data.
+        // Wire format: [size:u32][compType:i8=3][origSize:u32][lz4_data...]
+        const auto origSize = static_cast<uint32_t>(input.size());
+        encoding::writeUint32(origSize, compPos);
+        constexpr int kMinHcLevel = LZ4HC_CLEVEL_MIN;
+        const auto compressedSize = options.compressionLevel >= kMinHcLevel
+            ? LZ4_compress_HC(
+                  input.data(),
+                  compPos,
+                  static_cast<int>(input.size()),
+                  static_cast<int>(size),
+                  options.compressionLevel)
+            : LZ4_compress_default(
+                  input.data(),
+                  compPos,
+                  static_cast<int>(input.size()),
+                  static_cast<int>(size));
+        if (compressedSize == 0 ||
+            static_cast<uint32_t>(compressedSize) >= origSize) {
+          // Fall back to uncompressed
+        } else {
+          size = sizeof(uint32_t) + compressedSize;
           writeUncompressed = false;
         }
         break;

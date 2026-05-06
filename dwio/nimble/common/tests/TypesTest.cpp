@@ -90,6 +90,7 @@ TEST(TypesTest, CompressionTypeToString) {
   EXPECT_EQ(toString(CompressionType::Uncompressed), "Uncompressed");
   EXPECT_EQ(toString(CompressionType::Zstd), "Zstd");
   EXPECT_EQ(toString(CompressionType::MetaInternal), "MetaInternal");
+  EXPECT_EQ(toString(CompressionType::LZ4), "LZ4");
 }
 
 TEST(TypesTest, CompressionTypeToStringUnknown) {

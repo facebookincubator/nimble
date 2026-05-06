@@ -662,9 +662,11 @@ void StreamDataWriter<T>::encodeStream(
     auto* pos = detail::extend(buffer_, size + sizeof(uint32_t));
     detail::encodeStrings(data, size, pos);
   } else {
-    // Legacy scalar encoding: [size:u32][compression_type:i8][data...]
+    // Legacy scalar encoding:
+    //   Zstd: [size:u32][compType:i8][data...]
+    //   LZ4:  [size:u32][compType:i8][origSize:u32][data...]
     const auto bufferStart = buffer_.size();
-    const uint32_t maxSize = data.size() + sizeof(uint32_t) + 1;
+    const uint32_t maxSize = data.size() + 2 * sizeof(uint32_t) + 1;
     auto* pos = detail::extend(buffer_, maxSize);
     const auto encodedSize = detail::encode(options_, data, pos);
     if (encodedSize < maxSize) {

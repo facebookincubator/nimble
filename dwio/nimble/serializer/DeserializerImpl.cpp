@@ -16,6 +16,8 @@
 
 #include "dwio/nimble/serializer/DeserializerImpl.h"
 
+#include <lz4.h>
+
 #include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
@@ -130,6 +132,25 @@ void StreamData::decompress() {
           pos_,
           compressedSize);
       NIMBLE_CHECK(!ZSTD_isError(ret), "Error decompressing data");
+      pos_ = decompressionBuffer_.data();
+      end_ = pos_ + decompressionBuffer_.size();
+      break;
+    }
+    case CompressionType::LZ4: {
+      // LZ4 block data is preceded by the uncompressed size (uint32).
+      // Wire format: [origSize:u32][lz4_data...]
+      const auto decompressedSize = encoding::readUint32(pos_);
+      const auto compressedSize = static_cast<size_t>(end_ - pos_);
+      decompressionBuffer_.resize(decompressedSize);
+      const auto ret = LZ4_decompress_safe(
+          pos_,
+          decompressionBuffer_.data(),
+          static_cast<int>(compressedSize),
+          static_cast<int>(decompressedSize));
+      NIMBLE_CHECK_EQ(
+          ret,
+          static_cast<int>(decompressedSize),
+          "LZ4 decompressed size mismatch");
       pos_ = decompressionBuffer_.data();
       end_ = pos_ + decompressionBuffer_.size();
       break;
@@ -369,6 +390,24 @@ void StreamDataReader::appendChunkData(
           data,
           length);
       NIMBLE_CHECK(!ZSTD_isError(ret), "Error decompressing chunk data");
+      break;
+    }
+    case CompressionType::LZ4: {
+      const auto* pos = data;
+      const auto decompressedSize = encoding::readUint32(pos);
+      const auto compressedSize =
+          static_cast<size_t>(length - sizeof(uint32_t));
+      const auto offset = chunkStrippingBuffer_.size();
+      chunkStrippingBuffer_.resize(offset + decompressedSize);
+      const auto ret = LZ4_decompress_safe(
+          pos,
+          chunkStrippingBuffer_.data() + offset,
+          static_cast<int>(compressedSize),
+          static_cast<int>(decompressedSize));
+      NIMBLE_CHECK_EQ(
+          ret,
+          static_cast<int>(decompressedSize),
+          "LZ4 chunk decompressed size mismatch");
       break;
     }
     default:
