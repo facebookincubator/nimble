@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 #include "dwio/nimble/velox/FieldWriter.h"
+
+#include <folly/coro/BlockingWait.h>
+#include <folly/coro/Collect.h>
+#include <folly/coro/Invoke.h>
 #include <folly/system/HardwareConcurrency.h>
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/velox/DeduplicationUtils.h"
@@ -22,6 +26,7 @@
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "dwio/nimble/velox/VectorAdapters.h"
 #include "velox/common/base/CompareFlags.h"
+#include "velox/common/testutil/TestValue.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/DictionaryVector.h"
 #include "velox/vector/FlatMapVector.h"
@@ -621,63 +626,56 @@ class RowFieldWriter : public FieldWriter {
 
   void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
       override {
-    auto size = ranges.size();
-    OrderedRanges childRanges;
-    const OrderedRanges* childRangesPtr;
-    const velox::RowVector* row = vector->as<velox::RowVector>();
-    uint64_t nullCount = 0;
-
-    if (row) {
-      NIMBLE_CHECK_LE(
-          fields_.size(),
-          row->childrenSize(),
-          "Schema mismatch: expected {} fields, but got {} fields",
-          fields_.size(),
-          row->childrenSize());
-      nullsStream_.ensureAdditionalNullsCapacity(vector->mayHaveNulls(), size);
-      if (row->mayHaveNulls() && !ignoreNulls_) {
-        childRangesPtr = &childRanges;
-        auto nonNullCount = iterateNonNullIndices<true>(
-            ranges,
-            nullsStream_.mutableNonNulls(),
-            FlatAdapter<>{vector},
-            [&](auto offset) { childRanges.add(offset, 1); });
-        nullCount = size - nonNullCount;
-      } else {
-        childRangesPtr = &ranges;
-      }
-    } else {
-      auto decodingContext = context_.decodingContext();
-      auto& decoded = decodingContext.decode(vector, ranges);
-      row = decoded.base()->as<velox::RowVector>();
-      NIMBLE_CHECK_NOT_NULL(row, "Unexpected vector type");
-      NIMBLE_CHECK_LE(
-          fields_.size(),
-          row->childrenSize(),
-          "Schema mismatch: expected {} fields, but got {} fields",
-          fields_.size(),
-          row->childrenSize());
-      childRangesPtr = &childRanges;
-      nullsStream_.ensureAdditionalNullsCapacity(decoded.mayHaveNulls(), size);
-      auto nonNullCount = ignoreNulls_
-          ? iterateNonNullIndices<false>(
-                ranges,
-                nullsStream_.mutableNonNulls(),
-                DecodedAdapter<int8_t, true>{decoded},
-                [&](auto offset) { childRanges.add(offset, 1); })
-          : iterateNonNullIndices<true>(
-                ranges,
-                nullsStream_.mutableNonNulls(),
-                DecodedAdapter{decoded},
-                [&](auto offset) { childRanges.add(offset, 1); });
-      nullCount = size - nonNullCount;
+    if (parallelWriteEnabled(static_cast<uint32_t>(fields_.size()))) {
+      folly::coro::blockingWait(co_write(vector, ranges));
+      return;
     }
-
+    auto ctx = prepareChildRanges(vector, ranges);
     for (auto i = 0; i < fields_.size(); ++i) {
-      fields_[i]->write(row->childAt(i), *childRangesPtr);
+      fields_[i]->write(ctx.row->childAt(i), *ctx.childRangesPtr);
+    }
+    collectStatistics(ctx.nullCount, ctx.size);
+  }
+
+  folly::coro::Task<void> co_write(
+      const velox::VectorPtr& vector,
+      const OrderedRanges& ranges) override {
+    auto ctx = prepareChildRanges(vector, ranges);
+
+    const uint32_t numChildren = static_cast<uint32_t>(fields_.size());
+    const uint32_t taskCount = computeParallelWriteTaskCount(numChildren);
+    velox::common::testutil::TestValue::adjust(
+        "facebook::nimble::RowFieldWriter::co_write",
+        const_cast<uint32_t*>(&taskCount));
+
+    const uint32_t childrenPerTask = numChildren / taskCount;
+    const uint32_t numRemainderChildren = numChildren % taskCount;
+
+    auto writeRange = [this, &ctx](uint32_t startIdx, uint32_t endIdx) {
+      for (uint32_t i = startIdx; i < endIdx; ++i) {
+        fields_[i]->write(ctx.row->childAt(i), *ctx.childRangesPtr);
+      }
+    };
+
+    std::vector<folly::coro::TaskWithExecutor<void>> tasks;
+    tasks.reserve(taskCount);
+    uint32_t nextChildIdx = 0;
+    for (uint32_t taskId = 0; taskId < taskCount; ++taskId) {
+      const uint32_t endChildIdx = nextChildIdx + childrenPerTask +
+          (taskId < numRemainderChildren ? 1 : 0);
+      tasks.emplace_back(co_withExecutor(
+          context_.encodeExecutor(),
+          folly::coro::co_invoke(
+              [&writeRange, nextChildIdx, endChildIdx]()
+                  -> folly::coro::Task<void> {
+                writeRange(nextChildIdx, endChildIdx);
+                co_return;
+              })));
+      nextChildIdx = endChildIdx;
     }
 
-    collectStatistics(nullCount, size);
+    co_await folly::coro::collectAllRange(std::move(tasks));
+    collectStatistics(ctx.nullCount, ctx.size);
   }
 
   void reset() override {
@@ -695,6 +693,79 @@ class RowFieldWriter : public FieldWriter {
   }
 
  private:
+  // Result of null processing and child range computation, shared between
+  // the synchronous write() and coroutine co_write() paths.
+  struct PrepareContext {
+    // Decoded row vector (either direct cast or decoded from encoded input).
+    const velox::RowVector* row{};
+    // Ranges for child writes: points to either the original input ranges
+    // (when no nulls) or the filtered childRanges below.
+    const OrderedRanges* childRangesPtr{};
+    uint64_t nullCount{};
+    uint64_t size{};
+    // Filtered ranges containing only non-null row indices.
+    OrderedRanges childRanges;
+  };
+
+  PrepareContext prepareChildRanges(
+      const velox::VectorPtr& vector,
+      const OrderedRanges& ranges) {
+    PrepareContext ctx;
+    ctx.size = ranges.size();
+    ctx.nullCount = 0;
+    ctx.row = vector->as<velox::RowVector>();
+
+    if (ctx.row) {
+      NIMBLE_CHECK_LE(
+          fields_.size(),
+          ctx.row->childrenSize(),
+          "Schema mismatch: expected {} fields, but got {} fields",
+          fields_.size(),
+          ctx.row->childrenSize());
+      nullsStream_.ensureAdditionalNullsCapacity(
+          vector->mayHaveNulls(), ctx.size);
+      if (ctx.row->mayHaveNulls() && !ignoreNulls_) {
+        ctx.childRangesPtr = &ctx.childRanges;
+        auto nonNullCount = iterateNonNullIndices<true>(
+            ranges,
+            nullsStream_.mutableNonNulls(),
+            FlatAdapter<>{vector},
+            [&](auto offset) { ctx.childRanges.add(offset, 1); });
+        ctx.nullCount = ctx.size - nonNullCount;
+      } else {
+        ctx.childRangesPtr = &ranges;
+      }
+    } else {
+      auto decodingContext = context_.decodingContext();
+      auto& decoded = decodingContext.decode(vector, ranges);
+      ctx.row = decoded.base()->as<velox::RowVector>();
+      NIMBLE_CHECK_NOT_NULL(ctx.row, "Unexpected vector type");
+      NIMBLE_CHECK_LE(
+          fields_.size(),
+          ctx.row->childrenSize(),
+          "Schema mismatch: expected {} fields, but got {} fields",
+          fields_.size(),
+          ctx.row->childrenSize());
+      ctx.childRangesPtr = &ctx.childRanges;
+      nullsStream_.ensureAdditionalNullsCapacity(
+          decoded.mayHaveNulls(), ctx.size);
+      auto nonNullCount = ignoreNulls_
+          ? iterateNonNullIndices<false>(
+                ranges,
+                nullsStream_.mutableNonNulls(),
+                DecodedAdapter<int8_t, true>{decoded},
+                [&](auto offset) { ctx.childRanges.add(offset, 1); })
+          : iterateNonNullIndices<true>(
+                ranges,
+                nullsStream_.mutableNonNulls(),
+                DecodedAdapter{decoded},
+                [&](auto offset) { ctx.childRanges.add(offset, 1); });
+      ctx.nullCount = ctx.size - nonNullCount;
+    }
+
+    return ctx;
+  }
+
   void collectStatistics(uint64_t nullCount, uint64_t valueCount) {
     if (!statisticsCollector_) {
       return;
@@ -1851,8 +1922,13 @@ class FlatMapFieldWriter : public FieldWriter {
     if (nonNullCount > 0) {
       auto& values = map->mapValues();
 
-      for (auto& pair : currentValueFields_) {
-        pair.second->write(values, nonNullCount);
+      if (parallelWriteEnabled(
+              static_cast<uint32_t>(currentValueFields_.size()))) {
+        folly::coro::blockingWait(co_writeMapValues(values, nonNullCount));
+      } else {
+        for (auto& pair : currentValueFields_) {
+          pair.second->write(values, nonNullCount);
+        }
       }
     }
     nonNullCount_ += nonNullCount;
@@ -1901,6 +1977,52 @@ class FlatMapFieldWriter : public FieldWriter {
   }
 
  private:
+  folly::coro::Task<void> co_writeMapValues(
+      const velox::VectorPtr& values,
+      uint32_t nonNullCount) {
+    std::vector<FlatMapValueFieldWriter*> valueWriters;
+    valueWriters.reserve(currentValueFields_.size());
+    for (auto& pair : currentValueFields_) {
+      valueWriters.push_back(pair.second);
+    }
+
+    const uint32_t taskCount = computeParallelWriteTaskCount(
+        static_cast<uint32_t>(valueWriters.size()));
+    velox::common::testutil::TestValue::adjust(
+        "facebook::nimble::FlatMapFieldWriter::co_writeMapValues",
+        const_cast<uint32_t*>(&taskCount));
+
+    const uint32_t writersPerTask =
+        static_cast<uint32_t>(valueWriters.size()) / taskCount;
+    const uint32_t numRemainderWriters =
+        static_cast<uint32_t>(valueWriters.size()) % taskCount;
+
+    auto writeRange = [&valueWriters, &values, nonNullCount](
+                          uint32_t startIdx, uint32_t endIdx) {
+      for (uint32_t idx = startIdx; idx < endIdx; ++idx) {
+        valueWriters[idx]->write(values, nonNullCount);
+      }
+    };
+
+    std::vector<folly::coro::TaskWithExecutor<void>> tasks;
+    tasks.reserve(taskCount);
+    uint32_t nextIdx = 0;
+    for (uint32_t taskId = 0; taskId < taskCount; ++taskId) {
+      const uint32_t endIdx =
+          nextIdx + writersPerTask + (taskId < numRemainderWriters ? 1 : 0);
+      tasks.emplace_back(co_withExecutor(
+          context_.encodeExecutor(),
+          folly::coro::co_invoke(
+              [&writeRange, nextIdx, endIdx]() -> folly::coro::Task<void> {
+                writeRange(nextIdx, endIdx);
+                co_return;
+              })));
+      nextIdx = endIdx;
+    }
+
+    co_await folly::coro::collectAllRange(std::move(tasks));
+  }
+
   inline bool hasPredefinedKeys() const {
     return context_.getFlatMapNodeKeys(nodeId_) != nullptr;
   }
@@ -2725,6 +2847,22 @@ std::unique_ptr<FieldWriter> FieldWriter::create(
   }
   context.handleAddedType(*field->typeBuilder());
   return field;
+}
+
+uint32_t FieldWriter::computeParallelWriteTaskCount(
+    uint32_t numChildren) const {
+  if (numChildren == 0) {
+    return 0;
+  }
+  const uint32_t maxByStreams =
+      numChildren / std::max(1u, context_.minStreamsPerEncodeUnit());
+  return std::clamp(
+      std::min(context_.maxEncodeParallelism(), maxByStreams), 1u, numChildren);
+}
+
+bool FieldWriter::parallelWriteEnabled(uint32_t numChildren) const {
+  return context_.encodeExecutor() != nullptr &&
+      computeParallelWriteTaskCount(numChildren) > 1;
 }
 
 } // namespace facebook::nimble

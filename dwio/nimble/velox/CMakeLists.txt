@@ -78,6 +78,7 @@ target_link_libraries(
   nimble_velox_schema
   nimble_velox_stream_data
   nimble_velox_schema_builder
+  velox_test_util
   Folly::folly
 )
 

@@ -63,6 +63,13 @@ class WriterContext : public FieldWriterContext {
         : this->options_.stringBufferGrowthPolicyFactory();
     ignoreTopLevelNulls_ = options_.ignoreTopLevelNulls;
     disableSharedStringBuffers_ = options_.disableSharedStringBuffers;
+    if (this->options_.encodingExecutor &&
+        this->options_.maxEncodeParallelism > 0) {
+      setParallelEncoding(
+          this->options_.encodingExecutor.get(),
+          this->options_.maxEncodeParallelism,
+          this->options_.minStreamsPerEncodeUnit);
+    }
   }
 
   const VeloxWriterOptions& options() const {

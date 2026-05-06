@@ -13,10 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <folly/executors/CPUThreadPoolExecutor.h>
 #include <folly/system/HardwareConcurrency.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <set>
+
+#include "velox/common/testutil/TestValue.h"
 
 #include <utility>
 #include "dwio/nimble/common/Exceptions.h"
@@ -5820,6 +5823,294 @@ TEST_F(VeloxWriterTest, flatmapColumnsKeysImplicitFlatMapColumn) {
     ASSERT_TRUE(expected->equalValueAt(result.get(), i, i))
         << "Mismatch at row " << i;
   }
+}
+
+struct ParallelEncodeParam {
+  uint32_t maxEncodeParallelism;
+  uint32_t minStreamsPerEncodeUnit;
+
+  std::string debugString() const {
+    return fmt::format(
+        "maxParallel_{}_minStreams_{}",
+        maxEncodeParallelism,
+        minStreamsPerEncodeUnit);
+  }
+};
+
+class ParallelEncodeWriterTest
+    : public VeloxWriterTest,
+      public ::testing::WithParamInterface<ParallelEncodeParam> {
+ protected:
+  nimble::VeloxWriterOptions parallelWriterOptions() {
+    nimble::VeloxWriterOptions options;
+    executor_ = std::make_shared<folly::CPUThreadPoolExecutor>(4);
+    options.encodingExecutor = folly::getKeepAliveToken(*executor_);
+    options.maxEncodeParallelism = GetParam().maxEncodeParallelism;
+    options.minStreamsPerEncodeUnit = GetParam().minStreamsPerEncodeUnit;
+    return options;
+  }
+
+  std::shared_ptr<folly::CPUThreadPoolExecutor> executor_;
+};
+
+TEST_P(ParallelEncodeWriterTest, rowParallelEncode) {
+  auto type = velox::ROW({
+      {"a", velox::BIGINT()},
+      {"b", velox::DOUBLE()},
+      {"c", velox::INTEGER()},
+      {"d", velox::BIGINT()},
+      {"e", velox::REAL()},
+      {"f", velox::BIGINT()},
+      {"g", velox::INTEGER()},
+      {"h", velox::DOUBLE()},
+  });
+
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  velox::VectorFuzzer fuzzer(
+      {.vectorSize = 1000, .nullRatio = 0.1}, leafPool_.get(), seed);
+
+  auto writerOptions = parallelWriterOptions();
+
+  std::string seqFile;
+  std::string parFile;
+
+  {
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&seqFile);
+    nimble::VeloxWriter writer(type, std::move(writeFile), *rootPool_, {});
+    for (int i = 0; i < 10; ++i) {
+      writer.write(fuzzer.fuzzInputRow(type));
+    }
+    writer.close();
+  }
+
+  {
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&parFile);
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, writerOptions);
+    fuzzer.reSeed(seed);
+    for (int i = 0; i < 10; ++i) {
+      writer.write(fuzzer.fuzzInputRow(type));
+    }
+    writer.close();
+  }
+
+  auto seqRead = std::make_shared<velox::InMemoryReadFile>(seqFile);
+  auto parRead = std::make_shared<velox::InMemoryReadFile>(parFile);
+  nimble::VeloxReader seqReader(seqRead.get(), *leafPool_);
+  nimble::VeloxReader parReader(parRead.get(), *leafPool_);
+
+  velox::VectorPtr seqResult;
+  velox::VectorPtr parResult;
+  while (seqReader.next(1000, seqResult)) {
+    ASSERT_TRUE(parReader.next(1000, parResult));
+    ASSERT_EQ(seqResult->size(), parResult->size());
+    for (velox::vector_size_t row = 0; row < seqResult->size(); ++row) {
+      ASSERT_TRUE(seqResult->equalValueAt(parResult.get(), row, row))
+          << "Mismatch at row " << row;
+    }
+  }
+}
+
+TEST_P(ParallelEncodeWriterTest, flatMapParallelEncode) {
+  auto type = velox::ROW({
+      {"flatmap", velox::MAP(velox::INTEGER(), velox::BIGINT())},
+      {"col", velox::BIGINT()},
+  });
+
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  velox::VectorFuzzer fuzzer(
+      {.vectorSize = 1000, .nullRatio = 0.1, .containerLength = 20},
+      leafPool_.get(),
+      seed);
+
+  auto writerOptions = parallelWriterOptions();
+  writerOptions.flatMapColumns = {{"flatmap", {}}};
+
+  nimble::VeloxWriterOptions seqOptions;
+  seqOptions.flatMapColumns = {{"flatmap", {}}};
+
+  std::string seqFile;
+  std::string parFile;
+
+  {
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&seqFile);
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, seqOptions);
+    for (int i = 0; i < 10; ++i) {
+      writer.write(fuzzer.fuzzInputRow(type));
+    }
+    writer.close();
+  }
+
+  {
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&parFile);
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, writerOptions);
+    fuzzer.reSeed(seed);
+    for (int i = 0; i < 10; ++i) {
+      writer.write(fuzzer.fuzzInputRow(type));
+    }
+    writer.close();
+  }
+
+  auto seqRead = std::make_shared<velox::InMemoryReadFile>(seqFile);
+  auto parRead = std::make_shared<velox::InMemoryReadFile>(parFile);
+  nimble::VeloxReader seqReader(seqRead.get(), *leafPool_);
+  nimble::VeloxReader parReader(parRead.get(), *leafPool_);
+
+  velox::VectorPtr seqResult;
+  velox::VectorPtr parResult;
+  while (seqReader.next(1000, seqResult)) {
+    ASSERT_TRUE(parReader.next(1000, parResult));
+    ASSERT_EQ(seqResult->size(), parResult->size());
+    for (velox::vector_size_t row = 0; row < seqResult->size(); ++row) {
+      ASSERT_TRUE(seqResult->equalValueAt(parResult.get(), row, row))
+          << "Mismatch at row " << row;
+    }
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ParallelEncodeWriterTestSuite,
+    ParallelEncodeWriterTest,
+    ::testing::Values(
+        ParallelEncodeParam{2, 1},
+        ParallelEncodeParam{4, 1},
+        ParallelEncodeParam{8, 1},
+        ParallelEncodeParam{4, 4},
+        ParallelEncodeParam{100, 1}),
+    [](const ::testing::TestParamInfo<ParallelEncodeParam>& info) {
+      return info.param.debugString();
+    });
+
+DEBUG_ONLY_TEST_F(VeloxWriterTest, parallelEncodeRowTaskCount) {
+  velox::common::testutil::TestValue::enable();
+
+  auto type = velox::ROW({
+      {"a", velox::BIGINT()},
+      {"b", velox::DOUBLE()},
+      {"c", velox::INTEGER()},
+      {"d", velox::BIGINT()},
+      {"e", velox::REAL()},
+      {"f", velox::BIGINT()},
+      {"g", velox::INTEGER()},
+      {"h", velox::DOUBLE()},
+  });
+
+  velox::VectorFuzzer fuzzer(
+      {.vectorSize = 100, .nullRatio = 0}, leafPool_.get());
+
+  struct TestCase {
+    uint32_t maxEncodeParallelism;
+    uint32_t minStreamsPerEncodeUnit;
+    uint32_t expectedTaskCount;
+  };
+
+  const std::vector<TestCase> testCases = {
+      {2, 1, 2},
+      {4, 1, 4},
+      {8, 1, 8},
+      {4, 4, 2},
+      {8, 4, 2},
+      {100, 1, 8},
+  };
+
+  folly::CPUThreadPoolExecutor executor(4);
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(
+        fmt::format(
+            "maxParallel={}, minStreams={}, expected={}",
+            testCase.maxEncodeParallelism,
+            testCase.minStreamsPerEncodeUnit,
+            testCase.expectedTaskCount));
+
+    nimble::VeloxWriterOptions writerOptions;
+    writerOptions.encodingExecutor = folly::getKeepAliveToken(executor);
+    writerOptions.maxEncodeParallelism = testCase.maxEncodeParallelism;
+    writerOptions.minStreamsPerEncodeUnit = testCase.minStreamsPerEncodeUnit;
+
+    uint32_t parallelWriteCount = 0;
+    std::vector<uint32_t> observedTaskCounts;
+    SCOPED_TESTVALUE_SET(
+        "facebook::nimble::RowFieldWriter::co_write",
+        std::function<void(const uint32_t*)>([&](const uint32_t* taskCount) {
+          ++parallelWriteCount;
+          observedTaskCounts.emplace_back(*taskCount);
+        }));
+
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, writerOptions);
+
+    const size_t numBatches = 3;
+    for (size_t i = 0; i < numBatches; ++i) {
+      writer.write(fuzzer.fuzzInputRow(type));
+    }
+    writer.close();
+
+    EXPECT_EQ(parallelWriteCount, numBatches);
+    for (const auto taskCount : observedTaskCounts) {
+      EXPECT_EQ(taskCount, testCase.expectedTaskCount);
+    }
+
+    auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+    nimble::VeloxReader reader(readFile.get(), *leafPool_);
+    velox::VectorPtr result;
+    ASSERT_TRUE(reader.next(numBatches * 100, result));
+    EXPECT_EQ(result->size(), numBatches * 100);
+  }
+}
+
+DEBUG_ONLY_TEST_F(VeloxWriterTest, parallelEncodeFlatMapTaskCount) {
+  velox::common::testutil::TestValue::enable();
+
+  auto type = velox::ROW({
+      {"flatmap", velox::MAP(velox::INTEGER(), velox::BIGINT())},
+      {"col", velox::BIGINT()},
+  });
+
+  velox::VectorFuzzer fuzzer(
+      {.vectorSize = 100, .nullRatio = 0, .containerLength = 20},
+      leafPool_.get());
+
+  folly::CPUThreadPoolExecutor executor(4);
+
+  nimble::VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns = {{"flatmap", {}}};
+  writerOptions.encodingExecutor = folly::getKeepAliveToken(executor);
+  writerOptions.maxEncodeParallelism = 4;
+  writerOptions.minStreamsPerEncodeUnit = 1;
+
+  uint32_t flatMapParallelCount = 0;
+  SCOPED_TESTVALUE_SET(
+      "facebook::nimble::FlatMapFieldWriter::co_writeMapValues",
+      std::function<void(const uint32_t*)>([&](const uint32_t* taskCount) {
+        ++flatMapParallelCount;
+        EXPECT_GT(*taskCount, 1);
+      }));
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, writerOptions);
+
+  const size_t numBatches = 5;
+  for (size_t i = 0; i < numBatches; ++i) {
+    writer.write(fuzzer.fuzzInputRow(type));
+  }
+  writer.close();
+
+  EXPECT_GT(flatMapParallelCount, 0);
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  nimble::VeloxReader reader(readFile.get(), *leafPool_);
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(numBatches * 100, result));
+  EXPECT_EQ(result->size(), numBatches * 100);
 }
 
 } // namespace facebook
