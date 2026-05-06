@@ -50,7 +50,7 @@ class TrivialEncoding final
   static constexpr int kPrefixSize = 1;
 
   TrivialEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});
@@ -79,7 +79,7 @@ class TrivialEncoding final
  private:
   uint32_t row_;
   const T* values_;
-  Vector<char> uncompressed_;
+  velox::BufferPtr uncompressed_;
 };
 
 // For the string case the layout is:
@@ -97,7 +97,7 @@ class TrivialEncoding<std::string_view> final
   static constexpr int kPrefixSize = 5;
 
   TrivialEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});
@@ -132,7 +132,7 @@ class TrivialEncoding<std::string_view> final
   // NOTE: This is not necessarily the size of 'dataUncompressed_' because the
   // data could come as uncompressed.
   uint64_t uncompressedDataBytes_;
-  Vector<char> dataUncompressed_;
+  velox::BufferPtr dataUncompressed_;
 };
 
 // For the bool case the layout is:
@@ -171,7 +171,7 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
  private:
   uint32_t row_{0};
   const char* bitmap_;
-  Vector<char> uncompressed_;
+  velox::BufferPtr uncompressed_;
 };
 
 //
@@ -180,31 +180,31 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
 
 template <typename T>
 TrivialEncoding<T>::TrivialEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> /* stringBufferFactory */,
     const Encoding::Options& options)
-    : TypedEncoding<T, physicalType>{memoryPool, data, options},
+    : TypedEncoding<T, physicalType>{pool, data, options},
       row_{0},
       values_{reinterpret_cast<const T*>(
-          data.data() + this->dataOffset() + kPrefixSize)},
-      uncompressed_{&memoryPool} {
+          data.data() + this->dataOffset() + kPrefixSize)} {
   const auto valuesOffset = this->dataOffset() + kPrefixSize;
   auto compressionType = static_cast<CompressionType>(data[this->dataOffset()]);
   if (compressionType != CompressionType::Uncompressed) {
     uncompressed_ = Compression::uncompress(
-        memoryPool,
+        pool,
         compressionType,
         TypeTraits<physicalType>::dataType,
         {data.data() + valuesOffset, data.size() - valuesOffset});
-    values_ = reinterpret_cast<const T*>(uncompressed_.data());
-    NIMBLE_CHECK(
-        reinterpret_cast<const char*>(values_ + this->rowCount()) ==
-            uncompressed_.end(),
+    values_ = reinterpret_cast<const T*>(uncompressed_->as<char>());
+    NIMBLE_CHECK_EQ(
+        reinterpret_cast<const char*>(values_ + this->rowCount()),
+        uncompressed_->as<char>() + uncompressed_->size(),
         "Unexpected trivial encoding end");
   } else {
-    NIMBLE_CHECK(
-        reinterpret_cast<const char*>(values_ + this->rowCount()) == data.end(),
+    NIMBLE_CHECK_EQ(
+        reinterpret_cast<const char*>(values_ + this->rowCount()),
+        data.end(),
         "Unexpected trivial encoding end");
   }
 }

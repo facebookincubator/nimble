@@ -23,14 +23,14 @@ namespace facebook::nimble {
 class ZstdCompressor : public ICompressor {
  public:
   CompressionResult compress(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       DataType dataType,
       int bitWidth,
       const CompressionPolicy& compressionPolicy) override;
 
-  Vector<char> uncompress(
-      velox::memory::MemoryPool& memoryPool,
+  velox::BufferPtr uncompress(
+      velox::memory::MemoryPool& pool,
       CompressionType compressionType,
       DataType dataType,
       std::string_view data) override;

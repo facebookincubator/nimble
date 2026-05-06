@@ -19,32 +19,29 @@
 namespace facebook::nimble {
 
 TrivialEncoding<std::string_view>::TrivialEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> stringBufferFactory,
     const Encoding::Options& options)
-    : TypedEncoding<
-          std::string_view,
-          std::string_view>{memoryPool, data, options},
+    : TypedEncoding<std::string_view, std::string_view>{pool, data, options},
       row_{0},
-      buffer_{&memoryPool},
-      dataUncompressed_{&memoryPool} {
+      buffer_{&pool} {
   auto pos = data.data() + this->dataOffset();
   const auto dataCompressionType =
       static_cast<CompressionType>(encoding::readChar(pos));
   const auto lengthsSize = encoding::readUint32(pos);
   lengths_ = EncodingFactory(options).create(
-      memoryPool, {pos, lengthsSize}, stringBufferFactory);
+      pool, {pos, lengthsSize}, stringBufferFactory);
   blob_ = pos + lengthsSize;
 
   if (dataCompressionType != CompressionType::Uncompressed) {
     dataUncompressed_ = Compression::uncompress(
-        memoryPool,
+        pool,
         dataCompressionType,
         DataType::String,
         {blob_, static_cast<size_t>(data.end() - blob_)});
-    blob_ = reinterpret_cast<const char*>(dataUncompressed_.data());
-    uncompressedDataBytes_ = dataUncompressed_.size();
+    blob_ = dataUncompressed_->as<char>();
+    uncompressedDataBytes_ = dataUncompressed_->size();
   } else {
     uncompressedDataBytes_ = data.size() - std::distance(data.data(), blob_);
   }
@@ -54,7 +51,7 @@ TrivialEncoding<std::string_view>::TrivialEncoding(
   // TODO(huamengjiang): in a follow up, we will let the factory return a smart
   // pointer that can also be held by the encoding.
   std::memcpy(stringBuffer, blob_, uncompressedDataBytes_);
-  dataUncompressed_.clear();
+  dataUncompressed_.reset();
   blob_ = static_cast<char*>(stringBuffer);
   pos_ = blob_;
 }
@@ -199,8 +196,7 @@ TrivialEncoding<bool>::TrivialEncoding(
     std::function<void*(uint32_t)> /* stringBufferFactory */,
     const Encoding::Options& options)
     : TypedEncoding<bool, bool>{pool, data, options},
-      bitmap_{data.data() + this->dataOffset() + kPrefixSize},
-      uncompressed_{&pool} {
+      bitmap_{data.data() + this->dataOffset() + kPrefixSize} {
   const auto compressionType =
       static_cast<CompressionType>(data[this->dataOffset()]);
   if (compressionType != CompressionType::Uncompressed) {
@@ -209,14 +205,15 @@ TrivialEncoding<bool>::TrivialEncoding(
         compressionType,
         DataType::Undefined,
         {bitmap_, static_cast<size_t>(data.end() - bitmap_)});
-    bitmap_ = uncompressed_.data();
-    NIMBLE_CHECK(
-        bitmap_ + FixedBitArray::bufferSize(rowCount(), 1) ==
-            uncompressed_.end(),
+    bitmap_ = uncompressed_->as<char>();
+    NIMBLE_CHECK_EQ(
+        bitmap_ + FixedBitArray::bufferSize(rowCount(), 1),
+        uncompressed_->as<char>() + uncompressed_->size(),
         "Unexpected trivial encoding end");
   } else {
-    NIMBLE_CHECK(
-        bitmap_ + FixedBitArray::bufferSize(rowCount(), 1) == data.end(),
+    NIMBLE_CHECK_EQ(
+        bitmap_ + FixedBitArray::bufferSize(rowCount(), 1),
+        data.end(),
         "Unexpected trivial encoding end");
   }
 }
