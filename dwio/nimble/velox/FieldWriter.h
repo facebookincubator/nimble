@@ -605,8 +605,7 @@ class FieldWriter {
   // Writes the vector to internal buffers.
   virtual void write(
       const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor* executor = nullptr) = 0;
+      const OrderedRanges& ranges) = 0;
 
   // Collects stats and clears interanl state and any accumulated data in
   // internal buffers.

@@ -2539,7 +2539,6 @@ TEST_F(VeloxWriterTest, fuzzComplex) {
       executor =
           std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
       writerOptions.encodingExecutor = folly::getKeepAliveToken(*executor);
-      writerOptions.writeExecutor = folly::getKeepAliveToken(*executor);
     }
 
     const auto iterations = 20;

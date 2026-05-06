@@ -2675,7 +2675,6 @@ TEST_P(VeloxReaderTest, fuzzSimple) {
       executor =
           std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
       writerOptions.encodingExecutor = folly::getKeepAliveToken(*executor);
-      writerOptions.writeExecutor = folly::getKeepAliveToken(*executor);
     }
 
     for (auto i = 0; i < iterations; ++i) {
@@ -2798,7 +2797,6 @@ TEST_P(VeloxReaderTest, fuzzComplex) {
       executor =
           std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
       writerOptions.encodingExecutor = folly::getKeepAliveToken(*executor);
-      writerOptions.writeExecutor = folly::getKeepAliveToken(*executor);
     }
 
     for (auto i = 0; i < iterations; ++i) {

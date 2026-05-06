@@ -272,10 +272,8 @@ class SimpleFieldWriter : public FieldWriter {
             nodeId)},
         statisticsCollector_{context.getStatsCollector(nodeId)} {}
 
-  void write(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor*) override {
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
     auto size = ranges.size();
     auto& buffer = context_.stringBuffer();
     auto& data = valuesStream_.mutableData();
@@ -411,10 +409,8 @@ class StringFieldWriter : public FieldWriter {
         "StringFieldWriter only supports VARCHAR and VARBINARY types");
   }
 
-  void write(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor*) override {
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
     // Ensure string buffer capacity.
     auto size = ranges.size();
     const uint64_t totalBytes = getRawSizeFromVector(vector, ranges);
@@ -522,10 +518,8 @@ class TimestampFieldWriter : public FieldWriter {
             nodeId)},
         statisticsCollector_{context.getStatsCollector(nodeId)} {}
 
-  void write(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor*) override {
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
     auto size = ranges.size();
     Vector<int64_t>& microsData = microsStream_.mutableData();
     Vector<uint16_t>& nanosData = nanosStream_.mutableData();
@@ -625,10 +619,8 @@ class RowFieldWriter : public FieldWriter {
     }
   }
 
-  void write(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor* executor = nullptr) override {
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
     auto size = ranges.size();
     OrderedRanges childRanges;
     const OrderedRanges* childRangesPtr;
@@ -681,18 +673,8 @@ class RowFieldWriter : public FieldWriter {
       nullCount = size - nonNullCount;
     }
 
-    if (executor) {
-      for (auto i = 0; i < fields_.size(); ++i) {
-        executor->add([&field = fields_[i],
-                       &childVector = row->childAt(i),
-                       childRanges = *childRangesPtr]() {
-          field->write(childVector, childRanges);
-        });
-      }
-    } else {
-      for (auto i = 0; i < fields_.size(); ++i) {
-        fields_[i]->write(row->childAt(i), *childRangesPtr);
-      }
+    for (auto i = 0; i < fields_.size(); ++i) {
+      fields_[i]->write(row->childAt(i), *childRangesPtr);
     }
 
     collectStatistics(nullCount, size);
@@ -831,10 +813,8 @@ class ArrayFieldWriter : public MultiValueFieldWriter {
     typeBuilder_->asArray().setChildren(elements_->typeBuilder());
   }
 
-  void write(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor*) override {
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
     OrderedRanges childRanges;
     auto array = ingestLengths<velox::ArrayVector>(vector, ranges, childRanges);
     if (childRanges.size() > 0) {
@@ -872,10 +852,8 @@ class MapFieldWriter : public MultiValueFieldWriter {
         keys_->typeBuilder(), values_->typeBuilder());
   }
 
-  void write(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor*) override {
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
     OrderedRanges childRanges;
     auto map = ingestLengths<velox::MapVector>(vector, ranges, childRanges);
     if (childRanges.size() > 0) {
@@ -930,10 +908,8 @@ class SlidingWindowMapFieldWriter : public FieldWriter {
         type->type(), 1, context.bufferMemoryPool().get());
   }
 
-  void write(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor*) override {
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
     OrderedRanges childFilteredRanges;
     OrderedRanges fullChildRanges;
     // childItemCount is the (logical) total cardinality of map elements,
@@ -1395,10 +1371,8 @@ class FlatMapFieldWriter : public FieldWriter {
     }
   }
 
-  void write(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor* executor = nullptr) override {
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
     // Check the type of the received vector. Accepted types are ROW or MAP
     // (the latter either MapVector or FlatMapVector encodings).
     switch (vector->type()->kind()) {
@@ -1415,7 +1389,7 @@ class FlatMapFieldWriter : public FieldWriter {
             ingestFlatMap(vector, ranges);
             return;
           default:
-            ingestMap(vector, ranges, executor);
+            ingestMap(vector, ranges);
             return;
         }
         break;
@@ -1779,10 +1753,7 @@ class FlatMapFieldWriter : public FieldWriter {
     }
   }
 
-  void ingestMap(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor* executor = nullptr) {
+  void ingestMap(const velox::VectorPtr& vector, const OrderedRanges& ranges) {
     NIMBLE_CHECK(
         currentPassthroughFields_.empty(),
         "Mixing map and flatmap vectors in the FlatMapFieldWriter is not supported");
@@ -1880,14 +1851,8 @@ class FlatMapFieldWriter : public FieldWriter {
     if (nonNullCount > 0) {
       auto& values = map->mapValues();
 
-      if (executor) {
-        for (auto& pair : currentValueFields_) {
-          executor->add([&]() { pair.second->write(values, nonNullCount); });
-        }
-      } else {
-        for (auto& pair : currentValueFields_) {
-          pair.second->write(values, nonNullCount);
-        }
+      for (auto& pair : currentValueFields_) {
+        pair.second->write(values, nonNullCount);
       }
     }
     nonNullCount_ += nonNullCount;
@@ -2095,10 +2060,8 @@ class ArrayWithOffsetsFieldWriter : public FieldWriter {
         type->type(), 1, context.bufferMemoryPool().get());
   }
 
-  void write(
-      const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor*) override {
+  void write(const velox::VectorPtr& vector, const OrderedRanges& ranges)
+      override {
     OrderedRanges childFilteredRanges;
     // childItemCount is the (logical) total cardinality of array elements.
     uint64_t childItemCount = 0;

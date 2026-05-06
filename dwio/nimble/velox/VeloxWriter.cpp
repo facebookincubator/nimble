@@ -781,16 +781,8 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
       context_->updateFileRawSize(rawSize);
     }
 
-    if (context_->options().writeExecutor) {
-      velox::dwio::common::ExecutorBarrier barrier{
-          context_->options().writeExecutor};
-      rootWriter_->write(input, OrderedRanges::of(0, numRows), &barrier);
-      addIndexKey(input, &barrier);
-      barrier.waitAll();
-    } else {
-      rootWriter_->write(input, OrderedRanges::of(0, numRows));
-      addIndexKey(input);
-    }
+    rootWriter_->write(input, OrderedRanges::of(0, numRows));
+    addIndexKey(input);
 
     uint64_t memoryUsed{0};
     for (const auto& [_, stream] : context_->streams()) {
