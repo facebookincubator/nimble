@@ -15,6 +15,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <lz4.h>
 #include <zstd.h>
 
 #include "dwio/nimble/common/ChunkHeader.h"
@@ -1738,4 +1739,256 @@ TEST_F(ZstdDCtxReuseTest, streamDataReaderDCtxReusedAcrossStreams) {
   ASSERT_EQ(result.size(), 2);
   EXPECT_EQ(result[0].second, payload1);
   EXPECT_EQ(result[1].second, payload2);
+}
+
+class LZ4RoundtripTest : public TabletRawChunkStripTest {
+ protected:
+  static std::string buildLegacyLZ4CompressedData(std::string_view payload) {
+    std::string result;
+    result.push_back(static_cast<char>(CompressionType::LZ4));
+
+    const auto origSize = static_cast<uint32_t>(payload.size());
+    result.resize(result.size() + sizeof(uint32_t));
+    auto* sizePos = result.data() + 1;
+    encoding::writeUint32(origSize, sizePos);
+
+    const auto maxSize = LZ4_compressBound(static_cast<int>(payload.size()));
+    const auto offset = result.size();
+    result.resize(offset + maxSize);
+    const auto compressedSize = LZ4_compress_default(
+        payload.data(),
+        result.data() + offset,
+        static_cast<int>(payload.size()),
+        maxSize);
+    NIMBLE_CHECK_GT(compressedSize, 0, "LZ4 compression failed");
+    result.resize(offset + compressedSize);
+    return result;
+  }
+
+  static std::string buildLZ4CompressedChunk(std::string_view data) {
+    const auto maxCompressedSize =
+        LZ4_compressBound(static_cast<int>(data.size()));
+    std::string compressed(maxCompressedSize, '\0');
+    const auto compressedSize = LZ4_compress_default(
+        data.data(),
+        compressed.data(),
+        static_cast<int>(data.size()),
+        maxCompressedSize);
+    NIMBLE_CHECK_GT(compressedSize, 0, "LZ4 compression failed");
+    compressed.resize(compressedSize);
+
+    // Chunk payload: [origSize:u32][lz4_data...]
+    const auto chunkPayloadSize = sizeof(uint32_t) + compressedSize;
+    std::string chunk(kChunkHeaderSize + chunkPayloadSize, '\0');
+    auto* pos = chunk.data();
+    writeChunkHeader(
+        static_cast<uint32_t>(chunkPayloadSize), CompressionType::LZ4, pos);
+    encoding::writeUint32(static_cast<uint32_t>(data.size()), pos);
+    std::memcpy(pos, compressed.data(), compressedSize);
+    return chunk;
+  }
+};
+
+TEST_F(LZ4RoundtripTest, streamDataLegacyLZ4) {
+  const std::vector<int32_t> expected = {10, 20, 30, 40, 50};
+  std::string_view payload(
+      reinterpret_cast<const char*>(expected.data()),
+      expected.size() * sizeof(int32_t));
+  auto compressed = buildLegacyLZ4CompressedData(payload);
+
+  std::vector<BufferPtr> stringBuffers;
+  serde::StreamData sd(
+      ScalarKind::Int32,
+      compressed,
+      stringBuffers,
+      pool_.get(),
+      serde::StreamData::Options{.version = SerializationVersion::kLegacy});
+
+  std::vector<int32_t> output(expected.size());
+  sd.copyTo(
+      reinterpret_cast<char*>(output.data()),
+      static_cast<uint32_t>(output.size() * sizeof(int32_t)));
+  EXPECT_EQ(output, expected);
+}
+
+TEST_F(LZ4RoundtripTest, streamDataLZ4ReusedAcrossReset) {
+  const std::vector<int32_t> values1 = {1, 2, 3};
+  std::string_view payload1(
+      reinterpret_cast<const char*>(values1.data()),
+      values1.size() * sizeof(int32_t));
+  auto compressed1 = buildLegacyLZ4CompressedData(payload1);
+
+  const std::vector<int32_t> values2 = {100, 200};
+  std::string_view payload2(
+      reinterpret_cast<const char*>(values2.data()),
+      values2.size() * sizeof(int32_t));
+  auto compressed2 = buildLegacyLZ4CompressedData(payload2);
+
+  std::vector<BufferPtr> stringBuffers;
+  serde::StreamData sd(
+      ScalarKind::Int32,
+      compressed1,
+      stringBuffers,
+      pool_.get(),
+      serde::StreamData::Options{.version = SerializationVersion::kLegacy});
+
+  std::vector<int32_t> output1(values1.size());
+  sd.copyTo(
+      reinterpret_cast<char*>(output1.data()),
+      static_cast<uint32_t>(output1.size() * sizeof(int32_t)));
+  EXPECT_EQ(output1, values1);
+
+  sd.reset(compressed2, SerializationVersion::kLegacy);
+
+  std::vector<int32_t> output2(values2.size());
+  sd.copyTo(
+      reinterpret_cast<char*>(output2.data()),
+      static_cast<uint32_t>(output2.size() * sizeof(int32_t)));
+  EXPECT_EQ(output2, values2);
+}
+
+TEST_F(LZ4RoundtripTest, streamDataReaderLZ4CompressedChunk) {
+  std::string payload = "compressed data that should be lz4 encoded for test";
+  auto chunk = buildLZ4CompressedChunk(payload);
+  auto result = deserializeTabletRaw(10, {{0, chunk}});
+
+  ASSERT_EQ(result.size(), 1);
+  EXPECT_EQ(result[0].first, 0);
+  EXPECT_EQ(result[0].second, payload);
+}
+
+TEST_F(LZ4RoundtripTest, streamDataReaderLZ4ReusedAcrossStreams) {
+  std::string payload1 = "first compressed stream payload data";
+  std::string payload2 = "second compressed stream payload data";
+  auto chunk1 = buildLZ4CompressedChunk(payload1);
+  auto chunk2 = buildLZ4CompressedChunk(payload2);
+
+  auto result = deserializeTabletRaw(10, {{0, chunk1}, {1, chunk2}});
+
+  ASSERT_EQ(result.size(), 2);
+  EXPECT_EQ(result[0].second, payload1);
+  EXPECT_EQ(result[1].second, payload2);
+}
+
+TEST_F(LZ4RoundtripTest, streamDataReaderLZ4MultipleChunks) {
+  std::string part1 = "first chunk of lz4 compressed data here";
+  std::string part2 = "second chunk of lz4 compressed data here";
+  auto stream = concatChunks(
+      {buildLZ4CompressedChunk(part1), buildLZ4CompressedChunk(part2)});
+  auto result = deserializeTabletRaw(10, {{0, stream}});
+
+  ASSERT_EQ(result.size(), 1);
+  EXPECT_EQ(result[0].first, 0);
+  EXPECT_EQ(result[0].second, part1 + part2);
+}
+
+TEST_F(LZ4RoundtripTest, streamDataReaderLZ4MixedWithUncompressed) {
+  std::string part1 = "uncompressed chunk one";
+  std::string part2 = "lz4 compressed chunk two with some data";
+  std::string part3 = "another uncompressed chunk three";
+  auto stream = concatChunks(
+      {buildUncompressedChunk(part1),
+       buildLZ4CompressedChunk(part2),
+       buildUncompressedChunk(part3)});
+  auto result = deserializeTabletRaw(10, {{0, stream}});
+
+  ASSERT_EQ(result.size(), 1);
+  EXPECT_EQ(result[0].first, 0);
+  EXPECT_EQ(result[0].second, part1 + part2 + part3);
+}
+
+TEST_F(LZ4RoundtripTest, encodeDecodeLZ4Roundtrip) {
+  const std::vector<int32_t> expected(256);
+  std::string_view input(
+      reinterpret_cast<const char*>(expected.data()),
+      expected.size() * sizeof(int32_t));
+
+  SerializerOptions options;
+  options.compressionType = CompressionType::LZ4;
+  options.compressionThreshold = 1;
+
+  std::string buffer(input.size() + 2 * sizeof(uint32_t) + 1, '\0');
+  const auto encodedSize = serde::detail::encode(options, input, buffer.data());
+
+  // encode() outputs [size:u32][compressionType:i8][data...]; StreamData
+  // expects the stream without the size prefix.
+  std::string_view streamData(
+      buffer.data() + sizeof(uint32_t), encodedSize - sizeof(uint32_t));
+
+  std::vector<BufferPtr> stringBuffers;
+  serde::StreamData sd(
+      ScalarKind::Int32,
+      streamData,
+      stringBuffers,
+      pool_.get(),
+      serde::StreamData::Options{.version = SerializationVersion::kLegacy});
+
+  std::vector<int32_t> output(expected.size());
+  sd.copyTo(
+      reinterpret_cast<char*>(output.data()),
+      static_cast<uint32_t>(output.size() * sizeof(int32_t)));
+  EXPECT_EQ(output, expected);
+}
+
+TEST_F(LZ4RoundtripTest, encodeLZ4BelowThresholdStaysUncompressed) {
+  const std::vector<int32_t> expected = {1, 2, 3};
+  std::string_view input(
+      reinterpret_cast<const char*>(expected.data()),
+      expected.size() * sizeof(int32_t));
+
+  SerializerOptions options;
+  options.compressionType = CompressionType::LZ4;
+  options.compressionThreshold = 1'000'000;
+
+  std::string buffer(input.size() + 2 * sizeof(uint32_t) + 1, '\0');
+  const auto encodedSize = serde::detail::encode(options, input, buffer.data());
+
+  std::string_view streamData(
+      buffer.data() + sizeof(uint32_t), encodedSize - sizeof(uint32_t));
+
+  std::vector<BufferPtr> stringBuffers;
+  serde::StreamData sd(
+      ScalarKind::Int32,
+      streamData,
+      stringBuffers,
+      pool_.get(),
+      serde::StreamData::Options{.version = SerializationVersion::kLegacy});
+
+  std::vector<int32_t> output(expected.size());
+  sd.copyTo(
+      reinterpret_cast<char*>(output.data()),
+      static_cast<uint32_t>(output.size() * sizeof(int32_t)));
+  EXPECT_EQ(output, expected);
+}
+
+TEST_F(LZ4RoundtripTest, encodeDecodeLZ4HighCompression) {
+  const std::vector<int32_t> expected(256);
+  std::string_view input(
+      reinterpret_cast<const char*>(expected.data()),
+      expected.size() * sizeof(int32_t));
+
+  SerializerOptions options;
+  options.compressionType = CompressionType::LZ4;
+  options.compressionThreshold = 1;
+  options.compressionLevel = 9;
+
+  std::string buffer(input.size() + 2 * sizeof(uint32_t) + 1, '\0');
+  const auto encodedSize = serde::detail::encode(options, input, buffer.data());
+
+  std::string_view streamData(
+      buffer.data() + sizeof(uint32_t), encodedSize - sizeof(uint32_t));
+
+  std::vector<BufferPtr> stringBuffers;
+  serde::StreamData sd(
+      ScalarKind::Int32,
+      streamData,
+      stringBuffers,
+      pool_.get(),
+      serde::StreamData::Options{.version = SerializationVersion::kLegacy});
+
+  std::vector<int32_t> output(expected.size());
+  sd.copyTo(
+      reinterpret_cast<char*>(output.data()),
+      static_cast<uint32_t>(output.size() * sizeof(int32_t)));
+  EXPECT_EQ(output, expected);
 }
