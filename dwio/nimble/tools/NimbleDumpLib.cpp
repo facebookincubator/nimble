@@ -35,6 +35,8 @@
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/StatsGenerated.h"
 #include "dwio/nimble/velox/VeloxReader.h"
+#include "dwio/nimble/velox/stats/ColumnStatistics.h"
+#include "dwio/nimble/velox/stats/VectorizedStatistics.h"
 #include "folly/cli/NestedCommandLineApp.h"
 #include "velox/common/file/FileSystems.h"
 
@@ -1211,6 +1213,187 @@ void NimbleDumpLib::emitIndex() {
              << " bytes, Metadata: " << commaSeparated(totalMetadataBytes)
              << " bytes" << std::endl;
   }
+}
+
+namespace {
+
+std::string statTypeToString(StatType type) {
+  switch (type) {
+    case StatType::DEFAULT:
+      return "DEFAULT";
+    case StatType::INTEGRAL:
+      return "INTEGRAL";
+    case StatType::FLOATING_POINT:
+      return "FLOATING_POINT";
+    case StatType::STRING:
+      return "STRING";
+    case StatType::DEDUPLICATED:
+      return "DEDUPLICATED";
+    default:
+      return fmt::format("UNKNOWN: {}", static_cast<int>(type));
+  }
+}
+
+std::pair<std::string, std::string> formatMinMax(ColumnStatistics* stat) {
+  switch (stat->getType()) {
+    case StatType::INTEGRAL: {
+      auto* integralStat = stat->as<IntegralStatistics>();
+      auto min = integralStat->getMin();
+      auto max = integralStat->getMax();
+      return std::make_pair(
+          min.has_value() ? std::to_string(min.value()) : "N/A",
+          max.has_value() ? std::to_string(max.value()) : "N/A");
+    }
+    case StatType::FLOATING_POINT: {
+      auto* floatStat = stat->as<FloatingPointStatistics>();
+      auto min = floatStat->getMin();
+      auto max = floatStat->getMax();
+      return std::make_pair(
+          min.has_value() ? fmt::format("{:.6g}", min.value()) : "N/A",
+          max.has_value() ? fmt::format("{:.6g}", max.value()) : "N/A");
+    }
+    case StatType::STRING: {
+      auto* stringStat = stat->as<StringStatistics>();
+      auto min = stringStat->getMin();
+      auto max = stringStat->getMax();
+      return std::make_pair(
+          min.has_value() ? min.value() : "N/A",
+          max.has_value() ? max.value() : "N/A");
+    }
+    default:
+      return std::make_pair(std::string("N/A"), std::string("N/A"));
+  }
+}
+
+// Helper to traverse velox schema and build schema node paths.
+// For RowType: children use their field names (e.g., root.column_name)
+// For ArrayType: child node is named __element__
+// For MapType: children are named __key__ and __value__
+void buildSchemaNodePaths(
+    const velox::TypePtr& schema,
+    const std::string& currentPath,
+    std::vector<std::string>& schemaNodePaths) {
+  schemaNodePaths.push_back(currentPath);
+
+  switch (schema->kind()) {
+    case velox::TypeKind::TINYINT:
+    case velox::TypeKind::SMALLINT:
+    case velox::TypeKind::INTEGER:
+    case velox::TypeKind::BIGINT:
+    case velox::TypeKind::REAL:
+    case velox::TypeKind::DOUBLE:
+    case velox::TypeKind::VARCHAR:
+    case velox::TypeKind::VARBINARY:
+    case velox::TypeKind::BOOLEAN:
+    case velox::TypeKind::TIMESTAMP:
+      // Leaf types - no children
+      break;
+    case velox::TypeKind::ROW: {
+      const auto& rowType = schema->asRow();
+      for (size_t i = 0; i < rowType.size(); ++i) {
+        std::string childPath = currentPath + "." + rowType.nameOf(i);
+        buildSchemaNodePaths(schema->childAt(i), childPath, schemaNodePaths);
+      }
+      break;
+    }
+    case velox::TypeKind::ARRAY: {
+      std::string childPath = currentPath + ".__element__";
+      buildSchemaNodePaths(schema->childAt(0), childPath, schemaNodePaths);
+      break;
+    }
+    case velox::TypeKind::MAP: {
+      std::string keyPath = currentPath + ".__key__";
+      std::string valuePath = currentPath + ".__value__";
+      buildSchemaNodePaths(schema->childAt(0), keyPath, schemaNodePaths);
+      buildSchemaNodePaths(schema->childAt(1), valuePath, schemaNodePaths);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+std::vector<std::string> getSchemaNodePaths(const velox::TypePtr& schema) {
+  std::vector<std::string> schemaNodePaths;
+  buildSchemaNodePaths(schema, "root", schemaNodePaths);
+  return schemaNodePaths;
+}
+
+} // namespace
+
+void NimbleDumpLib::emitStats(bool noHeader) {
+  TabletReader::Options options;
+  options.preloadOptionalSections = {
+      std::string(kVectorizedStatsSection), std::string(kStatsSection)};
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
+
+  auto vectorizedStatsSection =
+      tabletReader->loadOptionalSection(std::string(kVectorizedStatsSection));
+
+  if (vectorizedStatsSection.has_value()) {
+    ostream_ << "Vectorized Stats:" << std::endl;
+    auto fileStats = VectorizedFileStats::deserialize(
+        vectorizedStatsSection->content(), *pool_);
+
+    VeloxReader reader{tabletReader, *pool_};
+    auto columnStats =
+        fileStats->toColumnStatistics(reader.type(), reader.schema());
+
+    auto schemaNodePaths = getSchemaNodePaths(reader.type());
+
+    TableFormatter formatter(
+        ostream_,
+        enableColors_,
+        {{"index", 8, Alignment::Right},
+         {"schema_node", 50, Alignment::Left},
+         {"stat_type", 15, Alignment::Left},
+         {"value_count", 15, Alignment::Right},
+         {"null_count", 12, Alignment::Right},
+         {"logical_size", 15, Alignment::Right},
+         {"physical_size", 15, Alignment::Right},
+         {"min", 20, Alignment::Right},
+         {"max", 20, Alignment::Right}},
+        noHeader);
+
+    NIMBLE_CHECK_EQ(columnStats.size(), schemaNodePaths.size());
+
+    for (size_t i = 0; i < columnStats.size(); ++i) {
+      auto* stat = columnStats[i].get();
+      auto [min, max] = formatMinMax(stat);
+      formatter.writeRow({
+          std::to_string(i),
+          schemaNodePaths[i],
+          statTypeToString(stat->getType()),
+          commaSeparated(stat->getValueCount()),
+          commaSeparated(stat->getNullCount()),
+          commaSeparated(stat->getLogicalSize()),
+          commaSeparated(stat->getPhysicalSize()),
+          min,
+          max,
+      });
+    }
+    return;
+  }
+
+  auto statsSection =
+      tabletReader->loadOptionalSection(std::string(kStatsSection));
+
+  if (statsSection.has_value()) {
+    ostream_ << "Legacy Stats:" << std::endl;
+    auto* stats = flatbuffers::GetRoot<nimble::serialization::Stats>(
+        statsSection->content().data());
+
+    TableFormatter formatter(
+        ostream_,
+        enableColors_,
+        {{"raw_size", 20, Alignment::Right}},
+        noHeader);
+
+    formatter.writeRow({commaSeparated(stats->raw_size())});
+    return;
+  }
+
+  ostream_ << "No stats section found in file." << std::endl;
 }
 
 } // namespace facebook::nimble::tools
