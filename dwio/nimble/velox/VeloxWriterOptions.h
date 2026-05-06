@@ -201,8 +201,8 @@ struct VeloxWriterOptions {
 
   const velox::common::SpillConfig* spillConfig{nullptr};
 
-  // If provided, internal encoding operations will happen in parallel
-  // using the specified executor.
+  // If provided, internal encoding operations will happen in parallel using
+  // the specified executor.
   //
   // The KeepAlive wrapper ensures that the executor object will be kept alive
   // (allocated), and that the pool will be open for receiving new tasks. A
@@ -215,9 +215,13 @@ struct VeloxWriterOptions {
   // As a result, if a KeepAlive is still being held, clients trying to destruct
   // the last reference of a shared_ptr to that executor will block until all
   // KeepAlive references are destructed.
-  //
-  // - encodingExecutor: execute stream encoding operations in parallel.
   folly::Executor::KeepAlive<> encodingExecutor;
+
+  // When maxEncodeParallelism > 0 and encodingExecutor is set,
+  // FieldWriter::write() operations will be parallelized using coroutines
+  // scheduled on encodingExecutor.
+  uint32_t maxEncodeParallelism{0};
+  uint32_t minStreamsPerEncodeUnit{1};
 
   bool enableChunking{false};
 
