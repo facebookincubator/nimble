@@ -55,6 +55,10 @@ class TrivialEncoding final
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});
 
+  ~TrivialEncoding() override {
+    this->releaseBuffer(uncompressed_);
+  }
+
   void reset() final;
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
@@ -152,6 +156,10 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});
 
+  ~TrivialEncoding() override {
+    this->releaseBuffer(uncompressed_);
+  }
+
   void reset() final;
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
@@ -195,7 +203,8 @@ TrivialEncoding<T>::TrivialEncoding(
         pool,
         compressionType,
         TypeTraits<physicalType>::dataType,
-        {data.data() + valuesOffset, data.size() - valuesOffset});
+        {data.data() + valuesOffset, data.size() - valuesOffset},
+        options.bufferPool);
     values_ = reinterpret_cast<const T*>(uncompressed_->as<char>());
     NIMBLE_CHECK_EQ(
         reinterpret_cast<const char*>(values_ + this->rowCount()),

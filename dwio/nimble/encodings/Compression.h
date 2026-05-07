@@ -21,6 +21,7 @@
 #include "dwio/nimble/encodings/EncodingSelection.h"
 #include "folly/io/IOBuf.h"
 #include "velox/buffer/Buffer.h"
+#include "velox/buffer/BufferPool.h"
 
 namespace facebook::nimble {
 
@@ -41,7 +42,8 @@ struct ICompressor {
       velox::memory::MemoryPool& pool,
       CompressionType compressionType,
       DataType dataType,
-      std::string_view data) = 0;
+      std::string_view data,
+      velox::BufferPool* bufferPool = nullptr) = 0;
 
   virtual std::optional<size_t> uncompressedSize(
       std::string_view data) const = 0;
@@ -50,6 +52,21 @@ struct ICompressor {
 
   virtual ~ICompressor() = default;
 };
+
+/// Allocates a buffer of at least 'bytes' capacity, trying the BufferPool
+/// first if available, falling back to MemoryPool allocation.
+inline velox::BufferPtr allocateBuffer(
+    velox::memory::MemoryPool& memoryPool,
+    velox::BufferPool* bufferPool,
+    uint64_t bytes) {
+  if (bufferPool != nullptr) {
+    if (auto buf = bufferPool->get(bytes)) {
+      buf->setSize(bytes);
+      return buf;
+    }
+  }
+  return velox::AlignedBuffer::allocate<char>(bytes, &memoryPool);
+}
 
 class Compression {
  public:
@@ -64,7 +81,8 @@ class Compression {
       velox::memory::MemoryPool& pool,
       CompressionType compressionType,
       DataType dataType,
-      std::string_view data);
+      std::string_view data,
+      velox::BufferPool* bufferPool = nullptr);
 
   static std::optional<size_t> uncompressedSize(
       CompressionType compressionType,

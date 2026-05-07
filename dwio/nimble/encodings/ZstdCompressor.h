@@ -33,7 +33,8 @@ class ZstdCompressor : public ICompressor {
       velox::memory::MemoryPool& pool,
       CompressionType compressionType,
       DataType dataType,
-      std::string_view data) override;
+      std::string_view data,
+      velox::BufferPool* bufferPool = nullptr) override;
 
   std::optional<size_t> uncompressedSize(std::string_view data) const override;
 
