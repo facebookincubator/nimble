@@ -74,9 +74,10 @@ TEST(ZstdCompressorTest, RoundTrip) {
 
   auto decompressed = compressor.uncompress(
       *pool, CompressionType::Zstd, DataType::Int8, compressed);
-  ASSERT_EQ(original.size(), decompressed.size());
+  ASSERT_EQ(original.size(), decompressed->size());
   EXPECT_EQ(
-      0, std::memcmp(original.data(), decompressed.data(), original.size()));
+      0,
+      std::memcmp(original.data(), decompressed->as<char>(), original.size()));
 }
 
 TEST(ZstdCompressorTest, UncompressedSize) {
@@ -138,8 +139,9 @@ TEST(ZstdCompressorTest, RoundTripVariousDataTypes) {
   std::string_view compressed(result.buffer->data(), result.buffer->size());
   auto decompressed = compressor.uncompress(
       *pool, CompressionType::Zstd, DataType::Int8, compressed);
-  ASSERT_EQ(input.size(), decompressed.size());
-  EXPECT_EQ(0, std::memcmp(input.data(), decompressed.data(), input.size()));
+  ASSERT_EQ(input.size(), decompressed->size());
+  EXPECT_EQ(
+      0, std::memcmp(input.data(), decompressed->as<char>(), input.size()));
 }
 
 TEST(ZstdCompressorTest, MinCompressionSizeSkipsSmallData) {

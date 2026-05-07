@@ -20,6 +20,7 @@
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/EncodingSelection.h"
 #include "folly/io/IOBuf.h"
+#include "velox/buffer/Buffer.h"
 
 namespace facebook::nimble {
 
@@ -30,14 +31,14 @@ struct CompressionResult {
 
 struct ICompressor {
   virtual CompressionResult compress(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       DataType dataType,
       int bitWidth,
       const CompressionPolicy& compressionPolicy) = 0;
 
-  virtual Vector<char> uncompress(
-      velox::memory::MemoryPool& memoryPool,
+  virtual velox::BufferPtr uncompress(
+      velox::memory::MemoryPool& pool,
       CompressionType compressionType,
       DataType dataType,
       std::string_view data) = 0;
@@ -53,14 +54,14 @@ struct ICompressor {
 class Compression {
  public:
   static CompressionResult compress(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       DataType dataType,
       int bitWidth,
       const CompressionPolicy& compressionPolicy);
 
-  static Vector<char> uncompress(
-      velox::memory::MemoryPool& memoryPool,
+  static velox::BufferPtr uncompress(
+      velox::memory::MemoryPool& pool,
       CompressionType compressionType,
       DataType dataType,
       std::string_view data);
@@ -83,7 +84,7 @@ class CompressionEncoder {
   // This CTor handles the sub-pattern where the source data is already encoded
   // correctly, so no extra encoding is needed.
   CompressionEncoder(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       const CompressionPolicy& compressionPolicy,
       DataType dataType,
       std::string_view uncompressedBuffer,
@@ -100,7 +101,7 @@ class CompressionEncoder {
     }
 
     auto compressionResult = Compression::compress(
-        memoryPool, uncompressedBuffer, dataType, bitWidth, compressionPolicy);
+        pool, uncompressedBuffer, dataType, bitWidth, compressionPolicy);
 
     if (compressionResult.compressionType == CompressionType::Uncompressed) {
       // Compression declined. Use the original buffer.
@@ -121,7 +122,7 @@ class CompressionEncoder {
   // different if compression is applied (it is written to a temp buffer), or if
   // compression is skipped (written directly to the stream buffer).
   CompressionEncoder(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       const CompressionPolicy& compressionPolicy,
       DataType dataType,
       int bitWidth,
@@ -146,7 +147,7 @@ class CompressionEncoder {
     char* pos = uncompressed.data();
     encoder_(pos);
     auto compressionResult = Compression::compress(
-        memoryPool,
+        pool,
         {uncompressed.data(), uncompressed.size()},
         dataType,
         bitWidth,

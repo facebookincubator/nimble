@@ -24,13 +24,13 @@
 namespace facebook::nimble {
 
 CompressionResult ZstdCompressor::compress(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     DataType dataType,
     int /* bitWidth */,
     const CompressionPolicy& compressionPolicy) {
   auto parameters = compressionPolicy.compression().parameters.zstd;
-  Vector<char> buffer{&memoryPool, data.size() + sizeof(uint32_t)};
+  Vector<char> buffer{&pool, data.size() + sizeof(uint32_t)};
   auto pos = buffer.data();
   encoding::writeUint32(data.size(), pos);
   auto ret = ZSTD_compress(
@@ -67,18 +67,18 @@ ZSTD_DCtx* getThreadLocalDCtx() {
 }
 } // namespace
 
-Vector<char> ZstdCompressor::uncompress(
-    velox::memory::MemoryPool& memoryPool,
+velox::BufferPtr ZstdCompressor::uncompress(
+    velox::memory::MemoryPool& pool,
     const CompressionType compressionType,
     const DataType /* dataType */,
     std::string_view data) {
   auto pos = data.data();
   const uint32_t uncompressedSize = encoding::readUint32(pos);
-  Vector<char> buffer{&memoryPool, uncompressedSize};
+  auto buffer = velox::AlignedBuffer::allocate<char>(uncompressedSize, &pool);
   auto ret = ZSTD_decompressDCtx(
       getThreadLocalDCtx(),
-      buffer.data(),
-      buffer.size(),
+      buffer->asMutable<char>(),
+      buffer->size(),
       pos,
       data.size() - sizeof(uint32_t));
   NIMBLE_CHECK(

@@ -53,7 +53,7 @@ ICompressor& getCompressor(CompressionType compressionType) {
 } // namespace
 
 /* static */ CompressionResult Compression::compress(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     DataType dataType,
     int bitWidth,
@@ -61,16 +61,16 @@ ICompressor& getCompressor(CompressionType compressionType) {
   auto compression = compressionPolicy.compression();
 
   return getCompressor(compression.compressionType)
-      .compress(memoryPool, data, dataType, bitWidth, compressionPolicy);
+      .compress(pool, data, dataType, bitWidth, compressionPolicy);
 }
 
-/* static */ Vector<char> Compression::uncompress(
-    velox::memory::MemoryPool& memoryPool,
+/* static */ velox::BufferPtr Compression::uncompress(
+    velox::memory::MemoryPool& pool,
     CompressionType compressionType,
     DataType dataType,
     std::string_view data) {
   return getCompressor(compressionType)
-      .uncompress(memoryPool, compressionType, dataType, data);
+      .uncompress(pool, compressionType, dataType, data);
 }
 
 /* static */ std::optional<size_t> Compression::uncompressedSize(

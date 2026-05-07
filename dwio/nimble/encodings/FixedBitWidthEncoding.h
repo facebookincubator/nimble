@@ -52,7 +52,7 @@ class FixedBitWidthEncoding final
   static const int kPrefixSize = 2 + sizeof(T);
 
   FixedBitWidthEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});
@@ -88,7 +88,7 @@ class FixedBitWidthEncoding final
   physicalType baseline_;
   FixedBitArray fixedBitArray_;
   uint32_t row_ = 0;
-  Vector<char> uncompressedData_;
+  velox::BufferPtr uncompressedData_;
   Vector<physicalType> buffer_;
 };
 
@@ -98,25 +98,23 @@ class FixedBitWidthEncoding final
 
 template <typename T>
 FixedBitWidthEncoding<T>::FixedBitWidthEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> /* stringBufferFactory */,
     const Encoding::Options& options)
-    : TypedEncoding<T, physicalType>{memoryPool, data, options},
-      uncompressedData_{&memoryPool},
-      buffer_{&memoryPool} {
+    : TypedEncoding<T, physicalType>{pool, data, options}, buffer_{&pool} {
   auto pos = data.data() + this->dataOffset();
   auto compressionType = static_cast<CompressionType>(encoding::readChar(pos));
   baseline_ = encoding::read<const physicalType>(pos);
   bitWidth_ = static_cast<uint32_t>(encoding::readChar(pos));
   if (compressionType != CompressionType::Uncompressed) {
     uncompressedData_ = Compression::uncompress(
-        memoryPool,
+        pool,
         compressionType,
         DataType::Undefined,
         {pos, static_cast<size_t>(data.end() - pos)});
     fixedBitArray_ = FixedBitArray{
-        {uncompressedData_.data(), uncompressedData_.size()}, bitWidth_};
+        {uncompressedData_->as<char>(), uncompressedData_->size()}, bitWidth_};
   } else {
     fixedBitArray_ =
         FixedBitArray{{pos, static_cast<size_t>(data.end() - pos)}, bitWidth_};
