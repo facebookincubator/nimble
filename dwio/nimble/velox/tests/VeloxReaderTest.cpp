@@ -25,6 +25,7 @@
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
@@ -6101,7 +6102,8 @@ TEST_P(VeloxReaderTest, chunkStreamsWithNulls) {
                   /*flushLambda=*/[&](auto&) { return false; },
                   /*chunkLambda=*/[&](auto&) { return true; });
             },
-        .enableChunking = enableChunking};
+        .enableChunking = enableChunking,
+        .minStreamChunkRawSize = 0};
     auto file = nimble::test::createNimbleFile(
         *rootPool_, vectors, options, /* flushAfterWrite */ false);
     velox::InMemoryReadFile readFile(file);
@@ -6119,6 +6121,41 @@ TEST_P(VeloxReaderTest, chunkStreamsWithNulls) {
             << "\nReference: " << expected->toString(i)
             << "\nResult: " << result->toString(i);
       }
+    }
+
+    // Verify that chunking actually produced the expected number of chunks.
+    // With chunkLambda returning true and minStreamChunkRawSize=0, each
+    // write() call should produce a separate chunk. Without the
+    // minStreamChunkRawSize=0 fix, small writes would be merged into one
+    // chunk.
+    if (enableChunking) {
+      nimble::VeloxReader chunkReader(
+          &readFile, *leafPool_, /*selector=*/nullptr, createReadParams());
+      const auto& tablet = chunkReader.tabletReader();
+      const auto stripeId = tablet.stripeIdentifier(0);
+      uint32_t maxChunkCount = 0;
+      const auto streamCount = tablet.streamCount(stripeId);
+      std::vector<uint32_t> streamIds(streamCount);
+      std::iota(streamIds.begin(), streamIds.end(), 0);
+      auto streamLoaders = tablet.load(stripeId, streamIds);
+      for (uint32_t s = 0; s < streamLoaders.size(); ++s) {
+        if (!streamLoaders[s]) {
+          continue;
+        }
+        nimble::InMemoryChunkedStream chunked{
+            *leafPool_, std::move(streamLoaders[s])};
+        uint32_t chunkCount = 0;
+        while (chunked.hasNext()) {
+          chunked.nextChunk();
+          ++chunkCount;
+        }
+        // At least one stream should have multiple chunks, confirming the
+        // chunking policy was honored with minStreamChunkRawSize=0.
+        maxChunkCount = std::max(maxChunkCount, chunkCount);
+      }
+      // At least one stream should have 3 chunks (one per write() call).
+      EXPECT_GE(maxChunkCount, 3)
+          << "No stream has enough chunks — chunking policy may not be honored";
     }
   }
 }

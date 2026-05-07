@@ -275,6 +275,10 @@ class E2EFilterTest
     options.skipConstantFlatMapInMapStreams = skipConstantFlatMapInMapStreams();
     options.enableChunking = true;
     options.enableChunkIndex = param().enableChunkIndex;
+    // Ensure the chunk flush policy is honored for small test data by removing
+    // the minimum chunk size threshold. Without this, small writes get merged
+    // into a single chunk regardless of the flush policy.
+    options.minStreamChunkRawSize = 0;
 
     // Force a specific encoding via layout tree, or use biased factors.
     if (forcedEncodingType_.has_value()) {
