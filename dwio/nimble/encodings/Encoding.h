@@ -100,6 +100,10 @@ class Encoding {
     /// fixed 4-byte uint32. Determined from file format version or serializer
     /// version.
     bool useVarintRowCount;
+    /// FrequencyPartitionEncoding index type (cast to FreqPartIndexType).
+    /// 0 = NoIndex (default, backward-compatible), 1 = PerTierBitmaps,
+    /// 2 = TierTagArray, 3 = EliasFano.
+    uint8_t frequencyPartitionIndex;
   };
 
   /// The binary layout for each Encoding begins with the same prefix:
