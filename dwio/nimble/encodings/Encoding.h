@@ -281,6 +281,14 @@ class Encoding {
   static uint32_t readRowCount(std::string_view data, bool useVarint);
   static uint32_t readPrefixSize(std::string_view data, bool useVarint);
 
+  void releaseBuffer(velox::BufferPtr& buffer) {
+    if (auto* bufferPool = options_.bufferPool) {
+      bufferPool->release(std::move(buffer));
+    } else {
+      buffer.reset();
+    }
+  }
+
   velox::memory::MemoryPool* const pool_;
   const std::string_view data_;
   const EncodingType encodingType_;

@@ -57,6 +57,10 @@ class FixedBitWidthEncoding final
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});
 
+  ~FixedBitWidthEncoding() override {
+    this->releaseBuffer(uncompressedData_);
+  }
+
   void reset() final;
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
@@ -112,7 +116,8 @@ FixedBitWidthEncoding<T>::FixedBitWidthEncoding(
         pool,
         compressionType,
         DataType::Undefined,
-        {pos, static_cast<size_t>(data.end() - pos)});
+        {pos, static_cast<size_t>(data.end() - pos)},
+        options.bufferPool);
     fixedBitArray_ = FixedBitArray{
         {uncompressedData_->as<char>(), uncompressedData_->size()}, bitWidth_};
   } else {

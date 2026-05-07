@@ -71,10 +71,11 @@ velox::BufferPtr ZstdCompressor::uncompress(
     velox::memory::MemoryPool& pool,
     const CompressionType compressionType,
     const DataType /* dataType */,
-    std::string_view data) {
+    std::string_view data,
+    velox::BufferPool* bufferPool) {
   auto pos = data.data();
   const uint32_t uncompressedSize = encoding::readUint32(pos);
-  auto buffer = velox::AlignedBuffer::allocate<char>(uncompressedSize, &pool);
+  auto buffer = allocateBuffer(pool, bufferPool, uncompressedSize);
   auto ret = ZSTD_decompressDCtx(
       getThreadLocalDCtx(),
       buffer->asMutable<char>(),
