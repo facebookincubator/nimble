@@ -109,7 +109,9 @@ void NimbleData::readNulls(
       nullsDecoder_->nextBools(nullsPtr, numValues, inMap_->as<uint64_t>());
     } else {
       inMapDecoder_->nextBools(nullsPtr, numValues, incomingNulls);
-      inMap_ = nulls;
+      if (inMap_.get() != nulls.get()) {
+        inMap_ = nulls;
+      }
     }
   } else if (nullsDecoder_) {
     nullsDecoder_->nextBools(nullsPtr, numValues, incomingNulls);
