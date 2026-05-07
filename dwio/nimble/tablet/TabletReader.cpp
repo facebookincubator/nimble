@@ -48,12 +48,12 @@ std::unique_ptr<MetadataBuffer> tryCreateMetadataBufferFromFooter(
   if (section.offset() + footerSize < fileSize) {
     return nullptr;
   }
-  return std::make_unique<MetadataBuffer>(
-      pool,
+  return std::make_unique<MetadataBuffer>(MetadataBuffer::decompress(
       footerIoBuf,
       section.offset() + footerSize - fileSize,
       section.size(),
-      section.compressionType());
+      section.compressionType(),
+      &pool));
 }
 
 } // namespace
@@ -137,11 +137,14 @@ inline void validateOptionalSections(
 // Converts a FlatBuffers section (with offset/size/compression_type fields)
 // to a MetadataSection.
 template <typename T>
-MetadataSection toMetadataSection(const T* fbSection) {
+MetadataSection toMetadataSection(const T* section) {
+  const auto uncompressedSize = section->uncompressed_size();
   return MetadataSection{
-      fbSection->offset(),
-      fbSection->size(),
-      static_cast<CompressionType>(fbSection->compression_type())};
+      section->offset(),
+      section->size(),
+      static_cast<CompressionType>(section->compression_type()),
+      uncompressedSize > 0 ? std::optional<uint32_t>(uncompressedSize)
+                           : std::nullopt};
 }
 
 size_t copyTo(const folly::IOBuf& source, void* target, size_t size) {
@@ -432,12 +435,12 @@ void TabletReader::initFooter(
     const folly::IOBuf& footerIoBuf,
     uint64_t footerIoSize) {
   NIMBLE_CHECK_NULL(footer_);
-  footer_ = std::make_unique<MetadataBuffer>(
-      *pool_,
+  footer_ = std::make_unique<MetadataBuffer>(MetadataBuffer::decompress(
       footerIoBuf,
       footerIoSize - kPostscriptSize - ps_.footerSize(),
       ps_.footerSize(),
-      ps_.footerCompressionType());
+      ps_.footerCompressionType(),
+      pool_));
 }
 
 void TabletReader::loadStripes(
@@ -479,12 +482,12 @@ void TabletReader::loadStripes(
     file_->preadv({&footerIoRegion, 1}, {&footerIoBuf, 1});
     NIMBLE_CHECK_EQ(footerIoSize, footerIoBuf.computeChainDataLength());
   }
-  stripes_ = std::make_unique<MetadataBuffer>(
-      *pool_,
+  stripes_ = std::make_unique<MetadataBuffer>(MetadataBuffer::decompress(
       footerIoBuf,
       stripesSection->offset() + footerIoSize - fileSize_,
       stripesSection->size(),
-      static_cast<CompressionType>(stripesSection->compression_type()));
+      static_cast<CompressionType>(stripesSection->compression_type()),
+      pool_));
 }
 
 void TabletReader::initStripes() {
@@ -530,6 +533,7 @@ void TabletReader::initOptionalSections() {
   validateOptionalSections(optionalSections);
 
   optionalSections_.reserve(optionalSections->names()->size());
+  const auto* uncompressedSizes = optionalSections->uncompressed_sizes();
   for (auto i = 0; i < optionalSections->names()->size(); ++i) {
     optionalSections_.insert(
         std::make_pair(
@@ -538,7 +542,10 @@ void TabletReader::initOptionalSections() {
                 optionalSections->offsets()->Get(i),
                 optionalSections->sizes()->Get(i),
                 static_cast<CompressionType>(
-                    optionalSections->compression_types()->Get(i))}));
+                    optionalSections->compression_types()->Get(i)),
+                uncompressedSizes != nullptr
+                    ? std::optional<uint32_t>(uncompressedSizes->Get(i))
+                    : std::nullopt}));
   }
 }
 
@@ -566,12 +573,12 @@ TabletReader::SectionLoader TabletReader::makeSectionLoader(
       [this, &footerIoBuf, footerIoOffset](
           const MetadataSection& section) -> std::unique_ptr<MetadataBuffer> {
         if (section.offset() >= footerIoOffset) {
-          return std::make_unique<MetadataBuffer>(
-              *pool_,
+          return std::make_unique<MetadataBuffer>(MetadataBuffer::decompress(
               footerIoBuf,
               section.offset() - footerIoOffset,
               section.size(),
-              section.compressionType());
+              section.compressionType(),
+              pool_));
         }
         return readMetadata(section, velox::dwio::common::LogType::FILE);
       };
@@ -706,12 +713,12 @@ bool TabletReader::tryLoadAndInitFooterFromCache() {
   // Build footer MetadataBuffer from an IOBuf chain wrapping the cached
   // ranges (zero-copy). MetadataBuffer copies from the IOBuf cursor
   // internally — no intermediate contiguous copy needed.
-  footer_ = std::make_unique<MetadataBuffer>(
-      *pool_,
+  footer_ = std::make_unique<MetadataBuffer>(MetadataBuffer::decompress(
       cached->toIOBuf(),
       0,
       ps_.footerSize(),
-      ps_.footerCompressionType());
+      ps_.footerCompressionType(),
+      pool_));
   return true;
 }
 
@@ -767,11 +774,11 @@ std::unique_ptr<MetadataBuffer> TabletReader::readMetadata(
   }
 
   // Direct file read path.
-  folly::IOBuf buffer;
-  velox::common::Region region{section.offset(), section.size(), "metadata"};
-  file_->preadv({&region, 1}, {&buffer, 1});
-  return std::make_unique<MetadataBuffer>(
-      *pool_, buffer, section.compressionType());
+  auto buffer =
+      velox::AlignedBuffer::allocateExact<char>(section.size(), pool_);
+  file_->pread(section.offset(), section.size(), buffer->asMutable<char>());
+  return std::make_unique<MetadataBuffer>(MetadataBuffer::decompress(
+      std::move(buffer), section.compressionType(), pool_));
 }
 
 std::unique_ptr<MetadataBuffer> TabletReader::readMetadata(
@@ -782,25 +789,25 @@ std::unique_ptr<MetadataBuffer> TabletReader::readMetadata(
   // Try zero-copy: get contiguous data from stream.
   if (stream->Next(&data, &size) &&
       static_cast<uint64_t>(size) >= section.size()) {
-    return std::make_unique<MetadataBuffer>(
-        *pool_,
-        std::string_view{static_cast<const char*>(data), section.size()},
-        section.compressionType());
+    auto buffer =
+        velox::AlignedBuffer::allocateExact<char>(section.size(), pool_);
+    std::memcpy(
+        buffer->asMutable<char>(),
+        static_cast<const char*>(data),
+        section.size());
+    return std::make_unique<MetadataBuffer>(MetadataBuffer::decompress(
+        std::move(buffer), section.compressionType(), pool_));
   }
 
-  // Data is fragmented — copy into IOBuf.
+  // Data is fragmented — copy into contiguous buffer.
   if (size > 0) {
     stream->BackUp(size);
   }
-  folly::IOBuf buffer(folly::IOBuf::CREATE, section.size());
-  stream->readFully(
-      reinterpret_cast<char*>(buffer.writableData()), section.size());
-  buffer.append(section.size());
-  return std::make_unique<MetadataBuffer>(
-      *pool_,
-      std::string_view{
-          reinterpret_cast<const char*>(buffer.data()), buffer.length()},
-      section.compressionType());
+  auto buffer =
+      velox::AlignedBuffer::allocateExact<char>(section.size(), pool_);
+  stream->readFully(buffer->asMutable<char>(), section.size());
+  return std::make_unique<MetadataBuffer>(MetadataBuffer::decompress(
+      std::move(buffer), section.compressionType(), pool_));
 }
 
 std::shared_ptr<StripeGroup> TabletReader::loadStripeGroup(
@@ -1076,7 +1083,7 @@ std::optional<Section> TabletReader::loadOptionalSection(
     auto itCache = optionalSectionsCache->find(name);
     if (itCache != optionalSectionsCache->end()) {
       if (keepCache) {
-        return Section{MetadataBuffer{*itCache->second}};
+        return Section{itCache->second->clone()};
       } else {
         auto metadata = std::move(itCache->second);
         optionalSectionsCache->erase(itCache);

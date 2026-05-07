@@ -29,6 +29,7 @@
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileIds.h"
 #include "velox/common/caching/ScanTracker.h"
+#include "velox/common/io/IoStatistics.h"
 #include "velox/common/memory/MallocAllocator.h"
 #include "velox/dwio/common/CachedBufferedInput.h"
 #include "velox/dwio/common/tests/utils/E2EFilterTestBase.h"
@@ -87,7 +88,8 @@ class E2EFilterTest
           memory::MemoryAllocator::Options{
               .capacity = 512 << 20, .reservationByteLimit = 0});
       cache_ = cache::AsyncDataCache::create(allocator_.get());
-      cacheIoStatistics_ = std::make_shared<io::IoStatistics>();
+      dataIoStats_ = std::make_shared<io::IoStatistics>();
+      metadataIoStats_ = std::make_shared<io::IoStatistics>();
       scanTracker_ = std::make_shared<cache::ScanTracker>(
           "testTracker", nullptr, 256 << 10);
       ioExecutor_ = std::make_unique<folly::CPUThreadPoolExecutor>(10);
@@ -364,9 +366,7 @@ class E2EFilterTest
       StringIdLease fileId(ids, "testFile");
       StringIdLease groupId(ids, "testGroup");
       io::ReaderOptions cacheReaderOpts(
-          &readerOpts.memoryPool(),
-          cacheIoStatistics_.get(),
-          cacheIoStatistics_.get());
+          &readerOpts.memoryPool(), dataIoStats_.get(), metadataIoStats_.get());
       input = std::make_unique<dwio::common::CachedBufferedInput>(
           std::move(readFile),
           dwio::common::MetricsLog::voidLog(),
@@ -374,7 +374,7 @@ class E2EFilterTest
           cache_.get(),
           scanTracker_,
           std::move(groupId),
-          cacheIoStatistics_,
+          dataIoStats_,
           nullptr,
           ioExecutor_.get(),
           cacheReaderOpts);
@@ -401,7 +401,8 @@ class E2EFilterTest
   // Cache infrastructure (only initialized when enableCache is true).
   std::shared_ptr<memory::MallocAllocator> allocator_;
   std::shared_ptr<cache::AsyncDataCache> cache_;
-  std::shared_ptr<io::IoStatistics> cacheIoStatistics_;
+  std::shared_ptr<io::IoStatistics> dataIoStats_;
+  std::shared_ptr<io::IoStatistics> metadataIoStats_;
   std::shared_ptr<cache::ScanTracker> scanTracker_;
   std::unique_ptr<folly::CPUThreadPoolExecutor> ioExecutor_;
 

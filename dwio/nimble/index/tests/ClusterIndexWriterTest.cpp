@@ -23,6 +23,7 @@
 #include "dwio/nimble/index/ClusterIndexWriter.h"
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/SortOrder.h"
+#include "velox/buffer/Buffer.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/dwio/common/SeekableInputStream.h"
@@ -32,6 +33,14 @@
 
 namespace facebook::nimble::index::test {
 namespace {
+
+velox::BufferPtr toBufferPtr(
+    std::string_view data,
+    velox::memory::MemoryPool* pool) {
+  auto buffer = velox::AlignedBuffer::allocate<char>(data.size(), pool);
+  std::memcpy(buffer->asMutable<char>(), data.data(), data.size());
+  return buffer;
+}
 
 class ClusterIndexWriterTest : public testing::Test,
                                public velox::test::VectorTestBase {
@@ -1100,19 +1109,24 @@ TEST_P(ClusterIndexWriterChunkTest, maxRowsPerKeyChunk) {
   ASSERT_EQ(partitionMetadata.size(), 1);
 
   // Load ClusterIndex from serialized data and verify layout.
-  Section rootSection{
-      MetadataBuffer(*pool_, rootIndexData, CompressionType::Uncompressed)};
+  Section rootSection{MetadataBuffer(
+      MetadataBuffer::decompress(
+          toBufferPtr(rootIndexData, pool_.get()),
+          CompressionType::Uncompressed,
+          pool_.get()))};
   auto partData = std::make_shared<std::string>(partitionMetadata[0]);
   auto streamData = std::make_shared<std::string>(keyStreamData);
 
   auto clusterIndex = ClusterIndex::create(
       std::move(rootSection),
       [partData, this](const MetadataSection& section) {
-        return std::make_unique<MetadataBuffer>(
-            *pool_,
-            std::string_view(
-                partData->data() + section.offset(), section.size()),
-            section.compressionType());
+        return std::make_unique<MetadataBuffer>(MetadataBuffer::decompress(
+            toBufferPtr(
+                std::string_view(
+                    partData->data() + section.offset(), section.size()),
+                pool_.get()),
+            section.compressionType(),
+            pool_.get()));
       },
       [streamData](const velox::common::Region& region)
           -> std::unique_ptr<velox::dwio::common::SeekableInputStream> {
