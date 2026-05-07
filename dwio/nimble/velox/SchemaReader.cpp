@@ -112,7 +112,7 @@ const ArrayType& Type::asArray() const {
       isArray(),
       "Cannot cast to Array. Current type is {}.",
       getKindName(kind_));
-  return dynamic_cast<const ArrayType&>(*this);
+  return static_cast<const ArrayType&>(*this);
 }
 
 const ArrayWithOffsetsType& Type::asArrayWithOffsets() const {
