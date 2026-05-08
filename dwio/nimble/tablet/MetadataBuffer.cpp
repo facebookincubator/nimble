@@ -15,80 +15,121 @@
  */
 
 #include "dwio/nimble/tablet/MetadataBuffer.h"
+#include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/tablet/Compression.h"
 #include "folly/io/Cursor.h"
 
 namespace facebook::nimble {
 
-namespace {
-
-folly::IOBuf
-cloneAndCoalesce(const folly::IOBuf& src, size_t offset, size_t size) {
-  folly::io::Cursor cursor(&src);
-  NIMBLE_CHECK_GE(cursor.totalLength(), offset, "Offset out of range");
-  cursor.skip(offset);
-  NIMBLE_CHECK_GE(cursor.totalLength(), size, "Size out of range");
-  folly::IOBuf result;
-  cursor.clone(result, size);
-  result.coalesceWithHeadroomTailroom(0, 0);
-  return result;
+MetadataBuffer::MetadataBuffer(velox::BufferPtr buffer)
+    : buffer_{std::move(buffer)} {
+  NIMBLE_CHECK_NOT_NULL(buffer_);
 }
 
-std::string_view toStringView(const folly::IOBuf& buf) {
-  return {reinterpret_cast<const char*>(buf.data()), buf.length()};
+MetadataBuffer::MetadataBuffer(velox::cache::CachePin pin)
+    : pin_{std::move(pin)} {
+  NIMBLE_CHECK(!pin_.empty(), "CachePin must not be empty");
+  pin_.checkedEntry();
+}
+
+MetadataBuffer::~MetadataBuffer() = default;
+
+MetadataBuffer::MetadataBuffer(MetadataBuffer&&) noexcept = default;
+
+MetadataBuffer& MetadataBuffer::operator=(MetadataBuffer&&) noexcept = default;
+
+MetadataBuffer MetadataBuffer::clone() const {
+  if (buffer_ != nullptr) {
+    return MetadataBuffer{buffer_};
+  }
+  NIMBLE_CHECK(!pin_.empty(), "Cannot clone empty MetadataBuffer");
+  return MetadataBuffer{pin_};
+}
+
+MetadataSection::MetadataSection(
+    uint64_t offset,
+    uint32_t size,
+    CompressionType compressionType,
+    std::optional<uint32_t> uncompressedSize)
+    : offset_{offset},
+      size_{size},
+      compressionType_{compressionType},
+      uncompressedSize_{uncompressedSize} {
+  if (uncompressedSize_.has_value()) {
+    if (compressionType_ == CompressionType::Uncompressed) {
+      NIMBLE_CHECK_EQ(
+          uncompressedSize_.value(),
+          size_,
+          "Uncompressed size must equal size for uncompressed data");
+    } else {
+      NIMBLE_CHECK_GE(
+          uncompressedSize_.value(),
+          size_,
+          "Uncompressed size must be >= compressed size");
+    }
+  }
+}
+
+namespace {
+
+velox::BufferPtr
+copyToBuffer(const char* data, size_t size, velox::memory::MemoryPool* pool) {
+  auto buffer = velox::AlignedBuffer::allocateExact<char>(size, pool);
+  std::memcpy(buffer->asMutable<char>(), data, size);
+  return buffer;
+}
+
+velox::BufferPtr decompressZstd(
+    std::string_view data,
+    velox::memory::MemoryPool* pool) {
+  return ZstdCompression::uncompress(data, pool);
 }
 
 } // namespace
 
-MetadataBuffer::MetadataBuffer(
-    velox::memory::MemoryPool& pool,
-    std::string_view ref,
-    CompressionType type)
-    : buffer_{&pool} {
-  switch (type) {
-    case CompressionType::Uncompressed: {
-      buffer_.resize(ref.size());
-      std::copy(ref.cbegin(), ref.cend(), buffer_.begin());
-      break;
-    }
-    case CompressionType::Zstd: {
-      buffer_ = ZstdCompression::uncompress(pool, ref);
-      break;
-    }
-    default:
-      NIMBLE_UNREACHABLE("Unexpected stream compression type: {}", type);
+velox::BufferPtr MetadataBuffer::decompress(
+    velox::BufferPtr data,
+    CompressionType type,
+    velox::memory::MemoryPool* pool) {
+  if (type == CompressionType::Uncompressed) {
+    return data;
   }
+  NIMBLE_CHECK_EQ(
+      static_cast<int>(type),
+      static_cast<int>(CompressionType::Zstd),
+      "Unsupported metadata compression type");
+  return decompressZstd({data->as<char>(), data->size()}, pool);
 }
 
-MetadataBuffer::MetadataBuffer(
-    velox::memory::MemoryPool& pool,
+velox::BufferPtr MetadataBuffer::decompress(
     const folly::IOBuf& iobuf,
     size_t offset,
     size_t length,
-    CompressionType type)
-    : buffer_{&pool} {
-  switch (type) {
-    case CompressionType::Uncompressed: {
-      buffer_.resize(length);
-      folly::io::Cursor cursor(&iobuf);
-      cursor.skip(offset);
-      cursor.pull(buffer_.data(), length);
-      break;
-    }
-    case CompressionType::Zstd: {
-      auto compressed = cloneAndCoalesce(iobuf, offset, length);
-      buffer_ = ZstdCompression::uncompress(pool, toStringView(compressed));
-      break;
-    }
-    default:
-      NIMBLE_UNREACHABLE("Unexpected stream compression type: {}", type);
-  }
-}
+    CompressionType type,
+    velox::memory::MemoryPool* pool) {
+  folly::io::Cursor cursor(&iobuf);
+  cursor.skip(offset);
 
-MetadataBuffer::MetadataBuffer(
-    velox::memory::MemoryPool& pool,
-    const folly::IOBuf& iobuf,
-    CompressionType type)
-    : MetadataBuffer{pool, iobuf, 0, iobuf.computeChainDataLength(), type} {}
+  if (type == CompressionType::Uncompressed) {
+    auto buffer = velox::AlignedBuffer::allocateExact<char>(length, pool);
+    cursor.pull(buffer->asMutable<char>(), length);
+    return buffer;
+  }
+
+  NIMBLE_CHECK_EQ(
+      static_cast<int>(type),
+      static_cast<int>(CompressionType::Zstd),
+      "Unsupported metadata compression type");
+
+  const auto contiguous = cursor.peekBytes();
+  if (contiguous.size() >= length) {
+    return decompressZstd(
+        {reinterpret_cast<const char*>(contiguous.data()), length}, pool);
+  }
+
+  auto buffer = velox::AlignedBuffer::allocateExact<char>(length, pool);
+  cursor.pull(buffer->asMutable<char>(), length);
+  return decompressZstd({buffer->as<char>(), buffer->size()}, pool);
+}
 
 } // namespace facebook::nimble

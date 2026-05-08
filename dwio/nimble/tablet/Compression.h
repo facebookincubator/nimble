@@ -15,20 +15,30 @@
  */
 #pragma once
 
-#include "dwio/nimble/common/Vector.h"
+#include <optional>
+#include <string_view>
+
+#include "velox/buffer/Buffer.h"
 
 namespace facebook::nimble {
 
 class ZstdCompression {
  public:
-  static std::optional<Vector<char>> compress(
-      velox::memory::MemoryPool& memoryPool,
+  static std::optional<velox::BufferPtr> compress(
       std::string_view source,
-      int32_t level = 1);
+      velox::memory::MemoryPool* pool,
+      int32_t compressionLevel = 1);
 
-  static Vector<char> uncompress(
-      velox::memory::MemoryPool& memoryPool,
-      std::string_view source);
+  static velox::BufferPtr uncompress(
+      std::string_view source,
+      velox::memory::MemoryPool* pool);
+
+  /// Decompresses into a caller-provided destination buffer.
+  /// Skips the 4-byte uncompressed size header in source.
+  static void uncompress(
+      std::string_view source,
+      void* destination,
+      uint64_t destinationSize);
 };
 
 } // namespace facebook::nimble

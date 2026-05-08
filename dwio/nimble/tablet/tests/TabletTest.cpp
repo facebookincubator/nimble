@@ -4667,4 +4667,58 @@ TEST_F(TabletTest, concurrentReadersWithCacheEviction) {
   cache->shutdown();
 }
 
+TEST_P(TabletWithIndexTest, metadataSectionUncompressedSize) {
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  nimble::index::test::TestClusterIndexMetadataWriter indexHelper(
+      *pool_, {"col1"}, {SortOrder{.ascending = true}});
+
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {
+          .metadataFlushThreshold = 1'024 * 1'024 * 1'024,
+          .streamDeduplicationEnabled = false,
+          .enableChunkIndex = true,
+          .stripeGroupFlushCallback =
+              indexHelper.createStripeGroupFlushCallback(),
+          .closeCallback = indexHelper.createCloseCallback(),
+      });
+
+  for (int stripe = 0; stripe < 2; ++stripe) {
+    auto streams = createStreams(
+        buffer, {{.offset = 0, .chunks = {{.rowCount = 100, .size = 50}}}});
+    indexHelper.addStripe(
+        {{.rowCount = 100, .key = fmt::format("key_{:03d}", stripe)}});
+    tabletWriter->writeStripe(100, std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  const auto layout = nimble::FileLayout::create(readFile, pool_.get());
+
+  ASSERT_TRUE(layout.stripes.uncompressedSize().has_value());
+  EXPECT_GT(layout.stripes.uncompressedSize().value(), 0);
+  EXPECT_GE(layout.stripes.uncompressedSize().value(), layout.stripes.size());
+
+  for (size_t i = 0; i < layout.stripeGroups.size(); ++i) {
+    SCOPED_TRACE(fmt::format("stripeGroup {}", i));
+    ASSERT_TRUE(layout.stripeGroups[i].uncompressedSize().has_value());
+    EXPECT_GT(layout.stripeGroups[i].uncompressedSize().value(), 0);
+    EXPECT_GE(
+        layout.stripeGroups[i].uncompressedSize().value(),
+        layout.stripeGroups[i].size());
+  }
+
+  for (const auto& [name, section] : layout.optionalSections) {
+    SCOPED_TRACE(fmt::format("optionalSection '{}'", name));
+    ASSERT_TRUE(section.uncompressedSize().has_value());
+    EXPECT_GT(section.uncompressedSize().value(), 0);
+    EXPECT_GE(section.uncompressedSize().value(), section.size());
+  }
+}
+
 } // namespace

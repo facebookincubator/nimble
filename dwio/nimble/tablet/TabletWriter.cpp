@@ -209,7 +209,8 @@ void TabletWriter::close() {
                                 stripes.offset(),
                                 stripes.size(),
                                 static_cast<serialization::CompressionType>(
-                                    stripes.compressionType()))
+                                    stripes.compressionType()),
+                                stripes.uncompressedSize().value())
                           : 0,
           !stripeGroups_.empty()
               ? builder.CreateVector<
@@ -221,7 +222,8 @@ void TabletWriter::close() {
                           stripeGroups_[i].offset(),
                           stripeGroups_[i].size(),
                           static_cast<serialization::CompressionType>(
-                              stripeGroups_[i].compressionType()));
+                              stripeGroups_[i].compressionType()),
+                          stripeGroups_[i].uncompressedSize().value());
                     })
               : 0,
           !optionalSections_.empty()
@@ -381,12 +383,12 @@ CompressionType TabletWriter::writeMetadata(std::string_view metadata) {
   const auto size = metadata.size();
   const bool shouldCompress = size > options_.metadataCompressionThreshold;
   CompressionType compressionType{CompressionType::Uncompressed};
-  std::optional<Vector<char>> compressed;
+  std::optional<velox::BufferPtr> compressed;
   if (shouldCompress) {
-    compressed = ZstdCompression::compress(*pool_, metadata);
+    compressed = ZstdCompression::compress(metadata, pool_);
     if (compressed.has_value()) {
       compressionType = CompressionType::Zstd;
-      metadata = {compressed->data(), compressed->size()};
+      metadata = {compressed.value()->as<char>(), compressed.value()->size()};
     }
   }
   writeWithChecksum(metadata);
@@ -394,10 +396,11 @@ CompressionType TabletWriter::writeMetadata(std::string_view metadata) {
 }
 
 MetadataSection TabletWriter::createMetadataSection(std::string_view metadata) {
+  const auto uncompressedSize = static_cast<uint32_t>(metadata.size());
   auto offset = file_->size();
   auto compressionType = writeMetadata(metadata);
   auto size = static_cast<uint32_t>(file_->size() - offset);
-  return MetadataSection{offset, size, compressionType};
+  return MetadataSection{offset, size, compressionType, uncompressedSize};
 }
 
 void TabletWriter::invokeCloseCallback() {
@@ -519,9 +522,14 @@ TabletWriter::createOptionalMetadataSection(
             return optionalSections[i].second.size();
           }),
       builder.CreateVector<uint8_t>(
-          optionalSections.size(), [&optionalSections](size_t i) {
+          optionalSections.size(),
+          [&optionalSections](size_t i) {
             return static_cast<uint8_t>(
                 optionalSections[i].second.compressionType());
+          }),
+      builder.CreateVector<uint32_t>(
+          optionalSections.size(), [&optionalSections](size_t i) {
+            return optionalSections[i].second.uncompressedSize().value();
           }));
 }
 
