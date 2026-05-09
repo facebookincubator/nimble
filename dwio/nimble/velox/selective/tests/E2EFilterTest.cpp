@@ -347,6 +347,13 @@ class E2EFilterTest
       options.clusterIndexConfig = std::move(clusterIndexConfig);
     }
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    // Branch on whether we need forced dictionary encoding, since
+    // EncodingLayoutTree is not move-assignable due to const members.
+    if (useForcedDictionaryEncoding_) {
+      // Need to set encodingLayoutTree at construction time.
+      options.encodingLayoutTree.emplace(
+          buildForcedDictionaryEncodingLayoutTree());
+    }
     VeloxWriter writer(
         writeSchema_, std::move(writeFile), *rootPool_, std::move(options));
     for (auto& batch : batches) {
@@ -387,6 +394,50 @@ class E2EFilterTest
   folly::F14FastMap<std::string, std::set<std::string>> flatMapColumns_;
   folly::F14FastSet<std::string> deduplicatedArrayColumns_;
   folly::F14FastSet<std::string> deduplicatedMapColumns_;
+  // When true, forces dictionary encoding for string columns via
+  // EncodingLayoutTree. This is useful for testing nested encoding scenarios
+  // where dictionary is not at the top level (e.g., Nullable -> Dictionary).
+  bool useForcedDictionaryEncoding_{false};
+
+  // Builds an encoding layout tree that forces dictionary encoding for string
+  // columns. When data has nulls, the writer will wrap this with nullable
+  // encoding, creating a Nullable -> Dictionary nesting.
+  EncodingLayoutTree buildForcedDictionaryEncodingLayoutTree() {
+    std::vector<EncodingLayoutTree> children;
+    for (column_index_t i = 0;
+         i < static_cast<column_index_t>(rowType_->size());
+         ++i) {
+      const auto& childType = rowType_->childAt(i);
+      const auto& childName = rowType_->nameOf(i);
+
+      if (childType->isVarchar() || childType->isVarbinary()) {
+        // Dictionary has two sub-encodings: Alphabet (id=0) and Indices (id=1).
+        // Specify nullopt for both to let the writer decide their encodings.
+        // Without these children, the layout replay fails with
+        // "Sub-encoding identifier out of range" when the writer creates
+        // Dictionary's sub-encoding selection policies.
+        children.push_back(
+            EncodingLayoutTree{
+                Kind::Scalar,
+                {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
+                  EncodingLayout{
+                      EncodingType::Dictionary,
+                      {},
+                      CompressionType::Uncompressed,
+                      {
+                          // Alphabet (id=0): let writer decide
+                          std::nullopt,
+                          // Indices (id=1): let writer decide
+                          std::nullopt,
+                      }}}},
+                std::string(childName)});
+      } else {
+        children.push_back(
+            EncodingLayoutTree{Kind::Scalar, {}, std::string(childName)});
+      }
+    }
+    return EncodingLayoutTree{Kind::Row, {}, "", std::move(children)};
+  }
 
   // Optional encoding factors for ManualEncodingSelectionPolicyFactory.
   // When set, writeToMemory will use these factors instead of the default
@@ -1685,6 +1736,519 @@ TEST_P(PrefixEncodingE2ETest, filterOnString) {
         /*numCombinations=*/5,
         withRecursiveNulls);
   }
+}
+
+// Test for cross-stripe reading of string data with filters.
+// This tests that dictionary column visitors work correctly when reading
+// across multiple stripes, where the dictionary may change between stripes.
+TEST_P(E2EFilterTest, stringDictionaryAcrossStripes) {
+  // Use frequent stripe flushes to maximize cross-stripe reads.
+  flushEveryNBatches_ = 1;
+  for (bool withRecursiveNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("withRecursiveNulls={}", withRecursiveNulls));
+    testWithTypes(
+        "string_val:string,"
+        "string_val_2:string,"
+        "long_val:bigint",
+        [&]() {
+          makeStringDistribution("string_val", 100, true, false);
+          makeStringDistribution("string_val_2", 170, false, true);
+        },
+        /*wrapInStruct=*/false,
+        {"string_val", "long_val"},
+        /*numCombinations=*/5,
+        withRecursiveNulls);
+  }
+}
+
+TEST_P(E2EFilterTest, stringUniqueAcrossStripes) {
+  // Use frequent stripe flushes to maximize cross-stripe reads.
+  flushEveryNBatches_ = 1;
+  for (bool withRecursiveNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("withRecursiveNulls={}", withRecursiveNulls));
+    testWithTypes(
+        "string_val:string,"
+        "string_val_2:string,"
+        "long_val:bigint",
+        [&]() {
+          makeStringUnique("string_val");
+          makeStringUnique("string_val_2");
+        },
+        /*wrapInStruct=*/false,
+        {"string_val", "long_val"},
+        /*numCombinations=*/5,
+        withRecursiveNulls);
+  }
+}
+
+// Test for nested encodings where dictionary encoding is NOT at the top level.
+// This tests scenarios like Nullable -> Dictionary, which may have different
+// behavior than Dictionary at the top level.
+TEST_P(E2EFilterTest, stringDictionaryNestedUnderNullable) {
+  // Force dictionary encoding for string columns via encoding layout.
+  useForcedDictionaryEncoding_ = true;
+  for (bool withRecursiveNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("withRecursiveNulls={}", withRecursiveNulls));
+    testWithTypes(
+        "string_val:string,"
+        "string_val_2:string,"
+        "long_val:bigint",
+        [&]() {
+          makeStringDistribution("string_val", 100, true, false);
+          makeStringDistribution("string_val_2", 170, false, true);
+        },
+        /*wrapInStruct=*/false,
+        {"string_val", "long_val"},
+        /*numCombinations=*/5,
+        withRecursiveNulls);
+  }
+}
+
+TEST_P(E2EFilterTest, filterOnNestedDictionaryString) {
+  // Force dictionary encoding for string columns via encoding layout.
+  useForcedDictionaryEncoding_ = true;
+  for (bool withRecursiveNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("withRecursiveNulls={}", withRecursiveNulls));
+    testWithTypes(
+        "string_val:string,"
+        "string_val_2:string,"
+        "long_val:bigint",
+        [&]() {
+          makeStringDistribution("string_val", 50, true, true);
+          makeStringDistribution("string_val_2", 80, true, false);
+        },
+        /*wrapInStruct=*/false,
+        {"string_val", "string_val_2", "long_val"},
+        /*numCombinations=*/5,
+        withRecursiveNulls);
+  }
+}
+
+// Test combining cross-stripe reading with nested dictionary encodings.
+// This is the most challenging scenario for dictionary column visitors.
+TEST_P(E2EFilterTest, stringDictionaryCrossStripeWithNestedEncoding) {
+  // Use both frequent stripe flushes and forced dictionary encoding.
+  flushEveryNBatches_ = 1;
+  useForcedDictionaryEncoding_ = true;
+  for (bool withRecursiveNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("withRecursiveNulls={}", withRecursiveNulls));
+    testWithTypes(
+        "string_val:string,"
+        "string_val_2:string,"
+        "long_val:bigint",
+        [&]() {
+          makeStringDistribution("string_val", 100, true, false);
+          makeStringDistribution("string_val_2", 170, false, true);
+        },
+        /*wrapInStruct=*/false,
+        {"string_val", "long_val"},
+        /*numCombinations=*/5,
+        withRecursiveNulls);
+  }
+}
+
+TEST_P(E2EFilterTest, stringFilterOnBothColumnsCrossStripeNested) {
+  // Use both frequent stripe flushes and forced dictionary encoding.
+  flushEveryNBatches_ = 1;
+  useForcedDictionaryEncoding_ = true;
+  for (bool withRecursiveNulls : {false, true}) {
+    SCOPED_TRACE(fmt::format("withRecursiveNulls={}", withRecursiveNulls));
+    testWithTypes(
+        "string_val:string,"
+        "string_val_2:string,"
+        "long_val:bigint",
+        [&]() {
+          makeStringDistribution("string_val", 50, true, true);
+          makeStringDistribution("string_val_2", 80, true, false);
+        },
+        /*wrapInStruct=*/false,
+        {"string_val", "string_val_2", "long_val"},
+        /*numCombinations=*/5,
+        withRecursiveNulls);
+  }
+}
+
+// Test for nested encoding where dictionary is not at the top level.
+// This test creates a MainlyConstant → Dictionary nesting by:
+// 1. Creating data where most values are a constant (triggers MainlyConstant)
+// 2. Forcing the otherValues_ child to use Dictionary encoding via
+// EncodingLayoutTree
+//
+// This scenario is challenging because dictionaryEncoding() may only check
+// for direct Dictionary or Nullable→Dictionary, not deeper nesting like
+// MainlyConstant→Dictionary.
+TEST_P(E2EFilterTest, nestedMainlyConstantWithDictionary) {
+  // Create data where most values are a constant string.
+  // ~90% of values will be the constant, ~10% will be "other" values.
+  auto type = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+
+  const size_t kRowCount = 1000;
+  std::vector<std::string> stringVals;
+  std::vector<int64_t> longVals;
+  stringVals.reserve(kRowCount);
+  longVals.reserve(kRowCount);
+
+  const std::string kConstantValue = "MOSTLY_CONSTANT_VALUE";
+  // For the "other" values, use low cardinality to encourage dictionary
+  // encoding for the otherValues_ child of MainlyConstant.
+  const std::vector<std::string> otherValues = {
+      "OTHER_A", "OTHER_B", "OTHER_C", "OTHER_D", "OTHER_E"};
+
+  for (size_t i = 0; i < kRowCount; ++i) {
+    if (i % 10 == 0) {
+      // ~10% of rows have "other" values (low cardinality for dictionary).
+      stringVals.push_back(otherValues[i % otherValues.size()]);
+    } else {
+      // ~90% of rows have the constant value.
+      stringVals.push_back(kConstantValue);
+    }
+    longVals.push_back(i);
+  }
+
+  auto stringVector =
+      velox::test::VectorMaker(leafPool_.get())
+          .flatVector<velox::StringView>(kRowCount, [&](auto row) {
+            return velox::StringView(stringVals[row]);
+          });
+  auto longVector = velox::test::VectorMaker(leafPool_.get())
+                        .flatVector<int64_t>(
+                            kRowCount, [&](auto row) { return longVals[row]; });
+
+  auto batch = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kRowCount,
+      std::vector<VectorPtr>{stringVector, longVector});
+
+  // Build EncodingLayoutTree that forces MainlyConstant with Dictionary child
+  // for otherValues_.
+  // The encoding hierarchy we want:
+  //   Row
+  //     -> Scalar (string_val): MainlyConstant
+  //         -> OtherValues (child 1): Dictionary
+  //     -> Scalar (long_val): default
+  EncodingLayoutTree encodingLayoutTree{
+      Kind::Row,
+      {},
+      "",
+      {
+          EncodingLayoutTree{
+              Kind::Scalar,
+              {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
+                EncodingLayout{
+                    EncodingType::MainlyConstant,
+                    {},
+                    CompressionType::Uncompressed,
+                    {
+                        // Child 0: IsCommon (let the writer decide)
+                        std::nullopt,
+                        // Child 1: OtherValues -> Dictionary
+                        EncodingLayout{
+                            EncodingType::Dictionary,
+                            {},
+                            CompressionType::Uncompressed,
+                            {
+                                // Alphabet (id=0): let writer decide
+                                std::nullopt,
+                                // Indices (id=1): let writer decide
+                                std::nullopt,
+                            }},
+                    }}}},
+              "string_val"},
+          EncodingLayoutTree{Kind::Scalar, {}, "long_val"},
+      }};
+
+  // Write the data with the forced encoding layout.
+  auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+  VeloxWriterOptions writerOptions;
+  writerOptions.encodingLayoutTree.emplace(std::move(encodingLayoutTree));
+  VeloxWriter writer(type, std::move(writeFile), *rootPool_, writerOptions);
+  writer.write(batch);
+  writer.close();
+
+  // Read back and verify the data is correct.
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+
+  velox::io::IoStatistics dataIoStats;
+  velox::io::IoStatistics metadataIoStats;
+  auto reader = makeReader(
+      velox::dwio::common::ReaderOptions{
+          leafPool_.get(), &dataIoStats, &metadataIoStats},
+      std::move(input));
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*type);
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  // Read all rows and verify.
+  auto result = BaseVector::create(type, 0, leafPool_.get());
+  size_t totalRows = 0;
+  while (rowReader->next(1000, result)) {
+    auto* rowResult = result->as<RowVector>();
+    ASSERT_NE(rowResult, nullptr);
+    totalRows += rowResult->size();
+
+    DecodedVector decodedString(*rowResult->childAt(0));
+    DecodedVector decodedLong(*rowResult->childAt(1));
+
+    for (size_t i = 0; i < rowResult->size(); ++i) {
+      auto rowIdx = decodedLong.valueAt<int64_t>(i);
+      std::string expected;
+      if (rowIdx % 10 == 0) {
+        expected = otherValues[rowIdx % otherValues.size()];
+      } else {
+        expected = kConstantValue;
+      }
+      ASSERT_EQ(decodedString.valueAt<StringView>(i).str(), expected)
+          << "Mismatch at row=" << rowIdx;
+    }
+  }
+
+  EXPECT_EQ(totalRows, kRowCount);
+}
+
+// Verifies that the reader returns DictionaryVector<StringView> for
+// dictionary-encoded string columns when stringBufferOptimized is enabled.
+// The dictionary path is only taken for simple encoding shapes:
+//   - Dictionary (top-level)
+//   - Nullable -> Dictionary (dictionary with nulls)
+TEST_P(E2EFilterTest, dictionaryVectorReturned) {
+  useForcedDictionaryEncoding_ = true;
+  auto type = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+
+  const vector_size_t kRowCount = 1000;
+  // Use low cardinality to ensure dictionary encoding is chosen.
+  std::vector<std::string> stringStorage(kRowCount);
+  for (vector_size_t i = 0; i < kRowCount; ++i) {
+    stringStorage[i] = fmt::format("VAL_{}", i % 10);
+  }
+  auto stringVector =
+      velox::test::VectorMaker(leafPool_.get())
+          .flatVector<velox::StringView>(kRowCount, [&](auto row) {
+            return velox::StringView(stringStorage[row]);
+          });
+  auto longVector = velox::test::VectorMaker(leafPool_.get())
+                        .flatVector<int64_t>(kRowCount, [](auto row) {
+                          return static_cast<int64_t>(row);
+                        });
+
+  auto batch = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kRowCount,
+      std::vector<VectorPtr>{stringVector, longVector});
+
+  // Write directly (without writeToMemory) to avoid the default chunking
+  // policy that splits the data into multiple chunks. The dictionary path
+  // requires all requested rows to fit in a single chunk.
+  {
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions writerOptions;
+    if (useForcedDictionaryEncoding_) {
+      rowType_ = asRowType(type);
+      writerOptions.encodingLayoutTree.emplace(
+          buildForcedDictionaryEncodingLayoutTree());
+    }
+    VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+    writer.write(batch);
+    writer.close();
+  }
+
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+
+  velox::io::IoStatistics dataIoStats;
+  velox::io::IoStatistics metadataIoStats;
+  velox::dwio::common::ReaderOptions readerOpts{
+      leafPool_.get(), &dataIoStats, &metadataIoStats};
+  auto reader = makeReader(readerOpts, std::move(input));
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*type);
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setStringDecoderZeroCopy(param().stringDecoderZeroCopy);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  auto result = BaseVector::create(type, 0, leafPool_.get());
+  size_t totalRows = 0;
+  while (rowReader->next(1000, result)) {
+    auto* rowResult = result->as<RowVector>();
+    ASSERT_NE(rowResult, nullptr);
+    totalRows += rowResult->size();
+
+    auto stringChild = rowResult->childAt(0)->loadedVector();
+    if (param().stringDecoderZeroCopy) {
+      // With string buffer optimization, the dictionary path should return
+      // a DictionaryVector wrapping a FlatVector alphabet.
+      ASSERT_EQ(stringChild->encoding(), VectorEncoding::Simple::DICTIONARY)
+          << "Expected DICTIONARY encoding for string column, got "
+          << stringChild->encoding();
+    }
+
+    // Verify values are correct regardless of encoding.
+    DecodedVector decoded(*stringChild);
+    for (size_t i = 0; i < rowResult->size(); ++i) {
+      auto expected = fmt::format("VAL_{}", i % 10);
+      ASSERT_EQ(decoded.valueAt<StringView>(i).str(), expected)
+          << "Mismatch at row=" << i;
+    }
+  }
+
+  EXPECT_EQ(totalRows, kRowCount);
+}
+
+// Test for cross-chunk encoding changes where encoding type varies between
+// chunks. This is a challenging scenario for dictionary column visitors because
+// the first chunk may use dictionary encoding while subsequent chunks may use
+// trivial encoding (or vice versa).
+//
+// The test creates data where:
+// - Batch 0: Highly repetitive strings -> likely dictionary encoding
+// - Batch 1: Unique strings -> likely trivial encoding
+// - Batch 2: Highly repetitive strings -> likely dictionary encoding
+// - Batch 3: Unique strings -> likely trivial encoding
+// - ... (8 batches total)
+//
+// Each batch is 200 rows and flushed as a separate chunk. The reader requests
+// 1000 rows per next() call, forcing each read to span ~5 chunks with
+// different encodings.
+TEST_P(E2EFilterTest, crossChunkEncodingChange) {
+  // Use frequent chunk/stripe flushes to create multiple chunks with different
+  // data characteristics.
+  flushEveryNBatches_ = 1;
+
+  // Create custom batches with alternating encoding characteristics.
+  // Use small batches (200 rows) so that next(1000) spans multiple chunks.
+  auto type =
+      ROW({"string_val", "string_val_2", "long_val"},
+          {VARCHAR(), VARCHAR(), BIGINT()});
+
+  const size_t kRowsPerBatch = 200;
+  const int kNumBatches = 8;
+  std::vector<RowVectorPtr> batches;
+
+  for (int batchIdx = 0; batchIdx < kNumBatches; ++batchIdx) {
+    std::vector<std::string> stringVals;
+    std::vector<std::string> stringVals2;
+    std::vector<int64_t> longVals;
+
+    stringVals.reserve(kRowsPerBatch);
+    stringVals2.reserve(kRowsPerBatch);
+    longVals.reserve(kRowsPerBatch);
+
+    if (batchIdx % 2 == 0) {
+      // Even batches: highly repetitive strings -> dictionary encoding.
+      // Use very low cardinality to ensure dictionary encoding is chosen.
+      for (size_t i = 0; i < kRowsPerBatch; ++i) {
+        stringVals.push_back(fmt::format("DICT_VAL_{}", i % 5));
+        stringVals2.push_back(fmt::format("DICT2_VAL_{}", i % 3));
+        longVals.push_back(batchIdx * kRowsPerBatch + i);
+      }
+    } else {
+      // Odd batches: unique strings -> trivial encoding.
+      // Use unique values to prevent dictionary encoding.
+      for (size_t i = 0; i < kRowsPerBatch; ++i) {
+        stringVals.push_back(
+            fmt::format("UNIQUE_VAL_BATCH{}_ROW{}_EXTRA_PADDING", batchIdx, i));
+        stringVals2.push_back(
+            fmt::format("UNIQUE2_VAL_BATCH{}_ROW{}_MORE_PADDING", batchIdx, i));
+        longVals.push_back(batchIdx * kRowsPerBatch + i);
+      }
+    }
+
+    auto stringVector =
+        velox::test::VectorMaker(leafPool_.get())
+            .flatVector<velox::StringView>(kRowsPerBatch, [&](auto row) {
+              return velox::StringView(stringVals[row]);
+            });
+    auto stringVector2 =
+        velox::test::VectorMaker(leafPool_.get())
+            .flatVector<velox::StringView>(kRowsPerBatch, [&](auto row) {
+              return velox::StringView(stringVals2[row]);
+            });
+    auto longVector = velox::test::VectorMaker(leafPool_.get())
+                          .flatVector<int64_t>(kRowsPerBatch, [&](auto row) {
+                            return longVals[row];
+                          });
+
+    batches.push_back(
+        std::make_shared<RowVector>(
+            leafPool_.get(),
+            type,
+            nullptr,
+            kRowsPerBatch,
+            std::vector<VectorPtr>{stringVector, stringVector2, longVector}));
+  }
+
+  // Write the data to memory.
+  writeToMemory(type, batches, /*forRowGroupSkip=*/false);
+
+  // Read back and verify the data is correct.
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+
+  velox::io::IoStatistics dataIoStats;
+  velox::io::IoStatistics metadataIoStats;
+  auto reader = makeReader(
+      velox::dwio::common::ReaderOptions{
+          leafPool_.get(), &dataIoStats, &metadataIoStats},
+      std::move(input));
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*type);
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  // Read with batch size larger than chunk size, forcing cross-chunk reads.
+  // Each chunk has 200 rows, so next(1000) should span ~5 chunks.
+  auto result = BaseVector::create(type, 0, leafPool_.get());
+  size_t totalRows = 0;
+  while (rowReader->next(1000, result)) {
+    auto* rowResult = result->as<RowVector>();
+    ASSERT_NE(rowResult, nullptr);
+    totalRows += rowResult->size();
+
+    // Verify the string values are correct.
+    DecodedVector decodedString(*rowResult->childAt(0));
+    DecodedVector decodedString2(*rowResult->childAt(1));
+    DecodedVector decodedLong(*rowResult->childAt(2));
+
+    for (size_t i = 0; i < rowResult->size(); ++i) {
+      auto globalRow = decodedLong.valueAt<int64_t>(i);
+      auto batchIdx = globalRow / kRowsPerBatch;
+      auto rowInBatch = globalRow % kRowsPerBatch;
+
+      std::string expectedStr;
+      std::string expectedStr2;
+      if (batchIdx % 2 == 0) {
+        expectedStr = fmt::format("DICT_VAL_{}", rowInBatch % 5);
+        expectedStr2 = fmt::format("DICT2_VAL_{}", rowInBatch % 3);
+      } else {
+        expectedStr = fmt::format(
+            "UNIQUE_VAL_BATCH{}_ROW{}_EXTRA_PADDING", batchIdx, rowInBatch);
+        expectedStr2 = fmt::format(
+            "UNIQUE2_VAL_BATCH{}_ROW{}_MORE_PADDING", batchIdx, rowInBatch);
+      }
+
+      ASSERT_EQ(decodedString.valueAt<StringView>(i).str(), expectedStr)
+          << "Mismatch at globalRow=" << globalRow;
+      ASSERT_EQ(decodedString2.valueAt<StringView>(i).str(), expectedStr2)
+          << "Mismatch at globalRow=" << globalRow;
+    }
+  }
+
+  EXPECT_EQ(totalRows, kNumBatches * kRowsPerBatch);
 }
 
 } // namespace facebook::nimble

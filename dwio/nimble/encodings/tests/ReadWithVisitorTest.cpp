@@ -2777,8 +2777,7 @@ TEST_P(ReadWithVisitorTest, readIndicesWithVisitorNullable) {
       visitor(filter, reader, rows, extractValues);
   auto params = makeReadWithVisitorParams(visitor, rows, pool());
 
-  static_cast<NullableEncoding<std::string_view>&>(*encoding)
-      .readIndicesWithVisitor(visitor, params);
+  callReadIndicesWithVisitor(*encoding, visitor, params);
 
   ASSERT_EQ(reader->numValues(), kRows);
   const auto* indices = reader->rawIndices();
@@ -2789,6 +2788,131 @@ TEST_P(ReadWithVisitorTest, readIndicesWithVisitorNullable) {
     ASSERT_GE(indices[i], 0) << "row " << i;
     ASSERT_LT(indices[i], static_cast<int32_t>(alphabetSize)) << "row " << i;
     EXPECT_EQ(alphabet[indices[i]], kAlphabet[i % 3]) << "row " << i;
+  }
+}
+
+// ===========================================================================
+// Test: readIndicesWithVisitor with a value exclusively in null-masked rows.
+// Verifies that the dictionary excludes "delta" which only appears at null
+// positions (rows 0, 4, 8, ...) and that indices correctly map to the
+// 3-entry non-null alphabet.
+// ===========================================================================
+TEST_P(ReadWithVisitorTest, readIndicesWithVisitorNullableAlphabetValue) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP() << "readIndicesWithVisitor requires non-legacy encoding";
+  }
+  constexpr int kRows = 20;
+  // "delta" appears only at rows 0,4,8,12,16 which are all null.
+  // Non-null rows see only "alpha", "bravo", "charlie".
+  constexpr std::string_view kValues[] = {"delta", "alpha", "bravo", "charlie"};
+  auto isNull = [](auto i) { return i % 4 == 0; };
+
+  auto input = makeRowVector({makeFlatVector<StringView>(
+      kRows, [&](auto i) { return StringView(kValues[i % 4]); }, isNull)});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader =
+      static_cast<StringColumnReaderTestAccessor*>(structReader->children()[0]);
+  ASSERT_NE(reader, nullptr);
+
+  std::vector<vector_size_t> rowVec(kRows);
+  std::iota(rowVec.begin(), rowVec.end(), 0);
+  RowSet rows(rowVec.data(), rowVec.size());
+  reader->doPrepareReadAsIndices(0, rows, nullptr);
+
+  // Build encoding manually with only non-null values.
+  nimble::Vector<std::string_view> nonNullVec{pool()};
+  for (int i = 0; i < kRows; ++i) {
+    if (!isNull(i)) {
+      nonNullVec.push_back(kValues[i % 4]);
+    }
+  }
+  auto nonNullSpan =
+      std::span<const std::string_view>(nonNullVec.data(), nonNullVec.size());
+  nimble::EncodingSelection<std::string_view> valSelection{
+      {.encodingType = nimble::EncodingType::Dictionary},
+      nimble::Statistics<std::string_view>::create(nonNullSpan),
+      std::make_unique<TrivialNestedPolicy<std::string_view>>()};
+  Buffer valBuffer(*pool());
+  auto serializedValues = nimble::DictionaryEncoding<std::string_view>::encode(
+      valSelection, nonNullSpan, valBuffer);
+
+  nimble::Vector<bool> nullBits{pool()};
+  for (int i = 0; i < kRows; ++i) {
+    nullBits.push_back(!isNull(i));
+  }
+  auto nullSpan = std::span<const bool>(nullBits.data(), nullBits.size());
+  nimble::EncodingSelection<bool> nullSelection{
+      {.encodingType = nimble::EncodingType::Trivial},
+      nimble::Statistics<bool>::create(nullSpan),
+      std::make_unique<TrivialNestedPolicy<bool>>()};
+  Buffer nullBuffer(*pool());
+  auto serializedNulls = nimble::TrivialEncoding<bool>::encode(
+      nullSelection, nullSpan, nullBuffer);
+
+  const uint32_t encodingSize = nimble::Encoding::kPrefixSize + 4 +
+      serializedValues.size() + serializedNulls.size();
+  Buffer assemblyBuffer(*pool());
+  char* reserved = assemblyBuffer.reserve(encodingSize);
+  char* pos = reserved;
+  nimble::encoding::writeChar(
+      static_cast<char>(nimble::EncodingType::Nullable), pos);
+  nimble::encoding::writeChar(static_cast<char>(nimble::DataType::String), pos);
+  nimble::encoding::writeUint32(kRows, pos);
+  nimble::encoding::writeString(serializedValues, pos);
+  nimble::encoding::writeBytes(serializedNulls, pos);
+
+  std::vector<velox::BufferPtr> stringBuffers;
+  auto encoding = nimble::EncodingFactory().create(
+      *pool(), std::string_view(reserved, encodingSize), [&](uint32_t size) {
+        stringBuffers.push_back(
+            velox::AlignedBuffer::allocate<char>(size, pool()));
+        return stringBuffers.back()->asMutable<void>();
+      });
+
+  ASSERT_TRUE(encoding->isNullable());
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+  // Dictionary should have 3 entries (alpha, bravo, charlie), NOT 4.
+  // "delta" only appeared in null rows and was excluded.
+  EXPECT_EQ(encoding->dictionarySize(), 3);
+
+  const auto* alphabet =
+      static_cast<const std::string_view*>(encoding->dictionaryEntries());
+  std::set<std::string_view> alphabetSet(
+      alphabet, alphabet + encoding->dictionarySize());
+  EXPECT_FALSE(alphabetSet.count("delta"))
+      << "Dictionary should not contain null-masked-only value";
+  EXPECT_TRUE(alphabetSet.count("alpha"));
+  EXPECT_TRUE(alphabetSet.count("bravo"));
+  EXPECT_TRUE(alphabetSet.count("charlie"));
+
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  DecoderVisitor<
+      int32_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      /*isDense=*/true>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  callReadIndicesWithVisitor(*encoding, visitor, params);
+
+  ASSERT_EQ(reader->numValues(), kRows);
+  const auto* indices = reader->rawIndices();
+  for (int i = 0; i < kRows; ++i) {
+    if (isNull(i)) {
+      continue;
+    }
+    ASSERT_GE(indices[i], 0) << "row " << i;
+    ASSERT_LT(indices[i], 3) << "row " << i;
+    EXPECT_EQ(alphabet[indices[i]], kValues[i % 4]) << "row " << i;
   }
 }
 
@@ -2921,8 +3045,7 @@ TEST_P(ReadWithVisitorTest, fuzzReadIndicesWithVisitorNullable) {
         visitor(filter, reader, rows, extractValues);
     auto params = makeReadWithVisitorParams(visitor, rows, this->pool());
 
-    static_cast<NullableEncoding<std::string_view>&>(*encoding)
-        .readIndicesWithVisitor(visitor, params);
+    callReadIndicesWithVisitor(*encoding, visitor, params);
 
     ASSERT_EQ(reader->numValues(), numRows);
     const auto* indices = reader->rawIndices();

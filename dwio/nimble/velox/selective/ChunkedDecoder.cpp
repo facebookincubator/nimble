@@ -30,6 +30,7 @@ namespace facebook::nimble {
 using namespace facebook::velox;
 
 void ChunkedDecoder::loadNextChunk() {
+  invokeOnChunkLoad();
   auto ret = ensureInput(kChunkHeaderSize);
   NIMBLE_CHECK(ret, "Failed to read chunk header");
   const auto [length, compressionType] = readChunkHeader(inputData_);
@@ -367,6 +368,12 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
   stringDataSizeEstimate_ = Compression::uncompressedSize(
       dataCompressionType, {inputData_ + blobOffset, blobSize});
   return stringDataSizeEstimate_;
+}
+
+bool ChunkedDecoder::dictionaryConvertible() {
+  NIMBLE_CHECK_NOT_NULL(
+      encoding_, "Call ensureLoaded() before dictionaryConvertible()");
+  return encoding_->dictionaryEnabled();
 }
 
 } // namespace facebook::nimble

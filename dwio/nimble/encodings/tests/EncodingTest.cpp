@@ -32,6 +32,7 @@
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/EncodingUtils.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
@@ -939,8 +940,8 @@ TYPED_TEST(DictionaryApiTypedTest, nullableBasics) {
     data = {T(1), T(2), T(1), T(3), T(2)};
   }
   nimble::Vector<bool> nulls{this->pool_.get()};
-  for (bool b : {true, true, false, true, true}) {
-    nulls.push_back(b);
+  for (bool null : {true, true, false, true, true}) {
+    nulls.push_back(null);
   }
 
   auto encoding = this->encodeNullableDictionary(data, nulls);
@@ -964,6 +965,43 @@ TYPED_TEST(DictionaryApiTypedTest, nullableBasics) {
   for (uint32_t i = 0; i < 3; ++i) {
     const auto* entry = static_cast<const T*>(encoding->dictionaryEntry(i));
     EXPECT_EQ(*entry, entries[i]);
+  }
+}
+
+// Verifies that dictionary size excludes values that only appear in
+// null-masked rows. "charlie"/T(3) only appears at row 2 which is null,
+// so the dictionary should contain only 2 entries.
+TYPED_TEST(DictionaryApiTypedTest, nullableAlphabetValue) {
+  using T = TypeParam;
+  // Row:  0       1       2         3       4
+  // Data: alpha   bravo   charlie   alpha   bravo
+  // Null: true    true    false     true    true
+  // "charlie" at row 2 is the only occurrence and it's masked by null.
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    data = {"alpha", "bravo", "charlie", "alpha", "bravo"};
+  } else {
+    data = {T(1), T(2), T(3), T(1), T(2)};
+  }
+  nimble::Vector<bool> nulls{this->pool_.get()};
+  for (bool null : {true, true, false, true, true}) {
+    nulls.push_back(null);
+  }
+
+  auto encoding = this->encodeNullableDictionary(data, nulls);
+  ASSERT_TRUE(encoding->isNullable());
+  EXPECT_TRUE(encoding->dictionaryEnabled());
+  // Only "alpha" and "bravo" (or T(1) and T(2)) are non-null entries.
+  EXPECT_EQ(encoding->dictionarySize(), 2);
+
+  const auto* entries = static_cast<const T*>(encoding->dictionaryEntries());
+  ASSERT_NE(entries, nullptr);
+  std::set<T> actualUniques(entries, entries + encoding->dictionarySize());
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    EXPECT_THAT(
+        actualUniques, ::testing::UnorderedElementsAre("alpha", "bravo"));
+  } else {
+    EXPECT_THAT(actualUniques, ::testing::UnorderedElementsAre(T(1), T(2)));
   }
 }
 
@@ -1031,6 +1069,174 @@ TYPED_TEST(DictionaryApiTypedTest, nullableFuzz) {
       const auto* entry = static_cast<const T*>(encoding->dictionaryEntry(i));
       EXPECT_EQ(*entry, entries[i]);
     }
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, buildAlphabet) {
+  using T = TypeParam;
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    data = {"alpha", "bravo", "alpha", "charlie", "bravo"};
+  } else {
+    data = {T(1), T(2), T(1), T(3), T(2)};
+  }
+
+  auto encoding = this->encodeDictionary(data);
+  auto alphabet = nimble::buildEncodingDictionaryAlphabet<T>(encoding.get());
+  EXPECT_EQ(alphabet.size(), 3);
+  std::set<T> actual(alphabet.begin(), alphabet.end());
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    EXPECT_EQ(actual, (std::set<T>{"alpha", "bravo", "charlie"}));
+  } else {
+    EXPECT_EQ(actual, (std::set<T>{T(1), T(2), T(3)}));
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, buildAlphabetNullable) {
+  using T = TypeParam;
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    data = {"alpha", "bravo", "alpha", "charlie", "bravo"};
+  } else {
+    data = {T(1), T(2), T(1), T(3), T(2)};
+  }
+  nimble::Vector<bool> nulls{this->pool_.get()};
+  for (bool null : {true, true, false, true, true}) {
+    nulls.push_back(null);
+  }
+
+  auto encoding = this->encodeNullableDictionary(data, nulls);
+  auto alphabet = nimble::buildEncodingDictionaryAlphabet<T>(encoding.get());
+  EXPECT_EQ(alphabet.size(), 3);
+  std::set<T> actual(alphabet.begin(), alphabet.end());
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    EXPECT_EQ(actual, (std::set<T>{"alpha", "bravo", "charlie"}));
+  } else {
+    EXPECT_EQ(actual, (std::set<T>{T(1), T(2), T(3)}));
+  }
+}
+
+// Verifies that buildEncodingDictionaryAlphabet excludes values that only
+// appear in null-masked rows.
+TYPED_TEST(DictionaryApiTypedTest, buildAlphabetNullableAlphabetValue) {
+  using T = TypeParam;
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    data = {"alpha", "bravo", "charlie", "alpha", "bravo"};
+  } else {
+    data = {T(1), T(2), T(3), T(1), T(2)};
+  }
+  nimble::Vector<bool> nulls{this->pool_.get()};
+  for (bool null : {true, true, false, true, true}) {
+    nulls.push_back(null);
+  }
+
+  auto encoding = this->encodeNullableDictionary(data, nulls);
+  auto alphabet = nimble::buildEncodingDictionaryAlphabet<T>(encoding.get());
+  EXPECT_EQ(alphabet.size(), 2);
+  std::set<T> actual(alphabet.begin(), alphabet.end());
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    EXPECT_EQ(actual, (std::set<T>{"alpha", "bravo"}));
+  } else {
+    EXPECT_EQ(actual, (std::set<T>{T(1), T(2)}));
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, buildAlphabetFuzz) {
+  using T = TypeParam;
+  for (int run = 0; run < 20; ++run) {
+    auto seed = folly::Random::rand32();
+    std::mt19937 rng(seed);
+    const auto numRows = 10 + rng() % 200;
+    const auto cardinality = 2 + rng() % 10;
+
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      this->stringPool_.clear();
+      for (int j = 0; j < cardinality; ++j) {
+        const int len = rng() % 30;
+        std::string s = fmt::format("{}:", j);
+        for (int k = 0; k < len; ++k) {
+          s += static_cast<char>('a' + rng() % 26);
+        }
+        this->stringPool_.push_back(std::move(s));
+      }
+    }
+
+    std::vector<T> data;
+    std::set<T> expectedUniques;
+    data.reserve(numRows);
+    for (int i = 0; i < numRows; ++i) {
+      T val;
+      if constexpr (std::is_same_v<T, std::string_view>) {
+        val = std::string_view(this->stringPool_[rng() % cardinality]);
+      } else {
+        val = static_cast<T>(rng() % cardinality);
+      }
+      data.push_back(val);
+      expectedUniques.insert(val);
+    }
+
+    SCOPED_TRACE(fmt::format("run={} seed={} numRows={}", run, seed, numRows));
+
+    auto encoding = this->encodeDictionary(data);
+    auto alphabet = nimble::buildEncodingDictionaryAlphabet<T>(encoding.get());
+    EXPECT_EQ(alphabet.size(), expectedUniques.size());
+    std::set<T> actual(alphabet.begin(), alphabet.end());
+    EXPECT_EQ(actual, expectedUniques);
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, buildAlphabetNullableFuzz) {
+  using T = TypeParam;
+  for (int run = 0; run < 20; ++run) {
+    auto seed = folly::Random::rand32();
+    std::mt19937 rng(seed);
+    const auto numRows = 10 + rng() % 200;
+    const auto cardinality = 2 + rng() % 10;
+
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      this->stringPool_.clear();
+      for (int j = 0; j < cardinality; ++j) {
+        const int len = rng() % 30;
+        std::string s = fmt::format("{}:", j);
+        for (int k = 0; k < len; ++k) {
+          s += static_cast<char>('a' + rng() % 26);
+        }
+        this->stringPool_.push_back(std::move(s));
+      }
+    }
+
+    std::vector<T> data;
+    nimble::Vector<bool> nulls{this->pool_.get()};
+    std::set<T> expectedUniques;
+    data.reserve(numRows);
+    nulls.reserve(numRows);
+    for (int i = 0; i < numRows; ++i) {
+      bool isNull = (rng() % 5 == 0);
+      nulls.push_back(!isNull);
+      T val;
+      if constexpr (std::is_same_v<T, std::string_view>) {
+        val = std::string_view(this->stringPool_[rng() % cardinality]);
+      } else {
+        val = static_cast<T>(rng() % cardinality);
+      }
+      data.push_back(val);
+      if (!isNull) {
+        expectedUniques.insert(val);
+      }
+    }
+
+    if (expectedUniques.empty()) {
+      continue;
+    }
+
+    SCOPED_TRACE(fmt::format("run={} seed={} numRows={}", run, seed, numRows));
+
+    auto encoding = this->encodeNullableDictionary(data, nulls);
+    auto alphabet = nimble::buildEncodingDictionaryAlphabet<T>(encoding.get());
+    EXPECT_EQ(alphabet.size(), expectedUniques.size());
+    std::set<T> actual(alphabet.begin(), alphabet.end());
+    EXPECT_EQ(actual, expectedUniques);
   }
 }
 
