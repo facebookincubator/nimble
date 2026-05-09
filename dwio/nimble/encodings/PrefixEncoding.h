@@ -72,6 +72,9 @@ class PrefixEncoding final
   static constexpr std::string_view kRestartIntervalConfigKey =
       "prefix-encoding.restart-interval";
 
+  /// Constructs a PrefixEncoding with string buffer factory support.
+  /// Pre-materializes all string data into a factory-allocated buffer,
+  /// ensuring string data outlives the encoding instance.
   PrefixEncoding(
       velox::memory::MemoryPool& pool,
       std::string_view data,

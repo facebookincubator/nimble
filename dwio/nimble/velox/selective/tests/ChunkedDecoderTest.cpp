@@ -1339,6 +1339,109 @@ TEST_F(ChunkedDecoderDataTest, fuzzer) {
   }
 }
 
+TEST_P(ChunkedDecoderDataTest, ensureLoadedAndAccessors) {
+  auto [streamData, chunkInfos] =
+      encodeChunkedStream<uint32_t>({{1, 2, 3, 4, 5}});
+  auto streamIndex = createTestStreamIndex(chunkInfos);
+  auto input = std::make_unique<velox::dwio::common::SeekableArrayInputStream>(
+      streamData.data(), streamData.size());
+  ChunkedDecoder decoder(
+      std::move(input),
+      streamIndex,
+      false,
+      &encodingFactory(),
+      pool_.get(),
+      true);
+
+  EXPECT_EQ(decoder.currentEncoding(), nullptr);
+  EXPECT_EQ(decoder.remainingValues(), 0);
+
+  decoder.ensureLoaded();
+
+  ASSERT_NE(decoder.currentEncoding(), nullptr);
+  EXPECT_EQ(decoder.remainingValues(), 5);
+  EXPECT_FALSE(decoder.dictionaryConvertible());
+}
+
+TEST_P(ChunkedDecoderDataTest, onChunkLoadCallback) {
+  auto [streamData, chunkInfos] =
+      encodeChunkedStream<uint32_t>({{1, 2, 3}, {4, 5, 6}});
+  auto streamIndex = createTestStreamIndex(chunkInfos);
+  auto input = std::make_unique<velox::dwio::common::SeekableArrayInputStream>(
+      streamData.data(), streamData.size());
+  ChunkedDecoder decoder(
+      std::move(input), streamIndex, false, &encodingFactory(), pool_.get());
+
+  int callbackCount = 0;
+  decoder.setOnChunkLoad([&] { ++callbackCount; });
+
+  decoder.ensureLoaded();
+  EXPECT_EQ(callbackCount, 1);
+
+  // Skip past chunk 1 (3 values) into chunk 2, triggering a second load.
+  decoder.skip(4);
+  EXPECT_EQ(callbackCount, 2);
+}
+
+TEST_P(ChunkedDecoderDataTest, hasMoreChunks) {
+  auto [streamData, chunkInfos] =
+      encodeChunkedStream<uint32_t>({{1, 2, 3}, {4, 5}});
+  auto streamIndex = createTestStreamIndex(chunkInfos);
+  auto input = std::make_unique<velox::dwio::common::SeekableArrayInputStream>(
+      streamData.data(), streamData.size());
+  ChunkedDecoder decoder(
+      std::move(input), streamIndex, false, &encodingFactory(), pool_.get());
+
+  // Before any load, there are chunks available.
+  decoder.ensureLoaded();
+  EXPECT_EQ(decoder.remainingValues(), 3);
+
+  // Skip all of chunk 1. Chunk 2 is not yet loaded but available.
+  decoder.skip(3);
+  EXPECT_EQ(decoder.remainingValues(), 0);
+
+  // ensureLoaded reloads when exhausted and more chunks exist.
+  decoder.ensureLoaded();
+  EXPECT_EQ(decoder.remainingValues(), 2);
+
+  // Skip all of chunk 2. No more chunks available.
+  decoder.skip(2);
+  EXPECT_EQ(decoder.remainingValues(), 0);
+
+  // ensureLoaded is a no-op when no more chunks exist.
+  decoder.ensureLoaded();
+  EXPECT_EQ(decoder.remainingValues(), 0);
+}
+
+// Verifies that ensureLoaded fires onChunkLoad when reloading an exhausted
+// chunk, allowing the caller to invalidate cached state.
+TEST_P(ChunkedDecoderDataTest, ensureLoadedFiresOnChunkLoadOnReload) {
+  auto [streamData, chunkInfos] =
+      encodeChunkedStream<uint32_t>({{1, 2, 3}, {4, 5, 6}});
+  auto streamIndex = createTestStreamIndex(chunkInfos);
+  auto input = std::make_unique<velox::dwio::common::SeekableArrayInputStream>(
+      streamData.data(), streamData.size());
+  ChunkedDecoder decoder(
+      std::move(input), streamIndex, false, &encodingFactory(), pool_.get());
+
+  int callbackCount = 0;
+  decoder.setOnChunkLoad([&] { ++callbackCount; });
+
+  // First load.
+  decoder.ensureLoaded();
+  EXPECT_EQ(callbackCount, 1);
+  EXPECT_EQ(decoder.remainingValues(), 3);
+
+  // Consume chunk 1.
+  decoder.skip(3);
+  EXPECT_EQ(decoder.remainingValues(), 0);
+
+  // ensureLoaded reloads chunk 2, firing the callback.
+  decoder.ensureLoaded();
+  EXPECT_EQ(callbackCount, 2);
+  EXPECT_EQ(decoder.remainingValues(), 3);
+}
+
 } // namespace
 
 } // namespace facebook::nimble

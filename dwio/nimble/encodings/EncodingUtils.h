@@ -55,17 +55,14 @@ inline int dataTypeSize(DataType type) {
     case DataType::Double:
       return 8;
     default:
-      NIMBLE_UNSUPPORTED(toString(type));
+      NIMBLE_UNSUPPORTED("{}", type);
   }
 }
 
 template <typename F>
 auto encodingTypeDispatchString(Encoding& encoding, F f) {
   NIMBLE_CHECK_EQ(
-      encoding.dataType(),
-      DataType::String,
-      "{}",
-      toString(encoding.dataType()));
+      encoding.dataType(), DataType::String, "{}", encoding.dataType());
   switch (encoding.encodingType()) {
     case EncodingType::Trivial:
       return f(static_cast<TrivialEncoding<std::string_view>&>(encoding));
@@ -83,17 +80,14 @@ auto encodingTypeDispatchString(Encoding& encoding, F f) {
     case EncodingType::Prefix:
       return f(static_cast<PrefixEncoding&>(encoding));
     default:
-      NIMBLE_UNSUPPORTED(toString(encoding.encodingType()));
+      NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
   }
 }
 
 template <typename T, typename F>
 auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
   NIMBLE_CHECK_EQ(
-      dataTypeSize(encoding.dataType()),
-      sizeof(T),
-      "{}",
-      toString(encoding.dataType()));
+      dataTypeSize(encoding.dataType()), sizeof(T), "{}", encoding.dataType());
   switch (encoding.encodingType()) {
     case EncodingType::Trivial:
       return f(static_cast<TrivialEncoding<T>&>(encoding));
@@ -109,7 +103,7 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       if constexpr (std::is_same_v<T, bool>) {
         return f(static_cast<SparseBoolEncoding&>(encoding));
       } else {
-        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+        NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
     case EncodingType::Varint:
       if constexpr (folly::IsOneOf<
@@ -122,7 +116,7 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
                         double>::value) {
         return f(static_cast<VarintEncoding<T>&>(encoding));
       } else {
-        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+        NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
     case EncodingType::Constant:
       return f(static_cast<ConstantEncoding<T>&>(encoding));
@@ -131,7 +125,7 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
     case EncodingType::Delta:
       return f(static_cast<DeltaEncoding<T>&>(encoding));
     default:
-      NIMBLE_UNSUPPORTED(toString(encoding.encodingType()));
+      NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
   }
 }
 
@@ -180,5 +174,35 @@ struct DefaultEncodingTrait {
     nimble::callReadWithVisitor(encoding, visitor, params);
   }
 };
+
+/// Dispatches readIndicesWithVisitor to the correct encoding type.
+/// Supports DictionaryEncoding and NullableEncoding wrapping Dictionary.
+template <typename V>
+void callReadIndicesWithVisitor(
+    Encoding& encoding,
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  if (encoding.encodingType() == EncodingType::Dictionary) {
+    static_cast<DictionaryEncoding<std::string_view>&>(encoding)
+        .readIndicesWithVisitor(visitor, params);
+  } else if (encoding.encodingType() == EncodingType::Nullable) {
+    static_cast<NullableEncoding<std::string_view>&>(encoding)
+        .readIndicesWithVisitor(visitor, params);
+  } else {
+    NIMBLE_UNREACHABLE(
+        "Dictionary indices dispatch on unsupported encoding: {}",
+        encoding.encodingType());
+  }
+}
+
+/// Extracts the dictionary alphabet from an encoding as a vector of values.
+/// Works through Nullable wrappers via virtual dictionaryEntries().
+template <typename T>
+inline std::vector<T> buildEncodingDictionaryAlphabet(
+    const Encoding* encoding) {
+  const auto size = encoding->dictionarySize();
+  const auto* entries = static_cast<const T*>(encoding->dictionaryEntries());
+  return {entries, entries + size};
+}
 
 } // namespace facebook::nimble
