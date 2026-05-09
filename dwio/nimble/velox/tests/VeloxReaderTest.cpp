@@ -528,8 +528,9 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
       auto fileIdStr = fmt::format("testFile_{}", nextFileId_++);
       velox::StringIdLease fileId(ids, fileIdStr);
       velox::StringIdLease groupId(ids, "testGroup");
-      velox::io::ReaderOptions ioReaderOpts(
-          pool, dataIoStats_.get(), metadataIoStats_.get());
+      velox::io::ReaderOptions ioReaderOpts(pool);
+      ioReaderOpts.setDataIoStats(dataIoStats_.get());
+      ioReaderOpts.setMetadataIoStats(metadataIoStats_.get());
       if (cache_ != nullptr) {
         cachedInput_ =
             std::make_unique<velox::dwio::common::CachedBufferedInput>(

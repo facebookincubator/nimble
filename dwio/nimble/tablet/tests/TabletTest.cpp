@@ -181,8 +181,9 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
     fileId_ = std::make_unique<velox::StringIdLease>(ids, "testFile");
     groupId_ = std::make_unique<velox::StringIdLease>(ids, "testGroup");
 
-    velox::io::ReaderOptions readerOptions(
-        pool_.get(), dataIoStats_.get(), metadataIoStats_.get());
+    velox::io::ReaderOptions readerOptions(pool_.get());
+    readerOptions.setDataIoStats(dataIoStats_.get());
+    readerOptions.setMetadataIoStats(metadataIoStats_.get());
 
     switch (mode) {
       case BufferedInputMode::kNone:
@@ -4182,8 +4183,9 @@ TEST_P(TabletTest, configureOptionsIndexFlags) {
     return std::find(sections.begin(), sections.end(), name) != sections.end();
   };
 
-  velox::dwio::common::ReaderOptions readerOptions(
-      pool_.get(), dataIoStats_.get(), metadataIoStats_.get());
+  velox::dwio::common::ReaderOptions readerOptions(pool_.get());
+  readerOptions.setDataIoStats(dataIoStats_.get());
+  readerOptions.setMetadataIoStats(metadataIoStats_.get());
 
   {
     SCOPED_TRACE("defaults");
@@ -4243,8 +4245,9 @@ TEST_P(TabletTest, configureOptionsIndexFlags) {
 TEST_P(TabletTest, configureOptionsBufferedInput) {
   // Verify configureOptions only sets bufferedInput when
   // fileMetadataCacheEnabled is true.
-  velox::dwio::common::ReaderOptions readerOptions(
-      pool_.get(), dataIoStats_.get(), metadataIoStats_.get());
+  velox::dwio::common::ReaderOptions readerOptions(pool_.get());
+  readerOptions.setDataIoStats(dataIoStats_.get());
+  readerOptions.setMetadataIoStats(metadataIoStats_.get());
 
   // Create a dummy BufferedInput to pass as the second parameter.
   std::string emptyFile;
@@ -4571,8 +4574,9 @@ TEST_F(TabletTest, concurrentReadersWithCacheEviction) {
       auto mode = static_cast<BufferedInputMode>(threadId % 4);
       std::unique_ptr<velox::dwio::common::BufferedInput> bi;
       std::shared_ptr<velox::cache::ScanTracker> tracker;
-      velox::io::ReaderOptions readerOptions(
-          threadPool.get(), dataIoStats_.get(), metadataIoStats_.get());
+      velox::io::ReaderOptions readerOptions(threadPool.get());
+      readerOptions.setDataIoStats(dataIoStats_.get());
+      readerOptions.setMetadataIoStats(metadataIoStats_.get());
       nimble::TabletReader::Options options;
 
       switch (mode) {

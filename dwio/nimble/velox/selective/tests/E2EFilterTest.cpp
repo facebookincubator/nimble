@@ -372,8 +372,9 @@ class E2EFilterTest
       auto& ids = fileIds();
       StringIdLease fileId(ids, "testFile");
       StringIdLease groupId(ids, "testGroup");
-      io::ReaderOptions cacheReaderOpts(
-          &readerOpts.memoryPool(), dataIoStats_.get(), metadataIoStats_.get());
+      io::ReaderOptions cacheReaderOpts(&readerOpts.memoryPool());
+      cacheReaderOpts.setDataIoStats(dataIoStats_.get());
+      cacheReaderOpts.setMetadataIoStats(metadataIoStats_.get());
       input = std::make_unique<dwio::common::CachedBufferedInput>(
           std::move(readFile),
           dwio::common::MetricsLog::voidLog(),
@@ -1975,10 +1976,10 @@ TEST_P(E2EFilterTest, nestedMainlyConstantWithDictionary) {
 
   velox::io::IoStatistics dataIoStats;
   velox::io::IoStatistics metadataIoStats;
-  auto reader = makeReader(
-      velox::dwio::common::ReaderOptions{
-          leafPool_.get(), &dataIoStats, &metadataIoStats},
-      std::move(input));
+  velox::dwio::common::ReaderOptions readerOpts(leafPool_.get());
+  readerOpts.setDataIoStats(&dataIoStats);
+  readerOpts.setMetadataIoStats(&metadataIoStats);
+  auto reader = makeReader(readerOpts, std::move(input));
   auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
   scanSpec->addAllChildFields(*type);
   velox::dwio::common::RowReaderOptions rowReaderOptions;
@@ -2068,8 +2069,9 @@ TEST_P(E2EFilterTest, dictionaryVectorReturned) {
 
   velox::io::IoStatistics dataIoStats;
   velox::io::IoStatistics metadataIoStats;
-  velox::dwio::common::ReaderOptions readerOpts{
-      leafPool_.get(), &dataIoStats, &metadataIoStats};
+  velox::dwio::common::ReaderOptions readerOpts(leafPool_.get());
+  readerOpts.setDataIoStats(&dataIoStats);
+  readerOpts.setMetadataIoStats(&metadataIoStats);
   auto reader = makeReader(readerOpts, std::move(input));
   auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
   scanSpec->addAllChildFields(*type);
@@ -2200,10 +2202,10 @@ TEST_P(E2EFilterTest, crossChunkEncodingChange) {
 
   velox::io::IoStatistics dataIoStats;
   velox::io::IoStatistics metadataIoStats;
-  auto reader = makeReader(
-      velox::dwio::common::ReaderOptions{
-          leafPool_.get(), &dataIoStats, &metadataIoStats},
-      std::move(input));
+  velox::dwio::common::ReaderOptions crossChunkReaderOpts(leafPool_.get());
+  crossChunkReaderOpts.setDataIoStats(&dataIoStats);
+  crossChunkReaderOpts.setMetadataIoStats(&metadataIoStats);
+  auto reader = makeReader(crossChunkReaderOpts, std::move(input));
   auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
   scanSpec->addAllChildFields(*type);
   velox::dwio::common::RowReaderOptions rowReaderOptions;
