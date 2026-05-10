@@ -1658,6 +1658,8 @@ class ZstdDCtxReuseTest : public TabletRawChunkStripTest {
     });
     return result;
   }
+
+  BufferPtr decompressionBuffer_;
 };
 
 TEST_F(ZstdDCtxReuseTest, streamDataLegacyZstdWithDCtx) {
@@ -1673,7 +1675,9 @@ TEST_F(ZstdDCtxReuseTest, streamDataLegacyZstdWithDCtx) {
       compressed,
       stringBuffers,
       pool_.get(),
-      serde::StreamData::Options{.version = SerializationVersion::kLegacy});
+      serde::StreamData::Options{
+          .version = SerializationVersion::kLegacy,
+          .decompressionBuffer = &decompressionBuffer_});
 
   std::vector<int32_t> output(expected.size());
   sd.copyTo(
@@ -1700,7 +1704,9 @@ TEST_F(ZstdDCtxReuseTest, streamDataDCtxReusedAcrossReset) {
       compressed1,
       stringBuffers,
       pool_.get(),
-      serde::StreamData::Options{.version = SerializationVersion::kLegacy});
+      serde::StreamData::Options{
+          .version = SerializationVersion::kLegacy,
+          .decompressionBuffer = &decompressionBuffer_});
 
   std::vector<int32_t> output1(values1.size());
   sd.copyTo(
@@ -1787,6 +1793,8 @@ class LZ4RoundtripTest : public TabletRawChunkStripTest {
     std::memcpy(pos, compressed.data(), compressedSize);
     return chunk;
   }
+
+  BufferPtr decompressionBuffer_;
 };
 
 TEST_F(LZ4RoundtripTest, streamDataLegacyLZ4) {
@@ -1802,7 +1810,9 @@ TEST_F(LZ4RoundtripTest, streamDataLegacyLZ4) {
       compressed,
       stringBuffers,
       pool_.get(),
-      serde::StreamData::Options{.version = SerializationVersion::kLegacy});
+      serde::StreamData::Options{
+          .version = SerializationVersion::kLegacy,
+          .decompressionBuffer = &decompressionBuffer_});
 
   std::vector<int32_t> output(expected.size());
   sd.copyTo(
@@ -1830,7 +1840,9 @@ TEST_F(LZ4RoundtripTest, streamDataLZ4ReusedAcrossReset) {
       compressed1,
       stringBuffers,
       pool_.get(),
-      serde::StreamData::Options{.version = SerializationVersion::kLegacy});
+      serde::StreamData::Options{
+          .version = SerializationVersion::kLegacy,
+          .decompressionBuffer = &decompressionBuffer_});
 
   std::vector<int32_t> output1(values1.size());
   sd.copyTo(
@@ -1921,7 +1933,9 @@ TEST_F(LZ4RoundtripTest, encodeDecodeLZ4Roundtrip) {
       streamData,
       stringBuffers,
       pool_.get(),
-      serde::StreamData::Options{.version = SerializationVersion::kLegacy});
+      serde::StreamData::Options{
+          .version = SerializationVersion::kLegacy,
+          .decompressionBuffer = &decompressionBuffer_});
 
   std::vector<int32_t> output(expected.size());
   sd.copyTo(
@@ -1952,7 +1966,9 @@ TEST_F(LZ4RoundtripTest, encodeLZ4BelowThresholdStaysUncompressed) {
       streamData,
       stringBuffers,
       pool_.get(),
-      serde::StreamData::Options{.version = SerializationVersion::kLegacy});
+      serde::StreamData::Options{
+          .version = SerializationVersion::kLegacy,
+          .decompressionBuffer = &decompressionBuffer_});
 
   std::vector<int32_t> output(expected.size());
   sd.copyTo(
@@ -1984,7 +2000,9 @@ TEST_F(LZ4RoundtripTest, encodeDecodeLZ4HighCompression) {
       streamData,
       stringBuffers,
       pool_.get(),
-      serde::StreamData::Options{.version = SerializationVersion::kLegacy});
+      serde::StreamData::Options{
+          .version = SerializationVersion::kLegacy,
+          .decompressionBuffer = &decompressionBuffer_});
 
   std::vector<int32_t> output(expected.size());
   sd.copyTo(

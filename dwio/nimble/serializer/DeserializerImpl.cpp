@@ -53,8 +53,10 @@ StreamData::StreamData(
       encodingEnabled_{nonLegacyFormat(options.version)},
       useVarintRowCount_{!isTabletRawFormat(options.version)},
       bufferPool_{options.bufferPool},
+      decompressionBuffer_{options.decompressionBuffer},
       stringBuffers_{&stringBuffers} {
   NIMBLE_CHECK_NOT_NULL(pool_, "Memory pool required for encoding");
+  NIMBLE_CHECK_NOT_NULL(decompressionBuffer_, "Decompression buffer required");
   init(data);
 }
 
@@ -103,6 +105,13 @@ void StreamData::init(std::string_view data) {
   }
 }
 
+void StreamData::ensureDecompressionBuffer(size_t minBytes) {
+  auto& buffer = decompressionBuf();
+  if (buffer == nullptr || !buffer->unique() || buffer->capacity() < minBytes) {
+    buffer = velox::AlignedBuffer::allocateExact<char>(minBytes, pool_);
+  }
+}
+
 void StreamData::decompress() {
   NIMBLE_CHECK(!encodingEnabled_);
 
@@ -124,16 +133,17 @@ void StreamData::decompress() {
           decompressedSize != ZSTD_CONTENTSIZE_ERROR &&
               decompressedSize != ZSTD_CONTENTSIZE_UNKNOWN,
           "Error determining decompressed size");
-      decompressionBuffer_.resize(decompressedSize);
+      ensureDecompressionBuffer(decompressedSize);
+      auto& buffer = decompressionBuf();
       const auto ret = ZSTD_decompressDCtx(
           getThreadLocalDCtx(),
-          decompressionBuffer_.data(),
+          buffer->asMutable<char>(),
           decompressedSize,
           pos_,
           compressedSize);
       NIMBLE_CHECK(!ZSTD_isError(ret), "Error decompressing data");
-      pos_ = decompressionBuffer_.data();
-      end_ = pos_ + decompressionBuffer_.size();
+      pos_ = buffer->as<char>();
+      end_ = pos_ + decompressedSize;
       break;
     }
     case CompressionType::LZ4: {
@@ -141,18 +151,19 @@ void StreamData::decompress() {
       // Wire format: [origSize:u32][lz4_data...]
       const auto decompressedSize = encoding::readUint32(pos_);
       const auto compressedSize = static_cast<size_t>(end_ - pos_);
-      decompressionBuffer_.resize(decompressedSize);
+      ensureDecompressionBuffer(decompressedSize);
+      auto& buffer = decompressionBuf();
       const auto ret = LZ4_decompress_safe(
           pos_,
-          decompressionBuffer_.data(),
+          buffer->asMutable<char>(),
           static_cast<int>(compressedSize),
           static_cast<int>(decompressedSize));
       NIMBLE_CHECK_EQ(
           ret,
           static_cast<int>(decompressedSize),
           "LZ4 decompressed size mismatch");
-      pos_ = decompressionBuffer_.data();
-      end_ = pos_ + decompressionBuffer_.size();
+      pos_ = buffer->as<char>();
+      end_ = pos_ + decompressedSize;
       break;
     }
     default:

@@ -235,6 +235,7 @@ class DeserializerImpl : public Decoder {
     const serde::StreamData::Options options{
         .version = segment.version,
         .bufferPool = bufferPool_.get(),
+        .decompressionBuffer = &decompressionBuffer_,
     };
     streamData_.emplace(
         scalarKind_, segment.data, stringBuffers, pool_, options);
@@ -570,6 +571,10 @@ class DeserializerImpl : public Decoder {
   // are reused instead of being allocated/freed through MemoryPool each time.
   // Null when buffer pooling is disabled via DeserializerOptions.
   const std::unique_ptr<velox::BufferPool> bufferPool_;
+  // Decompression buffer reused across StreamData lifetimes. Persists across
+  // clear()/addBatch() cycles so the buffer capacity is reused instead of
+  // freed and re-allocated on each segment transition.
+  velox::BufferPtr decompressionBuffer_;
 
   // --- Batch decode state (reset in clear()) ---
   // Total top-level rows across all batches. Used for FlatMap gap detection to

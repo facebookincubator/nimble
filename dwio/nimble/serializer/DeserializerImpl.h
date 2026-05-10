@@ -39,6 +39,10 @@ class StreamData {
     SerializationVersion version;
     /// Optional pool for encoding scratch buffers.
     velox::BufferPool* bufferPool{nullptr};
+    /// Externally-owned decompression buffer. Required (must not be null).
+    /// Owned by DeserializerImpl to persist across segment transitions so the
+    /// buffer capacity is reused.
+    velox::BufferPtr* decompressionBuffer{nullptr};
   };
 
   /// Constructor for thrift decoder: creates an empty stream that will be
@@ -52,11 +56,16 @@ class StreamData {
   StreamData(
       ScalarKind kind,
       std::vector<velox::BufferPtr>& stringBuffers,
-      velox::memory::MemoryPool* pool)
+      velox::memory::MemoryPool* pool,
+      velox::BufferPtr* decompressionBuffer)
       : kind_{kind},
         pool_{pool},
         encodingEnabled_{false},
-        stringBuffers_{&stringBuffers} {}
+        decompressionBuffer_{decompressionBuffer},
+        stringBuffers_{&stringBuffers} {
+    NIMBLE_CHECK_NOT_NULL(
+        decompressionBuffer_, "Decompression buffer required");
+  }
 
   /// @param kind Scalar kind for the stream data.
   /// @param data Stream data to initialize with.
@@ -127,6 +136,12 @@ class StreamData {
   template <typename T>
   void materialize(uint32_t count, T* output);
 
+  velox::BufferPtr& decompressionBuf() {
+    return *decompressionBuffer_;
+  }
+
+  void ensureDecompressionBuffer(size_t minBytes);
+
   const ScalarKind kind_{ScalarKind::Undefined};
   velox::memory::MemoryPool* const pool_{nullptr};
   // Whether nimble encoding is enabled. Non-const to allow reset() to change.
@@ -138,10 +153,13 @@ class StreamData {
   // Optional pool for encoding scratch buffers. Owned externally
   // (typically by DeserializerImpl) to persist across StreamData lifetimes.
   velox::BufferPool* const bufferPool_{nullptr};
+  // Externally-owned decompression buffer. Always non-null — checked in both
+  // constructors. Owned by DeserializerImpl or thrift Decoder to persist
+  // across StreamData lifetimes.
+  velox::BufferPtr* const decompressionBuffer_{nullptr};
 
   const char* pos_{nullptr};
   const char* end_{nullptr};
-  std::string decompressionBuffer_;
   std::unique_ptr<Encoding> encoding_;
   // Track consumed rows for nimble encoding path.
   uint32_t readRows_{0};
