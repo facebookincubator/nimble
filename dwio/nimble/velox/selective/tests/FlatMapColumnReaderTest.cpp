@@ -71,8 +71,9 @@ class FlatMapColumnReaderTest : public ::testing::TestWithParam<bool>,
     auto readFile = std::make_shared<InMemoryReadFile>(file);
     auto factory =
         dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
-    dwio::common::ReaderOptions options(
-        pool(), dataIoStats_.get(), metadataIoStats_.get());
+    dwio::common::ReaderOptions options(pool());
+    options.setDataIoStats(dataIoStats_.get());
+    options.setMetadataIoStats(metadataIoStats_.get());
     options.setScanSpec(scanSpec);
     Readers readers;
     readers.reader = factory->createReader(

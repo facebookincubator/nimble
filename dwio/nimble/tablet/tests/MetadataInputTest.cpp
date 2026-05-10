@@ -116,8 +116,9 @@ class MetadataInputTestBase : public ::testing::Test {
   velox::io::ReaderOptions makeReaderOptions(
       int32_t maxCoalesceDistance = 1 << 20,
       int64_t maxCoalesceBytes = 128 << 20) {
-    velox::io::ReaderOptions options(
-        pool_.get(), &dataIoStats_, &metadataIoStats_);
+    velox::io::ReaderOptions options(pool_.get());
+    options.setDataIoStats(&dataIoStats_);
+    options.setMetadataIoStats(&metadataIoStats_);
     options.setMaxCoalesceDistance(maxCoalesceDistance);
     options.setMaxCoalesceBytes(maxCoalesceBytes);
     return options;

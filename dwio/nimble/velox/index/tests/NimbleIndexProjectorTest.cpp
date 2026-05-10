@@ -118,8 +118,9 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
       const std::vector<Subfield>& projectedSubfields) {
     auto readFile =
         std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
-    dwio::common::ReaderOptions readerOptions(
-        leafPool_.get(), dataIoStats_.get(), metadataIoStats_.get());
+    dwio::common::ReaderOptions readerOptions(leafPool_.get());
+    readerOptions.setDataIoStats(dataIoStats_.get());
+    readerOptions.setMetadataIoStats(metadataIoStats_.get());
     readerOptions.setFileFormat(FileFormat::NIMBLE);
     readerOptions.setFileMetadataCacheEnabled(GetParam().enableCache);
     readerOptions.setPinFileMetadata(GetParam().pinFileMetadata);
@@ -887,8 +888,9 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
   auto makeProjector = [&](int32_t maxCoalesceDistance) {
     auto readFile =
         std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
-    dwio::common::ReaderOptions readerOptions(
-        leafPool_.get(), dataIoStats_.get(), metadataIoStats_.get());
+    dwio::common::ReaderOptions readerOptions(leafPool_.get());
+    readerOptions.setDataIoStats(dataIoStats_.get());
+    readerOptions.setMetadataIoStats(metadataIoStats_.get());
     readerOptions.setFileFormat(FileFormat::NIMBLE);
     readerOptions.setMaxCoalesceDistance(maxCoalesceDistance);
 
@@ -1041,8 +1043,9 @@ TEST_P(NimbleIndexProjectorTest, pinnedMetadataNoReread) {
   const auto metadataBoundary = stripeGroupsMeta[0].offset();
   tablet.reset();
 
-  dwio::common::ReaderOptions readerOptions(
-      leafPool_.get(), dataIoStats_.get(), metadataIoStats_.get());
+  dwio::common::ReaderOptions readerOptions(leafPool_.get());
+  readerOptions.setDataIoStats(dataIoStats_.get());
+  readerOptions.setMetadataIoStats(metadataIoStats_.get());
   readerOptions.setFileFormat(FileFormat::NIMBLE);
   readerOptions.setFileMetadataCacheEnabled(GetParam().enableCache);
   readerOptions.setPinFileMetadata(GetParam().pinFileMetadata);
