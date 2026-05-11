@@ -146,7 +146,7 @@ void StreamData::decompress() {
       end_ = pos_ + decompressedSize;
       break;
     }
-    case CompressionType::LZ4: {
+    case CompressionType::Lz4: {
       // LZ4 block data is preceded by the uncompressed size (uint32).
       // Wire format: [origSize:u32][lz4_data...]
       const auto decompressedSize = encoding::readUint32(pos_);
@@ -403,7 +403,7 @@ void StreamDataReader::appendChunkData(
       NIMBLE_CHECK(!ZSTD_isError(ret), "Error decompressing chunk data");
       break;
     }
-    case CompressionType::LZ4: {
+    case CompressionType::Lz4: {
       const auto* pos = data;
       const auto decompressedSize = encoding::readUint32(pos);
       const auto compressedSize =

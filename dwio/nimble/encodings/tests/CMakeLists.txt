@@ -19,8 +19,10 @@ add_executable(
   ConstantEncodingTest.cpp
   EncodingLayoutTest.cpp
   EncodingSelectionTest.cpp
+  CompressionTest.cpp
   EncodingTest.cpp
   EncodingLegacyTest.cpp
+  Lz4CompressorTest.cpp
   MainlyConstantEncodingTest.cpp
   NullableEncodingTest.cpp
   PrefixEncodingTest.cpp

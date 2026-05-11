@@ -109,6 +109,8 @@ struct CompressionOptions {
 #endif
   uint64_t zstdMinCompressionSize = kZstdMinCompressionSize;
   uint32_t zstdCompressionLevel = 3;
+  uint64_t lz4MinCompressionSize = kLz4MinCompressionSize;
+  uint32_t lz4AccelerationLevel = 1;
   uint64_t internalMinCompressionSize = kMetaInternalMinCompressionSize;
   uint32_t internalCompressionLevel = 4;
   uint32_t internalDecompressionLevel = 2;
@@ -223,6 +225,14 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
               .minCompressionSize = compressionOptions_.zstdMinCompressionSize};
           information.parameters.zstd.compressionLevel =
               compressionOptions_.zstdCompressionLevel;
+          return information;
+        }
+        if (compressionOptions_.compressionType == CompressionType::Lz4) {
+          CompressionInformation information{
+              .compressionType = CompressionType::Lz4,
+              .minCompressionSize = compressionOptions_.lz4MinCompressionSize};
+          information.parameters.lz4.accelerationLevel =
+              compressionOptions_.lz4AccelerationLevel;
           return information;
         }
         CompressionInformation information{
