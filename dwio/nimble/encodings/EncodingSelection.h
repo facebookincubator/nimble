@@ -76,6 +76,10 @@ struct ZstdCompressionParameters {
   int16_t compressionLevel = 3;
 };
 
+struct Lz4CompressionParameters {
+  int16_t accelerationLevel = 1;
+};
+
 /// An identifier for the meta internal compression policy.
 class MetaInternalCompressionKey {
  public:
@@ -131,6 +135,7 @@ struct MetaInternalCompressionParameters {
 
 struct CompressionParameters {
   ZstdCompressionParameters zstd{};
+  Lz4CompressionParameters lz4{};
   MetaInternalCompressionParameters metaInternal{};
 };
 

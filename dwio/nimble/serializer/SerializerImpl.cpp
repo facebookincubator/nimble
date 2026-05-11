@@ -144,7 +144,7 @@ encode(const SerializerOptions& options, std::string_view input, char* output) {
         }
         break;
       }
-      case CompressionType::LZ4: {
+      case CompressionType::Lz4: {
         // LZ4 block mode is not self-descriptive (unlike ZSTD frames), so we
         // prepend the uncompressed size as a uint32 before the compressed data.
         // Wire format: [size:u32][compType:i8=3][origSize:u32][lz4_data...]

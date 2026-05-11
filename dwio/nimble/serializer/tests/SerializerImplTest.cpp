@@ -1751,7 +1751,7 @@ class LZ4RoundtripTest : public TabletRawChunkStripTest {
  protected:
   static std::string buildLegacyLZ4CompressedData(std::string_view payload) {
     std::string result;
-    result.push_back(static_cast<char>(CompressionType::LZ4));
+    result.push_back(static_cast<char>(CompressionType::Lz4));
 
     const auto origSize = static_cast<uint32_t>(payload.size());
     result.resize(result.size() + sizeof(uint32_t));
@@ -1788,7 +1788,7 @@ class LZ4RoundtripTest : public TabletRawChunkStripTest {
     std::string chunk(kChunkHeaderSize + chunkPayloadSize, '\0');
     auto* pos = chunk.data();
     writeChunkHeader(
-        static_cast<uint32_t>(chunkPayloadSize), CompressionType::LZ4, pos);
+        static_cast<uint32_t>(chunkPayloadSize), CompressionType::Lz4, pos);
     encoding::writeUint32(static_cast<uint32_t>(data.size()), pos);
     std::memcpy(pos, compressed.data(), compressedSize);
     return chunk;
@@ -1916,7 +1916,7 @@ TEST_F(LZ4RoundtripTest, encodeDecodeLZ4Roundtrip) {
       expected.size() * sizeof(int32_t));
 
   SerializerOptions options;
-  options.compressionType = CompressionType::LZ4;
+  options.compressionType = CompressionType::Lz4;
   options.compressionThreshold = 1;
 
   std::string buffer(input.size() + 2 * sizeof(uint32_t) + 1, '\0');
@@ -1951,7 +1951,7 @@ TEST_F(LZ4RoundtripTest, encodeLZ4BelowThresholdStaysUncompressed) {
       expected.size() * sizeof(int32_t));
 
   SerializerOptions options;
-  options.compressionType = CompressionType::LZ4;
+  options.compressionType = CompressionType::Lz4;
   options.compressionThreshold = 1'000'000;
 
   std::string buffer(input.size() + 2 * sizeof(uint32_t) + 1, '\0');
@@ -1984,7 +1984,7 @@ TEST_F(LZ4RoundtripTest, encodeDecodeLZ4HighCompression) {
       expected.size() * sizeof(int32_t));
 
   SerializerOptions options;
-  options.compressionType = CompressionType::LZ4;
+  options.compressionType = CompressionType::Lz4;
   options.compressionThreshold = 1;
   options.compressionLevel = 9;
 

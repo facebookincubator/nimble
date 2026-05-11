@@ -18,6 +18,7 @@ add_subdirectory(legacy)
 add_library(
   nimble_encodings
   Compression.cpp
+  Lz4Compressor.cpp
   ConstantEncoding.cpp
   Encoding.cpp
   EncodingFactory.cpp
@@ -38,4 +39,5 @@ target_link_libraries(
   Folly::folly
   absl::flat_hash_map
   protobuf::libprotobuf
+  lz4
 )
