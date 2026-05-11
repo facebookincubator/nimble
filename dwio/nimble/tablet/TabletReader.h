@@ -361,7 +361,7 @@ class TabletReader {
   // Probes the cache for footer+PS at synthetic offset fileSize, parses PS and
   // footer, then loads all remaining metadata via cache hits. Returns true on
   // success, false on cache miss (caller falls through to cold path).
-  bool tryInitFromCache(const Options& options);
+  bool initFromCache(const Options& options);
 
   // Tries to parse PS and footer from cached footer+PS entry at synthetic
   // offset fileSize. Returns true on cache hit, false on miss.

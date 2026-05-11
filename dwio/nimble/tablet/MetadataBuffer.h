@@ -28,6 +28,10 @@
 
 namespace facebook::nimble {
 
+namespace test {
+class MetadataBufferTestHelper;
+} // namespace test
+
 class MetadataBuffer {
  public:
   // Creates from decompressed data in a pool-tracked buffer.
@@ -45,11 +49,13 @@ class MetadataBuffer {
   /// Creates a shallow copy sharing the same underlying buffer or cache pin.
   MetadataBuffer clone() const;
 
+  /// Creates a zero-copy MetadataBuffer viewing a sub-range of this buffer's
+  /// content. Shares the underlying buffer or cache pin.
+  std::unique_ptr<MetadataBuffer> slice(uint64_t offset, uint64_t size) const;
+
   std::string_view content() const {
-    if (!pin_.empty()) {
-      return cacheContent();
-    }
-    return bufferContent();
+    const auto data = pin_.empty() ? bufferContent() : cacheContent();
+    return data.substr(offset_, size_);
   }
 
   /// Decompresses metadata from a pool-tracked buffer. Returns the buffer
@@ -68,6 +74,9 @@ class MetadataBuffer {
       velox::memory::MemoryPool* pool);
 
  private:
+  MetadataBuffer(velox::BufferPtr buffer, uint64_t offset, uint64_t size);
+  MetadataBuffer(velox::cache::CachePin pin, uint64_t offset, uint64_t size);
+
   inline std::string_view bufferContent() const {
     return {buffer_->as<char>(), buffer_->size()};
   }
@@ -83,6 +92,12 @@ class MetadataBuffer {
   //   (cached path, keeps the cache entry pinned while this buffer is alive).
   velox::BufferPtr buffer_;
   velox::cache::CachePin pin_;
+  // Sub-range within the underlying storage. Default (0, full size) covers
+  // the entire content. Set by slice() for sub-range views.
+  uint64_t offset_{0};
+  uint64_t size_{0};
+
+  friend class test::MetadataBufferTestHelper;
 };
 
 class Section {
