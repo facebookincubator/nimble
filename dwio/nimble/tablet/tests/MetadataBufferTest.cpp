@@ -30,7 +30,34 @@
 
 using namespace ::facebook;
 
+namespace facebook::nimble::test {
+
+class MetadataBufferTestHelper {
+ public:
+  static uint64_t offset(const MetadataBuffer& buffer) {
+    return buffer.offset_;
+  }
+
+  static uint64_t size(const MetadataBuffer& buffer) {
+    return buffer.size_;
+  }
+
+  static void verifySlice(
+      const MetadataBuffer& buffer,
+      uint64_t expectedOffset,
+      uint64_t expectedSize,
+      std::string_view expectedContent) {
+    EXPECT_EQ(offset(buffer), expectedOffset);
+    EXPECT_EQ(size(buffer), expectedSize);
+    EXPECT_EQ(buffer.content(), expectedContent);
+  }
+};
+
+} // namespace facebook::nimble::test
+
 namespace {
+
+using TestHelper = nimble::test::MetadataBufferTestHelper;
 
 velox::BufferPtr toBufferPtr(
     std::string_view data,
@@ -429,6 +456,172 @@ TEST_F(MetadataBufferCacheTest, cloneCachePin) {
   auto cloned = original.clone();
   EXPECT_EQ(cloned.content(), data);
   EXPECT_EQ(original.content(), cloned.content());
+}
+
+TEST_F(MetadataBufferTest, sliceBufferPtr) {
+  struct SliceOp {
+    uint64_t offset;
+    uint64_t size;
+    uint64_t expectedAbsoluteOffset;
+    std::string expectedContent;
+
+    std::string debugString() const {
+      return fmt::format(
+          "offset {}, size {}, expectedAbsoluteOffset {}, expectedContent '{}'",
+          offset,
+          size,
+          expectedAbsoluteOffset,
+          expectedContent);
+    }
+  };
+
+  struct TestParam {
+    std::string data;
+    std::vector<std::vector<SliceOp>> sliceChains;
+
+    std::string debugString() const {
+      return fmt::format("data '{}'", data);
+    }
+  };
+
+  // clang-format off
+  std::vector<TestParam> testSettings = {
+      {kTestData,
+       {
+           {{0, kTestData.size(), 0, kTestData}},
+           {{0, 0, 0, ""}},
+           {{7, 14, 7, "MetadataBuffer"}},
+           {{7, 14, 7, "MetadataBuffer"}, {8, 6, 15, "Buffer"}},
+           {{7, 14, 7, "MetadataBuffer"}, {0, 8, 7, "Metadata"}, {4, 4, 11, "data"}},
+           {{0, 5, 0, "Hello"}},
+           {{kTestData.size() - 1, 1, kTestData.size() - 1, "!"}},
+       }},
+      {kLargeTestData,
+       {
+           {{0, 1'000, 0, kLargeTestData}},
+           {{500, 500, 500, std::string(500, 'A')}},
+           {{0, 100, 0, std::string(100, 'A')}, {50, 50, 50, std::string(50, 'A')}},
+       }},
+  };
+  // clang-format on
+
+  for (const auto& testData : testSettings) {
+    SCOPED_TRACE(testData.debugString());
+    auto buffer = toBufferPtr(testData.data, pool_.get());
+    nimble::MetadataBuffer original{std::move(buffer)};
+    TestHelper::verifySlice(original, 0, testData.data.size(), testData.data);
+
+    for (const auto& chain : testData.sliceChains) {
+      ASSERT_FALSE(chain.empty());
+      SCOPED_TRACE(chain[0].debugString());
+
+      auto current = original.slice(chain[0].offset, chain[0].size);
+      TestHelper::verifySlice(
+          *current,
+          chain[0].expectedAbsoluteOffset,
+          chain[0].size,
+          chain[0].expectedContent);
+      TestHelper::verifySlice(original, 0, testData.data.size(), testData.data);
+
+      for (size_t i = 1; i < chain.size(); ++i) {
+        SCOPED_TRACE(chain[i].debugString());
+        current = current->slice(chain[i].offset, chain[i].size);
+        TestHelper::verifySlice(
+            *current,
+            chain[i].expectedAbsoluteOffset,
+            chain[i].size,
+            chain[i].expectedContent);
+      }
+    }
+  }
+}
+
+TEST_F(MetadataBufferTest, sliceBufferPtrOutOfRange) {
+  auto buffer = toBufferPtr(kTestData, pool_.get());
+  nimble::MetadataBuffer original{std::move(buffer)};
+
+  NIMBLE_ASSERT_THROW(
+      original.slice(0, kTestData.size() + 1),
+      "Slice range exceeds buffer content");
+  NIMBLE_ASSERT_THROW(
+      original.slice(kTestData.size(), 1),
+      "Slice range exceeds buffer content");
+
+  auto sliced = original.slice(7, 14);
+  NIMBLE_ASSERT_THROW(
+      sliced->slice(0, 15), "Slice range exceeds buffer content");
+  NIMBLE_ASSERT_THROW(
+      sliced->slice(14, 1), "Slice range exceeds buffer content");
+}
+
+TEST_F(MetadataBufferCacheTest, sliceCachePin) {
+  struct SliceOp {
+    uint64_t offset;
+    uint64_t size;
+    uint64_t expectedAbsoluteOffset;
+    std::string expectedContent;
+
+    std::string debugString() const {
+      return fmt::format(
+          "offset {}, size {}, expectedAbsoluteOffset {}, expectedContent '{}'",
+          offset,
+          size,
+          expectedAbsoluteOffset,
+          expectedContent);
+    }
+  };
+
+  const std::string data = "Hello, CacheSlice!";
+  auto pin = makePin(600, data);
+  nimble::MetadataBuffer original{std::move(pin)};
+  TestHelper::verifySlice(original, 0, data.size(), data);
+
+  // clang-format off
+  std::vector<std::vector<SliceOp>> sliceChains = {
+      {{0, data.size(), 0, data}},
+      {{0, 0, 0, ""}},
+      {{7, 10, 7, "CacheSlice"}},
+      {{7, 10, 7, "CacheSlice"}, {5, 5, 12, "Slice"}},
+      {{7, 10, 7, "CacheSlice"}, {0, 5, 7, "Cache"}, {0, 3, 7, "Cac"}},
+      {{data.size() - 1, 1, data.size() - 1, "!"}},
+  };
+  // clang-format on
+
+  for (const auto& chain : sliceChains) {
+    ASSERT_FALSE(chain.empty());
+    SCOPED_TRACE(chain[0].debugString());
+
+    auto current = original.slice(chain[0].offset, chain[0].size);
+    TestHelper::verifySlice(
+        *current,
+        chain[0].expectedAbsoluteOffset,
+        chain[0].size,
+        chain[0].expectedContent);
+    TestHelper::verifySlice(original, 0, data.size(), data);
+
+    for (size_t i = 1; i < chain.size(); ++i) {
+      SCOPED_TRACE(chain[i].debugString());
+      current = current->slice(chain[i].offset, chain[i].size);
+      TestHelper::verifySlice(
+          *current,
+          chain[i].expectedAbsoluteOffset,
+          chain[i].size,
+          chain[i].expectedContent);
+    }
+  }
+}
+
+TEST_F(MetadataBufferCacheTest, sliceCachePinOutOfRange) {
+  const std::string data = "short";
+  auto pin = makePin(700, data);
+  nimble::MetadataBuffer original{std::move(pin)};
+
+  NIMBLE_ASSERT_THROW(
+      original.slice(0, data.size() + 1), "Slice range exceeds buffer content");
+
+  auto sliced = original.slice(1, 3);
+  NIMBLE_ASSERT_THROW(
+      sliced->slice(0, 4), "Slice range exceeds buffer content");
 }
 
 } // namespace

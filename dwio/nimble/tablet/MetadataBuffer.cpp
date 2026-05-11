@@ -22,14 +22,31 @@
 namespace facebook::nimble {
 
 MetadataBuffer::MetadataBuffer(velox::BufferPtr buffer)
-    : buffer_{std::move(buffer)} {
+    : MetadataBuffer(buffer, 0, buffer->size()) {}
+
+MetadataBuffer::MetadataBuffer(
+    velox::BufferPtr buffer,
+    uint64_t offset,
+    uint64_t size)
+    : buffer_{std::move(buffer)}, offset_{offset}, size_{size} {
   NIMBLE_CHECK_NOT_NULL(buffer_);
+  NIMBLE_CHECK_LE(offset_ + size_, buffer_->size());
 }
 
 MetadataBuffer::MetadataBuffer(velox::cache::CachePin pin)
-    : pin_{std::move(pin)} {
+    : MetadataBuffer(
+          pin,
+          0,
+          static_cast<uint64_t>(pin.checkedEntry()->size())) {}
+
+MetadataBuffer::MetadataBuffer(
+    velox::cache::CachePin pin,
+    uint64_t offset,
+    uint64_t size)
+    : pin_{std::move(pin)}, offset_{offset}, size_{size} {
   NIMBLE_CHECK(!pin_.empty(), "CachePin must not be empty");
-  pin_.checkedEntry();
+  NIMBLE_CHECK_LE(
+      offset_ + size_, static_cast<uint64_t>(pin_.checkedEntry()->size()));
 }
 
 MetadataBuffer::~MetadataBuffer() = default;
@@ -40,10 +57,10 @@ MetadataBuffer& MetadataBuffer::operator=(MetadataBuffer&&) noexcept = default;
 
 MetadataBuffer MetadataBuffer::clone() const {
   if (buffer_ != nullptr) {
-    return MetadataBuffer{buffer_};
+    return MetadataBuffer{buffer_, offset_, size_};
   }
   NIMBLE_CHECK(!pin_.empty(), "Cannot clone empty MetadataBuffer");
-  return MetadataBuffer{pin_};
+  return MetadataBuffer{pin_, offset_, size_};
 }
 
 MetadataSection::MetadataSection(
@@ -130,6 +147,19 @@ velox::BufferPtr MetadataBuffer::decompress(
   auto buffer = velox::AlignedBuffer::allocateExact<char>(length, pool);
   cursor.pull(buffer->asMutable<char>(), length);
   return decompressZstd({buffer->as<char>(), buffer->size()}, pool);
+}
+
+std::unique_ptr<MetadataBuffer> MetadataBuffer::slice(
+    uint64_t offset,
+    uint64_t size) const {
+  NIMBLE_CHECK_LE(offset + size, size_, "Slice range exceeds buffer content");
+  if (buffer_ != nullptr) {
+    return std::unique_ptr<MetadataBuffer>(
+        new MetadataBuffer(buffer_, offset_ + offset, size));
+  }
+  NIMBLE_CHECK(!pin_.empty(), "Cannot slice empty MetadataBuffer");
+  return std::unique_ptr<MetadataBuffer>(
+      new MetadataBuffer(pin_, offset_ + offset, size));
 }
 
 } // namespace facebook::nimble

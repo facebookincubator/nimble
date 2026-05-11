@@ -322,7 +322,7 @@ void TabletReader::init(const Options& options) {
       velox::succinctBytes(fileSize_),
       velox::succinctBytes(kPostscriptSize));
 
-  if (tryInitFromCache(options)) {
+  if (initFromCache(options)) {
     return;
   }
 
@@ -722,7 +722,7 @@ bool TabletReader::tryLoadAndInitFooterFromCache() {
   return true;
 }
 
-bool TabletReader::tryInitFromCache(const Options& options) {
+bool TabletReader::initFromCache(const Options& options) {
   if (!hasCache()) {
     return false;
   }
