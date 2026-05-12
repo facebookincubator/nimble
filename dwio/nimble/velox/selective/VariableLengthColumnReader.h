@@ -37,7 +37,9 @@ class ListColumnReader : public velox::dwio::common::SelectiveListColumnReader {
   uint64_t skip(uint64_t numValues) override;
 
   void resetFilterCaches() override {
-    child_->resetFilterCaches();
+    if (child_) {
+      child_->resetFilterCaches();
+    }
   }
 
   void seekToRowGroup(int64_t /*index*/) override {
@@ -167,7 +169,9 @@ class DeduplicatedArrayColumnReader
   void makeNestedRowSet(const velox::RowSet& rows, int32_t maxRow) override;
 
   void resetFilterCaches() override {
-    child_->resetFilterCaches();
+    if (child_) {
+      child_->resetFilterCaches();
+    }
   }
 
   void seekToRowGroup(int64_t /*index*/) override {
