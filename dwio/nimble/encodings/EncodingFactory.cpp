@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
@@ -243,6 +244,20 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     case EncodingType::Delta: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(DeltaEncoding, dataType);
     }
+    case EncodingType::ALP: {
+      switch (dataType) {
+        case DataType::Float:
+          return std::make_unique<ALPEncoding<float>>(
+              memoryPool, data, stringBufferFactory, options);
+        case DataType::Double:
+          return std::make_unique<ALPEncoding<double>>(
+              memoryPool, data, stringBufferFactory, options);
+        default:
+          NIMBLE_UNREACHABLE(
+              "ALPEncoding only supports Float and Double, got {}.",
+              toString(dataType));
+      }
+    }
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
@@ -374,6 +389,14 @@ std::string_view EncodingFactory::encode(
         NIMBLE_INCOMPATIBLE_ENCODING(
             "Delta encoding should not be selected for non-numeric data type: {}.",
             toString(TypeTraits<T>::dataType));
+      }
+    }
+    case EncodingType::ALP: {
+      if constexpr (isFloatingPointType<T>()) {
+        return ALPEncoding<T>::encode(selection, castedValues, buffer, options);
+      } else {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "ALP encoding only supports floating-point data types.");
       }
     }
     default: {
