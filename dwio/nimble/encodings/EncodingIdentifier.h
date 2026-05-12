@@ -57,6 +57,12 @@ struct EncodingIdentifiers {
     static constexpr NestedEncodingIdentifier Restatements = 1;
     static constexpr NestedEncodingIdentifier IsRestatements = 2;
   };
+
+  struct ALP {
+    static constexpr NestedEncodingIdentifier EncodedValues = 0;
+    static constexpr NestedEncodingIdentifier ExceptionIndices = 1;
+    static constexpr NestedEncodingIdentifier ExceptionValues = 2;
+  };
 };
 
 } // namespace facebook::nimble

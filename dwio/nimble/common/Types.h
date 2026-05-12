@@ -104,6 +104,10 @@ enum class EncodingType {
   // shared across consecutive entries to reduce storage. Supports seek
   // operations for efficient random access.
   Prefix = 11,
+  // Adaptive Lossless floating-Point encoding. Encodes float/double values
+  // with limited decimal precision as integers using a power-of-10 multiplier.
+  // Values that don't roundtrip exactly are stored as exceptions.
+  ALP = 12,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);

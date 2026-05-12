@@ -268,6 +268,31 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
               {pos, encoding.size() - (pos - encoding.data())}));
       break;
     }
+    case EncodingType::ALP: {
+      children.reserve(3);
+
+      const char* pos = encoding.data() + kEncodingPrefixSize;
+      // Skip exponent (1 byte).
+      pos += 1;
+      const uint32_t exceptionCount = encoding::readUint32(pos);
+      const uint32_t encodedValuesBytes = encoding::readUint32(pos);
+      const uint32_t exceptionIndicesBytes = encoding::readUint32(pos);
+
+      children.emplace_back(
+          EncodingLayoutCapture::capture({pos, encodedValuesBytes}));
+      pos += encodedValuesBytes;
+
+      if (exceptionCount > 0) {
+        children.emplace_back(
+            EncodingLayoutCapture::capture({pos, exceptionIndicesBytes}));
+        pos += exceptionIndicesBytes;
+
+        children.emplace_back(
+            EncodingLayoutCapture::capture(
+                {pos, encoding.size() - (pos - encoding.data())}));
+      }
+      break;
+    }
     case EncodingType::Nullable: {
       const char* pos = encoding.data() + kEncodingPrefixSize;
       const uint32_t dataBytes = encoding::readUint32(pos);

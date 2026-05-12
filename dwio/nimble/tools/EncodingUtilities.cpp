@@ -49,6 +49,7 @@ void extractCompressionType(
     case EncodingType::Constant:
     case EncodingType::MainlyConstant:
     case EncodingType::Prefix:
+    case EncodingType::ALP:
       break;
   }
 }
@@ -180,6 +181,32 @@ void traverseEncodings(
           2,
           "IsRestatements",
           visitor);
+      break;
+    }
+    case EncodingType::ALP: {
+      const char* pos = stream.data() + kEncodingPrefixSize;
+      pos += 1; // exponent
+      const uint32_t exceptionCount = encoding::readUint32(pos);
+      const uint32_t encodedValuesBytes = encoding::readUint32(pos);
+      const uint32_t exceptionIndicesBytes = encoding::readUint32(pos);
+      traverseEncodings(
+          {pos, encodedValuesBytes}, level + 1, 0, "EncodedValues", visitor);
+      pos += encodedValuesBytes;
+      if (exceptionCount > 0) {
+        traverseEncodings(
+            {pos, exceptionIndicesBytes},
+            level + 1,
+            1,
+            "ExceptionIndices",
+            visitor);
+        pos += exceptionIndicesBytes;
+        traverseEncodings(
+            {pos, stream.size() - (pos - stream.data())},
+            level + 1,
+            2,
+            "ExceptionValues",
+            visitor);
+      }
       break;
     }
     case EncodingType::Nullable: {
