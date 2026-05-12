@@ -40,8 +40,13 @@ TabletWriter::TabletWriter(
       chunkIndexWriter_{
           options_.enableChunkIndex ? std::make_unique<ChunkIndexWriter>(
                                           pool,
-                                          options_.chunkIndexMinAvgChunks)
-                                    : nullptr} {}
+                                          options_.chunkIndexMinAvgChunks,
+                                          options_.enableChunkStats)
+                                    : nullptr} {
+  NIMBLE_CHECK(
+      !options_.enableChunkStats || options_.enableChunkIndex,
+      "enableChunkStats requires enableChunkIndex to be true.");
+}
 
 namespace {
 template <typename Source, typename Target = Source>

@@ -16,6 +16,10 @@
 
 #pragma once
 
+#include <algorithm>
+#include <bit>
+#include <cmath>
+
 #include "dwio/nimble/velox/StreamData.h"
 
 namespace facebook::nimble {
@@ -42,6 +46,55 @@ inline bool shouldOmitNullStream(
   }
   return isFirstChunk || streamData.empty();
 }
+
+// Copies the raw bytes of 'value' into 'dst'.
+template <typename T>
+void assignBytes(std::string& dst, const T& value) {
+  static_assert(
+      std::endian::native == std::endian::little,
+      "Chunk stats binary format assumes little-endian byte order.");
+  dst.assign(reinterpret_cast<const char*>(&value), sizeof(T));
+}
+
+// Computes per-chunk statistics (hasNulls, nullCount, min/max) from a typed
+// data range.
+template <typename Iter>
+ChunkStats computeChunkStats(
+    Iter begin,
+    Iter end,
+    bool hasNulls = false,
+    uint64_t nullCount = 0) {
+  using T = typename std::iterator_traits<Iter>::value_type;
+  ChunkStats stats;
+  stats.hasNulls = hasNulls;
+  stats.nullCount = nullCount;
+  if (begin == end) {
+    return stats;
+  }
+  // Integer types (excluding bool).
+  if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
+    auto [minIt, maxIt] = std::minmax_element(begin, end);
+    assignBytes(stats.minValue, *minIt);
+    assignBytes(stats.maxValue, *maxIt);
+  }
+  // Float/double: bail out entirely if any NaN is present.
+  else if constexpr (std::is_floating_point_v<T>) {
+    T minVal = std::numeric_limits<T>::max();
+    T maxVal = std::numeric_limits<T>::lowest();
+    for (auto it = begin; it != end; ++it) {
+      if (std::isnan(*it)) {
+        return stats;
+      }
+      minVal = std::min(minVal, *it);
+      maxVal = std::max(maxVal, *it);
+    }
+    assignBytes(stats.minValue, minVal);
+    assignBytes(stats.maxValue, maxVal);
+  }
+  // Bool and other types: no min/max.
+  return stats;
+}
+
 } // namespace detail
 
 /**
@@ -52,6 +105,7 @@ struct StreamChunkerOptions {
   uint64_t maxChunkSize;
   bool ensureFullChunks;
   bool isFirstChunk;
+  bool enableChunkStats{false};
 };
 
 /**
@@ -95,6 +149,7 @@ class ContentStreamChunker final : public StreamChunker {
         minChunkSize_{options.minChunkSize},
         maxChunkSize_{options.maxChunkSize},
         ensureFullChunks_{options.ensureFullChunks},
+        enableChunkStats_{options.enableChunkStats},
         extraMemory_{streamData_->extraMemory()} {
     static_assert(
         std::is_same_v<StreamDataT, ContentStreamData<T>> ||
@@ -119,12 +174,24 @@ class ContentStreamChunker final : public StreamChunker {
         reinterpret_cast<const char*>(
             streamData_->mutableData().data() + dataElementOffset_),
         chunkSize.dataElementCount * sizeof(T)};
+
+    // Non-nullable stream: compute min/max over the data slice directly.
+    std::optional<ChunkStats> chunkStats;
+    if (enableChunkStats_ && chunkSize.dataElementCount > 0) {
+      const auto* begin =
+          streamData_->mutableData().data() + dataElementOffset_;
+      chunkStats =
+          detail::computeChunkStats(begin, begin + chunkSize.dataElementCount);
+    }
+
     dataElementOffset_ += chunkSize.dataElementCount;
     extraMemory_ -= chunkSize.extraMemory;
     return StreamDataView{
         streamData_->descriptor(),
         dataChunk,
-        static_cast<uint32_t>(chunkSize.dataElementCount)};
+        static_cast<uint32_t>(chunkSize.dataElementCount),
+        std::nullopt,
+        std::move(chunkStats)};
   }
 
  private:
@@ -231,6 +298,7 @@ class ContentStreamChunker final : public StreamChunker {
   const uint64_t minChunkSize_;
   const uint64_t maxChunkSize_;
   const bool ensureFullChunks_;
+  const bool enableChunkStats_;
 
   size_t dataElementOffset_{0};
   size_t extraMemory_{0};
@@ -363,6 +431,7 @@ class NullableContentStreamChunker final : public StreamChunker {
             streamData.nonNulls().empty(),
             options.isFirstChunk)},
         ensureFullChunks_{options.ensureFullChunks},
+        enableChunkStats_{options.enableChunkStats},
         extraMemory_{streamData_->extraMemory()} {
     static_assert(sizeof(bool) == 1);
     NIMBLE_CHECK(
@@ -396,22 +465,50 @@ class NullableContentStreamChunker final : public StreamChunker {
         streamData_->mutableNonNulls().data() + nonNullsOffset_,
         chunkSize.nullElementCount);
 
+    const bool chunkHasNulls =
+        chunkSize.nullElementCount > chunkSize.dataElementCount;
+
+    // Nullable stream: compute min/max over non-null values only.
+    std::optional<ChunkStats> chunkStats;
+    if (enableChunkStats_) {
+      if (chunkSize.dataElementCount > 0) {
+        const auto* begin =
+            streamData_->mutableData().data() + dataElementOffset_;
+        const uint64_t nullCount =
+            chunkSize.nullElementCount - chunkSize.dataElementCount;
+        chunkStats = detail::computeChunkStats(
+            begin,
+            begin + chunkSize.dataElementCount,
+            chunkHasNulls,
+            nullCount);
+      } else {
+        // All-null chunk: no data to compute min/max, only null info.
+        ChunkStats stats;
+        stats.hasNulls = true;
+        stats.nullCount = chunkSize.nullElementCount;
+        chunkStats = std::move(stats);
+      }
+    }
+
     dataElementOffset_ += chunkSize.dataElementCount;
     nonNullsOffset_ += chunkSize.nullElementCount;
     extraMemory_ -= chunkSize.extraMemory;
 
-    if (chunkSize.nullElementCount > chunkSize.dataElementCount) {
+    if (chunkHasNulls) {
       return StreamDataView{
           streamData_->descriptor(),
           dataChunk,
           static_cast<uint32_t>(chunkSize.nullElementCount),
-          nonNullsChunk};
+          nonNullsChunk,
+          std::move(chunkStats)};
     }
     NIMBLE_CHECK_EQ(chunkSize.dataElementCount, chunkSize.nullElementCount);
     return StreamDataView{
         streamData_->descriptor(),
         dataChunk,
-        static_cast<uint32_t>(chunkSize.dataElementCount)};
+        static_cast<uint32_t>(chunkSize.dataElementCount),
+        std::nullopt,
+        std::move(chunkStats)};
   }
 
  private:
@@ -517,6 +614,7 @@ class NullableContentStreamChunker final : public StreamChunker {
   const uint64_t maxChunkSize_;
   const bool omitStream_;
   const bool ensureFullChunks_;
+  const bool enableChunkStats_;
 
   size_t dataElementOffset_{0};
   size_t nonNullsOffset_{0};
@@ -589,7 +687,8 @@ class NullableContentStringStreamChunker final : public StreamChunker {
             options.minChunkSize,
             streamData.nonNulls().empty(),
             options.isFirstChunk)},
-        ensureFullChunks_{options.ensureFullChunks} {
+        ensureFullChunks_{options.ensureFullChunks},
+        enableChunkStats_{options.enableChunkStats} {
     static_assert(sizeof(bool) == 1);
     streamData_->materializeNulls();
   }
@@ -627,6 +726,20 @@ class NullableContentStringStreamChunker final : public StreamChunker {
         streamData_->mutableNonNulls().data() + nonNullsOffset_,
         chunkSize.nullElementCount);
 
+    // String stream: no typed min/max (variable-length), only null info.
+    std::optional<ChunkStats> chunkStats;
+    if (enableChunkStats_) {
+      const bool chunkHasNulls =
+          chunkSize.nullElementCount > chunkSize.dataElementCount;
+      const uint64_t nullCount = chunkHasNulls
+          ? chunkSize.nullElementCount - chunkSize.dataElementCount
+          : 0;
+      ChunkStats stats;
+      stats.hasNulls = chunkHasNulls;
+      stats.nullCount = nullCount;
+      chunkStats = std::move(stats);
+    }
+
     lengthsOffset_ += chunkSize.dataElementCount;
     nonNullsOffset_ += chunkSize.nullElementCount;
     bufferOffset_ += chunkSize.extraMemory;
@@ -636,13 +749,16 @@ class NullableContentStringStreamChunker final : public StreamChunker {
           streamData_->descriptor(),
           dataChunk,
           static_cast<uint32_t>(chunkSize.nullElementCount),
-          nonNullsChunk};
+          nonNullsChunk,
+          std::move(chunkStats)};
     }
     NIMBLE_DCHECK_EQ(chunkSize.dataElementCount, chunkSize.nullElementCount);
     return StreamDataView{
         streamData_->descriptor(),
         dataChunk,
-        static_cast<uint32_t>(chunkSize.dataElementCount)};
+        static_cast<uint32_t>(chunkSize.dataElementCount),
+        {},
+        std::move(chunkStats)};
   }
 
  private:
@@ -771,6 +887,7 @@ class NullableContentStringStreamChunker final : public StreamChunker {
   const uint64_t maxChunkSize_;
   const bool omitStream_;
   const bool ensureFullChunks_;
+  const bool enableChunkStats_;
 
   size_t lengthsOffset_{0};
   size_t nonNullsOffset_{0};

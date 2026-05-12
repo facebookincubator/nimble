@@ -706,6 +706,7 @@ VeloxWriter::VeloxWriter(
                context_->options().enableStreamDeduplication,
            .enableChunkIndex = context_->options().enableChunkIndex,
            .chunkIndexMinAvgChunks = context_->options().chunkIndexMinAvgChunks,
+           .enableChunkStats = context_->options().enableChunkStats,
            .stripeGroupFlushCallback = clusterIndexWriter_ != nullptr
                ? TabletWriter::StripeGroupFlushCallback(
                      [this](
@@ -722,6 +723,15 @@ VeloxWriter::VeloxWriter(
              writeIndexes(writeDataFn, createMetadataFn, writeMetadataFn);
            }})} {
   NIMBLE_CHECK_NOT_NULL(file_);
+
+  if (context_->options().enableChunkStats) {
+    NIMBLE_CHECK(
+        context_->options().enableChunking,
+        "enableChunkStats requires enableChunking to be true.");
+    NIMBLE_CHECK(
+        context_->options().enableChunkIndex,
+        "enableChunkStats requires enableChunkIndex to be true.");
+  }
 
   // Register handler for dynamically discovered FlatMap keys before creating
   // the writer tree, so that predefined keys also trigger the handler.
@@ -1168,17 +1178,20 @@ bool VeloxWriter::encodeStreamChunk(
   bool writtenChunk{false};
   logicalBytes += streamData.memoryUsed();
   auto& streamChunks = encodedStream.chunks;
+  const bool enableChunkStats = context_->options().enableChunkStats;
   auto chunker = getStreamChunker(
       streamData,
       StreamChunkerOptions{
           .minChunkSize = minChunkSize,
           .maxChunkSize = maxChunkSize,
           .ensureFullChunks = ensureFullChunks,
-          .isFirstChunk = streamChunks.empty()});
+          .isFirstChunk = streamChunks.empty(),
+          .enableChunkStats = enableChunkStats});
   uint64_t encodedChunkBytes{0};
   while (auto chunkView = chunker->next()) {
     auto& streamChunk = streamChunks.emplace_back();
     encodedChunkBytes += encodeChunk(*chunkView, streamChunk);
+    streamChunk.stats = chunkView->stats();
     writtenChunk = true;
   }
   streamBytes += encodedChunkBytes;

@@ -16,8 +16,11 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string_view>
 #include <vector>
+
+#include "dwio/nimble/common/Types.h"
 
 namespace facebook::nimble {
 
@@ -31,6 +34,9 @@ struct Chunk {
   /// of string views. Each string_view points to a buffer containing a portion
   /// of the chunk's data. Multiple buffers may be used for large chunks.
   std::vector<std::string_view> content;
+
+  /// Per-chunk statistics. Populated when chunk stats are enabled.
+  std::optional<ChunkStats> stats;
 
   /// Returns the total byte size of all content in this chunk.
   uint32_t contentSize() const {
