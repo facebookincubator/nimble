@@ -33,6 +33,7 @@
 #include "velox/common/memory/MallocAllocator.h"
 #include "velox/dwio/common/CachedBufferedInput.h"
 #include "velox/dwio/common/tests/utils/E2EFilterTestBase.h"
+#include "velox/vector/tests/utils/VectorMaker.h"
 
 namespace facebook::nimble {
 namespace {
@@ -2252,5 +2253,235 @@ TEST_P(E2EFilterTest, crossChunkEncodingChange) {
 
   EXPECT_EQ(totalRows, kNumBatches * kRowsPerBatch);
 }
+
+// --- Column extraction pushdown tests ---
+// These tests write data to Nimble format, configure ScanSpec with extraction
+// transforms, and verify the reader applies them correctly.
+
+class NimbleExtractionTest : public E2EFilterTest {
+ protected:
+  struct ReadResult {
+    VectorPtr result;
+    std::unique_ptr<dwio::common::Reader> reader;
+    std::unique_ptr<dwio::common::RowReader> rowReader;
+  };
+
+  // Write data to Nimble in-memory and read with a configured ScanSpec.
+  // configureColSpec is invoked with the column's ScanSpec to apply
+  // extraction settings (setExtractionType, setExtractionFieldIndex,
+  // setFilter, setConstantValue on children, etc.).
+  ReadResult readWithTransform(
+      const RowVectorPtr& data,
+      const std::string& columnName,
+      std::function<void(common::ScanSpec*)> configureColSpec) {
+    // Write.
+    rowType_ = asRowType(data->type());
+    VeloxWriterOptions options;
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriter writer(
+        rowType_, std::move(writeFile), *rootPool_, std::move(options));
+    writer.write(data);
+    writer.close();
+
+    // Read.
+    auto ioStats = std::make_shared<io::IoStatistics>();
+    dwio::common::ReaderOptions readerOpts{
+        leafPool_.get(), ioStats.get(), ioStats.get()};
+    auto input = std::make_unique<dwio::common::BufferedInput>(
+        std::make_shared<InMemoryReadFile>(sinkData_), readerOpts.memoryPool());
+
+    ReadResult rr;
+    rr.reader = makeReader(readerOpts, std::move(input));
+
+    auto spec = std::make_shared<common::ScanSpec>("<root>");
+    spec->addAllChildFields(*rowType_);
+    if (configureColSpec) {
+      configureColSpec(spec->childByName(columnName));
+    }
+
+    dwio::common::RowReaderOptions rowReaderOpts;
+    setUpRowReaderOptions(rowReaderOpts, spec);
+    rr.rowReader = rr.reader->createRowReader(rowReaderOpts);
+
+    rr.result = BaseVector::create(rowType_, 0, leafPool_.get());
+    rr.rowReader->next(data->size(), rr.result);
+    return rr;
+  }
+};
+
+TEST_P(NimbleExtractionTest, mapKeysExtraction) {
+  // Write MAP(VARCHAR, BIGINT), apply MapKeys transform -> ARRAY(VARCHAR).
+  velox::test::VectorMaker vm(leafPool_.get());
+  auto mapVector = vm.mapVector<StringView, int64_t>(
+      {{{"a", 1}, {"b", 2}}, {{"c", 3}}, {{"d", 4}, {"e", 5}, {"f", 6}}});
+  auto data = vm.rowVector({"col"}, {mapVector});
+
+  // Reader handles MapKeys natively — no transform needed.
+  auto rr = readWithTransform(data, "col", [](common::ScanSpec* colSpec) {
+    colSpec->setExtractionType(common::ScanSpec::ExtractionType::kKeys);
+  });
+
+  auto* row = rr.result->as<RowVector>();
+  ASSERT_EQ(row->size(), 3);
+  auto* arr = row->childAt(0)->loadedVector()->as<ArrayVector>();
+  ASSERT_EQ(arr->sizeAt(0), 2);
+  ASSERT_EQ(arr->sizeAt(1), 1);
+  ASSERT_EQ(arr->sizeAt(2), 3);
+}
+
+TEST_P(NimbleExtractionTest, sizeExtraction) {
+  // Write MAP(VARCHAR, BIGINT), apply Size transform -> BIGINT.
+  velox::test::VectorMaker vm(leafPool_.get());
+  auto mapVector = vm.mapVector<StringView, int64_t>(
+      {{{"a", 1}, {"b", 2}, {"c", 3}}, {{"d", 4}}});
+  auto data = vm.rowVector({"col"}, {mapVector});
+
+  // Reader handles Size natively — no transform needed.
+  auto rr = readWithTransform(data, "col", [](common::ScanSpec* colSpec) {
+    colSpec->setExtractionType(common::ScanSpec::ExtractionType::kSize);
+  });
+
+  auto* row = rr.result->as<RowVector>();
+  ASSERT_EQ(row->size(), 2);
+  auto* sizes = row->childAt(0)->loadedVector()->as<FlatVector<int64_t>>();
+  ASSERT_EQ(sizes->valueAt(0), 3);
+  ASSERT_EQ(sizes->valueAt(1), 1);
+}
+
+TEST_P(NimbleExtractionTest, mapValuesExtraction) {
+  // Write MAP(VARCHAR, BIGINT), apply MapValues transform -> ARRAY(BIGINT).
+  velox::test::VectorMaker vm(leafPool_.get());
+  auto mapVector = vm.mapVector<StringView, int64_t>(
+      {{{"a", 10}}, {{"b", 20}, {"c", 30}}, {{"d", 40}}});
+  auto data = vm.rowVector({"col"}, {mapVector});
+
+  // Reader handles MapValues natively — no transform needed.
+  auto rr = readWithTransform(data, "col", [](common::ScanSpec* colSpec) {
+    colSpec->setExtractionType(common::ScanSpec::ExtractionType::kValues);
+  });
+
+  auto* row = rr.result->as<RowVector>();
+  ASSERT_EQ(row->size(), 3);
+  auto* arr = row->childAt(0)->loadedVector()->as<ArrayVector>();
+  ASSERT_EQ(arr->sizeAt(0), 1);
+  ASSERT_EQ(arr->sizeAt(1), 2);
+  ASSERT_EQ(arr->sizeAt(2), 1);
+  auto* elements = arr->elements()->as<FlatVector<int64_t>>();
+  ASSERT_EQ(elements->valueAt(0), 10);
+  ASSERT_EQ(elements->valueAt(1), 20);
+  ASSERT_EQ(elements->valueAt(2), 30);
+  ASSERT_EQ(elements->valueAt(3), 40);
+}
+
+TEST_P(NimbleExtractionTest, mapKeyFilterExtraction) {
+  // Write MAP(VARCHAR, BIGINT), apply MapKeyFilter for keys {"a","b"}.
+  velox::test::VectorMaker vm(leafPool_.get());
+  auto mapVector = vm.mapVector<StringView, int64_t>(
+      {{{"a", 1}, {"b", 2}, {"c", 3}}, {{"a", 10}, {"d", 40}}});
+  auto data = vm.rowVector({"col"}, {mapVector});
+
+  // MapKeyFilter is implemented as an IN filter on the map keys ScanSpec
+  // (type-preserving — MAP stays MAP).
+  auto rr = readWithTransform(data, "col", [](common::ScanSpec* colSpec) {
+    auto* keysSpec = colSpec->childByName(common::ScanSpec::kMapKeysFieldName);
+    keysSpec->setFilter(
+        std::make_unique<common::BytesValues>(
+            std::vector<std::string>{"a", "b"}, /*nullAllowed=*/false));
+  });
+
+  auto* row = rr.result->as<RowVector>();
+  ASSERT_EQ(row->size(), 2);
+  auto* filteredMap = row->childAt(0)->loadedVector()->as<MapVector>();
+  // Row 0: {"a":1, "b":2} kept, "c" filtered out.
+  ASSERT_EQ(filteredMap->sizeAt(0), 2);
+  // Row 1: {"a":10} kept, "d" filtered out.
+  ASSERT_EQ(filteredMap->sizeAt(1), 1);
+}
+
+TEST_P(NimbleExtractionTest, structFieldExtraction) {
+  // Write ROW(x: INT, y: VARCHAR), extract just field "x".
+  velox::test::VectorMaker vm(leafPool_.get());
+  auto structVector = vm.rowVector(
+      {"x", "y"},
+      {vm.flatVector<int32_t>({10, 20, 30}),
+       vm.flatVector<StringView>({"aa", "bb", "cc"})});
+  auto data = vm.rowVector({"col"}, {structVector});
+
+  // kField on struct: extract field index 0 ("x"); mark "y" constant null.
+  auto rr = readWithTransform(data, "col", [&](common::ScanSpec* colSpec) {
+    colSpec->setExtractionType(common::ScanSpec::ExtractionType::kField);
+    colSpec->setExtractionFieldIndex(0);
+    colSpec->childByName("y")->setConstantValue(
+        BaseVector::createNullConstant(VARCHAR(), 1, leafPool_.get()));
+  });
+
+  auto* row = rr.result->as<RowVector>();
+  ASSERT_EQ(row->size(), 3);
+  auto* xField = row->childAt(0)->loadedVector()->as<FlatVector<int32_t>>();
+  ASSERT_EQ(xField->valueAt(0), 10);
+  ASSERT_EQ(xField->valueAt(1), 20);
+  ASSERT_EQ(xField->valueAt(2), 30);
+}
+
+TEST_P(NimbleExtractionTest, arraySizeExtraction) {
+  // Write ARRAY(BIGINT), apply Size transform -> BIGINT.
+  velox::test::VectorMaker vm(leafPool_.get());
+  auto arrayVector = vm.arrayVector<int64_t>({{1, 2, 3}, {4}, {5, 6}});
+  auto data = vm.rowVector({"col"}, {arrayVector});
+
+  // Reader handles Size natively — no transform needed.
+  auto rr = readWithTransform(data, "col", [](common::ScanSpec* colSpec) {
+    colSpec->setExtractionType(common::ScanSpec::ExtractionType::kSize);
+  });
+
+  auto* row = rr.result->as<RowVector>();
+  ASSERT_EQ(row->size(), 3);
+  auto* sizes = row->childAt(0)->loadedVector()->as<FlatVector<int64_t>>();
+  ASSERT_EQ(sizes->valueAt(0), 3);
+  ASSERT_EQ(sizes->valueAt(1), 1);
+  ASSERT_EQ(sizes->valueAt(2), 2);
+}
+
+TEST_P(NimbleExtractionTest, mapValuesStructFieldExtraction) {
+  // Write MAP(VARCHAR, ROW(x: INT, y: INT)), apply
+  // [MapValues, AE, StructField("x")] -> ARRAY(INT).
+  velox::test::VectorMaker vm(leafPool_.get());
+  auto keys = vm.flatVector<StringView>({"a", "b", "c"});
+  auto structValues = vm.rowVector(
+      {"x", "y"},
+      {vm.flatVector<int32_t>({10, 20, 30}),
+       vm.flatVector<int32_t>({100, 200, 300})});
+  auto mapVector = vm.mapVector({0, 2}, keys, structValues);
+  auto data = vm.rowVector({"col"}, {mapVector});
+
+  // Reader handles MapValues via kValues and StructField("x") via kField
+  // on the values struct — no remaining transform needed.
+  auto rr = readWithTransform(data, "col", [&](common::ScanSpec* colSpec) {
+    colSpec->setExtractionType(common::ScanSpec::ExtractionType::kValues);
+    auto* valuesSpec =
+        colSpec->childByName(common::ScanSpec::kMapValuesFieldName);
+    valuesSpec->setExtractionType(common::ScanSpec::ExtractionType::kField);
+    valuesSpec->setExtractionFieldIndex(0);
+    valuesSpec->childByName("y")->setConstantValue(
+        BaseVector::createNullConstant(INTEGER(), 1, leafPool_.get()));
+  });
+
+  auto* row = rr.result->as<RowVector>();
+  ASSERT_EQ(row->size(), 2);
+  auto* arr = row->childAt(0)->loadedVector()->as<ArrayVector>();
+  ASSERT_EQ(arr->sizeAt(0), 2);
+  ASSERT_EQ(arr->sizeAt(1), 1);
+  auto* elements = arr->elements()->as<FlatVector<int32_t>>();
+  ASSERT_EQ(elements->valueAt(0), 10);
+  ASSERT_EQ(elements->valueAt(1), 20);
+  ASSERT_EQ(elements->valueAt(2), 30);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    NimbleExtractionTests,
+    NimbleExtractionTest,
+    ::testing::Values(
+        E2EFilterTestParams{false, false, false, false, false, false},
+        E2EFilterTestParams{false, false, false, false, false, true}));
 
 } // namespace facebook::nimble

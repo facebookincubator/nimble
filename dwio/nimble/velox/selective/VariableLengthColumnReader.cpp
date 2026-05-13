@@ -304,6 +304,17 @@ ListColumnReader::ListColumnReader(
             velox::common::ScanSpec::kArrayElementsFieldName));
   }
   scanSpec_->children()[0]->setProjectOut(true);
+
+  // For kSize extraction we only need the length stream, so skip creating
+  // the element reader entirely.  This avoids registering its streams and
+  // reduces IO.  When deltaUpdate is set, we still need the element reader
+  // because delta updates operate on the full array.
+  if (scanSpec.extractionType() ==
+          velox::common::ScanSpec::ExtractionType::kSize &&
+      !scanSpec.deltaUpdate()) {
+    return;
+  }
+
   auto childParams =
       params.makeChildParams(params.nimbleType()->asArray().elements());
   child_ = buildColumnReader(
@@ -346,8 +357,6 @@ uint64_t ListColumnReader::skip(uint64_t numValues) {
     }
     child_->seekTo(child_->readOffset() + childElements, false);
     childTargetReadOffset_ += childElements;
-  } else {
-    VELOX_FAIL("Variable length type reader with no children");
   }
   return velox::bits::countNonNulls(nulls, 0, numValues);
 }
@@ -361,11 +370,37 @@ bool ListColumnReader::estimateMaterializedSize(
 
 namespace {
 
+/// Returns true if the MAP extraction type needs the key child reader.
+/// When deltaUpdate is set, all child readers are needed regardless of
+/// ExtractionType because delta updates (e.g., MAP_CONCAT) operate on the
+/// full map.
+bool needsKeyReader(
+    velox::common::ScanSpec::ExtractionType extractionType,
+    bool hasDeltaUpdate) {
+  return hasDeltaUpdate ||
+      extractionType == velox::common::ScanSpec::ExtractionType::kNone ||
+      extractionType == velox::common::ScanSpec::ExtractionType::kKeys;
+}
+
+/// Returns true if the MAP extraction type needs the value child reader.
+/// When deltaUpdate is set, all child readers are needed regardless of
+/// ExtractionType because delta updates (e.g., MAP_CONCAT) operate on the
+/// full map.
+bool needsElementReader(
+    velox::common::ScanSpec::ExtractionType extractionType,
+    bool hasDeltaUpdate) {
+  return hasDeltaUpdate ||
+      extractionType == velox::common::ScanSpec::ExtractionType::kNone ||
+      extractionType == velox::common::ScanSpec::ExtractionType::kValues;
+}
+
 void makeMapChildrenReaders(
     const velox::dwio::common::TypeWithId& fileType,
     const velox::Type& requestedType,
     NimbleParams& params,
     const velox::common::ScanSpec& scanSpec,
+    velox::common::ScanSpec::ExtractionType extractionType,
+    bool hasDeltaUpdate,
     std::unique_ptr<velox::dwio::common::SelectiveColumnReader>& keyReader,
     std::unique_ptr<velox::dwio::common::SelectiveColumnReader>&
         elementReader) {
@@ -374,20 +409,26 @@ void makeMapChildrenReaders(
   auto& fileKeyType = fileType.childAt(0);
   auto& fileValueType = fileType.childAt(1);
   auto& mapSchemaType = params.nimbleType()->asMap();
-  auto keyParams = params.makeChildParams(mapSchemaType.keys());
-  keyReader = buildColumnReader(
-      keyType,
-      fileKeyType,
-      keyParams,
-      *scanSpec.children()[0],
-      /*isRoot=*/false);
-  auto valueParams = params.makeChildParams(mapSchemaType.values());
-  elementReader = buildColumnReader(
-      valueType,
-      fileValueType,
-      valueParams,
-      *scanSpec.children()[1],
-      /*isRoot=*/false);
+  // Skip creating child readers that extraction pushdown doesn't need.
+  // This avoids registering their streams and reduces IO.
+  if (needsKeyReader(extractionType, hasDeltaUpdate)) {
+    auto keyParams = params.makeChildParams(mapSchemaType.keys());
+    keyReader = buildColumnReader(
+        keyType,
+        fileKeyType,
+        keyParams,
+        *scanSpec.children()[0],
+        /*isRoot=*/false);
+  }
+  if (needsElementReader(extractionType, hasDeltaUpdate)) {
+    auto valueParams = params.makeChildParams(mapSchemaType.values());
+    elementReader = buildColumnReader(
+        valueType,
+        fileValueType,
+        valueParams,
+        *scanSpec.children()[1],
+        /*isRoot=*/false);
+  }
 }
 
 template <typename ReadLengths>
@@ -403,7 +444,10 @@ uint64_t skipMapChildren(
       velox::bits::nwords(numValues), memoryPool);
   auto nulls = nullsBuffer->as<uint64_t>();
   formatData.readNulls(numValues, nullptr, nullsBuffer);
-  NIMBLE_CHECK(keyReader || elementReader);
+  if (!keyReader && !elementReader) {
+    return velox::bits::countNonNulls(
+        nulls, 0, static_cast<uint32_t>(numValues));
+  }
   nimble::Vector<int32_t> buffer{memoryPool, numValues};
   uint64_t childElements = 0;
   readLengths(buffer.data(), numValues, nullptr);
@@ -435,9 +479,16 @@ MapColumnReader::MapColumnReader(
       *requestedType_,
       params,
       *scanSpec_,
+      scanSpec.extractionType(),
+      scanSpec.deltaUpdate() != nullptr,
       keyReader_,
       elementReader_);
-  children_ = {keyReader_.get(), elementReader_.get()};
+  if (keyReader_) {
+    children_.push_back(keyReader_.get());
+  }
+  if (elementReader_) {
+    children_.push_back(elementReader_.get());
+  }
 }
 
 void MapColumnReader::readLengths(
@@ -485,11 +536,15 @@ MapAsStructColumnReader::MapAsStructColumnReader(
           fileType,
           params,
           scanSpec} {
+  // MapAsStruct never uses extraction pushdown (asserted in base class),
+  // so always create both readers.
   makeMapChildrenReaders(
       *fileType_,
       *requestedType_,
       params,
       mapScanSpec_,
+      velox::common::ScanSpec::ExtractionType::kNone,
+      /*hasDeltaUpdate=*/false,
       keyReader_,
       elementReader_);
   children_ = {keyReader_.get(), elementReader_.get()};
@@ -909,6 +964,15 @@ DeduplicatedArrayColumnReader::DeduplicatedArrayColumnReader(
             velox::common::ScanSpec::kArrayElementsFieldName));
   }
   scanSpec_->children()[0]->setProjectOut(true);
+
+  // For kSize extraction we only need the length stream, so skip creating
+  // the element reader entirely.  This avoids registering its streams and
+  // reduces IO.
+  if (scanSpec.extractionType() ==
+      velox::common::ScanSpec::ExtractionType::kSize) {
+    return;
+  }
+
   auto childParams = params.makeChildParams(
       params.nimbleType()->asArrayWithOffsets().elements());
   child_ = buildColumnReader(
@@ -953,8 +1017,6 @@ uint64_t DeduplicatedArrayColumnReader::skip(uint64_t numValues) {
         deduplicatedReadHelper_.prepareDeduplicatedStates(numValues, nulls);
     deduplicatedReadHelper_.skip(numValues, alphabetSize);
     child_->seekTo(childTargetReadOffset_, false);
-  } else {
-    VELOX_FAIL("Variable length type reader with no children");
   }
   return velox::bits::countNonNulls(nulls, 0, numValues);
 }
@@ -977,6 +1039,13 @@ void DeduplicatedArrayColumnReader::getValues(
     const velox::RowSet& rows,
     velox::VectorPtr* result) {
   VELOX_DCHECK_NOT_NULL(result);
+
+  if (scanSpec_->extractionType() ==
+      velox::common::ScanSpec::ExtractionType::kSize) {
+    getExtractionSizeValues(rows, result);
+    return;
+  }
+
   deduplicatedReadHelper_.lastRunLoaded_ = true;
   // TODO: looks like elements of the alphabet is not properly
   // referenced, and thus we are already in the elements of the
@@ -1040,22 +1109,35 @@ DeduplicatedMapColumnReader::DeduplicatedMapColumnReader(
   auto& fileKeyType = fileType_->childAt(0);
   auto& fileValueType = fileType_->childAt(1);
 
+  const auto extractionType = scanSpec.extractionType();
+  const bool hasDeltaUpdate = scanSpec.deltaUpdate() != nullptr;
   auto& mapSchemaType = params.nimbleType()->asSlidingWindowMap();
-  auto keyParams = params.makeChildParams(mapSchemaType.keys());
-  keyReader_ = buildColumnReader(
-      keyType,
-      fileKeyType,
-      keyParams,
-      *scanSpec_->children()[0],
-      /*isRoot=*/false);
-  auto valueParams = params.makeChildParams(mapSchemaType.values());
-  elementReader_ = buildColumnReader(
-      valueType,
-      fileValueType,
-      valueParams,
-      *scanSpec_->children()[1],
-      /*isRoot=*/false);
-  children_ = {keyReader_.get(), elementReader_.get()};
+  // Skip creating child readers that extraction pushdown doesn't need.
+  // This avoids registering their streams and reduces IO.
+  if (needsKeyReader(extractionType, hasDeltaUpdate)) {
+    auto keyParams = params.makeChildParams(mapSchemaType.keys());
+    keyReader_ = buildColumnReader(
+        keyType,
+        fileKeyType,
+        keyParams,
+        *scanSpec_->children()[0],
+        /*isRoot=*/false);
+  }
+  if (needsElementReader(extractionType, hasDeltaUpdate)) {
+    auto valueParams = params.makeChildParams(mapSchemaType.values());
+    elementReader_ = buildColumnReader(
+        valueType,
+        fileValueType,
+        valueParams,
+        *scanSpec_->children()[1],
+        /*isRoot=*/false);
+  }
+  if (keyReader_) {
+    children_.push_back(keyReader_.get());
+  }
+  if (elementReader_) {
+    children_.push_back(elementReader_.get());
+  }
 }
 
 void DeduplicatedMapColumnReader::readLengths(
@@ -1096,8 +1178,6 @@ uint64_t DeduplicatedMapColumnReader::skip(uint64_t numValues) {
     if (elementReader_) {
       elementReader_->seekTo(childTargetReadOffset_, false);
     }
-  } else {
-    VELOX_FAIL("Variable length type reader with no children");
   }
   return velox::bits::countNonNulls(nulls, 0, numValues);
 }
@@ -1120,6 +1200,13 @@ void DeduplicatedMapColumnReader::getValues(
     const velox::RowSet& rows,
     velox::VectorPtr* result) {
   VELOX_DCHECK_NOT_NULL(result);
+  const auto extractionType = scanSpec_->extractionType();
+
+  if (extractionType != velox::common::ScanSpec::ExtractionType::kNone) {
+    getExtractionValues(rows, result);
+    return;
+  }
+
   deduplicatedReadHelper_.lastRunLoaded_ = true;
   // TODO: looks like elements of the alphabet is not properly
   // referenced, and thus we are already in the elements of the

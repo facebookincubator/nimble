@@ -2873,7 +2873,7 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsInteger) {
   auto readers =
       makeReaders(input, fileContent, scanSpec, this->stringDecoderZeroCopy());
 
-  // Column 0 is the root ROW — column 1 is the first child (c0).
+  // Column 0 is the root ROW -- column 1 is the first child (c0).
   auto stats = readers.reader->columnStatistics(1);
   ASSERT_NE(stats, nullptr);
   ASSERT_TRUE(stats->getNumberOfValues().has_value());
@@ -2960,7 +2960,7 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsOutOfRange) {
   // Out-of-range index returns nullptr.
   EXPECT_EQ(readers.reader->columnStatistics(999), nullptr);
 
-  // Column 0 is the root ROW — should return base ColumnStatistics.
+  // Column 0 is the root ROW -- should return base ColumnStatistics.
   auto rootStats = readers.reader->columnStatistics(0);
   ASSERT_NE(rootStats, nullptr);
   ASSERT_TRUE(rootStats->getNumberOfValues().has_value());
@@ -3029,6 +3029,317 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsAllNull) {
   ASSERT_NE(intStats, nullptr);
   EXPECT_EQ(intStats->getMinimum(), std::nullopt);
   EXPECT_EQ(intStats->getMaximum(), std::nullopt);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionTransformMapKeys) {
+  // Write a MAP(VARCHAR, BIGINT) column, read with a MapKeys extraction
+  // transform applied via ScanSpec.
+  auto mapVector = makeMapVector<StringView, int64_t>(
+      {{{"a", 1}, {"b", 2}}, {{"c", 3}}, {{"d", 4}, {"e", 5}, {"f", 6}}});
+  auto input = makeRowVector({"col"}, {mapVector});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+
+  scanSpec->childByName("col")->setExtractionType(
+      common::ScanSpec::ExtractionType::kKeys);
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 3);
+  auto* row = result->as<RowVector>();
+  auto* resultArray = row->childAt(0)->loadedVector()->as<ArrayVector>();
+  ASSERT_EQ(resultArray->size(), 3);
+  ASSERT_EQ(resultArray->sizeAt(0), 2);
+  ASSERT_EQ(resultArray->sizeAt(1), 1);
+  ASSERT_EQ(resultArray->sizeAt(2), 3);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionTransformSize) {
+  // Write a MAP(VARCHAR, BIGINT) column, read with a Size extraction.
+  auto mapVector = makeMapVector<StringView, int64_t>(
+      {{{"a", 1}, {"b", 2}, {"c", 3}}, {{"d", 4}}});
+  auto input = makeRowVector({"col"}, {mapVector});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+
+  scanSpec->childByName("col")->setExtractionType(
+      common::ScanSpec::ExtractionType::kSize);
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 2);
+  auto* row = result->as<RowVector>();
+  auto* sizes = row->childAt(0)->loadedVector()->as<FlatVector<int64_t>>();
+  ASSERT_EQ(sizes->size(), 2);
+  ASSERT_EQ(sizes->valueAt(0), 3);
+  ASSERT_EQ(sizes->valueAt(1), 1);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionTransformMapValuesStructField) {
+  // Write MAP(VARCHAR, ROW(x: INT, y: INT)), apply
+  // [MapValues, AE, StructField("x")] -> ARRAY(INT).
+  // The reader handles this natively via kValues on the map and kField on
+  // the values struct, so no post-read transform is needed.
+  auto keys = makeFlatVector<StringView>({"a", "b", "c"});
+  auto structValues = makeRowVector(
+      {"x", "y"},
+      {makeFlatVector<int32_t>({10, 20, 30}),
+       makeFlatVector<int32_t>({100, 200, 300})});
+  auto mapVector = makeMapVector({0, 2}, keys, structValues);
+  auto input = makeRowVector({"col"}, {mapVector});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+
+  // Configure ScanSpec directly: kValues on the map, then kField on the
+  // values struct (extracting field "x" at index 0).  Mark "y" constant
+  // null so it is not read.
+  auto* colSpec = scanSpec->childByName("col");
+  colSpec->setExtractionType(common::ScanSpec::ExtractionType::kValues);
+  auto* valuesSpec =
+      colSpec->childByName(common::ScanSpec::kMapValuesFieldName);
+  valuesSpec->setExtractionType(common::ScanSpec::ExtractionType::kField);
+  valuesSpec->setExtractionFieldIndex(0);
+  valuesSpec->childByName("y")->setConstantValue(
+      BaseVector::createNullConstant(INTEGER(), 1, pool()));
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 2);
+  auto* row = result->as<RowVector>();
+  auto* resultArray = row->childAt(0)->loadedVector()->as<ArrayVector>();
+  ASSERT_EQ(resultArray->size(), 2);
+  ASSERT_EQ(resultArray->sizeAt(0), 2);
+  ASSERT_EQ(resultArray->sizeAt(1), 1);
+  auto* elements = resultArray->elements()->as<FlatVector<int32_t>>();
+  ASSERT_EQ(elements->valueAt(0), 10);
+  ASSERT_EQ(elements->valueAt(1), 20);
+  ASSERT_EQ(elements->valueAt(2), 30);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionSizeResultVectorReuse) {
+  // Verify the FlatVector<int64_t> result is reused across batches.
+  constexpr int kNumRows = 200;
+  std::vector<std::string> keyStrs(kNumRows * 2);
+  for (int i = 0; i < kNumRows * 2; ++i) {
+    keyStrs[i] = std::to_string(i);
+  }
+  auto keys = makeFlatVector<StringView>(
+      kNumRows * 2, [&](auto i) { return StringView(keyStrs[i]); });
+  auto values = makeFlatVector<int64_t>(kNumRows * 2, folly::identity);
+  std::vector<vector_size_t> offsets(kNumRows);
+  for (int i = 0; i < kNumRows; ++i) {
+    offsets[i] = i * 2;
+  }
+  auto mapVector = makeMapVector(offsets, keys, values);
+  auto input = makeRowVector({"col"}, {mapVector});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("col")->setExtractionType(
+      common::ScanSpec::ExtractionType::kSize);
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+
+  // Read first batch.
+  ASSERT_GT(readers.rowReader->next(50, result), 0);
+  auto* row = result->as<RowVector>();
+  auto* child = row->childAt(0)->loadedVector();
+  ASSERT_TRUE(child->type()->isBigint());
+  auto* firstBatchPtr = child;
+
+  // Read second batch — FlatVector should be the same object.
+  ASSERT_GT(readers.rowReader->next(50, result), 0);
+  row = result->as<RowVector>();
+  child = row->childAt(0)->loadedVector();
+  ASSERT_EQ(child, firstBatchPtr)
+      << "FlatVector result should be reused across batches for Size extraction";
+
+  auto* sizes = child->as<FlatVector<int64_t>>();
+  for (int i = 0; i < sizes->size(); ++i) {
+    ASSERT_EQ(sizes->valueAt(i), 2);
+  }
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionTransformMapValues) {
+  // Write a MAP(VARCHAR, BIGINT) column, read with a MapValues extraction
+  // transform applied via ScanSpec.
+  auto mapVector = makeMapVector<StringView, int64_t>(
+      {{{"a", 10}}, {{"b", 20}, {"c", 30}}, {{"d", 40}}});
+  auto input = makeRowVector({"col"}, {mapVector});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+
+  scanSpec->childByName("col")->setExtractionType(
+      common::ScanSpec::ExtractionType::kValues);
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 3);
+  auto* row = result->as<RowVector>();
+  auto* resultArray = row->childAt(0)->loadedVector()->as<ArrayVector>();
+  ASSERT_EQ(resultArray->size(), 3);
+  ASSERT_EQ(resultArray->sizeAt(0), 1);
+  ASSERT_EQ(resultArray->sizeAt(1), 2);
+  ASSERT_EQ(resultArray->sizeAt(2), 1);
+  auto* elements = resultArray->elements()->as<FlatVector<int64_t>>();
+  ASSERT_EQ(elements->valueAt(0), 10);
+  ASSERT_EQ(elements->valueAt(1), 20);
+  ASSERT_EQ(elements->valueAt(2), 30);
+  ASSERT_EQ(elements->valueAt(3), 40);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionTransformMapKeyFilter) {
+  // Write a MAP(VARCHAR, BIGINT) column, apply MapKeyFilter extraction
+  // to keep only selected keys.
+  auto mapVector = makeMapVector<StringView, int64_t>(
+      {{{"a", 1}, {"b", 2}, {"c", 3}}, {{"a", 10}, {"d", 40}}});
+  auto input = makeRowVector({"col"}, {mapVector});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+
+  // MapKeyFilter is implemented as an IN filter on the map keys ScanSpec
+  // (type-preserving — MAP stays MAP).
+  auto* colSpec = scanSpec->childByName("col");
+  auto* keysSpec = colSpec->childByName(common::ScanSpec::kMapKeysFieldName);
+  keysSpec->setFilter(
+      std::make_unique<common::BytesValues>(
+          std::vector<std::string>{"a", "b"}, /*nullAllowed=*/false));
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 2);
+  auto* row = result->as<RowVector>();
+  auto* filteredMap = row->childAt(0)->loadedVector()->as<MapVector>();
+  ASSERT_EQ(filteredMap->size(), 2);
+  // Row 0: {"a":1, "b":2} kept, "c" filtered out.
+  ASSERT_EQ(filteredMap->sizeAt(0), 2);
+  // Row 1: {"a":10} kept, "d" filtered out.
+  ASSERT_EQ(filteredMap->sizeAt(1), 1);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionTransformStructField) {
+  // Write a ROW(x: INT, y: VARCHAR) column, extract just field "x".
+  auto structVector = makeRowVector(
+      {"x", "y"},
+      {makeFlatVector<int32_t>({10, 20, 30}),
+       makeFlatVector<StringView>({"aa", "bb", "cc"})});
+  auto input = makeRowVector({"col"}, {structVector});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+
+  // kField on struct: extract field index 0 ("x"); mark "y" constant null.
+  auto* colSpec = scanSpec->childByName("col");
+  colSpec->setExtractionType(common::ScanSpec::ExtractionType::kField);
+  colSpec->setExtractionFieldIndex(0);
+  colSpec->childByName("y")->setConstantValue(
+      BaseVector::createNullConstant(VARCHAR(), 1, pool()));
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 3);
+  auto* row = result->as<RowVector>();
+  auto* xField = row->childAt(0)->loadedVector()->as<FlatVector<int32_t>>();
+  ASSERT_EQ(xField->size(), 3);
+  ASSERT_EQ(xField->valueAt(0), 10);
+  ASSERT_EQ(xField->valueAt(1), 20);
+  ASSERT_EQ(xField->valueAt(2), 30);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionTransformArraySize) {
+  // Write an ARRAY(BIGINT) column, read with Size extraction.
+  auto arrayVector = makeArrayVector<int64_t>({{1, 2, 3}, {4}, {5, 6}});
+  auto input = makeRowVector({"col"}, {arrayVector});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+
+  scanSpec->childByName("col")->setExtractionType(
+      common::ScanSpec::ExtractionType::kSize);
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 3);
+  auto* row = result->as<RowVector>();
+  auto* sizes = row->childAt(0)->loadedVector()->as<FlatVector<int64_t>>();
+  ASSERT_EQ(sizes->size(), 3);
+  ASSERT_EQ(sizes->valueAt(0), 3);
+  ASSERT_EQ(sizes->valueAt(1), 1);
+  ASSERT_EQ(sizes->valueAt(2), 2);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionDeduplicatedArraySize) {
+  // Write an ARRAY(BIGINT) column using the deduplicated (ArrayWithOffsets)
+  // encoding path, then verify Size extraction works correctly.
+  auto arrayVector = makeArrayVector<int64_t>({{1, 2}, {3}, {4, 5, 6}, {1, 2}});
+  auto input = makeRowVector({"col"}, {arrayVector});
+  auto file = test::createNimbleFile(
+      *rootPool(), input, {.dictionaryArrayColumns = {"col"}});
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("col")->setExtractionType(
+      common::ScanSpec::ExtractionType::kSize);
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 4);
+  auto* row = result->as<RowVector>();
+  auto* sizes = row->childAt(0)->loadedVector()->as<FlatVector<int64_t>>();
+  ASSERT_EQ(sizes->size(), 4);
+  ASSERT_EQ(sizes->valueAt(0), 2);
+  ASSERT_EQ(sizes->valueAt(1), 1);
+  ASSERT_EQ(sizes->valueAt(2), 3);
+  ASSERT_EQ(sizes->valueAt(3), 2);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionDeduplicatedMapSize) {
+  // Write a MAP(BIGINT, BIGINT) column using the deduplicated
+  // (SlidingWindowMap) encoding path, then verify Size extraction works.
+  auto keys = makeFlatVector<int64_t>({1, 2, 3, 4});
+  auto values = makeFlatVector<int64_t>({10, 20, 30, 40});
+  auto mapVector = makeMapVector({0, 3}, keys, values);
+  auto input = makeRowVector({"col"}, {mapVector});
+  auto file = test::createNimbleFile(
+      *rootPool(), input, {.deduplicatedMapColumns = {"col"}});
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("col")->setExtractionType(
+      common::ScanSpec::ExtractionType::kSize);
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 2);
+  auto* row = result->as<RowVector>();
+  auto* sizes = row->childAt(0)->loadedVector()->as<FlatVector<int64_t>>();
+  ASSERT_EQ(sizes->size(), 2);
+  ASSERT_EQ(sizes->valueAt(0), 3);
+  ASSERT_EQ(sizes->valueAt(1), 1);
 }
 
 INSTANTIATE_TEST_CASE_P(
