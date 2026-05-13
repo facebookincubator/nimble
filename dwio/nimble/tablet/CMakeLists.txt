@@ -120,7 +120,7 @@ target_link_libraries(
   Folly::folly
 )
 
-add_library(nimble_tablet_reader FileLayout.cpp TabletReader.cpp)
+add_library(nimble_tablet_reader FileLayout.cpp Postscript.cpp TabletReader.cpp)
 target_link_libraries(
   nimble_tablet_reader
   PUBLIC

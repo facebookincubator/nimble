@@ -222,54 +222,6 @@ std::span<const uint32_t> StripeGroup::streamSizes(uint32_t stripe) const {
   return {streamSizes_ + (stripe - firstStripe_) * streamCount_, streamCount_};
 }
 
-Postscript Postscript::parse(std::string_view data) {
-  NIMBLE_CHECK_GE(data.size(), kPostscriptSize, "Invalid postscript length");
-
-  Postscript ps;
-  // Read and validate magic
-  auto pos = data.data() + data.size() - 2;
-  const uint16_t magicNumber = *reinterpret_cast<const uint16_t*>(pos);
-
-  NIMBLE_CHECK_EQ(
-      magicNumber, kMagicNumber, "Magic number mismatch. Not a nimble file!");
-
-  // Read and validate versions
-  pos -= 4;
-  ps.majorVersion_ = *reinterpret_cast<const uint16_t*>(pos);
-  ps.minorVersion_ = *reinterpret_cast<const uint16_t*>(pos + 2);
-
-  NIMBLE_CHECK_LE(ps.majorVersion_, kVersionMajor, "Unsupported file version");
-
-  pos -= 14;
-  ps.footerSize_ = *reinterpret_cast<const uint32_t*>(pos);
-
-  // How CompressionType is written into and read from postscript requires
-  // its size must be 1 byte.
-  static_assert(sizeof(CompressionType) == 1);
-  ps.footerCompressionType_ =
-      *reinterpret_cast<const CompressionType*>(pos + 4);
-
-  // How ChecksumType is written into and read from postscript requires
-  // its size must be 1 byte.
-  static_assert(sizeof(ChecksumType) == 1);
-  ps.checksumType_ = *reinterpret_cast<const ChecksumType*>(pos + 5);
-  ps.checksum_ = *reinterpret_cast<const uint64_t*>(pos + 6);
-  return ps;
-}
-
-Postscript::Postscript(
-    uint32_t footerSize,
-    CompressionType footerCompressionType,
-    ChecksumType checksumType,
-    uint32_t majorVersion,
-    uint32_t minorVersion)
-    : footerSize_(footerSize),
-      footerCompressionType_(footerCompressionType),
-      checksum_(0),
-      checksumType_(checksumType),
-      majorVersion_(majorVersion),
-      minorVersion_(minorVersion) {}
-
 namespace {
 
 // Creates an owned BufferedInput clone for metadata reads. When

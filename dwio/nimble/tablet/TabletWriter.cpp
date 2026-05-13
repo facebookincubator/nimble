@@ -18,6 +18,7 @@
 
 #include "dwio/nimble/tablet/Compression.h"
 #include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/tablet/FileLayout.h"
 
 namespace facebook::nimble {
 
@@ -235,21 +236,27 @@ void TabletWriter::close() {
   auto footerStart = file_->size();
   auto footerCompressionType = writeMetadata(asView(builder));
 
-  // End with the fixed length constants.
-  const uint64_t footerSize64Bit = (file_->size() - footerStart);
+  // Write postscript. The first kPostscriptChecksumedSize bytes are included
+  // in the file checksum; the rest (including the checksum itself) are not.
+  const uint64_t footerSize = file_->size() - footerStart;
   NIMBLE_CHECK_LE(
-      footerSize64Bit,
-      std::numeric_limits<uint32_t>::max(),
-      "Footer size too big.");
-  const uint32_t footerSize = footerSize64Bit;
-  writeWithChecksum({reinterpret_cast<const char*>(&footerSize), 4});
-  writeWithChecksum({reinterpret_cast<const char*>(&footerCompressionType), 1});
-  uint64_t checksum = checksum_->getChecksum();
-  file_->append({reinterpret_cast<const char*>(&options_.checksumType), 1});
-  file_->append({reinterpret_cast<const char*>(&checksum), 8});
-  file_->append({reinterpret_cast<const char*>(&kVersionMajor), 2});
-  file_->append({reinterpret_cast<const char*>(&kVersionMinor), 2});
-  file_->append({reinterpret_cast<const char*>(&kMagicNumber), 2});
+      footerSize, std::numeric_limits<uint32_t>::max(), "Footer size too big.");
+  Postscript ps{
+      static_cast<uint32_t>(footerSize),
+      footerCompressionType,
+      options_.checksumType,
+      kVersionMajor,
+      kVersionMinor};
+  auto psBuf = ps.serialize();
+  writeWithChecksum({psBuf.data(), kPostscriptChecksumedSize});
+  // Patch the checksum value into the serialized buffer. The checksum field
+  // starts after checksumType (1 byte after the checksummed region).
+  const uint64_t checksum = checksum_->getChecksum();
+  constexpr uint32_t kChecksumOffset = kPostscriptChecksumedSize + 1;
+  std::memcpy(psBuf.data() + kChecksumOffset, &checksum, sizeof(checksum));
+  file_->append(
+      {psBuf.data() + kPostscriptChecksumedSize,
+       kPostscriptSize - kPostscriptChecksumedSize});
 
   state_ = State::kClosed;
 }

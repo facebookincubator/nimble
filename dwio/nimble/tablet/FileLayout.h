@@ -20,58 +20,11 @@
 #include <vector>
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
+#include "dwio/nimble/tablet/Postscript.h"
 #include "velox/common/file/File.h"
 #include "velox/common/memory/Memory.h"
 
 namespace facebook::nimble {
-
-/// Postscript information (last 20 bytes of a Nimble file).
-/// Contains file format version, checksum, and footer metadata.
-class Postscript {
- public:
-  Postscript() = default;
-
-  uint32_t footerSize() const {
-    return footerSize_;
-  }
-
-  CompressionType footerCompressionType() const {
-    return footerCompressionType_;
-  }
-
-  uint64_t checksum() const {
-    return checksum_;
-  }
-
-  ChecksumType checksumType() const {
-    return checksumType_;
-  }
-
-  uint32_t majorVersion() const {
-    return majorVersion_;
-  }
-
-  uint32_t minorVersion() const {
-    return minorVersion_;
-  }
-
-  static Postscript parse(std::string_view data);
-
- private:
-  Postscript(
-      uint32_t footerSize,
-      CompressionType footerCompressionType,
-      ChecksumType checksumType,
-      uint32_t majorVersion,
-      uint32_t minorVersion);
-
-  uint32_t footerSize_;
-  CompressionType footerCompressionType_;
-  uint64_t checksum_;
-  ChecksumType checksumType_;
-  uint32_t majorVersion_;
-  uint32_t minorVersion_;
-};
 
 /// Nimble Physical File Layout
 /// ============================
