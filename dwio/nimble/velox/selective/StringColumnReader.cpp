@@ -17,6 +17,7 @@
 #include "dwio/nimble/velox/selective/StringColumnReader.h"
 
 #include "dwio/nimble/encodings/legacy/EncodingUtils.h"
+#include "dwio/nimble/velox/selective/NimbleData.h"
 #include "velox/common/testutil/TestValue.h"
 #include "velox/dwio/common/SelectiveColumnReaderInternal.h"
 #include "velox/vector/DictionaryVector.h"
@@ -47,10 +48,12 @@ bool StringColumnReader::readWithDictionary(
     const RowSet& rows,
     const uint64_t* incomingNulls) {
   // Dictionary path requires: no filter pushdown, no value hook, non-legacy
-  // encoding path (zero-copy), single-chunk read, and dictionary-convertible
-  // encoding.
+  // encoding path (zero-copy), session property enabled, single-chunk read,
+  // and dictionary-convertible encoding.
   if (scanSpec_->hasFilter() || scanSpec_->valueHook() ||
-      !formatData().stringDecoderZeroCopy()) {
+      !formatData().stringDecoderZeroCopy() ||
+      !static_cast<const NimbleData&>(formatData())
+           .nimblePreserveDictionaryEncoding()) {
     return false;
   }
   decoder_.ensureLoaded();
