@@ -22,7 +22,6 @@
 #include <vector>
 
 #include "dwio/nimble/common/Types.h"
-#include "folly/io/IOBuf.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/common/caching/AsyncDataCache.h"
 
@@ -65,11 +64,9 @@ class MetadataBuffer {
       CompressionType type,
       velox::memory::MemoryPool* pool);
 
-  /// Decompresses metadata from an IOBuf slice and returns a BufferPtr.
+  /// Decompresses metadata from a string_view and returns a BufferPtr.
   static velox::BufferPtr decompress(
-      const folly::IOBuf& iobuf,
-      size_t offset,
-      size_t length,
+      std::string_view data,
       CompressionType type,
       velox::memory::MemoryPool* pool);
 

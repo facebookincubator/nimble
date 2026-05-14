@@ -15,11 +15,15 @@
  */
 #include "dwio/nimble/index/tests/ClusterIndexTestBase.h"
 
+#include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
 #include "dwio/nimble/tablet/ChunkIndexGenerated.h"
 #include "dwio/nimble/tablet/ClusterIndexGenerated.h"
+#include "dwio/nimble/tablet/MetadataInput.h"
 #include "folly/json/json.h"
 #include "velox/buffer/Buffer.h"
+#include "velox/common/io/Options.h"
 #include "velox/common/testutil/TestValue.h"
+#include "velox/dwio/common/BufferedInput.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 
 namespace facebook::nimble::index::test {
@@ -338,43 +342,33 @@ ClusterIndexTestBase::createChunkOnlyTestClusterIndex(
 }
 
 std::unique_ptr<ClusterIndex> ClusterIndexTestBase::createClusterIndex(
-    const IndexBuffers& indexBuffers) {
-  auto noopLoadData = [](const velox::common::Region&)
-      -> std::unique_ptr<velox::dwio::common::SeekableInputStream> {
-    NIMBLE_UNREACHABLE("No key stream data in this test");
-  };
-  return createClusterIndex(indexBuffers, std::move(noopLoadData), pool_.get());
-}
-
-std::unique_ptr<ClusterIndex> ClusterIndexTestBase::createClusterIndex(
     const IndexBuffers& indexBuffers,
-    LoadDataFn loadData,
-    velox::memory::MemoryPool* pool) {
+    velox::ReadFile* keyStreamFile) {
   Section indexSection{MetadataBuffer(
       MetadataBuffer::decompress(
           toBufferPtr(indexBuffers.rootIndex, pool_.get()),
           CompressionType::Uncompressed,
           pool_.get()))};
 
-  // Capture indexPartitions data and pool for the metadata loader callback.
-  auto indexPartitionsData =
-      std::make_shared<std::string>(indexBuffers.indexPartitions);
-  auto* metadataPool = pool_.get();
+  metadataFile_ =
+      std::make_shared<velox::InMemoryReadFile>(indexBuffers.indexPartitions);
+  ioStats_ = std::make_unique<velox::io::IoStatistics>();
+  velox::io::ReaderOptions readerOptions(pool_.get());
+  readerOptions.setMetadataIoStats(ioStats_.get());
+  auto metadataInput =
+      MetadataInput::create(metadataFile_.get(), readerOptions);
 
-  return ClusterIndex::create(
+  auto dataFile = keyStreamFile != nullptr
+      ? std::shared_ptr<velox::ReadFile>(
+            std::shared_ptr<velox::ReadFile>{}, keyStreamFile)
+      : metadataFile_;
+  auto dataInput = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::move(dataFile), *pool_);
+  return ClusterIndexTestHelper::create(
       std::move(indexSection),
-      [indexPartitionsData, metadataPool](const MetadataSection& section) {
-        return std::make_unique<MetadataBuffer>(MetadataBuffer::decompress(
-            toBufferPtr(
-                std::string_view(
-                    indexPartitionsData->data() + section.offset(),
-                    section.size()),
-                metadataPool),
-            section.compressionType(),
-            metadataPool));
-      },
-      std::move(loadData),
-      pool);
+      pool_.get(),
+      std::move(metadataInput),
+      std::move(dataInput));
 }
 
 std::shared_ptr<ChunkIndexGroup> ClusterIndexTestBase::createChunkIndex(

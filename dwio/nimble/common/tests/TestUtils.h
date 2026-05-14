@@ -312,10 +312,19 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
   }
 
   uint64_t preadv(
-      uint64_t /* offset */,
-      const std::vector<folly::Range<char*>>& /* buffers */,
-      const velox::FileIoContext& context = {}) const final {
-    NIMBLE_UNSUPPORTED("Not used by Nimble");
+      uint64_t offset,
+      const std::vector<folly::Range<char*>>& buffers,
+      const velox::FileIoContext& /*context*/ = {}) const final {
+    uint64_t totalRead = 0;
+    for (const auto& range : buffers) {
+      if (range.data() != nullptr) {
+        file_.pread(offset, range.size(), range.data());
+      }
+      chunks_.wlock()->push_back({offset, range.size()});
+      offset += range.size();
+      totalRead += range.size();
+    }
+    return totalRead;
   }
 
   uint64_t preadv(

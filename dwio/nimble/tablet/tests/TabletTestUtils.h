@@ -84,12 +84,6 @@ class TabletReaderTestHelper {
     return offsets;
   }
 
-  // Returns true if this reader is backed by a BufferedInput with Velox
-  // async data cache.
-  bool hasCache() const {
-    return tabletReader_->hasCache();
-  }
-
   /// Returns the stripe sizes array.
   /// Stripe size is computed as the difference between consecutive offsets,
   /// with the last stripe size computed using the file size.

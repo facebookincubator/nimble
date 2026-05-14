@@ -16,13 +16,16 @@
 #include "dwio/nimble/tablet/MetadataInput.h"
 
 #include <algorithm>
+
 #include <numeric>
+#include "velox/common/caching/FileHandle.h"
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/tablet/Compression.h"
 #include "folly/Range.h"
 #include "folly/ScopeGuard.h"
 #include "folly/executors/QueuedImmediateExecutor.h"
+#include "folly/io/Cursor.h"
 #include "velox/common/base/AsyncSource.h"
 #include "velox/common/base/CoalesceIo.h"
 #include "velox/common/testutil/TestValue.h"
@@ -51,12 +54,31 @@ std::shared_ptr<MetadataBuffer> MetadataHandle::read() {
 
 // --- MetadataInput ---
 
+std::unique_ptr<MetadataInput> MetadataInput::create(
+    velox::ReadFile* file,
+    const velox::io::ReaderOptions& readerOptions) {
+  NIMBLE_CHECK_NOT_NULL(file);
+  return std::unique_ptr<MetadataInput>(
+      new DirectMetadataInput(file, readerOptions));
+}
+
+std::unique_ptr<MetadataInput> MetadataInput::create(
+    const velox::FileHandle* fileHandle,
+    velox::cache::AsyncDataCache* cache,
+    const velox::io::ReaderOptions& readerOptions) {
+  NIMBLE_CHECK_NOT_NULL(fileHandle);
+  NIMBLE_CHECK_NOT_NULL(cache);
+  auto* file = fileHandle->file.get();
+  NIMBLE_CHECK_NOT_NULL(file);
+  return std::unique_ptr<MetadataInput>(
+      new CachedMetadataInput(file, fileHandle->uuid, cache, readerOptions));
+}
+
 MetadataInput::MetadataInput(
     velox::ReadFile* file,
-    velox::memory::MemoryPool* pool,
     const velox::io::ReaderOptions& options)
     : file_{file},
-      pool_{pool},
+      pool_{&options.memoryPool()},
       maxCoalesceDistance_{options.maxCoalesceDistance()},
       maxCoalesceBytes_{options.maxCoalesceBytes()},
       executor_{options.ioExecutor().get()},
@@ -74,6 +96,17 @@ MetadataHandle MetadataInput::enqueue(const MetadataSection& section) {
 void MetadataInput::reset() {
   sections_.clear();
   loaded_ = false;
+}
+
+std::unique_ptr<MetadataBuffer> MetadataInput::findCachedMetadata(
+    uint64_t /*offset*/) {
+  NIMBLE_UNREACHABLE("findCachedMetadata requires CachedMetadataInput");
+}
+
+void MetadataInput::cacheMetadata(
+    uint64_t /*cacheOffset*/,
+    std::span<const std::string_view> /*ranges*/) {
+  NIMBLE_UNREACHABLE("cacheMetadata requires CachedMetadataInput");
 }
 
 std::shared_ptr<MetadataBuffer> MetadataInput::read(uint32_t index) {
@@ -256,9 +289,8 @@ void MetadataInput::recordCoalescedIoStats(
 
 DirectMetadataInput::DirectMetadataInput(
     velox::ReadFile* file,
-    velox::memory::MemoryPool* pool,
     const velox::io::ReaderOptions& options)
-    : MetadataInput(file, pool, options) {}
+    : MetadataInput(file, options) {}
 
 void DirectMetadataInput::load() {
   NIMBLE_CHECK(!loaded_, "load() already called; call reset() first");
@@ -275,7 +307,7 @@ void DirectMetadataInput::prepareReadBuffers(
   readRanges_.resize(sectionIndices.size());
   for (size_t i = 0; i < sectionIndices.size(); ++i) {
     const auto size = sections_[sectionIndices[i]].section.size();
-    buffers_[i] = velox::AlignedBuffer::allocate<char>(size, pool_);
+    buffers_[i] = velox::AlignedBuffer::allocateExact<char>(size, pool_);
     readRanges_[i] = {buffers_[i]->asMutable<char>(), size};
   }
 }
@@ -301,11 +333,8 @@ CachedMetadataInput::CachedMetadataInput(
     velox::ReadFile* file,
     velox::StringIdLease fileId,
     velox::cache::AsyncDataCache* cache,
-    velox::memory::MemoryPool* pool,
     const velox::io::ReaderOptions& options)
-    : MetadataInput(file, pool, options),
-      cache_{cache},
-      fileId_{std::move(fileId)} {
+    : MetadataInput(file, options), cache_{cache}, fileId_{std::move(fileId)} {
   NIMBLE_CHECK_NOT_NULL(cache_);
 }
 
@@ -577,6 +606,63 @@ std::shared_ptr<MetadataBuffer> CachedMetadataInput::store(
   std::memcpy(destination, decompressed->as<char>(), decompressed->size());
   entry->setExclusiveToShared();
   return std::make_shared<MetadataBuffer>(std::move(pin));
+}
+
+std::unique_ptr<MetadataBuffer> CachedMetadataInput::findCachedMetadata(
+    uint64_t offset) {
+  for (;;) {
+    const velox::cache::RawFileCacheKey key{fileId_.id(), offset};
+    folly::SemiFuture<bool> waitFuture{false};
+    auto pin = cache_->findOrCreate(key, 0, /*contiguous=*/true, &waitFuture);
+    if (pin.empty()) {
+      if (!waitFuture.valid()) {
+        return nullptr;
+      }
+      uint64_t waitUs{0};
+      {
+        velox::MicrosecondTimer timer(&waitUs);
+        auto& exec = folly::QueuedImmediateExecutor::instance();
+        std::move(waitFuture).via(&exec).wait();
+      }
+      ioStats_->queryThreadIoLatencyUs().increment(waitUs);
+      ioStats_->cacheWaitLatencyUs().increment(waitUs);
+      continue;
+    }
+    auto* entry = pin.checkedEntry();
+    if (!entry->isShared()) {
+      return nullptr;
+    }
+    NIMBLE_CHECK(
+        entry->hasContiguousData(), "Cached entry must have contiguous data");
+    ioStats_->ramHit().increment(entry->size());
+    return std::make_unique<MetadataBuffer>(std::move(pin));
+  }
+}
+
+void CachedMetadataInput::cacheMetadata(
+    uint64_t cacheOffset,
+    std::span<const std::string_view> ranges) {
+  uint64_t totalSize = 0;
+  for (const auto& range : ranges) {
+    totalSize += range.size();
+  }
+  const velox::cache::RawFileCacheKey key{fileId_.id(), cacheOffset};
+  auto pin = acquireCachePin(key, totalSize);
+  velox::common::testutil::TestValue::adjust(
+      "facebook::nimble::CachedMetadataInput::cacheMetadata", &pin);
+  auto* entry = pin.checkedEntry();
+  if (entry->isShared()) {
+    return;
+  }
+  NIMBLE_CHECK(
+      entry->hasContiguousData(), "Cache entry must have contiguous data");
+  NIMBLE_CHECK_EQ(entry->size(), totalSize);
+  auto* dest = entry->contiguousData();
+  for (const auto& range : ranges) {
+    std::memcpy(dest, range.data(), range.size());
+    dest += range.size();
+  }
+  entry->setExclusiveToShared();
 }
 
 } // namespace facebook::nimble
