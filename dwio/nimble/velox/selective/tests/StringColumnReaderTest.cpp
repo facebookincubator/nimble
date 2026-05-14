@@ -75,6 +75,7 @@ class StringColumnReaderTest : public ::testing::Test,
     rowOptions.setScanSpec(scanSpec);
     rowOptions.setRequestedType(type);
     rowOptions.setStringDecoderZeroCopy(stringDecoderZeroCopy);
+    rowOptions.setNimblePreserveDictionaryEncoding(stringDecoderZeroCopy);
     readers.rowReader = readers.reader->createRowReader(rowOptions);
     return readers;
   }
@@ -899,6 +900,7 @@ TEST_P(StringColumnReaderTest, flatMapStringDictionaryPath) {
   rowOptions.setScanSpec(scanSpec);
   rowOptions.setRequestedType(asRowType(input->type()));
   rowOptions.setStringDecoderZeroCopy(true);
+  rowOptions.setNimblePreserveDictionaryEncoding(true);
   auto rowReader = reader->createRowReader(rowOptions);
 
   // Build expected output: key 1 always present, key 2 null when i%3==0.

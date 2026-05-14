@@ -409,7 +409,8 @@ void SelectiveNimbleRowReader::loadCurrentStripe() {
       options_.trackRowSize() ? rowSizeTracker_.get() : nullptr,
       *encodingFactory_,
       options_.stringDecoderZeroCopy(),
-      options_.preserveFlatMapsInMemory());
+      options_.preserveFlatMapsInMemory(),
+      options_.nimblePreserveDictionaryEncoding());
 
   columnReader_ = buildColumnReader(
       options_.requestedType() ? options_.requestedType()

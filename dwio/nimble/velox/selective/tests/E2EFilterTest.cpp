@@ -40,7 +40,8 @@ namespace {
 
 using namespace facebook::velox;
 
-using E2EFilterTestParams = std::tuple<bool, bool, bool, bool, bool, bool>;
+using E2EFilterTestParams =
+    std::tuple<bool, bool, bool, bool, bool, bool, bool>;
 
 struct E2EFilterTestParam {
   bool indexEnabled;
@@ -49,6 +50,7 @@ struct E2EFilterTestParam {
   bool stringDecoderZeroCopy;
   bool pinFileMetadata;
   bool enableCache;
+  bool nimblePreserveDictionaryEncoding;
 
   explicit E2EFilterTestParam(const E2EFilterTestParams& t)
       : indexEnabled{std::get<0>(t)},
@@ -56,17 +58,19 @@ struct E2EFilterTestParam {
         enableChunkIndex{std::get<2>(t)},
         stringDecoderZeroCopy{std::get<3>(t)},
         pinFileMetadata{std::get<4>(t)},
-        enableCache{std::get<5>(t)} {}
+        enableCache{std::get<5>(t)},
+        nimblePreserveDictionaryEncoding{std::get<6>(t)} {}
 
   std::string debugString() const {
     return fmt::format(
-        "index_{}_skipConstantInMap_{}_chunkIndex_{}_stringDecoderZeroCopy_{}_pinMetadata_{}_cache_{}",
+        "index_{}_skipConstantInMap_{}_chunkIndex_{}_stringDecoderZeroCopy_{}_pinMetadata_{}_cache_{}_nimblePreserveDict_{}",
         indexEnabled,
         skipConstantFlatMapInMapStreams,
         enableChunkIndex,
         stringDecoderZeroCopy,
         pinFileMetadata,
-        enableCache);
+        enableCache,
+        nimblePreserveDictionaryEncoding);
   }
 };
 
@@ -125,6 +129,8 @@ class E2EFilterTest
     opts.setTimestampPrecision(TimestampPrecision::kNanoseconds);
     opts.setIndexEnabled(indexEnabled());
     opts.setStringDecoderZeroCopy(param().stringDecoderZeroCopy);
+    opts.setNimblePreserveDictionaryEncoding(
+        param().nimblePreserveDictionaryEncoding);
   }
 
   void testWithTypes(
@@ -1606,6 +1612,7 @@ INSTANTIATE_TEST_SUITE_P(
         testing::Bool(),
         testing::Bool(),
         testing::Bool(),
+        testing::Bool(),
         testing::Bool()),
     [](const ::testing::TestParamInfo<E2EFilterTestParams>& info) {
       return E2EFilterTestParam{info.param}.debugString();
@@ -1632,6 +1639,8 @@ class PrefixEncodingE2ETest : public E2EFilterTest {
     // PrefixEncoding requires string buffer optimization for correct
     // string_view lifecycle management in readWithVisitor.
     opts.setStringDecoderZeroCopy(true);
+    opts.setNimblePreserveDictionaryEncoding(
+        param().nimblePreserveDictionaryEncoding);
   }
 
   void writeToMemory(
@@ -1692,6 +1701,7 @@ INSTANTIATE_TEST_SUITE_P(
     PrefixEncodingE2ETests,
     PrefixEncodingE2ETest,
     testing::Combine(
+        testing::Bool(),
         testing::Bool(),
         testing::Bool(),
         testing::Bool(),
@@ -2079,6 +2089,8 @@ TEST_P(E2EFilterTest, dictionaryVectorReturned) {
   velox::dwio::common::RowReaderOptions rowReaderOptions;
   rowReaderOptions.setScanSpec(scanSpec);
   rowReaderOptions.setStringDecoderZeroCopy(param().stringDecoderZeroCopy);
+  rowReaderOptions.setNimblePreserveDictionaryEncoding(
+      param().nimblePreserveDictionaryEncoding);
   auto rowReader = reader->createRowReader(rowReaderOptions);
 
   auto result = BaseVector::create(type, 0, leafPool_.get());
@@ -2089,8 +2101,9 @@ TEST_P(E2EFilterTest, dictionaryVectorReturned) {
     totalRows += rowResult->size();
 
     auto stringChild = rowResult->childAt(0)->loadedVector();
-    if (param().stringDecoderZeroCopy) {
-      // With string buffer optimization, the dictionary path should return
+    if (param().stringDecoderZeroCopy &&
+        param().nimblePreserveDictionaryEncoding) {
+      // With both flags enabled, the dictionary path should return
       // a DictionaryVector wrapping a FlatVector alphabet.
       ASSERT_EQ(stringChild->encoding(), VectorEncoding::Simple::DICTIONARY)
           << "Expected DICTIONARY encoding for string column, got "
@@ -2481,7 +2494,7 @@ INSTANTIATE_TEST_SUITE_P(
     NimbleExtractionTests,
     NimbleExtractionTest,
     ::testing::Values(
-        E2EFilterTestParams{false, false, false, false, false, false},
-        E2EFilterTestParams{false, false, false, false, false, true}));
+        E2EFilterTestParams{false, false, false, false, false, false, false},
+        E2EFilterTestParams{false, false, false, false, false, true, false}));
 
 } // namespace facebook::nimble
