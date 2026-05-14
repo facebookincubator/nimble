@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>NullableEncoding – Nimble</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'SF Mono', 'Fira Code', monospace; background: #0d1117; color: #c9d1d9; padding: 24px; }
+  h1 { font-size: 20px; color: #58a6ff; margin-bottom: 8px; }
+  h2 { font-size: 16px; color: #8b949e; margin-bottom: 24px; font-weight: normal; }
+  h3 { font-size: 15px; color: #58a6ff; margin: 32px 0 12px; }
+
+  .section { margin-bottom: 48px; }
+
+  .row-strip { display: flex; gap: 1px; margin: 4px 0; align-items: center; flex-wrap: wrap; }
+  .row-strip .label { width: 200px; font-size: 12px; color: #8b949e; flex-shrink: 0; text-align: right; padding-right: 12px; }
+  .cell { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+          font-size: 9px; border-radius: 3px; flex-shrink: 0; }
+  .cell-header { background: none; color: #484f58; font-size: 8px; }
+  .cell-null { background: #1c1e26; color: #484f58; border: 1px dashed #21262d; }
+  .cell-val  { background: #161b22; color: #c9d1d9; border: 1px solid #30363d; }
+  .cell-bool-t { background: #1a3a2a; color: #3fb950; border: 1px solid #238636; }
+  .cell-bool-f { background: #1c1e26; color: #30363d; border: 1px solid #21262d; }
+  .cell-bit-1 { background: #1a3a2a; color: #3fb950; border: 1px solid #238636; }
+  .cell-bit-0 { background: #1c1e26; color: #30363d; border: 1px solid #21262d; }
+  .cell-idx  { background: #1c2333; color: #79c0ff; border: 1px solid #1f6feb; }
+  .cell-inner { background: #1a2332; color: #d2a8ff; border: 1px solid #8957e5; }
+  .cell-highlight { background: #1a3a2a; color: #3fb950; border: 2px solid #3fb950; font-weight: bold; }
+  .cell-waste { background: #2a1010; color: #484f58; border: 1px solid #30363d; }
+
+  .connector { margin: 6px 0 6px 200px; display: flex; align-items: center; gap: 8px; }
+  .connector .arrow { color: #30363d; font-size: 18px; }
+  .connector .note { font-size: 11px; color: #484f58; }
+
+  .tree { margin: 16px 0 16px 40px; }
+  .tree-node { display: flex; align-items: center; gap: 8px; padding: 6px 0; position: relative; }
+  .tree-node::before { content: ''; position: absolute; left: -20px; top: 0; bottom: 50%;
+                       border-left: 1px solid #30363d; border-bottom: 1px solid #30363d; width: 16px; }
+  .tree-node:first-child::before { display: none; }
+  .tree .tree { margin-left: 30px; }
+  .node-box { display: inline-block; padding: 4px 10px; border-radius: 4px; font-size: 12px; }
+  .node-nullable { background: #1c2333; border: 1px solid #1f6feb; color: #79c0ff; }
+  .node-sparse   { background: #1a3a2a; border: 1px solid #238636; color: #3fb950; }
+  .node-trivial  { background: #1a2332; border: 1px solid #8957e5; color: #d2a8ff; }
+  .node-bitmap   { background: #2a1f14; border: 1px solid #9e6a03; color: #d29922; }
+  .node-data     { background: #161b22; border: 1px solid #30363d; color: #c9d1d9; }
+  .node-label { font-size: 11px; color: #484f58; }
+
+  .note-box { background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+              padding: 12px 16px; font-size: 12px; line-height: 1.6; margin: 12px 0; }
+  .note-box strong { color: #58a6ff; }
+
+  .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+  .compare-card { background: #161b22; border-radius: 8px; padding: 16px; border: 1px solid #30363d; }
+  .compare-card h4 { font-size: 13px; margin-bottom: 12px; }
+  .compare-card .size-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 8px; }
+
+  .bar-chart { margin: 16px 0; }
+  .bar-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .bar-label { width: 180px; font-size: 11px; color: #8b949e; text-align: right; flex-shrink: 0; }
+  .bar-track { flex: 1; height: 28px; background: #161b22; border-radius: 4px; position: relative; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; display: flex; align-items: center; padding-left: 8px;
+              font-size: 10px; color: #fff; white-space: nowrap; min-width: 2px; transition: width 0.6s ease; }
+  .bar-fill.sparse { background: linear-gradient(90deg, #238636, #1a3a2a); }
+  .bar-fill.trivial { background: linear-gradient(90deg, #9e6a03, #2a1f14); }
+  .bar-fill.waste { background: linear-gradient(90deg, #da3633, #3d1a1a); }
+  .bar-value { font-size: 11px; color: #484f58; margin-left: 8px; flex-shrink: 0; width: 80px; }
+
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 12px 0; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+  .legend-swatch { width: 14px; height: 14px; border-radius: 3px; }
+
+  .tab-bar { display: flex; gap: 2px; margin-bottom: 0; }
+  .tab { padding: 8px 16px; font-size: 12px; border-radius: 6px 6px 0 0; cursor: pointer;
+         background: #161b22; color: #484f58; border: 1px solid #30363d; border-bottom: none; }
+  .tab.active { background: #0d1117; color: #c9d1d9; border-color: #30363d; }
+  .tab-content { display: none; border: 1px solid #30363d; border-radius: 0 6px 6px 6px;
+                 padding: 20px; background: #0d1117; }
+  .tab-content.active { display: block; }
+
+  .flow { display: flex; flex-direction: column; gap: 0; margin: 16px 0 16px 40px; }
+  .flow-step { display: flex; align-items: stretch; gap: 0; }
+  .flow-num { width: 32px; display: flex; align-items: center; justify-content: center;
+              font-size: 11px; color: #484f58; flex-shrink: 0; }
+  .flow-box { flex: 1; padding: 10px 14px; border-left: 2px solid #30363d;
+              font-size: 12px; line-height: 1.6; }
+  .flow-box.active { border-left-color: #1f6feb; background: #0d1117; }
+  .flow-box code { background: #161b22; padding: 1px 5px; border-radius: 3px; color: #79c0ff; font-size: 11px; }
+  .flow-arrow { margin-left: 16px; color: #30363d; font-size: 14px; line-height: 1; padding: 2px 0; }
+
+  .grid-50 { display: grid; grid-template-columns: repeat(25, 28px); gap: 1px; }
+  .grid-label { grid-column: 1 / -1; font-size: 11px; color: #8b949e; padding: 8px 0 4px; }
+</style>
+</head>
+<body>
+
+<h1>NullableEncoding — Nimble</h1>
+
+<!-- ===== Nimble encoding metadata ===== -->
+<div class="section">
+<h3>Nimble encoding metadata</h3>
+
+<h3 style="font-size:13px; color:#8b949e; margin-top:20px;">Nimble file structure — how the reader finds encoding data</h3>
+
+<div style="margin:16px 0;">
+  <div style="font-size:11px; color:#8b949e; margin-bottom:8px;">Physical layout on disk (read from end):</div>
+  <div style="display:flex; gap:2px; flex-wrap:wrap; align-items:stretch;">
+    <div style="flex:3; min-width:120px; background:#1a2332; border:1px solid #8957e5; border-radius:4px; padding:10px; text-align:center;">
+      <div style="color:#d2a8ff; font-size:11px; font-weight:bold;">Stripe 0 data</div>
+      <div style="color:#484f58; font-size:9px; margin-top:4px;">raw stream bytes</div>
+    </div>
+    <div style="flex:3; min-width:120px; background:#1a2332; border:1px solid #8957e5; border-radius:4px; padding:10px; text-align:center;">
+      <div style="color:#d2a8ff; font-size:11px; font-weight:bold;">Stripe 1 data</div>
+      <div style="color:#484f58; font-size:9px; margin-top:4px;">raw stream bytes</div>
+    </div>
+    <div style="flex:1; min-width:40px; display:flex; align-items:center; justify-content:center; color:#484f58; font-size:14px;">...</div>
+    <div style="flex:2; min-width:100px; background:#2a1f14; border:1px solid #9e6a03; border-radius:4px; padding:10px; text-align:center;">
+      <div style="color:#d29922; font-size:11px; font-weight:bold;">StripeGroup</div>
+      <div style="color:#484f58; font-size:9px; margin-top:4px;">per-stream offsets</div>
+    </div>
+    <div style="flex:2; min-width:100px; background:#2a1f14; border:1px solid #9e6a03; border-radius:4px; padding:10px; text-align:center;">
+      <div style="color:#d29922; font-size:11px; font-weight:bold;">Stripes meta</div>
+      <div style="color:#484f58; font-size:9px; margin-top:4px;">stripe boundaries</div>
+    </div>
+    <div style="flex:2; min-width:100px; background:#161b22; border:1px solid #30363d; border-radius:4px; padding:10px; text-align:center;">
+      <div style="color:#8b949e; font-size:11px; font-weight:bold;">Optional</div>
+      <div style="color:#484f58; font-size:9px; margin-top:4px;">schema, stats</div>
+    </div>
+    <div style="flex:1.5; min-width:80px; background:#1c2333; border:1px solid #1f6feb; border-radius:4px; padding:10px; text-align:center;">
+      <div style="color:#79c0ff; font-size:11px; font-weight:bold;">Footer</div>
+      <div style="color:#484f58; font-size:9px; margin-top:4px;">272 B</div>
+    </div>
+    <div style="flex:1; min-width:60px; background:#1a3a2a; border:1px solid #238636; border-radius:4px; padding:10px; text-align:center;">
+      <div style="color:#3fb950; font-size:11px; font-weight:bold;">Postscript</div>
+      <div style="color:#484f58; font-size:9px; margin-top:4px;">20 B</div>
+    </div>
+  </div>
+</div>
+
+<!-- Two-stage reading -->
+<div style="display:flex; gap:16px; margin:16px 0; flex-wrap:wrap;">
+  <div style="flex:1; min-width:300px; background:#161b22; border:1px solid #238636; border-radius:6px; padding:14px;">
+    <div style="color:#3fb950; font-weight:bold; font-size:12px; margin-bottom:8px;">Stage 1 — Metadata (small reads from end of file)</div>
+    <div style="font-size:11px; color:#8b949e; line-height:1.8;">
+      <div><span style="color:#3fb950;">Postscript</span> (last 20 bytes) → footer size, checksum type</div>
+      <div><span style="color:#79c0ff;">Footer</span> (272 bytes) → stripe count, row count, optional section locations</div>
+      <div><span style="color:#d29922;">StripeGroup</span> (5,480 bytes) → per-stream offset + size within each stripe</div>
+      <div><span style="color:#8b949e;">Optional sections</span> → schema, vectorized stats, etc.</div>
+    </div>
+    <div style="font-size:10px; color:#484f58; margin-top:8px;">
+      Gives you file_info, schema, stripes, streams tables — all without touching stripe data.
+    </div>
+  </div>
+
+  <div style="flex:1; min-width:300px; background:#161b22; border:1px solid #d29922; border-radius:6px; padding:14px;">
+    <div style="color:#d29922; font-weight:bold; font-size:12px; margin-bottom:8px;">Stage 2 — Stream data (reads actual stripe bytes)</div>
+    <div style="font-size:11px; color:#8b949e; line-height:1.8;">
+      For the <strong style="color:#d2a8ff;">encodings table</strong>, there's no shortcut.<br>
+      The encoding tree is embedded in the raw stream bytes — it's not described in any metadata section.<br>
+      The tool uses stripe group offsets to seek to each stream, reads its bytes,
+      then runs <code>traverseEncodings</code> to parse the tree from the headers.
+    </div>
+  </div>
+</div>
+
+<div class="note-box">
+  <strong>Key insight:</strong> Each stream in a Nimble file is just an opaque blob of bytes.
+  The structure is <strong>self-describing</strong> — every encoding type has a known binary layout
+  baked into the code. There is no separate schema or tree descriptor.
+</div>
+
+<h3 style="font-size:13px; color:#8b949e; margin-top:20px;">Binary format — how each encoding is parsed from raw bytes</h3>
+
+<div style="margin:16px 0;">
+  <div style="font-size:11px; color:#8b949e; margin-bottom:8px;">Every encoding starts with a 6-byte header:</div>
+  <div style="display:flex; gap:2px; margin:8px 0;">
+    <div class="cell" style="width:100px; height:44px; background:#1c2333; border:1px solid #1f6feb; color:#79c0ff; font-size:10px; flex-direction:column; line-height:1.3;">
+      <div>byte 0</div>
+      <div style="color:#484f58; font-size:8px;">EncodingType</div>
+    </div>
+    <div class="cell" style="width:100px; height:44px; background:#1a2332; border:1px solid #8957e5; color:#d2a8ff; font-size:10px; flex-direction:column; line-height:1.3;">
+      <div>byte 1</div>
+      <div style="color:#484f58; font-size:8px;">DataType</div>
+    </div>
+    <div class="cell" style="width:200px; height:44px; background:#2a1f14; border:1px solid #9e6a03; color:#d29922; font-size:10px; flex-direction:column; line-height:1.3;">
+      <div>bytes 2–5</div>
+      <div style="color:#484f58; font-size:8px;">row count (uint32)</div>
+    </div>
+    <div class="cell" style="flex:1; height:44px; background:#161b22; border:1px solid #30363d; color:#8b949e; font-size:10px; flex-direction:column; line-height:1.3;">
+      <div>bytes 6+</div>
+      <div style="color:#484f58; font-size:8px;">encoding-specific payload</div>
+    </div>
+  </div>
+</div>
+
+<!-- Encoding type bytes -->
+<div style="display:flex; gap:8px; margin:16px 0; flex-wrap:wrap;">
+  <div style="font-size:11px; color:#8b949e; width:100%; margin-bottom:4px;">EncodingType byte values:</div>
+  <div style="display:flex; gap:4px; flex-wrap:wrap;">
+    <span style="padding:3px 8px; background:#161b22; border:1px solid #30363d; border-radius:4px; font-size:10px;">
+      <span style="color:#79c0ff;">0x00</span> <span style="color:#8b949e;">Trivial</span>
+    </span>
+    <span style="padding:3px 8px; background:#161b22; border:1px solid #30363d; border-radius:4px; font-size:10px;">
+      <span style="color:#79c0ff;">0x07</span> <span style="color:#8b949e;">SparseBool</span>
+    </span>
+    <span style="padding:3px 8px; background:#161b22; border:1px solid #30363d; border-radius:4px; font-size:10px;">
+      <span style="color:#79c0ff;">0x0A</span> <span style="color:#8b949e;">Nullable</span>
+    </span>
+    <span style="padding:3px 8px; background:#161b22; border:1px solid #30363d; border-radius:4px; font-size:10px;">
+      <span style="color:#79c0ff;">0x05</span> <span style="color:#8b949e;">MainlyConstant</span>
+    </span>
+    <span style="padding:3px 8px; background:#161b22; border:1px solid #30363d; border-radius:4px; font-size:10px;">
+      <span style="color:#79c0ff;">0x03</span> <span style="color:#8b949e;">Dictionary</span>
+    </span>
+    <span style="padding:3px 8px; background:#161b22; border:1px solid #30363d; border-radius:4px; font-size:10px;">
+      <span style="color:#79c0ff;">0x06</span> <span style="color:#8b949e;">Constant</span>
+    </span>
+    <span style="padding:3px 8px; background:#161b22; border:1px solid #30363d; border-radius:4px; font-size:10px;">
+      <span style="color:#79c0ff;">0x02</span> <span style="color:#8b949e;">FixedBitWidth</span>
+    </span>
+    <span style="padding:3px 8px; background:#161b22; border:1px solid #30363d; border-radius:4px; font-size:10px;">
+      <span style="color:#79c0ff;">0x0C</span> <span style="color:#8b949e;">CBP</span>
+    </span>
+  </div>
+</div>
+
+<!-- Payload formats per encoding type -->
+<div style="margin:16px 0;">
+  <div style="font-size:11px; color:#8b949e; margin-bottom:8px;">Payload format is hardcoded per encoding type:</div>
+
+  <!-- Nullable -->
+  <div style="margin:8px 0; display:flex; gap:0; align-items:stretch;">
+    <div style="width:140px; background:#1c2333; border:1px solid #1f6feb; border-radius:4px 0 0 4px;
+                padding:8px 12px; display:flex; align-items:center; flex-shrink:0;">
+      <span style="color:#79c0ff; font-size:11px; font-weight:bold;">Nullable</span>
+    </div>
+    <div style="flex:1; background:#0d1117; border:1px solid #1f6feb; border-left:none; border-radius:0 4px 4px 0; padding:8px 12px;">
+      <div style="display:flex; gap:2px;">
+        <div class="cell" style="width:90px; background:#161b22; border:1px solid #30363d; color:#8b949e; font-size:9px;">4B data size</div>
+        <div class="cell" style="flex:1; background:#1a2332; border:1px solid #8957e5; color:#d2a8ff; font-size:9px;">Data child bytes</div>
+        <div class="cell" style="flex:1; background:#1a3a2a; border:1px solid #238636; color:#3fb950; font-size:9px;">Nulls child bytes</div>
+      </div>
+      <div style="font-size:9px; color:#484f58; margin-top:4px;">2 children. Nulls size = total - 4 - data size.</div>
+    </div>
+  </div>
+
+  <!-- MainlyConstant -->
+  <div style="margin:8px 0; display:flex; gap:0; align-items:stretch;">
+    <div style="width:140px; background:#1a2332; border:1px solid #8957e5; border-radius:4px 0 0 4px;
+                padding:8px 12px; display:flex; align-items:center; flex-shrink:0;">
+      <span style="color:#d2a8ff; font-size:11px; font-weight:bold;">MainlyConstant</span>
+    </div>
+    <div style="flex:1; background:#0d1117; border:1px solid #8957e5; border-left:none; border-radius:0 4px 4px 0; padding:8px 12px;">
+      <div style="display:flex; gap:2px;">
+        <div class="cell" style="width:100px; background:#161b22; border:1px solid #30363d; color:#8b949e; font-size:9px;">4B IsCommon size</div>
+        <div class="cell" style="flex:1; background:#2a1f14; border:1px solid #9e6a03; color:#d29922; font-size:9px;">IsCommon bytes</div>
+        <div class="cell" style="width:110px; background:#161b22; border:1px solid #30363d; color:#8b949e; font-size:9px;">4B OtherVal size</div>
+        <div class="cell" style="flex:1; background:#1a2332; border:1px solid #8957e5; color:#d2a8ff; font-size:9px;">OtherValues bytes</div>
+      </div>
+      <div style="font-size:9px; color:#484f58; margin-top:4px;">2 children. CommonValue is inline in the header.</div>
+    </div>
+  </div>
+
+  <!-- SparseBool -->
+  <div style="margin:8px 0; display:flex; gap:0; align-items:stretch;">
+    <div style="width:140px; background:#1a3a2a; border:1px solid #238636; border-radius:4px 0 0 4px;
+                padding:8px 12px; display:flex; align-items:center; flex-shrink:0;">
+      <span style="color:#3fb950; font-size:11px; font-weight:bold;">SparseBool</span>
+    </div>
+    <div style="flex:1; background:#0d1117; border:1px solid #238636; border-left:none; border-radius:0 4px 4px 0; padding:8px 12px;">
+      <div style="display:flex; gap:2px;">
+        <div class="cell" style="width:90px; background:#1a3a2a; border:1px solid #238636; color:#3fb950; font-size:9px;">1B sparseValue</div>
+        <div class="cell" style="flex:1; background:#1c2333; border:1px solid #1f6feb; color:#79c0ff; font-size:9px;">remaining = Indices child bytes</div>
+      </div>
+      <div style="font-size:9px; color:#484f58; margin-top:4px;">1 child. sparseValue: true=indices point to set bits, false=unset bits.</div>
+    </div>
+  </div>
+
+  <!-- Trivial<String> -->
+  <div style="margin:8px 0; display:flex; gap:0; align-items:stretch;">
+    <div style="width:140px; background:#1a2332; border:1px solid #8957e5; border-radius:4px 0 0 4px;
+                padding:8px 12px; display:flex; align-items:center; flex-shrink:0;">
+      <span style="color:#d2a8ff; font-size:11px; font-weight:bold;">Trivial&lt;String&gt;</span>
+    </div>
+    <div style="flex:1; background:#0d1117; border:1px solid #8957e5; border-left:none; border-radius:0 4px 4px 0; padding:8px 12px;">
+      <div style="display:flex; gap:2px;">
+        <div class="cell" style="width:80px; background:#161b22; border:1px solid #30363d; color:#8b949e; font-size:9px;">1B compress</div>
+        <div class="cell" style="width:90px; background:#161b22; border:1px solid #30363d; color:#8b949e; font-size:9px;">4B lengths size</div>
+        <div class="cell" style="flex:1; background:#2a1f14; border:1px solid #9e6a03; color:#d29922; font-size:9px;">Lengths child bytes</div>
+        <div class="cell" style="flex:1; background:#161b22; border:1px solid #30363d; color:#c9d1d9; font-size:9px;">blob (string data)</div>
+      </div>
+      <div style="font-size:9px; color:#484f58; margin-top:4px;">1 child (Lengths). Blob is raw/compressed string bytes.</div>
+    </div>
+  </div>
+
+  <!-- Leaf encodings -->
+  <div style="margin:8px 0; display:flex; gap:0; align-items:stretch;">
+    <div style="width:140px; background:#161b22; border:1px solid #30363d; border-radius:4px 0 0 4px;
+                padding:8px 12px; display:flex; align-items:center; flex-shrink:0;">
+      <span style="color:#8b949e; font-size:11px; font-weight:bold;">CBP / FBW / Const</span>
+    </div>
+    <div style="flex:1; background:#0d1117; border:1px solid #30363d; border-left:none; border-radius:0 4px 4px 0; padding:8px 12px;">
+      <div style="display:flex; gap:2px;">
+        <div class="cell" style="flex:1; background:#161b22; border:1px solid #30363d; color:#8b949e; font-size:9px;">payload only — no children (leaf)</div>
+      </div>
+      <div style="font-size:9px; color:#484f58; margin-top:4px;">0 children. Entire blob after header is the encoded data.</div>
+    </div>
+  </div>
+</div>
+
+<div class="note-box">
+  <strong>The parser (<code>traverseEncodings</code>) and the reader (<code>NullableEncoding</code> constructor)
+  use the exact same byte layout knowledge.</strong> There is no separate schema or tree descriptor —
+  the binary format <em>is</em> the schema. Each encoding reads its header, carves out child byte ranges,
+  and recursively constructs child encodings via <code>EncodingFactory::create()</code>.
+</div>
+</div>
+
+<!-- ===== NullableEncoding ===== -->
+<div class="section">
+<h3>NullableEncoding</h3>
+
+<h3 style="font-size:13px; color:#8b949e; margin-top:20px;">Example: 50 rows, only row 37 is non-null</h3>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-swatch" style="background:#1c1e26;border:1px dashed #21262d"></div> NULL</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#1a3a2a;border:2px solid #3fb950"></div> non-null value</div>
+</div>
+
+<!-- 50-row logical view -->
+<div style="margin-left:0; margin-top:12px;">
+  <div style="font-size:11px; color:#8b949e; margin-bottom:6px;">Logical column (50 rows):</div>
+  <div class="grid-50" id="logical-grid"></div>
+</div>
+
+<div class="connector" style="margin-left:0;"><span class="arrow">↓</span><span class="note">NullableEncoding splits this into nulls_ + nonNullValues_</span></div>
+
+<!-- nulls_ as bools -->
+<div style="margin-top:8px;">
+  <div style="font-size:11px; color:#8b949e; margin-bottom:6px;">nulls_ — one bool per row (T=non-null, F=null):</div>
+  <div class="grid-50" id="nulls-bool-grid"></div>
+</div>
+
+<div style="margin-top:12px;">
+  <div style="font-size:11px; color:#8b949e; margin-bottom:6px;">nonNullValues_ — only 1 entry:</div>
+  <div style="display:flex; gap:2px;">
+    <div class="cell cell-inner" style="width:56px;">42</div>
+  </div>
+  <div style="font-size:10px; color:#484f58; margin-top:4px;">The value at row 37. No gaps, no placeholders.</div>
+</div>
+</div>
+
+<h3 style="font-size:13px; color:#8b949e; margin-top:20px;">How is nulls_ stored? Two encoding choices</h3>
+
+<div class="compare-grid">
+
+  <!-- Option A: TrivialEncoding<bool> -->
+  <div class="compare-card" style="border-color:#9e6a03;">
+    <h4 style="color:#d29922;">Option A: TrivialEncoding&lt;bool&gt;
+      <span class="size-tag" style="background:#2a1f14; color:#d29922;">7 bytes</span>
+    </h4>
+    <div style="font-size:11px; color:#8b949e; margin-bottom:8px;">
+      Stores 1 bit per row. 50 rows = 50 bits = 7 bytes.
+    </div>
+    <div style="font-size:10px; color:#484f58; margin-bottom:4px;">Packed bitmap (bit 37 = 1, all others = 0):</div>
+    <div class="grid-50" id="trivial-bits-grid"></div>
+    <div style="margin-top:8px; font-size:11px; color:#d29922;">
+      49 zero-bits stored just to record "not null". All wasted.
+    </div>
+  </div>
+
+  <!-- Option B: SparseBoolEncoding -->
+  <div class="compare-card" style="border-color:#238636;">
+    <h4 style="color:#3fb950;">Option B: SparseBoolEncoding
+      <span class="size-tag" style="background:#1a3a2a; color:#3fb950;">~5 bytes</span>
+    </h4>
+    <div style="font-size:11px; color:#8b949e; margin-bottom:8px;">
+      Stores only positions of the minority value. 1 non-null → store [37].
+    </div>
+    <div style="font-size:10px; color:#484f58; margin-bottom:4px;">On disk:</div>
+    <div style="display:flex; gap:8px; align-items: center; margin:8px 0;">
+      <div style="display:flex; gap:2px; align-items:center;">
+        <div class="cell cell-bool-t" style="width:80px; font-size:10px;">sparseValue_<br>= true</div>
+      </div>
+      <div style="color:#30363d;">+</div>
+      <div style="display:flex; gap:2px; align-items:center;">
+        <div class="cell cell-idx" style="width:80px; font-size:10px;">indices<br>[37]</div>
+      </div>
+    </div>
+    <div style="margin-top:8px; font-size:11px; color:#3fb950;">
+      1 byte (sparseValue) + ~4 bytes (one uint32 index). Done.
+    </div>
+  </div>
+</div>
+
+<div class="note-box">
+  <strong>sparseValue_</strong> tells you what the stored indices mean:<br>
+  &nbsp;&nbsp;• <code>sparseValue_ = true</code> → indices point to non-null (true) rows. Used when non-nulls are rare.<br>
+  &nbsp;&nbsp;• <code>sparseValue_ = false</code> → indices point to null (false) rows. Used when nulls are rare.
+</div>
+
+<!-- Bar chart: scaling comparison -->
+<h3>Storage comparison as data grows</h3>
+
+<div class="bar-chart">
+  <div style="font-size:11px; color:#484f58; margin-bottom:12px;">
+    All examples: 1 non-null row. Only the total row count changes.
+  </div>
+
+  <!-- 50 rows -->
+  <div class="bar-row">
+    <div class="bar-label">50 rows</div>
+    <div class="bar-track">
+      <div class="bar-fill trivial" style="width: 70%;">TrivialEncoding: 7 bytes (50 bits)</div>
+    </div>
+    <div class="bar-value"></div>
+  </div>
+  <div class="bar-row">
+    <div class="bar-label"></div>
+    <div class="bar-track">
+      <div class="bar-fill sparse" style="width: 50%;">SparseBool: ~5 bytes (1 index)</div>
+    </div>
+    <div class="bar-value" style="color:#3fb950;">1.4x smaller</div>
+  </div>
+
+  <div style="height:12px;"></div>
+
+  <!-- 1K rows -->
+  <div class="bar-row">
+    <div class="bar-label">1,000 rows</div>
+    <div class="bar-track">
+      <div class="bar-fill trivial" style="width: 80%;">Trivial: 125 bytes (1,000 bits)</div>
+    </div>
+    <div class="bar-value"></div>
+  </div>
+  <div class="bar-row">
+    <div class="bar-label"></div>
+    <div class="bar-track">
+      <div class="bar-fill sparse" style="width: 5%;">~5 B</div>
+    </div>
+    <div class="bar-value" style="color:#3fb950;">25x smaller</div>
+  </div>
+
+  <div style="height:12px;"></div>
+
+  <!-- 1M rows -->
+  <div class="bar-row">
+    <div class="bar-label">1,000,000 rows</div>
+    <div class="bar-track">
+      <div class="bar-fill trivial" style="width: 90%;">Trivial: 122 KB (1M bits)</div>
+    </div>
+    <div class="bar-value"></div>
+  </div>
+  <div class="bar-row">
+    <div class="bar-label"></div>
+    <div class="bar-track">
+      <div class="bar-fill sparse" style="width: 1%;"></div>
+    </div>
+    <div class="bar-value" style="color:#3fb950;">~5 B — 25,000x smaller</div>
+  </div>
+
+  <div style="height:12px;"></div>
+
+  <!-- 2.9B rows (real case) -->
+  <div class="bar-row">
+    <div class="bar-label" style="color:#58a6ff;">2.9B rows (your case)</div>
+    <div class="bar-track">
+      <div class="bar-fill waste" style="width: 95%;">Trivial: 345 MB (2.9B bits)</div>
+    </div>
+    <div class="bar-value" style="color:#f85149;">345 MB</div>
+  </div>
+  <div class="bar-row">
+    <div class="bar-label" style="color:#58a6ff;">258K non-nulls</div>
+    <div class="bar-track">
+      <div class="bar-fill sparse" style="width: 3%;">SparseBool</div>
+    </div>
+    <div class="bar-value" style="color:#3fb950;">~750 KB — 460x smaller</div>
+  </div>
+</div>
+
+<div class="note-box">
+  <strong>When does SparseBool win?</strong> When the minority fraction &lt; <code>1/lg(n)</code>.<br>
+  For n=2.9B: threshold ≈ 1/lg(2.9B) ≈ 1/31 ≈ <strong>3.2%</strong>.<br>
+  Your case: 258K / 2.9B = <strong>0.009%</strong> — well below threshold.<br><br>
+  <strong>When does Trivial win?</strong> When null rate is close to 50%. Both true and false positions
+  are equally frequent, so storing indices costs more than storing all bits.
+</div>
+</div>
+
+
+
+
+<script>
+// Generate the 50-cell grids
+function makeGrid(containerId, cellFn) {
+  const container = document.getElementById(containerId);
+  for (let i = 0; i < 50; i++) {
+    const div = document.createElement('div');
+    div.className = 'cell ' + cellFn(i);
+    div.textContent = cellFn === logicalCell ? (i === 37 ? '42' : '') : cellFn(i, true);
+    container.appendChild(div);
+  }
+}
+
+function logicalCell(i) {
+  return i === 37 ? 'cell-highlight' : 'cell-null';
+}
+
+function nullsBoolCell(i, getText) {
+  if (getText === true) return i === 37 ? 'T' : 'F';
+  return i === 37 ? 'cell-bool-t' : 'cell-bool-f';
+}
+
+function trivialBitsCell(i, getText) {
+  if (getText === true) return i === 37 ? '1' : '0';
+  return i === 37 ? 'cell-bit-1' : 'cell-bit-0';
+}
+
+function outputBitmapCell(i, getText) {
+  if (getText === true) return i === 37 ? '1' : '0';
+  return i === 37 ? 'cell-bit-1' : 'cell-bit-0';
+}
+
+// Logical column
+const lg = document.getElementById('logical-grid');
+for (let i = 0; i < 50; i++) {
+  const d = document.createElement('div');
+  d.className = 'cell ' + (i === 37 ? 'cell-highlight' : 'cell-null');
+  d.textContent = i === 37 ? '42' : '';
+  d.title = 'row ' + i;
+  lg.appendChild(d);
+}
+
+// nulls_ bools
+const nb = document.getElementById('nulls-bool-grid');
+for (let i = 0; i < 50; i++) {
+  const d = document.createElement('div');
+  d.className = 'cell ' + (i === 37 ? 'cell-bool-t' : 'cell-bool-f');
+  d.textContent = i === 37 ? 'T' : 'F';
+  d.title = 'row ' + i;
+  nb.appendChild(d);
+}
+
+// TrivialEncoding bits
+const tb = document.getElementById('trivial-bits-grid');
+for (let i = 0; i < 50; i++) {
+  const d = document.createElement('div');
+  d.className = 'cell ' + (i === 37 ? 'cell-bit-1' : 'cell-waste');
+  d.textContent = i === 37 ? '1' : '0';
+  d.title = 'bit ' + i;
+  tb.appendChild(d);
+}
+
+// Output bitmap
+const ob = document.getElementById('output-bitmap-grid');
+for (let i = 0; i < 50; i++) {
+  const d = document.createElement('div');
+  d.className = 'cell ' + (i === 37 ? 'cell-bit-1' : 'cell-bit-0');
+  d.textContent = i === 37 ? '1' : '0';
+  d.title = 'bit ' + i;
+  ob.appendChild(d);
+}
+
+// Tabs
+function showTab(id) {
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  event.target.classList.add('active');
+}
+</script>
+
+</body>
+</html>
