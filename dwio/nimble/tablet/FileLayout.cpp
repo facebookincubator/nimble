@@ -18,6 +18,7 @@
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "velox/common/file/FileSystems.h"
+#include "velox/common/io/Options.h"
 
 #include <numeric>
 
@@ -26,7 +27,16 @@ namespace facebook::nimble {
 FileLayout FileLayout::create(
     std::shared_ptr<velox::ReadFile> file,
     velox::memory::MemoryPool* pool) {
-  auto tablet = TabletReader::create(std::move(file), pool, {});
+  velox::io::IoStatistics dataStats;
+  velox::io::IoStatistics metadataStats;
+  velox::io::IoStatistics indexStats;
+  velox::io::ReaderOptions readerOptions(pool);
+  readerOptions.setDataIoStats(&dataStats);
+  readerOptions.setMetadataIoStats(&metadataStats);
+  readerOptions.setIndexIoStats(&indexStats);
+  TabletReader::Options options;
+  options.ioOptions = readerOptions;
+  auto tablet = TabletReader::create(std::move(file), pool, options);
 
   FileLayout layout;
   layout.fileSize = tablet->fileSize();

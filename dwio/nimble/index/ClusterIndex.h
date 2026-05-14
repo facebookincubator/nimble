@@ -26,7 +26,6 @@
 #include "dwio/nimble/index/IndexTypes.h"
 #include "dwio/nimble/index/KeyChunkDecoder.h"
 #include "dwio/nimble/index/SortOrder.h"
-#include "dwio/nimble/tablet/Callbacks.h"
 #include "dwio/nimble/tablet/ClusterIndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "dwio/nimble/tablet/MetadataCache.h"
@@ -35,9 +34,11 @@
 
 namespace facebook::nimble {
 class Encoding;
+class MetadataInput;
 } // namespace facebook::nimble
 
 namespace facebook::velox::dwio::common {
+class BufferedInput;
 class SeekableInputStream;
 } // namespace facebook::velox::dwio::common
 
@@ -72,15 +73,12 @@ class ClusterIndex : public IndexLookup {
   ~ClusterIndex() override;
 
   /// @param rootSection Root index section from the file footer.
-  /// @param loadMetadata Callback to load partition metadata on demand.
-  /// @param loadData Optional callback for row-level precision.
-  ///        When null, lookup() returns chunk-level precision.
-  /// @param pool Memory pool. Required when loadData is provided.
+  /// Creates with Options — index creates its own MetadataInput and data
+  /// input internally with index-specific IO stats.
   static std::unique_ptr<ClusterIndex> create(
       Section rootSection,
-      LoadMetadataFn loadMetadata,
-      LoadDataFn loadData,
-      velox::memory::MemoryPool* pool);
+      velox::memory::MemoryPool* pool,
+      const Options& options);
 
   const std::vector<std::string>& indexColumns() const override {
     return indexColumns_;
@@ -147,9 +145,9 @@ class ClusterIndex : public IndexLookup {
  private:
   ClusterIndex(
       Section rootSection,
-      LoadMetadataFn loadMetadata,
-      LoadDataFn loadData,
-      velox::memory::MemoryPool* pool);
+      velox::memory::MemoryPool* pool,
+      std::shared_ptr<MetadataInput> metadataInput,
+      std::unique_ptr<velox::dwio::common::BufferedInput> dataInput);
 
   // Cached decoded chunk, one per IndexPartition.
   struct DecodedChunk {
@@ -305,10 +303,8 @@ class ClusterIndex : public IndexLookup {
   // Total number of rows in the file.
   const uint32_t numRows_;
 
-  const LoadDataFn loadData_;
-  const LoadMetadataFn loadMetadata_;
-
-  /// Memory pool for allocations.
+  const std::shared_ptr<MetadataInput> metadataInput_;
+  const std::unique_ptr<velox::dwio::common::BufferedInput> dataInput_;
   velox::memory::MemoryPool* const pool_;
 
   // --- Mutable state ---

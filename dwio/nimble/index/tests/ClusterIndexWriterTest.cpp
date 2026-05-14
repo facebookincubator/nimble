@@ -23,9 +23,14 @@
 #include "dwio/nimble/index/ClusterIndexWriter.h"
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/SortOrder.h"
+#include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
+#include "dwio/nimble/tablet/MetadataInput.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/common/io/IoStatistics.h"
+#include "velox/common/io/Options.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/dwio/common/BufferedInput.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 #include "velox/serializers/KeyEncoder.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
@@ -1114,28 +1119,20 @@ TEST_P(ClusterIndexWriterChunkTest, maxRowsPerKeyChunk) {
           toBufferPtr(rootIndexData, pool_.get()),
           CompressionType::Uncompressed,
           pool_.get()))};
-  auto partData = std::make_shared<std::string>(partitionMetadata[0]);
-  auto streamData = std::make_shared<std::string>(keyStreamData);
+  auto metadataFile =
+      std::make_shared<velox::InMemoryReadFile>(partitionMetadata[0]);
+  velox::io::IoStatistics ioStats;
+  velox::io::ReaderOptions readerOptions(pool_.get());
+  readerOptions.setMetadataIoStats(&ioStats);
+  auto metadataInput = MetadataInput::create(metadataFile.get(), readerOptions);
+  auto dataInput = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(keyStreamData), *pool_);
 
-  auto clusterIndex = ClusterIndex::create(
+  auto clusterIndex = test::ClusterIndexTestHelper::create(
       std::move(rootSection),
-      [partData, this](const MetadataSection& section) {
-        return std::make_unique<MetadataBuffer>(MetadataBuffer::decompress(
-            toBufferPtr(
-                std::string_view(
-                    partData->data() + section.offset(), section.size()),
-                pool_.get()),
-            section.compressionType(),
-            pool_.get()));
-      },
-      [streamData](const velox::common::Region& region)
-          -> std::unique_ptr<velox::dwio::common::SeekableInputStream> {
-        return std::make_unique<velox::dwio::common::SeekableArrayInputStream>(
-            reinterpret_cast<const unsigned char*>(
-                streamData->data() + region.offset),
-            region.length);
-      },
-      pool_.get());
+      pool_.get(),
+      std::move(metadataInput),
+      std::move(dataInput));
 
   // Verify partition count and layout.
   EXPECT_EQ(clusterIndex->numPartitions(), 1);

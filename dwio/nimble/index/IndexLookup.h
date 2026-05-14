@@ -31,6 +31,24 @@
 #include "velox/common/base/RuntimeMetrics.h"
 #include "velox/serializers/KeyEncoder.h"
 
+namespace facebook::nimble {
+class MetadataInput;
+} // namespace facebook::nimble
+
+namespace facebook::velox {
+class ReadFile;
+struct FileHandle;
+namespace cache {
+class AsyncDataCache;
+} // namespace cache
+namespace dwio::common {
+class BufferedInput;
+} // namespace dwio::common
+namespace io {
+class ReaderOptions;
+} // namespace io
+} // namespace facebook::velox
+
 namespace facebook::nimble::index {
 
 /// Type of index.
@@ -62,6 +80,22 @@ std::ostream& operator<<(std::ostream& out, IndexType indexType);
 ///   bound. Only supported on cluster index.
 class IndexLookup {
  public:
+  /// IO options for index lookup creation. fileHandle and cache must
+  /// both be set (cached path) or both null (direct path).
+  struct Options {
+    /// File to read index metadata and key stream data from.
+    std::shared_ptr<velox::ReadFile> file;
+    /// IO settings: coalescing, executor, and index IO stats.
+    const velox::io::ReaderOptions* ioOptions{nullptr};
+    /// File handle for cache key. Set with cache for cached path.
+    const velox::FileHandle* fileHandle{nullptr};
+    /// Data cache for index metadata. Set with fileHandle for cached path.
+    velox::cache::AsyncDataCache* cache{nullptr};
+
+    /// Validates options consistency.
+    void validate() const;
+  };
+
   /// Batch lookup request. Contains encoded keys or key bounds and options.
   class LookupRequest {
    public:
@@ -225,6 +259,15 @@ class IndexLookup {
  private:
   const IndexType type_;
 };
+
+/// Creates a MetadataInput (cached or direct) from index options.
+std::unique_ptr<MetadataInput> createIndexMetadataInput(
+    const IndexLookup::Options& options);
+
+/// Creates a BufferedInput (cached or direct) from index options.
+std::unique_ptr<velox::dwio::common::BufferedInput> createIndexDataInput(
+    const IndexLookup::Options& options,
+    velox::memory::MemoryPool& pool);
 
 inline std::string toString(IndexLookup::LookupRequest::Mode mode) {
   switch (mode) {

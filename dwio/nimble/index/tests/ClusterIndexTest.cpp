@@ -83,16 +83,12 @@ class ClusterIndexTest : public ClusterIndexTestBase {
     return result;
   }
 
-  // Creates a LoadDataFn from key stream data.
-  LoadDataFn createLoadDataFn(const std::string& streamData) {
-    auto data = std::make_shared<std::string>(streamData);
-    return [data](const velox::common::Region& region)
-               -> std::unique_ptr<SeekableInputStream> {
-      return std::make_unique<SeekableArrayInputStream>(
-          reinterpret_cast<const unsigned char*>(data->data() + region.offset),
-          region.length > 0 ? region.length : data->size() - region.offset);
-    };
+  velox::ReadFile* createKeyStreamFile(const std::string& streamData) {
+    keyStreamFile_ = std::make_shared<velox::InMemoryReadFile>(streamData);
+    return keyStreamFile_.get();
   }
+
+  std::shared_ptr<velox::ReadFile> keyStreamFile_;
 
   // Creates a Stripe with only the keyStream specified.
   Stripe createStripeWithKeys(const KeyStream& keyStream) {
@@ -209,8 +205,8 @@ TEST_F(ClusterIndexTest, lookup) {
 
   auto indexBuffers =
       createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto clusterIndex = createClusterIndex(
-      indexBuffers, createLoadDataFn(combinedStream), pool_.get());
+  auto clusterIndex =
+      createClusterIndex(indexBuffers, createKeyStreamFile(combinedStream));
 
   // Partition 0: rows 0-1 (keys "ccc", "fff")
   // Partition 1: rows 2 (key "iii")
@@ -304,8 +300,8 @@ TEST_F(ClusterIndexTest, lookupAllStripes) {
 
   auto indexBuffers =
       createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto clusterIndex = createClusterIndex(
-      indexBuffers, createLoadDataFn(combinedStream), pool_.get());
+  auto clusterIndex =
+      createClusterIndex(indexBuffers, createKeyStreamFile(combinedStream));
 
   // Partition 0: rows 0-1 (keys "ccc", "fff")
   // Partition 1: row 2 (key "iii")
@@ -398,8 +394,8 @@ TEST_F(ClusterIndexTest, lookupWithSameKeys) {
 
   auto indexBuffers =
       createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto clusterIndex = createClusterIndex(
-      indexBuffers, createLoadDataFn(combinedStream), pool_.get());
+  auto clusterIndex =
+      createClusterIndex(indexBuffers, createKeyStreamFile(combinedStream));
 
   // Partition 0: rows 0-1 (both "aaa"), Partition 1: row 2 ("aaa").
   struct TestCase {
@@ -469,8 +465,8 @@ TEST_F(ClusterIndexTest, lookupWithKeyStream) {
 
   auto indexBuffers =
       createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto clusterIndex = createClusterIndex(
-      indexBuffers, createLoadDataFn(encodedStream.data), pool_.get());
+  auto clusterIndex =
+      createClusterIndex(indexBuffers, createKeyStreamFile(encodedStream.data));
 
   struct TestCase {
     std::string lookupKey;
@@ -549,8 +545,8 @@ TEST_F(ClusterIndexTest, lookupWithKeyStreamMultiplePartitions) {
 
   auto indexBuffers =
       createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto clusterIndex = createClusterIndex(
-      indexBuffers, createLoadDataFn(combinedStream), pool_.get());
+  auto clusterIndex =
+      createClusterIndex(indexBuffers, createKeyStreamFile(combinedStream));
 
   struct TestCase {
     std::string lookupKey;
@@ -829,7 +825,7 @@ class ClusterIndexLookupTest : public ClusterIndexTest,
     auto indexBuffers =
         createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
     clusterIndex_ = createClusterIndex(
-        indexBuffers, createLoadDataFn(encodedStream_.data), pool_.get());
+        indexBuffers, createKeyStreamFile(encodedStream_.data));
   }
 
   EncodedKeyStream encodedStream_;

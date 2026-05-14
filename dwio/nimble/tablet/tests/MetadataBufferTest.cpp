@@ -21,7 +21,6 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/tablet/Compression.h"
-#include "folly/io/IOBuf.h"
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileIds.h"
 #include "velox/common/caching/SsdCache.h"
@@ -123,23 +122,17 @@ TEST_F(MetadataBufferTest, decompressBufferPtr) {
   }
 }
 
-TEST_F(MetadataBufferTest, decompressIOBuf) {
+TEST_F(MetadataBufferTest, decompressStringView) {
   struct TestParam {
     std::string inputData;
     nimble::CompressionType compressionType;
     bool compressible;
-    std::string prefix;
-    std::string suffix;
-    bool chained;
     std::string debugString() const {
       return fmt::format(
-          "size {}, compressionType {}, compressible {}, prefix '{}', suffix '{}', chained {}",
+          "size {}, compressionType {}, compressible {}",
           inputData.size(),
           static_cast<int>(compressionType),
-          compressible,
-          prefix,
-          suffix,
-          chained);
+          compressible);
     }
   };
   std::vector<TestParam> testSettings;
@@ -150,17 +143,7 @@ TEST_F(MetadataBufferTest, decompressIOBuf) {
       const bool compressible =
           compressionType == nimble::CompressionType::Uncompressed ||
           nimble::ZstdCompression::compress(inputData, pool_.get()).has_value();
-      for (bool withOffset : {false, true}) {
-        for (bool chained : {false, true}) {
-          testSettings.push_back(
-              {inputData,
-               compressionType,
-               compressible,
-               withOffset ? "PREFIX" : "",
-               withOffset ? "SUFFIX" : "",
-               chained});
-        }
-      }
+      testSettings.push_back({inputData, compressionType, compressible});
     }
   }
   for (const auto& testData : testSettings) {
@@ -184,24 +167,9 @@ TEST_F(MetadataBufferTest, decompressIOBuf) {
       rawData = testData.inputData;
     }
 
-    const auto offset = testData.prefix.size();
-    const auto length = rawData.size();
-    const std::string fullData = testData.prefix + rawData + testData.suffix;
-
-    std::unique_ptr<folly::IOBuf> iobuf;
-    if (testData.chained && fullData.size() >= 2) {
-      const auto mid = fullData.size() / 2;
-      iobuf = folly::IOBuf::copyBuffer(fullData.data(), mid);
-      iobuf->appendToChain(
-          folly::IOBuf::copyBuffer(
-              fullData.data() + mid, fullData.size() - mid));
-    } else {
-      iobuf = folly::IOBuf::copyBuffer(fullData);
-    }
-
     nimble::MetadataBuffer buffer(
         nimble::MetadataBuffer::decompress(
-            *iobuf, offset, length, testData.compressionType, pool_.get()));
+            rawData, testData.compressionType, pool_.get()));
 
     auto content = buffer.content();
     EXPECT_EQ(content, testData.inputData);

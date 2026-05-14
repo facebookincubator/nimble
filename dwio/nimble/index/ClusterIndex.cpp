@@ -23,9 +23,10 @@
 #include "dwio/nimble/index/KeyChunkDecoder.h"
 #include "dwio/nimble/tablet/ClusterIndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
+#include "dwio/nimble/tablet/MetadataInput.h"
 #include "folly/ScopeGuard.h"
 #include "folly/json/json.h"
-#include "velox/dwio/common/SeekableInputStream.h"
+#include "velox/dwio/common/BufferedInput.h"
 
 namespace facebook::nimble::index {
 
@@ -135,21 +136,25 @@ ClusterIndex::~ClusterIndex() = default;
 
 std::unique_ptr<ClusterIndex> ClusterIndex::create(
     Section rootSection,
-    LoadMetadataFn loadMetadata,
-    LoadDataFn loadData,
-    velox::memory::MemoryPool* pool) {
+    velox::memory::MemoryPool* pool,
+    const Options& options) {
+  options.validate();
+  NIMBLE_CHECK_EQ(
+      static_cast<const void*>(&options.ioOptions->memoryPool()),
+      static_cast<const void*>(pool),
+      "ioOptions pool must match the provided pool");
   return std::unique_ptr<ClusterIndex>(new ClusterIndex(
       std::move(rootSection),
-      std::move(loadMetadata),
-      std::move(loadData),
-      pool));
+      pool,
+      createIndexMetadataInput(options),
+      createIndexDataInput(options, *pool)));
 }
 
 ClusterIndex::ClusterIndex(
     Section rootSection,
-    LoadMetadataFn loadMetadata,
-    LoadDataFn loadData,
-    velox::memory::MemoryPool* pool)
+    velox::memory::MemoryPool* pool,
+    std::shared_ptr<MetadataInput> metadataInput,
+    std::unique_ptr<velox::dwio::common::BufferedInput> dataInput)
     : IndexLookup{IndexType::Cluster},
       rootSection_{std::move(rootSection)},
       indexRoot_{getIndexRoot(rootSection_)},
@@ -161,8 +166,8 @@ ClusterIndex::ClusterIndex(
       partitionKeys_{getPartitionLastKeys(indexRoot_)},
       partitionRows_{getPartitionRows(indexRoot_)},
       numRows_{partitionRows_.back()},
-      loadData_{std::move(loadData)},
-      loadMetadata_{std::move(loadMetadata)},
+      metadataInput_{std::move(metadataInput)},
+      dataInput_{std::move(dataInput)},
       pool_{pool},
       partitions_(numPartitions_) {
   NIMBLE_CHECK(!indexColumns_.empty());
@@ -170,8 +175,8 @@ ClusterIndex::ClusterIndex(
   NIMBLE_CHECK_EQ(partitionRows_.size(), numPartitions_ + 1);
   NIMBLE_CHECK_EQ(partitionRows_.front(), 0);
   NIMBLE_CHECK_EQ(partitionKeys_.size(), numPartitions_);
-  NIMBLE_CHECK_NOT_NULL(loadMetadata_);
-  NIMBLE_CHECK_NOT_NULL(loadData_);
+  NIMBLE_CHECK_NOT_NULL(metadataInput_);
+  NIMBLE_CHECK_NOT_NULL(dataInput_);
   NIMBLE_CHECK_NOT_NULL(pool_);
 }
 
@@ -397,13 +402,12 @@ const ClusterIndex::IndexPartition* ClusterIndex::loadPartition(
   NIMBLE_CHECK_LT(partitionId, numPartitions_);
   auto& partition = partitions_[partitionId];
   if (partition == nullptr) {
-    NIMBLE_CHECK_NOT_NULL(
-        loadMetadata_,
-        "No metadata loader — cannot load partition {} on demand",
-        partitionId);
     const auto section = partitionSection(partitionId);
-    partition =
-        std::make_unique<IndexPartition>(partitionId, loadMetadata_(section));
+    auto handle = metadataInput_->enqueue(section);
+    MetadataInput::LoadGuard guard(metadataInput_.get());
+    auto result = handle.read();
+    partition = std::make_unique<IndexPartition>(
+        partitionId, std::make_unique<MetadataBuffer>(std::move(*result)));
   }
   return partition.get();
 }
@@ -468,8 +472,13 @@ const ClusterIndex::DecodedChunk& ClusterIndex::getDecodedChunk(
   decodedChunk.reset(chunkLocation.chunkOffset);
 
   const auto region = partition->chunkStreamRegion(chunkLocation);
-  decodedChunk.data =
-      decodeKeyChunk(loadData_(region), *pool_, partition->dataBuffer);
+  decodedChunk.data = decodeKeyChunk(
+      dataInput_->read(
+          region.offset,
+          region.length,
+          velox::dwio::common::LogType::GROUP_INDEX),
+      *pool_,
+      partition->dataBuffer);
   NIMBLE_CHECK_EQ(
       decodedChunk.data->encoding->dataType(),
       DataType::String,

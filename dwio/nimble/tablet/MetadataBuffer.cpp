@@ -17,7 +17,6 @@
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/tablet/Compression.h"
-#include "folly/io/Cursor.h"
 
 namespace facebook::nimble {
 
@@ -119,34 +118,17 @@ velox::BufferPtr MetadataBuffer::decompress(
 }
 
 velox::BufferPtr MetadataBuffer::decompress(
-    const folly::IOBuf& iobuf,
-    size_t offset,
-    size_t length,
+    std::string_view data,
     CompressionType type,
     velox::memory::MemoryPool* pool) {
-  folly::io::Cursor cursor(&iobuf);
-  cursor.skip(offset);
-
   if (type == CompressionType::Uncompressed) {
-    auto buffer = velox::AlignedBuffer::allocateExact<char>(length, pool);
-    cursor.pull(buffer->asMutable<char>(), length);
-    return buffer;
+    return copyToBuffer(data.data(), data.size(), pool);
   }
-
   NIMBLE_CHECK_EQ(
       static_cast<int>(type),
       static_cast<int>(CompressionType::Zstd),
       "Unsupported metadata compression type");
-
-  const auto contiguous = cursor.peekBytes();
-  if (contiguous.size() >= length) {
-    return decompressZstd(
-        {reinterpret_cast<const char*>(contiguous.data()), length}, pool);
-  }
-
-  auto buffer = velox::AlignedBuffer::allocateExact<char>(length, pool);
-  cursor.pull(buffer->asMutable<char>(), length);
-  return decompressZstd({buffer->as<char>(), buffer->size()}, pool);
+  return decompressZstd(data, pool);
 }
 
 std::unique_ptr<MetadataBuffer> MetadataBuffer::slice(

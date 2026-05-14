@@ -29,6 +29,7 @@
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/VeloxWriterOptions.h"
+#include "velox/dwio/common/BufferedInput.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 
@@ -166,6 +167,18 @@ Stream createStream(Buffer& buffer, const StreamSpec& spec);
 /// for testing purposes. This is a friend class of ClusterIndex.
 class ClusterIndexTestHelper {
  public:
+  static std::unique_ptr<ClusterIndex> create(
+      Section rootSection,
+      velox::memory::MemoryPool* pool,
+      std::shared_ptr<MetadataInput> metadataInput,
+      std::unique_ptr<velox::dwio::common::BufferedInput> dataInput) {
+    return std::unique_ptr<ClusterIndex>(new ClusterIndex(
+        std::move(rootSection),
+        pool,
+        std::move(metadataInput),
+        std::move(dataInput)));
+  }
+
   explicit ClusterIndexTestHelper(const ClusterIndex* clusterIndex)
       : clusterIndex_(clusterIndex) {}
 

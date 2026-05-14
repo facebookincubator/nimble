@@ -28,6 +28,8 @@
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "velox/common/file/FileSystems.h"
+#include "velox/common/io/IoStatistics.h"
+#include "velox/common/io/Options.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/vector/FlatVector.h"
@@ -95,7 +97,13 @@ class DenseIndexRegistryTest : public ::testing::Test {
   std::shared_ptr<TabletReader> openTablet(const std::string& filePath) {
     auto fs = velox::filesystems::getFileSystem(filePath, {});
     auto readFile = fs->openFileForRead(filePath);
-    return TabletReader::create(std::move(readFile), leafPool_.get(), {});
+    ioStats_ = std::make_unique<velox::io::IoStatistics>();
+    readerOptions_ =
+        std::make_unique<velox::io::ReaderOptions>(leafPool_.get());
+    readerOptions_->setMetadataIoStats(ioStats_.get());
+    TabletReader::Options options;
+    options.ioOptions = *readerOptions_;
+    return TabletReader::create(std::move(readFile), leafPool_.get(), options);
   }
 
   std::string tempFilePath(const std::string& name) {
@@ -106,15 +114,18 @@ class DenseIndexRegistryTest : public ::testing::Test {
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
   std::shared_ptr<velox::common::testutil::TempDirectoryPath> tempDir_;
   std::deque<std::string> valueStrings_;
+  std::unique_ptr<velox::io::IoStatistics> ioStats_;
+  std::unique_ptr<velox::io::ReaderOptions> readerOptions_;
 };
 
 TEST_F(DenseIndexRegistryTest, emptyRegistry) {
+  auto file = std::make_shared<velox::InMemoryReadFile>(std::string{});
+  velox::io::IoStatistics ioStats;
+  velox::io::ReaderOptions ioOptions(leafPool_.get());
+  ioOptions.setMetadataIoStats(&ioStats);
+  IndexLookup::Options options{.file = file, .ioOptions = &ioOptions};
   auto registry = DenseIndexRegistry::create(
-      std::nullopt,
-      std::nullopt,
-      [](const MetadataSection&) { return nullptr; },
-      [](const velox::common::Region&) { return nullptr; },
-      leafPool_.get());
+      std::nullopt, std::nullopt, options, leafPool_.get());
   EXPECT_EQ(registry, nullptr);
 }
 

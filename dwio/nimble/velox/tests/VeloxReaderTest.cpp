@@ -35,13 +35,13 @@
 #include "velox/common/Casts.h"
 #include "velox/common/base/BitUtil.h"
 #include "velox/common/caching/AsyncDataCache.h"
+#include "velox/common/caching/FileHandle.h"
 #include "velox/common/caching/FileIds.h"
 #include "velox/common/caching/ScanTracker.h"
 #include "velox/common/io/IoStatistics.h"
+#include "velox/common/io/Options.h"
 #include "velox/common/memory/MallocAllocator.h"
-#include "velox/dwio/common/CachedBufferedInput.h"
 #include "velox/dwio/common/ColumnSelector.h"
-#include "velox/dwio/common/DirectBufferedInput.h"
 #include "velox/type/CppToType.h"
 #include "velox/type/Type.h"
 #include "velox/vector/BaseVector.h"
@@ -523,41 +523,21 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
       velox::memory::MemoryPool* pool) {
     nimble::TabletReader::Options tabletOptions;
     tabletOptions.pinFileMetadata = pinFileMetadata();
+    ioReaderOptions_ = std::make_unique<velox::io::ReaderOptions>(pool);
+    ioReaderOptions_->setDataIoStats(dataIoStats_.get());
+    ioReaderOptions_->setMetadataIoStats(metadataIoStats_.get());
+    tabletOptions.ioOptions = *ioReaderOptions_;
     if (enableCache() || pinFileMetadata()) {
       auto& ids = velox::fileIds();
       auto fileIdStr = fmt::format("testFile_{}", nextFileId_++);
-      velox::StringIdLease fileId(ids, fileIdStr);
-      velox::StringIdLease groupId(ids, "testGroup");
-      velox::io::ReaderOptions ioReaderOpts(pool);
-      ioReaderOpts.setDataIoStats(dataIoStats_.get());
-      ioReaderOpts.setMetadataIoStats(metadataIoStats_.get());
+      fileHandle_ = std::make_unique<velox::FileHandle>();
+      fileHandle_->file = readFile;
+      fileHandle_->uuid = velox::StringIdLease(ids, fileIdStr);
+      fileHandle_->groupId = velox::StringIdLease(ids, "testGroup");
       if (cache_ != nullptr) {
-        cachedInput_ =
-            std::make_unique<velox::dwio::common::CachedBufferedInput>(
-                readFile,
-                velox::dwio::common::MetricsLog::voidLog(),
-                std::move(fileId),
-                cache_.get(),
-                scanTracker_,
-                std::move(groupId),
-                dataIoStats_,
-                nullptr, // ioStats
-                ioExecutor_.get(),
-                ioReaderOpts);
-      } else {
-        cachedInput_ =
-            std::make_unique<velox::dwio::common::DirectBufferedInput>(
-                readFile,
-                velox::dwio::common::MetricsLog::voidLog(),
-                std::move(fileId),
-                scanTracker_,
-                std::move(groupId),
-                dataIoStats_,
-                nullptr, // ioStats
-                ioExecutor_.get(),
-                ioReaderOpts);
+        tabletOptions.cache = cache_.get();
+        tabletOptions.fileHandle = fileHandle_.get();
       }
-      tabletOptions.bufferedInput = cachedInput_.get();
     }
     return nimble::TabletReader::create(readFile, pool, tabletOptions);
   }
@@ -1382,7 +1362,8 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
   std::shared_ptr<velox::cache::ScanTracker> scanTracker_;
   std::unique_ptr<folly::CPUThreadPoolExecutor> ioExecutor_;
   // Held alive for the duration of createTablet/createVeloxReader.
-  std::unique_ptr<velox::dwio::common::BufferedInput> cachedInput_;
+  std::unique_ptr<velox::FileHandle> fileHandle_;
+  std::unique_ptr<velox::io::ReaderOptions> ioReaderOptions_;
   uint64_t nextFileId_{0};
 };
 

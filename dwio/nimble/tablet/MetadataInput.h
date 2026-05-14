@@ -16,15 +16,21 @@
 #pragma once
 
 #include <memory>
+#include <span>
 #include <vector>
 
 #include <optional>
+#include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "folly/Range.h"
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/SsdCache.h"
 #include "velox/common/file/File.h"
 #include "velox/common/io/Options.h"
+
+namespace facebook::velox {
+struct FileHandle;
+} // namespace facebook::velox
 
 namespace facebook::nimble {
 
@@ -71,12 +77,23 @@ class MetadataHandle {
 /// NOTE: Not thread-safe. All calls must be serialized by the caller.
 class MetadataInput {
  public:
-  MetadataInput(
+  /// Creates a DirectMetadataInput for non-cached reads.
+  static std::unique_ptr<MetadataInput> create(
       velox::ReadFile* file,
-      velox::memory::MemoryPool* pool,
-      const velox::io::ReaderOptions& options);
+      const velox::io::ReaderOptions& readerOptions);
+
+  /// Creates a CachedMetadataInput using fileHandle->uuid as cache key.
+  static std::unique_ptr<MetadataInput> create(
+      const velox::FileHandle* fileHandle,
+      velox::cache::AsyncDataCache* cache,
+      const velox::io::ReaderOptions& readerOptions);
 
   virtual ~MetadataInput() = default;
+
+  /// Returns true if this MetadataInput is backed by a cache.
+  virtual bool cached() const {
+    return false;
+  }
 
   /// Enqueues a metadata section for coalesced IO. Returns a handle
   /// to retrieve the result later via handle.read().
@@ -89,7 +106,39 @@ class MetadataInput {
   /// Resets all internal state for the next round of enqueue/load/read.
   virtual void reset();
 
+  /// RAII guard that calls load() on construction and reset() on destruction.
+  class LoadGuard {
+   public:
+    explicit LoadGuard(MetadataInput* input) : input_{input} {
+      NIMBLE_CHECK_NOT_NULL(input_);
+      input_->load();
+    }
+
+    ~LoadGuard() {
+      input_->reset();
+    }
+
+    LoadGuard(const LoadGuard&) = delete;
+    LoadGuard& operator=(const LoadGuard&) = delete;
+
+   private:
+    MetadataInput* const input_;
+  };
+
+  /// Tries to find cached metadata at the given offset. Returns a
+  /// MetadataBuffer holding a cache pin if found, nullptr otherwise.
+  /// DirectMetadataInput always returns nullptr.
+  virtual std::unique_ptr<MetadataBuffer> findCachedMetadata(uint64_t offset);
+
+  /// Caches data at the given offset from multiple contiguous ranges.
+  /// Ranges are written sequentially into a single cache entry.
+  virtual void cacheMetadata(
+      uint64_t cacheOffset,
+      std::span<const std::string_view> ranges);
+
  protected:
+  MetadataInput(velox::ReadFile* file, const velox::io::ReaderOptions& options);
+
   struct LoadedSection {
     explicit LoadedSection(MetadataSection _section) : section{_section} {}
 
@@ -187,12 +236,14 @@ class MetadataInput {
 /// Direct metadata loading with IO coalescing, no caching.
 class DirectMetadataInput : public MetadataInput {
  public:
+  void load() override;
+
+ private:
+  friend class MetadataInput;
+
   DirectMetadataInput(
       velox::ReadFile* file,
-      velox::memory::MemoryPool* pool,
       const velox::io::ReaderOptions& options);
-
-  void load() override;
 
  protected:
   void prepareReadBuffers(const std::vector<uint32_t>& sectionIndices) override;
@@ -209,15 +260,19 @@ class DirectMetadataInput : public MetadataInput {
 /// Cache key is the compressed file offset.
 class CachedMetadataInput : public MetadataInput {
  public:
-  CachedMetadataInput(
-      velox::ReadFile* file,
-      velox::StringIdLease fileId,
-      velox::cache::AsyncDataCache* cache,
-      velox::memory::MemoryPool* pool,
-      const velox::io::ReaderOptions& options);
+  bool cached() const override {
+    return true;
+  }
 
   void load() override;
+
   void reset() override;
+
+  std::unique_ptr<MetadataBuffer> findCachedMetadata(uint64_t offset) override;
+
+  void cacheMetadata(
+      uint64_t cacheOffset,
+      std::span<const std::string_view> ranges) override;
 
  protected:
   void prepareReadBuffers(const std::vector<uint32_t>& sectionIndices) override;
@@ -254,6 +309,14 @@ class CachedMetadataInput : public MetadataInput {
       const MetadataSection& section,
       velox::cache::CachePin pin,
       velox::io::IoCounter& ioCounter);
+
+  friend class MetadataInput;
+
+  CachedMetadataInput(
+      velox::ReadFile* file,
+      velox::StringIdLease fileId,
+      velox::cache::AsyncDataCache* cache,
+      const velox::io::ReaderOptions& options);
 
   velox::cache::AsyncDataCache* const cache_;
   const velox::StringIdLease fileId_;

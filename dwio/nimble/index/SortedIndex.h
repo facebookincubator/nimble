@@ -25,9 +25,8 @@
 
 #include "dwio/nimble/index/IndexLookup.h"
 #include "dwio/nimble/index/KeyChunkDecoder.h"
-#include "dwio/nimble/tablet/Callbacks.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
-#include "velox/dwio/common/SeekableInputStream.h"
+#include "velox/dwio/common/BufferedInput.h"
 
 namespace facebook::nimble::serialization {
 struct SortedIndex;
@@ -71,14 +70,14 @@ class SortedIndex : public IndexLookup {
   static std::unique_ptr<SortedIndex> create(
       std::vector<std::string> columns,
       std::unique_ptr<MetadataBuffer> indexMetadata,
-      LoadDataFn loadData,
+      std::shared_ptr<velox::dwio::common::BufferedInput> dataInput,
       velox::memory::MemoryPool* pool);
 
  private:
   SortedIndex(
       std::vector<std::string> columns,
       std::unique_ptr<MetadataBuffer> indexMetadata,
-      LoadDataFn loadData,
+      std::shared_ptr<velox::dwio::common::BufferedInput> dataInput,
       velox::memory::MemoryPool* pool);
 
   // Finds the chunk index for the given key via binary search on chunk keys.
@@ -144,8 +143,7 @@ class SortedIndex : public IndexLookup {
   velox::memory::MemoryPool* const pool_;
   const uint8_t rowIdWidth_;
 
-  // Callback to load key stream data from file by region.
-  const LoadDataFn loadData_;
+  const std::shared_ptr<velox::dwio::common::BufferedInput> dataInput_;
 
   // Parsed from the FlatBuffer.
   const serialization::SortedIndex* const sortedIndex_;

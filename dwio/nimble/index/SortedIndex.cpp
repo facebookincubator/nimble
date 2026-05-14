@@ -66,24 +66,27 @@ uint8_t getRowIdWidth(const MetadataBuffer& metadata) {
 SortedIndex::SortedIndex(
     std::vector<std::string> columns,
     std::unique_ptr<MetadataBuffer> indexMetadata,
-    LoadDataFn loadData,
+    std::shared_ptr<velox::dwio::common::BufferedInput> dataInput,
     velox::memory::MemoryPool* pool)
     : IndexLookup{IndexType::Sorted},
       columns_{std::move(columns)},
       indexMetadata_{std::move(indexMetadata)},
       pool_{pool},
       rowIdWidth_{getRowIdWidth(*indexMetadata_)},
-      loadData_{std::move(loadData)},
+      dataInput_{std::move(dataInput)},
       sortedIndex_{getSortedIndexRoot(*indexMetadata_)},
       numChunks_{sortedIndex_->chunk_keys()->size()} {}
 
 std::unique_ptr<SortedIndex> SortedIndex::create(
     std::vector<std::string> columns,
     std::unique_ptr<MetadataBuffer> indexMetadata,
-    LoadDataFn loadData,
+    std::shared_ptr<velox::dwio::common::BufferedInput> dataInput,
     velox::memory::MemoryPool* pool) {
   return std::unique_ptr<SortedIndex>(new SortedIndex(
-      std::move(columns), std::move(indexMetadata), std::move(loadData), pool));
+      std::move(columns),
+      std::move(indexMetadata),
+      std::move(dataInput),
+      pool));
 }
 
 std::string_view SortedIndex::chunkKey(uint32_t chunkIdx) const {
@@ -128,9 +131,13 @@ std::shared_ptr<DecodedKeyChunk> SortedIndex::loadChunk(
   const uint32_t chunkOffset = this->chunkOffset(chunkIdx);
   const uint32_t chunkSize = this->chunkSize(chunkIdx);
 
-  auto inputStream =
-      loadData_(velox::common::Region{streamOffset + chunkOffset, chunkSize});
-  return decodeKeyChunk(std::move(inputStream), *pool_, chunkBuffer_);
+  return decodeKeyChunk(
+      dataInput_->read(
+          streamOffset + chunkOffset,
+          chunkSize,
+          velox::dwio::common::LogType::FOOTER),
+      *pool_,
+      chunkBuffer_);
 }
 
 std::string_view SortedIndex::extractKey(

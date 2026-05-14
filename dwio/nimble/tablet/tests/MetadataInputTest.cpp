@@ -25,6 +25,7 @@
 #include "velox/common/base/CoalesceIo.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/caching/AsyncDataCache.h"
+#include "velox/common/caching/FileHandle.h"
 #include "velox/common/caching/FileIds.h"
 #include "velox/common/caching/SsdCache.h"
 #include "velox/common/caching/SsdFile.h"
@@ -38,6 +39,9 @@
 #include "velox/common/testutil/TestValue.h"
 
 #include "folly/executors/IOThreadPoolExecutor.h"
+#include "folly/synchronization/Baton.h"
+
+#include <thread>
 
 using namespace facebook;
 
@@ -237,21 +241,21 @@ TEST_F(DirectMetadataInputTest, enqueueLoadRead) {
     auto readFile = std::make_shared<velox::InMemoryReadFile>(fileContent);
 
     const auto options = makeReaderOptions();
-    nimble::DirectMetadataInput input(readFile.get(), pool_.get(), options);
-    nimble::test::MetadataInputTestHelper helper(&input);
+    auto input = nimble::MetadataInput::create(readFile.get(), options);
+    nimble::test::MetadataInputTestHelper helper(input.get());
 
     EXPECT_FALSE(helper.testingLoaded());
     EXPECT_EQ(helper.testingSectionCount(), 0);
 
     std::vector<nimble::MetadataHandle> handles;
     for (uint32_t i = 0; i < sections.size(); ++i) {
-      handles.push_back(input.enqueue(sections[i]));
+      handles.push_back(input->enqueue(sections[i]));
       EXPECT_EQ(helper.testingSectionCount(), i + 1);
       EXPECT_FALSE(helper.testingHasBuffer(i));
     }
     EXPECT_FALSE(helper.testingLoaded());
 
-    input.load();
+    input->load();
     EXPECT_TRUE(helper.testingLoaded());
     for (uint32_t i = 0; i < sections.size(); ++i) {
       EXPECT_TRUE(helper.testingHasBuffer(i));
@@ -289,12 +293,12 @@ TEST_F(DirectMetadataInputTest, reverseEnqueueOrder) {
   auto readFile = std::make_shared<velox::InMemoryReadFile>(fileContent);
 
   const auto options = makeReaderOptions();
-  nimble::DirectMetadataInput input(readFile.get(), pool_.get(), options);
+  auto input = nimble::MetadataInput::create(readFile.get(), options);
 
   // Enqueue in reverse file order — should still work.
-  auto handle1 = input.enqueue(section1);
-  auto handle0 = input.enqueue(section0);
-  input.load();
+  auto handle1 = input->enqueue(section1);
+  auto handle0 = input->enqueue(section0);
+  input->load();
 
   EXPECT_EQ(handle0.read()->content(), data0);
   EXPECT_EQ(handle1.read()->content(), data1);
@@ -311,15 +315,15 @@ TEST_F(DirectMetadataInputTest, stateTransitions) {
   auto readFile = std::make_shared<velox::InMemoryReadFile>(fileContent);
 
   const auto options = makeReaderOptions();
-  nimble::DirectMetadataInput input(readFile.get(), pool_.get(), options);
-  nimble::test::MetadataInputTestHelper helper(&input);
+  auto input = nimble::MetadataInput::create(readFile.get(), options);
+  nimble::test::MetadataInputTestHelper helper(input.get());
 
   // Before enqueue.
   EXPECT_FALSE(helper.testingLoaded());
   EXPECT_EQ(helper.testingSectionCount(), 0);
 
   // After enqueue.
-  auto handle = input.enqueue(section);
+  auto handle = input->enqueue(section);
   EXPECT_FALSE(helper.testingLoaded());
   EXPECT_EQ(helper.testingSectionCount(), 1);
   EXPECT_EQ(helper.testingSection(0).offset(), 0);
@@ -327,7 +331,7 @@ TEST_F(DirectMetadataInputTest, stateTransitions) {
   EXPECT_FALSE(helper.testingHasBuffer(0));
 
   // After load.
-  input.load();
+  input->load();
   EXPECT_TRUE(helper.testingLoaded());
   EXPECT_EQ(helper.testingSectionCount(), 1);
   EXPECT_TRUE(helper.testingHasBuffer(0));
@@ -337,42 +341,40 @@ TEST_F(DirectMetadataInputTest, stateTransitions) {
   EXPECT_FALSE(helper.testingHasBuffer(0));
 
   // After reset — back to initial state.
-  input.reset();
+  input->reset();
   EXPECT_FALSE(helper.testingLoaded());
   EXPECT_EQ(helper.testingSectionCount(), 0);
 
   // Can enqueue/load/read again after reset.
-  auto handle2 = input.enqueue(section);
+  auto handle2 = input->enqueue(section);
   EXPECT_EQ(helper.testingSectionCount(), 1);
-  input.load();
+  input->load();
   EXPECT_TRUE(helper.testingLoaded());
   EXPECT_EQ(handle2.read()->content(), data);
 
   // Load without enqueue throws.
   {
-    nimble::DirectMetadataInput emptyInput(
-        readFile.get(), pool_.get(), options);
-    NIMBLE_ASSERT_THROW(emptyInput.load(), "No sections enqueued");
+    auto emptyInput = nimble::MetadataInput::create(readFile.get(), options);
+    NIMBLE_ASSERT_THROW(emptyInput->load(), "No sections enqueued");
   }
 
   // Read before load throws.
   {
-    nimble::DirectMetadataInput freshInput(
-        readFile.get(), pool_.get(), options);
-    auto h = freshInput.enqueue(section);
+    auto freshInput = nimble::MetadataInput::create(readFile.get(), options);
+    auto h = freshInput->enqueue(section);
     NIMBLE_ASSERT_THROW(h.read(), "load() must be called before read()");
   }
 
   // Without reset, enqueue throws.
   NIMBLE_ASSERT_THROW(
-      input.enqueue(section), "enqueue() not allowed after load()");
+      input->enqueue(section), "enqueue() not allowed after load()");
   // Without reset, load throws.
-  NIMBLE_ASSERT_THROW(input.load(), "load() already called");
+  NIMBLE_ASSERT_THROW(input->load(), "load() already called");
 
   // Double read throws.
-  input.reset();
-  auto handle3 = input.enqueue(section);
-  input.load();
+  input->reset();
+  auto handle3 = input->enqueue(section);
+  input->load();
   handle3.read();
   NIMBLE_ASSERT_THROW(handle3.read(), "Metadata buffer already consumed");
 }
@@ -404,9 +406,9 @@ TEST_F(DirectMetadataInputTest, ioStats) {
       metadataIoStats_.queryThreadIoLatencyUs().count();
 
   const auto options = makeReaderOptions();
-  nimble::DirectMetadataInput input(readFile.get(), pool_.get(), options);
-  input.enqueue(section);
-  input.load();
+  auto input = nimble::MetadataInput::create(readFile.get(), options);
+  input->enqueue(section);
+  input->load();
 
   EXPECT_GT(metadataIoStats_.read().count(), readCountBefore);
   EXPECT_EQ(metadataIoStats_.read().sum() - readSumBefore, data.size());
@@ -520,11 +522,11 @@ DEBUG_ONLY_TEST_F(DirectMetadataInputTest, ioCoalescing) {
 
     const auto options = makeReaderOptions(
         testData.maxCoalesceDistance, testData.maxCoalesceBytes);
-    nimble::DirectMetadataInput input(readFile.get(), pool_.get(), options);
+    auto input = nimble::MetadataInput::create(readFile.get(), options);
     for (const auto& section : sections) {
-      input.enqueue(section);
+      input->enqueue(section);
     }
-    input.load();
+    input->load();
 
     EXPECT_EQ(capturedStats.numIos, testData.expectedNumIos);
     EXPECT_EQ(capturedStats.extraBytes, testData.expectedOverread);
@@ -596,24 +598,49 @@ TEST_F(DirectMetadataInputTest, ioError) {
         std::make_exception_ptr(std::runtime_error("injected IO error")));
 
     const auto options = makeReaderOptions(testData.maxCoalesceDistance);
-    nimble::DirectMetadataInput input(readFile.get(), pool_.get(), options);
+    auto input = nimble::MetadataInput::create(readFile.get(), options);
     for (const auto& section : sections) {
-      input.enqueue(section);
+      input->enqueue(section);
     }
-    EXPECT_THROW(input.load(), std::runtime_error);
+    EXPECT_THROW(input->load(), std::runtime_error);
 
     // After IO error, reset and retry with error cleared should succeed.
     readFile->clearReadError();
-    input.reset();
+    input->reset();
     std::vector<nimble::MetadataHandle> handles;
     for (const auto& section : sections) {
-      handles.push_back(input.enqueue(section));
+      handles.push_back(input->enqueue(section));
     }
-    input.load();
+    input->load();
     for (uint32_t i = 0; i < handles.size(); ++i) {
       EXPECT_EQ(handles[i].read()->content(), testData.specs[i].data);
     }
   }
+}
+
+TEST_F(DirectMetadataInputTest, loadGuard) {
+  NIMBLE_ASSERT_THROW(nimble::MetadataInput::LoadGuard(nullptr), "");
+
+  std::string sectionData(64, 'A');
+  nimble::MetadataSection section{0, 64, nimble::CompressionType::Uncompressed};
+  auto fileContent = buildFileContent({section}, {sectionData});
+  auto file = std::make_shared<velox::InMemoryReadFile>(std::move(fileContent));
+  auto options = makeReaderOptions();
+  auto input = nimble::MetadataInput::create(file.get(), options);
+
+  auto handle = input->enqueue(section);
+  nimble::test::MetadataInputTestHelper helper(input.get());
+  EXPECT_FALSE(helper.testingLoaded());
+
+  {
+    nimble::MetadataInput::LoadGuard guard(input.get());
+    EXPECT_TRUE(helper.testingLoaded());
+    auto result = handle.read();
+    ASSERT_NE(result, nullptr);
+    EXPECT_EQ(result->content(), sectionData);
+  }
+  EXPECT_FALSE(helper.testingLoaded());
+  EXPECT_EQ(helper.testingSectionCount(), 0);
 }
 
 // --- CachedMetadataInput tests ---
@@ -676,19 +703,25 @@ class CachedMetadataInputTest : public MetadataInputTestBase,
     tempDir_.reset();
   }
 
-  std::unique_ptr<nimble::CachedMetadataInput> createCachedInput(
+  std::unique_ptr<nimble::MetadataInput> createCachedInput(
       velox::ReadFile* readFile,
-      int32_t maxCoalesceDistance = 1 << 20) {
-    velox::StringIdLease fileIdClone(
-        velox::fileIds(), "CachedMetadataInputTest");
-    const auto options = makeReaderOptions(maxCoalesceDistance);
-    return std::make_unique<nimble::CachedMetadataInput>(
-        readFile, std::move(fileIdClone), cache_.get(), pool_.get(), options);
+      int32_t maxCoalesceDistance = 1 << 20,
+      int64_t maxCoalesceBytes = 128 << 20) {
+    fileHandle_ = std::make_unique<velox::FileHandle>();
+    fileHandle_->file = std::shared_ptr<velox::ReadFile>(
+        std::shared_ptr<velox::ReadFile>{}, readFile);
+    fileHandle_->uuid =
+        velox::StringIdLease(velox::fileIds(), "CachedMetadataInputTest");
+    const auto options =
+        makeReaderOptions(maxCoalesceDistance, maxCoalesceBytes);
+    return nimble::MetadataInput::create(
+        fileHandle_.get(), cache_.get(), options);
   }
 
   std::unique_ptr<velox::memory::MemoryManager> manager_;
   velox::memory::MmapAllocator* allocator_{nullptr};
   std::shared_ptr<velox::cache::AsyncDataCache> cache_;
+  std::unique_ptr<velox::FileHandle> fileHandle_;
   std::unique_ptr<velox::StringIdLease> fileId_;
   std::shared_ptr<velox::common::testutil::TempDirectoryPath> tempDir_;
   std::unique_ptr<folly::IOThreadPoolExecutor> ssdExecutor_;
@@ -870,7 +903,8 @@ TEST_P(CachedMetadataInputTest, stateTransitions) {
   auto readFile = std::make_shared<velox::InMemoryReadFile>(fileContent);
 
   auto input = createCachedInput(readFile.get());
-  nimble::test::CachedMetadataInputTestHelper helper(input.get());
+  nimble::test::CachedMetadataInputTestHelper helper(
+      dynamic_cast<nimble::CachedMetadataInput*>(input.get()));
 
   // Before enqueue.
   EXPECT_FALSE(helper.testingLoaded());
@@ -980,8 +1014,6 @@ DEBUG_ONLY_TEST_P(CachedMetadataInputTest, ioCoalescing) {
     }
 
     auto readFile = std::make_shared<velox::InMemoryReadFile>(fileContent);
-    const auto options = makeReaderOptions(
-        testData.maxCoalesceDistance, testData.maxCoalesceBytes);
 
     uint64_t expectedPayloadBytes = 0;
     for (const auto& s : testData.sections) {
@@ -1002,12 +1034,10 @@ DEBUG_ONLY_TEST_P(CachedMetadataInputTest, ioCoalescing) {
                 capturedStats = *stats;
               }));
 
-      auto input = std::make_unique<nimble::CachedMetadataInput>(
+      auto input = createCachedInput(
           readFile.get(),
-          velox::StringIdLease(velox::fileIds(), "CachedMetadataInputTest"),
-          cache_.get(),
-          pool_.get(),
-          options);
+          testData.maxCoalesceDistance,
+          testData.maxCoalesceBytes);
       for (const auto& section : sections) {
         input->enqueue(section);
       }
@@ -1032,12 +1062,7 @@ DEBUG_ONLY_TEST_P(CachedMetadataInputTest, ioCoalescing) {
       const auto storageLatencyBefore =
           metadataIoStats_.storageReadLatencyUs().count();
 
-      auto input = std::make_unique<nimble::CachedMetadataInput>(
-          readFile.get(),
-          velox::StringIdLease(velox::fileIds(), "CachedMetadataInputTest"),
-          cache_.get(),
-          pool_.get(),
-          options);
+      auto input = createCachedInput(readFile.get());
       for (const auto& section : sections) {
         input->enqueue(section);
       }
@@ -1066,12 +1091,7 @@ DEBUG_ONLY_TEST_P(CachedMetadataInputTest, ioCoalescing) {
       const auto storageLatencyBefore =
           metadataIoStats_.storageReadLatencyUs().count();
 
-      auto input = std::make_unique<nimble::CachedMetadataInput>(
-          readFile.get(),
-          velox::StringIdLease(velox::fileIds(), "CachedMetadataInputTest"),
-          cache_.get(),
-          pool_.get(),
-          options);
+      auto input = createCachedInput(readFile.get());
       for (const auto& section : sections) {
         input->enqueue(section);
       }
@@ -1232,13 +1252,8 @@ TEST_P(CachedMetadataInputTest, ioError) {
     readFile->setReadError(
         std::make_exception_ptr(std::runtime_error("injected IO error")));
 
-    const auto options = makeReaderOptions(testData.maxCoalesceDistance);
-    auto input = std::make_unique<nimble::CachedMetadataInput>(
-        readFile.get(),
-        velox::StringIdLease(velox::fileIds(), "CachedMetadataInputTest"),
-        cache_.get(),
-        pool_.get(),
-        options);
+    auto input =
+        createCachedInput(readFile.get(), testData.maxCoalesceDistance);
     for (const auto& section : sections) {
       input->enqueue(section);
     }
@@ -1359,6 +1374,120 @@ TEST_P(CachedMetadataInputTest, cachePinRetention) {
   EXPECT_EQ(metadataIoStats_.ramHit().count(), ramHitBefore2);
   EXPECT_GT(
       metadataIoStats_.storageReadLatencyUs().count(), storageLatencyBefore);
+}
+
+TEST_P(CachedMetadataInputTest, loadGuard) {
+  NIMBLE_ASSERT_THROW(nimble::MetadataInput::LoadGuard(nullptr), "");
+
+  std::string sectionData(64, 'B');
+  nimble::MetadataSection section{0, 64, nimble::CompressionType::Uncompressed};
+  auto fileContent = buildFileContent({section}, {sectionData});
+  auto readFile =
+      std::make_shared<velox::InMemoryReadFile>(std::move(fileContent));
+  auto input = createCachedInput(readFile.get());
+
+  auto handle = input->enqueue(section);
+  nimble::test::MetadataInputTestHelper helper(input.get());
+  EXPECT_FALSE(helper.testingLoaded());
+
+  {
+    nimble::MetadataInput::LoadGuard guard(input.get());
+    EXPECT_TRUE(helper.testingLoaded());
+    auto result = handle.read();
+    ASSERT_NE(result, nullptr);
+    EXPECT_EQ(result->content(), sectionData);
+  }
+  EXPECT_FALSE(helper.testingLoaded());
+  EXPECT_EQ(helper.testingSectionCount(), 0);
+}
+
+TEST_F(DirectMetadataInputTest, cacheMethodsThrow) {
+  auto file = std::make_shared<velox::InMemoryReadFile>(std::string(100, 'x'));
+  auto options = makeReaderOptions();
+  auto input = nimble::MetadataInput::create(file.get(), options);
+  EXPECT_FALSE(input->cached());
+  NIMBLE_ASSERT_THROW(input->findCachedMetadata(0), "");
+  std::string_view data = "test";
+  std::span<const std::string_view> ranges(&data, 1);
+  NIMBLE_ASSERT_THROW(input->cacheMetadata(0, ranges), "");
+}
+
+TEST_P(CachedMetadataInputTest, cacheAndFindMetadata) {
+  auto readFile =
+      std::make_shared<velox::InMemoryReadFile>(std::string(100, 'x'));
+  auto input = createCachedInput(readFile.get());
+  EXPECT_TRUE(input->cached());
+
+  // Cache miss before caching.
+  EXPECT_EQ(input->findCachedMetadata(42), nullptr);
+
+  // Cache data at offset 42.
+  std::string data1 = "hello";
+  std::string data2 = "world";
+  std::array<std::string_view, 2> ranges = {data1, data2};
+  input->cacheMetadata(42, ranges);
+
+  // Cache hit after caching.
+  auto result = input->findCachedMetadata(42);
+  ASSERT_NE(result, nullptr);
+  EXPECT_EQ(result->content().size(), data1.size() + data2.size());
+  EXPECT_EQ(result->content(), std::string_view("helloworld"));
+}
+
+DEBUG_ONLY_TEST_P(CachedMetadataInputTest, concurrentCacheAndFind) {
+  auto readFile =
+      std::make_shared<velox::InMemoryReadFile>(std::string(100, 'x'));
+
+  // Verifies that findCachedMetadata blocks while another thread holds an
+  // exclusive cache pin via cacheMetadata, then returns the cached result
+  // once the pin is promoted to shared.
+  std::string cachedData(1'000, 'Z');
+  std::array<std::string_view, 1> ranges = {cachedData};
+
+  folly::Baton<> pinAcquired;
+  folly::Baton<> writerResume;
+
+  SCOPED_TESTVALUE_SET(
+      "facebook::nimble::CachedMetadataInput::cacheMetadata",
+      std::function<void(const velox::cache::CachePin*)>(
+          [&](const velox::cache::CachePin*) {
+            pinAcquired.post();
+            writerResume.wait();
+          }));
+
+  auto input1 = createCachedInput(readFile.get());
+  auto input2 = createCachedInput(readFile.get());
+
+  std::atomic_bool finderDone{false};
+  std::unique_ptr<nimble::MetadataBuffer> foundResult;
+
+  // Start cacher thread — will block in TestValue after acquiring exclusive
+  // pin.
+  std::thread cacher([&] { input1->cacheMetadata(99, ranges); });
+
+  pinAcquired.wait();
+
+  // Start finder thread — will block in findCachedMetadata waiting for the
+  // exclusive pin to be released.
+  std::thread finder([&] {
+    foundResult = input2->findCachedMetadata(99);
+    finderDone.store(true);
+  });
+
+  // Verify finder is blocked while cacher holds the exclusive pin.
+  EXPECT_EQ(foundResult, nullptr);
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  EXPECT_FALSE(finderDone.load());
+
+  // Resume cacher — writes data and promotes pin to shared.
+  writerResume.post();
+  cacher.join();
+  finder.join();
+
+  EXPECT_TRUE(finderDone.load());
+  ASSERT_NE(foundResult, nullptr);
+  EXPECT_EQ(foundResult->content().size(), cachedData.size());
+  EXPECT_EQ(foundResult->content(), cachedData);
 }
 
 INSTANTIATE_TEST_SUITE_P(
