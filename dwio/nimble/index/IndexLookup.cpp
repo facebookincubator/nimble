@@ -50,11 +50,10 @@ std::unique_ptr<velox::dwio::common::BufferedInput> createIndexDataInput(
     const IndexLookup::Options& options,
     velox::memory::MemoryPool& pool) {
   auto readFile = options.file;
-  auto* rawStats = options.ioOptions->indexIoStats();
-  auto indexIoStats = rawStats != nullptr
-      ? std::shared_ptr<velox::io::IoStatistics>(
-            std::shared_ptr<velox::io::IoStatistics>{}, rawStats)
-      : std::make_shared<velox::io::IoStatistics>();
+  auto indexIoStats = options.ioOptions->indexIoStats();
+  if (indexIoStats == nullptr) {
+    indexIoStats = std::make_shared<velox::io::IoStatistics>();
+  }
   if (options.cache != nullptr) {
     return std::make_unique<velox::dwio::common::CachedBufferedInput>(
         std::move(readFile),

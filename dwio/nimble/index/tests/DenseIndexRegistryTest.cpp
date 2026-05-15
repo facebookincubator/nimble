@@ -97,10 +97,10 @@ class DenseIndexRegistryTest : public ::testing::Test {
   std::shared_ptr<TabletReader> openTablet(const std::string& filePath) {
     auto fs = velox::filesystems::getFileSystem(filePath, {});
     auto readFile = fs->openFileForRead(filePath);
-    ioStats_ = std::make_unique<velox::io::IoStatistics>();
+    ioStats_ = std::make_shared<velox::io::IoStatistics>();
     readerOptions_ =
         std::make_unique<velox::io::ReaderOptions>(leafPool_.get());
-    readerOptions_->setMetadataIoStats(ioStats_.get());
+    readerOptions_->setMetadataIoStats(ioStats_);
     TabletReader::Options options;
     options.ioOptions = *readerOptions_;
     return TabletReader::create(std::move(readFile), leafPool_.get(), options);
@@ -114,15 +114,15 @@ class DenseIndexRegistryTest : public ::testing::Test {
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
   std::shared_ptr<velox::common::testutil::TempDirectoryPath> tempDir_;
   std::deque<std::string> valueStrings_;
-  std::unique_ptr<velox::io::IoStatistics> ioStats_;
+  std::shared_ptr<velox::io::IoStatistics> ioStats_;
   std::unique_ptr<velox::io::ReaderOptions> readerOptions_;
 };
 
 TEST_F(DenseIndexRegistryTest, emptyRegistry) {
   auto file = std::make_shared<velox::InMemoryReadFile>(std::string{});
-  velox::io::IoStatistics ioStats;
+  auto ioStats = std::make_shared<velox::io::IoStatistics>();
   velox::io::ReaderOptions ioOptions(leafPool_.get());
-  ioOptions.setMetadataIoStats(&ioStats);
+  ioOptions.setMetadataIoStats(ioStats);
   IndexLookup::Options options{.file = file, .ioOptions = &ioOptions};
   auto registry = DenseIndexRegistry::create(
       std::nullopt, std::nullopt, options, leafPool_.get());

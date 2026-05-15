@@ -121,8 +121,8 @@ class MetadataInputTestBase : public ::testing::Test {
       int32_t maxCoalesceDistance = 1 << 20,
       int64_t maxCoalesceBytes = 128 << 20) {
     velox::io::ReaderOptions options(pool_.get());
-    options.setDataIoStats(&dataIoStats_);
-    options.setMetadataIoStats(&metadataIoStats_);
+    options.setDataIoStats(dataIoStats_);
+    options.setMetadataIoStats(metadataIoStats_);
     options.setMaxCoalesceDistance(maxCoalesceDistance);
     options.setMaxCoalesceBytes(maxCoalesceBytes);
     return options;
@@ -130,8 +130,10 @@ class MetadataInputTestBase : public ::testing::Test {
 
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> pool_;
-  velox::io::IoStatistics dataIoStats_;
-  velox::io::IoStatistics metadataIoStats_;
+  std::shared_ptr<velox::io::IoStatistics> dataIoStats_{
+      std::make_shared<velox::io::IoStatistics>()};
+  std::shared_ptr<velox::io::IoStatistics> metadataIoStats_{
+      std::make_shared<velox::io::IoStatistics>()};
 };
 
 struct SectionSpec {
@@ -393,38 +395,38 @@ TEST_F(DirectMetadataInputTest, ioStats) {
       std::make_shared<nimble::testing::TrackingReadFile>(innerFile);
   readFile->setReadDelayUs(kInjectedDelayUs);
 
-  const auto readCountBefore = metadataIoStats_.read().count();
-  const auto readSumBefore = metadataIoStats_.read().sum();
-  const auto rawBytesBefore = metadataIoStats_.rawBytesRead();
-  const auto overreadBefore = metadataIoStats_.rawOverreadBytes();
-  const auto totalScanTimeBefore = metadataIoStats_.totalScanTimeNs();
+  const auto readCountBefore = metadataIoStats_->read().count();
+  const auto readSumBefore = metadataIoStats_->read().sum();
+  const auto rawBytesBefore = metadataIoStats_->rawBytesRead();
+  const auto overreadBefore = metadataIoStats_->rawOverreadBytes();
+  const auto totalScanTimeBefore = metadataIoStats_->totalScanTimeNs();
   const auto storageLatencySumBefore =
-      metadataIoStats_.storageReadLatencyUs().sum();
+      metadataIoStats_->storageReadLatencyUs().sum();
   const auto storageLatencyCountBefore =
-      metadataIoStats_.storageReadLatencyUs().count();
+      metadataIoStats_->storageReadLatencyUs().count();
   const auto queryIoLatencyCountBefore =
-      metadataIoStats_.queryThreadIoLatencyUs().count();
+      metadataIoStats_->queryThreadIoLatencyUs().count();
 
   const auto options = makeReaderOptions();
   auto input = nimble::MetadataInput::create(readFile.get(), options);
   input->enqueue(section);
   input->load();
 
-  EXPECT_GT(metadataIoStats_.read().count(), readCountBefore);
-  EXPECT_EQ(metadataIoStats_.read().sum() - readSumBefore, data.size());
-  EXPECT_EQ(metadataIoStats_.rawBytesRead() - rawBytesBefore, data.size());
-  EXPECT_EQ(metadataIoStats_.rawOverreadBytes(), overreadBefore);
+  EXPECT_GT(metadataIoStats_->read().count(), readCountBefore);
+  EXPECT_EQ(metadataIoStats_->read().sum() - readSumBefore, data.size());
+  EXPECT_EQ(metadataIoStats_->rawBytesRead() - rawBytesBefore, data.size());
+  EXPECT_EQ(metadataIoStats_->rawOverreadBytes(), overreadBefore);
   EXPECT_GE(
-      metadataIoStats_.totalScanTimeNs() - totalScanTimeBefore,
+      metadataIoStats_->totalScanTimeNs() - totalScanTimeBefore,
       kInjectedDelayUs * 1'000);
   EXPECT_GT(
-      metadataIoStats_.storageReadLatencyUs().count(),
+      metadataIoStats_->storageReadLatencyUs().count(),
       storageLatencyCountBefore);
   EXPECT_GE(
-      metadataIoStats_.storageReadLatencyUs().sum() - storageLatencySumBefore,
+      metadataIoStats_->storageReadLatencyUs().sum() - storageLatencySumBefore,
       kInjectedDelayUs);
   EXPECT_GT(
-      metadataIoStats_.queryThreadIoLatencyUs().count(),
+      metadataIoStats_->queryThreadIoLatencyUs().count(),
       queryIoLatencyCountBefore);
 }
 
@@ -509,8 +511,8 @@ DEBUG_ONLY_TEST_F(DirectMetadataInputTest, ioCoalescing) {
 
     auto readFile = std::make_shared<velox::InMemoryReadFile>(fileContent);
 
-    const auto rawBytesBefore = metadataIoStats_.rawBytesRead();
-    const auto overreadBefore = metadataIoStats_.rawOverreadBytes();
+    const auto rawBytesBefore = metadataIoStats_->rawBytesRead();
+    const auto overreadBefore = metadataIoStats_->rawOverreadBytes();
 
     velox::CoalesceIoStats capturedStats;
     SCOPED_TESTVALUE_SET(
@@ -536,9 +538,10 @@ DEBUG_ONLY_TEST_F(DirectMetadataInputTest, ioCoalescing) {
       expectedPayloadBytes += s.size;
     }
     EXPECT_EQ(
-        metadataIoStats_.rawBytesRead() - rawBytesBefore, expectedPayloadBytes);
+        metadataIoStats_->rawBytesRead() - rawBytesBefore,
+        expectedPayloadBytes);
     EXPECT_EQ(
-        metadataIoStats_.rawOverreadBytes() - overreadBefore,
+        metadataIoStats_->rawOverreadBytes() - overreadBefore,
         testData.expectedOverread);
   }
 }
@@ -814,9 +817,9 @@ TEST_P(CachedMetadataInputTest, enqueueLoadReadWithCache) {
 
     // First load — populates cache, expect zero ram hits.
     {
-      const auto ramHitBefore = metadataIoStats_.ramHit().count();
+      const auto ramHitBefore = metadataIoStats_->ramHit().count();
       const auto storageLatencyBefore =
-          metadataIoStats_.storageReadLatencyUs().count();
+          metadataIoStats_->storageReadLatencyUs().count();
       auto input = createCachedInput(readFile.get());
       std::vector<nimble::MetadataHandle> handles;
       for (const auto& section : sections) {
@@ -826,9 +829,9 @@ TEST_P(CachedMetadataInputTest, enqueueLoadReadWithCache) {
       for (uint32_t i = 0; i < handles.size(); ++i) {
         EXPECT_EQ(handles[i].read()->content(), testData.specs[i].data);
       }
-      EXPECT_EQ(metadataIoStats_.ramHit().count(), ramHitBefore);
+      EXPECT_EQ(metadataIoStats_->ramHit().count(), ramHitBefore);
       EXPECT_GT(
-          metadataIoStats_.storageReadLatencyUs().count(),
+          metadataIoStats_->storageReadLatencyUs().count(),
           storageLatencyBefore);
     }
 
@@ -842,7 +845,7 @@ TEST_P(CachedMetadataInputTest, enqueueLoadReadWithCache) {
     // Second load — sections with uncompressed size hit cache directly.
     // Sections without it still go through loadFromFile → store().
     {
-      const auto ramHitBefore = metadataIoStats_.ramHit().count();
+      const auto ramHitBefore = metadataIoStats_->ramHit().count();
       auto input = createCachedInput(readFile.get());
       std::vector<nimble::MetadataHandle> handles;
       for (const auto& section : sections) {
@@ -853,7 +856,7 @@ TEST_P(CachedMetadataInputTest, enqueueLoadReadWithCache) {
         EXPECT_EQ(handles[i].read()->content(), testData.specs[i].data);
       }
       EXPECT_GE(
-          metadataIoStats_.ramHit().count() - ramHitBefore, sectionsWithSize);
+          metadataIoStats_->ramHit().count() - ramHitBefore, sectionsWithSize);
     }
 
     // Third load (SSD only) — flush RAM to SSD, clear RAM, read from SSD.
@@ -866,10 +869,10 @@ TEST_P(CachedMetadataInputTest, enqueueLoadReadWithCache) {
       // Clear RAM cache — entries survive on SSD.
       cache_->clear();
 
-      const auto ramHitBefore = metadataIoStats_.ramHit().count();
-      const auto ssdReadBefore = metadataIoStats_.ssdRead().count();
+      const auto ramHitBefore = metadataIoStats_->ramHit().count();
+      const auto ssdReadBefore = metadataIoStats_->ssdRead().count();
       const auto storageLatencyBefore =
-          metadataIoStats_.storageReadLatencyUs().count();
+          metadataIoStats_->storageReadLatencyUs().count();
 
       auto input = createCachedInput(readFile.get());
       std::vector<nimble::MetadataHandle> handles;
@@ -882,11 +885,12 @@ TEST_P(CachedMetadataInputTest, enqueueLoadReadWithCache) {
       }
 
       // No RAM hits, SSD hits for sections with known size, no file IO.
-      EXPECT_EQ(metadataIoStats_.ramHit().count(), ramHitBefore);
+      EXPECT_EQ(metadataIoStats_->ramHit().count(), ramHitBefore);
       EXPECT_GE(
-          metadataIoStats_.ssdRead().count() - ssdReadBefore, sectionsWithSize);
+          metadataIoStats_->ssdRead().count() - ssdReadBefore,
+          sectionsWithSize);
       EXPECT_EQ(
-          metadataIoStats_.storageReadLatencyUs().count(),
+          metadataIoStats_->storageReadLatencyUs().count(),
           storageLatencyBefore);
     }
   }
@@ -1022,9 +1026,9 @@ DEBUG_ONLY_TEST_P(CachedMetadataInputTest, ioCoalescing) {
 
     // First load — cold cache, expect file IO with coalescing.
     {
-      const auto rawBytesBefore = metadataIoStats_.rawBytesRead();
-      const auto overreadBefore = metadataIoStats_.rawOverreadBytes();
-      const auto ramHitBefore = metadataIoStats_.ramHit().count();
+      const auto rawBytesBefore = metadataIoStats_->rawBytesRead();
+      const auto overreadBefore = metadataIoStats_->rawOverreadBytes();
+      const auto ramHitBefore = metadataIoStats_->ramHit().count();
 
       velox::CoalesceIoStats capturedStats;
       SCOPED_TESTVALUE_SET(
@@ -1046,21 +1050,21 @@ DEBUG_ONLY_TEST_P(CachedMetadataInputTest, ioCoalescing) {
       EXPECT_EQ(capturedStats.numIos, testData.expectedNumIos);
       EXPECT_EQ(capturedStats.extraBytes, testData.expectedOverread);
       EXPECT_EQ(
-          metadataIoStats_.rawBytesRead() - rawBytesBefore,
+          metadataIoStats_->rawBytesRead() - rawBytesBefore,
           expectedPayloadBytes);
       EXPECT_EQ(
-          metadataIoStats_.rawOverreadBytes() - overreadBefore,
+          metadataIoStats_->rawOverreadBytes() - overreadBefore,
           testData.expectedOverread);
-      EXPECT_EQ(metadataIoStats_.ramHit().count(), ramHitBefore);
+      EXPECT_EQ(metadataIoStats_->ramHit().count(), ramHitBefore);
     }
 
     // Second load — warm cache, expect all RAM hits, zero file IO.
     {
-      const auto rawBytesBefore = metadataIoStats_.rawBytesRead();
-      const auto overreadBefore = metadataIoStats_.rawOverreadBytes();
-      const auto ramHitBefore = metadataIoStats_.ramHit().count();
+      const auto rawBytesBefore = metadataIoStats_->rawBytesRead();
+      const auto overreadBefore = metadataIoStats_->rawOverreadBytes();
+      const auto ramHitBefore = metadataIoStats_->ramHit().count();
       const auto storageLatencyBefore =
-          metadataIoStats_.storageReadLatencyUs().count();
+          metadataIoStats_->storageReadLatencyUs().count();
 
       auto input = createCachedInput(readFile.get());
       for (const auto& section : sections) {
@@ -1068,12 +1072,12 @@ DEBUG_ONLY_TEST_P(CachedMetadataInputTest, ioCoalescing) {
       }
       input->load();
 
-      EXPECT_EQ(metadataIoStats_.rawBytesRead(), rawBytesBefore);
-      EXPECT_EQ(metadataIoStats_.rawOverreadBytes(), overreadBefore);
+      EXPECT_EQ(metadataIoStats_->rawBytesRead(), rawBytesBefore);
+      EXPECT_EQ(metadataIoStats_->rawOverreadBytes(), overreadBefore);
       EXPECT_EQ(
-          metadataIoStats_.ramHit().count() - ramHitBefore, sections.size());
+          metadataIoStats_->ramHit().count() - ramHitBefore, sections.size());
       EXPECT_EQ(
-          metadataIoStats_.storageReadLatencyUs().count(),
+          metadataIoStats_->storageReadLatencyUs().count(),
           storageLatencyBefore);
     }
 
@@ -1084,12 +1088,12 @@ DEBUG_ONLY_TEST_P(CachedMetadataInputTest, ioCoalescing) {
       cache_->ssdCache()->waitForWriteToFinish();
       cache_->clear();
 
-      const auto rawBytesBefore = metadataIoStats_.rawBytesRead();
-      const auto overreadBefore = metadataIoStats_.rawOverreadBytes();
-      const auto ramHitBefore = metadataIoStats_.ramHit().count();
-      const auto ssdReadBefore = metadataIoStats_.ssdRead().count();
+      const auto rawBytesBefore = metadataIoStats_->rawBytesRead();
+      const auto overreadBefore = metadataIoStats_->rawOverreadBytes();
+      const auto ramHitBefore = metadataIoStats_->ramHit().count();
+      const auto ssdReadBefore = metadataIoStats_->ssdRead().count();
       const auto storageLatencyBefore =
-          metadataIoStats_.storageReadLatencyUs().count();
+          metadataIoStats_->storageReadLatencyUs().count();
 
       auto input = createCachedInput(readFile.get());
       for (const auto& section : sections) {
@@ -1098,13 +1102,13 @@ DEBUG_ONLY_TEST_P(CachedMetadataInputTest, ioCoalescing) {
       input->load();
 
       // No RAM hits, all SSD hits, no file IO, no overread.
-      EXPECT_EQ(metadataIoStats_.rawBytesRead(), rawBytesBefore);
-      EXPECT_EQ(metadataIoStats_.rawOverreadBytes(), overreadBefore);
-      EXPECT_EQ(metadataIoStats_.ramHit().count(), ramHitBefore);
+      EXPECT_EQ(metadataIoStats_->rawBytesRead(), rawBytesBefore);
+      EXPECT_EQ(metadataIoStats_->rawOverreadBytes(), overreadBefore);
+      EXPECT_EQ(metadataIoStats_->ramHit().count(), ramHitBefore);
       EXPECT_EQ(
-          metadataIoStats_.ssdRead().count() - ssdReadBefore, sections.size());
+          metadataIoStats_->ssdRead().count() - ssdReadBefore, sections.size());
       EXPECT_EQ(
-          metadataIoStats_.storageReadLatencyUs().count(),
+          metadataIoStats_->storageReadLatencyUs().count(),
           storageLatencyBefore);
     }
   }
@@ -1143,14 +1147,14 @@ TEST_P(CachedMetadataInputTest, partialCacheHit) {
 
   // Load both sections — section0 should be a cache hit, section1 a miss.
   {
-    const auto ramHitBefore = metadataIoStats_.ramHit().count();
+    const auto ramHitBefore = metadataIoStats_->ramHit().count();
     auto input = createCachedInput(readFile.get());
     auto handle0 = input->enqueue(section0);
     auto handle1 = input->enqueue(section1);
     input->load();
     EXPECT_EQ(handle0.read()->content(), data0);
     EXPECT_EQ(handle1.read()->content(), data1);
-    EXPECT_GT(metadataIoStats_.ramHit().count(), ramHitBefore);
+    EXPECT_GT(metadataIoStats_->ramHit().count(), ramHitBefore);
   }
 
   // SSD partial hit: flush section0+section1 to SSD, clear RAM, then load
@@ -1170,10 +1174,10 @@ TEST_P(CachedMetadataInputTest, partialCacheHit) {
       EXPECT_EQ(handle.read()->content(), data1);
     }
 
-    const auto ssdReadBefore = metadataIoStats_.ssdRead().count();
-    const auto ramHitBefore = metadataIoStats_.ramHit().count();
+    const auto ssdReadBefore = metadataIoStats_->ssdRead().count();
+    const auto ramHitBefore = metadataIoStats_->ramHit().count();
     const auto storageLatencyBefore =
-        metadataIoStats_.storageReadLatencyUs().count();
+        metadataIoStats_->storageReadLatencyUs().count();
     {
       auto input = createCachedInput(readFile.get());
       auto handle0 = input->enqueue(section0);
@@ -1183,10 +1187,10 @@ TEST_P(CachedMetadataInputTest, partialCacheHit) {
       EXPECT_EQ(handle1.read()->content(), data1);
     }
     // section0 from SSD, section1 from RAM, no file IO.
-    EXPECT_GT(metadataIoStats_.ssdRead().count(), ssdReadBefore);
-    EXPECT_GT(metadataIoStats_.ramHit().count(), ramHitBefore);
+    EXPECT_GT(metadataIoStats_->ssdRead().count(), ssdReadBefore);
+    EXPECT_GT(metadataIoStats_->ramHit().count(), ramHitBefore);
     EXPECT_EQ(
-        metadataIoStats_.storageReadLatencyUs().count(), storageLatencyBefore);
+        metadataIoStats_->storageReadLatencyUs().count(), storageLatencyBefore);
   }
 }
 
@@ -1342,7 +1346,7 @@ TEST_P(CachedMetadataInputTest, cachePinRetention) {
 
   // A second load should still hit RAM cache because the pin keeps the
   // entry alive even after clear().
-  const auto ramHitBefore = metadataIoStats_.ramHit().count();
+  const auto ramHitBefore = metadataIoStats_->ramHit().count();
   {
     auto input2 = createCachedInput(readFile.get());
     auto handle2 = input2->enqueue(section);
@@ -1351,7 +1355,7 @@ TEST_P(CachedMetadataInputTest, cachePinRetention) {
     ASSERT_NE(buffer2, nullptr);
     EXPECT_EQ(buffer2->content(), data);
   }
-  EXPECT_GT(metadataIoStats_.ramHit().count(), ramHitBefore);
+  EXPECT_GT(metadataIoStats_->ramHit().count(), ramHitBefore);
 
   // Drop the original buffer — releases the pin.
   buffer.reset();
@@ -1360,9 +1364,9 @@ TEST_P(CachedMetadataInputTest, cachePinRetention) {
   cache_->clear();
 
   // Third load — cold miss, requires file IO.
-  const auto ramHitBefore2 = metadataIoStats_.ramHit().count();
+  const auto ramHitBefore2 = metadataIoStats_->ramHit().count();
   const auto storageLatencyBefore =
-      metadataIoStats_.storageReadLatencyUs().count();
+      metadataIoStats_->storageReadLatencyUs().count();
   {
     auto input3 = createCachedInput(readFile.get());
     auto handle3 = input3->enqueue(section);
@@ -1371,9 +1375,9 @@ TEST_P(CachedMetadataInputTest, cachePinRetention) {
     ASSERT_NE(buffer3, nullptr);
     EXPECT_EQ(buffer3->content(), data);
   }
-  EXPECT_EQ(metadataIoStats_.ramHit().count(), ramHitBefore2);
+  EXPECT_EQ(metadataIoStats_->ramHit().count(), ramHitBefore2);
   EXPECT_GT(
-      metadataIoStats_.storageReadLatencyUs().count(), storageLatencyBefore);
+      metadataIoStats_->storageReadLatencyUs().count(), storageLatencyBefore);
 }
 
 TEST_P(CachedMetadataInputTest, loadGuard) {

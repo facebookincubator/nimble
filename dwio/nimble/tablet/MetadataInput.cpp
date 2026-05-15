@@ -83,7 +83,7 @@ MetadataInput::MetadataInput(
       maxCoalesceBytes_{options.maxCoalesceBytes()},
       executor_{options.ioExecutor().get()},
       ioStats_{options.metadataIoStats()} {
-  NIMBLE_CHECK_NOT_NULL(ioStats_);
+  NIMBLE_CHECK_NOT_NULL(ioStats_.get());
 }
 
 MetadataHandle MetadataInput::enqueue(const MetadataSection& section) {
@@ -238,7 +238,7 @@ void MetadataInput::executeIoGroups(std::vector<IoGroup>& ioGroups) {
         }));
   }
 
-  QueryIoLatencyGuard queryIoGuard{ioStats_};
+  QueryIoLatencyGuard queryIoGuard{ioStats_.get()};
   if (executor_ != nullptr && asyncIos.size() > 1) {
     for (size_t i = 0; i + 1 < asyncIos.size(); ++i) {
       executor_->add([&asyncIo = asyncIos[i]]() { asyncIo->prepare(); });

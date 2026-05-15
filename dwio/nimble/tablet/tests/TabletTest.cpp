@@ -208,9 +208,9 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
   void ensureReaderOptions() {
     if (readerOptions_ == nullptr) {
       readerOptions_ = std::make_unique<velox::io::ReaderOptions>(pool_.get());
-      readerOptions_->setDataIoStats(dataIoStats_.get());
-      readerOptions_->setMetadataIoStats(metadataIoStats_.get());
-      readerOptions_->setIndexIoStats(indexIoStats_.get());
+      readerOptions_->setDataIoStats(dataIoStats_);
+      readerOptions_->setMetadataIoStats(metadataIoStats_);
+      readerOptions_->setIndexIoStats(indexIoStats_);
     }
   }
 
@@ -4185,8 +4185,8 @@ TEST_P(TabletTest, configureOptionsIndexFlags) {
   };
 
   velox::dwio::common::ReaderOptions readerOptions(pool_.get());
-  readerOptions.setDataIoStats(dataIoStats_.get());
-  readerOptions.setMetadataIoStats(metadataIoStats_.get());
+  readerOptions.setDataIoStats(dataIoStats_);
+  readerOptions.setMetadataIoStats(metadataIoStats_);
 
   {
     SCOPED_TRACE("defaults");
@@ -4522,8 +4522,8 @@ TEST_F(TabletTest, concurrentReadersWithCacheEviction) {
     while (!stop.load(std::memory_order_relaxed)) {
       auto mode = static_cast<BufferedInputMode>(threadId % 4);
       velox::io::ReaderOptions readerOptions(threadPool.get());
-      readerOptions.setDataIoStats(dataIoStats_.get());
-      readerOptions.setMetadataIoStats(metadataIoStats_.get());
+      readerOptions.setDataIoStats(dataIoStats_);
+      readerOptions.setMetadataIoStats(metadataIoStats_);
       nimble::TabletReader::Options options;
       options.ioOptions = readerOptions;
 

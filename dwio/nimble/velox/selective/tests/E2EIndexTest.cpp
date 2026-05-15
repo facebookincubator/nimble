@@ -339,8 +339,8 @@ class E2EIndexTestBase : public ::testing::Test {
     auto readFile =
         std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
     dwio::common::ReaderOptions readerOptions(leafPool_.get());
-    readerOptions.setDataIoStats(dataIoStats_.get());
-    readerOptions.setMetadataIoStats(metadataIoStats_.get());
+    readerOptions.setDataIoStats(dataIoStats_);
+    readerOptions.setMetadataIoStats(metadataIoStats_);
     readerOptions.setFileFormat(FileFormat::NIMBLE);
     setUpReaderOptions(readerOptions);
 
@@ -357,8 +357,8 @@ class E2EIndexTestBase : public ::testing::Test {
     StringIdLease fileId(ids, fmt::format("testFile_{}", readerId));
     StringIdLease groupId(ids, fmt::format("testGroup_{}", readerId));
     io::ReaderOptions ioReaderOpts(&readerOptions.memoryPool());
-    ioReaderOpts.setDataIoStats(dataIoStats_.get());
-    ioReaderOpts.setMetadataIoStats(metadataIoStats_.get());
+    ioReaderOpts.setDataIoStats(dataIoStats_);
+    ioReaderOpts.setMetadataIoStats(metadataIoStats_);
     if (cache_ != nullptr) {
       input = std::make_unique<CachedBufferedInput>(
           readFile,

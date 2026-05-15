@@ -142,8 +142,9 @@ class ReadWithVisitorTest : public ::testing::TestWithParam<bool>,
     ctx->fileData = test::createNimbleFile(*rootPool_, input);
 
     auto readFile = std::make_shared<InMemoryReadFile>(ctx->fileData);
-    dwio::common::ReaderOptions readerOpts(
-        pool(), dataIoStats_.get(), metadataIoStats_.get());
+    dwio::common::ReaderOptions readerOpts(pool());
+    readerOpts.setDataIoStats(dataIoStats_);
+    readerOpts.setMetadataIoStats(metadataIoStats_);
     ctx->readerBase = ReaderBase::create(
         std::make_unique<dwio::common::BufferedInput>(readFile, *pool()),
         readerOpts);
