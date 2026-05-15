@@ -112,8 +112,13 @@ target_include_directories(
 )
 add_dependencies(nimble_sorted_index_fb nimble_sorted_index_schema_fb)
 
-add_library(nimble_tablet_common Compression.cpp MetadataBuffer.cpp
-                                 MetadataInput.cpp Postscript.cpp)
+add_library(
+  nimble_tablet_common
+  Compression.cpp
+  MetadataBuffer.cpp
+  MetadataInput.cpp
+  Postscript.cpp
+)
 target_link_libraries(
   nimble_tablet_common
   nimble_footer_fb
