@@ -85,6 +85,14 @@ void TrivialEncoding<std::string_view>::materialize(
   row_ += rowCount;
 }
 
+void TrivialEncoding<std::string_view>::get(uint32_t row, void* buffer) {
+  reset();
+  if (row > 0) {
+    skip(row);
+  }
+  materialize(1, buffer);
+}
+
 uint64_t TrivialEncoding<std::string_view>::uncompressedDataBytes() const {
   return uncompressedDataBytes_;
 }

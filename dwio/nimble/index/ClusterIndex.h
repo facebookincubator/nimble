@@ -98,6 +98,11 @@ class ClusterIndex : public IndexLookup {
     return lastKey_;
   }
 
+  /// Returns the encoded key at the given file-level row position.
+  /// Requires loadData to have been provided at construction.
+  /// Used to compute resume keys when lookup results are truncated.
+  std::string keyAtRow(uint32_t row) const override;
+
   /// Returns the number of partitions in the index.
   uint32_t numPartitions() const {
     return numPartitions_;
@@ -219,6 +224,12 @@ class ClusterIndex : public IndexLookup {
   // Returns nullopt if the key is beyond all partitions.
   std::optional<uint32_t> lookupPartition(std::string_view key) const;
 
+  // Finds the partition containing the given file-level row.
+  const IndexPartition* lookupPartition(uint32_t row) const;
+
+  // Converts a file-level row to a partition-relative row number.
+  uint32_t partitionRow(uint32_t row) const;
+
   // A bound to resolve within a partition.
   // Stores a pointer to the target row field (startRow or endRow) in the
   // caller's RowRange. resolvePartitionBounds writes the resolved file-level
@@ -260,6 +271,13 @@ class ClusterIndex : public IndexLookup {
   ChunkLocation lookupChunk(
       const IndexPartition* partition,
       std::string_view encodedKey) const;
+
+  // Finds the chunk containing the given partition-relative row via binary
+  // search on chunk_rows. Returns a ChunkLocation with the chunk's offset,
+  // size, and row offset within the partition.
+  ChunkLocation lookupChunk(
+      const IndexPartition* partition,
+      uint32_t partitionRow) const;
 
   // Loads or returns cached decoded chunk for the given location.
   // Reuses partition-level buffers to avoid repeated allocations.
