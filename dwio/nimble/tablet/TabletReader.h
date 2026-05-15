@@ -500,7 +500,7 @@ class TabletReader {
   const bool loadChunkIndex_;
   const bool loadDenseIndexes_;
   // Default IO stats when caller doesn't provide ioOptions.
-  const std::unique_ptr<velox::io::IoStatistics> defaultIoStats_;
+  const std::shared_ptr<velox::io::IoStatistics> defaultIoStats_;
   // Resolved IO options — either copied from Options or created with defaults.
   const velox::io::ReaderOptions ioOptions_;
   // IO config for index creation — indexes create their own MetadataInput

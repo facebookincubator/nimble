@@ -217,7 +217,7 @@ class MetadataInput {
   // Max total bytes per coalesced IO batch.
   const int64_t maxCoalesceBytes_;
   folly::Executor* const executor_;
-  velox::io::IoStatistics* const ioStats_;
+  const std::shared_ptr<velox::io::IoStatistics> ioStats_;
 
   std::vector<LoadedSection> sections_;
   bool loaded_{false};

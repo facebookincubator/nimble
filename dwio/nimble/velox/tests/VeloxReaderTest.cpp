@@ -524,8 +524,8 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
     nimble::TabletReader::Options tabletOptions;
     tabletOptions.pinFileMetadata = pinFileMetadata();
     ioReaderOptions_ = std::make_unique<velox::io::ReaderOptions>(pool);
-    ioReaderOptions_->setDataIoStats(dataIoStats_.get());
-    ioReaderOptions_->setMetadataIoStats(metadataIoStats_.get());
+    ioReaderOptions_->setDataIoStats(dataIoStats_);
+    ioReaderOptions_->setMetadataIoStats(metadataIoStats_);
     tabletOptions.ioOptions = *ioReaderOptions_;
     if (enableCache() || pinFileMetadata()) {
       auto& ids = velox::fileIds();

@@ -100,8 +100,10 @@ class ChunkedDecoderTest : public testing::Test {
   }
 
  protected:
-  io::IoStatistics dataIoStats_;
-  io::IoStatistics metadataIoStats_;
+  std::shared_ptr<io::IoStatistics> dataIoStats_{
+      std::make_shared<io::IoStatistics>()};
+  std::shared_ptr<io::IoStatistics> metadataIoStats_{
+      std::make_shared<io::IoStatistics>()};
 
  private:
   std::shared_ptr<MemoryPool> leafPool_;
@@ -125,8 +127,9 @@ TEST_F(ChunkedDecoderTest, bufferedInput) {
   }
 
   auto file = std::make_shared<InMemoryReadFile>(fileContent);
-  dwio::common::ReaderOptions readerOpts{
-      &pool(), &dataIoStats_, &metadataIoStats_};
+  dwio::common::ReaderOptions readerOpts{&pool()};
+  readerOpts.setDataIoStats(dataIoStats_);
+  readerOpts.setMetadataIoStats(metadataIoStats_);
   readerOpts.setLoadQuantum(kLoadQuantum);
   auto executor = std::make_unique<folly::IOThreadPoolExecutor>(10, 10);
   auto input = std::make_unique<dwio::common::DirectBufferedInput>(

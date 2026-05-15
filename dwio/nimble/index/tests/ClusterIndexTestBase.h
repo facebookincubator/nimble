@@ -113,7 +113,7 @@ class ClusterIndexTestBase : public ::testing::Test {
   std::shared_ptr<velox::memory::MemoryPool> pool_{
       rootPool_->addLeafChild("ClusterIndexTestBase")};
   std::shared_ptr<velox::ReadFile> metadataFile_;
-  std::unique_ptr<velox::io::IoStatistics> ioStats_;
+  std::shared_ptr<velox::io::IoStatistics> ioStats_;
 };
 
 } // namespace facebook::nimble::index::test

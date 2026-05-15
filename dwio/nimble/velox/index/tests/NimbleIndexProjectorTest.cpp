@@ -119,8 +119,8 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
     auto readFile =
         std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
     dwio::common::ReaderOptions readerOptions(leafPool_.get());
-    readerOptions.setDataIoStats(dataIoStats_.get());
-    readerOptions.setMetadataIoStats(metadataIoStats_.get());
+    readerOptions.setDataIoStats(dataIoStats_);
+    readerOptions.setMetadataIoStats(metadataIoStats_);
     readerOptions.setFileFormat(FileFormat::NIMBLE);
     readerOptions.setFileMetadataCacheEnabled(GetParam().enableCache);
     readerOptions.setPinFileMetadata(GetParam().pinFileMetadata);
@@ -889,8 +889,8 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
     auto readFile =
         std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
     dwio::common::ReaderOptions readerOptions(leafPool_.get());
-    readerOptions.setDataIoStats(dataIoStats_.get());
-    readerOptions.setMetadataIoStats(metadataIoStats_.get());
+    readerOptions.setDataIoStats(dataIoStats_);
+    readerOptions.setMetadataIoStats(metadataIoStats_);
     readerOptions.setFileFormat(FileFormat::NIMBLE);
     readerOptions.setMaxCoalesceDistance(maxCoalesceDistance);
 
@@ -1044,8 +1044,8 @@ TEST_P(NimbleIndexProjectorTest, pinnedMetadataNoReread) {
   tablet.reset();
 
   dwio::common::ReaderOptions readerOptions(leafPool_.get());
-  readerOptions.setDataIoStats(dataIoStats_.get());
-  readerOptions.setMetadataIoStats(metadataIoStats_.get());
+  readerOptions.setDataIoStats(dataIoStats_);
+  readerOptions.setMetadataIoStats(metadataIoStats_);
   readerOptions.setFileFormat(FileFormat::NIMBLE);
   readerOptions.setFileMetadataCacheEnabled(GetParam().enableCache);
   readerOptions.setPinFileMetadata(GetParam().pinFileMetadata);

@@ -280,9 +280,9 @@ TEST_F(IndexLookupTest, createIndexMetadataInput) {
     SCOPED_TRACE(testData.debugString());
     auto file = std::make_shared<velox::InMemoryReadFile>(std::string{});
     auto pool = velox::memory::memoryManager()->addLeafPool();
-    velox::io::IoStatistics metadataIoStats;
+    auto metadataIoStats = std::make_shared<velox::io::IoStatistics>();
     velox::io::ReaderOptions ioOptions(pool.get());
-    ioOptions.setMetadataIoStats(&metadataIoStats);
+    ioOptions.setMetadataIoStats(metadataIoStats);
 
     std::shared_ptr<velox::memory::MallocAllocator> allocator;
     std::shared_ptr<velox::cache::AsyncDataCache> cache;
@@ -322,12 +322,12 @@ TEST_F(IndexLookupTest, createIndexDataInput) {
     SCOPED_TRACE(testData.debugString());
     auto file = std::make_shared<velox::InMemoryReadFile>(std::string{});
     auto pool = velox::memory::memoryManager()->addLeafPool();
-    velox::io::IoStatistics metadataIoStats;
-    velox::io::IoStatistics indexIoStats;
+    auto metadataIoStats = std::make_shared<velox::io::IoStatistics>();
+    auto indexIoStats = std::make_shared<velox::io::IoStatistics>();
     velox::io::ReaderOptions ioOptions(pool.get());
-    ioOptions.setMetadataIoStats(&metadataIoStats);
+    ioOptions.setMetadataIoStats(metadataIoStats);
     if (testData.hasIndexIoStats) {
-      ioOptions.setIndexIoStats(&indexIoStats);
+      ioOptions.setIndexIoStats(indexIoStats);
     }
 
     std::shared_ptr<velox::memory::MallocAllocator> allocator;

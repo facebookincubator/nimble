@@ -27,13 +27,13 @@ namespace facebook::nimble {
 FileLayout FileLayout::create(
     std::shared_ptr<velox::ReadFile> file,
     velox::memory::MemoryPool* pool) {
-  velox::io::IoStatistics dataStats;
-  velox::io::IoStatistics metadataStats;
-  velox::io::IoStatistics indexStats;
+  auto dataStats = std::make_shared<velox::io::IoStatistics>();
+  auto metadataStats = std::make_shared<velox::io::IoStatistics>();
+  auto indexStats = std::make_shared<velox::io::IoStatistics>();
   velox::io::ReaderOptions readerOptions(pool);
-  readerOptions.setDataIoStats(&dataStats);
-  readerOptions.setMetadataIoStats(&metadataStats);
-  readerOptions.setIndexIoStats(&indexStats);
+  readerOptions.setDataIoStats(dataStats);
+  readerOptions.setMetadataIoStats(metadataStats);
+  readerOptions.setIndexIoStats(indexStats);
   TabletReader::Options options;
   options.ioOptions = readerOptions;
   auto tablet = TabletReader::create(std::move(file), pool, options);

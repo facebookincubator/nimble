@@ -60,8 +60,9 @@ class NimbleDataTest : public ::testing::Test,
     auto readFile = std::make_shared<InMemoryReadFile>(file);
     auto factory =
         dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
-    dwio::common::ReaderOptions options(
-        pool(), dataIoStats_.get(), metadataIoStats_.get());
+    dwio::common::ReaderOptions options(pool());
+    options.setDataIoStats(dataIoStats_);
+    options.setMetadataIoStats(metadataIoStats_);
     options.setScanSpec(scanSpec);
     Readers readers;
     readers.reader = factory->createReader(
