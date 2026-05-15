@@ -331,15 +331,15 @@ void VeloxReader::loadNextStripe() {
           decoders_[offsets_[i]] = nullptr;
         } else {
           ++metrics.streamCount;
-          decoders_[offsets_[i]] = std::make_unique<ChunkedStreamDecoder>(
+          auto decoder = std::make_unique<ChunkedStreamDecoder>(
               pool_,
               std::make_unique<InMemoryChunkedStream>(
                   pool_, std::move(streams[i])),
               parameters_.encodingFactory,
               parameters_.optimizeStringBufferHandling,
               *logger_);
-          dynamic_cast<ChunkedStreamDecoder*>(decoders_[offsets_[i]].get())
-              ->ensureLoaded();
+          decoder->ensureLoaded();
+          decoders_[offsets_[i]] = std::move(decoder);
         }
       }
       loadedStripe_ = nextStripe_++;
