@@ -18,6 +18,7 @@
 
 #include <algorithm>
 
+#include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/index/KeyChunkDecoder.h"
@@ -191,6 +192,29 @@ std::optional<uint32_t> ClusterIndex::lookupPartition(
     return std::nullopt;
   }
   return static_cast<uint32_t>(it - partitionKeys_.begin());
+}
+
+const ClusterIndex::IndexPartition* ClusterIndex::lookupPartition(
+    uint32_t row) const {
+  NIMBLE_CHECK_LT(
+      row, numRows_, "Row {} is beyond file total rows {}", row, numRows_);
+  const auto it =
+      std::upper_bound(partitionRows_.begin(), partitionRows_.end(), row);
+  NIMBLE_CHECK(it != partitionRows_.begin());
+  const uint32_t partitionId =
+      static_cast<uint32_t>(it - partitionRows_.begin()) - 1;
+  return loadPartition(partitionId);
+}
+
+uint32_t ClusterIndex::partitionRow(uint32_t row) const {
+  NIMBLE_CHECK_LT(
+      row, numRows_, "Row {} is beyond file total rows {}", row, numRows_);
+  const auto it =
+      std::upper_bound(partitionRows_.begin(), partitionRows_.end(), row);
+  NIMBLE_CHECK(it != partitionRows_.begin());
+  const uint32_t partitionId =
+      static_cast<uint32_t>(it - partitionRows_.begin()) - 1;
+  return row - partitionRows_[partitionId];
 }
 
 void ClusterIndex::resolvePartitionBounds() const {
@@ -503,6 +527,57 @@ uint32_t ClusterIndex::seekInChunk(
     NIMBLE_CHECK(false, "Key must be found within a matched chunk");
   }
   return chunkLocation.rowOffset + rowInChunk.value();
+}
+
+ChunkLocation ClusterIndex::lookupChunk(
+    const IndexPartition* partition,
+    uint32_t partitionRow) const {
+  NIMBLE_DCHECK_NOT_NULL(partition);
+  // chunk_rows is cumulative: chunk_rows[i] = total rows through chunk i.
+  // Binary search for the first chunk whose cumulative rows > partitionRow.
+  const auto* chunkRows = partition->index->chunk_rows();
+  NIMBLE_CHECK_NOT_NULL(chunkRows);
+  const auto it =
+      std::upper_bound(chunkRows->begin(), chunkRows->end(), partitionRow);
+  NIMBLE_CHECK(
+      it != chunkRows->end(),
+      "Row {} is beyond partition {} total rows",
+      partitionRow,
+      partition->id);
+  const uint32_t idx = it - chunkRows->begin();
+  return ChunkLocation{
+      partition->chunkOffset(idx),
+      partition->chunkSize(idx),
+      partition->rowOffset(idx)};
+}
+
+std::string ClusterIndex::keyAtRow(uint32_t row) const {
+  const auto* partition = lookupPartition(row);
+  const auto partitionRow = this->partitionRow(row);
+
+  const auto* chunkRows = partition->index->chunk_rows();
+  const auto* chunkKeys = partition->index->chunk_keys();
+  NIMBLE_CHECK_NOT_NULL(chunkRows);
+  NIMBLE_CHECK_NOT_NULL(chunkKeys);
+
+  const auto chunkIt =
+      std::upper_bound(chunkRows->begin(), chunkRows->end(), partitionRow);
+  NIMBLE_CHECK(chunkIt != chunkRows->end());
+  const uint32_t chunkIdx = chunkIt - chunkRows->begin();
+
+  // Fast path: the last row of each chunk has its key in chunk_keys metadata.
+  const uint32_t chunkEndRow = chunkRows->Get(chunkIdx);
+  if (partitionRow == chunkEndRow - 1) {
+    return std::string(chunkKeys->Get(chunkIdx)->string_view());
+  }
+
+  const auto chunkLocation = lookupChunk(partition, partitionRow);
+  const auto& decodedChunk = getDecodedChunk(partition, chunkLocation);
+  const uint32_t rowInChunk = partitionRow - chunkLocation.rowOffset;
+
+  std::string_view value;
+  decodedChunk.data->encoding->get(rowInChunk, &value);
+  return std::string(value);
 }
 
 } // namespace facebook::nimble::index

@@ -1001,6 +1001,29 @@ TEST_P(ClusterIndexLookupTest, pointLookupBatchMixed) {
   EXPECT_EQ(result[2][0].endRow, 5);
 }
 
+TEST_P(ClusterIndexLookupTest, keyAtRow) {
+  // 9 rows: key_a(0), key_b(1), ..., key_i(8)
+  const std::vector<std::string> expectedKeys = {
+      "key_a",
+      "key_b",
+      "key_c",
+      "key_d",
+      "key_e",
+      "key_f",
+      "key_g",
+      "key_h",
+      "key_i"};
+  for (uint32_t row = 0; row < 9; ++row) {
+    SCOPED_TRACE(fmt::format("row={}", row));
+    EXPECT_EQ(clusterIndex_->keyAtRow(row), expectedKeys[row]);
+  }
+}
+
+TEST_P(ClusterIndexLookupTest, keyAtRowOutOfRange) {
+  NIMBLE_ASSERT_THROW(clusterIndex_->keyAtRow(9), "beyond file total rows");
+  NIMBLE_ASSERT_THROW(clusterIndex_->keyAtRow(100), "beyond file total rows");
+}
+
 INSTANTIATE_TEST_SUITE_P(
     ChunkGranularity,
     ClusterIndexLookupTest,
@@ -1008,6 +1031,198 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<uint32_t>& info) {
       return fmt::format("rowsPerChunk_{}", info.param);
     });
+
+TEST_F(ClusterIndexTest, keyAtRowMultiplePartitions) {
+  // 2 partitions: partition 0 = rows 0-2 (key_a,key_b,key_c),
+  //               partition 1 = rows 3-5 (key_d,key_e,key_f)
+  std::vector<std::vector<std::string>> partition0Keys = {
+      {"key_a", "key_b", "key_c"}};
+  std::vector<std::vector<std::string>> partition1Keys = {
+      {"key_d", "key_e", "key_f"}};
+
+  auto encoded0 = encodeKeyStream(partition0Keys);
+  auto encoded1 = encodeKeyStream(partition1Keys);
+  std::string combinedStream = encoded0.data + encoded1.data;
+
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "key_0";
+  std::vector<Stripe> stripes = {
+      createStripeWithKeys(
+          {.streamOffset = 0,
+           .streamSize = static_cast<uint32_t>(encoded0.data.size()),
+           .stream = {.numChunks = 1, .chunkRows = {3}, .chunkOffsets = {0}},
+           .chunkKeys = {"key_c"}}),
+      createStripeWithKeys(
+          {.streamOffset = static_cast<uint32_t>(encoded0.data.size()),
+           .streamSize = static_cast<uint32_t>(encoded1.data.size()),
+           .stream = {.numChunks = 1, .chunkRows = {3}, .chunkOffsets = {0}},
+           .chunkKeys = {"key_f"}})};
+  std::vector<int> stripeGroups = {1, 1};
+
+  auto indexBuffers =
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndex =
+      createClusterIndex(indexBuffers, createKeyStreamFile(combinedStream));
+
+  const std::vector<std::string> expectedKeys = {
+      "key_a", "key_b", "key_c", "key_d", "key_e", "key_f"};
+  for (uint32_t row = 0; row < 6; ++row) {
+    SCOPED_TRACE(fmt::format("row={}", row));
+    EXPECT_EQ(clusterIndex->keyAtRow(row), expectedKeys[row]);
+  }
+
+  NIMBLE_ASSERT_THROW(clusterIndex->keyAtRow(6), "beyond file total rows");
+}
+
+TEST_F(ClusterIndexTest, keyAtRowMultipleChunksPerPartition) {
+  // 1 partition, 3 chunks of 2 rows each = 6 rows total.
+  // Verifies correct lookup at chunk boundaries.
+  std::vector<std::vector<std::string>> keyChunks = {
+      {"key_a", "key_b"}, {"key_c", "key_d"}, {"key_e", "key_f"}};
+  auto encoded = encodeKeyStream(keyChunks);
+
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "key_0";
+  std::vector<Stripe> stripes = {createStripeWithKeys(
+      {.streamOffset = 0,
+       .streamSize = static_cast<uint32_t>(encoded.data.size()),
+       .stream =
+           {.numChunks = 3,
+            .chunkRows = {2, 2, 2},
+            .chunkOffsets = encoded.chunkOffsets},
+       .chunkKeys = {"key_b", "key_d", "key_f"}})};
+  std::vector<int> stripeGroups = {1};
+
+  auto indexBuffers =
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndex =
+      createClusterIndex(indexBuffers, createKeyStreamFile(encoded.data));
+
+  const std::vector<std::string> expectedKeys = {
+      "key_a", "key_b", "key_c", "key_d", "key_e", "key_f"};
+  for (uint32_t row = 0; row < 6; ++row) {
+    SCOPED_TRACE(fmt::format("row={}", row));
+    EXPECT_EQ(clusterIndex->keyAtRow(row), expectedKeys[row]);
+  }
+
+  NIMBLE_ASSERT_THROW(clusterIndex->keyAtRow(6), "beyond file total rows");
+}
+
+TEST_F(ClusterIndexTest, keyAtRowMultiplePartitionsMultipleChunks) {
+  // 2 partitions, each with 2 chunks of 2 rows = 8 rows total.
+  // Tests partition boundary + chunk boundary interactions.
+  std::vector<std::vector<std::string>> p0Chunks = {
+      {"key_a", "key_b"}, {"key_c", "key_d"}};
+  std::vector<std::vector<std::string>> p1Chunks = {
+      {"key_e", "key_f"}, {"key_g", "key_h"}};
+
+  auto encoded0 = encodeKeyStream(p0Chunks);
+  auto encoded1 = encodeKeyStream(p1Chunks);
+  std::string combinedStream = encoded0.data + encoded1.data;
+
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "key_0";
+  std::vector<Stripe> stripes = {
+      createStripeWithKeys(
+          {.streamOffset = 0,
+           .streamSize = static_cast<uint32_t>(encoded0.data.size()),
+           .stream =
+               {.numChunks = 2,
+                .chunkRows = {2, 2},
+                .chunkOffsets = encoded0.chunkOffsets},
+           .chunkKeys = {"key_b", "key_d"}}),
+      createStripeWithKeys(
+          {.streamOffset = static_cast<uint32_t>(encoded0.data.size()),
+           .streamSize = static_cast<uint32_t>(encoded1.data.size()),
+           .stream =
+               {.numChunks = 2,
+                .chunkRows = {2, 2},
+                .chunkOffsets = encoded1.chunkOffsets},
+           .chunkKeys = {"key_f", "key_h"}})};
+  std::vector<int> stripeGroups = {1, 1};
+
+  auto indexBuffers =
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndex =
+      createClusterIndex(indexBuffers, createKeyStreamFile(combinedStream));
+
+  const std::vector<std::string> expectedKeys = {
+      "key_a", "key_b", "key_c", "key_d", "key_e", "key_f", "key_g", "key_h"};
+  for (uint32_t row = 0; row < 8; ++row) {
+    SCOPED_TRACE(fmt::format("row={}", row));
+    EXPECT_EQ(clusterIndex->keyAtRow(row), expectedKeys[row]);
+  }
+
+  // Partition boundary: row 3 is last of partition 0, row 4 is first of
+  // partition 1.
+  EXPECT_EQ(clusterIndex->keyAtRow(3), "key_d");
+  EXPECT_EQ(clusterIndex->keyAtRow(4), "key_e");
+
+  NIMBLE_ASSERT_THROW(clusterIndex->keyAtRow(8), "beyond file total rows");
+}
+
+TEST_F(ClusterIndexTest, keyAtRowSingleRow) {
+  // Edge case: file with exactly 1 row.
+  std::vector<std::vector<std::string>> keyChunks = {{"only_key"}};
+  auto encoded = encodeKeyStream(keyChunks);
+
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "key_0";
+  std::vector<Stripe> stripes = {createStripeWithKeys(
+      {.streamOffset = 0,
+       .streamSize = static_cast<uint32_t>(encoded.data.size()),
+       .stream = {.numChunks = 1, .chunkRows = {1}, .chunkOffsets = {0}},
+       .chunkKeys = {"only_key"}})};
+  std::vector<int> stripeGroups = {1};
+
+  auto indexBuffers =
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndex =
+      createClusterIndex(indexBuffers, createKeyStreamFile(encoded.data));
+
+  EXPECT_EQ(clusterIndex->keyAtRow(0), "only_key");
+  NIMBLE_ASSERT_THROW(clusterIndex->keyAtRow(1), "beyond file total rows");
+}
+
+TEST_F(ClusterIndexTest, keyAtRowUnevenChunks) {
+  // 1 partition with uneven chunks: 1 row, 3 rows, 2 rows = 6 rows total.
+  std::vector<std::vector<std::string>> keyChunks = {
+      {"key_a"}, {"key_b", "key_c", "key_d"}, {"key_e", "key_f"}};
+  auto encoded = encodeKeyStream(keyChunks);
+
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "key_0";
+  std::vector<Stripe> stripes = {createStripeWithKeys(
+      {.streamOffset = 0,
+       .streamSize = static_cast<uint32_t>(encoded.data.size()),
+       .stream =
+           {.numChunks = 3,
+            .chunkRows = {1, 3, 2},
+            .chunkOffsets = encoded.chunkOffsets},
+       .chunkKeys = {"key_a", "key_d", "key_f"}})};
+  std::vector<int> stripeGroups = {1};
+
+  auto indexBuffers =
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndex =
+      createClusterIndex(indexBuffers, createKeyStreamFile(encoded.data));
+
+  const std::vector<std::string> expectedKeys = {
+      "key_a", "key_b", "key_c", "key_d", "key_e", "key_f"};
+  for (uint32_t row = 0; row < 6; ++row) {
+    SCOPED_TRACE(fmt::format("row={}", row));
+    EXPECT_EQ(clusterIndex->keyAtRow(row), expectedKeys[row]);
+  }
+
+  // Chunk boundaries: row 0 = chunk 0 (single), row 1 = first of chunk 1,
+  // row 3 = last of chunk 1, row 4 = first of chunk 2.
+  EXPECT_EQ(clusterIndex->keyAtRow(0), "key_a");
+  EXPECT_EQ(clusterIndex->keyAtRow(1), "key_b");
+  EXPECT_EQ(clusterIndex->keyAtRow(3), "key_d");
+  EXPECT_EQ(clusterIndex->keyAtRow(4), "key_e");
+
+  NIMBLE_ASSERT_THROW(clusterIndex->keyAtRow(6), "beyond file total rows");
+}
 
 } // namespace
 } // namespace facebook::nimble::index::test

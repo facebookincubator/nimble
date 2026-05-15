@@ -94,6 +94,8 @@ class PrefixEncoding final
   /// @param buffer Output buffer for std::string_view values.
   void materialize(uint32_t rowCount, void* buffer) final;
 
+  void get(uint32_t row, void* buffer) final;
+
   /// Seeks to the position at or after the given value.
   ///
   std::optional<uint32_t> seek(const void* value, bool inclusive) final;

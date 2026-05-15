@@ -518,3 +518,57 @@ TEST_F(TrivialEncodingTest, seekUnsupportedEncodings) {
         "seek is not supported");
   }
 }
+
+TEST_F(TrivialEncodingTest, getStringByRow) {
+  const auto values = toVector({"alpha", "beta", "gamma", "delta", "epsilon"});
+  auto encoding = createEncoding(values);
+
+  for (uint32_t i = 0; i < values.size(); ++i) {
+    SCOPED_TRACE(fmt::format("row={}", i));
+    std::string_view result;
+    encoding->get(i, &result);
+    EXPECT_EQ(result, values[i]);
+  }
+}
+
+TEST_F(TrivialEncodingTest, getStringSingleRow) {
+  const auto values = toVector({"only"});
+  auto encoding = createEncoding(values);
+
+  std::string_view result;
+  encoding->get(0, &result);
+  EXPECT_EQ(result, "only");
+}
+
+TEST_F(TrivialEncodingTest, getStringRepeatedCalls) {
+  const auto values = toVector({"aaa", "bbb", "ccc"});
+  auto encoding = createEncoding(values);
+
+  // Repeated get() calls on the same and different rows.
+  std::string_view result;
+  encoding->get(2, &result);
+  EXPECT_EQ(result, "ccc");
+  encoding->get(0, &result);
+  EXPECT_EQ(result, "aaa");
+  encoding->get(2, &result);
+  EXPECT_EQ(result, "ccc");
+  encoding->get(1, &result);
+  EXPECT_EQ(result, "bbb");
+}
+
+TEST_F(TrivialEncodingTest, getUnsupportedEncodingThrows) {
+  nimble::Vector<int32_t> intValues{pool_.get()};
+  intValues.push_back(1);
+  intValues.push_back(1);
+  intValues.push_back(2);
+  auto encoding =
+      nimble::test::Encoder<nimble::RLEEncoding<int32_t>>::createEncoding(
+          *buffer_, intValues, [&](uint32_t len) {
+            auto& buf = stringBuffers_.emplace_back(
+                velox::AlignedBuffer::allocate<char>(len, pool_.get()));
+            return buf->asMutable<void>();
+          });
+  int32_t result;
+  NIMBLE_ASSERT_THROW(
+      encoding->get(0, &result), "get is not supported by this encoding type");
+}

@@ -167,6 +167,12 @@ class Encoding {
     NIMBLE_UNSUPPORTED("seek is not supported.");
   }
 
+  /// Materializes the value at the given row index into buffer.
+  /// Only supported by Trivial and Prefix encodings.
+  virtual void get(uint32_t /*row*/, void* /*buffer*/) {
+    NIMBLE_NOT_IMPLEMENTED("get is not supported by this encoding type");
+  }
+
   /// Materializes the next |rowCount| rows into buffer. Advances
   /// the row pointer |rowCount|.
   ///

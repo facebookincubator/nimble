@@ -156,6 +156,14 @@ uint32_t PrefixEncoding::restartOffset(uint32_t restartIndex) const {
   return encoding::readUint32(offsetPos);
 }
 
+void PrefixEncoding::get(uint32_t row, void* buffer) {
+  reset();
+  if (row > 0) {
+    skip(row);
+  }
+  materialize(1, buffer);
+}
+
 void PrefixEncoding::seekToRestartPoint(uint32_t restartIndex) {
   NIMBLE_CHECK_LT(restartIndex, numRestarts_, "Restart index out of bounds");
 

@@ -1397,4 +1397,43 @@ TEST_F(PrefixEncodingTest, seekExactMatchWithDuplicatesAcrossRestarts) {
     }
   }
 }
+TEST_F(PrefixEncodingTest, getByRow) {
+  const std::vector<std::string_view> values = {
+      "apple", "application", "apply", "banana", "bandana", "band"};
+  Buffer buffer{*pool_};
+  auto encoded = EncodingFactory::encode<std::string_view>(
+      createSelectionPolicy(), values, buffer);
+  stringBuffers_.clear();
+  auto encoding =
+      EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
+
+  for (uint32_t i = 0; i < values.size(); ++i) {
+    SCOPED_TRACE(fmt::format("row={}", i));
+    std::string_view result;
+    encoding->get(i, &result);
+    EXPECT_EQ(result, values[i]);
+  }
+}
+
+TEST_F(PrefixEncodingTest, getByRowRepeatedCalls) {
+  const std::vector<std::string_view> values = {
+      "prefix_aaa", "prefix_bbb", "prefix_ccc"};
+  Buffer buffer{*pool_};
+  auto encoded = EncodingFactory::encode<std::string_view>(
+      createSelectionPolicy(), values, buffer);
+  stringBuffers_.clear();
+  auto encoding =
+      EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
+
+  std::string_view result;
+  encoding->get(2, &result);
+  EXPECT_EQ(result, "prefix_ccc");
+  encoding->get(0, &result);
+  EXPECT_EQ(result, "prefix_aaa");
+  encoding->get(2, &result);
+  EXPECT_EQ(result, "prefix_ccc");
+  encoding->get(1, &result);
+  EXPECT_EQ(result, "prefix_bbb");
+}
+
 } // namespace facebook::nimble::test

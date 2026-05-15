@@ -62,6 +62,7 @@ class TrivialEncoding final
   void reset() final;
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
+  void get(uint32_t row, void* buffer) final;
 
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
@@ -109,6 +110,7 @@ class TrivialEncoding<std::string_view> final
   void reset() final;
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
+  void get(uint32_t row, void* buffer) final;
 
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
@@ -233,6 +235,11 @@ void TrivialEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   const auto start = values_ + row_;
   std::copy(start, start + rowCount, static_cast<T*>(buffer));
   row_ += rowCount;
+}
+
+template <typename T>
+void TrivialEncoding<T>::get(uint32_t row, void* buffer) {
+  *static_cast<T*>(buffer) = values_[row];
 }
 
 template <typename T>
