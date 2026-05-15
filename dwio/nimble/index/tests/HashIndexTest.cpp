@@ -23,6 +23,7 @@
 #include "dwio/nimble/index/IndexLookup.h"
 
 #include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/tablet/tests/TabletTestUtils.h"
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "velox/common/file/FileSystems.h"
@@ -103,7 +104,10 @@ class HashIndexTestBase {
   std::shared_ptr<TabletReader> openTablet(const std::string& filePath) {
     auto fs = velox::filesystems::getFileSystem(filePath, {});
     auto readFile = fs->openFileForRead(filePath);
-    return TabletReader::create(std::move(readFile), leafPool_.get(), {});
+    return TabletReader::create(
+        std::move(readFile),
+        leafPool_.get(),
+        ::facebook::nimble::test::makeTestTabletOptions(leafPool_.get()));
   }
 
   // Encodes a lookup key for a single row and returns the encoded key.

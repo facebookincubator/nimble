@@ -26,6 +26,7 @@
 #include "velox/common/base/tests/GTestUtils.h"
 
 #include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/tablet/tests/TabletTestUtils.h"
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "velox/common/file/FileSystems.h"
@@ -99,7 +100,10 @@ class SortedIndexTestBase {
   std::shared_ptr<TabletReader> openTablet(const std::string& filePath) {
     auto fs = velox::filesystems::getFileSystem(filePath, {});
     auto readFile = fs->openFileForRead(filePath);
-    return TabletReader::create(std::move(readFile), leafPool_.get(), {});
+    return TabletReader::create(
+        std::move(readFile),
+        leafPool_.get(),
+        ::facebook::nimble::test::makeTestTabletOptions(leafPool_.get()));
   }
 
   std::string encodeLookupKey(

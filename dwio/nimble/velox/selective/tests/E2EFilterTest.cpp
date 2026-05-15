@@ -21,6 +21,7 @@
 #include "dwio/nimble/encodings/EncodingLayout.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/tablet/tests/TabletTestUtils.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
@@ -517,7 +518,8 @@ class E2EFilterTest
   void verifyColumnEncodingsOnDisk(EncodingType expectedEncodingType) {
     auto readFile = std::make_shared<InMemoryReadFile>(sinkData_);
     auto& pool = *leafPool_;
-    auto tablet = TabletReader::create(readFile, &pool, {});
+    auto tablet = TabletReader::create(
+        readFile, &pool, test::makeTestTabletOptions(&pool));
     auto section = tablet->loadOptionalSection(std::string(kSchemaSection));
     ASSERT_TRUE(section.has_value());
     auto schema = SchemaDeserializer::deserialize(section->content().data());

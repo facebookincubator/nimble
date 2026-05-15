@@ -25,6 +25,7 @@
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/tablet/tests/TabletTestUtils.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
@@ -41,6 +42,7 @@
 
 using namespace facebook;
 using namespace facebook::nimble;
+using facebook::nimble::test::makeTestTabletOptions;
 
 // Test parameters for parameterized tests.
 // For kCompact mode, we test both with and without compression to exercise the
@@ -510,7 +512,7 @@ SerializationTest::SerializeResult SerializationTest::serializeTabletRaw(
   auto readFile =
       std::make_shared<velox::InMemoryReadFile>(std::string_view(fileData));
   auto tablet = nimble::TabletReader::create(
-      readFile, pool_.get(), nimble::TabletReader::Options{});
+      readFile, pool_.get(), makeTestTabletOptions(pool_.get()));
   EXPECT_GT(tablet->stripeCount(), 0);
 
   // Load the nimble schema from the tablet file.
@@ -3134,7 +3136,7 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxHighParallelism) {
   auto readFile =
       std::make_shared<velox::InMemoryReadFile>(std::string_view(fileData));
   auto tablet = nimble::TabletReader::create(
-      readFile, pool_.get(), nimble::TabletReader::Options{});
+      readFile, pool_.get(), makeTestTabletOptions(pool_.get()));
   auto schemaSection =
       tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
   auto nimbleSchema =
@@ -3256,7 +3258,7 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxConcurrentDeserializers) {
     auto readFile =
         std::make_shared<velox::InMemoryReadFile>(std::string_view(fileData));
     auto tablet = nimble::TabletReader::create(
-        readFile, pool_.get(), nimble::TabletReader::Options{});
+        readFile, pool_.get(), makeTestTabletOptions(pool_.get()));
     auto schemaSection =
         tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
     schemas[t] = nimble::SchemaDeserializer::deserialize(
@@ -3425,7 +3427,7 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxFlatMapWithParallelDecode) {
   auto readFile =
       std::make_shared<velox::InMemoryReadFile>(std::string_view(fileData));
   auto tablet = nimble::TabletReader::create(
-      readFile, pool_.get(), nimble::TabletReader::Options{});
+      readFile, pool_.get(), makeTestTabletOptions(pool_.get()));
   auto schemaSection =
       tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
   auto nimbleSchema =
@@ -3544,7 +3546,7 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxRepeatedBatches) {
   auto readFile =
       std::make_shared<velox::InMemoryReadFile>(std::string_view(fileData));
   auto tablet = nimble::TabletReader::create(
-      readFile, pool_.get(), nimble::TabletReader::Options{});
+      readFile, pool_.get(), makeTestTabletOptions(pool_.get()));
   auto schemaSection =
       tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
   auto nimbleSchema =

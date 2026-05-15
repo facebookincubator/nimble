@@ -34,6 +34,7 @@
 #include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
+#include "dwio/nimble/tablet/tests/TabletTestUtils.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/FlushPolicy.h"
@@ -59,6 +60,8 @@ DEFINE_uint32(
     0,
     "If provided, this seed will be used when executing tests. "
     "Otherwise, a random seed will be used.");
+
+using nimble::test::makeTestTabletOptions;
 
 class VeloxWriterTest : public ::testing::Test {
  protected:
@@ -449,7 +452,8 @@ TEST_F(VeloxWriterTest, featureReorderingStreamCollocation) {
     }
 
     auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
-    auto tablet = nimble::TabletReader::create(readFile, leafPool_.get(), {});
+    auto tablet = nimble::TabletReader::create(
+        readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
     ASSERT_GE(tablet->stripeCount(), 1);
     if (enableIndex) {
       ASSERT_NE(tablet->clusterIndex(), nullptr) << "Cluster index must exist";
@@ -952,7 +956,8 @@ TEST_F(VeloxWriterTest, encodingLayout) {
     auto readFile =
         std::make_shared<nimble::testing::InMemoryTrackableReadFile>(
             file, useChainedBuffers);
-    auto tablet = nimble::TabletReader::create(readFile, leafPool_.get(), {});
+    auto tablet = nimble::TabletReader::create(
+        readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
     auto section =
         tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
     NIMBLE_CHECK(section.has_value(), "Schema not found.");
@@ -1473,8 +1478,8 @@ void testChunks(
   folly::writeFile(file, "/tmp/afile");
 
   auto tabletReadFile = std::make_shared<velox::InMemoryReadFile>(file);
-  auto tablet =
-      nimble::TabletReader::create(tabletReadFile, leafPool.get(), {});
+  auto tablet = nimble::TabletReader::create(
+      tabletReadFile, leafPool.get(), makeTestTabletOptions(leafPool.get()));
   verifier(*tablet);
 
   nimble::VeloxReader reader(
@@ -2355,7 +2360,8 @@ TEST_F(VeloxWriterTest, rawSizeWritten) {
     writer.close();
 
     auto statsReadFile = std::make_shared<velox::InMemoryReadFile>(file);
-    nimble::TabletReader::Options readerOptions;
+    nimble::TabletReader::Options readerOptions =
+        makeTestTabletOptions(leafPool_.get());
     readerOptions.preloadOptionalSections = {
         std::string(facebook::nimble::kStatsSection)};
     auto tablet = facebook::nimble::TabletReader::create(
@@ -2383,7 +2389,8 @@ TEST_F(VeloxWriterTest, rawSizeWritten) {
     writer.close();
 
     auto vecStatsReadFile = std::make_shared<velox::InMemoryReadFile>(file);
-    nimble::TabletReader::Options readerOptions;
+    nimble::TabletReader::Options readerOptions =
+        makeTestTabletOptions(leafPool_.get());
     readerOptions.preloadOptionalSections = {
         std::string(facebook::nimble::kVectorizedStatsSection)};
     auto tablet = facebook::nimble::TabletReader::create(
@@ -4399,7 +4406,8 @@ TEST_F(VeloxWriterTest, customPrefixRestartInterval) {
 
     // Read back and verify the restart interval in the key encoding
     auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
-    auto tablet = nimble::TabletReader::create(readFile, leafPool_.get(), {});
+    auto tablet = nimble::TabletReader::create(
+        readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
 
     const auto* index = tablet->clusterIndex();
     ASSERT_NE(index, nullptr) << "Index must exist";
@@ -4618,7 +4626,8 @@ void verifyDeltaEncoding(
     bool checkChildren = false) {
   auto readFile =
       std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
-  auto tablet = nimble::TabletReader::create(readFile, &pool, {});
+  auto tablet = nimble::TabletReader::create(
+      readFile, &pool, makeTestTabletOptions(&pool));
   auto section =
       tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
   NIMBLE_CHECK(section.has_value(), "Schema not found.");
@@ -4681,7 +4690,8 @@ TEST_F(VeloxWriterTest, encodingLayoutDelta) {
     auto readFile =
         std::make_shared<nimble::testing::InMemoryTrackableReadFile>(
             file, useChainedBuffers);
-    auto tablet = nimble::TabletReader::create(readFile, leafPool_.get(), {});
+    auto tablet = nimble::TabletReader::create(
+        readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
     auto section =
         tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
     NIMBLE_CHECK(section.has_value(), "Schema not found.");
@@ -4911,7 +4921,8 @@ TEST_F(VeloxWriterTest, encodingLayoutDeltaMultiStripe) {
 
   auto readFile =
       std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
-  auto tablet = nimble::TabletReader::create(readFile, leafPool_.get(), {});
+  auto tablet = nimble::TabletReader::create(
+      readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
   ASSERT_GT(tablet->stripeCount(), 1);
 
   verifyDeltaEncoding(file, *leafPool_, true);
@@ -4990,7 +5001,8 @@ TEST_F(VeloxWriterTest, encodingLayoutDeltaMultiColumn) {
   // Verify both column encodings.
   auto readFile =
       std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
-  auto tablet = nimble::TabletReader::create(readFile, leafPool_.get(), {});
+  auto tablet = nimble::TabletReader::create(
+      readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
   auto section =
       tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
   NIMBLE_CHECK(section.has_value(), "Schema not found.");
@@ -5194,8 +5206,10 @@ TEST_F(VeloxWriterTest, encodingLayoutDeltaMultiStripeLegacyRead) {
 
   auto readFileTrackable =
       std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
-  auto tablet =
-      nimble::TabletReader::create(readFileTrackable, leafPool_.get(), {});
+  auto tablet = nimble::TabletReader::create(
+      readFileTrackable,
+      leafPool_.get(),
+      makeTestTabletOptions(leafPool_.get()));
   ASSERT_GT(tablet->stripeCount(), 1);
 
   verifyDeltaEncoding(file, *leafPool_, true);

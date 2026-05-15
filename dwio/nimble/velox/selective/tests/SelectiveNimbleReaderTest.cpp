@@ -26,6 +26,7 @@
 #include "dwio/nimble/encodings/EncodingLayout.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/tablet/tests/TabletTestUtils.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
@@ -327,7 +328,8 @@ class SelectiveNimbleReaderTest
       EncodingType expectedEncodingType,
       bool isNullable = true) {
     auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
-    auto tablet = TabletReader::create(readFile, pool(), {});
+    auto tablet = TabletReader::create(
+        readFile, pool(), test::makeTestTabletOptions(pool()));
     auto section = tablet->loadOptionalSection(std::string(kSchemaSection));
     ASSERT_TRUE(section.has_value());
     auto schema = SchemaDeserializer::deserialize(section->content().data());
@@ -2552,7 +2554,8 @@ TEST_P(SelectiveNimbleReaderTest, pinnedMetadataNoReread) {
 
   // Get the metadata boundary. Stripe group metadata starts right after the
   // last stripe's data. Any read at or above this offset is a metadata read.
-  auto tablet = TabletReader::create(delegate, pool(), {});
+  auto tablet = TabletReader::create(
+      delegate, pool(), test::makeTestTabletOptions(pool()));
   const auto stripeGroupsMeta = tablet->stripeGroupsMetadata();
   ASSERT_EQ(stripeGroupsMeta.size(), 1);
   const auto metadataBoundary = stripeGroupsMeta[0].offset();
