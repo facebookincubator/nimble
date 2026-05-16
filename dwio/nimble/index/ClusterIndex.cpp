@@ -206,14 +206,10 @@ const ClusterIndex::IndexPartition* ClusterIndex::lookupPartition(
   return loadPartition(partitionId);
 }
 
-uint32_t ClusterIndex::partitionRow(uint32_t row) const {
-  NIMBLE_CHECK_LT(
-      row, numRows_, "Row {} is beyond file total rows {}", row, numRows_);
-  const auto it =
-      std::upper_bound(partitionRows_.begin(), partitionRows_.end(), row);
-  NIMBLE_CHECK(it != partitionRows_.begin());
-  const uint32_t partitionId =
-      static_cast<uint32_t>(it - partitionRows_.begin()) - 1;
+uint32_t ClusterIndex::partitionRow(uint32_t partitionId, uint32_t row) const {
+  NIMBLE_CHECK_LT(partitionId, numPartitions_);
+  NIMBLE_CHECK_GE(row, partitionRows_[partitionId]);
+  NIMBLE_CHECK_LT(row, partitionRows_[partitionId + 1]);
   return row - partitionRows_[partitionId];
 }
 
@@ -427,11 +423,10 @@ const ClusterIndex::IndexPartition* ClusterIndex::loadPartition(
   auto& partition = partitions_[partitionId];
   if (partition == nullptr) {
     const auto section = partitionSection(partitionId);
-    auto handle = metadataInput_->enqueue(section);
-    MetadataInput::LoadGuard guard(metadataInput_.get());
-    auto result = handle.read();
+    auto results = metadataInput_->load({&section, 1});
+    NIMBLE_CHECK_EQ(results.size(), 1);
     partition = std::make_unique<IndexPartition>(
-        partitionId, std::make_unique<MetadataBuffer>(std::move(*result)));
+        partitionId, std::make_unique<MetadataBuffer>(std::move(*results[0])));
   }
   return partition.get();
 }
@@ -553,7 +548,7 @@ ChunkLocation ClusterIndex::lookupChunk(
 
 std::string ClusterIndex::keyAtRow(uint32_t row) const {
   const auto* partition = lookupPartition(row);
-  const auto partitionRow = this->partitionRow(row);
+  const auto partitionRow = this->partitionRow(partition->id, row);
 
   const auto* chunkRows = partition->index->chunk_rows();
   const auto* chunkKeys = partition->index->chunk_keys();

@@ -151,11 +151,10 @@ HashIndex::HashIndex(
       partitionCache_{
           [this](uint32_t partitionIndex) -> std::shared_ptr<Partition> {
             const auto& descriptor = partitions_[partitionIndex];
-            auto handle = metadataInput_->enqueue(descriptor.section);
-            MetadataInput::LoadGuard guard(metadataInput_.get());
-            auto result = handle.read();
+            auto results = metadataInput_->load({&descriptor.section, 1});
+            NIMBLE_CHECK_EQ(results.size(), 1);
             return Partition::create(
-                std::make_unique<MetadataBuffer>(std::move(*result)));
+                std::make_unique<MetadataBuffer>(std::move(*results[0])));
           }} {}
 
 // static

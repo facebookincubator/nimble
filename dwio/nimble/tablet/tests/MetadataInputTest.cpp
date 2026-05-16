@@ -17,6 +17,7 @@
 #include "dwio/nimble/tablet/MetadataInput.h"
 
 #include <gtest/gtest.h>
+#include <array>
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
@@ -49,45 +50,13 @@ namespace facebook::nimble::test {
 
 class MetadataInputTestHelper {
  public:
-  explicit MetadataInputTestHelper(nimble::MetadataInput* input)
-      : input_{input} {}
-
-  bool testingLoaded() const {
-    return input_->loaded_;
-  }
-
-  uint32_t testingSectionCount() const {
-    return input_->sections_.size();
-  }
-
-  const nimble::MetadataSection& testingSection(uint32_t index) const {
-    return input_->sections_[index].section;
-  }
-
-  bool testingHasBuffer(uint32_t index) const {
-    return input_->sections_[index].buffer != nullptr;
-  }
-
- private:
-  nimble::MetadataInput* const input_;
+  explicit MetadataInputTestHelper(nimble::MetadataInput* /*input*/) {}
 };
 
 class CachedMetadataInputTestHelper : public MetadataInputTestHelper {
  public:
   explicit CachedMetadataInputTestHelper(nimble::CachedMetadataInput* input)
-      : MetadataInputTestHelper(input), input_{input} {}
-
-  uint32_t testingCachePinCount() const {
-    return input_->cachePins_.size();
-  }
-
-  bool testingHasCachePin(uint32_t index) const {
-    return index < input_->cachePins_.size() &&
-        input_->cachePins_[index].has_value();
-  }
-
- private:
-  nimble::CachedMetadataInput* const input_;
+      : MetadataInputTestHelper(input) {}
 };
 
 } // namespace facebook::nimble::test
@@ -231,7 +200,7 @@ class DirectMetadataInputTest : public MetadataInputTestBase {
   }
 };
 
-TEST_F(DirectMetadataInputTest, enqueueLoadRead) {
+TEST_F(DirectMetadataInputTest, loadSections) {
   for (const auto& testData : enqueueLoadReadTestSettings()) {
     SCOPED_TRACE(testData.debugString());
 
@@ -244,35 +213,17 @@ TEST_F(DirectMetadataInputTest, enqueueLoadRead) {
 
     const auto options = makeReaderOptions();
     auto input = nimble::MetadataInput::create(readFile.get(), options);
-    nimble::test::MetadataInputTestHelper helper(input.get());
 
-    EXPECT_FALSE(helper.testingLoaded());
-    EXPECT_EQ(helper.testingSectionCount(), 0);
-
-    std::vector<nimble::MetadataHandle> handles;
+    auto results = input->load(sections);
+    ASSERT_EQ(results.size(), sections.size());
     for (uint32_t i = 0; i < sections.size(); ++i) {
-      handles.push_back(input->enqueue(sections[i]));
-      EXPECT_EQ(helper.testingSectionCount(), i + 1);
-      EXPECT_FALSE(helper.testingHasBuffer(i));
-    }
-    EXPECT_FALSE(helper.testingLoaded());
-
-    input->load();
-    EXPECT_TRUE(helper.testingLoaded());
-    for (uint32_t i = 0; i < sections.size(); ++i) {
-      EXPECT_TRUE(helper.testingHasBuffer(i));
-    }
-
-    for (uint32_t i = 0; i < sections.size(); ++i) {
-      auto buffer = handles[i].read();
-      ASSERT_NE(buffer, nullptr);
-      EXPECT_EQ(buffer->content(), testData.specs[i].data);
-      EXPECT_FALSE(helper.testingHasBuffer(i));
+      ASSERT_NE(results[i], nullptr);
+      EXPECT_EQ(results[i]->content(), testData.specs[i].data);
     }
   }
 }
 
-TEST_F(DirectMetadataInputTest, reverseEnqueueOrder) {
+TEST_F(DirectMetadataInputTest, reverseSectionOrder) {
   const std::string data0 = "first-in-file";
   const std::string data1 = "second-in-file";
 
@@ -297,17 +248,14 @@ TEST_F(DirectMetadataInputTest, reverseEnqueueOrder) {
   const auto options = makeReaderOptions();
   auto input = nimble::MetadataInput::create(readFile.get(), options);
 
-  // Enqueue in reverse file order — should still work.
-  auto handle1 = input->enqueue(section1);
-  auto handle0 = input->enqueue(section0);
-  input->load();
-
-  EXPECT_EQ(handle0.read()->content(), data0);
-  EXPECT_EQ(handle1.read()->content(), data1);
+  // Sections in reverse file order — should still work.
+  auto results = input->load(std::array{section1, section0});
+  EXPECT_EQ(results[0]->content(), data1);
+  EXPECT_EQ(results[1]->content(), data0);
 }
 
-TEST_F(DirectMetadataInputTest, stateTransitions) {
-  const std::string data = "state-test";
+TEST_F(DirectMetadataInputTest, repeatedLoad) {
+  const std::string data = "repeat-test";
   nimble::MetadataSection section{
       0,
       static_cast<uint32_t>(data.size()),
@@ -318,67 +266,18 @@ TEST_F(DirectMetadataInputTest, stateTransitions) {
 
   const auto options = makeReaderOptions();
   auto input = nimble::MetadataInput::create(readFile.get(), options);
-  nimble::test::MetadataInputTestHelper helper(input.get());
 
-  // Before enqueue.
-  EXPECT_FALSE(helper.testingLoaded());
-  EXPECT_EQ(helper.testingSectionCount(), 0);
+  // Stateless: can call load() multiple times without reset.
+  auto results1 = input->load(std::array{section});
+  EXPECT_EQ(results1[0]->content(), data);
 
-  // After enqueue.
-  auto handle = input->enqueue(section);
-  EXPECT_FALSE(helper.testingLoaded());
-  EXPECT_EQ(helper.testingSectionCount(), 1);
-  EXPECT_EQ(helper.testingSection(0).offset(), 0);
-  EXPECT_EQ(helper.testingSection(0).size(), data.size());
-  EXPECT_FALSE(helper.testingHasBuffer(0));
+  auto results2 = input->load(std::array{section});
+  EXPECT_EQ(results2[0]->content(), data);
 
-  // After load.
-  input->load();
-  EXPECT_TRUE(helper.testingLoaded());
-  EXPECT_EQ(helper.testingSectionCount(), 1);
-  EXPECT_TRUE(helper.testingHasBuffer(0));
-
-  // After read — buffer consumed.
-  EXPECT_EQ(handle.read()->content(), data);
-  EXPECT_FALSE(helper.testingHasBuffer(0));
-
-  // After reset — back to initial state.
-  input->reset();
-  EXPECT_FALSE(helper.testingLoaded());
-  EXPECT_EQ(helper.testingSectionCount(), 0);
-
-  // Can enqueue/load/read again after reset.
-  auto handle2 = input->enqueue(section);
-  EXPECT_EQ(helper.testingSectionCount(), 1);
-  input->load();
-  EXPECT_TRUE(helper.testingLoaded());
-  EXPECT_EQ(handle2.read()->content(), data);
-
-  // Load without enqueue throws.
-  {
-    auto emptyInput = nimble::MetadataInput::create(readFile.get(), options);
-    NIMBLE_ASSERT_THROW(emptyInput->load(), "No sections enqueued");
-  }
-
-  // Read before load throws.
-  {
-    auto freshInput = nimble::MetadataInput::create(readFile.get(), options);
-    auto h = freshInput->enqueue(section);
-    NIMBLE_ASSERT_THROW(h.read(), "load() must be called before read()");
-  }
-
-  // Without reset, enqueue throws.
+  // Empty input throws.
   NIMBLE_ASSERT_THROW(
-      input->enqueue(section), "enqueue() not allowed after load()");
-  // Without reset, load throws.
-  NIMBLE_ASSERT_THROW(input->load(), "load() already called");
-
-  // Double read throws.
-  input->reset();
-  auto handle3 = input->enqueue(section);
-  input->load();
-  handle3.read();
-  NIMBLE_ASSERT_THROW(handle3.read(), "Metadata buffer already consumed");
+      input->load(std::span<const nimble::MetadataSection>{}),
+      "No sections to load");
 }
 
 TEST_F(DirectMetadataInputTest, ioStats) {
@@ -409,8 +308,7 @@ TEST_F(DirectMetadataInputTest, ioStats) {
 
   const auto options = makeReaderOptions();
   auto input = nimble::MetadataInput::create(readFile.get(), options);
-  input->enqueue(section);
-  input->load();
+  input->load(std::array{section});
 
   EXPECT_GT(metadataIoStats_->read().count(), readCountBefore);
   EXPECT_EQ(metadataIoStats_->read().sum() - readSumBefore, data.size());
@@ -525,10 +423,7 @@ DEBUG_ONLY_TEST_F(DirectMetadataInputTest, ioCoalescing) {
     const auto options = makeReaderOptions(
         testData.maxCoalesceDistance, testData.maxCoalesceBytes);
     auto input = nimble::MetadataInput::create(readFile.get(), options);
-    for (const auto& section : sections) {
-      input->enqueue(section);
-    }
-    input->load();
+    input->load(sections);
 
     EXPECT_EQ(capturedStats.numIos, testData.expectedNumIos);
     EXPECT_EQ(capturedStats.extraBytes, testData.expectedOverread);
@@ -602,48 +497,15 @@ TEST_F(DirectMetadataInputTest, ioError) {
 
     const auto options = makeReaderOptions(testData.maxCoalesceDistance);
     auto input = nimble::MetadataInput::create(readFile.get(), options);
-    for (const auto& section : sections) {
-      input->enqueue(section);
-    }
-    EXPECT_THROW(input->load(), std::runtime_error);
+    EXPECT_THROW(input->load(sections), std::runtime_error);
 
-    // After IO error, reset and retry with error cleared should succeed.
+    // After IO error, retry with error cleared should succeed (stateless).
     readFile->clearReadError();
-    input->reset();
-    std::vector<nimble::MetadataHandle> handles;
-    for (const auto& section : sections) {
-      handles.push_back(input->enqueue(section));
-    }
-    input->load();
-    for (uint32_t i = 0; i < handles.size(); ++i) {
-      EXPECT_EQ(handles[i].read()->content(), testData.specs[i].data);
+    auto results = input->load(sections);
+    for (uint32_t i = 0; i < results.size(); ++i) {
+      EXPECT_EQ(results[i]->content(), testData.specs[i].data);
     }
   }
-}
-
-TEST_F(DirectMetadataInputTest, loadGuard) {
-  NIMBLE_ASSERT_THROW(nimble::MetadataInput::LoadGuard(nullptr), "");
-
-  std::string sectionData(64, 'A');
-  nimble::MetadataSection section{0, 64, nimble::CompressionType::Uncompressed};
-  auto fileContent = buildFileContent({section}, {sectionData});
-  auto file = std::make_shared<velox::InMemoryReadFile>(std::move(fileContent));
-  auto options = makeReaderOptions();
-  auto input = nimble::MetadataInput::create(file.get(), options);
-
-  auto handle = input->enqueue(section);
-  nimble::test::MetadataInputTestHelper helper(input.get());
-  EXPECT_FALSE(helper.testingLoaded());
-
-  {
-    nimble::MetadataInput::LoadGuard guard(input.get());
-    EXPECT_TRUE(helper.testingLoaded());
-    auto result = handle.read();
-    ASSERT_NE(result, nullptr);
-    EXPECT_EQ(result->content(), sectionData);
-  }
-  EXPECT_FALSE(helper.testingLoaded());
-  EXPECT_EQ(helper.testingSectionCount(), 0);
 }
 
 // --- CachedMetadataInput tests ---
@@ -730,7 +592,7 @@ class CachedMetadataInputTest : public MetadataInputTestBase,
   std::unique_ptr<folly::IOThreadPoolExecutor> ssdExecutor_;
 };
 
-TEST_P(CachedMetadataInputTest, enqueueLoadRead) {
+TEST_P(CachedMetadataInputTest, loadSections) {
   for (const auto& testData : enqueueLoadReadTestSettings()) {
     SCOPED_TRACE(testData.debugString());
     cache_->clear();
@@ -743,35 +605,16 @@ TEST_P(CachedMetadataInputTest, enqueueLoadRead) {
     auto readFile = std::make_shared<velox::InMemoryReadFile>(fileContent);
 
     auto input = createCachedInput(readFile.get());
-    nimble::test::MetadataInputTestHelper helper(input.get());
-
-    EXPECT_FALSE(helper.testingLoaded());
-    EXPECT_EQ(helper.testingSectionCount(), 0);
-
-    std::vector<nimble::MetadataHandle> handles;
+    auto results = input->load(sections);
+    ASSERT_EQ(results.size(), sections.size());
     for (uint32_t i = 0; i < sections.size(); ++i) {
-      handles.push_back(input->enqueue(sections[i]));
-      EXPECT_EQ(helper.testingSectionCount(), i + 1);
-      EXPECT_FALSE(helper.testingHasBuffer(i));
-    }
-    EXPECT_FALSE(helper.testingLoaded());
-
-    input->load();
-    EXPECT_TRUE(helper.testingLoaded());
-    for (uint32_t i = 0; i < sections.size(); ++i) {
-      EXPECT_TRUE(helper.testingHasBuffer(i));
-    }
-
-    for (uint32_t i = 0; i < sections.size(); ++i) {
-      auto buffer = handles[i].read();
-      ASSERT_NE(buffer, nullptr);
-      EXPECT_EQ(buffer->content(), testData.specs[i].data);
-      EXPECT_FALSE(helper.testingHasBuffer(i));
+      ASSERT_NE(results[i], nullptr);
+      EXPECT_EQ(results[i]->content(), testData.specs[i].data);
     }
   }
 }
 
-TEST_P(CachedMetadataInputTest, reverseEnqueueOrder) {
+TEST_P(CachedMetadataInputTest, reverseSectionOrder) {
   const std::string data0 = "first-in-file";
   const std::string data1 = "second-in-file";
 
@@ -794,16 +637,12 @@ TEST_P(CachedMetadataInputTest, reverseEnqueueOrder) {
   auto readFile = std::make_shared<velox::InMemoryReadFile>(fileContent);
 
   auto input = createCachedInput(readFile.get());
-
-  auto handle1 = input->enqueue(section1);
-  auto handle0 = input->enqueue(section0);
-  input->load();
-
-  EXPECT_EQ(handle0.read()->content(), data0);
-  EXPECT_EQ(handle1.read()->content(), data1);
+  auto results = input->load(std::array{section1, section0});
+  EXPECT_EQ(results[0]->content(), data1);
+  EXPECT_EQ(results[1]->content(), data0);
 }
 
-TEST_P(CachedMetadataInputTest, enqueueLoadReadWithCache) {
+TEST_P(CachedMetadataInputTest, loadWithCache) {
   for (const auto& testData : enqueueLoadReadTestSettings()) {
     SCOPED_TRACE(testData.debugString());
     cache_->clear();
@@ -821,13 +660,9 @@ TEST_P(CachedMetadataInputTest, enqueueLoadReadWithCache) {
       const auto storageLatencyBefore =
           metadataIoStats_->storageReadLatencyUs().count();
       auto input = createCachedInput(readFile.get());
-      std::vector<nimble::MetadataHandle> handles;
-      for (const auto& section : sections) {
-        handles.push_back(input->enqueue(section));
-      }
-      input->load();
-      for (uint32_t i = 0; i < handles.size(); ++i) {
-        EXPECT_EQ(handles[i].read()->content(), testData.specs[i].data);
+      auto results = input->load(sections);
+      for (uint32_t i = 0; i < results.size(); ++i) {
+        EXPECT_EQ(results[i]->content(), testData.specs[i].data);
       }
       EXPECT_EQ(metadataIoStats_->ramHit().count(), ramHitBefore);
       EXPECT_GT(
@@ -835,25 +670,18 @@ TEST_P(CachedMetadataInputTest, enqueueLoadReadWithCache) {
           storageLatencyBefore);
     }
 
-    // Count sections with known uncompressed size — only these get
-    // pre-claimed cache pins and can be fully served from RAM cache.
     const uint32_t sectionsWithSize = std::count_if(
         testData.specs.begin(), testData.specs.end(), [](const auto& s) {
           return s.hasUncompressedSize;
         });
 
     // Second load — sections with uncompressed size hit cache directly.
-    // Sections without it still go through loadFromFile → store().
     {
       const auto ramHitBefore = metadataIoStats_->ramHit().count();
       auto input = createCachedInput(readFile.get());
-      std::vector<nimble::MetadataHandle> handles;
-      for (const auto& section : sections) {
-        handles.push_back(input->enqueue(section));
-      }
-      input->load();
-      for (uint32_t i = 0; i < handles.size(); ++i) {
-        EXPECT_EQ(handles[i].read()->content(), testData.specs[i].data);
+      auto results = input->load(sections);
+      for (uint32_t i = 0; i < results.size(); ++i) {
+        EXPECT_EQ(results[i]->content(), testData.specs[i].data);
       }
       EXPECT_GE(
           metadataIoStats_->ramHit().count() - ramHitBefore, sectionsWithSize);
@@ -861,12 +689,9 @@ TEST_P(CachedMetadataInputTest, enqueueLoadReadWithCache) {
 
     // Third load (SSD only) — flush RAM to SSD, clear RAM, read from SSD.
     if (enableSsd()) {
-      // Flush all saveable entries to SSD.
       ASSERT_TRUE(cache_->ssdCache()->startWrite());
       cache_->saveToSsd(/*saveAll=*/true);
       cache_->ssdCache()->waitForWriteToFinish();
-
-      // Clear RAM cache — entries survive on SSD.
       cache_->clear();
 
       const auto ramHitBefore = metadataIoStats_->ramHit().count();
@@ -875,16 +700,11 @@ TEST_P(CachedMetadataInputTest, enqueueLoadReadWithCache) {
           metadataIoStats_->storageReadLatencyUs().count();
 
       auto input = createCachedInput(readFile.get());
-      std::vector<nimble::MetadataHandle> handles;
-      for (const auto& section : sections) {
-        handles.push_back(input->enqueue(section));
-      }
-      input->load();
-      for (uint32_t i = 0; i < handles.size(); ++i) {
-        EXPECT_EQ(handles[i].read()->content(), testData.specs[i].data);
+      auto results = input->load(sections);
+      for (uint32_t i = 0; i < results.size(); ++i) {
+        EXPECT_EQ(results[i]->content(), testData.specs[i].data);
       }
 
-      // No RAM hits, SSD hits for sections with known size, no file IO.
       EXPECT_EQ(metadataIoStats_->ramHit().count(), ramHitBefore);
       EXPECT_GE(
           metadataIoStats_->ssdRead().count() - ssdReadBefore,
@@ -896,8 +716,8 @@ TEST_P(CachedMetadataInputTest, enqueueLoadReadWithCache) {
   }
 }
 
-TEST_P(CachedMetadataInputTest, stateTransitions) {
-  const std::string data = "cached-state-test";
+TEST_P(CachedMetadataInputTest, repeatedLoad) {
+  const std::string data = "cached-repeat-test";
   nimble::MetadataSection section{
       0,
       static_cast<uint32_t>(data.size()),
@@ -907,51 +727,18 @@ TEST_P(CachedMetadataInputTest, stateTransitions) {
   auto readFile = std::make_shared<velox::InMemoryReadFile>(fileContent);
 
   auto input = createCachedInput(readFile.get());
-  nimble::test::CachedMetadataInputTestHelper helper(
-      dynamic_cast<nimble::CachedMetadataInput*>(input.get()));
 
-  // Before enqueue.
-  EXPECT_FALSE(helper.testingLoaded());
-  EXPECT_EQ(helper.testingSectionCount(), 0);
-  EXPECT_EQ(helper.testingCachePinCount(), 0);
+  // Stateless: can call load() multiple times without reset.
+  auto results1 = input->load(std::array{section});
+  EXPECT_EQ(results1[0]->content(), data);
 
-  // After enqueue.
-  auto handle = input->enqueue(section);
-  EXPECT_FALSE(helper.testingLoaded());
-  EXPECT_EQ(helper.testingSectionCount(), 1);
-  EXPECT_EQ(helper.testingSection(0).offset(), 0);
-  EXPECT_EQ(helper.testingSection(0).size(), data.size());
-  EXPECT_FALSE(helper.testingHasBuffer(0));
+  auto results2 = input->load(std::array{section});
+  EXPECT_EQ(results2[0]->content(), data);
 
-  // After load.
-  input->load();
-  EXPECT_TRUE(helper.testingLoaded());
-  EXPECT_EQ(helper.testingSectionCount(), 1);
-  EXPECT_TRUE(helper.testingHasBuffer(0));
-  // cachePins_ cleared after load completes.
-  EXPECT_EQ(helper.testingCachePinCount(), 0);
-
-  // After read — buffer consumed.
-  EXPECT_EQ(handle.read()->content(), data);
-  EXPECT_FALSE(helper.testingHasBuffer(0));
-
-  // After reset — back to initial state.
-  input->reset();
-  EXPECT_FALSE(helper.testingLoaded());
-  EXPECT_EQ(helper.testingSectionCount(), 0);
-  EXPECT_EQ(helper.testingCachePinCount(), 0);
-
-  // Can enqueue/load/read again after reset.
-  auto handle2 = input->enqueue(section);
-  input->load();
-  EXPECT_TRUE(helper.testingLoaded());
-  EXPECT_EQ(handle2.read()->content(), data);
-
-  // Without reset, enqueue throws.
+  // Empty input throws.
   NIMBLE_ASSERT_THROW(
-      input->enqueue(section), "enqueue() not allowed after load()");
-  // Without reset, load throws.
-  NIMBLE_ASSERT_THROW(input->load(), "load() already called");
+      input->load(std::span<const nimble::MetadataSection>{}),
+      "No sections to load");
 }
 
 DEBUG_ONLY_TEST_P(CachedMetadataInputTest, ioCoalescing) {
@@ -1042,10 +829,7 @@ DEBUG_ONLY_TEST_P(CachedMetadataInputTest, ioCoalescing) {
           readFile.get(),
           testData.maxCoalesceDistance,
           testData.maxCoalesceBytes);
-      for (const auto& section : sections) {
-        input->enqueue(section);
-      }
-      input->load();
+      input->load(sections);
 
       EXPECT_EQ(capturedStats.numIos, testData.expectedNumIos);
       EXPECT_EQ(capturedStats.extraBytes, testData.expectedOverread);
@@ -1067,10 +851,7 @@ DEBUG_ONLY_TEST_P(CachedMetadataInputTest, ioCoalescing) {
           metadataIoStats_->storageReadLatencyUs().count();
 
       auto input = createCachedInput(readFile.get());
-      for (const auto& section : sections) {
-        input->enqueue(section);
-      }
-      input->load();
+      input->load(sections);
 
       EXPECT_EQ(metadataIoStats_->rawBytesRead(), rawBytesBefore);
       EXPECT_EQ(metadataIoStats_->rawOverreadBytes(), overreadBefore);
@@ -1096,12 +877,8 @@ DEBUG_ONLY_TEST_P(CachedMetadataInputTest, ioCoalescing) {
           metadataIoStats_->storageReadLatencyUs().count();
 
       auto input = createCachedInput(readFile.get());
-      for (const auto& section : sections) {
-        input->enqueue(section);
-      }
-      input->load();
+      input->load(sections);
 
-      // No RAM hits, all SSD hits, no file IO, no overread.
       EXPECT_EQ(metadataIoStats_->rawBytesRead(), rawBytesBefore);
       EXPECT_EQ(metadataIoStats_->rawOverreadBytes(), overreadBefore);
       EXPECT_EQ(metadataIoStats_->ramHit().count(), ramHitBefore);
@@ -1140,20 +917,17 @@ TEST_P(CachedMetadataInputTest, partialCacheHit) {
   // Load only section0 to populate cache for it.
   {
     auto input = createCachedInput(readFile.get());
-    auto handle = input->enqueue(section0);
-    input->load();
-    EXPECT_EQ(handle.read()->content(), data0);
+    auto results = input->load(std::array{section0});
+    EXPECT_EQ(results[0]->content(), data0);
   }
 
   // Load both sections — section0 should be a cache hit, section1 a miss.
   {
     const auto ramHitBefore = metadataIoStats_->ramHit().count();
     auto input = createCachedInput(readFile.get());
-    auto handle0 = input->enqueue(section0);
-    auto handle1 = input->enqueue(section1);
-    input->load();
-    EXPECT_EQ(handle0.read()->content(), data0);
-    EXPECT_EQ(handle1.read()->content(), data1);
+    auto results = input->load(std::array{section0, section1});
+    EXPECT_EQ(results[0]->content(), data0);
+    EXPECT_EQ(results[1]->content(), data1);
     EXPECT_GT(metadataIoStats_->ramHit().count(), ramHitBefore);
   }
 
@@ -1169,9 +943,8 @@ TEST_P(CachedMetadataInputTest, partialCacheHit) {
     // Reload only section1 into RAM.
     {
       auto input = createCachedInput(readFile.get());
-      auto handle = input->enqueue(section1);
-      input->load();
-      EXPECT_EQ(handle.read()->content(), data1);
+      auto results = input->load(std::array{section1});
+      EXPECT_EQ(results[0]->content(), data1);
     }
 
     const auto ssdReadBefore = metadataIoStats_->ssdRead().count();
@@ -1180,11 +953,9 @@ TEST_P(CachedMetadataInputTest, partialCacheHit) {
         metadataIoStats_->storageReadLatencyUs().count();
     {
       auto input = createCachedInput(readFile.get());
-      auto handle0 = input->enqueue(section0);
-      auto handle1 = input->enqueue(section1);
-      input->load();
-      EXPECT_EQ(handle0.read()->content(), data0);
-      EXPECT_EQ(handle1.read()->content(), data1);
+      auto results = input->load(std::array{section0, section1});
+      EXPECT_EQ(results[0]->content(), data0);
+      EXPECT_EQ(results[1]->content(), data1);
     }
     // section0 from SSD, section1 from RAM, no file IO.
     EXPECT_GT(metadataIoStats_->ssdRead().count(), ssdReadBefore);
@@ -1258,21 +1029,13 @@ TEST_P(CachedMetadataInputTest, ioError) {
 
     auto input =
         createCachedInput(readFile.get(), testData.maxCoalesceDistance);
-    for (const auto& section : sections) {
-      input->enqueue(section);
-    }
-    EXPECT_THROW(input->load(), std::runtime_error);
+    EXPECT_THROW(input->load(sections), std::runtime_error);
 
-    // After IO error, reset and retry with error cleared should succeed.
+    // After IO error, retry with error cleared should succeed (stateless).
     readFile->clearReadError();
-    input->reset();
-    std::vector<nimble::MetadataHandle> handles;
-    for (const auto& section : sections) {
-      handles.push_back(input->enqueue(section));
-    }
-    input->load();
-    for (uint32_t i = 0; i < handles.size(); ++i) {
-      EXPECT_EQ(handles[i].read()->content(), testData.specs[i].data);
+    auto results = input->load(sections);
+    for (uint32_t i = 0; i < results.size(); ++i) {
+      EXPECT_EQ(results[i]->content(), testData.specs[i].data);
     }
   }
 }
@@ -1295,9 +1058,8 @@ DEBUG_ONLY_TEST_P(CachedMetadataInputTest, ssdIoError) {
   // Populate cache, flush to SSD, clear RAM.
   {
     auto input = createCachedInput(readFile.get());
-    auto handle = input->enqueue(section);
-    input->load();
-    EXPECT_EQ(handle.read()->content(), data);
+    auto results = input->load(std::array{section});
+    EXPECT_EQ(results[0]->content(), data);
   }
   ASSERT_TRUE(cache_->ssdCache()->startWrite());
   cache_->saveToSsd(/*saveAll=*/true);
@@ -1313,8 +1075,8 @@ DEBUG_ONLY_TEST_P(CachedMetadataInputTest, ssdIoError) {
           }));
   {
     auto input = createCachedInput(readFile.get());
-    input->enqueue(section);
-    VELOX_ASSERT_THROW(input->load(), "injected SSD IO error");
+    VELOX_ASSERT_THROW(
+        input->load(std::array{section}), "injected SSD IO error");
   }
 }
 
@@ -1329,11 +1091,10 @@ TEST_P(CachedMetadataInputTest, cachePinRetention) {
   auto readFile = std::make_shared<velox::InMemoryReadFile>(fileContent);
   cache_->clear();
 
-  // Load and read — MetadataBuffer holds the cache pin reference.
+  // Load — MetadataBuffer holds the cache pin reference.
   auto input = createCachedInput(readFile.get());
-  auto handle = input->enqueue(section);
-  input->load();
-  auto buffer = handle.read();
+  auto results = input->load(std::array{section});
+  auto buffer = std::move(results[0]);
   ASSERT_NE(buffer, nullptr);
   EXPECT_EQ(buffer->content(), data);
 
@@ -1349,11 +1110,9 @@ TEST_P(CachedMetadataInputTest, cachePinRetention) {
   const auto ramHitBefore = metadataIoStats_->ramHit().count();
   {
     auto input2 = createCachedInput(readFile.get());
-    auto handle2 = input2->enqueue(section);
-    input2->load();
-    auto buffer2 = handle2.read();
-    ASSERT_NE(buffer2, nullptr);
-    EXPECT_EQ(buffer2->content(), data);
+    auto results2 = input2->load(std::array{section});
+    ASSERT_NE(results2[0], nullptr);
+    EXPECT_EQ(results2[0]->content(), data);
   }
   EXPECT_GT(metadataIoStats_->ramHit().count(), ramHitBefore);
 
@@ -1369,40 +1128,13 @@ TEST_P(CachedMetadataInputTest, cachePinRetention) {
       metadataIoStats_->storageReadLatencyUs().count();
   {
     auto input3 = createCachedInput(readFile.get());
-    auto handle3 = input3->enqueue(section);
-    input3->load();
-    auto buffer3 = handle3.read();
-    ASSERT_NE(buffer3, nullptr);
-    EXPECT_EQ(buffer3->content(), data);
+    auto results3 = input3->load(std::array{section});
+    ASSERT_NE(results3[0], nullptr);
+    EXPECT_EQ(results3[0]->content(), data);
   }
   EXPECT_EQ(metadataIoStats_->ramHit().count(), ramHitBefore2);
   EXPECT_GT(
       metadataIoStats_->storageReadLatencyUs().count(), storageLatencyBefore);
-}
-
-TEST_P(CachedMetadataInputTest, loadGuard) {
-  NIMBLE_ASSERT_THROW(nimble::MetadataInput::LoadGuard(nullptr), "");
-
-  std::string sectionData(64, 'B');
-  nimble::MetadataSection section{0, 64, nimble::CompressionType::Uncompressed};
-  auto fileContent = buildFileContent({section}, {sectionData});
-  auto readFile =
-      std::make_shared<velox::InMemoryReadFile>(std::move(fileContent));
-  auto input = createCachedInput(readFile.get());
-
-  auto handle = input->enqueue(section);
-  nimble::test::MetadataInputTestHelper helper(input.get());
-  EXPECT_FALSE(helper.testingLoaded());
-
-  {
-    nimble::MetadataInput::LoadGuard guard(input.get());
-    EXPECT_TRUE(helper.testingLoaded());
-    auto result = handle.read();
-    ASSERT_NE(result, nullptr);
-    EXPECT_EQ(result->content(), sectionData);
-  }
-  EXPECT_FALSE(helper.testingLoaded());
-  EXPECT_EQ(helper.testingSectionCount(), 0);
 }
 
 TEST_F(DirectMetadataInputTest, cacheMethodsThrow) {
