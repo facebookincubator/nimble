@@ -46,7 +46,7 @@ namespace internal {
 // to avoid having to use virtual functions (namely on
 // RLEEncodingBase::RunValue).
 // Data layout is:
-//   Encoding::kPrefixSize bytes: standard Encoding data
+//   EncodingPrefix::kFixedPrefixSize bytes: standard Encoding data
 //   4 bytes: runs size
 //   X bytes: runs encoding bytes
 template <typename T, typename RLEEncoding>
@@ -63,9 +63,9 @@ class RLEEncodingBase
       : TypedEncoding<T, physicalType>(memoryPool, data),
         materializedRunLengths_{EncodingFactory().create(
             memoryPool,
-            {data.data() + Encoding::kPrefixSize + 4,
+            {data.data() + EncodingPrefix::kFixedPrefixSize + 4,
              *reinterpret_cast<const uint32_t*>(
-                 data.data() + Encoding::kPrefixSize)},
+                 data.data() + EncodingPrefix::kFixedPrefixSize)},
             stringBufferFactory)} {}
 
   void reset() {
@@ -141,7 +141,7 @@ class RLEEncodingBase
     std::string_view serializedRunValues =
         getSerializedRunValues(selection, runValues, tempBuffer);
 
-    const uint32_t encodingSize = Encoding::kPrefixSize + 4 +
+    const uint32_t encodingSize = EncodingPrefix::kFixedPrefixSize + 4 +
         serializedRunLengths.size() + serializedRunValues.size();
     char* reserved = buffer.reserve(encodingSize);
     char* pos = reserved;
@@ -154,9 +154,9 @@ class RLEEncodingBase
   }
 
   const char* getValuesStart() const {
-    return this->data_.data() + Encoding::kPrefixSize + 4 +
+    return this->data_.data() + EncodingPrefix::kFixedPrefixSize + 4 +
         *reinterpret_cast<const uint32_t*>(
-               this->data_.data() + Encoding::kPrefixSize);
+               this->data_.data() + EncodingPrefix::kFixedPrefixSize);
   }
 
   RLEEncoding& derived() {

@@ -14,9 +14,6 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
-#include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/common/Varint.h"
 
 namespace facebook::nimble {
 
@@ -26,36 +23,12 @@ Encoding::Encoding(
     const Options& options)
     : pool_{&pool},
       data_{data},
-      encodingType_{data_[kEncodingTypeOffset]},
+      encodingType_{data_[EncodingPrefix::kEncodingTypeOffset]},
       options_{options},
-      dataType_{readDataType(data)},
-      rowCount_{readRowCount(data, options_.useVarintRowCount)},
-      prefixSize_{readPrefixSize(data, options_.useVarintRowCount)} {}
-
-/* static */ DataType Encoding::readDataType(std::string_view data) {
-  return static_cast<DataType>(data[kDataTypeOffset]);
-}
-
-/* static */ uint32_t Encoding::readRowCount(
-    std::string_view data,
-    bool useVarint) {
-  if (useVarint) {
-    const char* pos = data.data() + kRowCountOffset;
-    return varint::readVarint32(&pos);
-  }
-  return *reinterpret_cast<const uint32_t*>(data.data() + kRowCountOffset);
-}
-
-/* static */ uint32_t Encoding::readPrefixSize(
-    std::string_view data,
-    bool useVarint) {
-  if (useVarint) {
-    const char* pos = data.data() + kRowCountOffset;
-    varint::readVarint32(&pos);
-    return pos - data.data();
-  }
-  return kPrefixSize;
-}
+      dataType_{EncodingPrefix::readDataType(data)},
+      rowCount_{EncodingPrefix::readRowCount(data, options_.useVarintRowCount)},
+      prefixSize_{
+          EncodingPrefix::readPrefixSize(data, options_.useVarintRowCount)} {}
 
 /* static */ void Encoding::copyIOBuf(char* pos, const folly::IOBuf& buf) {
   [[maybe_unused]] size_t length = buf.computeChainDataLength();
@@ -65,30 +38,6 @@ Encoding::Encoding(
     length -= data.size();
   }
   NIMBLE_DCHECK_EQ(length, 0, "IOBuf chain length corruption");
-}
-
-void Encoding::serializePrefix(
-    EncodingType encodingType,
-    DataType dataType,
-    uint32_t rowCount,
-    bool useVarint,
-    char*& pos) {
-  encoding::writeChar(static_cast<char>(encodingType), pos);
-  encoding::writeChar(static_cast<char>(dataType), pos);
-  if (useVarint) {
-    varint::writeVarint(rowCount, &pos);
-  } else {
-    encoding::writeUint32(rowCount, pos);
-  }
-}
-
-/* static */ uint32_t Encoding::serializePrefixSize(
-    uint32_t rowCount,
-    bool useVarint) {
-  if (!useVarint) {
-    return kPrefixSize;
-  }
-  return kRowCountOffset + varint::varintSize(rowCount);
 }
 
 std::string Encoding::debugString(int offset) const {

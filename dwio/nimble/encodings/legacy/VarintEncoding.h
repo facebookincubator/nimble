@@ -34,7 +34,7 @@
 namespace facebook::nimble::legacy {
 
 /// Data layout is:
-/// Encoding::kPrefixSize bytes: standard Encoding prefix
+/// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 /// sizeof(T) bytes: baseline value
 /// X bytes: the varint encoded bytes
 template <typename T>
@@ -44,7 +44,7 @@ class VarintEncoding final
   using cppDataType = T;
   using physicalType = typename TypeTraits<T>::physicalType;
 
-  static const int kBaselineOffset = Encoding::kPrefixSize;
+  static const int kBaselineOffset = EncodingPrefix::kFixedPrefixSize;
   static const int kDataOffset = kBaselineOffset + sizeof(T);
   static const int kPrefixSize = kDataOffset - kBaselineOffset;
 
@@ -91,7 +91,7 @@ VarintEncoding<T>::VarintEncoding(
 template <typename T>
 void VarintEncoding<T>::reset() {
   row_ = 0;
-  pos_ = Encoding::data_.data() + Encoding::kPrefixSize +
+  pos_ = Encoding::data_.data() + EncodingPrefix::kFixedPrefixSize +
       VarintEncoding<T>::kPrefixSize;
 }
 
@@ -169,8 +169,8 @@ std::string_view VarintEncoding<T>::encode(
         // to consume 2 bytes, etc.
         return sum + (bucketSize * (++index));
       });
-  const uint32_t encodingSize =
-      dataSize + Encoding::kPrefixSize + VarintEncoding<T>::kPrefixSize;
+  const uint32_t encodingSize = dataSize + EncodingPrefix::kFixedPrefixSize +
+      VarintEncoding<T>::kPrefixSize;
 
   // Adding 7 bytes, to allow bulk materialization to access the last 64 bit
   // word, even if it is not full.

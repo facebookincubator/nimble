@@ -45,7 +45,7 @@ namespace internal {
 // to avoid having to use virtual functions (namely on
 // RLEEncodingBase::RunValue).
 // Data layout is:
-//   Encoding::kPrefixSize bytes: standard Encoding data
+//   EncodingPrefix::kFixedPrefixSize bytes: standard Encoding data
 //   4 bytes: runs size
 //   X bytes: runs encoding bytes
 template <typename T, typename RLEEncoding>

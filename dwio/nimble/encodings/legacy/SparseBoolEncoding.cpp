@@ -139,7 +139,7 @@ std::string_view SparseBoolEncoding::encode(
       selection.template encodeNested<uint32_t>(
           EncodingIdentifiers::SparseBool::Indices, indices, tempBuffer);
 
-  const uint32_t encodingSize = Encoding::kPrefixSize +
+  const uint32_t encodingSize = EncodingPrefix::kFixedPrefixSize +
       SparseBoolEncoding::kPrefixSize + serializedIndices.size();
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;

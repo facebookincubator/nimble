@@ -2742,7 +2742,7 @@ TEST_P(ReadWithVisitorTest, readIndicesWithVisitorNullable) {
   auto serializedNulls = nimble::TrivialEncoding<bool>::encode(
       nullSelection, nullSpan, nullBuffer);
 
-  const uint32_t encodingSize = nimble::Encoding::kPrefixSize + 4 +
+  const uint32_t encodingSize = nimble::EncodingPrefix::kFixedPrefixSize + 4 +
       serializedValues.size() + serializedNulls.size();
   Buffer assemblyBuffer(*pool());
   char* reserved = assemblyBuffer.reserve(encodingSize);
@@ -2857,7 +2857,7 @@ TEST_P(ReadWithVisitorTest, readIndicesWithVisitorNullableAlphabetValue) {
   auto serializedNulls = nimble::TrivialEncoding<bool>::encode(
       nullSelection, nullSpan, nullBuffer);
 
-  const uint32_t encodingSize = nimble::Encoding::kPrefixSize + 4 +
+  const uint32_t encodingSize = nimble::EncodingPrefix::kFixedPrefixSize + 4 +
       serializedValues.size() + serializedNulls.size();
   Buffer assemblyBuffer(*pool());
   char* reserved = assemblyBuffer.reserve(encodingSize);
@@ -3007,7 +3007,7 @@ TEST_P(ReadWithVisitorTest, fuzzReadIndicesWithVisitorNullable) {
     auto serializedNulls = nimble::TrivialEncoding<bool>::encode(
         nullSelection, nullSpan, nullBuffer);
 
-    const uint32_t encodingSize = nimble::Encoding::kPrefixSize + 4 +
+    const uint32_t encodingSize = nimble::EncodingPrefix::kFixedPrefixSize + 4 +
         serializedValues.size() + serializedNulls.size();
     Buffer assemblyBuffer(*this->pool());
     char* reserved = assemblyBuffer.reserve(encodingSize);

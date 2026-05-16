@@ -73,7 +73,7 @@ Vector<V> getPooledBuffer(
 } // namespace detail
 
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 4 bytes: num isCommon encoding bytes (X)
 // X bytes: isCommon encoding bytes
 // 4 bytes: num otherValues encoding bytes (Y)

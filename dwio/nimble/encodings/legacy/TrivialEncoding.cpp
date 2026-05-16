@@ -117,7 +117,7 @@ std::string_view TrivialEncoding<std::string_view>::encode(
         }
       }};
 
-  const uint32_t encodingSize = Encoding::kPrefixSize +
+  const uint32_t encodingSize = EncodingPrefix::kFixedPrefixSize +
       TrivialEncoding<std::string_view>::kPrefixSize +
       serializedLengths.size() + compressionEncoder.getSize();
 

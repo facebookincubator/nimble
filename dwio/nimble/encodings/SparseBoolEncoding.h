@@ -40,7 +40,7 @@
 namespace facebook::nimble {
 
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 1 byte: whether the sparse bits are set or unset
 // XX bytes: indices encoding bytes
 class SparseBoolEncoding final : public TypedEncoding<bool, bool> {

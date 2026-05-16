@@ -37,7 +37,7 @@ namespace facebook::nimble {
 
 // Handles the numeric cases. Bools and strings are specialized below.
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 1 byte: lengths compression
 // rowCount * sizeof(physicalType) bytes: the data
 template <typename T>
@@ -88,7 +88,7 @@ class TrivialEncoding final
 };
 
 // For the string case the layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 1 byte: data compression
 // 4 bytes: offset to start of blob
 // XX bytes: bit packed lengths
@@ -142,7 +142,7 @@ class TrivialEncoding<std::string_view> final
 };
 
 // For the bool case the layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 1 byte: compression type
 // FBA::BufferSize(rowCount, 1) bytes: the bitmap
 template <>

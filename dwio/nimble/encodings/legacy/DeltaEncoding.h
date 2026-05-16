@@ -50,7 +50,7 @@
 namespace facebook::nimble::legacy {
 
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 4 bytes: restatement relative offset (X)
 // 4 bytes: is-restatement relative offset (Y)
 // X bytes: delta encoding bytes
@@ -107,7 +107,7 @@ DeltaEncoding<T>::DeltaEncoding(
       restatementsBuffer_(&memoryPool),
       isRestatementsBuffer_(&memoryPool) {
   const EncodingFactory factory;
-  auto pos = data.data() + Encoding::kPrefixSize;
+  auto pos = data.data() + EncodingPrefix::kFixedPrefixSize;
   const uint32_t restatementsOffset = encoding::readUint32(pos);
   const uint32_t isRestatementsOffset = encoding::readUint32(pos);
   deltas_ = factory.create(
@@ -274,7 +274,7 @@ std::string_view DeltaEncoding<T>::encode(
           isRestatements,
           tempBuffer);
 
-  const uint32_t encodingSize = Encoding::kPrefixSize + 8 +
+  const uint32_t encodingSize = EncodingPrefix::kFixedPrefixSize + 8 +
       static_cast<uint32_t>(serializedDeltas.size()) +
       static_cast<uint32_t>(serializedRestatements.size()) +
       static_cast<uint32_t>(serializedIsRestatements.size());

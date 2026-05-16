@@ -53,7 +53,7 @@
 namespace facebook::nimble {
 
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 4 bytes: restatement relative offset (X)
 // 4 bytes: is-restatement relative offset (Y)
 // X bytes: delta encoding bytes

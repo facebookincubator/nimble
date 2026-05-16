@@ -35,7 +35,7 @@
 namespace facebook::nimble {
 
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 4 bytes: num nulls
 // 4 bytes: non-null child encoding size (X)
 // X bytes: non-null child encoding bytes
@@ -109,7 +109,7 @@ SentinelEncoding<T>::SentinelEncoding(
     std::string_view data,
     std::function<void*(uint32_t)> /* stringBufferFactory */)
     : TypedEncoding<T, physicalType>(memoryPool, data), buffer_(&memoryPool) {
-  const char* pos = data.data() + Encoding::kPrefixSize;
+  const char* pos = data.data() + EncodingPrefix::kFixedPrefixSize;
   nullCount_ = encoding::readUint32(pos);
   const uint32_t sentineledBytes = encoding::readUint32(pos);
   sentineledData_ =
@@ -330,7 +330,7 @@ Vector<physicalType> createSentineledData(
 //       nulls.size() - std::accumulate(nulls.begin(), nulls.end(), 0u);
 //   std::string_view sentineledEncoding = serializeEncoding<physicalType>(
 //       sentineledData, sentinelParameters.valuesParameters().value(), buffer);
-//   uint32_t encodingSize = Encoding::kPrefixSize + 8 +
+//   uint32_t encodingSize = EncodingPrefix::kFixedPrefixSize + 8 +
 //   sentineledEncoding.size(); if constexpr (isNumericType<physicalType>()) {
 //     encodingSize += sizeof(physicalType);
 //   } else {
@@ -377,8 +377,8 @@ Vector<physicalType> createSentineledData(
 //       optimalSearchParams,
 //       &sentineledSize,
 //       sentinelParameters.valuesParameters().ensure());
-//   *size = Encoding::kPrefixSize + 8 + sentineledSize + sizeof(physicalType);
-//   return true;
+//   *size = EncodingPrefix::kFixedPrefixSize + 8 + sentineledSize +
+//   sizeof(physicalType); return true;
 // }
 
 // template <typename T>
