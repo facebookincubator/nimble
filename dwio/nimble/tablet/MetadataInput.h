@@ -34,11 +34,6 @@ struct FileHandle;
 
 namespace facebook::nimble {
 
-namespace test {
-class MetadataInputTestHelper;
-class CachedMetadataInputTestHelper;
-} // namespace test
-
 /// Reads metadata sections from a Nimble file with IO coalescing.
 ///
 /// Stateless, thread-safe API: load() takes a span of sections and returns
@@ -133,7 +128,7 @@ class MetadataInput {
 
   /// Extracts results from loaded sections into a vector of MetadataBuffers.
   static std::vector<std::shared_ptr<MetadataBuffer>> extractResults(
-      std::vector<LoadedSection>& sections);
+      std::vector<LoadedSection>&& sections);
 
   struct IoGroup {
     uint64_t offset;
@@ -185,8 +180,6 @@ class MetadataInput {
   const int64_t maxCoalesceBytes_;
   folly::Executor* const executor_;
   const std::shared_ptr<velox::io::IoStatistics> ioStats_;
-
-  friend class test::MetadataInputTestHelper;
 };
 
 /// Direct metadata loading with IO coalescing, no caching.
@@ -295,8 +288,6 @@ class CachedMetadataInput : public MetadataInput {
 
   velox::cache::AsyncDataCache* const cache_;
   const velox::StringIdLease fileId_;
-
-  friend class test::CachedMetadataInputTestHelper;
 };
 
 } // namespace facebook::nimble

@@ -46,21 +46,6 @@
 
 using namespace facebook;
 
-namespace facebook::nimble::test {
-
-class MetadataInputTestHelper {
- public:
-  explicit MetadataInputTestHelper(nimble::MetadataInput* /*input*/) {}
-};
-
-class CachedMetadataInputTestHelper : public MetadataInputTestHelper {
- public:
-  explicit CachedMetadataInputTestHelper(nimble::CachedMetadataInput* input)
-      : MetadataInputTestHelper(input) {}
-};
-
-} // namespace facebook::nimble::test
-
 namespace {
 
 // Builds a flat file buffer containing sections at specified offsets.
