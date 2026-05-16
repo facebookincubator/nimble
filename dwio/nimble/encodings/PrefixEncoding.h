@@ -36,7 +36,7 @@
 /// - Periodically store full restart points for seek operations
 ///
 /// Binary layout:
-/// - Encoding::kPrefixSize bytes: standard Encoding prefix
+/// - EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 /// - 4 bytes: restart interval (number of entries between restart points)
 /// - ZZ bytes: restart offsets array (uint32_t array of byte offsets,
 ///   size = ceil(rowCount / restartInterval))

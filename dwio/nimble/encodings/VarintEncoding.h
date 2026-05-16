@@ -35,7 +35,7 @@
 namespace facebook::nimble {
 
 /// Data layout is:
-/// Encoding::kPrefixSize bytes: standard Encoding prefix
+/// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 /// sizeof(T) bytes: baseline value
 /// X bytes: the varint encoded bytes
 template <typename T>

@@ -799,7 +799,7 @@ class DictionaryApiTypedTest : public ::testing::Test {
     // Assemble the NullableEncoding binary format:
     // [EncodingType:1][DataType:1][rowCount:4] | uint32(valSize) | valBytes |
     // nullBytes
-    const uint32_t encodingSize = nimble::Encoding::kPrefixSize + 4 +
+    const uint32_t encodingSize = nimble::EncodingPrefix::kFixedPrefixSize + 4 +
         serializedValues.size() + serializedNulls.size();
     char* reserved = buffer_->reserve(encodingSize);
     char* pos = reserved;

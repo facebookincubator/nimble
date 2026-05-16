@@ -36,7 +36,7 @@
 namespace facebook::nimble {
 
 /// The layout for a dictionary encoding is:
-/// Encoding::kPrefixSize bytes: standard Encoding prefix
+/// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 /// 4 bytes: alphabet size
 /// XX bytes: alphabet encoding bytes
 /// YY bytes: indices encoding bytes

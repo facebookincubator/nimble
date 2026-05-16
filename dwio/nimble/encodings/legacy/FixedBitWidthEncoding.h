@@ -37,7 +37,7 @@
 namespace facebook::nimble::legacy {
 
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 1 byte: compression type
 // sizeof(T) byte: baseline value
 // 1 byte: bit width
@@ -49,7 +49,7 @@ class FixedBitWidthEncoding final
   using cppDataType = T;
   using physicalType = typename TypeTraits<T>::physicalType;
 
-  static const int kCompressionOffset = Encoding::kPrefixSize;
+  static const int kCompressionOffset = EncodingPrefix::kFixedPrefixSize;
   static const int kPrefixSize = 2 + sizeof(T);
 
   FixedBitWidthEncoding(
@@ -216,7 +216,7 @@ std::string_view FixedBitWidthEncoding<T>::encode(
         return pos;
       }};
 
-  const uint32_t encodingSize = Encoding::kPrefixSize +
+  const uint32_t encodingSize = EncodingPrefix::kFixedPrefixSize +
       FixedBitWidthEncoding<T>::kPrefixSize + compressionEncoder.getSize();
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;

@@ -32,7 +32,7 @@
 namespace facebook::nimble {
 
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 4 bytes: non-null child encoding size (X)
 // X bytes: non-null child encoding bytes
 // Y bytes: null child encoding bytes

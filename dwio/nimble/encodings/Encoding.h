@@ -19,6 +19,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/EncodingPrefix.h"
 #include "velox/buffer/BufferPool.h"
 #include "velox/common/base/BitUtil.h"
 #include "velox/common/memory/Memory.h"
@@ -110,15 +111,11 @@ class Encoding {
     velox::BufferPool* bufferPool;
   };
 
-  /// The binary layout for each Encoding begins with the same prefix:
-  /// 1 byte: EncodingType
-  /// 1 byte: DataType
-  /// 4 bytes: uint32_t num rows (fixed format)
-  ///   OR 1-5 bytes: varint num rows (when useVarintRowCount option is set)
-  static constexpr int kEncodingTypeOffset = 0;
-  static constexpr int kDataTypeOffset = 1;
-  static constexpr int kRowCountOffset = 2;
-  static constexpr int kPrefixSize = 6;
+  static constexpr int kEncodingTypeOffset =
+      EncodingPrefix::kEncodingTypeOffset;
+  static constexpr int kDataTypeOffset = EncodingPrefix::kDataTypeOffset;
+  static constexpr int kRowCountOffset = EncodingPrefix::kRowCountOffset;
+  static constexpr int kPrefixSize = EncodingPrefix::kFixedPrefixSize;
 
   Encoding(
       velox::memory::MemoryPool& pool,
@@ -276,16 +273,25 @@ class Encoding {
       DataType dataType,
       uint32_t rowCount,
       bool useVarint,
-      char*& pos);
+      char*& pos) {
+    EncodingPrefix::serialize(encodingType, dataType, rowCount, useVarint, pos);
+  }
 
-  // Compute the prefix size for serialization. Returns kPrefixSize for fixed
-  // format, or 2 + varintSize(rowCount) for varint format.
-  static uint32_t serializePrefixSize(uint32_t rowCount, bool useVarint);
+  static uint32_t serializePrefixSize(uint32_t rowCount, bool useVarint) {
+    return EncodingPrefix::serializedSize(rowCount, useVarint);
+  }
 
-  // Static helpers for initializer list computation.
-  static DataType readDataType(std::string_view data);
-  static uint32_t readRowCount(std::string_view data, bool useVarint);
-  static uint32_t readPrefixSize(std::string_view data, bool useVarint);
+  static DataType readDataType(std::string_view data) {
+    return EncodingPrefix::readDataType(data);
+  }
+
+  static uint32_t readRowCount(std::string_view data, bool useVarint) {
+    return EncodingPrefix::readRowCount(data, useVarint);
+  }
+
+  static uint32_t readPrefixSize(std::string_view data, bool useVarint) {
+    return EncodingPrefix::readPrefixSize(data, useVarint);
+  }
 
   void releaseBuffer(velox::BufferPtr& buffer) {
     if (auto* bufferPool = options_.bufferPool) {

@@ -53,7 +53,7 @@
 namespace facebook::nimble::legacy {
 
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 4 bytes: num isCommon encoding bytes (X)
 // X bytes: isCommon encoding bytes
 // 4 bytes: num otherValues encoding bytes (Y)
@@ -115,7 +115,7 @@ MainlyConstantEncoding<T>::MainlyConstantEncoding(
       isCommonBuffer_(&memoryPool),
       otherValuesBuffer_(&memoryPool) {
   const EncodingFactory factory;
-  const char* pos = data.data() + Encoding::kPrefixSize;
+  const char* pos = data.data() + EncodingPrefix::kFixedPrefixSize;
   const uint32_t isCommonBytes = encoding::readUint32(pos);
   isCommon_ =
       factory.create(*this->pool_, {pos, isCommonBytes}, stringBufferFactory);
@@ -380,7 +380,7 @@ std::string_view MainlyConstantEncoding<T>::encode(
           otherValues,
           tempBuffer);
 
-  uint32_t encodingSize = Encoding::kPrefixSize + 8 +
+  uint32_t encodingSize = EncodingPrefix::kFixedPrefixSize + 8 +
       serializedIsCommon.size() + serializedOtherValues.size();
   if constexpr (isNumericType<physicalType>()) {
     encodingSize += sizeof(physicalType);

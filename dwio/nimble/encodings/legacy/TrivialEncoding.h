@@ -38,7 +38,7 @@ namespace facebook::nimble::legacy {
 
 // Handles the numeric cases. Bools and strings are specialized below.
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 1 byte: lengths compression
 // rowCount * sizeof(physicalType) bytes: the data
 template <typename T>
@@ -49,9 +49,10 @@ class TrivialEncoding final
   using physicalType = typename TypeTraits<T>::physicalType;
 
   static constexpr int kPrefixSize = 1;
-  static constexpr int kCompressionTypeOffset = Encoding::kPrefixSize;
+  static constexpr int kCompressionTypeOffset =
+      EncodingPrefix::kFixedPrefixSize;
   static constexpr int kDataOffset =
-      Encoding::kPrefixSize + TrivialEncoding<T>::kPrefixSize;
+      EncodingPrefix::kFixedPrefixSize + TrivialEncoding<T>::kPrefixSize;
 
   TrivialEncoding(
       velox::memory::MemoryPool& pool,
@@ -85,7 +86,7 @@ class TrivialEncoding final
 };
 
 // For the string case the layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 1 byte: data compression
 // 4 bytes: offset to start of blob
 // XX bytes: bit packed lengths
@@ -97,10 +98,11 @@ class TrivialEncoding<std::string_view> final
   using cppDataType = std::string_view;
 
   static constexpr int kPrefixSize = 5;
-  static constexpr int kDataCompressionOffset = Encoding::kPrefixSize;
-  static constexpr int kBlobOffsetOffset = Encoding::kPrefixSize + 1;
-  static constexpr int kLengthOffset =
-      Encoding::kPrefixSize + TrivialEncoding<std::string_view>::kPrefixSize;
+  static constexpr int kDataCompressionOffset =
+      EncodingPrefix::kFixedPrefixSize;
+  static constexpr int kBlobOffsetOffset = EncodingPrefix::kFixedPrefixSize + 1;
+  static constexpr int kLengthOffset = EncodingPrefix::kFixedPrefixSize +
+      TrivialEncoding<std::string_view>::kPrefixSize;
 
   TrivialEncoding(
       velox::memory::MemoryPool& pool,
@@ -138,7 +140,7 @@ class TrivialEncoding<std::string_view> final
 };
 
 // For the bool case the layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 1 byte: compression type
 // FBA::BufferSize(rowCount, 1) bytes: the bitmap
 template <>
@@ -147,9 +149,10 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
   using cppDataType = bool;
 
   static constexpr int kPrefixSize = 1;
-  static constexpr int kCompressionTypeOffset = Encoding::kPrefixSize;
+  static constexpr int kCompressionTypeOffset =
+      EncodingPrefix::kFixedPrefixSize;
   static constexpr int kDataOffset =
-      Encoding::kPrefixSize + TrivialEncoding<bool>::kPrefixSize;
+      EncodingPrefix::kFixedPrefixSize + TrivialEncoding<bool>::kPrefixSize;
 
   TrivialEncoding(
       velox::memory::MemoryPool& pool,
