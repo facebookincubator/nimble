@@ -192,16 +192,40 @@ void DeltaEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   deltasBuffer_.reserve(rowCount - numRestatements);
   deltas_->materialize(rowCount - numRestatements, deltasBuffer_.data());
 
-  auto* castValue = static_cast<physicalType*>(buffer);
+  auto* output = static_cast<physicalType*>(buffer);
   const auto* nextRestatement = restatementsBuffer_.data();
   const auto* nextDelta = deltasBuffer_.data();
-  for (uint32_t i = 0; i < rowCount; ++i) {
-    if (FOLLY_LIKELY(!velox::bits::isBitSet(bitmap, i))) {
-      currentValue_ += *nextDelta++;
+
+  // Process the restatement bitmap 16 bits at a time. For all-delta
+  // chunks (the common case in sorted data), runs a tight branchless
+  // prefix-sum loop without per-element bit extraction or branching.
+  // 16-bit chunks balance fast-path hit rate with loop overhead
+  // (benchmarked vs 8/32/64-bit: 16-bit is fastest).
+  uint32_t remaining = rowCount;
+  const auto* bitmapChunks = reinterpret_cast<const uint16_t*>(bitmap);
+  const uint32_t numChunks = velox::bits::divRoundUp(rowCount, 16);
+  for (uint32_t c = 0; c < numChunks; ++c) {
+    const uint16_t chunk = bitmapChunks[c];
+    const uint32_t count = std::min<uint32_t>(16, remaining);
+
+    if (FOLLY_LIKELY(chunk == 0)) {
+      for (uint32_t i = 0; i < count; ++i) {
+        currentValue_ += *nextDelta++;
+        *output++ = currentValue_;
+      }
     } else {
-      currentValue_ = *nextRestatement++;
+      uint16_t restatementBits = chunk;
+      for (uint32_t i = 0; i < count; ++i) {
+        if (FOLLY_LIKELY(!(restatementBits & 1))) {
+          currentValue_ += *nextDelta++;
+        } else {
+          currentValue_ = *nextRestatement++;
+        }
+        *output++ = currentValue_;
+        restatementBits >>= 1;
+      }
     }
-    *castValue++ = currentValue_;
+    remaining -= count;
   }
 }
 
