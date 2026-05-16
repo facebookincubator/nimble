@@ -24,7 +24,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Compression.h"
+#include "dwio/nimble/compression/Compression.h"
 #include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/encodings/legacy/Encoding.h"
 

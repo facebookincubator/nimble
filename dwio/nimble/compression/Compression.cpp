@@ -13,14 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/encodings/Compression.h"
+#include "dwio/nimble/compression/Compression.h"
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/encodings/Lz4Compressor.h"
-#include "dwio/nimble/encodings/ZstdCompressor.h"
+#include "dwio/nimble/compression/Lz4Compressor.h"
+#include "dwio/nimble/compression/ZstdCompressor.h"
 
 #ifndef DISABLE_META_INTERNAL_COMPRESSOR
-#include "dwio/nimble/encodings/fb/MetaInternalCompressor.h"
+#include "dwio/nimble/compression/fb/MetaInternalCompressor.h"
 #endif
 
 namespace facebook::nimble {
