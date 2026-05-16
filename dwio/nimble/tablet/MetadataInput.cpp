@@ -23,7 +23,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/tablet/Compression.h"
 #include "folly/Range.h"
-#include "folly/ScopeGuard.h"
+
 #include "folly/executors/QueuedImmediateExecutor.h"
 #include "folly/io/Cursor.h"
 #include "velox/common/base/AsyncSource.h"
@@ -296,12 +296,12 @@ DirectMetadataInput::DirectMetadataInput(
     : MetadataInput(file, options) {}
 
 void DirectMetadataInput::prepareBuffers(
-    const std::vector<LoadedSection>& loadSections,
+    const std::vector<LoadedSection>& sections,
     ReadBuffers& readBuffers) {
-  readBuffers.buffers.resize(loadSections.size());
-  readBuffers.readRanges.resize(loadSections.size());
-  for (size_t i = 0; i < loadSections.size(); ++i) {
-    const auto size = loadSections[i].section.size();
+  readBuffers.buffers.resize(sections.size());
+  readBuffers.readRanges.resize(sections.size());
+  for (size_t i = 0; i < sections.size(); ++i) {
+    const auto size = sections[i].section.size();
     readBuffers.buffers[i] =
         velox::AlignedBuffer::allocateExact<char>(size, pool_);
     readBuffers.readRanges[i] = {
@@ -411,7 +411,6 @@ std::shared_ptr<MetadataBuffer> CachedMetadataInput::promoteCachePin(
 
 void CachedMetadataInput::loadFromSsd(
     std::vector<LoadedSection>& sections,
-    std::vector<std::optional<velox::cache::CachePin>>& cachePins,
     std::vector<uint32_t>& loadIndices) {
   if (loadIndices.empty()) {
     return;
@@ -516,7 +515,7 @@ std::vector<uint32_t> CachedMetadataInput::loadFromCache(
 }
 
 void CachedMetadataInput::prepareBuffers(
-    const std::vector<LoadedSection>& loadSections,
+    const std::vector<LoadedSection>& sections,
     const std::vector<uint32_t>& loadIndices,
     const std::vector<std::optional<velox::cache::CachePin>>& cachePins,
     ReadBuffers& readBuffers) {
@@ -524,7 +523,7 @@ void CachedMetadataInput::prepareBuffers(
   readBuffers.readRanges.resize(loadIndices.size());
   for (size_t i = 0; i < loadIndices.size(); ++i) {
     const auto sectionIndex = loadIndices[i];
-    const auto& section = loadSections[sectionIndex].section;
+    const auto& section = sections[sectionIndex].section;
     const auto& pin = cachePins[sectionIndex];
     if (pin.has_value() &&
         section.compressionType() == CompressionType::Uncompressed) {
@@ -543,13 +542,13 @@ void CachedMetadataInput::prepareBuffers(
 }
 
 void CachedMetadataInput::processLoadedBuffers(
-    std::vector<LoadedSection>& loadSections,
     const std::vector<uint32_t>& loadIndices,
+    std::vector<LoadedSection>& sections,
     std::vector<std::optional<velox::cache::CachePin>>& cachePins,
     ReadBuffers& readBuffers) {
   for (size_t i = 0; i < loadIndices.size(); ++i) {
     const auto sectionIndex = loadIndices[i];
-    auto& loaded = loadSections[sectionIndex];
+    auto& loaded = sections[sectionIndex];
     auto& pin = cachePins[sectionIndex];
     if (pin.has_value()) {
       if (loaded.section.compressionType() != CompressionType::Uncompressed) {
@@ -586,14 +585,14 @@ std::vector<std::shared_ptr<MetadataBuffer>> CachedMetadataInput::load(
 
   std::vector<std::optional<velox::cache::CachePin>> cachePins;
   auto missIndices = loadFromCache(loadSections, cachePins);
-  loadFromSsd(loadSections, cachePins, missIndices);
+  loadFromSsd(loadSections, missIndices);
 
   if (!missIndices.empty()) {
     ReadBuffers readBuffers;
     prepareBuffers(loadSections, missIndices, cachePins, readBuffers);
 
     loadFromFile(loadSections, missIndices, readBuffers.readRanges);
-    processLoadedBuffers(loadSections, missIndices, cachePins, readBuffers);
+    processLoadedBuffers(missIndices, loadSections, cachePins, readBuffers);
   }
 
   return extractResults(loadSections);
