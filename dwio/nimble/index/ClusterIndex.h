@@ -228,7 +228,7 @@ class ClusterIndex : public IndexLookup {
   const IndexPartition* lookupPartition(uint32_t row) const;
 
   // Converts a file-level row to a partition-relative row number.
-  uint32_t partitionRow(uint32_t row) const;
+  uint32_t partitionRow(uint32_t partitionId, uint32_t row) const;
 
   // A bound to resolve within a partition.
   // Stores a pointer to the target row field (startRow or endRow) in the

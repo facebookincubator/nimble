@@ -46,12 +46,6 @@ inline int64_t sectionGap(
 
 } // namespace
 
-// --- MetadataHandle ---
-
-std::shared_ptr<MetadataBuffer> MetadataHandle::read() {
-  return input_->read(index_);
-}
-
 // --- MetadataInput ---
 
 std::unique_ptr<MetadataInput> MetadataInput::create(
@@ -86,16 +80,15 @@ MetadataInput::MetadataInput(
   NIMBLE_CHECK_NOT_NULL(ioStats_.get());
 }
 
-MetadataHandle MetadataInput::enqueue(const MetadataSection& section) {
-  NIMBLE_CHECK(!loaded_, "enqueue() not allowed after load(); call reset()");
-  const auto index = static_cast<uint32_t>(sections_.size());
-  sections_.emplace_back(section);
-  return MetadataHandle{this, index};
-}
-
-void MetadataInput::reset() {
-  sections_.clear();
-  loaded_ = false;
+std::vector<std::shared_ptr<MetadataBuffer>> MetadataInput::extractResults(
+    std::vector<LoadedSection>& sections) {
+  std::vector<std::shared_ptr<MetadataBuffer>> results;
+  results.reserve(sections.size());
+  for (auto& loaded : sections) {
+    NIMBLE_CHECK_NOT_NULL(loaded.buffer);
+    results.emplace_back(std::move(loaded.buffer));
+  }
+  return results;
 }
 
 std::unique_ptr<MetadataBuffer> MetadataInput::findCachedMetadata(
@@ -107,15 +100,6 @@ void MetadataInput::cacheMetadata(
     uint64_t /*cacheOffset*/,
     std::span<const std::string_view> /*ranges*/) {
   NIMBLE_UNREACHABLE("cacheMetadata requires CachedMetadataInput");
-}
-
-std::shared_ptr<MetadataBuffer> MetadataInput::read(uint32_t index) {
-  NIMBLE_CHECK(loaded_, "load() must be called before read()");
-  NIMBLE_CHECK_LT(index, sections_.size(), "Invalid metadata handle index");
-  NIMBLE_CHECK_NOT_NULL(
-      sections_[index].buffer,
-      "Metadata buffer already consumed or not loaded");
-  return std::move(sections_[index].buffer);
 }
 
 std::shared_ptr<MetadataBuffer> MetadataInput::decompressAndStore(
@@ -146,9 +130,10 @@ std::optional<uint32_t> MetadataInput::resolveUncompressedSize(
 }
 
 std::vector<MetadataInput::IoGroup> MetadataInput::computeIoGroups(
-    const std::vector<uint32_t>& sectionIndices,
+    const std::vector<LoadedSection>& sections,
+    const std::vector<uint32_t>& loadIndices,
     const std::vector<folly::Range<char*>>& readRanges) {
-  std::vector<int32_t> items(sectionIndices.size());
+  std::vector<int32_t> items(loadIndices.size());
   std::iota(items.begin(), items.end(), 0);
 
   int64_t coalescedBytes = 0;
@@ -160,15 +145,15 @@ std::vector<MetadataInput::IoGroup> MetadataInput::computeIoGroups(
       /*rangesPerIo=*/std::numeric_limits<int32_t>::max(),
       /*offsetFunc=*/
       [&](int32_t i) -> uint64_t {
-        return sections_[sectionIndices[i]].section.offset();
+        return sections[loadIndices[i]].section.offset();
       },
       /*sizeFunc=*/
       [&](int32_t i) -> int32_t {
-        return sections_[sectionIndices[i]].section.size();
+        return sections[loadIndices[i]].section.size();
       },
       /*numRanges=*/
       [&](int32_t i) -> int32_t {
-        const auto size = sections_[sectionIndices[i]].section.size();
+        const auto size = sections[loadIndices[i]].section.size();
         if (coalescedBytes + size > maxCoalesceBytes_) {
           coalescedBytes = 0;
           return velox::kNoCoalesce;
@@ -203,10 +188,10 @@ std::vector<MetadataInput::IoGroup> MetadataInput::computeIoGroups(
   int32_t groupStart = 0;
   for (const auto groupEnd : groupEnds) {
     IoGroup group;
-    group.offset = sections_[sectionIndices[groupStart]].section.offset();
+    group.offset = sections[loadIndices[groupStart]].section.offset();
     auto lastEnd = group.offset;
     for (int32_t i = groupStart; i < groupEnd; ++i) {
-      const auto& section = sections_[sectionIndices[i]].section;
+      const auto& section = sections[loadIndices[i]].section;
       if (section.offset() > lastEnd) {
         const auto gap = section.offset() - lastEnd;
         group.ranges.emplace_back(
@@ -259,23 +244,41 @@ void MetadataInput::executeIoGroups(std::vector<IoGroup>& ioGroups) {
   }
 }
 
-void MetadataInput::loadFromFile(std::vector<uint32_t>& sectionIndices) {
-  if (sectionIndices.empty()) {
+void MetadataInput::loadFromFile(
+    const std::vector<LoadedSection>& sections,
+    const std::vector<uint32_t>& loadIndices,
+    const std::vector<folly::Range<char*>>& readRanges) {
+  if (loadIndices.empty()) {
     return;
   }
 
-  std::sort(sectionIndices.begin(), sectionIndices.end(), [&](auto a, auto b) {
-    return sections_[a].section.offset() < sections_[b].section.offset();
+  // Sort by file offset for IO coalescing. Reorder both loadIndices
+  // and readRanges in lock-step. The caller's buffers[i] ↔
+  // loadIndices[i] correspondence is preserved.
+  std::vector<uint32_t> sortOrder(loadIndices.size());
+  std::iota(sortOrder.begin(), sortOrder.end(), 0);
+  std::sort(sortOrder.begin(), sortOrder.end(), [&](auto lhs, auto rhs) {
+    return sections[loadIndices[lhs]].section.offset() <
+        sections[loadIndices[rhs]].section.offset();
   });
 
-  prepareReadBuffers(sectionIndices);
-  SCOPE_EXIT {
-    buffers_.clear();
-    readRanges_.clear();
-  };
-  auto ioGroups = computeIoGroups(sectionIndices, readRanges_);
+  std::vector<uint32_t> sortedIndices(loadIndices.size());
+  std::vector<folly::Range<char*>> sortedRanges(readRanges.size());
+  for (size_t i = 0; i < sortOrder.size(); ++i) {
+    sortedIndices[i] = loadIndices[sortOrder[i]];
+    sortedRanges[i] = readRanges[sortOrder[i]];
+  }
+
+  auto ioGroups = computeIoGroups(sections, sortedIndices, sortedRanges);
   executeIoGroups(ioGroups);
-  processLoadedBuffers(sectionIndices);
+}
+
+void MetadataInput::loadFromFile(
+    const std::vector<LoadedSection>& sections,
+    const std::vector<folly::Range<char*>>& readRanges) {
+  std::vector<uint32_t> loadIndices(sections.size());
+  std::iota(loadIndices.begin(), loadIndices.end(), 0);
+  loadFromFile(sections, loadIndices, readRanges);
 }
 
 void MetadataInput::recordCoalescedIoStats(
@@ -292,33 +295,41 @@ DirectMetadataInput::DirectMetadataInput(
     const velox::io::ReaderOptions& options)
     : MetadataInput(file, options) {}
 
-void DirectMetadataInput::load() {
-  NIMBLE_CHECK(!loaded_, "load() already called; call reset() first");
-  NIMBLE_CHECK(!sections_.empty(), "No sections enqueued");
-  std::vector<uint32_t> sectionIndices(sections_.size());
-  std::iota(sectionIndices.begin(), sectionIndices.end(), 0);
-  loadFromFile(sectionIndices);
-  loaded_ = true;
-}
-
-void DirectMetadataInput::prepareReadBuffers(
-    const std::vector<uint32_t>& sectionIndices) {
-  buffers_.resize(sectionIndices.size());
-  readRanges_.resize(sectionIndices.size());
-  for (size_t i = 0; i < sectionIndices.size(); ++i) {
-    const auto size = sections_[sectionIndices[i]].section.size();
-    buffers_[i] = velox::AlignedBuffer::allocateExact<char>(size, pool_);
-    readRanges_[i] = {buffers_[i]->asMutable<char>(), size};
+void DirectMetadataInput::prepareBuffers(
+    const std::vector<LoadedSection>& loadSections,
+    ReadBuffers& readBuffers) {
+  readBuffers.buffers.resize(loadSections.size());
+  readBuffers.readRanges.resize(loadSections.size());
+  for (size_t i = 0; i < loadSections.size(); ++i) {
+    const auto size = loadSections[i].section.size();
+    readBuffers.buffers[i] =
+        velox::AlignedBuffer::allocateExact<char>(size, pool_);
+    readBuffers.readRanges[i] = {
+        readBuffers.buffers[i]->asMutable<char>(), size};
   }
 }
 
-void DirectMetadataInput::processLoadedBuffers(
-    const std::vector<uint32_t>& sectionIndices) {
-  NIMBLE_CHECK_EQ(buffers_.size(), sectionIndices.size());
-  for (size_t i = 0; i < sectionIndices.size(); ++i) {
-    auto& loaded = sections_[sectionIndices[i]];
-    loaded.buffer = decompressAndStore(loaded.section, std::move(buffers_[i]));
+std::vector<std::shared_ptr<MetadataBuffer>> DirectMetadataInput::load(
+    std::span<const MetadataSection> sections) {
+  NIMBLE_CHECK(!sections.empty(), "No sections to load");
+
+  std::vector<LoadedSection> loadSections;
+  loadSections.reserve(sections.size());
+  for (const auto& section : sections) {
+    loadSections.emplace_back(section);
   }
+
+  ReadBuffers readBuffers;
+  prepareBuffers(loadSections, readBuffers);
+
+  loadFromFile(loadSections, readBuffers.readRanges);
+
+  for (size_t i = 0; i < loadSections.size(); ++i) {
+    loadSections[i].buffer = decompressAndStore(
+        loadSections[i].section, std::move(readBuffers.buffers[i]));
+  }
+
+  return extractResults(loadSections);
 }
 
 std::shared_ptr<MetadataBuffer> DirectMetadataInput::store(
@@ -336,11 +347,6 @@ CachedMetadataInput::CachedMetadataInput(
     const velox::io::ReaderOptions& options)
     : MetadataInput(file, options), cache_{cache}, fileId_{std::move(fileId)} {
   NIMBLE_CHECK_NOT_NULL(cache_);
-}
-
-void CachedMetadataInput::reset() {
-  MetadataInput::reset();
-  cachePins_.clear();
 }
 
 velox::cache::CachePin CachedMetadataInput::acquireCachePin(
@@ -403,8 +409,11 @@ std::shared_ptr<MetadataBuffer> CachedMetadataInput::promoteCachePin(
   return std::make_shared<MetadataBuffer>(std::move(pin));
 }
 
-void CachedMetadataInput::loadFromSsd(std::vector<uint32_t>& missIndices) {
-  if (missIndices.empty()) {
+void CachedMetadataInput::loadFromSsd(
+    std::vector<LoadedSection>& sections,
+    std::vector<std::optional<velox::cache::CachePin>>& cachePins,
+    std::vector<uint32_t>& loadIndices) {
+  if (loadIndices.empty()) {
     return;
   }
   auto* ssdCache = cache_->ssdCache();
@@ -418,18 +427,18 @@ void CachedMetadataInput::loadFromSsd(std::vector<uint32_t>& missIndices) {
     velox::cache::CachePin cachePin;
   };
   std::vector<SsdHit> ssdHits;
-  std::vector<uint32_t> remainingMissIndices;
-  remainingMissIndices.reserve(missIndices.size());
+  std::vector<uint32_t> remainingLoadIndices;
+  remainingLoadIndices.reserve(loadIndices.size());
 
   auto& ssdFile = ssdCache->file(fileId_.id());
-  for (const auto index : missIndices) {
-    auto& loaded = sections_[index];
+  for (const auto index : loadIndices) {
+    auto& loaded = sections[index];
     const velox::cache::RawFileCacheKey key{
         fileId_.id(), loaded.section.offset()};
 
     auto ssdPin = ssdFile.find(key);
     if (ssdPin.empty()) {
-      remainingMissIndices.emplace_back(index);
+      remainingLoadIndices.emplace_back(index);
       continue;
     }
 
@@ -442,7 +451,6 @@ void CachedMetadataInput::loadFromSsd(std::vector<uint32_t>& missIndices) {
           "SSD entry size mismatch with expected uncompressed size");
     }
 
-    // Allocate memory cache entry for loading from SSD.
     auto pin = acquireCachePin(key, ssdSize);
     auto buffer = tryCacheHit(ssdSize, pin);
     if (buffer != nullptr) {
@@ -452,42 +460,42 @@ void CachedMetadataInput::loadFromSsd(std::vector<uint32_t>& missIndices) {
     ssdHits.emplace_back(SsdHit{index, std::move(ssdPin), std::move(pin)});
   }
 
-  missIndices = std::move(remainingMissIndices);
+  loadIndices = std::move(remainingLoadIndices);
 
   if (ssdHits.empty()) {
     return;
   }
 
-  // Batch SsdFile::load() for all SSD hits.
   std::vector<velox::cache::SsdPin> ssdPins;
-  std::vector<velox::cache::CachePin> cachePins;
+  std::vector<velox::cache::CachePin> loadPins;
   ssdPins.reserve(ssdHits.size());
-  cachePins.reserve(ssdHits.size());
+  loadPins.reserve(ssdHits.size());
   for (auto& hit : ssdHits) {
     ssdPins.emplace_back(std::move(hit.ssdPin));
-    cachePins.emplace_back(std::move(hit.cachePin));
+    loadPins.emplace_back(std::move(hit.cachePin));
   }
   uint64_t ssdLoadUs{0};
   {
     velox::MicrosecondTimer timer(&ssdLoadUs);
-    ssdFile.load(ssdPins, cachePins);
+    ssdFile.load(ssdPins, loadPins);
   }
   ioStats_->queryThreadIoLatencyUs().increment(ssdLoadUs);
   ioStats_->ssdCacheReadLatencyUs().increment(ssdLoadUs);
   for (uint32_t i = 0; i < ssdHits.size(); ++i) {
-    const auto& section = sections_[ssdHits[i].sectionIndex].section;
-    sections_[ssdHits[i].sectionIndex].buffer =
-        promoteCachePin(section, std::move(cachePins[i]), ioStats_->ssdRead());
+    const auto& section = sections[ssdHits[i].sectionIndex].section;
+    sections[ssdHits[i].sectionIndex].buffer =
+        promoteCachePin(section, std::move(loadPins[i]), ioStats_->ssdRead());
   }
 }
 
-std::vector<uint32_t> CachedMetadataInput::loadFromCache() {
-  NIMBLE_CHECK(cachePins_.empty(), "Cache pins not cleared from previous load");
-  cachePins_.resize(sections_.size());
-  std::vector<uint32_t> missIndices;
-  missIndices.reserve(sections_.size());
-  for (uint32_t index = 0; index < sections_.size(); ++index) {
-    const auto& section = sections_[index].section;
+std::vector<uint32_t> CachedMetadataInput::loadFromCache(
+    std::vector<LoadedSection>& sections,
+    std::vector<std::optional<velox::cache::CachePin>>& cachePins) {
+  cachePins.resize(sections.size());
+  std::vector<uint32_t> loadIndices;
+  loadIndices.reserve(sections.size());
+  for (uint32_t index = 0; index < sections.size(); ++index) {
+    const auto& section = sections[index].section;
     const velox::cache::RawFileCacheKey key{fileId_.id(), section.offset()};
     const auto uncompressedSize = resolveUncompressedSize(section);
 
@@ -495,77 +503,62 @@ std::vector<uint32_t> CachedMetadataInput::loadFromCache() {
       auto pin = acquireCachePin(key, uncompressedSize.value());
       auto buffer = tryCacheHit(uncompressedSize.value(), pin);
       if (buffer != nullptr) {
-        sections_[index].buffer = std::move(buffer);
+        sections[index].buffer = std::move(buffer);
         continue;
       }
-      cachePins_[index] = std::move(pin);
-      missIndices.push_back(index);
+      cachePins[index] = std::move(pin);
+      loadIndices.push_back(index);
     } else {
-      missIndices.push_back(index);
+      loadIndices.push_back(index);
     }
   }
-  return missIndices;
+  return loadIndices;
 }
 
-void CachedMetadataInput::load() {
-  NIMBLE_CHECK(!loaded_, "load() already called; call reset() first");
-  NIMBLE_CHECK(!sections_.empty(), "No sections enqueued");
-
-  auto missIndices = loadFromCache();
-  loadFromSsd(missIndices);
-  loadFromFile(missIndices);
-  loaded_ = true;
-}
-
-void CachedMetadataInput::prepareReadBuffers(
-    const std::vector<uint32_t>& sectionIndices) {
-  NIMBLE_CHECK_EQ(
-      cachePins_.size(),
-      sections_.size(),
-      "Cache pins size mismatch with sections");
-
-  // For uncompressed sections with cache pins, read directly into the
-  // pin's contiguous data. For compressed sections or sections without
-  // pins, allocate a temporary buffer.
-  buffers_.resize(sectionIndices.size());
-  readRanges_.resize(sectionIndices.size());
-  for (size_t i = 0; i < sectionIndices.size(); ++i) {
-    const auto sectionIndex = sectionIndices[i];
-    const auto& section = sections_[sectionIndex].section;
-    const auto& pin = cachePins_[sectionIndex];
+void CachedMetadataInput::prepareBuffers(
+    const std::vector<LoadedSection>& loadSections,
+    const std::vector<uint32_t>& loadIndices,
+    const std::vector<std::optional<velox::cache::CachePin>>& cachePins,
+    ReadBuffers& readBuffers) {
+  readBuffers.buffers.resize(loadIndices.size());
+  readBuffers.readRanges.resize(loadIndices.size());
+  for (size_t i = 0; i < loadIndices.size(); ++i) {
+    const auto sectionIndex = loadIndices[i];
+    const auto& section = loadSections[sectionIndex].section;
+    const auto& pin = cachePins[sectionIndex];
     if (pin.has_value() &&
         section.compressionType() == CompressionType::Uncompressed) {
       NIMBLE_CHECK(
           pin->entry()->hasContiguousData(),
           "Cache entry must have contiguous data");
-      readRanges_[i] = {pin->entry()->contiguousData(), section.size()};
+      readBuffers.readRanges[i] = {
+          pin->entry()->contiguousData(), section.size()};
     } else {
-      buffers_[i] = velox::AlignedBuffer::allocate<char>(section.size(), pool_);
-      readRanges_[i] = {buffers_[i]->asMutable<char>(), section.size()};
+      readBuffers.buffers[i] =
+          velox::AlignedBuffer::allocate<char>(section.size(), pool_);
+      readBuffers.readRanges[i] = {
+          readBuffers.buffers[i]->asMutable<char>(), section.size()};
     }
   }
 }
 
 void CachedMetadataInput::processLoadedBuffers(
-    const std::vector<uint32_t>& sectionIndices) {
-  NIMBLE_CHECK_EQ(buffers_.size(), sectionIndices.size());
-  NIMBLE_CHECK_EQ(cachePins_.size(), sections_.size());
-  SCOPE_EXIT {
-    cachePins_.clear();
-  };
-
-  for (size_t i = 0; i < sectionIndices.size(); ++i) {
-    const auto sectionIndex = sectionIndices[i];
-    auto& loaded = sections_[sectionIndex];
-    auto& pin = cachePins_[sectionIndex];
+    std::vector<LoadedSection>& loadSections,
+    const std::vector<uint32_t>& loadIndices,
+    std::vector<std::optional<velox::cache::CachePin>>& cachePins,
+    ReadBuffers& readBuffers) {
+  for (size_t i = 0; i < loadIndices.size(); ++i) {
+    const auto sectionIndex = loadIndices[i];
+    auto& loaded = loadSections[sectionIndex];
+    auto& pin = cachePins[sectionIndex];
     if (pin.has_value()) {
       if (loaded.section.compressionType() != CompressionType::Uncompressed) {
-        NIMBLE_CHECK_NOT_NULL(buffers_[i]);
+        NIMBLE_CHECK_NOT_NULL(readBuffers.buffers[i]);
         NIMBLE_CHECK(
             pin->entry()->hasContiguousData(),
             "Cache entry must have contiguous data");
         std::string_view compressed{
-            buffers_[i]->as<char>(), loaded.section.size()};
+            readBuffers.buffers[i]->as<char>(), loaded.section.size()};
         ZstdCompression::uncompress(
             compressed, pin->entry()->contiguousData(), pin->entry()->size());
       }
@@ -576,9 +569,34 @@ void CachedMetadataInput::processLoadedBuffers(
           !loaded.section.uncompressedSize().has_value(),
           "Section without cache pin should not have uncompressed size set");
       loaded.buffer =
-          decompressAndStore(loaded.section, std::move(buffers_[i]));
+          decompressAndStore(loaded.section, std::move(readBuffers.buffers[i]));
     }
   }
+}
+
+std::vector<std::shared_ptr<MetadataBuffer>> CachedMetadataInput::load(
+    std::span<const MetadataSection> sections) {
+  NIMBLE_CHECK(!sections.empty(), "No sections to load");
+
+  std::vector<LoadedSection> loadSections;
+  loadSections.reserve(sections.size());
+  for (const auto& section : sections) {
+    loadSections.emplace_back(section);
+  }
+
+  std::vector<std::optional<velox::cache::CachePin>> cachePins;
+  auto missIndices = loadFromCache(loadSections, cachePins);
+  loadFromSsd(loadSections, cachePins, missIndices);
+
+  if (!missIndices.empty()) {
+    ReadBuffers readBuffers;
+    prepareBuffers(loadSections, missIndices, cachePins, readBuffers);
+
+    loadFromFile(loadSections, missIndices, readBuffers.readRanges);
+    processLoadedBuffers(loadSections, missIndices, cachePins, readBuffers);
+  }
+
+  return extractResults(loadSections);
 }
 
 std::shared_ptr<MetadataBuffer> CachedMetadataInput::store(

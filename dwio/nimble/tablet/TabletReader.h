@@ -388,44 +388,43 @@ class TabletReader {
       uint64_t& footerOffset,
       const Options& options);
 
-  // Tracks a section enqueued to MetadataInput for batched coalesced loading.
-  struct EnqueuedSection {
+  // Tracks a pending metadata section for batched coalesced loading.
+  struct LoadSection {
     enum class Type { kStripes, kOptionalSection };
 
     Type type;
     std::string name;
-    MetadataHandle handle{nullptr, 0};
+    MetadataSection section;
   };
 
-  // Enqueues the stripes section for coalesced loading via MetadataInput.
-  // Tries to extract from footerBuf first; enqueues to MetadataInput on miss.
-  void enqueueStripesSection(
+  // Collects stripes section for coalesced loading. Tries to extract from
+  // footerBuf first; adds to pending on miss.
+  void collectStripesSection(
       std::string_view footerBuf,
       uint64_t footerOffset,
-      std::vector<EnqueuedSection>& enqueued);
+      std::vector<LoadSection>& loadSections);
 
-  void enqueueStripesSection(std::vector<EnqueuedSection>& enqueued) {
-    enqueueStripesSection({}, 0, enqueued);
+  void collectStripesSection(std::vector<LoadSection>& loadSections) {
+    collectStripesSection({}, 0, loadSections);
   }
 
-  // Enqueues optional sections for coalesced loading via MetadataInput.
-  // Tries to extract from footerBuf first; enqueues to MetadataInput on miss.
-  // Skips sections not present in this file.
-  void enqueueOptionalSections(
+  // Collects optional sections for coalesced loading. Tries to extract from
+  // footerBuf first; adds to pending on miss.
+  void collectOptionalSections(
       const Options& options,
       std::string_view footerBuf,
       uint64_t footerOffset,
-      std::vector<EnqueuedSection>& enqueued);
+      std::vector<LoadSection>& loadSections);
 
-  void enqueueOptionalSections(
+  void collectOptionalSections(
       const Options& options,
-      std::vector<EnqueuedSection>& enqueued) {
-    enqueueOptionalSections(options, {}, 0, enqueued);
+      std::vector<LoadSection>& loadSections) {
+    collectOptionalSections(options, {}, 0, loadSections);
   }
 
-  // Loads all enqueued sections via MetadataInput and stores results:
+  // Loads all pending sections via MetadataInput and stores results:
   // stripes go to stripes_, optional sections go to optionalSectionsCache_.
-  void loadEnqueuedSections(std::vector<EnqueuedSection>& enqueued);
+  void loadSections(std::vector<LoadSection>& loadSections);
 
   // Parses stripes_ to populate stripe metadata and preloads the first
   // stripe group from footerBuf when available.
@@ -461,14 +460,6 @@ class TabletReader {
   // Returns the list of optional section names to preload: the user-specified
   // sections plus the index section if present.
   std::vector<std::string> preloadSectionNames(const Options& options) const;
-
-  // Preloads optional sections into optionalSectionsCache_. Tries to
-  // extract from the speculative read buffer first, then batches remaining
-  // sections through MetadataInput.
-  void preloadOptionalSections(
-      const Options& options,
-      std::string_view footerBuf,
-      uint64_t footerOffset);
 
   // Reads and decompresses a metadata section via MetadataInput.
   std::unique_ptr<MetadataBuffer> readMetadata(
@@ -509,9 +500,8 @@ class TabletReader {
 
   // Owned MetadataInput for coalesced metadata IO. Always created —
   // uses DirectMetadataInput (no cache) or CachedMetadataInput depending
-  // on options.
+  // on options. Thread-safe: load() is stateless.
   const std::unique_ptr<MetadataInput> metadataInput_;
-  mutable std::mutex metadataInputMutex_;
 
   uint64_t fileSize_{0};
   Postscript ps_;

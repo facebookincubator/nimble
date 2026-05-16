@@ -294,13 +294,13 @@ void TabletReader::init(const Options& options) {
   // Parse optional sections metadata from footer before enqueueing.
   initOptionalSections();
 
-  // Enqueue stripes + optional sections. Try extracting from footerBuf
-  // first (speculative mode), enqueue the rest for coalesced IO.
-  std::vector<EnqueuedSection> enqueued;
-  enqueueStripesSection(footerView, footerOffset, enqueued);
-  enqueueOptionalSections(options, footerView, footerOffset, enqueued);
+  // Collect stripes + optional sections. Try extracting from footerBuf
+  // first (speculative mode), batch-load the rest via coalesced IO.
+  std::vector<LoadSection> sections;
+  collectStripesSection(footerView, footerOffset, sections);
+  collectOptionalSections(options, footerView, footerOffset, sections);
 
-  loadEnqueuedSections(enqueued);
+  loadSections(sections);
 
   initStripes(footerView, footerOffset);
   initClusterIndex();
@@ -415,14 +415,14 @@ bool TabletReader::initFromCache(const Options& options) {
   }
   initOptionalSections();
 
-  // Enqueue stripes + optional sections together for coalesced IO.
+  // Collect stripes + optional sections together for coalesced IO.
   // Empty files (0 rows) have no stripes section but still need optional
   // sections loaded (e.g., schema describes column types even with no rows).
-  std::vector<EnqueuedSection> enqueued;
-  enqueueStripesSection(enqueued);
-  enqueueOptionalSections(options, enqueued);
+  std::vector<LoadSection> sections;
+  collectStripesSection(sections);
+  collectOptionalSections(options, sections);
 
-  loadEnqueuedSections(enqueued);
+  loadSections(sections);
 
   initStripes();
   initClusterIndex();
@@ -550,10 +550,10 @@ void TabletReader::loadStripes(
   }
 }
 
-void TabletReader::enqueueStripesSection(
+void TabletReader::collectStripesSection(
     std::string_view footerBuf,
     uint64_t footerOffset,
-    std::vector<EnqueuedSection>& enqueued) {
+    std::vector<LoadSection>& loadSections) {
   const auto* footer = footerRoot(*footer_);
   auto* stripesSection = footer->stripes();
   if (stripesSection == nullptr) {
@@ -564,22 +564,18 @@ void TabletReader::enqueueStripesSection(
   if (fromBuf != nullptr) {
     stripes_ = std::move(fromBuf);
   } else {
-    enqueued.push_back(
-        {EnqueuedSection::Type::kStripes,
-         {},
-         metadataInput_->enqueue(section)});
+    loadSections.emplace_back(
+        LoadSection{LoadSection::Type::kStripes, {}, section});
   }
 }
 
-void TabletReader::enqueueOptionalSections(
+void TabletReader::collectOptionalSections(
     const Options& options,
     std::string_view footerBuf,
     uint64_t footerOffset,
-    std::vector<EnqueuedSection>& enqueued) {
+    std::vector<LoadSection>& loadSections) {
   auto optionalSectionCache = optionalSectionsCache_.wlock();
   for (const auto& name : preloadSectionNames(options)) {
-    // Skip sections not present in this file (e.g., old files without
-    // chunk index, small files without stats).
     auto it = optionalSections_.find(name);
     if (it == optionalSections_.end()) {
       continue;
@@ -589,33 +585,31 @@ void TabletReader::enqueueOptionalSections(
     if (fromBuf != nullptr) {
       optionalSectionCache->insert({name, std::move(fromBuf)});
     } else {
-      enqueued.push_back(
-          {EnqueuedSection::Type::kOptionalSection,
-           name,
-           metadataInput_->enqueue(it->second)});
+      loadSections.emplace_back(
+          LoadSection{LoadSection::Type::kOptionalSection, name, it->second});
     }
   }
 }
 
-void TabletReader::loadEnqueuedSections(
-    std::vector<EnqueuedSection>& enqueued) {
-  if (enqueued.empty()) {
+void TabletReader::loadSections(std::vector<LoadSection>& loadSections) {
+  if (loadSections.empty()) {
     return;
   }
-  MetadataInput::LoadGuard guard{metadataInput_.get()};
+  std::vector<MetadataSection> sections;
+  sections.reserve(loadSections.size());
+  for (const auto& p : loadSections) {
+    sections.emplace_back(p.section);
+  }
+  auto results = metadataInput_->load(sections);
   auto optionalSectionCache = optionalSectionsCache_.wlock();
-  for (auto& entry : enqueued) {
-    auto buffer =
-        std::make_unique<MetadataBuffer>(std::move(*entry.handle.read()));
-    if (entry.type == EnqueuedSection::Type::kStripes) {
+  for (size_t i = 0; i < loadSections.size(); ++i) {
+    auto buffer = std::make_unique<MetadataBuffer>(std::move(*results[i]));
+    if (loadSections[i].type == LoadSection::Type::kStripes) {
       NIMBLE_CHECK_NULL(stripes_, "Stripes already loaded");
       stripes_ = std::move(buffer);
     } else {
-      NIMBLE_CHECK_EQ(
-          static_cast<int>(entry.type),
-          static_cast<int>(EnqueuedSection::Type::kOptionalSection));
       auto [_, inserted] = optionalSectionCache->insert(
-          {std::move(entry.name), std::move(buffer)});
+          {std::move(loadSections[i].name), std::move(buffer)});
       NIMBLE_CHECK(inserted, "Optional section already loaded");
     }
   }
@@ -713,42 +707,6 @@ std::vector<std::string> TabletReader::preloadSectionNames(
   return names;
 }
 
-void TabletReader::preloadOptionalSections(
-    const Options& options,
-    std::string_view footerBuf,
-    uint64_t footerOffset) {
-  std::vector<EnqueuedSection> pending;
-  auto optionalSectionCache = optionalSectionsCache_.wlock();
-  for (const auto& name : preloadSectionNames(options)) {
-    // Skip sections not present in this file (e.g., old files without
-    // chunk index, small files without stats).
-    auto it = optionalSections_.find(name);
-    if (it == optionalSections_.end()) {
-      continue;
-    }
-    const auto& section = it->second;
-    auto fromFooter =
-        tryExtractFromBuffer(footerBuf, footerOffset, section, pool_);
-    if (fromFooter != nullptr) {
-      optionalSectionCache->insert({name, std::move(fromFooter)});
-      continue;
-    }
-    pending.push_back(
-        {EnqueuedSection::Type::kOptionalSection,
-         name,
-         metadataInput_->enqueue(section)});
-  }
-  if (!pending.empty()) {
-    MetadataInput::LoadGuard guard{metadataInput_.get()};
-    for (auto& entry : pending) {
-      auto buffer = entry.handle.read();
-      optionalSectionCache->insert(
-          {std::move(entry.name),
-           std::make_unique<MetadataBuffer>(std::move(*buffer))});
-    }
-  }
-}
-
 std::shared_ptr<TabletReader> TabletReader::create(
     std::shared_ptr<velox::ReadFile> readFile,
     MemoryPool* pool,
@@ -844,11 +802,9 @@ uint32_t TabletReader::stripeGroupIndex(uint32_t stripeIndex) const {
 std::unique_ptr<MetadataBuffer> TabletReader::readMetadata(
     const MetadataSection& section) const {
   NIMBLE_CHECK_GT(section.size(), 0, "Metadata section size must be non-zero");
-  std::lock_guard<std::mutex> lock(metadataInputMutex_);
-  auto handle = metadataInput_->enqueue(section);
-  MetadataInput::LoadGuard guard{metadataInput_.get()};
-  auto result = handle.read();
-  return std::make_unique<MetadataBuffer>(std::move(*result));
+  auto results = metadataInput_->load({&section, 1});
+  NIMBLE_CHECK_EQ(results.size(), 1);
+  return std::make_unique<MetadataBuffer>(std::move(*results[0]));
 }
 
 std::shared_ptr<StripeGroup> TabletReader::loadStripeGroup(
@@ -874,34 +830,22 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
 
   const bool hasChunkIndex = this->hasChunkIndex(stripeGroupIndex);
 
-  std::unique_ptr<MetadataBuffer> groupMetadata;
-  std::unique_ptr<MetadataBuffer> chunkIndexMetadata;
-
-  {
-    std::lock_guard<std::mutex> lock(metadataInputMutex_);
-    auto groupHandle = metadataInput_->enqueue(groupSection);
-
-    std::optional<MetadataHandle> chunkIndexHandle;
-    if (hasChunkIndex) {
-      chunkIndexHandle.emplace(metadataInput_->enqueue(
-          chunkIndex_->groupMetadata(stripeGroupIndex)));
-    }
-
-    MetadataInput::LoadGuard guard{metadataInput_.get()};
-
-    auto groupShared = groupHandle.read();
-    groupMetadata = std::make_unique<MetadataBuffer>(std::move(*groupShared));
-    if (hasChunkIndex) {
-      auto chunkShared = chunkIndexHandle->read();
-      chunkIndexMetadata =
-          std::make_unique<MetadataBuffer>(std::move(*chunkShared));
-    }
+  std::vector<MetadataSection> sections;
+  sections.emplace_back(groupSection);
+  if (hasChunkIndex) {
+    sections.emplace_back(chunkIndex_->groupMetadata(stripeGroupIndex));
   }
+
+  auto results = metadataInput_->load(sections);
+
+  auto groupMetadata = std::make_unique<MetadataBuffer>(std::move(*results[0]));
 
   StripeGroupMetadata result;
   result.stripeGroup = std::make_shared<StripeGroup>(
       stripeGroupIndex, *stripes_, std::move(groupMetadata));
   if (hasChunkIndex) {
+    auto chunkIndexMetadata =
+        std::make_unique<MetadataBuffer>(std::move(*results[1]));
     result.chunkIndex = ChunkIndexGroup::create(
         result.stripeGroup->firstStripe(),
         result.stripeGroup->stripeCount(),

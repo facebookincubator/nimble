@@ -140,11 +140,10 @@ void DenseIndexRegistry::registerHashIndices(
       [this, metadataInput, pool](
           uint32_t index) -> std::shared_ptr<HashIndex> {
         const auto& descriptor = hashDescriptors_[index];
-        auto handle = metadataInput->enqueue(descriptor.section);
-        MetadataInput::LoadGuard guard(metadataInput.get());
-        auto result = handle.read();
+        auto results = metadataInput->load({&descriptor.section, 1});
+        NIMBLE_CHECK_EQ(results.size(), 1);
         auto indexMetadata =
-            std::make_unique<MetadataBuffer>(std::move(*result));
+            std::make_unique<MetadataBuffer>(std::move(*results[0]));
         return HashIndex::create(
             descriptor.columns, std::move(indexMetadata), metadataInput, pool);
       },
@@ -163,11 +162,10 @@ void DenseIndexRegistry::registerSortedIndices(
       [this, metadataInput, dataInput, pool](
           uint32_t index) -> std::shared_ptr<SortedIndex> {
         const auto& descriptor = sortedDescriptors_[index];
-        auto handle = metadataInput->enqueue(descriptor.section);
-        MetadataInput::LoadGuard guard(metadataInput.get());
-        auto result = handle.read();
+        auto results = metadataInput->load({&descriptor.section, 1});
+        NIMBLE_CHECK_EQ(results.size(), 1);
         auto indexMetadata =
-            std::make_unique<MetadataBuffer>(std::move(*result));
+            std::make_unique<MetadataBuffer>(std::move(*results[0]));
         return SortedIndex::create(
             descriptor.columns, std::move(indexMetadata), dataInput, pool);
       },

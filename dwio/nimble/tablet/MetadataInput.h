@@ -39,32 +39,11 @@ class MetadataInputTestHelper;
 class CachedMetadataInputTestHelper;
 } // namespace test
 
-class MetadataInput;
-
-/// Handle to an enqueued metadata section. Returned by
-/// MetadataInput::enqueue(). Call read() to get the decompressed
-/// MetadataBuffer — either from a prior coalesced load() or by
-/// triggering on-demand IO for just this section.
-class MetadataHandle {
- public:
-  MetadataHandle(MetadataInput* input, uint32_t index)
-      : input_{input}, index_{index} {}
-
-  /// Returns the decompressed MetadataBuffer. If load() was called
-  /// on the parent MetadataInput, returns the already-loaded result.
-  /// Otherwise triggers on-demand IO for this section only.
-  std::shared_ptr<MetadataBuffer> read();
-
- private:
-  MetadataInput* const input_;
-  const uint32_t index_;
-};
-
 /// Reads metadata sections from a Nimble file with IO coalescing.
 ///
-/// Supports two-phase IO: enqueue() registers sections and returns a
-/// MetadataHandle, load() executes coalesced preadv for all enqueued
-/// sections. The handle's read() returns the decompressed MetadataBuffer.
+/// Stateless, thread-safe API: load() takes a span of sections and returns
+/// decompressed MetadataBuffers. All per-call state is local — no member
+/// state is mutated during load(), so concurrent calls are safe.
 ///
 /// IO coalescing is controlled by maxCoalesceDistance and maxCoalesceBytes
 /// from io::ReaderOptions, shared with data IO settings.
@@ -73,8 +52,6 @@ class MetadataHandle {
 ///   - DirectMetadataInput: IO coalescing, no caching
 ///   - CachedMetadataInput: IO coalescing + AsyncDataCache for decompressed
 ///     metadata with memory/SSD tier support
-///
-/// NOTE: Not thread-safe. All calls must be serialized by the caller.
 class MetadataInput {
  public:
   /// Creates a DirectMetadataInput for non-cached reads.
@@ -95,35 +72,11 @@ class MetadataInput {
     return false;
   }
 
-  /// Enqueues a metadata section for coalesced IO. Returns a handle
-  /// to retrieve the result later via handle.read().
-  MetadataHandle enqueue(const MetadataSection& section);
-
-  /// Executes coalesced preadv for all enqueued sections, then
-  /// decompresses and stores each section via the subclass.
-  virtual void load() = 0;
-
-  /// Resets all internal state for the next round of enqueue/load/read.
-  virtual void reset();
-
-  /// RAII guard that calls load() on construction and reset() on destruction.
-  class LoadGuard {
-   public:
-    explicit LoadGuard(MetadataInput* input) : input_{input} {
-      NIMBLE_CHECK_NOT_NULL(input_);
-      input_->load();
-    }
-
-    ~LoadGuard() {
-      input_->reset();
-    }
-
-    LoadGuard(const LoadGuard&) = delete;
-    LoadGuard& operator=(const LoadGuard&) = delete;
-
-   private:
-    MetadataInput* const input_;
-  };
+  /// Loads metadata sections with coalesced IO. Returns one MetadataBuffer
+  /// per input section, in the same order. Thread-safe: all per-call state
+  /// is local.
+  virtual std::vector<std::shared_ptr<MetadataBuffer>> load(
+      std::span<const MetadataSection> sections) = 0;
 
   /// Tries to find cached metadata at the given offset. Returns a
   /// MetadataBuffer holding a cache pin if found, nullptr otherwise.
@@ -146,17 +99,26 @@ class MetadataInput {
     std::shared_ptr<MetadataBuffer> buffer;
   };
 
-  /// Reads sections at the given indices from file with IO coalescing,
-  /// decompresses, and calls store() for each. Sorts indices in-place.
-  void loadFromFile(std::vector<uint32_t>& sectionIndices);
+  // Per-section read state produced by prepareBuffers().
+  // buffers[i] owns the allocated memory (null when reading into cache pin).
+  // readRanges[i] is the writable destination for IO.
+  struct ReadBuffers {
+    std::vector<velox::BufferPtr> buffers;
+    std::vector<folly::Range<char*>> readRanges;
+  };
 
-  /// Subclass sets up per-section read buffers and ranges.
-  virtual void prepareReadBuffers(
-      const std::vector<uint32_t>& sectionIndices) = 0;
+  /// Sorts by file offset internally, computes coalesced IO groups,
+  /// and executes preadv. Does not reorder readRanges — the caller's
+  /// buffers[i] ↔ loadIndices[i] correspondence is preserved.
+  void loadFromFile(
+      const std::vector<LoadedSection>& sections,
+      const std::vector<uint32_t>& loadIndices,
+      const std::vector<folly::Range<char*>>& readRanges);
 
-  /// Subclass processes loaded buffers into MetadataBuffers.
-  virtual void processLoadedBuffers(
-      const std::vector<uint32_t>& sectionIndices) = 0;
+  /// Overload for loading all sections (sequential indices).
+  void loadFromFile(
+      const std::vector<LoadedSection>& sections,
+      const std::vector<folly::Range<char*>>& readRanges);
 
   /// Decompresses the buffer and calls store(). For uncompressed data,
   /// passes the buffer directly (zero copy).
@@ -169,6 +131,10 @@ class MetadataInput {
       const MetadataSection& section,
       velox::BufferPtr&& decompressed) = 0;
 
+  /// Extracts results from loaded sections into a vector of MetadataBuffers.
+  static std::vector<std::shared_ptr<MetadataBuffer>> extractResults(
+      std::vector<LoadedSection>& sections);
+
   struct IoGroup {
     uint64_t offset;
     std::vector<folly::Range<char*>> ranges;
@@ -178,7 +144,8 @@ class MetadataInput {
   // ranges for each group with null-data ranges for gaps.
   // 'readRanges' provides the writable destination for each section.
   std::vector<IoGroup> computeIoGroups(
-      const std::vector<uint32_t>& sectionIndices,
+      const std::vector<LoadedSection>& sections,
+      const std::vector<uint32_t>& loadIndices,
       const std::vector<folly::Range<char*>>& readRanges);
 
   // Dispatches IO groups in parallel via AsyncSource when executor is
@@ -219,39 +186,30 @@ class MetadataInput {
   folly::Executor* const executor_;
   const std::shared_ptr<velox::io::IoStatistics> ioStats_;
 
-  std::vector<LoadedSection> sections_;
-  bool loaded_{false};
-
-  // Per-section read state, populated by prepareReadBuffers().
-  std::vector<velox::BufferPtr> buffers_;
-  std::vector<folly::Range<char*>> readRanges_;
-
- private:
-  virtual std::shared_ptr<MetadataBuffer> read(uint32_t index);
-
-  friend class MetadataHandle;
   friend class test::MetadataInputTestHelper;
 };
 
 /// Direct metadata loading with IO coalescing, no caching.
 class DirectMetadataInput : public MetadataInput {
  public:
-  void load() override;
+  std::vector<std::shared_ptr<MetadataBuffer>> load(
+      std::span<const MetadataSection> sections) override;
+
+ protected:
+  std::shared_ptr<MetadataBuffer> store(
+      const MetadataSection& section,
+      velox::BufferPtr&& decompressed) override;
 
  private:
+  void prepareBuffers(
+      const std::vector<LoadedSection>& loadSections,
+      ReadBuffers& readBuffers);
+
   friend class MetadataInput;
 
   DirectMetadataInput(
       velox::ReadFile* file,
       const velox::io::ReaderOptions& options);
-
- protected:
-  void prepareReadBuffers(const std::vector<uint32_t>& sectionIndices) override;
-  void processLoadedBuffers(
-      const std::vector<uint32_t>& sectionIndices) override;
-  std::shared_ptr<MetadataBuffer> store(
-      const MetadataSection& section,
-      velox::BufferPtr&& decompressed) override;
 };
 
 /// Cached metadata loading with IO coalescing and AsyncDataCache.
@@ -264,9 +222,8 @@ class CachedMetadataInput : public MetadataInput {
     return true;
   }
 
-  void load() override;
-
-  void reset() override;
+  std::vector<std::shared_ptr<MetadataBuffer>> load(
+      std::span<const MetadataSection> sections) override;
 
   std::unique_ptr<MetadataBuffer> findCachedMetadata(uint64_t offset) override;
 
@@ -275,9 +232,6 @@ class CachedMetadataInput : public MetadataInput {
       std::span<const std::string_view> ranges) override;
 
  protected:
-  void prepareReadBuffers(const std::vector<uint32_t>& sectionIndices) override;
-  void processLoadedBuffers(
-      const std::vector<uint32_t>& sectionIndices) override;
   std::shared_ptr<MetadataBuffer> store(
       const MetadataSection& section,
       velox::BufferPtr&& decompressed) override;
@@ -285,11 +239,33 @@ class CachedMetadataInput : public MetadataInput {
  private:
   // Checks memory cache for all sections. Returns indices of sections
   // not found in cache. Pre-claims exclusive pins for known-size misses.
-  std::vector<uint32_t> loadFromCache();
+  std::vector<uint32_t> loadFromCache(
+      std::vector<LoadedSection>& sections,
+      std::vector<std::optional<velox::cache::CachePin>>& cachePins);
 
   // Checks SSD cache for memory misses, batch-loads SSD hits into
-  // memory cache. Removes loaded indices from missIndices in-place.
-  void loadFromSsd(std::vector<uint32_t>& missIndices);
+  // memory cache. Removes loaded indices from loadIndices in-place.
+  void loadFromSsd(
+      std::vector<LoadedSection>& sections,
+      std::vector<std::optional<velox::cache::CachePin>>& cachePins,
+      std::vector<uint32_t>& loadIndices);
+
+  // Decompresses loaded buffers and stores results into loadSections.
+  // For sections with cache pins, decompresses into the pin and promotes
+  // to shared. For sections without pins, uses decompressAndStore.
+  void processLoadedBuffers(
+      std::vector<LoadedSection>& loadSections,
+      const std::vector<uint32_t>& loadIndices,
+      std::vector<std::optional<velox::cache::CachePin>>& cachePins,
+      ReadBuffers& readBuffers);
+
+  // For uncompressed sections with cache pins, reads directly into the
+  // pin's contiguous data. Otherwise allocates a temp buffer.
+  void prepareBuffers(
+      const std::vector<LoadedSection>& loadSections,
+      const std::vector<uint32_t>& loadIndices,
+      const std::vector<std::optional<velox::cache::CachePin>>& cachePins,
+      ReadBuffers& readBuffers);
 
   // Waits for a cache pin to become available via findOrCreate.
   // Blocks until the pin is no longer exclusively held by another thread.
@@ -320,10 +296,6 @@ class CachedMetadataInput : public MetadataInput {
 
   velox::cache::AsyncDataCache* const cache_;
   const velox::StringIdLease fileId_;
-
-  // Pre-claimed exclusive cache pins from loadFromCache(), indexed by
-  // section index. Present for sections with known uncompressed size.
-  std::vector<std::optional<velox::cache::CachePin>> cachePins_;
 
   friend class test::CachedMetadataInputTestHelper;
 };
