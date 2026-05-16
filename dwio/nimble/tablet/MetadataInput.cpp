@@ -33,19 +33,6 @@
 
 namespace facebook::nimble {
 
-namespace {
-
-inline int64_t sectionGap(
-    const MetadataSection& prev,
-    const MetadataSection& next) {
-  const int64_t gap = static_cast<int64_t>(next.offset()) -
-      static_cast<int64_t>(prev.offset() + prev.size());
-  NIMBLE_CHECK_GE(gap, 0, "Metadata sections overlap");
-  return gap;
-}
-
-} // namespace
-
 // --- MetadataInput ---
 
 std::unique_ptr<MetadataInput> MetadataInput::create(
@@ -81,7 +68,7 @@ MetadataInput::MetadataInput(
 }
 
 std::vector<std::shared_ptr<MetadataBuffer>> MetadataInput::extractResults(
-    std::vector<LoadedSection>& sections) {
+    std::vector<LoadedSection>&& sections) {
   std::vector<std::shared_ptr<MetadataBuffer>> results;
   results.reserve(sections.size());
   for (auto& loaded : sections) {
@@ -313,12 +300,7 @@ std::vector<std::shared_ptr<MetadataBuffer>> DirectMetadataInput::load(
     std::span<const MetadataSection> sections) {
   NIMBLE_CHECK(!sections.empty(), "No sections to load");
 
-  std::vector<LoadedSection> loadSections;
-  loadSections.reserve(sections.size());
-  for (const auto& section : sections) {
-    loadSections.emplace_back(section);
-  }
-
+  std::vector<LoadedSection> loadSections(sections.begin(), sections.end());
   ReadBuffers readBuffers;
   prepareBuffers(loadSections, readBuffers);
 
@@ -329,7 +311,7 @@ std::vector<std::shared_ptr<MetadataBuffer>> DirectMetadataInput::load(
         loadSections[i].section, std::move(readBuffers.buffers[i]));
   }
 
-  return extractResults(loadSections);
+  return extractResults(std::move(loadSections));
 }
 
 std::shared_ptr<MetadataBuffer> DirectMetadataInput::store(
@@ -578,12 +560,7 @@ std::vector<std::shared_ptr<MetadataBuffer>> CachedMetadataInput::load(
     std::span<const MetadataSection> sections) {
   NIMBLE_CHECK(!sections.empty(), "No sections to load");
 
-  std::vector<LoadedSection> loadSections;
-  loadSections.reserve(sections.size());
-  for (const auto& section : sections) {
-    loadSections.emplace_back(section);
-  }
-
+  std::vector<LoadedSection> loadSections(sections.begin(), sections.end());
   std::vector<std::optional<velox::cache::CachePin>> cachePins;
   auto missIndices = loadFromCache(loadSections, cachePins);
   loadFromSsd(loadSections, cachePins, missIndices);
@@ -596,7 +573,7 @@ std::vector<std::shared_ptr<MetadataBuffer>> CachedMetadataInput::load(
     processLoadedBuffers(loadSections, missIndices, cachePins, readBuffers);
   }
 
-  return extractResults(loadSections);
+  return extractResults(std::move(loadSections));
 }
 
 std::shared_ptr<MetadataBuffer> CachedMetadataInput::store(
