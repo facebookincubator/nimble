@@ -426,7 +426,8 @@ const ClusterIndex::IndexPartition* ClusterIndex::loadPartition(
     auto results = metadataInput_->load({&section, 1});
     NIMBLE_CHECK_EQ(results.size(), 1);
     partition = std::make_unique<IndexPartition>(
-        partitionId, std::make_unique<MetadataBuffer>(std::move(*results[0])));
+        partitionId,
+        std::make_unique<MetadataBuffer>(std::move(*results.front())));
   }
   return partition.get();
 }

@@ -143,7 +143,7 @@ void DenseIndexRegistry::registerHashIndices(
         auto results = metadataInput->load({&descriptor.section, 1});
         NIMBLE_CHECK_EQ(results.size(), 1);
         auto indexMetadata =
-            std::make_unique<MetadataBuffer>(std::move(*results[0]));
+            std::make_unique<MetadataBuffer>(std::move(*results.front()));
         return HashIndex::create(
             descriptor.columns, std::move(indexMetadata), metadataInput, pool);
       },
@@ -165,7 +165,7 @@ void DenseIndexRegistry::registerSortedIndices(
         auto results = metadataInput->load({&descriptor.section, 1});
         NIMBLE_CHECK_EQ(results.size(), 1);
         auto indexMetadata =
-            std::make_unique<MetadataBuffer>(std::move(*results[0]));
+            std::make_unique<MetadataBuffer>(std::move(*results.front()));
         return SortedIndex::create(
             descriptor.columns, std::move(indexMetadata), dataInput, pool);
       },

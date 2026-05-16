@@ -202,7 +202,7 @@ class DirectMetadataInput : public MetadataInput {
 
  private:
   void prepareBuffers(
-      const std::vector<LoadedSection>& loadSections,
+      const std::vector<LoadedSection>& sections,
       ReadBuffers& readBuffers);
 
   friend class MetadataInput;
@@ -247,22 +247,21 @@ class CachedMetadataInput : public MetadataInput {
   // memory cache. Removes loaded indices from loadIndices in-place.
   void loadFromSsd(
       std::vector<LoadedSection>& sections,
-      std::vector<std::optional<velox::cache::CachePin>>& cachePins,
       std::vector<uint32_t>& loadIndices);
 
-  // Decompresses loaded buffers and stores results into loadSections.
+  // Decompresses loaded buffers and stores results into sections.
   // For sections with cache pins, decompresses into the pin and promotes
   // to shared. For sections without pins, uses decompressAndStore.
   void processLoadedBuffers(
-      std::vector<LoadedSection>& loadSections,
       const std::vector<uint32_t>& loadIndices,
+      std::vector<LoadedSection>& sections,
       std::vector<std::optional<velox::cache::CachePin>>& cachePins,
       ReadBuffers& readBuffers);
 
   // For uncompressed sections with cache pins, reads directly into the
   // pin's contiguous data. Otherwise allocates a temp buffer.
   void prepareBuffers(
-      const std::vector<LoadedSection>& loadSections,
+      const std::vector<LoadedSection>& sections,
       const std::vector<uint32_t>& loadIndices,
       const std::vector<std::optional<velox::cache::CachePin>>& cachePins,
       ReadBuffers& readBuffers);

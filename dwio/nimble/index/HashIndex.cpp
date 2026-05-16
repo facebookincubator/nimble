@@ -154,7 +154,7 @@ HashIndex::HashIndex(
             auto results = metadataInput_->load({&descriptor.section, 1});
             NIMBLE_CHECK_EQ(results.size(), 1);
             return Partition::create(
-                std::make_unique<MetadataBuffer>(std::move(*results[0])));
+                std::make_unique<MetadataBuffer>(std::move(*results.front())));
           }} {}
 
 // static
