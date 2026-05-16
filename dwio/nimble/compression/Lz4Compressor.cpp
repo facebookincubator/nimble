@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "dwio/nimble/encodings/Lz4Compressor.h"
+#include "dwio/nimble/compression/Lz4Compressor.h"
 
 #include <lz4.h>
 #include <optional>

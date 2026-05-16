@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "dwio/nimble/encodings/ZstdCompressor.h"
+#include "dwio/nimble/compression/ZstdCompressor.h"
 
 #include <zstd.h>
 #include <zstd_errors.h>

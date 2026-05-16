@@ -11,30 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_subdirectory(benchmarks)
-add_subdirectory(tests)
-add_subdirectory(legacy)
-
 add_library(
-  nimble_encodings
-  ConstantEncoding.cpp
-  Encoding.cpp
-  EncodingFactory.cpp
-  EncodingLayout.cpp
-  MainlyConstantEncoding.cpp
-  PrefixEncoding.cpp
-  RleEncoding.cpp
-  SparseBoolEncoding.cpp
-  Statistics.cpp
-  TrivialEncoding.cpp
+  nimble_compression
+  Compression.cpp
+  Lz4Compressor.cpp
+  ZstdCompressor.cpp
 )
 
-target_link_libraries(
-  nimble_encodings
-  nimble_compression
-  nimble_common
-  velox_common_base
-  Folly::folly
-  absl::flat_hash_map
-  protobuf::libprotobuf
-)
+target_link_libraries(nimble_compression nimble_common Folly::folly lz4)

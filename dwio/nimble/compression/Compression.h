@@ -18,7 +18,7 @@
 #include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
+#include "dwio/nimble/compression/CompressionPolicy.h"
 #include "folly/io/IOBuf.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/buffer/BufferPool.h"
@@ -145,7 +145,7 @@ class CompressionEncoder {
       DataType dataType,
       int bitWidth,
       size_t uncompressedSize,
-      std::function<std::span<char>()> allocateUncompressedBuffer,
+      const std::function<std::span<char>()>& allocateUncompressedBuffer,
       std::function<void(char*&)> encoder)
       : encoder_{std::move(encoder)},
         dataSize_{uncompressedSize},

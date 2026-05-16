@@ -167,6 +167,7 @@ include_directories(SYSTEM ${CMAKE_BINARY_DIR}/_deps/xsimd-src/include/)
 
 add_subdirectory(velox)
 add_subdirectory(dwio/nimble/common)
+add_subdirectory(dwio/nimble/compression)
 add_subdirectory(dwio/nimble/tools)
 add_subdirectory(dwio/nimble/encodings)
 add_subdirectory(dwio/nimble/index)

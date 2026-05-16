@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/encodings/Lz4Compressor.h"
+#include "dwio/nimble/compression/Lz4Compressor.h"
 #include <gtest/gtest.h>
 #include <cstring>
 #include <random>

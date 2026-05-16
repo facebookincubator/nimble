@@ -16,21 +16,21 @@
 
 #pragma once
 
-#include "dwio/nimble/encodings/Compression.h"
+#include "dwio/nimble/compression/Compression.h"
 
 namespace facebook::nimble {
 
-class ZstdCompressor : public ICompressor {
+class Lz4Compressor : public ICompressor {
  public:
   CompressionResult compress(
-      velox::memory::MemoryPool& pool,
+      velox::memory::MemoryPool& memoryPool,
       std::string_view data,
       DataType dataType,
       int bitWidth,
       const CompressionPolicy& compressionPolicy) override;
 
   velox::BufferPtr uncompress(
-      velox::memory::MemoryPool& pool,
+      velox::memory::MemoryPool& memoryPool,
       CompressionType compressionType,
       DataType dataType,
       std::string_view data,
