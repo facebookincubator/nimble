@@ -175,7 +175,8 @@ class TabletReader {
     bool pinFileMetadata{false};
 
     /// IO options providing pool, IO stats, coalescing params, and executor.
-    /// When not set, a default is created internally from the provided pool.
+    /// Must be set with a non-null metadataIoStats; the constructor enforces
+    /// this with a NIMBLE_CHECK.
     std::optional<velox::io::ReaderOptions> ioOptions;
 
     /// File handle and cache for CachedMetadataInput. Both must be set
@@ -499,9 +500,8 @@ class TabletReader {
   const bool loadClusterIndex_;
   const bool loadChunkIndex_;
   const bool loadDenseIndexes_;
-  // Default IO stats when caller doesn't provide ioOptions.
-  const std::shared_ptr<velox::io::IoStatistics> defaultIoStats_;
-  // Resolved IO options — either copied from Options or created with defaults.
+  // IO options copied from Options.ioOptions (required, with non-null
+  // metadataIoStats).
   const velox::io::ReaderOptions ioOptions_;
   // IO config for index creation — indexes create their own MetadataInput
   // with index-specific IO stats.

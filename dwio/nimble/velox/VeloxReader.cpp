@@ -149,13 +149,18 @@ uint64_t NimbleUnit::getIoSize() {
   return ioSize_.value();
 }
 
-} // namespace
-
-TabletReader::Options VeloxReader::defaultTabletReaderOptions() {
+// Default `TabletReader::Options` used by `VeloxReader`'s convenience
+// constructors: preload the schema section and attach a fresh `IoStatistics`.
+TabletReader::Options defaultTabletReaderOptions(
+    velox::memory::MemoryPool* pool) {
   TabletReader::Options options;
   options.preloadOptionalSections = {std::string(kSchemaSection)};
+  options.ioOptions.emplace(pool).setMetadataIoStats(
+      std::make_shared<velox::io::IoStatistics>());
   return options;
 }
+
+} // namespace
 
 VeloxReader::VeloxReader(
     velox::ReadFile* file,
@@ -166,7 +171,7 @@ VeloxReader::VeloxReader(
           TabletReader::create(
               std::shared_ptr<velox::ReadFile>(file, [](auto*) {}),
               &pool,
-              defaultTabletReaderOptions()),
+              defaultTabletReaderOptions(&pool)),
           pool,
           std::move(selector),
           std::move(params)) {}
@@ -180,7 +185,7 @@ VeloxReader::VeloxReader(
           TabletReader::create(
               std::move(file),
               &pool,
-              defaultTabletReaderOptions()),
+              defaultTabletReaderOptions(&pool)),
           pool,
           std::move(selector),
           std::move(params)) {}

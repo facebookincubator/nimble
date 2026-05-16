@@ -25,6 +25,7 @@
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/tablet/tests/TabletTestUtils.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/VeloxReader.h"
@@ -68,6 +69,8 @@ DEFINE_uint32(
 using nimble::testing::TrackingReadFile;
 
 namespace {
+
+using nimble::test::makeTestTabletOptions;
 
 struct VeloxMapGeneratorConfig {
   // A RowType containing a group of map feature column types.
@@ -386,7 +389,9 @@ size_t streamsReadCount(
   // Assumed for the algorithm
   NIMBLE_CHECK_EQ(false, readFile->shouldCoalesce());
   auto tablet = nimble::TabletReader::create(
-      std::shared_ptr<velox::ReadFile>(readFile, [](auto*) {}), &pool, {});
+      std::shared_ptr<velox::ReadFile>(readFile, [](auto*) {}),
+      &pool,
+      makeTestTabletOptions(&pool));
   NIMBLE_CHECK_GE(tablet->stripeCount(), 1);
   auto stripeIdentifier = tablet->stripeIdentifier(0);
   auto offsets = tablet->streamOffsets(stripeIdentifier);
@@ -417,7 +422,9 @@ std::unordered_set<nimble::offset_size> existingStreamOffsets(
     velox::ReadFile* readFile,
     uint32_t stripeIndex) {
   auto tablet = nimble::TabletReader::create(
-      std::shared_ptr<velox::ReadFile>(readFile, [](auto*) {}), &pool, {});
+      std::shared_ptr<velox::ReadFile>(readFile, [](auto*) {}),
+      &pool,
+      makeTestTabletOptions(&pool));
   NIMBLE_CHECK_LT(stripeIndex, tablet->stripeCount(), "Stripe out of range");
   auto stripeId = tablet->stripeIdentifier(stripeIndex);
   auto streamSizes = tablet->streamSizes(stripeId);
@@ -931,7 +938,8 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
 
     auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
 
-    auto tablet = nimble::TabletReader::create(readFile, leafPool_.get(), {});
+    auto tablet = nimble::TabletReader::create(
+        readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
     auto selector =
         std::make_shared<velox::dwio::common::ColumnSelector>(schema);
     std::unique_ptr<nimble::VeloxReader> reader =
@@ -4677,7 +4685,9 @@ class TestNimbleReaderFactory {
 
   std::shared_ptr<nimble::TabletReader> createTablet() {
     return nimble::TabletReader::create(
-        std::shared_ptr<velox::ReadFile>(file_.get(), [](auto*) {}), pool_, {});
+        std::shared_ptr<velox::ReadFile>(file_.get(), [](auto*) {}),
+        pool_,
+        makeTestTabletOptions(pool_));
   }
 
  private:

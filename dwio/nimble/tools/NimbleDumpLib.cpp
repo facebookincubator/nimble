@@ -308,6 +308,8 @@ NimbleDumpLib::NimbleDumpLib(
 void NimbleDumpLib::emitInfo() {
   TabletReader::Options options;
   options.preloadOptionalSections = {std::string(kStatsSection)};
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
   const auto tablet = TabletReader::create(file_, pool_.get(), options);
   ostream_ << CYAN(enableColors_) << "Nimble File "
            << RESET_COLOR(enableColors_) << "Version " << tablet->majorVersion()
@@ -382,7 +384,10 @@ void NimbleDumpLib::emitInfo() {
 }
 
 void NimbleDumpLib::emitSchema(bool collapseFlatMap) {
-  auto tablet = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tablet = TabletReader::create(file_, pool_.get(), options);
   VeloxReader reader{tablet, *pool_};
 
   auto emitOffsets = [](const Type& type) {
@@ -485,7 +490,10 @@ void NimbleDumpLib::emitSchema(bool collapseFlatMap) {
 }
 
 void NimbleDumpLib::emitStripes(bool noHeader) {
-  const auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  const auto tabletReader = TabletReader::create(file_, pool_.get(), options);
   TableFormatter formatter(
       ostream_,
       enableColors_,
@@ -517,7 +525,10 @@ void NimbleDumpLib::emitStreams(
     bool showStreamRawSize,
     bool showInMapStream,
     std::optional<uint32_t> stripeId) {
-  auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
 
   std::vector<std::tuple<std::string, uint8_t, Alignment>> fields;
   fields.emplace_back("Stripe Id", 9, Alignment::Left);
@@ -608,7 +619,10 @@ void NimbleDumpLib::emitHistogram(
     bool topLevel,
     bool noHeader,
     std::optional<uint32_t> stripeId) {
-  auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
   std::unordered_map<
       GroupingKey,
       EncodingHistogramValue,
@@ -695,7 +709,10 @@ void NimbleDumpLib::emitContent(
     uint32_t streamId,
     std::optional<uint32_t> stripeId,
     const std::string& separator) {
-  auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
 
   uint32_t maxStreamCount;
   bool found = false;
@@ -747,7 +764,10 @@ void NimbleDumpLib::emitBinary(
     std::function<std::unique_ptr<std::ostream>()> outputFactory,
     uint32_t streamId,
     uint32_t stripeId) {
-  auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
   auto stripeIdentifier = tabletReader->stripeIdentifier(stripeId);
   if (streamId >= tabletReader->streamCount(stripeIdentifier)) {
     throw folly::ProgramExit(
@@ -958,7 +978,10 @@ void NimbleDumpLib::emitLayout(bool noHeader, bool compressed) {
 }
 
 void NimbleDumpLib::emitStripesMetadata(bool noHeader) {
-  auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
   TableFormatter formatter(
       ostream_,
       enableColors_,
@@ -1075,7 +1098,10 @@ void NimbleDumpLib::emitFileLayout(bool noHeader) {
 }
 
 void NimbleDumpLib::emitStripeGroupsMetadata(bool noHeader) {
-  auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
   TableFormatter formatter(
       ostream_,
       enableColors_,
@@ -1104,7 +1130,10 @@ void NimbleDumpLib::emitOptionalSectionsMetadata(bool noHeader) {
     nimble::MetadataSection metadata;
   };
 
-  auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
   std::vector<NamedMetdataSection> sections;
   sections.reserve(tabletReader->optionalSections().size());
   for (const auto& [name, metadata] : tabletReader->optionalSections()) {
@@ -1136,7 +1165,10 @@ void NimbleDumpLib::emitOptionalSectionsMetadata(bool noHeader) {
 }
 
 void NimbleDumpLib::emitIndex() {
-  auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
   if (!tabletReader->hasClusterIndex()) {
     ostream_ << "Index: Not configured" << std::endl;
     return;
@@ -1325,6 +1357,8 @@ void NimbleDumpLib::emitStats(bool noHeader) {
   TabletReader::Options options;
   options.preloadOptionalSections = {
       std::string(kVectorizedStatsSection), std::string(kStatsSection)};
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
   auto tabletReader = TabletReader::create(file_, pool_.get(), options);
 
   auto vectorizedStatsSection =

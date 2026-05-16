@@ -232,24 +232,11 @@ TabletReader::TabletReader(
       loadClusterIndex_{options.loadClusterIndex},
       loadChunkIndex_{options.loadChunkIndex},
       loadDenseIndexes_{options.loadDenseIndexes},
-      defaultIoStats_{[&]() -> std::shared_ptr<velox::io::IoStatistics> {
-        if (options.ioOptions.has_value() &&
-            options.ioOptions->metadataIoStats() != nullptr) {
-          return nullptr;
-        }
-        return std::make_unique<velox::io::IoStatistics>();
-      }()},
       ioOptions_{[&]() {
-        if (options.ioOptions.has_value()) {
-          auto opts = *options.ioOptions;
-          if (opts.metadataIoStats() == nullptr) {
-            opts.setMetadataIoStats(defaultIoStats_);
-          }
-          return opts;
-        }
-        velox::io::ReaderOptions opts(&pool);
-        opts.setMetadataIoStats(defaultIoStats_);
-        return opts;
+        NIMBLE_CHECK(options.ioOptions.has_value(), "ioOptions is not set.");
+        NIMBLE_CHECK_NOT_NULL(
+            options.ioOptions->metadataIoStats(), "metadataIoStats is null.");
+        return *options.ioOptions;
       }()},
       indexOptions_{index::IndexLookup::Options{
           file_,

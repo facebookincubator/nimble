@@ -22,6 +22,7 @@
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/serializer/Deserializer.h"
 #include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/tablet/tests/TabletTestUtils.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
@@ -906,7 +907,8 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
     writeFile(/*enableReordering=*/true);
     auto readFile =
         std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
-    auto tablet = TabletReader::create(readFile, leafPool_.get(), {});
+    auto tablet = TabletReader::create(
+        readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
     ASSERT_GE(tablet->stripeCount(), 1);
 
     auto stripeId = tablet->stripeIdentifier(0);
@@ -1037,7 +1039,8 @@ TEST_P(NimbleIndexProjectorTest, pinnedMetadataNoReread) {
   auto trackingFile = std::make_shared<testing::TrackingReadFile>(innerFile);
 
   // Compute metadata boundary: the start of the first stripe group metadata.
-  auto tablet = TabletReader::create(innerFile, leafPool_.get(), {});
+  auto tablet = TabletReader::create(
+      innerFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
   auto stripeGroupsMeta = tablet->stripeGroupsMetadata();
   ASSERT_FALSE(stripeGroupsMeta.empty());
   const auto metadataBoundary = stripeGroupsMeta[0].offset();
