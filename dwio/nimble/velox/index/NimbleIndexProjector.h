@@ -69,7 +69,14 @@ class NimbleIndexProjector {
 
   /// Options for controlling projection behavior.
   struct Options {
-    /// Maximum number of rows per request. 0 means no limit.
+    /// Soft limit on total rows across all requests. 0 means no limit.
+    /// When the running total exceeds this limit mid-stripe, the entire
+    /// stripe is still included (stripe-boundary soft limit). Processing
+    /// stops after that stripe completes.
+    uint64_t maxRows{0};
+    /// Hard per-request row limit. 0 means no limit. Each request's row
+    /// range is clipped so that it never exceeds this many rows total.
+    /// No resume key is set — the request is considered fulfilled.
     uint64_t maxRowsPerRequest{0};
   };
 
@@ -135,8 +142,8 @@ class NimbleIndexProjector {
     /// numScannedRows since we project entire stripes. With fine-grained
     /// row range fetches (value fetch), this will be smaller.
     uint64_t numProjectedRows{0};
-    /// Number of rows read by request row ranges (may be less than matched
-    /// rows when truncated by maxRowsPerRequest).
+    /// Number of rows read by request row ranges (may exceed maxRows due to
+    /// stripe-boundary soft limit).
     uint64_t numReadRows{0};
     /// Total bytes read from tablet stream data (raw encoded bytes, excluding
     /// serialization overhead like headers and trailers).
@@ -208,29 +215,44 @@ class NimbleIndexProjector {
   // Populates stripeRangeMap_.
   void lookupStripes();
 
-  // Copies stripeRowRanges to stripeRowRanges_ and removes saturated
-  // requests. Returns true if there are remaining requests to process.
+  // Prunes stripe row ranges for requests that have exceeded their
+  // maxRowsPerRequest budget. Returns false if no active requests remain.
   bool pruneStripeRowRanges(std::span<const StripeRowRange> stripeRowRanges);
 
-  // Processes a single stripe: loads data streams, serializes projected
-  // columns, and builds results with maxRowsPerRequest truncation.
-  // Uses stripeRowRanges_ populated by pruneStripeRowRanges().
-  void processStripe(uint32_t stripeIndex, Result& result);
+  // Loads projected streams for the stripe, serializes them into kTabletRaw
+  // format, and maps the result to per-request row ranges. Returns false if
+  // a global limit (maxRows) was hit, signaling the caller to stop and set
+  // resume keys.
+  bool processStripe(
+      uint32_t stripeIndex,
+      std::span<const StripeRowRange> stripeRowRanges,
+      Result& result);
 
   using InputStreams =
       std::vector<std::unique_ptr<velox::dwio::common::SeekableInputStream>>;
 
-  // Enqueues and loads projected data streams from the tablet.
+  // Enqueues projected streams into StripeStreams and loads them from disk.
   InputStreams loadStripe();
 
-  // Stitches loaded raw tablet bytes into kTabletRaw format without
-  // decode/re-encode. Updates scan/projection stats.
+  // Stitches loaded raw stream bytes into a single kTabletRaw chunk
+  // (header + data + trailer) without decode/re-encode.
   Chunk serializeStripe(uint32_t stripeIndex, InputStreams& inputStreams);
 
-  // Maps the serialized stripe chunk to request results based on row ranges.
-  // Applies maxRowsPerRequest truncation.
-  // Uses stripeRowRanges_ populated by pruneStripeRowRanges().
-  void buildStripeResult(Chunk&& chunk, Result& result);
+  // Assigns the serialized chunk to per-request results based on row ranges.
+  // Applies maxRowsPerRequest hard clipping and accumulates numReadRows_.
+  // Returns false if a global limit (maxRows) was hit after this stripe.
+  bool buildStripeResult(
+      uint32_t stripeIndex,
+      std::span<const StripeRowRange> stripeRowRanges,
+      Chunk&& chunk,
+      Result& result);
+
+  // Sets resume keys on all truncated requests that have data in the next
+  // unprocessed stripe.
+  void setResumeKeys(
+      uint32_t stripeIndex,
+      std::span<const StripeRowRange> stripeRowRanges,
+      Result& result);
 
   inline uint32_t stripeRowCount(uint32_t stripe) const {
     return static_cast<uint32_t>(readerBase_->tablet().stripeRowCount(stripe));
@@ -272,10 +294,11 @@ class NimbleIndexProjector {
   const Request* request_{nullptr};
   const Options* options_{nullptr};
 
-  // Accumulated rows read per request for maxRowsPerRequest enforcement.
+  // Running total of rows read across all requests for maxRows enforcement.
+  uint64_t numReadRows_{0};
+  // Accumulated rows per request for maxRowsPerRequest enforcement.
   std::vector<uint64_t> rowsPerRequest_;
   // Current stripe's row ranges after pruning saturated requests.
-  // Populated by pruneStripeRowRanges(), consumed by processStripe().
   std::vector<StripeRowRange> stripeRowRanges_;
   // CSR mapping from stripes to request row ranges. Populated by
   // lookupStripes(), read-only during stripe processing.
