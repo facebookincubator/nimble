@@ -22,9 +22,9 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/legacy/Encoding.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
 #include "folly/container/F14Map.h"
 #include "velox/common/memory/Memory.h"
 

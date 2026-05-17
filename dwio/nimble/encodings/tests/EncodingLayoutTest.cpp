@@ -16,7 +16,7 @@
 #include "dwio/nimble/encodings/EncodingLayout.h"
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 
 using namespace facebook;
 

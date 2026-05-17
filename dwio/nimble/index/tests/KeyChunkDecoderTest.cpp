@@ -18,7 +18,7 @@
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/index/KeyChunkDecoder.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 #include "velox/common/memory/Memory.h"

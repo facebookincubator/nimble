@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/encodings/Statistics.h"
+#include "dwio/nimble/encodings/selection/Statistics.h"
 #include "dwio/nimble/common/Types.h"
 
 #include <algorithm>

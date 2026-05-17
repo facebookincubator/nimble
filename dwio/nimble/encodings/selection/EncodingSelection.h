@@ -23,9 +23,9 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/compression/CompressionPolicy.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/EncodingLayout.h"
-#include "dwio/nimble/encodings/Statistics.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
+#include "dwio/nimble/encodings/selection/Statistics.h"
 
 namespace facebook::nimble {
 

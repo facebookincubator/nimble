@@ -17,7 +17,6 @@
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
@@ -26,6 +25,7 @@
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 
 namespace facebook::nimble {
 

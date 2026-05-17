@@ -20,7 +20,7 @@
 #include <type_traits>
 
 #include "dwio/nimble/common/Varint.h"
-#include "dwio/nimble/encodings/Statistics.h"
+#include "dwio/nimble/encodings/selection/Statistics.h"
 
 using namespace facebook;
 

@@ -17,8 +17,8 @@
 
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingLayout.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 
 namespace facebook::nimble {
 

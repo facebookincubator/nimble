@@ -24,7 +24,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/EncodingLayout.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/SortedIndexGenerated.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"

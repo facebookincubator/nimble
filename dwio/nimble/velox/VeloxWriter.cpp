@@ -19,7 +19,7 @@
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
