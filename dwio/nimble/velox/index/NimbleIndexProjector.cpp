@@ -93,19 +93,22 @@ NimbleIndexProjector::Result NimbleIndexProjector::project(
 
   lookupStripes();
 
+  numReadRows_ = 0;
   const auto numRequests = request_->keyBounds.size();
+  rowsPerRequest_.assign(numRequests, 0);
   Result result;
   result.responses.resize(numRequests);
-  rowsPerRequest_.assign(numRequests, 0);
 
   for (uint32_t i = 0; i < stripeRangeMap_.numStripes; ++i) {
-    const auto stripeRowRanges =
-        stripeRangeMap_.stripeRowRanges(stripeRangeMap_.startStripe + i);
+    const uint32_t stripeIndex = stripeRangeMap_.startStripe + i;
+    const auto stripeRowRanges = stripeRangeMap_.stripeRowRanges(stripeIndex);
     if (!pruneStripeRowRanges(stripeRowRanges)) {
       continue;
     }
-    const uint32_t stripeIndex = stripeRangeMap_.startStripe + i;
-    processStripe(stripeIndex, result);
+    if (!processStripe(stripeIndex, stripeRowRanges_, result)) {
+      setResumeKeys(stripeIndex, stripeRowRanges_, result);
+      break;
+    }
   }
 
   updateIoStats();
@@ -220,8 +223,10 @@ bool NimbleIndexProjector::pruneStripeRowRanges(
   return !stripeRowRanges_.empty();
 }
 
-void NimbleIndexProjector::processStripe(uint32_t stripeIndex, Result& result) {
-  // Set up the stripe for data stream loading.
+bool NimbleIndexProjector::processStripe(
+    uint32_t stripeIndex,
+    std::span<const StripeRowRange> stripeRowRanges,
+    Result& result) {
   streams_.setStripe(stripeIndex);
 
   // TODO: Support fine-grained row range fetches from a stripe. For now, we
@@ -229,7 +234,8 @@ void NimbleIndexProjector::processStripe(uint32_t stripeIndex, Result& result) {
   // values. The result references a portion of it based on the row range.
   auto inputStreams = loadStripe();
   auto stripeChunk = serializeStripe(stripeIndex, inputStreams);
-  buildStripeResult(std::move(stripeChunk), result);
+  return buildStripeResult(
+      stripeIndex, stripeRowRanges, std::move(stripeChunk), result);
 }
 
 NimbleIndexProjector::InputStreams NimbleIndexProjector::loadStripe() {
@@ -309,32 +315,85 @@ NimbleIndexProjector::Chunk NimbleIndexProjector::serializeStripe(
   return chunk;
 }
 
-void NimbleIndexProjector::buildStripeResult(Chunk&& chunk, Result& result) {
+bool NimbleIndexProjector::buildStripeResult(
+    uint32_t stripeIndex,
+    std::span<const StripeRowRange> stripeRowRanges,
+    Chunk&& chunk,
+    Result& result) {
   const auto chunkIndex = static_cast<uint32_t>(result.chunks.size());
 
-  for (const auto& request : stripeRowRanges_) {
+  for (const auto& request : stripeRowRanges) {
     NIMBLE_CHECK(!request.rowRange.empty());
     auto rowRange = request.rowRange;
 
+    // Saturated requests are filtered out by the caller in project().
     if (options_->maxRowsPerRequest > 0) {
-      // Saturated requests are filtered out by the caller in project().
       NIMBLE_CHECK_GT(
           options_->maxRowsPerRequest, rowsPerRequest_[request.requestIndex]);
       const auto remaining =
           options_->maxRowsPerRequest - rowsPerRequest_[request.requestIndex];
-
       if (static_cast<uint64_t>(rowRange.numRows()) > remaining) {
         rowRange.endRow = rowRange.startRow + static_cast<uint32_t>(remaining);
       }
     }
-    stats_.numReadRows += rowRange.numRows();
 
+    stats_.numReadRows += rowRange.numRows();
+    numReadRows_ += rowRange.numRows();
     result.responses[request.requestIndex].slices.emplace_back(
         ChunkSlice{chunkIndex, rowRange});
     rowsPerRequest_[request.requestIndex] += rowRange.numRows();
   }
 
   result.chunks.emplace_back(std::move(chunk));
+
+  return !(options_->maxRows > 0 && numReadRows_ >= options_->maxRows);
+}
+
+void NimbleIndexProjector::setResumeKeys(
+    uint32_t stripeIndex,
+    std::span<const StripeRowRange> stripeRowRanges,
+    Result& result) {
+  // No next stripe in the range map — all mapped requests end at this stripe.
+  const auto nextStripe = stripeIndex + 1;
+  if (nextStripe >= stripeRangeMap_.startStripe + stripeRangeMap_.numStripes) {
+    return;
+  }
+
+  // No next stripe in the file — all requests are fully satisfied.
+  const auto stripeStartRow =
+      static_cast<uint32_t>(readerBase_->tablet().stripeStartRow(stripeIndex));
+  const auto nextStripeStartRow = stripeStartRow + stripeRowCount(stripeIndex);
+  if (nextStripeStartRow >= readerBase_->tablet().tabletRowCount()) {
+    return;
+  }
+
+  auto resumeKey = clusterIndex_->keyAtRow(nextStripeStartRow);
+  const auto nextRanges = stripeRangeMap_.stripeRowRanges(nextStripe);
+
+  for (const auto& request : stripeRowRanges) {
+    auto& response = result.responses[request.requestIndex];
+    NIMBLE_CHECK(!response.resumeKey.has_value());
+    if (std::any_of(
+            nextRanges.begin(), nextRanges.end(), [&](const auto& range) {
+              return range.requestIndex == request.requestIndex;
+            })) {
+      const auto& keyBounds = request_->keyBounds[request.requestIndex];
+      response.resumeKey = velox::serializer::EncodedKeyBounds{
+          .lowerKey = resumeKey, .upperKey = keyBounds.upperKey};
+    }
+  }
+
+  // For requests that were never started (empty slices, no resume key),
+  // set resume key to their original bounds so the caller can retry.
+  for (size_t i = 0; i < result.responses.size(); ++i) {
+    auto& response = result.responses[i];
+    if (response.slices.empty() && !response.resumeKey.has_value()) {
+      const auto& keyBounds = request_->keyBounds[i];
+      if (keyBounds.lowerKey.has_value()) {
+        response.resumeKey = keyBounds;
+      }
+    }
+  }
 }
 
 void NimbleIndexProjector::updateIoStats() {
