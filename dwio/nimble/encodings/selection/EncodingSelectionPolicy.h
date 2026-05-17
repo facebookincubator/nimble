@@ -21,10 +21,10 @@
 #include <utility>
 #include "dwio/nimble/common/Constants.h"
 #include "dwio/nimble/common/EncodingType.h"
-#include "dwio/nimble/encodings/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/EncodingLayout.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
-#include "dwio/nimble/encodings/EncodingSizeEstimation.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
+#include "dwio/nimble/encodings/selection/EncodingSizeEstimation.h"
 
 namespace facebook::nimble {
 

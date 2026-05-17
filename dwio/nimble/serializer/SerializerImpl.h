@@ -24,7 +24,7 @@
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/common/Zigzag.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/StreamData.h"
 #include "folly/io/Cursor.h"

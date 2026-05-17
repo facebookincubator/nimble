@@ -25,7 +25,7 @@ add_library(
   PrefixEncoding.cpp
   RleEncoding.cpp
   SparseBoolEncoding.cpp
-  Statistics.cpp
+  selection/Statistics.cpp
   TrivialEncoding.cpp
 )
 

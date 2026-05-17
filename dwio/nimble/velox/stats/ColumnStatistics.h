@@ -25,7 +25,7 @@
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/dwio/common/Statistics.h"

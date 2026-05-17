@@ -23,8 +23,8 @@
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingIdentifier.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "velox/common/memory/Memory.h"
 
 /// PrefixEncoding stores sorted string data with prefix compression. Common

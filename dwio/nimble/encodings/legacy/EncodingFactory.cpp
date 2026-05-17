@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
 #include "dwio/nimble/encodings/legacy/DictionaryEncoding.h"
@@ -26,6 +25,7 @@
 #include "dwio/nimble/encodings/legacy/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/legacy/TrivialEncoding.h"
 #include "dwio/nimble/encodings/legacy/VarintEncoding.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 
 // Import necessary types from parent namespace
 using ::facebook::nimble::isNumericType;

@@ -17,7 +17,7 @@
 
 #include "dwio/nimble/common/MetricsLogger.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"

@@ -23,7 +23,7 @@
 #include <ostream>
 
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "folly/Executor.h"
 #include "folly/container/F14Map.h"

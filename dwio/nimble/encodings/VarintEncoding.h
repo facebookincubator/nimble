@@ -25,8 +25,8 @@
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
-#include "dwio/nimble/encodings/Statistics.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
+#include "dwio/nimble/encodings/selection/Statistics.h"
 
 // Stores integer data in a varint encoding. For now we only support encoding
 // non-negative values, but we may later add an optional zigzag encoding that

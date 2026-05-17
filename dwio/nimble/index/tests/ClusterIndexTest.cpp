@@ -19,7 +19,7 @@
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestBase.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"

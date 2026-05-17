@@ -21,7 +21,7 @@
 #include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 
 // Encodes data that is constant, i.e. there is a single unique value.
 

@@ -19,7 +19,7 @@
 #include <iostream>
 #include "common/init/light.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/tools/EncodingUtilities.h"
 
 DEFINE_string(

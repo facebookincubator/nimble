@@ -16,7 +16,7 @@
 
 #include "dwio/nimble/encodings/tests/EncodingLayoutTestHelper.h"
 
-#include "dwio/nimble/encodings/EncodingIdentifier.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
 
 namespace facebook::nimble {
 

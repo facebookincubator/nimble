@@ -20,9 +20,9 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/common/memory/Memory.h"
 
