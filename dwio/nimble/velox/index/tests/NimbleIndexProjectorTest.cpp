@@ -1157,8 +1157,7 @@ TEST_P(NimbleIndexProjectorTest, resumeKeyOnTruncation) {
 
   // Resume key must be set since the request spans more stripes.
   ASSERT_TRUE(response.resumeKey.has_value());
-  EXPECT_TRUE(response.resumeKey->lowerKey.has_value());
-  EXPECT_EQ(response.resumeKey->upperKey, bounds.upperKey);
+  EXPECT_FALSE(response.resumeKey->empty());
 }
 
 TEST_P(NimbleIndexProjectorTest, resumeKeyNotSetWithoutTruncation) {
@@ -1315,7 +1314,9 @@ TEST_P(NimbleIndexProjectorTest, resumeKeyPagination) {
       break;
     }
 
-    currentBounds = response.resumeKey.value();
+    currentBounds = velox::serializer::EncodedKeyBounds{
+        .lowerKey = response.resumeKey.value(),
+        .upperKey = currentBounds.upperKey};
     ASSERT_LT(pageCount, 100) << "Pagination loop exceeded safety limit";
   }
 
@@ -1358,13 +1359,12 @@ TEST_P(NimbleIndexProjectorTest, maxRowsTotalAcrossRequests) {
     EXPECT_TRUE(response.resumeKey.has_value());
   }
 
-  // Request 1: stripe 9 was never processed, resume key = original start key.
+  // Request 1: stripe 9 was never processed, resume key = original lower key.
   {
     const auto& response = result.responses[1];
     EXPECT_TRUE(response.slices.empty());
     ASSERT_TRUE(response.resumeKey.has_value());
-    EXPECT_EQ(response.resumeKey->lowerKey, bounds1.lowerKey);
-    EXPECT_EQ(response.resumeKey->upperKey, bounds1.upperKey);
+    EXPECT_EQ(response.resumeKey.value(), bounds1.lowerKey);
   }
 }
 
@@ -1721,7 +1721,9 @@ TEST_P(NimbleIndexProjectorTest, maxRowsLargeScale) {
       if (!result.responses[0].resumeKey.has_value()) {
         break;
       }
-      currentBounds = result.responses[0].resumeKey.value();
+      currentBounds = velox::serializer::EncodedKeyBounds{
+          .lowerKey = result.responses[0].resumeKey.value(),
+          .upperKey = currentBounds.upperKey};
     }
     EXPECT_LT(pages, 100);
     return totalReadRows;
@@ -1771,11 +1773,10 @@ TEST_P(NimbleIndexProjectorTest, maxRowsMultiRequestMixedSatisfaction) {
   EXPECT_FALSE(result.responses[2].slices.empty());
   EXPECT_TRUE(result.responses[2].resumeKey.has_value());
 
-  // Request 3: stripe 9 never processed, resume key = original start key.
+  // Request 3: stripe 9 never processed, resume key = original lower key.
   EXPECT_TRUE(result.responses[3].slices.empty());
   ASSERT_TRUE(result.responses[3].resumeKey.has_value());
-  EXPECT_EQ(result.responses[3].resumeKey->lowerKey, bounds3.lowerKey);
-  EXPECT_EQ(result.responses[3].resumeKey->upperKey, bounds3.upperKey);
+  EXPECT_EQ(result.responses[3].resumeKey.value(), bounds3.lowerKey);
 }
 
 INSTANTIATE_TEST_CASE_P(

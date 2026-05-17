@@ -377,21 +377,22 @@ void NimbleIndexProjector::setResumeKeys(
             nextRanges.begin(), nextRanges.end(), [&](const auto& range) {
               return range.requestIndex == request.requestIndex;
             })) {
-      const auto& keyBounds = request_->keyBounds[request.requestIndex];
-      response.resumeKey = velox::serializer::EncodedKeyBounds{
-          .lowerKey = resumeKey, .upperKey = keyBounds.upperKey};
+      response.resumeKey = resumeKey;
     }
   }
 
   // For requests that were never started (empty slices, no resume key),
-  // set resume key to their original bounds so the caller can retry.
+  // set resume key to their original lower key so the caller can retry.
   for (size_t i = 0; i < result.responses.size(); ++i) {
     auto& response = result.responses[i];
     if (response.slices.empty() && !response.resumeKey.has_value()) {
       const auto& keyBounds = request_->keyBounds[i];
-      if (keyBounds.lowerKey.has_value()) {
-        response.resumeKey = keyBounds;
-      }
+      NIMBLE_CHECK(
+          keyBounds.lowerKey.has_value(),
+          "Request {} has no lowerKey: unbounded lower requests start from "
+          "stripe 0 and should have been processed before truncation",
+          i);
+      response.resumeKey = *keyBounds.lowerKey;
     }
   }
 }
