@@ -107,9 +107,10 @@ class NimbleIndexProjector {
     /// Slices into Result::chunks for this request. Empty for miss.
     std::vector<ChunkSlice> slices;
 
-    /// If the result was truncated (e.g. by maxResultBytes), the encoded
-    /// resume key for the next project() call. nullopt if complete or miss.
-    std::optional<velox::serializer::EncodedKeyBounds> resumeKey;
+    /// If the result was truncated by maxRows, the encoded resume key for
+    /// continuation. The caller constructs new key bounds using this as
+    /// lowerKey with their original upperKey. nullopt if complete or miss.
+    std::optional<std::string> resumeKey;
   };
 
   /// Result of a project() call.
