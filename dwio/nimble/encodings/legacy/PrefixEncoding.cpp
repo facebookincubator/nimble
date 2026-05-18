@@ -15,7 +15,7 @@
  */
 #include "dwio/nimble/encodings/legacy/PrefixEncoding.h"
 
-#include "dwio/nimble/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "velox/common/base/BitUtil.h"
 
 namespace facebook::nimble::legacy {

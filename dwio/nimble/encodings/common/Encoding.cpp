@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
 
 namespace facebook::nimble {
 

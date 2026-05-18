@@ -18,7 +18,7 @@
 
 #include <utility>
 
-#include "dwio/nimble/encodings/EncodingLayout.h"
+#include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/tablet/tests/TabletTestUtils.h"

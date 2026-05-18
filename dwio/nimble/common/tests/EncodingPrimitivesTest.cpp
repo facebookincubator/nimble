@@ -19,7 +19,7 @@
 #include <cstring>
 #include <string>
 
-#include "dwio/nimble/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 
 namespace facebook::nimble::encoding::test {
 

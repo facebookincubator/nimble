@@ -18,7 +18,7 @@
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "folly/Conv.h"

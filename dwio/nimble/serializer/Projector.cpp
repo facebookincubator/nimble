@@ -19,9 +19,9 @@
 #include <algorithm>
 #include <numeric>
 
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Varint.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/io/Cursor.h"

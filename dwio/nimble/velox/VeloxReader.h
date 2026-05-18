@@ -19,7 +19,7 @@
 #include "dwio/nimble/common/MetricsLogger.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/FieldReader.h"

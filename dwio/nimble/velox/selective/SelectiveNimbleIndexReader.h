@@ -20,7 +20,7 @@
 #include <memory>
 #include <vector>
 
-#include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"

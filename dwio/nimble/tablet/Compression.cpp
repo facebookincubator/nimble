@@ -17,8 +17,8 @@
 #include <zstd_errors.h>
 #include <optional>
 
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/tablet/Compression.h"
 
 namespace facebook::nimble {

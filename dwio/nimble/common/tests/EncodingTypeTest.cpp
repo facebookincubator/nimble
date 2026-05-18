@@ -21,7 +21,7 @@
 #include <limits>
 #include <vector>
 
-#include "dwio/nimble/common/EncodingType.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 
 namespace facebook::nimble::test {
 

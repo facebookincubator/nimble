@@ -18,7 +18,7 @@
 
 #include <utility>
 
-#include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/velox/SchemaUtils.h"

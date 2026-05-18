@@ -22,7 +22,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 
 #include "dwio/nimble/common/tests/GTestUtils.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/serializer/Deserializer.h"
 #include "dwio/nimble/serializer/DeserializerImpl.h"
 #include "dwio/nimble/serializer/Projector.h"

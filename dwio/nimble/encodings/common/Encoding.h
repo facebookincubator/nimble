@@ -15,11 +15,11 @@
  */
 #pragma once
 
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/EncodingPrefix.h"
+#include "dwio/nimble/encodings/common/EncodingPrefix.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "velox/buffer/BufferPool.h"
 #include "velox/common/base/BitUtil.h"
 #include "velox/common/base/SimdUtil.h"

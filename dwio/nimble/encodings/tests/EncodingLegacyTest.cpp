@@ -24,7 +24,7 @@
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
-#include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"

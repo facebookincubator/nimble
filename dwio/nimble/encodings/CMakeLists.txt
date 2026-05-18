@@ -18,15 +18,15 @@ add_subdirectory(legacy)
 add_library(
   nimble_encodings
   ConstantEncoding.cpp
-  Encoding.cpp
-  EncodingFactory.cpp
-  EncodingLayout.cpp
   MainlyConstantEncoding.cpp
   PrefixEncoding.cpp
   RleEncoding.cpp
   SparseBoolEncoding.cpp
-  selection/Statistics.cpp
   TrivialEncoding.cpp
+  common/Encoding.cpp
+  common/EncodingFactory.cpp
+  common/EncodingLayout.cpp
+  selection/Statistics.cpp
 )
 
 target_link_libraries(

@@ -19,10 +19,10 @@
 #include <zstd.h>
 
 #include "dwio/nimble/common/ChunkHeader.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Varint.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingLayout.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingLayout.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/serializer/DeserializerImpl.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "velox/common/memory/Memory.h"

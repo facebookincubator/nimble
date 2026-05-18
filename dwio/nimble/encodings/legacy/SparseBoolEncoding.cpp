@@ -17,9 +17,9 @@
 
 #include "dwio/nimble/encodings/legacy/SparseBoolEncoding.h"
 
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/compression/Compression.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 
 namespace facebook::nimble::legacy {

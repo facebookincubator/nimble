@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/TrivialEncoding.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
 
 namespace facebook::nimble {
 
