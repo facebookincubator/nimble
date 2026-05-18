@@ -813,24 +813,35 @@ template <typename V>
 void FrequencyPartitionEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
+  // All paths below use the encoding's own streaming state (currentOriginalPos_
+  // for indexed modes; currentTier_/currentTierOffset_ for NoIndex) so that
+  // position is correct across multiple readWithVisitor calls and when
+  // interleaved with skip()/materialize() calls. visitor.rowIndex() is NOT used
+  // because it includes null-row positions from NullableEncoding, which would
+  // produce wrong indices into FPE's non-null-only storage.
+  //
+  // A skip lambda is supplied so readWithVisitorSlow can advance the state past
+  // non-selected non-null rows (e.g. during chunk-index seeks or filter-driven
+  // row-group skipping).
   if (indexType_ != FreqPartIndexType::NoIndex) {
+    auto skipFn = [&](auto n) { skip(n); };
     switch (indexType_) {
       case FreqPartIndexType::PerTierBitmaps:
-        detail::readWithVisitorSlow(visitor, params, nullptr, [&] {
+        detail::readWithVisitorSlow(visitor, params, skipFn, [&] {
           return decodeAtOriginalIndexImpl<FreqPartIndexType::PerTierBitmaps>(
-              visitor.rowIndex());
+              currentOriginalPos_++);
         });
         break;
       case FreqPartIndexType::TierTagArray:
-        detail::readWithVisitorSlow(visitor, params, nullptr, [&] {
+        detail::readWithVisitorSlow(visitor, params, skipFn, [&] {
           return decodeAtOriginalIndexImpl<FreqPartIndexType::TierTagArray>(
-              visitor.rowIndex());
+              currentOriginalPos_++);
         });
         break;
       case FreqPartIndexType::EliasFano:
-        detail::readWithVisitorSlow(visitor, params, nullptr, [&] {
+        detail::readWithVisitorSlow(visitor, params, skipFn, [&] {
           return decodeAtOriginalIndexImpl<FreqPartIndexType::EliasFano>(
-              visitor.rowIndex());
+              currentOriginalPos_++);
         });
         break;
       default:
@@ -839,21 +850,26 @@ void FrequencyPartitionEncoding<T>::readWithVisitor(
     return;
   }
 
-  // NoIndex: row indices are in encoded (tier-reordered) space.
-  detail::readWithVisitorSlow(visitor, params, nullptr, [&] {
-    uint32_t absoluteRow = visitor.rowIndex();
-    uint32_t tier = getTierForRow(absoluteRow);
-
-    if (tier < tiers_.size()) {
-      const auto& tierInfo = tiers_[tier];
-      uint32_t relativeRow = absoluteRow - tierInfo.startRow;
-      uint32_t index = tierInfo.indices[relativeRow];
-      return tierInfo.dictionary[index];
-    } else {
-      uint32_t relativeRow = absoluteRow - unencodedStartRow_;
-      return unencodedValues_[relativeRow];
-    }
-  });
+  // NoIndex: values are in tier-reordered space; read one at a time using the
+  // currentTier_/currentTierOffset_ streaming state (same as materialize).
+  detail::readWithVisitorSlow(
+      visitor,
+      params,
+      [&](auto n) { skip(n); },
+      [&] {
+        T value;
+        if (currentTier_ < tiers_.size()) {
+          const auto& tier = tiers_[currentTier_];
+          value = tier.dictionary[tier.indices[currentTierOffset_]];
+          if (++currentTierOffset_ >= tier.size) {
+            ++currentTier_;
+            currentTierOffset_ = 0;
+          }
+        } else {
+          value = unencodedValues_[currentTierOffset_++];
+        }
+        return value;
+      });
 }
 
 // ---------------------------------------------------------------------------
