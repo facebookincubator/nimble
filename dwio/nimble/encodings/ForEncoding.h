@@ -366,9 +366,18 @@ template <typename V>
 void ForEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  detail::readWithVisitorSlow(visitor, params, nullptr, [&] {
-    return decodeValue(visitor.rowIndex());
-  });
+  // Provide a skip function so readWithVisitorSlow can advance currentRow_ past
+  // non-selected non-null rows when the visitor's row set is sparse (e.g. due
+  // to chunk-index seeks or filter-driven row group skipping). The skip lambda
+  // receives the count of non-null rows to bypass, matching how ForEncoding
+  // stores only non-null values sequentially.  Using currentRow_ keeps state
+  // consistent across multiple readWithVisitor calls and with interleaved
+  // skip()/materialize() calls on the same instance.
+  detail::readWithVisitorSlow(
+      visitor,
+      params,
+      [&](auto numNonNullsToSkip) { skip(numNonNullsToSkip); },
+      [&] { return decodeValue(currentRow_++); });
 }
 
 template <typename T>
