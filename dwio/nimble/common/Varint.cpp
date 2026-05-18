@@ -15,11 +15,11 @@
  */
 #ifdef __x86_64__
 #include <immintrin.h>
-#elif defined(__aarch64__)
-#include <arm_neon.h>
-#include <arm_neon_sve_bridge.h>
-#include <arm_sve.h>
 #endif //__x86_64__
+
+#ifdef __aarch64__
+#include "common/aarch64/compat.h"
+#endif //__aarch64__
 
 #include <array>
 #include <cstring>
@@ -68,15 +68,11 @@ uint64_t bulkVarintSize64(std::span<const uint64_t> values) {
   return size;
 }
 
-#ifdef __x86_64__
-
 // Declaration of the function we build via generated code below.
 template <typename T>
 __attribute__((__target__("bmi2")))
 // __attribute__ ((optimize("Os")))
 const char* bulkVarintDecodeBmi2(uint64_t n, const char* pos, T* output);
-
-#endif //__x86_64__
 
 // Zero-extend 8 consecutive bytes into T-sized output elements using xsimd
 // batch construction and store.
@@ -287,8 +283,6 @@ static constexpr auto kDecodeTable = [] {
   return table;
 }();
 
-#ifdef __x86_64__
-
 // Table-driven BMI2 varint decode. Reads extraction masks from a lookup table.
 // Takes n and output by reference so the caller can re-dispatch to fast paths
 // after this function yields on a single-byte or two-byte run boundary.
@@ -365,129 +359,6 @@ bulkVarintDecodeBmi2Table(uint64_t& n, const char* pos, T*& output) {
   }
   return pos;
 }
-
-#elif defined(__aarch64__)
-
-// Table-driven BEXT varint decode. Reads extraction masks from a lookup table.
-// Takes n and output by reference so the caller can re-dispatch to fast paths
-// after this function yields on a single-byte or two-byte run boundary.
-template <typename T>
-const char*
-bulkVarintDecodeBmi2Table(uint64_t& n, const char* pos, T*& output) {
-  svuint64_t kControlMask = svdup_n_u64(0x0000808080808080ULL);
-  svuint64_t kCarryoverMask = svdup_n_u64(0x00007f7f7f7f7f7fULL);
-  constexpr int kChunkLen = 6;
-  // Control bit pattern for uniform single-byte chunks.
-  // cb=0: all 6 bytes are terminators (6 single-byte varints).
-  constexpr double kAllSingleByteCb = 0.0;
-
-  svuint64_t carryover = svdup_n_u64(0);
-  svuint64_t carryoverBits = svdup_n_u64(0);
-  pos -= kChunkLen;
-
-  while (n >= 8) {
-    pos += kChunkLen;
-
-    svuint64_t svWord = svdup_n_u64(*reinterpret_cast<const uint64_t*>(pos));
-    uint64x2_t cb = svget_neonq(svbext_u64(svWord, kControlMask));
-    float64x2_t fb = vreinterpretq_f64_u64(cb);
-    float64x2_t fob = vreinterpretq_f64_u64(svget_neonq(carryoverBits));
-
-    // If there is no carryover from a previous chunk and we see a run of
-    // single-byte varints, break out so the caller can use the dedicated
-    // fast path.
-    if ((fob[0] == 0.0) && (fb[0] == kAllSingleByteCb)) {
-      return pos;
-    }
-
-    uint64_t gb = cb[0];
-
-    // Case 63 (all continuation bytes) requires accumulating carryover
-    // rather than replacing it. This case is extremely rare
-    if (FOLLY_UNLIKELY(gb == 63)) {
-      svuint64_t cbits = svbext_u64(svWord, kCarryoverMask);
-      carryover |= cbits << carryoverBits;
-      carryoverBits += 42;
-      continue;
-    }
-
-    const auto& info = kDecodeTable[gb];
-
-    // Extract and store up to 6 values. Unused mask slots are 0, producing
-    // harmless zero writes that will be overwritten by subsequent iterations
-
-    svuint64_t valueMasks0 =
-        svset_neonq(svundef_u64(), vld1q_u64(&(info.valueMasks[0])));
-    svuint64_t valueMasks1 =
-        svset_neonq(svundef_u64(), vld1q_u64(&(info.valueMasks[2])));
-    svuint64_t valueMasks2 =
-        svset_neonq(svundef_u64(), vld1q_u64(&(info.valueMasks[4])));
-
-    svuint64_t svo0 = svbext_u64(svWord, valueMasks0);
-    svuint64_t svo1 = svbext_u64(svWord, valueMasks1);
-    svuint64_t svo2 = svbext_u64(svWord, valueMasks2);
-
-    uint64x2_t vo0 = svget_neonq(svo0);
-    uint64x2_t vo1 = svget_neonq(svo1);
-    uint64x2_t vo2 = svget_neonq(svo2);
-
-    auto outputPtr = output;
-
-    uint64x2_t cvo0 = svget_neonq((svo0 << carryoverBits) | carryover);
-
-    if constexpr (sizeof(T) == 8) {
-      vst1q_lane_u64(outputPtr, cvo0, 0);
-      vst1q_lane_u64(outputPtr + 1, vo0, 1);
-      vst1q_u64(outputPtr + 2, vo1);
-      vst1q_u64(outputPtr + 4, vo2);
-    } else if constexpr (sizeof(T) == 4) {
-      vst1q_lane_u32(outputPtr, vreinterpretq_u32_u64(cvo0), 0);
-      vst1q_lane_u32(outputPtr + 1, vreinterpretq_u32_u64(vo0), 2);
-      svst1w_u64(svwhilelt_b32_u64(0, 4), outputPtr + 2, svo1);
-      svst1w_u64(svwhilelt_b32_u64(0, 4), outputPtr + 4, svo2);
-    } else if constexpr (sizeof(T) == 2) {
-      vst1q_lane_u16(outputPtr, vreinterpretq_u16_u64(cvo0), 0);
-      vst1q_lane_u16(outputPtr + 1, vreinterpretq_u16_u64(vo0), 4);
-      svst1h_u64(svwhilelt_b16_u64(0, 8), outputPtr + 2, svo1);
-      svst1h_u64(svwhilelt_b16_u64(0, 8), outputPtr + 4, svo2);
-    } else if constexpr (sizeof(T) == 1) {
-      vst1q_lane_u8(outputPtr, vreinterpretq_u8_u64(cvo0), 0);
-      vst1q_lane_u8(outputPtr + 1, vreinterpretq_u8_u64(vo0), 8);
-      svst1b_u64(svwhilelt_b8_u64(0, 16), outputPtr + 2, svo1);
-      svst1b_u64(svwhilelt_b8_u64(0, 16), outputPtr + 4, svo2);
-    }
-
-    output += info.numCompleted;
-    n -= info.numCompleted;
-
-    // Update carryover. When carryoverMask is 0, _pext returns 0 and
-    // carryoverBits is 0, effectively clearing the carryover state.
-    carryover = svbext_u64(svWord, svdup_n_u64(info.carryOverMask));
-    carryoverBits = svdup_n_u64(info.carryOverBits);
-  }
-
-  uint64_t carryoverVar = carryover[0];
-  uint64_t carryoverBitsVar = carryoverBits[0];
-
-  pos += kChunkLen;
-  if (n > 0) {
-    if constexpr (std::is_same_v<T, uint32_t>) {
-      *output++ = readVarint32(&pos) << carryoverBitsVar | carryoverVar;
-      for (uint64_t i = 1; i < n; ++i) {
-        *output++ = readVarint32(&pos);
-      }
-    } else {
-      *output++ = readVarint64(&pos) << carryoverBitsVar | carryoverVar;
-      for (uint64_t i = 1; i < n; ++i) {
-        *output++ = readVarint64(&pos);
-      }
-    }
-    n = 0;
-  }
-  return pos;
-}
-
-#endif
 
 // Dispatch loop: cycles between fast paths and the general BMI2 decoder.
 // When the BMI2 decoder detects a uniform single-byte or two-byte chunk
