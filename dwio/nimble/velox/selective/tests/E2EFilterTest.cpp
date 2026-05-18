@@ -358,7 +358,6 @@ class E2EFilterTest
     // Branch on whether we need forced dictionary encoding, since
     // EncodingLayoutTree is not move-assignable due to const members.
     if (useForcedDictionaryEncoding_) {
-      // Need to set encodingLayoutTree at construction time.
       options.encodingLayoutTree.emplace(
           buildForcedDictionaryEncodingLayoutTree());
     }
@@ -378,7 +377,8 @@ class E2EFilterTest
     if (param().enableCache) {
       auto readFile = std::make_shared<InMemoryReadFile>(sinkData_);
       auto& ids = fileIds();
-      StringIdLease fileId(ids, "testFile");
+      StringIdLease fileId(
+          ids, fmt::format("testFile_{}", reinterpret_cast<uintptr_t>(this)));
       StringIdLease groupId(ids, "testGroup");
       io::ReaderOptions cacheReaderOpts(&readerOpts.memoryPool());
       cacheReaderOpts.setDataIoStats(dataIoStats_);
@@ -432,6 +432,8 @@ class E2EFilterTest
                   EncodingLayout{
                       EncodingType::Dictionary,
                       {},
+                      // Required by EncodingLayout constructor; does not
+                      // override the encoding selection policy's choice.
                       CompressionType::Uncompressed,
                       {
                           // Alphabet (id=0): let writer decide
@@ -446,6 +448,118 @@ class E2EFilterTest
       }
     }
     return EncodingLayoutTree{Kind::Row, {}, "", std::move(children)};
+  }
+
+  EncodingLayoutTree buildForcedMainlyConstantDictionaryEncodingLayoutTree() {
+    std::vector<EncodingLayoutTree> children;
+    for (column_index_t i = 0;
+         i < static_cast<column_index_t>(rowType_->size());
+         ++i) {
+      const auto& childType = rowType_->childAt(i);
+      const auto& childName = rowType_->nameOf(i);
+
+      if (childType->isVarchar() || childType->isVarbinary()) {
+        // CompressionType::Uncompressed is required by EncodingLayout
+        // constructor; does not override the encoding selection policy.
+        EncodingLayout dictLayout{
+            EncodingType::Dictionary,
+            {},
+            CompressionType::Uncompressed,
+            {std::nullopt, std::nullopt}};
+        children.push_back(
+            EncodingLayoutTree{
+                Kind::Scalar,
+                {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
+                  EncodingLayout{
+                      EncodingType::MainlyConstant,
+                      {},
+                      CompressionType::Uncompressed,
+                      {std::nullopt, std::move(dictLayout)}}}},
+                std::string(childName)});
+      } else {
+        children.push_back(
+            EncodingLayoutTree{Kind::Scalar, {}, std::string(childName)});
+      }
+    }
+    return EncodingLayoutTree{Kind::Row, {}, "", std::move(children)};
+  }
+
+  void verifyDictionaryVectorReturned(
+      EncodingLayoutTree layoutTree,
+      const std::vector<std::string>& stringData) {
+    auto type = asRowType(rowType_);
+    const auto kRowCount = static_cast<vector_size_t>(stringData.size());
+
+    auto stringVector =
+        velox::test::VectorMaker(leafPool_.get())
+            .flatVector<velox::StringView>(kRowCount, [&](auto row) {
+              return velox::StringView(stringData[row]);
+            });
+    auto longVector = velox::test::VectorMaker(leafPool_.get())
+                          .flatVector<int64_t>(kRowCount, [](auto row) {
+                            return static_cast<int64_t>(row);
+                          });
+
+    auto batch = std::make_shared<RowVector>(
+        leafPool_.get(),
+        type,
+        nullptr,
+        kRowCount,
+        std::vector<VectorPtr>{stringVector, longVector});
+
+    {
+      auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+      VeloxWriterOptions writerOptions;
+      writerOptions.encodingLayoutTree.emplace(std::move(layoutTree));
+      VeloxWriter writer(
+          type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+      writer.write(batch);
+      writer.close();
+    }
+
+    auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+        std::make_shared<velox::InMemoryReadFile>(sinkData_),
+        *leafPool_,
+        velox::dwio::common::MetricsLog::voidLog());
+
+    auto dataIoStats = std::make_shared<velox::io::IoStatistics>();
+    auto metadataIoStats = std::make_shared<velox::io::IoStatistics>();
+    velox::dwio::common::ReaderOptions readerOpts(leafPool_.get());
+    readerOpts.setDataIoStats(dataIoStats);
+    readerOpts.setMetadataIoStats(metadataIoStats);
+    auto reader = makeReader(readerOpts, std::move(input));
+    auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*type);
+    velox::dwio::common::RowReaderOptions rowReaderOptions;
+    rowReaderOptions.setScanSpec(scanSpec);
+    rowReaderOptions.setStringDecoderZeroCopy(param().stringDecoderZeroCopy);
+    rowReaderOptions.setNimblePreserveDictionaryEncoding(
+        param().stringDecoderZeroCopy);
+    auto rowReader = reader->createRowReader(rowReaderOptions);
+
+    auto result = BaseVector::create(type, 0, leafPool_.get());
+    size_t totalRows = 0;
+    size_t globalRow = 0;
+    while (rowReader->next(1000, result)) {
+      auto* rowResult = result->as<RowVector>();
+      ASSERT_NE(rowResult, nullptr);
+      totalRows += rowResult->size();
+
+      auto stringChild = rowResult->childAt(0)->loadedVector();
+      if (param().stringDecoderZeroCopy) {
+        ASSERT_EQ(stringChild->encoding(), VectorEncoding::Simple::DICTIONARY)
+            << "Expected DICTIONARY encoding for string column";
+      }
+
+      DecodedVector decoded(*stringChild);
+      for (size_t i = 0; i < rowResult->size(); ++i) {
+        ASSERT_EQ(decoded.valueAt<StringView>(i).str(), stringData[globalRow])
+            << "Mismatch at row=" << globalRow;
+        ++globalRow;
+      }
+    }
+
+    EXPECT_EQ(totalRows, kRowCount);
   }
 
   // Optional encoding factors for ManualEncodingSelectionPolicyFactory.
@@ -1888,9 +2002,9 @@ TEST_P(E2EFilterTest, stringFilterOnBothColumnsCrossStripeNested) {
 // 2. Forcing the otherValues_ child to use Dictionary encoding via
 // EncodingLayoutTree
 //
-// This scenario is challenging because dictionaryEncoding() may only check
-// for direct Dictionary or Nullable→Dictionary, not deeper nesting like
-// MainlyConstant→Dictionary.
+// This scenario is challenging because isDictionaryCompatible() must handle
+// deeper nesting like MainlyConstant→Dictionary, not just direct Dictionary
+// or Nullable→Dictionary.
 TEST_P(E2EFilterTest, nestedMainlyConstantWithDictionary) {
   // Create data where most values are a constant string.
   // ~90% of values will be the constant, ~10% will be "other" values.
@@ -1941,6 +2055,8 @@ TEST_P(E2EFilterTest, nestedMainlyConstantWithDictionary) {
   //   Row
   //     -> Scalar (string_val): MainlyConstant
   //         -> OtherValues (child 1): Dictionary
+  //             -> Alphabet (child 0): let writer decide
+  //             -> Indices (child 1): let writer decide
   //     -> Scalar (long_val): default
   EncodingLayoutTree encodingLayoutTree{
       Kind::Row,
@@ -1958,6 +2074,8 @@ TEST_P(E2EFilterTest, nestedMainlyConstantWithDictionary) {
                         // Child 0: IsCommon (let the writer decide)
                         std::nullopt,
                         // Child 1: OtherValues -> Dictionary
+                        // Dictionary encoding needs children for alphabet and
+                        // indices.
                         EncodingLayout{
                             EncodingType::Dictionary,
                             {},
@@ -2007,8 +2125,11 @@ TEST_P(E2EFilterTest, nestedMainlyConstantWithDictionary) {
     ASSERT_NE(rowResult, nullptr);
     totalRows += rowResult->size();
 
-    DecodedVector decodedString(*rowResult->childAt(0));
-    DecodedVector decodedLong(*rowResult->childAt(1));
+    // Use DecodedVector to handle both flat and dictionary-encoded vectors.
+    // The string column might be wrapped in a DictionaryVector when using
+    // dictionary encoding path.
+    velox::DecodedVector decodedString(*rowResult->childAt(0));
+    velox::DecodedVector decodedLong(*rowResult->childAt(1));
 
     for (size_t i = 0; i < rowResult->size(); ++i) {
       auto rowIdx = decodedLong.valueAt<int64_t>(i);
@@ -2018,7 +2139,7 @@ TEST_P(E2EFilterTest, nestedMainlyConstantWithDictionary) {
       } else {
         expected = kConstantValue;
       }
-      ASSERT_EQ(decodedString.valueAt<StringView>(i).str(), expected)
+      ASSERT_EQ(decodedString.valueAt<velox::StringView>(i).str(), expected)
           << "Mismatch at row=" << rowIdx;
     }
   }
@@ -2026,30 +2147,129 @@ TEST_P(E2EFilterTest, nestedMainlyConstantWithDictionary) {
   EXPECT_EQ(totalRows, kRowCount);
 }
 
-// Verifies that the reader returns DictionaryVector<StringView> for
-// dictionary-encoded string columns when stringBufferOptimized is enabled.
-// The dictionary path is only taken for simple encoding shapes:
-//   - Dictionary (top-level)
-//   - Nullable -> Dictionary (dictionary with nulls)
+// Writes string data with a forced encoding layout, reads back, and verifies
+// dictionary vector return and data correctness.
 TEST_P(E2EFilterTest, dictionaryVectorReturned) {
-  useForcedDictionaryEncoding_ = true;
-  auto type = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
-
   const vector_size_t kRowCount = 1000;
-  // Use low cardinality to ensure dictionary encoding is chosen.
-  std::vector<std::string> stringStorage(kRowCount);
-  for (vector_size_t i = 0; i < kRowCount; ++i) {
-    stringStorage[i] = fmt::format("VAL_{}", i % 10);
+  std::mt19937 gen(42);
+  const int numDistinct = 5 + gen() % 20;
+  std::vector<std::string> alphabet(numDistinct);
+  for (int i = 0; i < numDistinct; ++i) {
+    auto len = 3 + gen() % 30;
+    alphabet[i].resize(len);
+    for (auto& c : alphabet[i]) {
+      c = 'a' + gen() % 26;
+    }
   }
+  std::vector<std::string> stringData(kRowCount);
+  for (vector_size_t i = 0; i < kRowCount; ++i) {
+    stringData[i] = alphabet[gen() % numDistinct];
+  }
+
+  rowType_ = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+  verifyDictionaryVectorReturned(
+      buildForcedDictionaryEncodingLayoutTree(), stringData);
+}
+
+TEST_P(E2EFilterTest, mainlyConstantDictionaryVectorReturned) {
+  const vector_size_t kRowCount = 1000;
+  std::mt19937 gen(123);
+  const int numOther = 3 + gen() % 10;
+  std::vector<std::string> otherAlphabet(numOther);
+  for (int i = 0; i < numOther; ++i) {
+    auto len = 3 + gen() % 20;
+    otherAlphabet[i].resize(len);
+    for (auto& c : otherAlphabet[i]) {
+      c = 'a' + gen() % 26;
+    }
+  }
+  auto commonLen = 20 + gen() % 40;
+  std::string commonValue(commonLen, 'x' + gen() % 3);
+
+  std::vector<std::string> stringData(kRowCount);
+  for (vector_size_t i = 0; i < kRowCount; ++i) {
+    stringData[i] =
+        (gen() % 10 == 0) ? otherAlphabet[gen() % numOther] : commonValue;
+  }
+
+  rowType_ = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+  verifyDictionaryVectorReturned(
+      buildForcedMainlyConstantDictionaryEncodingLayoutTree(), stringData);
+}
+
+// Fuzz test: exercises MC→Dict readIndicesWithVisitor with randomized data
+// shapes. Runs 10000 iterations with varying row counts, alphabet sizes,
+// common percentages, and null rates to catch subtle scattering/composition
+// bugs in materializeIndices and readIndicesWithVisitor.
+TEST_P(E2EFilterTest, fuzzMainlyConstantDictionaryVector) {
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "fuzzMainlyConstantDictionaryVector seed: " << seed;
+  std::mt19937 rng(seed);
+
+  const int kRowCount = 50 + rng() % 500;
+  const int numOther = 1 + rng() % 8;
+  const int commonPct = 50 + rng() % 45;
+  const bool withNulls = rng() % 3 == 0;
+
+  SCOPED_TRACE(
+      fmt::format(
+          "seed={} rows={} numOther={} commonPct={} withNulls={}",
+          seed,
+          kRowCount,
+          numOther,
+          commonPct,
+          withNulls));
+
+  std::vector<std::string> otherAlphabet(numOther);
+  for (int j = 0; j < numOther; ++j) {
+    auto len = 1 + rng() % 30;
+    otherAlphabet[j].resize(len);
+    for (auto& c : otherAlphabet[j]) {
+      c = 'a' + rng() % 26;
+    }
+  }
+  // Use a prefix that won't appear in otherAlphabet (which uses 'a'-'z').
+  auto commonLen = 5 + rng() % 50;
+  std::string commonValue(commonLen, '0' + rng() % 3);
+
+  std::vector<std::string> stringData(kRowCount);
+  for (int i = 0; i < kRowCount; ++i) {
+    stringData[i] = (static_cast<int>(rng() % 100) < commonPct)
+        ? commonValue
+        : otherAlphabet[rng() % numOther];
+  }
+  // Ensure at least one non-common value at a non-null position so the Dict
+  // child isn't empty. With nullEvery(7), position i is null when i % 7 == 0.
+  {
+    bool hasNonCommonAtNonNull = false;
+    for (int i = 0; i < kRowCount; ++i) {
+      if ((!withNulls || i % 7 != 0) && stringData[i] != commonValue) {
+        hasNonCommonAtNonNull = true;
+        break;
+      }
+    }
+    if (!hasNonCommonAtNonNull) {
+      // Place a non-common value at a position that won't be null.
+      int pos = 1;
+      while (withNulls && pos % 7 == 0) {
+        ++pos;
+      }
+      stringData[pos] = otherAlphabet[0];
+    }
+  }
+
+  rowType_ = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+
+  auto type = asRowType(rowType_);
   auto stringVector =
       velox::test::VectorMaker(leafPool_.get())
-          .flatVector<velox::StringView>(kRowCount, [&](auto row) {
-            return velox::StringView(stringStorage[row]);
-          });
-  auto longVector = velox::test::VectorMaker(leafPool_.get())
-                        .flatVector<int64_t>(kRowCount, [](auto row) {
-                          return static_cast<int64_t>(row);
-                        });
+          .flatVector<velox::StringView>(
+              kRowCount,
+              [&](auto row) { return velox::StringView(stringData[row]); },
+              withNulls ? velox::test::VectorMaker::nullEvery(7) : nullptr);
+  auto longVector =
+      velox::test::VectorMaker(leafPool_.get())
+          .flatVector<int64_t>(kRowCount, [](auto row) { return row; });
 
   auto batch = std::make_shared<RowVector>(
       leafPool_.get(),
@@ -2058,17 +2278,12 @@ TEST_P(E2EFilterTest, dictionaryVectorReturned) {
       kRowCount,
       std::vector<VectorPtr>{stringVector, longVector});
 
-  // Write directly (without writeToMemory) to avoid the default chunking
-  // policy that splits the data into multiple chunks. The dictionary path
-  // requires all requested rows to fit in a single chunk.
+  sinkData_.clear();
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
     VeloxWriterOptions writerOptions;
-    if (useForcedDictionaryEncoding_) {
-      rowType_ = asRowType(type);
-      writerOptions.encodingLayoutTree.emplace(
-          buildForcedDictionaryEncodingLayoutTree());
-    }
+    writerOptions.encodingLayoutTree.emplace(
+        buildForcedMainlyConstantDictionaryEncodingLayoutTree());
     VeloxWriter writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writer.write(batch);
@@ -2092,35 +2307,32 @@ TEST_P(E2EFilterTest, dictionaryVectorReturned) {
   rowReaderOptions.setScanSpec(scanSpec);
   rowReaderOptions.setStringDecoderZeroCopy(param().stringDecoderZeroCopy);
   rowReaderOptions.setNimblePreserveDictionaryEncoding(
-      param().nimblePreserveDictionaryEncoding);
+      param().stringDecoderZeroCopy);
   auto rowReader = reader->createRowReader(rowReaderOptions);
 
   auto result = BaseVector::create(type, 0, leafPool_.get());
   size_t totalRows = 0;
-  while (rowReader->next(1000, result)) {
+  size_t globalRow = 0;
+  while (rowReader->next(kRowCount, result)) {
     auto* rowResult = result->as<RowVector>();
     ASSERT_NE(rowResult, nullptr);
     totalRows += rowResult->size();
 
     auto stringChild = rowResult->childAt(0)->loadedVector();
-    if (param().stringDecoderZeroCopy &&
-        param().nimblePreserveDictionaryEncoding) {
-      // With both flags enabled, the dictionary path should return
-      // a DictionaryVector wrapping a FlatVector alphabet.
-      ASSERT_EQ(stringChild->encoding(), VectorEncoding::Simple::DICTIONARY)
-          << "Expected DICTIONARY encoding for string column, got "
-          << stringChild->encoding();
-    }
-
-    // Verify values are correct regardless of encoding.
     DecodedVector decoded(*stringChild);
     for (size_t i = 0; i < rowResult->size(); ++i) {
-      auto expected = fmt::format("VAL_{}", i % 10);
-      ASSERT_EQ(decoded.valueAt<StringView>(i).str(), expected)
-          << "Mismatch at row=" << i;
+      if (withNulls && globalRow % 7 == 0) {
+        ASSERT_TRUE(decoded.isNullAt(i))
+            << "Expected null at row=" << globalRow;
+      } else {
+        ASSERT_FALSE(decoded.isNullAt(i))
+            << "Unexpected null at row=" << globalRow;
+        ASSERT_EQ(decoded.valueAt<StringView>(i).str(), stringData[globalRow])
+            << "Mismatch at row=" << globalRow;
+      }
+      ++globalRow;
     }
   }
-
   EXPECT_EQ(totalRows, kRowCount);
 }
 
@@ -2238,9 +2450,10 @@ TEST_P(E2EFilterTest, crossChunkEncodingChange) {
     totalRows += rowResult->size();
 
     // Verify the string values are correct.
-    DecodedVector decodedString(*rowResult->childAt(0));
-    DecodedVector decodedString2(*rowResult->childAt(1));
-    DecodedVector decodedLong(*rowResult->childAt(2));
+    // Use DecodedVector to handle both flat and dictionary-encoded vectors.
+    velox::DecodedVector decodedString(*rowResult->childAt(0));
+    velox::DecodedVector decodedString2(*rowResult->childAt(1));
+    velox::DecodedVector decodedLong(*rowResult->childAt(2));
 
     for (size_t i = 0; i < rowResult->size(); ++i) {
       auto globalRow = decodedLong.valueAt<int64_t>(i);
@@ -2259,9 +2472,10 @@ TEST_P(E2EFilterTest, crossChunkEncodingChange) {
             "UNIQUE2_VAL_BATCH{}_ROW{}_MORE_PADDING", batchIdx, rowInBatch);
       }
 
-      ASSERT_EQ(decodedString.valueAt<StringView>(i).str(), expectedStr)
+      ASSERT_EQ(decodedString.valueAt<velox::StringView>(i).str(), expectedStr)
           << "Mismatch at globalRow=" << globalRow;
-      ASSERT_EQ(decodedString2.valueAt<StringView>(i).str(), expectedStr2)
+      ASSERT_EQ(
+          decodedString2.valueAt<velox::StringView>(i).str(), expectedStr2)
           << "Mismatch at globalRow=" << globalRow;
     }
   }

@@ -25,6 +25,7 @@
 #include "dwio/nimble/encodings/legacy/EncodingUtils.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/tests/EncodingLayoutTestHelper.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestBase.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 #include "velox/common/base/Nulls.h"
@@ -1443,6 +1444,126 @@ TEST_P(ChunkedDecoderDataTest, ensureLoadedFiresOnChunkLoadOnReload) {
   decoder.ensureLoaded();
   EXPECT_EQ(callbackCount, 2);
   EXPECT_EQ(decoder.remainingValues(), 3);
+}
+
+// DictionaryEnc with StringTrivialEnc for the alphabet, suitable for
+// encoding std::string_view data.
+DictionaryEnc stringDictEnc() {
+  return DictionaryEnc{.alphabet = StringTrivialEnc{}};
+}
+
+class ChunkedDecoderDictTest : public ChunkedDecoderTest {
+ protected:
+  // Encodes string values into a chunked stream using the given encoding
+  // layout. Returns the encoded stream data.
+  std::string encodeStringChunkedStream(
+      const std::vector<std::vector<std::string_view>>& chunks,
+      const EncodingLayout& layout) {
+    Buffer buffer{pool()};
+    std::string streamData;
+
+    for (const auto& chunk : chunks) {
+      // The factory must outlive the policy because
+      // ReplayedEncodingSelectionPolicy stores it by reference.
+      EncodingSelectionPolicyFactory factory =
+          [](DataType type) -> std::unique_ptr<EncodingSelectionPolicyBase> {
+        UNIQUE_PTR_FACTORY(type, TrivialNestedPolicy);
+      };
+      auto policy =
+          std::make_unique<ReplayedEncodingSelectionPolicy<std::string_view>>(
+              layout, CompressionOptions{}, factory);
+      auto encoded = EncodingFactory::encode<std::string_view>(
+          std::move(policy),
+          std::span<const std::string_view>(chunk.data(), chunk.size()),
+          buffer);
+
+      ChunkedStreamWriter writer{
+          buffer, {.type = CompressionType::Uncompressed}};
+      for (const auto& segment : writer.encode(encoded)) {
+        streamData += segment;
+      }
+    }
+    return streamData;
+  }
+
+  // Encodes nullable string values into a chunked stream.
+  std::string encodeNullableStringChunkedStream(
+      const std::vector<std::vector<std::optional<std::string_view>>>& chunks,
+      const EncodingLayout& dataLayout) {
+    Buffer buffer{pool()};
+    std::string streamData;
+
+    for (const auto& chunk : chunks) {
+      std::vector<std::string_view> nonNullValues;
+      Vector<bool> nulls(&pool());
+      nulls.resize(chunk.size());
+      for (size_t i = 0; i < chunk.size(); ++i) {
+        nulls[i] = chunk[i].has_value();
+        if (chunk[i].has_value()) {
+          nonNullValues.push_back(*chunk[i]);
+        }
+      }
+
+      // Pass just the data layout; ReplayedEncodingSelectionPolicy::
+      // selectNullable() will automatically wrap it in a Nullable layout.
+      // The factory must outlive the policy because
+      // ReplayedEncodingSelectionPolicy stores it by reference.
+      EncodingSelectionPolicyFactory factory =
+          [](DataType type) -> std::unique_ptr<EncodingSelectionPolicyBase> {
+        UNIQUE_PTR_FACTORY(type, TrivialNestedPolicy);
+      };
+      auto policy =
+          std::make_unique<ReplayedEncodingSelectionPolicy<std::string_view>>(
+              dataLayout, CompressionOptions{}, factory);
+
+      auto encoded = EncodingFactory::encodeNullable<std::string_view>(
+          std::move(policy),
+          std::span<const std::string_view>(
+              nonNullValues.data(), nonNullValues.size()),
+          std::span<const bool>(nulls.data(), nulls.size()),
+          buffer);
+
+      ChunkedStreamWriter writer{
+          buffer, {.type = CompressionType::Uncompressed}};
+      for (const auto& segment : writer.encode(encoded)) {
+        streamData += segment;
+      }
+    }
+    return streamData;
+  }
+
+  // Creates a ChunkedDecoder from encoded string stream data.
+  ChunkedDecoder createStringDecoder(const std::string& streamData) {
+    return ChunkedDecoder(
+        std::make_unique<dwio::common::SeekableArrayInputStream>(
+            streamData.data(), streamData.size()),
+        /*streamIndex=*/nullptr,
+        /*decodeValuesWithNulls=*/false,
+        &encodingFactory(),
+        &pool(),
+        /*stringDecoderZeroCopy=*/true);
+  }
+};
+
+// Verify buildAlphabet for a simple Dictionary encoding.
+// Verify string buffers keep alphabet data alive after reading a
+// dictionary-encoded string chunk.
+TEST_F(ChunkedDecoderDictTest, stringBuffersAfterChunkLoad) {
+  std::vector<std::string_view> data = {"hello", "world", "hello"};
+  auto streamData = encodeStringChunkedStream({data}, stringDictEnc());
+
+  auto decoder = createStringDecoder(streamData);
+  decoder.ensureLoaded();
+  ASSERT_TRUE(decoder.dictionaryConvertible());
+
+  // Build the alphabet — string_views point into the encoding's string
+  // buffers that were allocated during loadNextChunk.
+  auto alphabet = buildEncodingDictionaryAlphabet<std::string_view>(
+      decoder.currentEncoding());
+  ASSERT_EQ(alphabet.size(), 2);
+  std::set<std::string> entries(alphabet.begin(), alphabet.end());
+  EXPECT_TRUE(entries.count("hello"));
+  EXPECT_TRUE(entries.count("world"));
 }
 
 } // namespace

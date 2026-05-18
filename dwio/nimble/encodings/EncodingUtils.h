@@ -175,31 +175,51 @@ struct DefaultEncodingTrait {
   }
 };
 
-/// Dispatches readIndicesWithVisitor to the correct encoding type.
-/// Supports DictionaryEncoding and NullableEncoding wrapping Dictionary.
+/// Reads dictionary indices (not decoded values) from an encoding.
+/// Supports DictionaryEncoding, NullableEncoding, and MainlyConstantEncoding
+/// wrapping DictionaryEncoding. Currently only supports string
+/// (std::string_view) dictionary encodings. Non-legacy encodings only.
 template <typename V>
 void callReadIndicesWithVisitor(
     Encoding& encoding,
     V& visitor,
     ReadWithVisitorParams& params) {
-  if (encoding.encodingType() == EncodingType::Dictionary) {
-    static_cast<DictionaryEncoding<std::string_view>&>(encoding)
-        .readIndicesWithVisitor(visitor, params);
-  } else if (encoding.encodingType() == EncodingType::Nullable) {
-    static_cast<NullableEncoding<std::string_view>&>(encoding)
-        .readIndicesWithVisitor(visitor, params);
-  } else {
-    NIMBLE_UNREACHABLE(
-        "Dictionary indices dispatch on unsupported encoding: {}",
-        encoding.encodingType());
+  switch (encoding.encodingType()) {
+    case EncodingType::Dictionary: {
+      static_cast<DictionaryEncoding<std::string_view>&>(encoding)
+          .readIndicesWithVisitor(visitor, params);
+      return;
+    }
+    case EncodingType::Nullable: {
+      static_cast<NullableEncoding<std::string_view>&>(encoding)
+          .readIndicesWithVisitor(visitor, params);
+      return;
+    }
+    case EncodingType::MainlyConstant: {
+      static_cast<MainlyConstantEncoding<std::string_view>&>(encoding)
+          .readIndicesWithVisitor(visitor, params);
+      return;
+    }
+    default:
+      NIMBLE_UNREACHABLE(
+          "Dictionary indices dispatch on unsupported encoding: {}",
+          encoding.encodingType());
   }
 }
 
-/// Extracts the dictionary alphabet from an encoding as a vector of values.
-/// Works through Nullable wrappers via virtual dictionaryEntries().
+/// Builds the dictionary alphabet from any dictionary-enabled encoding.
+/// Uses dictionaryEntries() which returns a contiguous array for all
+/// encoding types (Dict, Nullable→Dict, MC→Dict).
 template <typename T>
 inline std::vector<T> buildEncodingDictionaryAlphabet(
     const Encoding* encoding) {
+  NIMBLE_CHECK(
+      encoding->dictionaryEnabled(),
+      "buildEncodingDictionaryAlphabet requires a dictionary-enabled encoding");
+  if (encoding->encodingType() == EncodingType::Nullable) {
+    return buildEncodingDictionaryAlphabet<T>(
+        static_cast<const NullableEncoding<T>*>(encoding)->nonNulls());
+  }
   const auto size = encoding->dictionarySize();
   const auto* entries = static_cast<const T*>(encoding->dictionaryEntries());
   return {entries, entries + size};

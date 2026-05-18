@@ -29,6 +29,20 @@ TrivialEnc::operator EncodingLayout() const {
       EncodingType::Trivial, {}, CompressionType::Uncompressed);
 }
 
+StringTrivialEnc::operator EncodingLayout() const {
+  constexpr auto kLengths = EncodingIdentifiers::Trivial::Lengths;
+  static_assert(kLengths == 0);
+
+  std::vector<std::optional<const EncodingLayout>> children;
+  children.reserve(1);
+  children.emplace_back(lengths);
+  return EncodingLayout(
+      EncodingType::Trivial,
+      {},
+      CompressionType::Uncompressed,
+      std::move(children));
+}
+
 ConstantEnc::operator EncodingLayout() const {
   return EncodingLayout(
       EncodingType::Constant, {}, CompressionType::Uncompressed);
