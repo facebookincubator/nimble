@@ -659,6 +659,10 @@ class E2EFilterTest
         // isRestatements that may fall back to Constant.
         factors.emplace_back(EncodingType::Constant, 100.0);
         break;
+      case EncodingType::SubIntSplit:
+        // SubIntSplit may fall back to Constant for fully-constant data.
+        factors.emplace_back(EncodingType::Constant, 100.0);
+        break;
       default:
         break;
     }
@@ -1059,6 +1063,125 @@ TEST_P(E2EFilterTest, integerBiasedDelta) {
   // Verify the on-disk encoding is Delta (sinkData_ holds the last written
   // file from testWithTypes).
   verifyColumnEncodingsOnDisk(EncodingType::Delta);
+}
+
+// Biased variant that forces SubIntSplit encoding selection.
+// SubIntSplit only applies to 32- and 64-bit types; smallint is excluded.
+TEST_P(E2EFilterTest, integerBiasedSubIntSplit) {
+  testWithTypes(
+      "int_val:int,"
+      "long_val:bigint",
+      [&]() {
+        makeIntDistribution<int32_t>(
+            "int_val",
+            /*min=*/100,
+            /*max=*/100000,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+        makeIntDistribution<int64_t>(
+            "long_val",
+            /*min=*/1000,
+            /*max=*/1000000,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+      },
+      /*wrapInStruct=*/true,
+      {"int_val", "long_val"},
+      /*numCombinations=*/20,
+      /*withRecursiveNulls=*/true,
+      biasedEncodingFactors(EncodingType::SubIntSplit));
+}
+
+// Tests data with bit-structured distributions where SubIntSplit naturally
+// wins: values concentrated in the low-bit range of a wider type, so the
+// upper bit sections collapse to Constant encoding.
+TEST_P(E2EFilterTest, integerSubIntSplitBitStructured) {
+  testWithTypes(
+      "int_val:int,"
+      "long_val:bigint",
+      [&]() {
+        makeIntDistribution<int32_t>(
+            "int_val",
+            /*min=*/0,
+            /*max=*/65535, // only 16 low bits vary; upper 16 are zero
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+        makeIntDistribution<int64_t>(
+            "long_val",
+            /*min=*/0,
+            /*max=*/4294967295, // only 32 low bits vary; upper 32 are zero
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+      },
+      /*wrapInStruct=*/false,
+      {"int_val", "long_val"},
+      /*numCombinations=*/20,
+      /*withRecursiveNulls=*/true);
+}
+
+// Biased variant that forces SubIntSplit encoding for float/double columns.
+// SubIntSplit encodes float/double via their uint32/uint64 IEEE 754 bit
+// patterns; quantized data produces sections of differing entropy.
+TEST_P(E2EFilterTest, floatBiasedSubIntSplit) {
+  testWithTypes(
+      "float_val:float,"
+      "double_val:double",
+      [&]() {
+        makeQuantizedFloat<float>("float_val", 100, true);
+        makeQuantizedFloat<double>("double_val", 100, true);
+      },
+      /*wrapInStruct=*/false,
+      {"float_val", "double_val"},
+      /*numCombinations=*/20,
+      /*withRecursiveNulls=*/true,
+      biasedEncodingFactors(EncodingType::SubIntSplit));
+}
+
+// Forces SubIntSplit via EncodingLayoutTree and verifies the on-disk encoding
+// matches. Schema uses only 32/64-bit types (SubIntSplit requires sizeof(T)>=4).
+TEST_P(E2EFilterTest, integerForcedSubIntSplit) {
+  forcedEncodingType_ = EncodingType::SubIntSplit;
+  testWithTypes(
+      "int_val:int,"
+      "long_val:bigint",
+      [&]() {
+        makeIntDistribution<int32_t>(
+            "int_val",
+            /*min=*/100,
+            /*max=*/100000,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+        makeIntDistribution<int64_t>(
+            "long_val",
+            /*min=*/1000,
+            /*max=*/1000000,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+      },
+      /*wrapInStruct=*/false,
+      {"int_val", "long_val"},
+      /*numCombinations=*/20,
+      /*withRecursiveNulls=*/true);
+  forcedEncodingType_.reset();
+  verifyColumnEncodingsOnDisk(EncodingType::SubIntSplit);
 }
 
 TEST_P(E2EFilterTest, float) {
