@@ -69,7 +69,7 @@ DeltaEnc::operator EncodingLayout() const {
   constexpr auto kIsRestatements = EncodingIdentifiers::Delta::IsRestatements;
   static_assert(kDeltas == 0 && kRestatements == 1 && kIsRestatements == 2);
 
-  std::vector<std::optional<const EncodingLayout>> children;
+  std::vector<std::optional<EncodingLayout>> children;
   children.reserve(3);
   children.emplace_back(deltas);
   children.emplace_back(restatements);
@@ -90,7 +90,7 @@ RLEEnc::operator EncodingLayout() const {
   constexpr auto kRunValues = EncodingIdentifiers::RunLength::RunValues;
   static_assert(kRunLengths == 0 && kRunValues == 1);
 
-  std::vector<std::optional<const EncodingLayout>> children;
+  std::vector<std::optional<EncodingLayout>> children;
   children.reserve(2);
   children.emplace_back(runLengths);
   children.emplace_back(runValues);
@@ -106,7 +106,7 @@ DictionaryEnc::operator EncodingLayout() const {
   constexpr auto kIndices = EncodingIdentifiers::Dictionary::Indices;
   static_assert(kAlphabet == 0 && kIndices == 1);
 
-  std::vector<std::optional<const EncodingLayout>> children;
+  std::vector<std::optional<EncodingLayout>> children;
   children.reserve(2);
   children.emplace_back(alphabet);
   children.emplace_back(indices);
@@ -123,7 +123,7 @@ MainlyConstantEnc::operator EncodingLayout() const {
       EncodingIdentifiers::MainlyConstant::OtherValues;
   static_assert(kIsCommon == 0 && kOtherValues == 1);
 
-  std::vector<std::optional<const EncodingLayout>> children;
+  std::vector<std::optional<EncodingLayout>> children;
   children.reserve(2);
   children.emplace_back(isCommon);
   children.emplace_back(otherValues);
@@ -139,7 +139,7 @@ NullableEnc::operator EncodingLayout() const {
   constexpr auto kNulls = EncodingIdentifiers::Nullable::Nulls;
   static_assert(kData == 0 && kNulls == 1);
 
-  std::vector<std::optional<const EncodingLayout>> children;
+  std::vector<std::optional<EncodingLayout>> children;
   children.reserve(2);
   children.emplace_back(data);
   children.emplace_back(nulls);

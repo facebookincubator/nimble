@@ -1158,7 +1158,7 @@ TEST(ReplayedEncodingSelectionPolicyTest, encodingRoundTrip) {
     std::vector<uint32_t> data;
     // Children layouts for compound encodings (e.g., RLE needs RunLengths
     // and RunValues slots). nullopt children fall back to policyFactory.
-    std::vector<std::optional<const nimble::EncodingLayout>> children;
+    std::vector<std::optional<nimble::EncodingLayout>> children;
     std::string debugString() const {
       return fmt::format(
           "encodingType {}, compress {}",

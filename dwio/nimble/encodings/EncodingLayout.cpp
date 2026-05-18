@@ -39,7 +39,7 @@ EncodingLayout::EncodingLayout(
     EncodingType encodingType,
     Config encodingConfig,
     CompressionType compressionType,
-    std::vector<std::optional<const EncodingLayout>> children)
+    std::vector<std::optional<EncodingLayout>> children)
     : encodingType_{encodingType},
       encodingConfig_{std::move(encodingConfig)},
       compressionType_{compressionType},
@@ -103,7 +103,7 @@ std::pair<EncodingLayout, uint32_t> EncodingLayout::create(
   NIMBLE_DCHECK_EQ(extraDataSize, 0, "Extra data currently not supported.");
 
   uint32_t offset = kMinEncodingLayoutBufferSize;
-  std::vector<std::optional<const EncodingLayout>> children;
+  std::vector<std::optional<EncodingLayout>> children;
   children.reserve(childrenCount);
   for (auto i = 0; i < childrenCount; ++i) {
     auto childExists = encoding::peek<uint8_t>(encoding.data() + offset);
@@ -132,7 +132,7 @@ uint8_t EncodingLayout::childrenCount() const {
   return children_.size();
 }
 
-const std::optional<const EncodingLayout>& EncodingLayout::child(
+const std::optional<EncodingLayout>& EncodingLayout::child(
     NestedEncodingIdentifier identifier) const {
   NIMBLE_DCHECK_LT(
       identifier,
@@ -166,7 +166,7 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
         encoding.data() + kEncodingPrefixSize);
   }
 
-  std::vector<std::optional<const EncodingLayout>> children;
+  std::vector<std::optional<EncodingLayout>> children;
   switch (encodingType) {
     case EncodingType::FixedBitWidth:
     case EncodingType::Varint:

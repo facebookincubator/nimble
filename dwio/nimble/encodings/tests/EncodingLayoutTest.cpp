@@ -23,8 +23,8 @@ using namespace facebook;
 namespace {
 
 void verifyEncodingLayout(
-    const std::optional<const nimble::EncodingLayout>& expected,
-    const std::optional<const nimble::EncodingLayout>& actual) {
+    const std::optional<nimble::EncodingLayout>& expected,
+    const std::optional<nimble::EncodingLayout>& actual) {
   ASSERT_EQ(expected.has_value(), actual.has_value());
 
   if (!expected.has_value()) {

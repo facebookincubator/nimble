@@ -376,7 +376,7 @@ class ChunkedDecoderDataTest : public index::test::ClusterIndexTestBase,
   template <typename T>
   std::unique_ptr<EncodingSelectionPolicy<T>> createEncodingSelectionPolicy(
       EncodingType encodingType) {
-    std::vector<std::optional<const EncodingLayout>> children;
+    std::vector<std::optional<EncodingLayout>> children;
     if (encodingType == EncodingType::Nullable) {
       // Nullable encoding needs child encodings for:
       // 0: nulls bitmap (bool)

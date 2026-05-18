@@ -47,7 +47,7 @@ class EncodingLayout {
       EncodingType encodingType,
       Config encodingConfig,
       CompressionType compressionType,
-      std::vector<std::optional<const EncodingLayout>> children = {});
+      std::vector<std::optional<EncodingLayout>> children = {});
 
   EncodingType encodingType() const;
 
@@ -55,7 +55,7 @@ class EncodingLayout {
 
   uint8_t childrenCount() const;
 
-  const std::optional<const EncodingLayout>& child(
+  const std::optional<EncodingLayout>& child(
       NestedEncodingIdentifier identifier) const;
 
   // Returns the encoding-specific configuration.
@@ -72,7 +72,7 @@ class EncodingLayout {
 
   CompressionType compressionType_;
 
-  std::vector<std::optional<const EncodingLayout>> children_;
+  std::vector<std::optional<EncodingLayout>> children_;
 };
 
 class EncodingLayoutCapture {
