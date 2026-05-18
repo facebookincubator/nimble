@@ -63,7 +63,7 @@ EncodingLayout makeIndexEncodingLayout(
     EncodingType encodingType,
     CompressionType compressionType,
     std::optional<uint32_t> prefixRestartInterval) {
-  std::vector<std::optional<const EncodingLayout>> children;
+  std::vector<std::optional<EncodingLayout>> children;
   if (encodingType == EncodingType::Trivial) {
     // Trivial encoding for string data needs a child encoding for lengths.
     children.emplace_back(

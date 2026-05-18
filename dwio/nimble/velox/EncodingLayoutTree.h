@@ -74,10 +74,10 @@ class EncodingLayoutTree {
   std::vector<StreamIdentifier> encodingLayoutIdentifiers() const;
 
  private:
-  const Kind schemaKind_;
-  const std::unordered_map<StreamIdentifier, EncodingLayout> encodingLayouts_;
-  const std::string name_;
-  const std::vector<EncodingLayoutTree> children_;
+  Kind schemaKind_;
+  std::unordered_map<StreamIdentifier, EncodingLayout> encodingLayouts_;
+  std::string name_;
+  std::vector<EncodingLayoutTree> children_;
 };
 
 } // namespace facebook::nimble
