@@ -223,7 +223,7 @@ struct VeloxWriterOptions {
   uint32_t maxEncodeParallelism{0};
   uint32_t minStreamsPerEncodeUnit{1};
 
-  bool enableChunking{false};
+  bool enableChunking{true};
 
   // This callback will be visited on access to getDecodedVector in order to
   // monitor usage of decoded vectors vs. data that is passed-through in the

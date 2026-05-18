@@ -568,6 +568,7 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
 
   nimble::VeloxWriterOptions createFlatMapWriterOptions() const {
     nimble::VeloxWriterOptions options;
+    options.enableChunking = false;
     options.skipConstantFlatMapInMapStreams = skipConstantFlatMapInMapStreams();
     return options;
   }
@@ -6476,6 +6477,7 @@ TEST_P(VeloxReaderTest, estimatedRowSizeMix) {
           velox::ROW({{"flat_mix_col", typeFunc(elementType)}}));
 
       nimble::VeloxWriterOptions writerOptions;
+      writerOptions.enableChunking = false;
       // TODO: Remove the customized policy after estimation is supported
       // for all encoding types.
       writerOptions.encodingSelectionPolicyFactory =
