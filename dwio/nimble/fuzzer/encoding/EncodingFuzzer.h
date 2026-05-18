@@ -180,11 +180,13 @@ class EncodingFuzzer {
       uint32_t iterations,
       uint32_t maxRows,
       uint32_t seed,
-      bool testCompression)
+      bool testCompression,
+      const Encoding::Options& options = {})
       : iterations_{iterations},
         maxRows_{maxRows},
         seed_{seed},
-        testCompression_{testCompression} {
+        testCompression_{testCompression},
+        options_{options} {
     pool_ = velox::memory::deprecatedAddDefaultLeafMemoryPool();
     buffer_ = std::make_unique<Buffer>(*pool_);
   }
@@ -284,8 +286,8 @@ class EncodingFuzzer {
 
     std::string_view encoded;
     try {
-      encoded =
-          Encoder<EncodingClass>::encode(encodeBuffer, data, compressionType);
+      encoded = Encoder<EncodingClass>::encode(
+          encodeBuffer, data, compressionType, options_);
     } catch (const NimbleUserError& e) {
       if (e.errorCode() == error_code::IncompatibleEncoding) {
         return;
@@ -464,6 +466,7 @@ class EncodingFuzzer {
   uint32_t maxRows_;
   uint32_t seed_;
   bool testCompression_;
+  Encoding::Options options_;
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::unique_ptr<Buffer> buffer_;
 };
