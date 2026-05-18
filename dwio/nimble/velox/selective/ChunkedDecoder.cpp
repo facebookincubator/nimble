@@ -372,10 +372,9 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
   return stringDataSizeEstimate_;
 }
 
-bool ChunkedDecoder::dictionaryConvertible() {
+bool ChunkedDecoder::dictionaryConvertible() const {
   NIMBLE_CHECK_NOT_NULL(
       encoding_, "Call ensureLoaded() before dictionaryConvertible()");
   return encoding_->dictionaryEnabled();
 }
-
 } // namespace facebook::nimble

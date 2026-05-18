@@ -328,15 +328,14 @@ template <typename V>
 void NullableEncoding<T>::readIndicesWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
+  NIMBLE_CHECK(
+      this->dictionaryEnabled(),
+      "readIndicesWithVisitor requires dictionary-enabled inner encoding");
+  NIMBLE_CHECK(
+      !V::kHasFilter && !V::kHasHook,
+      "readIndicesWithVisitor should only be invoked in dictionary fast path");
   materializeNullsForVisitor(visitor, params);
-  NIMBLE_CHECK_EQ(
-      nonNullValues_->encodingType(),
-      EncodingType::Dictionary,
-      "readIndicesWithVisitor called on NullableEncoding with non-dictionary "
-      "inner encoding: {}",
-      nonNullValues_->encodingType());
-  auto& dictEnc = static_cast<DictionaryEncoding<T>&>(*nonNullValues_);
-  dictEnc.readIndicesWithVisitor(visitor, params);
+  callReadIndicesWithVisitor(*nonNullValues_, visitor, params);
 }
 
 template <typename T>

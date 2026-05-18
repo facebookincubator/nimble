@@ -22,8 +22,10 @@
 #include "dwio/nimble/encodings/EncodingPrefix.h"
 #include "velox/buffer/BufferPool.h"
 #include "velox/common/base/BitUtil.h"
+#include "velox/common/base/SimdUtil.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/dwio/common/ColumnVisitors.h"
+#include "velox/dwio/common/DecoderUtil.h"
 
 #include <type_traits>
 
@@ -254,11 +256,10 @@ class Encoding {
     NIMBLE_UNREACHABLE("dictionaryEntries on non-dictionary encoding");
   }
 
-  /// Materializes the next |rowCount| dictionary indices into buffer.
-  /// Advances the row pointer |rowCount|.
-  virtual void materializeIndices(
-      uint32_t /* rowCount */,
-      uint32_t* /* buffer */) {
+  /// Materializes raw dictionary indices for rowCount dense consecutive
+  /// non-null rows. Does not touch any visitor/reader state.
+  /// Overridden by DictionaryEncoding and MainlyConstantEncoding.
+  virtual void materializeIndices(uint32_t /*rowCount*/, uint32_t* /*buffer*/) {
     NIMBLE_UNREACHABLE("materializeIndices on non-dictionary encoding");
   }
 
@@ -438,6 +439,128 @@ T castFromPhysicalType(const PhysicalType& value) {
   } else {
     return value;
   }
+}
+
+// Materializes dictionary indices into the reader's rawValues_ and scatters
+// for null gaps. Used by DictionaryEncoding and MainlyConstantEncoding
+// readIndicesWithVisitor as the dense no-filter fast path.
+// Updates visitor state (addNumValues/setRowIndex) to mark all rows consumed.
+//
+// @param encoding The encoding to call materializeIndices on.
+// @param visitor The visitor (used for outerNonNullRows scratch buffer).
+// @param rawNulls The null bitmap from nullsInReadRange (may be nullptr).
+// @param readOffset Bit offset into rawNulls for the current read range.
+// @param numReadRows Total rows in the read range (including nulls).
+// @param numNonNulls Count of non-null rows in the range.
+template <typename V>
+void readDenseMaterializedIndices(
+    Encoding& encoding,
+    V& visitor,
+    const uint64_t* rawNulls,
+    vector_size_t readOffset,
+    uint32_t numReadRows,
+    uint32_t numNonNulls) {
+  auto* rawOutputValues =
+      reinterpret_cast<int32_t*>(visitor.reader().rawValues());
+  const auto valueOutputOffset = visitor.reader().numValues();
+  encoding.materializeIndices(
+      numNonNulls,
+      reinterpret_cast<uint32_t*>(rawOutputValues + valueOutputOffset));
+  if (numNonNulls == numReadRows) {
+    visitor.addNumValues(numReadRows);
+    visitor.setRowIndex(visitor.numRows());
+    return;
+  }
+  auto& outerNonNullRows = visitor.outerNonNullRows();
+  outerNonNullRows.resize(numNonNulls);
+  auto* rawOuterNonNullRows = outerNonNullRows.data();
+  velox::simd::indicesOfSetBits(
+      rawNulls, readOffset, readOffset + numReadRows, rawOuterNonNullRows);
+  for (auto& row : outerNonNullRows) {
+    row = row - readOffset + valueOutputOffset;
+  }
+  velox::dwio::common::scatterNonNulls(
+      /*targetBegin=*/0,
+      numNonNulls,
+      /*sourceBegin=*/valueOutputOffset,
+      rawOuterNonNullRows,
+      rawOutputValues);
+  visitor.addNumValues(numReadRows);
+  visitor.setRowIndex(visitor.numRows());
+}
+
+// Gathers dictionary indices from a pre-materialized buffer into rawValues_
+// for sparse (non-dense) row sets. The buffer contains dense indices for all
+// non-null rows in the range [numScanned, numScanned + numReadRows).
+// The visitor's row set determines which positions to gather.
+// Updates visitor state (addNumValues/setRowIndex) to mark all rows consumed.
+//
+// Walks non-null positions and the visitor's row set in lockstep so the
+// encoding-space index is tracked incrementally — O(numReadRows)
+// instead of O(numVisitorRows * numReadRows).
+//
+// @param encoding The encoding to call materializeIndices on.
+// @param visitor The visitor with the sparse row set.
+// @param readOffset Bit offset into rawNulls for the current read range.
+// @param prepareResultNulls Callback to allocate resultNulls_ on first null.
+// @param rawNulls The null bitmap from nullsInReadRange (may be nullptr).
+// @param numReadRows Total rows in the read range.
+// @param numNonNulls Count of non-null rows in the range.
+// @param indicesBuffer Scratch buffer with at least numNonNulls entries.
+template <typename V>
+void readSparseMaterializedIndices(
+    Encoding& encoding,
+    V& visitor,
+    vector_size_t readOffset,
+    const std::function<void()>& prepareResultNulls,
+    const uint64_t* rawNulls,
+    uint32_t numReadRows,
+    uint32_t numNonNulls,
+    uint32_t* indicesBuffer) {
+  encoding.materializeIndices(numNonNulls, indicesBuffer);
+  auto* rawOutputValues =
+      reinterpret_cast<int32_t*>(visitor.reader().rawValues());
+  const auto valueOutputOffset = visitor.reader().numValues();
+
+  const auto startRowIndex = visitor.rowIndex();
+  uint32_t indexOffset = 0;
+  auto readRowIndex = startRowIndex;
+  bool nullsEmitted = false;
+  for (uint32_t row = 0; row < numReadRows && readRowIndex < visitor.numRows();
+       ++row) {
+    const bool isReadRow =
+        row == static_cast<uint32_t>(visitor.rowAt(readRowIndex) - readOffset);
+    const bool isNull = rawNulls != nullptr &&
+        !velox::bits::isBitSet(rawNulls, readOffset + row);
+    if (isNull) {
+      if (isReadRow) {
+        // In the sparse case, returnReaderNulls_ is false
+        // (initReturnReaderNulls only sets it for dense rows). resultNulls()
+        // then returns resultNulls_ instead of nullsInReadRange_. We must
+        // explicitly write null bits to resultNulls_ so
+        // DictionaryVector::validate() knows to skip these positions. Also
+        // write 0 as a safe placeholder index.
+        if (!nullsEmitted) {
+          nullsEmitted = true;
+          prepareResultNulls();
+          visitor.reader().setHasNulls();
+        }
+        const auto outputPos = valueOutputOffset + readRowIndex - startRowIndex;
+        rawOutputValues[outputPos] = 0;
+        velox::bits::setNull(visitor.reader().rawResultNulls(), outputPos);
+        ++readRowIndex;
+      }
+      continue;
+    }
+    if (isReadRow) {
+      rawOutputValues[valueOutputOffset + readRowIndex - startRowIndex] =
+          static_cast<int32_t>(indicesBuffer[indexOffset]);
+      ++readRowIndex;
+    }
+    ++indexOffset;
+  }
+  visitor.addNumValues(visitor.numRows() - visitor.rowIndex());
+  visitor.setRowIndex(visitor.numRows());
 }
 
 template <typename DecoderVisitor, typename Skip, typename F>

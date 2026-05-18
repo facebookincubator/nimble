@@ -17,11 +17,13 @@
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
+#include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/FlushPolicy.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/io/IoStatistics.h"
 #include "velox/common/testutil/TestValue.h"
+#include "velox/vector/DictionaryVector.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
 #include <gtest/gtest.h>
@@ -1153,6 +1155,274 @@ DEBUG_ONLY_TEST_P(StringColumnReaderTest, dictionaryPathAlphabetSize) {
       asRowType(input->type()),
       pool());
   EXPECT_EQ(dictPathEntries, 1);
+}
+
+// Basic mainly-constant string read: ~95% common value with a small other
+// alphabet. Naturally triggers Nullable<MainlyConstant<Dictionary>> encoding.
+TEST_P(StringColumnReaderTest, mainlyConstantDictionary) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kRows = 500;
+  const std::string commonValue(50, 'x');
+  const std::string otherValues[] = {"alpha", "bravo", "charlie"};
+  auto input = makeRowVector({
+      makeFlatVector<std::string>(
+          kRows,
+          [&](auto i) {
+            return i % 20 == 0 ? otherValues[i % 3] : commonValue;
+          }),
+  });
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
+  validateWithEncodingChecks(
+      *input->childAt(0),
+      *readers.rowReader,
+      kRows,
+      /*totalRows=*/kRows,
+      {VectorEncoding::Simple::DICTIONARY},
+      asRowType(input->type()),
+      pool());
+}
+
+// Mainly-constant string with nulls.
+TEST_P(StringColumnReaderTest, mainlyConstantDictionaryWithNulls) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kRows = 500;
+  const std::string commonValue(50, 'x');
+  const std::string otherValues[] = {"alpha", "bravo", "charlie"};
+  auto input = makeRowVector({
+      makeFlatVector<std::string>(
+          kRows,
+          [&](auto i) {
+            return i % 20 == 0 ? otherValues[i % 3] : commonValue;
+          },
+          nullEvery(7)),
+  });
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
+  validateWithEncodingChecks(
+      *input->childAt(0),
+      *readers.rowReader,
+      kRows,
+      /*totalRows=*/kRows,
+      {VectorEncoding::Simple::DICTIONARY},
+      asRowType(input->type()),
+      pool());
+}
+
+// Mainly-constant across stripe boundaries: two stripes with different
+// common values and different "other" alphabets.
+TEST_P(StringColumnReaderTest, mainlyConstantDictionaryAcrossStripes) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kStripeRows = 200;
+  const std::string common1(50, 'x');
+  const std::string common2(50, 'y');
+  const std::string others1[] = {"alpha", "bravo", "charlie"};
+  const std::string others2[] = {"delta", "echo", "foxtrot"};
+  auto stripe1 = makeRowVector({
+      makeFlatVector<std::string>(
+          kStripeRows,
+          [&](auto i) { return i % 20 == 0 ? others1[i % 3] : common1; }),
+  });
+  auto stripe2 = makeRowVector({
+      makeFlatVector<std::string>(
+          kStripeRows,
+          [&](auto i) { return i % 20 == 0 ? others2[i % 3] : common2; }),
+  });
+
+  // Force MC→Dict via encoding layout tree. The writer wraps in
+  // Nullable automatically for nullable columns.
+  EncodingLayout dictLayout{
+      EncodingType::Dictionary,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt}};
+  EncodingLayout mainlyConstLayout{
+      EncodingType::MainlyConstant,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::move(dictLayout)}};
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableChunking = true;
+  writerOptions.encodingLayoutTree.emplace(
+      Kind::Row,
+      std::
+          unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>{},
+      "",
+      std::vector<EncodingLayoutTree>{EncodingLayoutTree{
+          Kind::Scalar, {{0, std::move(mainlyConstLayout)}}, "c0"}});
+  auto file = test::createNimbleFile(
+      *rootPool(),
+      {stripe1, stripe2},
+      writerOptions,
+      /*flushAfterWrite=*/true);
+
+  auto expected = makeRowVector({
+      makeFlatVector<std::string>(
+          kStripeRows * 2,
+          [&](auto i) {
+            if (i < kStripeRows) {
+              return i % 20 == 0 ? others1[i % 3] : common1;
+            }
+            auto j = i - kStripeRows;
+            return j % 20 == 0 ? others2[j % 3] : common2;
+          }),
+  });
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*expected->type());
+  auto readers = makeReaders(expected, file, scanSpec, stringDecoderZeroCopy);
+  using E = VectorEncoding::Simple;
+  validateWithEncodingChecks(
+      *expected->childAt(0),
+      *readers.rowReader,
+      100,
+      /*totalRows=*/2 * kStripeRows,
+      {E::DICTIONARY, E::DICTIONARY, E::DICTIONARY, E::DICTIONARY},
+      asRowType(expected->type()),
+      pool());
+}
+
+// Mainly-constant string column with chunking where read batches align with
+// chunk boundaries. This exercises the non-fallback dictionary fast path for
+// chunked layouts: each batch fits within a single chunk, so the dictionary
+// state (alphabet, indices) remains valid for the entire read.
+TEST_P(StringColumnReaderTest, mainlyConstantDictionaryAlignedChunks) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  const int numRows = 10000;
+  const std::string commonValue(50, 'x');
+  const std::string otherValues[] = {"alpha", "bravo", "charlie"};
+  auto input = makeRowVector({
+      makeFlatVector<std::string>(
+          numRows,
+          [&](auto i) {
+            return i % 20 == 0 ? otherValues[i % 3] : commonValue;
+          }),
+  });
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableChunking = true;
+  writerOptions.minStreamChunkRawSize = 0;
+  auto writeCount = std::make_shared<int>(0);
+  writerOptions.flushPolicyFactory = [writeCount] {
+    return std::make_unique<LambdaFlushPolicy>(
+        [](const StripeProgress&) { return false; },
+        [writeCount](const StripeProgress&) {
+          return ++(*writeCount) % 2 == 0;
+        });
+  };
+
+  std::string file;
+  {
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    VeloxWriter writer(
+        input->type(),
+        std::move(writeFile),
+        *rootPool(),
+        std::move(writerOptions));
+    const int batchWriteSize = 500;
+    for (int i = 0; i < numRows; i += batchWriteSize) {
+      writer.write(input->slice(i, std::min(batchWriteSize, numRows - i)));
+    }
+    writer.close();
+  }
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(input, file, scanSpec, stringDecoderZeroCopy);
+  // Batch size fits within a single chunk (1000 rows per chunk), so all
+  // batches use the dictionary path. With 10 chunks of 1000 rows and
+  // batch size 500, we get 20 batches — each within a single chunk.
+  std::vector<VectorEncoding::Simple> expectedEncodings(
+      20, VectorEncoding::Simple::DICTIONARY);
+  validateWithEncodingChecks(
+      *input->childAt(0),
+      *readers.rowReader,
+      /*batchSize=*/500,
+      /*totalRows=*/numRows,
+      expectedEncodings,
+      asRowType(input->type()),
+      pool());
+}
+
+// Same as mainlyConstantDictionaryAlignedChunks but with nulls.
+TEST_P(StringColumnReaderTest, mainlyConstantDictionaryAlignedChunksWithNulls) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  const int numRows = 10000;
+  const std::string commonValue(50, 'x');
+  const std::string otherValues[] = {"alpha", "bravo", "charlie"};
+  auto input = makeRowVector({
+      makeFlatVector<std::string>(
+          numRows,
+          [&](auto i) {
+            return i % 20 == 0 ? otherValues[i % 3] : commonValue;
+          },
+          nullEvery(7)),
+  });
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableChunking = true;
+  writerOptions.minStreamChunkRawSize = 0;
+  auto writeCount = std::make_shared<int>(0);
+  writerOptions.flushPolicyFactory = [writeCount] {
+    return std::make_unique<LambdaFlushPolicy>(
+        [](const StripeProgress&) { return false; },
+        [writeCount](const StripeProgress&) {
+          return ++(*writeCount) % 2 == 0;
+        });
+  };
+
+  std::string file;
+  {
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    VeloxWriter writer(
+        input->type(),
+        std::move(writeFile),
+        *rootPool(),
+        std::move(writerOptions));
+    const int batchWriteSize = 500;
+    for (int i = 0; i < numRows; i += batchWriteSize) {
+      writer.write(input->slice(i, std::min(batchWriteSize, numRows - i)));
+    }
+    writer.close();
+  }
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(input, file, scanSpec, stringDecoderZeroCopy);
+  std::vector<VectorEncoding::Simple> expectedEncodings(
+      20, VectorEncoding::Simple::DICTIONARY);
+  validateWithEncodingChecks(
+      *input->childAt(0),
+      *readers.rowReader,
+      /*batchSize=*/500,
+      /*totalRows=*/numRows,
+      expectedEncodings,
+      asRowType(input->type()),
+      pool());
 }
 
 INSTANTIATE_TEST_CASE_P(

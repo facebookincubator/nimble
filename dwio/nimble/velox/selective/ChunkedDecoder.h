@@ -19,6 +19,7 @@
 #include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/EncodingUtils.h"
+#include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/legacy/EncodingTrait.h"
 #include "dwio/nimble/index/ChunkIndexGroup.h"
@@ -228,7 +229,7 @@ class ChunkedDecoder {
   /// Ensures a chunk with remaining values is loaded. Loads the first chunk
   /// if none has been loaded yet, or advances to the next chunk if the current
   /// one is fully consumed. Called before inspecting the current encoding
-  /// (e.g., dictionaryConvertible, currentEncoding) so that the caller sees
+  /// (e.g., currentEncoding, dictionaryConvertible) so that the caller sees
   /// the encoding and remainingValues of the chunk that will actually be read.
   void ensureLoaded() {
     if (encoding_ != nullptr && remainingValues_ != 0) {
@@ -245,10 +246,11 @@ class ChunkedDecoder {
     return encoding_.get();
   }
 
-  /// Returns true if the current chunk's encoding is convertible to dictionary
-  /// indices (Dictionary or Nullable wrapping Dictionary).
+  /// Returns true if the current chunk's encoding supports dictionary index
+  /// reading. Delegates to Encoding::dictionaryEnabled() which handles Dict,
+  /// Nullable→Dict, and MC→Dict via virtual dispatch.
   /// Caller must call ensureLoaded() first.
-  bool dictionaryConvertible();
+  bool dictionaryConvertible() const;
 
   int64_t remainingValues() const {
     return remainingValues_;
@@ -258,6 +260,10 @@ class ChunkedDecoder {
   /// Non-legacy encodings only: requires stringDecoderZeroCopy_ == true.
   template <typename DictionaryVisitor>
   void readDictionaryIndices(DictionaryVisitor& visitor) {
+    // Dictionary indices reading requires the non-legacy encoding path.
+    // callReadIndicesWithVisitor static_casts to DictionaryEncoding /
+    // NullableEncoding / MainlyConstantEncoding which only exist in the
+    // non-legacy path (stringDecoderZeroCopy_ == true).
     NIMBLE_CHECK(
         stringDecoderZeroCopy_,
         "Dictionary indices reading requires non-legacy encoding path");
@@ -643,8 +649,8 @@ class ChunkedDecoder {
   // Tracks the current row position in the stream.
   uint32_t rowPosition_{0};
 
-  // Callback invoked at the start of loadNextChunk(). Used by
-  // StringColumnReader to invalidate dictionary state on chunk transitions.
+  // Callback invoked on chunk transitions. Used to clear cached state
+  // (e.g., alphabet, dictionaryValues) in the owning column reader.
   std::function<void()> onChunkLoad_;
 
   friend class ChunkedDecoderTestHelper;

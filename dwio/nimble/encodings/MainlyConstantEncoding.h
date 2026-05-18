@@ -25,6 +25,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/Encoding.h"
 #include "dwio/nimble/encodings/EncodingFactory.h"
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
@@ -97,7 +98,9 @@ class MainlyConstantEncodingBase
         otherValuesBuffer_(
             detail::getPooledBuffer<physicalType>(
                 pool,
-                this->options_.bufferPool)) {}
+                this->options_.bufferPool)),
+        dictionaryIndicesBuffer_(&pool),
+        dictionaryAlphabet_(&pool) {}
 
   ~MainlyConstantEncodingBase() override {
     auto* bufferPool = this->options_.bufferPool;
@@ -121,7 +124,7 @@ class MainlyConstantEncodingBase
     // implemented.
     isCommon_->materializeBoolsAsBits(rowCount, isCommon, 0);
 
-    // Mask tail bits once so the count loop is branchless.
+    // Mask tail bits to 1 (common) so countNonCommon is branchless.
     const auto tailBits = rowCount & 63;
     if (tailBits != 0) {
       isCommon[numWords - 1] |= ~((1ULL << tailBits) - 1);
@@ -142,7 +145,8 @@ class MainlyConstantEncodingBase
     auto* isCommon = reinterpret_cast<uint64_t*>(isCommonBuffer_.data());
     isCommon_->materializeBoolsAsBits(rowCount, isCommon, 0);
 
-    // Mask tail bits once so both count and scatter loops are branchless.
+    // Mask tail bits to 1 (common) so countNonCommon and the scatter
+    // loop (~isCommon) are branchless.
     const auto tailBits = rowCount & 63;
     if (tailBits != 0) {
       isCommon[numWords - 1] |= ~((1ULL << tailBits) - 1);
@@ -195,6 +199,64 @@ class MainlyConstantEncodingBase
           otherValues_->materialize(1, &otherValue);
           return otherValue;
         });
+  }
+
+  /// Reads dictionary indices through a MainlyConstant wrapper.
+  /// Materializes inner dict indices into dictionaryIndicesBuffer_, then
+  /// scatters them and commonValueIndex directly into rawValues_.
+  ///
+  /// The combined alphabet is [innerAlphabet[0], ..., commonValue].
+  /// Common rows → commonValueIndex, non-common rows → inner dict index.
+  template <typename IndicesVisitor>
+  void readIndicesWithVisitor(
+      IndicesVisitor& visitor,
+      ReadWithVisitorParams& params) {
+    NIMBLE_CHECK(
+        this->dictionaryEnabled(),
+        "readIndicesWithVisitor requires dictionary-enabled inner encoding");
+    NIMBLE_CHECK(
+        !IndicesVisitor::kHasFilter && !IndicesVisitor::kHasHook,
+        "readIndicesWithVisitor should only be invoked in dictionary fast path");
+    const auto numReadRows =
+        visitor.rowAt(visitor.numRows() - 1) - params.numScanned + 1;
+
+    auto* rawNulls = visitor.reader().rawNullsInReadRange();
+    const auto numNonNulls = rawNulls != nullptr
+        ? velox::bits::countNonNulls(
+              rawNulls, params.numScanned, params.numScanned + numReadRows)
+        : numReadRows;
+
+    // Dense fast path: materialize directly into rawValues_, scatter for nulls.
+    if (IndicesVisitor::dense) {
+      NIMBLE_CHECK_EQ(
+          visitor.rowAt(visitor.numRows() - 1),
+          visitor.rowAt(0) + visitor.numRows() - 1,
+          "Dense visitor must have contiguous rows");
+      detail::readDenseMaterializedIndices(
+          *this,
+          visitor,
+          rawNulls,
+          params.numScanned,
+          numReadRows,
+          numNonNulls);
+      return;
+    }
+
+    // Sparse path: materialize all rows into buffer, gather only the
+    // requested positions into rawValues_.
+    // TODO: Use templated materializeIndices to avoid materializing
+    // unrequested rows — see commented-out API mock-ups below and in
+    // EncodingUtils.h.
+    dictionaryIndicesBuffer_.resize(numNonNulls);
+    detail::readSparseMaterializedIndices(
+        *this,
+        visitor,
+        params.numScanned,
+        params.prepareResultNulls,
+        rawNulls,
+        numReadRows,
+        numNonNulls,
+        reinterpret_cast<uint32_t*>(dictionaryIndicesBuffer_.data()));
   }
 
   template <bool kScatter, typename V>
@@ -344,6 +406,77 @@ class MainlyConstantEncodingBase
     return log;
   }
 
+  // MC wraps an inner Dictionary encoding. The combined alphabet is
+  // [innerAlphabet..., commonValue], so dictionarySize is inner + 1.
+  bool dictionaryEnabled() const override {
+    return otherValues_->dictionaryEnabled();
+  }
+
+  // MainlyConstantEncoding pads the inner dictionary by the common value.
+  // Hence adds 1 to the inner dictionary size.
+  uint32_t dictionarySize() const override {
+    return otherValues_->dictionarySize() + 1;
+  }
+
+  const void* dictionaryEntry(uint32_t index) const override {
+    if (index < otherValues_->dictionarySize()) {
+      return otherValues_->dictionaryEntry(index);
+    }
+    return &commonValue_;
+  }
+
+  const void* dictionaryEntries() const override {
+    if (dictionaryAlphabet_.empty()) {
+      const auto numOtherValues = otherValues_->dictionarySize();
+      dictionaryAlphabet_.resize(numOtherValues + 1);
+      const auto* otherValues =
+          static_cast<const physicalType*>(otherValues_->dictionaryEntries());
+      std::copy(
+          otherValues,
+          otherValues + numOtherValues,
+          dictionaryAlphabet_.data());
+      dictionaryAlphabet_[numOtherValues] = commonValue_;
+    }
+    return dictionaryAlphabet_.data();
+  }
+
+  /// Materializes composed dictionary indices for rowCount dense non-null rows.
+  /// Reads isCommon, delegates to inner encoding's materializeIndices for
+  /// non-common rows, fills common positions with commonValueIndex.
+  void materializeIndices(uint32_t rowCount, uint32_t* buffer) override {
+    const auto numWords = velox::bits::nwords(rowCount);
+    isCommonBuffer_.resize(numWords * sizeof(uint64_t));
+    auto* isCommon = reinterpret_cast<uint64_t*>(isCommonBuffer_.data());
+    // Set the last word to all-ones so tail bits beyond rowCount are treated
+    // as common, making countNonCommon branchless without post-masking.
+    // materializeBoolsAsBits only overwrites bits [0, rowCount).
+    isCommon[numWords - 1] = ~0ULL;
+    isCommon_->materializeBoolsAsBits(rowCount, isCommon, /*bitOffset=*/0);
+
+    const uint32_t numNonCommon = countNonCommon(isCommon, numWords);
+    const auto commonValueIndex =
+        static_cast<uint32_t>(otherValues_->dictionarySize());
+
+    if (numNonCommon == 0) {
+      std::fill(buffer, buffer + rowCount, commonValueIndex);
+      return;
+    }
+
+    // Materialize inner indices densely at the front of buffer, then
+    // reverse-scatter interleaving with commonValueIndex.
+    otherValues_->materializeIndices(numNonCommon, buffer);
+
+    uint32_t index = numNonCommon;
+    for (int32_t i = static_cast<int32_t>(rowCount) - 1; i >= 0; --i) {
+      if (velox::bits::isBitSet(isCommon, i)) {
+        buffer[i] = commonValueIndex;
+      } else {
+        buffer[i] = buffer[--index];
+      }
+    }
+    NIMBLE_CHECK_EQ(index, 0);
+  }
+
  protected:
   // Counts unset bits across all words. Caller must mask tail bits
   // before calling (set garbage tail bits to 1 in the last word).
@@ -362,6 +495,8 @@ class MainlyConstantEncodingBase
   physicalType commonValue_;
   Vector<bool> isCommonBuffer_;
   Vector<physicalType> otherValuesBuffer_;
+  Vector<int32_t> dictionaryIndicesBuffer_;
+  mutable Vector<physicalType> dictionaryAlphabet_;
 };
 
 template <typename T>

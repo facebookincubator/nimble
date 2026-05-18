@@ -66,6 +66,10 @@ class DictionaryEncoding
   template <typename V>
   void readIndicesWithVisitor(V& visitor, ReadWithVisitorParams& params);
 
+  void materializeIndices(uint32_t rowCount, uint32_t* buffer) override {
+    indicesEncoding_->materialize(rowCount, buffer);
+  }
+
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
@@ -230,14 +234,52 @@ void DictionaryEncoding<T>::readWithVisitor(
 
 /// Reads indices only without looking up values from the alphabet.
 /// This is used for dictionary-aware readers that return DictionaryVector.
+/// Uses materializeIndices to avoid recursing through the visitor machinery,
+/// which would incorrectly call addNumValues from the inner encoding.
 template <typename T>
 template <typename V>
 void DictionaryEncoding<T>::readIndicesWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  // Call readWithVisitor on the indices encoding directly.
-  // The visitor is expected to handle int32_t values (dictionary indices).
-  callReadWithVisitor(*indicesEncoding_, visitor, params);
+  NIMBLE_CHECK(this->dictionaryEnabled());
+  NIMBLE_CHECK(
+      !V::kHasFilter && !V::kHasHook,
+      "readIndicesWithVisitor should only be invoked in dictionary fast path");
+  const auto numReadRows =
+      visitor.rowAt(visitor.numRows() - 1) - params.numScanned + 1;
+  auto* rawNulls = visitor.reader().rawNullsInReadRange();
+  const auto numNonNulls = rawNulls != nullptr
+      ? velox::bits::countNonNulls(
+            rawNulls, params.numScanned, params.numScanned + numReadRows)
+      : numReadRows;
+
+  // Dense fast path: materialize directly into rawValues_, scatter for nulls.
+  if (V::dense) {
+    NIMBLE_CHECK_EQ(
+        visitor.rowAt(visitor.numRows() - 1),
+        visitor.rowAt(0) + visitor.numRows() - 1,
+        "Dense visitor must have contiguous rows");
+    detail::readDenseMaterializedIndices(
+        *this, visitor, rawNulls, params.numScanned, numReadRows, numNonNulls);
+    return;
+  }
+
+  // Sparse path: materialize all rows into buffer, gather only the
+  // requested positions into rawValues_.
+  // TODO: Use FBW's random-access fixedBitArray_.get() to avoid
+  // materializing unrequested rows. Requires templated
+  // materializeIndices — see commented-out API mock-ups in this file
+  // and EncodingUtils.h.
+  indicesBuffer_.resize(numNonNulls);
+  detail::readSparseMaterializedIndices(
+      *this,
+      visitor,
+      params.numScanned,
+      params.prepareResultNulls,
+      rawNulls,
+      numReadRows,
+      numNonNulls,
+      indicesBuffer_.data());
 }
 
 template <typename T>

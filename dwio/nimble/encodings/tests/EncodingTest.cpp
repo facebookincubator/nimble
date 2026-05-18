@@ -821,6 +821,151 @@ class DictionaryApiTypedTest : public ::testing::Test {
         });
   }
 
+  /// Creates an Encoding from serialized bytes using EncodingFactory.
+  std::unique_ptr<nimble::Encoding> decodeEncoding(std::string_view data) {
+    return nimble::EncodingFactory().create(
+        *pool_, data, [this](uint32_t size) {
+          stringBuffers_.push_back(
+              velox::AlignedBuffer::allocate<char>(size, pool_.get()));
+          return stringBuffers_.back()->asMutable<void>();
+        });
+  }
+
+  /// Serializes values as MainlyConstant wrapping Dictionary into outputBuffer.
+  /// The common value is the most frequent element. Returns a string_view of
+  /// the serialized bytes in outputBuffer.
+  std::string_view serializeMainlyConstantDictionary(
+      const std::vector<T>& values,
+      nimble::Buffer& outputBuffer) {
+    NIMBLE_CHECK(!values.empty());
+    const uint32_t rowCount = values.size();
+
+    // Find the most common value.
+    std::unordered_map<PhysicalType, uint32_t> counts;
+    for (const auto& v : values) {
+      ++counts[reinterpret_cast<const PhysicalType&>(v)];
+    }
+    PhysicalType commonValue{};
+    uint32_t maxCount = 0;
+    for (const auto& [val, cnt] : counts) {
+      if (cnt > maxCount) {
+        maxCount = cnt;
+        commonValue = val;
+      }
+    }
+
+    // Build isCommon bools and other (non-common) values.
+    nimble::Vector<bool> isCommon{pool_.get(), rowCount, false};
+    nimble::Vector<T> otherVec{pool_.get()};
+    for (size_t i = 0; i < values.size(); ++i) {
+      if (reinterpret_cast<const PhysicalType&>(values[i]) == commonValue) {
+        isCommon[i] = true;
+      } else {
+        otherVec.push_back(values[i]);
+      }
+    }
+
+    // Encode isCommon as Trivial<bool>.
+    auto isCommonSpan = std::span<const bool>(isCommon.data(), isCommon.size());
+    nimble::Buffer isCommonBuf{*pool_};
+    nimble::EncodingSelection<bool> isCommonSel{
+        {.encodingType = nimble::EncodingType::Trivial},
+        nimble::Statistics<bool>::create(isCommonSpan),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<bool>>(
+            false, false)};
+    auto serializedIsCommon = nimble::TrivialEncoding<bool>::encode(
+        isCommonSel, isCommonSpan, isCommonBuf);
+
+    // Encode other values as Dictionary.
+    auto otherSpan = std::span<const PhysicalType>(
+        reinterpret_cast<const PhysicalType*>(otherVec.data()),
+        otherVec.size());
+    nimble::Buffer otherBuf{*pool_};
+    nimble::EncodingSelection<PhysicalType> otherSel{
+        {.encodingType = nimble::EncodingType::Dictionary},
+        nimble::Statistics<PhysicalType>::create(otherSpan),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(false, false)};
+    auto serializedOther =
+        nimble::DictionaryEncoding<T>::encode(otherSel, otherSpan, otherBuf);
+
+    // Assemble MainlyConstant binary: prefix | isCommon | otherValues |
+    // commonValue
+    uint32_t encodingSize = nimble::Encoding::kPrefixSize + 8 +
+        serializedIsCommon.size() + serializedOther.size();
+    if constexpr (nimble::isNumericType<PhysicalType>()) {
+      encodingSize += sizeof(PhysicalType);
+    } else {
+      encodingSize += 4 + commonValue.size();
+    }
+    char* reserved = outputBuffer.reserve(encodingSize);
+    char* pos = reserved;
+    nimble::encoding::writeChar(
+        static_cast<char>(nimble::EncodingType::MainlyConstant), pos);
+    nimble::encoding::writeChar(
+        static_cast<char>(nimble::TypeTraits<T>::dataType), pos);
+    nimble::encoding::writeUint32(rowCount, pos);
+    nimble::encoding::writeString(serializedIsCommon, pos);
+    nimble::encoding::writeString(serializedOther, pos);
+    nimble::encoding::write<PhysicalType>(commonValue, pos);
+
+    return std::string_view(reserved, encodingSize);
+  }
+
+  /// Encodes data as MainlyConstant wrapping Dictionary for the other-values
+  /// child. The common value is the most frequent element.
+  std::unique_ptr<nimble::Encoding> encodeMainlyConstantDictionary(
+      const std::vector<T>& values) {
+    auto serialized = serializeMainlyConstantDictionary(values, *buffer_);
+    return decodeEncoding(serialized);
+  }
+
+  /// Encodes data as Nullable wrapping MainlyConstant wrapping Dictionary.
+  std::unique_ptr<nimble::Encoding> encodeNullableMainlyConstantDictionary(
+      const std::vector<T>& values,
+      const nimble::Vector<bool>& nulls) {
+    NIMBLE_CHECK_EQ(values.size(), nulls.size());
+    const uint32_t rowCount = values.size();
+
+    // Collect non-null values.
+    std::vector<T> nonNullValues;
+    for (size_t i = 0; i < values.size(); ++i) {
+      if (nulls[i]) {
+        nonNullValues.push_back(values[i]);
+      }
+    }
+
+    // Serialize MC→Dict for non-null values.
+    nimble::Buffer mcBuffer{*pool_};
+    auto serializedMC =
+        serializeMainlyConstantDictionary(nonNullValues, mcBuffer);
+
+    // Encode nulls as Trivial<bool>.
+    auto nullSpan = std::span<const bool>(nulls.data(), nulls.size());
+    nimble::Buffer nullBuffer{*pool_};
+    nimble::EncodingSelection<bool> nullSelection{
+        {.encodingType = nimble::EncodingType::Trivial},
+        nimble::Statistics<bool>::create(nullSpan),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<bool>>(
+            false, false)};
+    auto serializedNulls = nimble::TrivialEncoding<bool>::encode(
+        nullSelection, nullSpan, nullBuffer);
+
+    // Assemble Nullable: prefix | MC bytes | null bytes
+    const uint32_t encodingSize = nimble::Encoding::kPrefixSize + 4 +
+        serializedMC.size() + serializedNulls.size();
+    char* reserved = buffer_->reserve(encodingSize);
+    char* pos = reserved;
+    nimble::encoding::writeChar(
+        static_cast<char>(nimble::EncodingType::Nullable), pos);
+    nimble::encoding::writeChar(
+        static_cast<char>(nimble::TypeTraits<T>::dataType), pos);
+    nimble::encoding::writeUint32(rowCount, pos);
+    nimble::encoding::writeString(serializedMC, pos);
+    nimble::encoding::writeBytes(serializedNulls, pos);
+
+    return decodeEncoding(std::string_view(reserved, encodingSize));
+  }
+
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::unique_ptr<nimble::Buffer> buffer_;
   std::vector<velox::BufferPtr> stringBuffers_;
@@ -1237,6 +1382,431 @@ TYPED_TEST(DictionaryApiTypedTest, buildAlphabetNullableFuzz) {
     EXPECT_EQ(alphabet.size(), expectedUniques.size());
     std::set<T> actual(alphabet.begin(), alphabet.end());
     EXPECT_EQ(actual, expectedUniques);
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, mainlyConstantDictionaryBasics) {
+  using T = TypeParam;
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha", "bravo"};
+    std::string_view common = "common_value";
+    this->stringPool_.push_back(std::string(common));
+    data.resize(20, std::string_view(this->stringPool_[2]));
+    data[3] = std::string_view(this->stringPool_[0]);
+    data[7] = std::string_view(this->stringPool_[1]);
+    data[15] = std::string_view(this->stringPool_[0]);
+  } else {
+    T common = T(99);
+    data.resize(20, common);
+    data[3] = T(1);
+    data[7] = T(2);
+    data[15] = T(1);
+  }
+
+  auto encoding = this->encodeMainlyConstantDictionary(data);
+  EXPECT_TRUE(encoding->dictionaryEnabled());
+  EXPECT_EQ(encoding->dictionarySize(), 3);
+
+  std::set<T> entries;
+  for (uint32_t i = 0; i < encoding->dictionarySize(); ++i) {
+    const auto* entry = static_cast<const T*>(encoding->dictionaryEntry(i));
+    entries.insert(*entry);
+  }
+
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    EXPECT_THAT(
+        entries,
+        ::testing::UnorderedElementsAre("alpha", "bravo", "common_value"));
+  } else {
+    EXPECT_THAT(entries, ::testing::UnorderedElementsAre(T(1), T(2), T(99)));
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, mainlyConstantDictionaryFuzz) {
+  using T = TypeParam;
+  for (int run = 0; run < 20; ++run) {
+    auto seed = folly::Random::rand32();
+    std::mt19937 rng(seed);
+    const auto numRows = 50 + rng() % 500;
+    const auto cardinality = 2 + rng() % 50;
+    const int commonPct = 55 + rng() % 40;
+
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      this->stringPool_.clear();
+      for (int j = 0; j < cardinality; ++j) {
+        const int len = 1 + rng() % 20;
+        std::string s = fmt::format("{}:", j);
+        for (int k = 0; k < len; ++k) {
+          s += static_cast<char>('a' + rng() % 26);
+        }
+        this->stringPool_.push_back(std::move(s));
+      }
+    }
+
+    T commonValue;
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      commonValue = std::string_view(this->stringPool_[0]);
+    } else {
+      commonValue = static_cast<T>(cardinality + 1);
+    }
+
+    std::vector<T> data;
+    std::set<T> expectedUniques;
+    expectedUniques.insert(commonValue);
+    data.reserve(numRows);
+    for (int i = 0; i < numRows; ++i) {
+      if (static_cast<int>(rng() % 100) < commonPct) {
+        data.push_back(commonValue);
+      } else {
+        T val;
+        if constexpr (std::is_same_v<T, std::string_view>) {
+          val = std::string_view(
+              this->stringPool_[1 + rng() % (cardinality - 1)]);
+        } else {
+          val = static_cast<T>(1 + rng() % cardinality);
+        }
+        data.push_back(val);
+        expectedUniques.insert(val);
+      }
+    }
+
+    SCOPED_TRACE(fmt::format("run={} seed={} numRows={}", run, seed, numRows));
+
+    auto encoding = this->encodeMainlyConstantDictionary(data);
+    ASSERT_TRUE(encoding->dictionaryEnabled());
+    ASSERT_EQ(encoding->dictionarySize(), expectedUniques.size());
+
+    std::set<T> actualEntries;
+    for (uint32_t i = 0; i < encoding->dictionarySize(); ++i) {
+      const auto* entry = static_cast<const T*>(encoding->dictionaryEntry(i));
+      actualEntries.insert(*entry);
+    }
+    EXPECT_EQ(actualEntries, expectedUniques);
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, buildAlphabetMainlyConstantDictionary) {
+  using T = TypeParam;
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha", "bravo"};
+    std::string_view common = "common";
+    this->stringPool_.push_back(std::string(common));
+    data.resize(20, std::string_view(this->stringPool_[2]));
+    data[3] = std::string_view(this->stringPool_[0]);
+    data[7] = std::string_view(this->stringPool_[1]);
+    data[15] = std::string_view(this->stringPool_[0]);
+  } else {
+    data.resize(20, T(99));
+    data[3] = T(1);
+    data[7] = T(2);
+    data[15] = T(1);
+  }
+
+  auto encoding = this->encodeMainlyConstantDictionary(data);
+  auto alphabet = nimble::buildEncodingDictionaryAlphabet<T>(encoding.get());
+  EXPECT_EQ(alphabet.size(), 3);
+  std::set<T> actual(alphabet.begin(), alphabet.end());
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    EXPECT_EQ(actual, (std::set<T>{"alpha", "bravo", "common"}));
+  } else {
+    EXPECT_EQ(actual, (std::set<T>{T(1), T(2), T(99)}));
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, buildAlphabetMainlyConstantDictionaryFuzz) {
+  using T = TypeParam;
+  for (int run = 0; run < 20; ++run) {
+    auto seed = folly::Random::rand32();
+    std::mt19937 rng(seed);
+    const auto numRows = 50 + rng() % 500;
+    const auto cardinality = 2 + rng() % 50;
+    const int commonPct = 55 + rng() % 40;
+
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      this->stringPool_.clear();
+      for (int j = 0; j < cardinality; ++j) {
+        const int len = 1 + rng() % 20;
+        std::string s = fmt::format("{}:", j);
+        for (int k = 0; k < len; ++k) {
+          s += static_cast<char>('a' + rng() % 26);
+        }
+        this->stringPool_.push_back(std::move(s));
+      }
+    }
+
+    T commonValue;
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      commonValue = std::string_view(this->stringPool_[0]);
+    } else {
+      commonValue = static_cast<T>(cardinality + 1);
+    }
+
+    std::vector<T> data;
+    std::set<T> expectedUniques;
+    expectedUniques.insert(commonValue);
+    data.reserve(numRows);
+    for (int i = 0; i < numRows; ++i) {
+      if (static_cast<int>(rng() % 100) < commonPct) {
+        data.push_back(commonValue);
+      } else {
+        T val;
+        if constexpr (std::is_same_v<T, std::string_view>) {
+          val = std::string_view(
+              this->stringPool_[1 + rng() % (cardinality - 1)]);
+        } else {
+          val = static_cast<T>(1 + rng() % cardinality);
+        }
+        data.push_back(val);
+        expectedUniques.insert(val);
+      }
+    }
+
+    SCOPED_TRACE(fmt::format("run={} seed={} numRows={}", run, seed, numRows));
+
+    auto encoding = this->encodeMainlyConstantDictionary(data);
+    auto alphabet = nimble::buildEncodingDictionaryAlphabet<T>(encoding.get());
+    EXPECT_EQ(alphabet.size(), expectedUniques.size());
+    std::set<T> actual(alphabet.begin(), alphabet.end());
+    EXPECT_EQ(actual, expectedUniques);
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, nullableMainlyConstantDictionaryBasics) {
+  using T = TypeParam;
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha", "bravo"};
+    std::string_view common = "common";
+    this->stringPool_.push_back(std::string(common));
+    data = {
+        std::string_view(this->stringPool_[2]),
+        std::string_view(this->stringPool_[0]),
+        std::string_view(this->stringPool_[2]),
+        std::string_view(this->stringPool_[1]),
+        std::string_view(this->stringPool_[2]),
+        std::string_view(this->stringPool_[2]),
+        std::string_view(this->stringPool_[2])};
+  } else {
+    data = {T(99), T(1), T(99), T(2), T(99), T(99), T(99)};
+  }
+  nimble::Vector<bool> nulls{this->pool_.get()};
+  for (bool n : {true, true, false, true, true, true, true}) {
+    nulls.push_back(n);
+  }
+
+  auto encoding = this->encodeNullableMainlyConstantDictionary(data, nulls);
+  EXPECT_TRUE(encoding->dictionaryEnabled());
+  EXPECT_EQ(encoding->dictionarySize(), 3);
+}
+
+TYPED_TEST(DictionaryApiTypedTest, materializeIndicesDictionary) {
+  using T = TypeParam;
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha", "bravo", "charlie"};
+    data = {
+        std::string_view(this->stringPool_[0]),
+        std::string_view(this->stringPool_[1]),
+        std::string_view(this->stringPool_[0]),
+        std::string_view(this->stringPool_[2]),
+        std::string_view(this->stringPool_[1])};
+  } else {
+    data = {T(1), T(2), T(1), T(3), T(2)};
+  }
+
+  auto encoding = this->encodeDictionary(data);
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+  const uint32_t rowCount = data.size();
+
+  nimble::Vector<uint32_t> indices{this->pool_.get(), rowCount};
+  encoding->materializeIndices(rowCount, indices.data());
+
+  // Every materialized index must be in range and map to the correct value.
+  for (uint32_t i = 0; i < rowCount; ++i) {
+    ASSERT_LT(indices[i], encoding->dictionarySize());
+    const auto* entry =
+        static_cast<const T*>(encoding->dictionaryEntry(indices[i]));
+    EXPECT_EQ(*entry, data[i]) << "row=" << i;
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, materializeIndicesDictionaryFuzz) {
+  using T = TypeParam;
+
+  for (int run = 0; run < 20; ++run) {
+    auto seed = folly::Random::rand32();
+    std::mt19937 rng(seed);
+    const int numRows = 2 + rng() % 300;
+    const int cardinality = 2 + rng() % 10;
+
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      this->stringPool_.clear();
+      for (int j = 0; j < cardinality; ++j) {
+        const int len = rng() % 30;
+        std::string s = fmt::format("{}:", j);
+        for (int k = 0; k < len; ++k) {
+          s += static_cast<char>('a' + rng() % 26);
+        }
+        this->stringPool_.push_back(std::move(s));
+      }
+    }
+
+    std::vector<T> data;
+    data.reserve(numRows);
+    for (int i = 0; i < numRows; ++i) {
+      T val;
+      if constexpr (std::is_same_v<T, std::string_view>) {
+        val = std::string_view(this->stringPool_[rng() % cardinality]);
+      } else {
+        val = static_cast<T>(rng() % cardinality);
+      }
+      data.push_back(val);
+    }
+
+    SCOPED_TRACE(fmt::format("run={} seed={} numRows={}", run, seed, numRows));
+
+    auto encoding = this->encodeDictionary(data);
+    ASSERT_TRUE(encoding->dictionaryEnabled());
+
+    nimble::Vector<uint32_t> indices{
+        this->pool_.get(), static_cast<uint32_t>(numRows)};
+    encoding->materializeIndices(numRows, indices.data());
+
+    for (int i = 0; i < numRows; ++i) {
+      ASSERT_LT(indices[i], encoding->dictionarySize()) << "row=" << i;
+      const auto* entry =
+          static_cast<const T*>(encoding->dictionaryEntry(indices[i]));
+      EXPECT_EQ(*entry, data[i]) << "row=" << i;
+    }
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, materializeIndicesMainlyConstantDictionary) {
+  using T = TypeParam;
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha", "bravo"};
+    std::string_view common = "common_value";
+    this->stringPool_.push_back(std::string(common));
+    data.resize(20, std::string_view(this->stringPool_[2]));
+    data[3] = std::string_view(this->stringPool_[0]);
+    data[7] = std::string_view(this->stringPool_[1]);
+    data[15] = std::string_view(this->stringPool_[0]);
+  } else {
+    T common = T(99);
+    data.resize(20, common);
+    data[3] = T(1);
+    data[7] = T(2);
+    data[15] = T(1);
+  }
+
+  auto encoding = this->encodeMainlyConstantDictionary(data);
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+  const uint32_t rowCount = data.size();
+  const uint32_t commonValueIndex = encoding->dictionarySize() - 1;
+
+  nimble::Vector<uint32_t> indices{this->pool_.get(), rowCount};
+  encoding->materializeIndices(rowCount, indices.data());
+
+  // Build a lookup from alphabet entry value to index.
+  std::unordered_map<T, uint32_t> valueToIndex;
+  for (uint32_t i = 0; i < encoding->dictionarySize(); ++i) {
+    const auto* entry = static_cast<const T*>(encoding->dictionaryEntry(i));
+    valueToIndex[*entry] = i;
+  }
+
+  for (uint32_t i = 0; i < rowCount; ++i) {
+    ASSERT_LT(indices[i], encoding->dictionarySize()) << "row=" << i;
+    const auto* entry =
+        static_cast<const T*>(encoding->dictionaryEntry(indices[i]));
+    EXPECT_EQ(*entry, data[i]) << "row=" << i;
+  }
+
+  // Common-value rows should all map to the commonValueIndex.
+  T commonValue;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    commonValue = std::string_view(this->stringPool_[2]);
+  } else {
+    commonValue = T(99);
+  }
+  for (uint32_t i = 0; i < rowCount; ++i) {
+    if (data[i] == commonValue) {
+      EXPECT_EQ(indices[i], commonValueIndex) << "row=" << i;
+    }
+  }
+}
+
+TYPED_TEST(
+    DictionaryApiTypedTest,
+    materializeIndicesMainlyConstantDictionaryFuzz) {
+  using T = TypeParam;
+
+  for (int run = 0; run < 20; ++run) {
+    auto seed = folly::Random::rand32();
+    std::mt19937 rng(seed);
+    const auto numRows = 50 + rng() % 500;
+    const auto cardinality = 2 + rng() % 50;
+    const int commonPct = 55 + rng() % 40;
+
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      this->stringPool_.clear();
+      for (int j = 0; j < cardinality; ++j) {
+        const int len = 1 + rng() % 20;
+        std::string s = fmt::format("{}:", j);
+        for (int k = 0; k < len; ++k) {
+          s += static_cast<char>('a' + rng() % 26);
+        }
+        this->stringPool_.push_back(std::move(s));
+      }
+    }
+
+    T commonValue;
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      commonValue = std::string_view(this->stringPool_[0]);
+    } else {
+      commonValue = static_cast<T>(cardinality + 1);
+    }
+
+    std::vector<T> data;
+    data.reserve(numRows);
+    for (int i = 0; i < numRows; ++i) {
+      if (static_cast<int>(rng() % 100) < commonPct) {
+        data.push_back(commonValue);
+      } else {
+        T val;
+        if constexpr (std::is_same_v<T, std::string_view>) {
+          val = std::string_view(
+              this->stringPool_[1 + rng() % (cardinality - 1)]);
+        } else {
+          val = static_cast<T>(1 + rng() % cardinality);
+        }
+        data.push_back(val);
+      }
+    }
+
+    SCOPED_TRACE(fmt::format("run={} seed={} numRows={}", run, seed, numRows));
+
+    auto encoding = this->encodeMainlyConstantDictionary(data);
+    ASSERT_TRUE(encoding->dictionaryEnabled());
+    const uint32_t commonValueIndex = encoding->dictionarySize() - 1;
+
+    nimble::Vector<uint32_t> indices{
+        this->pool_.get(), static_cast<uint32_t>(numRows)};
+    encoding->materializeIndices(numRows, indices.data());
+
+    for (int i = 0; i < numRows; ++i) {
+      ASSERT_LT(indices[i], encoding->dictionarySize()) << "row=" << i;
+      const auto* entry =
+          static_cast<const T*>(encoding->dictionaryEntry(indices[i]));
+      EXPECT_EQ(*entry, data[i]) << "row=" << i;
+
+      // Common-value rows must map to the last alphabet entry.
+      if (data[i] == commonValue) {
+        EXPECT_EQ(indices[i], commonValueIndex) << "row=" << i;
+      }
+    }
   }
 }
 

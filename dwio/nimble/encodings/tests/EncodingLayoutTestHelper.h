@@ -30,6 +30,14 @@ struct TrivialEnc {
   operator EncodingLayout() const;
 };
 
+// TrivialEncoding<std::string_view> has a nested Lengths sub-encoding
+// (EncodingIdentifiers::Trivial::Lengths = 0). Use this instead of TrivialEnc
+// when encoding string types.
+struct StringTrivialEnc {
+  EncodingLayout lengths = TrivialEnc{};
+  operator EncodingLayout() const;
+};
+
 struct ConstantEnc {
   operator EncodingLayout() const;
 };
