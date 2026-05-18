@@ -588,3 +588,30 @@ TEST_F(FrequencyPartitionEncodingTest, IndexedLargeSkewed_AllThreeModes) {
     ASSERT_EQ(resultEF[i], data[i])      << "EliasFano mismatch at " << i;
   }
 }
+
+// Test getTierForRow returns correct tier for each encoded-stream position.
+//
+// Data layout after encoding (NoIndex, tier-order):
+//   Tier 0 (keyBits=1, cap=2): values {1,2} → 12 rows, startRow=0, size=12
+//   Tier 1 (keyBits=2, cap=4): values {3,4} →  3 rows, startRow=12, size=3
+//   Fallback: none; row 15 is past the end → returns tiers_.size() == 2
+TEST_F(FrequencyPartitionEncodingTest, GetTierForRow) {
+  nimble::Vector<int32_t> data(pool_.get());
+  for (int i = 0; i < 8; ++i) data.push_back(1);
+  for (int i = 0; i < 4; ++i) data.push_back(2);
+  for (int i = 0; i < 2; ++i) data.push_back(3);
+  data.push_back(4);
+
+  auto encoding = createEncoding(data);
+  auto* fpe = static_cast<nimble::FrequencyPartitionEncoding<int32_t>*>(
+      encoding.get());
+
+  // Tier 0: encoded rows 0–11
+  EXPECT_EQ(fpe->getTierForRow(0), 0u);
+  EXPECT_EQ(fpe->getTierForRow(11), 0u);
+  // Tier 1: encoded rows 12–14
+  EXPECT_EQ(fpe->getTierForRow(12), 1u);
+  EXPECT_EQ(fpe->getTierForRow(14), 1u);
+  // Beyond all tiers → fallback sentinel
+  EXPECT_EQ(fpe->getTierForRow(15), 2u);
+}

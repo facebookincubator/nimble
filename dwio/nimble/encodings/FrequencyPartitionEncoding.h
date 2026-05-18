@@ -123,6 +123,7 @@ class FrequencyPartitionEncoding
       const Encoding::Options& options = {});
 
   std::string debugString(int offset) const final;
+  uint32_t getTierForRow(uint32_t rowIndex) const;
 
  private:
   struct TierInfo {
@@ -368,7 +369,6 @@ class FrequencyPartitionEncoding
   // Index tiers_.size() is used for the fallback bucket.
   std::vector<std::vector<uint32_t>> tierRankSamples_;
 
-  uint32_t getTierForRow(uint32_t rowIndex) const;
 };
 
 //
@@ -635,10 +635,8 @@ void FrequencyPartitionEncoding<T>::reset() {
 template <typename T>
 uint32_t FrequencyPartitionEncoding<T>::getTierForRow(uint32_t rowIndex) const {
   for (uint32_t i = 0; i < tiers_.size(); ++i) {
-    if (rowIndex >= tiers_[i].startRow &&
-        rowIndex < tiers_[i].startRow + tiers_[i].size) {
-      return i;
-    }
+    if (rowIndex < tiers_[i].startRow) break;  // tiers are contiguous and ordered
+    if (rowIndex < tiers_[i].startRow + tiers_[i].size) return i;
   }
   return tiers_.size();
 }
