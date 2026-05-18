@@ -2523,71 +2523,74 @@ TEST_F(VeloxWriterTest, fuzzComplex) {
                                                     : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
-  for (auto parallelismFactor : {0U, 1U, folly::available_concurrency()}) {
-    std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
-    nimble::VeloxWriterOptions writerOptions;
-    writerOptions.enableChunking = true;
-    writerOptions.disableSharedStringBuffers = true;
-    writerOptions.flushPolicyFactory =
-        []() -> std::unique_ptr<nimble::FlushPolicy> {
-      return std::make_unique<nimble::ChunkFlushPolicy>(
-          nimble::ChunkFlushPolicyConfig{
-              .writerMemoryHighThresholdBytes = 200 << 10,
-              .writerMemoryLowThresholdBytes = 100 << 10,
-              .targetStripeSizeBytes = 100 << 10,
-              .estimatedCompressionFactor = 1.7,
-          });
-    };
+  for (bool disableSharedStringBuffers : {true, false}) {
+    LOG(INFO) << "disableSharedStringBuffers: " << disableSharedStringBuffers;
+    for (auto parallelismFactor : {0U, 1U, folly::available_concurrency()}) {
+      std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
+      nimble::VeloxWriterOptions writerOptions;
+      writerOptions.enableChunking = true;
+      writerOptions.disableSharedStringBuffers = disableSharedStringBuffers;
+      writerOptions.flushPolicyFactory =
+          []() -> std::unique_ptr<nimble::FlushPolicy> {
+        return std::make_unique<nimble::ChunkFlushPolicy>(
+            nimble::ChunkFlushPolicyConfig{
+                .writerMemoryHighThresholdBytes = 200 << 10,
+                .writerMemoryLowThresholdBytes = 100 << 10,
+                .targetStripeSizeBytes = 100 << 10,
+                .estimatedCompressionFactor = 1.7,
+            });
+      };
 
-    LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
-    writerOptions.dictionaryArrayColumns.insert("nested_map_array1");
-    writerOptions.dictionaryArrayColumns.insert("nested_map_array2");
-    writerOptions.dictionaryArrayColumns.insert("dict_array");
-    writerOptions.deduplicatedMapColumns.insert("dict_map");
+      LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
+      writerOptions.dictionaryArrayColumns.insert("nested_map_array1");
+      writerOptions.dictionaryArrayColumns.insert("nested_map_array2");
+      writerOptions.dictionaryArrayColumns.insert("dict_array");
+      writerOptions.deduplicatedMapColumns.insert("dict_map");
 
-    if (parallelismFactor > 0) {
-      executor =
-          std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
-      writerOptions.encodingExecutor = folly::getKeepAliveToken(*executor);
-    }
-
-    const auto iterations = 20;
-    // provide sufficient buffer between min and max chunk size thresholds
-    constexpr uint64_t chunkThresholdBuffer =
-        sizeof(std::string_view) + sizeof(bool);
-    for (auto i = 0; i < iterations; ++i) {
-      writerOptions.minStreamChunkRawSize =
-          std::uniform_int_distribution<uint64_t>(10, 4096)(rng);
-      writerOptions.maxStreamChunkRawSize =
-          std::uniform_int_distribution<uint64_t>(
-              writerOptions.minStreamChunkRawSize + chunkThresholdBuffer,
-              8192)(rng);
-      const auto batchSize =
-          std::uniform_int_distribution<uint32_t>(10, 400)(rng);
-      const auto batchCount = 5;
-
-      std::string file;
-      auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-      nimble::VeloxWriter writer(
-          type, std::move(writeFile), *leafPool_.get(), writerOptions);
-      const auto batches = generateBatches(
-          type,
-          /*batchCount=*/batchCount,
-          /*size=*/batchSize,
-          /*seed=*/seed,
-          *leafPool_);
-
-      for (const auto& batch : batches) {
-        writer.write(batch);
+      if (parallelismFactor > 0) {
+        executor =
+            std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
+        writerOptions.encodingExecutor = folly::getKeepAliveToken(*executor);
       }
-      writer.close();
 
-      velox::InMemoryReadFile readFile(file);
-      nimble::VeloxReader reader(&readFile, *leafPool_);
-      validateChunkSize(
-          reader,
-          writerOptions.minStreamChunkRawSize,
-          writerOptions.maxStreamChunkRawSize);
+      const auto iterations = 20;
+      // provide sufficient buffer between min and max chunk size thresholds
+      constexpr uint64_t chunkThresholdBuffer =
+          sizeof(std::string_view) + sizeof(bool);
+      for (auto i = 0; i < iterations; ++i) {
+        writerOptions.minStreamChunkRawSize =
+            std::uniform_int_distribution<uint64_t>(10, 4096)(rng);
+        writerOptions.maxStreamChunkRawSize =
+            std::uniform_int_distribution<uint64_t>(
+                writerOptions.minStreamChunkRawSize + chunkThresholdBuffer,
+                8192)(rng);
+        const auto batchSize =
+            std::uniform_int_distribution<uint32_t>(10, 400)(rng);
+        const auto batchCount = 5;
+
+        std::string file;
+        auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+        nimble::VeloxWriter writer(
+            type, std::move(writeFile), *leafPool_.get(), writerOptions);
+        const auto batches = generateBatches(
+            type,
+            /*batchCount=*/batchCount,
+            /*size=*/batchSize,
+            /*seed=*/seed,
+            *leafPool_);
+
+        for (const auto& batch : batches) {
+          writer.write(batch);
+        }
+        writer.close();
+
+        velox::InMemoryReadFile readFile(file);
+        nimble::VeloxReader reader(&readFile, *leafPool_);
+        validateChunkSize(
+            reader,
+            writerOptions.minStreamChunkRawSize,
+            writerOptions.maxStreamChunkRawSize);
+      }
     }
   }
 }
@@ -2605,83 +2608,93 @@ TEST_F(VeloxWriterTest, batchedChunkingRelievesMemoryPressure) {
   const auto stringColumn = fuzzer.fuzzFlat(velox::VARCHAR());
   const auto intColumn = fuzzer.fuzzFlat(velox::INTEGER());
 
-  nimble::RawSizeContext context;
-  nimble::OrderedRanges ranges;
-  ranges.add(0, rowCount);
-  const uint64_t stringColumnRawSize =
-      nimble::getRawSizeFromVector(stringColumn, ranges, context) +
-      sizeof(uint64_t) * rowCount;
-  const uint64_t intColumnRawSize =
-      nimble::getRawSizeFromVector(intColumn, ranges, context);
+  for (bool disableSharedStringBuffers : {true, false}) {
+    LOG(INFO) << "disableSharedStringBuffers: " << disableSharedStringBuffers;
+    nimble::RawSizeContext context;
+    nimble::OrderedRanges ranges;
+    ranges.add(0, rowCount);
+    // When shared string buffers are disabled, each row contributes the size
+    // of a uint64_t offset; otherwise it contributes the size of a
+    // std::string_view.
+    const uint64_t perRowOverhead = disableSharedStringBuffers
+        ? sizeof(uint64_t)
+        : sizeof(std::string_view);
+    const uint64_t stringColumnRawSize =
+        nimble::getRawSizeFromVector(stringColumn, ranges, context) +
+        perRowOverhead * rowCount;
+    const uint64_t intColumnRawSize =
+        nimble::getRawSizeFromVector(intColumn, ranges, context);
 
-  constexpr size_t kColumnCount = 20;
-  constexpr size_t kBatchSize = 4;
-  std::vector<velox::VectorPtr> children(kColumnCount);
-  std::vector<std::string> columnNames(kColumnCount);
-  uint64_t totalRawSize = 0;
-  for (size_t i = 0; i < kColumnCount; i += 2) {
-    columnNames[i] = fmt::format("string_column_{}", i);
-    columnNames[i + 1] = fmt::format("int_column_{}", i);
-    children[i] = stringColumn;
-    children[i + 1] = intColumn;
-    totalRawSize += intColumnRawSize + stringColumnRawSize;
+    constexpr size_t kColumnCount = 20;
+    constexpr size_t kBatchSize = 4;
+    std::vector<velox::VectorPtr> children(kColumnCount);
+    std::vector<std::string> columnNames(kColumnCount);
+    uint64_t totalRawSize = 0;
+    for (size_t i = 0; i < kColumnCount; i += 2) {
+      columnNames[i] = fmt::format("string_column_{}", i);
+      columnNames[i + 1] = fmt::format("int_column_{}", i);
+      children[i] = stringColumn;
+      children[i + 1] = intColumn;
+      totalRawSize += intColumnRawSize + stringColumnRawSize;
+    }
+
+    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+    const auto rowVector = vectorMaker.rowVector(columnNames, children);
+
+    // Ensure we can chunk the integer streams into multiple chunks
+    const uint64_t minChunkSize = intColumnRawSize / 2;
+    // In the aggresive stage, we chunk large streams in the first batch. We set
+    // the memoryPressureThreshold with the assumption of at least once max
+    // chunk being produced for each stream in that batch.
+    const uint64_t maxChunkSize = stringColumnRawSize / 2;
+    uint64_t memoryPressureThreshold =
+        totalRawSize - (kBatchSize * maxChunkSize);
+
+    std::vector<bool> actualChunkingDecisions;
+    nimble::VeloxWriterOptions writerOptions;
+    writerOptions.chunkedStreamBatchSize = kBatchSize;
+    writerOptions.enableChunking = true;
+    writerOptions.disableSharedStringBuffers = disableSharedStringBuffers;
+    writerOptions.minStreamChunkRawSize = minChunkSize;
+    writerOptions.maxStreamChunkRawSize = maxChunkSize;
+    writerOptions.flushPolicyFactory =
+        [&]() -> std::unique_ptr<nimble::FlushPolicy> {
+      return std::make_unique<nimble::LambdaFlushPolicy>(
+          /* shouldFlush */ [](const auto&) { return true; },
+          /* shouldChunk */
+          [&](const nimble::StripeProgress& stripeProgress) {
+            bool shouldChunk =
+                stripeProgress.stripeRawSize > memoryPressureThreshold;
+            actualChunkingDecisions.push_back(shouldChunk);
+            if (!shouldChunk) {
+              // Force memory pressure after the initial aggressive stage.
+              memoryPressureThreshold = 0;
+              // Force beginning of the non-aggressive chunking stage.
+              shouldChunk = true;
+            }
+            return shouldChunk;
+          });
+    };
+
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriter writer(
+        rowVector->type(), std::move(writeFile), *rootPool_, writerOptions);
+    writer.write(rowVector);
+    writer.close();
+
+    // We expect true and then false for the aggressive stage.
+    EXPECT_GE(actualChunkingDecisions.size(), 2);
+    EXPECT_TRUE(actualChunkingDecisions[0]);
+    EXPECT_FALSE(actualChunkingDecisions[1]);
+
+    velox::InMemoryReadFile readFile(file);
+    nimble::VeloxReader reader(&readFile, *leafPool_);
+    validateChunkSize(
+        reader,
+        writerOptions.minStreamChunkRawSize,
+        writerOptions.maxStreamChunkRawSize);
   }
-
-  velox::test::VectorMaker vectorMaker{leafPool_.get()};
-  const auto rowVector = vectorMaker.rowVector(columnNames, children);
-
-  // Ensure we can chunk the integer streams into multiple chunks
-  const uint64_t minChunkSize = intColumnRawSize / 2;
-  // In the aggresive stage, we chunk large streams in the first batch. We set
-  // the memoryPressureThreshold with the assumption of at least once max
-  // chunk being produced for each stream in that batch.
-  const uint64_t maxChunkSize = stringColumnRawSize / 2;
-  uint64_t memoryPressureThreshold = totalRawSize - (kBatchSize * maxChunkSize);
-
-  std::vector<bool> actualChunkingDecisions;
-  nimble::VeloxWriterOptions writerOptions;
-  writerOptions.chunkedStreamBatchSize = kBatchSize;
-  writerOptions.enableChunking = true;
-  writerOptions.disableSharedStringBuffers = true;
-  writerOptions.minStreamChunkRawSize = minChunkSize;
-  writerOptions.maxStreamChunkRawSize = maxChunkSize;
-  writerOptions.flushPolicyFactory =
-      [&]() -> std::unique_ptr<nimble::FlushPolicy> {
-    return std::make_unique<nimble::LambdaFlushPolicy>(
-        /* shouldFlush */ [](const auto&) { return true; },
-        /* shouldChunk */
-        [&](const nimble::StripeProgress& stripeProgress) {
-          bool shouldChunk =
-              stripeProgress.stripeRawSize > memoryPressureThreshold;
-          actualChunkingDecisions.push_back(shouldChunk);
-          if (!shouldChunk) {
-            // Force memory pressure after the initial aggressive stage.
-            memoryPressureThreshold = 0;
-            // Force beginning of the non-aggressive chunking stage.
-            shouldChunk = true;
-          }
-          return shouldChunk;
-        });
-  };
-
-  std::string file;
-  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-  nimble::VeloxWriter writer(
-      rowVector->type(), std::move(writeFile), *rootPool_, writerOptions);
-  writer.write(rowVector);
-  writer.close();
-
-  // We expect true and then false for the aggressive stage.
-  EXPECT_GE(actualChunkingDecisions.size(), 2);
-  EXPECT_TRUE(actualChunkingDecisions[0]);
-  EXPECT_FALSE(actualChunkingDecisions[1]);
-
-  velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(&readFile, *leafPool_);
-  validateChunkSize(
-      reader,
-      writerOptions.minStreamChunkRawSize,
-      writerOptions.maxStreamChunkRawSize);
 }
 
 TEST_F(VeloxWriterTest, ignoreTopLevelNulls) {
