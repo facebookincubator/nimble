@@ -20,7 +20,7 @@
 #include <vector>
 
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/EncodingLayout.h"
+#include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/index/SortOrder.h"
 
 namespace facebook::nimble {

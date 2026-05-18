@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 #include <gtest/gtest.h>
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "velox/common/memory/Memory.h"
 

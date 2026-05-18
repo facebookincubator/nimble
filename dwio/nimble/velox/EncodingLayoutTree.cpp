@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 
 namespace facebook::nimble {
 

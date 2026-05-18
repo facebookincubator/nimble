@@ -19,12 +19,11 @@
 #include <span>
 #include <type_traits>
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/FixedBitArray.h"
-#include "dwio/nimble/common/Rle.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/legacy/Encoding.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
@@ -39,6 +38,35 @@
 // tends to slow things down, particularly write speed.
 
 namespace facebook::nimble::legacy {
+
+namespace rle {
+
+template <typename T>
+void computeRuns(
+    std::span<const T> data,
+    Vector<uint32_t>* runLengths,
+    Vector<T>* runValues) {
+  static_assert(!std::is_floating_point_v<T>);
+  if (data.empty()) {
+    return;
+  }
+  uint32_t runLength = 1;
+  T last = data[0];
+  for (int i = 1; i < data.size(); ++i) {
+    if (data[i] == last) {
+      ++runLength;
+    } else {
+      runLengths->push_back(runLength);
+      runValues->push_back(last);
+      last = data[i];
+      runLength = 1;
+    }
+  }
+  runLengths->push_back(runLength);
+  runValues->push_back(last);
+}
+
+} // namespace rle
 
 namespace internal {
 

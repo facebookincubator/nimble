@@ -16,7 +16,7 @@
 #pragma once
 
 #include <unordered_map>
-#include "dwio/nimble/encodings/EncodingLayout.h"
+#include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "folly/CppAttributes.h"
 

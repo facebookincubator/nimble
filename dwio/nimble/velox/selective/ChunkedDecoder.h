@@ -18,9 +18,9 @@
 
 #include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
-#include "dwio/nimble/encodings/EncodingUtils.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
+#include "dwio/nimble/encodings/common/EncodingUtils.h"
 #include "dwio/nimble/encodings/legacy/EncodingTrait.h"
 #include "dwio/nimble/index/ChunkIndexGroup.h"
 #include "dwio/nimble/velox/selective/NimbleData.h"

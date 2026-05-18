@@ -15,10 +15,10 @@
  */
 #pragma once
 
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/compression/CompressionPolicy.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "folly/io/IOBuf.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/buffer/BufferPool.h"

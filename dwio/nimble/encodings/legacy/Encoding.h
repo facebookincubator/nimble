@@ -15,7 +15,7 @@
  */
 #pragma once
 
-#include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
 
 // Legacy encoding headers use qualified names like detail::readWithVisitorSlow.
 // Since facebook::nimble::legacy::detail exists (in EncodingUtils.h), qualified

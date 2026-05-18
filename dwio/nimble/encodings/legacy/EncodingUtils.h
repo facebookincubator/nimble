@@ -15,7 +15,7 @@
  */
 #pragma once
 
-#include "dwio/nimble/encodings/EncodingUtils.h"
+#include "dwio/nimble/encodings/common/EncodingUtils.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
 #include "dwio/nimble/encodings/legacy/DictionaryEncoding.h"

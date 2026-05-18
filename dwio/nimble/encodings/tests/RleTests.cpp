@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 #include <gtest/gtest.h>
-#include "dwio/nimble/common/Rle.h"
+#include "dwio/nimble/encodings/RleEncoding.h"
 #include "velox/common/memory/Memory.h"
 
 using namespace ::facebook;

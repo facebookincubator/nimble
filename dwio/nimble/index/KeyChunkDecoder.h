@@ -18,7 +18,7 @@
 #include <memory>
 #include <vector>
 
-#include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/dwio/common/SeekableInputStream.h"

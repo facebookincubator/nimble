@@ -28,7 +28,7 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
-#include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "folly/Random.h"
 #include "velox/common/memory/Memory.h"

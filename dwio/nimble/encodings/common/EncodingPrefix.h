@@ -17,9 +17,9 @@
 
 #include <string_view>
 
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Varint.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 
 /// Binary layout constants and helpers for the common encoding prefix.
 ///

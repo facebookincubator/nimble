@@ -17,7 +17,7 @@
 #include <optional>
 #include <ostream>
 
-#include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
 #include "velox/common/file/File.h"
 
 namespace facebook::nimble::tools {

@@ -22,7 +22,7 @@
 #include <zstd.h>
 
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "velox/buffer/Buffer.h"

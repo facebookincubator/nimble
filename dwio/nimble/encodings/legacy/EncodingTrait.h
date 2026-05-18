@@ -15,7 +15,7 @@
  */
 #pragma once
 
-#include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
 
 namespace facebook::nimble::legacy {
 

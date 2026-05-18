@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 #include "dwio/nimble/compression/Compression.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/compression/Lz4Compressor.h"
 #include "dwio/nimble/compression/ZstdCompressor.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 
 #ifndef DISABLE_META_INTERNAL_COMPRESSOR
 #include "dwio/nimble/compression/fb/MetaInternalCompressor.h"
