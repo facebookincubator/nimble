@@ -23,7 +23,7 @@
 using namespace facebook;
 using nimble::ColumnStats;
 
-class FieldWriterStatsTests : public ::testing::Test {
+class FieldWriterStatsTests : public ::testing::TestWithParam<bool> {
  protected:
   static void SetUpTestCase() {
     velox::memory::initializeMemoryManager(
@@ -84,7 +84,7 @@ class FieldWriterStatsTests : public ::testing::Test {
       rowType = input->type();
     }
     options.enableChunking = true;
-    options.disableSharedStringBuffers = true;
+    options.disableSharedStringBuffers = GetParam();
     nimble::VeloxWriter writer(
         rowType, std::move(writeFile), *rootPool_, options);
     writer.write(input);
@@ -147,7 +147,7 @@ class FieldWriterStatsTests : public ::testing::Test {
   std::unique_ptr<velox::test::VectorMaker> vectorMaker_;
 };
 
-TEST_F(FieldWriterStatsTests, simpleFieldWriterStats) {
+TEST_P(FieldWriterStatsTests, simpleFieldWriterStats) {
   {
     // String and int flat columns with nulls.
     auto c1 = vectorMaker_->flatVector<int32_t>({1, 2, 3});
@@ -270,7 +270,7 @@ TEST_F(FieldWriterStatsTests, simpleFieldWriterStats) {
   }
 }
 
-TEST_F(FieldWriterStatsTests, varbinaryFieldWriterStats) {
+TEST_P(FieldWriterStatsTests, varbinaryFieldWriterStats) {
   {
     // Varbinary and int flat columns with nulls.
     // Mirrors the first case of simpleFieldWriterStats but uses VARBINARY
@@ -319,7 +319,7 @@ TEST_F(FieldWriterStatsTests, varbinaryFieldWriterStats) {
   }
 }
 
-TEST_F(FieldWriterStatsTests, arrayFieldWriterStats) {
+TEST_P(FieldWriterStatsTests, arrayFieldWriterStats) {
   auto simpleArrayVector =
       vectorMaker_->arrayVector<int8_t>({{0, 1, 2}, {0, 1, 2}, {0, 1, 2}});
   simpleArrayVector->setNull(1, true);
@@ -405,7 +405,7 @@ TEST_F(FieldWriterStatsTests, arrayFieldWriterStats) {
        elementsStat4});
 }
 
-TEST_F(FieldWriterStatsTests, arrayWithOffsetFieldWriterStats) {
+TEST_P(FieldWriterStatsTests, arrayWithOffsetFieldWriterStats) {
   auto simpleArrayVector =
       vectorMaker_->arrayVector<int8_t>({{0, 1, 2}, {0, 1, 2}, {0, 1, 2}});
   // Note: root row 0 is set to null (line 436), so only 2 non-null rows.
@@ -516,7 +516,7 @@ TEST_F(FieldWriterStatsTests, arrayWithOffsetFieldWriterStats) {
       });
 }
 
-TEST_F(FieldWriterStatsTests, mapFieldWriterStats) {
+TEST_P(FieldWriterStatsTests, mapFieldWriterStats) {
   auto mapVector = vectorMaker_->mapVector<int8_t, int32_t>(
       {{{0, 1}, {2, 3}},
        {{0, 1}, {2, 3}},
@@ -557,7 +557,7 @@ TEST_F(FieldWriterStatsTests, mapFieldWriterStats) {
 }
 
 // A simplified scenario for flatmap writer for issue isolation
-TEST_F(FieldWriterStatsTests, flatmapFieldWriterStatsStableKeySet) {
+TEST_P(FieldWriterStatsTests, flatmapFieldWriterStatsStableKeySet) {
   // Input MapVector where every row has the same keys (0 and 2):
   //   row 0: {0->1, 2->2}
   //   row 1: {0->3, 2->4}
@@ -616,7 +616,7 @@ TEST_F(FieldWriterStatsTests, flatmapFieldWriterStatsStableKeySet) {
       {.flatMapColumns = {{"c0", {}}}});
 }
 
-TEST_F(FieldWriterStatsTests, flatMapFieldWriterStats) {
+TEST_P(FieldWriterStatsTests, flatMapFieldWriterStats) {
   // Input MapVector with 6 rows:
   //   row 0: {0->1, 2->3}  (2 entries)
   //   row 1: {0->1}        (1 entry)
@@ -716,7 +716,7 @@ TEST_F(FieldWriterStatsTests, flatMapFieldWriterStats) {
       {.flatMapColumns = {{"c0", {}}}});
 }
 
-TEST_F(FieldWriterStatsTests, flatMapPassThroughValueFieldWriterStats) {
+TEST_P(FieldWriterStatsTests, flatMapPassThroughValueFieldWriterStats) {
   // Passthrough flatmap using ROW vector input.
   // Each feature column is a child of the ROW vector.
   //
@@ -840,7 +840,7 @@ TEST_F(FieldWriterStatsTests, flatMapPassThroughValueFieldWriterStats) {
       velox::ROW({{"c0", velox::MAP(velox::TINYINT(), velox::INTEGER())}}));
 }
 
-TEST_F(FieldWriterStatsTests, flatMapWithNullValuesFieldWriterStats) {
+TEST_P(FieldWriterStatsTests, flatMapWithNullValuesFieldWriterStats) {
   // Input MapVector with 6 rows where some keys have null values:
   //   row 0: {0->1, 2->null}        (key 0 has value, key 2 has null)
   //   row 1: {0->null, 2->3}        (key 0 has null, key 2 has value)
@@ -944,7 +944,7 @@ TEST_F(FieldWriterStatsTests, flatMapWithNullValuesFieldWriterStats) {
       {.flatMapColumns = {{"c0", {}}}});
 }
 
-TEST_F(
+TEST_P(
     FieldWriterStatsTests,
     flatMapPassThroughWithNullValuesFieldWriterStats) {
   // Passthrough flatmap using ROW vector input with null values.
@@ -1037,7 +1037,7 @@ TEST_F(
       velox::ROW({{"c0", velox::MAP(velox::TINYINT(), velox::INTEGER())}}));
 }
 
-TEST_F(FieldWriterStatsTests, flatMapVarbinaryKeyFieldWriterStats) {
+TEST_P(FieldWriterStatsTests, flatMapVarbinaryKeyFieldWriterStats) {
   // Flatmap with VARBINARY keys via MAP vector ingestion.
   // This exercises the ingestMap code path where VARBINARY keys must use
   // collectMapStringKeyStatistics (actual string lengths) instead of
@@ -1106,7 +1106,7 @@ TEST_F(FieldWriterStatsTests, flatMapVarbinaryKeyFieldWriterStats) {
       {.flatMapColumns = {{"c0", {}}}});
 }
 
-TEST_F(FieldWriterStatsTests, flatMapPassThroughVarbinaryKeyFieldWriterStats) {
+TEST_P(FieldWriterStatsTests, flatMapPassThroughVarbinaryKeyFieldWriterStats) {
   // Passthrough flatmap with VARBINARY keys via ROW vector ingestion.
   // This exercises the ingestPassthrough code path where VARBINARY keys must
   // use collectPassthroughStringKeyStatistics (actual string lengths) instead
@@ -1176,7 +1176,7 @@ TEST_F(FieldWriterStatsTests, flatMapPassThroughVarbinaryKeyFieldWriterStats) {
       velox::ROW({{"c0", velox::MAP(velox::VARBINARY(), velox::INTEGER())}}));
 }
 
-TEST_F(FieldWriterStatsTests, slidingWindowMapFieldWriterStats) {
+TEST_P(FieldWriterStatsTests, slidingWindowMapFieldWriterStats) {
   uint64_t columnSize = 6;
   auto mapVector = vectorMaker_->mapVector<int8_t, int32_t>(
       {{{0, 1}, {2, 3}},
@@ -1268,7 +1268,7 @@ TEST_F(FieldWriterStatsTests, slidingWindowMapFieldWriterStats) {
       {.deduplicatedMapColumns = {"c0"}});
 }
 
-TEST_F(FieldWriterStatsTests, mixedColumnsFieldWriterStats) {
+TEST_P(FieldWriterStatsTests, mixedColumnsFieldWriterStats) {
   // Create test data with scalar columns + array + map (all non-deduped).
   // Data uses similar patterns to arrayWithOffsetFieldWriterStats and
   // slidingWindowMapFieldWriterStats tests.
@@ -1426,7 +1426,7 @@ TEST_F(FieldWriterStatsTests, mixedColumnsFieldWriterStats) {
 
 // Test for deduplicated types (array with offset and sliding window map) nested
 // inside a flatmap column. Uses MAP input vectors with a stable set of 3 keys.
-TEST_F(FieldWriterStatsTests, flatmapWithDeduplicatedValuesStats) {
+TEST_P(FieldWriterStatsTests, flatmapWithDeduplicatedValuesStats) {
   // Schema: MAP(INTEGER, ARRAY(INT8)) - flatmap with array values
   // We'll use 3 stable keys: 1, 2, 3
   // The array values will be deduplicated (dictionaryArrayColumns)
@@ -1521,7 +1521,7 @@ TEST_F(FieldWriterStatsTests, flatmapWithDeduplicatedValuesStats) {
 }
 
 // Test for sliding window map (deduplicatedMapColumns) nested inside a flatmap.
-TEST_F(FieldWriterStatsTests, flatmapWithSlidingWindowMapStats) {
+TEST_P(FieldWriterStatsTests, flatmapWithSlidingWindowMapStats) {
   // Schema: MAP(INTEGER, MAP(INT8, INT32)) - flatmap with nested map values
   // We'll use 3 stable keys: 1, 2, 3
   // The inner maps will use sliding window deduplication
@@ -1608,7 +1608,7 @@ TEST_F(FieldWriterStatsTests, flatmapWithSlidingWindowMapStats) {
       << "Raw size should match stats logical size";
 }
 
-TEST_F(FieldWriterStatsTests, rowFieldWriterStats) {
+TEST_P(FieldWriterStatsTests, rowFieldWriterStats) {
   auto c1 = vectorMaker_->rowVector({
       vectorMaker_->flatVectorNullable<int8_t>({0, 0, 0, 1, 1, std::nullopt}),
       vectorMaker_->flatVector<velox::StringView>(
@@ -1681,3 +1681,8 @@ TEST_F(FieldWriterStatsTests, rowFieldWriterStats) {
        c3SubFieldStat1,
        c3SubFieldStat2});
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    DisableSharedStringBuffers,
+    FieldWriterStatsTests,
+    ::testing::Bool());
