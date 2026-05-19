@@ -77,27 +77,15 @@ NimbleIndexProjector::NimbleIndexProjector(
 NimbleIndexProjector::Result NimbleIndexProjector::project(
     const Request& request,
     const Options& options) {
-  NIMBLE_CHECK_NULL(request_, "project() is not reentrant");
-  NIMBLE_CHECK_NULL(options_, "project() is not reentrant");
-  request_ = &request;
-  options_ = &options;
+  initRequest(request, options);
   SCOPE_EXIT {
-    request_ = nullptr;
-    options_ = nullptr;
-    rowsPerRequest_.clear();
-    stripeRowRanges_.clear();
-    stripeRangeMap_.clear();
+    clearRequest();
   };
-
-  NIMBLE_CHECK_GT(request_->keyBounds.size(), 0, "keyBounds must not be empty");
 
   lookupStripes();
 
-  numReadRows_ = 0;
-  const auto numRequests = request_->keyBounds.size();
-  rowsPerRequest_.assign(numRequests, 0);
   Result result;
-  result.responses.resize(numRequests);
+  result.responses.resize(numRequests_);
 
   for (uint32_t i = 0; i < stripeRangeMap_.numStripes; ++i) {
     const uint32_t stripeIndex = stripeRangeMap_.startStripe + i;
@@ -115,6 +103,29 @@ NimbleIndexProjector::Result NimbleIndexProjector::project(
   return result;
 }
 
+void NimbleIndexProjector::initRequest(
+    const Request& request,
+    const Options& options) {
+  NIMBLE_CHECK_NULL(request_, "project() is not reentrant");
+  NIMBLE_CHECK_NULL(options_, "project() is not reentrant");
+  NIMBLE_CHECK_GT(request.keyBounds.size(), 0, "keyBounds must not be empty");
+  request_ = &request;
+  options_ = &options;
+  numRequests_ = static_cast<uint32_t>(request.keyBounds.size());
+  numReadRows_ = 0;
+  numReadBytes_ = 0;
+  rowsPerRequest_.assign(numRequests_, 0);
+}
+
+void NimbleIndexProjector::clearRequest() {
+  request_ = nullptr;
+  options_ = nullptr;
+  numRequests_ = 0;
+  rowsPerRequest_.clear();
+  stripeRowRanges_.clear();
+  stripeRangeMap_.clear();
+}
+
 void NimbleIndexProjector::lookupStripes() {
   velox::CpuWallTimer timer(stats_.lookupTiming);
 
@@ -122,7 +133,6 @@ void NimbleIndexProjector::lookupStripes() {
       index::IndexLookup::LookupRequest::rangeScan(request_->keyBounds));
 
   // Find the stripe range across all requests.
-  const auto numRequests = request_->keyBounds.size();
   uint32_t minStripe = numStripes_;
   uint32_t maxStripe = 0;
 
@@ -137,11 +147,11 @@ void NimbleIndexProjector::lookupStripes() {
     }
   };
   std::vector<RequestStripeRange> requestRanges;
-  requestRanges.reserve(numRequests);
+  requestRanges.reserve(numRequests_);
 
   uint32_t numRowRanges = 0;
   const auto& tablet = readerBase_->tablet();
-  for (size_t requestIdx = 0; requestIdx < numRequests; ++requestIdx) {
+  for (size_t requestIdx = 0; requestIdx < numRequests_; ++requestIdx) {
     const auto rowRanges = result[requestIdx];
     if (rowRanges.empty()) {
       requestRanges.emplace_back(RequestStripeRange{0, 0, {}});
@@ -192,7 +202,7 @@ void NimbleIndexProjector::lookupStripes() {
   // Fill entries using a copy of offsets as write cursors.
   stripeRangeMap_.rowRanges.resize(numRowRanges);
   auto writeCursors = stripeRangeMap_.stripeOffsets;
-  for (size_t requestIdx = 0; requestIdx < numRequests; ++requestIdx) {
+  for (size_t requestIdx = 0; requestIdx < numRequests_; ++requestIdx) {
     const auto& requestRange = requestRanges[requestIdx];
     if (requestRange.empty()) {
       continue;
@@ -344,9 +354,10 @@ bool NimbleIndexProjector::buildStripeResult(
     rowsPerRequest_[request.requestIndex] += rowRange.numRows();
   }
 
+  numReadBytes_ += chunk.data.computeChainDataLength();
   result.chunks.emplace_back(std::move(chunk));
 
-  return !(options_->maxRows > 0 && numReadRows_ >= options_->maxRows);
+  return !checkOutputLimit();
 }
 
 void NimbleIndexProjector::setResumeKeys(
