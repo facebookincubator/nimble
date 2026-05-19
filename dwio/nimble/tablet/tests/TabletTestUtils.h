@@ -27,8 +27,11 @@ namespace facebook::nimble::test {
 inline TabletReader::Options makeTestTabletOptions(
     velox::memory::MemoryPool* pool) {
   TabletReader::Options options;
-  options.ioOptions.emplace(pool).setMetadataIoStats(
-      std::make_shared<velox::io::IoStatistics>());
+  options.loadClusterIndex = true;
+  options.loadDenseIndexes = true;
+  options.ioOptions.emplace(pool)
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>())
+      .setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
   return options;
 }
 

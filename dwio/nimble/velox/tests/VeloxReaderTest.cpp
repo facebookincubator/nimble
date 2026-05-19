@@ -443,7 +443,7 @@ struct TestParam {
   bool optimizeStringBufferHandling;
   bool skipConstantFlatMapInMapStreams;
   bool enableCache{false};
-  bool pinFileMetadata{false};
+  bool pinMetadata{false};
 
   std::string debugString() const {
     return fmt::format(
@@ -451,7 +451,7 @@ struct TestParam {
         optimizeStringBufferHandling,
         skipConstantFlatMapInMapStreams,
         enableCache,
-        pinFileMetadata);
+        pinMetadata);
   }
 };
 
@@ -520,8 +520,8 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
     return GetParam().enableCache;
   }
 
-  bool pinFileMetadata() const {
-    return GetParam().pinFileMetadata;
+  bool pinMetadata() const {
+    return GetParam().pinMetadata;
   }
 
   // Creates a TabletReader with cache options applied.
@@ -529,22 +529,22 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
       std::shared_ptr<velox::ReadFile> readFile,
       velox::memory::MemoryPool* pool) {
     nimble::TabletReader::Options tabletOptions;
-    tabletOptions.pinFileMetadata = pinFileMetadata();
+    tabletOptions.pinMetadata = pinMetadata();
+    tabletOptions.cacheMetadata = enableCache();
     ioReaderOptions_ = std::make_unique<velox::io::ReaderOptions>(pool);
     ioReaderOptions_->setDataIoStats(dataIoStats_);
     ioReaderOptions_->setMetadataIoStats(metadataIoStats_);
+    ioReaderOptions_->setIndexIoStats(indexIoStats_);
     tabletOptions.ioOptions = *ioReaderOptions_;
-    if (enableCache() || pinFileMetadata()) {
+    if (enableCache()) {
       auto& ids = velox::fileIds();
       auto fileIdStr = fmt::format("testFile_{}", nextFileId_++);
       fileHandle_ = std::make_unique<velox::FileHandle>();
       fileHandle_->file = readFile;
       fileHandle_->uuid = velox::StringIdLease(ids, fileIdStr);
       fileHandle_->groupId = velox::StringIdLease(ids, "testGroup");
-      if (cache_ != nullptr) {
-        tabletOptions.cache = cache_.get();
-        tabletOptions.fileHandle = fileHandle_.get();
-      }
+      tabletOptions.cache = cache_.get();
+      tabletOptions.fileHandle = fileHandle_.get();
     }
     return nimble::TabletReader::create(readFile, pool, tabletOptions);
   }
@@ -557,7 +557,7 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
           nullptr,
       nimble::VeloxReadParams params = {}) {
     params = configureWithTestParam(std::move(params));
-    if (enableCache() || pinFileMetadata()) {
+    if (enableCache() || pinMetadata()) {
       auto tablet = createTablet(readFile, &pool);
       return std::make_unique<nimble::VeloxReader>(
           std::move(tablet), pool, std::move(selector), std::move(params));
@@ -1367,6 +1367,8 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
   const std::shared_ptr<velox::io::IoStatistics> dataIoStats_{
       std::make_shared<velox::io::IoStatistics>()};
   const std::shared_ptr<velox::io::IoStatistics> metadataIoStats_{
+      std::make_shared<velox::io::IoStatistics>()};
+  const std::shared_ptr<velox::io::IoStatistics> indexIoStats_{
       std::make_shared<velox::io::IoStatistics>()};
   std::shared_ptr<velox::cache::ScanTracker> scanTracker_;
   std::unique_ptr<folly::CPUThreadPoolExecutor> ioExecutor_;
@@ -7020,67 +7022,265 @@ TEST_P(VeloxReaderTest, timestampLargeRowCount) {
   ASSERT_EQ(totalReads, rowCount);
 }
 
-// Verifies that when pinFileMetadata is true and cache is disabled, the
-// second pass of reading does not re-read metadata from the file. Uses
-// TrackingReadFile to record the max read offset and checks it stays below the
-// metadata boundary (stripe group offset).
-TEST_P(VeloxReaderTest, pinnedMetadataNoReread) {
-  if (!pinFileMetadata()) {
-    GTEST_SKIP() << "Only applicable when pinFileMetadata is enabled";
+// Verifies that within the same TabletReader, the second VeloxReader pass
+// does not re-read metadata. The weak-pointer cache retains entries while the
+// tablet is alive, so metadata is always reused regardless of pinMetadata,
+// cacheMetadata, or whether cache infrastructure is provided.
+TEST_P(VeloxReaderTest, metadataReuseWithSameReader) {
+  if (!enableCache()) {
+    GTEST_SKIP() << "Only applicable when cache is enabled";
   }
 
-  velox::test::VectorMaker vectorMaker(leafPool_.get());
-  auto data = vectorMaker.flatVector<int64_t>(100, [](auto i) { return i; });
-  auto input = vectorMaker.rowVector({data});
-  auto file = nimble::test::createNimbleFile(*rootPool_, input);
+  struct TestCase {
+    bool pinMetadata;
+    bool cacheMetadata;
+    bool provideCache;
+    bool expectRamHit;
 
-  auto delegate = std::make_shared<velox::InMemoryReadFile>(file);
-  auto trackingFile = std::make_shared<TrackingReadFile>(delegate);
+    std::string debugString() const {
+      return fmt::format(
+          "pinMetadata={}, cacheMetadata={}, provideCache={}, "
+          "expectRamHit={}",
+          pinMetadata,
+          cacheMetadata,
+          provideCache,
+          expectRamHit);
+    }
+  };
 
-  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
-      std::dynamic_pointer_cast<const velox::RowType>(input->type()));
+  std::vector<TestCase> testCases = {
+      {true, true, true, true},
+      {true, false, true, false},
+      {false, true, true, true},
+      {false, false, true, false},
+      {false, true, false, false},
+      {false, false, false, false},
+  };
 
-  // Create a single TabletReader with pinFileMetadata so metadata is pinned
-  // after first access and shared across readers.
-  auto tablet = createTablet(trackingFile, leafPool_.get());
-  auto readParams = createReadParams();
-  auto reader = std::make_unique<nimble::VeloxReader>(
-      tablet, *leafPool_, selector, readParams);
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
 
-  // First pass: reads both data and metadata from the file.
-  velox::VectorPtr result;
-  ASSERT_TRUE(reader->next(100, result));
-  ASSERT_EQ(result->size(), 100);
-  ASSERT_FALSE(reader->next(1, result));
+    velox::test::VectorMaker vectorMaker(leafPool_.get());
+    auto data = vectorMaker.flatVector<int64_t>(100, [](auto i) { return i; });
+    auto input = vectorMaker.rowVector({data});
+    auto file = nimble::test::createNimbleFile(*rootPool_, input);
 
-  // Get the metadata boundary. Stripe group metadata starts right after the
-  // last stripe's data. Any read at or above this offset is a metadata read.
-  const auto stripeGroupsMeta = tablet->stripeGroupsMetadata();
-  ASSERT_EQ(stripeGroupsMeta.size(), 1);
-  const auto metadataBoundary = stripeGroupsMeta[0].offset();
+    auto delegate = std::make_shared<velox::InMemoryReadFile>(file);
+    auto trackingFile = std::make_shared<TrackingReadFile>(delegate);
 
-  // Verify: first pass reads metadata (above boundary), confirming the file
-  // layout is correct and the tracking works.
-  ASSERT_GT(trackingFile->maxReadOffset(), metadataBoundary)
-      << "First pass should read metadata from the file. "
-      << "maxReadOffset=" << trackingFile->maxReadOffset()
-      << " metadataBoundary=" << metadataBoundary;
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
+        std::dynamic_pointer_cast<const velox::RowType>(input->type()));
 
-  // Reset tracking and do a second pass with a new reader using the same
-  // tablet (metadata should already be pinned).
-  trackingFile->resetMaxReadOffset();
-  auto reader2 = std::make_unique<nimble::VeloxReader>(
-      tablet, *leafPool_, selector, readParams);
-  ASSERT_TRUE(reader2->next(100, result));
-  ASSERT_EQ(result->size(), 100);
-  ASSERT_FALSE(reader2->next(1, result));
+    nimble::TabletReader::Options tabletOptions;
+    tabletOptions.pinMetadata = testCase.pinMetadata;
+    tabletOptions.cacheMetadata = testCase.cacheMetadata;
+    velox::io::ReaderOptions ioOpts(leafPool_.get());
+    ioOpts.setDataIoStats(dataIoStats_);
+    ioOpts.setMetadataIoStats(metadataIoStats_);
+    ioOpts.setIndexIoStats(indexIoStats_);
+    tabletOptions.ioOptions = ioOpts;
+    std::unique_ptr<velox::FileHandle> fileHandle;
+    if (testCase.provideCache) {
+      auto& ids = velox::fileIds();
+      auto fileIdStr = fmt::format(
+          "sameReaderTest_pin{}_cache{}_provide{}",
+          testCase.pinMetadata,
+          testCase.cacheMetadata,
+          testCase.provideCache);
+      fileHandle = std::make_unique<velox::FileHandle>();
+      fileHandle->file = trackingFile;
+      fileHandle->uuid = velox::StringIdLease(ids, fileIdStr);
+      fileHandle->groupId = velox::StringIdLease(ids, fileIdStr + "_group");
+      tabletOptions.cache = cache_.get();
+      tabletOptions.fileHandle = fileHandle.get();
+    }
 
-  // Verify: second-pass reads should only access data (below metadata
-  // boundary). With pinFileMetadata, all metadata is pinned in memory.
-  ASSERT_LE(trackingFile->maxReadOffset(), metadataBoundary)
-      << "Second pass should not re-read metadata from the file. "
-      << "maxReadOffset=" << trackingFile->maxReadOffset()
-      << " metadataBoundary=" << metadataBoundary;
+    auto tablet = nimble::TabletReader::create(
+        trackingFile, leafPool_.get(), tabletOptions);
+    auto readParams = createReadParams();
+
+    auto reader1 = std::make_unique<nimble::VeloxReader>(
+        tablet, *leafPool_, selector, readParams);
+    velox::VectorPtr result;
+    ASSERT_TRUE(reader1->next(100, result));
+    ASSERT_EQ(result->size(), 100);
+    ASSERT_FALSE(reader1->next(1, result));
+
+    const auto stripeGroupsMeta = tablet->stripeGroupsMetadata();
+    ASSERT_EQ(stripeGroupsMeta.size(), 1);
+    const auto metadataBoundary = stripeGroupsMeta[0].offset();
+
+    ASSERT_GT(trackingFile->maxReadOffset(), metadataBoundary)
+        << "First pass should read metadata from the file";
+
+    const auto ramHitsAfterFirstPass = metadataIoStats_->ramHit().count();
+
+    // Second pass: new VeloxReader on the same TabletReader. Metadata is
+    // always reused within the same tablet regardless of settings.
+    trackingFile->resetMaxReadOffset();
+    auto reader2 = std::make_unique<nimble::VeloxReader>(
+        tablet, *leafPool_, selector, readParams);
+    ASSERT_TRUE(reader2->next(100, result));
+    ASSERT_EQ(result->size(), 100);
+    ASSERT_FALSE(reader2->next(1, result));
+
+    ASSERT_LE(trackingFile->maxReadOffset(), metadataBoundary)
+        << "Second pass should not re-read metadata. "
+        << "maxReadOffset=" << trackingFile->maxReadOffset()
+        << " metadataBoundary=" << metadataBoundary;
+
+    if (testCase.expectRamHit) {
+      ASSERT_GT(metadataIoStats_->ramHit().count(), ramHitsAfterFirstPass)
+          << "Second pass should have RAM cache hits";
+    } else {
+      ASSERT_EQ(metadataIoStats_->ramHit().count(), ramHitsAfterFirstPass)
+          << "Second pass should have no new RAM cache hits";
+    }
+  }
+}
+
+// Tests metadata reuse across separate TabletReader instances. Only
+// cacheMetadata persists across TabletReader opens via AsyncDataCache.
+// pinMetadata only holds strong references within the same TabletReader.
+TEST_P(VeloxReaderTest, metadataReuseCrossReaders) {
+  if (!enableCache()) {
+    GTEST_SKIP() << "Only applicable when cache is enabled";
+  }
+
+  struct TestCase {
+    bool pinMetadata;
+    bool cacheMetadata;
+    bool provideCache;
+    bool expectCrossReaderReuse;
+    bool expectRamHit;
+
+    std::string debugString() const {
+      return fmt::format(
+          "pinMetadata={}, cacheMetadata={}, provideCache={}, "
+          "expectCrossReaderReuse={}, expectRamHit={}",
+          pinMetadata,
+          cacheMetadata,
+          provideCache,
+          expectCrossReaderReuse,
+          expectRamHit);
+    }
+  };
+
+  std::vector<TestCase> testCases = {
+      {true, true, true, true, true},
+      {true, false, true, false, false},
+      {false, true, true, true, true},
+      {false, false, true, false, false},
+      // cacheMetadata is set but cache is not provided — silently falls back
+      // to direct IO, so cross-reader reuse and RAM hits are not expected.
+      {false, true, false, false, false},
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
+
+    velox::test::VectorMaker vectorMaker(leafPool_.get());
+    auto data = vectorMaker.flatVector<int64_t>(100, [](auto i) { return i; });
+    auto input = vectorMaker.rowVector({data});
+    auto file = nimble::test::createNimbleFile(*rootPool_, input);
+
+    auto delegate = std::make_shared<velox::InMemoryReadFile>(file);
+    auto trackingFile = std::make_shared<TrackingReadFile>(delegate);
+
+    auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
+        std::dynamic_pointer_cast<const velox::RowType>(input->type()));
+
+    auto& ids = velox::fileIds();
+    auto fileIdStr = fmt::format(
+        "metadataNoRereadTest_pin{}_cache{}",
+        testCase.pinMetadata,
+        testCase.cacheMetadata);
+    velox::StringIdLease fileId(ids, fileIdStr);
+    velox::StringIdLease groupId(ids, fileIdStr + "_group");
+
+    auto makeTablet =
+        [&](const std::shared_ptr<velox::io::IoStatistics>& metadataStats,
+            std::unique_ptr<velox::FileHandle>& fileHandleOut) {
+          nimble::TabletReader::Options tabletOptions;
+          tabletOptions.pinMetadata = testCase.pinMetadata;
+          tabletOptions.cacheMetadata = testCase.cacheMetadata;
+          velox::io::ReaderOptions ioOpts(leafPool_.get());
+          ioOpts.setDataIoStats(dataIoStats_);
+          ioOpts.setMetadataIoStats(metadataStats);
+          ioOpts.setIndexIoStats(indexIoStats_);
+          tabletOptions.ioOptions = ioOpts;
+          if (testCase.provideCache) {
+            fileHandleOut = std::make_unique<velox::FileHandle>();
+            fileHandleOut->file = trackingFile;
+            fileHandleOut->uuid = fileId;
+            fileHandleOut->groupId = groupId;
+            tabletOptions.cache = cache_.get();
+            tabletOptions.fileHandle = fileHandleOut.get();
+          }
+          return nimble::TabletReader::create(
+              trackingFile, leafPool_.get(), tabletOptions);
+        };
+
+    // First open + first pass.
+    auto metadataIoStats1 = std::make_shared<velox::io::IoStatistics>();
+    std::unique_ptr<velox::FileHandle> fh1;
+    auto tablet1 = makeTablet(metadataIoStats1, fh1);
+
+    const auto stripeGroupsMeta = tablet1->stripeGroupsMetadata();
+    ASSERT_EQ(stripeGroupsMeta.size(), 1);
+    const auto metadataBoundary = stripeGroupsMeta[0].offset();
+
+    auto readParams = createReadParams();
+    auto reader1 = std::make_unique<nimble::VeloxReader>(
+        tablet1, *leafPool_, selector, readParams);
+    velox::VectorPtr result;
+    ASSERT_TRUE(reader1->next(100, result));
+    ASSERT_EQ(result->size(), 100);
+    ASSERT_FALSE(reader1->next(1, result));
+
+    ASSERT_GT(trackingFile->maxReadOffset(), metadataBoundary)
+        << "First pass should read metadata from the file";
+    ASSERT_GT(metadataIoStats1->rawBytesRead(), 0)
+        << "First pass should record metadata IO";
+
+    // Cross-reader: destroy everything and open a new TabletReader.
+    reader1.reset();
+    tablet1.reset();
+    fh1.reset();
+    trackingFile->resetMaxReadOffset();
+
+    auto metadataIoStats2 = std::make_shared<velox::io::IoStatistics>();
+    std::unique_ptr<velox::FileHandle> fh2;
+    auto tablet2 = makeTablet(metadataIoStats2, fh2);
+    auto reader3 = std::make_unique<nimble::VeloxReader>(
+        tablet2, *leafPool_, selector, readParams);
+    ASSERT_TRUE(reader3->next(100, result));
+    ASSERT_EQ(result->size(), 100);
+
+    if (testCase.expectCrossReaderReuse) {
+      ASSERT_LE(trackingFile->maxReadOffset(), metadataBoundary)
+          << "Cross-reader should not re-read metadata. "
+          << "maxReadOffset=" << trackingFile->maxReadOffset()
+          << " metadataBoundary=" << metadataBoundary;
+      ASSERT_EQ(metadataIoStats2->rawBytesRead(), 0)
+          << "Cross-reader should not record any metadata IO";
+    } else {
+      ASSERT_GT(trackingFile->maxReadOffset(), metadataBoundary)
+          << "Cross-reader should re-read metadata. "
+          << "maxReadOffset=" << trackingFile->maxReadOffset()
+          << " metadataBoundary=" << metadataBoundary;
+      ASSERT_GT(metadataIoStats2->rawBytesRead(), 0)
+          << "Cross-reader should record metadata IO";
+    }
+
+    if (testCase.expectRamHit) {
+      ASSERT_GT(metadataIoStats2->ramHit().count(), 0)
+          << "Should have RAM cache hits";
+    } else {
+      ASSERT_EQ(metadataIoStats2->ramHit().count(), 0)
+          << "Should have no RAM cache hits";
+    }
+  }
 }
 
 // Regression test: string-keyed flatmap writers store StringView keys in

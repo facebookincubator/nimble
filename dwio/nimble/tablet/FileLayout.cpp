@@ -35,6 +35,7 @@ FileLayout FileLayout::create(
   readerOptions.setMetadataIoStats(metadataStats);
   readerOptions.setIndexIoStats(indexStats);
   TabletReader::Options options;
+  options.loadClusterIndex = true;
   options.ioOptions = readerOptions;
   auto tablet = TabletReader::create(std::move(file), pool, options);
 

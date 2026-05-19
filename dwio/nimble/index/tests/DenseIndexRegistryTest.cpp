@@ -101,7 +101,10 @@ class DenseIndexRegistryTest : public ::testing::Test {
     readerOptions_ =
         std::make_unique<velox::io::ReaderOptions>(leafPool_.get());
     readerOptions_->setMetadataIoStats(ioStats_);
+    readerOptions_->setIndexIoStats(
+        std::make_shared<velox::io::IoStatistics>());
     TabletReader::Options options;
+    options.loadDenseIndexes = true;
     options.ioOptions = *readerOptions_;
     return TabletReader::create(std::move(readFile), leafPool_.get(), options);
   }
@@ -123,6 +126,7 @@ TEST_F(DenseIndexRegistryTest, emptyRegistry) {
   auto ioStats = std::make_shared<velox::io::IoStatistics>();
   velox::io::ReaderOptions ioOptions(leafPool_.get());
   ioOptions.setMetadataIoStats(ioStats);
+  ioOptions.setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
   IndexLookup::Options options{.file = file, .ioOptions = &ioOptions};
   auto registry = DenseIndexRegistry::create(
       std::nullopt, std::nullopt, options, leafPool_.get());
@@ -194,6 +198,30 @@ TEST_F(DenseIndexRegistryTest, hashAndSortedLookup) {
   EXPECT_EQ(sortedIdx->type(), IndexType::Sorted);
 
   // Non-existent columns should return null.
+  EXPECT_EQ(tablet->denseIndex({"nonexistent"}), nullptr);
+}
+
+TEST_F(DenseIndexRegistryTest, indexCacheRetention) {
+  std::vector<velox::VectorPtr> batches;
+  batches.push_back(makeBatch(0, 50));
+
+  const auto filePath = tempFilePath("cache_retention");
+  VeloxWriterOptions options;
+  options.hashIndexConfigs.push_back(HashIndexConfig{.columns = {"id"}});
+  writeFile(filePath, rowType(), batches, std::move(options));
+
+  auto tablet = openTablet(filePath);
+
+  auto* hashIdx = tablet->denseIndex({"id"});
+  ASSERT_NE(hashIdx, nullptr);
+  EXPECT_EQ(hashIdx->type(), IndexType::Hash);
+  EXPECT_EQ(hashIdx->indexColumns(), std::vector<std::string>{"id"});
+
+  // Repeated lookup returns the same pinned index object.
+  auto* hashIdx2 = tablet->denseIndex({"id"});
+  EXPECT_EQ(hashIdx, hashIdx2);
+
+  // Non-existent columns return null.
   EXPECT_EQ(tablet->denseIndex({"nonexistent"}), nullptr);
 }
 

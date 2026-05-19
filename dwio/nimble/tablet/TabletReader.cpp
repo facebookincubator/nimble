@@ -92,7 +92,10 @@ TabletReader::Options TabletReader::configureOptions(
   if (tabletOptions.loadChunkIndex) {
     tabletOptions.preloadOptionalSections.emplace_back(kChunkIndexSection);
   }
-  tabletOptions.pinFileMetadata = options.pinFileMetadata();
+  tabletOptions.pinMetadata = options.pinMetadata();
+  tabletOptions.cacheMetadata = options.cacheMetadata();
+  tabletOptions.pinIndex = options.pinIndex();
+  tabletOptions.cacheIndex = options.cacheIndex();
   tabletOptions.ioOptions = options;
   return tabletOptions;
 }
@@ -238,14 +241,25 @@ TabletReader::TabletReader(
             options.ioOptions->metadataIoStats(), "metadataIoStats is null.");
         return *options.ioOptions;
       }()},
-      indexOptions_{index::IndexLookup::Options{
-          file_,
-          &ioOptions_,
-          options.fileHandle,
-          options.cache}},
+      indexOptions_{[&]() {
+        // cacheIndex takes effect only when fileHandle and cache are provided.
+        const bool cacheEnabled =
+            options.cacheIndex && options.fileHandle != nullptr;
+        if (cacheEnabled) {
+          NIMBLE_CHECK_NOT_NULL(options.cache, "cacheIndex requires cache");
+        }
+        return index::IndexLookup::Options{
+            file_,
+            &ioOptions_,
+            cacheEnabled ? options.fileHandle : nullptr,
+            cacheEnabled ? options.cache : nullptr,
+            options.pinIndex};
+      }()},
       metadataInput_{[&]() {
-        if (options.fileHandle != nullptr) {
-          NIMBLE_CHECK_NOT_NULL(options.cache);
+        // cacheMetadata takes effect only when fileHandle and cache are
+        // provided.
+        if (options.cacheMetadata && options.fileHandle != nullptr) {
+          NIMBLE_CHECK_NOT_NULL(options.cache, "cacheMetadata requires cache");
           return MetadataInput::create(
               options.fileHandle, options.cache, ioOptions_);
         }
@@ -255,12 +269,12 @@ TabletReader::TabletReader(
           [this](uint32_t stripeGroupIndex) {
             return loadStripeGroup(stripeGroupIndex);
           },
-          options.pinFileMetadata},
+          options.pinMetadata},
       chunkIndexCache_{
           [this](uint32_t stripeGroupIndex) {
             return loadChunkIndexGroup(stripeGroupIndex);
           },
-          options.pinFileMetadata} {
+          options.pinMetadata} {
   NIMBLE_CHECK_EQ(
       static_cast<const void*>(&ioOptions_.memoryPool()),
       static_cast<const void*>(pool_),

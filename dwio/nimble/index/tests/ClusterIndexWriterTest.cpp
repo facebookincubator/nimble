@@ -1124,6 +1124,7 @@ TEST_P(ClusterIndexWriterChunkTest, maxRowsPerKeyChunk) {
   auto ioStats = std::make_shared<velox::io::IoStatistics>();
   velox::io::ReaderOptions readerOptions(pool_.get());
   readerOptions.setMetadataIoStats(ioStats);
+  readerOptions.setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
   auto metadataInput = MetadataInput::create(metadataFile.get(), readerOptions);
   auto dataInput = std::make_unique<velox::dwio::common::BufferedInput>(
       std::make_shared<velox::InMemoryReadFile>(keyStreamData), *pool_);

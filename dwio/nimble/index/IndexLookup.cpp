@@ -27,8 +27,10 @@ namespace facebook::nimble::index {
 void IndexLookup::Options::validate() const {
   NIMBLE_CHECK_NOT_NULL(file.get());
   NIMBLE_CHECK_NOT_NULL(ioOptions);
-  NIMBLE_CHECK(
-      (fileHandle != nullptr) == (cache != nullptr),
+  NIMBLE_CHECK_NOT_NULL(ioOptions->indexIoStats(), "indexIoStats must be set");
+  NIMBLE_CHECK_EQ(
+      fileHandle != nullptr,
+      cache != nullptr,
       "fileHandle and cache must both be set or neither");
   if (fileHandle != nullptr) {
     NIMBLE_CHECK_EQ(
@@ -38,7 +40,7 @@ void IndexLookup::Options::validate() const {
   }
 }
 
-std::unique_ptr<MetadataInput> createIndexMetadataInput(
+std::shared_ptr<MetadataInput> createIndexMetadataInput(
     const IndexLookup::Options& options) {
   return (options.fileHandle != nullptr)
       ? MetadataInput::create(
@@ -46,16 +48,12 @@ std::unique_ptr<MetadataInput> createIndexMetadataInput(
       : MetadataInput::create(options.file.get(), *options.ioOptions);
 }
 
-std::unique_ptr<velox::dwio::common::BufferedInput> createIndexDataInput(
-    const IndexLookup::Options& options,
-    velox::memory::MemoryPool& pool) {
+std::shared_ptr<velox::dwio::common::BufferedInput> createIndexDataInput(
+    const IndexLookup::Options& options) {
   auto readFile = options.file;
   auto indexIoStats = options.ioOptions->indexIoStats();
-  if (indexIoStats == nullptr) {
-    indexIoStats = std::make_shared<velox::io::IoStatistics>();
-  }
   if (options.cache != nullptr) {
-    return std::make_unique<velox::dwio::common::CachedBufferedInput>(
+    return std::make_shared<velox::dwio::common::CachedBufferedInput>(
         std::move(readFile),
         velox::dwio::common::MetricsLog::voidLog(),
         options.fileHandle->uuid,
@@ -67,7 +65,7 @@ std::unique_ptr<velox::dwio::common::BufferedInput> createIndexDataInput(
         nullptr,
         *options.ioOptions);
   }
-  return std::make_unique<velox::dwio::common::DirectBufferedInput>(
+  return std::make_shared<velox::dwio::common::DirectBufferedInput>(
       std::move(readFile),
       velox::dwio::common::MetricsLog::voidLog(),
       velox::StringIdLease(),

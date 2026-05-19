@@ -101,10 +101,8 @@ std::unique_ptr<DenseIndexRegistry> DenseIndexRegistry::create(
   if (!hashSection.has_value() && !sortedSection.has_value()) {
     return nullptr;
   }
-  auto metadataInput =
-      std::shared_ptr<MetadataInput>(createIndexMetadataInput(options));
-  auto dataInput = std::shared_ptr<velox::dwio::common::BufferedInput>(
-      createIndexDataInput(options, *pool));
+  auto metadataInput = createIndexMetadataInput(options);
+  auto dataInput = createIndexDataInput(options);
   auto registry = std::unique_ptr<DenseIndexRegistry>(new DenseIndexRegistry());
   if (hashSection.has_value()) {
     registry->registerHashIndices(
@@ -136,6 +134,7 @@ void DenseIndexRegistry::registerHashIndices(
   hashDescriptors_ = parseDescriptors<serialization::HashIndexDirectory>(
       directorySection, "Hash index");
 
+  // Always pin: findHashIndex returns raw pointers, so entries must stay alive.
   hashIndexCache_ = std::make_unique<MetadataCache<uint32_t, HashIndex>>(
       [this, metadataInput, pool](
           uint32_t index) -> std::shared_ptr<HashIndex> {
@@ -158,6 +157,8 @@ void DenseIndexRegistry::registerSortedIndices(
   sortedDescriptors_ = parseDescriptors<serialization::SortedIndexDirectory>(
       directorySection, "Sorted index");
 
+  // Always pin: findSortedIndex returns raw pointers, so entries must stay
+  // alive.
   sortedIndexCache_ = std::make_unique<MetadataCache<uint32_t, SortedIndex>>(
       [this, metadataInput, dataInput, pool](
           uint32_t index) -> std::shared_ptr<SortedIndex> {

@@ -90,79 +90,75 @@ struct IndexEncodingParam {
   SortOrder sortOrder;
   std::optional<uint32_t> prefixRestartInterval;
   bool enableChunkIndex{false};
-  bool pinFileMetadata{false};
+  bool pinMetadata{false};
   bool enableCache{false};
 
   static IndexEncodingParam prefix(
       std::optional<uint32_t> prefixRestartInterval = std::nullopt,
       bool enableChunkIndex = false,
-      bool pinFileMetadata = false,
+      bool pinMetadata = false,
       bool enableCache = false) {
     return IndexEncodingParam{
         makePrefixEncodingName("Prefix", prefixRestartInterval) +
             (enableChunkIndex ? "_ChunkIndex" : "") +
-            (pinFileMetadata ? "_PinMetadata" : "") +
-            (enableCache ? "_Cache" : ""),
+            (pinMetadata ? "_PinMetadata" : "") + (enableCache ? "_Cache" : ""),
         EncodingType::Prefix,
         CompressionType::Uncompressed,
         SortOrder{.ascending = true},
         prefixRestartInterval,
         enableChunkIndex,
-        pinFileMetadata,
+        pinMetadata,
         enableCache};
   }
 
   static IndexEncodingParam trivialZstd(
       bool enableChunkIndex = false,
-      bool pinFileMetadata = false,
+      bool pinMetadata = false,
       bool enableCache = false) {
     return IndexEncodingParam{
         std::string("TrivialZstd") + (enableChunkIndex ? "_ChunkIndex" : "") +
-            (pinFileMetadata ? "_PinMetadata" : "") +
-            (enableCache ? "_Cache" : ""),
+            (pinMetadata ? "_PinMetadata" : "") + (enableCache ? "_Cache" : ""),
         EncodingType::Trivial,
         CompressionType::Zstd,
         SortOrder{.ascending = true},
         std::nullopt,
         enableChunkIndex,
-        pinFileMetadata,
+        pinMetadata,
         enableCache};
   }
 
   static IndexEncodingParam prefixDesc(
       std::optional<uint32_t> prefixRestartInterval = std::nullopt,
       bool enableChunkIndex = false,
-      bool pinFileMetadata = false,
+      bool pinMetadata = false,
       bool enableCache = false) {
     return IndexEncodingParam{
         makePrefixEncodingName("PrefixDesc", prefixRestartInterval) +
             (enableChunkIndex ? "_ChunkIndex" : "") +
-            (pinFileMetadata ? "_PinMetadata" : "") +
-            (enableCache ? "_Cache" : ""),
+            (pinMetadata ? "_PinMetadata" : "") + (enableCache ? "_Cache" : ""),
         EncodingType::Prefix,
         CompressionType::Uncompressed,
         SortOrder{.ascending = false},
         prefixRestartInterval,
         enableChunkIndex,
-        pinFileMetadata,
+        pinMetadata,
         enableCache};
   }
 
   static IndexEncodingParam trivialZstdDesc(
       bool enableChunkIndex = false,
-      bool pinFileMetadata = false,
+      bool pinMetadata = false,
       bool enableCache = false) {
     return IndexEncodingParam{
         std::string("TrivialZstdDesc") +
             (enableChunkIndex ? "_ChunkIndex" : "") +
-            (pinFileMetadata ? "_PinMetadata" : "") +
-            (enableCache ? "_Cache" : ""),
+            (pinMetadata ? "_PinMetadata" : "") + (enableCache ? "_Cache" : ""),
         EncodingType::Trivial,
         CompressionType::Zstd,
         SortOrder{.ascending = false},
         std::nullopt,
         enableChunkIndex,
-        pinFileMetadata,
+        pinMetadata,
         enableCache};
   }
 
@@ -201,6 +197,7 @@ class E2EIndexTestBase : public ::testing::Test {
     vectorMaker_ = std::make_unique<velox::test::VectorMaker>(leafPool_.get());
     dataIoStats_ = std::make_shared<io::IoStatistics>();
     metadataIoStats_ = std::make_shared<io::IoStatistics>();
+    indexIoStats_ = std::make_shared<io::IoStatistics>();
     scanTracker_ =
         std::make_shared<cache::ScanTracker>("testTracker", nullptr, 256 << 10);
     ioExecutor_ = std::make_unique<folly::CPUThreadPoolExecutor>(10);
@@ -341,7 +338,9 @@ class E2EIndexTestBase : public ::testing::Test {
     dwio::common::ReaderOptions readerOptions(leafPool_.get());
     readerOptions.setDataIoStats(dataIoStats_);
     readerOptions.setMetadataIoStats(metadataIoStats_);
+    readerOptions.setIndexIoStats(indexIoStats_);
     readerOptions.setFileFormat(FileFormat::NIMBLE);
+    readerOptions.setLoadClusterIndex(true);
     setUpReaderOptions(readerOptions);
 
     // Set up random skip if sample rate is less than 1.0.
@@ -387,7 +386,7 @@ class E2EIndexTestBase : public ::testing::Test {
     return factory->createReader(std::move(input), readerOptions);
   }
 
-  // Override to customize reader options (e.g., pinFileMetadata).
+  // Override to customize reader options (e.g., pinMetadata).
   virtual void setUpReaderOptions(dwio::common::ReaderOptions& /*opts*/) {}
 
   // Reads all rows with the given filters and optionally disables index.
@@ -521,6 +520,7 @@ class E2EIndexTestBase : public ::testing::Test {
   std::shared_ptr<cache::AsyncDataCache> cache_;
   std::shared_ptr<io::IoStatistics> dataIoStats_;
   std::shared_ptr<io::IoStatistics> metadataIoStats_;
+  std::shared_ptr<io::IoStatistics> indexIoStats_;
   std::shared_ptr<cache::ScanTracker> scanTracker_;
   std::unique_ptr<folly::CPUThreadPoolExecutor> ioExecutor_;
 };
@@ -536,7 +536,7 @@ class E2EIndexTest : public E2EIndexTestBase,
   }
 
   void setUpReaderOptions(dwio::common::ReaderOptions& opts) override {
-    opts.setPinFileMetadata(GetParam().pinFileMetadata);
+    opts.setPinMetadata(GetParam().pinMetadata);
   }
 
   // Returns the encoding layout from the test parameter.
@@ -2514,7 +2514,7 @@ INSTANTIATE_TEST_SUITE_P(
         IndexEncodingParam::trivialZstd(true),
         IndexEncodingParam::prefixDesc(std::nullopt, true),
         IndexEncodingParam::trivialZstdDesc(true),
-        // With pinFileMetadata enabled.
+        // With pinMetadata enabled.
         IndexEncodingParam::prefix(std::nullopt, false, true),
         IndexEncodingParam::prefixDesc(std::nullopt, false, true),
         IndexEncodingParam::prefix(std::nullopt, true, true),
@@ -2522,7 +2522,7 @@ INSTANTIATE_TEST_SUITE_P(
         // With cache enabled.
         IndexEncodingParam::prefix(std::nullopt, false, false, true),
         IndexEncodingParam::prefixDesc(std::nullopt, false, false, true),
-        // With cache and pinFileMetadata enabled.
+        // With cache and pinMetadata enabled.
         IndexEncodingParam::prefix(std::nullopt, false, true, true),
         IndexEncodingParam::prefixDesc(std::nullopt, false, true, true)),
     [](const ::testing::TestParamInfo<IndexEncodingParam>& info) {

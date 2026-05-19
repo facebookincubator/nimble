@@ -40,11 +40,11 @@ using Subfield = velox::common::Subfield;
 
 struct TestParam {
   bool enableCache;
-  bool pinFileMetadata;
+  bool pinMetadata;
 
   std::string debugString() const {
     return fmt::format(
-        "enableCache={}, pinFileMetadata={}", enableCache, pinFileMetadata);
+        "enableCache={}, pinMetadata={}", enableCache, pinMetadata);
   }
 };
 
@@ -122,9 +122,11 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
     dwio::common::ReaderOptions readerOptions(leafPool_.get());
     readerOptions.setDataIoStats(dataIoStats_);
     readerOptions.setMetadataIoStats(metadataIoStats_);
+    readerOptions.setIndexIoStats(indexIoStats_);
     readerOptions.setFileFormat(FileFormat::NIMBLE);
-    readerOptions.setFileMetadataCacheEnabled(GetParam().enableCache);
-    readerOptions.setPinFileMetadata(GetParam().pinFileMetadata);
+    readerOptions.setLoadClusterIndex(true);
+    readerOptions.setCacheMetadata(GetParam().enableCache);
+    readerOptions.setPinMetadata(GetParam().pinMetadata);
     return NimbleIndexProjector(
         std::move(readFile), projectedSubfields, readerOptions);
   }
@@ -208,6 +210,8 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
   const std::shared_ptr<io::IoStatistics> dataIoStats_{
       std::make_shared<io::IoStatistics>()};
   const std::shared_ptr<io::IoStatistics> metadataIoStats_{
+      std::make_shared<io::IoStatistics>()};
+  const std::shared_ptr<io::IoStatistics> indexIoStats_{
       std::make_shared<io::IoStatistics>()};
 
   std::shared_ptr<memory::MemoryPool> rootPool_;
@@ -942,7 +946,9 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
     dwio::common::ReaderOptions readerOptions(leafPool_.get());
     readerOptions.setDataIoStats(dataIoStats_);
     readerOptions.setMetadataIoStats(metadataIoStats_);
+    readerOptions.setIndexIoStats(indexIoStats_);
     readerOptions.setFileFormat(FileFormat::NIMBLE);
+    readerOptions.setLoadClusterIndex(true);
     readerOptions.setMaxCoalesceDistance(maxCoalesceDistance);
 
     std::vector<Subfield> subfields;
@@ -1058,14 +1064,32 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
       << ", without: " << readsNoReorderLarge;
 }
 
-// Verifies that pinFileMetadata prevents re-reading metadata on repeated
-// project() calls within the same projector. Cross-reader caching via
-// AsyncDataCache requires CachedBufferedInput support in
-// NimbleIndexProjector (followup).
-TEST_P(NimbleIndexProjectorTest, pinnedMetadataNoReread) {
-  if (!GetParam().pinFileMetadata) {
-    GTEST_SKIP() << "Only applicable when pinFileMetadata is enabled";
+// Verifies that metadata is reused within the same reader on repeated
+// project() calls. Loops over combinations of pinMetadata and cacheMetadata
+// to confirm that all valid configurations avoid re-reading metadata.
+TEST_P(NimbleIndexProjectorTest, metadataReuseWithSameReader) {
+  if (!GetParam().enableCache) {
+    GTEST_SKIP() << "Only applicable when cache is enabled";
   }
+
+  struct TestCase {
+    bool pinMetadata;
+    bool cacheMetadata;
+    bool expectRamHit;
+    std::string debugString() const {
+      return fmt::format(
+          "pinMetadata={}, cacheMetadata={}, expectRamHit={}",
+          pinMetadata,
+          cacheMetadata,
+          expectRamHit);
+    }
+  };
+
+  const std::vector<TestCase> testCases = {
+      {true, true, true},
+      {true, false, false},
+      {false, true, true},
+  };
 
   auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
 
@@ -1084,11 +1108,9 @@ TEST_P(NimbleIndexProjectorTest, pinnedMetadataNoReread) {
 
   writeData({batch}, {"key"});
 
+  // Compute metadata boundary: the start of the first stripe group metadata.
   auto innerFile =
       std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
-  auto trackingFile = std::make_shared<testing::TrackingReadFile>(innerFile);
-
-  // Compute metadata boundary: the start of the first stripe group metadata.
   auto tablet = TabletReader::create(
       innerFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
   auto stripeGroupsMeta = tablet->stripeGroupsMetadata();
@@ -1096,33 +1118,41 @@ TEST_P(NimbleIndexProjectorTest, pinnedMetadataNoReread) {
   const auto metadataBoundary = stripeGroupsMeta[0].offset();
   tablet.reset();
 
-  dwio::common::ReaderOptions readerOptions(leafPool_.get());
-  readerOptions.setDataIoStats(dataIoStats_);
-  readerOptions.setMetadataIoStats(metadataIoStats_);
-  readerOptions.setFileFormat(FileFormat::NIMBLE);
-  readerOptions.setFileMetadataCacheEnabled(GetParam().enableCache);
-  readerOptions.setPinFileMetadata(GetParam().pinFileMetadata);
+  for (const auto& tc : testCases) {
+    SCOPED_TRACE(tc.debugString());
 
-  std::vector<Subfield> subfields;
-  subfields.emplace_back("value");
-  NimbleIndexProjector projector(trackingFile, subfields, readerOptions);
+    auto trackingFile = std::make_shared<testing::TrackingReadFile>(innerFile);
 
-  auto bounds = makePointLookup(rowType, {"key"}, 50);
-  NimbleIndexProjector::Request request;
-  request.keyBounds = {bounds};
+    dwio::common::ReaderOptions readerOptions(leafPool_.get());
+    readerOptions.setDataIoStats(dataIoStats_);
+    readerOptions.setMetadataIoStats(metadataIoStats_);
+    readerOptions.setIndexIoStats(indexIoStats_);
+    readerOptions.setFileFormat(FileFormat::NIMBLE);
+    readerOptions.setLoadClusterIndex(true);
+    readerOptions.setCacheMetadata(tc.cacheMetadata);
+    readerOptions.setPinMetadata(tc.pinMetadata);
 
-  // First project: reads both data and metadata regions.
-  projector.project(request, {});
-  ASSERT_GT(trackingFile->maxReadOffset(), metadataBoundary)
-      << "First project should read metadata beyond the boundary";
+    std::vector<Subfield> subfields;
+    subfields.emplace_back("value");
+    NimbleIndexProjector projector(trackingFile, subfields, readerOptions);
 
-  // Second project on the same projector: pinned metadata should avoid
-  // re-reading beyond the metadata boundary.
-  trackingFile->resetMaxReadOffset();
-  projector.project(request, {});
-  EXPECT_LE(trackingFile->maxReadOffset(), metadataBoundary)
-      << "Second project should not re-read metadata when "
-      << GetParam().debugString();
+    auto bounds = makePointLookup(rowType, {"key"}, 50);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+
+    // First project: reads both data and metadata regions.
+    projector.project(request, {});
+    ASSERT_GT(trackingFile->maxReadOffset(), metadataBoundary)
+        << "First project should read metadata beyond the boundary";
+
+    // Second project on the same projector: metadata should be reused,
+    // avoiding re-reads beyond the metadata boundary.
+    trackingFile->resetMaxReadOffset();
+    projector.project(request, {});
+    EXPECT_LE(trackingFile->maxReadOffset(), metadataBoundary)
+        << "Second project should not re-read metadata when "
+        << tc.debugString();
+  }
 }
 
 TEST_P(NimbleIndexProjectorTest, resumeKeyOnTruncation) {
@@ -1787,7 +1817,7 @@ INSTANTIATE_TEST_CASE_P(
       return fmt::format(
           "cache{}_pin{}",
           info.param.enableCache ? "On" : "Off",
-          info.param.pinFileMetadata ? "On" : "Off");
+          info.param.pinMetadata ? "On" : "Off");
     });
 
 } // namespace facebook::nimble::test

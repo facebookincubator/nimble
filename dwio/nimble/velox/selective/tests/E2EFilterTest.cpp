@@ -49,7 +49,7 @@ struct E2EFilterTestParam {
   bool skipConstantFlatMapInMapStreams;
   bool enableChunkIndex;
   bool stringDecoderZeroCopy;
-  bool pinFileMetadata;
+  bool pinMetadata;
   bool enableCache;
   bool nimblePreserveDictionaryEncoding;
 
@@ -58,7 +58,7 @@ struct E2EFilterTestParam {
         skipConstantFlatMapInMapStreams{std::get<1>(t)},
         enableChunkIndex{std::get<2>(t)},
         stringDecoderZeroCopy{std::get<3>(t)},
-        pinFileMetadata{std::get<4>(t)},
+        pinMetadata{std::get<4>(t)},
         enableCache{std::get<5>(t)},
         nimblePreserveDictionaryEncoding{std::get<6>(t)} {}
 
@@ -69,7 +69,7 @@ struct E2EFilterTestParam {
         skipConstantFlatMapInMapStreams,
         enableChunkIndex,
         stringDecoderZeroCopy,
-        pinFileMetadata,
+        pinMetadata,
         enableCache,
         nimblePreserveDictionaryEncoding);
   }
@@ -89,6 +89,7 @@ class E2EFilterTest
     batchSize_ = 2003;
     batchCount_ = 5;
     testRowGroupSkip_ = false;
+    indexIoStats_ = std::make_shared<io::IoStatistics>();
     if (param().enableCache) {
       allocator_ = std::make_shared<memory::MallocAllocator>(
           memory::MemoryAllocator::Options{
@@ -373,7 +374,10 @@ class E2EFilterTest
       const dwio::common::ReaderOptions& opts,
       std::unique_ptr<dwio::common::BufferedInput> input) final {
     auto readerOpts = opts;
-    readerOpts.setPinFileMetadata(param().pinFileMetadata);
+    readerOpts.setLoadClusterIndex(true);
+    readerOpts.setPinMetadata(param().pinMetadata);
+    readerOpts.setCacheMetadata(param().enableCache);
+    readerOpts.setIndexIoStats(indexIoStats_);
     if (param().enableCache) {
       auto readFile = std::make_shared<InMemoryReadFile>(sinkData_);
       auto& ids = fileIds();
@@ -577,6 +581,7 @@ class E2EFilterTest
   std::shared_ptr<cache::AsyncDataCache> cache_;
   std::shared_ptr<io::IoStatistics> dataIoStats_;
   std::shared_ptr<io::IoStatistics> metadataIoStats_;
+  std::shared_ptr<io::IoStatistics> indexIoStats_;
   std::shared_ptr<cache::ScanTracker> scanTracker_;
   std::unique_ptr<folly::CPUThreadPoolExecutor> ioExecutor_;
 
