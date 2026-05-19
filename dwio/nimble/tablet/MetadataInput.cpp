@@ -37,33 +37,25 @@ namespace facebook::nimble {
 
 std::unique_ptr<MetadataInput> MetadataInput::create(
     velox::ReadFile* file,
-    const velox::io::ReaderOptions& readerOptions) {
+    const Options& options) {
   NIMBLE_CHECK_NOT_NULL(file);
-  return std::unique_ptr<MetadataInput>(
-      new DirectMetadataInput(file, readerOptions));
+  if (options.fileHandle != nullptr) {
+    NIMBLE_CHECK_NOT_NULL(
+        options.cache, "cache required when fileHandle is set");
+    return std::unique_ptr<MetadataInput>(new CachedMetadataInput(
+        file, options.fileHandle->uuid, options.cache, options));
+  }
+  return std::unique_ptr<MetadataInput>(new DirectMetadataInput(file, options));
 }
 
-std::unique_ptr<MetadataInput> MetadataInput::create(
-    const velox::FileHandle* fileHandle,
-    velox::cache::AsyncDataCache* cache,
-    const velox::io::ReaderOptions& readerOptions) {
-  NIMBLE_CHECK_NOT_NULL(fileHandle);
-  NIMBLE_CHECK_NOT_NULL(cache);
-  auto* file = fileHandle->file.get();
-  NIMBLE_CHECK_NOT_NULL(file);
-  return std::unique_ptr<MetadataInput>(
-      new CachedMetadataInput(file, fileHandle->uuid, cache, readerOptions));
-}
-
-MetadataInput::MetadataInput(
-    velox::ReadFile* file,
-    const velox::io::ReaderOptions& options)
+MetadataInput::MetadataInput(velox::ReadFile* file, const Options& options)
     : file_{file},
-      pool_{&options.memoryPool()},
-      maxCoalesceDistance_{options.maxCoalesceDistance()},
-      maxCoalesceBytes_{options.maxCoalesceBytes()},
-      executor_{options.ioExecutor().get()},
-      ioStats_{options.metadataIoStats()} {
+      pool_{options.pool},
+      maxCoalesceDistance_{options.maxCoalesceDistance},
+      maxCoalesceBytes_{options.maxCoalesceBytes},
+      executor_{options.executor},
+      ioStats_{options.ioStats} {
+  NIMBLE_CHECK_NOT_NULL(pool_);
   NIMBLE_CHECK_NOT_NULL(ioStats_.get());
 }
 
@@ -279,7 +271,7 @@ void MetadataInput::recordCoalescedIoStats(
 
 DirectMetadataInput::DirectMetadataInput(
     velox::ReadFile* file,
-    const velox::io::ReaderOptions& options)
+    const Options& options)
     : MetadataInput(file, options) {}
 
 void DirectMetadataInput::prepareBuffers(
@@ -326,7 +318,7 @@ CachedMetadataInput::CachedMetadataInput(
     velox::ReadFile* file,
     velox::StringIdLease fileId,
     velox::cache::AsyncDataCache* cache,
-    const velox::io::ReaderOptions& options)
+    const Options& options)
     : MetadataInput(file, options), cache_{cache}, fileId_{std::move(fileId)} {
   NIMBLE_CHECK_NOT_NULL(cache_);
 }

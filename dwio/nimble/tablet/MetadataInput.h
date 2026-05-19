@@ -49,16 +49,21 @@ namespace facebook::nimble {
 ///     metadata with memory/SSD tier support
 class MetadataInput {
  public:
-  /// Creates a DirectMetadataInput for non-cached reads.
+  struct Options {
+    velox::memory::MemoryPool* pool;
+    std::shared_ptr<velox::io::IoStatistics> ioStats;
+    int32_t maxCoalesceDistance{
+        velox::io::ReaderOptions::kDefaultCoalesceDistance};
+    int64_t maxCoalesceBytes{velox::io::ReaderOptions::kDefaultCoalesceBytes};
+    folly::Executor* executor{nullptr};
+    // When both fileHandle and cache are set, creates CachedMetadataInput.
+    const velox::FileHandle* fileHandle{nullptr};
+    velox::cache::AsyncDataCache* cache{nullptr};
+  };
+
   static std::unique_ptr<MetadataInput> create(
       velox::ReadFile* file,
-      const velox::io::ReaderOptions& readerOptions);
-
-  /// Creates a CachedMetadataInput using fileHandle->uuid as cache key.
-  static std::unique_ptr<MetadataInput> create(
-      const velox::FileHandle* fileHandle,
-      velox::cache::AsyncDataCache* cache,
-      const velox::io::ReaderOptions& readerOptions);
+      const Options& options);
 
   virtual ~MetadataInput() = default;
 
@@ -85,7 +90,7 @@ class MetadataInput {
       std::span<const std::string_view> ranges);
 
  protected:
-  MetadataInput(velox::ReadFile* file, const velox::io::ReaderOptions& options);
+  MetadataInput(velox::ReadFile* file, const Options& options);
 
   struct LoadedSection {
     explicit LoadedSection(MetadataSection _section) : section{_section} {}
@@ -200,9 +205,7 @@ class DirectMetadataInput : public MetadataInput {
 
   friend class MetadataInput;
 
-  DirectMetadataInput(
-      velox::ReadFile* file,
-      const velox::io::ReaderOptions& options);
+  DirectMetadataInput(velox::ReadFile* file, const Options& options);
 };
 
 /// Cached metadata loading with IO coalescing and AsyncDataCache.
@@ -284,7 +287,7 @@ class CachedMetadataInput : public MetadataInput {
       velox::ReadFile* file,
       velox::StringIdLease fileId,
       velox::cache::AsyncDataCache* cache,
-      const velox::io::ReaderOptions& options);
+      const Options& options);
 
   velox::cache::AsyncDataCache* const cache_;
   const velox::StringIdLease fileId_;

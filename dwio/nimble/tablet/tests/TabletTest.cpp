@@ -3726,7 +3726,7 @@ TEST_P(TabletWithIndexTest, loadDenseIndexes) {
     if (loadDenseIndexes) {
       ASSERT_NE(tablet->denseIndex({"id"}), nullptr);
       ASSERT_NE(tablet->denseIndex({"value"}), nullptr);
-      EXPECT_GT(metadataIoStats->rawBytesRead(), metadataBytesAfterOpen);
+      EXPECT_GT(indexIoStats->rawBytesRead(), 0);
     } else {
       EXPECT_EQ(tablet->denseIndex({"id"}), nullptr);
       EXPECT_EQ(tablet->denseIndex({"value"}), nullptr);

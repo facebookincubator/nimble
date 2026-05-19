@@ -353,11 +353,9 @@ std::unique_ptr<ClusterIndex> ClusterIndexTestBase::createClusterIndex(
   metadataFile_ =
       std::make_shared<velox::InMemoryReadFile>(indexBuffers.indexPartitions);
   ioStats_ = std::make_shared<velox::io::IoStatistics>();
-  velox::io::ReaderOptions readerOptions(pool_.get());
-  readerOptions.setMetadataIoStats(ioStats_);
-  readerOptions.setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
-  auto metadataInput =
-      MetadataInput::create(metadataFile_.get(), readerOptions);
+  auto metadataInput = MetadataInput::create(
+      metadataFile_.get(),
+      MetadataInput::Options{.pool = pool_.get(), .ioStats = ioStats_});
 
   auto dataFile = keyStreamFile != nullptr
       ? std::shared_ptr<velox::ReadFile>(
