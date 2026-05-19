@@ -42,10 +42,15 @@ void IndexLookup::Options::validate() const {
 
 std::shared_ptr<MetadataInput> createIndexMetadataInput(
     const IndexLookup::Options& options) {
-  return (options.fileHandle != nullptr)
-      ? MetadataInput::create(
-            options.fileHandle, options.cache, *options.ioOptions)
-      : MetadataInput::create(options.file.get(), *options.ioOptions);
+  MetadataInput::Options metadataOptions{
+      .pool = &options.ioOptions->memoryPool(),
+      .ioStats = options.ioOptions->indexIoStats(),
+      .maxCoalesceDistance = options.ioOptions->maxCoalesceDistance(),
+      .maxCoalesceBytes = options.ioOptions->maxCoalesceBytes(),
+      .executor = options.ioOptions->ioExecutor().get(),
+      .fileHandle = options.fileHandle,
+      .cache = options.cache};
+  return MetadataInput::create(options.file.get(), metadataOptions);
 }
 
 std::shared_ptr<velox::dwio::common::BufferedInput> createIndexDataInput(

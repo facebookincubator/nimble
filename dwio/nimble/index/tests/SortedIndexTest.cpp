@@ -893,9 +893,8 @@ TEST_F(SortedIndexTest, indexDataReuseCrossReaders) {
       ASSERT_FALSE(secondResult[0].empty());
 
       if (testCase.expectCrossReaderReuse) {
-        // Metadata (index directory) is served from AsyncDataCache.
-        EXPECT_GT(metadataIoStats_->ramHit().count(), 0)
-            << "Second reader should serve index metadata from cache";
+        EXPECT_GT(indexIoStats_->ramHit().count(), 0)
+            << "Second reader should serve index data from cache";
       }
     }
   }

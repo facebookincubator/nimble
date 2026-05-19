@@ -256,14 +256,20 @@ TabletReader::TabletReader(
             options.pinIndex};
       }()},
       metadataInput_{[&]() {
+        MetadataInput::Options metadataOptions{
+            .pool = &pool,
+            .ioStats = ioOptions_.metadataIoStats(),
+            .maxCoalesceDistance = ioOptions_.maxCoalesceDistance(),
+            .maxCoalesceBytes = ioOptions_.maxCoalesceBytes(),
+            .executor = ioOptions_.ioExecutor().get()};
         // cacheMetadata takes effect only when fileHandle and cache are
         // provided.
         if (options.cacheMetadata && options.fileHandle != nullptr) {
           NIMBLE_CHECK_NOT_NULL(options.cache, "cacheMetadata requires cache");
-          return MetadataInput::create(
-              options.fileHandle, options.cache, ioOptions_);
+          metadataOptions.fileHandle = options.fileHandle;
+          metadataOptions.cache = options.cache;
         }
-        return MetadataInput::create(file_.get(), ioOptions_);
+        return MetadataInput::create(file_.get(), metadataOptions);
       }()},
       stripeGroupCache_{
           [this](uint32_t stripeGroupIndex) {

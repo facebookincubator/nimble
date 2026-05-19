@@ -71,15 +71,14 @@ std::string buildFileContent(
 
 class MetadataInputTestBase : public ::testing::Test {
  protected:
-  velox::io::ReaderOptions makeReaderOptions(
+  nimble::MetadataInput::Options makeMetadataInputOptions(
       int32_t maxCoalesceDistance = 1 << 20,
       int64_t maxCoalesceBytes = 128 << 20) {
-    velox::io::ReaderOptions options(pool_.get());
-    options.setDataIoStats(dataIoStats_);
-    options.setMetadataIoStats(metadataIoStats_);
-    options.setMaxCoalesceDistance(maxCoalesceDistance);
-    options.setMaxCoalesceBytes(maxCoalesceBytes);
-    return options;
+    return {
+        .pool = pool_.get(),
+        .ioStats = metadataIoStats_,
+        .maxCoalesceDistance = maxCoalesceDistance,
+        .maxCoalesceBytes = maxCoalesceBytes};
   }
 
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
@@ -196,7 +195,7 @@ TEST_F(DirectMetadataInputTest, loadSections) {
     const auto fileContent = buildFileContent(sections, fileDataParts);
     auto readFile = std::make_shared<velox::InMemoryReadFile>(fileContent);
 
-    const auto options = makeReaderOptions();
+    const auto options = makeMetadataInputOptions();
     auto input = nimble::MetadataInput::create(readFile.get(), options);
 
     auto results = input->load(sections);
@@ -230,7 +229,7 @@ TEST_F(DirectMetadataInputTest, reverseSectionOrder) {
       buildFileContent({section0, section1}, {data0, data1});
   auto readFile = std::make_shared<velox::InMemoryReadFile>(fileContent);
 
-  const auto options = makeReaderOptions();
+  const auto options = makeMetadataInputOptions();
   auto input = nimble::MetadataInput::create(readFile.get(), options);
 
   // Sections in reverse file order — should still work.
@@ -249,7 +248,7 @@ TEST_F(DirectMetadataInputTest, repeatedLoad) {
   const auto fileContent = buildFileContent({section}, {data});
   auto readFile = std::make_shared<velox::InMemoryReadFile>(fileContent);
 
-  const auto options = makeReaderOptions();
+  const auto options = makeMetadataInputOptions();
   auto input = nimble::MetadataInput::create(readFile.get(), options);
 
   // Stateless: can call load() multiple times without reset.
@@ -291,7 +290,7 @@ TEST_F(DirectMetadataInputTest, ioStats) {
   const auto queryIoLatencyCountBefore =
       metadataIoStats_->queryThreadIoLatencyUs().count();
 
-  const auto options = makeReaderOptions();
+  const auto options = makeMetadataInputOptions();
   auto input = nimble::MetadataInput::create(readFile.get(), options);
   input->load(std::array{section});
 
@@ -405,7 +404,7 @@ DEBUG_ONLY_TEST_F(DirectMetadataInputTest, ioCoalescing) {
               capturedStats = *stats;
             }));
 
-    const auto options = makeReaderOptions(
+    const auto options = makeMetadataInputOptions(
         testData.maxCoalesceDistance, testData.maxCoalesceBytes);
     auto input = nimble::MetadataInput::create(readFile.get(), options);
     input->load(sections);
@@ -480,7 +479,7 @@ TEST_F(DirectMetadataInputTest, ioError) {
     readFile->setReadError(
         std::make_exception_ptr(std::runtime_error("injected IO error")));
 
-    const auto options = makeReaderOptions(testData.maxCoalesceDistance);
+    const auto options = makeMetadataInputOptions(testData.maxCoalesceDistance);
     auto input = nimble::MetadataInput::create(readFile.get(), options);
     EXPECT_THROW(input->load(sections), std::runtime_error);
 
@@ -562,10 +561,11 @@ class CachedMetadataInputTest : public MetadataInputTestBase,
         std::shared_ptr<velox::ReadFile>{}, readFile);
     fileHandle_->uuid =
         velox::StringIdLease(velox::fileIds(), "CachedMetadataInputTest");
-    const auto options =
-        makeReaderOptions(maxCoalesceDistance, maxCoalesceBytes);
-    return nimble::MetadataInput::create(
-        fileHandle_.get(), cache_.get(), options);
+    auto options =
+        makeMetadataInputOptions(maxCoalesceDistance, maxCoalesceBytes);
+    options.fileHandle = fileHandle_.get();
+    options.cache = cache_.get();
+    return nimble::MetadataInput::create(readFile, options);
   }
 
   std::unique_ptr<velox::memory::MemoryManager> manager_;
@@ -1124,7 +1124,7 @@ TEST_P(CachedMetadataInputTest, cachePinRetention) {
 
 TEST_F(DirectMetadataInputTest, cacheMethodsThrow) {
   auto file = std::make_shared<velox::InMemoryReadFile>(std::string(100, 'x'));
-  auto options = makeReaderOptions();
+  auto options = makeMetadataInputOptions();
   auto input = nimble::MetadataInput::create(file.get(), options);
   EXPECT_FALSE(input->cached());
   NIMBLE_ASSERT_THROW(input->findCachedMetadata(0), "");

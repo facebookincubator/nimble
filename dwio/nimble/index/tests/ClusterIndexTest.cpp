@@ -1495,9 +1495,8 @@ TEST_F(ClusterIndexTest, indexDataReuseCrossReaders) {
       EXPECT_EQ(secondResult[0][0], RowRange(0, 300));
 
       if (testCase.expectCrossReaderReuse) {
-        // Metadata (partition info) is served from AsyncDataCache.
-        EXPECT_GT(metadataIoStats_->ramHit().count(), 0)
-            << "Second reader should serve partition metadata from cache";
+        EXPECT_GT(indexIoStats_->ramHit().count(), 0)
+            << "Second reader should serve index data from cache";
       }
     }
   }
