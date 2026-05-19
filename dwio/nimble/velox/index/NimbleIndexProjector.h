@@ -74,6 +74,11 @@ class NimbleIndexProjector {
     /// stripe is still included (stripe-boundary soft limit). Processing
     /// stops after that stripe completes.
     uint64_t maxRows{0};
+    /// Soft limit on total serialized bytes across all requests. 0 means no
+    /// limit. Like maxRows, operates at stripe granularity: at least one
+    /// stripe is always included, then processing stops after the stripe
+    /// that exceeds the budget.
+    uint64_t maxBytes{0};
     /// Hard per-request row limit. 0 means no limit. Each request's row
     /// range is clipped so that it never exceeds this many rows total.
     /// No resume key is set — the request is considered fulfilled.
@@ -107,9 +112,9 @@ class NimbleIndexProjector {
     /// Slices into Result::chunks for this request. Empty for miss.
     std::vector<ChunkSlice> slices;
 
-    /// If the result was truncated by maxRows, the encoded resume key for
-    /// continuation. The caller constructs new key bounds using this as
-    /// lowerKey with their original upperKey. nullopt if complete or miss.
+    /// If the result was truncated by maxRows or maxBytes, the encoded resume
+    /// key for continuation. The caller constructs new key bounds using this
+    /// as lowerKey with their original upperKey. nullopt if complete or miss.
     std::optional<std::string> resumeKey;
   };
 
@@ -212,6 +217,20 @@ class NimbleIndexProjector {
     }
   };
 
+  // Initializes per-project() state: stores request/options pointers, sizes
+  // rowsPerRequest_, and resets running totals. Caches numRequests_.
+  void initRequest(const Request& request, const Options& options);
+
+  // Clears all per-project() state set by initRequest(). Invoked on scope
+  // exit so a subsequent project() call starts from a clean slate.
+  void clearRequest();
+
+  // Returns true if a global output limit (maxRows or maxBytes) has been hit.
+  bool checkOutputLimit() const {
+    return (options_->maxRows > 0 && numReadRows_ >= options_->maxRows) ||
+        (options_->maxBytes > 0 && numReadBytes_ >= options_->maxBytes);
+  }
+
   // Looks up all requests via the cluster index and maps them to stripes.
   // Populates stripeRangeMap_.
   void lookupStripes();
@@ -222,8 +241,8 @@ class NimbleIndexProjector {
 
   // Loads projected streams for the stripe, serializes them into kTabletRaw
   // format, and maps the result to per-request row ranges. Returns false if
-  // a global limit (maxRows) was hit, signaling the caller to stop and set
-  // resume keys.
+  // a global limit (maxRows or maxBytes) was hit, signaling the caller to
+  // stop and set resume keys.
   bool processStripe(
       uint32_t stripeIndex,
       std::span<const StripeRowRange> stripeRowRanges,
@@ -241,7 +260,8 @@ class NimbleIndexProjector {
 
   // Assigns the serialized chunk to per-request results based on row ranges.
   // Applies maxRowsPerRequest hard clipping and accumulates numReadRows_.
-  // Returns false if a global limit (maxRows) was hit after this stripe.
+  // Returns false if a global limit (maxRows or maxBytes) was hit after this
+  // stripe.
   bool buildStripeResult(
       uint32_t stripeIndex,
       std::span<const StripeRowRange> stripeRowRanges,
@@ -294,9 +314,15 @@ class NimbleIndexProjector {
   // Set during project() and cleared on return.
   const Request* request_{nullptr};
   const Options* options_{nullptr};
+  // Number of requests in the current project() call. Cached from
+  // request_->keyBounds.size() to avoid repeated pointer chases.
+  uint32_t numRequests_{0};
 
   // Running total of rows read across all requests for maxRows enforcement.
   uint64_t numReadRows_{0};
+  // Running total of serialized bytes across all stripes for maxBytes
+  // enforcement.
+  uint64_t numReadBytes_{0};
   // Accumulated rows per request for maxRowsPerRequest enforcement.
   std::vector<uint64_t> rowsPerRequest_;
   // Current stripe's row ranges after pruning saturated requests.

@@ -1514,7 +1514,6 @@ TEST_P(NimbleIndexProjectorTest, maxRowsSingleRowStripes) {
 
 TEST_P(NimbleIndexProjectorTest, maxRowsPerRequestClipping) {
   auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
-  // 10 stripes x 100 rows.
   writeResumeKeyTestData();
 
   std::vector<Subfield> subfields;
@@ -1595,6 +1594,194 @@ TEST_P(NimbleIndexProjectorTest, maxRowsPerRequestIndependentPruning) {
     }
     EXPECT_EQ(totalRows, 100);
     EXPECT_FALSE(response.resumeKey.has_value());
+  }
+}
+
+TEST_P(NimbleIndexProjectorTest, maxBytesTruncation) {
+  writeResumeKeyTestData();
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+
+  // First, read one stripe without limits to learn the per-stripe byte size.
+  uint64_t bytesPerStripe;
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 0, 100);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    auto result = projector.project(request, {});
+    ASSERT_EQ(result.chunks.size(), 1);
+    bytesPerStripe = result.chunks[0].data.computeChainDataLength();
+    ASSERT_GT(bytesPerStripe, 0);
+  }
+
+  // Range [0, 500) spans 5 stripes. Set byte limit to allow ~2 stripes.
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 0, 500);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxBytes = bytesPerStripe * 2;
+
+    auto result = projector.project(request, options);
+    ASSERT_EQ(result.responses.size(), 1);
+    const auto& response = result.responses[0];
+
+    // Should be truncated with a resume key.
+    ASSERT_TRUE(response.resumeKey.has_value());
+
+    // Should have read exactly 2 stripes (byte budget consumed after 2).
+    EXPECT_EQ(projector.stats().numReadStripes, 2);
+    EXPECT_EQ(projector.stats().numReadRows, 200);
+  }
+}
+
+TEST_P(NimbleIndexProjectorTest, maxBytesNoTruncation) {
+  writeResumeKeyTestData();
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+
+  // maxBytes=0 (unlimited) -> no truncation, no resume key.
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 100, 300);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    auto result = projector.project(request, {});
+    ASSERT_EQ(result.responses.size(), 1);
+    EXPECT_FALSE(result.responses[0].resumeKey.has_value());
+  }
+
+  // maxBytes larger than total data -> no truncation, no resume key.
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 100, 300);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxBytes = std::numeric_limits<uint64_t>::max();
+    auto result = projector.project(request, options);
+    ASSERT_EQ(result.responses.size(), 1);
+    EXPECT_FALSE(result.responses[0].resumeKey.has_value());
+  }
+}
+
+TEST_P(NimbleIndexProjectorTest, maxBytesPagination) {
+  writeResumeKeyTestData();
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+
+  // Learn per-stripe byte size.
+  uint64_t bytesPerStripe;
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 0, 100);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    auto result = projector.project(request, {});
+    ASSERT_EQ(result.chunks.size(), 1);
+    bytesPerStripe = result.chunks[0].data.computeChainDataLength();
+  }
+
+  // Paginate through the full range using byte limits.
+  auto paginate =
+      [&](int64_t lowerKey, int64_t upperKey, uint64_t maxBytes) -> uint64_t {
+    auto currentBounds = makeRangeLookup(rowType, {"key"}, lowerKey, upperKey);
+    uint64_t totalReadRows = 0;
+    int iterations = 0;
+    const int maxIterations = 100;
+
+    while (iterations < maxIterations) {
+      ++iterations;
+      auto projector = createProjector(subfields);
+      NimbleIndexProjector::Request request;
+      request.keyBounds = {currentBounds};
+      NimbleIndexProjector::Options options;
+      options.maxBytes = maxBytes;
+
+      auto result = projector.project(request, options);
+      EXPECT_EQ(result.responses.size(), 1);
+      totalReadRows += projector.stats().numReadRows;
+
+      const auto& response = result.responses[0];
+      if (!response.resumeKey.has_value()) {
+        break;
+      }
+      currentBounds = velox::serializer::EncodedKeyBounds{
+          .lowerKey = response.resumeKey.value(),
+          .upperKey = currentBounds.upperKey};
+    }
+    EXPECT_LT(iterations, maxIterations);
+    return totalReadRows;
+  };
+
+  EXPECT_EQ(paginate(0, 1000, bytesPerStripe), 1000);
+  EXPECT_EQ(paginate(0, 1000, bytesPerStripe * 2), 1000);
+  EXPECT_EQ(paginate(0, 1000, bytesPerStripe * 3), 1000);
+  EXPECT_EQ(paginate(0, 1000, bytesPerStripe * 100), 1000);
+  EXPECT_EQ(paginate(150, 750, bytesPerStripe), 600);
+  EXPECT_EQ(paginate(150, 750, bytesPerStripe * 2), 600);
+}
+
+TEST_P(NimbleIndexProjectorTest, maxBytesAndMaxRowsInteraction) {
+  writeResumeKeyTestData();
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+
+  // Learn per-stripe byte size.
+  uint64_t bytesPerStripe;
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 0, 100);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    auto result = projector.project(request, {});
+    ASSERT_EQ(result.chunks.size(), 1);
+    bytesPerStripe = result.chunks[0].data.computeChainDataLength();
+  }
+
+  // Range [0, 500) = 5 stripes, 500 rows.
+  auto bounds = makeRangeLookup(rowType, {"key"}, 0, 500);
+
+  // Case 1: Global row limit is tighter (50 rows < 3 stripes of bytes).
+  {
+    auto projector = createProjector(subfields);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxRows = 50;
+    options.maxBytes = bytesPerStripe * 3;
+
+    auto result = projector.project(request, options);
+    ASSERT_EQ(result.responses.size(), 1);
+    ASSERT_TRUE(result.responses[0].resumeKey.has_value());
+    EXPECT_EQ(projector.stats().numReadStripes, 1);
+    EXPECT_EQ(projector.stats().numReadRows, 100);
+  }
+
+  // Case 2: Byte limit is tighter (1 stripe < 500 rows).
+  {
+    auto projector = createProjector(subfields);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxRows = 500;
+    options.maxBytes = bytesPerStripe;
+
+    auto result = projector.project(request, options);
+    ASSERT_EQ(result.responses.size(), 1);
+    ASSERT_TRUE(result.responses[0].resumeKey.has_value());
+    EXPECT_EQ(projector.stats().numReadStripes, 1);
+    EXPECT_EQ(projector.stats().numReadRows, 100);
   }
 }
 
@@ -1807,6 +1994,106 @@ TEST_P(NimbleIndexProjectorTest, maxRowsMultiRequestMixedSatisfaction) {
   EXPECT_TRUE(result.responses[3].slices.empty());
   ASSERT_TRUE(result.responses[3].resumeKey.has_value());
   EXPECT_EQ(result.responses[3].resumeKey.value(), bounds3.lowerKey);
+}
+
+TEST_P(NimbleIndexProjectorTest, maxBytesAndMaxRowsPerRequestInteraction) {
+  writeResumeKeyTestData();
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+
+  // Learn per-stripe byte size.
+  uint64_t bytesPerStripe;
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 0, 100);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    auto result = projector.project(request, {});
+    ASSERT_EQ(result.chunks.size(), 1);
+    bytesPerStripe = result.chunks[0].data.computeChainDataLength();
+  }
+
+  // maxRowsPerRequest clips to 150 rows (mid-stripe), maxBytes allows 5
+  // stripes. maxRowsPerRequest is tighter.
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 0, 500);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxRowsPerRequest = 150;
+    options.maxBytes = bytesPerStripe * 5;
+
+    auto result = projector.project(request, options);
+    ASSERT_EQ(result.responses.size(), 1);
+    EXPECT_FALSE(result.responses[0].resumeKey.has_value());
+    EXPECT_EQ(projector.stats().numReadRows, 150);
+  }
+
+  // maxBytes allows 1 stripe (100 rows), maxRowsPerRequest allows 300.
+  // maxBytes is tighter — sets resume key.
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 0, 500);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxRowsPerRequest = 300;
+    options.maxBytes = bytesPerStripe;
+
+    auto result = projector.project(request, options);
+    ASSERT_EQ(result.responses.size(), 1);
+    EXPECT_TRUE(result.responses[0].resumeKey.has_value());
+    EXPECT_EQ(projector.stats().numReadStripes, 1);
+    EXPECT_EQ(projector.stats().numReadRows, 100);
+  }
+}
+
+TEST_P(NimbleIndexProjectorTest, maxBytesLargeScale) {
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+  // 50 stripes x 200 rows = 10,000 rows.
+  writeResumeKeyTestData(/*rowsPerBatch=*/200, /*numBatches=*/50);
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+
+  // Learn per-stripe byte size.
+  uint64_t bytesPerStripe;
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 0, 200);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    auto result = projector.project(request, {});
+    ASSERT_EQ(result.chunks.size(), 1);
+    bytesPerStripe = result.chunks[0].data.computeChainDataLength();
+  }
+
+  // Paginate all 10,000 rows with byte limit of ~3 stripes per page.
+  auto currentBounds = makeRangeLookup(rowType, {"key"}, 0, 10000);
+  uint64_t totalReadRows = 0;
+  int pages = 0;
+  while (pages < 100) {
+    ++pages;
+    auto projector = createProjector(subfields);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {currentBounds};
+    NimbleIndexProjector::Options options;
+    options.maxBytes = bytesPerStripe * 3;
+    auto result = projector.project(request, options);
+    EXPECT_EQ(result.responses.size(), 1);
+    totalReadRows += projector.stats().numReadRows;
+    if (!result.responses[0].resumeKey.has_value()) {
+      break;
+    }
+    currentBounds = velox::serializer::EncodedKeyBounds{
+        .lowerKey = result.responses[0].resumeKey.value(),
+        .upperKey = currentBounds.upperKey};
+  }
+  EXPECT_LT(pages, 100);
+  EXPECT_EQ(totalReadRows, 10000);
 }
 
 INSTANTIATE_TEST_CASE_P(

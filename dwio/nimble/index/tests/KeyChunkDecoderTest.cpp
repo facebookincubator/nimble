@@ -127,5 +127,66 @@ TEST_F(KeyChunkDecoderTest, singleEntry) {
   EXPECT_EQ(materialized[0], "only");
 }
 
+// Regression tests for the use-after-move bug fixed in D103765334. Before the
+// fix, decodeKeyChunk returned DecodedKeyChunk by value and its string
+// allocator lambda captured the local `result` by reference. After the move
+// out of the function, the lambda referenced a destroyed stack frame; calling
+// materialize() later wrote the allocated buffer into the dangling reference
+// (ASAN: stack-use-after-return), leaving the caller's stringBuffers empty.
+//
+// The fix changes the return type to std::shared_ptr<DecodedKeyChunk> and
+// has the lambda capture a raw pointer to the heap-allocated object. The
+// shared_ptr keeps the DecodedKeyChunk alive across moves and assignments,
+// so the lambda's pointer stays valid. These tests verify that materialize()
+// after a move or move-assignment correctly populates stringBuffers and
+// produces the right values.
+TEST_F(KeyChunkDecoderTest, materializeAfterMove) {
+  std::vector<std::string_view> keys = {"foo", "bar", "baz"};
+  auto chunkData = encodeChunk(keys);
+
+  std::shared_ptr<DecodedKeyChunk> moved;
+  {
+    auto decoded =
+        decodeKeyChunk(makeStream(chunkData), *leafPool_, dataBuffer_);
+    moved = std::move(decoded);
+  }
+
+  ASSERT_NE(moved->encoding, nullptr);
+
+  moved->encoding->reset();
+  std::vector<std::string_view> materialized(3);
+  moved->encoding->materialize(3, materialized.data());
+
+  EXPECT_FALSE(moved->stringBuffers.empty());
+
+  EXPECT_EQ(materialized[0], "foo");
+  EXPECT_EQ(materialized[1], "bar");
+  EXPECT_EQ(materialized[2], "baz");
+}
+
+// Verifies the lambda's pointer remains valid through move-assignment, which
+// destroys the previously-held DecodedKeyChunk before binding the new one.
+TEST_F(KeyChunkDecoderTest, materializeAfterMoveAssign) {
+  std::vector<std::string_view> keys1 = {"alpha", "beta"};
+  std::vector<std::string_view> keys2 = {"gamma", "delta", "epsilon"};
+  auto chunkData1 = encodeChunk(keys1);
+  auto chunkData2 = encodeChunk(keys2);
+
+  auto holder = decodeKeyChunk(makeStream(chunkData1), *leafPool_, dataBuffer_);
+  holder = decodeKeyChunk(makeStream(chunkData2), *leafPool_, dataBuffer_);
+
+  ASSERT_NE(holder->encoding, nullptr);
+  EXPECT_EQ(holder->encoding->rowCount(), 3);
+
+  holder->encoding->reset();
+  std::vector<std::string_view> materialized(3);
+  holder->encoding->materialize(3, materialized.data());
+
+  EXPECT_FALSE(holder->stringBuffers.empty());
+  EXPECT_EQ(materialized[0], "gamma");
+  EXPECT_EQ(materialized[1], "delta");
+  EXPECT_EQ(materialized[2], "epsilon");
+}
+
 } // namespace
 } // namespace facebook::nimble::index
