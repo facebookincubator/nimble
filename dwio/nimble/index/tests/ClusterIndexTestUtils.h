@@ -171,7 +171,7 @@ class ClusterIndexTestHelper {
       Section rootSection,
       velox::memory::MemoryPool* pool,
       std::shared_ptr<MetadataInput> metadataInput,
-      std::unique_ptr<velox::dwio::common::BufferedInput> dataInput) {
+      std::shared_ptr<velox::dwio::common::BufferedInput> dataInput) {
     return std::unique_ptr<ClusterIndex>(new ClusterIndex(
         std::move(rootSection),
         pool,

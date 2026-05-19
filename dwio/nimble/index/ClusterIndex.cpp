@@ -148,14 +148,14 @@ std::unique_ptr<ClusterIndex> ClusterIndex::create(
       std::move(rootSection),
       pool,
       createIndexMetadataInput(options),
-      createIndexDataInput(options, *pool)));
+      createIndexDataInput(options)));
 }
 
 ClusterIndex::ClusterIndex(
     Section rootSection,
     velox::memory::MemoryPool* pool,
     std::shared_ptr<MetadataInput> metadataInput,
-    std::unique_ptr<velox::dwio::common::BufferedInput> dataInput)
+    std::shared_ptr<velox::dwio::common::BufferedInput> dataInput)
     : IndexLookup{IndexType::Cluster},
       rootSection_{std::move(rootSection)},
       indexRoot_{getIndexRoot(rootSection_)},

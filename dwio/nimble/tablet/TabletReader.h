@@ -159,20 +159,34 @@ class TabletReader {
     /// Optional sections to eagerly load during initialization.
     std::vector<std::string> preloadOptionalSections;
 
-    /// Whether to load the cluster index during initialization. Default true.
-    bool loadClusterIndex{true};
+    /// Whether to load the cluster index during initialization. Default false.
+    bool loadClusterIndex{false};
 
     /// Whether to load the chunk index during initialization. Default true.
     bool loadChunkIndex{true};
 
-    /// Whether to load the dense indexes during initialization. Default true.
-    bool loadDenseIndexes{true};
+    /// Whether to load the dense indexes during initialization. Default false.
+    bool loadDenseIndexes{false};
 
     /// If true, pins parsed metadata objects (StripeGroup, ChunkIndexGroup)
-    /// in the cache with strong references so they are never evicted. This
-    /// avoids re-reading and re-parsing metadata on every stripe access when
-    /// the weak-pointer cache entries would otherwise expire.
-    bool pinFileMetadata{false};
+    /// in the metadata cache with strong references so they are never evicted.
+    /// This avoids re-reading and re-parsing metadata on every stripe access
+    /// when the weak-pointer cache entries would otherwise expire. Works
+    /// independently of cacheMetadata.
+    bool pinMetadata{false};
+
+    /// If true, caches file metadata and index metadata in the async data
+    /// cache. Takes effect only when fileHandle and cache are provided.
+    bool cacheMetadata{false};
+
+    /// If true, pins parsed index objects in the index cache with strong
+    /// references.
+    bool pinIndex{false};
+
+    /// If true, caches index data (e.g., cluster index key stream) in the
+    /// async data cache. Takes effect only when fileHandle and cache are
+    /// provided.
+    bool cacheIndex{false};
 
     /// IO options providing pool, IO stats, coalescing params, and executor.
     /// Must be set with a non-null metadataIoStats; the constructor enforces

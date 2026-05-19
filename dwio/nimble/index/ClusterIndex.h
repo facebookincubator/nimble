@@ -152,7 +152,7 @@ class ClusterIndex : public IndexLookup {
       Section rootSection,
       velox::memory::MemoryPool* pool,
       std::shared_ptr<MetadataInput> metadataInput,
-      std::unique_ptr<velox::dwio::common::BufferedInput> dataInput);
+      std::shared_ptr<velox::dwio::common::BufferedInput> dataInput);
 
   // Cached decoded chunk, one per IndexPartition.
   struct DecodedChunk {
@@ -322,7 +322,7 @@ class ClusterIndex : public IndexLookup {
   const uint32_t numRows_;
 
   const std::shared_ptr<MetadataInput> metadataInput_;
-  const std::unique_ptr<velox::dwio::common::BufferedInput> dataInput_;
+  const std::shared_ptr<velox::dwio::common::BufferedInput> dataInput_;
   velox::memory::MemoryPool* const pool_;
 
   // --- Mutable state ---

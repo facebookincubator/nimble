@@ -355,6 +355,7 @@ std::unique_ptr<ClusterIndex> ClusterIndexTestBase::createClusterIndex(
   ioStats_ = std::make_shared<velox::io::IoStatistics>();
   velox::io::ReaderOptions readerOptions(pool_.get());
   readerOptions.setMetadataIoStats(ioStats_);
+  readerOptions.setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
   auto metadataInput =
       MetadataInput::create(metadataFile_.get(), readerOptions);
 

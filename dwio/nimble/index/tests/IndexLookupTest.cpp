@@ -224,10 +224,20 @@ TEST_F(IndexLookupTest, optionsValidateRequiredFields) {
   }
 }
 
-TEST_F(IndexLookupTest, optionsValidateFileHandleAndCache) {
+TEST_F(IndexLookupTest, optionsValidateIndexIoStats) {
   auto file = std::make_shared<velox::InMemoryReadFile>(std::string{});
   auto pool = velox::memory::memoryManager()->addLeafPool();
   velox::io::ReaderOptions ioOptions(pool.get());
+  IndexLookup::Options options{.file = file, .ioOptions = &ioOptions};
+  NIMBLE_ASSERT_THROW(options.validate(), "indexIoStats must be set");
+}
+
+TEST_F(IndexLookupTest, optionsValidateFileHandleAndCache) {
+  auto file = std::make_shared<velox::InMemoryReadFile>(std::string{});
+  auto pool = velox::memory::memoryManager()->addLeafPool();
+  auto indexIoStats = std::make_shared<velox::io::IoStatistics>();
+  velox::io::ReaderOptions ioOptions(pool.get());
+  ioOptions.setIndexIoStats(indexIoStats);
 
   {
     SCOPED_TRACE("direct path (no fileHandle, no cache)");
@@ -280,9 +290,9 @@ TEST_F(IndexLookupTest, createIndexMetadataInput) {
     SCOPED_TRACE(testData.debugString());
     auto file = std::make_shared<velox::InMemoryReadFile>(std::string{});
     auto pool = velox::memory::memoryManager()->addLeafPool();
-    auto metadataIoStats = std::make_shared<velox::io::IoStatistics>();
     velox::io::ReaderOptions ioOptions(pool.get());
-    ioOptions.setMetadataIoStats(metadataIoStats);
+    ioOptions.setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+    ioOptions.setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
 
     std::shared_ptr<velox::memory::MallocAllocator> allocator;
     std::shared_ptr<velox::cache::AsyncDataCache> cache;
@@ -308,32 +318,18 @@ TEST_F(IndexLookupTest, createIndexMetadataInput) {
 }
 
 TEST_F(IndexLookupTest, createIndexDataInput) {
-  struct TestParam {
-    bool cached;
-    bool hasIndexIoStats;
-    std::string debugString() const {
-      return fmt::format(
-          "cached {}, hasIndexIoStats {}", cached, hasIndexIoStats);
-    }
-  };
-  std::vector<TestParam> testSettings = {
-      {false, true}, {false, false}, {true, true}};
-  for (const auto& testData : testSettings) {
-    SCOPED_TRACE(testData.debugString());
+  for (bool cached : {false, true}) {
+    SCOPED_TRACE(cached ? "cached" : "direct");
     auto file = std::make_shared<velox::InMemoryReadFile>(std::string{});
     auto pool = velox::memory::memoryManager()->addLeafPool();
-    auto metadataIoStats = std::make_shared<velox::io::IoStatistics>();
-    auto indexIoStats = std::make_shared<velox::io::IoStatistics>();
     velox::io::ReaderOptions ioOptions(pool.get());
-    ioOptions.setMetadataIoStats(metadataIoStats);
-    if (testData.hasIndexIoStats) {
-      ioOptions.setIndexIoStats(indexIoStats);
-    }
+    ioOptions.setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+    ioOptions.setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
 
     std::shared_ptr<velox::memory::MallocAllocator> allocator;
     std::shared_ptr<velox::cache::AsyncDataCache> cache;
     std::unique_ptr<velox::FileHandle> fileHandle;
-    if (testData.cached) {
+    if (cached) {
       allocator = std::make_shared<velox::memory::MallocAllocator>(
           velox::memory::MemoryAllocator::Options{.capacity = 1UL << 30});
       cache = velox::cache::AsyncDataCache::create(allocator.get());
@@ -347,7 +343,7 @@ TEST_F(IndexLookupTest, createIndexDataInput) {
         .ioOptions = &ioOptions,
         .fileHandle = fileHandle.get(),
         .cache = cache.get()};
-    auto dataInput = createIndexDataInput(options, *pool);
+    auto dataInput = createIndexDataInput(options);
     ASSERT_NE(dataInput, nullptr);
   }
 }

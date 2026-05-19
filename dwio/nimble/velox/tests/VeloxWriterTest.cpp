@@ -3647,29 +3647,29 @@ TEST_P(VeloxWriterIndexTest, singleGroup) {
   writer.close();
 
   // Read and verify
-  velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(&readFile, *leafPool_);
-
-  const auto& tablet = reader.tabletReader();
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tabletOptions = makeTestTabletOptions(leafPool_.get());
+  auto tablet =
+      nimble::TabletReader::create(readFile, leafPool_.get(), tabletOptions);
 
   // Verify each batch triggered exactly one stripe
-  EXPECT_EQ(tablet.stripeCount(), kNumBatches)
+  EXPECT_EQ(tablet->stripeCount(), kNumBatches)
       << "Each batch should trigger exactly one stripe";
 
   // Verify all stripes are in the same stripe group (index 0)
   // Default metadataFlushThreshold is large, so all stripes stay in one group
-  for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
-    auto stripeId = tablet.stripeIdentifier(i);
+  for (uint32_t i = 0; i < tablet->stripeCount(); ++i) {
+    auto stripeId = tablet->stripeIdentifier(i);
     EXPECT_EQ(stripeId.stripeGroup()->index(), 0)
         << "Stripe " << i << " should be in stripe group 0";
   }
 
   // Verify index section exists
   EXPECT_TRUE(
-      tablet.hasOptionalSection(std::string(nimble::kClusterIndexSection)));
+      tablet->hasOptionalSection(std::string(nimble::kClusterIndexSection)));
 
   // Verify index is available
-  const auto* index = tablet.clusterIndex();
+  const auto* index = tablet->clusterIndex();
   ASSERT_NE(index, nullptr);
 
   // Verify index columns
@@ -3712,10 +3712,10 @@ TEST_P(VeloxWriterIndexTest, singleGroup) {
   verifyFileData(file, type, batches, kBatchSize);
 
   // Verify position index chunk row counts
-  verifyPositionIndex(tablet);
+  verifyPositionIndex(*tablet);
 
   // Verify value index maps each key to correct row position
-  verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
+  verifyValueIndex(*tablet, readFile.get(), type, batches, {"key_col"});
 }
 
 TEST_P(VeloxWriterIndexTest, multipleGroups) {
@@ -3751,30 +3751,30 @@ TEST_P(VeloxWriterIndexTest, multipleGroups) {
   writer.close();
 
   // Read and verify
-  velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(&readFile, *leafPool_);
-
-  const auto& tablet = reader.tabletReader();
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tabletOptions = makeTestTabletOptions(leafPool_.get());
+  auto tablet =
+      nimble::TabletReader::create(readFile, leafPool_.get(), tabletOptions);
 
   // Verify each batch triggered exactly one stripe
-  EXPECT_EQ(tablet.stripeCount(), kNumBatches)
+  EXPECT_EQ(tablet->stripeCount(), kNumBatches)
       << "Each batch should trigger exactly one stripe";
 
   // Note: Without controlling metadataFlushThreshold from VeloxWriterOptions,
   // all stripes end up in the same group (default threshold is 8MB).
   // This test verifies the default behavior where all stripes share group 0.
-  for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
-    auto stripeId = tablet.stripeIdentifier(i);
+  for (uint32_t i = 0; i < tablet->stripeCount(); ++i) {
+    auto stripeId = tablet->stripeIdentifier(i);
     EXPECT_EQ(stripeId.stripeGroup()->index(), 0)
         << "Stripe " << i << " should be in stripe group 0";
   }
 
   // Verify index section exists
   EXPECT_TRUE(
-      tablet.hasOptionalSection(std::string(nimble::kClusterIndexSection)));
+      tablet->hasOptionalSection(std::string(nimble::kClusterIndexSection)));
 
   // Verify index is available
-  const auto* index = tablet.clusterIndex();
+  const auto* index = tablet->clusterIndex();
   ASSERT_NE(index, nullptr);
 
   // Verify index columns
@@ -3809,8 +3809,8 @@ TEST_P(VeloxWriterIndexTest, multipleGroups) {
   EXPECT_GT(lastRanges[0].endRow, 0);
 
   // Verify stripeIdentifier returns index group
-  for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
-    auto stripeId = tablet.stripeIdentifier(i);
+  for (uint32_t i = 0; i < tablet->stripeCount(); ++i) {
+    auto stripeId = tablet->stripeIdentifier(i);
     EXPECT_NE(stripeId.stripeGroup(), nullptr);
   }
 
@@ -3818,10 +3818,10 @@ TEST_P(VeloxWriterIndexTest, multipleGroups) {
   verifyFileData(file, type, batches);
 
   // Verify position index chunk row counts
-  verifyPositionIndex(tablet);
+  verifyPositionIndex(*tablet);
 
   // Verify value index maps each key to correct row position
-  verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
+  verifyValueIndex(*tablet, readFile.get(), type, batches, {"key_col"});
 }
 
 TEST_P(VeloxWriterIndexTest, multipleIndexColumns) {
@@ -3881,11 +3881,11 @@ TEST_P(VeloxWriterIndexTest, multipleIndexColumns) {
   writer.close();
 
   // Read and verify
-  velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(&readFile, *leafPool_);
-
-  const auto& tablet = reader.tabletReader();
-  const auto* index = tablet.clusterIndex();
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tabletOptions = makeTestTabletOptions(leafPool_.get());
+  auto tablet =
+      nimble::TabletReader::create(readFile, leafPool_.get(), tabletOptions);
+  const auto* index = tablet->clusterIndex();
   ASSERT_NE(index, nullptr);
 
   // Verify both columns are indexed
@@ -3933,9 +3933,9 @@ TEST_P(VeloxWriterIndexTest, multipleIndexColumns) {
         }));
   }
   // Verify position index chunk row counts
-  verifyPositionIndex(tablet);
+  verifyPositionIndex(*tablet);
 
-  verifyValueIndex(tablet, &readFile, type, batches, {"key1", "key2"});
+  verifyValueIndex(*tablet, readFile.get(), type, batches, {"key1", "key2"});
 }
 
 TEST_F(VeloxWriterTest, indexEnforceKeyOrder) {
@@ -4114,12 +4114,12 @@ TEST_P(VeloxWriterIndexTest, duplicateKeys) {
       EXPECT_GT(layout.stripesInfo[i].size, 0);
     }
   }
-  nimble::VeloxReader reader(readFile.get(), *leafPool_);
-
-  const auto& tablet = reader.tabletReader();
+  auto tabletOptions = makeTestTabletOptions(leafPool_.get());
+  auto tablet =
+      nimble::TabletReader::create(readFile, leafPool_.get(), tabletOptions);
 
   // Verify index exists
-  const auto* index = tablet.clusterIndex();
+  const auto* index = tablet->clusterIndex();
   ASSERT_NE(index, nullptr);
   EXPECT_EQ(index->indexColumns().size(), 1);
   EXPECT_EQ(index->indexColumns()[0], "key_col");
@@ -4154,11 +4154,11 @@ TEST_P(VeloxWriterIndexTest, duplicateKeys) {
   verifyFileData(file, type, batches);
 
   // Verify position index chunk row counts
-  verifyPositionIndex(tablet);
+  verifyPositionIndex(*tablet);
 
   // Verify value index maps each key to correct row position
   // With duplicate keys, lookup should find the first occurrence
-  verifyValueIndex(tablet, readFile.get(), type, batches, {"key_col"});
+  verifyValueIndex(*tablet, readFile.get(), type, batches, {"key_col"});
 }
 
 TEST_P(VeloxWriterIndexTest, chunking) {
@@ -4192,13 +4192,13 @@ TEST_P(VeloxWriterIndexTest, chunking) {
   writer.close();
 
   // Read and verify
-  velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(&readFile, *leafPool_);
-
-  const auto& tablet = reader.tabletReader();
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tabletOptions = makeTestTabletOptions(leafPool_.get());
+  auto tablet =
+      nimble::TabletReader::create(readFile, leafPool_.get(), tabletOptions);
 
   // Verify index exists and works
-  const auto* index = tablet.clusterIndex();
+  const auto* index = tablet->clusterIndex();
   ASSERT_NE(index, nullptr);
   EXPECT_EQ(index->indexColumns().size(), 1);
   EXPECT_EQ(index->indexColumns()[0], "key_col");
@@ -4210,16 +4210,14 @@ TEST_P(VeloxWriterIndexTest, chunking) {
     EXPECT_LE(partitionKeys[i - 1], partitionKeys[i]);
   }
 
-  ASSERT_NE(tablet.clusterIndex(), nullptr);
-
   // Read back all data and verify row-by-row match with written batches
   verifyFileData(file, type, batches);
 
   // Verify position index chunk row counts
-  verifyPositionIndex(tablet);
+  verifyPositionIndex(*tablet);
 
   // Verify value index maps each key to correct row position
-  verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
+  verifyValueIndex(*tablet, readFile.get(), type, batches, {"key_col"});
 }
 
 TEST_P(VeloxWriterIndexTest, streamDeduplication) {
@@ -4307,13 +4305,13 @@ TEST_P(VeloxWriterIndexTest, streamDeduplication) {
   writer.close();
 
   // Read and verify
-  velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(&readFile, *leafPool_);
-
-  const auto& tablet = reader.tabletReader();
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tabletOptions = makeTestTabletOptions(leafPool_.get());
+  auto tablet =
+      nimble::TabletReader::create(readFile, leafPool_.get(), tabletOptions);
 
   // Verify index exists
-  const auto* index = tablet.clusterIndex();
+  const auto* index = tablet->clusterIndex();
   ASSERT_NE(index, nullptr);
   EXPECT_EQ(index->indexColumns().size(), 1);
   EXPECT_EQ(index->indexColumns()[0], "key_col");
@@ -4349,10 +4347,10 @@ TEST_P(VeloxWriterIndexTest, streamDeduplication) {
   verifyFileData(file, type, batches);
 
   // Verify position index chunk row counts
-  verifyPositionIndex(tablet);
+  verifyPositionIndex(*tablet);
 
   // Verify value index maps each key to correct row position
-  verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
+  verifyValueIndex(*tablet, readFile.get(), type, batches, {"key_col"});
 }
 
 // Test that custom prefixRestartInterval in ClusterIndexConfig flows through

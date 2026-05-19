@@ -1166,8 +1166,10 @@ void NimbleDumpLib::emitOptionalSectionsMetadata(bool noHeader) {
 
 void NimbleDumpLib::emitIndex() {
   TabletReader::Options options;
+  options.loadClusterIndex = true;
   options.ioOptions.emplace(pool_.get())
-      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>())
+      .setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
   auto tabletReader = TabletReader::create(file_, pool_.get(), options);
   if (!tabletReader->hasClusterIndex()) {
     ostream_ << "Index: Not configured" << std::endl;

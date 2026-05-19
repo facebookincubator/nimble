@@ -155,8 +155,9 @@ TabletReader::Options defaultTabletReaderOptions(
     velox::memory::MemoryPool* pool) {
   TabletReader::Options options;
   options.preloadOptionalSections = {std::string(kSchemaSection)};
-  options.ioOptions.emplace(pool).setMetadataIoStats(
-      std::make_shared<velox::io::IoStatistics>());
+  options.ioOptions.emplace(pool)
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>())
+      .setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
   return options;
 }
 

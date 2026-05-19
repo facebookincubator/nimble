@@ -31,6 +31,7 @@
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/index/ChunkIndexGroup.h"
+#include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/IndexLookup.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
@@ -38,6 +39,7 @@
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/tablet/tests/TabletTestUtils.h"
+#include "dwio/nimble/velox/VeloxWriter.h"
 #include "folly/FileUtil.h"
 #include "folly/Random.h"
 #include "folly/executors/CPUThreadPoolExecutor.h"
@@ -201,6 +203,8 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
       fileHandle_->groupId = velox::StringIdLease(ids, "testGroup");
       options.cache = cache_.get();
       options.fileHandle = fileHandle_.get();
+      options.cacheMetadata = true;
+      options.cacheIndex = true;
     }
   }
 
@@ -1319,6 +1323,16 @@ TEST_P(TabletTest, streamSize) {
 // It inherits the memory pool and helper methods from TabletTest.
 class TabletWithIndexTest : public TabletTest {
  protected:
+  // Override to enable index loading by default for index tests.
+  std::shared_ptr<nimble::TabletReader> createTabletReader(
+      std::shared_ptr<velox::ReadFile> readFile,
+      nimble::TabletReader::Options options = {}) {
+    options.loadClusterIndex = true;
+    options.loadDenseIndexes = true;
+    return TabletTest::createTabletReader(
+        std::move(readFile), std::move(options));
+  }
+
   // Use shared test data structs from ClusterIndexTestUtils.h
   using ChunkSpec = nimble::index::test::ChunkSpec;
   using KeyChunkSpec = nimble::index::test::KeyChunkSpec;
@@ -3573,6 +3587,185 @@ TEST_P(TabletWithIndexTest, noIndex) {
       tablet->hasOptionalSection(std::string(nimble::kChunkIndexSection)));
 }
 
+TEST_P(TabletWithIndexTest, loadClusterIndex) {
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+
+  nimble::index::test::TestClusterIndexMetadataWriter indexHelper(
+      *pool_,
+      {"col1"},
+      {SortOrder{.ascending = true}},
+      /*enforceKeyOrder=*/true);
+
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {
+          .metadataFlushThreshold = 1024 * 1024 * 1024,
+          .streamDeduplicationEnabled = false,
+          .enableChunkIndex = true,
+          .stripeGroupFlushCallback =
+              indexHelper.createStripeGroupFlushCallback(),
+          .closeCallback = indexHelper.createCloseCallback(),
+      });
+
+  nimble::Buffer buffer{*pool_};
+  auto streams = createStreams(
+      buffer, {{.offset = 0, .chunks = {{.rowCount = 100, .size = 10}}}});
+  indexHelper.addStripe({{.rowCount = 100, .key = "bbb"}});
+  tabletWriter->writeStripe(100, std::move(streams));
+  tabletWriter->close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  for (bool loadClusterIndex : {false, true}) {
+    SCOPED_TRACE(fmt::format("loadClusterIndex={}", loadClusterIndex));
+    const auto metadataBytesReadBefore = metadataIoStats_->rawBytesRead();
+    const auto indexBytesReadBefore = indexIoStats_->rawBytesRead();
+    nimble::TabletReader::Options options;
+    options.loadClusterIndex = loadClusterIndex;
+    auto tablet = TabletTest::createTabletReader(readFile, options);
+    if (loadClusterIndex) {
+      ASSERT_NE(tablet->clusterIndex(), nullptr);
+      EXPECT_GT(metadataIoStats_->rawBytesRead(), metadataBytesReadBefore);
+      // Index key stream data is lazy-loaded on first lookup, not during
+      // init. Only metadata IO (root section) happens here.
+      EXPECT_EQ(indexIoStats_->rawBytesRead(), indexBytesReadBefore);
+    } else {
+      EXPECT_EQ(tablet->clusterIndex(), nullptr);
+      EXPECT_EQ(metadataIoStats_->rawBytesRead(), metadataBytesReadBefore);
+      EXPECT_EQ(indexIoStats_->rawBytesRead(), indexBytesReadBefore);
+    }
+  }
+}
+
+TEST_P(TabletWithIndexTest, loadClusterIndexMissingIoStats) {
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+
+  nimble::index::test::TestClusterIndexMetadataWriter indexHelper(
+      *pool_,
+      {"col1"},
+      {SortOrder{.ascending = true}},
+      /*enforceKeyOrder=*/true);
+
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {
+          .metadataFlushThreshold = 1024 * 1024 * 1024,
+          .streamDeduplicationEnabled = false,
+          .enableChunkIndex = true,
+          .stripeGroupFlushCallback =
+              indexHelper.createStripeGroupFlushCallback(),
+          .closeCallback = indexHelper.createCloseCallback(),
+      });
+
+  nimble::Buffer buffer{*pool_};
+  auto streams = createStreams(
+      buffer, {{.offset = 0, .chunks = {{.rowCount = 100, .size = 10}}}});
+  indexHelper.addStripe({{.rowCount = 100, .key = "bbb"}});
+  tabletWriter->writeStripe(100, std::move(streams));
+  tabletWriter->close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  nimble::TabletReader::Options options;
+  options.loadClusterIndex = true;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  NIMBLE_ASSERT_THROW(
+      nimble::TabletReader::create(readFile, pool_.get(), options),
+      "indexIoStats must be set");
+}
+
+TEST_P(TabletWithIndexTest, loadDenseIndexes) {
+  auto type =
+      velox::ROW({{"id", velox::INTEGER()}, {"value", velox::VARCHAR()}});
+  auto ids = velox::BaseVector::create(velox::INTEGER(), 50, pool_.get());
+  auto values = velox::BaseVector::create(velox::VARCHAR(), 50, pool_.get());
+  auto* flatIds = ids->asFlatVector<int32_t>();
+  auto* flatValues = values->asFlatVector<velox::StringView>();
+  std::vector<std::string> valueStrings;
+  for (int i = 0; i < 50; ++i) {
+    flatIds->set(i, i);
+    valueStrings.push_back("v_" + std::to_string(i));
+    flatValues->set(i, velox::StringView(valueStrings.back()));
+  }
+  auto batch = std::make_shared<velox::RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      50,
+      std::vector<velox::VectorPtr>{ids, values});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriterOptions writerOptions;
+  writerOptions.hashIndexConfigs.push_back(
+      nimble::HashIndexConfig{.columns = {"id"}});
+  writerOptions.sortedIndexConfigs.push_back(
+      nimble::SortedIndexConfig{.columns = {"value"}});
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *pool_, std::move(writerOptions));
+  writer.write(batch);
+  writer.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  for (bool loadDenseIndexes : {false, true}) {
+    SCOPED_TRACE(fmt::format("loadDenseIndexes={}", loadDenseIndexes));
+    auto metadataIoStats = std::make_shared<velox::io::IoStatistics>();
+    auto indexIoStats = std::make_shared<velox::io::IoStatistics>();
+    nimble::TabletReader::Options options;
+    options.loadDenseIndexes = loadDenseIndexes;
+    options.ioOptions.emplace(pool_.get())
+        .setMetadataIoStats(metadataIoStats)
+        .setIndexIoStats(indexIoStats);
+    auto tablet = nimble::TabletReader::create(readFile, pool_.get(), options);
+    const auto metadataBytesAfterOpen = metadataIoStats->rawBytesRead();
+    if (loadDenseIndexes) {
+      ASSERT_NE(tablet->denseIndex({"id"}), nullptr);
+      ASSERT_NE(tablet->denseIndex({"value"}), nullptr);
+      EXPECT_GT(metadataIoStats->rawBytesRead(), metadataBytesAfterOpen);
+    } else {
+      EXPECT_EQ(tablet->denseIndex({"id"}), nullptr);
+      EXPECT_EQ(tablet->denseIndex({"value"}), nullptr);
+      EXPECT_EQ(metadataIoStats->rawBytesRead(), metadataBytesAfterOpen);
+      EXPECT_EQ(indexIoStats->rawBytesRead(), 0);
+    }
+  }
+}
+
+TEST_P(TabletWithIndexTest, loadDenseIndexesMissingIoStats) {
+  auto type = velox::ROW({{"id", velox::INTEGER()}});
+  auto ids = velox::BaseVector::create(velox::INTEGER(), 50, pool_.get());
+  auto* flatIds = ids->asFlatVector<int32_t>();
+  for (int i = 0; i < 50; ++i) {
+    flatIds->set(i, i);
+  }
+  auto batch = std::make_shared<velox::RowVector>(
+      pool_.get(), type, nullptr, 50, std::vector<velox::VectorPtr>{ids});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriterOptions writerOptions;
+  writerOptions.hashIndexConfigs.push_back(
+      nimble::HashIndexConfig{.columns = {"id"}});
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *pool_, std::move(writerOptions));
+  writer.write(batch);
+  writer.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  nimble::TabletReader::Options options;
+  options.loadDenseIndexes = true;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  NIMBLE_ASSERT_THROW(
+      nimble::TabletReader::create(readFile, pool_.get(), options),
+      "indexIoStats must be set");
+}
+
 // Tests all four orthogonal config combinations of enableChunkIndex ×
 // cluster index (via indexHelper) to verify:
 // 1. Neither: no optional sections
@@ -3676,7 +3869,11 @@ TEST_F(TabletWithIndexTest, configCombinations) {
     auto readFile =
         std::make_shared<nimble::testing::InMemoryTrackableReadFile>(
             file, false);
-    auto tablet = createTabletReader(readFile, {}, BufferedInputMode::kNone);
+    nimble::TabletReader::Options readOptions;
+    readOptions.loadClusterIndex = true;
+    readOptions.loadDenseIndexes = true;
+    auto tablet = TabletTest::createTabletReader(
+        readFile, readOptions, BufferedInputMode::kNone);
     EXPECT_EQ(tablet->stripeCount(), 2);
 
     // Verify optional sections
@@ -4191,11 +4388,11 @@ TEST_P(TabletTest, configureOptionsIndexFlags) {
   {
     SCOPED_TRACE("defaults");
     auto opts = nimble::TabletReader::configureOptions(readerOptions);
-    EXPECT_TRUE(opts.loadClusterIndex);
+    EXPECT_FALSE(opts.loadClusterIndex);
     EXPECT_TRUE(opts.loadChunkIndex);
     EXPECT_TRUE(
         containsSection(opts.preloadOptionalSections, nimble::kSchemaSection));
-    EXPECT_TRUE(containsSection(
+    EXPECT_FALSE(containsSection(
         opts.preloadOptionalSections, nimble::kClusterIndexSection));
     EXPECT_TRUE(containsSection(
         opts.preloadOptionalSections, nimble::kChunkIndexSection));

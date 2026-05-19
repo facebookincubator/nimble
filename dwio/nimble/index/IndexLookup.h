@@ -91,6 +91,9 @@ class IndexLookup {
     const velox::FileHandle* fileHandle{nullptr};
     /// Data cache for index metadata. Set with fileHandle for cached path.
     velox::cache::AsyncDataCache* cache{nullptr};
+    /// If true, pins parsed index objects in the index cache with strong
+    /// references so they are never evicted.
+    bool pinIndex{false};
 
     /// Validates options consistency.
     void validate() const;
@@ -267,13 +270,12 @@ class IndexLookup {
 };
 
 /// Creates a MetadataInput (cached or direct) from index options.
-std::unique_ptr<MetadataInput> createIndexMetadataInput(
+std::shared_ptr<MetadataInput> createIndexMetadataInput(
     const IndexLookup::Options& options);
 
 /// Creates a BufferedInput (cached or direct) from index options.
-std::unique_ptr<velox::dwio::common::BufferedInput> createIndexDataInput(
-    const IndexLookup::Options& options,
-    velox::memory::MemoryPool& pool);
+std::shared_ptr<velox::dwio::common::BufferedInput> createIndexDataInput(
+    const IndexLookup::Options& options);
 
 inline std::string toString(IndexLookup::LookupRequest::Mode mode) {
   switch (mode) {
