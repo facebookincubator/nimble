@@ -55,6 +55,10 @@ class ConstantEncodingBase
     }
   }
 
+  void get(uint32_t /* row */, void* buffer) final {
+    *static_cast<physicalType*>(buffer) = value_;
+  }
+
   void materializeBoolsAsBits(
       uint32_t /*rowCount*/,
       uint64_t* /*buffer*/,

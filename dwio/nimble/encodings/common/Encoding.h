@@ -167,7 +167,7 @@ class Encoding {
   }
 
   /// Materializes the value at the given row index into buffer.
-  /// Only supported by Trivial and Prefix encodings.
+  /// Only supported by Constant, Trivial, and Prefix encodings.
   virtual void get(uint32_t /*row*/, void* /*buffer*/) {
     NIMBLE_NOT_IMPLEMENTED("get is not supported by this encoding type");
   }

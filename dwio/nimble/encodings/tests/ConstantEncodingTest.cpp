@@ -196,3 +196,41 @@ TYPED_TEST(ConstantEncodingTest, NonConstantFailure) {
     }
   }
 }
+
+TYPED_TEST(ConstantEncodingTest, getReturnsConstantValueAtAnyRow) {
+  using D = typename TypeParam::data_type;
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
+
+  auto valueGroups = this->template prepareValues<D>();
+  std::vector<velox::BufferPtr> newStringBuffers;
+  const auto stringBufferFactory = [&](uint32_t totalLength) {
+    auto& buffer = newStringBuffers.emplace_back(
+        velox::AlignedBuffer::allocate<char>(totalLength, this->pool_.get()));
+    return buffer->template asMutable<void>();
+  };
+  for (const auto& values : valueGroups) {
+    auto encoding =
+        nimble::test::Encoder<nimble::ConstantEncoding<D>>::createEncoding(
+            *this->buffer_,
+            values,
+            stringBufferFactory,
+            nimble::CompressionType::Uncompressed,
+            options);
+
+    // Probe first, middle, and last rows. The encoding stores a single value
+    // shared by all rows, so every probe must return the same constant.
+    const uint32_t rowCount = values.size();
+    std::vector<uint32_t> probeRows = {0};
+    if (rowCount >= 2) {
+      probeRows.push_back(rowCount / 2);
+      probeRows.push_back(rowCount - 1);
+    }
+    for (const auto row : probeRows) {
+      SCOPED_TRACE("row=" + std::to_string(row));
+      D result{};
+      encoding->get(row, &result);
+      EXPECT_TRUE(nimble::NimbleCompare<D>::equals(result, values[0]));
+    }
+  }
+}
