@@ -87,7 +87,7 @@ std::optional<ChunkLocation> ClusterIndexGroup::lookupChunk(
   // location at offset 0.
   const auto* chunkIndex = root->chunk_index();
   if (chunkIndex == nullptr) {
-    return ChunkLocation{0, 0, 0};
+    return ChunkLocation{0, 0, 0, 0};
   }
 
   // Get chunk counts to determine the search range for this stripe.
@@ -132,7 +132,11 @@ std::optional<ChunkLocation> ClusterIndexGroup::lookupChunk(
   // Return the found chunk location.
   const uint32_t rowOffset =
       chunkOffset == startChunkIndex ? 0 : chunkRows->Get(chunkOffset - 1);
-  return ChunkLocation{chunkOffsets->Get(chunkOffset), 0, rowOffset};
+  return ChunkLocation{
+      chunkOffset - startChunkIndex,
+      chunkOffsets->Get(chunkOffset),
+      0,
+      rowOffset};
 }
 
 velox::common::Region ClusterIndexGroup::keyStreamRegion(

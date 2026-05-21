@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <string>
@@ -171,12 +172,14 @@ class ClusterIndexTestHelper {
       Section rootSection,
       velox::memory::MemoryPool* pool,
       std::shared_ptr<MetadataInput> metadataInput,
-      std::shared_ptr<velox::dwio::common::BufferedInput> dataInput) {
+      std::shared_ptr<velox::dwio::common::BufferedInput> dataInput,
+      bool pinIndex = false) {
     return std::unique_ptr<ClusterIndex>(new ClusterIndex(
         std::move(rootSection),
-        pool,
         std::move(metadataInput),
-        std::move(dataInput)));
+        std::move(dataInput),
+        pinIndex,
+        pool));
   }
 
   explicit ClusterIndexTestHelper(const ClusterIndex* clusterIndex)
@@ -207,6 +210,19 @@ class ClusterIndexTestHelper {
     return velox::common::Region{
         partition->index->key_stream_offset(),
         partition->index->key_stream_size()};
+  }
+
+  /// Returns the number of decoded chunks currently cached for the partition.
+  /// Counts populated slots in the per-chunk vector. With pinIndex=true the
+  /// vector has numChunks slots, one per chunk. With pinIndex=false the
+  /// vector has a single shared scratch slot, so the count is at most 1.
+  size_t decodedChunkCount(uint32_t partitionIndex) const {
+    const auto& decodedChunks =
+        clusterIndex_->loadPartition(partitionIndex)->decodedChunks;
+    return std::count_if(
+        decodedChunks.begin(), decodedChunks.end(), [](const auto& c) {
+          return c.data != nullptr;
+        });
   }
 
  private:

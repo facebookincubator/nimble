@@ -167,6 +167,65 @@ TEST_F(ChunkIndexTest, lookupChunkWithRowId) {
   NIMBLE_ASSERT_THROW(s11->lookupChunk(650), "beyond the last chunk");
 }
 
+TEST_F(ChunkIndexTest, lookupChunkPopulatesChunkIndex) {
+  // Single stripe, two streams. chunkIndex is the absolute position in the
+  // stripe's chunkRows FlatBuffers array — i.e., it is offset by the number
+  // of chunks belonging to earlier streams in the stripe.
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "aaa";
+  std::vector<Stripe> stripes = {
+      {.streams =
+           {// Stream 0: 3 chunks at rows {100, 250, 400}, offsets {0, 50, 120}
+            {.numChunks = 3,
+             .chunkRows = {100, 250, 400},
+             .chunkOffsets = {0, 50, 120}},
+            // Stream 1: 2 chunks at rows {150, 300}, offsets {0, 80}
+            {.numChunks = 2, .chunkRows = {150, 300}, .chunkOffsets = {0, 80}}},
+       .keyStream = {
+           .streamOffset = 0,
+           .streamSize = 100,
+           .stream = {.numChunks = 1, .chunkRows = {400}, .chunkOffsets = {0}},
+           .chunkKeys = {"bbb"}}}};
+  std::vector<int> stripeGroups = {1};
+
+  auto indexBuffers =
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto chunkIndex = createChunkIndex(indexBuffers, 0);
+  ASSERT_NE(chunkIndex, nullptr);
+
+  struct {
+    uint32_t streamId;
+    uint32_t rowId;
+    uint32_t expectedChunkIndex;
+  } testCases[] = {
+      // Stream 0 has startChunkOffset_ == 0. Cumulative row counts
+      // {100, 350, 750} → chunk 0 covers [0, 99], chunk 1 covers [100, 349],
+      // chunk 2 covers [350, 749]. Stripe-absolute chunkIndex == 0, 1, 2.
+      {0, 0, 0},
+      {0, 99, 0},
+      {0, 100, 1},
+      {0, 349, 1},
+      {0, 350, 2},
+      {0, 749, 2},
+      // Stream 1 has startChunkOffset_ == 3 (stream 0 contributed 3 chunks).
+      // Cumulative row counts {150, 450} → chunk 0 covers [0, 149], chunk 1
+      // covers [150, 449]. Stripe-absolute chunkIndex == 3, 4.
+      {1, 0, 3},
+      {1, 149, 3},
+      {1, 150, 4},
+      {1, 449, 4},
+  };
+
+  for (const auto& tc : testCases) {
+    SCOPED_TRACE(fmt::format("streamId {} rowId {}", tc.streamId, tc.rowId));
+    auto streamIndex = chunkIndex->createStreamIndex(
+        /*stripe=*/0, tc.streamId, /*streamSize=*/1000);
+    ASSERT_NE(streamIndex, nullptr);
+    const auto result = streamIndex->lookupChunk(tc.rowId);
+    EXPECT_EQ(result.chunkIndex, tc.expectedChunkIndex);
+  }
+}
+
 TEST_F(ChunkIndexTest, createStreamIndex) {
   std::vector<std::string> indexColumns = {"col1"};
   std::string minKey = "aaa";

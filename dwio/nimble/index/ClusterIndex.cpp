@@ -146,16 +146,18 @@ std::unique_ptr<ClusterIndex> ClusterIndex::create(
       "ioOptions pool must match the provided pool");
   return std::unique_ptr<ClusterIndex>(new ClusterIndex(
       std::move(rootSection),
-      pool,
       createIndexMetadataInput(options),
-      createIndexDataInput(options)));
+      createIndexDataInput(options),
+      options.pinIndex,
+      pool));
 }
 
 ClusterIndex::ClusterIndex(
     Section rootSection,
-    velox::memory::MemoryPool* pool,
     std::shared_ptr<MetadataInput> metadataInput,
-    std::shared_ptr<velox::dwio::common::BufferedInput> dataInput)
+    std::shared_ptr<velox::dwio::common::BufferedInput> dataInput,
+    bool pinIndex,
+    velox::memory::MemoryPool* pool)
     : IndexLookup{IndexType::Cluster},
       rootSection_{std::move(rootSection)},
       indexRoot_{getIndexRoot(rootSection_)},
@@ -170,6 +172,7 @@ ClusterIndex::ClusterIndex(
       metadataInput_{std::move(metadataInput)},
       dataInput_{std::move(dataInput)},
       pool_{pool},
+      pinIndex_{pinIndex},
       partitions_(numPartitions_) {
   NIMBLE_CHECK(!indexColumns_.empty());
   NIMBLE_CHECK_EQ(indexColumns_.size(), sortOrders_.size());
@@ -368,7 +371,8 @@ MetadataSection ClusterIndex::partitionSection(uint32_t partitionId) const {
 
 ClusterIndex::IndexPartition::IndexPartition(
     uint32_t _id,
-    std::unique_ptr<MetadataBuffer> _metadata)
+    std::unique_ptr<MetadataBuffer> _metadata,
+    bool pinIndex)
     : id{_id},
       metadata{std::move(_metadata)},
       index{flatbuffers::GetRoot<serialization::ClusterIndexPartition>(
@@ -381,6 +385,10 @@ ClusterIndex::IndexPartition::IndexPartition(
   const auto* chunkOffsets = index->chunk_offsets();
   NIMBLE_CHECK_NOT_NULL(chunkOffsets);
   NIMBLE_CHECK_EQ(chunkOffsets->size(), chunkKeys->size());
+  // Allocate the cache slot vector. When pinIndex is true, size to the
+  // number of chunks so every chunk has a dedicated slot. When false,
+  // allocate a single scratch slot that retains at most one decoded chunk.
+  decodedChunks.resize(pinIndex ? numChunks() : 1);
 }
 
 uint32_t ClusterIndex::IndexPartition::chunkIndex(
@@ -405,18 +413,6 @@ velox::common::Region ClusterIndex::IndexPartition::chunkStreamRegion(
   return velox::common::Region{offset, chunkLocation.chunkSize};
 }
 
-char* ClusterIndex::IndexPartition::ensureDataBuffer(
-    uint32_t bytes,
-    velox::memory::MemoryPool* pool) const {
-  if (dataBuffer == nullptr) {
-    dataBuffer = velox::AlignedBuffer::allocate<char>(bytes, pool);
-  } else if (dataBuffer->capacity() < bytes) {
-    NIMBLE_CHECK(dataBuffer->unique());
-    velox::AlignedBuffer::reallocate<char>(&dataBuffer, bytes);
-  }
-  return dataBuffer->asMutable<char>();
-}
-
 const ClusterIndex::IndexPartition* ClusterIndex::loadPartition(
     uint32_t partitionId) const {
   NIMBLE_CHECK_LT(partitionId, numPartitions_);
@@ -427,7 +423,8 @@ const ClusterIndex::IndexPartition* ClusterIndex::loadPartition(
     NIMBLE_CHECK_EQ(results.size(), 1);
     partition = std::make_unique<IndexPartition>(
         partitionId,
-        std::make_unique<MetadataBuffer>(std::move(*results.front())));
+        std::make_unique<MetadataBuffer>(std::move(*results.front())),
+        pinIndex_);
   }
   return partition.get();
 }
@@ -438,6 +435,7 @@ ChunkLocation ClusterIndex::lookupChunk(
   NIMBLE_DCHECK_NOT_NULL(partition);
   const uint32_t idx = partition->chunkIndex(encodedKey);
   return ChunkLocation{
+      idx,
       partition->chunkOffset(idx),
       partition->chunkSize(idx),
       partition->rowOffset(idx)};
@@ -479,32 +477,42 @@ ClusterIndex::Layout ClusterIndex::layout(bool detail) const {
 // ClusterIndex::DecodedChunk
 // ---------------------------------------------------------------------------
 
-const ClusterIndex::DecodedChunk& ClusterIndex::getDecodedChunk(
+ClusterIndex::DecodedChunk ClusterIndex::getDecodedChunk(
     const IndexPartition* partition,
     const ChunkLocation& chunkLocation) const {
   NIMBLE_DCHECK_NOT_NULL(partition);
-  auto& decodedChunk = partition->decodedChunk;
-  if (decodedChunk.data != nullptr &&
-      decodedChunk.chunkOffset == chunkLocation.chunkOffset) {
-    return decodedChunk;
+  // Resolve the cache slot. When pinned, every chunk has a dedicated slot
+  // indexed by chunkIndex. When unpinned, a single shared slot holds at most
+  // one decoded chunk; treat it as a hit only when chunkOffset matches.
+  const uint32_t slotIdx = pinIndex_ ? chunkLocation.chunkIndex : 0;
+  NIMBLE_CHECK_LT(slotIdx, partition->decodedChunks.size());
+  auto& slot = partition->decodedChunks.at(slotIdx);
+  if (slot.data != nullptr &&
+      (pinIndex_ || slot.chunkOffset == chunkLocation.chunkOffset)) {
+    return slot;
   }
 
-  decodedChunk.reset(chunkLocation.chunkOffset);
-
+  // Cache miss: decode from dataInput_ into a local DecodedChunk, then move
+  // it into the slot. The returned copy bumps the shared_ptr refcount so
+  // the underlying DecodedKeyChunk (and its owned buffer in stringBuffers)
+  // stays alive past this call.
+  DecodedChunk decodedChunk;
   const auto region = partition->chunkStreamRegion(chunkLocation);
+  decodedChunk.chunkOffset = chunkLocation.chunkOffset;
+  velox::BufferPtr scratch;
   decodedChunk.data = decodeKeyChunk(
       dataInput_->read(
           region.offset,
           region.length,
           velox::dwio::common::LogType::GROUP_INDEX),
       *pool_,
-      partition->dataBuffer);
+      scratch);
   NIMBLE_CHECK_EQ(
       decodedChunk.data->encoding->dataType(),
       DataType::String,
       "Expected String data type");
-
-  return decodedChunk;
+  slot = std::move(decodedChunk);
+  return slot;
 }
 
 uint32_t ClusterIndex::seekInChunk(
@@ -512,7 +520,7 @@ uint32_t ClusterIndex::seekInChunk(
     const ChunkLocation& chunkLocation,
     std::string_view encodedKey,
     bool inclusive) const {
-  const auto& chunk = getDecodedChunk(partition, chunkLocation);
+  const auto chunk = getDecodedChunk(partition, chunkLocation);
   const auto rowInChunk = chunk.data->encoding->seek(&encodedKey, inclusive);
   if (!rowInChunk.has_value()) {
     // For exclusive seek (inclusive=false), no row > key means the end is
@@ -542,6 +550,7 @@ ChunkLocation ClusterIndex::lookupChunk(
       partition->id);
   const uint32_t idx = it - chunkRows->begin();
   return ChunkLocation{
+      idx,
       partition->chunkOffset(idx),
       partition->chunkSize(idx),
       partition->rowOffset(idx)};
@@ -567,8 +576,12 @@ std::string ClusterIndex::keyAtRow(uint32_t row) const {
     return std::string(chunkKeys->Get(chunkIdx)->string_view());
   }
 
-  const auto chunkLocation = lookupChunk(partition, partitionRow);
-  const auto& decodedChunk = getDecodedChunk(partition, chunkLocation);
+  const ChunkLocation chunkLocation{
+      chunkIdx,
+      partition->chunkOffset(chunkIdx),
+      partition->chunkSize(chunkIdx),
+      partition->rowOffset(chunkIdx)};
+  const auto decodedChunk = getDecodedChunk(partition, chunkLocation);
   const uint32_t rowInChunk = partitionRow - chunkLocation.rowOffset;
 
   std::string_view value;

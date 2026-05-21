@@ -19,7 +19,6 @@
 #include <functional>
 #include <memory>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 #include "dwio/nimble/index/IndexLookup.h"
@@ -150,17 +149,16 @@ class ClusterIndex : public IndexLookup {
  private:
   ClusterIndex(
       Section rootSection,
-      velox::memory::MemoryPool* pool,
       std::shared_ptr<MetadataInput> metadataInput,
-      std::shared_ptr<velox::dwio::common::BufferedInput> dataInput);
+      std::shared_ptr<velox::dwio::common::BufferedInput> dataInput,
+      bool pinIndex,
+      velox::memory::MemoryPool* pool);
 
-  // Cached decoded chunk, one per IndexPartition.
+  // Cached decoded chunk. The DecodedKeyChunk owns its own backing buffer
+  // (decodeKeyChunk appends it to DecodedKeyChunk::stringBuffers when no
+  // external reuse buffer is provided), so each cached entry is fully
+  // self-contained.
   struct DecodedChunk {
-    void reset(uint32_t newChunkOffset) {
-      chunkOffset = newChunkOffset;
-      data.reset();
-    }
-
     uint32_t chunkOffset{0};
     std::shared_ptr<DecodedKeyChunk> data;
   };
@@ -171,12 +169,21 @@ class ClusterIndex : public IndexLookup {
     const std::unique_ptr<MetadataBuffer> metadata;
     const serialization::ClusterIndexPartition* const index;
 
-    // One cached decoded chunk. Replaced when a different chunk is requested.
-    mutable DecodedChunk decodedChunk;
-    // Reusable buffer for chunk data that spans multiple stream buffers.
-    mutable velox::BufferPtr dataBuffer;
+    // Lazily-populated decoded chunks. Sized to numChunks() when
+    // pinIndex_=true (each slot indexed by chunkIndex, retained across
+    // lookups). Sized to 1 when pinIndex_=false (a single shared scratch
+    // slot, evicted on every different-chunk lookup). Each slot starts
+    // empty (data == nullptr) and is filled on first access.
+    mutable std::vector<DecodedChunk> decodedChunks;
 
-    IndexPartition(uint32_t id, std::unique_ptr<MetadataBuffer> metadata);
+    // Constructs the partition and allocates the decoded chunks vector.
+    // When pinIndex=true, allocates one slot per chunk for full caching;
+    // when false, allocates a single scratch slot that retains at most one
+    // decoded chunk.
+    IndexPartition(
+        uint32_t id,
+        std::unique_ptr<MetadataBuffer> metadata,
+        bool pinIndex);
 
     uint32_t numChunks() const {
       return index->chunk_keys()->size();
@@ -204,11 +211,6 @@ class ClusterIndex : public IndexLookup {
 
     velox::common::Region chunkStreamRegion(
         const ChunkLocation& chunkLocation) const;
-
-    // Ensures dataBuffer has at least the requested capacity.
-    // Only grows, never shrinks, to avoid repeated allocations.
-    char* ensureDataBuffer(uint32_t bytes, velox::memory::MemoryPool* pool)
-        const;
   };
 
   // Resolves an encoded key to a file-level row number within a partition.
@@ -267,21 +269,27 @@ class ClusterIndex : public IndexLookup {
   // Builds the flat LookupResult from scratchRanges_.
   LookupResult buildLookupResult(const LookupOptions& options) const;
 
-  // Binary searches chunk keys in the partition.
+  // Binary searches chunk keys in the partition. The returned ChunkLocation
+  // carries the chunkIndex for indexing into per-chunk arrays.
   ChunkLocation lookupChunk(
       const IndexPartition* partition,
       std::string_view encodedKey) const;
 
   // Finds the chunk containing the given partition-relative row via binary
-  // search on chunk_rows. Returns a ChunkLocation with the chunk's offset,
-  // size, and row offset within the partition.
+  // search on chunk_rows.
   ChunkLocation lookupChunk(
       const IndexPartition* partition,
       uint32_t partitionRow) const;
 
-  // Loads or returns cached decoded chunk for the given location.
-  // Reuses partition-level buffers to avoid repeated allocations.
-  const DecodedChunk& getDecodedChunk(
+  // Returns the decoded chunk for the given chunk location. When
+  // pinIndex_=true, lazily fills the per-chunk slot in
+  // IndexPartition::decodedChunks (indexed by chunkIndex) and returns a copy.
+  // When pinIndex_=false, uses a single shared scratch slot — a hit only
+  // when the requested chunk matches the cached chunkOffset, otherwise the
+  // slot is evicted and refilled. The returned DecodedChunk owns its
+  // underlying buffer via shared_ptr / BufferPtr so it is safe to use past
+  // the call.
+  DecodedChunk getDecodedChunk(
       const IndexPartition* partition,
       const ChunkLocation& chunkLocation) const;
 
@@ -324,6 +332,10 @@ class ClusterIndex : public IndexLookup {
   const std::shared_ptr<MetadataInput> metadataInput_;
   const std::shared_ptr<velox::dwio::common::BufferedInput> dataInput_;
   velox::memory::MemoryPool* const pool_;
+
+  // When true, every decoded chunk stays pinned in IndexPartition::
+  // decodedChunks. When false, decodedChunks holds at most one entry.
+  const bool pinIndex_;
 
   // --- Mutable state ---
 
