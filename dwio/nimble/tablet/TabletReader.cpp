@@ -88,6 +88,7 @@ TabletReader::Options TabletReader::configureOptions(
   if (tabletOptions.loadClusterIndex) {
     tabletOptions.preloadOptionalSections.emplace_back(kClusterIndexSection);
   }
+  tabletOptions.preloadIndex = options.preloadIndex();
   tabletOptions.loadChunkIndex = options.loadChunkIndex();
   if (tabletOptions.loadChunkIndex) {
     tabletOptions.preloadOptionalSections.emplace_back(kChunkIndexSection);
@@ -249,11 +250,14 @@ TabletReader::TabletReader(
           NIMBLE_CHECK_NOT_NULL(options.cache, "cacheIndex requires cache");
         }
         return index::IndexLookup::Options{
-            file_,
-            &ioOptions_,
-            cacheEnabled ? options.fileHandle : nullptr,
-            cacheEnabled ? options.cache : nullptr,
-            options.pinIndex};
+            .file = file_,
+            .ioOptions = &ioOptions_,
+            .fileHandle = cacheEnabled ? options.fileHandle : nullptr,
+            .cache = cacheEnabled ? options.cache : nullptr,
+            // preloadIndex requires pinIndex; auto-promote so the caller only
+            // needs to flip one knob.
+            .pinIndex = options.pinIndex || options.preloadIndex,
+            .preloadIndex = options.preloadIndex};
       }()},
       metadataInput_{[&]() {
         MetadataInput::Options metadataOptions{

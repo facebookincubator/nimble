@@ -17,6 +17,7 @@
 #include "dwio/nimble/index/ClusterIndex.h"
 
 #include <algorithm>
+#include <numeric>
 
 #include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/Exceptions.h"
@@ -149,6 +150,7 @@ std::unique_ptr<ClusterIndex> ClusterIndex::create(
       createIndexMetadataInput(options),
       createIndexDataInput(options),
       options.pinIndex,
+      options.preloadIndex,
       pool));
 }
 
@@ -157,6 +159,7 @@ ClusterIndex::ClusterIndex(
     std::shared_ptr<MetadataInput> metadataInput,
     std::shared_ptr<velox::dwio::common::BufferedInput> dataInput,
     bool pinIndex,
+    bool preloadIndex,
     velox::memory::MemoryPool* pool)
     : IndexLookup{IndexType::Cluster},
       rootSection_{std::move(rootSection)},
@@ -182,6 +185,74 @@ ClusterIndex::ClusterIndex(
   NIMBLE_CHECK_NOT_NULL(metadataInput_);
   NIMBLE_CHECK_NOT_NULL(dataInput_);
   NIMBLE_CHECK_NOT_NULL(pool_);
+  if (!preloadIndex) {
+    return;
+  }
+  NIMBLE_CHECK(
+      pinIndex_,
+      "preloadIndex requires pinIndex=true to retain preloaded chunks");
+  this->preloadIndex();
+}
+
+void ClusterIndex::preloadIndex() {
+  NIMBLE_CHECK_GT(numPartitions_, 0);
+  std::vector<uint32_t> partitionIds(numPartitions_);
+  std::iota(partitionIds.begin(), partitionIds.end(), 0);
+  loadPartitions(partitionIds);
+
+  for (uint32_t partitionId = 0; partitionId < numPartitions_; ++partitionId) {
+    loadPartitionKeyStream(partitions_[partitionId].get());
+  }
+}
+
+void ClusterIndex::loadPartitionKeyStream(IndexPartition* partition) const {
+  const uint32_t numChunks = partition->numChunks();
+  NIMBLE_CHECK_GT(numChunks, 0, "Partition {} has no chunks", partition->id);
+  std::vector<std::unique_ptr<velox::dwio::common::SeekableInputStream>>
+      streams;
+  streams.reserve(numChunks);
+  for (uint32_t chunkIdx = 0; chunkIdx < numChunks; ++chunkIdx) {
+    const ChunkLocation chunkLocation{
+        chunkIdx,
+        partition->chunkOffset(chunkIdx),
+        partition->chunkSize(chunkIdx),
+        partition->rowOffset(chunkIdx)};
+    streams.push_back(
+        dataInput_->enqueue(partition->chunkStreamRegion(chunkLocation)));
+  }
+  dataInput_->load(velox::dwio::common::LogType::GROUP_INDEX);
+
+  for (uint32_t chunkIdx = 0; chunkIdx < numChunks; ++chunkIdx) {
+    auto& decodedChunk = partition->decodedChunks[chunkIdx];
+    decodedChunk.chunkOffset = partition->chunkOffset(chunkIdx);
+    // Per-iteration scratch so the previous chunk's buffer isn't aliased
+    // and overwritten if the next chunk fits in its capacity.
+    velox::BufferPtr scratch;
+    decodedChunk.data =
+        decodeKeyChunk(std::move(streams[chunkIdx]), *pool_, scratch);
+    NIMBLE_CHECK_EQ(
+        decodedChunk.data->encoding->dataType(),
+        DataType::String,
+        "Expected String data type");
+  }
+}
+
+void ClusterIndex::loadPartitions(
+    std::span<const uint32_t> partitionIds) const {
+  NIMBLE_CHECK(!partitionIds.empty(), "partitionIds must not be empty");
+  std::vector<MetadataSection> sections;
+  sections.reserve(partitionIds.size());
+  for (uint32_t id : partitionIds) {
+    NIMBLE_CHECK_LT(id, numPartitions_);
+    NIMBLE_CHECK_NULL(partitions_[id]);
+    sections.push_back(partitionSection(id));
+  }
+  auto buffers = metadataInput_->load(
+      std::span<const MetadataSection>{sections.data(), sections.size()});
+  NIMBLE_CHECK_EQ(buffers.size(), partitionIds.size());
+  for (size_t i = 0; i < partitionIds.size(); ++i) {
+    initializePartition(partitionIds[i], std::move(*buffers[i]));
+  }
 }
 
 std::optional<uint32_t> ClusterIndex::lookupPartition(
@@ -413,20 +484,26 @@ velox::common::Region ClusterIndex::IndexPartition::chunkStreamRegion(
   return velox::common::Region{offset, chunkLocation.chunkSize};
 }
 
+void ClusterIndex::initializePartition(
+    uint32_t partitionId,
+    MetadataBuffer&& buffer) const {
+  NIMBLE_CHECK_NULL(partitions_[partitionId]);
+  partitions_[partitionId] = std::make_unique<IndexPartition>(
+      partitionId,
+      std::make_unique<MetadataBuffer>(std::move(buffer)),
+      pinIndex_);
+}
+
 const ClusterIndex::IndexPartition* ClusterIndex::loadPartition(
     uint32_t partitionId) const {
   NIMBLE_CHECK_LT(partitionId, numPartitions_);
-  auto& partition = partitions_[partitionId];
-  if (partition == nullptr) {
+  if (partitions_[partitionId] == nullptr) {
     const auto section = partitionSection(partitionId);
     auto results = metadataInput_->load({&section, 1});
     NIMBLE_CHECK_EQ(results.size(), 1);
-    partition = std::make_unique<IndexPartition>(
-        partitionId,
-        std::make_unique<MetadataBuffer>(std::move(*results.front())),
-        pinIndex_);
+    initializePartition(partitionId, std::move(*results.front()));
   }
-  return partition.get();
+  return partitions_[partitionId].get();
 }
 
 ChunkLocation ClusterIndex::lookupChunk(

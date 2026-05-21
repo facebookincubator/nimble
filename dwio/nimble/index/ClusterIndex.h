@@ -18,6 +18,7 @@
 
 #include <functional>
 #include <memory>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -152,7 +153,15 @@ class ClusterIndex : public IndexLookup {
       std::shared_ptr<MetadataInput> metadataInput,
       std::shared_ptr<velox::dwio::common::BufferedInput> dataInput,
       bool pinIndex,
+      bool preloadIndex,
       velox::memory::MemoryPool* pool);
+
+  // Eagerly loads all partition metadata via a single coalesced metadata IO,
+  // then decodes each partition's key-stream chunks via one coalesced data
+  // IO per partition. After this returns, subsequent lookups against any
+  // partition/chunk hit pure-memory state (assuming pinIndex_=true, which is
+  // enforced).
+  void preloadIndex();
 
   // Cached decoded chunk. The DecodedKeyChunk owns its own backing buffer
   // (decodeKeyChunk appends it to DecodedKeyChunk::stringBuffers when no
@@ -305,6 +314,21 @@ class ClusterIndex : public IndexLookup {
 
   // Returns the partition, loading on demand if needed. Never evicted.
   const IndexPartition* loadPartition(uint32_t partitionId) const;
+
+  // Batch-loads the metadata for the given partitionIds via a single
+  // coalesced IO. Caller guarantees each id is < numPartitions_ and not
+  // already loaded. Used by preloadIndex().
+  void loadPartitions(std::span<const uint32_t> partitionIds) const;
+
+  // Loads and decodes all key-stream chunks for a single partition via one
+  // coalesced data IO. Populates partition->decodedChunks. Called per
+  // partition from preloadIndex().
+  void loadPartitionKeyStream(IndexPartition* partition) const;
+
+  // Constructs IndexPartition for partitionId from the given metadata buffer
+  // and (when pinIndex_=true) pre-sizes its decodedChunks vector. Shared by
+  // loadPartition() (single IO) and loadPartitions() (batched IO).
+  void initializePartition(uint32_t partitionId, MetadataBuffer&& buffer) const;
 
   const Section rootSection_;
   const serialization::ClusterIndex* const indexRoot_;

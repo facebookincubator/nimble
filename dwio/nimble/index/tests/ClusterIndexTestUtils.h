@@ -173,12 +173,14 @@ class ClusterIndexTestHelper {
       velox::memory::MemoryPool* pool,
       std::shared_ptr<MetadataInput> metadataInput,
       std::shared_ptr<velox::dwio::common::BufferedInput> dataInput,
-      bool pinIndex = false) {
+      bool pinIndex = false,
+      bool preloadIndex = false) {
     return std::unique_ptr<ClusterIndex>(new ClusterIndex(
         std::move(rootSection),
         std::move(metadataInput),
         std::move(dataInput),
         pinIndex,
+        preloadIndex,
         pool));
   }
 

@@ -1623,5 +1623,87 @@ TEST_F(ClusterIndexTest, pinIndexDisabledDoesNotRetainChunks) {
   EXPECT_GT(indexIoStats_->rawBytesRead(), bytesAfter2);
 }
 
+TEST_F(ClusterIndexTest, preloadIndexDecodesAllChunksAtConstruction) {
+  std::string file;
+  auto readFile = writeThreeChunkPartitionFile(*pool_, file);
+
+  TabletReader::Options options;
+  options.loadClusterIndex = true;
+  options.preloadIndex = true;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(metadataIoStats_)
+      .setIndexIoStats(indexIoStats_);
+
+  auto reader = TabletReader::create(readFile, pool_.get(), options);
+  ASSERT_NE(reader->clusterIndex(), nullptr);
+  ClusterIndexTestHelper helper(reader->clusterIndex());
+
+  // All chunks must be decoded at construction time, before any lookup runs.
+  EXPECT_EQ(helper.decodedChunkCount(0), 3);
+  const auto bytesAfterPreload = indexIoStats_->rawBytesRead();
+  EXPECT_GT(bytesAfterPreload, 0)
+      << "Preload should have triggered key-stream IO";
+
+  // Subsequent lookups across all three chunks must not trigger any further
+  // index data IO.
+  reader->clusterIndex()->lookup(makeRangeScanRequest("bbb"));
+  reader->clusterIndex()->lookup(makeRangeScanRequest("ddd"));
+  reader->clusterIndex()->lookup(makeRangeScanRequest("fff"));
+  EXPECT_EQ(helper.decodedChunkCount(0), 3);
+  EXPECT_EQ(indexIoStats_->rawBytesRead(), bytesAfterPreload)
+      << "Lookups after preload must not trigger additional index IO";
+}
+
+TEST_F(ClusterIndexTest, preloadIndexRequiresPinIndex) {
+  // IndexLookup::Options::validate() must reject preloadIndex=true when
+  // pinIndex=false, because non-pinned chunks would be evicted on first
+  // lookup, defeating the purpose of preloading.
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(std::string{});
+  velox::io::ReaderOptions ioOpts(pool_.get());
+  ioOpts.setIndexIoStats(indexIoStats_);
+  IndexLookup::Options opts{
+      .file = readFile,
+      .ioOptions = &ioOpts,
+      .pinIndex = false,
+      .preloadIndex = true,
+  };
+  EXPECT_THROW(opts.validate(), NimbleUserError);
+}
+
+TEST_F(ClusterIndexTest, preloadIndexAutoPromotesPinIndex) {
+  // At the TabletReader::Options level, setting preloadIndex=true together
+  // with pinIndex=false (apparently conflicting) must auto-promote pinIndex
+  // to true rather than failing — preloaded chunks must be retained for the
+  // preload to have any effect.
+  std::string file;
+  auto readFile = writeThreeChunkPartitionFile(*pool_, file);
+
+  TabletReader::Options options;
+  options.loadClusterIndex = true;
+  options.preloadIndex = true;
+  options.pinIndex = false; // intentionally conflicting; should be promoted.
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(metadataIoStats_)
+      .setIndexIoStats(indexIoStats_);
+
+  // Construction must succeed (no throw) despite the apparent conflict.
+  auto reader = TabletReader::create(readFile, pool_.get(), options);
+  ASSERT_NE(reader->clusterIndex(), nullptr);
+  ClusterIndexTestHelper helper(reader->clusterIndex());
+
+  // All chunks must be decoded and retained — proves pinIndex was promoted
+  // (otherwise decodedChunks would be capped at 1 entry).
+  EXPECT_EQ(helper.decodedChunkCount(0), 3);
+  const auto bytesAfterPreload = indexIoStats_->rawBytesRead();
+
+  // Lookups across all three chunks must not trigger additional index IO,
+  // confirming the chunks are pinned (not evicted between lookups).
+  reader->clusterIndex()->lookup(makeRangeScanRequest("bbb"));
+  reader->clusterIndex()->lookup(makeRangeScanRequest("ddd"));
+  reader->clusterIndex()->lookup(makeRangeScanRequest("fff"));
+  EXPECT_EQ(helper.decodedChunkCount(0), 3);
+  EXPECT_EQ(indexIoStats_->rawBytesRead(), bytesAfterPreload);
+}
+
 } // namespace
 } // namespace facebook::nimble::index::test

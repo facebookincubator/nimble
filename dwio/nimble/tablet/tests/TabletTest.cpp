@@ -3639,6 +3639,74 @@ TEST_P(TabletWithIndexTest, loadClusterIndex) {
   }
 }
 
+TEST_P(TabletWithIndexTest, preloadClusterIndex) {
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+
+  nimble::index::test::TestClusterIndexMetadataWriter indexHelper(
+      *pool_,
+      {"col1"},
+      {SortOrder{.ascending = true}},
+      /*enforceKeyOrder=*/true);
+
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {
+          .metadataFlushThreshold = 1024 * 1024 * 1024,
+          .streamDeduplicationEnabled = false,
+          .enableChunkIndex = true,
+          .stripeGroupFlushCallback =
+              indexHelper.createStripeGroupFlushCallback(),
+          .closeCallback = indexHelper.createCloseCallback(),
+      });
+
+  nimble::Buffer buffer{*pool_};
+  auto streams = createStreams(
+      buffer, {{.offset = 0, .chunks = {{.rowCount = 100, .size = 10}}}});
+  indexHelper.addStripe({{.rowCount = 100, .key = "bbb"}});
+  tabletWriter->writeStripe(100, std::move(streams));
+  tabletWriter->close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  // Case 1: preloadIndex=true with loadClusterIndex=true forces eager
+  // key-stream IO at construction time. Subsequent lookups must perform zero
+  // additional index IO.
+  {
+    const auto indexBytesReadBefore = indexIoStats_->rawBytesRead();
+    nimble::TabletReader::Options options;
+    options.loadClusterIndex = true;
+    options.preloadIndex = true;
+    auto tablet = TabletTest::createTabletReader(readFile, options);
+    ASSERT_NE(tablet->clusterIndex(), nullptr);
+    const auto indexBytesAfterOpen = indexIoStats_->rawBytesRead();
+    EXPECT_GT(indexBytesAfterOpen, indexBytesReadBefore)
+        << "preloadIndex must trigger key-stream IO during open";
+
+    velox::serializer::EncodedKeyBounds bounds{
+        .lowerKey = std::string("bbb"), .upperKey = std::nullopt};
+    tablet->clusterIndex()->lookup(
+        nimble::index::IndexLookup::LookupRequest::rangeScan({bounds}));
+    EXPECT_EQ(indexIoStats_->rawBytesRead(), indexBytesAfterOpen)
+        << "Lookup after preload must not trigger additional index IO";
+  }
+
+  // Case 2: preloadIndex=true with loadClusterIndex=false is a no-op for
+  // the index (the cluster index section is not even loaded).
+  {
+    const auto metadataBytesReadBefore = metadataIoStats_->rawBytesRead();
+    const auto indexBytesReadBefore = indexIoStats_->rawBytesRead();
+    nimble::TabletReader::Options options;
+    options.loadClusterIndex = false;
+    options.preloadIndex = true;
+    auto tablet = TabletTest::createTabletReader(readFile, options);
+    EXPECT_EQ(tablet->clusterIndex(), nullptr);
+    EXPECT_EQ(metadataIoStats_->rawBytesRead(), metadataBytesReadBefore);
+    EXPECT_EQ(indexIoStats_->rawBytesRead(), indexBytesReadBefore);
+  }
+}
+
 TEST_P(TabletWithIndexTest, loadClusterIndexMissingIoStats) {
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
