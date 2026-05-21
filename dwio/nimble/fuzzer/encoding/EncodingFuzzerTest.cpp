@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-/// Fuzzer tests for Varint encoding across supported data types.
+/// Fuzzer tests for all Nimble encodings across supported data types.
 ///
 /// Configuration via CLI flags:
 ///   --fuzzer_iterations=N     Number of iterations per test (default: 50)
@@ -25,7 +25,14 @@
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
 
+#include "dwio/nimble/encodings/ConstantEncoding.h"
+#include "dwio/nimble/encodings/DeltaEncoding.h"
+#include "dwio/nimble/encodings/DictionaryEncoding.h"
+#include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
+#include "dwio/nimble/encodings/RleEncoding.h"
+#include "dwio/nimble/encodings/SparseBoolEncoding.h"
+#include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
 #include "dwio/nimble/fuzzer/encoding/EncodingFuzzer.h"
 
@@ -36,6 +43,177 @@ DEFINE_bool(fuzzer_compression, true, "Test with compression enabled");
 
 using namespace facebook::nimble;
 using namespace facebook::nimble::test;
+
+// Trivial: all types
+using TrivialTypes = ::testing::Types<
+    TrivialEncoding<bool>,
+    TrivialEncoding<int8_t>,
+    TrivialEncoding<uint8_t>,
+    TrivialEncoding<int16_t>,
+    TrivialEncoding<uint16_t>,
+    TrivialEncoding<int32_t>,
+    TrivialEncoding<uint32_t>,
+    TrivialEncoding<int64_t>,
+    TrivialEncoding<uint64_t>,
+    TrivialEncoding<float>,
+    TrivialEncoding<double>,
+    TrivialEncoding<std::string_view>>;
+
+template <typename E>
+class TrivialFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(TrivialFuzzerTest, TrivialTypes);
+
+TYPED_TEST(TrivialFuzzerTest, correctness) {
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+
+// RLE: all types
+using RleTypes = ::testing::Types<
+    RLEEncoding<bool>,
+    RLEEncoding<int8_t>,
+    RLEEncoding<uint8_t>,
+    RLEEncoding<int16_t>,
+    RLEEncoding<uint16_t>,
+    RLEEncoding<int32_t>,
+    RLEEncoding<uint32_t>,
+    RLEEncoding<int64_t>,
+    RLEEncoding<uint64_t>,
+    RLEEncoding<float>,
+    RLEEncoding<double>,
+    RLEEncoding<std::string_view>>;
+
+template <typename E>
+class RleFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(RleFuzzerTest, RleTypes);
+
+TYPED_TEST(RleFuzzerTest, correctness) {
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+
+// Dictionary: all types except bool
+using DictionaryTypes = ::testing::Types<
+    DictionaryEncoding<int8_t>,
+    DictionaryEncoding<uint8_t>,
+    DictionaryEncoding<int16_t>,
+    DictionaryEncoding<uint16_t>,
+    DictionaryEncoding<int32_t>,
+    DictionaryEncoding<uint32_t>,
+    DictionaryEncoding<int64_t>,
+    DictionaryEncoding<uint64_t>,
+    DictionaryEncoding<float>,
+    DictionaryEncoding<double>,
+    DictionaryEncoding<std::string_view>>;
+
+template <typename E>
+class DictionaryFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(DictionaryFuzzerTest, DictionaryTypes);
+
+TYPED_TEST(DictionaryFuzzerTest, correctness) {
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+
+// FixedBitWidth: all numeric types
+using FixedBitWidthTypes = ::testing::Types<
+    FixedBitWidthEncoding<int8_t>,
+    FixedBitWidthEncoding<uint8_t>,
+    FixedBitWidthEncoding<int16_t>,
+    FixedBitWidthEncoding<uint16_t>,
+    FixedBitWidthEncoding<int32_t>,
+    FixedBitWidthEncoding<uint32_t>,
+    FixedBitWidthEncoding<int64_t>,
+    FixedBitWidthEncoding<uint64_t>,
+    FixedBitWidthEncoding<float>,
+    FixedBitWidthEncoding<double>>;
+
+template <typename E>
+class FixedBitWidthFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(FixedBitWidthFuzzerTest, FixedBitWidthTypes);
+
+TYPED_TEST(FixedBitWidthFuzzerTest, correctness) {
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+
+// Delta: integer types
+using DeltaTypes = ::testing::Types<
+    DeltaEncoding<int8_t>,
+    DeltaEncoding<uint8_t>,
+    DeltaEncoding<int16_t>,
+    DeltaEncoding<uint16_t>,
+    DeltaEncoding<int32_t>,
+    DeltaEncoding<uint32_t>,
+    DeltaEncoding<int64_t>,
+    DeltaEncoding<uint64_t>>;
+
+template <typename E>
+class DeltaFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(DeltaFuzzerTest, DeltaTypes);
+
+TYPED_TEST(DeltaFuzzerTest, correctness) {
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+
+// Constant: all types
+using ConstantTypes = ::testing::Types<
+    ConstantEncoding<bool>,
+    ConstantEncoding<int8_t>,
+    ConstantEncoding<uint8_t>,
+    ConstantEncoding<int16_t>,
+    ConstantEncoding<uint16_t>,
+    ConstantEncoding<int32_t>,
+    ConstantEncoding<uint32_t>,
+    ConstantEncoding<int64_t>,
+    ConstantEncoding<uint64_t>,
+    ConstantEncoding<float>,
+    ConstantEncoding<double>,
+    ConstantEncoding<std::string_view>>;
+
+template <typename E>
+class ConstantFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(ConstantFuzzerTest, ConstantTypes);
+
+TYPED_TEST(ConstantFuzzerTest, correctness) {
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+
+// SparseBool: bool only
+TEST(SparseBoolFuzzerTest, correctness) {
+  EncodingFuzzer<SparseBoolEncoding> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
 
 // Varint: 4+ byte types
 using VarintTypes = ::testing::Types<
@@ -50,7 +228,7 @@ template <typename E>
 class VarintFuzzerTest : public ::testing::Test {};
 TYPED_TEST_SUITE(VarintFuzzerTest, VarintTypes);
 
-TYPED_TEST(VarintFuzzerTest, Correctness) {
+TYPED_TEST(VarintFuzzerTest, correctness) {
   EncodingFuzzer<TypeParam> fuzzer(
       FLAGS_fuzzer_iterations,
       FLAGS_fuzzer_max_rows,
@@ -61,6 +239,10 @@ TYPED_TEST(VarintFuzzerTest, Correctness) {
 
 // MainlyConstant: all types except bool
 using MainlyConstantTypes = ::testing::Types<
+    MainlyConstantEncoding<int8_t>,
+    MainlyConstantEncoding<uint8_t>,
+    MainlyConstantEncoding<int16_t>,
+    MainlyConstantEncoding<uint16_t>,
     MainlyConstantEncoding<int32_t>,
     MainlyConstantEncoding<uint32_t>,
     MainlyConstantEncoding<int64_t>,
@@ -73,7 +255,7 @@ template <typename E>
 class MainlyConstantFuzzerTest : public ::testing::Test {};
 TYPED_TEST_SUITE(MainlyConstantFuzzerTest, MainlyConstantTypes);
 
-TYPED_TEST(MainlyConstantFuzzerTest, Correctness) {
+TYPED_TEST(MainlyConstantFuzzerTest, correctness) {
   EncodingFuzzer<TypeParam> fuzzer(
       FLAGS_fuzzer_iterations,
       FLAGS_fuzzer_max_rows,
