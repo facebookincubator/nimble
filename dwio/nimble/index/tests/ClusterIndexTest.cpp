@@ -605,12 +605,14 @@ TEST_F(ClusterIndexTest, lookupWithKeyStreamMultiplePartitions) {
 }
 
 TEST_F(ClusterIndexTest, chunkLocation) {
-  ChunkLocation loc1{100, 50, 200};
+  ChunkLocation loc1{3, 100, 50, 200};
+  EXPECT_EQ(loc1.chunkIndex, 3);
   EXPECT_EQ(loc1.chunkOffset, 100);
   EXPECT_EQ(loc1.chunkSize, 50);
   EXPECT_EQ(loc1.rowOffset, 200);
 
-  ChunkLocation loc2{0, 0, 0};
+  ChunkLocation loc2{0, 0, 0, 0};
+  EXPECT_EQ(loc2.chunkIndex, 0);
   EXPECT_EQ(loc2.chunkOffset, 0);
   EXPECT_EQ(loc2.chunkSize, 0);
   EXPECT_EQ(loc2.rowOffset, 0);
@@ -1319,6 +1321,11 @@ TEST_F(ClusterIndexTest, indexDataReuseWithSameReader) {
     TabletReader::Options options;
     options.loadClusterIndex = true;
     options.cacheIndex = testCase.cacheIndex;
+    // pinIndex=true so the ClusterIndex retains decoded chunks across
+    // lookups. Without pinning, !pin decodes via the scratch slot every
+    // call and would always issue fresh dataInput_->read() calls (modulo
+    // AsyncDataCache hits in the cacheIndex=true + provideCache case).
+    options.pinIndex = true;
     options.ioOptions.emplace(pool_.get())
         .setMetadataIoStats(metadataIoStats_)
         .setIndexIoStats(indexIoStats_);
@@ -1502,6 +1509,118 @@ TEST_F(ClusterIndexTest, indexDataReuseCrossReaders) {
   }
 
   cache->shutdown();
+}
+
+// Writes a tablet with three single-key stripes that all fall into the same
+// partition (no mid-write stripe-group flush), producing one partition with
+// three key chunks.
+namespace {
+std::shared_ptr<velox::ReadFile> writeThreeChunkPartitionFile(
+    velox::memory::MemoryPool& pool,
+    std::string& fileBacking) {
+  velox::InMemoryWriteFile writeFile(&fileBacking);
+  Buffer buffer{pool};
+
+  TestClusterIndexMetadataWriter indexHelper(
+      pool,
+      {"col1"},
+      {SortOrder{.ascending = true}},
+      /*enforceKeyOrder=*/true);
+
+  auto tabletWriter = TabletWriter::create(
+      &writeFile,
+      pool,
+      {
+          .metadataFlushThreshold = 1024 * 1024 * 1024,
+          .streamDeduplicationEnabled = false,
+          .enableChunkIndex = true,
+          .stripeGroupFlushCallback =
+              indexHelper.createStripeGroupFlushCallback(),
+          .closeCallback = indexHelper.createCloseCallback(),
+      });
+
+  const std::vector<std::string> keys = {"bbb", "ddd", "fff"};
+  for (const auto& key : keys) {
+    auto* pos = buffer.reserve(50);
+    std::memset(pos, 'A', 50);
+    std::vector<nimble::Stream> tabletStreams;
+    tabletStreams.push_back(
+        {.offset = 0, .chunks = {{.rowCount = 100, .content = {{pos, 50}}}}});
+    indexHelper.addStripe({{.rowCount = 100, .key = key}});
+    tabletWriter->writeStripe(100, std::move(tabletStreams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  return std::make_shared<velox::InMemoryReadFile>(fileBacking);
+}
+} // namespace
+
+TEST_F(ClusterIndexTest, pinIndexEnabledRetainsChunks) {
+  std::string file;
+  auto readFile = writeThreeChunkPartitionFile(*pool_, file);
+
+  TabletReader::Options options;
+  options.loadClusterIndex = true;
+  options.pinIndex = true;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(metadataIoStats_)
+      .setIndexIoStats(indexIoStats_);
+
+  auto reader = TabletReader::create(readFile, pool_.get(), options);
+  ASSERT_NE(reader->clusterIndex(), nullptr);
+  ClusterIndexTestHelper helper(reader->clusterIndex());
+
+  reader->clusterIndex()->lookup(makeRangeScanRequest("bbb"));
+  EXPECT_EQ(helper.decodedChunkCount(0), 1);
+  const auto bytesAfterChunk0 = indexIoStats_->rawBytesRead();
+  EXPECT_GT(bytesAfterChunk0, 0);
+
+  reader->clusterIndex()->lookup(makeRangeScanRequest("fff"));
+  EXPECT_EQ(helper.decodedChunkCount(0), 2);
+
+  reader->clusterIndex()->lookup(makeRangeScanRequest("ddd"));
+  EXPECT_EQ(helper.decodedChunkCount(0), 3);
+
+  const auto bytesAfterAllChunks = indexIoStats_->rawBytesRead();
+  reader->clusterIndex()->lookup(makeRangeScanRequest("bbb"));
+  EXPECT_EQ(helper.decodedChunkCount(0), 3);
+  EXPECT_EQ(indexIoStats_->rawBytesRead(), bytesAfterAllChunks)
+      << "Re-lookup of pinned chunk must not trigger new index IO";
+}
+
+TEST_F(ClusterIndexTest, pinIndexDisabledDoesNotRetainChunks) {
+  std::string file;
+  auto readFile = writeThreeChunkPartitionFile(*pool_, file);
+
+  TabletReader::Options options;
+  options.loadClusterIndex = true;
+  options.pinIndex = false;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(metadataIoStats_)
+      .setIndexIoStats(indexIoStats_);
+
+  auto reader = TabletReader::create(readFile, pool_.get(), options);
+  ASSERT_NE(reader->clusterIndex(), nullptr);
+  ClusterIndexTestHelper helper(reader->clusterIndex());
+
+  // Unpinned decodes share a single scratch slot — at most one decoded
+  // chunk is retained at a time, evicted whenever a different chunk is
+  // requested. Each lookup that lands on a different chunk issues fresh IO.
+  const auto bytesBefore = indexIoStats_->rawBytesRead();
+  reader->clusterIndex()->lookup(makeRangeScanRequest("bbb"));
+  EXPECT_EQ(helper.decodedChunkCount(0), 1);
+  const auto bytesAfter1 = indexIoStats_->rawBytesRead();
+  EXPECT_GT(bytesAfter1, bytesBefore);
+
+  reader->clusterIndex()->lookup(makeRangeScanRequest("fff"));
+  EXPECT_EQ(helper.decodedChunkCount(0), 1);
+  const auto bytesAfter2 = indexIoStats_->rawBytesRead();
+  EXPECT_GT(bytesAfter2, bytesAfter1);
+
+  reader->clusterIndex()->lookup(makeRangeScanRequest("ddd"));
+  EXPECT_EQ(helper.decodedChunkCount(0), 1);
+  EXPECT_GT(indexIoStats_->rawBytesRead(), bytesAfter2);
 }
 
 } // namespace

@@ -41,10 +41,16 @@ struct DecodedKeyChunk {
 /// captures a pointer to the DecodedKeyChunk) remains valid when the caller
 /// moves or reassigns the shared_ptr.
 ///
-/// @param dataBuffer Reusable buffer for multi-buffer reads. When the data
-///        spans multiple stream buffers, this buffer is resized and reused
-///        instead of allocating a new one. The caller retains ownership and the
-///        buffer must outlive the returned DecodedKeyChunk.
+/// @param dataBuffer Caller-owned reuse slot for multi-buffer reads. When
+///        the existing buffer has sufficient capacity it is reused;
+///        otherwise a fresh buffer is allocated and written back into the
+///        slot. The destination buffer (reused or freshly allocated) is
+///        always appended to DecodedKeyChunk::stringBuffers, so the
+///        returned DecodedKeyChunk holds its own reference and the caller
+///        may independently reassign or destroy dataBuffer without
+///        affecting the returned DecodedKeyChunk. Callers that don't want
+///        cross-call reuse can pass a local BufferPtr that goes out of
+///        scope after the call.
 std::shared_ptr<DecodedKeyChunk> decodeKeyChunk(
     std::unique_ptr<velox::dwio::common::SeekableInputStream> inputStream,
     velox::memory::MemoryPool& pool,

@@ -49,6 +49,10 @@ std::shared_ptr<DecodedKeyChunk> decodeKeyChunk(
     result->dataStream = std::move(inputStream);
     chunkData = header;
   } else {
+    // Reuse the caller's buffer when it has sufficient capacity; otherwise
+    // allocate fresh and write it back into the slot. The destination buffer
+    // is appended to stringBuffers so the returned DecodedKeyChunk holds its
+    // own reference (co-owned with the caller's slot).
     if (dataBuffer == nullptr || dataBuffer->capacity() < dataLen) {
       dataBuffer = velox::AlignedBuffer::allocate<char>(dataLen, &pool);
     }
@@ -63,6 +67,7 @@ std::shared_ptr<DecodedKeyChunk> decodeKeyChunk(
       copied += toCopy;
     }
     chunkData = dest;
+    result->stringBuffers.push_back(dataBuffer);
   }
 
   auto* raw = result.get();

@@ -131,16 +131,17 @@ ChunkLocation StreamIndex::lookupChunk(uint32_t rowId) const {
       rowId,
       streamId_);
 
-  const uint32_t chunkOffset = it - chunkRows->begin();
+  const uint32_t chunkIndex = it - chunkRows->begin();
   const auto* chunkOffsets = root->stream_chunk_offsets();
   NIMBLE_CHECK_NOT_NULL(chunkOffsets);
   const uint32_t rowOffset =
-      chunkOffset == startChunkOffset_ ? 0 : chunkRows->Get(chunkOffset - 1);
-  const uint32_t streamOffset = chunkOffsets->Get(chunkOffset);
-  const uint32_t nextOffset = (chunkOffset + 1 < endChunkOffset_)
-      ? chunkOffsets->Get(chunkOffset + 1)
+      chunkIndex == startChunkOffset_ ? 0 : chunkRows->Get(chunkIndex - 1);
+  const uint32_t streamOffset = chunkOffsets->Get(chunkIndex);
+  const uint32_t nextOffset = (chunkIndex + 1 < endChunkOffset_)
+      ? chunkOffsets->Get(chunkIndex + 1)
       : streamSize_;
-  return ChunkLocation{streamOffset, nextOffset - streamOffset, rowOffset};
+  return ChunkLocation{
+      chunkIndex, streamOffset, nextOffset - streamOffset, rowOffset};
 }
 
 uint32_t StreamIndex::rowCount() const {
