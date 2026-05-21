@@ -28,19 +28,7 @@
 namespace facebook::nimble::serde::detail {
 namespace {
 
-std::vector<uint32_t> decodeCompactStreamSizes(
-    std::string_view encodedSizes,
-    velox::memory::MemoryPool* pool) {
-  NIMBLE_CHECK_NOT_NULL(pool);
-  auto encoding = EncodingFactory(Encoding::Options{.useVarintRowCount = true})
-                      .create(*pool, encodedSizes, nullptr);
-  const uint32_t count = encoding->rowCount();
-  std::vector<uint32_t> values(count);
-  encoding->materialize(count, values.data());
-  return values;
-}
-
-std::vector<uint32_t> decodeRawStreamSizes(
+std::vector<uint32_t> decodeTrailerStreamSizes(
     const char* trailerStart,
     uint32_t trailerSize) {
   const auto* end = trailerStart + trailerSize;
@@ -80,14 +68,30 @@ std::vector<uint32_t> decodeRawStreamSizes(
       }
       break;
     }
+    case EncodingType::FixedBitWidth: {
+      const uint8_t bitWidth = static_cast<uint8_t>(*payload++);
+      const uint32_t count = varint::readVarint32(&payload);
+      sizes.resize(count);
+      if (bitWidth > 0 && count > 0) {
+        const uint32_t packedBytes =
+            static_cast<uint32_t>(FixedBitArray::bufferSize(count, bitWidth));
+        FixedBitArray arr{
+            const_cast<char*>(payload), static_cast<int>(bitWidth)};
+        arr.bulkGet32(0, count, sizes.data());
+        payload += packedBytes;
+      }
+      break;
+    }
     default:
-      NIMBLE_FAIL("Unsupported EncodingType for kCompactRaw: {}", encodingType);
+      NIMBLE_FAIL(
+          "Unsupported EncodingType for stream sizes trailer: {}",
+          encodingType);
   }
 
   NIMBLE_CHECK_EQ(
       payload,
       end,
-      "Raw trailer size mismatch: read {} bytes, expected {}",
+      "Trailer size mismatch: read {} bytes, expected {}",
       payload - trailerStart,
       trailerSize);
   return sizes;
@@ -187,22 +191,13 @@ encode(const SerializerOptions& options, std::string_view input, char* output) {
   return size + sizeof(uint32_t) + 1;
 }
 
-std::vector<uint32_t> readStreamSizes(
-    const char* end,
-    SerializationVersion version,
-    velox::memory::MemoryPool* pool) {
+std::vector<uint32_t> readTrailerStreamSizes(const char* end) {
   const uint32_t trailerSize = readTrailerSize(end);
   const char* trailerStart = end - sizeof(uint32_t) - trailerSize;
-  if (isRawFormat(version)) {
-    return decodeRawStreamSizes(trailerStart, trailerSize);
-  }
-  return decodeCompactStreamSizes({trailerStart, trailerSize}, pool);
+  return decodeTrailerStreamSizes(trailerStart, trailerSize);
 }
 
-std::vector<uint32_t> readStreamSizes(
-    const folly::IOBuf& input,
-    SerializationVersion version,
-    velox::memory::MemoryPool* pool) {
+std::vector<uint32_t> readTrailerStreamSizes(const folly::IOBuf& input) {
   // Fast path: trailer fits in the tail segment.
   const auto* tail = input.prev();
   if (tail->length() >= sizeof(uint32_t)) {
@@ -210,7 +205,7 @@ std::vector<uint32_t> readStreamSizes(
         reinterpret_cast<const char*>(tail->data()) + tail->length();
     const uint32_t trailerSize = readTrailerSize(tailEnd);
     if (tail->length() >= sizeof(uint32_t) + trailerSize) {
-      return readStreamSizes(tailEnd, version, pool);
+      return readTrailerStreamSizes(tailEnd);
     }
   }
 
@@ -224,14 +219,11 @@ std::vector<uint32_t> readStreamSizes(
   sizesCursor.skip(totalLength - sizeof(uint32_t) - trailerSize);
   std::string trailerBuf(trailerSize, '\0');
   sizesCursor.pull(trailerBuf.data(), trailerSize);
-  if (isRawFormat(version)) {
-    return decodeRawStreamSizes(trailerBuf.data(), trailerSize);
-  }
-  return decodeCompactStreamSizes(trailerBuf, pool);
+  return decodeTrailerStreamSizes(trailerBuf.data(), trailerSize);
 }
 
-size_t estimateRawTrailerSize(size_t numStreams, EncodingType encodingType) {
-  const auto resolvedType = getRawEncodingType(encodingType);
+size_t estimateTrailerSize(size_t numStreams, EncodingType encodingType) {
+  const auto resolvedType = getTrailerEncodingType(encodingType);
   // [encodingType:1B][payload][trailer_size:u32]
   size_t payloadSize{0};
   switch (resolvedType) {
@@ -247,8 +239,16 @@ size_t estimateRawTrailerSize(size_t numStreams, EncodingType encodingType) {
       // varints (max 5 bytes each).
       payloadSize = 5 + numStreams * 5;
       break;
+    case EncodingType::FixedBitWidth:
+      // Upper bound: bitWidth:1B + count varint + bufferSize (32 bits per
+      // element max).
+      payloadSize =
+          1 + 5 + FixedBitArray::bufferSize(numStreams, /*bitWidth=*/32);
+      break;
     default:
-      NIMBLE_FAIL("Unsupported EncodingType for kCompactRaw: {}", resolvedType);
+      NIMBLE_FAIL(
+          "Unsupported EncodingType for stream sizes trailer: {}",
+          resolvedType);
   }
   return sizeof(uint8_t) + payloadSize + sizeof(uint32_t);
 }
@@ -263,7 +263,7 @@ std::vector<std::string_view> parseStreams(
   std::vector<std::string_view> streams;
 
   if (isCompactFormat(version)) {
-    const auto streamSizes = readStreamSizes(end, version, pool);
+    const auto streamSizes = readTrailerStreamSizes(end);
     streams.resize(streamSizes.size());
 
     for (uint32_t i = 0; i < streamSizes.size(); ++i) {

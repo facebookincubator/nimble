@@ -296,8 +296,7 @@ NimbleIndexProjector::Chunk NimbleIndexProjector::serializeStripe(
   }
 
   std::string trailerBuf;
-  serde::detail::writeRawTrailer(
-      streamSizes, EncodingType::Trivial, trailerBuf);
+  serde::detail::writeTrailer(streamSizes, EncodingType::Trivial, trailerBuf);
 
   // Single allocation for header + data + trailer.
   const size_t totalSize = headerBuf.size() + totalBytes + trailerBuf.size();

@@ -454,7 +454,7 @@ std::string formatName(const ::testing::TestParamInfo<TestParams>& info) {
     name += "_Compressed";
   }
   if (info.param.streamSizesEncodingType != EncodingType::Trivial) {
-    name += "_DeltaStreamSizes";
+    name += "_" + toString(info.param.streamSizesEncodingType) + "StreamSizes";
   }
   if (!info.param.enableBufferPool) {
     name += "_NoBufferPool";
@@ -553,7 +553,7 @@ SerializationTest::SerializeResult SerializationTest::serializeTabletRaw(
     }
 
     std::string trailerBuf;
-    serde::detail::writeRawTrailer(
+    serde::detail::writeTrailer(
         streamSizes, nimble::EncodingType::Trivial, trailerBuf);
 
     std::string assembled;
@@ -1843,20 +1843,12 @@ TEST_P(SerializationTest, tabletRawVersionRejected) {
       "kTabletRaw is not supported by the serializer");
 }
 
-TEST_P(SerializationTest, nonTrivialStreamSizesEncodingWithLegacyRejected) {
+TEST_P(SerializationTest, streamSizesEncodingIgnoredForLegacy) {
   auto type = velox::ROW({{"int_val", velox::INTEGER()}});
-  // Default version (nullopt) resolves to kLegacy, which doesn't support
-  // non-trivial stream sizes encoding.
+  // Legacy format does not use stream sizes trailer, so non-trivial
+  // encoding types are accepted (and ignored).
   SerializerOptions options{.streamSizesEncodingType = EncodingType::Delta};
-  NIMBLE_ASSERT_THROW(
-      Serializer(options, type, pool_.get()),
-      "Non-trivial streamSizesEncodingType requires a non-legacy version");
-
-  // Explicit kCompact with non-trivial encoding is fine.
-  SerializerOptions compactOptions{
-      .version = SerializationVersion::kCompact,
-      .streamSizesEncodingType = EncodingType::Delta};
-  EXPECT_NO_THROW(Serializer(compactOptions, type, pool_.get()));
+  EXPECT_NO_THROW(Serializer(options, type, pool_.get()));
 }
 
 // Test encoding layout tree for non-FlatMap types.
@@ -3169,7 +3161,7 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxHighParallelism) {
     }
 
     std::string trailerBuf;
-    serde::detail::writeRawTrailer(
+    serde::detail::writeTrailer(
         streamSizes, nimble::EncodingType::Trivial, trailerBuf);
 
     std::string assembled;
@@ -3290,7 +3282,7 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxConcurrentDeserializers) {
       }
 
       std::string trailerBuf;
-      serde::detail::writeRawTrailer(
+      serde::detail::writeTrailer(
           streamSizes, nimble::EncodingType::Trivial, trailerBuf);
 
       std::string assembled;
@@ -3460,7 +3452,7 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxFlatMapWithParallelDecode) {
     }
 
     std::string trailerBuf;
-    serde::detail::writeRawTrailer(
+    serde::detail::writeTrailer(
         streamSizes, nimble::EncodingType::Trivial, trailerBuf);
 
     std::string assembled;
@@ -3579,7 +3571,7 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxRepeatedBatches) {
     }
 
     std::string trailerBuf;
-    serde::detail::writeRawTrailer(
+    serde::detail::writeTrailer(
         streamSizes, nimble::EncodingType::Trivial, trailerBuf);
 
     std::string assembled;
@@ -5020,12 +5012,20 @@ INSTANTIATE_TEST_SUITE_P(
                 CompressionOptions{
                     .compressionAcceptRatio = 1.0f,
                     .zstdMinCompressionSize = 0}},
+        // kCompact format with FixedBitWidth stream sizes encoding.
+        TestParams{
+            .version = SerializationVersion::kCompact,
+            .streamSizesEncodingType = EncodingType::FixedBitWidth},
         // kCompactRaw format without compression.
         TestParams{.version = SerializationVersion::kCompactRaw},
         // kCompactRaw format with Delta stream sizes encoding.
         TestParams{
             .version = SerializationVersion::kCompactRaw,
             .streamSizesEncodingType = EncodingType::Delta},
+        // kCompactRaw format with FixedBitWidth stream sizes encoding.
+        TestParams{
+            .version = SerializationVersion::kCompactRaw,
+            .streamSizesEncodingType = EncodingType::FixedBitWidth},
         // Buffer pool disabled variants.
         TestParams{.version = std::nullopt, .enableBufferPool = false},
         TestParams{
@@ -5044,5 +5044,9 @@ INSTANTIATE_TEST_SUITE_P(
         TestParams{
             .version = SerializationVersion::kCompactRaw,
             .streamSizesEncodingType = EncodingType::Delta,
+            .enableBufferPool = false},
+        TestParams{
+            .version = SerializationVersion::kCompactRaw,
+            .streamSizesEncodingType = EncodingType::FixedBitWidth,
             .enableBufferPool = false}),
     formatName);

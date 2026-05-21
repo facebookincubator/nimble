@@ -287,7 +287,7 @@ void StreamDataReader::iterateStreams(
         callback) {
   if (nonLegacyFormat(version_)) {
     // kCompact/kCompactRaw/kTabletRaw format: read stream sizes from trailer.
-    const auto streamSizes = detail::readStreamSizes(end_, version_, pool_);
+    const auto streamSizes = detail::readTrailerStreamSizes(end_);
     const bool tabletRaw = isTabletRawFormat(version_);
 
     for (uint32_t i = 0; i < streamSizes.size(); ++i) {

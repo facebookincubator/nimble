@@ -258,7 +258,6 @@ Projector::Projector(
     Options options)
     : pool_(pool),
       options_(std::move(options)),
-      streamSizesEncodingBuffer_(*pool, /*initialChunkSize=*/4096),
       inputSchema_(std::move(inputSchema)) {
   NIMBLE_CHECK_NOT_NULL(pool_, "Memory pool cannot be null");
   NIMBLE_CHECK_NOT_NULL(inputSchema_, "Input schema cannot be null");
@@ -574,11 +573,7 @@ folly::IOBuf Projector::buildProjectedOutput(
           outputStreamSizes.size(),
           options_.streamSizesEncodingType));
   detail::writeTrailer(
-      options_.projectVersion,
-      outputStreamSizes,
-      options_.streamSizesEncodingType,
-      streamSizesEncodingBuffer_,
-      trailer);
+      outputStreamSizes, options_.streamSizesEncodingType, trailer);
   output->appendToChain(std::move(trailer).build());
   return std::move(*output);
 }
@@ -606,8 +601,7 @@ folly::IOBuf Projector::projectContiguous(
   detail::writeHeader(header, options_.projectVersion, rowCount);
   auto output = std::move(header).build();
 
-  const auto inputStreamSizes =
-      detail::readStreamSizes(input, inputVersion, pool_);
+  const auto inputStreamSizes = detail::readTrailerStreamSizes(input);
 
   // Extract selected streams as zero-copy sub-range clones.
   const auto dataOffset = static_cast<size_t>(pos - data);
@@ -634,8 +628,7 @@ folly::IOBuf Projector::projectChained(
   detail::writeHeader(header, options_.projectVersion, rowCount);
   auto output = std::move(header).build();
 
-  const auto inputStreamSizes =
-      detail::readStreamSizes(input, inputVersion, pool_);
+  const auto inputStreamSizes = detail::readTrailerStreamSizes(input);
 
   // Extract selected streams as zero-copy clones via cursor.
   auto outputStreamSizes = inputStreamsSorted_

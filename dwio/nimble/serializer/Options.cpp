@@ -36,14 +36,17 @@ std::string toString(SerializationVersion version) {
   }
 }
 
-EncodingType getRawEncodingType(EncodingType encodingType) {
+EncodingType getTrailerEncodingType(EncodingType encodingType) {
   switch (encodingType) {
     case EncodingType::Trivial:
     case EncodingType::Varint:
     case EncodingType::Delta:
+    case EncodingType::FixedBitWidth:
       return encodingType;
     default:
-      NIMBLE_FAIL("Unsupported EncodingType for kCompactRaw: {}", encodingType);
+      NIMBLE_FAIL(
+          "Unsupported EncodingType for stream sizes trailer: {}",
+          encodingType);
   }
 }
 
