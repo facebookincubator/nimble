@@ -192,20 +192,21 @@ TEST(OptionsTest, usesVarintRowCountOptional) {
       usesVarintRowCount(std::optional{SerializationVersion::kTabletRaw}));
 }
 
-TEST(OptionsTest, getRawEncodingTypeBasic) {
-  EXPECT_EQ(getRawEncodingType(EncodingType::Trivial), EncodingType::Trivial);
-  EXPECT_EQ(getRawEncodingType(EncodingType::Varint), EncodingType::Varint);
-  EXPECT_EQ(getRawEncodingType(EncodingType::Delta), EncodingType::Delta);
+TEST(OptionsTest, getTrailerEncodingTypeBasic) {
+  EXPECT_EQ(
+      getTrailerEncodingType(EncodingType::Trivial), EncodingType::Trivial);
+  EXPECT_EQ(getTrailerEncodingType(EncodingType::Varint), EncodingType::Varint);
+  EXPECT_EQ(getTrailerEncodingType(EncodingType::Delta), EncodingType::Delta);
 }
 
-TEST(OptionsTest, getRawEncodingTypeError) {
+TEST(OptionsTest, getTrailerEncodingTypeError) {
   NIMBLE_ASSERT_THROW(
-      getRawEncodingType(EncodingType::RLE),
-      "Unsupported EncodingType for kCompactRaw");
+      getTrailerEncodingType(EncodingType::RLE),
+      "Unsupported EncodingType for stream sizes trailer");
   NIMBLE_ASSERT_THROW(
-      getRawEncodingType(EncodingType::Dictionary),
-      "Unsupported EncodingType for kCompactRaw");
-  NIMBLE_ASSERT_THROW(
-      getRawEncodingType(EncodingType::FixedBitWidth),
-      "Unsupported EncodingType for kCompactRaw");
+      getTrailerEncodingType(EncodingType::Dictionary),
+      "Unsupported EncodingType for stream sizes trailer");
+  EXPECT_EQ(
+      getTrailerEncodingType(EncodingType::FixedBitWidth),
+      EncodingType::FixedBitWidth);
 }

@@ -72,11 +72,9 @@ class Projector {
     /// Output serialization format version. Must be kCompact or kCompactRaw.
     SerializationVersion projectVersion{SerializationVersion::kCompact};
 
-    /// Encoding type for stream sizes in the sizes header.
-    /// For kCompact: forces nimble encoding to this type.
-    /// For kCompactRaw: only Trivial and Varint are supported.
-    /// Defaults to Trivial.
-    EncodingType streamSizesEncodingType{EncodingType::Trivial};
+    /// Encoding type for stream sizes in the trailer.
+    /// Supported types: Trivial, Varint, Delta, FixedBitWidth.
+    EncodingType streamSizesEncodingType{EncodingType::FixedBitWidth};
 
     /// Optional velox type with up-to-date column names from the current
     /// table schema. After schema evolution (e.g., column renames), the
@@ -197,9 +195,6 @@ class Projector {
 
   velox::memory::MemoryPool* const pool_;
   const Options options_;
-
-  // Reusable encoding buffer for stream sizes trailer. Reset before each use.
-  mutable nimble::Buffer streamSizesEncodingBuffer_;
 
   std::shared_ptr<const Type> inputSchema_;
   // Built during construction.

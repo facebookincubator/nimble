@@ -48,10 +48,7 @@ Serializer::Serializer(
         SerializationVersion::kTabletRaw,
         "kTabletRaw is not supported by the serializer. It is only used in projection.");
   }
-  NIMBLE_CHECK(
-      options_.streamSizesEncodingType == EncodingType::Trivial ||
-          options_.enableEncoding(),
-      "Non-trivial streamSizesEncodingType requires a non-legacy version");
+  // streamSizesEncodingType is ignored for kLegacy (no trailer).
   const std::shared_ptr<const velox::dwio::common::TypeWithId> typeWithId =
       velox::dwio::common::TypeWithId::create(type);
 
