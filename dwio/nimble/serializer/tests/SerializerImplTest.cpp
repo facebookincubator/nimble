@@ -44,14 +44,12 @@ class WriteHeaderTest : public ::testing::Test {
   // Helper to build a complete kCompact buffer: header + data + trailer.
   std::string buildCompactHeaderTrailer(
       uint32_t rowCount,
-      const std::vector<uint32_t>& sizes,
-      EncodingType encodingType = EncodingType::Trivial) {
+      const std::vector<uint32_t>& sizes) {
     std::string buffer;
     serde::detail::writeHeader(
         buffer, SerializationVersion::kCompact, rowCount);
     facebook::nimble::Buffer encodingBuffer{*pool_};
-    serde::detail::writeCompactTrailer(
-        sizes, encodingType, encodingBuffer, buffer);
+    serde::detail::writeCompactTrailer(sizes, encodingBuffer, buffer);
     return buffer;
   }
 
@@ -353,8 +351,7 @@ TEST_F(WriteHeaderTest, estimateCompactTrailerSize) {
     SCOPED_TRACE(testData.debugString());
     std::string buffer;
     facebook::nimble::Buffer encodingBuffer{*pool_};
-    serde::detail::writeCompactTrailer(
-        testData.sizes, EncodingType::Trivial, encodingBuffer, buffer);
+    serde::detail::writeCompactTrailer(testData.sizes, encodingBuffer, buffer);
     EXPECT_GE(
         serde::detail::estimateCompactTrailerSize(testData.sizes.size()),
         buffer.size())
@@ -580,8 +577,7 @@ TEST_F(ParseStreamsTest, denseFormatEmpty) {
   std::string buffer;
   serde::detail::writeHeader(buffer, SerializationVersion::kCompact, 10);
   facebook::nimble::Buffer encodingBuffer{*pool_};
-  serde::detail::writeCompactTrailer(
-      {}, EncodingType::Trivial, encodingBuffer, buffer);
+  serde::detail::writeCompactTrailer({}, encodingBuffer, buffer);
 
   auto streams = serde::detail::parseStreams(
       // Skip version byte and row count varint.
@@ -606,8 +602,7 @@ TEST_F(ParseStreamsTest, denseFormatSequential) {
     buffer.append(d);
   }
   facebook::nimble::Buffer encodingBuffer{*pool_};
-  serde::detail::writeCompactTrailer(
-      sizes, EncodingType::Trivial, encodingBuffer, buffer);
+  serde::detail::writeCompactTrailer(sizes, encodingBuffer, buffer);
 
   // Skip version byte + varint row count.
   const char* pos = buffer.data() + 1;
@@ -636,8 +631,7 @@ TEST_F(ParseStreamsTest, denseFormatWithGaps) {
   buffer.append("two");
   buffer.append("five");
   facebook::nimble::Buffer encodingBuffer{*pool_};
-  serde::detail::writeCompactTrailer(
-      sizes, EncodingType::Trivial, encodingBuffer, buffer);
+  serde::detail::writeCompactTrailer(sizes, encodingBuffer, buffer);
 
   const char* pos = buffer.data() + 1;
   varint::readVarint32(&pos);
@@ -666,8 +660,7 @@ TEST_F(ParseStreamsTest, denseFormatOnlyLastStream) {
   serde::detail::writeHeader(buffer, SerializationVersion::kCompact, 100);
   buffer.append("hello");
   facebook::nimble::Buffer encodingBuffer{*pool_};
-  serde::detail::writeCompactTrailer(
-      sizes, EncodingType::Trivial, encodingBuffer, buffer);
+  serde::detail::writeCompactTrailer(sizes, encodingBuffer, buffer);
 
   const char* pos = buffer.data() + 1;
   varint::readVarint32(&pos);
@@ -702,8 +695,7 @@ class EncodeDecodeTest : public ::testing::Test {
   std::string buildCompactTrailer(const std::vector<uint32_t>& values) {
     std::string buffer;
     facebook::nimble::Buffer encodingBuffer{*pool_};
-    serde::detail::writeCompactTrailer(
-        values, EncodingType::Trivial, encodingBuffer, buffer);
+    serde::detail::writeCompactTrailer(values, encodingBuffer, buffer);
     return buffer;
   }
 
@@ -750,50 +742,16 @@ TEST_F(EncodeDecodeTest, readStreamSizesLargeValues) {
   EXPECT_EQ(decoded, values);
 }
 
-TEST_F(EncodeDecodeTest, streamSizesEncodingType) {
+TEST_F(EncodeDecodeTest, compactTrailerAutoSelectRoundtrip) {
   std::vector<uint32_t> sizes = {2, 2, 2};
-
-  for (auto encodingType :
-       {EncodingType::Trivial,
-        EncodingType::FixedBitWidth,
-        EncodingType::Varint}) {
-    SCOPED_TRACE(toString(encodingType));
-
-    std::string buffer;
-    serde::detail::writeHeader(buffer, SerializationVersion::kCompact, 100);
-    buffer.append("s0");
-    buffer.append("s1");
-    buffer.append("s2");
-    facebook::nimble::Buffer encodingBuffer{*pool_};
-    serde::detail::writeCompactTrailer(
-        sizes, encodingType, encodingBuffer, buffer);
-
-    const char* pos = buffer.data() + 1;
-    varint::readVarint32(&pos);
-    auto streams = serde::detail::parseStreams(
-        pos,
-        buffer.data() + buffer.size(),
-        SerializationVersion::kCompact,
-        pool_.get());
-
-    ASSERT_EQ(streams.size(), 3);
-    EXPECT_EQ(streams[0], "s0");
-    EXPECT_EQ(streams[1], "s1");
-    EXPECT_EQ(streams[2], "s2");
-  }
-}
-
-TEST_F(EncodeDecodeTest, streamSizesEncodingTypeDefault) {
-  std::vector<uint32_t> sizes = {1, 1, 1};
 
   std::string buffer;
   serde::detail::writeHeader(buffer, SerializationVersion::kCompact, 100);
-  buffer.append("a");
-  buffer.append("b");
-  buffer.append("c");
+  buffer.append("s0");
+  buffer.append("s1");
+  buffer.append("s2");
   facebook::nimble::Buffer encodingBuffer{*pool_};
-  serde::detail::writeCompactTrailer(
-      sizes, EncodingType::Trivial, encodingBuffer, buffer);
+  serde::detail::writeCompactTrailer(sizes, encodingBuffer, buffer);
 
   const char* pos = buffer.data() + 1;
   varint::readVarint32(&pos);
@@ -804,9 +762,33 @@ TEST_F(EncodeDecodeTest, streamSizesEncodingTypeDefault) {
       pool_.get());
 
   ASSERT_EQ(streams.size(), 3);
-  EXPECT_EQ(streams[0], "a");
-  EXPECT_EQ(streams[1], "b");
-  EXPECT_EQ(streams[2], "c");
+  EXPECT_EQ(streams[0], "s0");
+  EXPECT_EQ(streams[1], "s1");
+  EXPECT_EQ(streams[2], "s2");
+}
+
+// Test for ebf use case: mostly zero stream sizes.
+TEST_F(EncodeDecodeTest, compactTrailerAutoSelectMostlyZero) {
+  constexpr size_t kNumStreams = 1000;
+  constexpr size_t kNonZero = 40;
+  std::vector<uint32_t> sizes(kNumStreams, 0);
+  for (size_t i = 0; i < kNonZero; ++i) {
+    sizes[i * (kNumStreams / kNonZero)] = 100 + i * 50;
+  }
+
+  facebook::nimble::Buffer encodingBuffer{*pool_};
+  std::string buffer;
+  serde::detail::writeCompactTrailer(sizes, encodingBuffer, buffer);
+  const uint32_t trailerSize =
+      serde::detail::readTrailerSize(buffer.data() + buffer.size());
+
+  EXPECT_LT(trailerSize, kNumStreams * sizeof(uint32_t) / 5);
+
+  auto decoded = serde::detail::readStreamSizes(
+      buffer.data() + buffer.size(),
+      SerializationVersion::kCompact,
+      pool_.get());
+  EXPECT_EQ(decoded, sizes);
 }
 
 TEST_F(EncodeDecodeTest, streamSizesEncodingTypeCompactRaw) {
@@ -940,8 +922,7 @@ class ProjectStreamsTest : public ParseStreamsTest {
 
     // Write trailer with encoded sizes.
     facebook::nimble::Buffer encodingBuffer{*pool_};
-    serde::detail::writeCompactTrailer(
-        sizes, EncodingType::Trivial, encodingBuffer, buffer);
+    serde::detail::writeCompactTrailer(sizes, encodingBuffer, buffer);
 
     // Skip version byte + varint row count to get to streams position.
     const char* pos = buffer.data() + 1;
@@ -1167,8 +1148,7 @@ TEST_F(EncodeDecodeTest, compactTrailerNoCompression) {
 
   std::string buffer;
   facebook::nimble::Buffer encodingBuffer{*pool_};
-  serde::detail::writeCompactTrailer(
-      sizes, EncodingType::Trivial, encodingBuffer, buffer);
+  serde::detail::writeCompactTrailer(sizes, encodingBuffer, buffer);
 
   // Read the trailer: last 4 bytes are trailerSize, preceding bytes are
   // the encoded stream sizes.

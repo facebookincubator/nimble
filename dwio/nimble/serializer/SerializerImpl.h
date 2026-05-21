@@ -280,27 +280,23 @@ void writeRawTrailer(
   }
 }
 
-/// Writes the kCompact trailer: appends
+/// Writes the kCompact trailer: encodes stream sizes and appends
 /// [encoded_stream_sizes][stream_sizes_encoded_size:u32] to buffer.
 ///
-/// @param streamSizes Dense stream sizes array. sizes[i] = byte size of
-///        stream i (0 for missing).
-/// @param encodingType Encoding type for stream sizes.
-/// @param encodingBuffer Encoding buffer for nimble encoding output.
-/// @param buffer Output buffer.
+/// Uses ManualEncodingSelectionPolicy to auto-select the optimal encoding
+/// based on data statistics (e.g. MainlyConstant for mostly-zero arrays).
 template <typename T>
 void writeCompactTrailer(
     const std::vector<uint32_t>& streamSizes,
-    EncodingType encodingType,
     nimble::Buffer& encodingBuffer,
     T& buffer) {
   encodingBuffer.reset();
 
-  EncodingLayout layout{encodingType, {}, CompressionType::Uncompressed};
-  auto policy = std::make_unique<ReplayedEncodingSelectionPolicy<uint32_t>>(
-      std::move(layout),
+  auto policy = std::make_unique<ManualEncodingSelectionPolicy<uint32_t>>(
+      ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
       /*compressionOptions=*/std::nullopt,
-      createDefaultEncodingPolicy);
+      /*identifier=*/std::nullopt);
+
   auto encodedStreamSizes = EncodingFactory::encode<uint32_t>(
       std::move(policy),
       std::span<const uint32_t>(streamSizes),
@@ -316,35 +312,28 @@ void writeCompactTrailer(
 }
 
 /// Writes the stream sizes trailer for the given serialization version.
-/// Dispatches to writeRawTrailer (kCompactRaw/kTabletRaw) or
-/// writeCompactTrailer (kCompact) based on outputVersion.
 ///
-/// @param outputVersion Must be kCompact, kCompactRaw, or kTabletRaw.
-/// @param streamSizes Dense stream sizes array.
-/// @param encodingType Encoding type for stream sizes.
-/// @param encodingBuffer Encoding buffer for kCompact nimble encoding.
-/// @param buffer Output buffer.
-/// @param encodingLayout Optional encoding layout for replaying captured
-///        encoding. Only used for kCompact. Ignored for kCompactRaw/kTabletRaw.
+/// For kCompactRaw/kTabletRaw: uses writeRawTrailer with the specified
+/// encodingType (Trivial, Varint, or Delta).
+/// For kCompact: uses writeCompactTrailer which auto-selects the optimal
+/// encoding via ManualEncodingSelectionPolicy (encodingType is ignored).
 template <typename T>
 void writeTrailer(
     SerializationVersion outputVersion,
     const std::vector<uint32_t>& streamSizes,
     EncodingType encodingType,
     nimble::Buffer& encodingBuffer,
-    T& buffer,
-    const EncodingLayout* encodingLayout = nullptr) {
+    T& buffer) {
   if (isRawFormat(outputVersion)) {
     writeRawTrailer(streamSizes, encodingType, buffer);
     return;
   }
-
   NIMBLE_CHECK_EQ(
       outputVersion,
       SerializationVersion::kCompact,
       "writeTrailer requires kCompact, kCompactRaw, or kTabletRaw, got {}",
       outputVersion);
-  writeCompactTrailer(streamSizes, encodingType, encodingBuffer, buffer);
+  writeCompactTrailer(streamSizes, encodingBuffer, buffer);
 }
 
 /// Writes a single stream to the buffer.
