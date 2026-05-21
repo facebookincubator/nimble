@@ -95,6 +95,12 @@ class IndexLookup {
     /// references so they are never evicted.
     bool pinIndex{false};
 
+    /// If true, eagerly loads all per-partition metadata and decodes all
+    /// per-partition key streams when the index is constructed. Requires
+    /// pinIndex=true; otherwise preloaded chunks would be evicted on the
+    /// first lookup.
+    bool preloadIndex{false};
+
     /// Validates options consistency.
     void validate() const;
   };

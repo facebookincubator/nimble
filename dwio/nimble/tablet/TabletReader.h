@@ -162,6 +162,13 @@ class TabletReader {
     /// Whether to load the cluster index during initialization. Default false.
     bool loadClusterIndex{false};
 
+    /// Whether to eagerly preload all per-partition metadata and decode all
+    /// per-partition key streams during ClusterIndex construction. Only
+    /// effective when loadClusterIndex is also true. Implies pinIndex=true
+    /// (chunks would otherwise be evicted before any lookup runs).
+    /// Default false.
+    bool preloadIndex{false};
+
     /// Whether to load the chunk index during initialization. Default true.
     bool loadChunkIndex{true};
 

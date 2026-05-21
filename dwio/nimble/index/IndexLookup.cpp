@@ -38,6 +38,9 @@ void IndexLookup::Options::validate() const {
         static_cast<const void*>(fileHandle->file.get()),
         "file and fileHandle->file must point to the same file");
   }
+  NIMBLE_USER_CHECK(
+      !preloadIndex || pinIndex,
+      "preloadIndex requires pinIndex=true to retain preloaded chunks");
 }
 
 std::shared_ptr<MetadataInput> createIndexMetadataInput(
