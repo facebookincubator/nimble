@@ -101,7 +101,9 @@ class ClusterIndex : public IndexLookup {
   /// Returns the encoded key at the given file-level row position.
   /// Requires loadData to have been provided at construction.
   /// Used to compute resume keys when lookup results are truncated.
-  std::string keyAtRow(uint32_t row) const override;
+  /// This is ClusterIndex-specific because it relies on the data being
+  /// physically sorted by the indexed key
+  std::string keyAtRow(uint32_t row) const;
 
   /// Returns the number of partitions in the index.
   uint32_t numPartitions() const {

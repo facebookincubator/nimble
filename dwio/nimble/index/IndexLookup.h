@@ -251,12 +251,6 @@ class IndexLookup {
   /// Returns the maximum key in this index.
   virtual std::string_view maxKey() const = 0;
 
-  /// Returns the encoded key at the given file-level row position.
-  /// Not all index types support this — the default throws.
-  virtual std::string keyAtRow(uint32_t /*row*/) const {
-    NIMBLE_NOT_IMPLEMENTED("keyAtRow is not supported by this index type");
-  }
-
   /// Returns runtime statistics accumulated during lookups.
   virtual folly::F14FastMap<std::string, velox::RuntimeMetric> stats() const {
     return {};
