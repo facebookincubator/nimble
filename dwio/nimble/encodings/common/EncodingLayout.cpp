@@ -171,7 +171,8 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     case EncodingType::FixedBitWidth:
     case EncodingType::Varint:
     case EncodingType::Constant:
-    case EncodingType::Prefix: {
+    case EncodingType::Prefix:
+    case EncodingType::ALP: {
       // Non nested encodings have zero children
       break;
     }

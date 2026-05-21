@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
@@ -113,6 +114,12 @@ class Encoder {
 
   template <typename Encoding>
   struct EncodingTypeTraits {};
+
+  template <>
+  struct EncodingTypeTraits<nimble::ALPEncoding<T>> {
+    static constexpr inline nimble::EncodingType encodingType =
+        nimble::EncodingType::ALP;
+  };
 
   template <>
   struct EncodingTypeTraits<nimble::ConstantEncoding<T>> {

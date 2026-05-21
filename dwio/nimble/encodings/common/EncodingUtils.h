@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
@@ -124,6 +125,10 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       return f(static_cast<MainlyConstantEncoding<T>&>(encoding));
     case EncodingType::Delta:
       return f(static_cast<DeltaEncoding<T>&>(encoding));
+    case EncodingType::ALP:
+      // TODO: Wire up ALPEncoding readWithVisitor dispatch once the actual
+      // ALP algorithm is implemented. ALP only supports float and double.
+      NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
     default:
       NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
   }

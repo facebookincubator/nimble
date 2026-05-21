@@ -25,6 +25,7 @@
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
 
+#include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
@@ -256,6 +257,22 @@ class MainlyConstantFuzzerTest : public ::testing::Test {};
 TYPED_TEST_SUITE(MainlyConstantFuzzerTest, MainlyConstantTypes);
 
 TYPED_TEST(MainlyConstantFuzzerTest, correctness) {
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+
+// ALP: float and double only
+using ALPTypes = ::testing::Types<ALPEncoding<float>, ALPEncoding<double>>;
+
+template <typename E>
+class ALPFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(ALPFuzzerTest, ALPTypes);
+
+TYPED_TEST(ALPFuzzerTest, correctness) {
   EncodingFuzzer<TypeParam> fuzzer(
       FLAGS_fuzzer_iterations,
       FLAGS_fuzzer_max_rows,
