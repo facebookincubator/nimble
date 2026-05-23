@@ -756,8 +756,25 @@ void Deserializer::deserialize(
   const bool hasInMapChildren = !inMapChildTypes_.empty();
   const auto maxStreamOffset = deserializers_.size() - 1;
 
-  // Iterate batches and add stream data with row offsets. Streams missing from
-  // a batch will have gaps that are filled later during reading.
+  // Iterate batches and add stream data with row offsets. Streams missing
+  // from a batch will have gaps that are filled later during reading.
+  //
+  // We decode the full cumulative stream below — over-fetching rows outside
+  // any per-batch row range. For kTabletRaw inputs from NimbleIndexProjector
+  // (the producer of row-range-bearing slices), this over-fetch is bounded
+  // by stripe boundaries and never crosses users: each chunk slice covers
+  // exactly one (request × stripe) intersection. For non-kTabletRaw inputs
+  // (kCompact/kCompactRaw/kLegacy) there's no embedded row range, so
+  // "over-fetch" doesn't apply — the full batch is decoded as intended.
+  //
+  // Callers that want only the in-range rows of a kTabletRaw slice can read
+  // the range via rocks::readResultRowRange and slice the output themselves.
+  //
+  // TODO: optimize by pushing the row range into the FieldReader::skip
+  // cascade so the decode pass produces only the in-range rows. Correct for
+  // nested-nullable types because the cascade goes through FieldReader
+  // (parent nulls/lengths are read and translated to child counts). Avoids
+  // the over-fetch CPU entirely.
   uint32_t rowOffset{0};
   serde::StreamDataReader reader{pool_, options_};
   for (auto sv : data) {
@@ -803,6 +820,7 @@ void Deserializer::deserialize(
     DeserializerImpl::toDecoderImpl(decoder.get())->setTopLevelRows(rowOffset);
   }
 
+  // Single-pass decode of all batches concatenated.
   rootReader_->next(rowOffset, vector, /*scatterBitmap=*/nullptr);
 }
 

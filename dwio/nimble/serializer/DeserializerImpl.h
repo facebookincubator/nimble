@@ -24,12 +24,25 @@
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/serializer/Options.h"
+#include "dwio/nimble/serializer/SerializerImpl.h"
+#include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/buffer/BufferPool.h"
 #include "velox/common/memory/Memory.h"
 
 namespace facebook::nimble::serde {
+
+/// Reads the kTabletRaw chunk slice header starting at `*pos` and advances
+/// `*pos` past it (including any resume key bytes). NIMBLE_CHECKs that the
+/// version is kTabletRaw and that the row range satisfies
+/// startRow <= endRow <= rowCount.
+///
+/// Counterpart to the writer-side `createTabletChunkHeader` in
+/// SerializerImpl.h. Used both by NimbleTable.h helpers (extract row range /
+/// resume key from a chunk slice) and by StreamDataReader::initialize (when
+/// the data is kTabletRaw).
+TabletChunkHeader readTabletChunkHeader(const char*& pos, const char* end);
 
 class StreamData {
  public:
@@ -187,6 +200,13 @@ class StreamDataReader {
 
   /// Returns number of rows serialized.
   /// Validates that the version in serialized data matches options.
+  ///
+  /// PRECONDITION (kTabletRaw only): the per-slice header
+  /// (`[version][rowCount:varint][startRow:varint][endRow:varint]`
+  /// `[resumeKeyLength:varint][resumeKey]`) must live contiguously within
+  /// `data`. The projector emits the header in a single allocation; consumers
+  /// that hand chunk slices to this method should coalesce the IOBuf chain
+  /// first (`folly::IOBuf::cloneCoalescedAsValue()`).
   uint32_t initialize(std::string_view data);
 
   void iterateStreams(
@@ -203,6 +223,14 @@ class StreamDataReader {
   /// version. Only valid after initialize() has been called.
   bool encodingEnabled() const {
     return nonLegacyFormat(version_);
+  }
+
+  /// Returns the row range embedded in the per-slice header for kTabletRaw
+  /// chunks (always present on the wire for kTabletRaw). nullopt for all
+  /// other serialization versions. Only valid after initialize() has been
+  /// called.
+  const std::optional<RowRange>& rowRange() const {
+    return rowRange_;
   }
 
  private:
@@ -240,6 +268,10 @@ class StreamDataReader {
   // header, this is read from the first byte; otherwise defaults to kLegacy.
   // When options specify a version, the data version is validated against it.
   SerializationVersion version_{SerializationVersion::kLegacy};
+  // Per-request row range embedded in the kTabletRaw header (post-rowCount,
+  // before stream data). nullopt for non-kTabletRaw formats or when the
+  // producer did not embed a row range.
+  std::optional<RowRange> rowRange_;
   const char* pos_{nullptr};
   const char* end_{nullptr};
   // Reusable buffer for chunk header stripping (compressed/multi-chunk case).

@@ -18,7 +18,9 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstring>
 #include <optional>
+#include <string>
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/FixedBitArray.h"
@@ -28,6 +30,7 @@
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/serializer/Options.h"
+#include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/StreamData.h"
 #include "folly/io/Cursor.h"
 #include "folly/io/IOBuf.h"
@@ -130,10 +133,20 @@ inline size_t rowCountSize(
 
 /// Returns the exact byte size of the serialization header.
 /// Use to pre-allocate buffers before calling writeHeader().
+/// For kTabletRaw, includes the required row range (2 × varint) and the
+/// resume-key-length sentinel (varint of 0 = absent) that writeHeader
+/// auto-emits — see writeHeader docs.
 inline size_t estimateHeaderSize(
     std::optional<SerializationVersion> version,
     uint32_t rowCount) {
-  return versionSize(version) + rowCountSize(version, rowCount);
+  size_t size = versionSize(version) + rowCountSize(version, rowCount);
+  if (version.has_value() &&
+      version.value() == SerializationVersion::kTabletRaw) {
+    // [startRow:varint=0][endRow:varint=rowCount][resumeKeyLength:varint=0]
+    size += varint::varintSize(uint32_t{0}) + varint::varintSize(rowCount) +
+        varint::varintSize(uint32_t{0});
+  }
+  return size;
 }
 
 /// Writes serialization header to buffer.
@@ -146,7 +159,13 @@ inline size_t estimateHeaderSize(
 ///   [version:1B][rowCount:varint][stream_data_0][stream_data_1]...[encoded_stream_sizes][stream_sizes_encoded_size:u32]
 ///
 /// For kLegacy: writes [optional_version:1B][rowCount:u32]
-/// For kCompact/kCompactRaw/kTabletRaw: writes [version:1B][rowCount:varint]
+/// For kCompact/kCompactRaw: writes [version:1B][rowCount:varint]
+/// For kTabletRaw: writes
+///   [version:1B][rowCount:varint][startRow:varint=0][endRow:varint=rowCount]
+///   [resumeKeyLength:varint=0]
+///   The default row range covers the whole stripe; resumeKeyLength=0 means
+///   no resume key. Producers that need a narrower range or a resume key use
+///   serde::createTabletChunkHeader instead of writeHeader.
 ///
 /// @param buffer Output buffer (std::string, velox::Buffer, etc.)
 /// @param version Serialization format version (nullopt = no version byte)
@@ -168,6 +187,26 @@ void writeHeader(
   } else {
     auto* rowCountPos = extend(buffer, sizeof(uint32_t));
     encoding::writeUint32(rowCount, rowCountPos);
+  }
+
+  // kTabletRaw requires a row range and a resume-key-length varint; the
+  // default row range covers the whole stripe and resumeKeyLength=0 signals
+  // no key. Producers that need narrower ranges or a resume key use
+  // serde::createTabletChunkHeader directly instead.
+  //
+  // WIRE-FORMAT INVARIANT: the bytes emitted here MUST stay in lockstep with
+  // serde::createTabletChunkHeader (see SerializerImpl.cpp). Both produce
+  // the kTabletRaw chunk slice header; any field added to one must be added
+  // to the other, and to readTabletChunkHeader + StreamDataReader::initialize.
+  if (version.has_value() &&
+      version.value() == SerializationVersion::kTabletRaw) {
+    constexpr uint32_t kStartRow = 0;
+    auto* startRowPos = extend(buffer, varint::varintSize(kStartRow));
+    varint::writeVarint(kStartRow, &startRowPos);
+    auto* endRowPos = extend(buffer, varint::varintSize(rowCount));
+    varint::writeVarint(rowCount, &endRowPos);
+    auto* resumeKeyLenPos = extend(buffer, varint::varintSize(uint32_t{0}));
+    varint::writeVarint(uint32_t{0}, &resumeKeyLenPos);
   }
 }
 
@@ -469,6 +508,44 @@ std::string_view encodeScalar(
   }
 }
 } // namespace detail
+
+/// Parsed fields of a kTabletRaw chunk slice header. Row range is required;
+/// resume key is optional (length-0 sentinel encoded on the wire).
+struct TabletChunkHeader {
+  uint32_t rowCount{0};
+  RowRange rowRange;
+  std::optional<std::string> resumeKey;
+};
+
+/// Minimum byte size of a kTabletRaw chunk slice header: version byte +
+/// 1-byte varint rowCount + 1-byte varint startRow + 1-byte varint endRow +
+/// 1-byte varint resumeKeyLength=0. All fields use varint, so larger values
+/// (or a present resume key) add bytes; callers track the extras separately
+/// for byte accounting.
+constexpr size_t kMinTabletChunkHeaderSize = sizeof(uint8_t) /* version */ +
+    1 /* rowCount varint (lower bound) */ +
+    1 /* startRow varint (lower bound) */ +
+    1 /* endRow varint (lower bound) */ +
+    1 /* resumeKeyLength varint (0 = no key) */;
+
+/// Builds the kTabletRaw chunk slice header as a freshly-allocated IOBuf.
+/// Used by NimbleIndexProjector to emit the per-slice header that prefixes
+/// each chunk slice's IOBuf chain. Wire layout:
+///   [version:1B = kTabletRaw][rowCount:varint]
+///   [startRow:varint][endRow:varint]
+///   [resumeKeyLength:varint][resumeKey]
+///
+/// `resumeKeyLength` is varint-encoded as `key.size() + 1` when a resume key
+/// is present (so 1 means an empty key, N>0 means a key of length N-1), and
+/// 0 when no resume key is present. This distinguishes "no key" from "empty
+/// key" without a separate flag.
+///
+/// The returned IOBuf is sized exactly to the header bytes (no headroom or
+/// trailing capacity).
+folly::IOBuf createTabletChunkHeader(const TabletChunkHeader& header);
+
+// Reader-side counterpart `readTabletChunkHeader(pos, end)` lives in
+// DeserializerImpl.h.
 
 template <typename T>
 class StreamDataWriter {
