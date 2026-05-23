@@ -328,6 +328,7 @@ void VeloxReader::loadNextStripe() {
       metrics.totalStreamSize = nimbleUnit->getIoSize();
 
       auto streams = nimbleUnit->extractStreamLoaders();
+      decoders_.reserve(streams.size());
       for (uint32_t i = 0; i < streams.size(); ++i) {
         if (!streams[i]) {
           // As this stream is not present in current stripe (might be present
