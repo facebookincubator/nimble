@@ -14,11 +14,14 @@
  * limitations under the License.
  */
 
+#include <limits>
+
 #include <gtest/gtest.h>
 #include <lz4.h>
 #include <zstd.h>
 
 #include "dwio/nimble/common/ChunkHeader.h"
+#include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
@@ -1959,4 +1962,182 @@ TEST_F(LZ4RoundtripTest, encodeDecodeLZ4HighCompression) {
       reinterpret_cast<char*>(output.data()),
       static_cast<uint32_t>(output.size() * sizeof(int32_t)));
   EXPECT_EQ(output, expected);
+}
+
+namespace {
+
+TabletChunkHeader roundTripTabletChunkHeader(const TabletChunkHeader& in) {
+  auto buf = createTabletChunkHeader(in);
+  const char* pos = reinterpret_cast<const char*>(buf.data());
+  const char* end = pos + buf.length();
+  auto out = readTabletChunkHeader(pos, end);
+  EXPECT_EQ(pos, end) << "Unexpected trailing bytes after header";
+  return out;
+}
+
+} // namespace
+
+TEST(TabletChunkHeaderTest, noResumeKey) {
+  TabletChunkHeader in{.rowCount = 100, .rowRange = RowRange{0, 100}};
+  const auto out = roundTripTabletChunkHeader(in);
+  EXPECT_EQ(out.rowCount, 100u);
+  EXPECT_EQ(out.rowRange, RowRange(0, 100));
+  EXPECT_FALSE(out.resumeKey.has_value());
+}
+
+TEST(TabletChunkHeaderTest, narrowRowRange) {
+  TabletChunkHeader in{.rowCount = 100, .rowRange = RowRange{10, 40}};
+  const auto out = roundTripTabletChunkHeader(in);
+  EXPECT_EQ(out.rowCount, 100u);
+  EXPECT_EQ(out.rowRange.startRow, 10u);
+  EXPECT_EQ(out.rowRange.endRow, 40u);
+  EXPECT_FALSE(out.resumeKey.has_value());
+}
+
+TEST(TabletChunkHeaderTest, withResumeKey) {
+  TabletChunkHeader in{
+      .rowCount = 100,
+      .rowRange = RowRange{0, 100},
+      .resumeKey = std::string{"my-resume-key"}};
+  const auto out = roundTripTabletChunkHeader(in);
+  EXPECT_EQ(out.rowCount, 100u);
+  EXPECT_EQ(out.rowRange, RowRange(0, 100));
+  ASSERT_TRUE(out.resumeKey.has_value());
+  EXPECT_EQ(*out.resumeKey, "my-resume-key");
+}
+
+TEST(TabletChunkHeaderTest, narrowRangeAndResumeKey) {
+  TabletChunkHeader in{
+      .rowCount = 4096,
+      .rowRange = RowRange{500, 1000},
+      .resumeKey = std::string{"\x00\x01\x02", 3}};
+  const auto out = roundTripTabletChunkHeader(in);
+  EXPECT_EQ(out.rowCount, 4096u);
+  EXPECT_EQ(out.rowRange, RowRange(500, 1000));
+  ASSERT_TRUE(out.resumeKey.has_value());
+  EXPECT_EQ(*out.resumeKey, (std::string{"\x00\x01\x02", 3}));
+}
+
+TEST(TabletChunkHeaderTest, emptyResumeKey) {
+  // An empty string resume key is distinct from "no resume key": the wire
+  // length is 1 (varint of size+1) vs 0 for absent.
+  TabletChunkHeader in{
+      .rowCount = 1, .rowRange = RowRange{0, 1}, .resumeKey = std::string{}};
+  const auto out = roundTripTabletChunkHeader(in);
+  EXPECT_EQ(out.rowCount, 1u);
+  ASSERT_TRUE(out.resumeKey.has_value());
+  EXPECT_TRUE(out.resumeKey->empty());
+}
+
+TEST(TabletChunkHeaderTest, rejectsUnknownVersion) {
+  // Forge bytes with an unsupported version byte.
+  std::string buf;
+  buf.push_back(static_cast<char>(SerializationVersion::kCompact));
+  buf.push_back(0x01); // rowCount = 1 (varint)
+  const char* pos = buf.data();
+  EXPECT_THROW(
+      readTabletChunkHeader(pos, pos + buf.size()), NimbleInternalError);
+}
+
+TEST(TabletChunkHeaderTest, truncatedVersionByte) {
+  std::string buf;
+  const char* pos = buf.data();
+  EXPECT_THROW(readTabletChunkHeader(pos, pos), NimbleInternalError);
+}
+
+TEST(TabletChunkHeaderTest, roundTripsMaxUint32RowCount) {
+  // Exercises the 5-byte varint encoding path for rowCount and endRow.
+  TabletChunkHeader in{
+      .rowCount = std::numeric_limits<uint32_t>::max(),
+      .rowRange = RowRange{0, std::numeric_limits<uint32_t>::max()},
+  };
+  const auto out = roundTripTabletChunkHeader(in);
+  EXPECT_EQ(out.rowCount, std::numeric_limits<uint32_t>::max());
+  EXPECT_EQ(out.rowRange.startRow, 0u);
+  EXPECT_EQ(out.rowRange.endRow, std::numeric_limits<uint32_t>::max());
+}
+
+TEST(TabletChunkHeaderTest, exactBoundaryEndRowEqualsRowCount) {
+  // Round-trip a row range whose endRow exactly equals rowCount (last-row
+  // boundary). NIMBLE_CHECK_LE permits equality; this exercises the
+  // boundary explicitly.
+  TabletChunkHeader in{.rowCount = 100, .rowRange = RowRange{99, 100}};
+  const auto out = roundTripTabletChunkHeader(in);
+  EXPECT_EQ(out.rowCount, 100u);
+  EXPECT_EQ(out.rowRange, RowRange(99, 100));
+}
+
+TEST(TabletChunkHeaderTest, rejectsRowRangeExceedingRowCount) {
+  // Forge a row range whose endRow exceeds the stripe's rowCount. All
+  // fields are 1-byte varints (values < 128).
+  std::string buf;
+  buf.push_back(static_cast<char>(SerializationVersion::kTabletRaw));
+  buf.push_back(0x05); // rowCount = 5
+  buf.push_back(0x00); // startRow = 0
+  buf.push_back(0x64); // endRow = 100 (> rowCount)
+  buf.push_back(0x00); // resumeKeyLength = 0
+  const char* pos = buf.data();
+  EXPECT_THROW(
+      readTabletChunkHeader(pos, pos + buf.size()), NimbleInternalError);
+}
+
+TEST(TabletChunkHeaderTest, rejectsInvertedRowRange) {
+  // startRow > endRow is invalid. All fields are 1-byte varints.
+  std::string buf;
+  buf.push_back(static_cast<char>(SerializationVersion::kTabletRaw));
+  buf.push_back(0x0a); // rowCount = 10
+  buf.push_back(0x05); // startRow = 5
+  buf.push_back(0x03); // endRow = 3 (< startRow)
+  buf.push_back(0x00); // resumeKeyLength = 0
+  const char* pos = buf.data();
+  EXPECT_THROW(
+      readTabletChunkHeader(pos, pos + buf.size()), NimbleInternalError);
+}
+
+// Exercises the StreamDataReader::initialize path (delegates to the shared
+// readTabletChunkFieldsAfterVersion helper) on forged kTabletRaw input.
+// Uses the WriteHeaderTest fixture purely for its initialized MemoryPool.
+class StreamDataReaderTabletRawTest : public WriteHeaderTest {
+ protected:
+  void expectInitializeThrows(const std::string& buf) {
+    DeserializerOptions options;
+    options.hasHeader = true;
+    StreamDataReader reader{pool_.get(), options};
+    EXPECT_THROW(
+        reader.initialize(std::string_view(buf.data(), buf.size())),
+        NimbleInternalError);
+  }
+};
+
+TEST_F(StreamDataReaderTabletRawTest, rejectsRowRangeExceedingRowCount) {
+  std::string buf;
+  buf.push_back(static_cast<char>(SerializationVersion::kTabletRaw));
+  buf.push_back(0x05); // rowCount = 5
+  buf.push_back(0x00); // startRow = 0
+  buf.push_back(0x64); // endRow = 100 (> rowCount)
+  buf.push_back(0x00); // resumeKeyLength = 0
+  expectInitializeThrows(buf);
+}
+
+TEST_F(StreamDataReaderTabletRawTest, rejectsInvertedRowRange) {
+  std::string buf;
+  buf.push_back(static_cast<char>(SerializationVersion::kTabletRaw));
+  buf.push_back(0x0a); // rowCount = 10
+  buf.push_back(0x05); // startRow = 5
+  buf.push_back(0x03); // endRow = 3
+  buf.push_back(0x00); // resumeKeyLength = 0
+  expectInitializeThrows(buf);
+}
+
+TEST_F(StreamDataReaderTabletRawTest, rejectsTruncatedResumeKey) {
+  // Valid version + rowCount + row range + resumeKeyLength=4 (declares a
+  // 3-byte key), but only 1 byte of resume key follows.
+  std::string buf;
+  buf.push_back(static_cast<char>(SerializationVersion::kTabletRaw));
+  buf.push_back(0x0a); // rowCount = 10
+  buf.push_back(0x00); // startRow = 0
+  buf.push_back(0x05); // endRow = 5
+  buf.push_back(0x04); // resumeKeyLength = 4 → declares 3 key bytes
+  buf.push_back('a'); // only 1 key byte present
+  expectInitializeThrows(buf);
 }

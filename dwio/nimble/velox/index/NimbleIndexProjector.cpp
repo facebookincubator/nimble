@@ -126,12 +126,13 @@ NimbleIndexProjector::Result NimbleIndexProjector::project(
     if (!pruneStripeRowRanges(stripeRowRanges)) {
       continue;
     }
-    if (!processStripe(stripeIndex, stripeRowRanges_, result)) {
+    if (!processStripe(stripeIndex, stripeRowRanges_)) {
       setResumeKeys(stripeIndex, stripeRowRanges_, result);
       break;
     }
   }
 
+  finalizeResultChunks(result);
   updateIoStats();
   return result;
 }
@@ -148,6 +149,7 @@ void NimbleIndexProjector::initRequest(
   numReadRows_ = 0;
   numReadBytes_ = 0;
   rowsPerRequest_.assign(numRequests_, 0);
+  resultChunks_.assign(numRequests_, {});
 }
 
 void NimbleIndexProjector::clearRequest() {
@@ -155,6 +157,7 @@ void NimbleIndexProjector::clearRequest() {
   options_ = nullptr;
   numRequests_ = 0;
   rowsPerRequest_.clear();
+  resultChunks_.clear();
   stripeRowRanges_.clear();
   stripeRangeMap_.clear();
 }
@@ -268,8 +271,7 @@ bool NimbleIndexProjector::pruneStripeRowRanges(
 
 bool NimbleIndexProjector::processStripe(
     uint32_t stripeIndex,
-    std::span<const StripeRowRange> stripeRowRanges,
-    Result& result) {
+    std::span<const StripeRowRange> stripeRowRanges) {
   streams_.setStripe(stripeIndex);
 
   // TODO: Support fine-grained row range fetches from a stripe. For now, we
@@ -277,8 +279,7 @@ bool NimbleIndexProjector::processStripe(
   // values. The result references a portion of it based on the row range.
   auto inputStreams = loadStripe();
   auto stripeChunk = serializeStripe(stripeIndex, inputStreams);
-  return buildStripeResult(
-      stripeIndex, stripeRowRanges, std::move(stripeChunk), result);
+  return buildStripeResult(stripeRowRanges, std::move(stripeChunk));
 }
 
 NimbleIndexProjector::InputStreams NimbleIndexProjector::loadStripe() {
@@ -293,28 +294,23 @@ NimbleIndexProjector::InputStreams NimbleIndexProjector::loadStripe() {
   return inputStreams;
 }
 
-NimbleIndexProjector::Chunk NimbleIndexProjector::serializeStripe(
+NimbleIndexProjector::ResultChunk NimbleIndexProjector::serializeStripe(
     uint32_t stripeIndex,
     InputStreams& inputStreams) {
   velox::CpuWallTimer timer(stats_.projectionTiming);
 
   const auto numStripeRows = stripeRowCount(stripeIndex);
 
-  // Build kTabletRaw output as chained IOBufs:
-  // [header] → [raw stream data...] → [trailer].
-  // kTabletRaw passes raw tablet bytes through including chunk headers.
-  // The Deserializer handles chunk header stripping on the client side.
-  std::string headerBuf;
-  serde::detail::writeHeader(
-      headerBuf, SerializationVersion::kTabletRaw, numStripeRows);
-  auto output = folly::IOBuf::copyBuffer(headerBuf.data(), headerBuf.size());
+  // Build the shared body+trailer for this stripe:
+  //   [stream_data...][encodingType][stream_sizes][trailer_size:u32].
+  // The version/rowCount/row-range/resume-key header is per-slice and is
+  // built later by finalizeResultChunks().
 
-  // Read all stream data into a single contiguous buffer to avoid
-  // per-segment IOBuf allocations (one IOBuf::create instead of many
-  // IOBuf::copyBuffer calls).
+  // Collect raw stream segments without copying. Sizes are needed for the
+  // trailer.
   std::vector<uint32_t> streamSizes(projectedStreamOffsets_.size(), 0);
   std::vector<std::pair<const void*, int>> segments;
-  uint32_t totalBytes = 0;
+  uint32_t totalStreamBytes = 0;
   for (size_t i = 0; i < inputStreams.size(); ++i) {
     if (inputStreams[i] == nullptr) {
       continue;
@@ -324,20 +320,17 @@ NimbleIndexProjector::Chunk NimbleIndexProjector::serializeStripe(
     while (inputStreams[i]->Next(&data, &size)) {
       segments.emplace_back(data, size);
       streamSizes[i] += static_cast<uint32_t>(size);
-      totalBytes += static_cast<uint32_t>(size);
+      totalStreamBytes += static_cast<uint32_t>(size);
     }
   }
 
   std::string trailerBuf;
   serde::detail::writeTrailer(streamSizes, EncodingType::Trivial, trailerBuf);
 
-  // Single allocation for header + data + trailer.
-  const size_t totalSize = headerBuf.size() + totalBytes + trailerBuf.size();
-  output = folly::IOBuf::create(totalSize);
-  auto* dest = output->writableData();
-
-  std::memcpy(dest, headerBuf.data(), headerBuf.size());
-  dest += headerBuf.size();
+  // Single allocation for stream data + trailer.
+  const size_t bodySize = totalStreamBytes + trailerBuf.size();
+  auto body = folly::IOBuf::create(bodySize);
+  auto* dest = body->writableData();
 
   for (const auto& [data, size] : segments) {
     std::memcpy(dest, data, size);
@@ -345,25 +338,22 @@ NimbleIndexProjector::Chunk NimbleIndexProjector::serializeStripe(
   }
 
   std::memcpy(dest, trailerBuf.data(), trailerBuf.size());
-  output->append(totalSize);
+  body->append(bodySize);
 
-  Chunk chunk;
-  chunk.data = std::move(*output);
-  chunk.numRows = numStripeRows;
+  ResultChunk stripeChunk;
+  stripeChunk.sharedData = std::move(*body);
+  stripeChunk.numStripeRows = numStripeRows;
 
   stats_.numScannedRows += numStripeRows;
   stats_.numProjectedRows += numStripeRows;
-  stats_.numReadBytes += chunk.data.computeChainDataLength();
-  return chunk;
+  stats_.numReadBytes += stripeChunk.sharedData.length();
+  return stripeChunk;
 }
 
 bool NimbleIndexProjector::buildStripeResult(
-    uint32_t stripeIndex,
     std::span<const StripeRowRange> stripeRowRanges,
-    Chunk&& chunk,
-    Result& result) {
-  const auto chunkIndex = static_cast<uint32_t>(result.chunks.size());
-
+    ResultChunk&& stripeChunk) {
+  size_t numEmittedSlices = 0;
   for (const auto& request : stripeRowRanges) {
     NIMBLE_CHECK(!request.rowRange.empty());
     auto rowRange = request.rowRange;
@@ -379,15 +369,44 @@ bool NimbleIndexProjector::buildStripeResult(
       }
     }
 
+    // Defensive guard: clipping above could in principle produce an empty
+    // range (rowRange.numRows() == 0). The upstream NIMBLE_CHECK_GT keeps
+    // `remaining > 0` today, but skipping empty ranges keeps the chunk
+    // slice list free of zero-row entries if that invariant ever drifts.
+    if (rowRange.numRows() == 0) {
+      continue;
+    }
+
+    // Queue a per-slice clone of the shared body+trailer. The header node
+    // (version + rowCount + row range + resume-key-length [+ resume key])
+    // is materialized and chained on top in finalizeResultChunks().
     stats_.numReadRows += rowRange.numRows();
     numReadRows_ += rowRange.numRows();
-    result.responses[request.requestIndex].slices.emplace_back(
-        ChunkSlice{chunkIndex, rowRange});
+    resultChunks_[request.requestIndex].emplace_back(
+        stripeChunk.sharedData.cloneOneAsValue(),
+        stripeChunk.numStripeRows,
+        rowRange);
     rowsPerRequest_[request.requestIndex] += rowRange.numRows();
+    ++numEmittedSlices;
   }
 
-  numReadBytes_ += chunk.data.computeChainDataLength();
-  result.chunks.emplace_back(std::move(chunk));
+  // Account for body+trailer bytes (per stripe, shared) plus a lower-bound
+  // for the per-slice header bytes — one min-sized header per emitted slice
+  // (skipped zero-row ranges are excluded). finalizeResultChunks() tops up
+  // to the actual header size per slice. serializeStripe already added body
+  // bytes to stats_; numReadBytes_ tracks the running total used by maxBytes
+  // enforcement.
+  //
+  // NOTE: bodyBytes is added once per stripe even though every per-request
+  // chunk slice clones the shared body. maxBytes therefore caps "stripe
+  // bytes assembled" (in-process memory growth), not "wire bytes returned"
+  // — a single hot stripe served to N requests transmits ~N×bodyBytes over
+  // RPC. Callers wanting wire-bytes semantics should set maxBytes lower or
+  // post-process Result to compute total chunkSlices length.
+  const auto bodyBytes = stripeChunk.sharedData.length();
+  const auto headerBytes = serde::kMinTabletChunkHeaderSize * numEmittedSlices;
+  numReadBytes_ += bodyBytes + headerBytes;
+  stats_.numReadBytes += headerBytes;
 
   return !checkOutputLimit();
 }
@@ -424,11 +443,13 @@ void NimbleIndexProjector::setResumeKeys(
     }
   }
 
-  // For requests that were never started (empty slices, no resume key),
-  // set resume key to their original lower key so the caller can retry.
+  // For requests that were never started (no result chunks for this scan,
+  // no resume key), set resume key to their original lower key so the
+  // caller can retry. Note: response.chunkSlices is populated later by
+  // finalizeResultChunks(), so we check resultChunks_ here.
   for (size_t i = 0; i < result.responses.size(); ++i) {
     auto& response = result.responses[i];
-    if (response.slices.empty() && !response.resumeKey.has_value()) {
+    if (resultChunks_[i].empty() && !response.resumeKey.has_value()) {
       const auto& keyBounds = request_->keyBounds[i];
       NIMBLE_CHECK(
           keyBounds.lowerKey.has_value(),
@@ -436,6 +457,48 @@ void NimbleIndexProjector::setResumeKeys(
           "stripe 0 and should have been processed before truncation",
           i);
       response.resumeKey = *keyBounds.lowerKey;
+    }
+  }
+}
+
+void NimbleIndexProjector::finalizeResultChunks(Result& result) {
+  NIMBLE_CHECK_EQ(resultChunks_.size(), result.responses.size());
+
+  for (size_t responseIdx = 0; responseIdx < result.responses.size();
+       ++responseIdx) {
+    auto& response = result.responses[responseIdx];
+    auto& chunks = resultChunks_[responseIdx];
+    const auto numChunks = chunks.size();
+    response.chunkSlices.reserve(numChunks);
+
+    for (size_t chunkIdx = 0; chunkIdx < numChunks; ++chunkIdx) {
+      auto& chunk = chunks[chunkIdx];
+
+      serde::TabletChunkHeader header{
+          .rowCount = chunk.numStripeRows,
+          .rowRange = chunk.rowRange,
+      };
+      // Resume key is only encoded on the last slice when present.
+      if (chunkIdx + 1 == numChunks && response.resumeKey.has_value()) {
+        header.resumeKey = response.resumeKey;
+      }
+
+      auto headerNode = std::make_unique<folly::IOBuf>(
+          serde::createTabletChunkHeader(header));
+      const auto headerSize = headerNode->length();
+
+      // Chain: [per-slice header] -> [shared body+trailer].
+      headerNode->appendToChain(
+          std::make_unique<folly::IOBuf>(std::move(chunk.sharedData)));
+
+      // Top up the lower-bound accounting from buildStripeResult to the
+      // actual header size (rowCount/range/resumeKeyLength varints may be
+      // larger than 1 byte; resume key bytes are also counted here).
+      const auto extra = headerSize - serde::kMinTabletChunkHeaderSize;
+      stats_.numReadBytes += extra;
+      numReadBytes_ += extra;
+
+      response.chunkSlices.emplace_back(std::move(*headerNode));
     }
   }
 }

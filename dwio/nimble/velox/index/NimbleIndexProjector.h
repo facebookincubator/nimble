@@ -43,18 +43,30 @@ using Subfield = velox::common::Subfield;
 /// Nimble cluster index to locate relevant stripes and row ranges, then reads
 /// and serializes the projected columns for transport.
 ///
-/// The output uses kTabletRaw serialization format, which passes raw tablet
-/// stream bytes through (including chunk headers). The Deserializer handles
-/// chunk header stripping on the client side, shifting CPU cost from the
-/// centralized server to distributed clients.
+/// The output uses kTabletRaw serialization format with a fixed-shape
+/// per-slice header in front of the stripe body+trailer:
+///   NODE 1 (per-slice header):
+///     [version:1B=3][rowCount:varint]
+///     [startRow:varint][endRow:varint]
+///     [resumeKeyLength:varint]   0 = no key; N>0 = key of length N-1
+///     [resumeKey bytes]          present when resumeKeyLength > 0
+///   NODE 2 (shared stripe body + trailer):
+///     [stream_data_0...][encodingType:1B][stream_sizes][trailer_size:u32]
+///
+/// The chunk slice IOBuf is a 2-node chain: a per-slice header node and a
+/// shared body+trailer node. Multiple requests that hit the same stripe with
+/// different row ranges share the body+trailer bytes via
+/// `folly::IOBuf::cloneOne` (refcounted SharedInfo); only the header node
+/// is unique per slice.
 ///
 /// Usage:
 ///   auto result = projector.project(request, options);
 ///   for (size_t i = 0; i < result.responses.size(); ++i) {
 ///     const auto& response = result.responses[i];
-///     for (const auto& slice : response.slices) {
-///       const auto& chunk = result.chunks[slice.chunkIndex];
-///       // process chunk.data (IOBuf), rows slice.rows
+///     for (const auto& chunkSlice : response.chunkSlices) {
+///       // `chunkSlice` is a self-describing kTabletRaw IOBuf chain with
+///       // the request's row range and (on the last slice of a truncated
+///       // response) the resume key embedded in the header.
 ///     }
 ///   }
 /// NOTE: NimbleIndexProjector is not thread-safe. Each thread must use its
@@ -98,37 +110,31 @@ class NimbleIndexProjector {
     std::vector<velox::serializer::EncodedKeyBounds> keyBounds;
   };
 
-  /// Serialized data for a contiguous row range.
-  struct Chunk {
-    /// kTabletRaw serialized data containing projected columns.
-    folly::IOBuf data;
-    /// Number of rows in this chunk.
-    uint32_t numRows{0};
-  };
-
-  /// Slice into a shared chunk for a specific request.
-  struct ChunkSlice {
-    /// Index into Result::chunks.
-    uint32_t chunkIndex{0};
-    /// Row range within the chunk.
-    RowRange rows;
-  };
-
   /// Response for a single request.
   struct Response {
-    /// Slices into Result::chunks for this request. Empty for miss.
-    std::vector<ChunkSlice> slices;
+    /// One self-describing kTabletRaw IOBuf chain per (request × stripe)
+    /// intersection. Each entry covers a contiguous row range within one
+    /// stripe; the row range is embedded in the chain's header. Empty for
+    /// miss. Chunk slices for overlapping requests share the body+trailer
+    /// bytes via refcounted SharedInfo on the second IOBuf node.
+    ///
+    /// If the response is truncated and has a resume key, it is embedded in
+    /// the header of the last slice. Use `rocks::readResultResumeKey()` on
+    /// the last slice to extract it.
+    std::vector<folly::IOBuf> chunkSlices;
 
     /// If the result was truncated by maxRows or maxBytes, the encoded resume
     /// key for continuation. The caller constructs new key bounds using this
     /// as lowerKey with their original upperKey. nullopt if complete or miss.
+    ///
+    /// Also embedded in the last slice's per-slice header (when chunkSlices
+    /// is non-empty) so consumers that hold an IOBuf can recover the key
+    /// without keeping the Response struct around.
     std::optional<std::string> resumeKey;
   };
 
   /// Result of a project() call.
   struct Result {
-    /// Serialized chunks (shared across requests that overlap).
-    std::vector<Chunk> chunks;
     /// One entry per request, in request order.
     std::vector<Response> responses;
   };
@@ -261,8 +267,7 @@ class NimbleIndexProjector {
   // stop and set resume keys.
   bool processStripe(
       uint32_t stripeIndex,
-      std::span<const StripeRowRange> stripeRowRanges,
-      Result& result);
+      std::span<const StripeRowRange> stripeRowRanges);
 
   using InputStreams =
       std::vector<std::unique_ptr<velox::dwio::common::SeekableInputStream>>;
@@ -270,19 +275,38 @@ class NimbleIndexProjector {
   // Enqueues projected streams into StripeStreams and loads them from disk.
   InputStreams loadStripe();
 
-  // Stitches loaded raw stream bytes into a single kTabletRaw chunk
-  // (header + data + trailer) without decode/re-encode.
-  Chunk serializeStripe(uint32_t stripeIndex, InputStreams& inputStreams);
+  // Per-slice info needed at finalization time to build the chunk slice
+  // IOBuf chain (header node + shared body+trailer clone).
+  //
+  // Reused as the producer-side container returned by serializeStripe(): the
+  // shared body+trailer bytes are produced once per stripe and referenced by
+  // every per-request chunk slice for that stripe via cloneOne(). On that
+  // producer side, rowRange is default-constructed and unused;
+  // buildStripeResult fills it in when materializing each per-request clone.
+  //
+  // Layout of sharedData:
+  //   [stream_data...][encodingType][stream_sizes][trailer_size:u32].
+  struct ResultChunk {
+    folly::IOBuf sharedData;
+    uint32_t numStripeRows{0};
+    RowRange rowRange;
+  };
 
-  // Assigns the serialized chunk to per-request results based on row ranges.
-  // Applies maxRowsPerRequest hard clipping and accumulates numReadRows_.
-  // Returns false if a global limit (maxRows or maxBytes) was hit after this
-  // stripe.
+  // Stitches loaded raw stream bytes into the shared kTabletRaw body+trailer
+  // (stream data + trailer) without decode/re-encode. The returned chunk has
+  // a default-constructed rowRange that buildStripeResult fills in per request.
+  ResultChunk serializeStripe(uint32_t stripeIndex, InputStreams& inputStreams);
+
+  // Queues per-request result chunks for the stripe. Each chunk captures a
+  // cloneOne() of the shared body+trailer, the stripe row count, and the
+  // per-request row range. The chunk slice IOBuf chain is finalized later by
+  // finalizeResultChunks() once we know whether the response carries a
+  // resume key. Applies maxRowsPerRequest hard clipping and accumulates
+  // numReadRows_. Returns false if a global limit (maxRows or maxBytes) was
+  // hit after this stripe.
   bool buildStripeResult(
-      uint32_t stripeIndex,
       std::span<const StripeRowRange> stripeRowRanges,
-      Chunk&& chunk,
-      Result& result);
+      ResultChunk&& stripeChunk);
 
   // Sets resume keys on all truncated requests that have data in the next
   // unprocessed stripe.
@@ -290,6 +314,12 @@ class NimbleIndexProjector {
       uint32_t stripeIndex,
       std::span<const StripeRowRange> stripeRowRanges,
       Result& result);
+
+  // Materializes the per-slice header node for every queued chunk and
+  // assembles the final chunk slice IOBuf chain (header -> body+trailer).
+  // The resume key is folded into the header of the last slice of any
+  // truncated response.
+  void finalizeResultChunks(Result& result);
 
   inline uint32_t stripeRowCount(uint32_t stripe) const {
     return static_cast<uint32_t>(readerBase_->tablet().stripeRowCount(stripe));
@@ -341,6 +371,9 @@ class NimbleIndexProjector {
   uint64_t numReadBytes_{0};
   // Accumulated rows per request for maxRowsPerRequest enforcement.
   std::vector<uint64_t> rowsPerRequest_;
+
+  // Per-response, per-slice chunks awaiting finalization.
+  std::vector<std::vector<ResultChunk>> resultChunks_;
   // Current stripe's row ranges after pruning saturated requests.
   std::vector<StripeRowRange> stripeRowRanges_;
   // CSR mapping from stripes to request row ranges. Populated by

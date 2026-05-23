@@ -286,3 +286,47 @@ std::vector<std::string_view> parseStreams(
 }
 
 } // namespace facebook::nimble::serde::detail
+
+namespace facebook::nimble::serde {
+
+folly::IOBuf createTabletChunkHeader(const TabletChunkHeader& header) {
+  // resumeKeyLength is varint-encoded as (key.size() + 1) when present so 0
+  // signals absent without a separate flag. Guard the (size + 1) narrowing
+  // to uint32 — a key at SIZE_MAX would silently encode as 0 and decode as
+  // "absent", dropping the key on the wire.
+  if (header.resumeKey.has_value()) {
+    NIMBLE_CHECK_LT(
+        header.resumeKey->size(),
+        std::numeric_limits<uint32_t>::max(),
+        "Resume key too large to fit in uint32 length sentinel");
+  }
+  const uint32_t resumeKeyLength = header.resumeKey.has_value()
+      ? static_cast<uint32_t>(header.resumeKey->size() + 1)
+      : 0;
+  size_t totalSize = sizeof(uint8_t) /* version */ +
+      varint::varintSize(header.rowCount) +
+      varint::varintSize(header.rowRange.startRow) +
+      varint::varintSize(header.rowRange.endRow) +
+      varint::varintSize(resumeKeyLength);
+  if (header.resumeKey.has_value()) {
+    totalSize += header.resumeKey->size();
+  }
+
+  auto buf = folly::IOBuf::create(totalSize);
+  auto* pos = reinterpret_cast<char*>(buf->writableData());
+  *pos++ = static_cast<char>(SerializationVersion::kTabletRaw);
+  varint::writeVarint(/*val=*/header.rowCount, &pos);
+  varint::writeVarint(/*val=*/header.rowRange.startRow, &pos);
+  varint::writeVarint(/*val=*/header.rowRange.endRow, &pos);
+  varint::writeVarint(/*val=*/resumeKeyLength, &pos);
+  if (header.resumeKey.has_value() && !header.resumeKey->empty()) {
+    // The destination IOBuf was allocated with totalSize bytes which include
+    // exactly resumeKey->size() bytes at this position — no overflow.
+    // NOLINTNEXTLINE(facebook-security-vulnerable-memcpy)
+    std::memcpy(pos, header.resumeKey->data(), header.resumeKey->size());
+  }
+  buf->append(totalSize);
+  return std::move(*buf);
+}
+
+} // namespace facebook::nimble::serde

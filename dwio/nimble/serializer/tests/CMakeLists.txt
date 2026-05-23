@@ -24,6 +24,7 @@ target_link_libraries(
   nimble_serializer_tests
   nimble_serializer
   nimble_deserializer
+  nimble_deserializer_impl
   nimble_serializer_impl
   nimble_serializer_options
   nimble_projector
