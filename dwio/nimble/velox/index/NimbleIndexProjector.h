@@ -26,8 +26,11 @@
 #include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
+#include "velox/common/caching/AsyncDataCache.h"
+#include "velox/common/caching/FileHandle.h"
 #include "velox/common/io/IoStatistics.h"
 #include "velox/common/time/CpuWallTimer.h"
+#include "velox/dwio/common/BufferedInput.h"
 #include "velox/serializers/KeyEncoder.h"
 #include "velox/type/Subfield.h"
 
@@ -58,10 +61,14 @@ using Subfield = velox::common::Subfield;
 /// own instance.
 class NimbleIndexProjector {
  public:
+  /// Creates a NimbleIndexProjector with appropriate BufferedInput based on
+  /// whether a cache is provided. Uses CachedBufferedInput when cache is
+  /// non-null, DirectBufferedInput otherwise.
   // TODO: projectedSubfields currently must match file schema column names.
   // Add table-to-file column name mapping for schema evolution support.
-  NimbleIndexProjector(
-      std::shared_ptr<velox::ReadFile> readFile,
+  static std::unique_ptr<NimbleIndexProjector> create(
+      const velox::FileHandle& fileHandle,
+      velox::cache::AsyncDataCache* cache,
       const std::vector<Subfield>& projectedSubfields,
       const velox::dwio::common::ReaderOptions& options);
 
@@ -164,6 +171,10 @@ class NimbleIndexProjector {
     uint64_t rawOverreadBytes{0};
     /// Number of storage read operations (pread syscalls).
     uint64_t numStorageReads{0};
+    /// Number of cache hits from the AsyncDataCache (RAM).
+    uint64_t numCacheHits{0};
+    /// Total bytes served from cache hits.
+    uint64_t cacheHitBytes{0};
 
     /// Time spent looking up stripes and row ranges via the tablet index.
     velox::CpuWallTiming lookupTiming;
@@ -181,6 +192,11 @@ class NimbleIndexProjector {
   }
 
  private:
+  NimbleIndexProjector(
+      std::unique_ptr<velox::dwio::common::BufferedInput> bufferedInput,
+      const std::vector<Subfield>& projectedSubfields,
+      const velox::dwio::common::ReaderOptions& options);
+
   // A request index paired with its stripe-relative row range.
   struct StripeRowRange {
     uint32_t requestIndex{};
@@ -296,8 +312,8 @@ class NimbleIndexProjector {
 
   void updateIoStats();
 
-  const std::shared_ptr<velox::io::IoStatistics> ioStatistics_;
   const std::shared_ptr<ReaderBase> readerBase_;
+  const std::shared_ptr<velox::io::IoStatistics> ioStats_;
   velox::memory::MemoryPool* const pool_;
   const ClusterIndex* const clusterIndex_;
   const uint32_t numStripes_{0};

@@ -23,7 +23,8 @@
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/ScopeGuard.h"
 #include "velox/common/base/SuccinctPrinter.h"
-#include "velox/dwio/common/BufferedInput.h"
+#include "velox/dwio/common/CachedBufferedInput.h"
+#include "velox/dwio/common/DirectBufferedInput.h"
 
 namespace facebook::nimble {
 
@@ -33,6 +34,7 @@ std::string NimbleIndexProjector::Stats::toString() const {
   return fmt::format(
       "Stats(numReadStripes={}, numScannedRows={}, numProjectedRows={}, numReadRows={}, "
       "numReadBytes={}, rawBytesRead={}, rawOverreadBytes={}, numStorageReads={}, "
+      "numCacheHits={}, cacheHitBytes={}, "
       "lookupTiming=[{}], scanTiming=[{}], projectionTiming=[{}])",
       numReadStripes,
       numScannedRows,
@@ -42,25 +44,56 @@ std::string NimbleIndexProjector::Stats::toString() const {
       velox::succinctBytes(rawBytesRead),
       velox::succinctBytes(rawOverreadBytes),
       numStorageReads,
+      numCacheHits,
+      velox::succinctBytes(cacheHitBytes),
       lookupTiming.toString(),
       scanTiming.toString(),
       projectionTiming.toString());
 }
 
+std::unique_ptr<NimbleIndexProjector> NimbleIndexProjector::create(
+    const velox::FileHandle& fileHandle,
+    velox::cache::AsyncDataCache* cache,
+    const std::vector<Subfield>& projectedSubfields,
+    const velox::dwio::common::ReaderOptions& options) {
+  std::unique_ptr<velox::dwio::common::BufferedInput> bufferedInput;
+  if (cache != nullptr && options.cacheData()) {
+    NIMBLE_CHECK(
+        fileHandle.uuid.hasValue() && fileHandle.groupId.hasValue(),
+        "FileHandle must have valid uuid and groupId when cache is provided");
+    bufferedInput = std::make_unique<velox::dwio::common::CachedBufferedInput>(
+        fileHandle.file,
+        velox::dwio::common::MetricsLog::voidLog(),
+        fileHandle.uuid,
+        cache,
+        /*tracker=*/nullptr,
+        fileHandle.groupId,
+        options.dataIoStats(),
+        /*ioStats=*/nullptr,
+        /*executor=*/nullptr,
+        options);
+  } else {
+    bufferedInput = std::make_unique<velox::dwio::common::DirectBufferedInput>(
+        fileHandle.file,
+        velox::dwio::common::MetricsLog::voidLog(),
+        fileHandle.uuid,
+        /*tracker=*/nullptr,
+        fileHandle.groupId,
+        options.dataIoStats(),
+        /*ioStats=*/nullptr,
+        /*executor=*/nullptr,
+        options);
+  }
+  return std::unique_ptr<NimbleIndexProjector>(new NimbleIndexProjector(
+      std::move(bufferedInput), projectedSubfields, options));
+}
+
 NimbleIndexProjector::NimbleIndexProjector(
-    std::shared_ptr<velox::ReadFile> readFile,
+    std::unique_ptr<velox::dwio::common::BufferedInput> bufferedInput,
     const std::vector<Subfield>& projectedSubfields,
     const velox::dwio::common::ReaderOptions& options)
-    : ioStatistics_{std::make_shared<velox::io::IoStatistics>()},
-      readerBase_{ReaderBase::create(
-          std::make_unique<velox::dwio::common::BufferedInput>(
-              std::move(readFile),
-              options.memoryPool(),
-              velox::dwio::common::MetricsLog::voidLog(),
-              ioStatistics_.get(),
-              /*ioStats=*/nullptr,
-              options.maxCoalesceDistance()),
-          options)},
+    : readerBase_{ReaderBase::create(std::move(bufferedInput), options)},
+      ioStats_{options.dataIoStats()},
       pool_{readerBase_->pool()},
       clusterIndex_{readerBase_->tablet().clusterIndex()},
       numStripes_{readerBase_->tablet().stripeCount()},
@@ -408,9 +441,11 @@ void NimbleIndexProjector::setResumeKeys(
 }
 
 void NimbleIndexProjector::updateIoStats() {
-  stats_.rawBytesRead = ioStatistics_->rawBytesRead();
-  stats_.rawOverreadBytes = ioStatistics_->rawOverreadBytes();
-  stats_.numStorageReads = ioStatistics_->read().count();
+  stats_.rawBytesRead = ioStats_->rawBytesRead();
+  stats_.rawOverreadBytes = ioStats_->rawOverreadBytes();
+  stats_.numStorageReads = ioStats_->read().count();
+  stats_.numCacheHits = ioStats_->ramHit().count();
+  stats_.cacheHitBytes = ioStats_->ramHit().sum();
 }
 
 } // namespace facebook::nimble
