@@ -1594,34 +1594,33 @@ class FlatMapFieldWriter : public FieldWriter {
         totalKeyCount * sizeof(KeyType) + nullCount);
   }
 
-  // Collects key statistics for passthrough flatmap with VARCHAR keys.
-  // For passthrough flatmaps, keys are ROW field names, so we use the actual
-  // string lengths instead of sizeof(StringView).
+  // Collects key statistics for passthrough flatmap with VARCHAR/VARBINARY
+  // keys. For passthrough flatmaps, keys are ROW field names; the caller
+  // provides the per-key count of parent rows in which that key is present
+  // (inMap=1). Total key string size is Σᵢ name_size(i) * presentPerKey[i].
   void collectPassthroughStringKeyStatistics(
       const velox::RowVector* rowVector,
-      uint64_t nonNullCount,
+      const std::vector<uint64_t>& presentPerKey,
       uint64_t nullCount,
       uint64_t valueCount) {
     if (!keyStatisticsCollector_) {
       return;
     }
 
-    // For passthrough flatmaps, each non-null row has all keys present.
     const auto& rowType = rowVector->type()->asRow();
-    const auto numKeys = rowType.size();
-    const uint64_t totalKeyCount = numKeys * nonNullCount;
+    NIMBLE_CHECK(
+        presentPerKey.empty() || presentPerKey.size() == rowType.size(),
+        "presentPerKey size must match the number of ROW fields when non-empty");
 
-    keyStatisticsCollector_->addCounts(totalKeyCount, nullCount);
-
-    // Calculate the total key string size: sum of all key name lengths
-    // multiplied by the number of non-null rows.
+    uint64_t totalKeyCount = 0;
     uint64_t totalKeyStringSize = 0;
-    for (size_t i = 0; i < numKeys; ++i) {
-      totalKeyStringSize += rowType.nameOf(i).size();
+    for (size_t i = 0; i < presentPerKey.size(); ++i) {
+      totalKeyCount += presentPerKey[i];
+      totalKeyStringSize += rowType.nameOf(i).size() * presentPerKey[i];
     }
 
-    keyStatisticsCollector_->addLogicalSize(
-        totalKeyStringSize * nonNullCount + nullCount);
+    keyStatisticsCollector_->addCounts(totalKeyCount, nullCount);
+    keyStatisticsCollector_->addLogicalSize(totalKeyStringSize + nullCount);
   }
 
   void ingestFlatMap(
@@ -1794,20 +1793,65 @@ class FlatMapFieldWriter : public FieldWriter {
         [&](auto offset) { childRanges.add(offset, 1); });
 
     collectStatistics(size - nonNullCount, size);
+
+    // For passthrough flatmap ingestion, a NULL value in a per-feature child
+    // column means "this key is NOT present in the map" (inMap=0), not "this
+    // key is present with NULL value". This matches the Velox MapVector
+    // contract and how readFlatmapAsStruct reconstructs the map; without it,
+    // a non-null empty map row would be re-encoded as {key0:NULL, key1:NULL,
+    // ...} after a passthrough roundtrip (see T272275493).
+    //
+    // Decode each child once over the parent's non-null offsets to build a
+    // per-child inMap bitmap (indexed by absolute parent offset) and the
+    // per-child present count. These feed the key statistics and the
+    // with-inMap overload of FlatMapPassthroughValueFieldWriter::write below.
+    std::vector<velox::BufferPtr> inMapsPerChild(keys.size());
+    std::vector<uint64_t> presentPerChild(keys.size(), 0);
+    uint64_t totalKeyCount = 0;
+
+    if (childRanges.size() > 0) {
+      auto* pool = context_.bufferMemoryPool().get();
+      const auto bufferWords = velox::bits::nwords(rowVector->size());
+      for (velox::vector_size_t i = 0; i < keys.size(); ++i) {
+        auto inMaps =
+            velox::AlignedBuffer::allocate<uint64_t>(bufferWords, pool, 0);
+        auto* rawInMaps = inMaps->template asMutable<uint64_t>();
+        uint64_t present = 0;
+        auto decodingContext = context_.decodingContext();
+        auto& decoded = decodingContext.decode(values[i], childRanges);
+        if (decoded.mayHaveNulls()) {
+          childRanges.applyEach([&](auto offset) {
+            if (!decoded.isNullAt(offset)) {
+              velox::bits::setBit(rawInMaps, offset);
+              ++present;
+            }
+          });
+        } else {
+          childRanges.applyEach(
+              [&](auto offset) { velox::bits::setBit(rawInMaps, offset); });
+          present = childRanges.size();
+        }
+        presentPerChild[i] = present;
+        totalKeyCount += present;
+        inMapsPerChild[i] = std::move(inMaps);
+      }
+    }
+
     // For ROW vector ingestion (passthrough flatmaps), keys are ROW field
     // names. For VARCHAR/VARBINARY keys, use actual string lengths instead of
     // sizeof(StringView).
     if constexpr (
         K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY) {
-      collectPassthroughStringKeyStatistics(rowVector, nonNullCount, 0, size);
+      collectPassthroughStringKeyStatistics(
+          rowVector, presentPerChild, /*nullCount=*/0, size);
     } else {
-      // For non-string keys, all keys are present for all non-null rows.
-      // The total key count is: numKeys * numNonNullRows
-      // This matches DWRF behavior where key sizes are counted per key per row.
-      collectKeyStatistics(keys.size() * nonNullCount, 0, size);
+      // Total key count is the sum of per-child present entries (number of
+      // parent rows where that key has inMap=1).
+      collectKeyStatistics(totalKeyCount, /*nullCount=*/0, size);
     }
 
-    // Early bail out if no ranges at the top level row vector.
+    // Early bail out if no ranges at the top level row vector. Stats above
+    // have already recorded keys=0 / inMap=0 for this batch.
     if (childRanges.size() == 0) {
       return;
     }
@@ -1820,7 +1864,9 @@ class FlatMapFieldWriter : public FieldWriter {
       const auto& key = keys[i];
       auto& writer = populateMap ? createPassthroughValueFieldWriter(key)
                                  : findPassthroughValueFieldWriter(key);
-      writer.write(values[i], childRanges);
+      // Use the with-inMap overload so the underlying value writer only sees
+      // the offsets where the key is actually present.
+      writer.write(values[i], inMapsPerChild[i], childRanges);
     }
   }
 

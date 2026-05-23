@@ -754,73 +754,60 @@ TEST_P(FieldWriterStatsTests, flatMapPassThroughValueFieldWriterStats) {
   //   2: Key (TINYINT)
   //   3: Value (INTEGER)
   //
-  // Per-key VALUE contributions (each key contributes to the merged value
-  // stat):
-  //   For passthrough flatmaps, each non-null value in a feature column
-  //   that is in a non-null flatmap row contributes to value stats.
-  //   - Key 0 (feature0): row0=1, row1=1 → 2 int32_t values
-  //   - Key 2 (feature2): row0=3 → 1 int32_t value
-  //   - Key 10 (feature10): row2=11 → 1 int32_t value
-  // Total: 4 values written
+  // Under passthrough flatmap semantics (see T272275493), a NULL value in a
+  // per-feature child column means "this key is NOT in the map" (inMap=0).
+  // Only present (non-NULL) entries reach the value writer.
   //
-  // Note: For passthrough flatmaps, null values in feature columns also
-  // contribute to null tracking, which affects logicalSize.
+  // Per-feature present counts over flatmap-non-null rows (0, 1, 2):
+  //   - feature0: row0=1, row1=1, row2=null → 2 present
+  //   - feature2: row0=3, row1=null, row2=null → 1 present
+  //   - feature10: row0=null, row1=null, row2=11 → 1 present
+  // totalKeyCount = 4 (was 9 under "all keys present per row" semantics).
 
+  // Per-key VALUE contributions. Under new semantics each key's value writer
+  // sees only the present offsets, so nullCount=0 and logicalSize is just
+  // sizeof(int32_t) * presentCount.
   auto key0ValueStat = ColumnStats{
-      .logicalSize =
-          sizeof(int32_t) * 2 + nimble::kNullSize, // 2 values + 1 null
-      .physicalSize = 40,
-      .nullCount = 1,
-      .valueCount = 3 - 1, // nonNullCount (1 null)
+      .logicalSize = sizeof(int32_t) * 2,
+      .nullCount = 0,
+      .valueCount = 2,
   };
   auto key2ValueStat = ColumnStats{
-      .logicalSize =
-          sizeof(int32_t) * 1 + 2 * nimble::kNullSize, // 1 value + 2 nulls
-      .physicalSize = 41,
-      .nullCount = 2,
-      .valueCount = 3 - 2, // nonNullCount (2 nulls)
+      .logicalSize = sizeof(int32_t) * 1,
+      .nullCount = 0,
+      .valueCount = 1,
   };
   auto key10ValueStat = ColumnStats{
-      .logicalSize =
-          sizeof(int32_t) * 1 + 2 * nimble::kNullSize, // 1 value + 2 nulls
-      .physicalSize = 41,
-      .nullCount = 2,
-      .valueCount = 3 - 2, // nonNullCount (2 nulls)
+      .logicalSize = sizeof(int32_t) * 1,
+      .nullCount = 0,
+      .valueCount = 1,
   };
 
-  // Merged value stat from all keys.
+  // Merged value stat from all keys. combineFlatmapValueStats only sums the
+  // physicalSize across keys; the empirically observed combined physicalSize
+  // is set directly here since the per-key physical breakdown is not asserted.
   auto valueStat =
       combineFlatmapValueStats({key0ValueStat, key2ValueStat, key10ValueStat});
+  valueStat.physicalSize = 47;
 
-  // Key statistics (tracked at flatmap level via collectKeyStatistics):
-  //   For passthrough flatmaps, totalKeyCount = numKeys *
-  //   numNonNullFlatmapRows.
-  //   - numKeys = 3 (feature0, feature2, feature10)
-  //   - numNonNullFlatmapRows = 3 (rows 0, 1, 2; rows 3,4 null, row 5 parent
-  //   null)
-  //   - totalKeyCount = 3 * 3 = 9
-  //   - nullCount = 0 (key stats don't include flatmap nulls)
-  //   - logicalSize = totalKeyCount * sizeof(KeyType) = 9 * 1 = 9
-  //   - valueCount = 9 (same as totalKeyCount)
-
-  // Key TypeWithId node (index 2) has no direct values.
+  // Key statistics for passthrough flatmap (new semantics):
+  //   - totalKeyCount = sum of per-child present entries = 4
+  //   - logicalSize = totalKeyCount * sizeof(KeyType) = 4
   auto keyStat = ColumnStats{
-      .logicalSize = 9 * sizeof(int8_t),
+      .logicalSize = 4 * sizeof(int8_t),
       .physicalSize = 0,
       .nullCount = 0,
-      .valueCount = 9,
+      .valueCount = 4,
   };
 
   // Flatmap stat.
-  // logicalSize = 2 (flatmap null bytes) + keyStat.logicalSize +
-  // valueStat.logicalSize nullCount = 2 (flatmap nulls) valueCount = 5
-  // (non-null flatmap rows including parent row)
-  // physicalSize includes overhead for key null streams (3 keys * ~18-19 bytes)
+  //   logicalSize = 2 (flatmap null bytes) + keyStat.logicalSize +
+  //                 valueStat.logicalSize
+  //   physical overhead is empirically observed.
   auto flatmapStat = ColumnStats{
       .logicalSize =
           2 * nimble::kNullSize + keyStat.logicalSize + valueStat.logicalSize,
-      .physicalSize =
-          valueStat.physicalSize + 56, // 3 key null streams overhead
+      .physicalSize = 127,
       .nullCount = 2,
       .valueCount = 5 - 2, // nonNullCount (flatmap has 2 nulls)
   };
@@ -968,66 +955,63 @@ TEST_P(
   auto vector = vectorMaker_->rowVector({flatmapVector});
   vector->setNull(5, true);
 
-  // Stats calculation for passthrough flatmap:
-  // For passthrough flatmaps, value stats are per-feature column (not merged).
-  // Per-key VALUE contributions:
-  //   - Key 0 (feature0): row0=1, row1=null, row2=5, row4=null → 2 values + 2
-  //   nulls
-  //   - Key 2 (feature2): row0=null, row1=3, row2=6, row4=null → 2 values + 2
-  //   nulls
-  // Total: 4 values, 4 nulls
+  // Under passthrough flatmap semantics (see T272275493), a NULL value in a
+  // per-feature child column means "this key is NOT in the map" (inMap=0).
+  // Only present (non-NULL) entries reach the value writer.
+  //
+  // Per-feature present counts over flatmap-non-null rows (0, 1, 2, 4):
+  //   - feature0: row0=1, row1=null, row2=5, row4=null → 2 present
+  //   - feature2: row0=null, row1=3, row2=6, row4=null → 2 present
+  // totalKeyCount = 4 (was 8 under "all keys present per row" semantics).
 
+  // Per-key VALUE contributions under the new semantics: only present entries
+  // reach the value writer, so nullCount=0 per key and logicalSize is just
+  // sizeof(int32_t) * presentCount.
   auto key0ValueStat = ColumnStats{
-      .logicalSize = sizeof(int32_t) * 2 + nimble::kNullSize * 2,
-      .physicalSize = 45, // 41 + 4 for null stream overhead
-      .nullCount = 2,
-      .valueCount = 2, // nonNullCount (actual from test)
+      .logicalSize = sizeof(int32_t) * 2,
+      .nullCount = 0,
+      .valueCount = 2,
   };
   auto key2ValueStat = ColumnStats{
-      .logicalSize = sizeof(int32_t) * 2 + nimble::kNullSize * 2,
-      .physicalSize = 45, // 41 + 4 for null stream overhead
-      .nullCount = 2,
-      .valueCount = 2, // nonNullCount (actual from test)
+      .logicalSize = sizeof(int32_t) * 2,
+      .nullCount = 0,
+      .valueCount = 2,
   };
 
-  // Merged value stat from all keys.
+  // Merged value stat from all keys; per-key physicalSize is not asserted
+  // individually, so set the combined physicalSize directly to the
+  // empirically observed value.
   auto valueStat = combineFlatmapValueStats({key0ValueStat, key2ValueStat});
+  valueStat.physicalSize = 40;
 
-  // Key statistics for passthrough flatmap:
-  //   For passthrough flatmaps, totalKeyCount = numKeys *
-  //   numNonNullFlatmapRows.
-  //   - numKeys = 2 (feature0, feature2)
-  //   - numNonNullFlatmapRows = 4 (rows 0, 1, 2, 4; row 3 is flatmap null, row
-  //   5 is parent null)
-  //   - totalKeyCount = 2 * 4 = 8
-  //   - nullCount = 0 (key stats don't include flatmap nulls; those are in
-  //   flatmap stats)
-  //   - logicalSize = totalKeyCount * sizeof(KeyType) = 8 * 1 = 8
+  // Key statistics (new semantics):
+  //   totalKeyCount = sum of per-child present entries = 4
+  //   logicalSize = totalKeyCount * sizeof(KeyType) = 4
   auto keyStat = ColumnStats{
-      .logicalSize = 8 * sizeof(int8_t),
+      .logicalSize = 4 * sizeof(int8_t),
       .physicalSize = 0,
       .nullCount = 0,
-      .valueCount = 8,
+      .valueCount = 4,
   };
 
   // Flatmap stat.
-  // physicalSize includes overhead for key null streams (2 keys * 20 bytes)
-  // plus flatmap null stream (20 bytes) = 44 additional bytes
+  //   logicalSize = keyStat.logicalSize + valueStat.logicalSize +
+  //                 1 flatmap null byte
+  //   physical overhead is empirically observed.
   auto flatmapStat = ColumnStats{
       .logicalSize =
-          1 * nimble::kNullSize + keyStat.logicalSize + valueStat.logicalSize,
-      .physicalSize = valueStat.physicalSize +
-          44, // 2 key null streams + flatmap null stream
+          keyStat.logicalSize + valueStat.logicalSize + 1 * nimble::kNullSize,
+      .physicalSize = 100,
       .nullCount = 1,
-      .valueCount = 4, // nonNullCount (actual from test)
+      .valueCount = 4, // nonNullCount (1 flatmap null in 5 iterated rows)
   };
 
-  // Root stat.
+  // Root stat: flatmap logicalSize + 1 null byte for row5.
   auto rootStat = ColumnStats{
       .logicalSize = flatmapStat.logicalSize + nimble::kNullSize,
       .physicalSize = flatmapStat.physicalSize + 20,
       .nullCount = 1,
-      .valueCount = 5, // nonNullCount (actual from test)
+      .valueCount = 5, // nonNullCount (root has 1 null)
   };
 
   verifyReturnedColumnStats(
@@ -1128,38 +1112,46 @@ TEST_P(FieldWriterStatsTests, flatMapPassThroughVarbinaryKeyFieldWriterStats) {
 
   auto vector = vectorMaker_->rowVector({flatmapVector});
 
-  // Per-key VALUE contributions:
-  //   - Key "ab": row0=1, row1=3, row2=null, row3=5 → 3 values + 1 null
-  //   - Key "cdef": row0=2, row1=null, row2=4, row3=6 → 3 values + 1 null
+  // Under passthrough flatmap semantics (see T272275493), a NULL value in a
+  // per-feature child column means "this key is NOT in the map" (inMap=0).
+  // Only present (non-NULL) entries reach the value writer.
+  //
+  // Per-key present counts:
+  //   - Key "ab": row0=1, row1=3, row2=null, row3=5 → 3 present
+  //   - Key "cdef": row0=2, row1=null, row2=4, row3=6 → 3 present
+  // totalKeyCount = 6 (was 8 under "all keys present per row" semantics).
+
+  // Per-key VALUE contributions (no nulls reach value writer under new
+  // semantics).
   auto keyAbValueStat = ColumnStats{
-      .logicalSize = sizeof(int32_t) * 3 + nimble::kNullSize,
-      .physicalSize = 43,
-      .nullCount = 1,
-      .valueCount = 3, // nonNullCount (4 total - 1 null)
+      .logicalSize = sizeof(int32_t) * 3,
+      .nullCount = 0,
+      .valueCount = 3,
   };
   auto keyCdefValueStat = ColumnStats{
-      .logicalSize = sizeof(int32_t) * 3 + nimble::kNullSize,
-      .physicalSize = 43,
-      .nullCount = 1,
-      .valueCount = 3, // nonNullCount (4 total - 1 null)
+      .logicalSize = sizeof(int32_t) * 3,
+      .nullCount = 0,
+      .valueCount = 3,
   };
+  // Per-key physicalSize is not asserted; set combined physicalSize directly
+  // to the empirically observed value.
   auto valueStat = combineFlatmapValueStats({keyAbValueStat, keyCdefValueStat});
+  valueStat.physicalSize = 36;
 
-  // Key statistics for passthrough flatmap with VARBINARY keys:
-  //   numKeys = 2, numNonNullFlatmapRows = 4
-  //   totalKeyCount = 2 * 4 = 8
-  //   totalKeyStringSize = ("ab".size() + "cdef".size()) * 4 = (2+4)*4 = 24
-  //   logicalSize = totalKeyStringSize = 24
-  // Without the fix, this would incorrectly be 8 * sizeof(StringView) = 128.
+  // Key statistics for passthrough flatmap with VARBINARY keys (new
+  // semantics):
+  //   totalKeyCount = Σᵢ presentᵢ = 6
+  //   totalKeyStringSize = "ab".size()*3 + "cdef".size()*3 = 2*3 + 4*3 = 18
+  //   logicalSize = totalKeyStringSize = 18
   auto keyStat = ColumnStats{
-      .logicalSize = (2 + 4) * 4, // 24
+      .logicalSize = 2 * 3 + 4 * 3, // 18
       .physicalSize = 0,
-      .valueCount = 8,
+      .valueCount = 6,
   };
 
   auto flatmapStat = ColumnStats{
       .logicalSize = keyStat.logicalSize + valueStat.logicalSize,
-      .physicalSize = valueStat.physicalSize + 24,
+      .physicalSize = 76,
       .valueCount = 4,
   };
 
