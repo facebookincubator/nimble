@@ -30,6 +30,22 @@ namespace facebook::nimble {
 
 using namespace facebook::velox; // NOLINT(google-build-using-namespace)
 
+namespace {
+
+void validateReaderOptions(const velox::dwio::common::ReaderOptions& options) {
+  NIMBLE_CHECK_NOT_NULL(
+      options.dataIoStats(),
+      "NimbleIndexProjector requires ReaderOptions::dataIoStats to be set");
+  NIMBLE_CHECK_NOT_NULL(
+      options.metadataIoStats(),
+      "NimbleIndexProjector requires ReaderOptions::metadataIoStats to be set");
+  NIMBLE_CHECK_NOT_NULL(
+      options.indexIoStats(),
+      "NimbleIndexProjector requires ReaderOptions::indexIoStats to be set");
+}
+
+} // namespace
+
 std::string NimbleIndexProjector::Stats::toString() const {
   return fmt::format(
       "Stats(numReadStripes={}, numScannedRows={}, numProjectedRows={}, numReadRows={}, "
@@ -92,7 +108,10 @@ NimbleIndexProjector::NimbleIndexProjector(
     std::unique_ptr<velox::dwio::common::BufferedInput> bufferedInput,
     const std::vector<Subfield>& projectedSubfields,
     const velox::dwio::common::ReaderOptions& options)
-    : readerBase_{ReaderBase::create(std::move(bufferedInput), options)},
+    : readerBase_{[&] {
+        validateReaderOptions(options);
+        return ReaderBase::create(std::move(bufferedInput), options);
+      }()},
       ioStats_{options.dataIoStats()},
       pool_{readerBase_->pool()},
       clusterIndex_{readerBase_->tablet().clusterIndex()},

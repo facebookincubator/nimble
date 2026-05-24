@@ -174,14 +174,24 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
   ProjectorWithStats createProjectorWithStats(
       const std::vector<Subfield>& projectedSubfields,
       velox::cache::AsyncDataCache* cache = nullptr,
-      std::optional<bool> cacheData = std::nullopt) {
+      std::optional<bool> cacheData = std::nullopt,
+      bool setDataIoStats = true,
+      bool setMetadataIoStats = true,
+      bool setIndexIoStats = true) {
     auto fileHandle = makeFileHandle();
     auto ioStats = std::make_shared<velox::io::IoStatistics>();
     dwio::common::ReaderOptions readerOptions(leafPool_.get());
-    readerOptions.setDataIoStats(ioStats);
-    readerOptions.setMetadataIoStats(
-        std::make_shared<velox::io::IoStatistics>());
-    readerOptions.setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
+    if (setDataIoStats) {
+      readerOptions.setDataIoStats(ioStats);
+    }
+    if (setMetadataIoStats) {
+      readerOptions.setMetadataIoStats(
+          std::make_shared<velox::io::IoStatistics>());
+    }
+    if (setIndexIoStats) {
+      readerOptions.setIndexIoStats(
+          std::make_shared<velox::io::IoStatistics>());
+    }
     readerOptions.setFileFormat(FileFormat::NIMBLE);
     readerOptions.setLoadClusterIndex(true);
     readerOptions.setCacheMetadata(GetParam().enableCache);
@@ -2742,6 +2752,53 @@ TEST_P(NimbleIndexProjectorTest, cacheDataReadStats) {
   }
 
   cache->shutdown();
+}
+
+TEST_P(NimbleIndexProjectorTest, requiresIoStats) {
+  auto batch = vectorMaker_->rowVector(
+      {"key", "value"},
+      {vectorMaker_->flatVector<int64_t>({1, 2, 3}),
+       vectorMaker_->flatVector<int32_t>({10, 20, 30})});
+  writeData({batch}, {"key"});
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+
+  struct TestCase {
+    bool setDataIoStats;
+    bool setMetadataIoStats;
+    bool setIndexIoStats;
+    std::string expectedMessage;
+  };
+
+  const std::vector<TestCase> testCases = {
+      {false,
+       true,
+       true,
+       "NimbleIndexProjector requires ReaderOptions::dataIoStats to be set"},
+      {true,
+       false,
+       true,
+       "NimbleIndexProjector requires ReaderOptions::metadataIoStats to be "
+       "set"},
+      {true,
+       true,
+       false,
+       "NimbleIndexProjector requires ReaderOptions::indexIoStats to be set"},
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.expectedMessage);
+    NIMBLE_ASSERT_THROW(
+        createProjectorWithStats(
+            subfields,
+            /*cache=*/nullptr,
+            /*cacheData=*/std::nullopt,
+            /*setDataIoStats=*/testCase.setDataIoStats,
+            /*setMetadataIoStats=*/testCase.setMetadataIoStats,
+            /*setIndexIoStats=*/testCase.setIndexIoStats),
+        testCase.expectedMessage);
+  }
 }
 
 TEST_P(NimbleIndexProjectorTest, invalidFileHandleWithCache) {
