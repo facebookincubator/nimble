@@ -368,14 +368,7 @@ bool NimbleIndexProjector::buildStripeResult(
         rowRange.endRow = rowRange.startRow + static_cast<uint32_t>(remaining);
       }
     }
-
-    // Defensive guard: clipping above could in principle produce an empty
-    // range (rowRange.numRows() == 0). The upstream NIMBLE_CHECK_GT keeps
-    // `remaining > 0` today, but skipping empty ranges keeps the chunk
-    // slice list free of zero-row entries if that invariant ever drifts.
-    if (rowRange.numRows() == 0) {
-      continue;
-    }
+    NIMBLE_CHECK_GT(rowRange.numRows(), 0);
 
     // Queue a per-slice clone of the shared body+trailer. The header node
     // (version + rowCount + row range + resume-key-length [+ resume key])
