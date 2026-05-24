@@ -151,7 +151,7 @@ NimbleIndexProjector::Result NimbleIndexProjector::project(
     }
   }
 
-  finalizeResultChunks(result);
+  finalizeResult(result);
   updateIoStats();
   return result;
 }
@@ -318,12 +318,12 @@ NimbleIndexProjector::ResultChunk NimbleIndexProjector::serializeStripe(
     InputStreams& inputStreams) {
   velox::CpuWallTimer timer(stats_.projectionTiming);
 
-  const auto numStripeRows = stripeRowCount(stripeIndex);
+  const auto numRows = stripeRowCount(stripeIndex);
 
   // Build the shared body+trailer for this stripe:
   //   [stream_data...][encodingType][stream_sizes][trailer_size:u32].
   // The version/rowCount/row-range/resume-key header is per-slice and is
-  // built later by finalizeResultChunks().
+  // built later by finalizeResult().
 
   // Collect raw stream segments without copying. Sizes are needed for the
   // trailer.
@@ -360,19 +360,18 @@ NimbleIndexProjector::ResultChunk NimbleIndexProjector::serializeStripe(
   body->append(bodySize);
 
   ResultChunk stripeChunk;
-  stripeChunk.sharedData = std::move(*body);
-  stripeChunk.numStripeRows = numStripeRows;
+  stripeChunk.sharedBody = std::move(*body);
+  stripeChunk.numRows = numRows;
 
-  stats_.numScannedRows += numStripeRows;
-  stats_.numProjectedRows += numStripeRows;
-  stats_.numReadBytes += stripeChunk.sharedData.length();
+  stats_.numScannedRows += numRows;
+  stats_.numProjectedRows += numRows;
+  stats_.numReadBytes += stripeChunk.sharedBody.length();
   return stripeChunk;
 }
 
 bool NimbleIndexProjector::buildStripeResult(
     std::span<const StripeRowRange> stripeRowRanges,
     ResultChunk&& stripeChunk) {
-  size_t numEmittedSlices = 0;
   for (const auto& request : stripeRowRanges) {
     NIMBLE_CHECK(!request.rowRange.empty());
     auto rowRange = request.rowRange;
@@ -391,34 +390,21 @@ bool NimbleIndexProjector::buildStripeResult(
 
     // Queue a per-slice clone of the shared body+trailer. The header node
     // (version + rowCount + row range + resume-key-length [+ resume key])
-    // is materialized and chained on top in finalizeResultChunks().
+    // is materialized and chained on top in finalizeResult().
     stats_.numReadRows += rowRange.numRows();
     numReadRows_ += rowRange.numRows();
-    resultChunks_[request.requestIndex].emplace_back(
-        stripeChunk.sharedData.cloneOneAsValue(),
-        stripeChunk.numStripeRows,
-        rowRange);
+    resultChunks_[request.requestIndex].push_back(
+        ResultChunk{
+            .sharedBody = stripeChunk.sharedBody.cloneOneAsValue(),
+            .numRows = stripeChunk.numRows,
+            .rowRange = rowRange});
     rowsPerRequest_[request.requestIndex] += rowRange.numRows();
-    ++numEmittedSlices;
   }
 
-  // Account for body+trailer bytes (per stripe, shared) plus a lower-bound
-  // for the per-slice header bytes — one min-sized header per emitted slice
-  // (skipped zero-row ranges are excluded). finalizeResultChunks() tops up
-  // to the actual header size per slice. serializeStripe already added body
-  // bytes to stats_; numReadBytes_ tracks the running total used by maxBytes
-  // enforcement.
-  //
-  // NOTE: bodyBytes is added once per stripe even though every per-request
-  // chunk slice clones the shared body. maxBytes therefore caps "stripe
-  // bytes assembled" (in-process memory growth), not "wire bytes returned"
-  // — a single hot stripe served to N requests transmits ~N×bodyBytes over
-  // RPC. Callers wanting wire-bytes semantics should set maxBytes lower or
-  // post-process Result to compute total chunkSlices length.
-  const auto bodyBytes = stripeChunk.sharedData.length();
-  const auto headerBytes = serde::kMinTabletChunkHeaderSize * numEmittedSlices;
-  numReadBytes_ += bodyBytes + headerBytes;
-  stats_.numReadBytes += headerBytes;
+  // Track body bytes only. Header bytes are small relative to stream data
+  // and are not worth the accounting complexity.
+  const auto bodyBytes = stripeChunk.sharedBody.length();
+  numReadBytes_ += bodyBytes;
 
   return !checkOutputLimit();
 }
@@ -457,8 +443,8 @@ void NimbleIndexProjector::setResumeKeys(
 
   // For requests that were never started (no result chunks for this scan,
   // no resume key), set resume key to their original lower key so the
-  // caller can retry. Note: response.chunkSlices is populated later by
-  // finalizeResultChunks(), so we check resultChunks_ here.
+  // caller can retry. Note: response.chunks is populated later by
+  // finalizeResult(), so we check resultChunks_ here.
   for (size_t i = 0; i < result.responses.size(); ++i) {
     auto& response = result.responses[i];
     if (resultChunks_[i].empty() && !response.resumeKey.has_value()) {
@@ -473,7 +459,29 @@ void NimbleIndexProjector::setResumeKeys(
   }
 }
 
-void NimbleIndexProjector::finalizeResultChunks(Result& result) {
+namespace {
+
+/// Builds a kTabletRaw IOBuf chain: [header] -> [shared body+trailer].
+folly::IOBuf assembleChunk(
+    uint32_t numRows,
+    RowRange rowRange,
+    folly::IOBuf body,
+    std::optional<std::string> resumeKey = std::nullopt) {
+  serde::TabletChunkHeader header{
+      .rowCount = numRows,
+      .rowRange = rowRange,
+      .resumeKey = std::move(resumeKey),
+  };
+  auto serializedHeader =
+      std::make_unique<folly::IOBuf>(serde::createTabletChunkHeader(header));
+  serializedHeader->appendToChain(
+      std::make_unique<folly::IOBuf>(std::move(body)));
+  return std::move(*serializedHeader);
+}
+
+} // namespace
+
+void NimbleIndexProjector::finalizeResult(Result& result) {
   NIMBLE_CHECK_EQ(resultChunks_.size(), result.responses.size());
 
   for (size_t responseIdx = 0; responseIdx < result.responses.size();
@@ -481,37 +489,18 @@ void NimbleIndexProjector::finalizeResultChunks(Result& result) {
     auto& response = result.responses[responseIdx];
     auto& chunks = resultChunks_[responseIdx];
     const auto numChunks = chunks.size();
-    response.chunkSlices.reserve(numChunks);
+    response.chunks.reserve(numChunks);
 
     for (size_t chunkIdx = 0; chunkIdx < numChunks; ++chunkIdx) {
       auto& chunk = chunks[chunkIdx];
-
-      serde::TabletChunkHeader header{
-          .rowCount = chunk.numStripeRows,
-          .rowRange = chunk.rowRange,
-      };
-      // Resume key is only encoded on the last slice when present.
-      if (chunkIdx + 1 == numChunks && response.resumeKey.has_value()) {
-        header.resumeKey = response.resumeKey;
-      }
-
-      auto headerNode = std::make_unique<folly::IOBuf>(
-          serde::createTabletChunkHeader(header));
-      const auto headerSize = headerNode->length();
-
-      // Chain: [per-slice header] -> [shared body+trailer].
-      headerNode->appendToChain(
-          std::make_unique<folly::IOBuf>(std::move(chunk.sharedData)));
-
-      // Top up the lower-bound accounting from buildStripeResult to the
-      // actual header size (rowCount/range/resumeKeyLength varints may be
-      // larger than 1 byte; resume key bytes are also counted here).
-      const auto extra = headerSize - serde::kMinTabletChunkHeaderSize;
-      stats_.numReadBytes += extra;
-      numReadBytes_ += extra;
-
-      response.chunkSlices.emplace_back(std::move(*headerNode));
+      const bool isLastChunk = chunkIdx + 1 == numChunks;
+      response.chunks.emplace_back(assembleChunk(
+          chunk.numRows,
+          chunk.rowRange,
+          std::move(chunk.sharedBody),
+          isLastChunk ? response.resumeKey : std::nullopt));
     }
+    chunks.clear();
   }
 }
 

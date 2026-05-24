@@ -40,15 +40,8 @@ namespace facebook::nimble {
 ///   Wire:
 ///   [version:1B][rowCount:u32][size_0:u32][stream_data_0]...[size_N:u32][stream_data_N]
 ///
-/// - kCompact: Nimble encoding with a dense sizes trailer.
-///   Wire: [version:1B][rowCount:varint][stream_data_0]...[stream_data_N]
-///         [encoded_stream_sizes][stream_sizes_encoded_size:u32]
-///   The trailer contains nimble-encoded stream sizes (sizes[i] = byte size
-///   of stream i, 0 for missing) followed by the encoded sizes length (u32).
-///
-/// - kCompactRaw: Same as kCompact but uses raw encoding for stream sizes
-///   instead of the nimble encoding framework. Stream values still use
-///   nimble encoding.
+/// - kCompactRaw: Nimble encoding with raw-encoded stream sizes trailer.
+///   Stream values use nimble encoding; stream sizes use a raw encoding.
 ///   Wire: [version:1B][rowCount:varint][stream_data_0]...[stream_data_N]
 ///         [encodingType:1B][raw_sizes_payload][trailer_size:u32]
 ///   trailer_size = 1 + len(raw_sizes_payload).
@@ -65,25 +58,23 @@ namespace facebook::nimble {
 ///         [encodingType:1B][raw_sizes_payload][trailer_size:u32]
 enum class SerializationVersion : uint8_t {
   kLegacy = 0,
-  kCompact = 1,
   kCompactRaw = 2,
   kTabletRaw = 3,
 };
 
 std::string toString(SerializationVersion version);
 
-/// Returns true if the version is any non-legacy format (kCompact, kCompactRaw,
-/// or kTabletRaw). All non-legacy formats have a version header, encoded
-/// streams, and a stream sizes trailer.
+/// Returns true if the version is any non-legacy format (kCompactRaw or
+/// kTabletRaw). All non-legacy formats have a version header, encoded streams,
+/// and a stream sizes trailer.
 inline bool nonLegacyFormat(SerializationVersion version) {
   return version != SerializationVersion::kLegacy;
 }
 
-/// Returns true if the version uses compact encoding (kCompact or kCompactRaw).
+/// Returns true if the version uses compact encoding (kCompactRaw).
 /// Note: kTabletRaw is NOT a compact format (has chunk headers in streams).
 inline bool isCompactFormat(SerializationVersion version) {
-  return version == SerializationVersion::kCompact ||
-      version == SerializationVersion::kCompactRaw;
+  return version == SerializationVersion::kCompactRaw;
 }
 
 /// Returns true if the version uses raw stream sizes (kCompactRaw or
@@ -114,9 +105,9 @@ inline bool isCompactFormat(std::optional<SerializationVersion> version) {
 }
 
 /// Returns true if the version uses varint for the header row count.
-/// All non-legacy versioned formats (kCompact, kCompactRaw, kTabletRaw) use
-/// varint row counts in the header. The raw stream bodies inside kTabletRaw
-/// may use fixed u32 row counts in their encoding headers.
+/// All non-legacy versioned formats (kCompactRaw, kTabletRaw) use varint row
+/// counts in the header. The raw stream bodies inside kTabletRaw may use fixed
+/// u32 row counts in their encoding headers.
 inline bool usesVarintRowCount(SerializationVersion version) {
   return version != SerializationVersion::kLegacy;
 }
@@ -138,7 +129,7 @@ inline std::ostream& operator<<(
 
 struct SerializerOptions {
   /// Legacy (kLegacy) compression settings. These only apply when version is
-  /// kLegacy or nullopt. For kCompact, compression is controlled by
+  /// kLegacy or nullopt. For kCompactRaw, compression is controlled by
   /// 'compressionOptions' below.
   CompressionType compressionType{CompressionType::Uncompressed};
   uint32_t compressionThreshold{0};
@@ -147,7 +138,7 @@ struct SerializerOptions {
   /// Serialization format version.
   /// - nullopt (default): Legacy format with no version header (kLegacy).
   /// - kLegacy: Legacy compression format.
-  /// - kCompact: Nimble encoding format with dense sizes header.
+  /// - kCompactRaw: Nimble encoding format with raw sizes trailer.
   std::optional<SerializationVersion> version{};
 
   /// Columns that should be encoded as flat maps. Maps column name to a set
@@ -159,7 +150,7 @@ struct SerializerOptions {
   folly::F14FastMap<std::string, std::set<std::string>> flatMapColumns{};
 
   /// Factory for creating encoding selection policies.
-  /// Only used when version is kCompact.
+  /// Only used when version is kCompactRaw.
   /// When encodingLayoutTree is specified, used as fallback for streams or
   /// nested encodings not captured in the layout tree. When encodingLayoutTree
   /// is not specified, used directly for all streams.
@@ -196,8 +187,7 @@ struct SerializerOptions {
   /// Returns the effective serialization version.
   SerializationVersion serializationVersion() const;
 
-  /// Returns true if nimble encoding is enabled (version is kCompact or
-  /// kCompactRaw).
+  /// Returns true if nimble encoding is enabled (version is kCompactRaw).
   bool enableEncoding() const;
 };
 

@@ -24,8 +24,6 @@ std::string toString(SerializationVersion version) {
   switch (version) {
     case SerializationVersion::kLegacy:
       return "kLegacy";
-    case SerializationVersion::kCompact:
-      return "kCompact";
     case SerializationVersion::kCompactRaw:
       return "kCompactRaw";
     case SerializationVersion::kTabletRaw:
