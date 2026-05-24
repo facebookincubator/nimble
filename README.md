@@ -125,7 +125,7 @@ Nimble integrates Velox as a Git submodule, referencing a specific commit of the
 Velox repository. The Velox badge at the top of this README shows the current
 commit and how far behind it is from Velox main.
 
-[See what changed since the current Velox commit.](https://github.com/facebookincubator/velox/compare/d41a22889051fe65ec1ff2ebfa0ee7623c40c220...main)
+[See what changed since the current Velox commit.](https://github.com/facebookincubator/velox/compare/9c406e973b36c0139566ac3128130ebb43c0546c...main)
 <!-- pre-commit check-velox-readme validates the SHA above matches the submodule -->
 
 Advance Velox when your changes depend on code in Velox that
