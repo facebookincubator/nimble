@@ -89,14 +89,14 @@ class E2EFilterTest
     batchSize_ = 2003;
     batchCount_ = 5;
     testRowGroupSkip_ = false;
+    dataIoStats_ = std::make_shared<io::IoStatistics>();
+    metadataIoStats_ = std::make_shared<io::IoStatistics>();
     indexIoStats_ = std::make_shared<io::IoStatistics>();
     if (param().enableCache) {
       allocator_ = std::make_shared<memory::MallocAllocator>(
           memory::MemoryAllocator::Options{
               .capacity = 512 << 20, .reservationByteLimit = 0});
       cache_ = cache::AsyncDataCache::create(allocator_.get());
-      dataIoStats_ = std::make_shared<io::IoStatistics>();
-      metadataIoStats_ = std::make_shared<io::IoStatistics>();
       scanTracker_ = std::make_shared<cache::ScanTracker>(
           "testTracker", nullptr, 256 << 10);
       ioExecutor_ = std::make_unique<folly::CPUThreadPoolExecutor>(10);
@@ -476,6 +476,40 @@ class E2EFilterTest
                 {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
                   EncodingLayout{
                       EncodingType::MainlyConstant,
+                      {},
+                      CompressionType::Uncompressed,
+                      {std::nullopt, std::move(dictLayout)}}}},
+                std::string(childName)});
+      } else {
+        children.push_back(
+            EncodingLayoutTree{Kind::Scalar, {}, std::string(childName)});
+      }
+    }
+    return EncodingLayoutTree{Kind::Row, {}, "", std::move(children)};
+  }
+
+  /// Builds a layout tree that forces string columns into RLE→Dictionary
+  /// encoding to exercise the RLE dictionary vector path in E2E tests.
+  EncodingLayoutTree buildForcedRleDictionaryEncodingLayoutTree() {
+    std::vector<EncodingLayoutTree> children;
+    for (column_index_t i = 0;
+         i < static_cast<column_index_t>(rowType_->size());
+         ++i) {
+      const auto& childType = rowType_->childAt(i);
+      const auto& childName = rowType_->nameOf(i);
+
+      if (childType->isVarchar() || childType->isVarbinary()) {
+        EncodingLayout dictLayout{
+            EncodingType::Dictionary,
+            {},
+            CompressionType::Uncompressed,
+            {std::nullopt, std::nullopt}};
+        children.push_back(
+            EncodingLayoutTree{
+                Kind::Scalar,
+                {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
+                  EncodingLayout{
+                      EncodingType::RLE,
                       {},
                       CompressionType::Uncompressed,
                       {std::nullopt, std::move(dictLayout)}}}},
@@ -2110,11 +2144,9 @@ TEST_P(E2EFilterTest, nestedMainlyConstantWithDictionary) {
       *leafPool_,
       velox::dwio::common::MetricsLog::voidLog());
 
-  auto dataIoStats = std::make_shared<velox::io::IoStatistics>();
-  auto metadataIoStats = std::make_shared<velox::io::IoStatistics>();
   velox::dwio::common::ReaderOptions readerOpts(leafPool_.get());
-  readerOpts.setDataIoStats(dataIoStats);
-  readerOpts.setMetadataIoStats(metadataIoStats);
+  readerOpts.setDataIoStats(dataIoStats_);
+  readerOpts.setMetadataIoStats(metadataIoStats_);
   auto reader = makeReader(readerOpts, std::move(input));
   auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
   scanSpec->addAllChildFields(*type);
@@ -2300,11 +2332,124 @@ TEST_P(E2EFilterTest, fuzzMainlyConstantDictionaryVector) {
       *leafPool_,
       velox::dwio::common::MetricsLog::voidLog());
 
-  auto dataIoStats = std::make_shared<velox::io::IoStatistics>();
-  auto metadataIoStats = std::make_shared<velox::io::IoStatistics>();
   velox::dwio::common::ReaderOptions readerOpts(leafPool_.get());
-  readerOpts.setDataIoStats(dataIoStats);
-  readerOpts.setMetadataIoStats(metadataIoStats);
+  readerOpts.setDataIoStats(dataIoStats_);
+  readerOpts.setMetadataIoStats(metadataIoStats_);
+  auto reader = makeReader(readerOpts, std::move(input));
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*type);
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setStringDecoderZeroCopy(param().stringDecoderZeroCopy);
+  rowReaderOptions.setNimblePreserveDictionaryEncoding(
+      param().stringDecoderZeroCopy);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  auto result = BaseVector::create(type, 0, leafPool_.get());
+  size_t totalRows = 0;
+  size_t globalRow = 0;
+  while (rowReader->next(kRowCount, result)) {
+    auto* rowResult = result->as<RowVector>();
+    ASSERT_NE(rowResult, nullptr);
+    totalRows += rowResult->size();
+
+    auto stringChild = rowResult->childAt(0)->loadedVector();
+    DecodedVector decoded(*stringChild);
+    for (size_t i = 0; i < rowResult->size(); ++i) {
+      if (withNulls && globalRow % 7 == 0) {
+        ASSERT_TRUE(decoded.isNullAt(i))
+            << "Expected null at row=" << globalRow;
+      } else {
+        ASSERT_FALSE(decoded.isNullAt(i))
+            << "Unexpected null at row=" << globalRow;
+        ASSERT_EQ(decoded.valueAt<StringView>(i).str(), stringData[globalRow])
+            << "Mismatch at row=" << globalRow;
+      }
+      ++globalRow;
+    }
+  }
+  EXPECT_EQ(totalRows, kRowCount);
+}
+
+TEST_P(E2EFilterTest, fuzzRleDictionaryVector) {
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "fuzzRleDictionaryVector seed: " << seed;
+  std::mt19937 rng(seed);
+
+  const int kRowCount = 50 + rng() % 500;
+  const int numDistinct = 2 + rng() % 8;
+  const int maxRunLength = 2 + rng() % 20;
+  const bool withNulls = rng() % 3 == 0;
+
+  SCOPED_TRACE(
+      fmt::format(
+          "seed={} rows={} numDistinct={} maxRunLength={} withNulls={}",
+          seed,
+          kRowCount,
+          numDistinct,
+          maxRunLength,
+          withNulls));
+
+  std::vector<std::string> alphabet(numDistinct);
+  for (int j = 0; j < numDistinct; ++j) {
+    auto len = 1 + rng() % 30;
+    alphabet[j].resize(len);
+    for (auto& c : alphabet[j]) {
+      c = 'a' + rng() % 26;
+    }
+  }
+
+  std::vector<std::string> stringData;
+  stringData.reserve(kRowCount);
+  while (static_cast<int>(stringData.size()) < kRowCount) {
+    auto value = alphabet[rng() % numDistinct];
+    auto runLen =
+        std::min<int>(1 + rng() % maxRunLength, kRowCount - stringData.size());
+    for (int j = 0; j < runLen; ++j) {
+      stringData.push_back(value);
+    }
+  }
+
+  rowType_ = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+
+  auto type = asRowType(rowType_);
+  auto stringVector =
+      velox::test::VectorMaker(leafPool_.get())
+          .flatVector<velox::StringView>(
+              kRowCount,
+              [&](auto row) { return velox::StringView(stringData[row]); },
+              withNulls ? velox::test::VectorMaker::nullEvery(7) : nullptr);
+  auto longVector =
+      velox::test::VectorMaker(leafPool_.get())
+          .flatVector<int64_t>(kRowCount, [](auto row) { return row; });
+
+  auto batch = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kRowCount,
+      std::vector<VectorPtr>{stringVector, longVector});
+
+  sinkData_.clear();
+  {
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions writerOptions;
+    writerOptions.encodingLayoutTree.emplace(
+        buildForcedRleDictionaryEncodingLayoutTree());
+    VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+    writer.write(batch);
+    writer.close();
+  }
+
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+
+  velox::dwio::common::ReaderOptions readerOpts(leafPool_.get());
+  readerOpts.setDataIoStats(dataIoStats_);
+  readerOpts.setMetadataIoStats(metadataIoStats_);
   auto reader = makeReader(readerOpts, std::move(input));
   auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
   scanSpec->addAllChildFields(*type);
@@ -2433,11 +2578,9 @@ TEST_P(E2EFilterTest, crossChunkEncodingChange) {
       *leafPool_,
       velox::dwio::common::MetricsLog::voidLog());
 
-  auto dataIoStats = std::make_shared<velox::io::IoStatistics>();
-  auto metadataIoStats = std::make_shared<velox::io::IoStatistics>();
   velox::dwio::common::ReaderOptions crossChunkReaderOpts(leafPool_.get());
-  crossChunkReaderOpts.setDataIoStats(dataIoStats);
-  crossChunkReaderOpts.setMetadataIoStats(metadataIoStats);
+  crossChunkReaderOpts.setDataIoStats(dataIoStats_);
+  crossChunkReaderOpts.setMetadataIoStats(metadataIoStats_);
   auto reader = makeReader(crossChunkReaderOpts, std::move(input));
   auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
   scanSpec->addAllChildFields(*type);

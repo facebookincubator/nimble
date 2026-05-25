@@ -966,6 +966,68 @@ class DictionaryApiTypedTest : public ::testing::Test {
     return decodeEncoding(std::string_view(reserved, encodingSize));
   }
 
+  /// Serializes values as RLE wrapping Dictionary into outputBuffer.
+  /// Computes runs, encodes run lengths as Trivial<uint32_t>, encodes
+  /// run values as Dictionary<T>.
+  std::string_view serializeRleDictionary(
+      const std::vector<T>& values,
+      nimble::Buffer& outputBuffer) {
+    NIMBLE_CHECK(!values.empty());
+    const uint32_t rowCount = values.size();
+
+    nimble::Vector<uint32_t> runLengths{pool_.get()};
+    nimble::Vector<PhysicalType> runValues{pool_.get()};
+    auto span = std::span<const PhysicalType>(
+        reinterpret_cast<const PhysicalType*>(values.data()), values.size());
+    nimble::rle::computeRuns(span, &runLengths, &runValues);
+
+    // Encode run lengths as Trivial<uint32_t>.
+    auto runLengthSpan =
+        std::span<const uint32_t>(runLengths.data(), runLengths.size());
+    nimble::Buffer rlBuf{*pool_};
+    nimble::EncodingSelection<uint32_t> rlSel{
+        {.encodingType = nimble::EncodingType::Trivial},
+        nimble::Statistics<uint32_t>::create(runLengthSpan),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<uint32_t>>(
+            false, false)};
+    auto serializedRunLengths =
+        nimble::TrivialEncoding<uint32_t>::encode(rlSel, runLengthSpan, rlBuf);
+
+    // Encode run values as Dictionary<T>.
+    auto rvSpan =
+        std::span<const PhysicalType>(runValues.data(), runValues.size());
+    nimble::Buffer rvBuf{*pool_};
+    nimble::EncodingSelection<PhysicalType> rvSel{
+        {.encodingType = nimble::EncodingType::Dictionary},
+        nimble::Statistics<PhysicalType>::create(rvSpan),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(false, false)};
+    auto serializedRunValues =
+        nimble::DictionaryEncoding<T>::encode(rvSel, rvSpan, rvBuf);
+
+    // Assemble RLE binary: prefix | writeString(runLengths) |
+    // writeBytes(runValues)
+    const uint32_t encodingSize = nimble::Encoding::kPrefixSize + 4 +
+        serializedRunLengths.size() + serializedRunValues.size();
+    char* reserved = outputBuffer.reserve(encodingSize);
+    char* pos = reserved;
+    nimble::encoding::writeChar(
+        static_cast<char>(nimble::EncodingType::RLE), pos);
+    nimble::encoding::writeChar(
+        static_cast<char>(nimble::TypeTraits<T>::dataType), pos);
+    nimble::encoding::writeUint32(rowCount, pos);
+    nimble::encoding::writeString(serializedRunLengths, pos);
+    nimble::encoding::writeBytes(serializedRunValues, pos);
+
+    return std::string_view(reserved, encodingSize);
+  }
+
+  /// Encodes data as RLE wrapping Dictionary.
+  std::unique_ptr<nimble::Encoding> encodeRleDictionary(
+      const std::vector<T>& values) {
+    auto serialized = serializeRleDictionary(values, *buffer_);
+    return decodeEncoding(serialized);
+  }
+
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::unique_ptr<nimble::Buffer> buffer_;
   std::vector<velox::BufferPtr> stringBuffers_;
@@ -1807,6 +1869,172 @@ TYPED_TEST(
         EXPECT_EQ(indices[i], commonValueIndex) << "row=" << i;
       }
     }
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, rleDictionaryBasics) {
+  using T = TypeParam;
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha", "bravo", "charlie"};
+    // 5x alpha, 3x bravo, 4x charlie, 3x alpha
+    for (int i = 0; i < 5; ++i) {
+      data.push_back(std::string_view(this->stringPool_[0]));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(std::string_view(this->stringPool_[1]));
+    }
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(std::string_view(this->stringPool_[2]));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(std::string_view(this->stringPool_[0]));
+    }
+  } else {
+    // 5x 10, 3x 20, 4x 30, 3x 10
+    for (int i = 0; i < 5; ++i) {
+      data.push_back(T(10));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(T(20));
+    }
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(T(30));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(T(10));
+    }
+  }
+
+  auto encoding = this->encodeRleDictionary(data);
+  EXPECT_TRUE(encoding->dictionaryEnabled());
+  EXPECT_EQ(encoding->dictionarySize(), 3);
+
+  std::set<T> entries;
+  for (uint32_t i = 0; i < encoding->dictionarySize(); ++i) {
+    const auto* entry = static_cast<const T*>(encoding->dictionaryEntry(i));
+    entries.insert(*entry);
+  }
+
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    EXPECT_THAT(
+        entries, ::testing::UnorderedElementsAre("alpha", "bravo", "charlie"));
+  } else {
+    EXPECT_THAT(entries, ::testing::UnorderedElementsAre(T(10), T(20), T(30)));
+  }
+
+  // Verify materializeIndices round-trips through the dictionary.
+  const auto dictSize = encoding->dictionarySize();
+  std::vector<uint32_t> indices(data.size());
+  encoding->materializeIndices(data.size(), indices.data());
+
+  const auto* allEntries = static_cast<const T*>(encoding->dictionaryEntries());
+  for (size_t i = 0; i < data.size(); ++i) {
+    SCOPED_TRACE(fmt::format("row {}", i));
+    ASSERT_LT(indices[i], dictSize);
+    EXPECT_EQ(allEntries[indices[i]], data[i]);
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, materializeIndicesRleDictionaryFuzz) {
+  using T = TypeParam;
+
+  for (int run = 0; run < 20; ++run) {
+    auto seed = folly::Random::rand32();
+    std::mt19937 rng(seed);
+    const auto numRows = 50 + rng() % 500;
+    const auto cardinality = 2 + rng() % 10;
+    const auto maxRunLength = 1 + rng() % 20;
+
+    SCOPED_TRACE(
+        fmt::format(
+            "run={} seed={} numRows={} cardinality={} maxRunLength={}",
+            run,
+            seed,
+            numRows,
+            cardinality,
+            maxRunLength));
+
+    std::vector<T> data;
+    data.reserve(numRows);
+    std::vector<T> alphabet;
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      this->stringPool_.clear();
+      for (size_t i = 0; i < cardinality; ++i) {
+        this->stringPool_.push_back("val_" + std::to_string(i));
+      }
+      for (size_t i = 0; i < cardinality; ++i) {
+        alphabet.push_back(std::string_view(this->stringPool_[i]));
+      }
+    } else {
+      for (size_t i = 0; i < cardinality; ++i) {
+        alphabet.push_back(static_cast<T>(i + 1));
+      }
+    }
+
+    // Build data with runs.
+    while (data.size() < static_cast<size_t>(numRows)) {
+      auto value = alphabet[rng() % cardinality];
+      auto runLen =
+          std::min<size_t>(1 + rng() % maxRunLength, numRows - data.size());
+      for (size_t j = 0; j < runLen; ++j) {
+        data.push_back(value);
+      }
+    }
+
+    auto encoding = this->encodeRleDictionary(data);
+    ASSERT_TRUE(encoding->dictionaryEnabled());
+
+    const auto dictSize = encoding->dictionarySize();
+    std::vector<uint32_t> indices(data.size());
+    encoding->materializeIndices(data.size(), indices.data());
+
+    const auto* entries = static_cast<const T*>(encoding->dictionaryEntries());
+    for (size_t i = 0; i < data.size(); ++i) {
+      ASSERT_LT(indices[i], dictSize) << "row " << i;
+      EXPECT_EQ(entries[indices[i]], data[i]) << "row " << i;
+    }
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, buildAlphabetRleDictionary) {
+  using T = TypeParam;
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha", "bravo", "charlie"};
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(std::string_view(this->stringPool_[0]));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(std::string_view(this->stringPool_[1]));
+    }
+    for (int i = 0; i < 2; ++i) {
+      data.push_back(std::string_view(this->stringPool_[2]));
+    }
+  } else {
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(T(10));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(T(20));
+    }
+    for (int i = 0; i < 2; ++i) {
+      data.push_back(T(30));
+    }
+  }
+
+  auto encoding = this->encodeRleDictionary(data);
+  auto alphabet = nimble::buildEncodingDictionaryAlphabet<T>(encoding.get());
+  EXPECT_EQ(alphabet.size(), 3);
+
+  std::set<T> alphabetSet(alphabet.begin(), alphabet.end());
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    EXPECT_THAT(
+        alphabetSet,
+        ::testing::UnorderedElementsAre("alpha", "bravo", "charlie"));
+  } else {
+    EXPECT_THAT(
+        alphabetSet, ::testing::UnorderedElementsAre(T(10), T(20), T(30)));
   }
 }
 

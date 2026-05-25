@@ -200,6 +200,11 @@ void callReadIndicesWithVisitor(
           .readIndicesWithVisitor(visitor, params);
       return;
     }
+    case EncodingType::RLE: {
+      static_cast<RLEEncoding<std::string_view>&>(encoding)
+          .readIndicesWithVisitor(visitor, params);
+      return;
+    }
     default:
       NIMBLE_UNREACHABLE(
           "Dictionary indices dispatch on unsupported encoding: {}",
