@@ -35,7 +35,7 @@ namespace facebook::nimble::serde {
 struct SerializationHeader {
   SerializationVersion version{SerializationVersion::kLegacy};
   uint32_t rowCount{0};
-  /// Row range embedded in kTabletRaw headers. nullopt for other versions.
+  /// Row range embedded in kTablet headers. nullopt for other versions.
   std::optional<RowRange> rowRange;
 };
 
@@ -52,7 +52,7 @@ char* extend(T& buffer, uint32_t size) {
 
 /// Reads the serialization header from `*pos`, detecting the version from the
 /// first byte when `hasHeader` is true (otherwise defaults to kLegacy).
-/// Advances `*pos` past all header fields. For kTabletRaw, also reads the
+/// Advances `*pos` past all header fields. For kTablet, also reads the
 /// row range and resume key length fields.
 SerializationHeader
 readSerializationHeader(const char*& pos, const char* end, bool hasHeader);
@@ -60,15 +60,15 @@ readSerializationHeader(const char*& pos, const char* end, bool hasHeader);
 /// Writes a serialization header to buffer.
 /// For kLegacy: writes [optional_version:1B][rowCount:u32]
 /// For kCompactRaw: writes [version:1B][rowCount:varint]
-/// kTabletRaw headers must use createTabletChunkHeader() instead.
+/// kTablet headers must use createTabletChunkHeader() instead.
 template <typename T>
 void writeSerializationHeader(
     T& buffer,
     std::optional<SerializationVersion> version,
     uint32_t rowCount) {
   NIMBLE_CHECK(
-      !isTabletRawFormat(version),
-      "kTabletRaw headers must use createTabletChunkHeader()");
+      !isTabletVersion(version),
+      "kTablet headers must use createTabletChunkHeader()");
 
   if (version.has_value()) {
     auto* versionPos = detail::extend(buffer, 1);
@@ -85,13 +85,13 @@ void writeSerializationHeader(
 }
 
 /// Returns the exact byte size of the serialization header.
-/// Not valid for kTabletRaw — use createTabletChunkHeader() instead.
+/// Not valid for kTablet — use createTabletChunkHeader() instead.
 inline size_t estimateSerializationHeaderSize(
     std::optional<SerializationVersion> version,
     uint32_t rowCount) {
   NIMBLE_CHECK(
-      !isTabletRawFormat(version),
-      "kTabletRaw headers must use createTabletChunkHeader()");
+      !isTabletVersion(version),
+      "kTablet headers must use createTabletChunkHeader()");
   const size_t versionBytes = version.has_value() ? sizeof(uint8_t) : 0;
   const size_t rowCountBytes = usesVarintRowCount(version)
       ? varint::varintSize(rowCount)
@@ -99,19 +99,19 @@ inline size_t estimateSerializationHeaderSize(
   return versionBytes + rowCountBytes;
 }
 
-// ---- Tablet chunk header (kTabletRaw only) ----
+// ---- Tablet chunk header (kTablet only) ----
 
-/// Parsed fields of a kTabletRaw chunk slice header.
+/// Parsed fields of a kTablet chunk slice header.
 struct TabletChunkHeader {
   uint32_t rowCount{0};
   RowRange rowRange;
   std::optional<std::string> resumeKey;
 };
 
-/// Builds the kTabletRaw chunk slice header as a freshly-allocated IOBuf.
+/// Builds the kTablet chunk slice header as a freshly-allocated IOBuf.
 folly::IOBuf createTabletChunkHeader(const TabletChunkHeader& header);
 
-/// Reads a kTabletRaw chunk slice header including the version byte.
+/// Reads a kTablet chunk slice header including the version byte.
 TabletChunkHeader readTabletChunkHeader(const char*& pos, const char* end);
 
 } // namespace facebook::nimble::serde

@@ -26,8 +26,8 @@ std::string toString(SerializationVersion version) {
       return "kLegacy";
     case SerializationVersion::kCompactRaw:
       return "kCompactRaw";
-    case SerializationVersion::kTabletRaw:
-      return "kTabletRaw";
+    case SerializationVersion::kTablet:
+      return "kTablet";
     default:
       NIMBLE_FAIL(
           "Unknown SerializationVersion: {}", static_cast<int>(version));

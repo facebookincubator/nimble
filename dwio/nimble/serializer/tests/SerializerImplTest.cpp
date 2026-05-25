@@ -1247,19 +1247,19 @@ TEST_F(EncodeTypedCompressionTest, defaultFactoryNoCompression) {
       CompressionType::Uncompressed);
 }
 
-// Tests for kTabletRaw chunk header stripping in StreamDataReader.
-// kTabletRaw streams contain chunk headers:
+// Tests for kTablet chunk header stripping in StreamDataReader.
+// kTablet streams contain chunk headers:
 //   [chunkSize:u32][compressionType:1B][encoded_data...]
 // StreamDataReader must strip these headers and decompress as needed.
 
-class TabletRawChunkStripTest : public ::testing::Test {
+class TabletChunkStripTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
     memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
 
   void SetUp() override {
-    pool_ = memory::memoryManager()->addLeafPool("tablet_raw_chunk_test");
+    pool_ = memory::memoryManager()->addLeafPool("tablet_chunk_test");
   }
 
   // Builds a single uncompressed chunk: [length:u32][Uncompressed:1B][data].
@@ -1298,10 +1298,10 @@ class TabletRawChunkStripTest : public ::testing::Test {
     return result;
   }
 
-  // Assembles a kTabletRaw buffer from streams and returns the data collected
+  // Assembles a kTablet buffer from streams and returns the data collected
   // by iterateStreams.
   // Each entry in 'streams' is the raw stream bytes (with chunk headers).
-  std::vector<std::pair<uint32_t, std::string>> deserializeTabletRaw(
+  std::vector<std::pair<uint32_t, std::string>> deserializeTablet(
       uint32_t rowCount,
       const std::vector<std::pair<uint32_t, std::string>>& streams) {
     // Build dense sizes array.
@@ -1341,27 +1341,27 @@ class TabletRawChunkStripTest : public ::testing::Test {
   std::shared_ptr<memory::MemoryPool> pool_;
 };
 
-TEST_F(TabletRawChunkStripTest, singleChunkUncompressed) {
+TEST_F(TabletChunkStripTest, singleChunkUncompressed) {
   std::string payload = "hello world test data";
   auto stream = buildUncompressedChunk(payload);
-  auto result = deserializeTabletRaw(10, {{0, stream}});
+  auto result = deserializeTablet(10, {{0, stream}});
 
   ASSERT_EQ(result.size(), 1);
   EXPECT_EQ(result[0].first, 0);
   EXPECT_EQ(result[0].second, payload);
 }
 
-TEST_F(TabletRawChunkStripTest, singleChunkCompressed) {
+TEST_F(TabletChunkStripTest, singleChunkCompressed) {
   std::string payload = "compressed data that should be zstd encoded";
   auto stream = buildCompressedChunk(payload);
-  auto result = deserializeTabletRaw(10, {{0, stream}});
+  auto result = deserializeTablet(10, {{0, stream}});
 
   ASSERT_EQ(result.size(), 1);
   EXPECT_EQ(result[0].first, 0);
   EXPECT_EQ(result[0].second, payload);
 }
 
-TEST_F(TabletRawChunkStripTest, multipleChunksAllUncompressed) {
+TEST_F(TabletChunkStripTest, multipleChunksAllUncompressed) {
   std::string part1 = "first chunk data";
   std::string part2 = "second chunk data";
   std::string part3 = "third chunk data";
@@ -1369,26 +1369,26 @@ TEST_F(TabletRawChunkStripTest, multipleChunksAllUncompressed) {
       {buildUncompressedChunk(part1),
        buildUncompressedChunk(part2),
        buildUncompressedChunk(part3)});
-  auto result = deserializeTabletRaw(10, {{0, stream}});
+  auto result = deserializeTablet(10, {{0, stream}});
 
   ASSERT_EQ(result.size(), 1);
   EXPECT_EQ(result[0].first, 0);
   EXPECT_EQ(result[0].second, part1 + part2 + part3);
 }
 
-TEST_F(TabletRawChunkStripTest, multipleChunksAllCompressed) {
+TEST_F(TabletChunkStripTest, multipleChunksAllCompressed) {
   std::string part1 = "first chunk of compressed data here";
   std::string part2 = "second chunk of compressed data here";
   auto stream =
       concatChunks({buildCompressedChunk(part1), buildCompressedChunk(part2)});
-  auto result = deserializeTabletRaw(10, {{0, stream}});
+  auto result = deserializeTablet(10, {{0, stream}});
 
   ASSERT_EQ(result.size(), 1);
   EXPECT_EQ(result[0].first, 0);
   EXPECT_EQ(result[0].second, part1 + part2);
 }
 
-TEST_F(TabletRawChunkStripTest, multipleChunksMixed) {
+TEST_F(TabletChunkStripTest, multipleChunksMixed) {
   std::string part1 = "uncompressed chunk one";
   std::string part2 = "compressed chunk two with some data";
   std::string part3 = "another uncompressed chunk three";
@@ -1396,20 +1396,20 @@ TEST_F(TabletRawChunkStripTest, multipleChunksMixed) {
       {buildUncompressedChunk(part1),
        buildCompressedChunk(part2),
        buildUncompressedChunk(part3)});
-  auto result = deserializeTabletRaw(10, {{0, stream}});
+  auto result = deserializeTablet(10, {{0, stream}});
 
   ASSERT_EQ(result.size(), 1);
   EXPECT_EQ(result[0].first, 0);
   EXPECT_EQ(result[0].second, part1 + part2 + part3);
 }
 
-TEST_F(TabletRawChunkStripTest, multipleStreams) {
+TEST_F(TabletChunkStripTest, multipleStreams) {
   std::string payload1 = "stream zero payload";
   std::string payload2 = "stream two payload data";
   auto stream0 = buildUncompressedChunk(payload1);
   auto stream2 = buildCompressedChunk(payload2);
   // Stream offsets 0 and 2 (gap at 1).
-  auto result = deserializeTabletRaw(10, {{0, stream0}, {2, stream2}});
+  auto result = deserializeTablet(10, {{0, stream0}, {2, stream2}});
 
   ASSERT_EQ(result.size(), 2);
   EXPECT_EQ(result[0].first, 0);
@@ -1418,7 +1418,7 @@ TEST_F(TabletRawChunkStripTest, multipleStreams) {
   EXPECT_EQ(result[1].second, payload2);
 }
 
-TEST_F(TabletRawChunkStripTest, multipleStreamsMultipleChunks) {
+TEST_F(TabletChunkStripTest, multipleStreamsMultipleChunks) {
   // Stream 0: two uncompressed chunks.
   std::string s0p1 = "stream0 part1";
   std::string s0p2 = "stream0 part2";
@@ -1436,7 +1436,7 @@ TEST_F(TabletRawChunkStripTest, multipleStreamsMultipleChunks) {
       concatChunks({buildUncompressedChunk(s2p1), buildCompressedChunk(s2p2)});
 
   auto result =
-      deserializeTabletRaw(10, {{0, stream0}, {1, stream1}, {2, stream2}});
+      deserializeTablet(10, {{0, stream0}, {1, stream1}, {2, stream2}});
 
   ASSERT_EQ(result.size(), 3);
   EXPECT_EQ(result[0].first, 0);
@@ -1447,18 +1447,18 @@ TEST_F(TabletRawChunkStripTest, multipleStreamsMultipleChunks) {
   EXPECT_EQ(result[2].second, s2p1 + s2p2);
 }
 
-TEST_F(TabletRawChunkStripTest, emptyPayloadChunk) {
+TEST_F(TabletChunkStripTest, emptyPayloadChunk) {
   // Single uncompressed chunk with empty payload.
   // The chunk header is still present (5 bytes), so iterateStreams calls the
   // callback with the stripped (empty) data.
   auto stream = buildUncompressedChunk("");
-  auto result = deserializeTabletRaw(10, {{0, stream}});
+  auto result = deserializeTablet(10, {{0, stream}});
   ASSERT_EQ(result.size(), 1);
   EXPECT_EQ(result[0].first, 0);
   EXPECT_TRUE(result[0].second.empty());
 }
 
-TEST_F(TabletRawChunkStripTest, largePayload) {
+TEST_F(TabletChunkStripTest, largePayload) {
   // Large payload to exercise buffer growth.
   std::string payload(100'000, 'x');
   for (size_t i = 0; i < payload.size(); ++i) {
@@ -1467,12 +1467,12 @@ TEST_F(TabletRawChunkStripTest, largePayload) {
 
   // Test single compressed chunk with large data.
   auto stream = buildCompressedChunk(payload);
-  auto result = deserializeTabletRaw(10, {{0, stream}});
+  auto result = deserializeTablet(10, {{0, stream}});
   ASSERT_EQ(result.size(), 1);
   EXPECT_EQ(result[0].second, payload);
 }
 
-TEST_F(TabletRawChunkStripTest, largePayloadMultipleChunks) {
+TEST_F(TabletChunkStripTest, largePayloadMultipleChunks) {
   // Split large payload across multiple chunks of different types.
   std::string payload(50'000, '\0');
   for (size_t i = 0; i < payload.size(); ++i) {
@@ -1487,17 +1487,17 @@ TEST_F(TabletRawChunkStripTest, largePayloadMultipleChunks) {
       {buildUncompressedChunk(part1),
        buildCompressedChunk(part2),
        buildCompressedChunk(part3)});
-  auto result = deserializeTabletRaw(10, {{0, stream}});
+  auto result = deserializeTablet(10, {{0, stream}});
 
   ASSERT_EQ(result.size(), 1);
   EXPECT_EQ(result[0].second, payload);
 }
 
 // Tests for ZSTD_DCtx reuse in StreamData and StreamDataReader.
-// Inherits from TabletRawChunkStripTest for shared helpers
+// Inherits from TabletChunkStripTest for shared helpers
 // (buildCompressedChunk, pool_, etc.).
 
-class ZstdDCtxReuseTest : public TabletRawChunkStripTest {
+class ZstdDCtxReuseTest : public TabletChunkStripTest {
  protected:
   static std::string buildLegacyCompressedData(std::string_view payload) {
     std::string result;
@@ -1512,9 +1512,9 @@ class ZstdDCtxReuseTest : public TabletRawChunkStripTest {
     return result;
   }
 
-  // Like TabletRawChunkStripTest::deserializeTabletRaw, but passes
+  // Like TabletChunkStripTest::deserializeTablet, but passes
   // the fixture's shared dctx to StreamDataReader.
-  std::vector<std::pair<uint32_t, std::string>> deserializeTabletRawWithDCtx(
+  std::vector<std::pair<uint32_t, std::string>> deserializeTabletWithDCtx(
       uint32_t rowCount,
       const std::vector<std::pair<uint32_t, std::string>>& streams) {
     uint32_t maxOffset = 0;
@@ -1616,7 +1616,7 @@ TEST_F(ZstdDCtxReuseTest, streamDataDCtxReusedAcrossReset) {
 TEST_F(ZstdDCtxReuseTest, streamDataReaderCompressedChunkWithDCtx) {
   std::string payload = "compressed data that should be zstd encoded for test";
   auto chunk = buildCompressedChunk(payload);
-  auto result = deserializeTabletRawWithDCtx(10, {{0, chunk}});
+  auto result = deserializeTabletWithDCtx(10, {{0, chunk}});
 
   ASSERT_EQ(result.size(), 1);
   EXPECT_EQ(result[0].first, 0);
@@ -1629,14 +1629,14 @@ TEST_F(ZstdDCtxReuseTest, streamDataReaderDCtxReusedAcrossStreams) {
   auto chunk1 = buildCompressedChunk(payload1);
   auto chunk2 = buildCompressedChunk(payload2);
 
-  auto result = deserializeTabletRawWithDCtx(10, {{0, chunk1}, {1, chunk2}});
+  auto result = deserializeTabletWithDCtx(10, {{0, chunk1}, {1, chunk2}});
 
   ASSERT_EQ(result.size(), 2);
   EXPECT_EQ(result[0].second, payload1);
   EXPECT_EQ(result[1].second, payload2);
 }
 
-class LZ4RoundtripTest : public TabletRawChunkStripTest {
+class LZ4RoundtripTest : public TabletChunkStripTest {
  protected:
   static std::string buildLegacyLZ4CompressedData(std::string_view payload) {
     std::string result;
@@ -1751,7 +1751,7 @@ TEST_F(LZ4RoundtripTest, streamDataLZ4ReusedAcrossReset) {
 TEST_F(LZ4RoundtripTest, streamDataReaderLZ4CompressedChunk) {
   std::string payload = "compressed data that should be lz4 encoded for test";
   auto chunk = buildLZ4CompressedChunk(payload);
-  auto result = deserializeTabletRaw(10, {{0, chunk}});
+  auto result = deserializeTablet(10, {{0, chunk}});
 
   ASSERT_EQ(result.size(), 1);
   EXPECT_EQ(result[0].first, 0);
@@ -1764,7 +1764,7 @@ TEST_F(LZ4RoundtripTest, streamDataReaderLZ4ReusedAcrossStreams) {
   auto chunk1 = buildLZ4CompressedChunk(payload1);
   auto chunk2 = buildLZ4CompressedChunk(payload2);
 
-  auto result = deserializeTabletRaw(10, {{0, chunk1}, {1, chunk2}});
+  auto result = deserializeTablet(10, {{0, chunk1}, {1, chunk2}});
 
   ASSERT_EQ(result.size(), 2);
   EXPECT_EQ(result[0].second, payload1);
@@ -1776,7 +1776,7 @@ TEST_F(LZ4RoundtripTest, streamDataReaderLZ4MultipleChunks) {
   std::string part2 = "second chunk of lz4 compressed data here";
   auto stream = concatChunks(
       {buildLZ4CompressedChunk(part1), buildLZ4CompressedChunk(part2)});
-  auto result = deserializeTabletRaw(10, {{0, stream}});
+  auto result = deserializeTablet(10, {{0, stream}});
 
   ASSERT_EQ(result.size(), 1);
   EXPECT_EQ(result[0].first, 0);
@@ -1791,7 +1791,7 @@ TEST_F(LZ4RoundtripTest, streamDataReaderLZ4MixedWithUncompressed) {
       {buildUncompressedChunk(part1),
        buildLZ4CompressedChunk(part2),
        buildUncompressedChunk(part3)});
-  auto result = deserializeTabletRaw(10, {{0, stream}});
+  auto result = deserializeTablet(10, {{0, stream}});
 
   ASSERT_EQ(result.size(), 1);
   EXPECT_EQ(result[0].first, 0);
@@ -1901,9 +1901,9 @@ TEST_F(LZ4RoundtripTest, encodeDecodeLZ4HighCompression) {
 }
 
 // Exercises the StreamDataReader::initialize path (delegates to the shared
-// readTabletChunkFieldsAfterVersion helper) on forged kTabletRaw input.
+// readTabletChunkFieldsAfterVersion helper) on forged kTablet input.
 // Uses the WriteHeaderTest fixture purely for its initialized MemoryPool.
-class StreamDataReaderTabletRawTest : public WriteHeaderTest {
+class StreamDataReaderTabletTest : public WriteHeaderTest {
  protected:
   void expectInitializeThrows(const std::string& buf) {
     DeserializerOptions options;
@@ -1915,9 +1915,9 @@ class StreamDataReaderTabletRawTest : public WriteHeaderTest {
   }
 };
 
-TEST_F(StreamDataReaderTabletRawTest, rejectsRowRangeExceedingRowCount) {
+TEST_F(StreamDataReaderTabletTest, rejectsRowRangeExceedingRowCount) {
   std::string buf;
-  buf.push_back(static_cast<char>(SerializationVersion::kTabletRaw));
+  buf.push_back(static_cast<char>(SerializationVersion::kTablet));
   buf.push_back(0x05); // rowCount = 5
   buf.push_back(0x00); // startRow = 0
   buf.push_back(0x64); // endRow = 100 (> rowCount)
@@ -1925,9 +1925,9 @@ TEST_F(StreamDataReaderTabletRawTest, rejectsRowRangeExceedingRowCount) {
   expectInitializeThrows(buf);
 }
 
-TEST_F(StreamDataReaderTabletRawTest, rejectsInvertedRowRange) {
+TEST_F(StreamDataReaderTabletTest, rejectsInvertedRowRange) {
   std::string buf;
-  buf.push_back(static_cast<char>(SerializationVersion::kTabletRaw));
+  buf.push_back(static_cast<char>(SerializationVersion::kTablet));
   buf.push_back(0x0a); // rowCount = 10
   buf.push_back(0x05); // startRow = 5
   buf.push_back(0x03); // endRow = 3
@@ -1935,11 +1935,11 @@ TEST_F(StreamDataReaderTabletRawTest, rejectsInvertedRowRange) {
   expectInitializeThrows(buf);
 }
 
-TEST_F(StreamDataReaderTabletRawTest, rejectsTruncatedResumeKey) {
+TEST_F(StreamDataReaderTabletTest, rejectsTruncatedResumeKey) {
   // Valid version + rowCount + row range + resumeKeyLength=4 (declares a
   // 3-byte key), but only 1 byte of resume key follows.
   std::string buf;
-  buf.push_back(static_cast<char>(SerializationVersion::kTabletRaw));
+  buf.push_back(static_cast<char>(SerializationVersion::kTablet));
   buf.push_back(0x0a); // rowCount = 10
   buf.push_back(0x00); // startRow = 0
   buf.push_back(0x05); // endRow = 5

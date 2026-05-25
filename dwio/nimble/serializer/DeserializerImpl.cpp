@@ -52,7 +52,7 @@ StreamData::StreamData(
     : kind_{kind},
       pool_{pool},
       encodingEnabled_{nonLegacyFormat(options.version)},
-      useVarintRowCount_{!isTabletRawFormat(options.version)},
+      useVarintRowCount_{!isTabletVersion(options.version)},
       bufferPool_{options.bufferPool},
       decompressionBuffer_{options.decompressionBuffer},
       stringBuffers_{&stringBuffers} {
@@ -86,7 +86,7 @@ void StreamData::reset(std::string_view data, SerializationVersion version) {
   readRows_ = 0;
   encoding_.reset();
   encodingEnabled_ = nonLegacyFormat(version);
-  useVarintRowCount_ = !isTabletRawFormat(version);
+  useVarintRowCount_ = !isTabletVersion(version);
   // Re-initialize with new data.
   init(data);
 }
@@ -269,16 +269,16 @@ void StreamDataReader::iterateStreams(
     const std::function<void(uint32_t offset, std::string_view data)>&
         callback) {
   if (nonLegacyFormat(version_)) {
-    // kCompactRaw/kTabletRaw format: read stream sizes from trailer.
+    // kCompactRaw/kTablet format: read stream sizes from trailer.
     const auto streamSizes = detail::readTrailerStreamSizes(end_);
-    const bool tabletRaw = isTabletRawFormat(version_);
+    const bool isTablet = isTabletVersion(version_);
 
     for (uint32_t i = 0; i < streamSizes.size(); ++i) {
       std::string_view streamData(pos_, streamSizes[i]);
       pos_ += streamSizes[i];
       if (!streamData.empty()) {
-        if (tabletRaw) {
-          // kTabletRaw: stream data includes tablet chunk headers:
+        if (isTablet) {
+          // kTablet: stream data includes tablet chunk headers:
           // [chunkSize:u32][compressionType:1B][encoded_data...]
           // Strip headers and decompress if needed before passing to callback.
           callback(i, stripChunkHeaders(streamData));

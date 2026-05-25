@@ -62,13 +62,13 @@ readSerializationHeader(const char*& pos, const char* end, bool hasHeader) {
     NIMBLE_CHECK(
         header.version == SerializationVersion::kLegacy ||
             header.version == SerializationVersion::kCompactRaw ||
-            header.version == SerializationVersion::kTabletRaw,
+            header.version == SerializationVersion::kTablet,
         "Unsupported version {}",
         static_cast<uint8_t>(header.version));
     ++pos;
   }
 
-  if (isTabletRawFormat(header.version)) {
+  if (isTabletVersion(header.version)) {
     auto tablet = extractTabletChunkHeader(pos, end);
     header.rowCount = tablet.rowCount;
     // TODO: consider setting rowRange to nullopt when it covers the full
@@ -107,7 +107,7 @@ folly::IOBuf createTabletChunkHeader(const TabletChunkHeader& header) {
 
   auto buf = folly::IOBuf::create(headerBytes);
   auto* pos = reinterpret_cast<char*>(buf->writableData());
-  *pos++ = static_cast<char>(SerializationVersion::kTabletRaw);
+  *pos++ = static_cast<char>(SerializationVersion::kTablet);
   varint::writeVarint(/*val=*/header.rowCount, &pos);
   varint::writeVarint(/*val=*/header.rowRange.startRow, &pos);
   varint::writeVarint(/*val=*/header.rowRange.endRow, &pos);
@@ -133,9 +133,7 @@ TabletChunkHeader readTabletChunkHeader(const char*& pos, const char* end) {
   NIMBLE_CHECK_GE(end - pos, 1, "Truncated chunk header (version)");
   const auto version = static_cast<SerializationVersion>(*pos++);
   NIMBLE_CHECK(
-      isTabletRawFormat(version),
-      "Expected kTabletRaw version, got: {}",
-      version);
+      isTabletVersion(version), "Expected kTablet version, got: {}", version);
   return extractTabletChunkHeader(pos, end);
 }
 

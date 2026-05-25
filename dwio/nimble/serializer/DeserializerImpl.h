@@ -150,7 +150,7 @@ class StreamData {
   // Whether nimble encoding is enabled. Non-const to allow reset() to change.
   bool encodingEnabled_{false};
   // Whether encoding headers use varint row counts (true for kCompactRaw) or
-  // fixed u32 (false for kTabletRaw). Non-const to allow
+  // fixed u32 (false for kTablet). Non-const to allow
   // reset() to change.
   bool useVarintRowCount_{true};
   // Optional pool for encoding scratch buffers. Owned externally
@@ -191,7 +191,7 @@ class StreamDataReader {
   /// Returns number of rows serialized.
   /// Validates that the version in serialized data matches options.
   ///
-  /// PRECONDITION (kTabletRaw only): the per-slice header
+  /// PRECONDITION (kTablet only): the per-slice header
   /// (`[version][rowCount:varint][startRow:varint][endRow:varint]`
   /// `[resumeKeyLength:varint][resumeKey]`) must live contiguously within
   /// `data`. The projector emits the header in a single allocation; consumers
@@ -215,8 +215,8 @@ class StreamDataReader {
     return nonLegacyFormat(version_);
   }
 
-  /// Returns the row range embedded in the per-slice header for kTabletRaw
-  /// chunks (always present on the wire for kTabletRaw). nullopt for all
+  /// Returns the row range embedded in the per-slice header for kTablet
+  /// chunks (always present on the wire for kTablet). nullopt for all
   /// other serialization versions. Only valid after initialize() has been
   /// called.
   const std::optional<RowRange>& rowRange() const {
@@ -224,7 +224,7 @@ class StreamDataReader {
   }
 
  private:
-  // Strips tablet chunk headers from stream data for kTabletRaw format.
+  // Strips tablet chunk headers from stream data for kTablet format.
   // Each chunk is: [chunkSize:u32][compressionType:1B][encoded_data...]
   // Returns a view into the original data for single uncompressed chunks
   // (zero-copy), or a view into chunkStrippingBuffer_ for compressed/
@@ -253,8 +253,8 @@ class StreamDataReader {
   // header, this is read from the first byte; otherwise defaults to kLegacy.
   // When options specify a version, the data version is validated against it.
   SerializationVersion version_{SerializationVersion::kLegacy};
-  // Per-request row range embedded in the kTabletRaw header (post-rowCount,
-  // before stream data). nullopt for non-kTabletRaw formats or when the
+  // Per-request row range embedded in the kTablet header (post-rowCount,
+  // before stream data). nullopt for non-kTablet formats or when the
   // producer did not embed a row range.
   std::optional<RowRange> rowRange_;
   const char* pos_{nullptr};

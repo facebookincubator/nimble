@@ -465,7 +465,7 @@ TEST_P(NimbleIndexProjectorTest, multipleRequests) {
 
 TEST_P(NimbleIndexProjectorTest, overlappingRequestsShareBody) {
   // Two range scans that hit the same single stripe with different row ranges.
-  // Verify that the per-request kTabletRaw chunk slices share the body+trailer
+  // Verify that the per-request kTablet chunk slices share the body+trailer
   // IOBuf bytes via cloneOne() and carry distinct per-slice header nodes.
   auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
 
@@ -755,7 +755,7 @@ TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedRanges) {
 }
 
 TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedVersions) {
-  // Mix a kTabletRaw chunk slice (projector output, narrow row range) with
+  // Mix a kTablet chunk slice (projector output, narrow row range) with
   // a kCompactRaw chunk (Serializer output, no row range) in one deserialize
   // call. Verifies the no-range branch of the per-batch loop: when
   // batchRanges[i] is nullopt, numRowsInBatch falls back to batchRows
@@ -779,13 +779,13 @@ TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedVersions) {
   subfields.emplace_back("value");
   auto projector = createProjector(subfields);
 
-  // kTabletRaw batch: range [10, 40) = 30 rows.
+  // kTablet batch: range [10, 40) = 30 rows.
   auto bounds = makeRangeLookup(rowType, {"key"}, 10, 40);
   NimbleIndexProjector::Request request;
   request.keyBounds = {bounds};
   auto result = projector->project(request, {});
   ASSERT_EQ(result.responses[0].chunks.size(), 1u);
-  auto tabletRawOwned = result.responses[0].chunks[0].cloneCoalescedAsValue();
+  auto tabletOwned = result.responses[0].chunks[0].cloneCoalescedAsValue();
 
   // kCompactRaw batch: serialize a 5-row Row<INTEGER> vector matching the
   // projected schema. The Serializer is constructed against the same velox
@@ -814,23 +814,23 @@ TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedVersions) {
 
   std::vector<std::string_view> batches{
       std::string_view(
-          reinterpret_cast<const char*>(tabletRawOwned.data()),
-          tabletRawOwned.length()),
+          reinterpret_cast<const char*>(tabletOwned.data()),
+          tabletOwned.length()),
       kCompactRawBytes,
   };
   VectorPtr output;
   deserializer.deserialize(batches, output);
 
-  // Over-fetch: kTabletRaw batch decodes its full 100 stripe rows;
+  // Over-fetch: kTablet batch decodes its full 100 stripe rows;
   // kCompactRaw batch contributes 5 rows. Concatenation = 105 rows. The
-  // in-range subset of the kTabletRaw batch (positions [10, 40) within the
+  // in-range subset of the kTablet batch (positions [10, 40) within the
   // first 100) carries values[10..39]; the kCompactRaw batch's 5 rows follow.
   ASSERT_EQ(output->size(), 105u);
   auto* rowVec = output->as<velox::RowVector>();
   auto* valueVec = rowVec->childAt(0)->as<velox::FlatVector<int32_t>>();
   for (uint32_t i = 10; i < 40; ++i) {
     EXPECT_EQ(valueVec->valueAt(i), static_cast<int32_t>(i * 10))
-        << "kTabletRaw i=" << i;
+        << "kTablet i=" << i;
   }
   for (uint32_t i = 0; i < 5; ++i) {
     EXPECT_EQ(valueVec->valueAt(100 + i), kCompactRawValues[i])
