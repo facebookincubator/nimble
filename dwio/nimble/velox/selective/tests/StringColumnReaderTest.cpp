@@ -1425,6 +1425,59 @@ TEST_P(StringColumnReaderTest, mainlyConstantDictionaryAlignedChunksWithNulls) {
       pool());
 }
 
+// RLE→Dictionary string column returns DictionaryVector. Uses forced
+// encoding layout to create RLE wrapping Dictionary for string values
+// with repeated patterns (natural RLE runs).
+TEST_P(StringColumnReaderTest, rleDictionaryVector) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kStripeRows = 300;
+  const std::string values[] = {"alpha", "bravo", "charlie"};
+  // Create data with repeated runs to produce natural RLE encoding.
+  auto data = makeRowVector({
+      makeFlatVector<std::string>(
+          kStripeRows, [&](auto i) { return values[(i / 10) % 3]; }),
+  });
+
+  // Force RLE→Dictionary encoding layout.
+  EncodingLayout dictLayout{
+      EncodingType::Dictionary,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt}};
+  EncodingLayout rleLayout{
+      EncodingType::RLE,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::move(dictLayout)}};
+  VeloxWriterOptions writerOptions;
+  writerOptions.encodingLayoutTree.emplace(
+      Kind::Row,
+      std::
+          unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>{},
+      "",
+      std::vector<EncodingLayoutTree>{
+          EncodingLayoutTree{Kind::Scalar, {{0, std::move(rleLayout)}}, "c0"}});
+  auto file = test::createNimbleFile(
+      *rootPool(), std::vector<VectorPtr>{data}, writerOptions);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*data->type());
+  auto readers = makeReaders(data, file, scanSpec, stringDecoderZeroCopy);
+  using E = VectorEncoding::Simple;
+  validateWithEncodingChecks(
+      *data->childAt(0),
+      *readers.rowReader,
+      100,
+      /*totalRows=*/kStripeRows,
+      {E::DICTIONARY, E::DICTIONARY, E::DICTIONARY},
+      asRowType(data->type()),
+      pool());
+}
+
 INSTANTIATE_TEST_CASE_P(
     StringColumnReaderTestSuite,
     StringColumnReaderTest,
