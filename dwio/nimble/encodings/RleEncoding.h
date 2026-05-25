@@ -344,7 +344,7 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
       return;
     }
 
-    indicesBuffer_.resize(numNonNulls);
+    auto* rawIndices = ensureIndicesBuffer(numNonNulls);
     detail::readSparseMaterializedIndices(
         *this,
         visitor,
@@ -353,7 +353,7 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
         rawNulls,
         numReadRows,
         numNonNulls,
-        indicesBuffer_.data());
+        rawIndices);
   }
 
  private:
@@ -366,6 +366,16 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
       vector_size_t numRows,
       vector_size_t currentRow) const;
 
+  uint32_t* ensureIndicesBuffer(uint32_t numElements) {
+    if (indicesBuffer_ == nullptr || !indicesBuffer_->unique()) {
+      indicesBuffer_ =
+          velox::AlignedBuffer::allocate<uint32_t>(numElements, this->pool_);
+    } else {
+      velox::AlignedBuffer::reallocate<uint32_t>(&indicesBuffer_, numElements);
+    }
+    return indicesBuffer_->asMutable<uint32_t>();
+  }
+
   // Exactly one of values_ or dictValues_ is active. When the inner
   // encoding is dictionary-enabled, dictValues_ loads indices in pages
   // and reconstructs values from the alphabet. Otherwise values_ loads
@@ -373,7 +383,7 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
   std::unique_ptr<detail::BufferedEncoding<physicalType, 128>> values_;
   std::unique_ptr<detail::BufferedDictEncoding<physicalType, 128>> dictValues_;
   const physicalType* alphabet_{nullptr};
-  Vector<uint32_t> indicesBuffer_;
+  velox::BufferPtr indicesBuffer_;
 };
 
 // For the bool case we know the values will alternate between true
@@ -425,8 +435,7 @@ RLEEncoding<T>::RLEEncoding(
           pool,
           data,
           stringBufferFactory,
-          options),
-      indicesBuffer_(&pool) {
+          options) {
   auto valuesView = std::string_view{
       internal::RLEEncodingBase<T, RLEEncoding<T>>::getValuesStart(),
       static_cast<size_t>(

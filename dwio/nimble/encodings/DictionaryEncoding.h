@@ -99,14 +99,20 @@ class DictionaryEncoding
   }
 
  private:
-  // Stores pre-loaded alphabet
-  Vector<T> alphabet_;
+  uint32_t* ensureIndicesBuffer(uint32_t numElements) {
+    if (indicesBuffer_ == nullptr || !indicesBuffer_->unique()) {
+      indicesBuffer_ =
+          velox::AlignedBuffer::allocate<uint32_t>(numElements, this->pool_);
+    } else {
+      velox::AlignedBuffer::reallocate<uint32_t>(&indicesBuffer_, numElements);
+    }
+    return indicesBuffer_->asMutable<uint32_t>();
+  }
 
-  // Indices are uint32_t.
+  Vector<T> alphabet_;
   std::unique_ptr<Encoding> indicesEncoding_;
   std::unique_ptr<Encoding> alphabetEncoding_;
-  // Temporary buffer.
-  Vector<uint32_t> indicesBuffer_;
+  velox::BufferPtr indicesBuffer_;
 };
 
 //
@@ -120,8 +126,7 @@ DictionaryEncoding<T>::DictionaryEncoding(
     std::function<void*(uint32_t)> stringBufferFactory,
     const Encoding::Options& options)
     : TypedEncoding<T, physicalType>{pool, data, options},
-      alphabet_{this->pool_},
-      indicesBuffer_{this->pool_} {
+      alphabet_{this->pool_} {
   const EncodingFactory factory{options};
   const auto* pos = data.data() + this->dataOffset();
   const uint32_t alphabetSize = encoding::readUint32(pos);
@@ -150,12 +155,12 @@ void DictionaryEncoding<T>::skip(uint32_t rowCount) {
 
 template <typename T>
 void DictionaryEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
-  indicesBuffer_.resize(rowCount);
-  indicesEncoding_->materialize(rowCount, indicesBuffer_.data());
+  auto* rawIndices = ensureIndicesBuffer(rowCount);
+  indicesEncoding_->materialize(rowCount, rawIndices);
 
   T* output = static_cast<T*>(buffer);
-  for (uint32_t index : indicesBuffer_) {
-    *output = alphabet_[index];
+  for (uint32_t i = 0; i < rowCount; ++i) {
+    *output = alphabet_[rawIndices[i]];
     ++output;
   }
 }
@@ -210,10 +215,10 @@ void DictionaryEncoding<T>::readWithVisitor(
         visitor.numRows(), true);
   }
   const auto startRowIndex = visitor.rowIndex();
-  indicesBuffer_.resize(visitor.numRows() - startRowIndex);
+  const auto numIndices = visitor.numRows() - startRowIndex;
+  auto* rawIndices = ensureIndicesBuffer(numIndices);
   velox::common::AlwaysTrue indicesFilter;
-  detail::DictionaryIndicesHook indicesHook(
-      indicesBuffer_.data(), startRowIndex);
+  detail::DictionaryIndicesHook indicesHook(rawIndices, startRowIndex);
   auto indicesVisitor = DecoderVisitor<
       int32_t,
       velox::common::AlwaysTrue,
@@ -227,8 +232,7 @@ void DictionaryEncoding<T>::readWithVisitor(
   indicesVisitor.setRowIndex(startRowIndex);
   callReadWithVisitor(*indicesEncoding_, indicesVisitor, params);
   detail::readWithVisitorSlow(visitor, params, nullptr, [&] {
-    const auto index = indicesBuffer_[visitor.rowIndex() - startRowIndex];
-    return alphabet_[index];
+    return alphabet_[rawIndices[visitor.rowIndex() - startRowIndex]];
   });
 }
 
@@ -270,7 +274,7 @@ void DictionaryEncoding<T>::readIndicesWithVisitor(
   // materializing unrequested rows. Requires templated
   // materializeIndices — see commented-out API mock-ups in this file
   // and EncodingUtils.h.
-  indicesBuffer_.resize(numNonNulls);
+  auto* rawIndices = ensureIndicesBuffer(numNonNulls);
   detail::readSparseMaterializedIndices(
       *this,
       visitor,
@@ -279,7 +283,7 @@ void DictionaryEncoding<T>::readIndicesWithVisitor(
       rawNulls,
       numReadRows,
       numNonNulls,
-      indicesBuffer_.data());
+      rawIndices);
 }
 
 template <typename T>
