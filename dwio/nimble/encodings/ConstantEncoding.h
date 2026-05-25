@@ -68,6 +68,73 @@ class ConstantEncodingBase
         visitor, params, nullptr, [&] { return value_; });
   }
 
+  bool dictionaryEnabled() const override {
+    return true;
+  }
+
+  uint32_t dictionarySize() const override {
+    return 1;
+  }
+
+  const void* dictionaryEntry(uint32_t index) const override {
+    NIMBLE_DCHECK_EQ(index, 0);
+    return &value_;
+  }
+
+  const void* dictionaryEntries() const override {
+    return &value_;
+  }
+
+  void materializeIndices(uint32_t rowCount, uint32_t* buffer) override {
+    std::fill(buffer, buffer + rowCount, 0);
+  }
+
+  /// Reads dictionary indices for a constant encoding. Every row maps to
+  /// index 0 (the single dictionary entry).
+  template <typename V>
+  void readIndicesWithVisitor(V& visitor, ReadWithVisitorParams& params) {
+    NIMBLE_CHECK(
+        !V::kHasFilter && !V::kHasHook,
+        "readIndicesWithVisitor should only be invoked in dictionary fast path");
+    const auto numReadRows =
+        visitor.rowAt(visitor.numRows() - 1) - params.numScanned + 1;
+    auto* rawNulls = visitor.reader().rawNullsInReadRange();
+    const auto numNonNulls = rawNulls != nullptr
+        ? velox::bits::countNonNulls(
+              rawNulls, params.numScanned, params.numScanned + numReadRows)
+        : numReadRows;
+
+    if (V::dense) {
+      NIMBLE_CHECK_EQ(
+          visitor.rowAt(visitor.numRows() - 1),
+          visitor.rowAt(0) + visitor.numRows() - 1,
+          "Dense visitor must have contiguous rows");
+      detail::readDenseMaterializedIndices(
+          *this,
+          visitor,
+          rawNulls,
+          params.numScanned,
+          numReadRows,
+          numNonNulls);
+      return;
+    }
+
+    // Sparse path is unlikely for constant encoding but supported for
+    // correctness.
+    auto indicesBuffer =
+        velox::AlignedBuffer::allocate<uint32_t>(numNonNulls, this->pool_);
+    auto* rawIndices = indicesBuffer->template asMutable<uint32_t>();
+    detail::readSparseMaterializedIndices(
+        *this,
+        visitor,
+        params.numScanned,
+        params.prepareResultNulls,
+        rawNulls,
+        numReadRows,
+        numNonNulls,
+        rawIndices);
+  }
+
   std::string debugString(int offset) const final {
     return fmt::format(
         "{}{}<{}> rowCount={} value={}",

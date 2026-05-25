@@ -831,6 +831,85 @@ class DictionaryApiTypedTest : public ::testing::Test {
         });
   }
 
+  /// Serializes values as MainlyConstant wrapping Constant into outputBuffer.
+  /// Requires exactly 2 distinct values. The most frequent becomes the MC
+  /// common value; the other becomes a ConstantEncoding leaf.
+  std::string_view serializeMainlyConstantWithConstantOthers(
+      const std::vector<T>& values,
+      nimble::Buffer& outputBuffer) {
+    NIMBLE_CHECK(!values.empty());
+    const uint32_t rowCount = values.size();
+
+    std::unordered_map<PhysicalType, uint32_t> counts;
+    for (const auto& v : values) {
+      ++counts[reinterpret_cast<const PhysicalType&>(v)];
+    }
+    NIMBLE_CHECK_EQ(counts.size(), 2, "Expected exactly 2 distinct values");
+
+    PhysicalType commonValue{};
+    uint32_t maxCount = 0;
+    for (const auto& [val, cnt] : counts) {
+      if (cnt > maxCount) {
+        maxCount = cnt;
+        commonValue = val;
+      }
+    }
+
+    nimble::Vector<bool> isCommon{pool_.get(), rowCount, false};
+    nimble::Vector<T> otherVec{pool_.get()};
+    for (size_t i = 0; i < values.size(); ++i) {
+      if (reinterpret_cast<const PhysicalType&>(values[i]) == commonValue) {
+        isCommon[i] = true;
+      } else {
+        otherVec.push_back(values[i]);
+      }
+    }
+
+    // Encode isCommon as Trivial<bool>.
+    auto isCommonSpan = std::span<const bool>(isCommon.data(), isCommon.size());
+    nimble::Buffer isCommonBuf{*pool_};
+    nimble::EncodingSelection<bool> isCommonSel{
+        {.encodingType = nimble::EncodingType::Trivial},
+        nimble::Statistics<bool>::create(isCommonSpan),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<bool>>(
+            false, false)};
+    auto serializedIsCommon = nimble::TrivialEncoding<bool>::encode(
+        isCommonSel, isCommonSpan, isCommonBuf);
+
+    // Encode other values as Constant.
+    auto otherSpan = std::span<const PhysicalType>(
+        reinterpret_cast<const PhysicalType*>(otherVec.data()),
+        otherVec.size());
+    nimble::Buffer otherBuf{*pool_};
+    nimble::EncodingSelection<PhysicalType> otherSel{
+        {.encodingType = nimble::EncodingType::Constant},
+        nimble::Statistics<PhysicalType>::create(otherSpan),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(false, false)};
+    auto serializedOther =
+        nimble::ConstantEncoding<T>::encode(otherSel, otherSpan, otherBuf);
+
+    // Assemble MainlyConstant binary.
+    uint32_t encodingSize = nimble::Encoding::kPrefixSize + 8 +
+        serializedIsCommon.size() + serializedOther.size();
+    if constexpr (nimble::isNumericType<PhysicalType>()) {
+      encodingSize += sizeof(PhysicalType);
+    } else {
+      encodingSize += 4 + commonValue.size();
+    }
+    char* reserved = outputBuffer.reserve(encodingSize);
+    char* pos = reserved;
+    nimble::encoding::writeChar(
+        static_cast<char>(nimble::EncodingType::MainlyConstant), pos);
+    nimble::encoding::writeChar(
+        static_cast<char>(nimble::TypeTraits<T>::dataType), pos);
+    nimble::encoding::writeUint32(rowCount, pos);
+    nimble::encoding::writeString(serializedIsCommon, pos);
+    nimble::encoding::writeString(serializedOther, pos);
+    nimble::encoding::write<PhysicalType>(commonValue, pos);
+
+    return std::string_view(reserved, encodingSize);
+  }
+
   /// Serializes values as MainlyConstant wrapping Dictionary into outputBuffer.
   /// The common value is the most frequent element. Returns a string_view of
   /// the serialized bytes in outputBuffer.
@@ -2038,6 +2117,363 @@ TYPED_TEST(DictionaryApiTypedTest, buildAlphabetRleDictionary) {
   }
 }
 
+TYPED_TEST(DictionaryApiTypedTest, constantDictionaryBasics) {
+  using T = TypeParam;
+  T value;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"constant_value"};
+    value = std::string_view(this->stringPool_[0]);
+  } else {
+    value = T(42);
+  }
+
+  std::vector<T> data(10, value);
+  auto span = std::span<const typename nimble::TypeTraits<T>::physicalType>(
+      reinterpret_cast<const typename nimble::TypeTraits<T>::physicalType*>(
+          data.data()),
+      data.size());
+  nimble::Buffer encBuf{*this->pool_};
+  nimble::EncodingSelection<typename nimble::TypeTraits<T>::physicalType> sel{
+      {.encodingType = nimble::EncodingType::Constant},
+      nimble::Statistics<typename nimble::TypeTraits<T>::physicalType>::create(
+          span),
+      std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(false, false)};
+  auto serialized = nimble::ConstantEncoding<T>::encode(sel, span, encBuf);
+  auto encoding = this->decodeEncoding(serialized);
+
+  EXPECT_TRUE(encoding->dictionaryEnabled());
+  EXPECT_EQ(encoding->dictionarySize(), 1);
+  EXPECT_EQ(*static_cast<const T*>(encoding->dictionaryEntry(0)), value);
+
+  // Verify materializeIndices round-trips through the dictionary.
+  std::vector<uint32_t> indices(data.size());
+  encoding->materializeIndices(data.size(), indices.data());
+
+  const auto* entries = static_cast<const T*>(encoding->dictionaryEntries());
+  for (size_t i = 0; i < data.size(); ++i) {
+    ASSERT_EQ(indices[i], 0) << "row " << i;
+    EXPECT_EQ(entries[indices[i]], value);
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, buildAlphabetConstant) {
+  using T = TypeParam;
+  T value;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alphabet_value"};
+    value = std::string_view(this->stringPool_[0]);
+  } else {
+    value = T(77);
+  }
+
+  std::vector<T> data(5, value);
+  auto span = std::span<const typename nimble::TypeTraits<T>::physicalType>(
+      reinterpret_cast<const typename nimble::TypeTraits<T>::physicalType*>(
+          data.data()),
+      data.size());
+  nimble::Buffer encBuf{*this->pool_};
+  nimble::EncodingSelection<typename nimble::TypeTraits<T>::physicalType> sel{
+      {.encodingType = nimble::EncodingType::Constant},
+      nimble::Statistics<typename nimble::TypeTraits<T>::physicalType>::create(
+          span),
+      std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(false, false)};
+  auto serialized = nimble::ConstantEncoding<T>::encode(sel, span, encBuf);
+  auto encoding = this->decodeEncoding(serialized);
+
+  auto alphabet = nimble::buildEncodingDictionaryAlphabet<T>(encoding.get());
+  ASSERT_EQ(alphabet.size(), 1);
+  EXPECT_EQ(alphabet[0], value);
+}
+
+// Tests MC with exactly 2 distinct values (one common, one other). Exercises
+// two inner encoding variants: Dictionary (from encodeMainlyConstantDictionary)
+// and Constant (from serializeMainlyConstantWithConstantOthers). Both should
+// produce dictionarySize == 2.
+TYPED_TEST(DictionaryApiTypedTest, mainlyConstantWithSingleOtherValue) {
+  using T = TypeParam;
+  T common;
+  T other;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"common_value", "other_value"};
+    common = std::string_view(this->stringPool_[0]);
+    other = std::string_view(this->stringPool_[1]);
+  } else {
+    common = T(100);
+    other = T(42);
+  }
+
+  // 20 rows: 16 common, 4 other (all same "other" value).
+  std::vector<T> data(20, common);
+  data[3] = other;
+  data[7] = other;
+  data[11] = other;
+  data[15] = other;
+
+  // Test both inner encoding variants: Dictionary and Constant.
+  for (int variant = 0; variant < 2; ++variant) {
+    SCOPED_TRACE(
+        variant == 0 ? "MC->Dictionary others" : "MC->Constant others");
+    // mcBuffer must outlive encoding since the encoding references its data.
+    nimble::Buffer mcBuffer{*this->pool_};
+    std::unique_ptr<nimble::Encoding> encoding;
+    if (variant == 0) {
+      encoding = this->encodeMainlyConstantDictionary(data);
+    } else {
+      auto serialized =
+          this->serializeMainlyConstantWithConstantOthers(data, mcBuffer);
+      encoding = this->decodeEncoding(serialized);
+    }
+
+    ASSERT_TRUE(encoding->dictionaryEnabled());
+    // MC alphabet = [innerAlphabet..., commonValue].
+    // Inner has 1 entry (single other value), so total = 2.
+    EXPECT_EQ(encoding->dictionarySize(), 2);
+
+    std::vector<uint32_t> indices(data.size());
+    encoding->materializeIndices(data.size(), indices.data());
+
+    const auto* entries = static_cast<const T*>(encoding->dictionaryEntries());
+    for (size_t i = 0; i < data.size(); ++i) {
+      ASSERT_LT(indices[i], encoding->dictionarySize()) << "row " << i;
+      EXPECT_EQ(entries[indices[i]], data[i]) << "row " << i;
+    }
+  }
+}
+
+TYPED_TEST(DictionaryApiTypedTest, rleWithConstantLeaf) {
+  using T = TypeParam;
+  using PhysicalType = typename nimble::TypeTraits<T>::physicalType;
+
+  // Build RLE manually with Constant as the run-values child encoding.
+  T value;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"repeated_run_value"};
+    value = std::string_view(this->stringPool_[0]);
+  } else {
+    value = T(55);
+  }
+
+  // 3 runs of the same value, different lengths.
+  nimble::Vector<uint32_t> runLengths{this->pool_.get()};
+  runLengths.push_back(5);
+  runLengths.push_back(3);
+  runLengths.push_back(7);
+  const uint32_t totalRows = 15;
+
+  // Encode run lengths as Trivial.
+  auto rlSpan = std::span<const uint32_t>(runLengths.data(), runLengths.size());
+  nimble::Buffer rlBuf{*this->pool_};
+  nimble::EncodingSelection<uint32_t> rlSel{
+      {.encodingType = nimble::EncodingType::Trivial},
+      nimble::Statistics<uint32_t>::create(rlSpan),
+      std::make_unique<TestTrivialEncodingSelectionPolicy<uint32_t>>(
+          false, false)};
+  auto serializedRunLengths =
+      nimble::TrivialEncoding<uint32_t>::encode(rlSel, rlSpan, rlBuf);
+
+  // Encode run values as Constant (all 3 runs have the same value).
+  nimble::Vector<PhysicalType> runValues{this->pool_.get()};
+  for (int i = 0; i < 3; ++i) {
+    runValues.push_back(reinterpret_cast<const PhysicalType&>(value));
+  }
+  auto rvSpan =
+      std::span<const PhysicalType>(runValues.data(), runValues.size());
+  nimble::Buffer rvBuf{*this->pool_};
+  nimble::EncodingSelection<PhysicalType> rvSel{
+      {.encodingType = nimble::EncodingType::Constant},
+      nimble::Statistics<PhysicalType>::create(rvSpan),
+      std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(false, false)};
+  auto serializedRunValues =
+      nimble::ConstantEncoding<T>::encode(rvSel, rvSpan, rvBuf);
+
+  // Assemble RLE binary.
+  const uint32_t encodingSize = nimble::Encoding::kPrefixSize + 4 +
+      serializedRunLengths.size() + serializedRunValues.size();
+  char* reserved = this->buffer_->reserve(encodingSize);
+  char* pos = reserved;
+  nimble::encoding::writeChar(
+      static_cast<char>(nimble::EncodingType::RLE), pos);
+  nimble::encoding::writeChar(
+      static_cast<char>(nimble::TypeTraits<T>::dataType), pos);
+  nimble::encoding::writeUint32(totalRows, pos);
+  nimble::encoding::writeString(serializedRunLengths, pos);
+  nimble::encoding::writeBytes(serializedRunValues, pos);
+
+  auto encoding =
+      this->decodeEncoding(std::string_view(reserved, encodingSize));
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+  EXPECT_EQ(encoding->dictionarySize(), 1);
+
+  std::vector<uint32_t> indices(totalRows);
+  encoding->materializeIndices(totalRows, indices.data());
+
+  const auto* entries = static_cast<const T*>(encoding->dictionaryEntries());
+  for (size_t i = 0; i < totalRows; ++i) {
+    ASSERT_EQ(indices[i], 0) << "row " << i;
+    EXPECT_EQ(entries[0], value);
+  }
+}
+
+// Fuzz MC→Constant: randomize row count, common-value ratio, and non-common
+// positions. Always exactly 2 distinct values so the inner encoding is
+// Constant.
+TYPED_TEST(DictionaryApiTypedTest, mainlyConstantWithConstantLeafFuzz) {
+  using T = TypeParam;
+
+  for (int run = 0; run < 20; ++run) {
+    auto seed = folly::Random::rand32();
+    std::mt19937 rng(seed);
+    const auto numRows = 10 + rng() % 500;
+    const int commonPct = 55 + rng() % 40;
+
+    T common;
+    T other;
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      this->stringPool_ = {
+          "common_" + std::to_string(run), "other_" + std::to_string(run)};
+      common = std::string_view(this->stringPool_[0]);
+      other = std::string_view(this->stringPool_[1]);
+    } else {
+      common = static_cast<T>(100 + run);
+      other = static_cast<T>(42 + run);
+    }
+
+    std::vector<T> data;
+    data.reserve(numRows);
+    bool hasOther = false;
+    for (size_t i = 0; i < numRows; ++i) {
+      if (static_cast<int>(rng() % 100) < commonPct) {
+        data.push_back(common);
+      } else {
+        data.push_back(other);
+        hasOther = true;
+      }
+    }
+    // Ensure at least one non-common value so MC is valid.
+    if (!hasOther) {
+      data[rng() % numRows] = other;
+    }
+
+    SCOPED_TRACE(
+        fmt::format(
+            "run={} seed={} numRows={} commonPct={}",
+            run,
+            seed,
+            numRows,
+            commonPct));
+
+    nimble::Buffer mcBuffer{*this->pool_};
+    auto serialized =
+        this->serializeMainlyConstantWithConstantOthers(data, mcBuffer);
+    auto encoding = this->decodeEncoding(serialized);
+
+    ASSERT_TRUE(encoding->dictionaryEnabled());
+    ASSERT_EQ(encoding->dictionarySize(), 2);
+
+    std::vector<uint32_t> indices(data.size());
+    encoding->materializeIndices(data.size(), indices.data());
+
+    const auto* entries = static_cast<const T*>(encoding->dictionaryEntries());
+    for (size_t i = 0; i < data.size(); ++i) {
+      ASSERT_LT(indices[i], encoding->dictionarySize()) << "row " << i;
+      EXPECT_EQ(entries[indices[i]], data[i]) << "row " << i;
+    }
+  }
+}
+
+// Fuzz RLE→Constant: randomize number of runs and run lengths while
+// run values are all constant. Exercises materializeIndices through
+// RLE with a Constant values child.
+TYPED_TEST(DictionaryApiTypedTest, rleWithConstantLeafFuzz) {
+  using T = TypeParam;
+  using PhysicalType = typename nimble::TypeTraits<T>::physicalType;
+
+  for (int run = 0; run < 20; ++run) {
+    auto seed = folly::Random::rand32();
+    std::mt19937 rng(seed);
+    const auto numRuns = 1 + rng() % 30;
+    const auto maxRunLength = 1 + rng() % 50;
+
+    T value;
+    if constexpr (std::is_same_v<T, std::string_view>) {
+      this->stringPool_ = {"constant_run_value_" + std::to_string(run)};
+      value = std::string_view(this->stringPool_[0]);
+    } else {
+      value = static_cast<T>(run + 1);
+    }
+
+    nimble::Vector<uint32_t> runLengths{this->pool_.get()};
+    uint32_t totalRows = 0;
+    for (size_t i = 0; i < numRuns; ++i) {
+      const uint32_t len = 1 + rng() % maxRunLength;
+      runLengths.push_back(len);
+      totalRows += len;
+    }
+
+    SCOPED_TRACE(
+        fmt::format(
+            "run={} seed={} numRuns={} totalRows={}",
+            run,
+            seed,
+            numRuns,
+            totalRows));
+
+    // Encode run lengths as Trivial.
+    auto rlSpan =
+        std::span<const uint32_t>(runLengths.data(), runLengths.size());
+    nimble::Buffer rlBuf{*this->pool_};
+    nimble::EncodingSelection<uint32_t> rlSel{
+        {.encodingType = nimble::EncodingType::Trivial},
+        nimble::Statistics<uint32_t>::create(rlSpan),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<uint32_t>>(
+            false, false)};
+    auto serializedRunLengths =
+        nimble::TrivialEncoding<uint32_t>::encode(rlSel, rlSpan, rlBuf);
+
+    // Encode run values as Constant.
+    nimble::Vector<PhysicalType> runValues{this->pool_.get()};
+    for (size_t i = 0; i < numRuns; ++i) {
+      runValues.push_back(reinterpret_cast<const PhysicalType&>(value));
+    }
+    auto rvSpan =
+        std::span<const PhysicalType>(runValues.data(), runValues.size());
+    nimble::Buffer rvBuf{*this->pool_};
+    nimble::EncodingSelection<PhysicalType> rvSel{
+        {.encodingType = nimble::EncodingType::Constant},
+        nimble::Statistics<PhysicalType>::create(rvSpan),
+        std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(false, false)};
+    auto serializedRunValues =
+        nimble::ConstantEncoding<T>::encode(rvSel, rvSpan, rvBuf);
+
+    // Assemble RLE binary.
+    const uint32_t encodingSize = nimble::Encoding::kPrefixSize + 4 +
+        serializedRunLengths.size() + serializedRunValues.size();
+    char* reserved = this->buffer_->reserve(encodingSize);
+    char* pos = reserved;
+    nimble::encoding::writeChar(
+        static_cast<char>(nimble::EncodingType::RLE), pos);
+    nimble::encoding::writeChar(
+        static_cast<char>(nimble::TypeTraits<T>::dataType), pos);
+    nimble::encoding::writeUint32(totalRows, pos);
+    nimble::encoding::writeString(serializedRunLengths, pos);
+    nimble::encoding::writeBytes(serializedRunValues, pos);
+
+    auto encoding =
+        this->decodeEncoding(std::string_view(reserved, encodingSize));
+    ASSERT_TRUE(encoding->dictionaryEnabled());
+    ASSERT_EQ(encoding->dictionarySize(), 1);
+
+    std::vector<uint32_t> indices(totalRows);
+    encoding->materializeIndices(totalRows, indices.data());
+
+    const auto* entries = static_cast<const T*>(encoding->dictionaryEntries());
+    for (size_t i = 0; i < totalRows; ++i) {
+      ASSERT_EQ(indices[i], 0) << "row " << i;
+      EXPECT_EQ(entries[0], value);
+    }
+  }
+}
+
 // Non-templated test for unsupported encodings and bool dictionary.
 class DictionaryApiTest : public ::testing::Test {
  protected:
@@ -2082,21 +2518,6 @@ TEST_F(DictionaryApiTest, unsupportedEncodings) {
           return stringBuffers_.back()->asMutable<void>();
         });
     verifyUnsupported(*enc, "Trivial");
-  }
-
-  // Constant<uint32_t>
-  {
-    std::vector<uint32_t> data(10, 42);
-    auto span = std::span<const uint32_t>(data);
-    nimble::EncodingSelection<uint32_t> sel{
-        {.encodingType = nimble::EncodingType::Constant},
-        nimble::Statistics<uint32_t>::create(span),
-        std::make_unique<TestTrivialEncodingSelectionPolicy<uint32_t>>(
-            false, false)};
-    auto encoded =
-        nimble::ConstantEncoding<uint32_t>::encode(sel, span, *buffer_);
-    auto enc = nimble::EncodingFactory().create(*pool_, encoded, nullptr);
-    verifyUnsupported(*enc, "Constant");
   }
 
   // RLE<uint32_t>
