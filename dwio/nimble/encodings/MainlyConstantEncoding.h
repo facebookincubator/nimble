@@ -99,7 +99,6 @@ class MainlyConstantEncodingBase
             detail::getPooledBuffer<physicalType>(
                 pool,
                 this->options_.bufferPool)),
-        dictionaryIndicesBuffer_(&pool),
         dictionaryAlphabet_(&pool) {}
 
   ~MainlyConstantEncodingBase() override {
@@ -202,7 +201,7 @@ class MainlyConstantEncodingBase
   }
 
   /// Reads dictionary indices through a MainlyConstant wrapper.
-  /// Materializes inner dict indices into dictionaryIndicesBuffer_, then
+  /// Materializes inner dict indices into indicesBuffer_, then
   /// scatters them and commonValueIndex directly into rawValues_.
   ///
   /// The combined alphabet is [innerAlphabet[0], ..., commonValue].
@@ -247,7 +246,7 @@ class MainlyConstantEncodingBase
     // TODO: Use templated materializeIndices to avoid materializing
     // unrequested rows — see commented-out API mock-ups below and in
     // EncodingUtils.h.
-    dictionaryIndicesBuffer_.resize(numNonNulls);
+    auto* rawIndices = ensureIndicesBuffer(numNonNulls);
     detail::readSparseMaterializedIndices(
         *this,
         visitor,
@@ -256,7 +255,7 @@ class MainlyConstantEncodingBase
         rawNulls,
         numReadRows,
         numNonNulls,
-        reinterpret_cast<uint32_t*>(dictionaryIndicesBuffer_.data()));
+        rawIndices);
   }
 
   template <bool kScatter, typename V>
@@ -493,9 +492,19 @@ class MainlyConstantEncodingBase
   std::unique_ptr<Encoding> isCommon_;
   std::unique_ptr<Encoding> otherValues_;
   physicalType commonValue_;
+  uint32_t* ensureIndicesBuffer(uint32_t numElements) {
+    if (indicesBuffer_ == nullptr || !indicesBuffer_->unique()) {
+      indicesBuffer_ =
+          velox::AlignedBuffer::allocate<uint32_t>(numElements, this->pool_);
+    } else {
+      velox::AlignedBuffer::reallocate<uint32_t>(&indicesBuffer_, numElements);
+    }
+    return indicesBuffer_->asMutable<uint32_t>();
+  }
+
   Vector<bool> isCommonBuffer_;
   Vector<physicalType> otherValuesBuffer_;
-  Vector<int32_t> dictionaryIndicesBuffer_;
+  velox::BufferPtr indicesBuffer_;
   mutable Vector<physicalType> dictionaryAlphabet_;
 };
 
