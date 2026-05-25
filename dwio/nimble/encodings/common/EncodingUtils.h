@@ -205,6 +205,11 @@ void callReadIndicesWithVisitor(
           .readIndicesWithVisitor(visitor, params);
       return;
     }
+    case EncodingType::Constant: {
+      static_cast<ConstantEncoding<std::string_view>&>(encoding)
+          .readIndicesWithVisitor(visitor, params);
+      return;
+    }
     default:
       NIMBLE_UNREACHABLE(
           "Dictionary indices dispatch on unsupported encoding: {}",

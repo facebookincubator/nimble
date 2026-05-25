@@ -2486,6 +2486,150 @@ TEST_P(E2EFilterTest, fuzzRleDictionaryVector) {
   EXPECT_EQ(totalRows, kRowCount);
 }
 
+// Constant string column — all values identical. The encoding factory picks
+// ConstantEncoding which is dictionary-enabled, so the reader should return
+// a DictionaryVector with a 1-element alphabet.
+TEST_P(E2EFilterTest, constantStringDictionaryVector) {
+  constexpr int kRowCount = 500;
+  const std::string constantValue = "always_the_same_value";
+
+  rowType_ = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+  auto type = asRowType(rowType_);
+  auto stringVector =
+      velox::test::VectorMaker(leafPool_.get())
+          .flatVector<velox::StringView>(kRowCount, [&](auto /*row*/) {
+            return velox::StringView(constantValue);
+          });
+  auto longVector =
+      velox::test::VectorMaker(leafPool_.get())
+          .flatVector<int64_t>(kRowCount, [](auto row) { return row; });
+
+  auto batch = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kRowCount,
+      std::vector<VectorPtr>{stringVector, longVector});
+
+  sinkData_.clear();
+  {
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, VeloxWriterOptions{});
+    writer.write(batch);
+    writer.close();
+  }
+
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+
+  velox::dwio::common::ReaderOptions readerOpts(leafPool_.get());
+  readerOpts.setDataIoStats(dataIoStats_);
+  readerOpts.setMetadataIoStats(metadataIoStats_);
+  auto reader = makeReader(readerOpts, std::move(input));
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*type);
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setStringDecoderZeroCopy(param().stringDecoderZeroCopy);
+  rowReaderOptions.setNimblePreserveDictionaryEncoding(
+      param().nimblePreserveDictionaryEncoding);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  auto result = BaseVector::create(type, 0, leafPool_.get());
+  size_t totalRows = 0;
+  while (rowReader->next(kRowCount, result)) {
+    auto* rowResult = result->as<RowVector>();
+    ASSERT_NE(rowResult, nullptr);
+    totalRows += rowResult->size();
+
+    auto stringChild = rowResult->childAt(0)->loadedVector();
+    DecodedVector decoded(*stringChild);
+    for (size_t i = 0; i < rowResult->size(); ++i) {
+      ASSERT_FALSE(decoded.isNullAt(i));
+      ASSERT_EQ(decoded.valueAt<StringView>(i).str(), constantValue);
+    }
+  }
+  EXPECT_EQ(totalRows, kRowCount);
+}
+
+// Constant string with nulls — exercises Nullable→Constant path.
+TEST_P(E2EFilterTest, constantStringWithNullsDictionaryVector) {
+  constexpr int kRowCount = 500;
+  const std::string constantValue = "nullable_constant";
+
+  rowType_ = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+  auto type = asRowType(rowType_);
+  auto stringVector =
+      velox::test::VectorMaker(leafPool_.get())
+          .flatVector<velox::StringView>(
+              kRowCount,
+              [&](auto /*row*/) { return velox::StringView(constantValue); },
+              velox::test::VectorMaker::nullEvery(7));
+  auto longVector =
+      velox::test::VectorMaker(leafPool_.get())
+          .flatVector<int64_t>(kRowCount, [](auto row) { return row; });
+
+  auto batch = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kRowCount,
+      std::vector<VectorPtr>{stringVector, longVector});
+
+  sinkData_.clear();
+  {
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, VeloxWriterOptions{});
+    writer.write(batch);
+    writer.close();
+  }
+
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+
+  velox::dwio::common::ReaderOptions readerOpts(leafPool_.get());
+  readerOpts.setDataIoStats(dataIoStats_);
+  readerOpts.setMetadataIoStats(metadataIoStats_);
+  auto reader = makeReader(readerOpts, std::move(input));
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*type);
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setStringDecoderZeroCopy(param().stringDecoderZeroCopy);
+  rowReaderOptions.setNimblePreserveDictionaryEncoding(
+      param().nimblePreserveDictionaryEncoding);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  auto result = BaseVector::create(type, 0, leafPool_.get());
+  size_t totalRows = 0;
+  size_t globalRow = 0;
+  while (rowReader->next(kRowCount, result)) {
+    auto* rowResult = result->as<RowVector>();
+    ASSERT_NE(rowResult, nullptr);
+    totalRows += rowResult->size();
+
+    auto stringChild = rowResult->childAt(0)->loadedVector();
+    DecodedVector decoded(*stringChild);
+    for (size_t i = 0; i < rowResult->size(); ++i) {
+      if (globalRow % 7 == 0) {
+        ASSERT_TRUE(decoded.isNullAt(i))
+            << "Expected null at row=" << globalRow;
+      } else {
+        ASSERT_FALSE(decoded.isNullAt(i));
+        ASSERT_EQ(decoded.valueAt<StringView>(i).str(), constantValue);
+      }
+      ++globalRow;
+    }
+  }
+  EXPECT_EQ(totalRows, kRowCount);
+}
+
 // Test for cross-chunk encoding changes where encoding type varies between
 // chunks. This is a challenging scenario for dictionary column visitors because
 // the first chunk may use dictionary encoding while subsequent chunks may use
