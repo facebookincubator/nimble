@@ -69,8 +69,8 @@ using Subfield = velox::common::Subfield;
 class Projector {
  public:
   struct Options {
-    /// Output serialization format version. Must be kCompact or kCompactRaw.
-    SerializationVersion projectVersion{SerializationVersion::kCompact};
+    /// Output serialization format version. Must be kCompactRaw.
+    SerializationVersion projectVersion{SerializationVersion::kCompactRaw};
 
     /// Encoding type for stream sizes in the trailer.
     /// Supported types: Trivial, Varint, Delta, FixedBitWidth.

@@ -45,8 +45,8 @@ using namespace facebook::nimble;
 using facebook::nimble::test::makeTestTabletOptions;
 
 // Test parameters for parameterized tests.
-// For kCompact mode, we test both with and without compression to exercise the
-// compressionOptions path in ReplayedEncodingSelectionPolicy.
+// For kCompactRaw mode, we test both with and without compression to exercise
+// the compressionOptions path in ReplayedEncodingSelectionPolicy.
 struct TestParams {
   std::optional<SerializationVersion> version;
   // Compression options used with encodingLayoutTree.
@@ -438,9 +438,6 @@ std::string formatName(const ::testing::TestParamInfo<TestParams>& info) {
       case SerializationVersion::kLegacy:
         name = "LegacyFormat";
         break;
-      case SerializationVersion::kCompact:
-        name = "DenseFormat";
-        break;
       case SerializationVersion::kCompactRaw:
         name = "CompactRawFormat";
         break;
@@ -536,9 +533,11 @@ SerializationTest::SerializeResult SerializationTest::serializeTabletRaw(
     const auto stripeRows = tablet->stripeRowCount(stripeIdx);
 
     // Build kTabletRaw: [header][raw stream data...][trailer].
-    std::string headerBuf;
-    serde::detail::writeHeader(
-        headerBuf, nimble::SerializationVersion::kTabletRaw, stripeRows);
+    auto headerIOBuf = serde::createTabletChunkHeader(
+        {.rowCount = stripeRows, .rowRange = RowRange{0, stripeRows}});
+    std::string headerBuf(
+        reinterpret_cast<const char*>(headerIOBuf.data()),
+        headerIOBuf.length());
 
     const auto maxOffset = streamOffsets.back();
     std::string streamData;
@@ -1599,7 +1598,7 @@ TEST_P(SerializationTest, nullsNotSupported) {
         "nulls not supported");
   }
 
-  // Test 4: FlatMap with null value (only for kCompact format).
+  // Test 4: FlatMap with null value (only for kCompactRaw format).
   if (SerializerOptions{.version = version()}.enableEncoding()) {
     auto type = velox::ROW({
         {"id", velox::BIGINT()},
@@ -1822,7 +1821,7 @@ TEST_P(SerializationTest, versionMismatch) {
   auto serialized =
       serializer.serialize(input, OrderedRanges::of(0, input->size()));
 
-  // Try to deserialize with kCompact (expects version header).
+  // Try to deserialize with kCompactRaw (expects version header).
   // The first byte is rowCount (not version), so it will be read as version
   // and fail the version check.
   Deserializer deserializer{
@@ -3144,9 +3143,11 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxHighParallelism) {
     auto streamLoaders = tablet->load(stripeId, streamOffsets);
     const auto stripeRows = tablet->stripeRowCount(stripeIdx);
 
-    std::string headerBuf;
-    serde::detail::writeHeader(
-        headerBuf, nimble::SerializationVersion::kTabletRaw, stripeRows);
+    auto headerIOBuf = serde::createTabletChunkHeader(
+        {.rowCount = stripeRows, .rowRange = RowRange{0, stripeRows}});
+    std::string headerBuf(
+        reinterpret_cast<const char*>(headerIOBuf.data()),
+        headerIOBuf.length());
 
     const auto maxOffset = streamOffsets.back();
     std::string streamData;
@@ -3265,9 +3266,11 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxConcurrentDeserializers) {
       auto streamLoaders = tablet->load(stripeId, streamOffsets);
       const auto stripeRows = tablet->stripeRowCount(si);
 
-      std::string headerBuf;
-      serde::detail::writeHeader(
-          headerBuf, nimble::SerializationVersion::kTabletRaw, stripeRows);
+      auto headerIOBuf = serde::createTabletChunkHeader(
+          {.rowCount = stripeRows, .rowRange = RowRange{0, stripeRows}});
+      std::string headerBuf(
+          reinterpret_cast<const char*>(headerIOBuf.data()),
+          headerIOBuf.length());
 
       const auto maxOffset = streamOffsets.back();
       std::string streamData;
@@ -3435,9 +3438,11 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxFlatMapWithParallelDecode) {
     auto streamLoaders = tablet->load(stripeId, streamOffsets);
     const auto stripeRows = tablet->stripeRowCount(stripeIdx);
 
-    std::string headerBuf;
-    serde::detail::writeHeader(
-        headerBuf, nimble::SerializationVersion::kTabletRaw, stripeRows);
+    auto headerIOBuf = serde::createTabletChunkHeader(
+        {.rowCount = stripeRows, .rowRange = RowRange{0, stripeRows}});
+    std::string headerBuf(
+        reinterpret_cast<const char*>(headerIOBuf.data()),
+        headerIOBuf.length());
 
     const auto maxOffset = streamOffsets.back();
     std::string streamData;
@@ -3554,9 +3559,11 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxRepeatedBatches) {
     auto streamLoaders = tablet->load(stripeId, streamOffsets);
     const auto stripeRows = tablet->stripeRowCount(stripeIdx);
 
-    std::string headerBuf;
-    serde::detail::writeHeader(
-        headerBuf, nimble::SerializationVersion::kTabletRaw, stripeRows);
+    auto headerIOBuf = serde::createTabletChunkHeader(
+        {.rowCount = stripeRows, .rowRange = RowRange{0, stripeRows}});
+    std::string headerBuf(
+        reinterpret_cast<const char*>(headerIOBuf.data()),
+        headerIOBuf.length());
 
     const auto maxOffset = streamOffsets.back();
     std::string streamData;
@@ -4247,7 +4254,7 @@ TEST_P(SerializationTest, flatmapColumnsKeysRejectsRowIngestion) {
 }
 
 // Fuzz test that serializes batches with different versions (cycling through
-// kCompact, kCompactRaw, kCompactRaw+Delta), deserializes each batch, and
+// kCompactRaw, kCompactRaw+Delta), deserializes each batch, and
 // verifies round-trip correctness.
 TEST_F(SerializationTest, fuzzMixedVersionSerialization) {
   auto type = velox::ROW({
@@ -4274,7 +4281,6 @@ TEST_F(SerializationTest, fuzzMixedVersionSerialization) {
 
   // Versions to cycle through for each batch.
   const std::vector<SerializerOptions> serializerVersions = {
-      {.version = SerializationVersion::kCompact},
       {.version = SerializationVersion::kCompactRaw},
       {.version = SerializationVersion::kCompactRaw,
        .streamSizesEncodingType = EncodingType::Delta},
@@ -5002,22 +5008,16 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(
         // Legacy format (no nimble encoding).
         TestParams{.version = std::nullopt},
-        // kCompact format without compression.
-        TestParams{.version = SerializationVersion::kCompact},
-        // kCompact format with compression enabled (for encodingLayoutTree
+        // kCompactRaw format without compression.
+        TestParams{.version = SerializationVersion::kCompactRaw},
+        // kCompactRaw format with compression enabled (for encodingLayoutTree
         // tests).
         TestParams{
-            .version = SerializationVersion::kCompact,
+            .version = SerializationVersion::kCompactRaw,
             .compressionOptions =
                 CompressionOptions{
                     .compressionAcceptRatio = 1.0f,
                     .zstdMinCompressionSize = 0}},
-        // kCompact format with FixedBitWidth stream sizes encoding.
-        TestParams{
-            .version = SerializationVersion::kCompact,
-            .streamSizesEncodingType = EncodingType::FixedBitWidth},
-        // kCompactRaw format without compression.
-        TestParams{.version = SerializationVersion::kCompactRaw},
         // kCompactRaw format with Delta stream sizes encoding.
         TestParams{
             .version = SerializationVersion::kCompactRaw,
@@ -5029,17 +5029,14 @@ INSTANTIATE_TEST_SUITE_P(
         // Buffer pool disabled variants.
         TestParams{.version = std::nullopt, .enableBufferPool = false},
         TestParams{
-            .version = SerializationVersion::kCompact,
+            .version = SerializationVersion::kCompactRaw,
             .enableBufferPool = false},
         TestParams{
-            .version = SerializationVersion::kCompact,
+            .version = SerializationVersion::kCompactRaw,
             .compressionOptions =
                 CompressionOptions{
                     .compressionAcceptRatio = 1.0f,
                     .zstdMinCompressionSize = 0},
-            .enableBufferPool = false},
-        TestParams{
-            .version = SerializationVersion::kCompactRaw,
             .enableBufferPool = false},
         TestParams{
             .version = SerializationVersion::kCompactRaw,

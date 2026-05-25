@@ -44,32 +44,20 @@ class WriteHeaderTest : public ::testing::Test {
     pool_ = memory::memoryManager()->addLeafPool("write_header_test");
   }
 
-  // Helper to build a complete kCompact buffer: header + data + trailer.
-  std::string buildCompactHeaderTrailer(
-      uint32_t rowCount,
-      const std::vector<uint32_t>& sizes,
-      EncodingType encodingType = EncodingType::Trivial) {
-    std::string buffer;
-    serde::detail::writeHeader(
-        buffer, SerializationVersion::kCompact, rowCount);
-    serde::detail::writeTrailer(sizes, encodingType, buffer);
-    return buffer;
-  }
-
   // Helper to build a complete kCompactRaw buffer: header + raw trailer.
   std::string buildCompactRawHeaderTrailer(
       uint32_t rowCount,
       const std::vector<uint32_t>& sizes,
       EncodingType encodingType = EncodingType::Trivial) {
     std::string buffer;
-    serde::detail::writeHeader(
+    serde::writeSerializationHeader(
         buffer, SerializationVersion::kCompactRaw, rowCount);
     serde::detail::writeTrailer(sizes, encodingType, buffer);
     return buffer;
   }
 
   // Helper to verify header by writing and parsing back using roundtrip.
-  // For kCompact format, verifies the dense offsets array from trailer.
+  // For kCompactRaw format, verifies the dense offsets array from trailer.
   void verifyHeader(
       const std::string& buffer,
       SerializationVersion expectedVersion,
@@ -82,7 +70,7 @@ class WriteHeaderTest : public ::testing::Test {
     auto actualVersion = static_cast<SerializationVersion>(*pos++);
     EXPECT_EQ(actualVersion, expectedVersion);
 
-    // Read row count. kCompact uses varint, kLegacy uses u32.
+    // Read row count. kCompactRaw uses varint, kLegacy uses u32.
     const bool isCompact = isCompactFormat(expectedVersion);
     uint32_t actualRowCount;
     if (isCompact) {
@@ -92,7 +80,7 @@ class WriteHeaderTest : public ::testing::Test {
     }
     EXPECT_EQ(actualRowCount, expectedRowCount);
 
-    // For kCompact/kCompactRaw, verify stream sizes from trailer.
+    // For kCompactRaw, verify stream sizes from trailer.
     if (isCompactFormat(expectedVersion)) {
       auto actualSizes = serde::detail::readTrailerStreamSizes(end);
       EXPECT_EQ(actualSizes, expectedSizes);
@@ -104,29 +92,8 @@ class WriteHeaderTest : public ::testing::Test {
 
 TEST_F(WriteHeaderTest, legacyFormat) {
   std::string buffer;
-  serde::detail::writeHeader(buffer, SerializationVersion::kLegacy, 100);
+  serde::writeSerializationHeader(buffer, SerializationVersion::kLegacy, 100);
   verifyHeader(buffer, SerializationVersion::kLegacy, 100, {});
-}
-
-TEST_F(WriteHeaderTest, compactFormatWithSizes) {
-  std::vector<uint32_t> sizes = {10, 20, 30};
-  auto buffer = buildCompactHeaderTrailer(200, sizes);
-  verifyHeader(buffer, SerializationVersion::kCompact, 200, sizes);
-}
-
-TEST_F(WriteHeaderTest, compactFormatEmptySizes) {
-  auto buffer = buildCompactHeaderTrailer(10, {});
-  verifyHeader(buffer, SerializationVersion::kCompact, 10, {});
-}
-
-TEST_F(WriteHeaderTest, compactFormatManySizes) {
-  // Sizes array with 200 entries (100 non-zero interleaved with zeros).
-  std::vector<uint32_t> sizes(200, 0);
-  for (uint32_t i = 0; i < 100; ++i) {
-    sizes[i * 2] = i + 1;
-  }
-  auto buffer = buildCompactHeaderTrailer(1000, sizes);
-  verifyHeader(buffer, SerializationVersion::kCompact, 1000, sizes);
 }
 
 TEST_F(WriteHeaderTest, compactRawFormatTrivial) {
@@ -184,13 +151,8 @@ TEST_F(WriteHeaderTest, zeroRowCount) {
   {
     SCOPED_TRACE("kLegacy");
     std::string buffer;
-    serde::detail::writeHeader(buffer, SerializationVersion::kLegacy, 0);
+    serde::writeSerializationHeader(buffer, SerializationVersion::kLegacy, 0);
     verifyHeader(buffer, SerializationVersion::kLegacy, 0, {});
-  }
-  {
-    SCOPED_TRACE("kCompact");
-    auto buffer = buildCompactHeaderTrailer(0, {});
-    verifyHeader(buffer, SerializationVersion::kCompact, 0, {});
   }
   {
     SCOPED_TRACE("kCompactRaw");
@@ -203,23 +165,13 @@ TEST_F(WriteHeaderTest, maxRowCount) {
   {
     SCOPED_TRACE("kLegacy");
     std::string buffer;
-    serde::detail::writeHeader(
+    serde::writeSerializationHeader(
         buffer,
         SerializationVersion::kLegacy,
         std::numeric_limits<uint32_t>::max());
     verifyHeader(
         buffer,
         SerializationVersion::kLegacy,
-        std::numeric_limits<uint32_t>::max(),
-        {});
-  }
-  {
-    SCOPED_TRACE("kCompact");
-    auto buffer =
-        buildCompactHeaderTrailer(std::numeric_limits<uint32_t>::max(), {});
-    verifyHeader(
-        buffer,
-        SerializationVersion::kCompact,
         std::numeric_limits<uint32_t>::max(),
         {});
   }
@@ -237,7 +189,7 @@ TEST_F(WriteHeaderTest, maxRowCount) {
 
 TEST_F(WriteHeaderTest, noVersionHeader) {
   std::string buffer;
-  serde::detail::writeHeader(buffer, std::nullopt, 100);
+  serde::writeSerializationHeader(buffer, std::nullopt, 100);
 
   // No version byte - only row count.
   EXPECT_EQ(buffer.size(), sizeof(uint32_t));
@@ -248,34 +200,6 @@ TEST_F(WriteHeaderTest, noVersionHeader) {
 }
 
 // Tests for estimateHeaderSize
-
-TEST_F(WriteHeaderTest, estimateHeaderSizeCompact) {
-  struct TestParam {
-    uint32_t rowCount;
-    std::string debugString() const {
-      return fmt::format("rowCount {}", rowCount);
-    }
-  };
-  std::vector<TestParam> testSettings = {
-      {0},
-      {1},
-      {127},
-      {128},
-      {16383},
-      {16384},
-      {1000000},
-      {std::numeric_limits<uint32_t>::max()}};
-  for (const auto& testData : testSettings) {
-    SCOPED_TRACE(testData.debugString());
-    std::string buffer;
-    serde::detail::writeHeader(
-        buffer, SerializationVersion::kCompact, testData.rowCount);
-    EXPECT_EQ(
-        serde::detail::estimateHeaderSize(
-            SerializationVersion::kCompact, testData.rowCount),
-        buffer.size());
-  }
-}
 
 TEST_F(WriteHeaderTest, estimateHeaderSizeLegacy) {
   struct TestParam {
@@ -289,10 +213,10 @@ TEST_F(WriteHeaderTest, estimateHeaderSizeLegacy) {
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.debugString());
     std::string buffer;
-    serde::detail::writeHeader(
+    serde::writeSerializationHeader(
         buffer, SerializationVersion::kLegacy, testData.rowCount);
     EXPECT_EQ(
-        serde::detail::estimateHeaderSize(
+        serde::estimateSerializationHeaderSize(
             SerializationVersion::kLegacy, testData.rowCount),
         buffer.size());
   }
@@ -317,10 +241,10 @@ TEST_F(WriteHeaderTest, estimateHeaderSizeCompactRaw) {
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.debugString());
     std::string buffer;
-    serde::detail::writeHeader(
+    serde::writeSerializationHeader(
         buffer, SerializationVersion::kCompactRaw, testData.rowCount);
     EXPECT_EQ(
-        serde::detail::estimateHeaderSize(
+        serde::estimateSerializationHeaderSize(
             SerializationVersion::kCompactRaw, testData.rowCount),
         buffer.size());
   }
@@ -328,9 +252,9 @@ TEST_F(WriteHeaderTest, estimateHeaderSizeCompactRaw) {
 
 TEST_F(WriteHeaderTest, estimateHeaderSizeNoVersion) {
   std::string buffer;
-  serde::detail::writeHeader(buffer, std::nullopt, 100);
+  serde::writeSerializationHeader(buffer, std::nullopt, 100);
   EXPECT_EQ(
-      serde::detail::estimateHeaderSize(std::nullopt, 100), buffer.size());
+      serde::estimateSerializationHeaderSize(std::nullopt, 100), buffer.size());
 }
 
 // Tests for estimateTrailerSize
@@ -571,20 +495,21 @@ TEST_F(ParseStreamsTest, legacyFormatMultipleStreams) {
   EXPECT_EQ(streams[2], "third");
 }
 
-// kCompact format tests use writeHeader/parseStreams roundtrip since
+// kCompactRaw format tests use writeHeader/parseStreams roundtrip since
 // the size encoding is now opaque (nimble-encoded).
 
 TEST_F(ParseStreamsTest, denseFormatEmpty) {
   // Write header + trailer with empty sizes array, then parse.
   std::string buffer;
-  serde::detail::writeHeader(buffer, SerializationVersion::kCompact, 10);
+  serde::writeSerializationHeader(
+      buffer, SerializationVersion::kCompactRaw, 10);
   serde::detail::writeTrailer({}, EncodingType::Trivial, buffer);
 
   auto streams = serde::detail::parseStreams(
       // Skip version byte and row count varint.
       buffer.data() + 1 + varint::varintSize(10),
       buffer.data() + buffer.size(),
-      SerializationVersion::kCompact,
+      SerializationVersion::kCompactRaw,
       pool_.get());
   EXPECT_TRUE(streams.empty());
 }
@@ -598,7 +523,8 @@ TEST_F(ParseStreamsTest, denseFormatSequential) {
   }
 
   std::string buffer;
-  serde::detail::writeHeader(buffer, SerializationVersion::kCompact, 100);
+  serde::writeSerializationHeader(
+      buffer, SerializationVersion::kCompactRaw, 100);
   for (const auto& d : data) {
     buffer.append(d);
   }
@@ -611,7 +537,7 @@ TEST_F(ParseStreamsTest, denseFormatSequential) {
   auto streams = serde::detail::parseStreams(
       pos,
       buffer.data() + buffer.size(),
-      SerializationVersion::kCompact,
+      SerializationVersion::kCompactRaw,
       pool_.get());
 
   ASSERT_EQ(streams.size(), 3);
@@ -626,7 +552,8 @@ TEST_F(ParseStreamsTest, denseFormatWithGaps) {
   std::vector<uint32_t> sizes = {4, 0, 3, 0, 0, 4};
 
   std::string buffer;
-  serde::detail::writeHeader(buffer, SerializationVersion::kCompact, 100);
+  serde::writeSerializationHeader(
+      buffer, SerializationVersion::kCompactRaw, 100);
   buffer.append("zero");
   buffer.append("two");
   buffer.append("five");
@@ -638,7 +565,7 @@ TEST_F(ParseStreamsTest, denseFormatWithGaps) {
   auto streams = serde::detail::parseStreams(
       pos,
       buffer.data() + buffer.size(),
-      SerializationVersion::kCompact,
+      SerializationVersion::kCompactRaw,
       pool_.get());
 
   ASSERT_EQ(streams.size(), 6);
@@ -656,7 +583,8 @@ TEST_F(ParseStreamsTest, denseFormatOnlyLastStream) {
   std::vector<uint32_t> sizes = {0, 0, 0, 0, 5};
 
   std::string buffer;
-  serde::detail::writeHeader(buffer, SerializationVersion::kCompact, 100);
+  serde::writeSerializationHeader(
+      buffer, SerializationVersion::kCompactRaw, 100);
   buffer.append("hello");
   serde::detail::writeTrailer(sizes, EncodingType::Trivial, buffer);
 
@@ -666,7 +594,7 @@ TEST_F(ParseStreamsTest, denseFormatOnlyLastStream) {
   auto streams = serde::detail::parseStreams(
       pos,
       buffer.data() + buffer.size(),
-      SerializationVersion::kCompact,
+      SerializationVersion::kCompactRaw,
       pool_.get());
 
   ASSERT_EQ(streams.size(), 5);
@@ -677,7 +605,7 @@ TEST_F(ParseStreamsTest, denseFormatOnlyLastStream) {
   EXPECT_EQ(streams[4], "hello");
 }
 
-// Tests for readTrailerStreamSizes roundtrip (kCompact).
+// Tests for readTrailerStreamSizes roundtrip (kCompactRaw).
 
 class EncodeDecodeTest : public ::testing::Test {
  protected:
@@ -689,7 +617,7 @@ class EncodeDecodeTest : public ::testing::Test {
     pool_ = memory::memoryManager()->addLeafPool("encode_decode_test");
   }
 
-  // Helper to build a kCompact trailer (encoded sizes + trailer size u32).
+  // Helper to build a kCompactRaw trailer (encoded sizes + trailer size u32).
   std::string buildCompactTrailer(const std::vector<uint32_t>& values) {
     std::string buffer;
     serde::detail::writeTrailer(values, EncodingType::Trivial, buffer);
@@ -745,7 +673,8 @@ TEST_F(EncodeDecodeTest, streamSizesEncodingType) {
     SCOPED_TRACE(toString(encodingType));
 
     std::string buffer;
-    serde::detail::writeHeader(buffer, SerializationVersion::kCompact, 100);
+    serde::writeSerializationHeader(
+        buffer, SerializationVersion::kCompactRaw, 100);
     buffer.append("s0");
     buffer.append("s1");
     buffer.append("s2");
@@ -756,7 +685,7 @@ TEST_F(EncodeDecodeTest, streamSizesEncodingType) {
     auto streams = serde::detail::parseStreams(
         pos,
         buffer.data() + buffer.size(),
-        SerializationVersion::kCompact,
+        SerializationVersion::kCompactRaw,
         pool_.get());
 
     ASSERT_EQ(streams.size(), 3);
@@ -770,7 +699,8 @@ TEST_F(EncodeDecodeTest, streamSizesEncodingTypeDefault) {
   std::vector<uint32_t> sizes = {1, 1, 1};
 
   std::string buffer;
-  serde::detail::writeHeader(buffer, SerializationVersion::kCompact, 100);
+  serde::writeSerializationHeader(
+      buffer, SerializationVersion::kCompactRaw, 100);
   buffer.append("a");
   buffer.append("b");
   buffer.append("c");
@@ -781,7 +711,7 @@ TEST_F(EncodeDecodeTest, streamSizesEncodingTypeDefault) {
   auto streams = serde::detail::parseStreams(
       pos,
       buffer.data() + buffer.size(),
-      SerializationVersion::kCompact,
+      SerializationVersion::kCompactRaw,
       pool_.get());
 
   ASSERT_EQ(streams.size(), 3);
@@ -798,7 +728,8 @@ TEST_F(EncodeDecodeTest, streamSizesEncodingTypeCompactRaw) {
     SCOPED_TRACE(toString(encodingType));
 
     std::string buffer;
-    serde::detail::writeHeader(buffer, SerializationVersion::kCompactRaw, 100);
+    serde::writeSerializationHeader(
+        buffer, SerializationVersion::kCompactRaw, 100);
     buffer.append(std::string(10, 'a'));
     buffer.append(std::string(20, 'b'));
     buffer.append(std::string(30, 'c'));
@@ -893,7 +824,7 @@ std::vector<ProjectedStream> projectStreams(
 
 class ProjectStreamsTest : public ParseStreamsTest {
  protected:
-  // Helper to build a kCompact buffer using writeHeader + raw data.
+  // Helper to build a kCompactRaw buffer using writeHeader + raw data.
   // Takes (streamIndex, data) pairs and builds a dense sizes array.
   // Returns buffer starting after version byte + row count (streams position).
   std::string buildDenseBuffer(
@@ -909,7 +840,8 @@ class ProjectStreamsTest : public ParseStreamsTest {
     }
 
     std::string buffer;
-    serde::detail::writeHeader(buffer, SerializationVersion::kCompact, 100);
+    serde::writeSerializationHeader(
+        buffer, SerializationVersion::kCompactRaw, 100);
 
     // Append raw stream data in index order (only non-zero sizes).
     // Sort by index to ensure correct order.
@@ -1033,7 +965,7 @@ TEST_F(ProjectStreamsTest, denseSelectAll) {
   auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
-      SerializationVersion::kCompact,
+      SerializationVersion::kCompactRaw,
       selected,
       pool_.get());
 
@@ -1054,7 +986,7 @@ TEST_F(ProjectStreamsTest, denseSelectSubset) {
   auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
-      SerializationVersion::kCompact,
+      SerializationVersion::kCompactRaw,
       selected,
       pool_.get());
 
@@ -1073,7 +1005,7 @@ TEST_F(ProjectStreamsTest, denseWithGaps) {
   auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
-      SerializationVersion::kCompact,
+      SerializationVersion::kCompactRaw,
       selected,
       pool_.get());
 
@@ -1092,7 +1024,7 @@ TEST_F(ProjectStreamsTest, denseSelectedNotInInput) {
   auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
-      SerializationVersion::kCompact,
+      SerializationVersion::kCompactRaw,
       selected,
       pool_.get());
 
@@ -1111,7 +1043,7 @@ TEST_F(ProjectStreamsTest, denseEmpty) {
   auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
-      SerializationVersion::kCompact,
+      SerializationVersion::kCompactRaw,
       selected,
       pool_.get());
   EXPECT_TRUE(streams.empty());
@@ -1124,7 +1056,7 @@ TEST_F(ProjectStreamsTest, denseSelectFirstAndLast) {
   auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
-      SerializationVersion::kCompact,
+      SerializationVersion::kCompactRaw,
       selected,
       pool_.get());
 
@@ -1157,7 +1089,7 @@ TEST_F(ProjectStreamsTest, denseSkipsEmptyStreams) {
   auto streams = projectStreams(
       buffer.data(),
       buffer.data() + buffer.size(),
-      SerializationVersion::kCompact,
+      SerializationVersion::kCompactRaw,
       selected,
       pool_.get());
 
@@ -1385,9 +1317,11 @@ class TabletRawChunkStripTest : public ::testing::Test {
     }
 
     // Assemble: [header][stream data][trailer].
-    std::string buffer;
-    serde::detail::writeHeader(
-        buffer, SerializationVersion::kTabletRaw, rowCount);
+    auto headerIOBuf = serde::createTabletChunkHeader(
+        {.rowCount = rowCount, .rowRange = RowRange{0, rowCount}});
+    std::string buffer(
+        reinterpret_cast<const char*>(headerIOBuf.data()),
+        headerIOBuf.length());
     buffer.append(streamData);
     serde::detail::writeTrailer(sizes, EncodingType::Trivial, buffer);
 
@@ -1594,9 +1528,11 @@ class ZstdDCtxReuseTest : public TabletRawChunkStripTest {
       streamData.append(data);
     }
 
-    std::string buffer;
-    serde::detail::writeHeader(
-        buffer, SerializationVersion::kTabletRaw, rowCount);
+    auto headerIOBuf = serde::createTabletChunkHeader(
+        {.rowCount = rowCount, .rowRange = RowRange{0, rowCount}});
+    std::string buffer(
+        reinterpret_cast<const char*>(headerIOBuf.data()),
+        headerIOBuf.length());
     buffer.append(streamData);
     serde::detail::writeTrailer(sizes, EncodingType::Trivial, buffer);
 
@@ -1962,136 +1898,6 @@ TEST_F(LZ4RoundtripTest, encodeDecodeLZ4HighCompression) {
       reinterpret_cast<char*>(output.data()),
       static_cast<uint32_t>(output.size() * sizeof(int32_t)));
   EXPECT_EQ(output, expected);
-}
-
-namespace {
-
-TabletChunkHeader roundTripTabletChunkHeader(const TabletChunkHeader& in) {
-  auto buf = createTabletChunkHeader(in);
-  const char* pos = reinterpret_cast<const char*>(buf.data());
-  const char* end = pos + buf.length();
-  auto out = readTabletChunkHeader(pos, end);
-  EXPECT_EQ(pos, end) << "Unexpected trailing bytes after header";
-  return out;
-}
-
-} // namespace
-
-TEST(TabletChunkHeaderTest, noResumeKey) {
-  TabletChunkHeader in{.rowCount = 100, .rowRange = RowRange{0, 100}};
-  const auto out = roundTripTabletChunkHeader(in);
-  EXPECT_EQ(out.rowCount, 100u);
-  EXPECT_EQ(out.rowRange, RowRange(0, 100));
-  EXPECT_FALSE(out.resumeKey.has_value());
-}
-
-TEST(TabletChunkHeaderTest, narrowRowRange) {
-  TabletChunkHeader in{.rowCount = 100, .rowRange = RowRange{10, 40}};
-  const auto out = roundTripTabletChunkHeader(in);
-  EXPECT_EQ(out.rowCount, 100u);
-  EXPECT_EQ(out.rowRange.startRow, 10u);
-  EXPECT_EQ(out.rowRange.endRow, 40u);
-  EXPECT_FALSE(out.resumeKey.has_value());
-}
-
-TEST(TabletChunkHeaderTest, withResumeKey) {
-  TabletChunkHeader in{
-      .rowCount = 100,
-      .rowRange = RowRange{0, 100},
-      .resumeKey = std::string{"my-resume-key"}};
-  const auto out = roundTripTabletChunkHeader(in);
-  EXPECT_EQ(out.rowCount, 100u);
-  EXPECT_EQ(out.rowRange, RowRange(0, 100));
-  ASSERT_TRUE(out.resumeKey.has_value());
-  EXPECT_EQ(*out.resumeKey, "my-resume-key");
-}
-
-TEST(TabletChunkHeaderTest, narrowRangeAndResumeKey) {
-  TabletChunkHeader in{
-      .rowCount = 4096,
-      .rowRange = RowRange{500, 1000},
-      .resumeKey = std::string{"\x00\x01\x02", 3}};
-  const auto out = roundTripTabletChunkHeader(in);
-  EXPECT_EQ(out.rowCount, 4096u);
-  EXPECT_EQ(out.rowRange, RowRange(500, 1000));
-  ASSERT_TRUE(out.resumeKey.has_value());
-  EXPECT_EQ(*out.resumeKey, (std::string{"\x00\x01\x02", 3}));
-}
-
-TEST(TabletChunkHeaderTest, emptyResumeKey) {
-  // An empty string resume key is distinct from "no resume key": the wire
-  // length is 1 (varint of size+1) vs 0 for absent.
-  TabletChunkHeader in{
-      .rowCount = 1, .rowRange = RowRange{0, 1}, .resumeKey = std::string{}};
-  const auto out = roundTripTabletChunkHeader(in);
-  EXPECT_EQ(out.rowCount, 1u);
-  ASSERT_TRUE(out.resumeKey.has_value());
-  EXPECT_TRUE(out.resumeKey->empty());
-}
-
-TEST(TabletChunkHeaderTest, rejectsUnknownVersion) {
-  // Forge bytes with an unsupported version byte.
-  std::string buf;
-  buf.push_back(static_cast<char>(SerializationVersion::kCompact));
-  buf.push_back(0x01); // rowCount = 1 (varint)
-  const char* pos = buf.data();
-  EXPECT_THROW(
-      readTabletChunkHeader(pos, pos + buf.size()), NimbleInternalError);
-}
-
-TEST(TabletChunkHeaderTest, truncatedVersionByte) {
-  std::string buf;
-  const char* pos = buf.data();
-  EXPECT_THROW(readTabletChunkHeader(pos, pos), NimbleInternalError);
-}
-
-TEST(TabletChunkHeaderTest, roundTripsMaxUint32RowCount) {
-  // Exercises the 5-byte varint encoding path for rowCount and endRow.
-  TabletChunkHeader in{
-      .rowCount = std::numeric_limits<uint32_t>::max(),
-      .rowRange = RowRange{0, std::numeric_limits<uint32_t>::max()},
-  };
-  const auto out = roundTripTabletChunkHeader(in);
-  EXPECT_EQ(out.rowCount, std::numeric_limits<uint32_t>::max());
-  EXPECT_EQ(out.rowRange.startRow, 0u);
-  EXPECT_EQ(out.rowRange.endRow, std::numeric_limits<uint32_t>::max());
-}
-
-TEST(TabletChunkHeaderTest, exactBoundaryEndRowEqualsRowCount) {
-  // Round-trip a row range whose endRow exactly equals rowCount (last-row
-  // boundary). NIMBLE_CHECK_LE permits equality; this exercises the
-  // boundary explicitly.
-  TabletChunkHeader in{.rowCount = 100, .rowRange = RowRange{99, 100}};
-  const auto out = roundTripTabletChunkHeader(in);
-  EXPECT_EQ(out.rowCount, 100u);
-  EXPECT_EQ(out.rowRange, RowRange(99, 100));
-}
-
-TEST(TabletChunkHeaderTest, rejectsRowRangeExceedingRowCount) {
-  // Forge a row range whose endRow exceeds the stripe's rowCount. All
-  // fields are 1-byte varints (values < 128).
-  std::string buf;
-  buf.push_back(static_cast<char>(SerializationVersion::kTabletRaw));
-  buf.push_back(0x05); // rowCount = 5
-  buf.push_back(0x00); // startRow = 0
-  buf.push_back(0x64); // endRow = 100 (> rowCount)
-  buf.push_back(0x00); // resumeKeyLength = 0
-  const char* pos = buf.data();
-  EXPECT_THROW(
-      readTabletChunkHeader(pos, pos + buf.size()), NimbleInternalError);
-}
-
-TEST(TabletChunkHeaderTest, rejectsInvertedRowRange) {
-  // startRow > endRow is invalid. All fields are 1-byte varints.
-  std::string buf;
-  buf.push_back(static_cast<char>(SerializationVersion::kTabletRaw));
-  buf.push_back(0x0a); // rowCount = 10
-  buf.push_back(0x05); // startRow = 5
-  buf.push_back(0x03); // endRow = 3 (< startRow)
-  buf.push_back(0x00); // resumeKeyLength = 0
-  const char* pos = buf.data();
-  EXPECT_THROW(
-      readTabletChunkHeader(pos, pos + buf.size()), NimbleInternalError);
 }
 
 // Exercises the StreamDataReader::initialize path (delegates to the shared

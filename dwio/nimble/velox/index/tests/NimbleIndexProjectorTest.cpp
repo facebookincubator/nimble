@@ -337,10 +337,10 @@ TEST_P(NimbleIndexProjectorTest, basicColumnProjection) {
 
   ASSERT_EQ(result.responses.size(), 1);
   const auto& response = result.responses[0];
-  ASSERT_FALSE(response.chunkSlices.empty());
+  ASSERT_FALSE(response.chunks.empty());
   EXPECT_FALSE(response.resumeKey.has_value());
 
-  const auto& chunkSlice = response.chunkSlices[0];
+  const auto& chunkSlice = response.chunks[0];
   const auto rowRange = readEmbeddedRowRange(chunkSlice);
   ASSERT_GT(rowRange.numRows(), 0);
 
@@ -404,7 +404,7 @@ TEST_P(NimbleIndexProjectorTest, emptyResult) {
   auto result = projector->project(request, {});
 
   ASSERT_EQ(result.responses.size(), 1);
-  EXPECT_TRUE(result.responses[0].chunkSlices.empty());
+  EXPECT_TRUE(result.responses[0].chunks.empty());
   EXPECT_FALSE(result.responses[0].resumeKey.has_value());
 
   // All stats should be zero for a miss.
@@ -450,7 +450,7 @@ TEST_P(NimbleIndexProjectorTest, multipleRequests) {
   ASSERT_EQ(result.responses.size(), 3);
   uint64_t totalBytes = 0;
   for (const auto& response : result.responses) {
-    for (const auto& chunkSlice : response.chunkSlices) {
+    for (const auto& chunkSlice : response.chunks) {
       totalBytes += chunkSlice.computeChainDataLength();
     }
   }
@@ -458,7 +458,7 @@ TEST_P(NimbleIndexProjectorTest, multipleRequests) {
 
   // All requests should have results (no misses).
   for (const auto& response : result.responses) {
-    EXPECT_FALSE(response.chunkSlices.empty());
+    EXPECT_FALSE(response.chunks.empty());
     EXPECT_FALSE(response.resumeKey.has_value());
   }
 }
@@ -497,11 +497,11 @@ TEST_P(NimbleIndexProjectorTest, overlappingRequestsShareBody) {
   auto result = projector->project(request, {});
 
   ASSERT_EQ(result.responses.size(), 2);
-  ASSERT_EQ(result.responses[0].chunkSlices.size(), 1);
-  ASSERT_EQ(result.responses[1].chunkSlices.size(), 1);
+  ASSERT_EQ(result.responses[0].chunks.size(), 1);
+  ASSERT_EQ(result.responses[1].chunks.size(), 1);
 
-  const auto& chunkSlice0 = result.responses[0].chunkSlices[0];
-  const auto& chunkSlice1 = result.responses[1].chunkSlices[0];
+  const auto& chunkSlice0 = result.responses[0].chunks[0];
+  const auto& chunkSlice1 = result.responses[1].chunks[0];
 
   // Each chunk slice is a 2-node chain: per-slice header + shared body+trailer.
   ASSERT_TRUE(chunkSlice0.isChained());
@@ -564,9 +564,8 @@ TEST_P(NimbleIndexProjectorTest, overlappingRequestsShareBody) {
     NimbleIndexProjector::Request request;                                     \
     request.keyBounds = {bounds};                                              \
     auto result = projector->project(request, {});                             \
-    ASSERT_EQ(result.responses[0].chunkSlices.size(), 1);                      \
-    auto coalesced =                                                           \
-        result.responses[0].chunkSlices[0].cloneCoalescedAsValue();            \
+    ASSERT_EQ(result.responses[0].chunks.size(), 1);                           \
+    auto coalesced = result.responses[0].chunks[0].cloneCoalescedAsValue();    \
     auto bytes = std::string_view(                                             \
         reinterpret_cast<const char*>(coalesced.data()), coalesced.length());  \
     DeserializerOptions deserOptions;                                          \
@@ -640,9 +639,9 @@ TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchWithRowRange) {
   NimbleIndexProjector::Request request;
   request.keyBounds = {bounds};
   auto result = projector->project(request, {});
-  ASSERT_EQ(result.responses[0].chunkSlices.size(), 1);
+  ASSERT_EQ(result.responses[0].chunks.size(), 1);
 
-  auto coalesced = result.responses[0].chunkSlices[0].cloneCoalescedAsValue();
+  auto coalesced = result.responses[0].chunks[0].cloneCoalescedAsValue();
   auto bytes = std::string_view(
       reinterpret_cast<const char*>(coalesced.data()), coalesced.length());
 
@@ -713,8 +712,8 @@ TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedRanges) {
   std::vector<std::string_view> batches;
   batches.reserve(4);
   for (auto& response : result.responses) {
-    ASSERT_EQ(response.chunkSlices.size(), 1u);
-    ownedSlices.push_back(response.chunkSlices[0].cloneCoalescedAsValue());
+    ASSERT_EQ(response.chunks.size(), 1u);
+    ownedSlices.push_back(response.chunks[0].cloneCoalescedAsValue());
     batches.emplace_back(
         reinterpret_cast<const char*>(ownedSlices.back().data()),
         ownedSlices.back().length());
@@ -757,10 +756,10 @@ TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedRanges) {
 
 TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedVersions) {
   // Mix a kTabletRaw chunk slice (projector output, narrow row range) with
-  // a kCompact chunk (Serializer output, no row range) in one deserialize
+  // a kCompactRaw chunk (Serializer output, no row range) in one deserialize
   // call. Verifies the no-range branch of the per-batch loop: when
   // batchRanges[i] is nullopt, numRowsInBatch falls back to batchRows
-  // (the full kCompact batch).
+  // (the full kCompactRaw batch).
   auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
 
   const int numRows = 100;
@@ -785,29 +784,28 @@ TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedVersions) {
   NimbleIndexProjector::Request request;
   request.keyBounds = {bounds};
   auto result = projector->project(request, {});
-  ASSERT_EQ(result.responses[0].chunkSlices.size(), 1u);
-  auto tabletRawOwned =
-      result.responses[0].chunkSlices[0].cloneCoalescedAsValue();
+  ASSERT_EQ(result.responses[0].chunks.size(), 1u);
+  auto tabletRawOwned = result.responses[0].chunks[0].cloneCoalescedAsValue();
 
-  // kCompact batch: serialize a 5-row Row<INTEGER> vector matching the
+  // kCompactRaw batch: serialize a 5-row Row<INTEGER> vector matching the
   // projected schema. The Serializer is constructed against the same velox
   // type the Deserializer will use, so the streams encode in lockstep.
   auto projectedVeloxType =
       convertToVeloxType(*projector->projectedNimbleType());
-  std::vector<int32_t> kCompactValues = {1000, 2000, 3000, 4000, 5000};
-  auto kCompactRow = vectorMaker_->rowVector(
-      {"value"}, {vectorMaker_->flatVector<int32_t>(kCompactValues)});
+  std::vector<int32_t> kCompactRawValues = {1000, 2000, 3000, 4000, 5000};
+  auto kCompactRawRow = vectorMaker_->rowVector(
+      {"value"}, {vectorMaker_->flatVector<int32_t>(kCompactRawValues)});
   SerializerOptions serOptions{
-      .version = SerializationVersion::kCompact,
+      .version = SerializationVersion::kCompactRaw,
   };
   Serializer ser{
       serOptions,
       projectedVeloxType,
       leafPool_.get(),
   };
-  auto kCompactBytes = ser.serialize(
-      kCompactRow,
-      OrderedRanges::of(0, static_cast<uint32_t>(kCompactValues.size())));
+  auto kCompactRawBytes = ser.serialize(
+      kCompactRawRow,
+      OrderedRanges::of(0, static_cast<uint32_t>(kCompactRawValues.size())));
 
   DeserializerOptions deserOptions;
   deserOptions.hasHeader = true;
@@ -818,15 +816,15 @@ TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedVersions) {
       std::string_view(
           reinterpret_cast<const char*>(tabletRawOwned.data()),
           tabletRawOwned.length()),
-      kCompactBytes,
+      kCompactRawBytes,
   };
   VectorPtr output;
   deserializer.deserialize(batches, output);
 
-  // Over-fetch: kTabletRaw batch decodes its full 100 stripe rows; kCompact
-  // batch contributes 5 rows. Concatenation = 105 rows. The in-range
-  // subset of the kTabletRaw batch (positions [10, 40) within the first
-  // 100) carries values[10..39]; the kCompact batch's 5 rows follow.
+  // Over-fetch: kTabletRaw batch decodes its full 100 stripe rows;
+  // kCompactRaw batch contributes 5 rows. Concatenation = 105 rows. The
+  // in-range subset of the kTabletRaw batch (positions [10, 40) within the
+  // first 100) carries values[10..39]; the kCompactRaw batch's 5 rows follow.
   ASSERT_EQ(output->size(), 105u);
   auto* rowVec = output->as<velox::RowVector>();
   auto* valueVec = rowVec->childAt(0)->as<velox::FlatVector<int32_t>>();
@@ -835,8 +833,8 @@ TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedVersions) {
         << "kTabletRaw i=" << i;
   }
   for (uint32_t i = 0; i < 5; ++i) {
-    EXPECT_EQ(valueVec->valueAt(100 + i), kCompactValues[i])
-        << "kCompact i=" << i;
+    EXPECT_EQ(valueVec->valueAt(100 + i), kCompactRawValues[i])
+        << "kCompactRaw i=" << i;
   }
 }
 
@@ -1007,9 +1005,9 @@ TEST_P(NimbleIndexProjectorTest, flatMapProjection) {
 
   ASSERT_EQ(result.responses.size(), 1);
   const auto& response = result.responses[0];
-  ASSERT_FALSE(response.chunkSlices.empty());
+  ASSERT_FALSE(response.chunks.empty());
 
-  const auto& chunkSlice = response.chunkSlices[0];
+  const auto& chunkSlice = response.chunks[0];
   const auto rowRange = readEmbeddedRowRange(chunkSlice);
   ASSERT_GT(rowRange.numRows(), 0);
 
@@ -1109,9 +1107,9 @@ TEST_P(NimbleIndexProjectorTest, flatMapProjectionWithNarrowRowRange) {
   request.keyBounds = {bounds};
   auto result = projector->project(request, {});
   ASSERT_EQ(result.responses.size(), 1);
-  ASSERT_EQ(result.responses[0].chunkSlices.size(), 1u);
+  ASSERT_EQ(result.responses[0].chunks.size(), 1u);
 
-  const auto& chunkSlice = result.responses[0].chunkSlices[0];
+  const auto& chunkSlice = result.responses[0].chunks[0];
   const auto rowRange = readEmbeddedRowRange(chunkSlice);
   ASSERT_EQ(rowRange.numRows(), 5u);
 
@@ -1252,9 +1250,9 @@ TEST_P(NimbleIndexProjectorTest, flatMapKeyProjectionSchemaComparison) {
   auto result = projector->project(request, {});
 
   ASSERT_EQ(result.responses.size(), 1);
-  ASSERT_FALSE(result.responses[0].chunkSlices.empty());
+  ASSERT_FALSE(result.responses[0].chunks.empty());
 
-  const auto& chunkSlice = result.responses[0].chunkSlices[0];
+  const auto& chunkSlice = result.responses[0].chunks[0];
   auto coalesced = coalesceChunkSlice(chunkSlice);
   auto data = std::string_view(
       reinterpret_cast<const char*>(coalesced.data()), coalesced.length());
@@ -1312,9 +1310,9 @@ TEST_P(NimbleIndexProjectorTest, flatMapIntKeyProjection) {
 
   ASSERT_EQ(result.responses.size(), 1);
   const auto& response = result.responses[0];
-  ASSERT_FALSE(response.chunkSlices.empty());
+  ASSERT_FALSE(response.chunks.empty());
 
-  const auto& chunkSlice = response.chunkSlices[0];
+  const auto& chunkSlice = response.chunks[0];
   const auto rowRange = readEmbeddedRowRange(chunkSlice);
   ASSERT_GT(rowRange.numRows(), 0);
 
@@ -1419,7 +1417,7 @@ TEST_P(NimbleIndexProjectorTest, flatMapMissingKeys) {
     request.keyBounds = {pointBounds};
     auto result = projector->project(request, {});
     ASSERT_EQ(result.responses.size(), 1);
-    ASSERT_FALSE(result.responses[0].chunkSlices.empty());
+    ASSERT_FALSE(result.responses[0].chunks.empty());
   }
 
   // All requested keys missing — should fail.
@@ -1593,7 +1591,7 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
     auto result = projector->project(request, {});
 
     ASSERT_EQ(result.responses.size(), 1);
-    ASSERT_FALSE(result.responses[0].chunkSlices.empty());
+    ASSERT_FALSE(result.responses[0].chunks.empty());
 
     storageReads[param.debugString()] = projector->stats().numStorageReads;
   }
@@ -1719,11 +1717,11 @@ TEST_P(NimbleIndexProjectorTest, resumeKeyOnTruncation) {
 
   ASSERT_EQ(result.responses.size(), 1);
   const auto& response = result.responses[0];
-  ASSERT_FALSE(response.chunkSlices.empty());
+  ASSERT_FALSE(response.chunks.empty());
 
   // Soft limit: first stripe (100 rows) included fully.
   uint64_t totalRows = 0;
-  for (const auto& chunkSlice : response.chunkSlices) {
+  for (const auto& chunkSlice : response.chunks) {
     totalRows += readEmbeddedRowRange(chunkSlice).numRows();
   }
   EXPECT_EQ(totalRows, 100);
@@ -1734,13 +1732,12 @@ TEST_P(NimbleIndexProjectorTest, resumeKeyOnTruncation) {
 
   // The resume key is embedded only on the last slice; earlier slices carry
   // an empty resume key marker.
-  const auto numSlices = response.chunkSlices.size();
+  const auto numSlices = response.chunks.size();
   for (size_t i = 0; i + 1 < numSlices; ++i) {
-    EXPECT_FALSE(readEmbeddedResumeKey(response.chunkSlices[i]).has_value())
+    EXPECT_FALSE(readEmbeddedResumeKey(response.chunks[i]).has_value())
         << "non-last slice " << i << " unexpectedly carries a resume key";
   }
-  const auto embeddedResumeKey =
-      readEmbeddedResumeKey(response.chunkSlices.back());
+  const auto embeddedResumeKey = readEmbeddedResumeKey(response.chunks.back());
   ASSERT_TRUE(embeddedResumeKey.has_value());
   EXPECT_EQ(*embeddedResumeKey, *response.resumeKey);
 }
@@ -1810,7 +1807,7 @@ TEST_P(NimbleIndexProjectorTest, softLimitAtStripeBoundary) {
 
     ASSERT_EQ(result.responses.size(), 1);
     uint64_t totalRows = 0;
-    for (const auto& chunkSlice : result.responses[0].chunkSlices) {
+    for (const auto& chunkSlice : result.responses[0].chunks) {
       totalRows += readEmbeddedRowRange(chunkSlice).numRows();
     }
     EXPECT_EQ(totalRows, 100);
@@ -1829,7 +1826,7 @@ TEST_P(NimbleIndexProjectorTest, softLimitAtStripeBoundary) {
 
     ASSERT_EQ(result.responses.size(), 1);
     uint64_t totalRows = 0;
-    for (const auto& chunkSlice : result.responses[0].chunkSlices) {
+    for (const auto& chunkSlice : result.responses[0].chunks) {
       totalRows += readEmbeddedRowRange(chunkSlice).numRows();
     }
     EXPECT_EQ(totalRows, 100);
@@ -1849,7 +1846,7 @@ TEST_P(NimbleIndexProjectorTest, softLimitAtStripeBoundary) {
 
     ASSERT_EQ(result.responses.size(), 1);
     uint64_t totalRows = 0;
-    for (const auto& chunkSlice : result.responses[0].chunkSlices) {
+    for (const auto& chunkSlice : result.responses[0].chunks) {
       totalRows += readEmbeddedRowRange(chunkSlice).numRows();
     }
     EXPECT_EQ(totalRows, 200);
@@ -1888,7 +1885,7 @@ TEST_P(NimbleIndexProjectorTest, resumeKeyPagination) {
     const auto& response = result.responses[0];
 
     uint64_t pageRows = 0;
-    for (const auto& chunkSlice : response.chunkSlices) {
+    for (const auto& chunkSlice : response.chunks) {
       pageRows += readEmbeddedRowRange(chunkSlice).numRows();
     }
     EXPECT_GT(pageRows, 0) << "Page " << pageCount << " returned no rows";
@@ -1937,7 +1934,7 @@ TEST_P(NimbleIndexProjectorTest, maxRowsTotalAcrossRequests) {
   {
     const auto& response = result.responses[0];
     uint64_t totalRows = 0;
-    for (const auto& chunkSlice : response.chunkSlices) {
+    for (const auto& chunkSlice : response.chunks) {
       totalRows += readEmbeddedRowRange(chunkSlice).numRows();
     }
     EXPECT_EQ(totalRows, 100);
@@ -1947,7 +1944,7 @@ TEST_P(NimbleIndexProjectorTest, maxRowsTotalAcrossRequests) {
   // Request 1: stripe 9 was never processed, resume key = original lower key.
   {
     const auto& response = result.responses[1];
-    EXPECT_TRUE(response.chunkSlices.empty());
+    EXPECT_TRUE(response.chunks.empty());
     ASSERT_TRUE(response.resumeKey.has_value());
     EXPECT_EQ(response.resumeKey.value(), bounds1.lowerKey);
   }
@@ -1979,14 +1976,14 @@ TEST_P(NimbleIndexProjectorTest, noResumeKeyWhenRequestFullySatisfied) {
   // Request 0: fully satisfied within stripe 0 — no resume key.
   {
     const auto& response = result.responses[0];
-    ASSERT_FALSE(response.chunkSlices.empty());
+    ASSERT_FALSE(response.chunks.empty());
     EXPECT_FALSE(response.resumeKey.has_value());
   }
 
   // Request 1: spans beyond stripe 0, truncated — has resume key.
   {
     const auto& response = result.responses[1];
-    ASSERT_FALSE(response.chunkSlices.empty());
+    ASSERT_FALSE(response.chunks.empty());
     EXPECT_TRUE(response.resumeKey.has_value());
   }
 }
@@ -2010,7 +2007,7 @@ TEST_P(NimbleIndexProjectorTest, maxRowsExceedsTotal) {
 
   ASSERT_EQ(result.responses.size(), 1);
   uint64_t totalRows = 0;
-  for (const auto& chunkSlice : result.responses[0].chunkSlices) {
+  for (const auto& chunkSlice : result.responses[0].chunks) {
     totalRows += readEmbeddedRowRange(chunkSlice).numRows();
   }
   EXPECT_EQ(totalRows, 300);
@@ -2034,7 +2031,7 @@ TEST_P(NimbleIndexProjectorTest, maxRowsZeroMeansUnlimited) {
 
   ASSERT_EQ(result.responses.size(), 1);
   uint64_t totalRows = 0;
-  for (const auto& chunkSlice : result.responses[0].chunkSlices) {
+  for (const auto& chunkSlice : result.responses[0].chunks) {
     totalRows += readEmbeddedRowRange(chunkSlice).numRows();
   }
   EXPECT_EQ(totalRows, 1000);
@@ -2060,7 +2057,7 @@ TEST_P(NimbleIndexProjectorTest, maxRowsSingleRowStripes) {
 
   ASSERT_EQ(result.responses.size(), 1);
   uint64_t totalRows = 0;
-  for (const auto& chunkSlice : result.responses[0].chunkSlices) {
+  for (const auto& chunkSlice : result.responses[0].chunks) {
     totalRows += readEmbeddedRowRange(chunkSlice).numRows();
   }
   EXPECT_EQ(totalRows, 3);
@@ -2103,9 +2100,9 @@ TEST_P(NimbleIndexProjectorTest, maxRowsPerRequestClipping) {
     const auto& response = result.responses[0];
     EXPECT_FALSE(response.resumeKey.has_value());
     EXPECT_EQ(projector->stats().numReadRows, 150);
-    ASSERT_EQ(response.chunkSlices.size(), 2);
-    EXPECT_EQ(readEmbeddedRowRange(response.chunkSlices[0]).numRows(), 100);
-    EXPECT_EQ(readEmbeddedRowRange(response.chunkSlices[1]).numRows(), 50);
+    ASSERT_EQ(response.chunks.size(), 2);
+    EXPECT_EQ(readEmbeddedRowRange(response.chunks[0]).numRows(), 100);
+    EXPECT_EQ(readEmbeddedRowRange(response.chunks[1]).numRows(), 50);
   }
 }
 
@@ -2134,7 +2131,7 @@ TEST_P(NimbleIndexProjectorTest, maxRowsPerRequestIndependentPruning) {
   {
     const auto& response = result.responses[0];
     uint64_t totalRows = 0;
-    for (const auto& chunkSlice : response.chunkSlices) {
+    for (const auto& chunkSlice : response.chunks) {
       totalRows += readEmbeddedRowRange(chunkSlice).numRows();
     }
     EXPECT_EQ(totalRows, 100);
@@ -2144,7 +2141,7 @@ TEST_P(NimbleIndexProjectorTest, maxRowsPerRequestIndependentPruning) {
   {
     const auto& response = result.responses[1];
     uint64_t totalRows = 0;
-    for (const auto& chunkSlice : response.chunkSlices) {
+    for (const auto& chunkSlice : response.chunks) {
       totalRows += readEmbeddedRowRange(chunkSlice).numRows();
     }
     EXPECT_EQ(totalRows, 100);
@@ -2167,9 +2164,8 @@ TEST_P(NimbleIndexProjectorTest, maxBytesTruncation) {
     NimbleIndexProjector::Request request;
     request.keyBounds = {bounds};
     auto result = projector->project(request, {});
-    ASSERT_EQ(result.responses[0].chunkSlices.size(), 1);
-    bytesPerStripe =
-        result.responses[0].chunkSlices[0].computeChainDataLength();
+    ASSERT_EQ(result.responses[0].chunks.size(), 1);
+    bytesPerStripe = projector->stats().numReadBytes;
     ASSERT_GT(bytesPerStripe, 0);
   }
 
@@ -2242,9 +2238,8 @@ TEST_P(NimbleIndexProjectorTest, maxBytesPagination) {
     NimbleIndexProjector::Request request;
     request.keyBounds = {bounds};
     auto result = projector->project(request, {});
-    ASSERT_EQ(result.responses[0].chunkSlices.size(), 1);
-    bytesPerStripe =
-        result.responses[0].chunkSlices[0].computeChainDataLength();
+    ASSERT_EQ(result.responses[0].chunks.size(), 1);
+    bytesPerStripe = projector->stats().numReadBytes;
   }
 
   // Paginate through the full range using byte limits.
@@ -2302,9 +2297,8 @@ TEST_P(NimbleIndexProjectorTest, maxBytesAndMaxRowsInteraction) {
     NimbleIndexProjector::Request request;
     request.keyBounds = {bounds};
     auto result = projector->project(request, {});
-    ASSERT_EQ(result.responses[0].chunkSlices.size(), 1);
-    bytesPerStripe =
-        result.responses[0].chunkSlices[0].computeChainDataLength();
+    ASSERT_EQ(result.responses[0].chunks.size(), 1);
+    bytesPerStripe = projector->stats().numReadBytes;
   }
 
   // Range [0, 500) = 5 stripes, 500 rows.
@@ -2431,14 +2425,14 @@ TEST_P(
     SCOPED_TRACE(fmt::format("request {}", i));
     const auto& response = result.responses[i];
     uint64_t totalRows = 0;
-    for (const auto& chunkSlice : response.chunkSlices) {
+    for (const auto& chunkSlice : response.chunks) {
       totalRows += readEmbeddedRowRange(chunkSlice).numRows();
     }
     EXPECT_EQ(totalRows, 150);
     EXPECT_FALSE(response.resumeKey.has_value());
-    ASSERT_EQ(response.chunkSlices.size(), 2);
-    EXPECT_EQ(readEmbeddedRowRange(response.chunkSlices[0]).numRows(), 100);
-    EXPECT_EQ(readEmbeddedRowRange(response.chunkSlices[1]).numRows(), 50);
+    ASSERT_EQ(response.chunks.size(), 2);
+    EXPECT_EQ(readEmbeddedRowRange(response.chunks[0]).numRows(), 100);
+    EXPECT_EQ(readEmbeddedRowRange(response.chunks[1]).numRows(), 50);
   }
 }
 
@@ -2464,8 +2458,8 @@ TEST_P(NimbleIndexProjectorTest, maxRowsPerRequestSingleRow) {
   const auto& response = result.responses[0];
   EXPECT_FALSE(response.resumeKey.has_value());
   EXPECT_EQ(projector->stats().numReadRows, 1);
-  ASSERT_EQ(response.chunkSlices.size(), 1);
-  EXPECT_EQ(readEmbeddedRowRange(response.chunkSlices[0]).numRows(), 1);
+  ASSERT_EQ(response.chunks.size(), 1);
+  EXPECT_EQ(readEmbeddedRowRange(response.chunks[0]).numRows(), 1);
 }
 
 TEST_P(NimbleIndexProjectorTest, maxRowsLargeScale) {
@@ -2537,19 +2531,19 @@ TEST_P(NimbleIndexProjectorTest, maxRowsMultiRequestMixedSatisfaction) {
   ASSERT_EQ(result.responses.size(), 4);
 
   // Request 0: 50 rows, fully satisfied, no resume key.
-  EXPECT_FALSE(result.responses[0].chunkSlices.empty());
+  EXPECT_FALSE(result.responses[0].chunks.empty());
   EXPECT_FALSE(result.responses[0].resumeKey.has_value());
 
   // Request 1: 100 rows, fully satisfied (ends at stripe boundary), no resume.
-  EXPECT_FALSE(result.responses[1].chunkSlices.empty());
+  EXPECT_FALSE(result.responses[1].chunks.empty());
   EXPECT_FALSE(result.responses[1].resumeKey.has_value());
 
   // Request 2: 100 rows from stripe 0, has data in stripes 1-4, resume key.
-  EXPECT_FALSE(result.responses[2].chunkSlices.empty());
+  EXPECT_FALSE(result.responses[2].chunks.empty());
   EXPECT_TRUE(result.responses[2].resumeKey.has_value());
 
   // Request 3: stripe 9 never processed, resume key = original lower key.
-  EXPECT_TRUE(result.responses[3].chunkSlices.empty());
+  EXPECT_TRUE(result.responses[3].chunks.empty());
   ASSERT_TRUE(result.responses[3].resumeKey.has_value());
   EXPECT_EQ(result.responses[3].resumeKey.value(), bounds3.lowerKey);
 }
@@ -2569,9 +2563,8 @@ TEST_P(NimbleIndexProjectorTest, maxBytesAndMaxRowsPerRequestInteraction) {
     NimbleIndexProjector::Request request;
     request.keyBounds = {bounds};
     auto result = projector->project(request, {});
-    ASSERT_EQ(result.responses[0].chunkSlices.size(), 1);
-    bytesPerStripe =
-        result.responses[0].chunkSlices[0].computeChainDataLength();
+    ASSERT_EQ(result.responses[0].chunks.size(), 1);
+    bytesPerStripe = projector->stats().numReadBytes;
   }
 
   // maxRowsPerRequest clips to 150 rows (mid-stripe), maxBytes allows 5
@@ -2626,9 +2619,8 @@ TEST_P(NimbleIndexProjectorTest, maxBytesLargeScale) {
     NimbleIndexProjector::Request request;
     request.keyBounds = {bounds};
     auto result = projector->project(request, {});
-    ASSERT_EQ(result.responses[0].chunkSlices.size(), 1);
-    bytesPerStripe =
-        result.responses[0].chunkSlices[0].computeChainDataLength();
+    ASSERT_EQ(result.responses[0].chunks.size(), 1);
+    bytesPerStripe = projector->stats().numReadBytes;
   }
 
   // Paginate all 10,000 rows with byte limit of ~3 stripes per page.
@@ -2712,7 +2704,7 @@ TEST_P(NimbleIndexProjectorTest, cacheDataReadStats) {
       request.keyBounds.push_back(std::move(bounds));
       auto result = projector->project(request, {});
       ASSERT_EQ(result.responses.size(), 1);
-      EXPECT_FALSE(result.responses[0].chunkSlices.empty());
+      EXPECT_FALSE(result.responses[0].chunks.empty());
 
       const auto& stats = projector->stats();
       EXPECT_GT(stats.numStorageReads, 0);
@@ -2730,7 +2722,7 @@ TEST_P(NimbleIndexProjectorTest, cacheDataReadStats) {
       request.keyBounds.push_back(std::move(bounds));
       auto result = projector->project(request, {});
       ASSERT_EQ(result.responses.size(), 1);
-      EXPECT_FALSE(result.responses[0].chunkSlices.empty());
+      EXPECT_FALSE(result.responses[0].chunks.empty());
 
       const auto& stats = projector->stats();
       if (testCase.expectCacheHitsOnSecondPass) {

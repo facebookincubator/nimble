@@ -75,39 +75,17 @@ struct FormatParam {
 // Generate all legal input × output version combinations.
 std::vector<FormatParam> allFormatCombinations() {
   return {
-      {SerializationVersion::kCompact, SerializationVersion::kCompact},
-      {SerializationVersion::kCompact, SerializationVersion::kCompactRaw},
-      {SerializationVersion::kCompactRaw, SerializationVersion::kCompact},
       {SerializationVersion::kCompactRaw, SerializationVersion::kCompactRaw},
       // Delta stream sizes encoding for kCompactRaw output.
       {SerializationVersion::kCompactRaw,
        SerializationVersion::kCompactRaw,
        EncodingType::Delta},
-      {SerializationVersion::kCompact,
-       SerializationVersion::kCompactRaw,
-       EncodingType::Delta},
       // Buffer pool disabled variants.
-      {SerializationVersion::kCompact,
-       SerializationVersion::kCompact,
-       EncodingType::Trivial,
-       /*enableBufferPool=*/false},
-      {SerializationVersion::kCompact,
-       SerializationVersion::kCompactRaw,
-       EncodingType::Trivial,
-       /*enableBufferPool=*/false},
-      {SerializationVersion::kCompactRaw,
-       SerializationVersion::kCompact,
-       EncodingType::Trivial,
-       /*enableBufferPool=*/false},
       {SerializationVersion::kCompactRaw,
        SerializationVersion::kCompactRaw,
        EncodingType::Trivial,
        /*enableBufferPool=*/false},
       {SerializationVersion::kCompactRaw,
-       SerializationVersion::kCompactRaw,
-       EncodingType::Delta,
-       /*enableBufferPool=*/false},
-      {SerializationVersion::kCompact,
        SerializationVersion::kCompactRaw,
        EncodingType::Delta,
        /*enableBufferPool=*/false},
@@ -661,7 +639,7 @@ TEST_F(ProjectorTest, incompatibleFormatsRejected) {
   auto subfields = makeSubfields({"a"});
 
   auto inputSchema =
-      getNimbleSchema(type, {.version = SerializationVersion::kCompact});
+      getNimbleSchema(type, {.version = SerializationVersion::kCompactRaw});
 
   // Test kLegacy output version — rejected in constructor.
   NIMBLE_ASSERT_THROW(
@@ -670,7 +648,7 @@ TEST_F(ProjectorTest, incompatibleFormatsRejected) {
           subfields,
           pool_.get(),
           {.projectVersion = SerializationVersion::kLegacy}),
-      "Projection output version must be kCompact");
+      "Projection output version must be kCompactRaw");
 
   // Test kTabletRaw output version — rejected in constructor.
   NIMBLE_ASSERT_THROW(
@@ -679,12 +657,12 @@ TEST_F(ProjectorTest, incompatibleFormatsRejected) {
           subfields,
           pool_.get(),
           {.projectVersion = SerializationVersion::kTabletRaw}),
-      "Projection output version must be kCompact");
+      "Projection output version must be kCompactRaw");
 
   // Test kTabletRaw input — rejected at projection time.
   {
     auto serialized =
-        serialize(vec, type, {.version = SerializationVersion::kCompact});
+        serialize(vec, type, {.version = SerializationVersion::kCompactRaw});
     Projector projector(inputSchema, subfields, pool_.get(), {});
 
     // Patch the version byte to kTabletRaw.
@@ -693,7 +671,7 @@ TEST_F(ProjectorTest, incompatibleFormatsRejected) {
 
     NIMBLE_ASSERT_THROW(
         projector.project(std::string_view(tabletRawInput)),
-        "Input must be kCompact or kCompactRaw");
+        "Input must be kCompactRaw format");
   }
 }
 
@@ -704,7 +682,7 @@ TEST_F(ProjectorTest, emptyProjectionInvalid) {
       {"b", BIGINT()},
   });
 
-  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
+  SerializerOptions serOpts{.version = SerializationVersion::kCompactRaw};
   auto inputSchema = getNimbleSchema(type, serOpts);
 
   // Empty subfields should throw.
@@ -714,7 +692,7 @@ TEST_F(ProjectorTest, emptyProjectionInvalid) {
           inputSchema,
           emptySubfields,
           pool_.get(),
-          {.projectVersion = SerializationVersion::kCompact}),
+          {.projectVersion = SerializationVersion::kCompactRaw}),
       "Must project at least one subfield");
 }
 
@@ -734,7 +712,7 @@ TEST_F(ProjectorTest, fullProjectionPassThrough) {
           makeStringVector({"x", "y", "z"}),
       });
 
-  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
+  SerializerOptions serOpts{.version = SerializationVersion::kCompactRaw};
   auto serialized = serialize(vec, type, serOpts);
   auto inputSchema = getNimbleSchema(type, serOpts);
 
@@ -773,7 +751,7 @@ TEST_F(ProjectorTest, fullProjectionPassThrough) {
 TEST_F(ProjectorTest, unsupportedArraySubscript) {
   auto type = ROW({{"arr", ARRAY(INTEGER())}});
 
-  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
+  SerializerOptions serOpts{.version = SerializationVersion::kCompactRaw};
   auto inputSchema = getNimbleSchema(type, serOpts);
 
   // Array subscripts are not supported.
@@ -784,7 +762,7 @@ TEST_F(ProjectorTest, unsupportedArraySubscript) {
           inputSchema,
           subfields,
           pool_.get(),
-          {.projectVersion = SerializationVersion::kCompact}),
+          {.projectVersion = SerializationVersion::kCompactRaw}),
       "only supported on FlatMap");
 }
 
@@ -792,7 +770,7 @@ TEST_F(ProjectorTest, unsupportedArraySubscript) {
 TEST_F(ProjectorTest, unsupportedMapKeyProjection) {
   auto type = ROW({{"m", MAP(VARCHAR(), INTEGER())}});
 
-  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
+  SerializerOptions serOpts{.version = SerializationVersion::kCompactRaw};
   auto inputSchema = getNimbleSchema(type, serOpts);
 
   // Regular map subscripts are not supported (would need re-encoding).
@@ -803,7 +781,7 @@ TEST_F(ProjectorTest, unsupportedMapKeyProjection) {
           inputSchema,
           subfields,
           pool_.get(),
-          {.projectVersion = SerializationVersion::kCompact}),
+          {.projectVersion = SerializationVersion::kCompactRaw}),
       "only supported on FlatMap");
 }
 
@@ -859,7 +837,7 @@ TEST_F(ProjectorTest, flatMapSerializeDeserializeNoProjction) {
 
   // Serialize with FlatMap encoding.
   SerializerOptions serOpts{
-      .version = SerializationVersion::kCompact,
+      .version = SerializationVersion::kCompactRaw,
       .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -927,7 +905,7 @@ TEST_F(ProjectorTest, projectEntireFlatMapColumn) {
       std::vector<VectorPtr>{ids, mapVector});
 
   SerializerOptions serOpts{
-      .version = SerializationVersion::kCompact,
+      .version = SerializationVersion::kCompactRaw,
       .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -939,7 +917,7 @@ TEST_F(ProjectorTest, projectEntireFlatMapColumn) {
           inputSchema,
           subfields,
           pool_.get(),
-          {.projectVersion = SerializationVersion::kCompact}),
+          {.projectVersion = SerializationVersion::kCompactRaw}),
       "Cannot project entire FlatMap column without key subscripts");
 }
 
@@ -995,7 +973,7 @@ TEST_F(ProjectorTest, projectFlatMapAllKeys) {
 
   // Serialize with FlatMap encoding.
   SerializerOptions serOpts{
-      .version = SerializationVersion::kCompact,
+      .version = SerializationVersion::kCompactRaw,
       .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -1007,7 +985,7 @@ TEST_F(ProjectorTest, projectFlatMapAllKeys) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.projectVersion = SerializationVersion::kCompact});
+      {.projectVersion = SerializationVersion::kCompactRaw});
 
   auto outputSchema = projector.projectedSchema();
   DeserializerOptions deserOpts{.hasHeader = true};
@@ -1085,7 +1063,7 @@ TEST_F(ProjectorTest, flatMapKeyProjectionSchemaComparison) {
       std::vector<VectorPtr>{ids, mapVector});
 
   SerializerOptions serOpts{
-      .version = SerializationVersion::kCompact,
+      .version = SerializationVersion::kCompactRaw,
       .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -1096,7 +1074,7 @@ TEST_F(ProjectorTest, flatMapKeyProjectionSchemaComparison) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.projectVersion = SerializationVersion::kCompact});
+      {.projectVersion = SerializationVersion::kCompactRaw});
   auto projectorSchema = projector.projectedSchema();
 
   // buildProjectedNimbleType should produce matching FlatMap schema.
@@ -1196,7 +1174,7 @@ TEST_F(ProjectorTest, flatMapFullProjectionSchemaTypeMismatch) {
       std::vector<VectorPtr>{ids, mapVector});
 
   SerializerOptions serOpts{
-      .version = SerializationVersion::kCompact,
+      .version = SerializationVersion::kCompactRaw,
       .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -1208,7 +1186,7 @@ TEST_F(ProjectorTest, flatMapFullProjectionSchemaTypeMismatch) {
           inputSchema,
           subfields,
           pool_.get(),
-          {.projectVersion = SerializationVersion::kCompact}),
+          {.projectVersion = SerializationVersion::kCompactRaw}),
       "Cannot project entire FlatMap column without key subscripts");
 }
 
@@ -1264,7 +1242,7 @@ TEST_F(ProjectorTest, flatMapStreamIndices) {
 
   // Serialize with FlatMap encoding.
   SerializerOptions serOpts{
-      .version = SerializationVersion::kCompact,
+      .version = SerializationVersion::kCompactRaw,
       .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -1299,7 +1277,7 @@ TEST_F(ProjectorTest, flatMapStreamIndices) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.projectVersion = SerializationVersion::kCompact});
+      {.projectVersion = SerializationVersion::kCompactRaw});
 
   const auto& indices = projector.testingInputStreamIndices();
   LOG(INFO) << "Projected stream indices: ";
@@ -1388,7 +1366,7 @@ TEST_F(ProjectorTest, projectFlatMapSingleKey) {
   // Use serializeWithSchema to get schema AFTER serialization (when FlatMap
   // keys are discovered).
   SerializerOptions serOpts{
-      .version = SerializationVersion::kCompact,
+      .version = SerializationVersion::kCompactRaw,
       .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -1399,7 +1377,7 @@ TEST_F(ProjectorTest, projectFlatMapSingleKey) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.projectVersion = SerializationVersion::kCompact});
+      {.projectVersion = SerializationVersion::kCompactRaw});
 
   auto outputSchema = projector.projectedSchema();
 
@@ -1489,7 +1467,7 @@ TEST_F(ProjectorTest, projectFlatMapMultipleKeys) {
   // Serialize with FlatMap encoding.
   // Use serializeWithSchema to get schema AFTER serialization.
   SerializerOptions serOpts{
-      .version = SerializationVersion::kCompact,
+      .version = SerializationVersion::kCompactRaw,
       .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -1500,7 +1478,7 @@ TEST_F(ProjectorTest, projectFlatMapMultipleKeys) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.projectVersion = SerializationVersion::kCompact});
+      {.projectVersion = SerializationVersion::kCompactRaw});
 
   auto outputSchema = projector.projectedSchema();
 
@@ -1586,7 +1564,7 @@ TEST_F(ProjectorTest, projectFlatMapNonExistentKey) {
 
   // Serialize with FlatMap encoding to discover keys 1, 2, 3.
   SerializerOptions serOpts{
-      .version = SerializationVersion::kCompact,
+      .version = SerializationVersion::kCompactRaw,
       .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -1600,7 +1578,7 @@ TEST_F(ProjectorTest, projectFlatMapNonExistentKey) {
           inputSchema,
           subfields,
           pool_.get(),
-          {.projectVersion = SerializationVersion::kCompact}),
+          {.projectVersion = SerializationVersion::kCompactRaw}),
       "Cannot project entire FlatMap column without key subscripts");
 }
 
@@ -1613,7 +1591,7 @@ TEST_F(ProjectorTest, streamIndicesCorrect) {
   });
   // Stream 0 is root row nulls.
 
-  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
+  SerializerOptions serOpts{.version = SerializationVersion::kCompactRaw};
   auto inputSchema = getNimbleSchema(type, serOpts);
 
   // Project "b" only - should include streams 0 (root nulls) and 2 (b data).
@@ -1622,7 +1600,7 @@ TEST_F(ProjectorTest, streamIndicesCorrect) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.projectVersion = SerializationVersion::kCompact});
+      {.projectVersion = SerializationVersion::kCompactRaw});
 
   const auto& indices = projector.testingInputStreamIndices();
   ASSERT_EQ(indices.size(), 2);
@@ -1667,7 +1645,7 @@ TEST_F(ProjectorTest, projectWithUpdatedRowType) {
       std::vector<VectorPtr>{ids, names, values});
 
   // Serialize with old column names.
-  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
+  SerializerOptions serOpts{.version = SerializationVersion::kCompactRaw};
   auto [serialized, inputSchema] = serializeWithSchema(vec, inputType, serOpts);
 
   // Query uses new column names from projectType.
@@ -1679,12 +1657,12 @@ TEST_F(ProjectorTest, projectWithUpdatedRowType) {
           inputSchema,
           subfields,
           pool_.get(),
-          {.projectVersion = SerializationVersion::kCompact}),
+          {.projectVersion = SerializationVersion::kCompactRaw}),
       "Field 'new_id' not found in RowType");
 
   // With projectType, name mapping is auto-computed and projection succeeds.
   Projector::Options opts{
-      .projectVersion = SerializationVersion::kCompact,
+      .projectVersion = SerializationVersion::kCompactRaw,
       .projectType = projectType,
   };
   Projector projector(inputSchema, subfields, pool_.get(), opts);
@@ -1778,7 +1756,7 @@ TEST_F(ProjectorTest, projectWithUpdatedNestedRowType) {
 
   // Serialize with FlatMap to discover keys.
   SerializerOptions serOpts{
-      .version = SerializationVersion::kCompact,
+      .version = SerializationVersion::kCompactRaw,
       .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, inputType, serOpts);
@@ -1792,7 +1770,7 @@ TEST_F(ProjectorTest, projectWithUpdatedNestedRowType) {
         inputSchema,
         subfields,
         pool_.get(),
-        {.projectVersion = SerializationVersion::kCompact});
+        {.projectVersion = SerializationVersion::kCompactRaw});
     const auto& nestedRow = projectorNoType.projectedSchema()
                                 ->asRow()
                                 .childAt(0)
@@ -1804,7 +1782,7 @@ TEST_F(ProjectorTest, projectWithUpdatedNestedRowType) {
 
   // With projectType, nested row field is renamed.
   Projector::Options opts{
-      .projectVersion = SerializationVersion::kCompact,
+      .projectVersion = SerializationVersion::kCompactRaw,
       .projectType = projectType,
   };
   Projector projector(inputSchema, subfields, pool_.get(), opts);
@@ -1896,7 +1874,7 @@ TEST_F(ProjectorTest, projectNestedFieldUnderFlatMapValue) {
       std::vector<VectorPtr>{ids, mapVector});
 
   SerializerOptions serOpts{
-      .version = SerializationVersion::kCompact,
+      .version = SerializationVersion::kCompactRaw,
       .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, inputType, serOpts);
@@ -1910,7 +1888,7 @@ TEST_F(ProjectorTest, projectNestedFieldUnderFlatMapValue) {
           inputSchema,
           subfields,
           pool_.get(),
-          {.projectVersion = SerializationVersion::kCompact}),
+          {.projectVersion = SerializationVersion::kCompactRaw}),
       "Field 'new_value' not found in RowType");
 
   // With projectType, nested field is renamed and projection succeeds.
@@ -1918,7 +1896,7 @@ TEST_F(ProjectorTest, projectNestedFieldUnderFlatMapValue) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.projectVersion = SerializationVersion::kCompact,
+      {.projectVersion = SerializationVersion::kCompactRaw,
        .projectType = projectType});
 
   for (bool useIOBuf : {false, true}) {
@@ -2018,7 +1996,7 @@ TEST_F(ProjectorTest, projectMultipleFlatMapColumns) {
 
   // Serialize both maps as FlatMaps.
   SerializerOptions serOpts{
-      .version = SerializationVersion::kCompact,
+      .version = SerializationVersion::kCompactRaw,
       .flatMapColumns = {{"map_a", {}}, {"map_b", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -2043,7 +2021,7 @@ TEST_F(ProjectorTest, projectMultipleFlatMapColumns) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.projectVersion = SerializationVersion::kCompact});
+      {.projectVersion = SerializationVersion::kCompactRaw});
 
   auto outputSchema = projector.projectedSchema();
 
@@ -2153,7 +2131,7 @@ TEST_F(ProjectorTestBase, flatMapInMapStreamSkipping) {
   };
 
   SerializerOptions serOpts{
-      .version = SerializationVersion::kCompact,
+      .version = SerializationVersion::kCompactRaw,
       .flatMapColumns = {{"flat_map", {}}},
   };
 
@@ -2283,7 +2261,7 @@ TEST_F(ProjectorTest, chainedIOBufInput) {
           makeStringVector({"x", "y", "z"}),
       });
 
-  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
+  SerializerOptions serOpts{.version = SerializationVersion::kCompactRaw};
   auto serialized = serialize(vec, type, serOpts);
   auto inputSchema = getNimbleSchema(type, serOpts);
 
@@ -2336,7 +2314,7 @@ TEST_F(ProjectorTest, sortedStreamIndicesFastPath) {
           makeStringVector({"x", "y", "z"}),
       });
 
-  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
+  SerializerOptions serOpts{.version = SerializationVersion::kCompactRaw};
   auto serialized = serialize(vec, type, serOpts);
   auto inputSchema = getNimbleSchema(type, serOpts);
 
@@ -2463,7 +2441,7 @@ TEST_F(ProjectorTest, unsortedStreamIndicesReorderPath) {
       pool_.get(), type, nullptr, numRows, std::vector<VectorPtr>{mapA, mapB});
 
   SerializerOptions serOpts{
-      .version = SerializationVersion::kCompact,
+      .version = SerializationVersion::kCompactRaw,
       .flatMapColumns = {{"map_a", {}}, {"map_b", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -2475,7 +2453,7 @@ TEST_F(ProjectorTest, unsortedStreamIndicesReorderPath) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.projectVersion = SerializationVersion::kCompact});
+      {.projectVersion = SerializationVersion::kCompactRaw});
 
   EXPECT_FALSE(projector.testingInputStreamsSorted());
   const auto& indices = projector.testingInputStreamIndices();
@@ -2588,7 +2566,7 @@ TEST_F(ProjectorTest, singleFlatMapSortedFastPath) {
       pool_.get(), type, nullptr, numRows, std::vector<VectorPtr>{ids, mapVec});
 
   SerializerOptions serOpts{
-      .version = SerializationVersion::kCompact,
+      .version = SerializationVersion::kCompactRaw,
       .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
@@ -2599,7 +2577,7 @@ TEST_F(ProjectorTest, singleFlatMapSortedFastPath) {
       inputSchema,
       subfields,
       pool_.get(),
-      {.projectVersion = SerializationVersion::kCompact});
+      {.projectVersion = SerializationVersion::kCompactRaw});
 
   // Single FlatMap with alphabetical keys — indices should be sorted.
   EXPECT_TRUE(projector.testingInputStreamsSorted());
@@ -2634,8 +2612,8 @@ TEST_F(ProjectorTest, projectedTrailerNoCompression) {
   auto type = ROW(std::vector<std::string>(names), extractTypes(children));
   auto vec = makeSimpleRowVector(names, children);
 
-  // Serialize with kCompact.
-  SerializerOptions serOpts{.version = SerializationVersion::kCompact};
+  // Serialize with kCompactRaw.
+  SerializerOptions serOpts{.version = SerializationVersion::kCompactRaw};
   auto serialized = serialize(vec, type, serOpts);
   auto inputSchema = getNimbleSchema(type, serOpts);
 
@@ -2679,7 +2657,7 @@ TEST_F(ProjectorTest, fuzzMixedVersionProjection) {
 
   // Versions to cycle through for each batch.
   const std::vector<SerializerOptions> inputVersions = {
-      {.version = SerializationVersion::kCompact},
+      {.version = SerializationVersion::kCompactRaw},
       {.version = SerializationVersion::kCompactRaw},
       {.version = SerializationVersion::kCompactRaw,
        .streamSizesEncodingType = EncodingType::Delta},
@@ -2687,7 +2665,7 @@ TEST_F(ProjectorTest, fuzzMixedVersionProjection) {
 
   // Output projection versions.
   const std::vector<Projector::Options> outputVersions = {
-      {.projectVersion = SerializationVersion::kCompact},
+      {.projectVersion = SerializationVersion::kCompactRaw},
       {.projectVersion = SerializationVersion::kCompactRaw},
       {.projectVersion = SerializationVersion::kCompactRaw,
        .streamSizesEncodingType = EncodingType::Delta},

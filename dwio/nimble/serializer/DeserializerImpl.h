@@ -24,6 +24,7 @@
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/serializer/Options.h"
+#include "dwio/nimble/serializer/SerializationHeader.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
@@ -32,17 +33,6 @@
 #include "velox/common/memory/Memory.h"
 
 namespace facebook::nimble::serde {
-
-/// Reads the kTabletRaw chunk slice header starting at `*pos` and advances
-/// `*pos` past it (including any resume key bytes). NIMBLE_CHECKs that the
-/// version is kTabletRaw and that the row range satisfies
-/// startRow <= endRow <= rowCount.
-///
-/// Counterpart to the writer-side `createTabletChunkHeader` in
-/// SerializerImpl.h. Used both by NimbleTable.h helpers (extract row range /
-/// resume key from a chunk slice) and by StreamDataReader::initialize (when
-/// the data is kTabletRaw).
-TabletChunkHeader readTabletChunkHeader(const char*& pos, const char* end);
 
 class StreamData {
  public:
@@ -159,8 +149,8 @@ class StreamData {
   velox::memory::MemoryPool* const pool_{nullptr};
   // Whether nimble encoding is enabled. Non-const to allow reset() to change.
   bool encodingEnabled_{false};
-  // Whether encoding headers use varint row counts (true for kCompact/
-  // kCompactRaw) or fixed u32 (false for kTabletRaw). Non-const to allow
+  // Whether encoding headers use varint row counts (true for kCompactRaw) or
+  // fixed u32 (false for kTabletRaw). Non-const to allow
   // reset() to change.
   bool useVarintRowCount_{true};
   // Optional pool for encoding scratch buffers. Owned externally
@@ -234,11 +224,6 @@ class StreamDataReader {
   }
 
  private:
-  // Reads and validates the serialization version from the data header.
-  // Sets version_ from the first byte if hasHeader is true, otherwise defaults
-  // to kLegacy. Advances pos_ past the version byte.
-  void readVersion();
-
   // Strips tablet chunk headers from stream data for kTabletRaw format.
   // Each chunk is: [chunkSize:u32][compressionType:1B][encoded_data...]
   // Returns a view into the original data for single uncompressed chunks

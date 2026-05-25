@@ -24,6 +24,7 @@
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/serializer/SerializationHeader.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 
 namespace facebook::nimble::serde {
@@ -255,101 +256,20 @@ StreamDataReader::StreamDataReader(
   NIMBLE_CHECK_NOT_NULL(pool_);
 }
 
-namespace {
-
-// Reads the kTabletRaw chunk fields that follow the version byte:
-//   [rowCount:varint][startRow:varint][endRow:varint]
-//   [resumeKeyLength:varint][resumeKey bytes]
-// Caller has already consumed the version byte. Used by both
-// readTabletChunkHeader (which validates version then delegates) and
-// StreamDataReader::initialize (which reads version via readVersion() then
-// delegates).
-TabletChunkHeader readTabletChunkFieldsAfterVersion(
-    const char*& pos,
-    const char* end) {
-  TabletChunkHeader header;
-  header.rowCount = varint::readVarint32(&pos);
-
-  const uint32_t startRow = varint::readVarint32(&pos);
-  const uint32_t endRow = varint::readVarint32(&pos);
-  NIMBLE_CHECK_LE(
-      startRow, endRow, "Row range startRow must not exceed endRow");
-  NIMBLE_CHECK_LE(
-      endRow,
-      header.rowCount,
-      "Row range endRow must not exceed stripe rowCount");
-  header.rowRange = RowRange{startRow, endRow};
-
-  const uint32_t resumeKeyLength = varint::readVarint32(&pos);
-  if (resumeKeyLength > 0) {
-    const uint32_t resumeKeyBytes = resumeKeyLength - 1;
-    NIMBLE_CHECK_GE(
-        end - pos,
-        static_cast<ptrdiff_t>(resumeKeyBytes),
-        "Truncated resume key payload");
-    header.resumeKey = std::string(pos, resumeKeyBytes);
-    pos += resumeKeyBytes;
-  }
-  return header;
-}
-
-} // namespace
-
-TabletChunkHeader readTabletChunkHeader(const char*& pos, const char* end) {
-  NIMBLE_CHECK_GE(end - pos, 1, "Truncated chunk header (version)");
-  const auto version = static_cast<SerializationVersion>(*pos++);
-  NIMBLE_CHECK_EQ(
-      version,
-      SerializationVersion::kTabletRaw,
-      "Unsupported version for kTabletRaw chunk header");
-  return readTabletChunkFieldsAfterVersion(pos, end);
-}
-
 uint32_t StreamDataReader::initialize(std::string_view data) {
-  // For kTabletRaw inputs, the caller is expected to pass a coalesced or
-  // single-node view of the chunk slice: the per-slice header
-  // (version + rowCount + row range + resume-key-length [+ resume key])
-  // must live contiguously within `data` so the reads below see all of it.
-  // The projector emits the header in a single allocation; consumers that
-  // hand chunk slices to this method should coalesce the IOBuf chain first.
   pos_ = data.data();
   end_ = data.end();
-  rowRange_.reset();
-  readVersion();
-
-  if (version_ == SerializationVersion::kTabletRaw) {
-    auto header = readTabletChunkFieldsAfterVersion(pos_, end_);
-    rowRange_ = header.rowRange;
-    return header.rowCount;
-  }
-  // All other non-legacy formats use varint row count; kLegacy uses fixed u32.
-  if (usesVarintRowCount(version_)) {
-    return varint::readVarint32(&pos_);
-  }
-  return encoding::readUint32(pos_);
-}
-
-void StreamDataReader::readVersion() {
-  if (!options_.hasHeader) {
-    version_ = SerializationVersion::kLegacy;
-    return;
-  }
-  version_ = static_cast<SerializationVersion>(*pos_);
-  NIMBLE_CHECK(
-      version_ == SerializationVersion::kLegacy ||
-          version_ == SerializationVersion::kCompact ||
-          version_ == SerializationVersion::kCompactRaw ||
-          version_ == SerializationVersion::kTabletRaw,
-      "Unsupported version {}",
-      static_cast<uint8_t>(version_));
-  ++pos_;
+  auto header = readSerializationHeader(pos_, end_, options_.hasHeader);
+  version_ = header.version;
+  rowRange_ = header.rowRange;
+  return header.rowCount;
 }
 
 void StreamDataReader::iterateStreams(
     const std::function<void(uint32_t offset, std::string_view data)>&
         callback) {
   if (nonLegacyFormat(version_)) {
-    // kCompact/kCompactRaw/kTabletRaw format: read stream sizes from trailer.
+    // kCompactRaw/kTabletRaw format: read stream sizes from trailer.
     const auto streamSizes = detail::readTrailerStreamSizes(end_);
     const bool tabletRaw = isTabletRawFormat(version_);
 

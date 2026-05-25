@@ -63,7 +63,7 @@ using Subfield = velox::common::Subfield;
 ///   auto result = projector.project(request, options);
 ///   for (size_t i = 0; i < result.responses.size(); ++i) {
 ///     const auto& response = result.responses[i];
-///     for (const auto& chunkSlice : response.chunkSlices) {
+///     for (const auto& chunkSlice : response.chunks) {
 ///       // `chunkSlice` is a self-describing kTabletRaw IOBuf chain with
 ///       // the request's row range and (on the last slice of a truncated
 ///       // response) the resume key embedded in the header.
@@ -121,13 +121,13 @@ class NimbleIndexProjector {
     /// If the response is truncated and has a resume key, it is embedded in
     /// the header of the last slice. Use `rocks::readResultResumeKey()` on
     /// the last slice to extract it.
-    std::vector<folly::IOBuf> chunkSlices;
+    std::vector<folly::IOBuf> chunks;
 
     /// If the result was truncated by maxRows or maxBytes, the encoded resume
     /// key for continuation. The caller constructs new key bounds using this
     /// as lowerKey with their original upperKey. nullopt if complete or miss.
     ///
-    /// Also embedded in the last slice's per-slice header (when chunkSlices
+    /// Also embedded in the last slice's per-slice header (when chunks
     /// is non-empty) so consumers that hold an IOBuf can recover the key
     /// without keeping the Response struct around.
     std::optional<std::string> resumeKey;
@@ -275,20 +275,15 @@ class NimbleIndexProjector {
   // Enqueues projected streams into StripeStreams and loads them from disk.
   InputStreams loadStripe();
 
-  // Per-slice info needed at finalization time to build the chunk slice
-  // IOBuf chain (header node + shared body+trailer clone).
-  //
-  // Reused as the producer-side container returned by serializeStripe(): the
-  // shared body+trailer bytes are produced once per stripe and referenced by
-  // every per-request chunk slice for that stripe via cloneOne(). On that
-  // producer side, rowRange is default-constructed and unused;
-  // buildStripeResult fills it in when materializing each per-request clone.
-  //
-  // Layout of sharedData:
-  //   [stream_data...][encodingType][stream_sizes][trailer_size:u32].
+  // Collected data from one stripe for one request. sharedBody holds the
+  // projected stream data and trailer (no header), shared across requests
+  // for the same stripe via refcounted IOBuf clones:
+  //   [stream_data...][encodingType][stream_sizes][trailer_size:u32]
+  // finalizeResult() prepends a per-request header with the row range via
+  // assembleChunk().
   struct ResultChunk {
-    folly::IOBuf sharedData;
-    uint32_t numStripeRows{0};
+    folly::IOBuf sharedBody;
+    uint32_t numRows{0};
     RowRange rowRange;
   };
 
@@ -300,7 +295,7 @@ class NimbleIndexProjector {
   // Queues per-request result chunks for the stripe. Each chunk captures a
   // cloneOne() of the shared body+trailer, the stripe row count, and the
   // per-request row range. The chunk slice IOBuf chain is finalized later by
-  // finalizeResultChunks() once we know whether the response carries a
+  // finalizeResult() once we know whether the response carries a
   // resume key. Applies maxRowsPerRequest hard clipping and accumulates
   // numReadRows_. Returns false if a global limit (maxRows or maxBytes) was
   // hit after this stripe.
@@ -319,7 +314,7 @@ class NimbleIndexProjector {
   // assembles the final chunk slice IOBuf chain (header -> body+trailer).
   // The resume key is folded into the header of the last slice of any
   // truncated response.
-  void finalizeResultChunks(Result& result);
+  void finalizeResult(Result& result);
 
   inline uint32_t stripeRowCount(uint32_t stripe) const {
     return static_cast<uint32_t>(readerBase_->tablet().stripeRowCount(stripe));

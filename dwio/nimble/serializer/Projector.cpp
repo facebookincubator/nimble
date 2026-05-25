@@ -33,8 +33,8 @@ namespace {
 
 // Lightweight adapter for writing small sections (header, trailer) directly
 // into an IOBuf. Satisfies the size()/resize()/data() interface required by
-// detail::extend/writeHeader/writeTrailer. Avoids the std::string → IOBuf
-// copy that would occur if writing into a temporary std::string first.
+// detail::extend/writeSerializationHeader/writeTrailer. Avoids the std::string
+// → IOBuf copy that would occur if writing into a temporary std::string first.
 class IOBufSection {
  public:
   explicit IOBufSection(size_t initialCapacity)
@@ -268,7 +268,7 @@ Projector::Projector(
   NIMBLE_CHECK(!projectSubfields.empty(), "Must project at least one subfield");
   NIMBLE_CHECK(
       isCompactFormat(options_.projectVersion),
-      "Projection output version must be kCompact or kCompactRaw, got: {}",
+      "Projection output version must be kCompactRaw, got: {}",
       options_.projectVersion);
 
   // Update inputSchema_ with projectType names for schema evolution.
@@ -302,12 +302,12 @@ Projector::Projector(
 
 namespace {
 
-// Validates the input version header is kCompact or kCompactRaw.
+// Validates the input version header is kCompactRaw.
 SerializationVersion getAndValidateInputVersion(const folly::IOBuf& input) {
   const auto version = static_cast<SerializationVersion>(*input.data());
   NIMBLE_CHECK(
       isCompactFormat(version),
-      "Input must be kCompact or kCompactRaw format, got: {}",
+      "Input must be kCompactRaw format, got: {}",
       version);
   return version;
 }
@@ -597,8 +597,8 @@ folly::IOBuf Projector::projectContiguous(
 
   // Build header: [version byte][varint rowCount].
   IOBufSection header(
-      detail::estimateHeaderSize(options_.projectVersion, rowCount));
-  detail::writeHeader(header, options_.projectVersion, rowCount);
+      estimateSerializationHeaderSize(options_.projectVersion, rowCount));
+  writeSerializationHeader(header, options_.projectVersion, rowCount);
   auto output = std::move(header).build();
 
   const auto inputStreamSizes = detail::readTrailerStreamSizes(input);
@@ -624,8 +624,8 @@ folly::IOBuf Projector::projectChained(
 
   // Build header: [version byte][varint rowCount].
   IOBufSection header(
-      detail::estimateHeaderSize(options_.projectVersion, rowCount));
-  detail::writeHeader(header, options_.projectVersion, rowCount);
+      estimateSerializationHeaderSize(options_.projectVersion, rowCount));
+  writeSerializationHeader(header, options_.projectVersion, rowCount);
   auto output = std::move(header).build();
 
   const auto inputStreamSizes = detail::readTrailerStreamSizes(input);
