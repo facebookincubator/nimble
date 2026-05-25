@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "dwio/nimble/encodings/BufferedEncoding.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 
 // Legacy encoding headers use qualified names like detail::readWithVisitorSlow.
@@ -38,6 +39,7 @@ void callReadWithVisitor(
 
 namespace detail {
 
+using ::facebook::nimble::detail::BufferedDictEncoding;
 using ::facebook::nimble::detail::BufferedEncoding;
 using ::facebook::nimble::detail::castFromPhysicalType;
 using ::facebook::nimble::detail::dataToValue;

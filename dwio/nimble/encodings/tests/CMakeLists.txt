@@ -19,6 +19,7 @@ target_link_libraries(nimble_encoding_layout_test_helper nimble_encodings)
 
 add_executable(
   nimble_encodings_tests
+  BufferedEncodingTest.cpp
   ConstantEncodingTest.cpp
   EncodingLayoutTest.cpp
   EncodingSelectionTest.cpp

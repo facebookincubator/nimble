@@ -391,46 +391,6 @@ void callReadWithVisitor(
 
 namespace detail {
 
-template <typename T, uint16_t BufferSize>
-class BufferedEncoding {
- public:
-  explicit BufferedEncoding(std::unique_ptr<Encoding> encoding)
-      : bufferPosition_{BufferSize},
-        encodingPosition_{0},
-        encoding_{std::move(encoding)} {}
-
-  T nextValue() {
-    if (UNLIKELY(bufferPosition_ == BufferSize)) {
-      auto rows = std::min<uint32_t>(
-          BufferSize, encoding_->rowCount() - encodingPosition_);
-      encoding_->materialize(rows, buffer_.data());
-      bufferPosition_ = 0;
-    }
-    ++encodingPosition_;
-    return buffer_[bufferPosition_++];
-  }
-
-  void reset() {
-    bufferPosition_ = BufferSize;
-    encodingPosition_ = 0;
-    encoding_->reset();
-  }
-
-  uint32_t position() const noexcept {
-    return encodingPosition_ - 1;
-  }
-
-  uint32_t rowCount() const noexcept {
-    return encoding_->rowCount();
-  }
-
- private:
-  uint16_t bufferPosition_;
-  uint32_t encodingPosition_;
-  std::unique_ptr<Encoding> encoding_;
-  std::array<T, BufferSize> buffer_;
-};
-
 template <typename T, typename PhysicalType>
 T castFromPhysicalType(const PhysicalType& value) {
   if constexpr (isFloatingPointType<T>()) {
