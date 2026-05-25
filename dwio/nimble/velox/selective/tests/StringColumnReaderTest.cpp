@@ -1478,6 +1478,62 @@ TEST_P(StringColumnReaderTest, rleDictionaryVector) {
       pool());
 }
 
+// Constant string encoding — all values identical.
+TEST_P(StringColumnReaderTest, constantDictionary) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kRows = 200;
+  const std::string constantValue = "always_the_same";
+  auto input = makeRowVector({
+      makeFlatVector<std::string>(
+          kRows, [&](auto /*i*/) { return constantValue; }),
+  });
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
+  validateWithEncodingChecks(
+      *input->childAt(0),
+      *readers.rowReader,
+      kRows,
+      /*totalRows=*/kRows,
+      {VectorEncoding::Simple::DICTIONARY},
+      asRowType(input->type()),
+      pool());
+}
+
+// Constant string with nulls — constant non-null value, some rows null.
+TEST_P(StringColumnReaderTest, constantDictionaryWithNulls) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kRows = 200;
+  const std::string constantValue = "always_the_same";
+  auto input = makeRowVector({
+      makeFlatVector<std::string>(
+          kRows,
+          [&](auto /*i*/) { return constantValue; },
+          velox::test::VectorMaker::nullEvery(7)),
+  });
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
+  validateWithEncodingChecks(
+      *input->childAt(0),
+      *readers.rowReader,
+      kRows,
+      /*totalRows=*/kRows,
+      {VectorEncoding::Simple::DICTIONARY},
+      asRowType(input->type()),
+      pool());
+}
+
 INSTANTIATE_TEST_CASE_P(
     StringColumnReaderTestSuite,
     StringColumnReaderTest,
