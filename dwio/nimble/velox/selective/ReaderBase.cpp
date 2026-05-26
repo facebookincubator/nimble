@@ -71,6 +71,26 @@ std::shared_ptr<ReaderBase> ReaderBase::create(
       std::move(fileSchema)));
 }
 
+std::shared_ptr<ReaderBase> ReaderBase::create(
+    std::unique_ptr<velox::dwio::common::BufferedInput> input,
+    CachedTabletReader&& cachedTablet,
+    const velox::dwio::common::ReaderOptions& options) {
+  auto* pool = &options.memoryPool();
+  const auto& randomSkip = options.randomSkip();
+  const auto& scanSpec = options.scanSpec();
+  auto fileSchema =
+      asRowType(getFileSchema(options, std::move(cachedTablet.veloxSchema)));
+
+  return std::shared_ptr<ReaderBase>(new ReaderBase(
+      std::move(input),
+      std::move(cachedTablet.tablet),
+      pool,
+      randomSkip,
+      scanSpec,
+      std::move(cachedTablet.nimbleSchema),
+      std::move(fileSchema)));
+}
+
 ReaderBase::ReaderBase(
     std::unique_ptr<velox::dwio::common::BufferedInput> input,
     std::shared_ptr<TabletReader> tablet,

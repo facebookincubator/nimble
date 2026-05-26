@@ -25,6 +25,7 @@
 #include "dwio/nimble/serializer/Serializer.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/tablet/TabletReaderCache.h"
 #include "dwio/nimble/tablet/tests/TabletTestUtils.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/VeloxReader.h"
@@ -78,10 +79,14 @@ folly::IOBuf coalesceChunkSlice(const folly::IOBuf& chunkSlice) {
 struct TestParam {
   bool enableCache;
   bool pinMetadata;
+  bool useTabletReaderCache;
 
   std::string debugString() const {
     return fmt::format(
-        "enableCache={}, pinMetadata={}", enableCache, pinMetadata);
+        "enableCache={}, pinMetadata={}, useTabletReaderCache={}",
+        enableCache,
+        pinMetadata,
+        useTabletReaderCache);
   }
 };
 
@@ -102,6 +107,7 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
     vectorMaker_.reset();
     leafPool_.reset();
     rootPool_.reset();
+    TabletReaderCache::testingReset();
   }
 
   // Writes sorted data with an index on the key column.
@@ -143,12 +149,15 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
 
  public:
   static std::vector<TestParam> getTestParams() {
-    return {
-        {false, false},
-        {false, true},
-        {true, false},
-        {true, true},
-    };
+    std::vector<TestParam> params;
+    for (bool enableCache : {false, true}) {
+      for (bool pinMetadata : {false, true}) {
+        for (bool useTabletReaderCache : {false, true}) {
+          params.push_back({enableCache, pinMetadata, useTabletReaderCache});
+        }
+      }
+    }
+    return params;
   }
 
  protected:
@@ -198,6 +207,17 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
     readerOptions.setPinMetadata(GetParam().pinMetadata);
     if (cacheData.has_value()) {
       readerOptions.setCacheData(*cacheData);
+    }
+    if (GetParam().useTabletReaderCache) {
+      ensureTabletReaderCache();
+      return {
+          NimbleIndexProjector::create(
+              *tabletReaderCache_,
+              fileHandle,
+              cache,
+              projectedSubfields,
+              readerOptions),
+          ioStats};
     }
     return {
         NimbleIndexProjector::create(
@@ -288,11 +308,22 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
   const std::shared_ptr<io::IoStatistics> indexIoStats_{
       std::make_shared<io::IoStatistics>()};
 
+  void ensureTabletReaderCache() {
+    if (tabletReaderCache_ == nullptr) {
+      TabletReaderCache::Options opts;
+      opts.numShards = 2;
+      opts.maxEntries = 100;
+      opts.executor = std::make_shared<folly::CPUThreadPoolExecutor>(4);
+      tabletReaderCache_ = std::make_unique<TabletReaderCache>(opts);
+    }
+  }
+
   std::shared_ptr<memory::MemoryPool> rootPool_;
   std::shared_ptr<memory::MemoryPool> leafPool_;
   std::unique_ptr<velox::test::VectorMaker> vectorMaker_;
   std::string sinkData_;
   std::unique_ptr<velox::serializer::KeyEncoder> keyEncoder_;
+  std::unique_ptr<TabletReaderCache> tabletReaderCache_;
 };
 
 TEST_P(NimbleIndexProjectorTest, basicColumnProjection) {
@@ -2833,9 +2864,10 @@ INSTANTIATE_TEST_CASE_P(
     ::testing::ValuesIn(NimbleIndexProjectorTest::getTestParams()),
     [](const ::testing::TestParamInfo<TestParam>& info) {
       return fmt::format(
-          "cache{}_pin{}",
+          "cache{}_pin{}_tabletCache{}",
           info.param.enableCache ? "On" : "Off",
-          info.param.pinMetadata ? "On" : "Off");
+          info.param.pinMetadata ? "On" : "Off",
+          info.param.useTabletReaderCache ? "On" : "Off");
     });
 
 } // namespace facebook::nimble::test

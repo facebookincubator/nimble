@@ -20,6 +20,7 @@
 
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
+#include "dwio/nimble/tablet/TabletReaderCache.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/ScopeGuard.h"
 #include "velox/common/base/SuccinctPrinter.h"
@@ -67,17 +68,16 @@ std::string NimbleIndexProjector::Stats::toString() const {
       projectionTiming.toString());
 }
 
-std::unique_ptr<NimbleIndexProjector> NimbleIndexProjector::create(
+namespace {
+std::unique_ptr<velox::dwio::common::BufferedInput> createBufferedInput(
     const velox::FileHandle& fileHandle,
     velox::cache::AsyncDataCache* cache,
-    const std::vector<Subfield>& projectedSubfields,
     const velox::dwio::common::ReaderOptions& options) {
-  std::unique_ptr<velox::dwio::common::BufferedInput> bufferedInput;
   if (cache != nullptr && options.cacheData()) {
     NIMBLE_CHECK(
         fileHandle.uuid.hasValue() && fileHandle.groupId.hasValue(),
         "FileHandle must have valid uuid and groupId when cache is provided");
-    bufferedInput = std::make_unique<velox::dwio::common::CachedBufferedInput>(
+    return std::make_unique<velox::dwio::common::CachedBufferedInput>(
         fileHandle.file,
         velox::dwio::common::MetricsLog::voidLog(),
         fileHandle.uuid,
@@ -88,30 +88,54 @@ std::unique_ptr<NimbleIndexProjector> NimbleIndexProjector::create(
         /*ioStats=*/nullptr,
         /*executor=*/nullptr,
         options);
-  } else {
-    bufferedInput = std::make_unique<velox::dwio::common::DirectBufferedInput>(
-        fileHandle.file,
-        velox::dwio::common::MetricsLog::voidLog(),
-        fileHandle.uuid,
-        /*tracker=*/nullptr,
-        fileHandle.groupId,
-        options.dataIoStats(),
-        /*ioStats=*/nullptr,
-        /*executor=*/nullptr,
-        options);
   }
+  return std::make_unique<velox::dwio::common::DirectBufferedInput>(
+      fileHandle.file,
+      velox::dwio::common::MetricsLog::voidLog(),
+      fileHandle.uuid,
+      /*tracker=*/nullptr,
+      fileHandle.groupId,
+      options.dataIoStats(),
+      /*ioStats=*/nullptr,
+      /*executor=*/nullptr,
+      options);
+}
+} // namespace
+
+std::unique_ptr<NimbleIndexProjector> NimbleIndexProjector::create(
+    const velox::FileHandle& fileHandle,
+    velox::cache::AsyncDataCache* cache,
+    const std::vector<Subfield>& projectedSubfields,
+    const velox::dwio::common::ReaderOptions& options) {
+  validateReaderOptions(options);
+  auto bufferedInput = createBufferedInput(fileHandle, cache, options);
   return std::unique_ptr<NimbleIndexProjector>(new NimbleIndexProjector(
-      std::move(bufferedInput), projectedSubfields, options));
+      ReaderBase::create(std::move(bufferedInput), options),
+      projectedSubfields,
+      options));
+}
+
+std::unique_ptr<NimbleIndexProjector> NimbleIndexProjector::create(
+    TabletReaderCache& tabletReaderCache,
+    const velox::FileHandle& fileHandle,
+    velox::cache::AsyncDataCache* cache,
+    const std::vector<Subfield>& projectedSubfields,
+    const velox::dwio::common::ReaderOptions& options) {
+  validateReaderOptions(options);
+  auto cached = tabletReaderCache.get(
+      fileHandle.file, TabletReader::configureOptions(options));
+  auto bufferedInput = createBufferedInput(fileHandle, cache, options);
+  return std::unique_ptr<NimbleIndexProjector>(new NimbleIndexProjector(
+      ReaderBase::create(std::move(bufferedInput), std::move(cached), options),
+      projectedSubfields,
+      options));
 }
 
 NimbleIndexProjector::NimbleIndexProjector(
-    std::unique_ptr<velox::dwio::common::BufferedInput> bufferedInput,
+    std::shared_ptr<ReaderBase> readerBase,
     const std::vector<Subfield>& projectedSubfields,
     const velox::dwio::common::ReaderOptions& options)
-    : readerBase_{[&] {
-        validateReaderOptions(options);
-        return ReaderBase::create(std::move(bufferedInput), options);
-      }()},
+    : readerBase_{std::move(readerBase)},
       ioStats_{options.dataIoStats()},
       pool_{readerBase_->pool()},
       clusterIndex_{readerBase_->tablet().clusterIndex()},
