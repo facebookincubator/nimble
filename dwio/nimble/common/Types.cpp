@@ -49,6 +49,8 @@ std::string toString(EncodingType encodingType) {
       return "Sentinel";
     case EncodingType::Prefix:
       return "Prefix";
+    case EncodingType::Pfor:
+      return "Pfor";
   }
   return fmt::format(
       "Unknown encoding type: {}", static_cast<int32_t>(encodingType));

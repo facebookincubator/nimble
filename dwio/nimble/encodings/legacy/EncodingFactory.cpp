@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
+#include "dwio/nimble/encodings/PforEncoding.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
 #include "dwio/nimble/encodings/legacy/DictionaryEncoding.h"
@@ -247,6 +248,10 @@ std::unique_ptr<Encoding> EncodingFactory::create(
           "Trying to deserialize a PrefixEncoding with a non-string data type.");
       return std::make_unique<PrefixEncoding>(
           memoryPool, data, stringBufferFactory);
+    }
+    case EncodingType::Pfor: {
+      RETURN_ENCODING_BY_NUMERIC_TYPE(
+          ::facebook::nimble::PforEncoding, dataType);
     }
     default: {
       NIMBLE_UNREACHABLE(
