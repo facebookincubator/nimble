@@ -20,6 +20,7 @@
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/tablet/TabletReaderCache.h"
 #include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/stats/VectorizedStatistics.h"
@@ -32,6 +33,15 @@ class ReaderBase {
  public:
   static std::shared_ptr<ReaderBase> create(
       std::unique_ptr<velox::dwio::common::BufferedInput> input,
+      const velox::dwio::common::ReaderOptions& options);
+
+  /// Creates a ReaderBase sharing a cached TabletReader and pre-loaded
+  /// schemas. The tablet's metadata (footer, stripes, ClusterIndex) is shared
+  /// across all ReaderBase instances using the same tablet. Each ReaderBase
+  /// still owns its own BufferedInput for data IO.
+  static std::shared_ptr<ReaderBase> create(
+      std::unique_ptr<velox::dwio::common::BufferedInput> input,
+      CachedTabletReader&& cachedTablet,
       const velox::dwio::common::ReaderOptions& options);
 
   velox::dwio::common::BufferedInput& input() {

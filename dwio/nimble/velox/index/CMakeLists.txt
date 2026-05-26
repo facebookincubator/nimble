@@ -16,6 +16,7 @@ target_link_libraries(
   nimble_index_projector
   nimble_index
   nimble_serializer_impl
+  nimble_tablet_reader_cache
   nimble_velox_common
   nimble_velox_selective
   velox_time

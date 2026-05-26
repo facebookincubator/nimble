@@ -36,6 +36,8 @@
 
 namespace facebook::nimble {
 
+class TabletReaderCache;
+
 using Subfield = velox::common::Subfield;
 
 /// NimbleIndexProjector takes a batch of index lookup requests (point lookups
@@ -79,6 +81,15 @@ class NimbleIndexProjector {
   // TODO: projectedSubfields currently must match file schema column names.
   // Add table-to-file column name mapping for schema evolution support.
   static std::unique_ptr<NimbleIndexProjector> create(
+      const velox::FileHandle& fileHandle,
+      velox::cache::AsyncDataCache* cache,
+      const std::vector<Subfield>& projectedSubfields,
+      const velox::dwio::common::ReaderOptions& options);
+
+  /// Creates a NimbleIndexProjector sharing a TabletReader from the
+  /// provided TabletReaderCache.
+  static std::unique_ptr<NimbleIndexProjector> create(
+      TabletReaderCache& tabletReaderCache,
       const velox::FileHandle& fileHandle,
       velox::cache::AsyncDataCache* cache,
       const std::vector<Subfield>& projectedSubfields,
@@ -199,7 +210,7 @@ class NimbleIndexProjector {
 
  private:
   NimbleIndexProjector(
-      std::unique_ptr<velox::dwio::common::BufferedInput> bufferedInput,
+      std::shared_ptr<ReaderBase> readerBase,
       const std::vector<Subfield>& projectedSubfields,
       const velox::dwio::common::ReaderOptions& options);
 
