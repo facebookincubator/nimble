@@ -99,25 +99,25 @@ class SerializationTest : public ::testing::TestWithParam<TestParams> {
 
   // Result of serializing input vectors.
   struct SerializeResult {
-    // One serialized buffer per input vector (or per stripe for kTabletRaw).
+    // One serialized buffer per input vector (or per stripe for kTablet).
     std::vector<std::string> serialized;
     // Nimble schema for deserialization.
     std::shared_ptr<const Type> schema;
   };
 
   // Serializes input vectors using the current test parameter's version.
-  // For kTabletRaw, writes a Nimble file and assembles kTabletRaw buffers.
+  // For kTablet, writes a Nimble file and assembles kTablet buffers.
   // For other versions, uses the Serializer directly.
   SerializeResult serialize(
       const velox::TypePtr& type,
       const std::vector<velox::VectorPtr>& inputs);
 
   // Writes vectors to a Nimble file, reads raw tablet streams, and assembles
-  // kTabletRaw buffers. Each input vector becomes part of a single-stripe file.
+  // kTablet buffers. Each input vector becomes part of a single-stripe file.
   // When enableChunking is true, streams include chunk headers (the actual
-  // kTabletRaw format); when false, streams are raw encoded data without chunk
+  // kTablet format); when false, streams are raw encoded data without chunk
   // headers.
-  SerializeResult serializeTabletRaw(
+  SerializeResult serializeTablet(
       const velox::TypePtr& type,
       const std::vector<velox::VectorPtr>& inputs,
       bool enableChunking);
@@ -441,8 +441,8 @@ std::string formatName(const ::testing::TestParamInfo<TestParams>& info) {
       case SerializationVersion::kCompactRaw:
         name = "CompactRawFormat";
         break;
-      case SerializationVersion::kTabletRaw:
-        name = "TabletRawFormat";
+      case SerializationVersion::kTablet:
+        name = "TabletFormat";
         break;
     }
   }
@@ -464,8 +464,8 @@ std::string formatName(const ::testing::TestParamInfo<TestParams>& info) {
 SerializationTest::SerializeResult SerializationTest::serialize(
     const velox::TypePtr& type,
     const std::vector<velox::VectorPtr>& inputs) {
-  if (version() == SerializationVersion::kTabletRaw) {
-    return serializeTabletRaw(type, inputs, /*enableChunking=*/true);
+  if (version() == SerializationVersion::kTablet) {
+    return serializeTablet(type, inputs, /*enableChunking=*/true);
   }
 
   SerializerOptions options{
@@ -487,7 +487,7 @@ SerializationTest::SerializeResult SerializationTest::serialize(
   return result;
 }
 
-SerializationTest::SerializeResult SerializationTest::serializeTabletRaw(
+SerializationTest::SerializeResult SerializationTest::serializeTablet(
     const velox::TypePtr& type,
     const std::vector<velox::VectorPtr>& inputs,
     bool enableChunking) {
@@ -524,7 +524,7 @@ SerializationTest::SerializeResult SerializationTest::serializeTabletRaw(
   collectStreamOffsets(*nimbleSchema, offsetSet);
   std::vector<uint32_t> streamOffsets(offsetSet.begin(), offsetSet.end());
 
-  // Assemble kTabletRaw buffer for each stripe.
+  // Assemble kTablet buffer for each stripe.
   SerializeResult result;
   result.schema = nimbleSchema;
   for (uint32_t stripeIdx = 0; stripeIdx < tablet->stripeCount(); ++stripeIdx) {
@@ -532,7 +532,7 @@ SerializationTest::SerializeResult SerializationTest::serializeTabletRaw(
     auto streamLoaders = tablet->load(stripeId, streamOffsets);
     const auto stripeRows = tablet->stripeRowCount(stripeIdx);
 
-    // Build kTabletRaw: [header][raw stream data...][trailer].
+    // Build kTablet: [header][raw stream data...][trailer].
     auto headerIOBuf = serde::createTabletChunkHeader(
         {.rowCount = stripeRows, .rowRange = RowRange{0, stripeRows}});
     std::string headerBuf(
@@ -1834,12 +1834,12 @@ TEST_P(SerializationTest, versionMismatch) {
       deserializer.deserialize(serialized, output), "Unsupported version");
 }
 
-TEST_P(SerializationTest, tabletRawVersionRejected) {
+TEST_P(SerializationTest, tabletVersionRejected) {
   auto type = velox::ROW({{"int_val", velox::INTEGER()}});
-  SerializerOptions options{.version = SerializationVersion::kTabletRaw};
+  SerializerOptions options{.version = SerializationVersion::kTablet};
   NIMBLE_ASSERT_THROW(
       Serializer(options, type, pool_.get()),
-      "kTabletRaw is not supported by the serializer");
+      "kTablet is not supported by the serializer");
 }
 
 TEST_P(SerializationTest, streamSizesEncodingIgnoredForLegacy) {
@@ -2932,12 +2932,12 @@ TEST_P(SerializationTest, flatMapAsStructWithMissingKeys) {
   }
 }
 
-// Standalone test for kTabletRaw deserialization.
-// kTabletRaw is not produced by the Serializer — it's constructed by reading
+// Standalone test for kTablet deserialization.
+// kTablet is not produced by the Serializer — it's constructed by reading
 // raw tablet stream bytes from a Nimble file and assembling them with a header
 // and trailer. This test writes a Nimble file, reads raw streams, assembles
-// kTabletRaw format, and verifies that Deserializer correctly handles it.
-TEST_F(SerializationTest, tabletRawDeserialization) {
+// kTablet format, and verifies that Deserializer correctly handles it.
+TEST_F(SerializationTest, tabletDeserialization) {
   auto rowType = velox::ROW(
       {{"col_a", velox::INTEGER()},
        {"col_b", velox::BIGINT()},
@@ -2952,14 +2952,13 @@ TEST_F(SerializationTest, tabletRawDeserialization) {
       pool_.get());
   auto input = fuzzer.fuzzInputRow(rowType);
 
-  auto tabletRaw =
-      serializeTabletRaw(rowType, {input}, /*enableChunking=*/true);
+  auto tablet = serializeTablet(rowType, {input}, /*enableChunking=*/true);
 
   nimble::Deserializer deserializer(
-      tabletRaw.schema, pool_.get(), DeserializerOptions{.hasHeader = true});
+      tablet.schema, pool_.get(), DeserializerOptions{.hasHeader = true});
 
   velox::VectorPtr deserialized;
-  for (const auto& assembled : tabletRaw.serialized) {
+  for (const auto& assembled : tablet.serialized) {
     velox::VectorPtr stripeOutput;
     deserializer.deserialize(std::string_view(assembled), stripeOutput);
     ASSERT_NE(stripeOutput, nullptr);
@@ -2985,7 +2984,7 @@ TEST_F(SerializationTest, tabletRawDeserialization) {
 
 // Verifies ZSTD decompression round-trips correctly with the thread-local
 // ZSTD_DCtx reuse (always-on). Exercises the StreamDataReader and StreamData
-// decompress paths with kTabletRaw chunked format.
+// decompress paths with kTablet chunked format.
 TEST_F(SerializationTest, zstdThreadLocalDCtxRoundTrip) {
   auto rowType = velox::ROW(
       {{"col_a", velox::INTEGER()},
@@ -3001,14 +3000,13 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxRoundTrip) {
       pool_.get());
   auto input = fuzzer.fuzzInputRow(rowType);
 
-  auto tabletRaw =
-      serializeTabletRaw(rowType, {input}, /*enableChunking=*/true);
+  auto tablet = serializeTablet(rowType, {input}, /*enableChunking=*/true);
 
   nimble::Deserializer deserializer(
-      tabletRaw.schema, pool_.get(), DeserializerOptions{.hasHeader = true});
+      tablet.schema, pool_.get(), DeserializerOptions{.hasHeader = true});
 
   velox::VectorPtr deserialized;
-  for (const auto& assembled : tabletRaw.serialized) {
+  for (const auto& assembled : tablet.serialized) {
     velox::VectorPtr stripeOutput;
     deserializer.deserialize(std::string_view(assembled), stripeOutput);
     ASSERT_NE(stripeOutput, nullptr);
@@ -3049,12 +3047,11 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxWithParallelDecode) {
       pool_.get());
   auto input = fuzzer.fuzzInputRow(rowType);
 
-  auto tabletRaw =
-      serializeTabletRaw(rowType, {input}, /*enableChunking=*/true);
+  auto tablet = serializeTablet(rowType, {input}, /*enableChunking=*/true);
 
   folly::CPUThreadPoolExecutor executor(2);
   nimble::Deserializer deserializer(
-      tabletRaw.schema,
+      tablet.schema,
       pool_.get(),
       DeserializerOptions{
           .hasHeader = true,
@@ -3063,7 +3060,7 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxWithParallelDecode) {
       });
 
   velox::VectorPtr deserialized;
-  for (const auto& assembled : tabletRaw.serialized) {
+  for (const auto& assembled : tablet.serialized) {
     velox::VectorPtr stripeOutput;
     deserializer.deserialize(std::string_view(assembled), stripeOutput);
     ASSERT_NE(stripeOutput, nullptr);

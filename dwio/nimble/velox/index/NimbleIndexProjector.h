@@ -43,7 +43,7 @@ using Subfield = velox::common::Subfield;
 /// Nimble cluster index to locate relevant stripes and row ranges, then reads
 /// and serializes the projected columns for transport.
 ///
-/// The output uses kTabletRaw serialization format with a fixed-shape
+/// The output uses kTablet serialization format with a fixed-shape
 /// per-slice header in front of the stripe body+trailer:
 ///   NODE 1 (per-slice header):
 ///     [version:1B=3][rowCount:varint]
@@ -64,7 +64,7 @@ using Subfield = velox::common::Subfield;
 ///   for (size_t i = 0; i < result.responses.size(); ++i) {
 ///     const auto& response = result.responses[i];
 ///     for (const auto& chunkSlice : response.chunks) {
-///       // `chunkSlice` is a self-describing kTabletRaw IOBuf chain with
+///       // `chunkSlice` is a self-describing kTablet IOBuf chain with
 ///       // the request's row range and (on the last slice of a truncated
 ///       // response) the resume key embedded in the header.
 ///     }
@@ -112,7 +112,7 @@ class NimbleIndexProjector {
 
   /// Response for a single request.
   struct Response {
-    /// One self-describing kTabletRaw IOBuf chain per (request × stripe)
+    /// One self-describing kTablet IOBuf chain per (request × stripe)
     /// intersection. Each entry covers a contiguous row range within one
     /// stripe; the row range is embedded in the chain's header. Empty for
     /// miss. Chunk slices for overlapping requests share the body+trailer
@@ -186,7 +186,7 @@ class NimbleIndexProjector {
     velox::CpuWallTiming lookupTiming;
     /// Time spent loading stripe stream data from tablet.
     velox::CpuWallTiming scanTiming;
-    /// Time spent serializing projected streams into kTabletRaw format.
+    /// Time spent serializing projected streams into kTablet format.
     velox::CpuWallTiming projectionTiming;
 
     std::string toString() const;
@@ -261,7 +261,7 @@ class NimbleIndexProjector {
   // maxRowsPerRequest budget. Returns false if no active requests remain.
   bool pruneStripeRowRanges(std::span<const StripeRowRange> stripeRowRanges);
 
-  // Loads projected streams for the stripe, serializes them into kTabletRaw
+  // Loads projected streams for the stripe, serializes them into kTablet
   // format, and maps the result to per-request row ranges. Returns false if
   // a global limit (maxRows or maxBytes) was hit, signaling the caller to
   // stop and set resume keys.
@@ -287,7 +287,7 @@ class NimbleIndexProjector {
     RowRange rowRange;
   };
 
-  // Stitches loaded raw stream bytes into the shared kTabletRaw body+trailer
+  // Stitches loaded raw stream bytes into the shared kTablet body+trailer
   // (stream data + trailer) without decode/re-encode. The returned chunk has
   // a default-constructed rowRange that buildStripeResult fills in per request.
   ResultChunk serializeStripe(uint32_t stripeIndex, InputStreams& inputStreams);

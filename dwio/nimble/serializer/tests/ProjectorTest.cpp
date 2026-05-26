@@ -650,27 +650,27 @@ TEST_F(ProjectorTest, incompatibleFormatsRejected) {
           {.projectVersion = SerializationVersion::kLegacy}),
       "Projection output version must be kCompactRaw");
 
-  // Test kTabletRaw output version — rejected in constructor.
+  // Test kTablet output version — rejected in constructor.
   NIMBLE_ASSERT_THROW(
       Projector(
           inputSchema,
           subfields,
           pool_.get(),
-          {.projectVersion = SerializationVersion::kTabletRaw}),
+          {.projectVersion = SerializationVersion::kTablet}),
       "Projection output version must be kCompactRaw");
 
-  // Test kTabletRaw input — rejected at projection time.
+  // Test kTablet input — rejected at projection time.
   {
     auto serialized =
         serialize(vec, type, {.version = SerializationVersion::kCompactRaw});
     Projector projector(inputSchema, subfields, pool_.get(), {});
 
-    // Patch the version byte to kTabletRaw.
-    std::string tabletRawInput = serialized;
-    tabletRawInput[0] = static_cast<char>(SerializationVersion::kTabletRaw);
+    // Patch the version byte to kTablet.
+    std::string tabletInput = serialized;
+    tabletInput[0] = static_cast<char>(SerializationVersion::kTablet);
 
     NIMBLE_ASSERT_THROW(
-        projector.project(std::string_view(tabletRawInput)),
+        projector.project(std::string_view(tabletInput)),
         "Input must be kCompactRaw format");
   }
 }

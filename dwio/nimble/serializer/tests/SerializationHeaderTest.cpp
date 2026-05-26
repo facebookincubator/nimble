@@ -59,14 +59,14 @@ TEST(SerializationHeaderTest, writeReadRoundtripNoHeader) {
   EXPECT_FALSE(header.rowRange.has_value());
 }
 
-TEST(SerializationHeaderTest, readTabletRawHeader) {
+TEST(SerializationHeaderTest, readTabletHeader) {
   auto iobuf =
       createTabletChunkHeader({.rowCount = 500, .rowRange = RowRange{10, 200}});
   const char* pos = reinterpret_cast<const char*>(iobuf.data());
   const char* end = pos + iobuf.length();
 
   auto header = readSerializationHeader(pos, end, true);
-  EXPECT_EQ(header.version, SerializationVersion::kTabletRaw);
+  EXPECT_EQ(header.version, SerializationVersion::kTablet);
   EXPECT_EQ(header.rowCount, 500);
   ASSERT_TRUE(header.rowRange.has_value());
   EXPECT_EQ(header.rowRange->startRow, 10);
@@ -82,17 +82,17 @@ TEST(SerializationHeaderTest, readRejectsUnsupportedVersion) {
       "Unsupported version");
 }
 
-TEST(SerializationHeaderTest, writeRejectsTabletRaw) {
+TEST(SerializationHeaderTest, writeRejectsTablet) {
   std::string buffer;
   NIMBLE_ASSERT_THROW(
-      writeSerializationHeader(buffer, SerializationVersion::kTabletRaw, 100),
-      "kTabletRaw headers must use createTabletChunkHeader()");
+      writeSerializationHeader(buffer, SerializationVersion::kTablet, 100),
+      "kTablet headers must use createTabletChunkHeader()");
 }
 
-TEST(SerializationHeaderTest, estimateRejectsTabletRaw) {
+TEST(SerializationHeaderTest, estimateRejectsTablet) {
   NIMBLE_ASSERT_THROW(
-      estimateSerializationHeaderSize(SerializationVersion::kTabletRaw, 100),
-      "kTabletRaw headers must use createTabletChunkHeader()");
+      estimateSerializationHeaderSize(SerializationVersion::kTablet, 100),
+      "kTablet headers must use createTabletChunkHeader()");
 }
 
 TEST(SerializationHeaderTest, estimateSizeMatchesActual) {
@@ -212,7 +212,7 @@ TEST(TabletChunkHeaderTest, exactBoundaryEndRowEqualsRowCount) {
 
 TEST(TabletChunkHeaderTest, rejectsRowRangeExceedingRowCount) {
   std::string buf;
-  buf.push_back(static_cast<char>(SerializationVersion::kTabletRaw));
+  buf.push_back(static_cast<char>(SerializationVersion::kTablet));
   buf.push_back(0x05); // rowCount = 5
   buf.push_back(0x00); // startRow = 0
   buf.push_back(0x64); // endRow = 100 (> rowCount)
@@ -224,7 +224,7 @@ TEST(TabletChunkHeaderTest, rejectsRowRangeExceedingRowCount) {
 
 TEST(TabletChunkHeaderTest, rejectsInvertedRowRange) {
   std::string buf;
-  buf.push_back(static_cast<char>(SerializationVersion::kTabletRaw));
+  buf.push_back(static_cast<char>(SerializationVersion::kTablet));
   buf.push_back(0x0a); // rowCount = 10
   buf.push_back(0x05); // startRow = 5
   buf.push_back(0x03); // endRow = 3 (< startRow)

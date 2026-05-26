@@ -25,25 +25,25 @@ TEST(OptionsTest, serializationVersionEnumValues) {
   // Verify enum underlying values match expected wire format versions.
   EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kLegacy), 0);
   EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kCompactRaw), 2);
-  EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kTabletRaw), 3);
+  EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kTablet), 3);
 }
 
 TEST(OptionsTest, toStringVersion) {
   EXPECT_EQ(toString(SerializationVersion::kLegacy), "kLegacy");
   EXPECT_EQ(toString(SerializationVersion::kCompactRaw), "kCompactRaw");
-  EXPECT_EQ(toString(SerializationVersion::kTabletRaw), "kTabletRaw");
+  EXPECT_EQ(toString(SerializationVersion::kTablet), "kTablet");
 }
 
 TEST(OptionsTest, streamOperator) {
   std::ostringstream os;
-  os << SerializationVersion::kTabletRaw;
-  EXPECT_EQ(os.str(), "kTabletRaw");
+  os << SerializationVersion::kTablet;
+  EXPECT_EQ(os.str(), "kTablet");
 }
 
 TEST(OptionsTest, fmtFormatter) {
   EXPECT_EQ(
       fmt::format("{}", SerializationVersion::kCompactRaw), "kCompactRaw");
-  EXPECT_EQ(fmt::format("{}", SerializationVersion::kTabletRaw), "kTabletRaw");
+  EXPECT_EQ(fmt::format("{}", SerializationVersion::kTablet), "kTablet");
 }
 
 TEST(OptionsTest, serializerOptionsDefaults) {
@@ -122,13 +122,13 @@ TEST(OptionsTest, serializerOptionsWithCompactRawVersion) {
 TEST(OptionsTest, nonLegacyFormat) {
   EXPECT_FALSE(nonLegacyFormat(SerializationVersion::kLegacy));
   EXPECT_TRUE(nonLegacyFormat(SerializationVersion::kCompactRaw));
-  EXPECT_TRUE(nonLegacyFormat(SerializationVersion::kTabletRaw));
+  EXPECT_TRUE(nonLegacyFormat(SerializationVersion::kTablet));
 }
 
 TEST(OptionsTest, isCompactFormat) {
   EXPECT_FALSE(isCompactFormat(SerializationVersion::kLegacy));
   EXPECT_TRUE(isCompactFormat(SerializationVersion::kCompactRaw));
-  EXPECT_FALSE(isCompactFormat(SerializationVersion::kTabletRaw));
+  EXPECT_FALSE(isCompactFormat(SerializationVersion::kTablet));
 }
 
 TEST(OptionsTest, isCompactFormatOptional) {
@@ -136,29 +136,27 @@ TEST(OptionsTest, isCompactFormatOptional) {
   EXPECT_FALSE(isCompactFormat(std::optional{SerializationVersion::kLegacy}));
   EXPECT_TRUE(
       isCompactFormat(std::optional{SerializationVersion::kCompactRaw}));
-  EXPECT_FALSE(
-      isCompactFormat(std::optional{SerializationVersion::kTabletRaw}));
+  EXPECT_FALSE(isCompactFormat(std::optional{SerializationVersion::kTablet}));
 }
 
-TEST(OptionsTest, isTabletRawFormat) {
-  EXPECT_FALSE(isTabletRawFormat(SerializationVersion::kLegacy));
-  EXPECT_FALSE(isTabletRawFormat(SerializationVersion::kCompactRaw));
-  EXPECT_TRUE(isTabletRawFormat(SerializationVersion::kTabletRaw));
+TEST(OptionsTest, isTabletVersion) {
+  EXPECT_FALSE(isTabletVersion(SerializationVersion::kLegacy));
+  EXPECT_FALSE(isTabletVersion(SerializationVersion::kCompactRaw));
+  EXPECT_TRUE(isTabletVersion(SerializationVersion::kTablet));
 }
 
-TEST(OptionsTest, isTabletRawFormatOptional) {
-  EXPECT_FALSE(isTabletRawFormat(std::nullopt));
-  EXPECT_FALSE(isTabletRawFormat(std::optional{SerializationVersion::kLegacy}));
+TEST(OptionsTest, isTabletVersionOptional) {
+  EXPECT_FALSE(isTabletVersion(std::nullopt));
+  EXPECT_FALSE(isTabletVersion(std::optional{SerializationVersion::kLegacy}));
   EXPECT_FALSE(
-      isTabletRawFormat(std::optional{SerializationVersion::kCompactRaw}));
-  EXPECT_TRUE(
-      isTabletRawFormat(std::optional{SerializationVersion::kTabletRaw}));
+      isTabletVersion(std::optional{SerializationVersion::kCompactRaw}));
+  EXPECT_TRUE(isTabletVersion(std::optional{SerializationVersion::kTablet}));
 }
 
 TEST(OptionsTest, usesVarintRowCount) {
   EXPECT_FALSE(usesVarintRowCount(SerializationVersion::kLegacy));
   EXPECT_TRUE(usesVarintRowCount(SerializationVersion::kCompactRaw));
-  EXPECT_TRUE(usesVarintRowCount(SerializationVersion::kTabletRaw));
+  EXPECT_TRUE(usesVarintRowCount(SerializationVersion::kTablet));
 }
 
 TEST(OptionsTest, usesVarintRowCountOptional) {
@@ -167,8 +165,7 @@ TEST(OptionsTest, usesVarintRowCountOptional) {
       usesVarintRowCount(std::optional{SerializationVersion::kLegacy}));
   EXPECT_TRUE(
       usesVarintRowCount(std::optional{SerializationVersion::kCompactRaw}));
-  EXPECT_TRUE(
-      usesVarintRowCount(std::optional{SerializationVersion::kTabletRaw}));
+  EXPECT_TRUE(usesVarintRowCount(std::optional{SerializationVersion::kTablet}));
 }
 
 TEST(OptionsTest, getTrailerEncodingTypeBasic) {

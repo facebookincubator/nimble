@@ -461,7 +461,7 @@ void NimbleIndexProjector::setResumeKeys(
 
 namespace {
 
-/// Builds a kTabletRaw IOBuf chain: [header] -> [shared body+trailer].
+/// Builds a kTablet IOBuf chain: [header] -> [shared body+trailer].
 folly::IOBuf assembleChunk(
     uint32_t numRows,
     RowRange rowRange,

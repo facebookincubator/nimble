@@ -48,7 +48,7 @@ namespace facebook::nimble {
 ///   Supported EncodingTypes: Trivial, Varint, Delta, FixedBitWidth.
 ///   See getTrailerEncodingType() for validation.
 ///
-/// - kTabletRaw: Raw tablet stream passthrough format. Like kCompactRaw but:
+/// - kTablet: Tablet stream passthrough format. Like kCompactRaw but:
 ///   (1) Each stream's data includes tablet chunk headers:
 ///       [chunkSize:u32][compressionType:1B][encoded_data...]
 ///       which the Deserializer strips before decoding.
@@ -59,29 +59,29 @@ namespace facebook::nimble {
 enum class SerializationVersion : uint8_t {
   kLegacy = 0,
   kCompactRaw = 2,
-  kTabletRaw = 3,
+  kTablet = 3,
 };
 
 std::string toString(SerializationVersion version);
 
 /// Returns true if the version is any non-legacy format (kCompactRaw or
-/// kTabletRaw). All non-legacy formats have a version header, encoded streams,
+/// kTablet). All non-legacy formats have a version header, encoded streams,
 /// and a stream sizes trailer.
 inline bool nonLegacyFormat(SerializationVersion version) {
   return version != SerializationVersion::kLegacy;
 }
 
 /// Returns true if the version uses compact encoding (kCompactRaw).
-/// Note: kTabletRaw is NOT a compact format (has chunk headers in streams).
+/// Note: kTablet is NOT a compact format (has chunk headers in streams).
 inline bool isCompactFormat(SerializationVersion version) {
   return version == SerializationVersion::kCompactRaw;
 }
 
 /// Returns true if the version uses raw stream sizes (kCompactRaw or
-/// kTabletRaw) instead of nimble-encoded stream sizes.
+/// kTablet) instead of nimble-encoded stream sizes.
 inline bool isRawFormat(SerializationVersion version) {
   return version == SerializationVersion::kCompactRaw ||
-      version == SerializationVersion::kTabletRaw;
+      version == SerializationVersion::kTablet;
 }
 
 /// Returns true if the optional version uses raw stream sizes.
@@ -89,14 +89,14 @@ inline bool isRawFormat(std::optional<SerializationVersion> version) {
   return version.has_value() && isRawFormat(version.value());
 }
 
-/// Returns true if the version is the tablet raw passthrough format.
-inline bool isTabletRawFormat(SerializationVersion version) {
-  return version == SerializationVersion::kTabletRaw;
+/// Returns true if the version is the tablet passthrough format.
+inline bool isTabletVersion(SerializationVersion version) {
+  return version == SerializationVersion::kTablet;
 }
 
-/// Returns true if the version is the tablet raw passthrough format.
-inline bool isTabletRawFormat(std::optional<SerializationVersion> version) {
-  return version.has_value() && isTabletRawFormat(version.value());
+/// Returns true if the version is the tablet passthrough format.
+inline bool isTabletVersion(std::optional<SerializationVersion> version) {
+  return version.has_value() && isTabletVersion(version.value());
 }
 
 /// Returns true if the optional version uses compact encoding.
@@ -105,8 +105,8 @@ inline bool isCompactFormat(std::optional<SerializationVersion> version) {
 }
 
 /// Returns true if the version uses varint for the header row count.
-/// All non-legacy versioned formats (kCompactRaw, kTabletRaw) use varint row
-/// counts in the header. The raw stream bodies inside kTabletRaw may use fixed
+/// All non-legacy versioned formats (kCompactRaw, kTablet) use varint row
+/// counts in the header. The raw stream bodies inside kTablet may use fixed
 /// u32 row counts in their encoding headers.
 inline bool usesVarintRowCount(SerializationVersion version) {
   return version != SerializationVersion::kLegacy;
