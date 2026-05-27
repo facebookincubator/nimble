@@ -23,7 +23,9 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/tests/TestUtils.h"
+#include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
+#include "dwio/nimble/encodings/selection/Statistics.h"
 #include "folly/Benchmark.h"
 #include "folly/Random.h"
 #include "velox/common/memory/Memory.h"
@@ -56,15 +58,25 @@ Vector<T> makeData(int bitWidth, int n = kNumElements) {
 }
 
 /// Encodes data and returns (encoded string, encoding).
-template <typename EncodingType>
-std::pair<std::string, std::unique_ptr<Encoding>> encodeAndCreate(
+template <typename T>
+std::string encodeFixedBitWidth(
     Buffer& buffer,
-    const Vector<typename EncodingType::cppDataType>& data) {
-  auto encoded = test::Encoder<EncodingType>::encode(buffer, data);
-  std::string encodedStr{encoded.data(), encoded.size()};
-  auto encoding = EncodingFactory{}.create(
-      *pool, encodedStr, [](uint32_t) -> void* { return nullptr; });
-  return {std::move(encodedStr), std::move(encoding)};
+    const Vector<T>& data,
+    const Encoding::Options& options = {}) {
+  using physicalType = typename TypeTraits<T>::physicalType;
+
+  auto physicalValues = std::span<const physicalType>(
+      reinterpret_cast<const physicalType*>(data.data()), data.size());
+  EncodingSelectionResult selectionResult{
+      .encodingType = EncodingType::FixedBitWidth};
+  auto selection = EncodingSelection<physicalType>{
+      std::move(selectionResult),
+      Statistics<physicalType>::create(physicalValues),
+      nullptr};
+
+  auto encoded = FixedBitWidthEncoding<T>::encode(
+      selection, physicalValues, buffer, options);
+  return std::string{encoded.data(), encoded.size()};
 }
 
 } // namespace
@@ -79,9 +91,7 @@ BENCHMARK(FBW_Materialize_uint32_8bit, iters) {
   BENCHMARK_SUSPEND {
     Buffer buffer{*pool};
     auto data = makeData<uint32_t>(8);
-    encoded =
-        test::Encoder<FixedBitWidthEncoding<uint32_t>>::encode(buffer, data);
-    encoded = std::string{encoded.data(), encoded.size()};
+    encoded = encodeFixedBitWidth(buffer, data);
   }
   while (iters--) {
     auto encoding = EncodingFactory{}.create(
@@ -96,9 +106,7 @@ BENCHMARK(FBW_Materialize_uint32_16bit, iters) {
   BENCHMARK_SUSPEND {
     Buffer buffer{*pool};
     auto data = makeData<uint32_t>(16);
-    auto sv =
-        test::Encoder<FixedBitWidthEncoding<uint32_t>>::encode(buffer, data);
-    encoded = std::string{sv.data(), sv.size()};
+    encoded = encodeFixedBitWidth(buffer, data);
   }
   while (iters--) {
     auto encoding = EncodingFactory{}.create(
@@ -120,9 +128,7 @@ BENCHMARK(FBW_Materialize_uint64_8bit, iters) {
   BENCHMARK_SUSPEND {
     Buffer buffer{*pool};
     auto data = makeData<uint64_t>(8);
-    auto sv =
-        test::Encoder<FixedBitWidthEncoding<uint64_t>>::encode(buffer, data);
-    encoded = std::string{sv.data(), sv.size()};
+    encoded = encodeFixedBitWidth(buffer, data);
   }
   while (iters--) {
     auto encoding = EncodingFactory{}.create(
@@ -137,9 +143,7 @@ BENCHMARK(FBW_Materialize_uint64_16bit, iters) {
   BENCHMARK_SUSPEND {
     Buffer buffer{*pool};
     auto data = makeData<uint64_t>(16);
-    auto sv =
-        test::Encoder<FixedBitWidthEncoding<uint64_t>>::encode(buffer, data);
-    encoded = std::string{sv.data(), sv.size()};
+    encoded = encodeFixedBitWidth(buffer, data);
   }
   while (iters--) {
     auto encoding = EncodingFactory{}.create(
@@ -154,9 +158,7 @@ BENCHMARK(FBW_Materialize_uint64_32bit, iters) {
   BENCHMARK_SUSPEND {
     Buffer buffer{*pool};
     auto data = makeData<uint64_t>(32);
-    auto sv =
-        test::Encoder<FixedBitWidthEncoding<uint64_t>>::encode(buffer, data);
-    encoded = std::string{sv.data(), sv.size()};
+    encoded = encodeFixedBitWidth(buffer, data);
   }
   while (iters--) {
     auto encoding = EncodingFactory{}.create(
@@ -171,9 +173,7 @@ BENCHMARK(FBW_Materialize_uint64_48bit, iters) {
   BENCHMARK_SUSPEND {
     Buffer buffer{*pool};
     auto data = makeData<uint64_t>(48);
-    auto sv =
-        test::Encoder<FixedBitWidthEncoding<uint64_t>>::encode(buffer, data);
-    encoded = std::string{sv.data(), sv.size()};
+    encoded = encodeFixedBitWidth(buffer, data);
   }
   while (iters--) {
     auto encoding = EncodingFactory{}.create(

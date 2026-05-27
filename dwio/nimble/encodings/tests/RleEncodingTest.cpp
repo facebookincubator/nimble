@@ -23,6 +23,7 @@
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 
 #include <limits>
+#include <type_traits>
 #include <vector>
 
 using namespace facebook;

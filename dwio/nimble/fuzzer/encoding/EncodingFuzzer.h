@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <random>
@@ -122,6 +123,35 @@ Vector<T> makeMainlyConstantData(
   return data;
 }
 
+// Values with a fixed upper-half prefix and varying lower 16 bits.
+// This is the primary use case for SubIntSplitEncoding: e.g. small counters
+// stored in a 64-bit field, or timestamps where the high bits are constant.
+template <typename T, typename RNG>
+Vector<T> makeBitStructuredData(
+    velox::memory::MemoryPool& pool,
+    RNG& rng,
+    uint32_t rowCount,
+    [[maybe_unused]] Buffer* buffer) {
+  Vector<T> data(&pool);
+  data.reserve(rowCount);
+  if constexpr (std::is_arithmetic_v<T> && !std::is_same_v<T, bool>) {
+    for (uint32_t i = 0; i < rowCount; ++i) {
+      if constexpr (sizeof(T) <= 2) {
+        auto bits = static_cast<T>(folly::Random::rand32(rng) & 0xFFFF);
+        data.push_back(bits);
+      } else if constexpr (sizeof(T) == 4) {
+        uint32_t bits = 0x12340000u + (folly::Random::rand32(rng) & 0xFFFF);
+        data.push_back(std::bit_cast<T>(bits));
+      } else {
+        uint64_t bits =
+            0x1234567800000000ULL + (folly::Random::rand32(rng) & 0xFFFF);
+        data.push_back(std::bit_cast<T>(bits));
+      }
+    }
+  }
+  return data;
+}
+
 // ============================================================================
 // Fuzzer operations
 // ============================================================================
@@ -221,6 +251,12 @@ class EncodingFuzzer {
     // Mainly constant data (good for MainlyConstant encoding).
     datasets.push_back(
         makeMainlyConstantData<T>(*pool_, rng, rowCount, buffer_.get()));
+
+    // Bit-structured data (fixed upper-half prefix, varying low 16 bits).
+    if constexpr (std::is_arithmetic_v<T> && !std::is_same_v<T, bool>) {
+      datasets.push_back(
+          makeBitStructuredData<T>(*pool_, rng, rowCount, buffer_.get()));
+    }
 
     // Small data (1-3 rows) for edge cases.
     for (uint32_t sz : {1u, 2u, 3u}) {
