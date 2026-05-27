@@ -22,6 +22,8 @@
 #include <string_view>
 #include <vector>
 
+#include <folly/SharedMutex.h>
+
 #include "dwio/nimble/index/IndexLookup.h"
 #include "dwio/nimble/index/IndexTypes.h"
 #include "dwio/nimble/index/KeyChunkDecoder.h"
@@ -57,7 +59,10 @@ class ClusterIndexTestHelper;
 /// lookup. When a key stream loader is provided, lookup returns exact row
 /// positions by decoding key stream data within chunks.
 ///
-/// NOTE: Not thread-safe. Callers must provide external synchronization.
+/// Thread-safety: `lookup()` and `keyAtRow()` are safe for concurrent use
+/// from multiple threads. Partition metadata and key-stream chunks are
+/// lazily loaded under internal locks (SharedMutex for partitions, per-
+/// partition mutex for chunks).
 ///
 /// Example usage:
 ///   auto index = ClusterIndex::create(std::move(rootSection), ...);
@@ -178,6 +183,10 @@ class ClusterIndex : public IndexLookup {
     const std::unique_ptr<MetadataBuffer> metadata;
     const serialization::ClusterIndexPartition* const index;
 
+    // Protects decodedChunks against concurrent lazy decoding. Shared lock
+    // for cache hits, exclusive lock for cache misses (lazy decode).
+    mutable folly::SharedMutex mutex;
+
     // Lazily-populated decoded chunks. Sized to numChunks() when
     // pinIndex_=true (each slot indexed by chunkIndex, retained across
     // lookups). Sized to 1 when pinIndex_=false (a single shared scratch
@@ -266,17 +275,29 @@ class ClusterIndex : public IndexLookup {
     }
   };
 
-  // Builds partition lookups from request into partitionLookups_
-  // and initializes scratchRanges_.
-  void lookupPartitions(const LookupRequest& request) const;
-  void partitionPointLookups(const LookupRequest& request) const;
-  void partitionRangeLookups(const LookupRequest& request) const;
+  // Builds partition lookups from request into partitionLookups
+  // and initializes partitionRowRanges.
+  void lookupPartitions(
+      const LookupRequest& request,
+      std::vector<PartitionLookup>& partitionLookups,
+      std::vector<RowRange>& partitionRowRanges) const;
+  void partitionPointLookups(
+      const LookupRequest& request,
+      std::vector<PartitionLookup>& partitionLookups,
+      std::vector<RowRange>& partitionRowRanges) const;
+  void partitionRangeLookups(
+      const LookupRequest& request,
+      std::vector<PartitionLookup>& partitionLookups,
+      std::vector<RowRange>& partitionRowRanges) const;
 
   // Resolves all partition lookups grouped by partition.
-  void resolvePartitionBounds() const;
+  void resolvePartitionBounds(
+      std::vector<PartitionLookup>& partitionLookups) const;
 
-  // Builds the flat LookupResult from scratchRanges_.
-  LookupResult buildLookupResult(const LookupOptions& options) const;
+  // Builds the flat LookupResult from partitionRowRanges.
+  LookupResult buildLookupResult(
+      const LookupOptions& options,
+      const std::vector<RowRange>& partitionRowRanges) const;
 
   // Binary searches chunk keys in the partition. The returned ChunkLocation
   // carries the chunkIndex for indexing into per-chunk arrays.
@@ -363,12 +384,11 @@ class ClusterIndex : public IndexLookup {
 
   // --- Mutable state ---
 
+  // Protects partitions_ against concurrent lazy loading.
+  mutable folly::SharedMutex mutex_;
+
   // Partitions loaded on demand and never evicted. Accessed by raw pointer.
   mutable std::vector<std::unique_ptr<IndexPartition>> partitions_;
-
-  // Reusable scratch buffers for lookup(). Cleared and reused each call.
-  mutable std::vector<PartitionLookup> partitionLookups_;
-  mutable std::vector<RowRange> scratchRanges_;
 
   friend class test::ClusterIndexTestHelper;
 };
