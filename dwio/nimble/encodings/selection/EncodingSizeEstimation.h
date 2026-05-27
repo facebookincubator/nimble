@@ -151,6 +151,57 @@ struct EncodingSizeEstimation {
           return std::nullopt;
         }
       }
+      case EncodingType::Pfor: {
+        // Pfor only applies to integral types. Estimate cost by mirroring the
+        // encoder's 90th-percentile rule: pick baseBW at the smallest 7-bit
+        // bucket boundary that covers >=90% of values; outliers go to a
+        // varint side-channel (position + value).
+        if constexpr (isIntegralType<physicalType>()) {
+          const auto& bucketCounts = statistics.bucketCounts();
+          const auto fullRange =
+              static_cast<physicalType>(statistics.max() - statistics.min());
+          const uint8_t maxBitWidth =
+              static_cast<uint8_t>(velox::bits::bitsRequired(fullRange));
+          uint8_t baseBitWidth = maxBitWidth;
+          uint64_t numExceptions = 0;
+          if (maxBitWidth > 0) {
+            constexpr double kCoverageThreshold = 0.9;
+            const uint64_t threshold = static_cast<uint64_t>(
+                static_cast<double>(entryCount) * kCoverageThreshold);
+            uint64_t cumulative = 0;
+            for (size_t k = 0; k < bucketCounts.size(); ++k) {
+              cumulative += bucketCounts[k];
+              if (cumulative >= threshold) {
+                const uint8_t bucketEndBitWidth =
+                    static_cast<uint8_t>(std::min<size_t>((k + 1) * 7, 64));
+                baseBitWidth = std::min(bucketEndBitWidth, maxBitWidth);
+                numExceptions = entryCount - cumulative;
+                break;
+              }
+            }
+          }
+          // Bitpacked region (matches FixedBitArray::bufferSize: ceil + 7
+          // bytes of slop). Skipped entirely when baseBW == 0.
+          const uint64_t bitpackedSize = baseBitWidth == 0
+              ? 0
+              : ((static_cast<uint64_t>(baseBitWidth) * entryCount + 7) >> 3) +
+                  7;
+          // Conservative per-exception cost: position varint up to 5 bytes,
+          // value varint up to ceil(maxBitWidth/7) bytes (capped at 10).
+          const uint64_t valueVarintBytes = std::min<uint64_t>(
+              (static_cast<uint64_t>(maxBitWidth) + 6) / 7, 10);
+          const uint64_t exceptionsSize =
+              numExceptions * (5 + valueVarintBytes);
+          // Overhead: common Encoding prefix (6) + baseline (sizeof T) +
+          // baseBitWidth (1 byte) + numExceptions (4 bytes).
+          constexpr uint32_t commonPrefixSize = 6;
+          const uint32_t overhead =
+              commonPrefixSize + sizeof(physicalType) + 1 + sizeof(uint32_t);
+          return overhead + bitpackedSize + exceptionsSize;
+        } else {
+          return std::nullopt;
+        }
+      }
       default: {
         return std::nullopt;
       }

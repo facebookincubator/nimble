@@ -104,6 +104,12 @@ enum class EncodingType {
   // shared across consecutive entries to reduce storage. Supports seek
   // operations for efficient random access.
   Prefix = 11,
+  // Patched Frame-of-Reference. Subtracts a min baseline, bitpacks ~90% of
+  // residuals at a narrow base bit width, and stores the remaining outliers
+  // ("exceptions") as a parallel position+value array. Wins on dense numeric
+  // streams that have a small number of large outliers, where plain
+  // FixedBitWidth would have to pay the worst-case bit width for every value.
+  Pfor = 15,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);

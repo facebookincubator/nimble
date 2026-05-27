@@ -382,6 +382,7 @@ class ManualEncodingSelectionPolicyFactory {
         EncodingType::Dictionary,
         EncodingType::RLE,
         EncodingType::Varint,
+        EncodingType::Pfor,
     };
   }
 
@@ -395,6 +396,11 @@ class ManualEncodingSelectionPolicyFactory {
         {EncodingType::Dictionary, 1.0},
         {EncodingType::RLE, 1.0},
         {EncodingType::Varint, 1.0},
+        // Pfor's read factor is intentionally conservative (1.5) so that the
+        // existing encodings keep winning auto-selection by default. This
+        // mirrors how new encoders are gated in until they have soak time in
+        // production.
+        {EncodingType::Pfor, 1.5},
     };
   }
 
