@@ -419,9 +419,9 @@ bool NimbleIndexProjector::buildStripeResult(
     numReadRows_ += rowRange.numRows();
     resultChunks_[request.requestIndex].push_back(
         ResultChunk{
-            .sharedBody = stripeChunk.sharedBody.cloneOneAsValue(),
-            .numRows = stripeChunk.numRows,
-            .rowRange = rowRange});
+            stripeChunk.sharedBody.cloneOneAsValue(),
+            stripeChunk.numRows,
+            rowRange});
     rowsPerRequest_[request.requestIndex] += rowRange.numRows();
   }
 

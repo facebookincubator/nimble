@@ -293,6 +293,13 @@ class NimbleIndexProjector {
   // finalizeResult() prepends a per-request header with the row range via
   // assembleChunk().
   struct ResultChunk {
+    ResultChunk() = default;
+
+    ResultChunk(folly::IOBuf sharedBody, uint32_t numRows, RowRange rowRange)
+        : sharedBody{std::move(sharedBody)},
+          numRows{numRows},
+          rowRange{rowRange} {}
+
     folly::IOBuf sharedBody;
     uint32_t numRows{0};
     RowRange rowRange;
