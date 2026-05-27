@@ -1,0 +1,1503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<base target="_blank">
+<title>Nimble Selective Reader — Concrete Example</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f5f7fa;
+  --bg-alt: #eef1f6;
+  --surface: #ffffff;
+  --text-primary: #0f1a2e;
+  --text-secondary: #4a5568;
+  --text-muted: #8896ab;
+  --border: #dde3ed;
+  --border-strong: #c1c9d6;
+  --surface-hover: #f1f5f9;
+
+  --col0: #2563eb;
+  --col1: #9ca3af;
+  --col2: #7c3aed;
+  --col3: #059669;
+  --col4: #9ca3af;
+  --col0-bg: #eff6ff;
+  --col1-bg: #f3f4f6;
+  --col2-bg: #f5f3ff;
+  --col3-bg: #ecfdf5;
+  --col4-bg: #f3f4f6;
+
+  --layer-query: #6366f1;
+  --layer-reader: #8b5cf6;
+  --layer-decoder: #0891b2;
+  --layer-encoding: #059669;
+  --layer-data: #d97706;
+
+  --accent: #f59e0b;
+  --accent-glow: rgba(245,158,11,0.12);
+  --kill: #ef4444;
+  --pass: #22c55e;
+}
+body.dark-mode {
+  --bg: #0c1220;
+  --bg-alt: #111827;
+  --surface: #1a2332;
+  --text-primary: #e8ecf4;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --border: #2a3548;
+  --border-strong: #3b4a60;
+  --surface-hover: #1e293b;
+  --col0-bg: #1a2544;
+  --col1-bg: #201840;
+  --col2-bg: #0c2a20;
+  --accent-glow: rgba(245,158,11,0.06);
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: 'DM Sans', sans-serif;
+  background: var(--bg);
+  color: var(--text-primary);
+  line-height: 1.55;
+}
+body::before {
+  content:'';
+  position:fixed; inset:0;
+  background:
+    radial-gradient(ellipse at 15% 0%, rgba(99,102,241,0.06) 0%, transparent 55%),
+    radial-gradient(ellipse at 85% 100%, rgba(245,158,11,0.04) 0%, transparent 55%);
+  pointer-events:none; z-index:0;
+}
+.container { position:relative; z-index:1; max-width:1800px; margin:0 auto; padding:3rem 2rem 2rem; }
+
+h1 { font-family:'Space Grotesk',sans-serif; font-size:1.85rem; font-weight:700; text-align:center; letter-spacing:-0.02em; margin-bottom:0.15rem; }
+.subtitle { text-align:center; color:var(--text-secondary); font-size:0.9rem; margin-bottom:0.3rem; }
+.query-box {
+  text-align:center; margin:0 auto 2.5rem;
+  font-family:'JetBrains Mono',monospace; font-size:0.78rem;
+  background:var(--surface); border:1.5px solid var(--border);
+  padding:0.5rem 1rem; border-radius:8px; display:inline-block;
+  width:100%;
+}
+.query-box .kw { color:var(--layer-query); font-weight:600; }
+.query-box .c0 { color:var(--col0); font-weight:500; }
+.query-box .c1 { color:var(--col1); font-weight:500; }
+.query-box .c2 { color:var(--col2); font-weight:500; }
+
+/* Sections */
+.section { margin-bottom:1.8rem; }
+.section-head {
+  font-family:'Space Grotesk',sans-serif; font-size:0.65rem; font-weight:600;
+  letter-spacing:0.1em; text-transform:uppercase; color:var(--text-muted);
+  margin-bottom:0.6rem; display:flex; align-items:center; gap:0.5rem;
+}
+.section-head::after { content:''; flex:1; height:1px; background:var(--border); }
+.section-num {
+  display:inline-flex; align-items:center; justify-content:center;
+  width:18px; height:18px; border-radius:50%;
+  font-size:0.6rem; font-weight:700; color:#fff;
+}
+
+/* Step cards */
+.step {
+  border:1.5px solid var(--border); border-radius:12px;
+  padding:1rem 1.25rem; background:var(--surface);
+  margin-bottom:0.6rem;
+}
+.step h3 {
+  font-family:'Space Grotesk',sans-serif; font-size:0.95rem; font-weight:600;
+  margin-bottom:0.3rem;
+}
+.step p, .step .detail { font-size:0.8rem; color:var(--text-secondary); }
+.step .fp {
+  font-family:'JetBrains Mono',monospace; font-size:0.65rem;
+  color:var(--text-muted); margin-top:0.35rem;
+}
+code {
+  font-family:'JetBrains Mono',monospace; font-size:0.72rem;
+  background:var(--bg-alt); padding:0.08rem 0.3rem; border-radius:3px;
+}
+
+/* Column pipeline */
+.pipeline { display:flex; flex-direction:column; gap:0; }
+.pipe-step {
+  display:grid; grid-template-columns:90px 1fr 90px; gap:0.5rem;
+  align-items:center; padding:0.5rem 0;
+}
+.pipe-col {
+  font-family:'Space Grotesk',sans-serif; font-size:0.78rem; font-weight:600;
+  display:flex; align-items:center; gap:0.3rem;
+}
+.pipe-col .dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.pipe-body {
+  border:1.5px solid var(--border); border-radius:8px;
+  padding:0.5rem 0.75rem; background:var(--surface); font-size:0.75rem;
+}
+.pipe-rows {
+  font-family:'JetBrains Mono',monospace; font-size:0.68rem;
+  text-align:right; color:var(--text-muted);
+}
+.pipe-rows .count { font-weight:600; }
+.pipe-rows .killed { color:var(--kill); }
+.pipe-rows .survived { color:var(--pass); }
+
+.pipe-arrow {
+  display:flex; justify-content:center; padding:0.2rem 0;
+}
+.pipe-arrow .arr {
+  width:2px; height:18px;
+  background:var(--accent);
+  position:relative;
+}
+.pipe-arrow .arr::after {
+  content:''; position:absolute; bottom:-1px; left:50%;
+  transform:translateX(-50%);
+  border-left:4px solid transparent; border-right:4px solid transparent;
+  border-top:5px solid var(--accent);
+}
+
+/* Decoder detail */
+.decoder-grid {
+  display:grid; grid-template-columns:1fr 1fr 1fr; gap:0.5rem;
+  margin-top:0.5rem;
+}
+.dec-card {
+  border:1.5px solid var(--border); border-radius:8px;
+  padding:0.55rem 0.65rem; font-size:0.72rem;
+}
+.dec-card h4 {
+  font-family:'Space Grotesk',sans-serif; font-size:0.72rem;
+  font-weight:600; margin-bottom:0.2rem; display:flex;
+  align-items:center; gap:0.3rem;
+}
+.dec-card p { color:var(--text-secondary); font-size:0.68rem; }
+
+/* Encoding dispatch */
+.dispatch {
+  display:flex; flex-wrap:wrap; gap:0.3rem; margin:0.4rem 0;
+}
+.enc-tag {
+  padding:0.2rem 0.5rem; border-radius:5px; font-family:'JetBrains Mono',monospace;
+  font-size:0.65rem; font-weight:500; border:1px solid var(--border);
+  background:var(--surface); color:var(--text-secondary);
+}
+.enc-tag.active { border-color:var(--accent); color:var(--accent); box-shadow:0 0 0 2px var(--accent-glow); }
+
+/* Fast/slow path */
+.paths {
+  display:grid; grid-template-columns:1fr 1fr; gap:0.5rem; margin-top:0.5rem;
+}
+.path-card {
+  border:1.5px solid var(--border); border-radius:8px;
+  padding:0.55rem 0.7rem;
+}
+.path-card h4 {
+  font-family:'Space Grotesk',sans-serif; font-size:0.75rem;
+  font-weight:600; margin-bottom:0.2rem;
+}
+.path-card p { font-size:0.7rem; color:var(--text-secondary); }
+.path-card.fast { border-color:var(--pass); background:color-mix(in srgb, var(--pass) 5%, var(--surface)); }
+.path-card.slow { border-color:var(--text-muted); }
+
+/* Mini-block row */
+.mb-strip {
+  display:flex; gap:1px; height:26px; border-radius:5px;
+  overflow:hidden; border:1px solid var(--border); margin-top:0.35rem;
+}
+.mb-cell {
+  flex:1; display:flex; align-items:center; justify-content:center;
+  font-family:'JetBrains Mono',monospace; font-size:0.5rem;
+  font-weight:500; color:#fff; min-width:0;
+}
+
+/* Callout */
+.callout {
+  display:flex; align-items:flex-start; gap:0.5rem;
+  padding:0.55rem 0.75rem; border-radius:7px;
+  background:var(--accent-glow);
+  border:1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  font-size:0.73rem; color:var(--text-secondary); margin-top:0.5rem;
+}
+
+/* Legend */
+.legend {
+  display:flex; flex-wrap:wrap; gap:0.8rem; justify-content:center;
+  margin-top:1.5rem; padding-top:0.8rem; border-top:1px solid var(--border);
+}
+.legend-item { display:flex; align-items:center; gap:0.3rem; font-size:0.68rem; color:var(--text-secondary); }
+.legend-dot { width:9px; height:9px; border-radius:3px; }
+
+.footer {
+  text-align:center; font-size:0.7rem; color:var(--text-muted);
+  margin-top:1.5rem; padding-top:0.6rem; border-top:1px solid var(--border);
+}
+
+/* Animate */
+.ani { opacity:0; animation: fadeUp 0.5s ease forwards; }
+@keyframes fadeUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
+.d1{animation-delay:.05s}.d2{animation-delay:.1s}.d3{animation-delay:.15s}
+.d4{animation-delay:.2s}.d5{animation-delay:.25s}.d6{animation-delay:.3s}
+.d7{animation-delay:.35s}.d8{animation-delay:.4s}.d9{animation-delay:.45s}
+.d10{animation-delay:.5s}.d11{animation-delay:.55s}.d12{animation-delay:.6s}
+
+/* Object tree */
+.obj-tree { margin:0.6rem 0 0.3rem; display:flex; flex-direction:column; align-items:center; }
+.obj-root {
+  border:1.5px solid var(--border); border-radius:8px;
+  padding:0.45rem 0.75rem; background:var(--surface);
+  text-align:center; max-width:520px; width:100%;
+}
+.obj-root h5 {
+  font-family:'Space Grotesk',sans-serif; font-size:0.75rem;
+  font-weight:600; margin-bottom:0.1rem;
+}
+.obj-root .obj-type {
+  font-family:'JetBrains Mono',monospace; font-size:0.6rem;
+  color:var(--text-muted);
+}
+.obj-root .obj-ptr {
+  font-family:'JetBrains Mono',monospace; font-size:0.58rem;
+  color:var(--layer-decoder); font-weight:500; margin-top:0.1rem;
+}
+.obj-fork {
+  position:relative; width:100%; height:24px;
+}
+.obj-fork::before {
+  content:''; position:absolute; left:50%; top:0;
+  width:2px; height:12px; background:var(--border-strong);
+}
+.obj-fork::after {
+  content:''; position:absolute;
+  left:calc(100%/6); right:calc(100%/6); top:12px;
+  height:2px; background:var(--border-strong);
+}
+.obj-fork-prongs {
+  position:absolute; top:12px; left:calc(100%/6); right:calc(100%/6);
+  display:flex; justify-content:space-between;
+}
+.obj-fork-prong {
+  width:2px; height:12px; background:var(--border-strong);
+}
+.obj-children {
+  display:grid; grid-template-columns:1fr 1fr 1fr; gap:0.5rem; width:100%;
+}
+.obj-child {
+  display:flex; flex-direction:column; align-items:center; gap:0;
+}
+.obj-child-box {
+  border:1.5px solid var(--border); border-radius:8px;
+  padding:0.45rem 0.6rem; background:var(--surface); width:100%;
+}
+.obj-child-box h5 {
+  font-family:'Space Grotesk',sans-serif; font-size:0.7rem;
+  font-weight:600; margin-bottom:0.1rem;
+  display:flex; align-items:center; gap:0.3rem;
+}
+.obj-child-box .obj-type {
+  font-family:'JetBrains Mono',monospace; font-size:0.58rem;
+  color:var(--text-muted);
+}
+.obj-child-box .obj-ptr {
+  font-family:'JetBrains Mono',monospace; font-size:0.56rem;
+  color:var(--layer-decoder); font-weight:500; margin-top:0.1rem;
+}
+.obj-child-box .obj-members {
+  font-family:'JetBrains Mono',monospace; font-size:0.56rem;
+  color:var(--text-secondary); margin-top:0.1rem;
+}
+.obj-child-arr {
+  width:2px; height:14px; background:var(--border-strong);
+  position:relative;
+}
+.obj-child-arr::after {
+  content:''; position:absolute; bottom:-1px; left:50%;
+  transform:translateX(-50%);
+  border-left:4px solid transparent; border-right:4px solid transparent;
+  border-top:5px solid var(--border-strong);
+}
+
+/* Flow diagram */
+.flow-h { display:flex; align-items:center; gap:0; flex-wrap:wrap; margin:0.6rem 0; justify-content:flex-start; }
+.flow-node { border:1.5px solid var(--border); border-radius:8px; padding:0.25rem 0.7rem; background:var(--surface); text-align:center; }
+.flow-node h5 { font-family:'Space Grotesk',sans-serif; font-size:0.68rem; font-weight:600; margin-bottom:0.1rem; white-space:nowrap; }
+.flow-node .fd { font-size:0.6rem; color:var(--text-muted); font-family:'JetBrains Mono',monospace; }
+.flow-arr { font-size:1rem; color:var(--accent); padding:0 0.25rem; font-weight:bold; flex-shrink:0; }
+.loop-box { border:1.5px dashed var(--accent); border-radius:10px; padding:0.7rem 0.8rem 0.5rem; margin:0.6rem 0; position:relative; }
+.loop-label { position:absolute; top:-0.55rem; left:1rem; background:var(--surface); padding:0 0.4rem; font-family:'JetBrains Mono',monospace; font-size:0.6rem; color:var(--accent); font-weight:600; }
+.state-row { display:flex; flex-wrap:wrap; gap:0.4rem; margin-top:0.5rem; }
+.state-chip { padding:0.25rem 0.5rem; border-radius:6px; font-family:'JetBrains Mono',monospace; font-size:0.62rem; background:var(--bg-alt); border:1px solid var(--border); }
+.state-chip .sl { color:var(--text-muted); }
+.state-chip .sv { color:var(--layer-decoder); font-weight:600; }
+
+@media (max-width:700px) {
+  .container { padding:2rem 1rem; }
+  .decoder-grid, .paths { grid-template-columns:1fr; }
+  .pipe-step { grid-template-columns:70px 1fr 70px; }
+  .flow-h { gap:0.3rem; }
+  .flow-node { padding:0.25rem 0.4rem; }
+  .obj-children { grid-template-columns:1fr; }
+  .obj-fork { display:none; }
+}
+</style>
+<style>
+/* === INFRA-MENU-CSS === */
+.viz-menu { position:fixed; top:1rem; right:1rem; z-index:10000; font-family:inherit; }
+.viz-menu-toggle {
+  width:36px; height:36px; border-radius:8px;
+  border:1px solid var(--border); background:var(--surface);
+  color:var(--text-secondary); cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  transition:background .15s,border-color .15s,transform .15s;
+  box-shadow:0 2px 8px rgba(0,0,0,.1);
+}
+.viz-menu-toggle:hover { background:var(--surface-hover); transform:scale(1.05); }
+.viz-menu-panel {
+  position:absolute; top:calc(100% + 6px); right:0; min-width:200px;
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:10px; padding:4px;
+  box-shadow:0 8px 24px rgba(0,0,0,.15);
+  opacity:0; transform:translateY(-4px) scale(.97);
+  pointer-events:none; transition:opacity .15s,transform .15s;
+}
+.viz-menu.open .viz-menu-panel { opacity:1; transform:translateY(0) scale(1); pointer-events:auto; }
+.viz-menu-item {
+  display:flex; align-items:center; gap:10px; width:100%;
+  padding:8px 12px; border:none; border-radius:7px;
+  background:transparent; color:var(--text-primary);
+  font-size:.85rem; cursor:pointer; text-align:left;
+  transition:background .1s; font-family:inherit;
+}
+.viz-menu-item:hover { background:var(--surface-hover); }
+.viz-menu-icon { width:20px; text-align:center; font-size:1rem; flex-shrink:0; }
+@media print {
+  .viz-menu { display:none !important; }
+  body { background:white !important; color:black !important; }
+  .ani { opacity:1 !important; animation:none !important; }
+}
+@media (prefers-reduced-motion:reduce) {
+  *,*::before,*::after { animation-duration:.01ms !important; transition-duration:.01ms !important; }
+  .ani { opacity:1 !important; transform:none !important; }
+}
+</style>
+</head>
+<body>
+
+<!-- INFRA-MENU-HTML -->
+<nav class="viz-menu" id="vizMenu" aria-label="Visualization controls">
+  <button class="viz-menu-toggle" onclick="toggleMenu()" aria-label="Toggle menu" aria-expanded="false">
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <line x1="3" y1="5" x2="15" y2="5"/><line x1="3" y1="9" x2="15" y2="9"/><line x1="3" y1="13" x2="15" y2="13"/>
+    </svg>
+  </button>
+  <div class="viz-menu-panel" id="vizMenuPanel">
+    <button onclick="toggleTheme()" class="viz-menu-item"><span class="viz-menu-icon" id="themeIcon">&#9684;</span><span id="themeLabel">Dark mode</span></button>
+    <button onclick="window.print()" class="viz-menu-item"><span class="viz-menu-icon">&#9114;</span><span>Print</span></button>
+    <button onclick="toggleFullscreen()" class="viz-menu-item"><span class="viz-menu-icon" id="fsIcon">&#9974;</span><span id="fsLabel">Fullscreen</span></button>
+    <hr style="border:none;border-top:1px solid var(--border);margin:2px 8px">
+    <button onclick="saveAsImage()" class="viz-menu-item" id="saveImgBtn"><span class="viz-menu-icon">&#128247;</span><span>Save as image</span></button>
+  </div>
+</nav>
+
+<div class="container">
+
+<!-- Header -->
+<h1 class="ani d1">Nimble Selective Reader</h1>
+<p class="subtitle ani d2">A concrete example &mdash; 5 columns in table, 3 projected</p>
+<div class="query-box ani d3">
+  <span class="kw">SELECT</span> <span style="color:var(--col3)">col4</span>
+  <span class="kw">FROM</span> t
+  <span class="kw">WHERE</span> <span style="color:var(--col0)">col1</span> &gt; 50
+  <span class="kw">AND</span> <span style="color:var(--col2)">col3</span> &lt; 3.14
+  <div style="margin-top:0.3rem;font-size:0.62rem;color:var(--text-muted)">
+    Table schema: <span style="color:var(--col0)">col1</span> int32, <span style="color:var(--col1)">col2</span> int64, <span style="color:var(--col2)">col3</span> double, <span style="color:var(--col3)">col4</span> string, <span style="color:var(--col4)">col5</span> float
+    &mdash; <span style="color:var(--col1)">col2</span> and <span style="color:var(--col4)">col5</span> not read
+  </div>
+</div>
+
+<!-- Section 0: Top-level Read Flow -->
+<div class="section ani d4" style="max-width:1800px;margin-left:auto;margin-right:auto;">
+  <div class="section-head"><span class="section-num" style="background:var(--text-muted)">0</span> Top-Level Read Flow</div>
+  <div class="step">
+    <h3>SelectiveNimbleReader &rarr; SelectiveNimbleRowReader</h3>
+    <p style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.5rem">
+      <code>SelectiveNimbleReader</code> (file-level) creates a <code>SelectiveNimbleRowReader</code> which drives the entire read loop, iterating through stripes internally.
+    </p>
+
+    <div style="display:flex;gap:3rem;align-items:flex-start;position:relative;">
+
+      <!-- Left: Velox call stack -->
+      <div style="width:150px;flex-shrink:0;display:flex;flex-direction:column;gap:0;font-family:'JetBrains Mono',monospace;font-size:0.58rem;">
+        <div style="font-family:'Space Grotesk',sans-serif;font-size:0.65rem;font-weight:600;color:var(--text-muted);margin-bottom:0.4rem;text-align:center;letter-spacing:0.05em">VELOX</div>
+        <div style="border:1.5px solid var(--border);border-radius:8px;overflow:hidden;">
+          <div style="padding:0.4rem 0.5rem;background:var(--surface);text-align:center;color:var(--text-secondary)">TableScan</div>
+          <div style="padding:0.15rem 0.5rem;text-align:center;color:var(--accent);font-size:0.6rem">&darr; <span style="font-size:0.48rem;color:var(--text-muted)">getOutput()</span></div>
+          <div style="padding:0.4rem 0.5rem;background:var(--surface);text-align:center;color:var(--text-secondary)">HiveDataSource</div>
+          <div style="padding:0.15rem 0.5rem;text-align:center;color:var(--accent);font-size:0.6rem">&darr; <span style="font-size:0.48rem;color:var(--text-muted)">getOutput()</span></div>
+          <div id="velox-splitreader" style="padding:0.4rem 0.5rem;background:var(--surface);text-align:center;color:var(--layer-query);font-weight:600">FileSplitReader</div>
+          <div style="padding:0.15rem 0.5rem;text-align:center;color:var(--accent);font-size:0.6rem">&darr; <span style="font-size:0.48rem;color:var(--text-muted)">createReader()</span></div>
+          <div style="padding:0.3rem 0.5rem;background:var(--bg-alt);text-align:center;color:var(--text-muted);font-size:0.5rem">SelectiveNimbleReader</div>
+          <div style="padding:0.15rem 0.5rem;text-align:center;color:var(--accent);font-size:0.6rem">&darr; <span style="font-size:0.48rem;color:var(--text-muted)">createRowReader()</span></div>
+          <div style="padding:0.3rem 0.5rem;background:var(--bg-alt);text-align:center;color:var(--text-muted);font-size:0.5rem">SelectiveNimbleRowReader</div>
+          <div style="padding:0.15rem 0.5rem;text-align:center;color:var(--accent);font-size:0.6rem">&darr; <span style="font-size:0.48rem;color:var(--text-muted)">next()</span></div>
+          <div style="padding:0.4rem 0.5rem;background:var(--bg-alt);text-align:center;color:var(--layer-reader);font-weight:500;border-bottom:none">rowReader-&gt;next()</div>
+        </div>
+      </div>
+
+      <!-- Middle: Nimble flow chart -->
+      <div style="flex:1;display:flex;flex-direction:column;gap:0;align-items:center;min-width:0;">
+
+        <!-- File init -->
+        <div class="flow-node" id="reader-init-box" style="border-color:var(--border-strong);width:100%">
+          <h5>SelectiveNimbleReader()</h5>
+          <div class="fd">ReaderBase::create() &rarr; read footer, cluster index, footer column stats</div>
+        </div>
+        <div class="pipe-arrow"><div class="arr"></div></div>
+        <div class="flow-node" style="border-color:var(--border-strong);width:100%">
+          <h5>createRowReader()</h5>
+          <div class="fd">&rarr; new SelectiveNimbleRowReader</div>
+          <div class="fd" style="margin-top:0.15rem">initReadRange(): split byte range &rarr; which stripes to read [startStripe_, endStripe_)</div>
+        </div>
+        <div class="pipe-arrow"><div class="arr"></div></div>
+
+        <!-- Stripe loop -->
+        <div class="loop-box" style="width:100%;border-color:var(--border-strong)">
+          <div class="loop-label" style="color:var(--text-muted)">per stripe</div>
+          <div style="display:flex;flex-direction:column;gap:0;align-items:center;">
+            <div class="flow-node" style="border-color:var(--border-strong);width:100%">
+              <h5>nextRowNumber()</h5>
+            </div>
+            <div class="pipe-arrow"><div class="arr"></div></div>
+            <div class="flow-node" style="border-color:var(--border-strong);width:100%">
+              <h5>loadCurrentStripe()</h5>
+            </div>
+            <div class="pipe-arrow"><div class="arr"></div></div>
+            <div class="flow-node" id="stripe-meta-box" style="border-color:var(--border-strong);width:100%">
+              <div class="fd"><span style="color:var(--text-primary)">setStripe():</span> I/O 1: load StripeGroup metadata (chunkIndex, chunkStats)</div>
+              <div class="fd" style="margin-top:0.15rem"><span style="color:var(--text-primary)">computeSkipRowRanges():</span> chunkStats &rarr; testFilter() per chunk &rarr; merge into skipRowRanges_</div>
+            </div>
+            <div class="pipe-arrow"><div class="arr"></div></div>
+            <div class="flow-node" id="stripe-load-box" style="border-color:var(--border-strong);width:100%">
+              <div class="fd" id="build-col-reader-box"><span style="color:var(--text-primary)">buildColumnReader():</span> create column reader tree, enqueue projected streams</div>
+              <div class="fd" style="margin-top:0.15rem"><span style="color:var(--text-primary)">streams_.load():</span> I/O 2: read full streams for col1, col3, col4 from disk (decode selectively later)</div>
+            </div>
+            <div class="pipe-arrow"><div class="arr"></div></div>
+
+            <!-- Batch loop -->
+            <div class="loop-box" style="width:100%;border-color:var(--border-strong)">
+              <div class="loop-label" style="color:var(--text-muted)">per batch</div>
+              <div style="display:flex;flex-direction:column;gap:0;align-items:center;">
+                <div class="flow-node" style="border-color:var(--border-strong);width:100%">
+                  <h5>nextReadSize(batchSize)</h5>
+                </div>
+                <div class="pipe-arrow"><div class="arr"></div></div>
+
+                <div style="font-size:0.55rem;font-weight:600;color:var(--text-muted);font-family:'Space Grotesk',sans-serif;letter-spacing:0.05em;margin-bottom:0.2rem">STEP 1: APPLY ROW SKIPS &rarr; SelectiveStructColumnReader-&gt;seekTo(targetRow)</div>
+
+                <div style="display:flex;gap:0.3rem;width:100%;">
+                  <div style="flex:1;border:1.5px solid var(--col0);border-radius:8px;padding:0.3rem 0.4rem;background:var(--col0-bg);text-align:center;">
+                    <div style="font-size:0.55rem;font-weight:600;color:var(--col0)">col1(IntegerColumnReader).seekTo(targetRow)</div>
+                    <div style="font-size:0.48rem;color:var(--text-muted)"><span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.skip(targetRow - currentRow)</span></div>
+                  </div>
+                  <div style="flex:1;border:1.5px solid var(--col2);border-radius:8px;padding:0.3rem 0.4rem;background:var(--col2-bg);text-align:center;">
+                    <div style="font-size:0.55rem;font-weight:600;color:var(--col2)">col3(FloatingPointColumnReader).seekTo(targetRow)</div>
+                    <div style="font-size:0.48rem;color:var(--text-muted)"><span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.skip(targetRow - currentRow)</span></div>
+                  </div>
+                  <div style="flex:1;border:1.5px solid var(--col3);border-radius:8px;padding:0.3rem 0.4rem;background:var(--col3-bg);text-align:center;">
+                    <div style="font-size:0.55rem;font-weight:600;color:var(--col3)">col4(StringColumnReader).seekTo(targetRow)</div>
+                    <div style="font-size:0.48rem;color:var(--text-muted)"><span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.skip(targetRow - currentRow)</span></div>
+                  </div>
+                </div>
+                <div class="pipe-arrow"><div class="arr"></div></div>
+
+                <div style="font-size:0.55rem;font-weight:600;color:var(--text-muted);font-family:'Space Grotesk',sans-serif;letter-spacing:0.05em;margin-bottom:0.2rem">STEP 2: COMPUTE READ SIZE</div>
+
+                <div class="flow-node" style="border-color:var(--border-strong);width:100%">
+                  <div class="fd">return min(batch, stripeEnd, nextSkipStart)</div>
+                </div>
+                <div class="pipe-arrow"><div class="arr"></div></div>
+                <div class="flow-node" style="border-color:var(--border-strong);width:100%">
+                  <h5>SelectiveStructColumnReader.next(size, result)</h5>
+                  <div class="fd">for each child in selectivity order: child-&gt;read(offset, rows) &rarr; child-&gt;getValues() &rarr; pass survivors to next</div>
+                </div>
+                <div class="pipe-arrow"><div class="arr"></div></div>
+                <!-- Phase 1: all read() calls sequentially -->
+                <div style="font-size:0.55rem;font-weight:600;color:var(--text-muted);font-family:'Space Grotesk',sans-serif;letter-spacing:0.05em;margin-bottom:0.2rem">PHASE 1: READ (sequential, narrowing rows)</div>
+
+                <div class="flow-node" style="border-color:var(--col0);width:70%;background:var(--col0-bg)">
+                  <h5 style="font-size:0.6rem;color:var(--col0)">col1(IntegerColumnReader).read(0, [0..10K]) <span style="color:var(--pass);font-weight:400">10K &rarr; 1K</span></h5>
+                </div>
+                <div class="pipe-arrow"><div class="arr"></div></div>
+                <div class="flow-node" style="border-color:var(--col0);width:65%;border-style:dashed">
+                  <div class="fd"><span style="color:var(--text-primary)">visitor captures:</span> new DecoderVisitor(filter from ScanSpec: col1 &gt; 50, rows: [0..10K])</div>
+                  <div class="fd">&rarr; <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.readWithVisitor(visitor)</span></div>
+                  <div class="fd"><span style="color:var(--text-primary)">visitor populates:</span> outputRows_=[3,17,42,...] rawValues_=[51,99,73,...] numValues_=1K</div>
+                </div>
+                <div class="pipe-arrow"><div class="arr"></div></div>
+
+                <div class="flow-node" style="border-color:var(--col2);width:70%;background:var(--col2-bg)">
+                  <h5 style="font-size:0.6rem;color:var(--col2)">col3(FloatingPointColumnReader).read(0, [3,17,42,...]) <span style="color:var(--pass);font-weight:400">1K &rarr; 200</span></h5>
+                </div>
+                <div class="pipe-arrow"><div class="arr"></div></div>
+                <div class="flow-node" style="border-color:var(--col2);width:65%;border-style:dashed">
+                  <div class="fd"><span style="color:var(--text-primary)">visitor captures:</span> new DecoderVisitor(filter from ScanSpec: col3 &lt; 3.14, rows: [3,17,42,...])</div>
+                  <div class="fd">&rarr; <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.readWithVisitor(visitor)</span></div>
+                  <div class="fd"><span style="color:var(--text-primary)">visitor populates:</span> outputRows_=[17,42,...] rawValues_=[1.2,2.7,...] numValues_=200</div>
+                </div>
+                <div class="pipe-arrow"><div class="arr"></div></div>
+
+                <div class="flow-node" style="border-color:var(--col3);width:70%;background:var(--col3-bg)">
+                  <h5 style="font-size:0.6rem;color:var(--col3)">col4(StringColumnReader).read(0, [17,42,...]) <span style="color:var(--pass);font-weight:400">200 &rarr; 200</span></h5>
+                </div>
+                <div class="pipe-arrow"><div class="arr"></div></div>
+                <div class="flow-node" style="border-color:var(--col3);width:65%;border-style:dashed">
+                  <div class="fd"><span style="color:var(--text-primary)">visitor captures:</span> new DecoderVisitor(filter from ScanSpec: AlwaysTrue, rows: [17,42,...])</div>
+                  <div class="fd">&rarr; <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.readWithVisitor(visitor)</span></div>
+                  <div class="fd"><span style="color:var(--text-primary)">visitor populates:</span> outputRows_=[17,42,...] rawValues_=["foo","bar",...] numValues_=200</div>
+                </div>
+                <div class="pipe-arrow"><div class="arr"></div></div>
+
+                <!-- Phase 2: all getValues() with final survivors -->
+                <div style="font-size:0.55rem;font-weight:600;color:var(--text-muted);font-family:'Space Grotesk',sans-serif;letter-spacing:0.05em;margin-top:0.2rem;margin-bottom:0.2rem">PHASE 2: GET VALUES (final 200 survivors passed to all)</div>
+
+                <div style="display:flex;gap:0.3rem;width:100%;">
+                  <div style="flex:1;border:1.5px solid var(--col0);border-radius:8px;padding:0.3rem 0.4rem;background:var(--col0-bg);text-align:center;">
+                    <div style="font-size:0.52rem;font-weight:600;color:var(--col0)">col1.getValues([17,42,...])</div>
+                    <div style="font-size:0.45rem;color:var(--text-muted)">compactScalarValues():<br>scan 1K rawValues_, copy 200 matching</div>
+                  </div>
+                  <div style="flex:1;border:1.5px solid var(--col2);border-radius:8px;padding:0.3rem 0.4rem;background:var(--col2-bg);text-align:center;">
+                    <div style="font-size:0.52rem;font-weight:600;color:var(--col2)">col3.getValues([17,42,...])</div>
+                    <div style="font-size:0.45rem;color:var(--text-muted)">compactScalarValues():<br>scan 200 rawValues_, copy 200 matching</div>
+                  </div>
+                  <div style="flex:1;border:1.5px solid var(--col3);border-radius:8px;padding:0.3rem 0.4rem;background:var(--col3-bg);text-align:center;">
+                    <div style="font-size:0.52rem;font-weight:600;color:var(--col3)">col4.getValues([17,42,...])</div>
+                    <div style="font-size:0.45rem;color:var(--text-muted)">compactScalarValues():<br>scan 200 rawValues_, copy 200 matching</div>
+                  </div>
+                </div>
+                <div class="pipe-arrow"><div class="arr"></div></div>
+                <div class="flow-node" style="border-color:var(--border-strong);width:100%">
+                  <h5>assemble RowVector</h5>
+                </div>
+              </div>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem;">
+              <div style="flex:1"></div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:0.55rem;color:var(--accent);font-weight:500;white-space:nowrap">advanceToNextStripe() &uarr;</div>
+              <div style="width:24px;height:24px;display:flex;align-items:center;justify-content:center;">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" style="transform:rotate(-90deg)">
+                  <path d="M4 10 C8 10, 8 3, 12 3" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="3,2" fill="none"/>
+                  <path d="M10 1 L12 3 L10 5" stroke="var(--accent)" stroke-width="1.5" fill="none"/>
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: file structure reference -->
+      <div style="width:560px;flex-shrink:0;display:flex;flex-direction:column;gap:0;font-family:'JetBrains Mono',monospace;font-size:0.62rem;">
+        <div style="font-family:'Space Grotesk',sans-serif;font-size:0.68rem;font-weight:600;color:var(--text-muted);margin-bottom:0.4rem;text-align:center;letter-spacing:0.05em">FILE LAYOUT</div>
+        <div id="file-layout-box" style="border:1.5px solid var(--border);border-radius:8px;overflow:hidden;">
+          <!-- Stripe Group 0 -->
+          <div style="padding:0.4rem 0.6rem;background:var(--layer-data);color:#fff;font-weight:500;text-align:center;opacity:0.35">Stripe 0</div>
+          <div id="fl-stripe0" style="padding:0.15rem 0.4rem;background:var(--layer-data);border-left:3px solid var(--accent)">
+            <div style="font-weight:600;color:#fff;text-align:center;font-size:0.55rem;margin-bottom:0.15rem">Stripe 1</div>
+            <div style="display:flex;gap:1px;height:14px;border-radius:3px;overflow:hidden">
+              <div style="flex:1;background:var(--col0);display:flex;align-items:center;justify-content:center;font-size:0.42rem;color:#fff">col1</div>
+              <div style="flex:1;background:var(--col1);opacity:0.4;display:flex;align-items:center;justify-content:center;font-size:0.42rem;color:#fff">col2</div>
+              <div style="flex:1;background:var(--col2);display:flex;align-items:center;justify-content:center;font-size:0.42rem;color:#fff">col3</div>
+              <div style="flex:1;background:var(--col3);display:flex;align-items:center;justify-content:center;font-size:0.42rem;color:#fff">col4</div>
+              <div style="flex:1;background:var(--col4);opacity:0.4;display:flex;align-items:center;justify-content:center;font-size:0.42rem;color:#fff">col5</div>
+            </div>
+          </div>
+          <div id="fl-stripegrp" style="padding:0.2rem 0.4rem;background:var(--layer-decoder);color:#fff;text-align:center;font-size:0.45rem;line-height:1.4">
+            <div style="font-weight:600;font-size:0.5rem">StripeGroup 0</div>
+            stream offsets/sizes<br>ChunkIndex (rows, offsets, stats)<br>ClusterIndex
+          </div>
+
+          <!-- Stripe Group 1 -->
+          <div style="padding:0.4rem 0.6rem;background:var(--layer-data);color:#fff;font-weight:500;text-align:center;border-left:3px solid var(--accent)">Stripe 2</div>
+          <div style="padding:0.4rem 0.6rem;background:var(--layer-data);color:#fff;font-weight:500;text-align:center;opacity:0.35">Stripe 3</div>
+          <div style="padding:0.2rem 0.4rem;background:var(--layer-decoder);color:#fff;text-align:center;font-size:0.45rem;line-height:1.4;opacity:0.35">
+            <div style="font-weight:600;font-size:0.5rem">StripeGroup 1</div>
+            stream offsets/sizes<br>ChunkIndex<br>ClusterIndex
+          </div>
+
+          <!-- Global metadata -->
+          <div style="padding:0.2rem 0.4rem;background:var(--bg-alt);text-align:center;font-size:0.45rem;line-height:1.4;color:var(--text-muted);border-top:1px solid var(--border)">
+            <div style="font-weight:600;font-size:0.5rem;color:var(--text-secondary)">Global Metadata</div>
+            Stripes &middot; Schema<br>
+            root ChunkIndex<br>
+            root ClusterIndex<br>
+            vectorized stats
+          </div>
+          <div id="fl-footer" style="padding:0.35rem 0.6rem;background:var(--layer-reader);color:#fff;font-weight:500;text-align:center;font-size:0.55rem">Footer</div>
+          <div id="fl-postscript" style="padding:0.35rem 0.6rem;background:var(--layer-query);color:#fff;font-weight:500;text-align:center;font-size:0.55rem">Postscript + Magic</div>
+        </div>
+        <div style="margin-top:0.4rem;color:var(--text-muted);font-size:0.5rem;text-align:center;line-height:1.4">
+          Read from end:<br>Postscript &rarr; Footer<br>&rarr; Global Metadata &rarr; Stripes
+        </div>
+
+        <!-- Build Column Reader tree -->
+        <div style="margin-top:1rem;">
+          <div id="fl-build-col-reader" style="font-family:'Space Grotesk',sans-serif;font-size:0.68rem;font-weight:600;color:var(--text-muted);margin-bottom:0.4rem;text-align:center;letter-spacing:0.05em">BUILD COLUMN READER</div>
+          <div style="font-size:0.55rem;color:var(--text-muted);text-align:center;margin-bottom:0.3rem">col2, col5 skipped</div>
+          <div class="obj-tree">
+            <div class="obj-root" style="border-color:var(--layer-query)">
+              <h5>SelectiveNimbleRowReader</h5>
+            </div>
+            <div class="pipe-arrow"><div class="arr"></div></div>
+            <div class="obj-root" style="border-color:var(--layer-reader)">
+              <h5>SelectiveStructColumnReader</h5>
+              <div class="obj-type">top-level ROW type &mdash; orchestrates filter order</div>
+              <div class="obj-ptr">vector&lt;unique_ptr&lt;SelectiveColumnReader&gt;&gt; children_ (3 of 5 columns)</div>
+            </div>
+            <div class="obj-fork">
+              <div class="obj-fork-prongs">
+                <div class="obj-fork-prong"></div>
+                <div class="obj-fork-prong"></div>
+                <div class="obj-fork-prong"></div>
+              </div>
+            </div>
+            <div class="obj-children">
+              <!-- col1 -->
+              <div class="obj-child">
+                <div class="obj-child-box" style="border-color:var(--col0)">
+                  <h5><span class="dot" style="background:var(--col0)"></span> IntegerColumnReader</h5>
+                  <div class="obj-type">col1 int32</div>
+                  <div class="obj-ptr">scanSpec_.filter_: col1 &gt; 50</div>
+                  <div class="obj-ptr">ChunkedDecoder decoder_ <span style="color:var(--pass)">(value)</span></div>
+                </div>
+                <div class="obj-child-arr"></div>
+                <div class="obj-child-box" style="border-color:var(--col0);border-style:dashed">
+                  <h5>ChunkedDecoder</h5>
+                  <div class="obj-members">
+                    encoding_ &rarr; FixedBitWidth<br>
+                    unique_ptr&lt;SeekableInputStream&gt; input_<br>
+                    shared_ptr&lt;StreamIndex&gt; streamIndex_<br>
+                    rowPosition_ (uint32)<br>
+                    remainingValues_ (int64)<br>
+                    onChunkLoad_ (callback)
+                  </div>
+                </div>
+              </div>
+              <!-- col3 -->
+              <div class="obj-child">
+                <div class="obj-child-box" style="border-color:var(--col2)">
+                  <h5><span class="dot" style="background:var(--col2)"></span> FloatingPointColumnReader</h5>
+                  <div class="obj-type">col3 double</div>
+                  <div class="obj-ptr">scanSpec_.filter_: col3 &lt; 3.14</div>
+                  <div class="obj-ptr">ChunkedDecoder decoder_ <span style="color:var(--pass)">(value)</span></div>
+                </div>
+                <div class="obj-child-arr"></div>
+                <div class="obj-child-box" style="border-color:var(--col2);border-style:dashed">
+                  <h5>ChunkedDecoder</h5>
+                  <div class="obj-members">
+                    encoding_ &rarr; Trivial<br>
+                    unique_ptr&lt;SeekableInputStream&gt; input_<br>
+                    shared_ptr&lt;StreamIndex&gt; streamIndex_<br>
+                    rowPosition_ (uint32)<br>
+                    remainingValues_ (int64)<br>
+                    onChunkLoad_ (callback)
+                  </div>
+                </div>
+              </div>
+              <!-- col4 -->
+              <div class="obj-child">
+                <div class="obj-child-box" style="border-color:var(--col3)">
+                  <h5><span class="dot" style="background:var(--col3)"></span> StringColumnReader</h5>
+                  <div class="obj-type">col4 string</div>
+                  <div class="obj-ptr">scanSpec_.filter_: AlwaysTrue</div>
+                  <div class="obj-ptr">ChunkedDecoder decoder_ <span style="color:var(--pass)">(value)</span></div>
+                  <div class="obj-members">DictionaryState dictState_</div>
+                </div>
+                <div class="obj-child-arr"></div>
+                <div class="obj-child-box" style="border-color:var(--col3);border-style:dashed">
+                  <h5>ChunkedDecoder</h5>
+                  <div class="obj-members">
+                    encoding_ &rarr; Dictionary<br>
+                    unique_ptr&lt;SeekableInputStream&gt; input_<br>
+                    shared_ptr&lt;StreamIndex&gt; streamIndex_<br>
+                    rowPosition_ (uint32)<br>
+                    remainingValues_ (int64)<br>
+                    onChunkLoad_ &rarr; invalidates dictState_
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- SVG connector overlay -->
+    <svg id="connectorSvg" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:visible;z-index:2;"></svg>
+
+    <div class="fp">SelectiveNimbleReader.cpp &middot; SelectiveNimbleRowReader (anonymous namespace)</div>
+  </div>
+</div>
+
+<script>
+function drawConnectors() {
+  var svg = document.getElementById('connectorSvg');
+  if (!svg) return;
+  var step = svg.closest('.step');
+  if (!step) return;
+  var stepRect = step.getBoundingClientRect();
+  svg.innerHTML = '';
+
+  var pairs = [
+    ['reader-init-box', 'fl-footer', 'right'],
+    ['stripe-meta-box', 'fl-stripegrp', 'right'],
+    ['stripe-load-box', 'fl-stripe0', 'right']
+  ];
+  var colors = ['var(--layer-query)', 'var(--layer-decoder)', 'var(--layer-data)'];
+
+  for (var i = 0; i < pairs.length; i++) {
+    var src = document.getElementById(pairs[i][0]);
+    var dst = document.getElementById(pairs[i][1]);
+    if (!src || !dst) continue;
+    var sr = src.getBoundingClientRect();
+    var dr = dst.getBoundingClientRect();
+    var x1 = sr.right - stepRect.left;
+    var y1 = sr.top + sr.height / 2 - stepRect.top;
+    var x2 = dr.left - stepRect.left;
+    var y2 = dr.top + dr.height / 2 - stepRect.top;
+    var midX = x1 + 20 + i * 15;
+    var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', 'M' + x1 + ',' + y1 + ' L' + midX + ',' + y1 + ' L' + midX + ',' + y2 + ' L' + x2 + ',' + y2);
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', colors[i]);
+    path.setAttribute('stroke-width', '2');
+    path.setAttribute('stroke-dasharray', '6,4');
+    path.setAttribute('opacity', '0.6');
+    svg.appendChild(path);
+
+    var dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    dot.setAttribute('cx', x2);
+    dot.setAttribute('cy', y2);
+    dot.setAttribute('r', '4');
+    dot.setAttribute('fill', colors[i]);
+    dot.setAttribute('opacity', '0.8');
+    svg.appendChild(dot);
+  }
+}
+window.addEventListener('load', function() { setTimeout(drawConnectors, 600); });
+window.addEventListener('resize', drawConnectors);
+</script>
+
+<!-- Section 1a: ChunkedDecoder API — Selective vs Batch -->
+<div class="section ani d7">
+  <div class="section-head"><span class="section-num" style="background:var(--layer-decoder)">1</span> ChunkedDecoder &mdash; Two Read Paths</div>
+  <div class="step">
+    <h3>ChunkedDecoder exposes multiple APIs — which path depends on the reader</h3>
+
+    <div style="display:flex;gap:1rem;margin-top:0.5rem;">
+
+      <!-- Selective Reader path -->
+      <div style="flex:1;border:1.5px solid var(--pass);border-radius:8px;padding:0.6rem 0.7rem;background:color-mix(in srgb, var(--pass) 5%, var(--surface));">
+        <h4 style="font-family:'Space Grotesk',sans-serif;font-size:0.75rem;color:var(--pass);margin-bottom:0.3rem">Selective Reader (production)</h4>
+        <div style="font-size:0.6rem;color:var(--text-secondary);line-height:1.5">
+          <code>SelectiveNimbleReader</code> &rarr; <code>SelectiveColumnReader</code><br><br>
+          <strong>APIs used:</strong><br>
+          &bull; <code>readWithVisitor(visitor)</code> &mdash; always, even without filter<br>
+          &bull; <code>skip(n)</code> &mdash; for seekTo<br><br>
+          <strong>Without filter:</strong> visitor is <code>AlwaysTrue</code> &mdash; every row passes<br>
+          <strong>With filter:</strong> visitor applies predicate inline during decode<br><br>
+          <span style="color:var(--pass)">Uses bulkScan with SIMD optimizations</span>
+        </div>
+      </div>
+
+      <!-- Batch Reader path -->
+      <div style="flex:1;border:1.5px solid var(--text-muted);border-radius:8px;padding:0.6rem 0.7rem;">
+        <h4 style="font-family:'Space Grotesk',sans-serif;font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.3rem">Batch Reader (non-selective)</h4>
+        <div style="font-size:0.6rem;color:var(--text-secondary);line-height:1.5">
+          <code>VeloxReader</code> &rarr; <code>FieldReader</code> &rarr; <code>Decoder</code><br><br>
+          <strong>APIs used:</strong><br>
+          &bull; <code>materialize(n, buffer)</code> &mdash; decode N values into buffer<br>
+          &bull; <code>skip(n)</code> &mdash; advance without decoding<br><br>
+          <strong>No filter support:</strong> reads all rows, filters applied post-decode<br><br>
+          <span style="color:var(--text-muted)">Different code path &mdash; no visitor, no bulkScan</span>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="callout" style="margin-top:0.5rem">
+      <span style="flex-shrink:0">&#9888;</span>
+      <div>These are <strong>different read paths with different performance characteristics</strong>. The selective path's <code>readWithVisitor</code> uses SIMD-accelerated <code>bulkScan</code> that the batch path's <code>materialize()</code> does not. Benchmarks using the batch reader may not reflect production selective reader performance.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Section 2b: ChunkedDecoder Internals -->
+<div class="section ani d7">
+  <div class="section-head"><span class="section-num" style="background:var(--layer-decoder)">2</span> ChunkedDecoder &mdash; Internal Architecture</div>
+  <div class="step">
+
+    <div style="border:1.5px solid var(--border);border-radius:10px;padding:0.7rem 0.8rem;background:var(--bg-alt);margin-bottom:0.8rem;">
+      <h3 style="margin-bottom:0.4rem">Key Internal State</h3>
+      <div class="state-row">
+        <div class="state-chip"><span class="sl">encoding_ </span><span class="sv">Encoding*</span></div>
+        <div class="state-chip"><span class="sl">rowPosition_ </span><span class="sv">uint32</span></div>
+        <div class="state-chip"><span class="sl">remainingValues_ </span><span class="sv">int64</span></div>
+        <div class="state-chip"><span class="sl">streamIndex_ </span><span class="sv">StreamIndex?</span></div>
+        <div class="state-chip"><span class="sl">inputBuffer_ </span><span class="sv">Buffer</span></div>
+        <div class="state-chip"><span class="sl">onChunkLoad_ </span><span class="sv">callback</span></div>
+      </div>
+      <div class="callout" style="margin-top:0.5rem">
+        <span style="flex-shrink:0">&#128260;</span>
+        <div><strong>onChunkLoad_ callback</strong> is critical for strings: <code>StringColumnReader</code> caches the dictionary alphabet per chunk. When the chunk changes, the callback invalidates the cache so the next read builds a fresh <code>DictionaryVector</code>.</div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:0;margin-top:0.3rem;">
+
+      <!-- Left: decoder_.skip(n) -->
+      <div style="flex:1;padding-right:1rem;">
+        <h3 style="color:var(--layer-decoder)">1. decoder_.skip(n)</h3>
+        <p style="font-size:0.7rem;color:var(--text-secondary);margin-bottom:0.4rem">Advances position without decoding values.</p>
+
+        <div style="display:flex;gap:0;margin-top:0.3rem;">
+          <!-- With StreamIndex -->
+          <div style="flex:1;padding-right:0.5rem;">
+            <div style="font-size:0.6rem;font-weight:600;color:var(--pass);font-family:'Space Grotesk',sans-serif;margin-bottom:0.3rem">WITH StreamIndex &mdash; O(1)</div>
+            <div class="pipeline">
+              <div class="pipe-step" style="grid-template-columns:1fr">
+                <div class="pipe-body" style="border-color:var(--pass)">
+                  <strong>&circledcirc; lookupChunk(targetRow)</strong>
+                  <span style="font-size:0.6rem;color:var(--text-muted)"><br>&rarr; {chunkOffset, rowOffset}</span>
+                </div>
+              </div>
+              <div class="pipe-arrow"><div class="arr"></div></div>
+              <div class="pipe-step" style="grid-template-columns:1fr">
+                <div class="pipe-body" style="border-color:var(--pass)">
+                  <strong>&circledcirc; seekToChunk(offset)</strong>
+                  <span style="font-size:0.6rem;color:var(--text-muted)"><br>&rarr; jump + <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.loadNextChunk()</span></span>
+                </div>
+              </div>
+              <div class="pipe-arrow"><div class="arr"></div></div>
+              <div class="pipe-step" style="grid-template-columns:1fr">
+                <div class="pipe-body" style="border-color:var(--layer-encoding)">
+                  <strong>&circledcirc; <span style="background:color-mix(in srgb, #e65100 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:#e65100;font-weight:600">encoding_-&gt;skip(rowOffset)</span></strong>
+                </div>
+              </div>
+              <div class="pipe-arrow"><div class="arr"></div></div>
+              <div class="pipe-step" style="grid-template-columns:1fr">
+                <div class="pipe-body" style="border-color:var(--layer-reader)">
+                  <strong>&circledcirc; decoder_.advancePosition(n)</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style="width:1px;background:var(--border);flex-shrink:0;"></div>
+
+          <!-- Without StreamIndex -->
+          <div style="flex:1;padding-left:0.5rem;">
+            <div style="font-size:0.6rem;font-weight:600;color:var(--text-muted);font-family:'Space Grotesk',sans-serif;margin-bottom:0.3rem">WITHOUT StreamIndex &mdash; O(chunks)</div>
+            <div class="loop-box" style="margin-bottom:0.3rem">
+              <div class="loop-label">while n &gt; 0</div>
+              <div class="pipeline" style="margin-top:0.3rem;">
+                <div class="pipe-step" style="grid-template-columns:1fr">
+                  <div class="pipe-body" style="border-color:var(--layer-decoder)">
+                    <strong>&circledcirc; remainingValues_ == 0?</strong>
+                    <span style="font-size:0.6rem;color:var(--text-muted)"><br>yes &rarr; <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.loadNextChunk()</span></span>
+                  </div>
+                </div>
+                <div class="pipe-arrow"><div class="arr"></div></div>
+                <div class="pipe-step" style="grid-template-columns:1fr">
+                  <div class="pipe-body" style="border-color:var(--layer-decoder)">
+                    <strong>&circledcirc; n &lt; remainingValues_?</strong>
+                    <span style="font-size:0.6rem;color:var(--text-muted)"><br>yes &rarr; <span style="background:color-mix(in srgb, #e65100 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:#e65100;font-weight:500">encoding_-&gt;skip(n)</span> &rarr; done<br>no &rarr; n -= remainingValues_ &rarr; loop</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="pipeline">
+              <div class="pipe-step" style="grid-template-columns:1fr">
+                <div class="pipe-body" style="border-color:var(--layer-reader)">
+                  <strong>&circledcirc; decoder_.advancePosition(n)</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Divider -->
+      <div style="width:2px;background:var(--border-strong);flex-shrink:0;"></div>
+
+      <!-- Right: decoder_.readWithVisitor(visitor) -->
+      <div style="flex:1;padding-left:1rem;">
+        <h3 style="color:var(--layer-decoder)">2. decoder_.readWithVisitor(visitor)</h3>
+        <p style="font-size:0.7rem;color:var(--text-secondary);margin-bottom:0.4rem">Decodes values, applies filter via visitor. Loads chunks transparently.</p>
+
+        <div class="loop-box">
+          <div class="loop-label">while rows remaining</div>
+          <div class="pipeline" style="margin-top:0.3rem;">
+            <div class="pipe-step" style="grid-template-columns:1fr">
+              <div class="pipe-body" style="border-color:var(--layer-decoder)">
+                <strong>&circledcirc; remainingValues_ == 0?</strong>
+                <span style="font-size:0.6rem;color:var(--text-muted)"><br>yes &rarr; <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.loadNextChunk()</span></span>
+              </div>
+            </div>
+            <div class="pipe-arrow"><div class="arr"></div></div>
+            <div class="pipe-step" style="grid-template-columns:1fr">
+              <div class="pipe-body" style="border-color:var(--layer-decoder)">
+                <strong>&circledcirc; computeNextRowIndex</strong>
+                <span style="font-size:0.6rem;color:var(--text-muted)"><br>how many rows can current chunk serve?</span>
+              </div>
+            </div>
+            <div class="pipe-arrow"><div class="arr"></div></div>
+            <div class="pipe-step" style="grid-template-columns:1fr">
+              <div class="pipe-body" style="border-color:var(--layer-encoding)">
+                <strong>&circledcirc; <span style="background:color-mix(in srgb, #e65100 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:#e65100;font-weight:600">encoding_-&gt;readWithVisitor(visitor)</span></strong>
+                <span style="font-size:0.6rem;color:var(--text-muted)"><br>&rarr; visitor.process(value) per value<br>&rarr; writes outputRows_ / rawValues_</span>
+              </div>
+            </div>
+            <div class="pipe-arrow"><div class="arr"></div></div>
+            <div class="pipe-step" style="grid-template-columns:1fr">
+              <div class="pipe-body" style="border-color:var(--layer-reader)">
+                <strong>&circledcirc; decoder_.advancePosition</strong>
+                <span style="font-size:0.6rem;color:var(--text-muted)"><br>update rowPosition_ &amp; remainingValues_</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- decoder_.loadNextChunk() bracket -->
+    <div style="margin-top:0.6rem;border:2.5px solid var(--layer-decoder);border-radius:10px;padding:0.7rem 0.8rem;background:color-mix(in srgb, var(--layer-decoder) 4%, var(--surface));box-shadow:0 2px 8px rgba(8,145,178,0.1);">
+      <h3 style="margin-bottom:0.3rem;color:var(--layer-decoder)">Internal: decoder_.loadNextChunk()</h3>
+      <p style="font-size:0.7rem;color:var(--text-secondary);margin-top:0.3rem;margin-bottom:0.3rem"><strong>Chunk byte layout</strong><br>example: nullable int32 (without chunking: entire stream = a single chunk):</p>
+
+      <div style="font-family:'JetBrains Mono',monospace;font-size:0.52rem;">
+        <!-- Chunk Header -->
+        <div style="display:inline-flex;gap:0.3rem;padding:0.25rem 0.4rem;border:1.5px solid var(--text-muted);border-radius:6px;background:var(--bg-alt);margin-bottom:0.3rem;">
+          <span style="font-weight:700">Chunk Header:</span>
+          <span>4B <span style="color:var(--text-muted)">(content length)</span></span>
+          <span>| 1B <span style="color:var(--text-muted)">(Uncompressed)</span></span>
+        </div>
+
+        <!-- NullableEncoding green box -->
+        <div style="border:2px solid var(--pass);border-radius:8px;padding:0.5rem;background:color-mix(in srgb, var(--pass) 4%, var(--surface));">
+          <!-- Prefix blue box -->
+          <div style="display:inline-flex;gap:0.3rem;padding:0.2rem 0.4rem;border:1.5px solid var(--col0);border-radius:5px;background:color-mix(in srgb, var(--col0) 8%, var(--surface));margin-bottom:0.4rem;">
+            <span style="font-weight:700;color:var(--col0)">Prefix:</span>
+            <span>1B=5 <span style="color:var(--text-muted)">(Nullable)</span></span>
+            <span>| 1B Int32 <span style="color:var(--text-muted)">(DataType)</span></span>
+            <span>| rows <span style="color:var(--text-muted)">(rowCount, e.g. 10K total rows in chunk)</span></span>
+          </div>
+
+          <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+            <!-- nulls: SparseBool green box -->
+            <div style="flex:1;min-width:250px;border:2px solid var(--pass);border-radius:8px;padding:0.4rem;background:color-mix(in srgb, var(--pass) 4%, var(--surface));">
+              <div style="font-weight:700;color:var(--accent);margin-bottom:0.2rem">nulls (SparseBool)</div>
+              <!-- SparseBool prefix blue box -->
+              <div style="display:inline-flex;gap:0.3rem;padding:0.15rem 0.35rem;border:1.5px solid var(--col0);border-radius:5px;background:color-mix(in srgb, var(--col0) 8%, var(--surface));margin-bottom:0.3rem;">
+                <span style="font-weight:700;color:var(--col0)">Prefix:</span>
+                <span>1B=6 <span style="color:var(--text-muted)">(SparseBool)</span></span>
+                <span>| 1B Bool <span style="color:var(--text-muted)">(DataType)</span></span>
+                <span>| rows <span style="color:var(--text-muted)">(rowCount, e.g. 10K same as parent)</span></span>
+              </div>
+              <div style="color:var(--text-secondary)">1B sparseVal</div>
+              <!-- nested indices: Trivial encoding -->
+              <div style="border:2px solid var(--pass);border-radius:6px;padding:0.3rem;margin-top:0.2rem;background:color-mix(in srgb, var(--pass) 4%, var(--surface));">
+                <div style="display:inline-flex;gap:0.3rem;padding:0.15rem 0.35rem;border:1.5px solid var(--col0);border-radius:5px;background:color-mix(in srgb, var(--col0) 8%, var(--surface));margin-bottom:0.2rem;">
+                  <span style="font-weight:700;color:var(--col0)">Prefix:</span>
+                  <span>1B=0 <span style="color:var(--text-muted)">(Trivial)</span></span>
+                  <span>| 1B UInt32 <span style="color:var(--text-muted)">(DataType)</span></span>
+                  <span>| rows <span style="color:var(--text-muted)">(rowCount, e.g. 50 null positions)</span></span>
+                </div>
+                <div style="color:var(--text-secondary)">1B <span style="color:var(--text-muted)">(Compressed)</span> | <span style="background:color-mix(in srgb, var(--kill) 15%, transparent);padding:0.05rem 0.2rem;border-radius:2px">values <span style="color:var(--text-muted)">(compressed)</span></span></div>
+              </div>
+            </div>
+
+            <!-- data: FixedBitWidth green box -->
+            <div style="flex:1;min-width:250px;border:2px solid var(--pass);border-radius:8px;padding:0.4rem;background:color-mix(in srgb, var(--pass) 4%, var(--surface));">
+              <div style="font-weight:700;color:var(--col0);margin-bottom:0.2rem">data (FixedBitWidth)</div>
+              <!-- FBW prefix blue box -->
+              <div style="display:inline-flex;gap:0.3rem;padding:0.15rem 0.35rem;border:1.5px solid var(--col0);border-radius:5px;background:color-mix(in srgb, var(--col0) 8%, var(--surface));margin-bottom:0.3rem;">
+                <span style="font-weight:700;color:var(--col0)">Prefix:</span>
+                <span>1B=3 <span style="color:var(--text-muted)">(FixedBitWidth)</span></span>
+                <span>| 1B Int32 <span style="color:var(--text-muted)">(DataType)</span></span>
+                <span>| rows <span style="color:var(--text-muted)">(rowCount, e.g. 9950 non-null values)</span></span>
+              </div>
+              <div style="color:var(--text-secondary)">1B <span style="color:var(--text-muted)">(Compressed)</span> | 4B baseline | 1B bitWidth | <span style="background:color-mix(in srgb, var(--kill) 15%, transparent);padding:0.05rem 0.2rem;border-radius:2px">packed bits <span style="color:var(--text-muted)">(compressed)</span></span></div>
+            </div>
+          </div>
+        </div>
+
+        <div style="font-size:0.48rem;color:var(--text-muted);margin-top:0.3rem">
+          <span style="display:inline-block;width:12px;height:12px;border:2px solid var(--pass);border-radius:3px;vertical-align:middle;margin-right:0.2rem"></span> encoding blob &nbsp;
+          <span style="display:inline-block;width:12px;height:12px;border:1.5px solid var(--col0);border-radius:3px;background:color-mix(in srgb, var(--col0) 8%, var(--surface));vertical-align:middle;margin-right:0.2rem"></span> standard prefix (always readable) &nbsp;
+          <span style="display:inline-block;width:12px;height:12px;background:color-mix(in srgb, var(--kill) 15%, transparent);border-radius:3px;vertical-align:middle;margin-right:0.2rem"></span> compressed data
+        </div>
+      </div>
+
+      <p style="font-size:0.7rem;color:var(--text-secondary);margin-top:0.5rem;margin-bottom:0.3rem"><strong>Call steps:</strong></p>
+      <div class="flow-h">
+        <div class="flow-node" style="border-color:var(--layer-data)">
+          <h5>ensureInput(5B)</h5>
+          <div class="fd">chunk header bytes</div>
+        </div>
+        <div class="flow-arr">&rarr;</div>
+        <div class="flow-node" style="border-color:var(--layer-decoder)">
+          <h5>readChunkHeader()</h5>
+          <div class="fd">4B length + 1B <span style="color:var(--text-muted)">(Compressed)</span>Type</div>
+        </div>
+        <div class="flow-arr">&rarr;</div>
+        <div class="flow-node" style="border-color:var(--layer-data)">
+          <h5>ensureInput(length)</h5>
+          <div class="fd">all chunk content bytes</div>
+        </div>
+        <div class="flow-arr">&rarr;</div>
+        <div class="flow-node" style="border-color:var(--layer-encoding)">
+          <h5>encoding_ = <span style="color:#e65100">EncodingFactory::create()</span></h5>
+          <div class="fd">parse prefix, build encoding tree, decompress all leaf data eagerly <span style="color:#e65100;font-weight:500">&darr; Section 3</span></div>
+        </div>
+        <div class="flow-arr">&rarr;</div>
+        <div class="flow-node" style="border-color:var(--pass)">
+          <h5>encoding_ = root Encoding</h5>
+          <div class="fd">remainingValues_ = root rowCount<br>(e.g. NullableEncoding's rows)</div>
+        </div>
+      </div>
+
+      <div style="margin-top:0.4rem;font-size:0.52rem;font-family:'JetBrains Mono',monospace;color:var(--text-secondary);">
+        <span style="font-weight:600;color:var(--layer-decoder)">State updated:</span>
+        <span style="color:var(--pass)">encoding_</span> &larr; new Encoding tree &nbsp;&middot;&nbsp;
+        <span style="color:var(--pass)">remainingValues_</span> &larr; rowCount() &nbsp;&middot;&nbsp;
+        <span style="color:var(--text-muted)">onChunkLoad_</span> invoked &nbsp;&middot;&nbsp;
+        <span style="color:var(--text-muted)">inputData_/inputSize_</span> advanced
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Section 3: encoding_ internals -->
+<div class="section ani d8">
+  <div class="section-head"><span class="section-num" style="background:var(--layer-encoding)">3</span> Internal: encoding_ &mdash; Encoding Object</div>
+  <div class="step">
+    <p style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.5rem">
+      <code>encoding_</code> is a <code>unique_ptr&lt;Encoding&gt;</code> on ChunkedDecoder. Virtual dispatch to concrete type. The encoding never sees the filter &mdash; it just decodes values and calls <code>visitor.process(value)</code>.
+    </p>
+
+    <!-- EncodingFactory::create() bracket -->
+    <div style="margin-bottom:0.6rem;border:2.5px solid #e65100;border-radius:10px;padding:0.7rem 0.8rem;background:color-mix(in srgb, #e65100 4%, var(--surface));box-shadow:0 2px 8px rgba(230,81,0,0.1);">
+      <h3 style="margin-bottom:0.3rem;color:#e65100">EncodingFactory::create()</h3>
+      <p style="font-size:0.7rem;color:var(--text-secondary);margin-bottom:0.3rem">Recursive descent parser. Reads prefix, switches on EncodingType, recursively builds tree. Leaf encodings decompress eagerly in their constructors. Example: nullable int32 column.</p>
+
+      <div class="obj-tree" style="margin-top:0.4rem;">
+        <!-- Root: create() call -->
+        <div class="obj-root" style="border-color:#e65100;padding:0.3rem 0.6rem;">
+          <h5 style="color:#e65100">EncodingFactory::create(chunkData)</h5>
+        </div>
+        <div class="pipe-arrow"><div class="arr"></div></div>
+
+        <!-- NullableEncoding -->
+        <div class="obj-root" style="border-color:#e65100;padding:0.3rem 0.6rem;">
+          <h5 style="color:#e65100">NullableEncoding&lt;int32&gt;</h5>
+          <div class="obj-type"><span style="color:var(--col0)">1. read prefix:</span> 1B=5 | 1B Int32 | 10K rows</div>
+          <div class="obj-type"><span style="color:var(--text-muted)">2. data:</span> recursive create() for nulls + values below</div>
+        </div>
+
+        <div class="obj-fork">
+          <div class="obj-fork-prongs">
+            <div class="obj-fork-prong"></div>
+            <div class="obj-fork-prong"></div>
+          </div>
+        </div>
+
+        <div class="obj-children" style="grid-template-columns:1fr 1fr;">
+          <!-- nulls branch -->
+          <div class="obj-child">
+            <div class="obj-child-box" style="border-color:var(--accent);padding:0.3rem 0.5rem;">
+              <h5 style="color:var(--accent)">create() &rarr; SparseBoolEncoding</h5>
+              <div class="obj-type"><span style="color:var(--col0)">1. read prefix:</span> 1B=6 | 1B Bool | 10K rows</div>
+              <div class="obj-type"><span style="color:var(--accent)">2. read metadata:</span> sparseVal = false</div>
+              <div class="obj-type"><span style="color:var(--text-muted)">3. data:</span> recursive create() below</div>
+            </div>
+            <div class="obj-child-arr"></div>
+            <div class="obj-child-box" style="border-color:var(--accent);border-style:dashed;padding:0.3rem 0.5rem;">
+              <h5 style="color:var(--accent)">create() &rarr; TrivialEncoding&lt;uint32&gt;</h5>
+              <div class="obj-type"><span style="color:var(--col0)">1. read prefix:</span> 1B=0 | 1B UInt32 | 50 rows</div>
+              <div class="obj-type"><span style="color:var(--accent)">2. read metadata:</span> compr</div>
+              <div class="obj-type"><span style="color:var(--kill)">3. data:</span> decompress eagerly in constructor</div>
+              <div class="obj-members" style="color:var(--pass)">leaf &mdash; no more recursion</div>
+            </div>
+          </div>
+
+          <!-- values branch -->
+          <div class="obj-child">
+            <div class="obj-child-box" style="border-color:var(--col0);padding:0.3rem 0.5rem;">
+              <h5 style="color:var(--col0)">create() &rarr; FixedBitWidthEncoding&lt;int32&gt;</h5>
+              <div class="obj-type"><span style="color:var(--col0)">1. read prefix:</span> 1B=3 | 1B Int32 | 9950 rows</div>
+              <div class="obj-type"><span style="color:var(--accent)">2. read metadata:</span> compr | baseline | bitWidth</div>
+              <div class="obj-type"><span style="color:var(--kill)">3. data:</span> decompress eagerly in constructor</div>
+              <div class="obj-members" style="color:var(--pass)">leaf &mdash; no more recursion</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+
+    <!-- encoding_->skip(n) bracket -->
+    <div style="margin-top:0.8rem;border:2.5px solid #e65100;border-radius:10px;padding:0.7rem 0.8rem;background:color-mix(in srgb, #e65100 4%, var(--surface));box-shadow:0 2px 8px rgba(230,81,0,0.1);">
+      <h3 style="margin-bottom:0.3rem;color:#e65100">encoding_-&gt;skip(n)</h3>
+      <p style="font-size:0.7rem;color:var(--text-secondary);margin-bottom:0.3rem">Advances position without decoding values. Cost and decompression behavior depends on encoding type.</p>
+      <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+        <div style="border:1.5px solid var(--pass);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
+          <div style="font-size:0.62rem;font-weight:600;color:var(--pass)">FixedBitWidth / Trivial</div>
+          <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
+            O(1) &mdash; <code>position_ += n</code>
+          </div>
+        </div>
+        <div style="border:1.5px solid var(--accent);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
+          <div style="font-size:0.62rem;font-weight:600;color:var(--accent)">ChunkedBitPacking</div>
+          <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
+            O(blocks) &mdash; walk headers
+          </div>
+        </div>
+        <div style="border:1.5px solid var(--accent);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
+          <div style="font-size:0.62rem;font-weight:600;color:var(--accent)">Varint</div>
+          <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
+            O(values) &mdash; scan byte boundaries<br>
+            <span style="color:var(--text-muted)">data already decompressed</span>
+          </div>
+        </div>
+        <div style="border:1.5px solid var(--kill);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
+          <div style="font-size:0.62rem;font-weight:600;color:var(--kill)">Delta</div>
+          <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
+            O(values) &mdash; decode + accumulate<br>
+            <span style="color:var(--text-muted)">data already decompressed</span>
+          </div>
+        </div>
+        <div style="border:1.5px solid var(--layer-decoder);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
+          <div style="font-size:0.62rem;font-weight:600;color:var(--layer-decoder)">Dictionary</div>
+          <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
+            skip index encoding<br>
+            <span style="color:var(--text-muted)">depends on index type</span>
+          </div>
+        </div>
+        <div style="border:1.5px solid var(--layer-reader);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
+          <div style="font-size:0.62rem;font-weight:600;color:var(--layer-reader)">Nullable</div>
+          <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
+            skip nulls + skip inner<br>
+            <span style="color:var(--text-muted)">depends on inner types</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Section 4: encoding_->readWithVisitor -->
+<div class="section ani d8">
+  <div class="section-head"><span class="section-num" style="background:#e65100">4</span> Internal: encoding_ &mdash; readWithVisitor</div>
+  <div class="step">
+
+    <!-- 1. Visitor creation -->
+    <h3 style="margin-bottom:0.3rem;color:#e65100">1. Visitor creation</h3>
+    <div style="border:1.5px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem;margin-bottom:0.6rem;background:var(--surface);">
+      <div style="font-size:0.62rem;font-weight:600;color:var(--text-primary);margin-bottom:0.2rem">Visitor construction (in ColumnReader::read())</div>
+      <div style="font-size:0.52rem;color:var(--text-secondary);line-height:1.6;font-family:'JetBrains Mono',monospace;">
+        visitor = ColumnVisitor&lt;T, Filter, ExtractToReader, isDense&gt; <span style="color:var(--text-muted)">// compile-time template</span><br>
+        &nbsp;&nbsp;.filter_ = scanSpec filter <span style="color:var(--text-muted)">// e.g. col1 &gt; 50</span><br>
+        &nbsp;&nbsp;.rows_ = row indices <span style="color:var(--text-muted)">// [0..N] dense or [3,17,42,...] sparse</span><br>
+        &nbsp;&nbsp;.outputRows_, rawValues_ <span style="color:var(--text-muted)">// references to column reader's buffers</span><br>
+        decoder_.readWithVisitor(visitor) <span style="color:var(--text-muted)">// pass to ChunkedDecoder &rarr; encoding</span>
+      </div>
+    </div>
+
+    <!-- 2. Dense vs Sparse -->
+    <h3 style="margin-bottom:0.3rem;color:#e65100">2. Dense vs Sparse</h3>
+    <div style="display:flex;gap:0.4rem;margin-bottom:0.6rem;">
+      <div style="flex:1;border:1.5px solid var(--pass);border-radius:8px;padding:0.35rem 0.5rem;background:color-mix(in srgb, var(--pass) 5%, var(--surface));">
+        <div style="font-size:0.62rem;font-weight:600;color:var(--pass)">Dense <span style="font-weight:400;color:var(--text-muted)">(isDense = true)</span></div>
+        <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
+          rows = [N, N+1, N+2, ..., M] &mdash; full batch scan, no gaps <span style="color:var(--text-muted)">check: rows.back() == rows.size() - 1 (0-based within batch)</span><br>
+          first filter column always dense (rows from iota())
+        </div>
+      </div>
+      <div style="flex:1;border:1.5px solid var(--accent);border-radius:8px;padding:0.35rem 0.5rem;background:var(--accent-glow);">
+        <div style="font-size:0.62rem;font-weight:600;color:var(--accent)">Sparse <span style="font-weight:400;color:var(--text-muted)">(isDense = false)</span></div>
+        <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
+          rows = [3, 17, 42, ...] &mdash; gaps between survivors<br>
+          subsequent filter columns get sparse from previous filter
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. Encoding ↔ Visitor interaction -->
+    <h3 style="margin-bottom:0.3rem;color:#e65100">3. encoding_-&gt;readWithVisitor(visitor)</h3>
+    <div style="margin-top:0.3rem;margin-bottom:0.3rem;">
+      <div style="font-size:0.65rem;font-weight:600;color:var(--text-muted);font-family:'Space Grotesk',sans-serif;letter-spacing:0.05em;margin-bottom:0.3rem">ENCODING &harr; VISITOR INTERACTION</div>
+      <div style="display:flex;gap:0.5rem;align-items:center;">
+        <div style="flex:1;border:1.5px solid #e65100;border-radius:8px;padding:0.4rem 0.6rem;background:color-mix(in srgb, #e65100 4%, var(--surface));text-align:center;">
+          <div style="font-size:0.62rem;font-weight:600;color:#e65100;margin-bottom:0.2rem">Encoding (decode)</div>
+          <div style="font-size:0.5rem;color:var(--text-secondary);line-height:1.5;font-family:'JetBrains Mono',monospace;">
+            dense: sequential decode<br>
+            sparse: random access or skip+read<br>
+            &darr; produces value
+          </div>
+        </div>
+        <div style="font-size:0.8rem;color:#e65100;font-weight:600">
+          value<br>&rarr;
+        </div>
+        <div style="flex:1;border:1.5px solid var(--border-strong);border-radius:8px;padding:0.4rem 0.6rem;background:var(--surface);text-align:center;">
+          <div style="font-size:0.62rem;font-weight:600;color:var(--text-primary);margin-bottom:0.2rem">visitor.process(value, atEnd)</div>
+          <div style="font-size:0.5rem;color:var(--text-secondary);line-height:1.5;font-family:'JetBrains Mono',monospace;text-align:left;">
+            if filter_.testValue(value):<br>
+            &nbsp;&nbsp;rawValues_[numValues_] = value<br>
+            &nbsp;&nbsp;outputRows_[numValues_] = currentRow<br>
+            &nbsp;&nbsp;numValues_++<br>
+            else: discard
+          </div>
+        </div>
+        <div style="font-size:0.8rem;color:var(--pass);font-weight:600">
+          &rarr;
+        </div>
+        <div style="flex:0.6;border:1.5px solid var(--pass);border-radius:8px;padding:0.4rem 0.6rem;background:color-mix(in srgb, var(--pass) 5%, var(--surface));text-align:center;">
+          <div style="font-size:0.62rem;font-weight:600;color:var(--pass);margin-bottom:0.2rem">Output</div>
+          <div style="font-size:0.5rem;color:var(--text-secondary);line-height:1.5;font-family:'JetBrains Mono',monospace;">
+            outputRows_<br>
+            rawValues_<br>
+            numValues_
+          </div>
+        </div>
+      </div>
+      <div style="font-size:0.48rem;color:var(--text-muted);margin-top:0.2rem;font-family:'JetBrains Mono',monospace;text-align:center">
+        encoding never sees the filter &middot; visitor never sees the data layout &middot; they interact only through process(value)
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Section 5: Encoding decode dispatch -->
+<div class="section ani d8">
+  <div class="section-head"><span class="section-num" style="background:#e65100">5</span> Encoding Decode &mdash; Fast &amp; Slow Paths</div>
+  <div class="step">
+    <!-- Implementation flow -->
+    <div class="pipeline" style="margin-bottom:0.3rem;">
+      <div class="pipe-step" style="grid-template-columns:1fr">
+        <div class="pipe-body" style="border-color:#e65100">
+          <strong>encoding_-&gt;readWithVisitor(visitor)</strong>
+          <span style="font-size:0.6rem;color:var(--text-muted)"><br>virtual dispatch to concrete encoding type</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:0.5rem;margin-bottom:0.5rem;">
+      <div style="flex:1;border:1.5px solid var(--pass);border-radius:8px;padding:0.4rem 0.6rem;background:color-mix(in srgb, var(--pass) 5%, var(--surface));">
+        <div style="font-size:0.62rem;font-weight:600;color:var(--pass);margin-bottom:0.2rem">bulkScan essence: decode first, filter second</div>
+        <div style="font-size:0.52rem;color:var(--text-secondary);line-height:1.5;font-family:'JetBrains Mono',monospace;">
+          Step 1 Decode Batch (<span style="color:var(--col0);font-weight:600">X rows</span>): decode all selected values into flat buffer<br>
+          &nbsp;&nbsp;dense &rarr; SIMD batch decode (big win)<br>
+          &nbsp;&nbsp;sparse &rarr; random access loop (marginal win)<br>
+          Step 2 Filter Batch (<span style="color:var(--col0);font-weight:600">X rows</span>): processFixedWidthRun() &mdash; filter the buffer in one pass<br>
+          &nbsp;&nbsp;filter + scatter over contiguous buffer<br>
+          &nbsp;&nbsp;cache friendly, branch predictor friendly
+        </div>
+      </div>
+      <div style="flex:1;border:1.5px solid var(--text-muted);border-radius:8px;padding:0.4rem 0.6rem;">
+        <div style="font-size:0.62rem;font-weight:600;color:var(--text-secondary);margin-bottom:0.2rem">readWithVisitorSlow: decode and filter interleaved</div>
+        <div style="font-size:0.52rem;color:var(--text-secondary);line-height:1.5;font-family:'JetBrains Mono',monospace;">
+          decode one &rarr; filter one &rarr; decode one &rarr; filter one &rarr; decode one &rarr; filter one...<br>
+          <span style="color:var(--col0);font-weight:600">2X function calls</span> <span style="color:var(--text-muted)">for X rows</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="pipeline" style="margin-bottom:0.3rem;">
+      <div class="pipe-step" style="grid-template-columns:1fr">
+        <div class="pipe-body" style="border-color:var(--layer-decoder)">
+          <strong>Eligibility check</strong> <span style="font-size:0.55rem;color:var(--text-muted)">&mdash; can each value be decoded independently (no data dependency between rows)?</span>
+          <span style="font-size:0.55rem;color:var(--text-secondary)"><br>
+            <strong>Compile-time</strong> <span style="color:var(--text-muted)">(if constexpr)</span>: has bulkScan()? <span style="color:var(--text-muted)">(FixedBitWidth, Trivial, RLE, MainlyConstant, ChunkedBitPacking: yes &mdash; independent. Varint, Delta: no &mdash; sequential dependency (each value depends on the previous one). Dictionary: no &mdash; indices accessed via abstract Encoding interface, no random access)</span> &middot; suitable type width? &middot; standard extract?<br>
+            <strong>Runtime</strong>: useFastPath(visitor, nulls) &mdash; deterministic filter? &middot; no value hooks?
+          </span>
+        </div>
+      </div>
+    </div>
+
+
+    <div style="display:flex;gap:0;margin-top:0.3rem;">
+      <!-- Left: Fast path -->
+      <div style="flex:1;padding-right:1rem;">
+        <div style="font-size:0.65rem;font-weight:600;color:var(--pass);font-family:'Space Grotesk',sans-serif;margin-bottom:0.3rem">YES &rarr; readWithVisitorFast()</div>
+        <div class="pipeline">
+          <div class="pipe-step" style="grid-template-columns:1fr">
+            <div class="pipe-body" style="border-color:var(--pass)">
+              <strong>compute selectedRows</strong>
+              <span style="font-size:0.6rem;color:var(--text-muted)"><br>non-null row positions + scatterRows for null gaps</span>
+            </div>
+          </div>
+          <div class="pipe-arrow"><div class="arr"></div></div>
+          <div class="pipe-step" style="grid-template-columns:1fr">
+            <div class="pipe-body" style="border-color:var(--pass)">
+              <strong>encoding.bulkScan(visitor, selectedRows)</strong>
+              <span style="font-size:0.6rem;color:var(--text-muted)"><br>
+                <strong>dense:</strong> bulkGetWithBaseline32() &mdash; SIMD decode all values, then processFixedWidthRun() filters in bulk<br>
+                <strong>sparse:</strong> fixedBitArray_.get(selectedRows[i]) + baseline_ per value</span>
+            </div>
+          </div>
+          <div class="pipe-arrow"><div class="arr"></div></div>
+          <div class="pipe-step" style="grid-template-columns:1fr">
+            <div class="pipe-body" style="border-color:var(--pass)">
+              <strong>processFixedWidthRun()</strong> <span style="font-size:0.55rem;color:var(--text-muted)">(generic utility, not FixedBitWidth-specific)</span>
+              <span style="font-size:0.6rem;color:var(--text-muted)"><br>operates on decoded fixed-width values (int32, int64, double) in buffer:<br>
+              1. filter: filter_.testValue(value) per value<br>
+              2. scatter: place at correct output positions (null gaps)<br>
+              3. hook: forward to value hooks if present</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Divider -->
+      <div style="width:2px;background:var(--border-strong);flex-shrink:0;"></div>
+
+      <!-- Right: Slow path -->
+      <div style="flex:1;padding-left:1rem;">
+        <div style="font-size:0.65rem;font-weight:600;color:var(--text-muted);font-family:'Space Grotesk',sans-serif;margin-bottom:0.3rem">NO &rarr; readWithVisitorSlow()</div>
+        <div class="loop-box">
+          <div class="loop-label">per value</div>
+          <div class="pipeline" style="margin-top:0.3rem;">
+            <div class="pipe-step" style="grid-template-columns:1fr">
+              <div class="pipe-body" style="border-color:var(--text-muted)">
+                <strong>skip(gap)</strong>
+                <span style="font-size:0.6rem;color:var(--text-muted)"><br>advance to next selected row</span>
+              </div>
+            </div>
+            <div class="pipe-arrow"><div class="arr"></div></div>
+            <div class="pipe-step" style="grid-template-columns:1fr">
+              <div class="pipe-body" style="border-color:var(--text-muted)">
+                <strong>decodeOne()</strong>
+                <span style="font-size:0.6rem;color:var(--text-muted)"><br>decode single value from encoding</span>
+              </div>
+            </div>
+            <div class="pipe-arrow"><div class="arr"></div></div>
+            <div class="pipe-step" style="grid-template-columns:1fr">
+              <div class="pipe-body" style="border-color:var(--text-muted)">
+                <strong>visitor.process(value)</strong>
+                <span style="font-size:0.6rem;color:var(--text-muted)"><br>filter + store or discard</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="font-size:0.52rem;color:var(--text-muted);margin-top:0.2rem;font-family:'JetBrains Mono',monospace">
+          Used by: Dictionary, Delta, Varint, SparseBool, Constant, Prefix
+        </div>
+      </div>
+    </div>
+
+    <h4 style="font-size:0.75rem;margin-top:0.6rem">Concrete examples</h4>
+
+    <!-- col1: Fast path, dense -->
+    <div style="border:1.5px solid var(--col0);border-radius:8px;padding:0.5rem 0.6rem;background:var(--col0-bg);margin-bottom:0.4rem;">
+      <div style="font-size:0.65rem;font-weight:600;color:var(--col0);margin-bottom:0.2rem">col1 (FixedBitWidth, dense, filter: &gt; 50) &mdash; Fast path</div>
+      <div style="font-size:0.5rem;color:var(--text-secondary);line-height:1.7;font-family:'JetBrains Mono',monospace;">
+        packed data: [12, 73, 3, 99, 51] <span style="color:var(--text-muted)">(already decompressed in constructor)</span><br>
+        <br>
+        <span style="color:var(--pass);font-weight:600">Step 1: bulkScan &rarr; SIMD decode all 5 values into buffer</span><br>
+        &nbsp;&nbsp;buffer = [12, 73, 3, 99, 51]<br>
+        <br>
+        <span style="color:var(--pass);font-weight:600">Step 2: processFixedWidthRun() &rarr; filter each</span><br>
+        &nbsp;&nbsp;12 &rarr; 12 &gt; 50? <span style="color:var(--kill)">NO</span> &rarr; discard<br>
+        &nbsp;&nbsp;73 &rarr; 73 &gt; 50? <span style="color:var(--pass)">YES</span> &rarr; outputRows_[0]=1, rawValues_[0]=73<br>
+        &nbsp;&nbsp;3 &nbsp;&rarr; 3 &gt; 50? &nbsp;<span style="color:var(--kill)">NO</span> &rarr; discard<br>
+        &nbsp;&nbsp;99 &rarr; 99 &gt; 50? <span style="color:var(--pass)">YES</span> &rarr; outputRows_[1]=3, rawValues_[1]=99<br>
+        &nbsp;&nbsp;51 &rarr; 51 &gt; 50? <span style="color:var(--pass)">YES</span> &rarr; outputRows_[2]=4, rawValues_[2]=51<br>
+        <br>
+        <span style="font-weight:600">Result: numValues_ = 3</span>
+      </div>
+    </div>
+
+    <!-- col3: Fast path, sparse -->
+    <div style="border:1.5px solid var(--col2);border-radius:8px;padding:0.5rem 0.6rem;background:var(--col2-bg);margin-bottom:0.4rem;">
+      <div style="font-size:0.65rem;font-weight:600;color:var(--col2);margin-bottom:0.2rem">col3 (Trivial, sparse rows=[1,3,4], filter: &lt; 3.14) &mdash; Fast path</div>
+      <div style="font-size:0.5rem;color:var(--text-secondary);line-height:1.7;font-family:'JetBrains Mono',monospace;">
+        raw values: [1.1, 2.7, 8.5, 0.3, 5.1]<br>
+        <br>
+        <span style="color:var(--pass);font-weight:600">Step 1: bulkScan &rarr; random access selected rows</span><br>
+        &nbsp;&nbsp;values_[1] = 2.7, values_[3] = 0.3, values_[4] = 5.1<br>
+        <br>
+        <span style="color:var(--pass);font-weight:600">Step 2: filter each</span><br>
+        &nbsp;&nbsp;2.7 &rarr; 2.7 &lt; 3.14? <span style="color:var(--pass)">YES</span> &rarr; outputRows_[0]=1, rawValues_[0]=2.7<br>
+        &nbsp;&nbsp;0.3 &rarr; 0.3 &lt; 3.14? <span style="color:var(--pass)">YES</span> &rarr; outputRows_[1]=3, rawValues_[1]=0.3<br>
+        &nbsp;&nbsp;5.1 &rarr; 5.1 &lt; 3.14? <span style="color:var(--kill)">NO</span> &rarr; discard<br>
+        <br>
+        <span style="font-weight:600">Result: numValues_ = 2</span>
+      </div>
+    </div>
+
+    <!-- col4: Slow path, sparse -->
+    <div style="border:1.5px solid var(--col3);border-radius:8px;padding:0.5rem 0.6rem;background:var(--col3-bg);">
+      <div style="font-size:0.65rem;font-weight:600;color:var(--col3);margin-bottom:0.2rem">col4 (Dictionary, sparse rows=[1,3], filter: AlwaysTrue) &mdash; Slow path</div>
+      <div style="font-size:0.5rem;color:var(--text-secondary);line-height:1.7;font-family:'JetBrains Mono',monospace;">
+        alphabet_ = ["foo", "bar", "baz"], indices = [2, 0, 1, 2, 0]<br>
+        <br>
+        <span style="color:var(--text-muted);font-weight:600">Interleaved skip + decode + filter:</span><br>
+        &nbsp;&nbsp;skip(1) &rarr; advance past row 0<br>
+        &nbsp;&nbsp;decodeOne() &rarr; indices[1]=0 &rarr; alphabet_[0]="foo"<br>
+        &nbsp;&nbsp;visitor.process("foo") &rarr; AlwaysTrue &rarr; <span style="color:var(--pass)">outputRows_[0]=1, rawValues_[0]="foo"</span><br>
+        <br>
+        &nbsp;&nbsp;skip(1) &rarr; advance past row 2<br>
+        &nbsp;&nbsp;decodeOne() &rarr; indices[3]=2 &rarr; alphabet_[2]="baz"<br>
+        &nbsp;&nbsp;visitor.process("baz") &rarr; AlwaysTrue &rarr; <span style="color:var(--pass)">outputRows_[1]=3, rawValues_[1]="baz"</span><br>
+        <br>
+        <span style="font-weight:600">Result: numValues_ = 2</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- Legend -->
+<div class="legend ani d11">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--col0)"></div> col1 (int32)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--col1)"></div> col2 (int64, skipped)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--col2)"></div> col3 (double)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--col3)"></div> col4 (string)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--col4)"></div> col5 (float, skipped)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--accent)"></div> Data flow</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--pass)"></div> Fast path</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--text-muted)"></div> Slow / lazy</div>
+</div>
+
+<div class="footer ani d12">
+  Ke Wang &middot; 2026-05-19<br>
+  Generated by <a href="https://fburl.com/claude-templates/k5rd6ab0" style="color:var(--text-muted)">/visualize</a> claude skill
+</div>
+
+</div>
+
+<!-- INFRA-MENU-JS -->
+<script>
+function toggleMenu(){const m=document.getElementById('vizMenu');const t=m.querySelector('.viz-menu-toggle');const o=m.classList.toggle('open');t.setAttribute('aria-expanded',o)}
+document.addEventListener('click',function(e){const m=document.getElementById('vizMenu');if(m&&!m.contains(e.target))m.classList.remove('open')});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'){const m=document.getElementById('vizMenu');if(m)m.classList.remove('open')}});
+function toggleTheme(){const d=document.body.classList.toggle('dark-mode');localStorage.setItem('visualize-dark-mode',d);updateThemeLabel()}
+function updateThemeLabel(){const d=document.body.classList.contains('dark-mode');const i=document.getElementById('themeIcon');const l=document.getElementById('themeLabel');if(i)i.textContent=d?'☀':'◔';if(l)l.textContent=d?'Light mode':'Dark mode'}
+if(localStorage.getItem('visualize-dark-mode')==='true'||(!localStorage.getItem('visualize-dark-mode')&&window.matchMedia('(prefers-color-scheme:dark)').matches)){document.body.classList.add('dark-mode')}
+updateThemeLabel();
+function toggleFullscreen(){if(!document.fullscreenElement){document.documentElement.requestFullscreen().catch(function(){})}else{document.exitFullscreen()}}
+function loadHtml2Canvas(){if(typeof html2canvas!=='undefined')return Promise.resolve();return new Promise(function(r,j){var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';s.integrity='sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H';s.crossOrigin='anonymous';s.onload=r;s.onerror=function(){j(new Error('load failed'))};document.head.appendChild(s)})}
+function saveAsImage(){var b=document.getElementById('saveImgBtn');var l=b.querySelector('span:last-child');var o=l.textContent;l.textContent='Loading...';b.style.pointerEvents='none';loadHtml2Canvas().then(function(){l.textContent='Capturing...';doCapture(b,l,o)}).catch(function(){l.textContent=o;b.style.pointerEvents=''})}
+function doCapture(b,l,o){var m=document.getElementById('vizMenu');m.style.display='none';var t=document.querySelector('.container')||document.body;var bg=t.style.background;if(t!==document.body)t.style.background=getComputedStyle(document.body).backgroundColor||'#fff';window.scrollTo(0,0);(document.fonts&&document.fonts.ready?document.fonts.ready:Promise.resolve()).then(function(){return html2canvas(t,{scale:2,useCORS:true,allowTaint:false,logging:false})}).then(function(c){c.toBlob(function(blob){var u=URL.createObjectURL(blob);var a=document.createElement('a');a.download='nimble-selective-reader.png';a.href=u;document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(u)},5000)},'image/png')}).finally(function(){t.style.background=bg;m.style.display='';l.textContent=o;b.style.pointerEvents='';m.classList.remove('open')})}
+</script>
+</body>
+</html>
