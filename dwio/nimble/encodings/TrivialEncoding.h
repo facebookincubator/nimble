@@ -127,6 +127,9 @@ class TrivialEncoding<std::string_view> final
       const Encoding::Options& options = {});
 
  private:
+  // Initializes seekValues_ from blob_ and lengths_.
+  void initSeekValues();
+
   uint32_t row_;
   const char* blob_;
   const char* pos_;
@@ -139,6 +142,12 @@ class TrivialEncoding<std::string_view> final
   // data could come as uncompressed.
   uint64_t uncompressedDataBytes_;
   velox::BufferPtr dataUncompressed_;
+
+  // Pre-materialized string views for thread-safe seek() and get(). Populated
+  // at construction when keyEncoding=true. Points into blob_ which is stable
+  // for the lifetime of this encoding. When empty, seek()/get() fall back to
+  // the stateful (non-thread-safe) path.
+  std::vector<std::string_view> seekValues_;
 };
 
 // For the bool case the layout is:

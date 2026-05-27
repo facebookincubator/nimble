@@ -111,6 +111,12 @@ class Encoding {
     /// buffers on construction, avoiding MemoryPool alloc/free overhead.
     /// Value-initialized to nullptr when omitted from aggregate initialization.
     velox::BufferPool* bufferPool;
+
+    /// When true, eagerly initializes lookup structures at construction time
+    /// for thread-safe seek() and get(). For TrivialEncoding<string_view>,
+    /// pre-materializes all string positions to avoid lazy initialization.
+    /// Value-initialized to false when omitted from aggregate initialization.
+    bool keyEncoding;
   };
 
   static constexpr int kEncodingTypeOffset =

@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <numeric>
+#include <shared_mutex>
 
 #include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/Exceptions.h"
@@ -26,8 +27,8 @@
 #include "dwio/nimble/tablet/ClusterIndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "dwio/nimble/tablet/MetadataInput.h"
-#include "folly/ScopeGuard.h"
 #include "folly/json/json.h"
+#include "velox/common/testutil/TestValue.h"
 #include "velox/dwio/common/BufferedInput.h"
 
 namespace facebook::nimble::index {
@@ -240,6 +241,7 @@ void ClusterIndex::loadPartitionKeyStream(IndexPartition* partition) const {
 void ClusterIndex::loadPartitions(
     std::span<const uint32_t> partitionIds) const {
   NIMBLE_CHECK(!partitionIds.empty(), "partitionIds must not be empty");
+  std::unique_lock l(mutex_);
   std::vector<MetadataSection> sections;
   sections.reserve(partitionIds.size());
   for (uint32_t id : partitionIds) {
@@ -287,20 +289,21 @@ uint32_t ClusterIndex::partitionRow(uint32_t partitionId, uint32_t row) const {
   return row - partitionRows_[partitionId];
 }
 
-void ClusterIndex::resolvePartitionBounds() const {
+void ClusterIndex::resolvePartitionBounds(
+    std::vector<PartitionLookup>& partitionLookups) const {
   std::sort(
-      partitionLookups_.begin(),
-      partitionLookups_.end(),
+      partitionLookups.begin(),
+      partitionLookups.end(),
       [](const auto& a, const auto& b) {
         return a.partitionId < b.partitionId;
       });
 
-  for (size_t i = 0; i < partitionLookups_.size();) {
-    const auto* partition = loadPartition(partitionLookups_[i].partitionId);
+  for (size_t i = 0; i < partitionLookups.size();) {
+    const auto* partition = loadPartition(partitionLookups[i].partitionId);
 
-    while (i < partitionLookups_.size() &&
-           partitionLookups_[i].partitionId == partition->id) {
-      const auto& entry = partitionLookups_[i];
+    while (i < partitionLookups.size() &&
+           partitionLookups[i].partitionId == partition->id) {
+      const auto& entry = partitionLookups[i];
       *entry.targetRow =
           resolvePartitionRow(partition, entry.encodedKey, entry.inclusive);
       ++i;
@@ -309,13 +312,15 @@ void ClusterIndex::resolvePartitionBounds() const {
 }
 
 IndexLookup::LookupResult ClusterIndex::buildLookupResult(
-    const LookupOptions& options) const {
+    const LookupOptions& options,
+    const std::vector<RowRange>& partitionRowRanges) const {
   std::vector<RowRange> locations;
+  locations.reserve(partitionRowRanges.size());
   std::vector<uint32_t> offsets;
-  offsets.reserve(scratchRanges_.size() + 1);
+  offsets.reserve(partitionRowRanges.size() + 1);
   offsets.emplace_back(0);
 
-  for (const auto& lookupRange : scratchRanges_) {
+  for (const auto& lookupRange : partitionRowRanges) {
     auto range = lookupRange;
     if (options.rowRange.has_value()) {
       range = range.intersect(options.rowRange.value());
@@ -329,20 +334,24 @@ IndexLookup::LookupResult ClusterIndex::buildLookupResult(
   return LookupResult{std::move(locations), std::move(offsets)};
 }
 
-void ClusterIndex::lookupPartitions(const LookupRequest& request) const {
-  NIMBLE_CHECK(partitionLookups_.empty());
-  NIMBLE_CHECK(scratchRanges_.empty());
-  partitionLookups_.reserve(2 * request.size());
-  scratchRanges_.assign(request.size(), RowRange{});
+void ClusterIndex::lookupPartitions(
+    const LookupRequest& request,
+    std::vector<PartitionLookup>& partitionLookups,
+    std::vector<RowRange>& partitionRowRanges) const {
+  partitionLookups.reserve(2 * request.size());
+  partitionRowRanges.assign(request.size(), RowRange{});
 
   if (request.mode() == LookupRequest::Mode::PointLookup) {
-    partitionPointLookups(request);
+    partitionPointLookups(request, partitionLookups, partitionRowRanges);
   } else {
-    partitionRangeLookups(request);
+    partitionRangeLookups(request, partitionLookups, partitionRowRanges);
   }
 }
 
-void ClusterIndex::partitionPointLookups(const LookupRequest& request) const {
+void ClusterIndex::partitionPointLookups(
+    const LookupRequest& request,
+    std::vector<PartitionLookup>& partitionLookups,
+    std::vector<RowRange>& partitionRowRanges) const {
   for (uint32_t i = 0; i < request.size(); ++i) {
     const auto encodedKey = request.pointKey(i);
     const auto partitionId = lookupPartition(encodedKey);
@@ -350,21 +359,24 @@ void ClusterIndex::partitionPointLookups(const LookupRequest& request) const {
       continue;
     }
     // Lower bound: first row >= key (inclusive).
-    partitionLookups_.emplace_back(
+    partitionLookups.emplace_back(
         partitionId.value(),
         encodedKey,
         /*inclusive=*/true,
-        &scratchRanges_[i].startRow);
+        &partitionRowRanges[i].startRow);
     // Upper bound: first row > key (exclusive).
-    partitionLookups_.emplace_back(
+    partitionLookups.emplace_back(
         partitionId.value(),
         encodedKey,
         /*inclusive=*/false,
-        &scratchRanges_[i].endRow);
+        &partitionRowRanges[i].endRow);
   }
 }
 
-void ClusterIndex::partitionRangeLookups(const LookupRequest& request) const {
+void ClusterIndex::partitionRangeLookups(
+    const LookupRequest& request,
+    std::vector<PartitionLookup>& partitionLookups,
+    std::vector<RowRange>& partitionRowRanges) const {
   for (uint32_t i = 0; i < request.size(); ++i) {
     const auto& keyBound = request.rangeBound(i);
     NIMBLE_CHECK(
@@ -382,41 +394,41 @@ void ClusterIndex::partitionRangeLookups(const LookupRequest& request) const {
       if (!partitionId.has_value()) {
         continue;
       }
-      partitionLookups_.emplace_back(
+      partitionLookups.emplace_back(
           partitionId.value(),
           keyBound.lowerKey.value(),
           /*inclusive=*/true,
-          &scratchRanges_[i].startRow);
+          &partitionRowRanges[i].startRow);
     }
 
     if (keyBound.upperKey.has_value()) {
       const auto partitionId = lookupPartition(keyBound.upperKey.value());
       if (partitionId.has_value()) {
         // Upper bound is exclusive: seekAtOrAfter gives the correct cutoff.
-        partitionLookups_.emplace_back(
+        partitionLookups.emplace_back(
             partitionId.value(),
             keyBound.upperKey.value(),
             /*inclusive=*/true,
-            &scratchRanges_[i].endRow);
+            &partitionRowRanges[i].endRow);
       } else {
-        scratchRanges_[i].endRow = numRows_;
+        partitionRowRanges[i].endRow = numRows_;
       }
     } else {
-      scratchRanges_[i].endRow = numRows_;
+      partitionRowRanges[i].endRow = numRows_;
     }
   }
 }
 
 IndexLookup::LookupResult ClusterIndex::lookup(
     const LookupRequest& request) const {
-  SCOPE_EXIT {
-    partitionLookups_.clear();
-    scratchRanges_.clear();
-  };
-  lookupPartitions(request);
-  resolvePartitionBounds();
+  std::vector<PartitionLookup> partitionLookups;
+  std::vector<RowRange> partitionRowRanges;
+  lookupPartitions(request, partitionLookups, partitionRowRanges);
+  NIMBLE_CHECK_EQ(partitionRowRanges.size(), request.size());
+  NIMBLE_CHECK_LE(partitionLookups.size(), 2 * request.size());
+  resolvePartitionBounds(partitionLookups);
 
-  return buildLookupResult(request.options());
+  return buildLookupResult(request.options(), partitionRowRanges);
 }
 
 uint32_t ClusterIndex::resolvePartitionRow(
@@ -497,7 +509,16 @@ void ClusterIndex::initializePartition(
 const ClusterIndex::IndexPartition* ClusterIndex::loadPartition(
     uint32_t partitionId) const {
   NIMBLE_CHECK_LT(partitionId, numPartitions_);
+  {
+    std::shared_lock l(mutex_);
+    if (partitions_[partitionId] != nullptr) {
+      return partitions_[partitionId].get();
+    }
+  }
+  std::unique_lock l(mutex_);
   if (partitions_[partitionId] == nullptr) {
+    velox::common::testutil::TestValue::adjust(
+        "facebook::nimble::index::ClusterIndex::loadPartition", &partitionId);
     const auto section = partitionSection(partitionId);
     auto results = metadataInput_->load({&section, 1});
     NIMBLE_CHECK_EQ(results.size(), 1);
@@ -558,21 +579,19 @@ ClusterIndex::DecodedChunk ClusterIndex::getDecodedChunk(
     const IndexPartition* partition,
     const ChunkLocation& chunkLocation) const {
   NIMBLE_DCHECK_NOT_NULL(partition);
-  // Resolve the cache slot. When pinned, every chunk has a dedicated slot
-  // indexed by chunkIndex. When unpinned, a single shared slot holds at most
-  // one decoded chunk; treat it as a hit only when chunkOffset matches.
   const uint32_t slotIdx = pinIndex_ ? chunkLocation.chunkIndex : 0;
-  NIMBLE_CHECK_LT(slotIdx, partition->decodedChunks.size());
-  auto& slot = partition->decodedChunks.at(slotIdx);
-  if (slot.data != nullptr &&
-      (pinIndex_ || slot.chunkOffset == chunkLocation.chunkOffset)) {
-    return slot;
+  // Fast path: shared lock for cache hit.
+  {
+    std::shared_lock l(partition->mutex);
+    NIMBLE_CHECK_LT(slotIdx, partition->decodedChunks.size());
+    const auto& slot = partition->decodedChunks.at(slotIdx);
+    if (slot.data != nullptr &&
+        (pinIndex_ || slot.chunkOffset == chunkLocation.chunkOffset)) {
+      return slot;
+    }
   }
 
-  // Cache miss: decode from dataInput_ into a local DecodedChunk, then move
-  // it into the slot. The returned copy bumps the shared_ptr refcount so
-  // the underlying DecodedKeyChunk (and its owned buffer in stringBuffers)
-  // stays alive past this call.
+  // Decode outside the lock to avoid blocking concurrent readers.
   DecodedChunk decodedChunk;
   const auto region = partition->chunkStreamRegion(chunkLocation);
   decodedChunk.chunkOffset = chunkLocation.chunkOffset;
@@ -588,7 +607,21 @@ ClusterIndex::DecodedChunk ClusterIndex::getDecodedChunk(
       decodedChunk.data->encoding->dataType(),
       DataType::String,
       "Expected String data type");
-  slot = std::move(decodedChunk);
+
+  velox::common::testutil::TestValue::adjust(
+      "facebook::nimble::index::ClusterIndex::getDecodedChunk",
+      decodedChunk.data.get());
+
+  // Install under exclusive lock. Another thread may have filled the slot
+  // while we were decoding — that's fine, both produce the same result.
+  std::unique_lock l(partition->mutex);
+  auto& slot = partition->decodedChunks.at(slotIdx);
+  if (slot.data == nullptr || slot.chunkOffset != chunkLocation.chunkOffset) {
+    NIMBLE_DCHECK(
+        !pinIndex_ || slot.data == nullptr,
+        "Pinned slot should only be filled once");
+    slot = std::move(decodedChunk);
+  }
   return slot;
 }
 
@@ -598,6 +631,7 @@ uint32_t ClusterIndex::seekInChunk(
     std::string_view encodedKey,
     bool inclusive) const {
   const auto chunk = getDecodedChunk(partition, chunkLocation);
+  // seek() is stateless — safe to call without the partition lock.
   const auto rowInChunk = chunk.data->encoding->seek(&encodedKey, inclusive);
   if (!rowInChunk.has_value()) {
     // For exclusive seek (inclusive=false), no row > key means the end is
@@ -658,9 +692,11 @@ std::string ClusterIndex::keyAtRow(uint32_t row) const {
       partition->chunkOffset(chunkIdx),
       partition->chunkSize(chunkIdx),
       partition->rowOffset(chunkIdx)};
+
   const auto decodedChunk = getDecodedChunk(partition, chunkLocation);
   const uint32_t rowInChunk = partitionRow - chunkLocation.rowOffset;
 
+  // get() is stateless — safe to call without the partition lock.
   std::string_view value;
   decodedChunk.data->encoding->get(rowInChunk, &value);
   return std::string(value);
