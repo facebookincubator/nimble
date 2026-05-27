@@ -50,7 +50,7 @@ TypePtr getFileSchema(
 std::shared_ptr<ReaderBase> ReaderBase::create(
     std::unique_ptr<velox::dwio::common::BufferedInput> input,
     const velox::dwio::common::ReaderOptions& options) {
-  auto tabletOptions = TabletReader::configureOptions(options);
+  auto tabletOptions = TabletReader::configureOptions(options, input.get());
 
   auto tablet = TabletReader::create(
       input->getReadFile(), &options.memoryPool(), tabletOptions);

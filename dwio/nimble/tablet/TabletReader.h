@@ -54,6 +54,10 @@
 /// encoded stream, and in the worst case (totally random data) the encoded data
 /// will be the same size as the raw data.
 
+namespace facebook::velox::dwio::common {
+class BufferedInput;
+}
+
 namespace facebook::nimble {
 
 namespace test {
@@ -214,6 +218,11 @@ class TabletReader {
     ///     such as deciding SSD placement
     const velox::FileHandle* fileHandle{nullptr};
     velox::cache::AsyncDataCache* cache{nullptr};
+
+    /// FileIoContext to forward on every direct ReadFile preadv call this
+    /// TabletReader makes (excluding, possibly, those made through a
+    /// BufferedInput)
+    velox::FileIoContext fileIoContext{};
   };
 
   /// Compute checksum from the beginning of the file all the way to footer
@@ -232,7 +241,8 @@ class TabletReader {
 
   /// Configures TabletReader::Options from Velox ReaderOptions.
   static Options configureOptions(
-      const velox::dwio::common::ReaderOptions& options);
+      const velox::dwio::common::ReaderOptions& options,
+      const velox::dwio::common::BufferedInput* input = nullptr);
 
   /// Returns a collection of stream loaders for the given stripe. The stream
   /// loaders are returned in the same order as the input stream identifiers
@@ -519,6 +529,8 @@ class TabletReader {
   // with index-specific IO stats.
   const index::IndexLookup::Options indexOptions_;
 
+  // FileIoContext forwarded on every direct file_->pread* call.
+  const velox::FileIoContext fileIoContext_;
   // Owned MetadataInput for coalesced metadata IO. Always created —
   // uses DirectMetadataInput (no cache) or CachedMetadataInput depending
   // on options. Thread-safe: load() is stateless.

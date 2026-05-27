@@ -91,6 +91,8 @@ class IndexLookup {
     const velox::FileHandle* fileHandle{nullptr};
     /// Data cache for index metadata. Set with fileHandle for cached path.
     velox::cache::AsyncDataCache* cache{nullptr};
+    /// Per-call file context for direct ReadFile calls.
+    velox::FileIoContext fileIoContext{};
     /// If true, pins parsed index objects in the index cache with strong
     /// references so they are never evicted.
     bool pinIndex{false};

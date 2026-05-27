@@ -1223,6 +1223,32 @@ TEST_P(TabletTest, deduplicateStreams) {
   }
 }
 
+TEST_P(TabletTest, passesFileIoContextToFooterReads) {
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
+  tabletWriter->writeStripe(
+      1,
+      {nimble::Stream{
+          .offset = 0,
+          .chunks = {{.rowCount = 1, .content = {std::string_view{"abc"}}}},
+      }});
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<nimble::testing::TrackingReadFile>(
+      std::make_shared<velox::InMemoryReadFile>(file));
+  velox::IoStats fileIoStats;
+  nimble::TabletReader::Options options;
+  options.fileIoContext = velox::FileIoContext{&fileIoStats};
+  options.maxFooterIoBytes = 0;
+
+  auto tablet = createTabletReader(readFile, std::move(options));
+
+  EXPECT_EQ(tablet->tabletRowCount(), 1);
+  EXPECT_GT(fileIoStats.stats().at("trackingReadFile.pread").sum, 0);
+}
+
 TEST_P(TabletTest, chunkContentSize) {
   nimble::Chunk chunk;
   EXPECT_EQ(chunk.contentSize(), 0);
