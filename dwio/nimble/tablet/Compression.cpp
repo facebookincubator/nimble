@@ -17,25 +17,31 @@
 #include <zstd_errors.h>
 #include <optional>
 
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/tablet/Compression.h"
 
 namespace facebook::nimble {
 
-std::optional<Vector<char>> ZstdCompression::compress(
-    velox::memory::MemoryPool& memoryPool,
+std::optional<velox::BufferPtr> ZstdCompression::compress(
     std::string_view source,
-    int32_t level) {
-  Vector<char> buffer{&memoryPool, source.size() + sizeof(uint32_t)};
-  auto pos = buffer.data();
+    velox::memory::MemoryPool* pool,
+    int32_t compressionLevel) {
+  NIMBLE_CHECK_NOT_NULL(pool);
+  NIMBLE_CHECK_GE(
+      compressionLevel, ZSTD_minCLevel(), "Compression level below minimum");
+  NIMBLE_CHECK_LE(
+      compressionLevel, ZSTD_maxCLevel(), "Compression level above maximum");
+  const auto maxSize = source.size() + sizeof(uint32_t);
+  auto buffer = velox::AlignedBuffer::allocateExact<char>(maxSize, pool);
+  auto* pos = buffer->asMutable<char>();
   encoding::writeUint32(source.size(), pos);
   auto ret = ZSTD_compress(
       pos,
       source.size() - sizeof(uint32_t),
       source.data(),
       source.size(),
-      level);
+      compressionLevel);
   if (ZSTD_isError(ret)) {
     NIMBLE_CHECK(
         ZSTD_getErrorCode(ret) == ZSTD_ErrorCode::ZSTD_error_dstSize_tooSmall,
@@ -43,23 +49,46 @@ std::optional<Vector<char>> ZstdCompression::compress(
     return std::nullopt;
   }
 
-  buffer.resize(ret + sizeof(uint32_t));
-  return {buffer};
+  buffer->setSize(ret + sizeof(uint32_t));
+  return buffer;
 }
 
-Vector<char> ZstdCompression::uncompress(
-    velox::memory::MemoryPool& memoryPool,
-    std::string_view source) {
+velox::BufferPtr ZstdCompression::uncompress(
+    std::string_view source,
+    velox::memory::MemoryPool* pool) {
+  NIMBLE_CHECK_NOT_NULL(pool);
   auto pos = source.data();
   const uint32_t uncompressedSize = encoding::readUint32(pos);
-  Vector<char> buffer{&memoryPool, uncompressedSize};
+  auto buffer =
+      velox::AlignedBuffer::allocateExact<char>(uncompressedSize, pool);
   auto ret = ZSTD_decompress(
-      buffer.data(), buffer.size(), pos, source.size() - sizeof(uint32_t));
+      buffer->asMutable<char>(),
+      buffer->size(),
+      pos,
+      source.size() - sizeof(uint32_t));
   NIMBLE_CHECK(
       !ZSTD_isError(ret),
       "Error uncompressing data: {}",
       ZSTD_getErrorName(ret));
   return buffer;
+}
+
+void ZstdCompression::uncompress(
+    std::string_view source,
+    void* destination,
+    uint64_t destinationSize) {
+  auto pos = source.data();
+  const uint32_t uncompressedSize = encoding::readUint32(pos);
+  NIMBLE_CHECK_EQ(
+      destinationSize,
+      uncompressedSize,
+      "Destination size mismatch with uncompressed size");
+  auto ret = ZSTD_decompress(
+      destination, destinationSize, pos, source.size() - sizeof(uint32_t));
+  NIMBLE_CHECK(
+      !ZSTD_isError(ret),
+      "Error uncompressing data: {}",
+      ZSTD_getErrorName(ret));
 }
 
 } // namespace facebook::nimble

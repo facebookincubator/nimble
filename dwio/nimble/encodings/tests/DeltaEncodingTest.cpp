@@ -17,7 +17,6 @@
 #include <gtest/gtest.h>
 #include <array>
 #include <limits>
-#include <type_traits>
 #include <vector>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Exceptions.h"
@@ -52,73 +51,96 @@ class DeltaEncodingTest : public ::testing::Test {
 
   template <typename T>
   std::vector<nimble::Vector<T>> prepareValues() {
-    if constexpr (std::is_same_v<T, int32_t>) {
-      return {
-          // Monotonically increasing — all deltas, no restatements.
-          toVector({1, 2, 3, 4, 5, 6, 7, 8, 9, 10}),
-          // Non-monotonic — triggers restatements on decrease.
-          toVector({1, 2, 4, 1, 2, 3, 4, 1, 2, 4, 8, 8}),
-          // Single element.
-          toVector({42}),
-          // Constant — all same values, deltas are all 0.
-          toVector({5, 5, 5, 5, 5}),
-          // Signed: negative to positive — triggers zero-crossing restatement.
-          toVector({-5, -3, -1, 2, 4, 6}),
-          // Signed: all negative, increasing (toward zero).
-          toVector({-10, -8, -6, -4, -2}),
-          // Signed: decreasing from positive to negative.
-          toVector({5, 3, 1, -1, -3, -5}),
-          // Large gaps.
-          toVector({0, 1000, 2000, 3000, 100, 200, 300}),
-      };
-    } else if constexpr (std::is_same_v<T, uint32_t>) {
-      return {
-          // Monotonically increasing.
-          toVector<uint32_t>({1, 2, 3, 4, 5, 6, 7, 8, 9, 10}),
-          // Non-monotonic.
-          toVector<uint32_t>({10, 20, 30, 5, 15, 25}),
-          // Single element.
-          toVector<uint32_t>({99}),
-          // Constant.
-          toVector<uint32_t>({7, 7, 7, 7}),
-      };
-    } else if constexpr (std::is_same_v<T, int64_t>) {
-      return {
-          // Monotonically increasing.
-          toVector<int64_t>({100, 200, 300, 400, 500}),
-          // Non-monotonic with restatements.
-          toVector<int64_t>({100, 200, 50, 150, 250}),
-          // Signed zero-crossing.
-          toVector<int64_t>({-100, -50, 0, 50, 100}),
-      };
-    } else if constexpr (std::is_same_v<T, uint64_t>) {
-      return {
-          toVector<uint64_t>({10, 20, 30, 40, 50}),
-          toVector<uint64_t>({100, 200, 50, 75, 300}),
-      };
-    } else if constexpr (std::is_same_v<T, int16_t>) {
-      return {
-          toVector<int16_t>({1, 2, 3, 4, 5}),
-          toVector<int16_t>({5, 3, 1, -1, -3}),
-      };
-    } else if constexpr (std::is_same_v<T, uint16_t>) {
-      return {
-          toVector<uint16_t>({1, 2, 3, 4, 5}),
-          toVector<uint16_t>({10, 5, 15, 3, 20}),
-      };
-    } else if constexpr (std::is_same_v<T, int8_t>) {
-      return {
-          toVector<int8_t>({1, 2, 3, 4, 5}),
-          toVector<int8_t>({-5, -3, -1, 1, 3}),
-      };
-    } else if constexpr (std::is_same_v<T, uint8_t>) {
-      return {
-          toVector<uint8_t>({1, 2, 3, 4, 5}),
-          toVector<uint8_t>({10, 5, 15, 3, 20}),
-      };
-    } else {
-      static_assert(!std::is_same_v<T, T>, "Unsupported test type");
-    }
+    FAIL() << "unspecialized prepareValues() should not be called";
+    return {};
+  }
+
+  template <>
+  std::vector<nimble::Vector<int32_t>> prepareValues() {
+    return {
+        // Monotonically increasing — all deltas, no restatements.
+        toVector({1, 2, 3, 4, 5, 6, 7, 8, 9, 10}),
+        // Non-monotonic — triggers restatements on decrease.
+        toVector({1, 2, 4, 1, 2, 3, 4, 1, 2, 4, 8, 8}),
+        // Single element.
+        toVector({42}),
+        // Constant — all same values, deltas are all 0.
+        toVector({5, 5, 5, 5, 5}),
+        // Signed: negative to positive — triggers zero-crossing restatement.
+        toVector({-5, -3, -1, 2, 4, 6}),
+        // Signed: all negative, increasing (toward zero).
+        toVector({-10, -8, -6, -4, -2}),
+        // Signed: decreasing from positive to negative.
+        toVector({5, 3, 1, -1, -3, -5}),
+        // Large gaps.
+        toVector({0, 1000, 2000, 3000, 100, 200, 300}),
+    };
+  }
+
+  template <>
+  std::vector<nimble::Vector<uint32_t>> prepareValues() {
+    return {
+        // Monotonically increasing.
+        toVector<uint32_t>({1, 2, 3, 4, 5, 6, 7, 8, 9, 10}),
+        // Non-monotonic.
+        toVector<uint32_t>({10, 20, 30, 5, 15, 25}),
+        // Single element.
+        toVector<uint32_t>({99}),
+        // Constant.
+        toVector<uint32_t>({7, 7, 7, 7}),
+    };
+  }
+
+  template <>
+  std::vector<nimble::Vector<int64_t>> prepareValues() {
+    return {
+        // Monotonically increasing.
+        toVector<int64_t>({100, 200, 300, 400, 500}),
+        // Non-monotonic with restatements.
+        toVector<int64_t>({100, 200, 50, 150, 250}),
+        // Signed zero-crossing.
+        toVector<int64_t>({-100, -50, 0, 50, 100}),
+    };
+  }
+
+  template <>
+  std::vector<nimble::Vector<uint64_t>> prepareValues() {
+    return {
+        toVector<uint64_t>({10, 20, 30, 40, 50}),
+        toVector<uint64_t>({100, 200, 50, 75, 300}),
+    };
+  }
+
+  template <>
+  std::vector<nimble::Vector<int16_t>> prepareValues() {
+    return {
+        toVector<int16_t>({1, 2, 3, 4, 5}),
+        toVector<int16_t>({5, 3, 1, -1, -3}),
+    };
+  }
+
+  template <>
+  std::vector<nimble::Vector<uint16_t>> prepareValues() {
+    return {
+        toVector<uint16_t>({1, 2, 3, 4, 5}),
+        toVector<uint16_t>({10, 5, 15, 3, 20}),
+    };
+  }
+
+  template <>
+  std::vector<nimble::Vector<int8_t>> prepareValues() {
+    return {
+        toVector<int8_t>({1, 2, 3, 4, 5}),
+        toVector<int8_t>({-5, -3, -1, 1, 3}),
+    };
+  }
+
+  template <>
+  std::vector<nimble::Vector<uint8_t>> prepareValues() {
+    return {
+        toVector<uint8_t>({1, 2, 3, 4, 5}),
+        toVector<uint8_t>({10, 5, 15, 3, 20}),
+    };
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;

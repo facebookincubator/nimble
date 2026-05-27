@@ -17,14 +17,14 @@
 
 #include <span>
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingIdentifier.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/legacy/Encoding.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
 #include "folly/container/F14Map.h"
 #include "velox/common/memory/Memory.h"
 
@@ -35,7 +35,7 @@
 namespace facebook::nimble::legacy {
 
 /// The layout for a dictionary encoding is:
-/// Encoding::kPrefixSize bytes: standard Encoding prefix
+/// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 /// 4 bytes: alphabet size
 /// XX bytes: alphabet encoding bytes
 /// YY bytes: indices encoding bytes
@@ -46,7 +46,7 @@ class DictionaryEncoding
   using cppDataType = T;
   using physicalType = typename TypeTraits<T>::physicalType;
 
-  static const int kAlphabetSizeOffset = Encoding::kPrefixSize;
+  static const int kAlphabetSizeOffset = EncodingPrefix::kFixedPrefixSize;
 
   DictionaryEncoding(
       velox::memory::MemoryPool& pool,
@@ -277,7 +277,7 @@ std::string_view DictionaryEncoding<T>::encode(
       selection.template encodeNested<uint32_t>(
           EncodingIdentifiers::Dictionary::Indices, {indices}, tempBuffer);
 
-  const uint32_t encodingSize = Encoding::kPrefixSize + 4 +
+  const uint32_t encodingSize = EncodingPrefix::kFixedPrefixSize + 4 +
       serializedAlphabet.size() + serializedIndices.size();
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;

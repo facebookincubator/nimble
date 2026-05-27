@@ -14,37 +14,35 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/TrivialEncoding.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
 
 namespace facebook::nimble {
 
 TrivialEncoding<std::string_view>::TrivialEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> stringBufferFactory,
     const Encoding::Options& options)
-    : TypedEncoding<
-          std::string_view,
-          std::string_view>{memoryPool, data, options},
+    : TypedEncoding<std::string_view, std::string_view>{pool, data, options},
       row_{0},
-      buffer_{&memoryPool},
-      dataUncompressed_{&memoryPool} {
+      buffer_{&pool} {
   auto pos = data.data() + this->dataOffset();
   const auto dataCompressionType =
       static_cast<CompressionType>(encoding::readChar(pos));
   const auto lengthsSize = encoding::readUint32(pos);
   lengths_ = EncodingFactory(options).create(
-      memoryPool, {pos, lengthsSize}, stringBufferFactory);
+      pool, {pos, lengthsSize}, stringBufferFactory);
   blob_ = pos + lengthsSize;
 
   if (dataCompressionType != CompressionType::Uncompressed) {
     dataUncompressed_ = Compression::uncompress(
-        memoryPool,
+        pool,
         dataCompressionType,
         DataType::String,
-        {blob_, static_cast<size_t>(data.end() - blob_)});
-    blob_ = reinterpret_cast<const char*>(dataUncompressed_.data());
-    uncompressedDataBytes_ = dataUncompressed_.size();
+        {blob_, static_cast<size_t>(data.end() - blob_)},
+        options.bufferPool);
+    blob_ = dataUncompressed_->as<char>();
+    uncompressedDataBytes_ = dataUncompressed_->size();
   } else {
     uncompressedDataBytes_ = data.size() - std::distance(data.data(), blob_);
   }
@@ -54,9 +52,13 @@ TrivialEncoding<std::string_view>::TrivialEncoding(
   // TODO(huamengjiang): in a follow up, we will let the factory return a smart
   // pointer that can also be held by the encoding.
   std::memcpy(stringBuffer, blob_, uncompressedDataBytes_);
-  dataUncompressed_.clear();
+  releaseBuffer(dataUncompressed_);
   blob_ = static_cast<char*>(stringBuffer);
   pos_ = blob_;
+
+  if (options.keyEncoding) {
+    initSeekValues();
+  }
 }
 
 void TrivialEncoding<std::string_view>::reset() {
@@ -87,8 +89,40 @@ void TrivialEncoding<std::string_view>::materialize(
   row_ += rowCount;
 }
 
+void TrivialEncoding<std::string_view>::get(uint32_t row, void* buffer) {
+  if (!seekValues_.empty()) {
+    NIMBLE_CHECK_LT(row, seekValues_.size());
+    *static_cast<std::string_view*>(buffer) = seekValues_[row];
+    return;
+  }
+  reset();
+  if (row > 0) {
+    skip(row);
+  }
+  materialize(1, buffer);
+}
+
 uint64_t TrivialEncoding<std::string_view>::uncompressedDataBytes() const {
   return uncompressedDataBytes_;
+}
+
+void TrivialEncoding<std::string_view>::initSeekValues() {
+  const uint32_t totalRows = rowCount();
+  if (totalRows == 0) {
+    return;
+  }
+  Vector<uint32_t> lengths(pool_);
+  lengths.resize(totalRows);
+  lengths_->reset();
+  lengths_->materialize(totalRows, lengths.data());
+  lengths_->reset();
+
+  seekValues_.reserve(totalRows);
+  const char* pos = blob_;
+  for (uint32_t i = 0; i < totalRows; ++i) {
+    seekValues_.emplace_back(pos, lengths[i]);
+    pos += lengths[i];
+  }
 }
 
 std::optional<uint32_t> TrivialEncoding<std::string_view>::seek(
@@ -97,9 +131,24 @@ std::optional<uint32_t> TrivialEncoding<std::string_view>::seek(
   const auto* seekValue = static_cast<const std::string_view*>(value);
   NIMBLE_CHECK_NOT_NULL(seekValue);
 
+  if (!seekValues_.empty()) {
+    const auto comparator = [](std::string_view a, std::string_view b) {
+      return a < b;
+    };
+    const auto it = inclusive
+        ? std::lower_bound(
+              seekValues_.begin(), seekValues_.end(), *seekValue, comparator)
+        : std::upper_bound(
+              seekValues_.begin(), seekValues_.end(), *seekValue, comparator);
+    if (it == seekValues_.end()) {
+      return std::nullopt;
+    }
+    return std::distance(seekValues_.begin(), it);
+  }
+
+  // Fallback: non-thread-safe path for non-key encodings.
   reset();
   const uint32_t totalRows = rowCount();
-
   if (totalRows == 0) {
     return std::nullopt;
   }
@@ -115,19 +164,15 @@ std::optional<uint32_t> TrivialEncoding<std::string_view>::seek(
     pos += buffer_[i];
   }
 
-  // inclusive: first row >= value (lower_bound).
-  // exclusive: first row > value (upper_bound).
   const auto comparator = [](std::string_view a, std::string_view b) {
     return a < b;
   };
   const auto it = inclusive
       ? std::lower_bound(values.begin(), values.end(), *seekValue, comparator)
       : std::upper_bound(values.begin(), values.end(), *seekValue, comparator);
-
   if (it == values.end()) {
     return std::nullopt;
   }
-
   return std::distance(values.begin(), it);
 }
 
@@ -199,8 +244,7 @@ TrivialEncoding<bool>::TrivialEncoding(
     std::function<void*(uint32_t)> /* stringBufferFactory */,
     const Encoding::Options& options)
     : TypedEncoding<bool, bool>{pool, data, options},
-      bitmap_{data.data() + this->dataOffset() + kPrefixSize},
-      uncompressed_{&pool} {
+      bitmap_{data.data() + this->dataOffset() + kPrefixSize} {
   const auto compressionType =
       static_cast<CompressionType>(data[this->dataOffset()]);
   if (compressionType != CompressionType::Uncompressed) {
@@ -208,15 +252,17 @@ TrivialEncoding<bool>::TrivialEncoding(
         pool,
         compressionType,
         DataType::Undefined,
-        {bitmap_, static_cast<size_t>(data.end() - bitmap_)});
-    bitmap_ = uncompressed_.data();
-    NIMBLE_CHECK(
-        bitmap_ + FixedBitArray::bufferSize(rowCount(), 1) ==
-            uncompressed_.end(),
+        {bitmap_, static_cast<size_t>(data.end() - bitmap_)},
+        options.bufferPool);
+    bitmap_ = uncompressed_->as<char>();
+    NIMBLE_CHECK_EQ(
+        bitmap_ + FixedBitArray::bufferSize(rowCount(), 1),
+        uncompressed_->as<char>() + uncompressed_->size(),
         "Unexpected trivial encoding end");
   } else {
-    NIMBLE_CHECK(
-        bitmap_ + FixedBitArray::bufferSize(rowCount(), 1) == data.end(),
+    NIMBLE_CHECK_EQ(
+        bitmap_ + FixedBitArray::bufferSize(rowCount(), 1),
+        data.end(),
         "Unexpected trivial encoding end");
   }
 }

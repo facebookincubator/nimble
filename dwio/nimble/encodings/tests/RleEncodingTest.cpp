@@ -17,13 +17,12 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/tests/NimbleCompare.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 
 #include <limits>
-#include <type_traits>
 #include <vector>
 
 using namespace facebook;
@@ -45,97 +44,102 @@ class RleEncodingTest : public ::testing::Test {
   }
 
   template <typename T>
-  nimble::Vector<T> toVector(std::initializer_list<T> values) {
-    nimble::Vector<T> vector{pool_.get()};
-    vector.insert(vector.end(), values.begin(), values.end());
-    return vector;
+  std::vector<nimble::Vector<T>> prepareValues() {
+    FAIL() << "unspecialized prepapreValues() should not be called";
+    return {};
   }
 
   template <typename T>
-  std::vector<nimble::Vector<T>> prepareValues() {
-    if constexpr (std::is_same_v<T, double>) {
-      const double dNaN0 = std::numeric_limits<double>::quiet_NaN();
-      const double dNaN1 = std::numeric_limits<double>::signaling_NaN();
-      const double dNaN2 = nimble::EncodingPhysicalType<double>::
-        asEncodingLogicalType((nimble::EncodingPhysicalType<double>::
-                     asEncodingPhysicalType(dNaN0) |
-                   0x3));
-      const double dNaN3 = nimble::EncodingPhysicalType<double>::
-        asEncodingLogicalType((nimble::EncodingPhysicalType<double>::
-                     asEncodingPhysicalType(dNaN0) |
-                   0x5));
-      return {
+  nimble::Vector<T> toVector(std::initializer_list<T> l) {
+    nimble::Vector<T> v{pool_.get()};
+    v.insert(v.end(), l.begin(), l.end());
+    return v;
+  }
+
+  template <typename T>
+  using ET = nimble::EncodingPhysicalType<T>;
+
+  double dNaN0 = std::numeric_limits<double>::quiet_NaN();
+  double dNaN1 = std::numeric_limits<double>::signaling_NaN();
+  double dNaN2 = ET<double>::asEncodingLogicalType(
+      (ET<double>::asEncodingPhysicalType(dNaN0) | 0x3));
+  double dNaN3 = ET<double>::asEncodingLogicalType(
+      (ET<double>::asEncodingPhysicalType(dNaN0) | 0x5));
+
+  template <>
+  std::vector<nimble::Vector<double>> prepareValues() {
+    return {
         toVector({0.0, -0.0}),
         toVector({-0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0}),
         toVector({-0.0, -0.0, -0.0, +0.0, -0.0, +0.0, -0.0, -0.0, -0.0, -0.0}),
         toVector({-2.1, -0.0, -0.0, 3.54, 9.87, -0.0, -0.0, -0.0, -0.0, 10.6}),
         toVector({0.00, 1.11, 2.22, 3.33, 4.44, 5.55, 6.66, 7.77, 8.88, 9.99}),
         toVector(
-          {dNaN0, dNaN0, dNaN0, dNaN1, dNaN1, dNaN2, dNaN3, dNaN3, dNaN0})};
-    } else if constexpr (std::is_same_v<T, float>) {
-      const float fNaN0 = std::numeric_limits<float>::quiet_NaN();
-      const float fNaN1 = std::numeric_limits<float>::signaling_NaN();
-      const float fNaN2 = nimble::EncodingPhysicalType<float>::
-        asEncodingLogicalType((nimble::EncodingPhysicalType<float>::
-                     asEncodingPhysicalType(fNaN0) |
-                   0x3));
-      const float fNaN3 = nimble::EncodingPhysicalType<float>::
-        asEncodingLogicalType((nimble::EncodingPhysicalType<float>::
-                     asEncodingPhysicalType(fNaN0) |
-                   0x5));
-      return {
+            {dNaN0, dNaN0, dNaN0, dNaN1, dNaN1, dNaN2, dNaN3, dNaN3, dNaN0})};
+  }
+
+  float fNaN0 = std::numeric_limits<float>::quiet_NaN();
+  float fNaN1 = std::numeric_limits<float>::signaling_NaN();
+  float fNaN2 = ET<float>::asEncodingLogicalType(
+      (ET<float>::asEncodingPhysicalType(fNaN0) | 0x3));
+  float fNaN3 = ET<float>::asEncodingLogicalType(
+      (ET<float>::asEncodingPhysicalType(fNaN0) | 0x5));
+
+  template <>
+  std::vector<nimble::Vector<float>> prepareValues() {
+    return {
         toVector({0.0f, -0.0f}),
         toVector(
-          {-0.0f,
-           -0.0f,
-           -0.0f,
-           -0.0f,
-           -0.0f,
-           -0.0f,
-           -0.0f,
-           -0.0f,
-           -0.0f,
-           -0.0f}),
+            {-0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f}),
         toVector(
-          {-0.0f,
-           -0.0f,
-           -0.0f,
-           +0.0f,
-           -0.0f,
-           +0.0f,
-           -0.0f,
-           -0.0f,
-           -0.0f,
-           -0.0f}),
+            {-0.0f,
+             -0.0f,
+             -0.0f,
+             +0.0f,
+             -0.0f,
+             +0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f}),
         toVector(
-          {-2.1f,
-           -0.0f,
-           -0.0f,
-           3.54f,
-           9.87f,
-           -0.0f,
-           -0.0f,
-           -0.0f,
-           -0.0f,
-           10.6f}),
+            {-2.1f,
+             -0.0f,
+             -0.0f,
+             3.54f,
+             9.87f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             -0.0f,
+             10.6f}),
         toVector(
-          {0.00f,
-           1.11f,
-           2.22f,
-           3.33f,
-           4.44f,
-           5.55f,
-           6.66f,
-           7.77f,
-           8.88f,
-           9.99f}),
+            {0.00f,
+             1.11f,
+             2.22f,
+             3.33f,
+             4.44f,
+             5.55f,
+             6.66f,
+             7.77f,
+             8.88f,
+             9.99f}),
         toVector(
-          {fNaN0, fNaN0, fNaN0, fNaN1, fNaN1, fNaN2, fNaN3, fNaN3, fNaN0})};
-    } else if constexpr (std::is_same_v<T, int32_t>) {
-      return {toVector({2, 3, 3}), toVector({1, 2, 2, 3, 3, 3, 4, 4, 4, 4})};
-    } else {
-      static_assert(!std::is_same_v<T, T>, "Unsupported test type");
-    }
+            {fNaN0, fNaN0, fNaN0, fNaN1, fNaN1, fNaN2, fNaN3, fNaN3, fNaN0})};
+  }
+
+  template <>
+  std::vector<nimble::Vector<int32_t>> prepareValues() {
+    return {toVector({2, 3, 3}), toVector({1, 2, 2, 3, 3, 3, 4, 4, 4, 4})};
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;

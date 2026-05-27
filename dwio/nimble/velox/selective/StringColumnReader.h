@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <vector>
 #include "dwio/nimble/velox/selective/ChunkedDecoder.h"
 #include "velox/dwio/common/SelectiveColumnReader.h"
 
@@ -44,11 +45,45 @@ class StringColumnReader : public velox::dwio::common::SelectiveColumnReader {
       const override;
 
  protected:
+  // Cached dictionary alphabet and materialized vector for the current chunk's
+  // encoding. Cleared on chunk transitions via the onChunkLoad callback.
+  struct DictionaryState {
+    // Raw alphabet entries extracted from the encoding's dictionary.
+    std::vector<std::string_view> alphabet;
+    // Materialized FlatVector wrapping alphabet for DictionaryVector output.
+    velox::VectorPtr alphabetVector;
+
+    void clear() {
+      alphabet.clear();
+      alphabetVector.reset();
+    }
+  };
+
   ChunkedDecoder decoder_;
+  DictionaryState dictionaryState_;
 
  private:
   bool readsNullsOnly() const final {
     return false;
+  }
+
+  // Populates dictionaryState_ from the current chunk's encoding if not
+  // already set. Registers the onChunkLoad callback on first call.
+  void ensureDictionaryState();
+
+  // Materializes the alphabet FlatVector from dictionaryState_.alphabet
+  // for use in DictionaryVector output.
+  void ensureAlphabetVector();
+
+  // Attempts to read using the dictionary index path. Returns true if the
+  // dict path was taken, false if the caller should fall back to flat read.
+  bool readWithDictionary(
+      int64_t offset,
+      const velox::RowSet& rows,
+      const uint64_t* incomingNulls);
+
+  bool hasDictionaryState() const {
+    return !dictionaryState_.alphabet.empty();
   }
 };
 

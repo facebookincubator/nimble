@@ -17,16 +17,16 @@
 
 #include <span>
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingIdentifier.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/legacy/Encoding.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 
 // A nullable encoding holds a subencoding of non-null values and another
 // subencoding of booleans representing whether each row was null.
@@ -34,7 +34,7 @@
 namespace facebook::nimble::legacy {
 
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 4 bytes: non-null child encoding size (X)
 // X bytes: non-null child encoding bytes
 // Y byes: null child encoding bytes
@@ -100,7 +100,7 @@ NullableEncoding<T>::NullableEncoding(
       indicesBuffer_(this->pool_),
       nullBuffer_(this->pool_) {
   const EncodingFactory factory;
-  const char* pos = data.data() + Encoding::kPrefixSize;
+  const char* pos = data.data() + EncodingPrefix::kFixedPrefixSize;
   const uint32_t nonNullsBytes = encoding::readUint32(pos);
   nonNullValues_ =
       factory.create(*this->pool_, {pos, nonNullsBytes}, stringBufferFactory);
@@ -298,7 +298,7 @@ std::string_view NullableEncoding<T>::encodeNullable(
   std::string_view serializedNulls = selection.template encodeNested<bool>(
       EncodingIdentifiers::Nullable::Nulls, nulls, tempBuffer);
 
-  const uint32_t encodingSize = Encoding::kPrefixSize + 4 +
+  const uint32_t encodingSize = EncodingPrefix::kFixedPrefixSize + 4 +
       serializedValues.size() + serializedNulls.size();
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;

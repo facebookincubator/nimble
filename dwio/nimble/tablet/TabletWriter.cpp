@@ -18,6 +18,7 @@
 
 #include "dwio/nimble/tablet/Compression.h"
 #include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/tablet/FileLayout.h"
 
 namespace facebook::nimble {
 
@@ -209,7 +210,8 @@ void TabletWriter::close() {
                                 stripes.offset(),
                                 stripes.size(),
                                 static_cast<serialization::CompressionType>(
-                                    stripes.compressionType()))
+                                    stripes.compressionType()),
+                                stripes.uncompressedSize().value())
                           : 0,
           !stripeGroups_.empty()
               ? builder.CreateVector<
@@ -221,7 +223,8 @@ void TabletWriter::close() {
                           stripeGroups_[i].offset(),
                           stripeGroups_[i].size(),
                           static_cast<serialization::CompressionType>(
-                              stripeGroups_[i].compressionType()));
+                              stripeGroups_[i].compressionType()),
+                          stripeGroups_[i].uncompressedSize().value());
                     })
               : 0,
           !optionalSections_.empty()
@@ -233,21 +236,27 @@ void TabletWriter::close() {
   auto footerStart = file_->size();
   auto footerCompressionType = writeMetadata(asView(builder));
 
-  // End with the fixed length constants.
-  const uint64_t footerSize64Bit = (file_->size() - footerStart);
+  // Write postscript. The first kPostscriptChecksumedSize bytes are included
+  // in the file checksum; the rest (including the checksum itself) are not.
+  const uint64_t footerSize = file_->size() - footerStart;
   NIMBLE_CHECK_LE(
-      footerSize64Bit,
-      std::numeric_limits<uint32_t>::max(),
-      "Footer size too big.");
-  const uint32_t footerSize = footerSize64Bit;
-  writeWithChecksum({reinterpret_cast<const char*>(&footerSize), 4});
-  writeWithChecksum({reinterpret_cast<const char*>(&footerCompressionType), 1});
-  uint64_t checksum = checksum_->getChecksum();
-  file_->append({reinterpret_cast<const char*>(&options_.checksumType), 1});
-  file_->append({reinterpret_cast<const char*>(&checksum), 8});
-  file_->append({reinterpret_cast<const char*>(&kVersionMajor), 2});
-  file_->append({reinterpret_cast<const char*>(&kVersionMinor), 2});
-  file_->append({reinterpret_cast<const char*>(&kMagicNumber), 2});
+      footerSize, std::numeric_limits<uint32_t>::max(), "Footer size too big.");
+  Postscript ps{
+      static_cast<uint32_t>(footerSize),
+      footerCompressionType,
+      options_.checksumType,
+      kVersionMajor,
+      kVersionMinor};
+  auto psBuf = ps.serialize();
+  writeWithChecksum({psBuf.data(), kPostscriptChecksumedSize});
+  // Patch the checksum value into the serialized buffer. The checksum field
+  // starts after checksumType (1 byte after the checksummed region).
+  const uint64_t checksum = checksum_->getChecksum();
+  constexpr uint32_t kChecksumOffset = kPostscriptChecksumedSize + 1;
+  std::memcpy(psBuf.data() + kChecksumOffset, &checksum, sizeof(checksum));
+  file_->append(
+      {psBuf.data() + kPostscriptChecksumedSize,
+       kPostscriptSize - kPostscriptChecksumedSize});
 
   state_ = State::kClosed;
 }
@@ -381,12 +390,12 @@ CompressionType TabletWriter::writeMetadata(std::string_view metadata) {
   const auto size = metadata.size();
   const bool shouldCompress = size > options_.metadataCompressionThreshold;
   CompressionType compressionType{CompressionType::Uncompressed};
-  std::optional<Vector<char>> compressed;
+  std::optional<velox::BufferPtr> compressed;
   if (shouldCompress) {
-    compressed = ZstdCompression::compress(*pool_, metadata);
+    compressed = ZstdCompression::compress(metadata, pool_);
     if (compressed.has_value()) {
       compressionType = CompressionType::Zstd;
-      metadata = {compressed->data(), compressed->size()};
+      metadata = {compressed.value()->as<char>(), compressed.value()->size()};
     }
   }
   writeWithChecksum(metadata);
@@ -394,10 +403,11 @@ CompressionType TabletWriter::writeMetadata(std::string_view metadata) {
 }
 
 MetadataSection TabletWriter::createMetadataSection(std::string_view metadata) {
+  const auto uncompressedSize = static_cast<uint32_t>(metadata.size());
   auto offset = file_->size();
   auto compressionType = writeMetadata(metadata);
   auto size = static_cast<uint32_t>(file_->size() - offset);
-  return MetadataSection{offset, size, compressionType};
+  return MetadataSection{offset, size, compressionType, uncompressedSize};
 }
 
 void TabletWriter::invokeCloseCallback() {
@@ -519,9 +529,14 @@ TabletWriter::createOptionalMetadataSection(
             return optionalSections[i].second.size();
           }),
       builder.CreateVector<uint8_t>(
-          optionalSections.size(), [&optionalSections](size_t i) {
+          optionalSections.size(),
+          [&optionalSections](size_t i) {
             return static_cast<uint8_t>(
                 optionalSections[i].second.compressionType());
+          }),
+      builder.CreateVector<uint32_t>(
+          optionalSections.size(), [&optionalSections](size_t i) {
+            return optionalSections[i].second.uncompressedSize().value();
           }));
 }
 

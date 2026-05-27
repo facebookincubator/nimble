@@ -25,7 +25,6 @@
 
 #include "dwio/nimble/index/BloomFilter.h"
 #include "dwio/nimble/index/IndexLookup.h"
-#include "dwio/nimble/tablet/Callbacks.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "dwio/nimble/tablet/MetadataCache.h"
 #include "flatbuffers/flatbuffers.h"
@@ -82,14 +81,14 @@ class HashIndex : public IndexLookup {
   static std::unique_ptr<HashIndex> create(
       std::vector<std::string> columns,
       std::unique_ptr<MetadataBuffer> indexMetadata,
-      LoadMetadataFn loadMetadata,
+      std::shared_ptr<MetadataInput> metadataInput,
       velox::memory::MemoryPool* pool);
 
  private:
   HashIndex(
       std::vector<std::string> columns,
       std::unique_ptr<MetadataBuffer> indexMetadata,
-      LoadMetadataFn loadMetadata,
+      std::shared_ptr<MetadataInput> metadataInput,
       velox::memory::MemoryPool* pool);
 
   // Loaded partition data. Raw pointers reference the underlying FlatBuffer
@@ -156,6 +155,7 @@ class HashIndex : public IndexLookup {
   // Partition descriptors and lazily loaded partition data.
   // Always has at least one partition.
   const std::vector<PartitionDescriptor> partitions_;
+  const std::shared_ptr<MetadataInput> metadataInput_;
   mutable MetadataCache<uint32_t, Partition> partitionCache_;
 
   mutable std::atomic_uint64_t numLookups_{0};

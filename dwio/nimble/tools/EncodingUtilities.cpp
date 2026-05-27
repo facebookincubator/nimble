@@ -195,29 +195,6 @@ void traverseEncodings(
           visitor);
       break;
     }
-    case EncodingType::SubIntSplit: {
-      const char* pos = stream.data() + kEncodingPrefixSize;
-      const uint8_t splitCount = encoding::read<uint8_t>(pos);
-      encoding::read<uint8_t>(pos); // reserved
-
-      std::vector<uint32_t> sectionBytes(splitCount);
-      for (uint8_t s = 0; s < splitCount; ++s) {
-        encoding::read<uint8_t>(pos); // bitStart
-        encoding::read<uint8_t>(pos); // bitEnd
-        sectionBytes[s] = encoding::readUint32(pos);
-      }
-
-      for (uint8_t s = 0; s < splitCount; ++s) {
-        traverseEncodings(
-            {pos, sectionBytes[s]},
-            level + 1,
-            s,
-            folly::to<std::string>("Section", static_cast<int>(s)),
-            visitor);
-        pos += sectionBytes[s];
-      }
-      break;
-    }
     case EncodingType::Sentinel: {
       const char* pos = stream.data() + kEncodingPrefixSize + 8;
       traverseEncodings(

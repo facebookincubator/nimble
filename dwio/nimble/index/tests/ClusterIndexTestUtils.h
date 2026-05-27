@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <string>
@@ -29,6 +30,7 @@
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/VeloxWriterOptions.h"
+#include "velox/dwio/common/BufferedInput.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 
@@ -166,6 +168,22 @@ Stream createStream(Buffer& buffer, const StreamSpec& spec);
 /// for testing purposes. This is a friend class of ClusterIndex.
 class ClusterIndexTestHelper {
  public:
+  static std::unique_ptr<ClusterIndex> create(
+      Section rootSection,
+      velox::memory::MemoryPool* pool,
+      std::shared_ptr<MetadataInput> metadataInput,
+      std::shared_ptr<velox::dwio::common::BufferedInput> dataInput,
+      bool pinIndex = false,
+      bool preloadIndex = false) {
+    return std::unique_ptr<ClusterIndex>(new ClusterIndex(
+        std::move(rootSection),
+        std::move(metadataInput),
+        std::move(dataInput),
+        pinIndex,
+        preloadIndex,
+        pool));
+  }
+
   explicit ClusterIndexTestHelper(const ClusterIndex* clusterIndex)
       : clusterIndex_(clusterIndex) {}
 
@@ -194,6 +212,30 @@ class ClusterIndexTestHelper {
     return velox::common::Region{
         partition->index->key_stream_offset(),
         partition->index->key_stream_size()};
+  }
+
+  /// Returns the number of decoded chunks currently cached for the partition.
+  /// Counts populated slots in the per-chunk vector. With pinIndex=true the
+  /// vector has numChunks slots, one per chunk. With pinIndex=false the
+  /// vector has a single shared scratch slot, so the count is at most 1.
+  size_t decodedChunkCount(uint32_t partitionIndex) const {
+    const auto& decodedChunks =
+        clusterIndex_->loadPartition(partitionIndex)->decodedChunks;
+    return std::count_if(
+        decodedChunks.begin(), decodedChunks.end(), [](const auto& c) {
+          return c.data != nullptr;
+        });
+  }
+
+  /// Returns the raw DecodedKeyChunk pointer for the given chunk slot in a
+  /// partition. Used to verify which decode result won the install race.
+  const DecodedKeyChunk* decodedChunkData(
+      uint32_t partitionIndex,
+      uint32_t chunkIndex) const {
+    const auto& decodedChunks =
+        clusterIndex_->loadPartition(partitionIndex)->decodedChunks;
+    NIMBLE_CHECK_LT(chunkIndex, decodedChunks.size());
+    return decodedChunks[chunkIndex].data.get();
   }
 
  private:

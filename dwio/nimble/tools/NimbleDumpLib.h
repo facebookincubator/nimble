@@ -17,7 +17,7 @@
 #include <optional>
 #include <ostream>
 
-#include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
 #include "velox/common/file/File.h"
 
 namespace facebook::nimble::tools {
@@ -59,6 +59,7 @@ class NimbleDumpLib {
   void emitStripeGroupsMetadata(bool noHeader);
   void emitOptionalSectionsMetadata(bool noHeader);
   void emitIndex();
+  void emitStats(bool noHeader);
 
  private:
   std::shared_ptr<velox::memory::MemoryPool> pool_;

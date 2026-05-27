@@ -20,9 +20,9 @@
 #include <string_view>
 
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "folly/io/IOBuf.h"
+#include "velox/buffer/Buffer.h"
 
 namespace facebook::nimble {
 
@@ -44,9 +44,9 @@ class InMemoryChunkedStream : public ChunkedStream {
   InMemoryChunkedStream(
       velox::memory::MemoryPool& memoryPool,
       std::unique_ptr<StreamLoader> streamLoader)
-      : streamLoader_{std::move(streamLoader)},
-        pos_{nullptr},
-        uncompressed_{&memoryPool} {}
+      : memoryPool_{memoryPool},
+        streamLoader_{std::move(streamLoader)},
+        pos_{nullptr} {}
 
   bool hasNext() override;
 
@@ -59,10 +59,11 @@ class InMemoryChunkedStream : public ChunkedStream {
  private:
   void ensureLoaded();
 
+  velox::memory::MemoryPool& memoryPool_;
   std::unique_ptr<StreamLoader> streamLoader_;
   std::string_view stream_;
   const char* pos_;
-  Vector<char> uncompressed_;
+  velox::BufferPtr uncompressed_;
 };
 
 } // namespace facebook::nimble

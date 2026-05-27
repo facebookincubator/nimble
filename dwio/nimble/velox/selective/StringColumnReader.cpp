@@ -17,7 +17,10 @@
 #include "dwio/nimble/velox/selective/StringColumnReader.h"
 
 #include "dwio/nimble/encodings/legacy/EncodingUtils.h"
+#include "dwio/nimble/velox/selective/NimbleData.h"
+#include "velox/common/testutil/TestValue.h"
 #include "velox/dwio/common/SelectiveColumnReaderInternal.h"
+#include "velox/vector/DictionaryVector.h"
 
 namespace facebook::nimble {
 
@@ -29,21 +32,116 @@ uint64_t StringColumnReader::skip(uint64_t numValues) {
   return numValues;
 }
 
+void StringColumnReader::ensureDictionaryState() {
+  if (hasDictionaryState()) {
+    return;
+  }
+  // Invalidate dictionary state when a new chunk is loaded, since the new
+  // chunk may have a different encoding or dictionary alphabet.
+  decoder_.setOnChunkLoad([this] { dictionaryState_.clear(); });
+  dictionaryState_.alphabet = buildEncodingDictionaryAlphabet<std::string_view>(
+      decoder_.currentEncoding());
+}
+
+bool StringColumnReader::readWithDictionary(
+    int64_t offset,
+    const RowSet& rows,
+    const uint64_t* incomingNulls) {
+  // Dictionary path requires: no filter pushdown, no value hook, non-legacy
+  // encoding path (zero-copy), session property enabled, single-chunk read,
+  // and dictionary-convertible encoding.
+  if (scanSpec_->hasFilter() || scanSpec_->valueHook() ||
+      !formatData().stringDecoderZeroCopy() ||
+      !static_cast<const NimbleData&>(formatData())
+           .nimblePreserveDictionaryEncoding()) {
+    return false;
+  }
+  decoder_.ensureLoaded();
+  const auto numRequestedRows = rows.back() + 1;
+  // The decoder must have enough remaining values in the current chunk to
+  // cover both the skip (from readOffset_ to offset, executed by prepareRead
+  // → seekTo → skip) and the read range (rows 0 through rows.back()). If
+  // this total exceeds remainingValues, the skip or read would cross a chunk
+  // boundary, invalidating the dictionary state built below.
+  const auto numValuesNeeded = offset - readOffset_ + numRequestedRows;
+  if (decoder_.remainingValues() < numValuesNeeded ||
+      !decoder_.dictionaryConvertible()) {
+    return false;
+  }
+  // NOTE: ensureDictionaryState must move back after readDictionaryIndices
+  // when nested encodings (MC, RLE) are supported, since the dictionary
+  // alphabet may not be available until the encoding is actually read.
+  ensureDictionaryState();
+  velox::common::testutil::TestValue::adjust(
+      "facebook::nimble::StringColumnReader::readWithDictionary",
+      &dictionaryState_.alphabet);
+  prepareRead<int32_t>(offset, rows, incomingNulls);
+  dwio::common::StringColumnReadWithVisitorHelper<
+      /*kEncodingHasNulls=*/false,
+      /*kDictionary=*/true>(*this, rows)([&](auto visitor) {
+    auto dictVisitor = visitor.toStringDictionaryColumnVisitor();
+    decoder_.readDictionaryIndices(dictVisitor);
+  });
+  readOffset_ += numRequestedRows;
+  return true;
+}
+
 void StringColumnReader::read(
     int64_t offset,
     const RowSet& rows,
     const uint64_t* incomingNulls) {
+  if (readWithDictionary(offset, rows, incomingNulls)) {
+    return;
+  }
+  dictionaryState_.clear();
   prepareRead<std::string_view>(offset, rows, incomingNulls);
-  dwio::common::StringColumnReadWithVisitorHelper<false, false>(
+  dwio::common::StringColumnReadWithVisitorHelper<
+      /*kEncodingHasNulls=*/false,
+      /*kDictionary=*/false>(
       *this, rows)([&](auto visitor) { decoder_.readWithVisitor(visitor); });
   readOffset_ += rows.back() + 1;
 }
 
+void StringColumnReader::ensureAlphabetVector() {
+  if (dictionaryState_.alphabetVector != nullptr) {
+    return;
+  }
+  const auto alphabetSize =
+      static_cast<vector_size_t>(dictionaryState_.alphabet.size());
+  auto values = AlignedBuffer::allocate<StringView>(alphabetSize, pool_);
+  auto* rawValues = values->asMutable<StringView>();
+  for (vector_size_t i = 0; i < alphabetSize; ++i) {
+    rawValues[i] = StringView(
+        dictionaryState_.alphabet[i].data(),
+        dictionaryState_.alphabet[i].size());
+  }
+  auto buffers = stringBuffers_;
+  dictionaryState_.alphabetVector = std::make_shared<FlatVector<StringView>>(
+      pool_,
+      fileType_->type(),
+      BufferPtr(nullptr),
+      alphabetSize,
+      std::move(values),
+      std::move(buffers));
+}
+
 void StringColumnReader::getValues(const RowSet& rows, VectorPtr* result) {
-  rawStringBuffer_ = nullptr;
-  rawStringSize_ = 0;
-  rawStringUsed_ = 0;
-  getFlatValues<StringView, StringView>(rows, result, fileType_->type());
+  if (hasDictionaryState()) {
+    compactScalarValues<int32_t, int32_t>(rows, /*isFinal=*/false);
+    ensureAlphabetVector();
+
+    *result = std::make_shared<DictionaryVector<StringView>>(
+        pool_,
+        resultNulls(),
+        numValues_,
+        dictionaryState_.alphabetVector,
+        values_);
+  } else {
+    rawStringBuffer_ = nullptr;
+    rawStringSize_ = 0;
+    rawStringUsed_ = 0;
+    getFlatValues<StringView, StringView>(rows, result, fileType_->type());
+  }
 }
 
 bool StringColumnReader::estimateMaterializedSize(

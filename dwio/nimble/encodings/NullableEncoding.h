@@ -17,14 +17,14 @@
 
 #include <span>
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingIdentifier.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 
 // A nullable encoding holds a subencoding of non-null values and another
 // subencoding of booleans representing whether each row was null.
@@ -32,7 +32,7 @@
 namespace facebook::nimble {
 
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 4 bytes: non-null child encoding size (X)
 // X bytes: non-null child encoding bytes
 // Y bytes: null child encoding bytes
@@ -328,15 +328,14 @@ template <typename V>
 void NullableEncoding<T>::readIndicesWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
+  NIMBLE_CHECK(
+      this->dictionaryEnabled(),
+      "readIndicesWithVisitor requires dictionary-enabled inner encoding");
+  NIMBLE_CHECK(
+      !V::kHasFilter && !V::kHasHook,
+      "readIndicesWithVisitor should only be invoked in dictionary fast path");
   materializeNullsForVisitor(visitor, params);
-  NIMBLE_CHECK_EQ(
-      nonNullValues_->encodingType(),
-      EncodingType::Dictionary,
-      "readIndicesWithVisitor called on NullableEncoding with non-dictionary "
-      "inner encoding: {}",
-      nonNullValues_->encodingType());
-  auto& dictEnc = static_cast<DictionaryEncoding<T>&>(*nonNullValues_);
-  dictEnc.readIndicesWithVisitor(visitor, params);
+  callReadIndicesWithVisitor(*nonNullValues_, visitor, params);
 }
 
 template <typename T>

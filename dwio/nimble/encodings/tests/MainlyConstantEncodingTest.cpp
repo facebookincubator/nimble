@@ -17,13 +17,12 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/tests/NimbleCompare.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 
 #include <limits>
-#include <type_traits>
 #include <vector>
 
 using namespace facebook;
@@ -46,42 +45,51 @@ class MainlyConstantEncodingTest : public ::testing::Test {
 
   template <typename T>
   std::vector<nimble::Vector<T>> prepareValues() {
-    auto toVector = [this]<typename ValueType>(
-                         std::initializer_list<ValueType> values) {
-      nimble::Vector<ValueType> vector{pool_.get()};
-      vector.insert(vector.end(), values.begin(), values.end());
-      return vector;
-    };
+    FAIL() << "unspecialized prepapreValues() should not be called";
+    return {};
+  }
 
-    if constexpr (std::is_same_v<T, double>) {
-      const double dNaN0 = std::numeric_limits<double>::quiet_NaN();
-      const double dNaN1 = std::numeric_limits<double>::signaling_NaN();
-      const double dNaN2 = nimble::EncodingPhysicalType<double>::
-          asEncodingLogicalType((nimble::EncodingPhysicalType<double>::
-                                     asEncodingPhysicalType(dNaN0) |
-                                 0x3));
-      return {
-          toVector({0.0}),
-          toVector({0.0, 0.00, 0.12}),
-          toVector({-2.1, -2.1, -2.3, -2.1, -2.1}),
-          toVector({dNaN0, dNaN0, dNaN1, dNaN2, dNaN0})};
-    } else if constexpr (std::is_same_v<T, float>) {
-      const float fNaN0 = std::numeric_limits<float>::quiet_NaN();
-      const float fNaN1 = std::numeric_limits<float>::signaling_NaN();
-      const float fNaN2 = nimble::EncodingPhysicalType<float>::
-          asEncodingLogicalType((nimble::EncodingPhysicalType<float>::
-                                     asEncodingPhysicalType(fNaN0) |
-                                 0x3));
-      return {
-          toVector({0.0f}),
-          toVector({0.0f, 0.00f, 0.12f}),
-          toVector({-2.1f, -2.1f, -2.3f, -2.1f, -2.1f}),
-          toVector({fNaN0, fNaN0, fNaN1, fNaN2, fNaN2})};
-    } else if constexpr (std::is_same_v<T, int32_t>) {
-      return {toVector({3, 3, 3, 1, 3})};
-    } else {
-      static_assert(!std::is_same_v<T, T>, "Unsupported test type");
-    }
+  template <typename T>
+  nimble::Vector<T> toVector(std::initializer_list<T> l) {
+    nimble::Vector<T> v{pool_.get()};
+    v.insert(v.end(), l.begin(), l.end());
+    return v;
+  }
+
+  template <typename T>
+  using ET = nimble::EncodingPhysicalType<T>;
+
+  double dNaN0 = std::numeric_limits<double>::quiet_NaN();
+  double dNaN1 = std::numeric_limits<double>::signaling_NaN();
+  double dNaN2 = ET<double>::asEncodingLogicalType(
+      (ET<double>::asEncodingPhysicalType(dNaN0) | 0x3));
+
+  template <>
+  std::vector<nimble::Vector<double>> prepareValues() {
+    return {
+        toVector({0.0}),
+        toVector({0.0, 0.00, 0.12}),
+        toVector({-2.1, -2.1, -2.3, -2.1, -2.1}),
+        toVector({dNaN0, dNaN0, dNaN1, dNaN2, dNaN0})};
+  }
+
+  float fNaN0 = std::numeric_limits<float>::quiet_NaN();
+  float fNaN1 = std::numeric_limits<float>::signaling_NaN();
+  float fNaN2 = ET<float>::asEncodingLogicalType(
+      (ET<float>::asEncodingPhysicalType(fNaN0) | 0x3));
+
+  template <>
+  std::vector<nimble::Vector<float>> prepareValues() {
+    return {
+        toVector({0.0f}),
+        toVector({0.0f, 0.00f, 0.12f}),
+        toVector({-2.1f, -2.1f, -2.3f, -2.1f, -2.1f}),
+        toVector({fNaN0, fNaN0, fNaN1, fNaN2, fNaN2})};
+  }
+
+  template <>
+  std::vector<nimble::Vector<int32_t>> prepareValues() {
+    return {toVector({3, 3, 3, 1, 3})};
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;

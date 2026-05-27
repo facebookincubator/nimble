@@ -21,7 +21,10 @@
 #include "dwio/nimble/index/HashIndex.h"
 #include "dwio/nimble/index/SortedIndex.h"
 #include "dwio/nimble/tablet/HashIndexGenerated.h"
+#include "dwio/nimble/tablet/MetadataInput.h"
 #include "dwio/nimble/tablet/SortedIndexGenerated.h"
+#include "velox/dwio/common/BufferedInput.h"
+#include "velox/dwio/common/SeekableInputStream.h"
 
 namespace facebook::nimble::index {
 
@@ -92,23 +95,22 @@ DenseIndexRegistry::parseDescriptors(
 std::unique_ptr<DenseIndexRegistry> DenseIndexRegistry::create(
     std::optional<Section> hashSection,
     std::optional<Section> sortedSection,
-    LoadMetadataFn loadMetadata,
-    LoadDataFn loadData,
+    const IndexLookup::Options& options,
     velox::memory::MemoryPool* pool) {
+  options.validate();
   if (!hashSection.has_value() && !sortedSection.has_value()) {
     return nullptr;
   }
+  auto metadataInput = createIndexMetadataInput(options);
+  auto dataInput = createIndexDataInput(options);
   auto registry = std::unique_ptr<DenseIndexRegistry>(new DenseIndexRegistry());
   if (hashSection.has_value()) {
     registry->registerHashIndices(
-        std::move(hashSection.value()), loadMetadata, pool);
+        std::move(hashSection.value()), metadataInput, pool);
   }
   if (sortedSection.has_value()) {
     registry->registerSortedIndices(
-        std::move(sortedSection.value()),
-        loadMetadata,
-        std::move(loadData),
-        pool);
+        std::move(sortedSection.value()), metadataInput, dataInput, pool);
   }
   registry->validate();
   return registry;
@@ -127,41 +129,46 @@ void DenseIndexRegistry::validate() const {
 
 void DenseIndexRegistry::registerHashIndices(
     Section directorySection,
-    LoadMetadataFn loadMetadata,
+    std::shared_ptr<MetadataInput> metadataInput,
     velox::memory::MemoryPool* pool) {
   hashDescriptors_ = parseDescriptors<serialization::HashIndexDirectory>(
       directorySection, "Hash index");
 
+  // Always pin: findHashIndex returns raw pointers, so entries must stay alive.
   hashIndexCache_ = std::make_unique<MetadataCache<uint32_t, HashIndex>>(
-      [this, loadMetadata = std::move(loadMetadata), pool](
+      [this, metadataInput, pool](
           uint32_t index) -> std::shared_ptr<HashIndex> {
         const auto& descriptor = hashDescriptors_[index];
-        auto indexMetadata = loadMetadata(descriptor.section);
-        NIMBLE_CHECK_NOT_NULL(indexMetadata);
+        auto results = metadataInput->load({&descriptor.section, 1});
+        NIMBLE_CHECK_EQ(results.size(), 1);
+        auto indexMetadata =
+            std::make_unique<MetadataBuffer>(std::move(*results.front()));
         return HashIndex::create(
-            descriptor.columns, std::move(indexMetadata), loadMetadata, pool);
+            descriptor.columns, std::move(indexMetadata), metadataInput, pool);
       },
       /*pinEntries=*/true);
 }
 
 void DenseIndexRegistry::registerSortedIndices(
     Section directorySection,
-    LoadMetadataFn loadMetadata,
-    LoadDataFn loadData,
+    std::shared_ptr<MetadataInput> metadataInput,
+    std::shared_ptr<velox::dwio::common::BufferedInput> dataInput,
     velox::memory::MemoryPool* pool) {
   sortedDescriptors_ = parseDescriptors<serialization::SortedIndexDirectory>(
       directorySection, "Sorted index");
 
+  // Always pin: findSortedIndex returns raw pointers, so entries must stay
+  // alive.
   sortedIndexCache_ = std::make_unique<MetadataCache<uint32_t, SortedIndex>>(
-      [this,
-       loadMetadata = std::move(loadMetadata),
-       loadData = std::move(loadData),
-       pool](uint32_t index) -> std::shared_ptr<SortedIndex> {
+      [this, metadataInput, dataInput, pool](
+          uint32_t index) -> std::shared_ptr<SortedIndex> {
         const auto& descriptor = sortedDescriptors_[index];
-        auto indexMetadata = loadMetadata(descriptor.section);
-        NIMBLE_CHECK_NOT_NULL(indexMetadata);
+        auto results = metadataInput->load({&descriptor.section, 1});
+        NIMBLE_CHECK_EQ(results.size(), 1);
+        auto indexMetadata =
+            std::make_unique<MetadataBuffer>(std::move(*results.front()));
         return SortedIndex::create(
-            descriptor.columns, std::move(indexMetadata), loadData, pool);
+            descriptor.columns, std::move(indexMetadata), dataInput, pool);
       },
       /*pinEntries=*/true);
 }

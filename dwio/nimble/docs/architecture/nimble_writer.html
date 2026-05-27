@@ -1,0 +1,1110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nimble Writer Internals</title>
+<style>
+  :root {
+    --bg: #1e1e2e;
+    --surface: #252536;
+    --surface2: #2a2a3d;
+    --border: #3b3b54;
+    --text: #cdd6f4;
+    --text-dim: #8888aa;
+    --accent: #89b4fa;
+    --green: #a6e3a1;
+    --red: #f38ba8;
+    --yellow: #f9e2af;
+    --peach: #fab387;
+    --mauve: #cba6f7;
+    --teal: #94e2d5;
+    --pink: #f5c2e7;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  .container { max-width: 1600px; margin: 0 auto; padding: 2rem; }
+  h1 { font-size: 2.2rem; color: var(--accent); margin-bottom: 0.5rem; font-weight: 700; }
+  .subtitle { color: var(--text-dim); font-size: 1rem; margin-bottom: 2rem; }
+  nav {
+    position: sticky; top: 0; z-index: 100; background: var(--bg);
+    border-bottom: 1px solid var(--border); padding: 0.75rem 0; margin-bottom: 2rem;
+  }
+  nav .nav-inner {
+    max-width: 1600px; margin: 0 auto; padding: 0 2rem;
+    display: flex; gap: 0.5rem; flex-wrap: wrap;
+  }
+  nav a {
+    color: var(--text-dim); text-decoration: none; font-size: 0.85rem;
+    padding: 0.3rem 0.7rem; border-radius: 6px; transition: all 0.2s; border: 1px solid transparent;
+  }
+  nav a:hover { color: var(--accent); background: var(--surface); border-color: var(--border); }
+
+  h2 {
+    font-size: 1.5rem; color: var(--green); margin-bottom: 1rem; padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--border); display: flex; align-items: center; gap: 0.5rem;
+  }
+  h2 .tag {
+    font-size: 0.7rem; background: var(--surface2); color: var(--text-dim);
+    padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 400;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  h3 { font-size: 1.15rem; color: var(--peach); margin: 1.5rem 0 0.75rem; }
+  h4 { font-size: 1rem; color: var(--mauve); margin: 1.2rem 0 0.5rem; }
+  p { margin-bottom: 0.8rem; }
+
+  pre {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.8rem; line-height: 1.5; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem;
+    overflow-x: auto; margin-bottom: 1.5rem; white-space: pre; tab-size: 2;
+  }
+  pre .comment { color: var(--text-dim); }
+  pre .highlight { color: var(--yellow); }
+  pre .key { color: var(--accent); }
+  pre .val { color: var(--green); }
+  pre .alert { color: var(--red); font-weight: 600; }
+  pre .note { color: var(--peach); }
+  pre .section { color: var(--mauve); font-weight: 600; }
+
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85em;
+    background: var(--surface2); padding: 0.15em 0.4em; border-radius: 4px; color: var(--yellow);
+  }
+
+  details { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 1rem; overflow: hidden; }
+  details[open] { border-color: var(--accent); }
+  summary {
+    padding: 1rem 1.25rem; cursor: pointer; font-weight: 600; color: var(--accent);
+    user-select: none; display: flex; align-items: center; gap: 0.5rem; transition: background 0.2s;
+  }
+  summary:hover { background: var(--surface2); }
+  summary::marker { content: ''; }
+  summary::before { content: '\25B6'; font-size: 0.7rem; transition: transform 0.2s; color: var(--text-dim); }
+  details[open] summary::before { transform: rotate(90deg); }
+  summary .phase-tag {
+    font-size: 0.7rem; padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: 0.05em; margin-left: auto;
+  }
+  .phase-tag.write { background: #1a3a2a; color: var(--green); }
+  .phase-tag.chunk { background: #3a2a1a; color: var(--peach); }
+  .phase-tag.flush { background: #3a1a2a; color: var(--red); }
+  .phase-tag.close { background: #2a1a3a; color: var(--mauve); }
+  .phase-tag.setup { background: #1a2a3a; color: var(--teal); }
+  .phase-tag.data  { background: #2a2a1a; color: var(--yellow); }
+  .detail-content { padding: 0 1.25rem 1.25rem; }
+  .detail-content pre { margin-bottom: 1rem; border: 1px solid var(--border); background: var(--bg); }
+
+  .insight {
+    background: linear-gradient(135deg, #1a2a3a, #1a3a2a); border: 1px solid var(--teal);
+    border-radius: 10px; padding: 1.25rem; margin: 1.5rem 0;
+  }
+  .insight .label { color: var(--teal); font-weight: 600; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
+  .insight p { color: var(--text); margin: 0; }
+
+  .memory-state {
+    background: var(--bg); border: 2px solid var(--border); border-radius: 8px;
+    padding: 1rem 1.25rem; margin: 1rem 0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.82rem; line-height: 1.6;
+  }
+  .memory-state .header { color: var(--accent); font-weight: 600; margin-bottom: 0.5rem; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.08em; }
+
+  .arch-box { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; margin-bottom: 1.5rem; }
+  .tree {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.9rem; line-height: 1.7;
+  }
+  .tree .node { color: var(--yellow); font-weight: 600; }
+  .tree .desc { color: var(--text-dim); }
+  .tree .branch { color: var(--border); }
+
+  .file-layout { display: flex; flex-direction: column; gap: 2px; margin: 1rem 0; }
+  .file-block {
+    padding: 0.5rem 1rem; border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .file-block.magic { background: #2a2a3d; color: var(--mauve); }
+  .file-block.stripe { background: #1a3a2a; color: var(--green); }
+  .file-block.group { background: #3a2a1a; color: var(--peach); }
+  .file-block.index { background: #2a1a3a; color: var(--mauve); }
+  .file-block.optional { background: #1a2a3a; color: var(--teal); }
+  .file-block.footer { background: #3a1a2a; color: var(--red); }
+  .file-block .fn { color: var(--text-dim); font-size: 0.75rem; }
+
+  /* === TWO-COLUMN LAYOUT === */
+  .split-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+    margin-bottom: 2.5rem;
+    align-items: start;
+  }
+  .split-row > .left-panel { min-width: 0; }
+  .split-row > .right-viz {
+    position: sticky;
+    top: 60px;
+    align-self: start;
+  }
+  .viz-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 1rem; margin-bottom: 1rem;
+  }
+  .viz-card .viz-title {
+    color: var(--accent); font-weight: 600; font-size: 0.8rem;
+    text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.75rem;
+  }
+  .viz-card svg { display: block; width: 100%; height: auto; max-width: 440px; margin: 0 auto; }
+
+  .full-width { margin-bottom: 2.5rem; }
+
+  @media (max-width: 1100px) {
+    .split-row { grid-template-columns: 1fr; }
+    .split-row > .right-viz { position: static; }
+    .container { max-width: 900px; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-inner">
+    <a href="#architecture">Architecture</a>
+    <a href="#call-flow">Call Flow</a>
+    <a href="#file-layout">File Layout</a>
+    <a href="#phase1">Phase 1: Write</a>
+    <a href="#phase2">Phase 2: Chunking</a>
+    <a href="#phase3">Phase 3: Stripe Flush</a>
+  </div>
+</nav>
+
+<div class="container">
+
+  <h1>Nimble Writer Internals</h1>
+  <p class="subtitle">Standalone core logic &mdash; append-only columnar file writer (<code>facebook::nimble::VeloxWriter</code>)</p>
+
+  <!-- ============================================================ -->
+  <!-- ARCHITECTURE — full width -->
+  <!-- ============================================================ -->
+  <section id="architecture" class="full-width">
+    <h2>Architecture <span class="tag">Overview</span></h2>
+    <div class="split-row" style="grid-template-columns:1fr 1fr">
+      <div class="arch-box">
+        <div class="tree">
+          <span class="node">VeloxWriter</span> <span class="desc">(orchestrator)</span><br>
+          <span class="branch">├──</span> <span class="node">FieldWriter tree</span> <span class="desc">(per-column writers → StreamData)</span><br>
+          <span class="branch">├──</span> <span class="node">WriterContext</span> <span class="desc">(owns streams_, MemoryPool, FlushPolicy)</span><br>
+          <span class="branch">├──</span> <span class="node">IndexWriters</span> <span class="desc">(ChunkIndex, ClusterIndex)</span><br>
+          <span class="branch">├──</span> <span class="node">TabletWriter</span> <span class="desc">(file I/O, stripes, footer)</span><br>
+          <span class="branch">└──</span> <span class="node">Disk</span> <span class="desc">(TabletWriter → file_-&gt;append())</span>
+        </div>
+      </div>
+      <div>
+        <svg viewBox="0 0 400 284" xmlns="http://www.w3.org/2000/svg">
+
+          <defs>
+            <marker id="ad" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#8888aa" stroke-width="1.2"/></marker>
+            <marker id="adb" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#89b4fa" stroke-width="1.2"/></marker>
+          </defs>
+
+          <!-- RowVector input -->
+          <rect x="50" y="4" width="120" height="22" rx="5" fill="#252536" stroke="#89b4fa" stroke-width="1.2"/>
+          <text x="110" y="19" text-anchor="middle" fill="#89b4fa" font-family="monospace" font-size="8" font-weight="600">RowVector input</text>
+          <line x1="110" y1="26" x2="110" y2="42" stroke="#8888aa" stroke-width="1.2" marker-end="url(#ad)"/>
+
+          <!-- VeloxWriter pipeline -->
+          <rect x="30" y="46" width="160" height="200" rx="8" fill="#252536" stroke="#89b4fa" stroke-width="1.5"/>
+          <text x="110" y="62" text-anchor="middle" fill="#89b4fa" font-family="monospace" font-size="9" font-weight="600">VeloxWriter</text>
+
+          <!-- Step 1: write() -->
+          <rect x="42" y="70" width="136" height="20" rx="4" fill="#2a2a3d" stroke="#89b4fa" stroke-width="0.8"/>
+          <text x="110" y="84" text-anchor="middle" fill="#89b4fa" font-family="monospace" font-size="7">1. write()</text>
+          <line x1="180" y1="80" x2="252" y2="80" stroke="#f9e2af" stroke-width="1.2" marker-end="url(#ad)"/>
+
+          <!-- Step 2: addIndexKey() -->
+          <rect x="42" y="96" width="136" height="20" rx="4" fill="#2a2a3d" stroke="#89b4fa" stroke-width="0.8"/>
+          <text x="110" y="110" text-anchor="middle" fill="#89b4fa" font-family="monospace" font-size="7">2. addIndexKey()</text>
+          <line x1="180" y1="106" x2="252" y2="30" stroke="#cba6f7" stroke-width="1.2" marker-end="url(#ad)"/>
+
+          <!-- Step 3: evaluateFlushPolicy() -->
+          <rect x="42" y="122" width="136" height="20" rx="4" fill="#2a2a3d" stroke="#89b4fa" stroke-width="0.8"/>
+          <text x="110" y="136" text-anchor="middle" fill="#89b4fa" font-family="monospace" font-size="7">3. evaluateFlushPolicy()</text>
+          <!-- arrow from step 3 to chunk+encode box (top edge) -->
+          <line x1="180" y1="142" x2="210" y2="153" stroke="#89b4fa" stroke-width="1" marker-end="url(#ad)"/>
+
+          <!-- arrow from streams_ r_n box to encodedStreams_ -->
+          <!-- chunk+encode box -->
+          <rect x="196" y="155" width="32" height="26" rx="4" fill="#3a2a1a" stroke="#fab387" stroke-width="0.8"/>
+          <text x="212" y="165" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="5" font-weight="600">chunk</text>
+          <text x="212" y="172" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="5">+</text>
+          <text x="212" y="179" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="5" font-weight="600">encode</text>
+          <!-- arrow from chunk+encode to encodedStreams_ -->
+          <line x1="194" y1="165" x2="166" y2="165" stroke="#fab387" stroke-width="1.2" marker-end="url(#ad)"/>
+          <!-- arrow from streams_ r_n to chunk+encode -->
+          <line x1="262" y1="165" x2="230" y2="165" stroke="#fab387" stroke-width="1" marker-end="url(#ad)"/>
+
+          <!-- encodedStreams_ (owned by VeloxWriter) -->
+          <text x="52" y="156" fill="#fab387" font-family="monospace" font-size="5">encodedStreams_:</text>
+          <rect x="52"  y="159" width="14" height="11" rx="2" fill="#3a2a1a" stroke="#fab38760"/>
+          <text x="59"  y="167" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="3">r_n</text>
+          <rect x="68"  y="159" width="14" height="11" rx="2" fill="#3a2a1a" stroke="#fab387"/>
+          <text x="75"  y="167" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="3">A_d</text>
+          <rect x="84"  y="159" width="14" height="11" rx="2" fill="#3a2a1a" stroke="#fab38780"/>
+          <text x="91"  y="167" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="3">A_n</text>
+          <rect x="100" y="159" width="14" height="11" rx="2" fill="#3a2a1a" stroke="#fab387"/>
+          <text x="107" y="167" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="3">B_d</text>
+          <rect x="116" y="159" width="14" height="11" rx="2" fill="#3a2a1a" stroke="#fab387"/>
+          <text x="123" y="167" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="3">C_b</text>
+          <rect x="132" y="159" width="14" height="11" rx="2" fill="#3a2a1a" stroke="#fab38780"/>
+          <text x="139" y="167" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="3">C_l</text>
+          <rect x="148" y="159" width="14" height="11" rx="2" fill="#3a2a1a" stroke="#fab38760"/>
+          <text x="155" y="167" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="3">C_n</text>
+
+          <!-- Step 4: writeStripe() -->
+          <rect x="42" y="178" width="136" height="28" rx="4" fill="#2a2a3d" stroke="#f38ba8" stroke-width="0.8"/>
+          <text x="110" y="192" text-anchor="middle" fill="#f38ba8" font-family="monospace" font-size="7">4. writeStripe()</text>
+          <!-- arrow from step 4 to chunk+encode box -->
+          <!-- arrow from step 4 to chunk+encode box (bottom edge) -->
+          <line x1="180" y1="188" x2="210" y2="183" stroke="#f38ba8" stroke-width="1" marker-end="url(#ad)"/>
+          <line x1="180" y1="192" x2="252" y2="220" stroke="#f38ba8" stroke-width="1.2" marker-end="url(#ad)"/>
+
+          <!-- Step 5: close() -->
+          <rect x="42" y="214" width="136" height="20" rx="4" fill="#2a2a3d" stroke="#cba6f7" stroke-width="0.8"/>
+          <text x="110" y="228" text-anchor="middle" fill="#cba6f7" font-family="monospace" font-size="7">5. close()</text>
+
+          <!-- RIGHT: IndexWriters (above FieldWriter) -->
+          <rect x="256" y="4" width="144" height="44" rx="5" fill="#252536" stroke="#cba6f7" stroke-width="1"/>
+          <text x="328" y="18" text-anchor="middle" fill="#cba6f7" font-family="monospace" font-size="7" font-weight="600">IndexWriters</text>
+          <text x="264" y="30" fill="#8888aa" font-family="monospace" font-size="5">ChunkIndex (offsets, min/max)</text>
+          <text x="264" y="42" fill="#8888aa" font-family="monospace" font-size="5">ClusterIndex (sorted keys)</text>
+
+          <!-- RIGHT: FieldWriters -->
+          <rect x="256" y="56" width="144" height="42" rx="6" fill="#252536" stroke="#f9e2af" stroke-width="1"/>
+          <text x="328" y="70" text-anchor="middle" fill="#f9e2af" font-family="monospace" font-size="7" font-weight="600">FieldWriter tree</text>
+          <rect x="264" y="76" width="32" height="14" rx="3" fill="#2a2a3d" stroke="#3b3b54"/>
+          <text x="280" y="87" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="6">int</text>
+          <rect x="300" y="76" width="32" height="14" rx="3" fill="#2a2a3d" stroke="#3b3b54"/>
+          <text x="316" y="87" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="6">dbl</text>
+          <rect x="336" y="76" width="32" height="14" rx="3" fill="#2a2a3d" stroke="#3b3b54"/>
+          <text x="352" y="87" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="6">str</text>
+
+          <!-- RIGHT: WriterContext -->
+          <rect x="256" y="118" width="144" height="76" rx="5" fill="#252536" stroke="#94e2d5" stroke-width="1"/>
+          <text x="328" y="132" text-anchor="middle" fill="#94e2d5" font-family="monospace" font-size="7" font-weight="600">WriterContext</text>
+          <text x="264" y="155" fill="#a6e3a1" font-family="monospace" font-size="5">streams_:</text>
+          <rect x="264" y="159" width="16" height="11" rx="2" fill="#1a3a2a" stroke="#a6e3a150"/>
+          <text x="272" y="167" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="4">r_n</text>
+          <rect x="282" y="159" width="16" height="11" rx="2" fill="#1a3a2a" stroke="#a6e3a1"/>
+          <text x="290" y="167" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="4">A_d</text>
+          <rect x="300" y="159" width="16" height="11" rx="2" fill="#1a3a2a" stroke="#a6e3a180"/>
+          <text x="308" y="167" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="4">A_n</text>
+          <rect x="318" y="159" width="16" height="11" rx="2" fill="#1a3a2a" stroke="#a6e3a1"/>
+          <text x="326" y="167" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="4">B_d</text>
+          <rect x="336" y="159" width="16" height="11" rx="2" fill="#1a3a2a" stroke="#a6e3a1"/>
+          <text x="344" y="167" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="4">C_b</text>
+          <rect x="354" y="159" width="16" height="11" rx="2" fill="#1a3a2a" stroke="#a6e3a180"/>
+          <text x="362" y="167" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="4">C_l</text>
+          <rect x="372" y="159" width="16" height="11" rx="2" fill="#1a3a2a" stroke="#a6e3a150"/>
+          <text x="380" y="167" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="4">C_n</text>
+          <!-- mapping lines from FieldWriter columns to streams -->
+          <line x1="280" y1="90" x2="290" y2="157" stroke="#a6e3a1" stroke-width="0.8" stroke-dasharray="2,2"/>
+          <line x1="280" y1="90" x2="308" y2="157" stroke="#a6e3a1" stroke-width="0.8" stroke-dasharray="2,2"/>
+          <line x1="316" y1="90" x2="326" y2="157" stroke="#a6e3a1" stroke-width="0.8" stroke-dasharray="2,2"/>
+          <line x1="352" y1="90" x2="344" y2="157" stroke="#a6e3a1" stroke-width="0.8" stroke-dasharray="2,2"/>
+          <line x1="352" y1="90" x2="362" y2="157" stroke="#a6e3a1" stroke-width="0.8" stroke-dasharray="2,2"/>
+          <line x1="352" y1="90" x2="380" y2="157" stroke="#a6e3a1" stroke-width="0.8" stroke-dasharray="2,2"/>
+
+          <!-- RIGHT: TabletWriter -->
+          <rect x="256" y="208" width="144" height="24" rx="5" fill="#252536" stroke="#f38ba8" stroke-width="1"/>
+          <text x="328" y="224" text-anchor="middle" fill="#f38ba8" font-family="monospace" font-size="7" font-weight="600">TabletWriter</text>
+          <line x1="328" y1="232" x2="328" y2="248" stroke="#f38ba8" stroke-width="1.5" marker-end="url(#ad)"/>
+          <rect x="288" y="252" width="80" height="24" rx="5" fill="#3a1a2a" stroke="#f38ba8" stroke-width="1.2"/>
+          <text x="328" y="268" text-anchor="middle" fill="#f38ba8" font-family="monospace" font-size="9" font-weight="600">Disk</text>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- CALL FLOW — split: left=code, right=pipeline viz -->
+  <!-- ============================================================ -->
+  <div class="split-row" id="call-flow">
+    <div class="left-panel">
+      <h2>Call Flow <span class="tag">write()</span></h2>
+      <pre><span class="key">rootWriter_</span> (RowFieldWriter)
+
+<span class="key">write</span>(VectorPtr)  ← input: RowVector with 1000 rows
+│
+├─ 1. rootWriter_-&gt;write(input, ranges[0..1000])
+│      │
+│      └─ <span class="highlight">RowFieldWriter::write()</span>
+│           ├─ nullsStream_: Vector&lt;bool&gt; ← append 1000 non-null flags
+│           │
+│           ├─ fields_[0]-&gt;write(childAt(0))   ← <span class="val">ScalarFieldWriter&lt;int32_t&gt;</span>
+│           │    └─ data_: Vector&lt;int32_t&gt; ← append 1000 ints
+│           │       e.g. [42, 7, -3, 100, ...]  (now 1000 elements)
+│           │
+│           ├─ fields_[1]-&gt;write(childAt(1))   ← <span class="val">ScalarFieldWriter&lt;double&gt;</span>
+│           │    └─ data_: Vector&lt;double&gt; ← append 1000 doubles
+│           │
+│           └─ fields_[2]-&gt;write(childAt(2))   ← <span class="val">ScalarFieldWriter&lt;string_view&gt;</span>
+│                └─ data_: Vector&lt;string_view&gt; ← append 1000 string_views
+│                   + StringBuffer grows with raw char data
+│
+├─ 2. <span class="note">addIndexKey</span>(input)
+│
+└─ 3. <span class="note">evaluateFlushPolicy()</span>
+       │
+       │  streams = context_-&gt;streams()  ← flat list of ALL streams:
+       │    stream[0] = row nulls       (Vector&lt;bool&gt;)
+       │    stream[1] = col a data      (Vector&lt;int32_t&gt;)
+       │    stream[2] = col b data      (Vector&lt;double&gt;)
+       │    stream[3] = col c lengths   (Vector&lt;int32_t&gt;)
+       │    stream[4] = col c chars     (Vector&lt;char&gt;)
+       │
+       ├─ IF enableChunking &amp;&amp; shouldChunk():
+       │    └─ flushChunks() → writeChunks()
+       │         └─ for each streamIndex:
+       │              <span class="highlight">encodeStreamChunk</span>(streams[streamIndex])
+       │                │
+       │                │  while (chunker-&gt;next()):
+       │                │
+       │                │    <span class="section">iteration 1:</span>
+       │                │    1. form StreamDataView (zero-copy):
+       │                │       ├─ nextChunkSize() → elements that fit
+       │                │       ├─ data: string_view → [42, 7, -3, 100]
+       │                │       │    e.g. [42, 7, -3, 100, | 101, 88, ...]
+       │                │       │         <span class="val">^^^^chunk 1^^^^</span>    <span class="comment">^^stays^^</span>
+       │                │       └─ IF enableChunkStats: computeChunkStats()
+       │                │            → {hasNulls=false, min=-3, max=100}
+       │                │
+       │                │    2. encode StreamDataView → Chunk:
+       │                │       chunk.content = encodeChunk(chunkView)
+       │                │         1. encodeStreamData() → RLE/Dict/Trivial
+       │                │         2. compress (Zstd)
+       │                │       chunk.stats = chunkView.stats()
+       │                │
+       │                │    <span class="section">iteration 2:</span> [next 20MB slice...] → same
+       │
+       └─ IF shouldFlush():
+            └─ <span class="alert">writeStripe()</span>
+                 ├─ encode remaining (lastChunk=true)
+                 │
+                 └─ tabletWriter_-&gt;writeStripe(encodedStreams_)
+                      │
+                      │  for each stream:
+                      │    <span class="highlight">writeStreamWithChecksum</span>(stream):
+                      │      for each chunk:
+                      │        file_-&gt;append(chunk.content) ← disk
+                      │
+                      │    <span class="note">addStreamIndex</span>(stream.chunks)
+                      │      chunkRows, chunkOffsets, chunkStats
+                      │
+                      │  tryWriteStripeGroup():
+                      │    metadata large → flush index to disk
+                      │    else → no-op
+
+<span class="key">close()</span>
+│
+├─ writeStripe()                         ← flush remaining data
+├─ tryWriteStripeGroup(force=true)       ← flush remaining index
+├─ writeRootIndex()                      ← root index → optional section
+├─ writeMetadata(), writeColumnStats(), writeSchema()
+├─ tabletWriter_-&gt;close()                ← footer + postscript
+└─ file_-&gt;close()</pre>
+    </div>
+
+    <!-- RIGHT: pipeline + write-loop flowchart -->
+    <div class="right-viz">
+      <div class="viz-card">
+        <div class="viz-title">Write Loop</div>
+        <svg viewBox="-14 0 470 440" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="aw" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#8888aa" stroke-width="1.2"/></marker>
+            <marker id="ag" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#a6e3a1" stroke-width="1.2"/></marker>
+            <marker id="ar" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#f38ba8" stroke-width="1.2"/></marker>
+          </defs>
+          <!-- RowVector input -->
+          <rect x="100" y="4" width="180" height="30" rx="7" fill="#252536" stroke="#89b4fa" stroke-width="1.5"/>
+          <text x="190" y="23" text-anchor="middle" fill="#89b4fa" font-family="monospace" font-size="11" font-weight="600">write(RowVector)</text>
+          <line x1="190" y1="34" x2="190" y2="48" stroke="#8888aa" stroke-width="1.2" marker-end="url(#aw)"/>
+          <!-- RowFieldWriter -->
+          <rect x="80" y="52" width="220" height="28" rx="7" fill="#252536" stroke="#f9e2af" stroke-width="1.2"/>
+          <text x="190" y="70" text-anchor="middle" fill="#f9e2af" font-family="monospace" font-size="10">RowFieldWriter::write()</text>
+          <text x="190" y="92" text-anchor="middle" fill="#8888aa" font-family="sans-serif" font-size="8">append → StreamData per column</text>
+          <line x1="190" y1="80" x2="190" y2="106" stroke="#8888aa" stroke-width="1.2" marker-end="url(#aw)"/>
+          <!-- evaluateFlushPolicy -->
+          <rect x="80" y="110" width="220" height="28" rx="7" fill="#252536" stroke="#fab387" stroke-width="1.2"/>
+          <text x="190" y="128" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="10">evaluateFlushPolicy()</text>
+          <line x1="190" y1="138" x2="190" y2="156" stroke="#8888aa" stroke-width="1.2" marker-end="url(#aw)"/>
+          <!-- shouldChunk diamond -->
+          <polygon points="190,160 270,190 190,220 110,190" fill="#2a2a3d" stroke="#f9e2af" stroke-width="1.2"/>
+          <text x="190" y="187" text-anchor="middle" fill="#f9e2af" font-family="monospace" font-size="9">shouldChunk?</text>
+          <text x="190" y="199" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="7">&gt;= 200MB</text>
+          <!-- YES left -->
+          <line x1="110" y1="190" x2="50" y2="190" stroke="#a6e3a1" stroke-width="1.2" marker-end="url(#ag)"/>
+          <text x="80" y="183" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="8" font-weight="600">YES</text>
+          <rect x="12" y="176" width="34" height="28" rx="5" fill="#252536" stroke="#a6e3a1" stroke-width="1.2"/>
+          <text x="29" y="189" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="7">chunk</text>
+          <text x="29" y="199" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="7">+cmpct</text>
+          <!-- loop back -->
+          <line x1="12" y1="190" x2="2" y2="190" stroke="#8888aa" stroke-width="1"/>
+          <line x1="2" y1="190" x2="2" y2="124" stroke="#8888aa" stroke-width="1"/>
+          <line x1="2" y1="124" x2="76" y2="124" stroke="#8888aa" stroke-width="1" marker-end="url(#aw)"/>
+          <text x="30" y="155" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="7" transform="rotate(-90,30,155)">re-check</text>
+          <!-- NO right -->
+          <line x1="270" y1="190" x2="310" y2="190" stroke="#f38ba8" stroke-width="1.2"/>
+          <text x="288" y="183" fill="#f38ba8" font-family="monospace" font-size="8" font-weight="600">NO</text>
+          <!-- shouldFlush diamond -->
+          <polygon points="340,162 370,190 340,218 310,190" fill="#2a2a3d" stroke="#f38ba8" stroke-width="1.2"/>
+          <text x="340" y="192" text-anchor="middle" fill="#f38ba8" font-family="monospace" font-size="7">flush?</text>
+          <!-- NO from flush -> loop back to write -->
+          <line x1="370" y1="190" x2="400" y2="190" stroke="#8888aa" stroke-width="1" stroke-dasharray="4,3"/>
+          <line x1="400" y1="190" x2="400" y2="19" stroke="#8888aa" stroke-width="1" stroke-dasharray="4,3"/>
+          <line x1="400" y1="19" x2="284" y2="19" stroke="#8888aa" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#aw)"/>
+          <text x="412" y="100" fill="#8888aa" font-family="monospace" font-size="7" transform="rotate(90,412,100)">NO — keep writing</text>
+          <!-- YES from flush -->
+          <line x1="340" y1="218" x2="340" y2="240" stroke="#a6e3a1" stroke-width="1.2" marker-end="url(#ag)"/>
+          <text x="352" y="234" fill="#a6e3a1" font-family="monospace" font-size="8" font-weight="600">YES</text>
+          <!-- writeStripe -->
+          <rect x="280" y="244" width="180" height="30" rx="7" fill="#252536" stroke="#f38ba8" stroke-width="2"/>
+          <text x="340" y="263" text-anchor="middle" fill="#f38ba8" font-family="monospace" font-size="11" font-weight="600">writeStripe()</text>
+          <line x1="340" y1="274" x2="340" y2="292" stroke="#8888aa" stroke-width="1.2" marker-end="url(#aw)"/>
+          <!-- encode + disk -->
+          <rect x="280" y="296" width="180" height="26" rx="6" fill="#252536" stroke="#fab387" stroke-width="1.2"/>
+          <text x="340" y="313" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="9">encode → compress → disk</text>
+          <line x1="340" y1="322" x2="340" y2="340" stroke="#8888aa" stroke-width="1.2" marker-end="url(#aw)"/>
+          <!-- reset -->
+          <rect x="280" y="344" width="180" height="26" rx="6" fill="#252536" stroke="#94e2d5" stroke-width="1.2"/>
+          <text x="340" y="361" text-anchor="middle" fill="#94e2d5" font-family="monospace" font-size="9">reset all buffers</text>
+          <!-- loop back to write -->
+          <path d="M250,357 L190,357 L190,38" stroke="#8888aa" stroke-width="1" stroke-dasharray="4,3" fill="none" marker-end="url(#aw)"/>
+          <text x="220" y="350" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="7">next stripe</text>
+        </svg>
+      </div>
+
+      <div class="viz-card">
+        <div class="viz-title">Data Pipeline (1000-row batch)</div>
+        <svg viewBox="0 0 400 526" xmlns="http://www.w3.org/2000/svg">
+          <defs><marker id="ap" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#a6e3a1" stroke-width="1.2"/></marker>
+          <marker id="ap2" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#fab387" stroke-width="1.2"/></marker></defs>
+          <!-- RowVector -->
+          <rect x="20" y="4" width="360" height="50" rx="8" fill="#252536" stroke="#89b4fa" stroke-width="1.5"/>
+          <text x="200" y="18" text-anchor="middle" fill="#89b4fa" font-family="monospace" font-size="9" font-weight="600">RowVector [1000 rows]</text>
+          <!-- column slots with example data -->
+          <rect x="28"  y="24" width="108" height="24" rx="3" fill="#1a3a2a" stroke="#a6e3a1" stroke-width="0.8"/>
+          <text x="82"  y="34" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="7" font-weight="600">col0: int32_t</text>
+          <text x="82"  y="44" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="6">[42, 7, -3, 100, ...]</text>
+          <rect x="144" y="24" width="108" height="24" rx="3" fill="#1a3a2a" stroke="#a6e3a1" stroke-width="0.8"/>
+          <text x="198" y="34" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="7" font-weight="600">col1: double</text>
+          <text x="198" y="44" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="6">[3.14, NaN, 2.7, ...]</text>
+          <rect x="260" y="24" width="112" height="24" rx="3" fill="#1a3a2a" stroke="#a6e3a1" stroke-width="0.8"/>
+          <text x="316" y="34" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="7" font-weight="600">col2: string</text>
+          <text x="316" y="44" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="6">["foo","bar", ...]</text>
+          <!-- arrows: write(childAt(i)) -->
+          <line x1="82"  y1="54" x2="82"  y2="78" stroke="#a6e3a1" stroke-width="1" marker-end="url(#ap)"/>
+          <line x1="198" y1="54" x2="198" y2="78" stroke="#a6e3a1" stroke-width="1" marker-end="url(#ap)"/>
+          <line x1="316" y1="54" x2="316" y2="78" stroke="#a6e3a1" stroke-width="1" marker-end="url(#ap)"/>
+          <text x="48" y="70" fill="#8888aa" font-family="monospace" font-size="5">fields_[0]-&gt;write</text>
+          <text x="164" y="70" fill="#8888aa" font-family="monospace" font-size="5">fields_[1]-&gt;write</text>
+          <text x="280" y="70" fill="#8888aa" font-family="monospace" font-size="5">fields_[2]-&gt;write</text>
+          <!-- FieldWriters -->
+          <rect x="28"  y="82" width="108" height="22" rx="5" fill="#252536" stroke="#f9e2af" stroke-width="1"/>
+          <text x="82"  y="96" text-anchor="middle" fill="#f9e2af" font-family="monospace" font-size="7">ScalarFieldWriter&lt;i32&gt;</text>
+          <rect x="144" y="82" width="108" height="22" rx="5" fill="#252536" stroke="#f9e2af" stroke-width="1"/>
+          <text x="198" y="96" text-anchor="middle" fill="#f9e2af" font-family="monospace" font-size="7">ScalarFieldWriter&lt;dbl&gt;</text>
+          <rect x="260" y="82" width="112" height="22" rx="5" fill="#252536" stroke="#f9e2af" stroke-width="1"/>
+          <text x="316" y="96" text-anchor="middle" fill="#f9e2af" font-family="monospace" font-size="7">StringFieldWriter</text>
+          <!-- arrows: append to StreamData -->
+          <line x1="82"  y1="104" x2="82"  y2="122" stroke="#a6e3a1" stroke-width="1" marker-end="url(#ap)"/>
+          <line x1="198" y1="104" x2="198" y2="122" stroke="#a6e3a1" stroke-width="1" marker-end="url(#ap)"/>
+          <line x1="316" y1="104" x2="316" y2="122" stroke="#a6e3a1" stroke-width="1" marker-end="url(#ap)"/>
+          <text x="60" y="116" fill="#8888aa" font-family="monospace" font-size="5">append 1000</text>
+          <text x="176" y="116" fill="#8888aa" font-family="monospace" font-size="5">append 1000</text>
+          <text x="292" y="116" fill="#8888aa" font-family="monospace" font-size="5">append 1000</text>
+          <!-- StreamData buffers with detail -->
+          <!-- col0: int32 streams -->
+          <rect x="20" y="126" width="124" height="56" rx="5" fill="#1a3a2a" stroke="#a6e3a1" stroke-width="1"/>
+          <text x="82" y="138" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="7" font-weight="600">StreamData (int32)</text>
+          <rect x="26" y="142" width="112" height="14" rx="2" fill="#252536" stroke="#3b3b54"/>
+          <text x="82" y="152" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="6">data_: Vector&lt;int32_t&gt;</text>
+          <rect x="26" y="158" width="112" height="14" rx="2" fill="#252536" stroke="#3b3b54"/>
+          <text x="82" y="168" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="6">nonNulls_: Vector&lt;bool&gt;</text>
+          <!-- col1: double stream (no nulls) -->
+          <rect x="150" y="126" width="108" height="40" rx="5" fill="#1a3a2a" stroke="#a6e3a1" stroke-width="1"/>
+          <text x="204" y="138" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="7" font-weight="600">StreamData (dbl)</text>
+          <rect x="156" y="142" width="96" height="14" rx="2" fill="#252536" stroke="#3b3b54"/>
+          <text x="204" y="152" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="6">data_: Vec&lt;double&gt;</text>
+          <text x="204" y="162" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="4">(no nulls → no nulls stream)</text>
+          <!-- col2: string streams -->
+          <rect x="264" y="126" width="126" height="56" rx="5" fill="#1a3a2a" stroke="#a6e3a1" stroke-width="1"/>
+          <text x="327" y="138" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="7" font-weight="600">StreamData (str)</text>
+          <rect x="270" y="142" width="114" height="12" rx="2" fill="#252536" stroke="#3b3b54"/>
+          <text x="327" y="151" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="5">buffer_: Vec&lt;char&gt;</text>
+          <rect x="270" y="156" width="114" height="12" rx="2" fill="#252536" stroke="#3b3b54"/>
+          <text x="327" y="165" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="5">lengths_: Vec&lt;u64&gt;</text>
+          <rect x="270" y="170" width="114" height="12" rx="2" fill="#252536" stroke="#3b3b54"/>
+          <text x="327" y="179" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="5">nonNulls_: Vec&lt;bool&gt;</text>
+          <!-- label -->
+          <text x="8" y="160" fill="#8888aa" font-family="monospace" font-size="7" transform="rotate(-90,8,160)">raw buffers</text>
+          <!-- mapping lines to streams_ flat list -->
+          <!-- int32: data_ → [1], nonNulls_ → [2] -->
+          <line x1="56"  y1="182" x2="56"  y2="210" stroke="#a6e3a1" stroke-width="0.8" stroke-dasharray="2,2"/>
+          <line x1="110" y1="182" x2="90"  y2="210" stroke="#a6e3a1" stroke-width="0.8" stroke-dasharray="2,2"/>
+          <!-- dbl: data_ → [3] -->
+          <line x1="204" y1="166" x2="160" y2="210" stroke="#a6e3a1" stroke-width="0.8" stroke-dasharray="2,2"/>
+          <!-- str: buffer_ → [4], lengths_ → [5], nonNulls_ → [6] -->
+          <line x1="290" y1="182" x2="230" y2="210" stroke="#a6e3a1" stroke-width="0.8" stroke-dasharray="2,2"/>
+          <line x1="327" y1="182" x2="280" y2="210" stroke="#a6e3a1" stroke-width="0.8" stroke-dasharray="2,2"/>
+          <line x1="360" y1="182" x2="330" y2="210" stroke="#a6e3a1" stroke-width="0.8" stroke-dasharray="2,2"/>
+          <!-- streams_ flat list (inside WriterContext) -->
+          <rect x="10" y="214" width="390" height="42" rx="5" fill="#252536" stroke="#94e2d5" stroke-width="1"/>
+          <text x="200" y="226" text-anchor="middle" fill="#94e2d5" font-family="monospace" font-size="7" font-weight="600">WriterContext::streams_ (7 streams)</text>
+          <rect x="18"  y="232" width="44" height="14" rx="2" fill="#1a3a2a" stroke="#a6e3a150"/>
+          <text x="40"  y="242" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="5">[0] r_null</text>
+          <rect x="66"  y="232" width="44" height="14" rx="2" fill="#1a3a2a" stroke="#a6e3a1"/>
+          <text x="88"  y="242" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="5">[1] A_d</text>
+          <rect x="114" y="232" width="44" height="14" rx="2" fill="#1a3a2a" stroke="#a6e3a180"/>
+          <text x="136" y="242" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="5">[2] A_n</text>
+          <rect x="162" y="232" width="44" height="14" rx="2" fill="#1a3a2a" stroke="#a6e3a1"/>
+          <text x="184" y="242" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="5">[3] B_d</text>
+          <rect x="210" y="232" width="44" height="14" rx="2" fill="#1a3a2a" stroke="#a6e3a1"/>
+          <text x="262" y="242" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="5">[4] C_b</text>
+          <rect x="258" y="232" width="44" height="14" rx="2" fill="#1a3a2a" stroke="#a6e3a180"/>
+          <text x="280" y="242" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="5">[5] C_l</text>
+          <rect x="306" y="232" width="44" height="14" rx="2" fill="#1a3a2a" stroke="#a6e3a150"/>
+          <text x="328" y="242" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="5">[6] C_n</text>
+          <!-- ===== VeloxWriter boundary ===== -->
+          <line x1="200" y1="256" x2="200" y2="270" stroke="#fab387" stroke-width="1.2" marker-end="url(#ap2)"/>
+          <rect x="6" y="274" width="394" height="116" rx="8" fill="none" stroke="#89b4fa" stroke-width="1.5" stroke-dasharray="5,3"/>
+          <text x="200" y="288" text-anchor="middle" fill="#89b4fa" font-family="monospace" font-size="8" font-weight="600">VeloxWriter::writeStripe()</text>
+          <!-- encode -->
+          <rect x="20" y="296" width="370" height="32" rx="5" fill="#3a2a1a" stroke="#fab387" stroke-width="1"/>
+          <text x="200" y="308" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="7" font-weight="600">encodeStreamChunk() per stream</text>
+          <text x="200" y="320" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="5">StreamChunker → 20MB views → encode (RLE/Dict) → compress (Zstd)</text>
+          <!-- arrow to encodedStreams_ -->
+          <line x1="200" y1="328" x2="200" y2="342" stroke="#fab387" stroke-width="1" marker-end="url(#ap2)"/>
+          <!-- encoded chunks -->
+          <rect x="20" y="346" width="370" height="36" rx="5" fill="#252536" stroke="#fab387" stroke-width="1"/>
+          <text x="200" y="358" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="7" font-weight="600">encodedStreams_ (compressed chunks)</text>
+          <rect x="28" y="364" width="50" height="12" rx="2" fill="#fab38740"/>
+          <rect x="82" y="364" width="50" height="12" rx="2" fill="#fab38735"/>
+          <rect x="136" y="364" width="50" height="12" rx="2" fill="#fab38730"/>
+          <rect x="190" y="364" width="40" height="12" rx="2" fill="#94e2d540"/>
+          <rect x="234" y="364" width="40" height="12" rx="2" fill="#94e2d535"/>
+          <rect x="278" y="364" width="24" height="12" rx="2" fill="#fab38740"/>
+          <text x="310" y="374" fill="#8888aa" font-family="monospace" font-size="5">+ stats</text>
+
+          <!-- ===== Handoff: std::move(encodedStreams_) ===== -->
+          <line x1="200" y1="390" x2="200" y2="410" stroke="#89b4fa" stroke-width="1.5" marker-end="url(#ap2)"/>
+          <text x="200" y="404" text-anchor="middle" fill="#89b4fa" font-family="monospace" font-size="6">std::move(encodedStreams_)</text>
+
+          <!-- ===== TabletWriter boundary ===== -->
+          <rect x="6" y="414" width="394" height="56" rx="8" fill="none" stroke="#f38ba8" stroke-width="1.5" stroke-dasharray="5,3"/>
+          <text x="200" y="428" text-anchor="middle" fill="#f38ba8" font-family="monospace" font-size="8" font-weight="600">TabletWriter::writeStripe()</text>
+          <text x="200" y="442" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="5">writeStreamWithChecksum() → file_-&gt;append() + checksum_-&gt;update()</text>
+          <text x="200" y="454" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="5">record offsets/sizes → tryWriteStripeGroup()</text>
+
+          <!-- arrow to disk -->
+          <line x1="200" y1="470" x2="200" y2="486" stroke="#f38ba8" stroke-width="1.5" marker-end="url(#ap2)"/>
+          <!-- disk -->
+          <rect x="100" y="490" width="200" height="28" rx="6" fill="#3a1a2a" stroke="#f38ba8" stroke-width="1.5"/>
+          <text x="200" y="508" text-anchor="middle" fill="#f38ba8" font-family="monospace" font-size="9" font-weight="600">Nimble File (disk)</text>
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- FILE LAYOUT — split -->
+  <!-- ============================================================ -->
+  <div class="split-row" id="file-layout">
+    <div class="left-panel">
+      <h2>File Layout <span class="tag">on disk</span></h2>
+      <div class="insight">
+        <div class="label">Key Insight</div>
+        <p>It&rsquo;s an append-only write. The index can appear in the middle of stripes &mdash; stripe groups and index groups are flushed periodically between stripes to bound metadata memory.</p>
+      </div>
+      <div class="file-layout">
+        <div class="file-block magic">Magic</div>
+        <div class="file-block stripe">Stripe 0 data <span class="fn">writeStreamWithChecksum()</span></div>
+        <div class="file-block stripe">Stripe 1 data <span class="fn">writeStreamWithChecksum()</span></div>
+        <div class="file-block group">Stripe Group 0 <span class="fn">writeStripeGroup()</span></div>
+        <div class="file-block index">Index Group 0 <span class="fn">writeIndexGroup()</span></div>
+        <div class="file-block stripe">Stripe 2 data</div>
+        <div class="file-block stripe">Stripe 3 data</div>
+        <div class="file-block group">Stripe Group 1</div>
+        <div class="file-block index">Index Group 1</div>
+        <div class="file-block stripe">...</div>
+        <div class="file-block optional">Optional sections <span class="fn">metadata, stats, schema, root index</span></div>
+        <div class="file-block footer">Footer <span class="fn">points to everything above</span></div>
+        <div class="file-block footer">Postscript</div>
+        <div class="file-block magic">Magic</div>
+      </div>
+    </div>
+    <div class="right-viz">
+      <div class="viz-card">
+        <div class="viz-title">Nimble File Structure</div>
+        <svg viewBox="0 0 380 520" xmlns="http://www.w3.org/2000/svg">
+          <!-- file outline -->
+          <rect x="40" y="6" width="300" height="508" rx="10" fill="none" stroke="#3b3b54" stroke-width="1.5" stroke-dasharray="6,3"/>
+          <text x="190" y="24" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="9">nimble_file.nimble</text>
+          <!-- magic -->
+          <rect x="56" y="34" width="268" height="20" rx="4" fill="#2a2a3d" stroke="#cba6f7" stroke-width="1"/>
+          <text x="190" y="48" text-anchor="middle" fill="#cba6f7" font-family="monospace" font-size="9">MAGIC</text>
+          <!-- stripe 0 -->
+          <rect x="56" y="60" width="268" height="44" rx="4" fill="#1a3a2a" stroke="#a6e3a1" stroke-width="1"/>
+          <text x="190" y="76" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="9" font-weight="600">Stripe 0</text>
+          <rect x="66" y="82" width="56" height="14" rx="2" fill="#a6e3a140"/>
+          <text x="94" y="93" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="7">Str A</text>
+          <rect x="128" y="82" width="42" height="14" rx="2" fill="#a6e3a140"/>
+          <text x="149" y="93" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="7">Str B</text>
+          <rect x="176" y="82" width="24" height="14" rx="2" fill="#a6e3a140"/>
+          <text x="188" y="93" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="7">C</text>
+          <!-- stripe 1 -->
+          <rect x="56" y="110" width="268" height="44" rx="4" fill="#1a3a2a" stroke="#a6e3a1" stroke-width="1"/>
+          <text x="190" y="126" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="9" font-weight="600">Stripe 1</text>
+          <rect x="66" y="132" width="56" height="14" rx="2" fill="#a6e3a140"/>
+          <rect x="128" y="132" width="42" height="14" rx="2" fill="#a6e3a140"/>
+          <rect x="176" y="132" width="24" height="14" rx="2" fill="#a6e3a140"/>
+          <!-- stripe group 0 -->
+          <rect x="56" y="162" width="268" height="24" rx="4" fill="#3a2a1a" stroke="#fab387" stroke-width="1"/>
+          <text x="190" y="178" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="9">Stripe Group 0</text>
+          <!-- index group 0 -->
+          <rect x="56" y="192" width="268" height="24" rx="4" fill="#2a1a3a" stroke="#cba6f7" stroke-width="1"/>
+          <text x="190" y="208" text-anchor="middle" fill="#cba6f7" font-family="monospace" font-size="9">Index Group 0</text>
+          <!-- brace annotation -->
+          <text x="346" y="135" text-anchor="start" fill="#8888aa" font-family="sans-serif" font-size="8">} written</text>
+          <text x="346" y="146" text-anchor="start" fill="#8888aa" font-family="sans-serif" font-size="8">  together</text>
+          <line x1="338" y1="60" x2="338" y2="218" stroke="#8888aa" stroke-width="0.8"/>
+          <!-- stripe 2+3 -->
+          <rect x="56" y="224" width="268" height="28" rx="4" fill="#1a3a2a" stroke="#a6e3a1" stroke-width="1"/>
+          <text x="190" y="242" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="9">Stripe 2</text>
+          <rect x="56" y="258" width="268" height="28" rx="4" fill="#1a3a2a" stroke="#a6e3a1" stroke-width="1"/>
+          <text x="190" y="276" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="9">Stripe 3</text>
+          <!-- stripe group 1 + index group 1 -->
+          <rect x="56" y="292" width="268" height="20" rx="4" fill="#3a2a1a" stroke="#fab387" stroke-width="1"/>
+          <text x="190" y="306" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="8">Stripe Group 1</text>
+          <rect x="56" y="318" width="268" height="20" rx="4" fill="#2a1a3a" stroke="#cba6f7" stroke-width="1"/>
+          <text x="190" y="332" text-anchor="middle" fill="#cba6f7" font-family="monospace" font-size="8">Index Group 1</text>
+          <!-- dots -->
+          <text x="190" y="356" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="14">...</text>
+          <!-- optional sections -->
+          <rect x="56" y="366" width="268" height="50" rx="4" fill="#1a2a3a" stroke="#94e2d5" stroke-width="1"/>
+          <text x="190" y="384" text-anchor="middle" fill="#94e2d5" font-family="monospace" font-size="9" font-weight="600">Optional Sections</text>
+          <text x="190" y="400" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="7">metadata | stats | schema</text>
+          <text x="190" y="411" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="7">stride_index | cluster_index | chunk_index</text>
+          <!-- footer -->
+          <rect x="56" y="422" width="268" height="24" rx="4" fill="#3a1a2a" stroke="#f38ba8" stroke-width="1.5"/>
+          <text x="190" y="438" text-anchor="middle" fill="#f38ba8" font-family="monospace" font-size="9" font-weight="600">Footer</text>
+          <!-- postscript -->
+          <rect x="56" y="452" width="268" height="20" rx="4" fill="#3a1a2a" stroke="#f38ba8" stroke-width="1"/>
+          <text x="190" y="466" text-anchor="middle" fill="#f38ba8" font-family="monospace" font-size="8">Postscript</text>
+          <!-- magic -->
+          <rect x="56" y="478" width="268" height="20" rx="4" fill="#2a2a3d" stroke="#cba6f7" stroke-width="1"/>
+          <text x="190" y="492" text-anchor="middle" fill="#cba6f7" font-family="monospace" font-size="9">MAGIC</text>
+          <!-- arrow annotations -->
+          <line x1="42" y1="422" x2="42" y2="366" stroke="#f38ba8" stroke-width="0.8" stroke-dasharray="3,2"/>
+          <text x="36" y="394" text-anchor="end" fill="#f38ba8" font-family="sans-serif" font-size="7" transform="rotate(-90,36,394)">footer points to all above</text>
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- PHASES 1-3 — split: left=code, right=memory waterfall -->
+  <!-- ============================================================ -->
+  <div class="split-row" id="phase1">
+    <div class="left-panel">
+      <h2>Phase 1: write() → StreamData Buffers <span class="tag">accumulation</span></h2>
+      <details open>
+        <summary>Phase 1.0 — Initial Writes <span class="phase-tag write">Write</span></summary>
+        <div class="detail-content">
+          <pre>TableWriter feeds RowVectors
+─────────────────────────────
+
+RowVector 1 ── <span class="key">VeloxWriter::write()</span>
+RowVector 2 ──     │
+RowVector 3 ──     ├─ <span class="highlight">RowFieldWriter::write()</span>
+   ...      ──     │       │
+RowVector N ──     │       ├─ FieldWriter A ──append── StreamData A (<span class="val">Vector&lt;int64&gt;</span>)
+                   │       ├─ FieldWriter B ──append── StreamData B (<span class="val">Vector&lt;int64&gt;</span>)
+                   │       └─ FieldWriter C ──append── StreamData C (<span class="val">Vector&lt;string_view&gt;</span>)
+                   │
+                   │   <span class="comment">(original RowVector can be freed now)</span>
+                   │
+                   └─ evaluateFlushPolicy()</pre>
+          <div class="memory-state"><div class="header">Memory State</div>
+StreamData A (raw):   10MB
+StreamData B (raw):    3MB
+StreamData C (raw):    1MB
+encodedStreams_[A-C]:  0MB
+────────────────────────────
+memoryUsed = 220MB    stripeEncodedSize = 0MB</div>
+        </div>
+      </details>
+      <details>
+        <summary>Phase 1.1 — More write() Calls <span class="phase-tag write">Write</span></summary>
+        <div class="detail-content">
+          <div class="memory-state"><div class="header">Memory State (accumulated)</div>
+A data_:   120MB    A nulls_: ~0.1MB
+B data_:    90MB    <span style="color:var(--text-dim)">(no nulls in data → no nulls stream)</span>
+C buffer_:   8MB    C lengths_: 1.5MB    C nulls_: ~0.1MB
+────────────────────────────
+memoryUsed = 220MB    stripeEncodedSize = 0MB
+(nulls/lengths streams are tiny — always below 20MB chunking threshold)</div>
+        </div>
+      </details>
+
+      <h2 id="phase2" style="margin-top:2rem">Phase 2: Chunking <span class="tag">memory management</span></h2>
+      <details open>
+        <summary>Phase 2a — Soft Chunking <span class="phase-tag chunk">Chunk</span></summary>
+        <div class="detail-content">
+          <pre><span class="key">evaluateFlushPolicy()</span>  220MB ≥ 200MB → <span class="alert">shouldChunk = YES</span>
+<span class="highlight">SOFT CHUNKING</span>: pick streams ≥ 20MB (A data_: 120MB, B data_: 90MB)</pre>
+          <h4>Column A</h4>
+          <pre>A data_  (120MB ≥ 20MB → chunk)
+  StreamChunker → 6 × 20MB views
+  Each view → <span class="highlight">encodeChunk()</span> (RLE/Dict/Trivial + Zstd) → ~5MB each
+  Result: <span class="val">120MB raw → 6 chunks (~30MB encoded)</span>
+────────────────────────────────────────────
+<span class="comment">A nulls_ (~0.1MB &lt; 20MB → untouched)</span>
+
+re-check: [30 enc] + 90 + 10 raw = 130MB &gt; 100MB → <span class="alert">CONTINUE</span></pre>
+          <h4>Column B</h4>
+          <pre>B data_  (90MB ≥ 20MB → chunk)
+  StreamChunker → 4 × 20MB views + 10MB leftover (stays raw)
+  Result: <span class="val">80MB → 4 chunks (~20MB encoded), 10MB leftover</span>
+────────────────────────────────────────────
+<span class="comment">B has no nulls → no nulls stream</span>
+
+re-check: [50 enc] + 0 + 10 + 10 raw = 70MB &lt; 100MB → <span class="val">STOP</span></pre>
+          <h4>Column C</h4>
+          <pre>C buffer_: 8MB  |  C lengths_: 1.5MB  |  C nulls_: ~0.1MB
+All &lt; 20MB → <span class="note">SKIP</span> (pressure already relieved)</pre>
+          <div class="memory-state"><div class="header">Result</div>
+raw:  A:0  B:10(leftover)  C:8+1.5+0.1(untouched)  A nulls:0.1
+enc:  A:30MB(6 chunks)  B:20MB(4 chunks)
+────────────────────────────
+total = 70MB    shouldFlush? 55MB &lt; 100MB → <span style="color:var(--green)">KEEP WRITING</span></div>
+        </div>
+      </details>
+      <details>
+        <summary>Phase 2b — Hard Chunking <span class="phase-tag chunk">Chunk</span></summary>
+        <div class="detail-content">
+          <pre>more write() → A:80MB, B:60MB, C:17MB raw + 50MB enc = 207MB
+<span class="key">evaluateFlushPolicy()</span>  207MB ≥ 200MB → <span class="alert">shouldChunk = YES</span>
+
+Soft: A(80MB) → 20MB enc  |  B(60MB) → 15MB enc
+re-check: 17 + 85 = 102MB &gt; 100MB → <span class="alert">still above!</span>
+
+<span class="alert">HARD CHUNK</span>: all streams, ensureFullChunks=false
+  C(17MB) → 1 undersized chunk → ~4MB enc
+  re-check: 0 + 89 = 89MB &lt; 100MB → <span class="val">STOP</span></pre>
+          <div class="memory-state"><div class="header">Result</div>
+raw: 0MB    enc: A:50MB(10) B:35MB(7) C:4MB(1)    total = 89MB</div>
+        </div>
+      </details>
+      <details>
+        <summary>Phase 2c — Flush Trigger <span class="phase-tag chunk">Chunk</span></summary>
+        <div class="detail-content">
+          <pre>more write() → A:25MB, B:15MB, C:3MB raw (43MB) + 89MB enc = 132MB
+shouldChunk?  132MB &lt; 200MB → <span class="val">NO</span>
+shouldFlush?  89 + 43/3.7 ≈ 100.6MB ≥ 100MB → <span class="alert">YES → writeStripe()!</span></pre>
+        </div>
+      </details>
+
+      <h2 id="phase3" style="margin-top:2rem">Phase 3: writeStripe() <span class="tag">I/O</span></h2>
+      <details open>
+        <summary>Encode Remaining &amp; Write <span class="phase-tag flush">Flush</span></summary>
+        <div class="detail-content">
+          <pre><span class="key">writeStripe()</span>
+│
+├─ 1. <span class="highlight">Encode ALL remaining raw</span> (lastChunk=true, minChunkSize=0)
+│     A: 25MB → [20MB, 5MB] → ~6.3MB encoded
+│     B: 15MB → [15MB]      → ~3.8MB encoded
+│     C: 3MB  → [3MB]       → ~0.8MB encoded
+│
+├─ 2. <span class="highlight">Final chunk inventory:</span>
+│     encodedStreams_[A]: c1..c10 + c11,c12 = <span class="val">12 chunks</span>
+│     encodedStreams_[B]: c1..c7 + c8       = <span class="val">8 chunks</span>
+│     encodedStreams_[C]: c1 + c2           = <span class="val">2 chunks</span>
+│
+├─ 3. Compact, pass to TabletWriter
+│
+├─ 4. <span class="highlight">TabletWriter::writeStripe()</span>
+│     for each stream:
+│       writeStreamWithChecksum → chunks to disk
+│       addStreamIndex → chunk metadata
+│     tryWriteStripeGroup()
+│
+└─ 5. Reset everything, start next stripe</pre>
+          <h4>On Disk (one stripe)</h4>
+          <pre>┌───────────────────────────────────────┐
+│ A-c1..c12 │ B-c1..c8 │ C-c1 C-c2    │
+│  Stream A │ Stream B │  Stream C     │
+│                                       │
+│◄──────────── ONE STRIPE ────────────►│
+└───────────────────────────────────────┘</pre>
+          <h4>Chunk Index (metadata)</h4>
+          <pre>Stream A: 12 chunks │ chunkRows, chunkOffsets, min/max stats
+Stream B:  8 chunks │ chunkRows, chunkOffsets, min/max stats
+Stream C:  2 chunks │ chunkRows, chunkOffsets, min/max stats
+→ Reader skips chunks via min/max (filter pushdown)</pre>
+        </div>
+      </details>
+    </div>
+
+    <!-- RIGHT: Memory Waterfall Visualization -->
+    <div class="right-viz">
+      <div class="viz-card">
+        <div class="viz-title">Memory Layout</div>
+        <svg viewBox="0 0 420 1070" xmlns="http://www.w3.org/2000/svg">
+
+          <defs>
+            <marker id="am" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#8888aa" stroke-width="1"/></marker>
+            <marker id="amr" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="none" stroke="#f38ba8" stroke-width="1"/></marker>
+          </defs>
+
+          <!-- ======== PHASE 1 — ACCUMULATION ======== -->
+          <text x="10" y="14" fill="#a6e3a1" font-family="monospace" font-size="9" font-weight="600">Phase 1 — write() accumulates raw data</text>
+          <rect x="10" y="22" width="400" height="94" rx="6" fill="#1e1e2e" stroke="#3b3b54" stroke-width="1.5"/>
+          <!-- column A: data + nulls -->
+          <rect x="14" y="26" width="220" height="14" rx="3" fill="#a6e3a1" opacity="0.7"/>
+          <text x="20" y="37" fill="#1e1e2e" font-family="monospace" font-size="7" font-weight="600">A data_: 120MB</text>
+          <rect x="268" y="26" width="3" height="14" rx="1" fill="#a6e3a1" opacity="0.3"/>
+          <text x="246" y="37" fill="#8888aa" font-family="monospace" font-size="6">A nulls_: ~0.1MB</text>
+          <!-- column B: data + nulls -->
+          <rect x="14" y="44" width="165" height="14" rx="3" fill="#a6e3a1" opacity="0.55"/>
+          <text x="20" y="55" fill="#1e1e2e" font-family="monospace" font-size="7" font-weight="600">B data_: 90MB</text>
+          <rect x="183" y="44" width="3" height="14" rx="1" fill="#a6e3a1" opacity="0.3"/>
+          <text x="191" y="55" fill="#8888aa" font-family="monospace" font-size="6">B nulls_: ~0.1MB</text>
+          <!-- column C: buffer + lengths + nulls -->
+          <rect x="14" y="62" width="14" height="14" rx="3" fill="#a6e3a1" opacity="0.4"/>
+          <text x="33" y="73" fill="#a6e3a1" font-family="monospace" font-size="7">C buffer_: 8MB</text>
+          <rect x="110" y="62" width="3" height="14" rx="1" fill="#a6e3a1" opacity="0.3"/>
+          <text x="118" y="73" fill="#8888aa" font-family="monospace" font-size="6">C lengths_: 1.5MB</text>
+          <rect x="195" y="62" width="2" height="14" rx="1" fill="#a6e3a1" opacity="0.2"/>
+          <text x="202" y="73" fill="#8888aa" font-family="monospace" font-size="6">C nulls_: ~0.1MB</text>
+          <!-- note -->
+          <text x="14" y="90" fill="#8888aa" font-family="monospace" font-size="6">each column → multiple streams; chunking selects per-stream (&gt;= 20MB)</text>
+          <text x="14" y="100" fill="#8888aa" font-family="monospace" font-size="6">nulls/lengths streams are tiny → always skipped</text>
+          <!-- totals -->
+          <text x="300" y="90" fill="#8888aa" font-family="monospace" font-size="8">total: 220MB</text>
+          <text x="300" y="102" fill="#f38ba8" font-family="monospace" font-size="7" font-weight="600">&gt;= 200MB → chunk</text>
+
+          <!-- ======== PHASE 2a — SOFT CHUNKING PROCESS ======== -->
+          <line x1="210" y1="116" x2="210" y2="130" stroke="#8888aa" stroke-width="1" marker-end="url(#am)"/>
+          <text x="10" y="142" fill="#fab387" font-family="monospace" font-size="9" font-weight="600">Phase 2a — Soft chunking (streams &gt;= 20MB)</text>
+
+          <!-- Step 1: Chunk A -->
+          <text x="14" y="160" fill="#fab387" font-family="monospace" font-size="7" font-weight="600">Step 1: chunk A data_ stream (120MB &gt;= 20MB)</text>
+          <rect x="10" y="166" width="400" height="106" rx="5" fill="#1e1e2e" stroke="#3b3b54" stroke-width="1"/>
+          <!-- raw bar -->
+          <rect x="14" y="170" width="220" height="14" rx="2" fill="#a6e3a1" opacity="0.5"/>
+          <text x="18" y="180" fill="#1e1e2e" font-family="monospace" font-size="6">A data_: 120MB raw</text>
+          <!-- StreamChunker slices into 6 views -->
+          <text x="14" y="196" fill="#8888aa" font-family="monospace" font-size="6">StreamChunker → 6 × 20MB views:</text>
+          <rect x="14"  y="200" width="36" height="12" rx="2" fill="#a6e3a1" opacity="0.45"/>
+          <rect x="52"  y="200" width="36" height="12" rx="2" fill="#a6e3a1" opacity="0.45"/>
+          <rect x="90"  y="200" width="36" height="12" rx="2" fill="#a6e3a1" opacity="0.45"/>
+          <rect x="128" y="200" width="36" height="12" rx="2" fill="#a6e3a1" opacity="0.45"/>
+          <rect x="166" y="200" width="36" height="12" rx="2" fill="#a6e3a1" opacity="0.45"/>
+          <rect x="204" y="200" width="36" height="12" rx="2" fill="#a6e3a1" opacity="0.45"/>
+          <text x="14"  y="209" fill="#1e1e2e" font-family="monospace" font-size="5">20MB</text>
+          <text x="52"  y="209" fill="#1e1e2e" font-family="monospace" font-size="5">20MB</text>
+          <text x="90"  y="209" fill="#1e1e2e" font-family="monospace" font-size="5">20MB</text>
+          <text x="128" y="209" fill="#1e1e2e" font-family="monospace" font-size="5">20MB</text>
+          <text x="166" y="209" fill="#1e1e2e" font-family="monospace" font-size="5">20MB</text>
+          <text x="204" y="209" fill="#1e1e2e" font-family="monospace" font-size="5">20MB</text>
+          <!-- each view → encodeChunk -->
+          <text x="280" y="196" fill="#fab387" font-family="monospace" font-size="6">each → encodeChunk():</text>
+          <text x="280" y="206" fill="#8888aa" font-family="monospace" font-size="5">1. encode (RLE/Dict/Trivial)</text>
+          <text x="280" y="214" fill="#8888aa" font-family="monospace" font-size="5">2. compress (Zstd) → ~5MB each</text>
+          <text x="280" y="222" fill="#8888aa" font-family="monospace" font-size="5">3. compute stats (min, max)</text>
+          <!-- arrow down to encoded chunks -->
+          <text x="14" y="226" fill="#8888aa" font-family="monospace" font-size="6">↓ encode + compress</text>
+          <rect x="14"  y="230" width="18" height="12" rx="2" fill="#fab387" opacity="0.6"/>
+          <rect x="34"  y="230" width="18" height="12" rx="2" fill="#fab387" opacity="0.6"/>
+          <rect x="54"  y="230" width="18" height="12" rx="2" fill="#fab387" opacity="0.6"/>
+          <rect x="74"  y="230" width="18" height="12" rx="2" fill="#fab387" opacity="0.6"/>
+          <rect x="94"  y="230" width="18" height="12" rx="2" fill="#fab387" opacity="0.6"/>
+          <rect x="114" y="230" width="18" height="12" rx="2" fill="#fab387" opacity="0.6"/>
+          <text x="14"  y="239" fill="#1e1e2e" font-family="monospace" font-size="5">5M</text>
+          <text x="34"  y="239" fill="#1e1e2e" font-family="monospace" font-size="5">5M</text>
+          <text x="54"  y="239" fill="#1e1e2e" font-family="monospace" font-size="5">5M</text>
+          <text x="74"  y="239" fill="#1e1e2e" font-family="monospace" font-size="5">5M</text>
+          <text x="94"  y="239" fill="#1e1e2e" font-family="monospace" font-size="5">5M</text>
+          <text x="114" y="239" fill="#1e1e2e" font-family="monospace" font-size="5">5M</text>
+          <text x="140" y="239" fill="#fab387" font-family="monospace" font-size="6">= 6 chunks, 30MB total</text>
+          <!-- re-check -->
+          <text x="14" y="258" fill="#8888aa" font-family="monospace" font-size="6">re-check: [30 enc] + 90 + 10 raw = 130MB</text>
+          <text x="396" y="258" text-anchor="end" fill="#f38ba8" font-family="monospace" font-size="6">&gt; 100MB → continue</text>
+
+          <!-- Step 2: Chunk B -->
+          <text x="14" y="284" fill="#fab387" font-family="monospace" font-size="7" font-weight="600">Step 2: chunk B data_ stream (90MB &gt;= 20MB)</text>
+          <rect x="10" y="290" width="400" height="88" rx="5" fill="#1e1e2e" stroke="#3b3b54" stroke-width="1"/>
+          <rect x="14" y="294" width="165" height="14" rx="2" fill="#a6e3a1" opacity="0.5"/>
+          <text x="18" y="304" fill="#1e1e2e" font-family="monospace" font-size="6">B raw: 90MB</text>
+          <!-- 4 full views + leftover -->
+          <text x="14" y="320" fill="#8888aa" font-family="monospace" font-size="6">StreamChunker → 4 × 20MB views + 10MB leftover:</text>
+          <rect x="14"  y="324" width="36" height="12" rx="2" fill="#a6e3a1" opacity="0.45"/>
+          <rect x="52"  y="324" width="36" height="12" rx="2" fill="#a6e3a1" opacity="0.45"/>
+          <rect x="90"  y="324" width="36" height="12" rx="2" fill="#a6e3a1" opacity="0.45"/>
+          <rect x="128" y="324" width="36" height="12" rx="2" fill="#a6e3a1" opacity="0.45"/>
+          <rect x="172" y="324" width="18" height="12" rx="2" fill="#a6e3a1" opacity="0.30" stroke="#a6e3a1" stroke-width="0.5" stroke-dasharray="2,1"/>
+          <text x="14"  y="333" fill="#1e1e2e" font-family="monospace" font-size="5">20MB</text>
+          <text x="52"  y="333" fill="#1e1e2e" font-family="monospace" font-size="5">20MB</text>
+          <text x="90"  y="333" fill="#1e1e2e" font-family="monospace" font-size="5">20MB</text>
+          <text x="128" y="333" fill="#1e1e2e" font-family="monospace" font-size="5">20MB</text>
+          <text x="194" y="333" fill="#8888aa" font-family="monospace" font-size="5">10MB leftover (not full → stays raw)</text>
+          <!-- encoded result -->
+          <text x="14" y="350" fill="#8888aa" font-family="monospace" font-size="6">↓ encode + compress</text>
+          <rect x="14"  y="354" width="18" height="12" rx="2" fill="#fab387" opacity="0.6"/>
+          <rect x="34"  y="354" width="18" height="12" rx="2" fill="#fab387" opacity="0.6"/>
+          <rect x="54"  y="354" width="18" height="12" rx="2" fill="#fab387" opacity="0.6"/>
+          <rect x="74"  y="354" width="18" height="12" rx="2" fill="#fab387" opacity="0.6"/>
+          <text x="100" y="363" fill="#fab387" font-family="monospace" font-size="6">= 4 chunks, 20MB</text>
+          <rect x="210" y="354" width="18" height="12" rx="2" fill="#a6e3a1" opacity="0.35"/>
+          <text x="262" y="363" fill="#8888aa" font-family="monospace" font-size="6">10MB raw leftover</text>
+          <!-- re-check -->
+          <text x="14" y="374" fill="#8888aa" font-family="monospace" font-size="6">re-check: [30+20 enc] + 0 + 10 + 10 raw = 70MB</text>
+          <text x="396" y="374" text-anchor="end" fill="#a6e3a1" font-family="monospace" font-size="6">&lt; 100MB → STOP</text>
+
+          <!-- Step 3: C skipped -->
+          <text x="14" y="396" fill="#8888aa" font-family="monospace" font-size="7">Step 3: C streams (buffer_: 8MB, lengths_: 1.5MB) — all &lt; 20MB → <tspan fill="#a6e3a1">SKIP</tspan></text>
+
+          <!-- Result box -->
+          <text x="14" y="414" fill="#8888aa" font-family="monospace" font-size="7" font-weight="600">Result:</text>
+          <rect x="10" y="420" width="400" height="44" rx="6" fill="#1e1e2e" stroke="#3b3b54" stroke-width="1.5"/>
+          <text x="16" y="434" fill="#8888aa" font-family="monospace" font-size="7">raw:</text>
+          <text x="44" y="434" fill="#8888aa" font-family="monospace" font-size="7">A:0</text>
+          <rect x="68" y="424" width="18" height="14" rx="2" fill="#a6e3a1" opacity="0.5"/>
+          <text x="90" y="434" fill="#a6e3a1" font-family="monospace" font-size="7">B:10</text>
+          <rect x="116" y="424" width="18" height="14" rx="2" fill="#a6e3a1" opacity="0.4"/>
+          <text x="138" y="434" fill="#a6e3a1" font-family="monospace" font-size="7">C:10</text>
+          <text x="16" y="454" fill="#8888aa" font-family="monospace" font-size="7">enc:</text>
+          <rect x="44" y="444" width="55" height="14" rx="2" fill="#fab387" opacity="0.65"/>
+          <text x="48" y="454" fill="#1e1e2e" font-family="monospace" font-size="7">A:30</text>
+          <rect x="104" y="444" width="37" height="14" rx="2" fill="#fab387" opacity="0.5"/>
+          <text x="108" y="454" fill="#1e1e2e" font-family="monospace" font-size="7">B:20</text>
+          <text x="300" y="438" fill="#8888aa" font-family="monospace" font-size="8">total: 70MB</text>
+
+          <!-- ======== MORE WRITES ======== -->
+          <text x="190" y="484" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="7">more write() calls...</text>
+          <line x1="190" y1="487" x2="190" y2="498" stroke="#8888aa" stroke-width="1" marker-end="url(#am)"/>
+
+          <!-- ======== PHASE 2b — HARD CHUNKING PROCESS ======== -->
+          <text x="10" y="514" fill="#fab387" font-family="monospace" font-size="9" font-weight="600">Phase 2b — Hard chunking</text>
+          <!-- soft A+B again -->
+          <text x="14" y="530" fill="#fab387" font-family="monospace" font-size="7">Soft: A(80MB) → 20MB encoded | B(60MB) → 15MB encoded</text>
+          <text x="14" y="542" fill="#8888aa" font-family="monospace" font-size="7">re-check: 0+0+17 raw + 85 enc = 102MB &gt; 100MB → <tspan fill="#f38ba8" font-weight="600">still above!</tspan></text>
+          <!-- hard chunk C -->
+          <text x="14" y="558" fill="#f38ba8" font-family="monospace" font-size="7" font-weight="600">HARD CHUNK: all remaining streams, ensureFullChunks=false</text>
+          <rect x="10" y="564" width="400" height="28" rx="5" fill="#1e1e2e" stroke="#3b3b54" stroke-width="1"/>
+          <rect x="14" y="568" width="30" height="14" rx="2" fill="#a6e3a1" opacity="0.4"/>
+          <text x="18" y="578" fill="#1e1e2e" font-family="monospace" font-size="6">C:17</text>
+          <text x="50" y="578" fill="#fab387" font-family="monospace" font-size="7">→ 1 undersized chunk (17MB &lt; 20MB OK) → 4MB enc</text>
+          <text x="300" y="588" fill="#a6e3a1" font-family="monospace" font-size="6">89MB &lt; 100MB → STOP</text>
+          <!-- Result -->
+          <text x="14" y="608" fill="#8888aa" font-family="monospace" font-size="7" font-weight="600">Result:</text>
+          <rect x="10" y="614" width="400" height="30" rx="6" fill="#1e1e2e" stroke="#3b3b54" stroke-width="1.5"/>
+          <text x="16" y="628" fill="#8888aa" font-family="monospace" font-size="7">raw: 0MB</text>
+          <text x="16" y="640" fill="#8888aa" font-family="monospace" font-size="7">enc:</text>
+          <rect x="44" y="630" width="92" height="12" rx="2" fill="#fab387" opacity="0.65"/>
+          <text x="48" y="640" fill="#1e1e2e" font-family="monospace" font-size="6">A:50</text>
+          <rect x="140" y="630" width="64" height="12" rx="2" fill="#fab387" opacity="0.5"/>
+          <text x="144" y="640" fill="#1e1e2e" font-family="monospace" font-size="6">B:35</text>
+          <rect x="208" y="630" width="8" height="12" rx="2" fill="#fab387" opacity="0.5"/>
+          <text x="220" y="640" fill="#fab387" font-family="monospace" font-size="6">C:4</text>
+          <text x="300" y="632" fill="#8888aa" font-family="monospace" font-size="8">total: 89MB</text>
+
+          <!-- ======== MORE WRITES ======== -->
+          <text x="190" y="666" text-anchor="middle" fill="#8888aa" font-family="monospace" font-size="7">more write() calls...</text>
+          <line x1="190" y1="669" x2="190" y2="680" stroke="#8888aa" stroke-width="1" marker-end="url(#am)"/>
+
+          <!-- ======== PHASE 2c — FLUSH TRIGGERED ======== -->
+          <text x="10" y="696" fill="#fab387" font-family="monospace" font-size="9" font-weight="600">Phase 2c — shouldFlush() triggers</text>
+          <rect x="10" y="704" width="400" height="52" rx="6" fill="#1e1e2e" stroke="#3b3b54" stroke-width="1.5"/>
+          <text x="16" y="718" fill="#8888aa" font-family="monospace" font-size="7">raw:</text>
+          <rect x="44" y="710" width="46" height="12" rx="2" fill="#a6e3a1" opacity="0.5"/>
+          <text x="48" y="720" fill="#1e1e2e" font-family="monospace" font-size="6">A:25</text>
+          <rect x="94" y="710" width="28" height="12" rx="2" fill="#a6e3a1" opacity="0.45"/>
+          <text x="98" y="720" fill="#1e1e2e" font-family="monospace" font-size="6">B:15</text>
+          <rect x="126" y="710" width="6" height="12" rx="2" fill="#a6e3a1" opacity="0.35"/>
+          <text x="136" y="720" fill="#8888aa" font-family="monospace" font-size="6">C:3</text>
+          <text x="16" y="738" fill="#8888aa" font-family="monospace" font-size="7">enc:</text>
+          <rect x="44" y="728" width="92" height="12" rx="2" fill="#fab387" opacity="0.65"/>
+          <text x="48" y="738" fill="#1e1e2e" font-family="monospace" font-size="6">A:50</text>
+          <rect x="140" y="728" width="64" height="12" rx="2" fill="#fab387" opacity="0.5"/>
+          <text x="144" y="738" fill="#1e1e2e" font-family="monospace" font-size="6">B:35</text>
+          <rect x="208" y="728" width="8" height="12" rx="2" fill="#fab387" opacity="0.4"/>
+          <text x="300" y="720" fill="#8888aa" font-family="monospace" font-size="7">est: 89+43/3.7 ≈ 100.6MB</text>
+          <text x="300" y="734" fill="#f38ba8" font-family="monospace" font-size="7" font-weight="600">&gt;= 100MB → FLUSH!</text>
+
+          <!-- arrow to phase 3 -->
+          <line x1="210" y1="756" x2="210" y2="776" stroke="#f38ba8" stroke-width="1.5" marker-end="url(#amr)"/>
+          <text x="220" y="770" fill="#f38ba8" font-family="monospace" font-size="8" font-weight="600">writeStripe()</text>
+
+          <!-- ======== PHASE 3 — STRIPE FLUSH PROCESS ======== -->
+          <text x="10" y="792" fill="#f38ba8" font-family="monospace" font-size="9" font-weight="600">Phase 3 — writeStripe()</text>
+
+          <!-- Step 1: encode remaining -->
+          <text x="14" y="810" fill="#f38ba8" font-family="monospace" font-size="7" font-weight="600">Step 1: encode remaining raw (lastChunk=true, minChunkSize=0)</text>
+          <rect x="10" y="816" width="400" height="50" rx="5" fill="#1e1e2e" stroke="#3b3b54" stroke-width="1"/>
+          <text x="16" y="830" fill="#8888aa" font-family="monospace" font-size="6">A: 25MB → [20MB, 5MB] → 2 chunks (~6.3MB)</text>
+          <text x="16" y="842" fill="#8888aa" font-family="monospace" font-size="6">B: 15MB → [15MB] → 1 chunk (~3.8MB)</text>
+          <text x="16" y="854" fill="#8888aa" font-family="monospace" font-size="6">C: 3MB → [3MB] → 1 chunk (~0.8MB)</text>
+
+          <!-- Step 2: chunk inventory -->
+          <text x="14" y="882" fill="#f38ba8" font-family="monospace" font-size="7" font-weight="600">Step 2: final chunk inventory</text>
+          <!-- A: 12 chunks -->
+          <rect x="10" y="888" width="310" height="18" rx="4" fill="#252536" stroke="#3b3b54"/>
+          <rect x="12" y="890" width="22" height="14" rx="2" fill="#fab38760"/><rect x="36" y="890" width="22" height="14" rx="2" fill="#fab38760"/>
+          <rect x="60" y="890" width="22" height="14" rx="2" fill="#fab38760"/><rect x="84" y="890" width="22" height="14" rx="2" fill="#fab38760"/>
+          <rect x="108" y="890" width="22" height="14" rx="2" fill="#fab38760"/><rect x="132" y="890" width="22" height="14" rx="2" fill="#fab38760"/>
+          <rect x="156" y="890" width="22" height="14" rx="2" fill="#fab38760"/><rect x="180" y="890" width="22" height="14" rx="2" fill="#fab38760"/>
+          <rect x="204" y="890" width="22" height="14" rx="2" fill="#fab38760"/><rect x="228" y="890" width="22" height="14" rx="2" fill="#fab38760"/>
+          <rect x="252" y="890" width="22" height="14" rx="2" fill="#fab38738"/><rect x="276" y="890" width="22" height="14" rx="2" fill="#fab38738"/>
+          <text x="330" y="902" fill="#fab387" font-family="monospace" font-size="7">A: 10+2 = 12</text>
+          <!-- B: 8 chunks -->
+          <rect x="10" y="910" width="220" height="18" rx="4" fill="#252536" stroke="#3b3b54"/>
+          <rect x="12" y="912" width="24" height="14" rx="2" fill="#94e2d560"/><rect x="38" y="912" width="24" height="14" rx="2" fill="#94e2d560"/>
+          <rect x="64" y="912" width="24" height="14" rx="2" fill="#94e2d560"/><rect x="90" y="912" width="24" height="14" rx="2" fill="#94e2d560"/>
+          <rect x="116" y="912" width="24" height="14" rx="2" fill="#94e2d560"/><rect x="142" y="912" width="24" height="14" rx="2" fill="#94e2d560"/>
+          <rect x="168" y="912" width="24" height="14" rx="2" fill="#94e2d560"/><rect x="194" y="912" width="24" height="14" rx="2" fill="#94e2d538"/>
+          <text x="240" y="924" fill="#94e2d5" font-family="monospace" font-size="7">B: 7+1 = 8</text>
+          <!-- C: 2 chunks -->
+          <rect x="10" y="932" width="76" height="18" rx="4" fill="#252536" stroke="#3b3b54"/>
+          <rect x="12" y="934" width="30" height="14" rx="2" fill="#fab38760"/>
+          <rect x="44" y="934" width="30" height="14" rx="2" fill="#fab38738"/>
+          <text x="96" y="946" fill="#fab387" font-family="monospace" font-size="7">C: 1+1 = 2</text>
+
+          <!-- Step 3: write to disk -->
+          <text x="14" y="970" fill="#f38ba8" font-family="monospace" font-size="7" font-weight="600">Step 3: TabletWriter writes chunks contiguously per stream</text>
+          <line x1="210" y1="976" x2="210" y2="990" stroke="#a6e3a1" stroke-width="1.5" marker-end="url(#am)"/>
+          <rect x="10" y="994" width="400" height="30" rx="6" fill="#1a3a2a" stroke="#a6e3a1" stroke-width="1.5"/>
+          <rect x="14" y="998" width="200" height="22" rx="3" fill="#fab38725"/>
+          <text x="114" y="1013" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="7">Stream A (12 chunks)</text>
+          <rect x="218" y="998" width="120" height="22" rx="3" fill="#94e2d525"/>
+          <text x="278" y="1013" text-anchor="middle" fill="#94e2d5" font-family="monospace" font-size="7">Stream B (8)</text>
+          <rect x="342" y="998" width="60" height="22" rx="3" fill="#fab38725"/>
+          <text x="372" y="1013" text-anchor="middle" fill="#fab387" font-family="monospace" font-size="7">C (2)</text>
+          <text x="210" y="1038" text-anchor="middle" fill="#a6e3a1" font-family="monospace" font-size="8" font-weight="600">ONE STRIPE ON DISK</text>
+
+          <!-- Step 4: reset -->
+          <text x="14" y="1058" fill="#94e2d5" font-family="monospace" font-size="7">Step 4: reset all StreamData + encodedStreams_ → start next stripe</text>
+        </svg>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

@@ -15,7 +15,7 @@
  */
 
 #include "dwio/nimble/encodings/tests/TestUtils.h"
-#include "dwio/nimble/encodings/EncodingUtils.h"
+#include "dwio/nimble/encodings/common/EncodingUtils.h"
 
 namespace facebook::nimble::test {
 

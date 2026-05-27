@@ -104,10 +104,6 @@ enum class EncodingType {
   // shared across consecutive entries to reduce storage. Supports seek
   // operations for efficient random access.
   Prefix = 11,
-  // Decomposes each value into bit-range sub-streams and encodes each
-  // independently. Optimal splits are chosen via a sample-driven DP algorithm.
-  // Only supported for 32- and 64-bit numeric types.
-  SubIntSplit = 12,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);
@@ -138,6 +134,7 @@ enum class CompressionType : uint8_t {
   // Zstd doesn't require us to externally store level or any other info.
   Zstd = 1,
   MetaInternal = 2,
+  Lz4 = 3,
 };
 
 std::string toString(CompressionType compressionType);

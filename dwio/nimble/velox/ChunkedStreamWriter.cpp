@@ -39,12 +39,12 @@ std::vector<std::string_view> ChunkedStreamWriter::encode(
 
   if (compressionParams_.type == CompressionType::Zstd) {
     auto compressed = ZstdCompression::compress(
-        buffer_.getMemoryPool(), chunk, compressionParams_.zstdLevel);
+        chunk, &buffer_.getMemoryPool(), compressionParams_.zstdLevel);
     if (compressed.has_value()) {
-      writeChunkHeader(compressed->size(), CompressionType::Zstd, pos);
+      writeChunkHeader(compressed.value()->size(), CompressionType::Zstd, pos);
       return {
           {header, kChunkHeaderSize},
-          buffer_.takeOwnership(compressed->releaseOwnership())};
+          buffer_.takeOwnership(std::move(*compressed))};
     }
   }
 

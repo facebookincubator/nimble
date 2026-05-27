@@ -15,8 +15,8 @@
  */
 #include <gtest/gtest.h>
 
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 #include "velox/common/memory/Memory.h"

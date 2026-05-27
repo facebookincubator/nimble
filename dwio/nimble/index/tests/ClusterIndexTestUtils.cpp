@@ -16,8 +16,8 @@
 
 #include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
 
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/tablet/ChunkIndexGenerated.h"
 #include "dwio/nimble/tablet/ClusterIndexGenerated.h"

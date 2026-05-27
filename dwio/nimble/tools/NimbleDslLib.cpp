@@ -17,7 +17,7 @@
 #include <locale>
 
 #include "dwio/nimble/common/FixedBitArray.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
@@ -334,7 +334,10 @@ void NimbleDslLib::select(
     uint64_t limit,
     uint64_t offset,
     std::optional<uint32_t> stripeId) {
-  auto tablet = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options tabletOptions;
+  tabletOptions.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tablet = TabletReader::create(file_, pool_.get(), tabletOptions);
 
   // First create a reader without projection to get the full schema.
   VeloxReader schemaReader{tablet, *pool_};
@@ -437,7 +440,10 @@ void NimbleDslLib::select(
 }
 
 void NimbleDslLib::describe() {
-  auto tablet = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options tabletOptions;
+  tabletOptions.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tablet = TabletReader::create(file_, pool_.get(), tabletOptions);
   VeloxReader reader{tablet, *pool_};
   const auto& veloxType = reader.type();
 
@@ -530,6 +536,8 @@ void NimbleDslLib::showStats() {
   TabletReader::Options tabletOptions;
   tabletOptions.preloadOptionalSections = {
       std::string(kVectorizedStatsSection)};
+  tabletOptions.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
   auto tablet = TabletReader::create(file_, pool_.get(), tabletOptions);
   VeloxReader reader{tablet, *pool_};
 
@@ -637,7 +645,10 @@ void NimbleDslLib::showOptionalSections() {
 }
 
 void NimbleDslLib::showEncoding(std::optional<uint32_t> stripeId) {
-  auto tablet = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options tabletOptions;
+  tabletOptions.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tablet = TabletReader::create(file_, pool_.get(), tabletOptions);
   VeloxReader reader{tablet, *pool_};
   StreamLabels labels{reader.schema()};
 

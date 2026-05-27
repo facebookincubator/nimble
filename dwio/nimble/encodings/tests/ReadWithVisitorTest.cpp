@@ -29,8 +29,8 @@
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingUtils.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingUtils.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/encodings/legacy/EncodingUtils.h"
 #include "dwio/nimble/encodings/tests/EncodingLayoutTestHelper.h"
@@ -42,6 +42,7 @@
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
 #include "dwio/nimble/velox/selective/StringColumnReader.h"
 #include "folly/Random.h"
+#include "velox/common/io/IoStatistics.h"
 #include "velox/dwio/common/ColumnVisitors.h"
 #include "velox/dwio/common/SelectiveColumnReader.h"
 #include "velox/dwio/common/SelectiveStructColumnReader.h"
@@ -142,6 +143,8 @@ class ReadWithVisitorTest : public ::testing::TestWithParam<bool>,
 
     auto readFile = std::make_shared<InMemoryReadFile>(ctx->fileData);
     dwio::common::ReaderOptions readerOpts(pool());
+    readerOpts.setDataIoStats(dataIoStats_);
+    readerOpts.setMetadataIoStats(metadataIoStats_);
     ctx->readerBase = ReaderBase::create(
         std::make_unique<dwio::common::BufferedInput>(readFile, *pool()),
         readerOpts);
@@ -224,6 +227,87 @@ class ReadWithVisitorTest : public ::testing::TestWithParam<bool>,
     return decodeEncoding(encoded, memPool);
   }
 
+  /// Manually encode data as MainlyConstant wrapping Dictionary.
+  /// Works for all types including string_view (unlike createFromCustomLayout
+  /// which fails for string_view due to nested sub-encoding depth).
+  template <typename T>
+  std::unique_ptr<Encoding> encodeMainlyConstantDictionary(
+      const std::vector<T>& values) {
+    using PhysicalType = typename TypeTraits<T>::physicalType;
+    NIMBLE_CHECK(!values.empty());
+    const uint32_t rowCount = values.size();
+
+    std::unordered_map<PhysicalType, uint32_t> counts;
+    for (const auto& v : values) {
+      ++counts[reinterpret_cast<const PhysicalType&>(v)];
+    }
+    PhysicalType commonValue{};
+    uint32_t maxCount = 0;
+    for (const auto& [val, cnt] : counts) {
+      if (cnt > maxCount) {
+        maxCount = cnt;
+        commonValue = val;
+      }
+    }
+
+    nimble::Vector<bool> isCommon{pool(), rowCount, false};
+    nimble::Vector<T> otherVec{pool()};
+    for (size_t i = 0; i < values.size(); ++i) {
+      if (reinterpret_cast<const PhysicalType&>(values[i]) == commonValue) {
+        isCommon[i] = true;
+      } else {
+        otherVec.push_back(values[i]);
+      }
+    }
+
+    auto isCommonSpan = std::span<const bool>(isCommon.data(), isCommon.size());
+    Buffer isCommonBuf{*pool()};
+    EncodingSelection<bool> isCommonSel{
+        {.encodingType = EncodingType::Trivial},
+        Statistics<bool>::create(isCommonSpan),
+        std::make_unique<TrivialNestedPolicy<bool>>()};
+    auto serializedIsCommon =
+        TrivialEncoding<bool>::encode(isCommonSel, isCommonSpan, isCommonBuf);
+
+    auto otherSpan = std::span<const PhysicalType>(
+        reinterpret_cast<const PhysicalType*>(otherVec.data()),
+        otherVec.size());
+    Buffer otherBuf{*pool()};
+    EncodingSelection<PhysicalType> otherSel{
+        {.encodingType = EncodingType::Dictionary},
+        Statistics<PhysicalType>::create(otherSpan),
+        std::make_unique<TrivialNestedPolicy<T>>()};
+    auto serializedOther =
+        DictionaryEncoding<T>::encode(otherSel, otherSpan, otherBuf);
+
+    uint32_t encodingSize = Encoding::kPrefixSize + 8 +
+        serializedIsCommon.size() + serializedOther.size();
+    if constexpr (isNumericType<PhysicalType>()) {
+      encodingSize += sizeof(PhysicalType);
+    } else {
+      encodingSize += 4 + commonValue.size();
+    }
+    auto& buf = mcDictBuffer_;
+    buf = std::make_unique<Buffer>(*pool());
+    char* reserved = buf->reserve(encodingSize);
+    char* pos = reserved;
+    encoding::writeChar(static_cast<char>(EncodingType::MainlyConstant), pos);
+    encoding::writeChar(static_cast<char>(TypeTraits<T>::dataType), pos);
+    encoding::writeUint32(rowCount, pos);
+    encoding::writeString(serializedIsCommon, pos);
+    encoding::writeString(serializedOther, pos);
+    encoding::write<PhysicalType>(commonValue, pos);
+
+    return EncodingFactory().create(
+        *pool(),
+        std::string_view(reserved, encodingSize),
+        [this](uint32_t size) {
+          mcDictStringBuffers_.push_back(
+              velox::AlignedBuffer::allocate<char>(size, pool()));
+          return mcDictStringBuffers_.back()->asMutable<void>();
+        });
+  }
+
   // Build root reader, get its first child, call read(), return child.
   // Caller inspects outputRows / numValues / rawValues / hasNulls on it.
   dwio::common::SelectiveColumnReader* readColumn(
@@ -250,6 +334,13 @@ class ReadWithVisitorTest : public ::testing::TestWithParam<bool>,
     auto* raw = reinterpret_cast<const T*>(reader->rawValues());
     return std::vector<T>(raw, raw + reader->numValues());
   }
+
+  const std::shared_ptr<io::IoStatistics> dataIoStats_{
+      std::make_shared<io::IoStatistics>()};
+  const std::shared_ptr<io::IoStatistics> metadataIoStats_{
+      std::make_shared<io::IoStatistics>()};
+  std::unique_ptr<Buffer> mcDictBuffer_;
+  std::vector<velox::BufferPtr> mcDictStringBuffers_;
 };
 
 // ===========================================================================
@@ -688,7 +779,7 @@ TEST_P(ReadWithVisitorTest, filterOnOneColumnInspectState) {
 // ===========================================================================
 
 // Explicit readWithVisitor: BigintRange filter, dense rows, ExtractToReader.
-TEST_P(ReadWithVisitorTest, explicitReadWithVisitor_BigintRange_Dense) {
+TEST_P(ReadWithVisitorTest, explicitReadWithVisitorBigintRangeDense) {
   constexpr int kRows = 500;
   auto input = makeRowVector({makeFlatVector<int64_t>(kRows, folly::identity)});
   auto rowType = asRowType(input->type());
@@ -749,7 +840,7 @@ TEST_P(ReadWithVisitorTest, explicitReadWithVisitor_BigintRange_Dense) {
 }
 
 // Explicit readWithVisitor: AlwaysTrue filter (no filtering), dense rows.
-TEST_P(ReadWithVisitorTest, explicitReadWithVisitor_AlwaysTrue_Dense) {
+TEST_P(ReadWithVisitorTest, explicitReadWithVisitorAlwaysTrueDense) {
   constexpr int kRows = 200;
   auto input = makeRowVector(
       {makeFlatVector<int64_t>(kRows, [](auto i) { return i * 3; })});
@@ -795,7 +886,7 @@ TEST_P(ReadWithVisitorTest, explicitReadWithVisitor_AlwaysTrue_Dense) {
 }
 
 // Explicit readWithVisitor: BigintRange filter, sparse rows (non-dense).
-TEST_P(ReadWithVisitorTest, explicitReadWithVisitor_BigintRange_Sparse) {
+TEST_P(ReadWithVisitorTest, explicitReadWithVisitorBigintRangeSparse) {
   constexpr int kRows = 500;
   auto input = makeRowVector({makeFlatVector<int64_t>(kRows, folly::identity)});
   auto rowType = asRowType(input->type());
@@ -844,7 +935,7 @@ TEST_P(ReadWithVisitorTest, explicitReadWithVisitor_BigintRange_Sparse) {
 }
 
 // Explicit readWithVisitor: IsNotNull filter on nullable data.
-TEST_P(ReadWithVisitorTest, explicitReadWithVisitor_IsNotNull_Nullable) {
+TEST_P(ReadWithVisitorTest, explicitReadWithVisitorIsNotNullNullable) {
   constexpr int kRows = 300;
   auto input = makeRowVector(
       {makeFlatVector<int64_t>(kRows, folly::identity, nullEvery(5))});
@@ -928,7 +1019,7 @@ ReadWithVisitorParams makeReadWithVisitorParams(
 // ---------------------------------------------------------------------------
 // 1. TrivialEncoding<int64_t> + BigintRange + dense
 // ---------------------------------------------------------------------------
-TEST_P(ReadWithVisitorTest, encodingLevel_Trivial_BigintRange_Dense) {
+TEST_P(ReadWithVisitorTest, encodingLevelTrivialBigintRangeDense) {
   constexpr int kRows = 500;
 
   // Sequential data [0..499].
@@ -989,7 +1080,7 @@ TEST_P(ReadWithVisitorTest, encodingLevel_Trivial_BigintRange_Dense) {
 // ---------------------------------------------------------------------------
 // 2. ConstantEncoding<int64_t> + AlwaysTrue + dense
 // ---------------------------------------------------------------------------
-TEST_P(ReadWithVisitorTest, encodingLevel_Constant_AlwaysTrue_Dense) {
+TEST_P(ReadWithVisitorTest, encodingLevelConstantAlwaysTrueDense) {
   constexpr int kRows = 300;
 
   // All-same data.
@@ -1044,7 +1135,7 @@ TEST_P(ReadWithVisitorTest, encodingLevel_Constant_AlwaysTrue_Dense) {
 // ---------------------------------------------------------------------------
 // 3. FixedBitWidthEncoding<int64_t> + BigintRange + sparse
 // ---------------------------------------------------------------------------
-TEST_P(ReadWithVisitorTest, encodingLevel_FixedBitWidth_BigintRange_Sparse) {
+TEST_P(ReadWithVisitorTest, encodingLevelFixedBitWidthBigintRangeSparse) {
   constexpr int kRows = 500;
 
   // Small-range data [0..15] that fits in fixed-bit-width encoding.
@@ -1114,7 +1205,7 @@ TEST_P(ReadWithVisitorTest, encodingLevel_FixedBitWidth_BigintRange_Sparse) {
 // ---------------------------------------------------------------------------
 // 4. RLEEncoding<int64_t> + AlwaysTrue + dense
 // ---------------------------------------------------------------------------
-TEST_P(ReadWithVisitorTest, encodingLevel_RLE_AlwaysTrue_Dense) {
+TEST_P(ReadWithVisitorTest, encodingLevelRleAlwaysTrueDense) {
   constexpr int kRows = 500;
 
   // Repeated-run data: 50 copies of each value [0..9].
@@ -1174,7 +1265,7 @@ TEST_P(ReadWithVisitorTest, encodingLevel_RLE_AlwaysTrue_Dense) {
 // 5. TrivialEncoding<int64_t> + AlwaysTrue + dense + SLOW PATH
 //    hasBulkPath=false forces readWithVisitorSlow regardless of CPU features.
 // ---------------------------------------------------------------------------
-TEST_P(ReadWithVisitorTest, encodingLevel_Trivial_AlwaysTrue_Dense_SlowPath) {
+TEST_P(ReadWithVisitorTest, encodingLevelTrivialAlwaysTrueDenseSlowPath) {
   constexpr int kRows = 500;
 
   std::vector<int64_t> data(kRows);
@@ -1230,7 +1321,7 @@ TEST_P(ReadWithVisitorTest, encodingLevel_Trivial_AlwaysTrue_Dense_SlowPath) {
 // ---------------------------------------------------------------------------
 // 6. RLEEncoding<int64_t> + AlwaysTrue + dense + SLOW PATH
 // ---------------------------------------------------------------------------
-TEST_P(ReadWithVisitorTest, encodingLevel_RLE_AlwaysTrue_Dense_SlowPath) {
+TEST_P(ReadWithVisitorTest, encodingLevelRleAlwaysTrueDenseSlowPath) {
   constexpr int kRows = 500;
 
   std::vector<int64_t> data(kRows);
@@ -1289,7 +1380,7 @@ TEST_P(ReadWithVisitorTest, encodingLevel_RLE_AlwaysTrue_Dense_SlowPath) {
 // ---------------------------------------------------------------------------
 // 7. MainlyConstantEncoding<int64_t> + AlwaysTrue + dense (FAST path)
 // ---------------------------------------------------------------------------
-TEST_P(ReadWithVisitorTest, encodingLevel_MainlyConstant_AlwaysTrue_Dense) {
+TEST_P(ReadWithVisitorTest, encodingLevelMainlyConstantAlwaysTrueDense) {
   constexpr int kRows = 500;
 
   std::vector<int64_t> data(kRows, 42);
@@ -1350,7 +1441,7 @@ TEST_P(ReadWithVisitorTest, encodingLevel_MainlyConstant_AlwaysTrue_Dense) {
 // ---------------------------------------------------------------------------
 TEST_P(
     ReadWithVisitorTest,
-    encodingLevel_MainlyConstant_AlwaysTrue_Dense_SlowPath) {
+    encodingLevelMainlyConstantAlwaysTrueDenseSlowPath) {
   constexpr int kRows = 500;
 
   std::vector<int64_t> data(kRows, 42);
@@ -1412,7 +1503,7 @@ TEST_P(
 // 9. DictionaryEncoding<int64_t> + AlwaysTrue + dense
 //    Dictionary always uses slow path (no bulkScan).
 // ---------------------------------------------------------------------------
-TEST_P(ReadWithVisitorTest, encodingLevel_Dictionary_AlwaysTrue_Dense) {
+TEST_P(ReadWithVisitorTest, encodingLevelDictionaryAlwaysTrueDense) {
   constexpr int kRows = 500;
 
   std::vector<int64_t> data(kRows);
@@ -1469,7 +1560,7 @@ TEST_P(ReadWithVisitorTest, encodingLevel_Dictionary_AlwaysTrue_Dense) {
 // ---------------------------------------------------------------------------
 // 10. DictionaryEncoding<int64_t> + BigintRange + sparse
 // ---------------------------------------------------------------------------
-TEST_P(ReadWithVisitorTest, encodingLevel_Dictionary_BigintRange_Sparse) {
+TEST_P(ReadWithVisitorTest, encodingLevelDictionaryBigintRangeSparse) {
   constexpr int kRows = 500;
 
   std::vector<int64_t> data(kRows);
@@ -1538,7 +1629,7 @@ TEST_P(ReadWithVisitorTest, encodingLevel_Dictionary_BigintRange_Sparse) {
 // ---------------------------------------------------------------------------
 TEST_P(
     ReadWithVisitorTest,
-    encodingLevel_MainlyConstant_Dictionary_AlwaysTrue_Dense) {
+    encodingLevelMainlyConstantDictionaryAlwaysTrueDense) {
   constexpr int kRows = 500;
 
   // Mostly 42; non-common values cycle through {100, 101, 102}.
@@ -1597,7 +1688,7 @@ TEST_P(
 // ---------------------------------------------------------------------------
 TEST_P(
     ReadWithVisitorTest,
-    encodingLevel_MainlyConstant_Dictionary_AlwaysTrue_Dense_SlowPath) {
+    encodingLevelMainlyConstantDictionaryAlwaysTrueDenseSlowPath) {
   constexpr int kRows = 500;
 
   std::vector<int64_t> data(kRows, 42);
@@ -1663,7 +1754,7 @@ TEST_P(
 // ---------------------------------------------------------------------------
 TEST_P(
     ReadWithVisitorTest,
-    encodingLevel_FixedBitWidth_AlwaysTrue_Dense_Int32_FastPath) {
+    encodingLevelFixedBitWidthAlwaysTrueDenseInt32FastPath) {
   constexpr int kRows = 500;
 
   // Small-range int32 data that fits in fixed-bit-width encoding.
@@ -1731,7 +1822,7 @@ TEST_P(
 // ---------------------------------------------------------------------------
 TEST_P(
     ReadWithVisitorTest,
-    encodingLevel_FixedBitWidth_AlwaysTrue_Dense_Int32_FastPath_WithNulls) {
+    encodingLevelFixedBitWidthAlwaysTrueDenseInt32FastPathWithNulls) {
   constexpr int kRows = 500;
 
   // Build null bitmap: every 5th row is null.
@@ -1819,7 +1910,7 @@ TEST_P(
 // ---------------------------------------------------------------------------
 TEST_P(
     ReadWithVisitorTest,
-    encodingLevel_FixedBitWidth_AlwaysTrue_Sparse_Int32_FastPath) {
+    encodingLevelFixedBitWidthAlwaysTrueSparseInt32FastPath) {
   constexpr int kTotalRows = 500;
 
   // Small-range int32 data.
@@ -1885,7 +1976,7 @@ TEST_P(
 // ---------------------------------------------------------------------------
 TEST_P(
     ReadWithVisitorTest,
-    encodingLevel_FixedBitWidth_BigintRange_Dense_Int32_FastPath) {
+    encodingLevelFixedBitWidthBigintRangeDenseInt32FastPath) {
   constexpr int kRows = 500;
 
   std::vector<int32_t> data(kRows);
@@ -1954,7 +2045,7 @@ TEST_P(
 // ---------------------------------------------------------------------------
 TEST_P(
     ReadWithVisitorTest,
-    encodingLevel_FixedBitWidth_BigintRange_Sparse_Int32_FastPath) {
+    encodingLevelFixedBitWidthBigintRangeSparseInt32FastPath) {
   constexpr int kTotalRows = 500;
 
   std::vector<int32_t> data(kTotalRows);
@@ -2027,7 +2118,7 @@ TEST_P(
 // ---------------------------------------------------------------------------
 TEST_P(
     ReadWithVisitorTest,
-    encodingLevel_FixedBitWidth_BigintRange_Dense_Int32_FastPath_WithNulls) {
+    encodingLevelFixedBitWidthBigintRangeDenseInt32FastPathWithNulls) {
   constexpr int kRows = 500;
 
   // Build null bitmap: every 5th row is null.
@@ -2116,7 +2207,7 @@ TEST_P(
 // 14. DeltaEncoding<int64_t> + AlwaysTrue + dense
 //     Delta always uses slow path (no bulkScan).
 // ---------------------------------------------------------------------------
-TEST_P(ReadWithVisitorTest, encodingLevel_Delta_AlwaysTrue_Dense) {
+TEST_P(ReadWithVisitorTest, encodingLevelDeltaAlwaysTrueDense) {
   constexpr int kRows = 500;
 
   // Monotonically increasing data suitable for delta encoding.
@@ -2174,7 +2265,7 @@ TEST_P(ReadWithVisitorTest, encodingLevel_Delta_AlwaysTrue_Dense) {
 // ---------------------------------------------------------------------------
 // 15. DeltaEncoding<int64_t> + BigintRange + sparse
 // ---------------------------------------------------------------------------
-TEST_P(ReadWithVisitorTest, encodingLevel_Delta_BigintRange_Sparse) {
+TEST_P(ReadWithVisitorTest, encodingLevelDeltaBigintRangeSparse) {
   constexpr int kRows = 500;
 
   // Monotonically increasing data with occasional restatements.
@@ -2243,7 +2334,7 @@ TEST_P(ReadWithVisitorTest, encodingLevel_Delta_BigintRange_Sparse) {
 // ---------------------------------------------------------------------------
 // 16. DeltaEncoding<int64_t> + AlwaysTrue + dense + SLOW PATH
 // ---------------------------------------------------------------------------
-TEST_P(ReadWithVisitorTest, encodingLevel_Delta_AlwaysTrue_Dense_SlowPath) {
+TEST_P(ReadWithVisitorTest, encodingLevelDeltaAlwaysTrueDenseSlowPath) {
   constexpr int kRows = 500;
 
   std::vector<int64_t> data(kRows);
@@ -2734,7 +2825,7 @@ TEST_P(ReadWithVisitorTest, readIndicesWithVisitorNullable) {
   auto serializedNulls = nimble::TrivialEncoding<bool>::encode(
       nullSelection, nullSpan, nullBuffer);
 
-  const uint32_t encodingSize = nimble::Encoding::kPrefixSize + 4 +
+  const uint32_t encodingSize = nimble::EncodingPrefix::kFixedPrefixSize + 4 +
       serializedValues.size() + serializedNulls.size();
   Buffer assemblyBuffer(*pool());
   char* reserved = assemblyBuffer.reserve(encodingSize);
@@ -2770,8 +2861,7 @@ TEST_P(ReadWithVisitorTest, readIndicesWithVisitorNullable) {
       visitor(filter, reader, rows, extractValues);
   auto params = makeReadWithVisitorParams(visitor, rows, pool());
 
-  static_cast<NullableEncoding<std::string_view>&>(*encoding)
-      .readIndicesWithVisitor(visitor, params);
+  callReadIndicesWithVisitor(*encoding, visitor, params);
 
   ASSERT_EQ(reader->numValues(), kRows);
   const auto* indices = reader->rawIndices();
@@ -2782,6 +2872,131 @@ TEST_P(ReadWithVisitorTest, readIndicesWithVisitorNullable) {
     ASSERT_GE(indices[i], 0) << "row " << i;
     ASSERT_LT(indices[i], static_cast<int32_t>(alphabetSize)) << "row " << i;
     EXPECT_EQ(alphabet[indices[i]], kAlphabet[i % 3]) << "row " << i;
+  }
+}
+
+// ===========================================================================
+// Test: readIndicesWithVisitor with a value exclusively in null-masked rows.
+// Verifies that the dictionary excludes "delta" which only appears at null
+// positions (rows 0, 4, 8, ...) and that indices correctly map to the
+// 3-entry non-null alphabet.
+// ===========================================================================
+TEST_P(ReadWithVisitorTest, readIndicesWithVisitorNullableAlphabetValue) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP() << "readIndicesWithVisitor requires non-legacy encoding";
+  }
+  constexpr int kRows = 20;
+  // "delta" appears only at rows 0,4,8,12,16 which are all null.
+  // Non-null rows see only "alpha", "bravo", "charlie".
+  constexpr std::string_view kValues[] = {"delta", "alpha", "bravo", "charlie"};
+  auto isNull = [](auto i) { return i % 4 == 0; };
+
+  auto input = makeRowVector({makeFlatVector<StringView>(
+      kRows, [&](auto i) { return StringView(kValues[i % 4]); }, isNull)});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader =
+      static_cast<StringColumnReaderTestAccessor*>(structReader->children()[0]);
+  ASSERT_NE(reader, nullptr);
+
+  std::vector<vector_size_t> rowVec(kRows);
+  std::iota(rowVec.begin(), rowVec.end(), 0);
+  RowSet rows(rowVec.data(), rowVec.size());
+  reader->doPrepareReadAsIndices(0, rows, nullptr);
+
+  // Build encoding manually with only non-null values.
+  nimble::Vector<std::string_view> nonNullVec{pool()};
+  for (int i = 0; i < kRows; ++i) {
+    if (!isNull(i)) {
+      nonNullVec.push_back(kValues[i % 4]);
+    }
+  }
+  auto nonNullSpan =
+      std::span<const std::string_view>(nonNullVec.data(), nonNullVec.size());
+  nimble::EncodingSelection<std::string_view> valSelection{
+      {.encodingType = nimble::EncodingType::Dictionary},
+      nimble::Statistics<std::string_view>::create(nonNullSpan),
+      std::make_unique<TrivialNestedPolicy<std::string_view>>()};
+  Buffer valBuffer(*pool());
+  auto serializedValues = nimble::DictionaryEncoding<std::string_view>::encode(
+      valSelection, nonNullSpan, valBuffer);
+
+  nimble::Vector<bool> nullBits{pool()};
+  for (int i = 0; i < kRows; ++i) {
+    nullBits.push_back(!isNull(i));
+  }
+  auto nullSpan = std::span<const bool>(nullBits.data(), nullBits.size());
+  nimble::EncodingSelection<bool> nullSelection{
+      {.encodingType = nimble::EncodingType::Trivial},
+      nimble::Statistics<bool>::create(nullSpan),
+      std::make_unique<TrivialNestedPolicy<bool>>()};
+  Buffer nullBuffer(*pool());
+  auto serializedNulls = nimble::TrivialEncoding<bool>::encode(
+      nullSelection, nullSpan, nullBuffer);
+
+  const uint32_t encodingSize = nimble::EncodingPrefix::kFixedPrefixSize + 4 +
+      serializedValues.size() + serializedNulls.size();
+  Buffer assemblyBuffer(*pool());
+  char* reserved = assemblyBuffer.reserve(encodingSize);
+  char* pos = reserved;
+  nimble::encoding::writeChar(
+      static_cast<char>(nimble::EncodingType::Nullable), pos);
+  nimble::encoding::writeChar(static_cast<char>(nimble::DataType::String), pos);
+  nimble::encoding::writeUint32(kRows, pos);
+  nimble::encoding::writeString(serializedValues, pos);
+  nimble::encoding::writeBytes(serializedNulls, pos);
+
+  std::vector<velox::BufferPtr> stringBuffers;
+  auto encoding = nimble::EncodingFactory().create(
+      *pool(), std::string_view(reserved, encodingSize), [&](uint32_t size) {
+        stringBuffers.push_back(
+            velox::AlignedBuffer::allocate<char>(size, pool()));
+        return stringBuffers.back()->asMutable<void>();
+      });
+
+  ASSERT_TRUE(encoding->isNullable());
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+  // Dictionary should have 3 entries (alpha, bravo, charlie), NOT 4.
+  // "delta" only appeared in null rows and was excluded.
+  EXPECT_EQ(encoding->dictionarySize(), 3);
+
+  const auto* alphabet =
+      static_cast<const std::string_view*>(encoding->dictionaryEntries());
+  std::set<std::string_view> alphabetSet(
+      alphabet, alphabet + encoding->dictionarySize());
+  EXPECT_FALSE(alphabetSet.count("delta"))
+      << "Dictionary should not contain null-masked-only value";
+  EXPECT_TRUE(alphabetSet.count("alpha"));
+  EXPECT_TRUE(alphabetSet.count("bravo"));
+  EXPECT_TRUE(alphabetSet.count("charlie"));
+
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  DecoderVisitor<
+      int32_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      /*isDense=*/true>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  callReadIndicesWithVisitor(*encoding, visitor, params);
+
+  ASSERT_EQ(reader->numValues(), kRows);
+  const auto* indices = reader->rawIndices();
+  for (int i = 0; i < kRows; ++i) {
+    if (isNull(i)) {
+      continue;
+    }
+    ASSERT_GE(indices[i], 0) << "row " << i;
+    ASSERT_LT(indices[i], 3) << "row " << i;
+    EXPECT_EQ(alphabet[indices[i]], kValues[i % 4]) << "row " << i;
   }
 }
 
@@ -2875,7 +3090,7 @@ TEST_P(ReadWithVisitorTest, fuzzReadIndicesWithVisitorNullable) {
     auto serializedNulls = nimble::TrivialEncoding<bool>::encode(
         nullSelection, nullSpan, nullBuffer);
 
-    const uint32_t encodingSize = nimble::Encoding::kPrefixSize + 4 +
+    const uint32_t encodingSize = nimble::EncodingPrefix::kFixedPrefixSize + 4 +
         serializedValues.size() + serializedNulls.size();
     Buffer assemblyBuffer(*this->pool());
     char* reserved = assemblyBuffer.reserve(encodingSize);
@@ -2914,8 +3129,7 @@ TEST_P(ReadWithVisitorTest, fuzzReadIndicesWithVisitorNullable) {
         visitor(filter, reader, rows, extractValues);
     auto params = makeReadWithVisitorParams(visitor, rows, this->pool());
 
-    static_cast<NullableEncoding<std::string_view>&>(*encoding)
-        .readIndicesWithVisitor(visitor, params);
+    callReadIndicesWithVisitor(*encoding, visitor, params);
 
     ASSERT_EQ(reader->numValues(), numRows);
     const auto* indices = reader->rawIndices();
@@ -3050,6 +3264,656 @@ TEST_P(ReadWithVisitorTest, fuzzStringDictionaryEncoded) {
           std::string_view(expected.data(), expected.size()))
           << "row " << i;
     }
+  }
+}
+
+// ===========================================================================
+// MainlyConstant dictionary API tests
+// ===========================================================================
+
+// Verifies dictionaryEnabled/dictionarySize/dictionaryEntry on
+// MC<Dict<string>>. The combined alphabet is [innerAlphabet..., commonValue].
+TEST_P(ReadWithVisitorTest, mainlyConstantDictionaryApiString) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP() << "MC dictionary API requires non-legacy encoding";
+  }
+  constexpr int kRows = 100;
+  const std::string_view commonValue = "common_value_long_string";
+  const std::string_view otherValues[] = {"alpha", "bravo", "charlie"};
+
+  std::vector<std::string_view> data(kRows, commonValue);
+  for (int i = 0; i < kRows; i += 10) {
+    data[i] = otherValues[(i / 10) % 3];
+  }
+
+  auto encoding = encodeMainlyConstantDictionary<std::string_view>(data);
+
+  ASSERT_EQ(encoding->encodingType(), EncodingType::MainlyConstant);
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+
+  const auto alphabetSize = encoding->dictionarySize();
+  EXPECT_EQ(alphabetSize, 4);
+
+  std::set<std::string> entries;
+  for (uint32_t i = 0; i < alphabetSize; ++i) {
+    const auto* entry =
+        static_cast<const std::string_view*>(encoding->dictionaryEntry(i));
+    entries.insert(std::string(*entry));
+  }
+  EXPECT_TRUE(entries.count("alpha"));
+  EXPECT_TRUE(entries.count("bravo"));
+  EXPECT_TRUE(entries.count("charlie"));
+  EXPECT_TRUE(entries.count(std::string(commonValue)));
+}
+
+// Verifies dictionaryEnabled/dictionarySize/dictionaryEntry on MC<Dict<int64>>.
+TEST_P(ReadWithVisitorTest, mainlyConstantDictionaryApiInteger) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP() << "MC dictionary API requires non-legacy encoding";
+  }
+  constexpr int kRows = 100;
+  constexpr int64_t commonValue = 42;
+
+  std::vector<int64_t> data(kRows, commonValue);
+  for (int i = 0; i < kRows; i += 10) {
+    data[i] = 100 + (i / 10) % 3;
+  }
+
+  Buffer buffer(*pool());
+  auto encoding = createFromCustomLayout<int64_t>(
+      MainlyConstantEnc{.otherValues = DictionaryEnc{}}, data, *pool(), buffer);
+
+  ASSERT_EQ(encoding->encodingType(), EncodingType::MainlyConstant);
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+
+  const auto alphabetSize = encoding->dictionarySize();
+  EXPECT_EQ(alphabetSize, 4);
+
+  std::set<int64_t> entries;
+  for (uint32_t i = 0; i < alphabetSize; ++i) {
+    const auto* entry =
+        static_cast<const int64_t*>(encoding->dictionaryEntry(i));
+    entries.insert(*entry);
+  }
+  EXPECT_TRUE(entries.count(100));
+  EXPECT_TRUE(entries.count(101));
+  EXPECT_TRUE(entries.count(102));
+  EXPECT_TRUE(entries.count(commonValue));
+}
+
+// Verifies that MC without Dict inner encoding returns dictionaryEnabled=false.
+TEST_P(ReadWithVisitorTest, mainlyConstantNoDictionaryApi) {
+  constexpr int kRows = 100;
+  std::vector<int64_t> data(kRows, 42);
+  for (int i = 0; i < kRows; i += 10) {
+    data[i] = 100 + i;
+  }
+
+  Buffer buffer(*pool());
+  auto encoding = createFromCustomLayout<int64_t>(
+      MainlyConstantEnc{}, data, *pool(), buffer);
+
+  ASSERT_EQ(encoding->encodingType(), EncodingType::MainlyConstant);
+  EXPECT_FALSE(encoding->dictionaryEnabled());
+}
+
+// Fuzz readIndicesWithVisitor for MC→Dict string encoding.
+TEST_P(ReadWithVisitorTest, fuzzReadIndicesWithVisitorMainlyConstantString) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP() << "readIndicesWithVisitor requires non-legacy encoding";
+  }
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+
+  constexpr int kNumRuns = 10;
+
+  for (int run = 0; run < kNumRuns; ++run) {
+    const int numRows = 20 + rng() % 200;
+    const int cardinality = 2 + rng() % 6;
+    const int commonPct = 70 + rng() % 25;
+
+    SCOPED_TRACE(
+        fmt::format(
+            "run={} seed={} numRows={} cardinality={} commonPct={}",
+            run,
+            seed,
+            numRows,
+            cardinality,
+            commonPct));
+
+    std::vector<std::string> otherPool;
+    for (int j = 0; j < cardinality; ++j) {
+      int len = 1 + rng() % 20;
+      std::string s;
+      for (int k = 0; k < len; ++k) {
+        s += static_cast<char>('a' + rng() % 26);
+      }
+      otherPool.push_back(std::move(s));
+    }
+    int commonLen = 10 + rng() % 40;
+    std::string commonValue(commonLen, 'x' + rng() % 3);
+
+    std::vector<std::string_view> data;
+    std::vector<std::string> storage;
+    storage.reserve(numRows);
+    data.reserve(numRows);
+    for (int i = 0; i < numRows; ++i) {
+      if (static_cast<int>(rng() % 100) < commonPct) {
+        storage.push_back(commonValue);
+      } else {
+        storage.push_back(otherPool[rng() % otherPool.size()]);
+      }
+      data.push_back(storage.back());
+    }
+
+    auto input = makeRowVector({makeFlatVector<StringView>(
+        numRows, [&](auto i) { return StringView(data[i]); })});
+    auto rowType = asRowType(input->type());
+    auto ctx = makeFileContext(input);
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*rowType);
+    auto root = buildReader(*ctx, rowType, *scanSpec);
+
+    auto* structReader =
+        dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(
+            root.get());
+    auto* reader = static_cast<StringColumnReaderTestAccessor*>(
+        structReader->children()[0]);
+
+    std::vector<vector_size_t> rowVec(numRows);
+    std::iota(rowVec.begin(), rowVec.end(), 0);
+    RowSet rows(rowVec.data(), rowVec.size());
+    reader->doPrepareReadAsIndices(0, rows, nullptr);
+
+    auto encoding = encodeMainlyConstantDictionary<std::string_view>(
+        std::vector<std::string_view>(data.begin(), data.end()));
+
+    ASSERT_TRUE(encoding->dictionaryEnabled());
+    auto alphabet =
+        buildEncodingDictionaryAlphabet<std::string_view>(encoding.get());
+
+    common::AlwaysTrue filter;
+    dwio::common::ExtractToReader extractValues(reader);
+    DecoderVisitor<
+        int32_t,
+        common::AlwaysTrue,
+        dwio::common::ExtractToReader,
+        /*isDense=*/true>
+        visitor(filter, reader, rows, extractValues);
+    auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+    callReadIndicesWithVisitor(*encoding, visitor, params);
+
+    ASSERT_EQ(reader->numValues(), numRows);
+    const auto* indices = reader->rawIndices();
+    for (int i = 0; i < numRows; ++i) {
+      ASSERT_GE(indices[i], 0) << "row " << i;
+      ASSERT_LT(indices[i], static_cast<int32_t>(alphabet.size()))
+          << "row " << i;
+      EXPECT_EQ(alphabet[indices[i]], data[i]) << "row " << i;
+    }
+  }
+}
+
+// Verifies that numValues() after readIndicesWithVisitor on MC→Dict equals
+// the total row count, not just the inner non-common count. The inner
+// encoding's bulkScan calls addNumValues with the non-common count; MC must
+// adjust to the full count.
+TEST_P(ReadWithVisitorTest, numValuesAfterMainlyConstantReadIndices) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP() << "readIndicesWithVisitor requires non-legacy encoding";
+  }
+  constexpr int kRows = 50;
+  const std::string_view commonValue = "COMMON_VALUE_STRING";
+  const std::string_view otherValues[] = {"alpha", "bravo", "charlie"};
+
+  std::vector<std::string_view> data;
+  data.reserve(kRows);
+  int numCommon = 0;
+  for (int i = 0; i < kRows; ++i) {
+    if (i % 5 != 0) {
+      data.push_back(commonValue);
+      ++numCommon;
+    } else {
+      data.push_back(otherValues[i % 3]);
+    }
+  }
+  const int numNonCommon = kRows - numCommon;
+  ASSERT_GT(numCommon, 0);
+  ASSERT_GT(numNonCommon, 0);
+
+  auto input = makeRowVector({makeFlatVector<StringView>(
+      kRows, [&](auto i) { return StringView(data[i]); })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader =
+      static_cast<StringColumnReaderTestAccessor*>(structReader->children()[0]);
+
+  std::vector<vector_size_t> rowVec(kRows);
+  std::iota(rowVec.begin(), rowVec.end(), 0);
+  RowSet rows(rowVec.data(), rowVec.size());
+  reader->doPrepareReadAsIndices(0, rows, nullptr);
+
+  auto encoding = encodeMainlyConstantDictionary<std::string_view>(
+      std::vector<std::string_view>(data.begin(), data.end()));
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  DecoderVisitor<
+      int32_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      /*isDense=*/true>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  ASSERT_EQ(reader->numValues(), 0);
+  callReadIndicesWithVisitor(*encoding, visitor, params);
+
+  // numValues must equal kRows (all rows), not just numNonCommon
+  // (what the inner Dict encoding's bulkScan wrote via addNumValues).
+  EXPECT_EQ(reader->numValues(), kRows)
+      << "numValues should be total rows (" << kRows
+      << "), not just non-common rows (" << numNonCommon << ")";
+}
+
+// ===========================================================================
+// Tests for detail::readDenseMaterializedIndices and
+// detail::readSparseMaterializedIndices helper functions.
+// ===========================================================================
+
+// Verifies that readDenseMaterializedIndices writes correct dictionary indices
+// to rawValues_ and updates visitor state (numValues, rowIndex).
+TEST_P(ReadWithVisitorTest, readDenseMaterializedIndicesNoNulls) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP() << "readDenseMaterializedIndices requires non-legacy encoding";
+  }
+  constexpr int kRows = 100;
+  constexpr int64_t kDistinct[] = {10, 20, 30};
+
+  // Build data with 3 distinct values cycling.
+  std::vector<int64_t> data(kRows);
+  for (int i = 0; i < kRows; ++i) {
+    data[i] = kDistinct[i % 3];
+  }
+
+  // Create reader infrastructure.
+  auto input = makeRowVector(
+      {makeFlatVector<int64_t>(kRows, [&](auto i) { return data[i]; })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  std::vector<vector_size_t> rowVec(kRows);
+  std::iota(rowVec.begin(), rowVec.end(), 0);
+  RowSet rows(rowVec.data(), rowVec.size());
+  reader->doPrepareRead<int32_t>(0, rows, nullptr);
+
+  // Encode as DictionaryEncoding independently.
+  Buffer buffer(*pool());
+  auto encoding =
+      createFromCustomLayout<int64_t>(DictionaryEnc{}, data, *pool(), buffer);
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+  const auto* alphabet =
+      static_cast<const int64_t*>(encoding->dictionaryEntries());
+  const auto alphabetSize = encoding->dictionarySize();
+
+  // Build visitor.
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = true;
+  DecoderVisitor<
+      int32_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+
+  // Verify numValues is 0 before the call.
+  ASSERT_EQ(reader->numValues(), 0);
+
+  // Call the helper with no nulls.
+  detail::readDenseMaterializedIndices(
+      *encoding,
+      visitor,
+      /*rawNulls=*/nullptr,
+      /*readOffset=*/0,
+      /*numReadRows=*/kRows,
+      /*numNonNulls=*/kRows);
+
+  // Verify numValues was updated by the helper.
+  EXPECT_EQ(reader->numValues(), kRows);
+
+  // Verify indices in rawValues_.
+  const auto* indices = reader->rawIndices();
+  for (int i = 0; i < kRows; ++i) {
+    SCOPED_TRACE(fmt::format("row {}", i));
+    ASSERT_GE(indices[i], 0);
+    ASSERT_LT(indices[i], static_cast<int32_t>(alphabetSize));
+    EXPECT_EQ(alphabet[indices[i]], data[i]);
+  }
+}
+
+// Verifies that readDenseMaterializedIndices correctly scatters indices when
+// a null bitmap is present (every 5th row null). Non-null positions should
+// have correct indices; null positions are gaps.
+TEST_P(ReadWithVisitorTest, readDenseMaterializedIndicesWithNulls) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP() << "readDenseMaterializedIndices requires non-legacy encoding";
+  }
+  constexpr int kRows = 100;
+  constexpr int64_t kDistinct[] = {10, 20, 30};
+
+  // Build data with 3 distinct values cycling.
+  std::vector<int64_t> data(kRows);
+  for (int i = 0; i < kRows; ++i) {
+    data[i] = kDistinct[i % 3];
+  }
+
+  // Build null bitmap: every 5th row is null.
+  auto nulls = velox::allocateNulls(kRows, pool(), velox::bits::kNotNull);
+  auto* rawNulls = nulls->asMutable<uint64_t>();
+  int numNonNull = 0;
+  for (int i = 0; i < kRows; ++i) {
+    if (i % 5 == 0) {
+      velox::bits::setNull(rawNulls, i);
+    } else {
+      ++numNonNull;
+    }
+  }
+
+  // Build non-null-only data for encoding.
+  std::vector<int64_t> nonNullData;
+  nonNullData.reserve(numNonNull);
+  for (int i = 0; i < kRows; ++i) {
+    if (i % 5 != 0) {
+      nonNullData.push_back(data[i]);
+    }
+  }
+
+  // Create reader infrastructure.
+  auto input = makeRowVector(
+      {makeFlatVector<int64_t>(kRows, [&](auto i) { return data[i]; })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  std::vector<vector_size_t> rowVec(kRows);
+  std::iota(rowVec.begin(), rowVec.end(), 0);
+  RowSet rows(rowVec.data(), rowVec.size());
+  reader->doPrepareRead<int32_t>(0, rows, nullptr);
+
+  // Encode only non-null values as DictionaryEncoding.
+  Buffer buffer(*pool());
+  auto encoding = createFromCustomLayout<int64_t>(
+      DictionaryEnc{}, nonNullData, *pool(), buffer);
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+  const auto* alphabet =
+      static_cast<const int64_t*>(encoding->dictionaryEntries());
+  const auto alphabetSize = encoding->dictionarySize();
+
+  // Build visitor.
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = true;
+  DecoderVisitor<
+      int32_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+
+  ASSERT_EQ(reader->numValues(), 0);
+
+  // Call the helper with nulls.
+  detail::readDenseMaterializedIndices(
+      *encoding,
+      visitor,
+      rawNulls,
+      /*readOffset=*/0,
+      /*numReadRows=*/kRows,
+      /*numNonNulls=*/numNonNull);
+
+  // Verify numValues was updated by the helper.
+  EXPECT_EQ(reader->numValues(), kRows);
+
+  // Verify non-null positions have correct indices.
+  const auto* indices = reader->rawIndices();
+  for (int i = 0; i < kRows; ++i) {
+    if (i % 5 == 0) {
+      continue;
+    }
+    SCOPED_TRACE(fmt::format("row {}", i));
+    ASSERT_GE(indices[i], 0);
+    ASSERT_LT(indices[i], static_cast<int32_t>(alphabetSize));
+    EXPECT_EQ(alphabet[indices[i]], data[i]);
+  }
+}
+
+// Verifies that readSparseMaterializedIndices materializes and gathers the
+// correct indices for a sparse (non-dense) row set, and updates visitor state.
+TEST_P(ReadWithVisitorTest, readSparseMaterializedIndices) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP()
+        << "readSparseMaterializedIndices requires non-legacy encoding";
+  }
+  constexpr int kTotalRows = 30;
+  constexpr int64_t kDistinct[] = {10, 20, 30};
+
+  // Build data with 3 distinct values cycling.
+  std::vector<int64_t> data(kTotalRows);
+  for (int i = 0; i < kTotalRows; ++i) {
+    data[i] = kDistinct[i % 3];
+  }
+
+  // Create reader infrastructure.
+  auto input = makeRowVector(
+      {makeFlatVector<int64_t>(kTotalRows, [&](auto i) { return data[i]; })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  // Sparse row set: rows [2, 5, 8].
+  std::vector<vector_size_t> sparseRows = {2, 5, 8};
+  RowSet rows(sparseRows.data(), sparseRows.size());
+  reader->doPrepareRead<int32_t>(0, rows, nullptr);
+
+  // Encode as DictionaryEncoding.
+  Buffer buffer(*pool());
+  auto encoding =
+      createFromCustomLayout<int64_t>(DictionaryEnc{}, data, *pool(), buffer);
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+  const auto* alphabet =
+      static_cast<const int64_t*>(encoding->dictionaryEntries());
+  const auto alphabetSize = encoding->dictionarySize();
+
+  // Build visitor with sparse (non-dense) rows.
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = false;
+  DecoderVisitor<
+      int32_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  ASSERT_EQ(reader->numValues(), 0);
+
+  // Call the helper.
+  std::vector<uint32_t> scratchBuffer(kTotalRows);
+  detail::readSparseMaterializedIndices(
+      *encoding,
+      visitor,
+      params.numScanned,
+      params.prepareResultNulls,
+      /*rawNulls=*/nullptr,
+      /*numReadRows=*/kTotalRows,
+      /*numNonNulls=*/kTotalRows,
+      scratchBuffer.data());
+
+  // Verify numValues was updated by the helper.
+  EXPECT_EQ(reader->numValues(), static_cast<int32_t>(sparseRows.size()));
+
+  // Verify gathered indices match the selected rows.
+  const auto* indices = reader->rawIndices();
+  for (int i = 0; i < static_cast<int>(sparseRows.size()); ++i) {
+    SCOPED_TRACE(fmt::format("sparse index {} (row {})", i, sparseRows[i]));
+    ASSERT_GE(indices[i], 0);
+    ASSERT_LT(indices[i], static_cast<int32_t>(alphabetSize));
+    EXPECT_EQ(alphabet[indices[i]], data[sparseRows[i]]);
+  }
+}
+
+// Verifies that readSparseMaterializedIndices correctly skips null rows in a
+// sparse row set. Null rows should not produce output values.
+TEST_P(ReadWithVisitorTest, readSparseMaterializedIndicesWithNulls) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP()
+        << "readSparseMaterializedIndices requires non-legacy encoding";
+  }
+  constexpr int kTotalRows = 30;
+  constexpr int64_t kDistinct[] = {10, 20, 30};
+
+  // Build data with 3 distinct values cycling.
+  std::vector<int64_t> data(kTotalRows);
+  for (int i = 0; i < kTotalRows; ++i) {
+    data[i] = kDistinct[i % 3];
+  }
+
+  // Build null bitmap: rows 0, 5, 10, 15, 20, 25 are null.
+  auto nulls = velox::allocateNulls(kTotalRows, pool(), velox::bits::kNotNull);
+  auto* rawNulls = nulls->asMutable<uint64_t>();
+  int numNonNull = 0;
+  for (int i = 0; i < kTotalRows; ++i) {
+    if (i % 5 == 0) {
+      velox::bits::setNull(rawNulls, i);
+    } else {
+      ++numNonNull;
+    }
+  }
+
+  // Build non-null-only data for encoding.
+  std::vector<int64_t> nonNullData;
+  nonNullData.reserve(numNonNull);
+  for (int i = 0; i < kTotalRows; ++i) {
+    if (i % 5 != 0) {
+      nonNullData.push_back(data[i]);
+    }
+  }
+
+  // Create reader infrastructure.
+  auto input = makeRowVector(
+      {makeFlatVector<int64_t>(kTotalRows, [&](auto i) { return data[i]; })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  // Sparse row set: rows [2, 5, 8, 10, 13].
+  // Row 5 and 10 are null; rows 2, 8, 13 are non-null.
+  std::vector<vector_size_t> sparseRows = {2, 5, 8, 10, 13};
+  RowSet rows(sparseRows.data(), sparseRows.size());
+  reader->doPrepareRead<int32_t>(0, rows, nullptr);
+
+  // Encode only non-null values as DictionaryEncoding.
+  Buffer buffer(*pool());
+  auto encoding = createFromCustomLayout<int64_t>(
+      DictionaryEnc{}, nonNullData, *pool(), buffer);
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+  const auto* alphabet =
+      static_cast<const int64_t*>(encoding->dictionaryEntries());
+  const auto alphabetSize = encoding->dictionarySize();
+
+  // Build visitor with sparse (non-dense) rows.
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = false;
+  DecoderVisitor<
+      int32_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  ASSERT_EQ(reader->numValues(), 0);
+
+  // Call the helper.
+  std::vector<uint32_t> scratchBuffer(numNonNull);
+  detail::readSparseMaterializedIndices(
+      *encoding,
+      visitor,
+      params.numScanned,
+      params.prepareResultNulls,
+      rawNulls,
+      /*numReadRows=*/kTotalRows,
+      /*numNonNulls=*/numNonNull,
+      scratchBuffer.data());
+
+  // Verify numValues was updated by the helper.
+  EXPECT_EQ(reader->numValues(), static_cast<int32_t>(sparseRows.size()));
+
+  // Verify gathered indices for non-null rows.
+  const auto* indices = reader->rawIndices();
+  for (int i = 0; i < static_cast<int>(sparseRows.size()); ++i) {
+    const auto row = sparseRows[i];
+    if (row % 5 == 0) {
+      // Null row — skipped by readSparseMaterializedIndices.
+      continue;
+    }
+    SCOPED_TRACE(fmt::format("sparse index {} (row {})", i, row));
+    ASSERT_GE(indices[i], 0);
+    ASSERT_LT(indices[i], static_cast<int32_t>(alphabetSize));
+    EXPECT_EQ(alphabet[indices[i]], data[row]);
   }
 }
 

@@ -17,9 +17,9 @@
 
 #include "dwio/nimble/encodings/legacy/SparseBoolEncoding.h"
 
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/Compression.h"
+#include "dwio/nimble/compression/Compression.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 
 namespace facebook::nimble::legacy {
@@ -139,7 +139,7 @@ std::string_view SparseBoolEncoding::encode(
       selection.template encodeNested<uint32_t>(
           EncodingIdentifiers::SparseBool::Indices, indices, tempBuffer);
 
-  const uint32_t encodingSize = Encoding::kPrefixSize +
+  const uint32_t encodingSize = EncodingPrefix::kFixedPrefixSize +
       SparseBoolEncoding::kPrefixSize + serializedIndices.size();
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;

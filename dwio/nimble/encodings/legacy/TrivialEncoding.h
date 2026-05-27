@@ -19,15 +19,15 @@
 #include <span>
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/Compression.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingIdentifier.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
+#include "dwio/nimble/compression/Compression.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/legacy/Encoding.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "velox/common/memory/Memory.h"
 
 // Holds data in the the 'trivial' way for each data type.
@@ -38,7 +38,7 @@ namespace facebook::nimble::legacy {
 
 // Handles the numeric cases. Bools and strings are specialized below.
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 1 byte: lengths compression
 // rowCount * sizeof(physicalType) bytes: the data
 template <typename T>
@@ -49,12 +49,13 @@ class TrivialEncoding final
   using physicalType = typename TypeTraits<T>::physicalType;
 
   static constexpr int kPrefixSize = 1;
-  static constexpr int kCompressionTypeOffset = Encoding::kPrefixSize;
+  static constexpr int kCompressionTypeOffset =
+      EncodingPrefix::kFixedPrefixSize;
   static constexpr int kDataOffset =
-      Encoding::kPrefixSize + TrivialEncoding<T>::kPrefixSize;
+      EncodingPrefix::kFixedPrefixSize + TrivialEncoding<T>::kPrefixSize;
 
   TrivialEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory);
 
@@ -81,11 +82,11 @@ class TrivialEncoding final
  private:
   uint32_t row_;
   const T* values_;
-  Vector<char> uncompressed_;
+  velox::BufferPtr uncompressed_;
 };
 
 // For the string case the layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 1 byte: data compression
 // 4 bytes: offset to start of blob
 // XX bytes: bit packed lengths
@@ -97,13 +98,14 @@ class TrivialEncoding<std::string_view> final
   using cppDataType = std::string_view;
 
   static constexpr int kPrefixSize = 5;
-  static constexpr int kDataCompressionOffset = Encoding::kPrefixSize;
-  static constexpr int kBlobOffsetOffset = Encoding::kPrefixSize + 1;
-  static constexpr int kLengthOffset =
-      Encoding::kPrefixSize + TrivialEncoding<std::string_view>::kPrefixSize;
+  static constexpr int kDataCompressionOffset =
+      EncodingPrefix::kFixedPrefixSize;
+  static constexpr int kBlobOffsetOffset = EncodingPrefix::kFixedPrefixSize + 1;
+  static constexpr int kLengthOffset = EncodingPrefix::kFixedPrefixSize +
+      TrivialEncoding<std::string_view>::kPrefixSize;
 
   TrivialEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory);
 
@@ -134,11 +136,11 @@ class TrivialEncoding<std::string_view> final
   // NOTE: This is not necessarily the size of 'dataUncompressed_' because the
   // data could come as uncompressed.
   uint64_t uncompressedDataBytes_;
-  Vector<char> dataUncompressed_;
+  velox::BufferPtr dataUncompressed_;
 };
 
 // For the bool case the layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 1 byte: compression type
 // FBA::BufferSize(rowCount, 1) bytes: the bitmap
 template <>
@@ -147,9 +149,10 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
   using cppDataType = bool;
 
   static constexpr int kPrefixSize = 1;
-  static constexpr int kCompressionTypeOffset = Encoding::kPrefixSize;
+  static constexpr int kCompressionTypeOffset =
+      EncodingPrefix::kFixedPrefixSize;
   static constexpr int kDataOffset =
-      Encoding::kPrefixSize + TrivialEncoding<bool>::kPrefixSize;
+      EncodingPrefix::kFixedPrefixSize + TrivialEncoding<bool>::kPrefixSize;
 
   TrivialEncoding(
       velox::memory::MemoryPool& pool,
@@ -174,7 +177,7 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
  private:
   uint32_t row_{0};
   const char* bitmap_;
-  Vector<char> uncompressed_;
+  velox::BufferPtr uncompressed_;
 };
 
 //
@@ -183,29 +186,29 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
 
 template <typename T>
 TrivialEncoding<T>::TrivialEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> /* stringBufferFactory */)
-    : TypedEncoding<T, physicalType>{memoryPool, data},
+    : TypedEncoding<T, physicalType>{pool, data},
       row_{0},
-      values_{reinterpret_cast<const T*>(data.data() + kDataOffset)},
-      uncompressed_{&memoryPool} {
+      values_{reinterpret_cast<const T*>(data.data() + kDataOffset)} {
   auto compressionType =
       static_cast<CompressionType>(data[kCompressionTypeOffset]);
   if (compressionType != CompressionType::Uncompressed) {
     uncompressed_ = Compression::uncompress(
-        memoryPool,
+        pool,
         compressionType,
         TypeTraits<physicalType>::dataType,
         {data.data() + kDataOffset, data.size() - kDataOffset});
-    values_ = reinterpret_cast<const T*>(uncompressed_.data());
-    NIMBLE_CHECK(
-        reinterpret_cast<const char*>(values_ + this->rowCount()) ==
-            uncompressed_.end(),
+    values_ = reinterpret_cast<const T*>(uncompressed_->as<char>());
+    NIMBLE_CHECK_EQ(
+        reinterpret_cast<const char*>(values_ + this->rowCount()),
+        uncompressed_->as<char>() + uncompressed_->size(),
         "Unexpected trivial encoding end");
   } else {
-    NIMBLE_CHECK(
-        reinterpret_cast<const char*>(values_ + this->rowCount()) == data.end(),
+    NIMBLE_CHECK_EQ(
+        reinterpret_cast<const char*>(values_ + this->rowCount()),
+        data.end(),
         "Unexpected trivial encoding end");
   }
 }

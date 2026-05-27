@@ -19,7 +19,7 @@
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
@@ -63,6 +63,13 @@ class WriterContext : public FieldWriterContext {
         : this->options_.stringBufferGrowthPolicyFactory();
     ignoreTopLevelNulls_ = options_.ignoreTopLevelNulls;
     disableSharedStringBuffers_ = options_.disableSharedStringBuffers;
+    if (this->options_.encodingExecutor &&
+        this->options_.maxEncodeParallelism > 0) {
+      setParallelEncoding(
+          this->options_.encodingExecutor.get(),
+          this->options_.maxEncodeParallelism,
+          this->options_.minStreamsPerEncodeUnit);
+    }
   }
 
   const VeloxWriterOptions& options() const {
@@ -781,16 +788,8 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
       context_->updateFileRawSize(rawSize);
     }
 
-    if (context_->options().writeExecutor) {
-      velox::dwio::common::ExecutorBarrier barrier{
-          context_->options().writeExecutor};
-      rootWriter_->write(input, OrderedRanges::of(0, numRows), &barrier);
-      addIndexKey(input, &barrier);
-      barrier.waitAll();
-    } else {
-      rootWriter_->write(input, OrderedRanges::of(0, numRows));
-      addIndexKey(input);
-    }
+    rootWriter_->write(input, OrderedRanges::of(0, numRows));
+    addIndexKey(input);
 
     uint64_t memoryUsed{0};
     for (const auto& [_, stream] : context_->streams()) {

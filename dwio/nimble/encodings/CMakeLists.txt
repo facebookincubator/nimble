@@ -17,22 +17,21 @@ add_subdirectory(legacy)
 
 add_library(
   nimble_encodings
-  Compression.cpp
   ConstantEncoding.cpp
-  Encoding.cpp
-  EncodingFactory.cpp
-  EncodingLayout.cpp
   MainlyConstantEncoding.cpp
   PrefixEncoding.cpp
   RleEncoding.cpp
   SparseBoolEncoding.cpp
-  Statistics.cpp
   TrivialEncoding.cpp
-  ZstdCompressor.cpp
+  common/Encoding.cpp
+  common/EncodingFactory.cpp
+  common/EncodingLayout.cpp
+  selection/Statistics.cpp
 )
 
 target_link_libraries(
   nimble_encodings
+  nimble_compression
   nimble_common
   velox_common_base
   Folly::folly

@@ -16,31 +16,48 @@
 
 #include "dwio/nimble/serializer/DeserializerImpl.h"
 
+#include <lz4.h>
+
 #include "dwio/nimble/common/ChunkHeader.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Varint.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/serializer/SerializationHeader.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 
 namespace facebook::nimble::serde {
+
+namespace {
+ZSTD_DCtx* getThreadLocalDCtx() {
+  struct DCtxDeleter {
+    void operator()(ZSTD_DCtx* ctx) const {
+      ZSTD_freeDCtx(ctx);
+    }
+  };
+  static thread_local std::unique_ptr<ZSTD_DCtx, DCtxDeleter> ctx{
+      ZSTD_createDCtx()};
+  NIMBLE_CHECK(ctx != nullptr, "Failed to create ZSTD decompression context");
+  return ctx.get();
+}
+} // namespace
 
 StreamData::StreamData(
     ScalarKind kind,
     std::string_view data,
     std::vector<velox::BufferPtr>& stringBuffers,
     velox::memory::MemoryPool* pool,
-    const Options& options,
-    ZSTD_DCtx* dctx)
+    const Options& options)
     : kind_{kind},
       pool_{pool},
-      dctx_{dctx},
       encodingEnabled_{nonLegacyFormat(options.version)},
-      useVarintRowCount_{!isTabletRawFormat(options.version)},
+      useVarintRowCount_{!isTabletVersion(options.version)},
       bufferPool_{options.bufferPool},
+      decompressionBuffer_{options.decompressionBuffer},
       stringBuffers_{&stringBuffers} {
   NIMBLE_CHECK_NOT_NULL(pool_, "Memory pool required for encoding");
+  NIMBLE_CHECK_NOT_NULL(decompressionBuffer_, "Decompression buffer required");
   init(data);
 }
 
@@ -69,7 +86,7 @@ void StreamData::reset(std::string_view data, SerializationVersion version) {
   readRows_ = 0;
   encoding_.reset();
   encodingEnabled_ = nonLegacyFormat(version);
-  useVarintRowCount_ = !isTabletRawFormat(version);
+  useVarintRowCount_ = !isTabletVersion(version);
   // Re-initialize with new data.
   init(data);
 }
@@ -86,6 +103,13 @@ void StreamData::init(std::string_view data) {
     prepareForDecoding({pos_, end_});
   } else {
     decompress();
+  }
+}
+
+void StreamData::ensureDecompressionBuffer(size_t minBytes) {
+  auto& buffer = decompressionBuf();
+  if (buffer == nullptr || !buffer->unique() || buffer->capacity() < minBytes) {
+    buffer = velox::AlignedBuffer::allocateExact<char>(minBytes, pool_);
   }
 }
 
@@ -110,21 +134,37 @@ void StreamData::decompress() {
           decompressedSize != ZSTD_CONTENTSIZE_ERROR &&
               decompressedSize != ZSTD_CONTENTSIZE_UNKNOWN,
           "Error determining decompressed size");
-      decompressionBuffer_.resize(decompressedSize);
-      const auto ret = dctx_ ? ZSTD_decompressDCtx(
-                                   dctx_,
-                                   decompressionBuffer_.data(),
-                                   decompressedSize,
-                                   pos_,
-                                   compressedSize)
-                             : ZSTD_decompress(
-                                   decompressionBuffer_.data(),
-                                   decompressedSize,
-                                   pos_,
-                                   compressedSize);
+      ensureDecompressionBuffer(decompressedSize);
+      auto& buffer = decompressionBuf();
+      const auto ret = ZSTD_decompressDCtx(
+          getThreadLocalDCtx(),
+          buffer->asMutable<char>(),
+          decompressedSize,
+          pos_,
+          compressedSize);
       NIMBLE_CHECK(!ZSTD_isError(ret), "Error decompressing data");
-      pos_ = decompressionBuffer_.data();
-      end_ = pos_ + decompressionBuffer_.size();
+      pos_ = buffer->as<char>();
+      end_ = pos_ + decompressedSize;
+      break;
+    }
+    case CompressionType::Lz4: {
+      // LZ4 block data is preceded by the uncompressed size (uint32).
+      // Wire format: [origSize:u32][lz4_data...]
+      const auto decompressedSize = encoding::readUint32(pos_);
+      const auto compressedSize = static_cast<size_t>(end_ - pos_);
+      ensureDecompressionBuffer(decompressedSize);
+      auto& buffer = decompressionBuf();
+      const auto ret = LZ4_decompress_safe(
+          pos_,
+          buffer->asMutable<char>(),
+          static_cast<int>(compressedSize),
+          static_cast<int>(decompressedSize));
+      NIMBLE_CHECK_EQ(
+          ret,
+          static_cast<int>(decompressedSize),
+          "LZ4 decompressed size mismatch");
+      pos_ = buffer->as<char>();
+      end_ = pos_ + decompressedSize;
       break;
     }
     default:
@@ -211,56 +251,34 @@ uint32_t StreamData::decode(
 
 StreamDataReader::StreamDataReader(
     velox::memory::MemoryPool* pool,
-    const DeserializerOptions& options,
-    ZSTD_DCtx* dctx)
-    : options_{options},
-      pool_{pool},
-      dctx_{dctx},
-      chunkStrippingBuffer_{pool_} {
+    const DeserializerOptions& options)
+    : options_{options}, pool_{pool}, chunkStrippingBuffer_{pool_} {
   NIMBLE_CHECK_NOT_NULL(pool_);
 }
 
 uint32_t StreamDataReader::initialize(std::string_view data) {
   pos_ = data.data();
   end_ = data.end();
-  readVersion();
-  // All non-legacy formats use varint row count.
-  if (usesVarintRowCount(version_)) {
-    return varint::readVarint32(&pos_);
-  }
-  return encoding::readUint32(pos_);
-}
-
-void StreamDataReader::readVersion() {
-  if (!options_.hasHeader) {
-    version_ = SerializationVersion::kLegacy;
-    return;
-  }
-  version_ = static_cast<SerializationVersion>(*pos_);
-  NIMBLE_CHECK(
-      version_ == SerializationVersion::kLegacy ||
-          version_ == SerializationVersion::kCompact ||
-          version_ == SerializationVersion::kCompactRaw ||
-          version_ == SerializationVersion::kTabletRaw,
-      "Unsupported version {}",
-      static_cast<uint8_t>(version_));
-  ++pos_;
+  auto header = readSerializationHeader(pos_, end_, options_.hasHeader);
+  version_ = header.version;
+  rowRange_ = header.rowRange;
+  return header.rowCount;
 }
 
 void StreamDataReader::iterateStreams(
     const std::function<void(uint32_t offset, std::string_view data)>&
         callback) {
   if (nonLegacyFormat(version_)) {
-    // kCompact/kCompactRaw/kTabletRaw format: read stream sizes from trailer.
-    const auto streamSizes = detail::readStreamSizes(end_, version_, pool_);
-    const bool tabletRaw = isTabletRawFormat(version_);
+    // kCompactRaw/kTablet format: read stream sizes from trailer.
+    const auto streamSizes = detail::readTrailerStreamSizes(end_);
+    const bool isTablet = isTabletVersion(version_);
 
     for (uint32_t i = 0; i < streamSizes.size(); ++i) {
       std::string_view streamData(pos_, streamSizes[i]);
       pos_ += streamSizes[i];
       if (!streamData.empty()) {
-        if (tabletRaw) {
-          // kTabletRaw: stream data includes tablet chunk headers:
+        if (isTablet) {
+          // kTablet: stream data includes tablet chunk headers:
           // [chunkSize:u32][compressionType:1B][encoded_data...]
           // Strip headers and decompress if needed before passing to callback.
           callback(i, stripChunkHeaders(streamData));
@@ -359,18 +377,31 @@ void StreamDataReader::appendChunkData(
           "Error determining decompressed size");
       const auto offset = chunkStrippingBuffer_.size();
       chunkStrippingBuffer_.resize(offset + decompressedSize);
-      const auto ret = dctx_ ? ZSTD_decompressDCtx(
-                                   dctx_,
-                                   chunkStrippingBuffer_.data() + offset,
-                                   decompressedSize,
-                                   data,
-                                   length)
-                             : ZSTD_decompress(
-                                   chunkStrippingBuffer_.data() + offset,
-                                   decompressedSize,
-                                   data,
-                                   length);
+      const auto ret = ZSTD_decompressDCtx(
+          getThreadLocalDCtx(),
+          chunkStrippingBuffer_.data() + offset,
+          decompressedSize,
+          data,
+          length);
       NIMBLE_CHECK(!ZSTD_isError(ret), "Error decompressing chunk data");
+      break;
+    }
+    case CompressionType::Lz4: {
+      const auto* pos = data;
+      const auto decompressedSize = encoding::readUint32(pos);
+      const auto compressedSize =
+          static_cast<size_t>(length - sizeof(uint32_t));
+      const auto offset = chunkStrippingBuffer_.size();
+      chunkStrippingBuffer_.resize(offset + decompressedSize);
+      const auto ret = LZ4_decompress_safe(
+          pos,
+          chunkStrippingBuffer_.data() + offset,
+          static_cast<int>(compressedSize),
+          static_cast<int>(decompressedSize));
+      NIMBLE_CHECK_EQ(
+          ret,
+          static_cast<int>(decompressedSize),
+          "LZ4 chunk decompressed size mismatch");
       break;
     }
     default:

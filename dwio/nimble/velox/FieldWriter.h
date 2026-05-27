@@ -16,6 +16,11 @@
 
 #pragma once
 
+#include <set>
+
+#include <folly/Executor.h>
+#include <folly/coro/Task.h>
+
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/OrderedRanges.h"
@@ -26,8 +31,6 @@
 #include "folly/container/F14Map.h"
 #include "folly/stats/StreamingStats.h"
 #include "velox/dwio/common/TypeWithId.h"
-
-#include <set>
 #include "velox/vector/DecodedVector.h"
 
 namespace facebook::nimble {
@@ -237,6 +240,28 @@ class FieldWriterContext {
 
   inline void setIgnoreTopLevelNulls(bool value) {
     ignoreTopLevelNulls_ = value;
+  }
+
+  void setParallelEncoding(
+      folly::Executor* executor,
+      uint32_t maxEncodeParallelism = 8,
+      uint32_t minStreamsPerEncodeUnit = 2) {
+    NIMBLE_CHECK_NOT_NULL(executor, "encodeExecutor must not be null");
+    encodeExecutor_ = executor;
+    maxEncodeParallelism_ = maxEncodeParallelism;
+    minStreamsPerEncodeUnit_ = minStreamsPerEncodeUnit;
+  }
+
+  folly::Executor* encodeExecutor() const {
+    return encodeExecutor_;
+  }
+
+  uint32_t maxEncodeParallelism() const {
+    return maxEncodeParallelism_;
+  }
+
+  uint32_t minStreamsPerEncodeUnit() const {
+    return minStreamsPerEncodeUnit_;
   }
 
   inline std::unique_ptr<InputBufferGrowthPolicy>& inputBufferGrowthPolicy() {
@@ -462,6 +487,10 @@ class FieldWriterContext {
   bool ignoreTopLevelNulls_{false};
   bool disableSharedStringBuffers_{false};
 
+  folly::Executor* encodeExecutor_{nullptr};
+  uint32_t maxEncodeParallelism_{0};
+  uint32_t minStreamsPerEncodeUnit_{1};
+
   std::unique_ptr<InputBufferGrowthPolicy> inputBufferGrowthPolicy_;
   std::unique_ptr<InputBufferGrowthPolicy> stringBufferGrowthPolicy_;
   InputBufferGrowthStats inputBufferGrowthStats_;
@@ -605,8 +634,14 @@ class FieldWriter {
   // Writes the vector to internal buffers.
   virtual void write(
       const velox::VectorPtr& vector,
-      const OrderedRanges& ranges,
-      folly::Executor* executor = nullptr) = 0;
+      const OrderedRanges& ranges) = 0;
+
+  virtual folly::coro::Task<void> co_write(
+      const velox::VectorPtr& vector,
+      const OrderedRanges& ranges) {
+    write(vector, ranges);
+    co_return;
+  }
 
   // Collects stats and clears interanl state and any accumulated data in
   // internal buffers.
@@ -630,6 +665,13 @@ class FieldWriter {
       std::function<void(const TypeBuilder&)> typeAddedHandler);
 
  protected:
+  // Computes the number of parallel write tasks based on max parallelism and
+  // minimum streams per task. The result is clamped to [1, numChildren].
+  uint32_t computeParallelWriteTaskCount(uint32_t numChildren) const;
+
+  // Returns true if child fields should be written in parallel.
+  bool parallelWriteEnabled(uint32_t numChildren) const;
+
   FieldWriterContext& context_;
   std::shared_ptr<TypeBuilder> typeBuilder_;
 };

@@ -17,10 +17,10 @@
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Constants.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 
 #include <vector>
@@ -37,13 +37,15 @@ class TestCompressionPolicy : public nimble::CompressionPolicy {
       uint64_t minCompressionSize) {
     EXPECT_TRUE(
         compressionType == nimble::CompressionType::Zstd ||
-        compressionType == nimble::CompressionType::MetaInternal);
+        compressionType == nimble::CompressionType::MetaInternal ||
+        compressionType == nimble::CompressionType::Lz4);
 
     compressionInfo_ = {
         .compressionType = compressionType,
         .minCompressionSize = minCompressionSize};
 
     compressionInfo_.parameters.zstd.compressionLevel = 3;
+    compressionInfo_.parameters.lz4.accelerationLevel = 1;
     compressionInfo_.parameters.metaInternal.compressionLevel = 4;
     compressionInfo_.parameters.metaInternal.decompressionLevel = 2;
   }
@@ -132,6 +134,12 @@ TYPED_TEST(CompressionTests, MinCompressibleSizeZstd) {
       nimble::CompressionType::Zstd, nimble::kZstdMinCompressionSize);
 }
 
+TYPED_TEST(CompressionTests, MinCompressibleSizeLz4) {
+  using T = TypeParam;
+  assertMinCompressibleSizeMetaInternal<T>(
+      nimble::CompressionType::Lz4, nimble::kLz4MinCompressionSize);
+}
+
 TEST(CompressionTests, VerifyDefaultMinCompressionSize) {
   nimble::CompressionOptions compressionOptions{};
   EXPECT_EQ(
@@ -140,6 +148,8 @@ TEST(CompressionTests, VerifyDefaultMinCompressionSize) {
   EXPECT_EQ(
       compressionOptions.zstdMinCompressionSize,
       nimble::kZstdMinCompressionSize);
+  EXPECT_EQ(
+      compressionOptions.lz4MinCompressionSize, nimble::kLz4MinCompressionSize);
 }
 
 TEST(CompressionTests, MinCompresssionSizeIsApplied) {

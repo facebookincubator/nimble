@@ -22,6 +22,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/index/HashIndexUtils.h"
 #include "dwio/nimble/tablet/HashIndexGenerated.h"
+#include "dwio/nimble/tablet/MetadataInput.h"
 #include "velox/common/base/BitUtil.h"
 
 namespace facebook::nimble::index {
@@ -134,7 +135,7 @@ std::vector<RowRange> resolveRowRanges(
 HashIndex::HashIndex(
     std::vector<std::string> columns,
     std::unique_ptr<MetadataBuffer> indexMetadata,
-    LoadMetadataFn loadMetadata,
+    std::shared_ptr<MetadataInput> metadataInput,
     velox::memory::MemoryPool* pool)
     : IndexLookup{IndexType::Hash},
       columns_{std::move(columns)},
@@ -146,12 +147,14 @@ HashIndex::HashIndex(
       maxKey_{getMaxKey(*indexMetadata_)},
       bloomFilter_{buildBloomFilter(*indexMetadata_, pool_)},
       partitions_{buildPartitionDescriptors(*indexMetadata_, numBuckets_)},
+      metadataInput_{std::move(metadataInput)},
       partitionCache_{
-          [this, loadMetadata = std::move(loadMetadata)](
-              uint32_t partitionIndex) -> std::shared_ptr<Partition> {
+          [this](uint32_t partitionIndex) -> std::shared_ptr<Partition> {
             const auto& descriptor = partitions_[partitionIndex];
-            auto metadata = loadMetadata(descriptor.section);
-            return Partition::create(std::move(metadata));
+            auto results = metadataInput_->load({&descriptor.section, 1});
+            NIMBLE_CHECK_EQ(results.size(), 1);
+            return Partition::create(
+                std::make_unique<MetadataBuffer>(std::move(*results.front())));
           }} {}
 
 // static
@@ -192,12 +195,12 @@ HashIndex::buildPartitionDescriptors(
 std::unique_ptr<HashIndex> HashIndex::create(
     std::vector<std::string> columns,
     std::unique_ptr<MetadataBuffer> indexMetadata,
-    LoadMetadataFn loadMetadata,
+    std::shared_ptr<MetadataInput> metadataInput,
     velox::memory::MemoryPool* pool) {
   return std::unique_ptr<HashIndex>(new HashIndex(
       std::move(columns),
       std::move(indexMetadata),
-      std::move(loadMetadata),
+      std::move(metadataInput),
       pool));
 }
 

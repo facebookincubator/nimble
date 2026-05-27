@@ -31,15 +31,13 @@
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "dwio/nimble/tablet/MetadataCache.h"
+#include "dwio/nimble/tablet/MetadataInput.h"
 #include "folly/Synchronized.h"
+#include "velox/common/caching/FileHandle.h"
 #include "velox/common/file/File.h"
+#include "velox/common/io/Options.h"
 #include "velox/dwio/common/MetricsLog.h"
 #include "velox/dwio/common/Options.h"
-
-namespace facebook::velox::dwio::common {
-class BufferedInput;
-class SeekableInputStream;
-} // namespace facebook::velox::dwio::common
 
 /// The TabletReader class is the on-disk layout for nimble.
 ///
@@ -161,27 +159,61 @@ class TabletReader {
     /// Optional sections to eagerly load during initialization.
     std::vector<std::string> preloadOptionalSections;
 
-    /// Whether to load the cluster index during initialization. Default true.
-    bool loadClusterIndex{true};
+    /// Whether to load the cluster index during initialization. Default false.
+    bool loadClusterIndex{false};
+
+    /// Whether to eagerly preload all per-partition metadata and decode all
+    /// per-partition key streams during ClusterIndex construction. Only
+    /// effective when loadClusterIndex is also true. Implies pinIndex=true
+    /// (chunks would otherwise be evicted before any lookup runs).
+    /// Default false.
+    bool preloadIndex{false};
 
     /// Whether to load the chunk index during initialization. Default true.
     bool loadChunkIndex{true};
 
-    /// Whether to load the dense indexes during initialization. Default true.
-    bool loadDenseIndexes{true};
-
-    /// Non-owning pointer to a BufferedInput for metadata reads. When set,
-    /// TabletReader clones this internally for its own metadata IO. When
-    /// pinFileMetadata is enabled with a CachedBufferedInput, a
-    /// non-cacheable clone is created so AsyncDataCache does not retain raw
-    /// metadata bytes (MetadataCache already pins parsed objects).
-    velox::dwio::common::BufferedInput* bufferedInput{nullptr};
+    /// Whether to load the dense indexes during initialization. Default false.
+    bool loadDenseIndexes{false};
 
     /// If true, pins parsed metadata objects (StripeGroup, ChunkIndexGroup)
-    /// in the cache with strong references so they are never evicted. This
-    /// avoids re-reading and re-parsing metadata on every stripe access when
-    /// the weak-pointer cache entries would otherwise expire.
-    bool pinFileMetadata{false};
+    /// in the metadata cache with strong references so they are never evicted.
+    /// This avoids re-reading and re-parsing metadata on every stripe access
+    /// when the weak-pointer cache entries would otherwise expire. Works
+    /// independently of cacheMetadata.
+    bool pinMetadata{false};
+
+    /// If true, caches file metadata and index metadata in the async data
+    /// cache. Takes effect only when fileHandle and cache are provided.
+    bool cacheMetadata{false};
+
+    /// If true, pins parsed index objects in the index cache with strong
+    /// references.
+    bool pinIndex{false};
+
+    /// If true, caches index data (e.g., cluster index key stream) in the
+    /// async data cache. Takes effect only when fileHandle and cache are
+    /// provided.
+    bool cacheIndex{false};
+
+    /// IO options providing pool, IO stats, coalescing params, and executor.
+    /// Must be set with a non-null metadataIoStats; the constructor enforces
+    /// this with a NIMBLE_CHECK.
+    std::optional<velox::io::ReaderOptions> ioOptions;
+
+    /// File handle and cache for CachedMetadataInput. Both must be set
+    /// together. When set, creates CachedMetadataInput using
+    /// fileHandle->uuid as cache key. When neither is set, creates
+    /// DirectMetadataInput.
+    ///
+    /// FileHandle contains:
+    ///   - file: shared_ptr<ReadFile> for IO
+    ///   - uuid: StringIdLease used as identifier in downstream data
+    ///     caching structures (saves memory vs using filename)
+    ///   - groupId: StringIdLease for the group of files this belongs to
+    ///     (e.g. directory), used for coarse granularity access tracking
+    ///     such as deciding SSD placement
+    const velox::FileHandle* fileHandle{nullptr};
+    velox::cache::AsyncDataCache* cache{nullptr};
   };
 
   /// Compute checksum from the beginning of the file all the way to footer
@@ -199,11 +231,8 @@ class TabletReader {
       const Options& options);
 
   /// Configures TabletReader::Options from Velox ReaderOptions.
-  /// @param bufferedInput Optional BufferedInput pointer to set on the
-  ///        returned Options for metadata reads.
   static Options configureOptions(
-      const velox::dwio::common::ReaderOptions& options,
-      velox::dwio::common::BufferedInput* bufferedInput = nullptr);
+      const velox::dwio::common::ReaderOptions& options);
 
   /// Returns a collection of stream loaders for the given stripe. The stream
   /// loaders are returned in the same order as the input stream identifiers
@@ -351,57 +380,76 @@ class TabletReader {
 
   void init(const Options& options);
 
-  // Cache init path.
-  //
-  // Returns true if this reader is backed by a BufferedInput with Velox
-  // async data cache.
-  bool hasCache() const;
+  // Tries to initialize entirely from cache. Returns true if successful
+  // (all metadata loaded from cache, no file IO needed).
+  bool initFromCache(const Options& options);
 
-  // Tries to initialize entirely from Velox async data cache (zero file IO).
-  // Probes the cache for footer+PS at synthetic offset fileSize, parses PS and
-  // footer, then loads all remaining metadata via cache hits. Returns true on
-  // success, false on cache miss (caller falls through to cold path).
-  bool tryInitFromCache(const Options& options);
+  // Tries to load footer+PS from cache at synthetic key fileSize_.
+  bool loadFooterFromCache();
 
-  // Tries to parse PS and footer from cached footer+PS entry at synthetic
-  // offset fileSize. Returns true on cache hit, false on miss.
-  bool tryLoadAndInitFooterFromCache();
+  // Caches metadata sections from the speculative read buffer into
+  // CachedMetadataInput for subsequent opens.
+  void cacheMetadata(std::string_view footerBuf, uint64_t footerOffset);
 
-  // Populates AsyncDataCache with exact-size metadata entries from the
-  // speculative tail read IOBuf. Enables zero-IO init for subsequent readers.
-  // No-op if there is no cache.
-  void cacheMetadata(const folly::IOBuf& footerIoBuf, uint64_t footerIoOffset);
-
-  // Footer/postscript parsing.
-  //
-  // Parses the postscript from the last kPostscriptSize bytes of footerIoBuf.
-  void initPostScript(const folly::IOBuf& footerIoBuf, uint64_t footerIoSize);
-
-  // Parses the footer from footerIoBuf using the already-parsed postscript.
-  void initFooter(const folly::IOBuf& footerIoBuf, uint64_t footerIoSize);
-
-  // Reads and parses both postscript and footer from file. Supports two modes:
-  // - Adaptive (maxFooterIoBytes=0): reads postscript first, then exact footer.
-  // - Speculative: reads maxFooterIoBytes, re-reads if footer is larger.
-  void loadAndInitFooter(
+  // Reads postscript and footer via MetadataInput. For speculative mode,
+  // also does a speculative read into footerBuf for downstream preload.
+  void loadFooter(
       uint64_t maxFooterIoBytes,
-      folly::IOBuf& footerIoBuf,
+      velox::BufferPtr& footerBuf,
       uint64_t& footerIoSize,
-      uint64_t& footerIoOffset);
+      uint64_t& footerOffset);
 
   // Stripes.
   //
-  // Loads stripes_ from the footerIoBuf. Handles both single-read and re-read
-  // cases when the speculative read didn't capture the full stripes section.
+  // Loads stripes_ from the speculative read buffer, falling back to
+  // MetadataInput when the buffer doesn't cover the stripes section.
   void loadStripes(
-      folly::IOBuf& footerIoBuf,
+      velox::BufferPtr& footerBuf,
       uint64_t& footerIoSize,
-      uint64_t& footerIoOffset,
+      uint64_t& footerOffset,
       const Options& options);
 
-  // Parses stripes_ to populate stripe metadata (counts, offsets, etc.).
-  // Used by test init path.
-  void initStripes();
+  // Tracks a pending metadata section for batched coalesced loading.
+  struct LoadSection {
+    enum class Type { kStripes, kOptionalSection };
+
+    Type type;
+    std::string name;
+    MetadataSection section;
+  };
+
+  // Collects stripes section for coalesced loading. Tries to extract from
+  // footerBuf first; adds to pending on miss.
+  void collectStripesSection(
+      std::string_view footerBuf,
+      uint64_t footerOffset,
+      std::vector<LoadSection>& loadSections);
+
+  void collectStripesSection(std::vector<LoadSection>& loadSections) {
+    collectStripesSection({}, 0, loadSections);
+  }
+
+  // Collects optional sections for coalesced loading. Tries to extract from
+  // footerBuf first; adds to pending on miss.
+  void collectOptionalSections(
+      const Options& options,
+      std::string_view footerBuf,
+      uint64_t footerOffset,
+      std::vector<LoadSection>& loadSections);
+
+  void collectOptionalSections(
+      const Options& options,
+      std::vector<LoadSection>& loadSections) {
+    collectOptionalSections(options, {}, 0, loadSections);
+  }
+
+  // Loads all pending sections via MetadataInput and stores results:
+  // stripes go to stripes_, optional sections go to optionalSectionsCache_.
+  void loadSections(std::vector<LoadSection>& loadSections);
+
+  // Parses stripes_ to populate stripe metadata and preloads the first
+  // stripe group from footerBuf when available.
+  void initStripes(std::string_view footerBuf = {}, uint64_t footerOffset = 0);
 
   // Stripe groups.
   //
@@ -410,10 +458,6 @@ class TabletReader {
   std::shared_ptr<StripeGroup> stripeGroup(uint32_t stripeGroupIndex) const;
 
   std::shared_ptr<StripeGroup> loadStripeGroup(uint32_t stripeGroupIndex) const;
-
-  // Eagerly pins the first stripe group if it's already in the footer IOBuf.
-  // Pinning saves deserialization cost on subsequent accesses.
-  void preloadStripeGroup(const folly::IOBuf& footerIoBuf);
 
   // Index.
   //
@@ -425,9 +469,8 @@ class TabletReader {
     std::shared_ptr<ChunkIndexGroup> chunkIndex;
   };
 
-  // Loads stripe group, cluster index group, and chunk index together using
-  // coalesced IO when BufferedInput is available. Falls back to separate loads
-  // otherwise.
+  // Loads stripe group and chunk index together using coalesced IO via
+  // MetadataInput.
   StripeGroupMetadata loadStripeGroupMetadata(uint32_t stripeGroupIndex) const;
 
   // Optional sections.
@@ -439,67 +482,17 @@ class TabletReader {
   // sections plus the index section if present.
   std::vector<std::string> preloadSectionNames(const Options& options) const;
 
-  // Preloads optional sections into optionalSectionsCache_ using the provided
-  // loader callback to read each section.
-  using SectionLoader = std::function<std::unique_ptr<MetadataBuffer>(
-      const MetadataSection& section)>;
-  void preloadOptionalSections(
-      const Options& options,
-      const SectionLoader& loader);
-
-  // Creates a SectionLoader that tries to extract from footerIoBuf first
-  // (for sections at offset >= footerIoOffset), falling back to readMetadata.
-  SectionLoader makeSectionLoader(
-      const folly::IOBuf& footerIoBuf,
-      uint64_t footerIoOffset) const;
-
-  // BufferedInput coalesced IO.
-  //
-  // Holds a section enqueued for coalesced IO via BufferedInput.
-  // After metadataBufferedInput_->load(), the stream can be read to get section
-  // data.
-  struct EnqueuedSection {
-    std::string name;
-    MetadataSection section;
-    std::unique_ptr<velox::dwio::common::SeekableInputStream> stream;
-  };
-
-  // Loads stripes and optional sections via BufferedInput's enqueue/load
-  // pattern for coalesced IO. Populates stripes_ and optionalSectionsCache_.
-  // No-op for empty files (no stripes). Caller must call initStripes() after.
-  void loadStripesAndSections(const Options& options);
-
-  // Enqueues a read for the stripes section via BufferedInput. Returns nullopt
-  // if no stripes (empty file). Caller must call metadataBufferedInput_->load()
-  // after.
-  std::optional<EnqueuedSection> enqueueStripesSection();
-
-  // Enqueues reads for the given optional section names via BufferedInput.
-  // Skips names not found in optionalSections_. Caller must call
-  // metadataBufferedInput_->load() after this to execute the coalesced IO.
-  std::vector<EnqueuedSection> enqueueOptionalSections(
-      const std::vector<std::string>& sectionNames);
-
-  // Reads enqueued sections and inserts them into optionalSectionsCache_.
-  // Must be called after metadataBufferedInput_->load().
-  void loadEnqueuedOptionalSections(std::vector<EnqueuedSection>&& sections);
-
-  // Low-level IO.
-  //
-  // Reads metadata from a MetadataSection (offset + size + compressionType).
-  // Uses BufferedInput when available, otherwise reads directly from file.
+  // Reads and decompresses a metadata section via MetadataInput.
   std::unique_ptr<MetadataBuffer> readMetadata(
-      const MetadataSection& section,
-      velox::dwio::common::LogType logType) const;
-
-  // Reads metadata from a pre-loaded stream (e.g. from enqueue/load pattern).
-  std::unique_ptr<MetadataBuffer> readMetadata(
-      std::unique_ptr<velox::dwio::common::SeekableInputStream> stream,
       const MetadataSection& section) const;
 
   void initDenseIndexes();
 
-  void initChunkIndex();
+  // Loads chunk index and preloads the first group from footerBuf
+  // when available.
+  void initChunkIndex(
+      std::string_view footerBuf = {},
+      uint64_t footerOffset = 0);
 
   // Returns the cached ChunkIndexGroup for the given stripe group index.
   std::shared_ptr<ChunkIndexGroup> chunkIndex(uint32_t stripeGroupIndex) const;
@@ -507,10 +500,6 @@ class TabletReader {
   // Loads the ChunkIndexGroup for the given stripe group index from file.
   std::shared_ptr<ChunkIndexGroup> loadChunkIndexGroup(
       uint32_t stripeGroupIndex) const;
-
-  // Eagerly pins the first chunk index group if it's already in the footer
-  // IOBuf. Pinning saves deserialization cost on subsequent accesses.
-  void preloadChunkIndex(const folly::IOBuf& footerIoBuf);
 
   // Computes first stripe index for the given stripe group.
   uint32_t firstStripe(uint32_t stripeGroupIndex) const;
@@ -520,10 +509,20 @@ class TabletReader {
 
   MemoryPool* const pool_;
   const std::shared_ptr<velox::ReadFile> file_;
-  // Owned BufferedInput clone for metadata reads. Created by cloning
-  // options.bufferedInput during construction. When pinFileMetadata is
-  // enabled with CachedBufferedInput, uses a non-cacheable clone.
-  const std::unique_ptr<velox::dwio::common::BufferedInput> metadataInput_;
+  const bool loadClusterIndex_;
+  const bool loadChunkIndex_;
+  const bool loadDenseIndexes_;
+  // IO options copied from Options.ioOptions (required, with non-null
+  // metadataIoStats).
+  const velox::io::ReaderOptions ioOptions_;
+  // IO config for index creation — indexes create their own MetadataInput
+  // with index-specific IO stats.
+  const index::IndexLookup::Options indexOptions_;
+
+  // Owned MetadataInput for coalesced metadata IO. Always created —
+  // uses DirectMetadataInput (no cache) or CachedMetadataInput depending
+  // on options. Thread-safe: load() is stateless.
+  const std::unique_ptr<MetadataInput> metadataInput_;
 
   uint64_t fileSize_{0};
   Postscript ps_;

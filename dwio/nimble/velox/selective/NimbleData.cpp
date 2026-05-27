@@ -29,7 +29,8 @@ NimbleData::NimbleData(
     memory::MemoryPool& memoryPool,
     ChunkedDecoder* inMapDecoder,
     const EncodingFactory& encodingFactory,
-    bool stringDecoderZeroCopy)
+    bool stringDecoderZeroCopy,
+    bool nimblePreserveDictionaryEncoding)
     : nimbleType_(nimbleType),
       streams_(&streams),
       pool_(&memoryPool),
@@ -84,6 +85,7 @@ NimbleData::NimbleData(
       NIMBLE_UNSUPPORTED("{}", toString(nimbleType->kind()));
   }
   stringDecoderZeroCopy_ = stringDecoderZeroCopy;
+  nimblePreserveDictionaryEncoding_ = nimblePreserveDictionaryEncoding;
 }
 
 void NimbleData::readNulls(
@@ -109,7 +111,9 @@ void NimbleData::readNulls(
       nullsDecoder_->nextBools(nullsPtr, numValues, inMap_->as<uint64_t>());
     } else {
       inMapDecoder_->nextBools(nullsPtr, numValues, incomingNulls);
-      inMap_ = nulls;
+      if (inMap_.get() != nulls.get()) {
+        inMap_ = nulls;
+      }
     }
   } else if (nullsDecoder_) {
     nullsDecoder_->nextBools(nullsPtr, numValues, incomingNulls);
@@ -232,7 +236,8 @@ std::unique_ptr<velox::dwio::common::FormatData> NimbleParams::toFormatData(
       pool(),
       inMapDecoder_,
       *encodingFactory_,
-      stringDecoderZeroCopy_);
+      stringDecoderZeroCopy_,
+      nimblePreserveDictionaryEncoding_);
 }
 
 } // namespace facebook::nimble

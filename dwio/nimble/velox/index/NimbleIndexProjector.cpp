@@ -20,19 +20,38 @@
 
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
+#include "dwio/nimble/tablet/TabletReaderCache.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/ScopeGuard.h"
 #include "velox/common/base/SuccinctPrinter.h"
-#include "velox/dwio/common/BufferedInput.h"
+#include "velox/dwio/common/CachedBufferedInput.h"
+#include "velox/dwio/common/DirectBufferedInput.h"
 
 namespace facebook::nimble {
 
 using namespace facebook::velox; // NOLINT(google-build-using-namespace)
 
+namespace {
+
+void validateReaderOptions(const velox::dwio::common::ReaderOptions& options) {
+  NIMBLE_CHECK_NOT_NULL(
+      options.dataIoStats(),
+      "NimbleIndexProjector requires ReaderOptions::dataIoStats to be set");
+  NIMBLE_CHECK_NOT_NULL(
+      options.metadataIoStats(),
+      "NimbleIndexProjector requires ReaderOptions::metadataIoStats to be set");
+  NIMBLE_CHECK_NOT_NULL(
+      options.indexIoStats(),
+      "NimbleIndexProjector requires ReaderOptions::indexIoStats to be set");
+}
+
+} // namespace
+
 std::string NimbleIndexProjector::Stats::toString() const {
   return fmt::format(
       "Stats(numReadStripes={}, numScannedRows={}, numProjectedRows={}, numReadRows={}, "
       "numReadBytes={}, rawBytesRead={}, rawOverreadBytes={}, numStorageReads={}, "
+      "numCacheHits={}, cacheHitBytes={}, "
       "lookupTiming=[{}], scanTiming=[{}], projectionTiming=[{}])",
       numReadStripes,
       numScannedRows,
@@ -42,25 +61,82 @@ std::string NimbleIndexProjector::Stats::toString() const {
       velox::succinctBytes(rawBytesRead),
       velox::succinctBytes(rawOverreadBytes),
       numStorageReads,
+      numCacheHits,
+      velox::succinctBytes(cacheHitBytes),
       lookupTiming.toString(),
       scanTiming.toString(),
       projectionTiming.toString());
 }
 
+namespace {
+std::unique_ptr<velox::dwio::common::BufferedInput> createBufferedInput(
+    const velox::FileHandle& fileHandle,
+    velox::cache::AsyncDataCache* cache,
+    const velox::dwio::common::ReaderOptions& options) {
+  if (cache != nullptr && options.cacheData()) {
+    NIMBLE_CHECK(
+        fileHandle.uuid.hasValue() && fileHandle.groupId.hasValue(),
+        "FileHandle must have valid uuid and groupId when cache is provided");
+    return std::make_unique<velox::dwio::common::CachedBufferedInput>(
+        fileHandle.file,
+        velox::dwio::common::MetricsLog::voidLog(),
+        fileHandle.uuid,
+        cache,
+        /*tracker=*/nullptr,
+        fileHandle.groupId,
+        options.dataIoStats(),
+        /*ioStats=*/nullptr,
+        /*executor=*/nullptr,
+        options);
+  }
+  return std::make_unique<velox::dwio::common::DirectBufferedInput>(
+      fileHandle.file,
+      velox::dwio::common::MetricsLog::voidLog(),
+      fileHandle.uuid,
+      /*tracker=*/nullptr,
+      fileHandle.groupId,
+      options.dataIoStats(),
+      /*ioStats=*/nullptr,
+      /*executor=*/nullptr,
+      options);
+}
+} // namespace
+
+std::unique_ptr<NimbleIndexProjector> NimbleIndexProjector::create(
+    const velox::FileHandle& fileHandle,
+    velox::cache::AsyncDataCache* cache,
+    const std::vector<Subfield>& projectedSubfields,
+    const velox::dwio::common::ReaderOptions& options) {
+  validateReaderOptions(options);
+  auto bufferedInput = createBufferedInput(fileHandle, cache, options);
+  return std::unique_ptr<NimbleIndexProjector>(new NimbleIndexProjector(
+      ReaderBase::create(std::move(bufferedInput), options),
+      projectedSubfields,
+      options));
+}
+
+std::unique_ptr<NimbleIndexProjector> NimbleIndexProjector::create(
+    TabletReaderCache& tabletReaderCache,
+    const velox::FileHandle& fileHandle,
+    velox::cache::AsyncDataCache* cache,
+    const std::vector<Subfield>& projectedSubfields,
+    const velox::dwio::common::ReaderOptions& options) {
+  validateReaderOptions(options);
+  auto cached = tabletReaderCache.get(
+      fileHandle.file, TabletReader::configureOptions(options));
+  auto bufferedInput = createBufferedInput(fileHandle, cache, options);
+  return std::unique_ptr<NimbleIndexProjector>(new NimbleIndexProjector(
+      ReaderBase::create(std::move(bufferedInput), std::move(cached), options),
+      projectedSubfields,
+      options));
+}
+
 NimbleIndexProjector::NimbleIndexProjector(
-    std::shared_ptr<velox::ReadFile> readFile,
+    std::shared_ptr<ReaderBase> readerBase,
     const std::vector<Subfield>& projectedSubfields,
     const velox::dwio::common::ReaderOptions& options)
-    : ioStatistics_{std::make_shared<velox::io::IoStatistics>()},
-      readerBase_{ReaderBase::create(
-          std::make_unique<velox::dwio::common::BufferedInput>(
-              std::move(readFile),
-              options.memoryPool(),
-              velox::dwio::common::MetricsLog::voidLog(),
-              ioStatistics_.get(),
-              /*ioStats=*/nullptr,
-              options.maxCoalesceDistance()),
-          options)},
+    : readerBase_{std::move(readerBase)},
+      ioStats_{options.dataIoStats()},
       pool_{readerBase_->pool()},
       clusterIndex_{readerBase_->tablet().clusterIndex()},
       numStripes_{readerBase_->tablet().stripeCount()},
@@ -77,39 +153,56 @@ NimbleIndexProjector::NimbleIndexProjector(
 NimbleIndexProjector::Result NimbleIndexProjector::project(
     const Request& request,
     const Options& options) {
-  NIMBLE_CHECK_NULL(request_, "project() is not reentrant");
-  NIMBLE_CHECK_NULL(options_, "project() is not reentrant");
-  request_ = &request;
-  options_ = &options;
+  initRequest(request, options);
   SCOPE_EXIT {
-    request_ = nullptr;
-    options_ = nullptr;
-    rowsPerRequest_.clear();
-    stripeRowRanges_.clear();
-    stripeRangeMap_.clear();
+    clearRequest();
   };
-
-  NIMBLE_CHECK_GT(request_->keyBounds.size(), 0, "keyBounds must not be empty");
 
   lookupStripes();
 
-  const auto numRequests = request_->keyBounds.size();
   Result result;
-  result.responses.resize(numRequests);
-  rowsPerRequest_.assign(numRequests, 0);
+  result.responses.resize(numRequests_);
 
   for (uint32_t i = 0; i < stripeRangeMap_.numStripes; ++i) {
-    const auto stripeRowRanges =
-        stripeRangeMap_.stripeRowRanges(stripeRangeMap_.startStripe + i);
+    const uint32_t stripeIndex = stripeRangeMap_.startStripe + i;
+    const auto stripeRowRanges = stripeRangeMap_.stripeRowRanges(stripeIndex);
     if (!pruneStripeRowRanges(stripeRowRanges)) {
       continue;
     }
-    const uint32_t stripeIndex = stripeRangeMap_.startStripe + i;
-    processStripe(stripeIndex, result);
+    if (!processStripe(stripeIndex, stripeRowRanges_)) {
+      setResumeKeys(stripeIndex, stripeRowRanges_, result);
+      break;
+    }
   }
 
+  finalizeResult(result);
   updateIoStats();
   return result;
+}
+
+void NimbleIndexProjector::initRequest(
+    const Request& request,
+    const Options& options) {
+  NIMBLE_CHECK_NULL(request_, "project() is not reentrant");
+  NIMBLE_CHECK_NULL(options_, "project() is not reentrant");
+  NIMBLE_CHECK_GT(request.keyBounds.size(), 0, "keyBounds must not be empty");
+  request_ = &request;
+  options_ = &options;
+  numRequests_ = static_cast<uint32_t>(request.keyBounds.size());
+  numReadRows_ = 0;
+  numReadBytes_ = 0;
+  rowsPerRequest_.assign(numRequests_, 0);
+  resultChunks_.assign(numRequests_, {});
+}
+
+void NimbleIndexProjector::clearRequest() {
+  request_ = nullptr;
+  options_ = nullptr;
+  numRequests_ = 0;
+  rowsPerRequest_.clear();
+  resultChunks_.clear();
+  stripeRowRanges_.clear();
+  stripeRangeMap_.clear();
 }
 
 void NimbleIndexProjector::lookupStripes() {
@@ -119,7 +212,6 @@ void NimbleIndexProjector::lookupStripes() {
       index::IndexLookup::LookupRequest::rangeScan(request_->keyBounds));
 
   // Find the stripe range across all requests.
-  const auto numRequests = request_->keyBounds.size();
   uint32_t minStripe = numStripes_;
   uint32_t maxStripe = 0;
 
@@ -134,11 +226,11 @@ void NimbleIndexProjector::lookupStripes() {
     }
   };
   std::vector<RequestStripeRange> requestRanges;
-  requestRanges.reserve(numRequests);
+  requestRanges.reserve(numRequests_);
 
   uint32_t numRowRanges = 0;
   const auto& tablet = readerBase_->tablet();
-  for (size_t requestIdx = 0; requestIdx < numRequests; ++requestIdx) {
+  for (size_t requestIdx = 0; requestIdx < numRequests_; ++requestIdx) {
     const auto rowRanges = result[requestIdx];
     if (rowRanges.empty()) {
       requestRanges.emplace_back(RequestStripeRange{0, 0, {}});
@@ -189,7 +281,7 @@ void NimbleIndexProjector::lookupStripes() {
   // Fill entries using a copy of offsets as write cursors.
   stripeRangeMap_.rowRanges.resize(numRowRanges);
   auto writeCursors = stripeRangeMap_.stripeOffsets;
-  for (size_t requestIdx = 0; requestIdx < numRequests; ++requestIdx) {
+  for (size_t requestIdx = 0; requestIdx < numRequests_; ++requestIdx) {
     const auto& requestRange = requestRanges[requestIdx];
     if (requestRange.empty()) {
       continue;
@@ -220,8 +312,9 @@ bool NimbleIndexProjector::pruneStripeRowRanges(
   return !stripeRowRanges_.empty();
 }
 
-void NimbleIndexProjector::processStripe(uint32_t stripeIndex, Result& result) {
-  // Set up the stripe for data stream loading.
+bool NimbleIndexProjector::processStripe(
+    uint32_t stripeIndex,
+    std::span<const StripeRowRange> stripeRowRanges) {
   streams_.setStripe(stripeIndex);
 
   // TODO: Support fine-grained row range fetches from a stripe. For now, we
@@ -229,7 +322,7 @@ void NimbleIndexProjector::processStripe(uint32_t stripeIndex, Result& result) {
   // values. The result references a portion of it based on the row range.
   auto inputStreams = loadStripe();
   auto stripeChunk = serializeStripe(stripeIndex, inputStreams);
-  buildStripeResult(std::move(stripeChunk), result);
+  return buildStripeResult(stripeRowRanges, std::move(stripeChunk));
 }
 
 NimbleIndexProjector::InputStreams NimbleIndexProjector::loadStripe() {
@@ -244,28 +337,23 @@ NimbleIndexProjector::InputStreams NimbleIndexProjector::loadStripe() {
   return inputStreams;
 }
 
-NimbleIndexProjector::Chunk NimbleIndexProjector::serializeStripe(
+NimbleIndexProjector::ResultChunk NimbleIndexProjector::serializeStripe(
     uint32_t stripeIndex,
     InputStreams& inputStreams) {
   velox::CpuWallTimer timer(stats_.projectionTiming);
 
-  const auto numStripeRows = stripeRowCount(stripeIndex);
+  const auto numRows = stripeRowCount(stripeIndex);
 
-  // Build kTabletRaw output as chained IOBufs:
-  // [header] → [raw stream data...] → [trailer].
-  // kTabletRaw passes raw tablet bytes through including chunk headers.
-  // The Deserializer handles chunk header stripping on the client side.
-  std::string headerBuf;
-  serde::detail::writeHeader(
-      headerBuf, SerializationVersion::kTabletRaw, numStripeRows);
-  auto output = folly::IOBuf::copyBuffer(headerBuf.data(), headerBuf.size());
+  // Build the shared body+trailer for this stripe:
+  //   [stream_data...][encodingType][stream_sizes][trailer_size:u32].
+  // The version/rowCount/row-range/resume-key header is per-slice and is
+  // built later by finalizeResult().
 
-  // Read all stream data into a single contiguous buffer to avoid
-  // per-segment IOBuf allocations (one IOBuf::create instead of many
-  // IOBuf::copyBuffer calls).
+  // Collect raw stream segments without copying. Sizes are needed for the
+  // trailer.
   std::vector<uint32_t> streamSizes(projectedStreamOffsets_.size(), 0);
   std::vector<std::pair<const void*, int>> segments;
-  uint32_t totalBytes = 0;
+  uint32_t totalStreamBytes = 0;
   for (size_t i = 0; i < inputStreams.size(); ++i) {
     if (inputStreams[i] == nullptr) {
       continue;
@@ -275,21 +363,17 @@ NimbleIndexProjector::Chunk NimbleIndexProjector::serializeStripe(
     while (inputStreams[i]->Next(&data, &size)) {
       segments.emplace_back(data, size);
       streamSizes[i] += static_cast<uint32_t>(size);
-      totalBytes += static_cast<uint32_t>(size);
+      totalStreamBytes += static_cast<uint32_t>(size);
     }
   }
 
   std::string trailerBuf;
-  serde::detail::writeRawTrailer(
-      streamSizes, EncodingType::Trivial, trailerBuf);
+  serde::detail::writeTrailer(streamSizes, EncodingType::Trivial, trailerBuf);
 
-  // Single allocation for header + data + trailer.
-  const size_t totalSize = headerBuf.size() + totalBytes + trailerBuf.size();
-  output = folly::IOBuf::create(totalSize);
-  auto* dest = output->writableData();
-
-  std::memcpy(dest, headerBuf.data(), headerBuf.size());
-  dest += headerBuf.size();
+  // Single allocation for stream data + trailer.
+  const size_t bodySize = totalStreamBytes + trailerBuf.size();
+  auto body = folly::IOBuf::create(bodySize);
+  auto* dest = body->writableData();
 
   for (const auto& [data, size] : segments) {
     std::memcpy(dest, data, size);
@@ -297,50 +381,159 @@ NimbleIndexProjector::Chunk NimbleIndexProjector::serializeStripe(
   }
 
   std::memcpy(dest, trailerBuf.data(), trailerBuf.size());
-  output->append(totalSize);
+  body->append(bodySize);
 
-  Chunk chunk;
-  chunk.data = std::move(*output);
-  chunk.numRows = numStripeRows;
+  ResultChunk stripeChunk;
+  stripeChunk.sharedBody = std::move(*body);
+  stripeChunk.numRows = numRows;
 
-  stats_.numScannedRows += numStripeRows;
-  stats_.numProjectedRows += numStripeRows;
-  stats_.numReadBytes += chunk.data.computeChainDataLength();
-  return chunk;
+  stats_.numScannedRows += numRows;
+  stats_.numProjectedRows += numRows;
+  stats_.numReadBytes += stripeChunk.sharedBody.length();
+  return stripeChunk;
 }
 
-void NimbleIndexProjector::buildStripeResult(Chunk&& chunk, Result& result) {
-  const auto chunkIndex = static_cast<uint32_t>(result.chunks.size());
-
-  for (const auto& request : stripeRowRanges_) {
+bool NimbleIndexProjector::buildStripeResult(
+    std::span<const StripeRowRange> stripeRowRanges,
+    ResultChunk&& stripeChunk) {
+  for (const auto& request : stripeRowRanges) {
     NIMBLE_CHECK(!request.rowRange.empty());
     auto rowRange = request.rowRange;
 
+    // Saturated requests are filtered out by the caller in project().
     if (options_->maxRowsPerRequest > 0) {
-      // Saturated requests are filtered out by the caller in project().
       NIMBLE_CHECK_GT(
           options_->maxRowsPerRequest, rowsPerRequest_[request.requestIndex]);
       const auto remaining =
           options_->maxRowsPerRequest - rowsPerRequest_[request.requestIndex];
-
       if (static_cast<uint64_t>(rowRange.numRows()) > remaining) {
         rowRange.endRow = rowRange.startRow + static_cast<uint32_t>(remaining);
       }
     }
-    stats_.numReadRows += rowRange.numRows();
+    NIMBLE_CHECK_GT(rowRange.numRows(), 0);
 
-    result.responses[request.requestIndex].slices.emplace_back(
-        ChunkSlice{chunkIndex, rowRange});
+    // Queue a per-slice clone of the shared body+trailer. The header node
+    // (version + rowCount + row range + resume-key-length [+ resume key])
+    // is materialized and chained on top in finalizeResult().
+    stats_.numReadRows += rowRange.numRows();
+    numReadRows_ += rowRange.numRows();
+    resultChunks_[request.requestIndex].push_back(
+        ResultChunk{
+            .sharedBody = stripeChunk.sharedBody.cloneOneAsValue(),
+            .numRows = stripeChunk.numRows,
+            .rowRange = rowRange});
     rowsPerRequest_[request.requestIndex] += rowRange.numRows();
   }
 
-  result.chunks.emplace_back(std::move(chunk));
+  // Track body bytes only. Header bytes are small relative to stream data
+  // and are not worth the accounting complexity.
+  const auto bodyBytes = stripeChunk.sharedBody.length();
+  numReadBytes_ += bodyBytes;
+
+  return !checkOutputLimit();
+}
+
+void NimbleIndexProjector::setResumeKeys(
+    uint32_t stripeIndex,
+    std::span<const StripeRowRange> stripeRowRanges,
+    Result& result) {
+  // No next stripe in the range map — all mapped requests end at this stripe.
+  const auto nextStripe = stripeIndex + 1;
+  if (nextStripe >= stripeRangeMap_.startStripe + stripeRangeMap_.numStripes) {
+    return;
+  }
+
+  // No next stripe in the file — all requests are fully satisfied.
+  const auto stripeStartRow =
+      static_cast<uint32_t>(readerBase_->tablet().stripeStartRow(stripeIndex));
+  const auto nextStripeStartRow = stripeStartRow + stripeRowCount(stripeIndex);
+  if (nextStripeStartRow >= readerBase_->tablet().tabletRowCount()) {
+    return;
+  }
+
+  auto resumeKey = clusterIndex_->keyAtRow(nextStripeStartRow);
+  const auto nextRanges = stripeRangeMap_.stripeRowRanges(nextStripe);
+
+  for (const auto& request : stripeRowRanges) {
+    auto& response = result.responses[request.requestIndex];
+    NIMBLE_CHECK(!response.resumeKey.has_value());
+    if (std::any_of(
+            nextRanges.begin(), nextRanges.end(), [&](const auto& range) {
+              return range.requestIndex == request.requestIndex;
+            })) {
+      response.resumeKey = resumeKey;
+    }
+  }
+
+  // For requests that were never started (no result chunks for this scan,
+  // no resume key), set resume key to their original lower key so the
+  // caller can retry. Note: response.chunks is populated later by
+  // finalizeResult(), so we check resultChunks_ here.
+  for (size_t i = 0; i < result.responses.size(); ++i) {
+    auto& response = result.responses[i];
+    if (resultChunks_[i].empty() && !response.resumeKey.has_value()) {
+      const auto& keyBounds = request_->keyBounds[i];
+      NIMBLE_CHECK(
+          keyBounds.lowerKey.has_value(),
+          "Request {} has no lowerKey: unbounded lower requests start from "
+          "stripe 0 and should have been processed before truncation",
+          i);
+      response.resumeKey = *keyBounds.lowerKey;
+    }
+  }
+}
+
+namespace {
+
+/// Builds a kTablet IOBuf chain: [header] -> [shared body+trailer].
+folly::IOBuf assembleChunk(
+    uint32_t numRows,
+    RowRange rowRange,
+    folly::IOBuf body,
+    std::optional<std::string> resumeKey = std::nullopt) {
+  serde::TabletChunkHeader header{
+      .rowCount = numRows,
+      .rowRange = rowRange,
+      .resumeKey = std::move(resumeKey),
+  };
+  auto serializedHeader =
+      std::make_unique<folly::IOBuf>(serde::createTabletChunkHeader(header));
+  serializedHeader->appendToChain(
+      std::make_unique<folly::IOBuf>(std::move(body)));
+  return std::move(*serializedHeader);
+}
+
+} // namespace
+
+void NimbleIndexProjector::finalizeResult(Result& result) {
+  NIMBLE_CHECK_EQ(resultChunks_.size(), result.responses.size());
+
+  for (size_t responseIdx = 0; responseIdx < result.responses.size();
+       ++responseIdx) {
+    auto& response = result.responses[responseIdx];
+    auto& chunks = resultChunks_[responseIdx];
+    const auto numChunks = chunks.size();
+    response.chunks.reserve(numChunks);
+
+    for (size_t chunkIdx = 0; chunkIdx < numChunks; ++chunkIdx) {
+      auto& chunk = chunks[chunkIdx];
+      const bool isLastChunk = chunkIdx + 1 == numChunks;
+      response.chunks.emplace_back(assembleChunk(
+          chunk.numRows,
+          chunk.rowRange,
+          std::move(chunk.sharedBody),
+          isLastChunk ? response.resumeKey : std::nullopt));
+    }
+    chunks.clear();
+  }
 }
 
 void NimbleIndexProjector::updateIoStats() {
-  stats_.rawBytesRead = ioStatistics_->rawBytesRead();
-  stats_.rawOverreadBytes = ioStatistics_->rawOverreadBytes();
-  stats_.numStorageReads = ioStatistics_->read().count();
+  stats_.rawBytesRead = ioStats_->rawBytesRead();
+  stats_.rawOverreadBytes = ioStats_->rawOverreadBytes();
+  stats_.numStorageReads = ioStats_->read().count();
+  stats_.numCacheHits = ioStats_->ramHit().count();
+  stats_.cacheHitBytes = ioStats_->ramHit().sum();
 }
 
 } // namespace facebook::nimble

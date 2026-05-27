@@ -23,8 +23,14 @@
 #include "dwio/nimble/index/ClusterIndexWriter.h"
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/SortOrder.h"
+#include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
+#include "dwio/nimble/tablet/MetadataInput.h"
+#include "velox/buffer/Buffer.h"
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/common/io/IoStatistics.h"
+#include "velox/common/io/Options.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/dwio/common/BufferedInput.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 #include "velox/serializers/KeyEncoder.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
@@ -32,6 +38,14 @@
 
 namespace facebook::nimble::index::test {
 namespace {
+
+velox::BufferPtr toBufferPtr(
+    std::string_view data,
+    velox::memory::MemoryPool* pool) {
+  auto buffer = velox::AlignedBuffer::allocate<char>(data.size(), pool);
+  std::memcpy(buffer->asMutable<char>(), data.data(), data.size());
+  return buffer;
+}
 
 class ClusterIndexWriterTest : public testing::Test,
                                public velox::test::VectorTestBase {
@@ -1100,28 +1114,25 @@ TEST_P(ClusterIndexWriterChunkTest, maxRowsPerKeyChunk) {
   ASSERT_EQ(partitionMetadata.size(), 1);
 
   // Load ClusterIndex from serialized data and verify layout.
-  Section rootSection{
-      MetadataBuffer(*pool_, rootIndexData, CompressionType::Uncompressed)};
-  auto partData = std::make_shared<std::string>(partitionMetadata[0]);
-  auto streamData = std::make_shared<std::string>(keyStreamData);
+  Section rootSection{MetadataBuffer(
+      MetadataBuffer::decompress(
+          toBufferPtr(rootIndexData, pool_.get()),
+          CompressionType::Uncompressed,
+          pool_.get()))};
+  auto metadataFile =
+      std::make_shared<velox::InMemoryReadFile>(partitionMetadata[0]);
+  auto ioStats = std::make_shared<velox::io::IoStatistics>();
+  auto metadataInput = MetadataInput::create(
+      metadataFile.get(),
+      MetadataInput::Options{.pool = pool_.get(), .ioStats = ioStats});
+  auto dataInput = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(keyStreamData), *pool_);
 
-  auto clusterIndex = ClusterIndex::create(
+  auto clusterIndex = test::ClusterIndexTestHelper::create(
       std::move(rootSection),
-      [partData, this](const MetadataSection& section) {
-        return std::make_unique<MetadataBuffer>(
-            *pool_,
-            std::string_view(
-                partData->data() + section.offset(), section.size()),
-            section.compressionType());
-      },
-      [streamData](const velox::common::Region& region)
-          -> std::unique_ptr<velox::dwio::common::SeekableInputStream> {
-        return std::make_unique<velox::dwio::common::SeekableArrayInputStream>(
-            reinterpret_cast<const unsigned char*>(
-                streamData->data() + region.offset),
-            region.length);
-      },
-      pool_.get());
+      pool_.get(),
+      std::move(metadataInput),
+      std::move(dataInput));
 
   // Verify partition count and layout.
   EXPECT_EQ(clusterIndex->numPartitions(), 1);

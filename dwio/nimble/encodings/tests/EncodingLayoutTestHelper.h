@@ -15,10 +15,10 @@
  */
 #pragma once
 
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingLayout.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingLayout.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 
 namespace facebook::nimble {
 
@@ -27,6 +27,14 @@ namespace facebook::nimble {
 // ===========================================================================
 
 struct TrivialEnc {
+  operator EncodingLayout() const;
+};
+
+// TrivialEncoding<std::string_view> has a nested Lengths sub-encoding
+// (EncodingIdentifiers::Trivial::Lengths = 0). Use this instead of TrivialEnc
+// when encoding string types.
+struct StringTrivialEnc {
+  EncodingLayout lengths = TrivialEnc{};
   operator EncodingLayout() const;
 };
 

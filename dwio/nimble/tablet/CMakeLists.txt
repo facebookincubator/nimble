@@ -112,11 +112,20 @@ target_include_directories(
 )
 add_dependencies(nimble_sorted_index_fb nimble_sorted_index_schema_fb)
 
-add_library(nimble_tablet_common Compression.cpp MetadataBuffer.cpp)
+add_library(
+  nimble_tablet_common
+  Compression.cpp
+  MetadataBuffer.cpp
+  MetadataInput.cpp
+  Postscript.cpp
+)
 target_link_libraries(
   nimble_tablet_common
   nimble_footer_fb
   nimble_common
+  velox_caching
+  velox_file
+  velox_memory
   Folly::folly
 )
 
@@ -128,6 +137,23 @@ target_link_libraries(
     nimble_cluster_index_fb
     nimble_chunk_index_fb
     nimble_hash_index_fb
+)
+
+add_library(nimble_tablet_reader_cache TabletReaderCache.cpp)
+target_link_libraries(
+  nimble_tablet_reader_cache
+  PUBLIC
+    nimble_tablet_reader
+    nimble_velox_schema_reader
+    velox_caching
+    velox_memory
+    velox_type
+  PRIVATE
+    nimble_common
+    nimble_velox_common
+    nimble_velox_schema_serialization
+    glog::glog
+    Folly::folly
 )
 
 add_library(nimble_tablet_writer ChunkIndexWriter.cpp TabletWriter.cpp)

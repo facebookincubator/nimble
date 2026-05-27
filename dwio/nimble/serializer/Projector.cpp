@@ -19,9 +19,9 @@
 #include <algorithm>
 #include <numeric>
 
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Varint.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/io/Cursor.h"
@@ -33,8 +33,8 @@ namespace {
 
 // Lightweight adapter for writing small sections (header, trailer) directly
 // into an IOBuf. Satisfies the size()/resize()/data() interface required by
-// detail::extend/writeHeader/writeTrailer. Avoids the std::string → IOBuf
-// copy that would occur if writing into a temporary std::string first.
+// detail::extend/writeSerializationHeader/writeTrailer. Avoids the std::string
+// → IOBuf copy that would occur if writing into a temporary std::string first.
 class IOBufSection {
  public:
   explicit IOBufSection(size_t initialCapacity)
@@ -258,7 +258,6 @@ Projector::Projector(
     Options options)
     : pool_(pool),
       options_(std::move(options)),
-      streamSizesEncodingBuffer_(*pool, /*initialChunkSize=*/4096),
       inputSchema_(std::move(inputSchema)) {
   NIMBLE_CHECK_NOT_NULL(pool_, "Memory pool cannot be null");
   NIMBLE_CHECK_NOT_NULL(inputSchema_, "Input schema cannot be null");
@@ -269,7 +268,7 @@ Projector::Projector(
   NIMBLE_CHECK(!projectSubfields.empty(), "Must project at least one subfield");
   NIMBLE_CHECK(
       isCompactFormat(options_.projectVersion),
-      "Projection output version must be kCompact or kCompactRaw, got: {}",
+      "Projection output version must be kCompactRaw, got: {}",
       options_.projectVersion);
 
   // Update inputSchema_ with projectType names for schema evolution.
@@ -303,12 +302,12 @@ Projector::Projector(
 
 namespace {
 
-// Validates the input version header is kCompact or kCompactRaw.
+// Validates the input version header is kCompactRaw.
 SerializationVersion getAndValidateInputVersion(const folly::IOBuf& input) {
   const auto version = static_cast<SerializationVersion>(*input.data());
   NIMBLE_CHECK(
       isCompactFormat(version),
-      "Input must be kCompact or kCompactRaw format, got: {}",
+      "Input must be kCompactRaw format, got: {}",
       version);
   return version;
 }
@@ -574,11 +573,7 @@ folly::IOBuf Projector::buildProjectedOutput(
           outputStreamSizes.size(),
           options_.streamSizesEncodingType));
   detail::writeTrailer(
-      options_.projectVersion,
-      outputStreamSizes,
-      options_.streamSizesEncodingType,
-      streamSizesEncodingBuffer_,
-      trailer);
+      outputStreamSizes, options_.streamSizesEncodingType, trailer);
   output->appendToChain(std::move(trailer).build());
   return std::move(*output);
 }
@@ -602,12 +597,11 @@ folly::IOBuf Projector::projectContiguous(
 
   // Build header: [version byte][varint rowCount].
   IOBufSection header(
-      detail::estimateHeaderSize(options_.projectVersion, rowCount));
-  detail::writeHeader(header, options_.projectVersion, rowCount);
+      estimateSerializationHeaderSize(options_.projectVersion, rowCount));
+  writeSerializationHeader(header, options_.projectVersion, rowCount);
   auto output = std::move(header).build();
 
-  const auto inputStreamSizes =
-      detail::readStreamSizes(input, inputVersion, pool_);
+  const auto inputStreamSizes = detail::readTrailerStreamSizes(input);
 
   // Extract selected streams as zero-copy sub-range clones.
   const auto dataOffset = static_cast<size_t>(pos - data);
@@ -630,12 +624,11 @@ folly::IOBuf Projector::projectChained(
 
   // Build header: [version byte][varint rowCount].
   IOBufSection header(
-      detail::estimateHeaderSize(options_.projectVersion, rowCount));
-  detail::writeHeader(header, options_.projectVersion, rowCount);
+      estimateSerializationHeaderSize(options_.projectVersion, rowCount));
+  writeSerializationHeader(header, options_.projectVersion, rowCount);
   auto output = std::move(header).build();
 
-  const auto inputStreamSizes =
-      detail::readStreamSizes(input, inputVersion, pool_);
+  const auto inputStreamSizes = detail::readTrailerStreamSizes(input);
 
   // Extract selected streams as zero-copy clones via cursor.
   auto outputStreamSizes = inputStreamsSorted_

@@ -149,13 +149,19 @@ uint64_t NimbleUnit::getIoSize() {
   return ioSize_.value();
 }
 
-} // namespace
-
-TabletReader::Options VeloxReader::defaultTabletReaderOptions() {
+// Default `TabletReader::Options` used by `VeloxReader`'s convenience
+// constructors: preload the schema section and attach a fresh `IoStatistics`.
+TabletReader::Options defaultTabletReaderOptions(
+    velox::memory::MemoryPool* pool) {
   TabletReader::Options options;
   options.preloadOptionalSections = {std::string(kSchemaSection)};
+  options.ioOptions.emplace(pool)
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>())
+      .setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
   return options;
 }
+
+} // namespace
 
 VeloxReader::VeloxReader(
     velox::ReadFile* file,
@@ -166,7 +172,7 @@ VeloxReader::VeloxReader(
           TabletReader::create(
               std::shared_ptr<velox::ReadFile>(file, [](auto*) {}),
               &pool,
-              defaultTabletReaderOptions()),
+              defaultTabletReaderOptions(&pool)),
           pool,
           std::move(selector),
           std::move(params)) {}
@@ -180,7 +186,7 @@ VeloxReader::VeloxReader(
           TabletReader::create(
               std::move(file),
               &pool,
-              defaultTabletReaderOptions()),
+              defaultTabletReaderOptions(&pool)),
           pool,
           std::move(selector),
           std::move(params)) {}
@@ -322,6 +328,7 @@ void VeloxReader::loadNextStripe() {
       metrics.totalStreamSize = nimbleUnit->getIoSize();
 
       auto streams = nimbleUnit->extractStreamLoaders();
+      decoders_.reserve(streams.size());
       for (uint32_t i = 0; i < streams.size(); ++i) {
         if (!streams[i]) {
           // As this stream is not present in current stripe (might be present
@@ -331,15 +338,15 @@ void VeloxReader::loadNextStripe() {
           decoders_[offsets_[i]] = nullptr;
         } else {
           ++metrics.streamCount;
-          decoders_[offsets_[i]] = std::make_unique<ChunkedStreamDecoder>(
+          auto decoder = std::make_unique<ChunkedStreamDecoder>(
               pool_,
               std::make_unique<InMemoryChunkedStream>(
                   pool_, std::move(streams[i])),
               parameters_.encodingFactory,
               parameters_.optimizeStringBufferHandling,
               *logger_);
-          dynamic_cast<ChunkedStreamDecoder*>(decoders_[offsets_[i]].get())
-              ->ensureLoaded();
+          decoder->ensureLoaded();
+          decoders_[offsets_[i]] = std::move(decoder);
         }
       }
       loadedStripe_ = nextStripe_++;

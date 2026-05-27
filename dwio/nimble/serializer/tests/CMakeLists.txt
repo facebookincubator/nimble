@@ -15,6 +15,7 @@ add_executable(
   nimble_serializer_tests
   OptionsTest.cpp
   ProjectorTest.cpp
+  SerializationHeaderTest.cpp
   SerializationTest.cpp
   SerializerImplTest.cpp
 )
@@ -22,8 +23,10 @@ add_test(nimble_serializer_tests nimble_serializer_tests)
 
 target_link_libraries(
   nimble_serializer_tests
+  nimble_serialization_header
   nimble_serializer
   nimble_deserializer
+  nimble_deserializer_impl
   nimble_serializer_impl
   nimble_serializer_options
   nimble_projector

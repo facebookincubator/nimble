@@ -17,8 +17,23 @@
 #pragma once
 
 #include "dwio/nimble/tablet/TabletReader.h"
+#include "velox/common/io/IoStatistics.h"
+#include "velox/common/io/Options.h"
 
 namespace facebook::nimble::test {
+
+/// Creates a TabletReader::Options object for testing purposes.
+/// Test only, production must plumb their own `IoStatistics`.
+inline TabletReader::Options makeTestTabletOptions(
+    velox::memory::MemoryPool* pool) {
+  TabletReader::Options options;
+  options.loadClusterIndex = true;
+  options.loadDenseIndexes = true;
+  options.ioOptions.emplace(pool)
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>())
+      .setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
+  return options;
+}
 
 /// Test helper class for TabletReader that provides access to private members
 /// for testing purposes. This follows the same pattern as
@@ -82,12 +97,6 @@ class TabletReaderTestHelper {
       offsets.push_back(tabletReader_->stripeOffsets_[i]);
     }
     return offsets;
-  }
-
-  // Returns true if this reader is backed by a BufferedInput with Velox
-  // async data cache.
-  bool hasCache() const {
-    return tabletReader_->hasCache();
   }
 
   /// Returns the stripe sizes array.

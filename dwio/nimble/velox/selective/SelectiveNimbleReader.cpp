@@ -15,7 +15,7 @@
  */
 
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/index/IndexConstants.h"
@@ -409,7 +409,8 @@ void SelectiveNimbleRowReader::loadCurrentStripe() {
       options_.trackRowSize() ? rowSizeTracker_.get() : nullptr,
       *encodingFactory_,
       options_.stringDecoderZeroCopy(),
-      options_.preserveFlatMapsInMemory());
+      options_.preserveFlatMapsInMemory(),
+      options_.nimblePreserveDictionaryEncoding());
 
   columnReader_ = buildColumnReader(
       options_.requestedType() ? options_.requestedType()

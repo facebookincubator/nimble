@@ -69,8 +69,12 @@ class ChunkIndexWriterTest : public ::testing::Test {
       const std::string& groupData,
       uint32_t firstStripe,
       uint32_t stripeCount) {
-    auto buffer = std::make_unique<MetadataBuffer>(
-        *pool_, groupData, CompressionType::Uncompressed);
+    auto inputBuffer =
+        velox::AlignedBuffer::allocate<char>(groupData.size(), pool_.get());
+    std::memcpy(
+        inputBuffer->asMutable<char>(), groupData.data(), groupData.size());
+    auto buffer = std::make_unique<MetadataBuffer>(MetadataBuffer::decompress(
+        std::move(inputBuffer), CompressionType::Uncompressed, pool_.get()));
     return index::ChunkIndexGroup::create(
         firstStripe, stripeCount, std::move(buffer));
   }

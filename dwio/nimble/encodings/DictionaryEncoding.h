@@ -17,15 +17,15 @@
 
 #include <span>
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingIdentifier.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "folly/container/F14Map.h"
 #include "velox/common/memory/Memory.h"
 
@@ -36,7 +36,7 @@
 namespace facebook::nimble {
 
 /// The layout for a dictionary encoding is:
-/// Encoding::kPrefixSize bytes: standard Encoding prefix
+/// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 /// 4 bytes: alphabet size
 /// XX bytes: alphabet encoding bytes
 /// YY bytes: indices encoding bytes
@@ -65,6 +65,10 @@ class DictionaryEncoding
   /// DictionaryVector. Non-legacy encodings only.
   template <typename V>
   void readIndicesWithVisitor(V& visitor, ReadWithVisitorParams& params);
+
+  void materializeIndices(uint32_t rowCount, uint32_t* buffer) override {
+    indicesEncoding_->materialize(rowCount, buffer);
+  }
 
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
@@ -95,14 +99,20 @@ class DictionaryEncoding
   }
 
  private:
-  // Stores pre-loaded alphabet
-  Vector<T> alphabet_;
+  uint32_t* ensureIndicesBuffer(uint32_t numElements) {
+    if (indicesBuffer_ == nullptr || !indicesBuffer_->unique()) {
+      indicesBuffer_ =
+          velox::AlignedBuffer::allocate<uint32_t>(numElements, this->pool_);
+    } else {
+      velox::AlignedBuffer::reallocate<uint32_t>(&indicesBuffer_, numElements);
+    }
+    return indicesBuffer_->asMutable<uint32_t>();
+  }
 
-  // Indices are uint32_t.
+  Vector<T> alphabet_;
   std::unique_ptr<Encoding> indicesEncoding_;
   std::unique_ptr<Encoding> alphabetEncoding_;
-  // Temporary buffer.
-  Vector<uint32_t> indicesBuffer_;
+  velox::BufferPtr indicesBuffer_;
 };
 
 //
@@ -116,8 +126,7 @@ DictionaryEncoding<T>::DictionaryEncoding(
     std::function<void*(uint32_t)> stringBufferFactory,
     const Encoding::Options& options)
     : TypedEncoding<T, physicalType>{pool, data, options},
-      alphabet_{this->pool_},
-      indicesBuffer_{this->pool_} {
+      alphabet_{this->pool_} {
   const EncodingFactory factory{options};
   const auto* pos = data.data() + this->dataOffset();
   const uint32_t alphabetSize = encoding::readUint32(pos);
@@ -146,12 +155,12 @@ void DictionaryEncoding<T>::skip(uint32_t rowCount) {
 
 template <typename T>
 void DictionaryEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
-  indicesBuffer_.resize(rowCount);
-  indicesEncoding_->materialize(rowCount, indicesBuffer_.data());
+  auto* rawIndices = ensureIndicesBuffer(rowCount);
+  indicesEncoding_->materialize(rowCount, rawIndices);
 
   T* output = static_cast<T*>(buffer);
-  for (uint32_t index : indicesBuffer_) {
-    *output = alphabet_[index];
+  for (uint32_t i = 0; i < rowCount; ++i) {
+    *output = alphabet_[rawIndices[i]];
     ++output;
   }
 }
@@ -206,10 +215,10 @@ void DictionaryEncoding<T>::readWithVisitor(
         visitor.numRows(), true);
   }
   const auto startRowIndex = visitor.rowIndex();
-  indicesBuffer_.resize(visitor.numRows() - startRowIndex);
+  const auto numIndices = visitor.numRows() - startRowIndex;
+  auto* rawIndices = ensureIndicesBuffer(numIndices);
   velox::common::AlwaysTrue indicesFilter;
-  detail::DictionaryIndicesHook indicesHook(
-      indicesBuffer_.data(), startRowIndex);
+  detail::DictionaryIndicesHook indicesHook(rawIndices, startRowIndex);
   auto indicesVisitor = DecoderVisitor<
       int32_t,
       velox::common::AlwaysTrue,
@@ -223,21 +232,58 @@ void DictionaryEncoding<T>::readWithVisitor(
   indicesVisitor.setRowIndex(startRowIndex);
   callReadWithVisitor(*indicesEncoding_, indicesVisitor, params);
   detail::readWithVisitorSlow(visitor, params, nullptr, [&] {
-    const auto index = indicesBuffer_[visitor.rowIndex() - startRowIndex];
-    return alphabet_[index];
+    return alphabet_[rawIndices[visitor.rowIndex() - startRowIndex]];
   });
 }
 
 /// Reads indices only without looking up values from the alphabet.
 /// This is used for dictionary-aware readers that return DictionaryVector.
+/// Uses materializeIndices to avoid recursing through the visitor machinery,
+/// which would incorrectly call addNumValues from the inner encoding.
 template <typename T>
 template <typename V>
 void DictionaryEncoding<T>::readIndicesWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  // Call readWithVisitor on the indices encoding directly.
-  // The visitor is expected to handle int32_t values (dictionary indices).
-  callReadWithVisitor(*indicesEncoding_, visitor, params);
+  NIMBLE_CHECK(this->dictionaryEnabled());
+  NIMBLE_CHECK(
+      !V::kHasFilter && !V::kHasHook,
+      "readIndicesWithVisitor should only be invoked in dictionary fast path");
+  const auto numReadRows =
+      visitor.rowAt(visitor.numRows() - 1) - params.numScanned + 1;
+  auto* rawNulls = visitor.reader().rawNullsInReadRange();
+  const auto numNonNulls = rawNulls != nullptr
+      ? velox::bits::countNonNulls(
+            rawNulls, params.numScanned, params.numScanned + numReadRows)
+      : numReadRows;
+
+  // Dense fast path: materialize directly into rawValues_, scatter for nulls.
+  if (V::dense) {
+    NIMBLE_CHECK_EQ(
+        visitor.rowAt(visitor.numRows() - 1),
+        visitor.rowAt(0) + visitor.numRows() - 1,
+        "Dense visitor must have contiguous rows");
+    detail::readDenseMaterializedIndices(
+        *this, visitor, rawNulls, params.numScanned, numReadRows, numNonNulls);
+    return;
+  }
+
+  // Sparse path: materialize all rows into buffer, gather only the
+  // requested positions into rawValues_.
+  // TODO: Use FBW's random-access fixedBitArray_.get() to avoid
+  // materializing unrequested rows. Requires templated
+  // materializeIndices — see commented-out API mock-ups in this file
+  // and EncodingUtils.h.
+  auto* rawIndices = ensureIndicesBuffer(numNonNulls);
+  detail::readSparseMaterializedIndices(
+      *this,
+      visitor,
+      params.numScanned,
+      params.prepareResultNulls,
+      rawNulls,
+      numReadRows,
+      numNonNulls,
+      rawIndices);
 }
 
 template <typename T>

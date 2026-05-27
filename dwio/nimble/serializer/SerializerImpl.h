@@ -17,15 +17,21 @@
 #pragma once
 
 #include <algorithm>
+#include <bit>
+#include <cstring>
 #include <optional>
+#include <string>
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
+#include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/common/Zigzag.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/serializer/Options.h"
+#include "dwio/nimble/serializer/SerializationHeader.h"
+#include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/StreamData.h"
 #include "folly/io/Cursor.h"
 #include "folly/io/IOBuf.h"
@@ -70,13 +76,6 @@ void writeMissingStreams(T& buffer, uint32_t lastStream, uint32_t nextStream) {
   }
 }
 
-template <typename T>
-char* extend(T& buffer, uint32_t size) {
-  const auto oldSize = buffer.size();
-  buffer.resize(oldSize + size);
-  return buffer.data() + oldSize;
-}
-
 /// Encode typed values using a given encoding selection policy factory.
 /// When encodingLayout is provided, replays the captured encoding with
 /// compressionOptions. policyFactory is used as fallback for nested encodings
@@ -107,244 +106,147 @@ std::string_view encodeTyped(
 }
 
 /// Reads the trailer size (u32) from the last 4 bytes of the buffer.
-/// For kCompact: the encoded stream sizes byte count.
-/// For kCompactRaw: the raw trailer byte count (including encodingType).
 inline uint32_t readTrailerSize(const char* end) {
   const char* pos = end - sizeof(uint32_t);
   return encoding::readUint32(pos);
 }
 
-/// Returns the byte size of the version header (0 or 1).
-inline size_t versionSize(std::optional<SerializationVersion> version) {
-  return version.has_value() ? sizeof(uint8_t) : 0;
-}
+/// Returns an upper-bound estimate of the trailer size.
+size_t estimateTrailerSize(size_t numStreams, EncodingType encodingType);
 
-/// Returns the byte size of the row count encoding for the given version.
-/// All non-legacy formats use varint; kLegacy uses fixed u32.
-inline size_t rowCountSize(
-    std::optional<SerializationVersion> version,
-    uint32_t rowCount) {
-  return usesVarintRowCount(version) ? varint::varintSize(rowCount)
-                                     : sizeof(uint32_t);
-}
-
-/// Returns the exact byte size of the serialization header.
-/// Use to pre-allocate buffers before calling writeHeader().
-inline size_t estimateHeaderSize(
-    std::optional<SerializationVersion> version,
-    uint32_t rowCount) {
-  return versionSize(version) + rowCountSize(version, rowCount);
-}
-
-/// Writes serialization header to buffer.
-/// Works with any buffer type that has size(), resize(), and data() methods.
-///
-/// kLegacy wire format:
-///   [version:1B][rowCount:u32][size_0:u32][stream_data_0]...[size_N:u32][stream_data_N]
-///
-/// kCompact wire format:
-///   [version:1B][rowCount:varint][stream_data_0][stream_data_1]...[encoded_stream_sizes][stream_sizes_encoded_size:u32]
-///
-/// For kLegacy: writes [optional_version:1B][rowCount:u32]
-/// For kCompact/kCompactRaw/kTabletRaw: writes [version:1B][rowCount:varint]
-///
-/// @param buffer Output buffer (std::string, velox::Buffer, etc.)
-/// @param version Serialization format version (nullopt = no version byte)
-/// @param rowCount Number of rows
-template <typename T>
-void writeHeader(
-    T& buffer,
-    std::optional<SerializationVersion> version,
-    uint32_t rowCount) {
-  // Write version byte if provided.
-  if (version.has_value()) {
-    auto* versionPos = extend(buffer, 1);
-    *versionPos = static_cast<char>(version.value());
-  }
-
-  if (usesVarintRowCount(version)) {
-    auto* rowCountPos = extend(buffer, varint::varintSize(rowCount));
-    varint::writeVarint(rowCount, &rowCountPos);
-  } else {
-    auto* rowCountPos = extend(buffer, sizeof(uint32_t));
-    encoding::writeUint32(rowCount, rowCountPos);
-  }
-}
-
-/// Returns an upper-bound estimate of the kCompact trailer size.
-/// The actual size depends on the encoding selected for stream sizes, so
-/// this is a conservative estimate (trivial encoding = raw uint32 values +
-/// encoding header overhead + trailing u32).
-///
-/// @param numStreams Number of streams (size of the streamSizes array).
-inline size_t estimateCompactTrailerSize(size_t numStreams) {
-  // Encoding header overhead (encoding type, row count varint, nested headers).
-  constexpr size_t kEncodingHeaderOverhead = 32;
-  // Trivial encoding: raw uint32 values.
-  // Trailing u32: stores the encoded sizes byte count.
-  return numStreams * sizeof(uint32_t) + kEncodingHeaderOverhead +
-      sizeof(uint32_t);
-}
-
-/// Returns the exact byte size of the kCompactRaw trailer.
-size_t estimateRawTrailerSize(size_t numStreams, EncodingType encodingType);
-
-/// Returns an upper-bound estimate of the trailer size for the given
-/// serialization version (kCompact, kCompactRaw, or kTabletRaw).
+/// Overload that accepts SerializationVersion for API compatibility.
 inline size_t estimateTrailerSize(
-    SerializationVersion outputVersion,
+    SerializationVersion /* outputVersion */,
     size_t numStreams,
     std::optional<EncodingType> encodingType = std::nullopt) {
-  if (isRawFormat(outputVersion)) {
-    return estimateRawTrailerSize(
-        numStreams, encodingType.value_or(EncodingType::Trivial));
-  }
-  return estimateCompactTrailerSize(numStreams);
+  return estimateTrailerSize(
+      numStreams, encodingType.value_or(EncodingType::FixedBitWidth));
 }
 
-/// Writes the kCompactRaw trailer: appends
-/// [encodingType:1B][payload][trailer_size:u32] to buffer.
-///
-/// @param streamSizes Dense stream sizes array. sizes[i] = byte size of
-///        stream i (0 for missing).
-/// @param encodingType Encoding type for stream sizes.
-/// @param buffer Output buffer.
+/// Writes the Trivial trailer: raw u32 memcpy.
+/// Wire: [encodingType:1B][size_0:u32]...[size_N:u32][trailer_size:u32]
 template <typename T>
-void writeRawTrailer(
-    const std::vector<uint32_t>& streamSizes,
-    EncodingType encodingType,
-    T& buffer) {
-  const auto resolvedType = getRawEncodingType(encodingType);
+void writeTrivialTrailer(const std::vector<uint32_t>& streamSizes, T& buffer) {
   const auto streamCount = streamSizes.size();
-
-  switch (resolvedType) {
-    case EncodingType::Trivial: {
-      const uint32_t payloadSize = streamCount * sizeof(uint32_t);
-      const uint32_t trailerSize = sizeof(uint8_t) + payloadSize;
-      // [encodingType:1B][size_0:u32]...[size_N:u32][trailer_size:u32]
-      auto* pos = extend(buffer, trailerSize + sizeof(uint32_t));
-      *pos++ = static_cast<char>(resolvedType);
-      if (payloadSize > 0) {
-        std::memcpy(pos, streamSizes.data(), payloadSize);
-        pos += payloadSize;
-      }
-      encoding::writeUint32(trailerSize, pos);
-      break;
-    }
-    case EncodingType::Varint: {
-      const auto countVarintSize =
-          varint::varintSize(static_cast<uint32_t>(streamCount));
-      const auto dataVarintSize = varint::bulkVarintSize32(streamSizes);
-      const uint32_t trailerSize =
-          sizeof(uint8_t) + countVarintSize + dataVarintSize;
-      auto* pos = extend(buffer, trailerSize + sizeof(uint32_t));
-      *pos++ = static_cast<char>(resolvedType);
-      varint::writeVarint(static_cast<uint32_t>(streamCount), &pos);
-      for (const auto size : streamSizes) {
-        varint::writeVarint(size, &pos);
-      }
-      encoding::writeUint32(trailerSize, pos);
-      break;
-    }
-    case EncodingType::Delta: {
-      // Delta encoding: store first size as varint, then deltas as varints.
-      // Wire: [encodingType:1B][count:varint][first:varint]
-      //       [delta_1:varint]...[delta_N:varint][trailer_size:u32]
-      const auto countVarintSize =
-          varint::varintSize(static_cast<uint32_t>(streamCount));
-      uint64_t dataVarintSize = 0;
-      if (streamCount > 0) {
-        dataVarintSize = varint::varintSize(streamSizes[0]);
-        for (size_t i = 1; i < streamCount; ++i) {
-          const auto delta = streamSizes[i] - streamSizes[i - 1];
-          dataVarintSize += varint::varintSize(delta);
-        }
-      }
-      const uint32_t trailerSize =
-          sizeof(uint8_t) + countVarintSize + dataVarintSize;
-      auto* pos = extend(buffer, trailerSize + sizeof(uint32_t));
-      *pos++ = static_cast<char>(resolvedType);
-      varint::writeVarint(static_cast<uint32_t>(streamCount), &pos);
-      if (streamCount > 0) {
-        varint::writeVarint(streamSizes[0], &pos);
-        for (size_t i = 1; i < streamCount; ++i) {
-          const auto delta = streamSizes[i] - streamSizes[i - 1];
-          varint::writeVarint(delta, &pos);
-        }
-      }
-      encoding::writeUint32(trailerSize, pos);
-      break;
-    }
-    default:
-      NIMBLE_FAIL("Unsupported EncodingType for kCompactRaw: {}", resolvedType);
+  const uint32_t payloadSize = streamCount * sizeof(uint32_t);
+  const uint32_t trailerSize = sizeof(uint8_t) + payloadSize;
+  auto* pos = extend(buffer, trailerSize + sizeof(uint32_t));
+  *pos++ = static_cast<char>(EncodingType::Trivial);
+  if (payloadSize > 0) {
+    std::memcpy(pos, streamSizes.data(), payloadSize);
+    pos += payloadSize;
   }
+  encoding::writeUint32(trailerSize, pos);
 }
 
-/// Writes the kCompact trailer: appends
-/// [encoded_stream_sizes][stream_sizes_encoded_size:u32] to buffer.
-///
-/// @param streamSizes Dense stream sizes array. sizes[i] = byte size of
-///        stream i (0 for missing).
-/// @param encodingType Encoding type for stream sizes.
-/// @param encodingBuffer Encoding buffer for nimble encoding output.
-/// @param buffer Output buffer.
+/// Writes the Varint trailer: each stream size as a varint.
+/// Wire: [encodingType:1B][count:varint][v_0:varint]...[trailer_size:u32]
 template <typename T>
-void writeCompactTrailer(
-    const std::vector<uint32_t>& streamSizes,
-    EncodingType encodingType,
-    nimble::Buffer& encodingBuffer,
-    T& buffer) {
-  encodingBuffer.reset();
-
-  EncodingLayout layout{encodingType, {}, CompressionType::Uncompressed};
-  auto policy = std::make_unique<ReplayedEncodingSelectionPolicy<uint32_t>>(
-      std::move(layout),
-      /*compressionOptions=*/std::nullopt,
-      createDefaultEncodingPolicy);
-  auto encodedStreamSizes = EncodingFactory::encode<uint32_t>(
-      std::move(policy),
-      std::span<const uint32_t>(streamSizes),
-      encodingBuffer,
-      Encoding::Options{.useVarintRowCount = true});
-
-  const uint32_t encodedSize = encodedStreamSizes.size();
-  auto* encodedPos = extend(buffer, encodedSize);
-  std::memcpy(encodedPos, encodedStreamSizes.data(), encodedSize);
-
-  auto* encodedSizePos = extend(buffer, sizeof(uint32_t));
-  encoding::writeUint32(encodedSize, encodedSizePos);
+void writeVarintTrailer(const std::vector<uint32_t>& streamSizes, T& buffer) {
+  const auto streamCount = streamSizes.size();
+  const auto countVarintSize =
+      varint::varintSize(static_cast<uint32_t>(streamCount));
+  const auto dataVarintSize = varint::bulkVarintSize32(streamSizes);
+  const uint32_t trailerSize =
+      sizeof(uint8_t) + countVarintSize + dataVarintSize;
+  auto* pos = extend(buffer, trailerSize + sizeof(uint32_t));
+  *pos++ = static_cast<char>(EncodingType::Varint);
+  varint::writeVarint(static_cast<uint32_t>(streamCount), &pos);
+  for (const auto size : streamSizes) {
+    varint::writeVarint(size, &pos);
+  }
+  encoding::writeUint32(trailerSize, pos);
 }
 
-/// Writes the stream sizes trailer for the given serialization version.
-/// Dispatches to writeRawTrailer (kCompactRaw/kTabletRaw) or
-/// writeCompactTrailer (kCompact) based on outputVersion.
-///
-/// @param outputVersion Must be kCompact, kCompactRaw, or kTabletRaw.
-/// @param streamSizes Dense stream sizes array.
-/// @param encodingType Encoding type for stream sizes.
-/// @param encodingBuffer Encoding buffer for kCompact nimble encoding.
-/// @param buffer Output buffer.
-/// @param encodingLayout Optional encoding layout for replaying captured
-///        encoding. Only used for kCompact. Ignored for kCompactRaw/kTabletRaw.
+/// Writes the Delta trailer: first value + deltas as varints.
+/// Wire: [encodingType:1B][count:varint][first:varint]
+///       [delta_1:varint]...[delta_N:varint][trailer_size:u32]
+template <typename T>
+void writeDeltaTrailer(const std::vector<uint32_t>& streamSizes, T& buffer) {
+  const auto streamCount = streamSizes.size();
+  const auto countVarintSize =
+      varint::varintSize(static_cast<uint32_t>(streamCount));
+  uint64_t dataVarintSize = 0;
+  if (streamCount > 0) {
+    dataVarintSize = varint::varintSize(streamSizes[0]);
+    for (size_t i = 1; i < streamCount; ++i) {
+      const auto delta = streamSizes[i] - streamSizes[i - 1];
+      dataVarintSize += varint::varintSize(delta);
+    }
+  }
+  const uint32_t trailerSize =
+      sizeof(uint8_t) + countVarintSize + dataVarintSize;
+  auto* pos = extend(buffer, trailerSize + sizeof(uint32_t));
+  *pos++ = static_cast<char>(EncodingType::Delta);
+  varint::writeVarint(static_cast<uint32_t>(streamCount), &pos);
+  if (streamCount > 0) {
+    varint::writeVarint(streamSizes[0], &pos);
+    for (size_t i = 1; i < streamCount; ++i) {
+      const auto delta = streamSizes[i] - streamSizes[i - 1];
+      varint::writeVarint(delta, &pos);
+    }
+  }
+  encoding::writeUint32(trailerSize, pos);
+}
+
+/// Writes the FixedBitWidth trailer: bit-packed stream sizes.
+/// Wire: [encodingType:1B][bitWidth:1B][count:varint]
+///       [bit-packed data][trailer_size:u32]
+template <typename T>
+void writeFixedBitWidthTrailer(
+    const std::vector<uint32_t>& streamSizes,
+    T& buffer) {
+  const auto streamCount = streamSizes.size();
+  uint32_t maxVal = 0;
+  for (const auto size : streamSizes) {
+    maxVal = std::max(maxVal, size);
+  }
+  const uint8_t bitWidth =
+      maxVal == 0 ? 0 : static_cast<uint8_t>(std::bit_width(maxVal));
+  const uint32_t packedBytes = (bitWidth > 0 && streamCount > 0)
+      ? static_cast<uint32_t>(FixedBitArray::bufferSize(streamCount, bitWidth))
+      : 0;
+  const auto countVarintSize =
+      varint::varintSize(static_cast<uint32_t>(streamCount));
+  const uint32_t trailerSize =
+      sizeof(uint8_t) + sizeof(uint8_t) + countVarintSize + packedBytes;
+  auto* pos = extend(buffer, trailerSize + sizeof(uint32_t));
+  *pos++ = static_cast<char>(EncodingType::FixedBitWidth);
+  *pos++ = static_cast<char>(bitWidth);
+  varint::writeVarint(static_cast<uint32_t>(streamCount), &pos);
+  if (bitWidth > 0 && streamCount > 0) {
+    std::memset(pos, 0, packedBytes);
+    FixedBitArray arr{pos, static_cast<int>(bitWidth)};
+    arr.bulkSet32(0, streamCount, streamSizes.data());
+    pos += packedBytes;
+  }
+  encoding::writeUint32(trailerSize, pos);
+}
+
+/// Writes the stream sizes trailer using the specified encoding type.
 template <typename T>
 void writeTrailer(
-    SerializationVersion outputVersion,
     const std::vector<uint32_t>& streamSizes,
     EncodingType encodingType,
-    nimble::Buffer& encodingBuffer,
-    T& buffer,
-    const EncodingLayout* encodingLayout = nullptr) {
-  if (isRawFormat(outputVersion)) {
-    writeRawTrailer(streamSizes, encodingType, buffer);
-    return;
+    T& buffer) {
+  switch (getTrailerEncodingType(encodingType)) {
+    case EncodingType::Trivial:
+      writeTrivialTrailer(streamSizes, buffer);
+      break;
+    case EncodingType::Varint:
+      writeVarintTrailer(streamSizes, buffer);
+      break;
+    case EncodingType::Delta:
+      writeDeltaTrailer(streamSizes, buffer);
+      break;
+    case EncodingType::FixedBitWidth:
+      writeFixedBitWidthTrailer(streamSizes, buffer);
+      break;
+    default:
+      NIMBLE_FAIL(
+          "Unsupported EncodingType for stream sizes trailer: {}",
+          encodingType);
   }
-
-  NIMBLE_CHECK_EQ(
-      outputVersion,
-      SerializationVersion::kCompact,
-      "writeTrailer requires kCompact, kCompactRaw, or kTabletRaw, got {}",
-      outputVersion);
-  writeCompactTrailer(streamSizes, encodingType, encodingBuffer, buffer);
 }
 
 /// Writes a single stream to the buffer.
@@ -407,28 +309,22 @@ void skipStream(const char*& pos) {
   pos += size;
 }
 
-/// Reads stream sizes from the trailer for kCompact or kCompactRaw format.
-/// The last 4 bytes store the trailer size. For kCompact, the trailer is
-/// nimble-encoded. For kCompactRaw, it starts with an EncodingType byte.
-std::vector<uint32_t> readStreamSizes(
-    const char* end,
-    SerializationVersion version,
-    velox::memory::MemoryPool* pool);
+/// Reads stream sizes from the trailer. The last 4 bytes store the trailer
+/// size. The trailer starts with an EncodingType byte followed by the
+/// encoding-specific payload.
+std::vector<uint32_t> readTrailerStreamSizes(const char* end);
 
 /// IOBuf overload: reads stream sizes from the trailer of a (possibly
 /// chained) IOBuf. Tries the fast path first: if the tail segment contains the
-/// entire trailer, delegates to the contiguous readStreamSizes. Falls back to
+/// entire trailer, delegates to the contiguous overload. Falls back to
 /// cursor + pull() when the trailer spans a chain boundary.
-std::vector<uint32_t> readStreamSizes(
-    const folly::IOBuf& input,
-    SerializationVersion version,
-    velox::memory::MemoryPool* pool);
+std::vector<uint32_t> readTrailerStreamSizes(const folly::IOBuf& input);
 
 /// Parses all streams from a serialized buffer.
 /// Returns a vector of stream data indexed by their original offset.
 ///
 /// For kLegacy: Returns streams in order with inline u32 sizes.
-/// For kCompact: Returns streams indexed by their offset from sizes header.
+/// For kCompactRaw: Returns streams indexed by their offset from sizes header.
 ///
 /// @param pos Pointer past the header (version + rowCount already read)
 /// @param end End of buffer
@@ -517,7 +413,7 @@ std::string_view encodeScalar(
 template <typename T>
 class StreamDataWriter {
  public:
-  /// Constructor. For kLegacy, writes the header immediately. For kCompact,
+  /// Constructor. For kLegacy, writes the header immediately. For kCompactRaw,
   /// writes the header prefix (version + rowCount).
   ///
   /// @param pool Memory pool for encoding buffer allocation.
@@ -534,11 +430,11 @@ class StreamDataWriter {
 
   /// Write encoded data for a single stream.
   /// For both formats, writes directly to buffer.
-  /// For kCompact, also tracks stream sizes for the trailer.
+  /// For kCompactRaw, also tracks stream sizes for the trailer.
   void writeData(const nimble::StreamData& streamData);
 
   /// Close the writer. For kLegacy, fills trailing zeros up to nodeCount.
-  /// For kCompact, writes the trailer (encoded sizes).
+  /// For kCompactRaw, writes the trailer (encoded sizes).
   void close(uint32_t nodeCount = 0);
 
  private:
@@ -585,17 +481,12 @@ StreamDataWriter<T>::StreamDataWriter(
   NIMBLE_CHECK(
       streamEncodingLayouts_ == nullptr || options_.enableEncoding(),
       "streamEncodingLayouts can only be set when encoding is enabled");
-  NIMBLE_CHECK(
-      options_.streamSizesEncodingType == EncodingType::Trivial ||
-          options_.enableEncoding(),
-      "Non-trivial streamSizesEncodingType requires a non-legacy version");
   NIMBLE_CHECK_NOT_NULL(pool, "Memory pool cannot be null");
-
   std::optional<SerializationVersion> version;
   if (options_.hasVersionHeader()) {
     version = options_.serializationVersion();
   }
-  detail::writeHeader(buffer_, version, rowCount);
+  writeSerializationHeader(buffer_, version, rowCount);
 }
 
 template <typename T>
@@ -662,9 +553,11 @@ void StreamDataWriter<T>::encodeStream(
     auto* pos = detail::extend(buffer_, size + sizeof(uint32_t));
     detail::encodeStrings(data, size, pos);
   } else {
-    // Legacy scalar encoding: [size:u32][compression_type:i8][data...]
+    // Legacy scalar encoding:
+    //   Zstd: [size:u32][compType:i8][data...]
+    //   LZ4:  [size:u32][compType:i8][origSize:u32][data...]
     const auto bufferStart = buffer_.size();
-    const uint32_t maxSize = data.size() + sizeof(uint32_t) + 1;
+    const uint32_t maxSize = data.size() + 2 * sizeof(uint32_t) + 1;
     auto* pos = detail::extend(buffer_, maxSize);
     const auto encodedSize = detail::encode(options_, data, pos);
     if (encodedSize < maxSize) {
@@ -677,11 +570,7 @@ template <typename T>
 void StreamDataWriter<T>::close(uint32_t nodeCount) {
   if (options_.enableEncoding()) {
     detail::writeTrailer(
-        options_.serializationVersion(),
-        streamSizes_,
-        options_.streamSizesEncodingType,
-        *encodingBuffer_,
-        buffer_);
+        streamSizes_, options_.streamSizesEncodingType, buffer_);
   } else {
     // kLegacy: fill trailing zeros up to nodeCount.
     detail::writeMissingStreams(buffer_, lastStream_, nodeCount);

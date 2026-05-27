@@ -18,7 +18,8 @@
 
 #include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "velox/common/testutil/TestValue.h"
 
 #include <cstddef>
@@ -30,6 +31,7 @@ namespace facebook::nimble {
 using namespace facebook::velox;
 
 void ChunkedDecoder::loadNextChunk() {
+  invokeOnChunkLoad();
   auto ret = ensureInput(kChunkHeaderSize);
   NIMBLE_CHECK(ret, "Failed to read chunk header");
   const auto [length, compressionType] = readChunkHeader(inputData_);
@@ -281,7 +283,7 @@ std::optional<size_t> ChunkedDecoder::estimateRowCount() const {
   constexpr int kEncodingOffset =
       kChunkCompressionTypeOffset + /*chunkCompressionType=*/1;
   constexpr int kChunkRowCountOffset =
-      kEncodingOffset + Encoding::kRowCountOffset;
+      kEncodingOffset + EncodingPrefix::kRowCountOffset;
   NIMBLE_CHECK(
       const_cast<ChunkedDecoder*>(this)->ensureInput(
           kChunkRowCountOffset + sizeof(uint32_t)));
@@ -322,7 +324,8 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
   const auto rowCount = encoding::readUint32(pos);
   // Peel off nullable encoding.
   if (encodingType == EncodingType::Nullable) {
-    encodingStart += Encoding::kPrefixSize + /*nonNullEncodingSize=*/4;
+    encodingStart +=
+        EncodingPrefix::kFixedPrefixSize + /*nonNullEncodingSize=*/4;
     NIMBLE_CHECK(
         const_cast<ChunkedDecoder*>(this)->ensureInputIncremental_hack(
             encodingStart + 6, pos));
@@ -344,7 +347,7 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
   {
     const auto ensured =
         const_cast<ChunkedDecoder*>(this)->ensureInputIncremental_hack(
-            encodingStart + Encoding::kPrefixSize +
+            encodingStart + EncodingPrefix::kFixedPrefixSize +
                 TrivialEncoding<std::string_view>::kPrefixSize,
             pos);
     NIMBLE_CHECK(ensured);
@@ -369,4 +372,9 @@ std::optional<size_t> ChunkedDecoder::estimateStringDataSize() const {
   return stringDataSizeEstimate_;
 }
 
+bool ChunkedDecoder::dictionaryConvertible() const {
+  NIMBLE_CHECK_NOT_NULL(
+      encoding_, "Call ensureLoaded() before dictionaryConvertible()");
+  return encoding_->dictionaryEnabled();
+}
 } // namespace facebook::nimble

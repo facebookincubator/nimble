@@ -18,88 +18,18 @@
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
-#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 
 namespace facebook::nimble::test {
-
-template <typename Encoding>
-struct EncodingTypeTraits;
-
-template <typename T>
-struct EncodingTypeTraits<nimble::ConstantEncoding<T>> {
-  static constexpr inline nimble::EncodingType encodingType =
-      nimble::EncodingType::Constant;
-};
-
-template <typename T>
-struct EncodingTypeTraits<nimble::DeltaEncoding<T>> {
-  static constexpr inline nimble::EncodingType encodingType =
-      nimble::EncodingType::Delta;
-};
-
-template <typename T>
-struct EncodingTypeTraits<nimble::DictionaryEncoding<T>> {
-  static constexpr inline nimble::EncodingType encodingType =
-      nimble::EncodingType::Dictionary;
-};
-
-template <typename T>
-struct EncodingTypeTraits<nimble::FixedBitWidthEncoding<T>> {
-  static constexpr inline nimble::EncodingType encodingType =
-      nimble::EncodingType::FixedBitWidth;
-};
-
-template <typename T>
-struct EncodingTypeTraits<nimble::MainlyConstantEncoding<T>> {
-  static constexpr inline nimble::EncodingType encodingType =
-      nimble::EncodingType::MainlyConstant;
-};
-
-template <typename T>
-struct EncodingTypeTraits<nimble::RLEEncoding<T>> {
-  static constexpr inline nimble::EncodingType encodingType =
-      nimble::EncodingType::RLE;
-};
-
-template <>
-struct EncodingTypeTraits<nimble::SparseBoolEncoding> {
-  static constexpr inline nimble::EncodingType encodingType =
-      nimble::EncodingType::SparseBool;
-};
-
-template <typename T>
-struct EncodingTypeTraits<nimble::TrivialEncoding<T>> {
-  static constexpr inline nimble::EncodingType encodingType =
-      nimble::EncodingType::Trivial;
-};
-
-template <typename T>
-struct EncodingTypeTraits<nimble::VarintEncoding<T>> {
-  static constexpr inline nimble::EncodingType encodingType =
-      nimble::EncodingType::Varint;
-};
-
-template <typename T>
-struct EncodingTypeTraits<nimble::SubIntSplitEncoding<T>> {
-  static constexpr inline nimble::EncodingType encodingType =
-      nimble::EncodingType::SubIntSplit;
-};
-
-template <typename T>
-struct EncodingTypeTraits<nimble::NullableEncoding<T>> {
-  static constexpr inline nimble::EncodingType encodingType =
-      nimble::EncodingType::Nullable;
-};
 
 template <typename E>
 class Encoder {
@@ -179,6 +109,69 @@ class Encoder {
 
    private:
     CompressionType compressionType_;
+  };
+
+  template <typename Encoding>
+  struct EncodingTypeTraits {};
+
+  template <>
+  struct EncodingTypeTraits<nimble::ConstantEncoding<T>> {
+    static constexpr inline nimble::EncodingType encodingType =
+        nimble::EncodingType::Constant;
+  };
+
+  template <>
+  struct EncodingTypeTraits<nimble::DeltaEncoding<T>> {
+    static constexpr inline nimble::EncodingType encodingType =
+        nimble::EncodingType::Delta;
+  };
+
+  template <>
+  struct EncodingTypeTraits<nimble::DictionaryEncoding<T>> {
+    static constexpr inline nimble::EncodingType encodingType =
+        nimble::EncodingType::Dictionary;
+  };
+
+  template <>
+  struct EncodingTypeTraits<nimble::FixedBitWidthEncoding<T>> {
+    static constexpr inline nimble::EncodingType encodingType =
+        nimble::EncodingType::FixedBitWidth;
+  };
+
+  template <>
+  struct EncodingTypeTraits<nimble::MainlyConstantEncoding<T>> {
+    static constexpr inline nimble::EncodingType encodingType =
+        nimble::EncodingType::MainlyConstant;
+  };
+
+  template <>
+  struct EncodingTypeTraits<nimble::RLEEncoding<T>> {
+    static constexpr inline nimble::EncodingType encodingType =
+        nimble::EncodingType::RLE;
+  };
+
+  template <>
+  struct EncodingTypeTraits<nimble::SparseBoolEncoding> {
+    static constexpr inline nimble::EncodingType encodingType =
+        nimble::EncodingType::SparseBool;
+  };
+
+  template <>
+  struct EncodingTypeTraits<nimble::TrivialEncoding<T>> {
+    static constexpr inline nimble::EncodingType encodingType =
+        nimble::EncodingType::Trivial;
+  };
+
+  template <>
+  struct EncodingTypeTraits<nimble::VarintEncoding<T>> {
+    static constexpr inline nimble::EncodingType encodingType =
+        nimble::EncodingType::Varint;
+  };
+
+  template <>
+  struct EncodingTypeTraits<nimble::NullableEncoding<T>> {
+    static constexpr inline nimble::EncodingType encodingType =
+        nimble::EncodingType::Nullable;
   };
 
  public:

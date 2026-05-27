@@ -17,13 +17,12 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/tests/NimbleCompare.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 
 #include <limits>
-#include <type_traits>
 #include <vector>
 
 using namespace facebook;
@@ -45,75 +44,85 @@ class ConstantEncodingTest : public ::testing::Test {
   }
 
   template <typename T>
+  std::vector<nimble::Vector<T>> prepareValues() {
+    FAIL() << "unspecialized prepapreValues() should not be called";
+    return {};
+  }
+
+  template <typename T>
+  std::vector<nimble::Vector<T>> prepareFailureValues() {
+    FAIL() << "unspecialized prepapreValues() should not be called";
+    return {};
+  }
+
+  template <typename T>
+  using ET = nimble::EncodingPhysicalType<T>;
+
+  double dNaN0 = std::numeric_limits<double>::quiet_NaN();
+  double dNaN1 = std::numeric_limits<double>::signaling_NaN();
+  double dNaN2 = ET<double>::asEncodingLogicalType(
+      (ET<double>::asEncodingPhysicalType(dNaN0) | 0x3));
+
+  float fNaN0 = std::numeric_limits<float>::quiet_NaN();
+  float fNaN1 = std::numeric_limits<float>::signaling_NaN();
+  float fNaN2 = ET<float>::asEncodingLogicalType(
+      (ET<float>::asEncodingPhysicalType(fNaN0) | 0x3));
+
+  template <typename T>
   nimble::Vector<T> toVector(std::initializer_list<T> l) {
     nimble::Vector<T> v{pool_.get()};
     v.insert(v.end(), l.begin(), l.end());
     return v;
   }
 
-  template <typename T>
-  std::vector<nimble::Vector<T>> prepareValues() {
-    if constexpr (std::is_same_v<T, double>) {
-      const double dNaN0 = std::numeric_limits<double>::quiet_NaN();
-      const double dNaN1 = std::numeric_limits<double>::signaling_NaN();
-      const double dNaN2 = nimble::EncodingPhysicalType<double>::
-          asEncodingLogicalType((nimble::EncodingPhysicalType<double>::
-                                     asEncodingPhysicalType(dNaN0) |
-                                 0x3));
-      return {
-          toVector({0.0}),
-          toVector({0.0, 0.00}),
-          toVector({-0.0, -0.00}),
-          toVector({-2.1, -2.1, -2.1, -2.1, -2.1}),
-          toVector({dNaN0, dNaN0, dNaN0}),
-          toVector({dNaN1, dNaN1, dNaN1}),
-          toVector({dNaN2, dNaN2, dNaN2})};
-    } else if constexpr (std::is_same_v<T, float>) {
-      const float fNaN0 = std::numeric_limits<float>::quiet_NaN();
-      const float fNaN1 = std::numeric_limits<float>::signaling_NaN();
-      const float fNaN2 = nimble::EncodingPhysicalType<float>::
-        asEncodingLogicalType((nimble::EncodingPhysicalType<float>::
-                     asEncodingPhysicalType(fNaN0) |
-                   0x3));
-      return {
-          toVector({0.0f}),
-          toVector({0.0f, 0.00f}),
-          toVector({-0.0f, -0.00f}),
-          toVector({-2.1f, -2.1f, -2.1f, -2.1f, -2.1f}),
-          toVector({fNaN0, fNaN0, fNaN0}),
-          toVector({fNaN1, fNaN1, fNaN1}),
-          toVector({fNaN2, fNaN2, fNaN2})};
-    } else if constexpr (std::is_same_v<T, int32_t>) {
-      return {toVector({1}), toVector({3, 3, 3})};
-    } else {
-      static_assert(!std::is_same_v<T, T>, "Unsupported test type");
-    }
+  template <>
+  std::vector<nimble::Vector<double>> prepareValues() {
+    return {
+        toVector({0.0}),
+        toVector({0.0, 0.00}),
+        toVector({-0.0, -0.00}),
+        toVector({-2.1, -2.1, -2.1, -2.1, -2.1}),
+        toVector({dNaN0, dNaN0, dNaN0}),
+        toVector({dNaN1, dNaN1, dNaN1}),
+        toVector({dNaN2, dNaN2, dNaN2})};
   }
 
-  template <typename T>
-  std::vector<nimble::Vector<T>> prepareFailureValues() {
-    if constexpr (std::is_same_v<T, double>) {
-      const double dNaN0 = std::numeric_limits<double>::quiet_NaN();
-      const double dNaN1 = std::numeric_limits<double>::signaling_NaN();
-      return {
-          toVector({-0.0, -0.00, -0.0000001}),
-          toVector({-2.1, -2.1, -2.1, -2.1, -2.2}),
-          toVector({dNaN0, dNaN0, dNaN1})};
-    } else if constexpr (std::is_same_v<T, float>) {
-      const float fNaN0 = std::numeric_limits<float>::quiet_NaN();
-      const float fNaN2 = nimble::EncodingPhysicalType<float>::
-          asEncodingLogicalType((nimble::EncodingPhysicalType<float>::
-                                     asEncodingPhysicalType(fNaN0) |
-                                 0x3));
-      return {
-          toVector({-0.0f, -0.00f, -0.0000001f}),
-          toVector({-2.1f, -2.1f, -2.1f, -2.1f, -2.2f}),
-          toVector({fNaN0, fNaN0, fNaN2})};
-    } else if constexpr (std::is_same_v<T, int32_t>) {
-      return {toVector({3, 2, 3})};
-    } else {
-      static_assert(!std::is_same_v<T, T>, "Unsupported test type");
-    }
+  template <>
+  std::vector<nimble::Vector<float>> prepareValues() {
+    return {
+        toVector({0.0f}),
+        toVector({0.0f, 0.00f}),
+        toVector({-0.0f, -0.00f}),
+        toVector({-2.1f, -2.1f, -2.1f, -2.1f, -2.1f}),
+        toVector({fNaN0, fNaN0, fNaN0}),
+        toVector({fNaN1, fNaN1, fNaN1}),
+        toVector({fNaN2, fNaN2, fNaN2})};
+  }
+
+  template <>
+  std::vector<nimble::Vector<int32_t>> prepareValues() {
+    return {toVector({1}), toVector({3, 3, 3})};
+  }
+
+  template <>
+  std::vector<nimble::Vector<double>> prepareFailureValues() {
+    return {
+        toVector({-0.0, -0.00, -0.0000001}),
+        toVector({-2.1, -2.1, -2.1, -2.1, -2.2}),
+        toVector({dNaN0, dNaN0, dNaN1})};
+  }
+
+  template <>
+  std::vector<nimble::Vector<float>> prepareFailureValues() {
+    return {
+        toVector({-0.0f, -0.00f, -0.0000001f}),
+        toVector({-2.1f, -2.1f, -2.1f, -2.1f, -2.2f}),
+        toVector({fNaN0, fNaN0, fNaN2})};
+  }
+
+  template <>
+  std::vector<nimble::Vector<int32_t>> prepareFailureValues() {
+    return {toVector({3, 2, 3})};
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;

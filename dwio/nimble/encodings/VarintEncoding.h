@@ -18,15 +18,15 @@
 #include <numeric>
 #include <span>
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
-#include "dwio/nimble/encodings/Statistics.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
+#include "dwio/nimble/encodings/selection/Statistics.h"
 
 // Stores integer data in a varint encoding. For now we only support encoding
 // non-negative values, but we may later add an optional zigzag encoding that
@@ -35,7 +35,7 @@
 namespace facebook::nimble {
 
 /// Data layout is:
-/// Encoding::kPrefixSize bytes: standard Encoding prefix
+/// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 /// sizeof(T) bytes: baseline value
 /// X bytes: the varint encoded bytes
 template <typename T>

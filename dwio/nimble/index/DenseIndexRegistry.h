@@ -21,7 +21,6 @@
 #include <vector>
 
 #include "dwio/nimble/index/IndexLookup.h"
-#include "dwio/nimble/tablet/Callbacks.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "dwio/nimble/tablet/MetadataCache.h"
 
@@ -38,11 +37,12 @@ class DenseIndexRegistry {
  public:
   /// Creates a registry from optional hash and sorted index sections.
   /// Returns nullptr if both sections are empty.
+  /// Creates with Options — indexes create their own MetadataInput
+  /// internally with index-specific IO stats.
   static std::unique_ptr<DenseIndexRegistry> create(
       std::optional<Section> hashSection,
       std::optional<Section> sortedSection,
-      LoadMetadataFn loadMetadata,
-      LoadDataFn loadData,
+      const IndexLookup::Options& options,
       velox::memory::MemoryPool* pool);
 
   /// Finds any dense index matching the given columns.
@@ -54,13 +54,13 @@ class DenseIndexRegistry {
 
   void registerHashIndices(
       Section directorySection,
-      LoadMetadataFn loadMetadata,
+      std::shared_ptr<MetadataInput> metadataInput,
       velox::memory::MemoryPool* pool);
 
   void registerSortedIndices(
       Section directorySection,
-      LoadMetadataFn loadMetadata,
-      LoadDataFn loadData,
+      std::shared_ptr<MetadataInput> metadataInput,
+      std::shared_ptr<velox::dwio::common::BufferedInput> dataInput,
       velox::memory::MemoryPool* pool);
 
   struct IndexDescriptor {

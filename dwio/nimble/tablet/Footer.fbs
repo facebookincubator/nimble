@@ -19,6 +19,7 @@ enum CompressionType:uint8 {
   Uncompressed = 0,
   Zstd = 1,
   MetaInternal = 2,
+  Lz4 = 3,
 }
 
 table Stripes {
@@ -38,6 +39,7 @@ table MetadataSection {
   offset:uint64;
   size:uint32;
   compression_type:CompressionType;
+  uncompressed_size:uint32;
 }
 
 table OptionalMetadataSections {
@@ -45,6 +47,7 @@ table OptionalMetadataSections {
   offsets:[uint64];
   sizes:[uint32];
   compression_types:[CompressionType];
+  uncompressed_sizes:[uint32];
 }
 
 table Footer {

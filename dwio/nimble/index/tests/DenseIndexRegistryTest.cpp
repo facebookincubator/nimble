@@ -28,6 +28,8 @@
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "velox/common/file/FileSystems.h"
+#include "velox/common/io/IoStatistics.h"
+#include "velox/common/io/Options.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/vector/FlatVector.h"
@@ -95,7 +97,16 @@ class DenseIndexRegistryTest : public ::testing::Test {
   std::shared_ptr<TabletReader> openTablet(const std::string& filePath) {
     auto fs = velox::filesystems::getFileSystem(filePath, {});
     auto readFile = fs->openFileForRead(filePath);
-    return TabletReader::create(std::move(readFile), leafPool_.get(), {});
+    ioStats_ = std::make_shared<velox::io::IoStatistics>();
+    readerOptions_ =
+        std::make_unique<velox::io::ReaderOptions>(leafPool_.get());
+    readerOptions_->setMetadataIoStats(ioStats_);
+    readerOptions_->setIndexIoStats(
+        std::make_shared<velox::io::IoStatistics>());
+    TabletReader::Options options;
+    options.loadDenseIndexes = true;
+    options.ioOptions = *readerOptions_;
+    return TabletReader::create(std::move(readFile), leafPool_.get(), options);
   }
 
   std::string tempFilePath(const std::string& name) {
@@ -106,15 +117,19 @@ class DenseIndexRegistryTest : public ::testing::Test {
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
   std::shared_ptr<velox::common::testutil::TempDirectoryPath> tempDir_;
   std::deque<std::string> valueStrings_;
+  std::shared_ptr<velox::io::IoStatistics> ioStats_;
+  std::unique_ptr<velox::io::ReaderOptions> readerOptions_;
 };
 
 TEST_F(DenseIndexRegistryTest, emptyRegistry) {
+  auto file = std::make_shared<velox::InMemoryReadFile>(std::string{});
+  auto ioStats = std::make_shared<velox::io::IoStatistics>();
+  velox::io::ReaderOptions ioOptions(leafPool_.get());
+  ioOptions.setMetadataIoStats(ioStats);
+  ioOptions.setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
+  IndexLookup::Options options{.file = file, .ioOptions = &ioOptions};
   auto registry = DenseIndexRegistry::create(
-      std::nullopt,
-      std::nullopt,
-      [](const MetadataSection&) { return nullptr; },
-      [](const velox::common::Region&) { return nullptr; },
-      leafPool_.get());
+      std::nullopt, std::nullopt, options, leafPool_.get());
   EXPECT_EQ(registry, nullptr);
 }
 
@@ -183,6 +198,30 @@ TEST_F(DenseIndexRegistryTest, hashAndSortedLookup) {
   EXPECT_EQ(sortedIdx->type(), IndexType::Sorted);
 
   // Non-existent columns should return null.
+  EXPECT_EQ(tablet->denseIndex({"nonexistent"}), nullptr);
+}
+
+TEST_F(DenseIndexRegistryTest, indexCacheRetention) {
+  std::vector<velox::VectorPtr> batches;
+  batches.push_back(makeBatch(0, 50));
+
+  const auto filePath = tempFilePath("cache_retention");
+  VeloxWriterOptions options;
+  options.hashIndexConfigs.push_back(HashIndexConfig{.columns = {"id"}});
+  writeFile(filePath, rowType(), batches, std::move(options));
+
+  auto tablet = openTablet(filePath);
+
+  auto* hashIdx = tablet->denseIndex({"id"});
+  ASSERT_NE(hashIdx, nullptr);
+  EXPECT_EQ(hashIdx->type(), IndexType::Hash);
+  EXPECT_EQ(hashIdx->indexColumns(), std::vector<std::string>{"id"});
+
+  // Repeated lookup returns the same pinned index object.
+  auto* hashIdx2 = tablet->denseIndex({"id"});
+  EXPECT_EQ(hashIdx, hashIdx2);
+
+  // Non-existent columns return null.
   EXPECT_EQ(tablet->denseIndex({"nonexistent"}), nullptr);
 }
 

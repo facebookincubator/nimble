@@ -26,9 +26,16 @@
 #include "velox/common/base/tests/GTestUtils.h"
 
 #include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/tablet/TabletWriter.h"
+#include "dwio/nimble/tablet/tests/TabletTestUtils.h"
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
+#include "velox/common/caching/AsyncDataCache.h"
+#include "velox/common/caching/FileHandle.h"
+#include "velox/common/caching/FileIds.h"
 #include "velox/common/file/FileSystems.h"
+#include "velox/common/io/IoStatistics.h"
+#include "velox/common/memory/MallocAllocator.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/vector/FlatVector.h"
@@ -99,7 +106,10 @@ class SortedIndexTestBase {
   std::shared_ptr<TabletReader> openTablet(const std::string& filePath) {
     auto fs = velox::filesystems::getFileSystem(filePath, {});
     auto readFile = fs->openFileForRead(filePath);
-    return TabletReader::create(std::move(readFile), leafPool_.get(), {});
+    return TabletReader::create(
+        std::move(readFile),
+        leafPool_.get(),
+        ::facebook::nimble::test::makeTestTabletOptions(leafPool_.get()));
   }
 
   std::string encodeLookupKey(
@@ -167,6 +177,10 @@ class SortedIndexTestBase {
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
   std::shared_ptr<velox::common::testutil::TempDirectoryPath> tempDir_;
   std::deque<std::string> valueStrings_;
+  std::shared_ptr<velox::io::IoStatistics> metadataIoStats_{
+      std::make_shared<velox::io::IoStatistics>()};
+  std::shared_ptr<velox::io::IoStatistics> indexIoStats_{
+      std::make_shared<velox::io::IoStatistics>()};
 };
 
 class SortedIndexTest : public SortedIndexTestBase, public ::testing::Test {
@@ -687,6 +701,205 @@ TEST_F(SortedIndexTest, rowCountOverflow) {
 
   NIMBLE_ASSERT_USER_THROW(
       writer->write(batch), "Sorted index row count exceeds uint32 limit");
+}
+
+TEST_F(SortedIndexTest, indexDataReuseWithSameReader) {
+  std::vector<velox::VectorPtr> batches;
+  batches.push_back(makeBatch(0, 50));
+
+  const auto filePath = tempFilePath("same_reader_reuse");
+  writeFile(filePath, batches, SortedIndexConfig{.columns = {"value"}});
+
+  auto allocator = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  auto cache = velox::cache::AsyncDataCache::create(allocator.get());
+
+  struct TestCase {
+    bool cacheIndex;
+    bool provideCache;
+    bool expectRamHit;
+
+    std::string debugString() const {
+      return fmt::format(
+          "cacheIndex={}, provideCache={}, expectRamHit={}",
+          cacheIndex,
+          provideCache,
+          expectRamHit);
+    }
+  };
+
+  std::vector<TestCase> testCases = {
+      {true, true, true},
+      {false, true, false},
+      {false, false, false},
+      {true, false, false},
+  };
+
+  auto fs = velox::filesystems::getFileSystem(filePath, {});
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
+
+    metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+    indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+
+    auto readFile =
+        std::shared_ptr<velox::ReadFile>(fs->openFileForRead(filePath));
+    auto& ids = velox::fileIds();
+    auto fileIdStr = fmt::format(
+        "sortedSameReader_cache{}_provide{}",
+        testCase.cacheIndex,
+        testCase.provideCache);
+
+    TabletReader::Options options;
+    options.loadDenseIndexes = true;
+    options.cacheIndex = testCase.cacheIndex;
+    options.ioOptions.emplace(leafPool_.get())
+        .setMetadataIoStats(metadataIoStats_)
+        .setIndexIoStats(indexIoStats_);
+
+    std::unique_ptr<velox::FileHandle> fileHandle;
+    if (testCase.provideCache) {
+      fileHandle = std::make_unique<velox::FileHandle>();
+      fileHandle->file = readFile;
+      fileHandle->uuid = velox::StringIdLease(ids, fileIdStr);
+      fileHandle->groupId = velox::StringIdLease(ids, fileIdStr + "_group");
+      options.cache = cache.get();
+      options.fileHandle = fileHandle.get();
+    }
+
+    auto tablet =
+        TabletReader::create(std::move(readFile), leafPool_.get(), options);
+    ASSERT_NE(tablet->denseIndex({"value"}), nullptr);
+
+    // Both lookups should return correct results. The pinned SortedIndex
+    // object is reused across lookups within the same reader.
+    auto firstResult = pointLookup(tablet->denseIndex({"value"}), {"value"}, 0);
+    ASSERT_EQ(firstResult.size(), 1);
+    ASSERT_FALSE(firstResult[0].empty());
+
+    auto secondResult =
+        pointLookup(tablet->denseIndex({"value"}), {"value"}, 25);
+    ASSERT_EQ(secondResult.size(), 1);
+    ASSERT_FALSE(secondResult[0].empty());
+
+    // Verify the same index object is returned (pinned in MetadataCache).
+    EXPECT_EQ(tablet->denseIndex({"value"}), tablet->denseIndex({"value"}));
+  }
+
+  cache->shutdown();
+}
+
+TEST_F(SortedIndexTest, indexDataReuseCrossReaders) {
+  std::vector<velox::VectorPtr> batches;
+  batches.push_back(makeBatch(0, 50));
+
+  const auto filePath = tempFilePath("cross_reader_reuse");
+  writeFile(filePath, batches, SortedIndexConfig{.columns = {"value"}});
+
+  auto allocator = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  auto cache = velox::cache::AsyncDataCache::create(allocator.get());
+
+  struct TestCase {
+    bool cacheIndex;
+    bool provideCache;
+    bool expectCrossReaderReuse;
+    bool expectRamHit;
+
+    std::string debugString() const {
+      return fmt::format(
+          "cacheIndex={}, provideCache={}, "
+          "expectCrossReaderReuse={}, expectRamHit={}",
+          cacheIndex,
+          provideCache,
+          expectCrossReaderReuse,
+          expectRamHit);
+    }
+  };
+
+  std::vector<TestCase> testCases = {
+      {true, true, true, true},
+      {false, true, false, false},
+      {false, false, false, false},
+      {true, false, false, false},
+  };
+
+  auto fs = velox::filesystems::getFileSystem(filePath, {});
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
+
+    auto& ids = velox::fileIds();
+    auto fileIdStr = fmt::format(
+        "sortedCrossReader_cache{}_provide{}",
+        testCase.cacheIndex,
+        testCase.provideCache);
+    velox::StringIdLease fileId(ids, fileIdStr);
+    velox::StringIdLease groupId(ids, fileIdStr + "_group");
+
+    auto createReader = [&]() {
+      metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+      indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+
+      auto readFile =
+          std::shared_ptr<velox::ReadFile>(fs->openFileForRead(filePath));
+
+      TabletReader::Options options;
+      options.loadDenseIndexes = true;
+      options.cacheIndex = testCase.cacheIndex;
+      options.ioOptions.emplace(leafPool_.get())
+          .setMetadataIoStats(metadataIoStats_)
+          .setIndexIoStats(indexIoStats_);
+
+      std::unique_ptr<velox::FileHandle> fileHandle;
+      if (testCase.provideCache) {
+        fileHandle = std::make_unique<velox::FileHandle>();
+        fileHandle->file = readFile;
+        fileHandle->uuid = fileId;
+        fileHandle->groupId = groupId;
+        options.cache = cache.get();
+        options.fileHandle = fileHandle.get();
+      }
+
+      auto reader =
+          TabletReader::create(std::move(readFile), leafPool_.get(), options);
+      return std::make_pair(std::move(reader), std::move(fileHandle));
+    };
+
+    // First reader: cold path reads from file.
+    {
+      auto [reader1, fh1] = createReader();
+      ASSERT_NE(reader1->denseIndex({"value"}), nullptr);
+
+      auto firstResult =
+          pointLookup(reader1->denseIndex({"value"}), {"value"}, 0);
+      ASSERT_EQ(firstResult.size(), 1);
+      ASSERT_FALSE(firstResult[0].empty());
+      EXPECT_GT(indexIoStats_->rawBytesRead(), 0)
+          << "First reader should read index data from file";
+    }
+
+    // Second reader: verify functional correctness with fresh IO stats.
+    {
+      auto [reader2, fh2] = createReader();
+      ASSERT_NE(reader2->denseIndex({"value"}), nullptr);
+
+      auto secondResult =
+          pointLookup(reader2->denseIndex({"value"}), {"value"}, 0);
+      ASSERT_EQ(secondResult.size(), 1);
+      ASSERT_FALSE(secondResult[0].empty());
+
+      if (testCase.expectCrossReaderReuse) {
+        EXPECT_GT(indexIoStats_->ramHit().count(), 0)
+            << "Second reader should serve index data from cache";
+      }
+    }
+  }
+
+  cache->shutdown();
 }
 
 } // namespace

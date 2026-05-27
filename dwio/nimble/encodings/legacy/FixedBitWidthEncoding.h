@@ -19,13 +19,13 @@
 #include <type_traits>
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Compression.h"
-#include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/compression/Compression.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/legacy/Encoding.h"
 
 // The FixedBitWidthEncoding stores integer data in a fixed number of
@@ -37,7 +37,7 @@
 namespace facebook::nimble::legacy {
 
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 1 byte: compression type
 // sizeof(T) byte: baseline value
 // 1 byte: bit width
@@ -49,11 +49,11 @@ class FixedBitWidthEncoding final
   using cppDataType = T;
   using physicalType = typename TypeTraits<T>::physicalType;
 
-  static const int kCompressionOffset = Encoding::kPrefixSize;
+  static const int kCompressionOffset = EncodingPrefix::kFixedPrefixSize;
   static const int kPrefixSize = 2 + sizeof(T);
 
   FixedBitWidthEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory);
 
@@ -76,7 +76,7 @@ class FixedBitWidthEncoding final
   physicalType baseline_;
   FixedBitArray fixedBitArray_{};
   uint32_t row_ = 0;
-  Vector<char> uncompressedData_;
+  velox::BufferPtr uncompressedData_;
   Vector<physicalType> buffer_;
 };
 
@@ -86,24 +86,22 @@ class FixedBitWidthEncoding final
 
 template <typename T>
 FixedBitWidthEncoding<T>::FixedBitWidthEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> /* stringBufferFactory */)
-    : TypedEncoding<T, physicalType>{memoryPool, data},
-      uncompressedData_{&memoryPool},
-      buffer_{&memoryPool} {
+    : TypedEncoding<T, physicalType>{pool, data}, buffer_{&pool} {
   auto pos = data.data() + kCompressionOffset;
   auto compressionType = static_cast<CompressionType>(encoding::readChar(pos));
   baseline_ = encoding::read<const physicalType>(pos);
   bitWidth_ = static_cast<uint32_t>(encoding::readChar(pos));
   if (compressionType != CompressionType::Uncompressed) {
     uncompressedData_ = Compression::uncompress(
-        memoryPool,
+        pool,
         compressionType,
         TypeTraits<physicalType>::dataType,
         {pos, static_cast<size_t>(data.end() - pos)});
     fixedBitArray_ = FixedBitArray{
-        {uncompressedData_.data(), uncompressedData_.size()}, bitWidth_};
+        {uncompressedData_->as<char>(), uncompressedData_->size()}, bitWidth_};
   } else {
     fixedBitArray_ =
         FixedBitArray{{pos, static_cast<size_t>(data.end() - pos)}, bitWidth_};
@@ -218,7 +216,7 @@ std::string_view FixedBitWidthEncoding<T>::encode(
         return pos;
       }};
 
-  const uint32_t encodingSize = Encoding::kPrefixSize +
+  const uint32_t encodingSize = EncodingPrefix::kFixedPrefixSize +
       FixedBitWidthEncoding<T>::kPrefixSize + compressionEncoder.getSize();
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;

@@ -14,13 +14,19 @@
 add_library(nimble_encodings_tests_utils TestUtils.cpp)
 target_link_libraries(nimble_encodings_tests_utils nimble_encodings)
 
+add_library(nimble_encoding_layout_test_helper EncodingLayoutTestHelper.cpp)
+target_link_libraries(nimble_encoding_layout_test_helper nimble_encodings)
+
 add_executable(
   nimble_encodings_tests
+  BufferedEncodingTest.cpp
   ConstantEncodingTest.cpp
   EncodingLayoutTest.cpp
   EncodingSelectionTest.cpp
+  CompressionTest.cpp
   EncodingTest.cpp
   EncodingLegacyTest.cpp
+  Lz4CompressorTest.cpp
   MainlyConstantEncodingTest.cpp
   NullableEncodingTest.cpp
   PrefixEncodingTest.cpp

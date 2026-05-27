@@ -577,7 +577,10 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithSingleGroup) {
 
   // Read and verify root index
   Section rootIndexSection{MetadataBuffer(
-      *pool_, fileIndex.rootIndexData, CompressionType::Uncompressed)};
+      MetadataBuffer::decompress(
+          fileIndex.rootIndexData,
+          CompressionType::Uncompressed,
+          pool_.get()))};
   auto clusterIndex = index::ClusterIndex::create(std::move(rootIndexSection));
 
   // Verify basic properties
@@ -836,7 +839,10 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroups) {
 
   // Read and verify root index
   Section rootIndexSection{MetadataBuffer(
-      *pool_, fileIndex.rootIndexData, CompressionType::Uncompressed)};
+      MetadataBuffer::decompress(
+          fileIndex.rootIndexData,
+          CompressionType::Uncompressed,
+          pool_.get()))};
   auto clusterIndex = index::ClusterIndex::create(std::move(rootIndexSection));
 
   // Verify basic properties
@@ -1176,7 +1182,10 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
 
   // Read and verify root index
   Section rootIndexSection{MetadataBuffer(
-      *pool_, fileIndex.rootIndexData, CompressionType::Uncompressed)};
+      MetadataBuffer::decompress(
+          fileIndex.rootIndexData,
+          CompressionType::Uncompressed,
+          pool_.get()))};
   auto clusterIndex = index::ClusterIndex::create(std::move(rootIndexSection));
 
   // Verify basic properties

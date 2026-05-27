@@ -31,6 +31,24 @@
 #include "velox/common/base/RuntimeMetrics.h"
 #include "velox/serializers/KeyEncoder.h"
 
+namespace facebook::nimble {
+class MetadataInput;
+} // namespace facebook::nimble
+
+namespace facebook::velox {
+class ReadFile;
+struct FileHandle;
+namespace cache {
+class AsyncDataCache;
+} // namespace cache
+namespace dwio::common {
+class BufferedInput;
+} // namespace dwio::common
+namespace io {
+class ReaderOptions;
+} // namespace io
+} // namespace facebook::velox
+
 namespace facebook::nimble::index {
 
 /// Type of index.
@@ -62,6 +80,31 @@ std::ostream& operator<<(std::ostream& out, IndexType indexType);
 ///   bound. Only supported on cluster index.
 class IndexLookup {
  public:
+  /// IO options for index lookup creation. fileHandle and cache must
+  /// both be set (cached path) or both null (direct path).
+  struct Options {
+    /// File to read index metadata and key stream data from.
+    std::shared_ptr<velox::ReadFile> file;
+    /// IO settings: coalescing, executor, and index IO stats.
+    const velox::io::ReaderOptions* ioOptions{nullptr};
+    /// File handle for cache key. Set with cache for cached path.
+    const velox::FileHandle* fileHandle{nullptr};
+    /// Data cache for index metadata. Set with fileHandle for cached path.
+    velox::cache::AsyncDataCache* cache{nullptr};
+    /// If true, pins parsed index objects in the index cache with strong
+    /// references so they are never evicted.
+    bool pinIndex{false};
+
+    /// If true, eagerly loads all per-partition metadata and decodes all
+    /// per-partition key streams when the index is constructed. Requires
+    /// pinIndex=true; otherwise preloaded chunks would be evicted on the
+    /// first lookup.
+    bool preloadIndex{false};
+
+    /// Validates options consistency.
+    void validate() const;
+  };
+
   /// Batch lookup request. Contains encoded keys or key bounds and options.
   class LookupRequest {
    public:
@@ -214,6 +257,12 @@ class IndexLookup {
   /// Returns the maximum key in this index.
   virtual std::string_view maxKey() const = 0;
 
+  /// Returns the encoded key at the given file-level row position.
+  /// Not all index types support this — the default throws.
+  virtual std::string keyAtRow(uint32_t /*row*/) const {
+    NIMBLE_NOT_IMPLEMENTED("keyAtRow is not supported by this index type");
+  }
+
   /// Returns runtime statistics accumulated during lookups.
   virtual folly::F14FastMap<std::string, velox::RuntimeMetric> stats() const {
     return {};
@@ -225,6 +274,14 @@ class IndexLookup {
  private:
   const IndexType type_;
 };
+
+/// Creates a MetadataInput (cached or direct) from index options.
+std::shared_ptr<MetadataInput> createIndexMetadataInput(
+    const IndexLookup::Options& options);
+
+/// Creates a BufferedInput (cached or direct) from index options.
+std::shared_ptr<velox::dwio::common::BufferedInput> createIndexDataInput(
+    const IndexLookup::Options& options);
 
 inline std::string toString(IndexLookup::LookupRequest::Mode mode) {
   switch (mode) {

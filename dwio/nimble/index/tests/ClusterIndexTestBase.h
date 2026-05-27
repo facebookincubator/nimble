@@ -23,6 +23,8 @@
 #include "dwio/nimble/index/ChunkIndexGroup.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
+#include "velox/common/file/File.h"
+#include "velox/common/io/IoStatistics.h"
 #include "velox/common/memory/Memory.h"
 
 namespace facebook::nimble::index::test {
@@ -95,16 +97,11 @@ class ClusterIndexTestBase : public ::testing::Test {
       const std::vector<int>& stripeGroups);
 
   /// Creates a ClusterIndex from the serialized IndexBuffers.
-  /// @param loadData Callback to load key stream data.
-  /// @param pool Memory pool for key stream reader allocations.
+  /// @param keyStreamFile ReadFile for key stream data (or nullptr for
+  ///        metadata-only tests that don't need key stream access).
   std::unique_ptr<ClusterIndex> createClusterIndex(
       const IndexBuffers& indexBuffers,
-      LoadDataFn loadData,
-      velox::memory::MemoryPool* pool);
-
-  /// Convenience overload with a no-op key stream loader.
-  std::unique_ptr<ClusterIndex> createClusterIndex(
-      const IndexBuffers& indexBuffers);
+      velox::ReadFile* keyStreamFile = nullptr);
 
   /// Creates a ChunkIndexGroup from the serialized IndexBuffers.
   std::shared_ptr<ChunkIndexGroup> createChunkIndex(
@@ -115,6 +112,8 @@ class ClusterIndexTestBase : public ::testing::Test {
       velox::memory::memoryManager()->addRootPool("ClusterIndexTestBase")};
   std::shared_ptr<velox::memory::MemoryPool> pool_{
       rootPool_->addLeafChild("ClusterIndexTestBase")};
+  std::shared_ptr<velox::ReadFile> metadataFile_;
+  std::shared_ptr<velox::io::IoStatistics> ioStats_;
 };
 
 } // namespace facebook::nimble::index::test

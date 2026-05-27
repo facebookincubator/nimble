@@ -19,6 +19,15 @@
 
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/index/IndexLookup.h"
+#include "dwio/nimble/tablet/MetadataInput.h"
+#include "velox/common/caching/AsyncDataCache.h"
+#include "velox/common/caching/FileHandle.h"
+#include "velox/common/caching/FileIds.h"
+#include "velox/common/file/File.h"
+#include "velox/common/io/Options.h"
+#include "velox/common/memory/MallocAllocator.h"
+#include "velox/common/memory/Memory.h"
+#include "velox/dwio/common/BufferedInput.h"
 
 namespace facebook::nimble::index::test {
 namespace {
@@ -28,6 +37,11 @@ using LookupResult = IndexLookup::LookupResult;
 using LookupOptions = IndexLookup::LookupOptions;
 
 class IndexLookupTest : public ::testing::Test {
+ public:
+  static void SetUpTestCase() {
+    velox::memory::MemoryManager::testingSetInstance({});
+  }
+
  protected:
   static velox::serializer::EncodedKeyBounds makePointKey(
       const std::string& key) {
@@ -194,6 +208,144 @@ TEST_F(IndexLookupTest, fmtFormat) {
 TEST_F(IndexLookupTest, unknownIndexType) {
   const auto unknown = static_cast<IndexType>(99);
   NIMBLE_ASSERT_THROW(toString(unknown), "Unknown IndexType: 99");
+}
+
+TEST_F(IndexLookupTest, optionsValidateRequiredFields) {
+  {
+    SCOPED_TRACE("null file");
+    IndexLookup::Options options;
+    NIMBLE_ASSERT_THROW(options.validate(), "");
+  }
+  {
+    SCOPED_TRACE("null ioOptions");
+    auto file = std::make_shared<velox::InMemoryReadFile>(std::string{});
+    IndexLookup::Options options{.file = file};
+    NIMBLE_ASSERT_THROW(options.validate(), "");
+  }
+}
+
+TEST_F(IndexLookupTest, optionsValidateIndexIoStats) {
+  auto file = std::make_shared<velox::InMemoryReadFile>(std::string{});
+  auto pool = velox::memory::memoryManager()->addLeafPool();
+  velox::io::ReaderOptions ioOptions(pool.get());
+  IndexLookup::Options options{.file = file, .ioOptions = &ioOptions};
+  NIMBLE_ASSERT_THROW(options.validate(), "indexIoStats must be set");
+}
+
+TEST_F(IndexLookupTest, optionsValidateFileHandleAndCache) {
+  auto file = std::make_shared<velox::InMemoryReadFile>(std::string{});
+  auto pool = velox::memory::memoryManager()->addLeafPool();
+  auto indexIoStats = std::make_shared<velox::io::IoStatistics>();
+  velox::io::ReaderOptions ioOptions(pool.get());
+  ioOptions.setIndexIoStats(indexIoStats);
+
+  {
+    SCOPED_TRACE("direct path (no fileHandle, no cache)");
+    IndexLookup::Options options{.file = file, .ioOptions = &ioOptions};
+    EXPECT_NO_THROW(options.validate());
+  }
+  {
+    SCOPED_TRACE("fileHandle without cache");
+    velox::FileHandle fileHandle;
+    fileHandle.file = file;
+    IndexLookup::Options options{
+        .file = file, .ioOptions = &ioOptions, .fileHandle = &fileHandle};
+    NIMBLE_ASSERT_THROW(
+        options.validate(), "fileHandle and cache must both be set or neither");
+  }
+  {
+    SCOPED_TRACE("cache without fileHandle");
+    IndexLookup::Options options{
+        .file = file,
+        .ioOptions = &ioOptions,
+        .cache = reinterpret_cast<velox::cache::AsyncDataCache*>(0x1)};
+    NIMBLE_ASSERT_THROW(
+        options.validate(), "fileHandle and cache must both be set or neither");
+  }
+  {
+    SCOPED_TRACE("file mismatch with fileHandle->file");
+    auto file2 = std::make_shared<velox::InMemoryReadFile>(std::string{});
+    velox::FileHandle fileHandle2;
+    fileHandle2.file = file2;
+    IndexLookup::Options options{
+        .file = file,
+        .ioOptions = &ioOptions,
+        .fileHandle = &fileHandle2,
+        .cache = reinterpret_cast<velox::cache::AsyncDataCache*>(0x1)};
+    NIMBLE_ASSERT_THROW(
+        options.validate(),
+        "file and fileHandle->file must point to the same file");
+  }
+}
+
+TEST_F(IndexLookupTest, createIndexMetadataInput) {
+  struct TestParam {
+    bool cached;
+    std::string debugString() const {
+      return cached ? "cached" : "direct";
+    }
+  };
+  std::vector<TestParam> testSettings = {{false}, {true}};
+  for (const auto& testData : testSettings) {
+    SCOPED_TRACE(testData.debugString());
+    auto file = std::make_shared<velox::InMemoryReadFile>(std::string{});
+    auto pool = velox::memory::memoryManager()->addLeafPool();
+    velox::io::ReaderOptions ioOptions(pool.get());
+    ioOptions.setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+    ioOptions.setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
+
+    std::shared_ptr<velox::memory::MallocAllocator> allocator;
+    std::shared_ptr<velox::cache::AsyncDataCache> cache;
+    std::unique_ptr<velox::FileHandle> fileHandle;
+    if (testData.cached) {
+      allocator = std::make_shared<velox::memory::MallocAllocator>(
+          velox::memory::MemoryAllocator::Options{.capacity = 1UL << 30});
+      cache = velox::cache::AsyncDataCache::create(allocator.get());
+      fileHandle = std::make_unique<velox::FileHandle>();
+      fileHandle->file = file;
+      fileHandle->uuid = velox::StringIdLease(velox::fileIds(), "testFile");
+    }
+
+    IndexLookup::Options options{
+        .file = file,
+        .ioOptions = &ioOptions,
+        .fileHandle = fileHandle.get(),
+        .cache = cache.get()};
+    auto metadataInput = createIndexMetadataInput(options);
+    ASSERT_NE(metadataInput, nullptr);
+    EXPECT_EQ(metadataInput->cached(), testData.cached);
+  }
+}
+
+TEST_F(IndexLookupTest, createIndexDataInput) {
+  for (bool cached : {false, true}) {
+    SCOPED_TRACE(cached ? "cached" : "direct");
+    auto file = std::make_shared<velox::InMemoryReadFile>(std::string{});
+    auto pool = velox::memory::memoryManager()->addLeafPool();
+    velox::io::ReaderOptions ioOptions(pool.get());
+    ioOptions.setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+    ioOptions.setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
+
+    std::shared_ptr<velox::memory::MallocAllocator> allocator;
+    std::shared_ptr<velox::cache::AsyncDataCache> cache;
+    std::unique_ptr<velox::FileHandle> fileHandle;
+    if (cached) {
+      allocator = std::make_shared<velox::memory::MallocAllocator>(
+          velox::memory::MemoryAllocator::Options{.capacity = 1UL << 30});
+      cache = velox::cache::AsyncDataCache::create(allocator.get());
+      fileHandle = std::make_unique<velox::FileHandle>();
+      fileHandle->file = file;
+      fileHandle->uuid = velox::StringIdLease(velox::fileIds(), "testFile");
+    }
+
+    IndexLookup::Options options{
+        .file = file,
+        .ioOptions = &ioOptions,
+        .fileHandle = fileHandle.get(),
+        .cache = cache.get()};
+    auto dataInput = createIndexDataInput(options);
+    ASSERT_NE(dataInput, nullptr);
+  }
 }
 
 } // namespace

@@ -81,6 +81,29 @@ inline ScalarKind getScalarKindForType(const Type& type) {
   NIMBLE_UNSUPPORTED("Unsupported type: {}", toString(type.kind()));
 }
 
+// Initializes the nulls buffer on the Velox vector for scattered reads.
+// When count=0, all rows are absent so all bits are cleared (all null).
+// When count < bitmap size, copies the scatter bitmap as the nulls buffer.
+inline void ensureNulls(
+    const std::function<void*()>& nulls,
+    const velox::bits::Bitmap* scatterBitmap,
+    uint32_t count) {
+  if (!nulls || scatterBitmap == nullptr) {
+    return;
+  }
+  auto* nullsBuffer = static_cast<uint64_t*>(nulls());
+  if (count == 0) {
+    velox::bits::fillBits(nullsBuffer, 0, scatterBitmap->size(), false);
+  } else if (count < scatterBitmap->size()) {
+    velox::bits::copyBits(
+        static_cast<const uint64_t*>(scatterBitmap->bits()),
+        0,
+        nullsBuffer,
+        0,
+        scatterBitmap->size());
+  }
+}
+
 // Decoder implementation for deserializing stream data from multiple batches.
 class DeserializerImpl : public Decoder {
  public:
@@ -92,11 +115,9 @@ class DeserializerImpl : public Decoder {
       const Type* type,
       bool inMapStream,
       bool enableBufferPool,
-      velox::memory::MemoryPool* pool,
-      ZSTD_DCtx* dctx)
+      velox::memory::MemoryPool* pool)
       : type_{type},
         pool_{pool},
-        dctx_{dctx},
         inMapStream_{inMapStream},
         scalarKind_{getScalarKindForType(*type)},
         typeStorageWidth_{getTypeStorageWidth(*type)},
@@ -108,9 +129,10 @@ class DeserializerImpl : public Decoder {
       uint32_t count,
       void* output,
       std::vector<velox::BufferPtr>& stringBuffers,
-      std::function<void*()> /* nulls */ = nullptr,
+      std::function<void*()> nulls = nullptr,
       const velox::bits::Bitmap* scatterBitmap = nullptr) override {
     if (count == 0) {
+      ensureNulls(nulls, scatterBitmap, count);
       return 0;
     }
 
@@ -124,6 +146,7 @@ class DeserializerImpl : public Decoder {
       return readFlatMap(count, output, typeStorageWidth_, stringBuffers);
     }
     if (scatterBitmap != nullptr) {
+      ensureNulls(nulls, scatterBitmap, count);
       return scatteredRead(
           count, output, typeStorageWidth_, scatterBitmap, stringBuffers);
     }
@@ -212,9 +235,10 @@ class DeserializerImpl : public Decoder {
     const serde::StreamData::Options options{
         .version = segment.version,
         .bufferPool = bufferPool_.get(),
+        .decompressionBuffer = &decompressionBuffer_,
     };
     streamData_.emplace(
-        scalarKind_, segment.data, stringBuffers, pool_, options, dctx_);
+        scalarKind_, segment.data, stringBuffers, pool_, options);
     return *streamData_;
   }
 
@@ -378,11 +402,9 @@ class DeserializerImpl : public Decoder {
       auto* buffer = ensureScatterBuffer((size_t)count * width);
       uint32_t valuesRead = 0;
       while (valuesRead < count && currentSegment_ < batchSegments_.size()) {
-        auto& streamData = ensureStreamData(stringBuffers);
-        auto* dest = buffer + valuesRead * width;
         const auto toRead = count - valuesRead;
-        const auto copied = streamData.copyTo(dest, toRead * width);
-        const auto read = copied / width;
+        const auto read = readFromBatchSegment(
+            buffer, valuesRead, toRead, width, stringBuffers);
         if (read == 0) {
           advanceSegment();
         } else {
@@ -409,10 +431,9 @@ class DeserializerImpl : public Decoder {
           ensureScatterBuffer(count * sizeof(std::string_view)));
       uint32_t valuesRead = 0;
       while (valuesRead < count && currentSegment_ < batchSegments_.size()) {
-        auto& streamData = ensureStreamData(stringBuffers);
         const auto toRead = count - valuesRead;
-        const auto read =
-            streamData.decodeStrings(toRead, stringBuffer + valuesRead);
+        const auto read = readFromBatchSegment(
+            stringBuffer, valuesRead, toRead, width, stringBuffers);
         if (read == 0) {
           advanceSegment();
         } else {
@@ -539,7 +560,6 @@ class DeserializerImpl : public Decoder {
   // --- Const members (set at construction, never modified) ---
   const Type* const type_;
   velox::memory::MemoryPool* const pool_;
-  ZSTD_DCtx* const dctx_;
   // True for inMap streams (fills with 'false' when missing), false for nulls
   // streams (fills with 'true' when missing).
   const bool inMapStream_;
@@ -551,6 +571,10 @@ class DeserializerImpl : public Decoder {
   // are reused instead of being allocated/freed through MemoryPool each time.
   // Null when buffer pooling is disabled via DeserializerOptions.
   const std::unique_ptr<velox::BufferPool> bufferPool_;
+  // Decompression buffer reused across StreamData lifetimes. Persists across
+  // clear()/addBatch() cycles so the buffer capacity is reused instead of
+  // freed and re-allocated on each segment transition.
+  velox::BufferPtr decompressionBuffer_;
 
   // --- Batch decode state (reset in clear()) ---
   // Total top-level rows across all batches. Used for FlatMap gap detection to
@@ -659,17 +683,6 @@ Deserializer::Deserializer(
     velox::memory::MemoryPool* pool,
     DeserializerOptions options)
     : schema_{std::move(schema)}, pool_{pool}, options_{std::move(options)} {
-  NIMBLE_USER_CHECK(
-      !(options_.shareZstdDecompressionContext &&
-        (options_.decodeExecutor != nullptr ||
-         options_.maxDecodeParallelism != 0)),
-      "shareZstdDecompressionContext is mutually exclusive with parallel "
-      "decoding (decodeExecutor and maxDecodeParallelism); a single "
-      "ZSTD_DCtx is not safe to use concurrently");
-  if (options_.shareZstdDecompressionContext) {
-    dctx_.reset(ZSTD_createDCtx());
-  }
-
   const auto params = createFieldReaderParams();
 
   std::shared_ptr<const velox::dwio::common::TypeWithId> schemaWithId =
@@ -707,8 +720,7 @@ void Deserializer::createDeserializersForType(
           &type,
           /*inMapStream=*/false,
           options_.enableBufferPool,
-          pool_,
-          dctx_.get());
+          pool_);
   // FlatMap is only supported at depth 1 (top-level columns). FlatMap keys can
   // vary across batches, causing gaps in nulls/inMap streams. Gap detection is
   // enabled in DeserializerImpl whenever type->isFlatMap().
@@ -722,8 +734,7 @@ void Deserializer::createDeserializersForType(
           &type,
           /*inMapStream=*/true,
           options_.enableBufferPool,
-          pool_,
-          dctx_.get());
+          pool_);
       inMapChildTypes_[inMapOffset] = flatMap.childAt(i).get();
     }
   }
@@ -745,10 +756,27 @@ void Deserializer::deserialize(
   const bool hasInMapChildren = !inMapChildTypes_.empty();
   const auto maxStreamOffset = deserializers_.size() - 1;
 
-  // Iterate batches and add stream data with row offsets. Streams missing from
-  // a batch will have gaps that are filled later during reading.
+  // Iterate batches and add stream data with row offsets. Streams missing
+  // from a batch will have gaps that are filled later during reading.
+  //
+  // We decode the full cumulative stream below — over-fetching rows outside
+  // any per-batch row range. For kTablet inputs from NimbleIndexProjector
+  // (the producer of row-range-bearing slices), this over-fetch is bounded
+  // by stripe boundaries and never crosses users: each chunk slice covers
+  // exactly one (request × stripe) intersection. For non-kTablet inputs
+  // (kCompactRaw/kLegacy) there's no embedded row range, so
+  // "over-fetch" doesn't apply — the full batch is decoded as intended.
+  //
+  // Callers that want only the in-range rows of a kTablet slice can read
+  // the range via rocks::readResultRowRange and slice the output themselves.
+  //
+  // TODO: optimize by pushing the row range into the FieldReader::skip
+  // cascade so the decode pass produces only the in-range rows. Correct for
+  // nested-nullable types because the cascade goes through FieldReader
+  // (parent nulls/lengths are read and translated to child counts). Avoids
+  // the over-fetch CPU entirely.
   uint32_t rowOffset{0};
-  serde::StreamDataReader reader{pool_, options_, dctx_.get()};
+  serde::StreamDataReader reader{pool_, options_};
   for (auto sv : data) {
     const auto batchRows = reader.initialize(sv);
     const auto version = reader.version();
@@ -792,6 +820,7 @@ void Deserializer::deserialize(
     DeserializerImpl::toDecoderImpl(decoder.get())->setTopLevelRows(rowOffset);
   }
 
+  // Single-pass decode of all batches concatenated.
   rootReader_->next(rowOffset, vector, /*scatterBitmap=*/nullptr);
 }
 

@@ -49,8 +49,6 @@ std::string toString(EncodingType encodingType) {
       return "Sentinel";
     case EncodingType::Prefix:
       return "Prefix";
-    case EncodingType::SubIntSplit:
-      return "SubIntSplit";
   }
   return fmt::format(
       "Unknown encoding type: {}", static_cast<int32_t>(encodingType));
@@ -100,6 +98,8 @@ std::string toString(CompressionType compressionType) {
       return "Zstd";
     case CompressionType::MetaInternal:
       return "MetaInternal";
+    case CompressionType::Lz4:
+      return "Lz4";
     default:
       return fmt::format(
           "Unknown compression type: {}",

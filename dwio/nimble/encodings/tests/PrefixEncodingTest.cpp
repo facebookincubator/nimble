@@ -16,11 +16,14 @@
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include <fmt/core.h>
 #include <gtest/gtest.h>
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "folly/Conv.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/common/memory/Memory.h"
@@ -1397,4 +1400,157 @@ TEST_F(PrefixEncodingTest, seekExactMatchWithDuplicatesAcrossRestarts) {
     }
   }
 }
+TEST_F(PrefixEncodingTest, getByRow) {
+  const std::vector<std::string_view> values = {
+      "apple", "application", "apply", "banana", "bandana", "band"};
+  Buffer buffer{*pool_};
+  auto encoded = EncodingFactory::encode<std::string_view>(
+      createSelectionPolicy(), values, buffer);
+  stringBuffers_.clear();
+  auto encoding =
+      EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
+
+  for (uint32_t i = 0; i < values.size(); ++i) {
+    SCOPED_TRACE(fmt::format("row={}", i));
+    std::string_view result;
+    encoding->get(i, &result);
+    EXPECT_EQ(result, values[i]);
+  }
+}
+
+TEST_F(PrefixEncodingTest, getByRowRepeatedCalls) {
+  const std::vector<std::string_view> values = {
+      "prefix_aaa", "prefix_bbb", "prefix_ccc"};
+  Buffer buffer{*pool_};
+  auto encoded = EncodingFactory::encode<std::string_view>(
+      createSelectionPolicy(), values, buffer);
+  stringBuffers_.clear();
+  auto encoding =
+      EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
+
+  std::string_view result;
+  encoding->get(2, &result);
+  EXPECT_EQ(result, "prefix_ccc");
+  encoding->get(0, &result);
+  EXPECT_EQ(result, "prefix_aaa");
+  encoding->get(2, &result);
+  EXPECT_EQ(result, "prefix_ccc");
+  encoding->get(1, &result);
+  EXPECT_EQ(result, "prefix_bbb");
+}
+
+TEST_F(PrefixEncodingTest, concurrentSeek) {
+  constexpr uint32_t kNumThreads = 16;
+  constexpr uint32_t kNumValues = 200;
+  constexpr auto kDuration = std::chrono::seconds(5);
+
+  std::vector<std::string> stringBuffers;
+  std::vector<std::string_view> stringViews;
+  stringBuffers.reserve(kNumValues);
+  stringViews.reserve(kNumValues);
+  for (uint32_t i = 0; i < kNumValues; ++i) {
+    stringBuffers.push_back(fmt::format("key_{:03d}", i * 2));
+  }
+  std::sort(stringBuffers.begin(), stringBuffers.end());
+  for (const auto& s : stringBuffers) {
+    stringViews.push_back(s);
+  }
+
+  Buffer buffer{*pool_};
+  auto encoded = EncodingFactory::encode<std::string_view>(
+      createSelectionPolicy(), stringViews, buffer);
+  stringBuffers_.clear();
+  auto encoding =
+      EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
+
+  auto linearSearch = [&stringViews](
+                          std::string_view target,
+                          bool inclusive) -> std::optional<uint32_t> {
+    for (size_t i = 0; i < stringViews.size(); ++i) {
+      const bool found =
+          inclusive ? stringViews[i] >= target : stringViews[i] > target;
+      if (found) {
+        return static_cast<uint32_t>(i);
+      }
+    }
+    return std::nullopt;
+  };
+
+  const auto deadline = std::chrono::steady_clock::now() + kDuration;
+  std::vector<std::thread> threads;
+  threads.reserve(kNumThreads);
+  for (uint32_t t = 0; t < kNumThreads; ++t) {
+    threads.emplace_back([&, t]() {
+      std::mt19937 rng(42 + t);
+      std::uniform_int_distribution<uint32_t> targetDist(0, kNumValues * 2 + 1);
+      while (std::chrono::steady_clock::now() < deadline) {
+        const uint32_t targetIdx = targetDist(rng);
+        const std::string targetKey = fmt::format("key_{:03d}", targetIdx);
+        const std::string_view target = targetKey;
+        for (bool inclusive : {true, false}) {
+          const auto expected = linearSearch(target, inclusive);
+          const auto actual = encoding->seek(&target, inclusive);
+          ASSERT_EQ(expected, actual)
+              << "key=" << targetKey << " inclusive=" << inclusive;
+        }
+      }
+    });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+}
+
+TEST_F(PrefixEncodingTest, concurrentGet) {
+  constexpr uint32_t kNumThreads = 16;
+  constexpr uint32_t kNumValues = 200;
+  constexpr auto kDuration = std::chrono::seconds(5);
+
+  std::vector<std::string> stringBuffers;
+  std::vector<std::string_view> stringViews;
+  stringBuffers.reserve(kNumValues);
+  stringViews.reserve(kNumValues);
+  for (uint32_t i = 0; i < kNumValues; ++i) {
+    stringBuffers.push_back(fmt::format("key_{:03d}", i));
+  }
+  std::sort(stringBuffers.begin(), stringBuffers.end());
+  for (const auto& s : stringBuffers) {
+    stringViews.push_back(s);
+  }
+
+  Buffer buffer{*pool_};
+  auto encoded = EncodingFactory::encode<std::string_view>(
+      createSelectionPolicy(), stringViews, buffer);
+  stringBuffers_.clear();
+
+  // Thread-safe string buffer factory for concurrent get() calls.
+  std::mutex factoryMutex;
+  auto threadSafeFactory = [this, &factoryMutex](uint32_t totalLength) {
+    std::lock_guard l(factoryMutex);
+    auto& buf = stringBuffers_.emplace_back(
+        velox::AlignedBuffer::allocate<char>(totalLength, pool_.get()));
+    return buf->asMutable<void>();
+  };
+  auto encoding = EncodingFactory().create(*pool_, encoded, threadSafeFactory);
+
+  const auto deadline = std::chrono::steady_clock::now() + kDuration;
+  std::vector<std::thread> threads;
+  threads.reserve(kNumThreads);
+  for (uint32_t t = 0; t < kNumThreads; ++t) {
+    threads.emplace_back([&, t]() {
+      std::mt19937 rng(42 + t);
+      std::uniform_int_distribution<uint32_t> rowDist(0, kNumValues - 1);
+      while (std::chrono::steady_clock::now() < deadline) {
+        const uint32_t row = rowDist(rng);
+        std::string_view result;
+        encoding->get(row, &result);
+        ASSERT_EQ(result, stringViews[row]) << "row=" << row;
+      }
+    });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+}
+
 } // namespace facebook::nimble::test

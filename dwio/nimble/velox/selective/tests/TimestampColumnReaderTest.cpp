@@ -18,6 +18,7 @@
 
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/common/io/IoStatistics.h"
 #include "velox/dwio/common/TypeUtils.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
@@ -58,6 +59,8 @@ class TimestampColumnReaderTest : public ::testing::Test,
     auto factory =
         dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
     dwio::common::ReaderOptions options(pool());
+    options.setDataIoStats(dataIoStats_);
+    options.setMetadataIoStats(metadataIoStats_);
     options.setScanSpec(scanSpec);
     Readers readers;
     readers.reader = factory->createReader(
@@ -130,6 +133,11 @@ class TimestampColumnReaderTest : public ::testing::Test,
     ASSERT_EQ(numScanned, input.size());
     ASSERT_EQ(0, rowReader.next(1, result));
   }
+
+  const std::shared_ptr<io::IoStatistics> dataIoStats_{
+      std::make_shared<io::IoStatistics>()};
+  const std::shared_ptr<io::IoStatistics> metadataIoStats_{
+      std::make_shared<io::IoStatistics>()};
 };
 
 // Write and read timestamps with no filter.

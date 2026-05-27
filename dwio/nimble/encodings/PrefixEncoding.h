@@ -17,14 +17,14 @@
 
 #include <span>
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingIdentifier.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "velox/common/memory/Memory.h"
 
 /// PrefixEncoding stores sorted string data with prefix compression. Common
@@ -36,7 +36,7 @@
 /// - Periodically store full restart points for seek operations
 ///
 /// Binary layout:
-/// - Encoding::kPrefixSize bytes: standard Encoding prefix
+/// - EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 /// - 4 bytes: restart interval (number of entries between restart points)
 /// - ZZ bytes: restart offsets array (uint32_t array of byte offsets,
 ///   size = ceil(rowCount / restartInterval))
@@ -72,6 +72,9 @@ class PrefixEncoding final
   static constexpr std::string_view kRestartIntervalConfigKey =
       "prefix-encoding.restart-interval";
 
+  /// Constructs a PrefixEncoding with string buffer factory support.
+  /// Pre-materializes all string data into a factory-allocated buffer,
+  /// ensuring string data outlives the encoding instance.
   PrefixEncoding(
       velox::memory::MemoryPool& pool,
       std::string_view data,
@@ -90,6 +93,8 @@ class PrefixEncoding final
   /// @param rowCount Number of rows to materialize.
   /// @param buffer Output buffer for std::string_view values.
   void materialize(uint32_t rowCount, void* buffer) final;
+
+  void get(uint32_t row, void* value) final;
 
   /// Seeks to the position at or after the given value.
   ///
@@ -144,6 +149,12 @@ class PrefixEncoding final
   // as decodedValue_ buffer is overwritten.
   std::string_view decodeEntry();
 
+  // Stateless variant of decodeEntry() for use in seek(). Operates on local
+  // state passed by reference instead of member variables, enabling concurrent
+  // seek() calls without locks.
+  static std::string_view
+  decodeEntryAt(const char*& pos, uint32_t& row, std::string& decoded);
+
   // Calls decodeEntry() then copies the decoded value into a string page
   // allocated via stringBufferFactory_. Returns a stable string_view.
   // Used by materialize() and readWithVisitor().
@@ -152,8 +163,13 @@ class PrefixEncoding final
   // Seeks to the restart point at the given index.
   void seekToRestartPoint(uint32_t restartIndex);
 
-  // Gets the offset for the restart point at the given index.
+  // Gets the byte offset for the restart point at the given index.
   uint32_t restartOffset(uint32_t restartIndex) const;
+
+  // Returns the data pointer for the restart point at the given index.
+  const char* restartPosition(uint32_t restartIndex) const {
+    return dataStart_ + restartOffset(restartIndex);
+  }
 
   // Allocates a new string page of at least minSize bytes via
   // stringBufferFactory_.

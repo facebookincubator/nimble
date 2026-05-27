@@ -17,7 +17,7 @@
 
 #include "dwio/nimble/common/MetricsLogger.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
@@ -201,10 +201,10 @@ struct VeloxWriterOptions {
 
   const velox::common::SpillConfig* spillConfig{nullptr};
 
-  // If provided, internal writing/encoding operations will happen in parallel
-  // using the specified executors.
+  // If provided, internal encoding operations will happen in parallel using
+  // the specified executor.
   //
-  // The KeepAlive wrappers ensures that the executor object will be kept alive
+  // The KeepAlive wrapper ensures that the executor object will be kept alive
   // (allocated), and that the pool will be open for receiving new tasks. A
   // shared_ptr would only guarantee that the object is still allocated, but not
   // necessarily open for new task (e.g. it could have been .join()'ed through a
@@ -215,13 +215,15 @@ struct VeloxWriterOptions {
   // As a result, if a KeepAlive is still being held, clients trying to destruct
   // the last reference of a shared_ptr to that executor will block until all
   // KeepAlive references are destructed.
-  //
-  // - encodingExecutor: execute stream encoding operations in parallel.
-  // - writeExecutor: execute FieldWriter::write() operations in parallel.
   folly::Executor::KeepAlive<> encodingExecutor;
-  folly::Executor::KeepAlive<> writeExecutor;
 
-  bool enableChunking{false};
+  // When maxEncodeParallelism > 0 and encodingExecutor is set,
+  // FieldWriter::write() operations will be parallelized using coroutines
+  // scheduled on encodingExecutor.
+  uint32_t maxEncodeParallelism{0};
+  uint32_t minStreamsPerEncodeUnit{1};
+
+  bool enableChunking{true};
 
   // This callback will be visited on access to getDecodedVector in order to
   // monitor usage of decoded vectors vs. data that is passed-through in the

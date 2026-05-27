@@ -15,7 +15,7 @@
  */
 
 #include <gtest/gtest.h>
-#include "dwio/nimble/encodings/EncodingSelection.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 
 using namespace facebook::nimble;
 

@@ -28,9 +28,9 @@
 
 #include "common/init/light.h"
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "folly/Benchmark.h"
 #include "folly/Random.h"
 #include "velox/common/memory/Memory.h"

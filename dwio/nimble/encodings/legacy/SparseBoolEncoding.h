@@ -18,10 +18,10 @@
 #include <span>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/FixedBitArray.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingIdentifier.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/legacy/Encoding.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "velox/common/memory/Memory.h"
 
 // Represents bools sparsely. Useful when only a small fraction  are set (or not
@@ -41,7 +41,7 @@
 namespace facebook::nimble::legacy {
 
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 1 byte: whether the sparse bits are set or unset
 // XX bytes: indices encoding bytes
 class SparseBoolEncoding final : public TypedEncoding<bool, bool> {
@@ -49,8 +49,8 @@ class SparseBoolEncoding final : public TypedEncoding<bool, bool> {
   using cppDataType = bool;
 
   static constexpr int kPrefixSize = 1;
-  static constexpr int kSparseValueOffset = Encoding::kPrefixSize;
-  static constexpr int kIndicesOffset = Encoding::kPrefixSize + 1;
+  static constexpr int kSparseValueOffset = EncodingPrefix::kFixedPrefixSize;
+  static constexpr int kIndicesOffset = EncodingPrefix::kFixedPrefixSize + 1;
 
   SparseBoolEncoding(
       velox::memory::MemoryPool& memoryPool,

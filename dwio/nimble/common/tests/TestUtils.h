@@ -15,8 +15,11 @@
  */
 #pragma once
 
+#include <chrono>
 #include <cstdint>
+#include <mutex>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 
 #include "dwio/nimble/common/Buffer.h"
@@ -309,10 +312,19 @@ class InMemoryTrackableReadFile final : public velox::ReadFile {
   }
 
   uint64_t preadv(
-      uint64_t /* offset */,
-      const std::vector<folly::Range<char*>>& /* buffers */,
-      const velox::FileIoContext& context = {}) const final {
-    NIMBLE_UNSUPPORTED("Not used by Nimble");
+      uint64_t offset,
+      const std::vector<folly::Range<char*>>& buffers,
+      const velox::FileIoContext& /*context*/ = {}) const final {
+    uint64_t totalRead = 0;
+    for (const auto& range : buffers) {
+      if (range.data() != nullptr) {
+        file_.pread(offset, range.size(), range.data());
+      }
+      chunks_.wlock()->push_back({offset, range.size()});
+      offset += range.size();
+      totalRead += range.size();
+    }
+    return totalRead;
   }
 
   uint64_t preadv(
@@ -394,12 +406,28 @@ class TrackingReadFile : public velox::ReadFile {
   explicit TrackingReadFile(std::shared_ptr<velox::ReadFile> delegate)
       : delegate_(std::move(delegate)) {}
 
+  void setReadDelayUs(uint64_t delayUs) {
+    readDelayUs_ = delayUs;
+  }
+
+  void setReadError(std::exception_ptr error) {
+    std::lock_guard<std::mutex> l(mu_);
+    readError_ = std::move(error);
+  }
+
+  void clearReadError() {
+    std::lock_guard<std::mutex> l(mu_);
+    readError_ = nullptr;
+  }
+
   std::string_view pread(
       uint64_t offset,
       uint64_t length,
       void* buf,
       const velox::FileIoContext& context = {}) const override {
     updateMaxReadOffset(offset + length);
+    maybeThrow();
+    maybeDelay();
     return delegate_->pread(offset, length, buf, context);
   }
 
@@ -408,6 +436,8 @@ class TrackingReadFile : public velox::ReadFile {
       uint64_t length,
       const velox::FileIoContext& context = {}) const override {
     updateMaxReadOffset(offset + length);
+    maybeThrow();
+    maybeDelay();
     return delegate_->pread(offset, length, context);
   }
 
@@ -420,6 +450,9 @@ class TrackingReadFile : public velox::ReadFile {
       totalLength += buffer.size();
     }
     updateMaxReadOffset(offset + totalLength);
+    ioGroups_.wlock()->push_back({offset, totalLength});
+    maybeThrow();
+    maybeDelay();
     return delegate_->preadv(offset, buffers, context);
   }
 
@@ -430,6 +463,8 @@ class TrackingReadFile : public velox::ReadFile {
     for (const auto& region : regions) {
       updateMaxReadOffset(region.offset + region.length);
     }
+    maybeThrow();
+    maybeDelay();
     return delegate_->preadv(regions, iobufs, context);
   }
 
@@ -462,6 +497,23 @@ class TrackingReadFile : public velox::ReadFile {
     maxReadOffset_.store(0, std::memory_order_relaxed);
   }
 
+  struct IoGroup {
+    uint64_t offset;
+    uint64_t size;
+
+    std::string debugString() const {
+      return fmt::format("[offset={}, size={}]", offset, size);
+    }
+  };
+
+  std::vector<IoGroup> ioGroups() const {
+    return *ioGroups_.rlock();
+  }
+
+  void resetIoGroups() {
+    ioGroups_.wlock()->clear();
+  }
+
  private:
   void updateMaxReadOffset(uint64_t endOffset) const {
     auto current = maxReadOffset_.load(std::memory_order_relaxed);
@@ -471,8 +523,26 @@ class TrackingReadFile : public velox::ReadFile {
     }
   }
 
+  void maybeThrow() const {
+    std::lock_guard<std::mutex> l(mu_);
+    if (readError_ != nullptr) {
+      std::rethrow_exception(readError_);
+    }
+  }
+
+  void maybeDelay() const {
+    const auto delayUs = readDelayUs_.load(std::memory_order_relaxed);
+    if (delayUs > 0) {
+      std::this_thread::sleep_for(std::chrono::microseconds(delayUs));
+    }
+  }
+
   const std::shared_ptr<velox::ReadFile> delegate_;
   mutable std::atomic_uint64_t maxReadOffset_{0};
+  mutable folly::Synchronized<std::vector<IoGroup>> ioGroups_;
+  std::atomic_uint64_t readDelayUs_{0};
+  mutable std::mutex mu_;
+  std::exception_ptr readError_;
 };
 
 } // namespace facebook::nimble::testing

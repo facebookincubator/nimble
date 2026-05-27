@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
 #include "dwio/nimble/encodings/legacy/DictionaryEncoding.h"
@@ -26,7 +25,7 @@
 #include "dwio/nimble/encodings/legacy/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/legacy/TrivialEncoding.h"
 #include "dwio/nimble/encodings/legacy/VarintEncoding.h"
-#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 
 // Import necessary types from parent namespace
 using ::facebook::nimble::isNumericType;
@@ -240,9 +239,6 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     }
     case EncodingType::Delta: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(DeltaEncoding, dataType);
-    }
-    case EncodingType::SubIntSplit: {
-      RETURN_ENCODING_BY_VARINT_TYPE(SubIntSplitEncoding, dataType);
     }
     case EncodingType::Prefix: {
       NIMBLE_CHECK_EQ(

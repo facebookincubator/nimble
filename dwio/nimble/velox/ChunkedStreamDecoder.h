@@ -16,7 +16,7 @@
 #pragma once
 
 #include "dwio/nimble/common/MetricsLogger.h"
-#include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/Decoder.h"
 

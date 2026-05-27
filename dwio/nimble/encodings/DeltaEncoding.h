@@ -21,14 +21,16 @@
 #include <folly/Likely.h>
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingIdentifier.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
+#include "velox/buffer/Buffer.h"
+#include "velox/common/base/BitUtil.h"
 
 // Stores integer data in a delta encoding. We use three child encodings:
 // one for whether each row is a delta from the last or a restatement,
@@ -51,7 +53,7 @@
 namespace facebook::nimble {
 
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 4 bytes: restatement relative offset (X)
 // 4 bytes: is-restatement relative offset (Y)
 // X bytes: delta encoding bytes
@@ -65,7 +67,7 @@ class DeltaEncoding final
   using physicalType = typename TypeTraits<T>::physicalType;
 
   DeltaEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});
@@ -86,6 +88,18 @@ class DeltaEncoding final
       const Encoding::Options& options = {});
 
  private:
+  // Ensures isRestatementsBitmap_ has capacity for rowCount bits and
+  // returns a mutable pointer to the underlying uint64_t words.
+  uint64_t* ensureRestatementsBitmap(uint32_t rowCount) {
+    const auto bitmapBytes = velox::bits::nwords(rowCount) * sizeof(uint64_t);
+    if (isRestatementsBitmap_ == nullptr ||
+        isRestatementsBitmap_->capacity() < bitmapBytes) {
+      isRestatementsBitmap_ =
+          velox::AlignedBuffer::allocate<char>(bitmapBytes, this->pool_);
+    }
+    return isRestatementsBitmap_->asMutable<uint64_t>();
+  }
+
   physicalType currentValue_;
   std::unique_ptr<Encoding> deltas_;
   std::unique_ptr<Encoding> restatements_;
@@ -93,7 +107,7 @@ class DeltaEncoding final
   // Temporary bufs.
   Vector<physicalType> deltasBuffer_;
   Vector<physicalType> restatementsBuffer_;
-  Vector<bool> isRestatementsBuffer_;
+  velox::BufferPtr isRestatementsBitmap_;
 };
 
 //
@@ -102,26 +116,25 @@ class DeltaEncoding final
 
 template <typename T>
 DeltaEncoding<T>::DeltaEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> stringBufferFactory,
     const Encoding::Options& options)
-    : TypedEncoding<T, physicalType>(memoryPool, data, options),
-      deltasBuffer_(&memoryPool),
-      restatementsBuffer_(&memoryPool),
-      isRestatementsBuffer_(&memoryPool) {
+    : TypedEncoding<T, physicalType>(pool, data, options),
+      deltasBuffer_(&pool),
+      restatementsBuffer_(&pool) {
   const EncodingFactory factory{options};
   auto pos = data.data() + this->dataOffset();
   const uint32_t restatementsOffset = encoding::readUint32(pos);
   const uint32_t isRestatementsOffset = encoding::readUint32(pos);
-  deltas_ = factory.create(
-      memoryPool, {pos, restatementsOffset}, stringBufferFactory);
+  deltas_ =
+      factory.create(pool, {pos, restatementsOffset}, stringBufferFactory);
   pos += restatementsOffset;
-  restatements_ = factory.create(
-      memoryPool, {pos, isRestatementsOffset}, stringBufferFactory);
+  restatements_ =
+      factory.create(pool, {pos, isRestatementsOffset}, stringBufferFactory);
   pos += isRestatementsOffset;
   isRestatements_ = factory.create(
-      memoryPool,
+      pool,
       {pos, static_cast<size_t>(data.end() - pos)},
       std::move(stringBufferFactory));
 }
@@ -138,28 +151,22 @@ void DeltaEncoding<T>::skip(uint32_t rowCount) {
   if (rowCount == 0) {
     return;
   }
-  isRestatementsBuffer_.resize(rowCount);
-  isRestatements_->materialize(rowCount, isRestatementsBuffer_.data());
 
-  // Single reverse scan: find the last restatement position and count
-  // total restatements in one pass from the end.
-  const bool* isRestData = isRestatementsBuffer_.data();
+  auto* bitmap = ensureRestatementsBitmap(rowCount);
+  isRestatements_->materializeBoolsAsBits(rowCount, bitmap, 0);
+
+  const uint32_t totalRestatements =
+      velox::bits::countBits(bitmap, 0, rowCount);
+
+  // Find the last restatement position using reverse bit scan.
   int64_t lastRestatement = -1;
-  uint32_t totalRestatements = 0;
-  for (int64_t i = static_cast<int64_t>(rowCount) - 1; i >= 0; --i) {
-    if (isRestData[i]) {
-      if (lastRestatement < 0) {
-        lastRestatement = i;
-      }
-      ++totalRestatements;
-    }
+  if (totalRestatements > 0) {
+    lastRestatement = velox::bits::findLastBit(bitmap, 0, rowCount);
   }
 
   if (lastRestatement >= 0) {
     restatements_->skip(totalRestatements - 1);
     restatements_->materialize(1, &currentValue_);
-    // Count deltas before the last restatement = positions before it minus
-    // restatements before it. Restatements before it = total - 1.
     const uint32_t deltasToSkip =
         static_cast<uint32_t>(lastRestatement) - (totalRestatements - 1);
     deltas_->skip(deltasToSkip);
@@ -174,24 +181,51 @@ void DeltaEncoding<T>::skip(uint32_t rowCount) {
 
 template <typename T>
 void DeltaEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
-  isRestatementsBuffer_.resize(rowCount);
-  isRestatements_->materialize(rowCount, isRestatementsBuffer_.data());
-  const uint32_t numRestatements = std::accumulate(
-      isRestatementsBuffer_.begin(), isRestatementsBuffer_.end(), 0UL);
+  // Decode isRestatements as bit-packed bitmap and count via popcount.
+  auto* bitmap = ensureRestatementsBitmap(rowCount);
+  isRestatements_->materializeBoolsAsBits(rowCount, bitmap, 0);
+
+  const uint32_t numRestatements = velox::bits::countBits(bitmap, 0, rowCount);
+
   restatementsBuffer_.reserve(numRestatements);
   restatements_->materialize(numRestatements, restatementsBuffer_.data());
   deltasBuffer_.reserve(rowCount - numRestatements);
   deltas_->materialize(rowCount - numRestatements, deltasBuffer_.data());
-  physicalType* castValue = static_cast<physicalType*>(buffer);
-  physicalType* nextRestatement = restatementsBuffer_.begin();
-  physicalType* nextDelta = deltasBuffer_.begin();
-  for (uint32_t i = 0; i < rowCount; ++i) {
-    if (FOLLY_LIKELY(!isRestatementsBuffer_[i])) {
-      currentValue_ += *nextDelta++;
+
+  auto* output = static_cast<physicalType*>(buffer);
+  const auto* nextRestatement = restatementsBuffer_.data();
+  const auto* nextDelta = deltasBuffer_.data();
+
+  // Process the restatement bitmap 16 bits at a time. For all-delta
+  // chunks (the common case in sorted data), runs a tight branchless
+  // prefix-sum loop without per-element bit extraction or branching.
+  // 16-bit chunks balance fast-path hit rate with loop overhead
+  // (benchmarked vs 8/32/64-bit: 16-bit is fastest).
+  uint32_t remaining = rowCount;
+  const auto* bitmapChunks = reinterpret_cast<const uint16_t*>(bitmap);
+  const uint32_t numChunks = velox::bits::divRoundUp(rowCount, 16);
+  for (uint32_t c = 0; c < numChunks; ++c) {
+    const uint16_t chunk = bitmapChunks[c];
+    const uint32_t count = std::min<uint32_t>(16, remaining);
+
+    if (FOLLY_LIKELY(chunk == 0)) {
+      for (uint32_t i = 0; i < count; ++i) {
+        currentValue_ += *nextDelta++;
+        *output++ = currentValue_;
+      }
     } else {
-      currentValue_ = *nextRestatement++;
+      uint16_t restatementBits = chunk;
+      for (uint32_t i = 0; i < count; ++i) {
+        if (FOLLY_LIKELY(!(restatementBits & 1))) {
+          currentValue_ += *nextDelta++;
+        } else {
+          currentValue_ = *nextRestatement++;
+        }
+        *output++ = currentValue_;
+        restatementBits >>= 1;
+      }
     }
-    *castValue++ = currentValue_;
+    remaining -= count;
   }
 }
 

@@ -16,8 +16,74 @@
 #include "dwio/nimble/index/IndexLookup.h"
 
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/tablet/MetadataInput.h"
+#include "velox/common/caching/FileHandle.h"
+#include "velox/common/io/Options.h"
+#include "velox/dwio/common/CachedBufferedInput.h"
+#include "velox/dwio/common/DirectBufferedInput.h"
 
 namespace facebook::nimble::index {
+
+void IndexLookup::Options::validate() const {
+  NIMBLE_CHECK_NOT_NULL(file.get());
+  NIMBLE_CHECK_NOT_NULL(ioOptions);
+  NIMBLE_CHECK_NOT_NULL(ioOptions->indexIoStats(), "indexIoStats must be set");
+  NIMBLE_CHECK_EQ(
+      fileHandle != nullptr,
+      cache != nullptr,
+      "fileHandle and cache must both be set or neither");
+  if (fileHandle != nullptr) {
+    NIMBLE_CHECK_EQ(
+        static_cast<const void*>(file.get()),
+        static_cast<const void*>(fileHandle->file.get()),
+        "file and fileHandle->file must point to the same file");
+  }
+  NIMBLE_USER_CHECK(
+      !preloadIndex || pinIndex,
+      "preloadIndex requires pinIndex=true to retain preloaded chunks");
+}
+
+std::shared_ptr<MetadataInput> createIndexMetadataInput(
+    const IndexLookup::Options& options) {
+  MetadataInput::Options metadataOptions{
+      .pool = &options.ioOptions->memoryPool(),
+      .ioStats = options.ioOptions->indexIoStats(),
+      .maxCoalesceDistance = options.ioOptions->maxCoalesceDistance(),
+      .maxCoalesceBytes = options.ioOptions->maxCoalesceBytes(),
+      .executor = options.ioOptions->ioExecutor().get(),
+      .fileHandle = options.fileHandle,
+      .cache = options.cache};
+  return MetadataInput::create(options.file.get(), metadataOptions);
+}
+
+std::shared_ptr<velox::dwio::common::BufferedInput> createIndexDataInput(
+    const IndexLookup::Options& options) {
+  auto readFile = options.file;
+  auto indexIoStats = options.ioOptions->indexIoStats();
+  if (options.cache != nullptr) {
+    return std::make_shared<velox::dwio::common::CachedBufferedInput>(
+        std::move(readFile),
+        velox::dwio::common::MetricsLog::voidLog(),
+        options.fileHandle->uuid,
+        options.cache,
+        nullptr,
+        velox::StringIdLease(),
+        std::move(indexIoStats),
+        nullptr,
+        nullptr,
+        *options.ioOptions);
+  }
+  return std::make_shared<velox::dwio::common::DirectBufferedInput>(
+      std::move(readFile),
+      velox::dwio::common::MetricsLog::voidLog(),
+      velox::StringIdLease(),
+      nullptr,
+      velox::StringIdLease(),
+      std::move(indexIoStats),
+      nullptr,
+      nullptr,
+      *options.ioOptions);
+}
 
 std::string toString(IndexType indexType) {
   switch (indexType) {

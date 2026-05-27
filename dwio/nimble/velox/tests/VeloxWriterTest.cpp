@@ -13,24 +13,28 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <folly/executors/CPUThreadPoolExecutor.h>
 #include <folly/system/HardwareConcurrency.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <set>
+
+#include "velox/common/testutil/TestValue.h"
 
 #include <utility>
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingLayout.h"
-#include "dwio/nimble/encodings/EncodingUtils.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingLayout.h"
+#include "dwio/nimble/encodings/common/EncodingUtils.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
+#include "dwio/nimble/tablet/tests/TabletTestUtils.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/FlushPolicy.h"
@@ -56,6 +60,8 @@ DEFINE_uint32(
     0,
     "If provided, this seed will be used when executing tests. "
     "Otherwise, a random seed will be used.");
+
+using nimble::test::makeTestTabletOptions;
 
 class VeloxWriterTest : public ::testing::Test {
  protected:
@@ -446,7 +452,8 @@ TEST_F(VeloxWriterTest, featureReorderingStreamCollocation) {
     }
 
     auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
-    auto tablet = nimble::TabletReader::create(readFile, leafPool_.get(), {});
+    auto tablet = nimble::TabletReader::create(
+        readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
     ASSERT_GE(tablet->stripeCount(), 1);
     if (enableIndex) {
       ASSERT_NE(tablet->clusterIndex(), nullptr) << "Cluster index must exist";
@@ -949,7 +956,8 @@ TEST_F(VeloxWriterTest, encodingLayout) {
     auto readFile =
         std::make_shared<nimble::testing::InMemoryTrackableReadFile>(
             file, useChainedBuffers);
-    auto tablet = nimble::TabletReader::create(readFile, leafPool_.get(), {});
+    auto tablet = nimble::TabletReader::create(
+        readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
     auto section =
         tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
     NIMBLE_CHECK(section.has_value(), "Schema not found.");
@@ -1470,8 +1478,8 @@ void testChunks(
   folly::writeFile(file, "/tmp/afile");
 
   auto tabletReadFile = std::make_shared<velox::InMemoryReadFile>(file);
-  auto tablet =
-      nimble::TabletReader::create(tabletReadFile, leafPool.get(), {});
+  auto tablet = nimble::TabletReader::create(
+      tabletReadFile, leafPool.get(), makeTestTabletOptions(leafPool.get()));
   verifier(*tablet);
 
   nimble::VeloxReader reader(
@@ -2352,7 +2360,8 @@ TEST_F(VeloxWriterTest, rawSizeWritten) {
     writer.close();
 
     auto statsReadFile = std::make_shared<velox::InMemoryReadFile>(file);
-    nimble::TabletReader::Options readerOptions;
+    nimble::TabletReader::Options readerOptions =
+        makeTestTabletOptions(leafPool_.get());
     readerOptions.preloadOptionalSections = {
         std::string(facebook::nimble::kStatsSection)};
     auto tablet = facebook::nimble::TabletReader::create(
@@ -2380,7 +2389,8 @@ TEST_F(VeloxWriterTest, rawSizeWritten) {
     writer.close();
 
     auto vecStatsReadFile = std::make_shared<velox::InMemoryReadFile>(file);
-    nimble::TabletReader::Options readerOptions;
+    nimble::TabletReader::Options readerOptions =
+        makeTestTabletOptions(leafPool_.get());
     readerOptions.preloadOptionalSections = {
         std::string(facebook::nimble::kVectorizedStatsSection)};
     auto tablet = facebook::nimble::TabletReader::create(
@@ -2513,72 +2523,74 @@ TEST_F(VeloxWriterTest, fuzzComplex) {
                                                     : folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng{seed};
-  for (auto parallelismFactor : {0U, 1U, folly::available_concurrency()}) {
-    std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
-    nimble::VeloxWriterOptions writerOptions;
-    writerOptions.enableChunking = true;
-    writerOptions.disableSharedStringBuffers = true;
-    writerOptions.flushPolicyFactory =
-        []() -> std::unique_ptr<nimble::FlushPolicy> {
-      return std::make_unique<nimble::ChunkFlushPolicy>(
-          nimble::ChunkFlushPolicyConfig{
-              .writerMemoryHighThresholdBytes = 200 << 10,
-              .writerMemoryLowThresholdBytes = 100 << 10,
-              .targetStripeSizeBytes = 100 << 10,
-              .estimatedCompressionFactor = 1.7,
-          });
-    };
+  for (bool disableSharedStringBuffers : {true, false}) {
+    LOG(INFO) << "disableSharedStringBuffers: " << disableSharedStringBuffers;
+    for (auto parallelismFactor : {0U, 1U, folly::available_concurrency()}) {
+      std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
+      nimble::VeloxWriterOptions writerOptions;
+      writerOptions.enableChunking = true;
+      writerOptions.disableSharedStringBuffers = disableSharedStringBuffers;
+      writerOptions.flushPolicyFactory =
+          []() -> std::unique_ptr<nimble::FlushPolicy> {
+        return std::make_unique<nimble::ChunkFlushPolicy>(
+            nimble::ChunkFlushPolicyConfig{
+                .writerMemoryHighThresholdBytes = 200 << 10,
+                .writerMemoryLowThresholdBytes = 100 << 10,
+                .targetStripeSizeBytes = 100 << 10,
+                .estimatedCompressionFactor = 1.7,
+            });
+      };
 
-    LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
-    writerOptions.dictionaryArrayColumns.insert("nested_map_array1");
-    writerOptions.dictionaryArrayColumns.insert("nested_map_array2");
-    writerOptions.dictionaryArrayColumns.insert("dict_array");
-    writerOptions.deduplicatedMapColumns.insert("dict_map");
+      LOG(INFO) << "Parallelism Factor: " << parallelismFactor;
+      writerOptions.dictionaryArrayColumns.insert("nested_map_array1");
+      writerOptions.dictionaryArrayColumns.insert("nested_map_array2");
+      writerOptions.dictionaryArrayColumns.insert("dict_array");
+      writerOptions.deduplicatedMapColumns.insert("dict_map");
 
-    if (parallelismFactor > 0) {
-      executor =
-          std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
-      writerOptions.encodingExecutor = folly::getKeepAliveToken(*executor);
-      writerOptions.writeExecutor = folly::getKeepAliveToken(*executor);
-    }
-
-    const auto iterations = 20;
-    // provide sufficient buffer between min and max chunk size thresholds
-    constexpr uint64_t chunkThresholdBuffer =
-        sizeof(std::string_view) + sizeof(bool);
-    for (auto i = 0; i < iterations; ++i) {
-      writerOptions.minStreamChunkRawSize =
-          std::uniform_int_distribution<uint64_t>(10, 4096)(rng);
-      writerOptions.maxStreamChunkRawSize =
-          std::uniform_int_distribution<uint64_t>(
-              writerOptions.minStreamChunkRawSize + chunkThresholdBuffer,
-              8192)(rng);
-      const auto batchSize =
-          std::uniform_int_distribution<uint32_t>(10, 400)(rng);
-      const auto batchCount = 5;
-
-      std::string file;
-      auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-      nimble::VeloxWriter writer(
-          type, std::move(writeFile), *leafPool_.get(), writerOptions);
-      const auto batches = generateBatches(
-          type,
-          /*batchCount=*/batchCount,
-          /*size=*/batchSize,
-          /*seed=*/seed,
-          *leafPool_);
-
-      for (const auto& batch : batches) {
-        writer.write(batch);
+      if (parallelismFactor > 0) {
+        executor =
+            std::make_shared<folly::CPUThreadPoolExecutor>(parallelismFactor);
+        writerOptions.encodingExecutor = folly::getKeepAliveToken(*executor);
       }
-      writer.close();
 
-      velox::InMemoryReadFile readFile(file);
-      nimble::VeloxReader reader(&readFile, *leafPool_);
-      validateChunkSize(
-          reader,
-          writerOptions.minStreamChunkRawSize,
-          writerOptions.maxStreamChunkRawSize);
+      const auto iterations = 20;
+      // provide sufficient buffer between min and max chunk size thresholds
+      constexpr uint64_t chunkThresholdBuffer =
+          sizeof(std::string_view) + sizeof(bool);
+      for (auto i = 0; i < iterations; ++i) {
+        writerOptions.minStreamChunkRawSize =
+            std::uniform_int_distribution<uint64_t>(10, 4096)(rng);
+        writerOptions.maxStreamChunkRawSize =
+            std::uniform_int_distribution<uint64_t>(
+                writerOptions.minStreamChunkRawSize + chunkThresholdBuffer,
+                8192)(rng);
+        const auto batchSize =
+            std::uniform_int_distribution<uint32_t>(10, 400)(rng);
+        const auto batchCount = 5;
+
+        std::string file;
+        auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+        nimble::VeloxWriter writer(
+            type, std::move(writeFile), *leafPool_.get(), writerOptions);
+        const auto batches = generateBatches(
+            type,
+            /*batchCount=*/batchCount,
+            /*size=*/batchSize,
+            /*seed=*/seed,
+            *leafPool_);
+
+        for (const auto& batch : batches) {
+          writer.write(batch);
+        }
+        writer.close();
+
+        velox::InMemoryReadFile readFile(file);
+        nimble::VeloxReader reader(&readFile, *leafPool_);
+        validateChunkSize(
+            reader,
+            writerOptions.minStreamChunkRawSize,
+            writerOptions.maxStreamChunkRawSize);
+      }
     }
   }
 }
@@ -2596,83 +2608,93 @@ TEST_F(VeloxWriterTest, batchedChunkingRelievesMemoryPressure) {
   const auto stringColumn = fuzzer.fuzzFlat(velox::VARCHAR());
   const auto intColumn = fuzzer.fuzzFlat(velox::INTEGER());
 
-  nimble::RawSizeContext context;
-  nimble::OrderedRanges ranges;
-  ranges.add(0, rowCount);
-  const uint64_t stringColumnRawSize =
-      nimble::getRawSizeFromVector(stringColumn, ranges, context) +
-      sizeof(uint64_t) * rowCount;
-  const uint64_t intColumnRawSize =
-      nimble::getRawSizeFromVector(intColumn, ranges, context);
+  for (bool disableSharedStringBuffers : {true, false}) {
+    LOG(INFO) << "disableSharedStringBuffers: " << disableSharedStringBuffers;
+    nimble::RawSizeContext context;
+    nimble::OrderedRanges ranges;
+    ranges.add(0, rowCount);
+    // When shared string buffers are disabled, each row contributes the size
+    // of a uint64_t offset; otherwise it contributes the size of a
+    // std::string_view.
+    const uint64_t perRowOverhead = disableSharedStringBuffers
+        ? sizeof(uint64_t)
+        : sizeof(std::string_view);
+    const uint64_t stringColumnRawSize =
+        nimble::getRawSizeFromVector(stringColumn, ranges, context) +
+        perRowOverhead * rowCount;
+    const uint64_t intColumnRawSize =
+        nimble::getRawSizeFromVector(intColumn, ranges, context);
 
-  constexpr size_t kColumnCount = 20;
-  constexpr size_t kBatchSize = 4;
-  std::vector<velox::VectorPtr> children(kColumnCount);
-  std::vector<std::string> columnNames(kColumnCount);
-  uint64_t totalRawSize = 0;
-  for (size_t i = 0; i < kColumnCount; i += 2) {
-    columnNames[i] = fmt::format("string_column_{}", i);
-    columnNames[i + 1] = fmt::format("int_column_{}", i);
-    children[i] = stringColumn;
-    children[i + 1] = intColumn;
-    totalRawSize += intColumnRawSize + stringColumnRawSize;
+    constexpr size_t kColumnCount = 20;
+    constexpr size_t kBatchSize = 4;
+    std::vector<velox::VectorPtr> children(kColumnCount);
+    std::vector<std::string> columnNames(kColumnCount);
+    uint64_t totalRawSize = 0;
+    for (size_t i = 0; i < kColumnCount; i += 2) {
+      columnNames[i] = fmt::format("string_column_{}", i);
+      columnNames[i + 1] = fmt::format("int_column_{}", i);
+      children[i] = stringColumn;
+      children[i + 1] = intColumn;
+      totalRawSize += intColumnRawSize + stringColumnRawSize;
+    }
+
+    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+    const auto rowVector = vectorMaker.rowVector(columnNames, children);
+
+    // Ensure we can chunk the integer streams into multiple chunks
+    const uint64_t minChunkSize = intColumnRawSize / 2;
+    // In the aggresive stage, we chunk large streams in the first batch. We set
+    // the memoryPressureThreshold with the assumption of at least once max
+    // chunk being produced for each stream in that batch.
+    const uint64_t maxChunkSize = stringColumnRawSize / 2;
+    uint64_t memoryPressureThreshold =
+        totalRawSize - (kBatchSize * maxChunkSize);
+
+    std::vector<bool> actualChunkingDecisions;
+    nimble::VeloxWriterOptions writerOptions;
+    writerOptions.chunkedStreamBatchSize = kBatchSize;
+    writerOptions.enableChunking = true;
+    writerOptions.disableSharedStringBuffers = disableSharedStringBuffers;
+    writerOptions.minStreamChunkRawSize = minChunkSize;
+    writerOptions.maxStreamChunkRawSize = maxChunkSize;
+    writerOptions.flushPolicyFactory =
+        [&]() -> std::unique_ptr<nimble::FlushPolicy> {
+      return std::make_unique<nimble::LambdaFlushPolicy>(
+          /* shouldFlush */ [](const auto&) { return true; },
+          /* shouldChunk */
+          [&](const nimble::StripeProgress& stripeProgress) {
+            bool shouldChunk =
+                stripeProgress.stripeRawSize > memoryPressureThreshold;
+            actualChunkingDecisions.push_back(shouldChunk);
+            if (!shouldChunk) {
+              // Force memory pressure after the initial aggressive stage.
+              memoryPressureThreshold = 0;
+              // Force beginning of the non-aggressive chunking stage.
+              shouldChunk = true;
+            }
+            return shouldChunk;
+          });
+    };
+
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriter writer(
+        rowVector->type(), std::move(writeFile), *rootPool_, writerOptions);
+    writer.write(rowVector);
+    writer.close();
+
+    // We expect true and then false for the aggressive stage.
+    EXPECT_GE(actualChunkingDecisions.size(), 2);
+    EXPECT_TRUE(actualChunkingDecisions[0]);
+    EXPECT_FALSE(actualChunkingDecisions[1]);
+
+    velox::InMemoryReadFile readFile(file);
+    nimble::VeloxReader reader(&readFile, *leafPool_);
+    validateChunkSize(
+        reader,
+        writerOptions.minStreamChunkRawSize,
+        writerOptions.maxStreamChunkRawSize);
   }
-
-  velox::test::VectorMaker vectorMaker{leafPool_.get()};
-  const auto rowVector = vectorMaker.rowVector(columnNames, children);
-
-  // Ensure we can chunk the integer streams into multiple chunks
-  const uint64_t minChunkSize = intColumnRawSize / 2;
-  // In the aggresive stage, we chunk large streams in the first batch. We set
-  // the memoryPressureThreshold with the assumption of at least once max
-  // chunk being produced for each stream in that batch.
-  const uint64_t maxChunkSize = stringColumnRawSize / 2;
-  uint64_t memoryPressureThreshold = totalRawSize - (kBatchSize * maxChunkSize);
-
-  std::vector<bool> actualChunkingDecisions;
-  nimble::VeloxWriterOptions writerOptions;
-  writerOptions.chunkedStreamBatchSize = kBatchSize;
-  writerOptions.enableChunking = true;
-  writerOptions.disableSharedStringBuffers = true;
-  writerOptions.minStreamChunkRawSize = minChunkSize;
-  writerOptions.maxStreamChunkRawSize = maxChunkSize;
-  writerOptions.flushPolicyFactory =
-      [&]() -> std::unique_ptr<nimble::FlushPolicy> {
-    return std::make_unique<nimble::LambdaFlushPolicy>(
-        /* shouldFlush */ [](const auto&) { return true; },
-        /* shouldChunk */
-        [&](const nimble::StripeProgress& stripeProgress) {
-          bool shouldChunk =
-              stripeProgress.stripeRawSize > memoryPressureThreshold;
-          actualChunkingDecisions.push_back(shouldChunk);
-          if (!shouldChunk) {
-            // Force memory pressure after the initial aggressive stage.
-            memoryPressureThreshold = 0;
-            // Force beginning of the non-aggressive chunking stage.
-            shouldChunk = true;
-          }
-          return shouldChunk;
-        });
-  };
-
-  std::string file;
-  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-  nimble::VeloxWriter writer(
-      rowVector->type(), std::move(writeFile), *rootPool_, writerOptions);
-  writer.write(rowVector);
-  writer.close();
-
-  // We expect true and then false for the aggressive stage.
-  EXPECT_GE(actualChunkingDecisions.size(), 2);
-  EXPECT_TRUE(actualChunkingDecisions[0]);
-  EXPECT_FALSE(actualChunkingDecisions[1]);
-
-  velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(&readFile, *leafPool_);
-  validateChunkSize(
-      reader,
-      writerOptions.minStreamChunkRawSize,
-      writerOptions.maxStreamChunkRawSize);
 }
 
 TEST_F(VeloxWriterTest, ignoreTopLevelNulls) {
@@ -3625,29 +3647,29 @@ TEST_P(VeloxWriterIndexTest, singleGroup) {
   writer.close();
 
   // Read and verify
-  velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(&readFile, *leafPool_);
-
-  const auto& tablet = reader.tabletReader();
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tabletOptions = makeTestTabletOptions(leafPool_.get());
+  auto tablet =
+      nimble::TabletReader::create(readFile, leafPool_.get(), tabletOptions);
 
   // Verify each batch triggered exactly one stripe
-  EXPECT_EQ(tablet.stripeCount(), kNumBatches)
+  EXPECT_EQ(tablet->stripeCount(), kNumBatches)
       << "Each batch should trigger exactly one stripe";
 
   // Verify all stripes are in the same stripe group (index 0)
   // Default metadataFlushThreshold is large, so all stripes stay in one group
-  for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
-    auto stripeId = tablet.stripeIdentifier(i);
+  for (uint32_t i = 0; i < tablet->stripeCount(); ++i) {
+    auto stripeId = tablet->stripeIdentifier(i);
     EXPECT_EQ(stripeId.stripeGroup()->index(), 0)
         << "Stripe " << i << " should be in stripe group 0";
   }
 
   // Verify index section exists
   EXPECT_TRUE(
-      tablet.hasOptionalSection(std::string(nimble::kClusterIndexSection)));
+      tablet->hasOptionalSection(std::string(nimble::kClusterIndexSection)));
 
   // Verify index is available
-  const auto* index = tablet.clusterIndex();
+  const auto* index = tablet->clusterIndex();
   ASSERT_NE(index, nullptr);
 
   // Verify index columns
@@ -3690,10 +3712,10 @@ TEST_P(VeloxWriterIndexTest, singleGroup) {
   verifyFileData(file, type, batches, kBatchSize);
 
   // Verify position index chunk row counts
-  verifyPositionIndex(tablet);
+  verifyPositionIndex(*tablet);
 
   // Verify value index maps each key to correct row position
-  verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
+  verifyValueIndex(*tablet, readFile.get(), type, batches, {"key_col"});
 }
 
 TEST_P(VeloxWriterIndexTest, multipleGroups) {
@@ -3729,30 +3751,30 @@ TEST_P(VeloxWriterIndexTest, multipleGroups) {
   writer.close();
 
   // Read and verify
-  velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(&readFile, *leafPool_);
-
-  const auto& tablet = reader.tabletReader();
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tabletOptions = makeTestTabletOptions(leafPool_.get());
+  auto tablet =
+      nimble::TabletReader::create(readFile, leafPool_.get(), tabletOptions);
 
   // Verify each batch triggered exactly one stripe
-  EXPECT_EQ(tablet.stripeCount(), kNumBatches)
+  EXPECT_EQ(tablet->stripeCount(), kNumBatches)
       << "Each batch should trigger exactly one stripe";
 
   // Note: Without controlling metadataFlushThreshold from VeloxWriterOptions,
   // all stripes end up in the same group (default threshold is 8MB).
   // This test verifies the default behavior where all stripes share group 0.
-  for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
-    auto stripeId = tablet.stripeIdentifier(i);
+  for (uint32_t i = 0; i < tablet->stripeCount(); ++i) {
+    auto stripeId = tablet->stripeIdentifier(i);
     EXPECT_EQ(stripeId.stripeGroup()->index(), 0)
         << "Stripe " << i << " should be in stripe group 0";
   }
 
   // Verify index section exists
   EXPECT_TRUE(
-      tablet.hasOptionalSection(std::string(nimble::kClusterIndexSection)));
+      tablet->hasOptionalSection(std::string(nimble::kClusterIndexSection)));
 
   // Verify index is available
-  const auto* index = tablet.clusterIndex();
+  const auto* index = tablet->clusterIndex();
   ASSERT_NE(index, nullptr);
 
   // Verify index columns
@@ -3787,8 +3809,8 @@ TEST_P(VeloxWriterIndexTest, multipleGroups) {
   EXPECT_GT(lastRanges[0].endRow, 0);
 
   // Verify stripeIdentifier returns index group
-  for (uint32_t i = 0; i < tablet.stripeCount(); ++i) {
-    auto stripeId = tablet.stripeIdentifier(i);
+  for (uint32_t i = 0; i < tablet->stripeCount(); ++i) {
+    auto stripeId = tablet->stripeIdentifier(i);
     EXPECT_NE(stripeId.stripeGroup(), nullptr);
   }
 
@@ -3796,10 +3818,10 @@ TEST_P(VeloxWriterIndexTest, multipleGroups) {
   verifyFileData(file, type, batches);
 
   // Verify position index chunk row counts
-  verifyPositionIndex(tablet);
+  verifyPositionIndex(*tablet);
 
   // Verify value index maps each key to correct row position
-  verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
+  verifyValueIndex(*tablet, readFile.get(), type, batches, {"key_col"});
 }
 
 TEST_P(VeloxWriterIndexTest, multipleIndexColumns) {
@@ -3859,11 +3881,11 @@ TEST_P(VeloxWriterIndexTest, multipleIndexColumns) {
   writer.close();
 
   // Read and verify
-  velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(&readFile, *leafPool_);
-
-  const auto& tablet = reader.tabletReader();
-  const auto* index = tablet.clusterIndex();
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tabletOptions = makeTestTabletOptions(leafPool_.get());
+  auto tablet =
+      nimble::TabletReader::create(readFile, leafPool_.get(), tabletOptions);
+  const auto* index = tablet->clusterIndex();
   ASSERT_NE(index, nullptr);
 
   // Verify both columns are indexed
@@ -3911,9 +3933,9 @@ TEST_P(VeloxWriterIndexTest, multipleIndexColumns) {
         }));
   }
   // Verify position index chunk row counts
-  verifyPositionIndex(tablet);
+  verifyPositionIndex(*tablet);
 
-  verifyValueIndex(tablet, &readFile, type, batches, {"key1", "key2"});
+  verifyValueIndex(*tablet, readFile.get(), type, batches, {"key1", "key2"});
 }
 
 TEST_F(VeloxWriterTest, indexEnforceKeyOrder) {
@@ -4092,12 +4114,12 @@ TEST_P(VeloxWriterIndexTest, duplicateKeys) {
       EXPECT_GT(layout.stripesInfo[i].size, 0);
     }
   }
-  nimble::VeloxReader reader(readFile.get(), *leafPool_);
-
-  const auto& tablet = reader.tabletReader();
+  auto tabletOptions = makeTestTabletOptions(leafPool_.get());
+  auto tablet =
+      nimble::TabletReader::create(readFile, leafPool_.get(), tabletOptions);
 
   // Verify index exists
-  const auto* index = tablet.clusterIndex();
+  const auto* index = tablet->clusterIndex();
   ASSERT_NE(index, nullptr);
   EXPECT_EQ(index->indexColumns().size(), 1);
   EXPECT_EQ(index->indexColumns()[0], "key_col");
@@ -4132,11 +4154,11 @@ TEST_P(VeloxWriterIndexTest, duplicateKeys) {
   verifyFileData(file, type, batches);
 
   // Verify position index chunk row counts
-  verifyPositionIndex(tablet);
+  verifyPositionIndex(*tablet);
 
   // Verify value index maps each key to correct row position
   // With duplicate keys, lookup should find the first occurrence
-  verifyValueIndex(tablet, readFile.get(), type, batches, {"key_col"});
+  verifyValueIndex(*tablet, readFile.get(), type, batches, {"key_col"});
 }
 
 TEST_P(VeloxWriterIndexTest, chunking) {
@@ -4170,13 +4192,13 @@ TEST_P(VeloxWriterIndexTest, chunking) {
   writer.close();
 
   // Read and verify
-  velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(&readFile, *leafPool_);
-
-  const auto& tablet = reader.tabletReader();
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tabletOptions = makeTestTabletOptions(leafPool_.get());
+  auto tablet =
+      nimble::TabletReader::create(readFile, leafPool_.get(), tabletOptions);
 
   // Verify index exists and works
-  const auto* index = tablet.clusterIndex();
+  const auto* index = tablet->clusterIndex();
   ASSERT_NE(index, nullptr);
   EXPECT_EQ(index->indexColumns().size(), 1);
   EXPECT_EQ(index->indexColumns()[0], "key_col");
@@ -4188,16 +4210,14 @@ TEST_P(VeloxWriterIndexTest, chunking) {
     EXPECT_LE(partitionKeys[i - 1], partitionKeys[i]);
   }
 
-  ASSERT_NE(tablet.clusterIndex(), nullptr);
-
   // Read back all data and verify row-by-row match with written batches
   verifyFileData(file, type, batches);
 
   // Verify position index chunk row counts
-  verifyPositionIndex(tablet);
+  verifyPositionIndex(*tablet);
 
   // Verify value index maps each key to correct row position
-  verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
+  verifyValueIndex(*tablet, readFile.get(), type, batches, {"key_col"});
 }
 
 TEST_P(VeloxWriterIndexTest, streamDeduplication) {
@@ -4285,13 +4305,13 @@ TEST_P(VeloxWriterIndexTest, streamDeduplication) {
   writer.close();
 
   // Read and verify
-  velox::InMemoryReadFile readFile(file);
-  nimble::VeloxReader reader(&readFile, *leafPool_);
-
-  const auto& tablet = reader.tabletReader();
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tabletOptions = makeTestTabletOptions(leafPool_.get());
+  auto tablet =
+      nimble::TabletReader::create(readFile, leafPool_.get(), tabletOptions);
 
   // Verify index exists
-  const auto* index = tablet.clusterIndex();
+  const auto* index = tablet->clusterIndex();
   ASSERT_NE(index, nullptr);
   EXPECT_EQ(index->indexColumns().size(), 1);
   EXPECT_EQ(index->indexColumns()[0], "key_col");
@@ -4327,10 +4347,10 @@ TEST_P(VeloxWriterIndexTest, streamDeduplication) {
   verifyFileData(file, type, batches);
 
   // Verify position index chunk row counts
-  verifyPositionIndex(tablet);
+  verifyPositionIndex(*tablet);
 
   // Verify value index maps each key to correct row position
-  verifyValueIndex(tablet, &readFile, type, batches, {"key_col"});
+  verifyValueIndex(*tablet, readFile.get(), type, batches, {"key_col"});
 }
 
 // Test that custom prefixRestartInterval in ClusterIndexConfig flows through
@@ -4397,7 +4417,8 @@ TEST_F(VeloxWriterTest, customPrefixRestartInterval) {
 
     // Read back and verify the restart interval in the key encoding
     auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
-    auto tablet = nimble::TabletReader::create(readFile, leafPool_.get(), {});
+    auto tablet = nimble::TabletReader::create(
+        readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
 
     const auto* index = tablet->clusterIndex();
     ASSERT_NE(index, nullptr) << "Index must exist";
@@ -4616,7 +4637,8 @@ void verifyDeltaEncoding(
     bool checkChildren = false) {
   auto readFile =
       std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
-  auto tablet = nimble::TabletReader::create(readFile, &pool, {});
+  auto tablet = nimble::TabletReader::create(
+      readFile, &pool, makeTestTabletOptions(&pool));
   auto section =
       tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
   NIMBLE_CHECK(section.has_value(), "Schema not found.");
@@ -4679,7 +4701,8 @@ TEST_F(VeloxWriterTest, encodingLayoutDelta) {
     auto readFile =
         std::make_shared<nimble::testing::InMemoryTrackableReadFile>(
             file, useChainedBuffers);
-    auto tablet = nimble::TabletReader::create(readFile, leafPool_.get(), {});
+    auto tablet = nimble::TabletReader::create(
+        readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
     auto section =
         tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
     NIMBLE_CHECK(section.has_value(), "Schema not found.");
@@ -4896,10 +4919,11 @@ TEST_F(VeloxWriterTest, encodingLayoutDeltaMultiStripe) {
       batches[0]->type(),
       std::move(writeFile),
       *rootPool_,
-      {.encodingLayoutTree = std::move(layoutTree),
-       .flushPolicyFactory = []() {
-         return std::make_unique<nimble::StripeRawSizeFlushPolicy>(1024);
-       }});
+      {.flushPolicyFactory =
+           []() {
+             return std::make_unique<nimble::StripeRawSizeFlushPolicy>(1024);
+           },
+       .encodingLayoutTree = std::move(layoutTree)});
 
   for (const auto& batch : batches) {
     writer.write(batch);
@@ -4908,7 +4932,8 @@ TEST_F(VeloxWriterTest, encodingLayoutDeltaMultiStripe) {
 
   auto readFile =
       std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
-  auto tablet = nimble::TabletReader::create(readFile, leafPool_.get(), {});
+  auto tablet = nimble::TabletReader::create(
+      readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
   ASSERT_GT(tablet->stripeCount(), 1);
 
   verifyDeltaEncoding(file, *leafPool_, true);
@@ -4987,7 +5012,8 @@ TEST_F(VeloxWriterTest, encodingLayoutDeltaMultiColumn) {
   // Verify both column encodings.
   auto readFile =
       std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
-  auto tablet = nimble::TabletReader::create(readFile, leafPool_.get(), {});
+  auto tablet = nimble::TabletReader::create(
+      readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
   auto section =
       tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
   NIMBLE_CHECK(section.has_value(), "Schema not found.");
@@ -5178,10 +5204,11 @@ TEST_F(VeloxWriterTest, encodingLayoutDeltaMultiStripeLegacyRead) {
       batches[0]->type(),
       std::move(writeFile),
       *rootPool_,
-      {.encodingLayoutTree = std::move(layoutTree),
-       .flushPolicyFactory = []() {
-         return std::make_unique<nimble::StripeRawSizeFlushPolicy>(1024);
-       }});
+      {.flushPolicyFactory =
+           []() {
+             return std::make_unique<nimble::StripeRawSizeFlushPolicy>(1024);
+           },
+       .encodingLayoutTree = std::move(layoutTree)});
 
   for (const auto& batch : batches) {
     writer.write(batch);
@@ -5190,8 +5217,10 @@ TEST_F(VeloxWriterTest, encodingLayoutDeltaMultiStripeLegacyRead) {
 
   auto readFileTrackable =
       std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
-  auto tablet =
-      nimble::TabletReader::create(readFileTrackable, leafPool_.get(), {});
+  auto tablet = nimble::TabletReader::create(
+      readFileTrackable,
+      leafPool_.get(),
+      makeTestTabletOptions(leafPool_.get()));
   ASSERT_GT(tablet->stripeCount(), 1);
 
   verifyDeltaEncoding(file, *leafPool_, true);
@@ -5819,6 +5848,294 @@ TEST_F(VeloxWriterTest, flatmapColumnsKeysImplicitFlatMapColumn) {
     ASSERT_TRUE(expected->equalValueAt(result.get(), i, i))
         << "Mismatch at row " << i;
   }
+}
+
+struct ParallelEncodeParam {
+  uint32_t maxEncodeParallelism;
+  uint32_t minStreamsPerEncodeUnit;
+
+  std::string debugString() const {
+    return fmt::format(
+        "maxParallel_{}_minStreams_{}",
+        maxEncodeParallelism,
+        minStreamsPerEncodeUnit);
+  }
+};
+
+class ParallelEncodeWriterTest
+    : public VeloxWriterTest,
+      public ::testing::WithParamInterface<ParallelEncodeParam> {
+ protected:
+  nimble::VeloxWriterOptions parallelWriterOptions() {
+    nimble::VeloxWriterOptions options;
+    executor_ = std::make_shared<folly::CPUThreadPoolExecutor>(4);
+    options.encodingExecutor = folly::getKeepAliveToken(*executor_);
+    options.maxEncodeParallelism = GetParam().maxEncodeParallelism;
+    options.minStreamsPerEncodeUnit = GetParam().minStreamsPerEncodeUnit;
+    return options;
+  }
+
+  std::shared_ptr<folly::CPUThreadPoolExecutor> executor_;
+};
+
+TEST_P(ParallelEncodeWriterTest, rowParallelEncode) {
+  auto type = velox::ROW({
+      {"a", velox::BIGINT()},
+      {"b", velox::DOUBLE()},
+      {"c", velox::INTEGER()},
+      {"d", velox::BIGINT()},
+      {"e", velox::REAL()},
+      {"f", velox::BIGINT()},
+      {"g", velox::INTEGER()},
+      {"h", velox::DOUBLE()},
+  });
+
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  velox::VectorFuzzer fuzzer(
+      {.vectorSize = 1000, .nullRatio = 0.1}, leafPool_.get(), seed);
+
+  auto writerOptions = parallelWriterOptions();
+
+  std::string seqFile;
+  std::string parFile;
+
+  {
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&seqFile);
+    nimble::VeloxWriter writer(type, std::move(writeFile), *rootPool_, {});
+    for (int i = 0; i < 10; ++i) {
+      writer.write(fuzzer.fuzzInputRow(type));
+    }
+    writer.close();
+  }
+
+  {
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&parFile);
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, writerOptions);
+    fuzzer.reSeed(seed);
+    for (int i = 0; i < 10; ++i) {
+      writer.write(fuzzer.fuzzInputRow(type));
+    }
+    writer.close();
+  }
+
+  auto seqRead = std::make_shared<velox::InMemoryReadFile>(seqFile);
+  auto parRead = std::make_shared<velox::InMemoryReadFile>(parFile);
+  nimble::VeloxReader seqReader(seqRead.get(), *leafPool_);
+  nimble::VeloxReader parReader(parRead.get(), *leafPool_);
+
+  velox::VectorPtr seqResult;
+  velox::VectorPtr parResult;
+  while (seqReader.next(1000, seqResult)) {
+    ASSERT_TRUE(parReader.next(1000, parResult));
+    ASSERT_EQ(seqResult->size(), parResult->size());
+    for (velox::vector_size_t row = 0; row < seqResult->size(); ++row) {
+      ASSERT_TRUE(seqResult->equalValueAt(parResult.get(), row, row))
+          << "Mismatch at row " << row;
+    }
+  }
+}
+
+TEST_P(ParallelEncodeWriterTest, flatMapParallelEncode) {
+  auto type = velox::ROW({
+      {"flatmap", velox::MAP(velox::INTEGER(), velox::BIGINT())},
+      {"col", velox::BIGINT()},
+  });
+
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  velox::VectorFuzzer fuzzer(
+      {.vectorSize = 1000, .nullRatio = 0.1, .containerLength = 20},
+      leafPool_.get(),
+      seed);
+
+  auto writerOptions = parallelWriterOptions();
+  writerOptions.flatMapColumns = {{"flatmap", {}}};
+
+  nimble::VeloxWriterOptions seqOptions;
+  seqOptions.flatMapColumns = {{"flatmap", {}}};
+
+  std::string seqFile;
+  std::string parFile;
+
+  {
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&seqFile);
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, seqOptions);
+    for (int i = 0; i < 10; ++i) {
+      writer.write(fuzzer.fuzzInputRow(type));
+    }
+    writer.close();
+  }
+
+  {
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&parFile);
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, writerOptions);
+    fuzzer.reSeed(seed);
+    for (int i = 0; i < 10; ++i) {
+      writer.write(fuzzer.fuzzInputRow(type));
+    }
+    writer.close();
+  }
+
+  auto seqRead = std::make_shared<velox::InMemoryReadFile>(seqFile);
+  auto parRead = std::make_shared<velox::InMemoryReadFile>(parFile);
+  nimble::VeloxReader seqReader(seqRead.get(), *leafPool_);
+  nimble::VeloxReader parReader(parRead.get(), *leafPool_);
+
+  velox::VectorPtr seqResult;
+  velox::VectorPtr parResult;
+  while (seqReader.next(1000, seqResult)) {
+    ASSERT_TRUE(parReader.next(1000, parResult));
+    ASSERT_EQ(seqResult->size(), parResult->size());
+    for (velox::vector_size_t row = 0; row < seqResult->size(); ++row) {
+      ASSERT_TRUE(seqResult->equalValueAt(parResult.get(), row, row))
+          << "Mismatch at row " << row;
+    }
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ParallelEncodeWriterTestSuite,
+    ParallelEncodeWriterTest,
+    ::testing::Values(
+        ParallelEncodeParam{2, 1},
+        ParallelEncodeParam{4, 1},
+        ParallelEncodeParam{8, 1},
+        ParallelEncodeParam{4, 4},
+        ParallelEncodeParam{100, 1}),
+    [](const ::testing::TestParamInfo<ParallelEncodeParam>& info) {
+      return info.param.debugString();
+    });
+
+DEBUG_ONLY_TEST_F(VeloxWriterTest, parallelEncodeRowTaskCount) {
+  velox::common::testutil::TestValue::enable();
+
+  auto type = velox::ROW({
+      {"a", velox::BIGINT()},
+      {"b", velox::DOUBLE()},
+      {"c", velox::INTEGER()},
+      {"d", velox::BIGINT()},
+      {"e", velox::REAL()},
+      {"f", velox::BIGINT()},
+      {"g", velox::INTEGER()},
+      {"h", velox::DOUBLE()},
+  });
+
+  velox::VectorFuzzer fuzzer(
+      {.vectorSize = 100, .nullRatio = 0}, leafPool_.get());
+
+  struct TestCase {
+    uint32_t maxEncodeParallelism;
+    uint32_t minStreamsPerEncodeUnit;
+    uint32_t expectedTaskCount;
+  };
+
+  const std::vector<TestCase> testCases = {
+      {2, 1, 2},
+      {4, 1, 4},
+      {8, 1, 8},
+      {4, 4, 2},
+      {8, 4, 2},
+      {100, 1, 8},
+  };
+
+  folly::CPUThreadPoolExecutor executor(4);
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(
+        fmt::format(
+            "maxParallel={}, minStreams={}, expected={}",
+            testCase.maxEncodeParallelism,
+            testCase.minStreamsPerEncodeUnit,
+            testCase.expectedTaskCount));
+
+    nimble::VeloxWriterOptions writerOptions;
+    writerOptions.encodingExecutor = folly::getKeepAliveToken(executor);
+    writerOptions.maxEncodeParallelism = testCase.maxEncodeParallelism;
+    writerOptions.minStreamsPerEncodeUnit = testCase.minStreamsPerEncodeUnit;
+
+    uint32_t parallelWriteCount = 0;
+    std::vector<uint32_t> observedTaskCounts;
+    SCOPED_TESTVALUE_SET(
+        "facebook::nimble::RowFieldWriter::co_write",
+        std::function<void(const uint32_t*)>([&](const uint32_t* taskCount) {
+          ++parallelWriteCount;
+          observedTaskCounts.emplace_back(*taskCount);
+        }));
+
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, writerOptions);
+
+    const size_t numBatches = 3;
+    for (size_t i = 0; i < numBatches; ++i) {
+      writer.write(fuzzer.fuzzInputRow(type));
+    }
+    writer.close();
+
+    EXPECT_EQ(parallelWriteCount, numBatches);
+    for (const auto taskCount : observedTaskCounts) {
+      EXPECT_EQ(taskCount, testCase.expectedTaskCount);
+    }
+
+    auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+    nimble::VeloxReader reader(readFile.get(), *leafPool_);
+    velox::VectorPtr result;
+    ASSERT_TRUE(reader.next(numBatches * 100, result));
+    EXPECT_EQ(result->size(), numBatches * 100);
+  }
+}
+
+DEBUG_ONLY_TEST_F(VeloxWriterTest, parallelEncodeFlatMapTaskCount) {
+  velox::common::testutil::TestValue::enable();
+
+  auto type = velox::ROW({
+      {"flatmap", velox::MAP(velox::INTEGER(), velox::BIGINT())},
+      {"col", velox::BIGINT()},
+  });
+
+  velox::VectorFuzzer fuzzer(
+      {.vectorSize = 100, .nullRatio = 0, .containerLength = 20},
+      leafPool_.get());
+
+  folly::CPUThreadPoolExecutor executor(4);
+
+  nimble::VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns = {{"flatmap", {}}};
+  writerOptions.encodingExecutor = folly::getKeepAliveToken(executor);
+  writerOptions.maxEncodeParallelism = 4;
+  writerOptions.minStreamsPerEncodeUnit = 1;
+
+  uint32_t flatMapParallelCount = 0;
+  SCOPED_TESTVALUE_SET(
+      "facebook::nimble::FlatMapFieldWriter::co_writeMapValues",
+      std::function<void(const uint32_t*)>([&](const uint32_t* taskCount) {
+        ++flatMapParallelCount;
+        EXPECT_GT(*taskCount, 1);
+      }));
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, writerOptions);
+
+  const size_t numBatches = 5;
+  for (size_t i = 0; i < numBatches; ++i) {
+    writer.write(fuzzer.fuzzInputRow(type));
+  }
+  writer.close();
+
+  EXPECT_GT(flatMapParallelCount, 0);
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  nimble::VeloxReader reader(readFile.get(), *leafPool_);
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(numBatches * 100, result));
+  EXPECT_EQ(result->size(), numBatches * 100);
 }
 
 } // namespace facebook

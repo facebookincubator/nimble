@@ -17,19 +17,19 @@
 
 #include <span>
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/legacy/Encoding.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 
 // Encodes data that is constant, i.e. there is a single unique value.
 
 namespace facebook::nimble::legacy {
 
 // Data layout is:
-// Encoding::kPrefixSize bytes: standard Encoding prefix
+// EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // X bytes: the constant value via encoding primitive.
 template <typename T>
 class ConstantEncoding final
@@ -74,7 +74,7 @@ ConstantEncoding<T>::ConstantEncoding(
     std::string_view data,
     std::function<void*(uint32_t)> /* stringBufferFactory */)
     : TypedEncoding<T, physicalType>(memoryPool, data) {
-  const char* pos = data.data() + Encoding::kPrefixSize;
+  const char* pos = data.data() + EncodingPrefix::kFixedPrefixSize;
   value_ = encoding::read<physicalType>(pos);
   NIMBLE_CHECK(pos == data.end(), "Unexpected constant encoding end");
 }
@@ -131,7 +131,7 @@ std::string_view ConstantEncoding<T>::encode(
   }
 
   const uint32_t rowCount = values.size();
-  uint32_t encodingSize = Encoding::kPrefixSize;
+  uint32_t encodingSize = EncodingPrefix::kFixedPrefixSize;
   if constexpr (isStringType<physicalType>()) {
     encodingSize += 4 + values[0].size();
   } else {

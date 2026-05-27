@@ -22,9 +22,19 @@ target_link_libraries(
   Folly::folly
 )
 
+add_library(nimble_serialization_header SerializationHeader.cpp)
+target_link_libraries(
+  nimble_serialization_header
+  nimble_serializer_options
+  nimble_common
+  nimble_velox_common
+  Folly::folly
+)
+
 add_library(nimble_serializer_impl SerializerImpl.cpp)
 target_link_libraries(
   nimble_serializer_impl
+  nimble_serialization_header
   nimble_serializer_options
   nimble_common
   nimble_encodings
@@ -35,6 +45,7 @@ target_link_libraries(
 add_library(nimble_deserializer_impl DeserializerImpl.cpp)
 target_link_libraries(
   nimble_deserializer_impl
+  nimble_serialization_header
   nimble_serializer_impl
   nimble_serializer_options
   nimble_encodings
@@ -70,6 +81,7 @@ target_link_libraries(
 add_library(nimble_projector Projector.cpp)
 target_link_libraries(
   nimble_projector
+  nimble_serialization_header
   nimble_serializer_options
   nimble_serializer_impl
   nimble_velox_schema_reader

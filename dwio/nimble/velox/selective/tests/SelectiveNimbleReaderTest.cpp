@@ -23,14 +23,17 @@
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
-#include "dwio/nimble/encodings/EncodingLayout.h"
+#include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/tablet/tests/TabletTestUtils.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
+#include "dwio/nimble/velox/VeloxReader.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/caching/AsyncDataCache.h"
+#include "velox/common/caching/FileHandle.h"
 #include "velox/common/caching/FileIds.h"
 #include "velox/common/caching/ScanTracker.h"
 #include "velox/common/io/IoStatistics.h"
@@ -48,43 +51,6 @@ namespace {
 
 using namespace facebook::velox;
 
-struct NullableArrayData {
-  std::optional<std::vector<std::optional<int64_t>>> value;
-
-  NullableArrayData(std::nullopt_t) : value(std::nullopt) {}
-
-  NullableArrayData(std::initializer_list<int64_t> values)
-      : value(std::in_place) {
-    value->reserve(values.size());
-    for (auto element : values) {
-      value->emplace_back(element);
-    }
-  }
-
-  operator std::optional<std::vector<std::optional<int64_t>>>() const {
-    return value;
-  }
-};
-
-struct NullableMapData {
-  std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>> value;
-
-  NullableMapData(std::nullopt_t) : value(std::nullopt) {}
-
-  NullableMapData(std::initializer_list<std::pair<int64_t, int64_t>> values)
-      : value(std::in_place) {
-    value->reserve(values.size());
-    for (const auto& [key, mapped] : values) {
-      value->emplace_back(key, mapped);
-    }
-  }
-
-  operator std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>()
-      const {
-    return value;
-  }
-};
-
 enum FilterType { kNone, kKeep, kDrop };
 auto format_as(FilterType filterType) {
   return fmt::underlying(filterType);
@@ -93,14 +59,14 @@ auto format_as(FilterType filterType) {
 struct TestParam {
   bool stringDecoderZeroCopy;
   bool enableCache;
-  bool pinFileMetadata{false};
+  bool pinMetadata{false};
 
   std::string debugString() const {
     return fmt::format(
         "passStringBuffers_{}_cache_{}_pinMetadata_{}",
         stringDecoderZeroCopy,
         enableCache,
-        pinFileMetadata);
+        pinMetadata);
   }
 };
 
@@ -179,15 +145,19 @@ class SelectiveNimbleReaderTest
     auto factory =
         dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
     dwio::common::ReaderOptions options(pool());
+    options.setDataIoStats(dataIoStats_);
+    options.setMetadataIoStats(metadataIoStats_);
     options.setScanSpec(scanSpec);
-    options.setPinFileMetadata(GetParam().pinFileMetadata);
+    options.setPinMetadata(GetParam().pinMetadata);
+    options.setCacheMetadata(GetParam().enableCache);
     std::unique_ptr<dwio::common::BufferedInput> input;
     auto& ids = fileIds();
     const auto readerId = readerIdCounter_++;
     StringIdLease fileId(ids, fmt::format("testFile_{}", readerId));
     StringIdLease groupId(ids, fmt::format("testGroup_{}", readerId));
-    io::ReaderOptions ioReaderOpts(
-        pool(), dataIoStats_.get(), metadataIoStats_.get());
+    io::ReaderOptions ioReaderOpts(pool());
+    ioReaderOpts.setDataIoStats(dataIoStats_);
+    ioReaderOpts.setMetadataIoStats(metadataIoStats_);
     if (cache_ != nullptr) {
       input = std::make_unique<dwio::common::CachedBufferedInput>(
           readFile,
@@ -246,6 +216,8 @@ class SelectiveNimbleReaderTest
   const std::shared_ptr<io::IoStatistics> dataIoStats_{
       std::make_shared<io::IoStatistics>()};
   const std::shared_ptr<io::IoStatistics> metadataIoStats_{
+      std::make_shared<io::IoStatistics>()};
+  const std::shared_ptr<io::IoStatistics> indexIoStats_{
       std::make_shared<io::IoStatistics>()};
   std::shared_ptr<cache::ScanTracker> scanTracker_;
   std::unique_ptr<folly::CPUThreadPoolExecutor> ioExecutor_;
@@ -361,7 +333,8 @@ class SelectiveNimbleReaderTest
       EncodingType expectedEncodingType,
       bool isNullable = true) {
     auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
-    auto tablet = TabletReader::create(readFile, pool(), {});
+    auto tablet = TabletReader::create(
+        readFile, pool(), test::makeTestTabletOptions(pool()));
     auto section = tablet->loadOptionalSection(std::string(kSchemaSection));
     ASSERT_TRUE(section.has_value());
     auto schema = SchemaDeserializer::deserialize(section->content().data());
@@ -498,27 +471,6 @@ class SelectiveNimbleReaderTest
     ASSERT_EQ(readers.rowReader->next(1, result), 0);
   }
 
-  void checkArrayWithOffsets(
-      std::initializer_list<NullableArrayData> data,
-      const std::vector<bool>& filter,
-      const std::vector<int>& readSizes,
-      bool stringDecoderZeroCopy,
-      std::optional<int> maxArrayElementsCount = std::nullopt,
-      bool filterAfterRead = false) {
-    std::vector<std::optional<std::vector<std::optional<int64_t>>>> converted;
-    converted.reserve(data.size());
-    for (const auto& item : data) {
-      converted.push_back(item);
-    }
-    checkArrayWithOffsets(
-        converted,
-        filter,
-        readSizes,
-        stringDecoderZeroCopy,
-        maxArrayElementsCount,
-        filterAfterRead);
-  }
-
   void checkSlidingWindowMap(
       const std::vector<std::optional<
           std::vector<std::pair<int64_t, std::optional<int64_t>>>>>& data,
@@ -632,28 +584,6 @@ class SelectiveNimbleReaderTest
     }
     ASSERT_EQ(totalScanned, data.size());
     ASSERT_EQ(readers.rowReader->next(1, result), 0);
-  }
-
-  void checkSlidingWindowMap(
-      std::initializer_list<NullableMapData> data,
-      const std::vector<bool>& rowFilter,
-      const common::Filter* keyFilter,
-      const std::vector<int>& readSizes,
-      bool stringDecoderZeroCopy,
-      bool filterAfterRead = false) {
-    std::vector<
-        std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>> converted;
-    converted.reserve(data.size());
-    for (const auto& item : data) {
-      converted.push_back(item);
-    }
-    checkSlidingWindowMap(
-        converted,
-        rowFilter,
-        keyFilter,
-        readSizes,
-        stringDecoderZeroCopy,
-        filterAfterRead);
   }
 
  private:
@@ -1217,6 +1147,8 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSize) {
     auto factory =
         dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
     dwio::common::ReaderOptions options(pool());
+    options.setDataIoStats(dataIoStats_);
+    options.setMetadataIoStats(metadataIoStats_);
     options.setScanSpec(structScanSpec);
     auto reader = factory->createReader(
         std::make_unique<dwio::common::BufferedInput>(readFile, *pool()),
@@ -1291,6 +1223,8 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSizePartialProjection) {
     auto factory =
         dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
     dwio::common::ReaderOptions options(pool());
+    options.setDataIoStats(dataIoStats_);
+    options.setMetadataIoStats(metadataIoStats_);
     options.setScanSpec(partialSpec);
     auto reader = factory->createReader(
         std::make_unique<dwio::common::BufferedInput>(readFile, *pool()),
@@ -1390,6 +1324,8 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeNestedRowPartialProjection) {
     auto factory =
         dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
     dwio::common::ReaderOptions options(pool());
+    options.setDataIoStats(dataIoStats_);
+    options.setMetadataIoStats(metadataIoStats_);
     options.setScanSpec(partialSpec);
     auto reader = factory->createReader(
         std::make_unique<dwio::common::BufferedInput>(readFile, *pool()),
@@ -1701,32 +1637,32 @@ TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsLastRowSetLifeCycle) {
   // smaller size.
   for (int i = 0; i < 16; ++i) {
     c0.emplace_back(std::nullopt);
-    c1.push_back(NullableArrayData{{1}});
-    c2.push_back(NullableArrayData{{}});
+    c1.push_back({{1}});
+    c2.push_back({{}});
   }
-  c0.push_back(NullableArrayData{{}});
-  c1.push_back(NullableArrayData{{1}});
-  c2.push_back(NullableArrayData{{}});
+  c0.push_back({{}});
+  c1.push_back({{1}});
+  c2.push_back({{}});
   // Second batch, all filtered out by c2, but c1 reads some value without
   // calling getValues.
   c0.emplace_back(std::nullopt);
   // Add a null to force setComplexNulls to read last row set before batch 3.
   c1.emplace_back(std::nullopt);
-  c2.push_back(NullableArrayData{{}});
+  c2.push_back({{}});
   for (int i = 0; i < 15; ++i) {
     c0.emplace_back(std::nullopt);
-    c1.push_back(NullableArrayData{{2}});
-    c2.push_back(NullableArrayData{{}});
+    c1.push_back({{2}});
+    c2.push_back({{}});
   }
-  c0.push_back(NullableArrayData{{}});
-  c1.push_back(NullableArrayData{{2}});
+  c0.push_back({{}});
+  c1.push_back({{2}});
   c2.emplace_back(std::nullopt);
   // Third batch, nothing is filtered out, and force outputRows_ buffer
   // reallocation.
   for (int i = 0; i < 17; ++i) {
-    c0.push_back(NullableArrayData{{}});
-    c1.push_back(NullableArrayData{{2}});
-    c2.push_back(NullableArrayData{{}});
+    c0.push_back({{}});
+    c1.push_back({{2}});
+    c2.push_back({{}});
   }
   auto vector = makeRowVector({
       makeNullableArrayVector<int64_t>(c0),
@@ -2336,6 +2272,8 @@ TEST_P(SelectiveNimbleReaderTest, columnDecodeMetrics) {
   auto factory =
       dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
   dwio::common::ReaderOptions options(pool());
+  options.setDataIoStats(dataIoStats_);
+  options.setMetadataIoStats(metadataIoStats_);
   options.setScanSpec(scanSpec);
   auto reader = factory->createReader(
       std::make_unique<dwio::common::BufferedInput>(readFile, *pool()),
@@ -2504,7 +2442,7 @@ TEST_P(SelectiveNimbleReaderTest, fixedBitWidthFastPathUpcastNegative) {
   }
 }
 
-TEST_P(SelectiveNimbleReaderTest, pinFileMetadata) {
+TEST_P(SelectiveNimbleReaderTest, pinMetadata) {
   const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
   auto data = makeFlatVector<int64_t>(100, [](auto i) { return i; });
   auto input = makeRowVector({data});
@@ -2520,10 +2458,12 @@ TEST_P(SelectiveNimbleReaderTest, pinFileMetadata) {
     auto factory =
         dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
     dwio::common::ReaderOptions options(pool());
+    options.setDataIoStats(dataIoStats_);
+    options.setMetadataIoStats(metadataIoStats_);
     options.setScanSpec(scanSpec);
-    options.setPinFileMetadata(true);
+    options.setPinMetadata(true);
     if (enableCache) {
-      options.setFileMetadataCacheEnabled(true);
+      options.setCacheMetadata(true);
     }
     Readers readers;
     readers.reader = factory->createReader(
@@ -2539,106 +2479,270 @@ TEST_P(SelectiveNimbleReaderTest, pinFileMetadata) {
   }
 }
 
-// Verifies that when pinFileMetadata is true, the second pass of reading does
-// not re-read metadata from the file. Uses TrackingReadFile to record the max
-// read offset and checks it stays below the metadata boundary (stripe group
-// offset). When enableCache is true, uses CachedBufferedInput so
-// AsyncDataCache also caches raw metadata bytes.
-TEST_P(SelectiveNimbleReaderTest, pinnedMetadataNoReread) {
-  if (!GetParam().pinFileMetadata) {
-    GTEST_SKIP() << "Only applicable when pinFileMetadata is enabled";
+// Verifies that within the same TabletReader, the second VeloxReader pass
+// does not re-read metadata. The weak-pointer cache retains entries while the
+// tablet is alive, so metadata is always reused regardless of pinMetadata,
+// cacheMetadata, or whether cache infrastructure is provided.
+TEST_P(SelectiveNimbleReaderTest, metadataReuseWithSameReader) {
+  if (!GetParam().enableCache) {
+    GTEST_SKIP() << "Only applicable when cache is enabled";
   }
 
-  const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
+  struct TestCase {
+    bool pinMetadata;
+    bool cacheMetadata;
+    bool provideCache;
+    bool expectRamHit;
 
-  // Write a small single-stripe file.
-  auto data = makeFlatVector<int64_t>(100, [](auto i) { return i; });
-  auto input = makeRowVector({data});
-  auto file = test::createNimbleFile(*rootPool(), input);
+    std::string debugString() const {
+      return fmt::format(
+          "pinMetadata={}, cacheMetadata={}, provideCache={}, "
+          "expectRamHit={}",
+          pinMetadata,
+          cacheMetadata,
+          provideCache,
+          expectRamHit);
+    }
+  };
 
-  auto delegate = std::make_shared<InMemoryReadFile>(file);
-  auto trackingFile =
-      std::make_shared<::facebook::nimble::testing::TrackingReadFile>(delegate);
+  std::vector<TestCase> testCases = {
+      {true, true, true, true},
+      {true, false, true, false},
+      {false, true, true, true},
+      {false, false, true, false},
+      {false, true, false, false},
+      {false, false, false, false},
+  };
 
-  auto factory =
-      dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
-  auto scanSpec = std::make_shared<common::ScanSpec>("root");
-  scanSpec->addAllChildFields(*input->type());
-  dwio::common::ReaderOptions options(pool());
-  options.setScanSpec(scanSpec);
-  options.setPinFileMetadata(true);
-  options.setFileMetadataCacheEnabled(GetParam().enableCache);
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
 
-  auto& ids = fileIds();
-  const auto readerId = readerIdCounter_++;
-  StringIdLease fileId(ids, fmt::format("testFile_{}", readerId));
-  StringIdLease groupId(ids, fmt::format("testGroup_{}", readerId));
-  io::ReaderOptions ioReaderOpts(
-      pool(), dataIoStats_.get(), metadataIoStats_.get());
-  std::unique_ptr<dwio::common::BufferedInput> bufferedInput;
-  if (cache_ != nullptr) {
-    bufferedInput = std::make_unique<dwio::common::CachedBufferedInput>(
-        trackingFile,
-        dwio::common::MetricsLog::voidLog(),
-        std::move(fileId),
-        cache_.get(),
-        scanTracker_,
-        std::move(groupId),
-        dataIoStats_,
-        nullptr,
-        ioExecutor_.get(),
-        ioReaderOpts);
-  } else {
-    bufferedInput = std::make_unique<dwio::common::DirectBufferedInput>(
-        trackingFile,
-        dwio::common::MetricsLog::voidLog(),
-        std::move(fileId),
-        scanTracker_,
-        std::move(groupId),
-        dataIoStats_,
-        nullptr,
-        ioExecutor_.get(),
-        ioReaderOpts);
+    auto data = makeFlatVector<int64_t>(100, [](auto i) { return i; });
+    auto input = makeRowVector({data});
+    auto file = test::createNimbleFile(*rootPool(), input);
+
+    auto delegate = std::make_shared<InMemoryReadFile>(file);
+    auto trackingFile =
+        std::make_shared<::facebook::nimble::testing::TrackingReadFile>(
+            delegate);
+
+    auto selector = std::make_shared<dwio::common::ColumnSelector>(
+        std::dynamic_pointer_cast<const velox::RowType>(input->type()));
+
+    TabletReader::Options tabletOptions;
+    tabletOptions.pinMetadata = testCase.pinMetadata;
+    tabletOptions.cacheMetadata = testCase.cacheMetadata;
+    io::ReaderOptions ioOpts(pool());
+    ioOpts.setDataIoStats(dataIoStats_);
+    ioOpts.setMetadataIoStats(metadataIoStats_);
+    ioOpts.setIndexIoStats(indexIoStats_);
+    tabletOptions.ioOptions = ioOpts;
+    std::unique_ptr<FileHandle> fileHandle;
+    if (testCase.provideCache) {
+      auto& ids = fileIds();
+      auto fileIdStr = fmt::format(
+          "sameReaderSelectiveTest_pin{}_cache{}_provide{}",
+          testCase.pinMetadata,
+          testCase.cacheMetadata,
+          testCase.provideCache);
+      fileHandle = std::make_unique<FileHandle>();
+      fileHandle->file = trackingFile;
+      fileHandle->uuid = StringIdLease(ids, fileIdStr);
+      fileHandle->groupId = StringIdLease(ids, fileIdStr + "_group");
+      tabletOptions.cache = cache_.get();
+      tabletOptions.fileHandle = fileHandle.get();
+    }
+
+    auto tablet = TabletReader::create(trackingFile, pool(), tabletOptions);
+
+    nimble::VeloxReadParams readParams;
+    readParams.decodingExecutor =
+        std::make_shared<folly::CPUThreadPoolExecutor>(1);
+
+    auto reader1 = std::make_unique<nimble::VeloxReader>(
+        tablet, *pool(), selector, readParams);
+    VectorPtr result;
+    ASSERT_TRUE(reader1->next(100, result));
+    ASSERT_EQ(result->size(), 100);
+    ASSERT_FALSE(reader1->next(1, result));
+
+    const auto stripeGroupsMeta = tablet->stripeGroupsMetadata();
+    ASSERT_EQ(stripeGroupsMeta.size(), 1);
+    const auto metadataBoundary = stripeGroupsMeta[0].offset();
+
+    ASSERT_GT(trackingFile->maxReadOffset(), metadataBoundary)
+        << "First pass should read metadata from the file";
+
+    const auto ramHitsAfterFirstPass = metadataIoStats_->ramHit().count();
+
+    // Second pass: new VeloxReader on the same TabletReader. Metadata is
+    // always reused within the same tablet regardless of settings.
+    trackingFile->resetMaxReadOffset();
+    auto reader2 = std::make_unique<nimble::VeloxReader>(
+        tablet, *pool(), selector, readParams);
+    ASSERT_TRUE(reader2->next(100, result));
+    ASSERT_EQ(result->size(), 100);
+    ASSERT_FALSE(reader2->next(1, result));
+
+    ASSERT_LE(trackingFile->maxReadOffset(), metadataBoundary)
+        << "Second pass should not re-read metadata. "
+        << "maxReadOffset=" << trackingFile->maxReadOffset()
+        << " metadataBoundary=" << metadataBoundary;
+
+    if (testCase.expectRamHit) {
+      ASSERT_GT(metadataIoStats_->ramHit().count(), ramHitsAfterFirstPass)
+          << "Second pass should have RAM cache hits";
+    } else {
+      ASSERT_EQ(metadataIoStats_->ramHit().count(), ramHitsAfterFirstPass)
+          << "Second pass should have no new RAM cache hits";
+    }
+  }
+}
+
+// Tests metadata reuse across separate TabletReader instances. Only
+// cacheMetadata persists across TabletReader opens via AsyncDataCache.
+// pinMetadata only holds strong references within the same TabletReader.
+TEST_P(SelectiveNimbleReaderTest, metadataReuseCrossReaders) {
+  if (!GetParam().enableCache) {
+    GTEST_SKIP() << "Only applicable when cache is enabled";
   }
 
-  Readers readers;
-  readers.reader = factory->createReader(std::move(bufferedInput), options);
-  ASSERT_EQ(readers.reader->numberOfRows(), input->size());
-  auto type = asRowType(input->type());
-  dwio::common::RowReaderOptions rowOptions;
-  rowOptions.setScanSpec(scanSpec);
-  rowOptions.setRequestedType(type);
-  rowOptions.setStringDecoderZeroCopy(stringDecoderZeroCopy);
+  struct TestCase {
+    bool pinMetadata;
+    bool cacheMetadata;
+    bool provideCache;
+    bool expectCrossReaderReuse;
+    bool expectRamHit;
 
-  // First pass: reads both data and metadata from the file.
-  readers.rowReader = readers.reader->createRowReader(rowOptions);
-  validate(*input, *readers.rowReader, 100, [](auto) { return true; });
+    std::string debugString() const {
+      return fmt::format(
+          "pinMetadata={}, cacheMetadata={}, provideCache={}, "
+          "expectCrossReaderReuse={}, expectRamHit={}",
+          pinMetadata,
+          cacheMetadata,
+          provideCache,
+          expectCrossReaderReuse,
+          expectRamHit);
+    }
+  };
 
-  // Get the metadata boundary. Stripe group metadata starts right after the
-  // last stripe's data. Any read at or above this offset is a metadata read.
-  auto tablet = TabletReader::create(delegate, pool(), {});
-  const auto stripeGroupsMeta = tablet->stripeGroupsMetadata();
-  ASSERT_EQ(stripeGroupsMeta.size(), 1);
-  const auto metadataBoundary = stripeGroupsMeta[0].offset();
+  std::vector<TestCase> testCases = {
+      {true, true, true, true, true},
+      {true, false, true, false, false},
+      {false, true, true, true, true},
+      {false, false, true, false, false},
+      // cacheMetadata is set but cache is not provided — silently falls back
+      // to direct IO, so cross-reader reuse and RAM hits are not expected.
+      {false, true, false, false, false},
+  };
 
-  // Verify: first pass reads metadata (above boundary), confirming the file
-  // layout is correct and the tracking works.
-  ASSERT_GT(trackingFile->maxReadOffset(), metadataBoundary)
-      << "First pass should read metadata from the file. "
-      << "maxReadOffset=" << trackingFile->maxReadOffset()
-      << " metadataBoundary=" << metadataBoundary;
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
 
-  // Reset tracking and do a second pass.
-  trackingFile->resetMaxReadOffset();
-  readers.rowReader = readers.reader->createRowReader(rowOptions);
-  validate(*input, *readers.rowReader, 100, [](auto) { return true; });
+    auto data = makeFlatVector<int64_t>(100, [](auto i) { return i; });
+    auto input = makeRowVector({data});
+    auto file = test::createNimbleFile(*rootPool(), input);
 
-  // Verify: second-pass reads should only access data (below metadata
-  // boundary). With pinFileMetadata, all metadata is pinned in memory.
-  ASSERT_LE(trackingFile->maxReadOffset(), metadataBoundary)
-      << "Second pass should not re-read metadata from the file. "
-      << "maxReadOffset=" << trackingFile->maxReadOffset()
-      << " metadataBoundary=" << metadataBoundary;
+    auto delegate = std::make_shared<InMemoryReadFile>(file);
+    auto trackingFile =
+        std::make_shared<::facebook::nimble::testing::TrackingReadFile>(
+            delegate);
+
+    auto selector = std::make_shared<dwio::common::ColumnSelector>(
+        std::dynamic_pointer_cast<const velox::RowType>(input->type()));
+
+    auto& ids = fileIds();
+    auto fileIdStr = fmt::format(
+        "crossReaderSelectiveTest_pin{}_cache{}",
+        testCase.pinMetadata,
+        testCase.cacheMetadata);
+    StringIdLease fileId(ids, fileIdStr);
+    StringIdLease groupId(ids, fileIdStr + "_group");
+
+    auto makeTablet =
+        [&](const std::shared_ptr<io::IoStatistics>& metadataStats,
+            std::unique_ptr<FileHandle>& fileHandleOut) {
+          TabletReader::Options tabletOptions;
+          tabletOptions.pinMetadata = testCase.pinMetadata;
+          tabletOptions.cacheMetadata = testCase.cacheMetadata;
+          io::ReaderOptions ioOpts(pool());
+          ioOpts.setDataIoStats(dataIoStats_);
+          ioOpts.setMetadataIoStats(metadataStats);
+          ioOpts.setIndexIoStats(indexIoStats_);
+          tabletOptions.ioOptions = ioOpts;
+          if (testCase.provideCache) {
+            fileHandleOut = std::make_unique<FileHandle>();
+            fileHandleOut->file = trackingFile;
+            fileHandleOut->uuid = fileId;
+            fileHandleOut->groupId = groupId;
+            tabletOptions.cache = cache_.get();
+            tabletOptions.fileHandle = fileHandleOut.get();
+          }
+          return TabletReader::create(trackingFile, pool(), tabletOptions);
+        };
+
+    // First open + first pass.
+    auto metadataIoStats1 = std::make_shared<io::IoStatistics>();
+    std::unique_ptr<FileHandle> fh1;
+    auto tablet1 = makeTablet(metadataIoStats1, fh1);
+
+    const auto stripeGroupsMeta = tablet1->stripeGroupsMetadata();
+    ASSERT_EQ(stripeGroupsMeta.size(), 1);
+    const auto metadataBoundary = stripeGroupsMeta[0].offset();
+
+    nimble::VeloxReadParams readParams;
+    readParams.decodingExecutor =
+        std::make_shared<folly::CPUThreadPoolExecutor>(1);
+    auto reader1 = std::make_unique<nimble::VeloxReader>(
+        tablet1, *pool(), selector, readParams);
+    VectorPtr result;
+    ASSERT_TRUE(reader1->next(100, result));
+    ASSERT_EQ(result->size(), 100);
+    ASSERT_FALSE(reader1->next(1, result));
+
+    ASSERT_GT(trackingFile->maxReadOffset(), metadataBoundary)
+        << "First pass should read metadata from the file";
+    ASSERT_GT(metadataIoStats1->rawBytesRead(), 0)
+        << "First pass should record metadata IO";
+
+    // Cross-reader: destroy everything and open a new TabletReader.
+    reader1.reset();
+    tablet1.reset();
+    fh1.reset();
+    trackingFile->resetMaxReadOffset();
+
+    auto metadataIoStats2 = std::make_shared<io::IoStatistics>();
+    std::unique_ptr<FileHandle> fh2;
+    auto tablet2 = makeTablet(metadataIoStats2, fh2);
+    auto reader3 = std::make_unique<nimble::VeloxReader>(
+        tablet2, *pool(), selector, readParams);
+    ASSERT_TRUE(reader3->next(100, result));
+    ASSERT_EQ(result->size(), 100);
+
+    if (testCase.expectCrossReaderReuse) {
+      ASSERT_LE(trackingFile->maxReadOffset(), metadataBoundary)
+          << "Cross-reader should not re-read metadata. "
+          << "maxReadOffset=" << trackingFile->maxReadOffset()
+          << " metadataBoundary=" << metadataBoundary;
+      ASSERT_EQ(metadataIoStats2->rawBytesRead(), 0)
+          << "Cross-reader should not record any metadata IO";
+    } else {
+      ASSERT_GT(trackingFile->maxReadOffset(), metadataBoundary)
+          << "Cross-reader should re-read metadata. "
+          << "maxReadOffset=" << trackingFile->maxReadOffset()
+          << " metadataBoundary=" << metadataBoundary;
+      ASSERT_GT(metadataIoStats2->rawBytesRead(), 0)
+          << "Cross-reader should record metadata IO";
+    }
+
+    if (testCase.expectRamHit) {
+      ASSERT_GT(metadataIoStats2->ramHit().count(), 0)
+          << "Should have RAM cache hits";
+    } else {
+      ASSERT_EQ(metadataIoStats2->ramHit().count(), 0)
+          << "Should have no RAM cache hits";
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2937,7 +3041,7 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsInteger) {
   auto readers =
       makeReaders(input, fileContent, scanSpec, this->stringDecoderZeroCopy());
 
-  // Column 0 is the root ROW — column 1 is the first child (c0).
+  // Column 0 is the root ROW -- column 1 is the first child (c0).
   auto stats = readers.reader->columnStatistics(1);
   ASSERT_NE(stats, nullptr);
   ASSERT_TRUE(stats->getNumberOfValues().has_value());
@@ -3024,7 +3128,7 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsOutOfRange) {
   // Out-of-range index returns nullptr.
   EXPECT_EQ(readers.reader->columnStatistics(999), nullptr);
 
-  // Column 0 is the root ROW — should return base ColumnStatistics.
+  // Column 0 is the root ROW -- should return base ColumnStatistics.
   auto rootStats = readers.reader->columnStatistics(0);
   ASSERT_NE(rootStats, nullptr);
   ASSERT_TRUE(rootStats->getNumberOfValues().has_value());
@@ -3093,6 +3197,317 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsAllNull) {
   ASSERT_NE(intStats, nullptr);
   EXPECT_EQ(intStats->getMinimum(), std::nullopt);
   EXPECT_EQ(intStats->getMaximum(), std::nullopt);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionTransformMapKeys) {
+  // Write a MAP(VARCHAR, BIGINT) column, read with a MapKeys extraction
+  // transform applied via ScanSpec.
+  auto mapVector = makeMapVector<StringView, int64_t>(
+      {{{"a", 1}, {"b", 2}}, {{"c", 3}}, {{"d", 4}, {"e", 5}, {"f", 6}}});
+  auto input = makeRowVector({"col"}, {mapVector});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+
+  scanSpec->childByName("col")->setExtractionType(
+      common::ScanSpec::ExtractionType::kKeys);
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 3);
+  auto* row = result->as<RowVector>();
+  auto* resultArray = row->childAt(0)->loadedVector()->as<ArrayVector>();
+  ASSERT_EQ(resultArray->size(), 3);
+  ASSERT_EQ(resultArray->sizeAt(0), 2);
+  ASSERT_EQ(resultArray->sizeAt(1), 1);
+  ASSERT_EQ(resultArray->sizeAt(2), 3);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionTransformSize) {
+  // Write a MAP(VARCHAR, BIGINT) column, read with a Size extraction.
+  auto mapVector = makeMapVector<StringView, int64_t>(
+      {{{"a", 1}, {"b", 2}, {"c", 3}}, {{"d", 4}}});
+  auto input = makeRowVector({"col"}, {mapVector});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+
+  scanSpec->childByName("col")->setExtractionType(
+      common::ScanSpec::ExtractionType::kSize);
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 2);
+  auto* row = result->as<RowVector>();
+  auto* sizes = row->childAt(0)->loadedVector()->as<FlatVector<int64_t>>();
+  ASSERT_EQ(sizes->size(), 2);
+  ASSERT_EQ(sizes->valueAt(0), 3);
+  ASSERT_EQ(sizes->valueAt(1), 1);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionTransformMapValuesStructField) {
+  // Write MAP(VARCHAR, ROW(x: INT, y: INT)), apply
+  // [MapValues, AE, StructField("x")] -> ARRAY(INT).
+  // The reader handles this natively via kValues on the map and kField on
+  // the values struct, so no post-read transform is needed.
+  auto keys = makeFlatVector<StringView>({"a", "b", "c"});
+  auto structValues = makeRowVector(
+      {"x", "y"},
+      {makeFlatVector<int32_t>({10, 20, 30}),
+       makeFlatVector<int32_t>({100, 200, 300})});
+  auto mapVector = makeMapVector({0, 2}, keys, structValues);
+  auto input = makeRowVector({"col"}, {mapVector});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+
+  // Configure ScanSpec directly: kValues on the map, then kField on the
+  // values struct (extracting field "x" at index 0).  Mark "y" constant
+  // null so it is not read.
+  auto* colSpec = scanSpec->childByName("col");
+  colSpec->setExtractionType(common::ScanSpec::ExtractionType::kValues);
+  auto* valuesSpec =
+      colSpec->childByName(common::ScanSpec::kMapValuesFieldName);
+  valuesSpec->setExtractionType(common::ScanSpec::ExtractionType::kField);
+  valuesSpec->setExtractionFieldIndex(0);
+  valuesSpec->childByName("y")->setConstantValue(
+      BaseVector::createNullConstant(INTEGER(), 1, pool()));
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 2);
+  auto* row = result->as<RowVector>();
+  auto* resultArray = row->childAt(0)->loadedVector()->as<ArrayVector>();
+  ASSERT_EQ(resultArray->size(), 2);
+  ASSERT_EQ(resultArray->sizeAt(0), 2);
+  ASSERT_EQ(resultArray->sizeAt(1), 1);
+  auto* elements = resultArray->elements()->as<FlatVector<int32_t>>();
+  ASSERT_EQ(elements->valueAt(0), 10);
+  ASSERT_EQ(elements->valueAt(1), 20);
+  ASSERT_EQ(elements->valueAt(2), 30);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionSizeResultVectorReuse) {
+  // Verify the FlatVector<int64_t> result is reused across batches.
+  constexpr int kNumRows = 200;
+  std::vector<std::string> keyStrs(kNumRows * 2);
+  for (int i = 0; i < kNumRows * 2; ++i) {
+    keyStrs[i] = std::to_string(i);
+  }
+  auto keys = makeFlatVector<StringView>(
+      kNumRows * 2, [&](auto i) { return StringView(keyStrs[i]); });
+  auto values = makeFlatVector<int64_t>(kNumRows * 2, folly::identity);
+  std::vector<vector_size_t> offsets(kNumRows);
+  for (int i = 0; i < kNumRows; ++i) {
+    offsets[i] = i * 2;
+  }
+  auto mapVector = makeMapVector(offsets, keys, values);
+  auto input = makeRowVector({"col"}, {mapVector});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("col")->setExtractionType(
+      common::ScanSpec::ExtractionType::kSize);
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+
+  // Read first batch.
+  ASSERT_GT(readers.rowReader->next(50, result), 0);
+  auto* row = result->as<RowVector>();
+  auto* child = row->childAt(0)->loadedVector();
+  ASSERT_TRUE(child->type()->isBigint());
+  auto* firstBatchPtr = child;
+
+  // Read second batch — FlatVector should be the same object.
+  ASSERT_GT(readers.rowReader->next(50, result), 0);
+  row = result->as<RowVector>();
+  child = row->childAt(0)->loadedVector();
+  ASSERT_EQ(child, firstBatchPtr)
+      << "FlatVector result should be reused across batches for Size extraction";
+
+  auto* sizes = child->as<FlatVector<int64_t>>();
+  for (int i = 0; i < sizes->size(); ++i) {
+    ASSERT_EQ(sizes->valueAt(i), 2);
+  }
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionTransformMapValues) {
+  // Write a MAP(VARCHAR, BIGINT) column, read with a MapValues extraction
+  // transform applied via ScanSpec.
+  auto mapVector = makeMapVector<StringView, int64_t>(
+      {{{"a", 10}}, {{"b", 20}, {"c", 30}}, {{"d", 40}}});
+  auto input = makeRowVector({"col"}, {mapVector});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+
+  scanSpec->childByName("col")->setExtractionType(
+      common::ScanSpec::ExtractionType::kValues);
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 3);
+  auto* row = result->as<RowVector>();
+  auto* resultArray = row->childAt(0)->loadedVector()->as<ArrayVector>();
+  ASSERT_EQ(resultArray->size(), 3);
+  ASSERT_EQ(resultArray->sizeAt(0), 1);
+  ASSERT_EQ(resultArray->sizeAt(1), 2);
+  ASSERT_EQ(resultArray->sizeAt(2), 1);
+  auto* elements = resultArray->elements()->as<FlatVector<int64_t>>();
+  ASSERT_EQ(elements->valueAt(0), 10);
+  ASSERT_EQ(elements->valueAt(1), 20);
+  ASSERT_EQ(elements->valueAt(2), 30);
+  ASSERT_EQ(elements->valueAt(3), 40);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionTransformMapKeyFilter) {
+  // Write a MAP(VARCHAR, BIGINT) column, apply MapKeyFilter extraction
+  // to keep only selected keys.
+  auto mapVector = makeMapVector<StringView, int64_t>(
+      {{{"a", 1}, {"b", 2}, {"c", 3}}, {{"a", 10}, {"d", 40}}});
+  auto input = makeRowVector({"col"}, {mapVector});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+
+  // MapKeyFilter is implemented as an IN filter on the map keys ScanSpec
+  // (type-preserving — MAP stays MAP).
+  auto* colSpec = scanSpec->childByName("col");
+  auto* keysSpec = colSpec->childByName(common::ScanSpec::kMapKeysFieldName);
+  keysSpec->setFilter(
+      std::make_unique<common::BytesValues>(
+          std::vector<std::string>{"a", "b"}, /*nullAllowed=*/false));
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 2);
+  auto* row = result->as<RowVector>();
+  auto* filteredMap = row->childAt(0)->loadedVector()->as<MapVector>();
+  ASSERT_EQ(filteredMap->size(), 2);
+  // Row 0: {"a":1, "b":2} kept, "c" filtered out.
+  ASSERT_EQ(filteredMap->sizeAt(0), 2);
+  // Row 1: {"a":10} kept, "d" filtered out.
+  ASSERT_EQ(filteredMap->sizeAt(1), 1);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionTransformStructField) {
+  // Write a ROW(x: INT, y: VARCHAR) column, extract just field "x".
+  auto structVector = makeRowVector(
+      {"x", "y"},
+      {makeFlatVector<int32_t>({10, 20, 30}),
+       makeFlatVector<StringView>({"aa", "bb", "cc"})});
+  auto input = makeRowVector({"col"}, {structVector});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+
+  // kField on struct: extract field index 0 ("x"); mark "y" constant null.
+  auto* colSpec = scanSpec->childByName("col");
+  colSpec->setExtractionType(common::ScanSpec::ExtractionType::kField);
+  colSpec->setExtractionFieldIndex(0);
+  colSpec->childByName("y")->setConstantValue(
+      BaseVector::createNullConstant(VARCHAR(), 1, pool()));
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 3);
+  auto* row = result->as<RowVector>();
+  auto* xField = row->childAt(0)->loadedVector()->as<FlatVector<int32_t>>();
+  ASSERT_EQ(xField->size(), 3);
+  ASSERT_EQ(xField->valueAt(0), 10);
+  ASSERT_EQ(xField->valueAt(1), 20);
+  ASSERT_EQ(xField->valueAt(2), 30);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionTransformArraySize) {
+  // Write an ARRAY(BIGINT) column, read with Size extraction.
+  auto arrayVector = makeArrayVector<int64_t>({{1, 2, 3}, {4}, {5, 6}});
+  auto input = makeRowVector({"col"}, {arrayVector});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+
+  scanSpec->childByName("col")->setExtractionType(
+      common::ScanSpec::ExtractionType::kSize);
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 3);
+  auto* row = result->as<RowVector>();
+  auto* sizes = row->childAt(0)->loadedVector()->as<FlatVector<int64_t>>();
+  ASSERT_EQ(sizes->size(), 3);
+  ASSERT_EQ(sizes->valueAt(0), 3);
+  ASSERT_EQ(sizes->valueAt(1), 1);
+  ASSERT_EQ(sizes->valueAt(2), 2);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionDeduplicatedArraySize) {
+  // Write an ARRAY(BIGINT) column using the deduplicated (ArrayWithOffsets)
+  // encoding path, then verify Size extraction works correctly.
+  auto arrayVector = makeArrayVector<int64_t>({{1, 2}, {3}, {4, 5, 6}, {1, 2}});
+  auto input = makeRowVector({"col"}, {arrayVector});
+  auto file = test::createNimbleFile(
+      *rootPool(), input, {.dictionaryArrayColumns = {"col"}});
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("col")->setExtractionType(
+      common::ScanSpec::ExtractionType::kSize);
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 4);
+  auto* row = result->as<RowVector>();
+  auto* sizes = row->childAt(0)->loadedVector()->as<FlatVector<int64_t>>();
+  ASSERT_EQ(sizes->size(), 4);
+  ASSERT_EQ(sizes->valueAt(0), 2);
+  ASSERT_EQ(sizes->valueAt(1), 1);
+  ASSERT_EQ(sizes->valueAt(2), 3);
+  ASSERT_EQ(sizes->valueAt(3), 2);
+}
+
+TEST_P(SelectiveNimbleReaderTest, extractionDeduplicatedMapSize) {
+  // Write a MAP(BIGINT, BIGINT) column using the deduplicated
+  // (SlidingWindowMap) encoding path, then verify Size extraction works.
+  auto keys = makeFlatVector<int64_t>({1, 2, 3, 4});
+  auto values = makeFlatVector<int64_t>({10, 20, 30, 40});
+  auto mapVector = makeMapVector({0, 3}, keys, values);
+  auto input = makeRowVector({"col"}, {mapVector});
+  auto file = test::createNimbleFile(
+      *rootPool(), input, {.deduplicatedMapColumns = {"col"}});
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("col")->setExtractionType(
+      common::ScanSpec::ExtractionType::kSize);
+
+  auto readers =
+      makeReaders(input, file, scanSpec, GetParam().stringDecoderZeroCopy);
+  auto result = BaseVector::create(input->type(), 0, pool());
+  ASSERT_EQ(readers.rowReader->next(10, result), 2);
+  auto* row = result->as<RowVector>();
+  auto* sizes = row->childAt(0)->loadedVector()->as<FlatVector<int64_t>>();
+  ASSERT_EQ(sizes->size(), 2);
+  ASSERT_EQ(sizes->valueAt(0), 3);
+  ASSERT_EQ(sizes->valueAt(1), 1);
 }
 
 INSTANTIATE_TEST_CASE_P(

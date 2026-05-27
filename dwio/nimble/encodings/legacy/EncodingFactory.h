@@ -19,9 +19,9 @@
 #include <span>
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 
 namespace facebook::nimble::legacy {
 

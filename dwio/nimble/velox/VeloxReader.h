@@ -19,7 +19,7 @@
 #include "dwio/nimble/common/MetricsLogger.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/FieldReader.h"
@@ -174,8 +174,6 @@ class VeloxReader {
   // This method does not load the last stripe, or skips inside the last stripe.
   // Returns the total number of rows skipped.
   uint64_t skipStripes(uint32_t startStripeIndex, uint64_t rowsToSkip);
-
-  static TabletReader::Options defaultTabletReaderOptions();
 
   std::unique_ptr<velox::dwio::common::UnitLoader> getUnitLoader();
 

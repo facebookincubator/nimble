@@ -19,15 +19,16 @@
 #include <span>
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/FixedBitArray.h"
-#include "dwio/nimble/common/Rle.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingIdentifier.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
+#include "dwio/nimble/encodings/BufferedEncoding.h"
+#include "dwio/nimble/encodings/DictionaryEncoding.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "velox/common/base/SimdUtil.h"
 
 // Holds data in RLE format. Run lengths are bit packed, and the run values
@@ -39,13 +40,42 @@
 
 namespace facebook::nimble {
 
+namespace rle {
+
+template <typename T>
+void computeRuns(
+    std::span<const T> data,
+    Vector<uint32_t>* runLengths,
+    Vector<T>* runValues) {
+  static_assert(!std::is_floating_point_v<T>);
+  if (data.empty()) {
+    return;
+  }
+  uint32_t runLength = 1;
+  T last = data[0];
+  for (int i = 1; i < data.size(); ++i) {
+    if (data[i] == last) {
+      ++runLength;
+    } else {
+      runLengths->push_back(runLength);
+      runValues->push_back(last);
+      last = data[i];
+      runLength = 1;
+    }
+  }
+  runLengths->push_back(runLength);
+  runValues->push_back(last);
+}
+
+} // namespace rle
+
 namespace internal {
 
 // Base case covers the datatype-independent functionality. We use the CRTP
 // to avoid having to use virtual functions (namely on
 // RLEEncodingBase::RunValue).
 // Data layout is:
-//   Encoding::kPrefixSize bytes: standard Encoding data
+//   EncodingPrefix::kFixedPrefixSize bytes: standard Encoding data
 //   4 bytes: runs size
 //   X bytes: runs encoding bytes
 template <typename T, typename RLEEncoding>
@@ -68,14 +98,14 @@ class RLEEncodingBase
                  data.data() + this->dataOffset())},
             stringBufferFactory)} {}
 
-  void reset() {
+  void reset() override {
     materializedRunLengths_.reset();
     derived().resetValues();
     copiesRemaining_ = materializedRunLengths_.nextValue();
     currentValue_ = nextValue();
   }
 
-  void skip(uint32_t rowCount) final {
+  void skip(uint32_t rowCount) override {
     uint32_t rowsLeft = rowCount;
     // TODO: We should have skip blocks.
     while (rowsLeft) {
@@ -90,7 +120,7 @@ class RLEEncodingBase
     }
   }
 
-  void materialize(uint32_t rowCount, void* buffer) final {
+  void materialize(uint32_t rowCount, void* buffer) override {
     uint32_t rowsLeft = rowCount;
     physicalType* output = static_cast<physicalType*>(buffer);
     while (rowsLeft) {
@@ -202,8 +232,18 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});
 
+  void reset() final;
+
+  void skip(uint32_t rowCount) final;
+
+  void materialize(uint32_t rowCount, void* buffer) final;
+
   physicalType nextValue();
+
+  uint32_t nextIndex();
+
   void resetValues();
+
   static std::string_view getSerializedRunValues(
       EncodingSelection<physicalType>& selection,
       const Vector<physicalType>& runValues,
@@ -224,7 +264,101 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
       vector_size_t numSelected,
       const vector_size_t* scatterRows);
 
+  /// RLE wraps an inner Dictionary encoding. The dictionary is identical
+  /// to the inner encoding's dictionary.
+  bool dictionaryEnabled() const override {
+    return dictValues_ != nullptr;
+  }
+
+  uint32_t dictionarySize() const override {
+    NIMBLE_CHECK_NOT_NULL(dictValues_);
+    return dictValues_->dictionarySize();
+  }
+
+  const void* dictionaryEntry(uint32_t index) const override {
+    NIMBLE_CHECK_NOT_NULL(dictValues_);
+    return static_cast<const physicalType*>(dictionaryEntries()) + index;
+  }
+
+  const void* dictionaryEntries() const override {
+    NIMBLE_CHECK_NOT_NULL(dictValues_);
+    return dictValues_->dictionaryEntries();
+  }
+
+  /// Materializes composed dictionary indices for rowCount dense non-null rows.
+  /// For each RLE run, looks up the run value's dictionary index via the
+  /// value→index map, then fills the buffer with that index repeated for
+  /// the run length.
+  void materializeIndices(uint32_t rowCount, uint32_t* buffer) override {
+    NIMBLE_CHECK_NOT_NULL(dictValues_);
+    NIMBLE_CHECK_NULL(values_);
+    uint32_t rowsLeft = rowCount;
+    uint32_t numOutputRows = 0;
+    uint32_t runIndex = 0;
+    while (rowsLeft > 0) {
+      if (this->copiesRemaining_ == 0) {
+        this->copiesRemaining_ = this->materializedRunLengths_.nextValue();
+        runIndex = this->nextIndex();
+        this->currentValue_ = alphabet_[runIndex];
+      }
+      const auto numRows = std::min(rowsLeft, this->copiesRemaining_);
+      velox::simd::simdFill(buffer + numOutputRows, runIndex, numRows);
+      numOutputRows += numRows;
+      rowsLeft -= numRows;
+      this->copiesRemaining_ -= numRows;
+    }
+  }
+
+  /// Reads dictionary indices through an RLE wrapper using the standard
+  /// materializeIndices + dense/sparse helper pattern.
+  template <typename IndicesVisitor>
+  void readIndicesWithVisitor(
+      IndicesVisitor& visitor,
+      ReadWithVisitorParams& params) {
+    NIMBLE_CHECK(
+        this->dictionaryEnabled(),
+        "readIndicesWithVisitor requires dictionary-enabled inner encoding");
+    NIMBLE_CHECK(
+        !IndicesVisitor::kHasFilter && !IndicesVisitor::kHasHook,
+        "readIndicesWithVisitor should only be invoked in dictionary fast path");
+    const auto numReadRows =
+        visitor.rowAt(visitor.numRows() - 1) - params.numScanned + 1;
+    auto* rawNulls = visitor.reader().rawNullsInReadRange();
+    const auto numNonNulls = rawNulls != nullptr
+        ? velox::bits::countNonNulls(
+              rawNulls, params.numScanned, params.numScanned + numReadRows)
+        : numReadRows;
+
+    if (IndicesVisitor::dense) {
+      NIMBLE_CHECK_EQ(
+          visitor.rowAt(visitor.numRows() - 1),
+          visitor.rowAt(0) + visitor.numRows() - 1,
+          "Dense visitor must have contiguous rows");
+      detail::readDenseMaterializedIndices(
+          *this,
+          visitor,
+          rawNulls,
+          params.numScanned,
+          numReadRows,
+          numNonNulls);
+      return;
+    }
+
+    auto* rawIndices = ensureIndicesBuffer(numNonNulls);
+    detail::readSparseMaterializedIndices(
+        *this,
+        visitor,
+        params.numScanned,
+        params.prepareResultNulls,
+        rawNulls,
+        numReadRows,
+        numNonNulls,
+        rawIndices);
+  }
+
  private:
+  void advanceRunValue();
+
   template <bool kDense>
   vector_size_t findNumInRun(
       const vector_size_t* rows,
@@ -232,7 +366,24 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
       vector_size_t numRows,
       vector_size_t currentRow) const;
 
-  detail::BufferedEncoding<physicalType, 128> values_;
+  uint32_t* ensureIndicesBuffer(uint32_t numElements) {
+    if (indicesBuffer_ == nullptr || !indicesBuffer_->unique()) {
+      indicesBuffer_ =
+          velox::AlignedBuffer::allocate<uint32_t>(numElements, this->pool_);
+    } else {
+      velox::AlignedBuffer::reallocate<uint32_t>(&indicesBuffer_, numElements);
+    }
+    return indicesBuffer_->asMutable<uint32_t>();
+  }
+
+  // Exactly one of values_ or dictValues_ is active. When the inner
+  // encoding is dictionary-enabled, dictValues_ loads indices in pages
+  // and reconstructs values from the alphabet. Otherwise values_ loads
+  // values directly via materialize().
+  std::unique_ptr<detail::BufferedEncoding<physicalType, 128>> values_;
+  std::unique_ptr<detail::BufferedDictEncoding<physicalType, 128>> dictValues_;
+  const physicalType* alphabet_{nullptr};
+  velox::BufferPtr indicesBuffer_;
 };
 
 // For the bool case we know the values will alternate between true
@@ -276,33 +427,137 @@ class RLEEncoding<bool> final
 
 template <typename T>
 RLEEncoding<T>::RLEEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> stringBufferFactory,
     const Encoding::Options& options)
     : internal::RLEEncodingBase<T, RLEEncoding<T>>(
-          memoryPool,
+          pool,
           data,
           stringBufferFactory,
-          options),
-      values_{EncodingFactory(options).create(
-          memoryPool,
-          {internal::RLEEncodingBase<T, RLEEncoding<T>>::getValuesStart(),
-           static_cast<size_t>(
-               data.end() -
-               internal::RLEEncodingBase<T, RLEEncoding<T>>::getValuesStart())},
-          stringBufferFactory)} {
-  internal::RLEEncodingBase<T, RLEEncoding<T>>::reset();
+          options) {
+  auto valuesView = std::string_view{
+      internal::RLEEncodingBase<T, RLEEncoding<T>>::getValuesStart(),
+      static_cast<size_t>(
+          data.end() -
+          internal::RLEEncodingBase<T, RLEEncoding<T>>::getValuesStart())};
+  auto valuesEncoding =
+      EncodingFactory(options).create(pool, valuesView, stringBufferFactory);
+  if (valuesEncoding->dictionaryEnabled()) {
+    dictValues_ =
+        std::make_unique<detail::BufferedDictEncoding<physicalType, 128>>(
+            std::move(valuesEncoding));
+    alphabet_ =
+        static_cast<const physicalType*>(dictValues_->dictionaryEntries());
+  } else {
+    values_ = std::make_unique<detail::BufferedEncoding<physicalType, 128>>(
+        std::move(valuesEncoding));
+  }
+  this->reset();
+}
+
+// Advances to the next run value, setting currentValue_ from either
+// the values buffer (non-dict) or the alphabet via dictionary index (dict).
+template <typename T>
+void RLEEncoding<T>::advanceRunValue() {
+  if (dictValues_ != nullptr) {
+    if constexpr (isStringType<physicalType>()) {
+      NIMBLE_CHECK_NULL(values_);
+    } else {
+      NIMBLE_DCHECK_NULL(values_);
+    }
+    this->currentValue_ = alphabet_[dictValues_->nextIndex()];
+  } else {
+    if constexpr (isStringType<physicalType>()) {
+      NIMBLE_CHECK_NOT_NULL(values_);
+    } else {
+      NIMBLE_DCHECK_NOT_NULL(values_);
+    }
+    this->currentValue_ = values_->nextValue();
+  }
+}
+
+template <typename T>
+void RLEEncoding<T>::reset() {
+  this->materializedRunLengths_.reset();
+  this->resetValues();
+  this->copiesRemaining_ = this->materializedRunLengths_.nextValue();
+  advanceRunValue();
+}
+
+template <typename T>
+void RLEEncoding<T>::skip(uint32_t rowCount) {
+  uint32_t rowsLeft = rowCount;
+  while (rowsLeft > 0) {
+    if (rowsLeft < this->copiesRemaining_) {
+      this->copiesRemaining_ -= rowsLeft;
+      return;
+    }
+    rowsLeft -= this->copiesRemaining_;
+    this->copiesRemaining_ = this->materializedRunLengths_.nextValue();
+    advanceRunValue();
+  }
+}
+
+template <typename T>
+void RLEEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
+  uint32_t rowsLeft = rowCount;
+  auto* output = static_cast<physicalType*>(buffer);
+  while (rowsLeft > 0) {
+    if (rowsLeft < this->copiesRemaining_) {
+      velox::simd::simdFill(output, this->currentValue_, rowsLeft);
+      this->copiesRemaining_ -= rowsLeft;
+      return;
+    }
+    velox::simd::simdFill(output, this->currentValue_, this->copiesRemaining_);
+    output += this->copiesRemaining_;
+    rowsLeft -= this->copiesRemaining_;
+    this->copiesRemaining_ = this->materializedRunLengths_.nextValue();
+    advanceRunValue();
+  }
 }
 
 template <typename T>
 typename RLEEncoding<T>::physicalType RLEEncoding<T>::nextValue() {
-  return values_.nextValue();
+  if constexpr (isStringType<physicalType>()) {
+    NIMBLE_CHECK_NOT_NULL(values_);
+    NIMBLE_CHECK_NULL(dictValues_);
+  } else {
+    NIMBLE_DCHECK_NOT_NULL(values_);
+    NIMBLE_DCHECK_NULL(dictValues_);
+  }
+  return values_->nextValue();
+}
+
+template <typename T>
+uint32_t RLEEncoding<T>::nextIndex() {
+  if constexpr (isStringType<physicalType>()) {
+    NIMBLE_CHECK_NOT_NULL(dictValues_);
+    NIMBLE_CHECK_NULL(values_);
+  } else {
+    NIMBLE_DCHECK_NOT_NULL(dictValues_);
+    NIMBLE_DCHECK_NULL(values_);
+  }
+  return dictValues_->nextIndex();
 }
 
 template <typename T>
 void RLEEncoding<T>::resetValues() {
-  values_.reset();
+  if (dictValues_ != nullptr) {
+    if constexpr (isStringType<physicalType>()) {
+      NIMBLE_CHECK_NULL(values_);
+    } else {
+      NIMBLE_DCHECK_NULL(values_);
+    }
+    dictValues_->reset();
+  } else {
+    if constexpr (isStringType<physicalType>()) {
+      NIMBLE_CHECK_NOT_NULL(values_);
+    } else {
+      NIMBLE_DCHECK_NOT_NULL(values_);
+    }
+    values_->reset();
+  }
 }
 
 template <typename T>
@@ -352,7 +607,7 @@ void RLEEncoding<T>::bulkScan(
   for (;;) {
     if (this->copiesRemaining_ == 0) {
       this->copiesRemaining_ = this->materializedRunLengths_.nextValue();
-      this->currentValue_ = nextValue();
+      advanceRunValue();
     }
     const auto numInRun = findNumInRun<V::dense>(
         selectedRows, selectedRowIndex, numSelected, currentRow);
@@ -422,8 +677,18 @@ void RLEEncoding<T>::readWithVisitor(
   if (velox::dwio::common::useFastPath(visitor, nulls)) {
     detail::readWithVisitorFast(*this, visitor, params, nulls);
   } else {
-    internal::RLEEncodingBase<T, RLEEncoding<T>>::readWithVisitor(
-        visitor, params);
+    detail::readWithVisitorSlow(
+        visitor,
+        params,
+        [&](auto toSkip) { this->skip(toSkip); },
+        [&] {
+          if (this->copiesRemaining_ == 0) {
+            this->copiesRemaining_ = this->materializedRunLengths_.nextValue();
+            advanceRunValue();
+          }
+          --this->copiesRemaining_;
+          return this->currentValue_;
+        });
   }
 }
 

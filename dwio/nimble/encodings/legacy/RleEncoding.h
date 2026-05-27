@@ -19,16 +19,15 @@
 #include <span>
 #include <type_traits>
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/FixedBitArray.h"
-#include "dwio/nimble/common/Rle.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingIdentifier.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/legacy/Encoding.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "velox/common/base/SimdUtil.h"
 
 // Holds data in RLE format. Run lengths are bit packed, and the run values
@@ -40,13 +39,42 @@
 
 namespace facebook::nimble::legacy {
 
+namespace rle {
+
+template <typename T>
+void computeRuns(
+    std::span<const T> data,
+    Vector<uint32_t>* runLengths,
+    Vector<T>* runValues) {
+  static_assert(!std::is_floating_point_v<T>);
+  if (data.empty()) {
+    return;
+  }
+  uint32_t runLength = 1;
+  T last = data[0];
+  for (int i = 1; i < data.size(); ++i) {
+    if (data[i] == last) {
+      ++runLength;
+    } else {
+      runLengths->push_back(runLength);
+      runValues->push_back(last);
+      last = data[i];
+      runLength = 1;
+    }
+  }
+  runLengths->push_back(runLength);
+  runValues->push_back(last);
+}
+
+} // namespace rle
+
 namespace internal {
 
 // Base case covers the datatype-independent functionality. We use the CRTP
 // to avoid having to use virtual functions (namely on
 // RLEEncodingBase::RunValue).
 // Data layout is:
-//   Encoding::kPrefixSize bytes: standard Encoding data
+//   EncodingPrefix::kFixedPrefixSize bytes: standard Encoding data
 //   4 bytes: runs size
 //   X bytes: runs encoding bytes
 template <typename T, typename RLEEncoding>
@@ -63,9 +91,9 @@ class RLEEncodingBase
       : TypedEncoding<T, physicalType>(memoryPool, data),
         materializedRunLengths_{EncodingFactory().create(
             memoryPool,
-            {data.data() + Encoding::kPrefixSize + 4,
+            {data.data() + EncodingPrefix::kFixedPrefixSize + 4,
              *reinterpret_cast<const uint32_t*>(
-                 data.data() + Encoding::kPrefixSize)},
+                 data.data() + EncodingPrefix::kFixedPrefixSize)},
             stringBufferFactory)} {}
 
   void reset() {
@@ -141,7 +169,7 @@ class RLEEncodingBase
     std::string_view serializedRunValues =
         getSerializedRunValues(selection, runValues, tempBuffer);
 
-    const uint32_t encodingSize = Encoding::kPrefixSize + 4 +
+    const uint32_t encodingSize = EncodingPrefix::kFixedPrefixSize + 4 +
         serializedRunLengths.size() + serializedRunValues.size();
     char* reserved = buffer.reserve(encodingSize);
     char* pos = reserved;
@@ -154,9 +182,9 @@ class RLEEncodingBase
   }
 
   const char* getValuesStart() const {
-    return this->data_.data() + Encoding::kPrefixSize + 4 +
+    return this->data_.data() + EncodingPrefix::kFixedPrefixSize + 4 +
         *reinterpret_cast<const uint32_t*>(
-               this->data_.data() + Encoding::kPrefixSize);
+               this->data_.data() + EncodingPrefix::kFixedPrefixSize);
   }
 
   RLEEncoding& derived() {

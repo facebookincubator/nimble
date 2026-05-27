@@ -35,7 +35,7 @@ bool InMemoryChunkedStream::hasNext() {
 
 std::string_view InMemoryChunkedStream::nextChunk() {
   ensureLoaded();
-  uncompressed_.clear();
+  uncompressed_.reset();
   NIMBLE_CHECK_LE(
       kChunkHeaderSize,
       stream_.size() - (pos_ - stream_.data()),
@@ -52,9 +52,8 @@ std::string_view InMemoryChunkedStream::nextChunk() {
       break;
     }
     case CompressionType::Zstd: {
-      uncompressed_ =
-          ZstdCompression::uncompress(*uncompressed_.pool(), {pos_, length});
-      chunk = {uncompressed_.data(), uncompressed_.size()};
+      uncompressed_ = ZstdCompression::uncompress({pos_, length}, &memoryPool_);
+      chunk = {uncompressed_->as<char>(), uncompressed_->size()};
       break;
     }
     default: {
@@ -77,7 +76,7 @@ CompressionType InMemoryChunkedStream::peekCompressionType() {
 }
 
 void InMemoryChunkedStream::reset() {
-  uncompressed_.clear();
+  uncompressed_.reset();
   pos_ = stream_.data();
 }
 

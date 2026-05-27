@@ -15,8 +15,12 @@
  */
 
 #include "dwio/nimble/tablet/Compression.h"
+
 #include <gtest/gtest.h>
-#include "dwio/nimble/tablet/MetadataBuffer.h"
+#include <zstd.h>
+
+#include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "velox/common/memory/Memory.h"
 
 using namespace ::facebook;
@@ -53,21 +57,52 @@ const std::string kLargeDataForTest = [] {
   return data;
 }();
 
-TEST_F(CompressionTest, SimpleCompressionTest) {
-  // First compress the data
-  auto compressed =
-      nimble::ZstdCompression::compress(*pool_, kLargeDataForTest);
-  ASSERT_TRUE(compressed.has_value());
+TEST_F(CompressionTest, compressRoundTrip) {
+  struct TestParam {
+    size_t size;
+    char fillChar;
+    std::string debugString() const {
+      return fmt::format("size {}, fillChar {}", size, fillChar);
+    }
+  };
+  for (const auto& testData : std::vector<TestParam>{
+           {0, '\0'}, {100, 'A'}, {2'001, 'B'}, {100'000, 'X'}}) {
+    SCOPED_TRACE(testData.debugString());
+    const std::string data(testData.size, testData.fillChar);
+    auto compressed = nimble::ZstdCompression::compress(data, pool_.get());
+    ASSERT_TRUE(compressed.has_value());
 
-  std::string_view compressedView{compressed->data(), compressed->size()};
+    std::string_view compressedView{
+        compressed.value()->as<char>(), compressed.value()->size()};
+    auto decompressed =
+        nimble::ZstdCompression::uncompress(compressedView, pool_.get());
 
-  // Create buffer from compressed data
-  nimble::MetadataBuffer buffer(
-      *pool_, compressedView, nimble::CompressionType::Zstd);
+    std::string_view result{decompressed->as<char>(), decompressed->size()};
+    EXPECT_EQ(result, data);
+  }
+}
 
-  auto content = buffer.content();
-  EXPECT_EQ(content, kLargeDataForTest);
-  EXPECT_EQ(content.size(), kLargeDataForTest.size());
+TEST_F(CompressionTest, compressIncompressible) {
+  std::string data;
+  data.reserve(256);
+  for (int i = 0; i < 256; ++i) {
+    data.push_back(static_cast<char>(i));
+  }
+
+  auto compressed = nimble::ZstdCompression::compress(data, pool_.get());
+  EXPECT_FALSE(compressed.has_value());
+}
+
+TEST_F(CompressionTest, invalidCompressionLevel) {
+  const std::string data(1'000, 'A');
+  NIMBLE_ASSERT_THROW(
+      nimble::ZstdCompression::compress(
+          data, pool_.get(), ZSTD_maxCLevel() + 1),
+      "Compression level above maximum");
+  NIMBLE_ASSERT_THROW(
+      nimble::ZstdCompression::compress(
+          data, pool_.get(), ZSTD_minCLevel() - 1),
+      "Compression level below minimum");
 }
 
 } // namespace

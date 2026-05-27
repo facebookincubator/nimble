@@ -67,11 +67,11 @@ SerializationDump::SerializationStats SerializationDump::serializationStats(
   info.version =
       static_cast<SerializationVersion>(static_cast<uint8_t>(*pos++));
 
-  // Read row count (varint for kCompact).
+  // Read row count (varint for kCompactRaw).
   info.rowCount = varint::readVarint32(&pos);
 
   // Parse stream sizes from trailer.
-  auto streamSizes = serde::detail::readStreamSizes(end, info.version, pool_);
+  auto streamSizes = serde::detail::readTrailerStreamSizes(end);
 
   // Walk streams and extract encoding info.
   info.streams.reserve(streamSizes.size());

@@ -15,7 +15,6 @@
  */
 #pragma once
 
-#include <bit>
 #include <cmath>
 #include <limits>
 #include <random>
@@ -29,7 +28,7 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
-#include "dwio/nimble/encodings/Encoding.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "folly/Random.h"
 #include "velox/common/memory/Memory.h"
@@ -118,34 +117,6 @@ Vector<T> makeMainlyConstantData(
       data.push_back(seed[1]);
     } else {
       data.push_back(seed[0]);
-    }
-  }
-  return data;
-}
-
-// Values with a fixed upper-half prefix and varying lower 16 bits.
-// This is the primary use case for SubIntSplitEncoding: e.g. small counters
-// stored in a 64-bit field, or timestamps where the high bits are constant.
-template <typename T, typename RNG>
-Vector<T> makeBitStructuredData(
-    velox::memory::MemoryPool& pool,
-    RNG& rng,
-    uint32_t rowCount,
-    [[maybe_unused]] Buffer* buffer) {
-  Vector<T> data(&pool);
-  data.reserve(rowCount);
-  if constexpr (std::is_arithmetic_v<T> && !std::is_same_v<T, bool>) {
-    using UintType = std::conditional_t<sizeof(T) == 4, uint32_t, uint64_t>;
-    UintType prefix{};
-    if constexpr (sizeof(T) == 4) {
-      prefix = static_cast<UintType>(0x12340000u);
-    } else {
-      prefix = static_cast<UintType>(0x1234567800000000ULL);
-    }
-    for (uint32_t i = 0; i < rowCount; ++i) {
-      auto bits = static_cast<UintType>(
-          prefix + (folly::Random::rand32(rng) & 0xFFFF));
-      data.push_back(std::bit_cast<T>(bits));
     }
   }
   return data;
@@ -250,12 +221,6 @@ class EncodingFuzzer {
     // Mainly constant data (good for MainlyConstant encoding).
     datasets.push_back(
         makeMainlyConstantData<T>(*pool_, rng, rowCount, buffer_.get()));
-
-    // Bit-structured data (fixed upper-half prefix, varying low 16 bits).
-    if constexpr (std::is_arithmetic_v<T> && !std::is_same_v<T, bool>) {
-      datasets.push_back(
-          makeBitStructuredData<T>(*pool_, rng, rowCount, buffer_.get()));
-    }
 
     // Small data (1-3 rows) for edge cases.
     for (uint32_t sz : {1u, 2u, 3u}) {

@@ -454,6 +454,34 @@ int main(int argc, char* argv[]) {
         );
   // clang-format on
 
+  app.addCommand(
+         "stats",
+         "<file>",
+         "Print file stats",
+         "Prints statistics information from the file. "
+         "Automatically detects and prints vectorized column stats if available, "
+         "otherwise falls back to legacy stats.",
+         [enableColors](
+             const po::variables_map& options,
+             const std::vector<std::string>& /*args*/) {
+           nimble::tools::NimbleDumpLib{
+               options["file"].as<std::string>(), enableColors, std::cout}
+               .emitStats(options["no_header"].as<bool>());
+         },
+         makePositionalArgs())
+      // clang-format off
+        .add_options()
+        (
+            "file",
+            po::value<std::string>()->required(),
+            "Nimble file path. Can be a local path or a Warm Storage path."
+        )(
+            "no_header,n",
+            po::bool_switch()->default_value(false),
+            "Don't print column names. Default is to include column names."
+        );
+  // clang-format on
+
   app.addAlias("i", "info");
   app.addAlias("b", "binary");
   app.addAlias("c", "content");

@@ -24,11 +24,10 @@
 
 #include <zstd.h>
 #include "dwio/nimble/common/FixedBitArray.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingUtils.h"
-#include "dwio/nimble/encodings/EncodingLayout.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingLayout.h"
+#include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tools/EncodingUtilities.h"
@@ -36,6 +35,8 @@
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/StatsGenerated.h"
 #include "dwio/nimble/velox/VeloxReader.h"
+#include "dwio/nimble/velox/stats/ColumnStatistics.h"
+#include "dwio/nimble/velox/stats/VectorizedStatistics.h"
 #include "folly/cli/NestedCommandLineApp.h"
 #include "velox/common/file/FileSystems.h"
 
@@ -58,122 +59,6 @@ namespace facebook::nimble::tools {
 namespace {
 
 constexpr uint32_t kBufferSize = 1000;
-constexpr int kRowCountOffset = 2;
-constexpr int kPrefixSize = 6;
-constexpr int kCompressionTypeSize = 1;
-
-uint64_t getRawDataSize(
-    velox::memory::MemoryPool& memoryPool,
-    std::string_view encodingStr) {
-  std::vector<velox::BufferPtr> newStringBuffers;
-  const auto stringBufferFactory = [&](uint32_t totalLength) {
-    auto& buffer = newStringBuffers.emplace_back(
-        velox::AlignedBuffer::allocate<char>(totalLength, &memoryPool));
-    return buffer->asMutable<void>();
-  };
-
-  auto encoding =
-      EncodingFactory().create(memoryPool, encodingStr, stringBufferFactory);
-  EncodingType encodingType = encoding->encodingType();
-  DataType dataType = encoding->dataType();
-  uint32_t rowCount = encoding->rowCount();
-
-  if (encodingType == EncodingType::Sentinel) {
-    NIMBLE_UNSUPPORTED("Sentinel encoding is not supported");
-  }
-
-  if (encodingType == EncodingType::Nullable) {
-    auto pos = encodingStr.data() + kPrefixSize;
-    auto nonNullsSize = encoding::readUint32(pos);
-    // Sum of the null count and size of the non-null child encoding.
-    return getRawDataSize(memoryPool, {pos, nonNullsSize}) + rowCount;
-  }
-
-  if (dataType != DataType::String) {
-    auto typeSize = nimble::detail::dataTypeSize(dataType);
-    return typeSize * rowCount;
-  }
-
-  auto pos = encodingStr.data() + kPrefixSize; // Skip the prefix.
-  uint64_t result = 0;
-
-  switch (encodingType) {
-    case EncodingType::Trivial: {
-      pos += kCompressionTypeSize;
-      auto lengthsSize = encoding::readUint32(pos);
-      auto lengths = EncodingFactory().create(
-          memoryPool, {pos, lengthsSize}, stringBufferFactory);
-      std::vector<uint32_t> buffer(rowCount);
-      lengths->materialize(rowCount, buffer.data());
-      result += std::accumulate(buffer.begin(), buffer.end(), 0u);
-      break;
-    }
-
-    case EncodingType::Constant: {
-      auto valueSize = encoding::readUint32(pos);
-      result += rowCount * valueSize;
-      break;
-    }
-
-    case EncodingType::MainlyConstant: {
-      auto isCommonSize = encoding::readUint32(pos);
-      pos += isCommonSize;
-      auto otherValuesSize = encoding::readUint32(pos);
-      auto otherValuesOffset = pos;
-      auto otherValuesCount = encoding::peek<uint32_t>(pos + kRowCountOffset);
-      pos += otherValuesSize;
-      auto constantValueSize = encoding::readUint32(pos);
-      result += (rowCount - otherValuesCount) * constantValueSize;
-      result += getRawDataSize(memoryPool, {otherValuesOffset, otherValuesSize});
-      break;
-    }
-
-    case EncodingType::Dictionary: {
-      auto alphabetSize = encoding::readUint32(pos);
-      auto alphabetCount = encoding::peek<uint32_t>(pos + kRowCountOffset);
-      auto alphabet = EncodingFactory().create(
-          memoryPool, {pos, alphabetSize}, stringBufferFactory);
-      std::vector<std::string_view> alphabetBuffer(alphabetCount);
-      alphabet->materialize(alphabetCount, alphabetBuffer.data());
-
-      pos += alphabetSize;
-      auto indicesSize = encodingStr.length() - (pos - encodingStr.data());
-      auto indices = EncodingFactory().create(
-          memoryPool, {pos, indicesSize}, stringBufferFactory);
-      std::vector<uint32_t> indicesBuffer(rowCount);
-      indices->materialize(rowCount, indicesBuffer.data());
-      for (int i = 0; i < rowCount; ++i) {
-        result += alphabetBuffer[indicesBuffer[i]].size();
-      }
-      break;
-    }
-
-    case EncodingType::RLE: {
-      auto runLengthsSize = encoding::readUint32(pos);
-      auto runLengthsCount = encoding::peek<uint32_t>(pos + kRowCountOffset);
-      auto runLengths = EncodingFactory().create(
-          memoryPool, {pos, runLengthsSize}, stringBufferFactory);
-      std::vector<uint32_t> runLengthsBuffer(runLengthsCount);
-      runLengths->materialize(runLengthsCount, runLengthsBuffer.data());
-
-      pos += runLengthsSize;
-      auto runValuesSize = encodingStr.length() - (pos - encodingStr.data());
-      auto runValues = EncodingFactory().create(
-          memoryPool, {pos, runValuesSize}, stringBufferFactory);
-      std::vector<std::string_view> runValuesBuffer(runLengthsCount);
-      runValues->materialize(runLengthsCount, runValuesBuffer.data());
-
-      for (int i = 0; i < runLengthsCount; ++i) {
-        result += runLengthsBuffer[i] * runValuesBuffer[i].size();
-      }
-      break;
-    }
-
-    default:
-      NIMBLE_UNSUPPORTED("Encoding type does not support strings.");
-  }
-  return result;
-}
 
 struct GroupingKey {
   EncodingType encodingType;
@@ -423,6 +308,8 @@ NimbleDumpLib::NimbleDumpLib(
 void NimbleDumpLib::emitInfo() {
   TabletReader::Options options;
   options.preloadOptionalSections = {std::string(kStatsSection)};
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
   const auto tablet = TabletReader::create(file_, pool_.get(), options);
   ostream_ << CYAN(enableColors_) << "Nimble File "
            << RESET_COLOR(enableColors_) << "Version " << tablet->majorVersion()
@@ -497,7 +384,10 @@ void NimbleDumpLib::emitInfo() {
 }
 
 void NimbleDumpLib::emitSchema(bool collapseFlatMap) {
-  auto tablet = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tablet = TabletReader::create(file_, pool_.get(), options);
   VeloxReader reader{tablet, *pool_};
 
   auto emitOffsets = [](const Type& type) {
@@ -600,7 +490,10 @@ void NimbleDumpLib::emitSchema(bool collapseFlatMap) {
 }
 
 void NimbleDumpLib::emitStripes(bool noHeader) {
-  const auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  const auto tabletReader = TabletReader::create(file_, pool_.get(), options);
   TableFormatter formatter(
       ostream_,
       enableColors_,
@@ -632,7 +525,10 @@ void NimbleDumpLib::emitStreams(
     bool showStreamRawSize,
     bool showInMapStream,
     std::optional<uint32_t> stripeId) {
-  auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
 
   std::vector<std::tuple<std::string, uint8_t, Alignment>> fields;
   fields.emplace_back("Stripe Id", 9, Alignment::Left);
@@ -689,7 +585,8 @@ void NimbleDumpLib::emitStreams(
           auto chunk = stream.nextChunk();
           itemCount += *reinterpret_cast<const uint32_t*>(chunk.data() + 2);
           if (showStreamRawSize) {
-            rawStreamSize += getRawDataSize(*pool_, chunk);
+            rawStreamSize +=
+                nimble::test::TestUtils::getRawDataSize(*pool_, chunk);
           }
         }
 
@@ -722,7 +619,10 @@ void NimbleDumpLib::emitHistogram(
     bool topLevel,
     bool noHeader,
     std::optional<uint32_t> stripeId) {
-  auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
   std::unordered_map<
       GroupingKey,
       EncodingHistogramValue,
@@ -809,7 +709,10 @@ void NimbleDumpLib::emitContent(
     uint32_t streamId,
     std::optional<uint32_t> stripeId,
     const std::string& separator) {
-  auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
 
   uint32_t maxStreamCount;
   bool found = false;
@@ -861,7 +764,10 @@ void NimbleDumpLib::emitBinary(
     std::function<std::unique_ptr<std::ostream>()> outputFactory,
     uint32_t streamId,
     uint32_t stripeId) {
-  auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
   auto stripeIdentifier = tabletReader->stripeIdentifier(stripeId);
   if (streamId >= tabletReader->streamCount(stripeIdentifier)) {
     throw folly::ProgramExit(
@@ -1072,7 +978,10 @@ void NimbleDumpLib::emitLayout(bool noHeader, bool compressed) {
 }
 
 void NimbleDumpLib::emitStripesMetadata(bool noHeader) {
-  auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
   TableFormatter formatter(
       ostream_,
       enableColors_,
@@ -1189,7 +1098,10 @@ void NimbleDumpLib::emitFileLayout(bool noHeader) {
 }
 
 void NimbleDumpLib::emitStripeGroupsMetadata(bool noHeader) {
-  auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
   TableFormatter formatter(
       ostream_,
       enableColors_,
@@ -1218,7 +1130,10 @@ void NimbleDumpLib::emitOptionalSectionsMetadata(bool noHeader) {
     nimble::MetadataSection metadata;
   };
 
-  auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
   std::vector<NamedMetdataSection> sections;
   sections.reserve(tabletReader->optionalSections().size());
   for (const auto& [name, metadata] : tabletReader->optionalSections()) {
@@ -1250,7 +1165,12 @@ void NimbleDumpLib::emitOptionalSectionsMetadata(bool noHeader) {
 }
 
 void NimbleDumpLib::emitIndex() {
-  auto tabletReader = TabletReader::create(file_, pool_.get(), {});
+  TabletReader::Options options;
+  options.loadClusterIndex = true;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>())
+      .setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
   if (!tabletReader->hasClusterIndex()) {
     ostream_ << "Index: Not configured" << std::endl;
     return;
@@ -1327,6 +1247,189 @@ void NimbleDumpLib::emitIndex() {
              << " bytes, Metadata: " << commaSeparated(totalMetadataBytes)
              << " bytes" << std::endl;
   }
+}
+
+namespace {
+
+std::string statTypeToString(StatType type) {
+  switch (type) {
+    case StatType::DEFAULT:
+      return "DEFAULT";
+    case StatType::INTEGRAL:
+      return "INTEGRAL";
+    case StatType::FLOATING_POINT:
+      return "FLOATING_POINT";
+    case StatType::STRING:
+      return "STRING";
+    case StatType::DEDUPLICATED:
+      return "DEDUPLICATED";
+    default:
+      return fmt::format("UNKNOWN: {}", static_cast<int>(type));
+  }
+}
+
+std::pair<std::string, std::string> formatMinMax(ColumnStatistics* stat) {
+  switch (stat->getType()) {
+    case StatType::INTEGRAL: {
+      auto* integralStat = stat->as<IntegralStatistics>();
+      auto min = integralStat->getMin();
+      auto max = integralStat->getMax();
+      return std::make_pair(
+          min.has_value() ? std::to_string(min.value()) : "N/A",
+          max.has_value() ? std::to_string(max.value()) : "N/A");
+    }
+    case StatType::FLOATING_POINT: {
+      auto* floatStat = stat->as<FloatingPointStatistics>();
+      auto min = floatStat->getMin();
+      auto max = floatStat->getMax();
+      return std::make_pair(
+          min.has_value() ? fmt::format("{:.6g}", min.value()) : "N/A",
+          max.has_value() ? fmt::format("{:.6g}", max.value()) : "N/A");
+    }
+    case StatType::STRING: {
+      auto* stringStat = stat->as<StringStatistics>();
+      auto min = stringStat->getMin();
+      auto max = stringStat->getMax();
+      return std::make_pair(
+          min.has_value() ? min.value() : "N/A",
+          max.has_value() ? max.value() : "N/A");
+    }
+    default:
+      return std::make_pair(std::string("N/A"), std::string("N/A"));
+  }
+}
+
+// Helper to traverse velox schema and build schema node paths.
+// For RowType: children use their field names (e.g., root.column_name)
+// For ArrayType: child node is named __element__
+// For MapType: children are named __key__ and __value__
+void buildSchemaNodePaths(
+    const velox::TypePtr& schema,
+    const std::string& currentPath,
+    std::vector<std::string>& schemaNodePaths) {
+  schemaNodePaths.push_back(currentPath);
+
+  switch (schema->kind()) {
+    case velox::TypeKind::TINYINT:
+    case velox::TypeKind::SMALLINT:
+    case velox::TypeKind::INTEGER:
+    case velox::TypeKind::BIGINT:
+    case velox::TypeKind::REAL:
+    case velox::TypeKind::DOUBLE:
+    case velox::TypeKind::VARCHAR:
+    case velox::TypeKind::VARBINARY:
+    case velox::TypeKind::BOOLEAN:
+    case velox::TypeKind::TIMESTAMP:
+      // Leaf types - no children
+      break;
+    case velox::TypeKind::ROW: {
+      const auto& rowType = schema->asRow();
+      for (size_t i = 0; i < rowType.size(); ++i) {
+        std::string childPath = currentPath + "." + rowType.nameOf(i);
+        buildSchemaNodePaths(schema->childAt(i), childPath, schemaNodePaths);
+      }
+      break;
+    }
+    case velox::TypeKind::ARRAY: {
+      std::string childPath = currentPath + ".__element__";
+      buildSchemaNodePaths(schema->childAt(0), childPath, schemaNodePaths);
+      break;
+    }
+    case velox::TypeKind::MAP: {
+      std::string keyPath = currentPath + ".__key__";
+      std::string valuePath = currentPath + ".__value__";
+      buildSchemaNodePaths(schema->childAt(0), keyPath, schemaNodePaths);
+      buildSchemaNodePaths(schema->childAt(1), valuePath, schemaNodePaths);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+std::vector<std::string> getSchemaNodePaths(const velox::TypePtr& schema) {
+  std::vector<std::string> schemaNodePaths;
+  buildSchemaNodePaths(schema, "root", schemaNodePaths);
+  return schemaNodePaths;
+}
+
+} // namespace
+
+void NimbleDumpLib::emitStats(bool noHeader) {
+  TabletReader::Options options;
+  options.preloadOptionalSections = {
+      std::string(kVectorizedStatsSection), std::string(kStatsSection)};
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tabletReader = TabletReader::create(file_, pool_.get(), options);
+
+  auto vectorizedStatsSection =
+      tabletReader->loadOptionalSection(std::string(kVectorizedStatsSection));
+
+  if (vectorizedStatsSection.has_value()) {
+    ostream_ << "Vectorized Stats:" << std::endl;
+    auto fileStats = VectorizedFileStats::deserialize(
+        vectorizedStatsSection->content(), *pool_);
+
+    VeloxReader reader{tabletReader, *pool_};
+    auto columnStats =
+        fileStats->toColumnStatistics(reader.type(), reader.schema());
+
+    auto schemaNodePaths = getSchemaNodePaths(reader.type());
+
+    TableFormatter formatter(
+        ostream_,
+        enableColors_,
+        {{"index", 8, Alignment::Right},
+         {"schema_node", 50, Alignment::Left},
+         {"stat_type", 15, Alignment::Left},
+         {"value_count", 15, Alignment::Right},
+         {"null_count", 12, Alignment::Right},
+         {"logical_size", 15, Alignment::Right},
+         {"physical_size", 15, Alignment::Right},
+         {"min", 20, Alignment::Right},
+         {"max", 20, Alignment::Right}},
+        noHeader);
+
+    NIMBLE_CHECK_EQ(columnStats.size(), schemaNodePaths.size());
+
+    for (size_t i = 0; i < columnStats.size(); ++i) {
+      auto* stat = columnStats[i].get();
+      auto [min, max] = formatMinMax(stat);
+      formatter.writeRow({
+          std::to_string(i),
+          schemaNodePaths[i],
+          statTypeToString(stat->getType()),
+          commaSeparated(stat->getValueCount()),
+          commaSeparated(stat->getNullCount()),
+          commaSeparated(stat->getLogicalSize()),
+          commaSeparated(stat->getPhysicalSize()),
+          min,
+          max,
+      });
+    }
+    return;
+  }
+
+  auto statsSection =
+      tabletReader->loadOptionalSection(std::string(kStatsSection));
+
+  if (statsSection.has_value()) {
+    ostream_ << "Legacy Stats:" << std::endl;
+    auto* stats = flatbuffers::GetRoot<nimble::serialization::Stats>(
+        statsSection->content().data());
+
+    TableFormatter formatter(
+        ostream_,
+        enableColors_,
+        {{"raw_size", 20, Alignment::Right}},
+        noHeader);
+
+    formatter.writeRow({commaSeparated(stats->raw_size())});
+    return;
+  }
+
+  ostream_ << "No stats section found in file." << std::endl;
 }
 
 } // namespace facebook::nimble::tools
