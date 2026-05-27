@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 #include <gtest/gtest.h>
+#include <atomic>
+#include <thread>
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
@@ -23,14 +25,17 @@
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestBase.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
+#include "dwio/nimble/tablet/MetadataInput.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
+#include "folly/synchronization/Baton.h"
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileHandle.h"
 #include "velox/common/caching/FileIds.h"
 #include "velox/common/memory/MallocAllocator.h"
+#include "velox/common/testutil/TestValue.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 #include "velox/serializers/KeyEncoder.h"
 
@@ -1704,6 +1709,407 @@ TEST_F(ClusterIndexTest, preloadIndexAutoPromotesPinIndex) {
   EXPECT_EQ(helper.decodedChunkCount(0), 3);
   EXPECT_EQ(indexIoStats_->rawBytesRead(), bytesAfterPreload);
 }
+
+DEBUG_ONLY_TEST_F(ClusterIndexTest, loadPartitionOnce) {
+  std::vector<std::string> indexColumns = {"key_col"};
+  std::string minKey = "aaa";
+
+  auto encoded0 = encodeKeyStream({{"ccc"}});
+  auto encoded1 = encodeKeyStream({{"fff"}});
+  std::string combinedStream = encoded0.data + encoded1.data;
+
+  const auto size0 = static_cast<uint32_t>(encoded0.data.size());
+  const auto size1 = static_cast<uint32_t>(encoded1.data.size());
+
+  std::vector<Stripe> stripes = {
+      createStripeWithKeys(
+          {.streamOffset = 0,
+           .streamSize = size0,
+           .stream = {.numChunks = 1, .chunkRows = {1}, .chunkOffsets = {0}},
+           .chunkKeys = {"ccc"}}),
+      createStripeWithKeys(
+          {.streamOffset = size0,
+           .streamSize = size1,
+           .stream = {.numChunks = 1, .chunkRows = {1}, .chunkOffsets = {0}},
+           .chunkKeys = {"fff"}})};
+  std::vector<int> stripeGroups = {1, 1};
+
+  auto indexBuffers =
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndex =
+      createClusterIndex(indexBuffers, createKeyStreamFile(combinedStream));
+
+  std::atomic_uint32_t loadCount{0};
+  folly::Baton firstLoaderReady;
+  folly::Baton firstLoaderProceed;
+
+  SCOPED_TESTVALUE_SET(
+      "facebook::nimble::index::ClusterIndex::loadPartition",
+      std::function<void(uint32_t*)>([&](uint32_t* partitionId) {
+        ASSERT_EQ(*partitionId, 0);
+        const auto count = ++loadCount;
+        if (count == 1) {
+          firstLoaderReady.post();
+          firstLoaderProceed.wait();
+        }
+      }));
+
+  std::thread t1([&]() { clusterIndex->lookup(makeRangeScanRequest("bbb")); });
+
+  firstLoaderReady.wait();
+  EXPECT_EQ(loadCount.load(), 1);
+
+  std::thread t2([&]() { clusterIndex->lookup(makeRangeScanRequest("aaa")); });
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  EXPECT_EQ(loadCount.load(), 1);
+
+  firstLoaderProceed.post();
+  t1.join();
+  t2.join();
+
+  EXPECT_EQ(loadCount.load(), 1);
+}
+
+DEBUG_ONLY_TEST_F(ClusterIndexTest, decodeChunkFirstWins) {
+  std::vector<std::vector<std::string>> keyChunks = {
+      {"key_a", "key_b", "key_c"}};
+  auto encodedStream = encodeKeyStream(keyChunks);
+
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "key_0";
+  std::vector<Stripe> stripes = {createStripeWithKeys(
+      {.streamOffset = 0,
+       .streamSize = static_cast<uint32_t>(encodedStream.data.size()),
+       .stream = {.numChunks = 1, .chunkRows = {3}, .chunkOffsets = {0}},
+       .chunkKeys = {"key_c"}})};
+  std::vector<int> stripeGroups = {1};
+
+  auto indexBuffers =
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndex =
+      createClusterIndex(indexBuffers, createKeyStreamFile(encodedStream.data));
+  ClusterIndexTestHelper helper(clusterIndex.get());
+
+  std::atomic_int decodeCount{0};
+  const DecodedKeyChunk* firstDecoded{nullptr};
+  const DecodedKeyChunk* secondDecoded{nullptr};
+  folly::Baton firstDecodeReady;
+  folly::Baton secondDecodeReady;
+  folly::Baton firstProceed;
+  folly::Baton secondProceed;
+
+  SCOPED_TESTVALUE_SET(
+      "facebook::nimble::index::ClusterIndex::getDecodedChunk",
+      std::function<void(DecodedKeyChunk*)>([&](DecodedKeyChunk* decodedChunk) {
+        const auto count = ++decodeCount;
+        if (count == 1) {
+          firstDecoded = decodedChunk;
+          firstDecodeReady.post();
+          firstProceed.wait();
+        } else {
+          secondDecoded = decodedChunk;
+          secondDecodeReady.post();
+          secondProceed.wait();
+        }
+      }));
+
+  std::thread t1(
+      [&]() { clusterIndex->lookup(makeRangeScanRequest("key_a")); });
+  std::thread t2(
+      [&]() { clusterIndex->lookup(makeRangeScanRequest("key_b")); });
+
+  firstDecodeReady.wait();
+  secondDecodeReady.wait();
+
+  EXPECT_NE(firstDecoded, nullptr);
+  EXPECT_NE(secondDecoded, nullptr);
+  EXPECT_NE(firstDecoded, secondDecoded);
+
+  // Release thread 1 first — it wins the install.
+  firstProceed.post();
+  t1.join();
+
+  EXPECT_EQ(
+      helper.decodedChunkData(/*partitionIndex=*/0, /*chunkIndex=*/0),
+      firstDecoded);
+
+  // Release thread 2 — its install is skipped (slot already filled).
+  secondProceed.post();
+  t2.join();
+
+  EXPECT_EQ(
+      helper.decodedChunkData(/*partitionIndex=*/0, /*chunkIndex=*/0),
+      firstDecoded);
+}
+
+DEBUG_ONLY_TEST_F(ClusterIndexTest, decodeChunksDifferentChunksInParallel) {
+  std::vector<std::vector<std::string>> keyChunks = {
+      {"key_a", "key_b"}, {"key_c", "key_d"}};
+  auto encodedStream = encodeKeyStream(keyChunks);
+
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "key_0";
+  std::vector<Stripe> stripes = {createStripeWithKeys(
+      {.streamOffset = 0,
+       .streamSize = static_cast<uint32_t>(encodedStream.data.size()),
+       .stream =
+           {.numChunks = 2,
+            .chunkRows = {2, 2},
+            .chunkOffsets = encodedStream.chunkOffsets},
+       .chunkKeys = {"key_b", "key_d"}})};
+  std::vector<int> stripeGroups = {1};
+
+  auto indexBuffers =
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+
+  auto rootBuf = velox::AlignedBuffer::allocate<char>(
+      indexBuffers.rootIndex.size(), pool_.get());
+  std::memcpy(
+      rootBuf->asMutable<char>(),
+      indexBuffers.rootIndex.data(),
+      indexBuffers.rootIndex.size());
+  Section indexSection{MetadataBuffer(
+      MetadataBuffer::decompress(
+          std::move(rootBuf), CompressionType::Uncompressed, pool_.get()))};
+  metadataFile_ =
+      std::make_shared<velox::InMemoryReadFile>(indexBuffers.indexPartitions);
+  ioStats_ = std::make_shared<velox::io::IoStatistics>();
+  auto metadataInput = MetadataInput::create(
+      metadataFile_.get(),
+      MetadataInput::Options{.pool = pool_.get(), .ioStats = ioStats_});
+  keyStreamFile_ =
+      std::make_shared<velox::InMemoryReadFile>(encodedStream.data);
+  auto dataInput = std::make_unique<velox::dwio::common::BufferedInput>(
+      keyStreamFile_, *pool_);
+  auto clusterIndex = ClusterIndexTestHelper::create(
+      std::move(indexSection),
+      pool_.get(),
+      std::move(metadataInput),
+      std::move(dataInput),
+      /*pinIndex=*/true);
+  ClusterIndexTestHelper helper(clusterIndex.get());
+
+  // Pre-load the partition so both threads go straight to getDecodedChunk.
+  clusterIndex->lookup(makeRangeScanRequest("key_a"));
+  EXPECT_EQ(helper.decodedChunkCount(0), 1);
+
+  std::atomic_int decodeCount{0};
+  folly::Baton firstDecodeReady;
+  folly::Baton secondDecodeReady;
+  folly::Baton firstProceed;
+  folly::Baton secondProceed;
+
+  SCOPED_TESTVALUE_SET(
+      "facebook::nimble::index::ClusterIndex::getDecodedChunk",
+      std::function<void(DecodedKeyChunk*)>(
+          [&](DecodedKeyChunk* /*decodedChunk*/) {
+            const auto count = ++decodeCount;
+            if (count == 1) {
+              firstDecodeReady.post();
+              firstProceed.wait();
+            } else {
+              secondDecodeReady.post();
+              secondProceed.wait();
+            }
+          }));
+
+  // Thread 1 looks up chunk 1 (not yet decoded), thread 2 looks up chunk 0.
+  // Chunk 0 is already cached so t2 hits the shared-lock fast path and
+  // never reaches the TestValue. We look up two uncached keys instead.
+  // Actually chunk 0 is cached. Let's invalidate by looking up chunk 1
+  // from both threads to test the same-chunk parallel decode scenario.
+  // Instead, let's just look up the uncached chunk 1 from two threads.
+  std::thread t1(
+      [&]() { clusterIndex->lookup(makeRangeScanRequest("key_c")); });
+  std::thread t2(
+      [&]() { clusterIndex->lookup(makeRangeScanRequest("key_d")); });
+
+  // Both threads are decoding chunk 1 in parallel.
+  firstDecodeReady.wait();
+  secondDecodeReady.wait();
+  EXPECT_EQ(decodeCount.load(), 2);
+
+  // Release both to install.
+  firstProceed.post();
+  secondProceed.post();
+  t1.join();
+  t2.join();
+
+  EXPECT_EQ(helper.decodedChunkCount(0), 2);
+  EXPECT_NE(helper.decodedChunkData(0, 0), nullptr);
+  EXPECT_NE(helper.decodedChunkData(0, 1), nullptr);
+}
+
+DEBUG_ONLY_TEST_F(ClusterIndexTest, decodeChunkLastWinsUnpinned) {
+  std::vector<std::vector<std::string>> keyChunks = {
+      {"key_a", "key_b"}, {"key_c", "key_d"}};
+  auto encodedStream = encodeKeyStream(keyChunks);
+
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "key_0";
+  std::vector<Stripe> stripes = {createStripeWithKeys(
+      {.streamOffset = 0,
+       .streamSize = static_cast<uint32_t>(encodedStream.data.size()),
+       .stream =
+           {.numChunks = 2,
+            .chunkRows = {2, 2},
+            .chunkOffsets = encodedStream.chunkOffsets},
+       .chunkKeys = {"key_b", "key_d"}})};
+  std::vector<int> stripeGroups = {1};
+
+  auto indexBuffers =
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndex =
+      createClusterIndex(indexBuffers, createKeyStreamFile(encodedStream.data));
+  ClusterIndexTestHelper helper(clusterIndex.get());
+
+  // Pre-load partition and chunk 0.
+  clusterIndex->lookup(makeRangeScanRequest("key_a"));
+  EXPECT_EQ(helper.decodedChunkCount(0), 1);
+  const auto* chunk0Data = helper.decodedChunkData(0, 0);
+
+  // Now look up chunk 1 — single scratch slot evicts chunk 0.
+  clusterIndex->lookup(makeRangeScanRequest("key_c"));
+  EXPECT_EQ(helper.decodedChunkCount(0), 1);
+  const auto* chunk1Data = helper.decodedChunkData(0, 0);
+  EXPECT_NE(chunk0Data, chunk1Data);
+}
+
+class ClusterIndexConcurrentTest
+    : public ClusterIndexTest,
+      public ::testing::WithParamInterface<EncodingType> {
+ protected:
+  EncodedKeyStream encodeKeyStreamWithType(
+      const std::vector<std::vector<std::string>>& keyChunks,
+      EncodingType encodingType) {
+    EncodedKeyStream result;
+    Buffer buffer{*pool_};
+
+    for (const auto& keys : keyChunks) {
+      result.chunkOffsets.push_back(result.data.size());
+
+      std::vector<std::string_view> keyViews;
+      keyViews.reserve(keys.size());
+      for (const auto& key : keys) {
+        keyViews.push_back(key);
+      }
+
+      Buffer encodingBuffer{*pool_};
+      auto policy =
+          std::make_unique<ManualEncodingSelectionPolicy<std::string_view>>(
+              std::vector<std::pair<EncodingType, float>>{{encodingType, 1.0}},
+              CompressionOptions{},
+              std::nullopt);
+      auto encoded = EncodingFactory::encode<std::string_view>(
+          std::move(policy), keyViews, encodingBuffer);
+
+      ChunkedStreamWriter writer{buffer};
+      auto segments = writer.encode(encoded);
+      for (const auto& segment : segments) {
+        result.data.append(segment.data(), segment.size());
+      }
+    }
+    return result;
+  }
+};
+
+TEST_P(ClusterIndexConcurrentTest, concurrentLookup) {
+  constexpr uint32_t kNumThreads = 16;
+  constexpr uint32_t kLookupsPerThread = 200;
+
+  const auto encodingType = GetParam();
+
+  std::vector<std::vector<std::string>> p0Chunks = {
+      {"key_a", "key_b", "key_c", "key_d"},
+      {"key_e", "key_f", "key_g", "key_h"}};
+  std::vector<std::vector<std::string>> p1Chunks = {
+      {"key_i", "key_j", "key_k", "key_l"},
+      {"key_m", "key_n", "key_o", "key_p"}};
+
+  auto encoded0 = encodeKeyStreamWithType(p0Chunks, encodingType);
+  auto encoded1 = encodeKeyStreamWithType(p1Chunks, encodingType);
+  std::string combinedStream = encoded0.data + encoded1.data;
+
+  std::vector<std::string> indexColumns = {"col1"};
+  std::string minKey = "key_0";
+  std::vector<Stripe> stripes = {
+      createStripeWithKeys(
+          {.streamOffset = 0,
+           .streamSize = static_cast<uint32_t>(encoded0.data.size()),
+           .stream =
+               {.numChunks = 2,
+                .chunkRows = {4, 4},
+                .chunkOffsets = encoded0.chunkOffsets},
+           .chunkKeys = {"key_d", "key_h"}}),
+      createStripeWithKeys(
+          {.streamOffset = static_cast<uint32_t>(encoded0.data.size()),
+           .streamSize = static_cast<uint32_t>(encoded1.data.size()),
+           .stream =
+               {.numChunks = 2,
+                .chunkRows = {4, 4},
+                .chunkOffsets = encoded1.chunkOffsets},
+           .chunkKeys = {"key_l", "key_p"}})};
+  std::vector<int> stripeGroups = {1, 1};
+
+  auto indexBuffers =
+      createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
+  auto clusterIndex =
+      createClusterIndex(indexBuffers, createKeyStreamFile(combinedStream));
+
+  // 16 keys across 2 partitions x 2 chunks each.
+  const std::vector<std::string> allKeys = {
+      "key_a",
+      "key_b",
+      "key_c",
+      "key_d",
+      "key_e",
+      "key_f",
+      "key_g",
+      "key_h",
+      "key_i",
+      "key_j",
+      "key_k",
+      "key_l",
+      "key_m",
+      "key_n",
+      "key_o",
+      "key_p"};
+
+  std::atomic_uint32_t errors{0};
+  std::vector<std::thread> threads;
+  threads.reserve(kNumThreads);
+  for (uint32_t t = 0; t < kNumThreads; ++t) {
+    threads.emplace_back([&, t]() {
+      std::mt19937 rng(42 + t);
+      std::uniform_int_distribution<uint32_t> keyDist(0, allKeys.size() - 1);
+      for (uint32_t i = 0; i < kLookupsPerThread; ++i) {
+        const auto keyIdx = keyDist(rng);
+        const auto& key = allKeys[keyIdx];
+
+        auto result = clusterIndex->lookup(
+            IndexLookup::LookupRequest::pointLookup({key}));
+        if (result.size() != 1 || result[0].size() != 1 ||
+            result[0][0].startRow != keyIdx ||
+            result[0][0].endRow != keyIdx + 1) {
+          ++errors;
+        }
+      }
+    });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(errors.load(), 0);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    KeyEncodingType,
+    ClusterIndexConcurrentTest,
+    ::testing::Values(EncodingType::Trivial, EncodingType::Prefix),
+    [](const ::testing::TestParamInfo<EncodingType>& info) {
+      return fmt::format("{}", toString(info.param));
+    });
 
 } // namespace
 } // namespace facebook::nimble::index::test

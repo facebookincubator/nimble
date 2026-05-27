@@ -16,6 +16,8 @@
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include <glog/logging.h>
 #include <gtest/gtest.h>
+#include <chrono>
+#include <thread>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Vector.h"
@@ -54,14 +56,21 @@ class TrivialEncodingTest : public ::testing::Test {
   }
 
   std::unique_ptr<nimble::Encoding> createEncoding(
-      const nimble::Vector<std::string_view>& values) {
+      const nimble::Vector<std::string_view>& values,
+      const nimble::Encoding::Options& options = {}) {
     stringBuffers_.clear();
     return nimble::test::Encoder<nimble::TrivialEncoding<std::string_view>>::
-        createEncoding(*buffer_, values, [&](uint32_t totalLength) {
-          auto& buffer = stringBuffers_.emplace_back(
-              velox::AlignedBuffer::allocate<char>(totalLength, pool_.get()));
-          return buffer->asMutable<void>();
-        });
+        createEncoding(
+            *buffer_,
+            values,
+            [&](uint32_t totalLength) {
+              auto& buffer = stringBuffers_.emplace_back(
+                  velox::AlignedBuffer::allocate<char>(
+                      totalLength, pool_.get()));
+              return buffer->asMutable<void>();
+            },
+            nimble::CompressionType::Uncompressed,
+            options);
   }
 
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
@@ -554,6 +563,104 @@ TEST_F(TrivialEncodingTest, getStringRepeatedCalls) {
   EXPECT_EQ(result, "ccc");
   encoding->get(1, &result);
   EXPECT_EQ(result, "bbb");
+}
+
+TEST_F(TrivialEncodingTest, concurrentSeek) {
+  constexpr uint32_t kNumThreads = 16;
+  constexpr uint32_t kNumValues = 200;
+  constexpr auto kDuration = std::chrono::seconds(5);
+
+  nimble::Vector<std::string_view> sortedValues{pool_.get()};
+  std::vector<std::string> stringBuffers;
+  stringBuffers.reserve(kNumValues);
+  for (uint32_t i = 0; i < kNumValues; ++i) {
+    stringBuffers.push_back(fmt::format("key_{:03d}", i * 2));
+  }
+  std::sort(stringBuffers.begin(), stringBuffers.end());
+  for (const auto& s : stringBuffers) {
+    sortedValues.push_back(s);
+  }
+
+  // keyEncoding=true eagerly initializes seekValues_ for thread-safe access.
+  auto encoding = createEncoding(
+      sortedValues, nimble::Encoding::Options{.keyEncoding = true});
+
+  auto linearSearch = [&sortedValues](
+                          std::string_view target,
+                          bool inclusive) -> std::optional<uint32_t> {
+    for (size_t i = 0; i < sortedValues.size(); ++i) {
+      const bool found =
+          inclusive ? sortedValues[i] >= target : sortedValues[i] > target;
+      if (found) {
+        return static_cast<uint32_t>(i);
+      }
+    }
+    return std::nullopt;
+  };
+
+  const auto deadline = std::chrono::steady_clock::now() + kDuration;
+  std::vector<std::thread> threads;
+  threads.reserve(kNumThreads);
+  for (uint32_t t = 0; t < kNumThreads; ++t) {
+    threads.emplace_back([&, t]() {
+      std::mt19937 rng(42 + t);
+      std::uniform_int_distribution<uint32_t> targetDist(0, kNumValues * 2 + 1);
+      while (std::chrono::steady_clock::now() < deadline) {
+        const uint32_t targetIdx = targetDist(rng);
+        const std::string targetKey = fmt::format("key_{:03d}", targetIdx);
+        const std::string_view target = targetKey;
+        for (bool inclusive : {true, false}) {
+          const auto expected = linearSearch(target, inclusive);
+          const auto actual = encoding->seek(&target, inclusive);
+          ASSERT_EQ(expected, actual)
+              << "key=" << targetKey << " inclusive=" << inclusive;
+        }
+      }
+    });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+}
+
+TEST_F(TrivialEncodingTest, concurrentGet) {
+  constexpr uint32_t kNumThreads = 16;
+  constexpr uint32_t kNumValues = 200;
+  constexpr auto kDuration = std::chrono::seconds(5);
+
+  nimble::Vector<std::string_view> sortedValues{pool_.get()};
+  std::vector<std::string> stringBuffers;
+  stringBuffers.reserve(kNumValues);
+  for (uint32_t i = 0; i < kNumValues; ++i) {
+    stringBuffers.push_back(fmt::format("key_{:03d}", i));
+  }
+  std::sort(stringBuffers.begin(), stringBuffers.end());
+  for (const auto& s : stringBuffers) {
+    sortedValues.push_back(s);
+  }
+
+  // keyEncoding=true eagerly initializes seekValues_ for thread-safe access.
+  auto encoding = createEncoding(
+      sortedValues, nimble::Encoding::Options{.keyEncoding = true});
+
+  const auto deadline = std::chrono::steady_clock::now() + kDuration;
+  std::vector<std::thread> threads;
+  threads.reserve(kNumThreads);
+  for (uint32_t t = 0; t < kNumThreads; ++t) {
+    threads.emplace_back([&, t]() {
+      std::mt19937 rng(42 + t);
+      std::uniform_int_distribution<uint32_t> rowDist(0, kNumValues - 1);
+      while (std::chrono::steady_clock::now() < deadline) {
+        const uint32_t row = rowDist(rng);
+        std::string_view result;
+        encoding->get(row, &result);
+        ASSERT_EQ(result, sortedValues[row]) << "row=" << row;
+      }
+    });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
 }
 
 TEST_F(TrivialEncodingTest, getUnsupportedEncodingThrows) {

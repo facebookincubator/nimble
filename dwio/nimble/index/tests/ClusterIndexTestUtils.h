@@ -227,6 +227,17 @@ class ClusterIndexTestHelper {
         });
   }
 
+  /// Returns the raw DecodedKeyChunk pointer for the given chunk slot in a
+  /// partition. Used to verify which decode result won the install race.
+  const DecodedKeyChunk* decodedChunkData(
+      uint32_t partitionIndex,
+      uint32_t chunkIndex) const {
+    const auto& decodedChunks =
+        clusterIndex_->loadPartition(partitionIndex)->decodedChunks;
+    NIMBLE_CHECK_LT(chunkIndex, decodedChunks.size());
+    return decodedChunks[chunkIndex].data.get();
+  }
+
  private:
   const ClusterIndex* const clusterIndex_;
 };
