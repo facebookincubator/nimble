@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+
 #include <algorithm>
 #include <bit>
 #include <string>
@@ -402,3 +404,5 @@ TEST(SubIntSplitEncodingTests, FullWidthSingleSectionRoundTrip) {
   const auto decoded = decodeAll<uint64_t>(encoded, *pool);
   expectBitwiseEqual(values, decoded);
 }
+
+#endif

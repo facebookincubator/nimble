@@ -107,8 +107,7 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       return f(static_cast<MainlyConstantEncoding<T>&>(encoding));
     case EncodingType::Delta:
       return f(static_cast<DeltaEncoding<T>&>(encoding));
-    // SubIntSplit has no legacy counterpart; use the new encoding class
-    // directly (same Encoding base class).
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::SubIntSplit:
       if constexpr (isNumericType<T>() && (sizeof(T) == 4 || sizeof(T) == 8)) {
         return f(
@@ -116,6 +115,7 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       } else {
         NIMBLE_UNREACHABLE(toString(encoding.dataType()));
       }
+#endif
     default:
       NIMBLE_UNSUPPORTED(toString(encoding.encodingType()));
   }

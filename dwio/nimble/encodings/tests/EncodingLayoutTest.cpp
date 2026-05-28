@@ -16,7 +16,9 @@
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Exceptions.h"
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 #include "dwio/nimble/encodings/SubIntSplitConfig.h"
+#endif
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/tools/EncodingUtilities.h"
 #include "velox/common/memory/Memory.h"
@@ -78,6 +80,7 @@ void testCapture(nimble::EncodingLayout expected, TCollection data) {
   verifyEncodingLayout(expected, actual);
 }
 
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 template <typename T>
 class ForceSubIntSplitPolicy final : public nimble::EncodingSelectionPolicy<T> {
   using physicalType = typename nimble::TypeTraits<T>::physicalType;
@@ -106,6 +109,7 @@ class ForceSubIntSplitPolicy final : public nimble::EncodingSelectionPolicy<T> {
     return factory.createPolicy(type);
   }
 };
+#endif
 
 } // namespace
 
@@ -359,6 +363,7 @@ TEST(EncodingLayoutTests, Nullable) {
       actual.first);
 }
 
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 // SubIntSplitEncoding layout tests -------------------------------------------
 
 // Verify that an EncodingLayout tree with a SubIntSplit root and two named
@@ -561,6 +566,7 @@ TEST(EncodingLayoutTests, SubIntSplitPreserveBoundariesReplay) {
   EXPECT_EQ(*replayedMode, nimble::detail::subintsplit::kSplitModePreserve);
   EXPECT_EQ(*replayedBoundaries, preserveBoundaries);
 }
+#endif
 
 TEST(EncodingLayoutTests, SizeTooSmall) {
   {
