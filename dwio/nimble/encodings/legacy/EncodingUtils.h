@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "dwio/nimble/encodings/DoubleDeltaEncoding.h"
 #include "dwio/nimble/encodings/PforEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
@@ -112,6 +113,12 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
     case EncodingType::Pfor:
       if constexpr (isIntegralType<T>()) {
         return f(static_cast<PforEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
+    case EncodingType::DoubleDelta:
+      if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>) {
+        return f(static_cast<DoubleDeltaEncoding<T>&>(encoding));
       } else {
         NIMBLE_UNREACHABLE(toString(encoding.dataType()));
       }

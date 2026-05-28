@@ -110,6 +110,12 @@ enum class EncodingType {
   // residuals at a narrow base bit width, and stores the remaining outliers
   // ("exceptions") as a parallel position+value array.
   Pfor = 15,
+  // Long Double-Delta Bitpack. 64-bit integer only. Stores the first two
+  // values explicitly, then bitpacks the second-order differences
+  // (delta-of-deltas) of the remaining values after FOR + zigzag. Wins on
+  // monotone sequences with regular intervals — perfectly regular timestamps
+  // collapse to bitWidth=0 and ~31 bytes total regardless of N.
+  DoubleDelta = 13,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);
