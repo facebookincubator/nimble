@@ -20,7 +20,9 @@
 #include <memory>
 #include <vector>
 #include "dwio/nimble/common/Exceptions.h"
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 #include "dwio/nimble/encodings/SubIntSplitConfig.h"
+#endif
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/SubIntSplitConfig.h"
 
@@ -350,6 +352,10 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     case EncodingType::PFOR:
     case EncodingType::SimdForBitpack: {
       // Non nested encodings have zero children
+#ifndef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+    case EncodingType::SubIntSplit:
+#endif
+    {
       break;
     }
     case EncodingType::Trivial: {
@@ -445,10 +451,8 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
               {pos, encoding.size() - (pos - encoding.data())}));
       break;
     }
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::SubIntSplit: {
-      // Layout after the standard prefix:
-      //   [splitCount(1)][reserved(1)][{bitStart(1),bitEnd(1),encodedSize(4)} × N]
-      //   [section_0_bytes][section_1_bytes]...
       const char* pos = encoding.data() + kEncodingPrefixSize;
       const uint8_t splitCount = encoding::read<uint8_t>(pos);
       encoding::read<uint8_t>(pos); // reserved
@@ -489,7 +493,9 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
               boundaryPlans)},
           compressionType,
           std::move(children)};
+      break;
     }
+#endif
     case EncodingType::Nullable: {
       const char* pos = encoding.data() + kEncodingPrefixSize;
       const uint32_t dataBytes = encoding::readUint32(pos);

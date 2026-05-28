@@ -244,9 +244,11 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     case EncodingType::Delta: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(DeltaEncoding, dataType);
     }
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::SubIntSplit: {
       RETURN_ENCODING_BY_VARINT_TYPE(SubIntSplitEncoding, dataType);
     }
+#endif
     case EncodingType::Prefix: {
       NIMBLE_CHECK_EQ(
           dataType,

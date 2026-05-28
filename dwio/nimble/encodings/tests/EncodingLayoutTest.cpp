@@ -16,7 +16,9 @@
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Exceptions.h"
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 #include "dwio/nimble/encodings/SubIntSplitConfig.h"
+#endif
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/tools/EncodingUtilities.h"
@@ -79,6 +81,7 @@ void testCapture(nimble::EncodingLayout expected, TCollection data) {
   verifyEncodingLayout(expected, actual);
 }
 
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 template <typename T>
 class ForceSubIntSplitPolicy final : public nimble::EncodingSelectionPolicy<T> {
   using physicalType = typename nimble::TypeTraits<T>::physicalType;
@@ -107,6 +110,7 @@ class ForceSubIntSplitPolicy final : public nimble::EncodingSelectionPolicy<T> {
     return factory.createPolicy(type);
   }
 };
+#endif
 
 } // namespace
 
@@ -360,6 +364,7 @@ TEST(EncodingLayoutTests, Nullable) {
       actual.first);
 }
 
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 // SubIntSplitEncoding layout tests -------------------------------------------
 
 // Verify that an EncodingLayout tree with a SubIntSplit root and two named
@@ -442,19 +447,14 @@ TEST(EncodingLayoutTests, SubIntSplitCapture) {
   }
 
   auto encoding = nimble::EncodingFactory::encode<int64_t>(
-<<<<<<< HEAD
       std::make_unique<ForceSubIntSplitPolicy<int64_t>>(),
       data,
       buffer);
-=======
-      std::make_unique<ForceSubIntSplitPolicy<int64_t>>(), data, buffer);
->>>>>>> feat(encoding): Subint Split Encoding (#697)
 
   // Capture must succeed and not throw.
   auto captured = nimble::EncodingLayoutCapture::capture(encoding);
   ASSERT_EQ(captured.encodingType(), nimble::EncodingType::SubIntSplit);
   ASSERT_GT(captured.childrenCount(), 0u);
-<<<<<<< HEAD
     EXPECT_EQ(
       captured.config().get(std::string(nimble::detail::subintsplit::kSplitModeConfigKey)),
       nimble::detail::subintsplit::kSplitModePreserve);
@@ -466,22 +466,6 @@ TEST(EncodingLayoutTests, SubIntSplitCapture) {
       *defaultPool,
       encoding,
       [](uint32_t) { return nullptr; });
-=======
-  EXPECT_EQ(
-      captured.config().get(
-          std::string(nimble::detail::subintsplit::kSplitModeConfigKey)),
-      nimble::detail::subintsplit::kSplitModePreserve);
-  ASSERT_TRUE(
-      captured.config()
-          .get(
-              std::string(
-                  nimble::detail::subintsplit::kSplitBoundariesConfigKey))
-          .has_value());
-
-  // The encoded stream must round-trip through the encoding factory.
-  auto decoded = nimble::EncodingFactory().create(
-      *defaultPool, encoding, [](uint32_t) { return nullptr; });
->>>>>>> feat(encoding): Subint Split Encoding (#697)
   nimble::Vector<int64_t> decodedValues{defaultPool.get()};
   decodedValues.resize(data.size());
   decoded->materialize(data.size(), decodedValues.data());
@@ -531,12 +515,8 @@ TEST(EncodingLayoutTests, SubIntSplitCapture) {
   EXPECT_EQ(*deserializedBoundaries, *capturedBoundaries);
 
   // Each child must be non-nullopt (all sections were encoded).
-<<<<<<< HEAD
   for (nimble::NestedEncodingIdentifier id = 0;
        id < captured.childrenCount();
-=======
-  for (nimble::NestedEncodingIdentifier id = 0; id < captured.childrenCount();
->>>>>>> feat(encoding): Subint Split Encoding (#697)
        ++id) {
     EXPECT_TRUE(captured.child(id).has_value());
   }
@@ -545,11 +525,7 @@ TEST(EncodingLayoutTests, SubIntSplitCapture) {
 TEST(EncodingLayoutTests, SubIntSplitPreserveBoundariesReplay) {
   nimble::EncodingSelectionPolicyFactory encodingSelectionPolicyFactory =
       [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{}](
-<<<<<<< HEAD
         nimble::DataType dataType)
-=======
-          nimble::DataType dataType)
->>>>>>> feat(encoding): Subint Split Encoding (#697)
       -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
     return encodingFactory.createPolicy(dataType);
   };
@@ -576,13 +552,9 @@ TEST(EncodingLayoutTests, SubIntSplitPreserveBoundariesReplay) {
 
   auto encoding = nimble::EncodingFactory::encode<int64_t>(
       std::make_unique<nimble::ReplayedEncodingSelectionPolicy<int64_t>>(
-<<<<<<< HEAD
           preserveLayout,
           std::nullopt,
           encodingSelectionPolicyFactory),
-=======
-          preserveLayout, std::nullopt, encodingSelectionPolicyFactory),
->>>>>>> feat(encoding): Subint Split Encoding (#697)
       data,
       buffer);
 
@@ -595,14 +567,12 @@ TEST(EncodingLayoutTests, SubIntSplitPreserveBoundariesReplay) {
   ASSERT_TRUE(replayedMode.has_value());
   ASSERT_TRUE(replayedBoundaries.has_value());
   EXPECT_EQ(*replayedMode, nimble::detail::subintsplit::kSplitModePreserve);
-<<<<<<< HEAD
   EXPECT_EQ(*replayedBoundaries,
       preserveBoundaries);
   }
-=======
   EXPECT_EQ(*replayedBoundaries, preserveBoundaries);
 }
->>>>>>> feat(encoding): Subint Split Encoding (#697)
+#endif
 
 TEST(EncodingLayoutTests, SizeTooSmall) {
   {

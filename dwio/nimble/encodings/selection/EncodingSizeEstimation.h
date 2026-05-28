@@ -202,18 +202,6 @@ struct EncodingSizeEstimation {
         }
       }
       case EncodingType::SubIntSplit: {
-        // Heuristic estimate — EncodingSizeEstimation only has Statistics, not
-        // raw values, so we cannot run the DP here without either re-reading
-        // the data or adding a raw-data accessor to Statistics. Instead, we
-        // use the FixedBitWidth estimate as a conservative proxy: SubIntSplit
-        // can do at least as well as FixedBitWidth and often better (constant
-        // bit ranges become free; low-cardinality ranges get Dictionary). We
-        // apply a small discount to make SubIntSplit a genuine competitor so
-        // the policy will actually try it. The actual DP runs at encode time.
-        //
-        // Filter: if the observed range already fills ≥ 3/4 of the type's bit
-        // width, the values look random and SubIntSplit is unlikely to help —
-        // skip it to avoid wasting encode-time DP work on unstructured data.
         if constexpr (
             isNumericType<physicalType>() &&
             (sizeof(physicalType) == 4 || sizeof(physicalType) == 8)) {
@@ -222,7 +210,6 @@ struct EncodingSizeEstimation {
           const uint64_t rangeBits =
               velox::bits::bitsRequired(statistics.max() - statistics.min());
           if (rangeBits > (kTypeWidthBits * 3) / 4) {
-            // Full-range data: SubIntSplit won't improve over FixedBitWidth.
             return std::nullopt;
           }
           const auto fbwEst = estimateNumericSize(
@@ -230,11 +217,7 @@ struct EncodingSizeEstimation {
           if (!fbwEst.has_value()) {
             return std::nullopt;
           }
-          // Conservative overhead: prefix(6) + splitCount(1) + reserved(1) +
-          // 4 section headers (6 B each) + ~8 B per nested encoding header.
           constexpr uint64_t kOverheadBytes = 6u + 2u + 4u * 6u + 4u * 8u;
-          // Apply a 10% discount on the FixedBitWidth estimate to signal that
-          // SubIntSplit can compress constant/low-cardinality ranges for free.
           const uint64_t estimate =
               static_cast<uint64_t>(
                   static_cast<double>(fbwEst.value()) * 0.90) +
@@ -244,6 +227,7 @@ struct EncodingSizeEstimation {
           return std::nullopt;
         }
       }
+#endif
       default: {
         return std::nullopt;
       }

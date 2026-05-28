@@ -126,6 +126,7 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::SubIntSplit:
       if constexpr (
           isNumericType<T>() &&
@@ -135,6 +136,7 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
+#endif
     default:
       NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
   }

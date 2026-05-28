@@ -255,12 +255,17 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     case EncodingType::PFOR: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(PFOREncoding, dataType);
     }
+<<<<<<< HEAD
     case EncodingType::SimdForBitpack: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(SimdForBitpackEncoding, dataType);
     }
+=======
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+>>>>>>> 8e5f488 (feat(encoding): Experimental - Enable/Disable SubIntSplit encoding in both write and read paths)
     case EncodingType::SubIntSplit: {
       RETURN_ENCODING_BY_VARINT_TYPE(SubIntSplitEncoding, dataType);
     }
+#endif
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
@@ -417,6 +422,7 @@ std::string_view EncodingFactory::encode(
             TypeTraits<T>::dataType);
       }
     }
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::SubIntSplit: {
       if constexpr (
           isNumericType<physicalType>() &&
@@ -428,6 +434,7 @@ std::string_view EncodingFactory::encode(
             "SubIntSplit encoding only supports 32- and 64-bit numeric types.");
       }
     }
+#endif
     default: {
       NIMBLE_UNSUPPORTED(
           "Encoding {} is not supported.", toString(selection.encodingType()));

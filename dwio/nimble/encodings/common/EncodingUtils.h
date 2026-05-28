@@ -146,12 +146,14 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::SubIntSplit:
       if constexpr (isNumericType<T>() && sizeof(T) >= 4) {
         return f(static_cast<SubIntSplitEncoding<T>&>(encoding));
       } else {
         NIMBLE_UNREACHABLE(toString(encoding.dataType()));
       }
+#endif
     default:
       NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
   }
