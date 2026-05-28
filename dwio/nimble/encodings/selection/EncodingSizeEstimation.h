@@ -33,6 +33,8 @@ template <typename T, bool FixedByteWidth>
 struct EncodingSizeEstimation {
   using physicalType = typename TypeTraits<T>::physicalType;
 
+  // TODO: Add EncodingType::ALP size estimation case once the actual ALP
+  // algorithm is implemented.
   static std::optional<uint64_t> estimateNumericSize(
       const EncodingType encodingType,
       const uint64_t entryCount,
