@@ -23,6 +23,7 @@
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
+#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
@@ -243,6 +244,11 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     case EncodingType::Delta: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(DeltaEncoding, dataType);
     }
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+    case EncodingType::SubIntSplit: {
+      RETURN_ENCODING_BY_VARINT_TYPE(SubIntSplitEncoding, dataType);
+    }
+#endif
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
@@ -376,6 +382,19 @@ std::string_view EncodingFactory::encode(
             toString(TypeTraits<T>::dataType));
       }
     }
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+    case EncodingType::SubIntSplit: {
+      if constexpr (
+          isNumericType<physicalType>() &&
+          (sizeof(physicalType) == 4 || sizeof(physicalType) == 8)) {
+        return SubIntSplitEncoding<T>::encode(
+            selection, castedValues, buffer, options);
+      } else {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "SubIntSplit encoding only supports 32- and 64-bit numeric types.");
+      }
+    }
+#endif
     default: {
       NIMBLE_UNSUPPORTED(
           "Encoding {} is not supported.", toString(selection.encodingType()));

@@ -29,6 +29,25 @@ namespace {
 
 using namespace facebook::velox;
 
+template <typename T>
+using NullableArray = std::optional<std::vector<std::optional<T>>>;
+
+template <typename T>
+NullableArray<T> makeNullableArray(
+    std::initializer_list<std::optional<T>> values) {
+  return NullableArray<T>{std::in_place, values.begin(), values.end()};
+}
+
+template <typename T>
+using NullableMap =
+    std::optional<std::vector<std::pair<int64_t, std::optional<T>>>>;
+
+template <typename T>
+NullableMap<T> makeNullableMap(
+    std::initializer_list<std::pair<int64_t, std::optional<T>>> values) {
+  return NullableMap<T>{std::in_place, values.begin(), values.end()};
+}
+
 // Tests for ListColumnReader and MapColumnReader (variable-length containers).
 class VariableLengthColumnReaderTest : public ::testing::Test,
                                        public velox::test::VectorTestBase {

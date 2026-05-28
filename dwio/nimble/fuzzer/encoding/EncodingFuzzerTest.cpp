@@ -32,6 +32,7 @@
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
+#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
 #include "dwio/nimble/fuzzer/encoding/EncodingFuzzer.h"
@@ -256,6 +257,28 @@ class MainlyConstantFuzzerTest : public ::testing::Test {};
 TYPED_TEST_SUITE(MainlyConstantFuzzerTest, MainlyConstantTypes);
 
 TYPED_TEST(MainlyConstantFuzzerTest, correctness) {
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+
+// SubIntSplit: 32- and 64-bit numeric types (no bool, no string_view)
+using SubIntSplitTypes = ::testing::Types<
+    SubIntSplitEncoding<int32_t>,
+    SubIntSplitEncoding<uint32_t>,
+    SubIntSplitEncoding<int64_t>,
+    SubIntSplitEncoding<uint64_t>,
+    SubIntSplitEncoding<float>,
+    SubIntSplitEncoding<double>>;
+
+template <typename E>
+class SubIntSplitFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(SubIntSplitFuzzerTest, SubIntSplitTypes);
+
+TYPED_TEST(SubIntSplitFuzzerTest, Correctness) {
   EncodingFuzzer<TypeParam> fuzzer(
       FLAGS_fuzzer_iterations,
       FLAGS_fuzzer_max_rows,

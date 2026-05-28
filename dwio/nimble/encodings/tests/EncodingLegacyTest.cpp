@@ -133,6 +133,57 @@ class TestTrivialEncodingSelectionPolicy
   bool shouldCompress_;
   bool useVariableBitWidthCompressor_;
 };
+
+template <typename Encoding>
+struct EncodingTypeTraits;
+
+template <typename T>
+struct EncodingTypeTraits<nimble::legacy::ConstantEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::Constant;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::legacy::DictionaryEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::Dictionary;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::legacy::FixedBitWidthEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::FixedBitWidth;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::legacy::MainlyConstantEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::MainlyConstant;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::legacy::RLEEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::RLE;
+};
+
+template <>
+struct EncodingTypeTraits<nimble::legacy::SparseBoolEncoding> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::SparseBool;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::legacy::TrivialEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::Trivial;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::legacy::VarintEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::Varint;
+};
 } // namespace
 // C is the encoding type.
 template <typename C>

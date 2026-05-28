@@ -17,6 +17,7 @@
 
 #include <glog/logging.h>
 #include <algorithm>
+#include <cmath>
 #include <optional>
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/FixedBitArray.h"
@@ -151,6 +152,34 @@ struct EncodingSizeEstimation {
           return std::nullopt;
         }
       }
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+      case EncodingType::SubIntSplit: {
+        if constexpr (
+            isNumericType<physicalType>() &&
+            (sizeof(physicalType) == 4 || sizeof(physicalType) == 8)) {
+          constexpr uint64_t kTypeWidthBits =
+              static_cast<uint64_t>(sizeof(physicalType)) * 8u;
+          const uint64_t rangeBits =
+              velox::bits::bitsRequired(statistics.max() - statistics.min());
+          if (rangeBits > (kTypeWidthBits * 3) / 4) {
+            return std::nullopt;
+          }
+          const auto fbwEst = estimateNumericSize(
+              EncodingType::FixedBitWidth, entryCount, statistics);
+          if (!fbwEst.has_value()) {
+            return std::nullopt;
+          }
+          constexpr uint64_t kOverheadBytes = 6u + 2u + 4u * 6u + 4u * 8u;
+          const uint64_t estimate =
+              static_cast<uint64_t>(
+                  static_cast<double>(fbwEst.value()) * 0.90) +
+              kOverheadBytes;
+          return estimate;
+        } else {
+          return std::nullopt;
+        }
+      }
+#endif
       default: {
         return std::nullopt;
       }

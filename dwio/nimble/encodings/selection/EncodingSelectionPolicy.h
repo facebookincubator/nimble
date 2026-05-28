@@ -382,6 +382,9 @@ class ManualEncodingSelectionPolicyFactory {
         EncodingType::Dictionary,
         EncodingType::RLE,
         EncodingType::Varint,
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+        EncodingType::SubIntSplit,
+#endif
     };
   }
 
@@ -395,6 +398,9 @@ class ManualEncodingSelectionPolicyFactory {
         {EncodingType::Dictionary, 1.0},
         {EncodingType::RLE, 1.0},
         {EncodingType::Varint, 1.0},
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+        {EncodingType::SubIntSplit, 0.85},
+#endif
     };
   }
 
