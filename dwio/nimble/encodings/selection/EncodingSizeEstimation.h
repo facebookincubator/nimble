@@ -21,6 +21,8 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/common/Varint.h"
+#include "dwio/nimble/encodings/PforEncoding.h"
 #include "velox/common/base/BitUtil.h"
 
 namespace facebook::nimble {
@@ -149,6 +151,101 @@ struct EncodingSizeEstimation {
               });
           return getEncodingOverhead<EncodingType::Varint, physicalType>() +
               dataSize;
+        } else {
+          return std::nullopt;
+        }
+      }
+      case EncodingType::DoubleDelta: {
+        if constexpr (
+            isIntegralType<physicalType>() && sizeof(physicalType) == 8) {
+          // Approximate bitWidth from average delta magnitude (×2 for
+          // double-delta wobble). Conservative: overestimates for irregular
+          // data, exact for constant-interval (bitWidth=0).
+          const physicalType range =
+              static_cast<physicalType>(statistics.max() - statistics.min());
+          uint64_t bitWidth = 0;
+          if (range != 0 && entryCount >= 3) {
+            const uint64_t perStepMagnitude = std::max<uint64_t>(
+                1,
+                static_cast<uint64_t>(range) /
+                    std::max<uint64_t>(1, entryCount - 1));
+            bitWidth = velox::bits::bitsRequired(perStepMagnitude * 2);
+          }
+          const uint64_t residualCount =
+              entryCount >= 3 ? entryCount - 2 : uint64_t{0};
+          const uint64_t bitpackedSize = bitWidth == 0
+              ? 0
+              : FixedBitArray::bufferSize(residualCount, bitWidth);
+          // Trailing checkpoint segment: 4-byte count + 16B per checkpoint.
+          // The encoder skips checkpoint capture entirely in the bitWidth=0
+          // fast path (so wire size stays O(1) for regular-stride streams)
+          // and captures one entry per 64 residuals otherwise. The 64 stride
+          // matches DoubleDeltaEncoding::kCheckpointStride.
+          constexpr uint64_t kCheckpointStride = 64;
+          const uint64_t checkpointCount =
+              bitWidth == 0 ? 0 : residualCount / kCheckpointStride;
+          const uint64_t checkpointSegmentSize =
+              sizeof(uint32_t) + checkpointCount * 16u;
+          // Common Encoding prefix (6) + first(8) + second(8) + minDD(8)
+          // + bitWidth(1).
+          constexpr uint32_t commonPrefixSize = 6;
+          const uint32_t overhead = commonPrefixSize + 8 + 8 + 8 + 1;
+          return overhead + bitpackedSize + checkpointSegmentSize;
+        } else {
+          return std::nullopt;
+        }
+      }
+      case EncodingType::Pfor: {
+        if constexpr (isIntegralType<physicalType>()) {
+          const auto fullRange =
+              static_cast<physicalType>(statistics.max() - statistics.min());
+          const uint8_t maxBitWidth =
+              static_cast<uint8_t>(velox::bits::bitsRequired(fullRange));
+          const auto [baseBitWidth, numExceptions] =
+              PforEncoding<physicalType>::selectBaseBitWidth(
+                  statistics.bucketCounts(), entryCount, maxBitWidth);
+          const uint64_t bitpackedSize = baseBitWidth == 0
+              ? 0
+              : FixedBitArray::bufferSize(entryCount, baseBitWidth);
+          // Per-exception: position varint (max 5B) + value varint (max
+          // ceil(maxBitWidth/7) bytes, capped at 10).
+          const uint64_t valueVarintBytes = std::min<uint64_t>(
+              (static_cast<uint64_t>(maxBitWidth) + 6) / 7, 10);
+          const uint64_t exceptionsSize =
+              numExceptions * (5 + valueVarintBytes);
+          constexpr uint32_t overhead =
+              6 + sizeof(physicalType) + 1 + sizeof(uint32_t);
+          return overhead + bitpackedSize + exceptionsSize;
+        } else {
+          return std::nullopt;
+        }
+      }
+      case EncodingType::CompactFor: {
+        // 64-bit integer only. Same shape as FixedBitWidth — every value pays
+        // the full bit width covering (max - min) — but with a varint-encoded
+        // baseline. The bitpacked region also includes the 7-byte tail slop.
+        if constexpr (
+            isIntegralType<physicalType>() && sizeof(physicalType) == 8) {
+          const uint64_t baseline = static_cast<uint64_t>(statistics.min());
+          const uint64_t fullRange =
+              static_cast<uint64_t>(statistics.max() - statistics.min());
+          const uint8_t bitWidth = fullRange == 0
+              ? uint8_t{0}
+              : static_cast<uint8_t>(velox::bits::bitsRequired(fullRange));
+          const uint64_t bitpackedSize = bitWidth == 0
+              ? 0
+              : ((static_cast<uint64_t>(bitWidth) * entryCount + 7) >> 3) + 7;
+          // Conservatively assume the varint baseline takes 10 bytes when we
+          // can't cheaply compute its exact size from Statistics; for small
+          // baselines (~0) the encoder will produce 1 byte and the actual wire
+          // will be smaller than this estimate, which keeps the selector
+          // honest.
+          const uint32_t baselineVarintBytes = varint::varintSize(baseline);
+          // Overhead: common Encoding prefix (6) + baseline varint
+          // + bitWidth (1 byte).
+          constexpr uint32_t commonPrefixSize = 6;
+          const uint32_t overhead = commonPrefixSize + baselineVarintBytes + 1;
+          return overhead + bitpackedSize;
         } else {
           return std::nullopt;
         }

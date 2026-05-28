@@ -106,6 +106,23 @@ enum class EncodingType {
   Prefix = 11,
   // Adaptive Lossless floating-Point compression for numeric types.
   ALP = 12,
+  // Patched Frame-of-Reference. Subtracts a min baseline, bitpacks ~90% of
+  // residuals at a narrow base bit width, and stores the remaining outliers
+  // ("exceptions") as a parallel position+value array.
+  Pfor = 15,
+  // Long Double-Delta Bitpack. 64-bit integer only. Stores the first two
+  // values explicitly, then bitpacks the second-order differences
+  // (delta-of-deltas) of the remaining values after FOR + zigzag. Wins on
+  // monotone sequences with regular intervals — perfectly regular timestamps
+  // collapse to bitWidth=0 and ~31 bytes total regardless of N.
+  DoubleDelta = 13,
+  // Long For Bitpack. 64-bit integer only. Subtracts a min baseline and
+  // bitpacks every residual at the smallest bit width that covers the full
+  // range. Same shape as FixedBitWidth but specialised for int64/uint64 with
+  // a varint-encoded baseline (compact when min is small) and no per-value
+  // exceptions. True O(1) random access; bit width <= 56 hits a byte-aligned
+  // single-load fast path inside FixedBitArray::bulkGet64WithBaseline.
+  CompactFor = 14,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);

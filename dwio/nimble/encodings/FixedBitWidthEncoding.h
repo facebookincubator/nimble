@@ -269,45 +269,8 @@ void FixedBitWidthEncoding<T>::bulkScan(
 
   row_ += selectedRows[numSelected - 1] - currentRow + 1;
 
-  // No scatter, filter, or hook: values are already in the output buffer.
-  if constexpr (!kScatter && !V::kHasFilter && !V::kHasHook) {
-    visitor.addNumValues(numRows);
-    visitor.setRowIndex(visitor.numRows());
-    return;
-  }
-
-  // processFixedWidthRun handles scatter (null gaps), filter evaluation,
-  // and hook forwarding. For non-hook paths, values points to the reader's
-  // output buffer (rawValues). For hooks, values stays as the local decode
-  // buffer since hook.addValue() consumes values without writing to the reader.
-  if constexpr (!V::kHasHook) {
-    values = reinterpret_cast<OutputType*>(visitor.reader().rawValues());
-  }
-
-  auto numValues = visitor.reader().numValues();
-  int32_t* filterHits = nullptr;
-  if constexpr (V::kHasFilter) {
-    filterHits = visitor.outputRows(numSelected) - numValues;
-  }
-
-  velox::dwio::common::
-      processFixedWidthRun<OutputType, V::kFilterOnly, kScatter, V::dense>(
-          velox::RowSet(selectedRows, numSelected),
-          0,
-          numSelected,
-          scatterRows,
-          values,
-          filterHits,
-          numValues,
-          visitor.filter(),
-          visitor.hook());
-
-  if constexpr (!V::kHasHook) {
-    // Filter: count passing rows; no filter: all rows produce values.
-    visitor.addNumValues(
-        V::kHasFilter ? numValues - visitor.reader().numValues() : numRows);
-  }
-  visitor.setRowIndex(visitor.numRows());
+  detail::finalizeBulkScan<OutputType, kScatter>(
+      visitor, values, numRows, selectedRows, numSelected, scatterRows);
 }
 
 template <typename T>

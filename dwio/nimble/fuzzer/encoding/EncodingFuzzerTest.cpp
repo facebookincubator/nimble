@@ -29,6 +29,7 @@
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
+#include "dwio/nimble/encodings/DoubleDeltaEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
@@ -273,6 +274,23 @@ class ALPFuzzerTest : public ::testing::Test {};
 TYPED_TEST_SUITE(ALPFuzzerTest, ALPTypes);
 
 TYPED_TEST(ALPFuzzerTest, correctness) {
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+
+// DoubleDelta: int64/uint64 only
+using DoubleDeltaTypes = ::testing::
+    Types<DoubleDeltaEncoding<int64_t>, DoubleDeltaEncoding<uint64_t>>;
+
+template <typename E>
+class DoubleDeltaFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(DoubleDeltaFuzzerTest, DoubleDeltaTypes);
+
+TYPED_TEST(DoubleDeltaFuzzerTest, correctness) {
   EncodingFuzzer<TypeParam> fuzzer(
       FLAGS_fuzzer_iterations,
       FLAGS_fuzzer_max_rows,

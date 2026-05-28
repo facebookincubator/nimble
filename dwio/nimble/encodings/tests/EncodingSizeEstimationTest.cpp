@@ -354,3 +354,36 @@ TEST_F(EncodingSizeEstimationTest, uint64AllEncodings) {
   ASSERT_TRUE(
       Est::estimateNumericSize(EncodingType::Varint, 100, stats).has_value());
 }
+
+TEST_F(EncodingSizeEstimationTest, pforEstimateVsActualSize) {
+  using Est = detail::EncodingSizeEstimation<uint32_t, false>;
+
+  // ~90% values in [0, 100], ~10% outliers near max — Pfor's sweet spot.
+  std::vector<uint32_t> data;
+  for (uint32_t i = 0; i < 900; ++i) {
+    data.push_back(i % 100);
+  }
+  for (uint32_t i = 0; i < 100; ++i) {
+    data.push_back(1'000'000 + i);
+  }
+  auto stats = Statistics<uint32_t>::create(data);
+  const uint32_t numValues = static_cast<uint32_t>(data.size());
+
+  auto estimated =
+      Est::estimateNumericSize(EncodingType::Pfor, numValues, stats);
+  ASSERT_TRUE(estimated.has_value());
+
+  // Actually encode and measure real size.
+  nimble::Buffer buffer{*pool_};
+  auto encoded = nimble::test::Encoder<nimble::PforEncoding<uint32_t>>::encode(
+      buffer, nimble::Vector<uint32_t>(pool_.get(), data.begin(), data.end()));
+  const uint64_t actualSize = encoded.size();
+
+  // Estimate should be in the same ballpark as actual — within 2x.
+  EXPECT_GT(estimated.value(), actualSize / 2)
+      << "estimate too low: " << estimated.value() << " vs actual "
+      << actualSize;
+  EXPECT_LT(estimated.value(), actualSize * 2)
+      << "estimate too high: " << estimated.value() << " vs actual "
+      << actualSize;
+}

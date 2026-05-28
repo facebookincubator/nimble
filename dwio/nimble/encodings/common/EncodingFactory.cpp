@@ -15,12 +15,15 @@
  */
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/ALPEncoding.h"
+#include "dwio/nimble/encodings/CompactForEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
+#include "dwio/nimble/encodings/DoubleDeltaEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
+#include "dwio/nimble/encodings/PforEncoding.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
@@ -249,12 +252,46 @@ std::unique_ptr<Encoding> EncodingFactory::create(
       // is implemented. ALP only supports float and double.
       NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
     }
+    case EncodingType::Pfor: {
+      RETURN_ENCODING_BY_NUMERIC_TYPE(PforEncoding, dataType);
+    }
+    }
+    case EncodingType::DoubleDelta: {
+      switch (dataType) {
+        case DataType::Int64:
+          return std::make_unique<DoubleDeltaEncoding<int64_t>>(
+              memoryPool, data, stringBufferFactory, options);
+        case DataType::Uint64:
+          return std::make_unique<DoubleDeltaEncoding<uint64_t>>(
+              memoryPool, data, stringBufferFactory, options);
+        default:
+          NIMBLE_UNREACHABLE(
+              "DoubleDelta only supports 64-bit integer types, got {}.",
+              toString(dataType));
+      }
+    }
+    case EncodingType::CompactFor: {
+      switch (dataType) {
+        case DataType::Int64:
+          return std::make_unique<CompactForEncoding<int64_t>>(
+              memoryPool, data, stringBufferFactory, options);
+        case DataType::Uint64:
+          return std::make_unique<CompactForEncoding<uint64_t>>(
+              memoryPool, data, stringBufferFactory, options);
+        default:
+          NIMBLE_UNREACHABLE(
+              "CompactFor only supports 64-bit integer types, got {}.",
+              toString(dataType));
+      }
+    }
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
           static_cast<int>(encodingType));
     }
+
   }
+}
 }
 
 template <typename T>
@@ -383,15 +420,50 @@ std::string_view EncodingFactory::encode(
       }
     }
     case EncodingType::ALP: {
-      // TODO: Wire up ALPEncoding::encode once the actual ALP algorithm is
-      // implemented. ALP only supports float and double.
       NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
+    }
+    case EncodingType::Pfor: {
+      if constexpr (isIntegralType<physicalType>()) {
+        return PforEncoding<T>::encode(
+            selection, castedValues, buffer, options);
+      } else {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "Pfor encoding should not be selected for non-integral data type: {}.",
+            toString(TypeTraits<T>::dataType));
+      }
+    }
+
+    case EncodingType::DoubleDelta: {
+      if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>) {
+        return DoubleDeltaEncoding<T>::encode(
+            selection, castedValues, buffer, options);
+      } else {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "DoubleDelta encoding only supports 64-bit integer types, got {}.",
+            toString(TypeTraits<T>::dataType));
+      }
+    }
+    case EncodingType::CompactFor: {
+      if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>) {
+        return CompactForEncoding<T>::encode(
+            selection, castedValues, buffer, options);
+      } else {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "CompactFor encoding only supports 64-bit integer types, got {}.",
+            toString(TypeTraits<T>::dataType));
+      }
     }
     default: {
       NIMBLE_UNSUPPORTED(
           "Encoding {} is not supported.", toString(selection.encodingType()));
     }
+
   }
+  default: {
+    NIMBLE_UNSUPPORTED(
+        "Encoding {} is not supported.", toString(selection.encodingType()));
+  }
+}
 }
 
 template <typename T>

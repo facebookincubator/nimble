@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
+#include "dwio/nimble/encodings/CompactForEncoding.h"
+#include "dwio/nimble/encodings/DoubleDeltaEncoding.h"
+#include "dwio/nimble/encodings/PforEncoding.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
 #include "dwio/nimble/encodings/legacy/DictionaryEncoding.h"
@@ -247,6 +250,41 @@ std::unique_ptr<Encoding> EncodingFactory::create(
           "Trying to deserialize a PrefixEncoding with a non-string data type.");
       return std::make_unique<PrefixEncoding>(
           memoryPool, data, stringBufferFactory);
+    }
+    case EncodingType::Pfor: {
+      RETURN_ENCODING_BY_NUMERIC_TYPE(PforEncoding, dataType);
+    }
+    case EncodingType::DoubleDelta: {
+      switch (dataType) {
+        case DataType::Int64:
+          return std::make_unique<
+              ::facebook::nimble::DoubleDeltaEncoding<int64_t>>(
+              memoryPool, data, stringBufferFactory);
+        case DataType::Uint64:
+          return std::make_unique<
+              ::facebook::nimble::DoubleDeltaEncoding<uint64_t>>(
+              memoryPool, data, stringBufferFactory);
+        default:
+          NIMBLE_UNREACHABLE(
+              "DoubleDelta only supports 64-bit integer types, got {}.",
+              toString(dataType));
+      }
+    }
+    case EncodingType::CompactFor: {
+      switch (dataType) {
+        case DataType::Int64:
+          return std::make_unique<
+              ::facebook::nimble::CompactForEncoding<int64_t>>(
+              memoryPool, data, stringBufferFactory);
+        case DataType::Uint64:
+          return std::make_unique<
+              ::facebook::nimble::CompactForEncoding<uint64_t>>(
+              memoryPool, data, stringBufferFactory);
+        default:
+          NIMBLE_UNREACHABLE(
+              "CompactFor only supports 64-bit integer types, got {}.",
+              toString(dataType));
+      }
     }
     default: {
       NIMBLE_UNREACHABLE(
