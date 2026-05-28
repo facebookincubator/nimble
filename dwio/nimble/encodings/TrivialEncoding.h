@@ -62,7 +62,6 @@ class TrivialEncoding final
   void reset() final;
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
-  void get(uint32_t row, void* buffer) final;
 
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
@@ -110,15 +109,12 @@ class TrivialEncoding<std::string_view> final
   void reset() final;
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
-  void get(uint32_t row, void* buffer) final;
 
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
 
   // Returns the total size of the characters payload in bytes
   uint64_t uncompressedDataBytes() const;
-
-  std::optional<uint32_t> seek(const void* value, bool inclusive) final;
 
   static std::string_view encode(
       EncodingSelection<std::string_view>& selection,
@@ -127,9 +123,6 @@ class TrivialEncoding<std::string_view> final
       const Encoding::Options& options = {});
 
  private:
-  // Initializes seekValues_ from blob_ and lengths_.
-  void initSeekValues();
-
   uint32_t row_;
   const char* blob_;
   const char* pos_;
@@ -142,12 +135,6 @@ class TrivialEncoding<std::string_view> final
   // data could come as uncompressed.
   uint64_t uncompressedDataBytes_;
   velox::BufferPtr dataUncompressed_;
-
-  // Pre-materialized string views for thread-safe seek() and get(). Populated
-  // at construction when keyEncoding=true. Points into blob_ which is stable
-  // for the lifetime of this encoding. When empty, seek()/get() fall back to
-  // the stateful (non-thread-safe) path.
-  std::vector<std::string_view> seekValues_;
 };
 
 // For the bool case the layout is:
@@ -244,11 +231,6 @@ void TrivialEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   const auto start = values_ + row_;
   std::copy(start, start + rowCount, static_cast<T*>(buffer));
   row_ += rowCount;
-}
-
-template <typename T>
-void TrivialEncoding<T>::get(uint32_t row, void* buffer) {
-  *static_cast<T*>(buffer) = values_[row];
 }
 
 template <typename T>

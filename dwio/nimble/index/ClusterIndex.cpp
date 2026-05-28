@@ -231,10 +231,6 @@ void ClusterIndex::loadPartitionKeyStream(IndexPartition* partition) const {
     velox::BufferPtr scratch;
     decodedChunk.data =
         decodeKeyChunk(std::move(streams[chunkIdx]), *pool_, scratch);
-    NIMBLE_CHECK_EQ(
-        decodedChunk.data->encoding->dataType(),
-        DataType::String,
-        "Expected String data type");
   }
 }
 
@@ -603,10 +599,6 @@ ClusterIndex::DecodedChunk ClusterIndex::getDecodedChunk(
           velox::dwio::common::LogType::GROUP_INDEX),
       *pool_,
       scratch);
-  NIMBLE_CHECK_EQ(
-      decodedChunk.data->encoding->dataType(),
-      DataType::String,
-      "Expected String data type");
 
   velox::common::testutil::TestValue::adjust(
       "facebook::nimble::index::ClusterIndex::getDecodedChunk",
@@ -631,11 +623,8 @@ uint32_t ClusterIndex::seekInChunk(
     std::string_view encodedKey,
     bool inclusive) const {
   const auto chunk = getDecodedChunk(partition, chunkLocation);
-  // seek() is stateless — safe to call without the partition lock.
-  const auto rowInChunk = chunk.data->encoding->seek(&encodedKey, inclusive);
+  const auto rowInChunk = chunk.data->encoding->seek(encodedKey, inclusive);
   if (!rowInChunk.has_value()) {
-    // For exclusive seek (inclusive=false), no row > key means the end is
-    // past all rows in this partition.
     if (!inclusive) {
       return chunkLocation.rowOffset + chunk.data->encoding->rowCount();
     }
@@ -695,11 +684,7 @@ std::string ClusterIndex::keyAtRow(uint32_t row) const {
 
   const auto decodedChunk = getDecodedChunk(partition, chunkLocation);
   const uint32_t rowInChunk = partitionRow - chunkLocation.rowOffset;
-
-  // get() is stateless — safe to call without the partition lock.
-  std::string_view value;
-  decodedChunk.data->encoding->get(rowInChunk, &value);
-  return std::string(value);
+  return decodedChunk.data->encoding->get(rowInChunk);
 }
 
 } // namespace facebook::nimble::index

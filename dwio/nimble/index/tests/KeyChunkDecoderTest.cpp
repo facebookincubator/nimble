@@ -29,7 +29,7 @@ namespace {
 
 using velox::dwio::common::SeekableArrayInputStream;
 
-class KeyChunkDecoderTest : public ::testing::Test {
+class KeyChunkDecoderTest : public ::testing::TestWithParam<EncodingType> {
  protected:
   static void SetUpTestCase() {
     velox::memory::MemoryManager::testingSetInstance({});
@@ -40,13 +40,11 @@ class KeyChunkDecoderTest : public ::testing::Test {
     leafPool_ = pool_->addLeafChild("leaf");
   }
 
-  // Encodes string keys into a chunk stream blob using Trivial encoding.
   std::string encodeChunk(const std::vector<std::string_view>& keys) {
     Buffer encodingBuffer{*leafPool_};
     auto policy =
         std::make_unique<ManualEncodingSelectionPolicy<std::string_view>>(
-            std::vector<std::pair<EncodingType, float>>{
-                {EncodingType::Trivial, 1.0}},
+            std::vector<std::pair<EncodingType, float>>{{GetParam(), 1.0}},
             CompressionOptions{},
             std::nullopt);
     auto encoded = EncodingFactory::encode<std::string_view>(
@@ -72,7 +70,7 @@ class KeyChunkDecoderTest : public ::testing::Test {
   velox::BufferPtr dataBuffer_;
 };
 
-TEST_F(KeyChunkDecoderTest, decodeAndMaterialize) {
+TEST_P(KeyChunkDecoderTest, decodeAndMaterialize) {
   std::vector<std::string_view> keys = {"apple", "banana", "cherry"};
   auto chunkData = encodeChunk(keys);
 
@@ -80,40 +78,31 @@ TEST_F(KeyChunkDecoderTest, decodeAndMaterialize) {
   ASSERT_NE(result, nullptr);
   ASSERT_NE(result->encoding, nullptr);
   EXPECT_EQ(result->encoding->rowCount(), 3);
-  EXPECT_EQ(result->encoding->encodingType(), EncodingType::Trivial);
 
-  std::vector<std::string_view> materialized(3);
-  result->encoding->materialize(3, materialized.data());
+  auto materialized = result->encoding->materialize(0, 3);
   EXPECT_EQ(materialized[0], "apple");
   EXPECT_EQ(materialized[1], "banana");
   EXPECT_EQ(materialized[2], "cherry");
 }
 
-TEST_F(KeyChunkDecoderTest, seekAndSelectiveMaterialize) {
+TEST_P(KeyChunkDecoderTest, seekAndSelectiveMaterialize) {
   std::vector<std::string_view> keys = {"aaa", "bbb", "ccc", "ddd", "eee"};
   auto chunkData = encodeChunk(keys);
 
   auto result = decodeKeyChunk(makeStream(chunkData), *leafPool_, dataBuffer_);
   ASSERT_NE(result, nullptr);
   ASSERT_NE(result->encoding, nullptr);
-  EXPECT_EQ(result->encoding->rowCount(), 5);
 
-  // Seek to "ccc" (position 2).
-  const std::string_view target = "ccc";
-  auto pos = result->encoding->seek(&target, /*inclusive=*/true);
+  auto pos = result->encoding->seek("ccc", /*inclusive=*/true);
   ASSERT_TRUE(pos.has_value());
   EXPECT_EQ(pos.value(), 2);
 
-  // Selectively materialize 2 entries from position 2.
-  result->encoding->reset();
-  result->encoding->skip(2);
-  std::vector<std::string_view> entries(2);
-  result->encoding->materialize(2, entries.data());
+  auto entries = result->encoding->materialize(2, 2);
   EXPECT_EQ(entries[0], "ccc");
   EXPECT_EQ(entries[1], "ddd");
 }
 
-TEST_F(KeyChunkDecoderTest, singleEntry) {
+TEST_P(KeyChunkDecoderTest, singleEntry) {
   std::vector<std::string_view> keys = {"only"};
   auto chunkData = encodeChunk(keys);
 
@@ -122,25 +111,11 @@ TEST_F(KeyChunkDecoderTest, singleEntry) {
   ASSERT_NE(result->encoding, nullptr);
   EXPECT_EQ(result->encoding->rowCount(), 1);
 
-  std::vector<std::string_view> materialized(1);
-  result->encoding->materialize(1, materialized.data());
+  auto materialized = result->encoding->materialize(0, 1);
   EXPECT_EQ(materialized[0], "only");
 }
 
-// Regression tests for the use-after-move bug fixed in D103765334. Before the
-// fix, decodeKeyChunk returned DecodedKeyChunk by value and its string
-// allocator lambda captured the local `result` by reference. After the move
-// out of the function, the lambda referenced a destroyed stack frame; calling
-// materialize() later wrote the allocated buffer into the dangling reference
-// (ASAN: stack-use-after-return), leaving the caller's stringBuffers empty.
-//
-// The fix changes the return type to std::shared_ptr<DecodedKeyChunk> and
-// has the lambda capture a raw pointer to the heap-allocated object. The
-// shared_ptr keeps the DecodedKeyChunk alive across moves and assignments,
-// so the lambda's pointer stays valid. These tests verify that materialize()
-// after a move or move-assignment correctly populates stringBuffers and
-// produces the right values.
-TEST_F(KeyChunkDecoderTest, materializeAfterMove) {
+TEST_P(KeyChunkDecoderTest, materializeAfterMove) {
   std::vector<std::string_view> keys = {"foo", "bar", "baz"};
   auto chunkData = encodeChunk(keys);
 
@@ -153,20 +128,14 @@ TEST_F(KeyChunkDecoderTest, materializeAfterMove) {
 
   ASSERT_NE(moved->encoding, nullptr);
 
-  moved->encoding->reset();
-  std::vector<std::string_view> materialized(3);
-  moved->encoding->materialize(3, materialized.data());
-
+  auto materialized = moved->encoding->materialize(0, 3);
   EXPECT_FALSE(moved->stringBuffers.empty());
-
   EXPECT_EQ(materialized[0], "foo");
   EXPECT_EQ(materialized[1], "bar");
   EXPECT_EQ(materialized[2], "baz");
 }
 
-// Verifies the lambda's pointer remains valid through move-assignment, which
-// destroys the previously-held DecodedKeyChunk before binding the new one.
-TEST_F(KeyChunkDecoderTest, materializeAfterMoveAssign) {
+TEST_P(KeyChunkDecoderTest, materializeAfterMoveAssign) {
   std::vector<std::string_view> keys1 = {"alpha", "beta"};
   std::vector<std::string_view> keys2 = {"gamma", "delta", "epsilon"};
   auto chunkData1 = encodeChunk(keys1);
@@ -178,15 +147,20 @@ TEST_F(KeyChunkDecoderTest, materializeAfterMoveAssign) {
   ASSERT_NE(holder->encoding, nullptr);
   EXPECT_EQ(holder->encoding->rowCount(), 3);
 
-  holder->encoding->reset();
-  std::vector<std::string_view> materialized(3);
-  holder->encoding->materialize(3, materialized.data());
-
+  auto materialized = holder->encoding->materialize(0, 3);
   EXPECT_FALSE(holder->stringBuffers.empty());
   EXPECT_EQ(materialized[0], "gamma");
   EXPECT_EQ(materialized[1], "delta");
   EXPECT_EQ(materialized[2], "epsilon");
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    EncodingTypes,
+    KeyChunkDecoderTest,
+    ::testing::Values(EncodingType::Trivial, EncodingType::Prefix),
+    [](const ::testing::TestParamInfo<EncodingType>& info) {
+      return info.param == EncodingType::Trivial ? "Trivial" : "Prefix";
+    });
 
 } // namespace
 } // namespace facebook::nimble::index

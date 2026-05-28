@@ -55,10 +55,6 @@ TrivialEncoding<std::string_view>::TrivialEncoding(
   releaseBuffer(dataUncompressed_);
   blob_ = static_cast<char*>(stringBuffer);
   pos_ = blob_;
-
-  if (options.keyEncoding) {
-    initSeekValues();
-  }
 }
 
 void TrivialEncoding<std::string_view>::reset() {
@@ -89,91 +85,8 @@ void TrivialEncoding<std::string_view>::materialize(
   row_ += rowCount;
 }
 
-void TrivialEncoding<std::string_view>::get(uint32_t row, void* buffer) {
-  if (!seekValues_.empty()) {
-    NIMBLE_CHECK_LT(row, seekValues_.size());
-    *static_cast<std::string_view*>(buffer) = seekValues_[row];
-    return;
-  }
-  reset();
-  if (row > 0) {
-    skip(row);
-  }
-  materialize(1, buffer);
-}
-
 uint64_t TrivialEncoding<std::string_view>::uncompressedDataBytes() const {
   return uncompressedDataBytes_;
-}
-
-void TrivialEncoding<std::string_view>::initSeekValues() {
-  const uint32_t totalRows = rowCount();
-  if (totalRows == 0) {
-    return;
-  }
-  Vector<uint32_t> lengths(pool_);
-  lengths.resize(totalRows);
-  lengths_->reset();
-  lengths_->materialize(totalRows, lengths.data());
-  lengths_->reset();
-
-  seekValues_.reserve(totalRows);
-  const char* pos = blob_;
-  for (uint32_t i = 0; i < totalRows; ++i) {
-    seekValues_.emplace_back(pos, lengths[i]);
-    pos += lengths[i];
-  }
-}
-
-std::optional<uint32_t> TrivialEncoding<std::string_view>::seek(
-    const void* value,
-    bool inclusive) {
-  const auto* seekValue = static_cast<const std::string_view*>(value);
-  NIMBLE_CHECK_NOT_NULL(seekValue);
-
-  if (!seekValues_.empty()) {
-    const auto comparator = [](std::string_view a, std::string_view b) {
-      return a < b;
-    };
-    const auto it = inclusive
-        ? std::lower_bound(
-              seekValues_.begin(), seekValues_.end(), *seekValue, comparator)
-        : std::upper_bound(
-              seekValues_.begin(), seekValues_.end(), *seekValue, comparator);
-    if (it == seekValues_.end()) {
-      return std::nullopt;
-    }
-    return std::distance(seekValues_.begin(), it);
-  }
-
-  // Fallback: non-thread-safe path for non-key encodings.
-  reset();
-  const uint32_t totalRows = rowCount();
-  if (totalRows == 0) {
-    return std::nullopt;
-  }
-
-  buffer_.resize(totalRows);
-  lengths_->materialize(totalRows, buffer_.data());
-
-  std::vector<std::string_view> values;
-  values.reserve(totalRows);
-  const char* pos = pos_;
-  for (uint32_t i = 0; i < totalRows; ++i) {
-    values.emplace_back(pos, buffer_[i]);
-    pos += buffer_[i];
-  }
-
-  const auto comparator = [](std::string_view a, std::string_view b) {
-    return a < b;
-  };
-  const auto it = inclusive
-      ? std::lower_bound(values.begin(), values.end(), *seekValue, comparator)
-      : std::upper_bound(values.begin(), values.end(), *seekValue, comparator);
-  if (it == values.end()) {
-    return std::nullopt;
-  }
-  return std::distance(values.begin(), it);
 }
 
 std::string_view TrivialEncoding<std::string_view>::encode(

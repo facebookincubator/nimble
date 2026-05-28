@@ -31,6 +31,7 @@
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
+#include "dwio/nimble/index/KeyEncoding.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
@@ -3501,8 +3502,8 @@ class VeloxWriterIndexTest
 
     // Cache for loaded and decoded key stream chunks
     // Key: chunk file offset (unique across all stripes), Value: decoded
-    // encoding
-    std::unordered_map<uint64_t, std::unique_ptr<nimble::Encoding>>
+    // key encoding
+    std::unordered_map<uint64_t, std::unique_ptr<nimble::index::KeyEncoding>>
         keyStreamCache;
     // Buffer for loaded key stream data (must outlive the encoding)
     std::unordered_map<uint64_t, std::string> keyStreamBufferCache;
@@ -3570,7 +3571,7 @@ class VeloxWriterIndexTest
 
           // Decode the key encoding from the chunk data
 
-          keyStreamCache[chunkFileOffset] = nimble::EncodingFactory().create(
+          keyStreamCache[chunkFileOffset] = nimble::index::KeyEncoding::create(
               *leafPool_, encodingData, [&](uint32_t totalLength) {
                 auto& buf = stringBuffers.emplace_back(
                     velox::AlignedBuffer::allocate<char>(
@@ -3582,13 +3583,7 @@ class VeloxWriterIndexTest
         auto* keyEncoding = keyStreamCache[chunkFileOffset].get();
         ASSERT_NE(keyEncoding, nullptr);
 
-        // Reset encoding and seek to find the row within the chunk
-        keyEncoding->reset();
-
-        // Use seek to find the exact row position within the
-        // remaining rows
-        auto seekResult =
-            keyEncoding->seek(&encodedKeyView, /*inclusive=*/true);
+        auto seekResult = keyEncoding->seek(encodedKeyView, /*inclusive=*/true);
         ASSERT_TRUE(seekResult.has_value())
             << "seek should find key at row " << currentRowId;
 

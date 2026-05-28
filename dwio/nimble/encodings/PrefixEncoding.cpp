@@ -120,24 +120,6 @@ std::string_view PrefixEncoding::decodeEntry() {
   return std::string_view(decodedValue_.data(), fullLen);
 }
 
-// static
-std::string_view PrefixEncoding::decodeEntryAt(
-    const char*& pos,
-    uint32_t& row,
-    std::string& decoded) {
-  const uint32_t sharedPrefixLen = encoding::readUint32(pos);
-  const uint32_t suffixLen = encoding::readUint32(pos);
-  const uint32_t fullLen = sharedPrefixLen + suffixLen;
-  NIMBLE_DCHECK_LE(sharedPrefixLen, decoded.size());
-  decoded.resize(fullLen);
-  if (suffixLen > 0) {
-    std::memcpy(decoded.data() + sharedPrefixLen, pos, suffixLen);
-    pos += suffixLen;
-  }
-  ++row;
-  return std::string_view(decoded.data(), fullLen);
-}
-
 void PrefixEncoding::allocatePage(size_t minSize) {
   const auto size = std::max(kStringPageSize, minSize);
   currentPage_ = static_cast<char*>(stringBufferFactory_(size));
@@ -174,27 +156,6 @@ uint32_t PrefixEncoding::restartOffset(uint32_t restartIndex) const {
   return encoding::readUint32(offsetPos);
 }
 
-void PrefixEncoding::get(uint32_t row, void* value) {
-  NIMBLE_CHECK_LT(row, rowCount_);
-
-  // Thread-safe: uses only local state and const members.
-  const uint32_t restartIndex = row / restartInterval_;
-  const char* pos = restartPosition(restartIndex);
-  uint32_t currentRow = restartIndex * restartInterval_;
-  std::string decoded;
-
-  while (currentRow <= row) {
-    decodeEntryAt(pos, currentRow, decoded);
-  }
-
-  // Copy into stable string buffer so the returned string_view outlives
-  // this call.
-  auto* buffer = static_cast<char*>(stringBufferFactory_(decoded.size()));
-  std::memcpy(buffer, decoded.data(), decoded.size());
-  *static_cast<std::string_view*>(value) =
-      std::string_view(buffer, decoded.size());
-}
-
 void PrefixEncoding::seekToRestartPoint(uint32_t restartIndex) {
   NIMBLE_CHECK_LT(restartIndex, numRestarts_, "Restart index out of bounds");
 
@@ -202,67 +163,6 @@ void PrefixEncoding::seekToRestartPoint(uint32_t restartIndex) {
   currentPos_ = restartPosition(restartIndex);
   currentRow_ = restartIndex * restartInterval_;
   decodedValue_.clear();
-}
-
-std::optional<uint32_t> PrefixEncoding::seek(
-    const void* value,
-    bool inclusive) {
-  const auto& targetValue = *static_cast<const std::string_view*>(value);
-
-  // Thread-safe: uses only local state and const members. No member mutation.
-  const char* pos = nullptr;
-  uint32_t row = 0;
-  std::string decoded;
-
-  // Binary search among restart points to find the block containing the target.
-  uint32_t left = 0;
-  uint32_t right = numRestarts_;
-
-  while (left < right) {
-    const uint32_t mid = left + (right - left) / 2;
-
-    pos = restartPosition(mid);
-    row = mid * restartInterval_;
-    decoded.clear();
-    const auto restartValue = decodeEntryAt(pos, row, decoded);
-
-    if (restartValue.compare(targetValue) < 0) {
-      left = mid + 1;
-    } else {
-      right = mid;
-    }
-  }
-
-  // 'left' is now the first restart point whose value >= targetValue,
-  // or numRestarts_ if all restart values < targetValue.
-  // We need to search from the previous restart point (if exists) because
-  // the target might be within that block but after its restart value.
-  if (left > 0) {
-    --left;
-  }
-
-  pos = restartPosition(left);
-  row = left * restartInterval_;
-  decoded.clear();
-
-  // Linear scan from the restart point. Each decodeEntryAt() builds on the
-  // shared prefix left in 'decoded' by the previous call. At restart
-  // boundaries, sharedPrefixLen is 0 so the full key is written regardless.
-  if (inclusive) {
-    while (row < rowCount_) {
-      if (decodeEntryAt(pos, row, decoded) >= targetValue) {
-        return row - 1;
-      }
-    }
-  } else {
-    while (row < rowCount_) {
-      if (decodeEntryAt(pos, row, decoded) > targetValue) {
-        return row - 1;
-      }
-    }
-  }
-
-  return std::nullopt;
 }
 
 // static

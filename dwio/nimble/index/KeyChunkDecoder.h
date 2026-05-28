@@ -18,7 +18,7 @@
 #include <memory>
 #include <vector>
 
-#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/index/KeyEncoding.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/dwio/common/SeekableInputStream.h"
@@ -29,7 +29,10 @@ namespace facebook::nimble::index {
 struct DecodedKeyChunk {
   // Zero-copy path: stream kept alive so its buffer backs the encoding.
   std::unique_ptr<velox::dwio::common::SeekableInputStream> dataStream;
-  std::unique_ptr<nimble::Encoding> encoding;
+
+  // Thread-safe random-access key store (seek/get/materialize).
+  std::unique_ptr<KeyEncoding> encoding;
+
   std::vector<velox::BufferPtr> stringBuffers;
 };
 

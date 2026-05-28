@@ -111,12 +111,6 @@ class Encoding {
     /// buffers on construction, avoiding MemoryPool alloc/free overhead.
     /// Value-initialized to nullptr when omitted from aggregate initialization.
     velox::BufferPool* bufferPool;
-
-    /// When true, eagerly initializes lookup structures at construction time
-    /// for thread-safe seek() and get(). For TrivialEncoding<string_view>,
-    /// pre-materializes all string positions to avoid lazy initialization.
-    /// Value-initialized to false when omitted from aggregate initialization.
-    bool keyEncoding;
   };
 
   static constexpr int kEncodingTypeOffset =
@@ -161,22 +155,6 @@ class Encoding {
   /// Advances the row pointer N rows. Note that we don't provide a 'backwards'
   /// iterator; if you need to move your row pointer back, reset() and skip().
   virtual void skip(uint32_t rowCount) = 0;
-
-  /// Seeks to the first row matching the target value.
-  ///
-  /// @param value Pointer to target value to seek.
-  /// @param inclusive When true, returns the first row >= value.
-  ///        When false, returns the first row > value.
-  /// @return Row index if found, std::nullopt if no matching row exists.
-  virtual std::optional<uint32_t> seek(const void* value, bool inclusive) {
-    NIMBLE_UNSUPPORTED("seek is not supported.");
-  }
-
-  /// Materializes the value at the given row index into buffer.
-  /// Only supported by Trivial and Prefix encodings.
-  virtual void get(uint32_t /*row*/, void* /*buffer*/) {
-    NIMBLE_NOT_IMPLEMENTED("get is not supported by this encoding type");
-  }
 
   /// Materializes the next |rowCount| rows into buffer. Advances
   /// the row pointer |rowCount|.

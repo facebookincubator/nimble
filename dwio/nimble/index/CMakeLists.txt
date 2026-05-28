@@ -23,6 +23,7 @@ add_library(
   HashIndexWriter.cpp
   IndexFilter.cpp
   KeyChunkDecoder.cpp
+  KeyEncoding.cpp
   SortedIndex.cpp
   SortedIndexWriter.cpp
   IndexLookup.cpp
