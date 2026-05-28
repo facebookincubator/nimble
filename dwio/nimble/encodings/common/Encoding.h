@@ -694,6 +694,53 @@ T* mutableValues(const V& visitor, vector_size_t size) {
   return values;
 }
 
+/// Post-processing for bulkScan implementations. Handles the fast return
+/// path (no scatter/filter/hook) and delegates complex cases to
+/// processFixedWidthRun. Every encoding that implements bulkScan shares
+/// this identical finalization logic.
+template <typename OutputType, bool kScatter, typename V>
+void finalizeBulkScan(
+    V& visitor,
+    OutputType* values,
+    vector_size_t numRows,
+    const vector_size_t* selectedRows,
+    vector_size_t numSelected,
+    const vector_size_t* scatterRows) {
+  if constexpr (!kScatter && !V::kHasFilter && !V::kHasHook) {
+    visitor.addNumValues(numRows);
+    visitor.setRowIndex(visitor.numRows());
+    return;
+  }
+
+  if constexpr (!V::kHasHook) {
+    values = reinterpret_cast<OutputType*>(visitor.reader().rawValues());
+  }
+
+  auto numValues = visitor.reader().numValues();
+  int32_t* filterHits = nullptr;
+  if constexpr (V::kHasFilter) {
+    filterHits = visitor.outputRows(numSelected) - numValues;
+  }
+
+  velox::dwio::common::
+      processFixedWidthRun<OutputType, V::kFilterOnly, kScatter, V::dense>(
+          velox::RowSet(selectedRows, numSelected),
+          /*rowIndex=*/0,
+          numSelected,
+          scatterRows,
+          values,
+          filterHits,
+          numValues,
+          visitor.filter(),
+          visitor.hook());
+
+  if constexpr (!V::kHasHook) {
+    visitor.addNumValues(
+        V::kHasFilter ? numValues - visitor.reader().numValues() : numRows);
+  }
+  visitor.setRowIndex(visitor.numRows());
+}
+
 } // namespace detail
 
 } // namespace facebook::nimble

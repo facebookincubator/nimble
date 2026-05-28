@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "dwio/nimble/encodings/CompactForEncoding.h"
 #include "dwio/nimble/encodings/DoubleDeltaEncoding.h"
 #include "dwio/nimble/encodings/PforEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
@@ -119,6 +120,14 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
     case EncodingType::DoubleDelta:
       if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>) {
         return f(static_cast<DoubleDeltaEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
+    case EncodingType::CompactFor:
+      // Same legacy-dispatches-to-modern story as Pfor.
+      if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>) {
+        return f(
+            static_cast<::facebook::nimble::CompactForEncoding<T>&>(encoding));
       } else {
         NIMBLE_UNREACHABLE(toString(encoding.dataType()));
       }

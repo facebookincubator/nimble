@@ -27,6 +27,7 @@ add_executable(
   EncodingTest.cpp
   EncodingLegacyTest.cpp
   DoubleDeltaEncodingTest.cpp
+  CompactForEncodingTest.cpp
   Lz4CompressorTest.cpp
   MainlyConstantEncodingTest.cpp
   NullableEncodingTest.cpp

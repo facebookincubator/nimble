@@ -116,6 +116,13 @@ enum class EncodingType {
   // monotone sequences with regular intervals — perfectly regular timestamps
   // collapse to bitWidth=0 and ~31 bytes total regardless of N.
   DoubleDelta = 13,
+  // Long For Bitpack. 64-bit integer only. Subtracts a min baseline and
+  // bitpacks every residual at the smallest bit width that covers the full
+  // range. Same shape as FixedBitWidth but specialised for int64/uint64 with
+  // a varint-encoded baseline (compact when min is small) and no per-value
+  // exceptions. True O(1) random access; bit width <= 56 hits a byte-aligned
+  // single-load fast path inside FixedBitArray::bulkGet64WithBaseline.
+  CompactFor = 14,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);

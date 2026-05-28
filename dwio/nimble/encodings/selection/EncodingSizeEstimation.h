@@ -21,6 +21,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/PforEncoding.h"
 #include "velox/common/base/BitUtil.h"
 
@@ -215,6 +216,36 @@ struct EncodingSizeEstimation {
           constexpr uint32_t overhead =
               6 + sizeof(physicalType) + 1 + sizeof(uint32_t);
           return overhead + bitpackedSize + exceptionsSize;
+        } else {
+          return std::nullopt;
+        }
+      }
+      case EncodingType::CompactFor: {
+        // 64-bit integer only. Same shape as FixedBitWidth — every value pays
+        // the full bit width covering (max - min) — but with a varint-encoded
+        // baseline. The bitpacked region also includes the 7-byte tail slop.
+        if constexpr (
+            isIntegralType<physicalType>() && sizeof(physicalType) == 8) {
+          const uint64_t baseline = static_cast<uint64_t>(statistics.min());
+          const uint64_t fullRange =
+              static_cast<uint64_t>(statistics.max() - statistics.min());
+          const uint8_t bitWidth = fullRange == 0
+              ? uint8_t{0}
+              : static_cast<uint8_t>(velox::bits::bitsRequired(fullRange));
+          const uint64_t bitpackedSize = bitWidth == 0
+              ? 0
+              : ((static_cast<uint64_t>(bitWidth) * entryCount + 7) >> 3) + 7;
+          // Conservatively assume the varint baseline takes 10 bytes when we
+          // can't cheaply compute its exact size from Statistics; for small
+          // baselines (~0) the encoder will produce 1 byte and the actual wire
+          // will be smaller than this estimate, which keeps the selector
+          // honest.
+          const uint32_t baselineVarintBytes = varint::varintSize(baseline);
+          // Overhead: common Encoding prefix (6) + baseline varint
+          // + bitWidth (1 byte).
+          constexpr uint32_t commonPrefixSize = 6;
+          const uint32_t overhead = commonPrefixSize + baselineVarintBytes + 1;
+          return overhead + bitpackedSize;
         } else {
           return std::nullopt;
         }

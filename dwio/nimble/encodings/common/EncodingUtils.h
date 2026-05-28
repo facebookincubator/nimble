@@ -16,6 +16,7 @@
 #pragma once
 
 #include "dwio/nimble/encodings/ALPEncoding.h"
+#include "dwio/nimble/encodings/CompactForEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
@@ -138,6 +139,12 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
     case EncodingType::DoubleDelta:
       if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>) {
         return f(static_cast<DoubleDeltaEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE("{}", encoding.dataType());
+      }
+    case EncodingType::CompactFor:
+      if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>) {
+        return f(static_cast<CompactForEncoding<T>&>(encoding));
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }

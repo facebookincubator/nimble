@@ -55,6 +55,8 @@ std::string toString(EncodingType encodingType) {
       return "Pfor";
     case EncodingType::DoubleDelta:
       return "DoubleDelta";
+    case EncodingType::CompactFor:
+      return "CompactFor";
   }
   return fmt::format(
       "Unknown encoding type: {}", static_cast<int32_t>(encodingType));

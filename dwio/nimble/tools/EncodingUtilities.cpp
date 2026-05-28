@@ -52,6 +52,7 @@ void extractCompressionType(
     case EncodingType::ALP:
     case EncodingType::Pfor:
     case EncodingType::DoubleDelta:
+    case EncodingType::CompactFor:
       break;
   }
 }
@@ -107,7 +108,8 @@ void traverseEncodings(
     case EncodingType::Prefix:
     case EncodingType::ALP:
     case EncodingType::Pfor:
-    case EncodingType::DoubleDelta: {
+    case EncodingType::DoubleDelta:
+    case EncodingType::CompactFor: {
       // don't have any nested encoding
       break;
     }

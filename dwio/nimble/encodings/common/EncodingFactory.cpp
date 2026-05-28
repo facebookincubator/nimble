@@ -15,6 +15,7 @@
  */
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/ALPEncoding.h"
+#include "dwio/nimble/encodings/CompactForEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
@@ -269,6 +270,20 @@ std::unique_ptr<Encoding> EncodingFactory::create(
               toString(dataType));
       }
     }
+    case EncodingType::CompactFor: {
+      switch (dataType) {
+        case DataType::Int64:
+          return std::make_unique<CompactForEncoding<int64_t>>(
+              memoryPool, data, stringBufferFactory, options);
+        case DataType::Uint64:
+          return std::make_unique<CompactForEncoding<uint64_t>>(
+              memoryPool, data, stringBufferFactory, options);
+        default:
+          NIMBLE_UNREACHABLE(
+              "CompactFor only supports 64-bit integer types, got {}.",
+              toString(dataType));
+      }
+    }
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
@@ -425,6 +440,16 @@ std::string_view EncodingFactory::encode(
       } else {
         NIMBLE_INCOMPATIBLE_ENCODING(
             "DoubleDelta encoding only supports 64-bit integer types, got {}.",
+            toString(TypeTraits<T>::dataType));
+      }
+    }
+    case EncodingType::CompactFor: {
+      if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>) {
+        return CompactForEncoding<T>::encode(
+            selection, castedValues, buffer, options);
+      } else {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "CompactFor encoding only supports 64-bit integer types, got {}.",
             toString(TypeTraits<T>::dataType));
       }
     }
