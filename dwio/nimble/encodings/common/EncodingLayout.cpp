@@ -301,9 +301,8 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
       }
       break;
     }
-    case EncodingType::FrequencyPartition: {
+    case EncodingType::FrequencyPartition:
       break;
-    }
     case EncodingType::Nullable: {
       const char* pos = encoding.data() + kEncodingPrefixSize;
       const uint32_t dataBytes = encoding::readUint32(pos);

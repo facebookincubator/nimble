@@ -269,12 +269,14 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     case EncodingType::Delta: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(DeltaEncoding, dataType);
     }
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::FOR: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(ForEncoding, dataType);
     }
     case EncodingType::FrequencyPartition: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(FrequencyPartitionEncoding, dataType);
     }
+#endif
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
@@ -381,6 +383,7 @@ std::string_view EncodingFactory::encode(
             selection, castedValues, buffer, options);
       }
     }
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::FrequencyPartition: {
       if constexpr (std::is_same<T, bool>::value) {
         NIMBLE_INCOMPATIBLE_ENCODING(
@@ -400,6 +403,7 @@ std::string_view EncodingFactory::encode(
             "For encoding can only be selected for integral data types (not bool).");
       }
     }
+#endif
     case EncodingType::SparseBool: {
       if constexpr (!std::is_same<T, bool>::value) {
         NIMBLE_INCOMPATIBLE_ENCODING(

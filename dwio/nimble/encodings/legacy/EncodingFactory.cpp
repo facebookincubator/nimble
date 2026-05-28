@@ -250,11 +250,7 @@ std::unique_ptr<Encoding> EncodingFactory::create(
       return std::make_unique<PrefixEncoding>(
           memoryPool, data, stringBufferFactory);
     }
-    // FOR and FrequencyPartition are newer encodings with no legacy
-    // counterparts. They use the same Encoding base class, so they can be
-    // returned from this factory. Their constructors take an extra
-    // Encoding::Options argument; default-constructed options are correct
-    // because files written by the new writer use useVarintRowCount=false.
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::FOR: {
       using ::facebook::nimble::ForEncoding;
       constexpr ::facebook::nimble::Encoding::Options kOpts{};
@@ -332,6 +328,7 @@ std::unique_ptr<Encoding> EncodingFactory::create(
               toString(dataType));
       }
     }
+#endif
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType -- garbage input?");

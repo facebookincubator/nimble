@@ -208,9 +208,8 @@ void traverseEncodings(
       break;
     }
     case EncodingType::FrequencyPartition:
-    case EncodingType::FOR: {
+    case EncodingType::FOR:
       break;
-    }
   }
 }
 
