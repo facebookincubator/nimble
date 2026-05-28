@@ -117,6 +117,11 @@ class Encoding {
     /// pre-materializes all string positions to avoid lazy initialization.
     /// Value-initialized to false when omitted from aggregate initialization.
     bool keyEncoding;
+
+    /// FrequencyPartitionEncoding index type (cast to FreqPartIndexType).
+    /// 0 = NoIndex (default, backward-compatible), 1 = PerTierBitmaps,
+    /// 2 = TierTagArray, 3 = EliasFano.
+    uint8_t frequencyPartitionIndex;
   };
 
   static constexpr int kEncodingTypeOffset =
@@ -295,7 +300,6 @@ class Encoding {
   static uint32_t readRowCount(std::string_view data, bool useVarint) {
     return EncodingPrefix::readRowCount(data, useVarint);
   }
-
   static uint32_t readPrefixSize(std::string_view data, bool useVarint) {
     return EncodingPrefix::readPrefixSize(data, useVarint);
   }

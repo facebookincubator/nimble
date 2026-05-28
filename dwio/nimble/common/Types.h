@@ -104,6 +104,12 @@ enum class EncodingType {
   // shared across consecutive entries to reduce storage. Supports seek
   // operations for efficient random access.
   Prefix = 11,
+  // Partitions data by value frequency. Frequent values get shorter bit-width
+  // codes. Rows are reordered to group values with same code length.
+  FrequencyPartition = 12,
+  // Frame of Reference: stores offsets from per-frame minimum values.
+  // Supports O(1) random access. Preserves row order.
+  FOR = 13,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);

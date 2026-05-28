@@ -16,6 +16,9 @@
 
 /// Fuzzer tests for all Nimble encodings across supported data types.
 ///
+/// Covers: VarintEncoding, MainlyConstantEncoding, ForEncoding, and
+/// FrequencyPartitionEncoding (PerTierBitmaps, TierTagArray, EliasFano).
+///
 /// Configuration via CLI flags:
 ///   --fuzzer_iterations=N     Number of iterations per test (default: 50)
 ///   --fuzzer_max_rows=N       Maximum rows per iteration (default: 5000)
@@ -29,6 +32,8 @@
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/ForEncoding.h"
+#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
@@ -261,5 +266,92 @@ TYPED_TEST(MainlyConstantFuzzerTest, correctness) {
       FLAGS_fuzzer_max_rows,
       FLAGS_fuzzer_seed,
       FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+
+// FOR: integral types only (float/string are excluded by static_assert)
+using ForTypes = ::testing::Types<
+    ForEncoding<int8_t>,
+    ForEncoding<int16_t>,
+    ForEncoding<int32_t>,
+    ForEncoding<int64_t>,
+    ForEncoding<uint8_t>,
+    ForEncoding<uint16_t>,
+    ForEncoding<uint32_t>,
+    ForEncoding<uint64_t>>;
+
+template <typename E>
+class ForFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(ForFuzzerTest, ForTypes);
+
+TYPED_TEST(ForFuzzerTest, Correctness) {
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+
+// FrequencyPartitionEncoding: indexed modes that preserve original row order.
+// NoIndex mode (tier-order output) is omitted here; its correctness is covered
+// by the deterministic tests in FrequencyPartitionEncodingTest.cpp.
+using FPETypes = ::testing::Types<
+    FrequencyPartitionEncoding<int32_t>,
+    FrequencyPartitionEncoding<uint32_t>,
+    FrequencyPartitionEncoding<int64_t>,
+    FrequencyPartitionEncoding<uint64_t>,
+    FrequencyPartitionEncoding<float>,
+    FrequencyPartitionEncoding<double>,
+    FrequencyPartitionEncoding<std::string_view>>;
+
+template <typename E>
+class FPEPerTierBitmapsFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(FPEPerTierBitmapsFuzzerTest, FPETypes);
+
+TYPED_TEST(FPEPerTierBitmapsFuzzerTest, Correctness) {
+  Encoding::Options opts{};
+  opts.frequencyPartitionIndex =
+      static_cast<uint8_t>(FreqPartIndexType::PerTierBitmaps);
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression,
+      opts);
+  fuzzer.run();
+}
+
+template <typename E>
+class FPETierTagArrayFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(FPETierTagArrayFuzzerTest, FPETypes);
+
+TYPED_TEST(FPETierTagArrayFuzzerTest, Correctness) {
+  Encoding::Options opts{};
+  opts.frequencyPartitionIndex =
+      static_cast<uint8_t>(FreqPartIndexType::TierTagArray);
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression,
+      opts);
+  fuzzer.run();
+}
+
+template <typename E>
+class FPEEliasFanoFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(FPEEliasFanoFuzzerTest, FPETypes);
+
+TYPED_TEST(FPEEliasFanoFuzzerTest, Correctness) {
+  Encoding::Options opts{};
+  opts.frequencyPartitionIndex =
+      static_cast<uint8_t>(FreqPartIndexType::EliasFano);
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression,
+      opts);
   fuzzer.run();
 }

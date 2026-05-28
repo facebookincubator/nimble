@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
+#include "dwio/nimble/encodings/ForEncoding.h"
+#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
 #include "dwio/nimble/encodings/legacy/DictionaryEncoding.h"
@@ -248,6 +250,85 @@ std::unique_ptr<Encoding> EncodingFactory::create(
       return std::make_unique<PrefixEncoding>(
           memoryPool, data, stringBufferFactory);
     }
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+    case EncodingType::FOR: {
+      using ::facebook::nimble::ForEncoding;
+      constexpr ::facebook::nimble::Encoding::Options kOpts{};
+      switch (dataType) {
+        case DataType::Int8:
+          return std::make_unique<ForEncoding<int8_t>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::Uint8:
+          return std::make_unique<ForEncoding<uint8_t>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::Int16:
+          return std::make_unique<ForEncoding<int16_t>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::Uint16:
+          return std::make_unique<ForEncoding<uint16_t>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::Int32:
+          return std::make_unique<ForEncoding<int32_t>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::Uint32:
+          return std::make_unique<ForEncoding<uint32_t>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::Int64:
+          return std::make_unique<ForEncoding<int64_t>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::Uint64:
+          return std::make_unique<ForEncoding<uint64_t>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        default:
+          NIMBLE_UNREACHABLE(
+              "FOR encoding only supports integral types, got {}.",
+              toString(dataType));
+      }
+    }
+    case EncodingType::FrequencyPartition: {
+      using ::facebook::nimble::FrequencyPartitionEncoding;
+      constexpr ::facebook::nimble::Encoding::Options kOpts{};
+      switch (dataType) {
+        case DataType::Int8:
+          return std::make_unique<FrequencyPartitionEncoding<int8_t>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::Uint8:
+          return std::make_unique<FrequencyPartitionEncoding<uint8_t>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::Int16:
+          return std::make_unique<FrequencyPartitionEncoding<int16_t>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::Uint16:
+          return std::make_unique<FrequencyPartitionEncoding<uint16_t>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::Int32:
+          return std::make_unique<FrequencyPartitionEncoding<int32_t>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::Uint32:
+          return std::make_unique<FrequencyPartitionEncoding<uint32_t>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::Int64:
+          return std::make_unique<FrequencyPartitionEncoding<int64_t>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::Uint64:
+          return std::make_unique<FrequencyPartitionEncoding<uint64_t>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::Float:
+          return std::make_unique<FrequencyPartitionEncoding<float>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::Double:
+          return std::make_unique<FrequencyPartitionEncoding<double>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        case DataType::String:
+          return std::make_unique<FrequencyPartitionEncoding<std::string_view>>(
+              memoryPool, data, stringBufferFactory, kOpts);
+        default:
+          NIMBLE_UNREACHABLE(
+              "FrequencyPartition encoding does not support bool, got {}.",
+              toString(dataType));
+      }
+    }
+#endif
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType -- garbage input?");

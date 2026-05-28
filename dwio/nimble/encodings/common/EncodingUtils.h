@@ -19,6 +19,8 @@
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/ForEncoding.h"
+#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
@@ -124,6 +126,20 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       return f(static_cast<MainlyConstantEncoding<T>&>(encoding));
     case EncodingType::Delta:
       return f(static_cast<DeltaEncoding<T>&>(encoding));
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+    case EncodingType::FOR:
+      if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
+        return f(static_cast<ForEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
+    case EncodingType::FrequencyPartition:
+      if constexpr (!std::is_same_v<T, bool>) {
+        return f(static_cast<FrequencyPartitionEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
+#endif
     default:
       NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
   }

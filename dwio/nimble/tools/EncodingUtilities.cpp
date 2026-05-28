@@ -49,6 +49,8 @@ void extractCompressionType(
     case EncodingType::Constant:
     case EncodingType::MainlyConstant:
     case EncodingType::Prefix:
+    case EncodingType::FrequencyPartition:
+    case EncodingType::FOR:
       break;
   }
 }
@@ -205,6 +207,9 @@ void traverseEncodings(
           visitor);
       break;
     }
+    case EncodingType::FrequencyPartition:
+    case EncodingType::FOR:
+      break;
   }
 }
 

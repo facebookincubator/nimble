@@ -96,7 +96,15 @@ std::pair<EncodingLayout, uint32_t> EncodingLayout::create(
 
   auto pos = encoding.data();
   const auto encodingType = encoding::read<uint8_t, EncodingType>(pos);
-  const auto compressionType = encoding::read<uint8_t, CompressionType>(pos);
+  auto compressionType = encoding::read<uint8_t, CompressionType>(pos);
+
+#ifdef DISABLE_META_INTERNAL_COMPRESSOR
+  // When MetaInternal is not available, map it to Zstd
+  if (compressionType == CompressionType::MetaInternal) {
+    compressionType = CompressionType::Zstd;
+  }
+#endif
+
   const auto childrenCount = encoding::read<uint8_t>(pos);
   [[maybe_unused]] const auto extraDataSize = encoding::read<uint16_t>(pos);
 
@@ -268,6 +276,33 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
               {pos, encoding.size() - (pos - encoding.data())}));
       break;
     }
+    case EncodingType::FOR: {
+      compressionType = encoding::peek<uint8_t, CompressionType>(
+          encoding.data() + kEncodingPrefixSize);
+      const bool enableBitOffsets = encoding::peek<uint8_t, bool>(
+          encoding.data() + kEncodingPrefixSize + 9);
+
+      const char* pos = encoding.data() + kEncodingPrefixSize + 10;
+
+      const uint32_t bitWidthsBytes = encoding::readUint32(pos);
+      children.emplace_back(
+          EncodingLayoutCapture::capture({pos, bitWidthsBytes}));
+      pos += bitWidthsBytes;
+
+      const uint32_t referencesBytes = encoding::readUint32(pos);
+      children.emplace_back(
+          EncodingLayoutCapture::capture({pos, referencesBytes}));
+      pos += referencesBytes;
+
+      if (enableBitOffsets) {
+        const uint32_t bitOffsetsBytes = encoding::readUint32(pos);
+        children.emplace_back(
+            EncodingLayoutCapture::capture({pos, bitOffsetsBytes}));
+      }
+      break;
+    }
+    case EncodingType::FrequencyPartition:
+      break;
     case EncodingType::Nullable: {
       const char* pos = encoding.data() + kEncodingPrefixSize;
       const uint32_t dataBytes = encoding::readUint32(pos);
