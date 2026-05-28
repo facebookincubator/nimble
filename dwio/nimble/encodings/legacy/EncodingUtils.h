@@ -106,6 +106,22 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       return f(static_cast<MainlyConstantEncoding<T>&>(encoding));
     case EncodingType::Delta:
       return f(static_cast<DeltaEncoding<T>&>(encoding));
+    // FOR and FrequencyPartition have no legacy counterparts; use the new
+    // encoding classes directly (same Encoding base class).
+    case EncodingType::FOR:
+      if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
+        return f(static_cast<::facebook::nimble::ForEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
+    case EncodingType::FrequencyPartition:
+      if constexpr (!std::is_same_v<T, bool>) {
+        return f(
+            static_cast<::facebook::nimble::FrequencyPartitionEncoding<T>&>(
+                encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
     default:
       NIMBLE_UNSUPPORTED(toString(encoding.encodingType()));
   }

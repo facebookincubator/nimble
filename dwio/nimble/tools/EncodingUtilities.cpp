@@ -49,6 +49,8 @@ void extractCompressionType(
     case EncodingType::Constant:
     case EncodingType::MainlyConstant:
     case EncodingType::Prefix:
+    case EncodingType::FrequencyPartition:
+    case EncodingType::FOR:
       break;
   }
 }
@@ -203,6 +205,10 @@ void traverseEncodings(
           0,
           "Sentinels",
           visitor);
+      break;
+    }
+    case EncodingType::FrequencyPartition:
+    case EncodingType::FOR: {
       break;
     }
   }

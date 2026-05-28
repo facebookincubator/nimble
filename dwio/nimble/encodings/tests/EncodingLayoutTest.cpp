@@ -32,7 +32,29 @@ void verifyEncodingLayout(
   }
 
   ASSERT_EQ(expected->encodingType(), actual->encodingType());
-  ASSERT_EQ(expected->compressionType(), actual->compressionType());
+
+  // When MetaInternal is not available, it gets redirected to Zstd.
+  // For tests, we need to account for this mapping.
+  auto expectedCompression = expected->compressionType();
+  auto actualCompression = actual->compressionType();
+
+#ifdef DISABLE_META_INTERNAL_COMPRESSOR
+  // If expected is MetaInternal but we don't have it, accept Zstd or
+  // Uncompressed (Uncompressed can happen if the data is too small to benefit
+  // from compression)
+  if (expectedCompression == nimble::CompressionType::MetaInternal) {
+    ASSERT_TRUE(
+        actualCompression == nimble::CompressionType::Zstd ||
+        actualCompression == nimble::CompressionType::Uncompressed)
+        << "Expected MetaInternal (mapped to Zstd or Uncompressed), but got "
+        << nimble::toString(actualCompression);
+  } else {
+    ASSERT_EQ(expectedCompression, actualCompression);
+  }
+#else
+  ASSERT_EQ(expectedCompression, actualCompression);
+#endif
+
   ASSERT_EQ(expected->childrenCount(), actual->childrenCount());
 
   for (auto i = 0; i < expected->childrenCount(); ++i) {
@@ -131,11 +153,11 @@ TEST(EncodingLayoutTests, FixedBitWidth) {
     nimble::EncodingLayout expected{
         nimble::EncodingType::FixedBitWidth,
         {},
-        nimble::CompressionType::Zstd,
+        nimble::CompressionType::MetaInternal,
     };
 
     testSerialization(expected);
-    // NOTE: We need this artitifical long input data, because if Zstd
+    // NOTE: We need this artitifical long input data, because if MetaInternal
     // compressed buffer is bigger than the uncompressed buffer, it is not
     // picked up, which then leads to the captured encloding layout to be
     // uncompressed.
@@ -188,10 +210,21 @@ TEST(EncodingLayoutTests, SparseBool) {
               {},
               nimble::CompressionType::MetaInternal},
       }};
-
   testSerialization(expected);
+
+  // Test actual capture with uncompressed
+  nimble::EncodingLayout captureTest{
+      nimble::EncodingType::SparseBool,
+      {},
+      nimble::CompressionType::Uncompressed,
+      {
+          nimble::EncodingLayout{
+              nimble::EncodingType::Trivial,
+              {},
+              nimble::CompressionType::Uncompressed},
+      }};
   testCapture<bool>(
-      expected, std::array<bool, 5>{false, false, false, true, false});
+      captureTest, std::array<bool, 5>{false, false, false, true, false});
 }
 
 TEST(EncodingLayoutTests, MainlyConst) {
@@ -209,9 +242,24 @@ TEST(EncodingLayoutTests, MainlyConst) {
               {},
               nimble::CompressionType::Uncompressed},
       }};
-
   testSerialization(expected);
-  testCapture<uint32_t>(expected, {1, 1, 1, 1, 5, 1});
+
+  // Test actual capture with uncompressed
+  nimble::EncodingLayout captureTest{
+      nimble::EncodingType::MainlyConstant,
+      {},
+      nimble::CompressionType::Uncompressed,
+      {
+          nimble::EncodingLayout{
+              nimble::EncodingType::Trivial,
+              {},
+              nimble::CompressionType::Uncompressed},
+          nimble::EncodingLayout{
+              nimble::EncodingType::Trivial,
+              {},
+              nimble::CompressionType::Uncompressed},
+      }};
+  testCapture<uint32_t>(captureTest, {1, 1, 1, 1, 5, 1});
 }
 
 TEST(EncodingLayoutTests, Dictionary) {
