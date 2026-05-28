@@ -21,6 +21,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/encodings/PforEncoding.h"
 #include "velox/common/base/BitUtil.h"
 
 namespace facebook::nimble {
@@ -149,6 +150,31 @@ struct EncodingSizeEstimation {
               });
           return getEncodingOverhead<EncodingType::Varint, physicalType>() +
               dataSize;
+        } else {
+          return std::nullopt;
+        }
+      }
+      case EncodingType::Pfor: {
+        if constexpr (isIntegralType<physicalType>()) {
+          const auto fullRange =
+              static_cast<physicalType>(statistics.max() - statistics.min());
+          const uint8_t maxBitWidth =
+              static_cast<uint8_t>(velox::bits::bitsRequired(fullRange));
+          const auto [baseBitWidth, numExceptions] =
+              PforEncoding<physicalType>::selectBaseBitWidth(
+                  statistics.bucketCounts(), entryCount, maxBitWidth);
+          const uint64_t bitpackedSize = baseBitWidth == 0
+              ? 0
+              : FixedBitArray::bufferSize(entryCount, baseBitWidth);
+          // Per-exception: position varint (max 5B) + value varint (max
+          // ceil(maxBitWidth/7) bytes, capped at 10).
+          const uint64_t valueVarintBytes = std::min<uint64_t>(
+              (static_cast<uint64_t>(maxBitWidth) + 6) / 7, 10);
+          const uint64_t exceptionsSize =
+              numExceptions * (5 + valueVarintBytes);
+          constexpr uint32_t overhead =
+              6 + sizeof(physicalType) + 1 + sizeof(uint32_t);
+          return overhead + bitpackedSize + exceptionsSize;
         } else {
           return std::nullopt;
         }

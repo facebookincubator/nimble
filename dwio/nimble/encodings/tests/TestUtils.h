@@ -22,6 +22,7 @@
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
+#include "dwio/nimble/encodings/PforEncoding.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
@@ -179,6 +180,12 @@ class Encoder {
   struct EncodingTypeTraits<nimble::NullableEncoding<T>> {
     static constexpr inline nimble::EncodingType encodingType =
         nimble::EncodingType::Nullable;
+  };
+
+  template <>
+  struct EncodingTypeTraits<nimble::PforEncoding<T>> {
+    static constexpr inline nimble::EncodingType encodingType =
+        nimble::EncodingType::Pfor;
   };
 
  public:

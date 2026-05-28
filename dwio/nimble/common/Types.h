@@ -106,6 +106,10 @@ enum class EncodingType {
   Prefix = 11,
   // Adaptive Lossless floating-Point compression for numeric types.
   ALP = 12,
+  // Patched Frame-of-Reference. Subtracts a min baseline, bitpacks ~90% of
+  // residuals at a narrow base bit width, and stores the remaining outliers
+  // ("exceptions") as a parallel position+value array.
+  Pfor = 15,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);

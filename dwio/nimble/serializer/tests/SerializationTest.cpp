@@ -2098,6 +2098,78 @@ TEST_P(SerializationTest, encodingLayoutTree) {
   }
 }
 
+// Columnar reader-level round-trip for PforEncoding. Forces Pfor via
+// EncodingLayoutTree and verifies data integrity through the full
+// Serializer → Deserializer path.
+TEST_P(SerializationTest, pforColumnarRoundTrip) {
+  auto type = velox::ROW({
+      {"int_val", velox::INTEGER()},
+      {"long_val", velox::BIGINT()},
+  });
+
+  EncodingLayoutTree layoutTree{
+      Kind::Row,
+      {},
+      "",
+      {
+          {Kind::Scalar,
+           {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
+             EncodingLayout{
+                 EncodingType::Pfor, {}, CompressionType::Uncompressed}}},
+           ""},
+          {Kind::Scalar,
+           {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
+             EncodingLayout{
+                 EncodingType::Pfor, {}, CompressionType::Uncompressed}}},
+           ""},
+      }};
+
+  SerializerOptions options{
+      .version = version(),
+      .encodingLayoutTree = layoutTree,
+      .compressionOptions = compressionOptions(),
+  };
+
+  Serializer serializer{options, type, pool_.get()};
+
+  const velox::vector_size_t numRows = 100;
+  auto intVals =
+      velox::BaseVector::create(velox::INTEGER(), numRows, pool_.get());
+  auto longVals =
+      velox::BaseVector::create(velox::BIGINT(), numRows, pool_.get());
+  for (velox::vector_size_t i = 0; i < numRows; ++i) {
+    // ~90% narrow values, ~10% outliers — Pfor's sweet spot.
+    intVals->asFlatVector<int32_t>()->set(
+        i, i % 10 == 0 ? 1'000'000 + i : i % 100);
+    longVals->asFlatVector<int64_t>()->set(
+        i, i % 10 == 0 ? 9'000'000'000LL + i : i * 60);
+  }
+
+  auto input = std::make_shared<velox::RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      numRows,
+      std::vector<velox::VectorPtr>{intVals, longVals});
+
+  auto serialized =
+      serializer.serialize(input, OrderedRanges::of(0, input->size()));
+
+  Deserializer deserializer{
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
+      pool_.get(),
+      deserializerOptions()};
+
+  velox::VectorPtr output;
+  deserializer.deserialize(serialized, output);
+
+  ASSERT_EQ(output->size(), input->size());
+  for (velox::vector_size_t i = 0; i < input->size(); ++i) {
+    ASSERT_TRUE(vectorEquals(output, input, i))
+        << "Content mismatch at index " << i;
+  }
+}
+
 // Test encoding layout tree for FlatMap with dynamic key discovery and nested
 // types.
 TEST_P(SerializationTest, encodingLayoutTreeFlatMap) {

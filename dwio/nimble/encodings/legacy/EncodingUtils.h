@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "dwio/nimble/encodings/PforEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
@@ -106,6 +107,14 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       return f(static_cast<MainlyConstantEncoding<T>&>(encoding));
     case EncodingType::Delta:
       return f(static_cast<DeltaEncoding<T>&>(encoding));
+    // New Encoding has no legacy-specialised class; legacy reads dispatch into
+    // the modern Encoding classes
+    case EncodingType::Pfor:
+      if constexpr (isIntegralType<T>()) {
+        return f(static_cast<PforEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
     default:
       NIMBLE_UNSUPPORTED(toString(encoding.encodingType()));
   }
