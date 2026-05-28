@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 #include <deque>
+#include <thread>
 
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/index/IndexConfig.h"
@@ -900,6 +901,52 @@ TEST_F(SortedIndexTest, indexDataReuseCrossReaders) {
   }
 
   cache->shutdown();
+}
+
+TEST_P(SortedIndexParamTest, concurrentLookup) {
+  constexpr uint32_t kNumThreads = 16;
+  constexpr uint32_t kLookupsPerThread = 200;
+  constexpr int32_t kNumRows = 50;
+
+  std::vector<velox::VectorPtr> batches;
+  batches.push_back(makeBatch(0, kNumRows));
+
+  const auto filePath = tempFilePath("concurrent_lookup");
+  writeFile(filePath, batches, indexConfig());
+
+  auto tablet = openTablet(filePath);
+  auto* sortedIdx = tablet->denseIndex(columns());
+  ASSERT_NE(sortedIdx, nullptr);
+
+  std::atomic_uint32_t errors{0};
+  std::vector<std::thread> threads;
+  threads.reserve(kNumThreads);
+
+  for (uint32_t t = 0; t < kNumThreads; ++t) {
+    threads.emplace_back([&, t]() {
+      std::mt19937 rng(42 + t);
+      std::uniform_int_distribution<int32_t> idDist(0, kNumRows - 1);
+      for (uint32_t i = 0; i < kLookupsPerThread; ++i) {
+        const auto id = idDist(rng);
+
+        auto result = pointLookup(sortedIdx, columns(), id);
+        if (result.size() != 1 || result[0].size() != 1) {
+          ++errors;
+          continue;
+        }
+        const auto& range = result[0][0];
+        if (range.startRow != static_cast<uint32_t>(id) ||
+            range.endRow != static_cast<uint32_t>(id) + 1) {
+          ++errors;
+        }
+      }
+    });
+  }
+
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(errors.load(), 0);
 }
 
 } // namespace

@@ -50,8 +50,6 @@ class PrefixEncoding final
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
 
-  std::optional<uint32_t> seek(const void* value, bool inclusive) final;
-
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
 

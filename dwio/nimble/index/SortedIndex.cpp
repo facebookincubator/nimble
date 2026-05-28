@@ -199,7 +199,7 @@ void SortedIndex::scanEntries(
     // ensures entries are in range, so start at 0.
     const uint32_t startPos = (ci != startChunk)
         ? 0
-        : chunk->encoding->seek(&startSeekKey, /*inclusive=*/true)
+        : chunk->encoding->seek(startSeekKey, /*inclusive=*/true)
               .value_or(rowCount);
     if (startPos >= rowCount) {
       break;
@@ -208,16 +208,13 @@ void SortedIndex::scanEntries(
     // If all remaining entries in this chunk match, skip the end seek.
     const uint32_t endPos = hasMoreEntries(ci)
         ? rowCount
-        : chunk->encoding->seek(&endSeekKey, /*inclusive=*/!isPointLookup)
+        : chunk->encoding->seek(endSeekKey, /*inclusive=*/!isPointLookup)
               .value_or(rowCount);
     if (startPos >= endPos) {
       break;
     }
 
-    chunk->encoding->reset();
-    chunk->encoding->skip(startPos);
-    std::vector<std::string_view> entries(endPos - startPos);
-    chunk->encoding->materialize(endPos - startPos, entries.data());
+    auto entries = chunk->encoding->materialize(startPos, endPos - startPos);
     for (const auto& entry : entries) {
       matchedRows.emplace_back(extractRowId(entry));
     }

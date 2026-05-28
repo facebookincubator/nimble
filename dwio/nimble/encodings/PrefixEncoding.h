@@ -94,12 +94,6 @@ class PrefixEncoding final
   /// @param buffer Output buffer for std::string_view values.
   void materialize(uint32_t rowCount, void* buffer) final;
 
-  void get(uint32_t row, void* value) final;
-
-  /// Seeks to the position at or after the given value.
-  ///
-  std::optional<uint32_t> seek(const void* value, bool inclusive) final;
-
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
 
@@ -148,12 +142,6 @@ class PrefixEncoding final
   // NOTE: The returned string_view is invalidated on the next decodeEntry call
   // as decodedValue_ buffer is overwritten.
   std::string_view decodeEntry();
-
-  // Stateless variant of decodeEntry() for use in seek(). Operates on local
-  // state passed by reference instead of member variables, enabling concurrent
-  // seek() calls without locks.
-  static std::string_view
-  decodeEntryAt(const char*& pos, uint32_t& row, std::string& decoded);
 
   // Calls decodeEntry() then copies the decoded value into a string page
   // allocated via stringBufferFactory_. Returns a stable string_view.

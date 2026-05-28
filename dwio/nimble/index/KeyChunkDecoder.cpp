@@ -17,7 +17,6 @@
 
 #include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/encodings/common/EncodingFactory.h"
 
 namespace facebook::nimble::index {
 
@@ -70,19 +69,15 @@ std::shared_ptr<DecodedKeyChunk> decodeKeyChunk(
     result->stringBuffers.push_back(dataBuffer);
   }
 
-  // Key encodings eagerly initialize lookup structures for thread-safe
-  // seek() and get() from concurrent index lookups.
   auto* raw = result.get();
-  result->encoding =
-      nimble::EncodingFactory(Encoding::Options{.keyEncoding = true})
-          .create(
-              pool,
-              std::string_view(chunkData, dataLen),
-              [raw, &pool](uint32_t totalLength) {
-                auto& buffer = raw->stringBuffers.emplace_back(
-                    velox::AlignedBuffer::allocate<char>(totalLength, &pool));
-                return buffer->asMutable<void>();
-              });
+  result->encoding = KeyEncoding::create(
+      pool,
+      std::string_view(chunkData, dataLen),
+      [raw, &pool](uint32_t totalLength) {
+        auto& buffer = raw->stringBuffers.emplace_back(
+            velox::AlignedBuffer::allocate<char>(totalLength, &pool));
+        return buffer->asMutable<void>();
+      });
   NIMBLE_CHECK(
       result->encoding->encodingType() == EncodingType::Trivial ||
           result->encoding->encodingType() == EncodingType::Prefix,
