@@ -631,6 +631,9 @@ TEST_P(CachedMetadataInputTest, loadWithCache) {
   for (const auto& testData : enqueueLoadReadTestSettings()) {
     SCOPED_TRACE(testData.debugString());
     cache_->clear();
+    if (enableSsd()) {
+      cache_->ssdCache()->clear();
+    }
 
     std::vector<nimble::MetadataSection> sections;
     std::vector<std::string> fileDataParts;
@@ -766,6 +769,9 @@ DEBUG_ONLY_TEST_P(CachedMetadataInputTest, ioCoalescing) {
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.debugString());
     cache_->clear();
+    if (enableSsd()) {
+      cache_->ssdCache()->clear();
+    }
 
     uint64_t fileSize = 0;
     std::vector<std::string> sectionData;

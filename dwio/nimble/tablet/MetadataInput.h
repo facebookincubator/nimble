@@ -243,7 +243,8 @@ class CachedMetadataInput : public MetadataInput {
   // memory cache. Removes loaded indices from loadIndices in-place.
   void loadFromSsd(
       std::vector<LoadedSection>& sections,
-      std::vector<uint32_t>& loadIndices);
+      std::vector<uint32_t>& loadIndices,
+      std::vector<std::optional<velox::cache::CachePin>>& cachePins);
 
   // Decompresses loaded buffers and stores results into sections.
   // For sections with cache pins, decompresses into the pin and promotes
