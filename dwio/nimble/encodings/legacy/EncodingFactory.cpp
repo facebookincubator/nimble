@@ -310,6 +310,7 @@ std::unique_ptr<Encoding> EncodingFactory::create(
       RETURN_ENCODING_BY_NUMERIC_TYPE(
           ::facebook::nimble::SimdForBitpackEncoding, dataType);
     }
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::FOR: {
       RETURN_ENCODING_BY_INTEGRAL_TYPE(
         ::facebook::nimble::ForEncoding, dataType);
@@ -318,6 +319,7 @@ std::unique_ptr<Encoding> EncodingFactory::create(
       RETURN_ENCODING_BY_NON_BOOL_TYPE(
         ::facebook::nimble::FrequencyPartitionEncoding, dataType);
     }
+#endif
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType -- garbage input?");

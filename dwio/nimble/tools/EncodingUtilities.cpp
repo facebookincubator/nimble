@@ -245,6 +245,9 @@ void traverseEncodings(
           visitor);
       break;
     }
+    case EncodingType::FrequencyPartition:
+    case EncodingType::FOR:
+      break;
   }
 }
 
