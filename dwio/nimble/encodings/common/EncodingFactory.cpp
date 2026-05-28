@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
@@ -243,6 +244,11 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     case EncodingType::Delta: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(DeltaEncoding, dataType);
     }
+    case EncodingType::ALP: {
+      // TODO: Wire up ALPEncoding deserialization once the actual ALP algorithm
+      // is implemented. ALP only supports float and double.
+      NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
+    }
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
@@ -375,6 +381,11 @@ std::string_view EncodingFactory::encode(
             "Delta encoding should not be selected for non-numeric data type: {}.",
             toString(TypeTraits<T>::dataType));
       }
+    }
+    case EncodingType::ALP: {
+      // TODO: Wire up ALPEncoding::encode once the actual ALP algorithm is
+      // implemented. ALP only supports float and double.
+      NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
     }
     default: {
       NIMBLE_UNSUPPORTED(

@@ -372,6 +372,8 @@ class ManualEncodingSelectionPolicyFactory {
         std::nullopt);
   }
 
+  // TODO: Add EncodingType::ALP here once the actual ALP algorithm is
+  // implemented and size estimation is wired up in EncodingSizeEstimation.h.
   static std::vector<EncodingType> possibleEncodings() {
     return {
         EncodingType::Constant,
@@ -385,6 +387,8 @@ class ManualEncodingSelectionPolicyFactory {
     };
   }
 
+  // TODO: Add EncodingType::ALP with an appropriate read factor once the
+  // actual ALP algorithm is implemented.
   static std::vector<std::pair<EncodingType, float>> defaultReadFactors() {
     return {
         {EncodingType::Constant, 1.0},
@@ -536,6 +540,8 @@ class LearnedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
   }
 
  private:
+  // TODO: Add EncodingType::ALP here once the actual ALP algorithm is
+  // implemented.
   static std::vector<EncodingType> possibleEncodingChoices() {
     return {
         EncodingType::Constant,
