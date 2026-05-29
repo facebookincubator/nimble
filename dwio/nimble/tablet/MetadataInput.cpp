@@ -385,10 +385,16 @@ std::shared_ptr<MetadataBuffer> CachedMetadataInput::promoteCachePin(
 
 void CachedMetadataInput::loadFromSsd(
     std::vector<LoadedSection>& sections,
-    std::vector<uint32_t>& loadIndices) {
+    std::vector<uint32_t>& loadIndices,
+    std::vector<std::optional<velox::cache::CachePin>>& cachePins) {
   if (loadIndices.empty()) {
     return;
   }
+  NIMBLE_CHECK_EQ(
+      cachePins.size(),
+      sections.size(),
+      "cachePins size must match sections size");
+
   auto* ssdCache = cache_->ssdCache();
   if (ssdCache == nullptr) {
     return;
@@ -424,7 +430,13 @@ void CachedMetadataInput::loadFromSsd(
           "SSD entry size mismatch with expected uncompressed size");
     }
 
-    auto pin = acquireCachePin(key, ssdSize);
+    velox::cache::CachePin pin;
+    if (cachePins[index].has_value()) {
+      pin = std::move(*cachePins[index]);
+      cachePins[index].reset();
+    } else {
+      pin = acquireCachePin(key, ssdSize);
+    }
     auto buffer = tryCacheHit(ssdSize, pin);
     if (buffer != nullptr) {
       loaded.buffer = std::move(buffer);
@@ -554,7 +566,7 @@ std::vector<std::shared_ptr<MetadataBuffer>> CachedMetadataInput::load(
   std::vector<LoadedSection> loadSections(sections.begin(), sections.end());
   std::vector<std::optional<velox::cache::CachePin>> cachePins;
   auto missIndices = loadFromCache(loadSections, cachePins);
-  loadFromSsd(loadSections, missIndices);
+  loadFromSsd(loadSections, missIndices, cachePins);
 
   if (!missIndices.empty()) {
     ReadBuffers readBuffers;
