@@ -22,6 +22,7 @@
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
+#include "dwio/nimble/encodings/PforEncoding.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/encodings/RleEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
@@ -126,9 +127,13 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
     case EncodingType::Delta:
       return f(static_cast<DeltaEncoding<T>&>(encoding));
     case EncodingType::ALP:
-      // TODO: Wire up ALPEncoding readWithVisitor dispatch once the actual
-      // ALP algorithm is implemented. ALP only supports float and double.
       NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
+    case EncodingType::Pfor:
+      if constexpr (isIntegralType<T>()) {
+        return f(static_cast<PforEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE("{}", encoding.dataType());
+      }
     default:
       NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
   }
