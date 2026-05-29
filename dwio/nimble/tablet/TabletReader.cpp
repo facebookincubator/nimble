@@ -424,10 +424,17 @@ bool TabletReader::loadFooterFromCache() {
       content.substr(content.size() - Postscript::kSize, Postscript::kSize));
 
   const auto footerSize = content.size() - Postscript::kSize;
-  NIMBLE_CHECK_EQ(
-      ps_.footerSize(),
-      footerSize,
-      "Cached footer size mismatch with postscript");
+  if (ps_.footerCompressionType() == CompressionType::Uncompressed) {
+    NIMBLE_CHECK_EQ(
+        ps_.footerSize(),
+        footerSize,
+        "Cached footer size mismatch with postscript");
+  } else {
+    NIMBLE_CHECK_LE(
+        ps_.footerSize(),
+        footerSize,
+        "Cached compressed footer size exceeds decompressed size");
+  }
 
   footer_ = cachedFooter->slice(0, footerSize);
   return true;
