@@ -61,9 +61,11 @@ class MetadataInput {
     velox::cache::AsyncDataCache* cache{nullptr};
   };
 
+  /// Creates a MetadataInput (direct or cached based on Options).
   static std::unique_ptr<MetadataInput> create(
       velox::ReadFile* file,
-      const Options& options);
+      const Options& options,
+      velox::FileIoContext fileIoContext = {});
 
   virtual ~MetadataInput() = default;
 
@@ -90,7 +92,10 @@ class MetadataInput {
       std::span<const std::string_view> ranges);
 
  protected:
-  MetadataInput(velox::ReadFile* file, const Options& options);
+  MetadataInput(
+      velox::ReadFile* file,
+      const Options& options,
+      velox::FileIoContext fileIoContext);
 
   struct LoadedSection {
     explicit LoadedSection(MetadataSection _section) : section{_section} {}
@@ -185,6 +190,7 @@ class MetadataInput {
   const int64_t maxCoalesceBytes_;
   folly::Executor* const executor_;
   const std::shared_ptr<velox::io::IoStatistics> ioStats_;
+  const velox::FileIoContext fileIoContext_;
 };
 
 /// Direct metadata loading with IO coalescing, no caching.
@@ -205,7 +211,10 @@ class DirectMetadataInput : public MetadataInput {
 
   friend class MetadataInput;
 
-  DirectMetadataInput(velox::ReadFile* file, const Options& options);
+  DirectMetadataInput(
+      velox::ReadFile* file,
+      const Options& options,
+      velox::FileIoContext fileIoContext);
 };
 
 /// Cached metadata loading with IO coalescing and AsyncDataCache.
@@ -288,7 +297,8 @@ class CachedMetadataInput : public MetadataInput {
       velox::ReadFile* file,
       velox::StringIdLease fileId,
       velox::cache::AsyncDataCache* cache,
-      const Options& options);
+      const Options& options,
+      velox::FileIoContext fileIoContext);
 
   velox::cache::AsyncDataCache* const cache_;
   const velox::StringIdLease fileId_;

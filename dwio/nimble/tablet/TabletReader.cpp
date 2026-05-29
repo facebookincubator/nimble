@@ -20,6 +20,7 @@
 #include "dwio/nimble/tablet/ChunkIndexGenerated.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
+#include "velox/dwio/common/BufferedInput.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 
 #include "folly/io/Cursor.h"
@@ -72,15 +73,20 @@ void rawRead(
     velox::ReadFile* file,
     uint64_t offset,
     uint64_t size,
-    void* dest) {
-  file->pread(offset, size, dest);
+    void* dest,
+    const velox::FileIoContext& fileIoContext) {
+  file->pread(offset, size, dest, fileIoContext);
 }
 
 } // namespace
 
 TabletReader::Options TabletReader::configureOptions(
-    const velox::dwio::common::ReaderOptions& options) {
+    const velox::dwio::common::ReaderOptions& options,
+    const velox::dwio::common::BufferedInput* input) {
   Options tabletOptions;
+  if (input != nullptr) {
+    tabletOptions.fileIoContext = input->getInputStream()->fileIoContext();
+  }
   tabletOptions.maxFooterIoBytes = options.footerSpeculativeIoSize();
   tabletOptions.preloadOptionalSections = {
       std::string(kSchemaSection), std::string(kVectorizedStatsSection)};
@@ -254,11 +260,13 @@ TabletReader::TabletReader(
             .ioOptions = &ioOptions_,
             .fileHandle = cacheEnabled ? options.fileHandle : nullptr,
             .cache = cacheEnabled ? options.cache : nullptr,
+            .fileIoContext = options.fileIoContext,
             // preloadIndex requires pinIndex; auto-promote so the caller only
             // needs to flip one knob.
             .pinIndex = options.pinIndex || options.preloadIndex,
             .preloadIndex = options.preloadIndex};
       }()},
+      fileIoContext_{options.fileIoContext},
       metadataInput_{[&]() {
         MetadataInput::Options metadataOptions{
             .pool = &pool,
@@ -273,7 +281,8 @@ TabletReader::TabletReader(
           metadataOptions.fileHandle = options.fileHandle;
           metadataOptions.cache = options.cache;
         }
-        return MetadataInput::create(file_.get(), metadataOptions);
+        return MetadataInput::create(
+            file_.get(), metadataOptions, fileIoContext_);
       }()},
       stripeGroupCache_{
           [this](uint32_t stripeGroupIndex) {
@@ -355,7 +364,8 @@ void TabletReader::loadFooter(
         file_.get(),
         footerOffset,
         footerBuf->size(),
-        footerBuf->asMutable<char>());
+        footerBuf->asMutable<char>(),
+        fileIoContext_);
 
     ps_ = Postscript::parse(
         std::string_view{
@@ -372,7 +382,8 @@ void TabletReader::loadFooter(
           file_.get(),
           footerOffset,
           footerBuf->size(),
-          footerBuf->asMutable<char>());
+          footerBuf->asMutable<char>(),
+          fileIoContext_);
     }
 
     const uint64_t footerOffset =
@@ -389,7 +400,8 @@ void TabletReader::loadFooter(
         file_.get(),
         fileSize_ - Postscript::kSize,
         Postscript::kSize,
-        footerBuf->asMutable<char>());
+        footerBuf->asMutable<char>(),
+        fileIoContext_);
     ps_ = Postscript::parse(
         std::string_view{footerBuf->as<char>(), Postscript::kSize});
 
@@ -401,7 +413,8 @@ void TabletReader::loadFooter(
         file_.get(),
         footerOffset,
         ps_.footerSize(),
-        footerBuf->asMutable<char>());
+        footerBuf->asMutable<char>(),
+        fileIoContext_);
     footer_ = std::make_unique<MetadataBuffer>(MetadataBuffer::decompress(
         std::move(footerBuf), ps_.footerCompressionType(), pool_));
   }
@@ -566,7 +579,8 @@ void TabletReader::loadStripes(
         file_.get(),
         footerOffset,
         footerBuf->size(),
-        footerBuf->asMutable<char>());
+        footerBuf->asMutable<char>(),
+        fileIoContext_);
   }
   const auto footerView = footerBuf != nullptr
       ? std::string_view{footerBuf->as<char>(), footerBuf->size()}
@@ -1002,7 +1016,8 @@ std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
   }
   if (!uniqueRegions.empty()) {
     std::vector<folly::IOBuf> iobufs(uniqueRegions.size());
-    file_->preadv(uniqueRegions, {iobufs.data(), iobufs.size()});
+    file_->preadv(
+        uniqueRegions, {iobufs.data(), iobufs.size()}, fileIoContext_);
     NIMBLE_DCHECK_EQ(
         iobufs.size(), uniqueRegions.size(), "Buffer size mismatch.");
     for (uint32_t i = 0; i < uniqueRegions.size(); ++i) {
