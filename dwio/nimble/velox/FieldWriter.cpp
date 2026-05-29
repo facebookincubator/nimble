@@ -1596,32 +1596,38 @@ class FlatMapFieldWriter : public FieldWriter {
 
   // Collects key statistics for passthrough flatmap with VARCHAR keys.
   // For passthrough flatmaps, keys are ROW field names, so we use the actual
-  // string lengths instead of sizeof(StringView).
+  // string lengths instead of sizeof(StringView). totalKeyCount is the
+  // count of (key, row) entries that will actually be written (per-feature
+  // NULL values are excluded; see T271900360).
   void collectPassthroughStringKeyStatistics(
       const velox::RowVector* rowVector,
-      uint64_t nonNullCount,
+      const std::vector<velox::VectorPtr>& values,
+      const OrderedRanges& childRanges,
+      uint64_t totalKeyCount,
       uint64_t nullCount,
       uint64_t valueCount) {
     if (!keyStatisticsCollector_) {
       return;
     }
-
-    // For passthrough flatmaps, each non-null row has all keys present.
+    keyStatisticsCollector_->addCounts(totalKeyCount, nullCount);
     const auto& rowType = rowVector->type()->asRow();
     const auto numKeys = rowType.size();
-    const uint64_t totalKeyCount = numKeys * nonNullCount;
-
-    keyStatisticsCollector_->addCounts(totalKeyCount, nullCount);
-
-    // Calculate the total key string size: sum of all key name lengths
-    // multiplied by the number of non-null rows.
     uint64_t totalKeyStringSize = 0;
-    for (size_t i = 0; i < numKeys; ++i) {
-      totalKeyStringSize += rowType.nameOf(i).size();
+    for (velox::column_index_t i = 0; i < numKeys; ++i) {
+      const auto& valueVector = values[i];
+      uint64_t presentCount = 0;
+      if (!valueVector->mayHaveNulls()) {
+        presentCount = childRanges.size();
+      } else {
+        childRanges.applyEach([&](auto offset) {
+          if (!valueVector->isNullAt(offset)) {
+            ++presentCount;
+          }
+        });
+      }
+      totalKeyStringSize += rowType.nameOf(i).size() * presentCount;
     }
-
-    keyStatisticsCollector_->addLogicalSize(
-        totalKeyStringSize * nonNullCount + nullCount);
+    keyStatisticsCollector_->addLogicalSize(totalKeyStringSize + nullCount);
   }
 
   void ingestFlatMap(
@@ -1793,18 +1799,34 @@ class FlatMapFieldWriter : public FieldWriter {
         FlatAdapter<>{vector},
         [&](auto offset) { childRanges.add(offset, 1); });
 
+    // T271900360: route per-feature NULL values to inMap=0 ("key absent"),
+    // not inMap=1 with a NULL value. Pre-pass per feature to compute the
+    // actual present-entry count so the key statistics stay in lockstep
+    // with what the writer will emit.
+    uint64_t totalKeyCount = 0;
+    for (velox::vector_size_t i = 0; i < values.size(); ++i) {
+      const auto& valueVector = values[i];
+      if (!valueVector->mayHaveNulls()) {
+        totalKeyCount += childRanges.size();
+        continue;
+      }
+      childRanges.applyEach([&](auto offset) {
+        if (!valueVector->isNullAt(offset)) {
+          ++totalKeyCount;
+        }
+      });
+    }
+
     collectStatistics(size - nonNullCount, size);
     // For ROW vector ingestion (passthrough flatmaps), keys are ROW field
     // names. For VARCHAR/VARBINARY keys, use actual string lengths instead of
     // sizeof(StringView).
     if constexpr (
         K == velox::TypeKind::VARCHAR || K == velox::TypeKind::VARBINARY) {
-      collectPassthroughStringKeyStatistics(rowVector, nonNullCount, 0, size);
+      collectPassthroughStringKeyStatistics(
+          rowVector, values, childRanges, totalKeyCount, 0, size);
     } else {
-      // For non-string keys, all keys are present for all non-null rows.
-      // The total key count is: numKeys * numNonNullRows
-      // This matches DWRF behavior where key sizes are counted per key per row.
-      collectKeyStatistics(keys.size() * nonNullCount, 0, size);
+      collectKeyStatistics(totalKeyCount, 0, size);
     }
 
     // Early bail out if no ranges at the top level row vector.
@@ -1816,11 +1838,29 @@ class FlatMapFieldWriter : public FieldWriter {
     // calls must have the same set of keys, otherwise writer will throw.
     bool populateMap = currentPassthroughFields_.empty();
 
+    velox::BufferPtr inMaps = velox::AlignedBuffer::allocate<uint64_t>(
+        velox::bits::nwords(vector->size()),
+        context_.bufferMemoryPool().get(),
+        /*initValue=*/0);
+    auto* rawInMaps = inMaps->asMutable<uint64_t>();
+    const auto numInMapWords = velox::bits::nwords(vector->size());
+
     for (velox::vector_size_t i = 0; i < keys.size(); ++i) {
       const auto& key = keys[i];
       auto& writer = populateMap ? createPassthroughValueFieldWriter(key)
                                  : findPassthroughValueFieldWriter(key);
-      writer.write(values[i], childRanges);
+      const auto& valueVector = values[i];
+      if (!valueVector->mayHaveNulls()) {
+        writer.write(valueVector, childRanges);
+        continue;
+      }
+      std::fill(rawInMaps, rawInMaps + numInMapWords, uint64_t{0});
+      childRanges.applyEach([&](auto offset) {
+        if (!valueVector->isNullAt(offset)) {
+          velox::bits::setBit(rawInMaps, offset);
+        }
+      });
+      writer.write(valueVector, inMaps, childRanges);
     }
   }
 
