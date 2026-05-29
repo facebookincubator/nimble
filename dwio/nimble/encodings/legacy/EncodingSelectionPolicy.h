@@ -109,6 +109,7 @@ struct CompressionOptions {
   uint32_t internalDecompressionLevel = 2;
   bool useVariableBitWidthCompressor = false;
   MetaInternalCompressionKey metaInternalCompressionKey;
+  std::vector<std::pair<EncodingType, float>> compressionAcceptRatioOverrides;
 };
 
 // This is the manual encoding selection implementation.
@@ -200,8 +201,11 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
     // bandwidth).
     class AlwaysCompressPolicy : public CompressionPolicy {
      public:
-      explicit AlwaysCompressPolicy(CompressionOptions compressionOptions)
-          : compressionOptions_{std::move(compressionOptions)} {}
+      AlwaysCompressPolicy(
+          CompressionOptions compressionOptions,
+          EncodingType encodingType)
+          : compressionOptions_{std::move(compressionOptions)},
+            effectiveAcceptRatio_{getAcceptRatio(encodingType)} {}
 
       CompressionInformation compression() const override {
 #ifndef DISABLE_META_INTERNAL_COMPRESSOR
@@ -232,8 +236,7 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
           CompressionType compressionType,
           uint64_t uncompressedSize,
           uint64_t compressedSize) const override {
-        if (uncompressedSize * compressionOptions_.compressionAcceptRatio <
-            compressedSize) {
+        if (uncompressedSize * effectiveAcceptRatio_ < compressedSize) {
           NIMBLE_SELECTION_LOG(
               BLUE << compressionType
                    << " compression rejected. Original size: "
@@ -250,7 +253,18 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
       }
 
      private:
+      float getAcceptRatio(EncodingType encodingType) const {
+        for (const auto& [enc, ratio] :
+             compressionOptions_.compressionAcceptRatioOverrides) {
+          if (enc == encodingType) {
+            return ratio;
+          }
+        }
+        return compressionOptions_.compressionAcceptRatio;
+      }
+
       const CompressionOptions compressionOptions_;
+      const float effectiveAcceptRatio_;
     };
 
     NIMBLE_SELECTION_LOG(
@@ -277,8 +291,10 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
     return {
         .encodingType = selectedEncoding,
         .compressionPolicyFactory = [compressionOptions =
-                                         compressionOptions_.value()]() {
-          return std::make_unique<AlwaysCompressPolicy>(compressionOptions);
+                                         compressionOptions_.value(),
+                                     selectedEncoding]() {
+          return std::make_unique<AlwaysCompressPolicy>(
+              compressionOptions, selectedEncoding);
         }};
   }
 
