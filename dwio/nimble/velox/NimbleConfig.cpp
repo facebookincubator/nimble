@@ -156,6 +156,28 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
         "alpha.encodingselection.compression.accept.ratio",
         FLAGS_nimble_selection_compression_accept_ratio);
 
+/* static */ Config::Entry<const std::vector<std::pair<EncodingType, float>>>
+    Config::COMPRESSION_ACCEPT_RATIO_OVERRIDES(
+        "alpha.encodingselection.compression.accept.ratio.overrides",
+        {},
+        [](const std::vector<std::pair<EncodingType, float>>& val) {
+          std::vector<std::string> parts;
+          std::transform(
+              val.cbegin(),
+              val.cend(),
+              std::back_inserter(parts),
+              [](const auto& p) {
+                return fmt::format("{}={}", toString(p.first), p.second);
+              });
+          return folly::join(";", parts);
+        },
+        [](const std::string& /* key */, const std::string& val) {
+          if (val.empty()) {
+            return std::vector<std::pair<EncodingType, float>>{};
+          }
+          return ManualEncodingSelectionPolicyFactory::parseReadFactors(val);
+        });
+
 // Attempt to compress the data only if the data size is equal or greater than
 // this threshold.
 /* static */ Config::Entry<uint64_t> Config::ZSTD_COMPRESSION_MIN_SIZE(

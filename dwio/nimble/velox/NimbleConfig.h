@@ -37,6 +37,8 @@ class Config : public velox::config::ConfigBase {
   static Entry<const std::vector<std::pair<EncodingType, float>>>
       MANUAL_ENCODING_SELECTION_READ_FACTORS;
   static Entry<float> ENCODING_SELECTION_COMPRESSION_ACCEPT_RATIO;
+  static Entry<const std::vector<std::pair<EncodingType, float>>>
+      COMPRESSION_ACCEPT_RATIO_OVERRIDES;
   static Entry<uint64_t> ZSTD_COMPRESSION_MIN_SIZE;
   static Entry<uint64_t> ZSTRONG_COMPRESSION_MIN_SIZE;
   static Entry<uint32_t> ZSTRONG_COMPRESSION_LEVEL;

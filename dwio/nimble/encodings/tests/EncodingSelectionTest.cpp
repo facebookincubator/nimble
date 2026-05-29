@@ -1495,3 +1495,95 @@ TEST(ManualEncodingSelectionPolicyTest, compressionTypeRoundTrip) {
   encoding->materialize(static_cast<uint32_t>(data.size()), decoded.data());
   EXPECT_EQ(decoded, data);
 }
+
+TEST(ManualEncodingSelectionPolicyTest, compressionAcceptRatioOverride) {
+  std::vector<uint32_t> data(1000, 42);
+
+  nimble::CompressionOptions options{
+      .compressionAcceptRatioOverrides =
+          {
+              {nimble::EncodingType::Constant, 0.0f},
+          },
+  };
+  auto policy =
+      std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
+          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          options,
+          std::nullopt);
+  auto result =
+      policy->select(data, nimble::Statistics<uint32_t>::create(data));
+
+  // Data is all-constant, so Constant encoding is selected.
+  EXPECT_EQ(result.encodingType, nimble::EncodingType::Constant);
+
+  auto compressionPolicy = result.compressionPolicyFactory();
+  // Constant encoding has override ratio=0.0, so compression is attempted but
+  // shouldAccept() will always reject (0 < compressedSize).
+  EXPECT_NE(
+      compressionPolicy->compression().compressionType,
+      nimble::CompressionType::Uncompressed);
+  EXPECT_FALSE(compressionPolicy->shouldAccept(
+      nimble::CompressionType::Zstd,
+      /*uncompressedSize=*/100,
+      /*compressedSize=*/1));
+}
+
+TEST(
+    ManualEncodingSelectionPolicyTest,
+    compressionAcceptRatioOverrideFallback) {
+  std::vector<uint32_t> data(1000, 42);
+
+  nimble::CompressionOptions options{
+      .compressionAcceptRatioOverrides =
+          {
+              {nimble::EncodingType::Trivial, 0.0f},
+          },
+  };
+  auto policy =
+      std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
+          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          options,
+          std::nullopt);
+  auto result =
+      policy->select(data, nimble::Statistics<uint32_t>::create(data));
+
+  // Data is all-constant, so Constant encoding is selected — not Trivial.
+  EXPECT_EQ(result.encodingType, nimble::EncodingType::Constant);
+
+  auto compressionPolicy = result.compressionPolicyFactory();
+  // No override for Constant, so the global ratio applies — compression
+  // should be attempted.
+  EXPECT_NE(
+      compressionPolicy->compression().compressionType,
+      nimble::CompressionType::Uncompressed);
+}
+
+TEST(
+    ManualEncodingSelectionPolicyTest,
+    compressionAcceptRatioOverrideShouldAccept) {
+  std::vector<uint32_t> data(1000, 42);
+
+  // Override with a very strict ratio that will reject most compression.
+  nimble::CompressionOptions options{
+      .compressionAcceptRatioOverrides =
+          {
+              {nimble::EncodingType::Constant, 0.01f},
+          },
+  };
+  auto policy =
+      std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
+          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          options,
+          std::nullopt);
+  auto result =
+      policy->select(data, nimble::Statistics<uint32_t>::create(data));
+  EXPECT_EQ(result.encodingType, nimble::EncodingType::Constant);
+
+  auto compressionPolicy = result.compressionPolicyFactory();
+  // With ratio=0.01, compressed size must be < 1% of original — even 50%
+  // compression (100→50) is rejected.
+  EXPECT_FALSE(compressionPolicy->shouldAccept(
+      nimble::CompressionType::Zstd,
+      /*uncompressedSize=*/100,
+      /*compressedSize=*/50));
+}
