@@ -18,6 +18,7 @@
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Checksum.h"
+#include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/tablet/Chunk.h"
 #include "dwio/nimble/tablet/ChunkIndexWriter.h"
@@ -75,6 +76,8 @@ class TabletWriter {
     // of chunks per stream is below this threshold. 0 disables chunk index
     // skipping.
     float chunkIndexMinAvgChunks{2};
+    // Serialize per-chunk min/max statistics into the chunk index.
+    bool enableChunkStats{false};
     // Callback invoked at stripe group flush boundaries. Used by index
     // writers (e.g., ClusterIndexWriter) to write partition data aligned
     // with stripe groups.
@@ -188,7 +191,7 @@ class TabletWriter {
   velox::memory::MemoryPool* const pool_;
   const Options options_;
   const std::unique_ptr<Checksum> checksum_;
-  // Chunk-level position index.
+  // Chunk-level position index and per-chunk statistics.
   const std::unique_ptr<ChunkIndexWriter> chunkIndexWriter_;
 
   // Number of rows in each stripe.

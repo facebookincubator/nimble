@@ -19,6 +19,7 @@
 #include <algorithm>
 
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/tablet/Chunk.h"
 #include "dwio/nimble/tablet/ChunkIndexGenerated.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
@@ -35,12 +36,81 @@ std::string_view asView(const flatbuffers::FlatBufferBuilder& builder) {
       builder.GetSize()};
 }
 
+flatbuffers::Offset<serialization::StreamChunkStats> serializeStreamStats(
+    flatbuffers::FlatBufferBuilder& builder,
+    const std::vector<ChunkStats>& chunks) {
+  if (chunks.empty()) {
+    return serialization::CreateStreamChunkStats(builder);
+  }
+  const auto n = chunks.size();
+
+  std::vector<uint8_t> hasNulls(n);
+  std::vector<int64_t> nullCounts(n);
+  for (size_t i = 0; i < n; ++i) {
+    hasNulls[i] = chunks[i].hasNulls ? 1 : 0;
+    nullCounts[i] = static_cast<int64_t>(chunks[i].nullCount);
+  }
+
+  // Determine value_size and validate that all chunks have consistent sizes.
+  // If any chunk has a different size or is missing min/max while others have
+  // it, drop min/max for the entire stream to avoid false filter bounds.
+  uint32_t valueSize = 0;
+  bool seenEmpty = false;
+  for (const auto& c : chunks) {
+    if (c.minValue.empty()) {
+      seenEmpty = true;
+    } else {
+      if (seenEmpty) {
+        // Earlier chunk(s) had empty min/max — inconsistent.
+        valueSize = 0;
+        break;
+      }
+      if (valueSize == 0) {
+        valueSize = static_cast<uint32_t>(c.minValue.size());
+      }
+      if (c.minValue.size() != valueSize || c.maxValue.size() != valueSize) {
+        valueSize = 0;
+        break;
+      }
+    }
+  }
+  if (seenEmpty) {
+    valueSize = 0;
+  }
+
+  // Concatenate min/max bytes.
+  flatbuffers::Offset<flatbuffers::Vector<uint8_t>> minsVec = 0;
+  flatbuffers::Offset<flatbuffers::Vector<uint8_t>> maxsVec = 0;
+  if (valueSize > 0) {
+    std::vector<uint8_t> allMins, allMaxs;
+    allMins.reserve(n * valueSize);
+    allMaxs.reserve(n * valueSize);
+    for (const auto& c : chunks) {
+      allMins.insert(allMins.end(), c.minValue.begin(), c.minValue.end());
+      allMaxs.insert(allMaxs.end(), c.maxValue.begin(), c.maxValue.end());
+    }
+    minsVec = builder.CreateVector(allMins);
+    maxsVec = builder.CreateVector(allMaxs);
+  }
+
+  return serialization::CreateStreamChunkStats(
+      builder,
+      /*has_nulls=*/builder.CreateVector(hasNulls),
+      /*min_values=*/minsVec,
+      /*max_values=*/maxsVec,
+      /*value_size=*/valueSize,
+      /*null_counts=*/builder.CreateVector(nullCounts));
+}
+
 } // namespace
 
 ChunkIndexWriter::ChunkIndexWriter(
     velox::memory::MemoryPool& pool,
-    float minAvgChunksPerStream)
-    : pool_{&pool}, minAvgChunksPerStream_{minAvgChunksPerStream} {}
+    float minAvgChunksPerStream,
+    bool enableChunkStats)
+    : pool_{&pool},
+      minAvgChunksPerStream_{minAvgChunksPerStream},
+      enableChunkStats_{enableChunkStats} {}
 
 void ChunkIndexWriter::newStripe(size_t streamCount) {
   NIMBLE_CHECK(!finalized_, "ChunkIndexWriter has been finalized");
@@ -59,15 +129,22 @@ void ChunkIndexWriter::addStream(
   NIMBLE_CHECK(!groupIndex_->empty());
   NIMBLE_CHECK_LT(streamIndex, groupIndex_->stripes.back().streams.size());
 
-  auto& index = groupIndex_->stripes.back().streams[streamIndex];
+  auto& stream = groupIndex_->stripes.back().streams[streamIndex];
   uint32_t accumulatedRows{0};
   uint32_t accumulatedOffset{0};
   for (const auto& chunk : chunks) {
     accumulatedRows += chunk.rowCount;
-    index.chunkRows.emplace_back(accumulatedRows);
-    index.chunkOffsets.emplace_back(accumulatedOffset);
+    stream.chunkRows.emplace_back(accumulatedRows);
+    stream.chunkOffsets.emplace_back(accumulatedOffset);
     accumulatedOffset += chunk.contentSize();
-    ++index.chunkCount;
+    ++stream.chunkCount;
+    if (enableChunkStats_) {
+      if (chunk.stats.has_value()) {
+        stream.chunkStats.emplace_back(*chunk.stats);
+      } else {
+        stream.chunkStats.emplace_back();
+      }
+    }
   }
 }
 
@@ -106,7 +183,7 @@ void ChunkIndexWriter::writeGroup(
     }
   }
 
-  // Flatten chunk data for all streams.
+  // Flatten chunk position data for all streams.
   std::vector<uint32_t> flattenedStreamChunkCounts;
   flattenedStreamChunkCounts.reserve(stripeCount * streamCount);
 
@@ -143,12 +220,34 @@ void ChunkIndexWriter::writeGroup(
   }
 
   flatbuffers::FlatBufferBuilder builder(kInitialFooterSize);
+
+  flatbuffers::Offset<
+      flatbuffers::Vector<flatbuffers::Offset<serialization::StreamChunkStats>>>
+      streamStatsVec = 0;
+  if (enableChunkStats_) {
+    std::vector<flatbuffers::Offset<serialization::StreamChunkStats>>
+        streamStats;
+    streamStats.reserve(stripeCount * streamCount);
+    for (const auto& stripe : groupIndex_->stripes) {
+      for (size_t sid = 0; sid < streamCount; ++sid) {
+        if (sid < stripe.streams.size()) {
+          streamStats.push_back(
+              serializeStreamStats(builder, stripe.streams[sid].chunkStats));
+        } else {
+          streamStats.push_back(serializeStreamStats(builder, {}));
+        }
+      }
+    }
+    streamStatsVec = builder.CreateVector(streamStats);
+  }
+
   auto chunkIndex = serialization::CreateStripeChunkIndex(
       builder,
       static_cast<uint32_t>(streamCount),
       builder.CreateVector(flattenedStreamChunkCounts),
       builder.CreateVector(flattenedChunkRows),
-      builder.CreateVector(flattenedChunkOffsets));
+      builder.CreateVector(flattenedChunkOffsets),
+      streamStatsVec);
   builder.Finish(chunkIndex);
 
   chunkIndexSections_.push_back(createMetadataSection(asView(builder)));
