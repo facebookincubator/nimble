@@ -4406,6 +4406,8 @@ TEST_P(TabletTest, readerOptionsAdaptiveMode) {
 
   EXPECT_EQ(tablet->stripeCount(), 1);
   EXPECT_EQ(tablet->stripeRowCount(0), 500);
+  // Adaptive mode reads the exact footer size, so no bytes are wasted.
+  EXPECT_EQ(tablet->stats().footerBufferOverread, 0);
 }
 
 TEST_P(TabletTest, readerOptionsSpeculativeMode) {
@@ -4438,6 +4440,11 @@ TEST_P(TabletTest, readerOptionsSpeculativeMode) {
 
   EXPECT_EQ(tablet->stripeCount(), 1);
   EXPECT_EQ(tablet->stripeRowCount(0), 600);
+  // Speculative mode reads more than needed; overread is the wasted bytes.
+  const auto footerRequired = tablet->footerSize() + nimble::kPostscriptSize;
+  EXPECT_EQ(
+      tablet->stats().footerBufferOverread,
+      std::min<uint64_t>(1024, file.size()) - footerRequired);
 }
 
 TEST_P(TabletTest, configureOptionsIndexFlags) {

@@ -373,6 +373,9 @@ void TabletReader::loadFooter(
           footerOffset,
           footerBuf->size(),
           footerBuf->asMutable<char>());
+    } else {
+      stats_.footerBufferOverread =
+          static_cast<int64_t>(footerIoSize - requiredSize);
     }
 
     const uint64_t footerOffset =

@@ -303,6 +303,17 @@ class TabletReader {
     return ps_.footerSize();
   }
 
+  /// TabletReader-level statistics collected during file open.
+  struct Stats {
+    /// Bytes read beyond the footer + postscript in speculative mode.
+    /// Zero in adaptive mode (exact-size read).
+    int64_t footerBufferOverread{0};
+  };
+
+  const Stats& stats() const {
+    return stats_;
+  }
+
   CompressionType footerCompressionType() const {
     return ps_.footerCompressionType();
   }
@@ -525,6 +536,7 @@ class TabletReader {
   const std::unique_ptr<MetadataInput> metadataInput_;
 
   uint64_t fileSize_{0};
+  Stats stats_;
   Postscript ps_;
   std::unique_ptr<MetadataBuffer> footer_;
   std::unique_ptr<MetadataBuffer> stripes_;
