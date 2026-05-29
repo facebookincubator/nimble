@@ -127,6 +127,11 @@ inline std::ostream& operator<<(
   return os << toString(version);
 }
 
+/// Returns the default encoding selection policy factory. The underlying
+/// ManualEncodingSelectionPolicyFactory (and its default read-factor vector) is
+/// initialized once and shared across all returned factories.
+EncodingSelectionPolicyFactory defaultEncodingSelectionPolicyFactory();
+
 struct SerializerOptions {
   /// Legacy (kLegacy) compression settings. These only apply when version is
   /// kLegacy or nullopt. For kCompactRaw, compression is controlled by
@@ -155,13 +160,7 @@ struct SerializerOptions {
   /// nested encodings not captured in the layout tree. When encodingLayoutTree
   /// is not specified, used directly for all streams.
   EncodingSelectionPolicyFactory encodingSelectionPolicyFactory =
-      [factory =
-           ManualEncodingSelectionPolicyFactory{
-               ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
-               /*compressionOptions=*/std::nullopt}](
-          DataType dataType) -> std::unique_ptr<EncodingSelectionPolicyBase> {
-    return factory.createPolicy(dataType);
-  };
+      defaultEncodingSelectionPolicyFactory();
 
   /// Optional captured encoding layout tree.
   /// When specified, encodings are replayed from this tree instead of using
