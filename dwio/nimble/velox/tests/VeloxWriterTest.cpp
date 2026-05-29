@@ -4578,7 +4578,7 @@ TEST_F(VeloxWriterTest, disableStatsCollectionWithChunking) {
   auto stats = writer.stats();
   EXPECT_TRUE(stats.columnStats.empty());
   EXPECT_EQ(stats.stripeCount, 1);
-  EXPECT_GT(stats.bytesWritten, 0);
+  EXPECT_GT(stats.writtenBytes, 0);
 }
 
 namespace {

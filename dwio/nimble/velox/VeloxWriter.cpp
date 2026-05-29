@@ -92,6 +92,34 @@ class WriterContext : public FieldWriterContext {
     stripeFlushTiming_.add(timing);
   }
 
+  velox::CpuWallTiming& encodingTiming() {
+    return encodingTiming_;
+  }
+
+  const velox::CpuWallTiming& encodingTiming() const {
+    return encodingTiming_;
+  }
+
+  velox::CpuWallTiming& writeTiming() {
+    return writeTiming_;
+  }
+
+  const velox::CpuWallTiming& writeTiming() const {
+    return writeTiming_;
+  }
+
+  velox::CpuWallTiming& ingestionTiming() {
+    return ingestionTiming_;
+  }
+
+  const velox::CpuWallTiming& ingestionTiming() const {
+    return ingestionTiming_;
+  }
+
+  velox::CpuWallTiming& encodingSelectionTiming() {
+    return encodingSelectionTiming_;
+  }
+
   const velox::CpuWallTiming& encodingSelectionTiming() const {
     return encodingSelectionTiming_;
   }
@@ -192,6 +220,9 @@ class WriterContext : public FieldWriterContext {
   const VeloxWriterOptions options_;
   velox::CpuWallTiming totalFlushTiming_;
   velox::CpuWallTiming stripeFlushTiming_;
+  velox::CpuWallTiming encodingTiming_;
+  velox::CpuWallTiming writeTiming_;
+  velox::CpuWallTiming ingestionTiming_;
   velox::CpuWallTiming encodingSelectionTiming_;
   std::shared_ptr<MetricsLogger> logger_;
   uint64_t memoryUsed_{0};
@@ -788,7 +819,10 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
       context_->updateFileRawSize(rawSize);
     }
 
-    rootWriter_->write(input, OrderedRanges::of(0, numRows));
+    {
+      velox::CpuWallTimer ingestionTimer{context_->ingestionTiming()};
+      rootWriter_->write(input, OrderedRanges::of(0, numRows));
+    }
     addIndexKey(input);
 
     uint64_t memoryUsed{0};
@@ -987,14 +1021,14 @@ void VeloxWriter::close() {
       file_->close();
       context_->setBytesWritten(file_->size());
 
-      auto stats = this->stats();
+      const auto stats = this->stats();
       // TODO: compute and populate input size.
       FileCloseMetrics metrics{
           .rowCount = context_->rowsInFile(),
           .stripeCount = context_->getStripeIndex(),
           .fileSize = context_->bytesWritten(),
-          .totalFlushCpuUsec = stats.flushCpuTimeUs,
-          .totalFlushWallTimeUsec = stats.flushWallTimeUs};
+          .totalFlushCpuUsec = stats.encodingCpuTimeNs / 1'000,
+          .totalFlushWallTimeUsec = stats.encodingWallTimeNs / 1'000};
       context_->logger()->logFileClose(metrics);
       file_ = nullptr;
     } catch (const std::exception& e) {
@@ -1094,6 +1128,7 @@ void VeloxWriter::writeStreams() {
   }
 
   context_->addStripeFlushTiming(flushTiming);
+  context_->encodingTiming().add(flushTiming);
   VLOG(1) << "writeChunk time: " << velox::succinctNanos(flushTiming.wallNanos)
           << ", chunk size: " << velox::succinctBytes(chunkSize);
 }
@@ -1288,6 +1323,7 @@ bool VeloxWriter::writeChunks(
   }
 
   context_->addStripeFlushTiming(flushTiming);
+  context_->encodingTiming().add(flushTiming);
   if (writtenChunk) {
     context_->recordChunkSize(chunkBytes);
   }
@@ -1350,8 +1386,11 @@ bool VeloxWriter::writeStripe() {
     encodedStreams_.resize(nonEmptyCount);
 
     const uint64_t startSize = tabletWriter_->size();
-    tabletWriter_->writeStripe(
-        context_->rowsInStripe(), std::move(encodedStreams_));
+    {
+      velox::CpuWallTimer writeTimer{context_->writeTiming()};
+      tabletWriter_->writeStripe(
+          context_->rowsInStripe(), std::move(encodedStreams_));
+    }
     stripeSize = tabletWriter_->size() - startSize;
     clearEncodingBuffer();
     // TODO: once chunked string fields are supported, move string buffer
@@ -1434,14 +1473,20 @@ bool VeloxWriter::evaluateFlushPolicy() {
 
 VeloxWriter::Stats VeloxWriter::stats() const {
   return Stats{
-      .bytesWritten = context_->bytesWritten(),
+      .writtenBytes = context_->bytesWritten(),
       .stripeCount = folly::to<uint32_t>(context_->getStripeIndex()),
-      .rawSize = context_->fileRawSize(),
+      .inputBytes = context_->fileRawSize(),
       .rowsPerStripe = context_->rowsPerStripe(),
-      .flushCpuTimeUs = context_->totalFlushTiming().cpuNanos / 1'000,
-      .flushWallTimeUs = context_->totalFlushTiming().wallNanos / 1'000,
-      .encodingSelectionCpuTimeUs =
-          context_->encodingSelectionTiming().cpuNanos / 1'000,
+      .writeCpuTimeNs = context_->writeTiming().cpuNanos,
+      .writeWallTimeNs = context_->writeTiming().wallNanos,
+      .ingestionCpuTimeNs = context_->ingestionTiming().cpuNanos,
+      .ingestionWallTimeNs = context_->ingestionTiming().wallNanos,
+      .encodingCpuTimeNs = context_->encodingTiming().cpuNanos,
+      .encodingWallTimeNs = context_->encodingTiming().wallNanos,
+      .encodingSelectionCpuTimeNs =
+          context_->encodingSelectionTiming().cpuNanos,
+      .encodingSelectionWallTimeNs =
+          context_->encodingSelectionTiming().wallNanos,
       .inputBufferReallocCount = context_->inputBufferGrowthStats().count,
       .inputBufferReallocItemCount =
           context_->inputBufferGrowthStats().itemCount,

@@ -59,23 +59,37 @@ class VeloxWriter {
 
   struct Stats {
     /// Total bytes written to the file.
-    uint64_t bytesWritten;
+    uint64_t writtenBytes;
     /// Number of stripes written to the file.
     uint32_t stripeCount;
     /// Uncompressed size of data written to the file.
-    uint64_t rawSize;
-    /// Number of rows in each stripe.
+    uint64_t inputBytes;
+    // TODO: Remove rowsPerStripe — replaced by nimble.rowsPerStripe runtime
+    // stat (RuntimeMetric with count/min/max/avg).
     std::vector<uint64_t> rowsPerStripe;
-    /// CPU time spent flushing data in microseconds.
-    uint64_t flushCpuTimeUs;
-    /// Wall clock time spent flushing data in microseconds.
-    uint64_t flushWallTimeUs;
-    /// CPU time spent on encoding selection in microseconds.
-    uint64_t encodingSelectionCpuTimeUs;
-    /// Number of input buffer reallocations. These 2 stats should be from
-    /// memory pool and have better coverage in the future.
+    /// CPU time spent in tabletWriter write in nanoseconds.
+    uint64_t writeCpuTimeNs;
+    /// Wall clock time spent in tabletWriter write in nanoseconds.
+    uint64_t writeWallTimeNs;
+    /// CPU time spent ingesting vectors into field writer buffers in
+    /// nanoseconds.
+    uint64_t ingestionCpuTimeNs;
+    /// Wall clock time spent ingesting vectors into field writer buffers in
+    /// nanoseconds.
+    uint64_t ingestionWallTimeNs;
+    /// CPU time spent on encoding and compression in nanoseconds.
+    // TODO: Separate encoding and compression costs.
+    uint64_t encodingCpuTimeNs;
+    /// Wall clock time spent on encoding and compression in nanoseconds.
+    uint64_t encodingWallTimeNs;
+    /// CPU time spent on encoding selection in nanoseconds. Subset of
+    /// encoding timing.
+    uint64_t encodingSelectionCpuTimeNs;
+    /// Wall clock time spent on encoding selection in nanoseconds. Subset of
+    /// encoding timing.
+    uint64_t encodingSelectionWallTimeNs;
+    // TODO: Remove inputBufferReallocCount and inputBufferReallocItemCount.
     uint64_t inputBufferReallocCount;
-    /// Number of items moved during input buffer reallocations.
     uint64_t inputBufferReallocItemCount;
     /// Cumulative encoded size distribution across all chunks written under
     /// memory pressure. Empty when chunking is not triggered.
