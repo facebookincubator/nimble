@@ -40,6 +40,7 @@ EncodingType getTrailerEncodingType(EncodingType encodingType) {
     case EncodingType::Varint:
     case EncodingType::Delta:
     case EncodingType::FixedBitWidth:
+    case EncodingType::MainlyConstant:
       return encodingType;
     default:
       NIMBLE_FAIL(

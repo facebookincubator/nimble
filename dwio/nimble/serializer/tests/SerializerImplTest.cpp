@@ -15,6 +15,7 @@
  */
 
 #include <limits>
+#include <random>
 
 #include <gtest/gtest.h>
 #include <lz4.h>
@@ -663,13 +664,227 @@ TEST_F(EncodeDecodeTest, readTrailerStreamSizesLargeValues) {
   EXPECT_EQ(decoded, values);
 }
 
+// MainlyConstant trailer roundtrip — encoding assumes 0 is the dominant value
+// and writes a sparse list of (index, value) pairs for non-zero slots.
+TEST_F(EncodeDecodeTest, readTrailerStreamSizesMainlyConstant) {
+  struct TestParam {
+    std::vector<uint32_t> values;
+    std::string label;
+  };
+  std::vector<TestParam> cases = {
+      {{}, "empty"},
+      {{0}, "single-zero"},
+      {{42}, "single-nonzero"},
+      {{0, 0, 0, 0, 0}, "all-zero"},
+      // Sparse cases (encoding's sweet spot).
+      {{0, 0, 0, 5, 0, 0, 0, 0, 0, 0}, "mostly-zero-one-nonzero"},
+      {{0, 0, 11, 0, 0, 22, 0, 0, 33, 0}, "mostly-zero-scattered"},
+      // nonConstantCount == count (all non-zero): degenerate path — still
+      // roundtrips even though MainlyConstant is the wrong choice for this
+      // input.
+      {{1, 2, 3, 4, 5}, "all-nonzero-degenerate"},
+      // UINT32_MAX as a stream size — exercises 5-byte varint and
+      // 32-bit valBitWidth.
+      {{0, 0, std::numeric_limits<uint32_t>::max(), 0}, "uint32-max-value"},
+      // Mixed near-max values exercise full valBitWidth=32.
+      {{0,
+        std::numeric_limits<uint32_t>::max(),
+        std::numeric_limits<uint32_t>::max() - 1,
+        0},
+       "max-and-near-max"},
+      // Trailer typical of full-projected hybrid blob: 1000 slots, 5 non-zero.
+      {[] {
+         std::vector<uint32_t> v(1000, 0);
+         v[50] = 11;
+         v[123] = 22;
+         v[456] = 33;
+         v[789] = 44;
+         v[999] = 55;
+         return v;
+       }(),
+       "sparse-1000-slots"},
+      // Smallest count where idxBitWidth > 0 (count=2 needs 1 bit).
+      {{0, 7}, "count2-nonzero-at-end-idxBitWidth1"},
+      {{7, 0}, "count2-nonzero-at-start-idxBitWidth1"},
+      // count=3 with non-zero at last index (idx=2 needs 2 bits).
+      {{0, 0, 9}, "count3-nonzero-at-end-idxBitWidth2"},
+      // idxBitWidth byte boundaries: 256 needs 8 bits, 257 needs 9 bits.
+      {[] {
+         std::vector<uint32_t> v(256, 0);
+         v[255] = 42;
+         return v;
+       }(),
+       "count256-nonzero-at-end-idxBitWidth8"},
+      {[] {
+         std::vector<uint32_t> v(257, 0);
+         v[256] = 42;
+         return v;
+       }(),
+       "count257-nonzero-at-end-idxBitWidth9"},
+      // streamCount=1 with the only non-zero value at UINT32_MAX exercises the
+      // idxBitWidth=0 fast path together with a 32-bit valBitWidth.
+      {{std::numeric_limits<uint32_t>::max()}, "single-uint32-max"},
+      // streamCount=2 with both slots non-zero (nonConstantCount == count):
+      // exercises the idxBitWidth=1 path with both indices populated.
+      {{5, 7}, "count2-both-nonzero"},
+      // Alternating zero/non-zero pattern exercises K=count/2 with indices
+      // densely covering half the slot space.
+      {{1, 0, 2, 0, 3, 0, 4, 0}, "alternating-zero-nonzero"},
+      // idxBitWidth=16 boundary: count=65537 needs 17 bits for indices.
+      {[] {
+         std::vector<uint32_t> v(65537, 0);
+         v[65536] = 1;
+         return v;
+       }(),
+       "count65537-nonzero-at-end-idxBitWidth17"},
+      // valBitWidth byte boundary: max value = 255 fits in 8 bits, 256 needs 9.
+      {{0, 0, 255, 0}, "valBitWidth8-boundary"},
+      {{0, 0, 256, 0}, "valBitWidth9-boundary"},
+  };
+  for (const auto& tc : cases) {
+    SCOPED_TRACE(tc.label);
+    std::string buffer;
+    serde::detail::writeTrailer(
+        tc.values, EncodingType::MainlyConstant, buffer);
+    auto decoded =
+        serde::detail::readTrailerStreamSizes(buffer.data() + buffer.size());
+    EXPECT_EQ(decoded, tc.values);
+  }
+}
+
+// Verify the MainlyConstant trailer wire format omits the `constant` field
+// (always 0) and additionally omits the idxBitWidth/valBitWidth bytes (plus
+// any packed arrays) when nonZeroCount == 0. For all-zero input the trailer
+// is exactly:
+//   encType(1) + streamCountVarint + nonZeroCountVarint(=1 for empty)
+//   + trailer_size(4)
+TEST_F(EncodeDecodeTest, mainlyConstantWireFormatAllZeroIsMinimal) {
+  // All-zero: nonZeroCount=0, no idxBitWidth/valBitWidth bytes, no packed
+  // bytes. streamCount=4 → varintSize=1. nonZeroCount=0 → varintSize=1.
+  // Expected: 1 + 1 + 1 + 4 = 7 bytes.
+  std::vector<uint32_t> sizes = {0, 0, 0, 0};
+  std::string buffer;
+  serde::detail::writeTrailer(sizes, EncodingType::MainlyConstant, buffer);
+  EXPECT_EQ(buffer.size(), 7u);
+
+  // Roundtrip must produce the exact input.
+  auto decoded =
+      serde::detail::readTrailerStreamSizes(buffer.data() + buffer.size());
+  EXPECT_EQ(decoded, sizes);
+}
+
+// Estimate must be an upper bound (>= actual) for representative inputs.
+TEST_F(EncodeDecodeTest, mainlyConstantEstimateIsUpperBound) {
+  std::vector<std::vector<uint32_t>> cases = {
+      {},
+      {0},
+      {42},
+      {0, 0, 0, 0, 0},
+      {0, 5, 0, 0, 9, 0, 0, 0, 0, 3},
+      {1, 2, 3, 4, 5},
+      [] {
+        std::vector<uint32_t> v(1000, 0);
+        v[100] = 50;
+        v[500] = 80;
+        v[999] = 30;
+        return v;
+      }(),
+      [] {
+        std::vector<uint32_t> v(257, 0);
+        v[256] = std::numeric_limits<uint32_t>::max();
+        return v;
+      }(),
+  };
+  for (const auto& tc : cases) {
+    SCOPED_TRACE(fmt::format("size={}", tc.size()));
+    std::string buffer;
+    serde::detail::writeTrailer(tc, EncodingType::MainlyConstant, buffer);
+    const auto estimate = serde::detail::estimateTrailerSize(
+        tc.size(), EncodingType::MainlyConstant);
+    EXPECT_LE(buffer.size(), estimate);
+  }
+}
+
+// Verify MainlyConstant produces a much smaller trailer than FixedBitWidth and
+// Varint when the input is dominated by a single value.
+TEST_F(EncodeDecodeTest, mainlyConstantSparseSize) {
+  // 1000 slots, mostly zeros, with 5 small non-zero values.
+  std::vector<uint32_t> sizes(1000, 0);
+  sizes[100] = 50;
+  sizes[200] = 80;
+  sizes[300] = 30;
+  sizes[400] = 12;
+  sizes[500] = 7;
+
+  std::string trivialBuf, fbwBuf, varintBuf, mcBuf;
+  serde::detail::writeTrailer(sizes, EncodingType::Trivial, trivialBuf);
+  serde::detail::writeTrailer(sizes, EncodingType::FixedBitWidth, fbwBuf);
+  serde::detail::writeTrailer(sizes, EncodingType::Varint, varintBuf);
+  serde::detail::writeTrailer(sizes, EncodingType::MainlyConstant, mcBuf);
+
+  // MainlyConstant should beat all others on this sparse input.
+  EXPECT_LT(mcBuf.size(), trivialBuf.size());
+  EXPECT_LT(mcBuf.size(), fbwBuf.size());
+  EXPECT_LT(mcBuf.size(), varintBuf.size());
+
+  // All four should roundtrip to the same values.
+  for (const auto* buf : {&trivialBuf, &fbwBuf, &varintBuf, &mcBuf}) {
+    auto decoded =
+        serde::detail::readTrailerStreamSizes(buf->data() + buf->size());
+    EXPECT_EQ(decoded, sizes);
+  }
+}
+
+// Randomized roundtrip: encode then decode a fuzzed stream-sizes vector.
+// Length is drawn uniformly from [0, kMaxStreamCount], values are drawn
+// uniformly across uint32_t. Seed is fixed so the test is fully
+// deterministic and reproducible.
+TEST_F(EncodeDecodeTest, mainlyConstantRandomRoundtrip) {
+  constexpr uint32_t kSeed = 0xC0FFEE;
+  std::mt19937 rng(kSeed);
+
+  constexpr uint32_t kMaxStreamCount = 5'000;
+  constexpr int kIterations = 200;
+  std::uniform_int_distribution<uint32_t> lengthDist(0, kMaxStreamCount);
+  std::uniform_int_distribution<uint32_t> valueDist(
+      0, std::numeric_limits<uint32_t>::max());
+  // Per iteration, draw a fresh nonzero density so we cover both
+  // sparse (MainlyConstant's sweet spot) and dense inputs.
+  std::uniform_int_distribution<int> densityDist(0, 100);
+
+  for (int iter = 0; iter < kIterations; ++iter) {
+    const uint32_t streamCount = lengthDist(rng);
+    const int nonzeroPercent = densityDist(rng);
+    SCOPED_TRACE(
+        fmt::format(
+            "iter={} streamCount={} nonzeroPercent={}",
+            iter,
+            streamCount,
+            nonzeroPercent));
+
+    std::vector<uint32_t> sizes;
+    sizes.reserve(streamCount);
+    std::uniform_int_distribution<int> coinDist(0, 99);
+    for (uint32_t i = 0; i < streamCount; ++i) {
+      sizes.push_back(coinDist(rng) < nonzeroPercent ? valueDist(rng) : 0);
+    }
+
+    std::string buffer;
+    serde::detail::writeTrailer(sizes, EncodingType::MainlyConstant, buffer);
+    const auto decoded =
+        serde::detail::readTrailerStreamSizes(buffer.data() + buffer.size());
+    EXPECT_EQ(decoded, sizes);
+  }
+}
+
 TEST_F(EncodeDecodeTest, streamSizesEncodingType) {
   std::vector<uint32_t> sizes = {2, 2, 2};
 
   for (auto encodingType :
        {EncodingType::Trivial,
         EncodingType::FixedBitWidth,
-        EncodingType::Varint}) {
+        EncodingType::Varint,
+        EncodingType::MainlyConstant}) {
     SCOPED_TRACE(toString(encodingType));
 
     std::string buffer;

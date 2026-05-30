@@ -73,7 +73,7 @@ class Projector {
     SerializationVersion projectVersion{SerializationVersion::kCompactRaw};
 
     /// Encoding type for stream sizes in the trailer.
-    /// Supported types: Trivial, Varint, Delta, FixedBitWidth.
+    /// Supported types: Trivial, Varint, Delta, FixedBitWidth, MainlyConstant.
     EncodingType streamSizesEncodingType{EncodingType::FixedBitWidth};
 
     /// Optional velox type with up-to-date column names from the current

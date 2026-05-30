@@ -45,8 +45,8 @@ namespace facebook::nimble {
 ///   Wire: [version:1B][rowCount:varint][stream_data_0]...[stream_data_N]
 ///         [encodingType:1B][raw_sizes_payload][trailer_size:u32]
 ///   trailer_size = 1 + len(raw_sizes_payload).
-///   Supported EncodingTypes: Trivial, Varint, Delta, FixedBitWidth.
-///   See getTrailerEncodingType() for validation.
+///   Supported EncodingTypes: Trivial, Varint, Delta, FixedBitWidth,
+///   MainlyConstant. See getTrailerEncodingType() for validation.
 ///
 /// - kTablet: Tablet stream passthrough format. Like kCompactRaw but:
 ///   (1) Each stream's data includes tablet chunk headers:
@@ -118,7 +118,7 @@ inline bool usesVarintRowCount(std::optional<SerializationVersion> version) {
 }
 
 /// Validates and returns the EncodingType for stream sizes trailer.
-/// Supported: Trivial, Varint, Delta, FixedBitWidth.
+/// Supported: Trivial, Varint, Delta, FixedBitWidth, MainlyConstant.
 EncodingType getTrailerEncodingType(EncodingType encodingType);
 
 inline std::ostream& operator<<(
@@ -177,7 +177,7 @@ struct SerializerOptions {
   std::optional<CompressionOptions> compressionOptions{};
 
   /// Encoding type for stream sizes in the trailer.
-  /// Supported types: Trivial, Varint, Delta, FixedBitWidth.
+  /// Supported types: Trivial, Varint, Delta, FixedBitWidth, MainlyConstant.
   EncodingType streamSizesEncodingType{EncodingType::FixedBitWidth};
 
   /// Returns true if the serialized data has a version header byte.

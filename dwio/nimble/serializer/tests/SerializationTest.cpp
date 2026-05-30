@@ -5095,6 +5095,10 @@ INSTANTIATE_TEST_SUITE_P(
         TestParams{
             .version = SerializationVersion::kCompactRaw,
             .streamSizesEncodingType = EncodingType::FixedBitWidth},
+        // kCompactRaw format with MainlyConstant stream sizes encoding.
+        TestParams{
+            .version = SerializationVersion::kCompactRaw,
+            .streamSizesEncodingType = EncodingType::MainlyConstant},
         // Buffer pool disabled variants.
         TestParams{.version = std::nullopt, .enableBufferPool = false},
         TestParams{
@@ -5114,5 +5118,9 @@ INSTANTIATE_TEST_SUITE_P(
         TestParams{
             .version = SerializationVersion::kCompactRaw,
             .streamSizesEncodingType = EncodingType::FixedBitWidth,
+            .enableBufferPool = false},
+        TestParams{
+            .version = SerializationVersion::kCompactRaw,
+            .streamSizesEncodingType = EncodingType::MainlyConstant,
             .enableBufferPool = false}),
     formatName);
