@@ -50,19 +50,13 @@ void validateReaderOptions(const velox::dwio::common::ReaderOptions& options) {
 std::string NimbleIndexProjector::Stats::toString() const {
   return fmt::format(
       "Stats(numReadStripes={}, numScannedRows={}, numProjectedRows={}, numReadRows={}, "
-      "numReadBytes={}, rawBytesRead={}, rawOverreadBytes={}, numStorageReads={}, "
-      "numCacheHits={}, cacheHitBytes={}, "
+      "numReadBytes={}, "
       "lookupTiming=[{}], scanTiming=[{}], projectionTiming=[{}])",
       numReadStripes,
       numScannedRows,
       numProjectedRows,
       numReadRows,
       velox::succinctBytes(numReadBytes),
-      velox::succinctBytes(rawBytesRead),
-      velox::succinctBytes(rawOverreadBytes),
-      numStorageReads,
-      numCacheHits,
-      velox::succinctBytes(cacheHitBytes),
       lookupTiming.toString(),
       scanTiming.toString(),
       projectionTiming.toString());
@@ -176,7 +170,6 @@ NimbleIndexProjector::Result NimbleIndexProjector::project(
   }
 
   finalizeResult(result);
-  updateIoStats();
   return result;
 }
 
@@ -526,14 +519,6 @@ void NimbleIndexProjector::finalizeResult(Result& result) {
     }
     chunks.clear();
   }
-}
-
-void NimbleIndexProjector::updateIoStats() {
-  stats_.rawBytesRead = ioStats_->rawBytesRead();
-  stats_.rawOverreadBytes = ioStats_->rawOverreadBytes();
-  stats_.numStorageReads = ioStats_->read().count();
-  stats_.numCacheHits = ioStats_->ramHit().count();
-  stats_.cacheHitBytes = ioStats_->ramHit().sum();
 }
 
 } // namespace facebook::nimble

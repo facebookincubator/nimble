@@ -179,20 +179,6 @@ class NimbleIndexProjector {
     /// serialization overhead like headers and trailers).
     uint64_t numReadBytes{0};
 
-    /// Total bytes read from disk, including coalesced/merged regions and
-    /// index/key streams. Only available when created with the ReadFile
-    /// overload; 0 otherwise.
-    uint64_t rawBytesRead{0};
-    /// Bytes read from disk but not requested by the projector, due to
-    /// BufferedInput merging adjacent regions (coalescing overhead).
-    uint64_t rawOverreadBytes{0};
-    /// Number of storage read operations (pread syscalls).
-    uint64_t numStorageReads{0};
-    /// Number of cache hits from the AsyncDataCache (RAM).
-    uint64_t numCacheHits{0};
-    /// Total bytes served from cache hits.
-    uint64_t cacheHitBytes{0};
-
     /// Time spent looking up stripes and row ranges via the tablet index.
     velox::CpuWallTiming lookupTiming;
     /// Time spent loading stripe stream data from tablet.
@@ -352,8 +338,6 @@ class NimbleIndexProjector {
     }
     return RowRange(startRow - stripeStart, endRow - stripeStart);
   }
-
-  void updateIoStats();
 
   const std::shared_ptr<ReaderBase> readerBase_;
   const std::shared_ptr<velox::io::IoStatistics> ioStats_;

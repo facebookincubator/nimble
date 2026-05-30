@@ -213,11 +213,11 @@ class SelectiveNimbleReaderTest
   // Cache infrastructure (only initialized when enableCache is true).
   std::shared_ptr<memory::MallocAllocator> allocator_;
   std::shared_ptr<cache::AsyncDataCache> cache_;
-  const std::shared_ptr<io::IoStatistics> dataIoStats_{
+  std::shared_ptr<io::IoStatistics> dataIoStats_{
       std::make_shared<io::IoStatistics>()};
-  const std::shared_ptr<io::IoStatistics> metadataIoStats_{
+  std::shared_ptr<io::IoStatistics> metadataIoStats_{
       std::make_shared<io::IoStatistics>()};
-  const std::shared_ptr<io::IoStatistics> indexIoStats_{
+  std::shared_ptr<io::IoStatistics> indexIoStats_{
       std::make_shared<io::IoStatistics>()};
   std::shared_ptr<cache::ScanTracker> scanTracker_;
   std::unique_ptr<folly::CPUThreadPoolExecutor> ioExecutor_;
@@ -3508,6 +3508,61 @@ TEST_P(SelectiveNimbleReaderTest, extractionDeduplicatedMapSize) {
   ASSERT_EQ(sizes->size(), 2);
   ASSERT_EQ(sizes->valueAt(0), 3);
   ASSERT_EQ(sizes->valueAt(1), 1);
+}
+
+TEST_P(SelectiveNimbleReaderTest, readGapTracking) {
+  const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
+
+  // Schema with many columns — projecting a sparse subset creates gaps.
+  auto input = makeRowVector(
+      {"a", "b", "c", "d", "e"},
+      {makeFlatVector<int32_t>(500, [](auto i) { return i * 10; }),
+       makeFlatVector<int32_t>(500, [](auto i) { return i * 20; }),
+       makeFlatVector<int32_t>(500, [](auto i) { return i * 30; }),
+       makeFlatVector<int32_t>(500, [](auto i) { return i * 40; }),
+       makeFlatVector<int32_t>(500, [](auto i) { return i * 50; })});
+  auto file = test::createNimbleFile(*rootPool(), input);
+
+  struct TestCase {
+    std::vector<std::string> projectedColumns;
+    bool expectGaps;
+    std::string debugString() const {
+      return fmt::format(
+          "columns=[{}], expectGaps={}",
+          folly::join(",", projectedColumns),
+          expectGaps);
+    }
+  };
+
+  std::vector<TestCase> testCases = {
+      {{"a", "e"}, true},
+      {{"a", "b", "c", "d", "e"}, false},
+  };
+
+  const auto& rowType = asRowType(input->type());
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
+
+    dataIoStats_ = std::make_shared<io::IoStatistics>();
+    metadataIoStats_ = std::make_shared<io::IoStatistics>();
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    for (const auto& col : testCase.projectedColumns) {
+      scanSpec->addField(col, rowType->getChildIdx(col));
+    }
+    auto readers = makeReaders(input, file, scanSpec, stringDecoderZeroCopy);
+
+    VectorPtr result = BaseVector::create(rowType, 0, pool());
+    while (readers.rowReader->next(1'000, result)) {
+    }
+
+    if (testCase.expectGaps) {
+      EXPECT_GT(dataIoStats_->readGap().count(), 0);
+      EXPECT_GT(dataIoStats_->readGap().sum(), 0);
+      EXPECT_GT(dataIoStats_->readGap().min(), 0);
+    } else {
+      EXPECT_EQ(dataIoStats_->readGap().count(), 0);
+    }
+  }
 }
 
 INSTANTIATE_TEST_CASE_P(

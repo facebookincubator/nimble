@@ -101,9 +101,17 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
         memory::memoryManager()->addRootPool("NimbleIndexProjectorTest");
     leafPool_ = rootPool_->addLeafChild("leaf");
     vectorMaker_ = std::make_unique<velox::test::VectorMaker>(leafPool_.get());
+    if (GetParam().enableCache) {
+      cache_ =
+          cache::AsyncDataCache::create(memory::memoryManager()->allocator());
+    }
   }
 
   void TearDown() override {
+    if (cache_ != nullptr) {
+      cache_->shutdown();
+      cache_.reset();
+    }
     vectorMaker_.reset();
     leafPool_.reset();
     rootPool_.reset();
@@ -170,36 +178,25 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
         velox::StringIdLease(velox::fileIds(), "test_group")};
   }
 
-  struct ProjectorWithStats {
-    std::unique_ptr<NimbleIndexProjector> projector;
-    std::shared_ptr<velox::io::IoStatistics> ioStats;
-  };
-
   std::unique_ptr<NimbleIndexProjector> createProjector(
-      const std::vector<Subfield>& projectedSubfields) {
-    return createProjectorWithStats(projectedSubfields).projector;
-  }
-
-  ProjectorWithStats createProjectorWithStats(
       const std::vector<Subfield>& projectedSubfields,
-      velox::cache::AsyncDataCache* cache = nullptr,
       std::optional<bool> cacheData = std::nullopt,
       bool setDataIoStats = true,
       bool setMetadataIoStats = true,
       bool setIndexIoStats = true) {
+    dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+    metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+    indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
     auto fileHandle = makeFileHandle();
-    auto ioStats = std::make_shared<velox::io::IoStatistics>();
     dwio::common::ReaderOptions readerOptions(leafPool_.get());
     if (setDataIoStats) {
-      readerOptions.setDataIoStats(ioStats);
+      readerOptions.setDataIoStats(dataIoStats_);
     }
     if (setMetadataIoStats) {
-      readerOptions.setMetadataIoStats(
-          std::make_shared<velox::io::IoStatistics>());
+      readerOptions.setMetadataIoStats(metadataIoStats_);
     }
     if (setIndexIoStats) {
-      readerOptions.setIndexIoStats(
-          std::make_shared<velox::io::IoStatistics>());
+      readerOptions.setIndexIoStats(indexIoStats_);
     }
     readerOptions.setFileFormat(FileFormat::NIMBLE);
     readerOptions.setLoadClusterIndex(true);
@@ -210,19 +207,15 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
     }
     if (GetParam().useTabletReaderCache) {
       ensureTabletReaderCache();
-      return {
-          NimbleIndexProjector::create(
-              *tabletReaderCache_,
-              fileHandle,
-              cache,
-              projectedSubfields,
-              readerOptions),
-          ioStats};
+      return NimbleIndexProjector::create(
+          *tabletReaderCache_,
+          fileHandle,
+          cache_.get(),
+          projectedSubfields,
+          readerOptions);
     }
-    return {
-        NimbleIndexProjector::create(
-            fileHandle, cache, projectedSubfields, readerOptions),
-        ioStats};
+    return NimbleIndexProjector::create(
+        fileHandle, cache_.get(), projectedSubfields, readerOptions);
   }
 
   // Creates encoded key bounds for a point lookup on a single int64 key.
@@ -301,11 +294,11 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
     writeData(batches, {"key"}, {}, /*stripeSize=*/1);
   }
 
-  const std::shared_ptr<io::IoStatistics> dataIoStats_{
+  std::shared_ptr<io::IoStatistics> dataIoStats_{
       std::make_shared<io::IoStatistics>()};
-  const std::shared_ptr<io::IoStatistics> metadataIoStats_{
+  std::shared_ptr<io::IoStatistics> metadataIoStats_{
       std::make_shared<io::IoStatistics>()};
-  const std::shared_ptr<io::IoStatistics> indexIoStats_{
+  std::shared_ptr<io::IoStatistics> indexIoStats_{
       std::make_shared<io::IoStatistics>()};
 
   void ensureTabletReaderCache() {
@@ -321,6 +314,7 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
   std::shared_ptr<memory::MemoryPool> rootPool_;
   std::shared_ptr<memory::MemoryPool> leafPool_;
   std::unique_ptr<velox::test::VectorMaker> vectorMaker_;
+  std::shared_ptr<cache::AsyncDataCache> cache_;
   std::string sinkData_;
   std::unique_ptr<velox::serializer::KeyEncoder> keyEncoder_;
   std::unique_ptr<TabletReaderCache> tabletReaderCache_;
@@ -443,8 +437,10 @@ TEST_P(NimbleIndexProjectorTest, emptyResult) {
   EXPECT_EQ(projector->stats().numScannedRows, 0);
   EXPECT_EQ(projector->stats().numProjectedRows, 0);
   EXPECT_EQ(projector->stats().numReadRows, 0);
-  EXPECT_EQ(projector->stats().rawBytesRead, 0);
-  EXPECT_EQ(projector->stats().rawOverreadBytes, 0);
+  EXPECT_EQ(dataIoStats_->rawBytesRead(), 0);
+  EXPECT_EQ(dataIoStats_->rawOverreadBytes(), 0);
+  EXPECT_EQ(dataIoStats_->read().count(), 0);
+  EXPECT_EQ(dataIoStats_->readGap().count(), 0);
 }
 
 TEST_P(NimbleIndexProjectorTest, multipleRequests) {
@@ -894,15 +890,12 @@ TEST_P(NimbleIndexProjectorTest, stats) {
   // Flush every batch to get exactly numBatches stripes.
   writeData(batches, {"key"}, {}, /*stripeSize=*/1);
 
-  auto makeProjector = [&]() {
-    std::vector<Subfield> subs;
-    subs.emplace_back("value");
-    return createProjector(subs);
-  };
+  std::vector<Subfield> subs;
+  subs.emplace_back("value");
 
   // Empty request should throw.
   {
-    auto proj = makeProjector();
+    auto proj = createProjector(subs);
     NimbleIndexProjector::Request request;
     NIMBLE_ASSERT_THROW(
         proj->project(request, {}), "keyBounds must not be empty");
@@ -910,7 +903,7 @@ TEST_P(NimbleIndexProjectorTest, stats) {
 
   // Single point lookup: key=15 is in stripe 1 (rows 10..19).
   {
-    auto proj = makeProjector();
+    auto proj = createProjector(subs);
     auto bounds = makePointLookup(rowType, {"key"}, 15);
     NimbleIndexProjector::Request request;
     request.keyBounds = {bounds};
@@ -928,13 +921,13 @@ TEST_P(NimbleIndexProjectorTest, stats) {
     EXPECT_GT(proj->stats().projectionTiming.wallNanos, 0);
 
     // IO stats should be non-zero for a hit.
-    EXPECT_GT(proj->stats().rawBytesRead, 0);
-    EXPECT_GE(proj->stats().rawOverreadBytes, 0);
+    EXPECT_GT(dataIoStats_->rawBytesRead(), 0);
+    EXPECT_GT(dataIoStats_->read().count(), 0);
   }
 
   // Two point lookups in first and last stripes.
   {
-    auto proj = makeProjector();
+    auto proj = createProjector(subs);
     auto bounds0 = makePointLookup(rowType, {"key"}, 0);
     auto bounds1 = makePointLookup(rowType, {"key"}, numRows - 1);
     NimbleIndexProjector::Request request;
@@ -948,12 +941,12 @@ TEST_P(NimbleIndexProjectorTest, stats) {
     EXPECT_EQ(proj->stats().numReadRows, 2);
 
     // IO stats should reflect more data read than single lookup.
-    EXPECT_GT(proj->stats().rawBytesRead, 0);
+    EXPECT_GT(dataIoStats_->rawBytesRead(), 0);
   }
 
   // Point lookup for a missing key (beyond max) should yield zero stats.
   {
-    auto proj = makeProjector();
+    auto proj = createProjector(subs);
     auto bounds = makePointLookup(rowType, {"key"}, numRows + 1'000);
     NimbleIndexProjector::Request request;
     request.keyBounds = {bounds};
@@ -963,6 +956,7 @@ TEST_P(NimbleIndexProjectorTest, stats) {
     EXPECT_EQ(proj->stats().numScannedRows, 0);
     EXPECT_EQ(proj->stats().numProjectedRows, 0);
     EXPECT_EQ(proj->stats().numReadRows, 0);
+    EXPECT_EQ(dataIoStats_->rawBytesRead(), 0);
   }
 }
 
@@ -973,16 +967,10 @@ TEST_P(NimbleIndexProjectorTest, statsToString) {
   stats.numProjectedRows = 1'000;
   stats.numReadRows = 42;
   stats.numReadBytes = 8'192;
-  stats.rawBytesRead = 10'000;
-  stats.rawOverreadBytes = 1'808;
-  stats.numStorageReads = 5;
-  stats.numCacheHits = 7;
-  stats.cacheHitBytes = 4'096;
   EXPECT_EQ(
       stats.toString(),
       "Stats(numReadStripes=3, numScannedRows=1000, numProjectedRows=1000, numReadRows=42, "
-      "numReadBytes=8.00KB, rawBytesRead=9.77KB, rawOverreadBytes=1.77KB, numStorageReads=5, "
-      "numCacheHits=7, cacheHitBytes=4.00KB, "
+      "numReadBytes=8.00KB, "
       "lookupTiming=[count: 0, wallTime: 0ns, cpuTime: 0ns], "
       "scanTiming=[count: 0, wallTime: 0ns, cpuTime: 0ns], "
       "projectionTiming=[count: 0, wallTime: 0ns, cpuTime: 0ns])");
@@ -1523,6 +1511,15 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
 
   // Create projector with custom coalesce distance.
   auto makeProjector = [&](int32_t maxCoalesceDistance) {
+    std::vector<Subfield> subfields;
+    subfields.reserve(projectedKeys.size());
+    for (auto key : projectedKeys) {
+      subfields.emplace_back(fmt::format("features[{}]", key));
+    }
+
+    dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+    metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+    indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
     auto fileHandle = makeFileHandle();
     dwio::common::ReaderOptions readerOptions(leafPool_.get());
     readerOptions.setDataIoStats(dataIoStats_);
@@ -1532,10 +1529,6 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
     readerOptions.setLoadClusterIndex(true);
     readerOptions.setMaxCoalesceDistance(maxCoalesceDistance);
 
-    std::vector<Subfield> subfields;
-    for (auto key : projectedKeys) {
-      subfields.emplace_back(fmt::format("features[{}]", key));
-    }
     return NimbleIndexProjector::create(
         fileHandle, /*cache=*/nullptr, subfields, readerOptions);
   };
@@ -1624,13 +1617,87 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
     ASSERT_EQ(result.responses.size(), 1);
     ASSERT_FALSE(result.responses[0].chunks.empty());
 
-    storageReads[param.debugString()] = projector->stats().numStorageReads;
+    storageReads[param.debugString()] = dataIoStats_->read().count();
+
+    if (param.maxCoalesceDistance == 0) {
+      if (!param.enableReordering) {
+        // Without reordering, projected keys are scattered on disk —
+        // gaps exist between non-adjacent stream regions.
+        EXPECT_GT(dataIoStats_->readGap().count(), 0);
+      } else {
+        // With reordering, projected keys are contiguous on disk —
+        // no gaps between adjacent stream regions.
+        EXPECT_EQ(dataIoStats_->readGap().count(), 0);
+      }
+    }
   }
 
   // Verify all configurations produced valid results with non-zero reads.
   for (const auto& [key, reads] : storageReads) {
     SCOPED_TRACE(key);
     EXPECT_GT(reads, 0) << "Expected non-zero storage reads";
+  }
+}
+
+TEST_P(NimbleIndexProjectorTest, readGapTracking) {
+  // Schema with many columns: projecting a sparse subset creates gaps between
+  // the projected stream regions on disk.
+  auto rowType =
+      ROW({"key", "a", "b", "c", "d", "e"},
+          {BIGINT(), INTEGER(), INTEGER(), INTEGER(), INTEGER(), INTEGER()});
+
+  const int numRows = 500;
+  auto batch = vectorMaker_->rowVector(
+      {"key", "a", "b", "c", "d", "e"},
+      {vectorMaker_->flatVector<int64_t>(
+           numRows, [](auto i) { return static_cast<int64_t>(i); }),
+       vectorMaker_->flatVector<int32_t>(
+           numRows, [](auto i) { return i * 10; }),
+       vectorMaker_->flatVector<int32_t>(
+           numRows, [](auto i) { return i * 20; }),
+       vectorMaker_->flatVector<int32_t>(
+           numRows, [](auto i) { return i * 30; }),
+       vectorMaker_->flatVector<int32_t>(
+           numRows, [](auto i) { return i * 40; }),
+       vectorMaker_->flatVector<int32_t>(
+           numRows, [](auto i) { return i * 50; })});
+
+  writeData({batch}, {"key"});
+
+  // Project only "a" and "e" (skipping b, c, d) — creates gaps.
+  {
+    std::vector<Subfield> subfields;
+    subfields.emplace_back("a");
+    subfields.emplace_back("e");
+    auto projector = createProjector(subfields);
+
+    auto bounds = makePointLookup(rowType, {"key"}, numRows / 2);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    projector->project(request, {});
+
+    EXPECT_GT(dataIoStats_->readGap().count(), 0)
+        << "Projecting non-adjacent columns should produce gaps";
+    EXPECT_GT(dataIoStats_->readGap().min(), 0);
+  }
+
+  // Project all columns — no gaps between adjacent streams.
+  {
+    std::vector<Subfield> subfields;
+    subfields.emplace_back("a");
+    subfields.emplace_back("b");
+    subfields.emplace_back("c");
+    subfields.emplace_back("d");
+    subfields.emplace_back("e");
+    auto projector = createProjector(subfields);
+
+    auto bounds = makePointLookup(rowType, {"key"}, numRows / 2);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    projector->project(request, {});
+
+    EXPECT_EQ(dataIoStats_->readGap().count(), 0)
+        << "Projecting all adjacent columns should produce no gaps";
   }
 }
 
@@ -2697,39 +2764,33 @@ TEST_P(NimbleIndexProjectorTest, cacheDataReadStats) {
 
   writeData({batch}, {"key"});
 
-  auto cache =
-      cache::AsyncDataCache::create(memory::memoryManager()->allocator());
-
   struct TestCase {
-    bool useCache;
     bool cacheData;
     bool expectCacheHitsOnSecondPass;
     std::string debugString() const {
       return fmt::format(
-          "useCache={}, cacheData={}, expectCacheHitsOnSecondPass={}",
-          useCache,
+          "cacheData={}, expectCacheHitsOnSecondPass={}",
           cacheData,
           expectCacheHitsOnSecondPass);
     }
   };
 
-  const std::vector<TestCase> testCases = {
-      {false, false, false},
-      {true, false, false},
-      {true, true, true},
-  };
+  std::vector<TestCase> testCases;
+  if (GetParam().enableCache) {
+    testCases = {{false, false}, {true, true}};
+  } else {
+    testCases = {{false, false}};
+  }
 
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(testCase.debugString());
 
     std::vector<Subfield> subs;
     subs.emplace_back("value");
-    auto* cachePtr = testCase.useCache ? cache.get() : nullptr;
 
     // First pass: populates the cache if cacheData is true.
     {
-      auto [projector, ioStats] =
-          createProjectorWithStats(subs, cachePtr, testCase.cacheData);
+      auto projector = createProjector(subs, testCase.cacheData);
       auto bounds = makePointLookup(rowType, {"key"}, 50);
       NimbleIndexProjector::Request request;
       request.keyBounds.push_back(std::move(bounds));
@@ -2737,17 +2798,13 @@ TEST_P(NimbleIndexProjectorTest, cacheDataReadStats) {
       ASSERT_EQ(result.responses.size(), 1);
       EXPECT_FALSE(result.responses[0].chunks.empty());
 
-      const auto& stats = projector->stats();
-      EXPECT_GT(stats.numStorageReads, 0);
-      EXPECT_GT(stats.rawBytesRead, 0);
-      EXPECT_GT(ioStats->read().count(), 0);
-      EXPECT_GT(ioStats->rawBytesRead(), 0);
+      EXPECT_GT(dataIoStats_->read().count(), 0);
+      EXPECT_GT(dataIoStats_->rawBytesRead(), 0);
     }
 
     // Second pass: should get cache hits if cacheData was true.
     {
-      auto [projector, ioStats] =
-          createProjectorWithStats(subs, cachePtr, testCase.cacheData);
+      auto projector = createProjector(subs, testCase.cacheData);
       auto bounds = makePointLookup(rowType, {"key"}, 50);
       NimbleIndexProjector::Request request;
       request.keyBounds.push_back(std::move(bounds));
@@ -2755,26 +2812,18 @@ TEST_P(NimbleIndexProjectorTest, cacheDataReadStats) {
       ASSERT_EQ(result.responses.size(), 1);
       EXPECT_FALSE(result.responses[0].chunks.empty());
 
-      const auto& stats = projector->stats();
       if (testCase.expectCacheHitsOnSecondPass) {
-        EXPECT_GT(stats.numCacheHits, 0)
+        EXPECT_GT(dataIoStats_->ramHit().count(), 0)
             << "Expected cache hits on second pass with cacheData=true";
-        EXPECT_GT(stats.cacheHitBytes, 0);
-        EXPECT_GT(ioStats->ramHit().count(), 0);
-        EXPECT_GT(ioStats->ramHit().sum(), 0);
+        EXPECT_GT(dataIoStats_->ramHit().sum(), 0);
       } else {
-        EXPECT_EQ(stats.numCacheHits, 0)
+        EXPECT_EQ(dataIoStats_->ramHit().count(), 0)
             << "Expected no cache hits with cacheData=false";
-        EXPECT_EQ(stats.cacheHitBytes, 0);
-        EXPECT_EQ(ioStats->ramHit().count(), 0);
-        EXPECT_EQ(ioStats->ramHit().sum(), 0);
-        EXPECT_GT(stats.numStorageReads, 0);
-        EXPECT_GT(ioStats->read().count(), 0);
+        EXPECT_EQ(dataIoStats_->ramHit().sum(), 0);
+        EXPECT_GT(dataIoStats_->read().count(), 0);
       }
     }
   }
-
-  cache->shutdown();
 }
 
 TEST_P(NimbleIndexProjectorTest, requiresIoStats) {
@@ -2813,9 +2862,8 @@ TEST_P(NimbleIndexProjectorTest, requiresIoStats) {
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(testCase.expectedMessage);
     NIMBLE_ASSERT_THROW(
-        createProjectorWithStats(
+        createProjector(
             subfields,
-            /*cache=*/nullptr,
             /*cacheData=*/std::nullopt,
             /*setDataIoStats=*/testCase.setDataIoStats,
             /*setMetadataIoStats=*/testCase.setMetadataIoStats,
@@ -2825,6 +2873,10 @@ TEST_P(NimbleIndexProjectorTest, requiresIoStats) {
 }
 
 TEST_P(NimbleIndexProjectorTest, invalidFileHandleWithCache) {
+  if (cache_ == nullptr) {
+    GTEST_SKIP() << "Only applicable when cache is enabled";
+  }
+
   auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
 
   const int numRows = 10;
@@ -2833,9 +2885,6 @@ TEST_P(NimbleIndexProjectorTest, invalidFileHandleWithCache) {
       {vectorMaker_->flatVector<int64_t>(numRows, [](auto i) { return i; }),
        vectorMaker_->flatVector<int32_t>(numRows, [](auto i) { return i; })});
   writeData({batch}, {"key"});
-
-  auto cache =
-      cache::AsyncDataCache::create(memory::memoryManager()->allocator());
 
   auto readFile =
       std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
@@ -2852,10 +2901,8 @@ TEST_P(NimbleIndexProjectorTest, invalidFileHandleWithCache) {
   subfields.emplace_back("value");
   NIMBLE_ASSERT_THROW(
       NimbleIndexProjector::create(
-          emptyHandle, cache.get(), subfields, readerOptions),
+          emptyHandle, cache_.get(), subfields, readerOptions),
       "FileHandle must have valid uuid and groupId when cache is provided");
-
-  cache->shutdown();
 }
 
 INSTANTIATE_TEST_CASE_P(
