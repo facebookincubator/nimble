@@ -154,6 +154,42 @@ struct EncodingSizeEstimation {
           return std::nullopt;
         }
       }
+      case EncodingType::DoubleDelta: {
+        if constexpr (isEightByteIntegralType<physicalType>()) {
+          // Approximate bitWidth from average delta magnitude (×2 for
+          // double-delta wobble). Conservative: overestimates for irregular
+          // data
+          const physicalType range =
+              static_cast<physicalType>(statistics.max() - statistics.min());
+          uint64_t bitWidth{0};
+          if (range != 0 && entryCount >= 3) {
+            const uint64_t perStepMagnitude = std::max<uint64_t>(
+                1,
+                static_cast<uint64_t>(range) /
+                    std::max<uint64_t>(1, entryCount - 1));
+            bitWidth = velox::bits::bitsRequired(perStepMagnitude * 2);
+          }
+          const uint64_t residualCount =
+              entryCount >= 3 ? entryCount - 2 : uint64_t{0};
+          const uint64_t bitpackedSize = bitWidth == 0
+              ? 0
+              : FixedBitArray::bufferSize(residualCount, bitWidth);
+          // Trailing checkpoint segment: 4-byte count + 16B per checkpoint.
+          // The encoder skips checkpoint capture entirely in the bitWidth=0
+          constexpr uint64_t kCheckpointStride{64};
+          const uint64_t checkpointCount =
+              bitWidth == 0 ? 0 : residualCount / kCheckpointStride;
+          const uint64_t checkpointSegmentSize =
+              sizeof(uint32_t) + checkpointCount * 16u;
+          constexpr uint32_t commonPrefixSize{6};
+          // Common Encoding prefix (6) + first(8) + second(8) + minDD(8)
+          // + bitWidth(1).
+          const uint32_t overhead = commonPrefixSize + 8 + 8 + 8 + 1;
+          return overhead + bitpackedSize + checkpointSegmentSize;
+        } else {
+          return std::nullopt;
+        }
+      }
       case EncodingType::Pfor: {
         if constexpr (isIntegralType<physicalType>()) {
           const auto fullRange =

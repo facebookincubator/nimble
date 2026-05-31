@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
+#include "dwio/nimble/encodings/DoubleDeltaEncoding.h"
 #include "dwio/nimble/encodings/PforEncoding.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
@@ -251,6 +252,22 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     }
     case EncodingType::Pfor: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(PforEncoding, dataType);
+    }
+    case EncodingType::DoubleDelta: {
+      switch (dataType) {
+        case DataType::Int64:
+          return std::make_unique<
+              ::facebook::nimble::DoubleDeltaEncoding<int64_t>>(
+              memoryPool, data, stringBufferFactory);
+        case DataType::Uint64:
+          return std::make_unique<
+              ::facebook::nimble::DoubleDeltaEncoding<uint64_t>>(
+              memoryPool, data, stringBufferFactory);
+        default:
+          NIMBLE_UNREACHABLE(
+              "DoubleDelta only supports 64-bit integer types, got {}.",
+              dataType);
+      }
     }
     default: {
       NIMBLE_UNREACHABLE(
