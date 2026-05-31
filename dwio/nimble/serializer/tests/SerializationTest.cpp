@@ -2170,6 +2170,71 @@ TEST_P(SerializationTest, pforColumnarRoundTrip) {
   }
 }
 
+// Columnar reader-level round-trip for DoubleDeltaEncoding. Forces DoubleDelta
+// via EncodingLayoutTree on a monotone int64 column and verifies data integrity
+// through the full Serializer → Deserializer path.
+TEST_P(SerializationTest, doubleDeltaColumnarRoundTrip) {
+  auto type = velox::ROW({
+      {"timestamp_val", velox::BIGINT()},
+  });
+
+  EncodingLayoutTree layoutTree{
+      Kind::Row,
+      {},
+      "",
+      {
+          {Kind::Scalar,
+           {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
+             EncodingLayout{
+                 EncodingType::DoubleDelta,
+                 {},
+                 CompressionType::Uncompressed}}},
+           ""},
+      }};
+
+  SerializerOptions options{
+      .version = version(),
+      .encodingLayoutTree = layoutTree,
+      .compressionOptions = compressionOptions(),
+  };
+
+  Serializer serializer{options, type, pool_.get()};
+
+  const velox::vector_size_t numRows = 200;
+  auto timestamps =
+      velox::BaseVector::create(velox::BIGINT(), numRows, pool_.get());
+  // Monotone timestamps with small jitter — DoubleDelta's sweet spot.
+  int64_t current = 1'716'835'200;
+  for (velox::vector_size_t i = 0; i < numRows; ++i) {
+    timestamps->asFlatVector<int64_t>()->set(i, current);
+    current += 60 + (i % 3);
+  }
+
+  auto input = std::make_shared<velox::RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      numRows,
+      std::vector<velox::VectorPtr>{timestamps});
+
+  auto serialized =
+      serializer.serialize(input, OrderedRanges::of(0, input->size()));
+
+  Deserializer deserializer{
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
+      pool_.get(),
+      deserializerOptions()};
+
+  velox::VectorPtr output;
+  deserializer.deserialize(serialized, output);
+
+  ASSERT_EQ(output->size(), input->size());
+  for (velox::vector_size_t i = 0; i < input->size(); ++i) {
+    ASSERT_TRUE(vectorEquals(output, input, i))
+        << "Content mismatch at index " << i;
+  }
+}
+
 // Test encoding layout tree for FlatMap with dynamic key discovery and nested
 // types.
 TEST_P(SerializationTest, encodingLayoutTreeFlatMap) {

@@ -110,6 +110,11 @@ enum class EncodingType {
   // residuals at a narrow base bit width, and stores the remaining outliers
   // ("exceptions") as a parallel position+value array.
   Pfor = 15,
+  // Delta-of-deltas encoding for int64/uint64. Instead of storing deltas
+  // between consecutive values, stores how much each delta *changes* from the
+  // previous one. For example, timestamps spaced ~60s apart have deltas of
+  // ~60 but double-deltas of ~0, which compresses extremely well.
+  DoubleDelta = 16,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);

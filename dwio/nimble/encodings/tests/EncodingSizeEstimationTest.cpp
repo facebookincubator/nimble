@@ -387,3 +387,37 @@ TEST_F(EncodingSizeEstimationTest, pforEstimateVsActualSize) {
       << "estimate too high: " << estimated.value() << " vs actual "
       << actualSize;
 }
+
+TEST_F(EncodingSizeEstimationTest, doubleDeltaEstimateVsActualSize) {
+  using Est = detail::EncodingSizeEstimation<uint64_t, false>;
+
+  // Monotone timestamps with small jitter — DoubleDelta's sweet spot.
+  std::vector<uint64_t> data;
+  uint64_t current = 1'000'000;
+  for (uint32_t i = 0; i < 200; ++i) {
+    data.push_back(current);
+    current += 60 + (i % 3);
+  }
+  auto stats = Statistics<uint64_t>::create(data);
+  const uint32_t numValues = static_cast<uint32_t>(data.size());
+
+  auto estimated =
+      Est::estimateNumericSize(EncodingType::DoubleDelta, numValues, stats);
+  ASSERT_TRUE(estimated.has_value());
+
+  nimble::Buffer buffer{*pool_};
+  auto encoded =
+      nimble::test::Encoder<nimble::DoubleDeltaEncoding<uint64_t>>::encode(
+          buffer,
+          nimble::Vector<uint64_t>(pool_.get(), data.begin(), data.end()));
+  const uint64_t actualSize = encoded.size();
+
+  // DoubleDelta uses a conservative heuristic (perStepMagnitude × 2),
+  // so the estimate can be up to ~3x actual for regular-interval data.
+  EXPECT_GT(estimated.value(), actualSize / 3)
+      << "estimate too low: " << estimated.value() << " vs actual "
+      << actualSize;
+  EXPECT_LT(estimated.value(), actualSize * 3)
+      << "estimate too high: " << estimated.value() << " vs actual "
+      << actualSize;
+}

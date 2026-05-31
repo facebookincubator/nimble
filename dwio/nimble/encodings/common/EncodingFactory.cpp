@@ -18,6 +18,7 @@
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
+#include "dwio/nimble/encodings/DoubleDeltaEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
@@ -253,6 +254,20 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     case EncodingType::Pfor: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(PforEncoding, dataType);
     }
+    case EncodingType::DoubleDelta: {
+      switch (dataType) {
+        case DataType::Int64:
+          return std::make_unique<DoubleDeltaEncoding<int64_t>>(
+              memoryPool, data, stringBufferFactory, options);
+        case DataType::Uint64:
+          return std::make_unique<DoubleDeltaEncoding<uint64_t>>(
+              memoryPool, data, stringBufferFactory, options);
+        default:
+          NIMBLE_UNREACHABLE(
+              "DoubleDelta only supports 64-bit integer types, got {}.",
+              dataType);
+      }
+    }
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
@@ -397,6 +412,17 @@ std::string_view EncodingFactory::encode(
         NIMBLE_INCOMPATIBLE_ENCODING(
             "Pfor encoding should not be selected for non-integral data type: {}.",
             toString(TypeTraits<T>::dataType));
+      }
+    }
+
+    case EncodingType::DoubleDelta: {
+      if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>) {
+        return DoubleDeltaEncoding<T>::encode(
+            selection, castedValues, buffer, options);
+      } else {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "DoubleDelta encoding only supports 64-bit integer types, got {}.",
+            TypeTraits<T>::dataType);
       }
     }
     default: {
