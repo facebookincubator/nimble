@@ -44,10 +44,19 @@ class NullableEncoding final
   using physicalType = typename TypeTraits<T>::physicalType;
 
   NullableEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});
+
+  ~NullableEncoding() override {
+    this->releaseVectorBuffer(nullBuffer_);
+  }
+
+  NullableEncoding(const NullableEncoding&) = delete;
+  NullableEncoding& operator=(const NullableEncoding&) = delete;
+  NullableEncoding(NullableEncoding&&) = delete;
+  NullableEncoding& operator=(NullableEncoding&&) = delete;
 
   uint32_t nullCount() const final;
   bool isNullable() const final;
@@ -113,8 +122,7 @@ class NullableEncoding final
   std::unique_ptr<Encoding> nulls_;
   uint32_t row_ = 0;
 
-  // Temporary buffers.
-  Vector<uint32_t> indicesBuffer_;
+  /// Scratch buffer for null bitmap during decode.
   Vector<bool> nullBuffer_;
 };
 
@@ -124,13 +132,12 @@ class NullableEncoding final
 
 template <typename T>
 NullableEncoding<T>::NullableEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> stringBufferFactory,
     const Encoding::Options& options)
-    : TypedEncoding<T, physicalType>(memoryPool, data, options),
-      indicesBuffer_(this->pool_),
-      nullBuffer_(this->pool_) {
+    : TypedEncoding<T, physicalType>(pool, data, options),
+      nullBuffer_(this->template getVectorBuffer<bool>()) {
   const EncodingFactory factory{options};
   const char* pos = data.data() + this->dataOffset();
   const uint32_t nonNullsBytes = encoding::readUint32(pos);

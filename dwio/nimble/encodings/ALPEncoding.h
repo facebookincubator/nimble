@@ -169,11 +169,11 @@ class ALPEncoding final
   using physicalType = typename TypeTraits<T>::physicalType;
 
   ALPEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> /* stringBufferFactory */,
       const Encoding::Options& options = {})
-      : TypedEncoding<T, physicalType>(memoryPool, data, options), pos_(0) {
+      : TypedEncoding<T, physicalType>(pool, data, options), pos_(0) {
     const char* pos = data.data() + this->dataOffset();
 
     exponent_ = encoding::read<uint8_t>(pos);

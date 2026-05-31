@@ -44,7 +44,7 @@ static std::span<const typename TypeTraits<T>::physicalType> toPhysicalSpan(
 } // namespace
 
 std::unique_ptr<Encoding> EncodingFactory::create(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> stringBufferFactory) const {
   const auto& options = options_;
@@ -55,40 +55,40 @@ std::unique_ptr<Encoding> EncodingFactory::create(
   switch (dataType) {                                                     \
     case DataType::Int8:                                                  \
       return std::make_unique<Encoding<int8_t>>(                          \
-          memoryPool, data, stringBufferFactory, options);                \
+          pool, data, stringBufferFactory, options);                      \
     case DataType::Uint8:                                                 \
       return std::make_unique<Encoding<uint8_t>>(                         \
-          memoryPool, data, stringBufferFactory, options);                \
+          pool, data, stringBufferFactory, options);                      \
     case DataType::Int16:                                                 \
       return std::make_unique<Encoding<int16_t>>(                         \
-          memoryPool, data, stringBufferFactory, options);                \
+          pool, data, stringBufferFactory, options);                      \
     case DataType::Uint16:                                                \
       return std::make_unique<Encoding<uint16_t>>(                        \
-          memoryPool, data, stringBufferFactory, options);                \
+          pool, data, stringBufferFactory, options);                      \
     case DataType::Int32:                                                 \
       return std::make_unique<Encoding<int32_t>>(                         \
-          memoryPool, data, stringBufferFactory, options);                \
+          pool, data, stringBufferFactory, options);                      \
     case DataType::Uint32:                                                \
       return std::make_unique<Encoding<uint32_t>>(                        \
-          memoryPool, data, stringBufferFactory, options);                \
+          pool, data, stringBufferFactory, options);                      \
     case DataType::Int64:                                                 \
       return std::make_unique<Encoding<int64_t>>(                         \
-          memoryPool, data, stringBufferFactory, options);                \
+          pool, data, stringBufferFactory, options);                      \
     case DataType::Uint64:                                                \
       return std::make_unique<Encoding<uint64_t>>(                        \
-          memoryPool, data, stringBufferFactory, options);                \
+          pool, data, stringBufferFactory, options);                      \
     case DataType::Float:                                                 \
       return std::make_unique<Encoding<float>>(                           \
-          memoryPool, data, stringBufferFactory, options);                \
+          pool, data, stringBufferFactory, options);                      \
     case DataType::Double:                                                \
       return std::make_unique<Encoding<double>>(                          \
-          memoryPool, data, stringBufferFactory, options);                \
+          pool, data, stringBufferFactory, options);                      \
     case DataType::Bool:                                                  \
       return std::make_unique<Encoding<bool>>(                            \
-          memoryPool, data, stringBufferFactory, options);                \
+          pool, data, stringBufferFactory, options);                      \
     case DataType::String:                                                \
       return std::make_unique<Encoding<std::string_view>>(                \
-          memoryPool, data, stringBufferFactory, options);                \
+          pool, data, stringBufferFactory, options);                      \
     default:                                                              \
       NIMBLE_UNREACHABLE("Unknown encoding type {}.", toString(dataType)) \
   }
@@ -97,22 +97,22 @@ std::unique_ptr<Encoding> EncodingFactory::create(
   switch (dataType) {                                      \
     case DataType::Int32:                                  \
       return std::make_unique<Encoding<int32_t>>(          \
-          memoryPool, data, stringBufferFactory, options); \
+          pool, data, stringBufferFactory, options);       \
     case DataType::Uint32:                                 \
       return std::make_unique<Encoding<uint32_t>>(         \
-          memoryPool, data, stringBufferFactory, options); \
+          pool, data, stringBufferFactory, options);       \
     case DataType::Int64:                                  \
       return std::make_unique<Encoding<int64_t>>(          \
-          memoryPool, data, stringBufferFactory, options); \
+          pool, data, stringBufferFactory, options);       \
     case DataType::Uint64:                                 \
       return std::make_unique<Encoding<uint64_t>>(         \
-          memoryPool, data, stringBufferFactory, options); \
+          pool, data, stringBufferFactory, options);       \
     case DataType::Float:                                  \
       return std::make_unique<Encoding<float>>(            \
-          memoryPool, data, stringBufferFactory, options); \
+          pool, data, stringBufferFactory, options);       \
     case DataType::Double:                                 \
       return std::make_unique<Encoding<double>>(           \
-          memoryPool, data, stringBufferFactory, options); \
+          pool, data, stringBufferFactory, options);       \
     default:                                               \
       NIMBLE_UNREACHABLE(                                  \
           "Trying to deserialize a varint stream for "     \
@@ -124,37 +124,37 @@ std::unique_ptr<Encoding> EncodingFactory::create(
   switch (dataType) {                                        \
     case DataType::Int8:                                     \
       return std::make_unique<Encoding<int8_t>>(             \
-          memoryPool, data, stringBufferFactory, options);   \
+          pool, data, stringBufferFactory, options);         \
     case DataType::Uint8:                                    \
       return std::make_unique<Encoding<uint8_t>>(            \
-          memoryPool, data, stringBufferFactory, options);   \
+          pool, data, stringBufferFactory, options);         \
     case DataType::Int16:                                    \
       return std::make_unique<Encoding<int16_t>>(            \
-          memoryPool, data, stringBufferFactory, options);   \
+          pool, data, stringBufferFactory, options);         \
     case DataType::Uint16:                                   \
       return std::make_unique<Encoding<uint16_t>>(           \
-          memoryPool, data, stringBufferFactory, options);   \
+          pool, data, stringBufferFactory, options);         \
     case DataType::Int32:                                    \
       return std::make_unique<Encoding<int32_t>>(            \
-          memoryPool, data, stringBufferFactory, options);   \
+          pool, data, stringBufferFactory, options);         \
     case DataType::Uint32:                                   \
       return std::make_unique<Encoding<uint32_t>>(           \
-          memoryPool, data, stringBufferFactory, options);   \
+          pool, data, stringBufferFactory, options);         \
     case DataType::Int64:                                    \
       return std::make_unique<Encoding<int64_t>>(            \
-          memoryPool, data, stringBufferFactory, options);   \
+          pool, data, stringBufferFactory, options);         \
     case DataType::Uint64:                                   \
       return std::make_unique<Encoding<uint64_t>>(           \
-          memoryPool, data, stringBufferFactory, options);   \
+          pool, data, stringBufferFactory, options);         \
     case DataType::Float:                                    \
       return std::make_unique<Encoding<float>>(              \
-          memoryPool, data, stringBufferFactory, options);   \
+          pool, data, stringBufferFactory, options);         \
     case DataType::Double:                                   \
       return std::make_unique<Encoding<double>>(             \
-          memoryPool, data, stringBufferFactory, options);   \
+          pool, data, stringBufferFactory, options);         \
     case DataType::String:                                   \
       return std::make_unique<Encoding<std::string_view>>(   \
-          memoryPool, data, stringBufferFactory, options);   \
+          pool, data, stringBufferFactory, options);         \
     default:                                                 \
       NIMBLE_UNREACHABLE(                                    \
           "Trying to deserialize a non-bool stream for "     \
@@ -166,34 +166,34 @@ std::unique_ptr<Encoding> EncodingFactory::create(
   switch (dataType) {                                       \
     case DataType::Int8:                                    \
       return std::make_unique<Encoding<int8_t>>(            \
-          memoryPool, data, stringBufferFactory, options);  \
+          pool, data, stringBufferFactory, options);        \
     case DataType::Uint8:                                   \
       return std::make_unique<Encoding<uint8_t>>(           \
-          memoryPool, data, stringBufferFactory, options);  \
+          pool, data, stringBufferFactory, options);        \
     case DataType::Int16:                                   \
       return std::make_unique<Encoding<int16_t>>(           \
-          memoryPool, data, stringBufferFactory, options);  \
+          pool, data, stringBufferFactory, options);        \
     case DataType::Uint16:                                  \
       return std::make_unique<Encoding<uint16_t>>(          \
-          memoryPool, data, stringBufferFactory, options);  \
+          pool, data, stringBufferFactory, options);        \
     case DataType::Int32:                                   \
       return std::make_unique<Encoding<int32_t>>(           \
-          memoryPool, data, stringBufferFactory, options);  \
+          pool, data, stringBufferFactory, options);        \
     case DataType::Uint32:                                  \
       return std::make_unique<Encoding<uint32_t>>(          \
-          memoryPool, data, stringBufferFactory, options);  \
+          pool, data, stringBufferFactory, options);        \
     case DataType::Int64:                                   \
       return std::make_unique<Encoding<int64_t>>(           \
-          memoryPool, data, stringBufferFactory, options);  \
+          pool, data, stringBufferFactory, options);        \
     case DataType::Uint64:                                  \
       return std::make_unique<Encoding<uint64_t>>(          \
-          memoryPool, data, stringBufferFactory, options);  \
+          pool, data, stringBufferFactory, options);        \
     case DataType::Float:                                   \
       return std::make_unique<Encoding<float>>(             \
-          memoryPool, data, stringBufferFactory, options);  \
+          pool, data, stringBufferFactory, options);        \
     case DataType::Double:                                  \
       return std::make_unique<Encoding<double>>(            \
-          memoryPool, data, stringBufferFactory, options);  \
+          pool, data, stringBufferFactory, options);        \
     default:                                                \
       NIMBLE_UNREACHABLE(                                   \
           "Trying to deserialize a non-numeric stream for " \
@@ -223,7 +223,7 @@ std::unique_ptr<Encoding> EncodingFactory::create(
           DataType::Bool,
           "Trying to deserialize a SparseBoolEncoding with a non-bool data type.");
       return std::make_unique<SparseBoolEncoding>(
-          memoryPool, data, stringBufferFactory, options);
+          pool, data, stringBufferFactory, options);
     }
     case EncodingType::Varint: {
       RETURN_ENCODING_BY_VARINT_TYPE(VarintEncoding, dataType);
@@ -240,7 +240,7 @@ std::unique_ptr<Encoding> EncodingFactory::create(
           DataType::String,
           "Trying to deserialize a PrefixEncoding with a non-string data type.");
       return std::make_unique<PrefixEncoding>(
-          memoryPool, data, stringBufferFactory, options);
+          pool, data, stringBufferFactory, options);
     }
     case EncodingType::Delta: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(DeltaEncoding, dataType);

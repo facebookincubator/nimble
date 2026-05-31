@@ -90,6 +90,55 @@ class TestCompressPolicy : public nimble::CompressionPolicy {
   bool useVariableBitWidthCompressor_;
 };
 
+std::string makeEncodingData() {
+  std::string data(nimble::EncodingPrefix::kFixedPrefixSize, '\0');
+  auto* pos = data.data();
+  nimble::EncodingPrefix::serialize(
+      nimble::EncodingType::Trivial,
+      nimble::DataType::Int8,
+      /*rowCount=*/0,
+      /*useVarint=*/false,
+      pos);
+  return data;
+}
+
+class TestEncoding : public nimble::Encoding {
+ public:
+  TestEncoding(
+      velox::memory::MemoryPool& pool,
+      std::string_view data,
+      const Options& options)
+      : Encoding(pool, data, options) {}
+
+  velox::BufferPtr testingGetBuffer(size_t bytes) {
+    return getBuffer(bytes);
+  }
+
+  template <typename V>
+  nimble::Vector<V> testingGetVectorBuffer() {
+    return getVectorBuffer<V>();
+  }
+
+  void testingReleaseVectorBuffer(auto& vector) {
+    releaseVectorBuffer(vector);
+  }
+
+  void reset() override {}
+
+  void skip(uint32_t /*rowCount*/) override {}
+
+  void materialize(uint32_t /*rowCount*/, void* /*buffer*/) override {}
+
+  uint32_t materializeNullable(
+      uint32_t /*rowCount*/,
+      void* /*buffer*/,
+      std::function<void*()> /*nulls*/,
+      const velox::bits::Bitmap* /*scatterBitmap*/,
+      uint32_t /*offset*/) override {
+    return 0;
+  }
+};
+
 template <typename T>
 class TestTrivialEncodingSelectionPolicy
     : public nimble::EncodingSelectionPolicy<T> {
@@ -139,6 +188,159 @@ class TestTrivialEncodingSelectionPolicy
 };
 
 } // namespace
+
+TEST(EncodingBufferPoolTest, getBufferUsesMinimumCapacity) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  velox::BufferPool bufferPool;
+  const auto data = makeEncodingData();
+  TestEncoding encoding{
+      *pool,
+      data,
+      nimble::Encoding::Options{
+          .useVarintRowCount = false,
+          .bufferPool = &bufferPool,
+      }};
+
+  auto smallBuffer = velox::AlignedBuffer::allocate<char>(128, pool.get());
+  auto* smallBufferPtr = smallBuffer.get();
+  bufferPool.release(std::move(smallBuffer));
+
+  auto allocatedBuffer = encoding.testingGetBuffer(1'024);
+  ASSERT_NE(allocatedBuffer, nullptr);
+  EXPECT_GE(allocatedBuffer->capacity(), 1'024);
+  EXPECT_EQ(bufferPool.size(), 1);
+
+  auto remainingSmallBuffer = bufferPool.get();
+  ASSERT_NE(remainingSmallBuffer, nullptr);
+  EXPECT_EQ(remainingSmallBuffer.get(), smallBufferPtr);
+  bufferPool.release(std::move(remainingSmallBuffer));
+
+  auto largeBuffer = velox::AlignedBuffer::allocate<char>(4'096, pool.get());
+  auto* largeBufferPtr = largeBuffer.get();
+  bufferPool.release(std::move(largeBuffer));
+
+  auto pooledBuffer = encoding.testingGetBuffer(1'024);
+  ASSERT_NE(pooledBuffer, nullptr);
+  EXPECT_EQ(pooledBuffer.get(), largeBufferPtr);
+  EXPECT_EQ(bufferPool.size(), 1);
+}
+
+TEST(EncodingBufferPoolTest, getVectorBufferFromPool) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  velox::BufferPool bufferPool;
+  const auto data = makeEncodingData();
+  TestEncoding encoding{
+      *pool,
+      data,
+      nimble::Encoding::Options{
+          .useVarintRowCount = false,
+          .bufferPool = &bufferPool,
+      }};
+
+  auto buffer = velox::AlignedBuffer::allocate<char>(4'096, pool.get());
+  auto* bufferPtr = buffer.get();
+  bufferPool.release(std::move(buffer));
+  ASSERT_EQ(bufferPool.size(), 1);
+
+  auto vector = encoding.testingGetVectorBuffer<int32_t>();
+  EXPECT_EQ(vector.testingBuffer().get(), bufferPtr);
+  EXPECT_GE(vector.capacity(), 4'096 / sizeof(int32_t));
+  EXPECT_EQ(vector.size(), 0);
+  EXPECT_EQ(bufferPool.size(), 0);
+}
+
+TEST(EncodingBufferPoolTest, getVectorBufferWithoutPool) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  const auto data = makeEncodingData();
+  TestEncoding encoding{
+      *pool, data, nimble::Encoding::Options{.useVarintRowCount = false}};
+
+  auto vector = encoding.testingGetVectorBuffer<int32_t>();
+  EXPECT_EQ(vector.size(), 0);
+  EXPECT_EQ(vector.capacity(), 0);
+}
+
+TEST(EncodingBufferPoolTest, getVectorBufferFromEmptyPool) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  velox::BufferPool bufferPool;
+  const auto data = makeEncodingData();
+  TestEncoding encoding{
+      *pool,
+      data,
+      nimble::Encoding::Options{
+          .useVarintRowCount = false,
+          .bufferPool = &bufferPool,
+      }};
+
+  ASSERT_EQ(bufferPool.size(), 0);
+
+  auto vector = encoding.testingGetVectorBuffer<int32_t>();
+  EXPECT_EQ(vector.size(), 0);
+  EXPECT_EQ(vector.capacity(), 0);
+  EXPECT_EQ(bufferPool.size(), 0);
+}
+
+TEST(EncodingBufferPoolTest, releaseVectorBufferToPool) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  velox::BufferPool bufferPool;
+  const auto data = makeEncodingData();
+  TestEncoding encoding{
+      *pool,
+      data,
+      nimble::Encoding::Options{
+          .useVarintRowCount = false,
+          .bufferPool = &bufferPool,
+      }};
+
+  auto vector = encoding.testingGetVectorBuffer<int32_t>();
+  vector.resize(100);
+  auto* bufferPtr = vector.testingBuffer().get();
+  ASSERT_EQ(bufferPool.size(), 0);
+
+  encoding.testingReleaseVectorBuffer(vector);
+  EXPECT_EQ(bufferPool.size(), 1);
+
+  auto recycled = bufferPool.get();
+  ASSERT_NE(recycled, nullptr);
+  EXPECT_EQ(recycled.get(), bufferPtr);
+}
+
+TEST(EncodingBufferPoolTest, releaseVectorBufferWithoutPool) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  const auto data = makeEncodingData();
+  TestEncoding encoding{
+      *pool, data, nimble::Encoding::Options{.useVarintRowCount = false}};
+
+  auto vector = encoding.testingGetVectorBuffer<int32_t>();
+  vector.resize(100);
+
+  encoding.testingReleaseVectorBuffer(vector);
+  EXPECT_NE(vector.testingBuffer(), nullptr);
+}
+
+TEST(EncodingBufferPoolTest, getVectorBufferRoundTrip) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  velox::BufferPool bufferPool;
+  const auto data = makeEncodingData();
+  TestEncoding encoding{
+      *pool,
+      data,
+      nimble::Encoding::Options{
+          .useVarintRowCount = false,
+          .bufferPool = &bufferPool,
+      }};
+
+  auto vector1 = encoding.testingGetVectorBuffer<int32_t>();
+  vector1.resize(100);
+  auto* bufferPtr = vector1.testingBuffer().get();
+
+  encoding.testingReleaseVectorBuffer(vector1);
+  ASSERT_EQ(bufferPool.size(), 1);
+
+  auto vector2 = encoding.testingGetVectorBuffer<int32_t>();
+  EXPECT_EQ(vector2.testingBuffer().get(), bufferPtr);
+  EXPECT_EQ(bufferPool.size(), 0);
+}
 
 template <typename EncodingType, bool UseVarint>
 struct TestConfig {

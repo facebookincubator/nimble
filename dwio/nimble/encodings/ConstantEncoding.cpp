@@ -19,11 +19,11 @@
 namespace facebook::nimble {
 
 ConstantEncoding<std::string_view>::ConstantEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> stringBufferFactory,
     const Encoding::Options& options)
-    : ConstantEncodingBase<std::string_view>(memoryPool, data, options) {
+    : ConstantEncodingBase<std::string_view>(pool, data, options) {
   const char* pos = data.data() + this->dataOffset();
   value_ = encoding::read<physicalType>(pos);
   NIMBLE_CHECK(pos == data.end(), "Unexpected constant encoding end");

@@ -18,12 +18,12 @@
 namespace facebook::nimble {
 
 RLEEncoding<bool>::RLEEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> stringBufferFactory,
     const Encoding::Options& options)
     : internal::RLEEncodingBase<bool, RLEEncoding<bool>>(
-          memoryPool,
+          pool,
           data,
           stringBufferFactory,
           options) {

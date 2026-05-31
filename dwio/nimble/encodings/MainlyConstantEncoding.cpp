@@ -19,11 +19,11 @@
 namespace facebook::nimble {
 
 MainlyConstantEncoding<std::string_view>::MainlyConstantEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> stringBufferFactory,
     const Encoding::Options& options)
-    : MainlyConstantEncodingBase<std::string_view>(memoryPool, data, options) {
+    : MainlyConstantEncodingBase<std::string_view>(pool, data, options) {
   const EncodingFactory factory{options};
   const char* pos = data.data() + this->dataOffset();
   const uint32_t isCommonBytes = encoding::readUint32(pos);

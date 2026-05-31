@@ -38,7 +38,7 @@ class EncodingFactory {
 
   /// Creates an Encoding from serialized data using this factory's options.
   virtual std::unique_ptr<Encoding> create(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory) const;
 

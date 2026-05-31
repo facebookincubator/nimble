@@ -106,9 +106,9 @@ class Encoding {
     bool useVarintRowCount;
 
     /// Optional buffer pool for reusing scratch buffers across encoding
-    /// lifetimes. When set, encodings like MainlyConstant will return their
-    /// scratch buffers to the pool on destruction and grab pre-allocated
-    /// buffers on construction, avoiding MemoryPool alloc/free overhead.
+    /// lifetimes. When set, encodings return their scratch buffers to the pool
+    /// on destruction and grab pre-allocated buffers on construction, avoiding
+    /// MemoryPool alloc/free overhead.
     /// Value-initialized to nullptr when omitted from aggregate initialization.
     velox::BufferPool* bufferPool;
   };
@@ -286,6 +286,36 @@ class Encoding {
     }
   }
 
+  /// Acquires a raw BufferPtr with at least bytes capacity. Uses the buffer
+  /// pool when it has a large enough buffer, otherwise allocates a new one.
+  velox::BufferPtr getBuffer(size_t bytes) {
+    if (auto* bufferPool = options_.bufferPool) {
+      if (auto buffer = bufferPool->get(bytes)) {
+        return buffer;
+      }
+    }
+    return velox::AlignedBuffer::allocate<char>(bytes, pool_);
+  }
+
+  /// Acquires a Vector backed by a buffer pool allocation if available.
+  /// Falls back to a fresh empty Vector from the memory pool.
+  template <typename V>
+  Vector<V> getVectorBuffer() {
+    if (auto* bufferPool = options_.bufferPool) {
+      if (auto buf = bufferPool->get()) {
+        return Vector<V>(std::move(buf));
+      }
+    }
+    return Vector<V>(pool_);
+  }
+
+  /// Releases a Vector's underlying buffer back to the buffer pool.
+  void releaseVectorBuffer(auto& vector) {
+    if (auto* bufferPool = options_.bufferPool) {
+      bufferPool->release(vector.releaseBuffer());
+    }
+  }
+
   velox::memory::MemoryPool* const pool_;
   const std::string_view data_;
   const EncodingType encodingType_;
@@ -306,10 +336,10 @@ class TypedEncoding : public Encoding {
 
  public:
   TypedEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       const Options& options = {})
-      : Encoding{memoryPool, data, options} {}
+      : Encoding{pool, data, options} {}
 
   // Similar to materialize(), but scatters values to output buffer according to
   // scatterBitmap. When scatterBitmap is nullptr or all 1's, the output

@@ -24,15 +24,15 @@
 namespace facebook::nimble {
 
 SparseBoolEncoding::SparseBoolEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> stringBufferFactory,
     const Encoding::Options& options)
-    : TypedEncoding<bool, bool>{memoryPool, data, options},
+    : TypedEncoding<bool, bool>{pool, data, options},
       sparseValue_{static_cast<bool>(data[this->dataOffset()])},
-      indicesUncompressed_{&memoryPool},
+      indicesUncompressed_{&pool},
       indices_{EncodingFactory(options).create(
-          memoryPool,
+          pool,
           {data.data() + this->dataOffset() + kPrefixSize,
            data.size() - this->dataOffset() - kPrefixSize},
           stringBufferFactory)} {
