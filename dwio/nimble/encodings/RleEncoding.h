@@ -86,13 +86,13 @@ class RLEEncodingBase
   using physicalType = typename TypeTraits<T>::physicalType;
 
   RLEEncodingBase(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {})
-      : TypedEncoding<T, physicalType>(memoryPool, data, options),
+      : TypedEncoding<T, physicalType>(pool, data, options),
         materializedRunLengths_{EncodingFactory(options).create(
-            memoryPool,
+            pool,
             {data.data() + this->dataOffset() + 4,
              *reinterpret_cast<const uint32_t*>(
                  data.data() + this->dataOffset())},
@@ -227,10 +227,19 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
 
  public:
   explicit RLEEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});
+
+  ~RLEEncoding() override {
+    this->releaseBuffer(indicesBuffer_);
+  }
+
+  RLEEncoding(const RLEEncoding&) = delete;
+  RLEEncoding& operator=(const RLEEncoding&) = delete;
+  RLEEncoding(RLEEncoding&&) = delete;
+  RLEEncoding& operator=(RLEEncoding&&) = delete;
 
   void reset() final;
 
@@ -367,11 +376,9 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
       vector_size_t currentRow) const;
 
   uint32_t* ensureIndicesBuffer(uint32_t numElements) {
-    if (indicesBuffer_ == nullptr || !indicesBuffer_->unique()) {
-      indicesBuffer_ =
-          velox::AlignedBuffer::allocate<uint32_t>(numElements, this->pool_);
-    } else {
-      velox::AlignedBuffer::reallocate<uint32_t>(&indicesBuffer_, numElements);
+    const auto bytes = numElements * sizeof(uint32_t);
+    if (indicesBuffer_ == nullptr || indicesBuffer_->capacity() < bytes) {
+      indicesBuffer_ = this->getBuffer(bytes);
     }
     return indicesBuffer_->asMutable<uint32_t>();
   }
@@ -396,7 +403,7 @@ class RLEEncoding<bool> final
     : public internal::RLEEncodingBase<bool, RLEEncoding<bool>> {
  public:
   RLEEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});

@@ -39,10 +39,10 @@ class ConstantEncodingBase
   using physicalType = typename TypeTraits<T>::physicalType;
 
   ConstantEncodingBase(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       const Encoding::Options& options = {})
-      : TypedEncoding<T, physicalType>(memoryPool, data, options) {}
+      : TypedEncoding<T, physicalType>(pool, data, options) {}
 
   void reset() final {}
 
@@ -190,7 +190,7 @@ class ConstantEncoding : public ConstantEncodingBase<T> {
   using physicalType = typename TypeTraits<T>::physicalType;
 
   ConstantEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});
@@ -202,11 +202,11 @@ class ConstantEncoding : public ConstantEncodingBase<T> {
 
 template <typename T>
 ConstantEncoding<T>::ConstantEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> /* stringBufferFactory */,
     const Encoding::Options& options)
-    : ConstantEncodingBase<T>(memoryPool, data, options) {
+    : ConstantEncodingBase<T>(pool, data, options) {
   const char* pos = data.data() + this->dataOffset();
   this->value_ = encoding::read<physicalType>(pos);
   NIMBLE_CHECK_EQ(pos, data.end(), "Unexpected constant encoding end");
@@ -220,11 +220,11 @@ class ConstantEncoding<bool> final : public ConstantEncodingBase<bool> {
   using physicalType = bool;
 
   ConstantEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> /* stringBufferFactory */,
       const Encoding::Options& options = {})
-      : ConstantEncodingBase<bool>(memoryPool, data, options) {
+      : ConstantEncodingBase<bool>(pool, data, options) {
     const char* pos = data.data() + this->dataOffset();
     this->value_ = encoding::read<physicalType>(pos);
     NIMBLE_CHECK_EQ(pos, data.end(), "Unexpected constant encoding end");
@@ -244,7 +244,7 @@ class ConstantEncoding<std::string_view> final
   using physicalType = std::string_view;
 
   ConstantEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});

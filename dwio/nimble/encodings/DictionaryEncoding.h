@@ -53,6 +53,15 @@ class DictionaryEncoding
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});
 
+  ~DictionaryEncoding() override {
+    this->releaseBuffer(indicesBuffer_);
+  }
+
+  DictionaryEncoding(const DictionaryEncoding&) = delete;
+  DictionaryEncoding& operator=(const DictionaryEncoding&) = delete;
+  DictionaryEncoding(DictionaryEncoding&&) = delete;
+  DictionaryEncoding& operator=(DictionaryEncoding&&) = delete;
+
   void reset() final;
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
@@ -100,11 +109,9 @@ class DictionaryEncoding
 
  private:
   uint32_t* ensureIndicesBuffer(uint32_t numElements) {
-    if (indicesBuffer_ == nullptr || !indicesBuffer_->unique()) {
-      indicesBuffer_ =
-          velox::AlignedBuffer::allocate<uint32_t>(numElements, this->pool_);
-    } else {
-      velox::AlignedBuffer::reallocate<uint32_t>(&indicesBuffer_, numElements);
+    const auto bytes = numElements * sizeof(uint32_t);
+    if (indicesBuffer_ == nullptr || indicesBuffer_->capacity() < bytes) {
+      indicesBuffer_ = this->getBuffer(bytes);
     }
     return indicesBuffer_->asMutable<uint32_t>();
   }

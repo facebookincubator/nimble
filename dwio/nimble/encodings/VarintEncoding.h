@@ -70,7 +70,6 @@ class VarintEncoding final
   const physicalType baseValue_;
   uint32_t row_{0};
   const char* pos_;
-  Vector<physicalType> buf_;
 };
 
 //
@@ -85,8 +84,7 @@ VarintEncoding<T>::VarintEncoding(
     const Encoding::Options& options)
     : TypedEncoding<T, physicalType>(pool, data, options),
       baseValue_{*reinterpret_cast<const physicalType*>(
-          data.data() + this->dataOffset())},
-      buf_{this->pool_} {
+          data.data() + this->dataOffset())} {
   reset();
 }
 

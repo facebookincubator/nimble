@@ -72,6 +72,17 @@ class DeltaEncoding final
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});
 
+  ~DeltaEncoding() override {
+    this->releaseVectorBuffer(deltasBuffer_);
+    this->releaseVectorBuffer(restatementsBuffer_);
+    this->releaseBuffer(isRestatementsBitmap_);
+  }
+
+  DeltaEncoding(const DeltaEncoding&) = delete;
+  DeltaEncoding& operator=(const DeltaEncoding&) = delete;
+  DeltaEncoding(DeltaEncoding&&) = delete;
+  DeltaEncoding& operator=(DeltaEncoding&&) = delete;
+
   void reset() final;
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
@@ -94,8 +105,7 @@ class DeltaEncoding final
     const auto bitmapBytes = velox::bits::nwords(rowCount) * sizeof(uint64_t);
     if (isRestatementsBitmap_ == nullptr ||
         isRestatementsBitmap_->capacity() < bitmapBytes) {
-      isRestatementsBitmap_ =
-          velox::AlignedBuffer::allocate<char>(bitmapBytes, this->pool_);
+      isRestatementsBitmap_ = this->getBuffer(bitmapBytes);
     }
     return isRestatementsBitmap_->asMutable<uint64_t>();
   }
@@ -121,8 +131,8 @@ DeltaEncoding<T>::DeltaEncoding(
     std::function<void*(uint32_t)> stringBufferFactory,
     const Encoding::Options& options)
     : TypedEncoding<T, physicalType>(pool, data, options),
-      deltasBuffer_(&pool),
-      restatementsBuffer_(&pool) {
+      deltasBuffer_(this->template getVectorBuffer<physicalType>()),
+      restatementsBuffer_(this->template getVectorBuffer<physicalType>()) {
   const EncodingFactory factory{options};
   auto pos = data.data() + this->dataOffset();
   const uint32_t restatementsOffset = encoding::readUint32(pos);

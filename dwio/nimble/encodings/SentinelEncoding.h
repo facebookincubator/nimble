@@ -48,7 +48,7 @@ class SentinelEncoding final
   using physicalType = typename TypeTraits<T>::physicalType;
 
   SentinelEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory);
 
@@ -74,7 +74,7 @@ class SentinelEncoding final
   // //
   // // Note that nulls[i] is set to true if the ith value is NOT null.
   // static bool estimateSize(
-  //     velox::memory::MemoryPool& memoryPool,
+  //     velox::memory::MemoryPool& pool,
   //     std::span<const T> nonNullValues,
   //     std::span<const bool> nulls,
   //     OptimalSearchParams optimalSearchParams,
@@ -99,21 +99,19 @@ class SentinelEncoding final
  private:
   std::unique_ptr<Encoding> sentineledData_;
   physicalType sentinelValue_;
-  nimble::Vector<physicalType> buffer_;
   uint32_t nullCount_;
 };
 
 template <typename T>
 SentinelEncoding<T>::SentinelEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> /* stringBufferFactory */)
-    : TypedEncoding<T, physicalType>(memoryPool, data), buffer_(&memoryPool) {
+    : TypedEncoding<T, physicalType>(pool, data) {
   const char* pos = data.data() + EncodingPrefix::kFixedPrefixSize;
   nullCount_ = encoding::readUint32(pos);
   const uint32_t sentineledBytes = encoding::readUint32(pos);
-  sentineledData_ =
-      deserializeEncoding(this->memoryPool_, {pos, sentineledBytes});
+  sentineledData_ = deserializeEncoding(this->pool_, {pos, sentineledBytes});
   pos += sentineledBytes;
   sentinelValue_ = encoding::read<physicalType>(pos);
   NIMBLE_CHECK(pos == data.end(), "Unexpected sentinel encoding end");
@@ -280,11 +278,11 @@ loop_start:
 
 template <typename physicalType>
 Vector<physicalType> createSentineledData(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::span<const physicalType> nonNullValues,
     std::span<const bool> nulls,
     physicalType sentinelValue) {
-  Vector<physicalType> sentineledData(&memoryPool, nulls.size());
+  Vector<physicalType> sentineledData(&pool, nulls.size());
   auto it = nonNullValues.begin();
   for (int i = 0; i < nulls.size(); ++i) {
     if (nulls[i]) {
@@ -323,9 +321,9 @@ Vector<physicalType> createSentineledData(
 //         "Cannot use SentinelEncoding when no value is left for sentinel.");
 //   }
 //   auto sentinelValue = sentinelOptional.value();
-//   auto& memoryPool = buffer->getMemoryPool();
+//   auto& pool = buffer->getMemoryPool();
 //   const Vector<physicalType> sentineledData =
-//       createSentineledData(memoryPool, nonNullValues, nulls, sentinelValue);
+//       createSentineledData(pool, nonNullValues, nulls, sentinelValue);
 //   const uint32_t nullCount =
 //       nulls.size() - std::accumulate(nulls.begin(), nulls.end(), 0u);
 //   std::string_view sentineledEncoding = serializeEncoding<physicalType>(
@@ -352,7 +350,7 @@ Vector<physicalType> createSentineledData(
 
 // template <typename T>
 // bool SentinelEncoding<T>::estimateSize(
-//     velox::memory::MemoryPool& memoryPool,
+//     velox::memory::MemoryPool& pool,
 //     std::span<const T> nonNullDataValues,
 //     std::span<const bool> nulls,
 //     OptimalSearchParams optimalSearchParams,
@@ -368,11 +366,11 @@ Vector<physicalType> createSentineledData(
 //   }
 //   auto sentinelValue = sentinelOptional.value();
 //   const Vector<physicalType> sentineledData =
-//       createSentineledData(memoryPool, nonNullValues, nulls, sentinelValue);
+//       createSentineledData(pool, nonNullValues, nulls, sentinelValue);
 //   uint32_t sentineledSize;
 //   auto& sentinelParameters = encodingParameters.set_sentinel();
 //   estimateOptimalEncodingSize<physicalType>(
-//       memoryPool,
+//       pool,
 //       sentineledData,
 //       optimalSearchParams,
 //       &sentineledSize,

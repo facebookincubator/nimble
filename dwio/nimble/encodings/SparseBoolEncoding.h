@@ -51,7 +51,7 @@ class SparseBoolEncoding final : public TypedEncoding<bool, bool> {
   static constexpr int kPrefixSize = 1;
 
   SparseBoolEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});

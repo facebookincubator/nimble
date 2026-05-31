@@ -59,6 +59,7 @@ class FixedBitWidthEncoding final
 
   ~FixedBitWidthEncoding() override {
     this->releaseBuffer(uncompressedData_);
+    this->releaseVectorBuffer(buffer_);
   }
 
   void reset() final;
@@ -106,7 +107,8 @@ FixedBitWidthEncoding<T>::FixedBitWidthEncoding(
     std::string_view data,
     std::function<void*(uint32_t)> /* stringBufferFactory */,
     const Encoding::Options& options)
-    : TypedEncoding<T, physicalType>{pool, data, options}, buffer_{&pool} {
+    : TypedEncoding<T, physicalType>{pool, data, options},
+      buffer_(this->template getVectorBuffer<physicalType>()) {
   auto pos = data.data() + this->dataOffset();
   auto compressionType = static_cast<CompressionType>(encoding::readChar(pos));
   baseline_ = encoding::read<const physicalType>(pos);

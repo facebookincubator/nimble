@@ -57,22 +57,6 @@
 
 namespace facebook::nimble {
 
-namespace detail {
-
-template <typename V>
-Vector<V> getPooledBuffer(
-    velox::memory::MemoryPool& pool,
-    velox::BufferPool* bufferPool) {
-  if (bufferPool != nullptr) {
-    if (auto buf = bufferPool->get()) {
-      return Vector<V>(std::move(buf));
-    }
-  }
-  return Vector<V>(&pool);
-}
-
-} // namespace detail
-
 // Data layout is:
 // EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 4 bytes: num isCommon encoding bytes (X)
@@ -93,20 +77,13 @@ class MainlyConstantEncodingBase
       std::string_view data,
       const Encoding::Options& options = {})
       : TypedEncoding<T, physicalType>(pool, data, options),
-        isCommonBuffer_(
-            detail::getPooledBuffer<bool>(pool, this->options_.bufferPool)),
-        otherValuesBuffer_(
-            detail::getPooledBuffer<physicalType>(
-                pool,
-                this->options_.bufferPool)),
+        isCommonBuffer_(this->template getVectorBuffer<bool>()),
+        otherValuesBuffer_(this->template getVectorBuffer<physicalType>()),
         dictionaryAlphabet_(&pool) {}
 
   ~MainlyConstantEncodingBase() override {
-    auto* bufferPool = this->options_.bufferPool;
-    if (bufferPool != nullptr) {
-      bufferPool->release(isCommonBuffer_.releaseBuffer());
-      bufferPool->release(otherValuesBuffer_.releaseBuffer());
-    }
+    this->releaseVectorBuffer(isCommonBuffer_);
+    this->releaseVectorBuffer(otherValuesBuffer_);
   }
 
   void reset() final {
@@ -493,11 +470,10 @@ class MainlyConstantEncodingBase
   std::unique_ptr<Encoding> otherValues_;
   physicalType commonValue_;
   uint32_t* ensureIndicesBuffer(uint32_t numElements) {
-    if (indicesBuffer_ == nullptr || !indicesBuffer_->unique()) {
+    if (indicesBuffer_ == nullptr ||
+        indicesBuffer_->capacity() < numElements * sizeof(uint32_t)) {
       indicesBuffer_ =
           velox::AlignedBuffer::allocate<uint32_t>(numElements, this->pool_);
-    } else {
-      velox::AlignedBuffer::reallocate<uint32_t>(&indicesBuffer_, numElements);
     }
     return indicesBuffer_->asMutable<uint32_t>();
   }
@@ -515,7 +491,7 @@ class MainlyConstantEncoding final : public MainlyConstantEncodingBase<T> {
   using physicalType = typename TypeTraits<T>::physicalType;
 
   MainlyConstantEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});
@@ -533,11 +509,11 @@ class MainlyConstantEncoding final : public MainlyConstantEncodingBase<T> {
 
 template <typename T>
 MainlyConstantEncoding<T>::MainlyConstantEncoding(
-    velox::memory::MemoryPool& memoryPool,
+    velox::memory::MemoryPool& pool,
     std::string_view data,
     std::function<void*(uint32_t)> stringBufferFactory,
     const Encoding::Options& options)
-    : MainlyConstantEncodingBase<T>(memoryPool, data, options) {
+    : MainlyConstantEncodingBase<T>(pool, data, options) {
   const EncodingFactory factory{options};
   const char* pos = data.data() + this->dataOffset();
   const uint32_t isCommonBytes = encoding::readUint32(pos);
@@ -630,7 +606,7 @@ class MainlyConstantEncoding<std::string_view> final
   using physicalType = std::string_view;
 
   MainlyConstantEncoding(
-      velox::memory::MemoryPool& memoryPool,
+      velox::memory::MemoryPool& pool,
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory,
       const Encoding::Options& options = {});
