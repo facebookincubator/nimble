@@ -16,6 +16,7 @@
 
 #include "dwio/nimble/serializer/SerializerImpl.h"
 
+#include <bit>
 #include <limits>
 
 #include "dwio/nimble/serializer/SerializationHeader.h"
@@ -28,7 +29,67 @@
 #include <folly/io/Cursor.h>
 
 namespace facebook::nimble::serde::detail {
+
 namespace {
+
+std::vector<uint32_t> decodeMainlyConstantTrailer(const char*& payload) {
+  const uint32_t streamCount = varint::readVarint32(&payload);
+  const uint32_t nonZeroCount = varint::readVarint32(&payload);
+  NIMBLE_CHECK_LE(
+      nonZeroCount,
+      streamCount,
+      "MainlyConstant nonZeroCount exceeds streamCount");
+  // Constant is fixed at 0 and not stored on the wire.
+  std::vector<uint32_t> sizes(streamCount, 0);
+  if (nonZeroCount == 0) {
+    // idxBitWidth/valBitWidth bytes and packed arrays are omitted when
+    // there are no non-zero entries.
+    return sizes;
+  }
+
+  const uint8_t idxBitWidth = static_cast<uint8_t>(*payload++);
+  NIMBLE_CHECK_LE(
+      idxBitWidth, 32, "MainlyConstant idxBitWidth exceeds 32 bits");
+  std::vector<uint32_t> indices(nonZeroCount);
+  const uint32_t packedIndicesBytes = static_cast<uint32_t>(
+      FixedBitArray::bufferSize(nonZeroCount, idxBitWidth));
+  FixedBitArray idxArr{
+      const_cast<char*>(payload), static_cast<int>(idxBitWidth)};
+  idxArr.bulkGet32(0, nonZeroCount, indices.data());
+  payload += packedIndicesBytes;
+
+  const uint8_t valBitWidth = static_cast<uint8_t>(*payload++);
+  NIMBLE_CHECK_LE(
+      valBitWidth, 32, "MainlyConstant valBitWidth exceeds 32 bits");
+  std::vector<uint32_t> values(nonZeroCount);
+  const uint32_t packedValuesBytes = static_cast<uint32_t>(
+      FixedBitArray::bufferSize(nonZeroCount, valBitWidth));
+  FixedBitArray valArr{
+      const_cast<char*>(payload), static_cast<int>(valBitWidth)};
+  valArr.bulkGet32(0, nonZeroCount, values.data());
+  payload += packedValuesBytes;
+
+  for (uint32_t i = 0; i < nonZeroCount; ++i) {
+    NIMBLE_CHECK_LT(
+        indices[i], streamCount, "MainlyConstant trailer index out of range");
+    sizes[indices[i]] = values[i];
+  }
+  return sizes;
+}
+
+// Upper bound on the MainlyConstant trailer payload size for a stream of
+// 'numStreams' values. idxBitWidth matches the writer's formula (max(1,
+// bit_width(numStreams - 1)) when there are indices); valBitWidth is
+// unbounded up to 32 since values are uint32_t.
+size_t estimateMainlyConstantTrailerPayloadSize(size_t numStreams) {
+  const size_t idxBitWidth =
+      numStreams == 0 ? 0 : std::max<size_t>(1, std::bit_width(numStreams - 1));
+  // 5 (streamCount varint) + 5 (nonZeroCount varint) + 1 (idxBitWidth) +
+  // packed indices + 1 (valBitWidth) + packed values.
+  return 5 + 5 + 1 +
+      FixedBitArray::bufferSize(numStreams, static_cast<int>(idxBitWidth)) + 1 +
+      FixedBitArray::bufferSize(numStreams, /*bitWidth=*/32);
+}
 
 std::vector<uint32_t> decodeTrailerStreamSizes(
     const char* trailerStart,
@@ -82,6 +143,10 @@ std::vector<uint32_t> decodeTrailerStreamSizes(
         arr.bulkGet32(0, count, sizes.data());
         payload += packedBytes;
       }
+      break;
+    }
+    case EncodingType::MainlyConstant: {
+      sizes = decodeMainlyConstantTrailer(payload);
       break;
     }
     default:
@@ -246,6 +311,9 @@ size_t estimateTrailerSize(size_t numStreams, EncodingType encodingType) {
       // element max).
       payloadSize =
           1 + 5 + FixedBitArray::bufferSize(numStreams, /*bitWidth=*/32);
+      break;
+    case EncodingType::MainlyConstant:
+      payloadSize = estimateMainlyConstantTrailerPayloadSize(numStreams);
       break;
     default:
       NIMBLE_FAIL(

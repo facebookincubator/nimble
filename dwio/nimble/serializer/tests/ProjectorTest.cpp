@@ -63,7 +63,7 @@ struct FormatParam {
     auto base =
         fmt::format("{}To{}", toString(inputVersion), toString(projectVersion));
     if (streamSizesEncodingType != EncodingType::Trivial) {
-      base += "_DeltaStreamSizes";
+      base += fmt::format("_{}StreamSizes", toString(streamSizesEncodingType));
     }
     if (!enableBufferPool) {
       base += "_NoBufferPool";
@@ -76,10 +76,13 @@ struct FormatParam {
 std::vector<FormatParam> allFormatCombinations() {
   return {
       {SerializationVersion::kCompactRaw, SerializationVersion::kCompactRaw},
-      // Delta stream sizes encoding for kCompactRaw output.
+      // Non-default stream sizes encodings for kCompactRaw output.
       {SerializationVersion::kCompactRaw,
        SerializationVersion::kCompactRaw,
        EncodingType::Delta},
+      {SerializationVersion::kCompactRaw,
+       SerializationVersion::kCompactRaw,
+       EncodingType::MainlyConstant},
       // Buffer pool disabled variants.
       {SerializationVersion::kCompactRaw,
        SerializationVersion::kCompactRaw,
@@ -88,6 +91,10 @@ std::vector<FormatParam> allFormatCombinations() {
       {SerializationVersion::kCompactRaw,
        SerializationVersion::kCompactRaw,
        EncodingType::Delta,
+       /*enableBufferPool=*/false},
+      {SerializationVersion::kCompactRaw,
+       SerializationVersion::kCompactRaw,
+       EncodingType::MainlyConstant,
        /*enableBufferPool=*/false},
   };
 }
@@ -2661,6 +2668,8 @@ TEST_F(ProjectorTest, fuzzMixedVersionProjection) {
       {.version = SerializationVersion::kCompactRaw},
       {.version = SerializationVersion::kCompactRaw,
        .streamSizesEncodingType = EncodingType::Delta},
+      {.version = SerializationVersion::kCompactRaw,
+       .streamSizesEncodingType = EncodingType::MainlyConstant},
   };
 
   // Output projection versions.
@@ -2669,6 +2678,8 @@ TEST_F(ProjectorTest, fuzzMixedVersionProjection) {
       {.projectVersion = SerializationVersion::kCompactRaw},
       {.projectVersion = SerializationVersion::kCompactRaw,
        .streamSizesEncodingType = EncodingType::Delta},
+      {.projectVersion = SerializationVersion::kCompactRaw,
+       .streamSizesEncodingType = EncodingType::MainlyConstant},
   };
 
   // Columns to project (subset of the full schema).

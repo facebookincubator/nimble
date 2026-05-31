@@ -21,6 +21,8 @@
 #include <cstring>
 #include <optional>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/FixedBitArray.h"
@@ -223,6 +225,102 @@ void writeFixedBitWidthTrailer(
   encoding::writeUint32(trailerSize, pos);
 }
 
+/// Writes the MainlyConstant trailer: assumes 0 is the dominant value and
+/// writes a sparse list of (index, value) pairs for non-zero slots. Optimized
+/// for trailers dominated by zero (e.g., empty slots in flat-map schemas with
+/// many absent keys). Callers should pick a different trailer encoding for
+/// inputs not dominated by zero.
+///
+/// Wire (when nonZeroCount > 0):
+///   [encodingType:1B][streamCount:varint][nonZeroCount:varint]
+///   [idxBitWidth:1B][indices packed nonZeroCount*idxBitWidth bits]
+///   [valBitWidth:1B][values packed nonZeroCount*valBitWidth bits]
+///   [trailer_size:u32]
+///
+/// Wire (when nonZeroCount == 0):
+///   [encodingType:1B][streamCount:varint][nonZeroCount=0:varint]
+///   [trailer_size:u32]
+///
+/// Where nonZeroCount = number of slots whose size != 0. The constant is
+/// fixed at 0 and not stored on the wire.
+template <typename T>
+void writeMainlyConstantTrailer(
+    const std::vector<uint32_t>& streamSizes,
+    T& buffer) {
+  const auto streamCount = static_cast<uint32_t>(streamSizes.size());
+
+  // Collect non-zero (index, value) pairs. Reserve the upper bound
+  // (streamCount) so the emplace_back loop never reallocates.
+  std::vector<uint32_t> indices;
+  std::vector<uint32_t> values;
+  indices.reserve(streamCount);
+  values.reserve(streamCount);
+  for (uint32_t i = 0; i < streamCount; ++i) {
+    if (streamSizes[i] != 0) {
+      indices.emplace_back(i);
+      values.emplace_back(streamSizes[i]);
+    }
+  }
+  const uint32_t nonZeroCount = static_cast<uint32_t>(indices.size());
+
+  // idxBitWidth covers indices in [0, streamCount). When nonZeroCount == 0
+  // there are no indices to pack, so width is 0. Otherwise clamp to a
+  // minimum of 1 because FixedBitArray::bulkSet32 LOG(FATAL)s on bitWidth=0
+  // (this only matters for streamCount == 1, where bit_width(0) would be 0).
+  const uint8_t idxBitWidth = (nonZeroCount == 0)
+      ? 0
+      : static_cast<uint8_t>(
+            std::max<size_t>(1, std::bit_width(streamCount - 1)));
+
+  auto maxValues = [](const std::vector<uint32_t>& vals) {
+    uint32_t maxVal = 0;
+    for (const auto v : vals) {
+      maxVal = std::max(maxVal, v);
+    }
+    return maxVal;
+  };
+  const uint32_t maxValue = nonZeroCount == 0 ? 0 : maxValues(values);
+  const uint8_t valBitWidth =
+      nonZeroCount == 0 ? 0 : static_cast<uint8_t>(std::bit_width(maxValue));
+
+  const auto streamCountVarintSize = varint::varintSize(streamCount);
+  const auto nonZeroCountVarintSize = varint::varintSize(nonZeroCount);
+  const uint32_t packedIndicesBytes = (nonZeroCount == 0)
+      ? 0
+      : static_cast<uint32_t>(
+            FixedBitArray::bufferSize(nonZeroCount, idxBitWidth));
+  const uint32_t packedValuesBytes = (nonZeroCount == 0)
+      ? 0
+      : static_cast<uint32_t>(
+            FixedBitArray::bufferSize(nonZeroCount, valBitWidth));
+
+  // When nonZeroCount == 0 the idxBitWidth/valBitWidth bytes and packed
+  // arrays are all omitted from the wire.
+  const uint32_t trailerSize = /*encodingType=*/sizeof(uint8_t) +
+      streamCountVarintSize + nonZeroCountVarintSize +
+      (nonZeroCount == 0 ? 0 : /*idxBitWidth=*/sizeof(uint8_t) +
+               packedIndicesBytes +
+               /*valBitWidth=*/sizeof(uint8_t) + packedValuesBytes);
+
+  auto* pos = extend(buffer, trailerSize + sizeof(uint32_t));
+  *pos++ = static_cast<char>(EncodingType::MainlyConstant);
+  varint::writeVarint(streamCount, &pos);
+  varint::writeVarint(nonZeroCount, &pos);
+  if (nonZeroCount > 0) {
+    *pos++ = static_cast<char>(idxBitWidth);
+    std::memset(pos, 0, packedIndicesBytes);
+    FixedBitArray idxArr{pos, static_cast<int>(idxBitWidth)};
+    idxArr.bulkSet32(0, nonZeroCount, indices.data());
+    pos += packedIndicesBytes;
+    *pos++ = static_cast<char>(valBitWidth);
+    std::memset(pos, 0, packedValuesBytes);
+    FixedBitArray valArr{pos, static_cast<int>(valBitWidth)};
+    valArr.bulkSet32(0, nonZeroCount, values.data());
+    pos += packedValuesBytes;
+  }
+  encoding::writeUint32(trailerSize, pos);
+}
+
 /// Writes the stream sizes trailer using the specified encoding type.
 template <typename T>
 void writeTrailer(
@@ -241,6 +339,9 @@ void writeTrailer(
       break;
     case EncodingType::FixedBitWidth:
       writeFixedBitWidthTrailer(streamSizes, buffer);
+      break;
+    case EncodingType::MainlyConstant:
+      writeMainlyConstantTrailer(streamSizes, buffer);
       break;
     default:
       NIMBLE_FAIL(
