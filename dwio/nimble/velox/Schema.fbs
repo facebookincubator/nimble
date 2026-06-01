@@ -50,11 +50,22 @@ enum Kind:uint8 {
   FlatMapBinary,
 }
 
+// A generic string-keyed attribute pair attached to a schema node.
+// Carries cross-format per-column metadata.
+table StringPair {
+  key:string;
+  value:string;
+}
+
 table SchemaNode {
   kind:Kind;
   children:uint32;
   name:string;
   offset:uint32;
+  // Per-node string-keyed attribute bag. Appended at the end of the
+  // table for backward wire compatibility: older readers ignore unknown
+  // flatbuffer fields and existing files have no `attributes` set.
+  attributes:[StringPair];
 }
 
 table Schema {
