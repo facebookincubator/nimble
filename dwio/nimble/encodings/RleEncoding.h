@@ -306,9 +306,8 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
     uint32_t runIndex = 0;
     while (rowsLeft > 0) {
       if (this->copiesRemaining_ == 0) {
-        this->copiesRemaining_ = this->materializedRunLengths_.nextValue();
-        runIndex = this->nextIndex();
-        this->currentValue_ = alphabet_[runIndex];
+        advanceRunLength();
+        runIndex = advanceRunIndex();
       }
       const auto numRows = std::min(rowsLeft, this->copiesRemaining_);
       velox::simd::simdFill(buffer + numOutputRows, runIndex, numRows);
@@ -366,7 +365,15 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
   }
 
  private:
+  void advanceRunLength() {
+    this->copiesRemaining_ = this->materializedRunLengths_.nextValue();
+  }
+
   void advanceRunValue();
+
+  uint32_t advanceRunIndex() {
+    return dictValues_->nextIndex();
+  }
 
   template <bool kDense>
   vector_size_t findNumInRun(
@@ -450,7 +457,8 @@ RLEEncoding<T>::RLEEncoding(
           internal::RLEEncodingBase<T, RLEEncoding<T>>::getValuesStart())};
   auto valuesEncoding =
       EncodingFactory(options).create(pool, valuesView, stringBufferFactory);
-  if (valuesEncoding->dictionaryEnabled()) {
+  if (options.preserveDictionaryEncoding &&
+      valuesEncoding->dictionaryEnabled()) {
     dictValues_ =
         std::make_unique<detail::BufferedDictEncoding<physicalType, 128>>(
             std::move(valuesEncoding));
@@ -463,33 +471,33 @@ RLEEncoding<T>::RLEEncoding(
   this->reset();
 }
 
-// Advances to the next run value, setting currentValue_ from either
-// the values buffer (non-dict) or the alphabet via dictionary index (dict).
+// Advances to the next run value in flat (non-dict) mode by setting
+// currentValue_ from the values encoding. In dict mode,
+// advanceRunIndex() is used instead.
 template <typename T>
 void RLEEncoding<T>::advanceRunValue() {
-  if (dictValues_ != nullptr) {
-    if constexpr (isStringType<physicalType>()) {
-      NIMBLE_CHECK_NULL(values_);
-    } else {
-      NIMBLE_DCHECK_NULL(values_);
-    }
-    this->currentValue_ = alphabet_[dictValues_->nextIndex()];
+  if constexpr (isStringType<physicalType>()) {
+    NIMBLE_CHECK_NULL(dictValues_);
+    NIMBLE_CHECK_NOT_NULL(values_);
   } else {
-    if constexpr (isStringType<physicalType>()) {
-      NIMBLE_CHECK_NOT_NULL(values_);
-    } else {
-      NIMBLE_DCHECK_NOT_NULL(values_);
-    }
-    this->currentValue_ = values_->nextValue();
+    NIMBLE_DCHECK_NULL(dictValues_);
+    NIMBLE_DCHECK_NOT_NULL(values_);
   }
+  this->currentValue_ = values_->nextValue();
 }
 
 template <typename T>
 void RLEEncoding<T>::reset() {
   this->materializedRunLengths_.reset();
   this->resetValues();
-  this->copiesRemaining_ = this->materializedRunLengths_.nextValue();
-  advanceRunValue();
+  if (dictValues_ != nullptr) {
+    // In dict mode, don't consume the first run — materializeIndices
+    // manages its own run traversal starting from copiesRemaining_ == 0.
+    this->copiesRemaining_ = 0;
+  } else {
+    advanceRunLength();
+    advanceRunValue();
+  }
 }
 
 template <typename T>
@@ -501,8 +509,20 @@ void RLEEncoding<T>::skip(uint32_t rowCount) {
       return;
     }
     rowsLeft -= this->copiesRemaining_;
-    this->copiesRemaining_ = this->materializedRunLengths_.nextValue();
-    advanceRunValue();
+    // In dict mode, avoid consuming the next run when we've exactly
+    // exhausted the current one — materializeIndices uses a local runIndex
+    // that would go stale if advanceRunIndex() fires here. Non-dict mode
+    // keeps the eager advance so currentValue_ is always primed.
+    if (rowsLeft == 0 && dictValues_ != nullptr) {
+      this->copiesRemaining_ = 0;
+      return;
+    }
+    advanceRunLength();
+    if (dictValues_ != nullptr) {
+      advanceRunIndex();
+    } else {
+      advanceRunValue();
+    }
   }
 }
 
@@ -519,7 +539,7 @@ void RLEEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
     velox::simd::simdFill(output, this->currentValue_, this->copiesRemaining_);
     output += this->copiesRemaining_;
     rowsLeft -= this->copiesRemaining_;
-    this->copiesRemaining_ = this->materializedRunLengths_.nextValue();
+    advanceRunLength();
     advanceRunValue();
   }
 }
@@ -601,6 +621,13 @@ void RLEEncoding<T>::bulkScan(
     const vector_size_t* selectedRows,
     vector_size_t numSelected,
     const vector_size_t* scatterRows) {
+  if constexpr (isStringType<physicalType>()) {
+    NIMBLE_CHECK_NULL(
+        dictValues_,
+        "bulkScan should not be called in dictionary mode for string types");
+  } else {
+    NIMBLE_DCHECK_NULL(dictValues_);
+  }
   using DataType = typename V::DataType;
   using ValueType = detail::ValueType<DataType>;
   constexpr bool kScatterValues = kScatter && !V::kHasFilter && !V::kHasHook;
@@ -613,7 +640,7 @@ void RLEEncoding<T>::bulkScan(
   vector_size_t selectedRowIndex = 0;
   for (;;) {
     if (this->copiesRemaining_ == 0) {
-      this->copiesRemaining_ = this->materializedRunLengths_.nextValue();
+      advanceRunLength();
       advanceRunValue();
     }
     const auto numInRun = findNumInRun<V::dense>(
@@ -680,6 +707,13 @@ template <typename V>
 void RLEEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
+  if constexpr (isStringType<physicalType>()) {
+    NIMBLE_CHECK_NULL(
+        dictValues_,
+        "readWithVisitor should not be called in dictionary mode for string types");
+  } else {
+    NIMBLE_DCHECK_NULL(dictValues_);
+  }
   auto* nulls = visitor.reader().rawNullsInReadRange();
   if (velox::dwio::common::useFastPath(visitor, nulls)) {
     detail::readWithVisitorFast(*this, visitor, params, nulls);
@@ -690,7 +724,7 @@ void RLEEncoding<T>::readWithVisitor(
         [&](auto toSkip) { this->skip(toSkip); },
         [&] {
           if (this->copiesRemaining_ == 0) {
-            this->copiesRemaining_ = this->materializedRunLengths_.nextValue();
+            advanceRunLength();
             advanceRunValue();
           }
           --this->copiesRemaining_;

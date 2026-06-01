@@ -56,7 +56,7 @@ bool StringColumnReader::readWithDictionary(
            .nimblePreserveDictionaryEncoding()) {
     return false;
   }
-  decoder_.ensureLoaded();
+  decoder_.ensureLoaded(/*preserveDictionaryEncoding=*/true);
   const auto numRequestedRows = rows.back() + 1;
   // The decoder must have enough remaining values in the current chunk to
   // cover both the skip (from readOffset_ to offset, executed by prepareRead

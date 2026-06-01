@@ -231,13 +231,13 @@ class ChunkedDecoder {
   /// one is fully consumed. Called before inspecting the current encoding
   /// (e.g., currentEncoding, dictionaryConvertible) so that the caller sees
   /// the encoding and remainingValues of the chunk that will actually be read.
-  void ensureLoaded() {
+  void ensureLoaded(bool preserveDictionaryEncoding = false) {
     if (encoding_ != nullptr && remainingValues_ != 0) {
       return;
     }
 
     if (hasMoreChunks()) {
-      loadNextChunk();
+      loadNextChunk(preserveDictionaryEncoding);
     }
   }
 
@@ -587,7 +587,7 @@ class ChunkedDecoder {
     }
   }
 
-  void loadNextChunk();
+  void loadNextChunk(bool preserveDictionaryEncoding = false);
 
   void prepareInputBuffer(int32_t size);
 
