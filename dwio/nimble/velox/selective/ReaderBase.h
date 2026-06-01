@@ -16,6 +16,10 @@
 
 #pragma once
 
+#include <optional>
+#include <span>
+#include <vector>
+
 #include "dwio/nimble/index/ChunkIndexGroup.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/tablet/Constants.h"
@@ -138,6 +142,14 @@ class ReaderBase {
       fileSchemaWithId_;
 };
 
+/// Physical file location of a stream within a stripe. Used to plan IO
+/// without immediately enqueueing reads, enabling callers to collect regions
+/// across multiple stripes for a single coalesced load.
+struct StreamLocation {
+  uint32_t streamId{};
+  velox::common::Region region;
+};
+
 class StripeStreams {
  public:
   explicit StripeStreams(const std::shared_ptr<ReaderBase>& readerBase)
@@ -159,6 +171,12 @@ class StripeStreams {
 
   std::unique_ptr<velox::dwio::common::SeekableInputStream> enqueue(
       int streamId);
+
+  /// Returns the physical file location of each requested stream in the
+  /// current stripe. Streams that do not exist or have zero size return
+  /// nullopt at the corresponding index. Does not enqueue IO.
+  std::vector<std::optional<StreamLocation>> locateStreams(
+      std::span<const uint32_t> streamIds) const;
 
   void load() {
     readerBase_->input().load(velox::dwio::common::LogType::STREAM_BUNDLE);

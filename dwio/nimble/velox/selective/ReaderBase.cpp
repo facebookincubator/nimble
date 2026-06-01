@@ -148,6 +148,31 @@ std::unique_ptr<dwio::common::SeekableInputStream> StripeStreams::enqueue(
   return readerBase_->input().enqueue(*region, &sid);
 }
 
+std::vector<std::optional<StreamLocation>> StripeStreams::locateStreams(
+    std::span<const uint32_t> streamIds) const {
+  NIMBLE_CHECK(stripeIdentifier_.has_value());
+
+  const auto& tablet = readerBase_->tablet();
+  const auto streamCount = tablet.streamCount(*stripeIdentifier_);
+  // File offset where this stripe's data begins.
+  const auto stripeOffset = tablet.stripeOffset(stripe_);
+  const auto& streamOffsets = tablet.streamOffsets(*stripeIdentifier_);
+  const auto& streamSizes = tablet.streamSizes(*stripeIdentifier_);
+
+  std::vector<std::optional<StreamLocation>> locations(streamIds.size());
+  for (size_t i = 0; i < streamIds.size(); ++i) {
+    const auto streamId = streamIds[i];
+    if (streamId >= streamCount || streamSizes[streamId] == 0) {
+      continue;
+    }
+    locations[i] = StreamLocation{
+        streamId,
+        common::Region{
+            stripeOffset + streamOffsets[streamId], streamSizes[streamId]}};
+  }
+  return locations;
+}
+
 std::shared_ptr<index::StreamIndex> StripeStreams::streamIndex(
     int streamId) const {
   NIMBLE_CHECK(stripeIdentifier_.has_value());

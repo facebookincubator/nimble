@@ -18,13 +18,17 @@
 
 #include <gtest/gtest.h>
 
+#include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/TabletReaderCache.h"
+#include "dwio/nimble/velox/FlushPolicy.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "folly/executors/CPUThreadPoolExecutor.h"
 #include "velox/common/file/File.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/dwio/common/BufferedInput.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
+
+#include <fmt/core.h>
 
 using namespace facebook::nimble;
 using namespace facebook;
@@ -171,6 +175,46 @@ TEST_P(ReaderBaseTest, equivalentAcrossModes) {
       direct->tablet().tabletRowCount(), fromCache->tablet().tabletRowCount());
 }
 
+TEST_P(ReaderBaseTest, locateStreams) {
+  auto reader = createReaderBase();
+  StripeStreams streams(reader);
+  streams.setStripe(0);
+
+  const auto numStreams = reader->nimbleSchema()->asRow().childrenCount() + 1;
+
+  struct TestCase {
+    std::vector<uint32_t> streamIds;
+    std::string debugString() const {
+      return fmt::format("streamIds=[{}]", fmt::join(streamIds, ","));
+    }
+  };
+
+  std::vector<uint32_t> allStreamIds;
+  for (uint32_t i = 0; i < numStreams; ++i) {
+    allStreamIds.push_back(i);
+  }
+
+  std::vector<TestCase> testCases = {
+      {allStreamIds},
+      {{9999}},
+      {{}},
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
+    auto locations = streams.locateStreams(testCase.streamIds);
+    ASSERT_EQ(locations.size(), testCase.streamIds.size());
+
+    for (size_t i = 0; i < locations.size(); ++i) {
+      SCOPED_TRACE(fmt::format("streamId={}", testCase.streamIds[i]));
+      if (locations[i].has_value()) {
+        EXPECT_EQ(locations[i]->streamId, testCase.streamIds[i]);
+        EXPECT_GT(locations[i]->region.length, 0);
+      }
+    }
+  }
+}
+
 INSTANTIATE_TEST_CASE_P(
     AllCreationModes,
     ReaderBaseTest,
@@ -178,3 +222,111 @@ INSTANTIATE_TEST_CASE_P(
     [](const ::testing::TestParamInfo<CreationMode>& info) {
       return info.param == CreationMode::kDirect ? "direct" : "cached";
     });
+
+class StripeStreamsMultiStripeTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    velox::memory::MemoryManager::testingSetInstance({});
+  }
+
+  void SetUp() override {
+    pool_ = velox::memory::memoryManager()->addLeafPool("test");
+    fileData_ = writeMultiStripeFile();
+  }
+
+  std::string writeMultiStripeFile() {
+    std::string file;
+    velox::test::VectorMaker vectorMaker(pool_.get());
+
+    VeloxWriterOptions writerOptions;
+    writerOptions.flushPolicyFactory = []() {
+      return std::make_unique<LambdaFlushPolicy>(
+          [](const StripeProgress&) { return true; });
+    };
+
+    auto writer = std::make_unique<VeloxWriter>(
+        kSchema,
+        std::make_unique<velox::InMemoryWriteFile>(&file),
+        *pool_,
+        std::move(writerOptions));
+
+    for (int stripe = 0; stripe < 3; ++stripe) {
+      const auto offset = stripe * 100;
+      auto vector = vectorMaker.rowVector(
+          {"a", "b"},
+          {vectorMaker.flatVector<int64_t>(
+               100, [offset](auto i) { return offset + i; }),
+           vectorMaker.flatVector<velox::StringView>(100, [offset](auto i) {
+             return velox::StringView::makeInline(
+                 "v" + std::to_string(offset + i));
+           })});
+      writer->write(vector);
+    }
+    writer->close();
+    return file;
+  }
+
+  static inline const velox::RowTypePtr kSchema =
+      velox::ROW({"a", "b"}, {velox::BIGINT(), velox::VARCHAR()});
+
+  velox::dwio::common::ReaderOptions makeReaderOptions() {
+    velox::dwio::common::ReaderOptions opts(pool_.get());
+    opts.setDataIoStats(dataIoStats_);
+    opts.setMetadataIoStats(metadataIoStats_);
+    opts.setIndexIoStats(indexIoStats_);
+    return opts;
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> pool_;
+  std::string fileData_;
+  const std::shared_ptr<velox::io::IoStatistics> dataIoStats_{
+      std::make_shared<velox::io::IoStatistics>()};
+  const std::shared_ptr<velox::io::IoStatistics> metadataIoStats_{
+      std::make_shared<velox::io::IoStatistics>()};
+  const std::shared_ptr<velox::io::IoStatistics> indexIoStats_{
+      std::make_shared<velox::io::IoStatistics>()};
+};
+
+TEST_F(StripeStreamsMultiStripeTest, locateStreams) {
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(fileData_);
+  auto opts = makeReaderOptions();
+
+  auto input =
+      std::make_unique<velox::dwio::common::BufferedInput>(readFile, *pool_);
+  auto reader = ReaderBase::create(std::move(input), opts);
+  const auto& tablet = reader->tablet();
+  ASSERT_EQ(tablet.stripeCount(), 3);
+
+  const auto layout = FileLayout::create(readFile, pool_.get());
+  ASSERT_EQ(layout.stripesInfo.size(), 3);
+
+  StripeStreams streams(reader);
+  std::vector<uint32_t> streamIds = {1, 2};
+
+  for (uint32_t stripe = 0; stripe < 3; ++stripe) {
+    SCOPED_TRACE(fmt::format("stripe={}", stripe));
+    streams.setStripe(stripe);
+    auto locations = streams.locateStreams(streamIds);
+    ASSERT_EQ(locations.size(), streamIds.size());
+
+    const auto stripeId = tablet.stripeIdentifier(stripe);
+    const auto stripeOffset = tablet.stripeOffset(stripe);
+    const auto& streamOffsets = tablet.streamOffsets(stripeId);
+    const auto& streamSizes = tablet.streamSizes(stripeId);
+    const auto& stripeInfo = layout.stripesInfo[stripe];
+
+    for (size_t i = 0; i < locations.size(); ++i) {
+      SCOPED_TRACE(fmt::format("streamId={}", streamIds[i]));
+      ASSERT_TRUE(locations[i].has_value());
+      EXPECT_EQ(locations[i]->streamId, streamIds[i]);
+      EXPECT_EQ(
+          locations[i]->region.offset,
+          stripeOffset + streamOffsets[streamIds[i]]);
+      EXPECT_EQ(locations[i]->region.length, streamSizes[streamIds[i]]);
+      EXPECT_GE(locations[i]->region.offset, stripeInfo.offset);
+      EXPECT_LE(
+          locations[i]->region.offset + locations[i]->region.length,
+          stripeInfo.offset + stripeInfo.size);
+    }
+  }
+}
