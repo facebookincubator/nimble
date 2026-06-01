@@ -1816,17 +1816,19 @@ DEBUG_ONLY_TEST_F(ClusterIndexTest, decodeChunkFirstWins) {
 
   std::thread t1(
       [&]() { clusterIndex->lookup(makeRangeScanRequest("key_a")); });
+
+  firstDecodeReady.wait();
+
   std::thread t2(
       [&]() { clusterIndex->lookup(makeRangeScanRequest("key_b")); });
 
-  firstDecodeReady.wait();
   secondDecodeReady.wait();
 
   EXPECT_NE(firstDecoded, nullptr);
   EXPECT_NE(secondDecoded, nullptr);
   EXPECT_NE(firstDecoded, secondDecoded);
 
-  // Release thread 1 first — it wins the install.
+  // Release t1 first — it wins the install.
   firstProceed.post();
   t1.join();
 
@@ -1834,7 +1836,7 @@ DEBUG_ONLY_TEST_F(ClusterIndexTest, decodeChunkFirstWins) {
       helper.decodedChunkData(/*partitionIndex=*/0, /*chunkIndex=*/0),
       firstDecoded);
 
-  // Release thread 2 — its install is skipped (slot already filled).
+  // Release t2 — its install is skipped (slot already filled).
   secondProceed.post();
   t2.join();
 
