@@ -21,9 +21,9 @@
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
-#include "dwio/nimble/encodings/PforEncoding.h"
+#include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
-#include "dwio/nimble/encodings/RleEncoding.h"
+#include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
@@ -250,8 +250,8 @@ std::unique_ptr<Encoding> EncodingFactory::create(
       // is implemented. ALP only supports float and double.
       NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
     }
-    case EncodingType::Pfor: {
-      RETURN_ENCODING_BY_NUMERIC_TYPE(PforEncoding, dataType);
+    case EncodingType::PFOR: {
+      RETURN_ENCODING_BY_NUMERIC_TYPE(PFOREncoding, dataType);
     }
     default: {
       NIMBLE_UNREACHABLE(
@@ -389,13 +389,13 @@ std::string_view EncodingFactory::encode(
     case EncodingType::ALP: {
       NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
     }
-    case EncodingType::Pfor: {
+    case EncodingType::PFOR: {
       if constexpr (isIntegralType<physicalType>()) {
-        return PforEncoding<T>::encode(
+        return PFOREncoding<T>::encode(
             selection, castedValues, buffer, options);
       } else {
         NIMBLE_INCOMPATIBLE_ENCODING(
-            "Pfor encoding should not be selected for non-integral data type: {}.",
+            "PFOR encoding should not be selected for non-integral data type: {}.",
             toString(TypeTraits<T>::dataType));
       }
     }

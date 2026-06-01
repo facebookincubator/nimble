@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/encodings/PforEncoding.h"
+#include "dwio/nimble/encodings/PFOREncoding.h"
 
 #include <fmt/core.h>
 #include <gtest/gtest.h>
@@ -37,7 +37,7 @@ namespace facebook::nimble::test {
 // the fuzzer test below, which routes int32/int64 through the standard
 // EncodingFactory::encode<T> path.
 template <typename T>
-class PforEncodingTest : public ::testing::Test {
+class PFOREncodingTest : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
     velox::memory::MemoryManager::testingSetInstance({});
@@ -49,7 +49,7 @@ class PforEncodingTest : public ::testing::Test {
 
   std::unique_ptr<EncodingSelectionPolicy<T>> createSelectionPolicy() {
     EncodingLayout layout{
-        EncodingType::Pfor, {}, CompressionType::Uncompressed};
+        EncodingType::PFOR, {}, CompressionType::Uncompressed};
     return std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
         std::move(layout),
         CompressionOptions{},
@@ -69,7 +69,7 @@ class PforEncodingTest : public ::testing::Test {
 
   void roundTripAndExpect(const std::vector<T>& values) {
     auto encoding = encodeAndCreate(values);
-    EXPECT_EQ(encoding->encodingType(), EncodingType::Pfor);
+    EXPECT_EQ(encoding->encodingType(), EncodingType::PFOR);
     EXPECT_EQ(encoding->dataType(), TypeTraits<T>::dataType);
     EXPECT_EQ(encoding->rowCount(), values.size());
 
@@ -89,21 +89,21 @@ class PforEncodingTest : public ::testing::Test {
       };
 };
 
-using PforTypes = ::testing::Types<uint32_t, uint64_t, uint8_t, uint16_t>;
-TYPED_TEST_SUITE(PforEncodingTest, PforTypes);
+using PFORTypes = ::testing::Types<uint32_t, uint64_t, uint8_t, uint16_t>;
+TYPED_TEST_SUITE(PFOREncodingTest, PFORTypes);
 
-TYPED_TEST(PforEncodingTest, singleElement) {
+TYPED_TEST(PFOREncodingTest, singleElement) {
   using T = TypeParam;
   this->roundTripAndExpect({T{42}});
 }
 
-TYPED_TEST(PforEncodingTest, allSameValues) {
+TYPED_TEST(PFOREncodingTest, allSameValues) {
   using T = TypeParam;
   std::vector<T> values(64, T{7});
   this->roundTripAndExpect(values);
 }
 
-TYPED_TEST(PforEncodingTest, denseSmallValuesNoExceptions) {
+TYPED_TEST(PFOREncodingTest, denseSmallValuesNoExceptions) {
   // Residuals all fit comfortably in the smallest 7-bit bucket; the encoder
   // should pick baseBitWidth=7 and emit zero exceptions.
   using T = TypeParam;
@@ -115,7 +115,7 @@ TYPED_TEST(PforEncodingTest, denseSmallValuesNoExceptions) {
   this->roundTripAndExpect(values);
 }
 
-TYPED_TEST(PforEncodingTest, sparseOutliers) {
+TYPED_TEST(PFOREncodingTest, sparseOutliers) {
   // 90% small residuals + 10% large outliers — Pfor's sweet spot. Skip on
   // narrow types where outliers would not be representable.
   using T = TypeParam;
@@ -135,7 +135,7 @@ TYPED_TEST(PforEncodingTest, sparseOutliers) {
   }
 }
 
-TYPED_TEST(PforEncodingTest, residualsAtBitWidthBoundary) {
+TYPED_TEST(PFOREncodingTest, residualsAtBitWidthBoundary) {
   // Residuals exactly at the (1<<7)-1 = 127 boundary — verifies the
   // base-mask comparison treats the boundary residual as a fitting value.
   using T = TypeParam;
@@ -147,7 +147,7 @@ TYPED_TEST(PforEncodingTest, residualsAtBitWidthBoundary) {
   this->roundTripAndExpect(values);
 }
 
-TYPED_TEST(PforEncodingTest, mixedSizes) {
+TYPED_TEST(PFOREncodingTest, mixedSizes) {
   using T = TypeParam;
   for (uint32_t n : {1u, 7u, 15u, 16u, 17u, 33u, 64u, 100u, 257u, 1024u}) {
     SCOPED_TRACE(fmt::format("n={}", n));
@@ -160,7 +160,7 @@ TYPED_TEST(PforEncodingTest, mixedSizes) {
   }
 }
 
-TYPED_TEST(PforEncodingTest, skipAndMaterialize) {
+TYPED_TEST(PFOREncodingTest, skipAndMaterialize) {
   using T = TypeParam;
   std::vector<T> values;
   values.reserve(300);
@@ -203,7 +203,7 @@ TYPED_TEST(PforEncodingTest, skipAndMaterialize) {
   }
 }
 
-TYPED_TEST(PforEncodingTest, exceptionAtFirstAndLastRow) {
+TYPED_TEST(PFOREncodingTest, exceptionAtFirstAndLastRow) {
   // Edge case: exceptions land on the first row, the last row, and a
   // middle row. Verifies cursor handling at the bounds.
   using T = TypeParam;
@@ -222,7 +222,7 @@ TYPED_TEST(PforEncodingTest, exceptionAtFirstAndLastRow) {
   }
 }
 
-TYPED_TEST(PforEncodingTest, debugString) {
+TYPED_TEST(PFOREncodingTest, debugString) {
   using T = TypeParam;
   std::vector<T> values;
   values.reserve(8);
@@ -231,12 +231,12 @@ TYPED_TEST(PforEncodingTest, debugString) {
   }
   auto encoding = this->encodeAndCreate(values);
   const std::string debug = encoding->debugString();
-  EXPECT_NE(debug.find("Pfor"), std::string::npos);
+  EXPECT_NE(debug.find("PFOR"), std::string::npos);
   EXPECT_NE(debug.find("baseBitWidth="), std::string::npos);
   EXPECT_NE(debug.find("numExceptions="), std::string::npos);
 }
 
-class PforEncodingFuzzerTest : public ::testing::Test {
+class PFOREncodingFuzzerTest : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
     velox::memory::MemoryManager::testingSetInstance({});
@@ -280,7 +280,7 @@ class PforEncodingFuzzerTest : public ::testing::Test {
 
       Buffer buffer{*pool_};
       EncodingLayout layout{
-          EncodingType::Pfor, {}, CompressionType::Uncompressed};
+          EncodingType::PFOR, {}, CompressionType::Uncompressed};
       auto policy = std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
           std::move(layout), CompressionOptions{}, factory);
       auto encoded = EncodingFactory::encode<T>(
@@ -291,7 +291,7 @@ class PforEncodingFuzzerTest : public ::testing::Test {
       auto encoding = EncodingFactory().create(
           *pool_, {storage.data(), storage.size()}, nullptr);
 
-      ASSERT_EQ(encoding->encodingType(), EncodingType::Pfor);
+      ASSERT_EQ(encoding->encodingType(), EncodingType::PFOR);
       ASSERT_EQ(encoding->dataType(), TypeTraits<T>::dataType);
       ASSERT_EQ(encoding->rowCount(), values.size());
       std::vector<T> decoded(values.size());
@@ -332,25 +332,25 @@ class PforEncodingFuzzerTest : public ::testing::Test {
   std::shared_ptr<velox::memory::MemoryPool> pool_;
 };
 
-TEST_F(PforEncodingFuzzerTest, fuzzerInt32) {
+TEST_F(PFOREncodingFuzzerTest, fuzzerInt32) {
   runFuzzer<int32_t>(/*seed=*/12345, /*numIterations=*/30);
 }
 
-TEST_F(PforEncodingFuzzerTest, fuzzerInt64) {
+TEST_F(PFOREncodingFuzzerTest, fuzzerInt64) {
   runFuzzer<int64_t>(/*seed=*/67890, /*numIterations=*/30);
 }
 
-TEST_F(PforEncodingFuzzerTest, fuzzerUint32) {
+TEST_F(PFOREncodingFuzzerTest, fuzzerUint32) {
   runFuzzer<uint32_t>(/*seed=*/24680, /*numIterations=*/30);
 }
 
-TEST_F(PforEncodingFuzzerTest, fuzzerUint64) {
+TEST_F(PFOREncodingFuzzerTest, fuzzerUint64) {
   runFuzzer<uint64_t>(/*seed=*/13579, /*numIterations=*/30);
 }
 
-TEST_F(PforEncodingFuzzerTest, encodeRejectsEmpty) {
+TEST_F(PFOREncodingFuzzerTest, encodeRejectsEmpty) {
   Buffer buffer{*pool_};
-  EncodingLayout layout{EncodingType::Pfor, {}, CompressionType::Uncompressed};
+  EncodingLayout layout{EncodingType::PFOR, {}, CompressionType::Uncompressed};
   ManualEncodingSelectionPolicyFactory manualFactory;
   EncodingSelectionPolicyFactory factory = [&manualFactory](DataType dataType) {
     return manualFactory.createPolicy(dataType);

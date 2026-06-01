@@ -370,12 +370,12 @@ TEST_F(EncodingSizeEstimationTest, pforEstimateVsActualSize) {
   const uint32_t numValues = static_cast<uint32_t>(data.size());
 
   auto estimated =
-      Est::estimateNumericSize(EncodingType::Pfor, numValues, stats);
+      Est::estimateNumericSize(EncodingType::PFOR, numValues, stats);
   ASSERT_TRUE(estimated.has_value());
 
   // Actually encode and measure real size.
   nimble::Buffer buffer{*pool_};
-  auto encoded = nimble::test::Encoder<nimble::PforEncoding<uint32_t>>::encode(
+  auto encoded = nimble::test::Encoder<nimble::PFOREncoding<uint32_t>>::encode(
       buffer, nimble::Vector<uint32_t>(pool_.get(), data.begin(), data.end()));
   const uint64_t actualSize = encoded.size();
 

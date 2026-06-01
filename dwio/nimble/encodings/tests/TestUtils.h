@@ -22,8 +22,8 @@
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
-#include "dwio/nimble/encodings/PforEncoding.h"
-#include "dwio/nimble/encodings/RleEncoding.h"
+#include "dwio/nimble/encodings/PFOREncoding.h"
+#include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
@@ -183,9 +183,9 @@ class Encoder {
   };
 
   template <>
-  struct EncodingTypeTraits<nimble::PforEncoding<T>> {
+  struct EncodingTypeTraits<nimble::PFOREncoding<T>> {
     static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Pfor;
+        nimble::EncodingType::PFOR;
   };
 
  public:

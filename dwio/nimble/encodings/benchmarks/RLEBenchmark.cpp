@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "dwio/nimble/encodings/RleEncoding.h"
+#include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/benchmarks/BenchmarkUtils.h"
 #include "folly/Benchmark.h"
 

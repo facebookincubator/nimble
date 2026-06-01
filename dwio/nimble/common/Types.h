@@ -109,7 +109,7 @@ enum class EncodingType {
   // Patched Frame-of-Reference. Subtracts a min baseline, bitpacks ~90% of
   // residuals at a narrow base bit width, and stores the remaining outliers
   // ("exceptions") as a parallel position+value array.
-  Pfor = 15,
+  PFOR = 15,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);

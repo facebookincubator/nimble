@@ -21,7 +21,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/PforEncoding.h"
+#include "dwio/nimble/encodings/PFOREncoding.h"
 #include "velox/common/base/BitUtil.h"
 
 namespace facebook::nimble {
@@ -154,14 +154,14 @@ struct EncodingSizeEstimation {
           return std::nullopt;
         }
       }
-      case EncodingType::Pfor: {
+      case EncodingType::PFOR: {
         if constexpr (isIntegralType<physicalType>()) {
           const auto fullRange =
               static_cast<physicalType>(statistics.max() - statistics.min());
           const uint8_t maxBitWidth =
               static_cast<uint8_t>(velox::bits::bitsRequired(fullRange));
           const auto [baseBitWidth, numExceptions] =
-              PforEncoding<physicalType>::selectBaseBitWidth(
+              PFOREncoding<physicalType>::selectBaseBitWidth(
                   statistics.bucketCounts(), entryCount, maxBitWidth);
           const uint64_t bitpackedSize = baseBitWidth == 0
               ? 0

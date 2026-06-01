@@ -29,9 +29,9 @@ add_executable(
   Lz4CompressorTest.cpp
   MainlyConstantEncodingTest.cpp
   NullableEncodingTest.cpp
-  PforEncodingTest.cpp
+  PFOREncodingTest.cpp
   PrefixEncodingTest.cpp
-  RleEncodingTest.cpp
+  RLEEncodingTest.cpp
   SentinelEncodingTest.cpp
   StatisticsTest.cpp
   TrivialEncodingTest.cpp
