@@ -30,7 +30,7 @@ namespace facebook::nimble {
 
 using namespace facebook::velox;
 
-void ChunkedDecoder::loadNextChunk() {
+void ChunkedDecoder::loadNextChunk(bool preserveDictionaryEncoding) {
   invokeOnChunkLoad();
   auto ret = ensureInput(kChunkHeaderSize);
   NIMBLE_CHECK(ret, "Failed to read chunk header");
@@ -51,14 +51,19 @@ void ChunkedDecoder::loadNextChunk() {
   inputData_ += length;
   inputSize_ -= length;
   currentStringBuffers_.clear();
-  encoding_ = encodingFactory_->create(
-      *pool_,
-      std::string_view(chunkData, chunkSize),
-      [&](uint32_t totalLength) {
-        auto& buffer = currentStringBuffers_.emplace_back(
-            velox::AlignedBuffer::allocate<char>(totalLength, pool_));
-        return buffer->asMutable<void>();
-      });
+  auto stringBufferFactory = [&](uint32_t totalLength) {
+    auto& buffer = currentStringBuffers_.emplace_back(
+        velox::AlignedBuffer::allocate<char>(totalLength, pool_));
+    return buffer->asMutable<void>();
+  };
+  auto data = std::string_view(chunkData, chunkSize);
+  if (preserveDictionaryEncoding) {
+    Encoding::Options options{.preserveDictionaryEncoding = true};
+    encoding_ =
+        EncodingFactory(options).create(*pool_, data, stringBufferFactory);
+  } else {
+    encoding_ = encodingFactory_->create(*pool_, data, stringBufferFactory);
+  }
   remainingValues_ = encoding_->rowCount();
   NIMBLE_CHECK_GT(remainingValues_, 0);
   VLOG(1) << encoding_->debugString();

@@ -111,6 +111,12 @@ class Encoding {
     /// MemoryPool alloc/free overhead.
     /// Value-initialized to nullptr when omitted from aggregate initialization.
     velox::BufferPool* bufferPool;
+
+    /// When true, encodings that support dictionary mode (e.g., RLE) will
+    /// use the dictionary index path when the inner encoding is
+    /// dictionary-enabled. False by default — only the selective
+    /// reader enables this for dictionary vector output.
+    bool preserveDictionaryEncoding;
   };
 
   static constexpr int kEncodingTypeOffset =

@@ -1024,8 +1024,12 @@ class DictionaryApiTypedTest : public ::testing::Test {
   }
 
   /// Creates an Encoding from serialized bytes using EncodingFactory.
-  std::unique_ptr<nimble::Encoding> decodeEncoding(std::string_view data) {
-    return nimble::EncodingFactory().create(
+  std::unique_ptr<nimble::Encoding> decodeEncoding(
+      std::string_view data,
+      bool preserveDictionaryEncoding = false) {
+    nimble::Encoding::Options options{};
+    options.preserveDictionaryEncoding = preserveDictionaryEncoding;
+    return nimble::EncodingFactory(options).create(
         *pool_, data, [this](uint32_t size) {
           stringBuffers_.push_back(
               velox::AlignedBuffer::allocate<char>(size, pool_.get()));
@@ -1306,7 +1310,7 @@ class DictionaryApiTypedTest : public ::testing::Test {
   std::unique_ptr<nimble::Encoding> encodeRleDictionary(
       const std::vector<T>& values) {
     auto serialized = serializeRleDictionary(values, *buffer_);
-    return decodeEncoding(serialized);
+    return decodeEncoding(serialized, /*preserveDictionaryEncoding=*/true);
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
@@ -2217,6 +2221,104 @@ TYPED_TEST(DictionaryApiTypedTest, rleDictionaryBasics) {
   }
 }
 
+// Verifies materializeIndices after skipping past the first run.
+// This catches off-by-one bugs where reset() or skip() consume a
+// run's index without storing it, causing materializeIndices to
+// use a stale index for the current run.
+TYPED_TEST(DictionaryApiTypedTest, rleDictionaryMaterializeAfterSkip) {
+  using T = TypeParam;
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha", "bravo", "charlie"};
+    for (int i = 0; i < 5; ++i) {
+      data.push_back(std::string_view(this->stringPool_[0]));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(std::string_view(this->stringPool_[1]));
+    }
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(std::string_view(this->stringPool_[2]));
+    }
+  } else {
+    for (int i = 0; i < 5; ++i) {
+      data.push_back(T(10));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(T(20));
+    }
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(T(30));
+    }
+  }
+
+  auto encoding = this->encodeRleDictionary(data);
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+
+  // Skip past the first run (5 rows) into the second run.
+  encoding->skip(5);
+
+  const auto remaining = data.size() - 5;
+  const auto dictSize = encoding->dictionarySize();
+  std::vector<uint32_t> indices(remaining);
+  encoding->materializeIndices(remaining, indices.data());
+
+  const auto* entries = static_cast<const T*>(encoding->dictionaryEntries());
+  for (size_t i = 0; i < remaining; ++i) {
+    SCOPED_TRACE(fmt::format("row {}", i));
+    ASSERT_LT(indices[i], dictSize);
+    EXPECT_EQ(entries[indices[i]], data[5 + i]);
+  }
+}
+
+// Verifies materialize after skipping exactly to a run boundary in
+// non-dict mode. This catches off-by-one bugs where skip() exits with
+// copiesRemaining_==0 after consuming a full run, and the subsequent
+// materialize produces wrong values from a stale currentValue_.
+TYPED_TEST(DictionaryApiTypedTest, rleMaterializeAfterSkip) {
+  using T = TypeParam;
+  using PhysicalType = typename nimble::TypeTraits<T>::physicalType;
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha", "bravo", "charlie"};
+    for (int i = 0; i < 5; ++i) {
+      data.push_back(std::string_view(this->stringPool_[0]));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(std::string_view(this->stringPool_[1]));
+    }
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(std::string_view(this->stringPool_[2]));
+    }
+  } else {
+    for (int i = 0; i < 5; ++i) {
+      data.push_back(T(10));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(T(20));
+    }
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(T(30));
+    }
+  }
+
+  // Construct with dict mode disabled — uses flat values path.
+  auto serialized = this->serializeRleDictionary(data, *this->buffer_);
+  auto encoding = this->decodeEncoding(serialized);
+  ASSERT_FALSE(encoding->dictionaryEnabled());
+
+  // Skip exactly to the first run boundary (5 rows).
+  encoding->skip(5);
+
+  const auto remaining = data.size() - 5;
+  std::vector<PhysicalType> materialized(remaining);
+  encoding->materialize(remaining, materialized.data());
+  for (size_t i = 0; i < remaining; ++i) {
+    SCOPED_TRACE(fmt::format("row {}", i));
+    EXPECT_EQ(
+        materialized[i], reinterpret_cast<const PhysicalType&>(data[5 + i]));
+  }
+}
+
 TYPED_TEST(DictionaryApiTypedTest, materializeIndicesRleDictionaryFuzz) {
   using T = TypeParam;
 
@@ -2501,8 +2603,9 @@ TYPED_TEST(DictionaryApiTypedTest, rleWithConstantLeaf) {
   nimble::encoding::writeString(serializedRunLengths, pos);
   nimble::encoding::writeBytes(serializedRunValues, pos);
 
-  auto encoding =
-      this->decodeEncoding(std::string_view(reserved, encodingSize));
+  auto encoding = this->decodeEncoding(
+      std::string_view(reserved, encodingSize),
+      /*preserveDictionaryEncoding=*/true);
   ASSERT_TRUE(encoding->dictionaryEnabled());
   EXPECT_EQ(encoding->dictionarySize(), 1);
 
@@ -2660,8 +2763,9 @@ TYPED_TEST(DictionaryApiTypedTest, rleWithConstantLeafFuzz) {
     nimble::encoding::writeString(serializedRunLengths, pos);
     nimble::encoding::writeBytes(serializedRunValues, pos);
 
-    auto encoding =
-        this->decodeEncoding(std::string_view(reserved, encodingSize));
+    auto encoding = this->decodeEncoding(
+        std::string_view(reserved, encodingSize),
+        /*preserveDictionaryEncoding=*/true);
     ASSERT_TRUE(encoding->dictionaryEnabled());
     ASSERT_EQ(encoding->dictionarySize(), 1);
 
