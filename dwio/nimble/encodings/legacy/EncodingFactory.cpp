@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
+#include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/PforEncoding.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
@@ -240,6 +241,10 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     }
     case EncodingType::Delta: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(DeltaEncoding, dataType);
+    }
+    case EncodingType::BlockBitPacking: {
+      RETURN_ENCODING_BY_NUMERIC_TYPE(
+          facebook::nimble::BlockBitPackingEncoding, dataType);
     }
     case EncodingType::Prefix: {
       NIMBLE_CHECK_EQ(

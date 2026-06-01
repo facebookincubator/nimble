@@ -3917,6 +3917,300 @@ TEST_P(ReadWithVisitorTest, readSparseMaterializedIndicesWithNulls) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// BlockBitPackingEncoding<int32_t> + AlwaysTrue + dense + FAST PATH
+// Exercises the dense bulkScan path that materializes directly into the
+// output buffer (no temp buffer copy). Uses multi-chunk data (>1024 rows)
+// with variable bit widths per chunk.
+// ---------------------------------------------------------------------------
+TEST_P(
+    ReadWithVisitorTest,
+    encodingLevel_BlockBitPacking_AlwaysTrue_Dense_Int32_FastPath) {
+  constexpr int kChunkSize = 1024;
+  constexpr int kRows = kChunkSize * 3 + 500;
+
+  std::vector<int32_t> data(kRows);
+  // Chunk 0: narrow range [100, 103]
+  for (int i = 0; i < kChunkSize; ++i) {
+    data[i] = 100 + (i % 4);
+  }
+  // Chunk 1: wider range [0, 255]
+  for (int i = kChunkSize; i < kChunkSize * 2; ++i) {
+    data[i] = i % 256;
+  }
+  // Chunk 2: constant 42 (bitWidth=0)
+  for (int i = kChunkSize * 2; i < kChunkSize * 3; ++i) {
+    data[i] = 42;
+  }
+  // Chunk 3 (partial): range [0, 15]
+  for (int i = kChunkSize * 3; i < kRows; ++i) {
+    data[i] = i % 16;
+  }
+
+  auto input = makeRowVector(
+      {makeFlatVector<int32_t>(kRows, [&](auto i) { return data[i]; })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  std::vector<vector_size_t> rowVec(kRows);
+  std::iota(rowVec.begin(), rowVec.end(), 0);
+  RowSet rows(rowVec.data(), rowVec.size());
+
+  reader->doPrepareRead<int32_t>(0, rows, nullptr);
+
+  Buffer buffer(*pool());
+  auto encoding = createFromCustomLayout<int32_t>(
+      BlockBitPackingEnc{}, data, *pool(), buffer);
+
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = true;
+  DecoderVisitor<
+      int32_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
+
+  EXPECT_EQ(reader->numValues(), kRows);
+  auto values = getValues<int32_t>(reader);
+  for (int i = 0; i < kRows; ++i) {
+    EXPECT_EQ(values[i], data[i]) << "row " << i;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// BlockBitPackingEncoding<int32_t> + AlwaysTrue + sparse + FAST PATH
+// Exercises the sparse bulkScan path that batches selected rows by chunk,
+// materializes each touched chunk range once, then scatters values.
+// Selects every 3rd row across multiple chunks.
+// ---------------------------------------------------------------------------
+TEST_P(
+    ReadWithVisitorTest,
+    encodingLevel_BlockBitPacking_AlwaysTrue_Sparse_Int32_FastPath) {
+  constexpr int kChunkSize = 1024;
+  constexpr int kTotalRows = kChunkSize * 3;
+
+  std::vector<int32_t> data(kTotalRows);
+  // Chunk 0: narrow range
+  for (int i = 0; i < kChunkSize; ++i) {
+    data[i] = 1000 + (i % 8);
+  }
+  // Chunk 1: constant (bitWidth=0 path)
+  for (int i = kChunkSize; i < kChunkSize * 2; ++i) {
+    data[i] = 77;
+  }
+  // Chunk 2: wider range
+  for (int i = kChunkSize * 2; i < kTotalRows; ++i) {
+    data[i] = i % 512;
+  }
+
+  auto input = makeRowVector(
+      {makeFlatVector<int32_t>(kTotalRows, [&](auto i) { return data[i]; })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  // Every 3rd row — sparse and crosses chunk boundaries.
+  std::vector<vector_size_t> rowVec;
+  for (int i = 0; i < kTotalRows; i += 3) {
+    rowVec.push_back(i);
+  }
+  RowSet rows(rowVec.data(), rowVec.size());
+
+  reader->doPrepareRead<int32_t>(0, rows, nullptr);
+
+  Buffer buffer(*pool());
+  auto encoding = createFromCustomLayout<int32_t>(
+      BlockBitPackingEnc{}, data, *pool(), buffer);
+
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = false;
+  DecoderVisitor<
+      int32_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
+
+  auto numSelected = static_cast<int>(rowVec.size());
+  EXPECT_EQ(reader->numValues(), numSelected);
+  auto values = getValues<int32_t>(reader);
+  for (int i = 0; i < numSelected; ++i) {
+    EXPECT_EQ(values[i], data[rowVec[i]]) << "selected row index " << i;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// BlockBitPackingEncoding<int32_t> + BigintRange + dense + FAST PATH
+// Exercises the filter path in bulkScan: only values in [100, 103] pass.
+// Data spans multiple chunks with different ranges.
+// ---------------------------------------------------------------------------
+TEST_P(
+    ReadWithVisitorTest,
+    encodingLevel_BlockBitPacking_BigintRange_Dense_Int32_FastPath) {
+  constexpr int kChunkSize = 1024;
+  constexpr int kRows = kChunkSize * 2;
+
+  std::vector<int32_t> data(kRows);
+  // Chunk 0: values [100, 103] — all pass filter
+  for (int i = 0; i < kChunkSize; ++i) {
+    data[i] = 100 + (i % 4);
+  }
+  // Chunk 1: values [200, 207] — none pass filter
+  for (int i = kChunkSize; i < kRows; ++i) {
+    data[i] = 200 + (i % 8);
+  }
+
+  auto input = makeRowVector(
+      {makeFlatVector<int32_t>(kRows, [&](auto i) { return data[i]; })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(100, 103, false));
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  std::vector<vector_size_t> rowVec(kRows);
+  std::iota(rowVec.begin(), rowVec.end(), 0);
+  RowSet rows(rowVec.data(), rowVec.size());
+
+  reader->doPrepareRead<int32_t>(0, rows, nullptr);
+
+  Buffer buffer(*pool());
+  auto encoding = createFromCustomLayout<int32_t>(
+      BlockBitPackingEnc{}, data, *pool(), buffer);
+
+  common::BigintRange filter(100, 103, false);
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = true;
+  DecoderVisitor<
+      int32_t,
+      common::BigintRange,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
+
+  // Only chunk 0 values pass the filter [100, 103].
+  EXPECT_EQ(reader->numValues(), kChunkSize);
+  auto values = getValues<int32_t>(reader);
+  for (int i = 0; i < kChunkSize; ++i) {
+    EXPECT_GE(values[i], 100);
+    EXPECT_LE(values[i], 103);
+    EXPECT_EQ(values[i], data[i]) << "row " << i;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// BlockBitPackingEncoding<int32_t> + AlwaysTrue + sparse + FAST PATH
+// Very sparse selection: only a few rows per chunk, some chunks skipped
+// entirely. Exercises the chunk-batching optimization in the sparse path.
+// ---------------------------------------------------------------------------
+TEST_P(
+    ReadWithVisitorTest,
+    encodingLevel_BlockBitPacking_AlwaysTrue_VerySparse_Int32_FastPath) {
+  constexpr int kChunkSize = 1024;
+  constexpr int kTotalRows = kChunkSize * 4;
+
+  std::vector<int32_t> data(kTotalRows);
+  for (int i = 0; i < kTotalRows; ++i) {
+    data[i] = i;
+  }
+
+  auto input = makeRowVector(
+      {makeFlatVector<int32_t>(kTotalRows, [&](auto i) { return data[i]; })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  // Pick specific rows: first, last, chunk boundaries, and mid-chunk.
+  std::vector<vector_size_t> rowVec = {
+      0, // chunk 0 first
+      512, // chunk 0 mid
+      kChunkSize - 1, // chunk 0 last
+      kChunkSize, // chunk 1 first
+      kChunkSize * 2 + 100, // chunk 2 mid (skip chunk 1 end)
+      kChunkSize * 3 - 1, // chunk 2 last
+      kChunkSize * 4 - 1, // chunk 3 last (overall last)
+  };
+  RowSet rows(rowVec.data(), rowVec.size());
+
+  reader->doPrepareRead<int32_t>(0, rows, nullptr);
+
+  Buffer buffer(*pool());
+  auto encoding = createFromCustomLayout<int32_t>(
+      BlockBitPackingEnc{}, data, *pool(), buffer);
+
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = false;
+  DecoderVisitor<
+      int32_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
+
+  auto numSelected = static_cast<int>(rowVec.size());
+  EXPECT_EQ(reader->numValues(), numSelected);
+  auto values = getValues<int32_t>(reader);
+  for (int i = 0; i < numSelected; ++i) {
+    EXPECT_EQ(values[i], data[rowVec[i]])
+        << "selected row " << rowVec[i] << " at index " << i;
+  }
+}
+
 INSTANTIATE_TEST_SUITE_P(
     NonLegacyAndLegacy,
     ReadWithVisitorTest,

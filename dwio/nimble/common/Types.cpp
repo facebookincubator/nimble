@@ -51,6 +51,8 @@ std::string toString(EncodingType encodingType) {
       return "Prefix";
     case EncodingType::ALP:
       return "ALP";
+    case EncodingType::BlockBitPacking:
+      return "BlockBitPacking";
     case EncodingType::Pfor:
       return "Pfor";
   }

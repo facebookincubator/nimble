@@ -106,6 +106,10 @@ enum class EncodingType {
   Prefix = 11,
   // Adaptive Lossless floating-Point compression for numeric types.
   ALP = 12,
+  // Stores integer data in fixed-size chunks (default 1024 rows), each with
+  // its own baseline and bit width. Adapts per-chunk variable bit widths for
+  // better compression on data with locally narrow value ranges.
+  BlockBitPacking = 13,
   // Patched Frame-of-Reference. Subtracts a min baseline, bitpacks ~90% of
   // residuals at a narrow base bit width, and stores the remaining outliers
   // ("exceptions") as a parallel position+value array.

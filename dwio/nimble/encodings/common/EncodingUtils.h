@@ -16,6 +16,7 @@
 #pragma once
 
 #include "dwio/nimble/encodings/ALPEncoding.h"
+#include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
@@ -128,6 +129,8 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       return f(static_cast<DeltaEncoding<T>&>(encoding));
     case EncodingType::ALP:
       NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
+    case EncodingType::BlockBitPacking:
+      return f(static_cast<BlockBitPackingEncoding<T>&>(encoding));
     case EncodingType::Pfor:
       if constexpr (isIntegralType<T>()) {
         return f(static_cast<PforEncoding<T>&>(encoding));

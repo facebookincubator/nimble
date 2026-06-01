@@ -63,6 +63,11 @@ SparseBoolEnc::operator EncodingLayout() const {
       EncodingType::SparseBool, {}, CompressionType::Uncompressed);
 }
 
+BlockBitPackingEnc::operator EncodingLayout() const {
+  return EncodingLayout(
+      EncodingType::BlockBitPacking, {}, CompressionType::Uncompressed);
+}
+
 DeltaEnc::operator EncodingLayout() const {
   constexpr auto kDeltas = EncodingIdentifiers::Delta::Deltas;
   constexpr auto kRestatements = EncodingIdentifiers::Delta::Restatements;
