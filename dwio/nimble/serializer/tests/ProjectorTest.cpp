@@ -57,7 +57,7 @@ struct FormatParam {
   SerializationVersion inputVersion;
   SerializationVersion projectVersion;
   EncodingType streamSizesEncodingType{EncodingType::Trivial};
-  bool enableBufferPool{true};
+  size_t bufferPoolCapacity{velox::BufferPool::kDefaultCapacity};
 
   std::string name() const {
     auto base =
@@ -65,8 +65,10 @@ struct FormatParam {
     if (streamSizesEncodingType != EncodingType::Trivial) {
       base += fmt::format("_{}StreamSizes", toString(streamSizesEncodingType));
     }
-    if (!enableBufferPool) {
+    if (bufferPoolCapacity == 0) {
       base += "_NoBufferPool";
+    } else if (bufferPoolCapacity != velox::BufferPool::kDefaultCapacity) {
+      base += "_BufferPool" + std::to_string(bufferPoolCapacity);
     }
     return base;
   }
@@ -87,15 +89,15 @@ std::vector<FormatParam> allFormatCombinations() {
       {SerializationVersion::kCompactRaw,
        SerializationVersion::kCompactRaw,
        EncodingType::Trivial,
-       /*enableBufferPool=*/false},
+       /*bufferPoolCapacity=*/0},
       {SerializationVersion::kCompactRaw,
        SerializationVersion::kCompactRaw,
        EncodingType::Delta,
-       /*enableBufferPool=*/false},
+       /*bufferPoolCapacity=*/0},
       {SerializationVersion::kCompactRaw,
        SerializationVersion::kCompactRaw,
        EncodingType::MainlyConstant,
-       /*enableBufferPool=*/false},
+       /*bufferPoolCapacity=*/0},
   };
 }
 
@@ -313,7 +315,7 @@ class ProjectorFormatTest : public ProjectorTestBase,
   DeserializerOptions outputDeserializerOptions() const {
     return {
         .hasHeader = true,
-        .enableBufferPool = GetParam().enableBufferPool,
+        .bufferPoolCapacity = GetParam().bufferPoolCapacity,
     };
   }
 };

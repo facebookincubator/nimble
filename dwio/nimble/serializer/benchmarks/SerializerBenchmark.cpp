@@ -210,7 +210,7 @@ struct DeserializeStats {
 
 DeserializeStats runDeserializeWithStats(
     const BenchmarkState& state,
-    bool enableBufferPool,
+    size_t bufferPoolCapacity,
     uint32_t iters) {
   auto pool = velox::memory::memoryManager()->addLeafPool("deser_stats");
   Deserializer deserializer{
@@ -218,7 +218,7 @@ DeserializeStats runDeserializeWithStats(
       pool.get(),
       DeserializerOptions{
           .hasHeader = true,
-          .enableBufferPool = enableBufferPool,
+          .bufferPoolCapacity = bufferPoolCapacity,
       }};
   velox::VectorPtr output;
 
@@ -237,7 +237,7 @@ DeserializeStats runDeserializeWithStats(
 
 void runDeserialize(
     const BenchmarkState& state,
-    bool enableBufferPool,
+    size_t bufferPoolCapacity,
     uint32_t iters) {
   auto pool = velox::memory::memoryManager()->addLeafPool("deser_bench");
   Deserializer deserializer{
@@ -245,7 +245,7 @@ void runDeserialize(
       pool.get(),
       DeserializerOptions{
           .hasHeader = true,
-          .enableBufferPool = enableBufferPool,
+          .bufferPoolCapacity = bufferPoolCapacity,
       }};
   velox::VectorPtr output;
   while (iters--) {
@@ -263,9 +263,12 @@ void printMemoryReport(
   auto state = prepareBenchmark(numRows, numKeys, dataPattern, forcedEncoding);
 
   auto withPool = runDeserializeWithStats(
-      state, /*enableBufferPool=*/true, kMemoryReportIters);
+      state,
+      /*bufferPoolCapacity=*/
+      velox::BufferPool::kDefaultCapacity,
+      kMemoryReportIters);
   auto noPool = runDeserializeWithStats(
-      state, /*enableBufferPool=*/false, kMemoryReportIters);
+      state, /*bufferPoolCapacity=*/0, kMemoryReportIters);
 
   double allocSavings = noPool.numAllocs > 0 ? 100.0 *
           (1.0 - static_cast<double>(withPool.numAllocs) / noPool.numAllocs)
@@ -289,11 +292,14 @@ void printMemoryReport(
 #define DESER_BENCH(Name, Rows, Keys, Pattern, ...)                           \
   BENCHMARK(Deser_##Name##_Pool, iters) {                                     \
     static auto state = prepareBenchmark(Rows, Keys, Pattern, ##__VA_ARGS__); \
-    runDeserialize(state, true, iters);                                       \
+    runDeserialize(                                                           \
+        state, /*bufferPoolCapacity=*/                                        \
+        velox::BufferPool::kDefaultCapacity,                                  \
+        iters);                                                               \
   }                                                                           \
   BENCHMARK_RELATIVE(Deser_##Name##_NoPool, iters) {                          \
     static auto state = prepareBenchmark(Rows, Keys, Pattern, ##__VA_ARGS__); \
-    runDeserialize(state, false, iters);                                      \
+    runDeserialize(state, /*bufferPoolCapacity=*/0, iters);                   \
   }
 
 // --- Forced encoding types ---

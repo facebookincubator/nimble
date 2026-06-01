@@ -191,7 +191,7 @@ class TestTrivialEncodingSelectionPolicy
 
 TEST(EncodingBufferPoolTest, getBufferUsesMinimumCapacity) {
   auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
-  velox::BufferPool bufferPool;
+  velox::BufferPool bufferPool{velox::BufferPool::kDefaultCapacity};
   const auto data = makeEncodingData();
   TestEncoding encoding{
       *pool,
@@ -227,7 +227,7 @@ TEST(EncodingBufferPoolTest, getBufferUsesMinimumCapacity) {
 
 TEST(EncodingBufferPoolTest, getVectorBufferFromPool) {
   auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
-  velox::BufferPool bufferPool;
+  velox::BufferPool bufferPool{velox::BufferPool::kDefaultCapacity};
   const auto data = makeEncodingData();
   TestEncoding encoding{
       *pool,
@@ -262,7 +262,7 @@ TEST(EncodingBufferPoolTest, getVectorBufferWithoutPool) {
 
 TEST(EncodingBufferPoolTest, getVectorBufferFromEmptyPool) {
   auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
-  velox::BufferPool bufferPool;
+  velox::BufferPool bufferPool{velox::BufferPool::kDefaultCapacity};
   const auto data = makeEncodingData();
   TestEncoding encoding{
       *pool,
@@ -282,7 +282,7 @@ TEST(EncodingBufferPoolTest, getVectorBufferFromEmptyPool) {
 
 TEST(EncodingBufferPoolTest, releaseVectorBufferToPool) {
   auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
-  velox::BufferPool bufferPool;
+  velox::BufferPool bufferPool{velox::BufferPool::kDefaultCapacity};
   const auto data = makeEncodingData();
   TestEncoding encoding{
       *pool,
@@ -320,7 +320,7 @@ TEST(EncodingBufferPoolTest, releaseVectorBufferWithoutPool) {
 
 TEST(EncodingBufferPoolTest, getVectorBufferRoundTrip) {
   auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
-  velox::BufferPool bufferPool;
+  velox::BufferPool bufferPool{velox::BufferPool::kDefaultCapacity};
   const auto data = makeEncodingData();
   TestEncoding encoding{
       *pool,
