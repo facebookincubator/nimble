@@ -28,6 +28,7 @@
 #include "folly/Executor.h"
 #include "folly/container/F14Map.h"
 #include "folly/container/F14Set.h"
+#include "velox/buffer/BufferPool.h"
 
 #include <set>
 #include "velox/type/Type.h"
@@ -204,11 +205,11 @@ struct DeserializerOptions {
   /// When nullopt (default), all flatmap columns are deserialized as maps.
   velox::RowTypePtr outputType{};
 
-  /// Whether to enable BufferPool for recycling encoding scratch buffers.
-  /// When true, a BufferPool is created per DeserializerImpl to cache and
-  /// reuse buffers across encoding lifetimes, reducing MemoryPool allocation
-  /// overhead.
-  bool enableBufferPool{true};
+  /// Maximum number of scratch buffers each per-stream BufferPool retains
+  /// for reuse across encoding lifetimes. Higher values reduce MemoryPool
+  /// allocation churn at the cost of resident memory. 0 disables the pool
+  /// entirely (every encoding allocates and frees through MemoryPool).
+  size_t bufferPoolCapacity{velox::BufferPool::kDefaultCapacity};
 
   /// Executor for parallel decoding of child fields.
   /// When set, RowFieldReader and StructFlatMapFieldReader dispatch child reads

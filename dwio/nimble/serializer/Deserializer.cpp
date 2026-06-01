@@ -114,7 +114,7 @@ class DeserializerImpl : public Decoder {
   DeserializerImpl(
       const Type* type,
       bool inMapStream,
-      bool enableBufferPool,
+      size_t bufferPoolCapacity,
       velox::memory::MemoryPool* pool)
       : type_{type},
         pool_{pool},
@@ -122,8 +122,9 @@ class DeserializerImpl : public Decoder {
         scalarKind_{getScalarKindForType(*type)},
         typeStorageWidth_{getTypeStorageWidth(*type)},
         bufferPool_{
-            enableBufferPool ? std::make_unique<velox::BufferPool>()
-                             : nullptr} {}
+            bufferPoolCapacity > 0
+                ? std::make_unique<velox::BufferPool>(bufferPoolCapacity)
+                : nullptr} {}
 
   uint32_t next(
       uint32_t count,
@@ -719,7 +720,7 @@ void Deserializer::createDeserializersForType(
       std::make_unique<DeserializerImpl>(
           &type,
           /*inMapStream=*/false,
-          options_.enableBufferPool,
+          options_.bufferPoolCapacity,
           pool_);
   // FlatMap is only supported at depth 1 (top-level columns). FlatMap keys can
   // vary across batches, causing gaps in nulls/inMap streams. Gap detection is
@@ -733,7 +734,7 @@ void Deserializer::createDeserializersForType(
       deserializerMap_[inMapOffset] = std::make_unique<DeserializerImpl>(
           &type,
           /*inMapStream=*/true,
-          options_.enableBufferPool,
+          options_.bufferPoolCapacity,
           pool_);
       inMapChildTypes_[inMapOffset] = flatMap.childAt(i).get();
     }

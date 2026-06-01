@@ -160,7 +160,8 @@ TEST(ZstdCompressorTest, MinCompressionSizeSkipsSmallData) {
 
 TEST(ZstdCompressorTest, AllocateBufferFromPool) {
   auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
-  facebook::velox::BufferPool bufferPool;
+  facebook::velox::BufferPool bufferPool{
+      facebook::velox::BufferPool::kDefaultCapacity};
 
   // Pool is empty — should fall back to MemoryPool allocation.
   auto buf1 = allocateBuffer(*pool, &bufferPool, 100);
@@ -194,7 +195,8 @@ TEST(ZstdCompressorTest, UncompressWithBufferPool) {
   auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   ZstdCompressor compressor;
   TestCompressionPolicy policy;
-  facebook::velox::BufferPool bufferPool;
+  facebook::velox::BufferPool bufferPool{
+      facebook::velox::BufferPool::kDefaultCapacity};
 
   std::vector<char> original(1024);
   for (size_t i = 0; i < original.size(); ++i) {
@@ -231,7 +233,8 @@ TEST(ZstdCompressorTest, BufferPoolReuseAcrossMultipleCycles) {
   auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   ZstdCompressor compressor;
   TestCompressionPolicy policy;
-  facebook::velox::BufferPool bufferPool;
+  facebook::velox::BufferPool bufferPool{
+      facebook::velox::BufferPool::kDefaultCapacity};
 
   std::vector<char> original(512);
   for (size_t i = 0; i < original.size(); ++i) {

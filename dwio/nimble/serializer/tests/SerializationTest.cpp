@@ -54,8 +54,8 @@ struct TestParams {
   std::optional<CompressionOptions> compressionOptions{};
   // Encoding type for stream sizes in compact trailer.
   EncodingType streamSizesEncodingType{EncodingType::Trivial};
-  // Whether to enable buffer pool for encoding scratch buffer reuse.
-  bool enableBufferPool{true};
+  // Max cached buffers per per-stream BufferPool. 0 disables pooling.
+  size_t bufferPoolCapacity{velox::BufferPool::kDefaultCapacity};
 };
 
 class SerializationTest : public ::testing::TestWithParam<TestParams> {
@@ -86,14 +86,14 @@ class SerializationTest : public ::testing::TestWithParam<TestParams> {
     return GetParam().compressionOptions;
   }
 
-  bool enableBufferPool() const {
-    return GetParam().enableBufferPool;
+  size_t bufferPoolCapacity() const {
+    return GetParam().bufferPoolCapacity;
   }
 
   DeserializerOptions deserializerOptions() const {
     return DeserializerOptions{
         .hasHeader = hasHeader(),
-        .enableBufferPool = enableBufferPool(),
+        .bufferPoolCapacity = bufferPoolCapacity(),
     };
   }
 
@@ -453,8 +453,11 @@ std::string formatName(const ::testing::TestParamInfo<TestParams>& info) {
   if (info.param.streamSizesEncodingType != EncodingType::Trivial) {
     name += "_" + toString(info.param.streamSizesEncodingType) + "StreamSizes";
   }
-  if (!info.param.enableBufferPool) {
+  if (info.param.bufferPoolCapacity == 0) {
     name += "_NoBufferPool";
+  } else if (
+      info.param.bufferPoolCapacity != velox::BufferPool::kDefaultCapacity) {
+    name += "_BufferPool" + std::to_string(info.param.bufferPoolCapacity);
   }
   return name;
 }
@@ -5100,27 +5103,27 @@ INSTANTIATE_TEST_SUITE_P(
             .version = SerializationVersion::kCompactRaw,
             .streamSizesEncodingType = EncodingType::MainlyConstant},
         // Buffer pool disabled variants.
-        TestParams{.version = std::nullopt, .enableBufferPool = false},
+        TestParams{.version = std::nullopt, .bufferPoolCapacity = 0},
         TestParams{
             .version = SerializationVersion::kCompactRaw,
-            .enableBufferPool = false},
+            .bufferPoolCapacity = 0},
         TestParams{
             .version = SerializationVersion::kCompactRaw,
             .compressionOptions =
                 CompressionOptions{
                     .compressionAcceptRatio = 1.0f,
                     .zstdMinCompressionSize = 0},
-            .enableBufferPool = false},
+            .bufferPoolCapacity = 0},
         TestParams{
             .version = SerializationVersion::kCompactRaw,
             .streamSizesEncodingType = EncodingType::Delta,
-            .enableBufferPool = false},
+            .bufferPoolCapacity = 0},
         TestParams{
             .version = SerializationVersion::kCompactRaw,
             .streamSizesEncodingType = EncodingType::FixedBitWidth,
-            .enableBufferPool = false},
+            .bufferPoolCapacity = 0},
         TestParams{
             .version = SerializationVersion::kCompactRaw,
             .streamSizesEncodingType = EncodingType::MainlyConstant,
-            .enableBufferPool = false}),
+            .bufferPoolCapacity = 0}),
     formatName);
