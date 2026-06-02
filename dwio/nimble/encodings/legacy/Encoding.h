@@ -15,7 +15,7 @@
  */
 #pragma once
 
-#include "dwio/nimble/encodings/BufferedEncoding.h"
+#include "dwio/nimble/encodings/common/BufferedEncoding.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 
 // Legacy encoding headers use qualified names like detail::readWithVisitorSlow.

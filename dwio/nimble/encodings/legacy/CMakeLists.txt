@@ -15,7 +15,7 @@ add_library(
   nimble_encodings_legacy
   EncodingFactory.cpp
   PrefixEncoding.cpp
-  RleEncoding.cpp
+  RLEEncoding.cpp
   SparseBoolEncoding.cpp
   TrivialEncoding.cpp
 )

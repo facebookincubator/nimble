@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
-#include "dwio/nimble/encodings/PforEncoding.h"
+#include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
 #include "dwio/nimble/encodings/legacy/DictionaryEncoding.h"
@@ -22,7 +22,7 @@
 #include "dwio/nimble/encodings/legacy/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/NullableEncoding.h"
 #include "dwio/nimble/encodings/legacy/PrefixEncoding.h"
-#include "dwio/nimble/encodings/legacy/RleEncoding.h"
+#include "dwio/nimble/encodings/legacy/RLEEncoding.h"
 #include "dwio/nimble/encodings/legacy/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/legacy/TrivialEncoding.h"
 #include "dwio/nimble/encodings/legacy/VarintEncoding.h"
@@ -249,8 +249,8 @@ std::unique_ptr<Encoding> EncodingFactory::create(
       return std::make_unique<PrefixEncoding>(
           memoryPool, data, stringBufferFactory);
     }
-    case EncodingType::Pfor: {
-      RETURN_ENCODING_BY_NUMERIC_TYPE(PforEncoding, dataType);
+    case EncodingType::PFOR: {
+      RETURN_ENCODING_BY_NUMERIC_TYPE(PFOREncoding, dataType);
     }
     default: {
       NIMBLE_UNREACHABLE(

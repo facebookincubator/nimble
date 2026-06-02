@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/encodings/legacy/RleEncoding.h"
+#include "dwio/nimble/encodings/legacy/RLEEncoding.h"
 
 namespace facebook::nimble::legacy {
 

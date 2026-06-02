@@ -30,7 +30,7 @@
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/encodings/legacy/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/legacy/MainlyConstantEncoding.h"
-#include "dwio/nimble/encodings/legacy/RleEncoding.h"
+#include "dwio/nimble/encodings/legacy/RLEEncoding.h"
 #include "dwio/nimble/encodings/legacy/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/legacy/TrivialEncoding.h"
 #include "dwio/nimble/encodings/legacy/VarintEncoding.h"

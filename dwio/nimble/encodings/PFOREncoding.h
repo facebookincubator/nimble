@@ -30,7 +30,7 @@
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "velox/common/base/BitUtil.h"
 
-// PforEncoding stores integer data using Patched Frame-of-Reference (slot 15).
+// PFOREncoding stores integer data using Patched Frame-of-Reference (slot 15).
 // Each value is decomposed as `value = baseline + residual`, where the
 // residuals are bitpacked at a base bit width chosen so that ~90% of the
 // residuals fit. Values whose residual overflows the base width are recorded
@@ -60,13 +60,13 @@ namespace facebook::nimble {
 ///                               bitpacked base residuals (omitted when
 ///                               baseBitWidth == 0)
 template <typename T>
-class PforEncoding final
+class PFOREncoding final
     : public TypedEncoding<T, typename TypeTraits<T>::physicalType> {
  public:
   using cppDataType = T;
   using physicalType = typename TypeTraits<T>::physicalType;
 
-  PforEncoding(
+  PFOREncoding(
       velox::memory::MemoryPool& pool,
       std::string_view data,
       const std::function<void*(uint32_t)>& stringBufferFactory,
@@ -162,7 +162,7 @@ class PforEncoding final
 //
 
 template <typename T>
-PforEncoding<T>::PforEncoding(
+PFOREncoding<T>::PFOREncoding(
     velox::memory::MemoryPool& pool,
     std::string_view data,
     const std::function<void*(uint32_t)>& /* stringBufferFactory */,
@@ -235,13 +235,13 @@ PforEncoding<T>::PforEncoding(
 }
 
 template <typename T>
-void PforEncoding<T>::reset() {
+void PFOREncoding<T>::reset() {
   row_ = 0;
   exceptionCursor_ = 0;
 }
 
 template <typename T>
-void PforEncoding<T>::seekExceptionsTo(uint32_t targetRow) {
+void PFOREncoding<T>::seekExceptionsTo(uint32_t targetRow) {
   // Linear scan for small exception counts, binary search for large counts.
   const uint32_t remaining = numExceptions_ - exceptionCursor_;
   constexpr uint32_t kLinearScanThreshold{64};
@@ -259,13 +259,13 @@ void PforEncoding<T>::seekExceptionsTo(uint32_t targetRow) {
 }
 
 template <typename T>
-void PforEncoding<T>::skip(uint32_t rowCount) {
+void PFOREncoding<T>::skip(uint32_t rowCount) {
   row_ += rowCount;
   seekExceptionsTo(row_);
 }
 
 template <typename T>
-void PforEncoding<T>::patchExceptions(uint32_t count, physicalType* output) {
+void PFOREncoding<T>::patchExceptions(uint32_t count, physicalType* output) {
   // Overwrite exception slots with their full values. Exceptions are
   // in ascending position order, so this is a forward linear scan.
   const auto endRow = row_ + count;
@@ -279,7 +279,7 @@ void PforEncoding<T>::patchExceptions(uint32_t count, physicalType* output) {
 }
 
 template <typename T>
-void PforEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
+void PFOREncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   if (rowCount == 0) {
     return;
   }
@@ -318,7 +318,7 @@ void PforEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
 
 template <typename T>
 template <typename V>
-void PforEncoding<T>::readWithVisitor(
+void PFOREncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
   // TODO: Add a bulkScan / readWithVisitorFast path for 4-byte and 8-byte
@@ -350,7 +350,7 @@ void PforEncoding<T>::readWithVisitor(
 }
 
 template <typename T>
-std::string_view PforEncoding<T>::encode(
+std::string_view PFOREncoding<T>::encode(
     EncodingSelection<typename TypeTraits<T>::physicalType>& selection,
     std::span<const typename TypeTraits<T>::physicalType> values,
     Buffer& buffer,
@@ -419,7 +419,7 @@ std::string_view PforEncoding<T>::encode(
         : FixedBitArray::bufferSize(rowCount, baseBitWidth);
     const uint32_t encodingSize =
         Encoding::serializePrefixSize(rowCount, useVarint) +
-        PforEncoding<T>::kPrefixSize +
+        PFOREncoding<T>::kPrefixSize +
         static_cast<uint32_t>(
             exceptionPositionBytes + exceptionValueBytes + bitpackedSize);
 
@@ -427,7 +427,7 @@ std::string_view PforEncoding<T>::encode(
     char* reserved = buffer.reserve(encodingSize);
     char* pos = reserved;
     Encoding::serializePrefix(
-        EncodingType::Pfor, TypeTraits<T>::dataType, rowCount, useVarint, pos);
+        EncodingType::PFOR, TypeTraits<T>::dataType, rowCount, useVarint, pos);
     encoding::write(baseline, pos);
     encoding::writeChar(static_cast<char>(baseBitWidth), pos);
     encoding::writeUint32(numExceptions, pos);
@@ -469,7 +469,7 @@ std::string_view PforEncoding<T>::encode(
 }
 
 template <typename T>
-std::string PforEncoding<T>::debugString(int offset) const {
+std::string PFOREncoding<T>::debugString(int offset) const {
   return fmt::format(
       "{}{}<{}> rowCount={} baseBitWidth={} numExceptions={}",
       std::string(offset, ' '),

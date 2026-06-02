@@ -2101,7 +2101,7 @@ TEST_P(SerializationTest, encodingLayoutTree) {
   }
 }
 
-// Columnar reader-level round-trip for PforEncoding. Forces Pfor via
+// Columnar reader-level round-trip for PFOREncoding. Forces PFOR via
 // EncodingLayoutTree and verifies data integrity through the full
 // Serializer → Deserializer path.
 TEST_P(SerializationTest, pforColumnarRoundTrip) {
@@ -2118,12 +2118,12 @@ TEST_P(SerializationTest, pforColumnarRoundTrip) {
           {Kind::Scalar,
            {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
              EncodingLayout{
-                 EncodingType::Pfor, {}, CompressionType::Uncompressed}}},
+                 EncodingType::PFOR, {}, CompressionType::Uncompressed}}},
            ""},
           {Kind::Scalar,
            {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
              EncodingLayout{
-                 EncodingType::Pfor, {}, CompressionType::Uncompressed}}},
+                 EncodingType::PFOR, {}, CompressionType::Uncompressed}}},
            ""},
       }};
 

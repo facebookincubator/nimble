@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/encodings/BufferedEncoding.h"
+#include "dwio/nimble/encodings/common/BufferedEncoding.h"
 #include <gtest/gtest.h>
 #include <span>
 #include <vector>

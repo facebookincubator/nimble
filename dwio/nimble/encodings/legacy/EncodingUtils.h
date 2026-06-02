@@ -15,7 +15,7 @@
  */
 #pragma once
 
-#include "dwio/nimble/encodings/PforEncoding.h"
+#include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
@@ -23,7 +23,7 @@
 #include "dwio/nimble/encodings/legacy/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/legacy/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/NullableEncoding.h"
-#include "dwio/nimble/encodings/legacy/RleEncoding.h"
+#include "dwio/nimble/encodings/legacy/RLEEncoding.h"
 #include "dwio/nimble/encodings/legacy/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/legacy/TrivialEncoding.h"
 #include "dwio/nimble/encodings/legacy/VarintEncoding.h"
@@ -109,9 +109,9 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       return f(static_cast<DeltaEncoding<T>&>(encoding));
     // New Encoding has no legacy-specialised class; legacy reads dispatch into
     // the modern Encoding classes
-    case EncodingType::Pfor:
+    case EncodingType::PFOR:
       if constexpr (isIntegralType<T>()) {
-        return f(static_cast<::facebook::nimble::PforEncoding<T>&>(encoding));
+        return f(static_cast<::facebook::nimble::PFOREncoding<T>&>(encoding));
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }

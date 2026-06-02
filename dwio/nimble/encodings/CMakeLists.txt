@@ -20,7 +20,7 @@ add_library(
   ConstantEncoding.cpp
   MainlyConstantEncoding.cpp
   PrefixEncoding.cpp
-  RleEncoding.cpp
+  RLEEncoding.cpp
   SparseBoolEncoding.cpp
   TrivialEncoding.cpp
   common/Encoding.cpp

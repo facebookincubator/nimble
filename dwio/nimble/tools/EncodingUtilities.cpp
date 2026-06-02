@@ -50,7 +50,7 @@ void extractCompressionType(
     case EncodingType::MainlyConstant:
     case EncodingType::Prefix:
     case EncodingType::ALP:
-    case EncodingType::Pfor:
+    case EncodingType::PFOR:
       break;
   }
 }
@@ -105,7 +105,7 @@ void traverseEncodings(
     case EncodingType::Constant:
     case EncodingType::Prefix:
     case EncodingType::ALP:
-    case EncodingType::Pfor: {
+    case EncodingType::PFOR: {
       // don't have any nested encoding
       break;
     }

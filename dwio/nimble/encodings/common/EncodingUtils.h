@@ -22,9 +22,9 @@
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
-#include "dwio/nimble/encodings/PforEncoding.h"
+#include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
-#include "dwio/nimble/encodings/RleEncoding.h"
+#include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
@@ -128,9 +128,9 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       return f(static_cast<DeltaEncoding<T>&>(encoding));
     case EncodingType::ALP:
       NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
-    case EncodingType::Pfor:
+    case EncodingType::PFOR:
       if constexpr (isIntegralType<T>()) {
-        return f(static_cast<PforEncoding<T>&>(encoding));
+        return f(static_cast<PFOREncoding<T>&>(encoding));
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
