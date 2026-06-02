@@ -56,3 +56,25 @@ class IntegerColumnReader
 };
 
 } // namespace facebook::nimble
+
+namespace facebook::velox::dwio::common {
+
+#define INTEGER_COLUMN_READER_PROCESS_FILTER(IsDense, ExtractValues) \
+  template void SelectiveIntegerColumnReader::processFilter<         \
+      nimble::IntegerColumnReader,                                   \
+      IsDense,                                                       \
+      false /* kEncodingHasNulls*/,                                  \
+      ExtractValues>(                                                \
+      const velox::common::Filter* filter,                           \
+      ExtractValues extractValues,                                   \
+      const RowSet& rows)
+
+// External template instantiations to speed up build time by parallelizing.
+// `SelectiveIntegerColumnReader::processFilter` is expensive to compile because
+// it and the functions it calls are template heavy.
+extern INTEGER_COLUMN_READER_PROCESS_FILTER(true, ExtractToReader);
+extern INTEGER_COLUMN_READER_PROCESS_FILTER(false, ExtractToReader);
+extern INTEGER_COLUMN_READER_PROCESS_FILTER(true, DropValues);
+extern INTEGER_COLUMN_READER_PROCESS_FILTER(false, DropValues);
+
+} // namespace facebook::velox::dwio::common

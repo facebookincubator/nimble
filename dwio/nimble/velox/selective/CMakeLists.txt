@@ -17,6 +17,8 @@ add_library(
   ColumnReader.cpp
   FlatMapColumnReader.cpp
   IntegerColumnReader.cpp
+  IntegerColumnReader_processFilter_DropValues.cpp
+  IntegerColumnReader_processFilter_ExtractToReader.cpp
   NimbleData.cpp
   ReaderBase.cpp
   RowSizeTracker.cpp
