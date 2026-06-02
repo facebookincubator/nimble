@@ -328,8 +328,10 @@ uint64_t SelectiveNimbleRowReader::next(
 void SelectiveNimbleRowReader::updateRuntimeStats(
     dwio::common::RuntimeStatistics& stats) const {
   stats.skippedStrides += skippedStripes_;
-  stats.footerBufferOverread +=
-      readerBase_->tablet().stats().footerBufferOverread;
+  const auto& tabletStats = readerBase_->tablet().stats();
+  stats.footerBufferOverread += tabletStats.footerBufferOverread;
+  stats.footerBufferUnderread += tabletStats.footerBufferUnderread;
+  stats.footerCacheHit += tabletStats.footerCacheHit ? 1 : 0;
   stats.columnReaderStats.mergeFrom(columnReaderStatistics_);
 }
 

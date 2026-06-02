@@ -4408,6 +4408,8 @@ TEST_P(TabletTest, readerOptionsAdaptiveMode) {
   EXPECT_EQ(tablet->stripeRowCount(0), 500);
   // Adaptive mode reads the exact footer size, so no bytes are wasted.
   EXPECT_EQ(tablet->stats().footerBufferOverread, 0);
+  EXPECT_EQ(tablet->stats().footerBufferUnderread, 0);
+  EXPECT_FALSE(tablet->stats().footerCacheHit);
 }
 
 TEST_P(TabletTest, readerOptionsSpeculativeMode) {
@@ -4445,6 +4447,8 @@ TEST_P(TabletTest, readerOptionsSpeculativeMode) {
   EXPECT_EQ(
       tablet->stats().footerBufferOverread,
       std::min<uint64_t>(1024, file.size()) - footerRequired);
+  EXPECT_EQ(tablet->stats().footerBufferUnderread, 0);
+  EXPECT_FALSE(tablet->stats().footerCacheHit);
 }
 
 TEST_P(TabletTest, configureOptionsIndexFlags) {
