@@ -4515,6 +4515,102 @@ TEST_P(TabletTest, configureOptionsIndexFlags) {
   }
 }
 
+TEST_P(TabletTest, configureOptionsCacheFields) {
+  // Verify configureOptions wires fileHandle and cache from
+  // ReaderOptions into TabletReader::Options, and that a TabletReader
+  // created via this path actually uses CachedMetadataInput (warm path
+  // reads from cache, not file). Guards against accidental removal of
+  // the cache wiring in configureOptions.
+
+  // Verify defaults are null.
+  {
+    velox::dwio::common::ReaderOptions defaults(pool_.get());
+    defaults.setDataIoStats(std::make_shared<velox::io::IoStatistics>());
+    defaults.setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+    auto opts = nimble::TabletReader::configureOptions(defaults);
+    EXPECT_EQ(opts.fileHandle, nullptr);
+    EXPECT_EQ(opts.cache, nullptr);
+  }
+
+  // Write a simple file for the behavioral test.
+  std::string file;
+  {
+    velox::InMemoryWriteFile writeFile(&file);
+    nimble::Buffer buffer(*pool_);
+    auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
+    std::vector<nimble::Stream> streams;
+    auto* pos = buffer.reserve(50);
+    std::memset(pos, 'a', 50);
+    streams.push_back(
+        {.offset = 0,
+         .chunks = {
+             {.rowCount = 100, .content = {std::string_view(pos, 50)}}}});
+    tabletWriter->writeStripe(100, std::move(streams));
+    tabletWriter->close();
+    writeFile.close();
+  }
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  auto allocator = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  auto cache = velox::cache::AsyncDataCache::create(allocator.get());
+
+  velox::FileHandle fileHandle;
+  fileHandle.file = readFile;
+  auto& ids = velox::fileIds();
+  fileHandle.uuid =
+      velox::StringIdLease(ids, "configureOptionsCacheFieldsTest");
+  fileHandle.groupId = velox::StringIdLease(ids, "testGroup");
+
+  // Helper to create ReaderOptions with cache fields set.
+  auto makeReaderOptions =
+      [&](std::shared_ptr<velox::io::IoStatistics> metadataStats) {
+        velox::dwio::common::ReaderOptions opts(pool_.get());
+        opts.setDataIoStats(std::make_shared<velox::io::IoStatistics>());
+        opts.setMetadataIoStats(std::move(metadataStats));
+        opts.setFileHandle(&fileHandle);
+        opts.setCache(cache.get());
+        opts.setCacheMetadata(true);
+        return opts;
+      };
+
+  // Verify configureOptions propagates pointers.
+  {
+    auto readerOptions =
+        makeReaderOptions(std::make_shared<velox::io::IoStatistics>());
+    auto opts = nimble::TabletReader::configureOptions(readerOptions);
+    EXPECT_EQ(opts.fileHandle, &fileHandle);
+    EXPECT_EQ(opts.cache, cache.get());
+  }
+
+  // Cold path: first reader populates cache.
+  {
+    auto readerOptions =
+        makeReaderOptions(std::make_shared<velox::io::IoStatistics>());
+    auto opts = nimble::TabletReader::configureOptions(readerOptions);
+    auto tablet = nimble::TabletReader::create(readFile, pool_.get(), opts);
+    EXPECT_EQ(tablet->stripeCount(), 1);
+  }
+
+  auto coldStats = cache->refreshStats();
+  EXPECT_GT(coldStats.numEntries, 0);
+
+  // Warm path: second reader should initialize from cache, not file.
+  {
+    auto warmMetadataIoStats = std::make_shared<velox::io::IoStatistics>();
+    auto readerOptions = makeReaderOptions(warmMetadataIoStats);
+    auto opts = nimble::TabletReader::configureOptions(readerOptions);
+    auto tablet = nimble::TabletReader::create(readFile, pool_.get(), opts);
+    EXPECT_EQ(tablet->stripeCount(), 1);
+
+    EXPECT_GT(warmMetadataIoStats->ramHit().count(), 0);
+    EXPECT_EQ(warmMetadataIoStats->rawBytesRead(), 0);
+  }
+
+  cache->shutdown();
+}
+
 TEST_P(TabletTest, metadataInputReads) {
   std::string file;
   velox::InMemoryWriteFile writeFile(&file);
