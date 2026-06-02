@@ -4375,6 +4375,112 @@ TEST_P(TabletTest, writeAfterCloseThrows) {
       tabletWriter->close(), "TabletWriter is already closed");
 }
 
+// WriteFile wrapper that returns 0 from size() starting at a specific call
+// index, simulating a faulty WriteFile implementation.
+class FaultInjectingWriteFile : public velox::WriteFile {
+ public:
+  explicit FaultInjectingWriteFile(std::string* file) : file_(file) {}
+
+  void append(std::string_view data) override {
+    file_->append(data);
+  }
+
+  void append(std::unique_ptr<folly::IOBuf> data) override {
+    for (auto range : *data) {
+      append(
+          std::string_view(
+              reinterpret_cast<const char*>(range.data()), range.size()));
+    }
+  }
+
+  void flush() override {}
+
+  void close() override {}
+
+  uint64_t size() const override {
+    auto callIndex = sizeCallCount_++;
+    if (faultAtCallIndex_ >= 0 &&
+        callIndex >= static_cast<uint32_t>(faultAtCallIndex_)) {
+      // Simulate a WriteFile whose size() counter was reset to 0.
+      // Capture the file size on first fault to use as the reset baseline.
+      if (!faultBaselineCaptured_) {
+        sizeAtFaultStart_ = file_->size();
+        faultBaselineCaptured_ = true;
+      }
+      return file_->size() - sizeAtFaultStart_;
+    }
+    return file_->size();
+  }
+
+  uint32_t sizeCallCount() const {
+    return sizeCallCount_.load();
+  }
+
+  void resetCallCount() {
+    sizeCallCount_.store(0);
+  }
+
+  // Starting at the Nth call to size() (0-based), return 0.
+  void faultAtCall(int n) {
+    faultAtCallIndex_ = n;
+  }
+
+ private:
+  std::string* file_;
+  mutable std::atomic<uint32_t> sizeCallCount_{0};
+  std::atomic<int> faultAtCallIndex_{-1};
+  mutable uint64_t sizeAtFaultStart_{0};
+  mutable bool faultBaselineCaptured_{false};
+};
+
+TEST_P(TabletTest, corruptStripesOffsetDetected) {
+  std::string file;
+  FaultInjectingWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
+
+  const auto streamSize = 100;
+  auto pos = buffer.reserve(streamSize);
+  std::memset(pos, 'x', streamSize);
+  std::vector<nimble::Stream> streams;
+  streams.push_back({
+      .offset = 0,
+      .chunks = {{.content = {std::string_view(pos, streamSize)}}},
+  });
+
+  tabletWriter->writeStripe(1000, std::move(streams));
+
+  // Dry-run close() on an identical writer to count how many size() calls
+  // precede writeStripes, then fault at that exact call index.
+  uint32_t faultIndex;
+  {
+    std::string dryFile;
+    FaultInjectingWriteFile dryWriteFile(&dryFile);
+    nimble::Buffer dryBuffer(*pool_);
+    auto dryWriter = nimble::TabletWriter::create(&dryWriteFile, *pool_, {});
+    auto dryPos = dryBuffer.reserve(streamSize);
+    std::memset(dryPos, 'x', streamSize);
+    std::vector<nimble::Stream> dryStreams;
+    dryStreams.push_back({
+        .offset = 0,
+        .chunks = {{.content = {std::string_view(dryPos, streamSize)}}},
+    });
+    dryWriter->writeStripe(1000, std::move(dryStreams));
+    dryWriteFile.resetCallCount();
+    dryWriter->close();
+    auto totalSizeCalls = dryWriteFile.sizeCallCount();
+    ASSERT_GE(totalSizeCalls, 4u);
+    // The last 4 size() calls are: writeStripes (2) + footer (2).
+    faultIndex = totalSizeCalls - 4;
+  }
+
+  writeFile.resetCallCount();
+  writeFile.faultAtCall(faultIndex);
+
+  NIMBLE_ASSERT_THROW(tabletWriter->close(), "Stripes metadata offset is 0");
+}
+
 TEST_P(TabletTest, readerOptionsAdaptiveMode) {
   // Test adaptive mode (maxFooterIoBytes=0) which reads postscript first,
   // then exact footer size.
