@@ -303,6 +303,7 @@ void TabletReader::init(const Options& options) {
       velox::succinctBytes(Postscript::kSize));
 
   if (initFromCache(options)) {
+    stats_.footerCacheHit = true;
     return;
   }
 
@@ -367,6 +368,8 @@ void TabletReader::loadFooter(
     // If the speculative read didn't cover the full footer, re-read.
     const uint64_t requiredSize = ps_.footerSize() + Postscript::kSize;
     if (requiredSize > footerIoSize) {
+      stats_.footerBufferUnderread =
+          static_cast<int64_t>(requiredSize - footerIoSize);
       footerIoSize = requiredSize;
       footerOffset = fileSize_ - footerIoSize;
       ensureBuffer(footerBuf, footerIoSize, pool_);

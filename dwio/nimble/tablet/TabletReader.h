@@ -308,6 +308,13 @@ class TabletReader {
     /// Bytes read beyond the footer + postscript in speculative mode.
     /// Zero in adaptive mode (exact-size read).
     int64_t footerBufferOverread{0};
+
+    /// Bytes short in speculative mode that required a second read.
+    /// Zero when the speculative read covered the full footer.
+    int64_t footerBufferUnderread{0};
+
+    /// Whether the footer was loaded from the metadata cache.
+    bool footerCacheHit{false};
   };
 
   const Stats& stats() const {
