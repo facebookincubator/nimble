@@ -97,6 +97,8 @@ TabletReader::Options TabletReader::configureOptions(
   tabletOptions.cacheMetadata = options.cacheMetadata();
   tabletOptions.pinIndex = options.pinIndex();
   tabletOptions.cacheIndex = options.cacheIndex();
+  tabletOptions.fileHandle = options.fileHandle();
+  tabletOptions.cache = options.cache();
   tabletOptions.ioOptions = options;
   return tabletOptions;
 }
