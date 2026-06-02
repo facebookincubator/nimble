@@ -235,7 +235,15 @@ void NimbleIndexProjector::initRequest(
 }
 
 void NimbleIndexProjector::clearRequest() {
-  ctx_ = {};
+  ctx_.request = nullptr;
+  ctx_.options = nullptr;
+  ctx_.numRequests = 0;
+  ctx_.stripeRanges.clear();
+  ctx_.plan.stripePlans.clear();
+  ctx_.plan.truncated = false;
+  ctx_.hasStripeRanges.clear();
+  ctx_.loadedStripes.clear();
+  ctx_.stripeBodies.clear();
 }
 
 RowRange NimbleIndexProjector::stripeRowRange(
@@ -297,30 +305,29 @@ void NimbleIndexProjector::lookupStripes() {
   ctx_.stripeRanges.startStripe = minStripe;
   ctx_.stripeRanges.numStripes = maxStripe - minStripe;
 
-  std::vector<std::vector<StripeRange>> rangesByStripe(
-      ctx_.stripeRanges.numStripes);
-  ctx_.stripeRanges.offsets.resize(ctx_.stripeRanges.numStripes + 1, 0);
+  // Build CSR layout with write-cursor pattern: count entries per stripe,
+  // prefix-sum into offsets, then fill entries by index.
+  ctx_.stripeRanges.offsets.assign(ctx_.stripeRanges.numStripes + 1, 0);
+  for (const auto& request : resolvedRequests) {
+    for (uint32_t stripe = request.startStripe; stripe < request.endStripe;
+         ++stripe) {
+      ++ctx_.stripeRanges.offsets[stripe - minStripe + 1];
+    }
+  }
+  for (uint32_t i = 1; i <= ctx_.stripeRanges.numStripes; ++i) {
+    ctx_.stripeRanges.offsets[i] += ctx_.stripeRanges.offsets[i - 1];
+  }
 
+  const auto numRanges = ctx_.stripeRanges.offsets.back();
+  ctx_.stripeRanges.ranges.resize(numRanges);
+  auto writeCursors = ctx_.stripeRanges.offsets;
   for (const auto& request : resolvedRequests) {
     for (uint32_t stripe = request.startStripe; stripe < request.endStripe;
          ++stripe) {
       const auto stripeOffset = stripe - minStripe;
-      rangesByStripe[stripeOffset].push_back(
-          StripeRange{
-              request.requestIndex, stripeRowRange(stripe, request.rowRange)});
+      ctx_.stripeRanges.ranges[writeCursors[stripeOffset]++] = StripeRange{
+          request.requestIndex, stripeRowRange(stripe, request.rowRange)};
     }
-  }
-
-  uint32_t numRanges = 0;
-  for (uint32_t i = 0; i < ctx_.stripeRanges.numStripes; ++i) {
-    numRanges += static_cast<uint32_t>(rangesByStripe[i].size());
-    ctx_.stripeRanges.offsets[i + 1] = numRanges;
-  }
-
-  ctx_.stripeRanges.ranges.reserve(numRanges);
-  for (const auto& ranges : rangesByStripe) {
-    ctx_.stripeRanges.ranges.insert(
-        ctx_.stripeRanges.ranges.end(), ranges.begin(), ranges.end());
   }
 }
 
