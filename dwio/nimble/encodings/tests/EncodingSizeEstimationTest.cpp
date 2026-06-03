@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 #include <gtest/gtest.h>
+#include <limits>
+
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/common/EncodingType.h"
@@ -27,6 +29,52 @@ class EncodingSizeEstimationTest : public ::testing::Test {
  protected:
   void SetUp() override {
     pool_ = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  }
+
+  template <typename T>
+  void verifySimdForBitpackEstimateVsActualSize() {
+    using Est = detail::EncodingSizeEstimation<T, false>;
+
+    const T min = std::numeric_limits<T>::min();
+    const T max = std::numeric_limits<T>::max();
+    const T base = static_cast<T>(max / 4);
+    const std::vector<std::vector<T>> testCases = {
+        std::vector<T>(1000, min),
+        std::vector<T>(1000, max),
+        {min, max},
+        [&] {
+          std::vector<T> data;
+          data.reserve(1000);
+          for (uint32_t i = 0; i < 1000; ++i) {
+            data.push_back(static_cast<T>(base + i % 50));
+          }
+          return data;
+        }(),
+    };
+
+    for (const auto& data : testCases) {
+      SCOPED_TRACE(static_cast<uint64_t>(max));
+      SCOPED_TRACE(static_cast<uint64_t>(data.front()));
+      auto stats = Statistics<T>::create(data);
+      const uint32_t numValues = static_cast<uint32_t>(data.size());
+
+      auto estimated = Est::estimateNumericSize(
+          EncodingType::SimdForBitpack, numValues, stats);
+      ASSERT_TRUE(estimated.has_value());
+
+      nimble::Buffer buffer{*pool_};
+      auto encoded =
+          nimble::test::Encoder<nimble::SimdForBitpackEncoding<T>>::encode(
+              buffer, nimble::Vector<T>(pool_.get(), data.begin(), data.end()));
+      const uint64_t actualSize = encoded.size();
+
+      EXPECT_GT(estimated.value(), actualSize / 2)
+          << "estimate too low: " << estimated.value() << " vs actual "
+          << actualSize;
+      EXPECT_LT(estimated.value(), actualSize * 2)
+          << "estimate too high: " << estimated.value() << " vs actual "
+          << actualSize;
+    }
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
@@ -386,4 +434,11 @@ TEST_F(EncodingSizeEstimationTest, pforEstimateVsActualSize) {
   EXPECT_LT(estimated.value(), actualSize * 2)
       << "estimate too high: " << estimated.value() << " vs actual "
       << actualSize;
+}
+
+TEST_F(EncodingSizeEstimationTest, simdForBitpackEstimateVsActualSize) {
+  verifySimdForBitpackEstimateVsActualSize<uint8_t>();
+  verifySimdForBitpackEstimateVsActualSize<uint16_t>();
+  verifySimdForBitpackEstimateVsActualSize<uint32_t>();
+  verifySimdForBitpackEstimateVsActualSize<uint64_t>();
 }

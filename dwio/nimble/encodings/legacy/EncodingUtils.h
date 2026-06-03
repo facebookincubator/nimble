@@ -16,6 +16,7 @@
 #pragma once
 
 #include "dwio/nimble/encodings/PFOREncoding.h"
+#include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
@@ -112,6 +113,14 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
     case EncodingType::PFOR:
       if constexpr (isIntegralType<T>()) {
         return f(static_cast<::facebook::nimble::PFOREncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE("{}", encoding.dataType());
+      }
+    case EncodingType::SimdForBitpack:
+      if constexpr (isIntegralType<T>()) {
+        return f(
+            static_cast<::facebook::nimble::SimdForBitpackEncoding<T>&>(
+                encoding));
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }

@@ -3917,6 +3917,84 @@ TEST_P(ReadWithVisitorTest, readSparseMaterializedIndicesWithNulls) {
   }
 }
 
+// ===========================================================================
+// SimdForBitpack column-reader coverage.
+// ===========================================================================
+TEST_P(ReadWithVisitorTest, encodingLevelSimdForBitpackBigintRangeSparse) {
+  auto runForType = [&]<typename T>(T) {
+    SCOPED_TRACE(fmt::format("type size = {}", sizeof(T)));
+    constexpr int kRows = 500;
+    constexpr int64_t kMinFilter = 20;
+    constexpr int64_t kMaxFilter = 40;
+
+    std::vector<T> data(kRows);
+    for (int i = 0; i < kRows; ++i) {
+      data[i] = static_cast<T>(10 + i % 64);
+    }
+
+    auto input = makeRowVector({makeFlatVector<T>(
+        kRows, [](auto i) { return static_cast<T>(10 + i % 64); })});
+    auto rowType = asRowType(input->type());
+    auto ctx = makeFileContext(input);
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*rowType);
+    scanSpec->childByName("c0")->setFilter(
+        std::make_unique<common::BigintRange>(kMinFilter, kMaxFilter, false));
+    auto root = buildReader(*ctx, rowType, *scanSpec);
+
+    auto* structReader =
+        dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(
+            root.get());
+    auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+        dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+    ASSERT_NE(reader, nullptr);
+
+    std::vector<vector_size_t> rowVec;
+    for (int i = 0; i < kRows; i += 2) {
+      rowVec.push_back(i);
+    }
+    RowSet rows(rowVec.data(), rowVec.size());
+
+    reader->doPrepareRead<T>(0, rows, nullptr);
+
+    Buffer buffer(*pool());
+    const EncodingLayout layout{
+        EncodingType::SimdForBitpack, {}, CompressionType::Uncompressed};
+    auto encoding = createFromCustomLayout<T>(layout, data, *pool(), buffer);
+
+    common::BigintRange filter(kMinFilter, kMaxFilter, false);
+    dwio::common::ExtractToReader extractValues(reader);
+    constexpr bool kIsDense = false;
+    DecoderVisitor<
+        T,
+        common::BigintRange,
+        dwio::common::ExtractToReader,
+        kIsDense>
+        visitor(filter, reader, rows, extractValues);
+    auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+    dispatchCallReadWithVisitor(*encoding, visitor, params);
+
+    int expected = 0;
+    for (int i = 0; i < kRows; i += 2) {
+      if (data[i] >= kMinFilter && data[i] <= kMaxFilter) {
+        ++expected;
+      }
+    }
+    EXPECT_EQ(reader->numValues(), expected);
+
+    auto values = getValues<T>(reader);
+    for (int i = 0; i < reader->numValues(); ++i) {
+      EXPECT_GE(values[i], static_cast<T>(kMinFilter));
+      EXPECT_LE(values[i], static_cast<T>(kMaxFilter));
+    }
+  };
+
+  runForType(int16_t{});
+  runForType(int32_t{});
+  runForType(int64_t{});
+}
+
 INSTANTIATE_TEST_SUITE_P(
     NonLegacyAndLegacy,
     ReadWithVisitorTest,

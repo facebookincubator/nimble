@@ -24,6 +24,7 @@
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
+#include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
@@ -253,6 +254,9 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     case EncodingType::PFOR: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(PFOREncoding, dataType);
     }
+    case EncodingType::SimdForBitpack: {
+      RETURN_ENCODING_BY_NUMERIC_TYPE(SimdForBitpackEncoding, dataType);
+    }
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
@@ -397,6 +401,16 @@ std::string_view EncodingFactory::encode(
         NIMBLE_INCOMPATIBLE_ENCODING(
             "PFOR encoding should not be selected for non-integral data type: {}.",
             toString(TypeTraits<T>::dataType));
+      }
+    }
+    case EncodingType::SimdForBitpack: {
+      if constexpr (isIntegralType<physicalType>()) {
+        return SimdForBitpackEncoding<T>::encode(
+            selection, castedValues, buffer, options);
+      } else {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "SimdForBitpack encoding only supports integral data types, got {}.",
+            TypeTraits<T>::dataType);
       }
     }
     default: {

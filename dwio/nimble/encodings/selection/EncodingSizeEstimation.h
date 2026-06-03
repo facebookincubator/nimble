@@ -22,7 +22,9 @@
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
+#include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "velox/common/base/BitUtil.h"
+#include "velox/dwio/common/Lemire/BitPacking/bitpackinghelpers.h"
 
 namespace facebook::nimble {
 namespace detail {
@@ -166,16 +168,34 @@ struct EncodingSizeEstimation {
           const uint64_t bitpackedSize = baseBitWidth == 0
               ? 0
               : FixedBitArray::bufferSize(entryCount, baseBitWidth);
-          // Per-exception: position varint (max 5B for uint32 positions)
-          // + value varint (ceil(maxBitWidth/7) bytes, capped at 10 because
-          // varint64 encodes at most 64 bits in ceil(64/7) = 10 bytes).
+          // Per-exception: position varint (max 5B) + value varint (max
+          // ceil(maxBitWidth/7) bytes, capped at 10).
           const uint64_t valueVarintBytes = std::min<uint64_t>(
               (static_cast<uint64_t>(maxBitWidth) + 6) / 7, 10);
           const uint64_t exceptionsSize =
               numExceptions * (5 + valueVarintBytes);
-          constexpr uint32_t overhead =
-              6 + sizeof(physicalType) + 1 + sizeof(uint32_t);
-          return overhead + bitpackedSize + exceptionsSize;
+
+          return getEncodingOverhead<EncodingType::PFOR, physicalType>() +
+              bitpackedSize + exceptionsSize;
+        } else {
+          return std::nullopt;
+        }
+      }
+      case EncodingType::SimdForBitpack: {
+        if constexpr (isIntegralType<physicalType>()) {
+          const auto fullRange =
+              static_cast<physicalType>(statistics.max() - statistics.min());
+          const uint8_t bitWidth = fullRange == 0
+              ? uint8_t{0}
+              : static_cast<uint8_t>(velox::bits::bitsRequired(fullRange));
+          const uint64_t packedSize =
+              SimdForBitpackEncoding<physicalType>::packedDataSize(
+                  entryCount, bitWidth);
+
+          return getEncodingOverhead<
+                     EncodingType::SimdForBitpack,
+                     physicalType>() +
+              packedSize;
         } else {
           return std::nullopt;
         }
@@ -449,6 +469,12 @@ struct EncodingSizeEstimation {
       return commonPrefixSize + sizeof(dataType); // Baseline (size of dataType)
     } else if constexpr (encodingType == EncodingType::Nullable) {
       return commonPrefixSize + sizeof(uint32_t); // Data size (4 bytes)
+    } else if constexpr (encodingType == EncodingType::PFOR) {
+      // Baseline (sizeof(dataType)) + baseBitWidth (1) + exceptionCount (4)
+      return commonPrefixSize + sizeof(dataType) + 1 + sizeof(uint32_t);
+    } else if constexpr (encodingType == EncodingType::SimdForBitpack) {
+      // Baseline (sizeof(dataType)) + bitWidth (1)
+      return commonPrefixSize + sizeof(dataType) + 1;
     }
   }
 
