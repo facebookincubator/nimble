@@ -24,7 +24,6 @@
 
 #include <zstd.h>
 #include "dwio/nimble/common/FixedBitArray.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
