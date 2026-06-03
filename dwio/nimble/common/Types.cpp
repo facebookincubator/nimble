@@ -55,6 +55,8 @@ std::string toString(EncodingType encodingType) {
       return "PFOR";
     case EncodingType::SimdForBitpack:
       return "SimdForBitpack";
+    case EncodingType::SubIntSplit:
+      return "SubIntSplit";
   }
   return fmt::format(
       "Unknown encoding type: {}", static_cast<int32_t>(encodingType));
