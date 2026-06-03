@@ -28,6 +28,7 @@
 #include "dwio/nimble/encodings/legacy/TrivialEncoding.h"
 #include "dwio/nimble/encodings/legacy/VarintEncoding.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
+#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 
 // Import necessary types from parent namespace
 using ::facebook::nimble::isNumericType;
@@ -241,6 +242,9 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     }
     case EncodingType::Delta: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(DeltaEncoding, dataType);
+    }
+    case EncodingType::SubIntSplit: {
+      RETURN_ENCODING_BY_VARINT_TYPE(SubIntSplitEncoding, dataType);
     }
     case EncodingType::Prefix: {
       NIMBLE_CHECK_EQ(

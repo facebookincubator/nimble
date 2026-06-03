@@ -28,6 +28,7 @@
 #include "dwio/nimble/encodings/legacy/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/legacy/TrivialEncoding.h"
 #include "dwio/nimble/encodings/legacy/VarintEncoding.h"
+#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 
 namespace facebook::nimble::legacy {
 
@@ -121,6 +122,15 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
         return f(
             static_cast<::facebook::nimble::SimdForBitpackEncoding<T>&>(
                 encoding));
+      } else {
+        NIMBLE_UNREACHABLE("{}", encoding.dataType());
+      }
+    case EncodingType::SubIntSplit:
+      if constexpr (
+          isNumericType<T>() &&
+          (sizeof(T) == 4 || sizeof(T) == 8)) {
+        return f(
+            static_cast<::facebook::nimble::SubIntSplitEncoding<T>&>(encoding));
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
