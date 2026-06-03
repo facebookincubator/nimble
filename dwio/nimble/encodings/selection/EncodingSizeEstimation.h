@@ -157,7 +157,6 @@ struct EncodingSizeEstimation {
           return std::nullopt;
         }
       }
-<<<<<<< HEAD:dwio/nimble/encodings/selection/EncodingSizeEstimation.h
       case EncodingType::PFOR: {
         if constexpr (isIntegralType<physicalType>()) {
           const auto fullRange =
@@ -202,7 +201,6 @@ struct EncodingSizeEstimation {
           return std::nullopt;
         }
       }
-=======
       case EncodingType::SubIntSplit: {
         // Heuristic estimate — EncodingSizeEstimation only has Statistics, not
         // raw values, so we cannot run the DP here without either re-reading
@@ -242,7 +240,6 @@ struct EncodingSizeEstimation {
                   static_cast<double>(fbwEst.value()) * 0.90) +
               kOverheadBytes;
           return estimate;
->>>>>>> 92302f9 ([encodings/policy] Add SubIntSplit to selection policy, size estimation, and dispatch):dwio/nimble/encodings/EncodingSizeEstimation.h
         } else {
           return std::nullopt;
         }

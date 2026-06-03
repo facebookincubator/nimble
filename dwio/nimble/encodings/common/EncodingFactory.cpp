@@ -394,7 +394,6 @@ std::string_view EncodingFactory::encode(
             toString(TypeTraits<T>::dataType));
       }
     }
-<<<<<<< HEAD:dwio/nimble/encodings/common/EncodingFactory.cpp
     case EncodingType::ALP: {
       NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
     }
@@ -408,7 +407,6 @@ std::string_view EncodingFactory::encode(
             toString(TypeTraits<T>::dataType));
       }
     }
-<<<<<<< HEAD
     case EncodingType::SimdForBitpack: {
       if constexpr (isIntegralType<physicalType>()) {
         return SimdForBitpackEncoding<T>::encode(
@@ -417,8 +415,8 @@ std::string_view EncodingFactory::encode(
         NIMBLE_INCOMPATIBLE_ENCODING(
             "SimdForBitpack encoding only supports integral data types, got {}.",
             TypeTraits<T>::dataType);
-=======
-=======
+      }
+    }
     case EncodingType::SubIntSplit: {
       if constexpr (
           isNumericType<physicalType>() &&
@@ -428,8 +426,6 @@ std::string_view EncodingFactory::encode(
       } else {
         NIMBLE_INCOMPATIBLE_ENCODING(
             "SubIntSplit encoding only supports 32- and 64-bit numeric types.");
->>>>>>> 15de29c ([encodings/factory] Register SubIntSplit in EncodingFactory create and encode):dwio/nimble/encodings/EncodingFactory.cpp
->>>>>>> e9369ad ([encodings/factories] fix merge overlapping for PFOR and SubInt cases)
       }
     }
     default: {
