@@ -201,6 +201,7 @@ struct EncodingSizeEstimation {
           return std::nullopt;
         }
       }
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
       case EncodingType::SubIntSplit: {
         if constexpr (
             isNumericType<physicalType>() &&
