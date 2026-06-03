@@ -187,6 +187,57 @@ class TestTrivialEncodingSelectionPolicy
   bool useVariableBitWidthCompressor_;
 };
 
+template <typename Encoding>
+struct EncodingTypeTraits;
+
+template <typename T>
+struct EncodingTypeTraits<nimble::ConstantEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::Constant;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::DictionaryEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::Dictionary;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::FixedBitWidthEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::FixedBitWidth;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::MainlyConstantEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::MainlyConstant;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::RLEEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::RLE;
+};
+
+template <>
+struct EncodingTypeTraits<nimble::SparseBoolEncoding> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::SparseBool;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::TrivialEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::Trivial;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::VarintEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::Varint;
+};
+
 } // namespace
 
 TEST(EncodingBufferPoolTest, getBufferUsesMinimumCapacity) {
@@ -361,56 +412,6 @@ class EncodingTest : public ::testing::Test {
     buffer_ = std::make_unique<nimble::Buffer>(*this->pool_);
     util_ = std::make_unique<nimble::testing::Util>(*this->pool_);
   }
-
-  template <typename Encoding>
-  struct EncodingTypeTraits {};
-
-  template <>
-  struct EncodingTypeTraits<nimble::ConstantEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Constant;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::DictionaryEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Dictionary;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::FixedBitWidthEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::FixedBitWidth;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::MainlyConstantEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::MainlyConstant;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::RLEEncoding<E>> {
-    static inline nimble::EncodingType encodingType = nimble::EncodingType::RLE;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::SparseBoolEncoding> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::SparseBool;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::TrivialEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Trivial;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::VarintEncoding<E>> {
-    static inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Varint;
-  };
 
   std::unique_ptr<nimble::Encoding> createEncoding(
       const nimble::Vector<E>& values,
