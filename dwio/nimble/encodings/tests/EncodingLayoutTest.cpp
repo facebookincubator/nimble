@@ -567,9 +567,6 @@ TEST(EncodingLayoutTests, SubIntSplitPreserveBoundariesReplay) {
   ASSERT_TRUE(replayedMode.has_value());
   ASSERT_TRUE(replayedBoundaries.has_value());
   EXPECT_EQ(*replayedMode, nimble::detail::subintsplit::kSplitModePreserve);
-  EXPECT_EQ(*replayedBoundaries,
-      preserveBoundaries);
-  }
   EXPECT_EQ(*replayedBoundaries, preserveBoundaries);
 }
 #endif
